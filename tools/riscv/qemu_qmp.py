@@ -1,4 +1,4 @@
-"""A deliberately fixed QMP client for capturing one screendump."""
+"""Bounded, fixed QMP exchanges for screendumps and absolute tablet input."""
 
 from __future__ import annotations
 
@@ -19,10 +19,18 @@ except ModuleNotFoundError as error:
 
 
 _MAX_LINE = 64 * 1024
+ABSOLUTE_AXIS_MAX = 32767
 _PPM_HEADER = f"P6\n{BOCHS_XRGB8888.width} {BOCHS_XRGB8888.height}\n255\n".encode()
 _MAX_CAPTURE_BYTES = len(_PPM_HEADER) + BOCHS_XRGB8888.width * BOCHS_XRGB8888.height * 3
-_OPEN_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
-_OPEN_FILE_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+_OPEN_DIRECTORY_FLAGS = (
+    os.O_RDONLY
+    | os.O_DIRECTORY
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+)
+_OPEN_FILE_FLAGS = (
+    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+)
 
 
 def _require_path(value: Path, name: str) -> Path:
@@ -33,7 +41,9 @@ def _require_path(value: Path, name: str) -> Path:
     return value
 
 
-def _reject_symlink_components(path: Path, root: Path, *, allow_missing_leaf: bool) -> None:
+def _reject_symlink_components(
+    path: Path, root: Path, *, allow_missing_leaf: bool
+) -> None:
     relative = path.relative_to(root)
     current = root
     for index, part in enumerate(relative.parts):
@@ -66,7 +76,10 @@ def _validate_paths(
     if stat.S_IMODE(root_info.st_mode) != 0o700:
         raise ValueError("capture_root must use private mode 0700")
     resolved_root = root.resolve(strict=True)
-    for candidate, name in ((socket_candidate, "socket_path"), (output_candidate, "output_path")):
+    for candidate, name in (
+        (socket_candidate, "socket_path"),
+        (output_candidate, "output_path"),
+    ):
         try:
             candidate.relative_to(root)
             resolved_candidate = candidate.resolve(strict=False)
@@ -141,16 +154,22 @@ def _require_success(connection: socket.socket, deadline: float) -> None:
         raise ValueError("QMP command did not return a success object")
 
 
-def _send_command(connection: socket.socket, command: dict[str, object], deadline: float) -> None:
+def _send_command(
+    connection: socket.socket, command: dict[str, object], deadline: float
+) -> None:
     _remaining_timeout(connection, deadline)
     try:
-        connection.sendall(json.dumps(command, separators=(",", ":")).encode("utf-8") + b"\n")
+        connection.sendall(
+            json.dumps(command, separators=(",", ":")).encode("utf-8") + b"\n"
+        )
     except socket.timeout as error:
         raise TimeoutError("QMP capture timed out") from error
     _remaining_timeout(connection, deadline)
 
 
-def _open_capture_directories(output_path: Path, capture_root: Path) -> tuple[int, int, str]:
+def _open_capture_directories(
+    output_path: Path, capture_root: Path
+) -> tuple[int, int, str]:
     root = _require_path(capture_root, "capture_root")
     output = _require_path(output_path, "output_path")
     relative = output.relative_to(root)
@@ -158,11 +177,16 @@ def _open_capture_directories(output_path: Path, capture_root: Path) -> tuple[in
     parent_descriptor = -1
     try:
         root_info = os.fstat(root_descriptor)
-        if not stat.S_ISDIR(root_info.st_mode) or stat.S_IMODE(root_info.st_mode) != 0o700:
+        if (
+            not stat.S_ISDIR(root_info.st_mode)
+            or stat.S_IMODE(root_info.st_mode) != 0o700
+        ):
             raise ValueError("capture_root must be a private directory")
         parent_descriptor = os.dup(root_descriptor)
         for component in relative.parts[:-1]:
-            next_descriptor = os.open(component, _OPEN_DIRECTORY_FLAGS, dir_fd=parent_descriptor)
+            next_descriptor = os.open(
+                component, _OPEN_DIRECTORY_FLAGS, dir_fd=parent_descriptor
+            )
             os.close(parent_descriptor)
             parent_descriptor = next_descriptor
         return root_descriptor, parent_descriptor, relative.name
@@ -207,10 +231,17 @@ def capture_screendump(
     timeout: float = 5.0,
 ) -> bytes:
     """Issue QMP's fixed capability/screendump exchange and read its PPM output."""
-    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not math.isfinite(timeout) or timeout <= 0:
+    if (
+        not isinstance(timeout, (int, float))
+        or isinstance(timeout, bool)
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
         raise ValueError("timeout must be finite and positive")
     _validate_paths(socket_path, output_path, capture_root)
-    root_descriptor, parent_descriptor, filename = _open_capture_directories(output_path, capture_root)
+    root_descriptor, parent_descriptor, filename = _open_capture_directories(
+        output_path, capture_root
+    )
     try:
         deadline = time.monotonic() + timeout
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
@@ -226,7 +257,10 @@ def capture_screendump(
             _require_success(connection, deadline)
             _send_command(
                 connection,
-                {"execute": "screendump", "arguments": {"filename": os.fspath(output_path)}},
+                {
+                    "execute": "screendump",
+                    "arguments": {"filename": os.fspath(output_path)},
+                },
                 deadline,
             )
             _require_success(connection, deadline)
@@ -234,3 +268,85 @@ def capture_screendump(
     finally:
         os.close(parent_descriptor)
         os.close(root_descriptor)
+
+
+def _tablet_movements(x: int, y: int) -> tuple[list[dict[str, object]], ...]:
+    if any(
+        type(value) is not int or not 0 <= value <= ABSOLUTE_AXIS_MAX
+        for value in (x, y)
+    ):
+        raise ValueError(
+            f"tablet coordinates must be integers in 0..{ABSOLUTE_AXIS_MAX}"
+        )
+    return (
+        [{"type": "abs", "data": {"axis": axis, "value": 0}} for axis in ("x", "y")],
+        [
+            {"type": "abs", "data": {"axis": axis, "value": value}}
+            for axis, value in (("x", x), ("y", y))
+        ],
+    )
+
+
+def _left_click() -> tuple[list[dict[str, object]], ...]:
+    return (
+        [{"type": "btn", "data": {"button": "left", "down": True}}],
+        [{"type": "btn", "data": {"button": "left", "down": False}}],
+    )
+
+
+def _send_input_events(
+    socket_path: Path,
+    groups: tuple[list[dict[str, object]], ...],
+    *,
+    timeout: float,
+) -> None:
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        raise ValueError("timeout must be finite and positive")
+    path = _require_path(socket_path, "socket_path")
+    parent = path.parent.lstat()
+    if not stat.S_ISDIR(parent.st_mode) or stat.S_IMODE(parent.st_mode) != 0o700:
+        raise ValueError("input socket parent must be a private directory")
+    if not stat.S_ISSOCK(path.lstat().st_mode):
+        raise ValueError("input socket must be a non-symlink Unix socket")
+    deadline = time.monotonic() + timeout
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        _remaining_timeout(connection, deadline)
+        connection.connect(os.fspath(path))
+        if "QMP" not in _read_message(connection, deadline):
+            raise ValueError("QMP greeting is missing QMP")
+        _send_command(connection, {"execute": "qmp_capabilities"}, deadline)
+        _require_success(connection, deadline)
+        for events in groups:
+            _send_command(
+                connection,
+                {"execute": "input-send-event", "arguments": {"events": events}},
+                deadline,
+            )
+            _require_success(connection, deadline)
+
+
+def move_tablet(socket_path: Path, *, x: int, y: int, timeout: float = 5.0) -> None:
+    """Move a QEMU tablet from the origin to one absolute position."""
+
+    # HMP mouse_move emits REL, which a virtio-tablet does not accept.
+    # QMP input-send-event sends ABS through the actual device/evdev path.
+    # QEMU v10.2.1: ui/ui-hmp-cmds.c and hw/input/virtio-input-hid.c.
+    _send_input_events(socket_path, _tablet_movements(x, y), timeout=timeout)
+
+
+def click_left_button(socket_path: Path, *, timeout: float = 5.0) -> None:
+    """Press and release QEMU's left pointer button without moving it."""
+
+    _send_input_events(socket_path, _left_click(), timeout=timeout)
+
+
+def click_tablet(socket_path: Path, *, x: int, y: int, timeout: float = 5.0) -> None:
+    """Move a QEMU tablet from the origin to absolute coordinates and click once."""
+
+    groups = (*_tablet_movements(x, y), *_left_click())
+    _send_input_events(socket_path, groups, timeout=timeout)

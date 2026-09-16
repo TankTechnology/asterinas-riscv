@@ -17,7 +17,9 @@ use crate::{
     prelude::*,
     process::{
         posix_thread::{AsPosixThread, FIRST_POSIX_TID, ThreadLocal, ptrace::PtraceStopResult},
-        signal::{HandlePendingSignal, PauseReason, handle_pending_signal},
+        signal::{
+            HandlePendingSignal, PauseReason, handle_pending_signal, restart_syscall_if_needed,
+        },
     },
     syscall::handle_syscall,
     thread::{AsThread, exception::handle_exception},
@@ -64,7 +66,8 @@ pub fn create_new_user_task(
             task: &current_task,
         };
 
-        let has_kernel_event_fn = || ctx.has_pending();
+        let has_kernel_event_fn =
+            || ctx.process.has_group_stop_work(ctx.posix_thread) || ctx.has_pending();
 
         #[cfg(target_arch = "riscv64")]
         let mut first_process_diagnostics = None;
@@ -79,6 +82,32 @@ pub fn create_new_user_task(
         }
 
         while !current_thread.is_exited() {
+            // This checkpoint also precedes a cloned thread's first user entry.
+            let user_ctx = user_mode.context_mut();
+            handle_pending_signal(user_ctx, &ctx);
+            while !current_thread.is_exited() && ctx.process.thread_must_stop(ctx.posix_thread) {
+                ctx.posix_thread.group_stop(&ctx, user_ctx);
+                // CONT changes the predicate at generation time. Only KILL
+                // interrupts the wait; ordinary signals remain pending.
+                let _ = stop_waiter.pause_until_by(
+                    || {
+                        // A CONT followed immediately by STOP may leave the
+                        // group stopped again before this waiter runs. It must
+                        // return to acknowledge the new obligation, not sleep
+                        // indefinitely on the previous episode's confirmation.
+                        (!ctx.process.thread_must_stop(ctx.posix_thread)
+                            || ctx.process.has_group_stop_checkpoint(ctx.posix_thread))
+                        .then_some(())
+                    },
+                    PauseReason::StopBySignal,
+                );
+                handle_pending_signal(user_ctx, &ctx);
+            }
+            if current_thread.is_exited() {
+                break;
+            }
+            restart_syscall_if_needed(user_mode.context_mut(), &ctx);
+
             #[cfg(target_arch = "riscv64")]
             if let Some(diagnostics) = first_process_diagnostics.as_mut() {
                 diagnostics.on_user_enter(user_mode.context());
@@ -130,30 +159,6 @@ pub fn create_new_user_task(
                     ctx.thread_local.set_orig_syscall_ret(None);
                 }
             };
-
-            // Exit if the thread terminates
-            if current_thread.is_exited() {
-                break;
-            }
-
-            // Handle signals
-            handle_pending_signal(user_ctx, &ctx);
-
-            // Handle signals while the thread is stopped
-            // FIXME: Currently, we handle all signals when the process is stopped.
-            // However, when the process is stopped, at least signals with user-provided handlers
-            // should not be handled; these signals should only be handled when the process is continued.
-            // Certain signals, such as SIGKILL, should be handled even if the process is stopped.
-            // We need to further investigate Linux behavior regarding which signals should be handled
-            // when the thread is stopped.
-            while !current_thread.is_exited() && ctx.process.is_stopped() {
-                let _ = stop_waiter.pause_until_by(
-                    || (!ctx.process.is_stopped()).then_some(()),
-                    // We currently do not support ptrace.
-                    PauseReason::StopBySignal,
-                );
-                handle_pending_signal(user_ctx, &ctx);
-            }
         }
     };
 

@@ -66,13 +66,13 @@ from tools.riscv import megrez_gmac_gate as gmac_gate
 
 
 EXPECTED_PHYSICAL_MILESTONES = (
-    b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
+    b"ASTERINAS_GMAC_READY key=eic7700-rj45 ",
     *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
     DESKTOP_M4_MILESTONES[-1].encode(),
     DESKTOP_M6_REMOTE_MARKER.encode(),
 )
 EXPECTED_PHYSICAL_NETWORK_MILESTONES = (
-    b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 ",
+    b"ASTERINAS_GMAC_READY key=eic7700-rj45 ",
     *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
 )
 EXPECTED_PHYSICAL_M7_MILESTONES = (
@@ -80,6 +80,8 @@ EXPECTED_PHYSICAL_M7_MILESTONES = (
     DESKTOP_M7_SEARCH_MARKER.encode(),
     DESKTOP_M7_READY_MARKER.encode(),
 )
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+DWMAC_DEVICE_SOURCE = REPOSITORY_ROOT / "kernel/comps/dwmac/src/device.rs"
 
 
 def complete_browser_evidence(status: str = "limited-pass") -> bytes:
@@ -105,17 +107,13 @@ def complete_desktop_evidence() -> bytes:
 
 
 def complete_web_network_evidence(mode: NetworkMode) -> bytes:
-    records = [b"ASTERINAS_GMAC_SELECTED key=eic7700-rj45 port=0"]
-    records.extend(
+    records = list(
         (
-            f"DEBIAN_WEB_NETWORK_LAYER mode={mode.value} "
-            f"layer={layer} status=pass"
+            f"DEBIAN_WEB_NETWORK_LAYER mode={mode.value} layer={layer} status=pass"
         ).encode()
         for layer in NETWORK_LAYERS
     )
-    records.append(
-        f"DEBIAN_WEB_NETWORK_READY mode={mode.value} layers=10".encode()
-    )
+    records.append(f"DEBIAN_WEB_NETWORK_READY mode={mode.value} layers=10".encode())
     return b"\n".join(records) + b"\n"
 
 
@@ -262,13 +260,32 @@ class MegrezGmacGateTests(unittest.TestCase):
         )
         self.assertNotIn("ASTERINAS_DESKTOP_PROXY_", direct)
         for bootargs in (proxy, direct):
+            self.assertIn("loglevel=error", bootargs.split())
+            self.assertIn("asterinas.klog_capture=info", bootargs.split())
+            self.assertNotIn("loglevel=info", bootargs.split())
+            self.assertNotIn("loglevel=notice", bootargs.split())
             self.assertLess(len(f'setenv bootargs "{bootargs}"'.encode()), 1024)
             self.assertNotIn("saveenv", bootargs)
 
-    def test_physical_web_network_classifier_isolates_modes(self) -> None:
-        self.assertTrue(
-            hasattr(gmac_gate, "classify_physical_web_network_transcript")
+    def test_network_bootargs_retain_expanded_fdt_headroom(self) -> None:
+        network = physical_bootargs(
+            300,
+            target=GateTarget.NETWORK,
+            network_mode=NetworkMode.PROXY,
         )
+        self.assertEqual(network.split().count("console=ttyS0"), 1)
+        self.assertNotIn("console=tty0", network.split())
+        self.assertLess(len(f'fdt set /chosen bootargs "{network}"'.encode()), 960)
+        self.assertNotIn("systemd.mask=", network)
+
+    def test_gmac_ready_uses_the_initialized_logger(self) -> None:
+        source = DWMAC_DEVICE_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn('ostd::notice!(\n        "ASTERINAS_GMAC_READY', source)
+        self.assertNotIn('early_println!(\n        "ASTERINAS_GMAC_READY', source)
+
+    def test_physical_web_network_classifier_isolates_modes(self) -> None:
+        self.assertTrue(hasattr(gmac_gate, "classify_physical_web_network_transcript"))
         proxy = complete_web_network_evidence(NetworkMode.PROXY)
         direct = complete_web_network_evidence(NetworkMode.DIRECT)
         self.assertTrue(
@@ -284,6 +301,18 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertFalse(
             gmac_gate.classify_physical_web_network_transcript(
                 proxy, mode=NetworkMode.DIRECT
+            ).passed
+        )
+
+    def test_physical_web_network_classifier_does_not_require_console_gmac_log(
+        self,
+    ) -> None:
+        evidence = complete_web_network_evidence(NetworkMode.PROXY)
+
+        self.assertNotIn(b"ASTERINAS_GMAC_READY", evidence)
+        self.assertTrue(
+            gmac_gate.classify_physical_web_network_transcript(
+                evidence, mode=NetworkMode.PROXY
             ).passed
         )
 
@@ -332,10 +361,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         evidence = complete_web_network_evidence(NetworkMode.PROXY)
         operations = FakeOperations(
             boot=evidence,
-            recovery=(
-                b"Kernel panic - not syncing\n"
-                b"OpenSBI v1.7\nU-Boot 2025.01\n=> "
-            ),
+            recovery=(b"Kernel panic - not syncing\nOpenSBI v1.7\nU-Boot 2025.01\n=> "),
         )
 
         result = run_gate(
@@ -419,6 +445,14 @@ class MegrezGmacGateTests(unittest.TestCase):
         )
         self.assertIn(
             "systemd.setenv=ASTERINAS_DESKTOP_M5_CONSOLE=/dev/ttyS0",
+            network_bootargs.split(),
+        )
+        self.assertIn(
+            "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
+            network_bootargs.split(),
+        )
+        self.assertNotIn(
+            "asterinas.neighbor=eic7700-rj45,10.100.16.1,4c:d6:29:18:93:43",
             network_bootargs.split(),
         )
         for unused_variable in (
@@ -542,9 +576,7 @@ class MegrezGmacGateTests(unittest.TestCase):
             self.assertEqual(
                 result["baidu_screenshot"]["path"], BROWSER_PNG_CAPTURE_PATH
             )
-            self.assertEqual(
-                result["baidu_screenshot"]["artifact"], "baidu-search.png"
-            )
+            self.assertEqual(result["baidu_screenshot"]["artifact"], "baidu-search.png")
 
     def test_proxy_mode_owns_bridge_and_publishes_its_summary(self) -> None:
         self.assertIn(
@@ -728,8 +760,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         operations = FakeOperations(
             chunks=(
                 b"DEBIAN_NETWORK_M5_FAIL reason=megrez-bootarg\n",
-                b"DEBIAN_BROWSER_M6_FAIL reason=browser-start-timeout\n"
-                + evidence,
+                b"DEBIAN_BROWSER_M6_FAIL reason=browser-start-timeout\n" + evidence,
                 b"late harmless log\n",
             ),
         )
@@ -1011,6 +1042,75 @@ class MegrezGmacGateTests(unittest.TestCase):
                 BOARD_ADDRESS,
                 run=lambda *args, **kwargs: conflict,
             )
+
+    def test_address_probe_falls_back_to_ping_without_raw_socket_permission(
+        self,
+    ) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def run_probe(
+            argv: tuple[str, ...], **kwargs: object
+        ) -> subprocess.CompletedProcess[bytes]:
+            calls.append(argv)
+            self.assertTrue(kwargs["capture_output"])
+            if argv[0] == "arping":
+                return subprocess.CompletedProcess(
+                    argv,
+                    1,
+                    b"",
+                    b"CAP_NET_RAW required\n",
+                )
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+
+        check_address_unused("enp1s0", BOARD_ADDRESS, run=run_probe)
+        self.assertEqual(
+            calls[1],
+            (
+                "ping",
+                "-c",
+                "1",
+                "-W",
+                "1",
+                "-I",
+                "enp1s0",
+                BOARD_ADDRESS,
+            ),
+        )
+
+        def run_conflict(
+            argv: tuple[str, ...], **kwargs: object
+        ) -> subprocess.CompletedProcess[bytes]:
+            del kwargs
+            if argv[0] == "arping":
+                return subprocess.CompletedProcess(
+                    argv,
+                    1,
+                    b"",
+                    b"CAP_NET_RAW required\n",
+                )
+            return subprocess.CompletedProcess(argv, 0, b"reply", b"")
+
+        with self.assertRaisesRegex(GateFailure, "already in use"):
+            check_address_unused(
+                "enp1s0",
+                BOARD_ADDRESS,
+                run=run_conflict,
+            )
+
+    def test_address_probe_falls_back_to_ping_when_arping_is_missing(self) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        def run_probe(
+            argv: tuple[str, ...], **kwargs: object
+        ) -> subprocess.CompletedProcess[bytes]:
+            calls.append(argv)
+            self.assertTrue(kwargs["capture_output"])
+            if argv[0] == "arping":
+                raise FileNotFoundError("arping")
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+
+        check_address_unused("enp1s0", BOARD_ADDRESS, run=run_probe)
+        self.assertEqual([argv[0] for argv in calls], ["arping", "ping"])
 
 
 if __name__ == "__main__":

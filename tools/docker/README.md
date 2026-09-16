@@ -2,6 +2,13 @@
 
 Asterinas development Docker images are provided to facilitate developing and testing Asterinas project. These images can be found in the [asterinas/asterinas](https://hub.docker.com/r/asterinas/asterinas/) repository on DockerHub.
 
+## Reusing the local build environment
+
+Use `tools/docker/run_dev_container.sh -- make kernel` for iterative builds.
+The launcher reuses a named container and persistent toolchain and dependency caches.
+See [Persistent development containers](PERSISTENT-DEV.md) for setup,
+worktree isolation, and offline verification.
+
 ## Building Docker Images
 
 Asterinas development Docker image is based on an OSDK development Docker image. To build an Asterinas development Docker image and test it on your local machine, navigate to the root directory of the Asterinas source code tree and execute the following command:

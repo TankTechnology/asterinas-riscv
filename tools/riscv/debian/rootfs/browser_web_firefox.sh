@@ -8,6 +8,7 @@ readonly FIREFOX_HOME="${HOME:-/home/asterinas}"
 readonly XAUTHORITY="$FIREFOX_HOME/.Xauthority"
 readonly PROFILE="$FIREFOX_HOME/.mozilla/asterinas-browser-web"
 readonly NETWORK_MODE="${ASTERINAS_WEB_NETWORK_MODE:-}"
+readonly BASIC_ONLY="${ASTERINAS_BROWSER_WEB_BASIC_ONLY:-0}"
 readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
 readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
 # Let Firefox finish its parent/child, window, and Marionette bootstrap before
@@ -53,6 +54,7 @@ validate_network_profile() {
             ;;
         *) return 1 ;;
     esac
+    [[ "$BASIC_ONLY" == 0 || "$BASIC_ONLY" == 1 ]] || return 1
 }
 
 configure_network_profile() {
@@ -79,6 +81,10 @@ configure_network_profile() {
             'user_pref("browser.pagethumbnails.capturing_disabled", true);' \
             'user_pref("browser.region.network.url", "");' \
             'user_pref("browser.topsites.contile.enabled", false);' \
+            'user_pref("dom.ipc.processCount", 1);' \
+            'user_pref("dom.ipc.processPrelaunch.enabled", false);' \
+            'user_pref("fission.autostart", false);' \
+            'user_pref("media.rdd-process.enabled", false);' \
             'user_pref("network.captive-portal-service.enabled", false);' \
             'user_pref("network.connectivity-service.enabled", false);' \
             'user_pref("browser.download.folderList", 2);' \
@@ -97,6 +103,23 @@ configure_network_profile() {
                 >>"$temporary"
         else
             printf '%s\n' 'user_pref("network.proxy.type", 0);' >>"$temporary"
+        fi
+        if [[ "$BASIC_ONLY" == 1 ]]; then
+            # The deterministic physical gate does not use public pages.
+            # Disable background update, Safe Browsing, settings, and DoH
+            # fetchers so they cannot starve Marionette on slow RISC-V CPUs.
+            # Normal browser-web boots retain their existing Firefox defaults.
+            printf '%s\n' \
+                'user_pref("app.update.auto", false);' \
+                'user_pref("app.update.enabled", false);' \
+                'user_pref("browser.safebrowsing.downloads.remote.enabled", false);' \
+                'user_pref("browser.safebrowsing.malware.enabled", false);' \
+                'user_pref("browser.safebrowsing.phishing.enabled", false);' \
+                'user_pref("extensions.systemAddon.update.enabled", false);' \
+                'user_pref("extensions.update.enabled", false);' \
+                'user_pref("network.trr.mode", 5);' \
+                'user_pref("services.settings.server", "");' \
+                >>"$temporary"
         fi
         /usr/bin/chmod 0600 -- "$temporary"
         /usr/bin/mv -T -- "$temporary" "$PROFILE/user.js"

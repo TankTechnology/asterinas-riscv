@@ -5,7 +5,8 @@ use core::{net::Ipv4Addr, slice::Iter, str::FromStr};
 
 use aster_bigtcp::{
     device::WithDevice,
-    iface::{InterfaceFlags, InterfaceType},
+    iface::{IfaceConfig, InterfaceFlags, InterfaceType},
+    socket_table::SocketRegistries,
     wire::{EthernetAddress, Ipv4Address, Ipv4Cidr},
 };
 use aster_softirq::BottomHalfDisabled;
@@ -248,9 +249,10 @@ pub fn init() {
             }
         };
         let mut ifaces = Vec::with_capacity(devices.len() + 1);
+        let socket_registries = Arc::new(SocketRegistries::new());
 
         // Keep loopback first so physical interface indexes are deterministic.
-        ifaces.push(new_loopback(true));
+        ifaces.push(new_loopback(true, socket_registries.clone()));
 
         for (index, registration) in devices.into_iter().enumerate() {
             let profile = profiles
@@ -266,7 +268,13 @@ pub fn init() {
                     )
                 })
                 .collect();
-            let iface = new_ethernet(&registration, index, profile, &static_neighbors);
+            let iface = new_ethernet(
+                &registration,
+                index,
+                profile,
+                &static_neighbors,
+                socket_registries.clone(),
+            );
             let recv_iface = iface.clone();
             aster_network::register_recv_callback(registration.key(), move || recv_iface.poll());
             let send_iface = iface.clone();
@@ -287,10 +295,13 @@ pub fn init() {
 /// The interface starts down, as in Linux; it can be brought up from inside
 /// the namespace (e.g., `ip link set lo up`).
 pub(in crate::net) fn new_ns_loopback() -> Arc<Iface> {
-    new_loopback(false)
+    new_loopback(false, Arc::new(SocketRegistries::new()))
 }
 
-fn new_loopback(up: bool) -> Arc<Iface> {
+fn new_loopback(
+    up: bool,
+    socket_registries: Arc<SocketRegistries<crate::net::iface::ext::BigtcpExt>>,
+) -> Arc<Iface> {
     use aster_bigtcp::{
         device::{Loopback, Medium},
         iface::IpIface,
@@ -325,18 +336,23 @@ fn new_loopback(up: bool) -> Arc<Iface> {
         flags |= InterfaceFlags::UP | InterfaceFlags::RUNNING;
     }
 
-    IpIface::new(
+    let iface = IpIface::new(
         Wrapper(Mutex::new(Loopback::new(Medium::Ip))),
         Ipv4Cidr::new(LOOPBACK_ADDRESS, LOOPBACK_ADDRESS_PREFIX_LEN),
         Some(Ipv6Cidr::new(
             LOOPBACK_IPV6_ADDRESS,
             LOOPBACK_IPV6_PREFIX_LEN,
         )),
-        CString::new("lo").unwrap(),
-        PollScheduler::new(),
-        InterfaceType::LOOPBACK,
-        flags,
-    ) as Arc<Iface>
+        IfaceConfig::new(
+            CString::new("lo").unwrap(),
+            InterfaceType::LOOPBACK,
+            flags,
+            PollScheduler::new(),
+            socket_registries.clone(),
+        ),
+    ) as Arc<Iface>;
+    socket_registries.register_iface(&iface);
+    iface
 }
 
 fn new_ethernet(
@@ -344,6 +360,7 @@ fn new_ethernet(
     index: usize,
     profile: Option<&BootNetworkProfile>,
     static_neighbors: &[(Ipv4Address, EthernetAddress)],
+    socket_registries: Arc<SocketRegistries<crate::net::iface::ext::BigtcpExt>>,
 ) -> Arc<Iface> {
     use aster_bigtcp::iface::EtherIface;
     use aster_network::AnyNetworkDevice;
@@ -385,16 +402,22 @@ fn new_ethernet(
         None => (None, None),
     };
 
-    EtherIface::new(
+    let iface = EtherIface::new(
         Wrapper(device),
         EthernetAddress(ether_addr),
         ip_cidr,
         gateway,
         static_neighbors,
-        CString::new(format!("eth{}", index)).unwrap(),
-        PollScheduler::new(),
-        flags,
-    )
+        IfaceConfig::new(
+            CString::new(format!("eth{}", index)).unwrap(),
+            InterfaceType::ETHER,
+            flags,
+            PollScheduler::new(),
+            socket_registries.clone(),
+        ),
+    ) as Arc<Iface>;
+    socket_registries.register_iface(&iface);
+    iface
 }
 
 #[cfg(ktest)]

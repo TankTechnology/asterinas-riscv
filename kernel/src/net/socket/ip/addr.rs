@@ -69,3 +69,7 @@ impl From<IpAddress> for IpAddressFamily {
         }
     }
 }
+
+pub(super) fn is_ipv4_mapped(addr: IpAddress) -> bool {
+    matches!(addr, IpAddress::Ipv6(addr) if addr.to_bits() >> 32 == 0xffff)
+}

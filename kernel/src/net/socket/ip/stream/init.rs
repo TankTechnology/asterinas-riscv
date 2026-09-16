@@ -88,13 +88,16 @@ impl InitStream {
         self.family
     }
 
-    pub(super) fn bind(&mut self, endpoint: &IpEndpoint, can_reuse: bool) -> Result<()> {
+    pub(super) fn bind(
+        &mut self,
+        endpoint: &IpEndpoint,
+        can_reuse: bool,
+        v6only: bool,
+    ) -> Result<()> {
         if self.bound_port.is_some() {
             return_errno_with_message!(Errno::EINVAL, "the socket is already bound to an address");
         }
 
-        // When we support `IPV6_V6ONLY` and if it is set, we should also reject IPv4-mapped
-        // IPv6 addresses.
         if IpAddressFamily::from(endpoint.addr) != self.family {
             return_errno_with_message!(
                 Errno::EAFNOSUPPORT,
@@ -102,7 +105,7 @@ impl InitStream {
             );
         }
 
-        self.bound_port = Some(bind_port(endpoint, can_reuse)?);
+        self.bound_port = Some(bind_port(endpoint, can_reuse, v6only)?);
 
         Ok(())
     }
@@ -123,8 +126,6 @@ impl InitStream {
             "`finish_last_connect()` should be called before calling `connect()`"
         );
 
-        // When we support `IPV6_V6ONLY` and if it is set, we should also reject IPv4-mapped
-        // IPv6 addresses.
         if IpAddressFamily::from(remote_endpoint.addr) != self.family {
             return Err((
                 Error::with_message(
@@ -165,7 +166,7 @@ impl InitStream {
                     ));
                 }
             };
-            match bind_port(&endpoint, can_reuse) {
+            match bind_port(&endpoint, can_reuse, false) {
                 Ok(bound_port) => bound_port,
                 Err(err) => return Err((err, self)),
             }
@@ -206,6 +207,7 @@ impl InitStream {
         backlog: usize,
         option: &RawTcpOption,
         observer: StreamObserver,
+        v6only: bool,
     ) -> Result<ListenStream, (Error, Self)> {
         if !self.is_connect_done {
             // See the comments of `is_connect_done`.
@@ -222,17 +224,24 @@ impl InitStream {
         let bound_port = match self.bound_port.take() {
             Some(bound_port) => bound_port,
             None => {
-                // Auto-bind to INADDR_ANY (0.0.0.0) with an ephemeral port when
-                // listen() is called without a prior bind().
-                let endpoint = IpEndpoint::new(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), 0);
-                match bind_port(&endpoint, false) {
+                // Auto-bind to the wildcard address for this protocol family
+                // when listen() is called without a prior bind().
+                let endpoint = match self.family {
+                    IpAddressFamily::IPv4 => {
+                        IpEndpoint::new(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), 0)
+                    }
+                    IpAddressFamily::IPv6 => {
+                        IpEndpoint::new(IpAddress::Ipv6(Ipv6Address::UNSPECIFIED), 0)
+                    }
+                };
+                match bind_port(&endpoint, false, v6only) {
                     Ok(bound_port) => bound_port,
                     Err(err) => return Err((err, self)),
                 }
             }
         };
 
-        match ListenStream::new(bound_port, backlog, option, observer) {
+        match ListenStream::new(bound_port, backlog, option, observer, v6only) {
             Ok(listen_stream) => Ok(listen_stream),
             Err((bound_port, error)) => Err((error, Self::new_bound(bound_port, self.family))),
         }
@@ -294,7 +303,9 @@ impl InitStream {
     }
 }
 
-fn bind_port(endpoint: &IpEndpoint, can_reuse: bool) -> Result<BoundTcpPort> {
-    let (iface, config) = resolve_bind_iface_and_config(endpoint, can_reuse)?;
+fn bind_port(endpoint: &IpEndpoint, can_reuse: bool, v6only: bool) -> Result<BoundTcpPort> {
+    let dual_stack =
+        matches!(endpoint.addr, IpAddress::Ipv6(addr) if addr.is_unspecified()) && !v6only;
+    let (iface, config) = resolve_bind_iface_and_config(endpoint, can_reuse, dual_stack)?;
     Ok(iface.bind_tcp(config)?)
 }

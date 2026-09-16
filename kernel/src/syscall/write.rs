@@ -27,6 +27,9 @@ pub fn sys_write(
     let write_len = {
         if user_buf_len != 0 {
             let user_space = ctx.user_space();
+            if file.as_socket().is_some() {
+                user_space.prefault(user_buf_ptr, user_buf_len, crate::vm::perms::VmPerms::READ)?;
+            }
             let mut reader = user_space.reader(user_buf_ptr, user_buf_len)?;
             file.write(&mut reader)
         } else {

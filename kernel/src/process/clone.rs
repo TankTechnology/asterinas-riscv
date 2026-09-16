@@ -566,6 +566,9 @@ fn clone_child_task(
     // Inherit sigmask from current thread
     let sig_mask = posix_thread.sig_mask().into();
 
+    // Inherit CPU affinity from the creating thread.
+    let child_cpu_affinity = ctx.thread.atomic_cpu_affinity().load(Ordering::Relaxed);
+
     // Inherit the thread name.
     let thread_name = posix_thread.thread_name().lock().clone();
 
@@ -586,6 +589,7 @@ fn clone_child_task(
         )
         .process(posix_thread.weak_process().clone())
         .sig_mask(sig_mask)
+        .cpu_affinity(child_cpu_affinity)
         .file_table(child_file_table)
         .fs(child_fs)
         .fpu_context(child_fpu_context)
@@ -622,6 +626,7 @@ fn clone_child_task(
             "the process has exited or has already executed a new program",
         )
     })?;
+    process.enroll_group_stop(child_posix_thread);
     drop(tasks);
 
     let child_thread = child_task.as_thread().unwrap();
@@ -704,6 +709,9 @@ fn clone_child_process(
     // Inherit the parent's signal mask
     let child_sig_mask = posix_thread.sig_mask().into();
 
+    // Inherit CPU affinity from the creating thread.
+    let child_cpu_affinity = ctx.thread.atomic_cpu_affinity().load(Ordering::Relaxed);
+
     // Inherit the parent's resource limits
     let child_resource_limits = process.resource_limits().clone();
 
@@ -756,6 +764,7 @@ fn clone_child_process(
                 child_vmar,
             )
             .sig_mask(child_sig_mask)
+            .cpu_affinity(child_cpu_affinity)
             .file_table(child_file_table)
             .fs(child_fs)
             .fpu_context(child_fpu_context)

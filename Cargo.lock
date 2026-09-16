@@ -303,10 +303,12 @@ dependencies = [
 name = "aster-logger"
 version = "0.1.0"
 dependencies = [
+ "aster-cmdline",
  "aster-console",
  "component",
  "ostd",
  "owo-colors",
+ "spin 0.9.9",
 ]
 
 [[package]]

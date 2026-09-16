@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{boxed::Box, collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use aster_softirq::BottomHalfDisabled;
 use ostd::sync::SpinLock;
 use smoltcp::{
     socket::PollAt,
     time::Duration,
-    wire::{IpEndpoint, IpRepr, TcpRepr},
+    wire::{IpEndpoint, IpListenEndpoint, IpRepr, TcpRepr},
 };
 
 use super::{
@@ -17,7 +18,7 @@ use super::{
 use crate::{
     errors::tcp::ListenError,
     ext::Ext,
-    iface::{BindPortConfig, BoundTcpPort, PollableIfaceMut},
+    iface::{BindPortConfig, BoundTcpPort, Iface, PollableIfaceMut},
     socket::{
         option::{RawTcpOption, RawTcpSetOption},
         unbound::{RawTcpSocket, new_tcp_socket},
@@ -38,13 +39,17 @@ pub struct TcpBacklog<E: Ext> {
 pub struct TcpListenerInner<E: Ext> {
     pub(super) backlog: SpinLock<TcpBacklog<E>, BottomHalfDisabled>,
     listener_key: ListenerKey,
+    accepts_ipv4: bool,
+    closed: AtomicBool,
 }
 
 impl<E: Ext> TcpListenerInner<E> {
-    fn new(backlog: TcpBacklog<E>, listener_key: ListenerKey) -> Self {
+    fn new(backlog: TcpBacklog<E>, listener_key: ListenerKey, accepts_ipv4: bool) -> Self {
         Self {
             backlog: SpinLock::new(backlog),
             listener_key,
+            accepts_ipv4,
+            closed: AtomicBool::new(false),
         }
     }
 }
@@ -54,11 +59,13 @@ impl<E: Ext> Inner<E> for TcpListenerInner<E> {
     type Observer = E::TcpEventObserver;
 
     fn on_drop(this: &Arc<SocketBg<Self, E>>) {
-        debug_assert_eq!(
-            Arc::strong_count(this),
-            1,
+        debug_assert!(
+            this.inner.closed.load(Ordering::Acquire),
             "a listener must be closed before dropping"
         );
+
+        let registry = this.bound.iface().common().tcp_registry();
+        registry.unregister_listener(this);
     }
 }
 
@@ -73,6 +80,7 @@ impl<E: Ext> TcpListener<E> {
         max_conn: usize,
         option: &RawTcpOption,
         observer: E::TcpEventObserver,
+        v6only: bool,
     ) -> Result<Self, (BoundTcpPort<E>, ListenError)> {
         let local_endpoint = bound.endpoint();
 
@@ -80,8 +88,20 @@ impl<E: Ext> TcpListener<E> {
         let mut sockets = iface.common().sockets();
 
         let listener_key = ListenerKey::new(local_endpoint.addr, local_endpoint.port);
+        let accepts_ipv4 = matches!(
+            local_endpoint.addr,
+            smoltcp::wire::IpAddress::Ipv6(addr) if addr.is_unspecified()
+        ) && !v6only;
 
-        if sockets.lookup_listener(&listener_key).is_some() {
+        let has_conflict = sockets.lookup_listener(&listener_key).is_some()
+            || (accepts_ipv4
+                && sockets
+                    .lookup_listener(&ListenerKey::new(
+                        smoltcp::wire::IpAddress::Ipv4(core::net::Ipv4Addr::UNSPECIFIED),
+                        local_endpoint.port,
+                    ))
+                    .is_some());
+        if has_conflict {
             return Err((bound, ListenError::AddressInUse));
         }
 
@@ -90,7 +110,18 @@ impl<E: Ext> TcpListener<E> {
 
             option.apply(&mut socket);
 
-            if let Err(err) = socket.listen(local_endpoint) {
+            let listen_endpoint = if local_endpoint.addr.is_unspecified() {
+                IpListenEndpoint {
+                    addr: None,
+                    port: local_endpoint.port,
+                }
+            } else {
+                IpListenEndpoint {
+                    addr: Some(local_endpoint.addr),
+                    port: local_endpoint.port,
+                }
+            };
+            if let Err(err) = socket.listen(listen_endpoint) {
                 return Err((bound, err.into()));
             }
 
@@ -105,13 +136,17 @@ impl<E: Ext> TcpListener<E> {
                 connected: Vec::new(),
             };
 
-            TcpListenerInner::new(backlog, listener_key)
+            TcpListenerInner::new(backlog, listener_key, accepts_ipv4)
         };
 
         let listener = Self::new(bound, inner);
         listener.init_observer(observer);
         let res = sockets.insert_listener(listener.inner().clone());
         debug_assert!(res.is_ok());
+        iface
+            .common()
+            .tcp_registry()
+            .register_listener(listener.inner());
 
         Ok(listener)
     }
@@ -151,8 +186,18 @@ impl<E: Ext> TcpListener<E> {
     /// Note that this method must be called before dropping the TCP listener to avoid resource
     /// leakage.
     pub fn close(&self) {
+        if self.0.inner.closed.swap(true, Ordering::AcqRel) {
+            return;
+        }
+
         // A TCP listener can be removed immediately.
         self.0.bound.iface().common().remove_tcp_listener(&self.0);
+        self.0
+            .bound
+            .iface()
+            .common()
+            .tcp_registry()
+            .unregister_listener(&self.0);
 
         let (connecting, connected) = {
             let mut socket = self.0.inner.backlog.lock();
@@ -187,6 +232,14 @@ impl<E: Ext> TcpListenerBg<E> {
     pub(crate) const fn listener_key(&self) -> &ListenerKey {
         &self.inner.listener_key
     }
+
+    pub(crate) const fn accepts_ipv4(&self) -> bool {
+        self.inner.accepts_ipv4
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.inner.closed.load(Ordering::Acquire)
+    }
 }
 
 impl<E: Ext> TcpListenerBg<E> {
@@ -194,10 +247,18 @@ impl<E: Ext> TcpListenerBg<E> {
     pub(crate) fn process(
         self: &Arc<Self>,
         iface: &mut PollableIfaceMut<E>,
+        connection_iface: &Arc<dyn Iface<E>>,
         ip_repr: &IpRepr,
         tcp_repr: &TcpRepr,
     ) -> (TcpProcessResult, Option<Arc<TcpConnectionBg<E>>>) {
         let mut backlog = self.inner.backlog.lock();
+
+        // Closing marks the listener before removing it from the interface and
+        // namespace registries. A lookup that raced with removal may retain a
+        // temporary Arc, but it must not create a connection after close.
+        if self.inner.closed.load(Ordering::Acquire) {
+            return (TcpProcessResult::NotProcessed, None);
+        }
 
         if !backlog
             .socket
@@ -233,8 +294,7 @@ impl<E: Ext> TcpListenerBg<E> {
         };
 
         let conn = TcpConnection::new_cyclic(
-            self.bound
-                .iface()
+            connection_iface
                 .bind_tcp(BindPortConfig::new_backlog(self.bound.endpoint()))
                 .unwrap(),
             |weak| {

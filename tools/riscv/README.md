@@ -8,6 +8,100 @@ The checks are evidence, not hardware emulation.
 A passing profile proves the declared CPU, MMU, DTB, U-Boot `booti`, and userspace contracts.
 It does not claim that QEMU reproduces unmodeled clocks, resets, cache controllers, or board peripherals.
 
+## Megrez selectable boot menu
+
+The schema-v3 selector provides RockOS, Asterinas Basic, Probe, and Desktop.
+It is qualified as a versioned canary before replacing `/extlinux/asterinas.conf`.
+See the [design](../../docs/superpowers/specs/2026-09-12-megrez-selectable-boot-menu-design.md)
+and [implementation status](../../docs/superpowers/plans/2026-09-12-megrez-selectable-boot-menu.md).
+
+After promotion, routine startup needs only a reboot/reset and menu selection:
+
+| Entry | Purpose | Recovery policy |
+| --- | --- | --- |
+| RockOS (default) | Maintenance and network file transfer | Normal RockOS shutdown |
+| Basic | BusyBox shell in the small initramfs; no Debian disk required | `sync; reboot -f` |
+| Probe | Automatic, non-writing boot check | Requests reboot; 90-second software deadline |
+| Desktop | Existing Debian, X and Firefox | Explicit shutdown; no automatic deadline |
+
+The menu defaults to RockOS after ten seconds. The board's preceding 30-second
+firmware delay is unchanged. No routine build, upload, CRC command, manual DTB
+patch, or `booti` sequence is required. A hard-locked kernel still requires a
+physical reset; the software timer is not a hardware watchdog. Basic's shell
+does not currently provide job control.
+
+Desktop shares the kernel, prepared DTB and Stage1 with Basic/Probe. It mounts
+the existing Debian partition and uses a temporary, UID-1000 desktop HOME;
+browser profiles and caches do not persist across reboot. Other Debian rootfs
+writes remain possible. Qualification checks X, framebuffer and Firefox process
+readiness and a visible Firefox window, not webpage rendering, Internet access
+or input responsiveness. The installed cold-profile ESR image still takes
+minutes to expose its window. The test allows up to 300 seconds after the root
+console appears; this is a timeout bound, not a performance target.
+
+### Build profile for desktop performance
+
+Use the existing optimized build for desktop performance qualification:
+
+```bash
+tools/docker/run_dev_container.sh --offline -- make kernel \
+  TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+```
+
+This is a build-time choice, not an additional step on every boot. Keep the
+default `RELEASE=0` for unoptimized debugging when needed; do not use it as the
+desktop performance baseline. The installed September 12 menu kernel was built
+with `profile = "dev"`. Controlled QEMU measurements show substantial VM and
+Firefox executable-loading overhead compared with the same source in release
+mode. They do not yet establish full-window startup time on the board.
+
+The subsequent release canary reached a visible Firefox window at menu +70–74 s
+in two physical boots and passed a local-page JavaScript/DOM-event check with
+a verified framebuffer screenshot.
+The same-source dev comparison took approximately 282 s to expose its window.
+The installed default kernel is still unchanged.
+These offline observations do not qualify Internet browsing, USB input,
+or the candidate's network-source parity with the deployed integration kernel.
+
+Retain `target/osdk/aster-kernel/bundle.toml` with each candidate to record its
+build profile, alongside the existing artifact hashes. The optimized candidate
+must still pass the normal qualification before replacing the installed kernel;
+do not overwrite the menu's frozen kernel in place. Reuse the existing Debian
+image and Stage1. See the [measurements and short probe](../../docs/porting/evidence/2026-09-12-firefox-release-startup.md).
+
+Maintenance commands below run in the persistent development container. They
+are for changing/qualifying a generation, not commands to repeat each boot:
+
+```bash
+tools/docker/run_dev_container.sh -- make test_riscv_megrez_boot_menu_unit
+tools/docker/run_dev_container.sh -- python3 -m tools.riscv.megrez_boot_menu --help
+tools/docker/run_dev_container.sh -- python3 -m tools.riscv.megrez_menu_board --help
+```
+
+`megrez_boot_menu prepare-dtb` moves the existing framebuffer/USB fixups to
+publication time. `prepare` now rejects a DTB unless those exact framebuffer
+geometry and USB-host properties are present, so a Desktop selector cannot be
+published with the raw board DTB. It records frozen local artifacts and the exact
+vendor configuration. `megrez_menu_board stage --from-uboot` boots RockOS and transfers
+only missing artifacts, verifies sizes/SHA-256, then publishes a canary. A
+`cycle --mode basic|probe|desktop|rockos|fallback` records one physical test and
+returns to U-Boot. `--check-root` optionally runs read-only `e2fsck -fn` from
+RockOS, refusing a mounted Debian filesystem.
+
+`promote --from-uboot --evidence DIRECTORY` requires three successful cycles
+each for Basic, Probe, RockOS and fallback, and two for Desktop, all for the
+same menu identity. It verifies installed files again, backs up the previous
+selector, atomically replaces it, and observes an uninterrupted software reboot
+through the persistent menu to RockOS. It never modifies the vendor extlinux
+file, uses `saveenv`, or deploys a rootfs image. Cold power-on qualification is
+separate and must be recorded from a real operator power cycle.
+
+Supply RockOS credentials through `--password-fd`, or explicitly select
+`--factory-login` only for the documented unchanged factory account. The board
+must be in the state named by the command; failure does not trigger speculative
+serial commands or forced resets. A failed cycle retains its `serial.log` and
+`result.json` and does not count toward promotion.
+
 ## SMP4 cross-hart instruction-cache regression
 
 The formal RISC-V regression job runs with exactly four guest CPUs and sets
@@ -270,21 +364,617 @@ immediately as `guest-reboot-before-terminal`; a bare pre-boot prompt is not
 mistaken for current-attempt evidence. The host retains its independent
 300-second cap even though the current DT describes a 200 MHz watchdog clock.
 
+## Current-main Megrez physical graphics
+
+This gate is based on `origin/main` commit
+`69a7b6e41ca74932f79d917f3638199da573b1e9`. The candidate branch adds the
+opt-in debug-root console and physical-interaction witness without importing a
+different RISC-V kernel baseline. Record both `git rev-parse origin/main` and
+`git rev-parse HEAD` with every run so that the upstream base and candidate
+source remain distinguishable.
+
+Before building, require a clean tracked worktree and confirm that the pinned
+base is an ancestor. The QEMU and physical results record artifact SHA-256
+values; retain this source record beside those results:
+
+```bash
+set -euo pipefail
+PINNED_MAIN=69a7b6e41ca74932f79d917f3638199da573b1e9
+EVIDENCE_ROOT="$PWD/target/current-main-physical-graphics"
+SOURCE_RECORD="$EVIDENCE_ROOT/source-identity.txt"
+mkdir -p -m 0700 "$EVIDENCE_ROOT"
+test ! -e "$SOURCE_RECORD"
+test -z "$(git status --porcelain --untracked-files=all)"
+test "$(git rev-parse origin/main)" = "$PINNED_MAIN"
+git merge-base --is-ancestor "$PINNED_MAIN" HEAD
+SOURCE_TMP=$(mktemp "$EVIDENCE_ROOT/.source-identity.XXXXXX")
+trap 'rm -f -- "$SOURCE_TMP"' EXIT
+{
+  printf 'origin_main=%s\n' "$(git rev-parse origin/main)"
+  printf 'candidate_head=%s\n' "$(git rev-parse HEAD)"
+  printf 'tracked_and_untracked_clean=true\n'
+} >"$SOURCE_TMP"
+chmod 0600 "$SOURCE_TMP"
+mv -- "$SOURCE_TMP" "$SOURCE_RECORD"
+trap - EXIT
+```
+
+The QEMU run binds the source-built current-main `--kernel` to seven immutable
+supporting inputs: `--uboot`, `--dtb`, `--stage1-initramfs`, `--root-image`,
+`--root-manifest`, `--packages-lock`, and `--package-checksums`. Use one set of
+these exact paths for the debug-console, browser-web, and interaction gates;
+do not rebuild or replace an input between runs.
+
+```bash
+make test_riscv_physical_graphics_unit
+
+QEMU_INPUTS=(
+  "DEBIAN_KERNEL=$PWD/target/osdk/aster-kernel-osdk-bin.Image"
+  "DEBIAN_UBOOT=$PWD/target/qemu-uboot/cache/u-boot-build/u-boot"
+  "DEBIAN_DTB=$PWD/target/qemu-uboot/current/qemu-virt.dtb"
+  "DEBIAN_STAGE1_INITRAMFS=$PWD/target/debian-riscv/stage1/initramfs.cpio"
+  "DEBIAN_ROOT_IMAGE=$PWD/target/debian-riscv/browser-web/rootfs/debian-root.ext2"
+  "DEBIAN_ROOT_MANIFEST=$PWD/target/debian-riscv/browser-web/rootfs/rootfs-manifest.json"
+  "DEBIAN_PACKAGES_LOCK=$PWD/target/debian-riscv/browser-web/rootfs/packages.lock"
+  "DEBIAN_PACKAGE_CHECKSUMS=$PWD/target/debian-riscv/browser-web/rootfs/source-metadata/package-checksums"
+)
+make test_riscv_debian_debug_console_qemu_gate "${QEMU_INPUTS[@]}" \
+  DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT="$PWD/target/current-main-physical-graphics/qemu-debug-console"
+make test_riscv_debian_browser_web_qemu_gate "${QEMU_INPUTS[@]}" \
+  DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT="$PWD/target/current-main-physical-graphics/qemu-browser-web"
+make test_riscv_physical_graphics_qemu_gate "${QEMU_INPUTS[@]}" \
+  RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT="$PWD/target/current-main-physical-graphics/qemu-interaction"
+```
+
+The QEMU adapter injects keys through HMP and absolute pointer events through
+a private QMP socket into the VirtIO keyboard and tablet.
+HMP relative mouse moves cannot drive the tablet.
+It validates three nonce-bound browser cycles and captures pixels, but its
+result always records `"physical":false`: QEMU cannot satisfy the physical
+result or prove the Megrez display scanout and real USB xHCI/HID paths.
+
+The interaction adapter enters the Stage1 `isolated-root` console first. Fixed
+boot parameters mask competing evidence/network and getty units, while Stage1
+provides the volatile browser home. The host completes the low-load
+kernel/rootfs probe before issuing one bounded Firefox start request. That
+administrator-only request uses systemd's
+`ignore-dependencies` job mode because the production browser unit requires
+the online evidence service that this local interaction gate intentionally
+masks.  The desktop and timeline prerequisites are enqueued explicitly, and
+the browser script's own `wait-x` check remains the display-readiness barrier.
+All subsequent preflight, browser-start, interaction-cycle, and final-state
+requests call the fixed-action Stage1 `physical-graphics-control` helper. Each
+request is below 128 bytes; the helper accepts only validated numeric and
+nonce arguments and preserves the existing result markers. At the configured
+10 ms per serial byte, this removes about 45 seconds of command transmission
+from one interaction cycle compared with the former inline shell programs.
+Python probes use an ephemeral `/run` bytecode-cache prefix, so repeated
+cycles reuse memory-backed bytecode and do not mutate the installed ext2
+cache.
+This ordering and transport boundary avoid both multi-kilobyte serial commands
+and the start-stop-restart race that let Firefox starve the diagnostic shell.
+The measured per-cycle UART request time fell from about 48.2 seconds to 2.92
+seconds, while an incremental menu update transfers only Stage1 and the menu
+in about 55 seconds. The persistent offline development container reuses the
+cross toolchain and Cargo/Rustup/Nix caches; neither operation rebuilds the
+root image or downloads dependencies.
+
+Never infer keyboard and pointer roles from `/dev/input/eventN`. The two
+physical xHCI controllers initialize concurrently: retained runs on the same
+board observed both keyboard=`event1`, pointer=`event0` and the reverse. The
+rootfs device-access helper matches the Linux input bus, name, and physical
+path, creates `/run/asterinas-input/keyboard` and
+`/run/asterinas-input/pointer`, and only then allows Xorg to start. Missing or
+duplicate identities fail closed. It reads the `EVIOCGID`, `EVIOCGNAME`, and
+`EVIOCGPHYS` ioctls implemented by Asterinas instead of assuming Linux sysfs
+identity files exist. When an older partition-2 root is reused,
+the Stage1 control helper derives the same identities and supplies a transient
+Xorg provider configuration under `/run`; it does not rewrite partition 2.
+Readiness is accepted only when Xorg has both resolved evdev nodes open. The
+interaction page is likewise carried by Stage1, preventing its DOM evidence
+schema from drifting from the Stage1 gate.
+The Stage1 initramfs must come from the same source revision so that the
+`isolated-root` debug-console mode is available; an older cached Stage1 is
+rejected instead of silently falling back to the normal desktop boot.
+
+Browser evidence also publishes
+`browser-performance-provenance.json`, which binds the observed display
+provider, framebuffer geometry, Xorg package versions, and Firefox JIT-overlay
+selection to the exact rootfs manifest. Completed physical interaction cycles
+carry trusted-input-to-frame samples plus nearest-rank p50/p95 values. Keep the
+same page and evidence schema when comparing the current `fbdev` provider with
+a future `drm` provider; the desktop session selects a provider-specific Xorg
+configuration through `ASTERINAS_DISPLAY_PROVIDER`. This integration adds the
+selection and evidence boundary only and intentionally does not modify DRM
+code.
+
+The physical guest keeps its fixed 900-second safety reboot. The gate defaults
+to three cycles for release-grade repeatability, but accepts `--cycles 1` for
+one information-rich experimental interaction. Graphical setup, the requested
+cycles, display evidence, and final verification share that lifetime, with 30
+seconds reserved before reboot.
+Per-phase timeout settings are upper bounds, not extensions of the board's
+remaining lifetime; an exhausted budget fails closed and proceeds to recovery.
+
+The real run consumes a schema-2 `debian-browser` debug plan. Its canonical
+order is `kernel`, `initramfs`, `qemu_dtb`, `megrez_dtb`, `u_boot`,
+`root_image`, `root_manifest`, `packages_lock`, `package_checksums`, and
+`in_release`; the prepare target recomputes every size, SHA-256, and CRC32.
+The plan's `megrez_dtb` must already pass `megrez_boot_menu prepare-dtb`.
+The gate verifies that immutable file on the host, checks its MMC CRC, and
+boots it directly; it no longer repeats framebuffer and USB `fdt set`
+commands at every experiment.
+Use a stable `/dev/serial/by-id/...` path. The release-grade mode asks an HDMI
+capture program to atomically create or replace the `--hdmi-capture` file only
+after the gate asks for the cyan final-cycle image. First validate every plan
+artifact and print the exact command, without opening the serial device or
+changing U-Boot state:
+
+```bash
+make prepare_riscv_megrez_physical_graphics \
+  MEGREZ_PHYSICAL_GRAPHICS_PLAN="$PWD/target/megrez-debug/debug-plan.json" \
+  MEGREZ_PHYSICAL_GRAPHICS_DEVICE=/dev/serial/by-id/usb-REPLACE_ME \
+  MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE="$PWD/target/current-main-physical-graphics/physical/operator-hdmi.png" \
+  MEGREZ_PHYSICAL_GRAPHICS_OUTPUT="$PWD/target/current-main-physical-graphics/physical/evidence"
+```
+
+Run the command printed by that target. For each of the three 180-second
+interaction windows, type the displayed random 16-hex-digit nonce on the
+physical USB keyboard, then move the physical USB mouse and click the amber
+button. The guest is booted with `asterinas.reboot_after=1140`; the host uses a
+1170-second recovery wait so it can retain the final HDMI image and still
+observe the fresh U-Boot prompt. The printed command makes every deadline
+explicit: opening the serial link is bounded at 60 seconds, artifact
+preparation at 300 seconds, graphical readiness at 300 seconds, each cycle at
+180 seconds, a measured non-JIT Marionette setup at 540 seconds, and the
+post-cycle HDMI update at 60 seconds. These are caps, not reserved waiting
+periods; respond to each prompt immediately. The capture
+must be a complete 1-byte-to-64-MiB PNG or JPEG that remains unchanged for at
+least 0.5 seconds. A missing input record, DOM transition,
+screenshot, HDMI update, recovery prompt, or any panic/xHCI/framebuffer fatal
+marker produces `passed:false` while retaining the diagnostic evidence.
+
+When external capture hardware is unavailable during experimental development,
+select the explicitly weaker `operator-attested` mode. It preserves real USB
+evdev input, trusted Firefox DOM state, the serial guest PNG, final Firefox PID
+and restart checks, and recovery, but it does not claim that an HDMI image was
+captured. Existing versioned MMC files can be selected so this path performs no
+artifact transfer or image rebuild:
+
+```bash
+make prepare_riscv_megrez_physical_graphics \
+  MEGREZ_PHYSICAL_GRAPHICS_PLAN="$PWD/target/current-main-physical-graphics/physical/plan-firefox-77d7e42c.json" \
+  MEGREZ_PHYSICAL_GRAPHICS_DEVICE=/dev/serial/by-id/usb-REPLACE_ME \
+  MEGREZ_PHYSICAL_GRAPHICS_DISPLAY=operator-attested \
+  MEGREZ_PHYSICAL_GRAPHICS_CYCLES=1 \
+  MEGREZ_PHYSICAL_GRAPHICS_MMC_KERNEL=asterinas-77d7e42c-220572e8.Image \
+  MEGREZ_PHYSICAL_GRAPHICS_MMC_INITRAMFS=asterinas-78c4a36c-f4d9b349-stage1.cpio \
+  MEGREZ_PHYSICAL_GRAPHICS_MMC_DTB=dtbs/linux-image-6.6.87-win2030/eswin/eic7700-milkv-megrez.dtb \
+  MEGREZ_PHYSICAL_GRAPHICS_OUTPUT="$PWD/target/current-main-physical-graphics/physical/operator-attested-evidence"
+```
+
+After the single keyboard/mouse cycle reaches cyan PASS, visually inspect the
+physical monitor and enter exactly the printed nonce-bound line,
+`confirm-cyan-pass <suffix>`. A successful one-cycle result
+proves one complete interaction path. Such a result does not prove three-cycle repeatability.
+The evidence is published as `operator-display-attestation.json`, with `hdmi: null`; no file is
+presented as an HDMI capture.
+
+## Megrez fast kernel probes
+
+Use the fast probe path for routine kernel work that does not need Debian,
+systemd, Firefox, network access, or partition 2.
+For a lightweight simulation on both the developer host and the running RockOS,
+use one kernel/Stage1 pair with the dual-host QEMU gate:
+
+```bash
+make test_riscv_dual_host_probe ROCKOS_SSH=debian@10.100.19.200
+```
+
+The developer run uses the already-running persistent Docker container's
+RISC-V QEMU; RockOS uses its installed QEMU in TCG mode.
+On the tested artifact pair, the developer probe took 6–8 seconds and
+RockOS TCG about 140–190 seconds; without KVM, do not treat the board run as a
+low-latency substitute for the developer gate.
+The command copies only a kernel Image and small Stage1 archive into a
+hash-named RockOS `/tmp/asterinas-qemu-probe/` cache.
+Before either guest starts, it copies the pair into a unique, read-only local
+snapshot and checks that both copies still match the source hashes. This keeps
+the Docker and SCP opens tied to the same verified bytes even if build outputs
+are replaced during the run.
+After the first copy, the full size and SHA-256 are checked on every run;
+unchanged bytes are not transferred again.
+Both guests are diskless and networkless, run `boot,syscall213`, and have a
+bounded reboot/exit deadline.
+Independent serial logs and JSON results are written under
+`target-ubuntu/dual-host-qemu-probe/runs/` with `physical:false`.
+QEMU `virt` does not exercise the real Megrez DTB, MMC, HDMI, USB, or Firefox.
+It is a lightweight kernel regression gate, not a replacement for the physical test.
+
+If the pair has not been built yet, prepare it once in the cached project
+containers (the RISC-V rootfs-builder image supplies the cross libc headers):
+
+```bash
+tools/docker/run_dev_container.sh --offline -- make kernel \
+  TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+tools/docker/run_dev_container.sh \
+  --image asterinas/asterinas:0.18.0-20260702-riscv-rootfs --offline -- \
+  tools/riscv/debian/rootfs/build_stage1.sh \
+  target/dual-host-qemu-probe/artifacts/initramfs.cpio
+```
+
+Set `DUAL_HOST_PROBE_KERNEL` and `DUAL_HOST_PROBE_INITRAMFS` on the `make`
+command when comparing another prebuilt pair.
+The dual-host gate never changes RockOS boot configuration or partitions,
+and does not need `/dev/kvm`.
+
+Build and deploy a versioned kernel, Stage1 initramfs, and DTB only when their
+identity changes, then select them once with `configure`.
+Routine runs use only the immutable bundle and the files already on MMC
+partition 1:
+
+```bash
+python3 -m tools.riscv.megrez_probe boot syscall213
+```
+
+The default bundle is `target/megrez-probe/current.json`; private evidence is
+written below `target/megrez-probe/latest` by default.
+The guest has one 90-second timer, recovery is independently bounded, and the
+host sends one newline after the new U-Boot banner to stop its autoboot
+countdown before requiring the prompt.
+The normal probe registry is fixed and read-only.
+A bounded shell is available only when explicitly requested for a physical
+diagnostic run.
+
+Run the host and Stage1 regression tests in the persistent container:
+
+```bash
+tools/docker/run_dev_container.sh -- make test_riscv_megrez_probe_unit
+```
+
+The same lifecycle has two QEMU gates: one executes `boot syscall213`, and one
+sends no request so the Stage1 kernel timer must reboot the guest. Override the
+three artifact variables only when testing a non-default build:
+
+```bash
+tools/docker/run_dev_container.sh -- make test_riscv_megrez_probe_qemu \
+  MEGREZ_PROBE_BUNDLE=target/megrez-probe/current.json \
+  MEGREZ_PROBE_KERNEL=target/osdk/aster-kernel-osdk-bin.Image \
+  MEGREZ_PROBE_INITRAMFS=target/megrez-probe/build/initramfs.cpio
+```
+
+Deployment is a separate maintenance operation.  Every kernel, Stage1, and
+DTB basename must contain the first 12 hexadecimal digits of that artifact's
+SHA-256.  The extlinux label contains the first 12 digits of the plan SHA-256.
+Keep the generated configuration at
+`<staged-directory>/extlinux/asterinas.conf` and validate the complete staged
+tree before opening the serial port.
+
+Render that configuration atomically from the frozen plan and the three
+partition-relative paths:
+
+```bash
+python3 -m tools.riscv.megrez_boot_manifest render \
+  --plan "$PWD/target/megrez-debug/current/plan.json" \
+  --mmc-kernel /asterinas-KERNEL_SHA12.booti \
+  --mmc-initramfs /stage1-INITRAMFS_SHA12.cpio \
+  --mmc-dtb /dtb/megrez-DTB_SHA12.dtb \
+  --output "$PWD/target/megrez-boot-manifest/current/extlinux/asterinas.conf"
+```
+
+With that directory already served read-only on the private board network,
+publish it once through RockOS:
+
+```bash
+python3 -m tools.riscv.megrez_rockos_attestation publish \
+  /dev/serial/by-id/usb-FTDI_FT232R_USB_UART-REPLACE-if00-port0 \
+  --plan "$PWD/target/megrez-debug/current/plan.json" \
+  --extlinux-config "$PWD/target/megrez-boot-manifest/current/extlinux/asterinas.conf" \
+  --staged-directory "$PWD/target/megrez-boot-manifest/current" \
+  --base-url http://10.100.19.216:18081/current \
+  --output-directory "$PWD/target/current-main-physical-graphics/physical/publication"
+```
+
+The command checks that `/boot` is `/dev/mmcblk1p1`, verifies or installs only
+new immutable artifact names, and replaces `/boot/extlinux/asterinas.conf`
+atomically last.  A failure leaves the previous configuration in place and
+still attempts a normal reboot to U-Boot.  It never accesses partition 2.
+The serial driver enters one password-authenticated root shell before
+transaction logging starts; `/boot` mutations then use non-interactive
+`sudo -n`, and recovery uses that root shell directly.  Do not replace this
+with ordinary-user writes or sudo timestamp caching: `MEGREZ-ROCKOS-PUBLISH-001`
+covered two fail-closed attempts, first when `install` returned
+`Permission denied` on `/boot/asterinas-*.booti`, then when this RockOS image
+discarded the `sudo -v` ticket before `sudo -n install`.  The transaction latch
+skipped every remaining mutation and recovered to U-Boot both times.  Unit
+tests now require the root-shell boundary, privileged non-interactive writes,
+and the 1024-byte serial command bound.
+
+After the RockOS receipt succeeds, select exactly those persistent bytes once:
+
+```bash
+python3 -m tools.riscv.megrez_probe configure \
+  --plan "$PWD/target/megrez-debug/current/plan.json" \
+  --device /dev/serial/by-id/usb-FTDI_FT232R_USB_UART-REPLACE-if00-port0 \
+  --mmc-kernel asterinas-KERNEL_SHA12.booti \
+  --mmc-initramfs stage1-INITRAMFS_SHA12.cpio \
+  --mmc-dtb dtb/megrez-DTB_SHA12.dtb \
+  --extlinux-config "$PWD/target/megrez-boot-manifest/current/extlinux/asterinas.conf" \
+  --mmc-extlinux extlinux/asterinas.conf
+```
+
+The probe bundle is schema 2 and binds the extlinux contents and its
+size/SHA-256/CRC32 in addition to the three artifacts.  Each physical probe
+loads and CRC-checks the persistent extlinux file first; a mismatch stops
+before `booti`.  Schema 1 remains accepted only by the explicit diskless QEMU
+adapter.
+
+This prevents `MEGREZ-BOOT-MANIFEST-001`, where the reset entry referenced the
+missing `asterinas-sv48-fe1dcfdf7.booti` and
+`initramfs-full-712208ba4.cpio`.  The host-side fixture reports
+`kernel: staged file is missing`; a physical MMC mismatch reports an extlinux
+size/CRC failure and does not try another kernel.
+
+The schema-2 RockOS attestation below remains the full Debian/browser release
+workflow.  The lightweight probe does not start RockOS, Firefox, network, or
+partition 2 during routine runs.
+A firmware or
+SBI hard lock that prevents all serial progress still requires a manual board
+reset.
+
+### Review policy for the experimental RISC-V fork
+
+This RISC-V support is experimental development in the `asterinas-riscv` fork.
+The fork intentionally does not carry or invoke the former repository-local
+`aster-code-review` skill, its automation, or its compatibility symlink.
+Use normal human-readable diff review plus the existing tests and hardware
+gates instead.
+When integrating future upstream changes, keep this removal as an explicit
+fork policy unless the project owner decides to adopt a replacement review
+workflow.
+
+## Megrez unattended boot stability
+
+The unattended gate separates deployment from acceptance. The schema-2
+`DebugPlan` is the immutable deployment manifest; its sizes, SHA-256 values,
+CRC32 values, and versioned MMC paths identify one release. A routine gate run
+loads only the existing kernel, Stage1 initramfs, and DTB from MMC partition 1.
+It does not build, upload, or fall back to serial transfer;
+partition 2 is never written.
+
+Keep compilation and all unit tests in the persistent development container:
+
+```bash
+tools/docker/run_dev_container.sh -- \
+  make test_riscv_megrez_boot_stability_unit
+```
+
+Boot RockOS only when the next `DebugPlan` names a kernel or initramfs that is
+not already present on partition 1.
+Transfer only changed, versioned files,
+then verify them with the controlled measurement tool below. It boots RockOS,
+uses native `stat` and `sha256sum`, binds every output to a fresh random nonce
+and the plan identity, performs a normal reboot, and requires a new
+OpenSBI/U-Boot epoch before publishing. The private raw serial source is kept
+as `deployment-measurement.serial.log`; the derived schema-2
+`deployment-attestation.json` binds its SHA-256, RockOS boot ID,
+`/dev/mmcblk1p1`, filenames, sizes, and observed SHA-256 values.
+
+With the board at a fresh U-Boot prompt, generate the receipt once. The
+password prompt is read from the terminal and is never placed in argv, an
+environment variable, or the retained transcript:
+
+```bash
+python3 -m tools.riscv.megrez_rockos_attestation \
+  /dev/serial/by-id/usb-FTDI_FT232R_USB_UART-REPLACE-if00-port0 \
+  --plan "$PWD/target/current-main-physical-graphics/physical/plan-isolated-resolved.json" \
+  --output-directory "$PWD/target/current-main-physical-graphics/physical/rockos-attestation" \
+  --mmc-kernel asterinas-COMMIT-CRC.Image \
+  --mmc-initramfs asterinas-COMMIT-CRC-stage1.cpio \
+  --mmc-dtb dtbs/linux-image-VERSION/eswin/eic7700-milkv-megrez.dtb
+```
+
+The receipt and raw log are reused by every later boot of the same immutable
+deployment. Retain the preceding plan, files, receipt, and log for rollback. A
+kernel update does not require rebuilding or reinstalling the partition-2
+Debian root. This is an auditable maintenance receipt, not a hardware root of
+trust: the host controlling the exclusive serial port, this tool, and RockOS
+remain inside the deployment trust boundary.
+
+Run the gate directly on the host as the `dialout` user. The routine gate
+validates the frozen plan and RockOS SHA-256 receipt, then observes the MMC
+size/CRC32 at U-Boot. It does not reread local build outputs or require the
+plan's original container paths to exist.
+This keeps serial ownership and the private evidence files with the host user.
+With the board at a fresh U-Boot prompt, run three unattended Asterinas boot
+and recovery epochs using the frozen plan and the filenames already verified
+on MMC:
+
+```bash
+python3 -m tools.riscv.megrez_boot_stability \
+  /dev/serial/by-id/usb-FTDI_FT232R_USB_UART-REPLACE-if00-port0 \
+  --plan "$PWD/target/current-main-physical-graphics/physical/plan-isolated-resolved.json" \
+  --output-directory "$PWD/target/current-main-physical-graphics/physical/boot-stability" \
+  --deployment-attestation "$PWD/target/current-main-physical-graphics/physical/rockos-attestation/deployment-attestation.json" \
+  --deployment-measurement-log "$PWD/target/current-main-physical-graphics/physical/rockos-attestation/deployment-measurement.serial.log" \
+  --mmc-kernel asterinas-COMMIT-CRC.Image \
+  --mmc-initramfs asterinas-COMMIT-CRC-stage1.cpio \
+  --mmc-dtb dtbs/linux-image-VERSION/eswin/eic7700-milkv-megrez.dtb
+```
+
+Each cycle verifies the MMC byte count and CRC32, reaches the isolated root
+debug console, masks the external network-evidence workload, and bind-mounts
+the volatile `/run/asterinas-physical-home` over `/home/asterinas`. Xorg,
+Openbox, and Firefox therefore keep logs, profiles, and caches on tmpfs instead
+of relying on unsupported partition-2 writeback. The gate then requires
+systemd, `/dev/fb0`, Xorg using that framebuffer, Openbox, and an active Firefox
+service with zero restarts. It has no keyboard, mouse, HDMI, or network-success
+requirement.
+
+Serial shell work is split into short, idempotent, acknowledged steps. A lost
+acknowledgement is detected after 15 seconds; the host sends Control-C and a
+newline to restore the shell boundary before retrying. Before an immediate
+`reboot -f`, the gate retains a bounded snapshot of the kernel ring buffer,
+mounts, failed systemd units, graphical unit state, process tree, full service
+status, journal, and Xorg/Firefox logs. An oversized diagnostic snapshot fails
+closed instead of dropping the earlier kernel log. `cycle-1.diagnostics.log`
+and its peers contain those snapshots; `deployment-measurement.serial.log`,
+`deployment-attestation.json`, `deployment.json`, `sha256sums.txt`, and the
+per-cycle serial logs bind them to the release.
+
+`result.json` is replaced last and reports pass only after all three cycles
+return to distinct fresh U-Boot epochs without a panic, oops, fatal exception,
+out-of-memory event, ext2 error, or block I/O error. To roll back, select the
+previous plan and its retained versioned filenames, then run the same gate.
+
+The default 240-second readiness deadline covers the measured cold-start
+variance; it is an upper bound and does not delay a successful cycle. Remaining
+`systemd-random-seed`/`systemd-sysctl` failures, read-only block writeback
+attempts, syscalls 213/272, and `SA_NOCLDSTOP` warnings are retained as kernel
+compatibility work. They are not hidden by the deployment gate and are not
+treated as proof of a fatal graphics failure.
+
+## One-command Megrez desktop and Firefox diagnosis
+
+Configure the already deployed, measured MMC release once. This operation is
+local-only: it validates and hashes the existing plan, RockOS receipt, and
+measurement log, then writes one private bundle. It does not open the serial
+device, build an image, transfer a file, boot RockOS, or write either MMC
+partition:
+
+The bundle records the plan's canonical semantic SHA-256 identity. The receipt
+and measurement-log fields record their exact byte SHA-256 identities; loading
+the bundle cross-validates all three before opening the serial device.
+
+```bash
+python3 -m tools.riscv.megrez_desktop configure \
+  --plan "$PWD/target/current-main-physical-graphics/physical/plan-isolated-resolved.json" \
+  --device /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0 \
+  --deployment-attestation "$PWD/target/current-main-physical-graphics/physical/rockos-attestation-isolated-resolved/deployment-attestation.json" \
+  --deployment-measurement-log "$PWD/target/current-main-physical-graphics/physical/rockos-attestation-isolated-resolved/deployment-measurement.serial.log" \
+  --mmc-kernel asterinas-790ab694-34bc1cc0.Image \
+  --mmc-initramfs asterinas-78c4a36c-f4d9b349-stage1.cpio \
+  --mmc-dtb dtbs/linux-image-6.6.87-win2030/eswin/eic7700-milkv-megrez.dtb \
+  --evidence-root "$PWD/target/megrez-desktop/evidence" \
+  --output "$PWD/target/megrez-desktop/current.json"
+```
+
+After that one-time configuration, the routine desktop boot is one command:
+
+```bash
+python3 -m tools.riscv.megrez_desktop start
+```
+
+`start` reads only the three named files already on MMC partition 1, verifies
+their U-Boot byte counts and CRC32 values, and reaches the existing systemd,
+framebuffer, Xorg, Openbox, and Firefox readiness contract. A successful run
+closes the host serial descriptor and leaves the desktop running; it does not
+arm the 900-second diagnostic reboot timer. A failure after Asterinas starts
+collects bounded `dmesg`, systemd, process, Xorg, and Firefox evidence, requests
+`reboot -f`, and checks for a new U-Boot epoch. Complete firmware/SBI loss is
+reported as `manual-reset-required`; without an independent reset controller,
+software cannot recover that state remotely.
+
+For one unattended real-web check, use the same configured bundle:
+
+```bash
+python3 -m tools.riscv.megrez_desktop browse-firefox
+```
+
+`browse-firefox` owns a temporary host bridge from `10.100.19.216:17893` to
+the local proxy (port `7890` by default), boots the existing three MMC files
+once, and retains the frozen network and static-neighbor boot arguments. It
+synchronizes the guest clock from a validated plain-HTTP `Date` header before
+any HTTPS request, waits for Marionette with a real loopback TCP connection,
+and uses one WebDriver session to validate and capture only the Baidu homepage.
+It does not run the 20-request fixture stress test, rewrite partition 2, or use
+`/proc/net/tcp` as a readiness oracle. The JSON and PNG are transferred with
+nonce, byte-count, and SHA-256 framing, after which the action requests a reboot
+and verifies a fresh U-Boot prompt. The PNG is a Marionette content-viewport
+capture, not an HDMI framebuffer dump: it must be a complete decodable image of
+at least 1024x700, while the paired JSON and ready marker independently bind the
+same WebDriver session to Baidu HTTPS, verified TLS timing, and the required DOM.
+The real-web action has a 1050-second terminal recovery timer and stops its page
+gate early enough to export failure evidence. It records payload-free
+Marionette command boundaries plus at most 128 kernel TCP events for loopback
+port 2828; routine `start` keeps its existing non-diagnostic behavior.
+Increasing the terminal bound does not delay a successful page. On a host with
+a different local proxy port, pass `--proxy-upstream-port PORT`.
+
+The two experiment helpers are carried by the small Stage1 initramfs and
+bind-mounted into the ephemeral `/run/asterinas-tools` path. Updating this
+workflow therefore replaces only the versioned Stage1 file on MMC partition 1
+(about 650 KiB); deployment does not rewrite the Debian root image on
+partition 2.
+
+Use the heavier action only for one explicitly falsifiable Firefox experiment:
+
+```bash
+python3 -m tools.riscv.megrez_desktop diagnose-firefox \
+  --hypothesis "The physical Firefox Marionette greeting completes and WebDriver:NewSession is fully sent but produces no response-header byte before the fixed 300-second deadline." \
+  --contrary-outcome "The listener does not become ready, NewSession is not fully sent, a response is partial or rejected, or NewSession returns a valid session."
+```
+
+The diagnostic records a stable Firefox identity, captures the before snapshot,
+then lets the one selected `WebDriver:NewSession` operation perform the loopback
+connection, Marionette greeting, request, and response under one 300-second
+absolute deadline. It does not send `WebDriver:Status` because that command is
+not part of Firefox ESR 140's direct Marionette command table. Exact offline
+NewSession error output is enabled only for this bounded diagnostic. It also
+captures during/after Firefox-tree and syscall snapshots, kernel/service logs,
+and payload-free Marionette transport counters, then always requests recovery.
+The complete physical experiment is capped at 15 host minutes before the
+independent recovery wait. It records zero QEMU runs, exactly one physical boot,
+and requires zero artifact-transfer bytes.
+
+Every runtime identity is admitted once in the mode-`0600`
+`target/megrez-desktop/evidence/experiments.jsonl` ledger. Rewording the
+hypothesis does not permit another identical boot. A repeat requires a proven
+observer defect and a changed, regression-tested diagnostic protocol identity.
+Each run gets a new mode-`0700` directory; raw evidence is mode `0600`, and
+`result.json` is published last with hashes for every retained input and file.
+The frozen partition-2 image is not reinstalled. Because
+`/home/asterinas` is backed by the physical run's volatile tmpfs, Firefox still
+starts with a cold profile on every boot; current measured graphical readiness
+is approximately 175–220 seconds, not an instant warm resume.
+
+Protocol v7 writes result schema version 2. Its classifier reports only the first
+observed boundary: listener unavailable, NewSession not sent, response absent,
+response partial, response rejected, response complete, or evidence incomplete.
+Older `mmc-graphics-final-19` evidence predates transport records and therefore
+classifies only as `evidence-incomplete`; it is not proof of a TCP, `poll`,
+scheduler, or Firefox deadlock. If a new run is also incomplete, fix and replay
+the observer before any further live Firefox boot.
+
+Run the focused host tests in the persistent development container. The tests
+use local loopback sockets, so do not pass the container launcher's `--offline`
+network-isolation flag; the command still performs no dependency download:
+
+```bash
+tools/docker/run_dev_container.sh -- make test_riscv_megrez_desktop_unit
+```
+
 ## Megrez SDHCI read-only evidence
 
 The Megrez SDHCI gate classifies a bounded Asterinas serial transcript. It
 requires an aligned 512 KiB SDMA buffer whose CPU and device addresses are
 identical inside `0xc0000000..0x100000000`, the EIC7700 removable-card
-controller, a nonzero SDHC capacity, and read-only `mmcblk0` registration in
-that order. For the physical data-path gate it then requires one exact 32 MiB
-read whose CRC32 matches the value measured by U-Boot. That read covers the
-partition table and is stronger than the old, never-implemented
+controller, a nonzero SDHC capacity, the exact negotiated record
+`[mmc] timing=high-speed clock=50000000`, and read-only `mmcblk0` registration
+in that order. For the physical data-path gate it then requires one exact
+32 MiB read whose CRC32 matches the value measured by U-Boot. That read covers
+the partition table and is stronger than the old, never-implemented
 `partition-table sha256` log requirement. The identity address is the RockOS
 U-Boot handoff contract; Linux's `0x20000000` IOVA requires SMMUv3 SID 16 and
 is not usable as a fixed offset while Asterinas RISC-V has no IOMMU. Panic,
-fatal, probe-failure, writable, translated, misaligned, duplicate, and
-out-of-order evidence is rejected. Linux boot output is not an accepted
-substitute.
+fatal, probe-failure, writable, default-speed fallback, translated, misaligned,
+duplicate, and out-of-order evidence is rejected. Linux boot output is not an
+accepted substitute.
+
+`asterinas.mmc_default_speed` is the recovery escape hatch. It skips optional
+SCR/CMD6 promotion and retains 4-bit 25 MHz default-speed operation. A run with
+this flag is useful for recovery or an A/B diagnosis, but cannot pass the High
+Speed physical gate.
 
 Run the host tests with:
 
@@ -372,6 +1062,91 @@ Any `DRM_FIRMWARE_FAIL` line or a missing recovery epoch is a failure.
 The serial markers prove that each ioctl returned success;
 they do not prove its visible effect, so retain an HDMI video or operator record that shows patterns A, B, and C in order.
 Passing the offline target is build and migration-contract evidence only; it is not HDMI runtime evidence.
+
+## Opt-in Asterinas root serial console
+
+The `debug-root-console` profile verifies a one-boot-only root shell created by
+Stage1 under the `/run` tmpfs. It does not change the rootfs shadow database,
+install a password, or persist a sudo rule. The exact selectors are accepted
+only together:
+
+```text
+-- --root-init=systemd --debug-console=root
+```
+
+The physical graphics orchestrator instead uses
+`--debug-console=isolated-root`. Stage1 then creates a transient
+`/run/systemd/system.control/default.target` that points at the debug-console
+target. The `system.control` lookup tier takes precedence over the rootfs's
+`/etc/systemd/system/default.target`, so no rootfs service can start before the
+orchestrator installs transient `/run/systemd/system.control` masks for the
+competing network evidence services and starts the graphical target. The
+same high-priority tier masks the generated serial getty so it cannot take the
+UART away from the debug shell. The kernel command line deliberately does not
+declare `console=ttyS0`; Stage1 gives the debug service explicit ownership with
+`TTYPath=/dev/ttyS0`, without inviting systemd's console generator to create a
+second owner. The physical boot combines `loglevel=off` with
+`asterinas.klog_capture=info`: kernel records remain available to later
+`dmesg` probes, while repeated writeback failures cannot saturate the
+115200-baud control channel. This does not depend on systemd's
+optional kernel-command-line generators, and the ordinary
+`--debug-console=root` mode continues to boot the rootfs's normal default
+target.
+
+First run the bounded acceptance boot. Resolve the stable FTDI path rather
+than relying on the current `ttyUSB0` number, retain the 120-second Asterinas
+recovery timer, and require a fresh U-Boot epoch:
+
+```bash
+SERIAL=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0
+PYTHONPATH=. python3 tools/riscv/megrez_board_session.py "$SERIAL" \
+  --booti ASTERINAS_IMAGE_ON_BOOT_FS \
+  --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
+  --dtb DTB_ON_BOOT_FS \
+  --expected-crc32 booti=8hex,dtb=8hex,initrd=8hex \
+  --bootargs "console=tty0 console=ttyS0 loglevel=off init=/init asterinas.reboot_after=120 -- --root-init=systemd --debug-console=root" \
+  --firmware-framebuffer \
+  --final-profile debug-root-console \
+  --milestone-timeout 150 \
+  --require-recovery \
+  --yes \
+  --log /absolute/path/to/megrez-debug-root-bounded.serial.log
+```
+
+The gate sends only five fixed, read-only commands. It requires UID 0, PID 1
+`systemd`, `/dev/mmcblk0p2 ext2`, and active desktop evidence/session units.
+It also retains the complete framed exchange in the serial log on failure.
+
+After that bounded gate passes, an operator handoff may omit only the recovery
+timer and `--require-recovery`. The runner closes its descriptor after the
+fixed probes, so the same root prompt can then be opened interactively:
+
+```bash
+PYTHONPATH=. python3 tools/riscv/megrez_board_session.py "$SERIAL" \
+  --booti ASTERINAS_IMAGE_ON_BOOT_FS \
+  --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
+  --dtb DTB_ON_BOOT_FS \
+  --expected-crc32 booti=8hex,dtb=8hex,initrd=8hex \
+  --bootargs "console=tty0 console=ttyS0 loglevel=off init=/init -- --root-init=systemd --debug-console=root" \
+  --firmware-framebuffer \
+  --final-profile debug-root-console \
+  --milestone-timeout 120 \
+  --yes \
+  --log /absolute/path/to/megrez-debug-root-handoff.serial.log
+picocom --baud 115200 "$SERIAL"
+```
+
+`ASTERINAS_DEBUG_CONSOLE_READY uid=0` identifies the Asterinas root console;
+it requires no username or password. The `debian` / `debian` credentials below
+belong only to the unrelated RockOS recovery system and never authenticate to
+Asterinas.
+
+This profile requires exactly one `loglevel=off`. On Megrez, asynchronous
+kernel diagnostics and the shell share the physical UART; sustained block
+errors can otherwise splice bytes into a framed shell response. Suppressing
+kernel logging is limited to this fixed-command acceptance and operator
+handoff profile. Use a separate diagnostic boot when kernel logs are the
+evidence under investigation.
 
 ## Generic U-Boot `booti`
 
@@ -461,6 +1236,23 @@ Preparing U-Boot additionally needs the RISC-V cross compiler, `dtc`, OpenSSL/Gn
 The unit tests use only the Python standard library and repository files.
 
 ### Host-side Megrez debugging
+
+#### RockOS recovery login
+
+The public factory-default credentials for the Milk-V Megrez RockOS/Debian
+maintenance system are:
+
+```text
+username: debian
+password: debian
+```
+
+A serial session on 2026-07-16 confirmed that this pair reaches
+`debian@rockos-eswin`. It applies only to the board's RockOS recovery system,
+not to the Debian root filesystem running on Asterinas. In particular, it
+cannot unlock an Asterinas account whose shadow entry is `!` or `*`.
+If an operator replaces the factory password, do not record the replacement in
+the repository, shell history, or controller logs.
 
 Keep builds and QEMU runs in the pinned development container.
 On the host, install only the tools that observe the physical serial and Ethernet paths:

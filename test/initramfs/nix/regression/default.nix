@@ -1,4 +1,4 @@
-{ lib, pkgs, stdenv, callPackage, testPlatform ? "asterinas", }:
+{ lib, pkgs, stdenv, callPackage, testPlatform ? "asterinas", testDirs ? null, }:
 let
   scripts = lib.fileset.toSource {
     root = ./../../src/regression/scripts;
@@ -35,6 +35,11 @@ let
       extraAttrs = { TDX_ATTEST_DIR = "${tdxAttest}/QuoteGeneration"; };
     });
   };
+  selectedNames = if testDirs == null then lib.attrNames allPkgs else testDirs;
+  invalidNames = lib.filter (name: !(builtins.hasAttr name allPkgs)) selectedNames;
+  selectedPkgs = assert lib.assertMsg (invalidNames == [ ])
+    "unknown regression test directories: ${lib.concatStringsSep ", " invalidNames}";
+  lib.getAttrs selectedNames allPkgs;
 in {
   package = stdenv.mkDerivation {
     pname = "regression";
@@ -44,8 +49,8 @@ in {
       cp ${scripts}/* $out
 
       ${lib.concatMapStringsSep "\n" (name: ''
-        ln -sT "${allPkgs.${name}}/${name}" "$out/${name}"
-      '') (lib.attrNames allPkgs)}
+        ln -sT "${selectedPkgs.${name}}/${name}" "$out/${name}"
+      '') (lib.attrNames selectedPkgs)}
     '';
   };
 }

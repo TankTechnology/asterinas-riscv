@@ -7,6 +7,7 @@ export DISPLAY=:0
 export HOME=/home/asterinas
 export XAUTHORITY="$HOME/.Xauthority"
 readonly SESSION_LOG="$HOME/desktop-m5-session.log"
+readonly DISPLAY_PROVIDER="${ASTERINAS_DISPLAY_PROVIDER:-fbdev}"
 
 guest_monotonic_ns() {
     local raw="${EPOCHREALTIME-}"
@@ -26,6 +27,16 @@ emit_stage() {
     printf '%s\n' "$line" >&2
     printf '%s\n' "$line" >>/dev/console 2>/dev/null || true
 }
+
+if provider_config_directory="$(/usr/lib/asterinas/desktop-display-provider)"; then
+    readonly provider_config_directory
+else
+    readonly provider_status=$?
+    emit_stage display-provider-failed 0 \
+        "provider=$DISPLAY_PROVIDER status=$provider_status"
+    exit "$provider_status"
+fi
+emit_stage display-provider-ready 0 "provider=$DISPLAY_PROVIDER"
 
 if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     # The online browser image does not need xinit's nested session, xterm, or
@@ -47,7 +58,8 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     /usr/bin/tail -n 0 -f "$HOME/Xorg.0.log" >&2 &
     readonly xorg_log_tailer_pid=$!
     /usr/bin/Xorg :0 -noreset -nolisten tcp -ac -novtswitch -keeptty -extension GLX \
-        -extension MIT-SHM -logfile "$HOME/Xorg.0.log" vt1 &
+        -configdir "$provider_config_directory" \
+        -logfile "$HOME/Xorg.0.log" vt1 &
     readonly xorg_pid=$!
     for _ in {1..120}; do
         if [[ -S /tmp/.X11-unix/X0 ]] &&
@@ -70,7 +82,7 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     # Xorg owns the VT as the privileged display provider; keep the window
     # manager unprivileged so the desktop surface cannot grant Firefox extra
     # capabilities through the session process.
-    /usr/bin/runuser --user asterinas --preserve-environment -- \
+    /usr/sbin/runuser --user asterinas --preserve-environment -- \
         /usr/bin/openbox --sm-disable >>"$SESSION_LOG" 2>&1 &
     wait "$xorg_pid"
     xorg_status=$?
@@ -90,5 +102,6 @@ fi
 
 exec /usr/bin/xinit "$0" --xsession -- \
     /usr/bin/Xorg :0 -noreset -nolisten tcp -extension GLX \
-    -extension MIT-SHM -logfile "$HOME/Xorg.0.log" vt1 \
+    -configdir "$provider_config_directory" \
+    -logfile "$HOME/Xorg.0.log" vt1 \
     >>"$SESSION_LOG" 2>&1

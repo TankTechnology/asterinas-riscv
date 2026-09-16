@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest import mock
 
 from tools.riscv.debian.rootfs import fsops as fsops_module
+from tools.riscv.debian.rootfs import desktop_input_identity
 from tools.riscv.debian.rootfs import gate_runtime as gate_runtime_module
 from tools.riscv.debian.rootfs import rootfs_gate as rootfs_gate_module
 from tools.riscv.debian.rootfs import rootfs_gate_backend as gate_backend_module
@@ -103,6 +104,9 @@ DESKTOP_M3_EVIDENCE_SCRIPT = (
 DESKTOP_M3_SESSION_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m3_session.sh"
 )
+DESKTOP_INPUT_IDENTITY_SOURCE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_input_identity.py"
+)
 DESKTOP_M4_EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_evidence.sh"
 )
@@ -127,6 +131,48 @@ LOGIND_DIAGNOSTIC_UNIT = (
 )
 STAGE1_BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_stage1.sh"
 STAGE1_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_init.c"
+STAGE1_DEBUG_CONSOLE_SOURCE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_debug_console.c"
+)
+STAGE1_PROBE_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_probe.c"
+STAGE1_BROWSER_GATE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_web_marionette_gate.py"
+)
+STAGE1_BROWSER_INTERACTION_PERF = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_interaction_perf.py"
+)
+STAGE1_BROWSER_SYSTEM_TIME = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_system_time.py"
+)
+STAGE1_BROWSER_LATENCY_CONTRACT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_latency_contract.py"
+)
+STAGE1_BROWSER_PERF_CAPTURE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_perf_capture.py"
+)
+STAGE1_BROWSER_M5_MARIONETTE_GATE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_m5_marionette_gate.py"
+)
+STAGE1_CLOCK_SYNC = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_clock_sync.py"
+STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_external_services_quiesce.sh"
+)
+STAGE1_PHYSICAL_GRAPHICS_GATE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_graphics_gate.py"
+)
+STAGE1_PHYSICAL_GRAPHICS_CONTROL = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_graphics_control.sh"
+)
+STAGE1_DESKTOP_INPUT_IDENTITY = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_input_identity.py"
+)
+STAGE1_PHYSICAL_GRAPHICS_PAGE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_graphics_interaction.html"
+)
+STAGE1_PHYSICAL_SYSTEM_PROBE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_system_probe.sh"
+)
+STAGE1_DEBUG_CONSOLE_INCLUDE = STAGE1_DEBUG_CONSOLE_SOURCE.parent
 CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
 REQUIRED_TOOLS = (
     "debootstrap",
@@ -452,6 +498,105 @@ configure_and_normalize_rootfs
     )
 
 
+class DesktopInputIdentityTests(unittest.TestCase):
+    def test_reads_only_supported_evdev_ioctls_and_closes_descriptor(self) -> None:
+        def ioctl(_descriptor: int, code: int, buffer: bytearray, mutate: bool) -> None:
+            self.assertTrue(mutate)
+            payloads = {
+                0x80084502: b"\x03\0\x01\0\x02\0\x03\0",
+                0x81004506: b"usb_boot_keyboard\0",
+                0x81004507: b"xhci/input0\0",
+            }
+            buffer[: len(payloads[code])] = payloads[code]
+
+        with (
+            mock.patch.object(
+                desktop_input_identity.os, "open", return_value=42
+            ) as opened,
+            mock.patch.object(desktop_input_identity.os, "close") as closed,
+            mock.patch.object(
+                desktop_input_identity.fcntl, "ioctl", side_effect=ioctl
+            ) as queried,
+        ):
+            self.assertEqual(
+                desktop_input_identity.read_identity("/dev/input/event9"),
+                (3, "usb_boot_keyboard", "xhci/input0"),
+            )
+        self.assertEqual(opened.call_args.args[0], "/dev/input/event9")
+        self.assertEqual(
+            [call.args[1] for call in queried.call_args_list],
+            [
+                0x80084502,
+                0x81004506,
+                0x81004507,
+            ],
+        )
+        closed.assert_called_once_with(42)
+
+    def test_both_physical_evdev_enumeration_orders_keep_the_same_roles(self) -> None:
+        physical = (
+            (3, "usb_boot_keyboard", "xhci/input0"),
+            (3, "usb_boot_mouse", "xhci/input1"),
+        )
+        for identities, expected in (
+            (physical, ("/dev/null", "/dev/zero")),
+            (physical[::-1], ("/dev/zero", "/dev/null")),
+        ):
+            with (
+                self.subTest(identities=identities),
+                mock.patch.object(
+                    desktop_input_identity.glob,
+                    "glob",
+                    return_value=["/dev/null", "/dev/zero"],
+                ),
+            ):
+                observed = dict(zip(("/dev/null", "/dev/zero"), identities))
+                self.assertEqual(
+                    desktop_input_identity.resolve_input_nodes(
+                        identity_reader=observed.__getitem__
+                    ),
+                    expected,
+                )
+
+    def test_virtio_evdev_and_duplicate_or_missing_identities(self) -> None:
+        keyboard = (6, "QEMU Virtio Keyboard", "virtio/input0")
+        pointer = (6, "QEMU Virtio Tablet", "virtio/input0")
+        with mock.patch.object(
+            desktop_input_identity.glob,
+            "glob",
+            return_value=["/dev/null", "/dev/zero"],
+        ):
+            for identities, expected in (
+                ((keyboard, pointer), ("/dev/null", "/dev/zero")),
+                ((keyboard, keyboard), None),
+                ((pointer, pointer), None),
+                (((3, "usb_boot_keyboard", "wrong/port"), pointer), None),
+            ):
+                if identities == (keyboard, keyboard) or identities == (
+                    pointer,
+                    pointer,
+                ):
+                    with (
+                        self.subTest(identities=identities),
+                        self.assertRaisesRegex(
+                            ValueError, "ambiguous desktop input device identity"
+                        ),
+                    ):
+                        observed = dict(zip(("/dev/null", "/dev/zero"), identities))
+                        desktop_input_identity.resolve_input_nodes(
+                            identity_reader=observed.__getitem__
+                        )
+                else:
+                    observed = dict(zip(("/dev/null", "/dev/zero"), identities))
+                    with self.subTest(identities=identities):
+                        self.assertEqual(
+                            desktop_input_identity.resolve_input_nodes(
+                                identity_reader=observed.__getitem__
+                            ),
+                            expected,
+                        )
+
+
 class DebianStage1Tests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -507,9 +652,56 @@ class DebianStage1Tests(unittest.TestCase):
         ]
         if define is not None:
             command.append(f"-D{define}")
-        command.extend((str(STAGE1_SOURCE), "-o", str(output)))
+        command.extend(
+            (
+                str(STAGE1_SOURCE),
+                str(STAGE1_DEBUG_CONSOLE_SOURCE),
+                str(STAGE1_PROBE_SOURCE),
+                "-o",
+                str(output),
+            )
+        )
         return subprocess.run(
             command,
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    def compile_debug_console_harness(
+        self, output: Path
+    ) -> subprocess.CompletedProcess[str]:
+        harness = self.directory / "debug-console-harness.c"
+        harness.write_text(
+            '#include "stage1_debug_console.h"\n'
+            "#include <string.h>\n"
+            "int main(int argc, char **argv)\n"
+            "{\n"
+            "    if (argc == 2) {\n"
+            "        return stage1_prepare_debug_console(argv[1]);\n"
+            "    }\n"
+            '    if (argc == 3 && strcmp(argv[2], "isolated") == 0) {\n'
+            "        return stage1_prepare_isolated_debug_console(argv[1]);\n"
+            "    }\n"
+            "    return 2;\n"
+            "}\n"
+        )
+        return subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-I",
+                str(STAGE1_DEBUG_CONSOLE_INCLUDE),
+                str(harness),
+                str(STAGE1_DEBUG_CONSOLE_SOURCE),
+                "-o",
+                str(output),
+            ],
             cwd=REPOSITORY_ROOT,
             check=False,
             capture_output=True,
@@ -530,6 +722,178 @@ class DebianStage1Tests(unittest.TestCase):
             capture_output=True,
             text=True,
         )
+
+    def test_debug_console_exits_on_sigterm(self) -> None:
+        binary = self.directory / "debug-console-harness"
+        compilation = self.compile_debug_console_harness(binary)
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        root = self.directory / "root"
+        root.mkdir()
+        subprocess.run([binary, root], check=True, capture_output=True)
+        bashrc = root / "run/asterinas-debug-console.bashrc"
+
+        with subprocess.Popen(
+            ["/bin/bash", "--noprofile", "--rcfile", str(bashrc), "-i"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        ) as shell:
+            try:
+                shell.stdin.write(b"printf 'CONSOLE_%s\\n' LIVE\n")
+                shell.stdin.flush()
+                output = b""
+                deadline = time.monotonic() + 5
+                while b"\nCONSOLE_LIVE\n" not in output:
+                    remaining = deadline - time.monotonic()
+                    self.assertGreater(remaining, 0, output)
+                    readable, _, _ = select.select([shell.stdout], [], [], remaining)
+                    self.assertTrue(readable, output)
+                    chunk = os.read(shell.stdout.fileno(), 4096)
+                    self.assertTrue(chunk, output)
+                    output += chunk
+                # Keep stdin open: EOF must not accidentally satisfy this test.
+                shell.send_signal(signal.SIGTERM)
+                # Bash defers traps while waiting in an interactive read.  A
+                # newline wakes that read so the TERM trap can run normally;
+                # systemd supplies the separate bounded fallback asserted below.
+                shell.stdin.write(b"\n")
+                shell.stdin.flush()
+                try:
+                    shell.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.fail("interactive debug console ignored SIGTERM")
+                self.assertEqual(shell.returncode, 0)
+            finally:
+                if shell.poll() is None:
+                    shell.kill()
+                shell.wait(timeout=3)
+
+    def test_debug_console_runtime_tree_is_exact(self) -> None:
+        binary = self.directory / "debug-console-harness"
+        compilation = self.compile_debug_console_harness(binary)
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        root = self.directory / "root"
+        root.mkdir()
+
+        result = subprocess.run(
+            [binary, root], check=False, capture_output=True, text=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        runtime = root / "run"
+        service = runtime / "systemd/system/asterinas-debug-console.service"
+        target = runtime / "systemd/system/asterinas-debug-console.target"
+        bashrc = runtime / "asterinas-debug-console.bashrc"
+        marker = runtime / "asterinas-debug-console.enabled"
+        drop_in = (
+            runtime
+            / "systemd/system/console-getty.service.d/asterinas-debug-console.conf"
+        )
+        service_link = (
+            runtime
+            / "systemd/system/getty.target.wants/asterinas-debug-console.service"
+        )
+
+        self.assertEqual(marker.read_bytes(), b"")
+        service_text = service.read_text()
+        self.assertIn("TTYPath=/dev/ttyS0\n", service_text)
+        self.assertIn("StandardInput=tty-force\n", service_text)
+        self.assertIn("Restart=always\n", service_text)
+        self.assertIn("TimeoutStopSec=2s\n", service_text)
+        self.assertIn("SendSIGKILL=yes\n", service_text)
+        self.assertIn("DefaultDependencies=no\n", service_text)
+        self.assertIn(
+            "ConditionPathExists=/run/asterinas-debug-console.enabled\n",
+            service_text,
+        )
+        self.assertEqual(
+            bashrc.read_text(),
+            "trap 'exit 0' TERM\n"
+            "printf 'ASTERINAS_DEBUG_CONSOLE_READY uid=%s\\n' \"$(id -u)\"\n"
+            "bind 'set enable-bracketed-paste off' 2>/dev/null\n"
+            "PS1='root@asterinas-debug:\\w# '\n",
+        )
+        self.assertEqual(
+            drop_in.read_text(),
+            "[Unit]\nConditionPathExists=!/run/asterinas-debug-console.enabled\n",
+        )
+        self.assertTrue(service_link.is_symlink())
+        self.assertEqual(
+            os.readlink(service_link), "../asterinas-debug-console.service"
+        )
+        self.assertEqual(
+            target.read_text(),
+            "[Unit]\n"
+            "Description=Asterinas opt-in root serial console target\n"
+            "DefaultDependencies=no\n"
+            "Wants=asterinas-debug-console.service\n"
+            "After=asterinas-debug-console.service\n",
+        )
+        self.assertFalse((runtime / "systemd/system/default.target").exists())
+        self.assertFalse((runtime / "systemd/system.control/default.target").exists())
+
+    def test_isolated_debug_console_selects_runtime_default_target(self) -> None:
+        binary = self.directory / "debug-console-harness"
+        compilation = self.compile_debug_console_harness(binary)
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        root = self.directory / "root"
+        root.mkdir()
+
+        result = subprocess.run(
+            [binary, root, "isolated"], check=False, capture_output=True, text=True
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        default_target = root / "run/systemd/system.control/default.target"
+        self.assertTrue(default_target.is_symlink())
+        self.assertEqual(
+            os.readlink(default_target), "../system/asterinas-debug-console.target"
+        )
+        self.assertEqual(
+            default_target.resolve(),
+            root / "run/systemd/system/asterinas-debug-console.target",
+        )
+
+    def test_isolated_debug_console_rejects_existing_default_target(self) -> None:
+        binary = self.directory / "debug-console-harness"
+        compilation = self.compile_debug_console_harness(binary)
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        root = self.directory / "root"
+        systemd = root / "run/systemd/system.control"
+        systemd.mkdir(parents=True)
+        default_target = systemd / "default.target"
+        default_target.write_text("unchanged")
+
+        result = subprocess.run(
+            [binary, root, "isolated"], check=False, capture_output=True, text=True
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(default_target.read_text(), "unchanged")
+        self.assertFalse((root / "run/asterinas-debug-console.enabled").exists())
+
+    def test_debug_console_rejects_symlink_destination(self) -> None:
+        binary = self.directory / "debug-console-harness"
+        compilation = self.compile_debug_console_harness(binary)
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        root = self.directory / "root"
+        systemd = root / "run/systemd/system"
+        systemd.mkdir(parents=True)
+        sentinel = self.directory / "sentinel"
+        sentinel.write_text("unchanged")
+        service = systemd / "asterinas-debug-console.service"
+        service.symlink_to(sentinel)
+
+        result = subprocess.run(
+            [binary, root], check=False, capture_output=True, text=True
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(sentinel.read_text(), "unchanged")
+        self.assertTrue(service.is_symlink())
+        self.assertEqual(service.resolve(), sentinel)
+        self.assertFalse((root / "run/asterinas-debug-console.enabled").exists())
 
     def test_native_self_test_covers_discovery_and_handoff_failures(self) -> None:
         binary = self.directory / "stage1-self-test"
@@ -553,6 +917,7 @@ class DebianStage1Tests(unittest.TestCase):
             "proc-mount-failure",
             "sysfs-mount-failure",
             "run-mount-failure",
+            "debug-console-failure",
             "tmp-mount-failure",
             "chroot-failure",
             "chdir-failure",
@@ -561,6 +926,18 @@ class DebianStage1Tests(unittest.TestCase):
             "root-init-default-interactive",
             "root-init-explicit-interactive",
             "root-init-systemd",
+            "root-init-systemd-debug-root",
+            "root-init-systemd-debug-isolated-root",
+            "root-init-probe",
+            "root-init-basic",
+            "root-init-probe-auto",
+            "root-init-volatile-home",
+            "root-init-probe-debug-conflict",
+            "root-init-probe-duplicate",
+            "root-init-debug-with-interactive",
+            "root-init-debug-duplicate",
+            "root-init-debug-unknown",
+            "root-init-debug-control-character",
             "root-init-duplicate",
             "root-init-unknown",
             "root-init-control-character",
@@ -571,6 +948,8 @@ class DebianStage1Tests(unittest.TestCase):
             "systemd-browser-root-label",
             "systemd-software-desktop-root-label",
             "systemd-handoff-sequence",
+            "systemd-debug-handoff-sequence",
+            "systemd-volatile-home-handoff",
             "systemd-exec",
         )
 
@@ -588,6 +967,286 @@ class DebianStage1Tests(unittest.TestCase):
                     result.stdout,
                     f"DEBIAN_STAGE1_SELF_TEST PASS case={case}\n",
                 )
+
+    def test_stage1_probe_agent_protocol(self) -> None:
+        binary = self.directory / "stage1-probe-self-test"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DDEBIAN_STAGE1_PROBE_SELF_TEST",
+                STAGE1_PROBE_SOURCE,
+                "-o",
+                binary,
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        automatic = subprocess.run(
+            [binary, "--auto"], input="", capture_output=True, text=True, timeout=2
+        )
+        self.assertEqual(automatic.returncode, 0, automatic.stderr)
+        self.assertIn("name=boot detail=", automatic.stdout)
+        self.assertIn("count=1 status=pass", automatic.stdout)
+        self.assertIn("ASTERINAS_PROBE_AUTO_REBOOT", automatic.stdout)
+        nonce = "00112233445566778899aabbccddeeff"
+        request = (
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} "
+            "probes=boot,syscall213,syscall272 shell=0\n"
+        )
+
+        result = subprocess.run(
+            [binary],
+            input=request,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        protocol = [
+            line
+            for line in result.stdout.splitlines()
+            if line.startswith("ASTERINAS_PROBE_")
+        ]
+        self.assertEqual(
+            protocol,
+            [
+                "ASTERINAS_PROBE_READY v=1 pid=1",
+                f"ASTERINAS_PROBE_START v=1 nonce={nonce} seq=0 name=boot",
+                f"ASTERINAS_PROBE_PASS v=1 nonce={nonce} seq=0 name=boot detail=boot-ok",
+                f"ASTERINAS_PROBE_START v=1 nonce={nonce} seq=1 name=syscall213",
+                f"ASTERINAS_PROBE_PASS v=1 nonce={nonce} seq=1 name=syscall213 detail=enosys",
+                f"ASTERINAS_PROBE_START v=1 nonce={nonce} seq=2 name=syscall272",
+                f"ASTERINAS_PROBE_PASS v=1 nonce={nonce} seq=2 name=syscall272 detail=enosys",
+                f"ASTERINAS_PROBE_DONE v=1 nonce={nonce} count=3 status=pass",
+                f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}",
+            ],
+        )
+
+    def test_stage1_probe_reloads_uuid_on_the_same_descriptor(self) -> None:
+        source = STAGE1_PROBE_SOURCE.read_text(encoding="utf-8")
+        function = source.split(
+            "static struct ProbeResult probe_systemd_compat(void)", 1
+        )[1].split("static struct ProbeResult execute_probe", 1)[0]
+
+        self.assertEqual(function.count('open("/proc/sys/kernel/random/uuid"'), 1)
+        self.assertGreaterEqual(function.count("pread(uuid_fd"), 2)
+        self.assertIn("lseek(uuid_fd, 0, SEEK_SET)", function)
+        self.assertIn("memcmp(first_uuid, second_uuid", function)
+        self.assertIn("memcmp(first_uuid, seek_uuid", function)
+
+    def test_stage1_probe_disables_tty_input_echo_before_ready(self) -> None:
+        binary = self.directory / "stage1-probe-tty-self-test"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DDEBIAN_STAGE1_PROBE_SELF_TEST",
+                STAGE1_PROBE_SOURCE,
+                "-o",
+                binary,
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        master, slave = os.openpty()
+        process = subprocess.Popen(
+            [binary],
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            close_fds=True,
+        )
+        os.close(slave)
+        self.addCleanup(lambda: process.poll() is None and process.kill())
+        self.addCleanup(os.close, master)
+        transcript = bytearray()
+        ready = b"ASTERINAS_PROBE_READY v=1 pid=1"
+        deadline = time.monotonic() + 2
+        while ready not in transcript:
+            readable, _, _ = select.select(
+                [master], [], [], max(0, deadline - time.monotonic())
+            )
+            self.assertTrue(readable, bytes(transcript))
+            transcript.extend(os.read(master, 4096))
+        request = (
+            b"ASTERINAS_PROBE_RUN v=1 "
+            b"nonce=00112233445566778899aabbccddeeff probes=boot shell=0\n"
+        )
+        os.write(master, request)
+        process.wait(timeout=2)
+        while select.select([master], [], [], 0)[0]:
+            try:
+                transcript.extend(os.read(master, 4096))
+            except OSError:
+                break
+
+        self.assertNotIn(request.rstrip(b"\n"), transcript)
+        self.assertIn(b"ASTERINAS_PROBE_DONE", transcript)
+
+    def test_stage1_probe_agent_rejects_noncanonical_requests(self) -> None:
+        binary = self.directory / "stage1-probe-self-test"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DDEBIAN_STAGE1_PROBE_SELF_TEST",
+                STAGE1_PROBE_SOURCE,
+                "-o",
+                binary,
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        nonce = "00112233445566778899aabbccddeeff"
+        invalid_requests = (
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=boot,boot shell=0\n",
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=unknown shell=0\n",
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce.upper()} probes=boot shell=0\n",
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=boot shell=2\n",
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=boot shell=0 extra\n",
+            f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=boot shell=0 \n",
+            "x" * 513 + "\n",
+        )
+        for request in invalid_requests:
+            with self.subTest(request=request[:80]):
+                result = subprocess.run(
+                    [binary],
+                    input=request,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(
+                    result.stdout.splitlines(),
+                    [
+                        "ASTERINAS_PROBE_READY v=1 pid=1",
+                        "ASTERINAS_PROBE_REQUEST_FAIL v=1 reason=invalid-request",
+                    ],
+                )
+
+    def test_stage1_probe_shell_is_fixed_and_bounded_by_kernel_timer(self) -> None:
+        binary = self.directory / "stage1-probe-self-test"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DDEBIAN_STAGE1_PROBE_SELF_TEST",
+                STAGE1_PROBE_SOURCE,
+                "-o",
+                binary,
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        nonce = "00112233445566778899aabbccddeeff"
+        result = subprocess.run(
+            [binary],
+            input=(
+                f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} probes=boot shell=1\n"
+                "help\n"
+                "uname -a\n"
+                "exit\n"
+            ),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"ASTERINAS_PROBE_SHELL_READY v=1 nonce={nonce}\n", result.stdout)
+        self.assertIn(
+            "ASTERINAS_PROBE_SHELL_COMMANDS help,dmesg,mounts,boot,syscall213,syscall272,ext2-writeback,systemd-compat,exit\n",
+            result.stdout,
+        )
+        self.assertIn(
+            "ASTERINAS_PROBE_SHELL_REJECT reason=unknown-command\n", result.stdout
+        )
+        self.assertIn(
+            f"ASTERINAS_PROBE_REBOOT_READY v=1 nonce={nonce}\n", result.stdout
+        )
+
+    def test_stage1_probe_agent_stops_after_first_failure(self) -> None:
+        binary = self.directory / "stage1-probe-failure-self-test"
+        compilation = subprocess.run(
+            [
+                "cc",
+                "-std=c11",
+                "-O2",
+                "-static",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "-DDEBIAN_STAGE1_PROBE_SELF_TEST",
+                "-DDEBIAN_STAGE1_PROBE_SELF_TEST_FAIL_BOOT",
+                STAGE1_PROBE_SOURCE,
+                "-o",
+                binary,
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        nonce = "00112233445566778899aabbccddeeff"
+        result = subprocess.run(
+            [binary],
+            input=(
+                f"ASTERINAS_PROBE_RUN v=1 nonce={nonce} "
+                "probes=boot,syscall213 shell=0\n"
+            ),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            f"ASTERINAS_PROBE_FAIL v=1 nonce={nonce} seq=0 name=boot errno=5 detail=uname-failed\n",
+            result.stdout,
+        )
+        self.assertNotIn("name=syscall213", result.stdout)
+        self.assertIn(
+            f"ASTERINAS_PROBE_DONE v=1 nonce={nonce} count=1 status=fail\n",
+            result.stdout,
+        )
 
     def test_normal_failure_lifecycle_flushes_one_marker_and_holds(self) -> None:
         binary = self.directory / "stage1-lifecycle-test"
@@ -656,6 +1315,8 @@ int main(int argc, char **argv)
                 "-Werror",
                 "-Wno-return-type",
                 harness_source,
+                STAGE1_DEBUG_CONSOLE_SOURCE,
+                STAGE1_PROBE_SOURCE,
                 "-o",
                 binary,
             ],
@@ -699,6 +1360,8 @@ int main(void)
                 "-Werror",
                 "-Wno-return-type",
                 harness_source,
+                STAGE1_DEBUG_CONSOLE_SOURCE,
+                STAGE1_PROBE_SOURCE,
                 "-o",
                 binary,
             ],
@@ -728,14 +1391,146 @@ int main(void)
             tools.stdout.splitlines(),
             ["riscv64-linux-gnu-gcc", "cpio", "python3"],
         )
+
         self.assertEqual(entries.returncode, 0, entries.stderr)
-        self.assertEqual(entries.stdout.splitlines(), [".", "init"])
+        self.assertEqual(
+            entries.stdout.splitlines(),
+            [
+                ".",
+                "init",
+                "usr",
+                "usr/lib",
+                "usr/lib/asterinas",
+                "usr/lib/asterinas/browser_interaction_perf.py",
+                "usr/lib/asterinas/browser_system_time.py",
+                "usr/lib/asterinas/browser_latency_contract.py",
+                "usr/lib/asterinas/browser_perf_capture.py",
+                "usr/lib/asterinas/browser-web-marionette-gate",
+                "usr/lib/asterinas/browser_m5_marionette_gate.py",
+                "usr/lib/asterinas/megrez-clock-sync",
+                "usr/lib/asterinas/physical-external-services-quiesce",
+                "usr/lib/asterinas/desktop-input-identity",
+                "usr/lib/asterinas/physical-graphics-control",
+                "usr/lib/asterinas/physical-graphics-gate",
+                "usr/lib/asterinas/physical-graphics-interaction.html",
+                "usr/lib/asterinas/physical-system-probe",
+                "usr/lib/asterinas/g",
+                "usr/lib/asterinas/q",
+                "usr/lib/asterinas/s",
+            ],
+        )
+
+    def test_stage1_carries_nonblocking_desktop_input_identity(self) -> None:
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+        output = self.directory / "input-identity" / "initramfs.cpio"
+
+        result = self.run_builder(str(output), environment=environment)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entries = {entry[0]: entry for entry in _parse_newc_entries(output.read_bytes())}
+        helper = entries["usr/lib/asterinas/desktop-input-identity"]
+        self.assertEqual(stat.S_IMODE(helper[1]), 0o755)
+        self.assertEqual(helper[5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
+        self.assertIn(b"os.O_NONBLOCK", helper[5])
+
+    def test_physical_graphics_control_uses_stage1_input_identity(self) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+
+        self.assertIn(
+            'runpy.run_path("/run/asterinas-tools/desktop-input-identity")',
+            source,
+        )
+        self.assertNotIn(
+            'runpy.run_path("/usr/lib/asterinas/desktop-input-identity")',
+            source,
+        )
+
+    def test_stage1_exposes_ephemeral_tools_from_run_without_rootfs_writes(
+        self,
+    ) -> None:
+        source = STAGE1_SOURCE.read_text()
+        normalized = " ".join(source.split())
+        self.assertIn('ensure_directory("/newroot/run/asterinas-tools")', source)
+        self.assertIn(
+            'mount("/usr/lib/asterinas", "/newroot/run/asterinas-tools", '
+            "NULL, MS_BIND, NULL)",
+            normalized,
+        )
+        mount_run = source[source.index("case HANDOFF_MOUNT_RUN:") :]
+        mount_run = mount_run[: mount_run.index("case HANDOFF_PREPARE_DEBUG_CONSOLE:")]
+        self.assertNotIn("O_WRONLY", mount_run)
+        self.assertNotIn("/newroot/usr", mount_run)
+
+    def test_physical_gate_imports_its_stage1_carried_dependencies(self) -> None:
+        stage_tools = self.directory / "stage-tools"
+        stage_tools.mkdir()
+        for source in (
+            STAGE1_PHYSICAL_GRAPHICS_GATE,
+            STAGE1_BROWSER_INTERACTION_PERF,
+            STAGE1_BROWSER_M5_MARIONETTE_GATE,
+        ):
+            (stage_tools / source.name).write_bytes(source.read_bytes())
+        environment = os.environ.copy()
+        environment["PYTHONPATH"] = ""
+
+        result = subprocess.run(
+            [sys.executable, stage_tools / "physical_graphics_gate.py", "--help"],
+            cwd=stage_tools,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_builder_rejects_unknown_arguments(self) -> None:
         result = self.run_builder("--unknown")
 
         self.assertEqual(result.returncode, 2)
         self.assertIn("unknown option", result.stderr)
+
+    def test_physical_graphics_control_rejects_untrusted_arguments(self) -> None:
+        for arguments in (
+            (),
+            ("unknown",),
+            ("preflight", "extra"),
+            ("cycle", "1", "not-a-nonce", "180", "540", "41", "1920", "1080"),
+            ("final", "2", "0123456789abcdef", "180", "540", "41"),
+        ):
+            with self.subTest(arguments=arguments):
+                result = subprocess.run(
+                    ["/bin/sh", STAGE1_PHYSICAL_GRAPHICS_CONTROL, *arguments],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr, "")
+
+    def test_physical_graphics_control_accepts_a_six_digit_linux_pid(self) -> None:
+        result = subprocess.run(
+            [
+                "/bin/sh",
+                STAGE1_PHYSICAL_GRAPHICS_CONTROL,
+                "final",
+                "3",
+                "0123",
+                "180",
+                "540",
+                "123456",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertRegex(
+            result.stdout, r"^__ASTERINAS_PHYSICAL_FINAL_STATUS__ status=12[46]\n$"
+        )
+        self.assertEqual(result.stderr, "")
 
     def test_builder_is_deterministic_with_exact_raw_newc_metadata(self) -> None:
         environment = os.environ.copy()
@@ -766,10 +1561,143 @@ int main(void)
             [
                 (".", stat.S_IFDIR | 0o755, 0, 0, 1700000000),
                 ("init", stat.S_IFREG | 0o755, 0, 0, 1700000000),
+                ("usr", stat.S_IFDIR | 0o755, 0, 0, 1700000000),
+                ("usr/lib", stat.S_IFDIR | 0o755, 0, 0, 1700000000),
+                ("usr/lib/asterinas", stat.S_IFDIR | 0o755, 0, 0, 1700000000),
+                (
+                    "usr/lib/asterinas/browser_interaction_perf.py",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/browser_system_time.py",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/browser_latency_contract.py",
+                    stat.S_IFREG | 0o644,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/browser_perf_capture.py",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/browser-web-marionette-gate",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/browser_m5_marionette_gate.py",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/megrez-clock-sync",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/physical-external-services-quiesce",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/desktop-input-identity",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/physical-graphics-control",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/physical-graphics-gate",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/physical-graphics-interaction.html",
+                    stat.S_IFREG | 0o644,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/physical-system-probe",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/g",
+                    stat.S_IFLNK | 0o777,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/q",
+                    stat.S_IFLNK | 0o777,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/s",
+                    stat.S_IFLNK | 0o777,
+                    0,
+                    0,
+                    1700000000,
+                ),
             ],
         )
         self.assertTrue(entries[1][5].startswith(b"\x7fELF"))
         self.assertEqual(entries[1][5], (first.parent / "init").read_bytes())
+        self.assertEqual(entries[5][5], STAGE1_BROWSER_INTERACTION_PERF.read_bytes())
+        self.assertEqual(entries[6][5], STAGE1_BROWSER_SYSTEM_TIME.read_bytes())
+        self.assertEqual(entries[7][5], STAGE1_BROWSER_LATENCY_CONTRACT.read_bytes())
+        self.assertEqual(entries[8][5], STAGE1_BROWSER_PERF_CAPTURE.read_bytes())
+        self.assertEqual(entries[9][5], STAGE1_BROWSER_GATE.read_bytes())
+        self.assertEqual(entries[10][5], STAGE1_BROWSER_M5_MARIONETTE_GATE.read_bytes())
+        self.assertEqual(entries[11][5], STAGE1_CLOCK_SYNC.read_bytes())
+        self.assertEqual(
+            entries[12][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
+        )
+        self.assertEqual(entries[13][5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
+        self.assertEqual(entries[14][5], STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_bytes())
+        self.assertEqual(entries[15][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
+        self.assertEqual(entries[16][5], STAGE1_PHYSICAL_GRAPHICS_PAGE.read_bytes())
+        self.assertEqual(entries[17][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
+        self.assertEqual(entries[18][5], b"physical-graphics-control")
+        self.assertEqual(entries[19][5], b"physical-external-services-quiesce")
+        self.assertEqual(entries[20][5], b"physical-system-probe")
 
     def test_builder_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):
@@ -991,6 +1919,53 @@ class DebianRootfsBuilderTests(unittest.TestCase):
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary_directory.cleanup)
         self.directory = Path(self.temporary_directory.name)
+
+    def test_cleanup_unmounts_only_private_workspace_descendants(self) -> None:
+        work_directory = self.directory / "cleanup-work"
+        (work_directory / "stage/proc").mkdir(parents=True)
+        fake_bin = self.directory / "cleanup-tools"
+        fake_bin.mkdir()
+        umount_log = self.directory / "umount.log"
+        (fake_bin / "findmnt").write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' / /root/asterinas "
+            '"$ASTERINAS_TEST_STAGE/proc" "$ASTERINAS_TEST_STAGE"\n',
+            encoding="utf-8",
+        )
+        (fake_bin / "umount").write_text(
+            '#!/bin/sh\nprintf \'%s\\n\' "$3" >>"$ASTERINAS_TEST_UMOUNT_LOG"\n',
+            encoding="utf-8",
+        )
+        (fake_bin / "findmnt").chmod(0o755)
+        (fake_bin / "umount").chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_TEST_STAGE=str(work_directory / "stage"),
+            ASTERINAS_TEST_UMOUNT_LOG=str(umount_log),
+        )
+
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                'source "$1"; WORK_DIR="$2"; cleanup',
+                "builder-cleanup-test",
+                str(BUILD_SCRIPT),
+                str(work_directory),
+            ],
+            cwd=REPOSITORY_ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            umount_log.read_text(encoding="utf-8").splitlines(),
+            [str(work_directory / "stage/proc"), str(work_directory / "stage")],
+        )
 
     def test_prints_exact_required_tool_contract(self) -> None:
         result = _run_builder("--print-tools", cwd=self.directory)
@@ -1335,20 +2310,31 @@ WantedBy=multi-user.target
             self.assertIn(directive, unit_text)
         device_access = stage / "usr/lib/asterinas/desktop-m3-device-access"
         self.assertEqual(stat.S_IMODE(device_access.stat().st_mode), 0o755)
+        identity_helper = stage / "usr/lib/asterinas/desktop-input-identity"
+        self.assertTrue(identity_helper.is_file())
+        self.assertEqual(
+            identity_helper.read_bytes(), DESKTOP_INPUT_IDENTITY_SOURCE.read_bytes()
+        )
+        self.assertEqual(stat.S_IMODE(identity_helper.stat().st_mode), 0o755)
         self.assertIn("chown asterinas:video /dev/fb0", device_access.read_text())
         self.assertIn("chmod 0660 /dev/fb0", device_access.read_text())
         self.assertIn("chown asterinas:input", device_access.read_text())
-        self.assertIn(
+        self.assertNotIn(
             'if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" != 1 ]]; then',
             device_access.read_text(),
         )
-        self.assertIn(
-            "while [[ ! -c /dev/input/event0 || ! -c /dev/input/event1 ]]",
-            device_access.read_text(),
-        )
+        self.assertIn("desktop-input-identity", device_access.read_text())
         self.assertIn(
             "failed: desktop input devices did not appear", device_access.read_text()
         )
+        for fragment in (
+            "ASTERINAS_DESKTOP_M3_STABLE_INPUT_DIRECTORY:-/run/asterinas-input",
+            '"$STABLE_INPUT_DIRECTORY/keyboard"',
+            '"$STABLE_INPUT_DIRECTORY/pointer"',
+            "ambiguous desktop input device identity",
+        ):
+            self.assertIn(fragment, device_access.read_text())
+        self.assertNotIn("/sys/class/input", device_access.read_text())
         self.assertFalse((getty_wants / "getty@tty1.service").exists())
         evidence_unit = (
             stage / "etc/systemd/system/asterinas-desktop-m3-evidence.service"
@@ -1371,7 +2357,7 @@ WantedBy=multi-user.target
                 / "asterinas-desktop-m3.service"
             ).is_symlink()
         )
-        xorg_directory = stage / "etc/X11/xorg.conf.d"
+        xorg_directory = stage / "etc/asterinas/display-providers/fbdev/xorg.conf.d"
         self.assertEqual(stat.S_IMODE(xorg_directory.stat().st_mode), 0o755)
         xorg_config_path = xorg_directory / "20-asterinas.conf"
         self.assertEqual(stat.S_IMODE(xorg_config_path.stat().st_mode), 0o644)
@@ -1379,9 +2365,9 @@ WantedBy=multi-user.target
         self.assertIn('Driver "fbdev"', xorg_config)
         self.assertIn('Driver "evdev"', xorg_config)
         self.assertIn('Identifier "Asterinas keyboard"', xorg_config)
-        self.assertIn('Option "Device" "/dev/input/event0"', xorg_config)
+        self.assertIn('Option "Device" "/run/asterinas-input/keyboard"', xorg_config)
         self.assertIn('Identifier "Asterinas pointer"', xorg_config)
-        self.assertIn('Option "Device" "/dev/input/event1"', xorg_config)
+        self.assertIn('Option "Device" "/run/asterinas-input/pointer"', xorg_config)
         self.assertIn('Identifier "Asterinas layout"', xorg_config)
         self.assertIn('InputDevice "Asterinas keyboard" "CoreKeyboard"', xorg_config)
         self.assertIn('InputDevice "Asterinas pointer" "CorePointer"', xorg_config)
@@ -3903,6 +4889,22 @@ class DebianRootfsGateRuntimeTests(unittest.TestCase):
 
         self.assertEqual(transcript.count(b"repeat-marker"), 2)
 
+    def test_serial_console_observes_admitted_chunks(self) -> None:
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        observed: list[bytes] = []
+        console = SerialConsole(reader, max_bytes=8, observer=observed.append)
+        os.write(writer, b"ready\n")
+
+        console.wait_for(b"ready", time.monotonic() + 1.0)
+
+        self.assertEqual(observed, [b"ready\n"])
+        os.write(writer, b"overflow")
+        with self.assertRaisesRegex(BufferError, "serial transcript"):
+            console.wait_for(b"missing", time.monotonic() + 1.0)
+        self.assertEqual(observed, [b"ready\n"])
+
     def test_serial_console_wait_for_any_returns_the_first_observed_marker(
         self,
     ) -> None:
@@ -3975,6 +4977,64 @@ class DebianRootfsGateRuntimeTests(unittest.TestCase):
         self.assertIn(b"ROOT_READY", matched)
         self.assertIn(b"boot noise", console.transcript)
         self.assertEqual(os.read(slave, 128), b"echo ready\n")
+
+    def test_serial_console_can_pace_physical_uart_transmission(self) -> None:
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        console = SerialConsole(writer, max_bytes=128, tx_delay=0.005)
+
+        with mock.patch("tools.riscv.debian.rootfs.gate_runtime.time.sleep") as sleep:
+            console.send(b"abc", self._deadline(3.0))
+
+        self.assertEqual(os.read(reader, 128), b"abc")
+        self.assertEqual(sleep.call_count, 2)
+        sleep.assert_has_calls([mock.call(0.005), mock.call(0.005)])
+
+    def test_paced_transmission_drains_concurrent_serial_output(self) -> None:
+        local, remote = socket.socketpair()
+        descriptor = local.detach()
+        self.addCleanup(os.close, descriptor)
+        self.addCleanup(remote.close)
+        console = SerialConsole(descriptor, max_bytes=128, tx_delay=0.005)
+        payload = b"abcdefgh"
+
+        def echo_during_send() -> None:
+            remote.recv(1)
+            remote.sendall(b"readline-redraw\n")
+            remaining = len(payload) - 1
+            while remaining:
+                remaining -= len(remote.recv(remaining))
+
+        echo = threading.Thread(target=echo_during_send, daemon=True)
+        echo.start()
+        self.addCleanup(echo.join, 1.0)
+
+        console.send(payload, self._deadline(3.0))
+        echo.join(1.0)
+
+        self.assertFalse(echo.is_alive())
+        self.assertIn(b"readline-redraw\n", console.transcript)
+
+    def test_serial_console_rejects_paced_command_before_partial_transmission(
+        self,
+    ) -> None:
+        reader, writer = os.pipe()
+        self.addCleanup(os.close, reader)
+        self.addCleanup(os.close, writer)
+        console = SerialConsole(writer, max_bytes=128, tx_delay=0.005)
+
+        with (
+            mock.patch(
+                "tools.riscv.debian.rootfs.gate_runtime.time.monotonic",
+                return_value=10.0,
+            ),
+            self.assertRaisesRegex(TimeoutError, "before transmission"),
+        ):
+            console.send(b"abcdef", 10.01)
+
+        readable, _, _ = select.select([reader], [], [], 0)
+        self.assertEqual(readable, [])
 
     def test_serial_console_bounds_prompt_boot_and_drain_deadlines(self) -> None:
         master, slave = os.openpty()

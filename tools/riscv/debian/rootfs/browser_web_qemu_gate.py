@@ -16,7 +16,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 from tools.riscv.debian.rootfs.browser_web_contract import (
@@ -31,6 +31,11 @@ from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     validate_bilibili_detail,
     validate_fixture_search,
 )
+from tools.riscv.debian.rootfs.browser_performance_provenance import (
+    ProvenanceError,
+    bind_runtime_provenance,
+    validate_runtime_provenance,
+)
 from tools.riscv.debian.rootfs.desktop_m3_gate import classify_desktop
 from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
     DesktopM5QemuOperations,
@@ -39,7 +44,11 @@ from tools.riscv.debian.rootfs.desktop_m5_qemu_gate import (
 )
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import NetworkMode
 from tools.riscv.debian.rootfs.gate_protocol import GateResult
-from tools.riscv.debian.rootfs.gate_runtime import GateTermination, TerminationSignalState
+from tools.riscv.debian.rootfs.gate_runtime import (
+    GateTermination,
+    PinnedOutputDirectory,
+    TerminationSignalState,
+)
 from tools.riscv.debian.rootfs.rootfs_gate import GateConfig, GateFailure, parse_gate_args
 from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
 from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gate
@@ -75,12 +84,25 @@ def browser_web_milestones(mode: NetworkMode) -> tuple[str, ...]:
 
 BROWSER_WEB_MILESTONES = browser_web_milestones(NetworkMode.DIRECT)
 _NETWORK_FAILURE = b"DEBIAN_NETWORK_M5_FAIL reason="
+_ROOTFS_FAILURE = b"DEBIAN_ROOTFS_FAIL reason="
 _WEB_FAILURE = b"DEBIAN_BROWSER_WEB_FAIL reason="
+_ROOTFS_FAILURE_LINE = re.compile(
+    rb"(?:^|\n)DEBIAN_ROOTFS_FAIL reason=([a-z0-9][a-z0-9-]*)\r?(?:\n|$)"
+)
 _EXTERNAL_BLOCK = b"DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha"
 KERNEL_FATAL_MARKERS = (
     b"Uncaught panic:",
     b"Kernel panic - not syncing",
 )
+BROWSER_WEB_PROTOCOL_TIMEOUT_SECONDS = 900
+_PROGRESS_PREFIXES = (
+    b"DEBIAN_WEB_NETWORK_",
+    b"DEBIAN_BROWSER_WEB_",
+    b"A_WEB_TIMELINE",
+    b"A_WEB_PHASE",
+)
+_PROGRESS_PHASE = re.compile(r"(?:^| )phase=([^ ]+) state=(start|done)(?: |$)")
+_MAX_PROGRESS_LINE_BYTES = 4096
 WEB_EVIDENCE_PATHS = {
     "baidu-home.json": "/home/asterinas/browser-web-evidence/baidu-home.json",
     "baidu-home.png": "/home/asterinas/browser-web-evidence/baidu-home.png",
@@ -106,7 +128,57 @@ WEB_EVIDENCE_PATHS = {
     "ca-certificates.crt": "/etc/ssl/certs/ca-certificates.crt",
     "timeline.log": "/home/asterinas/browser-web-timeline.log",
     "firefox-user.js": "/home/asterinas/.mozilla/asterinas-browser-web/user.js",
+    "runtime-provenance.json": (
+        "/home/asterinas/browser-web-evidence/runtime-provenance.json"
+    ),
 }
+
+
+class BrowserWebProgress:
+    """Publish completed, structured Firefox serial markers as live progress."""
+
+    def __init__(self, output: PinnedOutputDirectory, *, boot_number: int) -> None:
+        self._output = output
+        self._boot_number = boot_number
+        self._pending = bytearray()
+        self._sequence = 0
+        self._active_phase: str | None = None
+
+    def __call__(self, chunk: bytes) -> None:
+        self._pending.extend(chunk)
+        while (newline := self._pending.find(b"\n")) >= 0:
+            raw_line = bytes(self._pending[:newline]).removesuffix(b"\r")
+            del self._pending[: newline + 1]
+            self._record(raw_line)
+        if len(self._pending) > _MAX_PROGRESS_LINE_BYTES:
+            self._pending.clear()
+
+    def _record(self, raw_line: bytes) -> None:
+        if not raw_line.startswith(_PROGRESS_PREFIXES):
+            return
+        try:
+            line = raw_line.decode("ascii")
+        except UnicodeDecodeError:
+            return
+        phase_match = _PROGRESS_PHASE.search(line) if line.startswith("A_WEB_PHASE") else None
+        if phase_match is not None:
+            phase, state = phase_match.groups()
+            if state == "start":
+                self._active_phase = phase
+            elif self._active_phase == phase:
+                self._active_phase = None
+        self._sequence += 1
+        document = {
+            "active_phase": self._active_phase,
+            "boot_number": self._boot_number,
+            "last_marker": line,
+            "sequence": self._sequence,
+        }
+        self._output.atomic_write(
+            "browser-web-progress.json",
+            (json.dumps(document, indent=2, sort_keys=True) + "\n").encode(),
+        )
+        print(f"browser-web-progress: {line}", file=sys.stderr, flush=True)
 MAX_WEB_EVIDENCE_BYTES = 64 * 1024 * 1024
 MAX_WEB_EVIDENCE_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_WEB_OPAQUE_LOG_BYTES = 16 * 1024 * 1024
@@ -517,6 +589,11 @@ def validate_web_evidence(
     _validate_firefox_network_profile(
         evidence["firefox-user.js"], network_mode=network_mode
     )
+    try:
+        runtime_provenance = json.loads(evidence["runtime-provenance.json"])
+        validate_runtime_provenance(runtime_provenance)
+    except (UnicodeDecodeError, json.JSONDecodeError, ProvenanceError) as error:
+        raise GateFailure("browser runtime provenance is invalid") from error
     if timeline_pid != security_pid:
         raise GateFailure("browser startup timeline PID does not match security evidence")
     if evidence["MarionetteActivePort"].strip() != b"2828":
@@ -660,13 +737,64 @@ def classify_browser_web_qemu(
     )
 
 
+def browser_timeout_reason(
+    transcript: bytes, *, network_mode: NetworkMode
+) -> str:
+    """Classify a bounded host timeout from completed structured markers."""
+
+    if not isinstance(network_mode, NetworkMode):
+        raise ValueError("browser network mode must be a NetworkMode")
+    events: list[tuple[int, str, tuple[bytes, ...]]] = []
+    events.extend(
+        (match.start(), "phase", match.groups())
+        for match in _TIMELINE_PHASE_LINE.finditer(transcript)
+    )
+    events.extend(
+        (match.start(), "platform", match.groups())
+        for match in _TIMELINE_PLATFORM_LINE.finditer(transcript)
+    )
+    active_phase: bytes | None = None
+    platform_ready = False
+    for _, kind, groups in sorted(events, key=lambda event: event[0]):
+        if kind == "platform":
+            active_phase = None
+            platform_ready = True
+            continue
+        phase, state, _ = groups
+        if state == b"start":
+            active_phase = phase
+        elif active_phase == phase:
+            active_phase = None
+    if active_phase is not None:
+        return f"browser-timeout:phase-{active_phase.decode('ascii')}"
+    if platform_ready:
+        return "browser-timeout:after-platform-ready"
+    network_ready = (
+        f"DEBIAN_WEB_NETWORK_READY mode={network_mode.value} layers=10".encode()
+    )
+    if network_ready not in transcript:
+        return f"browser-timeout:network-{network_mode.value}"
+    return "browser-timeout:firefox-launch"
+
+
+def _stage1_failure_reason(transcript: bytes) -> str | None:
+    matches = tuple(_ROOTFS_FAILURE_LINE.finditer(transcript))
+    if not matches:
+        return None
+    return matches[-1].group(1).decode("ascii")
+
+
 class BrowserWebQemuOperations(DesktopM5QemuOperations):
     SCHEMA_VERSION = 7
     PROFILE_NAME = "browser-web"
     ARTIFACT_PREFIX = "browser-web-qemu"
     MILESTONES = BROWSER_WEB_MILESTONES
     FAILURE_MARKER = _WEB_FAILURE
-    ADDITIONAL_FAILURE_MARKERS = (_NETWORK_FAILURE, *KERNEL_FATAL_MARKERS)
+    ADDITIONAL_FAILURE_MARKERS = (
+        _ROOTFS_FAILURE,
+        _NETWORK_FAILURE,
+        *KERNEL_FATAL_MARKERS,
+    )
     BOOTARGS = qemu_web_network_bootargs(NetworkMode.DIRECT)
 
     def __init__(
@@ -692,6 +820,7 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
         super().__init__(config, **arguments)
         self._web_evidence: dict[str, bytes] = {}
         self._web_evidence_index: dict[str, dict[str, object]] = {}
+        self._performance_provenance: dict[str, object] = {}
 
     def __enter__(self) -> BrowserWebQemuOperations:
         try:
@@ -719,8 +848,20 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
     def run_protocol(self, session: dict[str, Any], config: GateConfig) -> None:
         try:
             super().run_protocol(session, config)
-        except GateFailure:
+        except TimeoutError as error:
+            raise GateFailure(
+                browser_timeout_reason(
+                    session["serial"].transcript,
+                    network_mode=self.network_mode,
+                )
+            ) from error
+        except GateFailure as error:
             serial = session["serial"]
+            stage1_reason = _stage1_failure_reason(serial.transcript)
+            if stage1_reason is not None:
+                raise GateFailure(
+                    f"stage1 rootfs failure: {stage1_reason}"
+                ) from error
             if any(marker in serial.transcript for marker in KERNEL_FATAL_MARKERS):
                 # The generic desktop gate returns as soon as it sees the panic
                 # prefix.  Give the kernel logger one bounded cleanup interval
@@ -729,12 +870,25 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
                 serial.drain(time.monotonic() + config.cleanup_timeout)
             raise
 
+    def _protocol_deadline(self, config: GateConfig) -> float:
+        return time.monotonic() + min(
+            config.boot_timeout, BROWSER_WEB_PROTOCOL_TIMEOUT_SECONDS
+        )
+
+    def serial_observer(
+        self, config: GateConfig, boot_number: int
+    ) -> Callable[[bytes], None]:
+        del config
+        return BrowserWebProgress(self._require_output(), boot_number=boot_number)
+
     def invalidate(self, config: GateConfig) -> None:
         super().invalidate(config)
         self._require_output().invalidate(
             *(f"browser-web-{name}" for name in WEB_EVIDENCE_PATHS),
             "browser-web-evidence.SHA256SUMS",
             "browser-web-evidence-index.json",
+            "browser-web-progress.json",
+            "browser-performance-provenance.json",
             "proxy-bridge.json",
         )
 
@@ -758,6 +912,12 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
         self._web_evidence_index = validate_web_evidence(
             self._web_evidence, network_mode=self.network_mode
         )
+        try:
+            self._performance_provenance = bind_runtime_provenance(
+                self._web_evidence["runtime-provenance.json"], config.manifest
+            )
+        except ProvenanceError as error:
+            raise GateFailure("failed to bind browser runtime provenance") from error
         return super().hash_final_root(config, prepared)
 
     def publish(
@@ -799,8 +959,21 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
         if result.get("passed"):
             if not self._web_evidence or not self._web_evidence_index:
                 raise GateFailure("validated browser web evidence was not retained")
+            if not self._performance_provenance:
+                raise GateFailure("bound browser performance provenance was not retained")
             for name, contents in sorted(self._web_evidence.items()):
                 output.atomic_write(f"browser-web-{name}", contents)
+            output.atomic_write(
+                "browser-performance-provenance.json",
+                (
+                    json.dumps(
+                        self._performance_provenance,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                ).encode(),
+            )
             sums = "".join(
                 f"{metadata['sha256']}  browser-web-{name}\n"
                 for name, metadata in sorted(self._web_evidence_index.items())
@@ -820,6 +993,7 @@ class BrowserWebQemuOperations(DesktopM5QemuOperations):
                 (json.dumps(index, indent=2, sort_keys=True) + "\n").encode(),
             )
             result["web_evidence"] = index
+            result["performance_provenance"] = self._performance_provenance
         super().publish(config, prepared, transcript, result)
 
 

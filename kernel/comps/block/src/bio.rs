@@ -485,6 +485,28 @@ impl BioSegment {
         self.inner.dma_slice.write_bytes(offset, buf)
     }
 
+    /// Copies device-produced bytes from `reader` into this read BIO segment.
+    ///
+    /// This is used by block-mapping layers that read one physically contiguous
+    /// extent into a bounce segment and then scatter it into page-cache pages.
+    /// The caller must provide at least [`BioSegment::nbytes`] bytes.
+    pub fn write_from_device_reader(
+        &self,
+        reader: &mut VmReader<'_, Infallible>,
+    ) -> Result<(), Error> {
+        if self.inner.direction != BioDirection::FromDevice {
+            return Err(Error::AccessDenied);
+        }
+        if reader.remain() < self.nbytes() {
+            return Err(Error::InvalidArgs);
+        }
+
+        let mut writer = self.inner.dma_slice.writer()?;
+        let copied_len = reader.read(&mut writer);
+        debug_assert_eq!(copied_len, self.nbytes());
+        Ok(())
+    }
+
     /// Copies bytes from a write BIO segment into a PIO device buffer.
     pub fn read_for_device(&self, offset: usize, buf: &mut [u8]) -> Result<(), Error> {
         if self.inner.direction != BioDirection::ToDevice {
@@ -730,6 +752,29 @@ mod tests {
         write_segment.read_for_device(0, &mut device_buf).unwrap();
         assert_eq!(device_buf, expected);
         assert!(segment.read_for_device(0, &mut device_buf).is_err());
+    }
+
+    #[ktest]
+    fn device_reader_scatter_validates_and_copies() {
+        let segment = BioSegment::alloc(1, BioDirection::FromDevice);
+        let expected = vec![0x5a; segment.nbytes()];
+        let mut reader = VmReader::from(expected.as_slice());
+        segment.write_from_device_reader(&mut reader).unwrap();
+        assert_eq!(reader.remain(), 0);
+
+        let mut actual = vec![0; segment.nbytes()];
+        segment.read_bytes(0, &mut actual).unwrap();
+        assert_eq!(actual, expected);
+
+        let short_source = vec![0; segment.nbytes() - 1];
+        let mut short_reader = VmReader::from(short_source.as_slice());
+        assert!(segment.write_from_device_reader(&mut short_reader).is_err());
+        assert_eq!(short_reader.remain(), short_source.len());
+
+        let write_segment = BioSegment::alloc(1, BioDirection::ToDevice);
+        let mut reader = VmReader::from(expected.as_slice());
+        assert!(write_segment.write_from_device_reader(&mut reader).is_err());
+        assert_eq!(reader.remain(), expected.len());
     }
 }
 

@@ -27,14 +27,21 @@ sleep 0.2
 ./sockoption_unix
 ./tcp_err
 ./tcp_poll
+./tcp_ppoll_wakeup
+./tcp_event_handoff
 ./tcp_reuseaddr
 ./tcp_wrapped_buffer_io
+./tcp_user_buffer_prefault
 ./udp_broadcast
 ./udp_err
 ./unix_datagram_err
 ./unix_seqpacket_err
 ./unix_scm_rights_acyclic
 ./unix_stream_err
+./ipv6_udp
+./ipv6_dual_stack
+./ipv6_dual_stack_udp
+./udp_user_buffer_prefault
 
 ./netlink_route
 ./rtnl_err

@@ -733,7 +733,8 @@ impl VmMapping {
                 Err(err) => {
                     let index = err.pending_index()?;
                     drop(preempt_guard);
-                    let end_idx = vmo.offset() + end_offset.div_ceil(PAGE_SIZE);
+                    // The mapped VMO offset is page-aligned, so convert it to a page index.
+                    let end_idx = vmo.offset() / PAGE_SIZE + end_offset.div_ceil(PAGE_SIZE);
                     vmo.vmo().commit_range_for_fault(index, end_idx)?;
                     start_addr = (index * PAGE_SIZE - vmo.offset()) + self.map_to_addr;
                     continue 'retry;
@@ -1289,7 +1290,7 @@ mod tests {
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     use io_util::batch::IoBatch;
-    use ostd::prelude::ktest;
+    use ostd::{mm::VmIoFill, prelude::ktest};
 
     use super::*;
     use crate::vm::page_cache::{LockedCachePage, PageCacheBackend, VmoOptions};
@@ -1355,6 +1356,36 @@ mod tests {
             Err(Error::with_message(
                 Errno::EIO,
                 "intentional fault-around write failure",
+            ))
+        }
+    }
+
+    struct RecordingPageCacheBackend {
+        reads: SpinLock<Vec<usize>>,
+    }
+
+    impl PageCacheBackend for RecordingPageCacheBackend {
+        fn read_page_async(
+            &self,
+            idx: usize,
+            locked_page: LockedCachePage,
+            _io_batch: &mut IoBatch,
+        ) -> Result<()> {
+            self.reads.lock().push(idx);
+            locked_page.fill_zeros(0, PAGE_SIZE)?;
+            locked_page.set_up_to_date();
+            Ok(())
+        }
+
+        fn write_page_async(
+            &self,
+            _idx: usize,
+            _locked_page: LockedCachePage,
+            _io_batch: &mut IoBatch,
+        ) -> Result<()> {
+            Err(Error::with_message(
+                Errno::EIO,
+                "unexpected write from fault-around test",
             ))
         }
     }
@@ -1563,5 +1594,66 @@ mod tests {
             &fault_range,
             PageFlags::R | PageFlags::AVAIL2 | PageFlags::ACCESSED,
         );
+    }
+
+    #[ktest]
+    fn fault_around_reads_only_the_mapping_window() {
+        const VMO_PAGE_COUNT: usize = 128;
+        const MAPPING_PAGE_COUNT: usize = 16;
+
+        let vm_space = Arc::new(VmSpace::new());
+        vm_space.activate();
+        for (iteration, offset) in [0, 8, 120].into_iter().enumerate() {
+            let mapping_start = (iteration + 1) * MAPPING_PAGE_COUNT * PAGE_SIZE;
+            let mapping_range = mapping_start..mapping_start + MAPPING_PAGE_COUNT * PAGE_SIZE;
+            let backend = Arc::new(RecordingPageCacheBackend {
+                reads: SpinLock::new(Vec::new()),
+            });
+            let backend_dyn: Arc<dyn PageCacheBackend> = backend.clone();
+            let vmo = VmoOptions::new_page_cache(
+                VMO_PAGE_COUNT * PAGE_SIZE,
+                Arc::downgrade(&backend_dyn),
+            )
+            .alloc()
+            .unwrap();
+            let mapped_vmo = MappedVmo::new(vmo, offset * PAGE_SIZE, false).unwrap();
+            let mapping = VmMapping::new(
+                NonZeroUsize::new(MAPPING_PAGE_COUNT * PAGE_SIZE).unwrap(),
+                mapping_start,
+                MappedMemory::Vmo(mapped_vmo),
+                None,
+                false,
+                true,
+                false,
+                false,
+                VmPerms::READ,
+            );
+            mapping
+                .handle_page_fault(
+                    &vm_space,
+                    &PageFaultInfo::new(mapping_start, VmPerms::READ),
+                    &mut RssDelta::new_for_test(),
+                )
+                .unwrap();
+
+            let expected_end = (offset + MAPPING_PAGE_COUNT).min(VMO_PAGE_COUNT);
+            assert_eq!(
+                *backend.reads.lock(),
+                (offset..expected_end).collect::<Vec<_>>()
+            );
+            assert_mapping_prop(
+                &vm_space,
+                &(mapping_start..mapping_start + PAGE_SIZE),
+                PageFlags::R | PageFlags::ACCESSED,
+            );
+            assert_eq!(
+                vm_space
+                    .reader(mapping_range.start, size_of::<u8>())
+                    .unwrap()
+                    .read_val::<u8>()
+                    .unwrap(),
+                0
+            );
+        }
     }
 }

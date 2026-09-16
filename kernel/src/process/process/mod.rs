@@ -5,19 +5,25 @@ use core::{
     time::Duration,
 };
 
-use ostd::timer::Jiffies;
-
 use self::timer_manager::PosixTimerManager;
 use super::{
     namespace::pid_ns::{PidNamespace, PidNsReservation},
     pid_table::{self, PidTable},
-    posix_thread::{AsPosixThread, FIRST_POSIX_TID},
+    posix_thread::{AsPosixThread, FIRST_POSIX_TID, PosixThread},
     process_vm::ProcessVmarGuard,
     rlimit::ResourceLimits,
     signal::{
+        c_types::siginfo_t,
+        constants::{
+            CLD_CONTINUED, CLD_STOPPED, SIGCHLD, SIGCONT, SIGKILL, SIGSTOP, SIGTSTP, SIGTTIN,
+            SIGTTOU,
+        },
+        job_control::{GroupStopParticipant, SignalJobControl, is_stop_signal},
+        sig_action::{SigActionFlags, SigHandler},
         sig_disposition::SigDispositions,
+        sig_mask::SigSet,
         sig_num::{AtomicSigNum, SigNum},
-        signals::Signal,
+        signals::{Signal, raw::RawSignal},
     },
     status::ProcessStatus,
     task_set::TaskSet,
@@ -147,6 +153,7 @@ pub struct Process {
     sig_dispositions: Mutex<Arc<Mutex<SigDispositions>>>,
     /// The process-level sigqueue.
     sig_queues: SigQueues,
+    signal_job_control: Mutex<SignalJobControl>,
     /// The signal that the process should receive when parent process exits.
     parent_death_signal: AtomicSigNum,
     /// The signal that should be sent to the parent when this process exits.
@@ -158,7 +165,7 @@ pub struct Process {
     /// A manager that manages timer resources and utilities of the process.
     timer_manager: PosixTimerManager,
     /// Process start time since boot.
-    start_time: Jiffies,
+    start_time: Duration,
 
     // Namespaces
     /// The user namespace
@@ -279,11 +286,14 @@ impl Process {
                 has_child_subreaper: AtomicBool::new(false),
                 sig_dispositions: Mutex::new(sig_dispositions),
                 sig_queues: SigQueues::new(),
+                signal_job_control: Mutex::new(SignalJobControl::default()),
                 parent_death_signal: AtomicSigNum::new_empty(),
                 exit_signal: AtomicSigNum::new_empty(),
                 prof_clock,
                 timer_manager,
-                start_time: Jiffies::elapsed(),
+                // Match /proc/uptime rather than accumulated timer IRQs,
+                // which can lag behind the clock source during startup.
+                start_time: aster_time::read_monotonic_time(),
                 user_ns: Mutex::new(user_ns),
             }
         })
@@ -353,7 +363,7 @@ impl Process {
     }
 
     /// Returns the process start time since boot.
-    pub fn start_time(&self) -> Jiffies {
+    pub fn start_time(&self) -> Duration {
         self.start_time
     }
 
@@ -684,26 +694,79 @@ impl Process {
         &self.sig_queues
     }
 
+    pub(super) fn signal_job_control(&self) -> &Mutex<SignalJobControl> {
+        &self.signal_job_control
+    }
+
     /// Enqueues a process-directed signal.
     ///
     /// This method does not perform permission checks on user signals.
     /// Therefore, unless the caller can ensure that there are no permission issues,
     /// this method should be used to enqueue kernel signals or fault signals.
     pub fn enqueue_signal(&self, signal: Box<dyn Signal>) {
+        self.enqueue_signal_for_thread(signal, None);
+    }
+
+    /// Common generation path; `None` selects the process-wide pending queue.
+    pub(super) fn enqueue_signal_for_thread(
+        &self,
+        signal: Box<dyn Signal>,
+        target: Option<&PosixThread>,
+    ) {
         if self.status.is_zombie() {
             return;
         }
 
-        self.sig_queues.enqueue(signal);
+        let is_sigcont = signal.num() == SIGCONT;
+        let queue = target.map_or(&self.sig_queues, PosixThread::sig_queues);
+        let (enqueued, resumed) = if is_sigcont || is_stop_signal(signal.num()) {
+            // Stabilize membership before taking the coordinator: newly created
+            // threads cannot miss a process-wide cancellation.
+            let tasks = self.tasks.lock();
+            let mut control = self.signal_job_control.lock();
+            let discarded = if is_sigcont {
+                SigSet::from(SIGSTOP) | SIGTSTP | SIGTTIN | SIGTTOU
+            } else {
+                SigSet::from(SIGCONT)
+            };
+            self.sig_queues.discard(discarded);
+            for task in tasks.as_slice() {
+                let thread = task.as_posix_thread().unwrap();
+                thread.sig_queues().discard(discarded);
+                if is_sigcont {
+                    control.cancel(&mut thread.selected_stop().lock());
+                    *thread.group_stop_participant().lock() = Default::default();
+                }
+            }
+            // Generation effects apply even when blocked, ignored, or coalesced.
+            let resumed = is_sigcont && control.resume(&self.status);
+            (queue.enqueue_without_notify(signal), resumed)
+        } else {
+            // In particular SIGKILL must not reacquire task membership: exit and
+            // exec already hold it when terminating sibling threads.
+            let _control = self.signal_job_control.lock();
+            (queue.enqueue_without_notify(signal), false)
+        };
 
-        for task in self.tasks.lock().as_slice() {
-            let posix_thread = task.as_posix_thread().unwrap();
-            // FIXME: This behavior differs a bit from Linux.
-            // Linux wakes up a single thread that neither blocks the signal
-            // nor already has the same pending signal;
-            // for simplicity we wake up all threads.
-            // Reference: <https://elixir.bootlin.com/linux/v6.17/source/kernel/signal.c#L969>.
-            posix_thread.wake_signalled_waker();
+        // Release the coordinator and the task-set guard acquired here before
+        // observer callbacks. Sibling SIGKILL callers may already hold task membership.
+        if enqueued {
+            queue.notify_enqueue();
+        }
+        if resumed && let Some(parent) = self.parent.lock().process().upgrade() {
+            parent.children_wait_queue.wake_all();
+        }
+        if let Some(target) = target
+            && !is_sigcont
+        {
+            target.wake_signalled_waker();
+        } else {
+            // FIXME: Process-directed signals currently wake all threads instead
+            // of selecting one eligible recipient as Linux does.
+            let tasks = self.tasks.lock().as_slice().to_vec();
+            for task in tasks {
+                task.as_posix_thread().unwrap().wake_signalled_waker();
+            }
         }
     }
 
@@ -740,26 +803,60 @@ impl Process {
         &self.status
     }
 
-    /// Stops the process.
-    pub fn stop(&self, sig_num: SigNum) {
-        if self.status.stop_status().stop(sig_num) {
-            self.wake_up_parent();
+    /// Commits a selected stop only if no CONT or exit has superseded it.
+    pub(super) fn stop_if_selected(&self, thread: &PosixThread, sig_num: SigNum) {
+        let tasks = {
+            let tasks = self.tasks.lock();
+            let mut control = self.signal_job_control.lock();
+            // A signal-delivery ptrace stop may have overlapped a sibling's
+            // group-stop initiation. Participate in that CURRENT obligation;
+            // do not let the tracer's injected signal replace its stop round.
+            if thread.group_stop_participant().lock().must_stop() {
+                control.cancel(&mut thread.selected_stop().lock());
+                return;
+            }
+            let kill_pending = thread.sig_queues().has_pending_signal(SIGKILL)
+                || self.sig_queues.has_pending_signal(SIGKILL);
+            if !control.begin_stop(
+                &mut thread.selected_stop().lock(),
+                &self.status,
+                sig_num,
+                kill_pending || tasks.in_execve(),
+            ) {
+                return;
+            }
+            for task in tasks.as_slice() {
+                if !task.as_thread().unwrap().is_exited() {
+                    control.enroll(
+                        &mut task
+                            .as_posix_thread()
+                            .unwrap()
+                            .group_stop_participant()
+                            .lock(),
+                    );
+                }
+            }
+            tasks.as_slice().to_vec()
+        };
+        for task in tasks {
+            task.as_posix_thread().unwrap().wake_signalled_waker();
         }
     }
 
-    /// Resumes the stopped process.
-    pub fn resume(&self) {
-        if self.status.stop_status().resume() {
-            self.wake_up_parent();
+    /// Returns whether this thread must acknowledge the current stop episode.
+    pub(crate) fn has_group_stop_checkpoint(&self, thread: &PosixThread) -> bool {
+        let _control = self.signal_job_control.lock();
+        matches!(
+            *thread.group_stop_participant().lock(),
+            GroupStopParticipant::Pending { .. }
+        )
+    }
 
-            // Note that the resume function is called by the thread which deals with SIGCONT,
-            // since SIGCONT is handled by any thread in this process, we need to wake
-            // up other stopped threads in the same process.
-            for task in self.tasks.lock().as_slice() {
-                let posix_thread = task.as_posix_thread().unwrap();
-                posix_thread.wake_signalled_waker();
-            }
-        }
+    /// Enrolls a new member while the caller still owns task membership.
+    pub(super) fn enroll_group_stop(&self, thread: &PosixThread) {
+        self.signal_job_control
+            .lock()
+            .enroll(&mut thread.group_stop_participant().lock());
     }
 
     /// Returns whether the process is stopped.
@@ -767,15 +864,104 @@ impl Process {
         self.status.stop_status().is_stopped()
     }
 
+    /// Returns whether returning members have group-stop work to handle.
+    pub(crate) fn has_group_stop_work(&self, thread: &PosixThread) -> bool {
+        self.thread_must_stop(thread) || self.status.stop_status().notification_pending()
+    }
+
+    /// Checks the thread's obligation, not the process completion latch: a
+    /// tracer can explicitly resume one member while its siblings stay stopped.
+    pub(crate) fn thread_must_stop(&self, thread: &PosixThread) -> bool {
+        if !self.is_stopped() {
+            return false;
+        }
+        let _control = self.signal_job_control.lock();
+        thread.group_stop_participant().lock().must_stop()
+    }
+
+    /// Delivers a claimed group-state notification with all child locks released.
+    pub(super) fn notify_group_stop(&self) {
+        if !self.status.stop_status().notification_pending() {
+            return;
+        }
+        let Some(event) = self
+            .signal_job_control
+            .lock()
+            .take_notification(&self.status)
+        else {
+            return;
+        };
+        self.notify_group_stop_event(event, None);
+    }
+
+    /// Delivers a previously claimed event, optionally omitting the tracer's
+    /// process when its per-thread stop notification already covers this event.
+    pub(super) fn notify_group_stop_event(&self, event: StopWaitStatus, tracer: Option<&Process>) {
+        let Some(parent) = self.parent.lock().process().upgrade() else {
+            return;
+        };
+        if tracer.is_some_and(|tracer| core::ptr::eq(parent.as_ref(), tracer)) {
+            return;
+        }
+        let (code, status) = match event {
+            StopWaitStatus::Stopped(signum) => (CLD_STOPPED, signum.as_u8() as i32),
+            StopWaitStatus::Continue => (CLD_CONTINUED, SIGCONT.as_u8() as i32),
+        };
+        let info = self.child_state_siginfo(&parent, code, status);
+        parent.notify_child_state(info);
+    }
+
+    /// Publishes a child-state signal and wakes waiters, honoring this parent's
+    /// dispositions for both ordinary children and ptrace notifications.
+    pub(super) fn notify_child_state(&self, info: siginfo_t) {
+        // Serialize disposition checking with enqueue, but release those locks
+        // before queue observers and wake callbacks. SA_NOCLDSTOP suppresses
+        // SIGCHLD only: waiters must still observe the committed wait status.
+        let enqueued = {
+            let dispositions = self.sig_dispositions.lock();
+            let dispositions = dispositions.lock();
+            let action = dispositions.get(SIGCHLD);
+            let suppressed = action.handler() == SigHandler::Ign
+                || action.flags().contains(SigActionFlags::SA_NOCLDSTOP);
+            if suppressed {
+                false
+            } else {
+                let _control = self.signal_job_control.lock();
+                self.sig_queues
+                    .enqueue_without_notify(Box::new(RawSignal::new(info)))
+            }
+        };
+        if enqueued {
+            self.sig_queues.notify_enqueue();
+            let tasks = self.tasks.lock().as_slice().to_vec();
+            for task in tasks {
+                task.as_posix_thread().unwrap().wake_signalled_waker();
+            }
+        }
+        self.children_wait_queue.wake_all();
+    }
+
+    /// Builds a child-state payload in the parent's PID and user namespaces.
+    pub(super) fn child_state_siginfo(
+        &self,
+        parent: &Process,
+        code: i32,
+        status: i32,
+    ) -> siginfo_t {
+        let mut info = siginfo_t::new(SIGCHLD, code);
+        let main_thread = self.main_thread();
+        let uid = main_thread.as_posix_thread().unwrap().credentials().ruid();
+        info.set_pid_uid(
+            self.pid_in_ns(parent.pid_ns()).unwrap_or(0),
+            parent.user_ns().lock().map_kuid(uid),
+        );
+        info.set_status(status);
+        info
+    }
+
     /// Gets and clears the stop status changes for the `wait` syscall.
     pub(super) fn wait_stopped_or_continued(&self, options: WaitOptions) -> Option<StopWaitStatus> {
         self.status.stop_status().wait(options)
-    }
-
-    fn wake_up_parent(&self) {
-        let parent_guard = self.parent.lock();
-        let parent = parent_guard.process().upgrade().unwrap();
-        parent.children_wait_queue.wake_all();
     }
 
     // ******************* Subreaper ********************

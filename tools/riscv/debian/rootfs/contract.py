@@ -873,6 +873,11 @@ def _validate_profile_tool_versions(
         versions["browser-web-runtime"],
         "tool_versions.browser-web-runtime",
     )
+    if "firefox-jit-overlay" in versions:
+        _sha256(
+            versions["firefox-jit-overlay"],
+            "tool_versions.firefox-jit-overlay",
+        )
 
 
 def _gate_versions(

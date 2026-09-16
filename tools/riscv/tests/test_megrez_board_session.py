@@ -33,6 +33,7 @@ def _make_session() -> board.BoardSession:
     session.fd = -1
     session.confirm = False
     session.milestones = {}
+    session.milestone_transcript = ""
     session._milestone_tail = ""
     session._next_milestone = 0
     session._markers = dict(board.MILESTONES)
@@ -41,6 +42,25 @@ def _make_session() -> board.BoardSession:
 
 
 class MilestoneDetectionTests(unittest.TestCase):
+    def test_debug_root_console_profile_uses_exact_readiness_marker(self):
+        self.assertEqual(
+            board.FINAL_MILESTONE_MARKERS["debug-root-console"],
+            "ASTERINAS_DEBUG_CONSOLE_READY uid=0",
+        )
+
+    def test_session_retains_only_the_current_boot_milestone_transcript(self):
+        session = _make_session()
+        session.note_milestone("Enter riscv_boot\n")
+        session.note_milestone("ASTERINAS_DEBUG_CONSOLE_READY uid=0\n")
+        self.assertEqual(
+            session.milestone_transcript,
+            "Enter riscv_boot\nASTERINAS_DEBUG_CONSOLE_READY uid=0\n",
+        )
+
+        session.start_boot_attempt()
+
+        self.assertEqual(session.milestone_transcript, "")
+
     def test_session_can_reuse_a_caller_owned_serial_descriptor(self):
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "serial.log"
@@ -134,6 +154,127 @@ class MilestoneDetectionTests(unittest.TestCase):
 
 
 class ArgumentContractTests(unittest.TestCase):
+    def test_writable_partition_emergency_reboot_requires_earlier_sync_reboot(self):
+        required = _required_args() + [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+        ]
+        prefix = (
+            "console=tty0 loglevel=off init=/init "
+            "asterinas.mmc_write_partition2 asterinas.reboot_after=900 "
+        )
+        tail = " -- --root-init=systemd --debug-console=root"
+        for setenv in (
+            "",
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=900 ",
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=850 ",
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=abc ",
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=780 "
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=780 ",
+        ):
+            with self.subTest(setenv=setenv):
+                _parse_fails(required + ["--bootargs", prefix + setenv + tail])
+
+        admitted = board.parse_args(
+            required
+            + [
+                "--bootargs",
+                prefix + "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=780" + tail,
+            ]
+        )
+        self.assertIn("ASTERINAS_SAFE_REBOOT_AFTER=780", admitted.bootargs)
+        _parse_fails(
+            required
+            + [
+                "--bootargs",
+                prefix + tail + " systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=780",
+            ]
+        )
+
+    def test_debug_root_console_profile_requires_both_boot_selectors(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+            "--final-profile",
+            "debug-root-console",
+        ]
+        for bootargs in (
+            "console=ttyS0 init=/init -- --root-init=systemd",
+            "console=ttyS0 init=/init -- --debug-console=root",
+            "console=ttyS0 init=/init -- --root-init=interactive --debug-console=root",
+        ):
+            with self.subTest(bootargs=bootargs):
+                _parse_fails(_required_args() + crc_args + ["--bootargs", bootargs])
+
+        args = board.parse_args(
+            _required_args()
+            + crc_args
+            + [
+                "--bootargs",
+                "console=ttyS0 loglevel=off init=/init -- --root-init=systemd "
+                "--debug-console=root",
+            ]
+        )
+        self.assertEqual(args.final_profile, "debug-root-console")
+
+    def test_debug_root_console_admits_isolated_volatile_desktop_contract(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+            "--final-profile",
+            "debug-root-console",
+        ]
+        prefix = "console=tty0 loglevel=off init=/init -- --root-init=systemd "
+        admitted = prefix + "--debug-console=isolated-root --volatile-home"
+        args = board.parse_args(_required_args() + crc_args + ["--bootargs", admitted])
+        self.assertEqual(args.final_profile, "debug-root-console")
+        for rejected in (
+            prefix + "--debug-console=isolated-root",
+            prefix + "--volatile-home --debug-console=isolated-root",
+            prefix + "--debug-console=isolated-root --volatile-home --volatile-home",
+        ):
+            with self.subTest(rejected=rejected):
+                _parse_fails(_required_args() + crc_args + ["--bootargs", rejected])
+
+    def test_debug_root_console_admits_root_volatile_desktop_contract(self):
+        args = board.parse_args(
+            _required_args()
+            + [
+                "--expected-crc32",
+                "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                "--final-profile",
+                "debug-root-console",
+                "--bootargs",
+                "console=tty0 loglevel=off init=/init -- "
+                "--root-init=systemd --debug-console=root --volatile-home",
+            ]
+        )
+        self.assertEqual(args.final_profile, "debug-root-console")
+
+    def test_debug_root_console_profile_requires_one_exclusive_off_loglevel(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+            "--final-profile",
+            "debug-root-console",
+        ]
+        suffix = "init=/init -- --root-init=systemd --debug-console=root"
+        for bootargs in (
+            f"console=ttyS0 {suffix}",
+            f"console=ttyS0 loglevel=info {suffix}",
+            f"console=ttyS0 loglevel=off loglevel=off {suffix}",
+            f"console=ttyS0 loglevel=info loglevel=off {suffix}",
+        ):
+            with self.subTest(bootargs=bootargs):
+                _parse_fails(_required_args() + crc_args + ["--bootargs", bootargs])
+
+        args = board.parse_args(
+            _required_args()
+            + crc_args
+            + ["--bootargs", f"console=ttyS0 loglevel=off {suffix}"]
+        )
+        self.assertEqual(args.final_profile, "debug-root-console")
+
     def test_physical_mode_parses_complete_crc_map(self):
         args = board.parse_args(
             _required_args()
@@ -694,6 +835,26 @@ class SerialContractTests(unittest.TestCase):
         self.assertEqual(output, "Hit any key to stop autoboot:  2\n=> ")
         write.assert_called_once_with(-1, b" ")
 
+    def test_wait_for_uboot_prompt_retries_a_lost_autoboot_interrupt(self):
+        session = self._session()
+        with (
+            mock.patch.object(
+                board,
+                "read_available",
+                side_effect=[
+                    "Hit any key to stop autoboot: 30",
+                    " 29",
+                    " 28",
+                    "=> ",
+                ],
+            ),
+            mock.patch.object(board.os, "write", return_value=1) as write,
+        ):
+            output = session.wait_for_uboot_prompt(timeout=0.2)
+
+        self.assertEqual(output, "Hit any key to stop autoboot: 30 29 28=> ")
+        self.assertEqual(write.call_args_list, [mock.call(-1, b" ")] * 3)
+
     def test_command_rejects_an_address_from_the_wrong_echo(self):
         session = self._session()
         command = "ext4load mmc 1:1 0x80200000 /kernel"
@@ -722,6 +883,16 @@ class SerialContractTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(RuntimeError, "FDT error"):
             session.command(fdt_command)
+
+    def test_fdt_error_detection_ignores_the_verified_command_echo(self):
+        session = self._session()
+        command = 'fdt set /chosen bootargs "console=ttyS0 loglevel=error"'
+        session.send = mock.Mock()
+        session.wait_for = mock.Mock(return_value=f"{command}\r\n=> ")
+
+        output = session.command(command)
+
+        self.assertEqual(output, f"{command}\r\n=> ")
 
     def test_booti_accepts_nonfatal_fdt_warning_after_kernel_entry(self):
         session = self._session()
@@ -884,6 +1055,13 @@ class SerialContractTests(unittest.TestCase):
             pass_fds=(source_fd,),
             timeout=12.5,
             check=False,
+        )
+
+    def test_ymodem_timeout_scales_for_large_serial_artifacts(self):
+        self.assertEqual(board._ymodem_transfer_timeout(4), 120.0)
+        self.assertGreater(
+            board._ymodem_transfer_timeout(12 * 1024 * 1024),
+            120.0,
         )
 
     def test_ymodem_failure_cancels_receiver_and_restores_prompt(self):
@@ -1095,6 +1273,220 @@ class MegrezDebianShellPhaseTests(unittest.TestCase):
 
 
 class BootTransactionTests(unittest.TestCase):
+    def test_debug_console_phase_uses_owned_fd_and_retains_transcript(self):
+        session = mock.Mock(fd=17)
+        session.milestone_transcript = (
+            "Enter riscv_boot\nASTERINAS_DEBUG_CONSOLE_READY uid=0\n"
+        )
+        serial = mock.Mock(transcript=b"framed exchange\r\n")
+        evidence = mock.sentinel.evidence
+        with (
+            mock.patch.object(board, "SerialConsole", return_value=serial) as wrapper,
+            mock.patch.object(
+                board, "run_debug_console_phase", return_value=evidence
+            ) as protocol,
+        ):
+            result = board.run_debug_root_console(session, 123.0)
+
+        self.assertIs(result, evidence)
+        wrapper.assert_called_once_with(
+            17,
+            max_bytes=board.MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES,
+            tx_delay=board.DEBUG_CONSOLE_TX_DELAY,
+        )
+        protocol.assert_called_once()
+        self.assertEqual(protocol.call_args.args[:2], (serial, 123.0))
+        self.assertTrue(protocol.call_args.kwargs["ready_seen"])
+        session._log.assert_called_once_with("framed exchange\r\n")
+
+    def test_debug_console_phase_retains_transcript_on_failure(self):
+        session = mock.Mock(fd=17)
+        session.milestone_transcript = (
+            "Enter riscv_boot\nASTERINAS_DEBUG_CONSOLE_READY uid=0\n"
+        )
+        serial = mock.Mock(transcript=b"partial exchange\r\n")
+        with (
+            mock.patch.object(board, "SerialConsole", return_value=serial),
+            mock.patch.object(
+                board, "run_debug_console_phase", side_effect=TimeoutError("late")
+            ),
+        ):
+            with self.assertRaisesRegex(TimeoutError, "late"):
+                board.run_debug_root_console(session, 123.0)
+        session._log.assert_called_once_with("partial exchange\r\n")
+
+    def test_debug_console_phase_rejects_missing_or_duplicate_readiness(self):
+        for transcript in (
+            "Enter riscv_boot\n",
+            "ASTERINAS_DEBUG_CONSOLE_READY uid=0\n" * 2,
+        ):
+            with self.subTest(transcript=transcript):
+                session = mock.Mock(fd=17)
+                session.milestone_transcript = transcript
+                with mock.patch.object(board, "run_debug_console_phase") as protocol:
+                    with self.assertRaisesRegex(
+                        board.DebugConsoleProtocolError,
+                        "readiness marker is missing or duplicated",
+                    ):
+                        board.run_debug_root_console(session, 123.0)
+                protocol.assert_not_called()
+
+    def test_debug_console_phase_accepts_ansi_prefix_on_exact_readiness_line(self):
+        session = mock.Mock(fd=17)
+        session.milestone_transcript = (
+            "Enter riscv_boot\n"
+            "\x1b[!p\x1b]104\x07\x1b[?7h\x1b[6n"
+            "ASTERINAS_DEBUG_CONSOLE_READY uid=0\r\n"
+        )
+        serial = mock.Mock(transcript=b"framed exchange\r\n")
+        with (
+            mock.patch.object(board, "SerialConsole", return_value=serial),
+            mock.patch.object(
+                board,
+                "run_debug_console_phase",
+                return_value=mock.sentinel.evidence,
+            ) as protocol,
+        ):
+            result = board.run_debug_root_console(session, 123.0)
+
+        self.assertIs(result, mock.sentinel.evidence)
+        protocol.assert_called_once()
+
+    def test_debug_console_phase_rejects_readiness_with_noise_prefix(self):
+        session = mock.Mock(fd=17)
+        session.milestone_transcript = (
+            "Enter riscv_boot\nnoiseASTERINAS_DEBUG_CONSOLE_READY uid=0\n"
+        )
+        with mock.patch.object(board, "run_debug_console_phase") as protocol:
+            with self.assertRaisesRegex(
+                board.DebugConsoleProtocolError,
+                "readiness marker is missing or duplicated",
+            ):
+                board.run_debug_root_console(session, 123.0)
+        protocol.assert_not_called()
+
+    def test_debug_console_phase_rejects_duplicate_readiness_during_protocol(self):
+        session = mock.Mock(fd=17)
+        session.milestone_transcript = (
+            "Enter riscv_boot\nASTERINAS_DEBUG_CONSOLE_READY uid=0\n"
+        )
+        serial = mock.Mock(
+            transcript=b"framed exchange\r\nASTERINAS_DEBUG_CONSOLE_READY uid=0\r\n"
+        )
+        with (
+            mock.patch.object(board, "SerialConsole", return_value=serial),
+            mock.patch.object(
+                board,
+                "run_debug_console_phase",
+                return_value=mock.sentinel.evidence,
+            ) as protocol,
+        ):
+            with self.assertRaisesRegex(
+                board.DebugConsoleProtocolError,
+                "readiness marker is missing or duplicated",
+            ):
+                board.run_debug_root_console(session, 123.0)
+        protocol.assert_called_once()
+
+    def test_debug_console_failure_returns_nonzero_and_closes_serial(self):
+        physical_session = mock.Mock()
+        physical_session.wait_for_uboot_prompt.return_value = "U-Boot 2026.07\n=> "
+        physical_session.milestones = {
+            "kernel_enter": 1.0,
+            "userspace": 2.0,
+        }
+        physical_session.log = mock.Mock()
+        physical_session.fd = 17
+        boot_output = "Enter riscv_boot\nASTERINAS_DEBUG_CONSOLE_READY uid=0\n"
+        with (
+            mock.patch.object(board, "BoardSession", return_value=physical_session),
+            mock.patch.object(board, "boot_loaded_artifacts", return_value=boot_output),
+            mock.patch.object(
+                board,
+                "run_debug_root_console",
+                side_effect=TimeoutError("debug timeout"),
+            ),
+            mock.patch.object(board.os, "close") as close_fd,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            result = board.main(
+                _required_args()
+                + [
+                    "--expected-crc32",
+                    "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                    "--final-profile",
+                    "debug-root-console",
+                    "--bootargs",
+                    "console=ttyS0 loglevel=off init=/init -- --root-init=systemd "
+                    "--debug-console=root",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        physical_session.log.close.assert_called_once_with()
+        close_fd.assert_called_once_with(17)
+
+    def test_debug_console_failure_still_requires_automatic_recovery(self):
+        initial = "U-Boot 2026.07\n=> "
+        recovery = "OpenSBI v1.7\nU-Boot 2026.07\n=> "
+        physical_session = mock.Mock()
+        physical_session.wait_for_uboot_prompt.side_effect = (initial, recovery)
+        physical_session.milestones = {
+            "kernel_enter": 1.0,
+            "userspace": 2.0,
+        }
+        physical_session.debug_console_transcript = b"partial protocol\n"
+        physical_session.log = mock.Mock()
+        physical_session.fd = 17
+        boot_output = "Enter riscv_boot\nASTERINAS_DEBUG_CONSOLE_READY uid=0\n"
+        with (
+            mock.patch.object(board, "BoardSession", return_value=physical_session),
+            mock.patch.object(board, "boot_loaded_artifacts", return_value=boot_output),
+            mock.patch.object(
+                board,
+                "run_debug_root_console",
+                side_effect=TimeoutError("debug timeout"),
+            ),
+            mock.patch.object(board.time, "monotonic", side_effect=(0.0, 0.0, 1.0)),
+            mock.patch.object(board.os, "close"),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            result = board.main(
+                _required_args()
+                + [
+                    "--expected-crc32",
+                    "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                    "--final-profile",
+                    "debug-root-console",
+                    "--bootargs",
+                    "console=ttyS0 loglevel=off init=/init "
+                    "asterinas.reboot_after=120 -- "
+                    "--root-init=systemd --debug-console=root",
+                    "--require-recovery",
+                ]
+            )
+
+        self.assertEqual(result, 2)
+        self.assertEqual(physical_session.wait_for_uboot_prompt.call_count, 2)
+        physical_session.wait_for_uboot_prompt.assert_called_with(timeout=89.0)
+
+    def test_debug_console_records_transcript_on_failure(self):
+        session = mock.Mock(fd=17)
+        session.milestone_transcript = (
+            "Enter riscv_boot\nASTERINAS_DEBUG_CONSOLE_READY uid=0\n"
+        )
+        serial = mock.Mock(transcript=b"partial exchange\r\n")
+        with (
+            mock.patch.object(board, "SerialConsole", return_value=serial),
+            mock.patch.object(
+                board, "run_debug_console_phase", side_effect=TimeoutError("late")
+            ),
+        ):
+            with self.assertRaisesRegex(TimeoutError, "late"):
+                board.run_debug_root_console(session, 123.0)
+
+        self.assertEqual(session.debug_console_transcript, b"partial exchange\r\n")
+
     def test_every_artifact_is_loaded_and_verified_before_booti(self):
         events: list[tuple] = []
         session = mock.Mock()
@@ -1149,8 +1541,62 @@ class BootTransactionTests(unittest.TestCase):
             ),
             events,
         )
+        self.assertIn(("command", 'setenv bootargs "init=/init"', {}), events)
+        self.assertFalse(
+            any(
+                event[0] == "command"
+                and event[1].startswith("fdt set /chosen bootargs")
+                for event in events
+            )
+        )
         self.assertEqual(events[booti_index - 1], ("start",))
         session.start_boot_attempt.assert_called_once_with()
+
+    def test_long_bootargs_are_chunked_below_uboot_line_limit(self):
+        events: list[tuple] = []
+        session = mock.Mock()
+        session.load_artifact.return_value = 4096
+        session.command.side_effect = lambda command, **kwargs: (
+            events.append(("command", command, kwargs)) or "boot output"
+        )
+        bootargs = " ".join(
+            f"systemd.setenv=ASTERINAS_PROFILE_VALUE_{index}={index:064d}"
+            for index in range(24)
+        )
+        args = SimpleNamespace(
+            booti="kernel",
+            dtb="board.dtb",
+            initrd="initrd",
+            bootargs=bootargs,
+            expected_crc32={
+                "booti": "0123abcd",
+                "dtb": "89abcdef",
+                "initrd": "00000001",
+            },
+            firmware_framebuffer=False,
+        )
+
+        board.boot_loaded_artifacts(session, args)
+
+        commands = [event[1] for event in events if event[0] == "command"]
+        staged = [
+            command
+            for command in commands
+            if command.startswith("setenv asterinas_bootargs_")
+        ]
+        self.assertGreater(len(staged), 1)
+        self.assertTrue(
+            all(
+                len(command.encode()) <= board.MAX_UBOOT_COMMAND_BYTES
+                for command in commands
+            )
+        )
+        self.assertTrue(
+            any(command.startswith('setenv bootargs "${') for command in commands)
+        )
+        self.assertFalse(
+            any(command.startswith("fdt set /chosen bootargs") for command in commands)
+        )
 
         current_boot = "Enter riscv_boot\nPresented by the Asterinas developers\nHello from RISC-V userspace\n"
         stale_preload = f"{current_boot}{board.PROMPT}"
@@ -1313,6 +1759,64 @@ class BootTransactionTests(unittest.TestCase):
         self.assertTrue(
             all(events.index(command) < booti_index for command in framebuffer_commands)
         )
+
+    def test_existing_framebuffer_node_is_reused_before_booti(self):
+        events: list[str] = []
+        session = mock.Mock()
+        session.load_artifact.return_value = 4096
+
+        def command(line: str, **_kwargs):
+            events.append(line)
+            if line == "fdt mknode / framebuffer@fd800000":
+                raise RuntimeError(
+                    "FDT error while running 'fdt mknode / framebuffer@fd800000': "
+                    "'libfdt fdt_add_subnode(): FDT_ERR_EXISTS'"
+                )
+            return "boot output"
+
+        session.command.side_effect = command
+        args = SimpleNamespace(
+            booti="kernel",
+            dtb="board.dtb",
+            initrd="initrd",
+            bootargs="console=tty0 init=/init",
+            expected_crc32={
+                "booti": "0123abcd",
+                "dtb": "89abcdef",
+                "initrd": "00000001",
+            },
+            firmware_framebuffer=True,
+        )
+
+        self.assertEqual(board.boot_loaded_artifacts(session, args), "boot output")
+        self.assertIn('fdt set /framebuffer@fd800000 status "okay"', events)
+        self.assertTrue(events[-1].startswith("booti "))
+
+    def test_framebuffer_creation_other_fdt_errors_remain_fatal(self):
+        session = mock.Mock()
+
+        def command(line: str, **_kwargs):
+            if line == "fdt mknode / framebuffer@fd800000":
+                raise RuntimeError("FDT_ERR_NOSPACE")
+            return "ok"
+
+        session.command.side_effect = command
+        args = SimpleNamespace(
+            booti="kernel",
+            dtb="board.dtb",
+            initrd="initrd",
+            bootargs="console=tty0 init=/init",
+            expected_crc32={
+                "booti": "0123abcd",
+                "dtb": "89abcdef",
+                "initrd": "00000001",
+            },
+            firmware_framebuffer=True,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "FDT_ERR_NOSPACE"):
+            board.boot_loaded_artifacts(session, args)
+        session.start_boot_attempt.assert_not_called()
 
     def test_tftp_transport_is_configured_without_persistent_environment(self):
         events: list[tuple] = []

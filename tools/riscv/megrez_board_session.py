@@ -29,13 +29,14 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import select
 import stat
 import subprocess
 import sys
 import termios
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TextIO
 
 from tools.riscv.megrez_debian_shell_physical import (
@@ -43,12 +44,25 @@ from tools.riscv.megrez_debian_shell_physical import (
     shell_commands as shell_commands,
 )
 from tools.riscv.megrez_debian_shell_contract import P2_NR_SECTORS, P2_START_LBA
+from tools.riscv.debian.rootfs.debug_console_protocol import (
+    DEBUG_CONSOLE_READY,
+    MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES,
+    DebugConsoleProtocolError,
+    run_debug_console_phase,
+)
+from tools.riscv.debian.rootfs.gate_runtime import SerialConsole
 
 BAUD = 115200
 YMODEM_BAUD = 1_500_000
 YMODEM_STAGING_ADDRESS = 0x9000_0000
 MAX_YMODEM_SOURCE_BYTES = 64 * 1024 * 1024
+YMODEM_MIN_TRANSFER_TIMEOUT = 120.0
+YMODEM_MIN_BYTES_PER_SECOND = 32 * 1024
+YMODEM_TRANSFER_GRACE_SECONDS = 30.0
+YMODEM_MAX_TRANSFER_TIMEOUT = 2100.0
 TX_DELAY = 0.02
+DEBUG_CONSOLE_TX_DELAY = 0.005
+RECOVERY_GRACE_SECONDS = 30.0
 PROMPT = "=> "
 INCOMPLETE_RECOVERED_EXIT = 3
 RECOVERY_WINDOW_CHARACTERS = 64 * 1024
@@ -65,6 +79,7 @@ FINAL_MILESTONE_MARKERS = {
     "verifier": "DEBIAN_VERIFY_PASS",
     "debian-shell-gate": "__DEBIAN_ROOTFS_SHELL_READY__",
     "debian-shell-handoff": "__DEBIAN_ROOTFS_SHELL_READY__",
+    "debug-root-console": "ASTERINAS_DEBUG_CONSOLE_READY uid=0",
 }
 GATE_PATTERN = re.compile(r"U-Boot (\S+)")
 LOAD_RESULT_PATTERN = re.compile(r"(?im)^\s*(\d+)\s+bytes read\b")
@@ -92,8 +107,11 @@ ARTIFACT_NAME_PATTERN = re.compile(
 )
 AUTOBOOT_MARKERS = ("Hit any key to stop autoboot", "Autoboot in")
 MAX_UBOOT_WAIT_BYTES = 256 * 1024
+MAX_UBOOT_COMMAND_BYTES = 512
+_UBOOT_BOOTARGS_CHUNK_BYTES = 384
 BOOTARGS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._=/,:@+%~-]*")
 DEFAULT_BOOTARGS = "loglevel=info init=/init asterinas.reboot_after=120"
+WRITABLE_RECOVERY_HEADROOM_SECONDS = 120
 MEGREZ_USB_HOST_COMMAND = (
     "fdt set /chosen asterinas,usb-host "
     "/soc/usb0@50480000/dwc3@50480000 "
@@ -102,6 +120,9 @@ MEGREZ_USB_HOST_COMMAND = (
 PARTITION_MARKER = re.compile(
     r"(?m)^__ASTERINAS_PARTITION_(?P<number>[123])__"
     r"start=(?P<start>[0-9a-f]+) size=(?P<size>[0-9a-f]+)\r?$"
+)
+TERMINAL_ESCAPE_PATTERN = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))"
 )
 
 
@@ -228,6 +249,14 @@ def _transfer_ymodem_file(serial_fd: int, source_fd: int, timeout: float) -> Non
     if result.returncode != 0:
         diagnostic = result.stderr.decode(errors="replace")[-200:]
         raise RuntimeError(f"YMODEM sender exited {result.returncode}: {diagnostic!r}")
+
+
+def _ymodem_transfer_timeout(size: int) -> float:
+    estimated = size / YMODEM_MIN_BYTES_PER_SECOND + YMODEM_TRANSFER_GRACE_SECONDS
+    return min(
+        YMODEM_MAX_TRANSFER_TIMEOUT,
+        max(YMODEM_MIN_TRANSFER_TIMEOUT, estimated),
+    )
 
 
 def read_available(fd: int, timeout: float) -> str:
@@ -361,6 +390,8 @@ class BoardSession:
             self.log = log_stream
         self.confirm = confirm
         self.milestones: dict[str, float] = {}
+        self.milestone_transcript = ""
+        self.debug_console_transcript = b""
         self._milestone_tail = ""
         self._next_milestone = 0
         if final_marker == MILESTONES["userspace"]:
@@ -395,9 +426,9 @@ class BoardSession:
         raise TimeoutError(f"timed out waiting for {pattern!r}; last: {buf[-200:]!r}")
 
     def wait_for_uboot_prompt(self, timeout: float) -> str:
-        """Wait for U-Boot and interrupt a newly observed autoboot once."""
+        """Wait for U-Boot and reliably interrupt a newly observed autoboot."""
         buf = ""
-        interrupted = False
+        interrupt_attempts = 0
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -408,11 +439,18 @@ class BoardSession:
                 continue
             self._log(chunk)
             buf = (buf + chunk)[-MAX_UBOOT_WAIT_BYTES:]
-            if not interrupted and any(marker in buf for marker in AUTOBOOT_MARKERS):
-                os.write(self.fd, b" ")
-                interrupted = True
+            # A prompt may arrive in the same UART batch as the countdown.
+            # Check it first so retries can never append input to a live prompt.
             if PROMPT in buf:
                 return buf
+            # Some Megrez resets expose the countdown before the UART RX path
+            # reliably accepts its first byte.  Retry on the next two received
+            # countdown chunks instead of allowing an unattended RockOS boot.
+            if interrupt_attempts < 3 and any(
+                marker in buf for marker in AUTOBOOT_MARKERS
+            ):
+                os.write(self.fd, b" ")
+                interrupt_attempts += 1
         raise TimeoutError(f"timed out waiting for U-Boot prompt; last: {buf[-200:]!r}")
 
     def send(self, command: str) -> None:
@@ -448,7 +486,11 @@ class BoardSession:
             raise RuntimeError(
                 f"U-Boot error while running {command!r}: {out[-200:]!r}"
             )
-        if command.startswith("fdt ") and FDT_ERROR_PATTERN.search(out):
+        command_echoes = (command, f"{PROMPT.strip()} {command}")
+        response = "\n".join(
+            line for line in normalized_lines if line not in command_echoes
+        )
+        if command.startswith("fdt ") and FDT_ERROR_PATTERN.search(response):
             raise RuntimeError(f"FDT error while running {command!r}: {out[-200:]!r}")
         return out
 
@@ -508,7 +550,11 @@ class BoardSession:
             try:
                 os.write(self.fd, b"\r")
                 self.wait_for("Ready for binary", timeout=15)
-                _transfer_ymodem_file(self.fd, source_fd, 120.0)
+                _transfer_ymodem_file(
+                    self.fd,
+                    source_fd,
+                    _ymodem_transfer_timeout(metadata.st_size),
+                )
                 completion = self.wait_for("press ESC", timeout=15)
             except BaseException:
                 try:
@@ -602,6 +648,13 @@ class BoardSession:
         return int(load_result.group(1))
 
     def note_milestone(self, text: str) -> None:
+        milestone_transcript = self.milestone_transcript + text
+        if (
+            len(milestone_transcript.encode("utf-8"))
+            > MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES
+        ):
+            raise BufferError("boot milestone transcript exceeds 8 MiB")
+        self.milestone_transcript = milestone_transcript
         found, next_index, tail = observe_milestones(
             self._next_milestone, self._milestone_tail, text, self._markers
         )
@@ -614,6 +667,7 @@ class BoardSession:
     def start_boot_attempt(self) -> None:
         """Discard pre-boot observations and start one ordered boot attempt."""
         self.milestones.clear()
+        self.milestone_transcript = ""
         self._milestone_tail = ""
         self._next_milestone = 0
 
@@ -833,6 +887,33 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ]
     if args.firmware_framebuffer and (not consoles or consoles[0] != "tty0"):
         p.error("--firmware-framebuffer requires console=tty0 as the first console")
+    try:
+        validate_writable_recovery(args.bootargs)
+    except ValueError as error:
+        p.error(str(error))
+    if args.final_profile == "debug-root-console":
+        tokens = args.bootargs.split()
+        if tokens.count("--") != 1:
+            p.error("debug-root-console requires one root-init argument separator")
+        separator = tokens.index("--")
+        loglevels = [
+            token for token in tokens[:separator] if token.startswith("loglevel=")
+        ]
+        if loglevels != ["loglevel=off"]:
+            p.error("debug-root-console requires exactly one loglevel=off")
+        root_init = tokens[separator + 1 :]
+        if root_init not in (
+            ["--root-init=systemd", "--debug-console=root"],
+            ["--root-init=systemd", "--debug-console=root", "--volatile-home"],
+            [
+                "--root-init=systemd",
+                "--debug-console=isolated-root",
+                "--volatile-home",
+            ],
+        ):
+            p.error(
+                "debug-root-console requires exact systemd and debug-console selectors"
+            )
     if args.final_profile == "firmware-drm":
         if not args.firmware_framebuffer:
             p.error("--final-profile firmware-drm requires --firmware-framebuffer")
@@ -852,6 +933,82 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         if args.milestone_timeout <= int(reboot_values[0]):
             p.error("firmware-drm milestone timeout must exceed reboot_after")
     return args
+
+
+def validate_writable_recovery(bootargs: str) -> None:
+    """Require a synced userspace reboot before a writable recovery deadline."""
+
+    tokens = bootargs.split()
+    separator = tokens.index("--") if tokens.count("--") == 1 else len(tokens)
+    kernel_args = tokens[:separator]
+    kernel_tokens = [
+        token.removeprefix("asterinas.reboot_after=")
+        for token in kernel_args
+        if token.startswith("asterinas.reboot_after=")
+    ]
+    if "asterinas.mmc_write_partition2" not in kernel_args or not kernel_tokens:
+        return
+
+    safe_tokens = [
+        token.removeprefix("systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=")
+        for token in kernel_args
+        if token.startswith("systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=")
+    ]
+    if (
+        len(kernel_tokens) != 1
+        or len(safe_tokens) != 1
+        or tokens.count("--") != 1
+        or "--root-init=systemd" not in tokens[separator + 1 :]
+        or re.fullmatch(r"[1-9][0-9]*", kernel_tokens[0]) is None
+        or re.fullmatch(r"[1-9][0-9]*", safe_tokens[0]) is None
+    ):
+        raise ValueError(
+            "writable partition emergency recovery requires one userspace sync reboot"
+        )
+    kernel_seconds = int(kernel_tokens[0])
+    safe_seconds = int(safe_tokens[0])
+    if (
+        kernel_seconds > 0xFFFF_FFFF
+        or safe_seconds + WRITABLE_RECOVERY_HEADROOM_SECONDS > kernel_seconds
+    ):
+        raise ValueError(
+            "userspace sync reboot must precede writable emergency recovery by 120 seconds"
+        )
+
+
+def uboot_bootargs_commands(bootargs: str) -> tuple[str, ...]:
+    """Stage boot arguments without overflowing the board's U-Boot line buffer."""
+
+    tokens = bootargs.split()
+    if not tokens:
+        raise ValueError("bootargs must not be empty")
+    direct = f'setenv bootargs "{bootargs}"'
+    if len(direct.encode()) <= MAX_UBOOT_COMMAND_BYTES:
+        return (direct,)
+
+    chunks: list[str] = []
+    current = ""
+    for token in tokens:
+        candidate = f"{current} {token}" if current else token
+        if len(candidate.encode()) <= _UBOOT_BOOTARGS_CHUNK_BYTES:
+            current = candidate
+            continue
+        if not current or len(token.encode()) > _UBOOT_BOOTARGS_CHUNK_BYTES:
+            raise ValueError("one bootarg exceeds the U-Boot command safety limit")
+        chunks.append(current)
+        current = token
+    chunks.append(current)
+
+    names = tuple(f"asterinas_bootargs_{index}" for index in range(len(chunks)))
+    expansion = " ".join(f"${{{name}}}" for name in names)
+    commands = (
+        *(f'setenv {name} "{chunk}"' for name, chunk in zip(names, chunks)),
+        f'setenv bootargs "{expansion}"',
+        *(f"setenv {name}" for name in names),
+    )
+    if any(len(command.encode()) > MAX_UBOOT_COMMAND_BYTES for command in commands):
+        raise ValueError("bootarg expansion exceeds the U-Boot command safety limit")
+    return commands
 
 
 def run_mock_qemu(device: str, timeout: float) -> int:
@@ -929,7 +1086,15 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
     session.command("fdt addr 0xf0000000")
     session.command("fdt resize 0x1000")
     if args.firmware_framebuffer:
-        for command in MEGREZ_FRAMEBUFFER.commands():
+        framebuffer_commands = MEGREZ_FRAMEBUFFER.commands()
+        try:
+            session.command(framebuffer_commands[0])
+        except RuntimeError as error:
+            # Some board DTBs already carry this node. Reapply the exact
+            # handoff properties rather than treating its existence as fatal.
+            if "FDT_ERR_EXISTS" not in str(error):
+                raise
+        for command in framebuffer_commands[1:]:
             session.command(command)
     if transport == "ymodem":
         initrd_size = session.load_ymodem_artifact(
@@ -946,8 +1111,8 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
         if initrd_size is None
         else f"setenv initrd_size 0x{initrd_size:x}"
     )
-    session.command(f'setenv bootargs "{args.bootargs}"')
-    session.command(f'fdt set /chosen bootargs "{args.bootargs}"')
+    for command in uboot_bootargs_commands(args.bootargs):
+        session.command(command)
     session.command(MEGREZ_USB_HOST_COMMAND)
     session.start_boot_attempt()
     return session.command(
@@ -955,6 +1120,47 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
         expect=MILESTONES["kernel_enter"],
         timeout=30,
     )
+
+
+def validate_debug_console_readiness(transcript: str) -> None:
+    """Require one exact readiness line after removing terminal escapes."""
+
+    if len(transcript.encode("utf-8")) > MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES:
+        raise DebugConsoleProtocolError("root-console transcript exceeds byte cap")
+    normalized = TERMINAL_ESCAPE_PATTERN.sub("", transcript)
+    readiness_count = sum(
+        line.rstrip("\r") == DEBUG_CONSOLE_READY for line in normalized.splitlines()
+    )
+    if readiness_count != 1:
+        raise DebugConsoleProtocolError(
+            "root-console readiness marker is missing or duplicated"
+        )
+
+
+def run_debug_root_console(session: BoardSession, deadline: float):
+    """Run fixed root probes without transferring ownership of the serial FD."""
+
+    validate_debug_console_readiness(session.milestone_transcript)
+    serial = SerialConsole(
+        session.fd,
+        max_bytes=MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES,
+        tx_delay=DEBUG_CONSOLE_TX_DELAY,
+    )
+    try:
+        evidence = run_debug_console_phase(
+            serial,
+            deadline,
+            secrets.token_hex(16),
+            ready_seen=True,
+        )
+        protocol_transcript = serial.transcript.decode("utf-8")
+        validate_debug_console_readiness(
+            session.milestone_transcript + protocol_transcript
+        )
+        return evidence
+    finally:
+        session.debug_console_transcript = serial.transcript
+        session._log(session.debug_console_transcript.decode("utf-8", errors="replace"))
 
 
 def main(argv: list[str]) -> int:
@@ -998,14 +1204,40 @@ def main(argv: list[str]) -> int:
         print(json.dumps(session.milestones))
         if len(session.milestones) != expected_milestones:
             return 2
+        debug_error: BaseException | None = None
+        if args.final_profile == "debug-root-console":
+            try:
+                debug_evidence = run_debug_root_console(session, end)
+            except (
+                DebugConsoleProtocolError,
+                TimeoutError,
+                BufferError,
+                EOFError,
+                UnicodeError,
+                OSError,
+            ) as error:
+                print(f"debug root console failed: {error}", file=sys.stderr)
+                debug_error = error
+            else:
+                print(
+                    json.dumps(
+                        {"debug_console": asdict(debug_evidence)},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                )
         if args.require_recovery:
-            if _has_recovery_epoch(recovery_window):
-                return 0
-            remaining = end - time.monotonic()
-            if remaining <= 0:
-                return 2
-            recovery = session.wait_for_uboot_prompt(timeout=remaining)
-            validate_recovery_epoch(recovery)
+            retained = session.debug_console_transcript.decode(
+                "utf-8", errors="replace"
+            )
+            if not _has_recovery_epoch(retained):
+                remaining = end + RECOVERY_GRACE_SECONDS - time.monotonic()
+                if remaining <= 0:
+                    return 2
+                recovery = session.wait_for_uboot_prompt(timeout=remaining)
+                validate_recovery_epoch(recovery)
+        if debug_error is not None:
+            return 2
         return 0
     finally:
         session.log.close()

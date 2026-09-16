@@ -14,13 +14,14 @@ use ostd::{
 };
 
 use crate::{
-    MMC_BOUNDED_PIO,
+    MMC_BOUNDED_PIO, MMC_DEFAULT_SPEED,
     card::{Card, HostController, Response},
     sdhci::{
         Command, DataDirection, HostError, Register, ResponseType, SDMA_BOUNDARY_BYTES,
         SdmaInterrupt, SdmaTransfer, classify_sdma_interrupt, decode_command_failure,
-        decode_data_failure, eic7700_core_clock_config, next_sdma_boundary, sdma_host_control,
-        sdma_v4_control, split_sdma_address, supports_sdma,
+        decode_data_failure, eic7700_core_clock_config, next_sdma_boundary,
+        sd_high_speed_host_control, sdma_host_control, sdma_v4_control, split_sdma_address,
+        supports_sdma,
     },
 };
 
@@ -397,7 +398,11 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
             config.interrupt
         );
     }
-    let card = Card::discover(&mut host).map_err(ProbeError::Host)?;
+    let card = Card::discover_with_policy(
+        &mut host,
+        !high_speed_allowed(MMC_DEFAULT_SPEED.load(Ordering::Relaxed)),
+    )
+    .map_err(ProbeError::Host)?;
     let mut sector0 = [0u8; 512];
     card.read_sector(&mut host, 0, &mut sector0)
         .map_err(ProbeError::Host)?;
@@ -408,11 +413,20 @@ pub(super) fn probe() -> Result<Option<(MmioHost, Card)>, ProbeError> {
         sector0[510],
         sector0[511]
     );
+    ostd::info!(
+        "[mmc] timing={} clock={}",
+        card.speed_selection().label(),
+        card.data_clock_hz()
+    );
     Ok(Some((host, card)))
 }
 
 const fn sdma_allowed(force_bounded_pio: bool) -> bool {
     !force_bounded_pio
+}
+
+const fn high_speed_allowed(force_default_speed: bool) -> bool {
+    !force_default_speed
 }
 
 /// Safe MMIO-backed SDHCI polling host.
@@ -741,8 +755,15 @@ impl HostController for MmioHost {
         Err(HostError::Timeout)
     }
 
+    fn set_timing(&mut self, timing: crate::card::CardTiming) -> Result<(), HostError> {
+        let value = self.read8(HOST_CONTROL)?;
+        let value =
+            sd_high_speed_host_control(value, matches!(timing, crate::card::CardTiming::HighSpeed));
+        self.write8(HOST_CONTROL, value)
+    }
+
     fn command(&mut self, command: Command) -> Result<Response, HostError> {
-        if !command.has_valid_block_count() {
+        if !command.has_valid_data_shape() {
             return Err(HostError::Unsupported);
         }
         let inhibit = PRESENT_COMMAND_INHIBIT
@@ -754,7 +775,7 @@ impl HostController for MmioHost {
         self.wait_clear(Register::PresentState.offset(), inhibit)?;
         self.write32(Register::InterruptStatus.offset(), u32::MAX)?;
         if command.data.is_some() {
-            self.write16(Register::BlockSize.offset(), 512)?;
+            self.write16(Register::BlockSize.offset(), command.block_size() as u16)?;
             self.write16(BLOCK_COUNT, command.block_count() as u16)?;
             self.write16(
                 Register::TransferMode.offset(),
@@ -1012,6 +1033,12 @@ mod tests {
     fn bounded_pio_boot_policy_skips_sdma_without_changing_the_default() {
         assert!(!sdma_allowed(true));
         assert!(sdma_allowed(false));
+    }
+
+    #[ktest]
+    fn default_speed_boot_policy_skips_promotion_without_changing_the_default() {
+        assert!(!high_speed_allowed(true));
+        assert!(high_speed_allowed(false));
     }
 
     #[ktest]

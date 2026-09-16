@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{boxed::Box, sync::Arc};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    marker::PhantomData,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use aster_softirq::BottomHalfDisabled;
 use ostd::sync::SpinLock;
 use smoltcp::{
     iface::Context,
     socket::udp::UdpMetadata,
-    wire::{IpRepr, UdpRepr},
+    wire::{IpAddress, IpListenEndpoint, IpRepr, UdpRepr},
 };
 
 use super::{
@@ -22,29 +25,43 @@ use crate::{
     socket::{RawUdpSocket, event::SocketEvents, unbound::new_udp_socket},
 };
 
-pub type UdpSocket<E> = Socket<UdpSocketInner, E>;
+pub type UdpSocket<E> = Socket<UdpSocketInner<E>, E>;
 
 /// States needed by [`UdpSocketBg`].
-pub struct UdpSocketInner {
+pub struct UdpSocketInner<E: Ext> {
     socket: SpinLock<Box<RawUdpSocket>, BottomHalfDisabled>,
     need_dispatch: AtomicBool,
+    accepts_ipv4: bool,
+    ext: PhantomData<fn() -> E>,
 }
 
-impl<E: Ext> Inner<E> for UdpSocketInner {
+impl<E: Ext> Inner<E> for UdpSocketInner<E> {
     type BoundPort = BoundUdpPort<E>;
     type Observer = E::UdpEventObserver;
 
     fn on_drop(this: &Arc<SocketBg<Self, E>>) {
         this.inner.socket.lock().close();
 
-        // A UDP socket can be removed immediately.
+        // Keep the socket-table -> UDP-registry lock order used by poll.
+        // Once removed locally, a concurrent registry lookup can at most see a
+        // closed socket through its weak reference.
         this.bound.iface().common().remove_udp_socket(this);
+
+        this.bound
+            .iface()
+            .common()
+            .udp_registry()
+            .unregister_socket(this);
     }
 }
 
-pub(crate) type UdpSocketBg<E> = SocketBg<UdpSocketInner, E>;
+pub(crate) type UdpSocketBg<E> = SocketBg<UdpSocketInner<E>, E>;
 
 impl<E: Ext> UdpSocketBg<E> {
+    pub(crate) fn local_port(&self) -> u16 {
+        self.bound.port()
+    }
+
     /// Tries to process an incoming packet and returns whether the packet is processed.
     pub(crate) fn process(
         &self,
@@ -53,6 +70,14 @@ impl<E: Ext> UdpSocketBg<E> {
         udp_repr: &UdpRepr,
         udp_payload: &[u8],
     ) -> bool {
+        let local_addr = self.bound.endpoint().addr;
+        if !matches!(
+            (local_addr, ip_repr.dst_addr()),
+            (IpAddress::Ipv4(_), IpAddress::Ipv4(_)) | (IpAddress::Ipv6(_), IpAddress::Ipv6(_))
+        ) {
+            return false;
+        }
+
         let mut socket = self.inner.socket.lock();
 
         if !socket.accepts(cx, ip_repr, udp_repr) {
@@ -100,6 +125,10 @@ impl<E: Ext> UdpSocketBg<E> {
     pub(crate) fn need_dispatch(&self) -> bool {
         self.inner.need_dispatch.load(Ordering::Relaxed)
     }
+
+    pub(crate) const fn accepts_ipv4(&self) -> bool {
+        self.inner.accepts_ipv4
+    }
 }
 
 impl<E: Ext> UdpSocket<E> {
@@ -109,13 +138,30 @@ impl<E: Ext> UdpSocket<E> {
     pub fn new_bind(
         bound: BoundUdpPort<E>,
         observer: E::UdpEventObserver,
+        v6only: bool,
     ) -> Result<Self, (BoundUdpPort<E>, smoltcp::socket::udp::BindError)> {
         let local_endpoint = bound.endpoint();
+        let accepts_ipv4 = matches!(
+            local_endpoint.addr,
+            IpAddress::Ipv6(addr) if addr.is_unspecified()
+        ) && !v6only;
 
         let socket = {
             let mut socket = new_udp_socket();
 
-            if let Err(err) = socket.bind(local_endpoint) {
+            // Linux wildcard addresses accept packets for every local address
+            // in their family. Represent both 0.0.0.0 and :: with smoltcp's
+            // wildcard (`None`); `accepts_ipv4` separately controls whether
+            // an IPv6 wildcard also receives translated IPv4 packets.
+            let bind_endpoint = IpListenEndpoint {
+                addr: if local_endpoint.addr.is_unspecified() {
+                    None
+                } else {
+                    Some(local_endpoint.addr)
+                },
+                port: local_endpoint.port,
+            };
+            if let Err(err) = socket.bind(bind_endpoint) {
                 return Err((bound, err));
             }
 
@@ -125,6 +171,8 @@ impl<E: Ext> UdpSocket<E> {
         let inner = UdpSocketInner {
             socket: SpinLock::new(socket),
             need_dispatch: AtomicBool::new(false),
+            accepts_ipv4,
+            ext: PhantomData,
         };
 
         let socket = Self::new(bound, inner);
@@ -133,6 +181,11 @@ impl<E: Ext> UdpSocket<E> {
             .iface()
             .common()
             .register_udp_socket(socket.inner().clone());
+        socket
+            .iface()
+            .common()
+            .udp_registry()
+            .register_socket(socket.inner());
 
         Ok(socket)
     }

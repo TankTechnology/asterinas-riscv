@@ -978,7 +978,7 @@ class PersistentShellInstallTests(unittest.TestCase):
             True,
             "install-pass",
             self.plan.plan_sha256,
-            ("installer.serial.log", "debian-current-network-installer.cpio"),
+            ("installer.serial.log", "debian-current-network-installer.cpio.gz"),
         )
 
     def test_matching_inventory_skips_install_without_consuming_permit(self) -> None:

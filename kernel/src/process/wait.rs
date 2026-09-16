@@ -127,6 +127,7 @@ pub enum WaitStatus {
     Continue(Arc<Process>),
     TraceeExit(Arc<Thread>),
     TraceeStop(Arc<Thread>, PtraceWaitStatus),
+    TraceeContinue(Arc<Thread>),
 }
 
 impl WaitStatus {
@@ -173,7 +174,9 @@ impl WaitStatus {
             WaitStatus::Zombie(process)
             | WaitStatus::Stop(process, _)
             | WaitStatus::Continue(process) => WaitStatusSource::Process(process.as_ref()),
-            WaitStatus::TraceeExit(thread) | WaitStatus::TraceeStop(thread, _) => {
+            WaitStatus::TraceeExit(thread)
+            | WaitStatus::TraceeStop(thread, _)
+            | WaitStatus::TraceeContinue(thread) => {
                 WaitStatusSource::Thread(thread.as_posix_thread().unwrap())
             }
         }
@@ -195,7 +198,7 @@ enum WaitResult {
     NoMatch,
 }
 
-/// Checks tracees for exited or ptrace-stopped threads.
+/// Checks tracees for exits, ptrace stops, or shared continuation events.
 fn try_wait_tracees(
     child_filter: &ProcessFilter,
     wait_options: WaitOptions,
@@ -259,6 +262,16 @@ fn try_wait_tracees(
         if let Some(sig_num) = tracee.wait_ptrace_stopped(wait_options) {
             return WaitResult::Found(WaitStatus::TraceeStop(thread.clone(), sig_num));
         }
+        // Unlike stopped state, continuation has one process-wide wait slot.
+        // A tracer explicitly requesting WCONTINUED can consume it before the
+        // real parent. Never consume the parent's group-stop slot here.
+        let continued_options = wait_options & (WaitOptions::WCONTINUED | WaitOptions::WNOWAIT);
+        if matches!(
+            process.wait_stopped_or_continued(continued_options),
+            Some(StopWaitStatus::Continue)
+        ) {
+            return WaitResult::Found(WaitStatus::TraceeContinue(thread.clone()));
+        }
     }
 
     fallback_result
@@ -319,11 +332,13 @@ fn try_wait_children(
         // We have found at least one child matching `child_filter`.
         fallback_result = WaitResult::MatchedButUnready;
 
-        if child.main_thread().as_posix_thread().unwrap().is_traced() {
-            continue;
-        }
-
         if child.status().is_zombie() {
+            // Exit remains owned by the tracer until it consumes the result.
+            // This does not hide a live child's independent group-stop state
+            // from its real parent when a different process is the tracer.
+            if child.main_thread().as_posix_thread().unwrap().is_traced() {
+                continue;
+            }
             let child = child.clone();
             if !wait_options.contains(WaitOptions::WNOWAIT) {
                 reap_zombie_child(
@@ -338,7 +353,12 @@ fn try_wait_children(
         if !wait_options.intersects(WaitOptions::WSTOPPED | WaitOptions::WCONTINUED) {
             continue;
         }
-        let Some(stop_wait_status) = child.wait_stopped_or_continued(wait_options) else {
+        let Some(stop_wait_status) = child
+            .main_thread()
+            .as_posix_thread()
+            .unwrap()
+            .wait_child_group_status(wait_options, &ctx.process)
+        else {
             continue;
         };
         let wait_status = match stop_wait_status {

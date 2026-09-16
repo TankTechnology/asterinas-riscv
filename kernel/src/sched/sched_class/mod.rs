@@ -455,6 +455,50 @@ impl SchedulerStats for ClassScheduler {
     }
 }
 
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::thread::kernel_thread::ThreadOptions;
+
+    #[ktest]
+    fn fair_yield_preserves_class_priority() {
+        // This scheduler is not injected; none of these tasks is spawned.
+        let scheduler = ClassScheduler::new();
+        let first = ThreadOptions::new(|| {}).build();
+        let peer = ThreadOptions::new(|| {}).build();
+        let higher = ThreadOptions::new(|| {})
+            .sched_policy(SchedPolicy::Stop)
+            .build();
+        let entity = |task: &Arc<Task>| (task.clone(), task.as_thread().unwrap().clone());
+        let mut rq = scheduler.rqs[CpuId::bsp().as_usize()].lock();
+
+        rq.enqueue_entity(entity(&first), None);
+        assert!(Arc::ptr_eq(rq.try_pick_next().unwrap(), &first));
+        rq.enqueue_entity(entity(&peer), None);
+        assert!(rq.update_current(UpdateFlags::Yield));
+        assert!(Arc::ptr_eq(rq.try_pick_next().unwrap(), &peer));
+        assert_eq!(rq.fair.len(), 1);
+        assert!(Arc::ptr_eq(rq.current().unwrap(), &peer));
+
+        // A same-class peer must not displace a queued higher-priority task.
+        rq.enqueue_entity(entity(&higher), None);
+        assert!(rq.update_current(UpdateFlags::Yield));
+        assert!(Arc::ptr_eq(rq.try_pick_next().unwrap(), &higher));
+        assert_eq!(rq.fair.len(), 2);
+        assert!(rq.stop.is_empty());
+
+        // The previous tasks each remain queued exactly once.
+        let a = rq.fair.pick_next().unwrap();
+        let b = rq.fair.pick_next().unwrap();
+        assert!(!Arc::ptr_eq(&a, &b));
+        assert!(Arc::ptr_eq(&a, &first) || Arc::ptr_eq(&a, &peer));
+        assert!(Arc::ptr_eq(&b, &first) || Arc::ptr_eq(&b, &peer));
+        assert!(rq.fair.is_empty());
+    }
+}
+
 impl Default for ClassScheduler {
     fn default() -> Self {
         Self::new()

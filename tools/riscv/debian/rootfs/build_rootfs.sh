@@ -53,6 +53,7 @@ SUITE="$SUPPORTED_SUITE"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-$DEFAULT_SOURCE_DATE_EPOCH}"
 WORK_DIR=""
 PROFILE="minimal-m1"
+FIREFOX_JIT_PACKAGE_DIR=""
 ROOT_LABEL="ASTER_DEBIANROOT"
 ROOT_UUID="7b7ad749-77d0-4e59-89e4-e117244a70aa"
 declare -a INSTALL_PACKAGES=(
@@ -83,7 +84,10 @@ run_chroot() {
         # Use a plain root mapping rather than -R: the latter implicitly binds
         # host /proc, /sys and /dev, which makes paths such as staged /etc
         # cross mount boundaries under proot and breaks maintainer scripts.
-        command proot -w / -q "$(command -v qemu-riscv64-static)" -r "$stage" "$@"
+        # Keep credentials virtual too.  Without -0, APT's switch to the _apt
+        # user changes the QEMU process's host credentials, after which an
+        # unprivileged proot tracer can no longer translate pathname pointers.
+        command proot -0 -w / -q "$(command -v qemu-riscv64-static)" -r "$stage" "$@"
     else
         chroot "$stage" "$@"
     fi
@@ -114,6 +118,7 @@ parse_arguments() {
     local has_mirror=0
     local has_suite=0
     local has_profile=0
+    local has_firefox_jit_package_dir=0
 
     while (($# > 0)); do
         case "$1" in
@@ -152,6 +157,13 @@ parse_arguments() {
                 PROFILE="$2"
                 shift 2
                 ;;
+            --firefox-jit-package-dir)
+                require_option_value "$1" "$#"
+                ((has_firefox_jit_package_dir == 0)) || die "duplicate argument: $1"
+                has_firefox_jit_package_dir=1
+                FIREFOX_JIT_PACKAGE_DIR="$2"
+                shift 2
+                ;;
             --print-tools | --print-packages)
                 [[ -z "$print_mode" ]] || die "duplicate print argument: $1"
                 print_mode="$1"
@@ -166,7 +178,8 @@ parse_arguments() {
     configure_profile "$has_output_dir"
 
     if [[ -n "$print_mode" ]]; then
-        ((has_output_dir == 0 && has_cache_dir == 0 && has_mirror == 0 && has_suite == 0)) ||
+        ((has_output_dir == 0 && has_cache_dir == 0 && has_mirror == 0 &&
+            has_suite == 0 && has_firefox_jit_package_dir == 0)) ||
             die "$print_mode does not accept build options"
         if [[ "$print_mode" == "--print-tools" ]]; then
             printf '%s\n' "${REQUIRED_TOOLS[@]}"
@@ -257,6 +270,19 @@ validate_configuration() {
         die "unsafe output/cache path: filesystem root"
     paths_are_disjoint "$OUTPUT_DIR" "$CACHE_DIR" ||
         die "unsafe output/cache path: directories alias or overlap"
+
+    if [[ -n "$FIREFOX_JIT_PACKAGE_DIR" ]]; then
+        [[ "$PROFILE" == browser-web ]] ||
+            die "Firefox JIT overlay is only valid for the browser-web profile"
+        [[ "$FIREFOX_JIT_PACKAGE_DIR" != *$'\n'* ]] ||
+            die "unsafe Firefox JIT package path"
+        FIREFOX_JIT_PACKAGE_DIR="$(normalize_path "$FIREFOX_JIT_PACKAGE_DIR")"
+        require_safe_path "$FIREFOX_JIT_PACKAGE_DIR" "Firefox JIT package"
+        [[ -d "$FIREFOX_JIT_PACKAGE_DIR" && ! -L "$FIREFOX_JIT_PACKAGE_DIR" ]] ||
+            die "Firefox JIT package directory must be an existing non-symlink directory"
+        paths_are_disjoint "$OUTPUT_DIR" "$FIREFOX_JIT_PACKAGE_DIR" ||
+            die "Firefox JIT package directory must not overlap the output"
+    fi
 
     validate_existing_publication_targets
     validate_existing_cache_targets
@@ -398,6 +424,10 @@ cleanup() {
         # the original diagnostic or leave a stale mount in the build runner.
         while read -r mount_target; do
             [[ -n "$mount_target" ]] || continue
+            # `findmnt --target` also reports the enclosing host/container
+            # mount. Never detach anything outside this private stage tree.
+            [[ "$mount_target" == "$WORK_DIR/stage" ||
+                "$mount_target" == "$WORK_DIR/stage/"* ]] || continue
             umount -l -- "$mount_target" 2>/dev/null || true
         done < <(findmnt -R -n -o TARGET --target "$WORK_DIR/stage" 2>/dev/null | sort -r)
         chmod -R u+w -- "$WORK_DIR" 2>/dev/null || true
@@ -1167,51 +1197,7 @@ finalize_browser_startup_caches() {
     qemu-riscv64-static -L "$stage" "$stage/usr/bin/systemd-hwdb" \
         --root="$stage" update --usr
     run_chroot "$stage" /usr/bin/journalctl --update-catalog
-    # Keep the target-side diagnostic visible without rewriting Debian's
-    # usr-is-merged cache aliases.  The package postinst has already created
-    # the target-side caches; a force scan here can remove those files after
-    # treating the intentional /usr/share/fonts aliases as loops.  `-n`
-    # performs the target-side check while preserving the materialised cache.
-    local fontcache_log="$WORK_DIR/fontconfig-cache.log"
-    if ! run_chroot "$stage" /usr/bin/fc-cache -f -v >"$fontcache_log" 2>&1; then
-        printf '%s\n' 'fontconfig non-mutating probe failed' >&2
-    fi
-    # Materialise caches from the concrete font directories only.  Scanning
-    # /usr/share/fonts as a whole follows Debian's compatibility symlinks and
-    # can discard every cache as a loop; these real directories avoid that
-    # alias walk while covering the fonts shipped in this image.
-    local font_dir
-    for font_dir in \
-        /usr/share/fonts/X11/Type1 /usr/share/fonts/X11/misc \
-        /usr/share/fonts/truetype/dejavu /usr/share/fonts/truetype/wqy \
-        /usr/share/fonts/opentype/urw-base35 /usr/share/fonts/type1/urw-base35; do
-        [[ -d "$stage$font_dir" ]] || continue
-        if ! run_chroot "$stage" /usr/bin/fc-cache -f "$font_dir" >>"$fontcache_log" 2>&1; then
-            printf 'fontconfig directory scan failed: %s\n' "$font_dir" >&2
-        fi
-    done
-    if ! find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
-        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q .; then
-        if [[ "$EXPLICIT_QEMU" == 1 ]]; then
-            # proot cannot currently expose fontconfig's host-side cache
-            # directory semantics. Keep a deterministic, non-empty marker so
-            # the startup-cache contract remains explicit; Firefox will build
-            # the real cache on first launch and the diagnostic log records the
-            # fallback. Native/binfmt builds remain fail-closed below.
-            printf '\004\374\002\374ASTERINAS_EXPLICIT_QEMU_FONTCONFIG_CACHE_PENDING\n' > \
-                "$stage/var/cache/fontconfig/asterinas-pending.cache-9"
-        fi
-    fi
-    if ! find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
-        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q .; then
-        printf '%s\n' 'fontconfig cache listing:' >&2
-        find "$stage/var/cache/fontconfig" -maxdepth 2 -printf '%M %u %g %p %s\\n' >&2 || :
-        printf '%s\n' 'fontconfig command output:' >&2
-        sed -n '1,120p' "$fontcache_log" >&2 || :
-    fi
-    find "$stage/var/cache/fontconfig" -maxdepth 1 -type f \
-        ! -name CACHEDIR.TAG -size +0c -print -quit | grep -q . ||
-        die "staged fontconfig cache is absent"
+    generate_fontconfig_cache "$stage"
 
     [[ -s "$stage/etc/ld.so.cache" ]] || die "staged ldconfig cache is absent"
     [[ -s "$stage/var/lib/systemd/catalog/database" ]] ||
@@ -1220,13 +1206,23 @@ finalize_browser_startup_caches() {
 
 generate_fontconfig_cache() {
     local stage="$1"
-    local cache_file
+    local cache_file font_root
     local scan_log="$stage/usr/share/asterinas/fontconfig-build.log"
 
+    # Cache headers embed directory mtimes. Normalize these inputs before
+    # scanning; the final whole-image timestamp pass must not invalidate them.
+    for font_root in /usr/share/fonts /usr/local/share/fonts; do
+        [[ -d "$stage$font_root" ]] || continue
+        find "$stage$font_root" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+    done
     install -d -m 0755 -- "$stage/usr/share/asterinas"
+    install -d -m 0755 -- "$stage/var/cache/fontconfig"
     printf 'FONTCONFIG_BUILD_SOURCE_DATE_EPOCH unset\n' >"$scan_log"
     if ! (
         unset SOURCE_DATE_EPOCH
+        # The host workspace stays private (umask 077), but system font
+        # caches must be readable by the unprivileged desktop processes.
+        umask 022
         run_chroot "$stage" /usr/bin/fc-cache -f -v
     ) >>"$scan_log" 2>&1; then
         cat -- "$scan_log" >&2
@@ -1475,6 +1471,7 @@ configure_desktop() {
     local desktop_after="local-fs.target dbus.service systemd-udevd.service systemd-logind.service"
     local desktop_wants="dbus.service systemd-udevd.service systemd-logind.service"
     local desktop_user=asterinas
+    local firefox_trust_mode=embedded-xul
     local desktop_session_options=$'PAMName=login\nTTYPath=/dev/tty1\nStandardInput=tty\nStandardOutput=journal+console\nStandardError=journal+console\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes'
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -1556,12 +1553,29 @@ configure_desktop() {
         if [[ "$browser_mode" == online ]]; then
             install -D -m 0755 -- "$script_directory/browser_web_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser-web-marionette-gate"
+            install -D -m 0755 -- "$script_directory/megrez_clock_sync.py" \
+                "$stage/usr/lib/asterinas/megrez-clock-sync"
             install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
             install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \
                 "$stage/usr/lib/asterinas/browser-web-firefox"
             install -D -m 0755 -- "$script_directory/browser_web_evidence.sh" \
                 "$stage/usr/lib/asterinas/browser-web-evidence"
+            install -D -m 0644 -- \
+                "$script_directory/physical_graphics_interaction.html" \
+                "$stage/usr/share/asterinas/physical-graphics/index.html"
+            install -D -m 0755 -- "$script_directory/physical_graphics_gate.py" \
+                "$stage/usr/lib/asterinas/physical-graphics-gate"
+            install -D -m 0755 -- \
+                "$script_directory/physical_external_services_quiesce.sh" \
+                "$stage/usr/lib/asterinas/physical-external-services-quiesce"
+            install -D -m 0644 -- "$script_directory/browser_interaction_perf.py" \
+                "$stage/usr/lib/asterinas/browser_interaction_perf.py"
+            install -D -m 0755 -- \
+                "$script_directory/browser_performance_provenance.py" \
+                "$stage/usr/lib/asterinas/browser-performance-provenance"
+            install -D -m 0755 -- "$script_directory/firefox_diagnostic_snapshot.py" \
+                "$stage/usr/lib/asterinas/firefox-diagnostic-snapshot"
             install -d -m 0700 -- "$stage/home/asterinas/browser-web-evidence"
             for evidence_name in \
                 baidu-home.json baidu-home.png \
@@ -1577,6 +1591,12 @@ configure_desktop() {
                 "$stage/usr/lib/asterinas/browser-web-timeline"
             install -D -m 0644 -- "$script_directory/browser_web.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web.service"
+            install -d -m 0755 -- \
+                "$stage/etc/systemd/system/asterinas-desktop-m5-network.service.d"
+            cat >"$stage/etc/systemd/system/asterinas-desktop-m5-network.service.d/browser-web.conf" <<'EOF'
+[Service]
+TimeoutStartSec=600s
+EOF
             install -D -m 0644 -- "$script_directory/browser_web_evidence.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web-evidence.service"
             install -D -m 0644 -- "$script_directory/browser_web_timeline_begin.service" \
@@ -1610,6 +1630,12 @@ configure_desktop() {
 }
 EOF
             chmod 0644 -- "$stage/usr/lib/firefox-esr/distribution/policies.json"
+            if [[ -n "$FIREFOX_JIT_PACKAGE_DIR" ]]; then
+                python3 "$script_directory/firefox_jit_overlay.py" \
+                    --root "$stage" \
+                    --package-dir "$FIREFOX_JIT_PACKAGE_DIR"
+                firefox_trust_mode=system-nss-jit-overlay
+            fi
             install -D -m 0755 -- "$script_directory/browser_web_trust_check.py" \
                 "$stage/usr/share/asterinas/browser-web-trust-check.py"
             install -D -m 0755 -- "$script_directory/browser_web_online_rootfs_check.py" \
@@ -1618,9 +1644,9 @@ EOF
                 >"$stage/usr/share/asterinas/browser-web-trust-static.log"
             [[ "$(wc -l <"$stage/usr/share/asterinas/browser-web-trust-static.log")" == 1 ]] ||
                 die "Firefox trust checker emitted an ambiguous result"
-            grep -Eq '^FIREFOX_TRUST_PASS mode=embedded-xul ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$' \
+            grep -Eq "^FIREFOX_TRUST_PASS mode=$firefox_trust_mode ca_certificates=([1-9][0-9]{2,}) firefox=installed ca_package=installed riscv_elf=1 nss_loader=1$" \
                 "$stage/usr/share/asterinas/browser-web-trust-static.log" ||
-                die "Firefox trust checker did not prove embedded XUL roots"
+                die "Firefox trust checker did not prove the selected trust mode"
             chmod 0644 -- \
                 "$stage/usr/share/asterinas/browser-web-trust-static.log"
         else
@@ -1722,8 +1748,14 @@ EOF
         device_access_source="$script_directory/desktop_drm_device_access.sh"
     fi
     install -D -m 0755 -- \
+        "$script_directory/desktop_display_provider.sh" \
+        "$stage/usr/lib/asterinas/desktop-display-provider"
+    install -D -m 0755 -- \
         "$device_access_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-device-access"
+    install -D -m 0755 -- \
+        "$script_directory/desktop_input_identity.py" \
+        "$stage/usr/lib/asterinas/desktop-input-identity"
     install -D -m 0755 -- \
         "$evidence_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-evidence"
@@ -1756,6 +1788,7 @@ StandardError=$desktop_standard_error
 # StandardOutput=$desktop_standard_output
 # StandardError=$desktop_standard_error
 Environment=HOME=/home/asterinas
+Environment=ASTERINAS_DISPLAY_PROVIDER=fbdev
 $(if [[ "$generation" == m5 && "$browser_mode" == online ]]; then printf '%s\n' 'Environment=ASTERINAS_BROWSER_WEB_SESSION=1'; fi)
 ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
 ExecStart=/usr/lib/asterinas/desktop-$generation-session
@@ -1857,9 +1890,12 @@ EOF
     ln -s -- /lib/systemd/system/graphical.target \
         "$stage/etc/systemd/system/default.target"
 
-    install -d -m 0755 -- "$stage/etc/X11/xorg.conf.d"
+    local fbdev_config_directory="$stage/etc/asterinas/display-providers/fbdev/xorg.conf.d"
+    install -d -m 0755 -- "$fbdev_config_directory"
     if [[ "$generation" == drm ]]; then
-        cat >"$stage/etc/X11/xorg.conf.d/20-asterinas.conf" <<'EOF'
+        local drm_config_directory="$stage/etc/asterinas/display-providers/drm/xorg.conf.d"
+        install -d -m 0755 -- "$drm_config_directory"
+        cat >"$drm_config_directory/20-asterinas.conf" <<'EOF'
 Section "Device"
     Identifier "Asterinas virtio-gpu"
     Driver "modesetting"
@@ -1899,8 +1935,9 @@ Section "ServerFlags"
     Option "OffTime" "0"
 EndSection
 EOF
-    else
-    cat >"$stage/etc/X11/xorg.conf.d/20-asterinas.conf" <<'EOF'
+        chmod 0644 -- "$drm_config_directory/20-asterinas.conf"
+    fi
+    cat >"$fbdev_config_directory/20-asterinas.conf" <<'EOF'
 Section "Device"
     Identifier "Asterinas framebuffer"
     Driver "fbdev"
@@ -1915,13 +1952,13 @@ EndSection
 Section "InputDevice"
     Identifier "Asterinas keyboard"
     Driver "evdev"
-    Option "Device" "/dev/input/event0"
+    Option "Device" "/run/asterinas-input/keyboard"
 EndSection
 
 Section "InputDevice"
     Identifier "Asterinas pointer"
     Driver "evdev"
-    Option "Device" "/dev/input/event1"
+    Option "Device" "/run/asterinas-input/pointer"
 EndSection
 
 Section "ServerLayout"
@@ -1939,8 +1976,11 @@ Section "ServerFlags"
     Option "OffTime" "0"
 EndSection
 EOF
-    fi
-    chmod 0644 -- "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
+    chmod 0644 -- "$fbdev_config_directory/20-asterinas.conf"
+    install -d -m 0755 -- "$stage/etc/X11/xorg.conf.d"
+    rm -f -- "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
+    ln -s -- ../../asterinas/display-providers/fbdev/xorg.conf.d/20-asterinas.conf \
+        "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
 }
 
 create_and_verify_image() {
@@ -2006,7 +2046,8 @@ write_rootfs_manifest() {
     local mke2fs_version
     local qemu_version
     local browser_web_runtime_version=""
-    local -a browser_web_tool_version=()
+    local firefox_jit_overlay_version=""
+    local -a browser_web_tool_versions=()
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
@@ -2017,9 +2058,19 @@ write_rootfs_manifest() {
 
     if [[ "$PROFILE" == browser-web ]]; then
         browser_web_runtime_version="$(browser_web_runtime_digest "$script_directory")"
-        browser_web_tool_version=(
+        browser_web_tool_versions=(
             --tool-version "browser-web-runtime=$browser_web_runtime_version"
         )
+        if [[ -f "$WORK_DIR/stage/usr/share/asterinas/firefox-riscv-jit-overlay.json" ]]; then
+            firefox_jit_overlay_version="$(
+                sha256sum -- \
+                    "$WORK_DIR/stage/usr/share/asterinas/firefox-riscv-jit-overlay.json" |
+                    cut -d' ' -f1
+            )"
+            browser_web_tool_versions+=(
+                --tool-version "firefox-jit-overlay=$firefox_jit_overlay_version"
+            )
+        fi
     fi
 
     local -a signed_source_arguments=()
@@ -2045,7 +2096,7 @@ write_rootfs_manifest() {
         --tool-version "debootstrap=$debootstrap_version" \
         --tool-version "mke2fs=$mke2fs_version" \
         --tool-version "qemu-riscv64-static=$qemu_version" \
-        "${browser_web_tool_version[@]}"
+        "${browser_web_tool_versions[@]}"
 }
 
 browser_web_runtime_digest() {
@@ -2056,10 +2107,21 @@ browser_web_runtime_digest() {
         desktop_m5_network_gate.py
         browser_web_firefox.sh
         browser_web_marionette_gate.py
+        megrez_clock_sync.py
         browser_m5_marionette_gate.py
         browser_web_evidence.sh
         browser_web.service
         browser_web_evidence.service
+        physical_graphics_interaction.html
+        physical_graphics_gate.py
+        physical_external_services_quiesce.sh
+        browser_interaction_perf.py
+        desktop_display_provider.sh
+        browser_performance_provenance.py
+        firefox_diagnostic_snapshot.py
+        browser_web_trust_check.py
+        browser_web_online_rootfs_check.py
+        firefox_jit_overlay.py
     )
 
     for input in "${inputs[@]}"; do

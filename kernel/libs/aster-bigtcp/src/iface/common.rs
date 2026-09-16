@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{
-    collections::btree_map::{BTreeMap, Entry},
+    collections::{
+        BTreeSet,
+        btree_map::{BTreeMap, Entry},
+    },
     ffi::CString,
     sync::Arc,
     vec::Vec,
@@ -33,8 +36,36 @@ use crate::{
     errors::BindError,
     ext::Ext,
     socket::{TcpListenerBg, UdpSocketBg},
-    socket_table::SocketTable,
+    socket_table::{SocketRegistries, SocketTable, TcpSocketRegistry, UdpSocketRegistry},
+    wire::PortNum,
 };
+
+/// Configuration shared by all concrete interface constructors.
+pub struct IfaceConfig<E: Ext> {
+    name: CString,
+    type_: InterfaceType,
+    flags: InterfaceFlags,
+    sched_poll: E::ScheduleNextPoll,
+    socket_registries: Arc<SocketRegistries<E>>,
+}
+
+impl<E: Ext> IfaceConfig<E> {
+    pub fn new(
+        name: CString,
+        type_: InterfaceType,
+        flags: InterfaceFlags,
+        sched_poll: E::ScheduleNextPoll,
+        socket_registries: Arc<SocketRegistries<E>>,
+    ) -> Self {
+        Self {
+            name,
+            type_,
+            flags,
+            sched_poll,
+            socket_registries,
+        }
+    }
+}
 
 pub struct IfaceCommon<E: Ext> {
     index: u32,
@@ -45,6 +76,7 @@ pub struct IfaceCommon<E: Ext> {
     interface: SpinLock<PollableIface<E>, BottomHalfDisabled>,
     used_ports: SpinLock<PortTable, BottomHalfDisabled>,
     sockets: SpinLock<SocketTable<E>, BottomHalfDisabled>,
+    socket_registries: Arc<SocketRegistries<E>>,
     sched_poll: E::ScheduleNextPoll,
 }
 
@@ -63,11 +95,9 @@ pub(super) enum IpPacket<'a> {
 /// to their IPv4 counterparts for binding purposes. This ensures that binding
 /// to `192.0.2.1:80` and `::ffff:192.0.2.1:80` are treated as the same.
 //
-// TODO: This type currently only handles port binding conflict detection. Full
-// dual-stack support is not yet implemented, including:
-// - Accepting IPv4 connections on IPv6 wildcard socket (binding to `::`).
-// - Returning IPv4-mapped addresses in `accept()` for IPv4 clients.
-// - Proper handling of `IPV6_V6ONLY` socket option.
+// TCP dual-stack listeners use this namespace to reserve the IPv4-mapped port
+// alongside their IPv6 wildcard port. Packet translation and listener matching
+// are handled by the TCP poll path.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct NormalizedAddress(Ipv6Address);
 
@@ -81,13 +111,15 @@ impl From<IpAddress> for NormalizedAddress {
 }
 
 impl<E: Ext> IfaceCommon<E> {
-    pub(super) fn new(
-        name: CString,
-        type_: InterfaceType,
-        flags: InterfaceFlags,
-        interface: smoltcp::iface::Interface,
-        sched_poll: E::ScheduleNextPoll,
-    ) -> Self {
+    pub(super) fn new(interface: smoltcp::iface::Interface, config: IfaceConfig<E>) -> Self {
+        let IfaceConfig {
+            name,
+            type_,
+            flags,
+            sched_poll,
+            socket_registries,
+        } = config;
+
         // Linux reserves interface index 1 for the loopback device in every
         // network namespace.  In particular, systemd configures a freshly
         // created namespace by addressing `lo` through the fixed
@@ -111,6 +143,7 @@ impl<E: Ext> IfaceCommon<E> {
             interface: SpinLock::new(PollableIface::new(interface)),
             used_ports: SpinLock::new(PortTable::new()),
             sockets: SpinLock::new(SocketTable::new()),
+            socket_registries,
             sched_poll,
         }
     }
@@ -166,6 +199,14 @@ impl<E: Ext> IfaceCommon<E> {
     pub(crate) fn sockets(&self) -> SpinLockGuard<'_, SocketTable<E>, BottomHalfDisabled> {
         self.sockets.lock()
     }
+
+    pub(crate) fn udp_registry(&self) -> &UdpSocketRegistry<E> {
+        self.socket_registries.udp()
+    }
+
+    pub(crate) fn tcp_registry(&self) -> &TcpSocketRegistry<E> {
+        self.socket_registries.tcp()
+    }
 }
 
 const IP_LOCAL_PORT_START: u16 = 32768;
@@ -197,12 +238,43 @@ impl<E: Ext> IfaceCommon<E> {
         protocol: PortProtocol,
     ) -> Result<BoundPort<E>, BindError> {
         let addr = config.addr();
-        let (port, can_reuse) = self.used_ports.lock().bind(config, protocol)?;
+        let socket_registries = self.socket_registries.clone();
+        let (port, can_reuse, registration) = if config.is_backlog() {
+            let (port, can_reuse) = self.used_ports.lock().bind(config, protocol, |_| false)?;
+            (port, can_reuse, PortRegistration::None)
+        } else if config.is_dual_stack() {
+            debug_assert!(matches!(addr, IpAddress::Ipv6(addr) if addr.is_unspecified()));
+            let bind = |ipv4_ports: &BTreeMap<PortNum, usize>, dual_ports: &[PortNum]| {
+                self.used_ports.lock().bind(config, protocol, |port| {
+                    ipv4_ports.contains_key(&port) || dual_ports.contains(&port)
+                })
+            };
+            let (port, can_reuse) = match protocol {
+                PortProtocol::Tcp => socket_registries.tcp().bind_dual_stack_port(bind),
+                PortProtocol::Udp => socket_registries.udp().bind_dual_stack_port(bind),
+            }?;
+            (port, can_reuse, PortRegistration::DualStack)
+        } else if matches!(addr, IpAddress::Ipv4(_)) {
+            let bind = |dual_ports: &[PortNum]| {
+                self.used_ports
+                    .lock()
+                    .bind(config, protocol, |port| dual_ports.contains(&port))
+            };
+            let (port, can_reuse) = match protocol {
+                PortProtocol::Tcp => socket_registries.tcp().bind_ipv4_port(bind),
+                PortProtocol::Udp => socket_registries.udp().bind_ipv4_port(bind),
+            }?;
+            (port, can_reuse, PortRegistration::Ipv4)
+        } else {
+            let (port, can_reuse) = self.used_ports.lock().bind(config, protocol, |_| false)?;
+            (port, can_reuse, PortRegistration::None)
+        };
         Ok(BoundPort {
             iface,
             addr,
             port,
             protocol,
+            registration,
             can_reuse: AtomicBool::new(can_reuse),
         })
     }
@@ -257,7 +329,14 @@ impl<E: Ext> IfaceCommon<E> {
         let mut sockets = self.sockets.lock();
         let mut socket_actions = Vec::new();
 
-        let mut context = PollContext::new(interface.as_mut(), &sockets, &mut socket_actions);
+        let mut context = PollContext::new(
+            interface.as_mut(),
+            &sockets,
+            self.socket_registries.udp(),
+            self.socket_registries.tcp(),
+            self.index,
+            &mut socket_actions,
+        );
         context.poll_ingress(device, &mut process_phy, &mut dispatch_phy);
         context.poll_egress(device, &mut dispatch_phy);
 
@@ -288,7 +367,15 @@ pub struct BoundPort<E: Ext> {
     addr: IpAddress,
     port: u16,
     protocol: PortProtocol,
+    registration: PortRegistration,
     can_reuse: AtomicBool,
+}
+
+#[derive(Clone, Copy)]
+enum PortRegistration {
+    None,
+    Ipv4,
+    DualStack,
 }
 
 impl<E: Ext> BoundPort<E> {
@@ -335,6 +422,25 @@ impl<E: Ext> BoundPort<E> {
 
 impl<E: Ext> Drop for BoundPort<E> {
     fn drop(&mut self) {
+        let common = self.iface.common();
+        match (self.protocol, self.registration) {
+            (_, PortRegistration::None) => {}
+            (PortProtocol::Tcp, PortRegistration::Ipv4) => {
+                common.tcp_registry().unregister_ipv4_port(self.port)
+            }
+            (PortProtocol::Tcp, PortRegistration::DualStack) => {
+                common.tcp_registry().unregister_dual_stack_port(self.port)
+            }
+            (PortProtocol::Udp, PortRegistration::Ipv4) => {
+                common.udp_registry().unregister_ipv4_port(self.port)
+            }
+            (PortProtocol::Udp, PortRegistration::DualStack) => {
+                common.udp_registry().unregister_dual_stack_port(self.port)
+            }
+        }
+
+        // Keep the namespace registry -> interface port table lock order used
+        // during bind.
         self.iface.common().release_port(
             self.addr,
             self.port,
@@ -394,6 +500,11 @@ impl PortState {
 
 struct PortTable {
     used_ports: BTreeMap<PortKey, PortState>,
+    /// Addresses indexed by port and protocol for bounded conflict checks.
+    ///
+    /// Each address occurs exactly when the corresponding key occurs in
+    /// `used_ports`; multiple reusable owners still occupy one address entry.
+    port_addresses: BTreeMap<(u16, PortProtocol), BTreeSet<NormalizedAddress>>,
     next_ephemeral_port: u16,
 }
 
@@ -401,6 +512,7 @@ impl PortTable {
     fn new() -> Self {
         Self {
             used_ports: BTreeMap::new(),
+            port_addresses: BTreeMap::new(),
             next_ephemeral_port: IP_LOCAL_PORT_START,
         }
     }
@@ -409,18 +521,44 @@ impl PortTable {
         &mut self,
         config: BindPortConfig,
         protocol: PortProtocol,
+        external_conflict: impl Fn(u16) -> bool,
     ) -> Result<(u16, bool), BindError> {
         let config_can_reuse = config.can_reuse();
         let addr = NormalizedAddress::from(config.addr());
 
         let port = if let Some(port) = config.port() {
+            if !config.is_backlog() && external_conflict(port) {
+                return Err(BindError::InUse);
+            }
             port
         } else {
-            match self.alloc_ephemeral_port(addr, protocol, config_can_reuse) {
+            match self.alloc_ephemeral_port(addr, protocol, config_can_reuse, external_conflict) {
                 Some(port) => port,
                 None => return Err(BindError::Exhausted),
             }
         };
+
+        if !config.is_backlog() {
+            if let Some(addresses) = self.port_addresses.get(&(port, protocol)) {
+                for existing_addr in addresses {
+                    if !port_addresses_conflict(*existing_addr, addr) {
+                        continue;
+                    }
+                    let existing = PortKey {
+                        addr: *existing_addr,
+                        port,
+                        protocol,
+                    };
+                    let Some(state) = self.used_ports.get(&existing) else {
+                        debug_assert!(false, "port address index must mirror the port table");
+                        return Err(BindError::InUse);
+                    };
+                    if !config_can_reuse || !state.can_reuse() {
+                        return Err(BindError::InUse);
+                    }
+                }
+            }
+        }
 
         let key = PortKey {
             addr,
@@ -450,6 +588,11 @@ impl PortTable {
             }
         };
 
+        self.port_addresses
+            .entry((port, protocol))
+            .or_default()
+            .insert(addr);
+
         Ok((port, config_can_reuse))
     }
 
@@ -468,6 +611,7 @@ impl PortTable {
         addr: NormalizedAddress,
         protocol: PortProtocol,
         _can_reuse: bool,
+        external_conflict: impl Fn(u16) -> bool,
     ) -> Option<u16> {
         const fn next_ephemeral_port_after(port: u16) -> u16 {
             if port >= IP_LOCAL_PORT_END {
@@ -477,16 +621,18 @@ impl PortTable {
             }
         }
 
-        let mut key = PortKey {
-            addr,
-            port: 0,
-            protocol,
-        };
         let start_port = self.next_ephemeral_port;
         let mut port = start_port;
         loop {
-            key.port = port;
-            if !self.used_ports.contains_key(&key) {
+            let address_conflict =
+                self.port_addresses
+                    .get(&(port, protocol))
+                    .is_some_and(|addresses| {
+                        addresses
+                            .iter()
+                            .any(|existing| port_addresses_conflict(*existing, addr))
+                    });
+            if !external_conflict(port) && !address_conflict {
                 self.next_ephemeral_port = next_ephemeral_port_after(port);
                 return Some(port);
             }
@@ -520,6 +666,15 @@ impl PortTable {
         }
         if port_state.nsocket == 0 {
             occupied.remove();
+            if let Some(addresses) = self.port_addresses.get_mut(&(port, protocol)) {
+                let removed = addresses.remove(&key.addr);
+                debug_assert!(removed, "port address index must mirror the port table");
+                if addresses.is_empty() {
+                    self.port_addresses.remove(&(port, protocol));
+                }
+            } else {
+                debug_assert!(false, "port address index must mirror the port table");
+            }
         }
     }
 
@@ -533,6 +688,137 @@ impl PortTable {
         } else {
             port_state.nreuse -= 1;
         }
+    }
+}
+
+/// Returns whether two normalized addresses share the same bind namespace.
+///
+/// IPv4 addresses are stored as IPv4-mapped IPv6 values, so the mapped family
+/// must be kept separate from native IPv6 when applying wildcard rules.
+fn port_addresses_conflict(left: NormalizedAddress, right: NormalizedAddress) -> bool {
+    let left_bits = left.0.to_bits();
+    let right_bits = right.0.to_bits();
+    let left_is_v4 = left_bits >> 32 == 0xffff;
+    let right_is_v4 = right_bits >> 32 == 0xffff;
+    if left_is_v4 != right_is_v4 {
+        return false;
+    }
+    if left_is_v4 {
+        left_bits == right_bits || left_bits & 0xffff_ffff == 0 || right_bits & 0xffff_ffff == 0
+    } else {
+        left_bits == right_bits || left_bits == 0 || right_bits == 0
+    }
+}
+
+#[cfg(ktest)]
+mod port_table_tests {
+    use ostd::prelude::*;
+    use smoltcp::wire::{IpAddress, IpEndpoint, Ipv4Address};
+
+    use super::{BindError, BindPortConfig, NormalizedAddress, PortProtocol, PortTable};
+
+    const PORT: u16 = 40_000;
+
+    fn ipv4(last_octet: u8) -> IpAddress {
+        IpAddress::Ipv4(Ipv4Address::new(192, 0, 2, last_octet))
+    }
+
+    fn bind_config(address: IpAddress, port: u16, can_reuse: bool) -> BindPortConfig {
+        BindPortConfig::new(IpEndpoint::new(address, port), can_reuse)
+    }
+
+    fn no_external_conflict(_: u16) -> bool {
+        false
+    }
+
+    #[ktest]
+    fn explicit_bind_requires_reuse_from_every_conflicting_owner() {
+        for (first_reuse, second_reuse, expected) in [
+            (false, false, Err(BindError::InUse)),
+            (false, true, Err(BindError::InUse)),
+            (true, false, Err(BindError::InUse)),
+            (true, true, Ok((PORT, true))),
+        ] {
+            let mut table = PortTable::new();
+            table
+                .bind(
+                    bind_config(ipv4(1), PORT, first_reuse),
+                    PortProtocol::Tcp,
+                    no_external_conflict,
+                )
+                .unwrap();
+
+            assert_eq!(
+                table.bind(
+                    bind_config(ipv4(1), PORT, second_reuse),
+                    PortProtocol::Tcp,
+                    no_external_conflict,
+                ),
+                expected,
+            );
+        }
+    }
+
+    #[ktest]
+    fn address_index_tracks_first_bind_and_last_release() {
+        let address = ipv4(1);
+        let normalized = NormalizedAddress::from(address);
+        let mut table = PortTable::new();
+
+        table
+            .bind(
+                bind_config(address, PORT, true),
+                PortProtocol::Udp,
+                no_external_conflict,
+            )
+            .unwrap();
+        table
+            .bind(
+                bind_config(address, PORT, true),
+                PortProtocol::Udp,
+                no_external_conflict,
+            )
+            .unwrap();
+        assert_eq!(
+            table.port_addresses.get(&(PORT, PortProtocol::Udp)),
+            Some(&[normalized].into_iter().collect()),
+        );
+
+        table.release(address, PORT, true, PortProtocol::Udp);
+        assert!(
+            table
+                .port_addresses
+                .contains_key(&(PORT, PortProtocol::Udp))
+        );
+        table.release(address, PORT, true, PortProtocol::Udp);
+        assert!(
+            !table
+                .port_addresses
+                .contains_key(&(PORT, PortProtocol::Udp))
+        );
+    }
+
+    #[ktest]
+    fn ephemeral_bind_uses_address_index_to_skip_wildcard_conflict() {
+        let mut table = PortTable::new();
+        table
+            .bind(
+                bind_config(IpAddress::Ipv4(Ipv4Address::UNSPECIFIED), PORT, false),
+                PortProtocol::Tcp,
+                no_external_conflict,
+            )
+            .unwrap();
+        table.next_ephemeral_port = PORT;
+
+        let (allocated, _) = table
+            .bind(
+                bind_config(ipv4(1), 0, false),
+                PortProtocol::Tcp,
+                no_external_conflict,
+            )
+            .unwrap();
+
+        assert_eq!(allocated, PORT + 1);
     }
 }
 

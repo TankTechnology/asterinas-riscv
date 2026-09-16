@@ -266,6 +266,7 @@ fn syscall_profile_log_process_boundary(number: u64, args: &[u64; 6], ctx: &Cont
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv.rs")]
 #[cfg_attr(target_arch = "loongarch64", path = "arch/loongarch.rs")]
 mod arch;
+pub(crate) use arch::SYS_RESTART_SYSCALL;
 
 mod accept;
 mod access;
@@ -288,6 +289,7 @@ mod close;
 mod connect;
 mod constants;
 mod copy_file_range;
+pub(crate) mod diagnostics;
 mod dup;
 mod epoll;
 mod eventfd;
@@ -386,6 +388,7 @@ mod recvfrom;
 mod recvmsg;
 mod removexattr;
 mod rename;
+pub(crate) mod restart_syscall;
 #[cfg(target_arch = "riscv64")]
 mod riscv_flush_icache;
 mod riscv_hwprobe;
@@ -455,6 +458,7 @@ mod statx;
 mod symlink;
 mod sync;
 mod sysinfo;
+mod syslog;
 mod tgkill;
 mod time;
 mod timer_create;
@@ -611,7 +615,7 @@ macro_rules! impl_syscall_nums_and_dispatch_fn {
                     }
                 )*
                 _ => {
-                    ostd::warn!("Unimplemented syscall number: {}", syscall_number);
+                    ostd::debug!("Unimplemented syscall number: {}", syscall_number);
                     $crate::error::return_errno_with_message!(
                         $crate::error::Errno::ENOSYS,
                         "Syscall was unimplemented"
@@ -654,6 +658,7 @@ impl SyscallArgument {
 
 pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     let syscall_frame = SyscallArgument::new_from_context(user_ctx);
+    diagnostics::enter(ctx, syscall_frame.syscall_number, syscall_frame.args);
     let profile_start = syscall_profile_begin(syscall_frame.syscall_number, ctx);
     syscall_profile_log_process_boundary(syscall_frame.syscall_number, &syscall_frame.args, ctx);
 
@@ -675,11 +680,13 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
                     syscall_frame.syscall_number as u32,
                 )));
             user_ctx.set_syscall_ret(-(Errno::ENOSYS as i32) as usize);
+            diagnostics::complete(ctx, diagnostics::Outcome::Error(-(Errno::ENOSYS as isize)));
             syscall_profile_end(profile_start);
             return;
         }
         seccomp::SeccompDecision::Errno(errno) => {
             user_ctx.set_syscall_ret((-errno) as usize);
+            diagnostics::complete(ctx, diagnostics::Outcome::Error(-errno as isize));
             syscall_profile_end(profile_start);
             return;
         }
@@ -696,6 +703,14 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
         Ok(return_value) => {
             if let SyscallReturn::Return(return_value) = return_value {
                 user_ctx.set_syscall_ret(return_value as usize);
+                diagnostics::complete(ctx, diagnostics::Outcome::Return(return_value));
+            } else {
+                // exec and sigreturn install a context, not a syscall result.
+                // Never reinterpret a restored user-controlled register as an
+                // internal restart code from this kernel entry.
+                ctx.thread_local.set_orig_syscall_ret(None);
+                ctx.thread_local.restart_block().take();
+                diagnostics::complete(ctx, diagnostics::Outcome::NoReturn);
             }
         }
         Err(err) => {
@@ -721,7 +736,8 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
                     err
                 );
             }
-            user_ctx.set_syscall_ret((-errno) as usize)
+            user_ctx.set_syscall_ret((-errno) as usize);
+            diagnostics::complete(ctx, diagnostics::Outcome::Error(-errno as isize));
         }
     }
     syscall_profile_end(profile_start);

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+from dataclasses import dataclass
+import fcntl
 import hashlib
 import json
 import os
@@ -14,10 +16,12 @@ from pathlib import Path
 import re
 import socket
 import stat
+import struct
 import sys
 import time
 from collections.abc import Callable, Sequence
 from urllib.parse import parse_qs, quote_plus, urlparse
+import zlib
 
 if Path("/usr/lib/asterinas/browser_m5_marionette_gate.py").is_file():
     sys.path.insert(0, "/usr/lib/asterinas")
@@ -37,9 +41,7 @@ FIXTURE_INDEX_PATH = "/browser-quality/index.html"
 FIXTURE_IMAGE_PATH = "/browser-quality/pattern.png"
 FIXTURE_SOURCE_PATH = "/asterinas-network-probe.bin"
 FIXTURE_DOWNLOAD_PATH = "/browser-quality/download.bin"
-FIXTURE_DOWNLOAD_FILE = Path(
-    "/home/asterinas/Downloads/asterinas-browser-quality.bin"
-)
+FIXTURE_DOWNLOAD_FILE = Path("/home/asterinas/Downloads/asterinas-browser-quality.bin")
 FIXTURE_DOWNLOAD_BYTES = 256 * 1024
 FIXTURE_DOWNLOAD_SHA256 = (
     "2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9"
@@ -58,7 +60,201 @@ CHALLENGE_TOKENS = (
 CHALLENGE_HOSTS = frozenset({"wappass.baidu.com"})
 BV_RE = re.compile(r"^https://www\.bilibili\.com/video/(BV[0-9A-Za-z]+)/?(?:[?#].*)?$")
 MAX_RESOURCES = 256
+MAX_SCREENSHOT_COMMAND_SECONDS = 90.0
+MAX_FRAMEBUFFER_BYTES = 64 * 1024 * 1024
+MAX_FRAMEBUFFER_PNG_BYTES = 2 * 1024 * 1024
+FBIOGET_VSCREENINFO = 0x4600
+FBIOGET_FSCREENINFO = 0x4602
+FRAMEBUFFER_DEVICE = Path("/dev/fb0")
 DETAIL_DIAGNOSTIC_MARKER = Path("/run/asterinas-browser-web-detail-phase")
+
+
+@dataclass(frozen=True)
+class FramebufferLayout:
+    width: int
+    height: int
+    stride: int
+    buffer_bytes: int
+
+
+def _parse_framebuffer_layout(
+    variable: bytes, fixed: bytes
+) -> FramebufferLayout:
+    """Validate the Linux fbdev ABI used by the Megrez firmware scanout."""
+
+    if len(variable) != 160 or len(fixed) != 80:
+        raise GateError("framebuffer metadata size is invalid")
+    width, height, virtual_width, virtual_height, xoffset, yoffset, bpp, grayscale = (
+        struct.unpack_from("=8I", variable)
+    )
+    red = struct.unpack_from("=3I", variable, 32)
+    green = struct.unpack_from("=3I", variable, 44)
+    blue = struct.unpack_from("=3I", variable, 56)
+    transparency = struct.unpack_from("=3I", variable, 68)
+    nonstandard = struct.unpack_from("=I", variable, 80)[0]
+    memory_bytes = struct.unpack_from("=I", fixed, 24)[0]
+    visual = struct.unpack_from("=I", fixed, 36)[0]
+    stride = struct.unpack_from("=I", fixed, 48)[0]
+    if (
+        not 0 < width <= 8192
+        or not 0 < height <= 8192
+        or virtual_width != width
+        or virtual_height != height
+        or xoffset != 0
+        or yoffset != 0
+        or bpp != 32
+        or grayscale != 0
+        or nonstandard != 0
+        or red != (16, 8, 0)
+        or green != (8, 8, 0)
+        or blue != (0, 8, 0)
+        or transparency != (24, 8, 0)
+        or visual != 2
+        or stride < width * 4
+        or stride > width * 4 + 65536
+    ):
+        raise GateError("framebuffer layout is unsupported")
+    buffer_bytes = stride * height
+    if buffer_bytes > MAX_FRAMEBUFFER_BYTES or memory_bytes < buffer_bytes:
+        raise GateError("framebuffer size is outside the bounded contract")
+    return FramebufferLayout(width, height, stride, buffer_bytes)
+
+
+def _png_chunk(kind: bytes, contents: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(contents))
+        + kind
+        + contents
+        + struct.pack(">I", zlib.crc32(kind + contents) & 0xFFFFFFFF)
+    )
+
+
+def _encode_bgr_reserved_framebuffer_png(
+    raw: bytes, *, width: int, height: int, stride: int
+) -> bytes:
+    """Encode bounded B,G,R,reserved scanout rows as an RGB PNG."""
+
+    if (
+        not 0 < width <= 8192
+        or not 0 < height <= 8192
+        or stride < width * 4
+        or stride * height > MAX_FRAMEBUFFER_BYTES
+        or len(raw) != stride * height
+    ):
+        raise GateError("framebuffer read is incomplete")
+    pixels = width * height
+    sample_count = min(4096, pixels)
+    colors: set[bytes] = set()
+    for sample in range(sample_count):
+        pixel = sample * (pixels - 1) // max(1, sample_count - 1)
+        row, column = divmod(pixel, width)
+        offset = row * stride + column * 4
+        colors.add(raw[offset : offset + 3])
+    if len(colors) < min(8, pixels):
+        raise GateError("framebuffer image is blank or insufficiently diverse")
+
+    compressor = zlib.compressobj(6)
+    compressed = bytearray()
+    view = memoryview(raw)
+    for row in range(height):
+        source = view[row * stride : row * stride + width * 4]
+        scanline = bytearray(1 + width * 3)
+        scanline[1::3] = source[2::4]
+        scanline[2::3] = source[1::4]
+        scanline[3::3] = source[0::4]
+        compressed.extend(compressor.compress(scanline))
+    compressed.extend(compressor.flush())
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    payload = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", header)
+        + _png_chunk(b"IDAT", bytes(compressed))
+        + _png_chunk(b"IEND", b"")
+    )
+    if len(payload) > MAX_FRAMEBUFFER_PNG_BYTES:
+        raise GateError("framebuffer PNG is outside the bounded contract")
+    return payload
+
+
+def _read_exact_fd(descriptor: int, size: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining:
+        chunk = os.read(descriptor, min(remaining, 1024 * 1024))
+        if not chunk:
+            raise GateError("framebuffer read is incomplete")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _capture_framebuffer_png(output: Path) -> tuple[int, int]:
+    """Read the live fbdev scanout once and publish a private PNG."""
+
+    if not output.is_absolute() or output.exists() or output.is_symlink():
+        raise GateError("framebuffer output path is unsafe")
+    descriptor = os.open(
+        FRAMEBUFFER_DEVICE,
+        os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        if not stat.S_ISCHR(os.fstat(descriptor).st_mode):
+            raise GateError("framebuffer device is not a character device")
+        variable = bytearray(160)
+        fixed = bytearray(80)
+        fcntl.ioctl(descriptor, FBIOGET_VSCREENINFO, variable, True)
+        fcntl.ioctl(descriptor, FBIOGET_FSCREENINFO, fixed, True)
+        layout = _parse_framebuffer_layout(bytes(variable), bytes(fixed))
+        raw = _read_exact_fd(descriptor, layout.buffer_bytes)
+    finally:
+        os.close(descriptor)
+    payload = _encode_bgr_reserved_framebuffer_png(
+        raw,
+        width=layout.width,
+        height=layout.height,
+        stride=layout.stride,
+    )
+    output_descriptor = os.open(
+        output,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | os.O_CLOEXEC
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(output_descriptor, view)
+            if written <= 0:
+                raise GateError("framebuffer PNG write is incomplete")
+            view = view[written:]
+    finally:
+        os.close(output_descriptor)
+    return layout.width, layout.height
+
+
+def _screenshot_identity(path: Path) -> tuple[str, int, int]:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        raise GateError("homepage screenshot is missing") from error
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or not 24 <= metadata.st_size <= MAX_FRAMEBUFFER_PNG_BYTES
+    ):
+        raise GateError("homepage screenshot is unsafe")
+    payload = path.read_bytes()
+    if (
+        not payload.startswith(b"\x89PNG\r\n\x1a\n")
+        or payload[12:16] != b"IHDR"
+    ):
+        raise GateError("homepage screenshot is not PNG")
+    width, height = struct.unpack(">II", payload[16:24])
+    if not 0 < width <= 8192 or not 0 < height <= 8192:
+        raise GateError("homepage screenshot dimensions are invalid")
+    return hashlib.sha256(payload).hexdigest(), width, height
 
 
 def _timeline(marker: str, firefox_pid: int, page: str | None = None) -> None:
@@ -73,6 +269,7 @@ def _timeline(marker: str, firefox_pid: int, page: str | None = None) -> None:
     if page is not None:
         line += f" page={page}"
     print(line, file=sys.stderr, flush=True)
+
 
 _PROBE_SCRIPT = r"""const host = location.hostname;
 return JSON.stringify({
@@ -113,6 +310,10 @@ return JSON.stringify({
     fixtureSecond: document.querySelector('a[href="/browser-quality/second.html"]') !== null
   }
 });"""
+
+_PING_SCRIPT = (
+    "return JSON.stringify({url:location.href,readyState:document.readyState});"
+)
 
 _SNAPSHOT_SCRIPT = r"""const detailPage = location.hostname === 'www.bilibili.com' && location.pathname.startsWith('/video/');
 return JSON.stringify({
@@ -235,9 +436,16 @@ _DOM_FIELDS = {
 
 def _mapping(snapshot: object) -> dict[str, object]:
     expected = {
-        "url", "title", "readyState", "bodyText", "jsComplete",
-        "browserCapabilities", "dom",
-        "links", "navigation", "resources",
+        "url",
+        "title",
+        "readyState",
+        "bodyText",
+        "jsComplete",
+        "browserCapabilities",
+        "dom",
+        "links",
+        "navigation",
+        "resources",
     }
     if not isinstance(snapshot, dict) or set(snapshot) != expected:
         raise GateError("web snapshot has unexpected fields")
@@ -246,8 +454,13 @@ def _mapping(snapshot: object) -> dict[str, object]:
 
 def _probe_mapping(probe: object) -> dict[str, object]:
     expected = {
-        "url", "title", "readyState", "bodyText", "jsComplete",
-        "browserCapabilities", "dom",
+        "url",
+        "title",
+        "readyState",
+        "bodyText",
+        "jsComplete",
+        "browserCapabilities",
+        "dom",
     }
     probe_keys = set(probe) if isinstance(probe, dict) else set()
     if probe_keys != expected and probe_keys != expected | {"apiTypes"}:
@@ -378,10 +591,21 @@ def _validate_common(
     if not isinstance(navigation, dict):
         raise GateError("NavigationTiming evidence is missing")
     required_timing = {
-        "name", "entryType", "startTime", "duration", "domainLookupStart",
-        "domainLookupEnd", "connectStart", "secureConnectionStart", "connectEnd",
-        "requestStart", "responseStart", "responseEnd", "domContentLoadedEventEnd",
-        "loadEventEnd", "nextHopProtocol",
+        "name",
+        "entryType",
+        "startTime",
+        "duration",
+        "domainLookupStart",
+        "domainLookupEnd",
+        "connectStart",
+        "secureConnectionStart",
+        "connectEnd",
+        "requestStart",
+        "responseStart",
+        "responseEnd",
+        "domContentLoadedEventEnd",
+        "loadEventEnd",
+        "nextHopProtocol",
     }
     if set(navigation) != required_timing or navigation["entryType"] != "navigation":
         raise GateError("NavigationTiming evidence is malformed")
@@ -397,7 +621,10 @@ def _validate_common(
         raise GateError("ResourceTiming evidence is missing or oversized")
     for resource in resources:
         if not isinstance(resource, dict) or set(resource) != {
-            "name", "initiatorType", "duration", "transferSize"
+            "name",
+            "initiatorType",
+            "duration",
+            "transferSize",
         }:
             raise GateError("ResourceTiming evidence is malformed")
         name = resource["name"]
@@ -410,7 +637,9 @@ def _validate_common(
 
 
 def validate_baidu_home(snapshot: object) -> None:
-    result = _validate_common(snapshot, host="www.baidu.com", require_tls_handshake=True)
+    result = _validate_common(
+        snapshot, host="www.baidu.com", require_tls_handshake=True
+    )
     dom = result["dom"]
     assert isinstance(dom, dict)
     if (
@@ -422,7 +651,9 @@ def validate_baidu_home(snapshot: object) -> None:
 
 
 def validate_baidu_search(snapshot: object) -> None:
-    result = _validate_common(snapshot, host="www.baidu.com", require_tls_handshake=False)
+    result = _validate_common(
+        snapshot, host="www.baidu.com", require_tls_handshake=False
+    )
     parsed = urlparse(str(result["url"]))
     if parsed.path != "/s" or parse_qs(parsed.query).get("wd") != ["Asterinas"]:
         raise GateError("Baidu search URL does not contain the exact query")
@@ -460,10 +691,17 @@ def fixture_index_url_from_environment() -> str:
     return f"http://10.0.2.2:{port}{FIXTURE_INDEX_PATH}"
 
 
-def _validate_fixture_document(document: object, expected_url: str) -> dict[str, object]:
+def _validate_fixture_document(
+    document: object, expected_url: str
+) -> dict[str, object]:
     probe_fields = {
-        "url", "title", "readyState", "bodyText", "jsComplete",
-        "browserCapabilities", "dom",
+        "url",
+        "title",
+        "readyState",
+        "bodyText",
+        "jsComplete",
+        "browserCapabilities",
+        "dom",
     }
     result = (
         _probe_mapping(document)
@@ -494,9 +732,9 @@ def _validate_fixture_document(document: object, expected_url: str) -> dict[str,
         raise GateError("fixture search lost its exact Latin/CJK content")
     dom = result["dom"]
     assert isinstance(dom, dict)
-    if not all(dom[name] is True for name in (
-        "fixtureQuery", "fixtureImage", "fixtureSecond"
-    )):
+    if not all(
+        dom[name] is True for name in ("fixtureQuery", "fixtureImage", "fixtureSecond")
+    ):
         raise GateError("fixture form, PNG, or navigation link is not ready")
     _validate_fixture_capabilities(result["browserCapabilities"], "search")
     return result
@@ -504,11 +742,22 @@ def _validate_fixture_document(document: object, expected_url: str) -> dict[str,
 
 def _validate_fixture_capabilities(capabilities: object, phase: str) -> None:
     expected_checks = {
-        "audio", "canvas", "cookie", "fetch", "indexedDb",
-        "localStorage", "sessionStorage", "wasm", "worker",
+        "audio",
+        "canvas",
+        "cookie",
+        "fetch",
+        "indexedDb",
+        "localStorage",
+        "sessionStorage",
+        "wasm",
+        "worker",
     }
     if not isinstance(capabilities, dict) or set(capabilities) != {
-        "version", "phase", "state", "checks", "error"
+        "version",
+        "phase",
+        "state",
+        "checks",
+        "error",
     }:
         raise GateError("fixture browser capability evidence is malformed")
     if (
@@ -552,9 +801,9 @@ def probe_fixture_home(probe: object, expected_url: str) -> None:
         raise GateError("fixture home lost its exact Latin/CJK content")
     dom = result["dom"]
     assert isinstance(dom, dict)
-    if not all(dom[name] is True for name in (
-        "fixtureQuery", "fixtureImage", "fixtureSecond"
-    )):
+    if not all(
+        dom[name] is True for name in ("fixtureQuery", "fixtureImage", "fixtureSecond")
+    ):
         raise GateError("fixture home form, PNG, or navigation link is not ready")
     _validate_fixture_capabilities(result["browserCapabilities"], "home")
 
@@ -589,7 +838,10 @@ def validate_fixture_search(snapshot: object, expected_url: str) -> None:
     image_seen = False
     for resource in resources:
         if not isinstance(resource, dict) or set(resource) != {
-            "name", "initiatorType", "duration", "transferSize"
+            "name",
+            "initiatorType",
+            "duration",
+            "transferSize",
         }:
             raise GateError("fixture ResourceTiming evidence is malformed")
         name = resource["name"]
@@ -598,7 +850,11 @@ def validate_fixture_search(snapshot: object, expected_url: str) -> None:
         parsed = urlparse(name)
         if parsed.scheme == "data":
             continue
-        if parsed.scheme != "http" or parsed.hostname != "10.0.2.2" or parsed.port != 17894:
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname != "10.0.2.2"
+            or parsed.port != 17894
+        ):
             raise GateError("fixture loaded a resource outside its frozen origin")
         image_seen = image_seen or name == expected_image
     if not image_seen:
@@ -642,7 +898,10 @@ def validate_baidu_challenge(snapshot: object) -> None:
         raise GateError("Baidu challenge ResourceTiming evidence is malformed")
     for resource in resources:
         if not isinstance(resource, dict) or set(resource) != {
-            "name", "initiatorType", "duration", "transferSize"
+            "name",
+            "initiatorType",
+            "duration",
+            "transferSize",
         }:
             raise GateError("Baidu challenge ResourceTiming record is malformed")
         name = resource["name"]
@@ -660,7 +919,9 @@ def validate_baidu_search_outcome(snapshot: object) -> str:
 
 
 def select_bilibili_video(snapshot: object) -> str:
-    result = _validate_common(snapshot, host="www.bilibili.com", require_tls_handshake=True)
+    result = _validate_common(
+        snapshot, host="www.bilibili.com", require_tls_handshake=True
+    )
     dom = result["dom"]
     assert isinstance(dom, dict)
     if dom["bilibiliHome"] is not True:
@@ -683,7 +944,9 @@ def select_bilibili_video(snapshot: object) -> str:
 
 
 def validate_bilibili_detail(snapshot: object, expected_url: str) -> None:
-    result = _validate_common(snapshot, host="www.bilibili.com", require_tls_handshake=False)
+    result = _validate_common(
+        snapshot, host="www.bilibili.com", require_tls_handshake=False
+    )
     expected = BV_RE.fullmatch(expected_url)
     actual = BV_RE.fullmatch(str(result["url"]))
     if expected is None or actual is None or actual.group(1) != expected.group(1):
@@ -698,12 +961,19 @@ def validate_network_namespace(firefox_pid: int) -> None:
     if firefox_pid <= 1:
         raise GateError("Firefox PID is outside the valid contract")
     try:
-        if os.readlink("/proc/self/ns/net") != os.readlink(f"/proc/{firefox_pid}/ns/net"):
-            raise GateError("web gate and Firefox do not share the host network namespace")
+        if os.readlink("/proc/self/ns/net") != os.readlink(
+            f"/proc/{firefox_pid}/ns/net"
+        ):
+            raise GateError(
+                "web gate and Firefox do not share the host network namespace"
+            )
         interfaces = [name for _, name in socket.if_nameindex()]
     except OSError as error:
         raise GateError("cannot inspect Firefox network namespace") from error
-    if "lo" not in interfaces or len([name for name in interfaces if name != "lo"]) != 1:
+    if (
+        "lo" not in interfaces
+        or len([name for name in interfaces if name != "lo"]) != 1
+    ):
         raise GateError("web workload does not have exactly one non-loopback NIC")
 
 
@@ -740,23 +1010,24 @@ def validate_gecko_profiler_environment(firefox_pid: int) -> None:
         key, separator, value = entry.partition(b"=")
         if not separator:
             continue
-        environment[key.decode("utf-8", "replace")] = value.decode(
-            "utf-8", "replace"
-        )
+        environment[key.decode("utf-8", "replace")] = value.decode("utf-8", "replace")
     for name, value in expected.items():
         if environment.get(name) != value:
             raise GateError(f"Firefox profiler environment mismatch: {name}")
 
 
 def _snapshot(client: Marionette, *, lightweight: bool = False) -> dict[str, object]:
-    response = client.command("WebDriver:ExecuteScript", {
-        "script": _SNAPSHOT_SCRIPT,
-        "args": [{"lightweight": lightweight}],
-        "newSandbox": True,
-        "sandbox": "default",
-        "line": 1,
-        "filename": "asterinas-browser-web-gate",
-    })
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _SNAPSHOT_SCRIPT,
+            "args": [{"lightweight": lightweight}],
+            "newSandbox": True,
+            "sandbox": "default",
+            "line": 1,
+            "filename": "asterinas-browser-web-gate",
+        },
+    )
     value = _script_value(response)
     if not isinstance(value, str):
         detail = repr(response)
@@ -774,12 +1045,15 @@ def _snapshot(client: Marionette, *, lightweight: bool = False) -> dict[str, obj
 
 
 def _probe(client: Marionette) -> dict[str, object]:
-    response = client.command("WebDriver:ExecuteScript", {
-        "script": _PROBE_SCRIPT,
-        "args": [],
-        "line": 1,
-        "filename": "asterinas-browser-web-readiness",
-    })
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _PROBE_SCRIPT,
+            "args": [],
+            "line": 1,
+            "filename": "asterinas-browser-web-readiness",
+        },
+    )
     value = _script_value(response)
     if not isinstance(value, str):
         detail = repr(response)
@@ -794,6 +1068,36 @@ def _probe(client: Marionette) -> dict[str, object]:
     except json.JSONDecodeError as error:
         raise GateError("web readiness script returned malformed JSON") from error
     return _probe_mapping(parsed)
+
+
+def _ping_document(client: Marionette) -> dict[str, str] | None:
+    """Issue a layout-free actor round trip before the detailed DOM probe."""
+
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _PING_SCRIPT,
+            "args": [],
+            "line": 1,
+            "filename": "asterinas-browser-web-ping",
+        },
+    )
+    value = _script_value(response)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise GateError("web ping script returned an invalid response")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise GateError("web ping script returned malformed JSON") from error
+    if (
+        not isinstance(parsed, dict)
+        or set(parsed) != {"url", "readyState"}
+        or not all(isinstance(item, str) for item in parsed.values())
+    ):
+        raise GateError("web ping script returned an invalid document identity")
+    return parsed
 
 
 def _script_value(response: object) -> object:
@@ -839,42 +1143,51 @@ def _clear_document(client: Marionette, deadline: float) -> None:
     # and remove the live DOM in-place; this is a bounded unload barrier that
     # does not ask Marionette to synchronously commit a second navigation.
     # The next controlled navigation then installs a fresh document.
-    response = client.command("WebDriver:ExecuteScript", {
-        "script": "window.stop(); const root = document.documentElement; "
-        "if (root !== null) root.replaceChildren(); return 'document-stopped';",
-        "args": [],
-        "newSandbox": True,
-        "sandbox": "default",
-        "line": 1,
-        "filename": "asterinas-public-unload",
-    })
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": "window.stop(); const root = document.documentElement; "
+            "if (root !== null) root.replaceChildren(); return 'document-stopped';",
+            "args": [],
+            "newSandbox": True,
+            "sandbox": "default",
+            "line": 1,
+            "filename": "asterinas-public-unload",
+        },
+    )
     if _script_value(response) != "document-stopped":
         raise GateError("public document could not be stopped")
 
 
 def _submit_baidu_search(client: Marionette) -> None:
-    response = client.command("WebDriver:ExecuteScript", {
-        "script": _BAIDU_SUBMIT_SCRIPT,
-        "args": [],
-        "newSandbox": True,
-        "sandbox": "default",
-        "line": 1,
-        "filename": "asterinas-baidu-search-submit",
-    })
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _BAIDU_SUBMIT_SCRIPT,
+            "args": [],
+            "newSandbox": True,
+            "sandbox": "default",
+            "line": 1,
+            "filename": "asterinas-baidu-search-submit",
+        },
+    )
     value = _script_value(response)
     if value != "search-click-scheduled":
         raise GateError("Baidu homepage search form could not be submitted")
 
 
 def _submit_fixture_search(client: Marionette) -> None:
-    response = client.command("WebDriver:ExecuteScript", {
-        "script": _FIXTURE_SUBMIT_SCRIPT,
-        "args": [],
-        "newSandbox": True,
-        "sandbox": "default",
-        "line": 1,
-        "filename": "asterinas-fixture-search-submit",
-    })
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _FIXTURE_SUBMIT_SCRIPT,
+            "args": [],
+            "newSandbox": True,
+            "sandbox": "default",
+            "line": 1,
+            "filename": "asterinas-fixture-search-submit",
+        },
+    )
     value = _script_value(response)
     if value != "fixture-search-scheduled":
         raise GateError("controlled fixture search form could not be submitted")
@@ -883,14 +1196,17 @@ def _submit_fixture_search(client: Marionette) -> None:
 def _trigger_fixture_download(client: Marionette) -> None:
     if FIXTURE_DOWNLOAD_FILE.exists() or FIXTURE_DOWNLOAD_FILE.is_symlink():
         raise GateError("controlled fixture download has stale state")
-    response = client.command("WebDriver:ExecuteScript", {
-        "script": _FIXTURE_DOWNLOAD_SCRIPT,
-        "args": [],
-        "newSandbox": True,
-        "sandbox": "default",
-        "line": 1,
-        "filename": "asterinas-fixture-download",
-    })
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _FIXTURE_DOWNLOAD_SCRIPT,
+            "args": [],
+            "newSandbox": True,
+            "sandbox": "default",
+            "line": 1,
+            "filename": "asterinas-fixture-download",
+        },
+    )
     if _script_value(response) != "fixture-download-scheduled":
         raise GateError("controlled fixture download link could not be activated")
 
@@ -904,10 +1220,7 @@ def _wait_for_fixture_download(
         except FileNotFoundError:
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
             continue
-        if (
-            not stat.S_ISREG(metadata.st_mode)
-            or metadata.st_uid != expected_owner_uid
-        ):
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != expected_owner_uid:
             raise GateError("controlled fixture download is not a safe regular file")
         if metadata.st_size != FIXTURE_DOWNLOAD_BYTES:
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
@@ -956,7 +1269,9 @@ def _wait_for_probe(
             # instead of reducing a long-running readiness timeout to a vague
             # protocol error.  This remains diagnostic-only: validators stay
             # fail-closed and the marker is emitted at most once per wait.
-            capabilities = probe.get("browserCapabilities") if isinstance(probe, dict) else None
+            capabilities = (
+                probe.get("browserCapabilities") if isinstance(probe, dict) else None
+            )
             if (
                 not capability_reported
                 and isinstance(capabilities, dict)
@@ -973,7 +1288,11 @@ def _wait_for_probe(
                     file=sys.stderr,
                     flush=True,
                 )
-            if "challenge" in str(error) or "403" in str(error) or "access denial" in str(error):
+            if (
+                "challenge" in str(error)
+                or "403" in str(error)
+                or "access denial" in str(error)
+            ):
                 raise
             if last_error is None:
                 print(
@@ -1058,7 +1377,10 @@ def _wait_baidu_search_outcome(
                 probe = _probe(client)
                 url = probe.get("url")
                 if isinstance(url, str) and urlparse(url).hostname in CHALLENGE_HOSTS:
-                    if probe["readyState"] != "complete" or probe["jsComplete"] is not True:
+                    if (
+                        probe["readyState"] != "complete"
+                        or probe["jsComplete"] is not True
+                    ):
                         raise GateError("Baidu challenge readiness is incomplete")
                     # A challenge page only needs URL/navigation/DOM proof;
                     # enumerating its full ResourceTiming list can itself
@@ -1081,12 +1403,28 @@ def _write_evidence(
     directory: Path,
     name: str,
     snapshot: dict[str, object],
+    deadline: float,
+    *,
+    screenshot_backend: str = "marionette",
 ) -> None:
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     (directory / f"{name}.json").write_text(
         json.dumps(snapshot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    response = client.command("WebDriver:TakeScreenshot", {"full": False})
+    if screenshot_backend == "framebuffer":
+        return
+    if screenshot_backend != "marionette":
+        raise GateError("screenshot backend is unsupported")
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("screenshot command started after the gate deadline")
+    client.set_timeout(min(remaining, MAX_SCREENSHOT_COMMAND_SECONDS))
+    try:
+        response = client.command("WebDriver:TakeScreenshot", {"full": False})
+    finally:
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            client.set_timeout(remaining)
     encoded = _script_value(response)
     if not isinstance(encoded, str):
         raise GateError("Marionette screenshot response is malformed")
@@ -1099,10 +1437,134 @@ def _write_evidence(
     (directory / f"{name}.png").write_bytes(screenshot)
 
 
-def run_gate(
-    host: str, port: int, timeout: float, evidence_dir: Path, firefox_pid: int
-) -> tuple[str, str]:
+def _start_webdriver_session(
+    client: Marionette,
+    run_phase: Callable[[str, Callable[[], object]], object],
+    firefox_pid: int,
+) -> None:
+    session = run_phase(
+        "new-session",
+        lambda: _script_value(
+            client.command(
+                "WebDriver:NewSession",
+                {
+                    "acceptInsecureCerts": False,
+                    "pageLoadStrategy": "none",
+                    "strictFileInteractability": True,
+                },
+            )
+        ),
+    )
+    _timeline("BOOT_NEW_SESSION_DONE", firefox_pid)
+    if not isinstance(session, dict) or not isinstance(session.get("sessionId"), str):
+        raise GateError("Marionette did not create a web session")
+    capabilities = session.get("capabilities", {})
+    if (
+        not isinstance(capabilities, dict)
+        or capabilities.get("acceptInsecureCerts") is not False
+    ):
+        raise GateError("Firefox did not preserve certificate verification")
+    handles = run_phase(
+        "window-handles",
+        lambda: _script_value(client.command("WebDriver:GetWindowHandles")),
+    )
+    if (
+        not isinstance(handles, list)
+        or not handles
+        or not all(isinstance(handle, str) for handle in handles)
+    ):
+        raise GateError("Firefox created no first browser window")
+    _timeline("BOOT_FIRST_WINDOW_READY", firefox_pid)
+
+
+def _capture_baidu_home(
+    client: Marionette,
+    run_phase: Callable[[str, Callable[[], object]], object],
+    deadline: float,
+    evidence_dir: Path,
+    firefox_pid: int,
+    *,
+    screenshot_backend: str = "marionette",
+) -> dict[str, object]:
+    run_phase(
+        "navigate-baidu-home",
+        lambda: _script_value(
+            client.command("WebDriver:Navigate", {"url": BAIDU_HOME})
+        ),
+    )
+    # Native WebDriver metadata is a cheap control probe.  If this phase
+    # completes while ExecuteScript below does not, the stall is in Firefox's
+    # JS evaluation/sandbox path rather than navigation or socket transport.
+    run_phase("title-baidu-home", lambda: client.command("WebDriver:GetTitle"))
+    ping = run_phase("ping-baidu-home", lambda: _ping_document(client))
+    if ping is None:
+        print("A_WEB_JS_PING state=no-document", file=sys.stderr, flush=True)
+    else:
+        print(
+            "A_WEB_JS_PING state=response "
+            f"url={json.dumps(ping['url'], ensure_ascii=True)} "
+            f"ready_state={json.dumps(ping['readyState'], ensure_ascii=True)}",
+            file=sys.stderr,
+            flush=True,
+        )
+    run_phase(
+        "probe-baidu-home",
+        lambda: _wait_for_probe(client, probe_baidu_home, deadline),
+    )
+    baidu_home = run_phase("snapshot-baidu-home", lambda: _snapshot(client))
+    if not isinstance(baidu_home, dict):
+        raise GateError("Baidu homepage snapshot is malformed")
+    validate_baidu_home(baidu_home)
+    api_types = baidu_home.get("apiTypes")
+    if isinstance(api_types, dict) and all(
+        isinstance(api_types.get(name), str)
+        for name in ("wasm", "worker", "indexedDb", "audio", "fetch")
+    ):
+        print(
+            "A_WEB_CAPABILITY_TYPES "
+            + " ".join(
+                f"{name}={api_types[name]}"
+                for name in ("wasm", "worker", "indexedDb", "audio", "fetch")
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+    _timeline("BOOT_DOM_READY", firefox_pid, "baidu-home")
+    def write_home_evidence() -> None:
+        if screenshot_backend == "marionette":
+            _write_evidence(
+                client, evidence_dir, "baidu-home", baidu_home, deadline
+            )
+            return
+        _write_evidence(
+            client,
+            evidence_dir,
+            "baidu-home",
+            baidu_home,
+            deadline,
+            screenshot_backend=screenshot_backend,
+        )
+
+    run_phase(
+        "evidence-baidu-home",
+        write_home_evidence,
+    )
+    return baidu_home
+
+
+def run_baidu_home_gate(
+    host: str,
+    port: int,
+    timeout: float,
+    evidence_dir: Path,
+    firefox_pid: int,
+    *,
+    screenshot_backend: str = "marionette",
+) -> dict[str, object]:
+    """Capture one verified Baidu homepage without running the heavy web suite."""
+
     deadline = time.monotonic() + timeout
+
     def phase(name: str, state: str, error: BaseException | None = None) -> None:
         line = f"A_WEB_PHASE phase={name} state={state} firefox_pid={firefox_pid}"
         if error is not None:
@@ -1113,6 +1575,59 @@ def run_gate(
         print(line, file=sys.stderr, flush=True)
 
     client = _connect(host, port, deadline, phase=phase)
+
+    def run_phase(name: str, operation: Callable[[], object]) -> object:
+        phase(name, "start")
+        try:
+            result = operation()
+        except BaseException as error:
+            phase(name, "exception", error)
+            raise
+        phase(name, "done")
+        return result
+
+    _timeline("BOOT_MARIONETTE_CONNECTED", firefox_pid)
+    home: dict[str, object] | None = None
+    try:
+        _start_webdriver_session(client, run_phase, firefox_pid)
+        home = _capture_baidu_home(
+            client,
+            run_phase,
+            deadline,
+            evidence_dir,
+            firefox_pid,
+            screenshot_backend=screenshot_backend,
+        )
+    finally:
+        # Closing only the transport leaves Firefox alive and avoids the
+        # DeleteSession behavior that can stop the listener before the host has
+        # copied evidence or requested a safe reboot.
+        client.close()
+    if screenshot_backend == "framebuffer":
+        _capture_framebuffer_png(evidence_dir / "baidu-home.png")
+    elif screenshot_backend != "marionette":
+        raise GateError("screenshot backend is unsupported")
+    if home is None:
+        raise GateError("Baidu homepage evidence is missing")
+    return home
+
+
+def run_gate(
+    host: str, port: int, timeout: float, evidence_dir: Path, firefox_pid: int
+) -> tuple[str, str]:
+    deadline = time.monotonic() + timeout
+
+    def phase(name: str, state: str, error: BaseException | None = None) -> None:
+        line = f"A_WEB_PHASE phase={name} state={state} firefox_pid={firefox_pid}"
+        if error is not None:
+            line += (
+                f" exception_type={type(error).__name__}"
+                f" exception={json.dumps(str(error), ensure_ascii=True)}"
+            )
+        print(line, file=sys.stderr, flush=True)
+
+    client = _connect(host, port, deadline, phase=phase)
+
     def run_phase(name: str, operation: Callable[[], object]) -> object:
         phase(name, "start")
         try:
@@ -1124,64 +1639,13 @@ def run_gate(
         return result
 
     def command(stage: str, name: str, parameters: object | None = None) -> object:
-        return run_phase(
-            stage, lambda: _script_value(client.command(name, parameters))
-        )
-    firefox_uid = firefox_process_uid(firefox_pid)
+        return run_phase(stage, lambda: _script_value(client.command(name, parameters)))
+
     _timeline("BOOT_MARIONETTE_CONNECTED", firefox_pid)
     try:
-        session = command("new-session", "WebDriver:NewSession", {
-            "acceptInsecureCerts": False,
-            "pageLoadStrategy": "none",
-            "strictFileInteractability": True,
-        })
-        _timeline("BOOT_NEW_SESSION_DONE", firefox_pid)
-        if not isinstance(session, dict) or not isinstance(session.get("sessionId"), str):
-            raise GateError("Marionette did not create a web session")
-        capabilities = session.get("capabilities", {})
-        if not isinstance(capabilities, dict) or capabilities.get("acceptInsecureCerts") is not False:
-            raise GateError("Firefox did not preserve certificate verification")
-        handles = command("window-handles", "WebDriver:GetWindowHandles")
-        if not isinstance(handles, list) or not handles or not all(
-            isinstance(handle, str) for handle in handles
-        ):
-            raise GateError("Firefox created no first browser window")
-        _timeline("BOOT_FIRST_WINDOW_READY", firefox_pid)
-
-        command("navigate-baidu-home", "WebDriver:Navigate", {"url": BAIDU_HOME})
-        # Native WebDriver metadata is a cheap control probe.  If this phase
-        # completes while ExecuteScript below does not, the stall is in
-        # Firefox's JS evaluation/sandbox path rather than navigation or the
-        # kernel's socket transport.
-        run_phase(
-            "title-baidu-home",
-            lambda: client.command("WebDriver:GetTitle"),
-        )
-        run_phase(
-            "probe-baidu-home",
-            lambda: _wait_for_probe(client, probe_baidu_home, deadline),
-        )
-        baidu_home = run_phase("snapshot-baidu-home", lambda: _snapshot(client))
-        assert isinstance(baidu_home, dict)
-        validate_baidu_home(baidu_home)
-        api_types = baidu_home.get("apiTypes")
-        if isinstance(api_types, dict) and all(
-            isinstance(api_types.get(name), str)
-            for name in ("wasm", "worker", "indexedDb", "audio", "fetch")
-        ):
-            print(
-                "A_WEB_CAPABILITY_TYPES "
-                + " ".join(f"{name}={api_types[name]}" for name in (
-                    "wasm", "worker", "indexedDb", "audio", "fetch"
-                )),
-                file=sys.stderr,
-                flush=True,
-            )
-        _timeline("BOOT_DOM_READY", firefox_pid, "baidu-home")
-        run_phase(
-            "evidence-baidu-home",
-            lambda: _write_evidence(client, evidence_dir, "baidu-home", baidu_home),
-        )
+        _start_webdriver_session(client, run_phase, firefox_pid)
+        _capture_baidu_home(client, run_phase, deadline, evidence_dir, firefox_pid)
+        firefox_uid = firefox_process_uid(firefox_pid)
 
         fixture_index = fixture_index_url_from_environment()
         fixture_search_url = f"{fixture_index}?q=asterinas"
@@ -1190,9 +1654,7 @@ def run_gate(
         # here: a busy public page can starve the Marionette main thread and
         # make the cleanup command itself unbounded.  Navigation replaces the
         # document and the fixture probes below remain fail-closed.
-        run_phase(
-            "navigate-fixture-home", lambda: _navigate(client, fixture_index)
-        )
+        run_phase("navigate-fixture-home", lambda: _navigate(client, fixture_index))
         run_phase(
             "probe-fixture-home",
             lambda: _wait_for_probe(
@@ -1208,21 +1670,17 @@ def run_gate(
                 deadline,
             ),
         )
-        fixture_search = run_phase(
-            "snapshot-fixture-search", lambda: _snapshot(client)
-        )
+        fixture_search = run_phase("snapshot-fixture-search", lambda: _snapshot(client))
         assert isinstance(fixture_search, dict)
         validate_fixture_search(fixture_search, fixture_search_url)
         _timeline("BOOT_DOM_READY", firefox_pid, "fixture-search")
         run_phase(
             "evidence-fixture-search",
             lambda: _write_evidence(
-                client, evidence_dir, "fixture-search", fixture_search
+                client, evidence_dir, "fixture-search", fixture_search, deadline
             ),
         )
-        run_phase(
-            "trigger-fixture-download", lambda: _trigger_fixture_download(client)
-        )
+        run_phase("trigger-fixture-download", lambda: _trigger_fixture_download(client))
         run_phase(
             "verify-fixture-download",
             lambda: _wait_for_fixture_download(
@@ -1235,9 +1693,7 @@ def run_gate(
             "probe-bilibili-home",
             lambda: _wait_for_probe(client, probe_bilibili_home, deadline),
         )
-        bilibili_home = run_phase(
-            "snapshot-bilibili-home", lambda: _snapshot(client)
-        )
+        bilibili_home = run_phase("snapshot-bilibili-home", lambda: _snapshot(client))
         assert isinstance(bilibili_home, dict)
         selected = select_bilibili_video(bilibili_home)
         assert isinstance(selected, str)
@@ -1245,7 +1701,7 @@ def run_gate(
         run_phase(
             "evidence-bilibili-home",
             lambda: _write_evidence(
-                client, evidence_dir, "bilibili-home", bilibili_home
+                client, evidence_dir, "bilibili-home", bilibili_home, deadline
             ),
         )
 
@@ -1275,7 +1731,7 @@ def run_gate(
         run_phase(
             "evidence-bilibili-detail",
             lambda: _write_evidence(
-                client, evidence_dir, "bilibili-detail", bilibili_detail
+                client, evidence_dir, "bilibili-detail", bilibili_detail, deadline
             ),
         )
         selected_bv = BV_RE.fullmatch(selected).group(1)  # type: ignore[union-attr]
@@ -1305,7 +1761,9 @@ def run_gate(
         _timeline("BOOT_DOM_READY", firefox_pid, "baidu-search")
         run_phase(
             "evidence-baidu-search",
-            lambda: _write_evidence(client, evidence_dir, "baidu-search", baidu_search),
+            lambda: _write_evidence(
+                client, evidence_dir, "baidu-search", baidu_search, deadline
+            ),
         )
         deleted = _script_value(client.command("WebDriver:DeleteSession"))
         if deleted is not None:
@@ -1317,12 +1775,19 @@ def run_gate(
 
 def main(arguments: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="browser_web_marionette_gate")
+    parser.add_argument("--scope", choices=("full", "baidu-home"), default="full")
+    parser.add_argument(
+        "--screenshot-backend",
+        choices=("marionette", "framebuffer"),
+        default="marionette",
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2828)
     parser.add_argument("--timeout", type=float, default=900.0)
     parser.add_argument("--firefox-pid", type=int, required=True)
     parser.add_argument(
-        "--evidence-dir", type=Path,
+        "--evidence-dir",
+        type=Path,
         default=Path("/home/asterinas/browser-web-evidence"),
     )
     values = parser.parse_args(arguments)
@@ -1330,8 +1795,55 @@ def main(arguments: Sequence[str] | None = None) -> int:
         parser.error("Marionette endpoint is outside the loopback contract")
     if not 0 < values.timeout <= 1200 or not values.evidence_dir.is_absolute():
         parser.error("timeout or evidence directory is outside the bounded contract")
+    if values.scope != "baidu-home" and values.screenshot_backend != "marionette":
+        parser.error("framebuffer screenshot backend requires baidu-home scope")
     try:
         validate_network_namespace(values.firefox_pid)
+        if values.scope == "baidu-home":
+            home_arguments = (
+                values.host,
+                values.port,
+                values.timeout,
+                values.evidence_dir,
+                values.firefox_pid,
+            )
+            if values.screenshot_backend == "marionette":
+                home = run_baidu_home_gate(*home_arguments)
+            else:
+                home = run_baidu_home_gate(
+                    *home_arguments, screenshot_backend=values.screenshot_backend
+                )
+            title = home.get("title")
+            url = home.get("url")
+            if not isinstance(title, str) or not isinstance(url, str):
+                raise GateError("Baidu homepage identity is malformed")
+            marker: dict[str, object] = {
+                "marker": "DEBIAN_BROWSER_WEB_BAIDU_HOME_READY",
+                "scope": "baidu-home",
+                "title_sha256": hashlib.sha256(title.encode()).hexdigest(),
+                "tls": "verified",
+                "url": url,
+            }
+            if values.screenshot_backend == "framebuffer":
+                digest, width, height = _screenshot_identity(
+                    values.evidence_dir / "baidu-home.png"
+                )
+                marker.update(
+                    {
+                        "screenshot_height": height,
+                        "screenshot_sha256": digest,
+                        "screenshot_source": "framebuffer",
+                        "screenshot_width": width,
+                    }
+                )
+            print(
+                json.dumps(
+                    marker,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+            return 0
         bv, baidu_outcome = run_gate(
             values.host,
             values.port,

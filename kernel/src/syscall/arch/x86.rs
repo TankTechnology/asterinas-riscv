@@ -69,6 +69,7 @@ use super::{
     impl_syscall_nums_and_dispatch_fn,
     inotify::{sys_inotify_add_watch, sys_inotify_init, sys_inotify_init1, sys_inotify_rm_watch},
     ioctl::sys_ioctl,
+    kcmp::sys_kcmp,
     kill::sys_kill,
     link::{sys_link, sys_linkat},
     listen::sys_listen,
@@ -117,6 +118,7 @@ use super::{
     recvmsg::sys_recvmsg,
     removexattr::{sys_fremovexattr, sys_lremovexattr, sys_removexattr},
     rename::{sys_rename, sys_renameat, sys_renameat2},
+    restart_syscall::sys_restart_syscall,
     rmdir::sys_rmdir,
     rt_sigaction::sys_rt_sigaction,
     rt_sigpending::sys_rt_sigpending,
@@ -179,6 +181,7 @@ use super::{
     symlink::{sys_symlink, sys_symlinkat},
     sync::{sys_sync, sys_syncfs},
     sysinfo::sys_sysinfo,
+    syslog::sys_syslog,
     tgkill::{sys_tgkill, sys_tkill},
     time::sys_time,
     timer_create::{sys_timer_create, sys_timer_delete},
@@ -297,6 +300,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_SYSINFO = 99           => sys_sysinfo(args[..1]);
     SYS_PTRACE = 101           => sys_ptrace(args[..4]);
     SYS_GETUID = 102           => sys_getuid(args[..0]);
+    SYS_SYSLOG = 103           => sys_syslog(args[..3]);
     SYS_GETGID = 104           => sys_getgid(args[..0]);
     SYS_SETUID = 105           => sys_setuid(args[..1]);
     SYS_SETGID = 106           => sys_setgid(args[..1]);
@@ -374,6 +378,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_EPOLL_CREATE = 213     => sys_epoll_create(args[..1]);
     SYS_GETDENTS64 = 217       => sys_getdents64(args[..3]);
     SYS_SET_TID_ADDRESS = 218  => sys_set_tid_address(args[..1]);
+    SYS_RESTART_SYSCALL = 219  => sys_restart_syscall(args[..0]);
     SYS_SEMTIMEDOP = 220       => sys_semtimedop(args[..4]);
     SYS_FADVISE64 = 221        => sys_fadvise64(args[..4]);
     SYS_TIMER_CREATE = 222     => sys_timer_create(args[..3]);
@@ -435,6 +440,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_SENDMMSG = 307         => sys_sendmmsg(args[..4]);
     SYS_SETNS = 308            => sys_setns(args[..2]);
     SYS_GETCPU = 309           => sys_getcpu(args[..3]);
+    SYS_KCMP = 312             => sys_kcmp(args[..5]);
     SYS_SCHED_SETATTR = 314    => sys_sched_setattr(args[..3]);
     SYS_SCHED_GETATTR = 315    => sys_sched_getattr(args[..4]);
     SYS_RENAMEAT2 = 316        => sys_renameat2(args[..5]);

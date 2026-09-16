@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use aster_bigtcp::wire::IpEndpoint;
+use aster_bigtcp::{socket::NeedIfacePoll, wire::IpEndpoint};
 use bound::BoundDatagram;
 use unbound::{BindOptions, UnboundDatagram};
 
-use super::addr::UNSPECIFIED_LOCAL_ENDPOINT;
+use super::addr::{UNSPECIFIED_LOCAL_ENDPOINT, is_ipv4_mapped};
 use crate::{
     events::IoEvents,
     fs::{
@@ -15,7 +15,10 @@ use crate::{
         iface::is_broadcast_endpoint,
         socket::{
             Socket,
-            ip::options::{IpOptionSet, SetIpLevelOption},
+            ip::{
+                IpAddressFamily,
+                options::{IpOptionSet, Ipv6OptionSet, SetIpLevelOption},
+            },
             options::{Error as SocketError, SocketOption, macros::sock_option_mut},
             private::SocketPrivate,
             util::{
@@ -39,6 +42,7 @@ mod unbound;
 pub struct DatagramSocket {
     // Lock order: `inner` first, `options` second
     inner: RwMutex<Inner<UnboundDatagram, BoundDatagram>>,
+    family: IpAddressFamily,
     options: RwLock<OptionSet>,
     timeouts: SocketTimeouts,
 
@@ -50,6 +54,7 @@ pub struct DatagramSocket {
 struct OptionSet {
     socket: SocketOptionSet,
     ip: IpOptionSet,
+    ipv6: Ipv6OptionSet,
     // TODO: UDP option set
 }
 
@@ -57,12 +62,13 @@ impl OptionSet {
     fn new() -> Self {
         let socket = SocketOptionSet::new_udp();
         let ip = IpOptionSet::new_udp();
-        OptionSet { socket, ip }
+        let ipv6 = Ipv6OptionSet::new();
+        OptionSet { socket, ip, ipv6 }
     }
 }
 
 impl DatagramSocket {
-    pub fn new(is_nonblocking: bool) -> Arc<Self> {
+    pub fn new(is_nonblocking: bool, family: IpAddressFamily) -> Arc<Self> {
         let unbound_datagram = UnboundDatagram::new();
         let status_flags = if is_nonblocking {
             StatusFlags::O_NONBLOCK
@@ -71,6 +77,7 @@ impl DatagramSocket {
         };
         Arc::new(Self {
             inner: RwMutex::new(Inner::Unbound(unbound_datagram)),
+            family,
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
@@ -109,9 +116,14 @@ impl DatagramSocket {
                         "the destination address is not specified",
                     )
                 })?;
-                self.inner
-                    .write()
-                    .bind_ephemeral(remote_endpoint, &self.pollee)
+                self.inner.write().bind_ephemeral(
+                    remote_endpoint,
+                    &self.pollee,
+                    BindOptions {
+                        can_reuse: false,
+                        v6only: self.options.read().ipv6.v6only(),
+                    },
+                )
             },
             |bound_datagram, remote_endpoint| {
                 let sent_bytes = bound_datagram.try_send(reader, remote_endpoint, flags)?;
@@ -143,15 +155,22 @@ impl SocketPrivate for DatagramSocket {
 impl Socket for DatagramSocket {
     fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
         let endpoint = socket_addr.try_into()?;
+        self.check_endpoint_family(&endpoint)?;
         let can_reuse = self.options.read().socket.reuse_addr();
 
-        self.inner
-            .write()
-            .bind(&endpoint, &self.pollee, BindOptions { can_reuse })
+        self.inner.write().bind(
+            &endpoint,
+            &self.pollee,
+            BindOptions {
+                can_reuse,
+                v6only: self.options.read().ipv6.v6only(),
+            },
+        )
     }
 
     fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
         let endpoint = socket_addr.try_into()?;
+        self.check_endpoint_family(&endpoint)?;
         let can_broadcast = self.options.read().socket.broadcast();
         if !can_broadcast && is_broadcast_endpoint(&endpoint) {
             return_errno_with_message!(
@@ -160,7 +179,14 @@ impl Socket for DatagramSocket {
             );
         }
 
-        self.inner.write().connect(&endpoint, &self.pollee)
+        self.inner.write().connect(
+            &endpoint,
+            &self.pollee,
+            BindOptions {
+                can_reuse: false,
+                v6only: self.options.read().ipv6.v6only(),
+            },
+        )
     }
 
     fn addr(&self) -> Result<SocketAddr> {
@@ -204,6 +230,7 @@ impl Socket for DatagramSocket {
         };
 
         if let Some(endpoint) = endpoint.as_ref() {
+            self.check_endpoint_family(endpoint)?;
             let can_broadcast = self.options.read().socket.broadcast();
             if !can_broadcast && is_broadcast_endpoint(endpoint) {
                 return_errno_with_message!(
@@ -267,7 +294,16 @@ impl Socket for DatagramSocket {
         }
 
         // Deal with IP-level options
-        options.ip.get_option(option)
+        match options.ip.get_option(option) {
+            Err(err) if err.error() == Errno::ENOPROTOOPT => {
+                if self.family == IpAddressFamily::IPv6 {
+                    options.ipv6.get_option(option)
+                } else {
+                    Err(err)
+                }
+            }
+            result => result,
+        }
     }
 
     fn set_option(&self, option: &dyn SocketOption) -> Result<()> {
@@ -281,7 +317,18 @@ impl Socket for DatagramSocket {
         {
             Err(err) if err.error() == Errno::ENOPROTOOPT => {
                 // Deal with IP-level options
-                options.ip.set_option(option, &*inner)?
+                match options.ip.set_option(option, &*inner) {
+                    Err(err) if err.error() == Errno::ENOPROTOOPT => {
+                        if self.family == IpAddressFamily::IPv6 {
+                            let is_socket_bound = matches!(&*inner, Inner::Bound(_));
+                            options.ipv6.set_option(option, is_socket_bound)?;
+                            NeedIfacePoll::FALSE
+                        } else {
+                            return Err(err);
+                        }
+                    }
+                    result => result?,
+                }
             }
             Err(err) => return Err(err),
             Ok(need_iface_poll) => need_iface_poll,
@@ -306,6 +353,22 @@ impl Socket for DatagramSocket {
 
     fn common(&self) -> &FileCommon {
         &self.common
+    }
+}
+
+impl DatagramSocket {
+    fn check_endpoint_family(&self, endpoint: &IpEndpoint) -> Result<()> {
+        let is_family_mismatch = IpAddressFamily::from(endpoint.addr) != self.family;
+        let is_disallowed_mapped_address = self.family == IpAddressFamily::IPv6
+            && self.options.read().ipv6.v6only()
+            && is_ipv4_mapped(endpoint.addr);
+        if is_family_mismatch || is_disallowed_mapped_address {
+            return_errno_with_message!(
+                Errno::EAFNOSUPPORT,
+                "the protocol family does not match the address family"
+            );
+        }
+        Ok(())
     }
 }
 

@@ -66,7 +66,18 @@ XFSTESTS_TEST_DEV ?= /dev/vdd
 XFSTESTS_SCRATCH_DEV ?= /dev/vde
 # Specify whether to build regression tests under `test/initramfs/src/regression`.
 ENABLE_REGRESSION_TEST ?= false
+REGRESSION_TEST_DIRS ?= null
 # End of auto test features.
+
+FOCUSED_NETWORK_AUTO_TESTS := \
+	ipv6_dual_stack \
+	ipv6_dual_stack_udp \
+	ipv6_udp \
+	tcp_user_buffer_prefault \
+	udp_user_buffer_prefault
+ifneq ($(filter $(AUTO_TEST),$(FOCUSED_NETWORK_AUTO_TESTS)),)
+REGRESSION_TEST_DIRS := [ "network" ]
+endif
 
 # Network settings
 # NETDEV possible values are user,tap
@@ -132,6 +143,18 @@ ifeq ($(RISCV_ICACHE_REQUIRE_SMP4), 1)
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="RISCV_ICACHE_REQUIRE_SMP4=1"
 endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
+else ifeq ($(AUTO_TEST), ipv6_dual_stack)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/network/run_dual_stack_test.sh"
+else ifeq ($(AUTO_TEST), ipv6_dual_stack_udp)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ipv6_dual_stack_udp_test.sh"
+else ifeq ($(AUTO_TEST), ipv6_udp)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ipv6_udp_test.sh"
+else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_udp_user_buffer_prefault_test.sh"
 else ifeq ($(AUTO_TEST), dynamic_clock)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_dynamic_clock_test.sh"
@@ -144,6 +167,10 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_memfd_exec_test.sh"
 else ifeq ($(AUTO_TEST), sched_policy)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sched_policy_test.sh"
+else ifeq ($(AUTO_TEST), kcmp)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "process" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_kcmp_test.sh"
 else ifeq ($(AUTO_TEST), riscv_icache_smp4)
 ifneq ($(TARGET_ARCH), riscv64)
 $(error AUTO_TEST=riscv_icache_smp4 requires TARGET_ARCH=riscv64)
@@ -155,6 +182,21 @@ ENABLE_REGRESSION_TEST := true
 # Keep this gate independent of QEMU's incomplete Zkr seed-CSR emulation.
 RISCV_QEMU_CPU := rv64,svpbmt=true,zkr=false
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_riscv_icache_smp4_test.sh"
+else ifeq ($(AUTO_TEST), tcp_user_buffer_prefault)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_user_buffer_prefault_test.sh"
+else ifeq ($(AUTO_TEST), tcp_ppoll_wakeup)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_ppoll_wakeup_test.sh"
+else ifeq ($(AUTO_TEST), tcp_event_handoff)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_event_handoff_test.sh"
+else ifeq ($(AUTO_TEST), pthread_cond_handoff)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_pthread_cond_handoff_test.sh"
+else ifeq ($(AUTO_TEST), sysv_shm)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sysv_shm_test.sh"
 else ifeq ($(AUTO_TEST), boot)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
 else ifeq ($(AUTO_TEST), vsock)
@@ -265,7 +307,7 @@ install_osdk:
 	@# The `OSDK_LOCAL_DEV` environment variable is used for local development
 	@# without the need to publish the changes of OSDK's self-hosted
 	@# dependencies to `crates.io`.
-	@OSDK_LOCAL_DEV=1 cargo install cargo-osdk --path osdk
+	@OSDK_LOCAL_DEV=1 cargo install cargo-osdk --locked --path osdk
 
 # This will install and update OSDK automatically
 $(CARGO_OSDK): $(OSDK_SRC_FILES)
@@ -290,6 +332,16 @@ MEGREZ_DEBUG_FAST_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/fast
 MEGREZ_DEBUG_UBOOT_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/uboot
 MEGREZ_DEBUG_BOARD_OUT_DIR ?= $(CURDIR)/target/megrez-debug/board
 MEGREZ_DEBUG_BOARD_TIMEOUT ?= 300
+RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT ?=
+MEGREZ_PHYSICAL_GRAPHICS_PLAN ?=
+MEGREZ_PHYSICAL_GRAPHICS_DEVICE ?=
+MEGREZ_PHYSICAL_GRAPHICS_DISPLAY ?= hdmi
+MEGREZ_PHYSICAL_GRAPHICS_CYCLES ?= 3
+MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE ?=
+MEGREZ_PHYSICAL_GRAPHICS_MMC_KERNEL ?=
+MEGREZ_PHYSICAL_GRAPHICS_MMC_INITRAMFS ?=
+MEGREZ_PHYSICAL_GRAPHICS_MMC_DTB ?=
+MEGREZ_PHYSICAL_GRAPHICS_OUTPUT ?= $(CURDIR)/target/current-main-physical-graphics/physical/evidence
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
 # TCG software rendering paints the full desktop tens of seconds after the
 # session reports READY, so the framebuffer capture needs a long retry window.
@@ -345,6 +397,12 @@ test_riscv_debian_rootfs_unit:
 		tools.riscv.tests.test_debian_m8_browser_quality \
 		tools.riscv.tests.test_debian_m9_software -v
 
+.PHONY: test_riscv_debian_debug_console
+test_riscv_debian_debug_console:
+	@python3 -m unittest \
+		tools.riscv.tests.test_debian_debug_console \
+		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
+
 .PHONY: build_riscv_debian_browser_web_dev_overlay
 build_riscv_debian_browser_web_dev_overlay:
 	@python3 -m tools.riscv.debian.rootfs.dev_overlay materialize \
@@ -390,6 +448,76 @@ test_riscv_megrez_debug_unit:
 		tools.riscv.tests.test_megrez_install_workflow \
 		tools.riscv.tests.test_megrez_preboard -v
 
+.PHONY: test_riscv_physical_graphics_unit
+test_riscv_physical_graphics_unit:
+	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
+		python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_physical_graphics_gate \
+		tools.riscv.tests.test_megrez_physical_graphics \
+		tools.riscv.tests.test_physical_graphics_qemu_gate -v
+
+.PHONY: test_riscv_megrez_boot_stability_unit
+test_riscv_megrez_boot_stability_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_boot_stability \
+		tools.riscv.tests.test_megrez_rockos_attestation \
+		tools.riscv.tests.test_megrez_physical_graphics \
+		tools.riscv.tests.test_debian_rootfs.DebianRootfsGateRuntimeTests -v
+
+.PHONY: test_riscv_megrez_desktop_unit
+test_riscv_megrez_desktop_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_desktop \
+		tools.riscv.tests.test_megrez_firefox_browse \
+		tools.riscv.tests.test_megrez_clock_sync -v
+
+.PHONY: test_riscv_megrez_boot_manifest_unit
+test_riscv_megrez_boot_manifest_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_boot_manifest \
+		tools.riscv.tests.test_megrez_rockos_attestation -v
+
+.PHONY: test_riscv_megrez_boot_menu_unit
+test_riscv_megrez_boot_menu_unit: test_riscv_megrez_boot_manifest_unit
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_boot_menu \
+		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
+
+.PHONY: test_riscv_megrez_probe_unit
+test_riscv_megrez_probe_unit: test_riscv_megrez_boot_manifest_unit
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_probe \
+		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
+
+MEGREZ_PROBE_BUNDLE ?= target/megrez-probe/current.json
+MEGREZ_PROBE_KERNEL ?= target/osdk/aster-kernel-osdk-bin.Image
+MEGREZ_PROBE_INITRAMFS ?= target/megrez-probe/build/initramfs.cpio
+
+.PHONY: test_riscv_megrez_probe_qemu
+test_riscv_megrez_probe_qemu:
+	@python3 -m tools.riscv.megrez_probe boot syscall213 \
+		--bundle "$(MEGREZ_PROBE_BUNDLE)" \
+		--output-directory target/megrez-probe/qemu-normal \
+		--qemu --qemu-kernel "$(MEGREZ_PROBE_KERNEL)" \
+		--qemu-initramfs "$(MEGREZ_PROBE_INITRAMFS)"
+	@python3 -m tools.riscv.megrez_probe boot \
+		--bundle "$(MEGREZ_PROBE_BUNDLE)" \
+		--output-directory target/megrez-probe/qemu-deadline \
+		--qemu --qemu-kernel "$(MEGREZ_PROBE_KERNEL)" \
+		--qemu-initramfs "$(MEGREZ_PROBE_INITRAMFS)" \
+		--qemu-deadline-only
+
+DUAL_HOST_PROBE_KERNEL ?= target/osdk/aster-kernel-osdk-bin.Image
+DUAL_HOST_PROBE_INITRAMFS ?= target/dual-host-qemu-probe/artifacts/initramfs.cpio
+ROCKOS_SSH ?=
+
+.PHONY: test_riscv_dual_host_probe
+test_riscv_dual_host_probe:
+	@python3 -m tools.riscv.dual_host_qemu_probe \
+		--kernel "$(DUAL_HOST_PROBE_KERNEL)" \
+		--initramfs "$(DUAL_HOST_PROBE_INITRAMFS)" \
+		--rockos "$(ROCKOS_SSH)"
+
 .PHONY: test_riscv_megrez_debug_desktop
 test_riscv_megrez_debug_desktop:
 	@python3 -W error::ResourceWarning -m unittest \
@@ -430,6 +558,60 @@ test_riscv_megrez_debug_board: test_riscv_megrez_debug_unit
 		--simulation-result "$(MEGREZ_DEBUG_SIMULATION_RESULT)" \
 		--output-directory "$(MEGREZ_DEBUG_BOARD_OUT_DIR_EFFECTIVE)" \
 		--timeout "$(MEGREZ_DEBUG_BOARD_TIMEOUT)"
+
+.PHONY: prepare_riscv_megrez_physical_graphics
+prepare_riscv_megrez_physical_graphics:
+	@test -n "$(MEGREZ_PHYSICAL_GRAPHICS_PLAN)" || \
+		{ echo "MEGREZ_PHYSICAL_GRAPHICS_PLAN is required" >&2; exit 2; }
+	@test -n "$(MEGREZ_PHYSICAL_GRAPHICS_DEVICE)" || \
+		{ echo "MEGREZ_PHYSICAL_GRAPHICS_DEVICE is required" >&2; exit 2; }
+	@test "$(MEGREZ_PHYSICAL_GRAPHICS_DISPLAY)" = hdmi -o \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_DISPLAY)" = operator-attested || \
+		{ echo "MEGREZ_PHYSICAL_GRAPHICS_DISPLAY must be hdmi or operator-attested" >&2; exit 2; }
+	@test "$(MEGREZ_PHYSICAL_GRAPHICS_CYCLES)" = 1 -o \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_CYCLES)" = 3 || \
+		{ echo "MEGREZ_PHYSICAL_GRAPHICS_CYCLES must be 1 or 3" >&2; exit 2; }
+	@if [ "$(MEGREZ_PHYSICAL_GRAPHICS_DISPLAY)" = hdmi ]; then \
+		test -n "$(MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE)" || \
+			{ echo "MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE is required for hdmi" >&2; exit 2; }; \
+	else \
+		test -z "$(MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE)" || \
+			{ echo "MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE conflicts with operator-attested" >&2; exit 2; }; \
+	fi
+	@set -eu; count=0; \
+	for value in \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_MMC_KERNEL)" \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_MMC_INITRAMFS)" \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_MMC_DTB)"; do \
+		test -z "$$value" || count=$$((count + 1)); \
+	done; \
+	test "$$count" -eq 0 -o "$$count" -eq 3 || \
+		{ echo "all three MEGREZ_PHYSICAL_GRAPHICS_MMC_* values are required together" >&2; exit 2; }
+	@test -n "$(MEGREZ_PHYSICAL_GRAPHICS_OUTPUT)" || \
+		{ echo "MEGREZ_PHYSICAL_GRAPHICS_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH="$(CURDIR)" python3 -c \
+		'from pathlib import Path; import sys; from tools.riscv.megrez_debug_simulation import _validate_current_artifacts; from tools.riscv.megrez_physical_graphics import _read_plan; _validate_current_artifacts(_read_plan(Path(sys.argv[1])))' \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_PLAN)"
+	@set -eu; printf '%q ' env "PYTHONPATH=$(CURDIR)" python3 -m \
+		tools.riscv.megrez_physical_graphics \
+		"$(MEGREZ_PHYSICAL_GRAPHICS_DEVICE)" \
+		--plan "$(MEGREZ_PHYSICAL_GRAPHICS_PLAN)" \
+		--output-directory "$(MEGREZ_PHYSICAL_GRAPHICS_OUTPUT)"; \
+	if [ "$(MEGREZ_PHYSICAL_GRAPHICS_DISPLAY)" = hdmi ]; then \
+		printf '%q ' --hdmi-capture "$(MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE)"; \
+	else \
+		printf '%q ' --operator-display-attestation; \
+	fi; \
+	printf '%q ' --cycles "$(MEGREZ_PHYSICAL_GRAPHICS_CYCLES)"; \
+	if [ -n "$(MEGREZ_PHYSICAL_GRAPHICS_MMC_KERNEL)" ]; then \
+		printf '%q ' \
+			--mmc-kernel "$(MEGREZ_PHYSICAL_GRAPHICS_MMC_KERNEL)" \
+			--mmc-initramfs "$(MEGREZ_PHYSICAL_GRAPHICS_MMC_INITRAMFS)" \
+			--mmc-dtb "$(MEGREZ_PHYSICAL_GRAPHICS_MMC_DTB)"; \
+	fi; \
+	printf '%q ' \
+		--open-timeout 60 --artifact-timeout 300 --boot-timeout 300 \
+		--cycle-timeout 180 --hdmi-timeout 60 --recovery-timeout 930; printf '\n'
 
 .PHONY: test_riscv_debian_rootfs_gate
 test_riscv_debian_rootfs_gate:
@@ -587,6 +769,38 @@ test_riscv_debian_desktop_drm_igt_gate:
 		--boot-timeout "$(DEBIAN_DRM_IGT_BOOT_TIMEOUT)" \
 		--command-timeout "$(DEBIAN_DESKTOP_COMMAND_TIMEOUT)"
 
+.PHONY: test_riscv_debian_debug_console_qemu_gate
+test_riscv_debian_debug_console_qemu_gate:
+	@test -n "$(DEBIAN_KERNEL)" || \
+		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || \
+		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || \
+		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
+		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
+		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
+		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
+		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
+		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT)" || \
+		{ echo "DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.debug_console_qemu_gate \
+		--kernel "$(DEBIAN_KERNEL)" \
+		--uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
+
 .PHONY: test_riscv_debian_web_network_proxy_qemu
 test_riscv_debian_web_network_proxy_qemu:
 	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
@@ -648,7 +862,27 @@ test_riscv_debian_browser_web_qemu_gate:
 		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
 		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
-		--output-directory "$(DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT)" --smp 4 --boot-timeout 7200
+		--output-directory "$(DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT)" --smp 4 --boot-timeout 900
+
+.PHONY: test_riscv_physical_graphics_qemu_gate
+test_riscv_physical_graphics_qemu_gate:
+	@test -n "$(DEBIAN_KERNEL)" || { echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || { echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || { echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || { echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || { echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || { echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT)" || { echo "RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
+		python3 -m tools.riscv.physical_graphics_qemu_gate \
+		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" --stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT)" \
+		--smp 4 --boot-timeout 7200 --command-timeout 300
 
 .PHONY: test_riscv_debian_desktop_m6_browser_gate
 test_riscv_debian_desktop_m6_browser_gate:
@@ -913,6 +1147,22 @@ ifneq ($(filter $(AUTO_TEST),conformance regression boot vsock),)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "$(AUTO_TEST)" $(if $(filter 1,$(RISCV_ICACHE_REQUIRE_SMP4)),--require-riscv-icache-smp4,)
+else ifeq ($(AUTO_TEST), ipv6_dual_stack)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ipv6-dual-stack"
+else ifeq ($(AUTO_TEST), ipv6_dual_stack_udp)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ipv6-dual-stack-udp"
+else ifeq ($(AUTO_TEST), ipv6_udp)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ipv6-udp"
+else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "udp-user-buffer-prefault"
 else ifeq ($(AUTO_TEST), dynamic_clock)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "Dynamic clock regression passed." \
@@ -929,10 +1179,34 @@ else ifeq ($(AUTO_TEST), sched_policy)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "Scheduler policy regression passed." \
 		|| (echo "Scheduler policy regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), kcmp)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "kcmp regression passed." \
+		|| (echo "kcmp regression failed" && exit 1)
 else ifeq ($(AUTO_TEST), riscv_icache_smp4)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "RISC-V SMP4 icache regression passed." \
 		|| (echo "RISC-V SMP4 icache regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), tcp_user_buffer_prefault)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "TCP user buffer prefault regression passed." \
+		|| (echo "TCP user buffer prefault regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), tcp_ppoll_wakeup)
+	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "TCP ppoll wakeup regression passed." \
+		|| (echo "TCP ppoll wakeup regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), tcp_event_handoff)
+	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "tcp_event_handoff: passed 4096 socket-to-queue-to-pipe handoffs" \
+		|| (echo "TCP event handoff regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), pthread_cond_handoff)
+	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "pthread condition handoff regression passed." \
+		|| (echo "pthread condition handoff regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), sysv_shm)
+	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "System V shared memory regression passed." \
+		|| (echo "System V shared memory regression failed" && exit 1)
 endif
 
 # Build the Asterinas NixOS ISO installer image
@@ -1004,12 +1278,20 @@ profile_client: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk profile $(CARGO_OSDK_BUILD_ARGS) --remote :$(GDB_TCP_PORT) \
 		--samples $(GDB_PROFILE_COUNT) --interval $(GDB_PROFILE_INTERVAL) --format $(GDB_PROFILE_FORMAT)
 
+.PHONY: test_klog_store
+test_klog_store:
+	@mkdir -p target
+	@rustc --edition=2024 --test -D warnings kernel/comps/logger/src/klog/store_tests.rs -o target/klog-store-tests
+	@target/klog-store-tests
+	@rustc --edition=2024 --test -D warnings kernel/comps/logger/src/diagnostics_tests.rs -o target/log-diagnostics-tests
+	@target/log-diagnostics-tests
+
 .PHONY: test
 test: NON_DEFAULT_PACKAGE_NAMES = \
     $(shell ./tools/print_workspace_members.sh --non-default-ones --package-names)
 test: TEST_PACKAGE_NAMES = \
     $(filter-out linux-bzimage-setup,$(NON_DEFAULT_PACKAGE_NAMES))
-test:
+test: test_klog_store
 	@if [ -n "$(TEST_PACKAGE_NAMES)" ]; then \
 		cargo test $(addprefix -p ,$(TEST_PACKAGE_NAMES)); \
 	fi
@@ -1059,7 +1341,6 @@ format:
 	@# NOTE: `--git-dir` will suppress "detected dubious ownership in repository" errors
 	@git --git-dir=$$PWD/.git ls-files --no-directory | \
 		grep -v '[.]patch$$' | \
-		grep -v '^.claude/skills/aster-code-review$$' `# This is a symbolic link` | \
 		xargs sed -i 's/ *$$//'
 	@
 	@# Format the code using various tools

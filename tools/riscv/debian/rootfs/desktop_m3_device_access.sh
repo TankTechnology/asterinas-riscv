@@ -5,6 +5,9 @@ set -euo pipefail
 
 shopt -s nullglob
 input_devices=()
+readonly INPUT_DIRECTORY="${ASTERINAS_DESKTOP_M3_INPUT_DIRECTORY:-/dev/input}"
+readonly STABLE_INPUT_DIRECTORY="${ASTERINAS_DESKTOP_M3_STABLE_INPUT_DIRECTORY:-/run/asterinas-input}"
+readonly XKB_CACHE_DIR="/var/lib/xkb"
 
 if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     # Keep diagnostics off the synchronous console path.  On Asterinas the
@@ -12,11 +15,77 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     # device setup itself is independent of that observation.
     printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=device-access-start' \
         >>/run/browser-web-device-stage.log
+    # Xorg asks xkbcomp to atomically replace server-0.xkm in this directory.
+    # The Asterinas ext2 path on Megrez cannot yet complete that replacement,
+    # which makes Xorg abort before the virtual keyboard is activated.  The
+    # compiled keymap is an ephemeral cache, so keep it off the persistent
+    # root filesystem for the online browser session.  Xorg runs as the
+    # desktop user, so the cache needs /tmp-style sticky shared-write access.
+    xkb_cache_created=0
+    if ! /usr/bin/mountpoint -q "$XKB_CACHE_DIR"; then
+        if ! /usr/bin/mount -t tmpfs -o mode=1777,nosuid,nodev tmpfs \
+            "$XKB_CACHE_DIR"; then
+            printf '%s\n' \
+                'BROWSER_WEB_DESKTOP_STAGE=device-access-failed reason=xkb-cache-mount' \
+                >>/run/browser-web-device-stage.log
+            printf '%s\n' \
+                'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: cannot mount XKB cache tmpfs' \
+            >&2
+            exit 1
+        fi
+        xkb_cache_created=1
+    fi
+    if ! xkb_mount=$(/usr/bin/awk -v path="$XKB_CACHE_DIR" \
+        '$2 == path { print $3, $4; matches++ } END { if (matches != 1) exit 1 }' \
+        /proc/self/mounts); then
+        xkb_mount=""
+    fi
+    read -r xkb_fstype xkb_options <<<"$xkb_mount"
+    if [[ "$xkb_fstype" != tmpfs ]] ||
+        [[ ",$xkb_options," != *",rw,"* ]] ||
+        [[ ",$xkb_options," != *",nosuid,"* ]] ||
+        [[ ",$xkb_options," != *",nodev,"* ]]; then
+        printf '%s\n' \
+            'BROWSER_WEB_DESKTOP_STAGE=device-access-failed reason=xkb-cache-contract' \
+            >>/run/browser-web-device-stage.log
+        printf '%s\n' \
+            'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: invalid XKB cache mount' \
+            >&2
+        printf 'xkb-cache fstype=%s options=%s\n' \
+            "${xkb_fstype:-missing}" "${xkb_options:-missing}" >&2
+        exit 1
+    fi
+    if ((xkb_cache_created)) &&
+        { ! /usr/bin/chown root:root "$XKB_CACHE_DIR" ||
+            ! /usr/bin/chmod 01777 "$XKB_CACHE_DIR"; }; then
+        printf '%s\n' \
+            'BROWSER_WEB_DESKTOP_STAGE=device-access-failed reason=xkb-cache-permissions' \
+            >>/run/browser-web-device-stage.log
+        printf '%s\n' \
+            'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: cannot restrict XKB cache' \
+            >&2
+        exit 1
+    fi
+    if ! xkb_owner_mode=$(/usr/bin/stat -c "%u %g %a" "$XKB_CACHE_DIR"); then
+        xkb_owner_mode="unknown"
+    fi
+    if [[ "$xkb_owner_mode" != "0 0 1777" ]]; then
+        printf '%s\n' \
+            'BROWSER_WEB_DESKTOP_STAGE=device-access-failed reason=xkb-cache-contract' \
+            >>/run/browser-web-device-stage.log
+        printf '%s\n' \
+            'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: invalid XKB cache ownership or mode' \
+            >&2
+        printf 'xkb-cache owner-mode=%s\n' "$xkb_owner_mode" >&2
+        exit 1
+    fi
+    printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=xkb-cache-ready' \
+        >>/run/browser-web-device-stage.log
 fi
 # Asterinas creates the framebuffer and evdev nodes after systemd has begun
-# activating the graphical target.  Marionette-driven browser gates do not
-# need local input, but an interactive desktop must not start Xorg before both
-# configured evdev nodes exist: AutoAddDevices is disabled in xorg.conf.
+# activating the graphical target.  Xorg must not start before both identified
+# devices exist: AutoAddDevices is disabled, and event numbers vary with the
+# order in which the two physical xHCI controllers finish initialization.
 readonly device_deadline=$((SECONDS + 120))
 while [[ ! -c /dev/fb0 ]]; do
     if ((SECONDS >= device_deadline)); then
@@ -29,18 +98,37 @@ while [[ ! -c /dev/fb0 ]]; do
     fi
     /usr/bin/sleep 1
 done
-if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" != 1 ]]; then
-    while [[ ! -c /dev/input/event0 || ! -c /dev/input/event1 ]]; do
-        if ((SECONDS >= device_deadline)); then
-            printf '%s\n' \
-                'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: desktop input devices did not appear' \
-                >&2
-            exit 1
-        fi
-        /usr/bin/sleep 1
-    done
-fi
-input_devices=(/dev/input/event*)
+keyboard_node=""
+pointer_node=""
+while true; do
+    if input_nodes="$(
+        PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+            /usr/bin/python3 /usr/lib/asterinas/desktop-input-identity
+    )"; then
+        read -r keyboard_node pointer_node <<<"$input_nodes"
+        break
+    else
+        input_status=$?
+    fi
+    ((input_status != 2)) || exit 1
+    if ((SECONDS >= device_deadline)); then
+        printf '%s\n' \
+            'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: desktop input devices did not appear' \
+            >&2
+        exit 1
+    fi
+    /usr/bin/sleep 1
+done
+[[ "$keyboard_node" != "$pointer_node" ]] || {
+    printf '%s\n' 'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: ambiguous desktop input device identity' >&2
+    exit 1
+}
+input_devices=("$INPUT_DIRECTORY"/event*)
+
+/usr/bin/install -d -m 0755 -- "$STABLE_INPUT_DIRECTORY"
+/usr/bin/rm -f -- "$STABLE_INPUT_DIRECTORY/keyboard" "$STABLE_INPUT_DIRECTORY/pointer"
+/usr/bin/ln -s -- "$keyboard_node" "$STABLE_INPUT_DIRECTORY/keyboard"
+/usr/bin/ln -s -- "$pointer_node" "$STABLE_INPUT_DIRECTORY/pointer"
 
 if ! chown asterinas:video /dev/fb0 || ! chmod 0660 /dev/fb0; then
     if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then

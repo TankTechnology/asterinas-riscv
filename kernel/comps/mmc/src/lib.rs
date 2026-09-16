@@ -34,8 +34,10 @@ pub mod sdhci;
 static MMC_BLOCK_MAJOR_ID: Once<MajorIdOwner> = Once::new();
 static MMC_WRITE_PARTITION2: AtomicBool = AtomicBool::new(false);
 pub(crate) static MMC_BOUNDED_PIO: AtomicBool = AtomicBool::new(false);
+pub(crate) static MMC_DEFAULT_SPEED: AtomicBool = AtomicBool::new(false);
 aster_cmdline::define_flag_param!("asterinas.mmc_write_partition2", MMC_WRITE_PARTITION2);
 aster_cmdline::define_flag_param!("asterinas.mmc_bounded_pio", MMC_BOUNDED_PIO);
+aster_cmdline::define_flag_param!("asterinas.mmc_default_speed", MMC_DEFAULT_SPEED);
 
 #[init_component]
 fn init() -> Result<(), ComponentInitError> {

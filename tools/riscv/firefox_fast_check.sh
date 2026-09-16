@@ -10,14 +10,20 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
 cd "${REPO_ROOT}"
 
 python3 -m unittest \
+  tools.riscv.tests.test_browser_interaction_perf \
+  tools.riscv.tests.test_browser_performance_provenance \
   tools.riscv.tests.test_debian_browser_web \
   tools.riscv.tests.test_debian_browser_m5_runtime_gate \
+  tools.riscv.tests.test_debian_dev_overlay \
   tools.riscv.tests.test_megrez_network_fixture \
+  tools.riscv.tests.test_physical_graphics_gate \
   tools.riscv.tests.test_firefox_debug_tool \
   -q
 
 python3 -m py_compile \
   tools/riscv/firefox_debug_tool.py \
+  tools/riscv/debian/rootfs/browser_interaction_perf.py \
+  tools/riscv/debian/rootfs/browser_performance_provenance.py \
   tools/riscv/debian/rootfs/browser_web_contract.py \
   tools/riscv/debian/rootfs/browser_web_marionette_gate.py \
   tools/riscv/debian/rootfs/browser_web_qemu_gate.py \
@@ -30,8 +36,14 @@ bash -n \
   tools/riscv/qemu_system_gdb_probe.sh \
   tools/riscv/firefox_kernel_static_check.sh \
   tools/riscv/kernel_ktest.sh \
+  tools/riscv/debian/rootfs/build_rootfs.sh \
   tools/riscv/debian/rootfs/browser_web_evidence.sh \
   tools/riscv/debian/rootfs/browser_web_firefox.sh \
+  tools/riscv/debian/rootfs/desktop_display_provider.sh \
+  tools/riscv/debian/rootfs/desktop_m3_device_access.sh \
+  tools/riscv/debian/rootfs/desktop_m5_session.sh \
+  tools/riscv/debian/rootfs/physical_external_services_quiesce.sh \
+  tools/riscv/debian/rootfs/physical_graphics_control.sh \
   tools/riscv/debian/rootfs/firefox_gdb_probe.sh \
   tools/riscv/debian/rootfs/browser_web_timeline.sh
 

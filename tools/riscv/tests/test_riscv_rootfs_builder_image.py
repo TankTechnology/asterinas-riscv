@@ -15,6 +15,9 @@ ENTRYPOINT = IMAGE_DIRECTORY / "entrypoint.sh"
 README = IMAGE_DIRECTORY / "README.md"
 DOCKER_README = REPOSITORY_ROOT / "tools" / "docker" / "README.md"
 MAKEFILE = REPOSITORY_ROOT / "Makefile"
+ROOTFS_BUILDER = (
+    REPOSITORY_ROOT / "tools" / "riscv" / "debian" / "rootfs" / "build_rootfs.sh"
+)
 
 
 class RiscvRootfsBuilderImageTests(unittest.TestCase):
@@ -25,6 +28,7 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
         cls.readme = README.read_text(encoding="utf-8")
         cls.docker_readme = DOCKER_README.read_text(encoding="utf-8")
         cls.makefile = MAKEFILE.read_text(encoding="utf-8")
+        cls.rootfs_builder = ROOTFS_BUILDER.read_text(encoding="utf-8")
 
     def test_dockerfile_is_derived_and_installs_build_contract(self) -> None:
         self.assertIn(
@@ -86,6 +90,12 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
         self.assertNotIn("update-binfmts", self.entrypoint)
         self.assertNotIn("mount -t binfmt_misc", self.entrypoint)
         self.assertNotIn("binfmt-support", self.dockerfile)
+
+    def test_explicit_qemu_proot_virtualizes_guest_credentials(self) -> None:
+        self.assertIn(
+            'command proot -0 -w / -q "$(command -v qemu-riscv64-static)"',
+            self.rootfs_builder,
+        )
 
     def test_documentation_explains_runtime_contract(self) -> None:
         for required_text in (

@@ -67,6 +67,7 @@ struct MockBackendState {
     write_completion: IoCompletion,
     deferred_reads: VecDeque<DeferredBio>,
     deferred_writes: VecDeque<DeferredBio>,
+    read_batch_calls: usize,
 }
 
 impl MockBackendState {
@@ -81,6 +82,7 @@ impl MockBackendState {
             write_completion: IoCompletion::Immediate,
             deferred_reads: VecDeque::new(),
             deferred_writes: VecDeque::new(),
+            read_batch_calls: 0,
         }
     }
 
@@ -186,6 +188,11 @@ impl MockPageCacheBackend {
     /// Returns how many read BIOs were submitted for `page_idx`.
     pub(super) fn read_count(&self, page_idx: usize) -> usize {
         self.state.lock().submission_count(IoKind::Read, page_idx)
+    }
+
+    /// Returns how many multi-page read entry-point calls were observed.
+    pub(super) fn read_batch_calls(&self) -> usize {
+        self.state.lock().read_batch_calls
     }
 
     /// Returns how many write BIOs were submitted for `page_idx`.
@@ -329,6 +336,19 @@ impl BlockDevice for MockPageCacheBackend {
 }
 
 impl BlockAsPageCacheBackend for MockPageCacheBackend {
+    fn submit_read_bios(
+        &self,
+        requests: Vec<crate::vm::page_cache::PageCacheReadRequest>,
+        io_batch: &mut IoBatch,
+    ) -> Result<()> {
+        self.state.lock().read_batch_calls += 1;
+        for request in requests {
+            let (page_idx, bio_segment, complete_fn) = request.into_parts();
+            self.submit_read_bio(page_idx, bio_segment, complete_fn, io_batch)?;
+        }
+        Ok(())
+    }
+
     fn submit_read_bio(
         &self,
         page_idx: usize,

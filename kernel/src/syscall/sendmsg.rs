@@ -54,6 +54,13 @@ pub(super) fn send_one_message(
         MessageHeader::new(addr, control_messages)
     };
     let mut io_vec_reader = c_user_msghdr.copy_reader_array_from_user(user_space)?;
+    if let Some(error) = io_vec_reader.prefault(user_space)? {
+        if socket.supports_partial_send() {
+            io_vec_reader.accept_prefaulted_prefix();
+        } else {
+            return Err(error);
+        }
+    }
 
     socket
         .sendmsg(&mut io_vec_reader, message_header, flags)

@@ -73,6 +73,31 @@ python3 -m tools.riscv.debian.rootfs.contract verify \
   --packages-lock target/debian-riscv/rootfs/packages.lock
 ```
 
+### Build the frozen Firefox 143 RISC-V JIT root
+
+The `browser-web` profile normally retains Debian's signed Firefox ESR base.
+The complete WebAssembly-capable image is an explicit opt-in and never
+downloads an unpinned browser during the rootfs build. Put the three packages
+named by `firefox_jit_overlay.py` in one persistent directory; the installer
+requires their exact filenames and SHA-256 identities before extracting them.
+
+Reuse both that directory and the content-addressed Debian cache across builds:
+
+```bash
+tools/riscv/debian/rootfs/build_rootfs.sh \
+  --profile browser-web \
+  --output-dir target/debian-riscv/browser-web-jit/rootfs \
+  --cache-dir target/debian-riscv/cache \
+  --firefox-jit-package-dir target/debian-riscv/firefox-jit-packages
+```
+
+The resulting schema-seven manifest records the overlay marker digest as
+`tool_versions.firefox-jit-overlay`. The build also runs the static RISC-V ELF,
+NSS, CA, launcher, and online-root checks against the overlaid tree before it
+publishes the ext2 image. Keep the package and Debian cache directories; do not
+delete them between QEMU or physical-board experiments. Omitting
+`--firefox-jit-package-dir` preserves the existing ESR-only build.
+
 ## Fast browser-web development overlay
 
 Do not rerun debootstrap or apt for changes limited to the browser-web guest
@@ -96,20 +121,33 @@ make build_riscv_debian_browser_web_dev_overlay \
   DEBIAN_BROWSER_WEB_DEV_ROOTFS=/absolute/path/to/development/rootfs
 ```
 
-The command has no network or package-install phase. It verifies the frozen
+The command has no network or package-install phase.
+It verifies the frozen
 base manifest and package checksums, reflink-copies the ext2 image when the
-filesystem supports it, replaces only the pre-existing regular files listed
-in `browser_web_dev_overlay.json`, and reads every replacement back through
-`debugfs`. A missing destination, symlinked source, unsafe path, byte mismatch,
-or mode mismatch fails closed without replacing the previous development
-output.
+filesystem supports it, and updates the regular files listed
+in `browser_web_dev_overlay.json`.
+Entries replace existing files by default.
+An entry with the optional boolean `"create": true` may also add a regular file
+under an existing directory;
+this permits adding a runtime script to an older frozen base.
+Every destination ancestor must already be a directory without symlink traversal.
+The command reads every updated file back through `debugfs`.
+A missing destination without the creation opt-in, symlinked source,
+unsafe path, byte mismatch, mode mismatch, non-root ownership,
+or nonzero timestamp fails closed
+without replacing the previous development output.
+Unexpected `debugfs` diagnostics also fail closed, regardless of exit status.
+Images with the `metadata_csum` feature are rejected before editing,
+because the overlay restores the superblock write time without recalculating checksums.
 
 The output directory is a drop-in gate input containing
 `debian-root.ext2`, `rootfs-manifest.json`, `packages.lock`, and
-`source-metadata/`. Point the existing QEMU gate variables at those files. The
-additional `dev-overlay-manifest.json` records the frozen base image and
-manifest hashes, overlay specification hash, per-file source hash and mode,
-and final derived image hash. The compatibility rootfs manifest also records
+`source-metadata/`.
+Point the existing QEMU gate variables at those files.
+The additional `dev-overlay-manifest.json` records the frozen base image and
+manifest hashes, overlay specification hash, and final derived image hash.
+Each file records its source hash, mode, and effective `create` flag.
+The compatibility rootfs manifest also records
 the derivation digest as `tool_versions.asterinas-dev-overlay`; it must never
 be confused with a newly signed package build.
 
@@ -119,6 +157,68 @@ versions, signed apt metadata, filesystem size/layout, users/groups, generated
 caches, directories, symlinks, or device nodes change. QEMU run disks and
 physical-board installation artifacts remain separate from both the frozen
 base and this disposable derivative.
+
+### Browser performance evidence and display-provider boundary
+
+The browser-web guest defaults to `ASTERINAS_DISPLAY_PROVIDER=fbdev`. A full
+rootfs build resolves its Xorg configuration from
+`/etc/asterinas/display-providers/fbdev/xorg.conf.d`. For compatibility with
+an older frozen browser-web image, the development overlay may fall back to
+the existing `/etc/X11/xorg.conf.d`, but only for `fbdev`. A future DRM image
+must install
+`/etc/asterinas/display-providers/drm/xorg.conf.d/20-asterinas.conf` and set
+`ASTERINAS_DISPLAY_PROVIDER=drm`; a missing provider-specific configuration
+fails before Xorg starts. This boundary does not implement DRM or change a DRM
+kernel path.
+
+Each browser-web gate now collects `runtime-provenance.json` in the guest and
+publishes `browser-performance-provenance.json` after binding it to the exact
+host-side rootfs manifest SHA-256. The record identifies the display provider,
+framebuffer width, height, stride and pixel depth, installed Xorg server and
+fbdev driver versions, and whether Firefox uses the frozen RISC-V JIT overlay.
+The interaction gate also reports bounded trusted-input-to-frame samples and
+their nearest-rank p50/p95 summary. These records make fbdev and a future DRM
+provider directly comparable without changing the Firefox workload.
+
+The host-local network fixture now serves a separate
+`/browser-quality/perf.html` timing page and `/browser-quality/perf-second.html`
+navigation page. They leave the existing capability gate unchanged. The timing
+page exposes bounded keyboard, pointer, and scroll samples from trusted events
+and from a separately marked synthetic browser-only sequence. Each sample
+distinguishes the first and next `requestAnimationFrame` callback. Those are
+browser scheduling boundaries, not proof that Xorg copied pixels to `/dev/fb0`
+or that the HDMI monitor scanned them out. The second page records Navigation
+Timing's first byte, response end, DOM completion, and load completion within
+the browser clock domain. `browser_latency_contract.py` validates samples and
+calculates disjoint local waterfall intervals; it will reject missing or
+reordered navigation rather than report an artificial zero.
+
+Treat 100 ms p95 as the first admission target for physical interaction, not
+as an assumed baseline. Gather multiple samples during one desktop boot; do
+not reset the board or rewrite the root image between samples. The development
+overlay includes all of these runtime collectors, so script-only measurement
+changes do not rerun debootstrap, apt, or package downloads.
+
+The Stage1 archive also carries a read-only process/system CPU sampler into
+`/run/asterinas-tools/browser_system_time.py` after root handoff. Once Firefox
+and Xorg are running, collect short intervals without restarting either process:
+
+```bash
+python3 /run/asterinas-tools/browser_system_time.py \
+  --pid "$(pidof Xorg)" --pid "$(pidof firefox)" \
+  --interval-seconds 1 --samples 20 \
+  --output /run/browser-system-time.json
+```
+
+Use exact, single PIDs; `pidof` may return more than one and must be checked
+first. The exclusive JSON artifact has mode `0600` and reports guest-monotonic
+wall intervals, per-process user/kernel CPU ticks, global and per-core CPU
+tick deltas, per-core busy fractions, context-switch deltas, and runnable counts.
+CPU time is *not* input latency or
+HDMI scanout latency. This Asterinas image does not yet expose reliable
+per-process I/O, per-thread runnable wait, or physical scanout timestamps; the
+sampler marks them unsupported instead of filling them with zeros. Keep syscall
+profiling disabled for this baseline, since detailed logs perturb timing.
 
 Build the separate schema-v2 systemd profile only when the M1 artifact is not
 the intended input. It has a distinct label, UUID, and output directory, so it
@@ -347,6 +447,11 @@ python3 tools/riscv/debian/rootfs/firefox_startup_profile.py \
 用于验证 epoll 伪就绪；追加 `--syscall-diagnostic` 可记录常见 syscall 的
 进入/完成次数、累计 jiffies 及 clone/exec 边界。两者都只影响诊断镜像的
 bootargs，默认关闭，不改变正常启动语义。
+
+`debug-root-console` 验收是一个独立的低噪声串口 profile。QEMU 与 Megrez
+都使用恰好一个 `loglevel=off`，防止异步内核日志在字节层打断固定命令的
+nonce 协议。需要分析内核日志时应使用单独的诊断启动，不要扩大 root console
+分类器的接受范围。
 
 For the systemd M2 profile, use the M2 root and Stage1 archive. This gate keeps
 one QEMU process alive across the guest's normal reboot, interrupts the second

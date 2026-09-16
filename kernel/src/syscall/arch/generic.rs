@@ -124,6 +124,7 @@ macro_rules! import_generic_syscall_entries {
             recvmsg::sys_recvmsg,
             removexattr::{sys_fremovexattr, sys_lremovexattr, sys_removexattr},
             rename::sys_renameat2,
+            restart_syscall::sys_restart_syscall,
             rseq::sys_rseq,
             rt_sigaction::sys_rt_sigaction,
             rt_sigpending::sys_rt_sigpending,
@@ -187,6 +188,7 @@ macro_rules! import_generic_syscall_entries {
             symlink::sys_symlinkat,
             sync::{sys_sync, sys_syncfs},
             sysinfo::sys_sysinfo,
+            syslog::sys_syslog,
             tgkill::{sys_tgkill, sys_tkill},
             timer_create::{sys_timer_create, sys_timer_delete},
             timer_settime::{sys_timer_getoverrun, sys_timer_gettime, sys_timer_settime},
@@ -330,6 +332,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_CLOCK_GETTIME = 113          => sys_clock_gettime(args[..2]);
             SYS_CLOCK_GETRES = 114           => sys_clock_getres(args[..2]);
             SYS_CLOCK_NANOSLEEP = 115        => sys_clock_nanosleep(args[..4]);
+            SYS_SYSLOG = 116                 => sys_syslog(args[..3]);
             SYS_PTRACE = 117                 => sys_ptrace(args[..4]);
             SYS_SCHED_SETPARAM = 118         => sys_sched_setparam(args[..2]);
             SYS_SCHED_SETSCHEDULER = 119     => sys_sched_setscheduler(args[..3]);
@@ -342,6 +345,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_SCHED_GET_PRIORITY_MIN = 126 => sys_sched_get_priority_min(args[..1]);
             SYS_SCHED_RR_GET_INTERVAL = 127  => sys_sched_rr_get_interval(args[..2]);
             SYS_KILL = 129                   => sys_kill(args[..2]);
+            SYS_RESTART_SYSCALL = 128        => sys_restart_syscall(args[..0]);
             SYS_TKILL = 130                  => sys_tkill(args[..2]);
             SYS_TGKILL = 131                 => sys_tgkill(args[..3]);
             SYS_SIGALTSTACK = 132            => sys_sigaltstack(args[..2], &user_ctx);

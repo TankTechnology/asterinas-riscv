@@ -4,7 +4,7 @@ use core::{cell::Cell, mem::offset_of, time::Duration};
 
 use ostd::mm::VmIo;
 
-use super::SyscallReturn;
+use super::{SyscallReturn, restart_syscall::RestartBlock};
 use crate::{
     events::IoEvents,
     fs::file::{
@@ -13,22 +13,61 @@ use crate::{
     },
     prelude::*,
     process::{ResourceType, signal::Poller},
+    time::{clocks::MonotonicClock, timer::Timeout, wait::ManagedTimeout},
 };
 
 pub fn sys_poll(fds: Vaddr, nfds: u32, timeout: i32, ctx: &Context) -> Result<SyscallReturn> {
-    let timeout = if timeout >= 0 {
-        Some(Duration::from_millis(timeout as _))
+    ctx.thread_local.restart_block().take();
+    let deadline = if timeout >= 0 {
+        let clock = MonotonicClock::timer_manager().clock();
+        Some(
+            clock
+                .read_time()
+                .checked_add(Duration::from_millis(timeout as _))
+                .ok_or_else(|| Error::with_message(Errno::EINVAL, "poll deadline overflows"))?,
+        )
     } else {
         None
     };
 
-    do_sys_poll(fds, nfds, timeout, ctx)
+    PollRestart {
+        fds,
+        nfds,
+        deadline,
+    }
+    .restart(ctx)
+}
+
+/// A poll restart retains the host-clock deadline and rereads the user array.
+#[derive(Clone, Copy)]
+pub(crate) struct PollRestart {
+    fds: Vaddr,
+    nfds: u32,
+    deadline: Option<Duration>,
+}
+
+impl PollRestart {
+    pub(super) fn restart(self, ctx: &Context) -> Result<SyscallReturn> {
+        let result = do_sys_poll(self.fds, self.nfds, self.deadline.map(Timeout::When), ctx);
+        match result {
+            Err(err) if err.error() == Errno::EINTR => {
+                // Linux v6.12 fs/select.c: do_restart_poll. A caught handler
+                // returns EINTR even with SA_RESTART; STOP/CONT without one
+                // uses restart_syscall and includes time spent stopped.
+                ctx.thread_local
+                    .restart_block()
+                    .set(RestartBlock::Poll(self));
+                Err(Error::new(Errno::ERESTART_RESTARTBLOCK))
+            }
+            result => result,
+        }
+    }
 }
 
 pub(super) fn do_sys_poll(
     fds: Vaddr,
     nfds: u32,
-    timeout: Option<Duration>,
+    timeout: Option<Timeout>,
     ctx: &Context,
 ) -> Result<SyscallReturn> {
     if nfds as u64
@@ -68,7 +107,7 @@ pub(super) fn do_sys_poll(
         poll_fds, nfds, timeout
     );
 
-    let result = do_poll(&poll_fds, timeout.as_ref(), ctx);
+    let result = do_poll(&poll_fds, timeout, ctx);
 
     // Write back -- even when `do_poll` returns an error
     // because the `revents` field may contain garbage and must be cleared.
@@ -87,7 +126,7 @@ pub(super) fn do_sys_poll(
 
 pub(super) fn do_poll(
     poll_fds: &[PollFd],
-    timeout: Option<&Duration>,
+    timeout: Option<Timeout>,
     ctx: &Context,
 ) -> Result<usize> {
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
@@ -164,8 +203,14 @@ enum PollerResult {
 
 impl PollFiles<'_> {
     /// Registers the files with a poller, or exits early if some events are detected.
-    fn register_poller(&self, timeout: Option<&Duration>) -> PollerResult {
-        let mut poller = Poller::new(timeout);
+    fn register_poller(&self, timeout: Option<Timeout>) -> PollerResult {
+        // Relative syscall timeouts use the high-resolution host clock. A
+        // jiffies-based deadline can expire before the requested duration and
+        // disagree with ppoll's remaining-time copyback.
+        let timeout = timeout.map(|timeout| {
+            ManagedTimeout::new_with_manager(timeout, MonotonicClock::timer_manager())
+        });
+        let mut poller = Poller::new_with_timeout(timeout.into());
 
         for (index, poll_fd) in self.poll_fds.iter().enumerate() {
             let events = if let Some(file) = self.file_at(index) {

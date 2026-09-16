@@ -3,7 +3,6 @@
 use alloc::{
     boxed::Box,
     collections::{btree_map::BTreeMap, vec_deque::VecDeque},
-    ffi::CString,
     sync::Arc,
     vec,
 };
@@ -24,8 +23,8 @@ use crate::{
     device::{NotifyDevice, WithDevice},
     ext::Ext,
     iface::{
-        Iface, InterfaceFlags, ScheduleNextPoll,
-        common::{IfaceCommon, InterfaceType, IpPacket},
+        Iface, IfaceConfig, ScheduleNextPoll,
+        common::{IfaceCommon, IpPacket},
         iface::internal::IfaceInternal,
         time::get_network_timestamp,
     },
@@ -71,6 +70,39 @@ enum PendingTxAction {
 struct PendingTxState {
     packets: VecDeque<PendingTxPacket>,
     last_arp_request_ms: BTreeMap<Ipv4Address, u64>,
+    arp_request_diagnostics: ArpRequestDiagnostics,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ArpRequestSource {
+    Dispatch,
+    Retry,
+}
+
+impl ArpRequestSource {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dispatch => "dispatch",
+            Self::Retry => "retry",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ArpRequestDiagnostics {
+    dispatch_emitted: u64,
+    retry_emitted: u64,
+}
+
+impl ArpRequestDiagnostics {
+    fn record_emitted(&mut self, source: ArpRequestSource) -> u64 {
+        let counter = match source {
+            ArpRequestSource::Dispatch => &mut self.dispatch_emitted,
+            ArpRequestSource::Retry => &mut self.retry_emitted,
+        };
+        *counter = counter.saturating_add(1);
+        *counter
+    }
 }
 
 impl PendingTxState {
@@ -78,6 +110,7 @@ impl PendingTxState {
         Self {
             packets: VecDeque::new(),
             last_arp_request_ms: BTreeMap::new(),
+            arp_request_diagnostics: ArpRequestDiagnostics::default(),
         }
     }
 
@@ -96,11 +129,32 @@ impl PendingTxState {
     }
 
     fn should_request_arp(&mut self, next_hop: Ipv4Address, now_ms: u64) -> bool {
+        self.should_request_arp_from(next_hop, now_ms, ArpRequestSource::Dispatch)
+    }
+
+    fn should_request_arp_from(
+        &mut self,
+        next_hop: Ipv4Address,
+        now_ms: u64,
+        source: ArpRequestSource,
+    ) -> bool {
         if !self.is_arp_request_due(next_hop, now_ms) {
             return false;
         }
 
-        self.last_arp_request_ms.insert(next_hop, now_ms);
+        let previous_ms = self.last_arp_request_ms.insert(next_hop, now_ms);
+        let emitted = self.arp_request_diagnostics.record_emitted(source);
+        if emitted.is_power_of_two() {
+            ostd::info!(
+                "ASTERINAS_NET_ARP_RATE source={} emitted={} target={:?} now_ms={} previous_ms={:?} pending={}",
+                source.as_str(),
+                emitted,
+                next_hop,
+                now_ms,
+                previous_ms,
+                self.packets.len(),
+            );
+        }
         true
     }
 
@@ -136,7 +190,9 @@ impl PendingTxState {
         let Some(next_hop) = arp_target else {
             return PendingTxAction::Idle;
         };
-        debug_assert!(self.should_request_arp(next_hop, now_ms));
+        let request_recorded =
+            self.should_request_arp_from(next_hop, now_ms, ArpRequestSource::Retry);
+        debug_assert!(request_recorded);
         PendingTxAction::RequestArp(next_hop)
     }
 
@@ -189,6 +245,11 @@ impl PendingTxState {
     fn len(&self) -> usize {
         self.packets.len()
     }
+
+    #[cfg(ktest)]
+    const fn arp_request_diagnostics(&self) -> ArpRequestDiagnostics {
+        self.arp_request_diagnostics
+    }
 }
 
 impl<D: WithDevice, E: Ext> EtherIface<D, E> {
@@ -198,9 +259,7 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
         ip_cidr: Option<Ipv4Cidr>,
         gateway: Option<Ipv4Address>,
         static_arp_entries: &[(Ipv4Address, EthernetAddress)],
-        name: CString,
-        sched_poll: E::ScheduleNextPoll,
-        flags: InterfaceFlags,
+        config: IfaceConfig<E>,
     ) -> Arc<Self> {
         let interface = driver.with(|device| {
             let config = Config::new(wire::HardwareAddress::Ethernet(ether_addr));
@@ -222,7 +281,7 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
             interface
         });
 
-        let common = IfaceCommon::new(name, InterfaceType::ETHER, flags, interface, sched_poll);
+        let common = IfaceCommon::new(interface, config);
 
         Arc::new(Self {
             driver,
@@ -632,5 +691,30 @@ mod tests {
         assert_eq!(ether_addr, RESOLVED_ETHER);
         assert_eq!(state.len(), 1);
         assert!(state.should_request_arp(UNRESOLVED, 0));
+    }
+
+    #[ktest]
+    fn retry_records_arp_request_in_release_build() {
+        let mut state = PendingTxState::new();
+        assert!(state.enqueue(packet(1), UNRESOLVED, 0));
+
+        assert!(state.should_request_arp_from(UNRESOLVED, 0, ArpRequestSource::Dispatch));
+        assert!(!state.should_request_arp_from(
+            UNRESOLVED,
+            ARP_RETRY_INTERVAL_MS - 1,
+            ArpRequestSource::Dispatch,
+        ));
+
+        let action = state.next_action(ARP_RETRY_INTERVAL_MS, |_| None);
+        assert!(matches!(action, PendingTxAction::RequestArp(UNRESOLVED)));
+        assert!(!state.should_request_arp(UNRESOLVED, ARP_RETRY_INTERVAL_MS));
+
+        assert_eq!(
+            state.arp_request_diagnostics(),
+            ArpRequestDiagnostics {
+                dispatch_emitted: 1,
+                retry_emitted: 1,
+            }
+        );
     }
 }

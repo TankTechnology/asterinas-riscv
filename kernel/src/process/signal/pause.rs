@@ -148,8 +148,13 @@ impl Pause for Waiter {
 
         let cancel_cond = || {
             let has_pending = match reason {
-                PauseReason::StopByPtrace => posix_thread.has_pending_sigkill(),
-                _ => posix_thread.has_pending(),
+                PauseReason::StopByPtrace | PauseReason::StopBySignal => {
+                    posix_thread.has_pending_sigkill()
+                }
+                PauseReason::Sleep => {
+                    posix_thread.process().has_group_stop_work(posix_thread)
+                        || posix_thread.has_pending()
+                }
             };
 
             if has_pending {
@@ -184,7 +189,9 @@ impl Pause for Waiter {
         if let Some(posix_thread) = posix_thread_opt {
             posix_thread.set_signalled_waker(self.waker(), PauseReason::Sleep);
             // Check `has_pending` after `set_signalled_waker` to avoid race conditions.
-            if posix_thread.has_pending() {
+            if posix_thread.process().has_group_stop_work(posix_thread)
+                || posix_thread.has_pending()
+            {
                 posix_thread.clear_signalled_waker();
                 return_errno_with_message!(
                     Errno::EINTR,

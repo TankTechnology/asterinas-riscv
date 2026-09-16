@@ -14,6 +14,7 @@ SUBDIRS := \
 	ptrace \
 	sched \
 	signal \
+	syslog \
 
 ifeq ($(HOST_PLATFORM), x86_64-linux)
 SUBDIRS += \
@@ -26,3 +27,5 @@ SUBDIRS += riscv_flush_icache
 endif
 
 include ../common/Makefile
+
+$(OBJ_OUTPUT_DIR)/rseq: EXTRA_C_FLAGS += -pthread

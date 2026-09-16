@@ -196,6 +196,10 @@ impl PollKey {
     pub(crate) fn is_active(&self) -> bool {
         self.next_poll_at_ms.load(Ordering::Relaxed) != Self::INACTIVE_VAL
     }
+
+    pub(crate) fn diagnostic_next_poll_at_ms(&self) -> u64 {
+        self.next_poll_at_ms.load(Ordering::Relaxed)
+    }
 }
 
 /// Sockets to poll in the future, sorted by poll time.

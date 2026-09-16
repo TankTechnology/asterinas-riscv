@@ -35,14 +35,44 @@ impl SigQueues {
         self.count.load(Ordering::Relaxed) == 0
     }
 
-    pub fn enqueue(&self, signal: Box<dyn Signal>) {
+    /// Mutates the queue without calling observers under an outer signal lock.
+    pub(in crate::process) fn enqueue_without_notify(&self, signal: Box<dyn Signal>) -> bool {
         let mut queues = self.queues.lock();
         if queues.enqueue(signal) {
             self.count.fetch_add(1, Ordering::Relaxed);
-            // Avoid holding lock when notifying observers
-            drop(queues);
-            self.signalfd_pollee.notify(IoEvents::IN);
+            true
+        } else {
+            false
         }
+    }
+
+    pub(in crate::process) fn notify_enqueue(&self) {
+        self.signalfd_pollee.notify(IoEvents::IN);
+    }
+
+    /// Discards every matching pending signal, preserving unrelated queues.
+    pub(in crate::process) fn discard(&self, signals: SigSet) {
+        let mut queues = self.queues.lock();
+        let mut removed = 0;
+        for queue in &mut queues.std_queues {
+            if queue
+                .as_ref()
+                .is_some_and(|signal| signals.contains(signal.num()))
+            {
+                *queue = None;
+                removed += 1;
+            }
+        }
+        for queue in &mut queues.rt_queues {
+            if queue
+                .front()
+                .is_some_and(|signal| signals.contains(signal.num()))
+            {
+                removed += queue.len();
+                queue.clear();
+            }
+        }
+        self.count.fetch_sub(removed, Ordering::Relaxed);
     }
 
     pub fn dequeue(&self, blocked: &SigMask) -> Option<Box<dyn Signal>> {
@@ -95,6 +125,35 @@ impl SigQueues {
 impl Default for SigQueues {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use ostd::prelude::*;
+
+    use super::*;
+    use crate::process::signal::signals::kernel::KernelSignal;
+
+    #[ktest]
+    fn discard_preserves_unrelated_signals_and_count() {
+        let queues = SigQueues::new();
+        let realtime = SigNum::from_u8(MIN_RT_SIG_NUM);
+        for signum in [SIGTSTP, SIGTSTP, SIGUSR1, realtime, realtime] {
+            queues.enqueue_without_notify(Box::new(KernelSignal::new(signum)));
+        }
+        assert_eq!(queues.count.load(Ordering::Relaxed), 4);
+        queues.discard(SigSet::from(SIGTSTP) | realtime);
+        assert_eq!(queues.count.load(Ordering::Relaxed), 1);
+        assert_eq!(queues.sig_pending(), SigSet::from(SIGUSR1));
+        queues.discard(SigSet::from(SIGTSTP) | realtime);
+        assert_eq!(queues.count.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            queues.dequeue(&SigMask::new_empty()).unwrap().num(),
+            SIGUSR1
+        );
+        assert!(queues.is_empty());
+        assert!(queues.dequeue(&SigMask::new_empty()).is_none());
     }
 }
 

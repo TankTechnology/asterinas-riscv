@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{ffi::CString, sync::Arc};
+use alloc::sync::Arc;
 
 use smoltcp::{
     iface::Config,
@@ -12,8 +12,8 @@ use crate::{
     device::WithDevice,
     ext::Ext,
     iface::{
-        Iface, ScheduleNextPoll,
-        common::{IfaceCommon, InterfaceFlags, InterfaceType, IpPacket},
+        Iface, IfaceConfig, ScheduleNextPoll,
+        common::{IfaceCommon, IpPacket},
         iface::internal::IfaceInternal,
         time::get_network_timestamp,
     },
@@ -30,10 +30,7 @@ impl<D: WithDevice, E: Ext> IpIface<D, E> {
         driver: D,
         ip_cidr: Ipv4Cidr,
         ipv6_cidr: Option<Ipv6Cidr>,
-        name: CString,
-        sched_poll: E::ScheduleNextPoll,
-        type_: InterfaceType,
-        flags: InterfaceFlags,
+        config: IfaceConfig<E>,
     ) -> Arc<Self> {
         let interface = driver.with(|device| {
             let config = Config::new(wire::HardwareAddress::Ip);
@@ -50,7 +47,7 @@ impl<D: WithDevice, E: Ext> IpIface<D, E> {
             interface
         });
 
-        let common = IfaceCommon::new(name, type_, flags, interface, sched_poll);
+        let common = IfaceCommon::new(interface, config);
 
         Arc::new(Self { driver, common })
     }

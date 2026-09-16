@@ -23,11 +23,12 @@ impl ListenStream {
         backlog: usize,
         option: &RawTcpOption,
         observer: StreamObserver,
+        v6only: bool,
     ) -> Result<Self, (BoundTcpPort, Error)> {
         const SOMAXCONN: usize = 4096;
         let max_conn = SOMAXCONN.min(backlog);
 
-        match TcpListener::new_listen(bound_port, max_conn, option, observer) {
+        match TcpListener::new_listen(bound_port, max_conn, option, observer, v6only) {
             Ok(tcp_listener) => Ok(Self { tcp_listener }),
             Err((bound_port, ListenError::AddressInUse)) => Err((
                 bound_port,

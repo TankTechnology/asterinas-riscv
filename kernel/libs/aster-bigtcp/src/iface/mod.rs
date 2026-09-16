@@ -11,9 +11,12 @@ mod sched;
 pub(crate) mod tcp_diagnostics;
 mod time;
 
-pub use common::{BoundPort, BoundTcpPort, BoundUdpPort, InterfaceFlags, InterfaceType};
+pub use common::{
+    BoundPort, BoundTcpPort, BoundUdpPort, IfaceConfig, InterfaceFlags, InterfaceType,
+};
 pub use iface::Iface;
 pub use phy::{EtherIface, IpIface};
 pub(crate) use poll_iface::{PollKey, PollableIfaceMut};
 pub use port::BindPortConfig;
 pub use sched::ScheduleNextPoll;
+pub use tcp_diagnostics::configure_tcp_diagnostics;
