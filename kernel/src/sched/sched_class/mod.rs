@@ -33,6 +33,7 @@ use super::{
 use crate::thread::{AsThread, Thread};
 
 mod policy;
+mod sched_info;
 mod time;
 
 mod fair;
@@ -40,10 +41,13 @@ mod idle;
 mod real_time;
 mod stop;
 
-use self::policy::{SchedPolicyKind, SchedPolicyState};
 pub use self::{
     policy::{LinuxSchedPolicy, SchedPolicy},
     real_time::{RealTimePolicy, RealTimePriority},
+};
+use self::{
+    policy::{SchedPolicyKind, SchedPolicyState},
+    sched_info::SchedInfo,
 };
 
 type SchedEntity = (Arc<Task>, Arc<Thread>);
@@ -150,6 +154,7 @@ trait SchedClassRq: Send + fmt::Debug {
 pub struct SchedAttr {
     policy: SchedPolicyState,
     last_cpu: AtomicCpuId,
+    sched_info: SchedInfo,
     real_time: real_time::RealTimeAttr,
     fair: fair::FairAttr,
     reset_on_fork: AtomicBool,
@@ -161,6 +166,7 @@ impl SchedAttr {
         Self {
             policy: SchedPolicyState::new(policy),
             last_cpu: AtomicCpuId::default(),
+            sched_info: SchedInfo::new(),
             real_time: {
                 let (prio, policy) = match policy {
                     SchedPolicy::RealTime { rt_prio, rt_policy } => (rt_prio.get(), rt_policy),
@@ -229,6 +235,10 @@ impl SchedAttr {
 
     fn set_last_cpu(&self, cpu_id: CpuId) {
         self.last_cpu.set_anyway(cpu_id);
+    }
+
+    pub(crate) fn sched_info(&self) -> &SchedInfo {
+        &self.sched_info
     }
 }
 
