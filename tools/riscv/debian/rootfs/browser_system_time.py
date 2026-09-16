@@ -257,6 +257,7 @@ def interval(
 
 MAX_PROC_READ_BYTES = 8 * 1024
 MAX_REPORT_BYTES = 256 * 1024
+MAX_THREAD_REPORT_BYTES = 2 * 1024 * 1024
 MAX_INTERVALS = 64
 MAX_THREADS = 128
 MAX_THREAD_INTERVALS = 20
@@ -358,8 +359,19 @@ def read_thread_snapshot(
         raise TimeEvidenceError("thread directory is unavailable") from error
 
     threads: dict[int, dict[str, int | str]] = {}
+    vanished_tids: list[int] = []
     for tid in sorted(tids):
-        raw = read_proc_text(process_dir / "task" / str(tid) / "stat")
+        thread_dir = process_dir / "task" / str(tid)
+        try:
+            raw = read_proc_text(thread_dir / "stat")
+            schedstat = read_proc_text(thread_dir / "schedstat")
+        except TimeEvidenceError as error:
+            if not isinstance(error.__cause__, FileNotFoundError):
+                raise
+            if tid == pid:
+                raise TimeEvidenceError("thread process identity changed") from error
+            vanished_tids.append(tid)
+            continue
         parsed = parse_pid_stat(raw)
         fields = raw[raw.rindex(") ") + 2 :].split()
         if parsed.pid != tid or len(fields) <= 36:
@@ -370,14 +382,13 @@ def read_thread_snapshot(
             "stime_ticks": parsed.stime_ticks,
             "starttime_ticks": parsed.starttime_ticks,
             "last_cpu": _natural(fields[36], "thread last CPU"),
-            "schedstat": parse_schedstat(
-                read_proc_text(process_dir / "task" / str(tid) / "schedstat")
-            ).as_dict(),
+            "schedstat": parse_schedstat(schedstat).as_dict(),
         }
     return {
         "guest_monotonic_ns": guest_monotonic_ns,
         "process_starttime_ticks": process.starttime_ticks,
         "threads": threads,
+        "vanished_tids": vanished_tids,
     }
 
 
@@ -525,7 +536,10 @@ def run_thread_sampler(
         common = prior.keys() & current.keys()
         new_tids = sorted(current.keys() - prior.keys())
         gone_tids = sorted(prior.keys() - current.keys())
-        if new_tids or gone_tids:
+        vanished_tids = sorted(
+            set(before["vanished_tids"]) | set(after["vanished_tids"])
+        )
+        if new_tids or gone_tids or vanished_tids:
             limitations.add("thread-churn")
         duration_ns = after["guest_monotonic_ns"] - before["guest_monotonic_ns"]
         max_thread_ticks = max(50, 3 * duration_ns * hz // 1_000_000_000)
@@ -582,6 +596,7 @@ def run_thread_sampler(
                 "threads": deltas,
                 "new_tids": new_tids,
                 "gone_tids": gone_tids,
+                "vanished_tids": vanished_tids,
             }
         )
 
@@ -609,7 +624,7 @@ def run_thread_sampler(
     payload = (
         json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
     ).encode()
-    if len(payload) > MAX_REPORT_BYTES:
+    if len(payload) > MAX_THREAD_REPORT_BYTES:
         raise TimeEvidenceError("thread evidence exceeds the bounded output")
     try:
         descriptor = os.open(

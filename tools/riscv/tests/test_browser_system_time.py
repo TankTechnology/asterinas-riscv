@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from tools.riscv.debian.rootfs import browser_system_time
 
@@ -360,6 +361,97 @@ class SamplerTests(unittest.TestCase):
                 },
             )
             self.assertEqual(snapshot["threads"][43]["last_cpu"], 1)
+
+    def test_thread_snapshot_records_a_tid_that_exits_during_procfs_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc_root = self.fake_proc(directory)
+            for tid in (42, 43):
+                thread_dir = proc_root / "42" / "task" / str(tid)
+                thread_dir.mkdir(parents=True)
+                raw = pid_stat(40, 12, 777).replace(
+                    "42 (Firefox (Main))", f"{tid} (Firefox)"
+                )
+                (thread_dir / "stat").write_text(raw)
+                (thread_dir / "schedstat").write_text("520000000 40000000 8\n")
+
+            real_read = browser_system_time.read_proc_text
+
+            def exit_before_stat(path: Path) -> str:
+                if path == proc_root / "42" / "task" / "43" / "stat":
+                    (path.parent / "schedstat").unlink()
+                    path.unlink()
+                return real_read(path)
+
+            with mock.patch.object(
+                browser_system_time, "read_proc_text", side_effect=exit_before_stat
+            ):
+                snapshot = browser_system_time.read_thread_snapshot(
+                    proc_root, 42, 1_000_000_000
+                )
+
+            self.assertEqual(tuple(snapshot["threads"]), (42,))
+            self.assertEqual(snapshot["vanished_tids"], [43])
+
+    def test_thread_sampler_retains_the_bounded_maximum_thread_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "ready"
+            marker_ns = time.monotonic_ns()
+            marker.write_text(f"{marker_ns}\n")
+            output = Path(directory) / "threads.json"
+            timestamps = iter(
+                marker_ns + 1 + index * 250_000_000 for index in range(21)
+            )
+            snapshot_index = 0
+
+            def snapshot(_root: Path, _pid: int, guest_ns: int) -> dict[str, object]:
+                nonlocal snapshot_index
+                index = snapshot_index
+                snapshot_index += 1
+                return {
+                    "guest_monotonic_ns": guest_ns,
+                    "process_starttime_ticks": 777,
+                    "threads": {
+                        tid: {
+                            "comm": f"Firefox-{tid}",
+                            "utime_ticks": index,
+                            "stime_ticks": index,
+                            "starttime_ticks": 1000 + tid,
+                            "last_cpu": tid % 4,
+                            "schedstat": {
+                                "cpu_runtime_ns": index * 20_000_000,
+                                "runqueue_wait_ns": index * 10_000_000,
+                                "dispatch_count": index,
+                            },
+                        }
+                        for tid in range(42, 42 + 128)
+                    },
+                    "vanished_tids": [],
+                }
+
+            with (
+                mock.patch.object(
+                    browser_system_time,
+                    "read_thread_snapshot",
+                    side_effect=snapshot,
+                ),
+                mock.patch.object(os, "sched_getaffinity", return_value={0, 1}),
+            ):
+                report = browser_system_time.run_thread_sampler(
+                    Path(directory) / "proc",
+                    42,
+                    marker,
+                    output,
+                    interval_seconds=0.25,
+                    samples=20,
+                    clock_ns=lambda: next(timestamps),
+                    sleep_fn=lambda _seconds: None,
+                    clock_ticks_per_second=100,
+                )
+
+            self.assertEqual(len(report["intervals"]), 20)
+            self.assertEqual(len(report["intervals"][0]["threads"]), 128)
+            self.assertGreater(output.stat().st_size, 256 * 1024)
+            self.assertLessEqual(output.stat().st_size, 2 * 1024 * 1024)
 
     def test_thread_sampler_rejects_schedstat_counter_regression(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
