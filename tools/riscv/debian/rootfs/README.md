@@ -205,13 +205,14 @@ and Xorg are running, collect short intervals without restarting either process:
 
 ```bash
 python3 /run/asterinas-tools/browser_system_time.py \
-  --pid "$(pidof Xorg)" --pid "$(pidof firefox)" \
+  --pid "$XORG_PID" --pid "$FIREFOX_PID" \
   --interval-seconds 1 --samples 20 \
   --output /run/browser-system-time.json
 ```
 
-Use exact, single PIDs; `pidof` may return more than one and must be checked
-first. The exclusive JSON artifact has mode `0600` and reports guest-monotonic
+Use exact, independently validated PIDs from the graphical-readiness probe;
+the executable name is not a stable Firefox identity and `pidof` may return
+zero or multiple processes. The exclusive JSON artifact has mode `0600` and reports guest-monotonic
 wall intervals, per-process user/kernel CPU ticks, global and per-core CPU
 tick deltas, per-core busy fractions, context-switch deltas, and runnable counts.
 CPU time is *not* input latency or
@@ -219,6 +220,26 @@ HDMI scanout latency. This Asterinas image does not yet expose reliable
 per-process I/O, per-thread runnable wait, or physical scanout timestamps; the
 sampler marks them unsupported instead of filling them with zeros. Keep syscall
 profiling disabled for this baseline, since detailed logs perturb timing.
+
+Three physical Megrez workload samples on the kernel identified by SHA-256
+`5444c9eb40e10d26278affb00f69bb8c212ce94091204cf94a6209899d2f588c`
+measured Firefox for about 10 seconds each. Firefox consumed 9.59, 10.05,
+and 10.10 CPU-seconds, including 3.50, 3.52, and 3.64 seconds in kernel mode.
+Across all Firefox threads, `/proc/<pid>/task/<tid>/schedstat` reported only
+326, 320, and 269 ms of runnable wait. The main thread's corresponding waits
+were 171, 121, and 109 ms. Average system busy fractions were 35.3%, 37.5%,
+and 37.4% across four CPUs, while the average runnable count stayed below two.
+These samples identify an execution-bound browser workload, not CPU-affinity or
+runqueue starvation. Do not tune scheduler affinity from this evidence; obtain
+low-overhead PC or stack attribution before changing a kernel hot path.
+
+The same runs recorded synthetic event-handler-to-first-rAF p95 values below
+100 ms in two runs. A third run had 57 ms keyboard, 175 ms pointer, and 131 ms
+scroll tails, consistent with intermittent execution spikes. The Firefox
+Navigation Timing sample still rejects an out-of-bounds negative `fetchStart`;
+retain and label the remaining timing fields rather than clamping that value.
+The opt-in syscall profiler is also unsuitable for this baseline because its
+periodic full serial snapshots prevent the desktop from reaching readiness.
 
 Build the separate schema-v2 systemd profile only when the M1 artifact is not
 the intended input. It has a distinct label, UUID, and output directory, so it
