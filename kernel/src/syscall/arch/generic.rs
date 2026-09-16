@@ -70,6 +70,7 @@ macro_rules! import_generic_syscall_entries {
             getxattr::{sys_fgetxattr, sys_getxattr, sys_lgetxattr},
             inotify::{sys_inotify_add_watch, sys_inotify_init1, sys_inotify_rm_watch},
             ioctl::sys_ioctl,
+            kcmp::sys_kcmp,
             keyctl::{sys_add_key, sys_keyctl, sys_request_key},
             kill::sys_kill,
             landlock::{
@@ -442,6 +443,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_SYNCFS = 267                 => sys_syncfs(args[..1]);
             SYS_SETNS = 268                  => sys_setns(args[..2]);
             SYS_SENDMMSG = 269               => sys_sendmmsg(args[..4]);
+            SYS_KCMP = 272                   => sys_kcmp(args[..5]);
             SYS_SCHED_SETATTR = 274          => sys_sched_setattr(args[..3]);
             SYS_SCHED_GETATTR = 275          => sys_sched_getattr(args[..4]);
             SYS_RENAMEAT2 = 276              => sys_renameat2(args[..5]);

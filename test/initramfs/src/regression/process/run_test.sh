@@ -114,5 +114,6 @@ fi
 ./job_control
 ./pidfd
 ./pidfd_getfd
+./kcmp
 ./rseq
 ./wait4
