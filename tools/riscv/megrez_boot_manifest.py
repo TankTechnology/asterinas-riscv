@@ -268,11 +268,17 @@ def rockos_publication_commands(
 
     identities = _publication_inputs(generation, plan, base_url, nonce)
     config = generation.canonical_bytes()
-    required = sum(identities[name].size for name in ARTIFACT_ORDER) + len(config)
+    capacity_terms = "; ".join(
+        f'[ -e /boot/{generation.artifact_paths[name].removeprefix("/")} ] || '
+        f"_required=$((_required + {identities[name].size}))"
+        for name in ARTIFACT_ORDER
+    )
     commands = [
         "_partition=$(findmnt -n -o SOURCE -- /boot); "
         "_available=$(df -B1 --output=avail /boot | tail -n 1); "
-        f"if [ \"$_partition\" = /dev/mmcblk1p1 ] && [ \"$_available\" -ge {required} ]; "
+        f"_required={len(config)}; {capacity_terms}; "
+        "if [ \"$_partition\" = /dev/mmcblk1p1 ] "
+        "&& [ \"$_available\" -ge \"$_required\" ]; "
         "then _asterinas_publish_ok=1; printf '__ASTERINAS_ROCKOS_PUBLISH_BEGIN__ "
         f"nonce={nonce} partition=%s status=0\\n' \"$_partition\"; "
         "else _asterinas_publish_ok=0; printf '__ASTERINAS_ROCKOS_PUBLISH_BEGIN__ "
