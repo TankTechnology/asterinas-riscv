@@ -20,6 +20,7 @@ from tools.riscv.debian.rootfs.browser_system_time import (
     interval,
     parse_cpu_stat,
     parse_pid_stat,
+    parse_schedstat,
     read_proc_text,
     read_snapshot,
     run_sampler,
@@ -56,6 +57,26 @@ PID_B = pid_stat(130, 35, 777)
 
 
 class ProcParserTests(unittest.TestCase):
+    def test_schedstat_reads_exact_linux_three_field_abi(self) -> None:
+        parsed = parse_schedstat("123 456 7\n")
+
+        self.assertEqual(parsed.cpu_runtime_ns, 123)
+        self.assertEqual(parsed.runqueue_wait_ns, 456)
+        self.assertEqual(parsed.dispatch_count, 7)
+
+    def test_schedstat_rejects_noncanonical_or_overflowing_input(self) -> None:
+        invalid = (
+            "1 2\n",
+            "1 2 3 4\n",
+            "1 2 3",
+            "1  2 3\n",
+            "-1 2 3\n",
+            "18446744073709551616 2 3\n",
+        )
+        for raw in invalid:
+            with self.subTest(raw=raw), self.assertRaises(TimeEvidenceError):
+                parse_schedstat(raw)
+
     def test_pid_stat_handles_parentheses_in_comm(self) -> None:
         parsed = parse_pid_stat(PID_A)
         self.assertEqual(
@@ -206,6 +227,7 @@ class SamplerTests(unittest.TestCase):
             thread_stat = proc_root / "42" / "task" / "42" / "stat"
             thread_stat.parent.mkdir(parents=True)
             thread_stat.write_text(pid_stat(40, 12, 777))
+            (thread_stat.parent / "schedstat").write_text("520000000 10000000 8\n")
             marker = Path(directory) / "ready"
             marker.write_text(f"{time.monotonic_ns()}\n")
             output = Path(directory) / "threads.json"
@@ -235,6 +257,7 @@ class SamplerTests(unittest.TestCase):
             thread_stat = proc_root / "42" / "task" / "42" / "stat"
             thread_stat.parent.mkdir(parents=True)
             thread_stat.write_text(pid_stat(40, 12, 777))
+            (thread_stat.parent / "schedstat").write_text("520000000 10000000 8\n")
             marker_path = Path(directory) / "ready"
             marker_ns = time.monotonic_ns()
             marker_path.write_text(f"{marker_ns}\n")
@@ -243,6 +266,9 @@ class SamplerTests(unittest.TestCase):
 
             def advance(_seconds: float) -> None:
                 thread_stat.write_text(pid_stat(60, 17, 777))
+                (thread_stat.parent / "schedstat").write_text(
+                    "770000000 40000000 13\n"
+                )
 
             report = run_threads(
                 proc_root,
@@ -260,10 +286,32 @@ class SamplerTests(unittest.TestCase):
             self.assertEqual(report["ready_marker_ns"], marker_ns)
             self.assertTrue(report["physical"])
             self.assertEqual(report["clock_domain"], "guest-monotonic")
+            self.assertEqual(report["schema_version"], 2)
             self.assertEqual(report["process_id"], 42)
             self.assertEqual(report["samples"], 1)
             self.assertEqual(report["intervals"][0]["threads"][0]["cpu_user_ms"], 200)
             self.assertEqual(report["intervals"][0]["threads"][0]["cpu_kernel_ms"], 50)
+            self.assertEqual(
+                report["intervals"][0]["threads"][0]["schedstat"],
+                {
+                    "before": {
+                        "cpu_runtime_ns": 520000000,
+                        "runqueue_wait_ns": 10000000,
+                        "dispatch_count": 8,
+                    },
+                    "after": {
+                        "cpu_runtime_ns": 770000000,
+                        "runqueue_wait_ns": 40000000,
+                        "dispatch_count": 13,
+                    },
+                    "delta": {
+                        "cpu_runtime_ns": 250000000,
+                        "runqueue_wait_ns": 30000000,
+                        "dispatch_count": 5,
+                    },
+                },
+            )
+            self.assertNotIn("per-thread-runnable-wait", report["unsupported"])
             self.assertEqual(json.loads(output.read_text()), report)
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
 
@@ -287,6 +335,10 @@ class SamplerTests(unittest.TestCase):
                 (thread_dir / "stat").write_text(
                     prefix + ") " + " ".join(fields) + "\n"
                 )
+                (thread_dir / "schedstat").write_text(
+                    f"{(user_ticks + kernel_ticks) * 10000000} "
+                    f"{tid * 1000000} {tid - 40}\n"
+                )
 
             snapshot = read_threads(proc_root, 42, 1_000_000_000)
 
@@ -300,9 +352,43 @@ class SamplerTests(unittest.TestCase):
                     "stime_ticks": 12,
                     "starttime_ticks": 777,
                     "last_cpu": 2,
+                    "schedstat": {
+                        "cpu_runtime_ns": 520000000,
+                        "runqueue_wait_ns": 42000000,
+                        "dispatch_count": 2,
+                    },
                 },
             )
             self.assertEqual(snapshot["threads"][43]["last_cpu"], 1)
+
+    def test_thread_sampler_rejects_schedstat_counter_regression(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc_root = self.fake_proc(directory)
+            thread_dir = proc_root / "42" / "task" / "42"
+            thread_dir.mkdir(parents=True)
+            (thread_dir / "stat").write_text(pid_stat(40, 12, 777))
+            (thread_dir / "schedstat").write_text("520000000 40000000 8\n")
+            marker = Path(directory) / "ready"
+            marker_ns = time.monotonic_ns()
+            marker.write_text(f"{marker_ns}\n")
+            timestamps = iter((marker_ns + 1, marker_ns + 1_000_000_001))
+
+            def regress(_seconds: float) -> None:
+                (thread_dir / "stat").write_text(pid_stat(41, 12, 777))
+                (thread_dir / "schedstat").write_text("530000000 39999999 9\n")
+
+            with self.assertRaisesRegex(TimeEvidenceError, "schedstat"):
+                browser_system_time.run_thread_sampler(
+                    proc_root,
+                    42,
+                    marker,
+                    Path(directory) / "threads.json",
+                    interval_seconds=0.25,
+                    samples=1,
+                    clock_ns=lambda: next(timestamps),
+                    sleep_fn=regress,
+                    clock_ticks_per_second=100,
+                )
 
     def test_phase_wait_starts_only_after_a_real_ready_marker(self) -> None:
         wait = getattr(browser_system_time, "wait_for_ready_marker", None)
