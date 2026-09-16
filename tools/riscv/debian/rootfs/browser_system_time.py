@@ -19,6 +19,9 @@ class TimeEvidenceError(ValueError):
     """The bounded system-time snapshot is unavailable or inconsistent."""
 
 
+MAX_U64 = 2**64 - 1
+
+
 @dataclass(frozen=True)
 class ProcessCpu:
     pid: int
@@ -36,10 +39,39 @@ class SystemCpu:
     per_cpu: tuple[tuple[int, tuple[int, ...]], ...] = ()
 
 
+@dataclass(frozen=True)
+class ThreadSchedstat:
+    cpu_runtime_ns: int
+    runqueue_wait_ns: int
+    dispatch_count: int
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "cpu_runtime_ns": self.cpu_runtime_ns,
+            "runqueue_wait_ns": self.runqueue_wait_ns,
+            "dispatch_count": self.dispatch_count,
+        }
+
+
 def _natural(token: str, label: str) -> int:
     if not token.isascii() or not token.isdecimal():
         raise TimeEvidenceError(f"{label} is not a natural number")
     return int(token)
+
+
+def parse_schedstat(raw: str) -> ThreadSchedstat:
+    """Reads the exact three-field Linux per-thread schedstat ABI."""
+
+    if not raw.endswith("\n") or raw.count("\n") != 1:
+        raise TimeEvidenceError("schedstat record is not newline terminated")
+    tokens = raw[:-1].split(" ")
+    if len(tokens) != 3 or any(not token for token in tokens):
+        raise TimeEvidenceError("schedstat record is not canonical")
+
+    values = tuple(_natural(token, "schedstat") for token in tokens)
+    if any(value > MAX_U64 for value in values):
+        raise TimeEvidenceError("schedstat field exceeds u64")
+    return ThreadSchedstat(*values)
 
 
 def parse_pid_stat(raw: str) -> ProcessCpu:
@@ -338,6 +370,9 @@ def read_thread_snapshot(
             "stime_ticks": parsed.stime_ticks,
             "starttime_ticks": parsed.starttime_ticks,
             "last_cpu": _natural(fields[36], "thread last CPU"),
+            "schedstat": parse_schedstat(
+                read_proc_text(process_dir / "task" / str(tid) / "schedstat")
+            ).as_dict(),
         }
     return {
         "guest_monotonic_ns": guest_monotonic_ns,
@@ -506,6 +541,24 @@ def run_thread_sampler(
                 or user_ticks + kernel_ticks > max_thread_ticks
             ):
                 raise TimeEvidenceError("thread identity or CPU tick rate is invalid")
+            old_schedstat = old["schedstat"]
+            new_schedstat = new["schedstat"]
+            schedstat_delta = {
+                key: new_schedstat[key] - old_schedstat[key]
+                for key in (
+                    "cpu_runtime_ns",
+                    "runqueue_wait_ns",
+                    "dispatch_count",
+                )
+            }
+            if any(value < 0 for value in schedstat_delta.values()):
+                raise TimeEvidenceError("thread schedstat counter regressed")
+            max_thread_runtime_ns = max(
+                50 * 1_000_000_000 // hz,
+                3 * duration_ns,
+            )
+            if schedstat_delta["cpu_runtime_ns"] > max_thread_runtime_ns:
+                raise TimeEvidenceError("thread schedstat runtime rate is invalid")
             deltas.append(
                 {
                     "tid": tid,
@@ -514,6 +567,11 @@ def run_thread_sampler(
                     "cpu_kernel_ms": kernel_ticks * 1000 / hz,
                     "last_cpu_before": old["last_cpu"],
                     "last_cpu_after": new["last_cpu"],
+                    "schedstat": {
+                        "before": old_schedstat,
+                        "after": new_schedstat,
+                        "delta": schedstat_delta,
+                    },
                 }
             )
         intervals.append(
@@ -535,7 +593,7 @@ def run_thread_sampler(
             affinity[str(tid)] = None
             limitations.add("thread-affinity-unavailable")
     report: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "physical": physical,
         "clock_domain": "guest-monotonic",
         "process_id": pid,
@@ -546,7 +604,7 @@ def run_thread_sampler(
         "affinity": affinity,
         "intervals": intervals,
         "limitations": sorted(limitations),
-        "unsupported": ["per-thread-runnable-wait", "physical-hdmi-scanout"],
+        "unsupported": ["physical-hdmi-scanout"],
     }
     payload = (
         json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
