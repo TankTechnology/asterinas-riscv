@@ -7,10 +7,14 @@ readonly DISPLAY=:0
 readonly FIREFOX_HOME="${HOME:-/home/asterinas}"
 readonly XAUTHORITY="$FIREFOX_HOME/.Xauthority"
 readonly PROFILE="$FIREFOX_HOME/.mozilla/asterinas-browser-web"
-readonly NETWORK_MODE="${ASTERINAS_WEB_NETWORK_MODE:-}"
 readonly BASIC_ONLY="${ASTERINAS_BROWSER_WEB_BASIC_ONLY:-0}"
 readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
 readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
+NETWORK_MODE="${ASTERINAS_WEB_NETWORK_MODE:-}"
+if [[ -z "$NETWORK_MODE" && -n "$PROXY_HOST" && -n "$PROXY_PORT" ]]; then
+    NETWORK_MODE=proxy
+fi
+readonly NETWORK_MODE
 # Let Firefox finish its parent/child, window, and Marionette bootstrap before
 # the web gate performs real HTTPS navigation.  The target is fixed in the
 # unit environment and is validated by browser_web_evidence.sh; it is not an
