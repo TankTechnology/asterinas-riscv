@@ -1762,6 +1762,34 @@ class PhysicalCommandTests(unittest.TestCase):
         self.assertLess(len(serial.command.encode()), 128)
         next_line.assert_called_once()
 
+    def test_graphics_start_ack_survives_an_interleaved_kernel_log_line(self) -> None:
+        gate = load_gate(self)
+
+        class Serial:
+            def checkpoint(self) -> int:
+                return 7
+
+            def send(self, payload: bytes, deadline: float) -> None:
+                del payload, deadline
+
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        operations._serial = Serial()
+        mixed_line = (
+            "\x1b[32m[ 33.066]\x1b[0m "
+            "__ASTERINAS_PHYSICAL_BROWSER_START__ status=0"
+        )
+        with mock.patch.object(
+            operations,
+            "_next_line",
+            side_effect=[
+                (mixed_line, 8),
+                AssertionError("ignored an interleaved browser start marker"),
+            ],
+        ) as next_line:
+            operations._start_browser(100.0)
+
+        next_line.assert_called_once()
+
     def test_isolated_readiness_has_no_runtime_service_reconfiguration(self) -> None:
         gate = load_gate(self)
         events: list[str] = []
