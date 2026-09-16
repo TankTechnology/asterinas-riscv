@@ -53,11 +53,44 @@ def load_gate(test: unittest.TestCase):
     return importlib.import_module("tools.riscv.megrez_physical_graphics")
 
 
+class HumanCodeTests(unittest.TestCase):
+    def test_host_accepts_exactly_four_decimal_code_digits(self) -> None:
+        gate = load_gate(self)
+        self.assertEqual(len(gate._validated_nonce_hashes(("0427",))), 1)
+        for wrong in ("042", "04270", "abcd"):
+            with self.subTest(wrong=wrong), self.assertRaises(gate.HostGateError):
+                gate._validated_nonce_hashes((wrong,))
+
+    def test_host_generates_distinct_zero_padded_codes(self) -> None:
+        gate = load_gate(self)
+        with mock.patch.object(gate.secrets, "randbelow", side_effect=(42, 42, 73, 99)):
+            self.assertEqual(gate._fresh_codes(3), ("0042", "0073", "0099"))
+
+    def test_start_reader_accepts_only_exact_code_line(self) -> None:
+        gate = load_gate(self)
+        gate._read_operator_start(
+            "0427",
+            1.0,
+            stream=io.StringIO("0427\n"),
+            wait_readable=lambda _stream, _timeout: True,
+        )
+        for reply in ("042\n", "9876\n", "0427", "0427\nextra\n"):
+            with self.subTest(reply=reply), self.assertRaises(
+                (gate.HostGateError, TimeoutError)
+            ):
+                gate._read_operator_start(
+                    "0427",
+                    1.0,
+                    stream=io.StringIO(reply),
+                    wait_readable=lambda _stream, _timeout: True,
+                )
+
+
 class PhysicalMarkerTests(unittest.TestCase):
     NONCES = (
-        "0123456789abcdef",
-        "fedcba9876543210",
-        "0011223344556677",
+        "0123",
+        "9876",
+        "0011",
     )
 
     @classmethod
@@ -70,7 +103,7 @@ class PhysicalMarkerTests(unittest.TestCase):
             f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle={cycle} nonce_sha256={nonce_hash}",
             f"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle={cycle} nonce_sha256={nonce_hash}",
             f"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle={cycle}",
-            f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} key_downs=16 relative_events=2 absolute_events=0 left_down=1 left_up=1 digest={event_hash}",
+            f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} key_downs=4 relative_events=2 absolute_events=0 left_down=1 left_up=1 digest={event_hash}",
             f"ASTERINAS_PHYSICAL_GRAPHICS_DOM cycle={cycle} nonce_sha256={nonce_hash} trusted_key=1 trusted_input=1 trusted_pointer=1 trusted_click=1 click_count=1 color=cyan",
             f"ASTERINAS_PHYSICAL_GRAPHICS_LATENCY cycle={cycle} count=4 min_ms=1.000 p50_ms=2.000 p95_ms=4.000 max_ms=4.000",
             f"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle={cycle} sha256={screenshot_hash}",
@@ -91,7 +124,7 @@ class PhysicalMarkerTests(unittest.TestCase):
         )
         cycles = gate.classify_interaction_transcript(self._passing(), self.NONCES)
         self.assertEqual([cycle.cycle for cycle in cycles], [1, 2, 3])
-        self.assertEqual([cycle.key_downs for cycle in cycles], [16, 16, 16])
+        self.assertEqual([cycle.key_downs for cycle in cycles], [4, 4, 4])
         self.assertEqual([cycle.input_latency_p95_ms for cycle in cycles], [4.0] * 3)
 
     def test_accepts_one_exact_nonce_bound_cycle(self) -> None:
@@ -172,7 +205,7 @@ class PhysicalMarkerTests(unittest.TestCase):
             hasattr(gate, "classify_interaction_transcript"),
             "interaction marker classifier is missing",
         )
-        weak = self._passing().replace("key_downs=16", "key_downs=15", 1)
+        weak = self._passing().replace("key_downs=4", "key_downs=3", 1)
         fatal = self._passing() + "Kernel panic - not syncing\n"
         xhci = self._passing() + "USB HID transfer stopped: timeout\n"
         framebuffer = (
@@ -387,7 +420,7 @@ class HdmiEvidenceTests(unittest.TestCase):
 class OperatorDisplayEvidenceTests(unittest.TestCase):
     def test_accepts_only_nonce_bound_confirmed_final_cycle_state(self) -> None:
         gate = load_gate(self)
-        nonce_sha256 = hashlib.sha256(b"0123456789abcdef").hexdigest()
+        nonce_sha256 = hashlib.sha256(b"0123").hexdigest()
 
         evidence = gate.OperatorDisplayEvidence(
             kind="operator-attested",
@@ -428,7 +461,7 @@ class OperatorDisplayEvidenceTests(unittest.TestCase):
 
     def test_confirmation_reader_accepts_only_one_exact_nonce_bound_line(self) -> None:
         gate = load_gate(self)
-        expected = "confirm-cyan-pass 89abcdef"
+        expected = "confirm-cyan-pass 0123"
 
         def read(payload: str) -> None:
             stream = io.StringIO(payload)
@@ -450,7 +483,7 @@ class OperatorDisplayEvidenceTests(unittest.TestCase):
         )
         for payload in (
             "",
-            "confirm-cyan-pass 01234567\n",
+            "confirm-cyan-pass 9876\n",
             expected,
             expected + "\n" + expected + "\n",
         ):
@@ -489,14 +522,14 @@ class OperatorDisplayEvidenceTests(unittest.TestCase):
         )
         operations._guest_deadline = time.monotonic() + 60
 
-        evidence = operations.retain_operator_display("0123456789abcdef", 30)
+        evidence = operations.retain_operator_display("0123", 30)
 
         self.assertEqual(evidence.kind, "operator-attested")
         self.assertEqual(
             evidence.nonce_sha256,
-            hashlib.sha256(b"0123456789abcdef").hexdigest(),
+            hashlib.sha256(b"0123").hexdigest(),
         )
-        self.assertEqual(reader.call_args.args[0], "confirm-cyan-pass 89abcdef")
+        self.assertEqual(reader.call_args.args[0], "confirm-cyan-pass 0123")
         self.assertGreater(reader.call_args.args[1], 0)
         self.assertLessEqual(reader.call_args.args[1], 30)
 
@@ -530,7 +563,11 @@ class PhysicalCliTests(unittest.TestCase):
         self.assertEqual(external.cycles, 3)
         self.assertIsNotNone(external.hdmi_capture)
         self.assertFalse(external.operator_display_attestation)
+        self.assertFalse(external.operator_start)
         self.assertEqual(operator.cycles, 1)
+        self.assertTrue(
+            gate.parse_args(common + ("--operator-display-attestation", "--operator-start")).operator_start
+        )
         self.assertEqual(operator.recovery_timeout, 1170.0)
         self.assertIsNone(operator.hdmi_capture)
         self.assertTrue(operator.operator_display_attestation)
@@ -595,6 +632,18 @@ class PhysicalCliTests(unittest.TestCase):
 
 
 class PhysicalMmcArtifactTests(unittest.TestCase):
+    def test_physical_artifacts_require_a_publication_prepared_dtb(self) -> None:
+        gate = load_gate(self)
+        plan = SimpleNamespace(
+            artifacts=(SimpleNamespace(name="megrez_dtb", path="/tmp/board.dtb"),)
+        )
+        with (
+            mock.patch.object(gate, "_validate_current_artifacts", return_value={}),
+            mock.patch.object(gate, "validate_prepared_dtb") as validate_dtb,
+        ):
+            gate._validate_physical_artifacts(plan)
+        validate_dtb.assert_called_once_with(Path("/tmp/board.dtb"))
+
     def test_real_boot_uses_conservative_linux_shell_uart_pacing(self) -> None:
         gate = load_gate(self)
         artifacts = tuple(
@@ -614,6 +663,15 @@ class PhysicalMmcArtifactTests(unittest.TestCase):
         with mock.patch.object(gate, "SerialConsole") as serial_console:
             operations.boot(SimpleNamespace(artifacts=artifacts), "console=tty0", 30)
 
+        commands = [call.args[0] for call in operations._session.command.call_args_list]
+        self.assertEqual(commands.count("fdt resize 0x1000"), 1)
+        self.assertFalse(any("framebuffer@fd800000" in command for command in commands))
+        self.assertFalse(any("asterinas,usb-host" in command for command in commands))
+        self.assertEqual(commands[-1], "booti 0x80200000 0x83000000:0xca 0xf0000000")
+        self.assertEqual(
+            operations._session.command.call_args.kwargs["expect"], "Enter riscv_boot"
+        )
+        operations._session.send.assert_not_called()
         serial_console.assert_called_once_with(
             41,
             max_bytes=gate.MAX_TRANSCRIPT_BYTES,
@@ -769,6 +827,10 @@ class PhysicalLifecycleTests(unittest.TestCase):
                 usb_inputs=2,
                 usb_keyboard=True,
                 usb_mouse=True,
+                keyboard_node="event1",
+                mouse_node="event0",
+                xorg_keyboard=True,
+                xorg_mouse=True,
             )
 
         def run_cycle(self, cycle: int, nonce: str, _timeout: float) -> bytes:
@@ -786,7 +848,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
                     f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle={cycle} nonce_sha256={nonce_hash}",
                     f"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle={cycle} nonce_sha256={nonce_hash}",
                     f"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle={cycle}",
-                    f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} key_downs=16 relative_events=2 absolute_events=0 left_down=1 left_up=1 digest={event_hash}",
+                    f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} key_downs=4 relative_events=2 absolute_events=0 left_down=1 left_up=1 digest={event_hash}",
                     f"ASTERINAS_PHYSICAL_GRAPHICS_DOM cycle={cycle} nonce_sha256={nonce_hash} trusted_key=1 trusted_input=1 trusted_pointer=1 trusted_click=1 click_count=1 color=cyan",
                     f"ASTERINAS_PHYSICAL_GRAPHICS_LATENCY cycle={cycle} count=4 min_ms=1.000 p50_ms=2.000 p95_ms=4.000 max_ms=4.000",
                     f"ASTERINAS_PHYSICAL_GRAPHICS_SCREENSHOT cycle={cycle} sha256={screenshot_hash}",
@@ -831,6 +893,9 @@ class PhysicalLifecycleTests(unittest.TestCase):
             self._transcript.append(
                 f"ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles={cycles_requested}"
             )
+
+        def request_reboot(self, _timeout: float) -> None:
+            self.events.append("request-reboot")
 
         def await_recovery(self, _timeout: float) -> None:
             self.events.append("recovery")
@@ -883,9 +948,29 @@ class PhysicalLifecycleTests(unittest.TestCase):
         self.assertEqual(
             tokens.count("systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1"), 1
         )
+        self.assertEqual(tokens.count("systemd.mask=serial-getty@ttyS0.service"), 1)
+        self.assertEqual(tokens.count("systemd.mask=console-getty.service"), 1)
         self.assertEqual(
-            tokens[-3:],
-            ["--", "--root-init=systemd", "--debug-console=isolated-root"],
+            tokens.count("systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy"), 1
+        )
+        self.assertEqual(
+            tokens.count("systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=127.0.0.1"),
+            1,
+        )
+        self.assertEqual(
+            tokens.count("systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=9"), 1
+        )
+        self.assertNotIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=10.100.19.216", tokens
+        )
+        self.assertEqual(
+            tokens[-4:],
+            [
+                "--",
+                "--root-init=systemd",
+                "--debug-console=isolated-root",
+                "--volatile-home",
+            ],
         )
 
     def test_physical_bootargs_remove_partition_write_aliases(self) -> None:
@@ -923,6 +1008,14 @@ class PhysicalLifecycleTests(unittest.TestCase):
         self.assertLess(
             operations.events.index("recovery"), operations.events.index("publish:True")
         )
+        self.assertLess(
+            operations.events.index("complete"),
+            operations.events.index("request-reboot"),
+        )
+        self.assertLess(
+            operations.events.index("request-reboot"),
+            operations.events.index("recovery"),
+        )
         self.assertEqual(operations.events.count("publish:True"), 1)
         self.assertEqual(operations.events[-1], "close")
 
@@ -959,6 +1052,29 @@ class PhysicalLifecycleTests(unittest.TestCase):
         self.assertLess(
             operations.events.index("final-state"), operations.events.index("complete")
         )
+
+    def test_operator_start_follows_readiness_and_precedes_cycle(self) -> None:
+        gate = load_gate(self)
+        operations = self.Operations(gate)
+
+        def confirm(code: str) -> None:
+            operations.events.append(f"operator-start:{code}")
+
+        result = gate.run_physical_graphics(
+            self._plan(),
+            gate.PhysicalGraphicsConfig(
+                cycles_requested=1,
+                display_mode=gate.DisplayEvidenceMode.OPERATOR_ATTESTED,
+            ),
+            operations,
+            nonces=self.NONCES[:1],
+            operator_start=confirm,
+            artifact_validator=lambda _plan: {},
+        )
+
+        self.assertTrue(result.passed)
+        self.assertLess(operations.events.index("readiness"), operations.events.index("operator-start:0123"))
+        self.assertLess(operations.events.index("operator-start:0123"), operations.events.index("cycle-1"))
 
     def test_rejects_nonce_count_that_does_not_match_requested_cycles(self) -> None:
         gate = load_gate(self)
@@ -1005,6 +1121,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
         )
         self.assertFalse(result.passed)
         self.assertTrue(result.recovered)
+        self.assertIn("request-reboot", operations.events)
         self.assertLess(
             operations.events.index("recovery"),
             operations.events.index("publish:False"),
@@ -1099,7 +1216,7 @@ class PhysicalCommandTests(unittest.TestCase):
         serial = mock.Mock(transcript=b"")
         serial.checkpoint.return_value = 0
         operations._serial = serial
-        nonce = "0123456789abcdef"
+        nonce = "0123"
         nonce_hash = hashlib.sha256(nonce.encode()).hexdigest()
         lines = iter(
             (
@@ -1125,12 +1242,48 @@ class PhysicalCommandTests(unittest.TestCase):
 
         self.assertIn("[physical cycle 1/1]", printed.call_args.args[0])
 
+    def test_recovery_interrupts_a_stuck_shell_command_before_reboot(self) -> None:
+        gate = load_gate(self)
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        operations._debug_console_ready = True
+        operations._guest_deadline = time.monotonic() + 60
+        operations._recovery_cursor = 0
+        serial = mock.Mock(transcript=b"")
+        serial.checkpoint.side_effect = (7, 11)
+        operations._serial = serial
+        nonce = "0123"
+        marker = f"__ASTERINAS_PHYSICAL_REBOOT__ nonce={nonce}"
+
+        with (
+            mock.patch.object(gate.secrets, "token_hex", return_value=nonce),
+            mock.patch.object(
+                operations,
+                "_next_line",
+                return_value=(marker, 12),
+            ),
+            mock.patch.object(operations, "_sync_serial_log"),
+        ):
+            operations.request_reboot(30)
+
+        self.assertEqual(serial.send.call_args_list[0].args[0], b"\x03\n")
+        self.assertEqual(
+            serial.send.call_args_list[1].args[0],
+            f"sync; printf '{marker}\\n'; reboot -f\n".encode(),
+        )
+        serial.wait_for.assert_called_once_with(
+            b"root@asterinas-debug:", mock.ANY, start=7
+        )
+        self.assertEqual(operations._recovery_cursor, 11)
+
     def test_one_cycle_final_command_and_completion_marker(self) -> None:
         gate = load_gate(self)
-        command = gate.physical_final_command("0123456789abcdef", 41, 180.0, cycle=1)
-        self.assertIn("/run/asterinas-tools/physical-graphics-gate", command)
-        self.assertIn("--cycle 1", command)
-        self.assertNotIn("--cycle 3", command)
+        command = gate.physical_final_command("0123", 41, 180.0, cycle=1)
+        self.assertEqual(
+            command,
+            "/run/asterinas-tools/physical-graphics-control final "
+            "1 0123 180 540 41",
+        )
+        self.assertLess(len(command.encode()), 128)
 
         operations = object.__new__(gate.RealPhysicalGraphicsOperations)
         serial = mock.Mock()
@@ -1164,7 +1317,7 @@ class PhysicalCommandTests(unittest.TestCase):
         serial.checkpoint.return_value = 0
         operations._serial = serial
         now = [100.0]
-        nonce = "0123456789abcdef"
+        nonce = "0123"
         nonce_hash = hashlib.sha256(nonce.encode()).hexdigest()
         lines = iter(
             (elapsed, line)
@@ -1208,7 +1361,7 @@ class PhysicalCommandTests(unittest.TestCase):
 
         ready = (
             "ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=1 nonce_sha256="
-            + hashlib.sha256("0123456789abcdef".encode()).hexdigest()
+            + hashlib.sha256("0123".encode()).hexdigest()
         )
         for prefix in ([], [ready]):
             for status in ("cycle=1 status=1", "cycle=1 status=0", "malformed"):
@@ -1241,7 +1394,7 @@ class PhysicalCommandTests(unittest.TestCase):
                             gate.HostGateError, "exited before PASS"
                         ),
                     ):
-                        operations.run_cycle(1, "0123456789abcdef", 30)
+                        operations.run_cycle(1, "0123", 30)
 
     def test_cli_exposes_every_physical_phase_deadline(self) -> None:
         gate = load_gate(self)
@@ -1285,15 +1438,31 @@ class PhysicalCommandTests(unittest.TestCase):
     ) -> None:
         gate = load_gate(self)
         command = gate.physical_preflight_command()
+        script = (
+            REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_graphics_control.sh"
+        ).read_text()
+        identity_script = (
+            REPOSITORY_ROOT
+            / "tools/riscv/debian/rootfs/desktop_input_identity.py"
+        ).read_text()
+        self.assertEqual(
+            command, "/run/asterinas-tools/g preflight"
+        )
+        self.assertLessEqual(len(command.encode()), 32)
         for fragment in (
             "/dev/fb0",
             "/dev/input/event*",
-            "/proc/$_asterinas_physical_xorg_pid/fd/*",
+            "/proc/$xorg_pid/fd/*",
             "readlink",
-            "0x81004506",
-            "0x80084502",
             "usb_boot_keyboard",
             "usb_boot_mouse",
+            "QEMU Virtio Keyboard",
+            "QEMU Virtio Tablet",
+            "keyboard_node",
+            "mouse_node",
+            "xorg_keyboard",
+            "xorg_mouse",
+            "/etc/X11/xorg.conf.d/20-asterinas.conf",
             "pgrep -x Xorg",
             "/tmp/.X11-unix/X0",
             "openbox",
@@ -1302,9 +1471,14 @@ class PhysicalCommandTests(unittest.TestCase):
             "NRestarts",
             "__ASTERINAS_PHYSICAL_PREFLIGHT__",
         ):
-            self.assertIn(fragment, command)
-        self.assertNotIn("dmesg", command)
-        self.assertNotIn("Xorg.0.log", command)
+            self.assertIn(fragment, script)
+        for fragment in ("0x81004506", "0x80084502", "0x81004507"):
+            self.assertIn(fragment, identity_script)
+        self.assertEqual(
+            script.count("PYTHONPYCACHEPREFIX=/run/asterinas-python-cache"), 3
+        )
+        self.assertNotIn("dmesg", script)
+        self.assertNotIn("Xorg.0.log", script)
 
     def test_preflight_returns_incomplete_marker_for_bounded_retry(self) -> None:
         gate = load_gate(self)
@@ -1317,7 +1491,8 @@ class PhysicalCommandTests(unittest.TestCase):
             "__ASTERINAS_PHYSICAL_PREFLIGHT__ browser_pid=0 input_nodes=2 "
             "framebuffer=0 xorg_fbdev=0 openbox=1 firefox=0 "
             "browser_service=inactive browser_restarts=0 usb_inputs=0 "
-            "usb_keyboard=0 usb_mouse=0"
+            "usb_keyboard=0 usb_mouse=0 keyboard_node=missing "
+            "mouse_node=missing xorg_keyboard=0 xorg_mouse=0"
         )
 
         with (
@@ -1341,21 +1516,37 @@ class PhysicalCommandTests(unittest.TestCase):
         gate = load_gate(self)
         command = gate.physical_external_services_quiesce_command()
         browser_command = gate.physical_browser_start_command()
+        web_browser_command = gate.physical_web_browser_start_command()
         script = (
             REPOSITORY_ROOT
             / "tools/riscv/debian/rootfs/physical_external_services_quiesce.sh"
         ).read_text()
+        control_script = (
+            REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_graphics_control.sh"
+        ).read_text()
 
         self.assertEqual(
             command,
-            "/run/asterinas-tools/physical-external-services-quiesce",
+            "/run/asterinas-tools/q",
         )
+        self.assertEqual(
+            browser_command,
+            "/run/asterinas-tools/g start-browser",
+        )
+        self.assertEqual(
+            web_browser_command,
+            "/run/asterinas-tools/g start-web",
+        )
+        self.assertLessEqual(len(browser_command.encode()), 40)
+        self.assertLessEqual(len(web_browser_command.encode()), 32)
         self.assertNotIn("/usr/lib/asterinas", command)
         self.assertNotIn("||", command)
         self.assertNotIn(";", command)
         self.assertNotIn("\n", command)
         for fragment in (
-            "timeout 60",
+            "systemctl_bounded()",
+            '/usr/bin/timeout --kill-after=1s 5s /usr/bin/systemctl "$@"',
+            "systemctl_bounded stop --no-block",
             "/run/systemd/system.control",
             "/run/asterinas-physical-home",
             "mount --bind",
@@ -1365,15 +1556,14 @@ class PhysicalCommandTests(unittest.TestCase):
             "Environment=ASTERINAS_DESKTOP_PROXY_HOST=127.0.0.1",
             "Environment=ASTERINAS_DESKTOP_PROXY_PORT=9",
             "ln -sfn /dev/null",
-            "systemctl daemon-reload",
-            "systemctl stop",
+            "systemctl_bounded daemon-reload",
             "_asterinas_stop_units",
             "_asterinas_after_stop_state",
             "active | activating | deactivating | reloading",
             "inactive | failed",
-            "systemctl start --no-block asterinas-desktop-m5.service",
-            "systemctl start --no-block \\\n    asterinas-browser-web-timeline-basic.service",
-            "systemctl reset-failed",
+            "systemctl_bounded start --no-block asterinas-desktop-m5.service",
+            "systemctl_bounded start --no-block \\\n    asterinas-browser-web-timeline-basic.service",
+            "systemctl_bounded reset-failed",
             "asterinas-browser-web-timeline-basic.service",
             "asterinas-browser-web-evidence.service",
             "asterinas-desktop-m5-network.service",
@@ -1387,11 +1577,35 @@ class PhysicalCommandTests(unittest.TestCase):
             "__ASTERINAS_PHYSICAL_EXTERNAL__",
         ):
             self.assertIn(fragment, script)
+        self.assertEqual(script.count("/usr/bin/systemctl"), 1)
         self.assertNotIn("--job-mode=ignore-dependencies", script)
         self.assertNotIn("\n", browser_command)
-        self.assertLess(len(browser_command.encode()), 512)
-        self.assertIn("--job-mode=ignore-dependencies", browser_command)
-        self.assertIn("__ASTERINAS_PHYSICAL_BROWSER_START__", browser_command)
+        self.assertIn("--job-mode=ignore-dependencies", control_script)
+        self.assertIn("__ASTERINAS_PHYSICAL_BROWSER_START__", control_script)
+        start_section = control_script[control_script.index("start_browser() {") :]
+        stop_browser = start_section.index(
+            "stop --no-block asterinas-browser-web.service"
+        )
+        stop_desktop = start_section.index(
+            "stop --no-block asterinas-desktop-m5.service"
+        )
+        identify = start_section.index("set -- $(input_identity)")
+        provider = start_section.index("ASTERINAS_DISPLAY_PROVIDER_ROOT=")
+        start_desktop = start_section.index(
+            "asterinas-desktop-m5.service >/dev/null 2>&1", provider
+        )
+        start_browser = start_section.index(
+            "asterinas-browser-web.service >/dev/null 2>&1", start_desktop
+        )
+        offsets = [
+            stop_browser,
+            stop_desktop,
+            identify,
+            provider,
+            start_desktop,
+            start_browser,
+        ]
+        self.assertEqual(offsets, sorted(offsets))
         self.assertIn('mount --bind "$_asterinas_home" /home/asterinas', script)
         self.assertNotIn(
             'mount --bind "$_asterinas_home/browser-web-timeline.log"', script
@@ -1399,46 +1613,92 @@ class PhysicalCommandTests(unittest.TestCase):
         self.assertLess(
             script.index('mount --bind "$_asterinas_home" /home/asterinas'),
             script.index(
-                "systemctl start --no-block \\\n    asterinas-browser-web-timeline-basic.service"
+                "systemctl_bounded start --no-block \\\n    asterinas-browser-web-timeline-basic.service"
             ),
         )
         self.assertLess(
             script.index("ln -sfn /dev/null"),
-            script.index("systemctl daemon-reload"),
+            script.index("systemctl_bounded daemon-reload"),
         )
         self.assertLess(
-            script.index("systemctl daemon-reload"),
-            script.index("systemctl stop"),
+            script.index("systemctl_bounded daemon-reload"),
+            script.index("systemctl_bounded stop --no-block"),
         )
         self.assertLess(
-            script.index("systemctl stop"),
+            script.index("systemctl_bounded stop --no-block"),
             script.index("mount --bind"),
         )
         self.assertLess(
             script.index("mount --bind"),
-            script.index("systemctl start --no-block asterinas-desktop-m5.service"),
-        )
-        self.assertLess(
-            script.index("systemctl start --no-block asterinas-desktop-m5.service"),
             script.index(
-                "systemctl start --no-block \\\n    asterinas-browser-web-timeline-basic.service"
+                "systemctl_bounded start --no-block asterinas-desktop-m5.service"
             ),
         )
-        self.assertNotIn("systemctl start --no-block graphical.target", script)
+        self.assertLess(
+            script.index(
+                "systemctl_bounded start --no-block asterinas-desktop-m5.service"
+            ),
+            script.index(
+                "systemctl_bounded start --no-block \\\n    asterinas-browser-web-timeline-basic.service"
+            ),
+        )
+        self.assertNotIn("systemctl_bounded start --no-block graphical.target", script)
+        self.assertIn("start-web) [ \"$#\" -eq 0 ]", control_script)
+        self.assertIn(
+            '/usr/bin/timeout --kill-after=1s 3s /usr/bin/systemctl "$@"',
+            control_script,
+        )
+        self.assertIn(
+            "/usr/bin/timeout --kill-after=1s 2s /usr/bin/python3 -c",
+            control_script,
+        )
+        self.assertIn(
+            "/run/asterinas-tools/desktop-input-identity", control_script
+        )
+        self.assertNotIn('open(p,"rb",buffering=0)', control_script)
+        self.assertNotIn("attempt\" -ge 120", control_script)
+        for stage in (
+            "input-wait",
+            "input-ready",
+            "desktop-start",
+            "desktop-ready",
+            "browser-start",
+        ):
+            self.assertIn("browser_stage " + stage, control_script)
+        self.assertIn(
+            "__ASTERINAS_PHYSICAL_BROWSER_STAGE__ stage=%s", control_script
+        )
 
     def test_system_probe_is_one_short_stage1_bound_command(self) -> None:
         gate = load_gate(self)
-        command = gate.physical_system_probe_command(
-            "0123456789abcdef0123456789abcdef"
-        )
+        nonce = "0123456789abcdef0123456789abcdef"
+        command = gate.physical_system_probe_command(nonce)
+        serial_commands = gate.physical_system_probe_serial_commands(nonce)
+        script = (
+            REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_system_probe.sh"
+        ).read_text()
 
         self.assertEqual(
             command,
-            "/run/asterinas-tools/physical-system-probe "
+            "/run/asterinas-tools/s "
             "0123456789abcdef0123456789abcdef",
         )
         self.assertLess(len(command.encode()), 128)
+        self.assertEqual(
+            serial_commands,
+            (
+                "N=0123456789abcdef",
+                "N=${N}0123456789abcdef",
+                "/run/asterinas-tools/s $N",
+            ),
+        )
+        self.assertLessEqual(max(map(len, serial_commands)), 32)
+        self.assertIn('nonce=${1-${N-}}', script)
         self.assertNotIn("systemctl", command)
+        self.assertNotIn("systemctl", script)
+        self.assertNotIn("sleep", script)
+        self.assertNotIn("GRAPHICAL", script)
+        self.assertNotIn("DESKTOP", script)
         with self.assertRaises(ValueError):
             gate.physical_system_probe_command("not-a-nonce")
 
@@ -1471,10 +1731,10 @@ class PhysicalCommandTests(unittest.TestCase):
 
         self.assertEqual(
             serial.command,
-            "/run/asterinas-tools/physical-external-services-quiesce\n",
+            "/run/asterinas-tools/q\n",
         )
 
-    def test_browser_start_ack_precedes_the_strong_readiness_probe(self) -> None:
+    def test_graphics_start_ack_precedes_the_strong_readiness_probe(self) -> None:
         gate = load_gate(self)
 
         class Serial:
@@ -1499,9 +1759,10 @@ class PhysicalCommandTests(unittest.TestCase):
             operations._start_browser(100.0)
 
         self.assertEqual(serial.command, gate.physical_browser_start_command() + "\n")
+        self.assertLess(len(serial.command.encode()), 128)
         next_line.assert_called_once()
 
-    def test_isolated_readiness_starts_graphics_only_after_runtime_masks(self) -> None:
+    def test_isolated_readiness_has_no_runtime_service_reconfiguration(self) -> None:
         gate = load_gate(self)
         events: list[str] = []
 
@@ -1529,6 +1790,10 @@ class PhysicalCommandTests(unittest.TestCase):
             usb_inputs=2,
             usb_keyboard=True,
             usb_mouse=True,
+            keyboard_node="event1",
+            mouse_node="event0",
+            xorg_keyboard=True,
+            xorg_mouse=True,
         )
 
         with (
@@ -1541,11 +1806,6 @@ class PhysicalCommandTests(unittest.TestCase):
                 operations,
                 "_probe_system_readiness",
                 side_effect=lambda _deadline: events.append("debug"),
-            ),
-            mock.patch.object(
-                operations,
-                "_quiesce_external_services",
-                side_effect=lambda _deadline: events.append("quiesce"),
             ),
             mock.patch.object(
                 operations,
@@ -1571,7 +1831,6 @@ class PhysicalCommandTests(unittest.TestCase):
             [
                 "ready",
                 "validate",
-                "quiesce",
                 "debug",
                 "start-browser",
                 "probe",
@@ -1593,12 +1852,21 @@ class PhysicalCommandTests(unittest.TestCase):
             "usb_inputs": 2,
             "usb_keyboard": True,
             "usb_mouse": True,
+            "keyboard_node": "event1",
+            "mouse_node": "event0",
+            "xorg_keyboard": True,
+            "xorg_mouse": True,
         }
         gate.GraphicalReadinessEvidence(**values)
         for mutation in (
             {"usb_inputs": 1},
             {"usb_keyboard": False},
             {"usb_mouse": False},
+            {"keyboard_node": "missing"},
+            {"mouse_node": "missing"},
+            {"keyboard_node": "event0", "mouse_node": "event0"},
+            {"xorg_keyboard": False},
+            {"xorg_mouse": False},
             {"framebuffer": False},
         ):
             with self.subTest(mutation=mutation), self.assertRaises(gate.HostGateError):
@@ -1608,17 +1876,13 @@ class PhysicalCommandTests(unittest.TestCase):
         self,
     ) -> None:
         gate = load_gate(self)
-        command = gate.physical_cycle_command(2, "0123456789abcdef", 180.0)
-        for fragment in (
-            "nsenter",
-            "asterinas-browser-web.service",
-            "/run/asterinas-tools/physical-graphics-gate",
-            "--nonce 0123456789abcdef",
-            "--cycle 2",
-            "--setup-timeout 540",
-            "__ASTERINAS_PHYSICAL_COMMAND_STATUS__cycle=2 status=%s",
-        ):
-            self.assertIn(fragment, command)
+        command = gate.physical_cycle_command(2, "0123", 180.0)
+        self.assertEqual(
+            command,
+            "/run/asterinas-tools/physical-graphics-control cycle "
+            "2 0123 180 540 0 1920 1080",
+        )
+        self.assertLess(len(command.encode()), 128)
         for forbidden in (
             "xdotool",
             "PerformActions",
@@ -1628,9 +1892,9 @@ class PhysicalCommandTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, command)
         for cycle, nonce, timeout in (
-            (0, "0123456789abcdef", 180.0),
+            (0, "0123", 180.0),
             (1, "not-a-nonce", 180.0),
-            (1, "0123456789abcdef", 301.0),
+            (1, "0123", 301.0),
         ):
             with (
                 self.subTest(cycle=cycle, nonce=nonce, timeout=timeout),
@@ -1639,23 +1903,33 @@ class PhysicalCommandTests(unittest.TestCase):
                 gate.physical_cycle_command(cycle, nonce, timeout)
         with self.assertRaises(ValueError):
             gate.physical_cycle_command(
-                1, "0123456789abcdef", 180.0, setup_timeout=901.0
+                1, "0123", 180.0, setup_timeout=901.0
             )
 
     def test_final_command_rechecks_cycle_three_without_navigation_or_input(
         self,
     ) -> None:
         gate = load_gate(self)
-        command = gate.physical_final_command("0123456789abcdef", 41, 180.0)
+        command = gate.physical_final_command("0123", 41, 180.0)
+        script = (
+            REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_graphics_control.sh"
+        ).read_text()
+        self.assertEqual(
+            command,
+            "/run/asterinas-tools/physical-graphics-control final "
+            "3 0123 180 540 41",
+        )
+        self.assertLess(len(command.encode()), 128)
         for fragment in (
             "nsenter",
-            "--cycle 3",
+            "PYTHONPYCACHEPREFIX=/run/asterinas-python-cache",
+            'case "$cycle" in 1 | 3)',
             "--firefox-pid",
             "--verify-final",
-            "--setup-timeout 540",
+            '"$setup_timeout"',
             "__ASTERINAS_PHYSICAL_FINAL_STATUS__",
         ):
-            self.assertIn(fragment, command)
+            self.assertIn(fragment, script)
         for forbidden in ("xdotool", "PerformActions", "ElementClick", "mouse_move"):
             self.assertNotIn(forbidden, command)
 

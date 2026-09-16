@@ -70,6 +70,11 @@ class BootMenuTests(unittest.TestCase):
             original = source.read_bytes()
             menu.prepare_dtb(source, output)
             self.assertEqual(source.read_bytes(), original)
+            menu.validate_prepared_dtb(output)
+            with self.assertRaisesRegex(
+                menu.BootManifestError, "framebuffer compatible"
+            ):
+                menu.validate_prepared_dtb(source)
             registers = subprocess.check_output(
                 [
                     "fdtget",
@@ -275,6 +280,10 @@ class BootMenuTests(unittest.TestCase):
         self.assertLess(script.index("if test -e /boot/"), script.index("curl -fSs"))
         self.assertGreater(script.index("mv -f"), script.rindex("install -D"))
 
+    @unittest.skipUnless(
+        shutil.which("dtc") and shutil.which("fdtput") and shutil.which("fdtget"),
+        "device-tree tools are required",
+    )
     def test_prepare_verifies_before_writing_selector(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -284,6 +293,16 @@ class BootMenuTests(unittest.TestCase):
             for name in menu.ARTIFACTS:
                 sources[name] = root / name
                 sources[name].write_bytes(name.encode())
+            raw_dtb = root / "raw.dtb"
+            subprocess.run(
+                ["dtc", "-I", "dts", "-O", "dtb", "-o", str(raw_dtb)],
+                input="/dts-v1/; / { #address-cells = <2>; #size-cells = <2>; chosen {}; };",
+                text=True,
+                check=True,
+                capture_output=True,
+            )
+            sources["dtb"].unlink()
+            menu.prepare_dtb(raw_dtb, sources["dtb"])
             value = menu.prepare(
                 vendor, sources, document()["desktop_args"], root / "out"
             )

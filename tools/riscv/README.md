@@ -79,8 +79,10 @@ tools/docker/run_dev_container.sh -- python3 -m tools.riscv.megrez_menu_board --
 ```
 
 `megrez_boot_menu prepare-dtb` moves the existing framebuffer/USB fixups to
-publication time. `prepare` records frozen local artifacts and the exact vendor
-configuration. `megrez_menu_board stage --from-uboot` boots RockOS and transfers
+publication time. `prepare` now rejects a DTB unless those exact framebuffer
+geometry and USB-host properties are present, so a Desktop selector cannot be
+published with the raw board DTB. It records frozen local artifacts and the exact
+vendor configuration. `megrez_menu_board stage --from-uboot` boots RockOS and transfers
 only missing artifacts, verifies sizes/SHA-256, then publishes a canary. A
 `cycle --mode basic|probe|desktop|rockos|fallback` records one physical test and
 returns to U-Boot. `--check-root` optionally runs read-only `e2fsck -fn` from
@@ -424,17 +426,46 @@ It validates three nonce-bound browser cycles and captures pixels, but its
 result always records `"physical":false`: QEMU cannot satisfy the physical
 result or prove the Megrez display scanout and real USB xHCI/HID paths.
 
-The interaction adapter enters the Stage1 `isolated-root` console first.  A
-single installed guest helper masks competing evidence/network units, creates
-the volatile browser home, and starts Xorg without Firefox.  The host completes
-the low-load kernel/rootfs probe before issuing one bounded Firefox start
-request.  That administrator-only request uses systemd's
+The interaction adapter enters the Stage1 `isolated-root` console first. Fixed
+boot parameters mask competing evidence/network and getty units, while Stage1
+provides the volatile browser home. The host completes the low-load
+kernel/rootfs probe before issuing one bounded Firefox start request. That
+administrator-only request uses systemd's
 `ignore-dependencies` job mode because the production browser unit requires
 the online evidence service that this local interaction gate intentionally
 masks.  The desktop and timeline prerequisites are enqueued explicitly, and
 the browser script's own `wait-x` check remains the display-readiness barrier.
-This ordering avoids both the previous multi-kilobyte serial command and the
-start-stop-restart race that let Firefox starve the diagnostic shell.
+All subsequent preflight, browser-start, interaction-cycle, and final-state
+requests call the fixed-action Stage1 `physical-graphics-control` helper. Each
+request is below 128 bytes; the helper accepts only validated numeric and
+nonce arguments and preserves the existing result markers. At the configured
+10 ms per serial byte, this removes about 45 seconds of command transmission
+from one interaction cycle compared with the former inline shell programs.
+Python probes use an ephemeral `/run` bytecode-cache prefix, so repeated
+cycles reuse memory-backed bytecode and do not mutate the installed ext2
+cache.
+This ordering and transport boundary avoid both multi-kilobyte serial commands
+and the start-stop-restart race that let Firefox starve the diagnostic shell.
+The measured per-cycle UART request time fell from about 48.2 seconds to 2.92
+seconds, while an incremental menu update transfers only Stage1 and the menu
+in about 55 seconds. The persistent offline development container reuses the
+cross toolchain and Cargo/Rustup/Nix caches; neither operation rebuilds the
+root image or downloads dependencies.
+
+Never infer keyboard and pointer roles from `/dev/input/eventN`. The two
+physical xHCI controllers initialize concurrently: retained runs on the same
+board observed both keyboard=`event1`, pointer=`event0` and the reverse. The
+rootfs device-access helper matches the Linux input bus, name, and physical
+path, creates `/run/asterinas-input/keyboard` and
+`/run/asterinas-input/pointer`, and only then allows Xorg to start. Missing or
+duplicate identities fail closed. It reads the `EVIOCGID`, `EVIOCGNAME`, and
+`EVIOCGPHYS` ioctls implemented by Asterinas instead of assuming Linux sysfs
+identity files exist. When an older partition-2 root is reused,
+the Stage1 control helper derives the same identities and supplies a transient
+Xorg provider configuration under `/run`; it does not rewrite partition 2.
+Readiness is accepted only when Xorg has both resolved evdev nodes open. The
+interaction page is likewise carried by Stage1, preventing its DOM evidence
+schema from drifting from the Stage1 gate.
 The Stage1 initramfs must come from the same source revision so that the
 `isolated-root` debug-console mode is available; an older cached Stage1 is
 rejected instead of silently falling back to the normal desktop boot.
@@ -462,6 +493,10 @@ The real run consumes a schema-2 `debian-browser` debug plan. Its canonical
 order is `kernel`, `initramfs`, `qemu_dtb`, `megrez_dtb`, `u_boot`,
 `root_image`, `root_manifest`, `packages_lock`, `package_checksums`, and
 `in_release`; the prepare target recomputes every size, SHA-256, and CRC32.
+The plan's `megrez_dtb` must already pass `megrez_boot_menu prepare-dtb`.
+The gate verifies that immutable file on the host, checks its MMC CRC, and
+boots it directly; it no longer repeats framebuffer and USB `fdt set`
+commands at every experiment.
 Use a stable `/dev/serial/by-id/...` path. The release-grade mode asks an HDMI
 capture program to atomically create or replace the `--hdmi-capture` file only
 after the gate asks for the cyan final-cycle image. First validate every plan

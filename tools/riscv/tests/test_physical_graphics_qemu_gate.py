@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -31,9 +32,9 @@ from tools.riscv.physical_graphics_qemu_gate import (
 
 
 NONCES = (
-    "0123456789abcdef",
-    "fedcba9876543210",
-    "0011223344556677",
+    "0123",
+    "9876",
+    "0011",
 )
 
 
@@ -51,7 +52,7 @@ def interaction_markers(*, absolute_events: int = 2) -> bytes:
                 f"nonce_sha256={nonce_hash}",
                 f"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle={cycle}",
                 f"ASTERINAS_PHYSICAL_GRAPHICS_INPUT cycle={cycle} "
-                f"key_downs=16 relative_events=0 "
+                f"key_downs=4 relative_events=0 "
                 f"absolute_events={absolute_events} left_down=1 left_up=1 "
                 f"digest={event_hash}",
                 f"ASTERINAS_PHYSICAL_GRAPHICS_DOM cycle={cycle} "
@@ -135,6 +136,12 @@ class PhysicalGraphicsQemuArgvTests(unittest.TestCase):
 
 
 class PhysicalGraphicsQemuInputTests(unittest.TestCase):
+    def test_hmp_accepts_four_digit_code(self) -> None:
+        self.assertEqual(
+            qemu_input_commands("0427"),
+            ("sendkey 0", "sendkey 4", "sendkey 2", "sendkey 7"),
+        )
+
     def test_browser_identity_reports_bounded_systemd_state(self) -> None:
         operations = object.__new__(PhysicalGraphicsQemuOperations)
         command = operations._browser_identity_command()
@@ -164,17 +171,17 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
         ):
             operations._query_browser_pid(serial, 100.0)
 
-    def test_hmp_commands_are_only_sixteen_hex_keys_without_relative_pointer_input(
+    def test_hmp_commands_are_only_four_decimal_keys_without_relative_pointer_input(
         self,
     ) -> None:
         commands = qemu_input_commands(NONCES[0])
-        self.assertEqual(len(commands), 16)
+        self.assertEqual(len(commands), 4)
         self.assertEqual(
-            tuple(command.split()[1] for command in commands[:16]),
+            tuple(command.split()[1] for command in commands[:4]),
             tuple(NONCES[0]),
         )
         self.assertTrue(
-            all(command.startswith("sendkey ") for command in commands[:16])
+            all(command.startswith("sendkey ") for command in commands[:4])
         )
         self.assertFalse(any(command.startswith("mouse_") for command in commands))
         joined = " ".join(commands)
@@ -182,7 +189,7 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
             self.assertNotIn(forbidden, joined)
 
     def test_rejects_noncanonical_nonce(self) -> None:
-        for nonce in ("", "0" * 15, "0" * 17, "A" * 16, "0" * 15 + "g"):
+        for nonce in ("", "0" * 3, "0" * 5, "A" * 4, "0" * 3 + "g"):
             with self.subTest(nonce=nonce), self.assertRaises(ValueError):
                 qemu_input_commands(nonce)
 
@@ -212,7 +219,7 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
 
         self.assertEqual(
             serial.command,
-            "/run/asterinas-tools/physical-external-services-quiesce\n",
+            "/run/asterinas-tools/q\n",
         )
 
     def test_rejects_browser_evidence_that_remains_active(self) -> None:
@@ -341,7 +348,7 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
         hmp_indices = [
             index for index, event in enumerate(events) if event.startswith("hmp:")
         ]
-        self.assertEqual(len(hmp_indices), 16)
+        self.assertEqual(len(hmp_indices), 4)
         self.assertTrue(all(index > ready_index for index in hmp_indices))
         self.assertTrue(all(index < pass_index for index in hmp_indices))
         self.assertGreater(capture_index, pass_index)
@@ -372,9 +379,12 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
             ),
         )
         self.assertEqual(capture.call_args.kwargs["capture_root"], session["directory"])
-        self.assertIn("--expected-width 1280", serial.command)
-        self.assertIn("--expected-height 1024", serial.command)
-        self.assertIn("--setup-timeout 600", serial.command)
+        self.assertEqual(
+            serial.command,
+            "/run/asterinas-tools/physical-graphics-control cycle "
+            "1 0123 30 600 42 1280 1024\n",
+        )
+        self.assertLess(len(serial.command.encode()), 128)
         self.assertNotIn("xdotool", serial.command)
         self.assertEqual(evidence.cycle, 1)
 
@@ -564,8 +574,8 @@ class PhysicalGraphicsQemuInputTests(unittest.TestCase):
                 side_effect=lambda *_args: events.append("complete"),
             ),
             mock.patch(
-                "tools.riscv.physical_graphics_qemu_gate.secrets.token_hex",
-                side_effect=NONCES,
+                "tools.riscv.physical_graphics_qemu_gate._fresh_codes",
+                return_value=NONCES,
             ),
             mock.patch(
                 "tools.riscv.physical_graphics_qemu_gate.time.monotonic",
@@ -743,6 +753,32 @@ class PhysicalGraphicsQemuClassifierTests(unittest.TestCase):
         )
         self.assertFalse(result.passed)
         self.assertIn("nonces", result.reason)
+
+
+class PhysicalGraphicsQemuPhaseTests(unittest.TestCase):
+    def test_live_phase_output_is_split_safe_deduplicated_and_code_free(self) -> None:
+        operations = object.__new__(PhysicalGraphicsQemuOperations)
+        output = io.StringIO()
+        with mock.patch("tools.riscv.physical_graphics_qemu_gate.sys.stderr", output):
+            observer = operations.serial_observer(None, 1)
+            self.assertIsNotNone(observer)
+            observer(b"9829 BROWSER_WEB_DESKTOP_STAGE=x-sock")
+            observer(
+                b"et-ready\nASTERINAS_PHYSICAL_GRAPHICS_READY cycle=1 "
+                b"nonce_sha256=9829\n"
+            )
+            observer(b"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=1\n")
+            observer(b"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle=1 code=9829\n")
+
+        self.assertEqual(
+            output.getvalue().splitlines(),
+            [
+                "QEMU_INTERACTION_PHASE boot=1 phase=x-socket",
+                "QEMU_INTERACTION_PHASE boot=1 phase=cycle-1-ready",
+                "QEMU_INTERACTION_PHASE boot=1 phase=cycle-1-key",
+            ],
+        )
+        self.assertNotIn("9829", output.getvalue())
 
 
 class PhysicalGraphicsQemuConstantsTests(unittest.TestCase):

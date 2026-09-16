@@ -120,7 +120,7 @@ class Reader:
         return sorted(numbers)
 
 
-def _identity(reader: Reader, directory: Path):
+def _stat_record(reader: Reader, directory: Path):
     record = reader.read(directory / "stat", directory)
     if record["status"] != "ok":
         return None
@@ -128,10 +128,26 @@ def _identity(reader: Reader, directory: Path):
         text = record["value"]
         pid = int(text[: text.index(" (")])
         fields = text[text.rindex(")") + 2 :].split()
-        return {"pid": pid, "ppid": int(fields[1]), "start_time_ticks": int(fields[19])}
+        user_ticks = int(fields[11])
+        kernel_ticks = int(fields[12])
+        if not (0 <= user_ticks < 2**64 and 0 <= kernel_ticks < 2**64):
+            raise ValueError("thread CPU ticks are not unsigned")
+        return {
+            "identity": {
+                "pid": pid,
+                "ppid": int(fields[1]),
+                "start_time_ticks": int(fields[19]),
+            },
+            "cpu_time_ticks": {"user": user_ticks, "kernel": kernel_ticks},
+        }
     except (ValueError, IndexError):
         reader.limitations.add("invalid_stat")
         return None
+
+
+def _identity(reader: Reader, directory: Path):
+    stat = _stat_record(reader, directory)
+    return stat["identity"] if stat is not None else None
 
 
 def _status(reader: Reader, directory: Path):
@@ -256,6 +272,7 @@ def collect_snapshot(root_pid: int, *, proc_root=Path("/proc"), limits=None):
     if type(root_pid) is not int or not 0 < root_pid <= 2**31 - 1:
         raise ValueError("root_pid must be a positive PID")
     limits = limits or Limits()
+    started_ns = time.monotonic_ns()
     reader = Reader(limits)
     proc_root = Path(proc_root)
     root_path = proc_root / str(root_pid)
@@ -313,10 +330,14 @@ def collect_snapshot(root_pid: int, *, proc_root=Path("/proc"), limits=None):
                 break
             thread_count += 1
             thread_path = path / "task" / str(tid)
-            before = _identity(reader, thread_path)
+            before_stat = _stat_record(reader, thread_path)
+            before = before_stat["identity"] if before_stat is not None else None
             thread = {
                 "tid": tid,
                 "identity": before,
+                "cpu_time_ticks": (
+                    before_stat["cpu_time_ticks"] if before_stat is not None else None
+                ),
                 "status": _status(reader, thread_path),
                 "comm": reader.read(thread_path / "comm", thread_path),
                 "syscall": _syscall(reader, thread_path),
@@ -389,9 +410,22 @@ def collect_snapshot(root_pid: int, *, proc_root=Path("/proc"), limits=None):
         for item in processes
         if not any(parent in invalid for parent in ancestors[item["pid"]])
     ]
+    ended_ns = time.monotonic_ns()
+    if ended_ns <= started_ns:
+        reader.limitations.add("clock_unverified")
+    try:
+        clock_ticks_per_second = os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError):
+        clock_ticks_per_second = None
+    if not isinstance(clock_ticks_per_second, int) or clock_ticks_per_second <= 0:
+        reader.limitations.add("clock_tick_rate_unavailable")
     return {
         "version": 1,
         "physical": False,
+        "clock_domain": "guest-monotonic",
+        "guest_monotonic_start_ns": started_ns,
+        "guest_monotonic_end_ns": ended_ns,
+        "clock_ticks_per_second": clock_ticks_per_second,
         "root_pid": root_pid,
         "root_identity": root_identity,
         "duration_seconds": time.monotonic() - reader.started,

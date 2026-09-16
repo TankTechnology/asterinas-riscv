@@ -420,6 +420,43 @@ class BootStabilityProtocolTests(unittest.TestCase):
             gate.MAX_SERIAL_COMMAND_BYTES,
         )
 
+    def test_readiness_uses_stage1_system_probe_not_long_console_commands(self) -> None:
+        operations = self._operations()
+        graphical = SimpleNamespace(
+            browser_pid=116,
+            framebuffer=True,
+            xorg_fbdev=True,
+            openbox=True,
+            firefox=True,
+            browser_service="active",
+            browser_restarts=0,
+        )
+
+        with (
+            mock.patch.object(gate, "validate_debug_console_readiness"),
+            mock.patch.object(operations, "_quiesce_external_services"),
+            mock.patch.object(operations, "_probe_system_readiness") as system_probe,
+            mock.patch.object(
+                operations,
+                "_probe_graphical_readiness",
+                return_value=graphical,
+            ) as graphical_probe,
+            mock.patch.object(operations, "_send_guest_step") as guest_step,
+            mock.patch.object(
+                operations,
+                "_next_line",
+                side_effect=AssertionError("legacy long-command probe used"),
+            ),
+            mock.patch.object(operations, "_sync_serial_log"),
+            mock.patch.object(gate.time, "monotonic", return_value=10.0),
+        ):
+            evidence = operations.prove_boot_readiness(30)
+
+        system_probe.assert_called_once_with(40.0)
+        graphical_probe.assert_called_once_with(40.0)
+        guest_step.assert_not_called()
+        self.assertEqual(evidence.browser_pid, 116)
+
     def test_diagnostics_commands_are_short_enough_for_the_serial_shell(self) -> None:
         commands = gate.boot_diagnostics_commands(self.NONCE)
         command = " ".join(commands)
@@ -479,27 +516,21 @@ class BootStabilityProtocolTests(unittest.TestCase):
 
     def test_readiness_timeout_reports_the_last_incomplete_snapshot(self) -> None:
         operations = self._operations()
-        marker = (
-            f"__ASTERINAS_BOOT_PREFLIGHT__ nonce={self.NONCE} "
-            "browser_pid=124 framebuffer=1 "
-            "xorg_fbdev=0 openbox=0 firefox=1 browser_service=active "
-            "browser_restarts=0"
+        incomplete = gate.HostGateError(
+            "graphical readiness contract is incomplete: "
+            "xorg_fbdev=0 openbox=0 firefox=1"
         )
-        successful_steps = len(gate.boot_readiness_commands(self.NONCE)) - 1
 
         with (
-            mock.patch.object(gate.secrets, "token_hex", return_value=self.NONCE),
             mock.patch.object(gate, "validate_debug_console_readiness"),
             mock.patch.object(operations, "_quiesce_external_services"),
-            mock.patch.object(gate, "run_debug_console_phase"),
+            mock.patch.object(operations, "_probe_system_readiness"),
             mock.patch.object(
                 operations,
-                "_send_guest_step",
-                side_effect=[None] * successful_steps
-                + [TimeoutError("serial marker not seen")],
+                "_probe_graphical_readiness",
+                side_effect=incomplete,
             ),
-            mock.patch.object(operations, "_next_line", return_value=(marker, 1)),
-            mock.patch.object(gate.time, "monotonic", return_value=10.0),
+            mock.patch.object(gate.time, "monotonic", side_effect=(10.0, 40.0)),
             mock.patch.object(gate.time, "sleep"),
             self.assertRaisesRegex(
                 gate.HostGateError,
@@ -508,45 +539,28 @@ class BootStabilityProtocolTests(unittest.TestCase):
         ):
             operations.prove_boot_readiness(30)
 
-        sent = b"".join(call.args[0] for call in operations._serial.send.call_args_list)
-        self.assertIn(b"\x03\n", sent)
-
-    def test_console_identity_does_not_mask_a_later_complete_snapshot(self) -> None:
+    def test_incomplete_graphical_snapshot_does_not_mask_a_later_complete_one(
+        self,
+    ) -> None:
         operations = self._operations()
-        second_nonce = "8899aabbccddeeff"
-        markers = iter(
-            (
-                f"__ASTERINAS_BOOT_PREFLIGHT__ nonce={self.NONCE} "
-                "browser_pid=116 framebuffer=1 xorg_fbdev=1 openbox=0 "
-                "firefox=1 browser_service=active browser_restarts=0",
-                f"__ASTERINAS_BOOT_PREFLIGHT__ nonce={second_nonce} "
-                "browser_pid=116 framebuffer=1 xorg_fbdev=1 openbox=1 "
-                "firefox=1 browser_service=active browser_restarts=0",
-            )
+        complete = SimpleNamespace(
+            browser_pid=116,
+            framebuffer=True,
+            xorg_fbdev=True,
+            openbox=True,
+            firefox=True,
+            browser_service="active",
+            browser_restarts=0,
         )
-        readiness_nonces = iter((self.NONCE, second_nonce))
-
-        def nonce(length: int) -> str:
-            return "0" * 32 if length == 16 else next(readiness_nonces)
-
-        def prove_console_identity(*_args, **_kwargs) -> None:
-            if operations._send_guest_step.call_count:
-                raise TimeoutError("console identity was deferred until budget expiry")
 
         with (
-            mock.patch.object(gate.secrets, "token_hex", side_effect=nonce),
             mock.patch.object(gate, "validate_debug_console_readiness"),
             mock.patch.object(operations, "_quiesce_external_services"),
-            mock.patch.object(operations, "_send_guest_step"),
+            mock.patch.object(operations, "_probe_system_readiness"),
             mock.patch.object(
                 operations,
-                "_next_line",
-                side_effect=lambda *_args: (next(markers), 1),
-            ),
-            mock.patch.object(
-                gate,
-                "run_debug_console_phase",
-                side_effect=prove_console_identity,
+                "_probe_graphical_readiness",
+                side_effect=(gate.HostGateError("openbox=0"), complete),
             ),
             mock.patch.object(operations, "_sync_serial_log"),
             mock.patch.object(gate.time, "monotonic", return_value=10.0),

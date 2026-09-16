@@ -74,6 +74,12 @@
       font-size: 20px;
       line-height: 1.5;
     }
+    #interaction-stage-report {
+      min-height: 26px;
+      margin-top: 12px;
+      color: #8ca4b3;
+      font-size: 16px;
+    }
   </style>
 </head>
 <body>
@@ -82,9 +88,10 @@
     <p id="interaction-instructions">Preparing the bounded interaction cycle…</p>
     <label for="interaction-nonce">Physical keyboard nonce</label>
     <input id="interaction-nonce" inputmode="text" autocomplete="off"
-           autocapitalize="off" spellcheck="false" maxlength="16">
+           autocapitalize="off" spellcheck="false" maxlength="4">
     <button id="interaction-button" type="button">MOVE POINTER · CLICK ONCE</button>
     <pre id="interaction-state" aria-live="polite"></pre>
+    <div id="interaction-stage-report" aria-live="polite"></div>
   </main>
   <script>
     "use strict";
@@ -93,17 +100,34 @@
     const cycleText = parameters.get("cycle") || "";
     const nonceLengthText = parameters.get("nonce_length") || "";
     const cycle = /^[1-3]$/.test(cycleText) ? Number(cycleText) : 0;
-    const nonceLength = nonceLengthText === "16" ? 16 : 0;
-    const validConfiguration = cycle !== 0 && nonceLength === 16;
-    const noncePattern = /^[0-9a-f]{16}$/;
+    const nonceLength = nonceLengthText === "4" ? 4 : 0;
+    const validConfiguration = cycle !== 0 && nonceLength === 4;
+    const noncePattern = /^[0-9]{4}$/;
     const stageOrder = ["waiting", "key", "pointer", "complete"];
     let reportedStage = "waiting";
     let stageReport = Promise.resolve();
+    const stageOutcomes = [];
 
     const nonceInput = document.getElementById("interaction-nonce");
     const button = document.getElementById("interaction-button");
     const output = document.getElementById("interaction-state");
     const instructions = document.getElementById("interaction-instructions");
+    const stageReportStatus = document.getElementById("interaction-stage-report");
+
+    function recordStageOutcome(stage, outcome) {
+      if (stageOutcomes.length < 3 && !stageOutcomes.some(entry => entry.stage === stage)) {
+        stageOutcomes.push({stage, outcome});
+      }
+      stageReportStatus.textContent = stageOutcomes
+        .map(entry => `stage=${entry.stage} outcome=${entry.outcome}`)
+        .join(" | ");
+    }
+
+    function safeErrorName(error) {
+      const name = error && typeof error.name === "string" ? error.name : "";
+      return /^(TypeError|Error|AbortError|TimeoutError)$/.test(name)
+        ? `error-${name}` : "error-Unknown";
+    }
 
     const state = {
       cycle,
@@ -144,9 +168,11 @@
             cache: "no-store",
             credentials: "omit"
           }).then(response => {
+            recordStageOutcome(stage, `http${response.status}`);
             if (!response.ok) throw new Error(`stage-http-${response.status}`);
           })
         ).catch(error => {
+          recordStageOutcome(stage, safeErrorName(error));
           console.error(`ASTERINAS_PHYSICAL_STAGE_REPORT_FAIL stage=${stage} name=${error.name}`);
         });
       }
@@ -164,7 +190,7 @@
 
     if (validConfiguration) {
       instructions.textContent =
-        `Cycle ${cycle}/3 · type the 16-character nonce, move the physical pointer, then click once.`;
+        `Cycle ${cycle}/3 · type the 4-digit code, move the physical pointer, then click once.`;
       nonceInput.focus();
     } else {
       instructions.textContent = "Invalid interaction configuration.";
@@ -183,7 +209,7 @@
       if (event.isTrusted) {
         const startMs = performance.now();
         state.trustedInput = true;
-        const sanitized = nonceInput.value.toLowerCase().replace(/[^0-9a-f]/g, "").slice(0, 16);
+        const sanitized = nonceInput.value.replace(/[^0-9]/g, "").slice(0, 4);
         nonceInput.value = sanitized;
         state.nonce = sanitized;
         render();

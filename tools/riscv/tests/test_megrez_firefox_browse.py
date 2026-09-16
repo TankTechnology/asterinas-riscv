@@ -187,6 +187,16 @@ class _Operations:
 
 
 class FirefoxBrowseTests(unittest.TestCase):
+    def test_real_web_readiness_preserves_network_and_browser_services(self) -> None:
+        operations = object.__new__(browse.RealFirefoxBrowseOperations)
+        operations._quiesce_external_services = mock.Mock()
+        operations._start_web_browser = mock.Mock()
+
+        operations._prepare_boot_readiness(123.0)
+
+        operations._quiesce_external_services.assert_not_called()
+        operations._start_web_browser.assert_called_once_with(123.0)
+
     def test_framebuffer_marker_is_bound_to_transferred_png(self) -> None:
         payload = _png()
         marker = {
@@ -211,7 +221,7 @@ class FirefoxBrowseTests(unittest.TestCase):
                     payload, {**marker, name: value}, width=1920, height=1080
                 )
 
-    def test_bootargs_keep_network_proxy_and_safety_reboot_without_writes(self) -> None:
+    def test_bootargs_keep_network_proxy_safety_reboot_and_root_writes(self) -> None:
         tokens = browse.firefox_browse_bootargs(_plan()).split()
         self.assertIn("asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1", tokens)
         self.assertIn(
@@ -222,10 +232,16 @@ class FirefoxBrowseTests(unittest.TestCase):
             "systemd.setenv=ASTERINAS_DESKTOP_PROXY_URL=http://10.100.19.216:17893",
             tokens,
         )
+        self.assertEqual(
+            tokens.count("systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy"), 1
+        )
         self.assertIn("asterinas.reboot_after=1050", tokens)
         self.assertNotIn("asterinas.reboot_after=900", tokens)
         self.assertEqual(tokens.count("asterinas.tcp_diagnostic_port=2828"), 1)
-        self.assertFalse(any("mmc_write_partition2" in token for token in tokens))
+        self.assertEqual(tokens.count("asterinas.mmc_write_partition2"), 1)
+        self.assertIn("systemd.mask=serial-getty@ttyS0.service", tokens)
+        self.assertIn("systemd.mask=console-getty.service", tokens)
+        self.assertIn("--volatile-home", tokens)
 
     def test_page_stage_budgets_are_individually_bounded(self) -> None:
         config = browse.FirefoxBrowseConfig()
@@ -622,20 +638,24 @@ class FirefoxBrowseTests(unittest.TestCase):
     def test_failure_diagnostics_are_compact_and_boundary_focused(self) -> None:
         commands = browse.browse_diagnostics_commands("0123456789abcdef")
 
-        self.assertLessEqual(len(commands), 6)
+        self.assertLessEqual(len(commands), 7)
         # Non-final commands receive the acknowledged-shell wrapper before
         # the 768-byte serial limit is enforced.
         self.assertTrue(
             all(len(command.encode()) < 480 for command in commands[:-1])
         )
         self.assertLess(len((commands[-1] + "\n").encode()), 768)
-        self.assertLess(sum(len(command.encode()) for command in commands), 2400)
+        self.assertLess(sum(len(command.encode()) for command in commands), 3200)
         joined = "\n".join(commands)
         self.assertIn("dmesg --color=never", joined)
-        self.assertIn("tail -c 131072", joined)
+        self.assertIn("tail -c 98304", joined)
         self.assertIn("firefox-diagnostic-snapshot", joined)
         self.assertIn("baidu-home.json", joined)
         self.assertIn("systemctl show", joined)
+        self.assertIn("ExecMainStatus", joined)
+        self.assertIn("journalctl -u asterinas-browser-web.service", joined)
+        self.assertIn("firefox-web-stderr.log", joined)
+        self.assertIn("browser-web-timeline.log", joined)
         self.assertNotIn("/proc/net/tcp", joined)
 
     def test_real_failure_collection_uses_compact_browse_commands(self) -> None:

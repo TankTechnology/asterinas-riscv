@@ -27,7 +27,7 @@ from typing import Any, Protocol, TextIO
 
 from tools.riscv.debian.rootfs.debug_console_protocol import (
     DEBUG_CONSOLE_READY,
-    classify_debug_console,
+    classify_system_identity,
     debug_console_commands,
 )
 from tools.riscv.debian.rootfs.physical_graphics_gate import (
@@ -38,9 +38,8 @@ from tools.riscv.debian.rootfs.gate_runtime import (
     PinnedOutputDirectory,
     SerialConsole,
 )
+from tools.riscv.megrez_boot_menu import validate_prepared_dtb
 from tools.riscv.megrez_board_session import (
-    MEGREZ_FRAMEBUFFER,
-    MEGREZ_USB_HOST_COMMAND,
     BoardSession,
     open_serial,
     safe_artifact_name,
@@ -65,7 +64,7 @@ PHYSICAL_REBOOT_HEADROOM = 30.0
 # The non-JIT physical Firefox image has repeatedly needed 355--467 seconds
 # for WebDriver:NewSession. Keep a bounded margin above the measured tail.
 PHYSICAL_MARIONETTE_SETUP_TIMEOUT = 540.0
-_NONCE = re.compile(r"[0-9a-f]{16}")
+_NONCE = re.compile(r"[0-9]{4}")
 _SHA256 = r"[0-9a-f]{64}"
 PHYSICAL_EXTERNAL_MARKER = "__ASTERINAS_PHYSICAL_EXTERNAL__"
 PHYSICAL_BROWSER_START_MARKER = "__ASTERINAS_PHYSICAL_BROWSER_START__"
@@ -119,7 +118,10 @@ _PREFLIGHT = re.compile(
     r"input_nodes=([0-9]+) framebuffer=([01]) xorg_fbdev=([01]) "
     r"openbox=([01]) firefox=([01]) browser_service=([a-z-]+) "
     r"browser_restarts=([0-9]+) usb_inputs=([0-9]+) "
-    r"usb_keyboard=([01]) usb_mouse=([01])"
+    r"usb_keyboard=([01]) usb_mouse=([01]) "
+    r"keyboard_node=(event(?:0|[1-9][0-9]*)|missing) "
+    r"mouse_node=(event(?:0|[1-9][0-9]*)|missing) "
+    r"xorg_keyboard=([01]) xorg_mouse=([01])"
 )
 _PROTOCOL_PREFIX = "ASTERINAS_PHYSICAL_GRAPHICS_"
 _FATAL_MARKERS = (
@@ -245,6 +247,10 @@ class GraphicalReadinessEvidence:
     usb_inputs: int
     usb_keyboard: bool
     usb_mouse: bool
+    keyboard_node: str
+    mouse_node: str
+    xorg_keyboard: bool
+    xorg_mouse: bool
 
     def __post_init__(self) -> None:
         if (
@@ -261,8 +267,13 @@ class GraphicalReadinessEvidence:
                     self.firefox,
                     self.usb_keyboard,
                     self.usb_mouse,
+                    self.xorg_keyboard,
+                    self.xorg_mouse,
                 )
             )
+            or re.fullmatch(r"event(?:0|[1-9][0-9]*)", self.keyboard_node) is None
+            or re.fullmatch(r"event(?:0|[1-9][0-9]*)", self.mouse_node) is None
+            or self.keyboard_node == self.mouse_node
             or self.browser_service != "active"
             or type(self.browser_restarts) is not int
             or self.browser_restarts != 0
@@ -413,6 +424,8 @@ class PhysicalGraphicsOperations(Protocol):
 
     def emit_complete(self, cycles_requested: int, timeout: float) -> None: ...
 
+    def request_reboot(self, timeout: float) -> None: ...
+
     def await_recovery(self, timeout: float) -> None: ...
 
     def publish(
@@ -457,9 +470,22 @@ def _validated_nonce_hashes(nonces: Sequence[str]) -> tuple[str, ...]:
         or len(set(nonces)) != len(nonces)
     ):
         raise HostGateError(
-            "expected one or three distinct 16-digit lowercase hex nonces"
+            "expected one or three distinct four-digit decimal codes"
         )
     return tuple(hashlib.sha256(nonce.encode()).hexdigest() for nonce in nonces)
+
+
+def _fresh_codes(count: int) -> tuple[str, ...]:
+    if count not in (1, 3):
+        raise ValueError("physical code count must be one or three")
+    codes: list[str] = []
+    for _ in range(100):
+        code = f"{secrets.randbelow(10_000):04d}"
+        if code not in codes:
+            codes.append(code)
+            if len(codes) == count:
+                return tuple(codes)
+    raise HostGateError("could not generate distinct physical codes")
 
 
 def _validated_sha256_identities(
@@ -590,7 +616,7 @@ def _classify_interaction_hash_transcript(
             if pointer_mode is PointerEvidenceMode.PHYSICAL_RELATIVE
             else absolute_events >= 1
         )
-        if key_downs < 16 or not motion_complete or (left_down, left_up) != (1, 1):
+        if key_downs < 4 or not motion_complete or left_down < 1 or left_up != left_down:
             raise HostGateError(
                 f"cycle {cycle} has insufficient physical input evidence"
             )
@@ -633,7 +659,7 @@ def _classify_interaction_hash_transcript(
 
 
 def physical_bootargs(plan: DebugPlan | Any) -> str:
-    """Derive the one ephemeral debug-console boot from a frozen browser plan."""
+    """Derive the fixed offline interaction boot from a frozen browser plan."""
 
     plan.validate()
     if not isinstance(plan.bootargs, str):
@@ -644,38 +670,26 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
     separator = tokens.index("--")
     if tokens[separator + 1 :] != ["--root-init=systemd"]:
         raise HostGateError("plan root-init arguments are not canonical")
-    replaced_kernel_parameters = {
-        "console",
-        "loglevel",
-        "asterinas.klog_capture",
-        "asterinas.mmc_write_partition2",
-        "asterinas.reboot_after",
-    }
-    retained = []
-    for token in tokens[:separator]:
-        normalized_name = token.partition("=")[0].replace("-", "_")
-        if normalized_name in replaced_kernel_parameters or token.startswith(
-            (
-                "systemd.unit=",
-                "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=",
-            )
-        ):
-            continue
-        retained.append(token)
-    if retained.count("init=/init") != 1:
+    if tokens[:separator].count("init=/init") != 1:
         raise HostGateError("plan must contain one stage1 init selector")
     physical = (
         "console=tty0",
         "loglevel=off",
         "asterinas.klog_capture=info",
-        *retained,
+        "init=/init",
         f"asterinas.reboot_after={PHYSICAL_REBOOT_AFTER}",
         "systemd.mask=asterinas-browser-web-evidence.service",
         "systemd.mask=asterinas-desktop-m5-network.service",
+        "systemd.mask=serial-getty@ttyS0.service",
+        "systemd.mask=console-getty.service",
         "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",
+        "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy",
+        "systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=127.0.0.1",
+        "systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=9",
         "--",
         "--root-init=systemd",
         "--debug-console=isolated-root",
+        "--volatile-home",
     )
     return " ".join(physical)
 
@@ -683,63 +697,13 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
 def physical_preflight_command() -> str:
     """Return the fixed root-shell probe for the physical graphics surface."""
 
-    return (
-        "_asterinas_physical_input_nodes=0; "
-        "for _asterinas_physical_node in /dev/input/event*; do "
-        '[ -c "$_asterinas_physical_node" ] && '
-        "_asterinas_physical_input_nodes=$((_asterinas_physical_input_nodes + 1)); "
-        "done; "
-        "_asterinas_physical_framebuffer=0; [ -c /dev/fb0 ] && "
-        "_asterinas_physical_framebuffer=1; "
-        "set -- $(/usr/bin/python3 -c 'import fcntl,glob,struct;"
-        'q=lambda p,c,n:(lambda b:(fcntl.ioctl(open(p,"rb",buffering=0),c,b),'
-        "bytes(b))[1])(bytearray(n));"
-        'd=[(struct.unpack("=HHHH",q(p,0x80084502,8))[0],'
-        'q(p,0x81004506,256).split(b"\\0",1)[0],'
-        'q(p,0x81004507,256).split(b"\\0",1)[0]) for p in '
-        'glob.glob("/dev/input/event*")];'
-        'k=(3,b"usb_boot_keyboard",b"xhci/input0");'
-        'm=(3,b"usb_boot_mouse",b"xhci/input1");'
-        "print(sum(x in (k,m) for x in d),int(k in d),int(m in d))' "
-        "2>/dev/null || printf '0 0 0'); "
-        "_asterinas_physical_usb_inputs=${1:-0}; "
-        "_asterinas_physical_usb_keyboard=${2:-0}; "
-        "_asterinas_physical_usb_mouse=${3:-0}; "
-        "_asterinas_physical_xorg=0; "
-        "for _asterinas_physical_xorg_pid in $(pgrep -x Xorg 2>/dev/null); do "
-        "for _asterinas_physical_xorg_fd in "
-        "/proc/$_asterinas_physical_xorg_pid/fd/*; do "
-        '[ "$(readlink "$_asterinas_physical_xorg_fd" 2>/dev/null)" = /dev/fb0 ] && '
-        "[ -S /tmp/.X11-unix/X0 ] && _asterinas_physical_xorg=1; "
-        "done; done; "
-        "_asterinas_physical_openbox=0; "
-        "pgrep -u 1000 -x openbox >/dev/null 2>&1 && _asterinas_physical_openbox=1; "
-        "_asterinas_physical_service=$(systemctl is-active "
-        "asterinas-browser-web.service 2>/dev/null || true); "
-        "_asterinas_physical_pid=$(systemctl show --property MainPID --value "
-        "asterinas-browser-web.service 2>/dev/null || true); "
-        "_asterinas_physical_restarts=$(systemctl show --property NRestarts --value "
-        "asterinas-browser-web.service 2>/dev/null || true); "
-        "_asterinas_physical_firefox=0; "
-        "case $_asterinas_physical_pid in ''|*[!0-9]*) ;; *) "
-        "grep -Eq '^firefox(-esr)?$' \"/proc/$_asterinas_physical_pid/comm\" "
-        "2>/dev/null && _asterinas_physical_firefox=1 ;; esac; "
-        "printf '__ASTERINAS_PHYSICAL_PREFLIGHT__ browser_pid=%s input_nodes=%s "
-        "framebuffer=%s xorg_fbdev=%s openbox=%s firefox=%s browser_service=%s "
-        "browser_restarts=%s usb_inputs=%s usb_keyboard=%s usb_mouse=%s\\n' "
-        '"$_asterinas_physical_pid" '
-        '"$_asterinas_physical_input_nodes" "$_asterinas_physical_framebuffer" '
-        '"$_asterinas_physical_xorg" "$_asterinas_physical_openbox" '
-        '"$_asterinas_physical_firefox" "$_asterinas_physical_service" '
-        '"$_asterinas_physical_restarts" "$_asterinas_physical_usb_inputs" '
-        '"$_asterinas_physical_usb_keyboard" "$_asterinas_physical_usb_mouse"'
-    )
+    return "/run/asterinas-tools/g preflight"
 
 
 def physical_external_services_quiesce_command() -> str:
     """Return the bounded guest helper used to isolate the interaction gate."""
 
-    return "/run/asterinas-tools/physical-external-services-quiesce"
+    return "/run/asterinas-tools/q"
 
 
 def physical_system_probe_command(nonce: str) -> str:
@@ -747,20 +711,30 @@ def physical_system_probe_command(nonce: str) -> str:
 
     if not isinstance(nonce, str) or re.fullmatch(r"[0-9a-f]{32}", nonce) is None:
         raise ValueError("physical system probe nonce must be 32 lowercase hex digits")
-    return f"/run/asterinas-tools/physical-system-probe {nonce}"
+    return f"/run/asterinas-tools/s {nonce}"
+
+
+def physical_system_probe_serial_commands(nonce: str) -> tuple[str, ...]:
+    """Build the nonce and invoke the system probe using short UART lines."""
+
+    physical_system_probe_command(nonce)
+    return (
+        f"N={nonce[:16]}",
+        f"N=${{N}}{nonce[16:]}",
+        "/run/asterinas-tools/s $N",
+    )
 
 
 def physical_browser_start_command() -> str:
     """Start only the local Firefox workload after baseline diagnostics."""
 
-    return (
-        "_asterinas_browser_start_status=0; "
-        "/usr/bin/systemctl start --no-block --job-mode=ignore-dependencies "
-        "asterinas-browser-web.service >/dev/null 2>&1 "
-        "|| _asterinas_browser_start_status=$?; "
-        f"printf '{PHYSICAL_BROWSER_START_MARKER} status=%s\\n' "
-        '"$_asterinas_browser_start_status"'
-    )
+    return "/run/asterinas-tools/g start-browser"
+
+
+def physical_web_browser_start_command() -> str:
+    """Start the online browser without resetting its network environment."""
+
+    return "/run/asterinas-tools/g start-web"
 
 
 def validate_physical_browser_start(line: str) -> None:
@@ -814,7 +788,7 @@ def physical_cycle_command(
     if type(cycle) is not int or cycle not in (1, 2, 3):
         raise ValueError("physical cycle must be 1, 2, or 3")
     if not isinstance(nonce, str) or _NONCE.fullmatch(nonce) is None:
-        raise ValueError("physical nonce must be 16 lowercase hex digits")
+        raise ValueError("physical code must be four decimal digits")
     if (
         isinstance(timeout, bool)
         or not isinstance(timeout, (int, float))
@@ -840,36 +814,11 @@ def physical_cycle_command(
         or not 0 < expected_height <= 16384
     ):
         raise ValueError("expected screenshot dimensions are outside the contract")
-    expected_pid_check = (
-        ""
-        if expected_browser_pid is None
-        else (
-            f'[ "$_asterinas_physical_pid" = {expected_browser_pid} ] || '
-            "_asterinas_physical_status=124; "
-        )
-    )
+    expected_pid = 0 if expected_browser_pid is None else expected_browser_pid
     return (
-        "_asterinas_physical_pid=$(systemctl show --property MainPID --value "
-        "asterinas-browser-web.service 2>/dev/null || true); "
-        "_asterinas_physical_status=125; "
-        "case $_asterinas_physical_pid in ''|*[!0-9]*) ;; *) "
-        f"{expected_pid_check}"
-        'if [ "$_asterinas_physical_status" != 124 ]; then '
-        f'nsenter -t "$_asterinas_physical_pid" -n '
-        f"/run/asterinas-tools/physical-graphics-gate --nonce {nonce} "
-        f'--cycle {cycle} --firefox-pid "$_asterinas_physical_pid" '
-        f"--timeout {timeout:g} --setup-timeout {setup_timeout:g} "
-        f"--expected-width {expected_width} "
-        f"--expected-height {expected_height}; "
-        "_asterinas_physical_status=$?; fi ;; esac; "
-        "_asterinas_physical_current=$(systemctl show --property MainPID --value "
-        "asterinas-browser-web.service 2>/dev/null || true); "
-        "_asterinas_physical_restarts=$(systemctl show --property NRestarts --value "
-        "asterinas-browser-web.service 2>/dev/null || true); "
-        '[ "$_asterinas_physical_current" = "$_asterinas_physical_pid" ] && '
-        '[ "$_asterinas_physical_restarts" = 0 ] || _asterinas_physical_status=126; '
-        f"printf '__ASTERINAS_PHYSICAL_COMMAND_STATUS__cycle={cycle} status=%s\\n' "
-        '"$_asterinas_physical_status"'
+        "/run/asterinas-tools/physical-graphics-control cycle "
+        f"{cycle} {nonce} {timeout:g} {setup_timeout:g} {expected_pid} "
+        f"{expected_width} {expected_height}"
     )
 
 
@@ -884,7 +833,7 @@ def physical_final_command(
     """Return a read-only terminal-DOM check bound to the original Firefox PID."""
 
     if not isinstance(nonce, str) or _NONCE.fullmatch(nonce) is None:
-        raise ValueError("physical nonce must be 16 lowercase hex digits")
+        raise ValueError("physical code must be four decimal digits")
     if type(browser_pid) is not int or browser_pid <= 1:
         raise ValueError("expected Firefox PID is outside the valid contract")
     if type(cycle) is not int or cycle not in (1, 3):
@@ -904,23 +853,8 @@ def physical_final_command(
     ):
         raise ValueError("physical setup timeout must be in (0, 900]")
     return (
-        "_asterinas_physical_pid=$(systemctl show --property MainPID --value "
-        "asterinas-browser-web.service 2>/dev/null || true); "
-        "_asterinas_physical_status=124; "
-        f'if [ "$_asterinas_physical_pid" = {browser_pid} ]; then '
-        f'nsenter -t "$_asterinas_physical_pid" -n '
-        f"/run/asterinas-tools/physical-graphics-gate --nonce {nonce} "
-        f'--cycle {cycle} --firefox-pid "$_asterinas_physical_pid" --verify-final '
-        f"--timeout {timeout:g} --setup-timeout {setup_timeout:g}; "
-        "_asterinas_physical_status=$?; fi; "
-        "_asterinas_physical_current=$(systemctl show --property MainPID --value "
-        "asterinas-browser-web.service 2>/dev/null || true); "
-        "_asterinas_physical_restarts=$(systemctl show --property NRestarts --value "
-        "asterinas-browser-web.service 2>/dev/null || true); "
-        '[ "$_asterinas_physical_current" = "$_asterinas_physical_pid" ] && '
-        '[ "$_asterinas_physical_restarts" = 0 ] || _asterinas_physical_status=126; '
-        "printf '__ASTERINAS_PHYSICAL_FINAL_STATUS__ status=%s\\n' "
-        '"$_asterinas_physical_status"'
+        "/run/asterinas-tools/physical-graphics-control final "
+        f"{cycle} {nonce} {timeout:g} {setup_timeout:g} {browser_pid}"
     )
 
 
@@ -1037,15 +971,35 @@ def _result(
     )
 
 
+def _validate_physical_artifacts(plan: DebugPlan | Any) -> object:
+    """Bind physical boot to a DTB prepared once at publication time."""
+
+    validated = _validate_current_artifacts(plan)
+    dtb = next(
+        (identity for identity in plan.artifacts if identity.name == "megrez_dtb"),
+        None,
+    )
+    if dtb is None:
+        raise HostGateError("physical graphics plan lacks a Megrez DTB")
+    try:
+        validate_prepared_dtb(Path(dtb.path))
+    except (OSError, ValueError) as error:
+        raise HostGateError(
+            f"physical graphics DTB is not prepared: {error}"
+        ) from error
+    return validated
+
+
 def run_physical_graphics(
     plan: DebugPlan | Any,
     config: PhysicalGraphicsConfig,
     operations: PhysicalGraphicsOperations,
     *,
     nonces: Sequence[str] | None = None,
+    operator_start: Callable[[str], None] | None = None,
     artifact_validator: Callable[
         [DebugPlan | Any], object
-    ] = _validate_current_artifacts,
+    ] = _validate_physical_artifacts,
 ) -> PhysicalGraphicsResult:
     """Execute the requested real-input cycles and require fresh U-Boot recovery."""
 
@@ -1053,7 +1007,7 @@ def run_physical_graphics(
     artifact_validator(plan)
     bootargs = physical_bootargs(plan)
     selected_nonces = (
-        tuple(secrets.token_hex(8) for _ in range(config.cycles_requested))
+        _fresh_codes(config.cycles_requested)
         if nonces is None
         else tuple(nonces)
     )
@@ -1079,6 +1033,8 @@ def run_physical_graphics(
             readiness = operations.prove_graphical_readiness(config.boot_timeout)
 
             for cycle, nonce in enumerate(selected_nonces, start=1):
+                if operator_start is not None:
+                    operator_start(nonce)
                 payload = operations.run_cycle(cycle, nonce, config.cycle_timeout)
                 if (
                     not isinstance(payload, bytes)
@@ -1116,6 +1072,15 @@ def run_physical_graphics(
             interruption = error
 
         if operations.guest_started:
+            try:
+                operations.request_reboot(min(config.recovery_timeout, 30.0))
+            except Exception:
+                # The kernel deadline remains the fail-safe when the guest
+                # shell cannot be recovered after an interrupted command.
+                pass
+            except BaseException as recovery_interruption:
+                if interruption is None:
+                    interruption = recovery_interruption
             try:
                 operations.await_recovery(config.recovery_timeout)
                 recovered = True
@@ -1360,7 +1325,7 @@ def _read_operator_confirmation(
 ) -> None:
     """Accept one exact, newline-terminated operator confirmation."""
 
-    if re.fullmatch(r"confirm-cyan-pass [0-9a-f]{8}", expected) is None:
+    if re.fullmatch(r"confirm-cyan-pass [0-9]{4}", expected) is None:
         raise ValueError("operator confirmation challenge is invalid")
     if (
         isinstance(timeout, bool)
@@ -1381,6 +1346,36 @@ def _read_operator_confirmation(
         raise HostGateError("operator display confirmation did not match exactly")
     if wait_readable(selected_stream, 0.0) and selected_stream.read(1) != "":
         raise HostGateError("operator display confirmation contained extra input")
+
+
+def _read_operator_start(
+    code: str,
+    timeout: float,
+    *,
+    stream: TextIO | None = None,
+    wait_readable: Callable[[TextIO, float], bool] = _wait_text_readable,
+) -> None:
+    """Require the human's exact four-digit start reply before page setup."""
+
+    if not isinstance(code, str) or _NONCE.fullmatch(code) is None:
+        raise ValueError("operator start code must be four decimal digits")
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or not 0 < timeout <= 180
+    ):
+        raise ValueError("operator start timeout must be in (0, 180]")
+    selected_stream = sys.stdin if stream is None else stream
+    if not wait_readable(selected_stream, timeout):
+        raise TimeoutError("operator start timed out")
+    line = selected_stream.readline(len(code) + 2)
+    if line == "":
+        raise HostGateError("operator start reached EOF")
+    if line != code + "\n":
+        raise HostGateError("operator start did not match exactly")
+    if wait_readable(selected_stream, 0.0) and selected_stream.read(1) != "":
+        raise HostGateError("operator start contained extra input")
 
 
 def _safe_output_directory(path: Path, repository: Path) -> Path:
@@ -1478,6 +1473,8 @@ class RealPhysicalGraphicsOperations:
         self._browser_pid: int | None = None
         self._guest_started = False
         self._guest_deadline: float | None = None
+        self._debug_console_ready = False
+        self._recovery_cursor = 0
 
     @property
     def transcript(self) -> str:
@@ -1491,6 +1488,8 @@ class RealPhysicalGraphicsOperations:
     def invalidate(self) -> None:
         self._guest_started = False
         self._guest_deadline = None
+        self._debug_console_ready = False
+        self._recovery_cursor = 0
         output_path = _safe_output_directory(self._output_path, self._repository)
         if self._hdmi_capture is not None:
             try:
@@ -1619,10 +1618,8 @@ class RealPhysicalGraphicsOperations:
             "mmc rescan",
             "fdt addr 0xf0000000",
             "fdt resize 0x1000",
-            *MEGREZ_FRAMEBUFFER.commands(),
             f"setenv initrd_size 0x{initramfs.size:x}",
             *_uboot_bootargs_commands(bootargs),
-            MEGREZ_USB_HOST_COMMAND,
         )
         for command in commands:
             session.command(
@@ -1631,16 +1628,21 @@ class RealPhysicalGraphicsOperations:
             )
         kernel = identities["kernel"]
         dtb = identities["megrez_dtb"]
+        boot_command = (
+            f"booti 0x{kernel.load_address:x} "
+            f"0x{initramfs.load_address:x}:0x{initramfs.size:x} "
+            f"0x{dtb.load_address:x}"
+        )
+        session.start_boot_attempt()
+        session.command(
+            boot_command,
+            expect="Enter riscv_boot",
+            timeout=_remaining(deadline, phase="Asterinas kernel entry"),
+        )
         # The kernel's recovery timer is fixed, not renewed by a new cycle.
         # Start slightly earlier on the host and leave room to drain evidence.
         self._guest_deadline = (
             time.monotonic() + self.GUEST_LIFETIME_SECONDS - PHYSICAL_REBOOT_HEADROOM
-        )
-        session.start_boot_attempt()
-        session.send(
-            f"booti 0x{kernel.load_address:x} "
-            f"0x{initramfs.load_address:x}:0x{initramfs.size:x} "
-            f"0x{dtb.load_address:x}"
         )
         self._guest_started = True
         self._serial = SerialConsole(
@@ -1663,7 +1665,7 @@ class RealPhysicalGraphicsOperations:
         deadline = self._guest_phase_deadline(timeout)
         serial.wait_for(DEBUG_CONSOLE_READY.encode(), deadline)
         validate_debug_console_readiness(serial.transcript.decode("utf-8"))
-        self._quiesce_external_services(deadline)
+        self._debug_console_ready = True
         self._probe_system_readiness(deadline)
         self._start_browser(deadline)
 
@@ -1685,9 +1687,10 @@ class RealPhysicalGraphicsOperations:
     def _probe_system_readiness(self, deadline: float) -> None:
         serial = self._require_serial()
         nonce = secrets.token_hex(16)
-        commands = debug_console_commands(nonce)
+        commands = debug_console_commands(nonce)[:3]
         cursor = serial.checkpoint()
-        serial.send((physical_system_probe_command(nonce) + "\n").encode(), deadline)
+        for command in physical_system_probe_serial_commands(nonce):
+            serial.send((command + "\n").encode(), deadline)
         serial.wait_for_any(
             (
                 f"{commands[-1].end_marker}\r".encode(),
@@ -1696,7 +1699,7 @@ class RealPhysicalGraphicsOperations:
             deadline,
             start=cursor,
         )
-        classify_debug_console(serial.transcript[cursor:], nonce)
+        classify_system_identity(serial.transcript[cursor:], nonce)
 
     def _quiesce_external_services(self, deadline: float) -> None:
         serial = self._require_serial()
@@ -1712,9 +1715,15 @@ class RealPhysicalGraphicsOperations:
             return
 
     def _start_browser(self, deadline: float) -> None:
+        self._start_browser_command(physical_browser_start_command(), deadline)
+
+    def _start_web_browser(self, deadline: float) -> None:
+        self._start_browser_command(physical_web_browser_start_command(), deadline)
+
+    def _start_browser_command(self, command: str, deadline: float) -> None:
         serial = self._require_serial()
         cursor = serial.checkpoint()
-        serial.send((physical_browser_start_command() + "\n").encode(), deadline)
+        serial.send((command + "\n").encode(), deadline)
         while True:
             line, cursor = self._next_line(serial, cursor, deadline)
             if line.startswith(PHYSICAL_BROWSER_START_MARKER):
@@ -1746,6 +1755,10 @@ class RealPhysicalGraphicsOperations:
                 usb_inputs=int(match.group(9)),
                 usb_keyboard=match.group(10) == "1",
                 usb_mouse=match.group(11) == "1",
+                keyboard_node=match.group(12),
+                mouse_node=match.group(13),
+                xorg_keyboard=match.group(14) == "1",
+                xorg_mouse=match.group(15) == "1",
             )
 
     def run_cycle(self, cycle: int, nonce: str, timeout: float) -> bytes:
@@ -1884,9 +1897,9 @@ class RealPhysicalGraphicsOperations:
         if self._display_mode is not DisplayEvidenceMode.OPERATOR_ATTESTED:
             raise HostGateError("operator-attested display mode is not selected")
         if not isinstance(nonce, str) or _NONCE.fullmatch(nonce) is None:
-            raise ValueError("physical nonce must be 16 lowercase hex digits")
+            raise ValueError("physical code must be four decimal digits")
         deadline = self._guest_phase_deadline(timeout)
-        expected = f"confirm-cyan-pass {nonce[-8:]}"
+        expected = f"confirm-cyan-pass {nonce}"
         print(
             "[physical display] confirm that the physical monitor shows the "
             f"cyan final-cycle PASS page; type exactly: {expected}",
@@ -1961,6 +1974,30 @@ class RealPhysicalGraphicsOperations:
         cursor = serial.checkpoint()
         marker = f"ASTERINAS_PHYSICAL_GRAPHICS_COMPLETE cycles={cycles_requested}"
         serial.send((f"printf '{marker}\\n'\n").encode(), deadline)
+        while True:
+            line, cursor = self._next_line(serial, cursor, deadline)
+            if line == marker:
+                self._sync_serial_log()
+                return
+
+    def request_reboot(self, timeout: float) -> None:
+        """End an interactive experiment promptly, retaining the kernel timer as fallback."""
+
+        if not self._debug_console_ready:
+            return
+        serial = self._require_serial()
+        deadline = self._guest_phase_deadline(timeout)
+        cursor = serial.checkpoint()
+        serial.send(b"\x03\n", deadline)
+        serial.wait_for(b"root@asterinas-debug:", deadline, start=cursor)
+
+        nonce = secrets.token_hex(8)
+        marker = f"__ASTERINAS_PHYSICAL_REBOOT__ nonce={nonce}"
+        self._recovery_cursor = serial.checkpoint()
+        serial.send(
+            (f"sync; printf '{marker}\\n'; reboot -f\n").encode(),
+            deadline,
+        )
         while True:
             line, cursor = self._next_line(serial, cursor, deadline)
             if line == marker:
@@ -2101,6 +2138,7 @@ def parse_args(arguments: Sequence[str]) -> argparse.Namespace:
     display.add_argument("--hdmi-capture", type=Path)
     display.add_argument("--operator-display-attestation", action="store_true")
     parser.add_argument("--cycles", type=int, choices=(1, 3), default=3)
+    parser.add_argument("--operator-start", action="store_true")
     parser.add_argument("--mmc-kernel", type=safe_artifact_name)
     parser.add_argument("--mmc-initramfs", type=safe_artifact_name)
     parser.add_argument("--mmc-dtb", type=safe_artifact_name)
@@ -2157,7 +2195,20 @@ def main(arguments: Sequence[str] | None = None) -> int:
             cycles_requested=config.cycles_requested,
             mmc_artifacts=mmc_artifacts,
         )
-        result = run_physical_graphics(plan, config, operations)
+        def confirm_start(code: str) -> None:
+            print(
+                f"[physical operator-start] reply with code {code} to start; "
+                "the 180-second input window opens only after page READY",
+                flush=True,
+            )
+            _read_operator_start(code, 180.0)
+
+        result = run_physical_graphics(
+            plan,
+            config,
+            operations,
+            operator_start=confirm_start if values.operator_start else None,
+        )
     except (HostGateError, OSError, RuntimeError, ValueError) as error:
         print(
             f"physical graphics gate failed before publication: {error}",

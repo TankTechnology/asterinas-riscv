@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import argparse
 import base64
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 import hashlib
 import http.server
@@ -69,10 +69,10 @@ DEFAULT_SETUP_TIMEOUT = 300.0
 MAX_SETUP_TIMEOUT = 900.0
 DOCUMENT_POLL_SECONDS = 0.25
 INPUT_EVENT_STRUCT = struct.Struct("=qqHHi")
-NONCE_PATTERN = re.compile(r"^[0-9a-f]{16}$")
+NONCE_PATTERN = re.compile(r"^[0-9]{4}$")
 DOM_STAGES = ("waiting", "key", "pointer", "complete")
-PAGE_URL = "file:///usr/share/asterinas/physical-graphics/index.html"
-PAGE_PATH = Path("/usr/share/asterinas/physical-graphics/index.html")
+PAGE_URL = "file:///run/asterinas-tools/physical-graphics-interaction.html"
+PAGE_PATH = Path("/run/asterinas-tools/physical-graphics-interaction.html")
 SNAPSHOT_SCRIPT = r"""const output = document.getElementById('interaction-state');
 if (output === null) return null;
 try {
@@ -90,6 +90,15 @@ SNAPSHOT_PARAMETERS = {
     "sandbox": "default",
     "line": 1,
     "filename": "asterinas-physical-graphics-gate",
+}
+STAGE_REPORT_PARAMETERS = {
+    "script": "const report = document.getElementById('interaction-stage-report'); "
+    "return report === null ? null : report.textContent;",
+    "args": [],
+    "newSandbox": True,
+    "sandbox": "default",
+    "line": 1,
+    "filename": "asterinas-physical-stage-report",
 }
 SNAPSHOT_FIELDS = {
     "cycle",
@@ -245,7 +254,14 @@ class X11WindowTitleSource:
 class DomStageServer:
     """Serve the test page and receive its ordered, nonce-bound DOM stages."""
 
-    def __init__(self, *, nonce: str, cycle: int, page_path: Path = PAGE_PATH) -> None:
+    def __init__(
+        self,
+        *,
+        nonce: str,
+        cycle: int,
+        page_path: Path = PAGE_PATH,
+        emit: Callable[[str], None] | None = None,
+    ) -> None:
         if NONCE_PATTERN.fullmatch(nonce) is None:
             raise GateError("physical-graphics-stage-nonce")
         if type(cycle) is not int or cycle not in (1, 2, 3):
@@ -259,6 +275,7 @@ class DomStageServer:
         self._nonce = nonce
         self._cycle = cycle
         self._page = page
+        self._emit = emit
         self._condition = threading.Condition()
         self._stage = "waiting"
         self._failure: str | None = None
@@ -322,7 +339,7 @@ class DomStageServer:
 
     @property
     def page_url(self) -> str:
-        return f"{self.origin}/index.html?cycle={self._cycle}&nonce_length=16"
+        return f"{self.origin}/index.html?cycle={self._cycle}&nonce_length=4"
 
     @staticmethod
     def _respond(
@@ -347,6 +364,24 @@ class DomStageServer:
                 self._failure = reason
             self._condition.notify_all()
 
+    def _record_stage_http(
+        self,
+        *,
+        stage: str,
+        previous: str,
+        status: int,
+        nonce_match: bool,
+        reason: str,
+    ) -> None:
+        if self._emit is None:
+            return
+        safe_stage = stage if stage in DOM_STAGES[1:] else "invalid"
+        self._emit(
+            f"ASTERINAS_PHYSICAL_STAGE_HTTP cycle={self._cycle} "
+            f"stage={safe_stage} previous={previous} status={status} "
+            f"nonce_match={int(nonce_match)} reason={reason}"
+        )
+
     def _handle_get(self, request: http.server.BaseHTTPRequestHandler) -> None:
         if request.client_address[0] != "127.0.0.1":
             self._respond(request, 403)
@@ -355,7 +390,7 @@ class DomStageServer:
         if target.path == "/favicon.ico" and not target.query:
             self._respond(request, 204)
             return
-        expected_page_query = f"cycle={self._cycle}&nonce_length=16"
+        expected_page_query = f"cycle={self._cycle}&nonce_length=4"
         if target.path == "/index.html" and target.query == expected_page_query:
             self._respond(request, 200, self._page, "text/html; charset=utf-8")
             return
@@ -365,23 +400,41 @@ class DomStageServer:
         try:
             query = parse_qs(target.query, strict_parsing=True)
         except ValueError:
+            with self._condition:
+                previous = self._stage
+            self._record_stage_http(
+                stage="invalid", previous=previous, status=400,
+                nonce_match=False, reason="invalid-query",
+            )
             self._respond(request, 400)
             return
         if set(query) != {"cycle", "stage", "nonce"} or any(
             len(values) != 1 for values in query.values()
         ):
+            with self._condition:
+                previous = self._stage
+            self._record_stage_http(
+                stage="invalid", previous=previous, status=400,
+                nonce_match=False, reason="invalid-query",
+            )
             self._respond(request, 400)
             return
         stage = query["stage"][0]
-        if (
-            query["cycle"] != [str(self._cycle)]
-            or query["nonce"] != [self._nonce]
-            or stage not in DOM_STAGES[1:]
-        ):
+        nonce_match = query["nonce"] == [self._nonce]
+        cycle_match = query["cycle"] == [str(self._cycle)]
+        if not nonce_match or not cycle_match or stage not in DOM_STAGES[1:]:
+            with self._condition:
+                previous = self._stage
+            self._record_stage_http(
+                stage=stage, previous=previous, status=400,
+                nonce_match=nonce_match,
+                reason="nonce-mismatch" if not nonce_match else "identity-mismatch",
+            )
             self._respond(request, 400)
             return
         with self._condition:
-            current = DOM_STAGES.index(self._stage)
+            previous = self._stage
+            current = DOM_STAGES.index(previous)
             received = DOM_STAGES.index(stage)
             if received not in (current, current + 1):
                 if self._failure is None:
@@ -392,6 +445,11 @@ class DomStageServer:
                 self._stage = stage
                 self._condition.notify_all()
                 status = 204
+        self._record_stage_http(
+            stage=stage, previous=previous, status=status,
+            nonce_match=True,
+            reason="stage-regression" if status == 409 else "accepted",
+        )
         self._respond(request, status)
 
     def read_title(self, timeout: float) -> str:
@@ -456,8 +514,8 @@ def snapshot_complete(snapshot: object, *, cycle: int) -> bool:
     nonce = snapshot["nonce"]
     if (
         not isinstance(nonce, str)
-        or len(nonce) > 16
-        or (nonce and re.fullmatch(r"[0-9a-f]+", nonce) is None)
+        or len(nonce) > 4
+        or (nonce and re.fullmatch(r"[0-9]+", nonce) is None)
     ):
         raise GateError("physical-graphics-snapshot-nonce-shape")
     for name in ("trustedKey", "trustedInput", "trustedPointer", "trustedClick"):
@@ -510,6 +568,9 @@ class GuardedMarionette:
         if self._ready:
             allowed = (
                 name == "WebDriver:ExecuteScript" and parameters == SNAPSHOT_PARAMETERS
+            ) or (
+                name == "WebDriver:ExecuteScript"
+                and parameters == STAGE_REPORT_PARAMETERS
             ) or (name == "WebDriver:TakeScreenshot" and parameters == {"full": False})
             if not allowed:
                 raise GateError("marionette-input-synthesis-after-ready")
@@ -522,6 +583,34 @@ class GuardedMarionette:
 
     def screenshot(self) -> object:
         return _script_value(self.command("WebDriver:TakeScreenshot", {"full": False}))
+
+    def stage_report(self) -> object:
+        return _script_value(
+            self.command("WebDriver:ExecuteScript", dict(STAGE_REPORT_PARAMETERS))
+        )
+
+
+def _safe_stage_report(value: object) -> str:
+    if value in (None, ""):
+        return "none"
+    if not isinstance(value, str) or len(value) > 192:
+        return "invalid"
+    entries = value.split(" | ")
+    if not 1 <= len(entries) <= 3:
+        return "invalid"
+    accepted: list[str] = []
+    seen: set[str] = set()
+    for entry in entries:
+        match = re.fullmatch(
+            r"stage=(key|pointer|complete) "
+            r"outcome=(http[1-5][0-9]{2}|error-(?:TypeError|Error|AbortError|TimeoutError|Unknown))",
+            entry,
+        )
+        if match is None or match.group(1) in seen:
+            return "invalid"
+        seen.add(match.group(1))
+        accepted.append(f"{match.group(1)}:{match.group(2)}")
+    return ",".join(accepted)
 
 
 @dataclass(frozen=True)
@@ -643,6 +732,7 @@ class EvdevCycle:
     absolute_events: int = 0
     left_down: int = 0
     left_up: int = 0
+    _left_pressed: bool = field(default=False, repr=False)
     _digest: Any = field(default_factory=hashlib.sha256, repr=False)
 
     @staticmethod
@@ -653,7 +743,7 @@ class EvdevCycle:
 
     @property
     def left_click_complete(self) -> bool:
-        return self.left_down == 1 and self.left_up == 1
+        return self.left_down >= 1 and self.left_up == self.left_down and not self._left_pressed
 
     @property
     def digest(self) -> str:
@@ -678,15 +768,15 @@ class EvdevCycle:
             self.absolute_events = self._increment(self.absolute_events)
         elif event.event_type == EV_KEY and event.code == BTN_LEFT:
             if event.value == 1:
-                if self.left_down != 0 or self.left_up != 0:
+                if self._left_pressed:
                     raise GateError("evdev-duplicate-button-down")
-                self.left_down = 1
+                self.left_down = self._increment(self.left_down)
+                self._left_pressed = True
             elif event.value == 0:
-                if self.left_down != 1:
+                if not self._left_pressed:
                     raise GateError("evdev-button-up-before-down")
-                if self.left_up != 0:
-                    raise GateError("evdev-duplicate-button-up")
-                self.left_up = 1
+                self.left_up = self._increment(self.left_up)
+                self._left_pressed = False
         self._digest.update(encoded)
 
 
@@ -806,6 +896,49 @@ def _emit_screenshot_frame(
     emit(f"__ASTERINAS_PHYSICAL_SCREENSHOT_END__ cycle={cycle}")
 
 
+def emit_with_ready_marker(
+    marker: str,
+    *,
+    output: Callable[[str], None],
+    marker_path: Path | None,
+) -> None:
+    """Publishes an opt-in guest-clock trigger before exposing READY."""
+
+    if marker_path is not None and marker.startswith(
+        "ASTERINAS_PHYSICAL_GRAPHICS_READY "
+    ):
+        payload = f"{time.monotonic_ns()}\n".encode("ascii")
+        descriptor = os.open(
+            marker_path,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_CLOEXEC
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            cursor = 0
+            while cursor < len(payload):
+                count = os.write(descriptor, payload[cursor:])
+                if count <= 0:
+                    raise OSError("ready marker write did not advance")
+                cursor += count
+        finally:
+            os.close(descriptor)
+    output(marker)
+
+
+def diagnostic_ready_marker_path(
+    cycle: int, environ: Mapping[str, str]
+) -> Path | None:
+    """Selects a volatile trigger only for explicitly enabled first cycles."""
+
+    if cycle == 1 and environ.get("ASTERINAS_KEY_THREAD_CPU") == "1":
+        return Path("/run/asterinas-key-thread-ready")
+    return None
+
+
 def run_cycle(
     client: MarionetteClient,
     events: EventSource,
@@ -837,7 +970,7 @@ def run_cycle(
 
     guarded = GuardedMarionette(client)
     if page_url is None:
-        page_url = f"{PAGE_URL}?cycle={cycle}&nonce_length=16"
+        page_url = f"{PAGE_URL}?cycle={cycle}&nonce_length=4"
     elif (
         not isinstance(page_url, str)
         or len(page_url) > 512
@@ -845,10 +978,20 @@ def run_cycle(
     ):
         raise GateError("physical-graphics-page-url")
 
+    def emit_time(phase: str) -> None:
+        emit(
+            f"ASTERINAS_PHYSICAL_TIME cycle={cycle} phase={phase} "
+            f"guest_monotonic_ns={time.monotonic_ns()}"
+        )
+
     def setup_command(name: str, parameters: object | None = None) -> object:
+        if name == "WebDriver:NewSession":
+            emit_time("newsession-start")
         emit(f"ASTERINAS_PHYSICAL_SETUP cycle={cycle} phase={name} state=start")
         result = guarded.command(name, parameters)
         emit(f"ASTERINAS_PHYSICAL_SETUP cycle={cycle} phase={name} state=done")
+        if name == "WebDriver:NewSession":
+            emit_time("newsession-done")
         return result
 
     try:
@@ -931,6 +1074,7 @@ def run_cycle(
             f"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle={cycle} "
             f"nonce_sha256={nonce_sha256}"
         )
+        emit_time("ready")
         guarded.mark_ready()
         deadline = time.monotonic() + timeout
         input_evidence = EvdevCycle()
@@ -975,7 +1119,26 @@ def run_cycle(
                 input_evidence.feed_record(record)
             title: str | None = None
             if input_evidence.key_downs >= len(nonce):
-                title = stages.read_title(min(5.0, remaining))
+                try:
+                    title = stages.read_title(min(5.0, remaining))
+                except GateError:
+                    report = "unavailable"
+                    diagnostic_remaining = deadline - time.monotonic()
+                    if diagnostic_remaining > 0:
+                        try:
+                            client.set_timeout(min(5.0, diagnostic_remaining))
+                            report = _safe_stage_report(guarded.stage_report())
+                        except Exception:
+                            pass
+                    emit(
+                        f"ASTERINAS_PHYSICAL_STAGE_DIAG cycle={cycle} "
+                        f"key_downs={input_evidence.key_downs} "
+                        f"relative_events={input_evidence.relative_events} "
+                        f"absolute_events={input_evidence.absolute_events} "
+                        f"left_down={input_evidence.left_down} "
+                        f"left_up={input_evidence.left_up} report={report}"
+                    )
+                    raise
                 last_title = title
             if (
                 not key_ready
@@ -987,6 +1150,7 @@ def run_cycle(
                     f"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle={cycle} "
                     f"nonce_sha256={nonce_sha256}"
                 )
+                emit_time("key-ready")
             if (
                 key_ready
                 and not pointer_ready
@@ -998,6 +1162,7 @@ def run_cycle(
             ):
                 pointer_ready = True
                 emit(f"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle={cycle}")
+                emit_time("pointer-ready")
             if not (
                 pointer_ready
                 and input_evidence.left_click_complete
@@ -1069,6 +1234,7 @@ def run_cycle(
                 payload=screenshot_payload,
                 sha256=screenshot_sha256,
             )
+            emit_time("pass")
             emit(f"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle={cycle}")
             return CycleEvidence(
                 cycle=cycle,
@@ -1144,7 +1310,23 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 flush=True,
             )
         else:
-            with DomStageServer(nonce=values.nonce, cycle=values.cycle) as stages:
+            ready_marker_path = diagnostic_ready_marker_path(values.cycle, os.environ)
+
+            def emit_cycle(marker: str) -> None:
+                if ready_marker_path is None:
+                    print(marker, flush=True)
+                else:
+                    emit_with_ready_marker(
+                        marker,
+                        output=lambda line: print(line, flush=True),
+                        marker_path=ready_marker_path,
+                    )
+
+            with DomStageServer(
+                nonce=values.nonce,
+                cycle=values.cycle,
+                emit=lambda marker: print(marker, flush=True),
+            ) as stages:
                 run_cycle(
                     client,
                     RealEvdevSource(values.input_directory),
@@ -1155,7 +1337,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                     expected_width=values.expected_width,
                     expected_height=values.expected_height,
                     page_url=stages.page_url,
-                    emit=lambda marker: print(marker, flush=True),
+                    emit=emit_cycle,
                 )
     except (GateError, MarionetteGateError, OSError, TimeoutError) as error:
         print(

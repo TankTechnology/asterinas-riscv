@@ -143,6 +143,43 @@ class MilestoneDetectionTests(unittest.TestCase):
 
 
 class ArgumentContractTests(unittest.TestCase):
+    def test_writable_partition_emergency_reboot_requires_earlier_sync_reboot(self):
+        required = _required_args() + [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+        ]
+        prefix = (
+            "console=tty0 loglevel=off init=/init "
+            "asterinas.mmc_write_partition2 asterinas.reboot_after=900 "
+        )
+        tail = " -- --root-init=systemd --debug-console=root"
+        for setenv in (
+            "",
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=900 ",
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=850 ",
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=abc ",
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=780 "
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=780 ",
+        ):
+            with self.subTest(setenv=setenv):
+                _parse_fails(required + ["--bootargs", prefix + setenv + tail])
+
+        admitted = board.parse_args(
+            required
+            + [
+                "--bootargs",
+                prefix + "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=780" + tail,
+            ]
+        )
+        self.assertIn("ASTERINAS_SAFE_REBOOT_AFTER=780", admitted.bootargs)
+        _parse_fails(
+            required
+            + [
+                "--bootargs",
+                prefix + tail + " systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=780",
+            ]
+        )
+
     def test_debug_root_console_profile_requires_both_boot_selectors(self):
         crc_args = [
             "--expected-crc32",
@@ -165,6 +202,40 @@ class ArgumentContractTests(unittest.TestCase):
                 "--bootargs",
                 "console=ttyS0 loglevel=off init=/init -- --root-init=systemd "
                 "--debug-console=root",
+            ]
+        )
+        self.assertEqual(args.final_profile, "debug-root-console")
+
+    def test_debug_root_console_admits_isolated_volatile_desktop_contract(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+            "--final-profile",
+            "debug-root-console",
+        ]
+        prefix = "console=tty0 loglevel=off init=/init -- --root-init=systemd "
+        admitted = prefix + "--debug-console=isolated-root --volatile-home"
+        args = board.parse_args(_required_args() + crc_args + ["--bootargs", admitted])
+        self.assertEqual(args.final_profile, "debug-root-console")
+        for rejected in (
+            prefix + "--debug-console=isolated-root",
+            prefix + "--volatile-home --debug-console=isolated-root",
+            prefix + "--debug-console=isolated-root --volatile-home --volatile-home",
+        ):
+            with self.subTest(rejected=rejected):
+                _parse_fails(_required_args() + crc_args + ["--bootargs", rejected])
+
+    def test_debug_root_console_admits_root_volatile_desktop_contract(self):
+        args = board.parse_args(
+            _required_args()
+            + [
+                "--expected-crc32",
+                "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                "--final-profile",
+                "debug-root-console",
+                "--bootargs",
+                "console=tty0 loglevel=off init=/init -- "
+                "--root-init=systemd --debug-console=root --volatile-home",
             ]
         )
         self.assertEqual(args.final_profile, "debug-root-console")
@@ -666,6 +737,26 @@ class SerialContractTests(unittest.TestCase):
 
         self.assertEqual(output, "Hit any key to stop autoboot:  2\n=> ")
         write.assert_called_once_with(-1, b" ")
+
+    def test_wait_for_uboot_prompt_retries_a_lost_autoboot_interrupt(self):
+        session = self._session()
+        with (
+            mock.patch.object(
+                board,
+                "read_available",
+                side_effect=[
+                    "Hit any key to stop autoboot: 30",
+                    " 29",
+                    " 28",
+                    "=> ",
+                ],
+            ),
+            mock.patch.object(board.os, "write", return_value=1) as write,
+        ):
+            output = session.wait_for_uboot_prompt(timeout=0.2)
+
+        self.assertEqual(output, "Hit any key to stop autoboot: 30 29 28=> ")
+        self.assertEqual(write.call_args_list, [mock.call(-1, b" ")] * 3)
 
     def test_command_rejects_an_address_from_the_wrong_echo(self):
         session = self._session()
@@ -1354,16 +1445,61 @@ class BootTransactionTests(unittest.TestCase):
             events,
         )
         self.assertIn(("command", 'setenv bootargs "init=/init"', {}), events)
-        self.assertIn(
-            ("command", 'fdt set /chosen bootargs "${bootargs}"', {}),
-            events,
-        )
-        self.assertNotIn(
-            ("command", 'fdt set /chosen bootargs "init=/init"', {}),
-            events,
+        self.assertFalse(
+            any(
+                event[0] == "command"
+                and event[1].startswith("fdt set /chosen bootargs")
+                for event in events
+            )
         )
         self.assertEqual(events[booti_index - 1], ("start",))
         session.start_boot_attempt.assert_called_once_with()
+
+    def test_long_bootargs_are_chunked_below_uboot_line_limit(self):
+        events: list[tuple] = []
+        session = mock.Mock()
+        session.load_artifact.return_value = 4096
+        session.command.side_effect = lambda command, **kwargs: (
+            events.append(("command", command, kwargs)) or "boot output"
+        )
+        bootargs = " ".join(
+            f"systemd.setenv=ASTERINAS_PROFILE_VALUE_{index}={index:064d}"
+            for index in range(24)
+        )
+        args = SimpleNamespace(
+            booti="kernel",
+            dtb="board.dtb",
+            initrd="initrd",
+            bootargs=bootargs,
+            expected_crc32={
+                "booti": "0123abcd",
+                "dtb": "89abcdef",
+                "initrd": "00000001",
+            },
+            firmware_framebuffer=False,
+        )
+
+        board.boot_loaded_artifacts(session, args)
+
+        commands = [event[1] for event in events if event[0] == "command"]
+        staged = [
+            command
+            for command in commands
+            if command.startswith("setenv asterinas_bootargs_")
+        ]
+        self.assertGreater(len(staged), 1)
+        self.assertTrue(
+            all(
+                len(command.encode()) <= board.MAX_UBOOT_COMMAND_BYTES
+                for command in commands
+            )
+        )
+        self.assertTrue(
+            any(command.startswith('setenv bootargs "${') for command in commands)
+        )
+        self.assertFalse(
+            any(command.startswith("fdt set /chosen bootargs") for command in commands)
+        )
 
         current_boot = "Enter riscv_boot\nPresented by the Asterinas developers\nHello from RISC-V userspace\n"
         stale_preload = f"{current_boot}{board.PROMPT}"
@@ -1478,6 +1614,64 @@ class BootTransactionTests(unittest.TestCase):
         self.assertTrue(
             all(events.index(command) < booti_index for command in framebuffer_commands)
         )
+
+    def test_existing_framebuffer_node_is_reused_before_booti(self):
+        events: list[str] = []
+        session = mock.Mock()
+        session.load_artifact.return_value = 4096
+
+        def command(line: str, **_kwargs):
+            events.append(line)
+            if line == "fdt mknode / framebuffer@fd800000":
+                raise RuntimeError(
+                    "FDT error while running 'fdt mknode / framebuffer@fd800000': "
+                    "'libfdt fdt_add_subnode(): FDT_ERR_EXISTS'"
+                )
+            return "boot output"
+
+        session.command.side_effect = command
+        args = SimpleNamespace(
+            booti="kernel",
+            dtb="board.dtb",
+            initrd="initrd",
+            bootargs="console=tty0 init=/init",
+            expected_crc32={
+                "booti": "0123abcd",
+                "dtb": "89abcdef",
+                "initrd": "00000001",
+            },
+            firmware_framebuffer=True,
+        )
+
+        self.assertEqual(board.boot_loaded_artifacts(session, args), "boot output")
+        self.assertIn('fdt set /framebuffer@fd800000 status "okay"', events)
+        self.assertTrue(events[-1].startswith("booti "))
+
+    def test_framebuffer_creation_other_fdt_errors_remain_fatal(self):
+        session = mock.Mock()
+
+        def command(line: str, **_kwargs):
+            if line == "fdt mknode / framebuffer@fd800000":
+                raise RuntimeError("FDT_ERR_NOSPACE")
+            return "ok"
+
+        session.command.side_effect = command
+        args = SimpleNamespace(
+            booti="kernel",
+            dtb="board.dtb",
+            initrd="initrd",
+            bootargs="console=tty0 init=/init",
+            expected_crc32={
+                "booti": "0123abcd",
+                "dtb": "89abcdef",
+                "initrd": "00000001",
+            },
+            firmware_framebuffer=True,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "FDT_ERR_NOSPACE"):
+            board.boot_loaded_artifacts(session, args)
+        session.start_boot_attempt.assert_not_called()
 
     def test_tftp_transport_is_configured_without_persistent_environment(self):
         events: list[tuple] = []
