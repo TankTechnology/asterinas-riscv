@@ -1726,8 +1726,12 @@ class RealPhysicalGraphicsOperations:
         serial.send((command + "\n").encode(), deadline)
         while True:
             line, cursor = self._next_line(serial, cursor, deadline)
-            if line.startswith(PHYSICAL_BROWSER_START_MARKER):
-                validate_physical_browser_start(line)
+            match = _BROWSER_START.search(line)
+            if match is not None:
+                # UART printk and the debug shell are independent writers, so
+                # their bytes can share one logical line. Keep the marker
+                # grammar strict while tolerating an unrelated log prefix.
+                validate_physical_browser_start(match.group(0))
                 # Quiet physical boots route the service's console output to
                 # tty0, so wrapper logs are intentionally absent from UART.
                 # The following readiness probe verifies the active service,
