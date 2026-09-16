@@ -106,9 +106,9 @@ struct CurrentRuntime {
 }
 
 impl CurrentRuntime {
-    fn new() -> Self {
+    fn new_at(now: u64) -> Self {
         CurrentRuntime {
-            start: sched_clock(),
+            start: now,
             delta: 0,
             period_delta: 0,
         }
@@ -376,12 +376,34 @@ impl PerCpuClassRqSet {
     }
 
     fn enqueue_entity(&mut self, (task, thread): SchedEntity, flags: Option<EnqueueFlags>) {
+        self.enqueue_entity_at((task, thread), flags, sched_clock());
+    }
+
+    fn enqueue_entity_at(
+        &mut self,
+        (task, thread): SchedEntity,
+        flags: Option<EnqueueFlags>,
+        now: u64,
+    ) {
+        thread.sched_attr().sched_info().enqueue_at(now);
         match thread.sched_attr().policy_kind() {
             SchedPolicyKind::Stop => self.stop.enqueue(task, flags),
             SchedPolicyKind::RealTime => self.real_time.enqueue(task, flags),
             SchedPolicyKind::Fair => self.fair.enqueue(task, flags),
             SchedPolicyKind::Idle => self.idle.enqueue(task, flags),
         }
+    }
+
+    fn try_pick_next_at(&mut self, now: u64) -> Option<&Arc<Task>> {
+        self.pick_next_entity().and_then(|next| {
+            // A task appears at most once in this runqueue, so `next` cannot
+            // also be the current task.
+            next.1.sched_attr().sched_info().dispatch_at(now);
+            if let Some((old, _)) = self.current.replace((next, CurrentRuntime::new_at(now))) {
+                self.enqueue_entity_at(old, None, now);
+            }
+            self.current.as_ref().map(|((task, _), _)| task)
+        })
     }
 
     fn load_stats(&self) -> PerCpuLoadStats {
@@ -400,14 +422,7 @@ impl LocalRunQueue for PerCpuClassRqSet {
     }
 
     fn try_pick_next(&mut self) -> Option<&Arc<Task>> {
-        self.pick_next_entity().and_then(|next| {
-            // We guarantee that a task can appear at once in a `PerCpuClassRqSet`. So, the `next` cannot be the same
-            // as the current task here.
-            if let Some((old, _)) = self.current.replace((next, CurrentRuntime::new())) {
-                self.enqueue_entity(old, None);
-            }
-            self.current.as_ref().map(|((task, _), _)| task)
-        })
+        self.try_pick_next_at(sched_clock())
     }
 
     fn update_current(&mut self, flags: UpdateFlags) -> bool {
@@ -471,6 +486,83 @@ mod tests {
 
     use super::*;
     use crate::thread::kernel_thread::ThreadOptions;
+
+    #[ktest]
+    fn sched_class() {
+        fixed_ticks_account_dispatch_and_requeue();
+        duplicate_wake_preserves_queued_timestamp();
+    }
+
+    fn fixed_ticks_account_dispatch_and_requeue() {
+        let scheduler = ClassScheduler::new();
+        let higher = ThreadOptions::new(|| {})
+            .sched_policy(SchedPolicy::Stop)
+            .build();
+        let peer = ThreadOptions::new(|| {}).build();
+        let entity = |task: &Arc<Task>| (task.clone(), task.as_thread().unwrap().clone());
+        let mut rq = scheduler.rqs[CpuId::bsp().as_usize()].lock();
+
+        rq.enqueue_entity_at(entity(&higher), None, 10);
+        rq.enqueue_entity_at(entity(&peer), None, 20);
+        assert!(Arc::ptr_eq(rq.try_pick_next_at(50).unwrap(), &higher));
+        assert_eq!(
+            higher
+                .as_thread()
+                .unwrap()
+                .sched_attr()
+                .sched_info()
+                .snapshot_at_frequency(1_000_000_000),
+            Some(sched_info::Snapshot {
+                run_delay_ns: 40,
+                dispatches: 1,
+            })
+        );
+
+        assert!(Arc::ptr_eq(rq.try_pick_next_at(70).unwrap(), &peer));
+        assert_eq!(
+            peer.as_thread()
+                .unwrap()
+                .sched_attr()
+                .sched_info()
+                .snapshot_at_frequency(1_000_000_000),
+            Some(sched_info::Snapshot {
+                run_delay_ns: 50,
+                dispatches: 1,
+            })
+        );
+        assert!(
+            higher
+                .as_thread()
+                .unwrap()
+                .sched_attr()
+                .sched_info()
+                .is_queued()
+        );
+        assert_eq!(
+            higher
+                .as_thread()
+                .unwrap()
+                .sched_attr()
+                .sched_info()
+                .queued_at(),
+            70
+        );
+    }
+
+    fn duplicate_wake_preserves_queued_timestamp() {
+        let scheduler = ClassScheduler::new();
+        let task = ThreadOptions::new(|| {}).build();
+
+        let _ = scheduler.enqueue(task.clone(), EnqueueFlags::Wake);
+        let thread = task.as_thread().unwrap().clone();
+        let info = thread.sched_attr().sched_info();
+        let first_queued_at = info.queued_at();
+        while sched_clock() == first_queued_at {
+            core::hint::spin_loop();
+        }
+        assert_eq!(scheduler.enqueue(task, EnqueueFlags::Wake), None);
+        assert_eq!(info.queued_at(), first_queued_at);
+    }
 
     #[ktest]
     fn fair_yield_preserves_class_priority() {
