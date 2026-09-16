@@ -31,6 +31,26 @@ static int writer_fd;
 static char record[8192];
 static char snapshot[1024 * 1024];
 
+static size_t count_occurrences(const char *text, const char *needle)
+{
+	size_t count = 0;
+	size_t needle_length = strlen(needle);
+
+	while ((text = strstr(text, needle))) {
+		count++;
+		text += needle_length;
+	}
+	return count;
+}
+
+static size_t count_captured(const char *needle)
+{
+	ssize_t count =
+		CHECK(klogctl(LOG_READ_ALL, snapshot, sizeof(snapshot) - 1));
+	snapshot[count] = '\0';
+	return count_occurrences(snapshot, needle);
+}
+
 static void inject(const char *message)
 {
 	size_t length = strlen(message);
@@ -346,6 +366,31 @@ FN_TEST(capture_level_retains_info)
 	TEST_RES(priority, _ret == 6);
 	CHECK(close(fd));
 	puts("KLOG_CAPTURE_INFO_RETAINED=1");
+}
+END_TEST()
+
+FN_TEST(hot_syscall_diagnostics_are_not_warnings)
+{
+	const char *fadvise_warning =
+		"POSIX_FADV_SEQUENTIAL is ignored";
+	const char *unimplemented_warning =
+		"Unimplemented syscall number: 2147483647";
+	size_t fadvise_before = count_captured(fadvise_warning);
+	size_t unimplemented_before = count_captured(unimplemented_warning);
+	int fd = CHECK(open("/tmp/asterinas-fadvise-log-level", O_CREAT | O_RDWR,
+			    0600));
+
+	for (int i = 0; i < 64; i++)
+		TEST_RES(posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL),
+			 _ret == 0);
+	for (int i = 0; i < 64; i++)
+		TEST_ERRNO(syscall(0x7fffffff), ENOSYS);
+
+	TEST_RES(count_captured(fadvise_warning), _ret == fadvise_before);
+	TEST_RES(count_captured(unimplemented_warning),
+		 _ret == unimplemented_before);
+	CHECK(close(fd));
+	CHECK(unlink("/tmp/asterinas-fadvise-log-level"));
 }
 END_TEST()
 

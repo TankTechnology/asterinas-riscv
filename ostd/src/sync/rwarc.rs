@@ -97,6 +97,12 @@ impl<T> Clone for RwArc<T> {
     }
 }
 
+impl<T> Clone for RoArc<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
 impl<T> Drop for RwArc<T> {
     fn drop(&mut self) {
         self.0.num_rw.fetch_sub(1, Ordering::Release);
@@ -115,6 +121,11 @@ impl<T> RoArc<T> {
     /// Acquires the read lock for immutable access.
     pub fn read(&self) -> RwLockReadGuard<'_, T, PreemptDisabled> {
         self.0.data.read()
+    }
+
+    /// Returns whether two read-only pointers refer to the same allocation.
+    pub fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 }
 
@@ -136,5 +147,17 @@ mod test {
 
         drop(rw2);
         assert_eq!(rw1.get(), Some(1).as_ref());
+    }
+
+    #[ktest]
+    fn read_only_arc_identity() {
+        let rw1 = RwArc::new(1u32);
+        let rw2 = RwArc::new(1u32);
+        let ro1 = rw1.clone_ro();
+        let ro1_again = ro1.clone();
+        let ro2 = rw2.clone_ro();
+
+        assert!(ro1.ptr_eq(&ro1_again));
+        assert!(!ro1.ptr_eq(&ro2));
     }
 }
