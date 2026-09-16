@@ -783,6 +783,16 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), "1 0")
 
+    def test_non_browser_profiles_do_not_seed_browser_cache_archives(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        builder = repository / "tools/riscv/debian/rootfs/build_rootfs.sh"
+        source = builder.read_text(encoding="utf-8")
+        self.assertIn(
+            "# Only browser profiles may reuse the browser cache.",
+            source,
+        )
+        self.assertIn("is_firefox_profile || continue", source)
+
     def test_non_browser_profile_rejects_stale_security_metadata_early(self) -> None:
         repository = Path(__file__).resolve().parents[3]
         builder = repository / "tools/riscv/debian/rootfs/build_rootfs.sh"

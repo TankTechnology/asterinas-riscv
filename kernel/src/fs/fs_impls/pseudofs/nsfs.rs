@@ -390,7 +390,6 @@ pub enum NsType {
     Mnt,
     Net,
     Pid,
-    #[expect(unused)]
     Time,
     User,
     Uts,

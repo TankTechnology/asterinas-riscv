@@ -14,8 +14,17 @@ fi
 ./clone3/clone_no_exit_signal
 ./clone3/clone_parent
 ./clone3/clone_process
+./clone3/clone_set_tid
 
 ./cpu_affinity/cpu_affinity
+
+if [ "$(uname -m)" = "riscv64" ]; then
+    if grep -qw 'RISCV_ICACHE_REQUIRE_SMP4=1' /proc/cmdline; then
+        ./riscv_flush_icache/riscv_flush_icache --require-smp4
+    else
+        ./riscv_flush_icache/riscv_flush_icache
+    fi
+fi
 
 ./execve/execve
 ./execve/execve_comm
@@ -55,6 +64,8 @@ fi
 ./sched/sched_attr_getset
 ./sched/sched_param_getset
 ./sched/sched_param_idle
+./sched/sched_permissions
+./sched/sched_policy
 
 ./signal/kill
 ./signal/parent_death_signal

@@ -5,24 +5,23 @@ boots it twice on current Asterinas. The first boot writes and syncs a random
 nonce; the second boot must read the same nonce from the same writable root
 disk. The runtime is headless, has four harts, and uses `-nic none`.
 
-Run all commands from the repository root. The validated development image is
-`asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached`.
+Run all commands from the repository root. Build and use the dedicated rootfs
+image described in `tools/docker/riscv-rootfs/README.md`; its default
+explicit-QEMU/proot path does not modify host binfmt state.
 
 ## Proxy and container setup
 
 ### binfmt safety boundary
 
-The rootfs builder needs a `qemu-riscv64` binfmt handler for the target-side
-`chroot` steps.  **Do not enable or register that handler on the host** with
-`update-binfmts`, `tonistiigi/binfmt`, or a write to
-`/proc/sys/fs/binfmt_misc/register`: Docker's privileged mount can propagate
-the registration back to the host and leave a persistent global interpreter.
-Before any build, inspect the host registration read-only and stop if it is
-missing or unexpected.  The supported build runner must provide an already
-audited, isolated binfmt boundary and pass its mounted tree through
-`ASTERINAS_BINFMT_ROOT`; the builder only verifies the tree and never mutates
-it.  If that boundary is unavailable, keep the rootfs build deferred and run
-the unit/contract tests instead of changing host binfmt state.
+The supported default is `ASTERINAS_EXPLICIT_QEMU=1`: `proot` dispatches every
+target-side exec through `qemu-riscv64-static`, including maintainer-script
+children. It neither needs nor changes a host `binfmt_misc` registration.
+
+**Do not enable or register a handler on the host** with `update-binfmts`,
+`tonistiigi/binfmt`, or a write to `/proc/sys/fs/binfmt_misc/register`.
+Docker's privileged mount can propagate the registration back to the host and
+leave a persistent global interpreter. A pre-existing isolated binfmt boundary
+may be used only as an explicit compatibility mode after read-only audit.
 
 Check Clash without changing Docker, apt, Cargo, or Git configuration:
 
@@ -39,28 +38,12 @@ docker run --rm -it --network=host \
   -v "$PWD:/root/asterinas" -w /root/asterinas \
   -e http_proxy="$ASTERINAS_PROXY" -e https_proxy="$ASTERINAS_PROXY" \
   -e HTTP_PROXY="$ASTERINAS_PROXY" -e HTTPS_PROXY="$ASTERINAS_PROXY" \
-  asterinas/asterinas:0.18.0-20260702-riscv-cross-dtc-cached
+  asterinas/asterinas:0.18.0-20260702-riscv-rootfs --check
 ```
 
-Inside the container, install the build, signature, filesystem, and emulation
-dependencies. This does not weaken Debian signature verification.
-
-```bash
-apt-get update
-apt-get install -y --no-install-recommends \
-  debootstrap qemu-user-static binfmt-support debian-archive-keyring \
-  gcc-riscv64-linux-gnu libc6-dev-riscv64-cross \
-  linux-libc-dev-riscv64-cross cpio e2fsprogs curl gpgv device-tree-compiler \
-  qemu-system-misc
-# Historical host-mutating command; do not run:
-# update-binfmts --enable qemu-riscv64
-cat /proc/sys/fs/binfmt_misc/qemu-riscv64
-```
-
-The final read-only check must show `enabled`, the
-`qemu-riscv64-static` interpreter, and the `F` flag. If the registration is
-already supplied by the host kernel, do not replace it with handwritten
-binfmt magic.
+Do not install dependencies interactively. If `--check` does not report
+`execution=explicit-proot` and `host_binfmt=unchanged`, rebuild the pinned
+Dockerfile instead of changing the running container or host.
 
 ## Build the frozen root once
 
@@ -89,6 +72,53 @@ python3 -m tools.riscv.debian.rootfs.contract verify \
   --manifest target/debian-riscv/rootfs/rootfs-manifest.json \
   --packages-lock target/debian-riscv/rootfs/packages.lock
 ```
+
+## Fast browser-web development overlay
+
+Do not rerun debootstrap or apt for changes limited to the browser-web guest
+scripts and systemd units. Build the signed `browser-web` rootfs once, keep it
+immutable, and materialize a copy-on-write development derivative:
+
+```bash
+make build_riscv_debian_browser_web_dev_overlay
+```
+
+The default input is
+`target/debian-riscv/browser-web/rootfs/`; the disposable output is
+`target/dev-overlays/browser-web/rootfs/`. The separate output tree remains
+writable even when a privileged rootfs builder created `target/debian-riscv`.
+Override both paths without changing
+the repository or host configuration:
+
+```bash
+make build_riscv_debian_browser_web_dev_overlay \
+  DEBIAN_BROWSER_WEB_BASE_ROOTFS=/absolute/path/to/frozen/rootfs \
+  DEBIAN_BROWSER_WEB_DEV_ROOTFS=/absolute/path/to/development/rootfs
+```
+
+The command has no network or package-install phase. It verifies the frozen
+base manifest and package checksums, reflink-copies the ext2 image when the
+filesystem supports it, replaces only the pre-existing regular files listed
+in `browser_web_dev_overlay.json`, and reads every replacement back through
+`debugfs`. A missing destination, symlinked source, unsafe path, byte mismatch,
+or mode mismatch fails closed without replacing the previous development
+output.
+
+The output directory is a drop-in gate input containing
+`debian-root.ext2`, `rootfs-manifest.json`, `packages.lock`, and
+`source-metadata/`. Point the existing QEMU gate variables at those files. The
+additional `dev-overlay-manifest.json` records the frozen base image and
+manifest hashes, overlay specification hash, per-file source hash and mode,
+and final derived image hash. The compatibility rootfs manifest also records
+the derivation digest as `tool_versions.asterinas-dev-overlay`; it must never
+be confused with a newly signed package build.
+
+Use this fast path only for listed scripts and service configuration. Run the
+full `build_rootfs.sh --profile browser-web` workflow whenever package names or
+versions, signed apt metadata, filesystem size/layout, users/groups, generated
+caches, directories, symlinks, or device nodes change. QEMU run disks and
+physical-board installation artifacts remain separate from both the frozen
+base and this disposable derivative.
 
 Build the separate schema-v2 systemd profile only when the M1 artifact is not
 the intended input. It has a distinct label, UUID, and output directory, so it
@@ -194,6 +224,7 @@ normal gate does not contain a GDB argument, and this opt-in does not add
 ```bash
 ASTERINAS_QEMU_GDB_PORT=23456 \
   python3 -m tools.riscv.debian.rootfs.browser_web_qemu_gate \
+  --network-mode direct \
   ...the frozen browser-web gate arguments...
 
 tools/riscv/qemu_live_pc_sampler.sh 23456 \
@@ -219,11 +250,13 @@ page, and a live BV detail link selected from that page.  A Baidu search is
 recorded as either a validated result page or an exact
 `wappass.baidu.com/static/captcha/` challenge whose back URL contains the
 submitted query.  The latter is reported as `external-captcha`; it is
-observable public-site evidence, not a successful search result.
+observable public-site evidence, not a successful search result, and the
+Firefox/Baidu acceptance gate therefore fails closed.
 
 The guest image precreates the ten JSON/PNG evidence inodes.  The gate
-overwrites them, performs a whole-filesystem `sync`, and only then emits
-`DEBIAN_BROWSER_WEB_READY`.  DNS and curl probes have explicit outer bounds,
+overwrites them, performs a whole-filesystem `sync`, uploads the final Baidu
+PNG to the owned fixture, and only then emits the mode-qualified
+`DEBIAN_FIREFOX_BAIDU_READY`. DNS and curl probes have explicit outer bounds,
 and shell/Python timeline producers share the `/proc/uptime` monotonic clock.
 The host validates the exact evidence set after QEMU stops, including PNG
 structure, trust hashes, process identity, phase pairs, and ordered timeline
@@ -399,6 +432,11 @@ foreground window has finished rendering Baidu.
 
 ### QEMU M6 browser evidence gate
 
+> This is a historical NetSurf milestone gate. Its `limited-pass`, `disabled`,
+> and `failed` JavaScript classifications must not be reported as Firefox-ready
+> or as modern-browser compatibility. Use the schema-seven Firefox Web gate for
+> current Firefox acceptance.
+
 After rebuilding the `desktop-m5-network` root, use the M6 gate to foreground
 and capture a Baidu-hosted PNG in NetSurf before navigating the same window to
 a fixed local JavaScript fixture. The direct image isolates HTTPS transfer and
@@ -464,6 +502,62 @@ query rendered `百度安全验证`, so the final M7 result remained failed with
 Chinese text as missing-glyph boxes. These are user-space/browser and remote
 service limitations; the run did not expose a new Asterinas DNS, TCP, TLS,
 VirtIO input, Xorg, or framebuffer failure.
+
+### QEMU M9 desktop software smoke gate
+
+The M9 profile is a separate signed rootfs derived from the M5 desktop
+package set. It uses Debian's official `riscv64` `netsurf-gtk`, adds `vim` and
+`ffmpeg`, and does not list `ffprobe` separately: Debian ships `/usr/bin/ffprobe`
+from the `ffmpeg` package. The manifest deliberately keeps schema version 5
+for compatibility with existing readers while binding the new profile name,
+label, UUID, and package identity.
+
+Build and verify the image once, then reuse it for both QEMU and the bounded
+Megrez run:
+
+```bash
+tools/riscv/debian/rootfs/build_rootfs.sh --profile desktop-m9-software
+python3 -m tools.riscv.debian.rootfs.contract verify \
+  --image target/debian-riscv/desktop-m9-software/rootfs/debian-root.ext2 \
+  --manifest target/debian-riscv/desktop-m9-software/rootfs/rootfs-manifest.json \
+  --packages-lock target/debian-riscv/desktop-m9-software/rootfs/packages.lock
+```
+
+Run the complete four-hart QEMU contract with finite timeouts. This single
+gate reuses the M5 slirp/DNS/HTTPS, M4 desktop, and M7 NetSurf/Baidu evidence,
+then executes the M9 software service. The M8 quality gate remains an
+independent optional run because its title assertion is intentionally not a
+prerequisite for application smoke evidence:
+
+```bash
+make test_riscv_debian_desktop_m9_software_gate \
+  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m9-software/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m9-software/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m9-software/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-m9-software/rootfs/source-metadata/package-checksums" \
+  DEBIAN_DESKTOP_M9_SOFTWARE_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-m9-software/m9-qemu-gate" \
+  DEBIAN_DESKTOP_BOOT_TIMEOUT=900
+```
+
+The software service is intentionally small and fail-closed. It saves a
+marker line with non-interactive Vim, generates a deterministic 16x16 RGB
+frame with single-threaded FFmpeg on the ext2-backed `/var/tmp`, and checks
+its dimensions with ffprobe. Each command has a 120-second timeout and the
+service has a 300-second systemd budget, so a missing package or a hung
+process produces `DEBIAN_DESKTOP_M9_FAIL reason=...` instead of leaving a
+QEMU or board session running indefinitely. The QEMU result retains the
+serial transcript, screenshot, network fixture summary, and immutable
+manifest identity.
+
+For an unreliable Chinese-network path, first use the proxy preflight above;
+if TUNA cannot provide a complete signed closure, retry the build explicitly
+with USTC and then `deb.debian.org`. Do not change the mirror in the guest or
+run an unbounded `apt` command on Megrez. The verified `.deb` closure and its
+`package-checksums` are the offline installation input for the physical test.
 
 ### Megrez static-RJ45 browser gate
 

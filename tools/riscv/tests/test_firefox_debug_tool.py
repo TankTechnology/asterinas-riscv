@@ -77,10 +77,10 @@ class FirefoxDebugToolTests(unittest.TestCase):
                 text=True,
             )
         args = result.stdout
-        self.assertIn("file=/home/", args)
-        self.assertIn("/test/initramfs/build/ext2.img", args)
-        self.assertIn("/test/initramfs/build/exfat.img", args)
-        self.assertIn("/test/initramfs/build/ltp_dev.img", args)
+        repo_root = Path("tools/qemu_args.sh").resolve().parent.parent
+        self.assertIn(f"file={repo_root}/test/initramfs/build/ext2.img", args)
+        self.assertIn(f"file={repo_root}/test/initramfs/build/exfat.img", args)
+        self.assertIn(f"file={repo_root}/test/initramfs/build/ltp_dev.img", args)
         self.assertIn(f"logfile={log_dir}/qemu.log", args)
         self.assertNotIn("file=./test/initramfs/build", args)
 

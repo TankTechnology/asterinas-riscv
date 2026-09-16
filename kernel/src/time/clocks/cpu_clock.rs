@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::sync::Arc;
-use core::time::Duration;
-
-use ostd::{
-    sync::{LocalIrqDisabled, SpinLock},
-    timer::Jiffies,
+use core::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
+
+use ostd::timer::{Jiffies, TIMER_FREQ};
 
 use crate::time::Clock;
 
 /// A clock used to record the CPU time for processes and threads.
 pub struct CpuClock {
-    time: SpinLock<Jiffies, LocalIrqDisabled>,
+    nanoseconds: AtomicU64,
 }
 
 /// A profiling clock that contains a user CPU clock and a kernel CPU clock.
@@ -28,24 +28,31 @@ impl CpuClock {
     /// Creates a new `CpuClock`. The recorded time is initialized to 0.
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            time: SpinLock::new(Jiffies::new(0)),
+            nanoseconds: AtomicU64::new(0),
         })
     }
 
-    /// Adds `jiffies` to the original recorded time to update the `CpuClock`.
-    pub fn add_jiffies(&self, jiffies: u64) {
-        self.time.lock().add(jiffies);
+    /// Adds elapsed CPU time to this clock.
+    pub fn add_duration(&self, duration: Duration) {
+        let nanoseconds = u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX);
+        let _ = self
+            .nanoseconds
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                Some(old.saturating_add(nanoseconds))
+            });
     }
 
     /// Reads the current time of this clock in [`Jiffies`].
     pub fn read_jiffies(&self) -> Jiffies {
-        *self.time.lock()
+        let nanoseconds = self.nanoseconds.load(Ordering::Relaxed);
+        let jiffies = (u128::from(nanoseconds) * u128::from(TIMER_FREQ)) / 1_000_000_000;
+        Jiffies::new(u64::try_from(jiffies).unwrap_or(u64::MAX))
     }
 }
 
 impl Clock for CpuClock {
     fn read_time(&self) -> Duration {
-        self.read_jiffies().as_duration()
+        Duration::from_nanos(self.nanoseconds.load(Ordering::Relaxed))
     }
 }
 

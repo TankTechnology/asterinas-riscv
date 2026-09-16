@@ -68,6 +68,14 @@ impl siginfo_t {
         self.set_pid_uid(ctx.process.pid(), ctx.posix_thread.credentials().ruid());
     }
 
+    pub fn set_timer(&mut self, timer_id: i32, overrun: i32, value: sigval_t) {
+        *self.siginfo_fields.common_mut().first.timer_mut() = siginfo_timer_t {
+            timerid: timer_id,
+            overrun,
+        };
+        *self.siginfo_fields.common_mut().second.value_mut() = value;
+    }
+
     pub fn set_status(&mut self, status: i32) {
         *self
             .siginfo_fields
@@ -149,6 +157,12 @@ pub union sigval_t {
 }
 
 impl sigval_t {
+    pub fn from_int(value: i32) -> Self {
+        let mut result = Self::new_zeroed();
+        *result.sigval_int_mut() = value;
+        result
+    }
+
     pub fn read_int(&self) -> i32 {
         *self.sigval_int()
     }

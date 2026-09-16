@@ -11,6 +11,7 @@ readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
 readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
 readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
 readonly DESKTOP_DRM_OUTPUT_DIR="target/debian-riscv/desktop-drm/rootfs"
+readonly DESKTOP_M9_SOFTWARE_OUTPUT_DIR="target/debian-riscv/desktop-m9-software/rootfs"
 readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
 readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
@@ -169,7 +170,7 @@ parse_arguments() {
             die "$print_mode does not accept build options"
         if [[ "$print_mode" == "--print-tools" ]]; then
             printf '%s\n' "${REQUIRED_TOOLS[@]}"
-            if [[ "$PROFILE" == browser-m5 ]]; then
+            if [[ "$PROFILE" == browser-m5 || "$PROFILE" == desktop-m9-software ]]; then
                 printf '%s\n' ffprobe ffmpeg
             fi
         else
@@ -186,7 +187,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-drm | browser-m5 | browser-web) ;;
+        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-drm | desktop-m9-software | browser-m5 | browser-web) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -215,6 +216,8 @@ configure_profile() {
         OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-drm && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_DRM_OUTPUT_DIR"
+    elif [[ "$PROFILE" == desktop-m9-software && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$DESKTOP_M9_SOFTWARE_OUTPUT_DIR"
     elif [[ "$PROFILE" == browser-m5 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$BROWSER_M5_OUTPUT_DIR"
     elif [[ "$PROFILE" == browser-web && "$has_output_dir" == 0 ]]; then
@@ -359,7 +362,7 @@ require_tools() {
     for tool in "${REQUIRED_TOOLS[@]}"; do
         command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
     done
-    if [[ "$PROFILE" == browser-m5 ]]; then
+    if [[ "$PROFILE" == browser-m5 || "$PROFILE" == desktop-m9-software ]]; then
         command -v ffprobe >/dev/null 2>&1 || die "missing required tool: ffprobe"
         command -v ffmpeg >/dev/null 2>&1 || die "missing required tool: ffmpeg"
     fi
@@ -516,7 +519,7 @@ bootstrap_rootfs() {
         install -d -- "$stage/usr/share/debootstrap"
         cp -a -- /usr/share/debootstrap/. "$stage/usr/share/debootstrap/"
     fi
-    verify_riscv_binfmt
+    verify_riscv_execution_boundary
     log "phase 3/8: completing debootstrap second stage"
     # proot can make the helper's self-test of /debootstrap ambiguous; pin
     # the directory explicitly so the generated suite/variant state is used.
@@ -524,7 +527,7 @@ bootstrap_rootfs() {
         /debootstrap/debootstrap --second-stage
 }
 
-verify_riscv_binfmt() {
+verify_riscv_execution_boundary() {
     # Docker gives the build container its own proc sys tree, which may expose
     # an empty binfmt_misc mount even though the host has the required fixed
     # qemu-riscv64 registration.  The workflow can bind that host tree at a
@@ -534,7 +537,7 @@ verify_riscv_binfmt() {
     local registration="$binfmt_root/qemu-riscv64"
 
     [[ "$(uname -m)" != riscv64 ]] ||
-        die "refusing a native RISC-V host; an enabled binfmt boundary is required"
+        die "refusing a native RISC-V host; this builder requires an emulated execution boundary"
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
         [[ -x "$WORK_DIR/stage/usr/bin/qemu-riscv64-static" ]] ||
             die "explicit qemu mode requires qemu-riscv64-static in the staged root"
@@ -580,13 +583,10 @@ install_rootfs_packages() {
         version="$(dpkg-deb -f "$cached" Version 2>/dev/null || true)"
         architecture="$(dpkg-deb -f "$cached" Architecture 2>/dev/null || true)"
         [[ -n "$package" && -n "$version" && -n "$architecture" ]] || continue
-        # For browser profiles the cache was admitted from the same signed
-        # package set by an earlier build, so reuse all matching archives. For
-        # smaller profiles keep the bridge narrow to avoid extra-package audit
-        # noise; Firefox is the only slow package worth pre-seeding there.
-        if ! is_firefox_profile; then
-            [[ "$package" == firefox-esr ]] || continue
-        fi
+        # Only browser profiles may reuse the browser cache.  Non-browser
+        # profiles must not seed an unrequested Firefox archive: the later
+        # package-lock audit would (correctly) reject that extra package.
+        is_firefox_profile || continue
         [[ "$architecture" == riscv64 || "$architecture" == all ]] || continue
         filename="${package}_${version}_${architecture}.deb"
         # The content cache uses '_' as a portable encoding for '~' in Debian
@@ -1010,6 +1010,10 @@ EOF
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
         configure_desktop "$stage" m4
         configure_desktop_m5_network "$stage"
+    elif [[ "$PROFILE" == desktop-m9-software ]]; then
+        configure_desktop "$stage" m4
+        configure_desktop_m5_network "$stage"
+        configure_desktop_m9_software "$stage"
     elif [[ "$PROFILE" == browser-m5 ]]; then
         configure_desktop "$stage" "m5"
         configure_desktop_m5_network "$stage" m5 false
@@ -1058,7 +1062,8 @@ EOF
         # closed if a real workspace somehow does not.
         if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
             finalize_browser_startup_caches "$stage"
-        elif [[ "$PROFILE" == desktop-m5-network ]]; then
+        elif [[ "$PROFILE" == desktop-m5-network ||
+                "$PROFILE" == desktop-m9-software ]]; then
             # Keep the helper overrideable for the skeletal desktop-M5 unit
             # tests; real builds have target systemd-sysusers and take the
             # branch above.
@@ -1088,7 +1093,7 @@ EOF
                 if [[ "$PROFILE" == browser-web ]]; then
                     startup_cache_marker='BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
                 else
-                    startup_cache_marker='DESKTOP_STARTUP_CACHE_PASS profile=desktop-m5-network sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
+                    startup_cache_marker="DESKTOP_STARTUP_CACHE_PASS profile=$PROFILE sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current"
                 fi
             fi
             grep -Fqx "$startup_cache_marker" \
@@ -1119,7 +1124,7 @@ configure_logind_diagnostic() {
 
 profile_uses_startup_caches() {
     case "$1" in
-        desktop-m5-network | browser-web | browser-m5) return 0 ;;
+        desktop-m5-network | desktop-m9-software | browser-web | browser-m5) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -1154,6 +1159,13 @@ finalize_browser_startup_caches() {
         run_chroot "$stage" /sbin/ldconfig -p
     } >"$stage/usr/share/asterinas/browser-startup-ldconfig.log"
 
+    # Under qemu-user, systemd's O_TMPFILE publication fallback needs /proc to
+    # link the anonymous file.  This build intentionally leaves host /proc out
+    # of the chroot, so run the target binary outside the chroot and give it an
+    # explicit staged root.  The database format is still owned by the target
+    # systemd, while the host's /proc makes publication atomic.
+    qemu-riscv64-static -L "$stage" "$stage/usr/bin/systemd-hwdb" \
+        --root="$stage" update --usr
     run_chroot "$stage" /usr/bin/journalctl --update-catalog
     # Keep the target-side diagnostic visible without rewriting Debian's
     # usr-is-merged cache aliases.  The package postinst has already created
@@ -1281,6 +1293,12 @@ $desktop_ordering
 [Service]
 Type=oneshot
 $(if [[ "$network_mode" == lightweight ]]; then printf '%s\n' 'Environment=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight'; fi)
+# Asterinas' iproute2 netlink path is known to complete on the board, but a
+# broken userspace probe must never hold graphical.target forever.  Bound the
+# unit as a whole instead of wrapping ip(8) with coreutils timeout: the latter
+# changes the process/signal path and has regressed on Asterinas before.
+TimeoutStartSec=180s
+TimeoutStopSec=5s
 ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence
 RemainAfterExit=yes
 
@@ -1380,6 +1398,44 @@ EOF
         "../$quality_service_name.service" \
         "$stage/etc/systemd/system/graphical.target.wants/$quality_service_name.service"
     fi
+}
+
+configure_desktop_m9_software() {
+    local stage="$1"
+    local script_directory
+    local service_name="asterinas-desktop-m9-software"
+
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    # M9 is an application smoke gate, not a second browser-quality run. Keep
+    # the M8 unit available for explicit quality profiles, but do not start it
+    # concurrently with FFmpeg on the constrained RISC-V guest.
+    rm -f -- \
+        "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m8-browser-quality.service"
+    install -D -m 0755 -- \
+        "$script_directory/desktop_m9_software_evidence.sh" \
+        "$stage/usr/lib/asterinas/desktop-m9-software-evidence"
+    cat >"$stage/etc/systemd/system/$service_name.service" <<'EOF'
+[Unit]
+Description=Asterinas Debian M9 desktop software evidence
+After=asterinas-desktop-m7-baidu.service
+
+[Service]
+Type=oneshot
+Environment=ASTERINAS_DESKTOP_M9_TIMEOUT_SECONDS=120
+Environment=ASTERINAS_DESKTOP_M9_COMMAND_TIMEOUT_SECONDS=120
+Environment=ASTERINAS_DESKTOP_M9_WORK_DIRECTORY=/var/tmp
+TimeoutStartSec=300
+ExecStart=/usr/lib/asterinas/desktop-m9-software-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/$service_name.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/graphical.target.wants"
+    ln -s -- \
+        "../$service_name.service" \
+        "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
 }
 
 configure_logind_namespace_compatibility() {
@@ -1746,6 +1802,14 @@ EOF
     ln -s -- \
         ../$service_name.service \
         "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
+    if [[ "$generation" == m4 ]]; then
+        install -D -m 0644 -- \
+            "$script_directory/desktop_m4_core_evidence.service" \
+            "$stage/etc/systemd/system/asterinas-desktop-core-evidence.service"
+        ln -s -- \
+            ../asterinas-desktop-core-evidence.service \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-core-evidence.service"
+    fi
     if [[ "$browser_mode" == offline ]]; then
         ln -s -- \
             ../$service_name-evidence.service \
@@ -1941,6 +2005,8 @@ write_rootfs_manifest() {
     local debootstrap_version
     local mke2fs_version
     local qemu_version
+    local browser_web_runtime_version=""
+    local -a browser_web_tool_version=()
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
@@ -1948,6 +2014,13 @@ write_rootfs_manifest() {
     debootstrap_version="$(debootstrap --version 2>&1 | head -n 1)"
     mke2fs_version="$(mke2fs -V 2>&1 | head -n 1)"
     qemu_version="$(qemu-riscv64-static --version 2>&1 | head -n 1)"
+
+    if [[ "$PROFILE" == browser-web ]]; then
+        browser_web_runtime_version="$(browser_web_runtime_digest "$script_directory")"
+        browser_web_tool_version=(
+            --tool-version "browser-web-runtime=$browser_web_runtime_version"
+        )
+    fi
 
     local -a signed_source_arguments=()
     if is_firefox_profile; then
@@ -1971,7 +2044,34 @@ write_rootfs_manifest() {
         --build-timestamp "$build_timestamp" \
         --tool-version "debootstrap=$debootstrap_version" \
         --tool-version "mke2fs=$mke2fs_version" \
-        --tool-version "qemu-riscv64-static=$qemu_version"
+        --tool-version "qemu-riscv64-static=$qemu_version" \
+        "${browser_web_tool_version[@]}"
+}
+
+browser_web_runtime_digest() {
+    local source_directory="$1"
+    local input
+    local -a inputs=(
+        desktop_m5_network_evidence.sh
+        desktop_m5_network_gate.py
+        browser_web_firefox.sh
+        browser_web_marionette_gate.py
+        browser_m5_marionette_gate.py
+        browser_web_evidence.sh
+        browser_web.service
+        browser_web_evidence.service
+    )
+
+    for input in "${inputs[@]}"; do
+        [[ -f "$source_directory/$input" ]] ||
+            die "missing browser-web runtime input: $input"
+    done
+    {
+        for input in "${inputs[@]}"; do
+            printf '%s\n' "$input"
+            sha256sum -- "$source_directory/$input" | cut -d' ' -f1
+        done
+    } | sha256sum | cut -d' ' -f1
 }
 
 publish_artifacts() {

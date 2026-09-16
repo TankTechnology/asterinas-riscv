@@ -20,6 +20,7 @@ use crate::{
             c_types::siginfo_t,
             constants::{CLD_TRAPPED, SIGCHLD, SIGKILL, SIGTRAP},
             provenance::trace_kernel_thread_enqueue,
+            sig_num::SigNum,
             signals::{kernel::KernelSignal, raw::RawSignal, user::UserSignal},
         },
     },
@@ -56,6 +57,15 @@ impl PosixThread {
     /// Detaches the tracer of this thread.
     pub(in crate::process) fn detach_tracer(&self) {
         self.detach_tracer_with(|_| {});
+    }
+
+    /// Detaches this thread from its tracer and resumes it.
+    fn detach_from_ptrace(&self, sig_num: Option<SigNum>, ctx: &Context) -> Result<()> {
+        let status = self.get_tracee_status()?;
+        status.detach(sig_num, ctx)?;
+        self.wake_signalled_waker();
+
+        Ok(())
     }
 
     /// Detaches the tracer of this thread with a callback.
@@ -305,6 +315,29 @@ impl PosixThread {
             .ok_or_else(|| Error::with_message(Errno::ESRCH, "no such tracee"))
     }
 
+    /// Detaches the tracee with the given TID and resumes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ESRCH` if there is no such tracee or it is not ptrace-stopped.
+    pub fn detach_from(&self, tid: Tid, sig_num: Option<SigNum>, ctx: &Context) -> Result<()> {
+        let tracees = self
+            .tracees()
+            .ok_or_else(|| Error::with_message(Errno::ESRCH, "no such tracee"))?;
+
+        // Lock order: tracer.tracees -> tracee.tracee_status
+        let mut tracees = tracees.lock();
+        let tracee_thread = tracees
+            .get(&tid)
+            .ok_or_else(|| Error::with_message(Errno::ESRCH, "no such tracee"))?;
+        let tracee = tracee_thread.as_posix_thread().unwrap();
+
+        tracee.detach_from_ptrace(sig_num, ctx)?;
+        tracees.remove(&tid);
+
+        Ok(())
+    }
+
     /// Clears all tracees of this tracer on exit.
     pub(in crate::process) fn clear_tracees(&self) {
         let Some(tracees) = self.tracees() else {
@@ -372,6 +405,28 @@ impl TraceeStatus {
         // Hold the lock first to avoid race conditions.
         let mut state = self.state.lock();
 
+        detach_callback(&state);
+        self.finish_detach(&mut state);
+    }
+
+    fn detach(&self, sig_num: Option<SigNum>, ctx: &Context) -> Result<()> {
+        let mut state = self.state.lock();
+        self.check_ptrace_stopped(&state)?;
+
+        if let Some(sig_num) = sig_num {
+            state
+                .signal
+                .inject(Box::new(UserSignal::new_kill(sig_num, ctx)));
+        } else {
+            state.signal.clear();
+        }
+
+        self.finish_detach(&mut state);
+
+        Ok(())
+    }
+
+    fn finish_detach(&self, state: &mut TraceeState) {
         state.tracer = Weak::new();
         #[cfg(target_arch = "x86_64")]
         {
@@ -379,8 +434,8 @@ impl TraceeStatus {
                 arch_ptrace::disable_single_step(regs);
             }
         }
+        state.options = PtraceOptions::empty();
         state.is_tracing_syscall = false;
-        detach_callback(&state);
         self.is_stopped.store(false, Ordering::Relaxed);
     }
 

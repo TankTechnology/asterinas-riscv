@@ -44,7 +44,7 @@ pub fn sys_set_priority(which: i32, who: u32, prio: i32, ctx: &Context) -> Resul
             return_errno!(Errno::EACCES);
         }
         // FIXME: `setpriority` updates only the per-process nice value. Fair
-        // scheduler state is kept in each thread's `SchedPolicy::Fair`, so it
+        // scheduler state is kept in each thread's fair-class policy, so it
         // should be updated from the same source of truth.
         process.nice().store(new_nice, Ordering::Relaxed);
     }

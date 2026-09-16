@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::{Interval, RssDelta, Vmar, VmMapping};
+use align_ext::AlignExt;
+
+use super::{Interval, RssDelta, VmMapping, Vmar};
 use crate::{prelude::*, vm::perms::VmPerms};
 
 impl Vmar {
@@ -13,7 +15,22 @@ impl Vmar {
         // while protected, then let the guard drop before any fault work.
         let vm_mapping = {
             let inner = self.inner.read();
-            inner.vm_mappings.find_one(&address).map(VmMapping::new_fork)
+            inner
+                .vm_mappings
+                .find_one(&address)
+                .map(VmMapping::new_fork)
+        };
+        let vm_mapping = if vm_mapping.is_some() {
+            vm_mapping
+        } else {
+            let mut inner = self.inner.write();
+            if inner.vm_mappings.find_one(&address).is_none() {
+                inner.try_expand_growsdown_mapping(address)?;
+            }
+            inner
+                .vm_mappings
+                .find_one(&address)
+                .map(VmMapping::new_fork)
         };
 
         if let Some(vm_mapping) = vm_mapping {
@@ -27,6 +44,44 @@ impl Vmar {
             Errno::EACCES,
             "no VM mappings contain the page fault address"
         );
+    }
+}
+
+impl super::VmarInner {
+    /// Expands the closest `MAP_GROWSDOWN` VMA to cover the faulting page.
+    fn try_expand_growsdown_mapping(&mut self, address: Vaddr) -> Result<()> {
+        let new_start = address.align_down(PAGE_SIZE);
+        let Some(next) = self.vm_mappings.find_next(&new_start) else {
+            return Ok(());
+        };
+        if !next.can_grow_down() {
+            return Ok(());
+        }
+
+        let old_start = next.map_to_addr();
+        let extra_size = old_start.saturating_sub(new_start);
+        if extra_size == 0 {
+            return Ok(());
+        }
+        // Match Linux's default stack guard gap: a grow-down VMA must not
+        // approach an existing lower VMA by less than 256 pages.
+        const STACK_GUARD_GAP: usize = 256 * PAGE_SIZE;
+        if self
+            .vm_mappings
+            .find_prev(&old_start)
+            .is_some_and(|prev| prev.map_end().saturating_add(STACK_GUARD_GAP) > new_start)
+        {
+            return_errno_with_message!(Errno::EACCES, "grow-down stack guard gap is occupied");
+        }
+        self.alloc_free_region_exact(new_start, extra_size)
+            .map_err(|_| {
+                Error::with_message(Errno::EACCES, "grow-down guard region is occupied")
+            })?;
+        self.check_extra_size_fits_rlimit(extra_size)?;
+
+        let mapping = self.remove(&old_start).unwrap();
+        self.insert_without_try_merge(mapping.enlarge_down(new_start));
+        Ok(())
     }
 }
 
@@ -59,6 +114,11 @@ impl PageFaultInfo {
             required_perms,
             is_forced: false,
         }
+    }
+
+    /// Returns the virtual address that triggered the fault.
+    pub(crate) fn address(&self) -> Vaddr {
+        self.address
     }
 
     /// Returns whether this page fault is forced.

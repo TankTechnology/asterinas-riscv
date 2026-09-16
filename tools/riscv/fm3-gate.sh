@@ -9,6 +9,7 @@
 #   tools/riscv/fm3-gate.sh                     # build initramfs + run
 #   tools/riscv/fm3-gate.sh --rebuild-kernel    # rebuild kernel first
 #   tools/riscv/fm3-gate.sh --smp 4             # SMP=4
+#   tools/riscv/fm3-gate.sh --prepare-only      # stop before QEMU
 
 set -euo pipefail
 
@@ -20,18 +21,20 @@ BOOT_DRIVER="${FM3_DIR}/boot_fm3.py"
 BUILD_SCRIPT="${FM3_DIR}/build_fm3.sh"
 
 KERNEL_IMAGE="${ASTERINAS_RISCV_BOOTI:-${REPO_ROOT}/target/osdk/aster-kernel-osdk-bin.Image}"
-INITRAMFS="${REPO_ROOT}/target/nixos/fm3/fm3-initramfs.cpio.gz"
+INITRAMFS="${FM3_INITRAMFS:-${REPO_ROOT}/target/nixos/fm3/fm3-initramfs.cpio.gz}"
 BOOT_DISK="${REPO_ROOT}/target/qemu-uboot/current/boot.ext4"
 DTB="${REPO_ROOT}/target/qemu-uboot/current/qemu-virt.dtb"
-SERIAL_LOG="${REPO_ROOT}/target/nixos/fm3/fm3-serial.log"
+SERIAL_LOG="${FM3_SERIAL_LOG:-${REPO_ROOT}/target/nixos/fm3/fm3-serial.log}"
 
 SMP=1
 REBUILD_KERNEL=0
+PREPARE_ONLY=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --smp) SMP="$2"; shift 2 ;;
         --rebuild-kernel) REBUILD_KERNEL=1; shift ;;
+        --prepare-only) PREPARE_ONLY=1; shift ;;
         --kernel) KERNEL_IMAGE="$2"; shift 2 ;;
         -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 2 ;;
@@ -51,7 +54,7 @@ if [[ "${REBUILD_KERNEL}" -eq 1 ]]; then
     KERNEL_IMAGE="${REPO_ROOT}/target/osdk/aster-kernel-osdk-bin.Image"
 fi
 
-bash "${BUILD_SCRIPT}"
+bash "${BUILD_SCRIPT}" "${INITRAMFS}"
 
 [[ -s "${KERNEL_IMAGE}" ]] || { echo "missing kernel Image: ${KERNEL_IMAGE}" >&2; exit 2; }
 [[ -s "${INITRAMFS}" ]] || { echo "missing initramfs: ${INITRAMFS}" >&2; exit 2; }
@@ -71,6 +74,11 @@ truncate -s "${BOOT_MB}M" "${BOOT_DISK}"
 mkfs.ext4 -q -F -d "${STAGE}" "${BOOT_DISK}"
 rm -rf "${STAGE}"
 echo "re-packed ${BOOT_DISK} (${BOOT_MB}M)"
+
+if [[ "${PREPARE_ONLY}" -eq 1 ]]; then
+    echo "FOUNDATION-M3 prepare-only complete"
+    exit 0
+fi
 
 echo ""
 echo "===== FOUNDATION-M3: SMP=${SMP} ====="

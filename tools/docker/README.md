@@ -24,3 +24,32 @@ The Docker images are tagged according to the version specified
 in the `DOCKER_IMAGE_VERSION` file at the project root.
 Check out the [version bump](https://asterinas.github.io/book/to-contribute/version-bump.html) documentation
 on how new versions of the Docker images are released.
+
+## Building the RISC-V Debian rootfs builder image
+
+The general development image intentionally does not include the packages
+needed to construct a Debian `riscv64` rootfs. Build the dedicated derived
+image when working on the Debian, NetSurf, or Firefox gates:
+
+```bash
+make build_riscv_rootfs_image
+```
+
+The target defaults to the published
+`asterinas/asterinas:0.18.0-20260702` base and produces
+`asterinas/asterinas:0.18.0-20260702-riscv-rootfs`. Both values can be pinned or
+overridden without changing the general image:
+
+```bash
+make build_riscv_rootfs_image \
+  RISCV_ROOTFS_BASE_IMAGE=asterinas/asterinas:0.18.0-20260702@sha256:<digest> \
+  RISCV_ROOTFS_IMAGE=asterinas/asterinas:0.18.0-20260702-riscv-rootfs
+```
+
+Run the image with `--network=host`; its default explicit-QEMU/proot execution
+path needs neither `--privileged` nor a `/dev` mount. The entrypoint never
+changes the host's `binfmt_misc` registration. Keep the content-addressed rootfs
+cache in a named volume mounted at
+`/root/asterinas/target/debian-riscv/cache`; it can be reused safely because
+the rootfs builder admits entries only after SHA-256 verification. See
+`tools/docker/riscv-rootfs/README.md` for the complete run and proxy examples.

@@ -180,7 +180,11 @@ def check_cache_profile(
     profile: str = "browser-web",
     service_name: str | None = None,
 ) -> str:
-    if profile not in ("browser-web", "desktop-m5-network"):
+    if profile not in (
+        "browser-web",
+        "desktop-m5-network",
+        "desktop-m9-software",
+    ):
         raise CacheCheckError(f"unsupported startup-cache profile: {profile}")
     if service_name is not None and profile != "browser-web":
         raise CacheCheckError("service-name is only valid for the browser-web profile")
@@ -296,9 +300,9 @@ def check_cache_profile(
             if unit.splitlines().count(line) != 1:
                 raise CacheCheckError(f"browser security unit contract changed: {line}")
     _validate_maintenance_units(root)
-    if profile == "desktop-m5-network":
+    if profile in ("desktop-m5-network", "desktop-m9-software"):
         return (
-            "DESKTOP_STARTUP_CACHE_PASS profile=desktop-m5-network "
+            f"DESKTOP_STARTUP_CACHE_PASS profile={profile} "
             "sysusers=static ldconfig=riscv64 journal=catalog "
             "fontconfig=cached stamps=current"
         )
@@ -313,7 +317,7 @@ def main() -> int:
     parser.add_argument("root", type=Path)
     parser.add_argument(
         "--profile",
-        choices=("browser-web", "desktop-m5-network"),
+        choices=("browser-web", "desktop-m5-network", "desktop-m9-software"),
         default="browser-web",
     )
     parser.add_argument(

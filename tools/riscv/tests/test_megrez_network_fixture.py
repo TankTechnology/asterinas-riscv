@@ -16,6 +16,7 @@ from tools.riscv.megrez_network_fixture import (
     BROWSER_AUDIO,
     BROWSER_AUDIO_PATH,
     BROWSER_CAPTURE_PATH,
+    BROWSER_PNG_CAPTURE_PATH,
     BROWSER_DOWNLOAD,
     BROWSER_DOWNLOAD_PATH,
     BROWSER_IMAGE,
@@ -187,6 +188,14 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
                 409,
             )
             self.assertEqual(server.capture_payload(), payload)
+
+    def test_accepts_firefox_png_capture_endpoint(self) -> None:
+        payload = BROWSER_IMAGE
+        with FixtureServer(FixtureConfig("127.0.0.1", 0)) as server:
+            status, body = self.post(server, BROWSER_PNG_CAPTURE_PATH, payload)
+            self.assertEqual((status, body), (201, b""))
+            self.assertEqual(server.capture_payload(), payload)
+            self.assertEqual(server.capture_summary()["path"], BROWSER_PNG_CAPTURE_PATH)
 
     def test_rejects_invalid_capture_boundaries_without_state(self) -> None:
         with FixtureServer(FixtureConfig("127.0.0.1", 0)) as server:

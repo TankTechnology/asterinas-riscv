@@ -115,6 +115,7 @@ class MegrezPreboardTests(unittest.TestCase):
             "effective_bootargs": (
                 "console=ttyS0 loglevel=info init=/init "
                 "asterinas.net=eic7700-rj45,10.100.19.200/21 "
+                "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e "
                 "asterinas.reboot_after=60"
             ),
             "passed": True,

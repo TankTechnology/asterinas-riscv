@@ -16,8 +16,13 @@ RELEASE_LTO ?= 0
 LOG_LEVEL ?= error
 SCHEME ?= ""
 SMP ?= 1
+RISCV_ICACHE_REQUIRE_SMP4 ?= 0
 RISCV_LTP_SMP ?= 4
 RISCV_LTP_SUITE ?= syscalls
+DEBIAN_BROWSER_WEB_NETWORK_MODE ?= direct
+DEBIAN_BROWSER_WEB_BASE_ROOTFS ?= $(CURDIR)/target/debian-riscv/browser-web/rootfs
+DEBIAN_BROWSER_WEB_DEV_ROOTFS ?= $(CURDIR)/target/dev-overlays/browser-web/rootfs
+DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC ?= $(CURDIR)/tools/riscv/debian/rootfs/browser_web_dev_overlay.json
 OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
 NO_DEFAULT_FEATURES ?= 0
@@ -123,7 +128,33 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
 else ifeq ($(AUTO_TEST), regression)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="INTEL_TDX=$(INTEL_TDX)"
+ifeq ($(RISCV_ICACHE_REQUIRE_SMP4), 1)
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="RISCV_ICACHE_REQUIRE_SMP4=1"
+endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
+else ifeq ($(AUTO_TEST), dynamic_clock)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_dynamic_clock_test.sh"
+else ifeq ($(AUTO_TEST), pty)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_pty_test.sh"
+else ifeq ($(AUTO_TEST), memfd_exec)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_memfd_exec_test.sh"
+else ifeq ($(AUTO_TEST), sched_policy)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sched_policy_test.sh"
+else ifeq ($(AUTO_TEST), riscv_icache_smp4)
+ifneq ($(TARGET_ARCH), riscv64)
+$(error AUTO_TEST=riscv_icache_smp4 requires TARGET_ARCH=riscv64)
+endif
+ifneq ($(SMP), 4)
+$(error AUTO_TEST=riscv_icache_smp4 requires SMP=4)
+endif
+ENABLE_REGRESSION_TEST := true
+# Keep this gate independent of QEMU's incomplete Zkr seed-CSR emulation.
+RISCV_QEMU_CPU := rv64,svpbmt=true,zkr=false
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_riscv_icache_smp4_test.sh"
 else ifeq ($(AUTO_TEST), boot)
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/boot_hello.sh"
 else ifeq ($(AUTO_TEST), vsock)
@@ -270,6 +301,11 @@ DEBIAN_DESKTOP_VIRGL_BOOT_TIMEOUT ?= 600
 # takes far longer than a desktop boot.
 DEBIAN_DRM_IGT_BOOT_TIMEOUT ?= 1800
 DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
+DEBIAN_WEB_NETWORK_MODE ?=
+DEBIAN_WEB_NETWORK_EXPECT_FAILURE ?= none
+RISCV_ROOTFS_BASE_IMAGE ?= asterinas/asterinas:0.18.0-20260702
+RISCV_ROOTFS_IMAGE ?= asterinas/asterinas:0.18.0-20260702-riscv-rootfs
+RISCV_ROOTFS_DOCKERFILE ?= tools/docker/riscv-rootfs/Dockerfile
 
 effective_path = $(abspath $(or $(strip $(1)),$(2)))
 QEMU_UBOOT_OUT_DIR_EFFECTIVE := $(call effective_path,$(QEMU_UBOOT_OUT_DIR),$(CURDIR)/target/qemu-uboot/current)
@@ -280,6 +316,13 @@ RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_BUI
 MEGREZ_DEBUG_FAST_OUT_DIR_EFFECTIVE := $(call effective_path,$(MEGREZ_DEBUG_FAST_OUT_DIR),$(CURDIR)/target/qemu-uboot/megrez-debug/fast)
 MEGREZ_DEBUG_UBOOT_BUILD_DIR_EFFECTIVE := $(call effective_path,$(MEGREZ_DEBUG_UBOOT_BUILD_DIR),$(CURDIR)/target/qemu-uboot/megrez-debug/uboot)
 MEGREZ_DEBUG_BOARD_OUT_DIR_EFFECTIVE := $(call effective_path,$(MEGREZ_DEBUG_BOARD_OUT_DIR),$(CURDIR)/target/megrez-debug/board)
+
+.PHONY: build_riscv_rootfs_image
+build_riscv_rootfs_image:
+	@docker build --pull=false \
+		--build-arg BASE_IMAGE="$(RISCV_ROOTFS_BASE_IMAGE)" \
+		-f "$(RISCV_ROOTFS_DOCKERFILE)" \
+		-t "$(RISCV_ROOTFS_IMAGE)" .
 
 .PHONY: test_riscv_ltp_unit
 test_riscv_ltp_unit:
@@ -294,16 +337,35 @@ test_riscv_ltp_unit:
 .PHONY: test_riscv_debian_rootfs_unit
 test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_debian_dev_overlay \
 		tools.riscv.tests.test_debian_rootfs \
 		tools.riscv.tests.test_debian_m5_network \
 		tools.riscv.tests.test_debian_m6_browser \
 		tools.riscv.tests.test_debian_m7_baidu \
-		tools.riscv.tests.test_debian_m8_browser_quality -v
+		tools.riscv.tests.test_debian_m8_browser_quality \
+		tools.riscv.tests.test_debian_m9_software -v
+
+.PHONY: build_riscv_debian_browser_web_dev_overlay
+build_riscv_debian_browser_web_dev_overlay:
+	@python3 -m tools.riscv.debian.rootfs.dev_overlay materialize \
+		--base-dir "$(DEBIAN_BROWSER_WEB_BASE_ROOTFS)" \
+		--spec "$(DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC)" \
+		--output-dir "$(DEBIAN_BROWSER_WEB_DEV_ROOTFS)"
 
 .PHONY: test_riscv_megrez_debian_shell
 test_riscv_megrez_debian_shell:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_debian_shell -v
+
+.PHONY: test_riscv_rootfs_builder_image_unit
+test_riscv_rootfs_builder_image_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_riscv_rootfs_builder_image -v
+
+.PHONY: test_riscv_run_kernel_log_unit
+test_riscv_run_kernel_log_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_validate_run_kernel_log -v
 
 .PHONY: test_riscv_megrez_gmac_unit
 test_riscv_megrez_gmac_unit:
@@ -311,6 +373,7 @@ test_riscv_megrez_gmac_unit:
 		tools.riscv.tests.test_megrez_gmac_contract \
 		tools.riscv.tests.test_megrez_gmac_gate \
 		tools.riscv.tests.test_megrez_network_fixture \
+		tools.riscv.tests.test_megrez_proxy_bridge \
 		tools.riscv.tests.test_megrez_xmodem -v
 
 .PHONY: test_riscv_dwmac_rx_model
@@ -452,6 +515,7 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		{ echo "DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
 	@python3 -m tools.riscv.debian.rootfs.desktop_m5_qemu_gate \
 		--target "$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)" \
+		$(if $(filter network,$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)),--network-mode "$(DEBIAN_WEB_NETWORK_MODE)" --expect-failure "$(DEBIAN_WEB_NETWORK_EXPECT_FAILURE)") \
 		--kernel "$(DEBIAN_KERNEL)" \
 		--uboot "$(DEBIAN_UBOOT)" \
 		--dtb "$(DEBIAN_DTB)" \
@@ -523,6 +587,18 @@ test_riscv_debian_desktop_drm_igt_gate:
 		--boot-timeout "$(DEBIAN_DRM_IGT_BOOT_TIMEOUT)" \
 		--command-timeout "$(DEBIAN_DESKTOP_COMMAND_TIMEOUT)"
 
+.PHONY: test_riscv_debian_web_network_proxy_qemu
+test_riscv_debian_web_network_proxy_qemu:
+	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
+		DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network \
+		DEBIAN_WEB_NETWORK_MODE=proxy
+
+.PHONY: test_riscv_debian_web_network_direct_qemu
+test_riscv_debian_web_network_direct_qemu:
+	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
+		DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network \
+		DEBIAN_WEB_NETWORK_MODE=direct
+
 .PHONY: test_riscv_debian_browser_m5_qemu_gate
 test_riscv_debian_browser_m5_qemu_gate:
 	@test -n "$(DEBIAN_KERNEL)" || \
@@ -567,6 +643,7 @@ test_riscv_debian_browser_web_qemu_gate:
 	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
 	@test -n "$(DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT)" || { echo "DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
 	@python3 -m tools.riscv.debian.rootfs.browser_web_qemu_gate \
+		--network-mode "$(DEBIAN_BROWSER_WEB_NETWORK_MODE)" \
 		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" --dtb "$(DEBIAN_DTB)" \
 		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
 		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
@@ -635,6 +712,38 @@ test_riscv_debian_desktop_m7_baidu_gate:
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
+
+.PHONY: test_riscv_debian_desktop_m9_software_gate
+test_riscv_debian_desktop_m9_software_gate:
+	@test -n "$(DEBIAN_KERNEL)" || \
+		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || \
+		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || \
+		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
+		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
+		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
+		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
+		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
+		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DESKTOP_M9_SOFTWARE_GATE_OUTPUT)" || \
+		{ echo "DEBIAN_DESKTOP_M9_SOFTWARE_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.desktop_m9_software_gate \
+		--kernel "$(DEBIAN_KERNEL)" \
+		--uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DESKTOP_M9_SOFTWARE_GATE_OUTPUT)" --smp 4 \
 		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
 
 .PHONY: test_riscv_ltp
@@ -799,19 +908,31 @@ kernel: initramfs $(CARGO_OSDK)
 .PHONY: run_kernel
 run_kernel: initramfs $(CARGO_OSDK)
 	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
-# Check the running status of auto tests from the QEMU log
-ifeq ($(AUTO_TEST), conformance)
-	@tail --lines 100 qemu.log | grep -q "^All conformance tests passed." \
-		|| (echo "Conformance test failed" && exit 1)
-else ifeq ($(AUTO_TEST), regression)
-	@tail --lines 100 qemu.log | grep -q "^All regression tests passed." \
-		|| (echo "Regression test failed" && exit 1)
-else ifeq ($(AUTO_TEST), boot)
-	@tail --lines 100 qemu.log | grep -q "^Successfully booted." \
-		|| (echo "Boot test failed" && exit 1)
-else ifeq ($(AUTO_TEST), vsock)
-	@tail --lines 100 qemu.log | grep -q "^Vsock test passed." \
-		|| (echo "Vsock test failed" && exit 1)
+# Validate the complete QEMU transcript, including fatal output after success.
+ifneq ($(filter $(AUTO_TEST),conformance regression boot vsock),)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "$(AUTO_TEST)" $(if $(filter 1,$(RISCV_ICACHE_REQUIRE_SMP4)),--require-riscv-icache-smp4,)
+else ifeq ($(AUTO_TEST), dynamic_clock)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "Dynamic clock regression passed." \
+		|| (echo "Dynamic clock regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), pty)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "PTY regression passed." \
+		|| (echo "PTY regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), memfd_exec)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "memfd exec regression passed." \
+		|| (echo "memfd exec regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), sched_policy)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "Scheduler policy regression passed." \
+		|| (echo "Scheduler policy regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), riscv_icache_smp4)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "RISC-V SMP4 icache regression passed." \
+		|| (echo "RISC-V SMP4 icache regression failed" && exit 1)
 endif
 
 # Build the Asterinas NixOS ISO installer image

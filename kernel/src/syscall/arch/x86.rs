@@ -78,9 +78,10 @@ use super::{
     madvise::sys_madvise,
     membarrier::sys_membarrier,
     memfd_create::sys_memfd_create,
+    mincore::sys_mincore,
     mkdir::{sys_mkdir, sys_mkdirat},
     mknod::{sys_mknod, sys_mknodat},
-    mlock::{sys_mlock, sys_munlock},
+    mlock::{sys_mlock, sys_mlockall, sys_munlock, sys_munlockall},
     mmap::sys_mmap,
     mount::sys_mount,
     mount_setattr::sys_mount_setattr,
@@ -129,6 +130,7 @@ use super::{
     sched_getattr::sys_sched_getattr,
     sched_getparam::sys_sched_getparam,
     sched_getscheduler::sys_sched_getscheduler,
+    sched_rr_get_interval::sys_sched_rr_get_interval,
     sched_setattr::sys_sched_setattr,
     sched_setparam::sys_sched_setparam,
     sched_setscheduler::sys_sched_setscheduler,
@@ -180,7 +182,7 @@ use super::{
     tgkill::{sys_tgkill, sys_tkill},
     time::sys_time,
     timer_create::{sys_timer_create, sys_timer_delete},
-    timer_settime::{sys_timer_gettime, sys_timer_settime},
+    timer_settime::{sys_timer_getoverrun, sys_timer_gettime, sys_timer_settime},
     timerfd_create::sys_timerfd_create,
     timerfd_gettime::sys_timerfd_gettime,
     timerfd_settime::sys_timerfd_settime,
@@ -223,6 +225,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_SELECT = 23            => sys_select(args[..5]);
     SYS_MREMAP = 25            => sys_mremap(args[..5]);
     SYS_MSYNC = 26             => sys_msync(args[..3]);
+    SYS_MINCORE = 27           => sys_mincore(args[..3]);
     SYS_SCHED_YIELD = 24       => sys_sched_yield(args[..0]);
     SYS_MADVISE = 28           => sys_madvise(args[..3]);
     SYS_SHMGET = 29            => sys_shmget(args[..3]);
@@ -334,8 +337,11 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_SCHED_GETSCHEDULER = 145 => sys_sched_getscheduler(args[..1]);
     SYS_SCHED_GET_PRIORITY_MAX = 146 => sys_sched_get_priority_max(args[..1]);
     SYS_SCHED_GET_PRIORITY_MIN = 147 => sys_sched_get_priority_min(args[..1]);
+    SYS_SCHED_RR_GET_INTERVAL = 148 => sys_sched_rr_get_interval(args[..2]);
     SYS_MLOCK = 149            => sys_mlock(args[..2]);
     SYS_MUNLOCK = 150          => sys_munlock(args[..2]);
+    SYS_MLOCKALL = 151         => sys_mlockall(args[..1]);
+    SYS_MUNLOCKALL = 152       => sys_munlockall(args[..0]);
     SYS_PIVOT_ROOT = 155       => sys_pivot_root(args[..2]);
     SYS_PRCTL = 157            => sys_prctl(args[..5]);
     SYS_ARCH_PRCTL = 158       => sys_arch_prctl(args[..2]);
@@ -373,6 +379,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_TIMER_CREATE = 222     => sys_timer_create(args[..3]);
     SYS_TIMER_SETTIME = 223    => sys_timer_settime(args[..4]);
     SYS_TIMER_GETTIME = 224    => sys_timer_gettime(args[..2]);
+    SYS_TIMER_GETOVERRUN = 225 => sys_timer_getoverrun(args[..1]);
     SYS_TIMER_DELETE = 226     => sys_timer_delete(args[..1]);
     SYS_CLOCK_SETTIME = 227    => sys_clock_settime(args[..2]);
     SYS_CLOCK_GETTIME = 228    => sys_clock_gettime(args[..2]);

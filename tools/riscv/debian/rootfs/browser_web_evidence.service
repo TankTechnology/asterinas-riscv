@@ -1,7 +1,8 @@
 [Unit]
 Description=Asterinas Debian online Firefox evidence
 After=basic.target
-Wants=asterinas-desktop-m5.service
+Wants=network-online.target asterinas-desktop-m5.service
+After=network-online.target asterinas-desktop-m5.service
 Requires=asterinas-browser-web.service
 After=asterinas-browser-web.service
 Requires=asterinas-desktop-m5-network.service

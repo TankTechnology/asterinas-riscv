@@ -53,27 +53,39 @@ jobs:
           - test_id: 'boot-debug-smp4'
             release: false
             smp: 4
+            auto_test: 'boot'
 
           - test_id: 'boot-debug-sv48-svade-smp4'
             release: false
             smp: 4
+            auto_test: 'boot'
             riscv_qemu_cpu: 'rv64,svpbmt=true,zkr=true,svadu=false,svade=true'
 
           - test_id: 'boot-debug-sv39-svade-smp4'
             release: false
             smp: 4
+            auto_test: 'boot'
             features: 'riscv_sv39_mode'
             riscv_qemu_cpu: 'rv64,svpbmt=true,zkr=true,sv48=false,svadu=false,svade=true'
 
           - test_id: 'boot-release'
             release: true
+            auto_test: 'boot'
+
+          - test_id: 'regression-debug-smp4'
+            release: false
+            smp: 4
+            auto_test: 'regression'
+            riscv_icache_require_smp4: '1'
 
           - test_id: 'conformance-release'
             release: true
+            auto_test: 'conformance'
 
           - test_id: 'conformance-release-smp4'
             release: true
             smp: 4
+            auto_test: 'conformance'
       fail-fast: false
     steps:
       - name: Free disk space
@@ -85,8 +97,9 @@ jobs:
         env:
           FEATURES: ${{ matrix.features }}
           RISCV_QEMU_CPU: ${{ matrix.riscv_qemu_cpu }}
+          RISCV_ICACHE_REQUIRE_SMP4: ${{ matrix.riscv_icache_require_smp4 }}
         with:
-          auto_test: ${{ (startsWith(matrix.test_id, 'boot') && 'boot') || 'conformance' }}
+          auto_test: ${{ matrix.auto_test }}
           release: ${{ !contains(matrix.release, 'false') }}
           arch: 'riscv64'
           smp: ${{ matrix.smp }}

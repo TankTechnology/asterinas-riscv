@@ -438,8 +438,7 @@ class LtpGatePolicyTests(unittest.TestCase):
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
-            names = tuple(f"arch_test_{index:03d}" for index in range(138))
-            missing = "rt_sigtimedwait01"
+            names = tuple(f"arch_test_{index:03d}" for index in range(158))
             enabled = repo / "tools/riscv/ltp/manifests/arch-riscv64.txt"
             runtest = repo / "target/ltp/src/runtest/syscalls"
             binaries = repo / "target/ltp/rootfs/opt/ltp/testcases/bin"
@@ -451,18 +450,14 @@ class LtpGatePolicyTests(unittest.TestCase):
             runtest.parent.mkdir(parents=True)
             binaries.mkdir(parents=True)
             manifest.parent.mkdir(parents=True)
-            enabled.write_text("\n".join((*names, missing)) + "\n")
-            runtest.write_text(
-                "\n".join(f"{name} {name}" for name in (*names, missing)) + "\n"
-            )
+            enabled.write_text("\n".join(names) + "\n")
+            runtest.write_text("\n".join(f"{name} {name}" for name in names) + "\n")
             manifest.write_text(
                 "\n".join(f"{name} {name}" for name in names) + "\n"
             )
             for name in names:
                 (binaries / name).write_bytes(b"binary")
-            unavailable.write_text(
-                json.dumps([{"name": missing, "reason": "missing-binary"}]) + "\n"
-            )
+            unavailable.write_text("[]\n")
             initramfs.write_bytes(b"archive")
             suite = suite_by_name(repo, "arch-riscv64")
 
@@ -485,7 +480,9 @@ class LtpGatePolicyTests(unittest.TestCase):
             manifest.write_text(
                 "\n".join(f"{name} {name}" for name in names) + "\n"
             )
-            unavailable.write_text("[]\n")
+            unavailable.write_text(
+                json.dumps([{"name": "extra", "reason": "missing-binary"}]) + "\n"
+            )
             with self.assertRaisesRegex(ValueError, "unavailable"):
                 _validate_packaged_suite(repo, suite)
 

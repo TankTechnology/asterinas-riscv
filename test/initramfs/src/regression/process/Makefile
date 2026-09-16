@@ -21,4 +21,8 @@ SUBDIRS += \
 	fork
 endif
 
+ifeq ($(HOST_PLATFORM), riscv64-linux)
+SUBDIRS += riscv_flush_icache
+endif
+
 include ../common/Makefile

@@ -31,6 +31,7 @@ BROWSER_DOWNLOAD_PATH = "/browser-quality/download.bin"
 BROWSER_API_PATH = "/browser-quality/capabilities.json"
 BROWSER_AUDIO_PATH = "/browser-quality/tone.wav"
 BROWSER_CAPTURE_PATH = "/browser-quality/capture.xwd.gz"
+BROWSER_PNG_CAPTURE_PATH = "/browser-quality/capture.png"
 MAX_CAPTURE_BYTES = 8 * 1024 * 1024
 BROWSER_DOWNLOAD = bytes(range(256)) * 1024
 BROWSER_DOWNLOAD_SHA256 = hashlib.sha256(BROWSER_DOWNLOAD).hexdigest()
@@ -461,7 +462,10 @@ class FixtureServer:
         if self.config.allowed_peer is not None and peer != self.config.allowed_peer:
             self._send_response(request, 403)
             return
-        if target.path != BROWSER_CAPTURE_PATH or target.query:
+        if (
+            target.path not in (BROWSER_CAPTURE_PATH, BROWSER_PNG_CAPTURE_PATH)
+            or target.query
+        ):
             self._send_response(request, 404)
             return
         if request.headers.get("Transfer-Encoding") is not None:
@@ -497,7 +501,7 @@ class FixtureServer:
                 self._capture = bytes(payload)
                 self._capture_evidence = {
                     "bytes": size,
-                    "path": BROWSER_CAPTURE_PATH,
+                    "path": target.path,
                     "peer": peer,
                     "sha256": hashlib.sha256(payload).hexdigest(),
                 }

@@ -290,6 +290,21 @@ impl CommitMode {
 }
 
 impl Vmo {
+    /// Returns whether the page covering `offset` is resident and initialized.
+    ///
+    /// This method only observes the sparse page array. It neither commits the
+    /// page nor starts backend I/O.
+    pub fn is_page_resident(&self, offset: usize) -> bool {
+        if offset >= self.size() {
+            return false;
+        }
+
+        let guard = disable_preempt();
+        let page_idx = offset / PAGE_SIZE;
+        let mut cursor = self.pages.cursor(&guard, page_idx as u64);
+        cursor.load().is_some_and(|page| !page.is_uninit())
+    }
+
     /// Commits the page at `page_idx`, blocking on backend I/O if required.
     ///
     /// For anonymous VMOs the page is zero-filled on first access.

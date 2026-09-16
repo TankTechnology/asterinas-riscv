@@ -30,6 +30,27 @@ FN_TEST(memfd_noexec_seal)
 }
 END_TEST()
 
+FN_TEST(execve_rejects_writable_regular_file)
+{
+	int writer = TEST_SUCC(open(EXECUTABLE_PATH, O_WRONLY));
+
+	pid_t pid = TEST_SUCC(fork());
+	if (pid == 0) {
+		char *const argv[] = { "hello", NULL };
+		char *const envp[] = { "PATH=/bin:/usr/bin", NULL };
+		CHECK_WITH(execve(EXECUTABLE_PATH, argv, envp),
+			   _ret < 0 && errno == ETXTBSY);
+		exit(EXIT_SUCCESS);
+	}
+
+	int status = 0;
+	TEST_RES(wait4(pid, &status, 0, NULL),
+		 _ret == pid && WIFEXITED(status) &&
+			 WEXITSTATUS(status) == EXIT_SUCCESS);
+	TEST_SUCC(close(writer));
+}
+END_TEST()
+
 FN_TEST(execveat_memfd)
 {
 	int hello_fd = TEST_SUCC(open(EXECUTABLE_PATH, O_RDONLY));

@@ -275,13 +275,35 @@ _PROFILES["browser-m5"] = RootfsProfile(
     + ("firefox-esr", "python3-minimal"),
 )
 
+_PROFILES["desktop-m9-software"] = RootfsProfile(
+    name="desktop-m9-software",
+    # M9 adds runtime software evidence while retaining the signed metadata
+    # manifest format used by the stable M5 desktop profile.
+    schema_version=5,
+    root_label="ASTER_DEBIANM9",
+    root_uuid="6f7af5d0-3f2f-5a32-9f7e-c0aa3c8c2e91",
+    requested_packages=tuple(
+        sorted(
+            _PROFILES["desktop-m5-network"].requested_packages
+            + ("ffmpeg", "vim")
+        )
+    ),
+    identity_packages=tuple(
+        sorted(
+            _PROFILES["desktop-m5-network"].identity_packages
+            + ("ffmpeg", "vim")
+        )
+    ),
+)
+
 _PROFILES["browser-web"] = RootfsProfile(
     name="browser-web",
     schema_version=7,
     root_label="ASTER_BROWSERWEB",
     root_uuid="c2ce5134-afcc-4d7c-b71e-7e6d4a8f2b10",
-    requested_packages=_PROFILES["browser-m5"].requested_packages,
-    identity_packages=_PROFILES["browser-m5"].identity_packages + ("ca-certificates",),
+    requested_packages=_PROFILES["browser-m5"].requested_packages + ("xdotool",),
+    identity_packages=_PROFILES["browser-m5"].identity_packages
+    + ("ca-certificates", "xdotool"),
     # Firefox's installed files consume most of a 1 GiB image.  A persistent
     # profile and even a small controlled download then hit ENOSPC during the
     # normal bookmark/places maintenance path.  Keep the smaller milestone
