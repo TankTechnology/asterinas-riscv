@@ -733,6 +733,26 @@ class BrowserWebContractTests(unittest.TestCase):
                 launcher,
             )
 
+    def test_firefox_infers_proxy_mode_from_the_complete_pinned_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            result = self._prepare_firefox_profile(
+                home,
+                mode="",
+                proxy_host="10.100.19.216",
+                proxy_port="17893",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            profile = (home / ".mozilla/asterinas-browser-web/user.js").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('user_pref("network.proxy.type", 1);', profile)
+            self.assertIn(
+                'user_pref("network.proxy.http", "10.100.19.216");', profile
+            )
+            self.assertIn('user_pref("network.proxy.http_port", 17893);', profile)
+
     def test_firefox_direct_profile_removes_proxy_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
