@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import re
-import secrets
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
@@ -46,6 +46,7 @@ from tools.riscv.megrez_physical_graphics import (
     physical_browser_start_command,
     physical_external_services_quiesce_command,
     physical_final_command,
+    _fresh_codes,
     validate_physical_external_services_quiesced,
     validate_physical_browser_start,
 )
@@ -61,7 +62,7 @@ QEMU_SCREEN_WIDTH = 1280
 QEMU_SCREEN_HEIGHT = 1024
 HMP_KEY_RELEASE_SECONDS = 0.12
 QEMU_MARIONETTE_SETUP_TIMEOUT = 600.0
-_NONCE = re.compile(r"[0-9a-f]{16}")
+_NONCE = re.compile(r"[0-9]{4}")
 _SHA256 = r"[0-9a-f]{64}"
 _BROWSER_IDENTITY = re.compile(
     r"__ASTERINAS_PHYSICAL_QEMU_BROWSER__ pid=([1-9][0-9]*) "
@@ -78,6 +79,28 @@ _LOCAL_GRAPHICS_FAILURE_MARKERS = (
     b"Printing stack trace:",
 )
 _FINAL = re.compile(rf"__ASTERINAS_PHYSICAL_FINAL__ cycle=3 nonce_sha256=({_SHA256})")
+_QEMU_PHASE_MARKERS = (
+    (b"__DEBIAN_ROOTFS_SHELL_READY__", "root-console"),
+    (b"BROWSER_WEB_DESKTOP_STAGE=x-socket-ready", "x-socket"),
+    (b"DEBIAN_WEB_NETWORK_READY", "network-ready"),
+    (b"__ASTERINAS_PHYSICAL_QEMU_BROWSER__ pid=", "browser-pid"),
+    (b"Listening on port 2828", "marionette-listening"),
+    (b"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=1", "cycle-1-ready"),
+    (b"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle=1", "cycle-1-key"),
+    (b"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle=1", "cycle-1-pointer"),
+    (b"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle=1", "cycle-1-pass"),
+    (b"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=2", "cycle-2-ready"),
+    (b"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle=2", "cycle-2-key"),
+    (b"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle=2", "cycle-2-pointer"),
+    (b"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle=2", "cycle-2-pass"),
+    (b"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=3", "cycle-3-ready"),
+    (b"ASTERINAS_PHYSICAL_GRAPHICS_KEY_READY cycle=3", "cycle-3-key"),
+    (b"ASTERINAS_PHYSICAL_GRAPHICS_POINTER_READY cycle=3", "cycle-3-pointer"),
+    (b"ASTERINAS_PHYSICAL_GRAPHICS_PASS cycle=3", "cycle-3-pass"),
+    (b"DEBIAN_BROWSER_WEB_FAIL reason=", "browser-failure"),
+    (b"Kernel panic", "kernel-panic"),
+)
+_QEMU_PHASE_TAIL_BYTES = max(len(marker) for marker, _ in _QEMU_PHASE_MARKERS) - 1
 
 
 @dataclass(frozen=True)
@@ -126,7 +149,7 @@ def qemu_input_commands(nonce: str) -> tuple[str, ...]:
     """Return the only reviewed HMP input sequence accepted by this gate."""
 
     if not isinstance(nonce, str) or _NONCE.fullmatch(nonce) is None:
-        raise ValueError("QEMU interaction nonce must be 16 lowercase hex digits")
+        raise ValueError("QEMU interaction code must be four decimal digits")
     return tuple(f"sendkey {character}" for character in nonce)
 
 
@@ -207,6 +230,36 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
     @staticmethod
     def _qemu_argv(**arguments: Any) -> tuple[str, ...]:
         return physical_graphics_qemu_argv(**arguments)
+
+    def serial_observer(
+        self, config: GateConfig, boot_number: int
+    ) -> Callable[[bytes], None]:
+        """Reports bounded, code-free progress without accepting a guest result."""
+
+        del config
+        seen_phases: set[str] = set()
+        tail = b""
+
+        def observe(payload: bytes) -> None:
+            nonlocal tail
+            window = tail + payload
+            found = []
+            for marker, phase in _QEMU_PHASE_MARKERS:
+                if phase in seen_phases:
+                    continue
+                offset = window.find(marker)
+                if offset >= 0:
+                    found.append((offset, phase))
+            for _, phase in sorted(found):
+                seen_phases.add(phase)
+                print(
+                    f"QEMU_INTERACTION_PHASE boot={boot_number} phase={phase}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            tail = window[-_QEMU_PHASE_TAIL_BYTES:]
+
+        return observe
 
     def invalidate(self, config: GateConfig) -> None:
         self._nonces = ()
@@ -532,9 +585,7 @@ class PhysicalGraphicsQemuOperations(DebugConsoleQemuOperations):
         self._wait_for_marionette(
             serial, time.monotonic() + min(config.boot_timeout, 900.0)
         )
-        self._nonces = tuple(secrets.token_hex(8) for _ in range(3))
-        if len(set(self._nonces)) != 3:
-            raise GateFailure("QEMU interaction nonces are not distinct")
+        self._nonces = _fresh_codes(3)
         self._cycle_artifacts.clear()
         for cycle, nonce in enumerate(self._nonces, start=1):
             self._run_interaction_cycle(

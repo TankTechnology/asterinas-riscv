@@ -11,6 +11,9 @@ not a pass/fail browser-quality gate.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -42,14 +45,64 @@ _MARKERS = (
     ("marionette", b"BOOT_MARIONETTE_PORT_READY"),
 )
 
-def _profile_boot_commands(operations: BrowserWebQemuOperations,
-                           framebuffer_address: int) -> tuple[str, ...]:
+
+def _wait_for_marker_line(serial, marker: bytes, deadline: float) -> bytes:
+    """Wait until a marker's whole newline-terminated evidence record arrives."""
+
+    transcript = serial.wait_for(marker, deadline)
+    marker_start = transcript.rfind(marker)
+    if marker_start < 0:
+        raise GateFailure("startup marker wait returned inconsistent evidence")
+    return serial.wait_for(b"\n", deadline, start=marker_start + len(marker))
+
+
+def _write_profile_result(
+    path: Path,
+    markers: list[dict[str, object]],
+    transcript: bytes,
+    total_seconds: float,
+) -> None:
+    """Publish a bounded, exclusive summary next to the raw serial evidence."""
+
+    payload = (
+        json.dumps(
+            {
+                "schema_version": 1,
+                "markers": markers,
+                "serial_sha256": hashlib.sha256(transcript).hexdigest(),
+                "total_seconds": round(total_seconds, 3),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode()
+    if len(payload) > 16 * 1024:
+        raise GateFailure("startup profile result exceeds its size bound")
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+        0o600,
+    )
+    try:
+        cursor = 0
+        while cursor < len(payload):
+            written = os.write(descriptor, payload[cursor:])
+            if written <= 0:
+                raise GateFailure("startup profile result write did not advance")
+            cursor += written
+    finally:
+        os.close(descriptor)
+
+
+def _profile_boot_commands(
+    operations: BrowserWebQemuOperations, framebuffer_address: int
+) -> tuple[str, ...]:
     """Return framebuffer boot commands without overflowing U-Boot input."""
 
     commands = list(operations._boot_commands(framebuffer_address))
     if not commands or all(
-        len(command.encode()) <= _UBOOT_COMMAND_SAFE_LIMIT
-        for command in commands
+        len(command.encode()) <= _UBOOT_COMMAND_SAFE_LIMIT for command in commands
     ):
         return tuple(commands)
     direct = f'setenv bootargs "{operations.BOOTARGS}"'
@@ -110,6 +163,14 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="log bounded slow futex wait identity and wake/timeout outcome",
     )
+    parser.add_argument(
+        "--local-icache-diagnostic",
+        action="store_true",
+        help=(
+            "diagnose global RISC-V instruction-cache synchronization cost; "
+            "not an SMP correctness or acceptance mode"
+        ),
+    )
     return parser
 
 
@@ -133,6 +194,42 @@ def _config(args: argparse.Namespace) -> GateConfig:
     )
 
 
+def _diagnostic_kernel_args(
+    *,
+    process_diagnostic: bool = False,
+    epoll_entry_diagnostic: bool = False,
+    timerfd_diagnostic: bool = False,
+    syscall_diagnostic: bool = False,
+    pagecache_diagnostic: bool = False,
+    read_detail_diagnostic: bool = False,
+    futex_diagnostic: bool = False,
+    local_icache_diagnostic: bool = False,
+) -> str:
+    """Build opt-in profiling arguments without changing the normal gate."""
+
+    args = "asterinas.vm_profile=1"
+    if process_diagnostic:
+        args += (
+            " systemd.setenv=ASTERINAS_FIREFOX_PS_DIAGNOSTIC=1"
+            " systemd.setenv=ASTERINAS_FIREFOX_PROC_DIAGNOSTIC=1"
+        )
+    if epoll_entry_diagnostic:
+        args += " asterinas.epoll_profile=1 asterinas.epoll_entry_profile=1"
+    if timerfd_diagnostic:
+        args += " asterinas.timerfd_profile=1"
+    if syscall_diagnostic:
+        args += " asterinas.syscall_profile=1"
+    if pagecache_diagnostic:
+        args += " asterinas.vm_pagecache_profile=1"
+    if read_detail_diagnostic:
+        args += " asterinas.read_detail_profile=1"
+    if futex_diagnostic:
+        args += " asterinas.futex_profile=1"
+    if local_icache_diagnostic:
+        args += " asterinas.vm_local_icache=1"
+    return args
+
+
 def run(
     config: GateConfig,
     *,
@@ -143,38 +240,29 @@ def run(
     pagecache_diagnostic: bool = False,
     read_detail_diagnostic: bool = False,
     futex_diagnostic: bool = False,
+    local_icache_diagnostic: bool = False,
 ) -> int:
     _safe_output(config.output_directory)
-    diagnostic_args = (
-        " systemd.setenv=ASTERINAS_FIREFOX_PS_DIAGNOSTIC=1"
-        " systemd.setenv=ASTERINAS_FIREFOX_PROC_DIAGNOSTIC=1"
-        if process_diagnostic
-        else ""
+    diagnostic_args = _diagnostic_kernel_args(
+        process_diagnostic=process_diagnostic,
+        epoll_entry_diagnostic=epoll_entry_diagnostic,
+        timerfd_diagnostic=timerfd_diagnostic,
+        syscall_diagnostic=syscall_diagnostic,
+        pagecache_diagnostic=pagecache_diagnostic,
+        read_detail_diagnostic=read_detail_diagnostic,
+        futex_diagnostic=futex_diagnostic,
+        local_icache_diagnostic=local_icache_diagnostic,
     )
-    if epoll_entry_diagnostic:
-        diagnostic_args += (
-            " asterinas.epoll_profile=1"
-            " asterinas.epoll_entry_profile=1"
-        )
-    if timerfd_diagnostic:
-        diagnostic_args += " asterinas.timerfd_profile=1"
-    if syscall_diagnostic:
-        diagnostic_args += " asterinas.syscall_profile=1"
-    if pagecache_diagnostic:
-        diagnostic_args += " asterinas.vm_pagecache_profile=1"
-    if read_detail_diagnostic:
-        diagnostic_args += " asterinas.read_detail_profile=1"
-    if futex_diagnostic:
-        diagnostic_args += " asterinas.futex_profile=1"
     operations = BrowserWebQemuOperations(config, network_mode=NetworkMode.DIRECT)
     operations.BOOTARGS = operations.BOOTARGS.replace(
         " -- --root-init=systemd",
-        f" asterinas.vm_profile=1{diagnostic_args} -- --root-init=systemd",
+        f" {diagnostic_args} -- --root-init=systemd",
     )
     operations.__enter__()
     session = None
     started = time.monotonic()
     transcript = b""
+    marker_records: list[dict[str, object]] = []
     try:
         operations.invalidate(config)
         snapshots = operations.snapshot_inputs(config)
@@ -207,10 +295,20 @@ def run(
         serial.wait_for(b"Starting kernel ...", deadline)
         for name, marker in _MARKERS:
             try:
-                serial.wait_for(marker, deadline)
+                complete = _wait_for_marker_line(serial, marker, deadline)
+                marker_start = complete.rfind(marker)
+                line_end = complete.find(b"\n", marker_start + len(marker))
+                evidence = complete[marker_start:line_end].decode("ascii", "replace")
+                elapsed = time.monotonic() - started
+                marker_records.append(
+                    {
+                        "name": name,
+                        "host_elapsed_seconds": round(elapsed, 3),
+                        "evidence": evidence,
+                    }
+                )
                 print(
-                    f"STARTUP_PROFILE_MARKER name={name} "
-                    f"elapsed={time.monotonic() - started:.3f}",
+                    f"STARTUP_PROFILE_MARKER name={name} elapsed={elapsed:.3f}",
                     flush=True,
                 )
             except BaseException as error:
@@ -222,9 +320,15 @@ def run(
                 break
         transcript = serial.transcript
         (config.output_directory / "startup.serial.log").write_bytes(transcript)
+        elapsed = time.monotonic() - started
+        _write_profile_result(
+            config.output_directory / "startup-profile.json",
+            marker_records,
+            transcript,
+            elapsed,
+        )
         print(
-            f"STARTUP_PROFILE_DONE elapsed={time.monotonic() - started:.3f} "
-            f"bytes={len(transcript)}",
+            f"STARTUP_PROFILE_DONE elapsed={elapsed:.3f} bytes={len(transcript)}",
             flush=True,
         )
         return 0
@@ -274,6 +378,7 @@ def main() -> int:
         pagecache_diagnostic=args.pagecache_diagnostic,
         read_detail_diagnostic=args.read_detail_diagnostic,
         futex_diagnostic=args.futex_diagnostic,
+        local_icache_diagnostic=args.local_icache_diagnostic,
     )
 
 

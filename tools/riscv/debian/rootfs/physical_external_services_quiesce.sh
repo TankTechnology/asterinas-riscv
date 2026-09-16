@@ -26,6 +26,10 @@ record_failure() {
     fi
 }
 
+systemctl_bounded() {
+    /usr/bin/timeout --kill-after=1s 5s /usr/bin/systemctl "$@"
+}
+
 /usr/bin/install -d -m 0755 "$_asterinas_control" || record_failure $? install-control
 /usr/bin/install -d -m 0700 -o 1000 -g 1000 \
     "$_asterinas_home" \
@@ -58,13 +62,13 @@ for _asterinas_external_unit in \
         "$_asterinas_control/$_asterinas_external_unit" || \
         record_failure $? mask-unit
 done
-/usr/bin/timeout 15 /usr/bin/systemctl daemon-reload \
+systemctl_bounded daemon-reload \
     >/dev/null 2>&1 || record_failure $? daemon-reload
 
 _asterinas_stop_units=()
 for _asterinas_external_unit in "${_asterinas_external_units[@]}"; do
     _asterinas_unit_state="$(
-        /usr/bin/systemctl is-active "$_asterinas_external_unit" 2>/dev/null || true
+        systemctl_bounded is-active "$_asterinas_external_unit" 2>/dev/null || true
     )"
     case "$_asterinas_unit_state" in
         active | activating | deactivating | reloading)
@@ -75,12 +79,12 @@ for _asterinas_external_unit in "${_asterinas_external_units[@]}"; do
     esac
 done
 if ((${#_asterinas_stop_units[@]} > 0)); then
-    /usr/bin/timeout 60 /usr/bin/systemctl stop \
+    systemctl_bounded stop --no-block \
         "${_asterinas_stop_units[@]}" >/dev/null 2>&1 || true
 fi
 for _asterinas_external_unit in "${_asterinas_external_units[@]}"; do
     _asterinas_after_stop_state="$(
-        /usr/bin/systemctl is-active "$_asterinas_external_unit" 2>/dev/null || true
+        systemctl_bounded is-active "$_asterinas_external_unit" 2>/dev/null || true
     )"
     case "$_asterinas_after_stop_state" in
         inactive | failed) ;;
@@ -91,33 +95,33 @@ done
 /usr/bin/mountpoint -q /home/asterinas ||
     /usr/bin/mount --bind "$_asterinas_home" /home/asterinas || \
     record_failure $? bind-home
-/usr/bin/systemctl reset-failed \
+systemctl_bounded reset-failed \
     asterinas-desktop-m5.service \
     asterinas-browser-web-timeline-basic.service \
     asterinas-browser-web.service \
     asterinas-browser-web-evidence.service \
     asterinas-desktop-m5-network.service >/dev/null 2>&1 || true
-/usr/bin/systemctl start --no-block asterinas-desktop-m5.service \
+systemctl_bounded start --no-block asterinas-desktop-m5.service \
     >/dev/null 2>&1 || record_failure $? start-desktop
-/usr/bin/systemctl start --no-block \
+systemctl_bounded start --no-block \
     asterinas-browser-web-timeline-basic.service \
     >/dev/null 2>&1 || record_failure $? start-timeline
 /usr/bin/sleep 1
 
 _asterinas_evidence_state="$(
-    /usr/bin/systemctl is-active \
+    systemctl_bounded is-active \
         asterinas-browser-web-evidence.service 2>/dev/null || true
 )"
 _asterinas_evidence_pid="$(
-    /usr/bin/systemctl show --property MainPID --value \
+    systemctl_bounded show --property MainPID --value \
         asterinas-browser-web-evidence.service 2>/dev/null || true
 )"
 _asterinas_network_state="$(
-    /usr/bin/systemctl is-active \
+    systemctl_bounded is-active \
         asterinas-desktop-m5-network.service 2>/dev/null || true
 )"
 _asterinas_network_pid="$(
-    /usr/bin/systemctl show --property MainPID --value \
+    systemctl_bounded show --property MainPID --value \
         asterinas-desktop-m5-network.service 2>/dev/null || true
 )"
 _asterinas_terminal_status=0

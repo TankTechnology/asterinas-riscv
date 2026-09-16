@@ -106,8 +106,11 @@ ARTIFACT_NAME_PATTERN = re.compile(
 )
 AUTOBOOT_MARKERS = ("Hit any key to stop autoboot", "Autoboot in")
 MAX_UBOOT_WAIT_BYTES = 256 * 1024
+MAX_UBOOT_COMMAND_BYTES = 512
+_UBOOT_BOOTARGS_CHUNK_BYTES = 384
 BOOTARGS_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._=/,:@+%~-]*")
 DEFAULT_BOOTARGS = "loglevel=info init=/init asterinas.reboot_after=120"
+WRITABLE_RECOVERY_HEADROOM_SECONDS = 120
 MEGREZ_USB_HOST_COMMAND = (
     "fdt set /chosen asterinas,usb-host "
     "/soc/usb0@50480000/dwc3@50480000 "
@@ -422,9 +425,9 @@ class BoardSession:
         raise TimeoutError(f"timed out waiting for {pattern!r}; last: {buf[-200:]!r}")
 
     def wait_for_uboot_prompt(self, timeout: float) -> str:
-        """Wait for U-Boot and interrupt a newly observed autoboot once."""
+        """Wait for U-Boot and reliably interrupt a newly observed autoboot."""
         buf = ""
-        interrupted = False
+        interrupt_attempts = 0
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -435,11 +438,18 @@ class BoardSession:
                 continue
             self._log(chunk)
             buf = (buf + chunk)[-MAX_UBOOT_WAIT_BYTES:]
-            if not interrupted and any(marker in buf for marker in AUTOBOOT_MARKERS):
-                os.write(self.fd, b" ")
-                interrupted = True
+            # A prompt may arrive in the same UART batch as the countdown.
+            # Check it first so retries can never append input to a live prompt.
             if PROMPT in buf:
                 return buf
+            # Some Megrez resets expose the countdown before the UART RX path
+            # reliably accepts its first byte.  Retry on the next two received
+            # countdown chunks instead of allowing an unattended RockOS boot.
+            if interrupt_attempts < 3 and any(
+                marker in buf for marker in AUTOBOOT_MARKERS
+            ):
+                os.write(self.fd, b" ")
+                interrupt_attempts += 1
         raise TimeoutError(f"timed out waiting for U-Boot prompt; last: {buf[-200:]!r}")
 
     def send(self, command: str) -> None:
@@ -876,6 +886,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ]
     if args.firmware_framebuffer and (not consoles or consoles[0] != "tty0"):
         p.error("--firmware-framebuffer requires console=tty0 as the first console")
+    try:
+        validate_writable_recovery(args.bootargs)
+    except ValueError as error:
+        p.error(str(error))
     if args.final_profile == "debug-root-console":
         tokens = args.bootargs.split()
         if tokens.count("--") != 1:
@@ -886,14 +900,96 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ]
         if loglevels != ["loglevel=off"]:
             p.error("debug-root-console requires exactly one loglevel=off")
-        if tokens[separator + 1 :] != [
-            "--root-init=systemd",
-            "--debug-console=root",
-        ]:
+        root_init = tokens[separator + 1 :]
+        if root_init not in (
+            ["--root-init=systemd", "--debug-console=root"],
+            ["--root-init=systemd", "--debug-console=root", "--volatile-home"],
+            [
+                "--root-init=systemd",
+                "--debug-console=isolated-root",
+                "--volatile-home",
+            ],
+        ):
             p.error(
                 "debug-root-console requires exact systemd and debug-console selectors"
             )
     return args
+
+
+def validate_writable_recovery(bootargs: str) -> None:
+    """Require a synced userspace reboot before a writable recovery deadline."""
+
+    tokens = bootargs.split()
+    separator = tokens.index("--") if tokens.count("--") == 1 else len(tokens)
+    kernel_args = tokens[:separator]
+    kernel_tokens = [
+        token.removeprefix("asterinas.reboot_after=")
+        for token in kernel_args
+        if token.startswith("asterinas.reboot_after=")
+    ]
+    if "asterinas.mmc_write_partition2" not in kernel_args or not kernel_tokens:
+        return
+
+    safe_tokens = [
+        token.removeprefix("systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=")
+        for token in kernel_args
+        if token.startswith("systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=")
+    ]
+    if (
+        len(kernel_tokens) != 1
+        or len(safe_tokens) != 1
+        or tokens.count("--") != 1
+        or "--root-init=systemd" not in tokens[separator + 1 :]
+        or re.fullmatch(r"[1-9][0-9]*", kernel_tokens[0]) is None
+        or re.fullmatch(r"[1-9][0-9]*", safe_tokens[0]) is None
+    ):
+        raise ValueError(
+            "writable partition emergency recovery requires one userspace sync reboot"
+        )
+    kernel_seconds = int(kernel_tokens[0])
+    safe_seconds = int(safe_tokens[0])
+    if (
+        kernel_seconds > 0xFFFF_FFFF
+        or safe_seconds + WRITABLE_RECOVERY_HEADROOM_SECONDS > kernel_seconds
+    ):
+        raise ValueError(
+            "userspace sync reboot must precede writable emergency recovery by 120 seconds"
+        )
+
+
+def uboot_bootargs_commands(bootargs: str) -> tuple[str, ...]:
+    """Stage boot arguments without overflowing the board's U-Boot line buffer."""
+
+    tokens = bootargs.split()
+    if not tokens:
+        raise ValueError("bootargs must not be empty")
+    direct = f'setenv bootargs "{bootargs}"'
+    if len(direct.encode()) <= MAX_UBOOT_COMMAND_BYTES:
+        return (direct,)
+
+    chunks: list[str] = []
+    current = ""
+    for token in tokens:
+        candidate = f"{current} {token}" if current else token
+        if len(candidate.encode()) <= _UBOOT_BOOTARGS_CHUNK_BYTES:
+            current = candidate
+            continue
+        if not current or len(token.encode()) > _UBOOT_BOOTARGS_CHUNK_BYTES:
+            raise ValueError("one bootarg exceeds the U-Boot command safety limit")
+        chunks.append(current)
+        current = token
+    chunks.append(current)
+
+    names = tuple(f"asterinas_bootargs_{index}" for index in range(len(chunks)))
+    expansion = " ".join(f"${{{name}}}" for name in names)
+    commands = (
+        *(f'setenv {name} "{chunk}"' for name, chunk in zip(names, chunks)),
+        f'setenv bootargs "{expansion}"',
+        *(f"setenv {name}" for name in names),
+    )
+    if any(len(command.encode()) > MAX_UBOOT_COMMAND_BYTES for command in commands):
+        raise ValueError("bootarg expansion exceeds the U-Boot command safety limit")
+    return commands
 
 
 def run_mock_qemu(device: str, timeout: float) -> int:
@@ -971,7 +1067,15 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
     session.command("fdt addr 0xf0000000")
     session.command("fdt resize 0x1000")
     if args.firmware_framebuffer:
-        for command in MEGREZ_FRAMEBUFFER.commands():
+        framebuffer_commands = MEGREZ_FRAMEBUFFER.commands()
+        try:
+            session.command(framebuffer_commands[0])
+        except RuntimeError as error:
+            # Some board DTBs already carry this node. Reapply the exact
+            # handoff properties rather than treating its existence as fatal.
+            if "FDT_ERR_EXISTS" not in str(error):
+                raise
+        for command in framebuffer_commands[1:]:
             session.command(command)
     if transport == "ymodem":
         initrd_size = session.load_ymodem_artifact(
@@ -988,8 +1092,8 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
         if initrd_size is None
         else f"setenv initrd_size 0x{initrd_size:x}"
     )
-    session.command(f'setenv bootargs "{args.bootargs}"')
-    session.command('fdt set /chosen bootargs "${bootargs}"')
+    for command in uboot_bootargs_commands(args.bootargs):
+        session.command(command)
     session.command(MEGREZ_USB_HOST_COMMAND)
     session.start_boot_attempt()
     return session.command(

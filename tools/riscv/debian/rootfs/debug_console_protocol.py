@@ -51,6 +51,16 @@ class DebugConsoleEvidence:
     desktop_state: str
 
 
+@dataclass(frozen=True)
+class SystemIdentityEvidence:
+    """Minimum root-handoff evidence independent of graphical startup state."""
+
+    uid: int
+    pid1: str
+    root_device: str
+    root_filesystem: str
+
+
 class DebugConsoleSerial(Protocol):
     @property
     def transcript(self) -> bytes: ...
@@ -209,11 +219,7 @@ def _extract_outputs(
     return outputs
 
 
-def classify_debug_console(transcript: str | bytes, nonce: str) -> DebugConsoleEvidence:
-    """Validate a complete five-command exchange and return exact evidence."""
-
-    commands = debug_console_commands(nonce)
-    outputs = _extract_outputs(_lines(transcript), commands, nonce)
+def _system_identity(outputs: dict[str, str]) -> SystemIdentityEvidence:
     if outputs["uid"] != "0":
         raise DebugConsoleProtocolError("debug console is not running as UID 0")
     if outputs["pid1"] != "systemd":
@@ -223,15 +229,39 @@ def classify_debug_console(transcript: str | bytes, nonce: str) -> DebugConsoleE
         raise DebugConsoleProtocolError("root device identity is invalid")
     if root_fields[1] != "ext2":
         raise DebugConsoleProtocolError("root filesystem is not ext2")
+    return SystemIdentityEvidence(
+        uid=0,
+        pid1="systemd",
+        root_device=root_fields[0],
+        root_filesystem=root_fields[1],
+    )
+
+
+def classify_system_identity(
+    transcript: str | bytes, nonce: str
+) -> SystemIdentityEvidence:
+    """Validate only UID, PID 1, and root mount for an early boot probe."""
+
+    commands = debug_console_commands(nonce)[:3]
+    outputs = _extract_outputs(_lines(transcript), commands, nonce)
+    return _system_identity(outputs)
+
+
+def classify_debug_console(transcript: str | bytes, nonce: str) -> DebugConsoleEvidence:
+    """Validate a complete five-command exchange and return exact evidence."""
+
+    commands = debug_console_commands(nonce)
+    outputs = _extract_outputs(_lines(transcript), commands, nonce)
+    identity = _system_identity(outputs)
     if outputs["graphical"] != "active":
         raise DebugConsoleProtocolError("graphical target is not active")
     if outputs["desktop"] != "active":
         raise DebugConsoleProtocolError("desktop service is not active")
     return DebugConsoleEvidence(
-        uid=0,
-        pid1="systemd",
-        root_device=root_fields[0],
-        root_filesystem=root_fields[1],
+        uid=identity.uid,
+        pid1=identity.pid1,
+        root_device=identity.root_device,
+        root_filesystem=identity.root_filesystem,
         graphical_state=outputs["graphical"],
         desktop_state=outputs["desktop"],
     )

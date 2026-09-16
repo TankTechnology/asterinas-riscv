@@ -26,6 +26,8 @@ PAYLOAD_SHA256 = hashlib.sha256(PAYLOAD).hexdigest()
 MAX_REQUEST_RECORDS = 64
 BROWSER_INDEX_PATH = "/browser-quality/index.html"
 BROWSER_SECOND_PATH = "/browser-quality/second.html"
+BROWSER_PERF_PATH = "/browser-quality/perf.html"
+BROWSER_PERF_SECOND_PATH = "/browser-quality/perf-second.html"
 BROWSER_IMAGE_PATH = "/browser-quality/pattern.png"
 BROWSER_DOWNLOAD_PATH = "/browser-quality/download.bin"
 BROWSER_API_PATH = "/browser-quality/capabilities.json"
@@ -241,6 +243,93 @@ BROWSER_SEARCH = BROWSER_INDEX.replace(
     b"<title>Asterinas Browser Quality</title>",
     b"<title>asterinas - Asterinas Browser Quality</title>",
 )
+BROWSER_PERF = b"""<!doctype html>
+<html lang=en><meta charset=utf-8><title>Asterinas browser timing</title>
+<meta http-equiv=Content-Security-Policy content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<style>body{font:24px sans-serif;margin:48px}#timing-pointer{width:400px;height:240px;background:#1b84a1}
+#timing-token{padding:18px;background:#14bb9c}.scroll-space{height:1600px}</style>
+<h1>Keyboard / pointer / scroll timing</h1>
+<label>Input <input id=timing-input autocomplete=off></label>
+<div id=timing-pointer>Move pointer here</div>
+<output id=timing-token>0</output>
+<a href=/browser-quality/perf-second.html>Local second page</a>
+<div class=scroll-space>Scroll this page</div>
+<script>
+(() => {
+  'use strict';
+  const token = document.querySelector('#timing-token');
+  const samples = [];
+  const accepted = Object.create(null);
+  let counter = 0;
+  let lastPointerMs = -200;
+  let lastScrollMs = -200;
+  const record = (kind, source, done = () => {}) => {
+    const key = source + '-' + kind;
+    if ((accepted[key] || 0) >= 64) { done(); return; }
+    accepted[key] = (accepted[key] || 0) + 1;
+    const startMs = performance.now();
+    token.textContent = String(++counter);
+    requestAnimationFrame(() => {
+      const firstRafMs = performance.now() - startMs;
+      requestAnimationFrame(() => {
+        const nextRafMs = performance.now() - startMs;
+        if (Number.isFinite(firstRafMs) && Number.isFinite(nextRafMs) &&
+            firstRafMs >= 0 && nextRafMs >= firstRafMs && nextRafMs <= 60000) {
+          samples.push({kind, source, firstRafMs, nextRafMs});
+        }
+        done();
+      });
+    });
+  };
+  const snapshot = () => ({schemaVersion: 1, clockDomain: 'browser-performance-now',
+                           samples: samples.slice()});
+  document.querySelector('#timing-input').addEventListener('input', event => {
+    if (event.isTrusted) record('keyboard', 'trusted');
+  });
+  document.querySelector('#timing-pointer').addEventListener('pointermove', event => {
+    const now = performance.now();
+    if (event.isTrusted && now - lastPointerMs >= 200) {
+      lastPointerMs = now;
+      record('pointer', 'trusted');
+    }
+  });
+  document.addEventListener('scroll', event => {
+    const now = performance.now();
+    if (event.isTrusted && now - lastScrollMs >= 200) {
+      lastScrollMs = now;
+      record('scroll', 'trusted');
+    }
+  }, {passive: true});
+  window.__asterinasTimingSnapshot = snapshot;
+  window.__asterinasRunSyntheticTiming = async (repetitions = 8) => {
+    if (!Number.isInteger(repetitions) || repetitions < 1 || repetitions > 16) {
+      throw new Error('synthetic timing repetition bound');
+    }
+    for (let index = 0; index < repetitions; index++) {
+      for (const kind of ['keyboard', 'pointer', 'scroll']) {
+        await new Promise(resolve => record(kind, 'synthetic', resolve));
+      }
+    }
+    return snapshot();
+  };
+})();
+</script>"""
+BROWSER_PERF_SECOND = b"""<!doctype html>
+<html lang=en><meta charset=utf-8><title>Asterinas local navigation timing</title>
+<meta http-equiv=Content-Security-Policy content="default-src 'none'; script-src 'unsafe-inline'">
+<h1>Local navigation complete</h1>
+<a href=/browser-quality/perf.html>Timing first page</a>
+<script>
+window.__asterinasNavigationSnapshot = () => {
+  const entry = performance.getEntriesByType('navigation')[0];
+  if (!entry) return null;
+  return {schemaVersion: 1, clockDomain: 'browser-navigation',
+          startTime: entry.startTime, fetchStart: entry.fetchStart,
+          responseStart: entry.responseStart, responseEnd: entry.responseEnd,
+          domContentLoadedEventEnd: entry.domContentLoadedEventEnd,
+          loadEventEnd: entry.loadEventEnd};
+};
+</script>"""
 
 
 def browser_resource(path: str) -> tuple[str, bytes] | None:
@@ -249,6 +338,8 @@ def browser_resource(path: str) -> tuple[str, bytes] | None:
     return {
         BROWSER_INDEX_PATH: ("text/html; charset=utf-8", BROWSER_INDEX),
         BROWSER_SECOND_PATH: ("text/html; charset=utf-8", BROWSER_SECOND),
+        BROWSER_PERF_PATH: ("text/html; charset=utf-8", BROWSER_PERF),
+        BROWSER_PERF_SECOND_PATH: ("text/html; charset=utf-8", BROWSER_PERF_SECOND),
         BROWSER_IMAGE_PATH: ("image/png", BROWSER_IMAGE),
         BROWSER_DOWNLOAD_PATH: ("application/octet-stream", BROWSER_DOWNLOAD),
         BROWSER_API_PATH: ("application/json", BROWSER_API),

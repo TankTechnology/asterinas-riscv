@@ -1733,6 +1733,9 @@ EOF
         "$script_directory/desktop_m3_device_access.sh" \
         "$stage/usr/lib/asterinas/desktop-$generation-device-access"
     install -D -m 0755 -- \
+        "$script_directory/desktop_input_identity.py" \
+        "$stage/usr/lib/asterinas/desktop-input-identity"
+    install -D -m 0755 -- \
         "$evidence_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-evidence"
     install -d -m 0755 -- "$stage/etc/systemd/system/dbus.service.d"
@@ -1883,13 +1886,13 @@ EndSection
 Section "InputDevice"
     Identifier "Asterinas keyboard"
     Driver "evdev"
-    Option "Device" "/dev/input/event0"
+    Option "Device" "/run/asterinas-input/keyboard"
 EndSection
 
 Section "InputDevice"
     Identifier "Asterinas pointer"
     Driver "evdev"
-    Option "Device" "/dev/input/event1"
+    Option "Device" "/run/asterinas-input/pointer"
 EndSection
 
 Section "ServerLayout"

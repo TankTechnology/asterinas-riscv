@@ -13,12 +13,60 @@ import subprocess
 from tools.riscv.firefox_debug_tool import manifest, summarize
 from tools.riscv.debian.rootfs.firefox_startup_profile import (
     _UBOOT_COMMAND_SAFE_LIMIT,
+    _diagnostic_kernel_args,
     _profile_boot_commands,
+    _wait_for_marker_line,
+    _write_profile_result,
 )
 
 
 class FirefoxDebugToolTests(unittest.TestCase):
-    def test_live_pc_sampler_is_bounded_loopback_only_and_binfmt_read_only(self) -> None:
+    def test_startup_profile_publishes_private_structured_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "startup-profile.json"
+            records = [
+                {
+                    "name": "marionette",
+                    "host_elapsed_seconds": 12.5,
+                    "evidence": "BOOT_MARIONETTE_PORT_READY guest_monotonic_ns=9",
+                }
+            ]
+
+            _write_profile_result(output, records, b"serial\n", 12.5)
+
+            value = json.loads(output.read_text())
+            self.assertEqual(value["schema_version"], 1)
+            self.assertEqual(value["markers"], records)
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+    def test_startup_marker_capture_waits_for_the_complete_line(self) -> None:
+        class FragmentedSerial:
+            def __init__(self) -> None:
+                self.transcript = b"prefix\nBOOT_MARIONETTE_PORT_READY"
+                self.calls = []
+
+            def wait_for(self, marker, deadline, *, start=0):
+                self.calls.append((marker, deadline, start))
+                if marker == b"\n":
+                    self.transcript += b" guest_monotonic_ns=123\n"
+                return self.transcript
+
+        serial = FragmentedSerial()
+        transcript = _wait_for_marker_line(serial, b"BOOT_MARIONETTE_PORT_READY", 42.0)
+
+        self.assertTrue(transcript.endswith(b"guest_monotonic_ns=123\n"))
+        self.assertEqual(serial.calls[1][0], b"\n")
+        self.assertGreater(serial.calls[1][2], len(b"prefix\n"))
+
+    def test_local_icache_profile_is_explicitly_diagnostic(self) -> None:
+        args = _diagnostic_kernel_args(local_icache_diagnostic=True)
+
+        self.assertIn("asterinas.vm_profile=1", args)
+        self.assertIn("asterinas.vm_local_icache=1", args)
+
+    def test_live_pc_sampler_is_bounded_loopback_only_and_binfmt_read_only(
+        self,
+    ) -> None:
         sampler = Path("tools/riscv/qemu_live_pc_sampler.sh")
         subprocess.run(["bash", "-n", sampler], check=True)
         source = sampler.read_text(encoding="utf-8")
@@ -31,6 +79,7 @@ class FirefoxDebugToolTests(unittest.TestCase):
         self.assertIn("detach", source)
         self.assertIn("binfmt_qemu_riscv64=absent", source)
         self.assertNotIn("/proc/sys/fs/binfmt_misc/register", source)
+
     def test_summarize_distinguishes_gdb_milestones_and_syscalls(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -63,7 +112,9 @@ class FirefoxDebugToolTests(unittest.TestCase):
             (root / "link").symlink_to("a.txt")
             value = manifest(root)
         self.assertEqual(value["schema"], 1)
-        self.assertEqual([entry["path"] for entry in value["files"]], ["a.txt", "b.txt"])
+        self.assertEqual(
+            [entry["path"] for entry in value["files"]], ["a.txt", "b.txt"]
+        )
         json.dumps(value, sort_keys=True)
 
     def test_qemu_args_use_absolute_persistent_artifact_paths(self) -> None:
@@ -104,9 +155,13 @@ class FirefoxDebugToolTests(unittest.TestCase):
         commands = _profile_boot_commands(FakeOperations(), 0)
         self.assertEqual(commands[0], "virtio scan")
         self.assertTrue(commands[-1].startswith('setenv bootargs "${ast_bootargs_0}'))
-        self.assertTrue(all(len(command) <= _UBOOT_COMMAND_SAFE_LIMIT for command in commands))
+        self.assertTrue(
+            all(len(command) <= _UBOOT_COMMAND_SAFE_LIMIT for command in commands)
+        )
         self.assertGreaterEqual(len(commands), 4)
-        self.assertTrue(all("asterinas.diagnostic=1" in command for command in commands[1:-1]))
+        self.assertTrue(
+            all("asterinas.diagnostic=1" in command for command in commands[1:-1])
+        )
 
 
 if __name__ == "__main__":

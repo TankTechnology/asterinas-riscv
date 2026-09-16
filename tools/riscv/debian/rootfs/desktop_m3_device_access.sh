@@ -5,6 +5,8 @@ set -euo pipefail
 
 shopt -s nullglob
 input_devices=()
+readonly INPUT_DIRECTORY="${ASTERINAS_DESKTOP_M3_INPUT_DIRECTORY:-/dev/input}"
+readonly STABLE_INPUT_DIRECTORY="${ASTERINAS_DESKTOP_M3_STABLE_INPUT_DIRECTORY:-/run/asterinas-input}"
 readonly XKB_CACHE_DIR="/var/lib/xkb"
 
 if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
@@ -81,9 +83,9 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
         >>/run/browser-web-device-stage.log
 fi
 # Asterinas creates the framebuffer and evdev nodes after systemd has begun
-# activating the graphical target.  Marionette-driven browser gates do not
-# need local input, but an interactive desktop must not start Xorg before both
-# configured evdev nodes exist: AutoAddDevices is disabled in xorg.conf.
+# activating the graphical target.  Xorg must not start before both identified
+# devices exist: AutoAddDevices is disabled, and event numbers vary with the
+# order in which the two physical xHCI controllers finish initialization.
 readonly device_deadline=$((SECONDS + 120))
 while [[ ! -c /dev/fb0 ]]; do
     if ((SECONDS >= device_deadline)); then
@@ -96,18 +98,37 @@ while [[ ! -c /dev/fb0 ]]; do
     fi
     /usr/bin/sleep 1
 done
-if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" != 1 ]]; then
-    while [[ ! -c /dev/input/event0 || ! -c /dev/input/event1 ]]; do
-        if ((SECONDS >= device_deadline)); then
-            printf '%s\n' \
-                'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: desktop input devices did not appear' \
-                >&2
-            exit 1
-        fi
-        /usr/bin/sleep 1
-    done
-fi
-input_devices=(/dev/input/event*)
+keyboard_node=""
+pointer_node=""
+while true; do
+    if input_nodes="$(
+        PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+            /usr/bin/python3 /usr/lib/asterinas/desktop-input-identity
+    )"; then
+        read -r keyboard_node pointer_node <<<"$input_nodes"
+        break
+    else
+        input_status=$?
+    fi
+    ((input_status != 2)) || exit 1
+    if ((SECONDS >= device_deadline)); then
+        printf '%s\n' \
+            'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: desktop input devices did not appear' \
+            >&2
+        exit 1
+    fi
+    /usr/bin/sleep 1
+done
+[[ "$keyboard_node" != "$pointer_node" ]] || {
+    printf '%s\n' 'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: ambiguous desktop input device identity' >&2
+    exit 1
+}
+input_devices=("$INPUT_DIRECTORY"/event*)
+
+/usr/bin/install -d -m 0755 -- "$STABLE_INPUT_DIRECTORY"
+/usr/bin/rm -f -- "$STABLE_INPUT_DIRECTORY/keyboard" "$STABLE_INPUT_DIRECTORY/pointer"
+/usr/bin/ln -s -- "$keyboard_node" "$STABLE_INPUT_DIRECTORY/keyboard"
+/usr/bin/ln -s -- "$pointer_node" "$STABLE_INPUT_DIRECTORY/pointer"
 
 if ! chown asterinas:video /dev/fb0 || ! chmod 0660 /dev/fb0; then
     if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then

@@ -27,15 +27,21 @@ does not require a new deployment mechanism.
 ## Design
 
 `build_stage1.sh` will install
-`physical_external_services_quiesce.sh` and the experiment's
+`physical_external_services_quiesce.sh`, the fixed-action
+`physical_graphics_control.sh`, and the experiment's
 `physical_graphics_gate.py` as executable files under `usr/lib/asterinas`.
 The interaction gate's direct project dependencies,
 `browser_interaction_perf.py` and `browser_m5_marionette_gate.py`, are carried
-beside it so the payload is import-complete. All four added files will be part
+beside it so the payload is import-complete. All of these files are part
 of the deterministic Stage1 entry list, timestamp normalization, and archive
 validation. Carrying the guest gate is necessary because the one-cycle host
 contract cannot safely execute the older three-cycle-only copy in the reused
 partition-2 image.
+
+The interaction HTML is also carried by Stage1 and served from
+`/run/asterinas-tools`. This binds the browser-visible fields to the guest gate
+that validates them; an older page from partition 2 cannot silently produce a
+different evidence schema.
 
 The physical orchestration command will invoke
 `/run/asterinas-tools/physical-external-services-quiesce`. This path is
@@ -51,16 +57,23 @@ host and guest halves of the experiment always come from the same source
 generation.
 
 The five system-readiness probes are packaged as
-`physical-system-probe`. This keeps the UART request below 128 bytes while
-retaining the existing nonce-bound UID, PID 1, root mount, graphical target,
-and desktop service response protocol. It avoids depending on reliable input
-of several long shell programs over the physical serial console.
+`physical-system-probe`. The preflight, browser-start, interaction-cycle, and
+final-state operations are likewise packaged behind the fixed-action
+`physical-graphics-control` helper. Every host-to-guest request is therefore
+below 128 bytes while retaining the existing output markers, nonce binding,
+Firefox PID/restart checks, and timeout bounds. The helper validates every
+argument before interpolation and exposes no general shell-evaluation action.
+Python bytecode caches are redirected to an ephemeral `/run` prefix so the
+first cycle compiles from immutable source and later cycles reuse the
+memory-backed cache without reading or writing persistent ext2 `.pyc` files.
+This avoids depending on reliable input of several long shell programs over
+the physical serial console.
 
 No fallback to `/usr/lib/asterinas` is allowed in the physical gate. A stale
 Stage1 must fail closed rather than silently executing helper code from an
 unrelated partition-2 generation.
 
-The helper continues to:
+The fixed boot and helper contract continues to:
 
 - create the volatile browser home;
 - mask competing evidence, network, and getty units;
@@ -68,13 +81,25 @@ The helper continues to:
 - start Xorg/desktop prerequisites without Firefox;
 - emit its bounded terminal status marker.
 
+The desktop device-access helper resolves the keyboard and pointer by exact
+Linux `EVIOCGID`, `EVIOCGNAME`, and `EVIOCGPHYS` input identity, then publishes
+stable `/run/asterinas-input/{keyboard,pointer}` symlinks before Xorg starts.
+It never assigns roles from `eventN`: the two physical xHCI controllers are
+initialized concurrently, so the same board has produced both
+keyboard=`event1`/pointer=`event0` and the reverse ordering. Missing or
+ambiguous identities fail closed. The Stage1 control helper applies the same
+identity rule to the reused partition-2 Xorg configuration for experiments
+that precede the next root-image rebuild.
+The kernel does not currently expose a Linux `/sys/class/input` identity
+contract, so the future rootfs resolver must use evdev ioctls.
+
 The host will still run low-load kernel and root probes before explicitly
 starting Firefox. The display-provider contract remains unchanged, and this
 work adds no DRM implementation.
 
 ## Deployment and Data Flow
 
-1. Build a deterministic Stage1 containing `init` and the seven helper files.
+1. Build a deterministic Stage1 containing `init` and the nine helper files.
 2. Transfer or select the versioned kernel, Stage1, and DTB only.
 3. Stage1 mounts the existing ext2 root and bind-mounts its own helper directory
    at `/run/asterinas-tools`.
@@ -90,6 +115,8 @@ Partition 2 is neither reimaged nor used as the helper source in this flow.
 
 - The Stage1 build rejects an archive with a missing, extra, or misordered
   helper entry.
+- The control helper rejects unknown actions, malformed nonces, and malformed
+  numeric arguments without producing a success marker.
 - The physical gate uses one bounded command and accepts only the complete
   terminal marker with inactive competing services.
 - Missing executable, mount failure, nonzero setup status, incomplete systemd
@@ -101,8 +128,9 @@ Partition 2 is neither reimaged nor used as the helper source in this flow.
 ## Verification
 
 1. Unit-test the exact Stage1 entry list and installed executable path.
-2. Unit-test that the physical command uses only the `/run/asterinas-tools`
-   path and has no root-image fallback.
+2. Unit-test that every physical command uses only the
+   `/run/asterinas-tools` path, remains below 128 bytes, and has no root-image
+   fallback.
 3. Build Stage1 twice and require byte-identical output.
 4. Inspect the archive and require executable helper bytes matching the source
    SHA-256.

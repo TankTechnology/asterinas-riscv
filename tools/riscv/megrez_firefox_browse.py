@@ -30,7 +30,7 @@ from tools.riscv.megrez_boot_stability import (
     BootReadinessEvidence,
     RealBootCycleOperations,
 )
-from tools.riscv.megrez_physical_graphics import HostGateError, physical_bootargs
+from tools.riscv.megrez_physical_graphics import HostGateError
 
 
 MAX_PAGE_JSON_BYTES = 1024 * 1024
@@ -89,10 +89,67 @@ def _transcript_bytes(value: str | bytes) -> bytes:
     raise HostGateError("Firefox browse transcript must be text or bytes")
 
 
+def _firefox_web_bootargs(plan: Any) -> str:
+    """Derive a quiet physical boot without dropping the frozen web path."""
+
+    plan.validate()
+    if not isinstance(plan.bootargs, str):
+        raise HostGateError("plan bootargs are invalid")
+    tokens = plan.bootargs.split()
+    if tokens.count("--") != 1:
+        raise HostGateError("plan must contain one root-init separator")
+    separator = tokens.index("--")
+    if tokens[separator + 1 :] != ["--root-init=systemd"]:
+        raise HostGateError("plan root-init arguments are not canonical")
+
+    replaced_kernel_parameters = {
+        "console",
+        "loglevel",
+        "asterinas.klog_capture",
+        "asterinas.mmc_write_partition2",
+        "asterinas.reboot_after",
+    }
+    retained = []
+    for token in tokens[:separator]:
+        normalized_name = token.partition("=")[0].replace("-", "_")
+        if normalized_name in replaced_kernel_parameters or token.startswith(
+            (
+                "systemd.unit=",
+                "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=",
+                "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=",
+            )
+        ):
+            continue
+        retained.append(token)
+    if retained.count("init=/init") != 1:
+        raise HostGateError("plan must contain one stage1 init selector")
+
+    return " ".join(
+        (
+            "console=tty0",
+            "loglevel=off",
+            "asterinas.klog_capture=info",
+            *retained,
+            "asterinas.mmc_write_partition2",
+            "asterinas.reboot_after=900",
+            "systemd.mask=asterinas-browser-web-evidence.service",
+            "systemd.mask=asterinas-desktop-m5-network.service",
+            "systemd.mask=serial-getty@ttyS0.service",
+            "systemd.mask=console-getty.service",
+            "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",
+            "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy",
+            "--",
+            "--root-init=systemd",
+            "--debug-console=isolated-root",
+            "--volatile-home",
+        )
+    )
+
+
 def firefox_browse_bootargs(plan: Any) -> str:
     """Keep the frozen web path and arm bounded recovery and TCP tracing."""
 
-    bootargs = physical_bootargs(plan)
+    bootargs = _firefox_web_bootargs(plan)
     tokens = bootargs.split()
     required_prefixes = (
         "asterinas.net=",
@@ -117,8 +174,8 @@ def firefox_browse_bootargs(plan: Any) -> str:
     if any(token.startswith("asterinas.tcp_diagnostic_port=") for token in tokens):
         raise HostGateError("Firefox browse TCP diagnostic port is ambiguous")
     tokens.insert(tokens.index("--"), "asterinas.tcp_diagnostic_port=2828")
-    if any("mmc_write_partition2" in token for token in tokens):
-        raise HostGateError("Firefox browse must not write partition 2")
+    if tokens.count("asterinas.mmc_write_partition2") != 1:
+        raise HostGateError("Firefox browse partition-2 write gate is ambiguous")
     return " ".join(tokens)
 
 
@@ -507,21 +564,29 @@ def browse_diagnostics_commands(nonce: str) -> tuple[str, ...]:
         'case "$_p" in ""|*[!0-9]*|0|1) _p=;; esac',
         "{ printf '%s\\n' '== uptime and cmdline =='; cat /proc/uptime /proc/cmdline; "
         "printf '%s\\n' '== bounded dmesg tail =='; "
-        'dmesg --color=never; } 2>&1 | tail -c 131072 >"$_d.01"',
+        'dmesg --color=never; } 2>&1 | tail -c 98304 >"$_d.01"',
         "{ printf '%s\\n' '== graphical services =='; /usr/bin/timeout 3 "
-        "systemctl show --no-pager --property Id,ActiveState,SubState,MainPID,NRestarts "
-        "asterinas-desktop-m5.service asterinas-browser-web.service || true; } "
-        '>"$_d.02" 2>&1',
+        "systemctl show --no-pager --property "
+        "Id,ActiveState,SubState,MainPID,NRestarts,Result,ExecMainCode,ExecMainStatus "
+        "asterinas-desktop-m5.service asterinas-browser-web.service || true; "
+        "printf '%s\\n' '== browser service journal =='; /usr/bin/timeout 5 "
+        "journalctl -u asterinas-browser-web.service -n 80 --no-pager || true; } "
+        '2>&1 | tail -c 32768 >"$_d.02"',
         "{ printf '%s\\n' '== Firefox process snapshot =='; if [ -n \"$_p\" ]; then "
         "/usr/bin/timeout 6 /usr/lib/asterinas/firefox-diagnostic-snapshot "
         '--root-pid "$_p" --max-seconds 3 --max-processes 16 --max-threads 128 '
         "--max-fds 64 --max-scan 1024 --max-file-bytes 8192 "
         "--max-total-bytes 32768; else printf '%s\\n' 'Firefox PID unavailable'; fi; "
-        '} 2>&1 | head -c 65536 >"$_d.03"',
-        'cat "$_d.01" "$_d.02" "$_d.03" >"$_d"; '
+        '} 2>&1 | head -c 49152 >"$_d.03"',
+        "{ printf '%s\\n' '== browser launcher logs =='; for _f in "
+        "/home/asterinas/firefox-web-stderr.log "
+        "/home/asterinas/firefox-web-mozilla.log "
+        "/home/asterinas/browser-web-timeline.log; do printf '--- %s ---\\n' \"$_f\"; "
+        'tail -n 80 "$_f" 2>&1 || true; done; } | tail -c 32768 >"$_d.04"',
+        'cat "$_d.01" "$_d.02" "$_d.03" "$_d.04" >"$_d"; '
         "printf '%s\\n' '== validated Baidu DOM before screenshot ==' >>\"$_d\"; "
         "for _f in /run/asterinas-browse-*/baidu-home.json; do "
-        '[ -f "$_f" ] || continue; head -c 49152 "$_f" >>"$_d"; break; done; '
+        '[ -f "$_f" ] || continue; head -c 24576 "$_f" >>"$_d"; break; done; '
         '_z=$(wc -c <"$_d"); '
         f'if [ "$_z" -le {MAX_DIAGNOSTICS_BYTES} ]; then '
         '_h=$(sha256sum "$_d" | cut -d\' \' -f1); else _h=' + zeros + "; fi",
@@ -601,6 +666,11 @@ class RealFirefoxBrowseOperations(RealBootCycleOperations):
     """MMC-only serial adapter for the lightweight homepage transaction."""
 
     GUEST_LIFETIME_SECONDS = FIREFOX_BROWSE_REBOOT_AFTER_SECONDS
+
+    def _prepare_boot_readiness(self, deadline: float) -> None:
+        """Start the online desktop without replacing its configured proxy."""
+
+        self._start_web_browser(deadline)
 
     def ensure_artifacts(self, plan: Any, timeout: float) -> tuple[str, ...]:
         outcomes = super().ensure_artifacts(plan, timeout)

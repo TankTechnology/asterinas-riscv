@@ -180,11 +180,45 @@ The interaction gate also reports bounded trusted-input-to-frame samples and
 their nearest-rank p50/p95 summary. These records make fbdev and a future DRM
 provider directly comparable without changing the Firefox workload.
 
+The host-local network fixture now serves a separate
+`/browser-quality/perf.html` timing page and `/browser-quality/perf-second.html`
+navigation page. They leave the existing capability gate unchanged. The timing
+page exposes bounded keyboard, pointer, and scroll samples from trusted events
+and from a separately marked synthetic browser-only sequence. Each sample
+distinguishes the first and next `requestAnimationFrame` callback. Those are
+browser scheduling boundaries, not proof that Xorg copied pixels to `/dev/fb0`
+or that the HDMI monitor scanned them out. The second page records Navigation
+Timing's first byte, response end, DOM completion, and load completion within
+the browser clock domain. `browser_latency_contract.py` validates samples and
+calculates disjoint local waterfall intervals; it will reject missing or
+reordered navigation rather than report an artificial zero.
+
 Treat 100 ms p95 as the first admission target for physical interaction, not
 as an assumed baseline. Gather multiple samples during one desktop boot; do
 not reset the board or rewrite the root image between samples. The development
 overlay includes all of these runtime collectors, so script-only measurement
 changes do not rerun debootstrap, apt, or package downloads.
+
+The Stage1 archive also carries a read-only process/system CPU sampler into
+`/run/asterinas-tools/browser_system_time.py` after root handoff. Once Firefox
+and Xorg are running, collect short intervals without restarting either process:
+
+```bash
+python3 /run/asterinas-tools/browser_system_time.py \
+  --pid "$(pidof Xorg)" --pid "$(pidof firefox)" \
+  --interval-seconds 1 --samples 20 \
+  --output /run/browser-system-time.json
+```
+
+Use exact, single PIDs; `pidof` may return more than one and must be checked
+first. The exclusive JSON artifact has mode `0600` and reports guest-monotonic
+wall intervals, per-process user/kernel CPU ticks, global and per-core CPU
+tick deltas, per-core busy fractions, context-switch deltas, and runnable counts.
+CPU time is *not* input latency or
+HDMI scanout latency. This Asterinas image does not yet expose reliable
+per-process I/O, per-thread runnable wait, or physical scanout timestamps; the
+sampler marks them unsupported instead of filling them with zeros. Keep syscall
+profiling disabled for this baseline, since detailed logs perturb timing.
 
 Build the separate schema-v2 systemd profile only when the M1 artifact is not
 the intended input. It has a distinct label, UUID, and output directory, so it
