@@ -405,7 +405,6 @@ pub(super) struct DrmModeCreatePropertyBlob {
 #[derive(Clone, Copy, Debug, Default, Pod)]
 pub(super) struct DrmModeDestroyPropertyBlob {
     pub(super) blob_id: u32,
-    pub(super) pad: u32,
 }
 
 /// `struct drm_mode_get_plane_res`.
