@@ -59,8 +59,12 @@ Its phase-facing wrapper forbids additional `WebDriver:NewSession`,
 It closes its protocol transport without deleting the session, returns to the
 original window after closing temporary context windows, and checks unchanged
 Firefox/Xorg PID and start-time identities.
-It does not restart either process, reboot the guest, or write the persistent
-rootfs.
+It does not restart either process, reboot the guest, rewrite partition 2, or
+change the boot menu.
+The exercised browser can still update its profile and leave the validated
+download under `/home/asterinas/Downloads`; use the separate Stage1
+`--volatile-home` handoff or a disposable image when those writes must not
+persist.
 
 ## What is measured
 
