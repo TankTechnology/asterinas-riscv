@@ -1245,7 +1245,19 @@ def _wait_for_probe(
     client: Marionette,
     validator: Callable[[object], object],
     deadline: float,
+    *,
+    diagnostic_fn: Callable[[str], object] | None = None,
 ) -> tuple[dict[str, object], object]:
+    diagnostic_count = 0
+
+    def diagnostic(line: str) -> None:
+        nonlocal diagnostic_count
+        if diagnostic_fn is None:
+            print(line, file=sys.stderr, flush=True)
+        elif diagnostic_count < 16:
+            diagnostic_count += 1
+            diagnostic_fn(line[:2048])
+
     last_error: GateError | None = None
     capability_reported = False
     command_reported = False
@@ -1260,9 +1272,9 @@ def _wait_for_probe(
             # after this loop reports the expected live DOM.
             if not command_reported:
                 command_reported = True
-                print("A_WEB_PROBE_COMMAND state=start", file=sys.stderr, flush=True)
+                diagnostic("A_WEB_PROBE_COMMAND state=start")
             probe = _probe(client)
-            print("A_WEB_PROBE_COMMAND state=done", file=sys.stderr, flush=True)
+            diagnostic("A_WEB_PROBE_COMMAND state=done")
             return probe, validator(probe)
         except GateError as error:
             # Preserve the browser-side capability progress in serial evidence
@@ -1280,13 +1292,11 @@ def _wait_for_probe(
                 capability_reported = True
                 checks = capabilities.get("checks")
                 checks_text = json.dumps(checks, sort_keys=True, separators=(",", ":"))
-                print(
+                diagnostic(
                     "A_WEB_PROBE_CAPABILITIES "
                     f"state={capabilities.get('state')} "
                     f"error={json.dumps(str(capabilities.get('error')), ensure_ascii=True)} "
                     f"checks={checks_text}",
-                    file=sys.stderr,
-                    flush=True,
                 )
             if (
                 "challenge" in str(error)
@@ -1295,11 +1305,9 @@ def _wait_for_probe(
             ):
                 raise
             if last_error is None:
-                print(
+                diagnostic(
                     "A_WEB_PROBE_RETRY error="
                     + json.dumps(str(error), ensure_ascii=True),
-                    file=sys.stderr,
-                    flush=True,
                 )
             last_error = error
         time.sleep(min(2.0, max(0.0, deadline - time.monotonic())))
