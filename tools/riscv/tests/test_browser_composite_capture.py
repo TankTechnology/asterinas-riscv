@@ -13,6 +13,7 @@ import unittest
 
 from tools.riscv.debian.rootfs.browser_composite_capture import (
     CompositeCaptureError,
+    DOCUMENT_SETUP_TIMEOUT_SECONDS,
     capture_composite,
     run_composite_capture,
     workload_url,
@@ -111,6 +112,9 @@ class FakeMarionette:
 
 
 class BrowserCompositeCaptureTests(unittest.TestCase):
+    def test_document_setup_budget_is_separate_and_bounded(self) -> None:
+        self.assertEqual(DOCUMENT_SETUP_TIMEOUT_SECONDS, 120.0)
+
     def test_workload_url_requires_exact_local_fixture_origin(self) -> None:
         self.assertEqual(workload_url(BASE), WORKLOAD)
         for invalid in (
