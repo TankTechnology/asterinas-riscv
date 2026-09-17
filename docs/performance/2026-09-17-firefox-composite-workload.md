@@ -62,8 +62,9 @@ reviewable commits:
 - `31dfb0e53` explicitly selects the verified Firefox window before navigation.
 - `a6b23ecbf` makes history completion observable and retains failure detail;
 - `2a5a2362b` creates deterministic same-document history entries.
+- `80f9894dd` waits for in-flight fixture handlers before publishing evidence.
 
-The final `tools/riscv/firefox_fast_check.sh` run passed 252 tests and emitted
+The final `tools/riscv/firefox_fast_check.sh` run passed 253 tests and emitted
 `FIREFOX_FAST_CHECK_PASS`. The focused protocol, fixture, and
 development-overlay run also passed 45 tests; it is a subset and is not added
 to the 252-test total.
