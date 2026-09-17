@@ -357,9 +357,17 @@ def run_composite_capture(
     if (
         not isinstance(handles, list)
         or not handles
+        or len(handles) > 16
         or not all(isinstance(handle, str) for handle in handles)
     ):
         raise CompositeCaptureError("Firefox composite window is unavailable")
+    switched = _value(
+        client.command(  # type: ignore[attr-defined]
+            "WebDriver:SwitchToWindow", {"handle": handles[0], "focus": False}
+        )
+    )
+    if switched is not None:
+        raise CompositeCaptureError("Firefox composite window selection failed")
     client.set_timeout(timeout_seconds)  # type: ignore[attr-defined]
 
     _private_marker(paths["ready"], time.monotonic_ns())

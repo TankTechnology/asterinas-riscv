@@ -86,6 +86,9 @@ class FakeMarionette:
             }
         if name == "WebDriver:GetWindowHandles":
             return {"value": ["window-1"]}
+        if name == "WebDriver:SwitchToWindow":
+            assert parameters == {"handle": "window-1", "focus": False}
+            return {"value": None}
         if name == "WebDriver:Navigate":
             assert isinstance(parameters, dict)
             self.url = str(parameters["url"])
@@ -252,6 +255,7 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
             self.assertTrue(report["physical"])
 
         self.assertNotIn("WebDriver:DeleteSession", client.commands)
+        self.assertIn("WebDriver:SwitchToWindow", client.commands)
 
     def test_run_capture_rejects_existing_output_and_pid_reuse(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
