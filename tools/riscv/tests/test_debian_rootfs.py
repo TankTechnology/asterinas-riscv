@@ -144,6 +144,12 @@ STAGE1_BROWSER_LATENCY_CONTRACT = (
 STAGE1_BROWSER_PERF_CAPTURE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_perf_capture.py"
 )
+STAGE1_BROWSER_WORKLOAD_CONTRACT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_workload_contract.py"
+)
+STAGE1_BROWSER_COMPOSITE_CAPTURE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_composite_capture.py"
+)
 STAGE1_BROWSER_M5_MARIONETTE_GATE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_m5_marionette_gate.py"
 )
@@ -1399,6 +1405,8 @@ int main(void)
                 "usr/lib/asterinas/browser_system_time.py",
                 "usr/lib/asterinas/browser_latency_contract.py",
                 "usr/lib/asterinas/browser_perf_capture.py",
+                "usr/lib/asterinas/browser_workload_contract.py",
+                "usr/lib/asterinas/browser_composite_capture.py",
                 "usr/lib/asterinas/browser-web-marionette-gate",
                 "usr/lib/asterinas/browser_m5_marionette_gate.py",
                 "usr/lib/asterinas/megrez-clock-sync",
@@ -1587,6 +1595,20 @@ int main(void)
                     1700000000,
                 ),
                 (
+                    "usr/lib/asterinas/browser_workload_contract.py",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/browser_composite_capture.py",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
                     "usr/lib/asterinas/browser-web-marionette-gate",
                     stat.S_IFREG | 0o755,
                     0,
@@ -1678,20 +1700,22 @@ int main(void)
         self.assertEqual(entries[6][5], STAGE1_BROWSER_SYSTEM_TIME.read_bytes())
         self.assertEqual(entries[7][5], STAGE1_BROWSER_LATENCY_CONTRACT.read_bytes())
         self.assertEqual(entries[8][5], STAGE1_BROWSER_PERF_CAPTURE.read_bytes())
-        self.assertEqual(entries[9][5], STAGE1_BROWSER_GATE.read_bytes())
-        self.assertEqual(entries[10][5], STAGE1_BROWSER_M5_MARIONETTE_GATE.read_bytes())
-        self.assertEqual(entries[11][5], STAGE1_CLOCK_SYNC.read_bytes())
+        self.assertEqual(entries[9][5], STAGE1_BROWSER_WORKLOAD_CONTRACT.read_bytes())
+        self.assertEqual(entries[10][5], STAGE1_BROWSER_COMPOSITE_CAPTURE.read_bytes())
+        self.assertEqual(entries[11][5], STAGE1_BROWSER_GATE.read_bytes())
+        self.assertEqual(entries[12][5], STAGE1_BROWSER_M5_MARIONETTE_GATE.read_bytes())
+        self.assertEqual(entries[13][5], STAGE1_CLOCK_SYNC.read_bytes())
         self.assertEqual(
-            entries[12][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
+            entries[14][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
         )
-        self.assertEqual(entries[13][5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
-        self.assertEqual(entries[14][5], STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_bytes())
-        self.assertEqual(entries[15][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
-        self.assertEqual(entries[16][5], STAGE1_PHYSICAL_GRAPHICS_PAGE.read_bytes())
-        self.assertEqual(entries[17][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
-        self.assertEqual(entries[18][5], b"physical-graphics-control")
-        self.assertEqual(entries[19][5], b"physical-external-services-quiesce")
-        self.assertEqual(entries[20][5], b"physical-system-probe")
+        self.assertEqual(entries[15][5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
+        self.assertEqual(entries[16][5], STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_bytes())
+        self.assertEqual(entries[17][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
+        self.assertEqual(entries[18][5], STAGE1_PHYSICAL_GRAPHICS_PAGE.read_bytes())
+        self.assertEqual(entries[19][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
+        self.assertEqual(entries[20][5], b"physical-graphics-control")
+        self.assertEqual(entries[21][5], b"physical-external-services-quiesce")
+        self.assertEqual(entries[22][5], b"physical-system-probe")
 
     def test_builder_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):

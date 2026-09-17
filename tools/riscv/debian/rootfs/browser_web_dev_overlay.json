@@ -29,6 +29,18 @@
       "create": true
     },
     {
+      "source": "browser_workload_contract.py",
+      "destination": "/usr/lib/asterinas/browser_workload_contract.py",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "browser_composite_capture.py",
+      "destination": "/usr/lib/asterinas/browser_composite_capture.py",
+      "mode": "0755",
+      "create": true
+    },
+    {
       "source": "browser_performance_provenance.py",
       "destination": "/usr/lib/asterinas/browser-performance-provenance",
       "mode": "0755",
