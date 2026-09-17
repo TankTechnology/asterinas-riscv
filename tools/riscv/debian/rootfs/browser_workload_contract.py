@@ -89,7 +89,7 @@ def _normalize_metrics(value: object) -> dict[str, object]:
             value["operationCount"], "operation count", 1_000_000
         ),
         "requestCount": _bounded_count(
-            value["requestCount"], "request count", 256
+            value["requestCount"], "request count", 384
         ),
         "contextCount": _bounded_count(
             value["contextCount"], "context count", 3

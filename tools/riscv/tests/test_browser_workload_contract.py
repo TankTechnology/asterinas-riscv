@@ -55,6 +55,14 @@ class BrowserWorkloadContractTests(unittest.TestCase):
         )
         self.assertEqual(report["state"], "complete")
 
+    def test_accepts_bounded_stress_cache_attempt_count(self) -> None:
+        snapshot = complete_snapshot("stress")
+        snapshot["phases"][3]["metrics"]["requestCount"] = 288
+
+        report = validate_workload_snapshot(snapshot, expected_mode="stress")
+
+        self.assertEqual(report["phases"][3]["metrics"]["requestCount"], 288)
+
     def test_accepts_only_an_ordered_prefix_while_running(self) -> None:
         snapshot = complete_snapshot()
         snapshot["state"] = "running"
@@ -120,6 +128,7 @@ class BrowserWorkloadContractTests(unittest.TestCase):
         for key, value in (
             ("operationCount", True),
             ("requestCount", -1),
+            ("requestCount", 385),
             ("contextCount", 4),
             ("longFrameCount", 257),
         ):
