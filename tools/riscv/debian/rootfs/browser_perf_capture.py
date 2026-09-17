@@ -167,8 +167,15 @@ def capture_local(
     synthetic_samples: int,
     timeout_seconds: float,
     interaction_checkpoint_fn: Callable[[dict[str, object]], object] | None = None,
+    navigation_validator: Callable[
+        [object], dict[str, float | str]
+    ] = validate_navigation,
 ) -> dict[str, object]:
-    """Capture isolated browser rAF and local navigation within one session."""
+    """Capture isolated browser rAF and local navigation within one session.
+
+    An explicit navigation validator may preserve independently usable timing
+    intervals. The default retains the complete, ordered waterfall contract.
+    """
 
     if (
         type(synthetic_samples) is not int
@@ -258,7 +265,7 @@ def capture_local(
                 f"last_validation={last_validation}"
             ) from error
         try:
-            navigation_parts = validate_navigation(navigation_snapshot)
+            navigation_parts = navigation_validator(navigation_snapshot)
         except BrowserLatencyError as error:
             last_validation = str(error)
             if (

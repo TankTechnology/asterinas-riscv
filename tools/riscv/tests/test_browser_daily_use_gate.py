@@ -8,6 +8,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -31,6 +32,15 @@ from tools.riscv.debian.rootfs.browser_daily_use_gate import (
     run_daily_use_gate,
 )
 from tools.riscv.tests.test_browser_daily_use_contract import RUN_ID, complete_result
+from tools.riscv.tests.test_browser_composite_capture import (
+    FakeMarionette as CompositeMarionette,
+)
+from tools.riscv.tests.test_browser_perf_capture import (
+    BASE,
+    NAVIGATION,
+    FakeMarionette as TimingMarionette,
+)
+from tools.riscv.debian.rootfs import browser_web_marionette_gate as web
 
 
 class FakeMarionette:
@@ -116,11 +126,15 @@ class BrowserDailyUseGateTests(unittest.TestCase):
         )
         self.events.append("fixture")
         self.assertFalse((self.evidence / "browser-daily-use-result.json").exists())
-        return FixtureCapture(self.source["functionGroups"], b"fixture")
+        return FixtureCapture(
+            [self.source["functionGroups"][i] for i in (0, 1, 2, 3, 5)], b"fixture"
+        )
 
     def timing(self, request):
         self.events.append("local-timing")
-        return TimingCapture(self.source["performance"][:4], b"timing")
+        return TimingCapture(
+            self.source["performance"][:4], b"timing", self.source["functionGroups"][4]
+        )
 
     def context(self, request):
         self.events.append("context-switch")
@@ -129,7 +143,9 @@ class BrowserDailyUseGateTests(unittest.TestCase):
             "WebDriver:SwitchToWindow", {"handle": response["value"]["handle"]}
         )
         request.client.command("WebDriver:SwitchToWindow", {"handle": "original"})
-        return ContextCapture(self.source["performance"][4], b"context")
+        return ContextCapture(
+            self.source["performance"][4], b"context", self.source["functionGroups"][6]
+        )
 
     def composite(self, request):
         self.events.append("composite")
@@ -173,11 +189,18 @@ class BrowserDailyUseGateTests(unittest.TestCase):
             value["completedPhases"], list(PHASES[: len(value["completedPhases"])])
         )
         self.assertEqual(value["failure"], {"type": "daily-use-gate", "reason": reason})
+        owned = set()
+        if "fixture" in value["completedPhases"]:
+            owned.update(
+                ("document", "storage", "execution", "rendering-media", "download")
+            )
+        if "local-timing" in value["completedPhases"]:
+            owned.add("navigation")
+        if "context-switch" in value["completedPhases"]:
+            owned.add("contexts")
         self.assertEqual(
             value["functionGroups"],
-            self.source["functionGroups"]
-            if "fixture" in value["completedPhases"]
-            else [],
+            [item for item in self.source["functionGroups"] if item["name"] in owned],
         )
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertTrue(self.client.closed)
@@ -301,15 +324,23 @@ class BrowserDailyUseGateTests(unittest.TestCase):
                 ):
                     self.source = complete_result()
                     if field == "functionGroups":
-                        self.source[field] = mutation(self.source[field])
                         self.operations = replace(
-                            self.operations, local_timing=self.timing
+                            self.operations,
+                            fixture=lambda request: FixtureCapture(
+                                mutation(
+                                    [self.source[field][i] for i in (0, 1, 2, 3, 5)]
+                                ),
+                                b"fixture",
+                            ),
                         )
                     else:
                         self.operations = replace(
                             self.operations,
+                            fixture=self.fixture,
                             local_timing=lambda request: TimingCapture(
-                                mutation(self.source["performance"][:4]), b"timing"
+                                mutation(self.source["performance"][:4]),
+                                b"timing",
+                                self.source["functionGroups"][4],
                             ),
                         )
                     with self.assertRaises(DailyUseGateError):
@@ -326,6 +357,35 @@ class BrowserDailyUseGateTests(unittest.TestCase):
         with self.assertRaisesRegex(DailyUseGateError, "phase-failed"):
             self.run_gate()
         self.checkpoint("phase-failed")
+
+    def test_no_phase_can_supply_another_phases_functional_verdict(self):
+        cases = (
+            {
+                "fixture": lambda request: FixtureCapture(
+                    self.source["functionGroups"], b"fixture"
+                )
+            },
+            {
+                "local_timing": lambda request: TimingCapture(
+                    self.source["performance"][:4],
+                    b"timing",
+                    self.source["functionGroups"][6],
+                )
+            },
+            {
+                "context_switch": lambda request: ContextCapture(
+                    self.source["performance"][4],
+                    b"context",
+                    self.source["functionGroups"][4],
+                )
+            },
+        )
+        for overrides in cases:
+            with tempfile.TemporaryDirectory() as directory:
+                operations = replace(self.operations, **overrides)
+                with self.assertRaisesRegex(DailyUseGateError, "contract-invalid"):
+                    self.run_gate(operations=operations, evidence_dir=Path(directory))
+                self.assertFalse((Path(directory) / gate.RESULT_NAME).exists())
 
     def test_publication_fsync_failure_cannot_leave_a_success_result(self):
         real_fsync = os.fsync
@@ -471,7 +531,9 @@ class BrowserDailyUseGateTests(unittest.TestCase):
         with self.assertRaises(DailyUseGateError):
             self.run_gate()
         checkpoint = json.loads((self.evidence / gate.CHECKPOINT_NAME).read_text())
-        self.assertEqual(checkpoint["functionGroups"], expected)
+        self.assertEqual(
+            checkpoint["functionGroups"], [expected[i] for i in (0, 1, 2, 3, 5)]
+        )
         self.assertIn("fixture", checkpoint["completedPhases"])
 
     def test_checkpoint_excludes_invalid_functional_values(self):
@@ -651,6 +713,569 @@ class BrowserDailyUseGateTests(unittest.TestCase):
         with self.assertRaises(DailyUseGateError):
             self.run_gate()
         self.evidence.chmod(0o700)
+
+
+class AdapterMarionette(FakeMarionette):
+    def __init__(self, download):
+        super().__init__([])
+        self.timing = TimingMarionette()
+        self.composite = CompositeMarionette()
+        self.download = download
+        self.urls = []
+        self.capabilities = {
+            "version": 1,
+            "phase": "home",
+            "state": "complete",
+            "error": None,
+            "checks": {
+                name: True
+                for name in (
+                    "audio",
+                    "canvas",
+                    "cookie",
+                    "fetch",
+                    "indexedDb",
+                    "localStorage",
+                    "sessionStorage",
+                    "wasm",
+                    "worker",
+                )
+            },
+        }
+        self.body = "Asterinas browser quality 浏览器质量"
+        self.foreign_resource = False
+
+    def command(self, name, parameters=None):
+        if name == "WebDriver:Navigate":
+            self.urls.append(parameters["url"])
+            self.composite.command(name, parameters)
+            return self.timing.command(name, parameters)
+        if name == "WebDriver:ExecuteScript":
+            script = parameters["script"]
+            if "CompositeWorkload" in script:
+                return self.composite.command(name, parameters)
+            if "quality-download" in script:
+                self.download.write_bytes(bytes(range(256)) * 1024)
+                return {"value": "fixture-download-scheduled"}
+            if script in (web._PROBE_SCRIPT, web._SNAPSHOT_SCRIPT):
+                url = self.timing.url
+                snapshot = {
+                    "url": url,
+                    "title": "Asterinas Browser Quality",
+                    "readyState": "complete",
+                    "bodyText": self.body,
+                    "jsComplete": True,
+                    "browserCapabilities": self.capabilities,
+                    "dom": {key: key.startswith("fixture") for key in web._DOM_FIELDS},
+                }
+                if script == web._SNAPSHOT_SCRIPT:
+                    snapshot.update(
+                        {
+                            "links": [],
+                            "navigation": {"name": url, "entryType": "navigation"},
+                            "resources": [
+                                {
+                                    "name": "https://example.com/private"
+                                    if self.foreign_resource
+                                    else url.rsplit("/", 1)[0] + "/pattern.png",
+                                    "initiatorType": "img",
+                                    "duration": 2,
+                                    "transferSize": 100,
+                                }
+                            ],
+                        }
+                    )
+                return {"value": json.dumps(snapshot)}
+            return self.timing.command(name, parameters)
+        return super().command(name, parameters)
+
+
+class DailyUseAdapterTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.download = self.root / "asterinas-browser-quality.bin"
+        self.client = AdapterMarionette(self.download)
+        self.timeline = "A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC guest_monotonic_ns=1000000000 firefox_pid=101\n"
+
+    def operations(self, **kwargs):
+        return gate.default_operations(
+            timeline_path=self.root / "timeline",
+            timeline_reader=lambda path: self.timeline,
+            download_path=self.download,
+            firefox_uid_reader=lambda pid: os.geteuid(),
+            **kwargs,
+        )
+
+    def request(self, **kwargs):
+        values = dict(
+            client=gate.ExistingSession(self.client),
+            original_window="original",
+            fixture_index_url=BASE,
+            mode="smoke",
+            firefox_pid=101,
+            xorg_pid=202,
+            deadline=time.monotonic() + 10,
+            clock=gate.DailyUseClock(),
+            run_id=RUN_ID,
+            session_ready_ns=1_500_000_000,
+            physical=False,
+        )
+        values.update(kwargs)
+        return gate.CaptureRequest(**values)
+
+    def test_factory_provides_typed_operations(self):
+        self.assertTrue(callable(getattr(gate, "default_operations", None)))
+        self.assertIsInstance(self.operations(), DailyUseOperations)
+
+    def test_fixture_reuses_local_helpers_and_strict_download_for_both_hosts(self):
+        for host in ("10.0.2.2", "10.100.19.216"):
+            with self.subTest(host=host):
+                if self.download.exists():
+                    self.download.unlink()
+                url = f"http://{host}:17894/browser-quality/index.html"
+                with mock.patch.object(
+                    web,
+                    "_wait_for_fixture_download",
+                    wraps=web._wait_for_fixture_download,
+                ) as verify:
+                    capture = self.operations().fixture(
+                        self.request(fixture_index_url=url)
+                    )
+                self.assertEqual(
+                    [item["name"] for item in capture.function_groups],
+                    ["document", "storage", "execution", "rendering-media", "download"],
+                )
+                report = json.loads(capture.artifact)
+                self.assertEqual(
+                    report["download"]["sha256"], web.FIXTURE_DOWNLOAD_SHA256
+                )
+                self.assertEqual(report["snapshot"]["url"], url)
+                self.assertEqual(verify.call_args.args[0], self.download)
+                self.assertEqual(verify.call_args.args[3], os.geteuid())
+                self.assertFalse(verify.call_args.args[2].exists())
+        self.assertNotIn("WebDriver:NewSession", self.client.events)
+        self.assertNotIn("WebDriver:DeleteSession", self.client.events)
+        self.assertTrue(all(url.startswith("http://10.") for url in self.client.urls))
+
+    def test_fixture_rejects_foreign_origin_stale_download_and_wrong_owner(self):
+        with self.assertRaises((ValueError, DailyUseGateError)):
+            self.operations().fixture(
+                self.request(fixture_index_url="https://example.com")
+            )
+        self.assertEqual(self.client.urls, [])
+        self.download.write_bytes(b"stale")
+        with self.assertRaises(ValueError):
+            self.operations().fixture(self.request())
+        self.assertEqual(self.download.read_bytes(), b"stale")
+        self.download.unlink()
+        operations = gate.default_operations(
+            download_path=self.download, firefox_uid_reader=lambda pid: os.geteuid() + 1
+        )
+        with self.assertRaises(web.GateError):
+            operations.fixture(self.request())
+
+    def test_fixture_rejects_each_missing_capability_and_foreign_resource(self):
+        operations = self.operations()
+        for capability in self.client.capabilities["checks"]:
+            with self.subTest(capability=capability):
+                self.client.capabilities["checks"][capability] = False
+                with mock.patch.object(
+                    web,
+                    "_wait_for_probe",
+                    side_effect=lambda client, validator, deadline: (
+                        web._probe(client),
+                        validator(web._probe(client)),
+                    ),
+                ):
+                    with self.assertRaises(web.GateError):
+                        operations.fixture(self.request())
+                self.client.capabilities["checks"][capability] = True
+        self.client.foreign_resource = True
+        with self.assertRaises(ValueError):
+            operations.fixture(self.request())
+
+    def test_fixture_rejects_missing_latin_cjk_and_incorrect_download_bytes(self):
+        for body in ("Asterinas browser quality", "浏览器质量"):
+            self.client.body = body
+            with mock.patch.object(
+                web,
+                "_wait_for_probe",
+                side_effect=lambda client, validator, deadline: (
+                    web._probe(client),
+                    validator(web._probe(client)),
+                ),
+            ):
+                with self.assertRaises(web.GateError):
+                    self.operations().fixture(self.request())
+        self.client.body = "Asterinas browser quality 浏览器质量"
+        from tools.riscv.debian.rootfs import browser_perf_capture as perf
+
+        def corrupt(*args):
+            self.download.write_bytes(b"x" * web.FIXTURE_DOWNLOAD_BYTES)
+            return "fixture-download-scheduled"
+
+        with mock.patch.object(perf, "_script", side_effect=corrupt):
+            with self.assertRaisesRegex(web.GateError, "hash does not match"):
+                self.operations().fixture(self.request())
+
+    def test_startup_ready_endpoint_is_measured_after_verified_session(self):
+        observed = []
+        operations = replace(
+            self.operations(), identity_reader=lambda pids: (1000, 2000)
+        )
+
+        def sample(request):
+            first = time.monotonic_ns()
+            request.ready.set()
+            request.stop.wait(2)
+            return SamplerCapture(b"sample", first, time.monotonic_ns())
+
+        def stop(request):
+            observed.append(request.session_ready_ns)
+            self.assertEqual(
+                self.client.events[:3],
+                [
+                    "WebDriver:NewSession",
+                    "WebDriver:GetWindowHandle",
+                    "WebDriver:SwitchToWindow",
+                ],
+            )
+            raise RuntimeError("stop after observing request")
+
+        operations = replace(
+            operations, fixture=stop, system_sampler=sample, thread_sampler=sample
+        )
+        before = time.monotonic_ns()
+        with self.assertRaises(DailyUseGateError):
+            gate.run_daily_use_gate(
+                client=self.client,
+                operations=operations,
+                firefox_pid=101,
+                xorg_pid=202,
+                evidence_dir=self.root,
+                mode="smoke",
+                timeout_seconds=10,
+                run_id=RUN_ID,
+                fixture_index_url=BASE,
+            )
+        self.assertTrue(before <= observed[0] <= time.monotonic_ns())
+
+    def test_timing_uses_existing_capture_and_preserves_negative_fetch_start(self):
+        from tools.riscv.debian.rootfs import browser_perf_capture as perf
+
+        with (
+            mock.patch.dict(NAVIGATION, {"fetchStart": -12}),
+            mock.patch.object(
+                perf, "capture_local", wraps=perf.capture_local
+            ) as capture_local,
+        ):
+            capture = self.operations().local_timing(self.request())
+        self.assertEqual(
+            capture.function_group,
+            {"name": "navigation", "state": "pass", "reason": None},
+        )
+        self.assertIsInstance(capture_local.call_args.args[0], gate.ExistingSession)
+        self.assertEqual(capture_local.call_args.args[1], BASE)
+        performance = capture.performance
+        self.assertEqual(
+            [entry["name"] for entry in performance],
+            ["startup", "input", "scroll", "navigation"],
+        )
+        self.assertEqual(performance[0]["metrics"]["durationMs"], 500)
+        self.assertEqual(
+            performance[1]["metrics"]["keyboard"]["firstRaf"], {"p50Ms": 2, "p95Ms": 2}
+        )
+        self.assertEqual(performance[2]["metrics"]["nextRaf"], {"p50Ms": 4, "p95Ms": 4})
+        navigation = performance[3]["metrics"]["browserNavigation"]
+        self.assertEqual(navigation["fetchStartMs"], -12)
+        self.assertIs(navigation["fetchStartValid"], False)
+        self.assertEqual(navigation["responseToDomMs"], 10)
+        self.assertEqual(navigation["responseToLoadMs"], 20)
+        self.assertEqual(
+            json.loads(capture.artifact)["navigation_snapshot"]["fetchStart"], -12
+        )
+
+    def test_unavailable_response_intervals_are_supported_unsupported_evidence(self):
+        for response in (None, 0, -1):
+            with (
+                self.subTest(response=response),
+                mock.patch.dict(NAVIGATION, {"responseEnd": response}),
+            ):
+                capture = self.operations().local_timing(self.request())
+            self.assertEqual(
+                capture.performance[3],
+                {
+                    "name": "navigation",
+                    "state": "unsupported",
+                    "clockDomain": "multiple-clock-domains-separated",
+                    "metrics": {},
+                    "reason": "navigation-timing-invalid",
+                },
+            )
+            self.assertEqual(capture.function_group["state"], "pass")
+
+    def test_startup_rejects_duplicates_order_pid_and_clock_errors(self):
+        original = self.timeline
+        invalid = (
+            original + original.splitlines()[0] + "\n",
+            original.replace("firefox_pid=101", "firefox_pid=102"),
+            original.replace("1000000000", "2000000000"),
+            original.replace("1000000000", str(time.monotonic_ns() + 10**12)),
+            original.replace("guest_monotonic_ns=1000000000", "wall_ns=1000000000"),
+            "",
+        )
+        for self.timeline in invalid:
+            with self.subTest(timeline=self.timeline), self.assertRaises(ValueError):
+                self.operations().local_timing(self.request())
+        self.timeline = (
+            original
+            + "A_WEB_TIMELINE marker=BOOT_MARIONETTE_CONNECTED guest_monotonic_ns=1600000000 firefox_pid=101\n"
+        )
+        self.assertEqual(
+            self.operations()
+            .local_timing(self.request())
+            .performance[0]["metrics"]["durationMs"],
+            500,
+        )
+
+    def test_context_measures_four_operations_and_cleans_up_on_success_and_failure(
+        self,
+    ):
+        capture = self.operations().context_switch(self.request())
+        self.assertEqual(capture.function_group["name"], "contexts")
+        metrics = capture.performance["metrics"]
+        self.assertEqual(
+            metrics["totalMs"],
+            sum(metrics[key] for key in ("openMs", "selectMs", "returnMs", "closeMs")),
+        )
+        self.assertEqual(
+            (metrics["handleCountBefore"], metrics["handleCountAfter"]), (1, 1)
+        )
+        self.assertEqual(self.client.handles, ["original"])
+        self.assertEqual(self.client.selected, "original")
+        with mock.patch.object(web, "_navigate", side_effect=RuntimeError("failure")):
+            with self.assertRaises(RuntimeError):
+                self.operations().context_switch(self.request())
+        self.assertEqual(self.client.handles, ["original"])
+        self.assertEqual(self.client.selected, "original")
+
+    def test_context_deadline_expiry_still_attempts_finally_cleanup(self):
+        now = [1.0]
+        clock = gate.DailyUseClock(
+            monotonic=lambda: now[0], monotonic_ns=lambda: int(now[0] * 1e9)
+        )
+
+        def expire(*args):
+            now[0] = 3.0
+            raise TimeoutError("navigation expired")
+
+        with mock.patch.object(web, "_navigate", side_effect=expire):
+            with self.assertRaises((TimeoutError, DailyUseGateError)):
+                self.operations().context_switch(
+                    self.request(clock=clock, deadline=2.0)
+                )
+        self.assertEqual(self.client.handles, ["original"])
+        self.assertEqual(self.client.selected, "original")
+
+    def test_factory_runs_complete_workload_with_one_session_and_hashed_artifacts(self):
+        from tools.riscv.debian.rootfs import browser_system_time as system
+
+        self.timeline = f"A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC guest_monotonic_ns={time.monotonic_ns() - 500_000_000} firefox_pid=101\n"
+
+        def sample(*args, **kwargs):
+            start = kwargs["clock_ns"]()
+            kwargs["ready_fn"]()
+            self.assertTrue(kwargs["stop_event"].wait(2))
+            end = kwargs["clock_ns"]()
+            args[-1].write_text(
+                json.dumps(
+                    {
+                        "intervals": [
+                            {
+                                "guest_monotonic_start_ns": start,
+                                "guest_monotonic_end_ns": end,
+                            }
+                        ]
+                    }
+                )
+            )
+
+        operations = replace(
+            self.operations(), identity_reader=lambda pids: (1000, 2000)
+        )
+        with (
+            mock.patch.object(system, "run_sampler", side_effect=sample),
+            mock.patch.object(system, "run_thread_sampler", side_effect=sample),
+        ):
+            result = gate.run_daily_use_gate(
+                client=self.client,
+                operations=operations,
+                firefox_pid=101,
+                xorg_pid=202,
+                evidence_dir=self.root,
+                mode="smoke",
+                timeout_seconds=10,
+                run_id=RUN_ID,
+                fixture_index_url=BASE,
+            )
+        self.assertEqual(result["state"], "pass")
+        self.assertEqual(len(result["functionGroups"]), 7)
+        self.assertEqual(self.client.events.count("WebDriver:NewSession"), 1)
+        self.assertNotIn("WebDriver:DeleteSession", self.client.events)
+        self.assertEqual(self.client.handles, ["original"])
+        self.assertGreater(result["performance"][0]["metrics"]["durationMs"], 0)
+        composite = json.loads((self.root / gate.ARTIFACT_NAMES[3]).read_text())
+        self.assertEqual(len(composite["phase_observations"]), 7)
+        self.assertEqual(composite["run_id"], RUN_ID)
+        for artifact in result["artifacts"]:
+            payload = (self.root / artifact["name"]).read_bytes()
+            self.assertEqual(artifact["sha256"], hashlib.sha256(payload).hexdigest())
+
+    def test_cli_invalid_inputs_produce_only_one_canonical_failure(self):
+        args = [
+            "--firefox-pid",
+            "101",
+            "--xorg-pid",
+            "202",
+            "--fixture-index-url",
+            BASE,
+            "--evidence-dir",
+            str(self.root),
+        ]
+        for extra in (
+            ["--port", "0"],
+            ["--timeout-seconds", "nan"],
+            ["--mode", "stress"],
+            ["--evidence-dir", str(self.root / "line\nbreak")],
+        ):
+            with (
+                self.subTest(extra=extra),
+                mock.patch.object(gate, "_connect") as connect,
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out,
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err,
+            ):
+                self.assertEqual(gate.main(args + extra), 1)
+            connect.assert_not_called()
+            self.assertEqual(out.getvalue(), "")
+            self.assertRegex(
+                err.getvalue(), r"\AASTERINAS_BROWSER_DAILY_USE_FAIL reason=[a-z-]+\n\Z"
+            )
+
+    def test_composite_reuses_existing_session_run_identity_and_remaining_budget(self):
+        from tools.riscv.debian.rootfs import browser_composite_capture as composite
+
+        report = {"run_id": RUN_ID, "phase_observations": ["seven phases"]}
+        request = self.request(mode="profile", physical=True)
+        with mock.patch.object(
+            composite, "capture_composite", return_value=report
+        ) as capture:
+            result = self.operations().composite(request)
+        self.assertEqual(json.loads(result.artifact), report)
+        self.assertEqual(capture.call_args.args, (request.client, BASE))
+        self.assertEqual(capture.call_args.kwargs["run_id"], RUN_ID)
+        self.assertEqual(capture.call_args.kwargs["mode"], "profile")
+        self.assertTrue(0 < capture.call_args.kwargs["timeout_seconds"] <= 10)
+        self.assertIn("physical-scanout-unsupported", result.limitations["items"])
+
+    def test_sampler_adapters_bridge_events_private_outputs_and_coverage(self):
+        from tools.riscv.debian.rootfs import browser_system_time as system
+
+        for name, runner in (
+            ("system_sampler", "run_sampler"),
+            ("thread_sampler", "run_thread_sampler"),
+        ):
+            request = gate.SamplerRequest(
+                (101, 202),
+                "profile",
+                threading.Event(),
+                threading.Event(),
+                time.monotonic() + 30,
+                gate.DailyUseClock(),
+                physical=True,
+            )
+            paths = []
+
+            def sample(*args, **kwargs):
+                paths.append(args[-1])
+                self.assertEqual(args[0], Path("/proc"))
+                self.assertFalse(args[-1].exists())
+                self.assertEqual(args[-1].parent.stat().st_mode & 0o777, 0o700)
+                if runner == "run_thread_sampler":
+                    self.assertTrue(kwargs["physical"])
+                    self.assertTrue(args[2].read_text().strip().isdigit())
+                kwargs["ready_fn"]()
+                self.assertTrue(request.ready.is_set())
+                self.assertIs(kwargs["stop_event"], request.stop)
+                request.stop.set()
+                args[-1].write_text(
+                    json.dumps(
+                        {
+                            "intervals": [
+                                {
+                                    "guest_monotonic_start_ns": 100,
+                                    "guest_monotonic_end_ns": 200,
+                                }
+                            ]
+                        }
+                    )
+                )
+                return {"ignored": "read authoritative artifact"}
+
+            with mock.patch.object(system, runner, side_effect=sample):
+                result = getattr(self.operations(), name)(request)
+            self.assertEqual(
+                (result.first_sample_ns, result.last_sample_ns), (100, 200)
+            )
+            self.assertIn("intervals", json.loads(result.artifact))
+            self.assertFalse(paths[0].parent.exists())
+
+    def test_cli_emits_exact_pass_and_fail_lines_and_defaults_physical_to_profile(self):
+        for physical, mode in ((False, "smoke"), (True, "profile")):
+            args = [
+                "--firefox-pid",
+                "101",
+                "--xorg-pid",
+                "202",
+                "--fixture-index-url",
+                BASE,
+                "--evidence-dir",
+                str(self.root),
+                "--timeout-seconds",
+                "10",
+            ]
+            if physical:
+                args.append("--physical")
+            with (
+                mock.patch.object(
+                    gate, "_connect", return_value=self.client
+                ) as connect,
+                mock.patch.object(
+                    gate, "run_daily_use_gate", return_value=complete_result()
+                ) as run,
+                mock.patch("sys.stdout", new_callable=io.StringIO) as out,
+                mock.patch("sys.stderr", new_callable=io.StringIO) as err,
+            ):
+                self.assertEqual(gate.main(args), 0)
+            self.assertEqual(
+                out.getvalue(),
+                f"ASTERINAS_BROWSER_DAILY_USE_PASS functions=7/7 slow=0 evidence_dir={self.root}\n",
+            )
+            self.assertEqual(err.getvalue(), "")
+            self.assertEqual(connect.call_args.args[:2], ("127.0.0.1", 2828))
+            self.assertEqual(run.call_args.kwargs["mode"], mode)
+            self.assertEqual(run.call_args.kwargs["physical"], physical)
+        with (
+            mock.patch.object(gate, "_connect", side_effect=OSError("secret")),
+            mock.patch("sys.stdout", new_callable=io.StringIO) as out,
+            mock.patch("sys.stderr", new_callable=io.StringIO) as err,
+        ):
+            self.assertEqual(gate.main(args), 1)
+        self.assertEqual(out.getvalue(), "")
+        self.assertEqual(
+            err.getvalue(), "ASTERINAS_BROWSER_DAILY_USE_FAIL reason=phase-failed\n"
+        )
 
 
 if __name__ == "__main__":
