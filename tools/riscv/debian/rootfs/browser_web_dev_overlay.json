@@ -110,6 +110,12 @@
       "mode": "0755"
     },
     {
+      "source": "desktop_input_identity.py",
+      "destination": "/usr/lib/asterinas/desktop-input-identity",
+      "mode": "0755",
+      "create": true
+    },
+    {
       "source": "browser_web_evidence.sh",
       "destination": "/usr/lib/asterinas/desktop-m5-evidence",
       "mode": "0755"
