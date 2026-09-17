@@ -386,6 +386,12 @@ BROWSER_WORKLOAD = b"""<!doctype html>
     frame.onerror = () => { clearTimeout(timer); reject(new Error('frame-load')); };
     frame.src = url;
   });
+  const historyStep = (frame, direction) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('history-timeout')), 10000);
+    frame.onload = () => { clearTimeout(timer); resolve(); };
+    if (direction === 'back') frame.contentWindow.history.back();
+    else frame.contentWindow.history.forward();
+  });
   const loadImage = url => new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => resolve(image);
@@ -470,15 +476,18 @@ BROWSER_WORKLOAD = b"""<!doctype html>
   const concurrentResources = async (metrics, config) => {
     const sequences = Array.from({length: config.resources}, (_, index) => index);
     for (const passName of ['cold', 'warm']) {
-      await runPool(sequences, 8, async sequence => {
-        const response = await fetch('/browser-quality/workload-resource.bin?' +
-          query(state.mode, 'resource', sequence, passName),
-          {cache: passName === 'cold' ? 'no-store' : 'default'});
-        if (!response.ok || (await response.arrayBuffer()).byteLength !== 65536)
-          throw new Error('resource-response');
-        metrics.requestCount++;
-        metrics.operationCount++;
-      });
+      const repetitions = passName === 'cold' ? 1 : 2;
+      for (let repetition = 0; repetition < repetitions; repetition++) {
+        await runPool(sequences, 8, async sequence => {
+          const response = await fetch('/browser-quality/workload-resource.bin?' +
+            query(state.mode, 'resource', sequence, passName),
+            {cache: passName === 'cold' ? 'no-store' : 'default'});
+          if (!response.ok || (await response.arrayBuffer()).byteLength !== 65536)
+            throw new Error('resource-response');
+          metrics.requestCount++;
+          metrics.operationCount++;
+        });
+      }
     }
   };
   const navigationHistory = async (metrics, config) => {
@@ -487,13 +496,18 @@ BROWSER_WORKLOAD = b"""<!doctype html>
     metrics.contextCount = 1;
     const urls = ['/browser-quality/second.html',
                   '/browser-quality/perf-second.html'];
-    for (let index = 0; index < config.scale * 4; index++) {
-      await loadFrame(frame, urls[index & 1]);
+    for (const url of urls) {
+      await loadFrame(frame, url);
       metrics.requestCount++;
       metrics.operationCount++;
     }
+    for (let index = 0; index < config.scale * 2; index++) {
+      await historyStep(frame, 'back');
+      metrics.operationCount++;
+      await historyStep(frame, 'forward');
+      metrics.operationCount++;
+    }
     frame.remove();
-    metrics.contextCount = 0;
   };
   const multiContext = async (metrics, config) => {
     const frames = [];
@@ -509,13 +523,15 @@ BROWSER_WORKLOAD = b"""<!doctype html>
       await response.arrayBuffer();
       metrics.requestCount++;
       metrics.operationCount++;
-      await new Promise(resolve => setTimeout(resolve, config.scale));
+      await new Promise(resolve =>
+        frame.contentWindow.setTimeout(resolve, config.scale));
+      metrics.operationCount++;
     }
     await nextFrames(metrics);
     for (const frame of frames) frame.remove();
-    metrics.contextCount = 0;
   };
   const cooldown = async metrics => {
+    if (contexts.children.length !== 0) throw new Error('context-cleanup');
     contexts.replaceChildren();
     grid.scrollTop = 0;
     metrics.operationCount = 2;
@@ -786,8 +802,19 @@ class FixtureServer:
         # handler's finally block records it.
         if not is_browser_request:
             self._record(peer, request.path, status, len(body))
+        cache_control = "no-store"
+        parsed_workload = _parse_workload_query(target.query)
+        if is_workload_request and status == 200 and parsed_workload is not None:
+            if parsed_workload[3] == "warm":
+                cache_control = "public, max-age=3600"
         try:
-            self._send_response(request, status, body, content_type)
+            self._send_response(
+                request,
+                status,
+                body,
+                content_type,
+                cache_control=cache_control,
+            )
             request.wfile.write(body)
         finally:
             if is_workload_request:
@@ -882,11 +909,13 @@ class FixtureServer:
         status: int,
         body: bytes = b"",
         content_type: str = "application/octet-stream",
+        *,
+        cache_control: str = "no-store",
     ) -> None:
         request.send_response(status)
         request.send_header("Content-Length", str(len(body)))
         request.send_header("Content-Type", content_type)
-        request.send_header("Cache-Control", "no-store")
+        request.send_header("Cache-Control", cache_control)
         request.send_header("Connection", "close")
         request.end_headers()
         request.close_connection = True
