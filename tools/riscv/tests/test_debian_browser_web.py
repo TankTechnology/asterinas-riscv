@@ -2699,6 +2699,40 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertIsNone(result)
         self.assertEqual(client.command.call_count, 2)
 
+    def test_probe_diagnostic_callback_is_bounded_and_does_not_write_stderr(
+        self,
+    ) -> None:
+        messages = []
+        attempts = 0
+
+        def validate(probe):
+            nonlocal attempts
+            attempts += 1
+            if attempts <= 30:
+                raise GateError("unavailable " * 500)
+            return "ready"
+
+        with (
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate._probe",
+                return_value={},
+            ),
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate.time.sleep"
+            ),
+            mock.patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
+            probe, result = _wait_for_probe(
+                mock.Mock(),
+                validate,
+                time.monotonic() + 5,
+                diagnostic_fn=messages.append,
+            )
+        self.assertEqual((probe, result), ({}, "ready"))
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertEqual(len(messages), 16)
+        self.assertTrue(all(len(message) <= 2048 for message in messages))
+
     def test_marionette_reports_running_fixture_capabilities_once(self) -> None:
         url = "http://10.0.2.2:17894/browser-quality/index.html"
         running = snapshot(url, tls=0)
