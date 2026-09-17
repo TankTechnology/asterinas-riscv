@@ -44,8 +44,11 @@ On success, the evidence directory contains the six capture artifacts
 `browser-context-switch.json`, `browser-composite-capture.json`,
 `browser-system-time.json`, and `browser-thread-time.json`, then
 `browser-daily-use-result.json`.
-On failure, any partially published output is retracted and the gate attempts
-to publish only `browser-daily-use-checkpoint.json`.
+On failure, the gate makes a best-effort attempt to retract partially published
+output and to publish only `browser-daily-use-checkpoint.json`.
+Neither retraction nor checkpoint persistence is guaranteed after a storage
+failure, so failure evidence is invalid: discard that directory and use a new
+one for the next run.
 
 The directory is a one-run reservation, not a workspace to reuse.
 Exclusive/no-follow mode-0600 writes and fsync prevent replacement.
@@ -53,12 +56,15 @@ Existing artifacts, checkpoints, reservation files, or private staging paths
 fail closed; the reservation and staging path remain after completion, and a
 fresh empty directory is required for every retry.
 
-The orchestrator makes one `WebDriver:NewSession` request.
+The orchestrator makes one `WebDriver:NewSession` request and requires the
+initial handle set to contain exactly one selected original window.
+Pre-existing extra windows fail closed before the workload begins.
 Its phase-facing wrapper forbids additional `WebDriver:NewSession`,
 `WebDriver:DeleteSession`, and `Marionette:Quit` requests.
 It closes its protocol transport without deleting the session, returns to the
-original window after closing temporary context windows, and checks unchanged
-Firefox/Xorg PID and start-time identities.
+original window after closing only windows not present in the captured baseline
+(the gate-created context windows), and checks unchanged Firefox/Xorg PID and
+start-time identities.
 It does not restart either process, reboot the guest, rewrite partition 2, or
 change the boot menu.
 The exercised browser can still update its profile and leave the validated
@@ -79,8 +85,10 @@ Navigation becomes `slow` above 2 s response-to-DOM, and a context switch is
 `slow` above 500 ms for any component operation or the complete operation.
 `slow` is diagnostic only: functional groups determine PASS/FAIL.
 Startup records the one persisted guest-monotonic `BOOT_FIREFOX_EXEC` endpoint
-for the selected Firefox PID through the gate's verified Marionette-session
-and original-window readiness endpoint.
+through the one persisted `BOOT_FIRST_WINDOW_READY` endpoint for the selected
+Firefox PID.
+The two positive endpoints must appear in that strict order; current gate
+session timing is not a substitute.
 It is not a cold-start or restart measurement.
 
 Browser `performance.now()` input/scroll values, guest-monotonic startup,
@@ -116,8 +124,8 @@ orchestrator, adapter, and packaging slice.
 The later hardening commits above are the review-driven fixes to failure
 publication, sampler determinism, negative navigation timing, and timeout
 cleanup.
-Fresh on 2026-09-17, `tools/riscv/firefox_fast_check.sh` ran 350 tests in
-22.625 seconds with `OK`, then completed its Python compilation, shell syntax,
+Fresh on 2026-09-17, `tools/riscv/firefox_fast_check.sh` ran 354 tests in
+22.504 seconds with `OK`, then completed its Python compilation, shell syntax,
 and diff checks with `FIREFOX_FAST_CHECK_PASS`.
 This is the current host-only count, not a copied count from an earlier record.
 

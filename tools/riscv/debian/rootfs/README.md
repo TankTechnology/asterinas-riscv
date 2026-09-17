@@ -394,8 +394,10 @@ A successful run publishes six private JSON artifacts:
 `browser-context-switch.json`, `browser-composite-capture.json`,
 `browser-system-time.json`, and `browser-thread-time.json`, followed by
 `browser-daily-use-result.json`.
-On a run failure, it removes any files it published and attempts to publish
-only `browser-daily-use-checkpoint.json`.
+On a run failure, it makes a best-effort attempt to retract files it published
+and to publish only `browser-daily-use-checkpoint.json`.
+Retraction or checkpoint persistence can itself fail, so failure evidence is
+invalid and must be discarded; use a new evidence directory for the next run.
 All files are exclusive, no-follow, mode-0600 publications with an fsync.
 
 Treat the evidence directory as single-use.
@@ -403,12 +405,16 @@ The gate rejects an existing artifact, checkpoint, private staging path, or
 reservation, retains its `.browser-daily-use-<run-id>` staging directory, and
 keeps `.browser-daily-use-reservation`; it never overwrites or resumes a run.
 Use a fresh empty directory after either outcome.
-The gate creates exactly one Marionette session, passes a restricted session
-handle to workload phases, and forbids phase calls to `WebDriver:NewSession`,
+The gate creates exactly one Marionette session and requires its initial
+window-handle set to contain exactly the selected original window.
+Pre-existing extra windows fail closed before any workload phase runs.
+It passes a restricted session handle to workload phases and forbids phase
+calls to `WebDriver:NewSession`,
 `WebDriver:DeleteSession`, and `Marionette:Quit`.
 It closes its transport but does not send `DeleteSession`; it also verifies
-unchanged Firefox and Xorg PID/start-time identities, closes only temporary
-browser windows, and does not restart Firefox or Xorg, reboot the guest,
+unchanged Firefox and Xorg PID/start-time identities, and closes only windows
+that were not in the captured baseline (that is, gate-created windows).
+It does not restart Firefox or Xorg, reboot the guest,
 rewrite partition 2, or change the boot menu.
 The exercised browser can still update its profile and leave the validated
 download under `/home/asterinas/Downloads`; use the separate Stage1
@@ -426,8 +432,11 @@ or their total exceeds 500 ms.
 `slow` is diagnostic evidence, not a functional failure, so a PASS may report
 a nonzero slow count.
 Startup is a guest-monotonic interval from the persisted `BOOT_FIREFOX_EXEC`
-record for this Firefox PID through the gate's verified session/original-window
-readiness endpoint; it is not a fresh browser-launch measurement.
+record through the persisted `BOOT_FIRST_WINDOW_READY` record for this Firefox
+PID.
+The timeline must contain exactly one strictly ordered, positive pair; it is
+not substituted with the current gate session or a fresh browser-launch
+measurement.
 
 Do not subtract timestamps across the browser and guest clocks.
 Input and scroll use browser `performance.now()`, startup/local-command/context
