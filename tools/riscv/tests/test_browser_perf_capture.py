@@ -343,6 +343,35 @@ class BrowserPerfCaptureTests(unittest.TestCase):
         self.assertGreaterEqual(deadline, before + 5)
         self.assertLessEqual(deadline, after + 5)
 
+    def test_explicit_navigation_validator_preserves_negative_fetch_start(self):
+        snapshot = {**NAVIGATION, "fetchStart": -12}
+        accepted = {"clock_domain": "browser-navigation", "response_to_dom_ms": 10}
+        validator = mock.Mock(return_value=accepted)
+        with mock.patch.dict(NAVIGATION, snapshot):
+            report = capture_local(
+                FakeMarionette(),
+                BASE,
+                synthetic_samples=1,
+                timeout_seconds=5,
+                navigation_validator=validator,
+            )
+        validator.assert_called_once_with(snapshot)
+        self.assertEqual(report["navigation_snapshot"]["fetchStart"], -12)
+        self.assertEqual(report["navigation_parts"], accepted)
+
+    def test_default_navigation_validator_still_rejects_negative_fetch_start(self):
+        with (
+            mock.patch.dict(NAVIGATION, {"fetchStart": -12}),
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_perf_capture.time.sleep",
+                side_effect=TimeoutError("bounded test"),
+            ),
+        ):
+            with self.assertRaises(TimeoutError):
+                capture_local(
+                    FakeMarionette(), BASE, synthetic_samples=1, timeout_seconds=5
+                )
+
     def test_local_capture_collects_synthetic_frames_and_complete_navigation(
         self,
     ) -> None:
