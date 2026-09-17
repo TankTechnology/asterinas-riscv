@@ -30,5 +30,62 @@ ioctl(
 // Control block devices
 ioctl(fd, op = BLKGETSIZE64 | BLKSSZGET, ..);
 
+drm_buffer_ops = DRM_IOCTL_GEM_OPEN | DRM_IOCTL_GEM_CLOSE |
+                 DRM_IOCTL_MODE_CREATE_DUMB | DRM_IOCTL_MODE_MAP_DUMB |
+                 DRM_IOCTL_MODE_DESTROY_DUMB | DRM_IOCTL_PRIME_HANDLE_TO_FD |
+                 DRM_IOCTL_PRIME_FD_TO_HANDLE;
+drm_virtgpu_ops = DRM_IOCTL_VIRTGPU_GETPARAM |
+                  DRM_IOCTL_VIRTGPU_RESOURCE_CREATE |
+                  DRM_IOCTL_VIRTGPU_RESOURCE_INFO |
+                  DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST |
+                  DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST |
+                  DRM_IOCTL_VIRTGPU_GET_CAPS | DRM_IOCTL_VIRTGPU_MAP |
+                  DRM_IOCTL_VIRTGPU_EXECBUFFER | DRM_IOCTL_VIRTGPU_WAIT;
+drm_syncobj_ops = DRM_IOCTL_SYNCOBJ_CREATE | DRM_IOCTL_SYNCOBJ_DESTROY |
+                  DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD | DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE |
+                  DRM_IOCTL_SYNCOBJ_WAIT | DRM_IOCTL_SYNCOBJ_RESET |
+                  DRM_IOCTL_SYNCOBJ_SIGNAL | DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT |
+                  DRM_IOCTL_SYNCOBJ_QUERY | DRM_IOCTL_SYNCOBJ_TRANSFER |
+                  DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL | DRM_IOCTL_SYNCOBJ_EVENTFD;
+drm_auth_ops = DRM_IOCTL_GET_MAGIC | DRM_IOCTL_AUTH_MAGIC;
+drm_kms_query_ops = DRM_IOCTL_GET_CAP | DRM_IOCTL_MODE_GETRESOURCES |
+                    DRM_IOCTL_MODE_GETCRTC | DRM_IOCTL_MODE_GETCONNECTOR |
+                    DRM_IOCTL_MODE_GETENCODER |
+                    DRM_IOCTL_MODE_GETPLANERESOURCES | DRM_IOCTL_MODE_GETPLANE |
+                    DRM_IOCTL_MODE_OBJ_GETPROPERTIES | DRM_IOCTL_MODE_GETPROPERTY |
+                    DRM_IOCTL_MODE_GETPROPBLOB | DRM_IOCTL_CRTC_GET_SEQUENCE;
+drm_vblank_ops = DRM_IOCTL_WAIT_VBLANK | DRM_IOCTL_CRTC_QUEUE_SEQUENCE;
+drm_kms_update_ops = DRM_IOCTL_MODE_SETCRTC | DRM_IOCTL_MODE_PAGE_FLIP |
+                     DRM_IOCTL_MODE_DIRTYFB |
+                     DRM_IOCTL_MODE_CURSOR | DRM_IOCTL_MODE_CURSOR2 |
+                     DRM_IOCTL_MODE_ADDFB | DRM_IOCTL_MODE_ADDFB2 |
+                     DRM_IOCTL_MODE_RMFB | DRM_IOCTL_MODE_ATOMIC |
+                     DRM_IOCTL_MODE_CREATEPROPBLOB |
+                     DRM_IOCTL_MODE_DESTROYPROPBLOB;
+
+// MODE_DIRTYFB accepts flags = 0 and at most 4096 nonempty, in-bounds clips.
+
+// Authenticate a DRM primary-node client through the current DRM master
+ioctl(fd, op = <drm_auth_ops>, ..);
+
+// Manage DRM GEM, DUMB-buffer, and PRIME handles and mappings
+ioctl(fd, op = <drm_buffer_ops>, ..);
+
+// Submit virgl work and query or wait for resource fences.
+// RESOURCE_CREATE accepts bo_handle = 0 or an existing GEM handle.
+ioctl(fd, op = <drm_virtgpu_ops>, ..);
+
+// Create, share, signal, transfer, query, and wait for DRM synchronization objects
+ioctl(fd, op = <drm_syncobj_ops>, ..);
+
+// Discover DRM KMS objects, planes, properties and blobs
+ioctl(fd, op = <drm_kms_query_ops>, ..);
+
+// Wait for a display refresh or queue a sequence-completion event
+ioctl(fd, op = <drm_vblank_ops>, ..);
+
+// Update the DRM KMS state from the current DRM master
+ioctl(fd, op = <drm_kms_update_ops>, ..);
+
 // Control Trust Domain Extensions (TDX) guest devices
 ioctl(fd, op = TDX_CMD_GET_REPORT0, ..);

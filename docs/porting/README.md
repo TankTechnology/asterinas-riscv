@@ -10,11 +10,11 @@
 | 项目 | 当前值 |
 |---|---|
 | 状态来源 | 本文件所在 Git commit |
-| 工作分支 | `main` |
+| 工作分支 | `codex/drm-main-sync` |
 | 最近桌面真机候选 | `f3d9c73fc` |
 | 最近网络真机候选 | `ed3a6508e` |
 | 最近真机记录 | [DWMAC streaming-DMA closure](evidence/megrez-dwmac-rx-liveness-contract.md#streaming-dma-physical-closure) |
-| 当前目标 | 将已验证的 DWMAC 路径接入 Debian/Firefox 门禁，并补真机鼠标交互；原生显示另行验收 |
+| 当前目标 | 完成 firmware `simpledrm` 真机门禁，再评估原生 EIC7700 KMS |
 
 当前结论：Asterinas 的 compiled Sv39 内核已在 Megrez 上启动 4 个 hart，
 通过 MMC 与 Stage1 进入持久 Debian Trixie 根；systemd 257.13、udev、
@@ -73,8 +73,7 @@ Megrez**，也不代表原生显示加速或 Debian 桌面网络已经可用。
   [riscv-qemu-desktop.md](riscv-qemu-desktop.md)。这验证的是软件链，
   不代表 EIC7700/Megrez 的显示硬件行为。
 
-这三条 QEMU 结果与 `3ef99e6bd` 真机候选属于不同产物和环境，不得拼成同一
-Image 的连续运行。
+以上 QEMU 结果与 `f3d9c73fc` 真机候选属于不同产物和环境，不得拼成同一 Image 的连续运行。
 
 ## 第一缺失边界
 
@@ -87,10 +86,11 @@ Debian 桌面根，因此 NetSurf 目前只证明应用和窗口启动，不能�
 
 ## 当前单变量假设
 
-下一轮只验证一个假设：**当前物理 USB boot mouse 的相对移动和按键事件能
-持续经过中断驱动 xHCI/HID worker、evdev 和 Xorg，到达 Matchbox 窗口。**
-QEMU 已验证精确移动/左键事件；真机只补操作者可观察的光标移动和窗口点击，
-不在同一轮扩展网络、热插拔或 DRM。
+下一轮只验证一个假设：**U-Boot 交接的 1920x1080 framebuffer 能由
+Asterinas `simpledrm` 通过 dumb buffer、mmap、`SETCRTC`、`PAGE_FLIP` 和
+`DIRTYFB` 连续更新，并在 HDMI 上依次显示 A、B、C 三幅图案。**
+真机鼠标交互保留为后续独立实验；本轮不扩展网络、USB 热插拔或原生 EIC7700
+寄存器编程。
 
 ## 尚未解决的问题
 
@@ -99,7 +99,8 @@ QEMU 已验证精确移动/左键事件；真机只补操作者可观察的光�
 2. 已验证的板载 DWMAC 路径尚未纳入 Desktop M4/Firefox 门禁，NetSurf 的
    桌面结果还不能外推为网页访问。
 3. EIC7700 原生 DRM、cache/coherency、加速渲染与显示模式切换尚未实现；
-   当前依赖 RAM-only 1920x1080 firmware framebuffer handoff。
+   当前 HEAD 已加入基于 RAM-only 1920x1080 firmware framebuffer handoff 的 `simpledrm`/dumb-buffer 复制后端以及静态 DRM 用户态探针。
+   探针的 ABI、负向用例、确定性 initramfs 和 Megrez 上板命令合同已经可以离线验证，但尚未在真机 HDMI 上运行。
 4. systemd 仍会报告缺少 kmod、部分 clone/syscall 与 cgroup 语义，但这些
    警告没有阻止本次 udev/logind/非 root 桌面 READY。
 5. NetSurf 是轻量浏览器且不代表现代 JavaScript 浏览器兼容性；音频也未测。
@@ -114,9 +115,11 @@ QEMU 已验证精确移动/左键事件；真机只补操作者可观察的光�
 
 ## 下一次真机门禁
 
-当前 M4 应用真机门禁已经通过，不重复相同 `booti`。下一次只由操作者移动
-并点击已经连接的鼠标，确认 HDMI 光标/窗口行为；通过后转向网络。后续仍
-不得 `saveenv`，也不得从 Linux 绕过 Asterinas 修改 Debian 根分区。
+先运行 `tools/riscv/README.md` 中的 `firmware-drm` 窄门禁：
+RAM-only 注入已验证的 1920x1080 framebuffer，要求 `simpledrm` 完成 dumb buffer、mmap、`SETCRTC`、`PAGE_FLIP` 和 `DIRTYFB`，并依次在 HDMI 显示 A、B、C 三幅确定性图案。
+串口 READY 只证明 ioctl 返回成功；必须另外保存三阶段 HDMI 视频或操作者记录，并在 120 秒保护定时器后确认进入新的 U-Boot 周期。
+该轮不得混入原生 EIC7700 寄存器编程、网络或桌面修改；
+仍不得 `saveenv`，也不得从 Linux 绕过 Asterinas 修改 Debian 根分区。
 
 ## 简化调试记录
 

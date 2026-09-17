@@ -75,7 +75,10 @@ pub(super) enum IdMapKind {
 /// `(first, lower_first, count)` triples and the number of bytes read.
 ///
 /// `lower_first` values are expressed in the *parent* user namespace.
-fn parse_id_map(reader: &mut VmReader) -> Result<(Vec<(u32, u32, u32)>, usize)> {
+type RawIdMapExtent = (u32, u32, u32);
+type ParsedIdMap = (Vec<RawIdMapExtent>, usize);
+
+fn parse_id_map(reader: &mut VmReader) -> Result<ParsedIdMap> {
     let (content, len) = reader
         .read_cstring_until_end(PAGE_SIZE)
         .map_err(|_| Error::with_message(Errno::EFAULT, "failed to read the ID map"))?;

@@ -76,6 +76,13 @@ impl InputDevice for UsbBootKeyboardDevice {
     }
 }
 
+#[cfg_attr(
+    all(ktest, not(target_arch = "riscv64")),
+    expect(
+        dead_code,
+        reason = "registration is architecture-specific; decoder tests are portable"
+    )
+)]
 pub(super) fn register(vendor_id: u16, product_id: u16) -> RegisteredInputDevice {
     aster_input::register_device(Arc::new(UsbBootKeyboardDevice::new(vendor_id, product_id)))
 }

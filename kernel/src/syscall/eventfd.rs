@@ -16,7 +16,7 @@
 
 use core::fmt::Display;
 
-use ostd::sync::WaitQueue;
+use ostd::sync::{LocalIrqDisabled, WaitQueue};
 
 use super::SyscallReturn;
 use crate::{
@@ -29,13 +29,13 @@ use crate::{
     process::signal::{PollHandle, Pollable, Pollee},
 };
 
-pub fn sys_eventfd(init_val: u32, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_eventfd(init_val: u32, ctx: &Context) -> Result<SyscallReturn> {
     debug!("init_val = 0x{:x}", init_val);
 
     do_sys_eventfd2(init_val, Flags::empty(), ctx)
 }
 
-pub fn sys_eventfd2(init_val: u32, flags: u32, ctx: &Context) -> Result<SyscallReturn> {
+pub(super) fn sys_eventfd2(init_val: u32, flags: u32, ctx: &Context) -> Result<SyscallReturn> {
     debug!("raw flags = {}", flags);
     let flags = Flags::from_bits(flags)
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown flags"))?;
@@ -66,8 +66,8 @@ bitflags! {
     }
 }
 
-struct EventFile {
-    counter: Mutex<u64>,
+pub(crate) struct EventFile {
+    counter: SpinLock<u64, LocalIrqDisabled>,
     pollee: Pollee,
     is_semaphore: bool,
     common: FileCommon,
@@ -78,7 +78,7 @@ impl EventFile {
     const MAX_COUNTER_VALUE: u64 = u64::MAX - 1;
 
     fn new(init_val: u64, flags: Flags) -> Self {
-        let counter = Mutex::new(init_val);
+        let counter = SpinLock::new(init_val);
         let pollee = Pollee::new();
         let write_wait_queue = WaitQueue::new();
         let pseudo_path = AnonInodeFs::new_path(|_| "anon_inode:[eventfd]".to_string());
@@ -110,6 +110,9 @@ impl EventFile {
         if is_readable {
             events |= IoEvents::IN;
         }
+        if *counter == u64::MAX {
+            events |= IoEvents::ERR;
+        }
 
         // If it is possible to write a value of at least "1"
         // without blocking, the file is writable
@@ -122,24 +125,26 @@ impl EventFile {
     }
 
     fn try_read(&self, writer: &mut VmWriter) -> Result<()> {
-        let mut counter = self.counter.lock();
+        let value = {
+            let mut counter = self.counter.lock();
+            if *counter == 0 {
+                return_errno_with_message!(Errno::EAGAIN, "the counter is zero");
+            }
 
-        // Wait until the counter becomes non-zero
-        if *counter == 0 {
-            return_errno_with_message!(Errno::EAGAIN, "the counter is zero");
-        }
-
-        // Copy the value from the counter and set the new counter value
-        if self.is_semaphore {
-            writer.write_fallible(&mut 1u64.as_bytes().into())?;
-            *counter -= 1;
-        } else {
-            writer.write_fallible(&mut (*counter).as_bytes().into())?;
-            *counter = 0;
-        }
+            // Linux consumes the counter before copying the result to
+            // userspace. An overflow value is always drained in one read,
+            // including for semaphore-mode eventfds.
+            if self.is_semaphore && *counter != u64::MAX {
+                *counter -= 1;
+                1
+            } else {
+                core::mem::take(&mut *counter)
+            }
+        };
 
         self.pollee.notify(IoEvents::OUT);
         self.write_wait_queue.wake_all();
+        writer.write_fallible(&mut value.as_bytes().into())?;
 
         Ok(())
     }
@@ -155,11 +160,34 @@ impl EventFile {
             && new_value <= Self::MAX_COUNTER_VALUE
         {
             *counter = new_value;
+            drop(counter);
             self.pollee.notify(IoEvents::IN);
             return Ok(());
         }
 
         return_errno_with_message!(Errno::EAGAIN, "the new value exceeds MAX_COUNTER_VALUE");
+    }
+
+    /// Signals this eventfd once from an in-kernel producer.
+    pub(crate) fn signal(&self) {
+        // Kernel producers may saturate the counter to `u64::MAX`, Linux's
+        // overflow state. A spinlock keeps this path nonblocking and IRQ-safe.
+        let overflow = {
+            let mut counter = self.counter.lock();
+            if *counter >= Self::MAX_COUNTER_VALUE {
+                *counter = u64::MAX;
+                true
+            } else {
+                *counter += 1;
+                false
+            }
+        };
+        let events = if overflow {
+            IoEvents::IN | IoEvents::ERR
+        } else {
+            IoEvents::IN
+        };
+        self.pollee.notify(events);
     }
 }
 

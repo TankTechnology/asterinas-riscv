@@ -50,6 +50,9 @@ pub enum VirtioDeviceError {
     ResourceAlloc(ostd::Error),
     InvalidQueueArgs,
     UnsupportedConfig,
+    /// The device may have consumed a state-changing request, but its
+    /// completion could not be validated.
+    AmbiguousCompletion,
 }
 
 impl From<VirtioTransportError> for VirtioDeviceError {

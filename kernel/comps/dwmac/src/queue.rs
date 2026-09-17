@@ -4,13 +4,17 @@
 
 extern crate alloc;
 
+#[cfg(target_arch = "riscv64")]
 use alloc::{sync::Arc, vec::Vec};
 
+#[cfg(target_arch = "riscv64")]
 use aster_network::{RxBuffer, TxBuffer, dma_pool::DmaPool};
+#[cfg(target_arch = "riscv64")]
 use ostd::mm::{
     HasDaddr, HasPaddr, PAGE_SIZE, VmIo, VmIoOnce,
     dma::{DmaCoherent, FromDevice, ToDevice},
 };
+#[cfg(target_arch = "riscv64")]
 use spin::Once;
 
 use crate::{
@@ -21,14 +25,22 @@ use crate::{
 pub const QUEUE_SIZE: usize = 64;
 pub const BUFFER_SIZE: usize = 2048;
 pub const POLL_BUDGET: usize = 32;
+#[cfg(target_arch = "riscv64")]
 const TX_RING_OFFSET: usize = 0;
+#[cfg(target_arch = "riscv64")]
 const RX_RING_OFFSET: usize = QUEUE_SIZE * size_of::<Descriptor>();
+#[cfg(target_arch = "riscv64")]
 const RING_BYTES: usize = RX_RING_OFFSET + QUEUE_SIZE * size_of::<Descriptor>();
+#[cfg(target_arch = "riscv64")]
 const MAX_FRAME_SIZE: usize = 1514;
+#[cfg(target_arch = "riscv64")]
 const POOL_INIT_PAGES: usize = 32;
+#[cfg(target_arch = "riscv64")]
 const POOL_HIGH_WATERMARK: usize = 64;
 
+#[cfg(target_arch = "riscv64")]
 static RX_POOL: Once<Arc<DmaPool<FromDevice>>> = Once::new();
+#[cfg(target_arch = "riscv64")]
 static TX_POOL: Once<Arc<DmaPool<ToDevice>>> = Once::new();
 
 /// A bounded queue-state failure.
@@ -132,6 +144,7 @@ impl RingState {
 }
 
 /// DMA addresses used to program DWMAC queue zero.
+#[cfg(target_arch = "riscv64")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct QueueAddresses {
     pub ring_paddr: usize,
@@ -143,6 +156,7 @@ pub(super) struct QueueAddresses {
     pub initial_rx_tail: usize,
 }
 
+#[cfg(target_arch = "riscv64")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct QueueProgress {
     pub tx_submitted: u64,
@@ -153,6 +167,7 @@ pub(super) struct QueueProgress {
 }
 
 /// One fresh 64-entry receive/transmit queue pair.
+#[cfg(target_arch = "riscv64")]
 pub(super) struct DmaQueue {
     ring: DmaCoherent,
     rx_buffers: Vec<Option<RxBuffer>>,
@@ -165,6 +180,7 @@ pub(super) struct DmaQueue {
     tx_reclaimed: u64,
 }
 
+#[cfg(target_arch = "riscv64")]
 impl DmaQueue {
     pub fn new() -> Result<Self, QueueError> {
         const { assert!(RING_BYTES <= PAGE_SIZE) };

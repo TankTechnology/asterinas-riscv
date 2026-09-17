@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod dev;
 mod fs;
 mod inode;
 mod kernel;
@@ -18,6 +19,7 @@ pub fn init() {
     registry::register(&SysFsType).unwrap();
 
     kernel::init();
+    dev::init();
 }
 
 /// Registers a new kernel `SysNode`.

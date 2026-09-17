@@ -1,0 +1,16 @@
+[Unit]
+Description=ALSA smoke test (aplay 440 Hz tone via virtio-sound)
+After=sysinit.target
+Before=graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/alsa-test
+# The journal socket (/run/systemd/journal/stdout) does not exist on this
+# kernel, so journal+console would drop the marker. Write straight to the serial
+# console so the host can see __ALSA_PASS__/__ALSA_FAIL__.
+StandardOutput=file:/dev/ttyS0
+StandardError=file:/dev/ttyS0
+
+[Install]
+WantedBy=multi-user.target

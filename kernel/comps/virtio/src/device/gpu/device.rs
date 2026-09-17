@@ -2,10 +2,17 @@
 
 //! Implements virtio-gpu device instances (device ID 16).
 //!
-//! The driver covers the 2D control-queue and hardware-cursor paths. EDID and
-//! the virgl 3D path remain outside this milestone.
+//! The driver covers the 2D control queue, hardware cursor,
+//! and virgl 3D command paths.
+//! EDID and newer resource/context features remain disabled.
 
-use alloc::{format, sync::Arc, vec::Vec};
+use alloc::{
+    boxed::Box,
+    collections::{BTreeMap, BTreeSet},
+    format,
+    sync::Arc,
+    vec::Vec,
+};
 use core::{
     hint::spin_loop,
     sync::atomic::{AtomicU32, AtomicUsize, Ordering},
@@ -13,33 +20,133 @@ use core::{
 
 use aster_util::mem_obj_slice::Slice;
 use ostd::{
+    arch::trap::TrapFrame,
     mm::{HasDaddr, PAGE_SIZE, VmIo, dma::DmaStream},
     sync::{Mutex, SpinLock},
 };
 
 use super::{
-    MAX_SCANOUTS, VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_MOVE_CURSOR,
-    VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
-    VIRTIO_GPU_CMD_RESOURCE_FLUSH, VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
-    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_CMD_UPDATE_CURSOR,
-    VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
-    VIRTIO_GPU_RESP_OK_DISPLAY_INFO, VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR,
-    VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDisplayOne, VirtioGpuMemEntry, VirtioGpuRect,
-    VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceFlush,
-    VirtioGpuResourceUnref, VirtioGpuSetScanout, VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
+    GpuBackingOwner, GpuCommandCompletion, MAX_SCANOUTS, VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
+    VIRTIO_GPU_CMD_MOVE_CURSOR, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+    VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+    VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
+    VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM,
+    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID,
+    VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID, VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
+    VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR, VirtioGpuCtrlHdr, VirtioGpuCursorPos,
+    VirtioGpuDisplayOne, VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuResourceAttachBacking,
+    VirtioGpuResourceCreate2d, VirtioGpuResourceFlush, VirtioGpuResourceUnref, VirtioGpuSetScanout,
+    VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
     config::VirtioGpuConfig,
+    control_queue::{ControlQueue, ControlTicket},
 };
 use crate::{
     device::{VirtioDeviceError, gpu::register_device},
-    queue::VirtQueue,
+    queue::{PopUsedError, VirtQueue},
     transport::DeviceTransport,
 };
 
-/// Number of descriptors per virtqueue.
-const QUEUE_SIZE: u16 = 64;
+/// Maximum number of descriptors selected for one virtqueue.
+const MAX_QUEUE_SIZE: u16 = 64;
 
 /// Cursor requests have no device-written response body.
 const CURSOR_COMPLETION_BYTES: usize = 0;
+
+/// An asynchronous fenced GPU command whose response can be collected later.
+#[must_use = "an asynchronous GPU command must be observed or retained"]
+pub struct GpuCommandTicket {
+    control: ControlTicket,
+    response: Slice<Arc<DmaStream>>,
+    response_len: usize,
+}
+
+/// A cloneable handle that advances completions on one virtio-gpu queue.
+///
+/// Unlike [`GpuCommandTicket`], this handle remains useful after an individual
+/// command response has been consumed. Fence chains use it to make progress
+/// without retaining or searching their dependency graph.
+#[derive(Clone)]
+pub struct GpuCommandPollHandle {
+    queue: Arc<ControlQueue>,
+}
+
+impl GpuCommandPollHandle {
+    /// Reclaims every completion currently visible in the control used ring.
+    pub fn poll_completion(&self) {
+        self.queue.poll_completions();
+    }
+}
+
+impl GpuCommandTicket {
+    /// Polls the control queue once without consuming this command's result.
+    pub fn poll_completion(&self) {
+        self.control.poll_completion();
+    }
+
+    /// Returns a persistent handle for polling this command's queue.
+    pub fn poll_handle(&self) -> GpuCommandPollHandle {
+        GpuCommandPollHandle {
+            queue: self.control.queue(),
+        }
+    }
+
+    /// Waits for device completion and validates the command response.
+    pub fn wait(self) -> Result<(), VirtioDeviceError> {
+        let (code, _) = self.wait_for_response()?;
+        check_ok(code)
+    }
+
+    fn wait_for_response(self) -> Result<(u32, usize), VirtioDeviceError> {
+        let (_, used_len) = self
+            .control
+            .wait_for_used()
+            .map_err(|_| VirtioDeviceError::UnsupportedConfig)?;
+        let used_len = (used_len as usize).min(self.response_len);
+        if used_len < size_of::<u32>() {
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
+        self.response.sync_from_device().unwrap();
+        Ok((self.response.read_val::<u32>(0).unwrap(), used_len))
+    }
+}
+
+/// A diagnostic snapshot of resources retained by the virtio-gpu backend.
+///
+/// Concurrent device operations may advance individual fields between lock
+/// acquisitions. Callers that require a stable baseline must quiesce their own
+/// workload before taking the snapshot.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GpuResourceSnapshot {
+    backing_owners: usize,
+    pending_cleanup: usize,
+    scanout_resources: usize,
+    cursor_resources: usize,
+}
+
+impl GpuResourceSnapshot {
+    /// Returns the number of host resources retaining guest backing memory.
+    pub fn backing_owners(self) -> usize {
+        self.backing_owners
+    }
+
+    /// Returns the number of failed resource unrefs awaiting retry.
+    pub fn pending_cleanup(self) -> usize {
+        self.pending_cleanup
+    }
+
+    /// Returns the number of resources currently driving a scanout.
+    pub fn scanout_resources(self) -> usize {
+        self.scanout_resources
+    }
+
+    /// Returns the number of resources currently used by the hardware cursor.
+    pub fn cursor_resources(self) -> usize {
+        self.cursor_resources
+    }
+}
+
+/// Upper bound for a device-advertised virgl capability blob.
+const MAX_CAPSET_SIZE: usize = 1024 * 1024;
 
 /// Control-buffer layout (single page): the request is written at the start of
 /// the page and the response is read from a fixed offset, keeping the two areas
@@ -54,25 +161,62 @@ const SCANOUT_ID: u32 = 0;
 /// Bytes per pixel of the B8G8R8X8 backing store.
 const BPP: usize = 4;
 
+#[derive(Clone, Copy)]
+struct PresentedResource {
+    resource_id: u32,
+    backing_addr: u64,
+    backing_size: u32,
+    width: u32,
+    height: u32,
+}
+
+impl PresentedResource {
+    fn matches(self, addr: u64, size: u32, width: u32, height: u32) -> bool {
+        (
+            self.backing_addr,
+            self.backing_size,
+            self.width,
+            self.height,
+        ) == (addr, size, width, height)
+    }
+}
+
 /// A virtio-gpu device.
 pub struct GpuDevice {
     /// Keeps the virtio transport alive for the device's lifetime. The control
     /// queue borrows it during `init` and holds its own handle afterwards, so
     /// this field is never read directly.
-    #[expect(dead_code)]
-    transport: SpinLock<DeviceTransport>,
-    control_queue: SpinLock<VirtQueue>,
-    cursor_queue: SpinLock<VirtQueue>,
-    control_buf: Arc<DmaStream>,
+    _transport: SpinLock<DeviceTransport>,
+    control_queue: Arc<ControlQueue>,
+    /// The cursor queue carries the hardware-cursor commands
+    /// (`UPDATE_CURSOR`/`MOVE_CURSOR`).
+    cursor_queue: Mutex<VirtQueue>,
+    /// Shared page for small control commands. Holding this sleeping mutex
+    /// only serializes users of this page; independently allocated 3D command
+    /// buffers can be submitted concurrently.
+    control_buf: Mutex<Arc<DmaStream>>,
+    /// DMA buffer containing the request submitted to the cursor virtqueue.
     cursor_buf: Arc<DmaStream>,
     /// Backing memory of the scanout resource, in B8G8R8X8.
     framebuffer: Arc<DmaStream>,
+    /// Owners of memory that remains attached to live host resources.
+    backing_owners: SpinLock<BTreeMap<u32, Arc<dyn GpuBackingOwner>>>,
+    /// Resource IDs whose host cleanup failed and must be retried.
+    pending_resource_cleanup: SpinLock<BTreeSet<u32>>,
     scanout_width: u32,
     scanout_height: u32,
-    /// Resource id of the most recent framebuffer presented via
-    /// [`present_framebuffer`], tracked so it can be unref'd before the next one.
-    present_resource: SpinLock<Option<u32>>,
-    /// Next resource id handed out by [`present_framebuffer`].
+    framebuffer_len: u32,
+    num_capsets: u32,
+    virgl_supported: bool,
+    /// Most recent 2D scanout: resource id, backing address/size, and geometry.
+    ///
+    /// Repeated dirty updates reuse this resource. Recreating it for every
+    /// update briefly detaches the active QEMU scanout and can leave the GTK
+    /// display reporting that its output is inactive.
+    present_resource: Mutex<Option<PresentedResource>>,
+    /// Resource currently selected on scanout 0, including the boot pattern.
+    active_scanout_resource: AtomicU32,
+    /// Next resource id handed out by framebuffer, cursor, and virgl clients.
     next_resource_id: AtomicU32,
     /// Serializes multi-command cursor resource transactions without spinning.
     cursor_operation: Mutex<()>,
@@ -81,31 +225,61 @@ pub struct GpuDevice {
 }
 
 impl GpuDevice {
-    pub(crate) fn negotiate_features(_features: u64) -> u64 {
-        // The MVP drives only the plain 2D path, so clear every device-specific
-        // feature (virgl, EDID, resource UUID, blob, context init).
-        0
+    pub(crate) fn negotiate_features(features: u64) -> u64 {
+        // Enable virgl 3D if the device offers it; clear everything else
+        // (EDID, resource UUID, blob, context init) for now.
+        features & super::VIRTIO_GPU_F_VIRGL
     }
 
     pub(crate) fn init(mut device_transport: DeviceTransport) -> Result<(), VirtioDeviceError> {
         let config_manager = VirtioGpuConfig::new_manager(device_transport.as_ref());
         let config = config_manager.read_config();
+        let virgl_supported = Self::negotiate_features(device_transport.read_device_features())
+            & super::VIRTIO_GPU_F_VIRGL
+            != 0;
         ostd::debug!("virtio_gpu_config = {:?}", config);
 
-        let mut control_queue = VirtQueue::new(VQ_CONTROL, QUEUE_SIZE, device_transport.as_mut())?;
-        let cursor_size = cursor_queue_size(device_transport.max_queue_size(VQ_CURSOR)?)
-            .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
-        let cursor_queue = VirtQueue::new(VQ_CURSOR, cursor_size, device_transport.as_mut())?;
+        // The cursor queue is allowed (and in QEMU, is) much smaller than the
+        // control queue (16 vs 256). Clamp each queue to what the device
+        // actually offers instead of assuming both are `QUEUE_SIZE`.
+        let control_queue_size = control_queue_size(
+            device_transport
+                .max_queue_size(VQ_CONTROL)
+                .unwrap_or(MAX_QUEUE_SIZE),
+        )
+        .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
+        let cursor_queue_size = cursor_queue_size(
+            device_transport
+                .max_queue_size(VQ_CURSOR)
+                .unwrap_or(MAX_QUEUE_SIZE),
+        )
+        .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
+        let control_queue = ControlQueue::new(VirtQueue::new(
+            VQ_CONTROL,
+            control_queue_size,
+            device_transport.as_mut(),
+        )?);
+        let cursor_queue = VirtQueue::new(VQ_CURSOR, cursor_queue_size, device_transport.as_mut())?;
         let control_buf =
             Arc::new(DmaStream::alloc(1, false).map_err(VirtioDeviceError::ResourceAlloc)?);
         let cursor_buf =
             Arc::new(DmaStream::alloc(1, false).map_err(VirtioDeviceError::ResourceAlloc)?);
 
+        let irq_control_queue = control_queue.clone();
+        device_transport.register_queue_callback(
+            VQ_CONTROL,
+            Box::new(move |_: &TrapFrame| {
+                irq_control_queue.handle_irq();
+            }),
+            false,
+        )?;
+
         // Mark the device ready before issuing the first control request.
+        // Boot-time requests still poll because task scheduling is not ready.
         device_transport.finish_init();
 
         let (scanout_width, scanout_height) =
-            query_display_info(&mut control_queue, &control_buf, config.num_scanouts)?;
+            query_display_info(&control_queue, &control_buf, config.num_scanouts)?;
         ostd::info!(
             "virtio-gpu: {} scanout(s), primary {}x{}",
             config.num_scanouts,
@@ -117,19 +291,24 @@ impl GpuDevice {
             return Err(VirtioDeviceError::UnsupportedConfig);
         }
 
-        let framebuffer = alloc_framebuffer(scanout_width, scanout_height)
-            .map_err(VirtioDeviceError::ResourceAlloc)?;
+        let (framebuffer, framebuffer_len) = alloc_framebuffer(scanout_width, scanout_height)?;
 
         let device = Arc::new(Self {
-            transport: SpinLock::new(device_transport),
-            control_queue: SpinLock::new(control_queue),
-            cursor_queue: SpinLock::new(cursor_queue),
-            control_buf,
+            _transport: SpinLock::new(device_transport),
+            control_queue,
+            cursor_queue: Mutex::new(cursor_queue),
+            control_buf: Mutex::new(control_buf),
             cursor_buf,
             framebuffer,
+            backing_owners: SpinLock::new(BTreeMap::new()),
+            pending_resource_cleanup: SpinLock::new(BTreeSet::new()),
             scanout_width,
             scanout_height,
-            present_resource: SpinLock::new(None),
+            framebuffer_len,
+            num_capsets: config.num_capsets,
+            virgl_supported,
+            present_resource: Mutex::new(None),
+            active_scanout_resource: AtomicU32::new(0),
             // Resource id 1 is reserved for the boot-time test pattern.
             next_resource_id: AtomicU32::new(2),
             cursor_operation: Mutex::new(()),
@@ -145,6 +324,7 @@ impl GpuDevice {
         );
 
         device.render_test_pattern();
+        device.control_queue.enable_irq_wait();
         Ok(())
     }
 
@@ -158,40 +338,108 @@ impl GpuDevice {
         self.scanout_height
     }
 
+    /// Returns whether the host offered and the driver negotiated virgl 3D support.
+    pub fn supports_virgl(&self) -> bool {
+        self.virgl_supported
+    }
+
+    /// Returns a low-cost diagnostic snapshot of backend resource ownership.
+    pub fn resource_snapshot(&self) -> GpuResourceSnapshot {
+        GpuResourceSnapshot {
+            backing_owners: self.backing_owners.lock().len(),
+            pending_cleanup: self.pending_resource_cleanup.lock().len(),
+            scanout_resources: usize::from(
+                self.active_scanout_resource.load(Ordering::Acquire) != 0,
+            ),
+            cursor_resources: usize::from(self.cursor_resource.load(Ordering::Acquire) != 0),
+        }
+    }
+
+    /// Allocates a resource id unique to this device instance.
+    pub fn allocate_resource_id(&self) -> Result<u32, VirtioDeviceError> {
+        self.next_resource_id
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, next_resource_id)
+            .map_err(|_| VirtioDeviceError::InvalidQueueArgs)
+    }
+
     /// Presents an externally-owned guest buffer as scanout 0.
     ///
     /// Runs the full 2D pipeline for a caller-provided framebuffer: create a
-    /// resource, attach `addr`/`size` of guest memory as its backing store, set
-    /// it as scanout 0, transfer the pixels to the host, and flush. Any
-    /// previously presented resource is unref'd first so repeated present calls
-    /// (e.g. page flips or mode switches) do not leak resources.
+    /// resource, attach `addr`/`size` of guest memory as its backing store,
+    /// transfer and flush the pixels, and finally set it as scanout 0. Any
+    /// previously presented resource is unref'd after the replacement becomes
+    /// active so repeated presents neither leak resources nor detach scanout 0.
     pub fn present_framebuffer(
         &self,
         addr: u64,
         size: u32,
+        owner: Arc<dyn GpuBackingOwner>,
         width: u32,
         height: u32,
     ) -> Result<(), VirtioDeviceError> {
-        if let Some(prev) = *self.present_resource.lock() {
-            // Best-effort cleanup: a stale resource id must not wedge a later present.
-            let _ = self.resource_unref(prev);
-        }
-
-        let resource_id = self.next_resource_id.fetch_add(1, Ordering::Relaxed);
-        self.resource_create_2d(resource_id, width, height)?;
-        self.attach_backing(resource_id, addr, size)?;
-
+        self.drain_pending_resource_cleanup();
         let r = VirtioGpuRect {
             x: 0,
             y: 0,
             width,
             height,
         };
-        self.set_scanout(SCANOUT_ID, resource_id, r)?;
-        self.transfer_to_host_2d(resource_id, r, 0)?;
-        self.flush(resource_id, r)?;
 
-        *self.present_resource.lock() = Some(resource_id);
+        let mut presented = self.present_resource.lock();
+        let previous = *presented;
+        if let Some(previous) = previous
+            && previous.matches(addr, size, width, height)
+        {
+            self.transfer_to_host_2d(previous.resource_id, r, 0)?;
+            self.flush(previous.resource_id, r)?;
+            return Ok(());
+        }
+
+        let resource_id = self.allocate_resource_id()?;
+        self.resource_create_2d(resource_id, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, width, height)?;
+        let prepare_result = (|| {
+            self.attach_backing(resource_id, addr, size, owner)?;
+            self.transfer_to_host_2d(resource_id, r, 0)?;
+            self.flush(resource_id, r)?;
+            self.set_scanout(SCANOUT_ID, resource_id, r)
+        })();
+        if let Err(error) = prepare_result {
+            self.defer_resource_unref(resource_id);
+            return Err(error);
+        }
+
+        *presented = Some(PresentedResource {
+            resource_id,
+            backing_addr: addr,
+            backing_size: size,
+            width,
+            height,
+        });
+        if let Some(previous) = previous {
+            // Switch scanout first, then release the old resource so scanout 0
+            // is never transiently detached.
+            self.defer_resource_unref(previous.resource_id);
+        }
+        Ok(())
+    }
+
+    /// Disables scanout 0 and releases the resource used for direct display.
+    pub fn disable_scanout(&self) -> Result<(), VirtioDeviceError> {
+        self.drain_pending_resource_cleanup();
+        let mut presented = self.present_resource.lock();
+        self.set_scanout(
+            SCANOUT_ID,
+            0,
+            VirtioGpuRect {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+            },
+        )?;
+        if let Some(previous) = presented.take() {
+            self.defer_resource_unref(previous.resource_id);
+        }
         Ok(())
     }
 
@@ -201,6 +449,7 @@ impl GpuDevice {
         &self,
         addr: u64,
         size: u32,
+        owner: Arc<dyn GpuBackingOwner>,
         width: u32,
         height: u32,
         hot_x: u32,
@@ -209,17 +458,13 @@ impl GpuDevice {
         y: i32,
     ) -> Result<u32, VirtioDeviceError> {
         let _operation = self.cursor_operation.lock();
-        let resource_id = self.next_resource_id.fetch_add(1, Ordering::Relaxed);
+        self.drain_pending_resource_cleanup();
+        let resource_id = self.allocate_resource_id()?;
         let mut created = false;
         let result = (|| {
-            self.resource_create_2d_with_format(
-                resource_id,
-                VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM,
-                width,
-                height,
-            )?;
+            self.resource_create_2d(resource_id, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, width, height)?;
             created = true;
-            self.attach_backing(resource_id, addr, size)?;
+            self.attach_backing(resource_id, addr, size, owner)?;
             self.transfer_to_host_2d(
                 resource_id,
                 VirtioGpuRect {
@@ -241,14 +486,14 @@ impl GpuDevice {
         })();
         if let Err(error) = result {
             if created {
-                let _ = self.resource_unref(resource_id);
+                self.defer_resource_unref(resource_id);
             }
             return Err(error);
         }
 
         let previous = self.cursor_resource.swap(resource_id, Ordering::AcqRel);
         if previous != 0 {
-            let _ = self.resource_unref(previous);
+            self.defer_resource_unref(previous);
         }
         Ok(resource_id)
     }
@@ -256,16 +501,18 @@ impl GpuDevice {
     /// Moves the active hardware cursor without replacing its image.
     pub fn move_cursor(&self, x: i32, y: i32) -> Result<(), VirtioDeviceError> {
         let _operation = self.cursor_operation.lock();
+        self.drain_pending_resource_cleanup();
         self.submit_cursor(VIRTIO_GPU_CMD_MOVE_CURSOR, 0, 0, 0, x, y)
     }
 
     /// Hides the hardware cursor and releases its active resource.
     pub fn hide_cursor(&self, x: i32, y: i32) -> Result<(), VirtioDeviceError> {
         let _operation = self.cursor_operation.lock();
+        self.drain_pending_resource_cleanup();
         self.submit_cursor(VIRTIO_GPU_CMD_UPDATE_CURSOR, 0, 0, 0, x, y)?;
         let previous = self.cursor_resource.swap(0, Ordering::AcqRel);
         if previous != 0 {
-            let _ = self.resource_unref(previous);
+            self.defer_resource_unref(previous);
         }
         Ok(())
     }
@@ -281,103 +528,14 @@ impl GpuDevice {
         y: i32,
     ) -> Result<bool, VirtioDeviceError> {
         let _operation = self.cursor_operation.lock();
+        self.drain_pending_resource_cleanup();
         if self.cursor_resource.load(Ordering::Acquire) != resource_id {
             return Ok(false);
         }
         self.submit_cursor(VIRTIO_GPU_CMD_UPDATE_CURSOR, 0, 0, 0, x, y)?;
         self.cursor_resource.store(0, Ordering::Release);
-        let _ = self.resource_unref(resource_id);
+        self.defer_resource_unref(resource_id);
         Ok(true)
-    }
-
-    /// Renders the test pattern and presents it on scanout 0.
-    ///
-    /// This is the full 2D pipeline: create the resource, attach backing
-    /// memory, set it as the scanout, copy a gradient into the backing store,
-    /// transfer it to the host, and flush the scanout region. Failures are
-    /// logged rather than propagated so a misbehaving GPU cannot wedge boot.
-    pub fn render_test_pattern(&self) {
-        if let Err(e) = self.do_render_test_pattern() {
-            ostd::error!("virtio-gpu render_test_pattern failed: {:?}", e);
-        }
-    }
-
-    fn do_render_test_pattern(&self) -> Result<(), VirtioDeviceError> {
-        self.resource_create_2d(RESOURCE_ID, self.scanout_width, self.scanout_height)?;
-        ostd::info!("virtio-gpu: RESOURCE_CREATE_2D ok");
-
-        let backing_len = self.scanout_width as usize * self.scanout_height as usize * BPP;
-        self.attach_backing(
-            RESOURCE_ID,
-            self.framebuffer.daddr() as u64,
-            backing_len as u32,
-        )?;
-        ostd::info!("virtio-gpu: ATTACH_BACKING ok");
-
-        let r = VirtioGpuRect {
-            x: 0,
-            y: 0,
-            width: self.scanout_width,
-            height: self.scanout_height,
-        };
-        self.set_scanout(SCANOUT_ID, RESOURCE_ID, r)?;
-        ostd::info!("virtio-gpu: SET_SCANOUT ok");
-
-        self.fill_framebuffer();
-        self.framebuffer
-            .sync_to_device(0..backing_len)
-            .map_err(VirtioDeviceError::ResourceAlloc)?;
-
-        self.transfer_to_host_2d(RESOURCE_ID, r, 0)?;
-        ostd::info!("virtio-gpu: TRANSFER_TO_HOST_2D ok");
-        self.flush(RESOURCE_ID, r)?;
-        ostd::info!("virtio-gpu: FLUSH ok");
-
-        ostd::info!(
-            "virtio-gpu: presented {}x{} test pattern on scanout {}",
-            self.scanout_width,
-            self.scanout_height,
-            SCANOUT_ID
-        );
-        Ok(())
-    }
-
-    fn resource_create_2d(
-        &self,
-        resource_id: u32,
-        width: u32,
-        height: u32,
-    ) -> Result<(), VirtioDeviceError> {
-        self.resource_create_2d_with_format(
-            resource_id,
-            VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
-            width,
-            height,
-        )
-    }
-
-    fn resource_create_2d_with_format(
-        &self,
-        resource_id: u32,
-        format: u32,
-        width: u32,
-        height: u32,
-    ) -> Result<(), VirtioDeviceError> {
-        let req = VirtioGpuResourceCreate2d {
-            hdr: ctrl_hdr(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D),
-            resource_id,
-            format,
-            width,
-            height,
-        };
-        let mut queue = self.control_queue.lock();
-        let code = control_cmd(
-            &mut queue,
-            &self.control_buf,
-            &req,
-            size_of::<VirtioGpuCtrlHdr>(),
-        )?;
-        check_ok(code)
     }
 
     fn submit_cursor(
@@ -406,11 +564,105 @@ impl GpuDevice {
         cursor_cmd(&mut queue, &self.cursor_buf, &request)
     }
 
-    fn attach_backing(
+    /// Renders the test pattern and presents it on scanout 0.
+    ///
+    /// This is the full 2D pipeline: create the resource, attach backing
+    /// memory, set it as the scanout, copy a gradient into the backing store,
+    /// transfer it to the host, and flush the scanout region. Failures are
+    /// logged rather than propagated so a misbehaving GPU cannot wedge boot.
+    pub fn render_test_pattern(&self) {
+        if let Err(e) = self.do_render_test_pattern() {
+            ostd::error!("virtio-gpu render_test_pattern failed: {:?}", e);
+        }
+    }
+
+    fn do_render_test_pattern(&self) -> Result<(), VirtioDeviceError> {
+        self.resource_create_2d(
+            RESOURCE_ID,
+            VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
+            self.scanout_width,
+            self.scanout_height,
+        )?;
+        ostd::info!("virtio-gpu: RESOURCE_CREATE_2D ok");
+
+        self.attach_backing(
+            RESOURCE_ID,
+            self.framebuffer.daddr() as u64,
+            self.framebuffer_len,
+            self.framebuffer.clone(),
+        )?;
+        ostd::info!("virtio-gpu: ATTACH_BACKING ok");
+
+        let r = VirtioGpuRect {
+            x: 0,
+            y: 0,
+            width: self.scanout_width,
+            height: self.scanout_height,
+        };
+        self.set_scanout(SCANOUT_ID, RESOURCE_ID, r)?;
+        ostd::info!("virtio-gpu: SET_SCANOUT ok");
+
+        self.fill_framebuffer();
+        self.framebuffer
+            .sync_to_device(0..self.framebuffer_len as usize)
+            .map_err(VirtioDeviceError::ResourceAlloc)?;
+
+        self.transfer_to_host_2d(RESOURCE_ID, r, 0)?;
+        ostd::info!("virtio-gpu: TRANSFER_TO_HOST_2D ok");
+        self.flush(RESOURCE_ID, r)?;
+        ostd::info!("virtio-gpu: FLUSH ok");
+
+        ostd::info!(
+            "virtio-gpu: presented {}x{} test pattern on scanout {}",
+            self.scanout_width,
+            self.scanout_height,
+            SCANOUT_ID
+        );
+        Ok(())
+    }
+
+    pub fn resource_create_2d(
+        &self,
+        resource_id: u32,
+        format: u32,
+        width: u32,
+        height: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let req = VirtioGpuResourceCreate2d {
+            hdr: ctrl_hdr(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D),
+            resource_id,
+            format,
+            width,
+            height,
+        };
+        let control_buf = self.control_buf.lock();
+        let code = match control_cmd(
+            &self.control_queue,
+            &control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        ) {
+            Ok(code) => code,
+            Err(error) => {
+                ostd::warn!(
+                    "virtio-gpu resource {} create completion is ambiguous: {:?}",
+                    resource_id,
+                    error
+                );
+                drop(control_buf);
+                self.defer_resource_unref(resource_id);
+                return Err(VirtioDeviceError::AmbiguousCompletion);
+            }
+        };
+        check_ok(code)
+    }
+
+    pub fn attach_backing(
         &self,
         resource_id: u32,
         addr: u64,
         length: u32,
+        owner: Arc<dyn GpuBackingOwner>,
     ) -> Result<(), VirtioDeviceError> {
         let attach_len = size_of::<VirtioGpuResourceAttachBacking>();
         let entry_len = size_of::<VirtioGpuMemEntry>();
@@ -427,21 +679,32 @@ impl GpuDevice {
             padding: 0,
         };
 
+        let control_buf = self.control_buf.lock();
         let req_slice = Slice::new(
-            self.control_buf.clone(),
+            control_buf.clone(),
             CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len,
         );
         req_slice.write_val(0, &attach).unwrap();
         req_slice.write_val(attach_len, &entry).unwrap();
 
-        let mut queue = self.control_queue.lock();
-        let code = submit_control(
-            &mut queue,
-            &self.control_buf,
+        // Publish the owner before submission. If transport fails after the
+        // device consumed the request, the backing lifetime is uncertain and
+        // must remain pinned until RESOURCE_UNREF is confirmed.
+        let previous = self.backing_owners.lock().insert(resource_id, owner);
+        debug_assert!(previous.is_none());
+        let (code, _) = submit_control(
+            &self.control_queue,
+            &control_buf,
             req_len,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
-        check_ok(code)
+        if let Err(error) = check_ok(code) {
+            // An explicit error response confirms that no backing was attached.
+            let owner = self.backing_owners.lock().remove(&resource_id);
+            drop(owner);
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn set_scanout(
@@ -456,14 +719,19 @@ impl GpuDevice {
             scanout_id,
             resource_id,
         };
-        let mut queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &mut queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
-        check_ok(code)
+        check_ok(code)?;
+        if scanout_id == SCANOUT_ID {
+            self.active_scanout_resource
+                .store(resource_id, Ordering::Release);
+        }
+        Ok(())
     }
 
     fn transfer_to_host_2d(
@@ -479,10 +747,10 @@ impl GpuDevice {
             resource_id,
             padding: 0,
         };
-        let mut queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &mut queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -496,26 +764,416 @@ impl GpuDevice {
             resource_id,
             padding: 0,
         };
-        let mut queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &mut queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
         check_ok(code)
     }
 
-    fn resource_unref(&self, resource_id: u32) -> Result<(), VirtioDeviceError> {
+    pub fn resource_unref(&self, resource_id: u32) -> Result<(), VirtioDeviceError> {
         let req = VirtioGpuResourceUnref {
             hdr: ctrl_hdr(VIRTIO_GPU_CMD_RESOURCE_UNREF),
             resource_id,
             padding: 0,
         };
-        let mut queue = self.control_queue.lock();
+        let control_buf = self.control_buf.lock();
         let code = control_cmd(
-            &mut queue,
-            &self.control_buf,
+            &self.control_queue,
+            &control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok_or_absent(code, VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID)?;
+        let owner = self.backing_owners.lock().remove(&resource_id);
+        drop(owner);
+        Ok(())
+    }
+
+    /// Attempts cleanup and records the resource for a later retry on failure.
+    fn defer_resource_unref(&self, resource_id: u32) {
+        if self.resource_unref(resource_id).is_err() {
+            self.pending_resource_cleanup.lock().insert(resource_id);
+        }
+    }
+
+    /// Retries resource cleanup without holding a spin lock across device I/O.
+    fn drain_pending_resource_cleanup(&self) {
+        let pending = core::mem::take(&mut *self.pending_resource_cleanup.lock());
+        for resource_id in pending {
+            if self.resource_unref(resource_id).is_err() {
+                self.pending_resource_cleanup.lock().insert(resource_id);
+            }
+        }
+    }
+
+    /// Creates a host-side 3D resource.
+    pub fn resource_create_3d(
+        &self,
+        params: super::Resource3dCreateParams,
+    ) -> Result<(), VirtioDeviceError> {
+        use super::VirtioGpuResourceCreate3d;
+        let req = VirtioGpuResourceCreate3d {
+            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_RESOURCE_CREATE_3D),
+            resource_id: params.resource_id,
+            target: params.target,
+            format: params.format,
+            bind: params.bind,
+            width: params.width,
+            height: params.height,
+            depth: params.depth,
+            array_size: params.array_size,
+            last_level: params.last_level,
+            nr_samples: params.nr_samples,
+            flags: params.flags,
+            padding: 0,
+        };
+        let control_buf = self.control_buf.lock();
+        let code = match control_cmd(
+            &self.control_queue,
+            &control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        ) {
+            Ok(code) => code,
+            Err(error) => {
+                ostd::warn!(
+                    "virtio-gpu 3D resource {} create completion is ambiguous: {:?}",
+                    params.resource_id,
+                    error
+                );
+                drop(control_buf);
+                self.defer_resource_unref(params.resource_id);
+                return Err(VirtioDeviceError::AmbiguousCompletion);
+            }
+        };
+        check_ok(code)
+    }
+
+    /// 3D: create a virgl rendering context.
+    pub fn ctx_create(
+        &self,
+        ctx_id: u32,
+        context_init: u32,
+        debug_name: &[u8],
+    ) -> Result<(), VirtioDeviceError> {
+        let mut name = [0u8; 64];
+        let copy_len = debug_name.len().min(64);
+        name[..copy_len].copy_from_slice(&debug_name[..copy_len]);
+        let req = super::VirtioGpuCtxCreate {
+            hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_CTX_CREATE, ctx_id),
+            nlen: copy_len as u32,
+            context_init,
+            debug_name: name,
+        };
+        let control_buf = self.control_buf.lock();
+        let code = control_cmd(
+            &self.control_queue,
+            &control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )
+        .map_err(|error| {
+            ostd::warn!(
+                "virtio-gpu context {} create completion is ambiguous: {:?}",
+                ctx_id,
+                error
+            );
+            VirtioDeviceError::AmbiguousCompletion
+        })?;
+        check_ok(code)
+    }
+
+    /// 3D: destroy a virgl rendering context.
+    pub fn ctx_destroy(&self, ctx_id: u32) -> Result<(), VirtioDeviceError> {
+        let req = super::VirtioGpuCtxDestroy {
+            hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_CTX_DESTROY, ctx_id),
+        };
+        let control_buf = self.control_buf.lock();
+        let code = control_cmd(
+            &self.control_queue,
+            &control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok_or_absent(code, VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID)
+    }
+
+    /// 3D: attach a resource to the virgl context.
+    pub fn ctx_attach_resource(
+        &self,
+        ctx_id: u32,
+        resource_id: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let req = super::VirtioGpuCtxResource {
+            hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, ctx_id),
+            resource_id,
+            padding: 0,
+        };
+        let control_buf = self.control_buf.lock();
+        let code = control_cmd(
+            &self.control_queue,
+            &control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// 3D: detach a resource from a virgl rendering context.
+    pub fn ctx_detach_resource(
+        &self,
+        ctx_id: u32,
+        resource_id: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let req = super::VirtioGpuCtxResource {
+            hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE, ctx_id),
+            resource_id,
+            padding: 0,
+        };
+        let control_buf = self.control_buf.lock();
+        let code = control_cmd(
+            &self.control_queue,
+            &control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// 3D: submit a virgl command buffer to the host (unfenced — the response
+    /// acknowledges receipt, not completion).
+    pub fn submit_3d(&self, ctx_id: u32, size: u32, data: &[u8]) -> Result<(), VirtioDeviceError> {
+        self.submit_3d_with_fence(ctx_id, size, data, 0, 0)
+    }
+
+    /// 3D: submit a virgl command buffer with `VIRTIO_GPU_FLAG_FENCE` set.
+    ///
+    /// The device defers the response until the command has completed, so the
+    /// synchronous [`submit_control`] wait below returns only after rendering
+    /// finishes. This is how the render→scanout path synchronizes.
+    pub fn submit_3d_fenced(
+        &self,
+        ctx_id: u32,
+        size: u32,
+        data: &[u8],
+        fence_id: u64,
+    ) -> Result<(), VirtioDeviceError> {
+        self.submit_3d_with_fence(ctx_id, size, data, super::VIRTIO_GPU_FLAG_FENCE, fence_id)
+    }
+
+    /// Queues a fenced virgl command without waiting for device completion.
+    pub fn submit_3d_fenced_async(
+        &self,
+        ctx_id: u32,
+        size: u32,
+        data: &[u8],
+        fence_id: u64,
+        completion: Arc<dyn GpuCommandCompletion>,
+    ) -> Result<GpuCommandTicket, VirtioDeviceError> {
+        let (submit_buf, total_len, resp_len) =
+            build_submit_3d(ctx_id, size, data, super::VIRTIO_GPU_FLAG_FENCE, fence_id)?;
+        Ok(submit_control_at_ticket(
+            &self.control_queue,
+            &submit_buf,
+            total_len,
+            total_len,
+            resp_len,
+            Some(completion),
+        ))
+    }
+
+    fn submit_3d_with_fence(
+        &self,
+        ctx_id: u32,
+        size: u32,
+        data: &[u8],
+        flags: u32,
+        fence_id: u64,
+    ) -> Result<(), VirtioDeviceError> {
+        let (submit_buf, total_len, resp_len) =
+            build_submit_3d(ctx_id, size, data, flags, fence_id)?;
+
+        let (code, _) = submit_control_at(
+            &self.control_queue,
+            &submit_buf,
+            total_len,
+            total_len,
+            resp_len,
+        )?;
+        check_ok(code)
+    }
+
+    /// 3D: query capset info from the device.
+    fn get_capset_info_at(
+        &self,
+        capset_index: u32,
+    ) -> Result<super::VirtioGpuRespCapsetInfo, VirtioDeviceError> {
+        let req = super::VirtioGpuGetCapsetInfo {
+            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_GET_CAPSET_INFO),
+            capset_index,
+            padding: 0,
+        };
+        let resp_len = size_of::<super::VirtioGpuRespCapsetInfo>();
+        let control_buf = self.control_buf.lock();
+        let code = control_cmd(&self.control_queue, &control_buf, &req, resp_len)?;
+        if code != super::VIRTIO_GPU_RESP_OK_CAPSET_INFO {
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
+        let resp_slice = Slice::new(
+            control_buf.clone(),
+            CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len,
+        );
+        resp_slice.sync_from_device().unwrap();
+        let resp: super::VirtioGpuRespCapsetInfo = resp_slice.read_val(0).unwrap();
+        Ok(resp)
+    }
+
+    /// 3D: finds device capability information by capset id.
+    pub fn get_capset_info(
+        &self,
+        capset_id: u32,
+    ) -> Result<super::VirtioGpuRespCapsetInfo, VirtioDeviceError> {
+        for index in 0..self.num_capsets {
+            let info = self.get_capset_info_at(index)?;
+            if info.capset_id == capset_id {
+                return Ok(info);
+            }
+        }
+        Err(VirtioDeviceError::UnsupportedConfig)
+    }
+
+    /// Returns the bitmask of capset ids actually advertised by the device.
+    pub fn supported_capset_ids(&self) -> Result<u64, VirtioDeviceError> {
+        let mut ids = 0u64;
+        for index in 0..self.num_capsets {
+            let info = self.get_capset_info_at(index)?;
+            if info.capset_id < u64::BITS {
+                ids |= 1u64 << info.capset_id;
+            }
+        }
+        Ok(ids)
+    }
+
+    /// 3D: fetch the capset data blob from the device.
+    pub fn get_capset(&self, capset_id: u32, version: u32) -> Result<Vec<u8>, VirtioDeviceError> {
+        let req = super::VirtioGpuGetCapset {
+            hdr: ctrl_hdr(super::VIRTIO_GPU_CMD_GET_CAPSET),
+            capset_id,
+            capset_version: version,
+        };
+
+        // First, query the capset info to know the size
+        let info = self.get_capset_info(capset_id)?;
+        let capset_size = info.capset_max_size as usize;
+        if capset_size == 0 {
+            return Ok(Vec::new());
+        }
+        if capset_size > MAX_CAPSET_SIZE {
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
+
+        // The device returns the actual capset size, which may be smaller
+        // than the advertised maximum.
+        let resp_len = size_of::<VirtioGpuCtrlHdr>()
+            .checked_add(capset_size)
+            .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
+        let req_len = size_of::<super::VirtioGpuGetCapset>();
+        let buffer_len = req_len
+            .checked_add(resp_len)
+            .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
+        let capset_buf = Arc::new(
+            DmaStream::alloc(buffer_len.div_ceil(PAGE_SIZE), false)
+                .map_err(VirtioDeviceError::ResourceAlloc)?,
+        );
+        let req_slice = Slice::new(capset_buf.clone(), 0..req_len);
+        req_slice.write_val(0, &req).unwrap();
+
+        let (code, used_len) =
+            submit_control_at(&self.control_queue, &capset_buf, req_len, req_len, resp_len)?;
+        if code != super::VIRTIO_GPU_RESP_OK_CAPSET {
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
+
+        let data_len = used_len.saturating_sub(size_of::<VirtioGpuCtrlHdr>());
+        let resp_slice = Slice::new(capset_buf, req_len..req_len + resp_len);
+        resp_slice.sync_from_device().unwrap();
+        let mut data = alloc::vec![0u8; data_len];
+        resp_slice
+            .read_bytes(size_of::<VirtioGpuCtrlHdr>(), &mut data)
+            .unwrap();
+        Ok(data)
+    }
+
+    /// 3D: transfer data from guest to host for a 3D resource.
+    #[expect(clippy::too_many_arguments)]
+    pub fn transfer_to_host_3d(
+        &self,
+        ctx_id: u32,
+        resource_id: u32,
+        x: u32,
+        y: u32,
+        z: u32,
+        w: u32,
+        h: u32,
+        d: u32,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let req = super::VirtioGpuTransferHost3d {
+            hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, ctx_id),
+            box_: super::VirtioGpuBox { x, y, z, w, h, d },
+            offset,
+            resource_id,
+            level,
+            stride,
+            layer_stride,
+        };
+        let control_buf = self.control_buf.lock();
+        let code = control_cmd(
+            &self.control_queue,
+            &control_buf,
+            &req,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// 3D: transfer data from host to guest for a 3D resource.
+    #[expect(clippy::too_many_arguments)]
+    pub fn transfer_from_host_3d(
+        &self,
+        ctx_id: u32,
+        resource_id: u32,
+        x: u32,
+        y: u32,
+        z: u32,
+        w: u32,
+        h: u32,
+        d: u32,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let req = super::VirtioGpuTransferHost3d {
+            hdr: ctrl_hdr_3d(super::VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D, ctx_id),
+            box_: super::VirtioGpuBox { x, y, z, w, h, d },
+            offset,
+            resource_id,
+            level,
+            stride,
+            layer_stride,
+        };
+        let control_buf = self.control_buf.lock();
+        let code = control_cmd(
+            &self.control_queue,
+            &control_buf,
             &req,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
@@ -553,9 +1211,17 @@ fn ctrl_hdr(type_: u32) -> VirtioGpuCtrlHdr {
     }
 }
 
+/// Builds a 3D control header for the given virgl context.
+fn ctrl_hdr_3d(type_: u32, ctx_id: u32) -> VirtioGpuCtrlHdr {
+    VirtioGpuCtrlHdr {
+        ctx_id,
+        ..ctrl_hdr(type_)
+    }
+}
+
 fn check_ok(code: u32) -> Result<(), VirtioDeviceError> {
     match code {
-        VIRTIO_GPU_RESP_OK_NODATA | VIRTIO_GPU_RESP_OK_DISPLAY_INFO => Ok(()),
+        VIRTIO_GPU_RESP_OK_NODATA => Ok(()),
         _ => {
             ostd::warn!("virtio-gpu control request failed: response = {:#x}", code);
             Err(VirtioDeviceError::UnsupportedConfig)
@@ -563,40 +1229,113 @@ fn check_ok(code: u32) -> Result<(), VirtioDeviceError> {
     }
 }
 
+/// Accepts a successful cleanup or a device-confirmed already-absent object.
+///
+/// A cleanup request may have reached the device even when its completion was
+/// not observable. Retrying then returns an invalid-object response, which is
+/// equivalent to successful cleanup for an internally tracked object.
+fn check_ok_or_absent(code: u32, absent_code: u32) -> Result<(), VirtioDeviceError> {
+    if code == absent_code {
+        return Ok(());
+    }
+    check_ok(code)
+}
+
+fn build_submit_3d(
+    ctx_id: u32,
+    size: u32,
+    data: &[u8],
+    flags: u32,
+    fence_id: u64,
+) -> Result<(Arc<DmaStream>, usize, usize), VirtioDeviceError> {
+    use super::VirtioGpuCmdSubmit;
+
+    if data.len() != size as usize {
+        return Err(VirtioDeviceError::InvalidQueueArgs);
+    }
+    let mut hdr = ctrl_hdr_3d(super::VIRTIO_GPU_CMD_SUBMIT_3D, ctx_id);
+    hdr.flags = flags;
+    hdr.fence_id = fence_id;
+    let req = VirtioGpuCmdSubmit {
+        hdr,
+        size,
+        padding: 0,
+    };
+    let req_len = size_of::<VirtioGpuCmdSubmit>();
+    let total_len = req_len
+        .checked_add(data.len())
+        .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
+    let resp_len = size_of::<VirtioGpuCtrlHdr>();
+    let buffer_len = total_len
+        .checked_add(resp_len)
+        .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
+    let submit_buf = Arc::new(
+        DmaStream::alloc(buffer_len.div_ceil(PAGE_SIZE), false)
+            .map_err(VirtioDeviceError::ResourceAlloc)?,
+    );
+    let req_slice = Slice::new(
+        submit_buf.clone(),
+        CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + total_len,
+    );
+    req_slice.write_val(0, &req).unwrap();
+    req_slice.write_bytes(req_len, data).unwrap();
+    Ok((submit_buf, total_len, resp_len))
+}
+
 /// Submits a control request of `req_len` bytes (already written into the
-/// buffer by the caller) and waits for a `resp_len`-byte response, returning
-/// the response type code.
+/// buffer by the caller) and waits for a response of at most `resp_len`
+/// bytes, returning the response type code and the actual used length.
+///
+/// The device may legitimately write fewer bytes than the buffer size (for
+/// example `GET_CAPSET` returns the actual capset size, not the maximum),
+/// so the used length is validated against the header size, not `resp_len`.
 fn submit_control(
-    queue: &mut VirtQueue,
+    queue: &Arc<ControlQueue>,
     buf: &Arc<DmaStream>,
     req_len: usize,
     resp_len: usize,
-) -> Result<u32, VirtioDeviceError> {
+) -> Result<(u32, usize), VirtioDeviceError> {
+    submit_control_at(queue, buf, req_len, CTRL_RESP_OFFSET, resp_len)
+}
+
+/// Like [`submit_control`], but places the response at a caller-selected offset.
+///
+/// Variable-sized `SUBMIT_3D` requests use an offset immediately after the
+/// command stream so they are not constrained by the fixed small-command
+/// layout in [`GpuDevice::control_buf`].
+fn submit_control_at(
+    queue: &Arc<ControlQueue>,
+    buf: &Arc<DmaStream>,
+    req_len: usize,
+    resp_offset: usize,
+    resp_len: usize,
+) -> Result<(u32, usize), VirtioDeviceError> {
+    submit_control_at_ticket(queue, buf, req_len, resp_offset, resp_len, None).wait_for_response()
+}
+
+fn submit_control_at_ticket(
+    queue: &Arc<ControlQueue>,
+    buf: &Arc<DmaStream>,
+    req_len: usize,
+    resp_offset: usize,
+    resp_len: usize,
+    listener: Option<Arc<dyn GpuCommandCompletion>>,
+) -> GpuCommandTicket {
     let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
     req_slice.sync_to_device().unwrap();
 
-    let resp_slice = Slice::new(buf.clone(), CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len);
-    queue
-        .add_dma_bufs(&[&req_slice], &[&resp_slice])
-        .expect("add control queue buffers");
-    if queue.should_notify() {
-        queue.notify();
+    let response = Slice::new(buf.clone(), resp_offset..resp_offset + resp_len);
+    let control = queue.submit_dma_bufs(&[&req_slice], &[&response], listener);
+    GpuCommandTicket {
+        control,
+        response,
+        response_len: resp_len,
     }
-
-    loop {
-        if queue.pop_used_with_min_bytes(resp_len).is_ok() {
-            break;
-        }
-        spin_loop();
-    }
-
-    resp_slice.sync_from_device().unwrap();
-    Ok(resp_slice.read_val::<u32>(0).unwrap())
 }
 
 /// Sends a fixed-size control request and waits for its response.
 fn control_cmd<T: ostd_pod::Pod>(
-    queue: &mut VirtQueue,
+    queue: &Arc<ControlQueue>,
     buf: &Arc<DmaStream>,
     req: &T,
     resp_len: usize,
@@ -604,7 +1343,11 @@ fn control_cmd<T: ostd_pod::Pod>(
     let req_len = size_of::<T>();
     let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
     req_slice.write_val(0, req).unwrap();
-    submit_control(queue, buf, req_len, resp_len)
+    let (code, used_len) = submit_control(queue, buf, req_len, resp_len)?;
+    if used_len < resp_len {
+        return Err(VirtioDeviceError::UnsupportedConfig);
+    }
+    Ok(code)
 }
 
 /// Sends one request-only command and accepts the cursor queue's zero-byte
@@ -625,20 +1368,30 @@ fn cursor_cmd<T: ostd_pod::Pod>(
         queue.notify();
     }
     loop {
-        if queue
-            .pop_used_with_min_bytes(CURSOR_COMPLETION_BYTES)
-            .is_ok()
-        {
-            return Ok(());
+        match queue.pop_used_once_with_min_bytes(CURSOR_COMPLETION_BYTES) {
+            Ok(_) => return Ok(()),
+            Err(PopUsedError::NotReady) => spin_loop(),
+            Err(error) => {
+                ostd::error!("invalid virtio-gpu cursor completion: {:?}", error);
+                return Err(VirtioDeviceError::UnsupportedConfig);
+            }
         }
-        spin_loop();
     }
 }
 
 /// Chooses the largest power-of-two queue size up to the driver's cap.
 fn cursor_queue_size(device_max: u16) -> Option<u16> {
-    let capped = device_max.min(QUEUE_SIZE);
-    if capped == 0 {
+    queue_size_up_to_cap(device_max, 1)
+}
+
+/// Chooses a power-of-two control queue with room for request and response.
+fn control_queue_size(device_max: u16) -> Option<u16> {
+    queue_size_up_to_cap(device_max, 2)
+}
+
+fn queue_size_up_to_cap(device_max: u16, min_size: u16) -> Option<u16> {
+    let capped = device_max.min(MAX_QUEUE_SIZE);
+    if capped < min_size {
         return None;
     }
     let mut size = 1;
@@ -648,9 +1401,9 @@ fn cursor_queue_size(device_max: u16) -> Option<u16> {
     Some(size)
 }
 
-/// Queries the display info and returns the first enabled scanout's dimensions.
+/// Queries the display info and returns scanout 0's dimensions.
 fn query_display_info(
-    queue: &mut VirtQueue,
+    queue: &Arc<ControlQueue>,
     buf: &Arc<DmaStream>,
     num_scanouts: u32,
 ) -> Result<(u32, u32), VirtioDeviceError> {
@@ -669,14 +1422,29 @@ fn query_display_info(
     let resp_slice = Slice::new(buf.clone(), CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len);
     resp_slice.sync_from_device().unwrap();
     let one: VirtioGpuDisplayOne = resp_slice.read_val(size_of::<VirtioGpuCtrlHdr>()).unwrap();
+    if one.enabled == 0 {
+        return Err(VirtioDeviceError::UnsupportedConfig);
+    }
     Ok((one.r.width, one.r.height))
 }
 
 /// Allocates a DMA backing store for a `width`x`height` B8G8R8X8 resource.
-fn alloc_framebuffer(width: u32, height: u32) -> Result<Arc<DmaStream>, ostd::Error> {
-    let nbytes = width as usize * height as usize * BPP;
-    let nframes = nbytes.div_ceil(PAGE_SIZE);
-    Ok(Arc::new(DmaStream::alloc(nframes, false)?))
+fn alloc_framebuffer(width: u32, height: u32) -> Result<(Arc<DmaStream>, u32), VirtioDeviceError> {
+    let nbytes = framebuffer_len(width, height).ok_or(VirtioDeviceError::InvalidQueueArgs)?;
+    let nframes = (nbytes as usize).div_ceil(PAGE_SIZE);
+    let framebuffer = DmaStream::alloc(nframes, false).map_err(VirtioDeviceError::ResourceAlloc)?;
+    Ok((Arc::new(framebuffer), nbytes))
+}
+
+fn framebuffer_len(width: u32, height: u32) -> Option<u32> {
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(BPP))
+        .and_then(|bytes| u32::try_from(bytes).ok())
+}
+
+fn next_resource_id(current: u32) -> Option<u32> {
+    current.checked_add(1)
 }
 
 static GPU_DEVICE_ID: AtomicUsize = AtomicUsize::new(0);
@@ -699,7 +1467,62 @@ mod tests {
     }
 
     #[ktest]
+    fn control_queue_requires_request_and_response_descriptors() {
+        assert_eq!(control_queue_size(0), None);
+        assert_eq!(control_queue_size(1), None);
+        assert_eq!(control_queue_size(2), Some(2));
+        assert_eq!(control_queue_size(63), Some(32));
+        assert_eq!(control_queue_size(256), Some(64));
+    }
+
+    #[ktest]
     fn cursor_completion_has_no_response_body() {
         assert_eq!(CURSOR_COMPLETION_BYTES, 0);
+    }
+
+    #[ktest]
+    fn framebuffer_length_rejects_virtio_backing_overflow() {
+        assert_eq!(framebuffer_len(1024, 768), Some(1024 * 768 * 4));
+        assert_eq!(
+            framebuffer_len(u16::MAX as u32 + 1, u16::MAX as u32 + 1),
+            None
+        );
+    }
+
+    #[ktest]
+    fn state_changing_commands_require_nodata_response() {
+        assert!(check_ok(VIRTIO_GPU_RESP_OK_NODATA).is_ok());
+        assert!(check_ok(VIRTIO_GPU_RESP_OK_DISPLAY_INFO).is_err());
+    }
+
+    #[ktest]
+    fn drm_validation_cleanup_accepts_objects_that_are_already_absent() {
+        assert!(
+            check_ok_or_absent(
+                VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID,
+                VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID
+            )
+            .is_ok()
+        );
+        assert!(
+            check_ok_or_absent(
+                VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID,
+                VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID
+            )
+            .is_ok()
+        );
+        assert!(
+            check_ok_or_absent(
+                VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
+                VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID
+            )
+            .is_err()
+        );
+    }
+
+    #[ktest]
+    fn resource_ids_do_not_wrap_into_reserved_values() {
+        assert_eq!(next_resource_id(2), Some(3));
+        assert_eq!(next_resource_id(u32::MAX), None);
     }
 }

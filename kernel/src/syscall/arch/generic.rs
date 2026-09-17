@@ -99,6 +99,7 @@ macro_rules! import_generic_syscall_entries {
             name_to_handle_at::{sys_name_to_handle_at, sys_open_by_handle_at},
             nanosleep::{sys_clock_nanosleep, sys_nanosleep},
             open::sys_openat,
+            open_tree::sys_open_tree,
             openat2::sys_openat2,
             personality::sys_personality,
             pidfd_getfd::sys_pidfd_getfd,
@@ -459,6 +460,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_STATX = 291                  => sys_statx(args[..5]);
             SYS_RSEQ = 293                   => sys_rseq(args[..4]);
             SYS_PIDFD_SEND_SIGNAL = 424      => sys_pidfd_send_signal(args[..4]);
+            SYS_OPEN_TREE = 428               => sys_open_tree(args[..3]);
             SYS_MOVE_MOUNT = 429             => sys_move_mount(args[..5]);
             SYS_FSOPEN = 430                 => sys_fsopen(args[..2]);
             SYS_FSCONFIG = 431               => sys_fsconfig(args[..5]);

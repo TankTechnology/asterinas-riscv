@@ -12,12 +12,12 @@ fn accepts_unrelated_acyclic_edges() {
     let queue = DatagramQueueNode::new();
     let socket = SocketNode::new();
 
-    let reservation = ReservedEdges::try_new(&queue, &[socket.clone()]).unwrap();
+    let reservation = ReservedEdges::try_new(&queue, core::slice::from_ref(&socket)).unwrap();
     assert_eq!(edge_count(&queue, &socket, EdgeClass::Reserved), 1);
     reservation.rollback();
     assert_eq!(edge_count(&queue, &socket, EdgeClass::Reserved), 0);
 
-    let committed = ReservedEdges::try_new(&queue, &[socket.clone()])
+    let committed = ReservedEdges::try_new(&queue, core::slice::from_ref(&socket))
         .unwrap()
         .commit();
     assert_eq!(edge_count(&queue, &socket, EdgeClass::Committed), 1);
@@ -38,7 +38,7 @@ fn rejects_direct_and_long_mixed_cycles() {
 
     let queued_socket = SocketNode::new();
     let queued_storage = StreamStorageNode::new();
-    let queued = ReservedEdges::try_new(&queued_storage, &[queued_socket.clone()])
+    let queued = ReservedEdges::try_new(&queued_storage, core::slice::from_ref(&queued_socket))
         .unwrap()
         .commit();
     assert_eq!(
@@ -54,7 +54,7 @@ fn rejects_direct_and_long_mixed_cycles() {
     let second_socket = SocketNode::new();
     let datagram_queue = DatagramQueueNode::new();
     let _first_owner = PermanentEdge::new(&first_socket, &stream_storage).unwrap();
-    let queued = ReservedEdges::try_new(&stream_storage, &[second_socket.clone()])
+    let queued = ReservedEdges::try_new(&stream_storage, core::slice::from_ref(&second_socket))
         .unwrap()
         .commit();
     let _second_owner = PermanentEdge::new(&second_socket, &datagram_queue).unwrap();

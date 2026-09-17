@@ -493,6 +493,12 @@ fn classify_scm_file(file: &Arc<dyn FileLike>) -> ScmFileClass {
         return ScmFileClass::ProvenLeaf;
     }
 
+    // Direct `FileLike` implementations (for example DRM dma-buf, syncobj,
+    // and sync_file objects) opt in explicitly after an ownership audit.
+    if file.is_scm_rights_proven_leaf() {
+        return ScmFileClass::ProvenLeaf;
+    }
+
     // Defaulting unknown `FileLike` implementations to a leaf would make the ownership proof
     // invalid as new strong-owning containers are added. Slice 4 records but does not reject this
     // class; later B1 policy must reject it until its ownership is modeled.

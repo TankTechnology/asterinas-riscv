@@ -5,7 +5,7 @@ use core::num::NonZeroUsize;
 use super::{MappedMemory, MappedVmo, RssDelta, VmMapping, Vmar};
 use crate::{
     fs::{
-        file::{FileLike, Mappable},
+        file::{FileLike, Mappable, MmapLifetime},
         ramfs::memfd::MemfdInode,
         vfs::path::Path,
     },
@@ -15,6 +15,19 @@ use crate::{
         perms::VmPerms,
     },
 };
+
+fn is_mmap_range_authorized(
+    ranges: &[core::ops::Range<usize>],
+    offset: usize,
+    size: usize,
+) -> bool {
+    let Some(end) = offset.checked_add(size) else {
+        return false;
+    };
+    ranges
+        .iter()
+        .any(|range| range.start <= offset && end <= range.end)
+}
 
 impl Vmar {
     /// Creates a mapping into the VMAR through a set of VMAR mapping options.
@@ -411,33 +424,71 @@ impl<'a> VmarMapOptions<'a> {
             )?;
         }
 
+        let mut map_vmo = |vmo: Arc<Vmo>,
+                           mapped_offset: usize,
+                           lifetime: Option<Arc<dyn MmapLifetime>>|
+         -> Result<MappedMemory> {
+            // For inode-backed files the mapped VMO must be the inode's page
+            // cache. Special files may map standalone VMOs.
+            if let Some(ref path) = path
+                && let Some(page_cache) = path.inode().page_cache()
+            {
+                debug_assert!(Arc::ptr_eq(&vmo, page_cache.as_vmo()));
+            }
+
+            let is_writable_tracked = if let Some(ref path) = path
+                && let Some(memfd_inode) = path.inode().downcast_ref::<MemfdInode>()
+                && is_shared
+                && may_perms.contains(VmPerms::MAY_WRITE)
+            {
+                memfd_inode.check_writable(perms, &mut may_perms)?;
+                true
+            } else {
+                false
+            };
+
+            Ok(MappedMemory::Vmo(MappedVmo::new(
+                vmo,
+                mapped_offset,
+                is_writable_tracked,
+                lifetime,
+            )?))
+        };
+
         // Parse the `Mappable` and prepare the `MappedMemory`.
         let (mapped_mem, io_mem) = match mappable {
-            Some(Mappable::Vmo(vmo)) => {
-                // For inode-backed files the mapped VMO must be the inode's page
-                // cache. Special files (e.g. the DRM char device) may map a
-                // standalone VMO that is not attached to any page cache, in which
-                // case the invariant does not apply.
-                if let Some(ref path) = path
-                    && let Some(page_cache) = path.inode().page_cache()
-                {
-                    debug_assert!(Arc::ptr_eq(&vmo, page_cache.as_vmo()));
-                }
-
-                let is_writable_tracked = if let Some(ref path) = path
-                    && let Some(memfd_inode) = path.inode().downcast_ref::<MemfdInode>()
-                    && is_shared
-                    && may_perms.contains(VmPerms::MAY_WRITE)
-                {
-                    memfd_inode.check_writable(perms, &mut may_perms)?;
-                    true
-                } else {
-                    false
+            Some(Mappable::Vmo(vmo)) => (map_vmo(vmo, vmo_offset, None)?, None),
+            Some(Mappable::VmoGuardedRanges { vmo, ranges }) => {
+                let Some(range) = ranges.iter().find(|range| {
+                    is_mmap_range_authorized(
+                        core::slice::from_ref(range.range()),
+                        vmo_offset,
+                        map_size,
+                    )
+                }) else {
+                    return_errno_with_message!(Errno::EACCES, "mmap range is not authorized");
                 };
-
-                let mapped_mem =
-                    MappedMemory::Vmo(MappedVmo::new(vmo, vmo_offset, is_writable_tracked)?);
-                (mapped_mem, None)
+                (
+                    map_vmo(vmo, vmo_offset, Some(range.lifetime().clone()))?,
+                    None,
+                )
+            }
+            Some(Mappable::VmoGuardedWindow {
+                vmo,
+                vmo_offset: window_offset,
+                size,
+                lifetime,
+            }) => {
+                let end = vmo_offset
+                    .checked_add(map_size)
+                    .ok_or_else(|| Error::with_message(Errno::EACCES, "mmap range overflows"))?;
+                if end > size {
+                    return_errno_with_message!(Errno::EACCES, "mmap range is not authorized");
+                }
+                let mapped_offset = window_offset
+                    .checked_add(vmo_offset)
+                    .ok_or_else(|| Error::with_message(Errno::EACCES, "VMO offset overflows"))?;
+                (map_vmo(vmo, mapped_offset, Some(lifetime))?, None)
             }
             Some(Mappable::IoMem(io_mem)) => (MappedMemory::Device, Some(io_mem)),
             Some(Mappable::Anonymous) => unreachable!("anonymous mappable was normalized above"),
@@ -524,5 +575,21 @@ impl<'a> VmarMapOptions<'a> {
 
         let vm_perms = self.perms | self.may_perms;
         vm_perms.check()
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::is_mmap_range_authorized;
+
+    #[ktest]
+    fn mmap_range_must_fit_one_authorized_extent() {
+        let ranges = [0x1000..0x3000, 0x5000..0x6000];
+        assert!(is_mmap_range_authorized(&ranges, 0x1000, 0x2000));
+        assert!(!is_mmap_range_authorized(&ranges, 0x2000, 0x4000));
+        assert!(!is_mmap_range_authorized(&ranges, 0, 0x1000));
+        assert!(!is_mmap_range_authorized(&ranges, usize::MAX, 2));
     }
 }

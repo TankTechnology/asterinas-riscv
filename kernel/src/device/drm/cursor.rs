@@ -6,6 +6,7 @@ use crate::prelude::*;
 
 pub(super) const MODE_CURSOR_BO: u32 = 0x01;
 pub(super) const MODE_CURSOR_MOVE: u32 = 0x02;
+pub(super) const CURSOR_SIZE: u32 = 64;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
@@ -163,7 +164,11 @@ pub(super) fn validate_cursor(
         });
     }
 
-    if request.width == 0 || request.height == 0 || request.width > 64 || request.height > 64 {
+    if request.width == 0
+        || request.height == 0
+        || request.width > CURSOR_SIZE
+        || request.height > CURSOR_SIZE
+    {
         return Err(CursorValidationError::InvalidDimensions);
     }
     if request.hot_x < 0

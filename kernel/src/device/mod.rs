@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-mod dri;
+mod drm;
 mod evdev;
 mod fb;
 pub(crate) mod kmsg;
@@ -17,6 +17,7 @@ pub mod tty;
 use alloc::borrow::Cow;
 
 use device_id::DeviceId;
+pub(crate) use drm::{DrmBackendKind, initialize_backend_kind};
 pub use mem::{getrandom, geturandom};
 pub use pty::{PtyMaster, PtySlave, new_pty_pair};
 pub use registry::lookup;
@@ -174,7 +175,7 @@ pub fn init_in_first_kthread() {
     misc::init_in_first_kthread();
     evdev::init_in_first_kthread();
     fb::init_in_first_kthread();
-    dri::init_in_first_kthread();
+    drm::init_in_first_kthread();
     r#loop::init_in_first_kthread();
 }
 

@@ -1,0 +1,8 @@
+[Unit]
+Description=Asterinas Debian DRM IGT test target
+# Booting this target (systemd.unit=asterinas-igt.target) skips
+# graphical.target, so the desktop session never starts and the DRM master
+# is free for the KMS tests.
+Requires=multi-user.target
+After=multi-user.target
+AllowIsolate=yes

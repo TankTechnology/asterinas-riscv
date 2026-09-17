@@ -4,7 +4,10 @@
 
 //! Opened File Handle
 
-use core::fmt::Display;
+use core::{
+    fmt::{Debug, Display},
+    ops::Range,
+};
 
 use ostd::io::IoMem;
 
@@ -172,6 +175,19 @@ pub trait FileLike: Pollable + Send + Sync + Any {
         None
     }
 
+    /// Returns whether this file is an audited SCM_RIGHTS ownership leaf.
+    ///
+    /// The default must remain conservative: a `FileLike` implementation may
+    /// strongly retain arbitrary file descriptions even when its shape looks
+    /// harmless.  Override this only after proving that every ownership chain
+    /// starting from this file terminates at a leaf, so no SCM_RIGHTS cycle
+    /// can involve it.  Note that per-open device objects should instead opt
+    /// in through [`crate::fs::file::inode_handle::PerOpenFileOps`], which the
+    /// SCM_RIGHTS classifier checks for `InodeHandle`-backed files.
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        false
+    }
+
     /// Returns the common state shared by file-like objects.
     fn common(&self) -> &FileCommon;
 
@@ -278,7 +294,6 @@ impl dyn FileLike {
         self.read_at(offset, &mut writer)
     }
 
-    #[expect(dead_code)]
     pub fn write_bytes_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
         let mut reader = VmReader::from(buf).to_fallible();
         self.write_at(offset, &mut reader)
@@ -427,11 +442,49 @@ impl StatusFlagsUpdate {
     }
 }
 
+/// A backing-lifetime token retained while a memory mapping exists.
+pub trait MmapLifetime: Debug + Send + Sync {}
+
+impl<T: Debug + Send + Sync> MmapLifetime for T {}
+
+/// One authorized VMO range together with the object lifetime it depends on.
+#[derive(Clone, Debug)]
+pub struct GuardedVmoRange {
+    range: Range<usize>,
+    lifetime: Arc<dyn MmapLifetime>,
+}
+
+impl GuardedVmoRange {
+    pub(crate) fn new(range: Range<usize>, lifetime: Arc<dyn MmapLifetime>) -> Self {
+        Self { range, lifetime }
+    }
+
+    pub(crate) fn range(&self) -> &Range<usize> {
+        &self.range
+    }
+
+    pub(crate) fn lifetime(&self) -> &Arc<dyn MmapLifetime> {
+        &self.lifetime
+    }
+}
+
 /// An object that may be memory mapped into the user address space.
 #[derive(Clone, Debug)]
 pub enum Mappable {
     /// A VMO (i.e., page cache).
     Vmo(Arc<Vmo>),
+    /// A VMO whose authorized ranges retain independent object lifetimes.
+    VmoGuardedRanges {
+        vmo: Arc<Vmo>,
+        ranges: Vec<GuardedVmoRange>,
+    },
+    /// A VMO window that retains the lifetime of its backing object.
+    VmoGuardedWindow {
+        vmo: Arc<Vmo>,
+        vmo_offset: usize,
+        size: usize,
+        lifetime: Arc<dyn MmapLifetime>,
+    },
     /// An MMIO region.
     IoMem(IoMem),
     /// Anonymous zero-filled memory.

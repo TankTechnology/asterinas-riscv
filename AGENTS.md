@@ -41,6 +41,25 @@ Key Makefile targets:
 
 Set `TARGET_ARCH` to `x86_64` (default), `riscv64`, or `loongarch64`.
 
+> [!WARNING]
+> **Never run `cargo clean` in the repository root.** Cargo treats `target/`
+> as purely its own and deletes the whole directory, but this project keeps
+> expensive non-Rust artifacts there:
+>
+> - `target/qemu-uboot/cache/u-boot-build/` — the U-Boot build
+>   (network clone + compile; rebuild via
+>   `tools/riscv/prepare_qemu_uboot_booti.sh`);
+> - `target/qemu-uboot/debian-root/` — prepared DTB and boot disk artifacts;
+> - `target/debian-riscv/*/rootfs/` — the signed Debian rootfs images
+>   (debootstrap + signed packages + network; rebuild via
+>   `tools/riscv/debian/rootfs/build_rootfs.sh --profile <name>`);
+> - `target/igt-riscv64/` — the cross-compiled IGT GPU Tools binaries
+>   (docker + network).
+>
+> To reclaim disk space, remove only the specific Cargo artifact directories
+> (`target/debug`, `target/osdk`, `target/<triple>`) or use
+> `cargo clean -p <crate>`.
+
 ## Toolchain
 
 - **Rust nightly** pinned in `rust-toolchain.toml`.

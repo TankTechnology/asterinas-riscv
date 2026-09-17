@@ -28,6 +28,7 @@ mod poll;
 
 pub mod descriptor;
 pub mod phy;
+#[cfg(any(target_arch = "riscv64", ktest))]
 pub mod queue;
 pub mod regs;
 pub mod select;

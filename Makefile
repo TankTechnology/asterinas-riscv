@@ -347,6 +347,15 @@ MEGREZ_PHYSICAL_GRAPHICS_MMC_INITRAMFS ?=
 MEGREZ_PHYSICAL_GRAPHICS_MMC_DTB ?=
 MEGREZ_PHYSICAL_GRAPHICS_OUTPUT ?= $(CURDIR)/target/current-main-physical-graphics/physical/evidence
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
+# TCG software rendering paints the full desktop tens of seconds after the
+# session reports READY, so the framebuffer capture needs a long retry window.
+DEBIAN_DESKTOP_COMMAND_TIMEOUT ?= 240
+# virgl guests additionally probe the GL renderer from the evidence script,
+# which needs more time under TCG than the base desktop profile.
+DEBIAN_DESKTOP_VIRGL_BOOT_TIMEOUT ?= 600
+# The IGT subset includes vblank-paced KMS tests; under TCG the whole run
+# takes far longer than a desktop boot.
+DEBIAN_DRM_IGT_BOOT_TIMEOUT ?= 1800
 DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
 DEBIAN_WEB_NETWORK_MODE ?=
 DEBIAN_WEB_NETWORK_EXPECT_FAILURE ?= none
@@ -704,6 +713,66 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		--output-directory "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" --smp 4 \
 		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
 
+.PHONY: test_riscv_debian_desktop_drm_gate
+test_riscv_debian_desktop_drm_gate:
+	@test -n "$(DEBIAN_KERNEL)" || { echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || { echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || { echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || { echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || { echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || { echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DESKTOP_DRM_GATE_OUTPUT)" || { echo "DEBIAN_DESKTOP_DRM_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.desktop_drm_gate \
+		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" --dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DESKTOP_DRM_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)" \
+		--command-timeout "$(DEBIAN_DESKTOP_COMMAND_TIMEOUT)"
+
+.PHONY: test_riscv_debian_desktop_drm_virgl_gate
+test_riscv_debian_desktop_drm_virgl_gate:
+	@test -n "$(DEBIAN_KERNEL)" || { echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || { echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || { echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || { echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || { echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || { echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DESKTOP_DRM_VIRGL_GATE_OUTPUT)" || { echo "DEBIAN_DESKTOP_DRM_VIRGL_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.desktop_drm_virgl_gate \
+		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" --dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DESKTOP_DRM_VIRGL_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout "$(DEBIAN_DESKTOP_VIRGL_BOOT_TIMEOUT)" \
+		--command-timeout "$(DEBIAN_DESKTOP_COMMAND_TIMEOUT)"
+
+.PHONY: test_riscv_debian_desktop_drm_igt_gate
+test_riscv_debian_desktop_drm_igt_gate:
+	@test -n "$(DEBIAN_KERNEL)" || { echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || { echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || { echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || { echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || { echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || { echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DESKTOP_DRM_IGT_GATE_OUTPUT)" || { echo "DEBIAN_DESKTOP_DRM_IGT_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.desktop_drm_igt_gate \
+		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" --dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DESKTOP_DRM_IGT_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout "$(DEBIAN_DRM_IGT_BOOT_TIMEOUT)" \
+		--command-timeout "$(DEBIAN_DESKTOP_COMMAND_TIMEOUT)"
+
 .PHONY: test_riscv_debian_debug_console_qemu_gate
 test_riscv_debian_debug_console_qemu_gate:
 	@test -n "$(DEBIAN_KERNEL)" || \
@@ -948,6 +1017,19 @@ test_riscv_drm_cursor: test_riscv_drm_cursor_unit
 		--boot-disk "$(DRM_CURSOR_BOOT_DISK)" \
 		--manifest "$(DRM_CURSOR_MANIFEST)" \
 		--output-directory "$(DRM_CURSOR_GATE_OUTPUT)"
+
+.PHONY: test_riscv_drm_firmware_unit
+test_riscv_drm_firmware_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_firmware_gate -v
+
+.PHONY: test_riscv_drm_firmware_preboard
+test_riscv_drm_firmware_preboard: test_riscv_drm_firmware_unit
+	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
+		python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_megrez_board_session -v
+	@bash tools/riscv/drm/build_firmware_gate.sh \
+		target/drm-firmware/initramfs.cpio.gz
 
 .PHONY: test_riscv_uboot_booti_unit
 test_riscv_uboot_booti_unit:

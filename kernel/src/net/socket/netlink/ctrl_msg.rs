@@ -60,6 +60,6 @@ impl NetlinkPktInfo {
 #[expect(clippy::upper_case_acronyms)]
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, TryFromInt)]
-pub(self) enum CControlType {
+enum CControlType {
     PKTINFO = 3,
 }

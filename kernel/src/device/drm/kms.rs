@@ -1,0 +1,719 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! KMS (Kernel Mode Setting) ioctls:
+//! framebuffer registration, CRTC control, cursor, and page-flip.
+//!
+//! These are only available on the primary node (`/dev/dri/card0`), not on
+//! the render node. The caller (`mod.rs`) must gate on `is_render_node()`
+//! before dispatching here.
+
+use ostd::mm::VmIo;
+
+use super::{
+    CONNECTOR_ID, CRTC_ID, DRM_MODE_CONNECTED, DRM_MODE_CONNECTOR_VIRTUAL,
+    DRM_MODE_ENCODER_VIRTUAL, DrmModeCrtc, DrmModeFbCmd, DrmModeFbCmd2, DrmModeFbDirtyCmd,
+    DrmModeGetConnector, DrmModeGetEncoder, ENCODER_ID, Framebuffer,
+    backend::{CursorGeometry, CursorScanoutBuffer, DamageRect, ScanoutBuffer},
+    build_mode,
+    cursor::{self, CursorBuffer, CursorImage, DrmModeCursor2},
+};
+use crate::{
+    context::current_userspace,
+    prelude::*,
+    util::ioctl::{InOutData, Ioctl},
+};
+
+const DRM_FORMAT_XRGB8888: u32 = 0x34325258;
+const DRM_FORMAT_ARGB8888: u32 = 0x34325241;
+const DRM_MODE_FB_MODIFIERS: u32 = 1 << 1;
+const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+const MAX_DIRTY_CLIPS: u32 = 4096;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmClipRect {
+    x1: u16,
+    y1: u16,
+    x2: u16,
+    y2: u16,
+}
+
+fn framebuffer_extent(
+    offset_bytes: u32,
+    pitch_bytes: u32,
+    width_pixels: u32,
+    height_pixels: u32,
+    bits_per_pixel: u32,
+) -> Option<usize> {
+    if width_pixels == 0 || height_pixels == 0 || bits_per_pixel == 0 {
+        return None;
+    }
+    let bytes_per_pixel = bits_per_pixel.checked_add(7)? / 8;
+    let row_bytes = (width_pixels as usize).checked_mul(bytes_per_pixel as usize)?;
+    let pitch_bytes = pitch_bytes as usize;
+    if pitch_bytes < row_bytes {
+        return None;
+    }
+    (offset_bytes as usize)
+        .checked_add(pitch_bytes.checked_mul(height_pixels as usize - 1)?)?
+        .checked_add(row_bytes)
+}
+
+/// ADDFB: register a framebuffer backed by a GEM/dumb-buffer handle.
+pub(super) fn add_fb(handle: &super::DriHandle, req: &DrmModeFbCmd) -> Result<u32> {
+    let tight_pitch = req
+        .width
+        .checked_mul(4)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer pitch overflows"))?;
+    if req.bpp != 32 || req.pitch != tight_pitch {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "only tightly packed 32-bpp framebuffers work"
+        );
+    }
+    let object_id = {
+        let inner = handle.inner.lock();
+        let Some(&object_id) = inner.handles.get(&req.handle) else {
+            ostd::warn!(
+                "drm: ADDFB unknown handle={} size={}x{} pitch={} bpp={} depth={}",
+                req.handle,
+                req.width,
+                req.height,
+                req.pitch,
+                req.bpp,
+                req.depth,
+            );
+            return_errno_with_message!(Errno::EINVAL, "unknown GEM handle");
+        };
+        let guard = handle.gpu_manager.gem_objects.lock();
+        let Some(obj) = guard.get(&object_id) else {
+            ostd::warn!("drm: ADDFB stale GEM object={}", object_id);
+            return_errno_with_message!(Errno::ENOENT, "stale GEM object");
+        };
+        let buf = &obj.buffer;
+        // The framebuffer may be smaller than the backing buffer (drivers
+        // over-allocate, e.g. llvmpipe aligns the height up); the fb only
+        // needs to fit within the buffer.
+        let needed = framebuffer_extent(0, req.pitch, req.width, req.height, req.bpp)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid framebuffer extent"))?;
+        if req.bpp != buf.bpp || needed > buf.size {
+            ostd::warn!(
+                "drm: ADDFB handle={} object={} needs={} bytes, GEM has {}; size={}x{} pitch={} bpp={}/{} depth={} buffer={:?}",
+                req.handle,
+                object_id,
+                needed,
+                buf.size,
+                req.width,
+                req.height,
+                req.pitch,
+                req.bpp,
+                buf.bpp,
+                req.depth,
+                buf,
+            );
+            return_errno_with_message!(Errno::EINVAL, "framebuffer does not fit in the GEM object");
+        }
+        object_id
+    };
+    let fb_id = handle.gpu_manager.allocate_framebuffer_id()?;
+    handle.gpu_manager.retain_gem_object(object_id)?;
+
+    let mut inner = handle.inner.lock();
+    inner.framebuffers.insert(
+        fb_id,
+        Framebuffer {
+            object_id,
+            width: req.width,
+            height: req.height,
+            offset: 0,
+            pitch: req.pitch,
+            pixel_format: DRM_FORMAT_XRGB8888,
+        },
+    );
+    Ok(fb_id)
+}
+
+/// ADDFB2: register a framebuffer with explicit format and modifier info.
+///
+/// The virtio-gpu 2D path supports only linear scanout.
+/// The framebuffer must fit within its GEM object,
+/// although the object itself may be larger than the framebuffer.
+pub(super) fn add_fb2(handle: &super::DriHandle, req: &DrmModeFbCmd2) -> Result<u32> {
+    let tight_pitch = req
+        .width
+        .checked_mul(4)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer pitch overflows"))?;
+    if req.pitches[0] != tight_pitch
+        || !matches!(req.pixel_format, DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888)
+    {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "only tightly packed XRGB8888/ARGB8888 framebuffers work"
+        );
+    }
+    if req.flags & !DRM_MODE_FB_MODIFIERS != 0
+        || req.modifier[0] != DRM_FORMAT_MOD_LINEAR
+        || req.handles[1..].iter().any(|&value| value != 0)
+        || req.pitches[1..].iter().any(|&value| value != 0)
+        || req.offsets[1..].iter().any(|&value| value != 0)
+        || req.modifier[1..].iter().any(|&value| value != 0)
+    {
+        return_errno_with_message!(Errno::EINVAL, "unsupported framebuffer layout or modifier");
+    }
+    let object_id = {
+        let inner = handle.inner.lock();
+        let Some(&object_id) = inner.handles.get(&req.handles[0]) else {
+            ostd::warn!(
+                "drm: ADDFB2 unknown handle={} size={}x{} pitch={} offset={} format={:#x}",
+                req.handles[0],
+                req.width,
+                req.height,
+                req.pitches[0],
+                req.offsets[0],
+                req.pixel_format,
+            );
+            return_errno_with_message!(Errno::EINVAL, "unknown GEM handle");
+        };
+        let guard = handle.gpu_manager.gem_objects.lock();
+        let Some(obj) = guard.get(&object_id) else {
+            ostd::warn!("drm: ADDFB2 stale GEM object={}", object_id);
+            return_errno_with_message!(Errno::ENOENT, "stale GEM object");
+        };
+        let buf = &obj.buffer;
+        // The framebuffer may be smaller than the backing buffer (drivers
+        // over-allocate, e.g. llvmpipe aligns the height to 32); it only
+        // needs to fit: last-row start + one row of pixels within the buffer.
+        let needed = framebuffer_extent(req.offsets[0], req.pitches[0], req.width, req.height, 32)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid framebuffer extent"))?;
+        if needed > buf.size {
+            ostd::warn!(
+                "drm: ADDFB2 handle={} object={} needs={} bytes, GEM has {}; size={}x{} pitch={} offset={} buffer={:?}",
+                req.handles[0],
+                object_id,
+                needed,
+                buf.size,
+                req.width,
+                req.height,
+                req.pitches[0],
+                req.offsets[0],
+                buf,
+            );
+            return_errno_with_message!(Errno::EINVAL, "framebuffer does not fit in the GEM object");
+        }
+        object_id
+    };
+    let fb_id = handle.gpu_manager.allocate_framebuffer_id()?;
+    handle.gpu_manager.retain_gem_object(object_id)?;
+
+    let mut inner = handle.inner.lock();
+    inner.framebuffers.insert(
+        fb_id,
+        Framebuffer {
+            object_id,
+            width: req.width,
+            height: req.height,
+            offset: req.offsets[0],
+            pitch: req.pitches[0],
+            pixel_format: req.pixel_format,
+        },
+    );
+    Ok(fb_id)
+}
+
+/// RMFB: unregister a framebuffer.
+pub(super) fn rm_fb(handle: &super::DriHandle, fb_id: u32) -> Result<()> {
+    let mut kms_state = handle.gpu_manager.kms_state.lock();
+    let (framebuffer, was_active) = {
+        let inner = handle.inner.lock();
+        let framebuffer = *inner
+            .framebuffers
+            .get(&fb_id)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
+        let was_active = kms_state.scanout_matches(handle.file_id, fb_id);
+        (framebuffer, was_active)
+    };
+
+    if was_active {
+        handle.gpu_manager.disable_scanout()?;
+    }
+
+    let mut inner = handle.inner.lock();
+    inner.framebuffers.remove(&fb_id);
+    if was_active {
+        kms_state.scanout = None;
+        handle.gpu_manager.property_manager.reset_atomic_state();
+    }
+    drop(inner);
+    handle
+        .gpu_manager
+        .release_gem_object(framebuffer.object_id)?;
+    Ok(())
+}
+
+/// SETCRTC: set the mode and scanout framebuffer for a CRTC.
+pub(super) fn set_crtc(
+    handle: &super::DriHandle,
+    kms_state: &mut super::KmsState,
+    req: &DrmModeCrtc,
+) -> Result<()> {
+    if req.crtc_id != CRTC_ID {
+        return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
+    }
+    if req.fb_id == 0 {
+        handle.gpu_manager.disable_scanout()?;
+        kms_state.scanout = None;
+        handle.gpu_manager.property_manager.reset_atomic_state();
+        return Ok(());
+    }
+    let framebuffer = *handle
+        .inner
+        .lock()
+        .framebuffers
+        .get(&req.fb_id)
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
+    if req.mode_valid == 0
+        || u32::from(req.mode.hdisplay) != framebuffer.width
+        || u32::from(req.mode.vdisplay) != framebuffer.height
+    {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "legacy mode and framebuffer dimensions differ"
+        );
+    }
+    let mode = handle
+        .gpu_manager
+        .property_manager
+        .create_kernel_blob(req.mode.as_bytes().to_vec())?;
+    present_fb(handle, kms_state, req.fb_id)?;
+    handle
+        .gpu_manager
+        .property_manager
+        .set_legacy_modeset_state(
+            Some(mode),
+            Some(req.fb_id),
+            framebuffer.width,
+            framebuffer.height,
+        );
+    Ok(())
+}
+
+/// Presents a framebuffer through the active display backend.
+pub(super) fn present_fb(
+    handle: &super::DriHandle,
+    kms_state: &mut super::KmsState,
+    fb_id: u32,
+) -> Result<()> {
+    let framebuffer = prepare_fb(handle, fb_id)?;
+    present_prepared_fb(
+        &handle.gpu_manager,
+        kms_state,
+        handle.file_id,
+        fb_id,
+        framebuffer,
+    )
+}
+
+/// Framebuffer data pinned for a synchronous or asynchronous presentation.
+pub(super) struct PreparedFramebuffer {
+    scanout: ScanoutBuffer,
+}
+
+impl PreparedFramebuffer {
+    pub(super) fn dimensions(&self) -> (u32, u32) {
+        self.scanout.dimensions()
+    }
+}
+
+/// Pins and validates a framebuffer before commit.
+pub(super) fn prepare_fb(handle: &super::DriHandle, fb_id: u32) -> Result<PreparedFramebuffer> {
+    let (size_bytes, backing_owner, source_offset, pitch, width, height) = {
+        let inner = handle.inner.lock();
+        let fb = inner
+            .framebuffers
+            .get(&fb_id)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
+        let guard = handle.gpu_manager.gem_objects.lock();
+        let obj = guard
+            .get(&fb.object_id)
+            .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale GEM object"))?;
+        debug_assert!(matches!(
+            fb.pixel_format,
+            DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888
+        ));
+        let size = framebuffer_extent(0, fb.pitch, fb.width, fb.height, 32)
+            .and_then(|size| u32::try_from(size).ok())
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer size overflows"))?;
+        let source_offset = obj
+            .buffer
+            .offset
+            .checked_add(fb.offset as usize)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer offset overflows"))?;
+        (
+            size,
+            obj.buffer.allocation.clone(),
+            source_offset,
+            fb.pitch as usize,
+            fb.width,
+            fb.height,
+        )
+    };
+    let source = handle.gpu_manager.pool_vmo()?;
+    let scanout = ScanoutBuffer::new(
+        source,
+        source_offset,
+        pitch,
+        size_bytes,
+        backing_owner,
+        width,
+        height,
+    );
+    Ok(PreparedFramebuffer { scanout })
+}
+
+/// Applies a prepared framebuffer to scanout and publishes the KMS state.
+pub(super) fn present_prepared_fb(
+    gpu_manager: &super::GpuManager,
+    kms_state: &mut super::KmsState,
+    file_id: u64,
+    fb_id: u32,
+    framebuffer: PreparedFramebuffer,
+) -> Result<()> {
+    let (width, height) = framebuffer.dimensions();
+    scanout_prepared_fb(gpu_manager, framebuffer)?;
+    kms_state.commit_scanout(file_id, fb_id, width, height);
+    Ok(())
+}
+
+/// Applies a prepared framebuffer to hardware without changing logical KMS state.
+pub(super) fn scanout_prepared_fb(
+    gpu_manager: &super::GpuManager,
+    framebuffer: PreparedFramebuffer,
+) -> Result<()> {
+    gpu_manager
+        .scanout_backend
+        .present_framebuffer(framebuffer.scanout)?;
+    gpu_manager.vblank_clock.start();
+    Ok(())
+}
+
+/// Validates and copies the userspace damage list for a framebuffer.
+pub(super) fn validate_dirty_fb(
+    framebuffer: &PreparedFramebuffer,
+    request: DrmModeFbDirtyCmd,
+) -> Result<Vec<DamageRect>> {
+    if request.flags != 0 {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "dirty framebuffer flags are unsupported");
+    }
+    read_damage_rects(request, framebuffer.dimensions())
+}
+
+/// Copies only the validated damage into the active scanout.
+pub(super) fn dirty_prepared_fb(
+    gpu_manager: &super::GpuManager,
+    framebuffer: PreparedFramebuffer,
+    damage: &[DamageRect],
+) -> Result<()> {
+    gpu_manager
+        .scanout_backend
+        .dirty_framebuffer(framebuffer.scanout, damage)
+}
+
+fn read_damage_rects(
+    request: DrmModeFbDirtyCmd,
+    (width, height): (u32, u32),
+) -> Result<Vec<DamageRect>> {
+    if request.num_clips == 0 {
+        return Ok(Vec::new());
+    }
+    if request.num_clips > MAX_DIRTY_CLIPS {
+        return_errno_with_message!(Errno::EINVAL, "too many dirty framebuffer clips");
+    }
+    let base = usize::try_from(request.clips_ptr)
+        .map_err(|_| Error::with_message(Errno::EFAULT, "dirty clip pointer overflows"))?;
+    let mut damage = Vec::with_capacity(request.num_clips as usize);
+    let full_area = u64::from(width) * u64::from(height);
+    let mut total_area = 0u64;
+    let mut collapse_to_full = false;
+    for index in 0..request.num_clips as usize {
+        let offset = index
+            .checked_mul(size_of::<DrmClipRect>())
+            .and_then(|offset| base.checked_add(offset))
+            .ok_or_else(|| Error::with_message(Errno::EFAULT, "dirty clip pointer overflows"))?;
+        let clip: DrmClipRect = current_userspace!().read_val(offset)?;
+        let rect = validate_damage_rect(clip, width, height)?;
+        if !collapse_to_full {
+            total_area = total_area.saturating_add(rect.area());
+            collapse_to_full = total_area >= full_area;
+            if collapse_to_full {
+                damage.clear();
+            } else {
+                damage.push(rect);
+            }
+        }
+    }
+    if collapse_to_full {
+        Ok(vec![DamageRect::new(0, 0, width, height, width, height)?])
+    } else {
+        Ok(damage)
+    }
+}
+
+fn validate_damage_rect(clip: DrmClipRect, width: u32, height: u32) -> Result<DamageRect> {
+    DamageRect::new(
+        u32::from(clip.x1),
+        u32::from(clip.y1),
+        u32::from(clip.x2),
+        u32::from(clip.y2),
+        width,
+        height,
+    )
+}
+
+/// GETCRTC: read back the current CRTC state.
+pub(super) fn get_crtc(
+    handle: &super::DriHandle,
+    cmd: Ioctl<b'd', 0xa1, true, InOutData<DrmModeCrtc>>,
+) -> Result<i32> {
+    let req = cmd.read()?;
+    if req.crtc_id != CRTC_ID {
+        return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
+    }
+    let kms_state = handle.gpu_manager.kms_state.lock();
+    let (fb_id, mode_valid, current_width, current_height) =
+        kms_state.crtc_snapshot_for(handle.file_id);
+    cmd.write(&DrmModeCrtc {
+        crtc_id: CRTC_ID,
+        fb_id: fb_id.unwrap_or(0),
+        mode_valid: u32::from(mode_valid),
+        mode: build_mode(current_width, current_height),
+        ..Default::default()
+    })?;
+    Ok(0)
+}
+
+/// GETCONNECTOR: enumerate modes and encoder for a connector.
+pub(super) fn get_connector(
+    handle: &super::DriHandle,
+    cmd: Ioctl<b'd', 0xa7, true, InOutData<DrmModeGetConnector>>,
+) -> Result<i32> {
+    let mut conn = cmd.read()?;
+    if conn.connector_id != CONNECTOR_ID {
+        return_errno_with_message!(Errno::EINVAL, "unknown connector id");
+    }
+    let mode_capacity = conn.count_modes;
+    let encoder_capacity = conn.count_encoders;
+    conn.count_modes = 1;
+    conn.count_props = 0;
+    conn.count_encoders = 1;
+    conn.encoder_id = ENCODER_ID;
+    conn.connector_type = DRM_MODE_CONNECTOR_VIRTUAL;
+    conn.connector_type_id = 1;
+    conn.connection = DRM_MODE_CONNECTED;
+    conn.mm_width = 0;
+    conn.mm_height = 0;
+    conn.subpixel = 0;
+    conn.pad = 0;
+    if conn.modes_ptr != 0 && mode_capacity >= 1 {
+        let (width, height) = handle.gpu_manager.scanout_backend.dimensions();
+        let mode = build_mode(width, height);
+        current_userspace!().write_val(conn.modes_ptr as usize, &mode)?;
+    }
+    if conn.encoders_ptr != 0 && encoder_capacity >= 1 {
+        current_userspace!().write_val(conn.encoders_ptr as usize, &ENCODER_ID)?;
+    }
+    cmd.write(&conn)?;
+    Ok(0)
+}
+
+/// GETENCODER: return encoder properties.
+pub(super) fn get_encoder(
+    cmd: Ioctl<b'd', 0xa6, true, InOutData<DrmModeGetEncoder>>,
+) -> Result<i32> {
+    let mut enc = cmd.read()?;
+    if enc.encoder_id != ENCODER_ID {
+        return_errno_with_message!(Errno::EINVAL, "unknown encoder id");
+    }
+    enc.encoder_type = DRM_MODE_ENCODER_VIRTUAL;
+    enc.crtc_id = CRTC_ID;
+    enc.possible_crtcs = 1;
+    enc.possible_clones = 0;
+    cmd.write(&enc)?;
+    Ok(0)
+}
+
+/// CURSOR / CURSOR2: validate and apply one hardware-cursor update.
+pub(super) fn set_cursor(handle: &super::DriHandle, request: DrmModeCursor2) -> Result<()> {
+    let cursor_backend =
+        handle.gpu_manager.cursor_backend.as_ref().ok_or_else(|| {
+            Error::with_message(Errno::EOPNOTSUPP, "hardware cursor is unavailable")
+        })?;
+    let _cursor_operation = handle.cursor_operation.lock();
+    let (update, position, backing) = {
+        let inner = handle.inner.lock();
+        let buffer = if request.flags & cursor::MODE_CURSOR_BO != 0 && request.handle != 0 {
+            let object_id = inner.handles.get(&request.handle);
+            object_id.and_then(|object_id| {
+                let objects = handle.gpu_manager.gem_objects.lock();
+                objects.get(object_id).map(|object| {
+                    let bytes_per_pixel = object.buffer.bpp.div_ceil(8);
+                    CursorBuffer {
+                        width: object.buffer.width,
+                        height: object.buffer.height,
+                        pitch: object.buffer.width.saturating_mul(bytes_per_pixel),
+                        bpp: object.buffer.bpp,
+                        size: object.buffer.size,
+                    }
+                })
+            })
+        } else {
+            None
+        };
+        let update = cursor::validate_cursor(request, buffer, CRTC_ID)
+            .map_err(|_| Error::with_message(Errno::EINVAL, "invalid cursor request"))?;
+        let position = inner.cursor.position_for(update);
+        let backing = match update.image {
+            Some(CursorImage::Buffer {
+                handle: gem_handle, ..
+            }) => {
+                let object_id = inner.handles.get(&gem_handle).ok_or_else(|| {
+                    Error::with_message(Errno::EINVAL, "unknown cursor buffer handle")
+                })?;
+                let objects = handle.gpu_manager.gem_objects.lock();
+                let object = objects
+                    .get(object_id)
+                    .ok_or_else(|| Error::with_message(Errno::ENOENT, "stale cursor GEM object"))?;
+                Some((
+                    object.buffer.offset,
+                    u32::try_from(object.buffer.size).map_err(|_| {
+                        Error::with_message(Errno::EINVAL, "cursor buffer is too large")
+                    })?,
+                    object.buffer.allocation.clone(),
+                ))
+            }
+            _ => None,
+        };
+        (update, position, backing)
+    };
+
+    let resource_id = match update.image {
+        Some(CursorImage::Buffer {
+            width,
+            height,
+            hot_x,
+            hot_y,
+            ..
+        }) => {
+            let (offset, size, backing_owner) = backing.ok_or_else(|| {
+                Error::with_message(Errno::EINVAL, "cursor buffer has no backing")
+            })?;
+            let source = handle.gpu_manager.pool_vmo()?;
+            Some(cursor_backend.update_cursor(CursorScanoutBuffer::new(
+                source,
+                offset,
+                size,
+                backing_owner,
+                CursorGeometry {
+                    width,
+                    height,
+                    hot_x,
+                    hot_y,
+                },
+                position,
+            ))?)
+        }
+        Some(CursorImage::Hide) => {
+            cursor_backend.hide_cursor(position.x, position.y)?;
+            None
+        }
+        None => {
+            cursor_backend.move_cursor(position.x, position.y)?;
+            None
+        }
+    };
+
+    handle.inner.lock().cursor.commit(update, resource_id);
+    Ok(())
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::{DrmClipRect, framebuffer_extent, validate_damage_rect};
+    use crate::device::drm::{ActiveFramebuffer, KmsState};
+
+    #[ktest]
+    fn framebuffer_extent_rejects_empty_or_overlapping_rows() {
+        assert_eq!(framebuffer_extent(0, 256, 64, 0, 32), None);
+        assert_eq!(framebuffer_extent(0, 255, 64, 64, 32), None);
+    }
+
+    #[ktest]
+    fn dirty_clip_must_be_nonempty_and_inside_the_framebuffer() {
+        assert!(
+            validate_damage_rect(
+                DrmClipRect {
+                    x1: 10,
+                    y1: 20,
+                    x2: 30,
+                    y2: 40,
+                },
+                1920,
+                1080,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_damage_rect(
+                DrmClipRect {
+                    x1: 30,
+                    y1: 20,
+                    x2: 30,
+                    y2: 40,
+                },
+                1920,
+                1080,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_damage_rect(
+                DrmClipRect {
+                    x1: 10,
+                    y1: 20,
+                    x2: 1921,
+                    y2: 40,
+                },
+                1920,
+                1080,
+            )
+            .is_err()
+        );
+    }
+
+    #[ktest]
+    fn framebuffer_extent_includes_pitch_and_offset() {
+        assert_eq!(framebuffer_extent(128, 512, 64, 2, 32), Some(896));
+    }
+
+    #[ktest]
+    fn device_scanout_distinguishes_per_file_framebuffer_ids() {
+        let mut state = KmsState::new(1280, 800);
+        state.commit_scanout(11, 7, 640, 480);
+
+        assert!(state.scanout_matches(11, 7));
+        assert!(!state.scanout_matches(12, 7));
+        assert!(state.scanout_owned_by(11));
+        assert!(!state.scanout_owned_by(12));
+        assert_eq!(
+            state.scanout,
+            Some(ActiveFramebuffer {
+                owner_file_id: 11,
+                fb_id: 7,
+            })
+        );
+        assert_eq!((state.current_width, state.current_height), (640, 480));
+        assert_eq!(state.crtc_snapshot_for(11), (Some(7), true, 640, 480));
+        assert_eq!(state.crtc_snapshot_for(12), (None, true, 640, 480));
+    }
+}

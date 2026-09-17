@@ -14,10 +14,15 @@
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 pub use clock_gettime::ClockId;
+pub(crate) use eventfd::EventFile;
 use ostd::{arch::cpu::context::UserContext, timer::Jiffies, user::UserContextApi};
 pub use timer_create::create_timer;
 
 use crate::{cpu::LinuxAbi, prelude::*};
+
+static TRACE_SYSCALL_ERRORS: AtomicBool = AtomicBool::new(false);
+
+aster_cmdline::define_flag_param!("asterinas.trace_syscall_errors", TRACE_SYSCALL_ERRORS);
 
 const SYSCALL_PROFILE_SLOTS: usize = 21;
 const SYSCALL_PROFILE_LOG_INTERVAL: u64 = 16_384;
@@ -356,6 +361,7 @@ mod munmap;
 mod name_to_handle_at;
 mod nanosleep;
 mod open;
+mod open_tree;
 mod openat2;
 mod pause;
 mod personality;
@@ -708,8 +714,28 @@ pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
             }
         }
         Err(err) => {
-            debug!("syscall return error: {:?}", err);
             let errno = err.error() as i32;
+            if TRACE_SYSCALL_ERRORS.load(Ordering::Relaxed) {
+                warn!(
+                    "[pid={}][tid={}][syscall={}][args={:x?}] returned errno={}: {:?}",
+                    ctx.process.pid(),
+                    ctx.posix_thread.tid(),
+                    syscall_frame.syscall_number,
+                    syscall_frame.args,
+                    errno,
+                    err
+                );
+            } else {
+                debug!(
+                    "[pid={}][tid={}][syscall={}][args={:x?}] returned errno={}: {:?}",
+                    ctx.process.pid(),
+                    ctx.posix_thread.tid(),
+                    syscall_frame.syscall_number,
+                    syscall_frame.args,
+                    errno,
+                    err
+                );
+            }
             user_ctx.set_syscall_ret((-errno) as usize);
             diagnostics::complete(ctx, diagnostics::Outcome::Error(-errno as isize));
         }

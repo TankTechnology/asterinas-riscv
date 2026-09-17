@@ -74,6 +74,7 @@ MILESTONES = {
 FINAL_MILESTONE_MARKERS = {
     "generic": MILESTONES["userspace"],
     "firmware-framebuffer": "Registered firmware framebuffer",
+    "firmware-drm": "ASTERINAS_DRM_FIRMWARE_R1_READY",
     "installer": "DEBIAN_INSTALL_PASS",
     "verifier": "DEBIAN_VERIFY_PASS",
     "debian-shell-gate": "__DEBIAN_ROOTFS_SHELL_READY__",
@@ -913,6 +914,24 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             p.error(
                 "debug-root-console requires exact systemd and debug-console selectors"
             )
+    if args.final_profile == "firmware-drm":
+        if not args.firmware_framebuffer:
+            p.error("--final-profile firmware-drm requires --firmware-framebuffer")
+        if not args.require_recovery:
+            p.error("--final-profile firmware-drm requires --require-recovery")
+        reboot_values = [
+            token.removeprefix("asterinas.reboot_after=")
+            for token in args.bootargs.split()
+            if token.startswith("asterinas.reboot_after=")
+        ]
+        if (
+            len(reboot_values) != 1
+            or not reboot_values[0].isdigit()
+            or int(reboot_values[0]) <= 0
+        ):
+            p.error("firmware-drm recovery requires one positive asterinas.reboot_after")
+        if args.milestone_timeout <= int(reboot_values[0]):
+            p.error("firmware-drm milestone timeout must exceed reboot_after")
     return args
 
 
@@ -1211,7 +1230,12 @@ def main(argv: list[str]) -> int:
             retained = session.debug_console_transcript.decode(
                 "utf-8", errors="replace"
             )
-            if not _has_recovery_epoch(retained):
+            # The debug-console transcript only exists for the
+            # debug-root-console profile; other profiles observe the recovery
+            # epoch in the milestone-read buffer instead.
+            if not _has_recovery_epoch(retained) and not _has_recovery_epoch(
+                recovery_window
+            ):
                 remaining = end + RECOVERY_GRACE_SECONDS - time.monotonic()
                 if remaining <= 0:
                     return 2

@@ -1,8 +1,8 @@
 [Unit]
 Description=Xfce desktop session (xfce4-session inside dbus-run-session)
 Documentation=https://docs.xfce.org/xfce/xfce4-session/start
-After=xorg.service dbus.service
-Requires=xorg.service
+After=xorg.service dbus.service gl-renderer-bench.service
+Requires=xorg.service gl-renderer-bench.service
 PartOf=graphical.target
 StartLimitIntervalSec=0
 

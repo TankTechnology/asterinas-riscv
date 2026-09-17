@@ -159,7 +159,7 @@ impl IrqLine {
         ordinary_callbacks_empty && phased_callback_empty
     }
 
-    #[cfg(ktest)]
+    #[cfg(all(ktest, target_arch = "riscv64"))]
     pub(crate) fn has_claim_time_phased_snapshot(&self) -> bool {
         self.phased_callback
             .as_ref()

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use macros::impl_socket_options;
+use macros::{impl_socket_options, impl_write_only_socket_options};
 
 use super::util::{LingerOption, SocketTimeout};
 use crate::{
@@ -34,7 +34,6 @@ impl_socket_options!(
     pub struct ReusePort(bool);
     pub struct PassCred(bool);
     pub struct AttachFilter(Arc<Vec<SockFilter>>);
-    pub struct DetachFilter(i32);
     pub struct PeerCred(CUserCred);
     pub struct AcceptConn(bool);
     pub struct SendBufForce(u32);
@@ -43,4 +42,8 @@ impl_socket_options!(
     pub struct Timestamp(bool);
     pub struct SockDomain(i32);
     pub struct SockProtocol(i32);
+);
+
+impl_write_only_socket_options!(
+    pub struct DetachFilter(i32);
 );

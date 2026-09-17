@@ -163,11 +163,6 @@ pub trait InodeExt {
     ///
     /// If the tracker does not exist for this inode, it will be created.
     fn write_access_tracker_or_init(&self) -> &WriteAccessTracker;
-
-    /// Returns a reference to the write-access tracker.
-    ///
-    /// If the tracker does not exist for this inode, a [`None`] will be returned.
-    fn write_access_tracker(&self) -> Option<&WriteAccessTracker>;
 }
 
 impl InodeExt for dyn Inode {
@@ -201,9 +196,5 @@ impl InodeExt for dyn Inode {
             .call_once(|| ThinBox::new_unsize(WriteAccessTracker::new()))
             .downcast_ref()
             .unwrap()
-    }
-
-    fn write_access_tracker(&self) -> Option<&WriteAccessTracker> {
-        Some(self.extension().group3().get()?.downcast_ref().unwrap())
     }
 }

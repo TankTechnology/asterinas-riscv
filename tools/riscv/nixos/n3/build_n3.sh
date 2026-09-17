@@ -83,11 +83,12 @@ cat > "${ROOTFS}/etc/resolv.conf" <<'EOF'
 nameserver 10.0.2.3
 EOF
 
-# Nix configuration: single-user daemon (empty build-users-group), no sandbox
-# (CLONE_NEWNET is a known kernel gap, NIXOS-N3-preflight.md), no seccomp
-# filter, no substituters by default (offline first install).
+# Nix configuration: single-user daemon (empty build-users-group), full
+# sandbox (NIXOS-N6: exercises the kernel namespace matrix — NEWNS/NEWPID/
+# NEWIPC/NEWUTS/NEWUSER/NEWNET). No seccomp filter. Substitutions are done
+# via explicit `nix copy --from` (no substituter configured).
 cat > "${ROOTFS}/etc/nix/nix.conf" <<'EOF'
-sandbox = false
+sandbox = true
 build-users-group =
 experimental-features = nix-command flakes
 filter-syscalls = false
