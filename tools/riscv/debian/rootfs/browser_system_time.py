@@ -12,6 +12,7 @@ import json
 import math
 import os
 from pathlib import Path
+import threading
 import time
 
 
@@ -281,10 +282,7 @@ def interval(
         "per-thread-runnable-wait",
         "physical-hdmi-scanout",
     ]
-    if (
-        before.memory_available_kib is None
-        or after.memory_available_kib is None
-    ):
+    if before.memory_available_kib is None or after.memory_available_kib is None:
         unsupported.append("system-memory-available")
     else:
         system_deltas["memory_available_kib_before"] = before.memory_available_kib
@@ -459,6 +457,8 @@ def run_sampler(
     clock_ns: Callable[[], int] = time.monotonic_ns,
     sleep_fn: Callable[[float], None] = time.sleep,
     clock_ticks_per_second: int | None = None,
+    ready_fn: Callable[[], object] | None = None,
+    stop_event: threading.Event | None = None,
 ) -> dict[str, object]:
     """Publishes bounded Firefox/Xorg CPU intervals to an exclusive JSON file."""
 
@@ -483,11 +483,17 @@ def run_sampler(
     ):
         raise TimeEvidenceError("process identities are invalid")
 
-    snapshots = []
-    for sample_index in range(samples + 1):
-        snapshots.append(read_snapshot(proc_root, pids, clock_ns()))
-        if sample_index < samples:
+    snapshots = [read_snapshot(proc_root, pids, clock_ns())]
+    if ready_fn is not None:
+        ready_fn()
+    for _sample_index in range(samples):
+        if stop_event is None:
             sleep_fn(interval_seconds)
+        else:
+            stop_event.wait(interval_seconds)
+        snapshots.append(read_snapshot(proc_root, pids, clock_ns()))
+        if stop_event is not None and stop_event.is_set():
+            break
 
     ticks_per_second = (
         os.sysconf("SC_CLK_TCK")
@@ -496,7 +502,7 @@ def run_sampler(
     )
     report: dict[str, object] = {
         "schema_version": 1,
-        "samples": samples,
+        "samples": len(snapshots) - 1,
         "process_ids": list(pids),
         "intervals": [
             interval(before, after, clock_ticks_per_second=ticks_per_second)
@@ -546,6 +552,8 @@ def run_thread_sampler(
     clock_ns: Callable[[], int] = time.monotonic_ns,
     sleep_fn: Callable[[float], None] = time.sleep,
     clock_ticks_per_second: int | None = None,
+    ready_fn: Callable[[], object] | None = None,
+    stop_event: threading.Event | None = None,
 ) -> dict[str, object]:
     """Publishes TID CPU intervals after a real, bounded READY condition."""
 
@@ -564,11 +572,17 @@ def run_thread_sampler(
         raise TimeEvidenceError("thread evidence output is not exclusive")
 
     ready_marker_ns = wait_for_ready_marker(ready_marker_path, timeout_seconds=600)
-    snapshots = []
-    for index in range(samples + 1):
-        snapshots.append(read_thread_snapshot(proc_root, pid, clock_ns()))
-        if index < samples:
+    snapshots = [read_thread_snapshot(proc_root, pid, clock_ns())]
+    if ready_fn is not None:
+        ready_fn()
+    for _index in range(samples):
+        if stop_event is None:
             sleep_fn(interval_seconds)
+        else:
+            stop_event.wait(interval_seconds)
+        snapshots.append(read_thread_snapshot(proc_root, pid, clock_ns()))
+        if stop_event is not None and stop_event.is_set():
+            break
 
     hz = (
         os.sysconf("SC_CLK_TCK")
@@ -672,7 +686,7 @@ def run_thread_sampler(
         "process_starttime_ticks": snapshots[0]["process_starttime_ticks"],
         "clock_ticks_per_second": hz,
         "ready_marker_ns": ready_marker_ns,
-        "samples": samples,
+        "samples": len(snapshots) - 1,
         "affinity": affinity,
         "intervals": intervals,
         "limitations": sorted(limitations),

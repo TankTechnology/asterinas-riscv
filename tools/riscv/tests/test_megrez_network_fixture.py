@@ -13,6 +13,7 @@ import subprocess
 import threading
 import unittest
 
+from tools.riscv.debian.rootfs.browser_workload_contract import MODES
 from tools.riscv.megrez_network_fixture import (
     BROWSER_API,
     BROWSER_API_PATH,
@@ -48,11 +49,22 @@ from tools.riscv.megrez_network_fixture import (
     FixtureConfig,
     FixtureServer,
     _parse_args,
+    is_successful_workload_summary,
     is_successful_summary,
 )
 
+RUN_ID = "0123456789abcdef0123456789abcdef"
+
 
 class MegrezNetworkFixtureTests(unittest.TestCase):
+    def test_browser_and_guest_contract_share_exact_mode_shapes(self) -> None:
+        for mode, config in MODES.items():
+            encoded = (
+                f"{mode}: {{scale: {config['scale']}, nodes: {config['nodes']}, "
+                f"resources: {config['resources']}, contexts: {config['contexts']}}}"
+            ).encode()
+            self.assertIn(encoded, BROWSER_WORKLOAD)
+
     def request(
         self, server: FixtureServer, path: str = FIXTURE_PATH
     ) -> tuple[int, bytes, dict[str, str]]:
@@ -190,7 +202,9 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
                     status, body, headers = self.request(server, path)
                     self.assertEqual(status, 200)
                     self.assertEqual(body, expected_body)
-                    self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
+                    self.assertEqual(
+                        headers["content-type"], "text/html; charset=utf-8"
+                    )
                     self.assertEqual(self.request(server, path + "?q=x")[0], 400)
             self.assertEqual(server.summary()["request_count"], 0)
 
@@ -206,10 +220,13 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
             self.assertNotIn(contaminant, BROWSER_PERF)
 
     def test_serves_composite_workload_and_bounded_resources(self) -> None:
-        query = "mode=smoke&phase=resource&sequence=7&pass=cold"
-        image_query = "mode=profile&phase=image&sequence=3&pass=warm"
+        query = f"mode=smoke&phase=resource&sequence=7&pass=cold&run={RUN_ID}"
+        image_query = f"mode=profile&phase=image&sequence=3&pass=cold&run={RUN_ID}"
         with FixtureServer(FixtureConfig("127.0.0.1", 0)) as server:
-            status, page, headers = self.request(server, BROWSER_WORKLOAD_PATH)
+            status, page, headers = self.request(
+                server, f"{BROWSER_WORKLOAD_PATH}?run={RUN_ID}"
+            )
+            self.assertEqual(self.request(server, BROWSER_WORKLOAD_PATH)[0], 400)
             resource_status, resource, resource_headers = self.request(
                 server, f"{BROWSER_WORKLOAD_RESOURCE_PATH}?{query}"
             )
@@ -221,7 +238,13 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
                 "phase=resource&mode=smoke&sequence=7&pass=cold",
                 "mode=smoke&phase=unknown&sequence=7&pass=cold",
                 "mode=smoke&phase=resource&sequence=256&pass=cold",
+                "mode=smoke&phase=resource&sequence=8&pass=cold",
+                "mode=smoke&phase=image&sequence=4&pass=cold",
+                "mode=smoke&phase=image&sequence=0&pass=warm",
+                "mode=smoke&phase=context&sequence=2&pass=cold",
+                "mode=smoke&phase=context&sequence=0&pass=warm",
                 "mode=smoke&phase=resource&sequence=7&pass=cold&extra=1",
+                "mode=smoke&phase=resource&sequence=7&pass=cold&run=bad",
             ):
                 separator = "?" if invalid else ""
                 self.assertEqual(
@@ -240,9 +263,9 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
         self.assertEqual(resource_headers["cache-control"], "no-store")
         self.assertEqual((image_status, image), (200, BROWSER_IMAGE))
         self.assertEqual(image_headers["content-type"], "image/png")
-        self.assertEqual(image_headers["cache-control"], "public, max-age=3600")
+        self.assertEqual(image_headers["cache-control"], "no-store")
         self.assertEqual(summary["request_count"], 0)
-        self.assertEqual(summary["workload_request_count"], 7)
+        self.assertEqual(summary["workload_request_count"], 13)
         self.assertFalse(summary["workload_records_truncated"])
         self.assertGreaterEqual(summary["workload_max_active"], 1)
         successful = [
@@ -251,6 +274,7 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
         self.assertEqual(len(successful), 2)
         self.assertEqual(successful[0]["sequence"], 7)
         self.assertEqual(successful[0]["pass"], "cold")
+        self.assertEqual(successful[0]["run_id"], RUN_ID)
         self.assertLessEqual(
             successful[0]["monotonic_start_ns"],
             successful[0]["monotonic_end_ns"],
@@ -272,8 +296,56 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
             b"frame.contentWindow.setTimeout",
             b"contexts.children.length !== 0",
             b"phase-error",
+            b"AbortController",
+            b"Promise.allSettled",
+            b"controller.abort()",
+            b"signal: signal",
         ):
             self.assertIn(marker, BROWSER_WORKLOAD)
+
+    def test_workload_summary_requires_exact_network_resource_identities(self) -> None:
+        records = []
+        for sequence in range(8):
+            records.append(("resource", sequence, "cold"))
+        records.append(("resource", 0, "cold"))
+        for sequence in range(8):
+            records.append(("resource", sequence, "warm"))
+        for sequence in range(4):
+            records.append(("image", sequence, "cold"))
+        for sequence in range(2):
+            records.append(("context", sequence, "cold"))
+        summary = {
+            "schema_version": 1,
+            "workload_request_count": len(records),
+            "workload_records_truncated": False,
+            "workload_max_active": 8,
+            "workload_requests": [
+                {
+                    "active_at_start": 1,
+                    "body_bytes": (
+                        len(BROWSER_IMAGE)
+                        if phase == "image"
+                        else WORKLOAD_RESOURCE_SIZE
+                    ),
+                    "mode": "smoke",
+                    "monotonic_end_ns": index + 2,
+                    "monotonic_start_ns": index + 1,
+                    "pass": pass_name,
+                    "phase": phase,
+                    "run_id": RUN_ID,
+                    "sequence": sequence,
+                    "status": 200,
+                }
+                for index, (phase, sequence, pass_name) in enumerate(records)
+            ],
+        }
+        self.assertTrue(
+            is_successful_workload_summary(summary, expected_mode="smoke", runs=1)
+        )
+        summary["workload_requests"][0]["sequence"] = 7
+        self.assertFalse(
+            is_successful_workload_summary(summary, expected_mode="smoke", runs=1)
+        )
 
     def test_summary_waits_for_inflight_workload_request(self) -> None:
         server = FixtureServer(FixtureConfig("127.0.0.1", 0))
@@ -291,7 +363,7 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
             self.assertFalse(summary_done.wait(0.05))
         finally:
             server._finish_workload_request(
-                "mode=smoke&phase=resource&sequence=0&pass=cold",
+                f"mode=smoke&phase=resource&sequence=0&pass=cold&run={RUN_ID}",
                 200,
                 WORKLOAD_RESOURCE_SIZE,
                 start_ns,
@@ -304,9 +376,7 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "Node is needed for fixture JS syntax")
     def test_composite_workload_javascript_is_syntactically_valid(self) -> None:
-        script = BROWSER_WORKLOAD.split(b"<script>\n", 1)[1].split(
-            b"</script>", 1
-        )[0]
+        script = BROWSER_WORKLOAD.split(b"<script>\n", 1)[1].split(b"</script>", 1)[0]
         result = subprocess.run(
             [shutil.which("node") or "node", "--check"],
             input=script,
@@ -317,7 +387,51 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
 
     @unittest.skipUnless(shutil.which("node"), "Node is needed for fixture JS smoke")
-    def test_performance_page_js_keeps_trusted_and_synthetic_samples_separate(self) -> None:
+    def test_composite_pool_aborts_and_awaits_sibling_workers(self) -> None:
+        script = BROWSER_WORKLOAD.split(b"<script>\n", 1)[1].split(b"</script>", 1)[0]
+        pool = script.split(b"  const runPool = ", 1)[1].split(
+            b"  const runPhase = ", 1
+        )[0]
+        harness = (
+            b"""
+const runPool = """
+            + pool
+            + b"""
+let active = 0;
+let aborted = 0;
+(async () => {
+  try {
+    await runPool([0, 1, 2, 3], 4, (item, signal) => new Promise((resolve, reject) => {
+      active++;
+      const finish = error => {
+        active--;
+        if (error) reject(error); else resolve();
+      };
+      if (item === 0) setTimeout(() => finish(new Error('expected')), 5);
+      else signal.addEventListener('abort', () => { aborted++; finish(new Error('abort')); },
+                                   {once: true});
+    }));
+    process.exit(2);
+  } catch (error) {
+    if (error.message !== 'expected' || active !== 0 || aborted !== 3)
+      process.exit(3);
+  }
+})();
+"""
+        )
+        result = subprocess.run(
+            [shutil.which("node") or "node"],
+            input=harness,
+            capture_output=True,
+            check=False,
+            timeout=3,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+
+    @unittest.skipUnless(shutil.which("node"), "Node is needed for fixture JS smoke")
+    def test_performance_page_js_keeps_trusted_and_synthetic_samples_separate(
+        self,
+    ) -> None:
         script = BROWSER_PERF.split(b"<script>\n", 1)[1].split(b"</script>", 1)[0]
         harness = r"""
 const vm = require('vm');

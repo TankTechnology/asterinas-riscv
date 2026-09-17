@@ -9,34 +9,44 @@ import json
 from pathlib import Path
 import stat
 import tempfile
+import threading
+import time
 import unittest
 
 from tools.riscv.debian.rootfs.browser_composite_capture import (
     CompositeCaptureError,
     DOCUMENT_SETUP_TIMEOUT_SECONDS,
+    SAMPLE_SCHEDULES,
     capture_composite,
     run_composite_capture,
     workload_url,
 )
-from tools.riscv.debian.rootfs.browser_workload_contract import PHASES
+from tools.riscv.debian.rootfs.browser_workload_contract import (
+    MODES,
+    PHASES,
+    expected_phase_metrics,
+)
 
 
 BASE = "http://10.0.2.2:17894/browser-quality/index.html"
 WORKLOAD = "http://10.0.2.2:17894/browser-quality/workload.html"
+RUN_ID = "0123456789abcdef0123456789abcdef"
+WORKLOAD_RUN = f"{WORKLOAD}?run={RUN_ID}"
 
 
 def phase(name: str, index: int, state: str = "complete") -> dict[str, object]:
+    expected = expected_phase_metrics("smoke", name)
     return {
         "name": name,
         "state": state,
         "startMs": index * 20,
         "endMs": None if state == "running" else index * 20 + 10,
         "metrics": {
-            "operationCount": 10,
-            "requestCount": 2,
-            "contextCount": 0,
+            "operationCount": expected["operationCount"],
+            "requestCount": expected["requestCount"],
+            "contextCount": expected["contextCount"],
             "longFrameCount": 0,
-            "frameMs": [4.0],
+            "frameMs": [4.0] * expected["frameSamples"],
         },
     }
 
@@ -49,6 +59,7 @@ def snapshot(count: int, *, terminal: str = "running") -> dict[str, object]:
         "schemaVersion": 1,
         "workloadVersion": 1,
         "clockDomain": "browser-performance-now",
+        "runId": RUN_ID,
         "mode": "smoke",
         "state": terminal,
         "phases": phases,
@@ -61,10 +72,13 @@ class FakeMarionette:
         self,
         snapshots: list[dict[str, object]] | None = None,
         *,
-        snapshot_url: str = WORKLOAD,
+        snapshot_url: str | None = None,
     ) -> None:
         self.url = "about:blank"
-        self.snapshots = snapshots or [snapshot(3), snapshot(len(PHASES), terminal="complete")]
+        self.snapshots = snapshots or [
+            snapshot(3),
+            snapshot(len(PHASES), terminal="complete"),
+        ]
         self.snapshot_url = snapshot_url
         self.commands: list[str] = []
         self.timeouts: list[float] = []
@@ -98,35 +112,67 @@ class FakeMarionette:
             script = str(parameters["script"])
             if "document.readyState" in script:
                 return {
-                    "value": json.dumps(
-                        {"url": self.url, "readyState": "complete"}
-                    )
+                    "value": json.dumps({"url": self.url, "readyState": "complete"})
                 }
             if "__asterinasStartCompositeWorkload" in script:
                 return {"value": "started"}
             if "__asterinasCompositeWorkloadSnapshot" in script:
-                value = self.snapshots.pop(0) if len(self.snapshots) > 1 else self.snapshots[0]
+                value = (
+                    self.snapshots.pop(0)
+                    if len(self.snapshots) > 1
+                    else self.snapshots[0]
+                )
                 return {
                     "value": json.dumps(
-                        {"url": self.snapshot_url, "workload": value}
+                        {"url": self.snapshot_url or self.url, "workload": value}
                     )
                 }
         raise AssertionError(f"unexpected command {name}")
 
 
 class BrowserCompositeCaptureTests(unittest.TestCase):
+    @staticmethod
+    def publish_covered_sample(path: Path, *_args: object) -> None:
+        ready, stop = _args[-2:]
+        assert isinstance(ready, threading.Event)
+        assert isinstance(stop, threading.Event)
+        start_ns = time.monotonic_ns()
+        ready.set()
+        stop.wait(1)
+        end_ns = max(time.monotonic_ns(), start_ns + 1)
+        path.write_text(
+            json.dumps(
+                {
+                    "intervals": [
+                        {
+                            "guest_monotonic_start_ns": start_ns,
+                            "guest_monotonic_end_ns": end_ns,
+                        }
+                    ]
+                }
+            )
+        )
+
     def test_document_setup_budget_is_separate_and_bounded(self) -> None:
         self.assertEqual(DOCUMENT_SETUP_TIMEOUT_SECONDS, 120.0)
+        for mode, (interval_seconds, samples) in SAMPLE_SCHEDULES.items():
+            self.assertGreaterEqual(
+                interval_seconds * samples, MODES[mode]["deadline_seconds"]
+            )
 
     def test_workload_url_requires_exact_local_fixture_origin(self) -> None:
         self.assertEqual(workload_url(BASE), WORKLOAD)
+        self.assertEqual(workload_url(BASE, RUN_ID), WORKLOAD_RUN)
+        with self.assertRaises(CompositeCaptureError):
+            workload_url(BASE, "not-a-run-id")
         for invalid in (
             "https://10.0.2.2:17894/browser-quality/index.html",
             "http://example.com:17894/browser-quality/index.html",
             BASE + "?secret=1",
         ):
-            with self.subTest(invalid=invalid), self.assertRaises(
-                CompositeCaptureError
+            with (
+                self.subTest(invalid=invalid),
+                self.assertRaises(CompositeCaptureError),
             ):
                 workload_url(invalid)
 
@@ -139,6 +185,7 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
             FakeMarionette(),
             BASE,
             mode="smoke",
+            run_id=RUN_ID,
             timeout_seconds=30,
             checkpoint_fn=lambda value: checkpoints.append(value),
             clock_ns=lambda: next(ticks),
@@ -150,6 +197,47 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
         self.assertEqual([item["phase"] for item in observations], list(PHASES))
         self.assertEqual(len(checkpoints), 2)
         self.assertEqual(checkpoints[-1]["completed_phases"], list(PHASES))
+
+    def test_capture_starts_workload_only_after_evidence_is_ready(self) -> None:
+        events: list[str] = []
+
+        class OrderedMarionette(FakeMarionette):
+            def command(self, name: str, parameters: object | None = None) -> object:
+                if name == "WebDriver:ExecuteScript" and isinstance(parameters, dict):
+                    if "__asterinasStartCompositeWorkload" in str(parameters["script"]):
+                        events.append("workload-start")
+                return super().command(name, parameters)
+
+        report = capture_composite(
+            OrderedMarionette(),
+            BASE,
+            mode="smoke",
+            run_id=RUN_ID,
+            timeout_seconds=30,
+            before_start_fn=lambda: events.append("evidence-ready"),
+            clock_ns=iter(range(1_000, 20_000)).__next__,
+            sleep_fn=lambda _seconds: None,
+        )
+
+        self.assertEqual(events, ["evidence-ready", "workload-start"])
+        self.assertLessEqual(
+            report["workload_start_observed_guest_monotonic_ns"],
+            report["phase_observations"][-1]["observed_guest_monotonic_ns"],
+        )
+
+    def test_capture_rejects_mutated_completed_phase_prefix(self) -> None:
+        first = snapshot(3)
+        terminal = snapshot(len(PHASES), terminal="complete")
+        terminal["phases"][0]["endMs"] = 9
+        with self.assertRaisesRegex(CompositeCaptureError, "completed phase changed"):
+            capture_composite(
+                FakeMarionette([first, terminal]),
+                BASE,
+                mode="smoke",
+                run_id=RUN_ID,
+                timeout_seconds=30,
+                sleep_fn=lambda _seconds: None,
+            )
 
     def test_capture_rejects_failed_or_reordered_workload(self) -> None:
         failed = snapshot(3, terminal="failed")
@@ -165,6 +253,7 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
                     FakeMarionette([value]),
                     BASE,
                     mode="smoke",
+                    run_id=RUN_ID,
                     timeout_seconds=30,
                     sleep_fn=lambda _seconds: None,
                 )
@@ -176,6 +265,7 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
                 FakeMarionette(snapshot_url="http://10.0.2.2:17894/other"),
                 BASE,
                 mode="smoke",
+                run_id=RUN_ID,
                 timeout_seconds=30,
                 checkpoint_fn=checkpoints.append,
                 sleep_fn=lambda _seconds: None,
@@ -189,6 +279,7 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
                 FakeMarionette([snapshot(3), failed]),
                 BASE,
                 mode="smoke",
+                run_id=RUN_ID,
                 timeout_seconds=30,
                 checkpoint_fn=checkpoints.append,
                 sleep_fn=lambda _seconds: None,
@@ -200,8 +291,14 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
     ) -> None:
         client = FakeMarionette()
 
-        def system_sample(path: Path, pids: tuple[int, int], _mode: str) -> None:
-            path.write_text(json.dumps({"process_ids": list(pids)}))
+        def system_sample(
+            path: Path,
+            pids: tuple[int, int],
+            _mode: str,
+            ready: threading.Event,
+            stop: threading.Event,
+        ) -> None:
+            self.publish_covered_sample(path, pids, ready, stop)
 
         def thread_sample(
             path: Path,
@@ -209,17 +306,20 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
             marker: Path,
             mode: str,
             physical: bool,
+            ready: threading.Event,
+            stop: threading.Event,
         ) -> None:
-            path.write_text(
-                json.dumps(
-                    {
-                        "process_id": pid,
-                        "mode": mode,
-                        "physical": physical,
-                        "ready": marker.is_file(),
-                    }
-                )
+            self.publish_covered_sample(path, pid, ready, stop)
+            value = json.loads(path.read_text())
+            value.update(
+                {
+                    "process_id": pid,
+                    "mode": mode,
+                    "physical": physical,
+                    "ready": marker.is_file(),
+                }
             )
+            path.write_text(json.dumps(value))
 
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
@@ -235,6 +335,7 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
                 system_sample_fn=system_sample,
                 thread_sample_fn=thread_sample,
                 identity_fn=lambda _pids: (100, 200),
+                run_id_fn=lambda: RUN_ID,
                 sleep_fn=lambda _seconds: None,
             )
 
@@ -273,12 +374,14 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
                     system_sample_fn=lambda *_args: None,
                     thread_sample_fn=lambda *_args: None,
                     identity_fn=lambda _pids: (100, 200),
+                    run_id_fn=lambda: RUN_ID,
                     sleep_fn=lambda _seconds: None,
                 )
 
         identities = iter(((100, 200), (101, 200)))
-        with tempfile.TemporaryDirectory() as directory, self.assertRaises(
-            CompositeCaptureError
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            self.assertRaises(CompositeCaptureError),
         ):
             run_composite_capture(
                 FakeMarionette(),
@@ -288,9 +391,10 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
                 evidence_dir=Path(directory),
                 mode="smoke",
                 timeout_seconds=30,
-                system_sample_fn=lambda path, *_args: path.write_text("{}"),
-                thread_sample_fn=lambda path, *_args: path.write_text("{}"),
+                system_sample_fn=self.publish_covered_sample,
+                thread_sample_fn=self.publish_covered_sample,
                 identity_fn=lambda _pids: next(identities),
+                run_id_fn=lambda: RUN_ID,
                 sleep_fn=lambda _seconds: None,
             )
 
@@ -298,11 +402,13 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
         def fail(*_args: object) -> None:
             raise RuntimeError("sampler failed")
 
-        def publish(path: Path, *_args: object) -> None:
-            path.write_text("{}")
+        publish = self.publish_covered_sample
 
         for system_fn, thread_fn in ((fail, publish), (publish, fail)):
-            with self.subTest(system=system_fn is fail), tempfile.TemporaryDirectory() as directory:
+            with (
+                self.subTest(system=system_fn is fail),
+                tempfile.TemporaryDirectory() as directory,
+            ):
                 with self.assertRaises(CompositeCaptureError):
                     run_composite_capture(
                         FakeMarionette(),
@@ -315,8 +421,91 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
                         system_sample_fn=system_fn,
                         thread_sample_fn=thread_fn,
                         identity_fn=lambda _pids: (100, 200),
+                        run_id_fn=lambda: RUN_ID,
                         sleep_fn=lambda _seconds: None,
                     )
+
+    def test_run_capture_rejects_sampler_that_ends_before_workload(self) -> None:
+        def uncovered(path: Path, *_args: object) -> None:
+            ready, stop = _args[-2:]
+            assert isinstance(ready, threading.Event)
+            assert isinstance(stop, threading.Event)
+            ready.set()
+            stop.wait(1)
+            path.write_text(
+                json.dumps(
+                    {
+                        "intervals": [
+                            {
+                                "guest_monotonic_start_ns": 0,
+                                "guest_monotonic_end_ns": 1,
+                            }
+                        ]
+                    }
+                )
+            )
+
+        for system_fn, thread_fn, expected_role in (
+            (uncovered, self.publish_covered_sample, "system"),
+            (self.publish_covered_sample, uncovered, "thread"),
+        ):
+            with (
+                self.subTest(role=expected_role),
+                tempfile.TemporaryDirectory() as directory,
+                self.assertRaisesRegex(
+                    CompositeCaptureError,
+                    rf"composite {expected_role} evidence does not cover workload "
+                    r"evidence=\[0,1\] workload=\[[0-9]+,[0-9]+\]",
+                ),
+            ):
+                run_composite_capture(
+                    FakeMarionette(),
+                    BASE,
+                    firefox_pid=116,
+                    xorg_pid=75,
+                    evidence_dir=Path(directory),
+                    mode="smoke",
+                    timeout_seconds=30,
+                    system_sample_fn=system_fn,
+                    thread_sample_fn=thread_fn,
+                    identity_fn=lambda _pids: (100, 200),
+                    run_id_fn=lambda: RUN_ID,
+                    sleep_fn=lambda _seconds: None,
+                )
+
+    def test_run_capture_bounds_a_sampler_that_ignores_stop(self) -> None:
+        release = threading.Event()
+
+        def stuck(_path: Path, *_args: object) -> None:
+            ready = _args[-2]
+            assert isinstance(ready, threading.Event)
+            ready.set()
+            release.wait(1)
+
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory)
+                started = time.monotonic()
+                with self.assertRaisesRegex(CompositeCaptureError, "stop expired"):
+                    run_composite_capture(
+                        FakeMarionette(),
+                        BASE,
+                        firefox_pid=116,
+                        xorg_pid=75,
+                        evidence_dir=output,
+                        mode="smoke",
+                        timeout_seconds=30,
+                        system_sample_fn=stuck,
+                        thread_sample_fn=stuck,
+                        identity_fn=lambda _pids: (100, 200),
+                        run_id_fn=lambda: RUN_ID,
+                        sampler_stop_timeout_seconds=0.01,
+                        sleep_fn=lambda _seconds: None,
+                    )
+                self.assertLess(time.monotonic() - started, 0.5)
+                self.assertFalse(any(output.glob(".browser-composite-samplers.*")))
+        finally:
+            release.set()
 
 
 if __name__ == "__main__":

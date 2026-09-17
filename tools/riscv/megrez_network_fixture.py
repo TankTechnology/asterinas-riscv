@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import hashlib
 import http.server
 import ipaddress
@@ -357,9 +358,13 @@ BROWSER_WORKLOAD = b"""<!doctype html>
   const names = ['warmup', 'interaction-layout', 'canvas-image',
                  'concurrent-resources', 'navigation-history',
                  'multi-context', 'cooldown'];
+  const parameters = new URLSearchParams(window.location.search);
+  const runId = parameters.get('run');
+  if (parameters.size !== 1 || !/^[0-9a-f]{32}$/.test(runId || ''))
+    throw new Error('workload-run-id');
   const state = {schemaVersion: 1, workloadVersion: 1,
     clockDomain: 'browser-performance-now', mode: 'smoke', state: 'running',
-    phases: [], error: null};
+    runId: runId, phases: [], error: null};
   let started = false;
   const grid = document.querySelector('#workload-grid');
   const canvas = document.querySelector('#workload-canvas');
@@ -380,7 +385,8 @@ BROWSER_WORKLOAD = b"""<!doctype html>
     }));
   });
   const query = (mode, phase, sequence, passName) =>
-    'mode=' + mode + '&phase=' + phase + '&sequence=' + sequence + '&pass=' + passName;
+    'mode=' + mode + '&phase=' + phase + '&sequence=' + sequence +
+    '&pass=' + passName + '&run=' + runId;
   const loadFrame = (frame, url) => new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('frame-timeout')), 10000);
     frame.onload = () => { clearTimeout(timer); resolve(); };
@@ -416,13 +422,25 @@ BROWSER_WORKLOAD = b"""<!doctype html>
   });
   const runPool = async (items, limit, operation) => {
     let cursor = 0;
+    let firstError = null;
+    const controller = new AbortController();
     const worker = async () => {
-      while (cursor < items.length) {
+      while (firstError === null && cursor < items.length) {
         const item = items[cursor++];
-        await operation(item);
+        try {
+          await operation(item, controller.signal);
+        } catch (error) {
+          if (firstError === null) {
+            firstError = error;
+            controller.abort();
+          }
+          return;
+        }
       }
     };
-    await Promise.all(Array.from({length: Math.min(limit, items.length)}, worker));
+    await Promise.allSettled(
+      Array.from({length: Math.min(limit, items.length)}, worker));
+    if (firstError !== null) throw firstError;
   };
   const runPhase = async (name, operation) => {
     const phase = {name, state: 'running', startMs: performance.now(),
@@ -497,10 +515,10 @@ BROWSER_WORKLOAD = b"""<!doctype html>
     for (const passName of ['cold', 'warm']) {
       const repetitions = passName === 'cold' ? 1 : 2;
       for (let repetition = 0; repetition < repetitions; repetition++) {
-        await runPool(sequences, 8, async sequence => {
+        await runPool(sequences, 8, async (sequence, signal) => {
           const response = await fetch('/browser-quality/workload-resource.bin?' +
             query(state.mode, 'resource', sequence, passName),
-            {cache: passName === 'cold' ? 'no-store' : 'default'});
+            {cache: passName === 'cold' ? 'no-store' : 'default', signal: signal});
           if (!response.ok || (await response.arrayBuffer()).byteLength !== 65536)
             throw new Error('resource-response');
           metrics.requestCount++;
@@ -615,19 +633,109 @@ _WORKLOAD_QUERY = re.compile(
     r"mode=(smoke|profile|stress)&"
     r"phase=(image|resource|context)&"
     r"sequence=(0|[1-9][0-9]{0,2})&"
-    r"pass=(cold|warm)\Z"
+    r"pass=(cold|warm)&"
+    r"run=([0-9a-f]{32})\Z"
 )
+_WORKLOAD_PAGE_QUERY = re.compile(r"run=([0-9a-f]{32})\Z")
+_WORKLOAD_MODE_SHAPES = {
+    "smoke": {"scale": 1, "resources": 8, "contexts": 2},
+    "profile": {"scale": 4, "resources": 32, "contexts": 3},
+    "stress": {"scale": 12, "resources": 96, "contexts": 3},
+}
 
 
-def _parse_workload_query(query: str) -> tuple[str, str, int, str] | None:
+def _parse_workload_query(query: str) -> tuple[str, str, int, str, str] | None:
     match = _WORKLOAD_QUERY.fullmatch(query)
     if match is None:
         return None
-    mode, phase, sequence_raw, pass_name = match.groups()
+    mode, phase, sequence_raw, pass_name, run_id = match.groups()
     sequence = int(sequence_raw)
-    if sequence >= 256:
+    shape = _WORKLOAD_MODE_SHAPES[mode]
+    limits = {
+        "image": shape["scale"] * 4,
+        "resource": shape["resources"],
+        "context": shape["contexts"],
+    }
+    if sequence >= limits[phase] or (phase != "resource" and pass_name != "cold"):
         return None
-    return mode, phase, sequence, pass_name
+    return mode, phase, sequence, pass_name, run_id
+
+
+def is_successful_workload_summary(
+    summary: Mapping[str, object], *, expected_mode: str, runs: int
+) -> bool:
+    """Verify the exact host-visible resource identities for completed runs.
+
+    The second warm fetch is intentionally satisfied by Firefox's cache, so
+    each resource sequence reaches the fixture once per nonce-bound run.
+    Browser-side snapshots separately prove all three fetch attempts per run.
+    """
+
+    if (
+        expected_mode not in _WORKLOAD_MODE_SHAPES
+        or type(runs) is not int
+        or not 1 <= runs <= 16
+        or summary.get("schema_version") != 1
+        or summary.get("workload_records_truncated") is not False
+    ):
+        return False
+    shape = _WORKLOAD_MODE_SHAPES[expected_mode]
+    expected: Counter[tuple[str, int, str]] = Counter()
+    for sequence in range(shape["resources"]):
+        expected[("resource", sequence, "cold")] = runs
+        expected[("resource", sequence, "warm")] = runs
+    expected[("resource", 0, "cold")] += runs
+    for sequence in range(shape["scale"] * 4):
+        expected[("image", sequence, "cold")] = runs
+    for sequence in range(shape["contexts"]):
+        expected[("context", sequence, "cold")] = runs
+
+    records = summary.get("workload_requests")
+    expected_count = sum(expected.values())
+    if (
+        expected_count > MAX_WORKLOAD_REQUEST_RECORDS
+        or not isinstance(records, list)
+        or len(records) != expected_count
+        or summary.get("workload_request_count") != expected_count
+        or type(summary.get("workload_max_active")) is not int
+        or not 1 <= summary["workload_max_active"] <= 8
+    ):
+        return False
+    actual: Counter[tuple[str, int, str]] = Counter()
+    fields = {
+        "active_at_start",
+        "body_bytes",
+        "mode",
+        "monotonic_end_ns",
+        "monotonic_start_ns",
+        "pass",
+        "phase",
+        "run_id",
+        "sequence",
+        "status",
+    }
+    for record in records:
+        if not isinstance(record, dict) or set(record) != fields:
+            return False
+        phase = record["phase"]
+        body_bytes = len(BROWSER_IMAGE) if phase == "image" else WORKLOAD_RESOURCE_SIZE
+        if (
+            record["mode"] != expected_mode
+            or record["status"] != 200
+            or record["body_bytes"] != body_bytes
+            or type(record["active_at_start"]) is not int
+            or not 1 <= record["active_at_start"] <= 8
+            or type(record["monotonic_start_ns"]) is not int
+            or type(record["monotonic_end_ns"]) is not int
+            or record["monotonic_start_ns"] < 0
+            or record["monotonic_end_ns"] < record["monotonic_start_ns"]
+            or type(record["sequence"]) is not int
+            or not isinstance(record["run_id"], str)
+            or _WORKLOAD_PAGE_QUERY.fullmatch(f"run={record['run_id']}") is None
+        ):
+            return False
+        actual[(str(phase), record["sequence"], str(record["pass"]))] += 1
+    return actual == expected
 
 
 def is_successful_summary(
@@ -856,12 +964,20 @@ class FixtureServer:
             if query == "q=asterinas":
                 return 200, "text/html; charset=utf-8", BROWSER_SEARCH
             return 400, "text/plain; charset=utf-8", b""
+        if path == BROWSER_WORKLOAD_PATH:
+            if _WORKLOAD_PAGE_QUERY.fullmatch(query) is None:
+                return 400, "text/plain; charset=utf-8", b""
+            return 200, "text/html; charset=utf-8", BROWSER_WORKLOAD
         if query:
             parsed = _parse_workload_query(query)
-            if path not in {
-                BROWSER_WORKLOAD_RESOURCE_PATH,
-                BROWSER_WORKLOAD_IMAGE_PATH,
-            } or parsed is None:
+            if (
+                path
+                not in {
+                    BROWSER_WORKLOAD_RESOURCE_PATH,
+                    BROWSER_WORKLOAD_IMAGE_PATH,
+                }
+                or parsed is None
+            ):
                 return 400, "text/plain; charset=utf-8", b""
             if path == BROWSER_WORKLOAD_IMAGE_PATH:
                 return 200, "image/png", BROWSER_IMAGE
@@ -960,8 +1076,10 @@ class FixtureServer:
         active_at_start: int,
     ) -> None:
         parsed = _parse_workload_query(query)
-        mode, phase, sequence, pass_name = (
-            parsed if parsed is not None else ("invalid", "invalid", -1, "invalid")
+        mode, phase, sequence, pass_name, run_id = (
+            parsed
+            if parsed is not None
+            else ("invalid", "invalid", -1, "invalid", "invalid")
         )
         with self._workload_idle:
             self._workload_active -= 1
@@ -976,6 +1094,7 @@ class FixtureServer:
                         "monotonic_start_ns": start_ns,
                         "pass": pass_name,
                         "phase": phase,
+                        "run_id": run_id,
                         "sequence": sequence,
                         "status": status,
                     }
