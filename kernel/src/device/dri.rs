@@ -90,14 +90,65 @@ const DUMB_POOL_SIZE: usize = 16 * 1024 * 1024;
 /// Maximum scanout width/height reported by `MODE_GETRESOURCES`.
 const MAX_RESOLUTION: u32 = 8192;
 
+/// A GEM object: a page-aligned span of the device-wide buffer pool.
+#[derive(Debug, Clone, Copy)]
+struct GemObject {
+    offset: usize,
+    size: usize,
+    pitch: u32,
+    width: u32,
+    height: u32,
+    bpp: u32,
+    /// Open handles naming this object, counted across every file. The object
+    /// is dropped when the last one goes away.
+    refs: u32,
+}
+
+/// The device-wide GEM object space, shared by every open file.
+///
+/// Objects cannot belong to a single file: `GEM_FLINK` gives one a name so
+/// that another file can open it by name, and the render node shares buffers
+/// with the card node. Handles stay per-file — each open file maps its own
+/// handle numbers onto these objects.
+#[derive(Debug)]
+struct GemObjects {
+    /// The contiguous pool every object is carved out of.
+    pool: Option<Arc<Vmo>>,
+    /// Bump-allocator cursor into the pool (page-aligned).
+    next_offset: usize,
+    objects: BTreeMap<u32, GemObject>,
+    next_object_id: u32,
+    /// Names created by `GEM_FLINK`, each mapping to the object it names.
+    names: BTreeMap<u32, u32>,
+    next_name: u32,
+}
+
+impl GemObjects {
+    const fn new() -> Self {
+        Self {
+            pool: None,
+            next_offset: 0,
+            objects: BTreeMap::new(),
+            next_object_id: 1,
+            names: BTreeMap::new(),
+            next_name: 1,
+        }
+    }
+}
+
+/// The one object space. Lock ordering: take a file's `DriInner` first, then
+/// this, never the other way round.
+static GEM_OBJECTS: SpinLock<GemObjects> = SpinLock::new(GemObjects::new());
+
 #[derive(Debug)]
 struct Dri;
 
 /// Per-open-file DRM state.
 ///
-/// GEM/dumb-buffer handles and framebuffer ids are namespaced per file, matching
-/// Linux's per-`drm_file` handle space. Each handle owns its own dumb-buffer
-/// pool (allocated lazily on the first `CREATE_DUMB`).
+/// Handles and framebuffer ids are namespaced per file, matching Linux's
+/// per-`drm_file` handle space. The objects those handles name live in the
+/// device-wide [`GEM_OBJECTS`] space instead, so a buffer can outlive the file
+/// that created it and be reached from another one.
 struct DriHandle {
     gpu: Arc<GpuDevice>,
     cursor_operation: Mutex<()>,
@@ -106,12 +157,9 @@ struct DriHandle {
 
 #[derive(Debug)]
 struct DriInner {
-    /// The contiguous pool all dumb buffers are carved out of.
-    pool: Option<Arc<Vmo>>,
-    /// Bump-allocator cursor into the pool (page-aligned).
-    next_offset: usize,
-    dumb_buffers: BTreeMap<u32, DumbBuffer>,
-    next_dumb_handle: u32,
+    /// This file's handles, each naming a device-wide GEM object.
+    handles: BTreeMap<u32, u32>,
+    next_handle: u32,
     framebuffers: BTreeMap<u32, Framebuffer>,
     next_fb_id: u32,
     current_fb_id: Option<u32>,
@@ -120,21 +168,10 @@ struct DriInner {
     cursor: CursorState,
 }
 
-/// A dumb buffer: a page-aligned sub-range of the shared pool.
-#[derive(Debug, Clone, Copy)]
-struct DumbBuffer {
-    offset: usize,
-    size: usize,
-    pitch: u32,
-    width: u32,
-    height: u32,
-    bpp: u32,
-}
-
-/// A registered framebuffer referencing a dumb buffer.
+/// A registered framebuffer referencing a GEM object.
 #[derive(Debug, Clone, Copy)]
 struct Framebuffer {
-    dumb_handle: u32,
+    object_id: u32,
     width: u32,
     height: u32,
 }
@@ -286,6 +323,31 @@ struct DrmModeCreateDumb {
     size: u64,
 }
 
+/// `struct drm_gem_close`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmGemClose {
+    handle: u32,
+    pad: u32,
+}
+
+/// `struct drm_gem_flink`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmGemFlink {
+    handle: u32,
+    name: u32,
+}
+
+/// `struct drm_gem_open`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmGemOpen {
+    name: u32,
+    handle: u32,
+    size: u64,
+}
+
 /// `struct drm_mode_map_dumb`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
@@ -350,8 +412,8 @@ mod ioctl_defs {
     use super::{
         DrmGetCap, DrmModeCardRes, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip,
         DrmModeCursor, DrmModeCursor2, DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd,
-        DrmModeGetConnector, DrmModeGetEncoder, DrmModeMapDumb, DrmModeObjGetProperties,
-        DrmSetClientCap, DrmVersion,
+        DrmGemClose, DrmGemFlink, DrmGemOpen, DrmModeGetConnector, DrmModeGetEncoder,
+        DrmModeMapDumb, DrmModeObjGetProperties, DrmSetClientCap, DrmVersion,
     };
     use crate::util::ioctl::{InData, InOutData, NoData, ioc};
 
@@ -359,6 +421,10 @@ mod ioctl_defs {
     pub(super) type GetVersion = ioc!(DRM_IOCTL_VERSION, b'd', 0x00, InOutData<DrmVersion>);
     pub(super) type GetCap = ioc!(DRM_IOCTL_GET_CAP, b'd', 0x0c, InOutData<DrmGetCap>);
     pub(super) type SetClientCap = ioc!(DRM_IOCTL_SET_CLIENT_CAP, b'd', 0x0d, InData<DrmSetClientCap>);
+    // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h>.
+    pub(super) type GemClose = ioc!(DRM_IOCTL_GEM_CLOSE, b'd', 0x09, InData<DrmGemClose>);
+    pub(super) type GemFlink = ioc!(DRM_IOCTL_GEM_FLINK, b'd', 0x0a, InOutData<DrmGemFlink>);
+    pub(super) type GemOpen = ioc!(DRM_IOCTL_GEM_OPEN, b'd', 0x1b, InOutData<DrmGemOpen>);
     pub(super) type SetMaster = ioc!(DRM_IOCTL_SET_MASTER, b'd', 0x1e, NoData);
     pub(super) type DropMaster = ioc!(DRM_IOCTL_DROP_MASTER, b'd', 0x1f, NoData);
 
@@ -409,10 +475,8 @@ impl Device for Dri {
             gpu,
             cursor_operation: Mutex::new(()),
             inner: SpinLock::new(DriInner {
-                pool: None,
-                next_offset: 0,
-                dumb_buffers: BTreeMap::new(),
-                next_dumb_handle: 1,
+                handles: BTreeMap::new(),
+                next_handle: 1,
                 framebuffers: BTreeMap::new(),
                 next_fb_id: 1,
                 current_fb_id: None,
@@ -424,29 +488,67 @@ impl Device for Dri {
     }
 }
 
+/// Returns the device-wide buffer pool, allocating it on first use.
+///
+/// The pool outlives any single file: buffers created through one open file
+/// must stay valid when another file reaches them by name.
+fn ensure_pool(objects: &mut GemObjects) -> Result<Arc<Vmo>> {
+    if let Some(pool) = objects.pool.as_ref() {
+        return Ok(pool.clone());
+    }
+    let pool = VmoOptions::new(DUMB_POOL_SIZE)
+        .flags(VmoFlags::CONTIGUOUS)
+        .alloc()?;
+    objects.pool = Some(pool.clone());
+    Ok(pool)
+}
+
+/// Base guest physical address of the device-wide pool.
+fn pool_paddr(objects: &GemObjects) -> Result<Paddr> {
+    objects
+        .pool
+        .as_ref()
+        .and_then(|pool| pool.paddr())
+        .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer pool has no memory"))
+}
+
+/// Returns the object a handle in this file names.
+fn object_for_handle(inner: &DriInner, handle: u32) -> Result<u32> {
+    inner
+        .handles
+        .get(&handle)
+        .copied()
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown buffer handle"))
+}
+
+/// Drops one reference to an object, freeing it when the last one goes.
+///
+/// The pool space is deliberately not reclaimed: the pool is a bump allocator,
+/// so a freed buffer's span is simply leaked within it. Fine for the handful of
+/// buffers a client allocates.
+fn release_object(object_id: u32) {
+    let mut objects = GEM_OBJECTS.lock();
+    let Some(object) = objects.objects.get_mut(&object_id) else {
+        return;
+    };
+    object.refs = object.refs.saturating_sub(1);
+    if object.refs == 0 {
+        objects.objects.remove(&object_id);
+        // A name is only a handle on an object that still exists.
+        objects.names.retain(|_, named| *named != object_id);
+    }
+}
+
+/// Returns a copy of a GEM object by its device-wide id.
+fn object_by_id(objects: &GemObjects, object_id: u32) -> Result<GemObject> {
+    objects
+        .objects
+        .get(&object_id)
+        .copied()
+        .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM object"))
+}
+
 impl DriHandle {
-    /// Returns the dumb-buffer pool, allocating it on first use.
-    fn ensure_pool(&self) -> Result<Arc<Vmo>> {
-        let mut inner = self.inner.lock();
-        if let Some(pool) = inner.pool.as_ref() {
-            return Ok(pool.clone());
-        }
-
-        let pool = VmoOptions::new(DUMB_POOL_SIZE)
-            .flags(VmoFlags::CONTIGUOUS)
-            .alloc()?;
-        inner.pool = Some(pool.clone());
-        Ok(pool)
-    }
-
-    /// Base guest physical address of the pool.
-    fn pool_paddr(&self, inner: &DriInner) -> Result<Paddr> {
-        inner
-            .pool
-            .as_ref()
-            .and_then(|pool| pool.paddr())
-            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer pool has no memory"))
-    }
 
     fn create_dumb(&self, req: &DrmModeCreateDumb) -> Result<DrmModeCreateDumb> {
         if req.flags != 0 {
@@ -464,10 +566,12 @@ impl DriHandle {
             return_errno_with_message!(Errno::EINVAL, "dumb buffer has zero size");
         }
 
-        self.ensure_pool()?;
-
+        // Take the file's lock before the device-wide one, as `GEM_OBJECTS`
+        // documents; the reverse order would deadlock against `gem_flink`.
         let mut inner = self.inner.lock();
-        let offset = inner.next_offset.align_up(PAGE_SIZE);
+        let mut objects = GEM_OBJECTS.lock();
+        ensure_pool(&mut objects)?;
+        let offset = objects.next_offset.align_up(PAGE_SIZE);
         let end = offset
             .checked_add(size)
             .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer size overflows"))?;
@@ -475,20 +579,25 @@ impl DriHandle {
             return_errno_with_message!(Errno::ENOMEM, "dumb buffer pool is exhausted");
         }
 
-        let handle = inner.next_dumb_handle;
-        inner.next_dumb_handle += 1;
-        inner.dumb_buffers.insert(
-            handle,
-            DumbBuffer {
+        let object_id = objects.next_object_id;
+        objects.next_object_id += 1;
+        objects.objects.insert(
+            object_id,
+            GemObject {
                 offset,
                 size,
                 pitch,
                 width: req.width,
                 height: req.height,
                 bpp: req.bpp,
+                refs: 1,
             },
         );
-        inner.next_offset = end.align_up(PAGE_SIZE);
+        objects.next_offset = end.align_up(PAGE_SIZE);
+
+        let handle = inner.next_handle;
+        inner.next_handle += 1;
+        inner.handles.insert(handle, object_id);
 
         Ok(DrmModeCreateDumb {
             handle,
@@ -498,14 +607,73 @@ impl DriHandle {
         })
     }
 
-    fn map_dumb(&self, req: &DrmModeMapDumb) -> Result<DrmModeMapDumb> {
+    /// Drops this file's handle on an object.
+    fn gem_close(&self, req: &DrmGemClose) -> Result<()> {
+        let mut inner = self.inner.lock();
+        if inner.cursor.uses_handle(req.handle) {
+            return_errno_with_message!(Errno::EBUSY, "buffer is active as the cursor");
+        }
+        let Some(object_id) = inner.handles.remove(&req.handle) else {
+            return_errno_with_message!(Errno::EINVAL, "unknown GEM handle");
+        };
+        drop(inner);
+        release_object(object_id);
+        Ok(())
+    }
+
+    /// Names an object so another file can open it.
+    fn gem_flink(&self, req: &DrmGemFlink) -> Result<DrmGemFlink> {
         let inner = self.inner.lock();
-        let dumb = inner
-            .dumb_buffers
-            .get(&req.handle)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown dumb buffer handle"))?;
+        let object_id = object_for_handle(&inner, req.handle)?;
+        let mut objects = GEM_OBJECTS.lock();
+        // An object already carrying a name keeps it, as in Linux: repeated
+        // flinks of the same handle observe the same name.
+        if let Some((name, _)) = objects.names.iter().find(|(_, named)| **named == object_id) {
+            return Ok(DrmGemFlink {
+                handle: req.handle,
+                name: *name,
+            });
+        }
+        let name = objects.next_name;
+        objects.next_name = objects.next_name.saturating_add(1);
+        objects.names.insert(name, object_id);
+        Ok(DrmGemFlink {
+            handle: req.handle,
+            name,
+        })
+    }
+
+    /// Takes a handle on a named object, which may have been created by
+    /// another file.
+    fn gem_open(&self, req: &DrmGemOpen) -> Result<DrmGemOpen> {
+        let mut inner = self.inner.lock();
+        let mut objects = GEM_OBJECTS.lock();
+        let object_id = objects
+            .names
+            .get(&req.name)
+            .copied()
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM name"))?;
+        let object = objects
+            .objects
+            .get_mut(&object_id)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM object"))?;
+        object.refs = object.refs.saturating_add(1);
+        let size = object.size;
+        let handle = inner.next_handle;
+        inner.next_handle = inner.next_handle.saturating_add(1);
+        inner.handles.insert(handle, object_id);
+        Ok(DrmGemOpen {
+            name: req.name,
+            handle,
+            size: size as u64,
+        })
+    }
+
+    fn map_dumb(&self, req: &DrmModeMapDumb) -> Result<DrmModeMapDumb> {
+        let object_id = object_for_handle(&self.inner.lock(), req.handle)?;
+        let object = object_by_id(&GEM_OBJECTS.lock(), object_id)?;
         Ok(DrmModeMapDumb {
-            offset: dumb.offset as u64,
+            offset: object.offset as u64,
             ..*req
         })
     }
@@ -516,25 +684,22 @@ impl DriHandle {
         if inner.cursor.uses_handle(req.handle) {
             return_errno_with_message!(Errno::EBUSY, "dumb buffer is active as the cursor");
         }
-        if inner.dumb_buffers.remove(&req.handle).is_none() {
+        let Some(object_id) = inner.handles.remove(&req.handle) else {
             return_errno_with_message!(Errno::EINVAL, "unknown dumb buffer handle");
-        }
-        // The freed pool space is intentionally not reclaimed: the pool is a
-        // bump allocator, so a destroyed buffer's span is simply leaked within
-        // the pool. Fine for the handful of buffers a client allocates.
+        };
+        drop(inner);
+        release_object(object_id);
         Ok(())
     }
 
     fn add_fb(&self, req: &DrmModeFbCmd) -> Result<u32> {
         let mut inner = self.inner.lock();
-        let dumb = inner
-            .dumb_buffers
-            .get(&req.handle)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown dumb buffer handle"))?;
-        if req.width != dumb.width
-            || req.height != dumb.height
-            || req.pitch != dumb.pitch
-            || req.bpp != dumb.bpp
+        let object_id = object_for_handle(&inner, req.handle)?;
+        let object = object_by_id(&GEM_OBJECTS.lock(), object_id)?;
+        if req.width != object.width
+            || req.height != object.height
+            || req.pitch != object.pitch
+            || req.bpp != object.bpp
         {
             return_errno_with_message!(Errno::EINVAL, "framebuffer does not match dumb buffer");
         }
@@ -543,7 +708,7 @@ impl DriHandle {
         inner.framebuffers.insert(
             fb_id,
             Framebuffer {
-                dumb_handle: req.handle,
+                object_id,
                 width: req.width,
                 height: req.height,
             },
@@ -589,12 +754,10 @@ impl DriHandle {
                 .framebuffers
                 .get(&fb_id)
                 .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
-            let dumb = inner
-                .dumb_buffers
-                .get(&fb.dumb_handle)
-                .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown dumb buffer handle"))?;
-            let base = self.pool_paddr(&inner)?;
-            (base + dumb.offset, dumb.size, fb.width, fb.height)
+            let objects = GEM_OBJECTS.lock();
+            let object = object_by_id(&objects, fb.object_id)?;
+            let base = pool_paddr(&objects)?;
+            (base + object.offset, object.size, fb.width, fb.height)
         };
 
         self.gpu
@@ -613,15 +776,15 @@ impl DriHandle {
         let (update, position, backing) = {
             let inner = self.inner.lock();
             let buffer = if request.flags & MODE_CURSOR_BO != 0 && request.handle != 0 {
-                inner
-                    .dumb_buffers
-                    .get(&request.handle)
-                    .map(|dumb| CursorBuffer {
-                        width: dumb.width,
-                        height: dumb.height,
-                        pitch: dumb.pitch,
-                        bpp: dumb.bpp,
-                        size: dumb.size,
+                object_for_handle(&inner, request.handle)
+                    .ok()
+                    .and_then(|object_id| object_by_id(&GEM_OBJECTS.lock(), object_id).ok())
+                    .map(|object| CursorBuffer {
+                        width: object.width,
+                        height: object.height,
+                        pitch: object.pitch,
+                        bpp: object.bpp,
+                        size: object.size,
                     })
             } else {
                 None
@@ -631,13 +794,13 @@ impl DriHandle {
             let position = inner.cursor.position_for(update);
             let backing = match update.image {
                 Some(CursorImage::Buffer { handle, .. }) => {
-                    let dumb = inner.dumb_buffers.get(&handle).ok_or_else(|| {
-                        Error::with_message(Errno::EINVAL, "unknown cursor buffer handle")
-                    })?;
-                    let base = self.pool_paddr(&inner)?;
+                    let object_id = object_for_handle(&inner, handle)?;
+                    let objects = GEM_OBJECTS.lock();
+                    let object = object_by_id(&objects, object_id)?;
+                    let base = pool_paddr(&objects)?;
                     Some((
-                        (base + dumb.offset) as u64,
-                        u32::try_from(dumb.size).map_err(|_| {
+                        (base + object.offset) as u64,
+                        u32::try_from(object.size).map_err(|_| {
                             Error::with_message(Errno::EINVAL, "cursor buffer is too large")
                         })?,
                     ))
@@ -750,8 +913,8 @@ impl PerOpenFileOps for DriHandle {
     }
 
     fn mappable(&self) -> Result<Mappable> {
-        let inner = self.inner.lock();
-        let pool = inner.pool.as_ref().ok_or_else(|| {
+        let objects = GEM_OBJECTS.lock();
+        let pool = objects.pool.as_ref().ok_or_else(|| {
             Error::with_message(Errno::ENODEV, "no dumb buffer has been created yet")
         })?;
         Ok(Mappable::Vmo(pool.clone()))
@@ -887,6 +1050,21 @@ impl PerOpenFileOps for DriHandle {
             cmd @ ModeCursor2 => {
                 let req = cmd.read()?;
                 self.update_cursor(req)?;
+                Ok(0)
+            }
+            cmd @ GemClose => {
+                let req = cmd.read()?;
+                self.gem_close(&req)?;
+                Ok(0)
+            }
+            cmd @ GemFlink => {
+                let req = cmd.read()?;
+                cmd.write(&self.gem_flink(&req)?)?;
+                Ok(0)
+            }
+            cmd @ GemOpen => {
+                let req = cmd.read()?;
+                cmd.write(&self.gem_open(&req)?)?;
                 Ok(0)
             }
             cmd @ ModeCreateDumb => {
