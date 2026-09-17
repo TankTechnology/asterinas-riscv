@@ -20,6 +20,7 @@ from tools.riscv.debian.rootfs.browser_system_time import (
     TimeEvidenceError,
     interval,
     parse_cpu_stat,
+    parse_mem_available,
     parse_pid_stat,
     parse_schedstat,
     read_proc_text,
@@ -45,11 +46,22 @@ CPU_CORES_B = (
 )
 
 
-def pid_stat(utime: int, stime: int, starttime: int) -> str:
+def pid_stat(
+    utime: int,
+    stime: int,
+    starttime: int,
+    *,
+    minor_faults: int = 0,
+    major_faults: int = 0,
+    rss_pages: int = 0,
+) -> str:
     fields = ["S"] + ["0"] * 49
+    fields[7] = str(minor_faults)
+    fields[9] = str(major_faults)
     fields[11] = str(utime)
     fields[12] = str(stime)
     fields[19] = str(starttime)
+    fields[21] = str(rss_pages)
     return "42 (Firefox (Main)) " + " ".join(fields)
 
 
@@ -79,7 +91,16 @@ class ProcParserTests(unittest.TestCase):
                 parse_schedstat(raw)
 
     def test_pid_stat_handles_parentheses_in_comm(self) -> None:
-        parsed = parse_pid_stat(PID_A)
+        parsed = parse_pid_stat(
+            pid_stat(
+                120,
+                30,
+                777,
+                minor_faults=12,
+                major_faults=3,
+                rss_pages=400,
+            )
+        )
         self.assertEqual(
             (
                 parsed.pid,
@@ -90,6 +111,23 @@ class ProcParserTests(unittest.TestCase):
             ),
             (42, "Firefox (Main)", 120, 30, 777),
         )
+        self.assertEqual(parsed.minor_faults, 12)
+        self.assertEqual(parsed.major_faults, 3)
+        self.assertEqual(parsed.rss_pages, 400)
+
+    def test_meminfo_reads_one_linux_memavailable_value(self) -> None:
+        self.assertEqual(
+            parse_mem_available("MemTotal: 1000 kB\nMemAvailable: 700 kB\n"),
+            700,
+        )
+        for invalid in (
+            "MemTotal: 1000 kB\n",
+            "MemAvailable: 1 MB\n",
+            "MemAvailable: -1 kB\n",
+            "MemAvailable: 1 kB\nMemAvailable: 2 kB\n",
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(TimeEvidenceError):
+                parse_mem_available(invalid)
 
     def test_cpu_stat_reads_ten_global_ticks_and_switch_count(self) -> None:
         parsed = parse_cpu_stat(CPU_A)
@@ -144,8 +182,16 @@ class IntervalTests(unittest.TestCase):
         )
 
     def test_interval_reports_cpu_deltas_and_separate_clock_domain(self) -> None:
-        before = self.snapshot(1_000_000_000, CPU_A, PID_A)
-        after = self.snapshot(2_000_000_000, CPU_B, PID_B)
+        before = self.snapshot(
+            1_000_000_000,
+            CPU_A,
+            pid_stat(120, 30, 777, minor_faults=10, major_faults=2, rss_pages=300),
+        )
+        after = self.snapshot(
+            2_000_000_000,
+            CPU_B,
+            pid_stat(130, 35, 777, minor_faults=17, major_faults=3, rss_pages=350),
+        )
 
         report = interval(before, after, clock_ticks_per_second=100)
 
@@ -155,6 +201,9 @@ class IntervalTests(unittest.TestCase):
         self.assertEqual(report["guest_monotonic_end_ns"], 2_000_000_000)
         self.assertEqual(report["processes"][0]["cpu_user_ms"], 100)
         self.assertEqual(report["processes"][0]["cpu_kernel_ms"], 50)
+        self.assertEqual(report["processes"][0]["minor_faults"], 7)
+        self.assertEqual(report["processes"][0]["major_faults"], 1)
+        self.assertEqual(report["processes"][0]["rss_pages_after"], 350)
         self.assertEqual(
             report["system"]["cpu_ticks"], [10, 0, 5, 20, 0, 0, 0, 0, 0, 0]
         )
@@ -399,7 +448,7 @@ class SamplerTests(unittest.TestCase):
             marker.write_text(f"{marker_ns}\n")
             output = Path(directory) / "threads.json"
             timestamps = iter(
-                marker_ns + 1 + index * 250_000_000 for index in range(21)
+                marker_ns + 1 + index * 250_000_000 for index in range(65)
             )
             snapshot_index = 0
 
@@ -442,16 +491,16 @@ class SamplerTests(unittest.TestCase):
                     marker,
                     output,
                     interval_seconds=0.25,
-                    samples=20,
+                    samples=64,
                     clock_ns=lambda: next(timestamps),
                     sleep_fn=lambda _seconds: None,
                     clock_ticks_per_second=100,
                 )
 
-            self.assertEqual(len(report["intervals"]), 20)
+            self.assertEqual(len(report["intervals"]), 64)
             self.assertEqual(len(report["intervals"][0]["threads"]), 128)
             self.assertGreater(output.stat().st_size, 256 * 1024)
-            self.assertLessEqual(output.stat().st_size, 2 * 1024 * 1024)
+            self.assertLessEqual(output.stat().st_size, 8 * 1024 * 1024)
 
     def test_thread_sampler_rejects_schedstat_counter_regression(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

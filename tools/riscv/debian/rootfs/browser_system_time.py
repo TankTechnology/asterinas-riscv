@@ -26,9 +26,12 @@ MAX_U64 = 2**64 - 1
 class ProcessCpu:
     pid: int
     comm: str
+    minor_faults: int
+    major_faults: int
     utime_ticks: int
     stime_ticks: int
     starttime_ticks: int
+    rss_pages: int
 
 
 @dataclass(frozen=True)
@@ -75,7 +78,7 @@ def parse_schedstat(raw: str) -> ThreadSchedstat:
 
 
 def parse_pid_stat(raw: str) -> ProcessCpu:
-    """Reads Linux field 14, 15, and 22 while preserving a parenthesized comm."""
+    """Read Linux fault, CPU, identity, and RSS fields from one stat record."""
 
     opening = raw.find(" (")
     closing = raw.rfind(") ")
@@ -87,19 +90,47 @@ def parse_pid_stat(raw: str) -> ProcessCpu:
     if (
         pid == 0
         or closing - opening > 256
-        or len(fields) < 20
+        or len(fields) < 22
         or len(fields[0]) != 1
         or fields[0] not in "RSDTtZXI"
     ):
         raise TimeEvidenceError("process stat fields are incomplete")
 
+    counters = (
+        _natural(fields[7], "minor faults"),
+        _natural(fields[9], "major faults"),
+        _natural(fields[11], "utime"),
+        _natural(fields[12], "stime"),
+        _natural(fields[19], "starttime"),
+        _natural(fields[21], "RSS pages"),
+    )
+    if any(value > MAX_U64 for value in counters):
+        raise TimeEvidenceError("process stat field exceeds u64")
     return ProcessCpu(
         pid=pid,
         comm=raw[opening + 2 : closing],
-        utime_ticks=_natural(fields[11], "utime"),
-        stime_ticks=_natural(fields[12], "stime"),
-        starttime_ticks=_natural(fields[19], "starttime"),
+        minor_faults=counters[0],
+        major_faults=counters[1],
+        utime_ticks=counters[2],
+        stime_ticks=counters[3],
+        starttime_ticks=counters[4],
+        rss_pages=counters[5],
     )
+
+
+def parse_mem_available(raw: str) -> int:
+    """Read exactly one Linux MemAvailable value expressed in KiB."""
+
+    values: list[int] = []
+    for line in raw.splitlines():
+        words = line.split()
+        if words and words[0] == "MemAvailable:":
+            if len(words) != 3 or words[2] != "kB":
+                raise TimeEvidenceError("MemAvailable has an invalid unit")
+            values.append(_natural(words[1], "MemAvailable"))
+    if len(values) != 1 or values[0] > MAX_U64:
+        raise TimeEvidenceError("MemAvailable is missing, duplicated, or overflowing")
+    return values[0]
 
 
 def parse_cpu_stat(raw: str) -> SystemCpu:
@@ -143,6 +174,7 @@ class Snapshot:
     guest_monotonic_ns: int
     system: SystemCpu
     processes: tuple[ProcessCpu, ...]
+    memory_available_kib: int | None = None
 
 
 def interval(
@@ -169,6 +201,8 @@ def interval(
         new = current[pid]
         if (
             old.starttime_ticks != new.starttime_ticks
+            or new.minor_faults < old.minor_faults
+            or new.major_faults < old.major_faults
             or new.utime_ticks < old.utime_ticks
             or new.stime_ticks < old.stime_ticks
         ):
@@ -178,6 +212,9 @@ def interval(
             {
                 "pid": pid,
                 "starttime_ticks": old.starttime_ticks,
+                "minor_faults": new.minor_faults - old.minor_faults,
+                "major_faults": new.major_faults - old.major_faults,
+                "rss_pages_after": new.rss_pages,
                 "cpu_user_ms": (new.utime_ticks - old.utime_ticks)
                 * 1000
                 / clock_ticks_per_second,
@@ -239,6 +276,19 @@ def interval(
             }
         )
     system_deltas["per_cpu"] = per_cpu_deltas
+    unsupported = [
+        "per-process-io",
+        "per-thread-runnable-wait",
+        "physical-hdmi-scanout",
+    ]
+    if (
+        before.memory_available_kib is None
+        or after.memory_available_kib is None
+    ):
+        unsupported.append("system-memory-available")
+    else:
+        system_deltas["memory_available_kib_before"] = before.memory_available_kib
+        system_deltas["memory_available_kib_after"] = after.memory_available_kib
     return {
         "clock_domain": "guest-monotonic",
         "guest_monotonic_start_ns": before.guest_monotonic_ns,
@@ -247,20 +297,16 @@ def interval(
         / 1_000_000,
         "processes": process_deltas,
         "system": system_deltas,
-        "unsupported": [
-            "per-process-io",
-            "per-thread-runnable-wait",
-            "physical-hdmi-scanout",
-        ],
+        "unsupported": unsupported,
     }
 
 
 MAX_PROC_READ_BYTES = 8 * 1024
 MAX_REPORT_BYTES = 256 * 1024
-MAX_THREAD_REPORT_BYTES = 2 * 1024 * 1024
+MAX_THREAD_REPORT_BYTES = 8 * 1024 * 1024
 MAX_INTERVALS = 64
 MAX_THREADS = 128
-MAX_THREAD_INTERVALS = 20
+MAX_THREAD_INTERVALS = 64
 MIN_INTERVAL_SECONDS = 0.25
 MAX_INTERVAL_SECONDS = 10.0
 
@@ -332,7 +378,18 @@ def read_snapshot(
         if parsed.pid != pid:
             raise TimeEvidenceError("requested process identity changed")
         processes.append(parsed)
-    return Snapshot(guest_monotonic_ns, system, tuple(processes))
+    meminfo_path = proc_root / "meminfo"
+    memory_available_kib = (
+        parse_mem_available(read_proc_text(meminfo_path))
+        if meminfo_path.is_file()
+        else None
+    )
+    return Snapshot(
+        guest_monotonic_ns,
+        system,
+        tuple(processes),
+        memory_available_kib,
+    )
 
 
 def read_thread_snapshot(
