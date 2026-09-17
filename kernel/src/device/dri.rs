@@ -90,6 +90,35 @@ const DUMB_POOL_SIZE: usize = 16 * 1024 * 1024;
 /// Maximum scanout width/height reported by `MODE_GETRESOURCES`.
 const MAX_RESOLUTION: u32 = 8192;
 
+/// Which node an open file reached the device through.
+///
+/// Linux exposes one GPU twice: `card0` for clients that modeset, and
+/// `renderD128` for clients that only render. The two differ in what they
+/// permit, not in what they reach — both resolve handles to the same
+/// device-wide GEM objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DriNode {
+    Card,
+    Render,
+}
+
+impl DriNode {
+    /// The minor number Linux assigns this node.
+    const fn minor(self) -> u32 {
+        match self {
+            DriNode::Card => 0,
+            DriNode::Render => 128,
+        }
+    }
+
+    const fn devtmpfs_name(self) -> &'static str {
+        match self {
+            DriNode::Card => "dri/card0",
+            DriNode::Render => "dri/renderD128",
+        }
+    }
+}
+
 /// A GEM object: a page-aligned span of the device-wide buffer pool.
 #[derive(Debug, Clone, Copy)]
 struct GemObject {
@@ -141,7 +170,9 @@ impl GemObjects {
 static GEM_OBJECTS: SpinLock<GemObjects> = SpinLock::new(GemObjects::new());
 
 #[derive(Debug)]
-struct Dri;
+struct Dri {
+    node: DriNode,
+}
 
 /// Per-open-file DRM state.
 ///
@@ -150,6 +181,8 @@ struct Dri;
 /// device-wide [`GEM_OBJECTS`] space instead, so a buffer can outlive the file
 /// that created it and be reached from another one.
 struct DriHandle {
+    /// The node this file was opened through, which decides what it may do.
+    node: DriNode,
     gpu: Arc<GpuDevice>,
     cursor_operation: Mutex<()>,
     inner: SpinLock<DriInner>,
@@ -451,18 +484,41 @@ mod ioctl_defs {
 /// by pointer, so it is dispatched by raw command instead of a typed `ioc!`.
 const MODE_RMFB_CMD: u32 = 0xc00464af;
 
+/// Whether an ioctl is reachable through the render node.
+///
+/// Mirrors the `DRM_RENDER_ALLOW` entries of Linux's `drm_ioctls[]`. A render
+/// node exists for clients that only render, so it withholds everything that
+/// acts on the display — modesetting, cursor, page flips — along with master.
+///
+/// `GEM_FLINK` and `GEM_OPEN` are withheld too, which is less obvious: Linux
+/// marks them `DRM_AUTH` *without* `DRM_RENDER_ALLOW`, because a name is how a
+/// legacy client hands a buffer to another file, and the render node serves
+/// clients that have no use for that. Buffers reach a render client through
+/// PRIME instead.
+///
+/// Comparing the typed ioctl rather than a raw command number keeps this table
+/// from drifting away from the definitions above.
+fn is_render_allowed(raw_ioctl: RawIoctl) -> bool {
+    use ioctl_defs::*;
+
+    GetVersion::try_from_raw(raw_ioctl).is_some()
+        || GetCap::try_from_raw(raw_ioctl).is_some()
+        || GemClose::try_from_raw(raw_ioctl).is_some()
+}
+
 impl Device for Dri {
     fn type_(&self) -> DeviceType {
         DeviceType::Char
     }
 
     fn id(&self) -> DeviceId {
-        // Linux: major 226 (DRM), minor 0 (the first card).
-        DeviceId::new(MajorId::new(DRM_MAJOR), MinorId::new(0))
+        // Linux: major 226 (DRM), minor 0 for the first card and 128 for the
+        // first render node.
+        DeviceId::new(MajorId::new(DRM_MAJOR), MinorId::new(self.node.minor()))
     }
 
     fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
-        Some(DevtmpfsInodeMeta::new("dri/card0"))
+        Some(DevtmpfsInodeMeta::new(self.node.devtmpfs_name()))
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
@@ -472,6 +528,7 @@ impl Device for Dri {
         let current_height = gpu.height();
 
         Ok(Box::new(DriHandle {
+            node: self.node,
             gpu,
             cursor_operation: Mutex::new(()),
             inner: SpinLock::new(DriInner {
@@ -923,6 +980,16 @@ impl PerOpenFileOps for DriHandle {
     fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {
         use ioctl_defs::*;
 
+        // A render node withholds everything that acts on the display, so the
+        // check comes before the request is decoded: a refused ioctl must not
+        // be able to reach the handlers at all.
+        if self.node == DriNode::Render && !is_render_allowed(raw_ioctl) {
+            return_errno_with_message!(
+                Errno::EACCES,
+                "ioctl is not permitted on the render node"
+            );
+        }
+
         // `RMFB` passes its argument by value, so it cannot go through the typed
         // dispatch below.
         if raw_ioctl.cmd() == MODE_RMFB_CMD {
@@ -1192,5 +1259,12 @@ pub(super) fn init_in_first_kthread() {
         return;
     }
 
-    char::register(Arc::new(Dri)).expect("failed to register DRM char device");
+    char::register(Arc::new(Dri {
+        node: DriNode::Card,
+    }))
+    .expect("failed to register the DRM card device");
+    char::register(Arc::new(Dri {
+        node: DriNode::Render,
+    }))
+    .expect("failed to register the DRM render device");
 }
