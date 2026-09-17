@@ -126,18 +126,26 @@ def capture_composite(
         raise CompositeCaptureError("composite workload did not start")
 
     snapshot_script = (
-        "return JSON.stringify("
+        "return JSON.stringify({url: document.URL, workload: "
         "window.wrappedJSObject.__asterinasCompositeWorkloadSnapshot ? "
-        "window.wrappedJSObject.__asterinasCompositeWorkloadSnapshot() : null);"
+        "window.wrappedJSObject.__asterinasCompositeWorkloadSnapshot() : null});"
     )
     observations: list[dict[str, object]] = []
     observed_count = 0
     while time.monotonic() < deadline:
         try:
-            raw = _json_value(_script(client, snapshot_script))
+            envelope = _json_value(_script(client, snapshot_script))
+            if (
+                not isinstance(envelope, dict)
+                or set(envelope) != {"url", "workload"}
+                or envelope["url"] != url
+            ):
+                raise CompositeCaptureError("composite workload document changed")
             workload = validate_workload_snapshot(
-                raw, expected_mode=mode, allow_running=True
+                envelope["workload"], expected_mode=mode, allow_running=True
             )
+        except CompositeCaptureError:
+            raise
         except (CaptureError, WorkloadContractError, TimeoutError) as error:
             raise CompositeCaptureError("composite workload snapshot is invalid") from error
         completed = _completed_phase_names(workload)
