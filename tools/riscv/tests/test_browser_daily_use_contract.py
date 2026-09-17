@@ -233,6 +233,19 @@ class BrowserDailyUseContractTests(unittest.TestCase):
         with self.assertRaises(DailyUseContractError):
             validate_daily_use_result(result)
 
+    def test_rejects_nonstring_function_and_performance_states(self) -> None:
+        for state in ([], {}):
+            function_state = complete_result()
+            function_state["functionGroups"][0]["state"] = state
+            performance_state = complete_result()
+            performance_state["performance"][0]["state"] = state
+
+            for result in (function_state, performance_state):
+                with self.subTest(state=type(state).__name__), self.assertRaises(
+                    DailyUseContractError
+                ):
+                    validate_daily_use_result(result)
+
         result = complete_result()
         result["identities"]["firefox"]["final"]["startTimeTicks"] += 1
         with self.assertRaises(DailyUseContractError):
@@ -355,23 +368,30 @@ class BrowserDailyUseContractTests(unittest.TestCase):
             validate_daily_use_result(result)
 
     def test_rejects_bad_artifact_paths_hashes_and_duplicates(self) -> None:
-        for name, digest, byte_count, duplicate in (
-            ("../owned", "a" * 64, 1_024, False),
-            ("nested/artifact.json", "a" * 64, 1_024, False),
-            ("artifact.json", "A" * 64, 1_024, False),
-            ("artifact.json", "a" * 64, -1, False),
-            ("artifact.json", "a" * 64, 64 * 1024 * 1024 + 1, False),
-            ("artifact.json", "a" * 64, 1_024, True),
+        for name, digest, byte_count, duplicate, error in (
+            ("../owned", "a" * 64, 1_024, False, "artifact name"),
+            ("nested/artifact.json", "a" * 64, 1_024, False, "artifact name"),
+            ("artifact.json", "A" * 64, 1_024, False, "artifact SHA"),
+            ("artifact.json", "a" * 64, -1, False, "artifact size"),
+            (
+                "artifact.json",
+                "a" * 64,
+                64 * 1024 * 1024 + 1,
+                False,
+                "artifact size",
+            ),
+            ("artifact.json", "a" * 64, 1_024, True, "artifact names"),
         ):
             result = complete_result()
             result["artifacts"][0]["name"] = name
             result["artifacts"][0]["sha256"] = digest
             result["artifacts"][0]["bytes"] = byte_count
+            result["attribution"]["compositeArtifact"] = name
             if duplicate:
                 result["artifacts"][1]["name"] = name
             with (
                 self.subTest(name=name, byte_count=byte_count, duplicate=duplicate),
-                self.assertRaises(DailyUseContractError),
+                self.assertRaisesRegex(DailyUseContractError, error),
             ):
                 validate_daily_use_result(result)
 
@@ -380,12 +400,12 @@ class BrowserDailyUseContractTests(unittest.TestCase):
             {"name": f"artifact-{index}.json", "bytes": 1, "sha256": "a" * 64}
             for index in range(17)
         ]
-        with self.assertRaises(DailyUseContractError):
+        with self.assertRaisesRegex(DailyUseContractError, "artifact list"):
             validate_daily_use_result(result)
 
         result = complete_result()
         result["artifacts"] = result["artifacts"][:2]
-        with self.assertRaises(DailyUseContractError):
+        with self.assertRaisesRegex(DailyUseContractError, "artifact list"):
             validate_daily_use_result(result)
 
     def test_rejects_invalid_oversized_and_duplicate_limitations(self) -> None:

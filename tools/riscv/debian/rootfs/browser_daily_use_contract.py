@@ -272,7 +272,7 @@ def _normalize_function_groups(value: object) -> list[dict[str, str | None]]:
         if item["name"] != expected_name:
             raise DailyUseContractError("function groups are missing or reordered")
         state = item["state"]
-        if state not in {"pass", "fail", "unsupported"}:
+        if not isinstance(state, str) or state not in {"pass", "fail", "unsupported"}:
             raise DailyUseContractError("function group state is invalid")
         reason = item["reason"]
         if state == "pass":
@@ -381,7 +381,7 @@ def _normalize_performance(
         if item["clockDomain"] != clock_domain:
             raise DailyUseContractError("performance category clock domain is invalid")
         state = item["state"]
-        if state not in {"pass", "slow", "unsupported"}:
+        if not isinstance(state, str) or state not in {"pass", "slow", "unsupported"}:
             raise DailyUseContractError("performance category state is invalid")
         metrics = item["metrics"]
         reason = item["reason"]
