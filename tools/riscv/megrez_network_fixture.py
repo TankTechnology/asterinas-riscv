@@ -10,6 +10,7 @@ import hashlib
 import http.server
 import ipaddress
 import json
+import re
 import signal
 import struct
 import threading
@@ -28,6 +29,9 @@ BROWSER_INDEX_PATH = "/browser-quality/index.html"
 BROWSER_SECOND_PATH = "/browser-quality/second.html"
 BROWSER_PERF_PATH = "/browser-quality/perf.html"
 BROWSER_PERF_SECOND_PATH = "/browser-quality/perf-second.html"
+BROWSER_WORKLOAD_PATH = "/browser-quality/workload.html"
+BROWSER_WORKLOAD_RESOURCE_PATH = "/browser-quality/workload-resource.bin"
+BROWSER_WORKLOAD_IMAGE_PATH = "/browser-quality/workload-image.png"
 BROWSER_IMAGE_PATH = "/browser-quality/pattern.png"
 BROWSER_DOWNLOAD_PATH = "/browser-quality/download.bin"
 BROWSER_API_PATH = "/browser-quality/capabilities.json"
@@ -35,9 +39,12 @@ BROWSER_AUDIO_PATH = "/browser-quality/tone.wav"
 BROWSER_CAPTURE_PATH = "/browser-quality/capture.xwd.gz"
 BROWSER_PNG_CAPTURE_PATH = "/browser-quality/capture.png"
 MAX_CAPTURE_BYTES = 8 * 1024 * 1024
+MAX_WORKLOAD_REQUEST_RECORDS = 512
 BROWSER_DOWNLOAD = bytes(range(256)) * 1024
 BROWSER_DOWNLOAD_SHA256 = hashlib.sha256(BROWSER_DOWNLOAD).hexdigest()
 BROWSER_API = b'{"schema_version":1,"token":"asterinas-browser-quality"}\n'
+WORKLOAD_RESOURCE_SIZE = 64 * 1024
+WORKLOAD_RESOURCE = bytes(range(256)) * (WORKLOAD_RESOURCE_SIZE // 256)
 
 
 def _pcm_wav() -> bytes:
@@ -330,6 +337,224 @@ window.__asterinasNavigationSnapshot = () => {
           loadEventEnd: entry.loadEventEnd};
 };
 </script>"""
+BROWSER_WORKLOAD = b"""<!doctype html>
+<html lang=en><meta charset=utf-8><title>Asterinas composite browser workload</title>
+<meta http-equiv=Content-Security-Policy content="default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<style>body{font:18px sans-serif;margin:24px}#workload-grid{display:grid;grid-template-columns:repeat(16,1fr)}
+.workload-node{min-height:4px}.workload-hot{background:#14bb9c}canvas{border:1px solid #1b84a1}</style>
+<h1>Asterinas composite browser workload</h1>
+<output id=workload-status>idle</output><div id=workload-grid></div>
+<canvas id=workload-canvas width=640 height=360></canvas><div id=workload-contexts></div>
+<script>
+(() => {
+  'use strict';
+  const modes = {
+    smoke: {scale: 1, nodes: 128, resources: 8, contexts: 2},
+    profile: {scale: 4, nodes: 512, resources: 32, contexts: 3},
+    stress: {scale: 12, nodes: 1024, resources: 96, contexts: 3}
+  };
+  const names = ['warmup', 'interaction-layout', 'canvas-image',
+                 'concurrent-resources', 'navigation-history',
+                 'multi-context', 'cooldown'];
+  const state = {schemaVersion: 1, workloadVersion: 1,
+    clockDomain: 'browser-performance-now', mode: 'smoke', state: 'running',
+    phases: [], error: null};
+  let started = false;
+  const grid = document.querySelector('#workload-grid');
+  const canvas = document.querySelector('#workload-canvas');
+  const contexts = document.querySelector('#workload-contexts');
+  const status = document.querySelector('#workload-status');
+  const emptyMetrics = () => ({operationCount: 0, requestCount: 0,
+    contextCount: 0, longFrameCount: 0, frameMs: []});
+  const nextFrames = metrics => new Promise(resolve => {
+    const start = performance.now();
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const elapsed = performance.now() - start;
+      if (Number.isFinite(elapsed) && elapsed >= 0 && elapsed <= 60000 &&
+          metrics.frameMs.length < 256) {
+        metrics.frameMs.push(elapsed);
+        if (elapsed > 50) metrics.longFrameCount++;
+      }
+      resolve();
+    }));
+  });
+  const query = (mode, phase, sequence, passName) =>
+    'mode=' + mode + '&phase=' + phase + '&sequence=' + sequence + '&pass=' + passName;
+  const loadFrame = (frame, url) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('frame-timeout')), 10000);
+    frame.onload = () => { clearTimeout(timer); resolve(); };
+    frame.onerror = () => { clearTimeout(timer); reject(new Error('frame-load')); };
+    frame.src = url;
+  });
+  const loadImage = url => new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('image-load'));
+    image.src = url;
+  });
+  const runPool = async (items, limit, operation) => {
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < items.length) {
+        const item = items[cursor++];
+        await operation(item);
+      }
+    };
+    await Promise.all(Array.from({length: Math.min(limit, items.length)}, worker));
+  };
+  const runPhase = async (name, operation) => {
+    const phase = {name, state: 'running', startMs: performance.now(),
+                   endMs: null, metrics: emptyMetrics()};
+    state.phases.push(phase);
+    status.textContent = name;
+    try {
+      await operation(phase.metrics);
+      phase.endMs = performance.now();
+      phase.state = 'complete';
+    } catch (_) {
+      phase.endMs = performance.now();
+      phase.state = 'failed';
+      throw new Error(name + '-failed');
+    }
+  };
+  const warmup = async (metrics, config) => {
+    const fragment = document.createDocumentFragment();
+    for (let index = 0; index < config.nodes; index++) {
+      const node = document.createElement('span');
+      node.className = 'workload-node';
+      node.textContent = String(index & 15);
+      fragment.appendChild(node);
+    }
+    grid.replaceChildren(fragment);
+    metrics.operationCount = config.nodes;
+    const response = await fetch('/browser-quality/workload-resource.bin?' +
+      query(state.mode, 'resource', 0, 'cold'), {cache: 'no-store'});
+    if (!response.ok || (await response.arrayBuffer()).byteLength !== 65536)
+      throw new Error('warmup-resource');
+    metrics.requestCount = 1;
+    await nextFrames(metrics);
+  };
+  const interactionLayout = async (metrics, config) => {
+    const nodes = Array.from(grid.children);
+    const rounds = config.scale * 8;
+    for (let round = 0; round < rounds; round++) {
+      for (let index = round & 1; index < nodes.length; index += 2) {
+        nodes[index].classList.toggle('workload-hot');
+        nodes[index].textContent = String((round + index) & 31);
+      }
+      void grid.offsetHeight;
+      grid.scrollTop = round & 1 ? grid.scrollHeight : 0;
+      metrics.operationCount += nodes.length / 2 + 2;
+      await nextFrames(metrics);
+    }
+  };
+  const canvasImage = async (metrics, config) => {
+    const count = config.scale * 4;
+    const images = [];
+    for (let index = 0; index < count; index++) {
+      images.push(await loadImage('/browser-quality/workload-image.png?' +
+        query(state.mode, 'image', index, 'cold')));
+      metrics.requestCount++;
+    }
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('canvas-context');
+    for (let index = 0; index < config.scale * 100; index++) {
+      const image = images[index % images.length];
+      context.fillStyle = index & 1 ? '#1b84a1' : '#14bb9c';
+      context.fillRect((index * 17) % 608, (index * 29) % 328, 32, 32);
+      context.drawImage(image, (index * 31) % 608, (index * 13) % 328);
+      metrics.operationCount += 2;
+    }
+    await nextFrames(metrics);
+  };
+  const concurrentResources = async (metrics, config) => {
+    const sequences = Array.from({length: config.resources}, (_, index) => index);
+    for (const passName of ['cold', 'warm']) {
+      await runPool(sequences, 8, async sequence => {
+        const response = await fetch('/browser-quality/workload-resource.bin?' +
+          query(state.mode, 'resource', sequence, passName),
+          {cache: passName === 'cold' ? 'no-store' : 'default'});
+        if (!response.ok || (await response.arrayBuffer()).byteLength !== 65536)
+          throw new Error('resource-response');
+        metrics.requestCount++;
+        metrics.operationCount++;
+      });
+    }
+  };
+  const navigationHistory = async (metrics, config) => {
+    const frame = document.createElement('iframe');
+    contexts.appendChild(frame);
+    metrics.contextCount = 1;
+    const urls = ['/browser-quality/second.html',
+                  '/browser-quality/perf-second.html'];
+    for (let index = 0; index < config.scale * 4; index++) {
+      await loadFrame(frame, urls[index & 1]);
+      metrics.requestCount++;
+      metrics.operationCount++;
+    }
+    frame.remove();
+    metrics.contextCount = 0;
+  };
+  const multiContext = async (metrics, config) => {
+    const frames = [];
+    for (let index = 0; index < config.contexts; index++) {
+      const frame = document.createElement('iframe');
+      contexts.appendChild(frame);
+      frames.push(frame);
+      await loadFrame(frame, '/browser-quality/second.html');
+      metrics.contextCount++;
+      const response = await fetch('/browser-quality/workload-resource.bin?' +
+        query(state.mode, 'context', index, 'cold'), {cache: 'no-store'});
+      if (!response.ok) throw new Error('context-resource');
+      await response.arrayBuffer();
+      metrics.requestCount++;
+      metrics.operationCount++;
+      await new Promise(resolve => setTimeout(resolve, config.scale));
+    }
+    await nextFrames(metrics);
+    for (const frame of frames) frame.remove();
+    metrics.contextCount = 0;
+  };
+  const cooldown = async metrics => {
+    contexts.replaceChildren();
+    grid.scrollTop = 0;
+    metrics.operationCount = 2;
+    await nextFrames(metrics);
+  };
+  const run = async config => {
+    const operations = [
+      metrics => warmup(metrics, config),
+      metrics => interactionLayout(metrics, config),
+      metrics => canvasImage(metrics, config),
+      metrics => concurrentResources(metrics, config),
+      metrics => navigationHistory(metrics, config),
+      metrics => multiContext(metrics, config),
+      metrics => cooldown(metrics, config)
+    ];
+    try {
+      for (let index = 0; index < names.length; index++)
+        await runPhase(names[index], operations[index]);
+      state.state = 'complete';
+      status.textContent = 'complete';
+    } catch (error) {
+      state.state = 'failed';
+      state.error = String(error && error.message || 'workload-failed')
+        .toLowerCase().replace(/[^a-z0-9-]/g, '-').slice(0, 96) || 'workload-failed';
+      contexts.replaceChildren();
+      status.textContent = 'failed';
+    }
+  };
+  window.__asterinasStartCompositeWorkload = mode => {
+    if (started || !Object.prototype.hasOwnProperty.call(modes, mode))
+      throw new Error('workload-mode');
+    started = true;
+    state.mode = mode;
+    void run(modes[mode]);
+  };
+  window.__asterinasCompositeWorkloadSnapshot = () =>
+    JSON.parse(JSON.stringify(state));
+})();
+</script>"""
 
 
 def browser_resource(path: str) -> tuple[str, bytes] | None:
@@ -340,11 +565,31 @@ def browser_resource(path: str) -> tuple[str, bytes] | None:
         BROWSER_SECOND_PATH: ("text/html; charset=utf-8", BROWSER_SECOND),
         BROWSER_PERF_PATH: ("text/html; charset=utf-8", BROWSER_PERF),
         BROWSER_PERF_SECOND_PATH: ("text/html; charset=utf-8", BROWSER_PERF_SECOND),
+        BROWSER_WORKLOAD_PATH: ("text/html; charset=utf-8", BROWSER_WORKLOAD),
         BROWSER_IMAGE_PATH: ("image/png", BROWSER_IMAGE),
         BROWSER_DOWNLOAD_PATH: ("application/octet-stream", BROWSER_DOWNLOAD),
         BROWSER_API_PATH: ("application/json", BROWSER_API),
         BROWSER_AUDIO_PATH: ("audio/wav", BROWSER_AUDIO),
     }.get(path)
+
+
+_WORKLOAD_QUERY = re.compile(
+    r"mode=(smoke|profile|stress)&"
+    r"phase=(image|resource|context)&"
+    r"sequence=(0|[1-9][0-9]{0,2})&"
+    r"pass=(cold|warm)\Z"
+)
+
+
+def _parse_workload_query(query: str) -> tuple[str, str, int, str] | None:
+    match = _WORKLOAD_QUERY.fullmatch(query)
+    if match is None:
+        return None
+    mode, phase, sequence_raw, pass_name = match.groups()
+    sequence = int(sequence_raw)
+    if sequence >= 256:
+        return None
+    return mode, phase, sequence, pass_name
 
 
 def is_successful_summary(
@@ -419,6 +664,10 @@ class FixtureServer:
         self._request_count = 0
         self._records: list[dict[str, object]] = []
         self._last_timestamp = 0
+        self._workload_request_count = 0
+        self._workload_records: list[dict[str, object]] = []
+        self._workload_active = 0
+        self._workload_max_active = 0
         self._capture: bytes | None = None
         self._capture_evidence: dict[str, object] | None = None
 
@@ -506,6 +755,14 @@ class FixtureServer:
         peer = request.client_address[0]
         target = urlsplit(request.path)
         is_browser_request = target.path.startswith("/browser-quality/")
+        is_workload_request = target.path in {
+            BROWSER_WORKLOAD_RESOURCE_PATH,
+            BROWSER_WORKLOAD_IMAGE_PATH,
+        }
+        workload_start_ns = 0
+        workload_active = 0
+        if is_workload_request:
+            workload_start_ns, workload_active = self._begin_workload_request()
         if self.config.allowed_peer is not None and peer != self.config.allowed_peer:
             status = 403
             body = b""
@@ -529,8 +786,18 @@ class FixtureServer:
         # handler's finally block records it.
         if not is_browser_request:
             self._record(peer, request.path, status, len(body))
-        self._send_response(request, status, body, content_type)
-        request.wfile.write(body)
+        try:
+            self._send_response(request, status, body, content_type)
+            request.wfile.write(body)
+        finally:
+            if is_workload_request:
+                self._finish_workload_request(
+                    target.query,
+                    status,
+                    len(body),
+                    workload_start_ns,
+                    workload_active,
+                )
 
     def _browser_response(self, path: str, query: str) -> tuple[int, str, bytes]:
         if path == BROWSER_INDEX_PATH:
@@ -540,6 +807,16 @@ class FixtureServer:
                 return 200, "text/html; charset=utf-8", BROWSER_SEARCH
             return 400, "text/plain; charset=utf-8", b""
         if query:
+            parsed = _parse_workload_query(query)
+            if path not in {
+                BROWSER_WORKLOAD_RESOURCE_PATH,
+                BROWSER_WORKLOAD_IMAGE_PATH,
+            } or parsed is None:
+                return 400, "text/plain; charset=utf-8", b""
+            if path == BROWSER_WORKLOAD_IMAGE_PATH:
+                return 200, "image/png", BROWSER_IMAGE
+            return 200, "application/octet-stream", WORKLOAD_RESOURCE
+        if path in {BROWSER_WORKLOAD_RESOURCE_PATH, BROWSER_WORKLOAD_IMAGE_PATH}:
             return 400, "text/plain; charset=utf-8", b""
         resource = browser_resource(path)
         if resource is None:
@@ -614,6 +891,44 @@ class FixtureServer:
         request.end_headers()
         request.close_connection = True
 
+    def _begin_workload_request(self) -> tuple[int, int]:
+        with self._lock:
+            self._workload_active += 1
+            self._workload_max_active = max(
+                self._workload_max_active, self._workload_active
+            )
+            return time.monotonic_ns(), self._workload_active
+
+    def _finish_workload_request(
+        self,
+        query: str,
+        status: int,
+        body_bytes: int,
+        start_ns: int,
+        active_at_start: int,
+    ) -> None:
+        parsed = _parse_workload_query(query)
+        mode, phase, sequence, pass_name = (
+            parsed if parsed is not None else ("invalid", "invalid", -1, "invalid")
+        )
+        with self._lock:
+            self._workload_active -= 1
+            self._workload_request_count += 1
+            if len(self._workload_records) < MAX_WORKLOAD_REQUEST_RECORDS:
+                self._workload_records.append(
+                    {
+                        "active_at_start": active_at_start,
+                        "body_bytes": body_bytes,
+                        "mode": mode,
+                        "monotonic_end_ns": max(time.monotonic_ns(), start_ns),
+                        "monotonic_start_ns": start_ns,
+                        "pass": pass_name,
+                        "phase": phase,
+                        "sequence": sequence,
+                        "status": status,
+                    }
+                )
+
     def capture_payload(self) -> bytes | None:
         """Return the immutable accepted capture, if one exists."""
 
@@ -650,6 +965,9 @@ class FixtureServer:
         with self._lock:
             records = [dict(record) for record in self._records]
             request_count = self._request_count
+            workload_records = [dict(record) for record in self._workload_records]
+            workload_request_count = self._workload_request_count
+            workload_max_active = self._workload_max_active
         return {
             "payload_path": FIXTURE_PATH,
             "payload_sha256": PAYLOAD_SHA256,
@@ -658,6 +976,11 @@ class FixtureServer:
             "request_count": request_count,
             "requests": records,
             "schema_version": 1,
+            "workload_max_active": workload_max_active,
+            "workload_records_truncated": workload_request_count
+            > len(workload_records),
+            "workload_request_count": workload_request_count,
+            "workload_requests": workload_records,
         }
 
     def summary_json(self) -> bytes:
