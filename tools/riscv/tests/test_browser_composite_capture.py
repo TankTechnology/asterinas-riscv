@@ -56,9 +56,15 @@ def snapshot(count: int, *, terminal: str = "running") -> dict[str, object]:
 
 
 class FakeMarionette:
-    def __init__(self, snapshots: list[dict[str, object]] | None = None) -> None:
+    def __init__(
+        self,
+        snapshots: list[dict[str, object]] | None = None,
+        *,
+        snapshot_url: str = WORKLOAD,
+    ) -> None:
         self.url = "about:blank"
         self.snapshots = snapshots or [snapshot(3), snapshot(len(PHASES), terminal="complete")]
+        self.snapshot_url = snapshot_url
         self.commands: list[str] = []
         self.timeouts: list[float] = []
 
@@ -96,7 +102,11 @@ class FakeMarionette:
                 return {"value": "started"}
             if "__asterinasCompositeWorkloadSnapshot" in script:
                 value = self.snapshots.pop(0) if len(self.snapshots) > 1 else self.snapshots[0]
-                return {"value": json.dumps(value)}
+                return {
+                    "value": json.dumps(
+                        {"url": self.snapshot_url, "workload": value}
+                    )
+                }
         raise AssertionError(f"unexpected command {name}")
 
 
@@ -151,6 +161,32 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
                     timeout_seconds=30,
                     sleep_fn=lambda _seconds: None,
                 )
+
+    def test_capture_rejects_changed_document_and_keeps_prior_checkpoint(self) -> None:
+        checkpoints: list[dict[str, object]] = []
+        with self.assertRaises(CompositeCaptureError):
+            capture_composite(
+                FakeMarionette(snapshot_url="http://10.0.2.2:17894/other"),
+                BASE,
+                mode="smoke",
+                timeout_seconds=30,
+                checkpoint_fn=checkpoints.append,
+                sleep_fn=lambda _seconds: None,
+            )
+        self.assertEqual(checkpoints, [])
+
+        failed = snapshot(4, terminal="failed")
+        failed["phases"][-1]["state"] = "failed"
+        with self.assertRaises(CompositeCaptureError):
+            capture_composite(
+                FakeMarionette([snapshot(3), failed]),
+                BASE,
+                mode="smoke",
+                timeout_seconds=30,
+                checkpoint_fn=checkpoints.append,
+                sleep_fn=lambda _seconds: None,
+            )
+        self.assertEqual(checkpoints[-1]["completed_phases"], list(PHASES[:3]))
 
     def test_run_capture_publishes_private_artifacts_without_deleting_session(
         self,
@@ -249,6 +285,30 @@ class BrowserCompositeCaptureTests(unittest.TestCase):
                 identity_fn=lambda _pids: next(identities),
                 sleep_fn=lambda _seconds: None,
             )
+
+    def test_run_capture_propagates_either_sampler_failure(self) -> None:
+        def fail(*_args: object) -> None:
+            raise RuntimeError("sampler failed")
+
+        def publish(path: Path, *_args: object) -> None:
+            path.write_text("{}")
+
+        for system_fn, thread_fn in ((fail, publish), (publish, fail)):
+            with self.subTest(system=system_fn is fail), tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises(CompositeCaptureError):
+                    run_composite_capture(
+                        FakeMarionette(),
+                        BASE,
+                        firefox_pid=116,
+                        xorg_pid=75,
+                        evidence_dir=Path(directory),
+                        mode="smoke",
+                        timeout_seconds=30,
+                        system_sample_fn=system_fn,
+                        thread_sample_fn=thread_fn,
+                        identity_fn=lambda _pids: (100, 200),
+                        sleep_fn=lambda _seconds: None,
+                    )
 
 
 if __name__ == "__main__":
