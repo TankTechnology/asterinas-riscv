@@ -40,6 +40,7 @@ BROWSER_CAPTURE_PATH = "/browser-quality/capture.xwd.gz"
 BROWSER_PNG_CAPTURE_PATH = "/browser-quality/capture.png"
 MAX_CAPTURE_BYTES = 8 * 1024 * 1024
 MAX_WORKLOAD_REQUEST_RECORDS = 512
+WORKLOAD_SUMMARY_QUIESCE_SECONDS = 2.0
 BROWSER_DOWNLOAD = bytes(range(256)) * 1024
 BROWSER_DOWNLOAD_SHA256 = hashlib.sha256(BROWSER_DOWNLOAD).hexdigest()
 BROWSER_API = b'{"schema_version":1,"token":"asterinas-browser-quality"}\n'
@@ -705,6 +706,7 @@ class FixtureServer:
         self._workload_records: list[dict[str, object]] = []
         self._workload_active = 0
         self._workload_max_active = 0
+        self._workload_idle = threading.Condition(self._lock)
         self._capture: bytes | None = None
         self._capture_evidence: dict[str, object] | None = None
 
@@ -961,7 +963,7 @@ class FixtureServer:
         mode, phase, sequence, pass_name = (
             parsed if parsed is not None else ("invalid", "invalid", -1, "invalid")
         )
-        with self._lock:
+        with self._workload_idle:
             self._workload_active -= 1
             self._workload_request_count += 1
             if len(self._workload_records) < MAX_WORKLOAD_REQUEST_RECORDS:
@@ -978,6 +980,8 @@ class FixtureServer:
                         "status": status,
                     }
                 )
+            if self._workload_active == 0:
+                self._workload_idle.notify_all()
 
     def capture_payload(self) -> bytes | None:
         """Return the immutable accepted capture, if one exists."""
@@ -1012,7 +1016,12 @@ class FixtureServer:
     def summary(self) -> dict[str, object]:
         """Return a detached canonical-schema snapshot of bounded evidence."""
 
-        with self._lock:
+        with self._workload_idle:
+            if not self._workload_idle.wait_for(
+                lambda: self._workload_active == 0,
+                timeout=WORKLOAD_SUMMARY_QUIESCE_SECONDS,
+            ):
+                raise TimeoutError("workload requests did not quiesce before summary")
             records = [dict(record) for record in self._records]
             request_count = self._request_count
             workload_records = [dict(record) for record in self._workload_records]
