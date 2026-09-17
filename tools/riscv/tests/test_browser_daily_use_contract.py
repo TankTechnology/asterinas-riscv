@@ -45,35 +45,71 @@ def complete_result() -> dict[str, object]:
                 "name": "startup",
                 "state": "pass",
                 "clockDomain": "guest-monotonic",
-                "metrics": {"durationMs": 500.0},
+                "metrics": {
+                    "firefoxPid": 101,
+                    "bootFirefoxExecNs": 1_000_000_000,
+                    "bootFirstWindowReadyNs": 1_500_000_000,
+                    "durationMs": 500.0,
+                },
                 "reason": None,
             },
             {
                 "name": "input",
                 "state": "pass",
                 "clockDomain": "browser-performance-now",
-                "metrics": {"p95Ms": 100.0},
+                "metrics": {
+                    "keyboard": {
+                        "firstRaf": {"p50Ms": 25.0, "p95Ms": 100.0},
+                        "nextRaf": {"p50Ms": 30.0, "p95Ms": 100.0},
+                    },
+                    "pointer": {
+                        "firstRaf": {"p50Ms": 25.0, "p95Ms": 100.0},
+                        "nextRaf": {"p50Ms": 30.0, "p95Ms": 100.0},
+                    },
+                },
                 "reason": None,
             },
             {
                 "name": "scroll",
                 "state": "pass",
                 "clockDomain": "browser-performance-now",
-                "metrics": {"p95Ms": 100.0},
+                "metrics": {
+                    "firstRaf": {"p50Ms": 25.0, "p95Ms": 100.0},
+                    "nextRaf": {"p50Ms": 30.0, "p95Ms": 100.0},
+                },
                 "reason": None,
             },
             {
                 "name": "navigation",
                 "state": "pass",
-                "clockDomain": "browser-navigation",
-                "metrics": {"domReadyMs": 2_000.0},
+                "clockDomain": "multiple-clock-domains-separated",
+                "metrics": {
+                    "localCommand": {
+                        "clockDomain": "guest-monotonic",
+                        "durationMs": 500.0,
+                    },
+                    "browserNavigation": {
+                        "clockDomain": "browser-navigation",
+                        "fetchStartMs": 10.0,
+                        "responseToDomMs": 2_000.0,
+                        "responseToLoadMs": 2_100.0,
+                    },
+                },
                 "reason": None,
             },
             {
                 "name": "context-switch",
                 "state": "pass",
                 "clockDomain": "guest-monotonic",
-                "metrics": {"durationMs": 500.0},
+                "metrics": {
+                    "openMs": 100.0,
+                    "selectMs": 100.0,
+                    "returnMs": 100.0,
+                    "closeMs": 100.0,
+                    "totalMs": 400.0,
+                    "handleCountBefore": 1,
+                    "handleCountAfter": 1,
+                },
                 "reason": None,
             },
         ],
@@ -147,6 +183,25 @@ class BrowserDailyUseContractTests(unittest.TestCase):
             with self.subTest(result=result), self.assertRaises(DailyUseContractError):
                 validate_daily_use_result(result)
 
+    def test_rejects_malformed_run_id_and_attribution_references(self) -> None:
+        for run_id in ("A" * 32, "a" * 31, "g" * 32):
+            result = complete_result()
+            result["runId"] = run_id
+            with self.subTest(run_id=run_id), self.assertRaises(DailyUseContractError):
+                validate_daily_use_result(result)
+
+        missing = complete_result()
+        missing["attribution"]["systemArtifact"] = "missing.json"
+        missing_field = complete_result()
+        missing_field["attribution"].pop("systemArtifact")
+        duplicate = complete_result()
+        duplicate["attribution"]["threadArtifact"] = duplicate["attribution"][
+            "systemArtifact"
+        ]
+        for result in (missing, missing_field, duplicate):
+            with self.subTest(result=result), self.assertRaises(DailyUseContractError):
+                validate_daily_use_result(result)
+
     def test_rejects_nonfinite_negative_and_oversized_metrics(self) -> None:
         for label, value in (
             ("nan", math.nan),
@@ -156,7 +211,9 @@ class BrowserDailyUseContractTests(unittest.TestCase):
             ("float-overflow", 10**100_000),
         ):
             result = complete_result()
-            result["performance"][0]["metrics"]["durationMs"] = value
+            result["performance"][1]["metrics"]["keyboard"]["firstRaf"][
+                "p95Ms"
+            ] = value
             with self.subTest(label=label), self.assertRaises(DailyUseContractError):
                 validate_daily_use_result(result)
 
@@ -168,9 +225,10 @@ class BrowserDailyUseContractTests(unittest.TestCase):
                 validate_daily_use_result(result)
 
         result = complete_result()
-        result["identities"]["xorg"]["initial"]["pid"] = result["identities"][
-            "firefox"
-        ]["initial"]["pid"]
+        for snapshot in ("initial", "final"):
+            result["identities"]["xorg"][snapshot]["pid"] = result["identities"][
+                "firefox"
+            ][snapshot]["pid"]
         with self.assertRaises(DailyUseContractError):
             validate_daily_use_result(result)
 
@@ -181,7 +239,9 @@ class BrowserDailyUseContractTests(unittest.TestCase):
 
     def test_rejects_cross_clock_metric_evidence(self) -> None:
         result = complete_result()
-        result["performance"][1]["clockDomain"] = "guest-monotonic"
+        result["performance"][3]["metrics"]["localCommand"][
+            "clockDomain"
+        ] = "browser-navigation"
 
         with self.assertRaises(DailyUseContractError):
             validate_daily_use_result(result)
@@ -190,25 +250,103 @@ class BrowserDailyUseContractTests(unittest.TestCase):
         result = complete_result()
         for index in (1, 2, 3, 4):
             result["performance"][index]["state"] = "slow"
-        result["performance"][1]["metrics"]["p95Ms"] = 100.001
-        result["performance"][2]["metrics"]["p95Ms"] = 100.001
-        result["performance"][3]["metrics"]["domReadyMs"] = 2_000.001
-        result["performance"][4]["metrics"]["durationMs"] = 500.001
+        result["performance"][1]["metrics"]["keyboard"]["firstRaf"][
+            "p95Ms"
+        ] = 100.001
+        result["performance"][2]["metrics"]["nextRaf"]["p95Ms"] = 100.001
+        result["performance"][3]["metrics"]["browserNavigation"][
+            "responseToDomMs"
+        ] = 2_000.001
+        result["performance"][4]["metrics"]["openMs"] = 500.001
+        result["performance"][4]["metrics"]["totalMs"] = 800.001
         result["slowCount"] = 4
 
         self.assertEqual(validate_daily_use_result(result)["slowCount"], 4)
 
         result = complete_result()
         result["performance"][1]["state"] = "slow"
-        result["performance"][1]["metrics"]["p95Ms"] = 100.0
+        result["performance"][1]["metrics"]["keyboard"]["firstRaf"][
+            "p95Ms"
+        ] = 100.0
         result["slowCount"] = 1
         with self.assertRaises(DailyUseContractError):
             validate_daily_use_result(result)
 
         result = complete_result()
         result["performance"][1]["state"] = "slow"
-        result["performance"][1]["metrics"]["p95Ms"] = 100.001
+        result["performance"][1]["metrics"]["keyboard"]["firstRaf"][
+            "p95Ms"
+        ] = 100.001
         result["slowCount"] = True
+        with self.assertRaises(DailyUseContractError):
+            validate_daily_use_result(result)
+
+    def test_requires_complete_nested_performance_evidence(self) -> None:
+        missing = complete_result()
+        missing["performance"][1]["metrics"]["keyboard"]["firstRaf"].pop(
+            "p50Ms"
+        )
+        extra = complete_result()
+        extra["performance"][2]["metrics"]["nextRaf"]["extra"] = 1.0
+        startup_duration = complete_result()
+        startup_duration["performance"][0]["metrics"]["durationMs"] = 501.0
+        startup_pid = complete_result()
+        startup_pid["performance"][0]["metrics"]["firefoxPid"] = 999
+        startup_endpoints = complete_result()
+        startup_endpoints["performance"][0]["metrics"]["bootFirefoxExecNs"] = (
+            1_600_000_000
+        )
+        context_total = complete_result()
+        context_total["performance"][4]["metrics"]["totalMs"] = 401.0
+        context_handles = complete_result()
+        context_handles["performance"][4]["metrics"]["handleCountAfter"] = 2
+
+        for result in (
+            missing,
+            extra,
+            startup_duration,
+            startup_pid,
+            startup_endpoints,
+            context_total,
+            context_handles,
+        ):
+            with self.subTest(result=result), self.assertRaises(DailyUseContractError):
+                validate_daily_use_result(result)
+
+        reordered_navigation = complete_result()
+        reordered_navigation["performance"][3]["metrics"]["browserNavigation"][
+            "responseToLoadMs"
+        ] = 1_999.0
+        with self.assertRaises(DailyUseContractError):
+            validate_daily_use_result(reordered_navigation)
+
+    def test_preserves_invalid_navigation_timing_as_unsupported(self) -> None:
+        result = complete_result()
+        result["performance"][3] = {
+            "name": "navigation",
+            "state": "unsupported",
+            "clockDomain": "multiple-clock-domains-separated",
+            "metrics": {
+                "localCommand": {
+                    "clockDomain": "guest-monotonic",
+                    "durationMs": 500.0,
+                },
+                "browserNavigation": {
+                    "clockDomain": "browser-navigation",
+                    "fetchStartMs": -1.0,
+                    "responseToDomMs": None,
+                    "responseToLoadMs": None,
+                },
+            },
+            "reason": "navigation-timing-invalid",
+        }
+        self.assertEqual(
+            validate_daily_use_result(result)["performance"][3]["state"],
+            "unsupported",
+        )
+
+        result["performance"][3]["state"] = "pass"
+        result["performance"][3]["reason"] = None
         with self.assertRaises(DailyUseContractError):
             validate_daily_use_result(result)
 
@@ -231,6 +369,33 @@ class BrowserDailyUseContractTests(unittest.TestCase):
                 self.subTest(name=name, byte_count=byte_count, duplicate=duplicate),
                 self.assertRaises(DailyUseContractError),
             ):
+                validate_daily_use_result(result)
+
+        result = complete_result()
+        result["artifacts"] = [
+            {"name": f"artifact-{index}.json", "bytes": 1, "sha256": "a" * 64}
+            for index in range(17)
+        ]
+        with self.assertRaises(DailyUseContractError):
+            validate_daily_use_result(result)
+
+        result = complete_result()
+        result["artifacts"] = result["artifacts"][:2]
+        with self.assertRaises(DailyUseContractError):
+            validate_daily_use_result(result)
+
+    def test_rejects_invalid_oversized_and_duplicate_limitations(self) -> None:
+        invalid = complete_result()
+        invalid["limitations"] = {"items": ["made-up-limitation"]}
+        oversized = complete_result()
+        oversized["limitations"] = {"items": ["synthetic-input-timing"] * 17}
+        duplicate = complete_result()
+        duplicate["limitations"] = {
+            "items": ["synthetic-input-timing", "synthetic-input-timing"]
+        }
+
+        for result in (invalid, oversized, duplicate):
+            with self.subTest(result=result), self.assertRaises(DailyUseContractError):
                 validate_daily_use_result(result)
 
     def test_derives_result_state_and_preserves_unsupported(self) -> None:
