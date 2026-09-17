@@ -75,6 +75,10 @@ DRM_GEM = QemuDeviceSet(
     "drm-gem",
     (DeviceKind.VIRTIO_GPU,),
 )
+DRM_RENDER_NODE = QemuDeviceSet(
+    "drm-render-node",
+    (DeviceKind.VIRTIO_GPU,),
+)
 
 _DEVICE_SETS = MappingProxyType(
     {
@@ -83,6 +87,7 @@ _DEVICE_SETS = MappingProxyType(
         MEGREZ_BASIC.name: MEGREZ_BASIC,
         DRM_CURSOR.name: DRM_CURSOR,
         DRM_GEM.name: DRM_GEM,
+        DRM_RENDER_NODE.name: DRM_RENDER_NODE,
     }
 )
 
