@@ -41,6 +41,8 @@ if (( $# == 1 )); then
                 usr/lib/asterinas/browser_system_time.py \
                 usr/lib/asterinas/browser_latency_contract.py \
                 usr/lib/asterinas/browser_perf_capture.py \
+                usr/lib/asterinas/browser_workload_contract.py \
+                usr/lib/asterinas/browser_composite_capture.py \
                 usr/lib/asterinas/browser-web-marionette-gate \
                 usr/lib/asterinas/browser_m5_marionette_gate.py \
                 usr/lib/asterinas/megrez-clock-sync \
@@ -75,6 +77,8 @@ BROWSER_INTERACTION_PERF_SOURCE="$SCRIPT_DIR/browser_interaction_perf.py"
 BROWSER_SYSTEM_TIME_SOURCE="$SCRIPT_DIR/browser_system_time.py"
 BROWSER_LATENCY_CONTRACT_SOURCE="$SCRIPT_DIR/browser_latency_contract.py"
 BROWSER_PERF_CAPTURE_SOURCE="$SCRIPT_DIR/browser_perf_capture.py"
+BROWSER_WORKLOAD_CONTRACT_SOURCE="$SCRIPT_DIR/browser_workload_contract.py"
+BROWSER_COMPOSITE_CAPTURE_SOURCE="$SCRIPT_DIR/browser_composite_capture.py"
 BROWSER_M5_MARIONETTE_GATE_SOURCE="$SCRIPT_DIR/browser_m5_marionette_gate.py"
 CLOCK_SYNC_SOURCE="$SCRIPT_DIR/megrez_clock_sync.py"
 PHYSICAL_EXTERNAL_SOURCE="$SCRIPT_DIR/physical_external_services_quiesce.sh"
@@ -185,6 +189,10 @@ install -D -m 0644 -- "$BROWSER_LATENCY_CONTRACT_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser_latency_contract.py"
 install -D -m 0755 -- "$BROWSER_PERF_CAPTURE_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser_perf_capture.py"
+install -D -m 0755 -- "$BROWSER_WORKLOAD_CONTRACT_SOURCE" \
+    "$STAGE/usr/lib/asterinas/browser_workload_contract.py"
+install -D -m 0755 -- "$BROWSER_COMPOSITE_CAPTURE_SOURCE" \
+    "$STAGE/usr/lib/asterinas/browser_composite_capture.py"
 install -D -m 0755 -- "$BROWSER_M5_MARIONETTE_GATE_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser_m5_marionette_gate.py"
 install -D -m 0755 -- "$CLOCK_SYNC_SOURCE" \
@@ -219,6 +227,8 @@ touch -d "@$SOURCE_DATE_EPOCH" \
     "$STAGE/usr/lib/asterinas/browser_system_time.py" \
     "$STAGE/usr/lib/asterinas/browser_latency_contract.py" \
     "$STAGE/usr/lib/asterinas/browser_perf_capture.py" \
+    "$STAGE/usr/lib/asterinas/browser_workload_contract.py" \
+    "$STAGE/usr/lib/asterinas/browser_composite_capture.py" \
     "$STAGE/usr/lib/asterinas/browser-web-marionette-gate" \
     "$STAGE/usr/lib/asterinas/browser_m5_marionette_gate.py" \
     "$STAGE/usr/lib/asterinas/megrez-clock-sync" \
@@ -246,6 +256,8 @@ printf '%s\n' \
     usr/lib/asterinas/browser_system_time.py \
     usr/lib/asterinas/browser_latency_contract.py \
     usr/lib/asterinas/browser_perf_capture.py \
+    usr/lib/asterinas/browser_workload_contract.py \
+    usr/lib/asterinas/browser_composite_capture.py \
     usr/lib/asterinas/browser-web-marionette-gate \
     usr/lib/asterinas/browser_m5_marionette_gate.py \
     usr/lib/asterinas/megrez-clock-sync \
@@ -277,6 +289,8 @@ EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_interaction_perf.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_system_time.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_latency_contract.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_perf_capture.py\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_workload_contract.py\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_composite_capture.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser-web-marionette-gate\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_m5_marionette_gate.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/megrez-clock-sync\n'

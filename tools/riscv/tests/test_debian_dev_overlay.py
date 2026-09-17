@@ -1015,6 +1015,8 @@ class DevelopmentOverlayTests(unittest.TestCase):
                 "/usr/lib/asterinas/browser-web-marionette-gate",
                 "/usr/lib/asterinas/browser_m5_marionette_gate.py",
                 "/usr/lib/asterinas/browser_interaction_perf.py",
+                "/usr/lib/asterinas/browser_workload_contract.py",
+                "/usr/lib/asterinas/browser_composite_capture.py",
                 "/usr/lib/asterinas/browser-performance-provenance",
                 "/usr/lib/asterinas/physical-graphics-gate",
                 "/usr/lib/asterinas/physical-external-services-quiesce",
@@ -1042,6 +1044,8 @@ class DevelopmentOverlayTests(unittest.TestCase):
             {entry.destination for entry in spec.files if entry.create},
             {
                 "/usr/lib/asterinas/browser_interaction_perf.py",
+                "/usr/lib/asterinas/browser_workload_contract.py",
+                "/usr/lib/asterinas/browser_composite_capture.py",
                 "/usr/lib/asterinas/browser-performance-provenance",
                 "/usr/lib/asterinas/desktop-display-provider",
                 "/usr/lib/asterinas/firefox-diagnostic-snapshot",

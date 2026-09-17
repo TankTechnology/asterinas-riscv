@@ -11,6 +11,9 @@ cd "${REPO_ROOT}"
 
 python3 -m unittest \
   tools.riscv.tests.test_browser_interaction_perf \
+  tools.riscv.tests.test_browser_workload_contract \
+  tools.riscv.tests.test_browser_composite_capture \
+  tools.riscv.tests.test_browser_system_time \
   tools.riscv.tests.test_browser_performance_provenance \
   tools.riscv.tests.test_debian_browser_web \
   tools.riscv.tests.test_debian_browser_m5_runtime_gate \
@@ -23,6 +26,9 @@ python3 -m unittest \
 python3 -m py_compile \
   tools/riscv/firefox_debug_tool.py \
   tools/riscv/debian/rootfs/browser_interaction_perf.py \
+  tools/riscv/debian/rootfs/browser_workload_contract.py \
+  tools/riscv/debian/rootfs/browser_composite_capture.py \
+  tools/riscv/debian/rootfs/browser_system_time.py \
   tools/riscv/debian/rootfs/browser_performance_provenance.py \
   tools/riscv/debian/rootfs/browser_web_contract.py \
   tools/riscv/debian/rootfs/browser_web_marionette_gate.py \
