@@ -236,8 +236,10 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
         self.assertEqual((resource_status, resource), (200, WORKLOAD_RESOURCE))
         self.assertEqual(len(resource), WORKLOAD_RESOURCE_SIZE)
         self.assertEqual(resource_headers["content-type"], "application/octet-stream")
+        self.assertEqual(resource_headers["cache-control"], "no-store")
         self.assertEqual((image_status, image), (200, BROWSER_IMAGE))
         self.assertEqual(image_headers["content-type"], "image/png")
+        self.assertEqual(image_headers["cache-control"], "public, max-age=3600")
         self.assertEqual(summary["request_count"], 0)
         self.assertEqual(summary["workload_request_count"], 7)
         self.assertFalse(summary["workload_records_truncated"])
@@ -261,6 +263,11 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
             b"concurrent-resources",
             b"navigation-history",
             b"multi-context",
+            b"for (let repetition = 0; repetition < repetitions; repetition++)",
+            b"frame.contentWindow.history.back()",
+            b"frame.contentWindow.history.forward()",
+            b"frame.contentWindow.setTimeout",
+            b"contexts.children.length !== 0",
         ):
             self.assertIn(marker, BROWSER_WORKLOAD)
 
