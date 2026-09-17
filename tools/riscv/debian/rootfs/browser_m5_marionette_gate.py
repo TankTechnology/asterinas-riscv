@@ -59,6 +59,10 @@ class GateError(RuntimeError):
     """The browser did not provide exact, trustworthy content evidence."""
 
 
+class CommandNotSentTimeout(TimeoutError):
+    """The deadline expired before any command bytes could have been sent."""
+
+
 class Marionette:
     def __init__(
         self,
@@ -197,20 +201,27 @@ class Marionette:
     def command(self, name: str, parameters: object | None = None) -> object:
         if self._pending_request is not None:
             raise GateError("unresolved Marionette response prevents another command")
+        try:
+            self._remaining()
+        except TimeoutError as error:
+            raise CommandNotSentTimeout(str(error)) from error
         identifier = self._next_id
         self._next_id += 1
         self._request_id = identifier
         self._command_name = name
         self._reset_progress()
-        self._pending_request = identifier
         self._timed_out = False
         self._stage = "send"
         self._diagnostic("begin")
         try:
             result = self._command(identifier, name, parameters)
         except BaseException as error:
-            self._timed_out = isinstance(error, TimeoutError)
+            self._timed_out = (
+                isinstance(error, TimeoutError) and self._pending_request is not None
+            )
             self._diagnostic("failure", error)
+            if isinstance(error, TimeoutError) and self._pending_request is None:
+                raise CommandNotSentTimeout(str(error)) from error
             raise
         self._stage = "complete"
         self._diagnostic("complete")
@@ -221,6 +232,9 @@ class Marionette:
             [0, identifier, name, parameters or {}], separators=(",", ":")
         ).encode()
         self._socket.settimeout(self._remaining())
+        # From this point a failed sendall may have transmitted a partial frame.
+        # Earlier preparation/deadline failures cannot poison response framing.
+        self._pending_request = identifier
         self._socket.sendall(str(len(payload)).encode("ascii") + b":" + payload)
         self._send_complete = True
         self._diagnostic("send_complete")
