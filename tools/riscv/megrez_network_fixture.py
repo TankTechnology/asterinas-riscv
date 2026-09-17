@@ -386,11 +386,26 @@ BROWSER_WORKLOAD = b"""<!doctype html>
     frame.onerror = () => { clearTimeout(timer); reject(new Error('frame-load')); };
     frame.src = url;
   });
-  const historyStep = (frame, direction) => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('history-timeout')), 10000);
-    frame.onload = () => { clearTimeout(timer); resolve(); };
+  const historyStep = (frame, direction, expectedPath) =>
+    new Promise((resolve, reject) => {
+    const deadline = performance.now() + 10000;
+    const observe = () => {
+      try {
+        if (frame.contentWindow.location.pathname === expectedPath &&
+            frame.contentDocument.readyState !== 'loading') {
+          resolve();
+          return;
+        }
+      } catch (_) {
+        reject(new Error('history-origin'));
+        return;
+      }
+      if (performance.now() >= deadline) reject(new Error('history-timeout'));
+      else setTimeout(observe, 10);
+    };
     if (direction === 'back') frame.contentWindow.history.back();
     else frame.contentWindow.history.forward();
+    observe();
   });
   const loadImage = url => new Promise((resolve, reject) => {
     const image = new Image();
@@ -502,9 +517,9 @@ BROWSER_WORKLOAD = b"""<!doctype html>
       metrics.operationCount++;
     }
     for (let index = 0; index < config.scale * 2; index++) {
-      await historyStep(frame, 'back');
+      await historyStep(frame, 'back', urls[0]);
       metrics.operationCount++;
-      await historyStep(frame, 'forward');
+      await historyStep(frame, 'forward', urls[1]);
       metrics.operationCount++;
     }
     frame.remove();
