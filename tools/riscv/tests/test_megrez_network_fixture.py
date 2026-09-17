@@ -32,12 +32,18 @@ from tools.riscv.megrez_network_fixture import (
     BROWSER_SEARCH,
     BROWSER_SECOND,
     BROWSER_SECOND_PATH,
+    BROWSER_WORKLOAD,
+    BROWSER_WORKLOAD_IMAGE_PATH,
+    BROWSER_WORKLOAD_PATH,
+    BROWSER_WORKLOAD_RESOURCE_PATH,
     FIXTURE_PATH,
     MAX_CAPTURE_BYTES,
     MAX_REQUEST_RECORDS,
     PAYLOAD,
     PAYLOAD_SHA256,
     PAYLOAD_SIZE,
+    WORKLOAD_RESOURCE,
+    WORKLOAD_RESOURCE_SIZE,
     FixtureConfig,
     FixtureServer,
     _parse_args,
@@ -197,6 +203,80 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
         self.assertIn(b"getEntriesByType('navigation')", BROWSER_PERF_SECOND)
         for contaminant in (b"indexedDB", b"WebAssembly", b"__asterinasCapabilities"):
             self.assertNotIn(contaminant, BROWSER_PERF)
+
+    def test_serves_composite_workload_and_bounded_resources(self) -> None:
+        query = "mode=smoke&phase=resource&sequence=7&pass=cold"
+        image_query = "mode=profile&phase=image&sequence=3&pass=warm"
+        with FixtureServer(FixtureConfig("127.0.0.1", 0)) as server:
+            status, page, headers = self.request(server, BROWSER_WORKLOAD_PATH)
+            resource_status, resource, resource_headers = self.request(
+                server, f"{BROWSER_WORKLOAD_RESOURCE_PATH}?{query}"
+            )
+            image_status, image, image_headers = self.request(
+                server, f"{BROWSER_WORKLOAD_IMAGE_PATH}?{image_query}"
+            )
+            for invalid in (
+                "",
+                "phase=resource&mode=smoke&sequence=7&pass=cold",
+                "mode=smoke&phase=unknown&sequence=7&pass=cold",
+                "mode=smoke&phase=resource&sequence=256&pass=cold",
+                "mode=smoke&phase=resource&sequence=7&pass=cold&extra=1",
+            ):
+                separator = "?" if invalid else ""
+                self.assertEqual(
+                    self.request(
+                        server, BROWSER_WORKLOAD_RESOURCE_PATH + separator + invalid
+                    )[0],
+                    400,
+                )
+            summary = server.summary()
+
+        self.assertEqual((status, page), (200, BROWSER_WORKLOAD))
+        self.assertEqual(headers["content-type"], "text/html; charset=utf-8")
+        self.assertEqual((resource_status, resource), (200, WORKLOAD_RESOURCE))
+        self.assertEqual(len(resource), WORKLOAD_RESOURCE_SIZE)
+        self.assertEqual(resource_headers["content-type"], "application/octet-stream")
+        self.assertEqual((image_status, image), (200, BROWSER_IMAGE))
+        self.assertEqual(image_headers["content-type"], "image/png")
+        self.assertEqual(summary["request_count"], 0)
+        self.assertEqual(summary["workload_request_count"], 7)
+        self.assertFalse(summary["workload_records_truncated"])
+        self.assertGreaterEqual(summary["workload_max_active"], 1)
+        successful = [
+            record for record in summary["workload_requests"] if record["status"] == 200
+        ]
+        self.assertEqual(len(successful), 2)
+        self.assertEqual(successful[0]["sequence"], 7)
+        self.assertEqual(successful[0]["pass"], "cold")
+        self.assertLessEqual(
+            successful[0]["monotonic_start_ns"],
+            successful[0]["monotonic_end_ns"],
+        )
+
+        for marker in (
+            b"__asterinasStartCompositeWorkload",
+            b"__asterinasCompositeWorkloadSnapshot",
+            b"interaction-layout",
+            b"canvas-image",
+            b"concurrent-resources",
+            b"navigation-history",
+            b"multi-context",
+        ):
+            self.assertIn(marker, BROWSER_WORKLOAD)
+
+    @unittest.skipUnless(shutil.which("node"), "Node is needed for fixture JS syntax")
+    def test_composite_workload_javascript_is_syntactically_valid(self) -> None:
+        script = BROWSER_WORKLOAD.split(b"<script>\n", 1)[1].split(
+            b"</script>", 1
+        )[0]
+        result = subprocess.run(
+            [shutil.which("node") or "node", "--check"],
+            input=script,
+            capture_output=True,
+            check=False,
+            timeout=3,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
 
     @unittest.skipUnless(shutil.which("node"), "Node is needed for fixture JS smoke")
     def test_performance_page_js_keeps_trusted_and_synthetic_samples_separate(self) -> None:
