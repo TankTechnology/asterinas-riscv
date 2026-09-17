@@ -6,11 +6,16 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools.riscv.debian.rootfs.desktop_drm_gate import (
+    DESKTOP_DRM_BOOTARGS,
     DESKTOP_DRM_EXPECTED_HEIGHT,
     DESKTOP_DRM_EXPECTED_WIDTH,
     DESKTOP_DRM_MILESTONES,
+    GUEST_DEADLINE_MINIMUM_SECONDS,
+    GUEST_DEADLINE_MARGIN_SECONDS,
+    DesktopDRMOperations,
     classify_desktop_drm,
     desktop_drm_qemu_argv,
 )
@@ -58,6 +63,42 @@ class DebianDesktopDRMTests(unittest.TestCase):
             expected_debian_release="13.6",
         )
         self.assertFalse(failed.passed)
+
+    def test_guest_deadline_expires_before_the_gate_window(self) -> None:
+        # The guest has to report its own diagnosis before the gate's window
+        # closes, otherwise a stuck desktop is only ever a bare gate timeout.
+        # The value is an absolute guest uptime, so it shares the gate's origin.
+        deadline = DesktopDRMOperations._guest_deadline_seconds(420)
+        self.assertEqual(deadline, 420 - GUEST_DEADLINE_MARGIN_SECONDS)
+        self.assertLess(deadline, 420)
+
+    def test_guest_deadline_keeps_a_floor_for_short_windows(self) -> None:
+        self.assertEqual(
+            DesktopDRMOperations._guest_deadline_seconds(30),
+            GUEST_DEADLINE_MINIMUM_SECONDS,
+        )
+
+    def test_bootargs_carry_the_guest_deadline_before_the_separator(self) -> None:
+        bootargs = DesktopDRMOperations._bootargs(600)
+        self.assertIn("asterinas.desktop_drm_deadline=600", bootargs)
+        # Only the kernel's own arguments belong before `--`; the stage-1
+        # selector must stay after it.
+        self.assertLess(
+            bootargs.index("asterinas.desktop_drm_deadline=600"),
+            bootargs.index(" -- "),
+        )
+        self.assertTrue(bootargs.endswith("--root-init=systemd"))
+
+    def test_bootargs_are_unchanged_without_a_deadline(self) -> None:
+        self.assertEqual(DesktopDRMOperations._bootargs(), DESKTOP_DRM_BOOTARGS)
+
+    def test_bootargs_environment_override_still_receives_the_deadline(self) -> None:
+        override = "console=ttyS0 loglevel=7 -- --root-init=systemd"
+        with mock.patch.dict("os.environ", {"ASTERINAS_DESKTOP_DRM_BOOTARGS": override}):
+            bootargs = DesktopDRMOperations._bootargs(600)
+        self.assertIn("loglevel=7", bootargs)
+        self.assertIn("asterinas.desktop_drm_deadline=600", bootargs)
+        self.assertTrue(bootargs.endswith("--root-init=systemd"))
 
 
 if __name__ == "__main__":

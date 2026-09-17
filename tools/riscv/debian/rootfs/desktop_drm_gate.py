@@ -27,6 +27,12 @@ from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gat
 
 DESKTOP_DRM_BOOTARGS = "console=ttyS0 loglevel=4 init=/init -- --root-init=systemd"
 
+# Head-room between the guest giving up and the gate doing so, and the floor the
+# guest deadline is never taken below. Under emulation a desktop boot takes
+# minutes, so the floor has to be far above a safety margin rather than below it.
+GUEST_DEADLINE_MARGIN_SECONDS = 60
+GUEST_DEADLINE_MINIMUM_SECONDS = 120
+
 # The kernel's virtio-gpu DRM driver synthesizes a single 1280x800 mode
 # (kernel/src/device/drm/kms.rs), so the Xorg modesetting driver always
 # drives the scanout at that geometry.
@@ -145,7 +151,8 @@ class DesktopDRMOperations(DesktopM3Operations):
         identity["profile"] = manifest.profile
         return identity
 
-    def _boot_commands(self) -> tuple[str, ...]:
+    def _boot_commands(self, config: GateConfig) -> tuple[str, ...]:
+        guest_deadline = self._guest_deadline_seconds(config.boot_timeout)
         return (
             "virtio scan",
             "ext4load virtio 0:0 0x80200000 /asterinas.booti",
@@ -154,21 +161,48 @@ class DesktopDRMOperations(DesktopM3Operations):
             "fdt resize 0x1000",
             "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
             "setenv initrd_size ${filesize}",
-            f'setenv bootargs "{self._bootargs()}"',
+            f'setenv bootargs "{self._bootargs(guest_deadline)}"',
         )
 
+    @staticmethod
+    def _guest_deadline_seconds(boot_timeout: float) -> int:
+        """Return the guest's deadline as an absolute uptime, in seconds.
+
+        It has to be absolute, not a duration: the gate's window starts when
+        QEMU starts, while the guest's script only starts once the boot has
+        reached basic.target.  A duration measured from the script's own start
+        would therefore always expire after the gate's deadline, and the guest
+        would never get to report which condition was unmet.
+        """
+
+        deadline = int(boot_timeout) - GUEST_DEADLINE_MARGIN_SECONDS
+        return max(GUEST_DEADLINE_MINIMUM_SECONDS, deadline)
+
     @classmethod
-    def _bootargs(cls) -> str:
+    def _bootargs(cls, guest_deadline: int | None = None) -> str:
         # Debugging knob: ASTERINAS_DESKTOP_DRM_BOOTARGS replaces the kernel
         # command line, e.g. to raise the log level and turn on
         # asterinas.trace_syscall_errors for ioctl-level diagnosis.
-        return os.environ.get("ASTERINAS_DESKTOP_DRM_BOOTARGS", cls.BOOTARGS)
+        command_line = os.environ.get("ASTERINAS_DESKTOP_DRM_BOOTARGS", cls.BOOTARGS)
+        if guest_deadline is None:
+            return command_line
+        # Only the kernel's own arguments go before the `--` that separates
+        # them from the stage-1 arguments.
+        kernel_arguments, separator, init_arguments = command_line.partition(" -- ")
+        kernel_arguments = (
+            f"{kernel_arguments} asterinas.desktop_drm_deadline={guest_deadline}"
+        )
+        return (
+            f"{kernel_arguments}{separator}{init_arguments}"
+            if separator
+            else kernel_arguments
+        )
 
     def run_protocol(self, session: dict[str, Any], config: GateConfig) -> None:
         serial = session["serial"]
         deadline = time.monotonic() + config.boot_timeout
         serial.wait_for(b"=> ", deadline)
-        for index, command in enumerate(self._boot_commands(), 1):
+        for index, command in enumerate(self._boot_commands(config), 1):
             self._send_uboot(session, command, index, deadline)
 
         marker = f"__ASTERINAS_DESKTOP_DRM_BOOT_{secrets.token_hex(8).upper()}__"

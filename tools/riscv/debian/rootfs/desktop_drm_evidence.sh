@@ -6,26 +6,86 @@ set -euo pipefail
 readonly CONSOLE="${ASTERINAS_DESKTOP_DRM_CONSOLE:-/dev/console}"
 readonly XORG_LOG="${ASTERINAS_DESKTOP_DRM_XORG_LOG:-/home/asterinas/Xorg.0.log}"
 readonly SESSION_LOG="${ASTERINAS_DESKTOP_DRM_SESSION_LOG:-/home/asterinas/desktop-drm-session.log}"
-readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_DRM_TIMEOUT_SECONDS:-300}"
 readonly USER_NAME=asterinas
 readonly USER_ID=1000
+readonly DEFAULT_TIMEOUT_SECONDS=300
+
+uptime_seconds() {
+    local value
+    value="$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null)" || return 0
+    printf '%s' "${value:-0}"
+}
+
+# The gate owns the overall boot budget and hands the guest an absolute
+# deadline on the kernel command line.  It must be absolute, not a duration:
+# the gate's window starts when QEMU starts, while this script only starts at
+# basic.target, so a duration measured from here would always expire after the
+# gate's own deadline and the guest would never get to report its diagnosis.
+cmdline_deadline() {
+    local value
+    [[ -r /proc/cmdline ]] || return 0
+    value="$(tr ' ' '\n' </proc/cmdline 2>/dev/null |
+        sed -n 's/^asterinas\.desktop_drm_deadline=//p' | head -1)" || return 0
+    [[ "$value" =~ ^[0-9]+$ ]] && printf '%s' "$value"
+}
+configured_deadline="$(cmdline_deadline)"
+if [[ -n "$configured_deadline" ]]; then
+    readonly DEADLINE_SECONDS="$configured_deadline"
+else
+    readonly DEADLINE_SECONDS="$(( $(uptime_seconds) + DEFAULT_TIMEOUT_SECONDS ))"
+fi
 
 emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
+
+# The desktop panel can emit the same GLib warning thousands of times, which
+# pushes the lines that actually explain a failure out of the tail window.
+# Collapse runs of identical lines so the dump stays readable and bounded.
+dump_log() {
+    local path="$1" label="$2"
+    [[ -f "$path" ]] || return 0
+    printf '%s\n' "--- $label ---" >>"$CONSOLE"
+    tail -c 65536 -- "$path" 2>/dev/null | awk '
+        { if ($0 == previous) { collapsed++; next }
+          if (collapsed > 0) {
+              printf "  [%d identical line(s) collapsed]\n", collapsed
+          }
+          print; previous = $0; collapsed = 0 }
+        END { if (collapsed > 0) {
+              printf "  [%d identical line(s) collapsed]\n", collapsed } }
+    ' >>"$CONSOLE" 2>&1 || true
+}
+
+# Name every condition so a timeout explains itself instead of only reporting
+# that it timed out.
+report_predicate() {
+    local udevd=no logind=no session=no devices=no xorg_log=no driver=no
+    local dri=no xorg=no openbox=no pcmanfm=no lxpanel=no xterm=no
+    systemctl is-active --quiet systemd-udevd.service && udevd=yes || true
+    systemctl is-active --quiet systemd-logind.service && logind=yes || true
+    loginctl list-sessions --no-legend 2>/dev/null |
+        grep -q " $USER_NAME " && session=yes || true
+    [[ -c /dev/dri/card0 && -e /dev/input/event0 && -e /dev/input/event1 ]] &&
+        devices=yes || true
+    [[ -f "$XORG_LOG" ]] && xorg_log=yes || true
+    grep -q 'modesetting_drv.so' "$XORG_LOG" 2>/dev/null && driver=yes || true
+    grep -Eq 'drm|DRI3|virtio' "$XORG_LOG" 2>/dev/null && dri=yes || true
+    pgrep -u "$USER_ID" -x Xorg >/dev/null 2>&1 && xorg=yes || true
+    pgrep -u "$USER_ID" -x openbox >/dev/null 2>&1 && openbox=yes || true
+    pgrep -u "$USER_ID" -f 'pcmanfm.*--desktop' >/dev/null 2>&1 && pcmanfm=yes || true
+    pgrep -u "$USER_ID" -x lxpanel >/dev/null 2>&1 && lxpanel=yes || true
+    pgrep -u "$USER_ID" -x xterm >/dev/null 2>&1 && xterm=yes || true
+    emit "DEBIAN_DESKTOP_DRM_PREDICATE udevd=$udevd logind=$logind session=$session devices=$devices xorg-log=$xorg_log modesetting=$driver dri=$dri xorg=$xorg openbox=$openbox pcmanfm=$pcmanfm lxpanel=$lxpanel xterm=$xterm"
+}
+
 fail() {
-    if [[ -f "$SESSION_LOG" ]]; then
-        printf '%s\n' '--- DRM desktop session log ---' >>"$CONSOLE"
-        tail -c 16384 "$SESSION_LOG" >>"$CONSOLE" 2>&1 || true
-    fi
-    if [[ -f "$XORG_LOG" ]]; then
-        printf '%s\n' '--- DRM Xorg log ---' >>"$CONSOLE"
-        tail -c 16384 "$XORG_LOG" >>"$CONSOLE" 2>&1 || true
-    fi
+    report_predicate
+    dump_log "$SESSION_LOG" 'DRM desktop session log'
+    dump_log "$XORG_LOG" 'DRM Xorg log'
     emit "DEBIAN_DESKTOP_DRM_FAIL reason=$1"
     exit 1
 }
 
-[[ "$TIMEOUT_SECONDS" =~ ^[0-9]+$ ]] || fail invalid-timeout
-deadline=$((SECONDS + TIMEOUT_SECONDS))
+[[ "$DEADLINE_SECONDS" =~ ^[0-9]+$ ]] || fail invalid-deadline
 ready() {
     systemctl is-active --quiet systemd-udevd.service || return 1
     systemctl is-active --quiet systemd-logind.service || return 1
@@ -34,6 +94,9 @@ ready() {
     [[ -f "$XORG_LOG" ]] || return 1
     grep -q 'modesetting_drv.so' "$XORG_LOG" || return 1
     grep -Eq 'drm|DRI3|virtio' "$XORG_LOG" || return 1
+    # The log outlives the server, so require the process as well; otherwise a
+    # dead Xorg still satisfies the remaining checks.
+    pgrep -u "$USER_ID" -x Xorg >/dev/null || return 1
     pgrep -u "$USER_ID" -x openbox >/dev/null || return 1
     pgrep -u "$USER_ID" -f 'pcmanfm.*--desktop' >/dev/null || return 1
     pgrep -u "$USER_ID" -x lxpanel >/dev/null || return 1
@@ -41,7 +104,7 @@ ready() {
 }
 
 while ! ready; do
-    ((SECONDS < deadline)) || fail desktop-timeout
+    (( $(uptime_seconds) < DEADLINE_SECONDS )) || fail desktop-timeout
     sleep 1
 done
 
