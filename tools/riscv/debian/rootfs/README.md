@@ -408,8 +408,12 @@ handle to workload phases, and forbids phase calls to `WebDriver:NewSession`,
 `WebDriver:DeleteSession`, and `Marionette:Quit`.
 It closes its transport but does not send `DeleteSession`; it also verifies
 unchanged Firefox and Xorg PID/start-time identities, closes only temporary
-browser windows, and does not restart Firefox or Xorg, reboot the guest, or
-write the persistent rootfs.
+browser windows, and does not restart Firefox or Xorg, reboot the guest,
+rewrite partition 2, or change the boot menu.
+The exercised browser can still update its profile and leave the validated
+download under `/home/asterinas/Downloads`; use the separate Stage1
+`--volatile-home` handoff or a disposable image when those writes must not
+persist.
 
 The result has seven functional groups: `document`, `storage`, `execution`,
 `rendering-media`, `navigation`, `download`, and `contexts`.
