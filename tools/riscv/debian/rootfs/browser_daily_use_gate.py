@@ -143,6 +143,12 @@ class ExistingSession:
         self.__client = client
         self.__timed_out_command = False
 
+    @property
+    def has_timed_out_command(self) -> bool:
+        """Whether a sent command reply must be drained before raw cleanup."""
+
+        return self.__timed_out_command
+
     def command(self, name: str, parameters: dict | None = None) -> object:
         if name in {
             "WebDriver:NewSession",
@@ -192,7 +198,6 @@ class CaptureRequest:
     deadline: float
     clock: DailyUseClock
     run_id: str
-    session_ready_ns: int
     physical: bool = False
 
 
@@ -276,6 +281,8 @@ def run_daily_use_gate(
     published: list[Path] = []
     staging: Path | None = None
     original: str | None = None
+    baseline_handles: tuple[str, ...] | None = None
+    phase_session: ExistingSession | None = None
     samplers: list[_Sampler] = []
     cleaned = False
     transport_closed = False
@@ -306,12 +313,19 @@ def run_daily_use_gate(
                 },
             )
         )
-        # Remember the window even when capabilities are invalid, so cleanup
-        # still restores the desktop if session setup partially succeeded.
+        baseline = _value(client.command("WebDriver:GetWindowHandles"))
         original = _value(client.command("WebDriver:GetWindowHandle"))
-        if not isinstance(original, str) or not original:
+        if (
+            type(baseline) is not list
+            or len(baseline) != 1
+            or any(type(handle) is not str or not handle for handle in baseline)
+            or not isinstance(original, str)
+            or not original
+            or baseline != [original]
+        ):
             original = None
             raise DailyUseGateError("session-invalid")
+        baseline_handles = tuple(baseline)
         _select(client, original)
         if (
             not isinstance(session, dict)
@@ -321,7 +335,6 @@ def run_daily_use_gate(
             or session["capabilities"].get("acceptInsecureCerts") is not False
         ):
             raise DailyUseGateError("session-invalid")
-        session_ready_ns = clock.monotonic_ns()
         completed.append("session")
 
         # Sampling covers readiness and four phases; stop wakes the final sample.
@@ -358,8 +371,9 @@ def run_daily_use_gate(
         ):
             _check_running(samplers)
             client.set_timeout(timeout_seconds)
+            phase_session = ExistingSession(client)
             request = CaptureRequest(
-                ExistingSession(client),
+                phase_session,
                 original,
                 fixture_url,
                 mode,
@@ -368,7 +382,6 @@ def run_daily_use_gate(
                 clock.monotonic() + timeout_seconds,
                 clock,
                 run_id,
-                session_ready_ns,
                 physical,
             )
             if clock.monotonic() > request.deadline:
@@ -398,7 +411,7 @@ def run_daily_use_gate(
         workload_end_ns = clock.monotonic_ns()
         _stop_samplers(samplers, timeout_seconds, clock)
         completed.append("samplers-stopped")
-        _cleanup(client, original, timeout_seconds)
+        _cleanup(client, original, baseline_handles, timeout_seconds)
         cleaned = True
         completed.append("cleanup")
         final = _identities(operations, pids)
@@ -447,6 +460,8 @@ def run_daily_use_gate(
             limitations=composite.limitations,
         )
         completed.append("validated")
+        if result["state"] != "pass":
+            raise DailyUseGateError("phase-failed")
         client.close()
         transport_closed = True
         for name in ARTIFACT_NAMES:
@@ -471,9 +486,18 @@ def run_daily_use_gate(
         except Exception:
             # Keep the triggering failure; an incomplete sampler cannot publish.
             pass
-        if original is not None and not cleaned:
+        cleanup_allowed = True
+        if phase_session is not None and phase_session.has_timed_out_command:
             try:
-                _cleanup(client, original, timeout_seconds)
+                phase_session.recover_timed_out_command(
+                    CONTEXT_CLEANUP_TIMEOUT_SECONDS
+                )
+            except Exception:
+                reason = "cleanup-failed"
+                cleanup_allowed = False
+        if original is not None and not cleaned and cleanup_allowed:
+            try:
+                _cleanup(client, original, baseline_handles, timeout_seconds)
             except Exception:
                 reason = "cleanup-failed"
         if not transport_closed:
@@ -764,25 +788,29 @@ def _startup_performance(raw, request):
     if type(raw) is not str or len(raw) > 64 * 1024:
         raise DailyUseGateError("phase-value-invalid")
     records = []
-    for line in raw.splitlines():
-        if not re.search(r"(?:^|\s)marker=BOOT_FIREFOX_EXEC(?:\s|$)", line):
+    for line_index, line in enumerate(raw.splitlines()):
+        if not re.search(
+            r"(?:^|\s)marker=BOOT_(?:FIREFOX_EXEC|FIRST_WINDOW_READY)(?:\s|$)",
+            line,
+        ):
             continue
         match = re.fullmatch(
-            r"A_WEB_TIMELINE marker=(BOOT_FIREFOX_EXEC) "
+            r"A_WEB_TIMELINE marker=(BOOT_FIREFOX_EXEC|BOOT_FIRST_WINDOW_READY) "
             r"guest_monotonic_ns=([0-9]+) firefox_pid=([0-9]+)",
             line,
         )
         if match is None:
             raise DailyUseGateError("phase-value-invalid")
-        records.append((match[1], int(match[2]), int(match[3])))
+        records.append((match[1], int(match[2]), int(match[3]), line_index))
+    execution = [record for record in records if record[0] == "BOOT_FIREFOX_EXEC"]
+    ready = [record for record in records if record[0] == "BOOT_FIRST_WINDOW_READY"]
     if (
-        len(records) != 1
-        or records[0][2] != request.firefox_pid
-        or type(request.session_ready_ns) is not int
-        or not 0
-        < records[0][1]
-        <= request.session_ready_ns
-        <= request.clock.monotonic_ns()
+        len(execution) != 1
+        or len(ready) != 1
+        or execution[0][2] != request.firefox_pid
+        or ready[0][2] != request.firefox_pid
+        or not 0 < execution[0][1] < ready[0][1]
+        or execution[0][3] >= ready[0][3]
     ):
         raise DailyUseGateError("phase-value-invalid")
     return _performance(
@@ -790,12 +818,9 @@ def _startup_performance(raw, request):
         "guest-monotonic",
         {
             "firefoxPid": request.firefox_pid,
-            "bootFirefoxExecNs": records[0][1],
-            # The launcher persists EXEC. The session-ready endpoint is measured
-            # by this gate after verifying its own session and original window;
-            # the public-web gate emits its marker only to stderr.
-            "bootFirstWindowReadyNs": request.session_ready_ns,
-            "durationMs": (request.session_ready_ns - records[0][1]) / 1_000_000,
+            "bootFirefoxExecNs": execution[0][1],
+            "bootFirstWindowReadyNs": ready[0][1],
+            "durationMs": (ready[0][1] - execution[0][1]) / 1_000_000,
         },
     )
 
@@ -1181,8 +1206,15 @@ def _select(client, handle):
     client.command("WebDriver:SwitchToWindow", {"handle": handle, "focus": False})
 
 
-def _cleanup(client, original, timeout):
+def _cleanup(client, original, baseline_handles, timeout):
     try:
+        if (
+            type(baseline_handles) is not tuple
+            or not baseline_handles
+            or original not in baseline_handles
+            or len(set(baseline_handles)) != len(baseline_handles)
+        ):
+            raise DailyUseGateError("cleanup-failed")
         client.set_timeout(timeout)
         handles = _value(client.command("WebDriver:GetWindowHandles"))
         if (
@@ -1193,12 +1225,13 @@ def _cleanup(client, original, timeout):
         ):
             raise DailyUseGateError("cleanup-failed")
         for handle in handles:
-            if handle != original:
+            if handle not in baseline_handles:
                 _select(client, handle)
                 client.command("WebDriver:CloseWindow")
         _select(client, original)
         if (
-            _value(client.command("WebDriver:GetWindowHandles")) != [original]
+            _value(client.command("WebDriver:GetWindowHandles"))
+            != list(baseline_handles)
             or _value(client.command("WebDriver:GetWindowHandle")) != original
         ):
             raise DailyUseGateError("cleanup-failed")

@@ -90,6 +90,34 @@ class FakeMarionette:
         self.closed = True
 
 
+class PendingReplyMarionette(FakeMarionette):
+    """A transport that rejects cleanup until a sent command reply is drained."""
+
+    def __init__(self, events, failure):
+        super().__init__(events)
+        self.failure = failure
+        self.pending_reply = False
+        self.recoveries = 0
+
+    def command(self, name, parameters=None):
+        if name == "WebDriver:Navigate":
+            self.events.append(name)
+            if isinstance(self.failure, gate.CommandNotSentTimeout):
+                raise self.failure
+            self.pending_reply = True
+            raise self.failure
+        if self.pending_reply:
+            raise RuntimeError("late command reply was not drained")
+        return super().command(name, parameters)
+
+    def recover_timed_out_command(self, timeout):
+        self.events.append("recover-timed-out-command")
+        self.recoveries += 1
+        if not self.pending_reply:
+            raise AssertionError("attempted to drain an unsent command")
+        self.pending_reply = False
+
+
 class BrowserDailyUseGateTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -222,20 +250,14 @@ class BrowserDailyUseGateTests(unittest.TestCase):
         self.assertEqual(self.client.handles, ["original"])
         self.assertEqual(self.client.selected, "original")
         self.assertTrue(self.client.closed)
-        ordered = [
+        initial = [
             "identity",
             "WebDriver:NewSession",
+            "WebDriver:GetWindowHandles",
             "WebDriver:GetWindowHandle",
-            "fixture",
-            "local-timing",
-            "context-switch",
-            "composite",
-            "WebDriver:CloseWindow",
-            "WebDriver:GetWindowHandle",
-            "identity",
-            "transport-close",
+            "WebDriver:SwitchToWindow",
         ]
-        self.assertEqual([event for event in self.events if event in ordered], ordered)
+        self.assertEqual(self.events[: len(initial)], initial)
         for name in ("system", "thread"):
             self.assertLess(
                 self.events.index(name + "-ready"), self.events.index("fixture")
@@ -269,6 +291,63 @@ class BrowserDailyUseGateTests(unittest.TestCase):
         self.checkpoint("phase-failed")
         self.assertEqual(self.client.handles, ["original"])
         self.assertEqual(self.client.selected, "original")
+        self.assertIn("WebDriver:CloseWindow", self.events)
+
+    def test_outer_cleanup_drains_a_sent_fixture_timeout_before_using_transport(self):
+        self.client = PendingReplyMarionette(self.events, TimeoutError("sent"))
+
+        def timeout(request):
+            request.client.command("WebDriver:Navigate")
+
+        self.operations = replace(self.operations, fixture=timeout)
+        with self.assertRaisesRegex(DailyUseGateError, "phase-timeout"):
+            self.run_gate()
+        self.checkpoint("phase-timeout")
+        self.assertEqual(self.client.recoveries, 1)
+        self.assertLess(
+            self.events.index("recover-timed-out-command"),
+            self.events.index("transport-close"),
+        )
+        self.assertEqual(self.client.handles, ["original"])
+
+    def test_outer_cleanup_does_not_drain_an_unsent_fixture_timeout(self):
+        self.client = PendingReplyMarionette(
+            self.events, gate.CommandNotSentTimeout("unsent")
+        )
+
+        def timeout(request):
+            request.client.command("WebDriver:Navigate")
+
+        self.operations = replace(self.operations, fixture=timeout)
+        with self.assertRaisesRegex(DailyUseGateError, "phase-timeout"):
+            self.run_gate()
+        self.checkpoint("phase-timeout")
+        self.assertEqual(self.client.recoveries, 0)
+        self.assertEqual(self.client.handles, ["original"])
+
+    def test_preexisting_extra_window_fails_without_running_workload_or_closing_it(self):
+        self.client.handles.append("pre-existing")
+
+        def should_not_run(request):
+            self.fail("workload ran despite pre-existing window")
+
+        self.operations = replace(self.operations, fixture=should_not_run)
+        with self.assertRaisesRegex(DailyUseGateError, "session-invalid"):
+            self.run_gate()
+        self.checkpoint("session-invalid")
+        self.assertEqual(self.client.handles, ["original", "pre-existing"])
+        self.assertEqual(self.client.selected, "original")
+        self.assertNotIn("WebDriver:CloseWindow", self.events)
+
+    def test_contract_valid_failed_function_group_publishes_only_checkpoint(self):
+        self.source["functionGroups"][0] = {
+            "name": "document",
+            "state": "fail",
+            "reason": "fixture-capability-failed",
+        }
+        with self.assertRaisesRegex(DailyUseGateError, "phase-failed"):
+            self.run_gate()
+        self.checkpoint("phase-failed")
 
     def test_cleanup_failure_blocks_result_and_preserves_failure_reason(self):
         self.client.cleanup_failure = True
@@ -812,7 +891,12 @@ class DailyUseAdapterTests(unittest.TestCase):
         self.root = Path(temporary.name)
         self.download = self.root / "asterinas-browser-quality.bin"
         self.client = AdapterMarionette(self.download)
-        self.timeline = "A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC guest_monotonic_ns=1000000000 firefox_pid=101\n"
+        self.timeline = (
+            "A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC "
+            "guest_monotonic_ns=1000000000 firefox_pid=101\n"
+            "A_WEB_TIMELINE marker=BOOT_FIRST_WINDOW_READY "
+            "guest_monotonic_ns=1500000000 firefox_pid=101\n"
+        )
 
     def operations(self, **kwargs):
         return gate.default_operations(
@@ -834,7 +918,6 @@ class DailyUseAdapterTests(unittest.TestCase):
             deadline=time.monotonic() + 10,
             clock=gate.DailyUseClock(),
             run_id=RUN_ID,
-            session_ready_ns=1_500_000_000,
             physical=False,
         )
         values.update(kwargs)
@@ -935,47 +1018,12 @@ class DailyUseAdapterTests(unittest.TestCase):
             with self.assertRaisesRegex(web.GateError, "hash does not match"):
                 self.operations().fixture(self.request())
 
-    def test_startup_ready_endpoint_is_measured_after_verified_session(self):
-        observed = []
-        operations = replace(
-            self.operations(), identity_reader=lambda pids: (1000, 2000)
-        )
-
-        def sample(request):
-            first = time.monotonic_ns()
-            request.ready.set()
-            request.stop.wait(2)
-            return SamplerCapture(b"sample", first, time.monotonic_ns())
-
-        def stop(request):
-            observed.append(request.session_ready_ns)
-            self.assertEqual(
-                self.client.events[:3],
-                [
-                    "WebDriver:NewSession",
-                    "WebDriver:GetWindowHandle",
-                    "WebDriver:SwitchToWindow",
-                ],
-            )
-            raise RuntimeError("stop after observing request")
-
-        operations = replace(
-            operations, fixture=stop, system_sampler=sample, thread_sampler=sample
-        )
-        before = time.monotonic_ns()
-        with self.assertRaises(DailyUseGateError):
-            gate.run_daily_use_gate(
-                client=self.client,
-                operations=operations,
-                firefox_pid=101,
-                xorg_pid=202,
-                evidence_dir=self.root,
-                mode="smoke",
-                timeout_seconds=10,
-                run_id=RUN_ID,
-                fixture_index_url=BASE,
-            )
-        self.assertTrue(before <= observed[0] <= time.monotonic_ns())
+    def test_startup_uses_persisted_first_window_ready_endpoint(self):
+        capture = self.operations().local_timing(self.request())
+        metrics = capture.performance[0]["metrics"]
+        self.assertEqual(metrics["bootFirefoxExecNs"], 1_000_000_000)
+        self.assertEqual(metrics["bootFirstWindowReadyNs"], 1_500_000_000)
+        self.assertEqual(metrics["durationMs"], 500.0)
 
     def test_timing_uses_existing_capture_and_preserves_negative_fetch_start(self):
         from tools.riscv.debian.rootfs import browser_perf_capture as perf
@@ -1057,7 +1105,11 @@ class DailyUseAdapterTests(unittest.TestCase):
             request.stop.wait(2)
             return SamplerCapture(b"sample", start, time.monotonic_ns())
 
-        self.timeline = f"A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC guest_monotonic_ns={time.monotonic_ns() - 500_000_000} firefox_pid=101\n"
+        exec_ns = time.monotonic_ns() - 500_000_000
+        self.timeline = (
+            f"A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC guest_monotonic_ns={exec_ns} firefox_pid=101\n"
+            f"A_WEB_TIMELINE marker=BOOT_FIRST_WINDOW_READY guest_monotonic_ns={exec_ns + 400_000_000} firefox_pid=101\n"
+        )
         for fail in (False, True):
             if self.download.exists():
                 self.download.unlink()
@@ -1162,12 +1214,18 @@ class DailyUseAdapterTests(unittest.TestCase):
 
     def test_startup_rejects_duplicates_order_pid_and_clock_errors(self):
         original = self.timeline
+        exec_record, ready_record = original.splitlines(keepends=True)
         invalid = (
-            original + original.splitlines()[0] + "\n",
-            original.replace("firefox_pid=101", "firefox_pid=102"),
-            original.replace("1000000000", "2000000000"),
-            original.replace("1000000000", str(time.monotonic_ns() + 10**12)),
-            original.replace("guest_monotonic_ns=1000000000", "wall_ns=1000000000"),
+            exec_record,
+            original + ready_record,
+            exec_record + ready_record.replace("firefox_pid=101", "firefox_pid=102"),
+            ready_record + exec_record,
+            exec_record + ready_record.replace("guest_monotonic_ns=1500000000", "guest_monotonic_ns=0"),
+            exec_record
+            + ready_record.replace(
+                "guest_monotonic_ns=1500000000", "guest_monotonic_ns=500000000"
+            ),
+            exec_record.replace("firefox_pid=101", "firefox_pid=102") + ready_record,
             "",
         )
         for self.timeline in invalid:
@@ -1175,7 +1233,8 @@ class DailyUseAdapterTests(unittest.TestCase):
                 self.operations().local_timing(self.request())
         self.timeline = (
             original
-            + "A_WEB_TIMELINE marker=BOOT_MARIONETTE_CONNECTED guest_monotonic_ns=1600000000 firefox_pid=101\n"
+            + "A_WEB_TIMELINE marker=BOOT_MARIONETTE_CONNECTED "
+            "guest_monotonic_ns=1600000000 firefox_pid=101\n"
         )
         self.assertEqual(
             self.operations()
@@ -1371,7 +1430,11 @@ class DailyUseAdapterTests(unittest.TestCase):
     def test_factory_runs_complete_workload_with_one_session_and_hashed_artifacts(self):
         from tools.riscv.debian.rootfs import browser_system_time as system
 
-        self.timeline = f"A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC guest_monotonic_ns={time.monotonic_ns() - 500_000_000} firefox_pid=101\n"
+        exec_ns = time.monotonic_ns() - 500_000_000
+        self.timeline = (
+            f"A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC guest_monotonic_ns={exec_ns} firefox_pid=101\n"
+            f"A_WEB_TIMELINE marker=BOOT_FIRST_WINDOW_READY guest_monotonic_ns={exec_ns + 400_000_000} firefox_pid=101\n"
+        )
 
         def sample(*args, **kwargs):
             start = kwargs["clock_ns"]()
