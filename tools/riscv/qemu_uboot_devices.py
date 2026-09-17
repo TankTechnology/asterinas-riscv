@@ -68,6 +68,13 @@ DRM_CURSOR = QemuDeviceSet(
     "drm-cursor",
     (DeviceKind.VIRTIO_GPU,),
 )
+# The GEM gate needs the same single-GPU device contract as the cursor gate, but
+# it names its own set so that changing one gate's devices cannot silently move
+# the other's.
+DRM_GEM = QemuDeviceSet(
+    "drm-gem",
+    (DeviceKind.VIRTIO_GPU,),
+)
 
 _DEVICE_SETS = MappingProxyType(
     {
@@ -75,6 +82,7 @@ _DEVICE_SETS = MappingProxyType(
         VIRTIO_NET_SLIRP.name: VIRTIO_NET_SLIRP,
         MEGREZ_BASIC.name: MEGREZ_BASIC,
         DRM_CURSOR.name: DRM_CURSOR,
+        DRM_GEM.name: DRM_GEM,
     }
 )
 

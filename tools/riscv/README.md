@@ -300,6 +300,49 @@ make test_riscv_drm_cursor \
 This gate proves the current-main VirtIO transport and DRM cursor ioctl path;
 it is not evidence for the Megrez display controller or physical scanout.
 
+## GEM object-space gate
+
+The GEM gate boots the same generic Sv39, SMP=4 profile with one
+`virtio-gpu-device` and proves that handles name objects in a single
+device-wide space rather than buffers owned by one open file. Its guest
+allocates one dumb buffer, flinks it, reopens the name under a second handle,
+and requires that handle to map to the same pool offset; it then closes one
+handle and requires the other to stay usable, and requires a released handle
+and a never-created name to be rejected.
+
+Run the host contract tests with:
+
+```bash
+make test_riscv_drm_gem_unit
+```
+
+Build the initramfs and prepare a boot disk the same way as the cursor gate,
+substituting the `drm-gem` profile:
+
+```bash
+tools/riscv/drm/build_gem_gate.sh \
+  target/qemu-uboot/drm-gem/initramfs.cpio.gz
+
+ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel-osdk-bin.Image" \
+ASTERINAS_INITRAMFS="$PWD/target/qemu-uboot/drm-gem/initramfs.cpio.gz" \
+QEMU_UBOOT_PROFILE=generic-sv39-drm-gem-smp4 \
+QEMU_UBOOT_OUT_DIR="$PWD/target/qemu-uboot/drm-gem/prepared" \
+QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
+tools/riscv/prepare_qemu_uboot_booti.sh prepare
+
+make test_riscv_drm_gem \
+  DRM_GEM_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DRM_GEM_BOOT_DISK="$PWD/target/qemu-uboot/drm-gem/prepared/boot.ext4" \
+  DRM_GEM_MANIFEST="$PWD/target/qemu-uboot/drm-gem/prepared/artifacts.json" \
+  DRM_GEM_GATE_OUTPUT="$PWD/target/qemu-uboot/drm-gem/evidence"
+```
+
+Unlike the cursor gate, this one has no QEMU-side trace to cross-check: GEM
+handles are kernel bookkeeping the emulator never observes. Its evidence is the
+guest sequence plus the object-identity claims the probe itself makes, and the
+probe's own self-test runs on the host so a wrong ioctl number or struct layout
+fails before QEMU is involved.
+
 ## Simulation-first Megrez debug attempt
 
 The Megrez debug workflow binds one immutable Asterinas artifact plan to a
