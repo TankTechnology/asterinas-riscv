@@ -272,6 +272,57 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
             client.command("WebDriver:GetWindowHandles")
         self.assertEqual(bytes(transport.sent), sent)
 
+    def test_expired_before_send_does_not_poison_the_cleanup_command(self) -> None:
+        transport = _Socket(
+            _frame({"applicationType": "gecko", "marionetteProtocol": 3})
+        )
+        now = [1.0]
+        with (
+            mock.patch.object(gate.time, "monotonic", side_effect=lambda: now[0]),
+            mock.patch.object(gate.socket, "create_connection", return_value=transport),
+        ):
+            client = gate.Marionette("127.0.0.1", 2828, 1)
+            now[0] = 3.0
+            with self.assertRaises(TimeoutError):
+                client.command("WebDriver:NewWindow")
+            self.assertEqual(bytes(transport.sent), b"")
+            with self.assertRaises(gate.GateError):
+                client.recover_timed_out_command(1)
+            client.set_timeout(1)
+            transport.incoming.extend(_frame([1, 1, None, {"value": ["original"]}]))
+            self.assertEqual(
+                client.command("WebDriver:GetWindowHandles"), {"value": ["original"]}
+            )
+            self.assertNotIn(b"WebDriver:NewWindow", transport.sent)
+
+    def test_expiry_while_preparing_a_request_still_counts_as_never_sent(self) -> None:
+        transport = _Socket(
+            _frame({"applicationType": "gecko", "marionetteProtocol": 3})
+        )
+        now = [1.0]
+        original_dumps = json.dumps
+
+        def expire(value, **kwargs):
+            now[0] = 3.0
+            return original_dumps(value, **kwargs)
+
+        with (
+            mock.patch.object(gate.time, "monotonic", side_effect=lambda: now[0]),
+            mock.patch.object(gate.socket, "create_connection", return_value=transport),
+        ):
+            client = gate.Marionette("127.0.0.1", 2828, 1)
+            with (
+                mock.patch.object(gate.json, "dumps", side_effect=expire),
+                self.assertRaises(TimeoutError),
+            ):
+                client.command("WebDriver:NewWindow")
+            self.assertEqual(bytes(transport.sent), b"")
+            with self.assertRaises(gate.GateError):
+                client.recover_timed_out_command(1)
+            client.set_timeout(1)
+            transport.incoming.extend(_frame([1, 2, None, {}]))
+            self.assertEqual(client.command("WebDriver:GetWindowHandles"), {})
+
     def test_recovery_rejects_wrong_response_identity_and_incomplete_send(self) -> None:
         for incomplete in (False, True):
             with self.subTest(incomplete=incomplete):

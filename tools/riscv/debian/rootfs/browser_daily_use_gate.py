@@ -33,6 +33,7 @@ from urllib.parse import urlparse
 
 if Path("/run/asterinas-tools/browser_daily_use_contract.py").is_file():
     sys.path.insert(0, "/run/asterinas-tools")
+    from browser_m5_marionette_gate import CommandNotSentTimeout  # type: ignore[import-not-found]
     from browser_daily_use_contract import (  # type: ignore[import-not-found]
         FUNCTION_GROUPS,
         MAX_ARTIFACT_BYTES,
@@ -50,6 +51,9 @@ if Path("/run/asterinas-tools/browser_daily_use_contract.py").is_file():
     import browser_system_time as system_time  # type: ignore[import-not-found]
     import browser_web_marionette_gate as web_gate  # type: ignore[import-not-found]
 else:
+    from tools.riscv.debian.rootfs.browser_m5_marionette_gate import (
+        CommandNotSentTimeout,
+    )
     from tools.riscv.debian.rootfs.browser_daily_use_contract import (
         FUNCTION_GROUPS,
         MAX_ARTIFACT_BYTES,
@@ -148,6 +152,9 @@ class ExistingSession:
             raise DailyUseGateError("session-command-forbidden")
         try:
             return self.__client.command(name, parameters)
+        except CommandNotSentTimeout:
+            # There is no outstanding response to drain before cleanup.
+            raise
         except TimeoutError:
             self.__timed_out_command = True
             raise

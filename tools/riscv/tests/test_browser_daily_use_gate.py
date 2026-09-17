@@ -1223,6 +1223,39 @@ class DailyUseAdapterTests(unittest.TestCase):
         self.assertEqual(self.client.handles, ["original"])
         self.assertEqual(self.client.selected, "original")
 
+    def test_existing_session_skips_drain_for_a_command_that_never_sent(self):
+        from tools.riscv.debian.rootfs import browser_m5_marionette_gate as wire
+        from tools.riscv.tests.test_debian_browser_m5_runtime_gate import (
+            _Socket,
+            _frame,
+        )
+
+        transport = _Socket(
+            _frame({"applicationType": "gecko", "marionetteProtocol": 3})
+        )
+        now = [1.0]
+        with (
+            mock.patch.object(wire.time, "monotonic", side_effect=lambda: now[0]),
+            mock.patch.object(wire.socket, "create_connection", return_value=transport),
+        ):
+            client = wire.Marionette("127.0.0.1", 2828, 1)
+            session = gate.ExistingSession(client)
+            now[0] = 3.0
+            with self.assertRaises(TimeoutError):
+                session.command("WebDriver:NewWindow")
+            self.assertEqual(bytes(transport.sent), b"")
+            with mock.patch.object(
+                client,
+                "recover_timed_out_command",
+                wraps=client.recover_timed_out_command,
+            ) as drain:
+                session.recover_timed_out_command(1)
+            drain.assert_not_called()
+            transport.incoming.extend(_frame([1, 1, None, {"value": ["original"]}]))
+            self.assertEqual(
+                session.command("WebDriver:GetWindowHandles"), {"value": ["original"]}
+            )
+
     def test_context_recovers_late_socket_response_before_closing_second_tab(self):
         from tools.riscv.debian.rootfs import browser_m5_marionette_gate as transport
 
