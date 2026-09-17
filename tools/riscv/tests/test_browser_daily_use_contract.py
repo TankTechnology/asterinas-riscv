@@ -91,6 +91,7 @@ def complete_result() -> dict[str, object]:
                     "browserNavigation": {
                         "clockDomain": "browser-navigation",
                         "fetchStartMs": 10.0,
+                        "fetchStartValid": True,
                         "responseToDomMs": 2_000.0,
                         "responseToLoadMs": 2_100.0,
                     },
@@ -320,11 +321,11 @@ class BrowserDailyUseContractTests(unittest.TestCase):
         with self.assertRaises(DailyUseContractError):
             validate_daily_use_result(reordered_navigation)
 
-    def test_preserves_invalid_navigation_timing_as_unsupported(self) -> None:
+    def test_retains_invalid_fetch_start_with_valid_navigation_intervals(self) -> None:
         result = complete_result()
         result["performance"][3] = {
             "name": "navigation",
-            "state": "unsupported",
+            "state": "pass",
             "clockDomain": "multiple-clock-domains-separated",
             "metrics": {
                 "localCommand": {
@@ -334,19 +335,22 @@ class BrowserDailyUseContractTests(unittest.TestCase):
                 "browserNavigation": {
                     "clockDomain": "browser-navigation",
                     "fetchStartMs": -1.0,
-                    "responseToDomMs": None,
-                    "responseToLoadMs": None,
+                    "fetchStartValid": False,
+                    "responseToDomMs": 2_000.0,
+                    "responseToLoadMs": 2_100.0,
                 },
             },
-            "reason": "navigation-timing-invalid",
+            "reason": None,
         }
-        self.assertEqual(
-            validate_daily_use_result(result)["performance"][3]["state"],
-            "unsupported",
+        navigation = validate_daily_use_result(result)["performance"][3]
+        self.assertEqual(navigation["state"], "pass")
+        self.assertFalse(
+            navigation["metrics"]["browserNavigation"]["fetchStartValid"]
         )
 
-        result["performance"][3]["state"] = "pass"
-        result["performance"][3]["reason"] = None
+        result["performance"][3]["metrics"]["browserNavigation"][
+            "fetchStartValid"
+        ] = True
         with self.assertRaises(DailyUseContractError):
             validate_daily_use_result(result)
 
