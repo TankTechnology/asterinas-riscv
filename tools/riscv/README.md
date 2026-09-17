@@ -343,6 +343,37 @@ guest sequence plus the object-identity claims the probe itself makes, and the
 probe's own self-test runs on the host so a wrong ioctl number or struct layout
 fails before QEMU is involved.
 
+## Render-node gate
+
+The render node gate proves `/dev/dri/renderD128` exists and that it grants the
+narrower permission set Linux gives it, rather than being a second name for
+`card0`.
+
+Its guest opens the render node and checks both halves of the split. The
+permitted half must not be refused — `VERSION` and `GET_CAP` must succeed, and
+`GEM_CLOSE` must reach its handler and fail with `EINVAL` on a handle the node
+never had, which is itself the evidence that the call was allowed through.
+The withheld half must be refused with `EACCES`: `SET_CLIENT_CAP`, `SET_MASTER`,
+`DROP_MASTER`, `GEM_FLINK`, `GEM_OPEN`, and every modeset ioctl. These mirror
+the entries of Linux's `drm_ioctls[]` that lack `DRM_RENDER_ALLOW`.
+
+The gate then re-runs the withheld set against `card0`, where none of them may
+be refused. That control is what makes the result mean anything: without it, a
+kernel that refused those ioctls on *every* node would pass.
+
+```bash
+make test_riscv_drm_render_node_unit
+make test_riscv_drm_render_node \
+  DRM_RENDER_NODE_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DRM_RENDER_NODE_BOOT_DISK="$PWD/target/qemu-uboot/drm-render-node/prepared/boot.ext4" \
+  DRM_RENDER_NODE_MANIFEST="$PWD/target/qemu-uboot/drm-render-node/prepared/artifacts.json" \
+  DRM_RENDER_NODE_GATE_OUTPUT="$PWD/target/qemu-uboot/drm-render-node/evidence"
+```
+
+`tools/riscv/drm/build_render_node_gate.sh` and the
+`generic-sv39-drm-render-node-smp4` profile prepare the boot disk, exactly as
+for the two gates above.
+
 ## Simulation-first Megrez debug attempt
 
 The Megrez debug workflow binds one immutable Asterinas artifact plan to a
