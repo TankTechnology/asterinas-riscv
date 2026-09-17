@@ -16,6 +16,8 @@ python3 -m unittest \
   tools.riscv.tests.test_browser_composite_manifest \
   tools.riscv.tests.test_browser_system_time \
   tools.riscv.tests.test_browser_performance_provenance \
+  tools.riscv.tests.test_browser_daily_use_contract \
+  tools.riscv.tests.test_browser_daily_use_gate \
   tools.riscv.tests.test_debian_browser_web \
   tools.riscv.tests.test_debian_browser_m5_runtime_gate \
   tools.riscv.tests.test_debian_dev_overlay \
@@ -31,9 +33,13 @@ python3 -m py_compile \
   tools/riscv/debian/rootfs/browser_workload_contract.py \
   tools/riscv/debian/rootfs/browser_composite_capture.py \
   tools/riscv/debian/rootfs/browser_system_time.py \
+  tools/riscv/debian/rootfs/browser_daily_use_contract.py \
+  tools/riscv/debian/rootfs/browser_daily_use_gate.py \
+  tools/riscv/debian/rootfs/browser_perf_capture.py \
   tools/riscv/debian/rootfs/browser_performance_provenance.py \
   tools/riscv/debian/rootfs/browser_web_contract.py \
   tools/riscv/debian/rootfs/browser_web_marionette_gate.py \
+  tools/riscv/debian/rootfs/browser_m5_marionette_gate.py \
   tools/riscv/debian/rootfs/browser_web_qemu_gate.py \
   tools/riscv/debian/rootfs/browser_web_trust_check.py \
   tools/riscv/debian/rootfs/firefox_jit_overlay.py
