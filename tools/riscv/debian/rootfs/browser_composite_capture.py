@@ -66,6 +66,7 @@ SAMPLE_SCHEDULES = {
     "stress": (2.5, 64),
 }
 MAX_CHECKPOINT_BYTES = 256 * 1024
+DOCUMENT_SETUP_TIMEOUT_SECONDS = 120.0
 
 
 def workload_url(index_url: str) -> str:
@@ -110,9 +111,8 @@ def capture_composite(
     ):
         raise CompositeCaptureError("composite workload timeout is invalid")
     url = workload_url(fixture_index_url)
-    deadline = time.monotonic() + timeout_seconds
     _navigate(client, url)
-    _wait_document(client, url, deadline)
+    _wait_document(client, url, time.monotonic() + DOCUMENT_SETUP_TIMEOUT_SECONDS)
     started = _script(
         client,
         "if (document.URL !== arguments[0] || "
@@ -124,6 +124,7 @@ def capture_composite(
     )
     if started != "started":
         raise CompositeCaptureError("composite workload did not start")
+    deadline = time.monotonic() + timeout_seconds
 
     snapshot_script = (
         "return JSON.stringify({url: document.URL, workload: "
