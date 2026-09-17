@@ -14,9 +14,27 @@ class WorkloadContractError(ValueError):
 
 
 MODES = {
-    "smoke": {"scale": 1, "deadline_seconds": 30},
-    "profile": {"scale": 4, "deadline_seconds": 120},
-    "stress": {"scale": 12, "deadline_seconds": 300},
+    "smoke": {
+        "scale": 1,
+        "nodes": 128,
+        "resources": 8,
+        "contexts": 2,
+        "deadline_seconds": 30,
+    },
+    "profile": {
+        "scale": 4,
+        "nodes": 512,
+        "resources": 32,
+        "contexts": 3,
+        "deadline_seconds": 120,
+    },
+    "stress": {
+        "scale": 12,
+        "nodes": 1024,
+        "resources": 96,
+        "contexts": 3,
+        "deadline_seconds": 300,
+    },
 }
 PHASES = (
     "warmup",
@@ -33,6 +51,7 @@ _TOP_LEVEL_FIELDS = frozenset(
         "schemaVersion",
         "workloadVersion",
         "clockDomain",
+        "runId",
         "mode",
         "state",
         "phases",
@@ -50,6 +69,15 @@ _METRIC_FIELDS = frozenset(
     }
 )
 _ERROR_TOKEN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+_RUN_ID = re.compile(r"[0-9a-f]{32}\Z")
+
+
+def validate_run_id(value: object) -> str:
+    """Return one canonical unpredictable workload-run identity."""
+
+    if not isinstance(value, str) or _RUN_ID.fullmatch(value) is None:
+        raise WorkloadContractError("workload run identity is invalid")
+    return value
 
 
 def _finite_time(value: object, label: str) -> float:
@@ -73,36 +101,97 @@ def _bounded_count(value: object, label: str, maximum: int) -> int:
     return value
 
 
-def _normalize_metrics(value: object) -> dict[str, object]:
+def expected_phase_metrics(mode: str, phase: str) -> dict[str, int]:
+    """Return the exact successful work encoded by the fixture program."""
+
+    if mode not in MODES or phase not in PHASES:
+        raise WorkloadContractError("workload expectation identity is invalid")
+    config = MODES[mode]
+    scale = config["scale"]
+    nodes = config["nodes"]
+    resources = config["resources"]
+    contexts = config["contexts"]
+    expectations = {
+        "warmup": (nodes, 1, 0, 1),
+        "interaction-layout": (
+            scale * 8 * (nodes // 2 + 2),
+            0,
+            0,
+            scale * 8,
+        ),
+        "canvas-image": (scale * 200, scale * 4, 0, 1),
+        "concurrent-resources": (resources * 3, resources * 3, 0, 0),
+        "navigation-history": (4 + scale * 4, 2, 1, 0),
+        "multi-context": (contexts * 2, contexts, contexts, 1),
+        "cooldown": (2, 0, 0, 1),
+    }
+    operations, requests, context_count, frame_samples = expectations[phase]
+    return {
+        "operationCount": operations,
+        "requestCount": requests,
+        "contextCount": context_count,
+        "frameSamples": frame_samples,
+    }
+
+
+def _normalize_metrics(
+    value: object, *, expected: dict[str, int], complete: bool
+) -> dict[str, object]:
     if not isinstance(value, dict) or set(value) != _METRIC_FIELDS:
         raise WorkloadContractError("phase metrics have unexpected fields")
     frames = value["frameMs"]
     if not isinstance(frames, list) or len(frames) > 256:
         raise WorkloadContractError("frame samples exceed their bound")
-    normalized_frames = [
-        _finite_time(sample, "frame sample") for sample in frames
-    ]
+    normalized_frames = [_finite_time(sample, "frame sample") for sample in frames]
     if any(sample > 60_000 for sample in normalized_frames):
         raise WorkloadContractError("frame sample exceeds its latency bound")
-    return {
+    normalized: dict[str, object] = {
         "operationCount": _bounded_count(
-            value["operationCount"], "operation count", 1_000_000
+            value["operationCount"],
+            "operation count",
+            1_000_000,
         ),
         "requestCount": _bounded_count(
-            value["requestCount"], "request count", 384
+            value["requestCount"],
+            "request count",
+            384,
         ),
         "contextCount": _bounded_count(
-            value["contextCount"], "context count", 3
+            value["contextCount"],
+            "context count",
+            3,
         ),
         "longFrameCount": _bounded_count(
-            value["longFrameCount"], "long frame count", 256
+            value["longFrameCount"],
+            "long frame count",
+            expected["frameSamples"],
         ),
         "frameMs": normalized_frames,
     }
+    if normalized["longFrameCount"] != sum(sample > 50 for sample in normalized_frames):
+        raise WorkloadContractError("long frame count disagrees with samples")
+    if len(normalized_frames) > expected["frameSamples"]:
+        raise WorkloadContractError("phase frame sample count exceeds exact workload")
+    if any(
+        normalized[name] > expected[name]
+        for name in ("operationCount", "requestCount", "contextCount")
+    ):
+        raise WorkloadContractError("phase metrics exceed exact workload")
+    if complete:
+        for name in ("operationCount", "requestCount", "contextCount"):
+            if normalized[name] != expected[name]:
+                raise WorkloadContractError("phase metrics do not match exact workload")
+        if len(normalized_frames) != expected["frameSamples"]:
+            raise WorkloadContractError("phase frame sample count is not exact")
+    return normalized
 
 
 def validate_workload_snapshot(
-    value: object, *, expected_mode: str, allow_running: bool = False
+    value: object,
+    *,
+    expected_mode: str,
+    expected_run_id: str | None = None,
+    allow_running: bool = False,
 ) -> dict[str, object]:
     """Return one detached snapshot after enforcing the complete protocol."""
 
@@ -117,6 +206,9 @@ def validate_workload_snapshot(
         or value["mode"] != expected_mode
     ):
         raise WorkloadContractError("workload snapshot identity is invalid")
+    run_id = validate_run_id(value["runId"])
+    if expected_run_id is not None and run_id != validate_run_id(expected_run_id):
+        raise WorkloadContractError("workload run identity changed")
     state = value["state"]
     if state not in {"running", "complete", "failed"}:
         raise WorkloadContractError("workload state is invalid")
@@ -179,7 +271,11 @@ def validate_workload_snapshot(
                 "state": phase_state,
                 "startMs": start,
                 "endMs": end,
-                "metrics": _normalize_metrics(item["metrics"]),
+                "metrics": _normalize_metrics(
+                    item["metrics"],
+                    expected=expected_phase_metrics(expected_mode, str(item["name"])),
+                    complete=phase_state == "complete",
+                ),
             }
         )
 
@@ -187,6 +283,7 @@ def validate_workload_snapshot(
         "schemaVersion": 1,
         "workloadVersion": 1,
         "clockDomain": "browser-performance-now",
+        "runId": run_id,
         "mode": expected_mode,
         "state": state,
         "phases": normalized_phases,

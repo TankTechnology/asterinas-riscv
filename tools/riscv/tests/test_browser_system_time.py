@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -316,9 +317,7 @@ class SamplerTests(unittest.TestCase):
 
             def advance(_seconds: float) -> None:
                 thread_stat.write_text(pid_stat(60, 17, 777))
-                (thread_stat.parent / "schedstat").write_text(
-                    "770000000 40000000 13\n"
-                )
+                (thread_stat.parent / "schedstat").write_text("770000000 40000000 13\n")
 
             report = run_threads(
                 proc_root,
@@ -364,6 +363,45 @@ class SamplerTests(unittest.TestCase):
             self.assertNotIn("per-thread-runnable-wait", report["unsupported"])
             self.assertEqual(json.loads(output.read_text()), report)
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+
+    def test_thread_sampler_stops_after_terminal_event_with_a_final_snapshot(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc_root = self.fake_proc(directory)
+            thread_stat = proc_root / "42" / "task" / "42" / "stat"
+            thread_stat.parent.mkdir(parents=True)
+            thread_stat.write_text(pid_stat(40, 12, 777))
+            schedstat = thread_stat.parent / "schedstat"
+            schedstat.write_text("520000000 10000000 8\n")
+            marker_path = Path(directory) / "ready"
+            marker_ns = time.monotonic_ns()
+            marker_path.write_text(f"{marker_ns}\n")
+            output = Path(directory) / "threads.json"
+            stop = threading.Event()
+            timestamps = iter((marker_ns + 1_000_000, marker_ns + 1_001_000_000))
+
+            def initial_ready() -> None:
+                thread_stat.write_text(pid_stat(60, 17, 777))
+                schedstat.write_text("770000000 40000000 13\n")
+                stop.set()
+
+            report = browser_system_time.run_thread_sampler(
+                proc_root,
+                42,
+                marker_path,
+                output,
+                interval_seconds=0.25,
+                samples=64,
+                ready_fn=initial_ready,
+                stop_event=stop,
+                clock_ns=lambda: next(timestamps),
+                sleep_fn=lambda _seconds: self.fail("stop-aware sampler slept"),
+                clock_ticks_per_second=100,
+            )
+
+            self.assertEqual(report["samples"], 1)
+            self.assertEqual(len(report["intervals"]), 1)
 
     def test_thread_snapshot_reads_tid_cpu_and_last_cpu_from_proc_stat(self) -> None:
         read_threads = getattr(browser_system_time, "read_thread_snapshot", None)
@@ -627,6 +665,39 @@ class SamplerTests(unittest.TestCase):
                     sleep_fn=lambda _: None,
                     clock_ticks_per_second=100,
                 )
+
+    def test_sampler_signals_initial_snapshot_and_stops_after_terminal_event(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            proc_root = self.fake_proc(directory)
+            output = Path(directory) / "time.json"
+            stop = threading.Event()
+            ready: list[str] = []
+            ticks = iter((1_000_000_000, 2_000_000_000))
+
+            def initial_ready() -> None:
+                ready.append("initial-snapshot")
+                (proc_root / "stat").write_text(CPU_B)
+                (proc_root / "42" / "stat").write_text(PID_B)
+                stop.set()
+
+            report = run_sampler(
+                proc_root,
+                (42,),
+                output,
+                interval_seconds=0.25,
+                samples=64,
+                ready_fn=initial_ready,
+                stop_event=stop,
+                clock_ns=lambda: next(ticks),
+                sleep_fn=lambda _seconds: self.fail("stop-aware sampler slept"),
+                clock_ticks_per_second=100,
+            )
+
+            self.assertEqual(ready, ["initial-snapshot"])
+            self.assertEqual(report["samples"], 1)
+            self.assertEqual(len(report["intervals"]), 1)
 
     def test_sampler_rejects_unbounded_rate_and_duplicate_pids(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

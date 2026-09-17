@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable
+import copy
 import json
 import os
 from pathlib import Path
+import secrets
+import shutil
 import stat
 import sys
 import threading
@@ -33,6 +36,7 @@ if Path("/run/asterinas-tools/browser_perf_capture.py").is_file():
     from browser_workload_contract import (  # type: ignore[import-not-found]
         MODES,
         WorkloadContractError,
+        validate_run_id,
         validate_workload_snapshot,
     )
 else:
@@ -52,6 +56,7 @@ else:
     from tools.riscv.debian.rootfs.browser_workload_contract import (
         MODES,
         WorkloadContractError,
+        validate_run_id,
         validate_workload_snapshot,
     )
 
@@ -61,22 +66,31 @@ class CompositeCaptureError(ValueError):
 
 
 SAMPLE_SCHEDULES = {
-    "smoke": (0.5, 30),
-    "profile": (1.0, 64),
-    "stress": (2.5, 64),
+    "smoke": (0.5, 64),
+    "profile": (2.0, 64),
+    "stress": (5.0, 64),
 }
 MAX_CHECKPOINT_BYTES = 256 * 1024
 DOCUMENT_SETUP_TIMEOUT_SECONDS = 120.0
+SAMPLER_READY_TIMEOUT_SECONDS = 10.0
+SAMPLER_STOP_TIMEOUT_SECONDS = 10.0
 
 
-def workload_url(index_url: str) -> str:
+def workload_url(index_url: str, run_id: str | None = None) -> str:
     """Derive the exact workload page from a validated local fixture URL."""
 
     try:
         first_url, _ = performance_urls(index_url)
     except CaptureError as error:
         raise CompositeCaptureError("workload fixture URL is invalid") from error
-    return first_url.rsplit("/", 1)[0] + "/workload.html"
+    base = first_url.rsplit("/", 1)[0] + "/workload.html"
+    if run_id is None:
+        return base
+    try:
+        validated = validate_run_id(run_id)
+    except WorkloadContractError as error:
+        raise CompositeCaptureError("workload run identity is invalid") from error
+    return f"{base}?run={validated}"
 
 
 def _completed_phase_names(workload: dict[str, object]) -> list[str]:
@@ -94,8 +108,10 @@ def capture_composite(
     fixture_index_url: str,
     *,
     mode: str,
+    run_id: str,
     timeout_seconds: float,
     checkpoint_fn: Callable[[dict[str, object]], object] | None = None,
+    before_start_fn: Callable[[], object] | None = None,
     clock_ns: Callable[[], int] = time.monotonic_ns,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> dict[str, object]:
@@ -110,9 +126,13 @@ def capture_composite(
         or not 1 <= timeout_seconds <= deadline_bound
     ):
         raise CompositeCaptureError("composite workload timeout is invalid")
-    url = workload_url(fixture_index_url)
+    run_id = validate_run_id(run_id)
+    url = workload_url(fixture_index_url, run_id)
     _navigate(client, url)
     _wait_document(client, url, time.monotonic() + DOCUMENT_SETUP_TIMEOUT_SECONDS)
+    if before_start_fn is not None:
+        before_start_fn()
+    workload_start_observed_ns = clock_ns()
     started = _script(
         client,
         "if (document.URL !== arguments[0] || "
@@ -133,6 +153,7 @@ def capture_composite(
     )
     observations: list[dict[str, object]] = []
     observed_count = 0
+    completed_prefix: list[dict[str, object]] = []
     while time.monotonic() < deadline:
         try:
             envelope = _json_value(_script(client, snapshot_script))
@@ -143,27 +164,39 @@ def capture_composite(
             ):
                 raise CompositeCaptureError("composite workload document changed")
             workload = validate_workload_snapshot(
-                envelope["workload"], expected_mode=mode, allow_running=True
+                envelope["workload"],
+                expected_mode=mode,
+                expected_run_id=run_id,
+                allow_running=True,
             )
         except CompositeCaptureError:
             raise
         except (CaptureError, WorkloadContractError, TimeoutError) as error:
-            raise CompositeCaptureError("composite workload snapshot is invalid") from error
+            raise CompositeCaptureError(
+                "composite workload snapshot is invalid"
+            ) from error
         completed = _completed_phase_names(workload)
         if len(completed) < observed_count:
             raise CompositeCaptureError("completed workload phase count regressed")
+        phases = workload["phases"]
+        if not isinstance(phases, list):
+            raise CompositeCaptureError("composite workload phases are unavailable")
+        if phases[:observed_count] != completed_prefix:
+            raise CompositeCaptureError("completed phase changed after publication")
         if len(completed) > observed_count:
             for name in completed[observed_count:]:
                 observations.append(
                     {"phase": name, "observed_guest_monotonic_ns": clock_ns()}
                 )
             observed_count = len(completed)
+            completed_prefix = copy.deepcopy(phases[:observed_count])
             if checkpoint_fn is not None:
                 checkpoint_fn(
                     {
                         "schema_version": 1,
                         "clock_domain": "guest-monotonic-observation",
                         "mode": mode,
+                        "run_id": run_id,
                         "completed_phases": completed,
                         "phase_observations": list(observations),
                         "workload": workload,
@@ -176,7 +209,10 @@ def capture_composite(
         if workload["state"] == "complete":
             try:
                 terminal = validate_workload_snapshot(
-                    workload, expected_mode=mode, allow_running=False
+                    workload,
+                    expected_mode=mode,
+                    expected_run_id=run_id,
+                    allow_running=False,
                 )
             except WorkloadContractError as error:
                 raise CompositeCaptureError(
@@ -186,6 +222,10 @@ def capture_composite(
                 "schema_version": 1,
                 "clock_domain": "browser-and-guest-monotonic-separated",
                 "workload_url": url,
+                "run_id": run_id,
+                "workload_start_observed_guest_monotonic_ns": (
+                    workload_start_observed_ns
+                ),
                 "workload": terminal,
                 "phase_observations": observations,
             }
@@ -246,7 +286,13 @@ def _private_marker(path: Path, marker_ns: int) -> None:
         os.close(descriptor)
 
 
-def _sample_system(path: Path, pids: tuple[int, int], mode: str) -> None:
+def _sample_system(
+    path: Path,
+    pids: tuple[int, int],
+    mode: str,
+    ready: threading.Event,
+    stop: threading.Event,
+) -> None:
     if Path("/run/asterinas-tools/browser_system_time.py").is_file():
         sys.path.insert(0, "/run/asterinas-tools")
         from browser_system_time import run_sampler  # type: ignore[import-not-found]
@@ -260,6 +306,8 @@ def _sample_system(path: Path, pids: tuple[int, int], mode: str) -> None:
         path,
         interval_seconds=interval_seconds,
         samples=samples,
+        ready_fn=ready.set,
+        stop_event=stop,
     )
 
 
@@ -269,6 +317,8 @@ def _sample_threads(
     marker: Path,
     mode: str,
     physical: bool,
+    ready: threading.Event,
+    stop: threading.Event,
 ) -> None:
     if Path("/run/asterinas-tools/browser_system_time.py").is_file():
         sys.path.insert(0, "/run/asterinas-tools")
@@ -287,7 +337,24 @@ def _sample_threads(
         interval_seconds=interval_seconds,
         samples=samples,
         physical=physical,
+        ready_fn=ready.set,
+        stop_event=stop,
     )
+
+
+def _evidence_bounds(path: Path) -> tuple[int, int]:
+    try:
+        if path.stat().st_size > 8 * 1024 * 1024:
+            raise CompositeCaptureError("composite system evidence is oversized")
+        report = json.loads(path.read_text())
+        intervals = report["intervals"]
+        first = intervals[0]["guest_monotonic_start_ns"]
+        last = intervals[-1]["guest_monotonic_end_ns"]
+    except (OSError, KeyError, IndexError, TypeError, json.JSONDecodeError) as error:
+        raise CompositeCaptureError("composite system evidence is malformed") from error
+    if type(first) is not int or type(last) is not int or first < 0 or last <= first:
+        raise CompositeCaptureError("composite system evidence clock is invalid")
+    return first, last
 
 
 def run_composite_capture(
@@ -300,9 +367,15 @@ def run_composite_capture(
     mode: str,
     timeout_seconds: float,
     physical: bool = False,
-    system_sample_fn: Callable[[Path, tuple[int, int], str], object] = _sample_system,
-    thread_sample_fn: Callable[[Path, int, Path, str, bool], object] = _sample_threads,
+    system_sample_fn: Callable[
+        [Path, tuple[int, int], str, threading.Event, threading.Event], object
+    ] = _sample_system,
+    thread_sample_fn: Callable[
+        [Path, int, Path, str, bool, threading.Event, threading.Event], object
+    ] = _sample_threads,
     identity_fn: Callable[[tuple[int, int]], tuple[int, int]] = _process_starttimes,
+    run_id_fn: Callable[[], str] = lambda: secrets.token_hex(16),
+    sampler_stop_timeout_seconds: float = SAMPLER_STOP_TIMEOUT_SECONDS,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> dict[str, object]:
     """Publish composite browser, process, and thread evidence together."""
@@ -316,9 +389,18 @@ def run_composite_capture(
         or type(physical) is not bool
         or mode not in MODES
         or not evidence_dir.is_absolute()
+        or isinstance(sampler_stop_timeout_seconds, bool)
+        or not isinstance(sampler_stop_timeout_seconds, (int, float))
+        or not 0 < sampler_stop_timeout_seconds <= 30
     ):
         raise CompositeCaptureError("composite capture inputs are invalid")
     workload_url(fixture_index_url)
+    try:
+        run_id = validate_run_id(run_id_fn())
+    except (WorkloadContractError, TypeError) as error:
+        raise CompositeCaptureError(
+            "composite workload run identity is invalid"
+        ) from error
     if (
         not evidence_dir.is_dir()
         or evidence_dir.is_symlink()
@@ -330,10 +412,17 @@ def run_composite_capture(
         "checkpoint": evidence_dir / "browser-composite-checkpoint.json",
         "system": evidence_dir / "browser-system-time.json",
         "thread": evidence_dir / "browser-thread-time.json",
-        "ready": evidence_dir / "browser-composite-ready",
     }
     if any(os.path.lexists(path) for path in paths.values()):
         raise CompositeCaptureError("composite evidence artifact already exists")
+    sampler_directory = evidence_dir / f".browser-composite-samplers.{run_id}"
+    if os.path.lexists(sampler_directory):
+        raise CompositeCaptureError("composite sampler directory already exists")
+    sampler_paths = {
+        "system": sampler_directory / paths["system"].name,
+        "thread": sampler_directory / paths["thread"].name,
+        "ready": sampler_directory / "browser-composite-ready",
+    }
 
     process_ids = (firefox_pid, xorg_pid)
     initial_starttimes = identity_fn(process_ids)
@@ -372,51 +461,165 @@ def run_composite_capture(
         raise CompositeCaptureError("Firefox composite window selection failed")
     client.set_timeout(timeout_seconds)  # type: ignore[attr-defined]
 
-    _private_marker(paths["ready"], time.monotonic_ns())
-    sample_errors: list[BaseException] = []
+    sample_error: BaseException | None = None
+    sample_error_lock = threading.Lock()
+    sampler_ready = (threading.Event(), threading.Event())
+    sampler_stop = threading.Event()
+    evidence_started = False
+    started_samplers: list[threading.Thread] = []
+
+    def record_sample_error(error: BaseException) -> None:
+        nonlocal sample_error
+        with sample_error_lock:
+            if sample_error is None:
+                sample_error = error
+
+    def current_sample_error() -> BaseException | None:
+        with sample_error_lock:
+            return sample_error
 
     def sample_system() -> None:
         try:
-            system_sample_fn(paths["system"], process_ids, mode)
+            system_sample_fn(
+                sampler_paths["system"],
+                process_ids,
+                mode,
+                sampler_ready[0],
+                sampler_stop,
+            )
         except BaseException as error:
-            sample_errors.append(error)
+            record_sample_error(error)
 
     def sample_threads() -> None:
         try:
             thread_sample_fn(
-                paths["thread"], firefox_pid, paths["ready"], mode, physical
+                sampler_paths["thread"],
+                firefox_pid,
+                sampler_paths["ready"],
+                mode,
+                physical,
+                sampler_ready[1],
+                sampler_stop,
             )
         except BaseException as error:
-            sample_errors.append(error)
+            record_sample_error(error)
 
     samplers = (
-        threading.Thread(target=sample_system, name="browser-system-sampler"),
-        threading.Thread(target=sample_threads, name="browser-thread-sampler"),
+        threading.Thread(
+            target=sample_system, name="browser-system-sampler", daemon=True
+        ),
+        threading.Thread(
+            target=sample_threads, name="browser-thread-sampler", daemon=True
+        ),
     )
-    for sampler in samplers:
-        sampler.start()
-    try:
-        report = capture_composite(
-            client,
-            fixture_index_url,
-            mode=mode,
-            timeout_seconds=timeout_seconds,
-            checkpoint_fn=lambda checkpoint: _atomic_private_json(
-                paths["checkpoint"], checkpoint
-            ),
-            sleep_fn=sleep_fn,
-        )
-    finally:
+
+    def start_evidence() -> None:
+        nonlocal evidence_started
+        if evidence_started:
+            raise CompositeCaptureError("composite samplers started more than once")
+        try:
+            sampler_directory.mkdir(mode=0o700)
+        except OSError as error:
+            raise CompositeCaptureError(
+                "composite sampler directory is unavailable"
+            ) from error
+        _private_marker(sampler_paths["ready"], time.monotonic_ns())
+        evidence_started = True
         for sampler in samplers:
-            sampler.join()
-    if sample_errors or not paths["system"].is_file() or not paths["thread"].is_file():
+            sampler.start()
+            started_samplers.append(sampler)
+        ready_deadline = time.monotonic() + SAMPLER_READY_TIMEOUT_SECONDS
+        while not all(event.is_set() for event in sampler_ready):
+            error = current_sample_error()
+            if error is not None:
+                raise CompositeCaptureError(
+                    "composite sampler failed before workload"
+                ) from error
+            remaining = ready_deadline - time.monotonic()
+            if remaining <= 0:
+                raise CompositeCaptureError("composite sampler readiness expired")
+            for event in sampler_ready:
+                event.wait(min(0.01, remaining))
+
+    try:
+        try:
+            report = capture_composite(
+                client,
+                fixture_index_url,
+                mode=mode,
+                run_id=run_id,
+                timeout_seconds=timeout_seconds,
+                checkpoint_fn=lambda checkpoint: _atomic_private_json(
+                    paths["checkpoint"], checkpoint
+                ),
+                before_start_fn=start_evidence,
+                sleep_fn=sleep_fn,
+            )
+        finally:
+            sampler_stop.set()
+            stop_deadline = time.monotonic() + sampler_stop_timeout_seconds
+            for sampler in started_samplers:
+                sampler.join(max(0.0, stop_deadline - time.monotonic()))
+            if any(sampler.is_alive() for sampler in started_samplers):
+                raise CompositeCaptureError("composite sampler stop expired")
+    except BaseException:
+        shutil.rmtree(sampler_directory, ignore_errors=True)
+        raise
+
+    def discard_sampler_evidence() -> None:
+        shutil.rmtree(sampler_directory, ignore_errors=True)
+        for name in ("system", "thread"):
+            try:
+                paths[name].unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    sampling_failure = current_sample_error()
+    if (
+        sampling_failure is not None
+        or not sampler_paths["system"].is_file()
+        or not sampler_paths["thread"].is_file()
+    ):
+        discard_sampler_evidence()
         raise CompositeCaptureError("composite system evidence is unavailable") from (
-            sample_errors[0] if sample_errors else None
+            sampling_failure
         )
-    for path in (paths["system"], paths["thread"]):
+    for path in (sampler_paths["system"], sampler_paths["thread"]):
         os.chmod(path, 0o600, follow_symlinks=False)
+    start_ns = report["workload_start_observed_guest_monotonic_ns"]
+    observations = report["phase_observations"]
+    if (
+        type(start_ns) is not int
+        or not isinstance(observations, list)
+        or not observations
+    ):
+        discard_sampler_evidence()
+        raise CompositeCaptureError("composite workload observation clock is invalid")
+    end_ns = observations[-1]["observed_guest_monotonic_ns"]
+    if type(end_ns) is not int or end_ns < start_ns:
+        discard_sampler_evidence()
+        raise CompositeCaptureError("composite workload observation clock is invalid")
+    for role in ("system", "thread"):
+        path = sampler_paths[role]
+        evidence_start, evidence_end = _evidence_bounds(path)
+        if evidence_start > start_ns or evidence_end < end_ns:
+            discard_sampler_evidence()
+            raise CompositeCaptureError(
+                f"composite {role} evidence does not cover workload "
+                f"evidence=[{evidence_start},{evidence_end}] "
+                f"workload=[{start_ns},{end_ns}]"
+            )
     if identity_fn(process_ids) != initial_starttimes:
+        discard_sampler_evidence()
         raise CompositeCaptureError("Firefox/Xorg identity changed during workload")
+
+    try:
+        for name in ("system", "thread"):
+            os.replace(sampler_paths[name], paths[name])
+    except OSError as error:
+        discard_sampler_evidence()
+        raise CompositeCaptureError("composite evidence publication failed") from error
+    shutil.rmtree(sampler_directory)
 
     report.update(
         {
@@ -455,9 +658,7 @@ def main() -> int:
     try:
         options.evidence_dir.mkdir(mode=0o700, parents=False, exist_ok=True)
         index_url = resolve_fixture_index_url(options.fixture_index_url)
-        client = _connect(
-            "127.0.0.1", options.port, time.monotonic() + timeout_seconds
-        )
+        client = _connect("127.0.0.1", options.port, time.monotonic() + timeout_seconds)
         try:
             report = run_composite_capture(
                 client,
