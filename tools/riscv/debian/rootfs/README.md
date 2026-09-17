@@ -254,15 +254,45 @@ python3 /run/asterinas-tools/browser_composite_capture.py \
 ```
 
 The capture writes private, exclusive phase/checkpoint, process, and thread
-artifacts without deleting the Marionette session or restarting Firefox. A
-checkpoint survives a later phase failure. Browser phase/rAF timings use the
+artifacts without deleting the Marionette session or restarting Firefox. The
+process and thread samplers complete an initial snapshot before the workload
+starts, stop with a final snapshot after the terminal phase, and must cover the
+entire guest-monotonic workload observation window. Completed phase objects are
+immutable, and successful phases must report the exact mode-specific operation,
+request, context, and frame-sample counts. A checkpoint survives a later phase
+failure. Browser phase/rAF timings use the
 browser `performance.now()` clock; procfs CPU, faults, RSS and schedstat use the
 guest monotonic sampling clock; human USB-to-HDMI latency is a third quantity
 and is not inferred from either. An unavailable procfs counter is reported as
 unsupported, never as zero. Public Baidu browsing remains an end-to-end
 acceptance check and is deliberately excluded from bottleneck attribution.
 
-Three physical Megrez workload samples on the kernel identified by SHA-256
+After copying each physical run into its own host directory without renaming
+the four canonical JSON files, bind the guest evidence to the exact fixture
+request segments. Each nonce-bound run includes one cache-fill request per
+warm resource and proves the repeated fetch from its browser-side count. The
+verifier recomputes every file SHA-256, checks
+the per-run fixture boundaries, requires stable Firefox/Xorg identities, and
+revalidates sampler coverage:
+
+```bash
+python3 -m tools.riscv.browser_composite_manifest \
+  --artifact-dir /path/to/evidence \
+  --fixture-summary /path/to/evidence/physical-fixture.json \
+  --run-dir /path/to/evidence/run-1 \
+  --run-dir /path/to/evidence/run-2 \
+  --run-dir /path/to/evidence/run-3 \
+  --mode profile --physical \
+  --output /path/to/evidence/manifest.json
+python3 -m tools.riscv.browser_composite_manifest \
+  --verify /path/to/evidence/manifest.json
+```
+
+The manifest is deterministic and deliberately contains no wall-clock field.
+Its host-monotonic fixture ranges and guest-monotonic sampling ranges remain
+separate clock domains; their file hashes and run ordering provide the binding.
+
+Earlier fixed-duration physical Firefox samples on the kernel identified by SHA-256
 `5444c9eb40e10d26278affb00f69bb8c212ce94091204cf94a6209899d2f588c`
 measured Firefox for about 10 seconds each. Firefox consumed 9.59, 10.05,
 and 10.10 CPU-seconds, including 3.50, 3.52, and 3.64 seconds in kernel mode.
@@ -270,9 +300,9 @@ Across all Firefox threads, `/proc/<pid>/task/<tid>/schedstat` reported only
 326, 320, and 269 ms of runnable wait. The main thread's corresponding waits
 were 171, 121, and 109 ms. Average system busy fractions were 35.3%, 37.5%,
 and 37.4% across four CPUs, while the average runnable count stayed below two.
-These samples identify an execution-bound browser workload, not CPU-affinity or
-runqueue starvation. Do not tune scheduler affinity from this evidence; obtain
-low-overhead PC or stack attribution before changing a kernel hot path.
+Those samples excluded the later phase-labelled composite workload. They did
+not justify CPU-affinity tuning; use the bound composite manifest and its
+phase/thread evidence before changing a kernel hot path.
 
 The same runs recorded synthetic event-handler-to-first-rAF p95 values below
 100 ms in two runs. A third run had 57 ms keyboard, 175 ms pointer, and 131 ms

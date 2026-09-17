@@ -13,6 +13,7 @@ python3 -m unittest \
   tools.riscv.tests.test_browser_interaction_perf \
   tools.riscv.tests.test_browser_workload_contract \
   tools.riscv.tests.test_browser_composite_capture \
+  tools.riscv.tests.test_browser_composite_manifest \
   tools.riscv.tests.test_browser_system_time \
   tools.riscv.tests.test_browser_performance_provenance \
   tools.riscv.tests.test_debian_browser_web \
@@ -25,6 +26,7 @@ python3 -m unittest \
 
 python3 -m py_compile \
   tools/riscv/firefox_debug_tool.py \
+  tools/riscv/browser_composite_manifest.py \
   tools/riscv/debian/rootfs/browser_interaction_perf.py \
   tools/riscv/debian/rootfs/browser_workload_contract.py \
   tools/riscv/debian/rootfs/browser_composite_capture.py \

@@ -12,22 +12,27 @@ import unittest
 from tools.riscv.debian.rootfs.browser_workload_contract import (
     PHASES,
     WorkloadContractError,
+    expected_phase_metrics,
     validate_workload_snapshot,
 )
 
+RUN_ID = "0123456789abcdef0123456789abcdef"
 
-def phase(name: str, start: float) -> dict[str, object]:
+
+def phase(name: str, start: float, mode: str = "smoke") -> dict[str, object]:
+    expected = expected_phase_metrics(mode, name)
+    frames = [2.5] * expected["frameSamples"]
     return {
         "name": name,
         "state": "complete",
         "startMs": start,
         "endMs": start + 10,
         "metrics": {
-            "operationCount": 4,
-            "requestCount": 2,
-            "contextCount": 1,
+            "operationCount": expected["operationCount"],
+            "requestCount": expected["requestCount"],
+            "contextCount": expected["contextCount"],
             "longFrameCount": 0,
-            "frameMs": [2.5, 4.0],
+            "frameMs": frames,
         },
     }
 
@@ -37,31 +42,69 @@ def complete_snapshot(mode: str = "smoke") -> dict[str, object]:
         "schemaVersion": 1,
         "workloadVersion": 1,
         "clockDomain": "browser-performance-now",
+        "runId": RUN_ID,
         "mode": mode,
         "state": "complete",
-        "phases": [phase(name, index * 20.0) for index, name in enumerate(PHASES)],
+        "phases": [
+            phase(name, index * 20.0, mode) for index, name in enumerate(PHASES)
+        ],
         "error": None,
     }
 
 
 class BrowserWorkloadContractTests(unittest.TestCase):
     def test_accepts_complete_ordered_smoke_snapshot(self) -> None:
-        report = validate_workload_snapshot(
-            complete_snapshot(), expected_mode="smoke"
-        )
+        report = validate_workload_snapshot(complete_snapshot(), expected_mode="smoke")
 
-        self.assertEqual(
-            tuple(item["name"] for item in report["phases"]), PHASES
-        )
+        self.assertEqual(tuple(item["name"] for item in report["phases"]), PHASES)
         self.assertEqual(report["state"], "complete")
+        self.assertEqual(report["runId"], RUN_ID)
+
+    def test_rejects_invalid_or_changed_run_identity(self) -> None:
+        for run_id in ("", "A" * 32, "0" * 31, 7):
+            snapshot = complete_snapshot()
+            snapshot["runId"] = run_id
+            with self.subTest(run_id=run_id), self.assertRaises(WorkloadContractError):
+                validate_workload_snapshot(snapshot, expected_mode="smoke")
+
+        with self.assertRaisesRegex(WorkloadContractError, "identity changed"):
+            validate_workload_snapshot(
+                complete_snapshot(),
+                expected_mode="smoke",
+                expected_run_id="f" * 32,
+            )
 
     def test_accepts_bounded_stress_cache_attempt_count(self) -> None:
         snapshot = complete_snapshot("stress")
-        snapshot["phases"][3]["metrics"]["requestCount"] = 288
 
         report = validate_workload_snapshot(snapshot, expected_mode="stress")
 
         self.assertEqual(report["phases"][3]["metrics"]["requestCount"], 288)
+
+    def test_rejects_completed_phase_with_inexact_work_or_frames(self) -> None:
+        for phase_index, metric, delta in (
+            (0, "operationCount", -1),
+            (2, "requestCount", 1),
+            (4, "contextCount", -1),
+        ):
+            snapshot = complete_snapshot()
+            snapshot["phases"][phase_index]["metrics"][metric] += delta
+            with (
+                self.subTest(metric=metric),
+                self.assertRaisesRegex(WorkloadContractError, "exact workload"),
+            ):
+                validate_workload_snapshot(snapshot, expected_mode="smoke")
+
+        snapshot = complete_snapshot()
+        snapshot["phases"][1]["metrics"]["frameMs"].pop()
+        with self.assertRaisesRegex(WorkloadContractError, "frame sample count"):
+            validate_workload_snapshot(snapshot, expected_mode="smoke")
+
+    def test_rejects_long_frame_count_that_disagrees_with_samples(self) -> None:
+        snapshot = complete_snapshot()
+        snapshot["phases"][0]["metrics"]["frameMs"] = [51.0]
+        with self.assertRaisesRegex(WorkloadContractError, "long frame count"):
+            validate_workload_snapshot(snapshot, expected_mode="smoke")
 
     def test_accepts_only_an_ordered_prefix_while_running(self) -> None:
         snapshot = complete_snapshot()
@@ -69,6 +112,9 @@ class BrowserWorkloadContractTests(unittest.TestCase):
         snapshot["phases"] = snapshot["phases"][:3]
         snapshot["phases"][-1]["state"] = "running"
         snapshot["phases"][-1]["endMs"] = None
+        snapshot["phases"][-1]["metrics"]["operationCount"] //= 2
+        snapshot["phases"][-1]["metrics"]["requestCount"] //= 2
+        snapshot["phases"][-1]["metrics"]["frameMs"] = []
 
         report = validate_workload_snapshot(
             snapshot, expected_mode="smoke", allow_running=True
@@ -94,8 +140,9 @@ class BrowserWorkloadContractTests(unittest.TestCase):
         variants.append(missing)
 
         for snapshot in variants:
-            with self.subTest(snapshot=snapshot), self.assertRaises(
-                WorkloadContractError
+            with (
+                self.subTest(snapshot=snapshot),
+                self.assertRaises(WorkloadContractError),
             ):
                 validate_workload_snapshot(snapshot, expected_mode="smoke")
 
@@ -141,8 +188,9 @@ class BrowserWorkloadContractTests(unittest.TestCase):
         for samples in ([1.0] * 257, [-1.0], [60_001.0], [math.inf], [True]):
             snapshot = complete_snapshot()
             snapshot["phases"][0]["metrics"]["frameMs"] = samples
-            with self.subTest(samples=len(samples)), self.assertRaises(
-                WorkloadContractError
+            with (
+                self.subTest(samples=len(samples)),
+                self.assertRaises(WorkloadContractError),
             ):
                 validate_workload_snapshot(snapshot, expected_mode="smoke")
 
@@ -151,9 +199,7 @@ class BrowserWorkloadContractTests(unittest.TestCase):
             snapshot = complete_snapshot()
             snapshot["state"] = "failed"
             snapshot["error"] = error
-            with self.subTest(error=error), self.assertRaises(
-                WorkloadContractError
-            ):
+            with self.subTest(error=error), self.assertRaises(WorkloadContractError):
                 validate_workload_snapshot(snapshot, expected_mode="smoke")
 
     def test_returns_a_detached_normalized_value(self) -> None:
