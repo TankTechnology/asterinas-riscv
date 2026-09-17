@@ -945,6 +945,27 @@ test_riscv_drm_cursor: test_riscv_drm_cursor_unit
 		--manifest "$(DRM_CURSOR_MANIFEST)" \
 		--output-directory "$(DRM_CURSOR_GATE_OUTPUT)"
 
+.PHONY: test_riscv_drm_gem_unit
+test_riscv_drm_gem_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_gem_gate -v
+
+.PHONY: test_riscv_drm_gem
+test_riscv_drm_gem: test_riscv_drm_gem_unit
+	@test -n "$(DRM_GEM_UBOOT)" || \
+		{ echo "DRM_GEM_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DRM_GEM_BOOT_DISK)" || \
+		{ echo "DRM_GEM_BOOT_DISK is required" >&2; exit 2; }
+	@test -n "$(DRM_GEM_MANIFEST)" || \
+		{ echo "DRM_GEM_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DRM_GEM_GATE_OUTPUT)" || \
+		{ echo "DRM_GEM_GATE_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH=tools/riscv python3 -m drm.gem_gate \
+		--uboot "$(DRM_GEM_UBOOT)" \
+		--boot-disk "$(DRM_GEM_BOOT_DISK)" \
+		--manifest "$(DRM_GEM_MANIFEST)" \
+		--output-directory "$(DRM_GEM_GATE_OUTPUT)"
+
 .PHONY: test_riscv_uboot_booti_unit
 test_riscv_uboot_booti_unit:
 	@python3 -m unittest \
