@@ -432,10 +432,13 @@ BROWSER_WORKLOAD = b"""<!doctype html>
       await operation(phase.metrics);
       phase.endMs = performance.now();
       phase.state = 'complete';
-    } catch (_) {
+    } catch (error) {
       phase.endMs = performance.now();
       phase.state = 'failed';
-      throw new Error(name + '-failed');
+      const detail = String(error && error.message || 'phase-error')
+        .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+        .slice(0, 48) || 'phase-error';
+      throw new Error(name + '-' + detail);
     }
   };
   const warmup = async (metrics, config) => {
@@ -516,6 +519,9 @@ BROWSER_WORKLOAD = b"""<!doctype html>
       metrics.requestCount++;
       metrics.operationCount++;
     }
+    frame.contentWindow.history.pushState({step: 1}, '', urls[0]);
+    frame.contentWindow.history.pushState({step: 2}, '', urls[1]);
+    metrics.operationCount += 2;
     for (let index = 0; index < config.scale * 2; index++) {
       await historyStep(frame, 'back', urls[0]);
       metrics.operationCount++;
