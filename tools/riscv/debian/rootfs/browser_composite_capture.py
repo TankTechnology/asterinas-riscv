@@ -170,7 +170,9 @@ def capture_composite(
                     }
                 )
         if workload["state"] == "failed":
-            raise CompositeCaptureError("composite workload reported failure")
+            raise CompositeCaptureError(
+                f"composite workload reported failure: {workload['error']}"
+            )
         if workload["state"] == "complete":
             try:
                 terminal = validate_workload_snapshot(
