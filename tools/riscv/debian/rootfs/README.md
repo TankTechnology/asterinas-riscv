@@ -336,6 +336,111 @@ Stage1 must receive the exact init argument `--root-init=systemd`; the gate
 places it after the kernel command-line `--` separator so Asterinas forwards it
 as init argv.
 
+#### Firefox daily-use gate
+
+`browser-daily-use-gate` is the bounded acceptance and diagnostic wrapper for
+one already running Firefox and Xorg pair.
+It uses the local browser-quality fixture only; it is not a public-web gate.
+Obtain the two stable PIDs from graphical readiness, create a new private
+directory, and run the Stage1-bound command:
+
+```bash
+install -d -m 0700 /run/asterinas-browser-daily-use-smoke
+/run/asterinas-tools/browser-daily-use-gate \
+  --firefox-pid "$FIREFOX_PID" \
+  --xorg-pid "$XORG_PID" \
+  --fixture-index-url http://10.0.2.2:17894/browser-quality/index.html \
+  --evidence-dir /run/asterinas-browser-daily-use-smoke \
+  --mode smoke
+```
+
+For a physical-board profile, use the fixture address reachable from that
+board and record the hardware flag explicitly:
+
+```bash
+install -d -m 0700 /run/asterinas-browser-daily-use-profile
+/run/asterinas-tools/browser-daily-use-gate \
+  --firefox-pid "$FIREFOX_PID" \
+  --xorg-pid "$XORG_PID" \
+  --fixture-index-url http://10.100.19.216:17894/browser-quality/index.html \
+  --evidence-dir /run/asterinas-browser-daily-use-profile \
+  --mode profile \
+  --physical
+```
+
+`--firefox-pid`, `--xorg-pid`, and `--evidence-dir` are parser-required.
+Supply `--fixture-index-url` as shown for every operator invocation, rather
+than relying on the fixture URL resolved from the guest environment.
+`--mode` accepts only `smoke` and `profile`.
+When it is omitted, the gate selects `smoke` without `--physical` and `profile`
+with it; their default timeouts are respectively 30 and 120 seconds.
+`--physical` records physical provenance for the relevant sampler only;
+it does not prove display scanout or force `profile` when `--mode smoke` is
+explicitly selected.
+An optional `--timeout-seconds` must remain positive and no greater than
+120 seconds.
+
+The terminal contract is exactly one verdict line:
+
+```text
+ASTERINAS_BROWSER_DAILY_USE_PASS functions=7/7 slow=<count> evidence_dir=<absolute-path>
+ASTERINAS_BROWSER_DAILY_USE_FAIL reason=<canonical-reason>
+```
+
+The PASS line is written to standard output and the FAIL line to standard
+error; a failure exits nonzero.
+A successful run publishes six private JSON artifacts:
+`browser-fixture-capture.json`, `browser-local-capture.json`,
+`browser-context-switch.json`, `browser-composite-capture.json`,
+`browser-system-time.json`, and `browser-thread-time.json`, followed by
+`browser-daily-use-result.json`.
+On a run failure, it removes any files it published and attempts to publish
+only `browser-daily-use-checkpoint.json`.
+All files are exclusive, no-follow, mode-0600 publications with an fsync.
+
+Treat the evidence directory as single-use.
+The gate rejects an existing artifact, checkpoint, private staging path, or
+reservation, retains its `.browser-daily-use-<run-id>` staging directory, and
+keeps `.browser-daily-use-reservation`; it never overwrites or resumes a run.
+Use a fresh empty directory after either outcome.
+The gate creates exactly one Marionette session, passes a restricted session
+handle to workload phases, and forbids phase calls to `WebDriver:NewSession`,
+`WebDriver:DeleteSession`, and `Marionette:Quit`.
+It closes its transport but does not send `DeleteSession`; it also verifies
+unchanged Firefox and Xorg PID/start-time identities, closes only temporary
+browser windows, and does not restart Firefox or Xorg, reboot the guest, or
+write the persistent rootfs.
+
+The result has seven functional groups: `document`, `storage`, `execution`,
+`rendering-media`, `navigation`, `download`, and `contexts`.
+Its five performance categories are `startup`, `input`, `scroll`,
+`navigation`, and `context-switch`.
+Input keyboard/pointer and scroll first/next-rAF p95 values above 100 ms are
+`slow`; navigation is `slow` only when browser response-to-DOM exceeds 2 s;
+and context switching is `slow` when any open/select/return/close operation
+or their total exceeds 500 ms.
+`slow` is diagnostic evidence, not a functional failure, so a PASS may report
+a nonzero slow count.
+Startup is a guest-monotonic interval from the persisted `BOOT_FIREFOX_EXEC`
+record for this Firefox PID through the gate's verified session/original-window
+readiness endpoint; it is not a fresh browser-launch measurement.
+
+Do not subtract timestamps across the browser and guest clocks.
+Input and scroll use browser `performance.now()`, startup/local-command/context
+and sampler coverage use guest monotonic time, and browser Navigation Timing
+is kept as its own domain.
+A negative Navigation Timing `fetchStart` remains in evidence with
+`fetchStartValid=false`; it is never clamped or rebased.
+Physical HDMI scanout is unsupported, public-network browsing is excluded, and
+synthetic browser input is not USB/Xorg/display latency.
+Although the procfs system artifact can contain minor/major-fault deltas, the
+daily-use result has no fault-based category or kernel-attribution claim;
+`kernel-diagnostics-unavailable` remains an explicit placeholder limitation.
+
+This command is a host-qualified interface only.
+It does not itself establish a live QEMU or physical-board result, and it
+makes no Firefox or kernel speedup claim.
+
 ## Build current-main boot artifacts
 
 Build the current Sv39/SMP=4 kernel and deterministic stage-1 handoff archive:
