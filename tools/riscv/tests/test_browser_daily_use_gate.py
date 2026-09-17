@@ -543,11 +543,12 @@ class BrowserDailyUseGateTests(unittest.TestCase):
         )
         self.assertFalse((self.evidence / "browser-daily-use-checkpoint.json").exists())
 
-    def test_sampler_early_failure_and_early_return_block_workload(self):
+    def test_sampler_failure_or_return_before_readiness_blocks_workload(self):
         for raises in (True, False):
 
             def bad(request):
-                request.ready.set()
+                # Never announce readiness: completion must be observed before
+                # the orchestrator can permit any fixture workload.
                 if raises:
                     raise RuntimeError("private")
                 return SamplerCapture(b"early", 1, 2)
