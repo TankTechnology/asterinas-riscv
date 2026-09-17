@@ -95,6 +95,7 @@ ARTIFACT_NAMES = (
 RESULT_NAME = "browser-daily-use-result.json"
 CHECKPOINT_NAME = "browser-daily-use-checkpoint.json"
 MAX_TIMEOUT_SECONDS = 120.0
+CONTEXT_CLEANUP_TIMEOUT_SECONDS = 5.0
 FIXTURE_GROUPS = ("document", "storage", "execution", "rendering-media", "download")
 STARTUP_TIMELINE = Path("/home/asterinas/browser-web-timeline.log")
 _FAILURE_REASONS = frozenset(
@@ -127,6 +128,7 @@ class DailyUseGateError(ValueError):
 class BrowserTransport(Protocol):
     def command(self, name: str, parameters: dict | None = None) -> object: ...
     def set_timeout(self, timeout: float) -> None: ...
+    def recover_timed_out_command(self, timeout: float) -> object: ...
     def close(self) -> None: ...
 
 
@@ -135,6 +137,7 @@ class ExistingSession:
 
     def __init__(self, client: BrowserTransport):
         self.__client = client
+        self.__timed_out_command = False
 
     def command(self, name: str, parameters: dict | None = None) -> object:
         if name in {
@@ -143,7 +146,24 @@ class ExistingSession:
             "Marionette:Quit",
         }:
             raise DailyUseGateError("session-command-forbidden")
-        return self.__client.command(name, parameters)
+        try:
+            return self.__client.command(name, parameters)
+        except TimeoutError:
+            self.__timed_out_command = True
+            raise
+
+    def recover_timed_out_command(self, timeout: float) -> None:
+        """Synchronize any late response before reserving a bounded cleanup phase."""
+        if (
+            type(timeout) not in (int, float)
+            or not math.isfinite(timeout)
+            or not 0 < timeout <= CONTEXT_CLEANUP_TIMEOUT_SECONDS
+        ):
+            raise DailyUseGateError("parameters-invalid")
+        if self.__timed_out_command:
+            self.__client.recover_timed_out_command(timeout)
+            self.__timed_out_command = False
+        self.__client.set_timeout(timeout)
 
 
 @dataclass(frozen=True)
@@ -495,6 +515,7 @@ def default_operations(
         startup = _startup_performance(
             (timeline_reader or _read_timeline)(timeline_path), request
         )
+        form_navigation = _capture_form_navigation(request)
         report = perf_capture.capture_local(
             request.client,
             resolve_fixture_index_url(request.fixture_index_url),
@@ -529,6 +550,7 @@ def default_operations(
             _navigation_performance(report),
         ]
         report["startup"] = startup
+        report["form_navigation"] = form_navigation
         return TimingCapture(
             performance, _json_bytes(report), _passing_group("navigation")
         )
@@ -615,6 +637,7 @@ def _capture_fixture(request, download_path, uid_reader):
         request.client,
         lambda value: web_gate.probe_fixture_home(value, url),
         request.deadline,
+        diagnostic_fn=lambda line: None,
     )
     snapshot = web_gate._snapshot(request.client)
     web_gate.probe_fixture_home(
@@ -674,6 +697,55 @@ def _validate_fixture_resources(snapshot, url):
         image_seen |= resource["name"] == image_url
     if not image_seen:
         raise DailyUseGateError("phase-value-invalid")
+
+
+def _capture_form_navigation(request: CaptureRequest) -> dict[str, object]:
+    url = resolve_fixture_index_url(request.fixture_index_url)
+    _remaining(request)
+    web_gate._navigate(request.client, url)
+    web_gate._wait_for_probe(
+        request.client,
+        lambda probe: web_gate.probe_fixture_home(probe, url),
+        request.deadline,
+        diagnostic_fn=lambda line: None,
+    )
+    web_gate._submit_fixture_search(request.client)
+    search_url = url + "?q=asterinas"
+    probe, _ = web_gate._wait_for_probe(
+        request.client,
+        lambda probe: _validate_form_destination(probe, search_url),
+        request.deadline,
+        diagnostic_fn=lambda line: None,
+    )
+    snapshot = web_gate._snapshot(request.client)
+    _validate_form_destination(
+        {name: snapshot[name] for name in probe if name != "apiTypes"}, search_url
+    )
+    _validate_fixture_resources(snapshot, search_url)
+    return {"probe": probe, "snapshot": snapshot}
+
+
+def _validate_form_destination(probe, expected_url):
+    # The existing full search validator intentionally accepts only slirp.
+    # Its content checks also apply to the board's already-validated origin.
+    result = web_gate._probe_mapping(probe)
+    if (
+        result["url"] != expected_url
+        or result["title"] != "asterinas - Asterinas Browser Quality"
+        or result["readyState"] != "complete"
+        or result["jsComplete"] is not True
+        or not isinstance(result["bodyText"], str)
+        or not all(
+            token in result["bodyText"]
+            for token in ("Asterinas browser quality", "浏览器质量")
+        )
+        or not all(
+            result["dom"][name] is True
+            for name in ("fixtureQuery", "fixtureImage", "fixtureSecond")
+        )
+    ):
+        raise web_gate.GateError("local fixture form destination is incomplete")
+    web_gate._validate_fixture_capabilities(result["browserCapabilities"], "search")
 
 
 def _read_timeline(path: Path) -> str:
@@ -858,6 +930,9 @@ def _capture_context(request: CaptureRequest) -> ContextCapture:
         if _value(client.command("WebDriver:GetWindowHandle")) != original:
             raise DailyUseGateError("session-invalid")
     finally:
+        # No cleanup command may consume the timed-out operation's late reply.
+        # Recovery drains only that response; it cannot create another session.
+        client.recover_timed_out_command(CONTEXT_CLEANUP_TIMEOUT_SECONDS)
         try:
 
             def close_extra():

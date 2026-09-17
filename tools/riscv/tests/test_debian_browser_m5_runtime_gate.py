@@ -229,6 +229,147 @@ class DebianBrowserM5RuntimeGateTests(unittest.TestCase):
         self.assertIn("no such window", diagnostic)
         self.assertIn("Browsing context discarded", diagnostic)
 
+    def test_recovery_retains_partial_frames_and_sends_no_new_request(self) -> None:
+        response = _frame([1, 1, None, {"value": "late"}])
+        for cut in (1, response.index(b":") + 6):
+            with self.subTest(cut=cut):
+                transport = _Socket(
+                    _frame({"applicationType": "gecko", "marionetteProtocol": 3})
+                    + response[:cut]
+                )
+                with mock.patch.object(
+                    gate.socket, "create_connection", return_value=transport
+                ):
+                    client = gate.Marionette("127.0.0.1", 2828, 1)
+                with self.assertRaises(TimeoutError):
+                    client.command("WebDriver:Navigate")
+                sent = bytes(transport.sent)
+                transport.incoming.extend(response[cut:])
+                self.assertTrue(
+                    callable(getattr(client, "recover_timed_out_command", None))
+                )
+                self.assertEqual(client.recover_timed_out_command(1), {"value": "late"})
+                self.assertEqual(bytes(transport.sent), sent)
+                transport.incoming.extend(_frame([1, 2, None, {"value": "next"}]))
+                self.assertEqual(
+                    client.command("WebDriver:GetWindowHandle"), {"value": "next"}
+                )
+                client.close()
+
+    def test_timeout_requires_recovery_before_another_request(self) -> None:
+        transport = _Socket(
+            _frame({"applicationType": "gecko", "marionetteProtocol": 3})
+        )
+        with mock.patch.object(
+            gate.socket, "create_connection", return_value=transport
+        ):
+            client = gate.Marionette("127.0.0.1", 2828, 1)
+        with self.assertRaises(TimeoutError):
+            client.command("WebDriver:Navigate")
+        sent = bytes(transport.sent)
+        client.set_timeout(1)
+        with self.assertRaisesRegex(gate.GateError, "unresolved"):
+            client.command("WebDriver:GetWindowHandles")
+        self.assertEqual(bytes(transport.sent), sent)
+
+    def test_recovery_rejects_wrong_response_identity_and_incomplete_send(self) -> None:
+        for incomplete in (False, True):
+            with self.subTest(incomplete=incomplete):
+                transport = _Socket(
+                    _frame({"applicationType": "gecko", "marionetteProtocol": 3})
+                )
+                with mock.patch.object(
+                    gate.socket, "create_connection", return_value=transport
+                ):
+                    client = gate.Marionette("127.0.0.1", 2828, 1)
+                if incomplete:
+
+                    def partial_send(value):
+                        transport.sent.extend(value[:3])
+                        raise TimeoutError("partial send")
+
+                    transport.sendall = partial_send
+                with self.assertRaises(TimeoutError):
+                    client.command("WebDriver:NewWindow")
+                sent = bytes(transport.sent)
+                transport.incoming.extend(
+                    _frame([1, 2, None, {"value": "wrong request"}])
+                )
+                with self.assertRaises(gate.GateError):
+                    client.recover_timed_out_command(1)
+                with self.assertRaises(gate.GateError):
+                    client.command("WebDriver:GetWindowHandles")
+                self.assertEqual(bytes(transport.sent), sent)
+
+    def test_recovery_is_bounded_and_requires_an_outstanding_timeout(self) -> None:
+        transport = _Socket(
+            _frame({"applicationType": "gecko", "marionetteProtocol": 3})
+        )
+        with mock.patch.object(
+            gate.socket, "create_connection", return_value=transport
+        ):
+            client = gate.Marionette("127.0.0.1", 2828, 1)
+        for timeout in (0, -1, float("nan"), True, 11):
+            with self.subTest(timeout=timeout), self.assertRaises(ValueError):
+                client.recover_timed_out_command(timeout)
+        with self.assertRaises(gate.GateError):
+            client.recover_timed_out_command(1)
+        self.assertEqual(bytes(transport.sent), b"")
+
+    def test_recovery_rejects_noninteger_response_identity(self) -> None:
+        for kind, identifier in ((True, 1), (1, True), (1.0, 1), (1, 1.0)):
+            with self.subTest(kind=kind, identifier=identifier):
+                transport = _Socket(
+                    _frame({"applicationType": "gecko", "marionetteProtocol": 3})
+                )
+                with mock.patch.object(
+                    gate.socket, "create_connection", return_value=transport
+                ):
+                    client = gate.Marionette("127.0.0.1", 2828, 1)
+                with self.assertRaises(TimeoutError):
+                    client.command("WebDriver:Navigate")
+                transport.incoming.extend(_frame([kind, identifier, None, {}]))
+                with self.assertRaises(gate.GateError):
+                    client.recover_timed_out_command(1)
+
+    def test_malformed_recovery_cannot_resume_at_a_different_frame_boundary(
+        self,
+    ) -> None:
+        transport = _Socket(
+            _frame({"applicationType": "gecko", "marionetteProtocol": 3})
+        )
+        with mock.patch.object(
+            gate.socket, "create_connection", return_value=transport
+        ):
+            client = gate.Marionette("127.0.0.1", 2828, 1)
+        with self.assertRaises(TimeoutError):
+            client.command("WebDriver:Navigate")
+        transport.incoming.extend(b"x")
+        with self.assertRaises(gate.GateError):
+            client.recover_timed_out_command(1)
+        transport.incoming.extend(_frame([1, 1, None, {}]))
+        with self.assertRaises(gate.GateError):
+            client.recover_timed_out_command(1)
+
+    def test_recovery_timeout_can_resume_without_forgetting_more_partial_bytes(
+        self,
+    ) -> None:
+        response = _frame([1, 1, None, {}])
+        transport = _Socket(
+            _frame({"applicationType": "gecko", "marionetteProtocol": 3}) + response[:1]
+        )
+        with mock.patch.object(
+            gate.socket, "create_connection", return_value=transport
+        ):
+            client = gate.Marionette("127.0.0.1", 2828, 1)
+        with self.assertRaises(TimeoutError):
+            client.command("WebDriver:Navigate")
+        transport.incoming.extend(response[1:6])
+        with self.assertRaises(TimeoutError):
+            client.recover_timed_out_command(1)
+        transport.incoming.extend(response[6:])
+        self.assertEqual(client.recover_timed_out_command(1), {})
+
     def test_protocol_rejects_non_loopback_and_timeout(self) -> None:
         with self.assertRaisesRegex(gate.GateError, "loopback"):
             gate.Marionette("192.0.2.1", 2828, 5)

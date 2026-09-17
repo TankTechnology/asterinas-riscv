@@ -12,6 +12,7 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
 import tempfile
 import threading
 import time
@@ -744,6 +745,9 @@ class AdapterMarionette(FakeMarionette):
         }
         self.body = "Asterinas browser quality 浏览器质量"
         self.foreign_resource = False
+        self.form_submissions = []
+        self.form_result = "fixture-search-scheduled"
+        self.form_destination = None
 
     def command(self, name, parameters=None):
         if name == "WebDriver:Navigate":
@@ -752,6 +756,12 @@ class AdapterMarionette(FakeMarionette):
             return self.timing.command(name, parameters)
         if name == "WebDriver:ExecuteScript":
             script = parameters["script"]
+            if script == web._FIXTURE_SUBMIT_SCRIPT:
+                self.form_submissions.append(self.timing.url)
+                self.timing.url = (
+                    self.form_destination or self.timing.url + "?q=asterinas"
+                )
+                return {"value": self.form_result}
             if "CompositeWorkload" in script:
                 return self.composite.command(name, parameters)
             if "quality-download" in script:
@@ -761,11 +771,16 @@ class AdapterMarionette(FakeMarionette):
                 url = self.timing.url
                 snapshot = {
                     "url": url,
-                    "title": "Asterinas Browser Quality",
+                    "title": "asterinas - Asterinas Browser Quality"
+                    if "?q=asterinas" in url
+                    else "Asterinas Browser Quality",
                     "readyState": "complete",
                     "bodyText": self.body,
                     "jsComplete": True,
-                    "browserCapabilities": self.capabilities,
+                    "browserCapabilities": {
+                        **self.capabilities,
+                        "phase": "search" if "?q=asterinas" in url else "home",
+                    },
                     "dom": {key: key.startswith("fixture") for key in web._DOM_FIELDS},
                 }
                 if script == web._SNAPSHOT_SCRIPT:
@@ -884,7 +899,7 @@ class DailyUseAdapterTests(unittest.TestCase):
                 with mock.patch.object(
                     web,
                     "_wait_for_probe",
-                    side_effect=lambda client, validator, deadline: (
+                    side_effect=lambda client, validator, deadline, **kwargs: (
                         web._probe(client),
                         validator(web._probe(client)),
                     ),
@@ -902,7 +917,7 @@ class DailyUseAdapterTests(unittest.TestCase):
             with mock.patch.object(
                 web,
                 "_wait_for_probe",
-                side_effect=lambda client, validator, deadline: (
+                side_effect=lambda client, validator, deadline, **kwargs: (
                     web._probe(client),
                     validator(web._probe(client)),
                 ),
@@ -997,6 +1012,135 @@ class DailyUseAdapterTests(unittest.TestCase):
             json.loads(capture.artifact)["navigation_snapshot"]["fetchStart"], -12
         )
 
+    def test_navigation_verdict_requires_fixture_form_submission_on_both_hosts(self):
+        for host in ("10.0.2.2", "10.100.19.216"):
+            url = f"http://{host}:17894/browser-quality/index.html"
+            result = self.operations().local_timing(self.request(fixture_index_url=url))
+            self.assertIn(url, self.client.form_submissions)
+            evidence = json.loads(result.artifact)["form_navigation"]
+            self.assertEqual(evidence["snapshot"]["url"], url + "?q=asterinas")
+            self.assertEqual(result.function_group["state"], "pass")
+
+    def test_broken_form_submission_or_destination_cannot_pass_navigation(self):
+        from tools.riscv.debian.rootfs import browser_perf_capture as perf
+
+        for failure in ("submit", "destination"):
+            self.client.form_result = (
+                "missing-controls"
+                if failure == "submit"
+                else "fixture-search-scheduled"
+            )
+            self.client.form_destination = (
+                "https://example.invalid/" if failure == "destination" else None
+            )
+            with (
+                mock.patch.object(
+                    web,
+                    "_wait_for_probe",
+                    side_effect=lambda client, validator, deadline, **kwargs: (
+                        web._probe(client),
+                        validator(web._probe(client)),
+                    ),
+                ),
+                mock.patch.object(
+                    perf, "capture_local", wraps=perf.capture_local
+                ) as capture,
+            ):
+                with self.assertRaises((web.GateError, DailyUseGateError)):
+                    self.operations().local_timing(self.request())
+            capture.assert_not_called()
+
+    def test_cli_real_adapters_emit_only_the_terminal_verdict(self):
+        def sample(request):
+            start = time.monotonic_ns()
+            request.ready.set()
+            request.stop.wait(2)
+            return SamplerCapture(b"sample", start, time.monotonic_ns())
+
+        self.timeline = f"A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC guest_monotonic_ns={time.monotonic_ns() - 500_000_000} firefox_pid=101\n"
+        for fail in (False, True):
+            if self.download.exists():
+                self.download.unlink()
+            self.client = AdapterMarionette(self.download)
+            self.client.foreign_resource = fail
+            with tempfile.TemporaryDirectory() as directory:
+                operations = replace(
+                    self.operations(),
+                    identity_reader=lambda pids: (1000, 2000),
+                    system_sampler=sample,
+                    thread_sampler=sample,
+                )
+                with (
+                    mock.patch.object(
+                        gate, "default_operations", return_value=operations
+                    ),
+                    mock.patch.object(gate, "_connect", return_value=self.client),
+                    mock.patch.object(gate.secrets, "token_hex", return_value=RUN_ID),
+                    mock.patch("sys.stdout", new_callable=io.StringIO) as out,
+                    mock.patch("sys.stderr", new_callable=io.StringIO) as err,
+                ):
+                    code = gate.main(
+                        [
+                            "--firefox-pid",
+                            "101",
+                            "--xorg-pid",
+                            "202",
+                            "--fixture-index-url",
+                            BASE,
+                            "--evidence-dir",
+                            directory,
+                        ]
+                    )
+                self.assertEqual(code, int(fail))
+                self.assertEqual(
+                    out.getvalue(),
+                    ""
+                    if fail
+                    else f"ASTERINAS_BROWSER_DAILY_USE_PASS functions=7/7 slow=0 evidence_dir={directory}\n",
+                )
+                self.assertEqual(
+                    err.getvalue(),
+                    "ASTERINAS_BROWSER_DAILY_USE_FAIL reason=phase-value-invalid\n"
+                    if fail
+                    else "",
+                )
+
+    def test_form_destination_requires_text_dom_and_complete_search_capabilities(self):
+        original_probe = web._probe
+
+        def observed_with(mutate):
+            def observed(client):
+                value = original_probe(client)
+                if value["url"].endswith("?q=asterinas"):
+                    mutate(value)
+                return value
+
+            return observed
+
+        mutations = (
+            lambda value: value.update(bodyText="Asterinas browser quality"),
+            lambda value: value.update(title="Asterinas Browser Quality"),
+            lambda value: value["dom"].update(fixtureQuery=False),
+            lambda value: value["dom"].update(fixtureImage=False),
+            lambda value: value["dom"].update(fixtureSecond=False),
+            lambda value: value["browserCapabilities"].update(state="running"),
+            lambda value: value["browserCapabilities"].update(phase="home"),
+        )
+        for mutation in mutations:
+            with (
+                mock.patch.object(web, "_probe", side_effect=observed_with(mutation)),
+                mock.patch.object(
+                    web,
+                    "_wait_for_probe",
+                    side_effect=lambda client, validator, deadline, **kwargs: (
+                        web._probe(client),
+                        validator(web._probe(client)),
+                    ),
+                ),
+            ):
+                with self.assertRaises(web.GateError):
+                    self.operations().local_timing(self.request())
+
     def test_unavailable_response_intervals_are_supported_unsupported_evidence(self):
         for response in (None, 0, -1):
             with (
@@ -1078,6 +1222,118 @@ class DailyUseAdapterTests(unittest.TestCase):
                 )
         self.assertEqual(self.client.handles, ["original"])
         self.assertEqual(self.client.selected, "original")
+
+    def test_context_recovers_late_socket_response_before_closing_second_tab(self):
+        from tools.riscv.debian.rootfs import browser_m5_marionette_gate as transport
+
+        for delayed_command in ("WebDriver:NewWindow", "WebDriver:Navigate"):
+            for partial_header in (False, True):
+                with self.subTest(
+                    command=delayed_command, partial_header=partial_header
+                ):
+                    browser = AdapterMarionette(self.download)
+                    local, peer = socket.socketpair()
+                    release = threading.Event()
+                    commands, errors = [], []
+
+                    def frame(value):
+                        payload = json.dumps(value).encode()
+                        return str(len(payload)).encode() + b":" + payload
+
+                    def server():
+                        try:
+                            peer.sendall(
+                                frame(
+                                    {
+                                        "applicationType": "gecko",
+                                        "marionetteProtocol": 3,
+                                    }
+                                )
+                            )
+                            while True:
+                                header = bytearray()
+                                while True:
+                                    byte = peer.recv(1)
+                                    if not byte:
+                                        return
+                                    if byte == b":":
+                                        break
+                                    header.extend(byte)
+                                payload = bytearray()
+                                while len(payload) < int(header):
+                                    chunk = peer.recv(int(header) - len(payload))
+                                    if not chunk:
+                                        return
+                                    payload.extend(chunk)
+                                kind, identifier, name, parameters = json.loads(payload)
+                                self.assertEqual(kind, 0)
+                                commands.append(name)
+                                value = browser.command(name, parameters)
+                                response = frame([1, identifier, None, value])
+                                if name == delayed_command:
+                                    cut = (
+                                        1
+                                        if partial_header
+                                        else response.index(b":") + 6
+                                    )
+                                    peer.sendall(response[:cut])
+                                    if not release.wait(2):
+                                        raise RuntimeError(
+                                            "recovery did not release the late response"
+                                        )
+                                    peer.sendall(response[cut:])
+                                else:
+                                    peer.sendall(response)
+                        except OSError:
+                            # The failing red case closes its unrecovered socket.
+                            if not release.is_set():
+                                errors.append("unexpected socket failure")
+                        except BaseException as error:
+                            errors.append(error)
+                        finally:
+                            peer.close()
+
+                    worker = threading.Thread(target=server, daemon=True)
+                    worker.start()
+                    with mock.patch.object(
+                        transport.socket, "create_connection", return_value=local
+                    ):
+                        client = transport.Marionette("127.0.0.1", 2828, 1)
+                    original_recover = getattr(
+                        client, "recover_timed_out_command", None
+                    )
+
+                    def recover(timeout):
+                        release.set()
+                        self.assertIsNotNone(original_recover)
+                        return original_recover(timeout)
+
+                    try:
+                        client.set_timeout(0.03)
+                        with (
+                            mock.patch.object(
+                                client,
+                                "recover_timed_out_command",
+                                side_effect=recover,
+                                create=True,
+                            ),
+                            self.assertRaises(TimeoutError),
+                        ):
+                            self.operations().context_switch(
+                                self.request(client=gate.ExistingSession(client))
+                            )
+                        self.assertEqual(browser.handles, ["original"])
+                        self.assertEqual(browser.selected, "original")
+                        self.assertEqual(commands.count(delayed_command), 1)
+                        self.assertNotIn("WebDriver:NewSession", commands)
+                        self.assertNotIn("WebDriver:DeleteSession", commands)
+                        self.assertIn("WebDriver:CloseWindow", commands)
+                    finally:
+                        release.set()
+                        client.close()
+                        worker.join(2)
+                    self.assertFalse(worker.is_alive())
+                    self.assertEqual(errors, [])
 
     def test_factory_runs_complete_workload_with_one_session_and_hashed_artifacts(self):
         from tools.riscv.debian.rootfs import browser_system_time as system
