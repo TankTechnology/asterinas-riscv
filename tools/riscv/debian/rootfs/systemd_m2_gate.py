@@ -86,7 +86,12 @@ class Operations(Protocol):
 
 def _reason(error: BaseException, fallback: str) -> str:
     candidate = getattr(error, "reason", None)
-    return candidate if isinstance(candidate, str) and candidate else fallback
+    if isinstance(candidate, str) and candidate:
+        return candidate
+    # Keep the exception identity in the gate reason: without it a plain
+    # TimeoutError or OSError collapses into a bare phase name, which makes
+    # post-mortem debugging of guest failures unnecessarily hard.
+    return f"{fallback}: {type(error).__name__}: {error}"
 
 
 def orchestrate_systemd_m2_gate(
