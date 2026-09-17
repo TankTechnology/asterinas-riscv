@@ -17,7 +17,9 @@ import time
 import unittest
 from unittest import mock
 
+from tools.riscv.debian.rootfs import browser_daily_use_gate as gate
 from tools.riscv.debian.rootfs.browser_daily_use_gate import (
+    ARTIFACT_NAMES,
     PHASES,
     DailyUseGateError,
     DailyUseOperations,
@@ -158,11 +160,12 @@ class BrowserDailyUseGateTests(unittest.TestCase):
         return run_daily_use_gate(**arguments)
 
     def checkpoint(self, reason):
-        self.assertFalse((self.evidence / "browser-daily-use-result.json").exists())
+        self.assert_no_canonical_captures()
         path = self.evidence / "browser-daily-use-checkpoint.json"
         value = json.loads(path.read_text())
         self.assertEqual(
-            set(value), {"schemaVersion", "runId", "completedPhases", "failure"}
+            set(value),
+            {"schemaVersion", "runId", "completedPhases", "functionGroups", "failure"},
         )
         self.assertEqual(value["schemaVersion"], 1)
         self.assertEqual(value["runId"], RUN_ID)
@@ -170,10 +173,20 @@ class BrowserDailyUseGateTests(unittest.TestCase):
             value["completedPhases"], list(PHASES[: len(value["completedPhases"])])
         )
         self.assertEqual(value["failure"], {"type": "daily-use-gate", "reason": reason})
+        self.assertEqual(
+            value["functionGroups"],
+            self.source["functionGroups"]
+            if "fixture" in value["completedPhases"]
+            else [],
+        )
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertTrue(self.client.closed)
         self.assertNotIn("WebDriver:DeleteSession", self.events)
         return value
+
+    def assert_no_canonical_captures(self):
+        for name in (*ARTIFACT_NAMES, gate.RESULT_NAME):
+            self.assertFalse(os.path.lexists(self.evidence / name), name)
 
     def test_success_preserves_one_session_and_order_and_publishes_hashed_artifacts(
         self,
@@ -331,6 +344,143 @@ class BrowserDailyUseGateTests(unittest.TestCase):
             with self.assertRaises(DailyUseGateError):
                 self.run_gate()
         self.checkpoint("phase-failed")
+
+    def test_later_component_publication_failure_retracts_earlier_components(self):
+        real_publish = gate._publish
+
+        def fail(source, destination):
+            if destination.name == ARTIFACT_NAMES[2]:
+                raise OSError("injected component publication failure")
+            real_publish(source, destination)
+
+        with mock.patch.object(gate, "_publish", side_effect=fail):
+            with self.assertRaisesRegex(DailyUseGateError, "phase-failed"):
+                self.run_gate()
+        self.checkpoint("phase-failed")
+
+    def test_checkpoint_persistence_failure_preserves_canonical_outward_error(self):
+        real_write = gate._write_private
+
+        def fail(path, payload):
+            if path.name in (gate.RESULT_NAME, gate.CHECKPOINT_NAME):
+                raise OSError("persistence unavailable")
+            real_write(path, payload)
+
+        with mock.patch.object(gate, "_write_private", side_effect=fail):
+            with self.assertRaisesRegex(DailyUseGateError, "^phase-failed$"):
+                self.run_gate()
+        self.assert_no_canonical_captures()
+        self.assertFalse((self.evidence / gate.CHECKPOINT_NAME).exists())
+
+    def test_checkpoint_link_failure_preserves_canonical_outward_error(self):
+        real_link = os.link
+
+        def fail(source, destination, **kwargs):
+            if Path(destination).name in (gate.RESULT_NAME, gate.CHECKPOINT_NAME):
+                raise OSError("publication unavailable")
+            real_link(source, destination, **kwargs)
+
+        with mock.patch("os.link", side_effect=fail):
+            with self.assertRaisesRegex(DailyUseGateError, "^phase-failed$"):
+                self.run_gate()
+        self.assert_no_canonical_captures()
+        self.assertFalse((self.evidence / gate.CHECKPOINT_NAME).exists())
+
+    def test_racing_publication_destination_is_not_overwritten(self):
+        original_open = os.open
+        target = self.evidence / ARTIFACT_NAMES[0]
+        raced = False
+
+        def race(path, flags, *args, **kwargs):
+            nonlocal raced
+            if Path(path) == self.evidence and flags & os.O_DIRECTORY and not raced:
+                target.write_bytes(b"racing evidence")
+                raced = True
+            return original_open(path, flags, *args, **kwargs)
+
+        with mock.patch("os.open", side_effect=race):
+            with self.assertRaisesRegex(DailyUseGateError, "^evidence-exists$"):
+                self.run_gate()
+        self.assertEqual(target.read_bytes(), b"racing evidence")
+        for name in (*ARTIFACT_NAMES[1:], gate.RESULT_NAME):
+            self.assertFalse((self.evidence / name).exists())
+
+    def test_unsafe_directory_retains_exact_failure_reason(self):
+        self.evidence.chmod(0o755)
+        try:
+            with self.assertRaisesRegex(
+                DailyUseGateError, "^evidence-directory-invalid$"
+            ):
+                self.run_gate()
+        finally:
+            self.evidence.chmod(0o700)
+
+    def test_browser_timeout_exception_uses_canonical_phase_timeout(self):
+        def timeout(request):
+            raise TimeoutError("private timeout detail")
+
+        self.operations = replace(self.operations, local_timing=timeout)
+        with self.assertRaisesRegex(DailyUseGateError, "^phase-timeout$"):
+            self.run_gate()
+        self.checkpoint("phase-timeout")
+
+    def test_injected_clock_rejects_late_phase_return_without_sleeping(self):
+        now = [1.0]
+        clock = gate.DailyUseClock(lambda: now[0], lambda: int(now[0] * 1_000_000_000))
+
+        def late(request):
+            now[0] = request.deadline + 1
+            return self.fixture(request)
+
+        self.operations = replace(self.operations, clock=clock, fixture=late)
+        with self.assertRaisesRegex(DailyUseGateError, "^phase-timeout$"):
+            self.run_gate()
+        self.checkpoint("phase-timeout")
+
+    def test_injected_clock_controls_sampler_interval_coverage(self):
+        clock = gate.DailyUseClock(lambda: 2.0, lambda: 2_000_000_000)
+
+        def sample(name, request):
+            self.ready[name].set()
+            request.ready.set()
+            request.stop.wait(2)
+            return SamplerCapture(name.encode(), 1_000_000_000, 2_000_000_000)
+
+        self.operations = replace(
+            self.operations,
+            clock=clock,
+            system_sampler=lambda request: sample("system", request),
+            thread_sampler=lambda request: sample("thread", request),
+        )
+        self.assertEqual(self.run_gate()["state"], "pass")
+
+    def test_checkpoint_retains_detached_functional_states_and_reasons(self):
+        expected = complete_result()["functionGroups"]
+        expected[0] = {
+            "name": "document",
+            "state": "fail",
+            "reason": "fixture-capability-failed",
+        }
+        self.source["functionGroups"] = [dict(group) for group in expected]
+
+        def fail(request):
+            self.source["functionGroups"][0]["reason"] = "unbounded " * 1000
+            raise RuntimeError("later phase")
+
+        self.operations = replace(self.operations, local_timing=fail)
+        with self.assertRaises(DailyUseGateError):
+            self.run_gate()
+        checkpoint = json.loads((self.evidence / gate.CHECKPOINT_NAME).read_text())
+        self.assertEqual(checkpoint["functionGroups"], expected)
+        self.assertIn("fixture", checkpoint["completedPhases"])
+
+    def test_checkpoint_excludes_invalid_functional_values(self):
+        self.source["functionGroups"][0]["extra"] = "private"
+        with self.assertRaisesRegex(DailyUseGateError, "^contract-invalid$"):
+            self.run_gate()
+        checkpoint = self.checkpoint("contract-invalid")
+        self.assertEqual(checkpoint["functionGroups"], [])
+        self.assertNotIn("fixture", checkpoint["completedPhases"])
 
     def test_transport_close_failure_blocks_publication(self):
         original_close = self.client.close
