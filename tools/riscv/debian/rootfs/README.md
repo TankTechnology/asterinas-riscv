@@ -215,6 +215,8 @@ the executable name is not a stable Firefox identity and `pidof` may return
 zero or multiple processes. The exclusive JSON artifact has mode `0600` and reports guest-monotonic
 wall intervals, per-process user/kernel CPU ticks, global and per-core CPU
 tick deltas, per-core busy fractions, context-switch deltas, and runnable counts.
+When procfs supplies them, it also records per-process minor/major-fault deltas,
+RSS after each interval, and system `MemAvailable` before and after the interval.
 CPU time is *not* input latency or
 HDMI scanout latency. This Asterinas image does not yet expose reliable
 per-process I/O or physical scanout timestamps; the sampler marks them
@@ -222,6 +224,43 @@ unsupported instead of filling them with zeros. Thread mode obtains runnable
 wait from the Linux-compatible `/proc/<pid>/task/<tid>/schedstat` interface.
 Keep syscall profiling disabled for this baseline, since detailed logs perturb
 timing.
+
+#### Deterministic composite Firefox workload
+
+Use the local composite workload when the lightweight interaction page is too
+small to attribute a repeated cost. It keeps one Firefox session alive and runs
+seven ordered phases: warm-up, DOM/layout interaction, canvas and image work,
+bounded concurrent resources, local navigation and history, up to three local
+browsing contexts, and cleanup. The resource phase performs a `no-store` pass,
+then fills and reuses cache-eligible URLs. It never accepts an arbitrary target
+URL from the page.
+
+The reviewed modes are `smoke` (scale 1, at most 30 seconds), `profile` (scale
+4, at most 120 seconds), and `stress` (scale 12, at most 300 seconds). `smoke`
+is the QEMU/regression mode; use repeated `profile` runs for normal physical
+attribution. `stress` is for bounded tail and stability investigation, not the
+default benchmark.
+
+Create a new empty evidence directory for every run, then invoke the Stage1
+copy of the collector with the exact PIDs established by graphical readiness:
+
+```bash
+install -d -m 0700 /run/asterinas-browser-composite-smoke
+python3 /run/asterinas-tools/browser_composite_capture.py \
+  --firefox-pid "$FIREFOX_PID" --xorg-pid "$XORG_PID" \
+  --mode smoke --timeout-seconds 30 \
+  --fixture-index-url http://10.0.2.2:17894/browser-quality/index.html \
+  --evidence-dir /run/asterinas-browser-composite-smoke
+```
+
+The capture writes private, exclusive phase/checkpoint, process, and thread
+artifacts without deleting the Marionette session or restarting Firefox. A
+checkpoint survives a later phase failure. Browser phase/rAF timings use the
+browser `performance.now()` clock; procfs CPU, faults, RSS and schedstat use the
+guest monotonic sampling clock; human USB-to-HDMI latency is a third quantity
+and is not inferred from either. An unavailable procfs counter is reported as
+unsupported, never as zero. Public Baidu browsing remains an end-to-end
+acceptance check and is deliberately excluded from bottleneck attribution.
 
 Three physical Megrez workload samples on the kernel identified by SHA-256
 `5444c9eb40e10d26278affb00f69bb8c212ce94091204cf94a6209899d2f588c`
