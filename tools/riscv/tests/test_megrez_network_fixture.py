@@ -266,9 +266,11 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
             b"for (let repetition = 0; repetition < repetitions; repetition++)",
             b"frame.contentWindow.history.back()",
             b"frame.contentWindow.history.forward()",
+            b"frame.contentWindow.history.pushState",
             b"frame.contentWindow.location.pathname === expectedPath",
             b"frame.contentWindow.setTimeout",
             b"contexts.children.length !== 0",
+            b"phase-error",
         ):
             self.assertIn(marker, BROWSER_WORKLOAD)
 
