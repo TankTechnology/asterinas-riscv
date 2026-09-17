@@ -10,6 +10,7 @@ import http.client
 import shutil
 import socket
 import subprocess
+import threading
 import unittest
 
 from tools.riscv.megrez_network_fixture import (
@@ -273,6 +274,33 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
             b"phase-error",
         ):
             self.assertIn(marker, BROWSER_WORKLOAD)
+
+    def test_summary_waits_for_inflight_workload_request(self) -> None:
+        server = FixtureServer(FixtureConfig("127.0.0.1", 0))
+        start_ns, active_at_start = server._begin_workload_request()
+        summary: dict[str, object] = {}
+        summary_done = threading.Event()
+
+        def read_summary() -> None:
+            summary.update(server.summary())
+            summary_done.set()
+
+        reader = threading.Thread(target=read_summary)
+        reader.start()
+        try:
+            self.assertFalse(summary_done.wait(0.05))
+        finally:
+            server._finish_workload_request(
+                "mode=smoke&phase=resource&sequence=0&pass=cold",
+                200,
+                WORKLOAD_RESOURCE_SIZE,
+                start_ns,
+                active_at_start,
+            )
+            reader.join(timeout=1)
+
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(summary["workload_request_count"], 1)
 
     @unittest.skipUnless(shutil.which("node"), "Node is needed for fixture JS syntax")
     def test_composite_workload_javascript_is_syntactically_valid(self) -> None:
