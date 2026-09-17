@@ -82,7 +82,13 @@ _RAF_SUMMARY_FIELDS = frozenset({"p50Ms", "p95Ms"})
 _NAVIGATION_METRICS_FIELDS = frozenset({"localCommand", "browserNavigation"})
 _LOCAL_COMMAND_FIELDS = frozenset({"clockDomain", "durationMs"})
 _BROWSER_NAVIGATION_FIELDS = frozenset(
-    {"clockDomain", "fetchStartMs", "responseToDomMs", "responseToLoadMs"}
+    {
+        "clockDomain",
+        "fetchStartMs",
+        "fetchStartValid",
+        "responseToDomMs",
+        "responseToLoadMs",
+    }
 )
 _CONTEXT_METRICS_FIELDS = frozenset(
     {
@@ -181,7 +187,7 @@ def _normalize_raf_summary(value: object, label: str) -> dict[str, float]:
     return {"p50Ms": p50, "p95Ms": p95}
 
 
-def _normalize_navigation_metrics(value: object) -> tuple[dict[str, object], bool]:
+def _normalize_navigation_metrics(value: object) -> dict[str, object]:
     metrics = _is_exact_dict(value, _NAVIGATION_METRICS_FIELDS, "navigation metrics")
     local = _is_exact_dict(metrics["localCommand"], _LOCAL_COMMAND_FIELDS, "local command")
     if local["clockDomain"] != "guest-monotonic":
@@ -196,45 +202,34 @@ def _normalize_navigation_metrics(value: object) -> tuple[dict[str, object], boo
     if browser["clockDomain"] != "browser-navigation":
         raise DailyUseContractError("browser navigation clock domain is invalid")
     fetch_start = _signed_time_ms(browser["fetchStartMs"], "navigation fetch start")
+    fetch_start_valid = browser["fetchStartValid"]
+    if type(fetch_start_valid) is not bool or fetch_start_valid != (fetch_start >= 0):
+        raise DailyUseContractError("navigation fetch-start validity is invalid")
     response_to_dom = browser["responseToDomMs"]
     response_to_load = browser["responseToLoadMs"]
-    is_invalid = fetch_start < 0
-    if is_invalid:
-        if response_to_dom is not None or response_to_load is not None:
-            raise DailyUseContractError("invalid navigation timing has intervals")
-        normalized_browser: dict[str, object] = {
+    normalized_response_to_dom = _duration_ms(
+        response_to_dom,
+        "response to DOM duration",
+    )
+    normalized_response_to_load = _duration_ms(
+        response_to_load,
+        "response to load duration",
+    )
+    if normalized_response_to_load < normalized_response_to_dom:
+        raise DailyUseContractError("navigation response intervals are reordered")
+    return {
+        "localCommand": {
+            "clockDomain": "guest-monotonic",
+            "durationMs": local_duration,
+        },
+        "browserNavigation": {
             "clockDomain": "browser-navigation",
             "fetchStartMs": fetch_start,
-            "responseToDomMs": None,
-            "responseToLoadMs": None,
-        }
-    else:
-        normalized_response_to_dom = _duration_ms(
-            response_to_dom,
-            "response to DOM duration",
-        )
-        normalized_response_to_load = _duration_ms(
-            response_to_load,
-            "response to load duration",
-        )
-        if normalized_response_to_load < normalized_response_to_dom:
-            raise DailyUseContractError("navigation response intervals are reordered")
-        normalized_browser = {
-            "clockDomain": "browser-navigation",
-            "fetchStartMs": fetch_start,
+            "fetchStartValid": fetch_start_valid,
             "responseToDomMs": normalized_response_to_dom,
             "responseToLoadMs": normalized_response_to_load,
-        }
-    return (
-        {
-            "localCommand": {
-                "clockDomain": "guest-monotonic",
-                "durationMs": local_duration,
-            },
-            "browserNavigation": normalized_browser,
         },
-        is_invalid,
-    )
+    }
 
 
 def _reason(value: object, label: str, allowed: frozenset[str]) -> str:
@@ -396,19 +391,9 @@ def _normalize_performance(
                 "performance reason",
                 _PERFORMANCE_REASONS,
             )
-            if (
-                expected_name == "navigation"
-                and normalized_reason == "navigation-timing-invalid"
-            ):
-                normalized_metrics, is_invalid_navigation = _normalize_navigation_metrics(
-                    metrics
-                )
-                if not is_invalid_navigation:
-                    raise DailyUseContractError("navigation timing invalid reason disagrees")
-            else:
-                if type(metrics) is not dict or metrics:
-                    raise DailyUseContractError("unsupported performance has metrics")
-                normalized_metrics = {}
+            if type(metrics) is not dict or metrics:
+                raise DailyUseContractError("unsupported performance has metrics")
+            normalized_metrics = {}
         else:
             if reason is not None:
                 raise DailyUseContractError("measured performance has a reason")
@@ -420,11 +405,7 @@ def _normalize_performance(
             elif expected_name == "scroll":
                 normalized_metrics, is_slow = _normalize_scroll_metrics(metrics)
             elif expected_name == "navigation":
-                normalized_metrics, is_invalid_navigation = _normalize_navigation_metrics(
-                    metrics
-                )
-                if is_invalid_navigation:
-                    raise DailyUseContractError("invalid navigation timing is unsupported")
+                normalized_metrics = _normalize_navigation_metrics(metrics)
                 browser = normalized_metrics["browserNavigation"]
                 assert isinstance(browser, dict)
                 response_to_dom = browser["responseToDomMs"]
