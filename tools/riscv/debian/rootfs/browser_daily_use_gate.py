@@ -6,7 +6,9 @@
 Adapters return bytes and contract values; only this module publishes evidence.
 Sampler adapters must set ready after their first sample, keep sampling until
 stop, and return their final sample's monotonic timestamp. Browser adapters must
-honor the request deadline and use the supplied existing-session transport.
+bound their own I/O, honor the request deadline, and use the supplied
+existing-session transport. Synchronous Python callbacks cannot be preempted;
+the orchestrator checks their deadline before invocation and after return.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ if Path("/run/asterinas-tools/browser_daily_use_contract.py").is_file():
     from browser_daily_use_contract import (  # type: ignore[import-not-found]
         MAX_ARTIFACT_BYTES,
         DailyUseContractError,
+        _normalize_function_groups,
         build_daily_use_result,
     )
     from browser_perf_capture import (  # type: ignore[import-not-found]
@@ -40,6 +43,7 @@ else:
     from tools.riscv.debian.rootfs.browser_daily_use_contract import (
         MAX_ARTIFACT_BYTES,
         DailyUseContractError,
+        _normalize_function_groups,
         build_daily_use_result,
     )
     from tools.riscv.debian.rootfs.browser_perf_capture import (
@@ -123,6 +127,14 @@ class ExistingSession:
 
 
 @dataclass(frozen=True)
+class DailyUseClock:
+    """The shared guest monotonic clock for deadlines and sample coverage."""
+
+    monotonic: Callable[[], float] = time.monotonic
+    monotonic_ns: Callable[[], int] = time.monotonic_ns
+
+
+@dataclass(frozen=True)
 class CaptureRequest:
     client: ExistingSession
     original_window: str
@@ -131,6 +143,7 @@ class CaptureRequest:
     firefox_pid: int
     xorg_pid: int
     deadline: float
+    clock: DailyUseClock
 
 
 @dataclass(frozen=True)
@@ -164,6 +177,7 @@ class SamplerRequest:
     ready: threading.Event
     stop: threading.Event
     deadline: float
+    clock: DailyUseClock
 
 
 @dataclass(frozen=True)
@@ -182,6 +196,7 @@ class DailyUseOperations:
     system_sampler: Callable[[SamplerRequest], SamplerCapture]
     thread_sampler: Callable[[SamplerRequest], SamplerCapture]
     identity_reader: Callable[[tuple[int, int]], tuple[int, int]] = _process_starttimes
+    clock: DailyUseClock = field(default_factory=DailyUseClock)
 
 
 def run_daily_use_gate(
@@ -203,11 +218,14 @@ def run_daily_use_gate(
     The private staging directory is retained as a run reservation on every exit.
     """
     completed: list[str] = []
+    function_groups: list[dict[str, object]] = []
+    published: list[Path] = []
     staging: Path | None = None
     original: str | None = None
     samplers: list[_Sampler] = []
     cleaned = False
     transport_closed = False
+    clock = operations.clock
     try:
         fixture_url = _validate_inputs(
             firefox_pid,
@@ -250,7 +268,7 @@ def run_daily_use_gate(
         completed.append("session")
 
         # The upper bound includes four browser phases and both handshakes.
-        sampler_deadline = time.monotonic() + 6 * timeout_seconds
+        sampler_deadline = clock.monotonic() + 6 * timeout_seconds
         for name, operation in (
             ("system", operations.system_sampler),
             ("thread", operations.thread_sampler),
@@ -259,14 +277,19 @@ def run_daily_use_gate(
                 name,
                 operation,
                 SamplerRequest(
-                    pids, mode, threading.Event(), threading.Event(), sampler_deadline
+                    pids,
+                    mode,
+                    threading.Event(),
+                    threading.Event(),
+                    sampler_deadline,
+                    clock,
                 ),
             )
             samplers.append(sampler)
             sampler.start()
-        _wait_ready(samplers, timeout_seconds)
+        _wait_ready(samplers, timeout_seconds, clock)
         completed.append("samplers-ready")
-        workload_start_ns = time.monotonic_ns()
+        workload_start_ns = clock.monotonic_ns()
 
         captures = []
         for phase, operation, expected in (
@@ -284,19 +307,24 @@ def run_daily_use_gate(
                 mode,
                 firefox_pid,
                 xorg_pid,
-                time.monotonic() + timeout_seconds,
+                clock.monotonic() + timeout_seconds,
+                clock,
             )
+            if clock.monotonic() > request.deadline:
+                raise DailyUseGateError("phase-timeout")
             capture = operation(request)
-            if time.monotonic() > request.deadline:
+            if clock.monotonic() > request.deadline:
                 raise DailyUseGateError("phase-timeout")
             _check_running(samplers)
             if type(capture) is not expected:
                 raise DailyUseGateError("phase-value-invalid")
             _artifact_bytes(capture.artifact)
+            if type(capture) is FixtureCapture:
+                function_groups = _normalize_function_groups(capture.function_groups)
             captures.append(capture)
             completed.append(phase)
-        workload_end_ns = time.monotonic_ns()
-        _stop_samplers(samplers, timeout_seconds)
+        workload_end_ns = clock.monotonic_ns()
+        _stop_samplers(samplers, timeout_seconds, clock)
         completed.append("samplers-stopped")
         _cleanup(client, original, timeout_seconds)
         cleaned = True
@@ -315,7 +343,7 @@ def run_daily_use_gate(
                 type(sample.first_sample_ns) is not int
                 or type(sample.last_sample_ns) is not int
                 or not 0 < sample.first_sample_ns <= workload_start_ns
-                or not workload_end_ns <= sample.last_sample_ns <= time.monotonic_ns()
+                or not workload_end_ns <= sample.last_sample_ns <= clock.monotonic_ns()
             ):
                 raise DailyUseGateError("sampler-coverage-invalid")
         completed.append("coverage")
@@ -336,7 +364,7 @@ def run_daily_use_gate(
             run_id=run_id,
             firefox_identity={"initial": initial[0], "final": final[0]},
             xorg_identity={"initial": initial[1], "final": final[1]},
-            function_groups=fixture.function_groups,
+            function_groups=function_groups,
             performance=timing.performance + [context.performance],
             artifacts=artifacts,
             attribution={
@@ -351,8 +379,10 @@ def run_daily_use_gate(
         transport_closed = True
         for name in ARTIFACT_NAMES:
             _publish(staging / name, evidence_dir / name)
+            published.append(evidence_dir / name)
         _write_private(staging / RESULT_NAME, _json_bytes(result))
         _publish(staging / RESULT_NAME, evidence_dir / RESULT_NAME)
+        published.append(evidence_dir / RESULT_NAME)
         return result
     except BaseException as error:
         reason = (
@@ -360,10 +390,12 @@ def run_daily_use_gate(
             if type(error) is DailyUseGateError and str(error) in _FAILURE_REASONS
             else "contract-invalid"
             if isinstance(error, DailyUseContractError)
+            else "phase-timeout"
+            if isinstance(error, TimeoutError)
             else "phase-failed"
         )
         try:
-            _stop_samplers(samplers, timeout_seconds)
+            _stop_samplers(samplers, timeout_seconds, clock)
         except Exception:
             # Keep the triggering failure; an incomplete sampler cannot publish.
             pass
@@ -379,14 +411,27 @@ def run_daily_use_gate(
             except Exception:
                 reason = "cleanup-failed"
         if staging is not None:
-            checkpoint = {
-                "schemaVersion": 1,
-                "runId": run_id,
-                "completedPhases": completed,
-                "failure": {"type": "daily-use-gate", "reason": reason},
-            }
-            _write_private(staging / CHECKPOINT_NAME, _json_bytes(checkpoint))
-            _publish(staging / CHECKPOINT_NAME, evidence_dir / CHECKPOINT_NAME)
+            for destination in reversed(published):
+                try:
+                    destination.unlink()
+                except OSError:
+                    # Persistence failure must not hide the canonical trigger.
+                    pass
+            try:
+                checkpoint = {
+                    "schemaVersion": 1,
+                    "runId": run_id,
+                    "completedPhases": completed,
+                    "functionGroups": _normalize_function_groups(function_groups)
+                    if "fixture" in completed
+                    else [],
+                    "failure": {"type": "daily-use-gate", "reason": reason},
+                }
+                _write_private(staging / CHECKPOINT_NAME, _json_bytes(checkpoint))
+                _publish(staging / CHECKPOINT_NAME, evidence_dir / CHECKPOINT_NAME)
+            except (OSError, DailyUseGateError, DailyUseContractError):
+                # No checkpoint is promised if evidence persistence is broken.
+                pass
         raise DailyUseGateError(reason) from error
 
 
@@ -419,6 +464,11 @@ def _validate_inputs(firefox_pid, xorg_pid, evidence_dir, mode, timeout, run_id,
             or status.st_uid != os.geteuid()
         ):
             raise DailyUseGateError("evidence-directory-invalid")
+    except DailyUseGateError:
+        raise
+    except OSError as error:
+        raise DailyUseGateError("evidence-directory-invalid") from error
+    try:
         return resolve_fixture_index_url(url)
     except (OSError, ValueError) as error:
         raise DailyUseGateError("parameters-invalid") from error
@@ -527,27 +577,27 @@ def _check_running(samplers):
         raise DailyUseGateError("sampler-failed")
 
 
-def _wait_ready(samplers, timeout):
-    deadline = time.monotonic() + timeout
+def _wait_ready(samplers, timeout, clock):
+    deadline = clock.monotonic() + timeout
     while True:
         _check_running(samplers)
         if all(sampler.request.ready.is_set() for sampler in samplers):
             return
-        remaining = deadline - time.monotonic()
+        remaining = deadline - clock.monotonic()
         if remaining <= 0:
             raise DailyUseGateError("sampler-ready-timeout")
         for sampler in samplers:
             sampler.request.ready.wait(min(0.005, remaining))
 
 
-def _stop_samplers(samplers, timeout):
+def _stop_samplers(samplers, timeout, clock):
     if not samplers:
         return
     for sampler in samplers:
         sampler.request.stop.set()
-    deadline = time.monotonic() + timeout
+    deadline = clock.monotonic() + timeout
     for sampler in samplers:
-        if not sampler.done.wait(max(0, deadline - time.monotonic())):
+        if not sampler.done.wait(max(0, deadline - clock.monotonic())):
             raise DailyUseGateError("sampler-stop-timeout")
     if any(sampler.failed for sampler in samplers):
         raise DailyUseGateError("sampler-failed")
@@ -572,16 +622,17 @@ def _write_private(path, payload):
 
 
 def _publish(source, destination):
-    if os.path.lexists(destination):
-        raise DailyUseGateError("evidence-exists")
     fd = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
-        os.replace(source, destination)
+        try:
+            os.link(source, destination, follow_symlinks=False)
+        except FileExistsError as error:
+            raise DailyUseGateError("evidence-exists") from error
         try:
             os.fsync(fd)
+            source.unlink()
         except OSError:
-            # The rename is ours; retract it if directory durability failed.
-            # Never leave a success result beside a failure checkpoint.
+            # Retract only the link we created, never a racing existing file.
             destination.unlink()
             raise
     finally:
