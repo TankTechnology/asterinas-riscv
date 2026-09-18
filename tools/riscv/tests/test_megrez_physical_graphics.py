@@ -1292,6 +1292,28 @@ class PhysicalCommandTests(unittest.TestCase):
             ).encode(),
         )
 
+    def test_run_daily_use_profile_uses_guest_lifetime_as_outer_deadline(
+        self,
+    ) -> None:
+        gate = load_gate(self)
+        operations, serial = self._daily_use_operations(
+            gate,
+            (
+                "__ASTERINAS_PHYSICAL_DAILY_USE__ "
+                f"experiment_id={self.DAILY_USE_ID} outcome=pass "
+                "gate_status=0 upload_status=0",
+            ),
+        )
+        operations._guest_deadline = 2000.0
+
+        with (
+            mock.patch.object(gate.time, "monotonic", return_value=1000.0),
+            mock.patch.object(operations, "_sync_serial_log"),
+        ):
+            operations.run_daily_use_profile(self.DAILY_USE_ID, 120.0, 4242)
+
+        self.assertEqual(serial.send.call_args.args[1], 2000.0)
+
     def test_run_daily_use_profile_rejects_open_or_duplicate_terminal(self) -> None:
         gate = load_gate(self)
         valid = (
