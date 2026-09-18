@@ -11,9 +11,12 @@ import unittest
 
 from tools.riscv.debian.rootfs.browser_daily_use_contract import (
     FUNCTION_GROUPS,
+    OPTIONAL_FUNCTION_GROUPS,
     PERFORMANCE_CATEGORIES,
+    REQUIRED_FUNCTION_GROUPS,
     DailyUseContractError,
     build_daily_use_result,
+    function_groups_qualify,
     validate_daily_use_result,
 )
 
@@ -141,7 +144,131 @@ def complete_result() -> dict[str, object]:
     }
 
 
+def set_group(
+    result: dict[str, object], name: str, state: str, reason: str | None
+) -> None:
+    groups = result["functionGroups"]
+    assert isinstance(groups, list)
+    group = next(item for item in groups if item["name"] == name)
+    group.update(state=state, reason=reason)
+
+
 class BrowserDailyUseContractTests(unittest.TestCase):
+    def test_shared_function_group_qualification_is_closed_and_role_aware(
+        self,
+    ) -> None:
+        result = complete_result()
+        groups = result["functionGroups"]
+
+        self.assertEqual(
+            REQUIRED_FUNCTION_GROUPS,
+            ("document", "storage", "navigation", "download", "contexts"),
+        )
+        self.assertEqual(
+            OPTIONAL_FUNCTION_GROUPS, ("execution", "rendering-media")
+        )
+        self.assertTrue(function_groups_qualify(groups))
+
+        for name in OPTIONAL_FUNCTION_GROUPS:
+            optional = copy.deepcopy(groups)
+            group = next(item for item in optional if item["name"] == name)
+            group.update(
+                state="unsupported", reason="fixture-capability-unavailable"
+            )
+            with self.subTest(optional=name):
+                self.assertTrue(function_groups_qualify(optional))
+
+        both_optional = copy.deepcopy(groups)
+        for group in both_optional:
+            if group["name"] in OPTIONAL_FUNCTION_GROUPS:
+                group.update(
+                    state="unsupported", reason="fixture-capability-unavailable"
+                )
+        self.assertTrue(function_groups_qualify(both_optional))
+
+        for name in OPTIONAL_FUNCTION_GROUPS:
+            wrong_reason = copy.deepcopy(groups)
+            group = next(item for item in wrong_reason if item["name"] == name)
+            group.update(state="unsupported", reason="browser-session-unavailable")
+            with self.subTest(optional_wrong_reason=name), self.assertRaises(
+                DailyUseContractError
+            ):
+                function_groups_qualify(wrong_reason)
+
+        for name in FUNCTION_GROUPS:
+            failed = copy.deepcopy(groups)
+            group = next(item for item in failed if item["name"] == name)
+            group.update(state="fail", reason="fixture-capability-failed")
+            with self.subTest(failed=name):
+                self.assertFalse(function_groups_qualify(failed))
+
+        for name in REQUIRED_FUNCTION_GROUPS:
+            unsupported = copy.deepcopy(groups)
+            group = next(item for item in unsupported if item["name"] == name)
+            group.update(
+                state="unsupported", reason="fixture-capability-unavailable"
+            )
+            with self.subTest(required_unsupported=name):
+                self.assertFalse(function_groups_qualify(unsupported))
+
+        malformed_values = (
+            groups[:-1],
+            [*groups, copy.deepcopy(groups[-1])],
+            [groups[1], groups[0], *groups[2:]],
+            [{**groups[0], "extra": True}, *groups[1:]],
+        )
+        for malformed in malformed_values:
+            with self.subTest(malformed=malformed), self.assertRaises(
+                DailyUseContractError
+            ):
+                function_groups_qualify(malformed)
+
+    def test_optional_unsupported_requires_exact_bidirectional_limitation(
+        self,
+    ) -> None:
+        for names in (
+            ("execution",),
+            ("rendering-media",),
+            OPTIONAL_FUNCTION_GROUPS,
+        ):
+            result = complete_result()
+            for name in names:
+                set_group(
+                    result,
+                    name,
+                    "unsupported",
+                    "fixture-capability-unavailable",
+                )
+            result["limitations"]["items"].append(
+                "fixture-capabilities-incomplete"
+            )
+
+            with self.subTest(names=names):
+                normalized = validate_daily_use_result(result)
+                self.assertEqual(normalized["state"], "pass")
+                self.assertTrue(
+                    function_groups_qualify(normalized["functionGroups"])
+                )
+
+            missing = copy.deepcopy(result)
+            missing["limitations"]["items"].remove(
+                "fixture-capabilities-incomplete"
+            )
+            with self.subTest(names=names, limitation="missing"), self.assertRaises(
+                DailyUseContractError
+            ):
+                validate_daily_use_result(missing)
+
+        stale = complete_result()
+        stale["limitations"]["items"].append("fixture-capabilities-incomplete")
+        with self.assertRaises(DailyUseContractError):
+            validate_daily_use_result(stale)
+
+        failed = complete_result()
+        set_group(failed, "storage", "fail", "fixture-capability-failed")
+        failed["state"] = "fail"
+        self.assertEqual(validate_daily_use_result(failed)["state"], "fail")
+
     def test_accepts_complete_ordered_result_and_returns_a_detached_copy(self) -> None:
         result = complete_result()
 
@@ -474,6 +601,26 @@ class BrowserDailyUseContractTests(unittest.TestCase):
         self.assertEqual(built, validate_daily_use_result(built))
         self.assertEqual(built["state"], "pass")
         self.assertEqual(built["slowCount"], 0)
+
+        source = complete_result()
+        set_group(
+            source,
+            "execution",
+            "unsupported",
+            "fixture-capability-unavailable",
+        )
+        source["limitations"]["items"].append("fixture-capabilities-incomplete")
+        built = build_daily_use_result(
+            run_id=RUN_ID,
+            firefox_identity=copy.deepcopy(source["identities"]["firefox"]),
+            xorg_identity=copy.deepcopy(source["identities"]["xorg"]),
+            function_groups=copy.deepcopy(source["functionGroups"]),
+            performance=copy.deepcopy(source["performance"]),
+            artifacts=copy.deepcopy(source["artifacts"]),
+            attribution=copy.deepcopy(source["attribution"]),
+            limitations=copy.deepcopy(source["limitations"]),
+        )
+        self.assertEqual(built["state"], "pass")
 
 
 if __name__ == "__main__":

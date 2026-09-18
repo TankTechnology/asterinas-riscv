@@ -18,6 +18,14 @@ FUNCTION_GROUPS = (
     "download",
     "contexts",
 )
+REQUIRED_FUNCTION_GROUPS = (
+    "document",
+    "storage",
+    "navigation",
+    "download",
+    "contexts",
+)
+OPTIONAL_FUNCTION_GROUPS = ("execution", "rendering-media")
 PERFORMANCE_CATEGORIES = (
     "startup",
     "input",
@@ -123,6 +131,7 @@ _PERFORMANCE_REASONS = frozenset(
 )
 _LIMITATION_REASONS = frozenset(
     {
+        "fixture-capabilities-incomplete",
         "guest-and-browser-clocks-separated",
         "kernel-diagnostics-unavailable",
         "physical-scanout-unsupported",
@@ -285,10 +294,34 @@ def _normalize_function_groups(value: object) -> list[dict[str, str | None]]:
                 "function group reason",
                 _FUNCTION_GROUP_REASONS,
             )
+            if (
+                expected_name in OPTIONAL_FUNCTION_GROUPS
+                and state == "unsupported"
+                and normalized_reason != "fixture-capability-unavailable"
+            ):
+                raise DailyUseContractError(
+                    "unsupported optional function group reason is invalid"
+                )
         normalized.append(
             {"name": expected_name, "state": state, "reason": normalized_reason}
         )
     return normalized
+
+
+def _normalized_function_groups_qualify(
+    function_groups: list[dict[str, str | None]],
+) -> bool:
+    states = {str(item["name"]): item["state"] for item in function_groups}
+    return all(states[name] == "pass" for name in REQUIRED_FUNCTION_GROUPS) and all(
+        states[name] in {"pass", "unsupported"}
+        for name in OPTIONAL_FUNCTION_GROUPS
+    )
+
+
+def function_groups_qualify(value: object) -> bool:
+    """Return whether one closed function-group list qualifies the workload."""
+
+    return _normalized_function_groups_qualify(_normalize_function_groups(value))
 
 
 def _normalize_startup_metrics(
@@ -499,7 +532,7 @@ def validate_daily_use_result(value: object) -> dict[str, object]:
 
     function_groups = _normalize_function_groups(result["functionGroups"])
     expected_state = (
-        "pass" if all(item["state"] == "pass" for item in function_groups) else "fail"
+        "pass" if _normalized_function_groups_qualify(function_groups) else "fail"
     )
     if result["state"] != expected_state:
         raise DailyUseContractError("daily-use state disagrees with function groups")
@@ -513,6 +546,17 @@ def validate_daily_use_result(value: object) -> dict[str, object]:
     artifact_names = {str(item["name"]) for item in artifacts}
     attribution = _normalize_attribution(result["attribution"], artifact_names)
     limitations = _normalize_limitations(result["limitations"])
+    has_incomplete_capabilities = (
+        "fixture-capabilities-incomplete" in limitations["items"]
+    )
+    optional_capabilities_unsupported = any(
+        item["name"] in OPTIONAL_FUNCTION_GROUPS and item["state"] == "unsupported"
+        for item in function_groups
+    )
+    if has_incomplete_capabilities != optional_capabilities_unsupported:
+        raise DailyUseContractError(
+            "fixture capability limitation disagrees with function groups"
+        )
     return {
         "schemaVersion": 1,
         "runId": run_id,
@@ -540,12 +584,7 @@ def build_daily_use_result(
 ) -> dict[str, object]:
     """Build and validate a daily-use result from its explicit components."""
 
-    state = "pass"
-    if not isinstance(function_groups, list) or any(
-        not isinstance(item, dict) or item.get("state") != "pass"
-        for item in function_groups
-    ):
-        state = "fail"
+    state = "pass" if function_groups_qualify(function_groups) else "fail"
     slow_count = (
         sum(
             isinstance(item, dict) and item.get("state") == "slow"
