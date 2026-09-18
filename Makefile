@@ -700,6 +700,37 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		--output-directory "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" --smp 4 \
 		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
 
+# The DRM desktop gate uses the artifacts built for the virtio-gpu work, which
+# are not the ones the other Debian variables point at, so it carries its own
+# defaults rather than inheriting the browser tree's.
+DEBIAN_DRM_UBOOT ?= $(CURDIR)/target/qemu-uboot/cache/u-boot-build/u-boot
+DEBIAN_DRM_KERNEL ?= $(CURDIR)/target/osdk/aster-kernel-osdk-bin.Image
+DEBIAN_DRM_DTB ?= $(CURDIR)/target/qemu-uboot/drm-virgl/prepared/qemu-virt.dtb
+DEBIAN_DRM_STAGE1_INITRAMFS ?= $(CURDIR)/target/xfce-drm/stage1-initramfs.cpio
+DEBIAN_DRM_ROOT_IMAGE ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/debian-root.ext2
+DEBIAN_DRM_ROOT_MANIFEST ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/rootfs-manifest.json
+DEBIAN_DRM_PACKAGES_LOCK ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/packages.lock
+DEBIAN_DRM_PACKAGE_CHECKSUMS ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/source-metadata/package-checksums
+DEBIAN_DRM_GATE_OUTPUT ?= $(CURDIR)/target/debian-riscv/desktop-drm/drm-gate
+# Asking for the GL device is what selects the 3D path; the gate then also
+# requires the guest to prove it reached virgl rather than llvmpipe.
+DEBIAN_DRM_GRAPHICS_DEVICE ?= virtio-gpu-gl-device
+
+.PHONY: test_riscv_debian_desktop_drm_gate
+test_riscv_debian_desktop_drm_gate:
+	@python3 -m tools.riscv.debian.rootfs.desktop_drm_gate \
+		--kernel "$(DEBIAN_DRM_KERNEL)" \
+		--uboot "$(DEBIAN_DRM_UBOOT)" \
+		--dtb "$(DEBIAN_DRM_DTB)" \
+		--stage1-initramfs "$(DEBIAN_DRM_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_DRM_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_DRM_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_DRM_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_DRM_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DRM_GATE_OUTPUT)" --smp 4 \
+		--graphics-device "$(DEBIAN_DRM_GRAPHICS_DEVICE)" \
+		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
+
 .PHONY: test_riscv_debian_debug_console_qemu_gate
 test_riscv_debian_debug_console_qemu_gate:
 	@test -n "$(DEBIAN_KERNEL)" || \
