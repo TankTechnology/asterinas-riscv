@@ -2,8 +2,9 @@
 
 //! Implements virtio-gpu device instances (device ID 16).
 //!
-//! The driver covers the 2D control-queue and hardware-cursor paths. EDID and
-//! the virgl 3D path remain outside this milestone.
+//! The driver covers the 2D control-queue and hardware-cursor paths, and
+//! negotiates virgl so the host can be asked for its 3D capability set. EDID
+//! remains outside this milestone.
 
 use alloc::{format, sync::Arc, vec::Vec};
 use core::{
@@ -18,13 +19,15 @@ use ostd::{
 };
 
 use super::{
-    MAX_SCANOUTS, VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_MOVE_CURSOR,
-    VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
-    VIRTIO_GPU_CMD_RESOURCE_FLUSH, VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
-    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_CMD_UPDATE_CURSOR,
+    MAX_SCANOUTS, VIRTIO_GPU_CMD_GET_CAPSET_INFO, VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
+    VIRTIO_GPU_CMD_MOVE_CURSOR, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+    VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+    VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
+    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_F_VIRGL,
     VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
-    VIRTIO_GPU_RESP_OK_DISPLAY_INFO, VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR,
-    VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDisplayOne, VirtioGpuMemEntry, VirtioGpuRect,
+    VIRTIO_GPU_RESP_OK_CAPSET_INFO, VIRTIO_GPU_RESP_OK_DISPLAY_INFO, VIRTIO_GPU_RESP_OK_NODATA,
+    VQ_CONTROL, VQ_CURSOR, VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDisplayOne,
+    VirtioGpuGetCapsetInfo, VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuRespCapsetInfo,
     VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceFlush,
     VirtioGpuResourceUnref, VirtioGpuSetScanout, VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
     config::VirtioGpuConfig,
@@ -78,18 +81,39 @@ pub struct GpuDevice {
     cursor_operation: Mutex<()>,
     /// Host-visible cursor resource, or zero when the cursor is hidden.
     cursor_resource: AtomicU32,
+    /// Whether the device offered virgl and the driver negotiated it. A host
+    /// without it will not answer 3D capability queries.
+    virgl_supported: bool,
 }
 
 impl GpuDevice {
-    pub(crate) fn negotiate_features(_features: u64) -> u64 {
-        // The MVP drives only the plain 2D path, so clear every device-specific
-        // feature (virgl, EDID, resource UUID, blob, context init).
-        0
+    pub(crate) fn negotiate_features(features: u64) -> u64 {
+        // Take virgl when the device offers it, so the host will answer 3D
+        // capability queries. Everything else (EDID, resource UUID, blob,
+        // context init) stays cleared: the 3D path below does not need them,
+        // and advertising a feature the driver does not implement would invite
+        // the host to use it.
+        features & VIRTIO_GPU_F_VIRGL
     }
 
     pub(crate) fn init(mut device_transport: DeviceTransport) -> Result<(), VirtioDeviceError> {
         let config_manager = VirtioGpuConfig::new_manager(device_transport.as_ref());
         let config = config_manager.read_config();
+        // Recompute the same answer `negotiate_features` gave the transport:
+        // the device's advertised bits do not change, and the transport offers
+        // no way to read back what was acknowledged.
+        let virgl_supported =
+            Self::negotiate_features(device_transport.read_device_features())
+                & VIRTIO_GPU_F_VIRGL
+                != 0;
+        ostd::info!(
+            "virtio-gpu: virgl 3D {}",
+            if virgl_supported {
+                "negotiated"
+            } else {
+                "unavailable"
+            }
+        );
         ostd::debug!("virtio_gpu_config = {:?}", config);
 
         let mut control_queue = VirtQueue::new(VQ_CONTROL, QUEUE_SIZE, device_transport.as_mut())?;
@@ -134,6 +158,7 @@ impl GpuDevice {
             next_resource_id: AtomicU32::new(2),
             cursor_operation: Mutex::new(()),
             cursor_resource: AtomicU32::new(0),
+            virgl_supported,
         });
 
         register_device(
@@ -146,6 +171,36 @@ impl GpuDevice {
 
         device.render_test_pattern();
         Ok(())
+    }
+
+    /// Returns whether the host offered 3D support and the driver took it.
+    pub fn supports_virgl(&self) -> bool {
+        self.virgl_supported
+    }
+
+    /// Returns the capability set the host advertises at `index`.
+    ///
+    /// The host enumerates its capsets; index 0 is the renderer's primary one,
+    /// which for a virgl host is `VIRTIO_GPU_CAPSET_VIRGL`. The answer carries
+    /// the id, the highest version the host implements, and how many bytes its
+    /// capability blob occupies.
+    pub fn capset_info(&self, index: u32) -> Result<CapsetInfo, VirtioDeviceError> {
+        let req = VirtioGpuGetCapsetInfo {
+            hdr: ctrl_hdr(VIRTIO_GPU_CMD_GET_CAPSET_INFO),
+            capset_index: index,
+            padding: 0,
+        };
+        let mut queue = self.control_queue.lock();
+        let response = control_cmd_read::<_, VirtioGpuRespCapsetInfo>(
+            &mut queue,
+            &self.control_buf,
+            &req,
+        )?;
+        Ok(CapsetInfo {
+            id: response.capset_id,
+            max_version: response.capset_max_version,
+            max_size: response.capset_max_size,
+        })
     }
 
     /// Returns the scanout width in pixels.
@@ -555,7 +610,9 @@ fn ctrl_hdr(type_: u32) -> VirtioGpuCtrlHdr {
 
 fn check_ok(code: u32) -> Result<(), VirtioDeviceError> {
     match code {
-        VIRTIO_GPU_RESP_OK_NODATA | VIRTIO_GPU_RESP_OK_DISPLAY_INFO => Ok(()),
+        VIRTIO_GPU_RESP_OK_NODATA
+        | VIRTIO_GPU_RESP_OK_DISPLAY_INFO
+        | VIRTIO_GPU_RESP_OK_CAPSET_INFO => Ok(()),
         _ => {
             ostd::warn!("virtio-gpu control request failed: response = {:#x}", code);
             Err(VirtioDeviceError::UnsupportedConfig)
@@ -592,6 +649,35 @@ fn submit_control(
 
     resp_slice.sync_from_device().unwrap();
     Ok(resp_slice.read_val::<u32>(0).unwrap())
+}
+
+/// What the host reports for one of its capability sets.
+#[derive(Clone, Copy, Debug)]
+pub struct CapsetInfo {
+    /// The capset id, which names the renderer whose capabilities follow.
+    pub id: u32,
+    /// Highest version of this capset the host implements.
+    pub max_version: u32,
+    /// Size in bytes of this capset's capability blob.
+    pub max_size: u32,
+}
+
+/// Sends a control request and decodes a typed response body.
+fn control_cmd_read<T: ostd_pod::Pod, R: ostd_pod::Pod>(
+    queue: &mut VirtQueue,
+    buf: &Arc<DmaStream>,
+    req: &T,
+) -> Result<R, VirtioDeviceError> {
+    let req_len = size_of::<T>();
+    let resp_len = size_of::<R>();
+    let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
+    req_slice.write_val(0, req).unwrap();
+    let code = submit_control(queue, buf, req_len, resp_len)?;
+    check_ok(code)?;
+    let resp_slice = Slice::new(buf.clone(), CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len);
+    resp_slice
+        .read_val::<R>(0)
+        .map_err(VirtioDeviceError::ResourceAlloc)
 }
 
 /// Sends a fixed-size control request and waits for its response.
