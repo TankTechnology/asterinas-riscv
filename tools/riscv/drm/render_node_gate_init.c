@@ -104,6 +104,11 @@ struct drm_mode_create_dumb {
     uint64_t size;
 };
 
+struct drm_virtgpu_getparam {
+    uint64_t param;
+    uint64_t value;
+};
+
 #define DRM_IOCTL_VERSION _IOWR('d', 0x00, struct drm_version)
 #define DRM_IOCTL_GEM_CLOSE _IOW('d', 0x09, struct drm_gem_close)
 #define DRM_IOCTL_GEM_FLINK _IOWR('d', 0x0a, struct drm_gem_flink)
@@ -118,6 +123,10 @@ struct drm_mode_create_dumb {
 #define DRM_IOCTL_MODE_CURSOR _IOWR('d', 0xa3, struct drm_mode_cursor)
 #define DRM_IOCTL_MODE_PAGE_FLIP _IOWR('d', 0xb0, struct drm_mode_crtc_page_flip)
 #define DRM_IOCTL_MODE_CREATE_DUMB _IOWR('d', 0xb2, struct drm_mode_create_dumb)
+/* `DRM_COMMAND_BASE` (0x40) plus `DRM_VIRTGPU_GETPARAM` (0x03). */
+#define DRM_IOCTL_VIRTGPU_GETPARAM _IOWR('d', 0x43, struct drm_virtgpu_getparam)
+
+#define VIRTGPU_PARAM_3D_FEATURES 1U
 
 #define DRM_CAP_DUMB_BUFFER 1U
 #define DRM_CLIENT_CAP_UNIVERSAL_PLANES 2U
@@ -181,6 +190,7 @@ static const struct check ALLOWED[] = {
     {"version", DRM_IOCTL_VERSION, EXPECT_OK},
     {"get-cap", DRM_IOCTL_GET_CAP, EXPECT_OK},
     {"gem-close", DRM_IOCTL_GEM_CLOSE, EXPECT_EINVAL},
+    {"virtgpu-getparam", DRM_IOCTL_VIRTGPU_GETPARAM, EXPECT_OK},
 };
 
 static struct drm_version version;
@@ -194,6 +204,8 @@ static struct drm_mode_crtc crtc;
 static struct drm_mode_cursor cursor;
 static struct drm_mode_crtc_page_flip flip;
 static struct drm_mode_create_dumb dumb;
+static struct drm_virtgpu_getparam getparam;
+static uint64_t getparam_value;
 
 static char name_buffer[64];
 static char date_buffer[64];
@@ -243,6 +255,12 @@ static void reset_arguments(void)
     dumb.width = 64;
     dumb.height = 64;
     dumb.bpp = 32;
+
+    /* `value` is a userspace pointer the kernel writes one u64 to. */
+    getparam_value = 0;
+    memset(&getparam, 0, sizeof(getparam));
+    getparam.param = VIRTGPU_PARAM_3D_FEATURES;
+    getparam.value = (uint64_t)(uintptr_t)&getparam_value;
 }
 
 static void *argument_for(unsigned long request)
@@ -271,6 +289,8 @@ static void *argument_for(unsigned long request)
         return &flip;
     case DRM_IOCTL_MODE_CREATE_DUMB:
         return &dumb;
+    case DRM_IOCTL_VIRTGPU_GETPARAM:
+        return &getparam;
     default:
         return NULL;
     }
@@ -356,7 +376,8 @@ static int fake_ioctl(void *opaque, unsigned long request, void *argument)
     struct fake_context *context = opaque;
     int render_allowed = request == DRM_IOCTL_VERSION ||
                          request == DRM_IOCTL_GET_CAP ||
-                         request == DRM_IOCTL_GEM_CLOSE;
+                         request == DRM_IOCTL_GEM_CLOSE ||
+                         request == DRM_IOCTL_VIRTGPU_GETPARAM;
 
     if (render_allowed) {
         if (context->refuse_allowed) {

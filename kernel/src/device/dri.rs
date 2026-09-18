@@ -381,6 +381,22 @@ struct DrmGemOpen {
     size: u64,
 }
 
+/// `struct drm_virtgpu_getparam`.
+///
+/// `value` is a userspace pointer the kernel writes one `u64` to, matching
+/// Linux's `copy_to_user` of the answer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmVirtgpuGetparam {
+    param: u64,
+    value: u64,
+}
+
+/// `VIRTGPU_PARAM_*` query ids (include/uapi/drm/virtgpu_drm.h).
+const VIRTGPU_PARAM_3D_FEATURES: u64 = 1;
+const VIRTGPU_PARAM_CAPSET_QUERY_FIX: u64 = 2;
+const VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS: u64 = 7;
+
 /// `struct drm_mode_map_dumb`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
@@ -446,6 +462,7 @@ mod ioctl_defs {
         DrmGetCap, DrmModeCardRes, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip,
         DrmModeCursor, DrmModeCursor2, DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd,
         DrmGemClose, DrmGemFlink, DrmGemOpen, DrmModeGetConnector, DrmModeGetEncoder,
+        DrmVirtgpuGetparam,
         DrmModeMapDumb, DrmModeObjGetProperties, DrmSetClientCap, DrmVersion,
     };
     use crate::util::ioctl::{InData, InOutData, NoData, ioc};
@@ -458,6 +475,8 @@ mod ioctl_defs {
     pub(super) type GemClose = ioc!(DRM_IOCTL_GEM_CLOSE, b'd', 0x09, InData<DrmGemClose>);
     pub(super) type GemFlink = ioc!(DRM_IOCTL_GEM_FLINK, b'd', 0x0a, InOutData<DrmGemFlink>);
     pub(super) type GemOpen = ioc!(DRM_IOCTL_GEM_OPEN, b'd', 0x1b, InOutData<DrmGemOpen>);
+    // The virtgpu ioctls live at `DRM_COMMAND_BASE` (0x40) plus their number.
+    pub(super) type VirtgpuGetparam = ioc!(DRM_IOCTL_VIRTGPU_GETPARAM, b'd', 0x43, InOutData<DrmVirtgpuGetparam>);
     pub(super) type SetMaster = ioc!(DRM_IOCTL_SET_MASTER, b'd', 0x1e, NoData);
     pub(super) type DropMaster = ioc!(DRM_IOCTL_DROP_MASTER, b'd', 0x1f, NoData);
 
@@ -504,6 +523,9 @@ fn is_render_allowed(raw_ioctl: RawIoctl) -> bool {
     GetVersion::try_from_raw(raw_ioctl).is_some()
         || GetCap::try_from_raw(raw_ioctl).is_some()
         || GemClose::try_from_raw(raw_ioctl).is_some()
+        // A 3D client reaches the device through the render node, so the
+        // parameter query it runs before anything else has to get through.
+        || VirtgpuGetparam::try_from_raw(raw_ioctl).is_some()
 }
 
 impl Device for Dri {
@@ -675,6 +697,39 @@ impl DriHandle {
         };
         drop(inner);
         release_object(object_id);
+        Ok(())
+    }
+
+    /// Answers a `VIRTGPU_GETPARAM` query into the caller's `value` pointer.
+    ///
+    /// This is how a 3D client asks whether it is worth opening a render path
+    /// at all: Mesa calls it before anything else and falls back to software
+    /// rendering when the answer says the host offers no 3D.
+    fn virtgpu_getparam(&self, req: &DrmVirtgpuGetparam) -> Result<()> {
+        let value = match req.param {
+            VIRTGPU_PARAM_3D_FEATURES => u64::from(self.gpu.supports_virgl()),
+            // The query-fix flag means the driver returns the capset the real
+            // driver would, rather than a fixed stub.
+            VIRTGPU_PARAM_CAPSET_QUERY_FIX => u64::from(self.gpu.supports_virgl()),
+            VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS => {
+                if !self.gpu.supports_virgl() {
+                    0
+                } else {
+                    // Read the host's first capset rather than assuming virgl,
+                    // so the mask describes this host and not our expectation.
+                    let info = self
+                        .gpu
+                        .capset_info(0)
+                        .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
+                    1u64 << info.id
+                }
+            }
+            _ => return_errno_with_message!(Errno::EINVAL, "unknown virtgpu parameter"),
+        };
+
+        current_userspace!()
+            .write_val(req.value as usize, &value)
+            .map_err(|_| Error::with_message(Errno::EFAULT, "bad virtgpu parameter pointer"))?;
         Ok(())
     }
 
@@ -1132,6 +1187,11 @@ impl PerOpenFileOps for DriHandle {
             cmd @ GemOpen => {
                 let req = cmd.read()?;
                 cmd.write(&self.gem_open(&req)?)?;
+                Ok(0)
+            }
+            cmd @ VirtgpuGetparam => {
+                let req = cmd.read()?;
+                self.virtgpu_getparam(&req)?;
                 Ok(0)
             }
             cmd @ ModeCreateDumb => {
