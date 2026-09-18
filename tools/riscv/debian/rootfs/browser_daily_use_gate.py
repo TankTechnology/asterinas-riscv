@@ -99,6 +99,7 @@ ARTIFACT_NAMES = (
 RESULT_NAME = "browser-daily-use-result.json"
 CHECKPOINT_NAME = "browser-daily-use-checkpoint.json"
 MAX_TIMEOUT_SECONDS = 120.0
+PHYSICAL_SESSION_SETUP_TIMEOUT_SECONDS = 300.0
 CONTEXT_CLEANUP_TIMEOUT_SECONDS = 5.0
 FIXTURE_GROUPS = ("document", "storage", "execution", "rendering-media", "download")
 STARTUP_TIMELINE = Path("/home/asterinas/browser-web-timeline.log")
@@ -302,7 +303,9 @@ def run_daily_use_gate(
         staging = _reserve_evidence(evidence_dir, run_id)
         pids = (firefox_pid, xorg_pid)
         initial = _identities(operations, pids)
-        client.set_timeout(timeout_seconds)
+        client.set_timeout(
+            PHYSICAL_SESSION_SETUP_TIMEOUT_SECONDS if physical else timeout_seconds
+        )
         session = _value(
             client.command(
                 "WebDriver:NewSession",
@@ -1095,8 +1098,13 @@ def main(argv: list[str] | None = None) -> int:
             options.fixture_index_url,
         )
         operations = default_operations()
+        setup_timeout = (
+            PHYSICAL_SESSION_SETUP_TIMEOUT_SECONDS if options.physical else timeout
+        )
         client = _connect(
-            "127.0.0.1", options.port, operations.clock.monotonic() + timeout
+            "127.0.0.1",
+            options.port,
+            operations.clock.monotonic() + setup_timeout,
         )
         result = run_daily_use_gate(
             client=client,
