@@ -31,11 +31,20 @@
 // CONFIG_VIRTIO_MMIO=m, CONFIG_VIRTIO_BLK=m and CONFIG_EXT4_FS=m, so on this
 // side nothing at all can be mounted until these are in.
 //
+// crc32c_generic is on this list even though nothing in modules.dep points at
+// it. It is a runtime, feature-dependent dependency rather than a symbol one:
+// ext4 resolves "crc32c" through the crypto API only when the filesystem it is
+// mounting carries metadata checksums, and that call fails with -ENOENT when
+// the algorithm is absent. A closure computed with depmod therefore looks
+// complete while the mount still fails, and the only clue is one kernel line
+// -- "EXT4-fs (vda): Cannot load crc32c driver." -- above a bare ENOENT.
+//
 // Overridable so the unit test can supply its own list instead of reaching for
 // modules that only exist inside a built initramfs.
 #ifndef BOOT_MODULES
 #define BOOT_MODULES \
     "/lib/modules/" KERNEL_RELEASE "/kernel/lib/crc16.ko", \
+    "/lib/modules/" KERNEL_RELEASE "/kernel/crypto/crc32c_generic.ko", \
     "/lib/modules/" KERNEL_RELEASE "/kernel/fs/mbcache.ko", \
     "/lib/modules/" KERNEL_RELEASE "/kernel/fs/jbd2.ko", \
     "/lib/modules/" KERNEL_RELEASE "/kernel/fs/ext4.ko", \
