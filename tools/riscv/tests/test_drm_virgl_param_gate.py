@@ -27,6 +27,7 @@ from qemu_uboot_profiles import (  # noqa: E402
     profile_by_name,
 )
 from drm.virgl_param_gate import (  # noqa: E402
+    CONTEXT_MARKER,
     MAX_TRANSCRIPT_BYTES,
     READY_MARKER,
     VirglParamGateConfig,
@@ -81,12 +82,15 @@ class DrmVirglLaunchContractTests(unittest.TestCase):
 
 class DrmVirglClassifierTests(unittest.TestCase):
     @staticmethod
-    def transcript(three_d: int, capsets: str) -> bytes:
-        return (
-            f"DRM_VIRGL_PARAM 3d={three_d} capsets=0x{capsets}\n".encode()
-            + READY_MARKER
-            + b"\n"
-        )
+    def transcript(three_d: int, capsets: str, caps_bytes: int = 512) -> bytes:
+        return b"\n".join(
+            (
+                f"DRM_VIRGL_PARAM 3d={three_d} capsets=0x{capsets}".encode(),
+                f"DRM_VIRGL_CAPS PASS caps_bytes={caps_bytes}".encode(),
+                CONTEXT_MARKER,
+                READY_MARKER,
+            )
+        ) + b"\n"
 
     def test_accepts_a_host_that_reports_3d_and_its_capset(self) -> None:
         result = classify_transcript(self.transcript(1, "2"), expected_3d=True)
@@ -94,16 +98,21 @@ class DrmVirglClassifierTests(unittest.TestCase):
         self.assertEqual(result.reported_3d, 1)
         self.assertEqual(result.reported_capsets, 0x2)
         self.assertEqual(result.expected_3d, 1)
+        self.assertEqual(result.caps_bytes, 512)
 
     def test_accepts_the_control_run_that_reports_no_3d(self) -> None:
-        result = classify_transcript(self.transcript(0, "0"), expected_3d=False)
+        result = classify_transcript(
+            self.transcript(0, "0", caps_bytes=0), expected_3d=False
+        )
         self.assertTrue(result.passed, result.reason)
         self.assertEqual(result.expected_3d, 0)
 
     def test_rejects_a_report_that_contradicts_the_launched_device(self) -> None:
         # Both directions: a GL device that reports no 3D, and a plain device
         # that claims 3D. Either means the report is not tracking the device.
-        no_3d = classify_transcript(self.transcript(0, "0"), expected_3d=True)
+        no_3d = classify_transcript(
+            self.transcript(0, "0", caps_bytes=0), expected_3d=True
+        )
         self.assertFalse(no_3d.passed)
         self.assertIn("should report 1", no_3d.reason)
 
@@ -117,11 +126,29 @@ class DrmVirglClassifierTests(unittest.TestCase):
         self.assertIn("lacks virgl", result.reason)
 
     def test_rejects_a_control_run_that_still_names_a_capset(self) -> None:
-        result = classify_transcript(self.transcript(0, "2"), expected_3d=False)
+        result = classify_transcript(
+            self.transcript(0, "2", caps_bytes=0), expected_3d=False
+        )
         self.assertFalse(result.passed)
         self.assertIn("non-empty", result.reason)
 
-    def test_rejects_a_missing_report_or_ready_marker(self) -> None:
+    def test_rejects_a_blob_that_was_never_delivered(self) -> None:
+        # Success without a copy leaves the caller's own buffer in place; a
+        # gate that only checked the ioctl's return code would accept it.
+        claimed = classify_transcript(
+            self.transcript(1, "2", caps_bytes=0), expected_3d=True
+        )
+        self.assertFalse(claimed.passed)
+        self.assertIn("capability bytes were delivered", claimed.reason)
+
+        # And the inverse: a host without 3D that still hands over a blob.
+        unexpected = classify_transcript(
+            self.transcript(0, "0", caps_bytes=512), expected_3d=False
+        )
+        self.assertFalse(unexpected.passed)
+        self.assertIn("capability bytes were delivered", unexpected.reason)
+
+    def test_rejects_a_missing_report_or_unordered_markers(self) -> None:
         self.assertFalse(
             classify_transcript(READY_MARKER + b"\n", expected_3d=True).passed
         )
@@ -130,6 +157,17 @@ class DrmVirglClassifierTests(unittest.TestCase):
             classify_transcript(self.transcript(1, "2")[:-len(READY_MARKER) - 1],
                                 expected_3d=True).passed
         )
+        # A context marker before the capability blob is not the order the
+        # probe walks, so the evidence would not describe one run.
+        reordered = b"\n".join(
+            (
+                b"DRM_VIRGL_PARAM 3d=1 capsets=0x2",
+                CONTEXT_MARKER,
+                b"DRM_VIRGL_CAPS PASS caps_bytes=512",
+                READY_MARKER,
+            )
+        )
+        self.assertFalse(classify_transcript(reordered, expected_3d=True).passed)
 
     def test_surfaces_the_guests_own_diagnosis(self) -> None:
         transcript = b"DRM_VIRGL_FAIL stage=3d-features errno=22\n"
@@ -199,7 +237,17 @@ class DrmVirglClassifierTests(unittest.TestCase):
 
 
 class DrmVirglGuestProbeTests(unittest.TestCase):
-    SELF_TEST_CASE_NAMES = ("valid", "no-3d", "unknown-accepted", "known-refused")
+    SELF_TEST_CASE_NAMES = (
+        "valid",
+        "no-3d",
+        "unknown-accepted",
+        "known-refused",
+        "caps-and-context",
+        "caps-empty",
+        "context-twice-allowed",
+        "no-3d-refuses-caps",
+        "no-3d-caps-succeed",
+    )
 
     @classmethod
     def setUpClass(cls) -> None:

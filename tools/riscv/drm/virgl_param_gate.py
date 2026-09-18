@@ -23,10 +23,15 @@ from qemu_uboot_secure_io import PinnedOutputDirectory, PinnedRegularInput
 
 READY_MARKER = DRM_VIRGL_READY_LINE
 PARAM_PATTERN = re.compile(rb"DRM_VIRGL_PARAM 3d=(\d+) capsets=0x([0-9a-f]+)")
+CAPS_PATTERN = re.compile(rb"DRM_VIRGL_CAPS PASS caps_bytes=(\d+)")
+CONTEXT_MARKER = b"DRM_VIRGL_CONTEXT PASS"
 FAIL_PATTERN = re.compile(rb"DRM_VIRGL_FAIL stage=([A-Za-z0-9-]+) ([^\r\n]*)")
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 #: The capset bit a virgl host sets in `VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs`.
 VIRGL_CAPSET_ID = 1
+#: How much of the capability blob must carry host data. Below this the buffer
+#: still holds the probe's own fill pattern, so nothing was copied.
+CAPS_MIN_DELIVERED = 256
 FATAL_MARKERS = (
     b"Uncaught panic",
     b"unexpected exception",
@@ -40,6 +45,7 @@ class VirglParamGateResult:
     reported_3d: int
     reported_capsets: int
     expected_3d: int
+    caps_bytes: int
 
 
 @dataclass(frozen=True)
@@ -78,7 +84,7 @@ def classify_transcript(
     for marker in FATAL_MARKERS:
         if marker in transcript:
             return VirglParamGateResult(
-                False, f"fatal marker: {marker.decode()}", -1, 0, expected
+                False, f"fatal marker: {marker.decode()}", -1, 0, expected, 0
             )
 
     failure = FAIL_PATTERN.search(transcript)
@@ -86,18 +92,45 @@ def classify_transcript(
         stage = failure.group(1).decode()
         trailing = failure.group(2).decode()
         return VirglParamGateResult(
-            False, f"guest reported {stage} failure: {trailing}", -1, 0, expected
+            False, f"guest reported {stage} failure: {trailing}", -1, 0, expected, 0
         )
 
     match = PARAM_PATTERN.search(transcript)
     if match is None:
-        return VirglParamGateResult(False, "missing virgl parameter report", -1, 0, expected)
+        return VirglParamGateResult(
+            False, "missing virgl parameter report", -1, 0, expected, 0
+        )
     reported_3d = int(match.group(1))
     capsets = int(match.group(2), 16)
+    rest = transcript[match.end() :]
 
-    if READY_MARKER not in transcript[match.end() :]:
+    caps_match = CAPS_PATTERN.search(rest)
+    if caps_match is None:
         return VirglParamGateResult(
-            False, "missing ready marker after the report", reported_3d, capsets, expected
+            False, "missing capability blob report", reported_3d, capsets, expected, 0
+        )
+    caps_bytes = int(caps_match.group(1))
+
+    # The sequence is what proves the probe walked the whole path, so the
+    # markers have to follow one another rather than merely be present.
+    context_at = rest.find(CONTEXT_MARKER, caps_match.end())
+    if context_at < 0:
+        return VirglParamGateResult(
+            False,
+            "missing or unordered context marker",
+            reported_3d,
+            capsets,
+            expected,
+            caps_bytes,
+        )
+    if READY_MARKER not in rest[context_at + len(CONTEXT_MARKER) :]:
+        return VirglParamGateResult(
+            False,
+            "missing ready marker after the context",
+            reported_3d,
+            capsets,
+            expected,
+            caps_bytes,
         )
 
     if reported_3d != expected:
@@ -107,13 +140,19 @@ def classify_transcript(
             reported_3d,
             capsets,
             expected,
+            caps_bytes,
         )
 
     # A host that reports 3D must also name the renderer's capset; a feature
     # flag without a capset is a 3D claim nothing can be created against.
     if expected_3d and not capsets & (1 << VIRGL_CAPSET_ID):
         return VirglParamGateResult(
-            False, f"3D reported but capset mask {capsets:#x} lacks virgl", reported_3d, capsets, expected
+            False,
+            f"3D reported but capset mask {capsets:#x} lacks virgl",
+            reported_3d,
+            capsets,
+            expected,
+            caps_bytes,
         )
     if not expected_3d and capsets != 0:
         return VirglParamGateResult(
@@ -122,9 +161,33 @@ def classify_transcript(
             reported_3d,
             capsets,
             expected,
+            caps_bytes,
         )
 
-    return VirglParamGateResult(True, "passed", reported_3d, capsets, expected)
+    # The blob is the renderer's own description of itself, so a 3D host has
+    # to deliver one and a host without 3D must not pretend to.
+    if expected_3d and caps_bytes < CAPS_MIN_DELIVERED:
+        return VirglParamGateResult(
+            False,
+            f"3D reported but only {caps_bytes} capability bytes were delivered",
+            reported_3d,
+            capsets,
+            expected,
+            caps_bytes,
+        )
+    if not expected_3d and caps_bytes != 0:
+        return VirglParamGateResult(
+            False,
+            f"no 3D reported but {caps_bytes} capability bytes were delivered",
+            reported_3d,
+            capsets,
+            expected,
+            caps_bytes,
+        )
+
+    return VirglParamGateResult(
+        True, "passed", reported_3d, capsets, expected, caps_bytes
+    )
 
 
 def _read_serial_log(path: Path) -> bytes:
@@ -186,6 +249,7 @@ def run_virgl_param_gate(
                     classified.reported_3d,
                     classified.reported_capsets,
                     expected_3d,
+                    classified.caps_bytes,
                 )
             else:
                 result = classified
@@ -196,6 +260,7 @@ def run_virgl_param_gate(
                 -1,
                 0,
                 int(expected_3d),
+                0,
             )
         _publish_result(output, result)
         return result
