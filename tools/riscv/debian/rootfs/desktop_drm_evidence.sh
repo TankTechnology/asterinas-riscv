@@ -210,6 +210,28 @@ if [[ -x /usr/lib/asterinas/boot-bench ]] &&
     emit 'DEBIAN_DESKTOP_DRM_BENCH_DONE'
 fi
 
+# Optional mid-boot sampler, off unless asked for (`asterinas.boot_sample=1`).
+#
+# It runs in the background and records what the boot's long-pole processes are
+# doing while they take minutes. A process in state R is doing work and one in S
+# is waiting; the two imply entirely different fixes, and the component timings
+# this script reports cannot tell them apart.
+if [[ -x /usr/lib/asterinas/sampler ]] &&
+    tr ' ' '\n' </proc/cmdline 2>/dev/null | grep -qx 'asterinas.boot_sample=1'; then
+    /usr/lib/asterinas/sampler >>"$CONSOLE" 2>&1 &
+fi
+
+# Optional systemd accounting, off unless asked for. The process-state sampling
+# shows the boot is idle-waiting rather than CPU-bound, but not what it waits
+# on; systemd's own per-unit blame does, without any kernel-side instrumentation.
+if tr ' ' '\n' </proc/cmdline 2>/dev/null | grep -qx 'asterinas.boot_blame=1'; then
+    emit "DEBIAN_DESKTOP_DRM_BLAME begin uptime=$(uptime_seconds)"
+    systemd-analyze blame --no-pager 2>&1 | head -25 >>"$CONSOLE" || true
+    emit 'DEBIAN_DESKTOP_DRM_BLAME critical-chain'
+    systemd-analyze critical-chain --no-pager 2>&1 | head -25 >>"$CONSOLE" || true
+    emit 'DEBIAN_DESKTOP_DRM_BLAME end'
+fi
+
 # When this script started, which is basic.target.
 #
 # The LAUNCH marker below gives the components' arrival times but is a
