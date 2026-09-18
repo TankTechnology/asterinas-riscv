@@ -22,14 +22,18 @@ from urllib.parse import urlsplit
 if Path("/run/asterinas-tools/browser_daily_use_contract.py").is_file():
     sys.path.insert(0, "/run/asterinas-tools")
     from browser_daily_use_contract import (  # type: ignore[import-not-found]
+        FUNCTION_GROUPS,
         MAX_ARTIFACT_BYTES,
         DailyUseContractError,
+        _normalize_function_groups,
         validate_daily_use_result,
     )
 else:
     from tools.riscv.debian.rootfs.browser_daily_use_contract import (
+        FUNCTION_GROUPS,
         MAX_ARTIFACT_BYTES,
         DailyUseContractError,
+        _normalize_function_groups,
         validate_daily_use_result,
     )
 
@@ -74,17 +78,6 @@ _PHASES = (
     "artifacts",
     "validated",
 )
-_FUNCTION_GROUPS = (
-    "document",
-    "storage",
-    "execution",
-    "rendering-media",
-    "navigation",
-    "download",
-    "contexts",
-)
-
-
 class EvidenceBundleError(ValueError):
     """A daily-use upload bundle or source artifact violates its contract."""
 
@@ -208,26 +201,30 @@ def _failure_gate_run_id(artifacts: dict[str, bytes]) -> str:
     ):
         raise EvidenceBundleError("daily-use checkpoint content is invalid")
     group_positions: list[int] = []
+    supplied_groups: dict[str, dict[str, object]] = {}
     for group in groups:
         if type(group) is not dict or set(group) != _FUNCTION_GROUP_FIELDS:
             raise EvidenceBundleError("daily-use checkpoint function group is invalid")
         name = group["name"]
-        reason = group["reason"]
-        if (
-            name not in _FUNCTION_GROUPS
-            or group["state"] not in ("pass", "fail")
-            or (
-                reason is not None
-                and (
-                    not isinstance(reason, str)
-                    or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", reason) is None
-                )
-            )
-        ):
+        if name not in FUNCTION_GROUPS or name in supplied_groups:
             raise EvidenceBundleError("daily-use checkpoint function group is invalid")
-        group_positions.append(_FUNCTION_GROUPS.index(name))
+        supplied_groups[name] = group
+        group_positions.append(FUNCTION_GROUPS.index(name))
     if group_positions != sorted(set(group_positions)):
         raise EvidenceBundleError("daily-use checkpoint function groups are unordered")
+    try:
+        _normalize_function_groups(
+            [
+                supplied_groups.get(
+                    name, {"name": name, "state": "pass", "reason": None}
+                )
+                for name in FUNCTION_GROUPS
+            ]
+        )
+    except DailyUseContractError as error:
+        raise EvidenceBundleError(
+            "daily-use checkpoint function group is invalid"
+        ) from error
     failure = checkpoint["failure"]
     if (
         type(failure) is not dict
