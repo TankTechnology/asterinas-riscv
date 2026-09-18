@@ -27,6 +27,7 @@ from qemu_uboot_profiles import (  # noqa: E402
     profile_by_name,
 )
 from drm.virgl_param_gate import (  # noqa: E402
+    BACKING_MARKER,
     CONTEXT_MARKER,
     MAX_TRANSCRIPT_BYTES,
     READY_MARKER,
@@ -82,15 +83,27 @@ class DrmVirglLaunchContractTests(unittest.TestCase):
 
 class DrmVirglClassifierTests(unittest.TestCase):
     @staticmethod
-    def transcript(three_d: int, capsets: str, caps_bytes: int = 512) -> bytes:
-        return b"\n".join(
-            (
-                f"DRM_VIRGL_PARAM 3d={three_d} capsets=0x{capsets}".encode(),
-                f"DRM_VIRGL_CAPS PASS caps_bytes={caps_bytes}".encode(),
-                CONTEXT_MARKER,
-                READY_MARKER,
-            )
-        ) + b"\n"
+    def transcript(
+        three_d: int,
+        capsets: str,
+        caps_bytes: int = 512,
+        resource: tuple[int, int, int] = (65, 257, 4096),
+        backing: bool = True,
+        timings: tuple[int, int, int] = (120, 340, 90),
+    ) -> bytes:
+        lines = [
+            f"DRM_VIRGL_PARAM 3d={three_d} capsets=0x{capsets}".encode(),
+            f"DRM_VIRGL_CAPS PASS caps_bytes={caps_bytes}".encode(),
+            CONTEXT_MARKER,
+            b"DRM_VIRGL_RESOURCE PASS bo=%d res=%d size=%d" % resource,
+        ]
+        if backing:
+            lines.append(BACKING_MARKER)
+        lines.append(
+            b"DRM_VIRGL_TIMING caps_context_us=%d resource_us=%d backing_us=%d" % timings
+        )
+        lines.append(READY_MARKER)
+        return b"\n".join(lines) + b"\n"
 
     def test_accepts_a_host_that_reports_3d_and_its_capset(self) -> None:
         result = classify_transcript(self.transcript(1, "2"), expected_3d=True)
@@ -102,7 +115,8 @@ class DrmVirglClassifierTests(unittest.TestCase):
 
     def test_accepts_the_control_run_that_reports_no_3d(self) -> None:
         result = classify_transcript(
-            self.transcript(0, "0", caps_bytes=0), expected_3d=False
+            self.transcript(0, "0", caps_bytes=0, resource=(0, 0, 0), backing=False),
+            expected_3d=False,
         )
         self.assertTrue(result.passed, result.reason)
         self.assertEqual(result.expected_3d, 0)
@@ -111,7 +125,8 @@ class DrmVirglClassifierTests(unittest.TestCase):
         # Both directions: a GL device that reports no 3D, and a plain device
         # that claims 3D. Either means the report is not tracking the device.
         no_3d = classify_transcript(
-            self.transcript(0, "0", caps_bytes=0), expected_3d=True
+            self.transcript(0, "0", caps_bytes=0, resource=(0, 0, 0), backing=False),
+            expected_3d=True,
         )
         self.assertFalse(no_3d.passed)
         self.assertIn("should report 1", no_3d.reason)
@@ -127,7 +142,8 @@ class DrmVirglClassifierTests(unittest.TestCase):
 
     def test_rejects_a_control_run_that_still_names_a_capset(self) -> None:
         result = classify_transcript(
-            self.transcript(0, "2", caps_bytes=0), expected_3d=False
+            self.transcript(0, "2", caps_bytes=0, resource=(0, 0, 0), backing=False),
+            expected_3d=False,
         )
         self.assertFalse(result.passed)
         self.assertIn("non-empty", result.reason)
@@ -143,7 +159,8 @@ class DrmVirglClassifierTests(unittest.TestCase):
 
         # And the inverse: a host without 3D that still hands over a blob.
         unexpected = classify_transcript(
-            self.transcript(0, "0", caps_bytes=512), expected_3d=False
+            self.transcript(0, "0", caps_bytes=512, resource=(0, 0, 0), backing=False),
+            expected_3d=False,
         )
         self.assertFalse(unexpected.passed)
         self.assertIn("capability bytes were delivered", unexpected.reason)
@@ -164,6 +181,9 @@ class DrmVirglClassifierTests(unittest.TestCase):
                 b"DRM_VIRGL_PARAM 3d=1 capsets=0x2",
                 CONTEXT_MARKER,
                 b"DRM_VIRGL_CAPS PASS caps_bytes=512",
+                b"DRM_VIRGL_RESOURCE PASS bo=65 res=257 size=4096",
+                BACKING_MARKER,
+                b"DRM_VIRGL_TIMING caps_context_us=1 resource_us=1 backing_us=1",
                 READY_MARKER,
             )
         )
@@ -247,6 +267,9 @@ class DrmVirglGuestProbeTests(unittest.TestCase):
         "context-twice-allowed",
         "no-3d-refuses-caps",
         "no-3d-caps-succeed",
+        "resource",
+        "resource-info-echoed",
+        "resource-without-3d",
     )
 
     @classmethod
