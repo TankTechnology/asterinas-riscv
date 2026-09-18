@@ -24,7 +24,10 @@ from tools.riscv.megrez_firefox_daily_use import (
     run_firefox_daily_use,
 )
 from tools.riscv.megrez_physical_graphics import DailyUseTerminalStatus
-from tools.riscv.tests.test_browser_daily_use_contract import complete_result
+from tools.riscv.tests.test_browser_daily_use_contract import (
+    complete_result,
+    set_group,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
@@ -368,6 +371,66 @@ class DailyUseRunnerTests(unittest.TestCase):
             result["attribution"].pop("threadArtifact")
 
         for mutation in (fail_groups, remove_attribution):
+            with self.subTest(mutation=mutation.__name__):
+                operations = FakeOperations(
+                    bundle=mutate_bundle_result(valid_pass_bundle(), mutation)
+                )
+                result = self.run_gate(operations)
+                self.assertFalse(result.qualified)
+                self.assertIn("failure=", result.reason)
+
+    def test_optional_unsupported_groups_with_limitation_qualify(self) -> None:
+        def mark_optional_unsupported(result) -> None:
+            for name in ("execution", "rendering-media"):
+                set_group(
+                    result,
+                    name,
+                    "unsupported",
+                    "fixture-capability-unavailable",
+                )
+            result["limitations"]["items"].append(
+                "fixture-capabilities-incomplete"
+            )
+
+        operations = FakeOperations(
+            bundle=mutate_bundle_result(
+                valid_pass_bundle(), mark_optional_unsupported
+            )
+        )
+
+        result = self.run_gate(operations)
+
+        self.assertTrue(result.passed)
+        self.assertTrue(result.qualified)
+
+    def test_required_optional_and_limitation_mismatches_fail_closed(self) -> None:
+        def required_fail(result) -> None:
+            set_group(result, "storage", "fail", "fixture-capability-failed")
+            result["state"] = "fail"
+
+        def optional_fail(result) -> None:
+            set_group(result, "execution", "fail", "fixture-capability-failed")
+            result["state"] = "fail"
+
+        def unsupported_without_limitation(result) -> None:
+            set_group(
+                result,
+                "execution",
+                "unsupported",
+                "fixture-capability-unavailable",
+            )
+
+        def stale_limitation(result) -> None:
+            result["limitations"]["items"].append(
+                "fixture-capabilities-incomplete"
+            )
+
+        for mutation in (
+            required_fail,
+            optional_fail,
+            unsupported_without_limitation,
+            stale_limitation,
+        ):
             with self.subTest(mutation=mutation.__name__):
                 operations = FakeOperations(
                     bundle=mutate_bundle_result(valid_pass_bundle(), mutation)
