@@ -417,7 +417,9 @@ static int fake_ioctl(void *opaque, unsigned long request, void *argument)
         }
         if (request == DRM_IOCTL_VERSION) {
             struct drm_version *version = argument;
-            snprintf(version->name, version->name_len, "virtio-gpu");
+            /* The spelling is the kernel's, not a label: Mesa's loader matches
+             * the DRM version name against "virtio_gpu" with strcmp. */
+            snprintf(version->name, version->name_len, "virtio_gpu");
             return 0;
         }
         if (request == DRM_IOCTL_GET_CAP) {

@@ -244,11 +244,13 @@ fi
 
 # How the DRM device presents itself to userspace.
 #
-# Mesa decides which DRI driver may serve a device from what sysfs says about
-# it, not from the DRM ioctls: a PCI device is matched by its vendor:device id
-# and a platform device by its devicetree `compatible` string. A virtio-mmio
-# GPU is the latter, so whether that node exists — and what it contains — is
-# what decides if the loader can ever consider `virtio_gpu_dri.so` at all.
+# For diagnosis only — this is NOT what picks the renderer. Mesa chooses the
+# DRI driver for a device that is not on the PCI bus from the name the kernel
+# returns for `DRM_IOCTL_VERSION`, matched with `strcmp` against its
+# `virtio_gpu` descriptor; nothing under /sys/class/drm is consulted, and an
+# earlier reading of this tree as the cause of the llvmpipe fallback was
+# wrong. It is dumped anyway because "the topology is absent" remains a fact
+# worth seeing when some other part of the stack asks for it.
 if [[ -n "$(cmdline_value mesa_loader_debug)" ]]; then
     emit '--- DRM sysfs ---'
     {

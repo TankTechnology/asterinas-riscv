@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,6 +55,24 @@ class DebianDesktopDRMTests(unittest.TestCase):
         # gate must accept that screendump geometry instead of the bochs-era
         # 1280x1024 default.
         self.assertEqual((DESKTOP_DRM_EXPECTED_WIDTH, DESKTOP_DRM_EXPECTED_HEIGHT), (1280, 800))
+
+    def test_kernel_reports_the_driver_name_mesa_matches_on(self) -> None:
+        # Mesa chooses the DRI driver for a device that is not on the PCI bus
+        # from the name the kernel returns for DRM_IOCTL_VERSION, and from
+        # nothing else; it compares that with strcmp against its own
+        # `virtio_gpu` descriptor. A miss does not raise: the static pipe
+        # loader falls through to the kmsro descriptor, that fails to create a
+        # screen, and Mesa quietly renders with llvmpipe instead. Because the
+        # only symptom is a renderer line tens of minutes into a QEMU run, the
+        # spelling is pinned here where a rename is caught in milliseconds.
+        source = (
+            Path(__file__).resolve().parents[3] / "kernel/src/device/dri.rs"
+        ).read_text(encoding="utf-8")
+        match = re.search(
+            r'^const DRIVER_NAME: &str = "([^"]+)";', source, re.MULTILINE
+        )
+        self.assertIsNotNone(match, "DRIVER_NAME not found in kernel/src/device/dri.rs")
+        self.assertEqual(match.group(1), "virtio_gpu")
 
     def test_classifier_requires_all_ordered_drm_markers(self) -> None:
         transcript = ("boot\n" + "\n".join(DESKTOP_DRM_MILESTONES) + "\n").encode()

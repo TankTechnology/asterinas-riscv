@@ -54,9 +54,21 @@ use crate::{
 /// Linux DRM character-device major number.
 const DRM_MAJOR: u16 = 226;
 
-const DRIVER_NAME: &str = "virtio-gpu";
+/// The DRM driver name, which is load-bearing rather than descriptive.
+///
+/// Mesa picks the DRI driver for a device that is not on the PCI bus from
+/// this string and nothing else: `loader_get_kernel_driver_name()` reads it
+/// back out of `DRM_IOCTL_VERSION`, the pipe loader matches it with `strcmp`
+/// against the `virtio_gpu` descriptor, and a miss there does not fail loudly
+/// -- it quietly selects the `kmsro` descriptor, which cannot create a screen,
+/// and Mesa then falls back to `kms_swrast` (llvmpipe).
+///
+/// So the underscore is the ABI: Linux's virtio-gpu driver reports
+/// `"virtio_gpu"`, and anything else makes accelerated rendering silently
+/// unavailable.
+const DRIVER_NAME: &str = "virtio_gpu";
 const DRIVER_DATE: &str = "20260815";
-const DRIVER_DESC: &str = "Asterinas virtio-gpu 2D driver";
+const DRIVER_DESC: &str = "Asterinas virtio-gpu driver";
 
 /// KMS object ids. The virtio-gpu device exposes a single CRTC/encoder/connector.
 const CRTC_ID: u32 = 1;
