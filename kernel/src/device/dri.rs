@@ -62,6 +62,8 @@ const DRIVER_DESC: &str = "Asterinas virtio-gpu 2D driver";
 const CRTC_ID: u32 = 1;
 const ENCODER_ID: u32 = 1;
 const CONNECTOR_ID: u32 = 1;
+/// The one overlay/primary plane the single scanout is driven through.
+const PLANE_ID: u32 = 1;
 
 /// `DRM_MODE_CONNECTOR_VIRTUAL`, the connector type Linux's virtio-gpu reports.
 const DRM_MODE_CONNECTOR_VIRTUAL: u32 = 15;
@@ -398,6 +400,28 @@ struct DrmGemOpen {
     size: u64,
 }
 
+/// `struct drm_mode_get_plane_res`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeGetPlaneRes {
+    plane_id_ptr: u64,
+    count_planes: u32,
+    pad: u32,
+}
+
+/// `struct drm_mode_get_plane`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmModeGetPlane {
+    plane_id: u32,
+    crtc_id: u32,
+    fb_id: u32,
+    possible_crtcs: u32,
+    gamma_size: u32,
+    count_format_types: u32,
+    format_type_ptr: u64,
+}
+
 /// `struct drm_virtgpu_getparam`.
 ///
 /// `value` is a userspace pointer the kernel writes one `u64` to, matching
@@ -599,7 +623,8 @@ mod ioctl_defs {
         DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
         DrmVirtgpuMap,
         DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo,
-        DrmModeMapDumb, DrmModeObjGetProperties, DrmSetClientCap, DrmVersion,
+        DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeMapDumb, DrmModeObjGetProperties,
+        DrmSetClientCap, DrmVersion,
     };
     use crate::util::ioctl::{InData, InOutData, NoData, ioc};
 
@@ -636,6 +661,8 @@ mod ioctl_defs {
     pub(super) type ModeMapDumb = ioc!(DRM_IOCTL_MODE_MAP_DUMB, b'd', 0xb3, InOutData<DrmModeMapDumb>);
     pub(super) type ModeDestroyDumb = ioc!(DRM_IOCTL_MODE_DESTROY_DUMB, b'd', 0xb4, InOutData<DrmModeDestroyDumb>);
     pub(super) type ModeObjGetProperties = ioc!(DRM_IOCTL_MODE_OBJ_GETPROPERTIES, b'd', 0xb9, InOutData<DrmModeObjGetProperties>);
+    pub(super) type ModeGetPlaneResources = ioc!(DRM_IOCTL_MODE_GETPLANERESOURCES, b'd', 0xb5, InOutData<DrmModeGetPlaneRes>);
+    pub(super) type ModeGetPlane = ioc!(DRM_IOCTL_MODE_GETPLANE, b'd', 0xb6, InOutData<DrmModeGetPlane>);
     pub(super) type ModeCursor2 = ioc!(DRM_IOCTL_MODE_CURSOR2, b'd', 0xbb, InOutData<DrmModeCursor2>);
 }
 
@@ -1653,6 +1680,33 @@ impl PerOpenFileOps for DriHandle {
                     current_userspace!().write_val(res.encoder_id_ptr as usize, &ENCODER_ID)?;
                 }
                 cmd.write(&res)?;
+                Ok(0)
+            }
+            cmd @ ModeGetPlaneResources => {
+                // A single scanout is presented through a single plane, so a
+                // client that enumerates planes finds exactly one. Reporting
+                // none would be equally true of the hardware and useless to a
+                // client trying to find out how it may drive it.
+                let mut res = cmd.read()?;
+                res.count_planes = 1;
+                if res.plane_id_ptr != 0 {
+                    current_userspace!().write_val(res.plane_id_ptr as usize, &PLANE_ID)?;
+                }
+                cmd.write(&res)?;
+                Ok(0)
+            }
+            cmd @ ModeGetPlane => {
+                let mut plane = cmd.read()?;
+                if plane.plane_id != PLANE_ID {
+                    return_errno_with_message!(Errno::EINVAL, "unknown plane id");
+                }
+                let inner = self.inner.lock();
+                plane.crtc_id = CRTC_ID;
+                plane.fb_id = inner.current_fb_id.unwrap_or(0);
+                plane.possible_crtcs = 1;
+                plane.gamma_size = 0;
+                plane.count_format_types = 0;
+                cmd.write(&plane)?;
                 Ok(0)
             }
             cmd @ ModeGetConnector => {
