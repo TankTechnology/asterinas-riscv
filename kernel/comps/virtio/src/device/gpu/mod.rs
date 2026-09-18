@@ -64,6 +64,7 @@ pub const VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE: u32 = 0x0203;
 pub const VIRTIO_GPU_CMD_RESOURCE_CREATE_3D: u32 = 0x0204;
 pub const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D: u32 = 0x0205;
 pub const VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D: u32 = 0x0206;
+pub const VIRTIO_GPU_CMD_SUBMIT_3D: u32 = 0x0207;
 
 pub const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x0300;
 pub const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x0301;
@@ -97,6 +98,20 @@ pub const MAX_SCANOUTS: usize = 16;
 /// Device feature bits (5.7.3), expressed as masks. Bit 0 is the virgl 3D
 /// feature, which the host offers only when it was started with a GL backend.
 pub const VIRTIO_GPU_F_VIRGL: u64 = 1 << 0;
+
+/// Asks the host to signal a fence when the command completes. The fence id
+/// travels in the header's `fence_id`.
+pub const VIRTIO_GPU_FLAG_FENCE: u32 = 1 << 0;
+
+/// `SUBMIT_3D` request (5.7.6.6.5), whose command buffer follows it on the
+/// wire as `size` bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct VirtioGpuCmdSubmit {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub size: u32,
+    pub padding: u32,
+}
 
 /// `CTX_CREATE` request (5.7.6.6.1).
 ///

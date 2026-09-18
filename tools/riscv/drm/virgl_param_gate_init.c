@@ -67,12 +67,22 @@ struct drm_virtgpu_resource_info {
     uint32_t blob_mem;
 };
 
+struct drm_virtgpu_execbuffer {
+    uint32_t flags;
+    uint32_t size;
+    uint64_t command;
+    uint64_t bo_handles;
+    uint32_t num_bo_handles;
+    int32_t fence_fd;
+};
+
 #define DRM_IOCTL_VIRTGPU_GETPARAM _IOWR('d', 0x43, struct drm_virtgpu_getparam)
 #define DRM_IOCTL_VIRTGPU_GET_CAPS _IOWR('d', 0x49, struct drm_virtgpu_get_caps)
 #define DRM_IOCTL_VIRTGPU_CONTEXT_INIT _IOWR('d', 0x4b, struct drm_virtgpu_context_init)
 #define DRM_IOCTL_VIRTGPU_MAP _IOWR('d', 0x41, struct drm_virtgpu_map)
 #define DRM_IOCTL_VIRTGPU_RESOURCE_CREATE _IOWR('d', 0x44, struct drm_virtgpu_resource_create)
 #define DRM_IOCTL_VIRTGPU_RESOURCE_INFO _IOWR('d', 0x45, struct drm_virtgpu_resource_info)
+#define DRM_IOCTL_VIRTGPU_EXECBUFFER _IOWR('d', 0x42, struct drm_virtgpu_execbuffer)
 
 /* Mesa's Gallium resource contract, which is what the `target` field carries. */
 #define PIPE_BUFFER 0U
@@ -83,6 +93,20 @@ struct drm_virtgpu_resource_info {
 /* A small but not trivially small buffer: large enough that a backing that was
  * never really allocated cannot pass by accident. */
 #define RESOURCE_SIZE 4096U
+
+#define VIRTGPU_EXECBUF_FENCE_FD_OUT 0x02U
+
+/* A virgl command buffer that draws nothing.
+ *
+ * The command stream is the client's business, but its *shape* is not: a
+ * header is a 32-bit command word whose low 16 bits are the opcode and whose
+ * upper 16 are its length in 32-bit words, and the stream ends with
+ * VIRGL_CCMD_NOP. Sending a well-formed empty stream is what makes this a test
+ * of the submission path rather than of the host's tolerance for garbage.
+ *
+ * VIRGL_CCMD_NOP is opcode 0, so the whole stream is one word of zero. */
+#define VIRGL_CCMD_NOP 0U
+static const uint32_t EMPTY_COMMAND_STREAM[1] = { VIRGL_CCMD_NOP };
 
 #define VIRTGPU_PARAM_3D_FEATURES 1U
 #define VIRTGPU_PARAM_CAPSET_QUERY_FIX 2U
@@ -229,6 +253,8 @@ static int run_checks(param_ioctl_fn call, void *context, uint64_t *features,
 static struct drm_virtgpu_map map_request;
 static struct drm_virtgpu_resource_create resource_request;
 static struct drm_virtgpu_resource_info info_request;
+static struct drm_virtgpu_execbuffer execbuffer_request;
+static uint32_t execbuffer_handles[1];
 
 /* What a resource creation handed back, for the caller to check further. */
 struct resource_handles {
@@ -253,6 +279,15 @@ static void reset_resource_requests(void)
 
     memset(&map_request, 0, sizeof(map_request));
     memset(&info_request, 0, sizeof(info_request));
+
+    /* Submitted twice: once plain, once asking for an out-fence the driver
+     * does not implement. */
+    memset(execbuffer_handles, 0, sizeof(execbuffer_handles));
+    memset(&execbuffer_request, 0, sizeof(execbuffer_request));
+    execbuffer_request.size = sizeof(EMPTY_COMMAND_STREAM);
+    execbuffer_request.command = (uint64_t)(uintptr_t)EMPTY_COMMAND_STREAM;
+    execbuffer_request.bo_handles = (uint64_t)(uintptr_t)execbuffer_handles;
+    execbuffer_request.fence_fd = -1;
 }
 
 /* A failed check, reported with the name the host gate classifies. */
@@ -385,6 +420,52 @@ static int run_resource(param_ioctl_fn call, void *context, int three_d, int pub
     return 0;
 }
 
+/* Submits a command buffer to the context, which is the point the whole path
+ * exists to reach: everything before this only set the stage.
+ *
+ * The out-fence is checked separately and must be *refused*: a client that asks
+ * for one goes on to poll it, and a driver that answered with -1 would leave it
+ * waiting on EBADF forever rather than failing where it can be seen. */
+static int run_submission(param_ioctl_fn call, void *context, int three_d, int publish)
+{
+    reset_resource_requests();
+    memset(execbuffer_handles, 0, sizeof(execbuffer_handles));
+    execbuffer_request.flags = 0;
+    execbuffer_request.fence_fd = -1;
+    errno = 0;
+    int result = call(context, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execbuffer_request);
+
+    if (!three_d) {
+        if (result == 0 || errno != EINVAL)
+            return report_failure("submit-without-3d");
+        /* The marker carries the outcome rather than merely appearing: the
+         * phase runs on both devices, so its presence says nothing about
+         * whether 3D accepted the submission. */
+        if (publish)
+            publish_marker("DRM_VIRGL_SUBMIT PASS refused=1");
+        return 0;
+    }
+
+    if (result != 0)
+        return report_failure("submit");
+    /* Refused, not answered: see the note above. */
+    if (execbuffer_request.fence_fd != -1)
+        return report_failure("submit-fence-fd");
+
+    reset_resource_requests();
+    memset(execbuffer_handles, 0, sizeof(execbuffer_handles));
+    execbuffer_request.flags = VIRTGPU_EXECBUF_FENCE_FD_OUT;
+    execbuffer_request.fence_fd = -1;
+    errno = 0;
+    if (call(context, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execbuffer_request) == 0 ||
+        errno != EINVAL)
+        return report_failure("submit-out-fence");
+
+    if (publish)
+        publish_marker("DRM_VIRGL_SUBMIT PASS refused=0");
+    return 0;
+}
+
 #if defined(DRM_VIRGL_GATE_SELF_TEST) || defined(DRM_VIRGL_GATE_LIFECYCLE_TEST)
 
 /* A fake kernel that answers the way a virgl host does, so the probe's own
@@ -408,6 +489,8 @@ struct fake_context {
     int resources_created;
     /* Answer a resource-info query by echoing it rather than looking it up. */
     int echo_resource_info;
+    /* Answer an out-fence request instead of refusing it. */
+    int allow_out_fence;
 };
 
 static int fake_ioctl(void *opaque, unsigned long request_, void *argument)
@@ -446,6 +529,27 @@ static int fake_ioctl(void *opaque, unsigned long request_, void *argument)
         context->resources_created++;
         create->bo_handle = 0x40 + context->resources_created;
         create->res_handle = 0x100 + context->resources_created;
+        return 0;
+    }
+
+    if (request_ == DRM_IOCTL_VIRTGPU_EXECBUFFER) {
+        struct drm_virtgpu_execbuffer *exec = argument;
+        if (context->no_3d) {
+            errno = EINVAL;
+            return -1;
+        }
+        /* The stream has to be real: an empty submission is what a driver that
+         * never looked at the buffer would also accept. */
+        if (exec->size != sizeof(EMPTY_COMMAND_STREAM) || exec->command == 0) {
+            errno = EINVAL;
+            return -1;
+        }
+        if ((exec->flags & VIRTGPU_EXECBUF_FENCE_FD_OUT) &&
+            !context->allow_out_fence) {
+            errno = EINVAL;
+            return -1;
+        }
+        exec->fence_fd = context->allow_out_fence ? 7 : -1;
         return 0;
     }
 
@@ -637,6 +741,21 @@ int main(int argc, char **argv)
         struct resource_handles handles;
         if (run_resource(fake_ioctl, &context, 0, 0, &handles) != 0)
             return 1;
+    } else if (strcmp(argv[1], "submit") == 0) {
+        if (run_checks(fake_ioctl, &context, &features, &capsets) != 0)
+            return 1;
+        if (run_caps_and_context(fake_ioctl, &context, 1, 0) != 0)
+            return 1;
+        if (run_submission(fake_ioctl, &context, 1, 0) != 0)
+            return 1;
+    } else if (strcmp(argv[1], "submit-out-fence-allowed") == 0) {
+        /* A driver that answered an out-fence request instead of refusing it
+         * would leave the client polling a descriptor that means nothing. */
+        context.allow_out_fence = 1;
+        if (run_checks(fake_ioctl, &context, &features, &capsets) != 0)
+            return 1;
+        if (run_submission(fake_ioctl, &context, 1, 0) == 0)
+            return 1;
     } else if (strcmp(argv[1], "no-3d-caps-succeed") == 0) {
         /* The inverse: a kernel that answers capability requests on a host
          * with no 3D, which would hand a client a blob that means nothing. */
@@ -667,6 +786,8 @@ int main(void)
     struct resource_handles handles;
     if (run_resource(fake_ioctl, &context, (int)features, 1, &handles) != 0)
         return 1;
+    if (run_submission(fake_ioctl, &context, (int)features, 1) != 0)
+        return 1;
     /* The fake has no file description, so it cannot make the mapping check the
      * real build makes. These two markers stand in for it so that this build
      * emits the whole sequence the host gate parses — the parser is what this
@@ -674,7 +795,8 @@ int main(void)
      * mean anything. */
     if (features != 0)
         publish_marker("DRM_VIRGL_BACKING PASS");
-    publish_marker("DRM_VIRGL_TIMING caps_context_us=0 resource_us=0 backing_us=0");
+    publish_marker(
+        "DRM_VIRGL_TIMING caps_context_us=0 resource_us=0 submit_us=0 backing_us=0");
     publish_marker("ASTERINAS_DRM_VIRGL_R1_READY");
     hold_forever();
 }
@@ -733,7 +855,11 @@ int main(void)
     /* The backing has to be memory the client can actually write into, so map
      * it through the offset the ioctl reported and read back what was written.
      * Only the real path can do this: it needs the file description. */
-    uint64_t after_backing = after_resource;
+    if (run_submission(real_ioctl, &fd, (int)features, 1) != 0)
+        hold_forever();
+    uint64_t after_submit = now_us();
+
+    uint64_t after_backing = after_submit;
     if (features != 0) {
         if (handles.size > (uint32_t)SIZE_MAX)
             fail_and_hold("resource-size-overflow");
@@ -759,10 +885,12 @@ int main(void)
      * what this path costs rather than as a threshold anything is held to:
      * the guest is emulated, so the number describes the emulator as much as
      * the driver. */
-    printf("DRM_VIRGL_TIMING caps_context_us=%llu resource_us=%llu backing_us=%llu\n",
+    printf("DRM_VIRGL_TIMING caps_context_us=%llu resource_us=%llu submit_us=%llu "
+           "backing_us=%llu\n",
            (unsigned long long)(after_caps - start),
            (unsigned long long)(after_resource - after_caps),
-           (unsigned long long)(after_backing - after_resource));
+           (unsigned long long)(after_submit - after_resource),
+           (unsigned long long)(after_backing - after_submit));
     fflush(stdout);
 
     /* Closing the file tears the context down; the host would otherwise hold
