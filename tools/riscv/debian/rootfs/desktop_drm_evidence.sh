@@ -103,10 +103,40 @@ ready() {
     pgrep -u "$USER_ID" -x xterm >/dev/null || return 1
 }
 
+# When each component first appeared.
+#
+# The readiness predicate is a conjunction, so it only says the last of them
+# arrived, not when each did. Recording them separately turns "the desktop came
+# up" into something that can be compared between builds: a change that moves
+# the window manager by ten seconds while leaving the total flat is a different
+# problem from one that moves everything.
+declare -A component_first_seen=()
+record_first_seen() {
+    local name="$1" probe="$2"
+    [[ -n "${component_first_seen[$name]:-}" ]] && return 0
+    if eval "$probe" >/dev/null 2>&1; then
+        component_first_seen[$name]="$(uptime_seconds)"
+    fi
+    return 0
+}
+
 while ! ready; do
     (( $(uptime_seconds) < DEADLINE_SECONDS )) || fail desktop-timeout
+    record_first_seen xorg "pgrep -u $USER_ID -x Xorg"
+    record_first_seen openbox "pgrep -u $USER_ID -x openbox"
+    record_first_seen pcmanfm "pgrep -u $USER_ID -f 'pcmanfm.*--desktop'"
+    record_first_seen lxpanel "pgrep -u $USER_ID -x lxpanel"
+    record_first_seen xterm "pgrep -u $USER_ID -x xterm"
     sleep 1
 done
+
+{
+    printf 'DEBIAN_DESKTOP_DRM_LAUNCH'
+    for component in xorg openbox pcmanfm lxpanel xterm; do
+        printf ' %s=%s' "$component" "${component_first_seen[$component]:-unknown}"
+    done
+    printf '\n'
+} >>"$CONSOLE"
 
 emit "DEBIAN_DESKTOP_DRM_UDEV state=active"
 emit "DEBIAN_DESKTOP_DRM_LOGIND state=active"
