@@ -86,7 +86,47 @@ fail() {
 }
 
 [[ "$DEADLINE_SECONDS" =~ ^[0-9]+$ ]] || fail invalid-deadline
+# What the desktop user is running.
+#
+# Read from /proc rather than spawning a `pgrep` per component: the readiness
+# loop runs once a second for the whole boot window, so five helpers a second
+# were being forked and exec'd during the very seconds the desktop was
+# starting, competing with the processes it was waiting for. This forks
+# nothing, and its logic was verified against a live /proc before it was put
+# here — the first attempt at this shipped a bug that cost a full boot to find.
+desktop_names=""
+desktop_pcmanfm=""
+component_snapshot() {
+    local pid_dir comm cmdline
+    desktop_names=$'\n'
+    desktop_pcmanfm=""
+    for pid_dir in /proc/[0-9]*; do
+        read -r _ comm _ <"$pid_dir/stat" 2>/dev/null || continue
+        comm="${comm#(}"
+        comm="${comm%)}"
+        desktop_names+="$comm"$'\n'
+        # `comm` is truncated to 15 characters and carries no arguments, and it
+        # is not filtered by user; the check below is the one the predicate
+        # needs, and the desktop is the only thing in this image running these.
+        if [[ "$comm" == pcmanfm ]]; then
+            cmdline="$(tr '\0' ' ' <"$pid_dir/cmdline" 2>/dev/null || true)"
+            [[ "$cmdline" == *"--desktop"* ]] && desktop_pcmanfm=yes
+        fi
+    done
+}
+
+component_running() {
+    local name="$1"
+    if [[ "$name" == pcmanfm ]]; then
+        [[ -n "$desktop_pcmanfm" ]]
+        return
+    fi
+    [[ "$desktop_names" == *$'\n'"$name"$'\n'* ]]
+}
+
 ready() {
+    component_snapshot
+
     systemctl is-active --quiet systemd-udevd.service || return 1
     systemctl is-active --quiet systemd-logind.service || return 1
     loginctl list-sessions --no-legend 2>/dev/null | grep -q " $USER_NAME " || return 1
@@ -96,11 +136,11 @@ ready() {
     grep -Eq 'drm|DRI3|virtio' "$XORG_LOG" || return 1
     # The log outlives the server, so require the process as well; otherwise a
     # dead Xorg still satisfies the remaining checks.
-    pgrep -u "$USER_ID" -x Xorg >/dev/null || return 1
-    pgrep -u "$USER_ID" -x openbox >/dev/null || return 1
-    pgrep -u "$USER_ID" -f 'pcmanfm.*--desktop' >/dev/null || return 1
-    pgrep -u "$USER_ID" -x lxpanel >/dev/null || return 1
-    pgrep -u "$USER_ID" -x xterm >/dev/null || return 1
+    component_running Xorg || return 1
+    component_running openbox || return 1
+    component_running pcmanfm || return 1
+    component_running lxpanel || return 1
+    component_running xterm || return 1
 }
 
 # When each component first appeared.
@@ -122,13 +162,23 @@ record_first_seen() {
 
 while ! ready; do
     (( $(uptime_seconds) < DEADLINE_SECONDS )) || fail desktop-timeout
-    record_first_seen xorg "pgrep -u $USER_ID -x Xorg"
-    record_first_seen openbox "pgrep -u $USER_ID -x openbox"
-    record_first_seen pcmanfm "pgrep -u $USER_ID -f 'pcmanfm.*--desktop'"
-    record_first_seen lxpanel "pgrep -u $USER_ID -x lxpanel"
-    record_first_seen xterm "pgrep -u $USER_ID -x xterm"
+    record_first_seen xorg "component_running Xorg"
+    record_first_seen openbox "component_running openbox"
+    record_first_seen pcmanfm "component_running pcmanfm"
+    record_first_seen lxpanel "component_running lxpanel"
+    record_first_seen xterm "component_running xterm"
     sleep 1
 done
+
+# The loop body does not run on the iteration that finds `ready` true, so the
+# components that made it true would never be recorded: take the final state
+# once more before reporting, or every run reports the last arrival as unknown.
+component_snapshot
+record_first_seen xorg "component_running Xorg"
+record_first_seen openbox "component_running openbox"
+record_first_seen pcmanfm "component_running pcmanfm"
+record_first_seen lxpanel "component_running lxpanel"
+record_first_seen xterm "component_running xterm"
 
 {
     printf 'DEBIAN_DESKTOP_DRM_LAUNCH'
