@@ -242,6 +242,121 @@ if [[ -f /usr/lib/asterinas/ioctltrace.so ]]; then
     glxinfo_env+=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so)
 fi
 
+# Xorg reaches the same Mesa loader the probe below does, but it decides
+# several minutes earlier and says so in its own words. Reading that verdict
+# out is free and is an independent witness: "the loader picked llvmpipe" and
+# "Xorg could not use the driver it picked" are different problems with the
+# same symptom, and only one of them is visible from the probe alone.
+if [[ -f "$XORG_LOG" ]]; then
+    if grep -q 'Refusing to try glamor on llvmpipe' "$XORG_LOG" 2>/dev/null; then
+        emit 'DEBIAN_DESKTOP_DRM_GL_XORG accel=llvmpipe'
+    elif grep -q 'glamor initialization failed' "$XORG_LOG" 2>/dev/null; then
+        emit 'DEBIAN_DESKTOP_DRM_GL_XORG accel=failed'
+    else
+        emit 'DEBIAN_DESKTOP_DRM_GL_XORG accel=glamor'
+    fi
+fi
+
+# The renderer is the whole point of a 3D run, so the line that reports it is
+# emitted unconditionally, by this outer scope, from a file the probe writes
+# the moment it learns anything. The probe itself runs in the background
+# behind a watchdog, because the one dependency this section cannot afford is
+# on `glxinfo` returning: `timeout` bounds a probe that is slow or ignoring
+# signals, but a process parked in an uninterruptible kernel wait cannot be
+# killed at all. When that happened the loop never finished, the renderer line
+# was never reached, and a run that had already taken half an hour reported
+# nothing -- the gate saw only silence and called it a protocol timeout.
+GL_PROBE_BUDGET_SECONDS=420
+gl_renderer="unavailable"
+gl_result="${TMPDIR:-/tmp}/asterinas-gl-renderer.$$"
+: >"$gl_result"
+gl_diag_dumped=""
+
+gl_probe() {
+    local probe proc_probe
+    for _ in $(seq 1 4); do
+        # stderr is kept when the loader is being debugged, and discarded
+        # otherwise: Mesa explains on stderr why it rejected a driver, which is
+        # the only place that reasoning exists, and the probe was throwing it away.
+        if [[ -n "$(cmdline_value mesa_loader_debug)" ]]; then
+            glxinfo_err="$CONSOLE"
+        else
+            glxinfo_err=/dev/null
+        fi
+        probe="$(env "${glxinfo_env[@]}" timeout 60 glxinfo -B 2>"$glxinfo_err" | \
+            sed -n 's/^OpenGL renderer string: //p' | head -1 || true)"
+        if [[ -n "$probe" ]]; then
+            printf '%s' "$probe" >"$gl_result"
+            return 0
+        fi
+        if [[ -z "$gl_diag_dumped" ]]; then
+            gl_diag_dumped=yes
+            emit '--- DRM GL probe diagnostics ---'
+            # Run one probed glxinfo in the background and sample it while it is
+            # stuck, so a hang is distinguishable from a slow start.
+            env "${glxinfo_env[@]}" glxinfo -B >>"$CONSOLE" 2>&1 &
+            gl_pid=$!
+            gl_waited=0
+            while kill -0 "$gl_pid" 2>/dev/null; do
+                if (( gl_waited >= 90 )); then
+                    # This kernel exposes `status` and `stat` per process but not
+                    # `wchan` or `stack`, so the state can be shown to be blocked
+                    # without naming what it blocks on. Say which probes are
+                    # missing rather than printing empty values that read like a
+                    # broken script. To find the blocking call itself, run the
+                    # gate with ASTERINAS_QEMU_TRACE=enable=virtio_gpu_*,file=...
+                    # and read the last command the host handled.
+                    emit "--- glxinfo[$gl_pid] still running after ${gl_waited}s ---"
+                    grep -E '^(State|Name|Pid|PPid|Threads)' "/proc/$gl_pid/status" \
+                        >>"$CONSOLE" 2>&1 || true
+                    for proc_probe in wchan stack; do
+                        if [[ -r "/proc/$gl_pid/$proc_probe" ]]; then
+                            printf -- '-- %s: %s\n' "$proc_probe" \
+                                "$(cat "/proc/$gl_pid/$proc_probe" 2>/dev/null)" >>"$CONSOLE" 2>&1
+                        else
+                            printf -- '-- %s: not provided by this kernel\n' "$proc_probe" \
+                                >>"$CONSOLE" 2>&1
+                        fi
+                    done
+                    kill -9 "$gl_pid" 2>/dev/null || true
+                    break
+                fi
+                sleep 5
+                gl_waited=$((gl_waited + 5))
+            done
+            wait "$gl_pid" 2>/dev/null || true
+            if [[ -f "$SESSION_LOG" ]]; then
+                emit '--- DRM GL probe: session log tail ---'
+                tail -c 8192 "$SESSION_LOG" >>"$CONSOLE" 2>&1 || true
+            fi
+            if [[ -f "$XORG_LOG" ]]; then
+                emit '--- DRM GL probe: Xorg log tail ---'
+                tail -c 8192 "$XORG_LOG" >>"$CONSOLE" 2>&1 || true
+            fi
+        fi
+        sleep 5
+    done
+}
+
+gl_probe &
+gl_probe_pid=$!
+gl_probe_waited=0
+while kill -0 "$gl_probe_pid" 2>/dev/null; do
+    if (( gl_probe_waited >= GL_PROBE_BUDGET_SECONDS )); then
+        emit "--- GL probe abandoned after ${gl_probe_waited}s without returning ---"
+        kill -9 "$gl_probe_pid" 2>/dev/null || true
+        break
+    fi
+    sleep 5
+    gl_probe_waited=$((gl_probe_waited + 5))
+done
+wait "$gl_probe_pid" 2>/dev/null || true
+if [[ -s "$gl_result" ]]; then
+    gl_renderer="$(cat "$gl_result")"
+fi
+rm -f "$gl_result"
+emit "DEBIAN_DESKTOP_DRM_GL renderer=$gl_renderer"
+
 # How the DRM device presents itself to userspace.
 #
 # For diagnosis only — this is NOT what picks the renderer. Mesa chooses the
@@ -251,8 +366,18 @@ fi
 # earlier reading of this tree as the cause of the llvmpipe fallback was
 # wrong. It is dumped anyway because "the topology is absent" remains a fact
 # worth seeing when some other part of the stack asks for it.
+#
+# Deliberately last. The renderer line above is the finding this run exists to
+# produce and the gate stops as soon as it arrives; putting anything ahead of
+# it means a stall here costs the answer instead of costing a diagnostic.
 if [[ -n "$(cmdline_value mesa_loader_debug)" ]]; then
     emit '--- DRM sysfs ---'
+    # Watchdogged like the GL probe above, and for the same reason: this is the
+    # only part of the script that walks paths the image does not have, and a
+    # diagnostic that can hang is worse than no diagnostic. The kill bounds a
+    # process that is merely slow or ignoring signals; a process parked in an
+    # uninterruptible kernel wait cannot be bounded from userspace at all,
+    # which is why this block is last rather than reliable.
     {
         ls -l /sys/class/drm/ 2>&1 | head -20
         for node in /sys/class/drm/renderD128 /sys/class/drm/card0; do
@@ -265,71 +390,17 @@ if [[ -n "$(cmdline_value mesa_loader_debug)" ]]; then
             printf -- '-- of_node/compatible: %s\n' \
                 "$(cat "$node/device/of_node/compatible" 2>&1 | head -1)"
         done
-    } >>"$CONSOLE" 2>&1
+    } >>"$CONSOLE" 2>&1 &
+    sysfs_pid=$!
+    sysfs_waited=0
+    while kill -0 "$sysfs_pid" 2>/dev/null; do
+        if (( sysfs_waited >= 60 )); then
+            emit "--- DRM sysfs still running after ${sysfs_waited}s; abandoning it ---"
+            kill -9 "$sysfs_pid" 2>/dev/null || true
+            break
+        fi
+        sleep 2
+        sysfs_waited=$((sysfs_waited + 2))
+    done
+    wait "$sysfs_pid" 2>/dev/null || true
 fi
-
-gl_renderer="unavailable"
-gl_diag_dumped=""
-for _ in $(seq 1 4); do
-    # stderr is kept when the loader is being debugged, and discarded
-    # otherwise: Mesa explains on stderr why it rejected a driver, which is the
-    # only place that reasoning exists, and the probe was throwing it away.
-    if [[ -n "$(cmdline_value mesa_loader_debug)" ]]; then
-        glxinfo_err="$CONSOLE"
-    else
-        glxinfo_err=/dev/null
-    fi
-    probe="$(env "${glxinfo_env[@]}" timeout 60 glxinfo -B 2>"$glxinfo_err" | \
-        sed -n 's/^OpenGL renderer string: //p' | head -1 || true)"
-    if [[ -n "$probe" ]]; then
-        gl_renderer="$probe"
-        break
-    fi
-    if [[ -z "$gl_diag_dumped" ]]; then
-        gl_diag_dumped=yes
-        emit '--- DRM GL probe diagnostics ---'
-        # Run one probed glxinfo in the background and sample it while it is
-        # stuck, so a hang is distinguishable from a slow start.
-        env "${glxinfo_env[@]}" glxinfo -B >>"$CONSOLE" 2>&1 &
-        gl_pid=$!
-        gl_waited=0
-        while kill -0 "$gl_pid" 2>/dev/null; do
-            if (( gl_waited >= 90 )); then
-                # This kernel exposes `status` and `stat` per process but not
-                # `wchan` or `stack`, so the state can be shown to be blocked
-                # without naming what it blocks on. Say which probes are
-                # missing rather than printing empty values that read like a
-                # broken script. To find the blocking call itself, run the
-                # gate with ASTERINAS_QEMU_TRACE=enable=virtio_gpu_*,file=...
-                # and read the last command the host handled.
-                emit "--- glxinfo[$gl_pid] still running after ${gl_waited}s ---"
-                grep -E '^(State|Name|Pid|PPid|Threads)' "/proc/$gl_pid/status" \
-                    >>"$CONSOLE" 2>&1 || true
-                for probe in wchan stack; do
-                    if [[ -r "/proc/$gl_pid/$probe" ]]; then
-                        printf -- '-- %s: %s\n' "$probe" \
-                            "$(cat "/proc/$gl_pid/$probe" 2>/dev/null)" >>"$CONSOLE" 2>&1
-                    else
-                        printf -- '-- %s: not provided by this kernel\n' "$probe" \
-                            >>"$CONSOLE" 2>&1
-                    fi
-                done
-                kill -9 "$gl_pid" 2>/dev/null || true
-                break
-            fi
-            sleep 5
-            gl_waited=$((gl_waited + 5))
-        done
-        wait "$gl_pid" 2>/dev/null || true
-        if [[ -f "$SESSION_LOG" ]]; then
-            emit '--- DRM GL probe: session log tail ---'
-            tail -c 8192 "$SESSION_LOG" >>"$CONSOLE" 2>&1 || true
-        fi
-        if [[ -f "$XORG_LOG" ]]; then
-            emit '--- DRM GL probe: Xorg log tail ---'
-            tail -c 8192 "$XORG_LOG" >>"$CONSOLE" 2>&1 || true
-        fi
-    fi
-    sleep 5
-done
-emit "DEBIAN_DESKTOP_DRM_GL renderer=$gl_renderer"
