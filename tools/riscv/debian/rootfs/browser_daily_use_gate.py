@@ -102,6 +102,22 @@ MAX_TIMEOUT_SECONDS = 120.0
 PHYSICAL_SESSION_SETUP_TIMEOUT_SECONDS = 300.0
 CONTEXT_CLEANUP_TIMEOUT_SECONDS = 5.0
 FIXTURE_GROUPS = ("document", "storage", "execution", "rendering-media", "download")
+_FIXTURE_CAPABILITY_CHECKS = frozenset(
+    {
+        "audio",
+        "canvas",
+        "cookie",
+        "fetch",
+        "indexedDb",
+        "localStorage",
+        "sessionStorage",
+        "wasm",
+        "worker",
+    }
+)
+_STORAGE_CAPABILITY_CHECKS = ("localStorage", "sessionStorage", "cookie", "indexedDb")
+_EXECUTION_CAPABILITY_CHECKS = ("wasm", "worker", "fetch")
+_RENDERING_MEDIA_CAPABILITY_CHECKS = ("canvas", "audio")
 STARTUP_TIMELINE = Path("/home/asterinas/browser-web-timeline.log")
 _FAILURE_REASONS = frozenset(
     {
@@ -206,6 +222,7 @@ class CaptureRequest:
 class FixtureCapture:
     function_groups: list[dict[str, object]]
     artifact: bytes
+    limitations: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -460,7 +477,9 @@ def run_daily_use_gate(
                 "systemArtifact": ARTIFACT_NAMES[4],
                 "threadArtifact": ARTIFACT_NAMES[5],
             },
-            limitations=composite.limitations,
+            limitations=_merge_limitations(
+                fixture.limitations, composite.limitations
+            ),
         )
         completed.append("validated")
         if result["state"] != "pass":
@@ -636,6 +655,134 @@ def _passing_group(name: str) -> dict[str, object]:
     return {"name": name, "state": "pass", "reason": None}
 
 
+def _fixture_group(
+    name: str, checks: dict[str, bool], owned_checks: tuple[str, ...], *, required: bool
+) -> dict[str, object]:
+    if all(checks[item] for item in owned_checks):
+        return _passing_group(name)
+    return {
+        "name": name,
+        "state": "fail" if required else "unsupported",
+        "reason": (
+            "fixture-capability-failed"
+            if required
+            else "fixture-capability-unavailable"
+        ),
+    }
+
+
+def _classify_daily_use_fixture(
+    probe: object, expected_url: str
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    result = web_gate._probe_mapping(probe)
+    if (
+        result["url"] != expected_url
+        or result["title"] != "Asterinas Browser Quality"
+        or result["readyState"] != "complete"
+        or result["jsComplete"] is not True
+    ):
+        raise web_gate.GateError("fixture home document or JavaScript is incomplete")
+    body = result["bodyText"]
+    if not isinstance(body, str) or not all(
+        token in body for token in ("Asterinas browser quality", "浏览器质量")
+    ):
+        raise web_gate.GateError("fixture home lost its exact Latin/CJK content")
+    dom = result["dom"]
+    if not isinstance(dom, dict) or not all(
+        dom.get(name) is True
+        for name in ("fixtureQuery", "fixtureImage", "fixtureSecond")
+    ):
+        raise web_gate.GateError(
+            "fixture home form, PNG, or navigation link is not ready"
+        )
+
+    capabilities = result["browserCapabilities"]
+    if type(capabilities) is not dict or set(capabilities) != {
+        "version",
+        "phase",
+        "state",
+        "checks",
+        "error",
+    }:
+        raise web_gate.GateError("fixture browser capability evidence is malformed")
+    checks = capabilities["checks"]
+    if (
+        type(capabilities["version"]) is not int
+        or capabilities["version"] != 1
+        or capabilities["phase"] != "home"
+        or type(checks) is not dict
+        or set(checks) != _FIXTURE_CAPABILITY_CHECKS
+        or any(type(value) is not bool for value in checks.values())
+    ):
+        raise web_gate.GateError("fixture browser capability evidence is malformed")
+    state = capabilities["state"]
+    error = capabilities["error"]
+    all_checks_pass = all(checks.values())
+    if state == "complete":
+        if error is not None or not all_checks_pass:
+            raise web_gate.GateError(
+                "fixture browser capability evidence is inconsistent"
+            )
+    elif state == "error":
+        if (
+            all_checks_pass
+            or not isinstance(error, str)
+            or not error
+            or len(error) > 160
+        ):
+            raise web_gate.GateError(
+                "fixture browser capability evidence is inconsistent"
+            )
+    else:
+        raise web_gate.GateError("fixture browser capabilities are not terminal")
+
+    typed_checks = {name: checks[name] for name in _FIXTURE_CAPABILITY_CHECKS}
+    groups = [
+        _passing_group("document"),
+        _fixture_group(
+            "storage", typed_checks, _STORAGE_CAPABILITY_CHECKS, required=True
+        ),
+        _fixture_group(
+            "execution", typed_checks, _EXECUTION_CAPABILITY_CHECKS, required=False
+        ),
+        _fixture_group(
+            "rendering-media",
+            typed_checks,
+            _RENDERING_MEDIA_CAPABILITY_CHECKS,
+            required=False,
+        ),
+    ]
+    optional_unsupported = any(
+        item["state"] == "unsupported" for item in groups
+    )
+    return (
+        groups,
+        {
+            "items": (
+                ["fixture-capabilities-incomplete"]
+                if optional_unsupported
+                else []
+            )
+        },
+    )
+
+
+def _merge_limitations(*values: object) -> dict[str, object]:
+    combined: set[str] = set()
+    for value in values:
+        if type(value) is not dict or set(value) != {"items"}:
+            raise DailyUseContractError("phase limitations are malformed")
+        items = value["items"]
+        if (
+            type(items) is not list
+            or any(not isinstance(item, str) for item in items)
+            or len(set(items)) != len(items)
+        ):
+            raise DailyUseContractError("phase limitations are malformed")
+        combined.update(items)
+    return {"items": sorted(combined)}
+
+
 def _owned_groups(entries, names):
     if (
         type(entries) is not list
@@ -667,16 +814,34 @@ def _capture_fixture(request, download_path, uid_reader):
         raise DailyUseGateError("identity-invalid")
     _remaining(request)
     web_gate._navigate(request.client, url)
-    probe, _ = web_gate._wait_for_probe(
+    probe, classified = web_gate._wait_for_probe(
         request.client,
-        lambda value: web_gate.probe_fixture_home(value, url),
+        lambda value: _classify_daily_use_fixture(value, url),
         request.deadline,
         diagnostic_fn=lambda line: None,
     )
+    probe_groups, probe_limitations = classified
     snapshot = web_gate._snapshot(request.client)
-    web_gate.probe_fixture_home(
-        {name: snapshot[name] for name in probe if name != "apiTypes"}, url
+    snapshot_groups, snapshot_limitations = _classify_daily_use_fixture(
+        {
+            name: snapshot[name]
+            for name in (
+                "url",
+                "title",
+                "readyState",
+                "bodyText",
+                "jsComplete",
+                "browserCapabilities",
+                "dom",
+            )
+        },
+        url,
     )
+    if (snapshot_groups, snapshot_limitations) != (
+        probe_groups,
+        probe_limitations,
+    ):
+        raise web_gate.GateError("fixture capability evidence changed during capture")
     _validate_fixture_resources(snapshot, url)
     # Both scripts use relative fixture paths. Search/resource validators in the
     # public-web gate deliberately accept slirp only and cannot serve the board.
@@ -693,8 +858,9 @@ def _capture_fixture(request, download_path, uid_reader):
             download_path, request.deadline, Path(directory), owner_uid
         )
     return FixtureCapture(
-        [_passing_group(name) for name in FIXTURE_GROUPS],
+        probe_groups + [_passing_group("download")],
         _json_bytes({"probe": probe, "snapshot": snapshot, "download": download}),
+        probe_limitations,
     )
 
 
