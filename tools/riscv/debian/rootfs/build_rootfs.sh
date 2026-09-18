@@ -13,6 +13,7 @@ readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/r
 readonly DESKTOP_M9_SOFTWARE_OUTPUT_DIR="target/debian-riscv/desktop-m9-software/rootfs"
 readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
 readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
+readonly DESKTOP_DRM_OUTPUT_DIR="target/debian-riscv/desktop-drm/rootfs"
 readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
 readonly DEFAULT_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
 readonly SECURITY_MIRROR="https://security.debian.org/debian-security"
@@ -199,7 +200,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web) ;;
+        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web | desktop-drm) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -232,6 +233,8 @@ configure_profile() {
         OUTPUT_DIR="$BROWSER_M5_OUTPUT_DIR"
     elif [[ "$PROFILE" == browser-web && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$BROWSER_WEB_OUTPUT_DIR"
+    elif [[ "$PROFILE" == desktop-drm && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$DESKTOP_DRM_OUTPUT_DIR"
     fi
 }
 
