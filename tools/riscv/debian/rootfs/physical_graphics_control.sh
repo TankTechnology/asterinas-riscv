@@ -50,7 +50,7 @@ is_profile_timeout() {
 
 input_identity() {
     PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
-        /usr/bin/timeout --kill-after=1s 2s /usr/bin/python3 -c 'import glob,os,runpy;m=runpy.run_path("/run/asterinas-tools/desktop-input-identity");d=[(os.path.basename(p),m["read_identity"](p)) for p in glob.glob("/dev/input/event*")];uk=(3,"usb_boot_keyboard","xhci/input0");um=(3,"usb_boot_mouse","xhci/input1");qk=(6,"QEMU Virtio Keyboard","virtio/input0");qm=(6,"QEMU Virtio Tablet","virtio/input0");ks=[p for p,x in d if x in (uk,qk)];ms=[p for p,x in d if x in (um,qm)];print(sum(x in (uk,um) for _,x in d),int(sum(x==uk for _,x in d)==1),int(sum(x==um for _,x in d)==1),ks[0] if len(ks)==1 else "missing",ms[0] if len(ms)==1 else "missing")' 2>/dev/null || printf '0 0 0 missing missing\n'
+        /usr/bin/timeout --kill-after=1s 10s /usr/bin/python3 -c 'import glob,os,runpy;m=runpy.run_path("/run/asterinas-tools/desktop-input-identity");d=[(os.path.basename(p),m["read_identity"](p)) for p in glob.glob("/dev/input/event*")];uk=(3,"usb_boot_keyboard","xhci/input0");um=(3,"usb_boot_mouse","xhci/input1");qk=(6,"QEMU Virtio Keyboard","virtio/input0");qm=(6,"QEMU Virtio Tablet","virtio/input0");ks=[p for p,x in d if x in (uk,qk)];ms=[p for p,x in d if x in (um,qm)];print(sum(x in (uk,um) for _,x in d),int(sum(x==uk for _,x in d)==1),int(sum(x==um for _,x in d)==1),ks[0] if len(ks)==1 else "missing",ms[0] if len(ms)==1 else "missing")' 2>/dev/null || printf '0 0 0 missing missing\n'
 }
 
 browser_stage() {
