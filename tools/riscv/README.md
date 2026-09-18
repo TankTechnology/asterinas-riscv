@@ -382,10 +382,21 @@ it correctly, which is the first thing a 3D client asks: Mesa calls
 there is no 3D.
 
 The guest opens `/dev/dri/renderD128` — where a 3D client belongs, and where the
-render-node permission split has to let the query through — and reads three
-parameters: `3D_FEATURES`, `CAPSET_QUERY_FIX`, and `SUPPORTED_CAPSET_IDs`. It
-also requires an unknown parameter to be refused rather than answered with a
-zero the kernel invented.
+render-node permission split has to let the queries through — and walks the
+same path a client does:
+
+1. three parameters via `VIRTGPU_GETPARAM`: `3D_FEATURES`, `CAPSET_QUERY_FIX`,
+   and `SUPPORTED_CAPSET_IDs`, with an unknown parameter required to be refused
+   rather than answered with a zero the kernel invented;
+2. the capability blob via `VIRTGPU_GET_CAPS`, which must be real: the probe
+   fills its buffer with a pattern first, so a returned success that copied
+   nothing leaves the probe's own bytes in place and is rejected;
+3. a context via `VIRTGPU_CONTEXT_INIT`, which must succeed once and be refused
+   with `EEXIST` the second time, matching the one-context-per-file contract.
+
+On a host without 3D the same three steps must be *refused* with `EINVAL`
+rather than half-work, so the probe asserts the direction its own report calls
+for.
 
 **The device is what decides the answer, so the gate derives its expectation
 from the device rather than taking one as configuration.** `drm-virgl` launches
@@ -407,12 +418,19 @@ make test_riscv_drm_virgl_param DRM_VIRGL_DEVICE_SET=drm-gem \
   DRM_VIRGL_UBOOT=... DRM_VIRGL_BOOT_DISK=... DRM_VIRGL_MANIFEST=...
 ```
 
-A pass reads `3d=1 capsets=0x2` on the GL device (bit 1 is the virgl capset) and
-`3d=0 capsets=0x0` on the control.
+A pass reads `3d=1 capsets=0x2` with a non-empty capability blob on the GL
+device (bit 1 is the virgl capset), and `3d=0 capsets=0x0` with no blob on the
+control.
 
-This gate covers capability negotiation only. Contexts, 3D resources, and
-`SUBMIT_3D` are not implemented yet, so advertising them would be premature —
-the driver takes the virgl feature bit and no more.
+This gate covers capability negotiation and contexts. 3D resources and
+`SUBMIT_3D` are not implemented yet, so a client can obtain the renderer's
+description and open a context against it, but cannot yet create anything to
+render into or submit work.
+
+`CONTEXT_INIT` accepts the parameters this driver implements and refuses the
+rest rather than accepting and ignoring them: a second ring count is rejected
+because submission is single-ring, and a non-zero ring-poll mask is rejected
+because polling is not implemented.
 
 ## Simulation-first Megrez debug attempt
 
