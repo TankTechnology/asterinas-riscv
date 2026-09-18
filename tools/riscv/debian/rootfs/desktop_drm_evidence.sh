@@ -130,6 +130,30 @@ grep -E 'glamor|AIGLX|DRI3|Modeline' "$XORG_LOG" >>"$CONSOLE" 2>&1 || true
 # /usr/lib/asterinas/ioctltrace.so (the M19 LD_PRELOAD ioctl logger) is
 # injected into diagnostic images to name the exact DRM ioctl sequence.
 glxinfo_env=(DISPLAY=:0 XAUTHORITY="/home/$USER_NAME/.Xauthority")
+
+# Diagnostics, all off unless asked for on the kernel command line, so a
+# normal run's renderer line means exactly what it says.
+#
+# `asterinas.mesa_loader_debug=1` makes Mesa name the driver it tried to load
+# and why it rejected it, which is the difference between "the loader never
+# considered virtio_gpu" and "it loaded and failed".
+#
+# `asterinas.mesa_driver_override=NAME` forces a driver. Forcing one that the
+# loader would not have chosen separates a selection problem from a driver
+# that cannot initialise against this kernel: if forcing works, the loader is
+# what is wrong; if it fails, the driver is.
+cmdline_value() {
+    [[ -r /proc/cmdline ]] || return 0
+    tr ' ' '\n' </proc/cmdline 2>/dev/null | sed -n "s/^asterinas\.$1=//p" | head -1
+}
+if [[ -n "$(cmdline_value mesa_loader_debug)" ]]; then
+    glxinfo_env+=(LIBGL_DEBUG=verbose MESA_DEBUG=1)
+fi
+mesa_override="$(cmdline_value mesa_driver_override)"
+if [[ "$mesa_override" =~ ^[a-z0-9_]+$ ]]; then
+    glxinfo_env+=(MESA_LOADER_DRIVER_OVERRIDE="$mesa_override")
+    emit "DEBIAN_DESKTOP_DRM_GL_OVERRIDE driver=$mesa_override"
+fi
 if [[ -f /usr/lib/asterinas/ioctltrace.so ]]; then
     glxinfo_env+=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so)
 fi
