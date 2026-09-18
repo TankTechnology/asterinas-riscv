@@ -23,6 +23,7 @@ from tools.riscv.debian.rootfs.desktop_drm_gate import (
     classify_desktop_drm_virgl,
     desktop_drm_qemu_argv,
     observed_desktop_drm_renderer,
+    orchestrate_desktop_drm_gate,
 )
 from tools.riscv.debian.rootfs.rootfs_gate import GateConfig
 from tools.riscv.debian.rootfs.profiles import get_profile
@@ -232,6 +233,28 @@ class DesktopDRMRendererTests(unittest.TestCase):
     def test_the_observed_renderer_is_read_back_from_the_line(self) -> None:
         self.assertEqual(observed_desktop_drm_renderer(self._transcript("zink")), "zink")
         self.assertIsNone(observed_desktop_drm_renderer(self._transcript(None)))
+
+    def test_the_gate_wires_the_3d_classifier_to_a_3d_device(self) -> None:
+        # Requiring virgl is only real if the run that needs it actually gets
+        # graded by the classifier that checks it. A correct classifier that
+        # nothing calls would look identical from the outside.
+        for device, expected in (
+            ("virtio-gpu-gl-device", classify_desktop_drm_virgl),
+            ("virtio-gpu-device", classify_desktop_drm),
+        ):
+            with self.subTest(device=device):
+                operations = DesktopDRMOperations(self._config(device))
+                with mock.patch(
+                    "tools.riscv.debian.rootfs.desktop_drm_gate."
+                    "orchestrate_systemd_m2_gate",
+                    return_value={"passed": True},
+                ) as orchestrate:
+                    orchestrate_desktop_drm_gate(
+                        self._config(device), operations
+                    )
+                self.assertIs(
+                    orchestrate.call_args.kwargs["classifier"], expected
+                )
 
 
 if __name__ == "__main__":
