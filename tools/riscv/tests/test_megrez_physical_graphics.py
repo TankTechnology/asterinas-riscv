@@ -1767,7 +1767,9 @@ class PhysicalCommandTests(unittest.TestCase):
             "/run/asterinas-tools/desktop-input-identity", control_script
         )
         self.assertNotIn('open(p,"rb",buffering=0)', control_script)
-        self.assertNotIn("attempt\" -ge 120", control_script)
+        self.assertIn('if [ "$stop_attempt" -ge 120 ]', control_script)
+        self.assertIn("active | activating | deactivating | reloading", control_script)
+        self.assertIn("inactive | failed", control_script)
         for stage in (
             "input-wait",
             "input-ready",
