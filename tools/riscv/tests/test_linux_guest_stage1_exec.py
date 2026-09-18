@@ -98,6 +98,7 @@ class LinuxGuestStage1ExecTests(unittest.TestCase):
         source = SOURCE.read_text(encoding="utf-8")
         order = [
             "kernel/lib/crc16.ko",
+            "kernel/crypto/crc32c_generic.ko",
             "kernel/fs/mbcache.ko",
             "kernel/fs/jbd2.ko",
             "kernel/fs/ext4.ko",
