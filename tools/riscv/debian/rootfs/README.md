@@ -423,6 +423,22 @@ persist.
 
 The result has seven functional groups: `document`, `storage`, `execution`,
 `rendering-media`, `navigation`, `download`, and `contexts`.
+The performance qualification requires `document`, `storage`, `navigation`,
+`download`, and `contexts` to pass.
+`execution` and `rendering-media` are capability-coverage groups: each may be
+`pass` or `unsupported`, but never `fail`, in a passing performance result.
+`execution` owns the WebAssembly, Web Worker, and `fetch` fixture checks;
+`rendering-media` owns canvas and audio; and `storage` continues to require
+local storage, session storage, cookies, and IndexedDB.
+An optional group is `unsupported` only after an exact terminal fixture report
+contains a false owned check, and the result then includes
+`fixture-capabilities-incomplete`.
+That limitation is rejected when both optional groups pass and is required
+when either is unsupported.
+The standalone browser Web gate remains stricter and still requires every
+fixture capability to be true.
+Accordingly, `functions=7/7` means that all seven bounded group verdicts are
+present; it does not turn an `unsupported` group into a functionality claim.
 Its five performance categories are `startup`, `input`, `scroll`,
 `navigation`, and `context-switch`.
 Input keyboard/pointer and scroll first/next-rAF p95 values above 100 ms are
