@@ -531,6 +531,8 @@ def _load_run(directory: Path) -> dict[str, object]:
         "ratios": ratios,
         "classification": classification,
         "diagnosticThresholdCrossings": threshold_crossings,
+        "functionGroups": daily_result["functionGroups"],
+        "dailyUseLimitations": daily_result["limitations"],
         "raw": {
             "keyboard": performance["input"]["metrics"]["keyboard"],
             "pointer": performance["input"]["metrics"]["pointer"],
@@ -573,6 +575,16 @@ def build_report(run_directories: Sequence[Path]) -> dict[str, object]:
     identity = runs[0]["identity"]
     if any(run["identity"] != identity for run in runs[1:]):
         raise ReportError("qualified runs have mixed immutable identities")
+    daily_use_coverage = {
+        "functionGroups": runs[0]["functionGroups"],
+        "limitations": runs[0]["dailyUseLimitations"],
+    }
+    if any(
+        run["functionGroups"] != daily_use_coverage["functionGroups"]
+        or run["dailyUseLimitations"] != daily_use_coverage["limitations"]
+        for run in runs[1:]
+    ):
+        raise ReportError("qualified runs have mixed daily-use capability coverage")
     metrics = {
         name: _summary([float(run["primary"][name]) for run in runs])
         for name in PRIMARY_METRICS
@@ -612,6 +624,7 @@ def build_report(run_directories: Sequence[Path]) -> dict[str, object]:
             bool(run["diagnosticThresholdCrossings"]) for run in runs
         ),
         "immutableIdentity": identity,
+        "dailyUseCoverage": daily_use_coverage,
         "metrics": metrics,
         "runs": runs,
         "limitations": [
@@ -639,11 +652,25 @@ def _markdown(report: dict[str, object], inputs: Sequence[Path]) -> bytes:
         json.dumps(report["immutableIdentity"], sort_keys=True, indent=2),
         "```",
         "",
-        "## Primary metrics (ms)",
+        "## Daily-use capability coverage",
         "",
-        "| Metric | Run 1 | Run 2 | Run 3 | Median | Min | Max |",
-        "|---|---:|---:|---:|---:|---:|---:|",
     ]
+    lines.extend(
+        f"- {item['name']}: {item['state']}"
+        for item in report["dailyUseCoverage"]["functionGroups"]
+    )
+    lines.extend(["", "Daily-use limitations:", ""])
+    daily_use_limitations = report["dailyUseCoverage"]["limitations"]["items"]
+    lines.extend(f"- {item}" for item in (daily_use_limitations or ["none"]))
+    lines.extend(
+        [
+            "",
+            "## Primary metrics (ms)",
+            "",
+            "| Metric | Run 1 | Run 2 | Run 3 | Median | Min | Max |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
     for name in PRIMARY_METRICS:
         summary = metrics[name]
         values = summary["values"]
