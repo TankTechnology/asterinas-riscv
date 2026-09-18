@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <poll.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
@@ -423,10 +424,15 @@ static int run_resource(param_ioctl_fn call, void *context, int three_d, int pub
 /* Submits a command buffer to the context, which is the point the whole path
  * exists to reach: everything before this only set the stage.
  *
- * The out-fence is checked separately and must be *refused*: a client that asks
- * for one goes on to poll it, and a driver that answered with -1 would leave it
- * waiting on EBADF forever rather than failing where it can be seen. */
-static int run_submission(param_ioctl_fn call, void *context, int three_d, int publish)
+ * A client may ask for a descriptor to wait on. That descriptor is the part
+ * worth checking hardest: one that is not a real file cannot be waited on at
+ * all, so a driver that answered with a number naming nothing would leave the
+ * client polling a descriptor that fails rather than one that completes.
+ *
+ * `check_fence` is set only where the call reaches the kernel: the fake has no
+ * file table and so cannot hand back a descriptor worth polling. */
+static int run_submission(param_ioctl_fn call, void *context, int three_d, int publish,
+                          int check_fence)
 {
     reset_resource_requests();
     memset(execbuffer_handles, 0, sizeof(execbuffer_handles));
@@ -451,18 +457,31 @@ static int run_submission(param_ioctl_fn call, void *context, int three_d, int p
     /* Refused, not answered: see the note above. */
     if (execbuffer_request.fence_fd != -1)
         return report_failure("submit-fence-fd");
+    if (publish)
+        publish_marker("DRM_VIRGL_SUBMIT PASS refused=0");
 
     reset_resource_requests();
     memset(execbuffer_handles, 0, sizeof(execbuffer_handles));
     execbuffer_request.flags = VIRTGPU_EXECBUF_FENCE_FD_OUT;
     execbuffer_request.fence_fd = -1;
     errno = 0;
-    if (call(context, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execbuffer_request) == 0 ||
-        errno != EINVAL)
+    if (call(context, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execbuffer_request) != 0)
         return report_failure("submit-out-fence");
+    int fence_fd = execbuffer_request.fence_fd;
+    if (fence_fd < 0)
+        return report_failure("submit-out-fence-missing");
+
+    if (check_fence) {
+        /* The fence must be readable straight away: the submission it stands
+         * for has already completed. */
+        struct pollfd wait = {.fd = fence_fd, .events = POLLIN, .revents = 0};
+        if (poll(&wait, 1, 0) != 1 || !(wait.revents & POLLIN))
+            return report_failure("submit-fence-not-ready");
+        close(fence_fd);
+    }
 
     if (publish)
-        publish_marker("DRM_VIRGL_SUBMIT PASS refused=0");
+        publish_marker("DRM_VIRGL_FENCE PASS");
     return 0;
 }
 
@@ -489,8 +508,8 @@ struct fake_context {
     int resources_created;
     /* Answer a resource-info query by echoing it rather than looking it up. */
     int echo_resource_info;
-    /* Answer an out-fence request instead of refusing it. */
-    int allow_out_fence;
+    /* Answer an out-fence request with a descriptor that names nothing. */
+    int out_fence_is_bogus;
 };
 
 static int fake_ioctl(void *opaque, unsigned long request_, void *argument)
@@ -544,12 +563,16 @@ static int fake_ioctl(void *opaque, unsigned long request_, void *argument)
             errno = EINVAL;
             return -1;
         }
-        if ((exec->flags & VIRTGPU_EXECBUF_FENCE_FD_OUT) &&
-            !context->allow_out_fence) {
-            errno = EINVAL;
-            return -1;
+        if (exec->flags & VIRTGPU_EXECBUF_FENCE_FD_OUT) {
+            /* A descriptor that names nothing: what the probe must reject. */
+            if (context->out_fence_is_bogus) {
+                exec->fence_fd = -1;
+                return 0;
+            }
+            exec->fence_fd = 7;
+            return 0;
         }
-        exec->fence_fd = context->allow_out_fence ? 7 : -1;
+        exec->fence_fd = -1;
         return 0;
     }
 
@@ -746,15 +769,16 @@ int main(int argc, char **argv)
             return 1;
         if (run_caps_and_context(fake_ioctl, &context, 1, 0) != 0)
             return 1;
-        if (run_submission(fake_ioctl, &context, 1, 0) != 0)
+        if (run_submission(fake_ioctl, &context, 1, 0, 0) != 0)
             return 1;
-    } else if (strcmp(argv[1], "submit-out-fence-allowed") == 0) {
-        /* A driver that answered an out-fence request instead of refusing it
-         * would leave the client polling a descriptor that means nothing. */
-        context.allow_out_fence = 1;
+    } else if (strcmp(argv[1], "submit-out-fence-bogus") == 0) {
+        /* A driver that answered an out-fence request with a descriptor that
+         * names nothing would leave the client waiting on something that is
+         * not a file. */
+        context.out_fence_is_bogus = 1;
         if (run_checks(fake_ioctl, &context, &features, &capsets) != 0)
             return 1;
-        if (run_submission(fake_ioctl, &context, 1, 0) == 0)
+        if (run_submission(fake_ioctl, &context, 1, 0, 0) == 0)
             return 1;
     } else if (strcmp(argv[1], "no-3d-caps-succeed") == 0) {
         /* The inverse: a kernel that answers capability requests on a host
@@ -786,15 +810,17 @@ int main(void)
     struct resource_handles handles;
     if (run_resource(fake_ioctl, &context, (int)features, 1, &handles) != 0)
         return 1;
-    if (run_submission(fake_ioctl, &context, (int)features, 1) != 0)
+    if (run_submission(fake_ioctl, &context, (int)features, 1, 0) != 0)
         return 1;
     /* The fake has no file description, so it cannot make the mapping check the
      * real build makes. These two markers stand in for it so that this build
      * emits the whole sequence the host gate parses — the parser is what this
      * build exists to exercise, and the real run is what makes the checks
      * mean anything. */
-    if (features != 0)
+    if (features != 0) {
         publish_marker("DRM_VIRGL_BACKING PASS");
+        publish_marker("DRM_VIRGL_FENCE PASS");
+    }
     publish_marker(
         "DRM_VIRGL_TIMING caps_context_us=0 resource_us=0 submit_us=0 backing_us=0");
     publish_marker("ASTERINAS_DRM_VIRGL_R1_READY");
@@ -855,7 +881,7 @@ int main(void)
     /* The backing has to be memory the client can actually write into, so map
      * it through the offset the ioctl reported and read back what was written.
      * Only the real path can do this: it needs the file description. */
-    if (run_submission(real_ioctl, &fd, (int)features, 1) != 0)
+    if (run_submission(real_ioctl, &fd, (int)features, 1, 1) != 0)
         hold_forever();
     uint64_t after_submit = now_us();
 
