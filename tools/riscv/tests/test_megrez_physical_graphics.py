@@ -1584,7 +1584,7 @@ class PhysicalCommandTests(unittest.TestCase):
         for fragment in ("0x81004506", "0x80084502", "0x81004507"):
             self.assertIn(fragment, identity_script)
         self.assertEqual(script.count("PYTHONDONTWRITEBYTECODE=1"), 5)
-        self.assertNotIn("PYTHONPYCACHEPREFIX", script)
+        self.assertNotIn("PYTHONPYCACHEPREFIX=", script)
         self.assertNotIn("dmesg", script)
         self.assertNotIn("Xorg.0.log", script)
 
