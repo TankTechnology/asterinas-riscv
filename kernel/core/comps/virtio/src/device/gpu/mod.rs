@@ -56,6 +56,10 @@ pub const VIRTIO_GPU_CMD_GET_CAPSET_INFO: u32 = 0x0108;
 pub const VIRTIO_GPU_CMD_GET_CAPSET: u32 = 0x0109;
 pub const VIRTIO_GPU_CMD_GET_EDID: u32 = 0x010a;
 
+/// The 3D context block, contiguous from `VIRTIO_GPU_CMD_CTX_CREATE`.
+pub const VIRTIO_GPU_CMD_CTX_CREATE: u32 = 0x0200;
+pub const VIRTIO_GPU_CMD_CTX_DESTROY: u32 = 0x0201;
+
 pub const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x0300;
 pub const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x0301;
 
@@ -66,6 +70,9 @@ pub const VIRTIO_GPU_RESP_OK_DISPLAY_INFO: u32 = 0x1101;
 /// rather than the generic no-data one, so a driver that only accepts
 /// `RESP_OK_NODATA` sees a failure on a request that worked.
 pub const VIRTIO_GPU_RESP_OK_CAPSET_INFO: u32 = 0x1102;
+/// Answer to `GET_CAPSET`, whose capability blob follows the header on the
+/// wire as a variable-length array.
+pub const VIRTIO_GPU_RESP_OK_CAPSET: u32 = 0x1103;
 pub const VIRTIO_GPU_RESP_ERR_UNSPEC: u32 = 0x1200;
 pub const VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY: u32 = 0x1201;
 pub const VIRTIO_GPU_RESP_ERR_INVALID_SCANOUT_ID: u32 = 0x1202;
@@ -85,6 +92,29 @@ pub const MAX_SCANOUTS: usize = 16;
 /// Device feature bits (5.7.3), expressed as masks. Bit 0 is the virgl 3D
 /// feature, which the host offers only when it was started with a GL backend.
 pub const VIRTIO_GPU_F_VIRGL: u64 = 1 << 0;
+
+/// `CTX_CREATE` request (5.7.6.6.1).
+///
+/// The context id travels in the header's `ctx_id` field; this struct only
+/// carries the capability set the context is created against and an optional
+/// name for debugging.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuCtxCreate {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub nlen: u32,
+    pub context_init: u32,
+    pub debug_name: [u8; 64],
+}
+
+/// `GET_CAPSET` request (5.7.6.9.2).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuGetCapset {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub capset_id: u32,
+    pub capset_version: u32,
+}
 
 /// `GET_CAPSET_INFO` request (5.7.6.9.1).
 #[repr(C)]

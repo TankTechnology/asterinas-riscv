@@ -19,17 +19,19 @@ use ostd::{
 };
 
 use super::{
-    MAX_SCANOUTS, VIRTIO_GPU_CMD_GET_CAPSET_INFO, VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
+    MAX_SCANOUTS, VIRTIO_GPU_CMD_CTX_CREATE, VIRTIO_GPU_CMD_CTX_DESTROY,
+    VIRTIO_GPU_CMD_GET_CAPSET, VIRTIO_GPU_CMD_GET_CAPSET_INFO, VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
     VIRTIO_GPU_CMD_MOVE_CURSOR, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
     VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
     VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
     VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_F_VIRGL,
     VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
-    VIRTIO_GPU_RESP_OK_CAPSET_INFO, VIRTIO_GPU_RESP_OK_DISPLAY_INFO, VIRTIO_GPU_RESP_OK_NODATA,
-    VQ_CONTROL, VQ_CURSOR, VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDisplayOne,
-    VirtioGpuGetCapsetInfo, VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuRespCapsetInfo,
-    VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceFlush,
-    VirtioGpuResourceUnref, VirtioGpuSetScanout, VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
+    VIRTIO_GPU_RESP_OK_CAPSET, VIRTIO_GPU_RESP_OK_CAPSET_INFO, VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
+    VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR, VirtioGpuCtrlHdr, VirtioGpuCtxCreate,
+    VirtioGpuCursorPos, VirtioGpuDisplayOne, VirtioGpuGetCapset, VirtioGpuGetCapsetInfo,
+    VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuRespCapsetInfo, VirtioGpuResourceAttachBacking,
+    VirtioGpuResourceCreate2d, VirtioGpuResourceFlush, VirtioGpuResourceUnref,
+    VirtioGpuSetScanout, VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
     config::VirtioGpuConfig,
 };
 use crate::{
@@ -201,6 +203,80 @@ impl GpuDevice {
             max_version: response.capset_max_version,
             max_size: response.capset_max_size,
         })
+    }
+
+    /// Fetches the host's capability blob for one capability set.
+    ///
+    /// The blob dwarfs a control request, so it gets a buffer sized to hold it
+    /// rather than sharing the page-resident one the 2D path uses.
+    pub fn capset(&self, id: u32, version: u32, size: u32) -> Result<Vec<u8>, VirtioDeviceError> {
+        let request = VirtioGpuGetCapset {
+            hdr: ctrl_hdr(VIRTIO_GPU_CMD_GET_CAPSET),
+            capset_id: id,
+            capset_version: version,
+        };
+        let response_len = size_of::<VirtioGpuCtrlHdr>() + size as usize;
+        let pages = (CTRL_RESP_OFFSET + response_len).div_ceil(PAGE_SIZE);
+        let buf = Arc::new(DmaStream::alloc(pages, false).map_err(VirtioDeviceError::ResourceAlloc)?);
+
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(&mut queue, &buf, &request, response_len)?;
+        check_ok(code)?;
+
+        let blob_start = CTRL_RESP_OFFSET + size_of::<VirtioGpuCtrlHdr>();
+        let mut blob = Vec::new();
+        blob.resize(size as usize, 0u8);
+        Slice::new(buf.clone(), blob_start..blob_start + size as usize)
+            .read_bytes(0, &mut blob)
+            .map_err(VirtioDeviceError::ResourceAlloc)?;
+        Ok(blob)
+    }
+
+    /// Creates a 3D context on the host, identified by `context_id`.
+    ///
+    /// The capability set decides which renderer the host instantiates; a
+    /// context created against a set the host does not offer is refused there
+    /// rather than here.
+    pub fn context_create(
+        &self,
+        context_id: u32,
+        capset_id: u32,
+        debug_name: &str,
+    ) -> Result<(), VirtioDeviceError> {
+        let mut request = VirtioGpuCtxCreate {
+            hdr: ctrl_hdr_for_context(VIRTIO_GPU_CMD_CTX_CREATE, context_id),
+            nlen: 0,
+            context_init: capset_id,
+            debug_name: [0u8; DEBUG_NAME_LEN],
+        };
+        // The host is told the length, so a name longer than its field is
+        // truncated rather than reported as the length it was given.
+        let name = debug_name.as_bytes();
+        let copied = name.len().min(DEBUG_NAME_LEN);
+        request.debug_name[..copied].copy_from_slice(&name[..copied]);
+        request.nlen = copied as u32;
+
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &request,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// Destroys a 3D context, so the host can release what it holds for it.
+    pub fn context_destroy(&self, context_id: u32) -> Result<(), VirtioDeviceError> {
+        let request = ctrl_hdr_for_context(VIRTIO_GPU_CMD_CTX_DESTROY, context_id);
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &request,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
     }
 
     /// Returns the scanout width in pixels.
@@ -598,6 +674,9 @@ impl GpuDevice {
 }
 
 /// Builds a control header with the given type and a zeroed fence.
+/// The `debug_name` field of a `CTX_CREATE` request, in bytes.
+const DEBUG_NAME_LEN: usize = 64;
+
 fn ctrl_hdr(type_: u32) -> VirtioGpuCtrlHdr {
     VirtioGpuCtrlHdr {
         type_,
@@ -608,11 +687,23 @@ fn ctrl_hdr(type_: u32) -> VirtioGpuCtrlHdr {
     }
 }
 
+/// A control header naming the 3D context the request belongs to.
+///
+/// The 3D commands carry their context in the header rather than in the body,
+/// so a request built with [`ctrl_hdr`] would name context 0.
+fn ctrl_hdr_for_context(type_: u32, context_id: u32) -> VirtioGpuCtrlHdr {
+    VirtioGpuCtrlHdr {
+        ctx_id: context_id,
+        ..ctrl_hdr(type_)
+    }
+}
+
 fn check_ok(code: u32) -> Result<(), VirtioDeviceError> {
     match code {
         VIRTIO_GPU_RESP_OK_NODATA
         | VIRTIO_GPU_RESP_OK_DISPLAY_INFO
-        | VIRTIO_GPU_RESP_OK_CAPSET_INFO => Ok(()),
+        | VIRTIO_GPU_RESP_OK_CAPSET_INFO
+        | VIRTIO_GPU_RESP_OK_CAPSET => Ok(()),
         _ => {
             ostd::warn!("virtio-gpu control request failed: response = {:#x}", code);
             Err(VirtioDeviceError::UnsupportedConfig)
