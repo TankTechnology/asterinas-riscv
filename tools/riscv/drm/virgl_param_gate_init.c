@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 
 struct drm_virtgpu_getparam {
@@ -35,9 +37,52 @@ struct drm_virtgpu_context_init {
     uint64_t ctx_set_params;
 };
 
+struct drm_virtgpu_map {
+    uint64_t offset;
+    uint32_t handle;
+    uint32_t pad;
+};
+
+struct drm_virtgpu_resource_create {
+    uint32_t target;
+    uint32_t format;
+    uint32_t bind;
+    uint32_t width;
+    uint32_t height;
+    uint32_t depth;
+    uint32_t array_size;
+    uint32_t last_level;
+    uint32_t nr_samples;
+    uint32_t flags;
+    uint32_t bo_handle;
+    uint32_t res_handle;
+    uint32_t size;
+    uint32_t stride;
+};
+
+struct drm_virtgpu_resource_info {
+    uint32_t bo_handle;
+    uint32_t res_handle;
+    uint32_t size;
+    uint32_t blob_mem;
+};
+
 #define DRM_IOCTL_VIRTGPU_GETPARAM _IOWR('d', 0x43, struct drm_virtgpu_getparam)
 #define DRM_IOCTL_VIRTGPU_GET_CAPS _IOWR('d', 0x49, struct drm_virtgpu_get_caps)
 #define DRM_IOCTL_VIRTGPU_CONTEXT_INIT _IOWR('d', 0x4b, struct drm_virtgpu_context_init)
+#define DRM_IOCTL_VIRTGPU_MAP _IOWR('d', 0x41, struct drm_virtgpu_map)
+#define DRM_IOCTL_VIRTGPU_RESOURCE_CREATE _IOWR('d', 0x44, struct drm_virtgpu_resource_create)
+#define DRM_IOCTL_VIRTGPU_RESOURCE_INFO _IOWR('d', 0x45, struct drm_virtgpu_resource_info)
+
+/* Mesa's Gallium resource contract, which is what the `target` field carries. */
+#define PIPE_BUFFER 0U
+/* PIPE_FORMAT_NONE: a buffer's contents are described by the commands that
+ * read it, not by the resource. */
+#define PIPE_FORMAT_NONE 0U
+
+/* A small but not trivially small buffer: large enough that a backing that was
+ * never really allocated cannot pass by accident. */
+#define RESOURCE_SIZE 4096U
 
 #define VIRTGPU_PARAM_3D_FEATURES 1U
 #define VIRTGPU_PARAM_CAPSET_QUERY_FIX 2U
@@ -181,6 +226,35 @@ static int run_checks(param_ioctl_fn call, void *context, uint64_t *features,
     return 0;
 }
 
+static struct drm_virtgpu_map map_request;
+static struct drm_virtgpu_resource_create resource_request;
+static struct drm_virtgpu_resource_info info_request;
+
+/* What a resource creation handed back, for the caller to check further. */
+struct resource_handles {
+    uint32_t bo_handle;
+    uint32_t res_handle;
+    uint32_t size;
+    uint64_t offset;
+};
+
+static void reset_resource_requests(void)
+{
+    memset(&resource_request, 0, sizeof(resource_request));
+    resource_request.target = PIPE_BUFFER;
+    resource_request.format = PIPE_FORMAT_NONE;
+    resource_request.size = RESOURCE_SIZE;
+    resource_request.width = RESOURCE_SIZE;
+    resource_request.height = 1;
+    resource_request.depth = 1;
+    resource_request.array_size = 1;
+    resource_request.last_level = 1;
+    resource_request.nr_samples = 1;
+
+    memset(&map_request, 0, sizeof(map_request));
+    memset(&info_request, 0, sizeof(info_request));
+}
+
 /* A failed check, reported with the name the host gate classifies. */
 static int report_failure(const char *stage)
 {
@@ -251,6 +325,66 @@ static int run_caps_and_context(param_ioctl_fn call, void *context, int three_d,
     return 0;
 }
 
+/* Creates a 3D resource and obtains the guest offset of the memory backing it.
+ *
+ * The point of the check is that the buffer a client writes into is real: the
+ * creation has to hand back both a handle it can be named by and a resource id
+ * the renderer knows, and the handle has to resolve to a mappable offset. */
+static int run_resource(param_ioctl_fn call, void *context, int three_d, int publish,
+                        struct resource_handles *out)
+{
+    reset_resource_requests();
+    errno = 0;
+    int result = call(context, DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, &resource_request);
+
+    if (!three_d) {
+        if (result == 0 || errno != EINVAL)
+            return report_failure("resource-without-3d");
+        if (publish)
+            publish_marker("DRM_VIRGL_RESOURCE PASS bo=0 res=0 size=0");
+        return 0;
+    }
+
+    if (result != 0)
+        return report_failure("resource-create");
+    if (resource_request.bo_handle == 0 || resource_request.res_handle == 0)
+        return report_failure("resource-handles-empty");
+    if (resource_request.size != RESOURCE_SIZE)
+        return report_failure("resource-size-wrong");
+
+    /* The handle has to name memory the client can reach, or there is nothing
+     * to put commands in. */
+    memset(&map_request, 0, sizeof(map_request));
+    map_request.handle = resource_request.bo_handle;
+    errno = 0;
+    if (call(context, DRM_IOCTL_VIRTGPU_MAP, &map_request) != 0)
+        return report_failure("resource-map");
+
+    /* And the renderer's name for it has to lead back to the same handle,
+     * which is only true if both were recorded together. */
+    memset(&info_request, 0, sizeof(info_request));
+    info_request.res_handle = resource_request.res_handle;
+    errno = 0;
+    if (call(context, DRM_IOCTL_VIRTGPU_RESOURCE_INFO, &info_request) != 0)
+        return report_failure("resource-info");
+    if (info_request.bo_handle != resource_request.bo_handle)
+        return report_failure("resource-info-handle");
+    if (info_request.size != RESOURCE_SIZE)
+        return report_failure("resource-info-size");
+
+    out->bo_handle = resource_request.bo_handle;
+    out->res_handle = resource_request.res_handle;
+    out->size = resource_request.size;
+    out->offset = map_request.offset;
+
+    if (publish) {
+        printf("DRM_VIRGL_RESOURCE PASS bo=%u res=%u size=%u\n", out->bo_handle,
+               out->res_handle, out->size);
+        fflush(stdout);
+    }
+    return 0;
+}
+
 #if defined(DRM_VIRGL_GATE_SELF_TEST) || defined(DRM_VIRGL_GATE_LIFECYCLE_TEST)
 
 /* A fake kernel that answers the way a virgl host does, so the probe's own
@@ -270,6 +404,10 @@ struct fake_context {
     int allow_second_context;
     /* Contexts created so far, so the fake can refuse the second. */
     int contexts_created;
+    /* Resources created so far, which is how the fake names them. */
+    int resources_created;
+    /* Answer a resource-info query by echoing it rather than looking it up. */
+    int echo_resource_info;
 };
 
 static int fake_ioctl(void *opaque, unsigned long request_, void *argument)
@@ -289,6 +427,51 @@ static int fake_ioctl(void *opaque, unsigned long request_, void *argument)
         }
         if (!context->caps_empty)
             memset((void *)(uintptr_t)caps->addr, 0x5a, caps->size);
+        return 0;
+    }
+
+    if (request_ == DRM_IOCTL_VIRTGPU_RESOURCE_CREATE) {
+        struct drm_virtgpu_resource_create *create = argument;
+        if (context->no_3d) {
+            errno = EINVAL;
+            return -1;
+        }
+        /* The renderer is told the resource's shape, so a request that does not
+         * carry one is not a resource this fake will invent. */
+        if (create->target != PIPE_BUFFER || create->size != RESOURCE_SIZE ||
+            create->array_size != 1) {
+            errno = EINVAL;
+            return -1;
+        }
+        context->resources_created++;
+        create->bo_handle = 0x40 + context->resources_created;
+        create->res_handle = 0x100 + context->resources_created;
+        return 0;
+    }
+
+    if (request_ == DRM_IOCTL_VIRTGPU_MAP) {
+        struct drm_virtgpu_map *map = argument;
+        if (map->handle < 0x40) {
+            errno = EINVAL;
+            return -1;
+        }
+        map->offset = 0x100000;
+        return 0;
+    }
+
+    if (request_ == DRM_IOCTL_VIRTGPU_RESOURCE_INFO) {
+        struct drm_virtgpu_resource_info *info = argument;
+        /* Answer only for a resource this fake handed out, so a kernel that
+         * echoes the query instead of looking the resource up is caught. */
+        if (info->res_handle < 0x100) {
+            errno = EINVAL;
+            return -1;
+        }
+        info->bo_handle = context->echo_resource_info
+                              ? info->bo_handle
+                              : 0x40 + (info->res_handle - 0x100);
+        info->size = RESOURCE_SIZE;
+        info->blob_mem = 0;
         return 0;
     }
 
@@ -426,6 +609,34 @@ int main(int argc, char **argv)
             return 1;
         if (run_caps_and_context(fake_ioctl, &context, 0, 0) != 0)
             return 1;
+    } else if (strcmp(argv[1], "resource") == 0) {
+        struct resource_handles handles;
+        if (run_checks(fake_ioctl, &context, &features, &capsets) != 0)
+            return 1;
+        if (run_caps_and_context(fake_ioctl, &context, 1, 0) != 0)
+            return 1;
+        if (run_resource(fake_ioctl, &context, 1, 0, &handles) != 0)
+            return 1;
+        if (handles.bo_handle == 0 || handles.res_handle == 0 ||
+            handles.size != RESOURCE_SIZE || handles.offset == 0)
+            return 1;
+    } else if (strcmp(argv[1], "resource-info-echoed") == 0) {
+        /* The kernel answered the resource lookup by echoing the query rather
+         * than naming the handle, which would make the pair meaningless. */
+        context.echo_resource_info = 1;
+        struct resource_handles handles;
+        if (run_checks(fake_ioctl, &context, &features, &capsets) != 0)
+            return 1;
+        if (run_caps_and_context(fake_ioctl, &context, 1, 0) != 0)
+            return 1;
+        if (run_resource(fake_ioctl, &context, 1, 0, &handles) == 0)
+            return 1;
+    } else if (strcmp(argv[1], "resource-without-3d") == 0) {
+        /* A host without 3D must refuse resource creation too. */
+        context.no_3d = 1;
+        struct resource_handles handles;
+        if (run_resource(fake_ioctl, &context, 0, 0, &handles) != 0)
+            return 1;
     } else if (strcmp(argv[1], "no-3d-caps-succeed") == 0) {
         /* The inverse: a kernel that answers capability requests on a host
          * with no 3D, which would hand a client a blob that means nothing. */
@@ -453,6 +664,17 @@ int main(void)
     fflush(stdout);
     if (run_caps_and_context(fake_ioctl, &context, (int)features, 1) != 0)
         return 1;
+    struct resource_handles handles;
+    if (run_resource(fake_ioctl, &context, (int)features, 1, &handles) != 0)
+        return 1;
+    /* The fake has no file description, so it cannot make the mapping check the
+     * real build makes. These two markers stand in for it so that this build
+     * emits the whole sequence the host gate parses — the parser is what this
+     * build exists to exercise, and the real run is what makes the checks
+     * mean anything. */
+    if (features != 0)
+        publish_marker("DRM_VIRGL_BACKING PASS");
+    publish_marker("DRM_VIRGL_TIMING caps_context_us=0 resource_us=0 backing_us=0");
     publish_marker("ASTERINAS_DRM_VIRGL_R1_READY");
     hold_forever();
 }
@@ -473,6 +695,15 @@ static _Noreturn void fail_and_hold(const char *stage)
     hold_forever();
 }
 
+static uint64_t now_us(void)
+{
+    struct timespec timestamp;
+    if (clock_gettime(CLOCK_MONOTONIC, &timestamp) != 0)
+        return 0;
+    return (uint64_t)timestamp.tv_sec * 1000000ULL +
+           (uint64_t)timestamp.tv_nsec / 1000ULL;
+}
+
 int main(void)
 {
     /* A 3D client reaches the device through the render node, which is also
@@ -489,8 +720,50 @@ int main(void)
            (unsigned long long)features, (unsigned long long)capsets);
     fflush(stdout);
 
+    uint64_t start = now_us();
     if (run_caps_and_context(real_ioctl, &fd, (int)features, 1) != 0)
         hold_forever();
+    uint64_t after_caps = now_us();
+
+    struct resource_handles handles = {0, 0, 0, 0};
+    if (run_resource(real_ioctl, &fd, (int)features, 1, &handles) != 0)
+        hold_forever();
+    uint64_t after_resource = now_us();
+
+    /* The backing has to be memory the client can actually write into, so map
+     * it through the offset the ioctl reported and read back what was written.
+     * Only the real path can do this: it needs the file description. */
+    uint64_t after_backing = after_resource;
+    if (features != 0) {
+        if (handles.size > (uint32_t)SIZE_MAX)
+            fail_and_hold("resource-size-overflow");
+        unsigned char *backing = mmap(NULL, handles.size, PROT_READ | PROT_WRITE,
+                                      MAP_SHARED, fd, (off_t)handles.offset);
+        if (backing == MAP_FAILED)
+            fail_and_hold("resource-mmap");
+        for (uint32_t index = 0; index < handles.size; ++index)
+            backing[index] = (unsigned char)(index * 7 + 1);
+        if (msync(backing, handles.size, MS_SYNC) != 0)
+            fail_and_hold("resource-msync");
+        for (uint32_t index = 0; index < handles.size; ++index) {
+            if (backing[index] != (unsigned char)(index * 7 + 1))
+                fail_and_hold("resource-readback");
+        }
+        if (munmap(backing, handles.size) != 0)
+            fail_and_hold("resource-munmap");
+        after_backing = now_us();
+        publish_marker("DRM_VIRGL_BACKING PASS");
+    }
+
+    /* Reported in microseconds for the work each phase did, as a record of
+     * what this path costs rather than as a threshold anything is held to:
+     * the guest is emulated, so the number describes the emulator as much as
+     * the driver. */
+    printf("DRM_VIRGL_TIMING caps_context_us=%llu resource_us=%llu backing_us=%llu\n",
+           (unsigned long long)(after_caps - start),
+           (unsigned long long)(after_resource - after_caps),
+           (unsigned long long)(after_backing - after_resource));
+    fflush(stdout);
 
     /* Closing the file tears the context down; the host would otherwise hold
      * it for the device's lifetime. */

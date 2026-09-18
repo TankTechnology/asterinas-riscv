@@ -130,6 +130,10 @@ struct GemObject {
     width: u32,
     height: u32,
     bpp: u32,
+    /// The id the host's renderer knows this object by, once it has been
+    /// created as a 3D resource. `None` for 2D-only buffers, which the host
+    /// never receives as resources.
+    resource_id: Option<u32>,
     /// Open handles naming this object, counted across every file. The object
     /// is dropped when the last one goes away.
     refs: u32,
@@ -429,6 +433,49 @@ struct DrmVirtgpuContextInit {
     ctx_set_params: u64,
 }
 
+/// `struct drm_virtgpu_map`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmVirtgpuMap {
+    /// Pool offset to pass to `mmap`, in bytes.
+    offset: u64,
+    handle: u32,
+    pad: u32,
+}
+
+/// `struct drm_virtgpu_resource_create`.
+///
+/// `bo_handle` and `res_handle` are outputs: the first names the buffer in this
+/// file, the second names it to the host's renderer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmVirtgpuResourceCreate {
+    target: u32,
+    format: u32,
+    bind: u32,
+    width: u32,
+    height: u32,
+    depth: u32,
+    array_size: u32,
+    last_level: u32,
+    nr_samples: u32,
+    flags: u32,
+    bo_handle: u32,
+    res_handle: u32,
+    size: u32,
+    stride: u32,
+}
+
+/// `struct drm_virtgpu_resource_info`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmVirtgpuResourceInfo {
+    bo_handle: u32,
+    res_handle: u32,
+    size: u32,
+    blob_mem: u32,
+}
+
 /// `VIRTGPU_PARAM_*` query ids (include/uapi/drm/virtgpu_drm.h).
 const VIRTGPU_PARAM_3D_FEATURES: u64 = 1;
 const VIRTGPU_PARAM_CAPSET_QUERY_FIX: u64 = 2;
@@ -522,7 +569,8 @@ mod ioctl_defs {
         DrmGetCap, DrmModeCardRes, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip,
         DrmModeCursor, DrmModeCursor2, DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd,
         DrmGemClose, DrmGemFlink, DrmGemOpen, DrmModeGetConnector, DrmModeGetEncoder,
-        DrmVirtgpuContextInit, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
+        DrmVirtgpuContextInit, DrmVirtgpuGetCaps, DrmVirtgpuGetparam, DrmVirtgpuMap,
+        DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo,
         DrmModeMapDumb, DrmModeObjGetProperties, DrmSetClientCap, DrmVersion,
     };
     use crate::util::ioctl::{InData, InOutData, NoData, ioc};
@@ -536,7 +584,10 @@ mod ioctl_defs {
     pub(super) type GemFlink = ioc!(DRM_IOCTL_GEM_FLINK, b'd', 0x0a, InOutData<DrmGemFlink>);
     pub(super) type GemOpen = ioc!(DRM_IOCTL_GEM_OPEN, b'd', 0x1b, InOutData<DrmGemOpen>);
     // The virtgpu ioctls live at `DRM_COMMAND_BASE` (0x40) plus their number.
+    pub(super) type VirtgpuMap = ioc!(DRM_IOCTL_VIRTGPU_MAP, b'd', 0x41, InOutData<DrmVirtgpuMap>);
     pub(super) type VirtgpuGetparam = ioc!(DRM_IOCTL_VIRTGPU_GETPARAM, b'd', 0x43, InOutData<DrmVirtgpuGetparam>);
+    pub(super) type VirtgpuResourceCreate = ioc!(DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, b'd', 0x44, InOutData<DrmVirtgpuResourceCreate>);
+    pub(super) type VirtgpuResourceInfo = ioc!(DRM_IOCTL_VIRTGPU_RESOURCE_INFO, b'd', 0x45, InOutData<DrmVirtgpuResourceInfo>);
     pub(super) type VirtgpuGetCaps = ioc!(DRM_IOCTL_VIRTGPU_GET_CAPS, b'd', 0x49, InOutData<DrmVirtgpuGetCaps>);
     pub(super) type VirtgpuContextInit = ioc!(DRM_IOCTL_VIRTGPU_CONTEXT_INIT, b'd', 0x4b, InOutData<DrmVirtgpuContextInit>);
     pub(super) type SetMaster = ioc!(DRM_IOCTL_SET_MASTER, b'd', 0x1e, NoData);
@@ -591,6 +642,9 @@ fn is_render_allowed(raw_ioctl: RawIoctl) -> bool {
         || VirtgpuGetparam::try_from_raw(raw_ioctl).is_some()
         || VirtgpuGetCaps::try_from_raw(raw_ioctl).is_some()
         || VirtgpuContextInit::try_from_raw(raw_ioctl).is_some()
+        || VirtgpuMap::try_from_raw(raw_ioctl).is_some()
+        || VirtgpuResourceCreate::try_from_raw(raw_ioctl).is_some()
+        || VirtgpuResourceInfo::try_from_raw(raw_ioctl).is_some()
 }
 
 impl Device for Dri {
@@ -711,6 +765,55 @@ fn object_by_id(objects: &GemObjects, object_id: u32) -> Result<GemObject> {
         .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM object"))
 }
 
+/// Carves a new object out of the device-wide pool, returning its id.
+///
+/// Shared by the 2D and 3D allocation paths so both reach the same pool and the
+/// same id space. Handle numbering stays with the caller: a handle is a name
+/// one open file gives an object, not a property of the object.
+fn alloc_object(
+    objects: &mut GemObjects,
+    size: usize,
+    pitch: u32,
+    width: u32,
+    height: u32,
+    bpp: u32,
+) -> Result<u32> {
+    ensure_pool(objects)?;
+    let offset = objects.next_offset.align_up(PAGE_SIZE);
+    let end = offset
+        .checked_add(size)
+        .ok_or_else(|| Error::with_message(Errno::ENOMEM, "buffer size overflows"))?;
+    if end > DUMB_POOL_SIZE {
+        return_errno_with_message!(Errno::ENOMEM, "buffer pool is exhausted");
+    }
+
+    let object_id = objects.next_object_id;
+    objects.next_object_id += 1;
+    objects.objects.insert(
+        object_id,
+        GemObject {
+            offset,
+            size,
+            pitch,
+            width,
+            height,
+            bpp,
+            resource_id: None,
+            refs: 1,
+        },
+    );
+    objects.next_offset = end.align_up(PAGE_SIZE);
+    Ok(object_id)
+}
+
+/// Gives `object_id` a handle in this file, returning the handle.
+fn name_object(inner: &mut DriInner, object_id: u32) -> u32 {
+    let handle = inner.next_handle;
+    inner.next_handle += 1;
+    inner.handles.insert(handle, object_id);
+    handle
+}
+
 impl DriHandle {
 
     fn create_dumb(&self, req: &DrmModeCreateDumb) -> Result<DrmModeCreateDumb> {
@@ -733,34 +836,15 @@ impl DriHandle {
         // documents; the reverse order would deadlock against `gem_flink`.
         let mut inner = self.inner.lock();
         let mut objects = GEM_OBJECTS.lock();
-        ensure_pool(&mut objects)?;
-        let offset = objects.next_offset.align_up(PAGE_SIZE);
-        let end = offset
-            .checked_add(size)
-            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "dumb buffer size overflows"))?;
-        if end > DUMB_POOL_SIZE {
-            return_errno_with_message!(Errno::ENOMEM, "dumb buffer pool is exhausted");
-        }
-
-        let object_id = objects.next_object_id;
-        objects.next_object_id += 1;
-        objects.objects.insert(
-            object_id,
-            GemObject {
-                offset,
-                size,
-                pitch,
-                width: req.width,
-                height: req.height,
-                bpp: req.bpp,
-                refs: 1,
-            },
-        );
-        objects.next_offset = end.align_up(PAGE_SIZE);
-
-        let handle = inner.next_handle;
-        inner.next_handle += 1;
-        inner.handles.insert(handle, object_id);
+        let object_id = alloc_object(
+            &mut objects,
+            size,
+            pitch,
+            req.width,
+            req.height,
+            req.bpp,
+        )?;
+        let handle = name_object(&mut inner, object_id);
 
         Ok(DrmModeCreateDumb {
             handle,
@@ -923,6 +1007,147 @@ impl DriHandle {
             .map_err(|_| Error::with_message(Errno::EIO, "context creation failed"))?;
         self.inner.lock().context_id = Some(context_id);
         Ok(())
+    }
+
+    /// Reports the pool offset a client passes to `mmap` for a handle.
+    ///
+    /// The same answer `MODE_MAP_DUMB` gives; 3D clients reach it through this
+    /// ioctl instead, which knows only about handles.
+    fn virtgpu_map(&self, req: &DrmVirtgpuMap) -> Result<DrmVirtgpuMap> {
+        let object_id = object_for_handle(&self.inner.lock(), req.handle)?;
+        let object = object_by_id(&GEM_OBJECTS.lock(), object_id)?;
+        Ok(DrmVirtgpuMap {
+            offset: object.offset as u64,
+            ..*req
+        })
+    }
+
+    /// Creates a 3D resource and the guest buffer backing it.
+    ///
+    /// This is where a 3D buffer comes from: the renderer is told the
+    /// resource's shape, the guest memory it reads through is attached as its
+    /// backing, and the resource is attached to this file's context so a
+    /// command buffer submitted to that context may name it.
+    fn virtgpu_resource_create(
+        &self,
+        req: &DrmVirtgpuResourceCreate,
+    ) -> Result<DrmVirtgpuResourceCreate> {
+        if !self.gpu.supports_virgl() {
+            return_errno_with_message!(Errno::EINVAL, "3D is not available");
+        }
+        if req.size == 0 {
+            return_errno_with_message!(Errno::EINVAL, "resource has zero size");
+        }
+        let context_id = self
+            .inner
+            .lock()
+            .context_id
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "no context has been created"))?;
+
+        // The file's handle table and the device-wide pool are both touched, in
+        // the order `GEM_OBJECTS` documents.
+        let mut inner = self.inner.lock();
+        let (handle, object_id, object) = {
+            let mut objects = GEM_OBJECTS.lock();
+            let object_id = alloc_object(
+                &mut objects,
+                req.size as usize,
+                req.stride,
+                req.width,
+                req.height,
+                0,
+            )?;
+            let handle = name_object(&mut inner, object_id);
+            let object = object_by_id(&objects, object_id)?;
+            (handle, object_id, object)
+        };
+        drop(inner);
+
+        // From the device's counter, not one of this module's own: the scanout
+        // resource already holds id 1, and the host refuses a duplicate.
+        let resource_id = self.gpu.reserve_resource_id();
+        let base = {
+            let mut objects = GEM_OBJECTS.lock();
+            let base = pool_paddr(&objects)?;
+            // Recorded before the host is told, so a failure below cannot
+            // leave an object claiming a resource that was never created.
+            if let Some(entry) = objects.objects.get_mut(&object_id) {
+                entry.resource_id = Some(resource_id);
+            }
+            base
+        };
+
+        // A resource the host never heard of, or one whose memory it cannot
+        // reach, is not usable: both steps have to succeed for the handle to be
+        // worth returning.
+        let create = self.gpu.resource_create_3d(
+            resource_id,
+            req.target,
+            req.format,
+            req.bind,
+            req.width,
+            req.height,
+            req.depth,
+            req.array_size,
+            req.last_level,
+            req.nr_samples,
+            req.flags,
+        );
+        if create.is_err() {
+            self.destroy_dumb(&DrmModeDestroyDumb { handle })?;
+            return_errno_with_message!(Errno::EIO, "3D resource creation failed");
+        }
+        if self
+            .gpu
+            .attach_backing(resource_id, (base + object.offset) as u64, object.size as u32)
+            .is_err()
+        {
+            self.destroy_dumb(&DrmModeDestroyDumb { handle })?;
+            return_errno_with_message!(Errno::EIO, "3D resource backing could not be attached");
+        }
+        if self
+            .gpu
+            .attach_resource_to_context(context_id, resource_id)
+            .is_err()
+        {
+            self.destroy_dumb(&DrmModeDestroyDumb { handle })?;
+            return_errno_with_message!(Errno::EIO, "3D resource could not join the context");
+        }
+
+        Ok(DrmVirtgpuResourceCreate {
+            bo_handle: handle,
+            res_handle: resource_id,
+            size: object.size as u32,
+            ..*req
+        })
+    }
+
+    /// Reports which of this file's handles names a given resource.
+    ///
+    /// The query is by resource id, which is the name the host knows, so the
+    /// answer is whichever of this file's handles stands for it.
+    fn virtgpu_resource_info(
+        &self,
+        req: &DrmVirtgpuResourceInfo,
+    ) -> Result<DrmVirtgpuResourceInfo> {
+        let inner = self.inner.lock();
+        let objects = GEM_OBJECTS.lock();
+        for (handle, object_id) in inner.handles.iter() {
+            let Ok(object) = object_by_id(&objects, *object_id) else {
+                continue;
+            };
+            if object.resource_id == Some(req.res_handle) {
+                return Ok(DrmVirtgpuResourceInfo {
+                    bo_handle: *handle,
+                    res_handle: req.res_handle,
+                    size: object.size as u32,
+                    // Resources this driver creates are guest-backed, so there
+                    // is no blob to name.
+                    blob_mem: 0,
+                });
+            }
+        }
+        return_errno_with_message!(Errno::EINVAL, "unknown 3D resource");
     }
 
     /// Names an object so another file can open it.
@@ -1401,6 +1626,21 @@ impl PerOpenFileOps for DriHandle {
             cmd @ VirtgpuContextInit => {
                 let req = cmd.read()?;
                 self.virtgpu_context_init(&req)?;
+                Ok(0)
+            }
+            cmd @ VirtgpuMap => {
+                let req = cmd.read()?;
+                cmd.write(&self.virtgpu_map(&req)?)?;
+                Ok(0)
+            }
+            cmd @ VirtgpuResourceCreate => {
+                let req = cmd.read()?;
+                cmd.write(&self.virtgpu_resource_create(&req)?)?;
+                Ok(0)
+            }
+            cmd @ VirtgpuResourceInfo => {
+                let req = cmd.read()?;
+                cmd.write(&self.virtgpu_resource_info(&req)?)?;
                 Ok(0)
             }
             cmd @ ModeCreateDumb => {
