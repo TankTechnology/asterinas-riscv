@@ -1418,6 +1418,7 @@ int main(void)
                 "usr/lib/asterinas/browser_workload_contract.py",
                 "usr/lib/asterinas/browser_composite_capture.py",
                 "usr/lib/asterinas/browser-web-marionette-gate",
+                "usr/lib/asterinas/browser_web_marionette_gate.py",
                 "usr/lib/asterinas/browser_m5_marionette_gate.py",
                 "usr/lib/asterinas/browser-daily-use-gate",
                 "usr/lib/asterinas/browser-daily-use-upload",
@@ -1464,6 +1465,24 @@ int main(void)
         uploader = entries["usr/lib/asterinas/browser-daily-use-upload"]
         self.assertEqual(stat.S_IMODE(uploader[1]), 0o755)
         self.assertEqual(uploader[5], STAGE1_BROWSER_DAILY_USE_UPLOAD.read_bytes())
+
+    def test_stage1_carries_importable_marionette_module_for_daily_use(self) -> None:
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+        output = self.directory / "daily-use-import" / "initramfs.cpio"
+
+        result = self.run_builder(str(output), environment=environment)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entries = {entry[0]: entry for entry in _parse_newc_entries(output.read_bytes())}
+        module = entries.get("usr/lib/asterinas/browser_web_marionette_gate.py")
+        self.assertIsNotNone(
+            module,
+            "daily-use gate cannot import browser_web_marionette_gate from Stage1",
+        )
+        assert module is not None
+        self.assertEqual(stat.S_IMODE(module[1]), 0o644)
+        self.assertEqual(module[5], STAGE1_BROWSER_GATE.read_bytes())
 
     def test_physical_graphics_control_uses_stage1_input_identity(self) -> None:
         source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
@@ -1885,6 +1904,13 @@ int main(void)
                     1700000000,
                 ),
                 (
+                    "usr/lib/asterinas/browser_web_marionette_gate.py",
+                    stat.S_IFREG | 0o644,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
                     "usr/lib/asterinas/browser_m5_marionette_gate.py",
                     stat.S_IFREG | 0o755,
                     0,
@@ -1987,21 +2013,22 @@ int main(void)
         self.assertEqual(entries[10][5], STAGE1_BROWSER_WORKLOAD_CONTRACT.read_bytes())
         self.assertEqual(entries[11][5], STAGE1_BROWSER_COMPOSITE_CAPTURE.read_bytes())
         self.assertEqual(entries[12][5], STAGE1_BROWSER_GATE.read_bytes())
-        self.assertEqual(entries[13][5], STAGE1_BROWSER_M5_MARIONETTE_GATE.read_bytes())
-        self.assertEqual(entries[14][5], STAGE1_BROWSER_DAILY_USE_GATE.read_bytes())
-        self.assertEqual(entries[15][5], STAGE1_BROWSER_DAILY_USE_UPLOAD.read_bytes())
-        self.assertEqual(entries[16][5], STAGE1_CLOCK_SYNC.read_bytes())
+        self.assertEqual(entries[13][5], STAGE1_BROWSER_GATE.read_bytes())
+        self.assertEqual(entries[14][5], STAGE1_BROWSER_M5_MARIONETTE_GATE.read_bytes())
+        self.assertEqual(entries[15][5], STAGE1_BROWSER_DAILY_USE_GATE.read_bytes())
+        self.assertEqual(entries[16][5], STAGE1_BROWSER_DAILY_USE_UPLOAD.read_bytes())
+        self.assertEqual(entries[17][5], STAGE1_CLOCK_SYNC.read_bytes())
         self.assertEqual(
-            entries[17][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
+            entries[18][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
         )
-        self.assertEqual(entries[18][5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
-        self.assertEqual(entries[19][5], STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_bytes())
-        self.assertEqual(entries[20][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
-        self.assertEqual(entries[21][5], STAGE1_PHYSICAL_GRAPHICS_PAGE.read_bytes())
-        self.assertEqual(entries[22][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
-        self.assertEqual(entries[23][5], b"physical-graphics-control")
-        self.assertEqual(entries[24][5], b"physical-external-services-quiesce")
-        self.assertEqual(entries[25][5], b"physical-system-probe")
+        self.assertEqual(entries[19][5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
+        self.assertEqual(entries[20][5], STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_bytes())
+        self.assertEqual(entries[21][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
+        self.assertEqual(entries[22][5], STAGE1_PHYSICAL_GRAPHICS_PAGE.read_bytes())
+        self.assertEqual(entries[23][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
+        self.assertEqual(entries[24][5], b"physical-graphics-control")
+        self.assertEqual(entries[25][5], b"physical-external-services-quiesce")
+        self.assertEqual(entries[26][5], b"physical-system-probe")
 
     def test_builder_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):

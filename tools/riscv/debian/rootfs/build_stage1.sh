@@ -45,6 +45,7 @@ if (( $# == 1 )); then
                 usr/lib/asterinas/browser_workload_contract.py \
                 usr/lib/asterinas/browser_composite_capture.py \
                 usr/lib/asterinas/browser-web-marionette-gate \
+                usr/lib/asterinas/browser_web_marionette_gate.py \
                 usr/lib/asterinas/browser_m5_marionette_gate.py \
                 usr/lib/asterinas/browser-daily-use-gate \
                 usr/lib/asterinas/browser-daily-use-upload \
@@ -187,6 +188,8 @@ trap 'exit 143' TERM
 chmod 0755 "$STAGE" "$STAGE/init"
 install -D -m 0755 -- "$BROWSER_GATE_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser-web-marionette-gate"
+install -D -m 0644 -- "$BROWSER_GATE_SOURCE" \
+    "$STAGE/usr/lib/asterinas/browser_web_marionette_gate.py"
 install -D -m 0755 -- "$BROWSER_INTERACTION_PERF_SOURCE" \
     "$STAGE/usr/lib/asterinas/browser_interaction_perf.py"
 install -D -m 0755 -- "$BROWSER_SYSTEM_TIME_SOURCE" \
@@ -243,6 +246,7 @@ touch -d "@$SOURCE_DATE_EPOCH" \
     "$STAGE/usr/lib/asterinas/browser_workload_contract.py" \
     "$STAGE/usr/lib/asterinas/browser_composite_capture.py" \
     "$STAGE/usr/lib/asterinas/browser-web-marionette-gate" \
+    "$STAGE/usr/lib/asterinas/browser_web_marionette_gate.py" \
     "$STAGE/usr/lib/asterinas/browser_m5_marionette_gate.py" \
     "$STAGE/usr/lib/asterinas/browser-daily-use-gate" \
     "$STAGE/usr/lib/asterinas/browser-daily-use-upload" \
@@ -275,6 +279,7 @@ printf '%s\n' \
     usr/lib/asterinas/browser_workload_contract.py \
     usr/lib/asterinas/browser_composite_capture.py \
     usr/lib/asterinas/browser-web-marionette-gate \
+    usr/lib/asterinas/browser_web_marionette_gate.py \
     usr/lib/asterinas/browser_m5_marionette_gate.py \
     usr/lib/asterinas/browser-daily-use-gate \
     usr/lib/asterinas/browser-daily-use-upload \
@@ -311,6 +316,7 @@ EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_perf_capture.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_workload_contract.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_composite_capture.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser-web-marionette-gate\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_web_marionette_gate.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser_m5_marionette_gate.py\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser-daily-use-gate\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/browser-daily-use-upload\n'
