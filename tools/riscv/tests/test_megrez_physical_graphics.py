@@ -1760,7 +1760,7 @@ class PhysicalCommandTests(unittest.TestCase):
             control_script,
         )
         self.assertIn(
-            "/usr/bin/timeout --kill-after=1s 2s /usr/bin/python3 -c",
+            "/usr/bin/timeout --kill-after=1s 10s /usr/bin/python3 -c",
             control_script,
         )
         self.assertIn(
