@@ -27,6 +27,7 @@ CAPS_PATTERN = re.compile(rb"DRM_VIRGL_CAPS PASS caps_bytes=(\d+)")
 CONTEXT_MARKER = b"DRM_VIRGL_CONTEXT PASS"
 SUBMIT_PATTERN = re.compile(rb"DRM_VIRGL_SUBMIT PASS refused=(\d+)")
 FENCE_MARKER = b"DRM_VIRGL_FENCE PASS"
+IMPLICIT_MARKER = b"DRM_VIRGL_IMPLICIT PASS"
 RESOURCE_PATTERN = re.compile(rb"DRM_VIRGL_RESOURCE PASS bo=(\d+) res=(\d+) size=(\d+)")
 BACKING_MARKER = b"DRM_VIRGL_BACKING PASS"
 TIMING_PATTERN = re.compile(
@@ -221,6 +222,15 @@ def classify_transcript(
         return result(False, "missing completion fence")
     if not expected_3d and fence_at >= 0:
         return result(False, "a host without 3D produced a completion fence")
+
+    # A client that never creates a context still has to be able to submit:
+    # Mesa reads the CONTEXT_INIT parameter, finds it unsupported, and goes
+    # straight to work, expecting the driver to have a context ready.
+    implicit_at = rest.find(IMPLICIT_MARKER, resource_match.end())
+    if expected_3d and implicit_at < 0:
+        return result(False, "missing submission without an explicit context")
+    if not expected_3d and implicit_at >= 0:
+        return result(False, "a host without 3D accepted a contextless submission")
 
     # The backing check is what proves the resource names memory the client can
     # reach, so a 3D run that never made it is missing its strongest evidence.
