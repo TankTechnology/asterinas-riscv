@@ -987,6 +987,30 @@ test_riscv_drm_render_node: test_riscv_drm_render_node_unit
 		--manifest "$(DRM_RENDER_NODE_MANIFEST)" \
 		--output-directory "$(DRM_RENDER_NODE_GATE_OUTPUT)"
 
+.PHONY: test_riscv_drm_virgl_param_unit
+test_riscv_drm_virgl_param_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_virgl_param_gate -v
+
+# Run with `DRM_VIRGL_DEVICE_SET=drm-gem` and the same boot disk for the
+# control: the same probe on a device without GL has to report no 3D.
+.PHONY: test_riscv_drm_virgl_param
+test_riscv_drm_virgl_param: test_riscv_drm_virgl_param_unit
+	@test -n "$(DRM_VIRGL_UBOOT)" || \
+		{ echo "DRM_VIRGL_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DRM_VIRGL_BOOT_DISK)" || \
+		{ echo "DRM_VIRGL_BOOT_DISK is required" >&2; exit 2; }
+	@test -n "$(DRM_VIRGL_MANIFEST)" || \
+		{ echo "DRM_VIRGL_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DRM_VIRGL_GATE_OUTPUT)" || \
+		{ echo "DRM_VIRGL_GATE_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH=tools/riscv python3 -m drm.virgl_param_gate \
+		--uboot "$(DRM_VIRGL_UBOOT)" \
+		--boot-disk "$(DRM_VIRGL_BOOT_DISK)" \
+		--manifest "$(DRM_VIRGL_MANIFEST)" \
+		--output-directory "$(DRM_VIRGL_GATE_OUTPUT)" \
+		--device-set "$(if $(DRM_VIRGL_DEVICE_SET),$(DRM_VIRGL_DEVICE_SET),drm-virgl)"
+
 .PHONY: test_riscv_uboot_booti_unit
 test_riscv_uboot_booti_unit:
 	@python3 -m unittest \

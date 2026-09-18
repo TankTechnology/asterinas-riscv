@@ -374,6 +374,46 @@ make test_riscv_drm_render_node \
 `generic-sv39-drm-render-node-smp4` profile prepare the boot disk, exactly as
 for the two gates above.
 
+## virgl capability gate
+
+The virgl gate proves the driver negotiates the host's 3D feature and reports
+it correctly, which is the first thing a 3D client asks: Mesa calls
+`VIRTGPU_GETPARAM` and falls back to software rendering when the answer says
+there is no 3D.
+
+The guest opens `/dev/dri/renderD128` — where a 3D client belongs, and where the
+render-node permission split has to let the query through — and reads three
+parameters: `3D_FEATURES`, `CAPSET_QUERY_FIX`, and `SUPPORTED_CAPSET_IDs`. It
+also requires an unknown parameter to be refused rather than answered with a
+zero the kernel invented.
+
+**The device is what decides the answer, so the gate derives its expectation
+from the device rather than taking one as configuration.** `drm-virgl` launches
+`virtio-gpu-gl-device` with `-display egl-headless,gl=on`; a host GL context is
+what makes QEMU offer the virgl feature bit at all. Running the *same boot disk*
+with `--device-set drm-gem` launches a plain `virtio-gpu-device` and the same
+probe must report no 3D — a control that needs no second kernel build.
+
+```bash
+make test_riscv_drm_virgl_param \
+  DRM_VIRGL_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DRM_VIRGL_BOOT_DISK="$PWD/target/qemu-uboot/drm-virgl/prepared/boot.ext4" \
+  DRM_VIRGL_MANIFEST="$PWD/target/qemu-uboot/drm-virgl/prepared/artifacts.json" \
+  DRM_VIRGL_GATE_OUTPUT="$PWD/target/qemu-uboot/drm-virgl/evidence"
+
+# the control, against the same boot disk
+make test_riscv_drm_virgl_param DRM_VIRGL_DEVICE_SET=drm-gem \
+  DRM_VIRGL_GATE_OUTPUT="$PWD/target/qemu-uboot/drm-virgl/evidence-control" \
+  DRM_VIRGL_UBOOT=... DRM_VIRGL_BOOT_DISK=... DRM_VIRGL_MANIFEST=...
+```
+
+A pass reads `3d=1 capsets=0x2` on the GL device (bit 1 is the virgl capset) and
+`3d=0 capsets=0x0` on the control.
+
+This gate covers capability negotiation only. Contexts, 3D resources, and
+`SUBMIT_3D` are not implemented yet, so advertising them would be premature —
+the driver takes the virgl feature bit and no more.
+
 ## Simulation-first Megrez debug attempt
 
 The Megrez debug workflow binds one immutable Asterinas artifact plan to a
