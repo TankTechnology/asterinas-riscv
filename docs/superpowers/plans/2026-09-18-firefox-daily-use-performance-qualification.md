@@ -434,10 +434,12 @@
 - [ ] **Step 2: Build Stage1 twice and prove determinism**
 
   ```bash
-  tools/docker/run_dev_container.sh --workspace "$PWD" -- \
+  tools/docker/run_dev_container.sh --workspace "$PWD" \
+    --image asterinas/asterinas:0.18.0-20260702-riscv-rootfs --offline -- \
     tools/riscv/debian/rootfs/build_stage1.sh \
       target/firefox-daily-use-physical/stage1-qualification-a/initramfs.cpio
-  tools/docker/run_dev_container.sh --workspace "$PWD" -- \
+  tools/docker/run_dev_container.sh --workspace "$PWD" \
+    --image asterinas/asterinas:0.18.0-20260702-riscv-rootfs --offline -- \
     tools/riscv/debian/rootfs/build_stage1.sh \
       target/firefox-daily-use-physical/stage1-qualification-b/initramfs.cpio
   sha256sum \
@@ -454,22 +456,28 @@
 
   ```bash
   tools/docker/run_dev_container.sh --workspace "$PWD" -- \
+    install -d -m 0700 target/firefox-daily-use-physical/qemu-qualification
+  tools/docker/run_dev_container.sh --workspace "$PWD" -- \
     make test_riscv_physical_graphics_qemu_gate \
-      DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
-      DEBIAN_UBOOT="$PWD/target/firefox-daily-use-physical/qemu-inputs/u-boot" \
-      DEBIAN_DTB="$PWD/target/firefox-daily-use-physical/qemu-inputs/qemu-virt-smp4.dtb" \
-      DEBIAN_STAGE1_INITRAMFS="$PWD/target/firefox-daily-use-physical/stage1-qualification-a/initramfs.cpio" \
-      DEBIAN_ROOT_IMAGE="$PWD/target/firefox-daily-use-physical/qemu-inputs/debian-root.ext2" \
-      DEBIAN_ROOT_MANIFEST="$PWD/target/firefox-daily-use-physical/qemu-inputs/rootfs-manifest.json" \
-      DEBIAN_PACKAGES_LOCK="$PWD/target/firefox-daily-use-physical/qemu-inputs/packages.lock" \
-      DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/firefox-daily-use-physical/qemu-inputs/package-checksums" \
-      RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT="$PWD/target/firefox-daily-use-physical/qemu-qualification"
+      DEBIAN_KERNEL=target/osdk/aster-kernel/aster-kernel-osdk-bin.Image \
+      DEBIAN_UBOOT=target/firefox-daily-use-physical/qemu-inputs/u-boot \
+      DEBIAN_DTB=target/firefox-daily-use-physical/qemu-inputs/qemu-virt-smp4.dtb \
+      DEBIAN_STAGE1_INITRAMFS=target/firefox-daily-use-physical/stage1-qualification-a/initramfs.cpio \
+      DEBIAN_ROOT_IMAGE=target/debian-riscv/browser-web/rootfs/debian-root.ext2 \
+      DEBIAN_ROOT_MANIFEST=target/debian-riscv/browser-web/rootfs/rootfs-manifest.json \
+      DEBIAN_PACKAGES_LOCK=target/debian-riscv/browser-web/rootfs/packages.lock \
+      DEBIAN_PACKAGE_CHECKSUMS=target/debian-riscv/browser-web/rootfs/source-metadata/package-checksums \
+      RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT=target/firefox-daily-use-physical/qemu-qualification
   ```
 
   Expected: the rebuilt Stage1, Firefox/Marionette readiness, keyboard/tablet
   interaction, capture, and bounded cleanup path pass in QEMU. The daily-use
   classifier itself is covered by Tasks 1--6; this QEMU result is surrounding
-  compatibility evidence, not a physical performance baseline.
+  compatibility evidence, not a physical performance baseline. The output
+  directory must be root-owned mode `0700` because the gate pins it from inside
+  the development container. Do not substitute the older `qemu-inputs`
+  desktop-M5 root image or manifest for the current schema-7 `browser-web`
+  rootfs.
 
 - [ ] **Step 4: Record immutable input hashes**
 
@@ -498,6 +506,23 @@
 - [ ] **Step 1: Prepare a plan bound to the rebuilt inputs**
 
   ```bash
+  ASTERINAS_PLAN_BOOTARGS='console=tty0 console=ttyS0 cpu_no_boost_1_6ghz loglevel=info init=/init asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 asterinas.reboot_after=600 -- --root-init=systemd'
+  python3 -m tools.riscv.megrez_debug plan \
+    --profile debian-browser \
+    --kernel "$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+    --initramfs "$PWD/target/firefox-daily-use-physical/stage1-qualification-a/initramfs.cpio" \
+    --qemu-dtb "$PWD/target/firefox-daily-use-physical/qemu-inputs/qemu-virt-smp4.dtb" \
+    --megrez-dtb "$PWD/target/firefox-daily-use-physical/inputs/eic7700-milkv-megrez-prepared.dtb" \
+    --u-boot "$PWD/target/firefox-daily-use-physical/qemu-inputs/u-boot" \
+    --root-image "$PWD/target/debian-riscv/browser-web/rootfs/debian-root.ext2" \
+    --root-manifest "$PWD/target/debian-riscv/browser-web/rootfs/rootfs-manifest.json" \
+    --packages-lock "$PWD/target/debian-riscv/browser-web/rootfs/packages.lock" \
+    --package-checksums "$PWD/target/debian-riscv/browser-web/rootfs/source-metadata/package-checksums" \
+    --in-release "$PWD/target/debian-riscv/browser-web/rootfs/source-metadata/InRelease" \
+    --bootargs "$ASTERINAS_PLAN_BOOTARGS" --paging-mode sv39 --reboot-after 600 \
+    --output "$PWD/target/firefox-daily-use-physical/plan-qualification.json"
+  python3 -m tools.riscv.megrez_debug check \
+    "$PWD/target/firefox-daily-use-physical/plan-qualification.json"
   make prepare_riscv_megrez_firefox_daily_use \
     MEGREZ_FIREFOX_DAILY_USE_PLAN="$PWD/target/firefox-daily-use-physical/plan-qualification.json" \
     MEGREZ_FIREFOX_DAILY_USE_DEVICE=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0 \
@@ -507,8 +532,10 @@
     MEGREZ_FIREFOX_DAILY_USE_MMC_DTB="$PWD/target/firefox-daily-use-physical/inputs/eic7700-milkv-megrez-prepared.dtb"
   ```
 
-  Expected: a schema-valid plan whose embedded SHA-256 identities match Step
-  7.4. Do not reuse `plan-v3.json`, because it names an older Stage1.
+  Expected: plan creation and prepare-only validation both pass, and the
+  schema-valid plan's embedded SHA-256 identities match Step 7.4. The Make
+  target validates and prints a runnable command; it does not create the plan.
+  Do not reuse `plan-v3.json`, because it names an older Stage1.
 
 - [ ] **Step 2: Run three fresh one-profile-per-boot samples**
 
