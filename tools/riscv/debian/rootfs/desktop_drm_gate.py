@@ -160,7 +160,10 @@ class DesktopDRMOperations(DesktopM3Operations):
 
     def __init__(self, config: GateConfig, **arguments: Any) -> None:
         super().__init__(config, **arguments)
-        self._capture_screenshot = config.display == "none"
+        # Derived from the device, not from `config.display`: the display is
+        # chosen inside `desktop_drm_qemu_argv`, after this config is built, so
+        # reading it here would still see the default and try to capture.
+        self._capture_screenshot = config.graphics_device != "virtio-gpu-gl-device"
         # Asking for the GL device is asking for the 3D path, so the run has to
         # prove it got there: a desktop that came up on llvmpipe satisfies
         # every other milestone identically, and would otherwise be reported as
