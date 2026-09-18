@@ -706,7 +706,11 @@ test_riscv_debian_desktop_m5_qemu_gate:
 DEBIAN_DRM_UBOOT ?= $(CURDIR)/target/qemu-uboot/cache/u-boot-build/u-boot
 DEBIAN_DRM_KERNEL ?= $(CURDIR)/target/osdk/aster-kernel-osdk-bin.Image
 DEBIAN_DRM_DTB ?= $(CURDIR)/target/qemu-uboot/drm-virgl/prepared/qemu-virt.dtb
-DEBIAN_DRM_STAGE1_INITRAMFS ?= $(CURDIR)/target/xfce-drm/stage1-initramfs.cpio
+# The stage1 must be the one built for this rootfs. The xfce variant next to
+# it is the same size and also contains an `init`, so it looks interchangeable
+# and is not: it mounts the root and hands off to a layout this image does not
+# have, failing with a bare `exec /init failed`.
+DEBIAN_DRM_STAGE1_INITRAMFS ?= $(CURDIR)/target/debian-riscv/desktop-drm/stage1/initramfs.cpio
 DEBIAN_DRM_ROOT_IMAGE ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/debian-root.ext2
 DEBIAN_DRM_ROOT_MANIFEST ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/rootfs-manifest.json
 DEBIAN_DRM_PACKAGES_LOCK ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/packages.lock
