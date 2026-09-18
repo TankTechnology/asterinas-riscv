@@ -25,6 +25,13 @@ READY_MARKER = DRM_VIRGL_READY_LINE
 PARAM_PATTERN = re.compile(rb"DRM_VIRGL_PARAM 3d=(\d+) capsets=0x([0-9a-f]+)")
 CAPS_PATTERN = re.compile(rb"DRM_VIRGL_CAPS PASS caps_bytes=(\d+)")
 CONTEXT_MARKER = b"DRM_VIRGL_CONTEXT PASS"
+RESOURCE_PATTERN = re.compile(rb"DRM_VIRGL_RESOURCE PASS bo=(\d+) res=(\d+) size=(\d+)")
+BACKING_MARKER = b"DRM_VIRGL_BACKING PASS"
+TIMING_PATTERN = re.compile(
+    rb"DRM_VIRGL_TIMING caps_context_us=(\d+) resource_us=(\d+) backing_us=(\d+)"
+)
+#: The size the probe asks a 3D resource to be.
+RESOURCE_SIZE = 4096
 FAIL_PATTERN = re.compile(rb"DRM_VIRGL_FAIL stage=([A-Za-z0-9-]+) ([^\r\n]*)")
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 #: The capset bit a virgl host sets in `VIRTGPU_PARAM_SUPPORTED_CAPSET_IDs`.
@@ -46,6 +53,13 @@ class VirglParamGateResult:
     reported_capsets: int
     expected_3d: int
     caps_bytes: int
+    resource_bo: int = 0
+    resource_res: int = 0
+    #: Microseconds spent in each phase. Recorded rather than thresholded: the
+    #: guest is emulated, so a bound would describe the emulator, not the driver.
+    caps_context_us: int = 0
+    resource_us: int = 0
+    backing_us: int = 0
 
 
 @dataclass(frozen=True)
@@ -123,71 +137,90 @@ def classify_transcript(
             expected,
             caps_bytes,
         )
-    if READY_MARKER not in rest[context_at + len(CONTEXT_MARKER) :]:
+    resource_match = RESOURCE_PATTERN.search(rest, context_at + len(CONTEXT_MARKER))
+    if resource_match is None:
         return VirglParamGateResult(
-            False,
-            "missing ready marker after the context",
-            reported_3d,
-            capsets,
-            expected,
-            caps_bytes,
+            False, "missing or unordered resource report", reported_3d, capsets,
+            expected, caps_bytes,
+        )
+    resource_bo = int(resource_match.group(1))
+    resource_res = int(resource_match.group(2))
+    resource_size = int(resource_match.group(3))
+
+    # The backing check needs the file description, so only the real run can
+    # make it; on a host without 3D there is no resource to back.
+    backing_at = rest.find(BACKING_MARKER, resource_match.end())
+    after_backing = (
+        backing_at + len(BACKING_MARKER) if backing_at >= 0 else resource_match.end()
+    )
+
+    timing_match = TIMING_PATTERN.search(rest, after_backing)
+    if timing_match is None:
+        return VirglParamGateResult(
+            False, "missing timing report", reported_3d, capsets, expected, caps_bytes,
+            resource_bo, resource_res,
+        )
+    caps_context_us = int(timing_match.group(1))
+    resource_us = int(timing_match.group(2))
+    backing_us = int(timing_match.group(3))
+
+    def result(passed: bool, reason: str) -> VirglParamGateResult:
+        return VirglParamGateResult(
+            passed, reason, reported_3d, capsets, expected, caps_bytes,
+            resource_bo, resource_res, caps_context_us, resource_us, backing_us,
         )
 
+    if READY_MARKER not in rest[timing_match.end() :]:
+        return result(False, "missing ready marker after the timings")
+
     if reported_3d != expected:
-        return VirglParamGateResult(
-            False,
-            f"reported 3D={reported_3d} but this device should report {expected}",
-            reported_3d,
-            capsets,
-            expected,
-            caps_bytes,
+        return result(
+            False, f"reported 3D={reported_3d} but this device should report {expected}"
         )
 
     # A host that reports 3D must also name the renderer's capset; a feature
     # flag without a capset is a 3D claim nothing can be created against.
     if expected_3d and not capsets & (1 << VIRGL_CAPSET_ID):
-        return VirglParamGateResult(
-            False,
-            f"3D reported but capset mask {capsets:#x} lacks virgl",
-            reported_3d,
-            capsets,
-            expected,
-            caps_bytes,
-        )
+        return result(False, f"3D reported but capset mask {capsets:#x} lacks virgl")
     if not expected_3d and capsets != 0:
-        return VirglParamGateResult(
-            False,
-            f"no 3D reported but capset mask {capsets:#x} is non-empty",
-            reported_3d,
-            capsets,
-            expected,
-            caps_bytes,
+        return result(
+            False, f"no 3D reported but capset mask {capsets:#x} is non-empty"
         )
 
     # The blob is the renderer's own description of itself, so a 3D host has
     # to deliver one and a host without 3D must not pretend to.
     if expected_3d and caps_bytes < CAPS_MIN_DELIVERED:
-        return VirglParamGateResult(
-            False,
-            f"3D reported but only {caps_bytes} capability bytes were delivered",
-            reported_3d,
-            capsets,
-            expected,
-            caps_bytes,
+        return result(
+            False, f"3D reported but only {caps_bytes} capability bytes were delivered"
         )
     if not expected_3d and caps_bytes != 0:
-        return VirglParamGateResult(
-            False,
-            f"no 3D reported but {caps_bytes} capability bytes were delivered",
-            reported_3d,
-            capsets,
-            expected,
-            caps_bytes,
+        return result(
+            False, f"no 3D reported but {caps_bytes} capability bytes were delivered"
         )
 
-    return VirglParamGateResult(
-        True, "passed", reported_3d, capsets, expected, caps_bytes
-    )
+    # The backing check is what proves the resource names memory the client can
+    # reach, so a 3D run that never made it is missing its strongest evidence.
+    if expected_3d and backing_at < 0:
+        return result(False, "missing backing check")
+    if not expected_3d and backing_at >= 0:
+        return result(False, "a host without 3D claimed a backing")
+
+    # A 3D resource has to arrive with both names and be the size that was
+    # asked for; anything else means the buffer a client would write into is
+    # not the buffer it was promised.
+    if expected_3d:
+        if resource_bo == 0 or resource_res == 0:
+            return result(False, "3D resource was created without both handles")
+        if resource_size != RESOURCE_SIZE:
+            return result(
+                False,
+                f"3D resource is {resource_size} bytes, not the {RESOURCE_SIZE} asked for",
+            )
+    elif resource_bo != 0 or resource_res != 0 or resource_size != 0:
+        return result(False, "a host without 3D reported a resource")
+
+    return result(True, "passed")
+
 
 
 def _read_serial_log(path: Path) -> bytes:

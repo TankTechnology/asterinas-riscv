@@ -418,14 +418,36 @@ make test_riscv_drm_virgl_param DRM_VIRGL_DEVICE_SET=drm-gem \
   DRM_VIRGL_UBOOT=... DRM_VIRGL_BOOT_DISK=... DRM_VIRGL_MANIFEST=...
 ```
 
-A pass reads `3d=1 capsets=0x2` with a non-empty capability blob on the GL
-device (bit 1 is the virgl capset), and `3d=0 capsets=0x0` with no blob on the
+A pass reads `3d=1 capsets=0x2` with a non-empty capability blob, a 3D resource
+with both handles, and a verified backing on the GL device (bit 1 is the virgl
+capset); and `3d=0 capsets=0x0` with no blob, no resource, and no backing on the
 control.
 
-This gate covers capability negotiation and contexts. 3D resources and
-`SUBMIT_3D` are not implemented yet, so a client can obtain the renderer's
-description and open a context against it, but cannot yet create anything to
-render into or submit work.
+### Recorded timings
+
+Each run reports the microseconds spent in three phases, and the gate records
+them in `result.json`:
+
+| phase | what it covers | GL device | control |
+|---|---|---|---|
+| `caps_context_us` | capability blob + context creation | 20,978 | 4,957 |
+| `resource_us` | 3D resource + backing attach + context attach | 203,014 | 3,070 |
+| `backing_us` | mmap 4 KiB, write, msync, read back, munmap | 12,430 | — |
+
+Measured 2026-09-18 under QEMU TCG emulation, SMP=4, `-m 2G`.
+
+**These describe the emulator as much as the driver and are recorded, not
+thresholded** — no gate holds them to a bound. Two things to read carefully:
+the ~10x gap between the GL and control runs is mostly the three extra host
+round-trips that only a 3D device answers (each a virtqueue notify plus a
+spin-wait for the used entry), and `resource_us` is much the largest because it
+is three round-trips where the other phases are one or two. They are a
+regression baseline for this path, not a statement about rendering speed.
+
+This gate covers capability negotiation, contexts, and 3D resources. `SUBMIT_3D`
+is not implemented yet, so a client can obtain the renderer's description, open
+a context against it, and create a buffer the host can read — but cannot yet
+submit work that uses it.
 
 `CONTEXT_INIT` accepts the parameters this driver implements and refuses the
 rest rather than accepting and ignoring them: a second ring count is rejected
