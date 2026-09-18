@@ -104,6 +104,12 @@ class LinuxGuestStage1ExecTests(unittest.TestCase):
             "kernel/fs/ext4.ko",
             "kernel/drivers/virtio/virtio_mmio.ko",
             "kernel/drivers/block/virtio_blk.ko",
+            "kernel/drivers/gpu/drm/drm.ko",
+            "kernel/drivers/gpu/drm/drm_kms_helper.ko",
+            "kernel/drivers/gpu/drm/drm_shmem_helper.ko",
+            "kernel/drivers/virtio/virtio_dma_buf.ko",
+            "kernel/drivers/gpu/drm/virtio/virtio-gpu.ko",
+            "kernel/drivers/virtio/virtio_input.ko",
         ]
         positions = [source.find(entry) for entry in order]
         # Collected rather than formatted into the assertion message: an
