@@ -288,16 +288,32 @@ for _ in $(seq 1 4); do
     if [[ -z "$gl_diag_dumped" ]]; then
         gl_diag_dumped=yes
         emit '--- DRM GL probe diagnostics ---'
-        # Run one probed glxinfo in the background and sample where it is
-        # stuck so a hang names the blocking kernel wait channel.
+        # Run one probed glxinfo in the background and sample it while it is
+        # stuck, so a hang is distinguishable from a slow start.
         env "${glxinfo_env[@]}" glxinfo -B >>"$CONSOLE" 2>&1 &
         gl_pid=$!
         gl_waited=0
         while kill -0 "$gl_pid" 2>/dev/null; do
             if (( gl_waited >= 90 )); then
-                emit "--- glxinfo[$gl_pid] stuck: $(cat "/proc/$gl_pid/wchan" 2>/dev/null) ---"
-                grep -E '^(State|Name|Pid|PPid)' "/proc/$gl_pid/status" >>"$CONSOLE" 2>&1 || true
-                cat "/proc/$gl_pid/stack" >>"$CONSOLE" 2>&1 || true
+                # This kernel exposes `status` and `stat` per process but not
+                # `wchan` or `stack`, so the state can be shown to be blocked
+                # without naming what it blocks on. Say which probes are
+                # missing rather than printing empty values that read like a
+                # broken script. To find the blocking call itself, run the
+                # gate with ASTERINAS_QEMU_TRACE=enable=virtio_gpu_*,file=...
+                # and read the last command the host handled.
+                emit "--- glxinfo[$gl_pid] still running after ${gl_waited}s ---"
+                grep -E '^(State|Name|Pid|PPid|Threads)' "/proc/$gl_pid/status" \
+                    >>"$CONSOLE" 2>&1 || true
+                for probe in wchan stack; do
+                    if [[ -r "/proc/$gl_pid/$probe" ]]; then
+                        printf -- '-- %s: %s\n' "$probe" \
+                            "$(cat "/proc/$gl_pid/$probe" 2>/dev/null)" >>"$CONSOLE" 2>&1
+                    else
+                        printf -- '-- %s: not provided by this kernel\n' "$probe" \
+                            >>"$CONSOLE" 2>&1
+                    fi
+                done
                 kill -9 "$gl_pid" 2>/dev/null || true
                 break
             fi
