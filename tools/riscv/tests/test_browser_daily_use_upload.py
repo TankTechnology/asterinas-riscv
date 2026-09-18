@@ -18,7 +18,10 @@ import threading
 import unittest
 from unittest import mock
 
-from tools.riscv.tests.test_browser_daily_use_contract import complete_result
+from tools.riscv.tests.test_browser_daily_use_contract import (
+    complete_result,
+    set_group,
+)
 
 
 EXPERIMENT_ID = "fedcba9876543210fedcba9876543210"
@@ -87,13 +90,18 @@ class BrowserDailyUseUploadTests(unittest.TestCase):
             self.write_private(name, payload)
         return payloads
 
-    def make_failure_evidence(self) -> bytes:
+    def make_failure_evidence(
+        self,
+        *,
+        completed_phases: list[str] | None = None,
+        function_groups: list[dict[str, object]] | None = None,
+    ) -> bytes:
         payload = canonical_gate_json(
             {
                 "schemaVersion": 1,
                 "runId": GATE_RUN_ID,
-                "completedPhases": ["session"],
-                "functionGroups": [],
+                "completedPhases": completed_phases or ["session"],
+                "functionGroups": function_groups or [],
                 "failure": {"type": "daily-use-gate", "reason": "phase-failed"},
             }
         )
@@ -129,6 +137,79 @@ class BrowserDailyUseUploadTests(unittest.TestCase):
             parsed.artifacts,
             {"browser-daily-use-checkpoint.json": expected},
         )
+
+    def test_failure_bundle_preserves_optional_unsupported_groups(self) -> None:
+        result = complete_result()
+        for name in ("execution", "rendering-media"):
+            set_group(
+                result,
+                name,
+                "unsupported",
+                "fixture-capability-unavailable",
+            )
+        groups = [result["functionGroups"][index] for index in (0, 1, 2, 3, 5)]
+        expected = self.make_failure_evidence(
+            completed_phases=["session", "samplers-ready", "fixture"],
+            function_groups=groups,
+        )
+        module = self.load_module()
+
+        raw = module.build_bundle(self.evidence, EXPERIMENT_ID, "fail")
+        parsed = module.parse_bundle(raw, EXPERIMENT_ID)
+        checkpoint = json.loads(
+            parsed.artifacts["browser-daily-use-checkpoint.json"]
+        )
+
+        self.assertEqual(
+            parsed.artifacts["browser-daily-use-checkpoint.json"], expected
+        )
+        self.assertEqual(checkpoint["functionGroups"], groups)
+
+    def test_failure_checkpoint_rejects_invalid_group_states_and_reasons(self) -> None:
+        result = complete_result()
+        groups = [result["functionGroups"][index] for index in (0, 1, 2, 3, 5)]
+        source = json.loads(
+            self.make_failure_evidence(
+                completed_phases=["session", "samplers-ready", "fixture"],
+                function_groups=groups,
+            )
+        )
+        module = self.load_module()
+        invalid_values = []
+
+        unsupported_required = json.loads(json.dumps(source))
+        unsupported_required["functionGroups"][0].update(
+            state="unsupported", reason="made-up-reason"
+        )
+        invalid_values.append(unsupported_required)
+        optional_without_reason = json.loads(json.dumps(source))
+        optional_without_reason["functionGroups"][2].update(
+            state="unsupported", reason=None
+        )
+        invalid_values.append(optional_without_reason)
+        optional_wrong_reason = json.loads(json.dumps(source))
+        optional_wrong_reason["functionGroups"][2].update(
+            state="unsupported", reason="browser-session-unavailable"
+        )
+        invalid_values.append(optional_wrong_reason)
+        passing_with_reason = json.loads(json.dumps(source))
+        passing_with_reason["functionGroups"][0]["reason"] = (
+            "fixture-capability-failed"
+        )
+        invalid_values.append(passing_with_reason)
+        unknown_state = json.loads(json.dumps(source))
+        unknown_state["functionGroups"][0].update(
+            state="partial", reason="fixture-capability-failed"
+        )
+        invalid_values.append(unknown_state)
+
+        for value in invalid_values:
+            with self.subTest(value=value):
+                self.replace_private(
+                    "browser-daily-use-checkpoint.json", canonical_gate_json(value)
+                )
+                with self.assertRaises(module.EvidenceBundleError):
+                    module.build_bundle(self.evidence, EXPERIMENT_ID, "fail")
 
     def test_failure_checkpoint_rejects_unknown_phase_and_group_shape(self) -> None:
         source = json.loads(self.make_failure_evidence())
