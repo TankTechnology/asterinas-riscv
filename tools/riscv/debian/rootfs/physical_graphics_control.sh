@@ -110,13 +110,34 @@ start_browser() {
             >/dev/null 2>&1 || status=$?
         systemctl_bounded stop --no-block asterinas-desktop-m5.service \
             >/dev/null 2>&1 || status=$?
-        attempt=0
-        while systemctl_bounded is-active --quiet \
-            asterinas-browser-web.service asterinas-desktop-m5.service \
-            2>/dev/null; do
-            attempt=$((attempt + 1))
-            if [ "$attempt" -ge 30 ]; then
-                [ "$status" -ne 0 ] || status=124
+        stop_attempt=0
+        while [ "$status" -eq 0 ]; do
+            service_states=$(systemctl_bounded is-active \
+                asterinas-browser-web.service asterinas-desktop-m5.service \
+                2>/dev/null || true)
+            set -- $service_states
+            if [ "$#" -ne 2 ]; then
+                status=124
+                break
+            fi
+            all_quiesced=1
+            for service_state in "$@"; do
+                case "$service_state" in
+                    inactive | failed) ;;
+                    active | activating | deactivating | reloading)
+                        all_quiesced=0
+                        ;;
+                    *)
+                        status=124
+                        all_quiesced=0
+                        ;;
+                esac
+            done
+            [ "$status" -ne 0 ] && break
+            [ "$all_quiesced" -eq 1 ] && break
+            stop_attempt=$((stop_attempt + 1))
+            if [ "$stop_attempt" -ge 120 ]; then
+                status=124
                 break
             fi
             /usr/bin/sleep 1
