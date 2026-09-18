@@ -274,6 +274,8 @@ class ConcreteOperations:
                 monitor_socket=monitor_path,
                 smp=config.smp,
                 dtb_enabled_cpu_count=4,
+                graphics_device=config.graphics_device,
+                display=config.display,
             )
             self._attempted_argv.append(argv)
             master, slave = os.openpty()

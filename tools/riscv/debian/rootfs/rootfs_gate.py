@@ -32,6 +32,12 @@ class GateConfig:
     package_checksums: Path
     output_directory: Path
     smp: int = 4
+    #: Which GPU QEMU attaches and how it is displayed. The two travel
+    #: together: a virgl device only offers 3D under a display backend that can
+    #: give it a host GL context, so asking for one without the other yields a
+    #: device quietly missing the feature rather than an error.
+    graphics_device: str = "bochs-display"
+    display: str = "none"
     boot_timeout: float = 120.0
     command_timeout: float = 30.0
     cleanup_timeout: float = 10.0
@@ -445,6 +451,14 @@ def parse_gate_args(arguments: list[str] | None = None) -> GateConfig:
     ):
         parser.add_argument(f"--{option}", required=True, type=Path)
     parser.add_argument("--smp", type=int, choices=(4,), default=4)
+    parser.add_argument(
+        "--graphics-device",
+        choices=("bochs-display", "virtio-gpu-device", "virtio-gpu-gl-device"),
+        default="bochs-display",
+    )
+    parser.add_argument(
+        "--display", choices=("none", "egl-headless,gl=on"), default="none"
+    )
     parser.add_argument("--boot-timeout", type=_positive_timeout, default=120.0)
     parser.add_argument("--command-timeout", type=_positive_timeout, default=30.0)
     parser.add_argument("--cleanup-timeout", type=_positive_timeout, default=10.0)
@@ -460,6 +474,8 @@ def parse_gate_args(arguments: list[str] | None = None) -> GateConfig:
         values.package_checksums,
         values.output_directory,
         values.smp,
+        values.graphics_device,
+        values.display,
         values.boot_timeout,
         values.command_timeout,
         values.cleanup_timeout,
