@@ -158,10 +158,42 @@ if [[ -f /usr/lib/asterinas/ioctltrace.so ]]; then
     glxinfo_env+=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so)
 fi
 
+# How the DRM device presents itself to userspace.
+#
+# Mesa decides which DRI driver may serve a device from what sysfs says about
+# it, not from the DRM ioctls: a PCI device is matched by its vendor:device id
+# and a platform device by its devicetree `compatible` string. A virtio-mmio
+# GPU is the latter, so whether that node exists — and what it contains — is
+# what decides if the loader can ever consider `virtio_gpu_dri.so` at all.
+if [[ -n "$(cmdline_value mesa_loader_debug)" ]]; then
+    emit '--- DRM sysfs ---'
+    {
+        ls -l /sys/class/drm/ 2>&1 | head -20
+        for node in /sys/class/drm/renderD128 /sys/class/drm/card0; do
+            printf '== %s ==\n' "$node"
+            ls -l "$node/" 2>&1 | head -20
+            printf -- '-- device -> %s\n' "$(readlink -f "$node/device" 2>&1)"
+            for attr in subsystem vendor device uevent; do
+                printf -- '-- %s: %s\n' "$attr" "$(cat "$node/device/$attr" 2>&1 | head -2)"
+            done
+            printf -- '-- of_node/compatible: %s\n' \
+                "$(cat "$node/device/of_node/compatible" 2>&1 | head -1)"
+        done
+    } >>"$CONSOLE" 2>&1
+fi
+
 gl_renderer="unavailable"
 gl_diag_dumped=""
 for _ in $(seq 1 4); do
-    probe="$(env "${glxinfo_env[@]}" timeout 60 glxinfo -B 2>/dev/null | \
+    # stderr is kept when the loader is being debugged, and discarded
+    # otherwise: Mesa explains on stderr why it rejected a driver, which is the
+    # only place that reasoning exists, and the probe was throwing it away.
+    if [[ -n "$(cmdline_value mesa_loader_debug)" ]]; then
+        glxinfo_err="$CONSOLE"
+    else
+        glxinfo_err=/dev/null
+    fi
+    probe="$(env "${glxinfo_env[@]}" timeout 60 glxinfo -B 2>"$glxinfo_err" | \
         sed -n 's/^OpenGL renderer string: //p' | head -1 || true)"
     if [[ -n "$probe" ]]; then
         gl_renderer="$probe"
