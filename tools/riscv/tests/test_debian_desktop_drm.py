@@ -13,13 +13,18 @@ from tools.riscv.debian.rootfs.desktop_drm_gate import (
     DESKTOP_DRM_BOOTARGS,
     DESKTOP_DRM_EXPECTED_HEIGHT,
     DESKTOP_DRM_EXPECTED_WIDTH,
+    DESKTOP_DRM_GL_PREFIX,
     DESKTOP_DRM_MILESTONES,
+    DESKTOP_DRM_VIRGL_MILESTONE,
     GUEST_DEADLINE_MINIMUM_SECONDS,
     GUEST_DEADLINE_MARGIN_SECONDS,
     DesktopDRMOperations,
     classify_desktop_drm,
+    classify_desktop_drm_virgl,
     desktop_drm_qemu_argv,
+    observed_desktop_drm_renderer,
 )
+from tools.riscv.debian.rootfs.rootfs_gate import GateConfig
 from tools.riscv.debian.rootfs.profiles import get_profile
 
 
@@ -118,6 +123,115 @@ class DebianDesktopDRMTests(unittest.TestCase):
         self.assertIn("loglevel=7", bootargs)
         self.assertIn("asterinas.desktop_drm_deadline=600", bootargs)
         self.assertTrue(bootargs.endswith("--root-init=systemd"))
+
+
+class DesktopDRMRendererTests(unittest.TestCase):
+    """The renderer line is the evidence; these pin how it is waited on and graded."""
+
+    def setUp(self) -> None:
+        # Building the operations opens every input path, so the config has to
+        # point at files that exist rather than at plausible-looking names.
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.inputs = Path(temporary.name) / "inputs"
+        self.inputs.mkdir()
+        for name in (
+            "kernel",
+            "u-boot",
+            "dtb",
+            "initramfs.cpio",
+            "root.ext2",
+            "manifest.json",
+            "packages.lock",
+            "checksums",
+        ):
+            (self.inputs / name).write_bytes(b"input")
+        self.output = Path(temporary.name) / "evidence"
+        self.output.mkdir()
+
+    def _config(self, graphics_device: str) -> GateConfig:
+        return GateConfig(
+            kernel=self.inputs / "kernel",
+            u_boot=self.inputs / "u-boot",
+            dtb=self.inputs / "dtb",
+            stage1_initramfs=self.inputs / "initramfs.cpio",
+            root_image=self.inputs / "root.ext2",
+            manifest=self.inputs / "manifest.json",
+            packages_lock=self.inputs / "packages.lock",
+            package_checksums=self.inputs / "checksums",
+            output_directory=self.output,
+            graphics_device=graphics_device,
+        )
+
+    @staticmethod
+    def _transcript(renderer: str | None) -> bytes:
+        lines = ["boot", *DESKTOP_DRM_MILESTONES]
+        if renderer is not None:
+            lines.append(f"{DESKTOP_DRM_GL_PREFIX}{renderer}")
+        return ("\n".join(lines) + "\n").encode()
+
+    def test_a_3d_run_waits_on_the_prefix_not_the_virgl_literal(self) -> None:
+        # Waiting for the literal meant an llvmpipe run was never recognised at
+        # all: the gate sat out its entire window and reported a bare protocol
+        # timeout, destroying the one datum the run existed to produce.
+        operations = DesktopDRMOperations(self._config("virtio-gpu-gl-device"))
+        self.assertEqual(operations.TERMINAL_MARKER, DESKTOP_DRM_GL_PREFIX.encode())
+        self.assertTrue(
+            operations.TERMINAL_MARKER.startswith(DESKTOP_DRM_GL_PREFIX.encode())
+        )
+        # It must still match the good answer, or the gate would never stop on it.
+        self.assertTrue(DESKTOP_DRM_VIRGL_MILESTONE.encode().startswith(operations.TERMINAL_MARKER))
+
+    def test_a_2d_run_still_waits_on_its_last_milestone(self) -> None:
+        # A plain virtio-gpu run emits no renderer line, so waiting on the
+        # prefix there would hang until the timeout on every single run.
+        operations = DesktopDRMOperations(self._config("virtio-gpu-device"))
+        self.assertEqual(operations.TERMINAL_MARKER, DESKTOP_DRM_MILESTONES[-1].encode())
+
+    def test_the_device_decides_whether_virgl_is_required(self) -> None:
+        self.assertTrue(
+            DesktopDRMOperations(self._config("virtio-gpu-gl-device")).REQUIRES_VIRGL
+        )
+        self.assertFalse(
+            DesktopDRMOperations(self._config("virtio-gpu-device")).REQUIRES_VIRGL
+        )
+
+    def test_a_3d_run_that_fell_back_to_llvmpipe_fails_and_names_it(self) -> None:
+        result = classify_desktop_drm_virgl(
+            self._transcript("llvmpipe"), expected_debian_release="13.6"
+        )
+        self.assertFalse(result.passed)
+        self.assertIn("llvmpipe", result.reason)
+
+    def test_a_3d_run_on_virgl_passes(self) -> None:
+        self.assertTrue(
+            classify_desktop_drm_virgl(
+                self._transcript("virgl"), expected_debian_release="13.6"
+            ).passed
+        )
+
+    def test_a_3d_run_with_no_renderer_line_is_not_reported_as_a_renderer(self) -> None:
+        # "never got there" and "got there on the wrong driver" are different
+        # failures; only the second one has a renderer to name.
+        result = classify_desktop_drm_virgl(
+            self._transcript(None), expected_debian_release="13.6"
+        )
+        self.assertFalse(result.passed)
+        self.assertNotIn("llvmpipe", result.reason)
+        self.assertIn(DESKTOP_DRM_VIRGL_MILESTONE, result.reason)
+
+    def test_the_2d_classifier_ignores_the_renderer_entirely(self) -> None:
+        # Same transcript, no 3D device: nothing about the renderer may leak
+        # into a 2D verdict, or every plain run would start failing.
+        self.assertTrue(
+            classify_desktop_drm(
+                self._transcript("llvmpipe"), expected_debian_release="13.6"
+            ).passed
+        )
+
+    def test_the_observed_renderer_is_read_back_from_the_line(self) -> None:
+        self.assertEqual(observed_desktop_drm_renderer(self._transcript("zink")), "zink")
+        self.assertIsNone(observed_desktop_drm_renderer(self._transcript(None)))
 
 
 if __name__ == "__main__":

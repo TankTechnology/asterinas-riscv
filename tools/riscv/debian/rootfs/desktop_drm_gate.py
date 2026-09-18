@@ -6,15 +6,17 @@
 from __future__ import annotations
 
 import os
+import re
 import secrets
 import sys
 import time
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from tools.riscv.debian.rootfs.contract import load_manifest
 from tools.riscv.debian.rootfs.desktop_m3_gate import (
     DesktopM3Operations,
+    _ANSI_ESCAPE_RE,
     capture_rendered_ppm,
     classify_desktop,
 )
@@ -56,7 +58,20 @@ DESKTOP_DRM_MIN_NON_BACKGROUND_RATIO = 0.05
 
 # The virgl variant additionally requires the guest to prove that Mesa talks
 # to the host virglrenderer instead of falling back to llvmpipe.
-DESKTOP_DRM_VIRGL_MILESTONE = "DEBIAN_DESKTOP_DRM_GL renderer=virgl"
+DESKTOP_DRM_GL_PREFIX = "DEBIAN_DESKTOP_DRM_GL renderer="
+DESKTOP_DRM_VIRGL_MILESTONE = DESKTOP_DRM_GL_PREFIX + "virgl"
+
+# Every renderer line begins with the prefix above, whatever value follows it.
+#
+# The gate waits for the prefix rather than for the `renderer=virgl` literal,
+# and the difference is not cosmetic. Waiting on the literal made an llvmpipe
+# answer -- a real finding, and the one this gate most needs to report --
+# indistinguishable from a guest that never got that far: the wait ran out its
+# entire window and the run ended as a bare protocol timeout, with the renderer
+# never surfaced because the transcript is only written at teardown. Waiting on
+# the prefix stops the run as soon as the guest answers at all, and leaves
+# `classify_desktop_drm_virgl` to decide whether the answer was good enough.
+DESKTOP_DRM_GL_RENDERER_RE = re.compile(r"DEBIAN_DESKTOP_DRM_GL renderer=(\S+)")
 
 DESKTOP_DRM_MILESTONES = (
     "DEBIAN_DESKTOP_DRM_UDEV state=active",
@@ -126,6 +141,43 @@ def classify_desktop_drm(
     )
 
 
+def observed_desktop_drm_renderer(transcript: bytes) -> str | None:
+    """Return the GL renderer the guest reported, if it got that far."""
+
+    clean = _ANSI_ESCAPE_RE.sub(b"", transcript).decode("utf-8", "replace")
+    match = DESKTOP_DRM_GL_RENDERER_RE.search(clean)
+    return match.group(1) if match else None
+
+
+def classify_desktop_drm_virgl(
+    transcript: bytes, *, expected_debian_release: str
+) -> GateResult:
+    """Classify a 3D run, where a software renderer is a failure.
+
+    The milestone list alone cannot say this. Every other marker is identical
+    on llvmpipe -- the desktop comes up, Xorg runs, all five clients appear --
+    so the renderer line is the only thing separating a virgl run from one
+    that quietly fell back, which is why it is both a required milestone here
+    and named by value in the reason.
+    """
+
+    result = classify_desktop(
+        transcript,
+        expected_debian_release=expected_debian_release,
+        milestones=DESKTOP_DRM_VIRGL_MILESTONES,
+        failure_marker=b"DEBIAN_DESKTOP_DRM_FAIL reason=",
+    )
+    if result.passed:
+        return result
+    # Only when the guest actually answered: a missing renderer line is the
+    # generic "never got there" case and is better reported as the milestone
+    # that is missing than as a renderer that was never observed.
+    renderer = observed_desktop_drm_renderer(transcript)
+    if renderer is not None and renderer != "virgl":
+        return GateResult(False, f"GL renderer was {renderer}, not virgl", None)
+    return result
+
+
 class DesktopDRMOperations(DesktopM3Operations):
     """Reuse the signed-root lifecycle while changing only display evidence."""
 
@@ -168,11 +220,62 @@ class DesktopDRMOperations(DesktopM3Operations):
         # prove it got there: a desktop that came up on llvmpipe satisfies
         # every other milestone identically, and would otherwise be reported as
         # a passing virgl run.
+        self._requires_virgl = config.graphics_device == "virtio-gpu-gl-device"
         self._milestones = (
             DESKTOP_DRM_VIRGL_MILESTONES
-            if config.graphics_device == "virtio-gpu-gl-device"
+            if self._requires_virgl
             else DESKTOP_DRM_MILESTONES
         )
+
+    @property
+    def REQUIRES_VIRGL(self) -> bool:
+        return self._requires_virgl
+
+    @property
+    def TERMINAL_MARKER(self) -> bytes:
+        """The marker whose arrival means the guest has said all it is going to.
+
+        For a 3D run that is the renderer line's *prefix*, so the run ends on
+        the answer however the answer reads; waiting for `renderer=virgl`
+        itself would only ever end early on the outcome that needs no
+        reporting. The value is graded afterwards, not waited on.
+        """
+
+        return (
+            DESKTOP_DRM_GL_PREFIX.encode()
+            if self.REQUIRES_VIRGL
+            else self.MILESTONES[-1].encode()
+        )
+
+    def serial_observer(
+        self, config: GateConfig, boot_number: int
+    ) -> Callable[[bytes], None] | None:
+        """Tee serial bytes to a file while the boot is still running.
+
+        The transcript is otherwise written in one piece at teardown, so from
+        outside a guest that has stalled and a guest that is merely slow look
+        exactly alike -- both are silence, both cost the same half hour to
+        discover, and the run that would tell them apart is the one already
+        running. A live copy costs one write per chunk and makes the boot
+        observable with `tail -f` while it happens.
+        """
+
+        del boot_number
+        path = Path(config.output_directory) / f"{self.ARTIFACT_PREFIX}.live.log"
+        try:
+            handle = open(path, "ab", buffering=0)
+        except OSError:
+            # Observability is a convenience; it must never fail the run it is
+            # trying to make visible.
+            return None
+
+        def observe(chunk: bytes) -> None:
+            try:
+                handle.write(chunk)
+            except OSError:
+                pass
+
+        return observe
 
     def invalidate(self, config: GateConfig) -> None:
         self._require_config(config)
@@ -180,6 +283,7 @@ class DesktopDRMOperations(DesktopM3Operations):
             "boot.ext4",
             "debian-root.run.ext2",
             f"{self.ARTIFACT_PREFIX}.serial.log",
+            f"{self.ARTIFACT_PREFIX}.live.log",
             f"{self.ARTIFACT_PREFIX}.ppm",
             "result.json",
         )
@@ -259,7 +363,7 @@ class DesktopDRMOperations(DesktopM3Operations):
         serial.wait_for(marker.encode(), deadline)
         serial.wait_for(b"Starting kernel ...", deadline)
         completion = serial.wait_for_any(
-            (self.MILESTONES[-1].encode(), self.FAILURE_MARKER),
+            (self.TERMINAL_MARKER, self.FAILURE_MARKER),
             time.monotonic() + config.boot_timeout,
         )
         if completion.startswith(self.FAILURE_MARKER.split(b" reason=", 1)[0]):
@@ -288,8 +392,16 @@ def orchestrate_desktop_drm_gate(
     config: GateConfig,
     operations: DesktopDRMOperations,
     *,
-    classifier: Any = classify_desktop_drm,
+    classifier: Any = None,
 ) -> dict[str, object]:
+    # A 3D run is graded on whether the renderer is virgl; a 2D run has no
+    # renderer to grade and must not acquire a requirement for one.
+    if classifier is None:
+        classifier = (
+            classify_desktop_drm_virgl
+            if operations.REQUIRES_VIRGL
+            else classify_desktop_drm
+        )
     return orchestrate_systemd_m2_gate(config, operations, classifier=classifier)
 
 
