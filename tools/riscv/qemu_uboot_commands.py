@@ -111,6 +111,7 @@ def qemu_argv(
         slow_permit=slow_permit,
         guest_reboot=guest_reboot,
         snapshot_disk=snapshot_disk,
+        display=device_set.display,
     )
     argv.extend(render_device_argv(device_set, device_paths))
     return argv
@@ -124,6 +125,7 @@ def _base_qemu_argv(
     slow_permit: object | None = None,
     guest_reboot: bool = False,
     snapshot_disk: bool = False,
+    display: str = "none",
 ) -> list[str]:
     """Construct the pre-device QEMU U-Boot command line."""
 
@@ -149,7 +151,7 @@ def _base_qemu_argv(
         "-smp",
         str(profile.hart_count),
         "-display",
-        "none",
+        display,
         "-monitor",
         "none",
         "-serial",

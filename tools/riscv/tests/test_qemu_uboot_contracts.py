@@ -385,6 +385,7 @@ class ContractCompositionTests(unittest.TestCase):
                 ("VIRTIO_RNG", "virtio-rng"),
                 ("VIRTIO_NET", "virtio-net"),
                 ("VIRTIO_GPU", "virtio-gpu"),
+                ("VIRTIO_GPU_GL", "virtio-gpu-gl"),
                 ("SCRATCH_VIRTIO_BLOCK", "scratch-virtio-block"),
                 ("NVME", "nvme"),
             ),
