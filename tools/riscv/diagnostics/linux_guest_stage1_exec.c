@@ -25,6 +25,20 @@
 // ext4 needs jbd2 and crc16, jbd2 needs crc16, and the block device has to
 // exist before anything can be mounted on it.
 //
+// Every one of them has to be named explicitly, because nothing else can load
+// a module here: this rootfs ships no /sbin/modprobe, so systemd's
+// modprobe@*.service units report "Unable to locate executable" and udev has
+// nothing to call. Asterinas needs none of this -- its drivers are compiled in
+// -- which is the asymmetry the comparison exists to measure rather than an
+// accident of the setup.
+//
+// The order was briefly changed to put drivers first, on the theory that a
+// driver registered after virtio_mmio created its devices would not attach.
+// That theory is wrong and the order is not load-bearing: re-running with the
+// drivers first changed nothing, because what actually refuses these devices
+// is the transport itself -- virtio_gpu's probe returns EIO on virtio-mmio
+// while binding immediately on virtio-pci, whatever the module order.
+//
 // Asterinas has no loadable modules -- its drivers are compiled in -- so this
 // step has no counterpart there. That difference is part of what the control
 // compares, not a defect in it: the Debian kernel is built with
@@ -49,7 +63,13 @@
     "/lib/modules/" KERNEL_RELEASE "/kernel/fs/jbd2.ko", \
     "/lib/modules/" KERNEL_RELEASE "/kernel/fs/ext4.ko", \
     "/lib/modules/" KERNEL_RELEASE "/kernel/drivers/virtio/virtio_mmio.ko", \
-    "/lib/modules/" KERNEL_RELEASE "/kernel/drivers/block/virtio_blk.ko",
+    "/lib/modules/" KERNEL_RELEASE "/kernel/drivers/block/virtio_blk.ko", \
+    "/lib/modules/" KERNEL_RELEASE "/kernel/drivers/gpu/drm/drm.ko", \
+    "/lib/modules/" KERNEL_RELEASE "/kernel/drivers/gpu/drm/drm_kms_helper.ko", \
+    "/lib/modules/" KERNEL_RELEASE "/kernel/drivers/gpu/drm/drm_shmem_helper.ko", \
+    "/lib/modules/" KERNEL_RELEASE "/kernel/drivers/virtio/virtio_dma_buf.ko", \
+    "/lib/modules/" KERNEL_RELEASE "/kernel/drivers/gpu/drm/virtio/virtio-gpu.ko", \
+    "/lib/modules/" KERNEL_RELEASE "/kernel/drivers/virtio/virtio_input.ko",
 #endif
 
 static const char *const BOOT_MODULE_PATHS[] = {BOOT_MODULES NULL};
