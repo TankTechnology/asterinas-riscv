@@ -17,7 +17,10 @@ from tools.riscv.megrez_firefox_daily_use_report import (
     build_report,
     main,
 )
-from tools.riscv.tests.test_browser_daily_use_contract import complete_result
+from tools.riscv.tests.test_browser_daily_use_contract import (
+    complete_result,
+    set_group,
+)
 
 
 def canonical(value: object) -> bytes:
@@ -45,6 +48,7 @@ class DailyUseReportTests(unittest.TestCase):
         coverage: bool = True,
         identity_change: tuple[str, object] | None = None,
         fixture_port: int = 17894,
+        optional_unsupported: bool = False,
     ) -> Path:
         directory = self.root / f"run-{index}-{len(list(self.root.iterdir()))}"
         directory.mkdir(mode=0o700)
@@ -52,6 +56,17 @@ class DailyUseReportTests(unittest.TestCase):
         gate_run_id = f"{index + 101:032x}"
         result = complete_result()
         result["runId"] = gate_run_id
+        if optional_unsupported:
+            for name in ("execution", "rendering-media"):
+                set_group(
+                    result,
+                    name,
+                    "unsupported",
+                    "fixture-capability-unavailable",
+                )
+            result["limitations"]["items"].append(
+                "fixture-capabilities-incomplete"
+            )
         for phase in result["performance"]:
             metrics = phase["metrics"]
             if phase["name"] == "input":
@@ -386,6 +401,63 @@ class DailyUseReportTests(unittest.TestCase):
         )
         self.assertEqual(len(report["runs"]), 3)
         self.assertIn("raw", report["runs"][0])
+
+    def test_report_retains_unsupported_groups_and_daily_use_limitations(self):
+        runs = self.three(optional_unsupported=True)
+
+        report = build_report(runs)
+
+        for run in report["runs"]:
+            states = {
+                item["name"]: item["state"] for item in run["functionGroups"]
+            }
+            self.assertEqual(states["execution"], "unsupported")
+            self.assertEqual(states["rendering-media"], "unsupported")
+            self.assertEqual(
+                run["dailyUseLimitations"],
+                {
+                    "items": [
+                        "synthetic-input-timing",
+                        "fixture-capabilities-incomplete",
+                    ]
+                },
+            )
+        self.assertEqual(
+            report["dailyUseCoverage"],
+            {
+                "functionGroups": report["runs"][0]["functionGroups"],
+                "limitations": report["runs"][0]["dailyUseLimitations"],
+            },
+        )
+
+        json_output = self.root / "coverage-report.json"
+        markdown_output = self.root / "coverage-report.md"
+        self.assertEqual(
+            main(
+                [
+                    *(str(path) for path in runs),
+                    "--json-output",
+                    str(json_output),
+                    "--markdown-output",
+                    str(markdown_output),
+                ]
+            ),
+            0,
+        )
+        markdown = markdown_output.read_text(encoding="utf-8")
+        self.assertIn("execution: unsupported", markdown)
+        self.assertIn("rendering-media: unsupported", markdown)
+        self.assertIn("fixture-capabilities-incomplete", markdown)
+
+    def test_report_rejects_mixed_daily_use_capability_coverage(self) -> None:
+        runs = [
+            self.make_run(0, optional_unsupported=True),
+            self.make_run(1, optional_unsupported=True),
+            self.make_run(2),
+        ]
+
+        with self.assertRaisesRegex(ReportError, "capability coverage"):
+            build_report(runs)
 
     def test_cli_writes_private_exclusive_json_and_markdown(self) -> None:
         runs = self.three()
