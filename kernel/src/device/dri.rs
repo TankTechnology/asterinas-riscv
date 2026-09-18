@@ -22,6 +22,8 @@
 
 mod cursor;
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use align_ext::AlignExt;
 use aster_virtio::device::gpu::{device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
@@ -199,6 +201,11 @@ struct DriInner {
     current_width: u32,
     current_height: u32,
     cursor: CursorState,
+    /// The 3D context this file created, if it has created one.
+    ///
+    /// Linux allows one context per file and refuses a second, so the field
+    /// doubles as the "already created" flag.
+    context_id: Option<u32>,
 }
 
 /// A registered framebuffer referencing a GEM object.
@@ -392,10 +399,63 @@ struct DrmVirtgpuGetparam {
     value: u64,
 }
 
+/// `struct drm_virtgpu_get_caps`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmVirtgpuGetCaps {
+    cap_set_id: u32,
+    cap_set_ver: u32,
+    /// Userspace address the capability blob is copied out to.
+    addr: u64,
+    size: u32,
+    pad: u32,
+}
+
+/// `struct drm_virtgpu_context_set_param`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmVirtgpuContextSetParam {
+    param: u64,
+    value: u64,
+}
+
+/// `struct drm_virtgpu_context_init`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmVirtgpuContextInit {
+    num_params: u32,
+    pad: u32,
+    /// Userspace address of a `DrmVirtgpuContextSetParam` array.
+    ctx_set_params: u64,
+}
+
 /// `VIRTGPU_PARAM_*` query ids (include/uapi/drm/virtgpu_drm.h).
 const VIRTGPU_PARAM_3D_FEATURES: u64 = 1;
 const VIRTGPU_PARAM_CAPSET_QUERY_FIX: u64 = 2;
 const VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS: u64 = 7;
+
+/// `VIRTGPU_CONTEXT_PARAM_*` ids accepted by `CONTEXT_INIT`.
+const VIRTGPU_CONTEXT_PARAM_CAPSET_ID: u64 = 1;
+const VIRTGPU_CONTEXT_PARAM_NUM_RINGS: u64 = 2;
+const VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK: u64 = 3;
+const VIRTGPU_CONTEXT_PARAM_DEBUG_NAME: u64 = 4;
+
+/// How many context parameters `CONTEXT_INIT` accepts, matching Linux's
+/// `VIRTGPU_MAX_CTX_PARAMS`.
+const VIRTGPU_MAX_CTX_PARAMS: u32 = 4;
+
+/// The number of rings this driver supports on a context.
+///
+/// A context is created with the one default ring: the multi-ring submission
+/// the parameter exists to enable is not implemented, so asking for more is
+/// refused rather than accepted and quietly ignored.
+const SUPPORTED_RING_COUNT: u64 = 1;
+
+/// Ids for the 3D contexts this driver hands out.
+///
+/// The host keys contexts by id across every open file, so these cannot be
+/// per-file numbers: two clients each starting at 1 would collide.
+static NEXT_CONTEXT_ID: AtomicU32 = AtomicU32::new(1);
 
 /// `struct drm_mode_map_dumb`.
 #[repr(C)]
@@ -462,7 +522,7 @@ mod ioctl_defs {
         DrmGetCap, DrmModeCardRes, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip,
         DrmModeCursor, DrmModeCursor2, DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd,
         DrmGemClose, DrmGemFlink, DrmGemOpen, DrmModeGetConnector, DrmModeGetEncoder,
-        DrmVirtgpuGetparam,
+        DrmVirtgpuContextInit, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
         DrmModeMapDumb, DrmModeObjGetProperties, DrmSetClientCap, DrmVersion,
     };
     use crate::util::ioctl::{InData, InOutData, NoData, ioc};
@@ -477,6 +537,8 @@ mod ioctl_defs {
     pub(super) type GemOpen = ioc!(DRM_IOCTL_GEM_OPEN, b'd', 0x1b, InOutData<DrmGemOpen>);
     // The virtgpu ioctls live at `DRM_COMMAND_BASE` (0x40) plus their number.
     pub(super) type VirtgpuGetparam = ioc!(DRM_IOCTL_VIRTGPU_GETPARAM, b'd', 0x43, InOutData<DrmVirtgpuGetparam>);
+    pub(super) type VirtgpuGetCaps = ioc!(DRM_IOCTL_VIRTGPU_GET_CAPS, b'd', 0x49, InOutData<DrmVirtgpuGetCaps>);
+    pub(super) type VirtgpuContextInit = ioc!(DRM_IOCTL_VIRTGPU_CONTEXT_INIT, b'd', 0x4b, InOutData<DrmVirtgpuContextInit>);
     pub(super) type SetMaster = ioc!(DRM_IOCTL_SET_MASTER, b'd', 0x1e, NoData);
     pub(super) type DropMaster = ioc!(DRM_IOCTL_DROP_MASTER, b'd', 0x1f, NoData);
 
@@ -523,9 +585,12 @@ fn is_render_allowed(raw_ioctl: RawIoctl) -> bool {
     GetVersion::try_from_raw(raw_ioctl).is_some()
         || GetCap::try_from_raw(raw_ioctl).is_some()
         || GemClose::try_from_raw(raw_ioctl).is_some()
-        // A 3D client reaches the device through the render node, so the
-        // parameter query it runs before anything else has to get through.
+        // A 3D client reaches the device through the render node, so the whole
+        // sequence it runs to get rendering — ask what the host supports, read
+        // the capability set, create a context — has to get through.
         || VirtgpuGetparam::try_from_raw(raw_ioctl).is_some()
+        || VirtgpuGetCaps::try_from_raw(raw_ioctl).is_some()
+        || VirtgpuContextInit::try_from_raw(raw_ioctl).is_some()
 }
 
 impl Device for Dri {
@@ -562,9 +627,28 @@ impl Device for Dri {
                 current_width,
                 current_height,
                 cursor: CursorState::default(),
+                context_id: None,
             }),
         }))
     }
+}
+
+/// Reads a NUL-terminated debug name from userspace.
+///
+/// Bounded to the length the host's `CTX_CREATE` field can hold, so a client
+/// cannot make the kernel walk an unbounded string.
+fn read_user_debug_name(address: usize) -> Result<String> {
+    const MAX_DEBUG_NAME: usize = 64;
+
+    let mut buffer = [0u8; MAX_DEBUG_NAME];
+    current_userspace!()
+        .read_bytes(address, &mut buffer)
+        .map_err(|_| Error::with_message(Errno::EFAULT, "bad debug name pointer"))?;
+    let length = buffer
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(MAX_DEBUG_NAME);
+    Ok(String::from_utf8_lossy(&buffer[..length]).into_owned())
 }
 
 /// Returns the device-wide buffer pool, allocating it on first use.
@@ -730,6 +814,114 @@ impl DriHandle {
         current_userspace!()
             .write_val(req.value as usize, &value)
             .map_err(|_| Error::with_message(Errno::EFAULT, "bad virtgpu parameter pointer"))?;
+        Ok(())
+    }
+
+    /// Copies the host's capability blob for a capability set to the caller.
+    ///
+    /// The blob is what tells a client how to build command streams for this
+    /// renderer, so it has to come from the host rather than be invented here.
+    fn virtgpu_get_caps(&self, req: &DrmVirtgpuGetCaps) -> Result<()> {
+        if !self.gpu.supports_virgl() {
+            return_errno_with_message!(Errno::EINVAL, "3D is not available");
+        }
+        if req.size == 0 {
+            return_errno_with_message!(Errno::EINVAL, "capability request has zero size");
+        }
+        let info = self
+            .gpu
+            .capset_info(0)
+            .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
+        if req.cap_set_id != info.id {
+            return_errno_with_message!(Errno::EINVAL, "unknown capability set id");
+        }
+        if req.cap_set_ver > info.max_version {
+            return_errno_with_message!(Errno::EINVAL, "unsupported capability set version");
+        }
+
+        // Fetch the whole blob and hand back only what was asked for, as Linux
+        // does: the host answers for one version, not for one length.
+        let blob = self
+            .gpu
+            .capset(info.id, req.cap_set_ver, info.max_size)
+            .map_err(|_| Error::with_message(Errno::EIO, "capability set query failed"))?;
+        let copy = (req.size as usize).min(blob.len());
+        current_userspace!()
+            .write_bytes(req.addr as usize, &blob[..copy])
+            .map_err(|_| Error::with_message(Errno::EFAULT, "bad capability set pointer"))?;
+        Ok(())
+    }
+
+    /// Creates this file's 3D context, against the capability set it names.
+    fn virtgpu_context_init(&self, req: &DrmVirtgpuContextInit) -> Result<()> {
+        if !self.gpu.supports_virgl() {
+            return_errno_with_message!(Errno::EINVAL, "3D is not available");
+        }
+        if req.num_params > VIRTGPU_MAX_CTX_PARAMS {
+            return_errno_with_message!(Errno::EINVAL, "too many context parameters");
+        }
+        if self.inner.lock().context_id.is_some() {
+            return_errno_with_message!(Errno::EEXIST, "context already created");
+        }
+
+        let mut capset_id = None;
+        let mut debug_name = String::new();
+        for index in 0..req.num_params as usize {
+            let offset = req.ctx_set_params as usize
+                + index * size_of::<DrmVirtgpuContextSetParam>();
+            let entry: DrmVirtgpuContextSetParam = current_userspace!()
+                .read_val(offset)
+                .map_err(|_| Error::with_message(Errno::EFAULT, "bad context parameters"))?;
+            match entry.param {
+                VIRTGPU_CONTEXT_PARAM_CAPSET_ID => {
+                    if capset_id.is_some() {
+                        return_errno_with_message!(Errno::EINVAL, "capset id given twice");
+                    }
+                    capset_id = Some(
+                        u32::try_from(entry.value)
+                            .map_err(|_| Error::with_message(Errno::EINVAL, "capset id out of range"))?,
+                    );
+                }
+                VIRTGPU_CONTEXT_PARAM_DEBUG_NAME => {
+                    debug_name = read_user_debug_name(entry.value as usize)?;
+                }
+                VIRTGPU_CONTEXT_PARAM_NUM_RINGS => {
+                    if entry.value != SUPPORTED_RING_COUNT {
+                        return_errno_with_message!(
+                            Errno::EINVAL,
+                            "this driver creates contexts with one ring"
+                        );
+                    }
+                }
+                VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK => {
+                    if entry.value != 0 {
+                        return_errno_with_message!(
+                            Errno::EINVAL,
+                            "ring polling is not implemented"
+                        );
+                    }
+                }
+                _ => return_errno_with_message!(Errno::EINVAL, "unknown context parameter"),
+            }
+        }
+
+        // A context is created against a renderer; without a capability set
+        // there is nothing to create it against.
+        let capset_id =
+            capset_id.ok_or_else(|| Error::with_message(Errno::EINVAL, "no capset id given"))?;
+        let info = self
+            .gpu
+            .capset_info(0)
+            .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
+        if capset_id != info.id {
+            return_errno_with_message!(Errno::EINVAL, "unknown capability set id");
+        }
+
+        let context_id = NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
+        self.gpu
+            .context_create(context_id, capset_id, &debug_name)
+            .map_err(|_| Error::with_message(Errno::EIO, "context creation failed"))?;
+        self.inner.lock().context_id = Some(context_id);
         Ok(())
     }
 
@@ -978,6 +1170,13 @@ impl DriHandle {
 
 impl Drop for DriHandle {
     fn drop(&mut self) {
+        // The host keys 3D contexts by id for the device's lifetime, so one a
+        // closed file left behind would outlive everything able to reach it.
+        let context_id = self.inner.lock().context_id.take();
+        if let Some(context_id) = context_id {
+            let _ = self.gpu.context_destroy(context_id);
+        }
+
         let _cursor_operation = self.cursor_operation.lock();
         let (resource_id, position) = {
             let inner = self.inner.lock();
@@ -1192,6 +1391,16 @@ impl PerOpenFileOps for DriHandle {
             cmd @ VirtgpuGetparam => {
                 let req = cmd.read()?;
                 self.virtgpu_getparam(&req)?;
+                Ok(0)
+            }
+            cmd @ VirtgpuGetCaps => {
+                let req = cmd.read()?;
+                self.virtgpu_get_caps(&req)?;
+                Ok(0)
+            }
+            cmd @ VirtgpuContextInit => {
+                let req = cmd.read()?;
+                self.virtgpu_context_init(&req)?;
                 Ok(0)
             }
             cmd @ ModeCreateDumb => {
