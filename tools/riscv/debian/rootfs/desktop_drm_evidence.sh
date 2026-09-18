@@ -164,6 +164,31 @@ record_first_seen() {
     return 0
 }
 
+# Optional in-guest microbenchmark, off unless asked for on the kernel command
+# line (`asterinas.boot_bench=1`).
+#
+# The desktop-startup figure says the whole system is slower than Linux by one
+# large factor, but not which operation pays it. This runs a fixed synthetic
+# workload -- process creation, a trivial syscall, a file open, a path lookup --
+# at the same point on both kernels, so the cost can be attributed to a
+# mechanism instead of guessed at from component timings.
+if [[ -x /usr/lib/asterinas/boot-bench ]] &&
+    tr ' ' '\n' </proc/cmdline 2>/dev/null | grep -qx 'asterinas.boot_bench=1'; then
+    emit "DEBIAN_DESKTOP_DRM_BENCH phase=basic-target uptime=$(uptime_seconds)"
+    /usr/lib/asterinas/boot-bench 200 >>"$CONSOLE" 2>&1 || true
+    emit 'DEBIAN_DESKTOP_DRM_BENCH_DONE'
+fi
+
+# When this script started, which is basic.target.
+#
+# The LAUNCH marker below gives the components' arrival times but is a
+# conjunction over all of them, so on its own it says nothing about how long
+# the boot took before the desktop was even attempted. Recording the start
+# splits the interval into "kernel and systemd reached basic.target" and
+# "the desktop clients came up", which are different problems: the first is
+# the kernel's and the second is the session's.
+emit "DEBIAN_DESKTOP_DRM_BOOT phase=basic-target uptime=$(uptime_seconds)"
+
 while ! ready; do
     (( $(uptime_seconds) < DEADLINE_SECONDS )) || fail desktop-timeout
     record_first_seen xorg "component_running Xorg"
