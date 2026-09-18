@@ -89,7 +89,7 @@ class DrmVirglClassifierTests(unittest.TestCase):
         caps_bytes: int = 512,
         resource: tuple[int, int, int] = (65, 257, 4096),
         backing: bool = True,
-        timings: tuple[int, int, int] = (120, 340, 90),
+        timings: tuple[int, int, int, int] = (120, 340, 200, 90),
     ) -> bytes:
         lines = [
             f"DRM_VIRGL_PARAM 3d={three_d} capsets=0x{capsets}".encode(),
@@ -97,10 +97,12 @@ class DrmVirglClassifierTests(unittest.TestCase):
             CONTEXT_MARKER,
             b"DRM_VIRGL_RESOURCE PASS bo=%d res=%d size=%d" % resource,
         ]
+        lines.append(b"DRM_VIRGL_SUBMIT PASS refused=%d" % (0 if three_d else 1))
         if backing:
             lines.append(BACKING_MARKER)
         lines.append(
-            b"DRM_VIRGL_TIMING caps_context_us=%d resource_us=%d backing_us=%d" % timings
+            b"DRM_VIRGL_TIMING caps_context_us=%d resource_us=%d submit_us=%d "
+            b"backing_us=%d" % timings
         )
         lines.append(READY_MARKER)
         return b"\n".join(lines) + b"\n"
@@ -182,8 +184,8 @@ class DrmVirglClassifierTests(unittest.TestCase):
                 CONTEXT_MARKER,
                 b"DRM_VIRGL_CAPS PASS caps_bytes=512",
                 b"DRM_VIRGL_RESOURCE PASS bo=65 res=257 size=4096",
-                BACKING_MARKER,
-                b"DRM_VIRGL_TIMING caps_context_us=1 resource_us=1 backing_us=1",
+                            BACKING_MARKER,
+                b"DRM_VIRGL_TIMING caps_context_us=1 resource_us=1 submit_us=1 backing_us=1",
                 READY_MARKER,
             )
         )
@@ -270,6 +272,8 @@ class DrmVirglGuestProbeTests(unittest.TestCase):
         "resource",
         "resource-info-echoed",
         "resource-without-3d",
+        "submit",
+        "submit-out-fence-allowed",
     )
 
     @classmethod
