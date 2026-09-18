@@ -47,6 +47,7 @@ from tools.riscv.debian.rootfs import browser_web_marionette_gate as web
 class FakeMarionette:
     def __init__(self, events):
         self.events = events
+        self.timeouts = []
         self.handles = ["original"]
         self.selected = "original"
         self.closed = False
@@ -55,6 +56,7 @@ class FakeMarionette:
 
     def set_timeout(self, timeout):
         self.timeout = timeout
+        self.timeouts.append(timeout)
 
     def command(self, name, parameters=None):
         self.events.append(name)
@@ -280,6 +282,11 @@ class BrowserDailyUseGateTests(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text()), result)
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         self.assertFalse((self.evidence / "browser-daily-use-checkpoint.json").exists())
+
+    def test_physical_session_setup_has_a_separate_cold_start_budget(self):
+        self.run_gate(physical=True)
+        self.assertEqual(self.client.timeouts[0], 300.0)
+        self.assertEqual(self.client.timeouts[1], 0.2)
 
     def test_failure_closes_second_window_and_publishes_bounded_checkpoint(self):
         def fail(request):
@@ -1628,6 +1635,34 @@ class DailyUseAdapterTests(unittest.TestCase):
         self.assertEqual(
             err.getvalue(), "ASTERINAS_BROWSER_DAILY_USE_FAIL reason=phase-failed\n"
         )
+
+    def test_cli_gives_physical_marionette_connect_a_cold_start_budget(self):
+        operations = mock.Mock(
+            clock=gate.DailyUseClock(monotonic=lambda: 1000.0)
+        )
+        args = [
+            "--firefox-pid",
+            "101",
+            "--xorg-pid",
+            "202",
+            "--fixture-index-url",
+            BASE,
+            "--evidence-dir",
+            str(self.root),
+            "--timeout-seconds",
+            "10",
+            "--physical",
+        ]
+        with (
+            mock.patch.object(gate, "default_operations", return_value=operations),
+            mock.patch.object(gate, "_connect", return_value=self.client) as connect,
+            mock.patch.object(
+                gate, "run_daily_use_gate", return_value=complete_result()
+            ),
+            mock.patch("sys.stdout", new_callable=io.StringIO),
+        ):
+            self.assertEqual(gate.main(args), 0)
+        self.assertEqual(connect.call_args.args[2], 1300.0)
 
 
 if __name__ == "__main__":
