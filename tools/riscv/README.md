@@ -430,10 +430,10 @@ them in `result.json`:
 
 | phase | what it covers | GL device | control |
 |---|---|---|---|
-| `caps_context_us` | capability blob + context creation | 23,868 | 4,215 |
-| `resource_us` | 3D resource + backing attach + context attach | 195,835 | 3,093 |
-| `submit_us` | command stream submission | 5,753 | 1,837 |
-| `backing_us` | mmap 4 KiB, write, msync, read back, munmap | 14,112 | — |
+| `caps_context_us` | capability blob + context creation | 19,319 | 3,842 |
+| `resource_us` | 3D resource + backing attach + context attach | 160,980 | 2,723 |
+| `submit_us` | command stream submission (+ fence) | 17,946 | 1,808 |
+| `backing_us` | mmap 4 KiB, write, msync, read back, munmap | 19,021 | — |
 
 Measured 2026-09-18 under QEMU TCG emulation, SMP=4, `-m 2G`.
 
@@ -450,13 +450,16 @@ submission. A client can walk the whole path: read the renderer's description,
 open a context against it, create a buffer the host can read, and submit a
 command stream.
 
-**Out-fences are refused rather than faked.** A client that sets
-`VIRTGPU_EXECBUF_FENCE_FD_OUT` gets `EINVAL`. The alternative — answering with
-`fence_fd = -1` — is what a client would then `poll`, and `poll(-1)` is EBADF:
-it would not fail, it would wait forever. Refusing says so where it can be seen.
-That is the known hang from the earlier fence work, and this is deliberately not
-reintroducing it; what is missing is a real fence object to hand back, not the
-submission path.
+**A client that asks for a completion fence gets a real descriptor.** Setting
+`VIRTGPU_EXECBUF_FENCE_FD_OUT` installs an anonymous `[drm-fence]` file and
+returns its fd; the probe polls it and requires `POLLIN` immediately.
+
+There is no wake-up machinery because there is nothing to wake up for. The
+submission is synchronous — the driver waits for the host before returning — so
+the fence is created in the state a client is waiting to reach. The alternative,
+answering `fence_fd = -1`, is what a client would then `poll`, and `poll(-1)` is
+`EBADF`: it would not fail, it would wait forever. That was the hang the earlier
+fence work diagnosed, and this is the shape that avoids it.
 
 `CONTEXT_INIT` accepts the parameters this driver implements and refuses the
 rest rather than accepting and ignoring them: a second ring count is rejected

@@ -26,6 +26,7 @@ PARAM_PATTERN = re.compile(rb"DRM_VIRGL_PARAM 3d=(\d+) capsets=0x([0-9a-f]+)")
 CAPS_PATTERN = re.compile(rb"DRM_VIRGL_CAPS PASS caps_bytes=(\d+)")
 CONTEXT_MARKER = b"DRM_VIRGL_CONTEXT PASS"
 SUBMIT_PATTERN = re.compile(rb"DRM_VIRGL_SUBMIT PASS refused=(\d+)")
+FENCE_MARKER = b"DRM_VIRGL_FENCE PASS"
 RESOURCE_PATTERN = re.compile(rb"DRM_VIRGL_RESOURCE PASS bo=(\d+) res=(\d+) size=(\d+)")
 BACKING_MARKER = b"DRM_VIRGL_BACKING PASS"
 TIMING_PATTERN = re.compile(
@@ -213,6 +214,13 @@ def classify_transcript(
         return result(False, "a 3D host refused the submission")
     if not expected_3d and not submit_refused:
         return result(False, "a host without 3D accepted a submission")
+
+    # A 3D host has to hand back a descriptor a client can actually wait on.
+    fence_at = rest.find(FENCE_MARKER, submit_match.end())
+    if expected_3d and fence_at < 0:
+        return result(False, "missing completion fence")
+    if not expected_3d and fence_at >= 0:
+        return result(False, "a host without 3D produced a completion fence")
 
     # The backing check is what proves the resource names memory the client can
     # reach, so a 3D run that never made it is missing its strongest evidence.

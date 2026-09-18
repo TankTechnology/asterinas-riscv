@@ -29,6 +29,7 @@ from qemu_uboot_profiles import (  # noqa: E402
 from drm.virgl_param_gate import (  # noqa: E402
     BACKING_MARKER,
     CONTEXT_MARKER,
+    FENCE_MARKER,
     MAX_TRANSCRIPT_BYTES,
     READY_MARKER,
     VirglParamGateConfig,
@@ -98,6 +99,8 @@ class DrmVirglClassifierTests(unittest.TestCase):
             b"DRM_VIRGL_RESOURCE PASS bo=%d res=%d size=%d" % resource,
         ]
         lines.append(b"DRM_VIRGL_SUBMIT PASS refused=%d" % (0 if three_d else 1))
+        if three_d:
+            lines.append(FENCE_MARKER)
         if backing:
             lines.append(BACKING_MARKER)
         lines.append(
@@ -273,7 +276,7 @@ class DrmVirglGuestProbeTests(unittest.TestCase):
         "resource-info-echoed",
         "resource-without-3d",
         "submit",
-        "submit-out-fence-allowed",
+        "submit-out-fence-bogus",
     )
 
     @classmethod

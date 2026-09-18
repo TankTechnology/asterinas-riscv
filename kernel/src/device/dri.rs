@@ -21,13 +21,17 @@
 //! virtio-gpu's `RESOURCE_ATTACH_BACKING` accepts.
 
 mod cursor;
+mod fence;
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use align_ext::AlignExt;
 use aster_virtio::device::gpu::{device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
-use ostd::mm::{Paddr, VmIo};
+use ostd::{
+    mm::{Paddr, VmIo},
+    task::Task,
+};
 
 use self::cursor::{
     CursorBuffer, CursorImage, CursorState, DrmModeCursor, DrmModeCursor2, MODE_CURSOR_BO,
@@ -38,7 +42,7 @@ use crate::{
     device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
     events::IoEvents,
     fs::{
-        file::{Mappable, PerOpenFileOps, StatusFlags},
+        file::{Mappable, PerOpenFileOps, StatusFlags, file_table::FdFlags},
         vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
@@ -711,6 +715,20 @@ impl Device for Dri {
     }
 }
 
+/// Creates a completed-fence descriptor in the calling thread's file table.
+fn install_fence_file() -> Result<i32> {
+    let file = Arc::new(fence::FenceFile::new_signalled());
+    let current_task = Task::current().ok_or_else(|| Error::with_message(Errno::EAGAIN, "no current task"))?;
+    let thread_local = current_task
+        .as_thread_local()
+        .ok_or_else(|| Error::with_message(Errno::EAGAIN, "no thread-local storage"))?;
+    // A thread executing an ioctl always has a file table — it reached the
+    // syscall through a descriptor in one — so this cannot be absent.
+    let file_table = thread_local.borrow_file_table();
+    let mut file_table_locked = file_table.unwrap().write();
+    Ok(file_table_locked.insert(file, FdFlags::empty()).into())
+}
+
 /// Reads a NUL-terminated debug name from userspace.
 ///
 /// Bounded to the length the host's `CTX_CREATE` field can hold, so a client
@@ -1210,22 +1228,21 @@ impl DriHandle {
             object_for_handle(&self.inner.lock(), handle)?;
         }
 
-        // An out-fence is refused rather than answered with -1. A client that
-        // asks for one goes on to `poll` it, and `poll(-1)` is EBADF: it would
-        // not fail, it would wait forever. Refusing says so immediately, which
-        // is what a client can act on.
-        if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0 {
-            return_errno_with_message!(Errno::EINVAL, "out-fences are not implemented");
-        }
-
         let fence_id = u64::from(NEXT_FENCE_ID.fetch_add(1, Ordering::Relaxed));
         self.gpu
             .submit_3d(context_id, &commands, fence_id)
             .map_err(|_| Error::with_message(Errno::EIO, "3D submission failed"))?;
 
         // The submission has completed by the time this returns — `submit_3d`
-        // waits for the host — so there is nothing left for a fence to report.
-        Ok(*req)
+        // waits for the host — so a fence handed back now stands for work that
+        // is already done, which is why it can be created signalled.
+        let fence_fd = if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0 {
+            install_fence_file()?
+        } else {
+            -1
+        };
+
+        Ok(DrmVirtgpuExecbuffer { fence_fd, ..*req })
     }
 
     /// Names an object so another file can open it.
