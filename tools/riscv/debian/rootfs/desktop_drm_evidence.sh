@@ -101,7 +101,11 @@ component_snapshot() {
     desktop_names=$'\n'
     desktop_pcmanfm=""
     for pid_dir in /proc/[0-9]*; do
-        read -r _ comm _ <"$pid_dir/stat" 2>/dev/null || continue
+        # The `2>/dev/null` has to sit on the enclosing group, not on `read`:
+        # when the redirection itself fails the message comes from the shell,
+        # so `read ... 2>/dev/null` still prints it and a process exiting
+        # mid-scan would write to the console on every iteration.
+        { read -r _ comm _ <"$pid_dir/stat" || continue; } 2>/dev/null
         comm="${comm#(}"
         comm="${comm%)}"
         desktop_names+="$comm"$'\n'
