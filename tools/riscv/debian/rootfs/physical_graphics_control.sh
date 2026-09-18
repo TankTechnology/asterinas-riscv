@@ -4,7 +4,7 @@
 set -u
 
 systemctl_bounded() {
-    /usr/bin/timeout --kill-after=1s 3s /usr/bin/systemctl "$@"
+    /usr/bin/timeout --kill-after=1s 10s /usr/bin/systemctl "$@"
 }
 
 die_usage() {

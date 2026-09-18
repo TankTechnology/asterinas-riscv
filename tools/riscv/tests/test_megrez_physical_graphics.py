@@ -1756,7 +1756,7 @@ class PhysicalCommandTests(unittest.TestCase):
         self.assertNotIn("systemctl_bounded start --no-block graphical.target", script)
         self.assertIn("start-web) [ \"$#\" -eq 0 ]", control_script)
         self.assertIn(
-            '/usr/bin/timeout --kill-after=1s 3s /usr/bin/systemctl "$@"',
+            '/usr/bin/timeout --kill-after=1s 10s /usr/bin/systemctl "$@"',
             control_script,
         )
         self.assertIn(
