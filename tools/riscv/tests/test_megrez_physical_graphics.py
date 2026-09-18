@@ -1583,9 +1583,8 @@ class PhysicalCommandTests(unittest.TestCase):
             self.assertIn(fragment, script)
         for fragment in ("0x81004506", "0x80084502", "0x81004507"):
             self.assertIn(fragment, identity_script)
-        self.assertEqual(
-            script.count("PYTHONPYCACHEPREFIX=/run/asterinas-python-cache"), 5
-        )
+        self.assertEqual(script.count("PYTHONDONTWRITEBYTECODE=1"), 5)
+        self.assertNotIn("PYTHONPYCACHEPREFIX", script)
         self.assertNotIn("dmesg", script)
         self.assertNotIn("Xorg.0.log", script)
 
@@ -2063,7 +2062,7 @@ class PhysicalCommandTests(unittest.TestCase):
         self.assertLess(len(command.encode()), 128)
         for fragment in (
             "nsenter",
-            "PYTHONPYCACHEPREFIX=/run/asterinas-python-cache",
+            "PYTHONDONTWRITEBYTECODE=1",
             'case "$cycle" in 1 | 3)',
             "--firefox-pid",
             "--verify-final",

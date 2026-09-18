@@ -49,7 +49,10 @@ is_profile_timeout() {
 }
 
 input_identity() {
-    PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+    # Read the rootfs's precompiled standard-library bytecode without writing
+    # caches. PYTHONPYCACHEPREFIX would bypass those files and recompile source
+    # under peak Firefox memory pressure.
+    PYTHONDONTWRITEBYTECODE=1 \
         /usr/bin/timeout --kill-after=1s 10s /usr/bin/python3 -c 'import glob,os,runpy;m=runpy.run_path("/run/asterinas-tools/desktop-input-identity");d=[(os.path.basename(p),m["read_identity"](p)) for p in glob.glob("/dev/input/event*")];uk=(3,"usb_boot_keyboard","xhci/input0");um=(3,"usb_boot_mouse","xhci/input1");qk=(6,"QEMU Virtio Keyboard","virtio/input0");qm=(6,"QEMU Virtio Tablet","virtio/input0");ks=[p for p,x in d if x in (uk,qk)];ms=[p for p,x in d if x in (um,qm)];print(sum(x in (uk,um) for _,x in d),int(sum(x==uk for _,x in d)==1),int(sum(x==um for _,x in d)==1),ks[0] if len(ks)==1 else "missing",ms[0] if len(ms)==1 else "missing")' 2>/dev/null || printf '0 0 0 missing missing\n'
 }
 
@@ -247,7 +250,7 @@ cycle() {
             if [ "$expected_pid" != 0 ] && [ "$original_pid" != "$expected_pid" ]; then
                 status=124
             else
-                PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+                PYTHONDONTWRITEBYTECODE=1 \
                     nsenter -t "$original_pid" -n \
                     /run/asterinas-tools/physical-graphics-gate \
                     --nonce "$nonce" --cycle "$cycle" --firefox-pid "$original_pid" \
@@ -280,7 +283,7 @@ final() {
     original_pid=$pid
     status=124
     if [ "$original_pid" = "$expected_pid" ]; then
-        PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+        PYTHONDONTWRITEBYTECODE=1 \
             nsenter -t "$original_pid" -n \
             /run/asterinas-tools/physical-graphics-gate \
             --nonce "$nonce" --cycle "$cycle" --firefox-pid "$original_pid" \
@@ -333,7 +336,7 @@ daily_use() {
                     gate_status=121
                 else
                     xorg_pid=$1
-                    PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+                    PYTHONDONTWRITEBYTECODE=1 \
                         nsenter -t "$original_pid" -n \
                         /run/asterinas-tools/browser-daily-use-gate \
                         --firefox-pid "$original_pid" --xorg-pid "$xorg_pid" \
@@ -342,7 +345,7 @@ daily_use() {
                         --timeout-seconds "$timeout_seconds"
                     gate_status=$?
                     [ "$gate_status" -ne 0 ] || outcome=pass
-                    PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+                    PYTHONDONTWRITEBYTECODE=1 \
                         nsenter -t "$original_pid" -n \
                         /run/asterinas-tools/browser-daily-use-upload \
                         "$evidence_dir" "$experiment_id" "$outcome" "$upload_url" \
