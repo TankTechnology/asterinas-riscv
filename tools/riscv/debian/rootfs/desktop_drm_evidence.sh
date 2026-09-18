@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+
+set -euo pipefail
+
+readonly CONSOLE="${ASTERINAS_DESKTOP_DRM_CONSOLE:-/dev/console}"
+readonly XORG_LOG="${ASTERINAS_DESKTOP_DRM_XORG_LOG:-/home/asterinas/Xorg.0.log}"
+readonly SESSION_LOG="${ASTERINAS_DESKTOP_DRM_SESSION_LOG:-/home/asterinas/desktop-drm-session.log}"
+readonly USER_NAME=asterinas
+readonly USER_ID=1000
+readonly DEFAULT_TIMEOUT_SECONDS=300
+
+uptime_seconds() {
+    local value
+    value="$(awk '{printf "%d", $1}' /proc/uptime 2>/dev/null)" || return 0
+    printf '%s' "${value:-0}"
+}
+
+# The gate owns the overall boot budget and hands the guest an absolute
+# deadline on the kernel command line.  It must be absolute, not a duration:
+# the gate's window starts when QEMU starts, while this script only starts at
+# basic.target, so a duration measured from here would always expire after the
+# gate's own deadline and the guest would never get to report its diagnosis.
+cmdline_deadline() {
+    local value
+    [[ -r /proc/cmdline ]] || return 0
+    value="$(tr ' ' '\n' </proc/cmdline 2>/dev/null |
+        sed -n 's/^asterinas\.desktop_drm_deadline=//p' | head -1)" || return 0
+    [[ "$value" =~ ^[0-9]+$ ]] && printf '%s' "$value"
+}
+configured_deadline="$(cmdline_deadline)"
+if [[ -n "$configured_deadline" ]]; then
+    readonly DEADLINE_SECONDS="$configured_deadline"
+else
+    readonly DEADLINE_SECONDS="$(( $(uptime_seconds) + DEFAULT_TIMEOUT_SECONDS ))"
+fi
+
+emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
+
+# The desktop panel can emit the same GLib warning thousands of times, which
+# pushes the lines that actually explain a failure out of the tail window.
+# Collapse runs of identical lines so the dump stays readable and bounded.
+dump_log() {
+    local path="$1" label="$2"
+    [[ -f "$path" ]] || return 0
+    printf '%s\n' "--- $label ---" >>"$CONSOLE"
+    tail -c 65536 -- "$path" 2>/dev/null | awk '
+        { if ($0 == previous) { collapsed++; next }
+          if (collapsed > 0) {
+              printf "  [%d identical line(s) collapsed]\n", collapsed
+          }
+          print; previous = $0; collapsed = 0 }
+        END { if (collapsed > 0) {
+              printf "  [%d identical line(s) collapsed]\n", collapsed } }
+    ' >>"$CONSOLE" 2>&1 || true
+}
+
+# Name every condition so a timeout explains itself instead of only reporting
+# that it timed out.
+report_predicate() {
+    local udevd=no logind=no session=no devices=no xorg_log=no driver=no
+    local dri=no xorg=no openbox=no pcmanfm=no lxpanel=no xterm=no
+    systemctl is-active --quiet systemd-udevd.service && udevd=yes || true
+    systemctl is-active --quiet systemd-logind.service && logind=yes || true
+    loginctl list-sessions --no-legend 2>/dev/null |
+        grep -q " $USER_NAME " && session=yes || true
+    [[ -c /dev/dri/card0 && -e /dev/input/event0 && -e /dev/input/event1 ]] &&
+        devices=yes || true
+    [[ -f "$XORG_LOG" ]] && xorg_log=yes || true
+    grep -q 'modesetting_drv.so' "$XORG_LOG" 2>/dev/null && driver=yes || true
+    grep -Eq 'drm|DRI3|virtio' "$XORG_LOG" 2>/dev/null && dri=yes || true
+    pgrep -u "$USER_ID" -x Xorg >/dev/null 2>&1 && xorg=yes || true
+    pgrep -u "$USER_ID" -x openbox >/dev/null 2>&1 && openbox=yes || true
+    pgrep -u "$USER_ID" -f 'pcmanfm.*--desktop' >/dev/null 2>&1 && pcmanfm=yes || true
+    pgrep -u "$USER_ID" -x lxpanel >/dev/null 2>&1 && lxpanel=yes || true
+    pgrep -u "$USER_ID" -x xterm >/dev/null 2>&1 && xterm=yes || true
+    emit "DEBIAN_DESKTOP_DRM_PREDICATE udevd=$udevd logind=$logind session=$session devices=$devices xorg-log=$xorg_log modesetting=$driver dri=$dri xorg=$xorg openbox=$openbox pcmanfm=$pcmanfm lxpanel=$lxpanel xterm=$xterm"
+}
+
+fail() {
+    report_predicate
+    dump_log "$SESSION_LOG" 'DRM desktop session log'
+    dump_log "$XORG_LOG" 'DRM Xorg log'
+    emit "DEBIAN_DESKTOP_DRM_FAIL reason=$1"
+    exit 1
+}
+
+[[ "$DEADLINE_SECONDS" =~ ^[0-9]+$ ]] || fail invalid-deadline
+ready() {
+    systemctl is-active --quiet systemd-udevd.service || return 1
+    systemctl is-active --quiet systemd-logind.service || return 1
+    loginctl list-sessions --no-legend 2>/dev/null | grep -q " $USER_NAME " || return 1
+    [[ -c /dev/dri/card0 && -e /dev/input/event0 && -e /dev/input/event1 ]] || return 1
+    [[ -f "$XORG_LOG" ]] || return 1
+    grep -q 'modesetting_drv.so' "$XORG_LOG" || return 1
+    grep -Eq 'drm|DRI3|virtio' "$XORG_LOG" || return 1
+    # The log outlives the server, so require the process as well; otherwise a
+    # dead Xorg still satisfies the remaining checks.
+    pgrep -u "$USER_ID" -x Xorg >/dev/null || return 1
+    pgrep -u "$USER_ID" -x openbox >/dev/null || return 1
+    pgrep -u "$USER_ID" -f 'pcmanfm.*--desktop' >/dev/null || return 1
+    pgrep -u "$USER_ID" -x lxpanel >/dev/null || return 1
+    pgrep -u "$USER_ID" -x xterm >/dev/null || return 1
+}
+
+while ! ready; do
+    (( $(uptime_seconds) < DEADLINE_SECONDS )) || fail desktop-timeout
+    sleep 1
+done
+
+emit "DEBIAN_DESKTOP_DRM_UDEV state=active"
+emit "DEBIAN_DESKTOP_DRM_LOGIND state=active"
+emit "DEBIAN_DESKTOP_DRM_SESSION user=$USER_NAME tty=tty1"
+emit "DEBIAN_DESKTOP_DRM_INPUT keyboard=evdev pointer=evdev"
+emit 'DEBIAN_DESKTOP_DRM_XORG driver=modesetting device=virtio-gpu drm=active display=:0'
+emit 'DEBIAN_DESKTOP_DRM_CLIENTS window-manager=openbox file-manager=pcmanfm panel=lxpanel terminal=xterm'
+emit "DEBIAN_DESKTOP_DRM_READY user=$USER_NAME display=:0"
+
+# Record the acceleration setup in the serial transcript so that gate runs
+# are self-diagnosing (e.g. glamor falling back to software rendering).
+grep -E 'glamor|AIGLX|DRI3|Modeline' "$XORG_LOG" >>"$CONSOLE" 2>&1 || true
+
+# Report the GL renderer so gates can prove virgl acceleration instead of
+# inferring it from the boot device.  Under TCG a single virgl glxinfo run
+# can take tens of seconds (every Gallium step is an emulated round-trip to
+# the host GPU), so each attempt gets a generous budget.  Every step is
+# failure-tolerant: a failing probe must not kill the evidence run (the
+# script uses `set -e`) before the renderer marker is emitted.
+#
+# /usr/lib/asterinas/ioctltrace.so (the M19 LD_PRELOAD ioctl logger) is
+# injected into diagnostic images to name the exact DRM ioctl sequence.
+glxinfo_env=(DISPLAY=:0 XAUTHORITY="/home/$USER_NAME/.Xauthority")
+if [[ -f /usr/lib/asterinas/ioctltrace.so ]]; then
+    glxinfo_env+=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so)
+fi
+
+gl_renderer="unavailable"
+gl_diag_dumped=""
+for _ in $(seq 1 4); do
+    probe="$(env "${glxinfo_env[@]}" timeout 60 glxinfo -B 2>/dev/null | \
+        sed -n 's/^OpenGL renderer string: //p' | head -1 || true)"
+    if [[ -n "$probe" ]]; then
+        gl_renderer="$probe"
+        break
+    fi
+    if [[ -z "$gl_diag_dumped" ]]; then
+        gl_diag_dumped=yes
+        emit '--- DRM GL probe diagnostics ---'
+        # Run one probed glxinfo in the background and sample where it is
+        # stuck so a hang names the blocking kernel wait channel.
+        env "${glxinfo_env[@]}" glxinfo -B >>"$CONSOLE" 2>&1 &
+        gl_pid=$!
+        gl_waited=0
+        while kill -0 "$gl_pid" 2>/dev/null; do
+            if (( gl_waited >= 90 )); then
+                emit "--- glxinfo[$gl_pid] stuck: $(cat "/proc/$gl_pid/wchan" 2>/dev/null) ---"
+                grep -E '^(State|Name|Pid|PPid)' "/proc/$gl_pid/status" >>"$CONSOLE" 2>&1 || true
+                cat "/proc/$gl_pid/stack" >>"$CONSOLE" 2>&1 || true
+                kill -9 "$gl_pid" 2>/dev/null || true
+                break
+            fi
+            sleep 5
+            gl_waited=$((gl_waited + 5))
+        done
+        wait "$gl_pid" 2>/dev/null || true
+        if [[ -f "$SESSION_LOG" ]]; then
+            emit '--- DRM GL probe: session log tail ---'
+            tail -c 8192 "$SESSION_LOG" >>"$CONSOLE" 2>&1 || true
+        fi
+        if [[ -f "$XORG_LOG" ]]; then
+            emit '--- DRM GL probe: Xorg log tail ---'
+            tail -c 8192 "$XORG_LOG" >>"$CONSOLE" 2>&1 || true
+        fi
+    fi
+    sleep 5
+done
+emit "DEBIAN_DESKTOP_DRM_GL renderer=$gl_renderer"
