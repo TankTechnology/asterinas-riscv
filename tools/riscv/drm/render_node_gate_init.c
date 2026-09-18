@@ -109,6 +109,20 @@ struct drm_virtgpu_getparam {
     uint64_t value;
 };
 
+struct drm_virtgpu_get_caps {
+    uint32_t cap_set_id;
+    uint32_t cap_set_ver;
+    uint64_t addr;
+    uint32_t size;
+    uint32_t pad;
+};
+
+struct drm_virtgpu_context_init {
+    uint32_t num_params;
+    uint32_t pad;
+    uint64_t ctx_set_params;
+};
+
 #define DRM_IOCTL_VERSION _IOWR('d', 0x00, struct drm_version)
 #define DRM_IOCTL_GEM_CLOSE _IOW('d', 0x09, struct drm_gem_close)
 #define DRM_IOCTL_GEM_FLINK _IOWR('d', 0x0a, struct drm_gem_flink)
@@ -123,8 +137,10 @@ struct drm_virtgpu_getparam {
 #define DRM_IOCTL_MODE_CURSOR _IOWR('d', 0xa3, struct drm_mode_cursor)
 #define DRM_IOCTL_MODE_PAGE_FLIP _IOWR('d', 0xb0, struct drm_mode_crtc_page_flip)
 #define DRM_IOCTL_MODE_CREATE_DUMB _IOWR('d', 0xb2, struct drm_mode_create_dumb)
-/* `DRM_COMMAND_BASE` (0x40) plus `DRM_VIRTGPU_GETPARAM` (0x03). */
+/* `DRM_COMMAND_BASE` (0x40) plus the `DRM_VIRTGPU_*` command number. */
 #define DRM_IOCTL_VIRTGPU_GETPARAM _IOWR('d', 0x43, struct drm_virtgpu_getparam)
+#define DRM_IOCTL_VIRTGPU_GET_CAPS _IOWR('d', 0x49, struct drm_virtgpu_get_caps)
+#define DRM_IOCTL_VIRTGPU_CONTEXT_INIT _IOWR('d', 0x4b, struct drm_virtgpu_context_init)
 
 #define VIRTGPU_PARAM_3D_FEATURES 1U
 
@@ -191,6 +207,8 @@ static const struct check ALLOWED[] = {
     {"get-cap", DRM_IOCTL_GET_CAP, EXPECT_OK},
     {"gem-close", DRM_IOCTL_GEM_CLOSE, EXPECT_EINVAL},
     {"virtgpu-getparam", DRM_IOCTL_VIRTGPU_GETPARAM, EXPECT_OK},
+    {"virtgpu-get-caps", DRM_IOCTL_VIRTGPU_GET_CAPS, EXPECT_OK},
+    {"virtgpu-context-init", DRM_IOCTL_VIRTGPU_CONTEXT_INIT, EXPECT_OK},
 };
 
 static struct drm_version version;
@@ -206,6 +224,8 @@ static struct drm_mode_crtc_page_flip flip;
 static struct drm_mode_create_dumb dumb;
 static struct drm_virtgpu_getparam getparam;
 static uint64_t getparam_value;
+static struct drm_virtgpu_get_caps caps_request;
+static struct drm_virtgpu_context_init context_request;
 
 static char name_buffer[64];
 static char date_buffer[64];
@@ -261,6 +281,11 @@ static void reset_arguments(void)
     memset(&getparam, 0, sizeof(getparam));
     getparam.param = VIRTGPU_PARAM_3D_FEATURES;
     getparam.value = (uint64_t)(uintptr_t)&getparam_value;
+
+    /* Zeroed requests: this gate asks only whether the node lets the call
+     * through, and the permission check runs before the arguments are read. */
+    memset(&caps_request, 0, sizeof(caps_request));
+    memset(&context_request, 0, sizeof(context_request));
 }
 
 static void *argument_for(unsigned long request)
@@ -291,6 +316,10 @@ static void *argument_for(unsigned long request)
         return &dumb;
     case DRM_IOCTL_VIRTGPU_GETPARAM:
         return &getparam;
+    case DRM_IOCTL_VIRTGPU_GET_CAPS:
+        return &caps_request;
+    case DRM_IOCTL_VIRTGPU_CONTEXT_INIT:
+        return &context_request;
     default:
         return NULL;
     }
@@ -377,7 +406,9 @@ static int fake_ioctl(void *opaque, unsigned long request, void *argument)
     int render_allowed = request == DRM_IOCTL_VERSION ||
                          request == DRM_IOCTL_GET_CAP ||
                          request == DRM_IOCTL_GEM_CLOSE ||
-                         request == DRM_IOCTL_VIRTGPU_GETPARAM;
+                         request == DRM_IOCTL_VIRTGPU_GETPARAM ||
+                         request == DRM_IOCTL_VIRTGPU_GET_CAPS ||
+                         request == DRM_IOCTL_VIRTGPU_CONTEXT_INIT;
 
     if (render_allowed) {
         if (context->refuse_allowed) {
