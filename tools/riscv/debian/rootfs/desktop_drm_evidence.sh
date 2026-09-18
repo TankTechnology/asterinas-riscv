@@ -128,23 +128,54 @@ component_running() {
     [[ "$desktop_names" == *$'\n'"$name"$'\n'* ]]
 }
 
+# Readiness is a conjunction of conditions that never become false again:
+# udevd and logind stay active, a session stays listed, a device node stays
+# present, the Xorg log only grows, and a process that has appeared has
+# appeared. Re-testing a settled condition therefore cannot change the answer,
+# so each one is tested until it first succeeds and then latched.
+#
+# That matters far more than it looks. Each unlatched test forks: two
+# `systemctl`, one `loginctl`, and two `grep`, every second, for the whole
+# readiness window -- which on this kernel is ~380 seconds. Measured in-guest,
+# a fork+exec+wait costs ~394ms here, so the probe was spending on the order of
+# a thousand process creations competing with the desktop it was waiting for.
+# The loop is not supposed to be part of the workload it measures.
+declare -A settled=()
+
+settled_or() {
+    local name="$1"
+    shift
+    [[ -n "${settled[$name]:-}" ]] && return 0
+    if "$@"; then
+        settled[$name]=yes
+        return 0
+    fi
+    return 1
+}
+
+active_unit() { systemctl is-active --quiet "$1"; }
+logged_in() { loginctl list-sessions --no-legend 2>/dev/null | grep -q " $USER_NAME "; }
+devices_ready() { [[ -c /dev/dri/card0 && -e /dev/input/event0 && -e /dev/input/event1 ]]; }
+log_has_modesetting() { grep -q 'modesetting_drv.so' "$XORG_LOG"; }
+log_has_drm() { grep -Eq 'drm|DRI3|virtio' "$XORG_LOG"; }
+
 ready() {
     component_snapshot
 
-    systemctl is-active --quiet systemd-udevd.service || return 1
-    systemctl is-active --quiet systemd-logind.service || return 1
-    loginctl list-sessions --no-legend 2>/dev/null | grep -q " $USER_NAME " || return 1
-    [[ -c /dev/dri/card0 && -e /dev/input/event0 && -e /dev/input/event1 ]] || return 1
+    settled_or udevd  active_unit systemd-udevd.service || return 1
+    settled_or logind active_unit systemd-logind.service || return 1
+    settled_or session logged_in || return 1
+    settled_or devices devices_ready || return 1
     [[ -f "$XORG_LOG" ]] || return 1
-    grep -q 'modesetting_drv.so' "$XORG_LOG" || return 1
-    grep -Eq 'drm|DRI3|virtio' "$XORG_LOG" || return 1
+    settled_or modesetting log_has_modesetting || return 1
+    settled_or drm log_has_drm || return 1
     # The log outlives the server, so require the process as well; otherwise a
     # dead Xorg still satisfies the remaining checks.
-    component_running Xorg || return 1
-    component_running openbox || return 1
-    component_running pcmanfm || return 1
-    component_running lxpanel || return 1
-    component_running xterm || return 1
+    settled_or xorg component_running Xorg || return 1
+    settled_or openbox component_running openbox || return 1
+    settled_or pcmanfm component_running pcmanfm || return 1
+    settled_or lxpanel component_running lxpanel || return 1
+    settled_or xterm component_running xterm || return 1
 }
 
 # When each component first appeared.
