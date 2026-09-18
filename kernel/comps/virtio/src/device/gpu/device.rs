@@ -21,14 +21,14 @@ use ostd::{
 use super::{
     MAX_SCANOUTS, VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, VIRTIO_GPU_CMD_CTX_CREATE,
     VIRTIO_GPU_CMD_CTX_DESTROY, VIRTIO_GPU_CMD_GET_CAPSET, VIRTIO_GPU_CMD_GET_CAPSET_INFO,
-    VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_RESOURCE_CREATE_3D,
+    VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, VIRTIO_GPU_CMD_SUBMIT_3D,
     VIRTIO_GPU_CMD_MOVE_CURSOR, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
     VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
     VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
     VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_F_VIRGL,
     VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
     VIRTIO_GPU_RESP_OK_CAPSET, VIRTIO_GPU_RESP_OK_CAPSET_INFO, VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
-    VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR, VirtioGpuCtrlHdr, VirtioGpuCtxCreate,
+    VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR, VirtioGpuCmdSubmit, VirtioGpuCtrlHdr, VirtioGpuCtxCreate,
     VirtioGpuCursorPos, VirtioGpuDisplayOne, VirtioGpuGetCapset, VirtioGpuGetCapsetInfo,
     VirtioGpuCtxResource, VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuRespCapsetInfo,
     VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceCreate3d,
@@ -343,6 +343,52 @@ impl GpuDevice {
             &mut queue,
             &self.control_buf,
             &request,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// Submits a virgl command buffer to `context_id` and waits for the host
+    /// to finish with it.
+    ///
+    /// The wait is the point rather than an implementation detail: this call
+    /// returns only once the host has processed the buffer, so a client that
+    /// asks for a completion fence can be handed one that is already signalled
+    /// instead of one it would have to be woken for.
+    pub fn submit_3d(
+        &self,
+        context_id: u32,
+        commands: &[u8],
+        fence_id: u64,
+    ) -> Result<(), VirtioDeviceError> {
+        let request = VirtioGpuCmdSubmit {
+            hdr: VirtioGpuCtrlHdr {
+                flags: VIRTIO_GPU_FLAG_FENCE,
+                fence_id,
+                ..ctrl_hdr_for_context(VIRTIO_GPU_CMD_SUBMIT_3D, context_id)
+            },
+            size: commands.len() as u32,
+            padding: 0,
+        };
+
+        // The command buffer is written straight after the header, so the
+        // request is one contiguous span rather than a struct.
+        let request_len = size_of::<VirtioGpuCmdSubmit>() + commands.len();
+        let pages = (CTRL_RESP_OFFSET + size_of::<VirtioGpuCtrlHdr>() + request_len)
+            .div_ceil(PAGE_SIZE);
+        let buf = Arc::new(DmaStream::alloc(pages, false).map_err(VirtioDeviceError::ResourceAlloc)?);
+
+        let request_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + request_len);
+        request_slice.write_val(0, &request).unwrap();
+        request_slice
+            .write_bytes(size_of::<VirtioGpuCmdSubmit>(), commands)
+            .unwrap();
+
+        let mut queue = self.control_queue.lock();
+        let code = submit_control(
+            &mut queue,
+            &buf,
+            request_len,
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
         check_ok(code)

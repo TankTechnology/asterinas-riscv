@@ -476,6 +476,27 @@ struct DrmVirtgpuResourceInfo {
     blob_mem: u32,
 }
 
+/// `struct drm_virtgpu_execbuffer`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmVirtgpuExecbuffer {
+    flags: u32,
+    size: u32,
+    /// Userspace address of the virgl command buffer.
+    command: u64,
+    /// Userspace address of a `u32` array of buffer handles.
+    bo_handles: u64,
+    num_bo_handles: u32,
+    /// Out-fence, filled in when `VIRTGPU_EXECBUF_FENCE_FD_OUT` is set.
+    fence_fd: i32,
+}
+
+/// `VIRTGPU_EXECBUF_*` flags.
+const VIRTGPU_EXECBUF_FENCE_FD_OUT: u32 = 0x02;
+
+/// Fence ids issued to the host, which it echoes back when the work retires.
+static NEXT_FENCE_ID: AtomicU32 = AtomicU32::new(1);
+
 /// `VIRTGPU_PARAM_*` query ids (include/uapi/drm/virtgpu_drm.h).
 const VIRTGPU_PARAM_3D_FEATURES: u64 = 1;
 const VIRTGPU_PARAM_CAPSET_QUERY_FIX: u64 = 2;
@@ -569,7 +590,8 @@ mod ioctl_defs {
         DrmGetCap, DrmModeCardRes, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip,
         DrmModeCursor, DrmModeCursor2, DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd,
         DrmGemClose, DrmGemFlink, DrmGemOpen, DrmModeGetConnector, DrmModeGetEncoder,
-        DrmVirtgpuContextInit, DrmVirtgpuGetCaps, DrmVirtgpuGetparam, DrmVirtgpuMap,
+        DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
+        DrmVirtgpuMap,
         DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo,
         DrmModeMapDumb, DrmModeObjGetProperties, DrmSetClientCap, DrmVersion,
     };
@@ -585,6 +607,7 @@ mod ioctl_defs {
     pub(super) type GemOpen = ioc!(DRM_IOCTL_GEM_OPEN, b'd', 0x1b, InOutData<DrmGemOpen>);
     // The virtgpu ioctls live at `DRM_COMMAND_BASE` (0x40) plus their number.
     pub(super) type VirtgpuMap = ioc!(DRM_IOCTL_VIRTGPU_MAP, b'd', 0x41, InOutData<DrmVirtgpuMap>);
+    pub(super) type VirtgpuExecbuffer = ioc!(DRM_IOCTL_VIRTGPU_EXECBUFFER, b'd', 0x42, InOutData<DrmVirtgpuExecbuffer>);
     pub(super) type VirtgpuGetparam = ioc!(DRM_IOCTL_VIRTGPU_GETPARAM, b'd', 0x43, InOutData<DrmVirtgpuGetparam>);
     pub(super) type VirtgpuResourceCreate = ioc!(DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, b'd', 0x44, InOutData<DrmVirtgpuResourceCreate>);
     pub(super) type VirtgpuResourceInfo = ioc!(DRM_IOCTL_VIRTGPU_RESOURCE_INFO, b'd', 0x45, InOutData<DrmVirtgpuResourceInfo>);
@@ -643,6 +666,7 @@ fn is_render_allowed(raw_ioctl: RawIoctl) -> bool {
         || VirtgpuGetCaps::try_from_raw(raw_ioctl).is_some()
         || VirtgpuContextInit::try_from_raw(raw_ioctl).is_some()
         || VirtgpuMap::try_from_raw(raw_ioctl).is_some()
+        || VirtgpuExecbuffer::try_from_raw(raw_ioctl).is_some()
         || VirtgpuResourceCreate::try_from_raw(raw_ioctl).is_some()
         || VirtgpuResourceInfo::try_from_raw(raw_ioctl).is_some()
 }
@@ -1150,6 +1174,60 @@ impl DriHandle {
         return_errno_with_message!(Errno::EINVAL, "unknown 3D resource");
     }
 
+    /// Submits a virgl command buffer to this file's context.
+    ///
+    /// Nothing here renders: the commands are the client's, and what they draw
+    /// is the renderer's business. What this has to get right is that the
+    /// buffer arrives whole and that every buffer it names is one the renderer
+    /// can actually reach.
+    fn virtgpu_execbuffer(&self, req: &DrmVirtgpuExecbuffer) -> Result<DrmVirtgpuExecbuffer> {
+        if !self.gpu.supports_virgl() {
+            return_errno_with_message!(Errno::EINVAL, "3D is not available");
+        }
+        if req.size == 0 {
+            return_errno_with_message!(Errno::EINVAL, "empty command buffer");
+        }
+        let context_id = self
+            .inner
+            .lock()
+            .context_id
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "no context has been created"))?;
+
+        let mut commands = Vec::new();
+        commands.resize(req.size as usize, 0u8);
+        current_userspace!()
+            .read_bytes(req.command as usize, &mut commands)
+            .map_err(|_| Error::with_message(Errno::EFAULT, "bad command buffer pointer"))?;
+
+        // Every buffer the command stream names has to be one this file holds.
+        // A handle the renderer was never given would leave it reading memory
+        // nothing stands behind.
+        for index in 0..req.num_bo_handles as usize {
+            let offset = req.bo_handles as usize + index * size_of::<u32>();
+            let handle: u32 = current_userspace!()
+                .read_val(offset)
+                .map_err(|_| Error::with_message(Errno::EFAULT, "bad buffer handle array"))?;
+            object_for_handle(&self.inner.lock(), handle)?;
+        }
+
+        // An out-fence is refused rather than answered with -1. A client that
+        // asks for one goes on to `poll` it, and `poll(-1)` is EBADF: it would
+        // not fail, it would wait forever. Refusing says so immediately, which
+        // is what a client can act on.
+        if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0 {
+            return_errno_with_message!(Errno::EINVAL, "out-fences are not implemented");
+        }
+
+        let fence_id = u64::from(NEXT_FENCE_ID.fetch_add(1, Ordering::Relaxed));
+        self.gpu
+            .submit_3d(context_id, &commands, fence_id)
+            .map_err(|_| Error::with_message(Errno::EIO, "3D submission failed"))?;
+
+        // The submission has completed by the time this returns — `submit_3d`
+        // waits for the host — so there is nothing left for a fence to report.
+        Ok(*req)
+    }
+
     /// Names an object so another file can open it.
     fn gem_flink(&self, req: &DrmGemFlink) -> Result<DrmGemFlink> {
         let inner = self.inner.lock();
@@ -1626,6 +1704,11 @@ impl PerOpenFileOps for DriHandle {
             cmd @ VirtgpuContextInit => {
                 let req = cmd.read()?;
                 self.virtgpu_context_init(&req)?;
+                Ok(0)
+            }
+            cmd @ VirtgpuExecbuffer => {
+                let req = cmd.read()?;
+                cmd.write(&self.virtgpu_execbuffer(&req)?)?;
                 Ok(0)
             }
             cmd @ VirtgpuMap => {

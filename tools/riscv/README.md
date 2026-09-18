@@ -430,9 +430,10 @@ them in `result.json`:
 
 | phase | what it covers | GL device | control |
 |---|---|---|---|
-| `caps_context_us` | capability blob + context creation | 20,978 | 4,957 |
-| `resource_us` | 3D resource + backing attach + context attach | 203,014 | 3,070 |
-| `backing_us` | mmap 4 KiB, write, msync, read back, munmap | 12,430 | — |
+| `caps_context_us` | capability blob + context creation | 23,868 | 4,215 |
+| `resource_us` | 3D resource + backing attach + context attach | 195,835 | 3,093 |
+| `submit_us` | command stream submission | 5,753 | 1,837 |
+| `backing_us` | mmap 4 KiB, write, msync, read back, munmap | 14,112 | — |
 
 Measured 2026-09-18 under QEMU TCG emulation, SMP=4, `-m 2G`.
 
@@ -444,10 +445,18 @@ spin-wait for the used entry), and `resource_us` is much the largest because it
 is three round-trips where the other phases are one or two. They are a
 regression baseline for this path, not a statement about rendering speed.
 
-This gate covers capability negotiation, contexts, and 3D resources. `SUBMIT_3D`
-is not implemented yet, so a client can obtain the renderer's description, open
-a context against it, and create a buffer the host can read — but cannot yet
-submit work that uses it.
+This gate covers capability negotiation, contexts, 3D resources, and
+submission. A client can walk the whole path: read the renderer's description,
+open a context against it, create a buffer the host can read, and submit a
+command stream.
+
+**Out-fences are refused rather than faked.** A client that sets
+`VIRTGPU_EXECBUF_FENCE_FD_OUT` gets `EINVAL`. The alternative — answering with
+`fence_fd = -1` — is what a client would then `poll`, and `poll(-1)` is EBADF:
+it would not fail, it would wait forever. Refusing says so where it can be seen.
+That is the known hang from the earlier fence work, and this is deliberately not
+reintroducing it; what is missing is a real fence object to hand back, not the
+submission path.
 
 `CONTEXT_INIT` accepts the parameters this driver implements and refuses the
 rest rather than accepting and ignoring them: a second ring count is rejected

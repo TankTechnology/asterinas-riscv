@@ -25,10 +25,12 @@ READY_MARKER = DRM_VIRGL_READY_LINE
 PARAM_PATTERN = re.compile(rb"DRM_VIRGL_PARAM 3d=(\d+) capsets=0x([0-9a-f]+)")
 CAPS_PATTERN = re.compile(rb"DRM_VIRGL_CAPS PASS caps_bytes=(\d+)")
 CONTEXT_MARKER = b"DRM_VIRGL_CONTEXT PASS"
+SUBMIT_PATTERN = re.compile(rb"DRM_VIRGL_SUBMIT PASS refused=(\d+)")
 RESOURCE_PATTERN = re.compile(rb"DRM_VIRGL_RESOURCE PASS bo=(\d+) res=(\d+) size=(\d+)")
 BACKING_MARKER = b"DRM_VIRGL_BACKING PASS"
 TIMING_PATTERN = re.compile(
-    rb"DRM_VIRGL_TIMING caps_context_us=(\d+) resource_us=(\d+) backing_us=(\d+)"
+    rb"DRM_VIRGL_TIMING caps_context_us=(\d+) resource_us=(\d+) submit_us=(\d+) "
+    rb"backing_us=(\d+)"
 )
 #: The size the probe asks a 3D resource to be.
 RESOURCE_SIZE = 4096
@@ -59,6 +61,7 @@ class VirglParamGateResult:
     #: guest is emulated, so a bound would describe the emulator, not the driver.
     caps_context_us: int = 0
     resource_us: int = 0
+    submit_us: int = 0
     backing_us: int = 0
 
 
@@ -162,12 +165,14 @@ def classify_transcript(
         )
     caps_context_us = int(timing_match.group(1))
     resource_us = int(timing_match.group(2))
-    backing_us = int(timing_match.group(3))
+    submit_us = int(timing_match.group(3))
+    backing_us = int(timing_match.group(4))
 
     def result(passed: bool, reason: str) -> VirglParamGateResult:
         return VirglParamGateResult(
             passed, reason, reported_3d, capsets, expected, caps_bytes,
-            resource_bo, resource_res, caps_context_us, resource_us, backing_us,
+            resource_bo, resource_res, caps_context_us, resource_us, submit_us,
+            backing_us,
         )
 
     if READY_MARKER not in rest[timing_match.end() :]:
@@ -197,6 +202,17 @@ def classify_transcript(
         return result(
             False, f"no 3D reported but {caps_bytes} capability bytes were delivered"
         )
+
+    # A submission is what everything before it was for: a context with a
+    # resource in it that never submits has rendered nothing.
+    submit_match = SUBMIT_PATTERN.search(rest, resource_match.end())
+    if submit_match is None:
+        return result(False, "missing or unordered submission report")
+    submit_refused = int(submit_match.group(1))
+    if expected_3d and submit_refused:
+        return result(False, "a 3D host refused the submission")
+    if not expected_3d and not submit_refused:
+        return result(False, "a host without 3D accepted a submission")
 
     # The backing check is what proves the resource names memory the client can
     # reach, so a 3D run that never made it is missing its strongest evidence.
