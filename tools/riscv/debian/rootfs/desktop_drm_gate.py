@@ -91,7 +91,16 @@ def desktop_drm_qemu_argv(**arguments: Any) -> tuple[str, ...]:
     arguments.setdefault("smp", 4)
     arguments.setdefault("dtb_enabled_cpu_count", 4)
     arguments["graphical"] = True
-    arguments["graphics_device"] = "virtio-gpu-device"
+    arguments.setdefault("graphics_device", "virtio-gpu-device")
+    # The display backend follows the device rather than the caller, because
+    # the wrong pairing does not fail: a virgl device under a headless backend
+    # comes up quietly without the 3D feature, and a gate that then reported
+    # "no 3D" would be reporting its own misconfiguration.
+    arguments["display"] = (
+        "egl-headless,gl=on"
+        if arguments["graphics_device"] == "virtio-gpu-gl-device"
+        else "none"
+    )
     return qemu_argv(**arguments) + _qemu_trace_arguments()
 
 
