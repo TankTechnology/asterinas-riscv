@@ -820,6 +820,9 @@ int main(void)
     if (features != 0) {
         publish_marker("DRM_VIRGL_BACKING PASS");
         publish_marker("DRM_VIRGL_FENCE PASS");
+        /* The fake has no second file description either, so it stands in for
+         * the contextless submission the real build makes. */
+        publish_marker("DRM_VIRGL_IMPLICIT PASS");
     }
     publish_marker(
         "DRM_VIRGL_TIMING caps_context_us=0 resource_us=0 submit_us=0 backing_us=0");
@@ -918,6 +921,33 @@ int main(void)
            (unsigned long long)(after_submit - after_resource),
            (unsigned long long)(after_backing - after_submit));
     fflush(stdout);
+
+    /* Mesa's path, on a file of its own: it never asks for a context, so the
+     * driver has to have one ready when the first submission arrives. A fresh
+     * descriptor is the point — the one above already has a context, so it
+     * could not tell whether this works. */
+    if (features != 0) {
+        int mesa_fd = open("/dev/dri/renderD128", O_RDWR | O_CLOEXEC);
+        if (mesa_fd < 0)
+            fail_and_hold("mesa-open-renderD128");
+
+        /* Straight from the capability query to a buffer and a submission,
+         * with no context created in between. */
+        struct resource_handles implicit = {0, 0, 0, 0};
+        reset_resource_requests();
+        memset(&map_request, 0, sizeof(map_request));
+        if (run_resource(real_ioctl, &mesa_fd, 1, 0, &implicit) != 0)
+            fail_and_hold("implicit-resource");
+        reset_resource_requests();
+        memset(execbuffer_handles, 0, sizeof(execbuffer_handles));
+        execbuffer_request.flags = 0;
+        execbuffer_request.fence_fd = -1;
+        errno = 0;
+        if (real_ioctl(&mesa_fd, DRM_IOCTL_VIRTGPU_EXECBUFFER, &execbuffer_request) != 0)
+            fail_and_hold("implicit-submit");
+        close(mesa_fd);
+        publish_marker("DRM_VIRGL_IMPLICIT PASS");
+    }
 
     /* Closing the file tears the context down; the host would otherwise hold
      * it for the device's lifetime. */

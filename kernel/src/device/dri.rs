@@ -194,6 +194,8 @@ struct DriHandle {
     /// The node this file was opened through, which decides what it may do.
     node: DriNode,
     gpu: Arc<GpuDevice>,
+    /// Serializes implicit context creation for this file.
+    context_operation: Mutex<()>,
     cursor_operation: Mutex<()>,
     inner: SpinLock<DriInner>,
 }
@@ -699,6 +701,7 @@ impl Device for Dri {
         Ok(Box::new(DriHandle {
             node: self.node,
             gpu,
+            context_operation: Mutex::new(()),
             cursor_operation: Mutex::new(()),
             inner: SpinLock::new(DriInner {
                 handles: BTreeMap::new(),
@@ -978,6 +981,32 @@ impl DriHandle {
         Ok(())
     }
 
+    /// Returns this file's 3D context, creating one if it has none.
+    ///
+    /// A client does not have to ask for a context to need one. Mesa queries
+    /// the `CONTEXT_INIT` parameter, finds this driver does not offer it, and
+    /// submits without ever calling `VIRTGPU_CONTEXT_INIT` — it expects the
+    /// driver to have a context ready, as Linux's does from the moment a
+    /// client that can render opens the node. Creating it on first use rather
+    /// than at open keeps clients that never render from paying for a host
+    /// round-trip.
+    fn ensure_context(&self) -> Result<u32> {
+        let _operation = self.context_operation.lock();
+        if let Some(context_id) = self.inner.lock().context_id {
+            return Ok(context_id);
+        }
+        let info = self
+            .gpu
+            .capset_info(0)
+            .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
+        let context_id = NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
+        self.gpu
+            .context_create(context_id, info.id, "asterinas")
+            .map_err(|_| Error::with_message(Errno::EIO, "context creation failed"))?;
+        self.inner.lock().context_id = Some(context_id);
+        Ok(context_id)
+    }
+
     /// Creates this file's 3D context, against the capability set it names.
     fn virtgpu_context_init(&self, req: &DrmVirtgpuContextInit) -> Result<()> {
         if !self.gpu.supports_virgl() {
@@ -1080,11 +1109,7 @@ impl DriHandle {
         if req.size == 0 {
             return_errno_with_message!(Errno::EINVAL, "resource has zero size");
         }
-        let context_id = self
-            .inner
-            .lock()
-            .context_id
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "no context has been created"))?;
+        let context_id = self.ensure_context()?;
 
         // The file's handle table and the device-wide pool are both touched, in
         // the order `GEM_OBJECTS` documents.
@@ -1205,11 +1230,7 @@ impl DriHandle {
         if req.size == 0 {
             return_errno_with_message!(Errno::EINVAL, "empty command buffer");
         }
-        let context_id = self
-            .inner
-            .lock()
-            .context_id
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "no context has been created"))?;
+        let context_id = self.ensure_context()?;
 
         let mut commands = Vec::new();
         commands.resize(req.size as usize, 0u8);
