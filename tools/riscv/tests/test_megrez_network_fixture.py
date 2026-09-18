@@ -54,6 +54,7 @@ from tools.riscv.megrez_network_fixture import (
 )
 
 RUN_ID = "0123456789abcdef0123456789abcdef"
+DAILY_USE_EVIDENCE_PATH = f"/browser-quality/daily-use-evidence/{RUN_ID}"
 
 
 class MegrezNetworkFixtureTests(unittest.TestCase):
@@ -155,6 +156,145 @@ class MegrezNetworkFixtureTests(unittest.TestCase):
         self.assertTrue(summary["records_truncated"])
         timestamps = [record["monotonic_ns"] for record in summary["requests"]]
         self.assertEqual(timestamps, sorted(timestamps))
+
+    def test_daily_use_evidence_accepts_one_matching_upload(self) -> None:
+        try:
+            config = FixtureConfig(
+                "127.0.0.1", 0, daily_use_experiment_id=RUN_ID
+            )
+        except TypeError:
+            self.fail("daily-use experiment binding is not implemented")
+        payload = b'{"schemaVersion":1}\n'
+        with FixtureServer(config) as server:
+            status, body = self.post(server, DAILY_USE_EVIDENCE_PATH, payload)
+            retained = server.daily_use_evidence_payload()
+            summary = server.daily_use_evidence_summary()
+
+        self.assertEqual((status, body), (204, b""))
+        self.assertEqual(retained, payload)
+        self.assertEqual(
+            summary,
+            {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()},
+        )
+
+    def test_daily_use_evidence_rejects_second_upload(self) -> None:
+        config = FixtureConfig("127.0.0.1", 0, daily_use_experiment_id=RUN_ID)
+        with FixtureServer(config) as server:
+            first = self.post(server, DAILY_USE_EVIDENCE_PATH, b"first")
+            second = self.post(server, DAILY_USE_EVIDENCE_PATH, b"second")
+            retained = server.daily_use_evidence_payload()
+
+        self.assertEqual(first, (204, b""))
+        self.assertEqual(second, (409, b""))
+        self.assertEqual(retained, b"first")
+
+    def test_wait_for_daily_use_evidence_wakes_on_upload(self) -> None:
+        config = FixtureConfig("127.0.0.1", 0, daily_use_experiment_id=RUN_ID)
+        with FixtureServer(config) as server:
+            try:
+                waiter = server.wait_for_daily_use_evidence
+            except AttributeError:
+                self.fail("bounded daily-use upload wait is not implemented")
+            result: list[bytes] = []
+            thread = threading.Thread(target=lambda: result.append(waiter(1.0)))
+            thread.start()
+            self.assertEqual(
+                self.post(server, DAILY_USE_EVIDENCE_PATH, b"evidence"),
+                (204, b""),
+            )
+            thread.join(timeout=1)
+
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result, [b"evidence"])
+
+    def test_daily_use_evidence_rejects_wrong_path_query_peer_and_framing(
+        self,
+    ) -> None:
+        config = FixtureConfig("127.0.0.1", 0, daily_use_experiment_id=RUN_ID)
+        with FixtureServer(config) as server:
+            self.assertEqual(
+                self.post(
+                    server,
+                    "/browser-quality/daily-use-evidence/" + "f" * 32,
+                    b"body",
+                )[0],
+                404,
+            )
+            self.assertEqual(
+                self.post(server, DAILY_USE_EVIDENCE_PATH + "?q=1", b"body")[0],
+                400,
+            )
+            requests = (
+                (
+                    b"POST "
+                    + DAILY_USE_EVIDENCE_PATH.encode()
+                    + b" HTTP/1.1\r\nHost: localhost\r\n\r\n",
+                    b" 411 ",
+                ),
+                (
+                    b"POST "
+                    + DAILY_USE_EVIDENCE_PATH.encode()
+                    + b" HTTP/1.1\r\nHost: localhost\r\n"
+                    b"Content-Length: 4\r\nContent-Length: 4\r\n\r\nbody",
+                    b" 400 ",
+                ),
+                (
+                    b"POST "
+                    + DAILY_USE_EVIDENCE_PATH.encode()
+                    + b" HTTP/1.1\r\nHost: localhost\r\n"
+                    b"Transfer-Encoding: chunked\r\n\r\n4\r\nbody\r\n0\r\n\r\n",
+                    b" 400 ",
+                ),
+                (
+                    b"POST "
+                    + DAILY_USE_EVIDENCE_PATH.encode()
+                    + b" HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n",
+                    b" 400 ",
+                ),
+                (
+                    b"POST "
+                    + DAILY_USE_EVIDENCE_PATH.encode()
+                    + b" HTTP/1.1\r\nHost: localhost\r\nContent-Length: 2097153\r\n\r\n",
+                    b" 413 ",
+                ),
+            )
+            for request, expected in requests:
+                with self.subTest(expected=expected):
+                    self.assertIn(expected, self.raw_request(server, request))
+            self.assertIsNone(server.daily_use_evidence_payload())
+
+        with FixtureServer(FixtureConfig("127.0.0.1", 0)) as disabled:
+            self.assertEqual(
+                self.post(disabled, DAILY_USE_EVIDENCE_PATH, b"body")[0], 404
+            )
+        denied_config = FixtureConfig(
+            "127.0.0.1",
+            0,
+            allowed_peer="192.0.2.1",
+            daily_use_experiment_id=RUN_ID,
+        )
+        with FixtureServer(denied_config) as denied:
+            self.assertEqual(
+                self.post(denied, DAILY_USE_EVIDENCE_PATH, b"body")[0], 403
+            )
+            self.assertIsNone(denied.daily_use_evidence_payload())
+
+    def test_cli_accepts_daily_use_experiment_identity(self) -> None:
+        try:
+            config = _parse_args(
+                [
+                    "--bind-address",
+                    "127.0.0.1",
+                    "--port",
+                    "0",
+                    "--daily-use-experiment-id",
+                    RUN_ID,
+                ]
+            )
+        except SystemExit:
+            self.fail("daily-use experiment CLI flag is not implemented")
+
+        self.assertEqual(config.daily_use_experiment_id, RUN_ID)
 
     def test_serves_deterministic_browser_resources_without_legacy_records(
         self,
@@ -574,6 +714,9 @@ handlers['document:scroll']({isTrusted: true});
             lambda: FixtureConfig("127.0.0.1", -1),
             lambda: FixtureConfig("127.0.0.1", 65536),
             lambda: FixtureConfig("127.0.0.1", 17894, allowed_peer="bad"),
+            lambda: FixtureConfig(
+                "127.0.0.1", 17894, daily_use_experiment_id="A" * 32
+            ),
         ):
             with self.subTest(config=config):
                 with self.assertRaises(ValueError):
@@ -595,6 +738,7 @@ handlers['document:scroll']({isTrusted: true});
             ["--port", "-1"],
             ["--port", "70000"],
             ["--allow-peer", "bad"],
+            ["--daily-use-experiment-id", "a" * 31],
         ):
             with self.subTest(arguments=arguments):
                 with self.assertRaises(SystemExit):
