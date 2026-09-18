@@ -1893,7 +1893,11 @@ class RealPhysicalGraphicsOperations:
         command = physical_daily_use_command(
             experiment_id, timeout, expected_firefox_pid
         )
-        deadline = self._guest_phase_deadline(timeout + 30.0)
+        # The guest timeout applies independently to readiness, four capture
+        # phases, sampler shutdown, and cleanup.  Keep the host transport alive
+        # for the already-bounded guest lifetime so a late failure can publish
+        # its checkpoint and terminal record instead of being interrupted.
+        deadline = self._guest_phase_deadline(self.GUEST_LIFETIME_SECONDS)
         command_start = serial.checkpoint()
         cursor = command_start
         serial.send((command + "\n").encode(), deadline)
