@@ -17,6 +17,10 @@ class DeviceKind(str, Enum):
     VIRTIO_RNG = "virtio-rng"
     VIRTIO_NET = "virtio-net"
     VIRTIO_GPU = "virtio-gpu"
+    # The 3D-capable variant. It is a distinct device rather than a property of
+    # `virtio-gpu`, and it only offers virgl when the display backend can give
+    # it a host GL context.
+    VIRTIO_GPU_GL = "virtio-gpu-gl"
     SCRATCH_VIRTIO_BLOCK = "scratch-virtio-block"
     NVME = "nvme"
 
@@ -36,6 +40,9 @@ class QemuDeviceSet:
     name: str
     devices: tuple[DeviceKind, ...]
     framebuffer: FramebufferContract | None = None
+    #: The QEMU display backend. Headless by default; a GL device needs a
+    #: backend that can hand it a host GL context, which `none` cannot.
+    display: str = "none"
 
 
 @dataclass(frozen=True)
@@ -79,6 +86,14 @@ DRM_RENDER_NODE = QemuDeviceSet(
     "drm-render-node",
     (DeviceKind.VIRTIO_GPU,),
 )
+# The only set that is not `-display none`: `egl-headless,gl=on` is what gives
+# the GL device a host context, and without one QEMU withholds the virgl
+# feature bit entirely.
+DRM_VIRGL = QemuDeviceSet(
+    "drm-virgl",
+    (DeviceKind.VIRTIO_GPU_GL,),
+    display="egl-headless,gl=on",
+)
 
 _DEVICE_SETS = MappingProxyType(
     {
@@ -88,8 +103,14 @@ _DEVICE_SETS = MappingProxyType(
         DRM_CURSOR.name: DRM_CURSOR,
         DRM_GEM.name: DRM_GEM,
         DRM_RENDER_NODE.name: DRM_RENDER_NODE,
+        DRM_VIRGL.name: DRM_VIRGL,
     }
 )
+
+
+#: The display backends a device set may name. Closed so that a typo becomes a
+#: refusal rather than a QEMU that silently drops to a different backend.
+DISPLAY_BACKENDS = ("none", "egl-headless,gl=on")
 
 
 def _validate_device_set_shape(device_set: QemuDeviceSet) -> None:
@@ -109,6 +130,15 @@ def _validate_device_set_shape(device_set: QemuDeviceSet) -> None:
         and device_set.framebuffer is None
     ):
         raise ValueError("bochs-display requires framebuffer")
+    if device_set.display not in DISPLAY_BACKENDS:
+        raise ValueError(f"unregistered display backend: {device_set.display}")
+    # The GL device gets its virgl feature bit from a host GL context, so a
+    # headless backend would silently produce a device without 3D.
+    if (
+        DeviceKind.VIRTIO_GPU_GL in device_set.devices
+        and device_set.display == "none"
+    ):
+        raise ValueError("virtio-gpu-gl requires a GL-capable display backend")
 
 
 def validate_registered_device_set(device_set: QemuDeviceSet) -> None:
@@ -213,6 +243,15 @@ def render_device_argv(
                     "virtio-gpu-device",
                     "-trace",
                     "enable=virtio_gpu_update_cursor",
+                )
+            )
+        elif device is DeviceKind.VIRTIO_GPU_GL:
+            argv.extend(
+                (
+                    "-nic",
+                    "none",
+                    "-device",
+                    "virtio-gpu-gl-device",
                 )
             )
         else:

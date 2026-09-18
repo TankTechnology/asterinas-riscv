@@ -525,6 +525,39 @@ DRM_RENDER_NODE_GATE = ValidationScenario(
     post_terminal_timeout=0.25,
 )
 
+DRM_VIRGL_READY_LINE = b"ASTERINAS_DRM_VIRGL_R1_READY"
+DRM_VIRGL_GATE = ValidationScenario(
+    name="asterinas-drm-virgl-r1",
+    bootargs="console=ttyS0 loglevel=info init=/init",
+    scope=ResultScope.COMPLETE_BOOT,
+    milestones=(
+        *_ASTERINAS_COMMON_MILESTONES,
+        MilestoneExpectation(
+            BootMilestone.KERNEL_READY,
+            b"OSTD initialized. Preparing components.",
+        ),
+        MilestoneExpectation(
+            BootMilestone.ROOTFS_READY,
+            b"[kernel] rootfs is ready",
+        ),
+        MilestoneExpectation(
+            BootMilestone.USERSPACE_READY,
+            DRM_VIRGL_READY_LINE,
+        ),
+    ),
+    terminal=BootMilestone.USERSPACE_READY,
+    completion_line=DRM_VIRGL_READY_LINE,
+    forbidden_markers=(
+        b"Uncaught panic",
+        b"unexpected exception",
+    ),
+    audit_policy=AuditPolicy.REGISTERED_MILESTONES,
+    startup_timeout=30.0,
+    command_timeout=10.0,
+    boot_timeout=90.0,
+    post_terminal_timeout=0.25,
+)
+
 MEGREZ_USERSPACE_SMOKE = ValidationScenario(
     name="megrez-userspace-smoke",
     bootargs="cpu_no_boost_1_6ghz loglevel=info init=/init",
@@ -790,6 +823,15 @@ GENERIC_SV39_DRM_RENDER_NODE_SMP4 = QemuUbootProfile(
     validation=DRM_RENDER_NODE_GATE,
 )
 
+# Launched with the `drm-virgl` device set by its gate, and with a plain
+# `drm-gem` one for the control run that proves the report tracks the device.
+GENERIC_SV39_DRM_VIRGL_SMP4 = QemuUbootProfile(
+    name="generic-sv39-drm-virgl-smp4",
+    machine=QEMU_VIRT_SMP4,
+    boot_flow=UBOOT_BOOTI,
+    validation=DRM_VIRGL_GATE,
+)
+
 MEGREZ_SV48_SVADE_FAST = QemuUbootProfile(
     name="megrez-sv48-svade-fast",
     machine=MEGREZ_SVADE_FAST_MACHINE,
@@ -909,6 +951,7 @@ _PROFILES: Mapping[str, QemuUbootProfile] = MappingProxyType(
             GENERIC_SV39_DRM_CURSOR_SMP4,
             GENERIC_SV39_DRM_GEM_SMP4,
             GENERIC_SV39_DRM_RENDER_NODE_SMP4,
+            GENERIC_SV39_DRM_VIRGL_SMP4,
             MEGREZ_SV48_SVADE_FAST,
             MEGREZ_SV48_SVADU_FAST,
             MEGREZ_SV48_SLOW,
