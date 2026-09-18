@@ -19,8 +19,9 @@ use ostd::{
 };
 
 use super::{
-    MAX_SCANOUTS, VIRTIO_GPU_CMD_CTX_CREATE, VIRTIO_GPU_CMD_CTX_DESTROY,
-    VIRTIO_GPU_CMD_GET_CAPSET, VIRTIO_GPU_CMD_GET_CAPSET_INFO, VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
+    MAX_SCANOUTS, VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, VIRTIO_GPU_CMD_CTX_CREATE,
+    VIRTIO_GPU_CMD_CTX_DESTROY, VIRTIO_GPU_CMD_GET_CAPSET, VIRTIO_GPU_CMD_GET_CAPSET_INFO,
+    VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_RESOURCE_CREATE_3D,
     VIRTIO_GPU_CMD_MOVE_CURSOR, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
     VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
     VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
@@ -29,8 +30,9 @@ use super::{
     VIRTIO_GPU_RESP_OK_CAPSET, VIRTIO_GPU_RESP_OK_CAPSET_INFO, VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
     VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR, VirtioGpuCtrlHdr, VirtioGpuCtxCreate,
     VirtioGpuCursorPos, VirtioGpuDisplayOne, VirtioGpuGetCapset, VirtioGpuGetCapsetInfo,
-    VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuRespCapsetInfo, VirtioGpuResourceAttachBacking,
-    VirtioGpuResourceCreate2d, VirtioGpuResourceFlush, VirtioGpuResourceUnref,
+    VirtioGpuCtxResource, VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuRespCapsetInfo,
+    VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceCreate3d,
+    VirtioGpuResourceFlush, VirtioGpuResourceUnref,
     VirtioGpuSetScanout, VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
     config::VirtioGpuConfig,
 };
@@ -180,6 +182,17 @@ impl GpuDevice {
         self.virgl_supported
     }
 
+    /// Reserves a resource id from the device's single id space.
+    ///
+    /// The host keys resources by id for the device's lifetime, so every
+    /// resource the driver creates has to come from one counter. A second
+    /// counter starting at 1 would collide with the scanout resource, which
+    /// holds that id, and the host rejects the duplicate rather than replacing
+    /// what is already there.
+    pub fn reserve_resource_id(&self) -> u32 {
+        self.next_resource_id.fetch_add(1, Ordering::Relaxed)
+    }
+
     /// Returns the capability set the host advertises at `index`.
     ///
     /// The host enumerates its capsets; index 0 is the renderer's primary one,
@@ -256,6 +269,75 @@ impl GpuDevice {
         request.debug_name[..copied].copy_from_slice(&name[..copied]);
         request.nlen = copied as u32;
 
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &request,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// Creates a 3D resource on the host for `resource_id`.
+    ///
+    /// The renderer is told the resource's shape; its storage is attached
+    /// separately by [`GpuDevice::attach_backing`], which is also what the 2D
+    /// path uses.
+    #[expect(clippy::too_many_arguments)]
+    pub fn resource_create_3d(
+        &self,
+        resource_id: u32,
+        target: u32,
+        format: u32,
+        bind: u32,
+        width: u32,
+        height: u32,
+        depth: u32,
+        array_size: u32,
+        last_level: u32,
+        nr_samples: u32,
+        flags: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let request = VirtioGpuResourceCreate3d {
+            hdr: ctrl_hdr(VIRTIO_GPU_CMD_RESOURCE_CREATE_3D),
+            resource_id,
+            target,
+            format,
+            bind,
+            width,
+            height,
+            depth,
+            array_size,
+            last_level,
+            nr_samples,
+            flags,
+            padding: 0,
+        };
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &request,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// Tells the host that `resource_id` belongs to `context_id`.
+    ///
+    /// A resource the context does not know about cannot be named by a command
+    /// buffer submitted to it, so this is what makes a resource usable.
+    pub fn attach_resource_to_context(
+        &self,
+        context_id: u32,
+        resource_id: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let request = VirtioGpuCtxResource {
+            hdr: ctrl_hdr_for_context(VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, context_id),
+            resource_id,
+            padding: 0,
+        };
         let mut queue = self.control_queue.lock();
         let code = control_cmd(
             &mut queue,
@@ -537,7 +619,11 @@ impl GpuDevice {
         cursor_cmd(&mut queue, &self.cursor_buf, &request)
     }
 
-    fn attach_backing(
+    /// Attaches a span of guest memory as a resource's backing store.
+    ///
+    /// The host reads and writes the resource through this memory, so a
+    /// resource without a backing has no storage at all.
+    pub fn attach_backing(
         &self,
         resource_id: u32,
         addr: u64,
