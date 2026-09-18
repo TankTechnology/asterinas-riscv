@@ -27,6 +27,10 @@ from tools.riscv.megrez_physical_graphics import DailyUseTerminalStatus
 from tools.riscv.tests.test_browser_daily_use_contract import complete_result
 
 
+REPOSITORY_ROOT = Path(__file__).parents[3]
+MAKEFILE = REPOSITORY_ROOT / "Makefile"
+FAST_CHECK = REPOSITORY_ROOT / "tools/riscv/firefox_fast_check.sh"
+README = REPOSITORY_ROOT / "tools/riscv/README.md"
 EXPERIMENT_ID = "fedcba9876543210fedcba9876543210"
 GATE_RUN_ID = "0123456789abcdef0123456789abcdef"
 COMPONENT_NAMES = (
@@ -487,6 +491,72 @@ class DailyUseRunnerTests(unittest.TestCase):
         self.assertIn(f"--output-directory {output}", command)
         self.assertIn("--profile-timeout 120", command)
         self.assertNotIn("--prepare-only", command)
+
+
+class DailyUseEntryPointTests(unittest.TestCase):
+    def test_makefile_exposes_complete_physical_daily_use_unit_gate(self) -> None:
+        source = MAKEFILE.read_text(encoding="utf-8")
+        target = source.split(
+            "test_riscv_firefox_daily_use_physical_unit:", 1
+        )[1].split("\n.PHONY:", 1)[0]
+        for module in (
+            "test_browser_daily_use_contract",
+            "test_browser_daily_use_gate",
+            "test_browser_daily_use_upload",
+            "test_megrez_network_fixture",
+            "test_debian_rootfs",
+            "test_megrez_physical_graphics",
+            "test_megrez_firefox_daily_use",
+            "test_megrez_firefox_daily_use_report",
+        ):
+            self.assertIn(f"tools.riscv.tests.{module}", target)
+
+    def test_prepare_target_is_validation_only_and_fail_closed(self) -> None:
+        source = MAKEFILE.read_text(encoding="utf-8")
+        target = source.split("prepare_riscv_megrez_firefox_daily_use:", 1)[1].split(
+            "\n.PHONY:", 1
+        )[0]
+        for fragment in (
+            "MEGREZ_FIREFOX_DAILY_USE_PLAN",
+            "MEGREZ_FIREFOX_DAILY_USE_DEVICE",
+            "MEGREZ_FIREFOX_DAILY_USE_OUTPUT",
+            "MEGREZ_FIREFOX_DAILY_USE_FIXTURE_BIND",
+            "MEGREZ_FIREFOX_DAILY_USE_BOARD_PEER",
+            "/dev/serial/by-id/",
+            "10.100.19.216",
+            "10.100.19.200",
+            "MEGREZ_FIREFOX_DAILY_USE_MMC_KERNEL",
+            "MEGREZ_FIREFOX_DAILY_USE_MMC_INITRAMFS",
+            "MEGREZ_FIREFOX_DAILY_USE_MMC_DTB",
+            "tools.riscv.megrez_firefox_daily_use",
+            "--prepare-only",
+        ):
+            self.assertIn(fragment, target)
+        self.assertIn('test ! -e "$(MEGREZ_FIREFOX_DAILY_USE_OUTPUT)"', target)
+
+    def test_fast_check_and_readme_cover_three_one_shot_runs(self) -> None:
+        fast = FAST_CHECK.read_text(encoding="utf-8")
+        for module in (
+            "test_browser_daily_use_upload",
+            "test_megrez_physical_graphics",
+            "test_megrez_firefox_daily_use",
+            "test_megrez_firefox_daily_use_report",
+        ):
+            self.assertIn(f"tools.riscv.tests.{module}", fast)
+        readme = README.read_text(encoding="utf-8")
+        for fragment in (
+            "one profile per boot",
+            "run-a1",
+            "run-a2",
+            "run-a3",
+            "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
+            "10.100.19.216:17894",
+            "10.100.19.200",
+            "target/firefox-daily-use-physical/",
+            "megrez_firefox_daily_use_report",
+            "qualified",
+        ):
+            self.assertIn(fragment, readme)
 
 
 if __name__ == "__main__":
