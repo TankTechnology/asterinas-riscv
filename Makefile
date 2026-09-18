@@ -346,6 +346,15 @@ MEGREZ_PHYSICAL_GRAPHICS_MMC_KERNEL ?=
 MEGREZ_PHYSICAL_GRAPHICS_MMC_INITRAMFS ?=
 MEGREZ_PHYSICAL_GRAPHICS_MMC_DTB ?=
 MEGREZ_PHYSICAL_GRAPHICS_OUTPUT ?= $(CURDIR)/target/current-main-physical-graphics/physical/evidence
+MEGREZ_FIREFOX_DAILY_USE_PLAN ?=
+MEGREZ_FIREFOX_DAILY_USE_DEVICE ?=
+MEGREZ_FIREFOX_DAILY_USE_OUTPUT ?= $(CURDIR)/target/firefox-daily-use-physical/run-a1
+MEGREZ_FIREFOX_DAILY_USE_FIXTURE_BIND ?= 10.100.19.216
+MEGREZ_FIREFOX_DAILY_USE_FIXTURE_PORT ?= 17894
+MEGREZ_FIREFOX_DAILY_USE_BOARD_PEER ?= 10.100.19.200
+MEGREZ_FIREFOX_DAILY_USE_MMC_KERNEL ?=
+MEGREZ_FIREFOX_DAILY_USE_MMC_INITRAMFS ?=
+MEGREZ_FIREFOX_DAILY_USE_MMC_DTB ?=
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
 DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
 DEBIAN_WEB_NETWORK_MODE ?=
@@ -450,6 +459,18 @@ test_riscv_physical_graphics_unit:
 		tools.riscv.tests.test_physical_graphics_gate \
 		tools.riscv.tests.test_megrez_physical_graphics \
 		tools.riscv.tests.test_physical_graphics_qemu_gate -v
+
+.PHONY: test_riscv_firefox_daily_use_physical_unit
+test_riscv_firefox_daily_use_physical_unit:
+	@PYTHONPATH="$(CURDIR)" python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_browser_daily_use_contract \
+		tools.riscv.tests.test_browser_daily_use_gate \
+		tools.riscv.tests.test_browser_daily_use_upload \
+		tools.riscv.tests.test_megrez_network_fixture \
+		tools.riscv.tests.test_debian_rootfs \
+		tools.riscv.tests.test_megrez_physical_graphics \
+		tools.riscv.tests.test_megrez_firefox_daily_use \
+		tools.riscv.tests.test_megrez_firefox_daily_use_report -v
 
 .PHONY: test_riscv_megrez_boot_stability_unit
 test_riscv_megrez_boot_stability_unit:
@@ -607,6 +628,53 @@ prepare_riscv_megrez_physical_graphics:
 	printf '%q ' \
 		--open-timeout 60 --artifact-timeout 300 --boot-timeout 300 \
 		--cycle-timeout 180 --hdmi-timeout 60 --recovery-timeout 930; printf '\n'
+
+.PHONY: prepare_riscv_megrez_firefox_daily_use
+prepare_riscv_megrez_firefox_daily_use:
+	@test -n "$(MEGREZ_FIREFOX_DAILY_USE_PLAN)" || \
+		{ echo "MEGREZ_FIREFOX_DAILY_USE_PLAN is required" >&2; exit 2; }
+	@test -n "$(MEGREZ_FIREFOX_DAILY_USE_DEVICE)" || \
+		{ echo "MEGREZ_FIREFOX_DAILY_USE_DEVICE is required" >&2; exit 2; }
+	@case "$(MEGREZ_FIREFOX_DAILY_USE_DEVICE)" in \
+		/dev/serial/by-id/*) ;; \
+		*) echo "MEGREZ_FIREFOX_DAILY_USE_DEVICE must be an absolute /dev/serial/by-id/ path" >&2; exit 2 ;; \
+	esac
+	@test -n "$(MEGREZ_FIREFOX_DAILY_USE_OUTPUT)" || \
+		{ echo "MEGREZ_FIREFOX_DAILY_USE_OUTPUT is required" >&2; exit 2; }
+	@test ! -e "$(MEGREZ_FIREFOX_DAILY_USE_OUTPUT)" || \
+		{ echo "MEGREZ_FIREFOX_DAILY_USE_OUTPUT already exists" >&2; exit 2; }
+	@test "$(MEGREZ_FIREFOX_DAILY_USE_FIXTURE_BIND)" = 10.100.19.216 || \
+		{ echo "MEGREZ_FIREFOX_DAILY_USE_FIXTURE_BIND must be 10.100.19.216" >&2; exit 2; }
+	@test "$(MEGREZ_FIREFOX_DAILY_USE_FIXTURE_PORT)" = 17894 || \
+		{ echo "MEGREZ_FIREFOX_DAILY_USE_FIXTURE_PORT must be 17894" >&2; exit 2; }
+	@test "$(MEGREZ_FIREFOX_DAILY_USE_BOARD_PEER)" = 10.100.19.200 || \
+		{ echo "MEGREZ_FIREFOX_DAILY_USE_BOARD_PEER must be 10.100.19.200" >&2; exit 2; }
+	@set -eu; count=0; \
+	for value in \
+		"$(MEGREZ_FIREFOX_DAILY_USE_MMC_KERNEL)" \
+		"$(MEGREZ_FIREFOX_DAILY_USE_MMC_INITRAMFS)" \
+		"$(MEGREZ_FIREFOX_DAILY_USE_MMC_DTB)"; do \
+		test -z "$$value" || count=$$((count + 1)); \
+	done; \
+	test "$$count" -eq 0 -o "$$count" -eq 3 || \
+		{ echo "all three MEGREZ_FIREFOX_DAILY_USE_MMC_* values are required together" >&2; exit 2; }
+	@set -eu; set -- env "PYTHONPATH=$(CURDIR)" python3 -m \
+		tools.riscv.megrez_firefox_daily_use \
+		"$(MEGREZ_FIREFOX_DAILY_USE_DEVICE)" \
+		--plan "$(MEGREZ_FIREFOX_DAILY_USE_PLAN)" \
+		--output-directory "$(MEGREZ_FIREFOX_DAILY_USE_OUTPUT)" \
+		--fixture-bind "$(MEGREZ_FIREFOX_DAILY_USE_FIXTURE_BIND)" \
+		--fixture-port "$(MEGREZ_FIREFOX_DAILY_USE_FIXTURE_PORT)" \
+		--board-peer "$(MEGREZ_FIREFOX_DAILY_USE_BOARD_PEER)" \
+		--profile-timeout 120 --open-timeout 60 --artifact-timeout 300 \
+		--boot-timeout 300 --upload-timeout 30 --recovery-timeout 930; \
+	if [ -n "$(MEGREZ_FIREFOX_DAILY_USE_MMC_KERNEL)" ]; then \
+		set -- "$$@" \
+			--mmc-kernel "$(MEGREZ_FIREFOX_DAILY_USE_MMC_KERNEL)" \
+			--mmc-initramfs "$(MEGREZ_FIREFOX_DAILY_USE_MMC_INITRAMFS)" \
+			--mmc-dtb "$(MEGREZ_FIREFOX_DAILY_USE_MMC_DTB)"; \
+	fi; \
+	"$$@" --prepare-only
 
 .PHONY: test_riscv_debian_rootfs_gate
 test_riscv_debian_rootfs_gate:
