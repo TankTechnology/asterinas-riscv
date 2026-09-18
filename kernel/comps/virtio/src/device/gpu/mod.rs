@@ -62,6 +62,10 @@ pub const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x0301;
 /// Control response codes (5.7.6.3).
 pub const VIRTIO_GPU_RESP_OK_NODATA: u32 = 0x1100;
 pub const VIRTIO_GPU_RESP_OK_DISPLAY_INFO: u32 = 0x1101;
+/// Answer to `GET_CAPSET_INFO`. The host reports success with its own code
+/// rather than the generic no-data one, so a driver that only accepts
+/// `RESP_OK_NODATA` sees a failure on a request that worked.
+pub const VIRTIO_GPU_RESP_OK_CAPSET_INFO: u32 = 0x1102;
 pub const VIRTIO_GPU_RESP_ERR_UNSPEC: u32 = 0x1200;
 pub const VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY: u32 = 0x1201;
 pub const VIRTIO_GPU_RESP_ERR_INVALID_SCANOUT_ID: u32 = 0x1202;
@@ -77,6 +81,30 @@ pub const VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM: u32 = 4;
 
 /// Maximum number of scanouts described by a single display-info response.
 pub const MAX_SCANOUTS: usize = 16;
+
+/// Device feature bits (5.7.3), expressed as masks. Bit 0 is the virgl 3D
+/// feature, which the host offers only when it was started with a GL backend.
+pub const VIRTIO_GPU_F_VIRGL: u64 = 1 << 0;
+
+/// `GET_CAPSET_INFO` request (5.7.6.9.1).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuGetCapsetInfo {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub capset_index: u32,
+    pub padding: u32,
+}
+
+/// `GET_CAPSET_INFO` response (5.7.6.9.1).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub struct VirtioGpuRespCapsetInfo {
+    pub hdr: VirtioGpuCtrlHdr,
+    pub capset_id: u32,
+    pub capset_max_version: u32,
+    pub capset_max_size: u32,
+    pub padding: u32,
+}
 
 /// Common control header (5.7.6.3).
 #[repr(C)]
