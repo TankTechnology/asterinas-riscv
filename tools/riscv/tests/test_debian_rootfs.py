@@ -1567,7 +1567,7 @@ int main(void)
         source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text(encoding="utf-8")
         source = source.replace(
             "systemctl_bounded() {\n"
-            '    /usr/bin/timeout --kill-after=1s 3s /usr/bin/systemctl "$@"\n'
+            '    /usr/bin/timeout --kill-after=1s 10s /usr/bin/systemctl "$@"\n'
             "}",
             "systemctl_bounded() { systemctl \"$@\"; }",
         )
