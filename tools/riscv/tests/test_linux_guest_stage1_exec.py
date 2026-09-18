@@ -24,6 +24,11 @@ class LinuxGuestStage1ExecTests(unittest.TestCase):
                 '#!/bin/sh\nprintf "%s\\n" "$@"\n', encoding="utf-8"
             )
             fake_stage1.chmod(0o755)
+            # Point the module list at paths that cannot exist, so the loading
+            # loop is exercised without the test needing a built initramfs.
+            # The shim must report each one and carry on: stage1's own failure
+            # is what explains a boot that cannot find its root.
+            missing_modules = f'-DBOOT_MODULES="{directory}/missing-1.ko", "{directory}/missing-2.ko",'
             mount_stub = directory / "mount_stub.c"
             mount_stub.write_text(
                 '#include <stdio.h>\n#include <string.h>\n#include <sys/mount.h>\n'
@@ -48,6 +53,7 @@ class LinuxGuestStage1ExecTests(unittest.TestCase):
                     "-Wextra",
                     "-Werror",
                     f'-DSTAGE1_EXEC_PATH="{fake_stage1}"',
+                    missing_modules,
                     str(SOURCE),
                     str(mount_stub),
                     "-o",
@@ -72,10 +78,39 @@ class LinuxGuestStage1ExecTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("DEV_TMPFS_MOUNT_CALLED", result.stderr)
+            # Every module is attempted, in the order it was listed, and a
+            # failure to load one does not stop the handoff.
+            self.assertIn("missing-1.ko", result.stderr)
+            self.assertIn("missing-2.ko", result.stderr)
+            self.assertLess(
+                result.stderr.index("missing-1.ko"), result.stderr.index("missing-2.ko")
+            )
             self.assertEqual(
                 result.stdout,
                 "--root-init=systemd\n--debug-console=root\n",
             )
+
+    def test_boot_modules_are_listed_in_dependency_order(self) -> None:
+        # The kernel cannot mount anything until these are in, and the order is
+        # a dependency order rather than a preference: loading ext4 before jbd2
+        # or crc16 fails. A silently reordered list would show up only as a
+        # control boot that cannot find its root.
+        source = SOURCE.read_text(encoding="utf-8")
+        order = [
+            "kernel/lib/crc16.ko",
+            "kernel/fs/mbcache.ko",
+            "kernel/fs/jbd2.ko",
+            "kernel/fs/ext4.ko",
+            "kernel/drivers/virtio/virtio_mmio.ko",
+            "kernel/drivers/block/virtio_blk.ko",
+        ]
+        positions = [source.find(entry) for entry in order]
+        # Collected rather than formatted into the assertion message: an
+        # argument to assertX is evaluated eagerly, so indexing for a message
+        # would raise on the very case the assertion exists to report.
+        missing = [entry for entry, position in zip(order, positions) if position < 0]
+        self.assertEqual(missing, [], "module entries missing from the shim")
+        self.assertEqual(positions, sorted(positions), "module list is out of order")
 
 
 if __name__ == "__main__":
