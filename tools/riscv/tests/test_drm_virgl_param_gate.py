@@ -30,6 +30,7 @@ from drm.virgl_param_gate import (  # noqa: E402
     BACKING_MARKER,
     CONTEXT_MARKER,
     FENCE_MARKER,
+    IMPLICIT_MARKER,
     MAX_TRANSCRIPT_BYTES,
     READY_MARKER,
     VirglParamGateConfig,
@@ -101,6 +102,7 @@ class DrmVirglClassifierTests(unittest.TestCase):
         lines.append(b"DRM_VIRGL_SUBMIT PASS refused=%d" % (0 if three_d else 1))
         if three_d:
             lines.append(FENCE_MARKER)
+            lines.append(IMPLICIT_MARKER)
         if backing:
             lines.append(BACKING_MARKER)
         lines.append(
@@ -187,7 +189,10 @@ class DrmVirglClassifierTests(unittest.TestCase):
                 CONTEXT_MARKER,
                 b"DRM_VIRGL_CAPS PASS caps_bytes=512",
                 b"DRM_VIRGL_RESOURCE PASS bo=65 res=257 size=4096",
-                            BACKING_MARKER,
+                b"DRM_VIRGL_SUBMIT PASS refused=0",
+                FENCE_MARKER,
+                IMPLICIT_MARKER,
+                BACKING_MARKER,
                 b"DRM_VIRGL_TIMING caps_context_us=1 resource_us=1 submit_us=1 backing_us=1",
                 READY_MARKER,
             )
