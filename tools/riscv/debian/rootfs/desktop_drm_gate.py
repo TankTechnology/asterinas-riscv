@@ -136,9 +136,40 @@ class DesktopDRMOperations(DesktopM3Operations):
     FAILURE_MARKER = b"DEBIAN_DESKTOP_DRM_FAIL reason="
     BOOTARGS = DESKTOP_DRM_BOOTARGS
 
+    #: Whether a framebuffer capture can be taken at all.
+    #:
+    #: Not a policy choice: QEMU cannot screendump an `egl-headless` GL console
+    #: ("no surface"), and VNC readback delivers no frames for a virgl scanout
+    #: either. Asking for one there fails the run on a protocol error that says
+    #: nothing about the guest, so the capture is skipped and the evidence is
+    #: what the guest reports about itself.
+    _capture_screenshot: bool = True
+    _milestones: tuple[str, ...] = DESKTOP_DRM_MILESTONES
+
+    @property
+    def CAPTURE_SCREENSHOT(self) -> bool:  # type: ignore[override]
+        return self._capture_screenshot
+
+    @property
+    def MILESTONES(self) -> tuple[str, ...]:  # type: ignore[override]
+        return self._milestones
+
     @staticmethod
     def _qemu_argv(**arguments: Any) -> tuple[str, ...]:
         return desktop_drm_qemu_argv(**arguments)
+
+    def __init__(self, config: GateConfig, **arguments: Any) -> None:
+        super().__init__(config, **arguments)
+        self._capture_screenshot = config.display == "none"
+        # Asking for the GL device is asking for the 3D path, so the run has to
+        # prove it got there: a desktop that came up on llvmpipe satisfies
+        # every other milestone identically, and would otherwise be reported as
+        # a passing virgl run.
+        self._milestones = (
+            DESKTOP_DRM_VIRGL_MILESTONES
+            if config.graphics_device == "virtio-gpu-gl-device"
+            else DESKTOP_DRM_MILESTONES
+        )
 
     def invalidate(self, config: GateConfig) -> None:
         self._require_config(config)
