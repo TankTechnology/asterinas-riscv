@@ -21,8 +21,8 @@ import subprocess
 from typing import Protocol
 
 from tools.riscv.debian.rootfs.browser_daily_use_contract import (
-    FUNCTION_GROUPS,
     DailyUseContractError,
+    function_groups_qualify,
     validate_daily_use_result,
 )
 from tools.riscv.debian.rootfs.browser_daily_use_upload import (
@@ -265,9 +265,7 @@ def _bundle_predicates(
         return predicates, None
     predicates["result-pass"] = result["state"] == "pass"
     groups = result["functionGroups"]
-    predicates["function-groups-pass"] = tuple(
-        item["name"] for item in groups
-    ) == FUNCTION_GROUPS and all(item["state"] == "pass" for item in groups)
+    predicates["function-groups-pass"] = function_groups_qualify(groups)
     identities = result["identities"]
     predicates["identities-stable"] = all(
         identities[name]["initial"] == identities[name]["final"]
