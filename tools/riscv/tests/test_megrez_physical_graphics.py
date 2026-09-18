@@ -1207,6 +1207,115 @@ class PhysicalLifecycleTests(unittest.TestCase):
 
 
 class PhysicalCommandTests(unittest.TestCase):
+    DAILY_USE_ID = "0123456789abcdef0123456789abcdef"
+
+    def _daily_use_operations(
+        self,
+        gate,
+        lines: tuple[str, ...],
+        *,
+        prefix: str = "boot noise\n",
+    ):
+        payload = prefix.encode() + ("\n".join(lines) + "\n").encode()
+        serial = mock.Mock(transcript=payload)
+        serial.checkpoint.return_value = len(prefix.encode())
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        operations._serial = serial
+        operations._guest_deadline = time.monotonic() + 300
+        return operations, serial
+
+    def test_daily_use_command_is_closed(self) -> None:
+        gate = load_gate(self)
+        command = gate.physical_daily_use_command(self.DAILY_USE_ID, 120.0, 4242)
+
+        self.assertEqual(
+            command,
+            "/run/asterinas-tools/physical-graphics-control daily-use "
+            "0123456789abcdef0123456789abcdef 120 4242",
+        )
+        for experiment_id, timeout, pid in (
+            ("short", 120.0, 4242),
+            (self.DAILY_USE_ID.upper(), 120.0, 4242),
+            (self.DAILY_USE_ID, 0.0, 4242),
+            (self.DAILY_USE_ID, 120.1, 4242),
+            (self.DAILY_USE_ID, 121.0, 4242),
+            (self.DAILY_USE_ID, 120.0, True),
+            (self.DAILY_USE_ID, 120.0, 0),
+        ):
+            with (
+                self.subTest(experiment_id=experiment_id, timeout=timeout, pid=pid),
+                self.assertRaises(gate.HostGateError),
+            ):
+                gate.physical_daily_use_command(experiment_id, timeout, pid)
+
+    def test_run_daily_use_profile_requires_matching_terminal_id(self) -> None:
+        gate = load_gate(self)
+        operations, _serial = self._daily_use_operations(
+            gate,
+            (
+                "__ASTERINAS_PHYSICAL_DAILY_USE__ "
+                "experiment_id=ffffffffffffffffffffffffffffffff outcome=pass "
+                "gate_status=0 upload_status=0",
+            ),
+        )
+
+        with self.assertRaisesRegex(gate.HostGateError, "experiment"):
+            operations.run_daily_use_profile(self.DAILY_USE_ID, 120.0, 4242)
+
+    def test_run_daily_use_profile_returns_closed_terminal_status(self) -> None:
+        gate = load_gate(self)
+        operations, serial = self._daily_use_operations(
+            gate,
+            (
+                "__ASTERINAS_PHYSICAL_DAILY_USE__ "
+                f"experiment_id={self.DAILY_USE_ID} outcome=pass "
+                "gate_status=0 upload_status=0",
+            ),
+            prefix=(
+                "__ASTERINAS_PHYSICAL_DAILY_USE__ "
+                "experiment_id=ffffffffffffffffffffffffffffffff outcome=fail "
+                "gate_status=1 upload_status=0\n"
+            ),
+        )
+
+        with mock.patch.object(operations, "_sync_serial_log"):
+            status = operations.run_daily_use_profile(self.DAILY_USE_ID, 120.0, 4242)
+
+        self.assertEqual(status.experiment_id, self.DAILY_USE_ID)
+        self.assertEqual(status.outcome, "pass")
+        self.assertEqual((status.gate_status, status.upload_status), (0, 0))
+        self.assertEqual(
+            serial.send.call_args.args[0],
+            (
+                "/run/asterinas-tools/physical-graphics-control daily-use "
+                f"{self.DAILY_USE_ID} 120 4242\n"
+            ).encode(),
+        )
+
+    def test_run_daily_use_profile_rejects_open_or_duplicate_terminal(self) -> None:
+        gate = load_gate(self)
+        valid = (
+            "__ASTERINAS_PHYSICAL_DAILY_USE__ "
+            f"experiment_id={self.DAILY_USE_ID} outcome=pass "
+            "gate_status=0 upload_status=0"
+        )
+        invalid_lines = (
+            (valid, valid),
+            (valid.replace("gate_status=0", "gate_status=no"),),
+            (valid.replace("gate_status=0", "gate_status=-1"),),
+            (valid.replace("outcome=pass", "outcome=unknown"),),
+            (valid.replace("gate_status=0", "gate_status=1"),),
+            (valid.replace("upload_status=0", "upload_status=1"),),
+            (valid.replace("outcome=pass", "outcome=fail"),),
+            (valid.replace(self.DAILY_USE_ID, "0" * 31 + "G"),),
+            (valid + " trailing=field",),
+        )
+        for lines in invalid_lines:
+            with self.subTest(lines=lines):
+                operations, _serial = self._daily_use_operations(gate, lines)
+                with self.assertRaises(gate.HostGateError):
+                    operations.run_daily_use_profile(self.DAILY_USE_ID, 120.0, 4242)
+
     def test_one_cycle_real_prompt_uses_one_as_the_denominator(self) -> None:
         gate = load_gate(self)
         operations = object.__new__(gate.RealPhysicalGraphicsOperations)
@@ -1475,7 +1584,7 @@ class PhysicalCommandTests(unittest.TestCase):
         for fragment in ("0x81004506", "0x80084502", "0x81004507"):
             self.assertIn(fragment, identity_script)
         self.assertEqual(
-            script.count("PYTHONPYCACHEPREFIX=/run/asterinas-python-cache"), 3
+            script.count("PYTHONPYCACHEPREFIX=/run/asterinas-python-cache"), 5
         )
         self.assertNotIn("dmesg", script)
         self.assertNotIn("Xorg.0.log", script)
@@ -1553,7 +1662,9 @@ class PhysicalCommandTests(unittest.TestCase):
             "$_asterinas_browser.d/physical.conf",
             "Environment=HOME=/run/asterinas-physical-home",
             "Environment=ASTERINAS_WEB_NETWORK_MODE=proxy",
-            "Environment=ASTERINAS_DESKTOP_PROXY_HOST=127.0.0.1",
+            "_asterinas_proxy_host=127.0.0.1",
+            "_asterinas_proxy_host=10.100.19.216",
+            "Environment=ASTERINAS_DESKTOP_PROXY_HOST=$_asterinas_proxy_host",
             "Environment=ASTERINAS_DESKTOP_PROXY_PORT=9",
             "ln -sfn /dev/null",
             "systemctl_bounded daemon-reload",

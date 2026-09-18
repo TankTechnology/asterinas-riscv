@@ -75,6 +75,12 @@ _EXTERNAL_SERVICES_QUIESCED = re.compile(
     r"network_state=([a-z-]+) network_pid=([0-9]+)"
 )
 _BROWSER_START = re.compile(rf"{PHYSICAL_BROWSER_START_MARKER} status=([0-9]+)")
+_DAILY_USE_TERMINAL_PREFIX = "__ASTERINAS_PHYSICAL_DAILY_USE__"
+_DAILY_USE_TERMINAL = re.compile(
+    rf"{_DAILY_USE_TERMINAL_PREFIX} experiment_id=([0-9a-f]{{32}}) "
+    r"outcome=(pass|fail) gate_status=(0|[1-9][0-9]*) "
+    r"upload_status=(0|[1-9][0-9]*)"
+)
 _READY = re.compile(
     rf"ASTERINAS_PHYSICAL_GRAPHICS_READY cycle=([1-3]) nonce_sha256=({_SHA256})"
 )
@@ -284,6 +290,33 @@ class GraphicalReadinessEvidence:
 
 
 @dataclass(frozen=True)
+class DailyUseTerminalStatus:
+    """Closed terminal state returned by one fixed physical profile action."""
+
+    experiment_id: str
+    outcome: str
+    gate_status: int
+    upload_status: int
+
+    def __post_init__(self) -> None:
+        if re.fullmatch(r"[0-9a-f]{32}", self.experiment_id) is None:
+            raise HostGateError("daily-use terminal experiment identity is invalid")
+        if (
+            self.outcome not in ("pass", "fail")
+            or type(self.gate_status) is not int
+            or self.gate_status < 0
+            or type(self.upload_status) is not int
+            or self.upload_status < 0
+        ):
+            raise HostGateError("daily-use terminal status is invalid")
+        if self.outcome == "pass":
+            if self.gate_status != 0 or self.upload_status != 0:
+                raise HostGateError("passing daily-use terminal has a failure status")
+        elif self.gate_status == 0:
+            raise HostGateError("failed daily-use terminal has a passing gate status")
+
+
+@dataclass(frozen=True)
 class PhysicalGraphicsConfig:
     """Independent bounded deadlines for one physical acceptance attempt."""
 
@@ -407,6 +440,10 @@ class PhysicalGraphicsOperations(Protocol):
     ) -> GraphicalReadinessEvidence: ...
 
     def run_cycle(self, cycle: int, nonce: str, timeout: float) -> bytes: ...
+
+    def run_daily_use_profile(
+        self, experiment_id: str, timeout: float, expected_firefox_pid: int
+    ) -> DailyUseTerminalStatus: ...
 
     def retain_hdmi(self, timeout: float) -> FileEvidence: ...
 
@@ -729,6 +766,29 @@ def physical_browser_start_command() -> str:
     """Start only the local Firefox workload after baseline diagnostics."""
 
     return "/run/asterinas-tools/g start-browser"
+
+
+def physical_daily_use_command(
+    experiment_id: str, timeout_seconds: float, expected_firefox_pid: int
+) -> str:
+    """Return the fixed daily-use profiling action with no injectable paths."""
+
+    if re.fullmatch(r"[0-9a-f]{32}", experiment_id) is None:
+        raise HostGateError("daily-use experiment identity is invalid")
+    if (
+        isinstance(timeout_seconds, bool)
+        or not isinstance(timeout_seconds, (int, float))
+        or not math.isfinite(timeout_seconds)
+        or not 1 <= timeout_seconds <= 120
+        or int(timeout_seconds) != timeout_seconds
+    ):
+        raise HostGateError("daily-use timeout is invalid")
+    if type(expected_firefox_pid) is not int or expected_firefox_pid <= 1:
+        raise HostGateError("daily-use Firefox PID is invalid")
+    return (
+        "/run/asterinas-tools/physical-graphics-control daily-use "
+        f"{experiment_id} {int(timeout_seconds)} {expected_firefox_pid}"
+    )
 
 
 def physical_web_browser_start_command() -> str:
@@ -1820,6 +1880,52 @@ class RealPhysicalGraphicsOperations:
         payload = extract_screenshot_frame(segment, cycle)
         self._sync_serial_log()
         return payload
+
+    def run_daily_use_profile(
+        self,
+        experiment_id: str,
+        timeout: float,
+        expected_firefox_pid: int,
+    ) -> DailyUseTerminalStatus:
+        """Run one non-retried profile and require its unique terminal record."""
+
+        serial = self._require_serial()
+        command = physical_daily_use_command(
+            experiment_id, timeout, expected_firefox_pid
+        )
+        deadline = self._guest_phase_deadline(timeout + 30.0)
+        command_start = serial.checkpoint()
+        cursor = command_start
+        serial.send((command + "\n").encode(), deadline)
+        while True:
+            line, cursor = self._next_line(serial, cursor, deadline)
+            if not line.startswith(_DAILY_USE_TERMINAL_PREFIX):
+                continue
+            match = _DAILY_USE_TERMINAL.fullmatch(line)
+            if match is None:
+                raise HostGateError("daily-use terminal marker is malformed")
+            segment = serial.transcript[command_start:]
+            try:
+                segment_lines = segment.decode("utf-8").splitlines()
+            except UnicodeDecodeError as error:
+                raise HostGateError("daily-use terminal output is not UTF-8") from error
+            terminal_lines = [
+                candidate
+                for candidate in segment_lines
+                if candidate.startswith(_DAILY_USE_TERMINAL_PREFIX)
+            ]
+            if terminal_lines != [line]:
+                raise HostGateError("daily-use terminal marker is duplicated")
+            terminal = DailyUseTerminalStatus(
+                experiment_id=match.group(1),
+                outcome=match.group(2),
+                gate_status=int(match.group(3)),
+                upload_status=int(match.group(4)),
+            )
+            if terminal.experiment_id != experiment_id:
+                raise HostGateError("daily-use terminal experiment identity mismatch")
+            self._sync_serial_log()
+            return terminal
 
     def retain_hdmi(self, timeout: float) -> FileEvidence:
         if (
