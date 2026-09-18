@@ -36,6 +36,18 @@ is_nonce() {
     esac
 }
 
+is_experiment_id() {
+    [ "${#1}" -eq 32 ] || return 1
+    case "$1" in
+        *[!0-9a-f]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+is_profile_timeout() {
+    is_uint "$1" && [ "$1" -ge 1 ] && [ "$1" -le 120 ]
+}
+
 input_identity() {
     PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
         /usr/bin/timeout --kill-after=1s 2s /usr/bin/python3 -c 'import glob,os,runpy;m=runpy.run_path("/run/asterinas-tools/desktop-input-identity");d=[(os.path.basename(p),m["read_identity"](p)) for p in glob.glob("/dev/input/event*")];uk=(3,"usb_boot_keyboard","xhci/input0");um=(3,"usb_boot_mouse","xhci/input1");qk=(6,"QEMU Virtio Keyboard","virtio/input0");qm=(6,"QEMU Virtio Tablet","virtio/input0");ks=[p for p,x in d if x in (uk,qk)];ms=[p for p,x in d if x in (um,qm)];print(sum(x in (uk,um) for _,x in d),int(sum(x==uk for _,x in d)==1),int(sum(x==um for _,x in d)==1),ks[0] if len(ks)==1 else "missing",ms[0] if len(ms)==1 else "missing")' 2>/dev/null || printf '0 0 0 missing missing\n'
@@ -259,6 +271,72 @@ final() {
     printf '__ASTERINAS_PHYSICAL_FINAL_STATUS__ status=%s\n' "$status"
 }
 
+daily_use() {
+    [ "$#" -eq 3 ] || die_usage
+    experiment_id=$1
+    timeout_seconds=$2
+    expected_pid=$3
+    is_experiment_id "$experiment_id" || die_usage
+    is_profile_timeout "$timeout_seconds" || die_usage
+    is_uint "$expected_pid" || die_usage
+    [ "$expected_pid" -gt 1 ] || die_usage
+
+    fixture_source='http://10.100.19.216:17894/asterinas-network-probe.bin'
+    fixture_index='http://10.100.19.216:17894/browser-quality/index.html'
+    upload_url="http://10.100.19.216:17894/browser-quality/daily-use-evidence/$experiment_id"
+    evidence_dir="/run/asterinas-browser-daily-use-$experiment_id"
+    gate_status=125
+    upload_status=125
+    outcome=fail
+
+    browser_identity
+    original_pid=$pid
+    case "$original_pid" in
+        '' | *[!0-9]*) gate_status=124 ;;
+        *)
+            if [ "$original_pid" != "$expected_pid" ] || [ "$original_pid" -le 1 ]; then
+                gate_status=124
+            elif [ -e "$evidence_dir" ] || [ -L "$evidence_dir" ]; then
+                gate_status=123
+            else
+                manager_environment=$(systemctl_bounded show-environment 2>/dev/null || true)
+                physical_mode=$(printf '%s\n' "$manager_environment" |
+                    sed -n 's/^ASTERINAS_PHYSICAL_DAILY_USE=//p')
+                configured_fixture=$(printf '%s\n' "$manager_environment" |
+                    sed -n 's/^ASTERINAS_DESKTOP_FIXTURE_URL=//p')
+                xorg_pids=$(pgrep -x Xorg 2>/dev/null || true)
+                set -- $xorg_pids
+                if [ "$#" -ne 1 ] || ! is_uint "$1"; then
+                    gate_status=122
+                elif [ "$physical_mode" != 1 ] || [ "$configured_fixture" != "$fixture_source" ]; then
+                    gate_status=121
+                else
+                    xorg_pid=$1
+                    PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+                        nsenter -t "$original_pid" -n \
+                        /run/asterinas-tools/browser-daily-use-gate \
+                        --firefox-pid "$original_pid" --xorg-pid "$xorg_pid" \
+                        --fixture-index-url "$fixture_index" \
+                        --evidence-dir "$evidence_dir" --mode profile --physical \
+                        --timeout-seconds "$timeout_seconds"
+                    gate_status=$?
+                    [ "$gate_status" -ne 0 ] || outcome=pass
+                    PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+                        nsenter -t "$original_pid" -n \
+                        /run/asterinas-tools/browser-daily-use-upload \
+                        "$evidence_dir" "$experiment_id" "$outcome" "$upload_url" \
+                        --timeout 15
+                    upload_status=$?
+                fi
+            fi
+            ;;
+    esac
+
+    printf '__ASTERINAS_PHYSICAL_DAILY_USE__ experiment_id=%s outcome=%s gate_status=%s upload_status=%s\n' \
+        "$experiment_id" "$outcome" "$gate_status" "$upload_status"
+    [ "$outcome" = pass ] && [ "$gate_status" -eq 0 ] && [ "$upload_status" -eq 0 ]
+}
+
 action=${1-}
 [ "$#" -ge 1 ] || die_usage
 shift
@@ -268,5 +346,6 @@ case "$action" in
     start-web) [ "$#" -eq 0 ] || die_usage; start_browser 0 ;;
     cycle) cycle "$@" ;;
     final) final "$@" ;;
+    daily-use) daily_use "$@" ;;
     *) die_usage ;;
 esac

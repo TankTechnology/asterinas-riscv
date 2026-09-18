@@ -43,11 +43,21 @@ systemctl_bounded() {
 /usr/bin/install -d -m 0755 \
     "$_asterinas_control/$_asterinas_browser.d" || \
     record_failure $? install-browser-drop-in
+_asterinas_proxy_host=127.0.0.1
+_asterinas_manager_environment="$(systemctl_bounded show-environment 2>/dev/null || true)"
+_asterinas_physical_mode="$(printf '%s\n' "$_asterinas_manager_environment" |
+    sed -n 's/^ASTERINAS_PHYSICAL_DAILY_USE=//p')"
+_asterinas_fixture_url="$(printf '%s\n' "$_asterinas_manager_environment" |
+    sed -n 's/^ASTERINAS_DESKTOP_FIXTURE_URL=//p')"
+if [[ "$_asterinas_physical_mode" == 1 &&
+      "$_asterinas_fixture_url" == 'http://10.100.19.216:17894/asterinas-network-probe.bin' ]]; then
+    _asterinas_proxy_host=10.100.19.216
+fi
 printf '%s\n' \
     '[Service]' \
     'Environment=HOME=/run/asterinas-physical-home' \
     'Environment=ASTERINAS_WEB_NETWORK_MODE=proxy' \
-    'Environment=ASTERINAS_DESKTOP_PROXY_HOST=127.0.0.1' \
+    "Environment=ASTERINAS_DESKTOP_PROXY_HOST=$_asterinas_proxy_host" \
     'Environment=ASTERINAS_DESKTOP_PROXY_PORT=9' \
     'Environment=XDG_CACHE_HOME=/run/asterinas-physical-home/.cache' \
     >"$_asterinas_control/$_asterinas_browser.d/physical.conf" || \
