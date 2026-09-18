@@ -110,6 +110,8 @@ def qemu_argv(
     dtb_enabled_cpu_count: int = 4,
     allow_reboot: bool = False,
     graphical: bool = False,
+    graphics_device: str = "bochs-display",
+    display: str = "none",
 ) -> tuple[str, ...]:
     """Construct the frozen no-network SMP=4 two-disk QEMU contract."""
 
@@ -122,6 +124,18 @@ def qemu_argv(
         raise ValueError("QEMU and the DTB must expose exactly 4 enabled CPUs")
     if not isinstance(graphical, bool):
         raise ValueError("QEMU graphical mode must be a boolean")
+    if graphics_device not in {
+        "bochs-display",
+        "virtio-gpu-device",
+        "virtio-gpu-gl-device",
+    }:
+        raise ValueError("unsupported QEMU graphical device")
+    # "egl-headless,gl=on" gives a virgl device a host GL context without
+    # needing a windowing system on the host. The plain `virtio-gpu-device`
+    # cannot do virgl at all, and a GL device under `-display none` silently
+    # comes up without the feature bit, so the pairing is what matters.
+    if display not in {"none", "egl-headless,gl=on"}:
+        raise ValueError("unsupported QEMU display backend")
     _validate_regular_input(uboot, role="U-Boot")
     _validate_regular_input(boot_disk, role="boot disk")
     _validate_regular_input(root_disk, role="root disk")
@@ -142,7 +156,7 @@ def qemu_argv(
     graphics_devices = (
         (
             "-device",
-            "bochs-display",
+            graphics_device,
             "-device",
             "virtio-keyboard-device",
             "-device",
@@ -162,7 +176,7 @@ def qemu_argv(
         "-smp",
         "4",
         "-display",
-        "none",
+        display,
         "-nic",
         "none",
         "-serial",
