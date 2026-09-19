@@ -144,6 +144,9 @@ class BrowserDailyUseGateTests(unittest.TestCase):
             system_sampler=lambda request: self.sample("system", request),
             thread_sampler=lambda request: self.sample("thread", request),
             identity_reader=self.identities,
+            first_window_ready=lambda pid: self.events.append(
+                f"first-window-ready:{pid}"
+            ),
         )
 
     def identities(self, pids):
@@ -293,6 +296,7 @@ class BrowserDailyUseGateTests(unittest.TestCase):
         self.run_gate(physical=True)
         self.assertEqual(self.client.timeouts[0], 300.0)
         self.assertEqual(self.client.timeouts[1], 0.2)
+        self.assertIn("first-window-ready:101", self.events)
 
     def test_failure_closes_second_window_and_publishes_bounded_checkpoint(self):
         def fail(request):
@@ -1191,6 +1195,35 @@ class DailyUseAdapterTests(unittest.TestCase):
         self.assertEqual(metrics["bootFirefoxExecNs"], 1_000_000_000)
         self.assertEqual(metrics["bootFirstWindowReadyNs"], 1_500_000_000)
         self.assertEqual(metrics["durationMs"], 500.0)
+
+    def test_daily_use_records_its_own_first_window_ready_endpoint(self):
+        timeline = self.root / "timeline"
+        timeline.write_text(
+            "A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC "
+            "guest_monotonic_ns=1000000000 firefox_pid=101\n"
+        )
+        operations = gate.default_operations(
+            timeline_path=timeline,
+            download_path=self.download,
+            firefox_uid_reader=lambda pid: os.geteuid(),
+            clock=gate.DailyUseClock(
+                monotonic=lambda: 2.0, monotonic_ns=lambda: 1_500_000_000
+            ),
+        )
+
+        operations.first_window_ready(101)
+
+        self.assertEqual(
+            timeline.read_text(),
+            "A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC "
+            "guest_monotonic_ns=1000000000 firefox_pid=101\n"
+            "A_WEB_TIMELINE marker=BOOT_FIRST_WINDOW_READY "
+            "guest_monotonic_ns=1500000000 firefox_pid=101\n",
+        )
+        metrics = gate._startup_performance(timeline.read_text(), 101)["metrics"]
+        self.assertEqual(metrics["durationMs"], 500.0)
+        with self.assertRaisesRegex(DailyUseGateError, "phase-value-invalid"):
+            operations.first_window_ready(101)
 
     def test_timing_uses_existing_capture_and_preserves_negative_fetch_start(self):
         from tools.riscv.debian.rootfs import browser_perf_capture as perf

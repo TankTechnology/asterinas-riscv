@@ -272,6 +272,7 @@ class DailyUseOperations:
     system_sampler: Callable[[SamplerRequest], SamplerCapture]
     thread_sampler: Callable[[SamplerRequest], SamplerCapture]
     identity_reader: Callable[[tuple[int, int]], tuple[int, int]] = _process_starttimes
+    first_window_ready: Callable[[int], None] = lambda firefox_pid: None
     clock: DailyUseClock = field(default_factory=DailyUseClock)
 
 
@@ -355,6 +356,11 @@ def run_daily_use_gate(
             or session["capabilities"].get("acceptInsecureCerts") is not False
         ):
             raise DailyUseGateError("session-invalid")
+        # The normal evidence service owns this endpoint on QEMU and public
+        # web runs. Physical daily-use mode masks that service, so this gate
+        # must record the endpoint it has just validated itself.
+        if physical:
+            operations.first_window_ready(firefox_pid)
         completed.append("session")
 
         # Sampling covers readiness and four phases; stop wakes the final sample.
@@ -561,12 +567,14 @@ def default_operations(
 ) -> DailyUseOperations:
     """Adapt the existing local Firefox captures without granting publication access."""
 
+    clock = clock or DailyUseClock()
+
     def fixture(request: CaptureRequest) -> FixtureCapture:
         return _capture_fixture(request, download_path, firefox_uid_reader)
 
     def timing(request: CaptureRequest) -> TimingCapture:
         startup = _startup_performance(
-            (timeline_reader or _read_timeline)(timeline_path), request
+            (timeline_reader or _read_timeline)(timeline_path), request.firefox_pid
         )
         form_navigation = _capture_form_navigation(request)
         report = perf_capture.capture_local(
@@ -640,7 +648,10 @@ def default_operations(
         composite=composite,
         system_sampler=lambda request: _capture_sampler(request, threads=False),
         thread_sampler=lambda request: _capture_sampler(request, threads=True),
-        clock=clock or DailyUseClock(),
+        first_window_ready=lambda firefox_pid: _record_first_window_ready(
+            timeline_path, firefox_pid, clock
+        ),
+        clock=clock,
     )
 
 
@@ -953,7 +964,43 @@ def _read_timeline(path: Path) -> str:
         return stream.read(64 * 1024 + 1)
 
 
-def _startup_performance(raw, request):
+def _record_first_window_ready(
+    path: Path, firefox_pid: int, clock: DailyUseClock
+) -> None:
+    """Append the readiness endpoint owned by this one-session daily-use gate."""
+    if type(firefox_pid) is not int or firefox_pid <= 1:
+        raise DailyUseGateError("identity-invalid")
+    descriptor = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDWR | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0),
+        )
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 64 * 1024:
+            raise DailyUseGateError("phase-value-invalid")
+        payload = os.pread(descriptor, 64 * 1024 + 1, 0)
+        raw = payload.decode("utf-8")
+        ready_ns = clock.monotonic_ns()
+        if type(ready_ns) is not int or ready_ns <= 0:
+            raise DailyUseGateError("phase-value-invalid")
+        line = (
+            "A_WEB_TIMELINE marker=BOOT_FIRST_WINDOW_READY "
+            f"guest_monotonic_ns={ready_ns} firefox_pid={firefox_pid}\n"
+        )
+        # Validate the complete startup interval before mutating the evidence
+        # file. This also rejects a duplicate endpoint from another gate.
+        _startup_performance(raw + line, firefox_pid)
+        if os.write(descriptor, line.encode()) != len(line):
+            raise DailyUseGateError("phase-value-invalid")
+    except (OSError, UnicodeError) as error:
+        raise DailyUseGateError("phase-value-invalid") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _startup_performance(raw, firefox_pid):
     if type(raw) is not str or len(raw) > 64 * 1024:
         raise DailyUseGateError("phase-value-invalid")
     records = []
@@ -976,8 +1023,8 @@ def _startup_performance(raw, request):
     if (
         len(execution) != 1
         or len(ready) != 1
-        or execution[0][2] != request.firefox_pid
-        or ready[0][2] != request.firefox_pid
+        or execution[0][2] != firefox_pid
+        or ready[0][2] != firefox_pid
         or not 0 < execution[0][1] < ready[0][1]
         or execution[0][3] >= ready[0][3]
     ):
@@ -986,7 +1033,7 @@ def _startup_performance(raw, request):
         "startup",
         "guest-monotonic",
         {
-            "firefoxPid": request.firefox_pid,
+            "firefoxPid": firefox_pid,
             "bootFirefoxExecNs": execution[0][1],
             "bootFirstWindowReadyNs": ready[0][1],
             "durationMs": (ready[0][1] - execution[0][1]) / 1_000_000,
