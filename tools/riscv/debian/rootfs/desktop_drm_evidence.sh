@@ -95,8 +95,22 @@ report_predicate() {
     emit "DEBIAN_DESKTOP_DRM_PREDICATE udevd=$udevd logind=$logind session=$session devices=$devices xorg-log=$xorg_log modesetting=$driver dri=$dri xorg=$xorg openbox=$openbox pcmanfm=$pcmanfm lxpanel=$lxpanel xterm=$xterm"
 }
 
+# Which of Mesa's two buffer paths a compositor's `gbm_bo_create` lands on.
+# `eglinfo` answers what EGL will do, which is a different question, and the
+# two paths disagree about formats -- so this is the only place the answer
+# exists. Gated on the diagnostic flag because a normal run does not need it.
+run_gbm_probe() {
+    [[ -x /usr/lib/asterinas/drm-gbm-probe ]] || return 0
+    tr ' ' '\n' </proc/cmdline 2>/dev/null | grep -qx 'asterinas.egl_probe=1' || return 0
+    /usr/lib/asterinas/drm-gbm-probe 1280 800 >>"$CONSOLE" 2>&1 || true
+}
+
 fail() {
     report_predicate
+    # Before the early exit, not after: a desktop that never starts is exactly
+    # when this is worth having, and `exit` is what made the first run of this
+    # probe produce nothing at all.
+    run_gbm_probe
     dump_log "$SESSION_LOG" 'DRM desktop session log'
     dump_log "$XORG_LOG" 'DRM Xorg log'
     emit "DEBIAN_DESKTOP_DRM_FAIL reason=$1"
@@ -508,6 +522,8 @@ emit "DEBIAN_DESKTOP_DRM_CMDLINE $(tr ' ' ',' </proc/cmdline 2>/dev/null | tr -d
         done
     done
 } >>"$CONSOLE" 2>&1 || true
+
+run_gbm_probe
 
 if [[ -x /usr/bin/eglinfo ]] &&
     tr ' ' '\n' </proc/cmdline 2>/dev/null | grep -qx 'asterinas.egl_probe=1'; then
