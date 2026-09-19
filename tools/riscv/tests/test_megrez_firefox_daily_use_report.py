@@ -49,6 +49,7 @@ class DailyUseReportTests(unittest.TestCase):
         identity_change: tuple[str, object] | None = None,
         fixture_port: int = 17894,
         optional_unsupported: bool = False,
+        navigation_unsupported: bool = False,
     ) -> Path:
         directory = self.root / f"run-{index}-{len(list(self.root.iterdir()))}"
         directory.mkdir(mode=0o700)
@@ -77,10 +78,17 @@ class DailyUseReportTests(unittest.TestCase):
                 metrics["firstRaf"].update(p50Ms=50.0, p95Ms=100.0)
                 metrics["nextRaf"].update(p50Ms=50.0, p95Ms=100.0)
             elif phase["name"] == "navigation":
-                metrics["localCommand"]["durationMs"] = 100.0
-                metrics["browserNavigation"].update(
-                    responseToDomMs=100.0, responseToLoadMs=110.0
-                )
+                if navigation_unsupported:
+                    phase.update(
+                        state="unsupported",
+                        reason="navigation-timing-invalid",
+                    )
+                    metrics.clear()
+                else:
+                    metrics["localCommand"]["durationMs"] = 100.0
+                    metrics["browserNavigation"].update(
+                        responseToDomMs=100.0, responseToLoadMs=110.0
+                    )
             elif phase["name"] == "context-switch":
                 metrics.update(
                     openMs=25.0,
@@ -401,6 +409,20 @@ class DailyUseReportTests(unittest.TestCase):
         )
         self.assertEqual(len(report["runs"]), 3)
         self.assertIn("raw", report["runs"][0])
+
+    def test_unsupported_navigation_is_retained_without_inventing_values(self):
+        runs = [
+            self.make_run(index, navigation_unsupported=index == 1)
+            for index in range(3)
+        ]
+
+        report = build_report(runs)
+
+        for name in ("navigationCommandMs", "navigationResponseToDomMs"):
+            self.assertEqual(report["metrics"][name]["values"], [100.0, None, 100.0])
+            self.assertEqual(report["metrics"][name]["supportedRuns"], 2)
+            self.assertIsNone(report["metrics"][name]["median"])
+        self.assertEqual(report["runs"][1]["raw"]["navigation"], {})
 
     def test_report_retains_unsupported_groups_and_daily_use_limitations(self):
         runs = self.three(optional_unsupported=True)

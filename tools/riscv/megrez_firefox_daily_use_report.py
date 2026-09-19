@@ -198,7 +198,7 @@ def _performance_map(result: dict[str, object]) -> dict[str, dict[str, object]]:
     return {str(item["name"]): item for item in performance}
 
 
-def _primary_metrics(result: dict[str, object]) -> dict[str, float]:
+def _primary_metrics(result: dict[str, object]) -> dict[str, float | None]:
     phases = _performance_map(result)
     input_metrics = phases["input"]["metrics"]
     scroll = phases["scroll"]["metrics"]
@@ -211,9 +211,6 @@ def _primary_metrics(result: dict[str, object]) -> dict[str, float]:
     keyboard = input_metrics["keyboard"]
     pointer = input_metrics["pointer"]
     assert isinstance(keyboard, dict) and isinstance(pointer, dict)
-    local = navigation["localCommand"]
-    browser = navigation["browserNavigation"]
-    assert isinstance(local, dict) and isinstance(browser, dict)
     values = {
         "keyboardFirstRafP95Ms": keyboard["firstRaf"]["p95Ms"],
         "keyboardNextRafP95Ms": keyboard["nextRaf"]["p95Ms"],
@@ -221,11 +218,32 @@ def _primary_metrics(result: dict[str, object]) -> dict[str, float]:
         "pointerNextRafP95Ms": pointer["nextRaf"]["p95Ms"],
         "scrollFirstRafP95Ms": scroll["firstRaf"]["p95Ms"],
         "scrollNextRafP95Ms": scroll["nextRaf"]["p95Ms"],
-        "navigationCommandMs": local["durationMs"],
-        "navigationResponseToDomMs": browser["responseToDomMs"],
         "contextSwitchTotalMs": context["totalMs"],
     }
-    return {name: _numeric(values[name], name) for name in PRIMARY_METRICS}
+    primary: dict[str, float | None] = {
+        name: _numeric(value, name) for name, value in values.items()
+    }
+    if phases["navigation"]["state"] == "unsupported":
+        primary.update(
+            navigationCommandMs=None,
+            navigationResponseToDomMs=None,
+        )
+    else:
+        try:
+            local = navigation["localCommand"]
+            browser = navigation["browserNavigation"]
+            assert isinstance(local, dict) and isinstance(browser, dict)
+            primary.update(
+                navigationCommandMs=_numeric(
+                    local["durationMs"], "navigationCommandMs"
+                ),
+                navigationResponseToDomMs=_numeric(
+                    browser["responseToDomMs"], "navigationResponseToDomMs"
+                ),
+            )
+        except (AssertionError, KeyError) as error:
+            raise ReportError("supported navigation metrics are incomplete") from error
+    return {name: primary[name] for name in PRIMARY_METRICS}
 
 
 def _intervals(value: dict[str, object], label: str) -> list[dict[str, object]]:
@@ -377,13 +395,13 @@ def _thread_attribution(
 
 
 def _classify(
-    primary: dict[str, float], attribution: dict[str, float | int | bool]
+    primary: dict[str, float | None], attribution: dict[str, float | int | bool]
 ) -> tuple[str, dict[str, float]]:
     runtime = float(attribution["mainThreadRuntimeSeconds"])
     wait = float(attribution["mainThreadRunqueueWaitSeconds"])
     total = float(attribution["firefoxCpuSeconds"])
     wall = float(attribution["profileWallSeconds"])
-    affected = max(primary.values())
+    affected = max(value for value in primary.values() if value is not None)
     wait_ratio = wait / max(runtime + wait, 1e-9)
     main_runtime_share = runtime / max(total, 1e-9)
     occupancy = total / max(wall, 1e-9)
@@ -546,12 +564,15 @@ def _load_run(directory: Path) -> dict[str, object]:
     }
 
 
-def _summary(values: list[float]) -> dict[str, object]:
+def _summary(values: list[float | None]) -> dict[str, object]:
+    supported = [value for value in values if value is not None]
+    is_complete = len(supported) == len(values)
     return {
         "values": values,
-        "median": statistics.median(values),
-        "minimum": min(values),
-        "maximum": max(values),
+        "supportedRuns": len(supported),
+        "median": statistics.median(supported) if is_complete else None,
+        "minimum": min(supported) if is_complete else None,
+        "maximum": max(supported) if is_complete else None,
     }
 
 
@@ -586,7 +607,7 @@ def build_report(run_directories: Sequence[Path]) -> dict[str, object]:
     ):
         raise ReportError("qualified runs have mixed daily-use capability coverage")
     metrics = {
-        name: _summary([float(run["primary"][name]) for run in runs])
+        name: _summary([run["primary"][name] for run in runs])
         for name in PRIMARY_METRICS
     }
     metrics.update(
@@ -631,11 +652,15 @@ def build_report(run_directories: Sequence[Path]) -> dict[str, object]:
             "mechanism-class-admission-is-not-proof-of-a-specific-function-or-subsystem",
             "browser-timings-are-not-usb-to-hdmi-latency",
             "procfs-placeholder-fault-fields-were-not-used",
+            "primary-metric-aggregates-require-three-supported-runs",
         ],
     }
 
 
 def _markdown(report: dict[str, object], inputs: Sequence[Path]) -> bytes:
+    def format_metric(value: float | None) -> str:
+        return "unsupported" if value is None else f"{value:.3f}"
+
     metrics = report["metrics"]
     runs = report["runs"]
     lines = [
@@ -667,16 +692,18 @@ def _markdown(report: dict[str, object], inputs: Sequence[Path]) -> bytes:
             "",
             "## Primary metrics (ms)",
             "",
-            "| Metric | Run 1 | Run 2 | Run 3 | Median | Min | Max |",
-            "|---|---:|---:|---:|---:|---:|---:|",
+            "| Metric | Run 1 | Run 2 | Run 3 | Supported | Median | Min | Max |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for name in PRIMARY_METRICS:
         summary = metrics[name]
         values = summary["values"]
         lines.append(
-            f"| {name} | {values[0]:.3f} | {values[1]:.3f} | {values[2]:.3f} | "
-            f"{summary['median']:.3f} | {summary['minimum']:.3f} | {summary['maximum']:.3f} |"
+            f"| {name} | {format_metric(values[0])} | {format_metric(values[1])} | "
+            f"{format_metric(values[2])} | {summary['supportedRuns']}/3 | "
+            f"{format_metric(summary['median'])} | {format_metric(summary['minimum'])} | "
+            f"{format_metric(summary['maximum'])} |"
         )
     lines.extend(
         [
