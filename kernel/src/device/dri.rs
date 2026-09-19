@@ -1013,9 +1013,17 @@ impl DriHandle {
                     1u64 << info.id
                 }
             }
-            _ => return_errno_with_message!(Errno::EINVAL, "unknown virtgpu parameter"),
+            _ => {
+                if DRI_TRACE.load(Ordering::Relaxed) {
+                    ostd::error!("DRI_GETPARAM param={} -> EINVAL", req.param);
+                }
+                return_errno_with_message!(Errno::EINVAL, "unknown virtgpu parameter")
+            }
         };
 
+        if DRI_TRACE.load(Ordering::Relaxed) {
+            ostd::error!("DRI_GETPARAM param={} -> {:#x}", req.param, value);
+        }
         current_userspace!()
             .write_val(req.value as usize, &value)
             .map_err(|_| Error::with_message(Errno::EFAULT, "bad virtgpu parameter pointer"))?;
@@ -1027,6 +1035,16 @@ impl DriHandle {
     /// The blob is what tells a client how to build command streams for this
     /// renderer, so it has to come from the host rather than be invented here.
     fn virtgpu_get_caps(&self, req: &DrmVirtgpuGetCaps) -> Result<()> {
+        let trace = DRI_TRACE.load(Ordering::Relaxed);
+        if trace {
+            ostd::error!(
+                "DRI_GET_CAPS id={} ver={} size={} virgl={}",
+                req.cap_set_id,
+                req.cap_set_ver,
+                req.size,
+                self.gpu.supports_virgl()
+            );
+        }
         if !self.gpu.supports_virgl() {
             return_errno_with_message!(Errno::EINVAL, "3D is not available");
         }
@@ -1037,6 +1055,14 @@ impl DriHandle {
             .gpu
             .capset_info(0)
             .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
+        if trace {
+            ostd::error!(
+                "DRI_GET_CAPS host id={} max_ver={} max_size={}",
+                info.id,
+                info.max_version,
+                info.max_size
+            );
+        }
         if req.cap_set_id != info.id {
             return_errno_with_message!(Errno::EINVAL, "unknown capability set id");
         }
@@ -1050,6 +1076,9 @@ impl DriHandle {
             .gpu
             .capset(info.id, req.cap_set_ver, info.max_size)
             .map_err(|_| Error::with_message(Errno::EIO, "capability set query failed"))?;
+        if trace {
+            ostd::error!("DRI_GET_CAPS blob_len={} copy={}", blob.len(), req.size);
+        }
         let copy = (req.size as usize).min(blob.len());
         current_userspace!()
             .write_bytes(req.addr as usize, &blob[..copy])
