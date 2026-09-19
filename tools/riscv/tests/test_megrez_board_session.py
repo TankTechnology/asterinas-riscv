@@ -785,6 +785,21 @@ class SerialContractTests(unittest.TestCase):
         self.assertEqual(output, "Hit any key to stop autoboot: 30 29 28=> ")
         self.assertEqual(write.call_args_list, [mock.call(-1, b" ")] * 3)
 
+    def test_wait_for_uboot_prompt_interrupts_mid_countdown_fragment(self):
+        session = self._session()
+        with (
+            mock.patch.object(
+                board,
+                "read_available",
+                side_effect=["\x08\x08\x0818 ", "\x08\x08\x0817 ", "=> "],
+            ),
+            mock.patch.object(board.os, "write", return_value=1) as write,
+        ):
+            output = session.wait_for_uboot_prompt(timeout=0.2)
+
+        self.assertEqual(output, "\x08\x08\x0818 \x08\x08\x0817 => ")
+        self.assertEqual(write.call_args_list, [mock.call(-1, b" ")] * 2)
+
     def test_command_rejects_an_address_from_the_wrong_echo(self):
         session = self._session()
         command = "ext4load mmc 1:1 0x80200000 /kernel"
