@@ -57,6 +57,12 @@ class DesktopBootFixture(unittest.TestCase):
 
 
 class DesktopBootManifestTests(DesktopBootFixture):
+    def test_fast_boot_reduces_firefox_startup_log_categories(self) -> None:
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_FIREFOX_VERBOSE_LOG=timestamp,Marionette:1",
+            boot.BOOTARGS,
+        )
+
     def test_manifest_is_canonical_and_content_addressed(self) -> None:
         manifest = boot.DesktopBootManifest.from_plan(self.plan)
         document = json.loads(manifest.canonical_bytes())
