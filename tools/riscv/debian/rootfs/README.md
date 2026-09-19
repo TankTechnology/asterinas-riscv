@@ -98,6 +98,15 @@ publishes the ext2 image. Keep the package and Debian cache directories; do not
 delete them between QEMU or physical-board experiments. Omitting
 `--firefox-jit-package-dir` preserves the existing ESR-only build.
 
+For a root already installed on Megrez partition 2, normal desktop startup is
+the separate bounded workflow documented in
+[the RISC-V operator guide](../../README.md#bounded-megrez-desktop-startup).
+`make run_riscv_megrez_desktop` does not rebuild, transfer, mount, hash, or
+rewrite the root image. Its frozen plan carries the expected root SHA-256 as an
+identity assertion while Stage1 mounts the existing filesystem. If that
+identity or the boot artifacts change, run the explicit one-time
+`make prepare_riscv_megrez_desktop_boot` publication first.
+
 ## Fast browser-web development overlay
 
 Do not rerun debootstrap or apt for changes limited to the browser-web guest

@@ -542,8 +542,9 @@ def _publication_server(
 class RealStartOperations:
     """Exclusive, non-interactive serial implementation of one start epoch."""
 
-    def __init__(self, device: str) -> None:
+    def __init__(self, device: str, *, progress_stream: Any | None = None) -> None:
         self._device = device
+        self._progress_stream = progress_stream or sys.stdout
         self._fd: int | None = None
         self._session: Any = None
         self._serial: Any = None
@@ -552,6 +553,7 @@ class RealStartOperations:
         self._boot_started: float | None = None
         self._boot_epoch_started = False
         self._phase_times: dict[str, float] = {}
+        self._phase_tail = b""
 
     @property
     def transcript(self) -> bytes:
@@ -570,6 +572,25 @@ class RealStartOperations:
     @property
     def boot_epoch_started(self) -> bool:
         return self._boot_epoch_started
+
+    def _record_phase(self, name: str) -> None:
+        if name in self._phase_times or self._boot_started is None:
+            return
+        elapsed = time.monotonic() - self._boot_started
+        self._phase_times[name] = elapsed
+        print(
+            f"Megrez desktop phase: {name} elapsed={elapsed:.3f}s",
+            file=self._progress_stream,
+            flush=True,
+        )
+
+    def _observe_serial(self, chunk: bytes) -> None:
+        combined = self._phase_tail + chunk
+        for name, marker in PHASE_MARKERS[1:]:
+            if marker.encode() in combined:
+                self._record_phase(name)
+        tail_length = max(len(marker) for _, marker in PHASE_MARKERS) - 1
+        self._phase_tail = combined[-tail_length:]
 
     def open(self, timeout: float) -> None:
         from tools.riscv.megrez_board_session import BoardSession, open_serial
@@ -661,11 +682,14 @@ class RealStartOperations:
             expect="Enter riscv_boot",
             timeout=max(1, deadline - time.monotonic()),
         )
-        self._phase_times["kernel-entered"] = time.monotonic() - self._boot_started
+        self._record_phase("kernel-entered")
         self._preboot_log_length = len(self._log.getvalue().encode())
         assert self._fd is not None
         self._serial = SerialConsole(
-            self._fd, max_bytes=8 * 1024 * 1024, tx_delay=0.005
+            self._fd,
+            max_bytes=8 * 1024 * 1024,
+            tx_delay=0.005,
+            observer=self._observe_serial,
         )
 
     def wait_ready(self, timeout: float) -> bytes:
@@ -677,7 +701,7 @@ class RealStartOperations:
         )
         for name, marker in PHASE_MARKERS[1:]:
             self._serial.wait_for(marker.encode(), deadline)
-            self._phase_times[name] = time.monotonic() - self._boot_started
+            self._record_phase(name)
         return self.transcript
 
     def probe(self, timeout: float) -> dict[str, Any]:
