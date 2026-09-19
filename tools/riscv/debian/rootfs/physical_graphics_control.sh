@@ -217,6 +217,82 @@ start_browser() {
             asterinas-browser-web.service >/dev/null 2>&1 || status=$?
     fi
     printf '__ASTERINAS_PHYSICAL_BROWSER_START__ status=%s\n' "$status"
+    return "$status"
+}
+
+boot_phase() {
+    printf '%s\n' "$1" >/dev/console
+}
+
+startup_ready_once() {
+    readiness_reason=debug-console
+    systemctl_bounded is-active --quiet asterinas-debug-console.service \
+        >/dev/null 2>&1 || return 1
+    readiness_reason=framebuffer
+    [ -c /dev/fb0 ] || return 1
+    readiness_reason=x11-socket
+    [ -S /tmp/.X11-unix/X0 ] || return 1
+    readiness_reason=xorg-fbdev
+    xorg_ready=0
+    for xorg_pid in $(pgrep -x Xorg 2>/dev/null); do
+        for xorg_fd in /proc/$xorg_pid/fd/*; do
+            [ "$(readlink "$xorg_fd" 2>/dev/null || true)" = /dev/fb0 ] && xorg_ready=1
+        done
+    done
+    [ "$xorg_ready" -eq 1 ] || return 1
+    readiness_reason=openbox
+    pgrep -u 1000 -x openbox >/dev/null 2>&1 || return 1
+    readiness_reason=firefox-service
+    [ "$(systemctl is-active asterinas-browser-web.service 2>/dev/null || true)" = active ] || return 1
+    browser_identity
+    readiness_reason=firefox-pid
+    is_uint "$pid" && [ "$pid" -gt 1 ] || return 1
+    grep -Eq '^firefox(-esr)?$' "/proc/$pid/comm" 2>/dev/null || return 1
+    readiness_reason=firefox-user
+    grep -Eq '^Uid:[[:space:]]+1000[[:space:]]' "/proc/$pid/status" 2>/dev/null || return 1
+    readiness_reason=firefox-window
+    DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
+        /usr/bin/timeout --kill-after=1s 8s /usr/bin/xdotool \
+        search --onlyvisible --class firefox >/dev/null 2>&1 || return 1
+    return 0
+}
+
+startup_ready() {
+    watchdog=/proc/sys/kernel/asterinas_reboot_watchdog
+    [ -r "$watchdog" ] && [ -w "$watchdog" ] || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-unavailable'
+        return 1
+    }
+    [ "$(cat "$watchdog" 2>/dev/null || true)" = 1 ] || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-not-armed'
+        return 1
+    }
+    start_browser 0 || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=browser-start'
+        return 1
+    }
+    attempt=0
+    readiness_reason=unknown
+    while ! startup_ready_once; do
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge 240 ]; then
+            boot_phase "ASTERINAS_DESKTOP_BOOT_FAIL reason=$readiness_reason"
+            return 1
+        fi
+        /usr/bin/sleep 1
+    done
+    boot_phase 'ASTERINAS_DESKTOP_DISPLAY_READY'
+    boot_phase "ASTERINAS_DESKTOP_FIREFOX_READY pid=$pid user=1000"
+    printf '0\n' >"$watchdog" || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-write'
+        return 1
+    }
+    [ "$(cat "$watchdog" 2>/dev/null || true)" = 0 ] || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-readback'
+        return 1
+    }
+    boot_phase 'ASTERINAS_DESKTOP_WATCHDOG_DISARMED'
+    boot_phase "ASTERINAS_DESKTOP_BOOT_READY firefox_pid=$pid"
 }
 
 browser_identity() {
@@ -368,6 +444,7 @@ case "$action" in
     preflight) [ "$#" -eq 0 ] || die_usage; preflight ;;
     start-browser) [ "$#" -eq 0 ] || die_usage; start_browser 1 ;;
     start-web) [ "$#" -eq 0 ] || die_usage; start_browser 0 ;;
+    startup-ready) [ "$#" -eq 0 ] || die_usage; startup_ready ;;
     cycle) cycle "$@" ;;
     final) final "$@" ;;
     daily-use) daily_use "$@" ;;

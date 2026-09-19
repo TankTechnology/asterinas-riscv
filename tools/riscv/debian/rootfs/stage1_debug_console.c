@@ -43,6 +43,21 @@ static const char DEBUG_CONSOLE_TARGET[] =
     "Wants=asterinas-debug-console.service\n"
     "After=asterinas-debug-console.service\n";
 
+static const char DESKTOP_READY_SERVICE[] =
+    "[Unit]\n"
+    "Description=Asterinas bounded desktop readiness and watchdog disarm\n"
+    "DefaultDependencies=no\n"
+    "Requires=asterinas-debug-console.service\n"
+    "After=asterinas-debug-console.service\n"
+    "\n"
+    "[Service]\n"
+    "Type=oneshot\n"
+    "ExecStart=/run/asterinas-tools/physical-graphics-control startup-ready\n"
+    "TimeoutStartSec=285s\n"
+    "StandardOutput=journal+console\n"
+    "StandardError=journal+console\n"
+    "RemainAfterExit=yes\n";
+
 static const char DEBUG_CONSOLE_BASHRC[] =
     // Interactive Bash otherwise ignores TERM. Let shutdown close the idle
     // console without SIGKILL; install this before advertising readiness.
@@ -127,6 +142,7 @@ static int prepare_debug_console(const char *root, int isolated)
         "/run/systemd/system",
         "/run/systemd/system/console-getty.service.d",
         "/run/systemd/system/getty.target.wants",
+        "/run/systemd/system/asterinas-debug-console.target.wants",
     };
     static const char *const destination_suffixes[] = {
         "/run/asterinas-debug-console.enabled",
@@ -137,6 +153,9 @@ static int prepare_debug_console(const char *root, int isolated)
         "asterinas-debug-console.conf",
         "/run/systemd/system/getty.target.wants/"
         "asterinas-debug-console.service",
+        "/run/systemd/system/asterinas-desktop-ready.service",
+        "/run/systemd/system/asterinas-debug-console.target.wants/"
+        "asterinas-desktop-ready.service",
     };
     char paths[sizeof(destination_suffixes) / sizeof(destination_suffixes[0])]
               [STAGE1_PATH_SIZE];
@@ -185,6 +204,9 @@ static int prepare_debug_console(const char *root, int isolated)
         create_file(paths[4], CONSOLE_GETTY_DROP_IN,
                     sizeof(CONSOLE_GETTY_DROP_IN) - 1) != 0 ||
         symlink("../asterinas-debug-console.service", paths[5]) != 0 ||
+        create_file(paths[6], DESKTOP_READY_SERVICE,
+                    sizeof(DESKTOP_READY_SERVICE) - 1) != 0 ||
+        symlink("../asterinas-desktop-ready.service", paths[7]) != 0 ||
         (isolated &&
          symlink("../system/asterinas-debug-console.target",
                  default_target_path) != 0)) {
