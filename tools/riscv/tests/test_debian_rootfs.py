@@ -1524,6 +1524,18 @@ int main(void)
         self.assertIn("ASTERINAS_DESKTOP_WATCHDOG_DISARMED", source)
         self.assertIn("ASTERINAS_DESKTOP_BOOT_READY", source)
 
+    def test_startup_readiness_uses_one_monotonic_deadline(self) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+        startup = source[source.index("startup_ready() {") :]
+        startup = startup[: startup.index("\nbrowser_identity() {")]
+
+        self.assertIn("/proc/uptime", source)
+        self.assertIn("ASTERINAS_DESKTOP_BOOT_WAIT", startup)
+        self.assertNotIn('if [ "$attempt" -ge 240 ]', startup)
+        self.assertIn("readiness_deadline", startup)
+        self.assertIn("printf '%s\\n' \"$1\"\n", source)
+        self.assertNotIn("printf '%s\\n' \"$1\" >/dev/console", source)
+
     def test_stage1_exposes_ephemeral_tools_from_run_without_rootfs_writes(
         self,
     ) -> None:
