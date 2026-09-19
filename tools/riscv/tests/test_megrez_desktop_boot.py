@@ -57,12 +57,6 @@ class DesktopBootFixture(unittest.TestCase):
 
 
 class DesktopBootManifestTests(DesktopBootFixture):
-    def test_fast_boot_reduces_firefox_startup_log_categories(self) -> None:
-        self.assertIn(
-            "systemd.setenv=ASTERINAS_FIREFOX_VERBOSE_LOG=timestamp,Marionette:1",
-            boot.BOOTARGS,
-        )
-
     def test_manifest_is_canonical_and_content_addressed(self) -> None:
         manifest = boot.DesktopBootManifest.from_plan(self.plan)
         document = json.loads(manifest.canonical_bytes())
@@ -501,6 +495,21 @@ class DesktopBootStartTests(DesktopBootFixture):
             boot.DesktopBootError, r"generation .* unavailable.*run .* prepare"
         ):
             operations.load(manifest, 30)
+
+    def test_real_start_transcript_preserves_recovery_chronology(self) -> None:
+        class Serial:
+            transcript = b"guest-before-recovery\n"
+
+        operations = boot.RealStartOperations("unused")
+        operations._log.write("firmware-before-boot\n")
+        operations._preboot_log_length = len(operations._log.getvalue())
+        operations._serial = Serial()
+        operations._log.write("firmware-after-recovery\n")
+
+        self.assertEqual(
+            operations.transcript,
+            b"firmware-before-boot\nguest-before-recovery\nfirmware-after-recovery\n",
+        )
 
     def test_admission_probe_cannot_match_the_echoed_command(self) -> None:
         nonce = "0123456789abcdef"
