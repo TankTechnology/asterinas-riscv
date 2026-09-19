@@ -55,7 +55,6 @@ BOOTARGS = " ".join(
         "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy",
         "systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=127.0.0.1",
         "systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=9",
-        "systemd.setenv=ASTERINAS_FIREFOX_VERBOSE_LOG=timestamp,Marionette:1",
         "--",
         "--root-init=systemd",
         "--debug-console=isolated-root",
@@ -549,16 +548,20 @@ class RealStartOperations:
         self._session: Any = None
         self._serial: Any = None
         self._log = io.StringIO()
+        self._preboot_log_length: int | None = None
         self._boot_started: float | None = None
         self._boot_epoch_started = False
         self._phase_times: dict[str, float] = {}
 
     @property
     def transcript(self) -> bytes:
-        payload = self._log.getvalue().encode()
-        if self._serial is not None:
-            payload += self._serial.transcript
-        return payload
+        log_payload = self._log.getvalue().encode()
+        if self._serial is None:
+            return log_payload
+        split = self._preboot_log_length
+        if split is None:
+            split = len(log_payload)
+        return log_payload[:split] + self._serial.transcript + log_payload[split:]
 
     @property
     def phase_times(self) -> dict[str, float]:
@@ -659,6 +662,7 @@ class RealStartOperations:
             timeout=max(1, deadline - time.monotonic()),
         )
         self._phase_times["kernel-entered"] = time.monotonic() - self._boot_started
+        self._preboot_log_length = len(self._log.getvalue().encode())
         assert self._fd is not None
         self._serial = SerialConsole(
             self._fd, max_bytes=8 * 1024 * 1024, tx_delay=0.005
