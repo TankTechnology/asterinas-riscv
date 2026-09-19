@@ -253,9 +253,35 @@ if [[ "${1:-}" == "prepare" ]]; then
             exit 2
             ;;
     esac
+
+    # Boot with no autoboot delay.  The stock defconfig sets CONFIG_BOOTDELAY=2,
+    # so every boot spends two seconds printing "Hit any key to stop autoboot:
+    # 2/1/0" and waiting for a keypress that no automated boot ever sends.  It
+    # is 2 of the desktop's ~15 seconds, measured at ~2.8 s on the guest's
+    # basic.target (7.92/8.67 s before, 5.39/5.57 s after).
+    #
+    # This is safe for the gate's U-Boot interaction, which is worth stating
+    # because it looks like it should not be.  The gate drives the U-Boot
+    # prompt with `serial.wait_for(b"=> ")`, and it reaches that prompt because
+    # the default `bootcmd` fails to find a bootable device and falls back to
+    # it -- not because anything interrupts the countdown.  The
+    # "Hit any key to stop autoboot" line is still printed (as ": 0"), so the
+    # reboot synchronisation marker in debian/rootfs/systemd_m2_gate.py still
+    # matches.  Both were checked against a BOOTDELAY=0 build before landing.
+    "${source_dir}/scripts/config" --file "${build_dir}/.config" \
+        --set-val BOOTDELAY 0
+    # `yes ''` rather than a plain stdin: kconfig asks for new symbols
+    # interactively, and when stdin is not a tty it re-reads EOF and loops
+    # forever instead of failing.  Feeding blank lines accepts the defaults and
+    # terminates.  This is not hypothetical -- getting it wrong once spun `conf`
+    # in a tight loop that wrote tens of gigabytes and filled the disk.
+    yes '' | make -C "${source_dir}" O="${build_dir}" \
+        CROSS_COMPILE=riscv64-linux-gnu- olddefconfig
+
     make -C "${source_dir}" O="${build_dir}" \
         CROSS_COMPILE=riscv64-linux-gnu- -j"$(nproc)" "${uboot_binary}"
     test -s "${build_dir}/${uboot_binary}"
+    grep -q '^CONFIG_BOOTDELAY=0$' "${build_dir}/.config"
     grep -q '^CONFIG_CMD_BOOTI=y$' "${build_dir}/.config"
     grep -q '^CONFIG_CMD_EXT4=y$' "${build_dir}/.config"
     case "${storage_transport}" in
