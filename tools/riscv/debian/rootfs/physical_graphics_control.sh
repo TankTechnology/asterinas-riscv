@@ -221,7 +221,18 @@ start_browser() {
 }
 
 boot_phase() {
-    printf '%s\n' "$1" >/dev/console
+    # systemd owns duplication to the journal and serial console for the
+    # readiness service.  Redirecting through /dev/console loses messages
+    # after the isolated debug shell takes ttyS0 ownership.
+    printf '%s\n' "$1"
+}
+
+monotonic_seconds() {
+    IFS=' ' read -r uptime _ </proc/uptime || return 1
+    case "$uptime" in
+        [0-9]*.[0-9]*) printf '%s\n' "${uptime%%.*}" ;;
+        *) return 1 ;;
+    esac
 }
 
 startup_ready_once() {
@@ -271,13 +282,28 @@ startup_ready() {
         boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=browser-start'
         return 1
     }
+    readiness_started=$(monotonic_seconds) || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=monotonic-clock'
+        return 1
+    }
+    readiness_deadline=$((readiness_started + 240))
     attempt=0
+    last_reported_reason=
     readiness_reason=unknown
     while ! startup_ready_once; do
         attempt=$((attempt + 1))
-        if [ "$attempt" -ge 240 ]; then
+        readiness_now=$(monotonic_seconds) || {
+            boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=monotonic-clock'
+            return 1
+        }
+        if [ "$readiness_now" -ge "$readiness_deadline" ]; then
             boot_phase "ASTERINAS_DESKTOP_BOOT_FAIL reason=$readiness_reason"
             return 1
+        fi
+        if [ "$readiness_reason" != "$last_reported_reason" ]; then
+            readiness_remaining=$((readiness_deadline - readiness_now))
+            boot_phase "ASTERINAS_DESKTOP_BOOT_WAIT reason=$readiness_reason remaining=$readiness_remaining"
+            last_reported_reason=$readiness_reason
         fi
         /usr/bin/sleep 1
     done
