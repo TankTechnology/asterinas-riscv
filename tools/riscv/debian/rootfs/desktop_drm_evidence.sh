@@ -475,6 +475,40 @@ rm -f "$gl_result"
 # evidence that the kernel received it.
 emit "DEBIAN_DESKTOP_DRM_CMDLINE $(tr ' ' ',' </proc/cmdline 2>/dev/null | tr -d '\n' || true)"
 
+# The sysfs view of the DRM device, which is what libdrm reads before it will
+# describe the device to Mesa. `drmGetDevice2()` needs
+# `/sys/dev/char/<major>:<minor>/device/subsystem` to readlink and
+# `.../device/uevent` to read; with neither, it returns ENOENT and Mesa falls
+# back to llvmpipe with no ioctl ever reaching the driver. Dumped
+# unconditionally because it is cheap and it separates "the tree is missing"
+# from "the tree is there and Mesa still said no".
+{
+    for dev in /dev/dri/card0 /dev/dri/renderD128; do
+        [[ -c "$dev" ]] || continue
+        major_minor="$(stat -c '%t:%T' "$dev" 2>/dev/null)" || continue
+        maj=$((16#${major_minor%%:*})); min=$((16#${major_minor##*:}))
+        printf 'DEBIAN_DESKTOP_DRM_SYSFS dev=%s node=%d:%d\n' "$dev" "$maj" "$min"
+        for probe in "/sys/dev/char/$maj:$min" \
+                     "/sys/dev/char/$maj:$min/device" \
+                     "/sys/dev/char/$maj:$min/device/subsystem" \
+                     "/sys/dev/char/$maj:$min/device/uevent" \
+                     "/sys/dev/char/$maj:$min/device/drm"; do
+            if [[ -L "$probe" ]]; then
+                printf 'DEBIAN_DESKTOP_DRM_SYSFS link %s -> %s\n' \
+                    "$probe" "$(readlink "$probe" 2>/dev/null)"
+            elif [[ -d "$probe" ]]; then
+                printf 'DEBIAN_DESKTOP_DRM_SYSFS dir %s: %s\n' \
+                    "$probe" "$(command ls -A "$probe" 2>/dev/null | tr '\n' ' ')"
+            elif [[ -f "$probe" ]]; then
+                printf 'DEBIAN_DESKTOP_DRM_SYSFS file %s: %s\n' \
+                    "$probe" "$(tr '\n' '|' <"$probe" 2>/dev/null)"
+            else
+                printf 'DEBIAN_DESKTOP_DRM_SYSFS ABSENT %s\n' "$probe"
+            fi
+        done
+    done
+} >>"$CONSOLE" 2>&1 || true
+
 if [[ -x /usr/bin/eglinfo ]] &&
     tr ' ' '\n' </proc/cmdline 2>/dev/null | grep -qx 'asterinas.egl_probe=1'; then
     emit 'DEBIAN_DESKTOP_DRM_EGL_PROBE begin'
@@ -488,8 +522,45 @@ if [[ -x /usr/bin/eglinfo ]] &&
         probe_preload=()
         [[ -f /usr/lib/asterinas/ioctltrace.so ]] &&
             probe_preload=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so)
+        # Honouring the override here, on the GBM path, is the experiment that
+        # matters: the earlier forced-driver run applied it to `glxinfo` only,
+        # and `glxinfo` talks to X -- so it reports the *server's* renderer,
+        # and forcing its own loader changes nothing observable.  This probe
+        # opens the DRM node itself, so an override here either produces a
+        # virtio_gpu screen or proves the driver cannot initialise at all.
+        probe_override=()
+        if [[ "$(cmdline_value mesa_driver_override)" =~ ^[a-z0-9_]+$ ]]; then
+            probe_override+=(MESA_LOADER_DRIVER_OVERRIDE="$(cmdline_value mesa_driver_override)")
+        fi
         env LIBGL_DEBUG=verbose MESA_DEBUG=1 EGL_LOG_LEVEL=debug \
-            "${probe_preload[@]}" eglinfo -B 2>&1 | head -120
+            "${probe_override[@]}" \
+            "${probe_preload[@]}" eglinfo -B >/tmp/eglinfo-B.out 2>&1 || true
+        head -60 /tmp/eglinfo-B.out
+
+        # Mesa's own "why I refused this driver" text is compiled out of
+        # Debian's release build (LIBGL_DEBUG=verbose prints nothing at all),
+        # so the question "did the loader ever ask for virtio_gpu_dri.so, and
+        # what did it get?" is answered one layer down, by glibc's own loader
+        # trace.  Everything upstream of this -- the driver file existing, its
+        # entry point being exported, libgallium carrying virgl -- has been
+        # checked against this very image and holds, so the failure has to be
+        # in the open, and only the loader records the open.
+        # Deliberately run *without* the override: the probe above answers "can
+        # the driver initialise", this one answers "which name did Mesa derive
+        # from this device on its own", and the two answers are only useful
+        # apart.
+        echo '--- loader trace: which dri driver was asked for ---'
+        env LIBGL_DEBUG=verbose MESA_DEBUG=1 EGL_LOG_LEVEL=debug LD_DEBUG=libs \
+            "${probe_preload[@]}" eglinfo -B >/dev/null 2>/tmp/eglinfo-ld.out || true
+        # Deliberately not piped through `head` on the way out of the probe:
+        # truncated loader output is how an earlier reading concluded that no
+        # gbm backend was ever opened when the lines showing otherwise had
+        # simply been cut off.
+        grep -aE 'virtio_gpu|virgl|_dri\.so|dri_gbm|libgallium' /tmp/eglinfo-ld.out |
+            head -60
+        echo '--- loader errors ---'
+        grep -aiE 'error|undefined symbol|cannot open|no such file' /tmp/eglinfo-ld.out |
+            head -20
     } >>"$CONSOLE" 2>&1 || true
     emit 'DEBIAN_DESKTOP_DRM_EGL_PROBE end'
 fi
