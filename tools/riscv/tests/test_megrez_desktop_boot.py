@@ -309,8 +309,9 @@ class DesktopBootStartTests(DesktopBootFixture):
 
         class Operations:
             def __init__(self):
-                self.transcript = b"\n".join(
-                    marker.encode() for _, marker in boot.PHASE_MARKERS[:5]
+                self.transcript = (
+                    b"\n".join(marker.encode() for _, marker in boot.PHASE_MARKERS[:5])
+                    + b"\nASTERINAS_DESKTOP_BOOT_WAIT reason=firefox-window remaining=209\n"
                 )
                 self.phase_times = {
                     name: float(index)
@@ -351,6 +352,11 @@ class DesktopBootStartTests(DesktopBootFixture):
         self.assertEqual(result["status"], "fail")
         self.assertTrue(result["recovered_to_uboot"])
         self.assertEqual(result["phases"], operations.phase_times)
+        self.assertEqual(
+            result["reason"],
+            "desktop readiness deadline expired; last readiness "
+            "reason=firefox-window remaining=209",
+        )
         self.assertIn(("recover", 360), operations.calls)
 
     def test_boot_command_failure_after_epoch_still_waits_for_recovery(self) -> None:
