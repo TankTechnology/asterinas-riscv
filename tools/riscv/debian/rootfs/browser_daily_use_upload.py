@@ -169,7 +169,9 @@ def _success_gate_run_id(artifacts: dict[str, bytes]) -> str:
             _load_json(artifacts[RESULT_NAME], "daily-use result")
         )
     except DailyUseContractError as error:
-        raise EvidenceBundleError("daily-use result contract is invalid") from error
+        raise EvidenceBundleError(
+            f"daily-use result contract is invalid: {error}"
+        ) from error
     if result["state"] != "pass":
         raise EvidenceBundleError("daily-use result is not a pass")
     manifest = result["artifacts"]
