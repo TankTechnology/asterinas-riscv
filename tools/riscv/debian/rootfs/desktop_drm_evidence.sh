@@ -466,8 +466,11 @@ if [[ -s "$gl_result" ]]; then
     gl_renderer="$(cat "$gl_result")"
 fi
 rm -f "$gl_result"
-emit "DEBIAN_DESKTOP_DRM_GL renderer=$gl_renderer"
-
+# NOTE: this probe must stay *before* the renderer line below.  For a 3D run
+# the gate's terminal marker is that line's prefix, so the gate tears the
+# machine down the moment it appears -- anything emitted after it is never
+# captured.  The probe was originally placed after it and silently produced
+# nothing for three runs.
 # Direct EGL/GBM probe, off unless asked for (`asterinas.egl_probe=1`).
 #
 # `glxinfo` cannot answer why the desktop is on llvmpipe: it talks to X, and by
@@ -484,11 +487,23 @@ if [[ -x /usr/bin/eglinfo ]] &&
     tr ' ' '\n' </proc/cmdline 2>/dev/null | grep -qx 'asterinas.egl_probe=1'; then
     emit 'DEBIAN_DESKTOP_DRM_EGL_PROBE begin'
     {
+        # VIRGL_DEBUG makes the virgl winsys explain itself, which is the
+        # layer the EGL errors point at but do not name.
+        # LD_PRELOAD the ioctl logger when the image has it: Mesa's own
+        # debug output is compiled out of Debian's release build, so the
+        # kernel-side ioctl sequence is the only place that shows which
+        # call the GBM path stops at.
+        probe_preload=()
+        [[ -f /usr/lib/asterinas/ioctltrace.so ]] &&
+            probe_preload=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so)
         env LIBGL_DEBUG=verbose MESA_DEBUG=1 EGL_LOG_LEVEL=debug \
-            eglinfo -B 2>&1 | head -80
+            "${probe_preload[@]}" eglinfo -B 2>&1 | head -120
     } >>"$CONSOLE" 2>&1 || true
     emit 'DEBIAN_DESKTOP_DRM_EGL_PROBE end'
 fi
+
+emit "DEBIAN_DESKTOP_DRM_GL renderer=$gl_renderer"
+
 
 # How the DRM device presents itself to userspace.
 #
