@@ -9,6 +9,7 @@ import contextlib
 import functools
 import hashlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import io
 import json
 import os
 import re
@@ -17,14 +18,27 @@ import stat
 import sys
 import tempfile
 import threading
+import time
 import zlib
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, Sequence
 
 
 GENERATION_ROOT = "/home/debian/asterinas/boot"
 ARTIFACT_NAMES = ("kernel", "initramfs", "megrez_dtb")
+PHASE_MARKERS = (
+    ("kernel-entered", "Enter riscv_boot"),
+    ("stage1-start", "DEBIAN_STAGE1_PROGRESS step=start "),
+    ("root-found", "DEBIAN_STAGE1_PROGRESS step=root-found "),
+    ("root-handoff", "DEBIAN_STAGE1_PROGRESS step=handoff-enter action=exec"),
+    ("debug-console-ready", "ASTERINAS_DEBUG_CONSOLE_READY uid=0"),
+    ("display-ready", "ASTERINAS_DESKTOP_DISPLAY_READY"),
+    ("firefox-ready", "ASTERINAS_DESKTOP_FIREFOX_READY "),
+    ("kernel-watchdog-disarmed", "ASTERINAS_SOFTWARE_REBOOT_DISARMED"),
+    ("guest-watchdog-disarmed", "ASTERINAS_DESKTOP_WATCHDOG_DISARMED"),
+    ("desktop-ready", "ASTERINAS_DESKTOP_BOOT_READY "),
+)
 BOOTARGS = " ".join(
     (
         "console=ttyS0",
@@ -70,6 +84,33 @@ class PrepareOperations(Protocol):
     ) -> None: ...
 
     def reboot_and_recover(self, password: str, timeout: float) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class StartOperations(Protocol):
+    @property
+    def transcript(self) -> bytes: ...
+
+    @property
+    def phase_times(self) -> dict[str, float]: ...
+
+    @property
+    def boot_epoch_started(self) -> bool: ...
+
+    def open(self, timeout: float) -> None: ...
+
+    def load(
+        self, manifest: "DesktopBootManifest", timeout: float
+    ) -> dict[str, int]: ...
+
+    def boot(self, manifest: "DesktopBootManifest", timeout: float) -> None: ...
+
+    def wait_ready(self, timeout: float) -> bytes: ...
+
+    def probe(self, timeout: float) -> dict[str, Any]: ...
+
+    def await_recovery(self, timeout: float) -> bytes: ...
 
     def close(self) -> None: ...
 
@@ -125,7 +166,9 @@ class DesktopBootManifest:
                     raise DesktopBootError(f"{name}: source is a symbolic link")
                 content = source.read_bytes()
             except OSError as error:
-                raise DesktopBootError(f"{name}: cannot read source: {error}") from error
+                raise DesktopBootError(
+                    f"{name}: cannot read source: {error}"
+                ) from error
             actual_sha = hashlib.sha256(content).hexdigest()
             actual_crc = f"{zlib.crc32(content):08x}"
             if (
@@ -170,7 +213,8 @@ class DesktopBootManifest:
             for name, artifact in artifacts.items()
         }
         return cls(
-            **identity | {
+            **identity
+            | {
                 "artifacts": artifacts,
                 "generation_sha256": generation_sha,
                 "generation_directory": generation_directory,
@@ -215,9 +259,7 @@ def _published_artifact(
     return result
 
 
-def publication_script(
-    manifest: DesktopBootManifest, base_url: str, nonce: str
-) -> str:
+def publication_script(manifest: DesktopBootManifest, base_url: str, nonce: str) -> str:
     """Return a fail-closed RockOS script for one immutable p3 generation."""
 
     if _BASE_URL.fullmatch(base_url) is None or _NONCE.fullmatch(nonce) is None:
@@ -252,7 +294,7 @@ def publication_script(
             "trap 'rm -rf -- $WORK' EXIT HUP INT TERM",
             *downloads,
             f"curl -fSs --max-time 30 {base_url}/manifest.json -o $WORK/manifest.json",
-            *(f'printf \'%s\\n\' "{line}" | sha256sum -c -' for line in checks),
+            *(f"printf '%s\\n' \"{line}\" | sha256sum -c -" for line in checks),
             f"printf '%s  %s\\n' {manifest_sha} $WORK/manifest.json | sha256sum -c -",
             "sync $WORK",
             "mv -T -- $WORK $FINAL",
@@ -311,6 +353,144 @@ def prepare_generation(
         operations.close()
 
 
+def observe_ready_phases(
+    transcript: bytes, *, now: Any = time.monotonic
+) -> dict[str, float]:
+    if not isinstance(transcript, bytes) or len(transcript) > 8 * 1024 * 1024:
+        raise DesktopBootError("serial readiness transcript is invalid")
+    try:
+        text = transcript.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise DesktopBootError("serial readiness transcript is not UTF-8") from error
+    positions: list[int] = []
+    observed: dict[str, float] = {}
+    for name, marker in PHASE_MARKERS:
+        count = text.count(marker)
+        if count > 1:
+            raise DesktopBootError(f"phase {name} is duplicated")
+        if count == 0:
+            raise DesktopBootError(f"phase {name} is missing")
+        position = text.find(marker)
+        if positions and position <= positions[-1]:
+            raise DesktopBootError(f"phase {name} is out of order")
+        positions.append(position)
+        observed[name] = now()
+    return observed
+
+
+def _validate_admission(evidence: dict[str, Any]) -> None:
+    required_true = ("debug_console", "x11_socket")
+    if any(evidence.get(name) is not True for name in required_true):
+        raise DesktopBootError("read-only desktop admission predicate failed")
+    if (
+        not isinstance(evidence.get("firefox_pid"), int)
+        or evidence["firefox_pid"] <= 1
+        or evidence.get("firefox_uid") != 1000
+        or not isinstance(evidence.get("visible_windows"), int)
+        or evidence["visible_windows"] < 1
+        or evidence.get("watchdog") != 0
+        or not isinstance(evidence.get("boot_id"), str)
+        or re.fullmatch(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            evidence["boot_id"],
+        )
+        is None
+    ):
+        raise DesktopBootError("read-only desktop admission evidence is invalid")
+
+
+def start_generation(
+    manifest: DesktopBootManifest, operations: StartOperations
+) -> dict[str, Any]:
+    """Execute one bounded start, returning success or proven recovery."""
+
+    started = time.monotonic()
+    try:
+        operations.open(30)
+        sizes = operations.load(manifest, 90)
+        expected_sizes = {
+            name: manifest.artifacts[name].size for name in ARTIFACT_NAMES
+        }
+        if sizes != expected_sizes:
+            raise DesktopBootError("partition-3 artifact byte count mismatch")
+        operations.boot(manifest, 30)
+        transcript = operations.wait_ready(300)
+        observe_ready_phases(transcript)
+        phases = operations.phase_times
+        expected_phase_names = tuple(name for name, _ in PHASE_MARKERS)
+        if tuple(phases) != expected_phase_names:
+            raise DesktopBootError("host phase timestamps are incomplete")
+        evidence = operations.probe(30)
+        _validate_admission(evidence)
+        return {
+            "schema_version": 1,
+            "status": "pass",
+            "reason": "desktop-ready",
+            "generation_sha256": manifest.generation_sha256,
+            "plan_sha256": manifest.plan_sha256,
+            "expected_root_sha256": manifest.expected_root_sha256,
+            "elapsed_seconds": time.monotonic() - started,
+            "boot_epoch_started": True,
+            "phases": phases,
+            "artifacts": _result_artifacts(manifest),
+            **evidence,
+            "serial_sha256": hashlib.sha256(transcript).hexdigest(),
+        }
+    except (DesktopBootError, OSError, RuntimeError, TimeoutError) as error:
+        if not operations.boot_epoch_started:
+            return {
+                "schema_version": 1,
+                "status": "fail",
+                "reason": str(error),
+                "generation_sha256": manifest.generation_sha256,
+                "plan_sha256": manifest.plan_sha256,
+                "expected_root_sha256": manifest.expected_root_sha256,
+                "elapsed_seconds": time.monotonic() - started,
+                "boot_epoch_started": False,
+                "phases": operations.phase_times,
+                "artifacts": _result_artifacts(manifest),
+                "recovered_to_uboot": True,
+                "recovery_sha256": hashlib.sha256(b"").hexdigest(),
+                "serial_sha256": hashlib.sha256(operations.transcript).hexdigest(),
+            }
+        recovery_error = None
+        try:
+            recovery = operations.await_recovery(360)
+        except (DesktopBootError, OSError, RuntimeError, TimeoutError) as failure:
+            recovery = b""
+            recovery_error = str(failure)
+        recovered = all(
+            marker in recovery for marker in (b"OpenSBI", b"U-Boot", b"=> ")
+        )
+        reason = str(error)
+        if recovery_error is not None:
+            reason = f"{reason}; recovery failed: {recovery_error}"
+        return {
+            "schema_version": 1,
+            "status": "fail",
+            "reason": reason,
+            "generation_sha256": manifest.generation_sha256,
+            "plan_sha256": manifest.plan_sha256,
+            "expected_root_sha256": manifest.expected_root_sha256,
+            "elapsed_seconds": time.monotonic() - started,
+            "boot_epoch_started": True,
+            "phases": operations.phase_times,
+            "artifacts": _result_artifacts(manifest),
+            "recovered_to_uboot": recovered,
+            "recovery_sha256": hashlib.sha256(recovery).hexdigest(),
+            "serial_sha256": hashlib.sha256(operations.transcript).hexdigest(),
+        }
+    finally:
+        operations.close()
+
+
+def _result_artifacts(manifest: DesktopBootManifest) -> dict[str, dict[str, Any]]:
+    return {
+        name: _published_artifact(manifest.artifacts[name], include_path=True)
+        for name in ARTIFACT_NAMES
+    }
+
+
 def uboot_load_commands(manifest: DesktopBootManifest) -> tuple[str, ...]:
     return tuple(
         f"ext4load mmc 1:3 0x{artifact.load_address:x} {artifact.mmc_path}"
@@ -332,9 +512,7 @@ def _publication_server(
         (directory / script_name).write_text(
             publication_script(manifest, f"http://{address}:{port}", nonce)
         )
-        handler = functools.partial(
-            SimpleHTTPRequestHandler, directory=str(directory)
-        )
+        handler = functools.partial(SimpleHTTPRequestHandler, directory=str(directory))
         server = ThreadingHTTPServer((address, port), handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -344,6 +522,204 @@ def _publication_server(
             server.shutdown()
             server.server_close()
             thread.join()
+
+
+class RealStartOperations:
+    """Exclusive, non-interactive serial implementation of one start epoch."""
+
+    def __init__(self, device: str) -> None:
+        self._device = device
+        self._fd: int | None = None
+        self._session: Any = None
+        self._serial: Any = None
+        self._log = io.StringIO()
+        self._boot_started: float | None = None
+        self._boot_epoch_started = False
+        self._phase_times: dict[str, float] = {}
+
+    @property
+    def transcript(self) -> bytes:
+        payload = self._log.getvalue().encode()
+        if self._serial is not None:
+            payload += self._serial.transcript
+        return payload
+
+    @property
+    def phase_times(self) -> dict[str, float]:
+        return dict(self._phase_times)
+
+    @property
+    def boot_epoch_started(self) -> bool:
+        return self._boot_epoch_started
+
+    def open(self, timeout: float) -> None:
+        from tools.riscv.megrez_board_session import BoardSession, open_serial
+        from tools.riscv.megrez_debug_board import _lock_serial
+
+        fd = open_serial(self._device)
+        try:
+            _lock_serial(fd)
+            session = BoardSession.from_fd(
+                fd, None, confirm=False, log_stream=self._log
+            )
+            os.write(fd, b"\x03")
+            session.wait_for_uboot_prompt(timeout)
+        except BaseException:
+            os.close(fd)
+            raise
+        self._fd = fd
+        self._session = session
+
+    def _require_session(self) -> Any:
+        if self._session is None:
+            raise DesktopBootError("serial session is not open")
+        return self._session
+
+    def load(self, manifest: DesktopBootManifest, timeout: float) -> dict[str, int]:
+        from tools.riscv.megrez_board_session import LOAD_RESULT_PATTERN
+
+        session = self._require_session()
+        deadline = time.monotonic() + timeout
+        session.command("mmc dev 1", timeout=min(15, timeout))
+        session.command("mmc rescan", timeout=min(15, timeout))
+        sizes: dict[str, int] = {}
+        for name in ARTIFACT_NAMES:
+            artifact = manifest.artifacts[name]
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("partition-3 artifact validation timed out")
+            command = (
+                f"ext4load mmc 1:3 0x{artifact.load_address:x} {artifact.mmc_path}"
+            )
+            try:
+                output = session.command(command, timeout=remaining)
+            except (OSError, RuntimeError, TimeoutError) as error:
+                raise DesktopBootError(
+                    f"generation {manifest.generation_sha256[:16]} unavailable "
+                    "on partition 3; run `python3 -m "
+                    "tools.riscv.megrez_desktop_boot prepare`: "
+                    f"{error}"
+                ) from error
+            sizes[name] = session._verify_loaded_artifact(
+                name,
+                artifact.load_address,
+                artifact.crc32,
+                output,
+                LOAD_RESULT_PATTERN,
+            )
+        return sizes
+
+    def boot(self, manifest: DesktopBootManifest, timeout: float) -> None:
+        from tools.riscv.megrez_board_session import uboot_bootargs_commands
+        from tools.riscv.debian.rootfs.gate_runtime import SerialConsole
+
+        session = self._require_session()
+        initramfs = manifest.artifacts["initramfs"]
+        deadline = time.monotonic() + timeout
+        commands = (
+            "fdt addr 0xf0000000",
+            "fdt resize 0x1000",
+            f"setenv initrd_size 0x{initramfs.size:x}",
+            *uboot_bootargs_commands(manifest.bootargs),
+        )
+        for command in commands:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("U-Boot desktop preparation timed out")
+            session.command(command, timeout=remaining)
+        kernel = manifest.artifacts["kernel"]
+        dtb = manifest.artifacts["megrez_dtb"]
+        command = (
+            f"booti 0x{kernel.load_address:x} "
+            f"0x{initramfs.load_address:x}:0x{initramfs.size:x} "
+            f"0x{dtb.load_address:x}"
+        )
+        self._boot_started = time.monotonic()
+        self._boot_epoch_started = True
+        session.start_boot_attempt()
+        session.command(
+            command,
+            expect="Enter riscv_boot",
+            timeout=max(1, deadline - time.monotonic()),
+        )
+        self._phase_times["kernel-entered"] = time.monotonic() - self._boot_started
+        assert self._fd is not None
+        self._serial = SerialConsole(
+            self._fd, max_bytes=8 * 1024 * 1024, tx_delay=0.005
+        )
+
+    def wait_ready(self, timeout: float) -> bytes:
+        if self._serial is None or self._boot_started is None:
+            raise DesktopBootError("guest serial protocol is not active")
+        deadline = min(
+            time.monotonic() + timeout,
+            self._boot_started + 300,
+        )
+        for name, marker in PHASE_MARKERS[1:]:
+            self._serial.wait_for(marker.encode(), deadline)
+            self._phase_times[name] = time.monotonic() - self._boot_started
+        return self.transcript
+
+    def probe(self, timeout: float) -> dict[str, Any]:
+        if self._serial is None:
+            raise DesktopBootError("guest serial protocol is not active")
+        nonce = secrets.token_hex(8)
+        marker = f"__ASTERINAS_DESKTOP_ADMISSION_{nonce}__"
+        end_marker = f"__ASTERINAS_DESKTOP_ADMISSION_END_{nonce}__"
+        command = (
+            "pid=$(systemctl show -p MainPID --value asterinas-browser-web.service); "
+            "uid=$(awk '/^Uid:/{print $2}' /proc/$pid/status); "
+            "windows=$(DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority "
+            "xdotool search --onlyvisible --class firefox 2>/dev/null | wc -l); "
+            "x11=0; test -S /tmp/.X11-unix/X0 && x11=1; "
+            "printf '__ASTERINAS_DESKTOP_ADMISSION_%s__ boot_id=%s "
+            "firefox_pid=%s firefox_uid=%s visible_windows=%s watchdog=%s "
+            "debug_console=1 x11_socket=%s "
+            "__ASTERINAS_DESKTOP_ADMISSION_END_%s__\\n' "
+            f"'{nonce}' "
+            '"$(cat /proc/sys/kernel/random/boot_id)" "$pid" "$uid" "$windows" '
+            '"$(cat /proc/sys/kernel/asterinas_reboot_watchdog)" "$x11" '
+            f"'{nonce}'"
+        )
+        start = self._serial.checkpoint()
+        deadline = time.monotonic() + timeout
+        self._serial.send((command + "\n").encode(), deadline)
+        self._serial.wait_for(end_marker.encode(), deadline, start=start)
+        text = self._serial.transcript[start:].decode("utf-8", errors="replace")
+        pattern = re.compile(
+            re.escape(marker) + r" boot_id=([0-9a-f-]{36}) firefox_pid=([0-9]+) "
+            r"firefox_uid=([0-9]+) visible_windows=([0-9]+) "
+            r"watchdog=([01]) debug_console=1 x11_socket=([01]) "
+            + re.escape(end_marker)
+        )
+        matches = pattern.findall(text)
+        if len(matches) != 1:
+            raise DesktopBootError("read-only desktop admission response is missing")
+        boot_id, pid, uid, windows, watchdog, x11 = matches[0]
+        return {
+            "boot_id": boot_id,
+            "firefox_pid": int(pid),
+            "firefox_uid": int(uid),
+            "visible_windows": int(windows),
+            "watchdog": int(watchdog),
+            "debug_console": True,
+            "x11_socket": x11 == "1",
+        }
+
+    def await_recovery(self, timeout: float) -> bytes:
+        if self._boot_started is None:
+            raise DesktopBootError("guest boot epoch was not established")
+        remaining = min(timeout, self._boot_started + timeout - time.monotonic())
+        if remaining <= 0:
+            raise TimeoutError("firmware recovery deadline expired")
+        recovery = self._require_session().wait_for_uboot_prompt(remaining)
+        return recovery.encode()
+
+    def close(self) -> None:
+        if self._fd is not None:
+            os.close(self._fd)
+        self._fd = None
+        self._session = None
 
 
 def _atomic_write(path: Path, payload: bytes) -> None:
@@ -379,6 +755,12 @@ def _parser() -> argparse.ArgumentParser:
     credential.add_argument("--factory-login", action="store_true")
     credential.add_argument("--password-fd", type=int)
     prepare.add_argument("--output", type=Path, required=True)
+    start = subparsers.add_parser(
+        "start", help="start an already-published generation from partition 3"
+    )
+    start.add_argument("--plan", type=Path, required=True)
+    start.add_argument("--device", required=True)
+    start.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -432,11 +814,30 @@ def _prepare_main(args: argparse.Namespace) -> int:
     return 0
 
 
+def _start_main(args: argparse.Namespace) -> int:
+    manifest = DesktopBootManifest.from_plan(args.plan)
+    operations = RealStartOperations(args.device)
+    try:
+        result = start_generation(manifest, operations)
+    finally:
+        transcript = operations.transcript
+        _atomic_write(args.output / "serial.log", transcript)
+    result["serial_sha256"] = hashlib.sha256(transcript).hexdigest()
+    _atomic_write(args.output / "result.json", _canonical(result))
+    print(
+        f"Megrez desktop start {result['status']}: {result['reason']} "
+        f"generation={manifest.generation_sha256[:16]}"
+    )
+    return 0 if result["status"] == "pass" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if args.action == "prepare":
             return _prepare_main(args)
+        if args.action == "start":
+            return _start_main(args)
         raise AssertionError(args.action)
     except (DesktopBootError, OSError, RuntimeError, TimeoutError) as error:
         print(f"Megrez desktop boot {args.action} failed: {error}", file=sys.stderr)
