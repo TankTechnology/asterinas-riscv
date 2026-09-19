@@ -102,6 +102,41 @@ must be in the state named by the command; failure does not trigger speculative
 serial commands or forced resets. A failed cycle retains its `serial.log` and
 `result.json` and does not count toward promotion.
 
+## Bounded Megrez desktop startup
+
+Use the fast desktop workflow for normal development boots. Publishing and
+starting are deliberately separate: publish only after the kernel, Stage1,
+prepared DTB, or expected root identity changes, then reuse that immutable
+generation for daily starts.
+
+```bash
+make prepare_riscv_megrez_desktop_boot
+make run_riscv_megrez_desktop
+```
+
+The defaults select
+`target/megrez-desktop-boot/build/plan.json`, the stable FTDI
+`/dev/serial/by-id/` path, and a timestamped evidence directory below
+`target/megrez-desktop-boot/`. Every variable has a
+`MEGREZ_DESKTOP_BOOT_*` override for another plan, serial device, host address,
+port, or output directory. An existing output directory is rejected rather
+than overwritten.
+
+`run_riscv_megrez_desktop` performs only the bounded `start` action. It never
+boots RockOS, transfers or installs artifacts, rewrites the root partition, or
+runs a browser performance workload. Before `booti`, it verifies the byte count
+and CRC32 of the immutable partition-3 kernel, Stage1, and DTB. During boot it
+prints each observed phase with host elapsed time. Success requires the debug
+console, X11/fbdev/Openbox, a visible UID-1000 Firefox window, and guest-local
+watchdog disarm within 300 seconds; a successful guest stays running.
+
+After a failed kernel entry, leave the command running: the armed watchdog
+reboots the board and the host requires a fresh OpenSBI, U-Boot, and prompt
+epoch within the bounded recovery allowance. Diagnose from the last printed
+phase and the retained `serial.log`/`result.json`; do not physically reset an
+ordinary failed boot. End a successful session from the debug console with
+`sync; reboot -f`, which returns the board to U-Boot for the next start.
+
 ## SMP4 cross-hart instruction-cache regression
 
 The formal RISC-V regression job runs with exactly four guest CPUs and sets
