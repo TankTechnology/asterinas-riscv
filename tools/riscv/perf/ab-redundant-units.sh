@@ -30,4 +30,4 @@ exec "$(dirname "${BASH_SOURCE[0]}")/measure-desktop.sh" "$NAME" \
     "DEBIAN_DRM_ROOT_IMAGE=$DERIVED/debian-root.ext2" \
     "DEBIAN_DRM_ROOT_MANIFEST=$DERIVED/rootfs-manifest.json" \
     DEBIAN_DRM_GRAPHICS_DEVICE=virtio-gpu-device \
-    DEBIAN_DESKTOP_BOOT_TIMEOUT=1800
+    DEBIAN_DESKTOP_BOOT_TIMEOUT=${DEBIAN_DESKTOP_BOOT_TIMEOUT:-1800}
