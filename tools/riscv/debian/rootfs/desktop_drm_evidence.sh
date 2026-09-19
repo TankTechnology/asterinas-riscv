@@ -468,6 +468,28 @@ fi
 rm -f "$gl_result"
 emit "DEBIAN_DESKTOP_DRM_GL renderer=$gl_renderer"
 
+# Direct EGL/GBM probe, off unless asked for (`asterinas.egl_probe=1`).
+#
+# `glxinfo` cannot answer why the desktop is on llvmpipe: it talks to X, and by
+# then X has already settled for a software device.  `eglinfo` opens the DRM
+# node itself and enumerates the EGL platforms and devices, which is the layer
+# where the choice was actually made -- so this reports what Mesa returns for
+# /dev/dri/card0 with no X server in the path.
+# The guest's own view of the command line, emitted unconditionally: the
+# flag is set by U-Boot, and U-Boot's echo of the command it ran is not
+# evidence that the kernel received it.
+emit "DEBIAN_DESKTOP_DRM_CMDLINE $(tr ' ' ',' </proc/cmdline 2>/dev/null | tr -d '\n' || true)"
+
+if [[ -x /usr/bin/eglinfo ]] &&
+    tr ' ' '\n' </proc/cmdline 2>/dev/null | grep -qx 'asterinas.egl_probe=1'; then
+    emit 'DEBIAN_DESKTOP_DRM_EGL_PROBE begin'
+    {
+        env LIBGL_DEBUG=verbose MESA_DEBUG=1 EGL_LOG_LEVEL=debug \
+            eglinfo -B 2>&1 | head -80
+    } >>"$CONSOLE" 2>&1 || true
+    emit 'DEBIAN_DESKTOP_DRM_EGL_PROBE end'
+fi
+
 # How the DRM device presents itself to userspace.
 #
 # For diagnosis only — this is NOT what picks the renderer. Mesa chooses the
