@@ -300,7 +300,20 @@ emit_stat_snapshot ready
 
 # Record the acceleration setup in the serial transcript so that gate runs
 # are self-diagnosing (e.g. glamor falling back to software rendering).
-grep -E 'glamor|AIGLX|DRI3|Modeline' "$XORG_LOG" >>"$CONSOLE" 2>&1 || true
+# Widened past glamor/AIGLX to the EGL and GBM lines as well: when glamor is
+# declined the reason is always one step earlier, in the EGL device Xorg was
+# handed, and that line names the driver Mesa actually returned.
+grep -E 'glamor|AIGLX|DRI3|Modeline|EGL|GBM|egl|gbm|virgl|virtio|DRI driver|libGL' \
+    "$XORG_LOG" >>"$CONSOLE" 2>&1 || true
+
+# The same lines from the session log, which is where Xorg's *stderr* goes.
+# Xorg's own log records the decision ("Refusing to try glamor on llvmpipe")
+# but not the reason: libEGL, libgbm and Mesa write that to stderr, and the
+# session script redirects stderr into this file.  It used to be dumped only
+# when the run failed, so a run that came up cleanly threw away the one message
+# that said why it came up on the software driver.
+grep -E 'EGL|GBM|Mesa|mesa|libGL|DRI|swrast|virgl|virtio|kmsro' \
+    "$SESSION_LOG" >>"$CONSOLE" 2>&1 || true
 
 # Report the GL renderer so gates can prove virgl acceleration instead of
 # inferring it from the boot device.  Under TCG a single virgl glxinfo run

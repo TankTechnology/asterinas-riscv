@@ -17,6 +17,14 @@ readonly ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly BASE="$ROOT/target/debian-riscv/desktop-drm/rootfs"
 readonly DERIVED="$ROOT/target/drm-mesa/rootfs-ab-$STATE"
 
+# dev_overlay resolves a spec's `source` relative to the *spec's own directory*,
+# so the evidence script it bakes is target/drm-mesa/desktop_drm_evidence.sh --
+# not the repository copy. Editing the repository one and running the gate
+# silently produces an image with the old script inside it; a change to the
+# evidence script that never appeared cost a confusing debugging pass.
+cp "$ROOT/tools/riscv/debian/rootfs/desktop_drm_evidence.sh" \
+    "$ROOT/target/drm-mesa/desktop_drm_evidence.sh"
+
 "$(dirname "${BASH_SOURCE[0]}")/toggle-redundant-units.sh" "$STATE"
 
 sudo rm -rf "$DERIVED"
