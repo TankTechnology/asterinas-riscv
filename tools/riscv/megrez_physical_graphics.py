@@ -2107,16 +2107,18 @@ class RealPhysicalGraphicsOperations:
         deadline = self._guest_phase_deadline(timeout)
         cursor = serial.checkpoint()
         nonce = secrets.token_hex(8)
-        ready = f"__ASTERINAS_PHYSICAL_REBOOT_READY__ nonce={nonce}"
         # A prompt emitted by the just-finished experiment may still be in
-        # flight after the checkpoint.  A prompt-only barrier can therefore
-        # let the interrupt arrive in the middle of the reboot command.  The
-        # nonce proves that the shell processed Ctrl-C before we continue.
-        serial.send((f"\x03\nprintf '{ready}\\n'\n").encode(), deadline)
-        while True:
-            line, cursor = self._next_line(serial, cursor, deadline)
-            if line == ready:
-                break
+        # flight after the checkpoint. Require the terminal's new Ctrl-C echo
+        # and only then a subsequent full prompt; no command bytes are sent
+        # while the interrupt can still be pending.
+        serial.send(b"\x03", deadline)
+        serial.wait_for(b"^C", deadline, start=cursor)
+        interrupt = serial.transcript.find(b"^C", cursor)
+        if interrupt < 0:
+            raise HostGateError("guest interrupt acknowledgement is missing")
+        serial.wait_for(
+            b"root@asterinas-debug:/#", deadline, start=interrupt + len(b"^C")
+        )
 
         marker = f"__ASTERINAS_PHYSICAL_REBOOT__ nonce={nonce}"
         self._recovery_cursor = serial.checkpoint()
