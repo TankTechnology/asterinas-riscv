@@ -124,13 +124,21 @@ invariant, not a bug. The test also supplied the fix: the fault path already
 asks for a 16-page window, so scoping readahead to narrower requests leaves the
 invariant intact and targets the single-page buffered read.
 
-**It was reverted on the evidence.** The scoped version's effect on
-`basic.target` (123--131) overlapped the no-readahead runs (129--139) and the
-end-to-end figures were indistinguishable, so it could not be shown to help.
-The patch is preserved at
-`docs/performance/2026-09-19-readahead-rejected.patch`, and it should be
-re-measured on a release kernel before being dismissed or landed -- the noise
-that hid it was largely the debug kernel's.
+**Reverted, and re-measured on the release kernel to be sure.** The first
+measurement was on the debug kernel, where its effect on `basic.target`
+(123--131) overlapped the no-readahead runs (129--139) and the end-to-end
+figures were indistinguishable -- so it could not be shown to help, but the
+noise that hid it might have been the debug kernel's. On the release kernel the
+answer is the same and the runs are tight enough to say so:
+
+| | desktop READY | `basic.target` |
+|---|---|---|
+| no readahead (3 runs) | 16, 15, 16 s | 3, 4, 3 |
+| with readahead (2 runs) | 17, 17 s | 4, 4 |
+
+It is, if anything, slightly slower. The patch is preserved at
+`docs/performance/2026-09-19-readahead-rejected.patch`; it is rejected on
+measurement twice over, not on noise.
 
 ## Corrected claims
 
@@ -177,7 +185,15 @@ difference between them.
 
 ## Open items
 
-- Re-measure the readahead patch on a release kernel.
 - Decide whether the RISC-V desktop gate should build with `RELEASE=1` by
-  default, and whether its absence from CI is why this went unnoticed.
-- The gate's `reason: protocol` verdict under `-display none`.
+  default, and whether its absence from CI is why this went unnoticed. The
+  measurement tooling now refuses a debug kernel image, but the gate itself
+  still takes whatever `target/osdk/aster-kernel-osdk-bin.Image` holds.
+- The gate's `reason: protocol` verdict under `-display none`. `result.json`
+  carries an empty `screenshot`, and the gate reports the same verdict on the
+  historical baselines, so this is a gate defect rather than a run failure --
+  but it means no run in this series is a *passing* run.
+- What is left of the gap to Linux is microseconds per syscall (`getpid` 4.3x,
+  `open+close` 1.4x) and does not move the desktop boot. `fork+exec` is already
+  0.81x, i.e. faster than Linux. Whether closing the rest is worth the effort
+  is a judgement call, not a measurement question.
