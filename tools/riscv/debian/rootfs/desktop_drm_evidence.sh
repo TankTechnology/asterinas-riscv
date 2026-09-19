@@ -306,14 +306,6 @@ emit_stat_snapshot ready
 grep -E 'glamor|AIGLX|DRI3|Modeline|EGL|GBM|egl|gbm|virgl|virtio|DRI driver|libGL' \
     "$XORG_LOG" >>"$CONSOLE" 2>&1 || true
 
-# The same lines from the session log, which is where Xorg's *stderr* goes.
-# Xorg's own log records the decision ("Refusing to try glamor on llvmpipe")
-# but not the reason: libEGL, libgbm and Mesa write that to stderr, and the
-# session script redirects stderr into this file.  It used to be dumped only
-# when the run failed, so a run that came up cleanly threw away the one message
-# that said why it came up on the software driver.
-grep -E 'EGL|GBM|Mesa|mesa|libGL|DRI|swrast|virgl|virtio|kmsro' \
-    "$SESSION_LOG" >>"$CONSOLE" 2>&1 || true
 
 # Report the GL renderer so gates can prove virgl acceleration instead of
 # inferring it from the boot device.  Under TCG a single virgl glxinfo run
@@ -501,6 +493,13 @@ if [[ -x /usr/bin/eglinfo ]] &&
     } >>"$CONSOLE" 2>&1 || true
     emit 'DEBIAN_DESKTOP_DRM_EGL_PROBE end'
 fi
+
+# The X server's own stderr, which is where libEGL, libgbm and Mesa explain
+# the choice Xorg's log only records the outcome of.  It has to be read *here*
+# rather than at basic.target: the session has not started yet at that point
+# and the file is still empty.
+grep -aE 'EGL|GBM|Mesa|mesa|libGL|DRI|swrast|virgl|virtio|kmsro' \
+    "$SESSION_LOG" >>"$CONSOLE" 2>&1 || true
 
 emit "DEBIAN_DESKTOP_DRM_GL renderer=$gl_renderer"
 

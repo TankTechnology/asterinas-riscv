@@ -42,6 +42,18 @@ xorg_env=()
 if [[ -f /usr/lib/asterinas/ioctltrace.so ]]; then
     xorg_env+=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so)
 fi
+
+# Mesa/EGL debugging on the X server itself, off unless asked for
+# (`asterinas.egl_probe=1`).
+#
+# This has to be the X server's environment, not a probe's: the decision that
+# matters is the one Xorg makes when glamor asks for an EGL device, and a
+# separate probe reaching the DRM node on its own terms can fail somewhere
+# else entirely and report a failure the desktop never took.  Xorg's stderr
+# already goes to the session log, which the evidence script now reads.
+if tr ' ' '\n' </proc/cmdline 2>/dev/null | grep -qx 'asterinas.egl_probe=1'; then
+    xorg_env+=(EGL_LOG_LEVEL=debug LIBGL_DEBUG=verbose MESA_DEBUG=1)
+fi
 exec env "${xorg_env[@]}" /usr/bin/xinit "$0" --xsession -- \
     /usr/bin/Xorg :0 -noreset -nolisten tcp \
     -extension MIT-SHM -logfile "$HOME/Xorg.0.log" vt1 \
