@@ -714,6 +714,7 @@ def physical_bootargs(plan: DebugPlan | Any) -> str:
         "loglevel=off",
         "asterinas.klog_capture=info",
         "init=/init",
+        "asterinas.mmc_write_partition2",
         f"asterinas.reboot_after={PHYSICAL_REBOOT_AFTER}",
         "systemd.mask=asterinas-browser-web-evidence.service",
         "systemd.mask=asterinas-desktop-m5-network.service",
@@ -1584,7 +1585,10 @@ class RealPhysicalGraphicsOperations:
                 final_marker=DEBUG_CONSOLE_READY,
                 log_stream=self._log,
             )
-            session.send("")
+            # An empty U-Boot command repeats the last command, which may be
+            # a boot command. Interrupt instead to request a fresh prompt
+            # without executing command history.
+            os.write(fd, b"\x03")
             session.wait_for_uboot_prompt(timeout)
         except BaseException:
             self._close_device(fd)
