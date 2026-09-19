@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MPL-2.0
 
 import hashlib
+import io
 import json
 import tempfile
 import time
@@ -225,6 +226,61 @@ class DesktopBootManifestTests(DesktopBootFixture):
                 nonce="0123456789abcdef",
             )
         self.assertEqual(operations.calls[-2:], ["recover", "close"])
+
+
+class DesktopBootMakefileTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        cls.makefile = (repository / "Makefile").read_text(encoding="utf-8")
+
+    def _recipe(self, target: str) -> str:
+        return self.makefile.split(f".PHONY: {target}", 1)[1].split(
+            ".PHONY:", 1
+        )[0]
+
+    def test_makefile_exposes_stable_desktop_boot_defaults(self) -> None:
+        self.assertIn(
+            "MEGREZ_DESKTOP_BOOT_PLAN ?= "
+            "$(CURDIR)/target/megrez-desktop-boot/build/plan.json",
+            self.makefile,
+        )
+        self.assertIn(
+            "MEGREZ_DESKTOP_BOOT_DEVICE ?= "
+            "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
+            self.makefile,
+        )
+        self.assertIn("MEGREZ_DESKTOP_BOOT_OUTPUT_ROOT ?=", self.makefile)
+
+    def test_makefile_start_is_only_the_bounded_start_action(self) -> None:
+        recipe = self._recipe("run_riscv_megrez_desktop")
+        self.assertIn("tools.riscv.megrez_desktop_boot start", recipe)
+        for variable in (
+            "MEGREZ_DESKTOP_BOOT_PLAN",
+            "MEGREZ_DESKTOP_BOOT_DEVICE",
+            "MEGREZ_DESKTOP_BOOT_START_OUTPUT",
+        ):
+            self.assertIn(f"$({variable})", recipe)
+        for forbidden in (
+            " prepare ",
+            "install",
+            "fixture",
+            "qualification",
+            "performance",
+        ):
+            self.assertNotIn(forbidden, recipe)
+
+    def test_makefile_prepare_is_explicit_and_overridable(self) -> None:
+        recipe = self._recipe("prepare_riscv_megrez_desktop_boot")
+        self.assertIn("tools.riscv.megrez_desktop_boot prepare", recipe)
+        for variable in (
+            "MEGREZ_DESKTOP_BOOT_PLAN",
+            "MEGREZ_DESKTOP_BOOT_DEVICE",
+            "MEGREZ_DESKTOP_BOOT_HOST_ADDRESS",
+            "MEGREZ_DESKTOP_BOOT_PREPARE_OUTPUT",
+        ):
+            self.assertIn(f"$({variable})", recipe)
+        self.assertIn("--factory-login", recipe)
 
 
 class DesktopBootStartTests(DesktopBootFixture):
@@ -509,6 +565,22 @@ class DesktopBootStartTests(DesktopBootFixture):
         self.assertEqual(
             operations.transcript,
             b"firmware-before-boot\nguest-before-recovery\nfirmware-after-recovery\n",
+        )
+
+    def test_real_start_reports_split_phase_marker_once(self) -> None:
+        progress = io.StringIO()
+        operations = boot.RealStartOperations("unused", progress_stream=progress)
+        operations._boot_started = 90.0
+        marker = b"DEBIAN_STAGE1_PROGRESS step=start "
+
+        with mock.patch.object(boot.time, "monotonic", return_value=100.0):
+            operations._observe_serial(marker[:17])
+            operations._observe_serial(marker[17:] + marker)
+
+        self.assertEqual(operations.phase_times, {"stage1-start": 10.0})
+        self.assertEqual(
+            progress.getvalue(),
+            "Megrez desktop phase: stage1-start elapsed=10.000s\n",
         )
 
     def test_admission_probe_cannot_match_the_echoed_command(self) -> None:

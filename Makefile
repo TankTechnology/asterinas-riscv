@@ -355,6 +355,14 @@ MEGREZ_FIREFOX_DAILY_USE_BOARD_PEER ?= 10.100.19.200
 MEGREZ_FIREFOX_DAILY_USE_MMC_KERNEL ?=
 MEGREZ_FIREFOX_DAILY_USE_MMC_INITRAMFS ?=
 MEGREZ_FIREFOX_DAILY_USE_MMC_DTB ?=
+MEGREZ_DESKTOP_BOOT_PLAN ?= $(CURDIR)/target/megrez-desktop-boot/build/plan.json
+MEGREZ_DESKTOP_BOOT_DEVICE ?= /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0
+MEGREZ_DESKTOP_BOOT_HOST_ADDRESS ?= 10.100.19.216
+MEGREZ_DESKTOP_BOOT_PORT ?= 18080
+MEGREZ_DESKTOP_BOOT_OUTPUT_ROOT ?= $(CURDIR)/target/megrez-desktop-boot
+MEGREZ_DESKTOP_BOOT_RUN_ID ?= $(shell date -u +%Y%m%dT%H%M%SZ)
+MEGREZ_DESKTOP_BOOT_PREPARE_OUTPUT ?= $(MEGREZ_DESKTOP_BOOT_OUTPUT_ROOT)/prepare-$(MEGREZ_DESKTOP_BOOT_RUN_ID)
+MEGREZ_DESKTOP_BOOT_START_OUTPUT ?= $(MEGREZ_DESKTOP_BOOT_OUTPUT_ROOT)/start-$(MEGREZ_DESKTOP_BOOT_RUN_ID)
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
 DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
 DEBIAN_WEB_NETWORK_MODE ?=
@@ -484,6 +492,7 @@ test_riscv_megrez_boot_stability_unit:
 test_riscv_megrez_desktop_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_desktop \
+		tools.riscv.tests.test_megrez_desktop_boot \
 		tools.riscv.tests.test_megrez_firefox_browse \
 		tools.riscv.tests.test_megrez_clock_sync -v
 
@@ -538,6 +547,31 @@ test_riscv_dual_host_probe:
 test_riscv_megrez_debug_desktop:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_debug_desktop -v
+
+.PHONY: prepare_riscv_megrez_desktop_boot
+prepare_riscv_megrez_desktop_boot:
+	@test -f "$(MEGREZ_DESKTOP_BOOT_PLAN)" || \
+		{ echo "MEGREZ_DESKTOP_BOOT_PLAN must name a regular file" >&2; exit 2; }
+	@test ! -e "$(MEGREZ_DESKTOP_BOOT_PREPARE_OUTPUT)" || \
+		{ echo "MEGREZ_DESKTOP_BOOT_PREPARE_OUTPUT already exists" >&2; exit 2; }
+	@python3 -m tools.riscv.megrez_desktop_boot prepare \
+		--plan "$(MEGREZ_DESKTOP_BOOT_PLAN)" \
+		--device "$(MEGREZ_DESKTOP_BOOT_DEVICE)" \
+		--host-address "$(MEGREZ_DESKTOP_BOOT_HOST_ADDRESS)" \
+		--port "$(MEGREZ_DESKTOP_BOOT_PORT)" \
+		--factory-login \
+		--output "$(MEGREZ_DESKTOP_BOOT_PREPARE_OUTPUT)"
+
+.PHONY: run_riscv_megrez_desktop
+run_riscv_megrez_desktop:
+	@test -f "$(MEGREZ_DESKTOP_BOOT_PLAN)" || \
+		{ echo "MEGREZ_DESKTOP_BOOT_PLAN must name a regular file" >&2; exit 2; }
+	@test ! -e "$(MEGREZ_DESKTOP_BOOT_START_OUTPUT)" || \
+		{ echo "MEGREZ_DESKTOP_BOOT_START_OUTPUT already exists" >&2; exit 2; }
+	@python3 -m tools.riscv.megrez_desktop_boot start \
+		--plan "$(MEGREZ_DESKTOP_BOOT_PLAN)" \
+		--device "$(MEGREZ_DESKTOP_BOOT_DEVICE)" \
+		--output "$(MEGREZ_DESKTOP_BOOT_START_OUTPUT)"
 
 .PHONY: test_riscv_megrez_preboard
 test_riscv_megrez_preboard:
