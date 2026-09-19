@@ -54,11 +54,19 @@ fi
 # already goes to the session log, which the evidence script now reads.
 if tr ' ' '\n' </proc/cmdline 2>/dev/null | grep -qx 'asterinas.egl_probe=1'; then
     xorg_env+=(EGL_LOG_LEVEL=debug LIBGL_DEBUG=verbose MESA_DEBUG=1)
-    # LD_DEBUG is the loader's own tracing, built into glibc.  An LD_PRELOAD
-    # shim meant to answer the same question crashed the X server instead --
-    # interposing dlsym breaks glibc's internal symbol resolution -- and this
-    # needs no shim at all: it names every file the loader searched for and
-    # what it did when it could not find one.
+fi
+
+# LD_DEBUG is the loader's own tracing, built into glibc.  An LD_PRELOAD shim
+# meant to answer the same question crashed the X server instead -- interposing
+# dlsym breaks glibc's internal symbol resolution -- and this needs no shim at
+# all: it names every file the loader searched for and what it did when it
+# could not find one.
+#
+# It rides its own flag rather than `egl_probe`, because it is enormously
+# expensive under emulation -- tracing every library the X server loads turned
+# a ten-second start into five minutes -- and once the loader question is
+# answered it is pure cost.  The EGL variables above stay cheap.
+if tr ' ' '\n' </proc/cmdline 2>/dev/null | grep -qx 'asterinas.loader_trace=1'; then
     xorg_env+=(LD_DEBUG=libs)
 fi
 exec env "${xorg_env[@]}" /usr/bin/xinit "$0" --xsession -- \

@@ -1697,11 +1697,12 @@ impl PerOpenFileOps for DriHandle {
             return Ok(0);
         }
 
+        let traced_command = raw_ioctl.cmd();
         if DRI_TRACE.load(Ordering::Relaxed) {
             ostd::error!("DRI_IOCTL cmd={:#010x} arg={:#x}", raw_ioctl.cmd(), raw_ioctl.arg());
         }
 
-        dispatch_ioctl!(match raw_ioctl {
+        let result: Result<i32> = dispatch_ioctl!(match raw_ioctl {
             cmd @ GetVersion => {
                 let mut version = cmd.read()?;
                 version.version_major = 0;
@@ -1975,7 +1976,20 @@ impl PerOpenFileOps for DriHandle {
                 );
                 return_errno_with_message!(Errno::ENOTTY, "the ioctl command is unknown");
             }
-        })
+        });
+
+        // Only the refusals, and only after the fact: the line above already
+        // records the sequence, and a client that stops early stops because of
+        // one call the driver would not serve. `Errno` alone does not say
+        // which.
+        if DRI_TRACE.load(Ordering::Relaxed) && let Err(error) = &result {
+            ostd::error!(
+                "DRI_IOCTL REFUSED cmd={:#010x} errno={:?}",
+                traced_command,
+                error.error()
+            );
+        }
+        result
     }
 }
 
