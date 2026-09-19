@@ -286,7 +286,9 @@ startup_ready() {
         boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=monotonic-clock'
         return 1
     }
-    readiness_deadline=$((readiness_started + 240))
+    # Leave enough of the kernel's 300-second watchdog window to record the
+    # terminal blocker before the watchdog performs the recovery reboot.
+    readiness_deadline=$((readiness_started + 220))
     attempt=0
     last_reported_reason=
     readiness_reason=unknown
@@ -329,6 +331,10 @@ startup_snapshot() {
     cpu_ticks=0
     task_count=0
     rss_kb=0
+    read_bytes=0
+    rchar=0
+    voluntary_ctxt=0
+    nonvoluntary_ctxt=0
     case "$pid" in
         '' | *[!0-9]*) pid=0 ;;
         *)
@@ -336,7 +342,11 @@ startup_snapshot() {
                 state=$(awk '/^State:/{print $2}' "/proc/$pid/status" 2>/dev/null || true)
                 threads=$(awk '/^Threads:/{print $2}' "/proc/$pid/status" 2>/dev/null || true)
                 rss_kb=$(awk '/^VmRSS:/{print $2}' "/proc/$pid/status" 2>/dev/null || true)
+                voluntary_ctxt=$(awk '$1 == "voluntary_ctxt_switches:" {print $2}' "/proc/$pid/status" 2>/dev/null || true)
+                nonvoluntary_ctxt=$(awk '$1 == "nonvoluntary_ctxt_switches:" {print $2}' "/proc/$pid/status" 2>/dev/null || true)
                 cpu_ticks=$(awk '{print $14 + $15}' "/proc/$pid/stat" 2>/dev/null || true)
+                read_bytes=$(awk '$1 == "read_bytes:" {print $2}' "/proc/$pid/io" 2>/dev/null || true)
+                rchar=$(awk '$1 == "rchar:" {print $2}' "/proc/$pid/io" 2>/dev/null || true)
                 for task in /proc/$pid/task/[0-9]*; do
                     [ -d "$task" ] && task_count=$((task_count + 1))
                 done
@@ -347,6 +357,10 @@ startup_snapshot() {
     [ -n "$threads" ] || threads=0
     [ -n "$rss_kb" ] || rss_kb=0
     [ -n "$cpu_ticks" ] || cpu_ticks=0
+    [ -n "$read_bytes" ] || read_bytes=0
+    [ -n "$rchar" ] || rchar=0
+    [ -n "$voluntary_ctxt" ] || voluntary_ctxt=0
+    [ -n "$nonvoluntary_ctxt" ] || nonvoluntary_ctxt=0
     all_window_ids=$(/usr/bin/timeout --kill-after=1s 5s /usr/bin/env \
         DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
         /usr/bin/xdotool search --class firefox 2>/dev/null || true)
@@ -361,9 +375,15 @@ startup_snapshot() {
     [ -n "$watchdog" ] || watchdog=missing
     uptime=$(cut -d' ' -f1 /proc/uptime 2>/dev/null || true)
     [ -n "$uptime" ] || uptime=missing
-    printf '__ASTERINAS_STARTUP_SNAPSHOT__ uptime=%s service=%s pid=%s state=%s threads=%s tasks=%s cpu_ticks=%s rss_kb=%s all_windows=%s visible_windows=%s watchdog=%s\n' \
+    runqueue=$(awk '{print $4}' /proc/loadavg 2>/dev/null || true)
+    [ -n "$runqueue" ] || runqueue=missing
+    procs_running=$(awk '$1 == "procs_running" {print $2}' /proc/stat 2>/dev/null || true)
+    [ -n "$procs_running" ] || procs_running=missing
+    printf '__ASTERINAS_STARTUP_SNAPSHOT__ uptime=%s service=%s pid=%s state=%s threads=%s tasks=%s cpu_ticks=%s rss_kb=%s read_bytes=%s rchar=%s voluntary_ctxt=%s nonvoluntary_ctxt=%s runqueue=%s procs_running=%s all_windows=%s visible_windows=%s watchdog=%s\n' \
         "$uptime" "$service" "$pid" "$state" "$threads" "$task_count" \
-        "$cpu_ticks" "$rss_kb" "$all_windows" "$visible_windows" "$watchdog"
+        "$cpu_ticks" "$rss_kb" "$read_bytes" "$rchar" "$voluntary_ctxt" \
+        "$nonvoluntary_ctxt" "$runqueue" "$procs_running" "$all_windows" \
+        "$visible_windows" "$watchdog"
 }
 
 browser_identity() {
