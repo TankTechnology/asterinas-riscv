@@ -23,7 +23,7 @@
 mod cursor;
 mod fence;
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use align_ext::AlignExt;
 use aster_virtio::device::gpu::{device::GpuDevice, first_device};
@@ -188,6 +188,17 @@ impl GemObjects {
         }
     }
 }
+
+/// Diagnostic switch, on with `asterinas.dri_trace=1`: print every DRM ioctl
+/// command as it is dispatched.
+///
+/// A client that gives up on this device before issuing anything is a
+/// different problem from one that is refused part-way, and nothing else
+/// distinguishes them: Mesa's own debug output is compiled out of Debian's
+/// release build, and `LD_DEBUG` only shows the objects it ended up
+/// loading, not the ioctls it chose not to send.
+static DRI_TRACE: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.dri_trace", DRI_TRACE);
 
 /// The one object space. Lock ordering: take a file's `DriInner` first, then
 /// this, never the other way round.
@@ -1629,6 +1640,10 @@ impl PerOpenFileOps for DriHandle {
         if raw_ioctl.cmd() == MODE_RMFB_CMD {
             self.rm_fb(raw_ioctl.arg() as u32)?;
             return Ok(0);
+        }
+
+        if DRI_TRACE.load(Ordering::Relaxed) {
+            ostd::error!("DRI_IOCTL cmd={:#010x} arg={:#x}", raw_ioctl.cmd(), raw_ioctl.arg());
         }
 
         dispatch_ioctl!(match raw_ioctl {

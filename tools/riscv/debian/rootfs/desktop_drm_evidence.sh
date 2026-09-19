@@ -507,10 +507,13 @@ grep -aE 'EGL|GBM|Mesa|mesa|libGL|DRI|swrast|virgl|virtio|kmsro' \
 # build, and an LD_PRELOAD shim written to answer the same question crashed the
 # X server instead.
 {
-    grep -aE 'find library=|trying file=' "$SESSION_LOG" 2>/dev/null |
-        grep -aiE 'dri|gallium|egl|gbm|swrast|virgl' | head -60
-    grep -aE 'error:|cannot open shared|undefined symbol|symbol lookup' \
-        "$SESSION_LOG" 2>/dev/null | head -40
+    # No `head` here: truncating this output is how an earlier reading of it
+    # concluded that no gbm backend was ever opened, when the lines that would
+    # have shown otherwise had simply been cut off.
+    grep -aE 'calling init:.*/dri/|trying file=.*/(dri|gbm)/|dri_gbm' \
+        "$SESSION_LOG" 2>/dev/null | tail -40
+    grep -aE 'error:|cannot open shared|undefined symbol' \
+        "$SESSION_LOG" 2>/dev/null | grep -av 'libfm/modules' | head -25
 } >>"$CONSOLE" 2>&1 || true
 
 emit "DEBIAN_DESKTOP_DRM_GL renderer=$gl_renderer"
