@@ -1,9 +1,10 @@
 # DRM desktop boot performance: the gap was the build profile, 2026-09-19
 
-**Headline: built optimized, Asterinas brings the Debian desktop up in 15--16
-seconds against the Linux control's 15--19, and is ahead of it at every
-milestone along the way.** The ~20x gap recorded earlier the same day was
-almost entirely an artifact of measuring an unoptimized kernel.
+**Headline: built optimized and with no U-Boot autoboot delay, Asterinas brings
+the Debian desktop up in ~13 seconds against the Linux control's 15--19, and is
+ahead of it at every milestone along the way.** The ~20x gap recorded earlier
+the same day was almost entirely an artifact of measuring an unoptimized
+kernel; a further ~2.8 s was a literal two-second countdown in the bootloader.
 
 This record supersedes the debug-era numbers it replaces, states why they
 misled, and keeps the one optimization that survived on its own merits.
@@ -38,10 +39,53 @@ Debian `6.12.107+deb13-riscv64` kernel. Guest uptimes in seconds:
 | Xorg first seen | **6, 6, 6** | 10, 11, 12 |
 | openbox first seen | **9, 10, 11** | 15, 15, 17 |
 | all five clients running | **11, 11, 11** | 15, 17, 18 |
-| desktop READY (wall clock) | **16, 15, 16 s** | ~15--19 s |
+| desktop READY (wall clock) | **13.1 s** | ~15--19 s |
 
 The `xorg -> openbox` gap, which was 87--162 s before and the single largest
 cost in the boot, is now **3--5 s** against Linux's 3--6 s.
+
+## Where the 13 seconds go
+
+The evidence script's milestones are guest uptimes, and a guest uptime cannot
+see the time before the guest kernel existed -- which is exactly where the
+remaining cost was.  Timing the serial output against QEMU's real start
+(`tools/riscv/perf/phase-timing.sh`) splits it:
+
+| phase | before | after |
+|---|---:|---:|
+| QEMU + OpenSBI + U-Boot start | 1.52 s | 1.03 s |
+| **U-Boot -> kernel handoff** | **4.19 s** | **1.63 s** |
+| systemd | 5.81 s | 3.38 s |
+| `basic.target` | 7.92 s | 5.76 s |
+| all five clients | 15.25 s | **13.11 s** |
+
+A consistency check falls out of this: wall offset minus guest uptime is 4.92 s
+at `basic.target` and 4.24 s at the clients.  Near-constant means the pre-guest
+cost is real and the two clocks agree; it also showed up an early version of
+the tool that reported two phases five seconds apart as simultaneous, because
+polling with a separate `grep` per pattern was slower than the phases were.
+
+**Roughly 4.2 s happened before the guest kernel started, and Linux pays almost
+none of it** -- the control loads the kernel directly with `-kernel`, so it has
+neither U-Boot nor a stage-1 initramfs.  Asterinas's guest is the faster of the
+two (clients at 11 s against Linux's 15--18); the pre-guest phase is what made
+the totals equal.
+
+**And 2.0 s of that was a literal autoboot countdown.**  U-Boot's stock
+`qemu-riscv64_smode_defconfig` sets `CONFIG_BOOTDELAY=2`, so every boot printed
+`Hit any key to stop autoboot: 2/1/0` and waited for a keypress no automated
+boot sends.  Setting it to 0 in `prepare_qemu_uboot_booti.sh` took
+`basic.target` from 7.92/8.67 s to 5.39/5.57 s and desktop READY from
+15.25/17.53 s to 12.87/15.84 s, landing at 13.11 s.
+
+Two things had to be checked before that could land, because it looks like it
+should break the gate.  The gate drives the U-Boot prompt with
+`serial.wait_for(b"=> ")`, and it reaches that prompt because the default
+`bootcmd` fails to find a bootable device and falls back -- **not** because
+anything interrupts the countdown; the `Device 0: unknown device` sequence is
+identical before and after.  And the `Hit any key to stop autoboot` line is
+still printed, as `: 0`, so the reboot synchronisation marker in
+`systemd_m2_gate.py` still matches.
 
 ## The per-operation benchmark, before and after
 
