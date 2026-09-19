@@ -461,6 +461,23 @@ class BrowserDailyUseContractTests(unittest.TestCase):
         with self.assertRaises(DailyUseContractError):
             validate_daily_use_result(reordered_navigation)
 
+    def test_context_total_accepts_cross_architecture_float_rounding(self) -> None:
+        result = complete_result()
+        metrics = result["performance"][4]["metrics"]
+        for name, value in zip(
+            ("openMs", "selectMs", "returnMs", "closeMs"),
+            (0.1, 0.2, 0.3, 0.4),
+        ):
+            metrics[name] = value
+        metrics["totalMs"] = math.nextafter(1.0, math.inf)
+
+        normalized = validate_daily_use_result(result)
+
+        self.assertEqual(
+            normalized["performance"][4]["metrics"]["totalMs"],
+            sum((0.1, 0.2, 0.3, 0.4)),
+        )
+
     def test_retains_invalid_fetch_start_with_valid_navigation_intervals(self) -> None:
         result = complete_result()
         result["performance"][3] = {

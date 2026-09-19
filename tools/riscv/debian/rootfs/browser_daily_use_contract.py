@@ -382,7 +382,11 @@ def _normalize_context_metrics(value: object) -> tuple[dict[str, int | float], b
     }
     total = _duration_ms(metrics["totalMs"], "context switch total")
     derived_total = sum(durations.values())
-    if total != derived_total:
+    # The guest and host may use different IEEE-754 implementations. JSON
+    # preserves each operand, but their repeated sum can still differ by one
+    # final rounding bit across architectures. Accept only sub-nanosecond
+    # representation noise; material disagreement remains fail-closed.
+    if not math.isclose(total, derived_total, rel_tol=1e-12, abs_tol=1e-9):
         raise DailyUseContractError("context switch total is not derived from operations")
     before = _nonnegative_int(metrics["handleCountBefore"], "context handle count")
     after = _nonnegative_int(metrics["handleCountAfter"], "context handle count")

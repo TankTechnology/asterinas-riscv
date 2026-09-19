@@ -1413,11 +1413,10 @@ class PhysicalCommandTests(unittest.TestCase):
         operations._debug_console_ready = True
         operations._guest_deadline = time.monotonic() + 60
         operations._recovery_cursor = 0
-        serial = mock.Mock(transcript=b"")
+        serial = mock.Mock(transcript=b"1234567^C\r\nroot@asterinas-debug:/# ")
         serial.checkpoint.side_effect = (7, 11)
         operations._serial = serial
         nonce = "0123"
-        ready = f"__ASTERINAS_PHYSICAL_REBOOT_READY__ nonce={nonce}"
         marker = f"__ASTERINAS_PHYSICAL_REBOOT__ nonce={nonce}"
 
         with (
@@ -1425,7 +1424,7 @@ class PhysicalCommandTests(unittest.TestCase):
             mock.patch.object(
                 operations,
                 "_next_line",
-                side_effect=((ready, 8), (marker, 12)),
+                return_value=(marker, 12),
             ),
             mock.patch.object(operations, "_sync_serial_log"),
         ):
@@ -1433,13 +1432,19 @@ class PhysicalCommandTests(unittest.TestCase):
 
         self.assertEqual(
             serial.send.call_args_list[0].args[0],
-            f"\x03\nprintf '{ready}\\n'\n".encode(),
+            b"\x03",
         )
         self.assertEqual(
             serial.send.call_args_list[1].args[0],
             f"sync; printf '{marker}\\n'; reboot -f\n".encode(),
         )
-        serial.wait_for.assert_not_called()
+        self.assertEqual(
+            serial.wait_for.call_args_list,
+            [
+                mock.call(b"^C", mock.ANY, start=7),
+                mock.call(b"root@asterinas-debug:/#", mock.ANY, start=9),
+            ],
+        )
         self.assertEqual(operations._recovery_cursor, 11)
 
     def test_one_cycle_final_command_and_completion_marker(self) -> None:
