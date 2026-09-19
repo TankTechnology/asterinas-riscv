@@ -533,6 +533,34 @@ class OperatorDisplayEvidenceTests(unittest.TestCase):
         self.assertGreater(reader.call_args.args[1], 0)
         self.assertLessEqual(reader.call_args.args[1], 30)
 
+    def test_real_adapter_interrupts_uboot_without_repeating_command_history(
+        self,
+    ) -> None:
+        gate = load_gate(self)
+        session = mock.Mock()
+        close_device = mock.Mock()
+        operations = gate.RealPhysicalGraphicsOperations(
+            SimpleNamespace(artifacts=(), plan_sha256="a" * 64),
+            "/dev/serial/by-id/test",
+            Path("/unused"),
+            None,
+            display_mode=gate.DisplayEvidenceMode.OPERATOR_ATTESTED,
+            cycles_requested=1,
+            open_device=mock.Mock(return_value=57),
+            lock_device=mock.Mock(),
+            close_device=close_device,
+            session_factory=mock.Mock(return_value=session),
+        )
+
+        with mock.patch("os.write") as write:
+            operations.open(30)
+            operations.close()
+
+        write.assert_called_once_with(57, b"\x03")
+        session.send.assert_not_called()
+        session.wait_for_uboot_prompt.assert_called_once_with(30)
+        close_device.assert_called_once_with(57)
+
 
 class PhysicalCliTests(unittest.TestCase):
     BASE_ARGUMENTS = (
@@ -938,7 +966,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
         self.assertFalse(any(token.startswith("systemd.unit=") for token in tokens))
         self.assertNotIn("systemd.unit=multi-user.target", tokens)
         self.assertNotIn("asterinas.reboot_after=600", tokens)
-        self.assertNotIn("asterinas.mmc_write_partition2", tokens)
+        self.assertEqual(tokens.count("asterinas.mmc_write_partition2"), 1)
         self.assertEqual(
             tokens.count("systemd.mask=asterinas-browser-web-evidence.service"), 1
         )
@@ -973,7 +1001,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
             ],
         )
 
-    def test_physical_bootargs_remove_partition_write_aliases(self) -> None:
+    def test_physical_bootargs_canonicalize_partition_write_aliases(self) -> None:
         gate = load_gate(self)
         for spelling in (
             "asterinas.mmc_write_partition2",
@@ -989,7 +1017,13 @@ class PhysicalLifecycleTests(unittest.TestCase):
                     token.partition("=")[0].replace("-", "_")
                     for token in gate.physical_bootargs(plan).split()
                 }
-                self.assertNotIn("asterinas.mmc_write_partition2", normalized_names)
+                self.assertIn("asterinas.mmc_write_partition2", normalized_names)
+                self.assertEqual(
+                    gate.physical_bootargs(plan)
+                    .split()
+                    .count("asterinas.mmc_write_partition2"),
+                    1,
+                )
 
     def test_publishes_pass_only_after_three_cycles_hdmi_and_recovery(self) -> None:
         gate = load_gate(self)

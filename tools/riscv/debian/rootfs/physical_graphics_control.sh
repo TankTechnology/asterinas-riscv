@@ -337,7 +337,7 @@ daily_use() {
                 else
                     xorg_pid=$1
                     PYTHONDONTWRITEBYTECODE=1 \
-                        nsenter -t "$original_pid" -n \
+                        nsenter -t "$original_pid" -m -n \
                         /run/asterinas-tools/browser-daily-use-gate \
                         --firefox-pid "$original_pid" --xorg-pid "$xorg_pid" \
                         --fixture-index-url "$fixture_index" \
@@ -346,7 +346,7 @@ daily_use() {
                     gate_status=$?
                     [ "$gate_status" -ne 0 ] || outcome=pass
                     PYTHONDONTWRITEBYTECODE=1 \
-                        nsenter -t "$original_pid" -n \
+                        nsenter -t "$original_pid" -m -n \
                         /run/asterinas-tools/browser-daily-use-upload \
                         "$evidence_dir" "$experiment_id" "$outcome" "$upload_url" \
                         --timeout 15
