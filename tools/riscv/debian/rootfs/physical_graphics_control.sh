@@ -321,6 +321,51 @@ startup_ready() {
     boot_phase "ASTERINAS_DESKTOP_BOOT_READY firefox_pid=$pid"
 }
 
+startup_snapshot() {
+    service=$(systemctl is-active asterinas-browser-web.service 2>/dev/null || true)
+    pid=$(systemctl show --property MainPID --value asterinas-browser-web.service 2>/dev/null || true)
+    state=missing
+    threads=0
+    cpu_ticks=0
+    task_count=0
+    rss_kb=0
+    case "$pid" in
+        '' | *[!0-9]*) pid=0 ;;
+        *)
+            if [ -r "/proc/$pid/status" ] && [ -r "/proc/$pid/stat" ]; then
+                state=$(awk '/^State:/{print $2}' "/proc/$pid/status" 2>/dev/null || true)
+                threads=$(awk '/^Threads:/{print $2}' "/proc/$pid/status" 2>/dev/null || true)
+                rss_kb=$(awk '/^VmRSS:/{print $2}' "/proc/$pid/status" 2>/dev/null || true)
+                cpu_ticks=$(awk '{print $14 + $15}' "/proc/$pid/stat" 2>/dev/null || true)
+                for task in /proc/$pid/task/[0-9]*; do
+                    [ -d "$task" ] && task_count=$((task_count + 1))
+                done
+            fi
+            ;;
+    esac
+    [ -n "$state" ] || state=unknown
+    [ -n "$threads" ] || threads=0
+    [ -n "$rss_kb" ] || rss_kb=0
+    [ -n "$cpu_ticks" ] || cpu_ticks=0
+    all_window_ids=$(/usr/bin/timeout --kill-after=1s 5s /usr/bin/env \
+        DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
+        /usr/bin/xdotool search --class firefox 2>/dev/null || true)
+    set -- $all_window_ids
+    all_windows=$#
+    visible_window_ids=$(/usr/bin/timeout --kill-after=1s 5s /usr/bin/env \
+        DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
+        /usr/bin/xdotool search --onlyvisible --class firefox 2>/dev/null || true)
+    set -- $visible_window_ids
+    visible_windows=$#
+    watchdog=$(cat /proc/sys/kernel/asterinas_reboot_watchdog 2>/dev/null || true)
+    [ -n "$watchdog" ] || watchdog=missing
+    uptime=$(cut -d' ' -f1 /proc/uptime 2>/dev/null || true)
+    [ -n "$uptime" ] || uptime=missing
+    printf '__ASTERINAS_STARTUP_SNAPSHOT__ uptime=%s service=%s pid=%s state=%s threads=%s tasks=%s cpu_ticks=%s rss_kb=%s all_windows=%s visible_windows=%s watchdog=%s\n' \
+        "$uptime" "$service" "$pid" "$state" "$threads" "$task_count" \
+        "$cpu_ticks" "$rss_kb" "$all_windows" "$visible_windows" "$watchdog"
+}
+
 browser_identity() {
     pid=$(systemctl show --property MainPID --value asterinas-browser-web.service 2>/dev/null || true)
     restarts=$(systemctl show --property NRestarts --value asterinas-browser-web.service 2>/dev/null || true)
@@ -471,6 +516,7 @@ case "$action" in
     start-browser) [ "$#" -eq 0 ] || die_usage; start_browser 1 ;;
     start-web) [ "$#" -eq 0 ] || die_usage; start_browser 0 ;;
     startup-ready) [ "$#" -eq 0 ] || die_usage; startup_ready ;;
+    startup-snapshot) [ "$#" -eq 0 ] || die_usage; startup_snapshot ;;
     cycle) cycle "$@" ;;
     final) final "$@" ;;
     daily-use) daily_use "$@" ;;

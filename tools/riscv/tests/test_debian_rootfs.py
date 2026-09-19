@@ -1537,6 +1537,22 @@ int main(void)
         self.assertNotIn("printf '%s\\n' \"$1\"\n", source)
         self.assertNotIn("printf '%s\\n' \"$1\" >/dev/console", source)
 
+    def test_physical_graphics_control_has_bounded_startup_snapshot(self) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+        snapshot = source[source.index("startup_snapshot() {") :]
+        snapshot = snapshot[: snapshot.index("\nbrowser_identity() {")]
+
+        self.assertIn(
+            'startup-snapshot) [ "$#" -eq 0 ] || die_usage; startup_snapshot ;;',
+            source,
+        )
+        self.assertIn("/proc/$pid/status", snapshot)
+        self.assertIn("/proc/$pid/stat", snapshot)
+        self.assertIn("/proc/$pid/task/", snapshot)
+        self.assertIn("/proc/sys/kernel/asterinas_reboot_watchdog", snapshot)
+        self.assertGreaterEqual(snapshot.count("/usr/bin/timeout"), 2)
+        self.assertIn("__ASTERINAS_STARTUP_SNAPSHOT__", snapshot)
+
     def test_stage1_exposes_ephemeral_tools_from_run_without_rootfs_writes(
         self,
     ) -> None:
