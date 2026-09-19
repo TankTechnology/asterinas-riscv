@@ -1533,7 +1533,8 @@ int main(void)
         self.assertIn("ASTERINAS_DESKTOP_BOOT_WAIT", startup)
         self.assertNotIn('if [ "$attempt" -ge 240 ]', startup)
         self.assertIn("readiness_deadline", startup)
-        self.assertIn("printf '%s\\n' \"$1\"\n", source)
+        self.assertIn("printf '<6>%s\\n' \"$1\" >/dev/kmsg", source)
+        self.assertNotIn("printf '%s\\n' \"$1\"\n", source)
         self.assertNotIn("printf '%s\\n' \"$1\" >/dev/console", source)
 
     def test_stage1_exposes_ephemeral_tools_from_run_without_rootfs_writes(

@@ -221,10 +221,10 @@ start_browser() {
 }
 
 boot_phase() {
-    # systemd owns duplication to the journal and serial console for the
-    # readiness service.  Redirecting through /dev/console loses messages
-    # after the isolated debug shell takes ttyS0 ownership.
-    printf '%s\n' "$1"
+    # The isolated debug shell owns ttyS0, so both /dev/console and systemd's
+    # console output can lose readiness lines.  Kernel logging retains the
+    # journal copy and uses the already-proven serial klog path.
+    printf '<6>%s\n' "$1" >/dev/kmsg
 }
 
 monotonic_seconds() {
