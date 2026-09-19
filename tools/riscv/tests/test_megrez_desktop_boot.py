@@ -63,6 +63,7 @@ class DesktopBootManifestTests(unittest.TestCase):
         self.assertEqual(len(manifest.generation_sha256), 64)
         self.assertTrue(manifest.generation_directory.endswith(manifest.generation_sha256[:16]))
         self.assertEqual(manifest.canonical_bytes(), manifest.canonical_bytes())
+        self.assertNotIn(str(self.root), manifest.canonical_bytes().decode())
 
     def test_generation_uses_safe_sha_prefixed_p3_paths(self) -> None:
         manifest = boot.DesktopBootManifest.from_plan(self.plan)
@@ -82,6 +83,142 @@ class DesktopBootManifestTests(unittest.TestCase):
         self.plan.write_text(json.dumps(document))
         with self.assertRaisesRegex(boot.DesktopBootError, "identity mismatch"):
             boot.DesktopBootManifest.from_plan(self.plan)
+
+    def test_rejects_symlink_source(self) -> None:
+        document = json.loads(self.plan.read_text())
+        source = Path(document["artifacts"][0]["path"])
+        target = source.with_suffix(".real")
+        source.rename(target)
+        source.symlink_to(target)
+
+        with self.assertRaisesRegex(boot.DesktopBootError, "symbolic link"):
+            boot.DesktopBootManifest.from_plan(self.plan)
+
+    def test_rejects_duplicate_artifact_names(self) -> None:
+        document = json.loads(self.plan.read_text())
+        document["artifacts"].append(document["artifacts"][0])
+        self.plan.write_text(json.dumps(document))
+
+        with self.assertRaisesRegex(boot.DesktopBootError, "duplicate"):
+            boot.DesktopBootManifest.from_plan(self.plan)
+
+    def test_publication_script_is_atomic_idempotent_and_partition3_only(self) -> None:
+        manifest = boot.DesktopBootManifest.from_plan(self.plan)
+        script = boot.publication_script(
+            manifest, "http://10.100.19.216:18080", "0123456789abcdef"
+        )
+
+        self.assertIn("mktemp -d", script)
+        self.assertIn("trap", script)
+        self.assertIn("mv -T", script)
+        self.assertIn("sha256sum -c", script)
+        self.assertIn("ASTERINAS_DESKTOP_GENERATION_READY", script)
+        self.assertNotIn("mmcblk1p1", script)
+        self.assertNotIn("mmcblk1p2", script)
+        self.assertNotIn(str(self.root), script)
+        self.assertNotIn("debian", script.split("GENERATION_ROOT=", 1)[0])
+        self.assertIn(
+            f'"{manifest.artifacts["kernel"].sha256}  $WORK/', script
+        )
+
+    def test_publication_script_rejects_unsafe_transport_inputs(self) -> None:
+        manifest = boot.DesktopBootManifest.from_plan(self.plan)
+        for base_url, nonce in (
+            ("http://host/a b", "0123456789abcdef"),
+            ("http://host", "../escape"),
+        ):
+            with self.subTest(base_url=base_url, nonce=nonce):
+                with self.assertRaises(boot.DesktopBootError):
+                    boot.publication_script(manifest, base_url, nonce)
+
+    def test_prepare_uses_rockos_and_always_returns_to_uboot(self) -> None:
+        manifest = boot.DesktopBootManifest.from_plan(self.plan)
+
+        class Operations:
+            def __init__(self) -> None:
+                self.calls = []
+                self.publication_transcript = (
+                    "ASTERINAS_DESKTOP_GENERATION_READY "
+                    f"generation={manifest.generation_sha256}"
+                ).encode()
+
+            def open(self, timeout):
+                self.calls.append(("open", timeout))
+
+            def boot_rockos(self, timeout):
+                self.calls.append(("boot", timeout))
+
+            def login(self, username, password, timeout):
+                self.calls.append(("login", username, password, timeout))
+
+            def publish(self, commands, password, timeout):
+                self.calls.append(("publish", commands, password, timeout))
+
+            def reboot_and_recover(self, password, timeout):
+                self.calls.append(("recover", password, timeout))
+
+            def close(self):
+                self.calls.append(("close",))
+
+        operations = Operations()
+        transcript = boot.prepare_generation(
+            manifest,
+            operations,
+            username="debian",
+            password="secret",
+            base_url="http://10.100.19.216:18080",
+            nonce="0123456789abcdef",
+        )
+
+        self.assertEqual(transcript, operations.publication_transcript)
+        self.assertEqual(
+            [call[0] for call in operations.calls],
+            ["open", "boot", "login", "publish", "recover", "close"],
+        )
+        launcher = operations.calls[3][1][0]
+        self.assertIn(manifest.generation_sha256[:16], launcher)
+        self.assertIn("sha256sum -c", launcher)
+        self.assertNotIn("secret", launcher)
+
+    def test_prepare_recovers_after_publication_failure(self) -> None:
+        manifest = boot.DesktopBootManifest.from_plan(self.plan)
+
+        class Operations:
+            publication_transcript = b""
+
+            def __init__(self) -> None:
+                self.calls = []
+
+            def open(self, timeout):
+                self.calls.append("open")
+
+            def boot_rockos(self, timeout):
+                self.calls.append("boot")
+
+            def login(self, username, password, timeout):
+                self.calls.append("login")
+
+            def publish(self, commands, password, timeout):
+                self.calls.append("publish")
+                raise RuntimeError("interrupted")
+
+            def reboot_and_recover(self, password, timeout):
+                self.calls.append("recover")
+
+            def close(self):
+                self.calls.append("close")
+
+        operations = Operations()
+        with self.assertRaisesRegex(RuntimeError, "interrupted"):
+            boot.prepare_generation(
+                manifest,
+                operations,
+                username="debian",
+                password="secret",
+                base_url="http://10.100.19.216:18080",
+                nonce="0123456789abcdef",
+            )
+        self.assertEqual(operations.calls[-2:], ["recover", "close"])
 
 
 if __name__ == "__main__":
