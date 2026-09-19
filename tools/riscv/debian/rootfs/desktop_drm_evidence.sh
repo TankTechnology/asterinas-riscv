@@ -37,6 +37,24 @@ fi
 
 emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
 
+# Snapshot the kernel's own cumulative counters so an Asterinas run can be
+# compared with the Linux control on the same axes.
+#
+# `ctxt` is the total context-switch count and `processes` the total number of
+# processes created, both since boot.  Two snapshots -- at basic.target and at
+# desktop READY -- bound the desktop phase without any kernel-side
+# instrumentation, and they are the same two numbers `/proc/stat` reports on
+# Linux, so the comparison needs no translation.
+#
+# This matters because an address-space switch rewrites `satp`, and QEMU
+# flushes its whole TLB on any `satp` change (it does not tag its TLB by ASID),
+# so a difference in switch *rate* would be a difference in TLB-flush rate.
+emit_stat_snapshot() {
+    local phase="$1" stats
+    stats="$(grep -E '^(ctxt|processes|procs_running) ' /proc/stat 2>/dev/null | tr '\n' ' ' || true)"
+    emit "DEBIAN_DESKTOP_DRM_STAT phase=$phase $stats"
+}
+
 # The desktop panel can emit the same GLib warning thousands of times, which
 # pushes the lines that actually explain a failure out of the tail window.
 # Collapse runs of identical lines so the dump stays readable and bounded.
@@ -241,6 +259,7 @@ fi
 # "the desktop clients came up", which are different problems: the first is
 # the kernel's and the second is the session's.
 emit "DEBIAN_DESKTOP_DRM_BOOT phase=basic-target uptime=$(uptime_seconds)"
+emit_stat_snapshot basic-target
 
 while ! ready; do
     (( $(uptime_seconds) < DEADLINE_SECONDS )) || fail desktop-timeout
@@ -277,6 +296,7 @@ emit "DEBIAN_DESKTOP_DRM_INPUT keyboard=evdev pointer=evdev"
 emit 'DEBIAN_DESKTOP_DRM_XORG driver=modesetting device=virtio-gpu drm=active display=:0'
 emit 'DEBIAN_DESKTOP_DRM_CLIENTS window-manager=openbox file-manager=pcmanfm panel=lxpanel terminal=xterm'
 emit "DEBIAN_DESKTOP_DRM_READY user=$USER_NAME display=:0"
+emit_stat_snapshot ready
 
 # Record the acceleration setup in the serial transcript so that gate runs
 # are self-diagnosing (e.g. glamor falling back to software rendering).
