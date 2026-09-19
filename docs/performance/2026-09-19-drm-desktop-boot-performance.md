@@ -86,12 +86,25 @@ top `systemd-analyze blame`. On this rootfs both are redundant rather than
 merely expensive: the image is immutable, nothing installs libraries at
 runtime, and it already ships a complete `/etc/ld.so.cache` (15,771 bytes).
 
-Measured on the debug kernel, where it was isolated as a within-profile A/B:
-`basic.target` fell from 163--178 s to 129--139 s, every masked run below every
-unmasked run including eight historical ones. The mask is an *absolute* saving
-rather than a fixed fraction, so on a 3-second boot it is a much smaller share
--- it is retained because the work is genuinely redundant, not because it is
-worth much now. `tools/riscv/perf/toggle-redundant-units.sh` applies it.
+**Re-measured on the release kernel, it is worth about one second and nothing
+end-to-end.** Interleaved A/B, two runs per arm:
+
+| | unmasked | masked |
+|---|---|---|
+| `basic.target` (guest uptime) | 5, 5 | 4, 4 |
+| desktop READY (wall) | 16, 19 s | 16, 18 s |
+
+The mask is an *absolute* saving, and on the debug kernel -- where the same
+`ldconfig` run cost far more -- it was worth ~36 s of a ~350 s boot. On a
+16-second boot the same work costs about a second, and the wall-clock
+difference is inside the noise.
+
+So the earlier framing of this as "the landed optimization" does not survive
+the release kernel: what looked like a 10% win was 10% of a debug-inflated
+boot. It is kept because the work is genuinely redundant -- an immutable image
+that already ships a complete `/etc/ld.so.cache` has no reason to rebuild it
+every boot -- and not because it is a meaningful speedup.
+`tools/riscv/perf/toggle-redundant-units.sh` applies it.
 
 The masks must live in the base image: the gate recomputes a derived image's
 hash from (base, spec), so a symlink added to a derived image is rejected with
