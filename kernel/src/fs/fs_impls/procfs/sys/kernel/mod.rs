@@ -6,6 +6,7 @@ use crate::{
         procfs::{
             ProcDir, StaticEntry,
             sys::kernel::{
+                asterinas_reboot_watchdog::AsterinasRebootWatchdogFileOps,
                 cap_last_cap::CapLastCapFileOps,
                 dmesg_restrict::DmesgRestrictFileOps,
                 pid_max::PidMaxFileOps,
@@ -25,6 +26,7 @@ use crate::{
     security::lsm::is_yama_enabled,
 };
 
+mod asterinas_reboot_watchdog;
 mod cap_last_cap;
 mod dmesg_restrict;
 mod pid_max;
@@ -46,6 +48,11 @@ impl KernelDirOps {
 
     const STATIC_ENTRIES: &'static [StaticEntry] = &[
         (
+            "asterinas_reboot_watchdog",
+            InodeType::File,
+            AsterinasRebootWatchdogFileOps::new_inode,
+        ),
+        (
             "cap_last_cap",
             InodeType::File,
             CapLastCapFileOps::new_inode,
@@ -63,6 +70,30 @@ impl KernelDirOps {
         ("tainted", InodeType::File, TaintedFileOps::new_inode),
         ("version", InodeType::File, VersionFileOps::new_inode),
     ];
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::*;
+
+    use super::asterinas_reboot_watchdog::{validate_disarm_value, validate_write_offset};
+    use crate::prelude::Errno;
+
+    #[ktest]
+    fn watchdog_write_must_start_at_offset_zero() {
+        assert!(validate_write_offset(0).is_ok());
+        assert_eq!(validate_write_offset(1).unwrap_err().error(), Errno::EINVAL);
+    }
+
+    #[ktest]
+    fn watchdog_write_accepts_only_disarm_value() {
+        assert!(validate_disarm_value(0).is_ok());
+        assert_eq!(validate_disarm_value(1).unwrap_err().error(), Errno::EINVAL);
+        assert_eq!(
+            validate_disarm_value(-1).unwrap_err().error(),
+            Errno::EINVAL
+        );
+    }
 }
 
 impl ProcDirOps for KernelDirOps {
