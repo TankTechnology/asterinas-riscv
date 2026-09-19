@@ -1654,13 +1654,13 @@ int main(void)
         self.assertEqual(
             calls,
             [
-                "nsenter -t 4242 -n /run/asterinas-tools/browser-daily-use-gate "
+                "nsenter -t 4242 -m -n /run/asterinas-tools/browser-daily-use-gate "
                 "--firefox-pid 4242 --xorg-pid 4343 --fixture-index-url "
                 "http://10.100.19.216:17894/browser-quality/index.html "
                 "--evidence-dir /run/asterinas-browser-daily-use-"
                 "0123456789abcdef0123456789abcdef --mode profile --physical "
                 "--timeout-seconds 120",
-                "nsenter -t 4242 -n /run/asterinas-tools/browser-daily-use-upload "
+                "nsenter -t 4242 -m -n /run/asterinas-tools/browser-daily-use-upload "
                 "/run/asterinas-browser-daily-use-0123456789abcdef0123456789abcdef "
                 "0123456789abcdef0123456789abcdef pass "
                 "http://10.100.19.216:17894/browser-quality/daily-use-evidence/"
