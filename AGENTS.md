@@ -41,6 +41,27 @@ Key Makefile targets:
 
 Set `TARGET_ARCH` to `x86_64` (default), `riscv64`, or `loongarch64`.
 
+**Benchmark with `RELEASE=1`.** `RELEASE` and `RELEASE_LTO` both default to off,
+so a plain `make kernel` builds an unoptimized `dev` profile (~16 MB image;
+`RELEASE=1` is ~6 MB). That is fine for correctness work and wrong for anything
+you intend to report as a performance number. Measured on an otherwise-idle
+guest with the same userspace and the same QEMU/TCG, the debug build costs
+30--90x more per system call:
+
+| operation | debug | release |
+|---|---:|---:|
+| `getpid` | 189 us | 6.39 us |
+| `fstat` on a descriptor | 285 us | 7.28 us |
+| `stat` on a path | 1631 us | 18.1 us |
+| `fork+exec+wait` | 423 ms | 8.12 ms |
+
+The penalty is *uniform* across unrelated workloads, which is what makes it
+dangerous: a constant factor of that size reads like the kernel is
+architecturally slow and sends you looking for a missing feature. If a
+measurement seems to show the kernel slow everywhere, check the build profile
+before anything else. `tools/riscv/perf/measure-desktop.sh` refuses to measure a
+kernel image over 10 MB for this reason.
+
 ## Toolchain
 
 - **Rust nightly** pinned in `rust-toolchain.toml`.
