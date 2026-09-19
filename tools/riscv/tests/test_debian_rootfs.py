@@ -803,6 +803,12 @@ class DebianStage1Tests(unittest.TestCase):
             runtime
             / "systemd/system/getty.target.wants/asterinas-debug-console.service"
         )
+        ready_service = runtime / "systemd/system/asterinas-desktop-ready.service"
+        ready_link = (
+            runtime
+            / "systemd/system/asterinas-debug-console.target.wants/"
+            "asterinas-desktop-ready.service"
+        )
 
         self.assertEqual(marker.read_bytes(), b"")
         service_text = service.read_text()
@@ -839,6 +845,13 @@ class DebianStage1Tests(unittest.TestCase):
             "Wants=asterinas-debug-console.service\n"
             "After=asterinas-debug-console.service\n",
         )
+        self.assertIn(
+            "ExecStart=/run/asterinas-tools/physical-graphics-control startup-ready\n",
+            ready_service.read_text(),
+        )
+        self.assertIn("TimeoutStartSec=285s\n", ready_service.read_text())
+        self.assertTrue(ready_link.is_symlink())
+        self.assertEqual(os.readlink(ready_link), "../asterinas-desktop-ready.service")
         self.assertFalse((runtime / "systemd/system/default.target").exists())
         self.assertFalse((runtime / "systemd/system.control/default.target").exists())
 
@@ -1495,6 +1508,21 @@ int main(void)
             'runpy.run_path("/usr/lib/asterinas/desktop-input-identity")',
             source,
         )
+
+    def test_physical_graphics_control_disarms_only_after_desktop_readiness(
+        self,
+    ) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+
+        self.assertIn(
+            'startup-ready) [ "$#" -eq 0 ] || die_usage; startup_ready ;;',
+            source,
+        )
+        self.assertIn("/proc/sys/kernel/asterinas_reboot_watchdog", source)
+        self.assertIn("ASTERINAS_DESKTOP_DISPLAY_READY", source)
+        self.assertIn("ASTERINAS_DESKTOP_FIREFOX_READY", source)
+        self.assertIn("ASTERINAS_DESKTOP_WATCHDOG_DISARMED", source)
+        self.assertIn("ASTERINAS_DESKTOP_BOOT_READY", source)
 
     def test_stage1_exposes_ephemeral_tools_from_run_without_rootfs_writes(
         self,
