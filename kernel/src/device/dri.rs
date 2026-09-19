@@ -52,7 +52,7 @@ use crate::{
 };
 
 /// Linux DRM character-device major number.
-const DRM_MAJOR: u16 = 226;
+pub(super) const DRM_MAJOR: u16 = 226;
 
 /// The DRM driver name, which is load-bearing rather than descriptive.
 ///
@@ -66,7 +66,7 @@ const DRM_MAJOR: u16 = 226;
 /// So the underscore is the ABI: Linux's virtio-gpu driver reports
 /// `"virtio_gpu"`, and anything else makes accelerated rendering silently
 /// unavailable.
-const DRIVER_NAME: &str = "virtio_gpu";
+pub(super) const DRIVER_NAME: &str = "virtio_gpu";
 const DRIVER_DATE: &str = "20260815";
 const DRIVER_DESC: &str = "Asterinas virtio-gpu driver";
 
@@ -137,6 +137,32 @@ impl DriNode {
             DriNode::Render => "dri/renderD128",
         }
     }
+
+    /// The device-node name by itself, without the `/dev` directory it lives
+    /// in. sysfs names the same node this way under `device/drm/`.
+    const fn node_name(self) -> &'static str {
+        match self {
+            DriNode::Card => "card0",
+            DriNode::Render => "renderD128",
+        }
+    }
+}
+
+/// Every DRM node this kernel exposes, as `(name, minor)` pairs, or an empty
+/// slice when no virtio-gpu device was found.
+///
+/// The sysfs view of these nodes is built from this list, so it appears only
+/// once the character devices themselves do.
+pub(super) fn exposed_nodes() -> &'static [(&'static str, u32)] {
+    const NODES: [(&str, u32); 2] = [
+        (DriNode::Card.node_name(), DriNode::Card.minor()),
+        (DriNode::Render.node_name(), DriNode::Render.minor()),
+    ];
+
+    if first_device().is_none() {
+        return &[];
+    }
+    &NODES
 }
 
 /// A GEM object: a page-aligned span of the device-wide buffer pool.
@@ -1950,16 +1976,35 @@ fn build_mode(width: u32, height: u32) -> DrmModeModeInfo {
     }
 }
 
-/// Copies a driver string into a userspace buffer and updates the length field.
+/// Copies a driver string into a userspace buffer and updates the length field,
+/// following Linux's `DRM_COPY` in `drm_version()`.
 ///
-/// If the buffer is null (or has zero length), only the required length is
-/// reported. Otherwise the string is null-terminated and truncated as needed.
+/// Two phases, driven by the caller. A null buffer (or a zero length) only
+/// reports the length the string needs. A real buffer receives
+/// `min(strlen + 1, len)` bytes of the string: the whole thing *and* its
+/// terminator when there is room for both, and a bare truncation when there is
+/// not.
+///
+/// The detail that matters is what happens when the buffer is exactly
+/// `strlen` bytes. libdrm's `drmGetVersion()` allocates `name_len + 1` bytes
+/// and writes `name[name_len] = '\0'` itself, so it hands the kernel a length
+/// one *less* than the buffer. A kernel that treats `len` as the buffer size
+/// and reserves a byte for the terminator therefore hands back a name one
+/// character short: libdrm asks for ten bytes and gets `"virtio_gp"`. Mesa
+/// reads that with `strndup(version->name, version->name_len)`, tries to load
+/// `virtio_gp_dri.so`, fails, and falls back to software rendering -- which is
+/// exactly what an accelerated guest looks like when the name loses its last
+/// letter.
 fn copy_field(dst: usize, len: &mut usize, src: &str) -> Result<()> {
     let src_bytes = src.as_bytes();
     if dst != 0 && *len > 0 {
-        let copy = src_bytes.len().min(*len - 1);
-        current_userspace!().write_bytes(dst, &src_bytes[..copy])?;
-        current_userspace!().write_val(dst + copy, &0u8)?;
+        let copy = (src_bytes.len() + 1).min(*len);
+        if copy > src_bytes.len() {
+            current_userspace!().write_bytes(dst, src_bytes)?;
+            current_userspace!().write_val(dst + src_bytes.len(), &0u8)?;
+        } else {
+            current_userspace!().write_bytes(dst, &src_bytes[..copy])?;
+        }
     }
     *len = src_bytes.len();
     Ok(())
