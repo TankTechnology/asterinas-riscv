@@ -55,6 +55,7 @@ BOOTARGS = " ".join(
         "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy",
         "systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=127.0.0.1",
         "systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=9",
+        "systemd.setenv=ASTERINAS_FIREFOX_VERBOSE_LOG=timestamp,Marionette:1",
         "--",
         "--root-init=systemd",
         "--debug-console=isolated-root",
