@@ -35,10 +35,22 @@ if [[ -n "$(live_qemus)" ]]; then
     exit 1
 fi
 
+# Optional extra kernel command line, for runs that enable a kernel-side
+# profiler.  It goes through the environment rather than a make variable
+# because the gate reads ASTERINAS_DESKTOP_DRM_BOOTARGS from os.environ;
+# passing it as a make variable silently does nothing and the run comes back
+# unprofiled.
+bootargs_env=()
+if [[ -n "${ASTERINAS_PERF_BOOTARGS:-}" ]]; then
+    bootargs_env=("ASTERINAS_DESKTOP_DRM_BOOTARGS=$ASTERINAS_PERF_BOOTARGS")
+    printf '%s: kernel cmdline override: %s\n' "$NAME" "$ASTERINAS_PERF_BOOTARGS"
+fi
+
 # Start the gate in the background and wait for its QEMU to appear.
 # The gate refuses to run as a non-root user, and -E keeps the caller's
 # environment (PATH included) so make is found under sudo.
-sudo -E env "PATH=$PATH" make -C "$ROOT" test_riscv_debian_desktop_drm_gate \
+sudo -E env "PATH=$PATH" "${bootargs_env[@]}" \
+    make -C "$ROOT" test_riscv_debian_desktop_drm_gate \
     DEBIAN_DRM_GATE_OUTPUT="$OUT" "$@" \
     >"/tmp/gate-$NAME.log" 2>&1 &
 gate_pid=$!

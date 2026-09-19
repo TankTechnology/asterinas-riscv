@@ -1,191 +1,170 @@
-# DRM desktop boot performance against a Linux control, 2026-09-19
+# DRM desktop boot performance: the gap was the build profile, 2026-09-19
 
-This record measures how long the Debian desktop takes to come up under
-Asterinas and under the real Debian RISC-V kernel.  It reports one change that
-was kept, one that was implemented, measured and then reverted because it could
-not be shown to help, and two earlier results that did not survive checking.
+**Headline: built optimized, Asterinas brings the Debian desktop up in 15--16
+seconds against the Linux control's 15--19, and is ahead of it at every
+milestone along the way.** The ~20x gap recorded earlier the same day was
+almost entirely an artifact of measuring an unoptimized kernel.
 
-## What is being timed
+This record supersedes the debug-era numbers it replaces, states why they
+misled, and keeps the one optimization that survived on its own merits.
 
-Both kernels boot the same Debian 13.6 rootfs image, with the same QEMU/TCG
-configuration and the same in-guest evidence script
-(`tools/riscv/debian/rootfs/desktop_drm_evidence.sh`), which emits milestones as
-it goes:
+## Step 0, which was skipped: confirm what you are comparing
 
-- `DEBIAN_DESKTOP_DRM_BOOT phase=basic-target uptime=N` -- systemd reached
-  `basic.target`, timestamped on the guest's own monotonic clock.
-- `DEBIAN_DESKTOP_DRM_LAUNCH xorg=... openbox=... pcmanfm=... lxpanel=... xterm=...`
-  -- the guest uptime at which each desktop component was first seen running.
-- `DEBIAN_DESKTOP_DRM_READY` -- all five components are running.
+`Makefile` has:
 
-Because the milestone times come from the guest's own clock, they are
-comparable across runs without depending on host-side timing.  Wall time
-("desktop ready") is additionally measured from the QEMU process's real start,
-read out of `/proc/<pid>/stat`, to the READY marker (`tools/riscv/perf/measure-desktop.sh`);
-timing from a wrapper's own start would include the gate's 1 GiB image copy,
-which is not boot time.
+```make
+RELEASE ?= 0
+RELEASE_LTO ?= 0
+```
 
-## The control, and where it is not a control
+Both default to off, so a plain `make kernel TARGET_ARCH=riscv64 ...` builds
+`dev profile [unoptimized + debuginfo]` -- a ~16 MB image. With `RELEASE=1` it
+is ~6 MB. The CI release workflow uses `make iso RELEASE=1`; the RISC-V desktop
+gate is not in CI and had never been run against an optimized kernel.
 
-The Linux side (`target/linux-control/run-control.sh`) boots the same image
-under the Debian `6.12.107+deb13-riscv64` kernel with the device set copied from
-the gate's own argv.
+Every measurement taken before this was found -- the 20x desktop gap, the
+per-operation benchmark, and the ASID, TLB-flush and path-resolution analysis
+built on top of them -- was comparing a `-O0` kernel against `-O2` Linux.
 
-One difference cannot be removed: **the GPU transport**.  The Debian
-`virtio_gpu` driver returns `EIO` for QEMU's virtio-MMIO GPU, so Linux is given
-`virtio-gpu-pci` while Asterinas binds the MMIO device.  The GPU transport is
-therefore the one part of the hardware that differs, and any comparison has to
-say so.  Everything else -- disk, input, CPU count, memory, emulation -- is
-matched.
+## Result
 
-## Result: both phases are slower by a similar factor
+Same Debian 13.6 rootfs, same QEMU/TCG (`-smp 4`), same in-guest evidence
+script for both kernels. Asterinas is `RELEASE=1`; the Linux control is the
+Debian `6.12.107+deb13-riscv64` kernel. Guest uptimes in seconds:
 
-| | Linux control | Asterinas |
-|---|---:|---:|
-| `basic.target` (guest uptime) | 6--8 s | 122--178 s |
-| desktop READY | 15--19 s | 299--389 s |
-| xorg -> openbox gap | 3--6 s | 87--162 s (masked) / 34--247 s (all runs) |
+| milestone | Asterinas (release), 3 runs | Linux control, 3 runs |
+|---|---|---|
+| `basic.target` | **3, 4, 3** | 7, 7, 8 |
+| Xorg first seen | **6, 6, 6** | 10, 11, 12 |
+| openbox first seen | **9, 10, 11** | 15, 15, 17 |
+| all five clients running | **11, 11, 11** | 15, 17, 18 |
+| desktop READY (wall clock) | **16, 15, 16 s** | ~15--19 s |
 
-The two phases are different workloads -- one is systemd and the kernel, the
-other is Xorg, Mesa and five clients -- and they are slower by a similar factor
-(~18--25x).  That uniformity is the main finding: it rules out a single missing
-feature as the explanation.  In particular, absent readahead would only have
-affected the I/O-heavy phase, and it does not account for systemd's own cost.
+The `xorg -> openbox` gap, which was 87--162 s before and the single largest
+cost in the boot, is now **3--5 s** against Linux's 3--6 s.
 
-The `xorg -> openbox` gap is the largest single block, and it is also the
-noisiest: across all recorded runs it has ranged from 34 s to 247 s, so most of
-the spread in "desktop READY" between runs is this gap rather than anything the
-configuration changed.
+## The per-operation benchmark, before and after
+
+Run on an otherwise-idle guest (desktop session masked) so the numbers describe
+the kernel rather than its load:
+
+| operation | debug | release | Linux | release vs Linux |
+|---|---:|---:|---:|---:|
+| `alu` (userspace, control) | 1.55 ns | 1.17 ns | -- | -- |
+| `clock_gettime` (vDSO, control) | 0.298 us | 0.210 us | -- | -- |
+| `fork+exec+wait` | 423 ms | **8.12 ms** | 9.98 ms | **0.81x (faster)** |
+| `getpid` | 189 us | **6.39 us** | 1.50 us | 4.3x |
+| `fstat`(fd) | 285 us | **7.28 us** | -- | -- |
+| `stat`(path) | 1631 us | **18.1 us** | -- | -- |
+| `open+close` | 1792 us | **34 us** | 24 us | 1.4x |
+| `readlink`(/proc) | 4184 us | **45.5 us** | 18.5 us | 2.5x |
+
+The two control rows are what made this findable. They never enter the kernel,
+they ran on the same Debian binaries under the same emulation, and they were
+fine throughout -- so the kernel was the only place the cost could be.
+
+## Why the earlier number looked like an architecture problem
+
+The debug penalty is **uniform**. Two unrelated phases -- systemd reaching
+`basic.target`, and Xorg plus five clients coming up -- were slower by a similar
+~20x, and every kernel operation was slower by a similar factor.
+
+That shape is ambiguous, and it was read the wrong way here. A *uniform*
+slowdown means a constant factor: build configuration, or a fixed per-syscall
+cost. A *phase-specific* slowdown means a missing feature. The reasoning that
+followed from reading it as "the kernel is architecturally slow" produced a
+long hunt for a missing feature, including an ASID and TLB-flush investigation,
+none of which was the problem.
+
+The check that would have caught it in a minute is comparing the size of the
+kernel image, or reading the profile line the build already prints.
 
 ## Kept: removing redundant boot work
 
 `ldconfig.service` (~48 s) and `systemd-journal-catalog-update.service` (~31 s)
-appeared at the top of `systemd-analyze blame`.  On this rootfs both are
-redundant rather than merely expensive: the image is immutable, nothing installs
-libraries at runtime, and it already ships a complete `/etc/ld.so.cache`
-(15,771 bytes).  Rebuilding that cache at every boot is repeated work whose
-result is already on disk.
+top `systemd-analyze blame`. On this rootfs both are redundant rather than
+merely expensive: the image is immutable, nothing installs libraries at
+runtime, and it already ships a complete `/etc/ld.so.cache` (15,771 bytes).
+
+Measured on the debug kernel, where it was isolated as a within-profile A/B:
+`basic.target` fell from 163--178 s to 129--139 s, every masked run below every
+unmasked run including eight historical ones. The mask is an *absolute* saving
+rather than a fixed fraction, so on a 3-second boot it is a much smaller share
+-- it is retained because the work is genuinely redundant, not because it is
+worth much now. `tools/riscv/perf/toggle-redundant-units.sh` applies it.
 
 The masks must live in the base image: the gate recomputes a derived image's
-hash from (base, spec), so a hand-added symlink in a derived image is rejected
-with `reason: validate`, and `dev_overlay` can only write regular files -- it
-cannot create the symlinks a systemd mask requires.  `debugfs` does not
-reproduce a byte-identical image, so each toggle also has to re-sync
-`root_image_sha256` in the base manifest
-(`tools/riscv/perf/toggle-redundant-units.sh`).
+hash from (base, spec), so a symlink added to a derived image is rejected with
+`reason: validate`, and `dev_overlay` cannot create symlinks at all. `debugfs`
+does not reproduce a byte-identical image, so each toggle re-syncs
+`root_image_sha256` in the base manifest.
 
-Verified effective: the masked runs contain 0 `ldconfig` mentions, against
-9--127 in the unmasked logs.
+## Not landed: page-cache readahead
 
-| Configuration | `basic.target` uptime |
-|---|---|
-| unmasked | 163, 178 (and 152, 154, 167, 191, 236, 238, 261, 477 historically) |
-| masked | **129, 136, 139** |
+`BackedVmo::commit_range` batches a page range into one `IoBatch` and ext2
+already merges adjacent requests, but nothing ever asked for adjacent pages, so
+a sequential reader paid one backend round trip per page.
 
-Every masked run is below every unmasked run, including all historical ones.
-The improvement is ~36 s at this milestone.  Note the honest boundary: the
-end-to-end desktop time does *not* show this clearly (masked 325 and 381 s
-against unmasked 362 and 386 s), because the desktop phase's own variance is
-larger than the gain.
+A first version broke the ktest `fault_around_reads_only_the_mapping_window`,
+which asserts that a fault reads *exactly* the mapping window -- a deliberate
+invariant, not a bug. The test also supplied the fix: the fault path already
+asks for a 16-page window, so scoping readahead to narrower requests leaves the
+invariant intact and targets the single-page buffered read.
 
-## Not landed: sequential readahead in the page cache
+**It was reverted on the evidence.** The scoped version's effect on
+`basic.target` (123--131) overlapped the no-readahead runs (129--139) and the
+end-to-end figures were indistinguishable, so it could not be shown to help.
+The patch is preserved at
+`docs/performance/2026-09-19-readahead-rejected.patch`, and it should be
+re-measured on a release kernel before being dismissed or landed -- the noise
+that hid it was largely the debug kernel's.
 
-`BackedVmo::commit_range` (`kernel/src/vm/page_cache/vmo/mod.rs`) already
-batches a page range into one `IoBatch`, and ext2's `InodeBlockManager` already
-overrides `submit_read_bios` to merge adjacent pages into one device operation.
-Nothing ever asked for adjacent pages, though: callers request exactly the pages
-one `read()` touches, so a sequential reader paid one backend round trip per
-page with nothing to merge.
+## Corrected claims
 
-The change widens the fetched range by `READAHEAD_PAGES` (16 pages, 64 KiB) and
-trims the result back to what the caller asked for.
+Three earlier results did not survive checking and are withdrawn:
 
-Two design points are load-bearing:
+- **The microbenchmark's absolute values were load-confounded** and, separately,
+  taken on a debug kernel. The idle re-measurement fixed the first problem; the
+  build profile was the second.
+- **"Readahead cut host read syscalls 33%"** was wrong. `/proc/<qemu-pid>/io`
+  counts every read the QEMU process makes, including polling its `-stdio`
+  chardev; later runs showed 1,047,925 "reads" at ~100 bytes each, which cannot
+  be disk I/O. Only `read_bytes` is usable, and only when `rchar` agrees with it.
+- **A suspicion that `ACTIVATED_VM_SPACE` was a shared global** was wrong; it is
+  `cpu_local_cell!` and per-CPU.
 
-- **Sequential detection is stateless.**  The window is widened only when the
-  page immediately before the range is already resident
-  (`Vmo::is_page_resident`), which is a direct signal that something just walked
-  forward from there.  Scattered access reads exactly what it asked for, and
-  there is no per-file cursor to keep or to get wrong.  A `BackedVmo` is a
-  short-lived wrapper, so state would have had nowhere natural to live anyway.
-- **The bound is exact, not approximate.**  ext2 rejects a *whole batch* if any
-  request is out of bounds (`block_manager/mod.rs`), so over-reading past the
-  object would turn a working read into an error.  `npages` is
-  `new_size_bytes.div_ceil(PAGE_SIZE)` and `page_cache.resize` rounds up to page
-  boundaries, so the page-aligned VMO size *is* `npages` -- the clamp is the
-  same one `end_idx` already carried.
+## Why ASID cannot be measured here
 
-### A first version was rejected, and why
+Worth recording because it is a dead end that looks promising. QEMU's RISC-V
+soft TLB is not tagged by ASID, so it must flush the whole TLB on any `satp`
+change; guest ASIDs therefore change nothing. Commit `1e0d985fa9` (2019) made
+that flush conditional on the ASID, and commit `5242ef887` (2022) reverted it,
+noting that QEMU "doesn't currently exploit ASIDs for translation performance".
+Both kernels pay the same flush cost here, so the mechanism cannot explain a
+difference between them.
 
-The first version applied readahead to every path.  It broke an existing ktest:
-`fault_around_reads_only_the_mapping_window`
-(`kernel/src/vm/vmar/vm_mapping.rs`) asserts that a page fault reads *exactly*
-the mapping window `offset..offset+16`.  That is a deliberate invariant -- fault
-around, not "read the file" -- and widening it was overriding a decision rather
-than fixing a bug.
+## Boundaries
 
-The test also supplied the fix.  The fault path *already* asks for a 16-page
-window, so it is already batched and gains nothing from readahead; the unbatched
-path is the single-page buffered read.  The scoped version therefore only widens
-requests narrower than `READAHEAD_PAGES`, which leaves the fault window exactly
-where the invariant says it should be and needs no new parameter.  That version
-is correct; it is reverted on the evidence, not on the design.
-
-| Configuration | `basic.target` uptime | mean |
-|---|---|---:|
-| unmasked | 163, 178 | 170.5 |
-| masked, no readahead | 129, 136, 139 | 134.7 |
-| masked + readahead (first version) | 122, 126, 128 | 125.3 |
-| masked + readahead (kept version, scoped) | 123, 131, 131 | 128.3 |
-
-**It was reverted, because the effect did not survive the scoping.**  The first
-version's separation (122--128 against 129--139) came from a version that was
-wrong for an independent reason.  Once readahead was confined to the unbatched
-path, the range moved to 123--131, which overlaps the no-readahead runs at 129
-and 131, and the mean gained only ~6 s against a within-arm spread of ~6--10 s.
-Desktop READY tells the same story: 301 / 317 / 386 s with the scoped version
-against 325 / 381 s without, means 335 against 353, with individual runs from
-every configuration landing inside the same 299--389 s band.
-
-Six readahead runs and three no-readahead runs are not enough to separate a
-~5% shift from this machine's run-to-run variation, and an optimization that
-cannot be shown to help does not belong in the kernel.  The change is preserved
-as `docs/performance/2026-09-19-readahead-rejected.patch` rather than discarded,
-because the reasoning behind it is sound and the measurement it needs is cheap:
-run more arms, or re-measure with the desktop-phase variance removed.
-
-## Corrected: two earlier results that did not survive checking
-
-**The microbenchmark is confounded.**  The per-operation numbers previously
-recorded (`stat` 387x, `getpid` 117x, `open+close` 114x, `fork+exec` 37x) are not
-trustworthy.  `boot-bench` runs synchronously at the top of the evidence script
-at `basic.target`, while systemd starts the desktop units in parallel -- so on
-Asterinas the benchmark competes with a ~100 s llvmpipe/Xorg startup for the
-four vCPUs, and on the Linux control the desktop settles in ~3 s.  The
-asymmetry inflates the Asterinas figures by an unknown amount.  These numbers
-should not be used to choose an optimization until the bench is re-run with the
-desktop suppressed on both sides.
-
-**The host read-syscall counter is contaminated.**  Readahead was first reported
-as cutting host read syscalls from 138,405 to 92,721 for the same bytes.  Two
-later runs showed `syscr` of 1,047,925 and 1,340,904 at roughly 100 bytes per
-read, which cannot be disk reads.  `/proc/<pid>/io` counts every read the QEMU
-process makes, including a non-disk source -- almost certainly QEMU polling its
-`-stdio` chardev.  Only one run had `rchar` captured alongside, and only there
-did `rchar` (120 MB) track `read_bytes` (129 MB).  `syscr` is not a usable proxy
-for request count here; the claim is withdrawn.
+- The Asterinas runs have the two redundant units masked; **the Linux control
+  does not**. This compares our best configuration against a stock Linux, which
+  is the fair question for "can we reach Linux", but it is not an identical
+  configuration. On a boot this short the mask is worth a small fraction of a
+  second.
+- Three runs each. The gate has a documented ~25% flake rate, so three
+  consistent runs is good evidence but not a long series.
+- **The GPU transport still differs and cannot be matched.** The Debian
+  `virtio_gpu` driver returns `EIO` for QEMU's virtio-MMIO GPU, so Linux is
+  given `virtio-gpu-pci` while Asterinas binds MMIO. Disk, input, CPU count,
+  memory and emulation are matched.
+- These runs are not *passing* gate runs. The gate reports `reason: protocol`
+  on every run including the historical baselines, and `result.json` carries an
+  empty `screenshot`, consistent with its screendump step failing under
+  `-display none`. The desktop itself demonstrably comes up -- all five clients
+  are observed running -- but that gate verdict is a separate, unfixed issue.
 
 ## Open items
 
-- The gate reports `reason: protocol` on every run, including the historical
-  baselines.  `result.json` carries an empty `screenshot`, consistent with the
-  gate's screendump step failing under `-display none`.  This is uniform across
-  arms, so it does not bias the comparison above, but it means these runs are
-  not passing runs and should not be cited as such.
-- Re-measure the microbench with the desktop suppressed on both kernels.
-- The largest single cost, the xorg -> openbox gap, is not yet explained.  Xorg
-  is first seen running at 190--260 and openbox only appears at 277--361, and
-  Xorg's own log does not reach the serial console, so what fills that gap is
-  still unknown.  The gap is also where most of the run-to-run spread lives,
-  which is why an improvement smaller than it cannot be resolved from these
-  runs.
+- Re-measure the readahead patch on a release kernel.
+- Decide whether the RISC-V desktop gate should build with `RELEASE=1` by
+  default, and whether its absence from CI is why this went unnoticed.
+- The gate's `reason: protocol` verdict under `-display none`.
