@@ -39,6 +39,7 @@ fi
 # Diagnostic images carry the M19 ioctl logger at /usr/lib/asterinas/ so the
 # X server's own DRM ioctls land in the session log.
 xorg_env=()
+# ioctltrace is the only shim carried, and it has never produced a line.
 if [[ -f /usr/lib/asterinas/ioctltrace.so ]]; then
     xorg_env+=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so)
 fi
@@ -53,6 +54,12 @@ fi
 # already goes to the session log, which the evidence script now reads.
 if tr ' ' '\n' </proc/cmdline 2>/dev/null | grep -qx 'asterinas.egl_probe=1'; then
     xorg_env+=(EGL_LOG_LEVEL=debug LIBGL_DEBUG=verbose MESA_DEBUG=1)
+    # LD_DEBUG is the loader's own tracing, built into glibc.  An LD_PRELOAD
+    # shim meant to answer the same question crashed the X server instead --
+    # interposing dlsym breaks glibc's internal symbol resolution -- and this
+    # needs no shim at all: it names every file the loader searched for and
+    # what it did when it could not find one.
+    xorg_env+=(LD_DEBUG=libs)
 fi
 exec env "${xorg_env[@]}" /usr/bin/xinit "$0" --xsession -- \
     /usr/bin/Xorg :0 -noreset -nolisten tcp \

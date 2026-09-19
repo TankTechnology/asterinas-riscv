@@ -501,6 +501,18 @@ fi
 grep -aE 'EGL|GBM|Mesa|mesa|libGL|DRI|swrast|virgl|virtio|kmsro' \
     "$SESSION_LOG" >>"$CONSOLE" 2>&1 || true
 
+# The loader's own tracing when LD_DEBUG=libs is set, filtered to the objects
+# that matter.  This is the layer that says which file was wanted and why it
+# could not be had; Mesa's own debugging is compiled out of Debian's release
+# build, and an LD_PRELOAD shim written to answer the same question crashed the
+# X server instead.
+{
+    grep -aE 'find library=|trying file=' "$SESSION_LOG" 2>/dev/null |
+        grep -aiE 'dri|gallium|egl|gbm|swrast|virgl' | head -60
+    grep -aE 'error:|cannot open shared|undefined symbol|symbol lookup' \
+        "$SESSION_LOG" 2>/dev/null | head -40
+} >>"$CONSOLE" 2>&1 || true
+
 emit "DEBIAN_DESKTOP_DRM_GL renderer=$gl_renderer"
 
 
