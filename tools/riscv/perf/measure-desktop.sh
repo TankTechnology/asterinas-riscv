@@ -35,6 +35,28 @@ if [[ -n "$(live_qemus)" ]]; then
     exit 1
 fi
 
+# Refuse to report a number from a debug kernel.
+#
+# `Makefile` defaults RELEASE=0, so a plain `make kernel` builds an unoptimized
+# image that is 30-90x slower per syscall than the release build. Measuring one
+# of those and calling it "the kernel's performance" is exactly the mistake
+# this tooling was written to stop repeating, and the difference shows up only
+# as an unexplained large constant, which is easy to misread as an architectural
+# problem. Set ASTERINAS_ALLOW_DEBUG_KERNEL=1 to override deliberately.
+readonly KERNEL_IMAGE="$ROOT/target/osdk/aster-kernel-osdk-bin.Image"
+if [[ -f "$KERNEL_IMAGE" && -z "${ASTERINAS_ALLOW_DEBUG_KERNEL:-}" ]]; then
+    image_bytes="$(stat -c %s "$KERNEL_IMAGE")"
+    # A release build is ~6 MB and a debug build ~16 MB; the gap is wide enough
+    # that the size is a reliable signal without inspecting the build profile.
+    if (( image_bytes > 10000000 )); then
+        printf '%s ERROR: %s is %s bytes, which is an unoptimized debug build\n' \
+            "$NAME" "$KERNEL_IMAGE" "$image_bytes" >&2
+        printf '  Build it with RELEASE=1, or set ASTERINAS_ALLOW_DEBUG_KERNEL=1\n' >&2
+        printf '  to measure it anyway.\n' >&2
+        exit 1
+    fi
+fi
+
 # Optional extra kernel command line, for runs that enable a kernel-side
 # profiler.  It goes through the environment rather than a make variable
 # because the gate reads ASTERINAS_DESKTOP_DRM_BOOTARGS from os.environ;
