@@ -285,7 +285,10 @@ class BrowserDailyUseUploadTests(unittest.TestCase):
         result["unexpected"] = None
         self.replace_private(RESULT_NAME, canonical_gate_json(result))
 
-        with self.assertRaises(module.EvidenceBundleError):
+        with self.assertRaisesRegex(
+            module.EvidenceBundleError,
+            "daily-use result contract is invalid: daily-use result has unexpected fields",
+        ):
             module.build_bundle(self.evidence, EXPERIMENT_ID, "pass")
 
     def test_parse_bundle_rejects_schema_order_encoding_size_and_digest_drift(self) -> None:
