@@ -399,6 +399,21 @@ def _validate_admission(evidence: dict[str, Any]) -> None:
         raise DesktopBootError("read-only desktop admission evidence is invalid")
 
 
+def _readiness_failure_context(transcript: bytes) -> str:
+    matches = re.findall(
+        rb"ASTERINAS_DESKTOP_BOOT_(?:WAIT|FAIL) "
+        rb"reason=([a-z0-9-]+)(?: remaining=([0-9]+))?",
+        transcript,
+    )
+    if not matches:
+        return ""
+    reason, remaining = matches[-1]
+    detail = f"; last readiness reason={reason.decode()}"
+    if remaining:
+        detail += f" remaining={remaining.decode()}"
+    return detail
+
+
 def start_generation(
     manifest: DesktopBootManifest, operations: StartOperations
 ) -> dict[str, Any]:
@@ -462,7 +477,7 @@ def start_generation(
         recovered = all(
             marker in recovery for marker in (b"OpenSBI", b"U-Boot", b"=> ")
         )
-        reason = str(error)
+        reason = str(error) + _readiness_failure_context(operations.transcript)
         if recovery_error is not None:
             reason = f"{reason}; recovery failed: {recovery_error}"
         return {
