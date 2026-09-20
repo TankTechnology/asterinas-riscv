@@ -1880,6 +1880,36 @@ impl FileOps for DriHandle {
 }
 
 impl PerOpenFileOps for DriHandle {
+    /// Declares that this per-open object is an audited SCM_RIGHTS leaf.
+    ///
+    /// The default is `false` and must stay that way: a per-open device object
+    /// may retain another [`FileLike`], and passing its descriptor to another
+    /// process would then keep a file description alive behind the sender's
+    /// back. So the default is overridden only where the fields have been
+    /// checked, and here they have:
+    ///
+    /// - `node`, `DriNode` -- an enum, no ownership
+    /// - `gpu`, `Arc<GpuDevice>` -- the device, not a file
+    /// - `context_operation`, `cursor_operation`, `Mutex<()>`
+    /// - `events`, `Pollee`
+    /// - `inner`, `SpinLock<DriInner>`, whose fields are `BTreeMap<u32, u32>`,
+    ///   `BTreeMap<u32, Framebuffer>` (`Framebuffer` is three `u32`s), two
+    ///   `Option<u32>` and a `CursorState` (`Option<u32>`, `Option<u32>`,
+    ///   `CursorPosition` -- the type is `Copy`).
+    ///
+    /// Nothing can hold a file description, so a client that receives this
+    /// descriptor holds exactly what it was handed.
+    ///
+    /// This matters because it is how a GL client is given the DRM device at
+    /// all: `glamor_dri3_open_client` opens the node and the reply carries the
+    /// descriptor over the X socket. A DRM *dma-buf* was given the same
+    /// treatment for the same reason; the device node itself was not, so a
+    /// descriptor for it classified as `Unsupported` and the whole `sendmsg`
+    /// was refused.
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        true
+    }
+
     fn check_seekable(&self) -> Result<()> {
         Ok(())
     }
