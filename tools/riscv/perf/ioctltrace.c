@@ -40,6 +40,7 @@
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -60,6 +61,8 @@ static ssize_t (*real_read)(int, void *, size_t);
 static int (*real_epoll_wait)(int, struct epoll_event *, int, int);
 static int (*real_epoll_ctl)(int, int, int, struct epoll_event *);
 static ssize_t (*real_recvmsg)(int, struct msghdr *, int);
+static ssize_t (*real_writev)(int, const struct iovec *, int);
+static ssize_t (*real_sendmsg)(int, const struct msghdr *, int);
 static int out_fd = -1;
 static int tracing;
 
@@ -441,6 +444,88 @@ ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags)
         used = append(line, used, "\n");
         emit(line, used);
         (void)control_len;
+    }
+
+    errno = saved;
+    return result;
+}
+
+/* The X server sends its replies with `writev` and its descriptors with
+ * `sendmsg`, so a trace that stops at `write` sees a server that reads
+ * requests and answers nothing. The counts are what matter here, and the
+ * leading bytes when there are any. */
+ssize_t writev(int fd, const struct iovec *iov, int count)
+{
+    ssize_t result, saved;
+
+    if (!real_writev)
+        real_writev = dlsym(RTLD_NEXT, "writev");
+    if (!real_writev) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    result = real_writev(fd, iov, count);
+    saved = errno;
+
+    if (tracing && fd > STDERR_FILENO) {
+        char line[LINE_MAX];
+        size_t used = 0;
+        used = append(line, used, "WRITEV pid=");
+        used = append_dec(line, used, (long long)getpid());
+        used = append(line, used, " fd=");
+        used = append_fd_path(line, used, fd);
+        used = append(line, used, " ret=");
+        used = append_dec(line, used, (long long)result);
+        if (count > 0 && iov[0].iov_base) {
+            const unsigned char *bytes = iov[0].iov_base;
+            size_t show = iov[0].iov_len < 4 ? iov[0].iov_len : 4;
+            used = append(line, used, " bytes=");
+            for (size_t byte = 0; byte < show && used < LINE_MAX - 4; byte++) {
+                static const char digits[] = "0123456789abcdef";
+                line[used++] = digits[bytes[byte] >> 4];
+                line[used++] = digits[bytes[byte] & 0xf];
+            }
+        }
+        used = append(line, used, "\n");
+        emit(line, used);
+    }
+
+    errno = saved;
+    return result;
+}
+
+ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags)
+{
+    ssize_t result, saved;
+
+    if (!real_sendmsg)
+        real_sendmsg = dlsym(RTLD_NEXT, "sendmsg");
+    if (!real_sendmsg) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    result = real_sendmsg(sockfd, msg, flags);
+    saved = errno;
+
+    if (tracing) {
+        char line[LINE_MAX];
+        size_t used = 0;
+        used = append(line, used, "SENDMSG pid=");
+        used = append_dec(line, used, (long long)getpid());
+        used = append(line, used, " fd=");
+        used = append_fd_path(line, used, sockfd);
+        used = append(line, used, " ret=");
+        used = append_dec(line, used, (long long)result);
+        used = append(line, used, " ctrl=");
+        used = append_dec(line, used, (long long)(msg ? msg->msg_controllen : 0));
+        if (result < 0) {
+            used = append(line, used, " errno=");
+            used = append_dec(line, used, saved);
+        }
+        used = append(line, used, "\n");
+        emit(line, used);
     }
 
     errno = saved;
