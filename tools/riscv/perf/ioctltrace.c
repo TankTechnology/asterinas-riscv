@@ -37,6 +37,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/epoll.h>
 #include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
@@ -53,14 +54,27 @@
 static int (*real_ioctl)(int, unsigned long, ...);
 static int (*real_poll)(struct pollfd *, nfds_t, int);
 static int (*real_futex)(int *, int, int, const struct timespec *, int *, int);
+static ssize_t (*real_write)(int, const void *, size_t);
+static ssize_t (*real_read)(int, void *, size_t);
+static int (*real_epoll_wait)(int, struct epoll_event *, int, int);
 static int out_fd = -1;
 static int tracing;
 
 /* Appends one line, retrying nothing: a lost line is better than a shim that
- * blocks. Called with no locks held that the caller could also take. */
+ * blocks. Called with no locks held that the caller could also take.
+ *
+ * It calls the resolved `write` and not the symbol. Interposing `write` means
+ * the symbol is this file's own function, so writing through it here would
+ * re-enter `trace_io`, emit again, and recurse until the stack is gone — which
+ * is how an earlier revision of this shim stopped the X server from starting
+ * at all. */
 static void emit(const char *line, size_t length)
 {
-    ssize_t written = write(out_fd, line, length);
+    ssize_t written;
+
+    if (!real_write || out_fd < 0)
+        return;
+    written = real_write(out_fd, line, length);
     (void)written;
 }
 
@@ -161,13 +175,124 @@ static size_t append_fd_path(char *at, size_t used, int fd)
     return append(at, used, ")");
 }
 
+/* Records one socket-level call with its result. These are what is left once
+ * the driver calls stop: a server that has stopped touching the device is
+ * either in its event loop or blocked writing to a client, and the two are
+ * indistinguishable from `/proc`. */
+static void trace_io(const char *name, int fd, long result, int saved_errno)
+{
+    char line[LINE_MAX];
+    size_t used = 0;
+
+    if (!tracing)
+        return;
+    used = append(line, used, name);
+    used = append(line, used, " pid=");
+    used = append_dec(line, used, (long long)getpid());
+    used = append(line, used, " fd=");
+    used = append_fd_path(line, used, fd);
+    used = append(line, used, " ret=");
+    used = append_dec(line, used, result);
+    if (result < 0) {
+        used = append(line, used, " errno=");
+        used = append_dec(line, used, saved_errno);
+    }
+    used = append(line, used, "\n");
+    emit(line, used);
+}
+
+ssize_t write(int fd, const void *buffer, size_t count)
+{
+    ssize_t result, saved;
+
+    if (!real_write)
+        real_write = dlsym(RTLD_NEXT, "write");
+    if (!real_write) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    result = real_write(fd, buffer, count);
+    saved = errno;
+    /* The console is skipped: the log is the question, and every line of it
+     * would otherwise generate another. */
+    if (count > 0 && fd > STDERR_FILENO)
+        trace_io("WRITE", fd, (long)result, saved);
+    errno = saved;
+    return result;
+}
+
+ssize_t read(int fd, void *buffer, size_t count)
+{
+    ssize_t result, saved;
+
+    if (!real_read)
+        real_read = dlsym(RTLD_NEXT, "read");
+    if (!real_read) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    result = real_read(fd, buffer, count);
+    saved = errno;
+    trace_io("READ", fd, (long)result, saved);
+    errno = saved;
+    return result;
+}
+
+/* The server's event loop. A server sitting here with a long timeout is idle
+ * and would answer a client the moment one arrived; a server that never
+ * reaches here is stuck somewhere the socket trace will name. */
+int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
+{
+    int result, saved;
+
+    if (!real_epoll_wait)
+        real_epoll_wait = dlsym(RTLD_NEXT, "epoll_wait");
+    if (!real_epoll_wait) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    if (tracing) {
+        char line[LINE_MAX];
+        size_t used = 0;
+        used = append(line, used, "EPOLL_WAIT pid=");
+        used = append_dec(line, used, (long long)getpid());
+        used = append(line, used, " timeout=");
+        used = append_dec(line, used, timeout);
+        used = append(line, used, "\n");
+        emit(line, used);
+    }
+
+    result = real_epoll_wait(epfd, events, maxevents, timeout);
+    saved = errno;
+
+    if (tracing) {
+        char line[LINE_MAX];
+        size_t used = 0;
+        used = append(line, used, "EPOLL_DONE pid=");
+        used = append_dec(line, used, (long long)getpid());
+        used = append(line, used, " ret=");
+        used = append_dec(line, used, result);
+        used = append(line, used, "\n");
+        emit(line, used);
+    }
+
+    errno = saved;
+    return result;
+}
+
 __attribute__((constructor)) static void start_tracing(void)
 {
     const char *path = getenv("ASTERINAS_IOCTLTRACE_OUT");
 
     real_ioctl = dlsym(RTLD_NEXT, "ioctl");
     real_poll = dlsym(RTLD_NEXT, "poll");
-    if (!path || !real_ioctl)
+    /* `emit` needs this before the first traced call, so it is resolved here
+     * rather than lazily inside `write`. */
+    real_write = dlsym(RTLD_NEXT, "write");
+    if (!path || !real_ioctl || !real_write)
         return;
     out_fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
     tracing = out_fd >= 0;
