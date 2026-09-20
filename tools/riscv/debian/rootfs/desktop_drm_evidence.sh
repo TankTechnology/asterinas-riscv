@@ -600,6 +600,17 @@ gl_probe() {
                 # becomes which call it stops at.
                 emit '--- DRM GL probe: client DRM ioctls (last 60) ---'
                 grep -a '^IOCTL ' "$GL_TRACE" 2>/dev/null | tail -60 >>"$CONSOLE" 2>&1 || true
+                # The DRI3 conversation by name, with context.
+                #
+                # Everything else here is a window into a long file, and the
+                # one exchange that matters -- DRI3Open and its reply -- keeps
+                # falling outside those windows. Pulling the opcode out by name
+                # puts the request, the server's answer, and whatever the
+                # client did next side by side, which is what decides whether
+                # the descriptor arrived or only its envelope did.
+                emit '--- DRM GL probe: DRI3 (opcode 148) on the client ---'
+                grep -a -B3 -A3 'opcode=148' "$GL_TRACE" 2>/dev/null |
+                    tail -40 >>"$CONSOLE" 2>&1 || true
             else
                 emit '--- DRM GL probe: no client trace (shim missing or unconfigured) ---'
             fi
@@ -634,6 +645,13 @@ gl_probe() {
                 # And the server's own last driver calls, for the same reason.
                 emit '--- DRM GL probe: Xorg DRM ioctls (last 60) ---'
                 grep -a '^IOCTL ' "$XORG_TRACE" 2>/dev/null | tail -60 >>"$CONSOLE" 2>&1 || true
+                # The same exchange as the server saw it. A request that the
+                # server read and answered appears here as the reception of an
+                # `opcode=148` message, so the two dumps can be read against
+                # each other.
+                emit '--- DRM GL probe: DRI3 (opcode 148) on the server ---'
+                grep -a -B3 -A3 'opcode=148' "$XORG_TRACE" 2>/dev/null |
+                    tail -40 >>"$CONSOLE" 2>&1 || true
             else
                 emit '--- DRM GL probe: no Xorg trace (shim missing or unconfigured) ---'
             fi
