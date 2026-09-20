@@ -177,3 +177,17 @@ These are host and contract checks, not physical performance samples.
 
 Only a controlled before/after run of the same qualified workload can support
 a speedup claim.
+
+### Status, 2026-09-20
+
+| Gate | Status | Evidence |
+| --- | --- | --- |
+| 1. Stage1 build determinism | **passed** | `stage1-crossarch-a` and `stage1-crossarch-b` are byte-identical at `9bcf5f7b`; that digest is the one the physical plans reference. An earlier pair (`stage1-a`/`stage1-b`, `816f8c4d`) also matched. |
+| 2. QEMU graphics/control gate | **not satisfied** | Fourteen `target/firefox-daily-use-physical/qemu-*` directories exist and every one is empty; nothing was retained, so the attempts cannot be classified as failed, hung, or abandoned. |
+| 3. Three physical samples | **passed** | `release-jit-crossarch-run-3/4/5`, all qualified and recovered, one profile per boot, published as [the 2026-09-18 baseline](../../performance/2026-09-18-firefox-daily-use-physical-baseline.md). |
+| 4. Select one kernel variable | **applied, result not admitted** | Classification was `runnable-delayed` 3/3, so `53c4601a6` was selected as the one variable. Its A/B is recorded in [the 2026-09-19 result](../../performance/2026-09-19-firefox-wake-balance-physical-ab.md) as a directional improvement, not a speedup, because gate 2 is open. |
+
+Gate 2 is therefore the blocking item for anything that depends on the
+admission criteria. Note that the QEMU graphics gate and the RISC-V kernel-test
+suite are different gates: the new `select_cpu` regressions are `#[ktest]` and
+only the kernel-test suite executes them.
