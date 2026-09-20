@@ -49,11 +49,12 @@ struct drm_gem_open {
     uint64_t size;
 };
 
+/* Twelve bytes, with no padding: `drm_prime_handle` has three fields and the
+ * struct's size is part of the ioctl's command number. */
 struct drm_prime_handle {
     uint32_t handle;
     uint32_t flags;
     int32_t fd;
-    uint32_t pad;
 };
 
 struct drm_mode_modeinfo {

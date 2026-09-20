@@ -473,13 +473,19 @@ struct DrmGemOpen {
 /// The same layout carries a handle out (`HANDLE_TO_FD`) and in
 /// (`FD_TO_HANDLE`); which field the caller fills in is what the command
 /// selects.
+///
+/// Twelve bytes, and there is no padding field to add: the struct's size is
+/// part of the ioctl's command number, so a fourth field makes this a
+/// definition of a different command. A client's request then arrives as an
+/// unknown ioctl and is refused with `ENOTTY`, which reads like a permission
+/// problem and is not one. The guest confirmed the size directly — the trace
+/// shows the client sending `0xc00c642d` (size `0x0c`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
 struct DrmPrimeHandle {
     handle: u32,
     flags: u32,
     fd: i32,
-    pad: u32,
 }
 
 /// `struct drm_mode_get_plane_res`.
@@ -2057,16 +2063,14 @@ impl PerOpenFileOps for DriHandle {
                 let mut req = cmd.read()?;
                 let (file, fd_flags) = prime::handle_to_fd(self, req.handle, req.flags)?;
                 req.fd = install_file(file, fd_flags)?;
-                req.pad = 0;
                 cmd.write(&req)?;
                 Ok(0)
             }
             cmd @ PrimeFdToHandle => {
                 let mut req = cmd.read()?;
                 // The command carries no size field: Linux reports the handle
-                // and leaves `pad` as the caller's zero.
+                // and leaves the rest as the caller sent it.
                 req.handle = self.prime_fd_to_handle(req.fd)?;
-                req.pad = 0;
                 cmd.write(&req)?;
                 Ok(0)
             }
