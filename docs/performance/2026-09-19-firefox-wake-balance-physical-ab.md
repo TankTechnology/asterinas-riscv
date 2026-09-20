@@ -103,19 +103,30 @@ stops just short of the 0.50 `executing` gate; `unaccounted` is 0.0, so
    was inside its threshold in A crosses in B: `input` crossings fall from 2/3
    to 1/3, `scroll` from 1/3 to 0/3, `context-switch` stays at 3/3.
 4. **The focused regression, host tests, and relevant QEMU tests pass.**
-   **Not satisfied**, on one narrow ground: the two `#[ktest]` regressions
-   (`wake_prefers_less_loaded_allowed_cpu`,
-   `wake_preserves_last_cpu_when_load_is_equal`) have never been executed
-   anywhere. They landed in the same commit as the implementation rather than
-   preceding it, they were never observed failing against the unmodified
-   scheduler, and no RISC-V kernel-test run has exercised them.
+   **Satisfied.** A RISC-V kernel-test run at `53c4601a6`, taken in a separate
+   worktree so the deployed kernel artifact was not replaced, executed both new
+   regressions and both report `ok`:
 
-   The other two parts hold and are evidenced. `tools/riscv/firefox_fast_check.sh`
-   passes (487 tests, `FIREFOX_FAST_CHECK_PASS`). The four-hart QEMU
-   graphics/control gate passes with retained evidence: `qemu-qualification`,
-   `qemu-qualification-current`, `qemu-smoke-fixed5`, and `qemu-namespace` each
-   report `passed=true`, `reason=pass`, `physical=false`, and three interaction
-   cycles. `qemu-qualification` records Stage1
+   ```text
+   test aster_kernel::sched::sched_class::tests::wake_prefers_less_loaded_allowed_cpu ... ok
+   test aster_kernel::sched::sched_class::tests::wake_preserves_last_cpu_when_load_is_equal ... ok
+   ```
+
+   The same suite at A (`55ee5c64e`) has an identical failure set:
+   `aster_kernel::device::tty::tests::tty_echo_runs_without_the_line_discipline_lock`,
+   `aster_kernel::syscall::clock_gettime::tests::reports_tick_resolution_for_cpu_clocks`,
+   `xarray::test::no_leakage`, and `xarray::test::remove_shrinks_empty_nodes`.
+   Those four therefore pre-date the change and are not attributable to it. The
+   only difference between the two runs is that B passes two more
+   `aster_kernel` tests, 242 against 240, and those two are exactly the new
+   regressions.
+
+   `tools/riscv/firefox_fast_check.sh` passes (487 tests,
+   `FIREFOX_FAST_CHECK_PASS`). The four-hart QEMU graphics/control gate passes
+   with retained evidence: `qemu-qualification`, `qemu-qualification-current`,
+   `qemu-smoke-fixed5`, and `qemu-namespace` each report `passed=true`,
+   `reason=pass`, `physical=false`, and three interaction cycles.
+   `qemu-qualification` records Stage1
    `0d4ebedf76d920c00d2168097b632e06b9e9ba77bed0113cea7d3eb54a6b9ed2`, which is
    the digest the two-build determinism check produced.
 5. **The attribution evidence changes in the direction predicted by the
@@ -123,18 +134,30 @@ stops just short of the 0.50 `executing` gate; `unaccounted` is 0.0, so
 
 ## Verdict
 
-Four of the five conditions hold. The fifth is unmet only because the two new
-regressions have never been executed; the QEMU graphics/control gate and the
-host checks both pass. Under the design's own rule, that is not a speedup.
-Recorded result: **directional improvement with the admitted mechanism removed,
-not an admitted speedup.**
+All five conditions now hold, under the reading that "the primary metric" is
+the metric the classifier names as affected. That is the better supported
+reading: the report computes `affectedPrimaryMs` as the maximum over its
+primary set, that maximum is `contextSwitchTotalMs` in all six runs, and the
+design speaks of one primary metric while the report presents nine.
 
-Closing condition 4 requires one RISC-V kernel-test run so that
-`wake_prefers_less_loaded_allowed_cpu` and
-`wake_preserves_last_cpu_when_load_is_equal` actually execute. Note that this
-run replaces `target/osdk/aster-kernel/aster-kernel-osdk-bin.Image`, the only
-retained copy of the B kernel bytes, so it must be taken in a separate worktree
-or after preserving that artifact.
+Under that reading the design permits a speedup claim for
+`contextSwitchTotalMs` and for both scroll metrics: every B value lies below
+every A value, and each B median lies below the complete A range. It does not
+permit one for the other six metrics, and the two keyboard metrics moved in the
+opposite direction inside the overlapping band. A published claim must carry
+both halves, and the removed-mechanism result is the stronger of the two.
+
+Two process limitations remain, recorded rather than waived. They do not void
+any of the five conditions, which are conditions on outcomes:
+
+- the focused regressions landed with the implementation instead of preceding
+  it, so neither was ever observed failing against the unmodified scheduler;
+- the variants were not alternated and no additional A control was taken after
+  the B set, so thermal and temporal drift between the two sets is not excluded
+  by an independent control.
+
+Recorded result: **the admitted mechanism is removed, and an affected-metric
+speedup is admitted with mixed aggregate metrics stated alongside.**
 
 ### Correction, 2026-09-20
 

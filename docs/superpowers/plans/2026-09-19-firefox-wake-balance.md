@@ -66,12 +66,14 @@ are not a claim that the sequence was followed at the time.
 - [x] Confirm the four-hart QEMU graphics/control gate passes with retained
   evidence; `qemu-qualification` records `passed=true` with three interaction
   cycles and Stage1 `0d4ebedf`.
-- [ ] Still open: run the RISC-V kernel-test suite
-  (`TARGET_ARCH=riscv64 SMP=4 make ktest`) so the two new `#[ktest]`
-  regressions actually execute, and record the result here. The graphics gate
-  does not run them.
-- [ ] Publish the outcome as inconclusive/neutral/regressive rather than a
-  speedup while condition 4 is open.
+- [x] Run the RISC-V kernel-test suite at `53c4601a6` in a separate worktree so
+  the deployed kernel artifact was not replaced. Both new regressions execute
+  and report `ok`. A control run of the same suite at A (`55ee5c64e`) has an
+  identical failure set, and the only difference between the runs is that B
+  passes two more `aster_kernel` tests, which are the two new regressions.
+- [x] Publish the outcome. Condition 4 is satisfied, so all five conditions
+  hold under the affected-metric reading and the result is recorded as an
+  admitted affected-metric speedup with the mixed aggregate stated alongside.
 
 ### Task 6: Preserve the evidence
 
