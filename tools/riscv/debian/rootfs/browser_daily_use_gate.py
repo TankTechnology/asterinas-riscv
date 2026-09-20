@@ -99,8 +99,25 @@ ARTIFACT_NAMES = (
 RESULT_NAME = "browser-daily-use-result.json"
 CHECKPOINT_NAME = "browser-daily-use-checkpoint.json"
 MAX_TIMEOUT_SECONDS = 120.0
+PHYSICAL_SESSION_SETUP_TIMEOUT_SECONDS = 300.0
 CONTEXT_CLEANUP_TIMEOUT_SECONDS = 5.0
 FIXTURE_GROUPS = ("document", "storage", "execution", "rendering-media", "download")
+_FIXTURE_CAPABILITY_CHECKS = frozenset(
+    {
+        "audio",
+        "canvas",
+        "cookie",
+        "fetch",
+        "indexedDb",
+        "localStorage",
+        "sessionStorage",
+        "wasm",
+        "worker",
+    }
+)
+_STORAGE_CAPABILITY_CHECKS = ("localStorage", "sessionStorage", "cookie", "indexedDb")
+_EXECUTION_CAPABILITY_CHECKS = ("wasm", "worker", "fetch")
+_RENDERING_MEDIA_CAPABILITY_CHECKS = ("canvas", "audio")
 STARTUP_TIMELINE = Path("/home/asterinas/browser-web-timeline.log")
 _FAILURE_REASONS = frozenset(
     {
@@ -205,6 +222,7 @@ class CaptureRequest:
 class FixtureCapture:
     function_groups: list[dict[str, object]]
     artifact: bytes
+    limitations: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -254,6 +272,7 @@ class DailyUseOperations:
     system_sampler: Callable[[SamplerRequest], SamplerCapture]
     thread_sampler: Callable[[SamplerRequest], SamplerCapture]
     identity_reader: Callable[[tuple[int, int]], tuple[int, int]] = _process_starttimes
+    first_window_ready: Callable[[int], None] = lambda firefox_pid: None
     clock: DailyUseClock = field(default_factory=DailyUseClock)
 
 
@@ -302,7 +321,9 @@ def run_daily_use_gate(
         staging = _reserve_evidence(evidence_dir, run_id)
         pids = (firefox_pid, xorg_pid)
         initial = _identities(operations, pids)
-        client.set_timeout(timeout_seconds)
+        client.set_timeout(
+            PHYSICAL_SESSION_SETUP_TIMEOUT_SECONDS if physical else timeout_seconds
+        )
         session = _value(
             client.command(
                 "WebDriver:NewSession",
@@ -335,6 +356,11 @@ def run_daily_use_gate(
             or session["capabilities"].get("acceptInsecureCerts") is not False
         ):
             raise DailyUseGateError("session-invalid")
+        # The normal evidence service owns this endpoint on QEMU and public
+        # web runs. Physical daily-use mode masks that service, so this gate
+        # must record the endpoint it has just validated itself.
+        if physical:
+            operations.first_window_ready(firefox_pid)
         completed.append("session")
 
         # Sampling covers readiness and four phases; stop wakes the final sample.
@@ -457,7 +483,9 @@ def run_daily_use_gate(
                 "systemArtifact": ARTIFACT_NAMES[4],
                 "threadArtifact": ARTIFACT_NAMES[5],
             },
-            limitations=composite.limitations,
+            limitations=_merge_limitations(
+                fixture.limitations, composite.limitations
+            ),
         )
         completed.append("validated")
         if result["state"] != "pass":
@@ -539,12 +567,14 @@ def default_operations(
 ) -> DailyUseOperations:
     """Adapt the existing local Firefox captures without granting publication access."""
 
+    clock = clock or DailyUseClock()
+
     def fixture(request: CaptureRequest) -> FixtureCapture:
         return _capture_fixture(request, download_path, firefox_uid_reader)
 
     def timing(request: CaptureRequest) -> TimingCapture:
         startup = _startup_performance(
-            (timeline_reader or _read_timeline)(timeline_path), request
+            (timeline_reader or _read_timeline)(timeline_path), request.firefox_pid
         )
         form_navigation = _capture_form_navigation(request)
         report = perf_capture.capture_local(
@@ -618,7 +648,10 @@ def default_operations(
         composite=composite,
         system_sampler=lambda request: _capture_sampler(request, threads=False),
         thread_sampler=lambda request: _capture_sampler(request, threads=True),
-        clock=clock or DailyUseClock(),
+        first_window_ready=lambda firefox_pid: _record_first_window_ready(
+            timeline_path, firefox_pid, clock
+        ),
+        clock=clock,
     )
 
 
@@ -631,6 +664,134 @@ def _remaining(request: CaptureRequest | SamplerRequest) -> float:
 
 def _passing_group(name: str) -> dict[str, object]:
     return {"name": name, "state": "pass", "reason": None}
+
+
+def _fixture_group(
+    name: str, checks: dict[str, bool], owned_checks: tuple[str, ...], *, required: bool
+) -> dict[str, object]:
+    if all(checks[item] for item in owned_checks):
+        return _passing_group(name)
+    return {
+        "name": name,
+        "state": "fail" if required else "unsupported",
+        "reason": (
+            "fixture-capability-failed"
+            if required
+            else "fixture-capability-unavailable"
+        ),
+    }
+
+
+def _classify_daily_use_fixture(
+    probe: object, expected_url: str
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    result = web_gate._probe_mapping(probe)
+    if (
+        result["url"] != expected_url
+        or result["title"] != "Asterinas Browser Quality"
+        or result["readyState"] != "complete"
+        or result["jsComplete"] is not True
+    ):
+        raise web_gate.GateError("fixture home document or JavaScript is incomplete")
+    body = result["bodyText"]
+    if not isinstance(body, str) or not all(
+        token in body for token in ("Asterinas browser quality", "浏览器质量")
+    ):
+        raise web_gate.GateError("fixture home lost its exact Latin/CJK content")
+    dom = result["dom"]
+    if not isinstance(dom, dict) or not all(
+        dom.get(name) is True
+        for name in ("fixtureQuery", "fixtureImage", "fixtureSecond")
+    ):
+        raise web_gate.GateError(
+            "fixture home form, PNG, or navigation link is not ready"
+        )
+
+    capabilities = result["browserCapabilities"]
+    if type(capabilities) is not dict or set(capabilities) != {
+        "version",
+        "phase",
+        "state",
+        "checks",
+        "error",
+    }:
+        raise web_gate.GateError("fixture browser capability evidence is malformed")
+    checks = capabilities["checks"]
+    if (
+        type(capabilities["version"]) is not int
+        or capabilities["version"] != 1
+        or capabilities["phase"] != "home"
+        or type(checks) is not dict
+        or set(checks) != _FIXTURE_CAPABILITY_CHECKS
+        or any(type(value) is not bool for value in checks.values())
+    ):
+        raise web_gate.GateError("fixture browser capability evidence is malformed")
+    state = capabilities["state"]
+    error = capabilities["error"]
+    all_checks_pass = all(checks.values())
+    if state == "complete":
+        if error is not None or not all_checks_pass:
+            raise web_gate.GateError(
+                "fixture browser capability evidence is inconsistent"
+            )
+    elif state == "error":
+        if (
+            all_checks_pass
+            or not isinstance(error, str)
+            or not error
+            or len(error) > 160
+        ):
+            raise web_gate.GateError(
+                "fixture browser capability evidence is inconsistent"
+            )
+    else:
+        raise web_gate.GateError("fixture browser capabilities are not terminal")
+
+    typed_checks = {name: checks[name] for name in _FIXTURE_CAPABILITY_CHECKS}
+    groups = [
+        _passing_group("document"),
+        _fixture_group(
+            "storage", typed_checks, _STORAGE_CAPABILITY_CHECKS, required=True
+        ),
+        _fixture_group(
+            "execution", typed_checks, _EXECUTION_CAPABILITY_CHECKS, required=False
+        ),
+        _fixture_group(
+            "rendering-media",
+            typed_checks,
+            _RENDERING_MEDIA_CAPABILITY_CHECKS,
+            required=False,
+        ),
+    ]
+    optional_unsupported = any(
+        item["state"] == "unsupported" for item in groups
+    )
+    return (
+        groups,
+        {
+            "items": (
+                ["fixture-capabilities-incomplete"]
+                if optional_unsupported
+                else []
+            )
+        },
+    )
+
+
+def _merge_limitations(*values: object) -> dict[str, object]:
+    combined: set[str] = set()
+    for value in values:
+        if type(value) is not dict or set(value) != {"items"}:
+            raise DailyUseContractError("phase limitations are malformed")
+        items = value["items"]
+        if (
+            type(items) is not list
+            or any(not isinstance(item, str) for item in items)
+            or len(set(items)) != len(items)
+        ):
+            raise DailyUseContractError("phase limitations are malformed")
+        combined.update(items)
+    return {"items": sorted(combined)}
 
 
 def _owned_groups(entries, names):
@@ -664,16 +825,34 @@ def _capture_fixture(request, download_path, uid_reader):
         raise DailyUseGateError("identity-invalid")
     _remaining(request)
     web_gate._navigate(request.client, url)
-    probe, _ = web_gate._wait_for_probe(
+    probe, classified = web_gate._wait_for_probe(
         request.client,
-        lambda value: web_gate.probe_fixture_home(value, url),
+        lambda value: _classify_daily_use_fixture(value, url),
         request.deadline,
         diagnostic_fn=lambda line: None,
     )
+    probe_groups, probe_limitations = classified
     snapshot = web_gate._snapshot(request.client)
-    web_gate.probe_fixture_home(
-        {name: snapshot[name] for name in probe if name != "apiTypes"}, url
+    snapshot_groups, snapshot_limitations = _classify_daily_use_fixture(
+        {
+            name: snapshot[name]
+            for name in (
+                "url",
+                "title",
+                "readyState",
+                "bodyText",
+                "jsComplete",
+                "browserCapabilities",
+                "dom",
+            )
+        },
+        url,
     )
+    if (snapshot_groups, snapshot_limitations) != (
+        probe_groups,
+        probe_limitations,
+    ):
+        raise web_gate.GateError("fixture capability evidence changed during capture")
     _validate_fixture_resources(snapshot, url)
     # Both scripts use relative fixture paths. Search/resource validators in the
     # public-web gate deliberately accept slirp only and cannot serve the board.
@@ -690,8 +869,9 @@ def _capture_fixture(request, download_path, uid_reader):
             download_path, request.deadline, Path(directory), owner_uid
         )
     return FixtureCapture(
-        [_passing_group(name) for name in FIXTURE_GROUPS],
+        probe_groups + [_passing_group("download")],
         _json_bytes({"probe": probe, "snapshot": snapshot, "download": download}),
+        probe_limitations,
     )
 
 
@@ -784,7 +964,43 @@ def _read_timeline(path: Path) -> str:
         return stream.read(64 * 1024 + 1)
 
 
-def _startup_performance(raw, request):
+def _record_first_window_ready(
+    path: Path, firefox_pid: int, clock: DailyUseClock
+) -> None:
+    """Append the readiness endpoint owned by this one-session daily-use gate."""
+    if type(firefox_pid) is not int or firefox_pid <= 1:
+        raise DailyUseGateError("identity-invalid")
+    descriptor = None
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDWR | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0),
+        )
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 64 * 1024:
+            raise DailyUseGateError("phase-value-invalid")
+        payload = os.pread(descriptor, 64 * 1024 + 1, 0)
+        raw = payload.decode("utf-8")
+        ready_ns = clock.monotonic_ns()
+        if type(ready_ns) is not int or ready_ns <= 0:
+            raise DailyUseGateError("phase-value-invalid")
+        line = (
+            "A_WEB_TIMELINE marker=BOOT_FIRST_WINDOW_READY "
+            f"guest_monotonic_ns={ready_ns} firefox_pid={firefox_pid}\n"
+        )
+        # Validate the complete startup interval before mutating the evidence
+        # file. This also rejects a duplicate endpoint from another gate.
+        _startup_performance(raw + line, firefox_pid)
+        if os.write(descriptor, line.encode()) != len(line):
+            raise DailyUseGateError("phase-value-invalid")
+    except (OSError, UnicodeError) as error:
+        raise DailyUseGateError("phase-value-invalid") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _startup_performance(raw, firefox_pid):
     if type(raw) is not str or len(raw) > 64 * 1024:
         raise DailyUseGateError("phase-value-invalid")
     records = []
@@ -807,8 +1023,8 @@ def _startup_performance(raw, request):
     if (
         len(execution) != 1
         or len(ready) != 1
-        or execution[0][2] != request.firefox_pid
-        or ready[0][2] != request.firefox_pid
+        or execution[0][2] != firefox_pid
+        or ready[0][2] != firefox_pid
         or not 0 < execution[0][1] < ready[0][1]
         or execution[0][3] >= ready[0][3]
     ):
@@ -817,7 +1033,7 @@ def _startup_performance(raw, request):
         "startup",
         "guest-monotonic",
         {
-            "firefoxPid": request.firefox_pid,
+            "firefoxPid": firefox_pid,
             "bootFirefoxExecNs": execution[0][1],
             "bootFirstWindowReadyNs": ready[0][1],
             "durationMs": (ready[0][1] - execution[0][1]) / 1_000_000,
@@ -1095,8 +1311,13 @@ def main(argv: list[str] | None = None) -> int:
             options.fixture_index_url,
         )
         operations = default_operations()
+        setup_timeout = (
+            PHYSICAL_SESSION_SETUP_TIMEOUT_SECONDS if options.physical else timeout
+        )
         client = _connect(
-            "127.0.0.1", options.port, operations.clock.monotonic() + timeout
+            "127.0.0.1",
+            options.port,
+            operations.clock.monotonic() + setup_timeout,
         )
         result = run_daily_use_gate(
             client=client,

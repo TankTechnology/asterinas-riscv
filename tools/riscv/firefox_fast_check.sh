@@ -18,10 +18,14 @@ python3 -m unittest \
   tools.riscv.tests.test_browser_performance_provenance \
   tools.riscv.tests.test_browser_daily_use_contract \
   tools.riscv.tests.test_browser_daily_use_gate \
+  tools.riscv.tests.test_browser_daily_use_upload \
   tools.riscv.tests.test_debian_browser_web \
   tools.riscv.tests.test_debian_browser_m5_runtime_gate \
   tools.riscv.tests.test_debian_dev_overlay \
   tools.riscv.tests.test_megrez_network_fixture \
+  tools.riscv.tests.test_megrez_physical_graphics \
+  tools.riscv.tests.test_megrez_firefox_daily_use \
+  tools.riscv.tests.test_megrez_firefox_daily_use_report \
   tools.riscv.tests.test_physical_graphics_gate \
   tools.riscv.tests.test_firefox_debug_tool \
   -q
@@ -35,6 +39,7 @@ python3 -m py_compile \
   tools/riscv/debian/rootfs/browser_system_time.py \
   tools/riscv/debian/rootfs/browser_daily_use_contract.py \
   tools/riscv/debian/rootfs/browser_daily_use_gate.py \
+  tools/riscv/debian/rootfs/browser_daily_use_upload.py \
   tools/riscv/debian/rootfs/browser_perf_capture.py \
   tools/riscv/debian/rootfs/browser_performance_provenance.py \
   tools/riscv/debian/rootfs/browser_web_contract.py \
@@ -42,7 +47,10 @@ python3 -m py_compile \
   tools/riscv/debian/rootfs/browser_m5_marionette_gate.py \
   tools/riscv/debian/rootfs/browser_web_qemu_gate.py \
   tools/riscv/debian/rootfs/browser_web_trust_check.py \
-  tools/riscv/debian/rootfs/firefox_jit_overlay.py
+  tools/riscv/debian/rootfs/firefox_jit_overlay.py \
+  tools/riscv/megrez_physical_graphics.py \
+  tools/riscv/megrez_firefox_daily_use.py \
+  tools/riscv/megrez_firefox_daily_use_report.py
 
 bash -n \
   tools/qemu_args.sh \

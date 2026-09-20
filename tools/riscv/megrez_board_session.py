@@ -105,6 +105,7 @@ ARTIFACT_NAME_PATTERN = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._+-]*(?:/[A-Za-z0-9][A-Za-z0-9._+-]*)*"
 )
 AUTOBOOT_MARKERS = ("Hit any key to stop autoboot", "Autoboot in")
+AUTOBOOT_COUNTDOWN_PATTERN = re.compile(r"(?:\x08){3}[0-9]{1,2}[ \r\n]")
 MAX_UBOOT_WAIT_BYTES = 256 * 1024
 MAX_UBOOT_COMMAND_BYTES = 512
 _UBOOT_BOOTARGS_CHUNK_BYTES = 384
@@ -445,8 +446,9 @@ class BoardSession:
             # Some Megrez resets expose the countdown before the UART RX path
             # reliably accepts its first byte.  Retry on the next two received
             # countdown chunks instead of allowing an unattended RockOS boot.
-            if interrupt_attempts < 3 and any(
-                marker in buf for marker in AUTOBOOT_MARKERS
+            if interrupt_attempts < 3 and (
+                any(marker in buf for marker in AUTOBOOT_MARKERS)
+                or AUTOBOOT_COUNTDOWN_PATTERN.search(buf) is not None
             ):
                 os.write(self.fd, b" ")
                 interrupt_attempts += 1

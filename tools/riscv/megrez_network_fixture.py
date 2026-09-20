@@ -39,7 +39,9 @@ BROWSER_API_PATH = "/browser-quality/capabilities.json"
 BROWSER_AUDIO_PATH = "/browser-quality/tone.wav"
 BROWSER_CAPTURE_PATH = "/browser-quality/capture.xwd.gz"
 BROWSER_PNG_CAPTURE_PATH = "/browser-quality/capture.png"
+BROWSER_DAILY_USE_EVIDENCE_PREFIX = "/browser-quality/daily-use-evidence/"
 MAX_CAPTURE_BYTES = 8 * 1024 * 1024
+MAX_DAILY_USE_EVIDENCE_BYTES = 2 * 1024 * 1024
 MAX_WORKLOAD_REQUEST_RECORDS = 512
 WORKLOAD_SUMMARY_QUIESCE_SECONDS = 2.0
 BROWSER_DOWNLOAD = bytes(range(256)) * 1024
@@ -777,6 +779,7 @@ class FixtureConfig:
     bind_address: str = "127.0.0.1"
     port: int = 17894
     allowed_peer: str | None = None
+    daily_use_experiment_id: str | None = None
 
     def __post_init__(self) -> None:
         _validate_ipv4(self.bind_address, "bind address")
@@ -786,6 +789,10 @@ class FixtureConfig:
             raise ValueError("port must be an integer between 0 and 65535")
         if self.allowed_peer is not None:
             _validate_ipv4(self.allowed_peer, "allowed peer")
+        if self.daily_use_experiment_id is not None and re.fullmatch(
+            r"[0-9a-f]{32}", self.daily_use_experiment_id
+        ) is None:
+            raise ValueError("daily-use experiment identity is invalid")
 
 
 def _validate_ipv4(value: str, name: str) -> None:
@@ -817,6 +824,8 @@ class FixtureServer:
         self._workload_idle = threading.Condition(self._lock)
         self._capture: bytes | None = None
         self._capture_evidence: dict[str, object] | None = None
+        self._daily_use_evidence: bytes | None = None
+        self._daily_use_condition = threading.Condition(self._lock)
 
     def __enter__(self) -> FixtureServer:
         return self.start()
@@ -996,38 +1005,39 @@ class FixtureServer:
         if self.config.allowed_peer is not None and peer != self.config.allowed_peer:
             self._send_response(request, 403)
             return
+        expected_daily_use_path = (
+            BROWSER_DAILY_USE_EVIDENCE_PREFIX + self.config.daily_use_experiment_id
+            if self.config.daily_use_experiment_id is not None
+            else None
+        )
+        if expected_daily_use_path is not None and target.path == expected_daily_use_path:
+            if target.query or request.path != target.path:
+                self._send_response(request, 400)
+                return
+            payload = self._read_post_payload(request, MAX_DAILY_USE_EVIDENCE_BYTES)
+            if isinstance(payload, int):
+                self._send_response(request, payload)
+                return
+            with self._daily_use_condition:
+                if self._daily_use_evidence is not None:
+                    status = 409
+                else:
+                    self._daily_use_evidence = payload
+                    self._daily_use_condition.notify_all()
+                    status = 204
+            self._send_response(request, status)
+            return
         if (
             target.path not in (BROWSER_CAPTURE_PATH, BROWSER_PNG_CAPTURE_PATH)
             or target.query
         ):
             self._send_response(request, 404)
             return
-        if request.headers.get("Transfer-Encoding") is not None:
-            self._send_response(request, 400)
+        payload = self._read_post_payload(request, MAX_CAPTURE_BYTES)
+        if isinstance(payload, int):
+            self._send_response(request, payload)
             return
-        lengths = request.headers.get_all("Content-Length", failobj=[])
-        if not lengths:
-            self._send_response(request, 411)
-            return
-        if len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdecimal():
-            self._send_response(request, 400)
-            return
-        size = int(lengths[0])
-        if size == 0:
-            self._send_response(request, 400)
-            return
-        if size > MAX_CAPTURE_BYTES:
-            self._send_response(request, 413)
-            return
-        request.connection.settimeout(1.0)
-        try:
-            payload = request.rfile.read(size)
-        except OSError:
-            self._send_response(request, 400)
-            return
-        if len(payload) != size:
-            self._send_response(request, 400)
-            return
+        size = len(payload)
         with self._lock:
             if self._capture is not None:
                 status = 409
@@ -1041,6 +1051,30 @@ class FixtureServer:
                 }
                 status = 201
         self._send_response(request, status)
+
+    def _read_post_payload(
+        self, request: http.server.BaseHTTPRequestHandler, maximum: int
+    ) -> bytes | int:
+        if request.headers.get("Transfer-Encoding") is not None:
+            return 400
+        lengths = request.headers.get_all("Content-Length", failobj=[])
+        if not lengths:
+            return 411
+        if len(lengths) != 1 or not lengths[0].isascii() or not lengths[0].isdecimal():
+            return 400
+        size = int(lengths[0])
+        if size == 0:
+            return 400
+        if size > maximum:
+            return 413
+        request.connection.settimeout(1.0)
+        try:
+            payload = request.rfile.read(size)
+        except OSError:
+            return 400
+        if len(payload) != size:
+            return 400
+        return bytes(payload)
 
     def _send_response(
         self,
@@ -1116,6 +1150,41 @@ class FixtureServer:
                 return None
             return dict(self._capture_evidence)
 
+    def daily_use_evidence_payload(self) -> bytes | None:
+        """Return a detached copy of the accepted daily-use upload, if any."""
+
+        with self._lock:
+            return self._daily_use_evidence
+
+    def daily_use_evidence_summary(self) -> dict[str, object] | None:
+        """Return the immutable size and digest of the daily-use upload."""
+
+        payload = self.daily_use_evidence_payload()
+        if payload is None:
+            return None
+        return {
+            "bytes": len(payload),
+            "sha256": hashlib.sha256(payload).hexdigest(),
+        }
+
+    def wait_for_daily_use_evidence(self, timeout_seconds: float) -> bytes:
+        """Wait a bounded interval for the experiment-bound upload."""
+
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not 0 < timeout_seconds <= 300
+        ):
+            raise ValueError("daily-use evidence timeout is invalid")
+        deadline = time.monotonic() + timeout_seconds
+        with self._daily_use_condition:
+            while self._daily_use_evidence is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("daily-use evidence upload timed out")
+                self._daily_use_condition.wait(remaining)
+            return self._daily_use_evidence
+
     def _record(self, peer: str, path: str, status: int, body_bytes: int) -> None:
         with self._lock:
             self._request_count += 1
@@ -1185,13 +1254,27 @@ def _port_argument(value: str) -> int:
     return port
 
 
+def _experiment_id_argument(value: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{32}", value) is None:
+        raise argparse.ArgumentTypeError("experiment ID must be 32 lowercase hex digits")
+    return value
+
+
 def _parse_args(arguments: Sequence[str] | None = None) -> FixtureConfig:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bind-address", type=_ipv4_argument, default="127.0.0.1")
     parser.add_argument("--port", type=_port_argument, default=17894)
     parser.add_argument("--allow-peer", type=_ipv4_argument)
+    parser.add_argument(
+        "--daily-use-experiment-id", type=_experiment_id_argument
+    )
     values = parser.parse_args(arguments)
-    return FixtureConfig(values.bind_address, values.port, values.allow_peer)
+    return FixtureConfig(
+        values.bind_address,
+        values.port,
+        values.allow_peer,
+        values.daily_use_experiment_id,
+    )
 
 
 def main(arguments: Sequence[str] | None = None) -> int:

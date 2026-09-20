@@ -313,12 +313,36 @@ impl ClassScheduler {
     // TODO: Implement a better algorithm and replace the current naive implementation.
     fn select_cpu(&self, thread: &Thread) -> CpuId {
         let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
-        if let Some(last_cpu) = thread.sched_attr().last_cpu()
-            && affinity.contains(last_cpu)
-        {
-            return last_cpu;
-        }
         let guard = disable_local();
+        let last_cpu = thread
+            .sched_attr()
+            .last_cpu()
+            .filter(|cpu| affinity.contains(*cpu));
+
+        if let Some(last_cpu) = last_cpu {
+            // Probe one rotating alternative on each wake instead of scanning every CPU in this
+            // hot path. A tie stays on the previous CPU to retain cache locality.
+            let probe_after = self.last_chosen_cpu.get().unwrap_or(last_cpu);
+            let candidate = Self::cycle_after(probe_after, &affinity).next().unwrap();
+            self.last_chosen_cpu.set_anyway(candidate);
+            if candidate == last_cpu {
+                return last_cpu;
+            }
+
+            let last_load = self.rqs[last_cpu.as_usize()]
+                .lock()
+                .load_stats()
+                .runnable_load();
+            let candidate_load = self.rqs[candidate.as_usize()]
+                .lock()
+                .load_stats()
+                .runnable_load();
+            return if candidate_load < last_load {
+                candidate
+            } else {
+                last_cpu
+            };
+        }
 
         let mut selected = guard.current_cpu();
         let mut minimum_load = u32::MAX;
@@ -471,6 +495,12 @@ struct PerCpuLoadStats {
     is_idle: bool,
 }
 
+impl PerCpuLoadStats {
+    fn runnable_load(&self) -> u32 {
+        self.queue_len.saturating_add(u32::from(!self.is_idle))
+    }
+}
+
 impl SchedulerStats for ClassScheduler {
     fn nr_queued_and_running(&self) -> (u32, u32) {
         self.rqs.iter().fold((0, 0), |(queued, running), rq| {
@@ -562,6 +592,39 @@ mod tests {
         }
         assert_eq!(scheduler.enqueue(task, EnqueueFlags::Wake), None);
         assert_eq!(info.queued_at(), first_queued_at);
+    }
+
+    #[ktest]
+    fn wake_prefers_less_loaded_allowed_cpu() {
+        let mut cpus = all_cpus();
+        let overloaded_cpu = cpus.next().unwrap();
+        if cpus.next().is_none() {
+            return;
+        }
+
+        let scheduler = ClassScheduler::new();
+        let peer = ThreadOptions::new(|| {}).build();
+        let peer_thread = peer.as_thread().unwrap().clone();
+        scheduler.rqs[overloaded_cpu.as_usize()]
+            .lock()
+            .enqueue_entity((peer, peer_thread), None);
+
+        let waking = ThreadOptions::new(|| {}).build();
+        let waking_thread = waking.as_thread().unwrap();
+        waking_thread.sched_attr().set_last_cpu(overloaded_cpu);
+
+        assert_ne!(scheduler.select_cpu(waking_thread), overloaded_cpu);
+    }
+
+    #[ktest]
+    fn wake_preserves_last_cpu_when_load_is_equal() {
+        let scheduler = ClassScheduler::new();
+        let waking = ThreadOptions::new(|| {}).build();
+        let waking_thread = waking.as_thread().unwrap();
+        let last_cpu = all_cpus().next().unwrap();
+        waking_thread.sched_attr().set_last_cpu(last_cpu);
+
+        assert_eq!(scheduler.select_cpu(waking_thread), last_cpu);
     }
 
     #[ktest]

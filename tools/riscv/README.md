@@ -102,6 +102,41 @@ must be in the state named by the command; failure does not trigger speculative
 serial commands or forced resets. A failed cycle retains its `serial.log` and
 `result.json` and does not count toward promotion.
 
+## Bounded Megrez desktop startup
+
+Use the fast desktop workflow for normal development boots. Publishing and
+starting are deliberately separate: publish only after the kernel, Stage1,
+prepared DTB, or expected root identity changes, then reuse that immutable
+generation for daily starts.
+
+```bash
+make prepare_riscv_megrez_desktop_boot
+make run_riscv_megrez_desktop
+```
+
+The defaults select
+`target/megrez-desktop-boot/build/plan.json`, the stable FTDI
+`/dev/serial/by-id/` path, and a timestamped evidence directory below
+`target/megrez-desktop-boot/`. Every variable has a
+`MEGREZ_DESKTOP_BOOT_*` override for another plan, serial device, host address,
+port, or output directory. An existing output directory is rejected rather
+than overwritten.
+
+`run_riscv_megrez_desktop` performs only the bounded `start` action. It never
+boots RockOS, transfers or installs artifacts, rewrites the root partition, or
+runs a browser performance workload. Before `booti`, it verifies the byte count
+and CRC32 of the immutable partition-3 kernel, Stage1, and DTB. During boot it
+prints each observed phase with host elapsed time. Success requires the debug
+console, X11/fbdev/Openbox, a visible UID-1000 Firefox window, and guest-local
+watchdog disarm within 300 seconds; a successful guest stays running.
+
+After a failed kernel entry, leave the command running: the armed watchdog
+reboots the board and the host requires a fresh OpenSBI, U-Boot, and prompt
+epoch within the bounded recovery allowance. Diagnose from the last printed
+phase and the retained `serial.log`/`result.json`; do not physically reset an
+ordinary failed boot. End a successful session from the debug console with
+`sync; reboot -f`, which returns the board to U-Boot for the next start.
+
 ## SMP4 cross-hart instruction-cache regression
 
 The formal RISC-V regression job runs with exactly four guest CPUs and sets
@@ -552,6 +587,88 @@ physical monitor and enter exactly the printed nonce-bound line,
 proves one complete interaction path. Such a result does not prove three-cycle repeatability.
 The evidence is published as `operator-display-attestation.json`, with `hdmi: null`; no file is
 presented as an HDMI capture.
+
+## Physical Firefox daily-use baseline
+
+The daily-use baseline is a closed, three-run experiment. Build the current
+Sv39/SMP=4 kernel in the persistent project container, then build Stage1 twice
+with the pinned offline rootfs image. The two Stage1 hashes must match before a
+board run is admitted:
+
+```bash
+tools/docker/run_dev_container.sh --workspace "$PWD" -- \
+  make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+mkdir -p target/firefox-daily-use-physical/stage1-a \
+  target/firefox-daily-use-physical/stage1-b
+for copy in a b; do
+  tools/docker/run_dev_container.sh \
+    --image asterinas/asterinas:0.18.0-20260702-riscv-rootfs --offline -- \
+    tools/riscv/debian/rootfs/build_stage1.sh \
+    "target/firefox-daily-use-physical/stage1-${copy}/initramfs.cpio"
+done
+sha256sum target/firefox-daily-use-physical/stage1-{a,b}/initramfs.cpio
+```
+
+Create and check `target/firefox-daily-use-physical/plan.json` as described by
+the Megrez debug-plan workflow. Before touching serial or U-Boot, validate the
+frozen plan, all artifact hashes, the stable serial path, fixture addresses,
+and a new output directory. This prepare command performs validation only and
+prints the exact real command; it does not open the serial device:
+
+```bash
+make prepare_riscv_megrez_firefox_daily_use \
+  MEGREZ_FIREFOX_DAILY_USE_PLAN="$PWD/target/firefox-daily-use-physical/plan.json" \
+  MEGREZ_FIREFOX_DAILY_USE_DEVICE=/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0 \
+  MEGREZ_FIREFOX_DAILY_USE_OUTPUT="$PWD/target/firefox-daily-use-physical/run-a1" \
+  MEGREZ_FIREFOX_DAILY_USE_FIXTURE_BIND=10.100.19.216 \
+  MEGREZ_FIREFOX_DAILY_USE_BOARD_PEER=10.100.19.200
+```
+
+Preflight the dedicated host Ethernet address and board peer before the first
+run. The fixture is fixed at `10.100.19.216:17894`, the board peer is
+`10.100.19.200`, and the serial link must resolve through the stable by-id path:
+
+```bash
+ip address show | grep -F 10.100.19.216
+ping -c 1 -W 2 10.100.19.200
+test -e /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0
+```
+
+Run exactly one profile per boot. These are three distinct one-shot commands;
+do not reuse an output directory or combine profiles in one guest lifetime:
+
+```bash
+python3 -m tools.riscv.megrez_firefox_daily_use \
+  /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0 \
+  --plan target/firefox-daily-use-physical/plan.json \
+  --output-directory target/firefox-daily-use-physical/run-a1 \
+  --fixture-bind 10.100.19.216 --fixture-port 17894 --board-peer 10.100.19.200
+python3 -m tools.riscv.megrez_firefox_daily_use \
+  /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0 \
+  --plan target/firefox-daily-use-physical/plan.json \
+  --output-directory target/firefox-daily-use-physical/run-a2 \
+  --fixture-bind 10.100.19.216 --fixture-port 17894 --board-peer 10.100.19.200
+python3 -m tools.riscv.megrez_firefox_daily_use \
+  /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0 \
+  --plan target/firefox-daily-use-physical/plan.json \
+  --output-directory target/firefox-daily-use-physical/run-a3 \
+  --fixture-bind 10.100.19.216 --fixture-port 17894 --board-peer 10.100.19.200
+```
+
+Each command must observe the fresh U-Boot prompt after the safety reboot; a
+missing recovery prompt makes that run unqualified. Generate the report only
+from three distinct `qualified` run directories with identical immutable
+deployment identity. The reporter validates every private manifest and never
+repairs evidence:
+
+```bash
+python3 -m tools.riscv.megrez_firefox_daily_use_report \
+  target/firefox-daily-use-physical/run-a1 \
+  target/firefox-daily-use-physical/run-a2 \
+  target/firefox-daily-use-physical/run-a3 \
+  --json-output target/firefox-daily-use-physical/baseline-report.json \
+  --markdown-output target/firefox-daily-use-physical/baseline-report.md
+```
 
 ## Megrez fast kernel probes
 

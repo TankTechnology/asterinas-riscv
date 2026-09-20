@@ -42,8 +42,16 @@ pub(super) fn arm_if_requested() {
     ostd::early_println!("ASTERINAS_SOFTWARE_REBOOT_ARMED seconds={}", seconds);
 }
 
-pub(super) fn is_armed() -> bool {
+pub(crate) fn is_armed() -> bool {
     RECOVERY_STATE.is_armed()
+}
+
+pub(crate) fn disarm() -> bool {
+    let was_armed = RECOVERY_STATE.disarm();
+    if was_armed {
+        ostd::early_println!("ASTERINAS_SOFTWARE_REBOOT_DISARMED");
+    }
+    was_armed
 }
 
 fn on_timer_interrupt() {
@@ -52,12 +60,33 @@ fn on_timer_interrupt() {
     else {
         return;
     };
+    let Some(action) = timer_action(&RECOVERY_STATE, remaining) else {
+        return;
+    };
+    match action {
+        TimerAction::Restart => power::emergency_restart(ExitCode::Failure),
+        TimerAction::Rearm(remaining) => {
+            // Another one-shot timer may expire before the recovery deadline.
+            // Re-arm the shared hardware deadline for the remaining interval.
+            timer::request_interrupt_after(remaining);
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum TimerAction {
+    Restart,
+    Rearm(Duration),
+}
+
+fn timer_action(state: &RecoveryState, remaining: Duration) -> Option<TimerAction> {
+    if !state.is_armed() {
+        return None;
+    }
     if remaining.is_zero() {
-        power::emergency_restart(ExitCode::Failure);
+        Some(TimerAction::Restart)
     } else {
-        // Another one-shot timer may expire before the recovery deadline.
-        // Re-arm the shared hardware deadline for the remaining interval.
-        timer::request_interrupt_after(remaining);
+        Some(TimerAction::Rearm(remaining))
     }
 }
 
@@ -97,6 +126,10 @@ impl RecoveryState {
 
     fn is_armed(&self) -> bool {
         self.is_armed.load(Ordering::Acquire)
+    }
+
+    fn disarm(&self) -> bool {
+        self.is_armed.swap(false, Ordering::AcqRel)
     }
 
     fn armed_deadline(&self) -> Option<Duration> {
@@ -169,5 +202,51 @@ mod tests {
         state.publish_armed();
         assert!(state.is_armed());
         assert_eq!(state.armed_deadline(), Some(Duration::from_secs(100)));
+    }
+
+    #[ktest]
+    fn first_disarm_clears_an_armed_recovery() {
+        let state = RecoveryState::new();
+        state.freeze_deadline(Duration::from_secs(100));
+        state.publish_armed();
+
+        assert!(state.disarm());
+        assert!(!state.is_armed());
+        assert!(state.armed_deadline().is_none());
+    }
+
+    #[ktest]
+    fn repeated_disarm_is_a_one_way_noop() {
+        let state = RecoveryState::new();
+        state.freeze_deadline(Duration::from_secs(100));
+        state.publish_armed();
+
+        assert!(state.disarm());
+        assert!(!state.disarm());
+        assert_eq!(state.deadline.get(), Some(&Duration::from_secs(100)));
+    }
+
+    #[ktest]
+    fn disarm_of_disabled_recovery_is_a_noop() {
+        let state = RecoveryState::new();
+
+        assert!(!state.disarm());
+        assert!(!state.is_armed());
+        assert!(state.armed_deadline().is_none());
+    }
+
+    #[ktest]
+    fn stale_timer_action_is_ignored_after_disarm() {
+        let state = RecoveryState::new();
+        state.freeze_deadline(Duration::from_secs(100));
+        state.publish_armed();
+        let remaining = remaining_before_deadline(
+            Duration::from_secs(100),
+            state.armed_deadline(),
+        )
+        .unwrap();
+
+        assert!(state.disarm());
+        assert_eq!(timer_action(&state, remaining), None);
     }
 }
