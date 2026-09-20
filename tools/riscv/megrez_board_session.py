@@ -494,10 +494,16 @@ class BoardSession:
         return out
 
     def load_artifact(
-        self, name: str, filename: str, address: int, expected_crc32: str
+        self,
+        name: str,
+        filename: str,
+        address: int,
+        expected_crc32: str,
+        *,
+        device_partition: str = "1:1",
     ) -> int:
         """Load one artifact and verify U-Boot's size and CRC32 evidence."""
-        load_command = f"ext4load mmc 1:1 0x{address:x} /{filename}"
+        load_command = f"ext4load mmc {device_partition} 0x{address:x} /{filename}"
         load_output = self.command(load_command)
         return self._verify_loaded_artifact(
             name, address, expected_crc32, load_output, LOAD_RESULT_PATTERN
@@ -743,6 +749,14 @@ def safe_artifact_name(value: str) -> str:
     return value
 
 
+def safe_mmc_device_partition(value: str) -> str:
+    if re.fullmatch(r"[0-9]:[1-9][0-9]?", value) is None:
+        raise argparse.ArgumentTypeError(
+            "MMC source must be one canonical DEVICE:PARTITION"
+        )
+    return value
+
+
 def safe_bootargs(value: str) -> str:
     if BOOTARGS_PATTERN.fullmatch(value) is None:
         raise argparse.ArgumentTypeError(
@@ -809,6 +823,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         choices=("mmc", "tftp", "ymodem"),
         default="mmc",
         help="artifact source (default: mmc)",
+    )
+    p.add_argument(
+        "--mmc-device-partition",
+        type=safe_mmc_device_partition,
+        default="1:1",
+        help="MMC artifact source as DEVICE:PARTITION (default: 1:1)",
     )
     p.add_argument("--tftp-board-address", type=safe_ipv4, default="10.100.19.200")
     p.add_argument("--tftp-server-address", type=safe_ipv4, default="10.100.19.216")
@@ -879,6 +899,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         value is not None for value in ymodem_contract
     ):
         p.error("YMODEM options require --load-transport ymodem")
+    if args.load_transport != "mmc" and args.mmc_device_partition != "1:1":
+        p.error("--mmc-device-partition requires --load-transport mmc")
     consoles = [
         token.removeprefix("console=")
         for token in args.bootargs.split()
@@ -1043,6 +1065,24 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
     """Run the exact guarded U-Boot load, patch, and boot transaction."""
     transport = getattr(args, "load_transport", "mmc")
     loader = session.load_artifact
+    mmc_device_partition = getattr(args, "mmc_device_partition", "1:1")
+    if transport == "mmc" and mmc_device_partition != "1:1":
+
+        def load_mmc_artifact(
+            name: str,
+            filename: str,
+            address: int,
+            expected_crc32: str,
+        ) -> int:
+            return session.load_artifact(
+                name,
+                filename,
+                address,
+                expected_crc32,
+                device_partition=mmc_device_partition,
+            )
+
+        loader = load_mmc_artifact
     if transport == "tftp":
         session.command(f"setenv ipaddr {args.tftp_board_address}")
         session.command(f"setenv serverip {args.tftp_server_address}")
