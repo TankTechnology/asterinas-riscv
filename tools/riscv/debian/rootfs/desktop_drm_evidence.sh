@@ -6,6 +6,8 @@ set -euo pipefail
 readonly CONSOLE="${ASTERINAS_DESKTOP_DRM_CONSOLE:-/dev/console}"
 readonly XORG_LOG="${ASTERINAS_DESKTOP_DRM_XORG_LOG:-/home/asterinas/Xorg.0.log}"
 readonly SESSION_LOG="${ASTERINAS_DESKTOP_DRM_SESSION_LOG:-/home/asterinas/desktop-drm-session.log}"
+# Where the LD_PRELOAD shim records the GL probe's own DRM ioctls and waits.
+readonly GL_TRACE="${ASTERINAS_DESKTOP_DRM_GL_TRACE:-/tmp/gl-renderer-ioctltrace.log}"
 readonly USER_NAME=asterinas
 readonly USER_ID=1000
 readonly DEFAULT_TIMEOUT_SECONDS=300
@@ -355,8 +357,14 @@ if [[ "$mesa_override" =~ ^[a-z0-9_]+$ ]]; then
     glxinfo_env+=(MESA_LOADER_DRIVER_OVERRIDE="$mesa_override")
     emit "DEBIAN_DESKTOP_DRM_GL_OVERRIDE driver=$mesa_override"
 fi
+# The shim writes to the path it is given and does nothing without one, so
+# `LD_PRELOAD` alone is a no-op -- which is why the earlier version of this
+# shim "never produced a line" and looked like a broken tracer rather than an
+# unconfigured one.
 if [[ -f /usr/lib/asterinas/ioctltrace.so ]]; then
-    glxinfo_env+=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so)
+    : >"$GL_TRACE"
+    glxinfo_env+=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so
+                  ASTERINAS_IOCTLTRACE_OUT="$GL_TRACE")
 fi
 
 # Xorg reaches the same Mesa loader the probe below does, but it decides
@@ -449,6 +457,18 @@ gl_probe() {
             if [[ -f "$XORG_LOG" ]]; then
                 emit '--- DRM GL probe: Xorg log tail ---'
                 tail -c 8192 "$XORG_LOG" >>"$CONSOLE" 2>&1 || true
+            fi
+            # The client's own account of what it did, in order. The kernel's
+            # trace shows the calls that reached the driver; this shows the ones
+            # that did not, and the wait that ended the sequence -- which is how
+            # "blocked in X" is told apart from "blocked in the driver".
+            if [[ -s "$GL_TRACE" ]]; then
+                emit '--- DRM GL probe: client ioctl/poll trace (tail) ---'
+                tail -c 8192 "$GL_TRACE" >>"$CONSOLE" 2>&1 || true
+                emit '--- DRM GL probe: client ioctl/poll trace (head) ---'
+                head -c 4096 "$GL_TRACE" >>"$CONSOLE" 2>&1 || true
+            else
+                emit '--- DRM GL probe: no client trace (shim missing or unconfigured) ---'
             fi
         fi
         sleep 5
