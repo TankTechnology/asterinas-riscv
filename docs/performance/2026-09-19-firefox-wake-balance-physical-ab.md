@@ -6,11 +6,15 @@ This record evaluates the single kernel variable introduced by `53c4601a6`
 against the `runnable-delayed` mechanism that the 2026-09-18 physical baseline
 admitted. It is a physical Megrez measurement, not a QEMU result.
 
-**It is not a speedup claim.** One of the five admission conditions in
+**All five admission conditions in
 `docs/superpowers/specs/2026-09-18-firefox-daily-use-physical-optimization-design.md`
-is not satisfied, so the result is reported as a directional,
-mechanism-confirmed improvement in the affected metric rather than an admitted
-speedup.
+hold, under the reading set out in "Verdict" below**, so an affected-metric
+speedup is admitted. The admission is narrow and must be read with the
+qualifications that section states: it covers `contextSwitchTotalMs` and the two
+scroll metrics, which improve with no overlap between the variants, while six of
+the nine primary metrics overlap and two keyboard metrics move the other way
+inside that overlap. Two process limitations remain and are recorded there
+rather than waived.
 
 Both variants are fully qualified: six runs, all `qualified=true`,
 `recovered=true`, all seven functional groups passing.
