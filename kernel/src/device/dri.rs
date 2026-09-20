@@ -22,6 +22,7 @@
 
 mod cursor;
 mod fence;
+mod prime;
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -42,7 +43,7 @@ use crate::{
     device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
     events::IoEvents,
     fs::{
-        file::{Mappable, PerOpenFileOps, StatusFlags, file_table::FdFlags},
+        file::{FileLike, Mappable, PerOpenFileOps, StatusFlags, file_table::FdFlags},
         vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
@@ -90,6 +91,18 @@ const DRM_MODE_TYPE_PREFERRED: u32 = 8;
 const DRM_CAP_DUMB_BUFFER: u64 = 1;
 const DRM_CAP_DUMB_PREFERRED_DEPTH: u64 = 3;
 const DRM_CAP_DUMB_PREFER_SHADOW: u64 = 4;
+const DRM_CAP_PRIME: u64 = 5;
+
+/// `DRM_PRIME_CAP_*`: which directions of buffer sharing this device offers.
+///
+/// This is not a free-standing claim — Mesa reads it as the answer to "can
+/// this device hand a buffer out at all", and takes its `create_dumb()` path
+/// for every buffer when the answer is no. The two bits are backed by
+/// `PRIME_HANDLE_TO_FD` and `PRIME_FD_TO_HANDLE` below; advertising a bit
+/// whose ioctl is missing would move a client onto a path that then fails
+/// further along, which is harder to diagnose than never being offered it.
+const DRM_PRIME_CAP_IMPORT: u64 = 0x1;
+const DRM_PRIME_CAP_EXPORT: u64 = 0x2;
 
 /// `DRM_CLIENT_CAP_*` values accepted by `SET_CLIENT_CAP`.
 const DRM_CLIENT_CAP_STEREO_3D: u64 = 1;
@@ -101,11 +114,17 @@ const DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT: u64 = 6;
 
 /// Size of the single contiguous dumb-buffer pool, in bytes.
 ///
-/// Covers framebuffers up to ~2048x2048 at 32 bpp; enough for the QEMU
-/// virtio-gpu scanouts (1024x768 by default) and a generous multi-resolution
-/// headroom. A single pool is required because the mmap path maps one
-/// `Mappable::Vmo` per file and selects a buffer by its byte offset within it.
-const DUMB_POOL_SIZE: usize = 16 * 1024 * 1024;
+/// A single pool is required because the mmap path maps one `Mappable::Vmo`
+/// per file and selects a buffer by its byte offset within it.
+///
+/// The size is set by the 3D path, not the 2D one. A single scanout is 4 MiB
+/// at 1280x800, but a client that renders allocates several buffers at once —
+/// glamor alone holds more than one — and the pool is a bump allocator, so a
+/// freed buffer's span is not reused (see `release_object`). 16 MiB ran out
+/// during a probe that asked for five buffers in a row, which surfaces as
+/// `ENOMEM` from `gbm_bo_create` and, at the desktop, as a renderer that never
+/// appears. 64 MiB is the size the frozen branch ran virgl with.
+const DUMB_POOL_SIZE: usize = 64 * 1024 * 1024;
 
 /// Maximum scanout width/height reported by `MODE_GETRESOURCES`.
 const MAX_RESOLUTION: u32 = 8192;
@@ -449,6 +468,20 @@ struct DrmGemOpen {
     size: u64,
 }
 
+/// `struct drm_prime_handle`, shared by both PRIME ioctls.
+///
+/// The same layout carries a handle out (`HANDLE_TO_FD`) and in
+/// (`FD_TO_HANDLE`); which field the caller fills in is what the command
+/// selects.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmPrimeHandle {
+    handle: u32,
+    flags: u32,
+    fd: i32,
+    pad: u32,
+}
+
 /// `struct drm_mode_get_plane_res`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
@@ -556,6 +589,14 @@ struct DrmVirtgpuResourceInfo {
 }
 
 /// `struct drm_virtgpu_execbuffer`.
+///
+/// The trailing fields describe sync objects this driver does not implement,
+/// and are present for a reason that is easy to miss: they are part of the
+/// struct, and the struct's *size* is part of the ioctl's command number. A
+/// definition that stops at `fence_fd` is 32 bytes where a client sends 64, so
+/// the request arrives as a different command and is refused as unknown before
+/// it is ever decoded — which is what Mesa reports as "got error from kernel -
+/// expect bad rendering".
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
 struct DrmVirtgpuExecbuffer {
@@ -568,6 +609,20 @@ struct DrmVirtgpuExecbuffer {
     num_bo_handles: u32,
     /// Out-fence, filled in when `VIRTGPU_EXECBUF_FENCE_FD_OUT` is set.
     fence_fd: i32,
+    ring_idx: u32,
+    syncobj_stride: u32,
+    num_in_syncobjs: u32,
+    num_out_syncobjs: u32,
+    in_syncobjs: u64,
+    out_syncobjs: u64,
+}
+
+/// `struct drm_virtgpu_3d_wait`, the argument of `VIRTGPU_WAIT`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmVirtgpuWait {
+    handle: u32,
+    flags: u32,
 }
 
 /// `VIRTGPU_EXECBUF_*` flags.
@@ -669,9 +724,10 @@ mod ioctl_defs {
         DrmGetCap, DrmModeCardRes, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip,
         DrmModeCursor, DrmModeCursor2, DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd,
         DrmGemClose, DrmGemFlink, DrmGemOpen, DrmModeGetConnector, DrmModeGetEncoder,
+        DrmPrimeHandle,
         DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
         DrmVirtgpuMap,
-        DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo,
+        DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo, DrmVirtgpuWait,
         DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeMapDumb, DrmModeObjGetProperties,
         DrmSetClientCap, DrmVersion,
     };
@@ -685,6 +741,9 @@ mod ioctl_defs {
     pub(super) type GemClose = ioc!(DRM_IOCTL_GEM_CLOSE, b'd', 0x09, InData<DrmGemClose>);
     pub(super) type GemFlink = ioc!(DRM_IOCTL_GEM_FLINK, b'd', 0x0a, InOutData<DrmGemFlink>);
     pub(super) type GemOpen = ioc!(DRM_IOCTL_GEM_OPEN, b'd', 0x1b, InOutData<DrmGemOpen>);
+    // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h>.
+    pub(super) type PrimeHandleToFd = ioc!(DRM_IOCTL_PRIME_HANDLE_TO_FD, b'd', 0x2d, InOutData<DrmPrimeHandle>);
+    pub(super) type PrimeFdToHandle = ioc!(DRM_IOCTL_PRIME_FD_TO_HANDLE, b'd', 0x2e, InOutData<DrmPrimeHandle>);
     // The virtgpu ioctls live at `DRM_COMMAND_BASE` (0x40) plus their number.
     pub(super) type VirtgpuMap = ioc!(DRM_IOCTL_VIRTGPU_MAP, b'd', 0x41, InOutData<DrmVirtgpuMap>);
     pub(super) type VirtgpuExecbuffer = ioc!(DRM_IOCTL_VIRTGPU_EXECBUFFER, b'd', 0x42, InOutData<DrmVirtgpuExecbuffer>);
@@ -692,6 +751,7 @@ mod ioctl_defs {
     pub(super) type VirtgpuResourceCreate = ioc!(DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, b'd', 0x44, InOutData<DrmVirtgpuResourceCreate>);
     pub(super) type VirtgpuResourceInfo = ioc!(DRM_IOCTL_VIRTGPU_RESOURCE_INFO, b'd', 0x45, InOutData<DrmVirtgpuResourceInfo>);
     pub(super) type VirtgpuGetCaps = ioc!(DRM_IOCTL_VIRTGPU_GET_CAPS, b'd', 0x49, InOutData<DrmVirtgpuGetCaps>);
+    pub(super) type VirtgpuWait = ioc!(DRM_IOCTL_VIRTGPU_WAIT, b'd', 0x48, InOutData<DrmVirtgpuWait>);
     pub(super) type VirtgpuContextInit = ioc!(DRM_IOCTL_VIRTGPU_CONTEXT_INIT, b'd', 0x4b, InOutData<DrmVirtgpuContextInit>);
     pub(super) type SetMaster = ioc!(DRM_IOCTL_SET_MASTER, b'd', 0x1e, NoData);
     pub(super) type DropMaster = ioc!(DRM_IOCTL_DROP_MASTER, b'd', 0x1f, NoData);
@@ -741,6 +801,12 @@ fn is_render_allowed(raw_ioctl: RawIoctl) -> bool {
     GetVersion::try_from_raw(raw_ioctl).is_some()
         || GetCap::try_from_raw(raw_ioctl).is_some()
         || GemClose::try_from_raw(raw_ioctl).is_some()
+        // The two PRIME ioctls are the pair the paragraph above says a render
+        // client uses in place of a name; Linux marks them
+        // `DRM_AUTH|DRM_RENDER_ALLOW`, so withholding them here would leave the
+        // render node with no way to share a buffer at all.
+        || PrimeHandleToFd::try_from_raw(raw_ioctl).is_some()
+        || PrimeFdToHandle::try_from_raw(raw_ioctl).is_some()
         // A 3D client reaches the device through the render node, so the whole
         // sequence it runs to get rendering — ask what the host supports, read
         // the capability set, create a context — has to get through.
@@ -749,6 +815,7 @@ fn is_render_allowed(raw_ioctl: RawIoctl) -> bool {
         || VirtgpuContextInit::try_from_raw(raw_ioctl).is_some()
         || VirtgpuMap::try_from_raw(raw_ioctl).is_some()
         || VirtgpuExecbuffer::try_from_raw(raw_ioctl).is_some()
+        || VirtgpuWait::try_from_raw(raw_ioctl).is_some()
         || VirtgpuResourceCreate::try_from_raw(raw_ioctl).is_some()
         || VirtgpuResourceInfo::try_from_raw(raw_ioctl).is_some()
 }
@@ -794,9 +861,9 @@ impl Device for Dri {
     }
 }
 
-/// Creates a completed-fence descriptor in the calling thread's file table.
-fn install_fence_file() -> Result<i32> {
-    let file = Arc::new(fence::FenceFile::new_signalled());
+/// Installs a file the driver synthesized into the calling thread's file
+/// table, returning the descriptor that names it.
+fn install_file(file: Arc<dyn FileLike>, fd_flags: FdFlags) -> Result<i32> {
     let current_task = Task::current().ok_or_else(|| Error::with_message(Errno::EAGAIN, "no current task"))?;
     let thread_local = current_task
         .as_thread_local()
@@ -805,7 +872,12 @@ fn install_fence_file() -> Result<i32> {
     // syscall through a descriptor in one — so this cannot be absent.
     let file_table = thread_local.borrow_file_table();
     let mut file_table_locked = file_table.unwrap().write();
-    Ok(file_table_locked.insert(file, FdFlags::empty()).into())
+    Ok(file_table_locked.insert(file, fd_flags).into())
+}
+
+/// Creates a completed-fence descriptor in the calling thread's file table.
+fn install_fence_file() -> Result<i32> {
+    install_file(Arc::new(fence::FenceFile::new_signalled()), FdFlags::empty())
 }
 
 /// Reads a NUL-terminated debug name from userspace.
@@ -1419,6 +1491,27 @@ impl DriHandle {
         })
     }
 
+    /// Imports the dma-buf a descriptor names as a handle in this file.
+    ///
+    /// A descriptor that names anything else — a regular file, a socket, a
+    /// dma-buf exported by some other device — is refused rather than
+    /// reinterpreted. The only handle this driver can mint is one onto its own
+    /// pool, so accepting a stranger's descriptor would produce a handle that
+    /// resolves to bytes the caller never had.
+    fn prime_fd_to_handle(&self, fd: i32) -> Result<u32> {
+        let current_task = Task::current().ok_or_else(|| Error::with_message(Errno::EAGAIN, "no current task"))?;
+        let thread_local = current_task
+            .as_thread_local()
+            .ok_or_else(|| Error::with_message(Errno::EAGAIN, "no thread-local storage"))?;
+        let file_table = thread_local.borrow_file_table();
+        let file_table_locked = file_table.unwrap().read();
+        let file = file_table_locked.get_file(fd.try_into()?)?;
+        let dma_buf = (**file).downcast_ref::<prime::DmaBufFile>().ok_or_else(|| {
+            Error::with_message(Errno::EINVAL, "descriptor is not a dma-buf from this device")
+        })?;
+        prime::fd_to_handle(self, dma_buf)
+    }
+
     fn map_dumb(&self, req: &DrmModeMapDumb) -> Result<DrmModeMapDumb> {
         let object_id = object_for_handle(&self.inner.lock(), req.handle)?;
         let object = object_by_id(&GEM_OBJECTS.lock(), object_id)?;
@@ -1442,16 +1535,34 @@ impl DriHandle {
         Ok(())
     }
 
+    /// Registers a framebuffer, which is a *view* of a buffer rather than a
+    /// restatement of how that buffer was allocated.
+    ///
+    /// This used to require the request's geometry to equal the buffer's, which
+    /// only held while every buffer came from `MODE_CREATE_DUMB`. A buffer now
+    /// also arrives through `VIRTGPU_RESOURCE_CREATE`, where there is no bpp to
+    /// record — a 3D resource is described by a format, not by bits per pixel —
+    /// so that object carries `bpp == 0` and an exact comparison rejects Xorg's
+    /// `drmModeAddFB(..., depth 24, bpp 32, ...)` for a buffer that is in fact
+    /// the right one. The client then retries forever: `glxinfo` issues the same
+    /// `ADDFB` with the same argument hundreds of times and never reaches a
+    /// renderer. Linux does not compare against the allocation either; it
+    /// checks that the format is one the device can scan out and that the
+    /// buffer is large enough for the geometry asked for. This is that check.
     fn add_fb(&self, req: &DrmModeFbCmd) -> Result<u32> {
         let mut inner = self.inner.lock();
         let object_id = object_for_handle(&inner, req.handle)?;
         let object = object_by_id(&GEM_OBJECTS.lock(), object_id)?;
-        if req.width != object.width
-            || req.height != object.height
-            || req.pitch != object.pitch
-            || req.bpp != object.bpp
-        {
-            return_errno_with_message!(Errno::EINVAL, "framebuffer does not match dumb buffer");
+        // A row has to fit in the pitch, and the rows have to fit in the buffer.
+        let bytes_per_pixel = u64::from(req.bpp).div_ceil(8);
+        let minimum_pitch = u64::from(req.width)
+            .checked_mul(bytes_per_pixel)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer width overflows"))?;
+        let span = u64::from(req.pitch)
+            .checked_mul(u64::from(req.height))
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "framebuffer height overflows"))?;
+        if u64::from(req.pitch) < minimum_pitch || span > object.size as u64 {
+            return_errno_with_message!(Errno::EINVAL, "framebuffer does not fit its buffer");
         }
         let fb_id = inner.next_fb_id;
         inner.next_fb_id += 1;
@@ -1720,6 +1831,7 @@ impl PerOpenFileOps for DriHandle {
                     DRM_CAP_DUMB_BUFFER => 1,
                     DRM_CAP_DUMB_PREFERRED_DEPTH => 24,
                     DRM_CAP_DUMB_PREFER_SHADOW => 0,
+                    DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
                     _ => {
                         return_errno_with_message!(Errno::EINVAL, "unsupported DRM capability")
                     }
@@ -1866,6 +1978,23 @@ impl PerOpenFileOps for DriHandle {
                 cmd.write(&self.gem_open(&req)?)?;
                 Ok(0)
             }
+            cmd @ PrimeHandleToFd => {
+                let mut req = cmd.read()?;
+                let (file, fd_flags) = prime::handle_to_fd(self, req.handle, req.flags)?;
+                req.fd = install_file(file, fd_flags)?;
+                req.pad = 0;
+                cmd.write(&req)?;
+                Ok(0)
+            }
+            cmd @ PrimeFdToHandle => {
+                let mut req = cmd.read()?;
+                // The command carries no size field: Linux reports the handle
+                // and leaves `pad` as the caller's zero.
+                req.handle = self.prime_fd_to_handle(req.fd)?;
+                req.pad = 0;
+                cmd.write(&req)?;
+                Ok(0)
+            }
             cmd @ VirtgpuGetparam => {
                 let req = cmd.read()?;
                 self.virtgpu_getparam(&req)?;
@@ -1884,6 +2013,16 @@ impl PerOpenFileOps for DriHandle {
             cmd @ VirtgpuExecbuffer => {
                 let req = cmd.read()?;
                 cmd.write(&self.virtgpu_execbuffer(&req)?)?;
+                Ok(0)
+            }
+            cmd @ VirtgpuWait => {
+                let _req = cmd.read()?;
+                // Nothing to wait for: `submit_3d` does not return until the
+                // host has retired the work, so a resource is never still in
+                // flight by the time a client can ask about it. Reporting that
+                // as a no-op is the honest answer — the alternative is to
+                // refuse a call that Linux serves, and Mesa prints the refusal
+                // as "slow gpu or hang?" on every submission.
                 Ok(0)
             }
             cmd @ VirtgpuMap => {
