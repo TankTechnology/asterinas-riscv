@@ -385,6 +385,111 @@ if [[ -f "$XORG_LOG" ]]; then
     fi
 fi
 
+# Name the extension behind each opcode the traces record.
+#
+# The trace prints `major=<opcode> minor=<n>` and an opcode is a number with no
+# meaning on its own: `major=148 minor=1` sent the search through the Xorg log,
+# Mesa's source and the extension init order, and still did not name it. The
+# mapping only exists on the server side, and a client can ask for it -- so ask,
+# rather than derive it. The names come from the server's own log, in the order
+# it initialised them, which is also the order the opcodes were assigned.
+if command -v python3 >/dev/null 2>&1; then
+    emit '--- X extension opcodes ---'
+    DISPLAY=:0 XAUTHORITY="/home/$USER_NAME/.Xauthority" \
+        python3 - "$XORG_LOG" >>"$CONSOLE" 2>&1 <<'PY' || true
+import ctypes, re, sys
+
+names = []
+try:
+    with open(sys.argv[1]) as handle:
+        for line in handle:
+            found = re.search(r"Initializing extension (\S+)", line)
+            if found and found.group(1) not in names:
+                names.append(found.group(1))
+except OSError:
+    pass
+
+x11 = ctypes.CDLL("libX11.so.6")
+x11.XOpenDisplay.restype = ctypes.c_void_p
+x11.XQueryExtension.argtypes = [ctypes.c_void_p, ctypes.c_char_p,
+                                ctypes.POINTER(ctypes.c_int),
+                                ctypes.POINTER(ctypes.c_int),
+                                ctypes.POINTER(ctypes.c_int)]
+display = x11.XOpenDisplay(None)
+if not display:
+    print("X-EXT none (could not open :0)")
+for name in names:
+    opcode, first_event, first_error = (ctypes.c_int(), ctypes.c_int(), ctypes.c_int())
+    if x11.XQueryExtension(ctypes.c_void_p(display), name.encode(), *[
+            ctypes.byref(value) for value in (opcode, first_event, first_error)]):
+        if opcode.value:
+            print(f"X-EXT opcode={opcode.value} name={name} "
+                  f"first_event={first_event.value} first_error={first_error.value}")
+PY
+fi
+
+# What libdrm makes of the DRM node, and whether that node can be reopened.
+#
+# glamor answers `DRI3Open` with:
+#
+#     fd = open(glamor_egl->device_path, O_RDWR|O_CLOEXEC);
+#     if (fd < 0) return BadAlloc;
+#
+# and that is the hook's only BadAlloc. `device_path` is whatever
+# `drmGetDeviceNameFromFd2()` returned, so both halves are asked for here --
+# the name, and then the very open glamor performs with it. Neither failure is
+# visible from the kernel: a name lookup that goes wrong makes no syscall at
+# all, which is why an ioctl trace showed a perfectly healthy kernel while
+# every GL client was being refused a device fd.
+#
+# This asks through libdrm itself rather than reimplementing the lookup, for
+# the reason the whole file keeps relearning: the answer that matters is the
+# one the consumer gets, not the one our own reading of the format predicts.
+#
+# Written in Python rather than as the C probe for a practical reason: the C
+# probe has produced no output in any run so far. Its stdout is redirected to a
+# file, so stdio buffers it, and it does not survive long enough to flush --
+# which looks exactly like a probe that never ran.
+if command -v python3 >/dev/null 2>&1; then
+    emit '--- DRM device name (what glamor would open for DRI3) ---'
+    python3 -u - >>"$CONSOLE" 2>&1 <<'PY' || true
+import ctypes, errno, os
+
+drm = ctypes.CDLL("libdrm.so.2", use_errno=True)
+drm.drmGetDeviceNameFromFd2.restype = ctypes.c_void_p
+drm.drmGetDeviceNameFromFd2.argtypes = [ctypes.c_int]
+libc = ctypes.CDLL(None)
+libc.free.argtypes = [ctypes.c_void_p]
+
+for node in ("/dev/dri/card0", "/dev/dri/renderD128"):
+    try:
+        fd = os.open(node, os.O_RDWR | os.O_CLOEXEC)
+    except OSError as error:
+        print(f"DRI3_OPEN node={node} open-failed errno={error.errno}")
+        continue
+
+    ctypes.set_errno(0)
+    raw = drm.drmGetDeviceNameFromFd2(fd)
+    if not raw:
+        print(f"DRI3_OPEN node={node} device_name=NULL errno={ctypes.get_errno()}"
+              " -> glamor's open(NULL) is EFAULT and DRI3Open returns BadAlloc")
+        os.close(fd)
+        continue
+
+    path = ctypes.cast(ctypes.c_void_p(raw), ctypes.c_char_p).value.decode()
+    try:
+        again = os.open(path, os.O_RDWR | os.O_CLOEXEC)
+        print(f"DRI3_OPEN node={node} device_name={path} reopen=ok fd={again}")
+        os.close(again)
+    except OSError as error:
+        name = errno.errorcode.get(error.errno, "?")
+        print(f"DRI3_OPEN node={node} device_name={path} reopen-failed "
+              f"errno={error.errno} ({name}) -> glamor returns BadAlloc")
+    libc.free(ctypes.c_void_p(raw))
+    os.close(fd)
+PY
+fi
+
 # The renderer is the whole point of a 3D run, so the line that reports it is
 # emitted unconditionally, by this outer scope, from a file the probe writes
 # the moment it learns anything. The probe itself runs in the background
@@ -470,6 +575,16 @@ gl_probe() {
                 tail -c 8192 "$GL_TRACE" >>"$CONSOLE" 2>&1 || true
                 emit '--- DRM GL probe: client ioctl/poll trace (head) ---'
                 head -c 4096 "$GL_TRACE" >>"$CONSOLE" 2>&1 || true
+                # head and tail cannot answer "did the reply reach the client".
+                # The wait and the read that should end it are scattered
+                # through the file, and the two ends of the conversation are in
+                # two different traces. Every socket call carries the socket's
+                # inode, so these lines are the only ones that can show the
+                # client's `poll` and the server's `writev` are the same
+                # conversation rather than two that merely look alike.
+                emit '--- DRM GL probe: client socket calls ---'
+                grep -aE '^(POLL|RECVMSG|SENDMSG|READ|WRITE) ' "$GL_TRACE" 2>/dev/null |
+                    head -150 >>"$CONSOLE" 2>&1 || true
             else
                 emit '--- DRM GL probe: no client trace (shim missing or unconfigured) ---'
             fi
@@ -494,6 +609,13 @@ gl_probe() {
             if [[ -s "$XORG_TRACE" ]]; then
                 emit '--- DRM GL probe: Xorg ioctl/poll/futex trace (tail) ---'
                 tail -c 8192 "$XORG_TRACE" >>"$CONSOLE" 2>&1 || true
+                # The server's half of the same question: which socket it
+                # answers on, and what shape the answer had. `iovs`/`first`/
+                # `total` separate a complete reply from a fragment of one,
+                # which `ret` alone cannot -- both can return the same count.
+                emit '--- DRM GL probe: Xorg socket calls ---'
+                grep -aE '^(POLL|WRITEV|RECVMSG|SENDMSG) ' "$XORG_TRACE" 2>/dev/null |
+                    head -150 >>"$CONSOLE" 2>&1 || true
             else
                 emit '--- DRM GL probe: no Xorg trace (shim missing or unconfigured) ---'
             fi
