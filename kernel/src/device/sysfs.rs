@@ -341,7 +341,7 @@ mod test {
         // `uevent` has to be a readable attribute of the device directory
         // itself, not a child node, or libdrm's `fopen` on it finds a
         // directory and gives up.
-        assert!(device.attributes().contains(&SysStr::from("uevent")));
+        assert!(device.node_attrs().contains("uevent"));
 
         let drm = device.child("drm").unwrap().cast_to_branch().unwrap();
         assert!(drm.child("card0").is_some());
@@ -377,8 +377,17 @@ mod test {
         // looks for `DEVNAME=`. The test asserted only the first for several
         // rounds while the second did not exist at all, and no GL client could
         // be given a device fd. Assert both, because neither implies the other.
+        // Read it, rather than only checking that an attribute of that name is
+        // present: `show_attr` is what libdrm's `fopen`+`read` reaches, so this
+        // asserts the whole path from the tree to the bytes -- and the bytes
+        // are the ones `drmGetDeviceNameFromFd2()` greps for `DEVNAME=`.
         let card_node = char.child("226:0").unwrap().cast_to_branch().unwrap();
-        assert!(card_node.attributes().contains(&SysStr::from("uevent")));
+        assert!(
+            card_node
+                .show_attr("uevent")
+                .unwrap()
+                .contains("DEVNAME=dri/card0\n")
+        );
     }
 
     /// The line `drmGetDeviceNameFromFd2()` searches for, and the form it has
