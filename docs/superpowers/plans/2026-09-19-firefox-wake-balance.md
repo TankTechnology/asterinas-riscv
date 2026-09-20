@@ -63,9 +63,13 @@ are not a claim that the sequence was followed at the time.
   `tools/riscv/megrez_firefox_daily_use_report.py`.
 - [x] Apply the five controlled-A/B conditions from the optimization design
   verbatim and record which hold.
-- [ ] The QEMU half of condition 4 is open: run the RISC-V kernel-test suite
+- [x] Confirm the four-hart QEMU graphics/control gate passes with retained
+  evidence; `qemu-qualification` records `passed=true` with three interaction
+  cycles and Stage1 `0d4ebedf`.
+- [ ] Still open: run the RISC-V kernel-test suite
   (`TARGET_ARCH=riscv64 SMP=4 make ktest`) so the two new `#[ktest]`
-  regressions execute in QEMU, and record the result here.
+  regressions actually execute, and record the result here. The graphics gate
+  does not run them.
 - [ ] Publish the outcome as inconclusive/neutral/regressive rather than a
   speedup while condition 4 is open.
 
