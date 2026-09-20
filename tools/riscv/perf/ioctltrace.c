@@ -39,6 +39,7 @@
 #include <string.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -58,6 +59,7 @@ static ssize_t (*real_write)(int, const void *, size_t);
 static ssize_t (*real_read)(int, void *, size_t);
 static int (*real_epoll_wait)(int, struct epoll_event *, int, int);
 static int (*real_epoll_ctl)(int, int, int, struct epoll_event *);
+static ssize_t (*real_recvmsg)(int, struct msghdr *, int);
 static int out_fd = -1;
 static int tracing;
 
@@ -377,6 +379,49 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
         }
         used = append(line, used, "\n");
         emit(line, used);
+    }
+
+    errno = saved;
+    return result;
+}
+
+/* The X server exchanges descriptors with its clients through `recvmsg`, which
+ * is why a socket-level trace that stops at `read` shows a server apparently
+ * ignoring data a client sent. The result and the amount of control data
+ * received are what say whether the message was taken. */
+ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags)
+{
+    ssize_t result, saved;
+    size_t control_len = msg ? msg->msg_controllen : 0;
+
+    if (!real_recvmsg)
+        real_recvmsg = dlsym(RTLD_NEXT, "recvmsg");
+    if (!real_recvmsg) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    result = real_recvmsg(sockfd, msg, flags);
+    saved = errno;
+
+    if (tracing) {
+        char line[LINE_MAX];
+        size_t used = 0;
+        used = append(line, used, "RECVMSG pid=");
+        used = append_dec(line, used, (long long)getpid());
+        used = append(line, used, " fd=");
+        used = append_fd_path(line, used, sockfd);
+        used = append(line, used, " ret=");
+        used = append_dec(line, used, (long long)result);
+        used = append(line, used, " ctrl=");
+        used = append_dec(line, used, (long long)msg->msg_controllen);
+        if (result < 0) {
+            used = append(line, used, " errno=");
+            used = append_dec(line, used, saved);
+        }
+        used = append(line, used, "\n");
+        emit(line, used);
+        (void)control_len;
     }
 
     errno = saved;
