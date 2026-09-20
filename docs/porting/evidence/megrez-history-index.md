@@ -23,12 +23,17 @@ QEMU results are not treated as Megrez board results.
 | Megrez Debian systemd M2 `6576d661f` | [Asterinas Debian systemd M2 evidence](2026-08-25-megrez-debian-systemd-m2.md) | Asterinas installed and verified the signed 1 GiB root on eMMC partition 2; systemd 257.13 then reached boot 1, requested a userspace reboot, recovered through a new firmware epoch, and produced the persistent boot-2 PASS. |
 | Megrez Debian Desktop M4 `f3d9c73fc` | [Desktop applications on QEMU and Megrez](2026-08-26-debian-desktop-m4-apps.md) | Asterinas installed and verified the signed Desktop M4 root, then reached a persistent physical Xorg fbdev session with two xHCI controllers, USB keyboard and mouse, Matchbox, PCManFM, NetSurf, and xterm; the same frozen userspace passed QEMU first. |
 | Megrez DWMAC streaming DMA `ed3a6508e` | [DWMAC RX liveness and physical closure](megrez-dwmac-rx-liveness-contract.md#streaming-dma-physical-closure) | Four ordered TCP payloads completed, including 16 MiB with zero retransmissions in that trace; the runner sealed `passed=true` evidence and recovered to a fresh U-Boot prompt. This is a frozen network probe, not Debian/Firefox integration evidence. |
+| Megrez browser interaction baseline `0c2da5081` | [RISC-V browser interaction baseline, 2026-09-16](2026-09-16-browser-interaction-performance-baseline.md) | Byte-identical release-kernel QEMU interaction cycles accepted trusted keyboard input but stayed above the 100 ms p95 target, and a dedicated TLB probe located a software-IPI lost wakeup that `269ee6285` later fixed in `main`. The requested greater-than-fivefold everyday-Firefox improvement remains unverified, and no ratio may be assembled from these observations. |
 
 ## Tracked summaries and local raw evidence
 
 The Markdown pages above are reviewable summaries with artifact identities and interpretation limits.
 The 264-item manifest at `.local-workspace/manifests/2026-07-18/` covers only the migrated legacy material from `porting/logs/`, `porting/hardware/`, `.local-notes/`, and the known repository-root local files.
 Those local files and manifests are intentionally absent from a fresh clone and must pass a separate redaction review before publication.
+The same convention covers the 2026-09-16 board raw material: the
+`2026-09-16-board-rockos-*` logs, the JIT startup CPU ledger, and the GDB
+capture directories are retained untracked in the development checkout beside
+the published page, so a fresh clone contains the curated summary only.
 
 The `70734c14e` result remains locally under
 `target/megrez-preflight/slow-70734c14e-rerun2-20260717/`. Its
