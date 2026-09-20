@@ -15,13 +15,17 @@ from tools.riscv.debian.rootfs.desktop_drm_gate import (
     DESKTOP_DRM_EXPECTED_WIDTH,
     DESKTOP_DRM_GL_PREFIX,
     DESKTOP_DRM_MILESTONES,
+    DESKTOP_DRM_PIXEL_MILESTONE,
+    DESKTOP_DRM_PIXEL_PREFIX,
     DESKTOP_DRM_VIRGL_MILESTONE,
+    DESKTOP_DRM_VIRGL_MILESTONES,
     GUEST_DEADLINE_MINIMUM_SECONDS,
     GUEST_DEADLINE_MARGIN_SECONDS,
     DesktopDRMOperations,
     classify_desktop_drm,
     classify_desktop_drm_virgl,
     desktop_drm_qemu_argv,
+    observed_desktop_drm_pixels,
     observed_desktop_drm_renderer,
     orchestrate_desktop_drm_gate,
 )
@@ -172,9 +176,27 @@ class DesktopDRMRendererTests(unittest.TestCase):
             graphics_device=graphics_device,
         )
 
-    @staticmethod
-    def _transcript(renderer: str | None) -> bytes:
+    #: A verdict line in the shape the guest's probe emits on success.
+    PASSING_PIXELS = "ok=yes left=ffffff right=000000 expect=ffffff/000000"
+
+    @classmethod
+    def _transcript(
+        cls, renderer: str | None, pixels: str | None = PASSING_PIXELS
+    ) -> bytes:
+        """A transcript in the guest's own emission order.
+
+        The pixel verdict comes *before* the renderer line, as it does on the
+        guest, because `classify_desktop` rejects milestones that are out of
+        order -- so a transcript assembled the other way round would test an
+        ordering that never occurs.
+
+        `pixels=None` with a renderer given is the case of a guest that
+        reported a renderer and no pixel verdict at all, which is its own
+        failure and not the same as a verdict of `ok=no`.
+        """
         lines = ["boot", *DESKTOP_DRM_MILESTONES]
+        if renderer is not None and pixels is not None:
+            lines.append(f"{DESKTOP_DRM_PIXEL_PREFIX}{pixels}")
         if renderer is not None:
             lines.append(f"{DESKTOP_DRM_GL_PREFIX}{renderer}")
         return ("\n".join(lines) + "\n").encode()
@@ -221,13 +243,18 @@ class DesktopDRMRendererTests(unittest.TestCase):
 
     def test_a_3d_run_with_no_renderer_line_is_not_reported_as_a_renderer(self) -> None:
         # "never got there" and "got there on the wrong driver" are different
-        # failures; only the second one has a renderer to name.
+        # failures; only the second one has a renderer to name. Both the pixel
+        # verdict and the renderer line are absent here, so the classifier
+        # reports whichever it looks for first -- the pixel verdict, because
+        # that is the order the guest emits them in -- and what matters is that
+        # it reads as a missing milestone rather than as a named renderer.
         result = classify_desktop_drm_virgl(
             self._transcript(None), expected_debian_release="13.6"
         )
         self.assertFalse(result.passed)
         self.assertNotIn("llvmpipe", result.reason)
-        self.assertIn(DESKTOP_DRM_VIRGL_MILESTONE, result.reason)
+        self.assertNotIn("GL renderer was", result.reason)
+        self.assertIn("missing desktop milestone:", result.reason)
 
     def test_the_2d_classifier_ignores_the_renderer_entirely(self) -> None:
         # Same transcript, no 3D device: nothing about the renderer may leak
@@ -241,6 +268,70 @@ class DesktopDRMRendererTests(unittest.TestCase):
     def test_the_observed_renderer_is_read_back_from_the_line(self) -> None:
         self.assertEqual(observed_desktop_drm_renderer(self._transcript("zink")), "zink")
         self.assertIsNone(observed_desktop_drm_renderer(self._transcript(None)))
+
+    def test_a_renderer_that_drew_nothing_is_not_a_pass(self) -> None:
+        """`renderer=virgl` says a driver was chosen; it does not say it drew.
+
+        This is the whole reason the pixel verdict exists. A winsys that
+        initialises and then produces nothing, or a command stream that never
+        lands, reports virgl exactly as happily as a working one -- so the
+        renderer line on its own cannot tell those apart.
+        """
+        result = classify_desktop_drm_virgl(
+            self._transcript("virgl", "ok=no left=000000 right=000000"),
+            expected_debian_release="13.6",
+        )
+        self.assertFalse(result.passed)
+        self.assertIn("nothing was drawn", result.reason)
+        self.assertIn("000000", result.reason)
+
+    def test_a_missing_pixel_verdict_is_not_a_pass(self) -> None:
+        """A guest that never answered the pixel question has not passed it."""
+        result = classify_desktop_drm_virgl(
+            self._transcript("virgl", None), expected_debian_release="13.6"
+        )
+        self.assertFalse(result.passed)
+        self.assertIn(DESKTOP_DRM_PIXEL_MILESTONE, result.reason)
+
+    def test_a_software_renderer_is_reported_before_its_pixels(self) -> None:
+        """When both questions are answered badly, name the more basic one.
+
+        A software renderer with wrong pixels and a GPU renderer with wrong
+        pixels need different work; leading with the pixels would send the
+        reader after the second when the cause is the first.
+        """
+        result = classify_desktop_drm_virgl(
+            self._transcript("llvmpipe", "ok=no left=000000 right=000000"),
+            expected_debian_release="13.6",
+        )
+        self.assertFalse(result.passed)
+        self.assertIn("llvmpipe", result.reason)
+        self.assertNotIn("nothing was drawn", result.reason)
+
+    def test_the_pixel_verdict_is_read_from_the_line(self) -> None:
+        self.assertEqual(
+            observed_desktop_drm_pixels(self._transcript("virgl")),
+            self.PASSING_PIXELS.encode(),
+        )
+        self.assertEqual(
+            observed_desktop_drm_pixels(
+                self._transcript("virgl", "ok=no left=000000 right=000000")
+            ),
+            b"ok=no left=000000 right=000000",
+        )
+        self.assertIsNone(observed_desktop_drm_pixels(self._transcript(None)))
+
+    def test_the_pixel_verdict_is_expected_before_the_renderer_line(self) -> None:
+        """The guest emits the verdict first, and the gate has to agree.
+
+        `classify_desktop` fails a transcript whose milestones are out of
+        order, so this is a contract between the two halves of the evidence
+        rather than a coincidence of how the list happens to be written.
+        """
+        self.assertLess(
+            DESKTOP_DRM_VIRGL_MILESTONES.index(DESKTOP_DRM_PIXEL_MILESTONE),
+            DESKTOP_DRM_VIRGL_MILESTONES.index(DESKTOP_DRM_VIRGL_MILESTONE),
+        )
 
     def test_the_gate_wires_the_3d_classifier_to_a_3d_device(self) -> None:
         # Requiring virgl is only real if the run that needs it actually gets
