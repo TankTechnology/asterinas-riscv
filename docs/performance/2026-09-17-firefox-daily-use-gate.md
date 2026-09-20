@@ -185,12 +185,20 @@ a speedup claim.
 | 1. Stage1 build determinism | **passed** | Three pairs, each byte-identical within its pair and each pair carrying a distinct digest: `stage1-a`/`stage1-b` at `816f8c4d`, `stage1-crossarch-a`/`stage1-crossarch-b` at `9bcf5f7b` (the digest the physical plans reference), and `stage1-qualification-a`/`stage1-qualification-b` at `0d4ebedf` (the digest the QEMU gate used). |
 | 2. QEMU graphics/control gate | **passed** | `qemu-qualification`, `qemu-qualification-current`, `qemu-smoke-fixed5`, and `qemu-namespace` each record `passed=true`, `reason=pass`, `physical=false`, and three interaction cycles. `qemu-qualification` ran with the rebuilt Stage1 `0d4ebedf`; `qemu-smoke-fixed4` retains the earlier `QEMU interaction cycle 1 exited before READY` failure. |
 | 3. Three physical samples | **passed** | `release-jit-crossarch-run-3/4/5`, all qualified and recovered, one profile per boot, published as [the 2026-09-18 baseline](../../performance/2026-09-18-firefox-daily-use-physical-baseline.md). |
-| 4. Select one kernel variable | **applied, result not yet admitted** | Classification was `runnable-delayed` 3/3, so `53c4601a6` was selected as the one variable. Its A/B is recorded in [the 2026-09-19 result](../../performance/2026-09-19-firefox-wake-balance-physical-ab.md) as a directional improvement, not a speedup; the remaining gap is one RISC-V kernel-test run. |
+| 4. Select one kernel variable | **applied and admitted** | Classification was `runnable-delayed` 3/3, so `53c4601a6` was selected as the one variable. Its A/B is recorded in [the 2026-09-19 result](../../performance/2026-09-19-firefox-wake-balance-physical-ab.md): all five admission conditions hold under the affected-metric reading, and the mixed aggregate is stated alongside. |
 
 The QEMU graphics/control gate and the RISC-V kernel-test suite are different
 gates. The gate above boots the desktop and drives three interaction cycles; it
-does not execute the new `select_cpu` `#[ktest]` regressions, which only the
-kernel-test suite runs. That kernel-test run is the last open item behind gate 4.
+does not execute the new `select_cpu` `#[ktest]` regressions. The kernel-test
+suite does, and was run at `53c4601a6` in a separate worktree: both regressions
+pass, and a control run at `55ee5c64e` shows that the four other failures in the
+suite pre-date the change.
+
+All four gates are now closed. The next decision is the one the classification
+forces: B is `mixed`, so the optimization admission rule applies and no further
+kernel change is eligible until one bounded attribution observation has been
+taken. `contextSwitchTotalMs` remains over its 500 ms threshold in all three B
+runs and is the largest primary metric.
 
 Reading this gate's evidence requires care: the gate creates its output
 directories root-owned mode `0700` inside the development container, so an
