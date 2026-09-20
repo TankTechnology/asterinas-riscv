@@ -718,6 +718,20 @@ class MegrezGmacGateTests(unittest.TestCase):
         desktop = _parse_args(required[:-2] + ["--target", "desktop"])
         self.assertEqual(desktop.target, GateTarget.DESKTOP)
 
+    def test_physical_gate_fails_fast_when_board_never_boots(self) -> None:
+        parsed = _parse_args(
+            [
+                "/dev/ttyUSB0",
+                "--booti", "kernel",
+                "--initrd", "stage1.cpio",
+                "--dtb", "board.dtb",
+                "--expected-crc32", "booti=12345678,dtb=90abcdef,initrd=deadbeef",
+                "--host-interface", "enp12s0",
+                "--output-directory", "/tmp/gmac-gate",
+            ]
+        )
+        self.assertEqual(parsed.boot_timeout, 120.0)
+
     def test_address_conflict_is_rejected_before_serial_open(self) -> None:
         operations = FakeOperations(conflict=True)
 

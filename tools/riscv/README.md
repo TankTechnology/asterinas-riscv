@@ -323,7 +323,7 @@ make test_riscv_megrez_debug_board \
 ```
 
 The command has one declining timeout, capped at 900 seconds. Its default
-remains 300 seconds. A desktop plan using `asterinas.reboot_after=600` must use
+is 120 seconds. A desktop plan using `asterinas.reboot_after=600` must use
 `--timeout 900`: the Megrez guest clock can advance more slowly than host
 monotonic time, so a 660-second host budget can expire before the bounded guest
 recovery. Reusing RAM is safe only when U-Boot reports the exact planned
