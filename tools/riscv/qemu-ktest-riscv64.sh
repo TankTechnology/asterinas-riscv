@@ -43,13 +43,28 @@
 #         "Starting hart 0/2/3" each followed by "Successfully started hart
 #         N", then "Processor 1/2/3 started. Spinning for tasks." Four CPUs run;
 #         they are not absent.
-#       - the APs are therefore *running* but never reporting a quiescent
-#         state: instrumenting the RCU monitor to print each reporting CPU
-#         gives `report cpu=0` and never 1, 2 or 3.
+#       - but the APs never leave the boot context. `ostd/src/boot/smp.rs`
+#         parks each one on `AP_LATE_ENTRY.wait()`, and the only thing that
+#         releases it is `register_ap_entry(ap_init)` in the kernel's `main()`
+#         (kernel/src/init.rs:32). **A ktest build does not run that `main()`**:
+#         it uses `#[test_main]`, not `#[ostd_main]`, so the kernel's boot
+#         sequence never happens. The signature is exact -- the first line of
+#         that `main()`, "OSTD initialized. Preparing components.", appears
+#         once in the gate kernel's log and **zero** times in the ktest
+#         kernel's.
+#       - an AP parked there runs no idle thread, never idles, and so never
+#         reports a quiescent state: instrumenting the RCU monitor to print
+#         each reporting CPU gives `report cpu=0` and never 1, 2 or 3.
 #       - an RCU grace period completes only when every counted CPU has
 #         reported, so the set stays unfilled, `after_grace_period` callbacks
 #         are never invoked, and nothing an `RcuOption` held is ever freed.
 #         That is what the two tests observe.
+#
+#     So this is a property of the test harness rather than a kernel defect:
+#     under ktests the APs are permanently parked, and every run is effectively
+#     single-CPU. `-smp 1` matches the machine the suite actually gets. A run
+#     that wants SMP coverage needs `#[test_main]` to perform the kernel's boot
+#     far enough to register the AP entry.
 #
 #     Two attempted fixes -- reporting from `halt_cpu` and from `reschedule`
 #     -- did not change the outcome and were reverted. `KTEST_SMP=4`
