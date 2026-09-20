@@ -415,6 +415,25 @@ ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags)
         used = append_dec(line, used, (long long)result);
         used = append(line, used, " ctrl=");
         used = append_dec(line, used, (long long)msg->msg_controllen);
+        /* The leading bytes, so the exchange can be read rather than guessed
+         * at. An X11 request opens with its major opcode, and a reply with 1;
+         * a loop is only diagnosable once the messages in it are named. */
+        if (result > 0 && msg->msg_iovlen > 0 && msg->msg_iov[0].iov_base) {
+            const unsigned char *bytes = msg->msg_iov[0].iov_base;
+            size_t show = (size_t)result < msg->msg_iov[0].iov_len
+                              ? (size_t)result
+                              : msg->msg_iov[0].iov_len;
+            if (show > 4)
+                show = 4;
+            used = append(line, used, " bytes=");
+            for (size_t byte = 0; byte < show; byte++) {
+                static const char digits[] = "0123456789abcdef";
+                if (used < LINE_MAX - 4) {
+                    line[used++] = digits[bytes[byte] >> 4];
+                    line[used++] = digits[bytes[byte] & 0xf];
+                }
+            }
+        }
         if (result < 0) {
             used = append(line, used, " errno=");
             used = append_dec(line, used, saved);
