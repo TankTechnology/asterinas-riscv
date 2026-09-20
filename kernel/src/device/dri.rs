@@ -24,6 +24,10 @@ mod cursor;
 mod fence;
 mod prime;
 
+/// The dma-buf descriptor, reachable so that the SCM_RIGHTS classifier can
+/// recognize one. See [`prime::DmaBufFile`].
+pub(crate) use prime::DmaBufFile;
+
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use align_ext::AlignExt;

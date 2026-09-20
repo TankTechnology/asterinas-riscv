@@ -39,7 +39,12 @@ use crate::{
 };
 
 /// A dma-buf descriptor naming one exported GEM object.
-pub(super) struct DmaBufFile {
+///
+/// It is a [`FileLike`] rather than an inode handle, which is why the SCM_RIGHTS
+/// classifier has to be told about it by name: everything it holds is a device
+/// pool, an object id and a size, and none of those can retain a file
+/// description. Without that, passing one to another process is refused.
+pub(crate) struct DmaBufFile {
     /// The device-wide pool the object is carved out of. Holding it keeps the
     /// mapping valid after every other file has closed.
     pool: Arc<Vmo>,
@@ -79,6 +84,19 @@ impl Pollable for DmaBufFile {
 }
 
 impl FileLike for DmaBufFile {
+    /// Says that this file owns no other file description, which is what lets
+    /// it be passed over a socket.
+    ///
+    /// The claim is checkable: the fields are a device pool VMO, an object id,
+    /// a size, an access mode, and [`FileCommon`] — a path, status flags and an
+    /// owner. None of them can reach the file table. Without this the
+    /// classifier in `net::socket::unix::ctrl_msg` returns `Unsupported` and
+    /// the *whole* `sendmsg` is refused with `EPERM`, so the descriptor never
+    /// arrives and the peer blocks for one that will not come.
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        true
+    }
+
     fn access_mode(&self) -> AccessMode {
         self.access_mode
     }
