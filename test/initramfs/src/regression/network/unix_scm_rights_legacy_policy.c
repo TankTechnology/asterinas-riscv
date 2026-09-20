@@ -85,8 +85,8 @@ static void verify_received_fd(enum passed_kind kind, int received_fd,
 	char received = 0;
 
 	if (kind == PASSED_PIPE) {
-		if (write(peer_fd, &byte, 1) != 1 || read(received_fd, &received, 1) != 1 ||
-		    received != byte)
+		if (write(peer_fd, &byte, 1) != 1 ||
+		    read(received_fd, &received, 1) != 1 || received != byte)
 			fail("received pipe FD is not usable");
 		return;
 	}
@@ -94,11 +94,13 @@ static void verify_received_fd(enum passed_kind kind, int received_fd,
 	int type = 0;
 	socklen_t type_len = sizeof(type);
 	int expected = kind == PASSED_STREAM ? SOCK_STREAM : SOCK_DGRAM;
-	if (getsockopt(received_fd, SOL_SOCKET, SO_TYPE, &type, &type_len) != 0 ||
+	if (getsockopt(received_fd, SOL_SOCKET, SO_TYPE, &type, &type_len) !=
+		    0 ||
 	    type != expected)
-		fail("received socket has type %d, expected %d", type, expected);
-	if (send(peer_fd, &byte, 1, 0) != 1 || recv(received_fd, &received, 1, 0) != 1 ||
-	    received != byte)
+		fail("received socket has type %d, expected %d", type,
+		     expected);
+	if (send(peer_fd, &byte, 1, 0) != 1 ||
+	    recv(received_fd, &received, 1, 0) != 1 || received != byte)
 		fail("received socket FD is not usable");
 }
 
@@ -114,8 +116,8 @@ static void run_case(int carrier_type, enum passed_kind kind, bool expect_eperm)
 		if (pipe(passed) != 0)
 			fail("pipe failed: %s", strerror(errno));
 	} else if (socketpair(AF_UNIX,
-			      kind == PASSED_STREAM ? SOCK_STREAM : SOCK_DGRAM, 0,
-			      passed) != 0) {
+			      kind == PASSED_STREAM ? SOCK_STREAM : SOCK_DGRAM,
+			      0, passed) != 0) {
 		fail("passed socketpair failed: %s", strerror(errno));
 	}
 
@@ -123,11 +125,12 @@ static void run_case(int carrier_type, enum passed_kind kind, bool expect_eperm)
 	result = send_fd(carrier[0], passed[0]);
 	if (expect_eperm) {
 		if (result != -1 || errno != EPERM)
-			fail("stream FD send returned %d/%s, expected EPERM", result,
-			     strerror(errno));
+			fail("stream FD send returned %d/%s, expected EPERM",
+			     result, strerror(errno));
 	} else {
 		if (result != 1)
-			fail("SCM_RIGHTS send returned %d/%s", result, strerror(errno));
+			fail("SCM_RIGHTS send returned %d/%s", result,
+			     strerror(errno));
 		int received_fd = receive_fd(carrier[1]);
 		verify_received_fd(kind, received_fd, passed[1]);
 		close(received_fd);
@@ -143,7 +146,8 @@ static void run_policy_matrix(bool expect_stream_eperm)
 {
 	const int carrier_types[] = { SOCK_STREAM, SOCK_DGRAM };
 
-	for (size_t i = 0; i < sizeof(carrier_types) / sizeof(carrier_types[0]); i++) {
+	for (size_t i = 0; i < sizeof(carrier_types) / sizeof(carrier_types[0]);
+	     i++) {
 		run_case(carrier_types[i], PASSED_STREAM, expect_stream_eperm);
 		run_case(carrier_types[i], PASSED_DATAGRAM, false);
 		run_case(carrier_types[i], PASSED_PIPE, false);

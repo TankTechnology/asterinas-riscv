@@ -371,14 +371,13 @@ END_TEST()
 
 FN_TEST(hot_syscall_diagnostics_are_not_warnings)
 {
-	const char *fadvise_warning =
-		"POSIX_FADV_SEQUENTIAL is ignored";
+	const char *fadvise_warning = "POSIX_FADV_SEQUENTIAL is ignored";
 	const char *unimplemented_warning =
 		"Unimplemented syscall number: 2147483647";
 	size_t fadvise_before = count_captured(fadvise_warning);
 	size_t unimplemented_before = count_captured(unimplemented_warning);
-	int fd = CHECK(open("/tmp/asterinas-fadvise-log-level", O_CREAT | O_RDWR,
-			    0600));
+	int fd = CHECK(open("/tmp/asterinas-fadvise-log-level",
+			    O_CREAT | O_RDWR, 0600));
 
 	for (int i = 0; i < 64; i++)
 		TEST_RES(posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL),

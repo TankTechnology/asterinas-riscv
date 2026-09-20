@@ -10,9 +10,11 @@
 //!   vnc-capture screenshot <monitor-socket> <output-png>
 //!   vnc-capture sendkey  <monitor-socket> <key> [<key>...]
 
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
-use std::time::Duration;
+use std::{
+    io::{Read, Write},
+    os::unix::net::UnixStream,
+    time::Duration,
+};
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();

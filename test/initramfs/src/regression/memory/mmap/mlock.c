@@ -30,10 +30,9 @@ static long get_locked_kb(void)
 FN_TEST(range_locking_updates_accounting)
 {
 	long before = TEST_RES(get_locked_kb(), _ret >= 0);
-	char *mapping = TEST(
-		mmap(NULL, PAGE_SIZE * 3, PROT_READ | PROT_WRITE,
-		     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
-		0, _ret != MAP_FAILED);
+	char *mapping = TEST(mmap(NULL, PAGE_SIZE * 3, PROT_READ | PROT_WRITE,
+				  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
+			     0, _ret != MAP_FAILED);
 
 	TEST_SUCC(mlock(mapping + PAGE_SIZE, PAGE_SIZE));
 	TEST_RES(get_locked_kb(), _ret == before + PAGE_SIZE / 1024);
@@ -53,10 +52,9 @@ END_TEST()
 
 FN_TEST(locking_a_range_with_a_hole_updates_the_mapped_prefix)
 {
-	char *mapping = TEST(
-		mmap(NULL, PAGE_SIZE * 3, PROT_READ | PROT_WRITE,
-		     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
-		0, _ret != MAP_FAILED);
+	char *mapping = TEST(mmap(NULL, PAGE_SIZE * 3, PROT_READ | PROT_WRITE,
+				  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
+			     0, _ret != MAP_FAILED);
 	long before = TEST_RES(get_locked_kb(), _ret >= 0);
 
 	TEST_SUCC(munmap(mapping + PAGE_SIZE, PAGE_SIZE));
@@ -70,10 +68,10 @@ END_TEST()
 FN_TEST(map_locked_updates_accounting)
 {
 	long before = TEST_RES(get_locked_kb(), _ret >= 0);
-	char *mapping = TEST(
-		mmap(NULL, PAGE_SIZE * 2, PROT_READ | PROT_WRITE,
-		     MAP_PRIVATE | MAP_ANONYMOUS | MAP_LOCKED, -1, 0),
-		0, _ret != MAP_FAILED);
+	char *mapping =
+		TEST(mmap(NULL, PAGE_SIZE * 2, PROT_READ | PROT_WRITE,
+			  MAP_PRIVATE | MAP_ANONYMOUS | MAP_LOCKED, -1, 0),
+		     0, _ret != MAP_FAILED);
 
 	TEST_RES(get_locked_kb(), _ret == before + PAGE_SIZE * 2 / 1024);
 	TEST_SUCC(munmap(mapping, PAGE_SIZE * 2));
@@ -85,20 +83,18 @@ FN_TEST(mlockall_tracks_current_and_future_mappings)
 {
 	TEST_SUCC(mlockall(MCL_CURRENT));
 	long current_locked = TEST_RES(get_locked_kb(), _ret >= 0);
-	char *current_only = TEST(
-		mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
-		     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
-		0, _ret != MAP_FAILED);
+	char *current_only = TEST(mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
+				       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
+				  0, _ret != MAP_FAILED);
 	TEST_RES(get_locked_kb(), _ret == current_locked);
 	TEST_SUCC(munmap(current_only, PAGE_SIZE));
 
 	TEST_SUCC(munlockall());
 	TEST_SUCC(mlockall(MCL_FUTURE));
 	long before = TEST_RES(get_locked_kb(), _ret >= 0);
-	char *future = TEST(
-		mmap(NULL, PAGE_SIZE * 2, PROT_READ | PROT_WRITE,
-		     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
-		0, _ret != MAP_FAILED);
+	char *future = TEST(mmap(NULL, PAGE_SIZE * 2, PROT_READ | PROT_WRITE,
+				 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0),
+			    0, _ret != MAP_FAILED);
 	TEST_RES(get_locked_kb(), _ret == before + PAGE_SIZE * 2 / 1024);
 	TEST_SUCC(munmap(future, PAGE_SIZE * 2));
 	TEST_SUCC(munlockall());

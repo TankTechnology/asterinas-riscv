@@ -82,7 +82,8 @@ static int is_uuid_v4(const char *value)
 		if (i == 8 || i == 13 || i == 18 || i == 23) {
 			continue;
 		}
-		if (!isdigit(value[i]) && !(value[i] >= 'a' && value[i] <= 'f')) {
+		if (!isdigit(value[i]) &&
+		    !(value[i] >= 'a' && value[i] <= 'f')) {
 			return 0;
 		}
 	}
@@ -113,7 +114,8 @@ FN_TEST(proc_sys_kernel_boot_id_is_stable_uuid)
 		if (i == 8 || i == 13 || i == 18 || i == 23) {
 			continue;
 		}
-		TEST_RES(first[i], isdigit(_ret) || (_ret >= 'a' && _ret <= 'f'));
+		TEST_RES(first[i],
+			 isdigit(_ret) || (_ret >= 'a' && _ret <= 'f'));
 	}
 }
 END_TEST()

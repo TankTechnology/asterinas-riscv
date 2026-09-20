@@ -240,11 +240,8 @@ mod tests {
         let state = RecoveryState::new();
         state.freeze_deadline(Duration::from_secs(100));
         state.publish_armed();
-        let remaining = remaining_before_deadline(
-            Duration::from_secs(100),
-            state.armed_deadline(),
-        )
-        .unwrap();
+        let remaining =
+            remaining_before_deadline(Duration::from_secs(100), state.armed_deadline()).unwrap();
 
         assert!(state.disarm());
         assert_eq!(timer_action(&state, remaining), None);
