@@ -46,11 +46,19 @@
 #       - but the APs never leave the boot context. `ostd/src/boot/smp.rs`
 #         parks each one on `AP_LATE_ENTRY.wait()`, and the only thing that
 #         releases it is `register_ap_entry(ap_init)` in the kernel's `main()`
-#         (kernel/src/init.rs:32). **A ktest build does not run that `main()`**:
-#         it uses `#[test_main]`, not `#[ostd_main]`, so the kernel's boot
-#         sequence never happens. The signature is exact -- the first line of
-#         that `main()`, "OSTD initialized. Preparing components.", appears
-#         once in the gate kernel's log and **zero** times in the ktest
+#         (kernel/src/init.rs:32).
+#
+#         **A ktest build never runs that `main()`.** `#[ostd::main]`
+#         (ostd/libs/ostd-macros/src/lib.rs:76-94) emits its `__ostd_main`
+#         entry point under `#[cfg(not(ktest))]`, so under `--cfg ktest` the
+#         kernel's entry is compiled out entirely and the entry comes from
+#         `osdk-test-kernel`'s `#[ostd::ktest::main]`
+#         (osdk/deps/test-kernel/src/lib.rs:34) instead. The kernel's `main()`
+#         is still compiled; nothing calls it.
+#
+#         The signature is exact and cheap to re-check: the first line of that
+#         `main()`, "OSTD initialized. Preparing components.", appears once in
+#         the gate kernel's serial log and **zero** times in the ktest
 #         kernel's.
 #       - an AP parked there runs no idle thread, never idles, and so never
 #         reports a quiescent state: instrumenting the RCU monitor to print
@@ -65,6 +73,14 @@
 #     single-CPU. `-smp 1` matches the machine the suite actually gets. A run
 #     that wants SMP coverage needs `#[test_main]` to perform the kernel's boot
 #     far enough to register the AP entry.
+#
+#     The same fact has a wider consequence, worth stating because it bounds
+#     what a green suite means: `component::init_all` is called only from that
+#     `main()` and the tasks it spawns (kernel/src/init.rs:21,155,173), so
+#     **the ktests run against an uninitialized kernel** -- no components
+#     registered, no devices, no filesystems. Most ktests are self-contained
+#     and that is harmless, but it is exactly why a whole-machine property like
+#     the AP rendezvous stayed broken without any test noticing.
 #
 #     Two attempted fixes -- reporting from `halt_cpu` and from `reschedule`
 #     -- did not change the outcome and were reverted. `KTEST_SMP=4`
