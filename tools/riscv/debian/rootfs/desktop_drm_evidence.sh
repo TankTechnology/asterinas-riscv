@@ -110,6 +110,35 @@ run_gbm_probe() {
     /usr/lib/asterinas/drm-gbm-probe 1280 800 >>"$CONSOLE" 2>&1 || true
 }
 
+# Whether the GPU drew anything, as distinct from which Gallium driver Mesa
+# says it picked.
+#
+# The renderer line is what this run exists to produce and the gate stops as
+# soon as it arrives, so anything placed ahead of it can cost the answer. That
+# is why `glxinfo` is bounded with `timeout` above, and why this probe is too:
+# a hang here must not be able to take the renderer line with it. It runs
+# before the renderer line rather than after because a proof of what was drawn
+# is worth more than a diagnostic, and it is emitted as its own marker so a
+# gate can require it without parsing the renderer string.
+#
+# Every failure mode gets an `ok=no` line, including the probe being missing
+# from the image -- silence would be indistinguishable from a run that died
+# before reaching this point, and those need different responses.
+run_pixel_probe() {
+    if [[ ! -x /usr/lib/asterinas/egl-pixel-probe ]]; then
+        emit 'DEBIAN_DESKTOP_DRM_PIXEL ok=no reason=probe-absent'
+        return 0
+    fi
+    local output
+    output="$(timeout 60 /usr/lib/asterinas/egl-pixel-probe /dev/dri/renderD128 2>&1)" || true
+    output="${output%%$'\n'*}"
+    if [[ "$output" != PIXEL_PROBE\ ok=* ]]; then
+        emit "DEBIAN_DESKTOP_DRM_PIXEL ok=no reason=${output:-no-output}"
+        return 0
+    fi
+    emit "DEBIAN_DESKTOP_DRM_PIXEL ${output#PIXEL_PROBE }"
+}
+
 fail() {
     report_predicate
     # Before the early exit, not after: a desktop that never starts is exactly
@@ -807,6 +836,8 @@ grep -aE 'EGL|GBM|Mesa|mesa|libGL|DRI|swrast|virgl|virtio|kmsro' \
     grep -aE 'error:|cannot open shared|undefined symbol' \
         "$SESSION_LOG" 2>/dev/null | grep -av 'libfm/modules' | head -25
 } >>"$CONSOLE" 2>&1 || true
+
+run_pixel_probe
 
 emit "DEBIAN_DESKTOP_DRM_GL renderer=$gl_renderer"
 
