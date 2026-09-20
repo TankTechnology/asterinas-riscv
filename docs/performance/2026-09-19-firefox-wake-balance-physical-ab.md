@@ -103,31 +103,52 @@ stops just short of the 0.50 `executing` gate; `unaccounted` is 0.0, so
    was inside its threshold in A crosses in B: `input` crossings fall from 2/3
    to 1/3, `scroll` from 1/3 to 0/3, `context-switch` stays at 3/3.
 4. **The focused regression, host tests, and relevant QEMU tests pass.**
-   **Not satisfied.** Three separate gaps:
-   - The two `#[ktest]` regressions
-     (`wake_prefers_less_loaded_allowed_cpu`,
-     `wake_preserves_last_cpu_when_load_is_equal`) landed in the same commit as
-     the implementation rather than preceding it, and neither was observed
-     failing against the unmodified scheduler.
-   - The RISC-V kernel-test suite was not run, so the new regressions have
-     never executed in QEMU.
-   - The QEMU graphics/control gate required as the second next gate left no
-     evidence. Fourteen `target/firefox-daily-use-physical/qemu-*` directories
-     exist, including six `qemu-smoke-fixed*` iterations, and every one of them
-     is empty. Whether those attempts failed, hung, or were abandoned cannot be
-     determined from what was retained.
+   **Not satisfied**, on one narrow ground: the two `#[ktest]` regressions
+   (`wake_prefers_less_loaded_allowed_cpu`,
+   `wake_preserves_last_cpu_when_load_is_equal`) have never been executed
+   anywhere. They landed in the same commit as the implementation rather than
+   preceding it, they were never observed failing against the unmodified
+   scheduler, and no RISC-V kernel-test run has exercised them.
 
-   `tools/riscv/firefox_fast_check.sh` passes (487 tests,
-   `FIREFOX_FAST_CHECK_PASS`), which is a host check, not a QEMU result.
+   The other two parts hold and are evidenced. `tools/riscv/firefox_fast_check.sh`
+   passes (487 tests, `FIREFOX_FAST_CHECK_PASS`). The four-hart QEMU
+   graphics/control gate passes with retained evidence: `qemu-qualification`,
+   `qemu-qualification-current`, `qemu-smoke-fixed5`, and `qemu-namespace` each
+   report `passed=true`, `reason=pass`, `physical=false`, and three interaction
+   cycles. `qemu-qualification` records Stage1
+   `0d4ebedf76d920c00d2168097b632e06b9e9ba77bed0113cea7d3eb54a6b9ed2`, which is
+   the digest the two-build determinism check produced.
 5. **The attribution evidence changes in the direction predicted by the
    mechanism.** Holds, as tabulated above.
 
 ## Verdict
 
-Four of the five conditions hold, and the fifth — the QEMU kernel-test run and
-the precedence of the focused regression — is unmet. Under the design's own
-rule, that is not a speedup. Recorded result: **directional improvement with
-the admitted mechanism removed, not an admitted speedup.**
+Four of the five conditions hold. The fifth is unmet only because the two new
+regressions have never been executed; the QEMU graphics/control gate and the
+host checks both pass. Under the design's own rule, that is not a speedup.
+Recorded result: **directional improvement with the admitted mechanism removed,
+not an admitted speedup.**
+
+Closing condition 4 requires one RISC-V kernel-test run so that
+`wake_prefers_less_loaded_allowed_cpu` and
+`wake_preserves_last_cpu_when_load_is_equal` actually execute. Note that this
+run replaces `target/osdk/aster-kernel/aster-kernel-osdk-bin.Image`, the only
+retained copy of the B kernel bytes, so it must be taken in a separate worktree
+or after preserving that artifact.
+
+### Correction, 2026-09-20
+
+An earlier revision of this document stated that the fourteen
+`target/firefox-daily-use-physical/qemu-*` directories were all empty and that
+the QEMU gate had therefore retained no evidence. That was wrong. The gate's
+output directories are created root-owned mode `0700` inside the development
+container, so a host-side `find`/`ls` run as an unprivileged user cannot read
+them; suppressing stderr made the permission failures look like empty
+directories. Every one of the fourteen contains files, and four of them record
+a passing gate with three interaction cycles.
+
+Read this gate's evidence from inside the container, or as root, and do not
+treat an unreadable directory as an empty one.
 
 The practical consequence for the next step follows from the classification
 rather than from the metric table. B is `mixed`, so the optimization admission

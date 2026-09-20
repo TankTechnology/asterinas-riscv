@@ -15,9 +15,11 @@ admission rule, the baseline that admitted it, and the diff as committed.
 Two consequences of that ordering are recorded rather than smoothed over:
 
 - the two `#[ktest]` regressions landed in the same commit as the
-  implementation, not as a preceding failing regression;
-- the QEMU half of the validation criteria was not run before the result was
-  read.
+  implementation, not as a preceding failing regression, and neither has been
+  executed since;
+- the four-hart QEMU graphics/control gate was run before the result was read
+  and passes, but it does not execute those regressions, so the QEMU evidence
+  that exists is not evidence about this change's own tests.
 
 Both are treated as open items in the result record. This file does not
 retroactively claim that the process was followed.
