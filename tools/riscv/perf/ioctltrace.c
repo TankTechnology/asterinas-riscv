@@ -57,6 +57,7 @@ static int (*real_futex)(int *, int, int, const struct timespec *, int *, int);
 static ssize_t (*real_write)(int, const void *, size_t);
 static ssize_t (*real_read)(int, void *, size_t);
 static int (*real_epoll_wait)(int, struct epoll_event *, int, int);
+static int (*real_epoll_ctl)(int, int, int, struct epoll_event *);
 static int out_fd = -1;
 static int tracing;
 
@@ -240,6 +241,88 @@ ssize_t read(int fd, void *buffer, size_t count)
     return result;
 }
 
+/* What a caller puts in `epoll_data` is opaque: Xorg stores a pointer of its
+ * own, so reading the union as an integer yields garbage rather than the
+ * descriptor. The descriptor is only recoverable from the `epoll_ctl` that
+ * registered it, so the pair is remembered there and looked up here. A fixed
+ * table, walked linearly: the sets involved are a handful of descriptors and
+ * this must not allocate. */
+struct epoll_registration {
+    int epfd;
+    void *tag;
+    int fd;
+};
+
+#define EPOLL_REGISTRATIONS_MAX 256
+static struct epoll_registration epoll_registrations[EPOLL_REGISTRATIONS_MAX];
+static int epoll_registration_count;
+static int epoll_overflows;
+
+static void remember_registration(int epfd, void *tag, int fd)
+{
+    for (int index = 0; index < epoll_registration_count; index++) {
+        if (epoll_registrations[index].epfd == epfd &&
+            epoll_registrations[index].tag == tag) {
+            epoll_registrations[index].fd = fd;
+            return;
+        }
+    }
+    if (epoll_registration_count < EPOLL_REGISTRATIONS_MAX) {
+        epoll_registrations[epoll_registration_count].epfd = epfd;
+        epoll_registrations[epoll_registration_count].tag = tag;
+        epoll_registrations[epoll_registration_count].fd = fd;
+        epoll_registration_count++;
+    } else {
+        epoll_overflows++;
+    }
+}
+
+/* Returns the descriptor registered under `tag`, or a negative value when it
+ * was never seen — which is itself worth reporting rather than printing a
+ * number that reads like a descriptor. */
+static int registration_fd(int epfd, void *tag)
+{
+    for (int index = 0; index < epoll_registration_count; index++) {
+        if (epoll_registrations[index].epfd == epfd &&
+            epoll_registrations[index].tag == tag) {
+            return epoll_registrations[index].fd;
+        }
+    }
+    return -1;
+}
+
+int epoll_ctl(int epfd, int operation, int fd, struct epoll_event *event)
+{
+    int result, saved;
+
+    if (!real_epoll_ctl)
+        real_epoll_ctl = dlsym(RTLD_NEXT, "epoll_ctl");
+    if (!real_epoll_ctl) {
+        errno = ENOSYS;
+        return -1;
+    }
+
+    result = real_epoll_ctl(epfd, operation, fd, event);
+    saved = errno;
+
+    if (tracing && result == 0 && event && operation != EPOLL_CTL_DEL) {
+        char line[LINE_MAX];
+        size_t used = 0;
+        used = append(line, used, "EPOLL_CTL pid=");
+        used = append_dec(line, used, (long long)getpid());
+        used = append(line, used, " fd=");
+        used = append_fd_path(line, used, fd);
+        used = append(line, used, " events=");
+        used = append_dec(line, used, (long long)event->events);
+        used = append(line, used, "\n");
+        emit(line, used);
+        remember_registration(epfd, event->data.ptr, fd);
+    }
+
+    errno = saved;
+    return result;
+}
+
 /* The server's event loop. A server sitting here with a long timeout is idle
  * and would answer a client the moment one arrived; a server that never
  * reaches here is stuck somewhere the socket trace will name. */
@@ -275,6 +358,23 @@ int epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
         used = append_dec(line, used, (long long)getpid());
         used = append(line, used, " ret=");
         used = append_dec(line, used, result);
+        /* *Which* descriptor is ready, not just how many. A wait that keeps
+         * returning without the server doing anything is a descriptor that
+         * reports ready and never has anything to give; the count alone cannot
+         * name it, and naming it is the whole question. The caller stores the
+         * descriptor it is interested in `data.fd`, which is what `epoll` hands
+         * back untouched. */
+        for (int index = 0; index < result && index < 4 && used < LINE_MAX - 60;
+             index++) {
+            int fd = registration_fd(epfd, events[index].data.ptr);
+            used = append(line, used, " rdy=");
+            if (fd >= 0)
+                used = append_fd_path(line, used, fd);
+            else
+                used = append(line, used, "unregistered");
+            used = append(line, used, ":");
+            used = append_dec(line, used, (long long)events[index].events);
+        }
         used = append(line, used, "\n");
         emit(line, used);
     }
