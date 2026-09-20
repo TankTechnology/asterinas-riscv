@@ -399,6 +399,33 @@ class ArgumentContractTests(unittest.TestCase):
                     + ["--load-transport", "tftp", flag, value]
                 )
 
+    def test_mmc_transport_accepts_only_one_explicit_device_partition(self):
+        crc_args = [
+            "--expected-crc32",
+            "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+        ]
+        args = board.parse_args(
+            _required_args() + crc_args + ["--mmc-device-partition", "1:3"]
+        )
+        self.assertEqual(args.mmc_device_partition, "1:3")
+
+        for value in ("", "1", "1:0", "1:3; reset", "../1:3", "01:3"):
+            with self.subTest(value=value):
+                _parse_fails(
+                    _required_args() + crc_args + ["--mmc-device-partition", value]
+                )
+
+        _parse_fails(
+            _required_args()
+            + crc_args
+            + [
+                "--load-transport",
+                "tftp",
+                "--mmc-device-partition",
+                "1:3",
+            ]
+        )
+
     def test_ymodem_transport_requires_pinned_kernel_decompression_contract(self):
         crc_args = [
             "--expected-crc32",
@@ -834,6 +861,32 @@ class SerialContractTests(unittest.TestCase):
             ]
         )
         size = session.load_artifact("booti", "kernel", 0x80200000, "0123abcd")
+        self.assertEqual(size, 1234)
+        self.assertEqual(
+            session.command.call_args_list,
+            [mock.call(load), mock.call(crc)],
+        )
+
+    def test_load_artifact_can_use_the_rockos_root_partition(self):
+        session = self._session()
+        filename = "home/debian/asterinas/incoming/build/kernel"
+        load = f"ext4load mmc 1:3 0x80200000 /{filename}"
+        crc = "crc32 0x80200000 ${filesize}"
+        session.command = mock.Mock(
+            side_effect=[
+                f"{load}\r\n1234 bytes read in 1 ms\r\n=> ",
+                f"{crc}\r\nCRC32 for 80200000 ... ==> 0123abcd\r\n=> ",
+            ]
+        )
+
+        size = session.load_artifact(
+            "booti",
+            filename,
+            0x80200000,
+            "0123abcd",
+            device_partition="1:3",
+        )
+
         self.assertEqual(size, 1234)
         self.assertEqual(
             session.command.call_args_list,
@@ -1389,6 +1442,53 @@ class BootTransactionTests(unittest.TestCase):
                 board.run_debug_root_console(session, 123.0)
 
         self.assertEqual(session.debug_console_transcript, b"partial exchange\r\n")
+
+    def test_mmc_boot_transaction_uses_the_selected_partition(self):
+        session = mock.Mock()
+        session.command.return_value = "boot output"
+        args = SimpleNamespace(
+            booti="home/debian/asterinas/build/kernel",
+            dtb="home/debian/asterinas/build/board.dtb",
+            initrd="home/debian/asterinas/build/initrd",
+            bootargs="init=/init",
+            expected_crc32={
+                "booti": "0123abcd",
+                "dtb": "89abcdef",
+                "initrd": "00000001",
+            },
+            firmware_framebuffer=False,
+            load_transport="mmc",
+            mmc_device_partition="1:3",
+        )
+
+        board.boot_loaded_artifacts(session, args)
+
+        self.assertEqual(
+            session.load_artifact.call_args_list,
+            [
+                mock.call(
+                    "booti",
+                    "home/debian/asterinas/build/kernel",
+                    0x80200000,
+                    "0123abcd",
+                    device_partition="1:3",
+                ),
+                mock.call(
+                    "dtb",
+                    "home/debian/asterinas/build/board.dtb",
+                    0xF0000000,
+                    "89abcdef",
+                    device_partition="1:3",
+                ),
+                mock.call(
+                    "initrd",
+                    "home/debian/asterinas/build/initrd",
+                    0x83000000,
+                    "00000001",
+                    device_partition="1:3",
+                ),
+            ],
+        )
 
     def test_every_artifact_is_loaded_and_verified_before_booti(self):
         events: list[tuple] = []
