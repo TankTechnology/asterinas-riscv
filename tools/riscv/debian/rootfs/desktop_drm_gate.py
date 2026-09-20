@@ -226,6 +226,50 @@ def classify_desktop_drm_virgl(
     return result
 
 
+#: The band a kernel image that can boot this gate falls in.
+#:
+#: `cargo osdk test` rewrites `target/osdk/aster-kernel-osdk-bin.Image` **in
+#: place** with what the ktests need -- a dev-profile build of an Sv48 kernel --
+#: and that is the same path `DEBIAN_DRM_KERNEL` defaults to. Two artifacts,
+#: one filename, and nothing announces the swap.
+#:
+#: Both ways of getting it wrong end identically: U-Boot prints
+#: "Starting kernel ...", the CPU faults on the first page-table walk, and
+#: **nothing is printed again, ever**. The gate sees a silent serial line and
+#: waits out its entire boot timeout, which for twenty-five minutes looks
+#: exactly like a run that is still working.
+#:
+#: Size is a proxy and is offered as one: it cannot tell a correct kernel from
+#: a merely small one. What it can do is turn a silent stall into one sentence,
+#: which is the whole of the claim. The margins are wide deliberately -- a
+#: release build is about 6 MB against about 14 MB for the test build and about
+#: 4 MB for an Sv48 release build -- so ordinary growth will not trip it. The
+#: semantic version of this check, if anyone wants it, is to require *some*
+#: kernel output within a bounded window after the handoff, which would catch
+#: any cause of a silent hang rather than these two.
+DESKTOP_DRM_KERNEL_MIN_BYTES = 5 * 1024 * 1024
+DESKTOP_DRM_KERNEL_MAX_BYTES = 10 * 1024 * 1024
+
+
+def reject_a_kernel_that_cannot_boot(kernel: Path) -> None:
+    """Refuse a kernel image that would hang without saying anything.
+
+    See `DESKTOP_DRM_KERNEL_MIN_BYTES` for what this is, and what it is not.
+    """
+    size = kernel.stat().st_size
+    if DESKTOP_DRM_KERNEL_MIN_BYTES <= size <= DESKTOP_DRM_KERNEL_MAX_BYTES:
+        return
+    raise GateFailure(
+        f"kernel image is {size} bytes, outside the "
+        f"{DESKTOP_DRM_KERNEL_MIN_BYTES}..{DESKTOP_DRM_KERNEL_MAX_BYTES} band "
+        f"a bootable one occupies, so it would hang at 'Starting kernel ...' "
+        f"with no output at all and the run would look like it was working. "
+        f"Rebuild it with: make kernel RELEASE=1 FEATURES=riscv_sv39_mode "
+        f"TARGET_ARCH=riscv64 CARGO_OSDK=$PWD/.osdk-bin/bin/cargo-osdk. "
+        f"A preceding `cargo osdk test` is the usual reason it is wrong."
+    )
+
+
 class DesktopDRMOperations(DesktopM3Operations):
     """Reuse the signed-root lifecycle while changing only display evidence."""
 
@@ -260,6 +304,9 @@ class DesktopDRMOperations(DesktopM3Operations):
 
     def __init__(self, config: GateConfig, **arguments: Any) -> None:
         super().__init__(config, **arguments)
+        # Before anything is launched: this failure is silent on the serial
+        # line, so it has to be caught here or it is not caught at all.
+        reject_a_kernel_that_cannot_boot(config.kernel)
         # Derived from the device, not from `config.display`: the display is
         # chosen inside `desktop_drm_qemu_argv`, after this config is built, so
         # reading it here would still see the default and try to capture.

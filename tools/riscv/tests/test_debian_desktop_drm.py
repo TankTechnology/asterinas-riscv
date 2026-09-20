@@ -14,6 +14,8 @@ from tools.riscv.debian.rootfs.desktop_drm_gate import (
     DESKTOP_DRM_EXPECTED_HEIGHT,
     DESKTOP_DRM_EXPECTED_WIDTH,
     DESKTOP_DRM_GL_PREFIX,
+    DESKTOP_DRM_KERNEL_MAX_BYTES,
+    DESKTOP_DRM_KERNEL_MIN_BYTES,
     DESKTOP_DRM_MILESTONES,
     DESKTOP_DRM_PIXEL_MILESTONE,
     DESKTOP_DRM_PIXEL_PREFIX,
@@ -28,8 +30,9 @@ from tools.riscv.debian.rootfs.desktop_drm_gate import (
     observed_desktop_drm_pixels,
     observed_desktop_drm_renderer,
     orchestrate_desktop_drm_gate,
+    reject_a_kernel_that_cannot_boot,
 )
-from tools.riscv.debian.rootfs.rootfs_gate import GateConfig
+from tools.riscv.debian.rootfs.rootfs_gate import GateConfig, GateFailure
 from tools.riscv.debian.rootfs.profiles import get_profile
 
 
@@ -91,6 +94,35 @@ class DebianDesktopDRMTests(unittest.TestCase):
         )
         self.assertIsNotNone(match, "DRIVER_NAME not found in kernel/src/device/dri.rs")
         self.assertEqual(match.group(1), "virtio_gpu")
+
+    def test_a_kernel_that_would_hang_is_refused_before_launch(self) -> None:
+        """The two artifacts that stall silently, at the sizes they arrive at.
+
+        `cargo osdk test` rewrites the gate's kernel in place with a dev-profile
+        Sv48 build, and a build made without `riscv_sv39_mode` is an Sv48
+        release build. Both stop at "Starting kernel ..." and never print
+        again, so the gate has to refuse them *before* it launches anything:
+        once running, a stall is indistinguishable from work.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            kernel = Path(directory) / "kernel"
+            for size in (
+                14_316_712,  # a dev-profile build, as `cargo osdk test` leaves it
+                4_056_528,  # a release build made without `riscv_sv39_mode`
+            ):
+                with kernel.open("wb") as handle:
+                    handle.truncate(size)
+                with self.assertRaises(GateFailure) as raised:
+                    reject_a_kernel_that_cannot_boot(kernel)
+                self.assertIn(str(size), str(raised.exception))
+                self.assertIn("riscv_sv39_mode", str(raised.exception))
+
+    def test_a_kernel_of_a_bootable_size_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            kernel = Path(directory) / "kernel"
+            with kernel.open("wb") as handle:
+                handle.truncate(6_138_136)  # a real release build with Sv39
+            reject_a_kernel_that_cannot_boot(kernel)
 
     def test_classifier_requires_all_ordered_drm_markers(self) -> None:
         transcript = ("boot\n" + "\n".join(DESKTOP_DRM_MILESTONES) + "\n").encode()
@@ -159,6 +191,12 @@ class DesktopDRMRendererTests(unittest.TestCase):
             "checksums",
         ):
             (self.inputs / name).write_bytes(b"input")
+        # The kernel has to be sized like one that can boot: the gate refuses
+        # an image it would hang on before it launches anything, and a
+        # five-byte placeholder is exactly such an image. Sparse, so this costs
+        # no disk and no measurable time.
+        with (self.inputs / "kernel").open("r+b") as handle:
+            handle.truncate(DESKTOP_DRM_KERNEL_MIN_BYTES + 1)
         self.output = Path(temporary.name) / "evidence"
         self.output.mkdir()
 
