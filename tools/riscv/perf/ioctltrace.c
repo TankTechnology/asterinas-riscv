@@ -34,9 +34,11 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 
 /* The DRM ioctl type byte, from `_IOC_TYPE`. Everything else is left alone:
@@ -50,6 +52,7 @@
 
 static int (*real_ioctl)(int, unsigned long, ...);
 static int (*real_poll)(struct pollfd *, nfds_t, int);
+static int (*real_futex)(int *, int, int, const struct timespec *, int *, int);
 static int out_fd = -1;
 static int tracing;
 
@@ -168,6 +171,53 @@ __attribute__((constructor)) static void start_tracing(void)
         return;
     out_fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
     tracing = out_fd >= 0;
+}
+
+/* Waiting on a lock and waiting on a socket look the same from `/proc`: both
+ * are `S`. Which call blocks is the whole difference between "the server is
+ * deadlocked" and "the server is waiting for a client", so `futex` is traced
+ * alongside them. */
+int futex(int *uaddr, int operation, int value, const struct timespec *timeout,
+          int *uaddr2, int value3)
+{
+    int result, saved;
+
+    if (!real_futex)
+        real_futex = dlsym(RTLD_NEXT, "futex");
+
+    if (tracing) {
+        char line[LINE_MAX];
+        size_t used = 0;
+        used = append(line, used, "FUTEX pid=");
+        used = append_dec(line, used, (long long)getpid());
+        used = append(line, used, " op=");
+        used = append_hex(line, used, (unsigned long long)operation);
+        used = append(line, used, " uaddr=");
+        used = append_hex(line, used, (unsigned long long)(uintptr_t)uaddr);
+        used = append(line, used, "\n");
+        emit(line, used);
+    }
+
+    if (!real_futex) {
+        errno = ENOSYS;
+        return -1;
+    }
+    result = real_futex(uaddr, operation, value, timeout, uaddr2, value3);
+    saved = errno;
+
+    if (tracing) {
+        char line[LINE_MAX];
+        size_t used = 0;
+        used = append(line, used, "FUTEX-DONE pid=");
+        used = append_dec(line, used, (long long)getpid());
+        used = append(line, used, " ret=");
+        used = append_dec(line, used, result);
+        used = append(line, used, "\n");
+        emit(line, used);
+    }
+
+    errno = saved;
+    return result;
 }
 
 int ioctl(int fd, unsigned long request, ...)

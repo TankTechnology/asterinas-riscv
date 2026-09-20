@@ -7,6 +7,11 @@ export DISPLAY=:0
 export HOME=/home/asterinas
 export XAUTHORITY="$HOME/.Xauthority"
 readonly SESSION_LOG="$HOME/desktop-drm-session.log"
+# Where the LD_PRELOAD shim records the X server's own DRM ioctls, waits and
+# lock waits. The server is the other end of the connection a stalled client is
+# waiting on, so its trace is what says whether it stopped asking the driver
+# anything, and what it is doing instead.
+readonly XORG_TRACE="${ASTERINAS_DESKTOP_DRM_XORG_TRACE:-/tmp/xorg-ioctltrace.log}"
 
 if [[ "${1-}" == --xsession ]]; then
     /usr/bin/openbox &
@@ -41,7 +46,9 @@ fi
 xorg_env=()
 # ioctltrace is the only shim carried, and it has never produced a line.
 if [[ -f /usr/lib/asterinas/ioctltrace.so ]]; then
-    xorg_env+=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so)
+    : >"$XORG_TRACE"
+    xorg_env+=(LD_PRELOAD=/usr/lib/asterinas/ioctltrace.so
+               ASTERINAS_IOCTLTRACE_OUT="$XORG_TRACE")
 fi
 
 # Mesa/EGL debugging on the X server itself, off unless asked for

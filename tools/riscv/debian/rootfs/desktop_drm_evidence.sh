@@ -8,6 +8,9 @@ readonly XORG_LOG="${ASTERINAS_DESKTOP_DRM_XORG_LOG:-/home/asterinas/Xorg.0.log}
 readonly SESSION_LOG="${ASTERINAS_DESKTOP_DRM_SESSION_LOG:-/home/asterinas/desktop-drm-session.log}"
 # Where the LD_PRELOAD shim records the GL probe's own DRM ioctls and waits.
 readonly GL_TRACE="${ASTERINAS_DESKTOP_DRM_GL_TRACE:-/tmp/gl-renderer-ioctltrace.log}"
+# The same shim on the X server, written by the session script. Must default to
+# the same path here as there.
+readonly XORG_TRACE="${ASTERINAS_DESKTOP_DRM_XORG_TRACE:-/tmp/xorg-ioctltrace.log}"
 readonly USER_NAME=asterinas
 readonly USER_ID=1000
 readonly DEFAULT_TIMEOUT_SECONDS=300
@@ -469,6 +472,30 @@ gl_probe() {
                 head -c 4096 "$GL_TRACE" >>"$CONSOLE" 2>&1 || true
             else
                 emit '--- DRM GL probe: no client trace (shim missing or unconfigured) ---'
+            fi
+            # The other end. A client blocked on the X socket says only that it
+            # is waiting; whether the server stopped talking to the driver, and
+            # what it is doing instead, is in the server's own trace.
+            xorg_pid="$(pgrep -u "$USER_ID" -x Xorg 2>/dev/null | head -1 || true)"
+            if [[ -n "$xorg_pid" ]]; then
+                emit "--- DRM GL probe: Xorg[$xorg_pid] state ---"
+                grep -E '^(State|Name|Pid|Threads)' "/proc/$xorg_pid/status" \
+                    >>"$CONSOLE" 2>&1 || true
+                for proc_probe in wchan syscall; do
+                    if [[ -r "/proc/$xorg_pid/$proc_probe" ]]; then
+                        printf -- '-- %s: %s\n' "$proc_probe" \
+                            "$(cat "/proc/$xorg_pid/$proc_probe" 2>/dev/null)" >>"$CONSOLE" 2>&1
+                    else
+                        printf -- '-- %s: not provided by this kernel\n' "$proc_probe" \
+                            >>"$CONSOLE" 2>&1
+                    fi
+                done
+            fi
+            if [[ -s "$XORG_TRACE" ]]; then
+                emit '--- DRM GL probe: Xorg ioctl/poll/futex trace (tail) ---'
+                tail -c 8192 "$XORG_TRACE" >>"$CONSOLE" 2>&1 || true
+            else
+                emit '--- DRM GL probe: no Xorg trace (shim missing or unconfigured) ---'
             fi
         fi
         sleep 5
