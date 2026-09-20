@@ -292,6 +292,13 @@ struct DriInner {
     current_width: u32,
     current_height: u32,
     cursor: CursorState,
+    /// The magic token this file was given by `DRM_IOCTL_GET_MAGIC`.
+    ///
+    /// Linux allocates these per master file for the legacy authentication
+    /// handshake. Nothing on this device consults authentication, so the value
+    /// only has to be unique across the device and stable for the file that
+    /// asked, which is what the counter it is drawn from provides.
+    magic: Option<u32>,
     /// The 3D context this file created, if it has created one.
     ///
     /// Linux allows one context per file and refuses a second, so the field
@@ -339,6 +346,13 @@ struct DrmGetCap {
 struct DrmSetClientCap {
     capability: u64,
     value: u64,
+}
+
+/// `struct drm_auth`; the magic token alone.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmAuth {
+    magic: u32,
 }
 
 /// `struct drm_mode_card_res`.
@@ -762,6 +776,13 @@ struct DrmModeFbDirtyCmd {
     clips_ptr: u64,
 }
 
+/// The next magic token `DRM_IOCTL_GET_MAGIC` will hand out.
+///
+/// Device-wide and monotonic, so two files never share one. `DRM_IOCTL_AUTH_MAGIC`
+/// only has to recognise a token this device issued, and a counter is enough to
+/// answer that -- which is honest only because nothing here checks the result.
+static NEXT_MAGIC: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
+
 mod ioctl_defs {
     use super::{
         DrmGetCap, DrmModeCardRes, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip,
@@ -772,13 +793,38 @@ mod ioctl_defs {
         DrmVirtgpuMap,
         DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo, DrmVirtgpuTransfer3d, DrmVirtgpuWait,
         DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeMapDumb, DrmModeObjGetProperties,
-        DrmSetClientCap, DrmVersion,
+        DrmSetClientCap, DrmVersion, DrmAuth,
     };
-    use crate::util::ioctl::{InData, InOutData, NoData, ioc};
+    use crate::util::ioctl::{InData, InOutData, NoData, OutData, ioc};
 
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h>.
     pub(super) type GetVersion = ioc!(DRM_IOCTL_VERSION, b'd', 0x00, InOutData<DrmVersion>);
     pub(super) type GetCap = ioc!(DRM_IOCTL_GET_CAP, b'd', 0x0c, InOutData<DrmGetCap>);
+    // The legacy authentication pair. Their absence was not harmless: glamor
+    // answers `DRI3Open` by opening the device and then calling `drmGetMagic`
+    // on it, and it treats exactly one errno as good news --
+    //
+    //     if (drmGetMagic(fd, &magic) < 0) {
+    //         if (errno == EACCES) { *fdp = fd; return Success; }
+    //         else { close(fd); return BadMatch; }
+    //     }
+    //
+    // `EACCES` is not a failure there, it is how a caller learns the node
+    // needs no authentication. Linux produces it by design: a render node
+    // refuses any ioctl whose descriptor lacks `DRM_RENDER_ALLOW`, and
+    // `GET_MAGIC` is one of those. An unimplemented request produces `ENOTTY`
+    // instead, which glamor reads as a real error, closes the fd and answers
+    // the client with `BadMatch`.
+    // The directions are not incidental -- they are two of the four fields
+    // that make up the command number. `GET_MAGIC` is `_IOR` and `AUTH_MAGIC`
+    // is `_IOW`, and writing either as `InOutData` produces a *different
+    // ioctl*: `0xc0046402` where libdrm sends `0x80046402`. The kernel then
+    // answers `ENOTTY`, which is indistinguishable from not having implemented
+    // the request at all -- the same failure this pair was added to fix, one
+    // layer down. A struct's size and an ioctl's direction are both part of its
+    // name.
+    pub(super) type GetMagic = ioc!(DRM_IOCTL_GET_MAGIC, b'd', 0x02, OutData<DrmAuth>);
+    pub(super) type AuthMagic = ioc!(DRM_IOCTL_AUTH_MAGIC, b'd', 0x11, InData<DrmAuth>);
     pub(super) type SetClientCap = ioc!(DRM_IOCTL_SET_CLIENT_CAP, b'd', 0x0d, InData<DrmSetClientCap>);
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h>.
     pub(super) type GemClose = ioc!(DRM_IOCTL_GEM_CLOSE, b'd', 0x09, InData<DrmGemClose>);
@@ -903,6 +949,7 @@ impl Device for Dri {
                 current_width,
                 current_height,
                 cursor: CursorState::default(),
+                magic: None,
                 context_id: None,
             }),
         }))
@@ -1975,6 +2022,32 @@ impl PerOpenFileOps for DriHandle {
                     }
                 };
                 cmd.write(&cap)?;
+                Ok(0)
+            }
+            cmd @ GetMagic => {
+                // `_IOR`: nothing comes in, the token goes out.
+                let magic = {
+                    let mut inner = self.inner.lock();
+                    *inner.magic.get_or_insert_with(|| {
+                        NEXT_MAGIC.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+                    })
+                };
+                cmd.write(&DrmAuth { magic })?;
+                Ok(0)
+            }
+            cmd @ AuthMagic => {
+                let auth = cmd.read()?;
+                // Linux looks the token up in the master's map and marks that
+                // file authenticated. No ioctl on this device reads an
+                // authenticated flag, so the half that does work is the
+                // recognition -- a token this device issued is accepted and
+                // anything else is refused, rather than the request quietly
+                // succeeding on a value nothing produced.
+                if auth.magic == 0
+                    || auth.magic >= NEXT_MAGIC.load(core::sync::atomic::Ordering::Relaxed)
+                {
+                    return_errno_with_message!(Errno::EINVAL, "unknown magic");
+                }
                 Ok(0)
             }
             cmd @ SetClientCap => {
