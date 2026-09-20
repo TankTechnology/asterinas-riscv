@@ -225,7 +225,7 @@ class TerminationSignals:
 class GateConfig:
     """The bounded portions of one physical gate execution."""
 
-    boot_timeout: float = 300.0
+    boot_timeout: float = 120.0
     drain_timeout: float = 2.0
     recovery_timeout: float = 360.0
     target: GateTarget = GateTarget.BROWSER
@@ -969,7 +969,7 @@ def _parser() -> argparse.ArgumentParser:
         type=GateTarget,
     )
     parser.add_argument("--output-directory", required=True, type=Path)
-    parser.add_argument("--boot-timeout", type=positive_finite_seconds, default=300.0)
+    parser.add_argument("--boot-timeout", type=positive_finite_seconds, default=120.0)
     parser.add_argument("--drain-timeout", type=positive_finite_seconds, default=2.0)
     parser.add_argument(
         "--recovery-timeout", type=positive_finite_seconds, default=360.0
