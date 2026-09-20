@@ -21,6 +21,19 @@ the kernel (`kernel/`) is entirely safe Rust.
 
 All development is done inside the project Docker container:
 
+For local iterative builds, use the persistent launcher:
+
+```bash
+tools/docker/run_dev_container.sh -- make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+```
+
+It reuses a named container and persistent Cargo, Rustup, and Nix caches.
+For an isolated worktree, pass `--workspace /absolute/path/to/worktree`.
+Do not use fresh uncached containers for repeated local builds.
+See `tools/docker/README.md` for local image selection, offline builds, and stopping.
+
+The underlying project image can also be run directly:
+
 ```bash
 docker run -it --privileged --network=host -v /dev:/dev \
   -v $(pwd)/asterinas:/root/asterinas \
