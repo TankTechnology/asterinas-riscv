@@ -25,15 +25,17 @@ use super::{
     VIRTIO_GPU_CMD_MOVE_CURSOR, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
     VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
     VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
-    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_F_VIRGL,
+    VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
+    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_F_VIRGL,
     VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
     VIRTIO_GPU_RESP_OK_CAPSET, VIRTIO_GPU_RESP_OK_CAPSET_INFO, VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
-    VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR, VirtioGpuCmdSubmit, VirtioGpuCtrlHdr, VirtioGpuCtxCreate,
+    VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR, VirtioGpuBox, VirtioGpuCmdSubmit, VirtioGpuCtrlHdr, VirtioGpuCtxCreate,
     VirtioGpuCursorPos, VirtioGpuDisplayOne, VirtioGpuGetCapset, VirtioGpuGetCapsetInfo,
     VirtioGpuCtxResource, VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuRespCapsetInfo,
     VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceCreate3d,
     VirtioGpuResourceFlush, VirtioGpuResourceUnref,
-    VirtioGpuSetScanout, VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
+    VirtioGpuSetScanout, VirtioGpuTransferHost3d, VirtioGpuTransferToHost2d,
+    VirtioGpuUpdateCursor,
     config::VirtioGpuConfig,
 };
 use crate::{
@@ -750,6 +752,92 @@ impl GpuDevice {
             size_of::<VirtioGpuCtrlHdr>(),
         )?;
         check_ok(code)
+    }
+
+    /// Moves a region of a 3D resource between guest memory and the host.
+    ///
+    /// `command` picks the direction, and is one of the two
+    /// `TRANSFER_*_HOST_3D` codes rather than a flag so the call site reads as
+    /// which way the pixels are going.
+    ///
+    /// The context travels in the control header, not the body, so the plain
+    /// `ctrl_hdr` would address context 0 — which no client has.
+    fn transfer_3d(
+        &self,
+        command: u32,
+        context_id: u32,
+        resource_id: u32,
+        box_: VirtioGpuBox,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let request = VirtioGpuTransferHost3d {
+            hdr: ctrl_hdr_for_context(command, context_id),
+            box_,
+            offset,
+            resource_id,
+            level,
+            stride,
+            layer_stride,
+        };
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &request,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// Uploads a region of a 3D resource, for the renderer to read.
+    #[expect(clippy::too_many_arguments)]
+    pub fn transfer_to_host_3d(
+        &self,
+        context_id: u32,
+        resource_id: u32,
+        box_: VirtioGpuBox,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        self.transfer_3d(
+            VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D,
+            context_id,
+            resource_id,
+            box_,
+            offset,
+            level,
+            stride,
+            layer_stride,
+        )
+    }
+
+    /// Brings back a region of a 3D resource the renderer wrote.
+    #[expect(clippy::too_many_arguments)]
+    pub fn transfer_from_host_3d(
+        &self,
+        context_id: u32,
+        resource_id: u32,
+        box_: VirtioGpuBox,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        self.transfer_3d(
+            VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
+            context_id,
+            resource_id,
+            box_,
+            offset,
+            level,
+            stride,
+            layer_stride,
+        )
     }
 
     fn flush(&self, resource_id: u32, r: VirtioGpuRect) -> Result<(), VirtioDeviceError> {

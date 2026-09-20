@@ -27,7 +27,7 @@ mod prime;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use align_ext::AlignExt;
-use aster_virtio::device::gpu::{device::GpuDevice, first_device};
+use aster_virtio::device::gpu::{VirtioGpuBox, device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::{
     mm::{Paddr, VmIo},
@@ -625,6 +625,32 @@ struct DrmVirtgpuWait {
     flags: u32,
 }
 
+/// `struct drm_virtgpu_3d_box`: the region a 3D transfer covers.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmVirtgpuBox {
+    x: u32,
+    y: u32,
+    z: u32,
+    w: u32,
+    h: u32,
+    d: u32,
+}
+
+/// `struct drm_virtgpu_3d_transfer_to_host` and its `from_host` twin, which
+/// have the same layout. 44 bytes; the size is part of the ioctl's command
+/// number, so it has to match the client's definition exactly.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmVirtgpuTransfer3d {
+    bo_handle: u32,
+    box_: DrmVirtgpuBox,
+    level: u32,
+    offset: u32,
+    stride: u32,
+    layer_stride: u32,
+}
+
 /// `VIRTGPU_EXECBUF_*` flags.
 const VIRTGPU_EXECBUF_FENCE_FD_OUT: u32 = 0x02;
 
@@ -727,7 +753,7 @@ mod ioctl_defs {
         DrmPrimeHandle,
         DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
         DrmVirtgpuMap,
-        DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo, DrmVirtgpuWait,
+        DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo, DrmVirtgpuTransfer3d, DrmVirtgpuWait,
         DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeMapDumb, DrmModeObjGetProperties,
         DrmSetClientCap, DrmVersion,
     };
@@ -751,6 +777,8 @@ mod ioctl_defs {
     pub(super) type VirtgpuResourceCreate = ioc!(DRM_IOCTL_VIRTGPU_RESOURCE_CREATE, b'd', 0x44, InOutData<DrmVirtgpuResourceCreate>);
     pub(super) type VirtgpuResourceInfo = ioc!(DRM_IOCTL_VIRTGPU_RESOURCE_INFO, b'd', 0x45, InOutData<DrmVirtgpuResourceInfo>);
     pub(super) type VirtgpuGetCaps = ioc!(DRM_IOCTL_VIRTGPU_GET_CAPS, b'd', 0x49, InOutData<DrmVirtgpuGetCaps>);
+    pub(super) type VirtgpuTransferFromHost = ioc!(DRM_IOCTL_VIRTGPU_TRANSFER_FROM_HOST, b'd', 0x46, InOutData<DrmVirtgpuTransfer3d>);
+    pub(super) type VirtgpuTransferToHost = ioc!(DRM_IOCTL_VIRTGPU_TRANSFER_TO_HOST, b'd', 0x47, InOutData<DrmVirtgpuTransfer3d>);
     pub(super) type VirtgpuWait = ioc!(DRM_IOCTL_VIRTGPU_WAIT, b'd', 0x48, InOutData<DrmVirtgpuWait>);
     pub(super) type VirtgpuContextInit = ioc!(DRM_IOCTL_VIRTGPU_CONTEXT_INIT, b'd', 0x4b, InOutData<DrmVirtgpuContextInit>);
     pub(super) type SetMaster = ioc!(DRM_IOCTL_SET_MASTER, b'd', 0x1e, NoData);
@@ -815,6 +843,8 @@ fn is_render_allowed(raw_ioctl: RawIoctl) -> bool {
         || VirtgpuContextInit::try_from_raw(raw_ioctl).is_some()
         || VirtgpuMap::try_from_raw(raw_ioctl).is_some()
         || VirtgpuExecbuffer::try_from_raw(raw_ioctl).is_some()
+        || VirtgpuTransferFromHost::try_from_raw(raw_ioctl).is_some()
+        || VirtgpuTransferToHost::try_from_raw(raw_ioctl).is_some()
         || VirtgpuWait::try_from_raw(raw_ioctl).is_some()
         || VirtgpuResourceCreate::try_from_raw(raw_ioctl).is_some()
         || VirtgpuResourceInfo::try_from_raw(raw_ioctl).is_some()
@@ -1400,6 +1430,51 @@ impl DriHandle {
     /// is the renderer's business. What this has to get right is that the
     /// buffer arrives whole and that every buffer it names is one the renderer
     /// can actually reach.
+    /// Moves a region of a 3D resource between guest memory and the host.
+    ///
+    /// A client uploads a texture before drawing with it and reads one back
+    /// afterwards. Refusing either direction does not fail loudly: the
+    /// renderer keeps working on whatever the buffer held before, so the
+    /// picture is wrong rather than absent — which is why both are served.
+    fn virtgpu_transfer_3d(&self, to_host: bool, req: &DrmVirtgpuTransfer3d) -> Result<()> {
+        if !self.gpu.supports_virgl() {
+            return_errno_with_message!(Errno::EINVAL, "3D is not available");
+        }
+        let context_id = self.ensure_context()?;
+        let object_id = object_for_handle(&self.inner.lock(), req.bo_handle)?;
+        let object = object_by_id(&GEM_OBJECTS.lock(), object_id)?;
+        // Only a buffer the host already knows as a resource can be moved. A
+        // plain 2D dumb buffer has no resource behind it for a transfer to
+        // name, and inventing one would upload a span the host never received.
+        let resource_id = object
+            .resource_id
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "buffer is not a 3D resource"))?;
+
+        let transfer = if to_host {
+            GpuDevice::transfer_to_host_3d
+        } else {
+            GpuDevice::transfer_from_host_3d
+        };
+        transfer(
+            &self.gpu,
+            context_id,
+            resource_id,
+            VirtioGpuBox {
+                x: req.box_.x,
+                y: req.box_.y,
+                z: req.box_.z,
+                w: req.box_.w,
+                h: req.box_.h,
+                d: req.box_.d,
+            },
+            u64::from(req.offset),
+            req.level,
+            req.stride,
+            req.layer_stride,
+        )
+        .map_err(|_| Error::with_message(Errno::EIO, "3D transfer failed"))
+    }
+
     fn virtgpu_execbuffer(&self, req: &DrmVirtgpuExecbuffer) -> Result<DrmVirtgpuExecbuffer> {
         if !self.gpu.supports_virgl() {
             return_errno_with_message!(Errno::EINVAL, "3D is not available");
@@ -2013,6 +2088,16 @@ impl PerOpenFileOps for DriHandle {
             cmd @ VirtgpuExecbuffer => {
                 let req = cmd.read()?;
                 cmd.write(&self.virtgpu_execbuffer(&req)?)?;
+                Ok(0)
+            }
+            cmd @ VirtgpuTransferToHost => {
+                let req = cmd.read()?;
+                self.virtgpu_transfer_3d(true, &req)?;
+                Ok(0)
+            }
+            cmd @ VirtgpuTransferFromHost => {
+                let req = cmd.read()?;
+                self.virtgpu_transfer_3d(false, &req)?;
                 Ok(0)
             }
             cmd @ VirtgpuWait => {
