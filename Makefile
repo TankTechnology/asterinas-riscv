@@ -980,6 +980,17 @@ test_riscv_drm_cursor: test_riscv_drm_cursor_unit
 		--manifest "$(DRM_CURSOR_MANIFEST)" \
 		--output-directory "$(DRM_CURSOR_GATE_OUTPUT)"
 
+# The DRM ioctl command numbers the driver declares, held against the numbers
+# the Linux uapi headers define. An ioctl number is `direction | size | type |
+# number` packed into 32 bits and `ioc!` never reads its first argument, so a
+# declaration can name one ioctl and encode another; libdrm then gets ENOTTY,
+# which reads as "not implemented". Four debugging cycles went into that class
+# of defect. This needs no kernel build and finishes in well under a second.
+.PHONY: test_riscv_drm_uapi_contract
+test_riscv_drm_uapi_contract:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_uapi_contract -v
+
 .PHONY: test_riscv_drm_gem_unit
 test_riscv_drm_gem_unit:
 	@python3 -W error::ResourceWarning -m unittest \
