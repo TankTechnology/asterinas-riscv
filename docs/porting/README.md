@@ -11,111 +11,79 @@
 |---|---|
 | 状态来源 | 本文件所在 Git commit |
 | 工作分支 | `main` |
-| 最近桌面真机候选 | `f3d9c73fc` |
-| 最近网络真机候选 | `ed3a6508e` |
-| 最近真机记录 | [DWMAC streaming-DMA closure](evidence/megrez-dwmac-rx-liveness-contract.md#streaming-dma-physical-closure) |
-| 当前目标 | 将已验证的 DWMAC 路径接入 Debian/Firefox 门禁，并补真机鼠标交互；原生显示另行验收 |
+| 最近整合 | 合并 `bb76f8d63`（`codex/firefox-daily-use-perf` 的 52 个提交）；验证提交 `d38a0fb28` |
+| 最近桌面真机候选 | 验证内核 `8c470f09`；发布 generation `70dd75d0` |
+| 最近网络真机候选 | `ed3a6508e`（DWMAC streaming-DMA closure，未随本次合并重跑） |
+| 最近真机记录 | [合并后 main 的 QEMU 与真机验证](evidence/2026-09-20-merged-main-physical-validation.md) |
+| 当前目标 | 对 `contextSwitchTotalMs` 做一次有界归因观测；在该观测完成前不得再改内核 |
 
-当前结论：Asterinas 的 compiled Sv39 内核已在 Megrez 上启动 4 个 hart，
-通过 MMC 与 Stage1 进入持久 Debian Trixie 根；systemd 257.13、udev、
-logind、Xorg fbdev、双 xHCI、USB 键盘和鼠标、Matchbox、PCManFM、NetSurf
-与 xterm 已在无自动重启的真机启动中到达完整 M4 READY。HDMI 桌面与串口
-调试可同时保留。这仍是集成与调试成果，**不代表 Asterinas 已正式支持
-Megrez**，也不代表原生显示加速或 Debian 桌面网络已经可用。
-
-独立的原生 DWMAC 真机门禁随后在 `ed3a6508e` 上完成 17,907,712 字节的
-四阶段 TCP 接收并安全回到 U-Boot。该结果证明冻结 probe 的网络数据路径，
-尚未证明 Desktop M4/Firefox 根文件系统已经完成网络集成。
+当前结论：合并后的 `main` 已在 QEMU 四 hart 门禁上通过，并在真机上以
+`status=pass` 到达桌面（`desktop-ready` 61.8 s，Firefox PID 172，watchdog 已解除），
+随后完成一次 `qualified=true` 的 daily-use profile（7/7 功能组，`recovered=true`）。
+这证明的是**合并的集成线仍可部署与启动**，不是新的性能结论。
 
 ## 最后真机边界
 
-- RockOS 只通过同交换机网络把哈希冻结的 Image、Stage1 和安装器放到
-  `/boot`；Asterinas 自己把签名 Desktop M4 1 GiB 镜像写入 eMMC 分区 2，
-  完成全分区 SHA-256 后由 Asterinas/SBI 重启。
-- 真机重新加载并核对 Image、Stage1 和 Megrez DTB，进入 Asterinas Sv39、
-  4 hart、MMC、Debian systemd 257.13 与 1920x1080 firmware framebuffer。
-- 两套 DWC3/xHCI 控制器分别登记物理鼠标和键盘；Xorg 通过 evdev 选择
-  两者，随后 Matchbox、PCManFM、NetSurf 和 xterm 到达完整 M4 READY。
-- 有界启动在 READY 后由 180 秒保护定时器回到新 U-Boot 周期；随后的长期
-  启动删除了该定时器，重复到达 READY，并把桌面留在运行状态。
-
-完整身份、哈希、失败诊断和限制见
-[最新真机证据](evidence/2026-08-26-debian-desktop-m4-apps.md)。
+- 冻结的 kernel（`8c470f09`）、Stage1（`9bcf5f7b`）与 Megrez DTB（`465cb129`）
+  作为 generation `70dd75d0` 发布到 RockOS 分区 3；`booti` 前逐件校验字节数与 CRC32。
+- Sv39、4 hart、fbdev 显示；Stage1 挂载板上 eMMC 分区 2 上**既有的** Debian 根
+  （`80b11187`），该根未被重写或重装。
+- 有界启动在 95.73 s 内到达 `ASTERINAS_DESKTOP_BOOT_READY`，guest 保持运行；
+  随后经 debug console 的软件重启返回 U-Boot。
+- daily-use profile 由 Marionette 合成输入完成，`outcome=pass`、`upload_status=0`，
+  并有界恢复到新的 U-Boot 周期。**单次 profile 只是冒烟验证**：daily-use 基线按
+  定义是封闭的三次运行实验，一次合格运行不会重新资格化它。
 
 ## 最近 QEMU 边界
 
-- 与真机相同的签名 Desktop M4 根已在 QEMU、compiled Sv39、4 hart、
-  2 GiB、无网络条件下启动 PCManFM、NetSurf、xterm 与 Matchbox，门禁保存
-  1280x1024 非空截图并返回 `passed: true`。见
-  [Desktop M4 应用证据](evidence/2026-08-26-debian-desktop-m4-apps.md)。
-- current-main 的签名 Debian Desktop M3 已在 QEMU、compiled Sv39、4 hart、
-  2 GiB、无网络环境通过非 root Xorg fbdev + evdev + Matchbox + xterm 门禁，
-  并保存 1280x1024 非空截图。见
-  [Desktop M3 current-main 证据](evidence/2026-08-26-debian-desktop-m3-current-main.md)。
-  这不代表 Megrez 物理 framebuffer、HDMI 或 xHCI 已通过。
-- current-main DRM R1 已在 QEMU 10.2.1、compiled Sv39、4 hart、2 GiB、
-  无网络环境通过硬件光标 set/move/hide 门禁；用户态 marker 与 VirtIO-GPU
-  host trace 严格对应。见
-  [DRM R1 证据](evidence/2026-08-26-drm-r1-current-main.md)。这证明的是
-  VirtIO-GPU 软件路径，不代表 EIC7700/Megrez HDMI。
-- 相同的 Debian systemd M2 产物已在 QEMU `virt`、compiled Sv39、4 hart、
-  2 GiB、无网络、无显示条件下通过两次启动和持久 boot-count gate。见
-  [M2 构建与 QEMU 证据](evidence/2026-08-25-debian-systemd-m2-build.md)。
-- 冻结提交 `7f691c479df1b5319f71a6ad738f36541d90ca54` 的默认 Sv48
-  Image 已通过通用 U-Boot `booti` 的 timer 与 panic 两个软件恢复场景；
-  两者都进入新的 OpenSBI/U-Boot 周期。见[冻结恢复证据](evidence/2026-07-18-riscv-software-reboot-qemu.md)。
-- `70734c14e` 的 direct QEMU 已在 16 GiB、4 hart、Sv48/Svade 下到达
-  用户态 marker 并完成进程清理；它没有经过 U-Boot，也不是 EIC7700
-  真机证据。见[证据索引](evidence/megrez-history-index.md)。
-- 重构后 `main` 的 Sv39 内核已在 QEMU `virt` + bochs-display 上跑通完整
-  framebuffer 显示链：U-Boot 注入 `simple-framebuffer` 节点，内核登记
-  framebuffer 且 VT 控制台渲染到 1280x1024 画面。见
-  [riscv-qemu-desktop.md](riscv-qemu-desktop.md)。这验证的是软件链，
-  不代表 EIC7700/Megrez 的显示硬件行为。
-
-这三条 QEMU 结果与 `3ef99e6bd` 真机候选属于不同产物和环境，不得拼成同一
-Image 的连续运行。
+- 四 hart QEMU 图形/控制门禁以合并后的 kernel、重建的 Stage1 与 development
+  overlay 根通过：`passed=true`，三个交互周期，`physical=false`。
+- 该门禁的输出目录由容器内以 root、mode `0700` 创建，宿主非 root 读不到；
+  **读不到不等于空**，必须进容器或提权读取。
+- RISC-V kernel-test 套件在合并树上的失败集与 `55ee5c64e` 上**完全相同**
+  （`aster_kernel` 2 项、`xarray` 2 项），属既有问题，不是合并引入。
 
 ## 第一缺失边界
 
-基础桌面第一缺失边界已经推进到 **真机鼠标交互与网络集成**：鼠标已通过
-xHCI、HID、evdev 并被 Xorg 选中，但物理移动/点击仍需 HDMI 操作者确认；
-冻结 probe 已证明 Asterinas DWMAC 的持续 TCP 接收，但该路径尚未接入这个
-Debian 桌面根，因此 NetSurf 目前只证明应用和窗口启动，不能外推为网页
-访问。显示仍使用 U-Boot 交接的 firmware framebuffer，不是原生 EIC7700
-显示控制器或加速渲染。
+桌面与 daily-use 路径已经打通，第一缺失边界移到了**性能归因**：唤醒均衡改动把
+`runnable-delayed` 机制消除后，三次 B 运行的分类一致为 `mixed`——没有任何边界占
+主导。`contextSwitchTotalMs` 在三次 B 运行中仍全部越过 500 ms 诊断阈值，且是最大的
+主指标，是目前最明确的下一个观测对象。
+
+网络方面，已验证的板载 DWMAC 路径仍未纳入 Debian/Firefox 门禁；`main` 对
+`desktop_m5_network_evidence.sh` 的改动写进了 **rootfs**（由 `build_rootfs.sh`
+安装），而本次真机与 QEMU 验证都**没有**重装 rootfs，因此该改动本轮未被验证——
+它属于 M5 网络门禁，不属于本条线。
 
 ## 当前单变量假设
 
-下一轮只验证一个假设：**当前物理 USB boot mouse 的相对移动和按键事件能
-持续经过中断驱动 xHCI/HID worker、evdev 和 Xorg，到达 Matchbox 窗口。**
-QEMU 已验证精确移动/左键事件；真机只补操作者可观察的光标移动和窗口点击，
-不在同一轮扩展网络、热插拔或 DRM。
+下一轮只验证一个假设（仍属归因观测，不是优化）：**对 `contextSwitchTotalMs`
+做一次有界、开销可测的观测，足以判断缺失的到底是哪一类归因**。
+sampled-PC 只有在"缺的是指令区域归因"时才被准入，且其设计稿仍处于待评审状态。
 
 ## 尚未解决的问题
 
-1. 真机光标移动和点击仍需操作者确认；USB 热插拔和任意 report-protocol
-   HID 尚未验证。
-2. 已验证的板载 DWMAC 路径尚未纳入 Desktop M4/Firefox 门禁，NetSurf 的
-   桌面结果还不能外推为网页访问。
-3. EIC7700 原生 DRM、cache/coherency、加速渲染与显示模式切换尚未实现；
-   当前依赖 RAM-only 1920x1080 firmware framebuffer handoff。
-4. systemd 仍会报告缺少 kmod、部分 clone/syscall 与 cgroup 语义，但这些
-   警告没有阻止本次 udev/logind/非 root 桌面 READY。
-5. NetSurf 是轻量浏览器且不代表现代 JavaScript 浏览器兼容性；音频也未测。
+1. `contextSwitchTotalMs` 仍越过诊断阈值，且当前分类为 `mixed`；在完成一次有界
+   归因观测之前，不得选择第二个内核变量。
+2. 唤醒均衡改动的 A/B 未做变体交替、B 组之后也未补 A 对照，因此两组之间的热漂移
+   未被独立排除。
+3. `main` 的 M5 网络证据脚本改动尚未在任何门禁中验证（rootfs 未重建）。
+4. `make check` 在 `main` 上仍有 3 项**既有**失败（`ostd` 两个 dead-code、`dwmac`
+   的 "Synopsys" 拼写），不在本次整合范围内。
+5. 显示仍使用 U-Boot 交接的 firmware framebuffer，不是原生 EIC7700 显示控制器。
 
 不要把 DTB 中的 `snps,dw-apb-uart` 伪装成 `ns16550a`；错误的寄存器步长和
 访问宽度可能让轮询停在错误寄存器上。
 
 ## 下一次 QEMU 门禁
 
-不重复已经通过的 M4 应用启动和鼠标事件。只有网络或输入代码发生相关变化
-时，才在同一冻结根上跑对应的窄门禁。
+不重复已经通过的四 hart 图形/控制门禁。只有当内核或 Stage1 再次变化时才重跑，
+并记录 kernel、Stage1、root 三个摘要（旧记录只记了 Stage1）。
 
 ## 下一次真机门禁
 
-当前 M4 应用真机门禁已经通过，不重复相同 `booti`。下一次只由操作者移动
-并点击已经连接的鼠标，确认 HDMI 光标/窗口行为；通过后转向网络。后续仍
+按 `mixed` 分类的要求，先完成一次有界归因观测，再考虑任何内核变量。若再改内核，
+必须按 A/B 协议做 3+3 次合格真机 profile，并在可能时交替变体或补一次 A 对照。
 不得 `saveenv`，也不得从 Linux 绕过 Asterinas 修改 Debian 根分区。
 
 ## 简化调试记录
@@ -135,11 +103,13 @@ QEMU 已验证精确移动/左键事件；真机只补操作者可观察的光�
 ## 文档地图与历史归档
 
 - [唯一可执行命令来源](../../tools/riscv/README.md)
+- [合并后 main 的 QEMU 与真机验证（本次）](evidence/2026-09-20-merged-main-physical-validation.md)
+- [Firefox 唤醒均衡 A/B](../../performance/2026-09-19-firefox-wake-balance-physical-ab.md)
+- [Firefox daily-use 门禁状态](../../performance/2026-09-17-firefox-daily-use-gate.md)
 - [Megrez 网络硬件研究契约](evidence/megrez-network-hardware-research-contract.md)
 - [Megrez/EIC7700 网络硬件资料账本](evidence/megrez-network-hardware-source-ledger.md)
 - [QEMU framebuffer 显示链（已验证）](riscv-qemu-desktop.md)
 - [追加式证据索引](evidence/megrez-history-index.md)
-- [最新 PID 1 与恢复证据](evidence/2026-07-20-megrez-pid1-recovery.md)
 - [历史启动指南快照](megrez-asterinas-boot-guide.md)
 - [历史启动流程可视化快照](megrez-boot-flow.html)
 - [`docs/superpowers/` 设计、计划与审查史](../superpowers/)
