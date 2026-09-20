@@ -242,6 +242,10 @@ static void run_case(struct gbm_device *dev, const struct case_ *c, int w,
 
     printf("GBM_PROBE %s ok stride=%u", c->label, p_gbm_bo_get_stride(bo));
     if (p_gbm_bo_get_fd) {
+        /* Cleared first: `gbm_bo_get_fd` is not obliged to set `errno` when it
+         * fails, so without this the report carries whatever the last unrelated
+         * call left behind — which reads as a diagnosis and is not one. */
+        errno = 0;
         int fd = p_gbm_bo_get_fd(bo);
         printf(" dmabuf_fd=%d errno=%d", fd, fd < 0 ? errno : 0);
         if (fd >= 0)
