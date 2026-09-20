@@ -262,6 +262,48 @@ static size_t append_message_iov(char *at, size_t used, const struct iovec *iov,
     return append_message(at, used, prefix, gathered);
 }
 
+/* The file descriptors a control message carries, by number.
+ *
+ * `ctrl=` is how many bytes of control data were *asked for*, which is not the
+ * same question as what was passed. It is zero when nothing is attached, and on
+ * a failed call it is still the caller's buffer size -- 80 and 528 appear in
+ * these traces on nothing but EAGAINs, which reads like traffic and is not.
+ *
+ * A DRI3 device hand-off is the one thing this trace has to be able to see, and
+ * it is invisible in a length: the question is whether an fd crossed, and
+ * which. Printing the numbers answers it directly, and "no line with `fds=`"
+ * is then a finding rather than an absence.
+ */
+static size_t append_scm_fds(char *at, size_t used, const struct msghdr *msg)
+{
+    struct msghdr *message = (struct msghdr *)msg;
+    struct cmsghdr *header;
+    int printed = 0;
+
+    if (!msg || !msg->msg_control ||
+        msg->msg_controllen < (socklen_t)sizeof(struct cmsghdr))
+        return used;
+
+    for (header = CMSG_FIRSTHDR(message); header;
+         header = CMSG_NXTHDR(message, header)) {
+        const int *fds;
+        size_t count, index;
+
+        if (header->cmsg_level != SOL_SOCKET || header->cmsg_type != SCM_RIGHTS)
+            continue;
+        if (header->cmsg_len < CMSG_LEN(0))
+            continue;
+
+        fds = (const int *)CMSG_DATA(header);
+        count = (size_t)(header->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+        for (index = 0; index < count; index++) {
+            used = append(at, used, printed++ == 0 ? " fds=" : ",");
+            used = append_dec(at, used, fds[index]);
+        }
+    }
+    return used;
+}
+
 /* Writes `value` as decimal into `at`, returning the new length. Used to build
  * the `/proc/self/fd/` path without `snprintf`, so the shim stays free of
  * stdio's allocation and locking. */
@@ -547,6 +589,7 @@ ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags)
         used = append_dec(line, used, (long long)result);
         used = append(line, used, " ctrl=");
         used = append_dec(line, used, (long long)msg->msg_controllen);
+        used = append_scm_fds(line, used, msg);
         used = append_iov_summary(line, used, msg->msg_iov,
                                   (int)msg->msg_iovlen);
         /* The leading bytes, so the exchange can be read rather than guessed
@@ -641,6 +684,7 @@ ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags)
         used = append_dec(line, used, (long long)result);
         used = append(line, used, " ctrl=");
         used = append_dec(line, used, (long long)(msg ? msg->msg_controllen : 0));
+        used = append_scm_fds(line, used, msg);
         if (msg)
             used = append_iov_summary(line, used, msg->msg_iov,
                                       (int)msg->msg_iovlen);
