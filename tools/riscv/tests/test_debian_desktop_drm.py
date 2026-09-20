@@ -74,8 +74,16 @@ class DebianDesktopDRMTests(unittest.TestCase):
         source = (
             Path(__file__).resolve().parents[3] / "kernel/src/device/dri.rs"
         ).read_text(encoding="utf-8")
+        # The visibility prefix is optional in the pattern because the
+        # declaration carries one. Anchoring on a bare `^const` is what made
+        # this test fail for as long as the constant has been `pub(super)`:
+        # it matched nothing, so it reported "DRIVER_NAME not found" rather
+        # than a spelling change, and a test that can only fail with the wrong
+        # message is a test nobody reads.
         match = re.search(
-            r'^const DRIVER_NAME: &str = "([^"]+)";', source, re.MULTILINE
+            r'^\s*(?:pub(?:\([^)]*\))?\s+)?const DRIVER_NAME: &str = "([^"]+)";',
+            source,
+            re.MULTILINE,
         )
         self.assertIsNotNone(match, "DRIVER_NAME not found in kernel/src/device/dri.rs")
         self.assertEqual(match.group(1), "virtio_gpu")
