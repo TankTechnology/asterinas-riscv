@@ -512,47 +512,70 @@ request_qemu_https() {
 }
 
 request_megrez_https() {
+    local deadline="$1"
     local attempt
+    local attempt_start
     local curl_error
     local curl_result
     local curl_status=1
+    local curl_trace
     local stderr_hex
+    local trace_hex
 
     curl_error="$(mktemp "${URL_FILE}.curl-error.XXXXXX")" ||
         fail megrez-curl-temporary
+    curl_trace="$(mktemp "${URL_FILE}.curl-trace.XXXXXX")" || {
+        rm -f -- "$curl_error"
+        fail megrez-curl-temporary
+    }
     for attempt in 1 2 3; do
+        if ((SECONDS >= deadline)); then
+            emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-https attempt=$attempt stage=deadline"
+            rm -f -- "$curl_error" "$curl_trace"
+            return 1
+        fi
+        emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-https attempt=$attempt stage=begin"
         : >"$curl_error" || fail megrez-curl-error-reset
+        : >"$curl_trace" || fail megrez-curl-trace-reset
+        attempt_start=$SECONDS
         if curl_result="$(
-            timeout "$COMMAND_TIMEOUT_SECONDS" curl \
+            timeout -k 5 "$COMMAND_TIMEOUT_SECONDS" curl \
                 --fail \
                 --ipv4 \
                 --location \
                 --silent \
                 --show-error \
                 --max-time "$COMMAND_TIMEOUT_SECONDS" \
+                --connect-timeout 10 \
                 --proxy "$PROXY_URL" \
                 --output /dev/null \
+                --trace-ascii "$curl_trace" \
                 --write-out $'%{http_code}\t%{local_ip}' \
                 "$BAIDU_URL" 2>"$curl_error"
         )"; then
-            rm -f -- "$curl_error"
+            rm -f -- "$curl_error" "$curl_trace"
             printf '%s' "$curl_result"
             return 0
         else
             curl_status=$?
         fi
+        stderr_hex="$(
+            head -c 2048 -- "$curl_error" |
+                od -An -v -tx1 |
+                tr -d '[:space:]'
+        )"
+        trace_hex="$(
+            tail -c 512 -- "$curl_trace" |
+                od -An -v -tx1 |
+                tr -d '[:space:]'
+        )"
+        emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-https attempt=$attempt status=$curl_status elapsed=$((SECONDS - attempt_start)) stderr_hex=${stderr_hex:-none} trace_hex=${trace_hex:-none}"
         if ((attempt != 3)); then
             sleep 1
         fi
     done
 
-    stderr_hex="$(
-        head -c 2048 -- "$curl_error" |
-            od -An -v -tx1 |
-            tr -d '[:space:]'
-    )"
-    emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-https attempt=3 status=$curl_status stderr_hex=${stderr_hex:-none}"
-    rm -f -- "$curl_error"
+    rm -f -- "$curl_error" "$curl_trace"
     return 1
 }
 
@@ -562,13 +585,14 @@ synchronize_megrez_clock() {
     local headers
 
     if ! headers="$(
-        timeout "$COMMAND_TIMEOUT_SECONDS" curl \
+        timeout -k 5 "$COMMAND_TIMEOUT_SECONDS" curl \
             --fail \
             --head \
             --ipv4 \
             --silent \
             --show-error \
             --max-time "$COMMAND_TIMEOUT_SECONDS" \
+            --connect-timeout 10 \
             --proxy "$PROXY_URL" \
             "$CLOCK_URL"
     )"; then
@@ -756,7 +780,7 @@ megrez_network_evidence() {
     stress_fixture "$deadline" '10.100.19.216:17894' megrez
     synchronize_megrez_clock
 
-    curl_result="$(request_megrez_https)" || fail megrez-https
+    curl_result="$(request_megrez_https "$deadline")" || fail megrez-https
     [[ "$curl_result" == *$'\t'* ]] || fail megrez-curl-output
     http_status="${curl_result%%$'\t'*}"
     local_address="${curl_result#*$'\t'}"
@@ -764,14 +788,16 @@ megrez_network_evidence() {
     [[ "$local_address" == "10.100.19.200" ]] || fail megrez-local-address
     emit "DEBIAN_NETWORK_M5_MEGREZ_HTTPS host=www.baidu.com status=$http_status address=$local_address proxy=$PROXY_HOST:$PROXY_PORT"
 
+    emit "DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-asset stage=begin"
     temporary_asset="$(mktemp "${URL_FILE}.asset.XXXXXX")" || fail asset-temporary
-    if ! timeout "$COMMAND_TIMEOUT_SECONDS" curl \
+    if ! timeout -k 5 "$COMMAND_TIMEOUT_SECONDS" curl \
         --fail \
         --ipv4 \
         --location \
         --silent \
         --show-error \
         --max-time "$COMMAND_TIMEOUT_SECONDS" \
+        --connect-timeout 10 \
         --proxy "$PROXY_URL" \
         --output "$temporary_asset" \
         "$BAIDU_ASSET"; then
