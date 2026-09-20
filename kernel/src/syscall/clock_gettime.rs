@@ -280,15 +280,31 @@ mod tests {
         assert_eq!(error.error(), Errno::EINVAL);
     }
 
+    /// The resolution each clock is actually accounted at.
+    ///
+    /// The coarse clocks are the only tick-granular ones left. CPU clocks read
+    /// a nanosecond-granular clocksource, and this test asserted 1 ms for them
+    /// long after that stopped being true: `30461615a` ("Implement precise CPU
+    /// clocks") removed the CPU-clock arms from the 1 ms group and updated the
+    /// doc comment above `read_clock_resolution` to match, but not this
+    /// expectation. The kernel was right and the test was stale, so it failed
+    /// on every run without anything being wrong.
+    ///
+    /// Both halves are asserted here rather than only the CPU one, because the
+    /// rule is a contrast: it is the *coarse* clocks that are tick-granular.
     #[ktest]
-    fn reports_tick_resolution_for_cpu_clocks() {
+    fn reports_the_resolution_each_clock_is_accounted_at() {
         assert_eq!(
-            read_clock_resolution(super::ClockId::CLOCK_PROCESS_CPUTIME_ID as i32).unwrap(),
+            read_clock_resolution(super::ClockId::CLOCK_MONOTONIC_COARSE as i32).unwrap(),
             core::time::Duration::from_millis(1)
         );
         assert_eq!(
+            read_clock_resolution(super::ClockId::CLOCK_PROCESS_CPUTIME_ID as i32).unwrap(),
+            core::time::Duration::from_nanos(1)
+        );
+        assert_eq!(
             read_clock_resolution(cpu_clock_id(42, 2, false)).unwrap(),
-            core::time::Duration::from_millis(1)
+            core::time::Duration::from_nanos(1)
         );
     }
 }
