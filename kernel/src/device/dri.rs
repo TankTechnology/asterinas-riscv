@@ -829,7 +829,7 @@ mod ioctl_defs {
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h>.
     pub(super) type GemClose = ioc!(DRM_IOCTL_GEM_CLOSE, b'd', 0x09, InData<DrmGemClose>);
     pub(super) type GemFlink = ioc!(DRM_IOCTL_GEM_FLINK, b'd', 0x0a, InOutData<DrmGemFlink>);
-    pub(super) type GemOpen = ioc!(DRM_IOCTL_GEM_OPEN, b'd', 0x1b, InOutData<DrmGemOpen>);
+    pub(super) type GemOpen = ioc!(DRM_IOCTL_GEM_OPEN, b'd', 0x0b, InOutData<DrmGemOpen>);
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h>.
     pub(super) type PrimeHandleToFd = ioc!(DRM_IOCTL_PRIME_HANDLE_TO_FD, b'd', 0x2d, InOutData<DrmPrimeHandle>);
     pub(super) type PrimeFdToHandle = ioc!(DRM_IOCTL_PRIME_FD_TO_HANDLE, b'd', 0x2e, InOutData<DrmPrimeHandle>);
