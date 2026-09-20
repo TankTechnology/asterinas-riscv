@@ -47,7 +47,7 @@ use crate::{
         vfs::{inode::FileOps, path::Path},
     },
     prelude::*,
-    process::signal::{PollHandle, Pollable},
+    process::signal::{PollHandle, Pollable, Pollee},
     util::ioctl::{RawIoctl, dispatch_ioctl},
     vm::page_cache::{Vmo, VmoFlags, VmoOptions},
 };
@@ -268,6 +268,13 @@ struct DriHandle {
     context_operation: Mutex<()>,
     cursor_operation: Mutex<()>,
     inner: SpinLock<DriInner>,
+    /// Readiness for `poll` and `epoll`.
+    ///
+    /// A DRM descriptor becomes readable when the driver has an event queued
+    /// for this file, such as a completed page flip. This driver queues none,
+    /// so it is never readable — but the poller still has to be registered, so
+    /// that adding one later does not mean revisiting every call site.
+    events: Pollee,
 }
 
 #[derive(Debug)]
@@ -882,6 +889,7 @@ impl Device for Dri {
             gpu,
             context_operation: Mutex::new(()),
             cursor_operation: Mutex::new(()),
+            events: Pollee::new(),
             inner: SpinLock::new(DriInner {
                 handles: BTreeMap::new(),
                 next_handle: 1,
@@ -1827,8 +1835,23 @@ impl Drop for DriHandle {
 }
 
 impl Pollable for DriHandle {
-    fn poll(&self, mask: IoEvents, _poller: Option<&mut PollHandle>) -> IoEvents {
-        mask & IoEvents::OUT
+    /// Reports this descriptor ready only when the driver has an event for it.
+    ///
+    /// Linux's `drm_poll` returns `EPOLLIN | EPOLLRDNORM` for a file with a
+    /// queued event and nothing otherwise — never `EPOLLOUT`. Saying
+    /// `mask & IoEvents::OUT` instead, as this did, claims the descriptor is
+    /// writable at all times, and `epoll` always requests `EPOLLOUT` when the
+    /// caller asks for it. A level-triggered readiness that can never be
+    /// cleared makes `epoll_wait` return immediately, every time: the caller
+    /// is not waiting, it is spinning, and it never gets to the work it was
+    /// woken to do.
+    ///
+    /// That is what the X server does here. It watches this descriptor for
+    /// display events, spins on the always-writable answer, and never services
+    /// its clients again — a `glxinfo` left blocked on the X socket with the
+    /// server apparently alive.
+    fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
+        self.events.poll_with(mask, poller, || IoEvents::empty())
     }
 }
 
