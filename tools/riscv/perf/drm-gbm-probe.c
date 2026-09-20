@@ -56,6 +56,11 @@ static struct gbm_bo *(*p_gbm_bo_create)(struct gbm_device *dev, uint32_t width,
 static void (*p_gbm_bo_destroy)(struct gbm_bo *bo);
 static uint32_t (*p_gbm_bo_get_stride)(struct gbm_bo *bo);
 static int (*p_gbm_bo_get_fd)(struct gbm_bo *bo);
+/* `gbm_bo_handle` is a union whose widest member is eight bytes, so the return
+ * value is read as one and narrowed to the `u32` member GEM handles use. */
+static uint64_t (*p_gbm_bo_get_handle)(struct gbm_bo *bo);
+static int (*p_drm_prime_handle_to_fd)(int fd, uint32_t handle, uint32_t flags,
+                                       int *prime_fd);
 
 /*
  * What Mesa's loader is able to learn about the device, asked through libdrm
@@ -204,9 +209,14 @@ static void probe_driver_open(void) {
 
 static int load_gbm(void) {
     void *h = dlopen("libgbm.so.1", RTLD_NOW | RTLD_LOCAL);
+    void *drm;
     if (!h) {
         printf("GBM_PROBE dlopen-failed %s\n", dlerror());
         return -1;
+    }
+    drm = dlopen("libdrm.so.2", RTLD_NOW | RTLD_LOCAL);
+    if (drm) {
+        p_drm_prime_handle_to_fd = dlsym(drm, "drmPrimeHandleToFD");
     }
     p_gbm_create_device = dlsym(h, "gbm_create_device");
     p_gbm_device_destroy = dlsym(h, "gbm_device_destroy");
@@ -215,6 +225,7 @@ static int load_gbm(void) {
     p_gbm_bo_destroy = dlsym(h, "gbm_bo_destroy");
     p_gbm_bo_get_stride = dlsym(h, "gbm_bo_get_stride");
     p_gbm_bo_get_fd = dlsym(h, "gbm_bo_get_fd");
+    p_gbm_bo_get_handle = dlsym(h, "gbm_bo_get_handle");
     if (!p_gbm_create_device || !p_gbm_bo_create) {
         printf("GBM_PROBE dlsym-failed\n");
         return -1;
@@ -228,8 +239,8 @@ struct case_ {
     uint32_t usage;
 };
 
-static void run_case(struct gbm_device *dev, const struct case_ *c, int w,
-                     int h) {
+static void run_case(int node_fd, struct gbm_device *dev, const struct case_ *c,
+                     int w, int h) {
     struct gbm_bo *bo;
 
     errno = 0;
@@ -250,6 +261,20 @@ static void run_case(struct gbm_device *dev, const struct case_ *c, int w,
         printf(" dmabuf_fd=%d errno=%d", fd, fd < 0 ? errno : 0);
         if (fd >= 0)
             close(fd);
+    }
+
+    /* Ask the export ioctl directly, with a handle this process knows is good.
+     * `gbm_bo_get_fd` reports only that it failed, so a kernel that refuses the
+     * ioctl and a failure inside Mesa look identical from outside; this is what
+     * tells them apart. `O_CLOEXEC` is the flag libdrm's own callers pass. */
+    if (p_gbm_bo_get_handle && p_drm_prime_handle_to_fd) {
+        uint32_t handle = (uint32_t)p_gbm_bo_get_handle(bo);
+        int exported = -1, rc;
+        errno = 0;
+        rc = p_drm_prime_handle_to_fd(node_fd, handle, 0x00080000u, &exported);
+        printf(" export rc=%d fd=%d errno=%d", rc, exported, rc ? errno : 0);
+        if (rc == 0 && exported >= 0)
+            close(exported);
     }
     printf("\n");
     p_gbm_bo_destroy(bo);
@@ -294,7 +319,7 @@ static void probe_node(const char *node, int w, int h) {
                : "(no symbol)");
 
     for (i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++)
-        run_case(dev, &cases[i], w, h);
+        run_case(fd, dev, &cases[i], w, h);
 
     p_gbm_device_destroy(dev);
     close(fd);
