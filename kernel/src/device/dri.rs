@@ -2425,3 +2425,176 @@ pub(super) fn init_in_first_kthread() {
     }))
     .expect("failed to register the DRM render device");
 }
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::ioctl_defs::*;
+    use super::*;
+    use crate::util::ioctl::NoData;
+
+    /// The command number and argument size the Linux uapi gives each ioctl
+    /// this driver serves.
+    ///
+    /// These are not transcribed by hand. They are the output of
+    /// `tools/riscv/perf/drm-uapi-contract.c`, which obtains them by including
+    /// the real `<drm/drm.h>` / `<drm/virtgpu_drm.h>` and evaluating the
+    /// `DRM_IOCTL_*` and `sizeof()` expressions those headers define -- so the
+    /// expected values come from the uapi, not from the driver, and the test
+    /// is not a mirror of the thing it checks.
+    ///
+    /// `tools/riscv/tests/test_drm_uapi_contract.py` re-derives the same table
+    /// from the same headers and compares it against this one, so a constant
+    /// here cannot drift from the uapi without a test saying so.
+    ///
+    /// The reason this matters is a defect class that has cost this tree four
+    /// separate debugging cycles. An ioctl command number is not a name: it is
+    /// `direction | size | type | number` packed into 32 bits. `ioc!`'s first
+    /// argument is a label the macro never reads, so a declaration whose label
+    /// says one ioctl and whose number says another compiles cleanly and then
+    /// answers `ENOTTY` -- indistinguishable from not implementing it. That is
+    /// how `DRM_IOCTL_GET_MAGIC` was silently missing for a whole cycle, and
+    /// how `DRM_IOCTL_GEM_OPEN` came to be declared as `DRM_IOCTL_RM_MAP`.
+    macro_rules! uapi_contract {
+        ($( $name:ident : $number:expr, $argument:ty, $size:expr; )*) => {
+            /// `(ioctl, command number, argument size)`.
+            const CONTRACT: &[(&str, u32, u32)] = &[
+                $( (stringify!($name), $number, $size), )*
+            ];
+
+            /// The declaration answers to the number libdrm actually sends.
+            /// This is the whole contract: a caller does
+            /// `ioctl(fd, DRM_IOCTL_X, ...)`, and the number in that call is
+            /// built from the uapi's own definition of `DRM_IOCTL_X`.
+            #[ktest]
+            fn every_ioctl_answers_to_the_command_number_the_uapi_gives_it() {
+                $(
+                    assert!(
+                        $name::try_from_raw(RawIoctl::new($number, 0)).is_some(),
+                        concat!(
+                            stringify!($name),
+                            " does not answer to its uapi command number"
+                        ),
+                    );
+                )*
+            }
+
+            /// The check above would also pass if the encoding ignored fields.
+            /// Flipping the low bit of the number lands on a different `nr`
+            /// (or, for the master pair, on its twin), and every one of those
+            /// must be refused -- which is what makes the assertion above mean
+            /// something.
+            #[ktest]
+            fn no_ioctl_answers_to_a_neighbouring_command_number() {
+                $(
+                    assert!(
+                        $name::try_from_raw(RawIoctl::new($number ^ 0x01, 0)).is_none(),
+                        concat!(
+                            stringify!($name),
+                            " also answers to a command number it does not own"
+                        ),
+                    );
+                )*
+            }
+
+            /// The number encodes the argument size, so a struct that is not
+            /// the uapi's size is not a cosmetic difference -- it changes the
+            /// number the driver accepts. Asserting the size separately names
+            /// the cause when that happens.
+            #[ktest]
+            fn every_argument_struct_is_the_size_the_uapi_declares() {
+                $(
+                    assert_eq!(
+                        size_of::<$argument>(),
+                        $size,
+                        concat!(
+                            stringify!($argument),
+                            " does not match the uapi layout"
+                        ),
+                    );
+                )*
+            }
+        };
+    }
+
+    uapi_contract! {
+        GetVersion: 0xc0406400, DrmVersion, 64;
+        GetCap: 0xc010640c, DrmGetCap, 16;
+        GetMagic: 0x80046402, DrmAuth, 4;
+        AuthMagic: 0x40046411, DrmAuth, 4;
+        SetClientCap: 0x4010640d, DrmSetClientCap, 16;
+        GemClose: 0x40086409, DrmGemClose, 8;
+        GemFlink: 0xc008640a, DrmGemFlink, 8;
+        GemOpen: 0xc010640b, DrmGemOpen, 16;
+        PrimeHandleToFd: 0xc00c642d, DrmPrimeHandle, 12;
+        PrimeFdToHandle: 0xc00c642e, DrmPrimeHandle, 12;
+        SetMaster: 0x0000641e, NoData, 0;
+        DropMaster: 0x0000641f, NoData, 0;
+        VirtgpuMap: 0xc0106441, DrmVirtgpuMap, 16;
+        VirtgpuExecbuffer: 0xc0406442, DrmVirtgpuExecbuffer, 64;
+        VirtgpuGetparam: 0xc0106443, DrmVirtgpuGetparam, 16;
+        VirtgpuResourceCreate: 0xc0386444, DrmVirtgpuResourceCreate, 56;
+        VirtgpuResourceInfo: 0xc0106445, DrmVirtgpuResourceInfo, 16;
+        VirtgpuGetCaps: 0xc0186449, DrmVirtgpuGetCaps, 24;
+        VirtgpuTransferFromHost: 0xc02c6446, DrmVirtgpuTransfer3d, 44;
+        VirtgpuTransferToHost: 0xc02c6447, DrmVirtgpuTransfer3d, 44;
+        VirtgpuWait: 0xc0086448, DrmVirtgpuWait, 8;
+        VirtgpuContextInit: 0xc010644b, DrmVirtgpuContextInit, 16;
+        ModeGetResources: 0xc04064a0, DrmModeCardRes, 64;
+        ModeGetCrtc: 0xc06864a1, DrmModeCrtc, 104;
+        ModeSetCrtc: 0xc06864a2, DrmModeCrtc, 104;
+        ModeCursor: 0xc01c64a3, DrmModeCursor, 28;
+        ModeGetEncoder: 0xc01464a6, DrmModeGetEncoder, 20;
+        ModeGetConnector: 0xc05064a7, DrmModeGetConnector, 80;
+        ModeAddFb: 0xc01c64ae, DrmModeFbCmd, 28;
+        ModePageFlip: 0xc01864b0, DrmModeCrtcPageFlip, 24;
+        ModeDirtyFb: 0xc01864b1, DrmModeFbDirtyCmd, 24;
+        ModeCreateDumb: 0xc02064b2, DrmModeCreateDumb, 32;
+        ModeMapDumb: 0xc01064b3, DrmModeMapDumb, 16;
+        ModeDestroyDumb: 0xc00464b4, DrmModeDestroyDumb, 4;
+        ModeObjGetProperties: 0xc02064b9, DrmModeObjGetProperties, 32;
+        ModeGetPlaneResources: 0xc01064b5, DrmModeGetPlaneRes, 16;
+        ModeGetPlane: 0xc02064b6, DrmModeGetPlane, 32;
+        ModeCursor2: 0xc02464bb, DrmModeCursor2, 36;
+    }
+
+    /// Two ioctls sharing a number would mean one of them is unreachable, and
+    /// which one depends on dispatch order.
+    #[ktest]
+    fn no_two_ioctls_share_a_command_number() {
+        for (index, (name, number, _)) in CONTRACT.iter().enumerate() {
+            for (other_name, other_number, _) in &CONTRACT[index + 1..] {
+                assert_ne!(
+                    number, other_number,
+                    "{name} and {other_name} declare the same command number"
+                );
+            }
+        }
+    }
+
+    /// The four command numbers this driver has actually got wrong, pinned so
+    /// they cannot come back.
+    ///
+    /// Each is a real defect that shipped, and each is a number that differs
+    /// from the correct one by a single field. They are asserted here rather
+    /// than described in a comment because the failures were all silent:
+    /// libdrm's call returned `ENOTTY`, which reads as "not implemented"
+    /// rather than "declared wrong".
+    #[ktest]
+    fn historically_mistaken_command_numbers_stay_rejected() {
+        // Declared with `InOutData` where the uapi says `DRM_IOR`: the
+        // direction is part of the number, so libdrm's GET_MAGIC did not
+        // match. This is what made glamor answer DRI3Open with BadMatch.
+        assert!(GetMagic::try_from_raw(RawIoctl::new(0xc0046402, 0)).is_none());
+        // The same, for `DRM_IOW`.
+        assert!(AuthMagic::try_from_raw(RawIoctl::new(0xc0046411, 0)).is_none());
+        // Declared as `0x1b`, which is `DRM_IOCTL_RM_MAP` -- a removed legacy
+        // ioctl -- rather than GEM_OPEN's `0x0b`, leaving `gem_open` and its
+        // dispatch arm unreachable from userspace.
+        assert!(GemOpen::try_from_raw(RawIoctl::new(0xc010641b, 0)).is_none());
+        // Declared with the 16-byte size where `struct drm_prime_handle` is
+        // 12 bytes.
+        assert!(PrimeHandleToFd::try_from_raw(RawIoctl::new(0xc010642d, 0)).is_none());
+    }
+}
