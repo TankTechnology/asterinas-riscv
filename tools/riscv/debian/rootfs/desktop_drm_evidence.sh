@@ -585,6 +585,21 @@ gl_probe() {
                 emit '--- DRM GL probe: client socket calls ---'
                 grep -aE '^(POLL|RECVMSG|SENDMSG|READ|WRITE) ' "$GL_TRACE" 2>/dev/null |
                     head -150 >>"$CONSOLE" 2>&1 || true
+                # The driver calls, and deliberately the *last* of them.
+                #
+                # These were missing from every dump: head and tail are byte
+                # windows, and a run's worth of poll and read lines scrolls the
+                # ioctls out of the 8KB tail, while the filter above never
+                # mentioned `IOCTL` at all. Four runs therefore reported zero
+                # DRM ioctls from a guest whose whole desktop is driven through
+                # them, and that read as "the client never touches the device"
+                # rather than as an instrument that was not looking.
+                #
+                # The tail is the point: once a client holds a device fd, the
+                # question stops being whether it talks to the driver and
+                # becomes which call it stops at.
+                emit '--- DRM GL probe: client DRM ioctls (last 60) ---'
+                grep -a '^IOCTL ' "$GL_TRACE" 2>/dev/null | tail -60 >>"$CONSOLE" 2>&1 || true
             else
                 emit '--- DRM GL probe: no client trace (shim missing or unconfigured) ---'
             fi
@@ -616,6 +631,9 @@ gl_probe() {
                 emit '--- DRM GL probe: Xorg socket calls ---'
                 grep -aE '^(POLL|WRITEV|RECVMSG|SENDMSG) ' "$XORG_TRACE" 2>/dev/null |
                     head -150 >>"$CONSOLE" 2>&1 || true
+                # And the server's own last driver calls, for the same reason.
+                emit '--- DRM GL probe: Xorg DRM ioctls (last 60) ---'
+                grep -a '^IOCTL ' "$XORG_TRACE" 2>/dev/null | tail -60 >>"$CONSOLE" 2>&1 || true
             else
                 emit '--- DRM GL probe: no Xorg trace (shim missing or unconfigured) ---'
             fi
