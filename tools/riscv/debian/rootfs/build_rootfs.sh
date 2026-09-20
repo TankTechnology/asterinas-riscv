@@ -1741,6 +1741,15 @@ EOF
     install -D -m 0755 -- \
         "$evidence_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-evidence"
+    # The probe behind the pixel verdict: the evidence script runs it to answer
+    # "did the GPU draw anything", which is a different question from the
+    # renderer line's "which driver did Mesa choose". Installed for every
+    # desktop generation because it costs about a second, and a 2D run's answer
+    # is worth having to compare a 3D run against -- only a 3D run is required
+    # to produce it.
+    install -D -m 0755 -- \
+        "$script_directory/../../drm/egl-pixel-probe.py" \
+        "$stage/usr/lib/asterinas/egl-pixel-probe"
     install -d -m 0755 -- "$stage/etc/systemd/system/dbus.service.d"
     cat >"$stage/etc/systemd/system/dbus.service.d/asterinas-readiness.conf" <<'EOF'
 [Service]

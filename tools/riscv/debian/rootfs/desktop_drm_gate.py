@@ -73,6 +73,23 @@ DESKTOP_DRM_VIRGL_MILESTONE = DESKTOP_DRM_GL_PREFIX + "virgl"
 # `classify_desktop_drm_virgl` to decide whether the answer was good enough.
 DESKTOP_DRM_GL_RENDERER_RE = re.compile(r"DEBIAN_DESKTOP_DRM_GL renderer=(\S+)")
 
+# The second, independent question: did anything reach the framebuffer?
+#
+# The renderer line answers "which Gallium driver did Mesa choose", which is a
+# statement about a decision, not about output. A winsys that initialises and
+# then renders nothing, or a command stream that never lands, reports
+# `renderer=virgl` exactly as happily as a working one -- so on its own it
+# cannot tell a working GPU from one that is being talked to and not
+# answering. The guest draws a known shape and reads the pixels back; this is
+# that verdict.
+#
+# Required for a 3D run alongside the renderer line, and named by value in the
+# reason for the same reason the renderer is: `ok=no left=000000 right=000000`
+# names the failure, "missing milestone" does not.
+DESKTOP_DRM_PIXEL_PREFIX = "DEBIAN_DESKTOP_DRM_PIXEL "
+DESKTOP_DRM_PIXEL_MILESTONE = DESKTOP_DRM_PIXEL_PREFIX + "ok=yes"
+DESKTOP_DRM_PIXEL_RE = re.compile(rb"DEBIAN_DESKTOP_DRM_PIXEL (ok=.*)")
+
 DESKTOP_DRM_MILESTONES = (
     "DEBIAN_DESKTOP_DRM_UDEV state=active",
     "DEBIAN_DESKTOP_DRM_LOGIND state=active",
@@ -83,7 +100,15 @@ DESKTOP_DRM_MILESTONES = (
     "DEBIAN_DESKTOP_DRM_READY user=asterinas display=:0",
 )
 
-DESKTOP_DRM_VIRGL_MILESTONES = DESKTOP_DRM_MILESTONES + (DESKTOP_DRM_VIRGL_MILESTONE,)
+#: The pixel verdict is listed *before* the renderer line because that is the
+#: order the guest emits them in, and `classify_desktop` rejects a transcript
+#: whose milestones are out of order. The guest emits it first on purpose: the
+#: gate stops waiting as soon as the renderer line arrives, so anything after
+#: it risks being cut off at teardown and never reaching the transcript at all.
+DESKTOP_DRM_VIRGL_MILESTONES = DESKTOP_DRM_MILESTONES + (
+    DESKTOP_DRM_PIXEL_MILESTONE,
+    DESKTOP_DRM_VIRGL_MILESTONE,
+)
 
 
 def _qemu_trace_arguments() -> tuple[str, ...]:
@@ -149,6 +174,17 @@ def observed_desktop_drm_renderer(transcript: bytes) -> str | None:
     return match.group(1) if match else None
 
 
+def observed_desktop_drm_pixels(transcript: bytes) -> bytes | None:
+    """Return the guest's pixel verdict, or None if it never reported one.
+
+    None and `ok=no` are different findings and are kept apart deliberately:
+    the first says the run never got as far as drawing, the second says it drew
+    and the pixels that came back were wrong.
+    """
+    match = DESKTOP_DRM_PIXEL_RE.search(transcript)
+    return match.group(1) if match else None
+
+
 def classify_desktop_drm_virgl(
     transcript: bytes, *, expected_debian_release: str
 ) -> GateResult:
@@ -175,6 +211,18 @@ def classify_desktop_drm_virgl(
     renderer = observed_desktop_drm_renderer(transcript)
     if renderer is not None and renderer != "virgl":
         return GateResult(False, f"GL renderer was {renderer}, not virgl", None)
+    # The renderer answered and was virgl, so the milestone that is missing is
+    # the pixel one. Name the pixels rather than let the generic
+    # missing-milestone message stand -- a renderer that was chosen and drew
+    # nothing is a different problem from one that was never chosen.
+    pixels = observed_desktop_drm_pixels(transcript)
+    if pixels is not None and not pixels.startswith(b"ok=yes"):
+        return GateResult(
+            False,
+            "renderer was virgl but nothing was drawn: "
+            + pixels.decode("utf-8", "replace"),
+            None,
+        )
     return result
 
 
