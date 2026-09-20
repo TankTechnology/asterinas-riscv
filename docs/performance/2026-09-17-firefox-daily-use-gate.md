@@ -200,6 +200,29 @@ kernel change is eligible until one bounded attribution observation has been
 taken. `contextSwitchTotalMs` remains over its 500 ms threshold in all three B
 runs and is the largest primary metric.
 
+### Two notes that qualify the table above
+
+**The four kernel-test failures are not attributable to this line.** The RISC-V
+kernel-test suite reports `tty_echo_runs_without_the_line_discipline_lock`,
+`reports_tick_resolution_for_cpu_clocks`, `xarray::test::no_leakage`, and
+`xarray::test::remove_shrinks_empty_nodes` as failing. The identical suite at A
+(`55ee5c64e`) fails the same four, so they pre-date the waking-task change. The
+only difference between the two runs is that B passes two more `aster_kernel`
+tests, which are the two new `select_cpu` regressions. This matters beyond this
+record: the upstream RISC-V CI job runs the same suite and has no blocklist for
+these, so a published merge of this line leaves that job red until they are
+fixed. That is a pre-existing condition, not a regression, and should be stated
+as such wherever the merge is published.
+
+**The gate 1 and gate 2 digests are pre-merge and will be re-taken.** Gate 1's
+`stage1-qualification-a`/`-b` pair and gate 2's `0d4ebedf` Stage1 were both
+produced before the waking-task line was merged. Merging changes the Stage1
+archive (`build_stage1.sh` gains the `browser-daily-use-upload` entry) and the
+rootfs (`desktop_m5_network_evidence.sh` is installed into it by
+`build_rootfs.sh`), so neither digest describes the merged tree. The table rows
+above remain the record of what was observed; they must not be read as
+describing the merged line.
+
 Reading this gate's evidence requires care: the gate creates its output
 directories root-owned mode `0700` inside the development container, so an
 unprivileged host-side listing cannot read them. Read them from inside the
