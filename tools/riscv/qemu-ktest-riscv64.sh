@@ -34,7 +34,23 @@
 #     as a kernel that never started rather than as a CPU mismatch. Observed
 #     both ways on 2026-09-20: sv48=false hangs, sv48=true runs the suite.
 #   * no disk images and no NIC, because ktests need neither and their
-#     absence is what makes the stock path fail rather than merely misconfigure.
+#     absence is what makes the stock path fail rather than merely misconfigure;
+#   * `-smp 1`, because under this boot path the kernel does not bring its
+#     application processors up. With `-smp 4`, `num_cpus()` reports 4 while
+#     only CPU 0 is ever observed to run: instrumenting the RCU monitor shows
+#     `report cpu=0` and never 1, 2 or 3, and `ap_idle_loop`'s own
+#     "Idle thread for CPU #N started" never appears.
+#
+#     That is not cosmetic. An RCU grace period completes only when *every*
+#     counted CPU has reported a quiescent state, so three phantom CPUs make
+#     the set unfillable: no `RcuOption` callback ever fires and nothing is
+#     ever reclaimed. The `xarray` ktests fail on exactly that
+#     (`no_leakage` and `remove_shrinks_empty_nodes`, both with nothing freed)
+#     under `-smp 4` and pass under `-smp 1`. Whether the absent APs are an
+#     artifact of booting `-kernel` directly on QEMU `virt` -- rather than
+#     through U-Boot with the gate's hand-built DTB, which does bring them up
+#     -- or a real bring-up bug, is not settled. `KTEST_SMP=4` reproduces it
+#     for whoever picks that up.
 #
 # Usage:
 #     cargo osdk test --target-arch riscv64 --scheme riscv \
@@ -65,7 +81,7 @@ set -- \
     -machine virt \
     -cpu "${KTEST_CPU:-rv64,sv48=true,svpbmt=true,zkr=true,svadu=false,svade=true}" \
     -m "${KTEST_MEM:-2G}" \
-    -smp "${KTEST_SMP:-4}" \
+    -smp "${KTEST_SMP:-1}" \
     -nographic \
     -nic none \
     -no-reboot \
