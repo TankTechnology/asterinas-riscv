@@ -133,6 +133,135 @@ static size_t append_hex(char *at, size_t used, unsigned long long value)
     return used;
 }
 
+/* How many buffers a vectored call used, how long the first one is, and how
+ * many bytes they add up to.
+ *
+ * `ret=` alone is ambiguous in exactly the case that matters. Xorg writes a
+ * reply as one iovec holding the 32-byte header followed by a second holding
+ * the body, so `iovs=2 first=32 total=352` reads as a complete reply while
+ * `iovs=1 first=64 total=64` reads as a fragment of one -- and both print the
+ * same `ret=64`. Without this, a leading byte that is not a reply header (see
+ * the note on `0x0b` in writev) cannot be told apart from a write that simply
+ * started mid-buffer, which is the difference between "the server answers" and
+ * "the server answers something else". */
+static size_t append_iov_summary(char *at, size_t used, const struct iovec *iov,
+                                 int count)
+{
+    unsigned long long total = 0;
+
+    if (count < 0)
+        count = 0;
+    for (int index = 0; index < count; index++)
+        total += (unsigned long long)iov[index].iov_len;
+
+    used = append(at, used, " iovs=");
+    used = append_dec(at, used, count);
+    used = append(at, used, " first=");
+    used = append_dec(at, used, count > 0 ? (long long)iov[0].iov_len : 0);
+    used = append(at, used, " total=");
+    used = append_dec(at, used, (long long)total);
+    return used;
+}
+
+/* Names the X11 message a buffer opens with, and the leading bytes it opens
+ * with, so a trace can be read without decoding the protocol by hand.
+ *
+ * Four bytes were enough to tell a request from a reply and not much else. An
+ * error is the case that matters and it is invisible in four: the error code
+ * is byte 1, but *which request* failed is only in bytes 8..10, and a sequence
+ * number that cannot be matched to a request names nothing. The same applies
+ * to a leading byte that is none of the three shapes -- `0x0b` on a 352-byte
+ * write is not a reply, an error or a plausible request header, and without
+ * the decoder there is no way to tell whether that is a malformed message or a
+ * message this reader has mis-framed.
+ *
+ * X11 framing, all little-endian:
+ *   error    0, code, seq@2, ..., minor@8, major@10
+ *   reply    1, unused, seq@2, length@4
+ *   request  major, minor-or-data, length@2 (in 4-byte units, header included)
+ */
+static size_t append_x11(char *at, size_t used, const unsigned char *bytes,
+                         size_t length)
+{
+    if (length < 4)
+        return used;
+    if (bytes[0] == 0) {
+        used = append(at, used, " X=error code=");
+        used = append_dec(at, used, bytes[1]);
+        used = append(at, used, " seq=");
+        used = append_dec(at, used, bytes[2] | (bytes[3] << 8));
+        if (length >= 11) {
+            used = append(at, used, " major=");
+            used = append_dec(at, used, bytes[10]);
+            used = append(at, used, " minor=");
+            used = append_dec(at, used, bytes[8] | (bytes[9] << 8));
+        }
+    } else if (bytes[0] == 1) {
+        used = append(at, used, " X=reply seq=");
+        used = append_dec(at, used, bytes[2] | (bytes[3] << 8));
+    } else {
+        used = append(at, used, bytes[0] < 128 ? " X=req major=" : " X=ext opcode=");
+        used = append_dec(at, used, bytes[0]);
+        used = append(at, used, " minor=");
+        used = append_dec(at, used, bytes[1]);
+        used = append(at, used, " len=");
+        used = append_dec(at, used, (bytes[2] | (bytes[3] << 8)) * 4);
+    }
+    return used;
+}
+
+/* The leading bytes of a message, hex, followed by what they decode to. Kept
+ * in one place so `recvmsg`, `writev` and `sendmsg` cannot drift into printing
+ * three different things for the same message. */
+static size_t append_message(char *at, size_t used, const unsigned char *bytes,
+                             size_t available)
+{
+    static const char digits[] = "0123456789abcdef";
+    size_t show = available < 16 ? available : 16;
+
+    used = append(at, used, " bytes=");
+    for (size_t byte = 0; byte < show; byte++) {
+        if (used < LINE_MAX - 4) {
+            at[used++] = digits[bytes[byte] >> 4];
+            at[used++] = digits[bytes[byte] & 0xf];
+        }
+    }
+    return append_x11(at, used, bytes, available);
+}
+
+/* The leading bytes of a vectored message, concatenated across its iovecs.
+ *
+ * One iovec is not the message. Xlib writes through its output buffer, so a
+ * `QueryExtension` leaves as `iovs=3 first=8 total=20` and only the header is
+ * in `iov[0]` -- printing that alone hid the extension *name*, which is the
+ * one field that says what the request is for. Reading a message's first four
+ * bytes off `iov[0]` and treating them as the message is the same mistake in
+ * miniature as reading a byte count as sustained activity: the number is real
+ * and the conclusion drawn from it is not.
+ */
+static size_t append_message_iov(char *at, size_t used, const struct iovec *iov,
+                                 int count, size_t available)
+{
+    unsigned char prefix[16];
+    size_t gathered = 0;
+
+    if (count < 0)
+        count = 0;
+    for (int index = 0; index < count; index++) {
+        const unsigned char *base = iov[index].iov_base;
+        if (!base)
+            continue;
+        for (size_t byte = 0; byte < iov[index].iov_len; byte++) {
+            if (gathered >= available || gathered >= sizeof(prefix))
+                break;
+            prefix[gathered++] = base[byte];
+        }
+    }
+    if (gathered == 0)
+        return used;
+    return append_message(at, used, prefix, gathered);
+}
+
 /* Writes `value` as decimal into `at`, returning the new length. Used to build
  * the `/proc/self/fd/` path without `snprintf`, so the shim stays free of
  * stdio's allocation and locking. */
@@ -418,24 +547,17 @@ ssize_t recvmsg(int sockfd, struct msghdr *msg, int flags)
         used = append_dec(line, used, (long long)result);
         used = append(line, used, " ctrl=");
         used = append_dec(line, used, (long long)msg->msg_controllen);
+        used = append_iov_summary(line, used, msg->msg_iov,
+                                  (int)msg->msg_iovlen);
         /* The leading bytes, so the exchange can be read rather than guessed
          * at. An X11 request opens with its major opcode, and a reply with 1;
          * a loop is only diagnosable once the messages in it are named. */
         if (result > 0 && msg->msg_iovlen > 0 && msg->msg_iov[0].iov_base) {
             const unsigned char *bytes = msg->msg_iov[0].iov_base;
-            size_t show = (size_t)result < msg->msg_iov[0].iov_len
-                              ? (size_t)result
-                              : msg->msg_iov[0].iov_len;
-            if (show > 4)
-                show = 4;
-            used = append(line, used, " bytes=");
-            for (size_t byte = 0; byte < show; byte++) {
-                static const char digits[] = "0123456789abcdef";
-                if (used < LINE_MAX - 4) {
-                    line[used++] = digits[bytes[byte] >> 4];
-                    line[used++] = digits[bytes[byte] & 0xf];
-                }
-            }
+            size_t available = (size_t)result < msg->msg_iov[0].iov_len
+                                   ? (size_t)result
+                                   : msg->msg_iov[0].iov_len;
+            used = append_message(line, used, bytes, available);
         }
         if (result < 0) {
             used = append(line, used, " errno=");
@@ -477,15 +599,14 @@ ssize_t writev(int fd, const struct iovec *iov, int count)
         used = append_fd_path(line, used, fd);
         used = append(line, used, " ret=");
         used = append_dec(line, used, (long long)result);
+        used = append_iov_summary(line, used, iov, count);
         if (count > 0 && iov[0].iov_base) {
-            const unsigned char *bytes = iov[0].iov_base;
-            size_t show = iov[0].iov_len < 4 ? iov[0].iov_len : 4;
-            used = append(line, used, " bytes=");
-            for (size_t byte = 0; byte < show && used < LINE_MAX - 4; byte++) {
-                static const char digits[] = "0123456789abcdef";
-                line[used++] = digits[bytes[byte] >> 4];
-                line[used++] = digits[bytes[byte] & 0xf];
-            }
+            size_t available = 0;
+            for (int index = 0; index < count; index++)
+                available += iov[index].iov_len;
+            if (result > 0 && (size_t)result < available)
+                available = (size_t)result;
+            used = append_message_iov(line, used, iov, count, available);
         }
         used = append(line, used, "\n");
         emit(line, used);
@@ -520,6 +641,9 @@ ssize_t sendmsg(int sockfd, const struct msghdr *msg, int flags)
         used = append_dec(line, used, (long long)result);
         used = append(line, used, " ctrl=");
         used = append_dec(line, used, (long long)(msg ? msg->msg_controllen : 0));
+        if (msg)
+            used = append_iov_summary(line, used, msg->msg_iov,
+                                      (int)msg->msg_iovlen);
         if (result < 0) {
             used = append(line, used, " errno=");
             used = append_dec(line, used, saved);

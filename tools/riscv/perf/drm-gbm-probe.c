@@ -78,6 +78,7 @@ static void probe_libdrm(const char *node) {
     int fd, (*get_device2)(int, unsigned, void **);
     void *(*get_version)(int);
     void (*free_version)(void *);
+    char *(*get_device_name)(int);
     char busname[256];
 
     h = dlopen("libdrm.so.2", RTLD_NOW | RTLD_LOCAL);
@@ -141,6 +142,46 @@ static void probe_libdrm(const char *node) {
             printf("DRM_PROBE node=%s drmGetDevice2 FAILED errno=%d (%s)\n", node,
                    errno, strerror(errno));
         }
+    }
+
+    /*
+     * The call nothing else here reports, and the one that decides DRI3Open.
+     *
+     * glamor's DRI3 hook answers that request by re-opening the device itself:
+     *
+     *     fd = open(glamor_egl->device_path, O_RDWR|O_CLOEXEC);
+     *     if (fd < 0) return BadAlloc;
+     *
+     * and that is the hook's only BadAlloc -- every other failure in it is
+     * BadMatch. `device_path` is whatever `drmGetDeviceNameFromFd2()` returned,
+     * so a NULL there makes the open `open(NULL, ...)`, which fails with
+     * EFAULT and gives every GL client BadAlloc without a single fd being
+     * sent. This reproduces both halves of that expression, which is what
+     * turns the chain from a reading of the source into something measured.
+     */
+    get_device_name = dlsym(h, "drmGetDeviceNameFromFd2");
+    if (get_device_name) {
+        char *name;
+
+        errno = 0;
+        name = get_device_name(fd);
+        if (!name) {
+            printf("DRM_PROBE node=%s drmGetDeviceNameFromFd2=NULL errno=%d (%s)"
+                   " -> glamor's DRI3 open would return BadAlloc\n",
+                   node, errno, strerror(errno));
+        } else {
+            int again;
+
+            errno = 0;
+            again = open(name, O_RDWR | O_CLOEXEC);
+            printf("DRM_PROBE node=%s device_name=%s reopen=%d errno=%d (%s)\n",
+                   node, name, again, errno, strerror(errno));
+            if (again >= 0)
+                close(again);
+            free(name);
+        }
+    } else {
+        printf("DRM_PROBE node=%s drmGetDeviceNameFromFd2-missing\n", node);
     }
 
     printf("DRM_PROBE node=%s subsystem=", node);
