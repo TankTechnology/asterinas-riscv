@@ -77,8 +77,7 @@ static int wait_for_cpu(int cpu)
 }
 
 static int wait_for_generation(const atomic_uint *generation,
-			       unsigned int expected,
-			       const atomic_bool *stop)
+			       unsigned int expected, const atomic_bool *stop)
 {
 	struct timespec start;
 	struct timespec now;
@@ -86,7 +85,8 @@ static int wait_for_generation(const atomic_uint *generation,
 	if (clock_gettime(CLOCK_MONOTONIC, &start) < 0)
 		return -1;
 
-	while (atomic_load_explicit(generation, memory_order_acquire) < expected) {
+	while (atomic_load_explicit(generation, memory_order_acquire) <
+	       expected) {
 		if (atomic_load_explicit(stop, memory_order_relaxed)) {
 			errno = ECANCELED;
 			return -1;
@@ -152,8 +152,8 @@ static void *execute_on_remote_hart(void *argument)
 				observed, expected, generation);
 			atomic_store(&context->error, EILSEQ);
 		}
-		atomic_store_explicit(&context->completed_generation, generation,
-				      memory_order_release);
+		atomic_store_explicit(&context->completed_generation,
+				      generation, memory_order_release);
 		if (atomic_load(&context->error) != 0)
 			return NULL;
 	}
@@ -283,8 +283,8 @@ static int test_cross_hart_flush(void *code, int remote_cpu)
 		}
 		atomic_store_explicit(&context.generation, generation,
 				      memory_order_release);
-		if (wait_for_generation(&context.completed_generation, generation,
-					&context.stop) < 0) {
+		if (wait_for_generation(&context.completed_generation,
+					generation, &context.stop) < 0) {
 			perror("waiting for remote-hart execution");
 			goto stop_worker;
 		}
@@ -374,7 +374,8 @@ int main(int argc, char **argv)
 	printf("riscv_flush_icache cross-hart passed: cpus=%d local=%d remotes=",
 	       cpu_count, cpus[0]);
 	for (remote_index = 1; remote_index < cpu_count; remote_index++)
-		printf("%s%d", remote_index == 1 ? "" : ",", cpus[remote_index]);
+		printf("%s%d", remote_index == 1 ? "" : ",",
+		       cpus[remote_index]);
 	printf(" generations=%u\n", CROSS_HART_ITERATIONS);
 	result = EXIT_SUCCESS;
 

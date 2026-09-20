@@ -82,8 +82,8 @@ static int install_padded_filter(size_t len, long blocked_nr)
 			BPF_RET | BPF_K,
 			SECCOMP_RET_ERRNO | (BLOCK_ERRNO & SECCOMP_RET_DATA));
 	}
-	insns[len - 1] =
-		(struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW);
+	insns[len - 1] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K,
+						      SECCOMP_RET_ALLOW);
 	prog.len = len;
 	prog.filter = insns;
 	result = syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog);
@@ -258,7 +258,8 @@ static int test_filter_requires_privilege(void)
 		return 1;
 	errno = 0;
 	return install_errno_filter(SYS_getpid, 0) == -1 && errno == EACCES ?
-		0 : 1;
+		       0 :
+		       1;
 }
 
 static void *nnp_probe_worker(void *arg)
@@ -283,8 +284,7 @@ static int test_tsync_propagates_nnp(void)
 	if (pthread_create(&thread, NULL, nnp_probe_worker, &worker) != 0)
 		goto out;
 	pthread_barrier_wait(&worker.ready);
-	if (worker.result != 0 ||
-	    prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
+	if (worker.result != 0 || prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
 	    install_errno_filter(SYS_getpid, SECCOMP_FILTER_FLAG_TSYNC) != 0)
 		goto release;
 	pthread_barrier_wait(&worker.done);
@@ -547,9 +547,9 @@ int main(void)
 
 	failures += run_isolated(test_tsync, "sibling synchronization");
 	failures += run_isolated_without_nnp(test_filter_requires_privilege,
-					   "filter privilege requirement");
+					     "filter privilege requirement");
 	failures += run_isolated_without_nnp(test_tsync_propagates_nnp,
-					   "TSYNC propagates no_new_privs");
+					     "TSYNC propagates no_new_privs");
 	failures += run_isolated(test_thread_local, "thread-local install");
 	failures += run_isolated(test_unknown_flags, "unknown flags");
 	failures += run_isolated(test_clone_inherits_filter,
