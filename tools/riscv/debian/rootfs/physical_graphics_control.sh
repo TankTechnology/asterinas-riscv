@@ -4,7 +4,7 @@
 set -u
 
 systemctl_bounded() {
-    /usr/bin/timeout --kill-after=1s 3s /usr/bin/systemctl "$@"
+    /usr/bin/timeout --kill-after=1s 10s /usr/bin/systemctl "$@"
 }
 
 die_usage() {
@@ -36,9 +36,24 @@ is_nonce() {
     esac
 }
 
+is_experiment_id() {
+    [ "${#1}" -eq 32 ] || return 1
+    case "$1" in
+        *[!0-9a-f]*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+is_profile_timeout() {
+    is_uint "$1" && [ "$1" -ge 1 ] && [ "$1" -le 120 ]
+}
+
 input_identity() {
-    PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
-        /usr/bin/timeout --kill-after=1s 2s /usr/bin/python3 -c 'import glob,os,runpy;m=runpy.run_path("/run/asterinas-tools/desktop-input-identity");d=[(os.path.basename(p),m["read_identity"](p)) for p in glob.glob("/dev/input/event*")];uk=(3,"usb_boot_keyboard","xhci/input0");um=(3,"usb_boot_mouse","xhci/input1");qk=(6,"QEMU Virtio Keyboard","virtio/input0");qm=(6,"QEMU Virtio Tablet","virtio/input0");ks=[p for p,x in d if x in (uk,qk)];ms=[p for p,x in d if x in (um,qm)];print(sum(x in (uk,um) for _,x in d),int(sum(x==uk for _,x in d)==1),int(sum(x==um for _,x in d)==1),ks[0] if len(ks)==1 else "missing",ms[0] if len(ms)==1 else "missing")' 2>/dev/null || printf '0 0 0 missing missing\n'
+    # Read the rootfs's precompiled standard-library bytecode without writing
+    # caches. PYTHONPYCACHEPREFIX would bypass those files and recompile source
+    # under peak Firefox memory pressure.
+    PYTHONDONTWRITEBYTECODE=1 \
+        /usr/bin/timeout --kill-after=1s 10s /usr/bin/python3 -c 'import glob,os,runpy;m=runpy.run_path("/run/asterinas-tools/desktop-input-identity");d=[(os.path.basename(p),m["read_identity"](p)) for p in glob.glob("/dev/input/event*")];uk=(3,"usb_boot_keyboard","xhci/input0");um=(3,"usb_boot_mouse","xhci/input1");qk=(6,"QEMU Virtio Keyboard","virtio/input0");qm=(6,"QEMU Virtio Tablet","virtio/input0");ks=[p for p,x in d if x in (uk,qk)];ms=[p for p,x in d if x in (um,qm)];print(sum(x in (uk,um) for _,x in d),int(sum(x==uk for _,x in d)==1),int(sum(x==um for _,x in d)==1),ks[0] if len(ks)==1 else "missing",ms[0] if len(ms)==1 else "missing")' 2>/dev/null || printf '0 0 0 missing missing\n'
 }
 
 browser_stage() {
@@ -98,13 +113,34 @@ start_browser() {
             >/dev/null 2>&1 || status=$?
         systemctl_bounded stop --no-block asterinas-desktop-m5.service \
             >/dev/null 2>&1 || status=$?
-        attempt=0
-        while systemctl_bounded is-active --quiet \
-            asterinas-browser-web.service asterinas-desktop-m5.service \
-            2>/dev/null; do
-            attempt=$((attempt + 1))
-            if [ "$attempt" -ge 30 ]; then
-                [ "$status" -ne 0 ] || status=124
+        stop_attempt=0
+        while [ "$status" -eq 0 ]; do
+            service_states=$(systemctl_bounded is-active \
+                asterinas-browser-web.service asterinas-desktop-m5.service \
+                2>/dev/null || true)
+            set -- $service_states
+            if [ "$#" -ne 2 ]; then
+                status=124
+                break
+            fi
+            all_quiesced=1
+            for service_state in "$@"; do
+                case "$service_state" in
+                    inactive | failed) ;;
+                    active | activating | deactivating | reloading)
+                        all_quiesced=0
+                        ;;
+                    *)
+                        status=124
+                        all_quiesced=0
+                        ;;
+                esac
+            done
+            [ "$status" -ne 0 ] && break
+            [ "$all_quiesced" -eq 1 ] && break
+            stop_attempt=$((stop_attempt + 1))
+            if [ "$stop_attempt" -ge 120 ]; then
+                status=124
                 break
             fi
             /usr/bin/sleep 1
@@ -181,6 +217,173 @@ start_browser() {
             asterinas-browser-web.service >/dev/null 2>&1 || status=$?
     fi
     printf '__ASTERINAS_PHYSICAL_BROWSER_START__ status=%s\n' "$status"
+    return "$status"
+}
+
+boot_phase() {
+    # The isolated debug shell owns ttyS0, so both /dev/console and systemd's
+    # console output can lose readiness lines.  Kernel logging retains the
+    # journal copy and uses the already-proven serial klog path.
+    printf '<6>%s\n' "$1" >/dev/kmsg
+}
+
+monotonic_seconds() {
+    IFS=' ' read -r uptime _ </proc/uptime || return 1
+    case "$uptime" in
+        [0-9]*.[0-9]*) printf '%s\n' "${uptime%%.*}" ;;
+        *) return 1 ;;
+    esac
+}
+
+startup_ready_once() {
+    readiness_reason=debug-console
+    systemctl_bounded is-active --quiet asterinas-debug-console.service \
+        >/dev/null 2>&1 || return 1
+    readiness_reason=framebuffer
+    [ -c /dev/fb0 ] || return 1
+    readiness_reason=x11-socket
+    [ -S /tmp/.X11-unix/X0 ] || return 1
+    readiness_reason=xorg-fbdev
+    xorg_ready=0
+    for xorg_pid in $(pgrep -x Xorg 2>/dev/null); do
+        for xorg_fd in /proc/$xorg_pid/fd/*; do
+            [ "$(readlink "$xorg_fd" 2>/dev/null || true)" = /dev/fb0 ] && xorg_ready=1
+        done
+    done
+    [ "$xorg_ready" -eq 1 ] || return 1
+    readiness_reason=openbox
+    pgrep -u 1000 -x openbox >/dev/null 2>&1 || return 1
+    readiness_reason=firefox-service
+    [ "$(systemctl is-active asterinas-browser-web.service 2>/dev/null || true)" = active ] || return 1
+    browser_identity
+    readiness_reason=firefox-pid
+    is_uint "$pid" && [ "$pid" -gt 1 ] || return 1
+    grep -Eq '^firefox(-esr)?$' "/proc/$pid/comm" 2>/dev/null || return 1
+    readiness_reason=firefox-user
+    grep -Eq '^Uid:[[:space:]]+1000[[:space:]]' "/proc/$pid/status" 2>/dev/null || return 1
+    readiness_reason=firefox-window
+    DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
+        /usr/bin/timeout --kill-after=1s 8s /usr/bin/xdotool \
+        search --onlyvisible --class firefox >/dev/null 2>&1 || return 1
+    return 0
+}
+
+startup_ready() {
+    watchdog=/proc/sys/kernel/asterinas_reboot_watchdog
+    [ -r "$watchdog" ] && [ -w "$watchdog" ] || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-unavailable'
+        return 1
+    }
+    [ "$(cat "$watchdog" 2>/dev/null || true)" = 1 ] || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-not-armed'
+        return 1
+    }
+    start_browser 0 || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=browser-start'
+        return 1
+    }
+    readiness_started=$(monotonic_seconds) || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=monotonic-clock'
+        return 1
+    }
+    # Leave enough of the kernel's 300-second watchdog window to record the
+    # terminal blocker before the watchdog performs the recovery reboot.
+    readiness_deadline=$((readiness_started + 220))
+    attempt=0
+    last_reported_reason=
+    readiness_reason=unknown
+    while ! startup_ready_once; do
+        attempt=$((attempt + 1))
+        readiness_now=$(monotonic_seconds) || {
+            boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=monotonic-clock'
+            return 1
+        }
+        if [ "$readiness_now" -ge "$readiness_deadline" ]; then
+            boot_phase "ASTERINAS_DESKTOP_BOOT_FAIL reason=$readiness_reason"
+            return 1
+        fi
+        if [ "$readiness_reason" != "$last_reported_reason" ]; then
+            readiness_remaining=$((readiness_deadline - readiness_now))
+            boot_phase "ASTERINAS_DESKTOP_BOOT_WAIT reason=$readiness_reason remaining=$readiness_remaining"
+            last_reported_reason=$readiness_reason
+        fi
+        /usr/bin/sleep 1
+    done
+    boot_phase 'ASTERINAS_DESKTOP_DISPLAY_READY'
+    boot_phase "ASTERINAS_DESKTOP_FIREFOX_READY pid=$pid user=1000"
+    printf '0\n' >"$watchdog" || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-write'
+        return 1
+    }
+    [ "$(cat "$watchdog" 2>/dev/null || true)" = 0 ] || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-readback'
+        return 1
+    }
+    boot_phase 'ASTERINAS_DESKTOP_WATCHDOG_DISARMED'
+    boot_phase "ASTERINAS_DESKTOP_BOOT_READY firefox_pid=$pid"
+}
+
+startup_snapshot() {
+    service=$(systemctl is-active asterinas-browser-web.service 2>/dev/null || true)
+    pid=$(systemctl show --property MainPID --value asterinas-browser-web.service 2>/dev/null || true)
+    state=missing
+    threads=0
+    cpu_ticks=0
+    task_count=0
+    rss_kb=0
+    read_bytes=0
+    rchar=0
+    voluntary_ctxt=0
+    nonvoluntary_ctxt=0
+    case "$pid" in
+        '' | *[!0-9]*) pid=0 ;;
+        *)
+            if [ -r "/proc/$pid/status" ] && [ -r "/proc/$pid/stat" ]; then
+                state=$(awk '/^State:/{print $2}' "/proc/$pid/status" 2>/dev/null || true)
+                threads=$(awk '/^Threads:/{print $2}' "/proc/$pid/status" 2>/dev/null || true)
+                rss_kb=$(awk '/^VmRSS:/{print $2}' "/proc/$pid/status" 2>/dev/null || true)
+                voluntary_ctxt=$(awk '$1 == "voluntary_ctxt_switches:" {print $2}' "/proc/$pid/status" 2>/dev/null || true)
+                nonvoluntary_ctxt=$(awk '$1 == "nonvoluntary_ctxt_switches:" {print $2}' "/proc/$pid/status" 2>/dev/null || true)
+                cpu_ticks=$(awk '{print $14 + $15}' "/proc/$pid/stat" 2>/dev/null || true)
+                read_bytes=$(awk '$1 == "read_bytes:" {print $2}' "/proc/$pid/io" 2>/dev/null || true)
+                rchar=$(awk '$1 == "rchar:" {print $2}' "/proc/$pid/io" 2>/dev/null || true)
+                for task in /proc/$pid/task/[0-9]*; do
+                    [ -d "$task" ] && task_count=$((task_count + 1))
+                done
+            fi
+            ;;
+    esac
+    [ -n "$state" ] || state=unknown
+    [ -n "$threads" ] || threads=0
+    [ -n "$rss_kb" ] || rss_kb=0
+    [ -n "$cpu_ticks" ] || cpu_ticks=0
+    [ -n "$read_bytes" ] || read_bytes=0
+    [ -n "$rchar" ] || rchar=0
+    [ -n "$voluntary_ctxt" ] || voluntary_ctxt=0
+    [ -n "$nonvoluntary_ctxt" ] || nonvoluntary_ctxt=0
+    all_window_ids=$(/usr/bin/timeout --kill-after=1s 5s /usr/bin/env \
+        DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
+        /usr/bin/xdotool search --class firefox 2>/dev/null || true)
+    set -- $all_window_ids
+    all_windows=$#
+    visible_window_ids=$(/usr/bin/timeout --kill-after=1s 5s /usr/bin/env \
+        DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
+        /usr/bin/xdotool search --onlyvisible --class firefox 2>/dev/null || true)
+    set -- $visible_window_ids
+    visible_windows=$#
+    watchdog=$(cat /proc/sys/kernel/asterinas_reboot_watchdog 2>/dev/null || true)
+    [ -n "$watchdog" ] || watchdog=missing
+    uptime=$(cut -d' ' -f1 /proc/uptime 2>/dev/null || true)
+    [ -n "$uptime" ] || uptime=missing
+    runqueue=$(awk '{print $4}' /proc/loadavg 2>/dev/null || true)
+    [ -n "$runqueue" ] || runqueue=missing
+    procs_running=$(awk '$1 == "procs_running" {print $2}' /proc/stat 2>/dev/null || true)
+    [ -n "$procs_running" ] || procs_running=missing
+    printf '__ASTERINAS_STARTUP_SNAPSHOT__ uptime=%s service=%s pid=%s state=%s threads=%s tasks=%s cpu_ticks=%s rss_kb=%s read_bytes=%s rchar=%s voluntary_ctxt=%s nonvoluntary_ctxt=%s runqueue=%s procs_running=%s all_windows=%s visible_windows=%s watchdog=%s\n' \
+        "$uptime" "$service" "$pid" "$state" "$threads" "$task_count" \
+        "$cpu_ticks" "$rss_kb" "$read_bytes" "$rchar" "$voluntary_ctxt" \
+        "$nonvoluntary_ctxt" "$runqueue" "$procs_running" "$all_windows" \
+        "$visible_windows" "$watchdog"
 }
 
 browser_identity() {
@@ -214,7 +417,7 @@ cycle() {
             if [ "$expected_pid" != 0 ] && [ "$original_pid" != "$expected_pid" ]; then
                 status=124
             else
-                PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+                PYTHONDONTWRITEBYTECODE=1 \
                     nsenter -t "$original_pid" -n \
                     /run/asterinas-tools/physical-graphics-gate \
                     --nonce "$nonce" --cycle "$cycle" --firefox-pid "$original_pid" \
@@ -247,7 +450,7 @@ final() {
     original_pid=$pid
     status=124
     if [ "$original_pid" = "$expected_pid" ]; then
-        PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+        PYTHONDONTWRITEBYTECODE=1 \
             nsenter -t "$original_pid" -n \
             /run/asterinas-tools/physical-graphics-gate \
             --nonce "$nonce" --cycle "$cycle" --firefox-pid "$original_pid" \
@@ -259,6 +462,72 @@ final() {
     printf '__ASTERINAS_PHYSICAL_FINAL_STATUS__ status=%s\n' "$status"
 }
 
+daily_use() {
+    [ "$#" -eq 3 ] || die_usage
+    experiment_id=$1
+    timeout_seconds=$2
+    expected_pid=$3
+    is_experiment_id "$experiment_id" || die_usage
+    is_profile_timeout "$timeout_seconds" || die_usage
+    is_uint "$expected_pid" || die_usage
+    [ "$expected_pid" -gt 1 ] || die_usage
+
+    fixture_source='http://10.100.19.216:17894/asterinas-network-probe.bin'
+    fixture_index='http://10.100.19.216:17894/browser-quality/index.html'
+    upload_url="http://10.100.19.216:17894/browser-quality/daily-use-evidence/$experiment_id"
+    evidence_dir="/run/asterinas-browser-daily-use-$experiment_id"
+    gate_status=125
+    upload_status=125
+    outcome=fail
+
+    browser_identity
+    original_pid=$pid
+    case "$original_pid" in
+        '' | *[!0-9]*) gate_status=124 ;;
+        *)
+            if [ "$original_pid" != "$expected_pid" ] || [ "$original_pid" -le 1 ]; then
+                gate_status=124
+            elif [ -e "$evidence_dir" ] || [ -L "$evidence_dir" ]; then
+                gate_status=123
+            else
+                manager_environment=$(systemctl_bounded show-environment 2>/dev/null || true)
+                physical_mode=$(printf '%s\n' "$manager_environment" |
+                    sed -n 's/^ASTERINAS_PHYSICAL_DAILY_USE=//p')
+                configured_fixture=$(printf '%s\n' "$manager_environment" |
+                    sed -n 's/^ASTERINAS_DESKTOP_FIXTURE_URL=//p')
+                xorg_pids=$(pgrep -x Xorg 2>/dev/null || true)
+                set -- $xorg_pids
+                if [ "$#" -ne 1 ] || ! is_uint "$1"; then
+                    gate_status=122
+                elif [ "$physical_mode" != 1 ] || [ "$configured_fixture" != "$fixture_source" ]; then
+                    gate_status=121
+                else
+                    xorg_pid=$1
+                    PYTHONDONTWRITEBYTECODE=1 \
+                        nsenter -t "$original_pid" -m -n \
+                        /run/asterinas-tools/browser-daily-use-gate \
+                        --firefox-pid "$original_pid" --xorg-pid "$xorg_pid" \
+                        --fixture-index-url "$fixture_index" \
+                        --evidence-dir "$evidence_dir" --mode profile --physical \
+                        --timeout-seconds "$timeout_seconds"
+                    gate_status=$?
+                    [ "$gate_status" -ne 0 ] || outcome=pass
+                    PYTHONDONTWRITEBYTECODE=1 \
+                        nsenter -t "$original_pid" -m -n \
+                        /run/asterinas-tools/browser-daily-use-upload \
+                        "$evidence_dir" "$experiment_id" "$outcome" "$upload_url" \
+                        --timeout 15
+                    upload_status=$?
+                fi
+            fi
+            ;;
+    esac
+
+    printf '__ASTERINAS_PHYSICAL_DAILY_USE__ experiment_id=%s outcome=%s gate_status=%s upload_status=%s\n' \
+        "$experiment_id" "$outcome" "$gate_status" "$upload_status"
+    [ "$outcome" = pass ] && [ "$gate_status" -eq 0 ] && [ "$upload_status" -eq 0 ]
+}
+
 action=${1-}
 [ "$#" -ge 1 ] || die_usage
 shift
@@ -266,7 +535,10 @@ case "$action" in
     preflight) [ "$#" -eq 0 ] || die_usage; preflight ;;
     start-browser) [ "$#" -eq 0 ] || die_usage; start_browser 1 ;;
     start-web) [ "$#" -eq 0 ] || die_usage; start_browser 0 ;;
+    startup-ready) [ "$#" -eq 0 ] || die_usage; startup_ready ;;
+    startup-snapshot) [ "$#" -eq 0 ] || die_usage; startup_snapshot ;;
     cycle) cycle "$@" ;;
     final) final "$@" ;;
+    daily-use) daily_use "$@" ;;
     *) die_usage ;;
 esac

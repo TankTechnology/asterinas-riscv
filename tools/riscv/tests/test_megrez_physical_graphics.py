@@ -533,6 +533,34 @@ class OperatorDisplayEvidenceTests(unittest.TestCase):
         self.assertGreater(reader.call_args.args[1], 0)
         self.assertLessEqual(reader.call_args.args[1], 30)
 
+    def test_real_adapter_interrupts_uboot_without_repeating_command_history(
+        self,
+    ) -> None:
+        gate = load_gate(self)
+        session = mock.Mock()
+        close_device = mock.Mock()
+        operations = gate.RealPhysicalGraphicsOperations(
+            SimpleNamespace(artifacts=(), plan_sha256="a" * 64),
+            "/dev/serial/by-id/test",
+            Path("/unused"),
+            None,
+            display_mode=gate.DisplayEvidenceMode.OPERATOR_ATTESTED,
+            cycles_requested=1,
+            open_device=mock.Mock(return_value=57),
+            lock_device=mock.Mock(),
+            close_device=close_device,
+            session_factory=mock.Mock(return_value=session),
+        )
+
+        with mock.patch("os.write") as write:
+            operations.open(30)
+            operations.close()
+
+        write.assert_called_once_with(57, b"\x03")
+        session.send.assert_not_called()
+        session.wait_for_uboot_prompt.assert_called_once_with(30)
+        close_device.assert_called_once_with(57)
+
 
 class PhysicalCliTests(unittest.TestCase):
     BASE_ARGUMENTS = (
@@ -938,7 +966,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
         self.assertFalse(any(token.startswith("systemd.unit=") for token in tokens))
         self.assertNotIn("systemd.unit=multi-user.target", tokens)
         self.assertNotIn("asterinas.reboot_after=600", tokens)
-        self.assertNotIn("asterinas.mmc_write_partition2", tokens)
+        self.assertEqual(tokens.count("asterinas.mmc_write_partition2"), 1)
         self.assertEqual(
             tokens.count("systemd.mask=asterinas-browser-web-evidence.service"), 1
         )
@@ -973,7 +1001,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
             ],
         )
 
-    def test_physical_bootargs_remove_partition_write_aliases(self) -> None:
+    def test_physical_bootargs_canonicalize_partition_write_aliases(self) -> None:
         gate = load_gate(self)
         for spelling in (
             "asterinas.mmc_write_partition2",
@@ -989,7 +1017,13 @@ class PhysicalLifecycleTests(unittest.TestCase):
                     token.partition("=")[0].replace("-", "_")
                     for token in gate.physical_bootargs(plan).split()
                 }
-                self.assertNotIn("asterinas.mmc_write_partition2", normalized_names)
+                self.assertIn("asterinas.mmc_write_partition2", normalized_names)
+                self.assertEqual(
+                    gate.physical_bootargs(plan)
+                    .split()
+                    .count("asterinas.mmc_write_partition2"),
+                    1,
+                )
 
     def test_publishes_pass_only_after_three_cycles_hdmi_and_recovery(self) -> None:
         gate = load_gate(self)
@@ -1207,6 +1241,137 @@ class PhysicalLifecycleTests(unittest.TestCase):
 
 
 class PhysicalCommandTests(unittest.TestCase):
+    DAILY_USE_ID = "0123456789abcdef0123456789abcdef"
+
+    def _daily_use_operations(
+        self,
+        gate,
+        lines: tuple[str, ...],
+        *,
+        prefix: str = "boot noise\n",
+    ):
+        payload = prefix.encode() + ("\n".join(lines) + "\n").encode()
+        serial = mock.Mock(transcript=payload)
+        serial.checkpoint.return_value = len(prefix.encode())
+        operations = object.__new__(gate.RealPhysicalGraphicsOperations)
+        operations._serial = serial
+        operations._guest_deadline = time.monotonic() + 300
+        return operations, serial
+
+    def test_daily_use_command_is_closed(self) -> None:
+        gate = load_gate(self)
+        command = gate.physical_daily_use_command(self.DAILY_USE_ID, 120.0, 4242)
+
+        self.assertEqual(
+            command,
+            "/run/asterinas-tools/physical-graphics-control daily-use "
+            "0123456789abcdef0123456789abcdef 120 4242",
+        )
+        for experiment_id, timeout, pid in (
+            ("short", 120.0, 4242),
+            (self.DAILY_USE_ID.upper(), 120.0, 4242),
+            (self.DAILY_USE_ID, 0.0, 4242),
+            (self.DAILY_USE_ID, 120.1, 4242),
+            (self.DAILY_USE_ID, 121.0, 4242),
+            (self.DAILY_USE_ID, 120.0, True),
+            (self.DAILY_USE_ID, 120.0, 0),
+        ):
+            with (
+                self.subTest(experiment_id=experiment_id, timeout=timeout, pid=pid),
+                self.assertRaises(gate.HostGateError),
+            ):
+                gate.physical_daily_use_command(experiment_id, timeout, pid)
+
+    def test_run_daily_use_profile_requires_matching_terminal_id(self) -> None:
+        gate = load_gate(self)
+        operations, _serial = self._daily_use_operations(
+            gate,
+            (
+                "__ASTERINAS_PHYSICAL_DAILY_USE__ "
+                "experiment_id=ffffffffffffffffffffffffffffffff outcome=pass "
+                "gate_status=0 upload_status=0",
+            ),
+        )
+
+        with self.assertRaisesRegex(gate.HostGateError, "experiment"):
+            operations.run_daily_use_profile(self.DAILY_USE_ID, 120.0, 4242)
+
+    def test_run_daily_use_profile_returns_closed_terminal_status(self) -> None:
+        gate = load_gate(self)
+        operations, serial = self._daily_use_operations(
+            gate,
+            (
+                "__ASTERINAS_PHYSICAL_DAILY_USE__ "
+                f"experiment_id={self.DAILY_USE_ID} outcome=pass "
+                "gate_status=0 upload_status=0",
+            ),
+            prefix=(
+                "__ASTERINAS_PHYSICAL_DAILY_USE__ "
+                "experiment_id=ffffffffffffffffffffffffffffffff outcome=fail "
+                "gate_status=1 upload_status=0\n"
+            ),
+        )
+
+        with mock.patch.object(operations, "_sync_serial_log"):
+            status = operations.run_daily_use_profile(self.DAILY_USE_ID, 120.0, 4242)
+
+        self.assertEqual(status.experiment_id, self.DAILY_USE_ID)
+        self.assertEqual(status.outcome, "pass")
+        self.assertEqual((status.gate_status, status.upload_status), (0, 0))
+        self.assertEqual(
+            serial.send.call_args.args[0],
+            (
+                "/run/asterinas-tools/physical-graphics-control daily-use "
+                f"{self.DAILY_USE_ID} 120 4242\n"
+            ).encode(),
+        )
+
+    def test_run_daily_use_profile_uses_guest_lifetime_as_outer_deadline(
+        self,
+    ) -> None:
+        gate = load_gate(self)
+        operations, serial = self._daily_use_operations(
+            gate,
+            (
+                "__ASTERINAS_PHYSICAL_DAILY_USE__ "
+                f"experiment_id={self.DAILY_USE_ID} outcome=pass "
+                "gate_status=0 upload_status=0",
+            ),
+        )
+        operations._guest_deadline = 2000.0
+
+        with (
+            mock.patch.object(gate.time, "monotonic", return_value=1000.0),
+            mock.patch.object(operations, "_sync_serial_log"),
+        ):
+            operations.run_daily_use_profile(self.DAILY_USE_ID, 120.0, 4242)
+
+        self.assertEqual(serial.send.call_args.args[1], 2000.0)
+
+    def test_run_daily_use_profile_rejects_open_or_duplicate_terminal(self) -> None:
+        gate = load_gate(self)
+        valid = (
+            "__ASTERINAS_PHYSICAL_DAILY_USE__ "
+            f"experiment_id={self.DAILY_USE_ID} outcome=pass "
+            "gate_status=0 upload_status=0"
+        )
+        invalid_lines = (
+            (valid, valid),
+            (valid.replace("gate_status=0", "gate_status=no"),),
+            (valid.replace("gate_status=0", "gate_status=-1"),),
+            (valid.replace("outcome=pass", "outcome=unknown"),),
+            (valid.replace("gate_status=0", "gate_status=1"),),
+            (valid.replace("upload_status=0", "upload_status=1"),),
+            (valid.replace("outcome=pass", "outcome=fail"),),
+            (valid.replace(self.DAILY_USE_ID, "0" * 31 + "G"),),
+            (valid + " trailing=field",),
+        )
+        for lines in invalid_lines:
+            with self.subTest(lines=lines):
+                operations, _serial = self._daily_use_operations(gate, lines)
+                with self.assertRaises(gate.HostGateError):
+                    operations.run_daily_use_profile(self.DAILY_USE_ID, 120.0, 4242)
+
     def test_one_cycle_real_prompt_uses_one_as_the_denominator(self) -> None:
         gate = load_gate(self)
         operations = object.__new__(gate.RealPhysicalGraphicsOperations)
@@ -1248,7 +1413,7 @@ class PhysicalCommandTests(unittest.TestCase):
         operations._debug_console_ready = True
         operations._guest_deadline = time.monotonic() + 60
         operations._recovery_cursor = 0
-        serial = mock.Mock(transcript=b"")
+        serial = mock.Mock(transcript=b"1234567^C\r\nroot@asterinas-debug:/# ")
         serial.checkpoint.side_effect = (7, 11)
         operations._serial = serial
         nonce = "0123"
@@ -1265,13 +1430,20 @@ class PhysicalCommandTests(unittest.TestCase):
         ):
             operations.request_reboot(30)
 
-        self.assertEqual(serial.send.call_args_list[0].args[0], b"\x03\n")
+        self.assertEqual(
+            serial.send.call_args_list[0].args[0],
+            b"\x03",
+        )
         self.assertEqual(
             serial.send.call_args_list[1].args[0],
             f"sync; printf '{marker}\\n'; reboot -f\n".encode(),
         )
-        serial.wait_for.assert_called_once_with(
-            b"root@asterinas-debug:", mock.ANY, start=7
+        self.assertEqual(
+            serial.wait_for.call_args_list,
+            [
+                mock.call(b"^C", mock.ANY, start=7),
+                mock.call(b"root@asterinas-debug:/#", mock.ANY, start=9),
+            ],
         )
         self.assertEqual(operations._recovery_cursor, 11)
 
@@ -1474,9 +1646,8 @@ class PhysicalCommandTests(unittest.TestCase):
             self.assertIn(fragment, script)
         for fragment in ("0x81004506", "0x80084502", "0x81004507"):
             self.assertIn(fragment, identity_script)
-        self.assertEqual(
-            script.count("PYTHONPYCACHEPREFIX=/run/asterinas-python-cache"), 3
-        )
+        self.assertEqual(script.count("PYTHONDONTWRITEBYTECODE=1"), 5)
+        self.assertNotIn("PYTHONPYCACHEPREFIX=", script)
         self.assertNotIn("dmesg", script)
         self.assertNotIn("Xorg.0.log", script)
 
@@ -1553,7 +1724,9 @@ class PhysicalCommandTests(unittest.TestCase):
             "$_asterinas_browser.d/physical.conf",
             "Environment=HOME=/run/asterinas-physical-home",
             "Environment=ASTERINAS_WEB_NETWORK_MODE=proxy",
-            "Environment=ASTERINAS_DESKTOP_PROXY_HOST=127.0.0.1",
+            "_asterinas_proxy_host=127.0.0.1",
+            "_asterinas_proxy_host=10.100.19.216",
+            "Environment=ASTERINAS_DESKTOP_PROXY_HOST=$_asterinas_proxy_host",
             "Environment=ASTERINAS_DESKTOP_PROXY_PORT=9",
             "ln -sfn /dev/null",
             "systemctl_bounded daemon-reload",
@@ -1645,18 +1818,20 @@ class PhysicalCommandTests(unittest.TestCase):
         self.assertNotIn("systemctl_bounded start --no-block graphical.target", script)
         self.assertIn("start-web) [ \"$#\" -eq 0 ]", control_script)
         self.assertIn(
-            '/usr/bin/timeout --kill-after=1s 3s /usr/bin/systemctl "$@"',
+            '/usr/bin/timeout --kill-after=1s 10s /usr/bin/systemctl "$@"',
             control_script,
         )
         self.assertIn(
-            "/usr/bin/timeout --kill-after=1s 2s /usr/bin/python3 -c",
+            "/usr/bin/timeout --kill-after=1s 10s /usr/bin/python3 -c",
             control_script,
         )
         self.assertIn(
             "/run/asterinas-tools/desktop-input-identity", control_script
         )
         self.assertNotIn('open(p,"rb",buffering=0)', control_script)
-        self.assertNotIn("attempt\" -ge 120", control_script)
+        self.assertIn('if [ "$stop_attempt" -ge 120 ]', control_script)
+        self.assertIn("active | activating | deactivating | reloading", control_script)
+        self.assertIn("inactive | failed", control_script)
         for stage in (
             "input-wait",
             "input-ready",
@@ -1950,7 +2125,7 @@ class PhysicalCommandTests(unittest.TestCase):
         self.assertLess(len(command.encode()), 128)
         for fragment in (
             "nsenter",
-            "PYTHONPYCACHEPREFIX=/run/asterinas-python-cache",
+            "PYTHONDONTWRITEBYTECODE=1",
             'case "$cycle" in 1 | 3)',
             "--firefox-pid",
             "--verify-final",

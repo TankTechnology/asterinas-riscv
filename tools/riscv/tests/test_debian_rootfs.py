@@ -159,6 +159,9 @@ STAGE1_BROWSER_M5_MARIONETTE_GATE = (
 STAGE1_BROWSER_DAILY_USE_GATE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_daily_use_gate.py"
 )
+STAGE1_BROWSER_DAILY_USE_UPLOAD = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_daily_use_upload.py"
+)
 STAGE1_CLOCK_SYNC = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_clock_sync.py"
 STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_external_services_quiesce.sh"
@@ -800,6 +803,12 @@ class DebianStage1Tests(unittest.TestCase):
             runtime
             / "systemd/system/getty.target.wants/asterinas-debug-console.service"
         )
+        ready_service = runtime / "systemd/system/asterinas-desktop-ready.service"
+        ready_link = (
+            runtime
+            / "systemd/system/asterinas-debug-console.target.wants/"
+            "asterinas-desktop-ready.service"
+        )
 
         self.assertEqual(marker.read_bytes(), b"")
         service_text = service.read_text()
@@ -836,6 +845,13 @@ class DebianStage1Tests(unittest.TestCase):
             "Wants=asterinas-debug-console.service\n"
             "After=asterinas-debug-console.service\n",
         )
+        self.assertIn(
+            "ExecStart=/run/asterinas-tools/physical-graphics-control startup-ready\n",
+            ready_service.read_text(),
+        )
+        self.assertIn("TimeoutStartSec=285s\n", ready_service.read_text())
+        self.assertTrue(ready_link.is_symlink())
+        self.assertEqual(os.readlink(ready_link), "../asterinas-desktop-ready.service")
         self.assertFalse((runtime / "systemd/system/default.target").exists())
         self.assertFalse((runtime / "systemd/system.control/default.target").exists())
 
@@ -1415,8 +1431,10 @@ int main(void)
                 "usr/lib/asterinas/browser_workload_contract.py",
                 "usr/lib/asterinas/browser_composite_capture.py",
                 "usr/lib/asterinas/browser-web-marionette-gate",
+                "usr/lib/asterinas/browser_web_marionette_gate.py",
                 "usr/lib/asterinas/browser_m5_marionette_gate.py",
                 "usr/lib/asterinas/browser-daily-use-gate",
+                "usr/lib/asterinas/browser-daily-use-upload",
                 "usr/lib/asterinas/megrez-clock-sync",
                 "usr/lib/asterinas/physical-external-services-quiesce",
                 "usr/lib/asterinas/desktop-input-identity",
@@ -1444,6 +1462,41 @@ int main(void)
         self.assertEqual(helper[5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
         self.assertIn(b"os.O_NONBLOCK", helper[5])
 
+    def test_stage1_includes_daily_use_uploader(self) -> None:
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+        output = self.directory / "daily-use-upload" / "initramfs.cpio"
+
+        result = self.run_builder(str(output), environment=environment)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entries = {entry[0]: entry for entry in _parse_newc_entries(output.read_bytes())}
+        self.assertTrue(
+            "usr/lib/asterinas/browser-daily-use-upload" in entries,
+            "daily-use uploader missing from Stage1 archive",
+        )
+        uploader = entries["usr/lib/asterinas/browser-daily-use-upload"]
+        self.assertEqual(stat.S_IMODE(uploader[1]), 0o755)
+        self.assertEqual(uploader[5], STAGE1_BROWSER_DAILY_USE_UPLOAD.read_bytes())
+
+    def test_stage1_carries_importable_marionette_module_for_daily_use(self) -> None:
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+        output = self.directory / "daily-use-import" / "initramfs.cpio"
+
+        result = self.run_builder(str(output), environment=environment)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entries = {entry[0]: entry for entry in _parse_newc_entries(output.read_bytes())}
+        module = entries.get("usr/lib/asterinas/browser_web_marionette_gate.py")
+        self.assertIsNotNone(
+            module,
+            "daily-use gate cannot import browser_web_marionette_gate from Stage1",
+        )
+        assert module is not None
+        self.assertEqual(stat.S_IMODE(module[1]), 0o644)
+        self.assertEqual(module[5], STAGE1_BROWSER_GATE.read_bytes())
+
     def test_physical_graphics_control_uses_stage1_input_identity(self) -> None:
         source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
 
@@ -1455,6 +1508,55 @@ int main(void)
             'runpy.run_path("/usr/lib/asterinas/desktop-input-identity")',
             source,
         )
+
+    def test_physical_graphics_control_disarms_only_after_desktop_readiness(
+        self,
+    ) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+
+        self.assertIn(
+            'startup-ready) [ "$#" -eq 0 ] || die_usage; startup_ready ;;',
+            source,
+        )
+        self.assertIn("/proc/sys/kernel/asterinas_reboot_watchdog", source)
+        self.assertIn("ASTERINAS_DESKTOP_DISPLAY_READY", source)
+        self.assertIn("ASTERINAS_DESKTOP_FIREFOX_READY", source)
+        self.assertIn("ASTERINAS_DESKTOP_WATCHDOG_DISARMED", source)
+        self.assertIn("ASTERINAS_DESKTOP_BOOT_READY", source)
+
+    def test_startup_readiness_uses_one_monotonic_deadline(self) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+        startup = source[source.index("startup_ready() {") :]
+        startup = startup[: startup.index("\nbrowser_identity() {")]
+
+        self.assertIn("/proc/uptime", source)
+        self.assertIn("ASTERINAS_DESKTOP_BOOT_WAIT", startup)
+        self.assertNotIn('if [ "$attempt" -ge 240 ]', startup)
+        self.assertIn("readiness_deadline", startup)
+        self.assertIn("readiness_deadline=$((readiness_started + 220))", startup)
+        self.assertIn("printf '<6>%s\\n' \"$1\" >/dev/kmsg", source)
+        self.assertNotIn("printf '%s\\n' \"$1\"\n", source)
+        self.assertNotIn("printf '%s\\n' \"$1\" >/dev/console", source)
+
+    def test_physical_graphics_control_has_bounded_startup_snapshot(self) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+        snapshot = source[source.index("startup_snapshot() {") :]
+        snapshot = snapshot[: snapshot.index("\nbrowser_identity() {")]
+
+        self.assertIn(
+            'startup-snapshot) [ "$#" -eq 0 ] || die_usage; startup_snapshot ;;',
+            source,
+        )
+        self.assertIn("/proc/$pid/status", snapshot)
+        self.assertIn("/proc/$pid/stat", snapshot)
+        self.assertIn("/proc/$pid/io", snapshot)
+        self.assertIn("/proc/$pid/task/", snapshot)
+        self.assertIn("voluntary_ctxt_switches", snapshot)
+        self.assertIn("/proc/loadavg", snapshot)
+        self.assertIn("procs_running", snapshot)
+        self.assertIn("/proc/sys/kernel/asterinas_reboot_watchdog", snapshot)
+        self.assertGreaterEqual(snapshot.count("/usr/bin/timeout"), 2)
+        self.assertIn("__ASTERINAS_STARTUP_SNAPSHOT__", snapshot)
 
     def test_stage1_exposes_ephemeral_tools_from_run_without_rootfs_writes(
         self,
@@ -1519,6 +1621,239 @@ int main(void)
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(result.stdout, "")
                 self.assertEqual(result.stderr, "")
+
+    def _run_daily_use_control(
+        self,
+        *,
+        arguments: tuple[str, ...] = (
+            "daily-use",
+            "0123456789abcdef0123456789abcdef",
+            "120",
+            "4242",
+        ),
+        firefox_pid: str = "4242",
+        xorg_pids: str = "4343",
+        manager_environment: str = (
+            "ASTERINAS_PHYSICAL_DAILY_USE=1\n"
+            "ASTERINAS_DESKTOP_FIXTURE_URL="
+            "http://10.100.19.216:17894/asterinas-network-probe.bin\n"
+        ),
+        gate_status: int = 0,
+        existing_evidence: bool = False,
+    ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+        fake_bin = self.directory / f"daily-use-bin-{len(list(self.directory.iterdir()))}"
+        fake_bin.mkdir()
+        log = fake_bin / "calls.log"
+        control = fake_bin / "physical-graphics-control"
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text(encoding="utf-8")
+        source = source.replace(
+            "systemctl_bounded() {\n"
+            '    /usr/bin/timeout --kill-after=1s 10s /usr/bin/systemctl "$@"\n'
+            "}",
+            "systemctl_bounded() { systemctl \"$@\"; }",
+        )
+        if existing_evidence:
+            evidence = fake_bin / "existing-evidence"
+            evidence.mkdir()
+            source = source.replace(
+                '[ -e "$evidence_dir" ] || [ -L "$evidence_dir" ]',
+                f'[ -e "{evidence}" ] || [ -L "{evidence}" ]',
+            )
+        control.write_text(source, encoding="utf-8")
+        control.chmod(0o755)
+        (fake_bin / "systemctl").write_text(
+            "#!/bin/sh\n"
+            "case \"$*\" in\n"
+            "  'show --property MainPID --value asterinas-browser-web.service') "
+            'printf "%s\\n" "$ASTERINAS_TEST_FIREFOX_PID" ;;\n'
+            "  'show --property NRestarts --value asterinas-browser-web.service') "
+            "printf '0\\n' ;;\n"
+            "  'show-environment') printf '%s' \"$ASTERINAS_TEST_MANAGER_ENV\" ;;\n"
+            "  *) exit 97 ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        (fake_bin / "pgrep").write_text(
+            "#!/bin/sh\nprintf '%s' \"$ASTERINAS_TEST_XORG_PIDS\"\n",
+            encoding="utf-8",
+        )
+        (fake_bin / "nsenter").write_text(
+            "#!/bin/sh\n"
+            "printf 'nsenter %s\\n' \"$*\" >>\"$ASTERINAS_TEST_LOG\"\n"
+            "case \"$*\" in\n"
+            "  *browser-daily-use-gate*) exit \"$ASTERINAS_TEST_GATE_STATUS\" ;;\n"
+            "  *browser-daily-use-upload*) exit 0 ;;\n"
+            "  *) exit 98 ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        for name in ("systemctl", "pgrep", "nsenter"):
+            (fake_bin / name).chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                "ASTERINAS_TEST_FIREFOX_PID": firefox_pid,
+                "ASTERINAS_TEST_XORG_PIDS": xorg_pids,
+                "ASTERINAS_TEST_MANAGER_ENV": manager_environment,
+                "ASTERINAS_TEST_GATE_STATUS": str(gate_status),
+                "ASTERINAS_TEST_LOG": str(log),
+            }
+        )
+        result = subprocess.run(
+            ["/bin/sh", control, *arguments],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        return result, log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+
+    def test_physical_graphics_control_accepts_closed_daily_use_action(self) -> None:
+        result, calls = self._run_daily_use_control()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            calls,
+            [
+                "nsenter -t 4242 -m -n /run/asterinas-tools/browser-daily-use-gate "
+                "--firefox-pid 4242 --xorg-pid 4343 --fixture-index-url "
+                "http://10.100.19.216:17894/browser-quality/index.html "
+                "--evidence-dir /run/asterinas-browser-daily-use-"
+                "0123456789abcdef0123456789abcdef --mode profile --physical "
+                "--timeout-seconds 120",
+                "nsenter -t 4242 -m -n /run/asterinas-tools/browser-daily-use-upload "
+                "/run/asterinas-browser-daily-use-0123456789abcdef0123456789abcdef "
+                "0123456789abcdef0123456789abcdef pass "
+                "http://10.100.19.216:17894/browser-quality/daily-use-evidence/"
+                "0123456789abcdef0123456789abcdef --timeout 15",
+            ],
+        )
+        self.assertEqual(
+            result.stdout,
+            "__ASTERINAS_PHYSICAL_DAILY_USE__ "
+            "experiment_id=0123456789abcdef0123456789abcdef outcome=pass "
+            "gate_status=0 upload_status=0\n",
+        )
+
+    def test_physical_graphics_control_rejects_untrusted_daily_use_arguments(
+        self,
+    ) -> None:
+        valid_id = "0123456789abcdef0123456789abcdef"
+        for arguments in (
+            ("daily-use",),
+            ("daily-use", "0123", "120", "4242"),
+            ("daily-use", valid_id.upper(), "120", "4242"),
+            ("daily-use", "g" * 32, "120", "4242"),
+            ("daily-use", valid_id, "0", "4242"),
+            ("daily-use", valid_id, "120.1", "4242"),
+            ("daily-use", valid_id, "121", "4242"),
+            ("daily-use", valid_id, "120", "1"),
+            ("daily-use", valid_id, "120", "4242", "extra"),
+        ):
+            with self.subTest(arguments=arguments):
+                result, calls = self._run_daily_use_control(arguments=arguments)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual((result.stdout, result.stderr, calls), ("", "", []))
+
+        prerequisite_cases = (
+            ({"firefox_pid": "4243"}, 124),
+            ({"existing_evidence": True}, 123),
+            ({"xorg_pids": ""}, 122),
+            ({"xorg_pids": "4343\n4344\n"}, 122),
+            ({"manager_environment": ""}, 121),
+            (
+                {
+                    "manager_environment": (
+                        "ASTERINAS_PHYSICAL_DAILY_USE=1\n"
+                        "ASTERINAS_DESKTOP_FIXTURE_URL=http://example.invalid/file\n"
+                    )
+                },
+                121,
+            ),
+        )
+        for overrides, expected_status in prerequisite_cases:
+            with self.subTest(overrides=overrides):
+                result, calls = self._run_daily_use_control(**overrides)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(f"gate_status={expected_status}", result.stdout)
+                self.assertEqual(calls, [])
+
+    def test_physical_graphics_control_preserves_failed_daily_use_outcome(
+        self,
+    ) -> None:
+        result, calls = self._run_daily_use_control(gate_status=17)
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(" outcome=fail gate_status=17 upload_status=0\n", result.stdout)
+        self.assertIn(" fail http://10.100.19.216:17894/", calls[1])
+
+    def _run_physical_quiesce(self, manager_environment: str) -> str:
+        root = self.directory / f"quiesce-{len(list(self.directory.iterdir()))}"
+        control = root / "system.control"
+        home = root / "home"
+        fake_bin = root / "bin"
+        fake_bin.mkdir(parents=True)
+        script = root / "quiesce.sh"
+        source = STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_text(encoding="utf-8")
+        source = source.replace(
+            "readonly _asterinas_control=/run/systemd/system.control",
+            f"readonly _asterinas_control={control}",
+        ).replace(
+            "readonly _asterinas_home=/run/asterinas-physical-home",
+            f"readonly _asterinas_home={home}",
+        ).replace(
+            "systemctl_bounded() {\n"
+            '    /usr/bin/timeout --kill-after=1s 5s /usr/bin/systemctl "$@"\n'
+            "}",
+            "systemctl_bounded() { systemctl \"$@\"; }",
+        ).replace("/usr/bin/mountpoint", "/bin/true").replace(
+            "/usr/bin/mount --bind", "/bin/true"
+        ).replace("/usr/bin/sleep 1", "/bin/true")
+        script.write_text(source, encoding="utf-8")
+        (fake_bin / "systemctl").write_text(
+            "#!/bin/sh\n"
+            "case \"$*\" in\n"
+            "  show-environment) printf '%s' \"$ASTERINAS_TEST_MANAGER_ENV\" ;;\n"
+            "  'is-active '* ) printf 'inactive\\n'; exit 3 ;;\n"
+            "  'show --property MainPID --value '* ) printf '0\\n' ;;\n"
+            "  *) exit 0 ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        (fake_bin / "systemctl").chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "PATH": f"{fake_bin}:/usr/bin:/bin",
+                "ASTERINAS_TEST_MANAGER_ENV": manager_environment,
+            }
+        )
+        result = subprocess.run(
+            ["/bin/bash", script],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return (control / "asterinas-browser-web.service.d/physical.conf").read_text(
+            encoding="utf-8"
+        )
+
+    def test_daily_use_quiesce_allows_only_fixture_host(self) -> None:
+        daily_use = self._run_physical_quiesce(
+            "ASTERINAS_PHYSICAL_DAILY_USE=1\n"
+            "ASTERINAS_DESKTOP_FIXTURE_URL="
+            "http://10.100.19.216:17894/asterinas-network-probe.bin\n"
+        )
+        ordinary = self._run_physical_quiesce("")
+
+        self.assertIn("Environment=ASTERINAS_WEB_NETWORK_MODE=proxy\n", daily_use)
+        self.assertIn("Environment=ASTERINAS_DESKTOP_PROXY_HOST=10.100.19.216\n", daily_use)
+        self.assertIn("Environment=ASTERINAS_DESKTOP_PROXY_PORT=9\n", daily_use)
+        self.assertIn("Environment=ASTERINAS_DESKTOP_PROXY_HOST=127.0.0.1\n", ordinary)
+        self.assertIn("Environment=ASTERINAS_DESKTOP_PROXY_PORT=9\n", ordinary)
 
     def test_physical_graphics_control_accepts_a_six_digit_linux_pid(self) -> None:
         result = subprocess.run(
@@ -1631,6 +1966,13 @@ int main(void)
                     1700000000,
                 ),
                 (
+                    "usr/lib/asterinas/browser_web_marionette_gate.py",
+                    stat.S_IFREG | 0o644,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
                     "usr/lib/asterinas/browser_m5_marionette_gate.py",
                     stat.S_IFREG | 0o755,
                     0,
@@ -1639,6 +1981,13 @@ int main(void)
                 ),
                 (
                     "usr/lib/asterinas/browser-daily-use-gate",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
+                    "usr/lib/asterinas/browser-daily-use-upload",
                     stat.S_IFREG | 0o755,
                     0,
                     0,
@@ -1726,20 +2075,22 @@ int main(void)
         self.assertEqual(entries[10][5], STAGE1_BROWSER_WORKLOAD_CONTRACT.read_bytes())
         self.assertEqual(entries[11][5], STAGE1_BROWSER_COMPOSITE_CAPTURE.read_bytes())
         self.assertEqual(entries[12][5], STAGE1_BROWSER_GATE.read_bytes())
-        self.assertEqual(entries[13][5], STAGE1_BROWSER_M5_MARIONETTE_GATE.read_bytes())
-        self.assertEqual(entries[14][5], STAGE1_BROWSER_DAILY_USE_GATE.read_bytes())
-        self.assertEqual(entries[15][5], STAGE1_CLOCK_SYNC.read_bytes())
+        self.assertEqual(entries[13][5], STAGE1_BROWSER_GATE.read_bytes())
+        self.assertEqual(entries[14][5], STAGE1_BROWSER_M5_MARIONETTE_GATE.read_bytes())
+        self.assertEqual(entries[15][5], STAGE1_BROWSER_DAILY_USE_GATE.read_bytes())
+        self.assertEqual(entries[16][5], STAGE1_BROWSER_DAILY_USE_UPLOAD.read_bytes())
+        self.assertEqual(entries[17][5], STAGE1_CLOCK_SYNC.read_bytes())
         self.assertEqual(
-            entries[16][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
+            entries[18][5], STAGE1_PHYSICAL_EXTERNAL_SERVICES_QUIESCE.read_bytes()
         )
-        self.assertEqual(entries[17][5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
-        self.assertEqual(entries[18][5], STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_bytes())
-        self.assertEqual(entries[19][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
-        self.assertEqual(entries[20][5], STAGE1_PHYSICAL_GRAPHICS_PAGE.read_bytes())
-        self.assertEqual(entries[21][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
-        self.assertEqual(entries[22][5], b"physical-graphics-control")
-        self.assertEqual(entries[23][5], b"physical-external-services-quiesce")
-        self.assertEqual(entries[24][5], b"physical-system-probe")
+        self.assertEqual(entries[19][5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
+        self.assertEqual(entries[20][5], STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_bytes())
+        self.assertEqual(entries[21][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
+        self.assertEqual(entries[22][5], STAGE1_PHYSICAL_GRAPHICS_PAGE.read_bytes())
+        self.assertEqual(entries[23][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
+        self.assertEqual(entries[24][5], b"physical-graphics-control")
+        self.assertEqual(entries[25][5], b"physical-external-services-quiesce")
+        self.assertEqual(entries[26][5], b"physical-system-probe")
 
     def test_builder_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):

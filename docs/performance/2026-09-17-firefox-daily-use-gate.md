@@ -76,6 +76,29 @@ persist.
 
 The seven functional groups are `document`, `storage`, `execution`,
 `rendering-media`, `navigation`, `download`, and `contexts`.
+The performance profile requires `document`, `storage`, `navigation`,
+`download`, and `contexts` to pass.
+The `execution` and `rendering-media` groups record optional capability
+coverage and may be `pass` or `unsupported`, but never `fail`, in a passing
+performance result.
+`execution` is derived from WebAssembly, Web Worker, and `fetch`;
+`rendering-media` is derived from canvas and audio; and `storage` still
+requires local storage, session storage, cookies, and IndexedDB.
+A terminal, exact capability report with a false optional check produces
+`fixture-capability-unavailable` and the mandatory limitation
+`fixture-capabilities-incomplete`.
+The limitation is invalid when both optional groups pass.
+Missing, malformed, non-terminal, or inconsistent reports remain fatal.
+
+This qualification is intentionally narrower than the standalone browser Web
+functionality gate.
+That gate is unchanged and continues to require every capability check to be
+true.
+A passing performance result with `execution=unsupported` does not claim that
+WebAssembly, workers, or `fetch` work; `rendering-media=unsupported` likewise
+does not claim audio support.
+The terminal `functions=7/7` field counts seven closed-schema verdicts, not
+seven feature passes.
 The five performance categories are `startup`, `input`, `scroll`,
 `navigation`, and `context-switch`.
 
@@ -118,6 +141,12 @@ The TDD slices were committed in order:
   timeouts, including commands that were not sent.
 - `ed665be58` packaged the command and contract into Stage1 and extended the
   fast host check.
+- `004ccc6ab` defined required and optional daily-use qualification;
+  `820715a78` classified terminal fixture capability evidence without changing
+  the standalone Web gate.
+- `9e3e53a91` preserved unsupported states in failure uploads; `42d99792a`
+  reused the guest qualification rule on the physical host; and `f547a5d8f`
+  retained exact capability coverage in three-run reports.
 
 The committed implementation plan specifies red tests before each contract,
 orchestrator, adapter, and packaging slice.
@@ -127,15 +156,74 @@ cleanup.
 Fresh on 2026-09-17, `tools/riscv/firefox_fast_check.sh` ran 354 tests in
 22.504 seconds with `OK`, then completed its Python compilation, shell syntax,
 and diff checks with `FIREFOX_FAST_CHECK_PASS`.
-This is the current host-only count, not a copied count from an earlier record.
+After the 2026-09-18 qualification amendment, the complete physical daily-use
+unit target ran 399 tests in 34.165 seconds with `OK` and three Node-dependent
+tests skipped.
+The host `tools/riscv/firefox_fast_check.sh` then ran 483 tests in 28.590
+seconds with `OK`, the same three skips, and completed Python compilation,
+shell syntax, and diff checks with `FIREFOX_FAST_CHECK_PASS`.
+These are host and contract checks, not physical performance samples.
 
-## Required next gates
+## Required next gates after the 2026-09-18 contract amendment
 
-1. Run the cached four-hart QEMU smoke gate with this Stage1 command.
-2. Run one physical `profile` with `--physical`, then optionally a separately
-   classified public page.
-3. Use those results to choose between a renderer/IPC-wakeup investigation and
-   a serialized resource-path investigation.
+1. Rebuild Stage1 twice and prove that both archives have the same digest.
+2. Run the cached four-hart QEMU graphics/control gate with the rebuilt
+   Stage1.
+3. Run three fresh one-profile-per-boot physical samples on the same Megrez
+   board and admit only samples with stable identities, complete samplers,
+   matching capability coverage, successful upload, and automatic recovery.
+4. Use the three-run mechanism classification to select one kernel variable
+   for a separately reviewed before/after experiment.
 
 Only a controlled before/after run of the same qualified workload can support
 a speedup claim.
+
+### Status, 2026-09-20
+
+| Gate | Status | Evidence |
+| --- | --- | --- |
+| 1. Stage1 build determinism | **passed** | Three pairs, each byte-identical within its pair and each pair carrying a distinct digest: `stage1-a`/`stage1-b` at `816f8c4d`, `stage1-crossarch-a`/`stage1-crossarch-b` at `9bcf5f7b` (the digest the physical plans reference), and `stage1-qualification-a`/`stage1-qualification-b` at `0d4ebedf` (the digest the QEMU gate used). |
+| 2. QEMU graphics/control gate | **passed** | `qemu-qualification`, `qemu-qualification-current`, `qemu-smoke-fixed5`, and `qemu-namespace` each record `passed=true`, `reason=pass`, `physical=false`, and three interaction cycles. `qemu-qualification` ran with the rebuilt Stage1 `0d4ebedf`; `qemu-smoke-fixed4` retains the earlier `QEMU interaction cycle 1 exited before READY` failure. |
+| 3. Three physical samples | **passed** | `release-jit-crossarch-run-3/4/5`, all qualified and recovered, one profile per boot, published as [the 2026-09-18 baseline](../../performance/2026-09-18-firefox-daily-use-physical-baseline.md). |
+| 4. Select one kernel variable | **applied and admitted** | Classification was `runnable-delayed` 3/3, so `53c4601a6` was selected as the one variable. Its A/B is recorded in [the 2026-09-19 result](../../performance/2026-09-19-firefox-wake-balance-physical-ab.md): all five admission conditions hold under the affected-metric reading, and the mixed aggregate is stated alongside. |
+
+The QEMU graphics/control gate and the RISC-V kernel-test suite are different
+gates. The gate above boots the desktop and drives three interaction cycles; it
+does not execute the new `select_cpu` `#[ktest]` regressions. The kernel-test
+suite does, and was run at `53c4601a6` in a separate worktree: both regressions
+pass, and a control run at `55ee5c64e` shows that the four other failures in the
+suite pre-date the change.
+
+All four gates are now closed. The next decision is the one the classification
+forces: B is `mixed`, so the optimization admission rule applies and no further
+kernel change is eligible until one bounded attribution observation has been
+taken. `contextSwitchTotalMs` remains over its 500 ms threshold in all three B
+runs and is the largest primary metric.
+
+### Two notes that qualify the table above
+
+**The four kernel-test failures are not attributable to this line.** The RISC-V
+kernel-test suite reports `tty_echo_runs_without_the_line_discipline_lock`,
+`reports_tick_resolution_for_cpu_clocks`, `xarray::test::no_leakage`, and
+`xarray::test::remove_shrinks_empty_nodes` as failing. The identical suite at A
+(`55ee5c64e`) fails the same four, so they pre-date the waking-task change. The
+only difference between the two runs is that B passes two more `aster_kernel`
+tests, which are the two new `select_cpu` regressions. This matters beyond this
+record: the upstream RISC-V CI job runs the same suite and has no blocklist for
+these, so a published merge of this line leaves that job red until they are
+fixed. That is a pre-existing condition, not a regression, and should be stated
+as such wherever the merge is published.
+
+**The gate 1 and gate 2 digests are pre-merge and will be re-taken.** Gate 1's
+`stage1-qualification-a`/`-b` pair and gate 2's `0d4ebedf` Stage1 were both
+produced before the waking-task line was merged. Merging changes the Stage1
+archive (`build_stage1.sh` gains the `browser-daily-use-upload` entry) and the
+rootfs (`desktop_m5_network_evidence.sh` is installed into it by
+`build_rootfs.sh`), so neither digest describes the merged tree. The table rows
+above remain the record of what was observed; they must not be read as
+describing the merged line.
+
+Reading this gate's evidence requires care: the gate creates its output
+directories root-owned mode `0700` inside the development container, so an
+unprivileged host-side listing cannot read them. Read them from inside the
+container or as root; an unreadable directory is not an empty one.
