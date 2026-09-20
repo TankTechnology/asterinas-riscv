@@ -80,7 +80,11 @@ EXPECTED_MEGREZ_MILESTONES = (
 EXPECTED_MEGREZ_CONSOLE = (
     EXPECTED_MEGREZ_MILESTONES[:2]
     + ("DEBIAN_NETWORK_M5_STRESS_START requests=20 endpoint=10.100.19.216:17894",)
-    + EXPECTED_MEGREZ_MILESTONES[2:]
+    + EXPECTED_MEGREZ_MILESTONES[2:4]
+    + ("DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-https attempt=1 stage=begin",)
+    + EXPECTED_MEGREZ_MILESTONES[4:5]
+    + ("DEBIAN_NETWORK_M5_DIAGNOSTIC phase=megrez-asset stage=begin",)
+    + EXPECTED_MEGREZ_MILESTONES[5:]
 )
 EXPECTED_QEMU_STRESS_MILESTONE = (
     "DEBIAN_NETWORK_M5_STRESS requests=20 bytes=1310720 "
@@ -838,6 +842,9 @@ case "$*" in
         exit "${ASTERINAS_M5_ASSET_STATUS:-0}"
         ;;
     *)
+        if [ -n "${ASTERINAS_M5_HTTPS_SLEEP:-}" ]; then
+            sleep "$ASTERINAS_M5_HTTPS_SLEEP"
+        fi
         if [ "${ASTERINAS_M5_HTTPS_STATUS:-0}" != 0 ]; then
             printf '%s\n' "${ASTERINAS_M5_HTTPS_ERROR:-curl failed}" >&2
             exit "$ASTERINAS_M5_HTTPS_STATUS"
@@ -1508,17 +1515,81 @@ esac
                     f"DEBIAN_NETWORK_M5_FAIL reason={expected_reason}",
                 )
                 if name == "https":
+                    console_lines = console.read_text().splitlines()
+                    self.assertRegex(
+                        console_lines[-2],
+                        r"^DEBIAN_NETWORK_M5_DIAGNOSTIC "
+                        r"phase=megrez-https attempt=3 status=42 elapsed=[0-9]+ "
+                        r"stderr_hex=6375726c3a2072656376206661696c7572650a "
+                        r"trace_hex=none$",
+                    )
                     self.assertEqual(
-                        console.read_text().splitlines()[-2],
-                        "DEBIAN_NETWORK_M5_DIAGNOSTIC "
-                        "phase=megrez-https attempt=3 status=42 "
-                        "stderr_hex=6375726c3a2072656376206661696c7572650a",
+                        [
+                            line
+                            for line in console_lines
+                            if line.endswith("stage=begin")
+                        ],
+                        [
+                            "DEBIAN_NETWORK_M5_DIAGNOSTIC "
+                            f"phase=megrez-https attempt={attempt} stage=begin"
+                            for attempt in (1, 2, 3)
+                        ],
+                    )
+                    self.assertEqual(
+                        len(
+                            [
+                                line
+                                for line in console_lines
+                                if "phase=megrez-https" in line and "status=" in line
+                            ]
+                        ),
+                        3,
                     )
                 self.assertEqual(url_file.read_text(), "https://old.invalid/\n")
                 self.assertEqual(
                     tuple((self.directory / name).glob("desktop-url.fixture.*")),
                     (),
                 )
+
+    def test_guest_evidence_bounds_megrez_https_by_the_global_deadline(self) -> None:
+        environment, console, _, _, _, _ = (
+            self._physical_evidence_environment(
+                self.directory / "https-deadline",
+                cmdline=("asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1"),
+            )
+        )
+        environment["ASTERINAS_M5_HTTPS_SLEEP"] = "5"
+        environment["ASTERINAS_M5_HTTPS_STATUS"] = "7"
+
+        result = subprocess.run(
+            ["/bin/bash", str(EVIDENCE_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        console_lines = console.read_text().splitlines()
+        self.assertEqual(
+            console_lines[-1], "DEBIAN_NETWORK_M5_FAIL reason=megrez-https"
+        )
+        self.assertIn(
+            "DEBIAN_NETWORK_M5_DIAGNOSTIC "
+            "phase=megrez-https attempt=2 stage=deadline",
+            console_lines,
+        )
+        self.assertEqual(
+            [
+                line
+                for line in console_lines
+                if "phase=megrez-https" in line and line.endswith("stage=begin")
+            ],
+            [
+                "DEBIAN_NETWORK_M5_DIAGNOSTIC "
+                "phase=megrez-https attempt=1 stage=begin"
+            ],
+        )
 
     def test_guest_evidence_preserves_url_when_proxy_config_is_missing(self) -> None:
         environment, console, resolv_conf, url_file, _, _ = (
