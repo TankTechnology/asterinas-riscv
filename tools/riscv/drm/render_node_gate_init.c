@@ -49,6 +49,13 @@ struct drm_gem_open {
     uint64_t size;
 };
 
+struct drm_prime_handle {
+    uint32_t handle;
+    uint32_t flags;
+    int32_t fd;
+    uint32_t pad;
+};
+
 struct drm_mode_modeinfo {
     uint32_t clock;
     uint16_t hdisplay, hsync_start, hsync_end, htotal, hskew;
@@ -138,6 +145,8 @@ struct drm_virtgpu_context_init {
 #define DRM_IOCTL_MODE_PAGE_FLIP _IOWR('d', 0xb0, struct drm_mode_crtc_page_flip)
 #define DRM_IOCTL_MODE_CREATE_DUMB _IOWR('d', 0xb2, struct drm_mode_create_dumb)
 /* `DRM_COMMAND_BASE` (0x40) plus the `DRM_VIRTGPU_*` command number. */
+#define DRM_IOCTL_PRIME_HANDLE_TO_FD _IOWR('d', 0x2d, struct drm_prime_handle)
+
 #define DRM_IOCTL_VIRTGPU_GETPARAM _IOWR('d', 0x43, struct drm_virtgpu_getparam)
 #define DRM_IOCTL_VIRTGPU_GET_CAPS _IOWR('d', 0x49, struct drm_virtgpu_get_caps)
 #define DRM_IOCTL_VIRTGPU_CONTEXT_INIT _IOWR('d', 0x4b, struct drm_virtgpu_context_init)
@@ -206,6 +215,10 @@ static const struct check ALLOWED[] = {
     {"version", DRM_IOCTL_VERSION, EXPECT_OK},
     {"get-cap", DRM_IOCTL_GET_CAP, EXPECT_OK},
     {"gem-close", DRM_IOCTL_GEM_CLOSE, EXPECT_EINVAL},
+    /* Same shape as `gem-close`: the only handle a render node can be asked to
+     * export is one it never had, so reaching `EINVAL` is the evidence that the
+     * call was permitted. This is also the ioctl `DRM_CAP_PRIME` promises. */
+    {"prime-handle-to-fd", DRM_IOCTL_PRIME_HANDLE_TO_FD, EXPECT_EINVAL},
     {"virtgpu-getparam", DRM_IOCTL_VIRTGPU_GETPARAM, EXPECT_OK},
     {"virtgpu-get-caps", DRM_IOCTL_VIRTGPU_GET_CAPS, EXPECT_OK},
     {"virtgpu-context-init", DRM_IOCTL_VIRTGPU_CONTEXT_INIT, EXPECT_OK},
@@ -217,6 +230,7 @@ static struct drm_set_client_cap client_cap;
 static struct drm_gem_close close_request;
 static struct drm_gem_flink flink;
 static struct drm_gem_open open_request;
+static struct drm_prime_handle prime_request;
 static struct drm_mode_card_res resources;
 static struct drm_mode_crtc crtc;
 static struct drm_mode_cursor cursor;
@@ -257,6 +271,9 @@ static void reset_arguments(void)
 
     memset(&open_request, 0, sizeof(open_request));
     open_request.name = UNKNOWN_NAME;
+
+    memset(&prime_request, 0, sizeof(prime_request));
+    prime_request.handle = UNKNOWN_HANDLE;
 
     memset(&resources, 0, sizeof(resources));
 
@@ -303,6 +320,8 @@ static void *argument_for(unsigned long request)
         return &flink;
     case DRM_IOCTL_GEM_OPEN:
         return &open_request;
+    case DRM_IOCTL_PRIME_HANDLE_TO_FD:
+        return &prime_request;
     case DRM_IOCTL_MODE_GETRESOURCES:
         return &resources;
     case DRM_IOCTL_MODE_GETCRTC:
@@ -406,6 +425,7 @@ static int fake_ioctl(void *opaque, unsigned long request, void *argument)
     int render_allowed = request == DRM_IOCTL_VERSION ||
                          request == DRM_IOCTL_GET_CAP ||
                          request == DRM_IOCTL_GEM_CLOSE ||
+                         request == DRM_IOCTL_PRIME_HANDLE_TO_FD ||
                          request == DRM_IOCTL_VIRTGPU_GETPARAM ||
                          request == DRM_IOCTL_VIRTGPU_GET_CAPS ||
                          request == DRM_IOCTL_VIRTGPU_CONTEXT_INIT;
