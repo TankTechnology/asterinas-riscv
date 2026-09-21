@@ -270,6 +270,31 @@ if [[ "${1:-}" == "prepare" ]]; then
     # matches.  Both were checked against a BOOTDELAY=0 build before landing.
     "${source_dir}/scripts/config" --file "${build_dir}/.config" \
         --set-val BOOTDELAY 0
+
+    # The bochs display's resolution is a *compile-time* property of U-Boot,
+    # not something QEMU's `xres=`/`yres=` device properties decide.
+    # `drivers/video/bochs.c:16-17` initialises its mode from
+    # CONFIG_VIDEO_BOCHS_SIZE_X/Y, and `pci display 0.1.0` in the framebuffer
+    # plan makes U-Boot program the device itself -- so whatever the QEMU
+    # command line asked for is overwritten with the value U-Boot was built
+    # with. Those defaults are 1280x1024, which is why every device contract in
+    # this tree has carried `BOCHS_XRGB8888` and why a contract with any other
+    # geometry fails the capture-dimension check *after* the guest has drawn
+    # correctly. Rebuilding U-Boot is the only lever, so it is a build input.
+    #
+    # Leave this unset for the ordinary 1280x1024 U-Boot; a run that needs a
+    # different geometry must also use its own QEMU_UBOOT_BUILD_DIR, because
+    # the two configurations cannot share one.
+    if [[ -n "${QEMU_UBOOT_BOCHS_SIZE:-}" ]]; then
+        if [[ ! "${QEMU_UBOOT_BOCHS_SIZE}" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
+            printf 'QEMU_UBOOT_BOCHS_SIZE must be <width>x<height>, got %s\n' \
+                "${QEMU_UBOOT_BOCHS_SIZE}" >&2
+            exit 2
+        fi
+        "${source_dir}/scripts/config" --file "${build_dir}/.config" \
+            --set-val VIDEO_BOCHS_SIZE_X "${QEMU_UBOOT_BOCHS_SIZE%%x*}" \
+            --set-val VIDEO_BOCHS_SIZE_Y "${QEMU_UBOOT_BOCHS_SIZE##*x}"
+    fi
     # `yes ''` rather than a plain stdin: kconfig asks for new symbols
     # interactively, and when stdin is not a tty it re-reads EOF and loops
     # forever instead of failing.  Feeding blank lines accepts the defaults and
@@ -290,6 +315,12 @@ if [[ "${1:-}" == "prepare" ]]; then
         CROSS_COMPILE=riscv64-linux-gnu- -j"$(nproc)" "${uboot_binary}"
     test -s "${build_dir}/${uboot_binary}"
     grep -q '^CONFIG_BOOTDELAY=0$' "${build_dir}/.config"
+    if [[ -n "${QEMU_UBOOT_BOCHS_SIZE:-}" ]]; then
+        grep -q "^CONFIG_VIDEO_BOCHS_SIZE_X=${QEMU_UBOOT_BOCHS_SIZE%%x*}$" \
+            "${build_dir}/.config"
+        grep -q "^CONFIG_VIDEO_BOCHS_SIZE_Y=${QEMU_UBOOT_BOCHS_SIZE##*x}$" \
+            "${build_dir}/.config"
+    fi
     grep -q '^CONFIG_CMD_BOOTI=y$' "${build_dir}/.config"
     grep -q '^CONFIG_CMD_EXT4=y$' "${build_dir}/.config"
     case "${storage_transport}" in

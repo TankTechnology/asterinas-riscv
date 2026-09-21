@@ -10,18 +10,18 @@ import socket
 import stat
 import time
 
-try:
-    from qemu_uboot_devices import BOCHS_XRGB8888
-except ModuleNotFoundError as error:
-    if error.name != "qemu_uboot_devices":
-        raise
-    from tools.riscv.qemu_uboot_devices import BOCHS_XRGB8888
-
-
 _MAX_LINE = 64 * 1024
 ABSOLUTE_AXIS_MAX = 32767
-_PPM_HEADER = f"P6\n{BOCHS_XRGB8888.width} {BOCHS_XRGB8888.height}\n255\n".encode()
-_MAX_CAPTURE_BYTES = len(_PPM_HEADER) + BOCHS_XRGB8888.width * BOCHS_XRGB8888.height * 3
+#: How much of a screendump this will read at all, independent of the geometry
+#: being captured. It exists so that a wedged or hostile QMP peer cannot make
+#: the reader allocate without limit. It is **not** a geometry check, and
+#: deriving it from `BOCHS_XRGB8888` -- as it was -- made it one by accident:
+#: a run capturing 1920x1080 died with "QEMU screendump output exceeds the
+#: registered display limit" after the guest had drawn correctly, and the
+#: message sent you looking at the display rather than at this constant.
+#: Whether the capture *matches* the contract is `audit_ppm`'s question, and
+#: it answers it by comparing dimensions.
+_MAX_CAPTURE_BYTES = 64 * 1024 * 1024
 _OPEN_DIRECTORY_FLAGS = (
     os.O_RDONLY
     | os.O_DIRECTORY
@@ -219,7 +219,7 @@ def _read_output(parent_descriptor: int, filename: str) -> bytes:
     finally:
         os.close(descriptor)
     if len(payload) > _MAX_CAPTURE_BYTES:
-        raise ValueError("QMP screendump output exceeds the registered display limit")
+        raise ValueError("QMP screendump output exceeds the read limit")
     return bytes(payload)
 
 

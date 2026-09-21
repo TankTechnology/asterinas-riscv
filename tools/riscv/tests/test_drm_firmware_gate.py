@@ -12,11 +12,18 @@ from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(TOOLS))
+# `megrez_board_session` imports `tools.riscv.*`, so the repository root has to
+# be importable too -- the board modules are reached as a package, not as
+# siblings of the QEMU ones. Inserted rather than relied on from the caller's
+# cwd, so the cross-check below runs the same way from anywhere.
+REPO_ROOT = TOOLS.parents[1]
+sys.path.insert(0, str(REPO_ROOT))
 
-from qemu_uboot_commands import qemu_argv  # noqa: E402
+from qemu_uboot_commands import boot_commands, qemu_argv  # noqa: E402
 from qemu_uboot_devices import (  # noqa: E402
     DRM_FIRMWARE,
     MEGREZ_BASIC,
+    MEGREZ_BOARD_GEOMETRY,
     DeviceKind,
     RuntimeDevicePaths,
     device_set_by_name,
@@ -158,6 +165,113 @@ class MegrezDrmFirmwareProfileTests(unittest.TestCase):
         # driver would select it and the firmware backend would go untested.
         self.assertNotIn(DeviceKind.VIRTIO_GPU, device_set.devices)
         self.assertNotIn(DeviceKind.VIRTIO_GPU_GL, device_set.devices)
+
+
+class BoardFramebufferContractTests(unittest.TestCase):
+    """The run that stands in for the board uses the board's own geometry.
+
+    `MEGREZ_FRAMEBUFFER` lives in `megrez_board_session.py` and is what the
+    physical session injects into the DTB. The QEMU device set restates the
+    layout, because the two modules are used from opposite ends of the tree
+    and neither should import the other's world. Restating it is only safe if
+    a test holds the two together -- otherwise the stand-in silently drifts
+    from the thing it stands in for, and the run keeps passing while testing a
+    layout the board does not have.
+
+    The one field that is deliberately *not* held together is the address, and
+    it is pinned separately below so the divergence is visible rather than
+    looking like drift.
+    """
+
+    def test_the_device_set_restates_the_board_geometry(self) -> None:
+        from megrez_board_session import MEGREZ_FRAMEBUFFER  # noqa: PLC0415
+
+        device_set = device_set_by_name("megrez-board-geometry")
+        self.assertIs(device_set, MEGREZ_BOARD_GEOMETRY)
+        contract = device_set.framebuffer
+        self.assertIsNotNone(contract)
+        # `address` and `size` are deliberately excluded: address is covered by
+        # the test below, and size here is the bochs BAR's extent rather than
+        # the board's scanout length.
+        for field in ("width", "height", "stride", "pixel_format"):
+            with self.subTest(field=field):
+                self.assertEqual(
+                    getattr(contract, field), getattr(MEGREZ_FRAMEBUFFER, field)
+                )
+
+    def test_the_scanout_is_the_display_so_the_capture_means_something(self) -> None:
+        """Why this is not the board's 0xfd800000, pinned rather than narrated.
+
+        Two independent reasons, and the test records both because they are
+        the kind of thing that gets "simplified" back later.
+
+        The address is not simulable at 2 GiB: U-Boot's own stack and code sit
+        at `[0xfde96000, 0xffffffff]` and the board's scanout overlaps them, so
+        U-Boot relocates the device tree into the scanout buffer and the kernel
+        destroys the tree it booted from. Declaring the region reserved does
+        not help -- U-Boot swallows the `-EEXIST` an overlapping region
+        returns.
+
+        And a scanout that is not the display cannot be screenshotted: pointing
+        the node into DRAM (0x90000000, tried) passed every guest check but the
+        capture held only U-Boot's two-colour console, which the PPM audit
+        rejects. So this set keeps the node on the bochs BAR, where the
+        screenshot is the scanout and therefore evidence.
+        """
+
+        from megrez_board_session import MEGREZ_FRAMEBUFFER  # noqa: PLC0415
+
+        contract = MEGREZ_BOARD_GEOMETRY.framebuffer
+        self.assertNotEqual(contract.address, MEGREZ_FRAMEBUFFER.address)
+        # On the bochs BAR, which is where the capture comes from.
+        self.assertEqual(contract.address, DRM_FIRMWARE.framebuffer.address)
+        self.assertEqual(contract.size, DRM_FIRMWARE.framebuffer.size)
+        # The board's geometry, which is the whole point of the set.
+        self.assertEqual(contract.width, MEGREZ_FRAMEBUFFER.width)
+        self.assertEqual(contract.height, MEGREZ_FRAMEBUFFER.height)
+        self.assertEqual(contract.stride, MEGREZ_FRAMEBUFFER.stride)
+        # And the layout the driver fits inside it: stride * height must not
+        # exceed the mapping, or the last row has nowhere to go.
+        self.assertLessEqual(contract.stride * contract.height, contract.size)
+
+    def test_the_scanout_is_declared_reserved_before_booti(self) -> None:
+        """U-Boot places the tree and the initrd itself, and cannot know.
+
+        `boot_fdt_add_mem_rsv_regions()` runs immediately before
+        `boot_relocate_fdt()`, so a `/reserved-memory` child is the channel
+        that reaches that decision. It is not load-bearing at the address
+        above -- the tree would not have landed there anyway -- but it is the
+        declaration that makes the scanout's extent known, and the board's own
+        DTB is the place that most needs it.
+        """
+
+        commands = boot_commands(device_set=MEGREZ_BOARD_GEOMETRY)
+        names = [command.name for command in commands]
+        self.assertIn("framebuffer-reserve-node", names)
+        self.assertIn("framebuffer-reserve-reg", names)
+        self.assertLess(
+            names.index("framebuffer-reserve-reg"), names.index("booti")
+        )
+        reserve_reg = commands[names.index("framebuffer-reserve-reg")]
+        self.assertIn("0x40000000", reserve_reg.text)
+        self.assertIn("0x1000000", reserve_reg.text)
+
+    def test_the_display_device_is_built_at_the_same_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as capture_root:
+            joined = " ".join(
+                qemu_argv(
+                    uboot=Path("/inputs/u-boot"),
+                    boot_disk=Path("/inputs/boot.ext4"),
+                    profile=MEGREZ_SV48_SVADE_DRM_FIRMWARE,
+                    device_set=MEGREZ_BOARD_GEOMETRY,
+                    device_paths=RuntimeDevicePaths(
+                        capture_root=Path(capture_root),
+                        monitor_socket=Path(capture_root) / "qmp.sock",
+                    ),
+                )
+            )
+        self.assertIn("bochs-display,xres=1920,yres=1080", joined)
+        self.assertNotIn("virtio-gpu", joined)
 
 
 class DrmFirmwareClassifierTests(unittest.TestCase):
