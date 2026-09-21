@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import re
 import tempfile
 import unittest
@@ -24,8 +25,10 @@ from tools.riscv.debian.rootfs.desktop_drm_gate import (
     GUEST_DEADLINE_MINIMUM_SECONDS,
     GUEST_DEADLINE_MARGIN_SECONDS,
     DesktopDRMOperations,
+    capture_rendered_ppm,
     classify_desktop_drm,
     classify_desktop_drm_virgl,
+    desktop_drm_milestones,
     desktop_drm_qemu_argv,
     observed_desktop_drm_pixels,
     observed_desktop_drm_renderer,
@@ -168,6 +171,100 @@ class DebianDesktopDRMTests(unittest.TestCase):
         self.assertIn("loglevel=7", bootargs)
         self.assertIn("asterinas.desktop_drm_deadline=600", bootargs)
         self.assertTrue(bootargs.endswith("--root-init=systemd"))
+
+
+class DesktopDRMScreenshotContractTests(unittest.TestCase):
+    def test_the_capture_accepts_what_this_gate_passes_it(self) -> None:
+        """The screenshot call and the screenshot function have to agree.
+
+        This gate passed `min_distinct_colors` and
+        `min_non_background_ratio` for as long as those constants have existed,
+        and `capture_rendered_ppm` never took them, so every run that captured
+        a screenshot died with `TypeError: ... got an unexpected keyword
+        argument`. The orchestrator reported the phase name, `protocol`, and
+        threw the exception away -- so the failure named nothing.
+
+        It went unnoticed because the virgl run, which is the one anybody runs,
+        skips the capture entirely (`_capture_screenshot` is false for a GL
+        device). The call only ever ran on the non-3D path. The signature is
+        the contract between the two, so this pins the names the gate passes.
+        """
+
+        parameters = inspect.signature(capture_rendered_ppm).parameters
+        for name in ("min_distinct_colors", "min_non_background_ratio"):
+            with self.subTest(parameter=name):
+                self.assertIn(name, parameters)
+
+    def test_the_gate_still_passes_its_own_thresholds(self) -> None:
+        # The parameters existing is only half of it: the call has to name the
+        # gate's constants, or the stricter "the desktop has painted" check
+        # would silently become the looser "the screen is not blank" one.
+        source = inspect.getsource(DesktopDRMOperations.run_protocol)
+        self.assertIn("min_distinct_colors=DESKTOP_DRM_MIN_DISTINCT_COLORS", source)
+        self.assertIn(
+            "min_non_background_ratio=DESKTOP_DRM_MIN_NON_BACKGROUND_RATIO", source
+        )
+
+
+class DesktopDRMXorgMilestoneTests(unittest.TestCase):
+    """The Xorg milestone has to be a check, not a constant on both sides.
+
+    It was `device=virtio-gpu` in this gate's expected list and the same literal
+    in the guest's `emit`, so the two agreed by construction and the milestone
+    passed on every machine -- including one with no virtio-gpu at all, where it
+    was false. Nothing could have caught that from a transcript, because the
+    transcript was the thing being asserted.
+
+    These pin both halves: the expectation varies with the display device, and
+    the guest derives its half instead of restating it. Either one alone is
+    useless -- a device-aware expectation matched against a constant emission
+    fails every non-virtio run, and a constant expectation matched against an
+    observation never fails at all.
+    """
+
+    EVIDENCE = (
+        Path(__file__).resolve().parents[1] / "debian/rootfs/desktop_drm_evidence.sh"
+    )
+
+    def test_the_expected_driver_follows_the_display_device(self) -> None:
+        self.assertIn(
+            "DEBIAN_DESKTOP_DRM_XORG driver=modesetting device=virtio_gpu "
+            "drm=active display=:0",
+            desktop_drm_milestones("virtio-gpu-device"),
+        )
+        # A bochs display has no GPU, so what presents is the firmware
+        # backend's `simpledrm`.
+        self.assertIn(
+            "DEBIAN_DESKTOP_DRM_XORG driver=modesetting device=simpledrm "
+            "drm=active display=:0",
+            desktop_drm_milestones("bochs-display"),
+        )
+
+    def test_an_unknown_display_device_is_refused(self) -> None:
+        # Better to fail here than to expect a driver nothing will report.
+        with self.assertRaises(ValueError):
+            desktop_drm_milestones("some-other-display")
+
+    def test_the_guest_observes_the_driver_rather_than_restating_it(self) -> None:
+        script = self.EVIDENCE.read_text()
+        emits = [
+            line
+            for line in script.splitlines()
+            if "DEBIAN_DESKTOP_DRM_XORG" in line and line.lstrip().startswith("emit")
+        ]
+        self.assertEqual(len(emits), 1, "expected exactly one Xorg emit line")
+        # A literal `device=` is the defect: it prints the same string on a
+        # machine that does not have that device.
+        self.assertNotIn("device=virtio-gpu", emits[0])
+        self.assertIn("$(drm_driver_name)", emits[0])
+
+    def test_the_guest_reports_a_missing_device_as_itself(self) -> None:
+        # `absent` and `unnamed` are not driver names, and are not meant to be:
+        # substituting a plausible one would turn "there is no card node" into
+        # "the wrong driver is bound", which is a different investigation.
+        script = self.EVIDENCE.read_text()
+        self.assertIn("printf 'absent'", script)
+        self.assertIn("printf 'unnamed'", script)
 
 
 class DesktopDRMRendererTests(unittest.TestCase):
