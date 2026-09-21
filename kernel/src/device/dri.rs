@@ -351,6 +351,16 @@ enum DisplaySource {
     Firmware(Arc<FrameBuffer>),
 }
 
+impl DisplaySource {
+    /// The driver name `DRM_IOCTL_VERSION` and sysfs report for this source.
+    fn driver_name(&self) -> &'static str {
+        match self {
+            DisplaySource::Virtio(_) => DRIVER_NAME,
+            DisplaySource::Firmware(_) => FIRMWARE_DRIVER_NAME,
+        }
+    }
+}
+
 /// The display this machine has, if it has one this driver can present through.
 ///
 /// virtio-gpu wins when both are present: it is the device with a 3D path and a
@@ -366,14 +376,27 @@ fn display_source() -> Option<DisplaySource> {
     })
 }
 
+/// The name of the driver that is actually presenting, for sysfs to report.
+///
+/// Read from the selected display rather than from `DRIVER_NAME`, which is a
+/// virtio-gpu constant: a machine whose only display is the firmware
+/// framebuffer has no virtio-gpu, and its `uevent` said so anyway. libdrm
+/// reads that file to describe the device, and a guest checking it would have
+/// been reading a constant -- which is the same defect as a guest that prints
+/// a constant, one layer down.
+pub(super) fn driver_name() -> &'static str {
+    display_source().map_or(DRIVER_NAME, |source| source.driver_name())
+}
+
 /// Builds the presentation devices for a source.
 fn display_device(source: DisplaySource) -> Result<DisplayDevice> {
+    let name = source.driver_name();
     Ok(match source {
         DisplaySource::Virtio(gpu) => DisplayDevice {
             scanout: Arc::clone(&gpu) as Arc<dyn ScanoutBackend>,
             cursor: Some(Arc::clone(&gpu) as Arc<dyn CursorBackend>),
             gpu: Some(gpu),
-            name: DRIVER_NAME,
+            name,
             connector_type: DRM_MODE_CONNECTOR_VIRTUAL,
         },
         DisplaySource::Firmware(framebuffer) => DisplayDevice {
@@ -384,7 +407,7 @@ fn display_device(source: DisplaySource) -> Result<DisplayDevice> {
             // the pointer itself instead of waiting for one that never comes.
             cursor: None,
             gpu: None,
-            name: FIRMWARE_DRIVER_NAME,
+            name,
             // Not `DRM_MODE_CONNECTOR_VIRTUAL`: there is a real connector here,
             // firmware is driving it, and this driver has no way to ask what
             // kind it is. "Unknown" is what the uapi provides for exactly that.

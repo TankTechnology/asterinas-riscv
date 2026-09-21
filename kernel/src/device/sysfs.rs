@@ -116,7 +116,10 @@ fn build_dev_node(nodes: &[(&str, u32)]) -> SysTreeResult<Option<Arc<AttrLessSys
 fn drm_uevent() -> String {
     alloc::format!(
         "DRIVER={}\nMODALIAS=virtio:d{:08X}\n",
-        super::dri::DRIVER_NAME,
+        // The selected backend's name, not the virtio-gpu constant: a machine
+        // whose only display is the firmware framebuffer has no virtio-gpu,
+        // and libdrm reads this file to describe the device.
+        super::dri::driver_name(),
         VIRTIO_ID_GPU
     )
 }
