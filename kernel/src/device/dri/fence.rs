@@ -40,11 +40,25 @@ impl FenceFile {
     }
 }
 
+/// The readiness a completed fence reports for a given request mask.
+///
+/// A free function so the rule can be checked without a file: building one
+/// needs `FileCommon`, which needs the system clock, which a kernel unit test
+/// does not have — the rule itself needs none of that.
+fn signalled_readiness(mask: IoEvents) -> IoEvents {
+    // Readable from the moment it exists. Only the bits the caller asked
+    // about are reported: `epoll` requests `EPOLLOUT` whenever the caller
+    // lists it, so a descriptor that answers writable without being asked
+    // makes `epoll_wait` return immediately, every time — the caller is not
+    // waiting, it is spinning. The DRM descriptor itself was fixed for exactly
+    // this; the fence has the same shape and gets the same rule.
+    mask & IoEvents::IN
+}
+
 impl Pollable for FenceFile {
     fn poll(&self, mask: IoEvents, _poller: Option<&mut PollHandle>) -> IoEvents {
-        // Readable from the moment it exists, and no poller is registered
-        // because there is no later state to reach.
-        mask & IoEvents::IN
+        // No poller is registered because there is no later state to reach.
+        signalled_readiness(mask)
     }
 }
 
@@ -88,5 +102,38 @@ impl FileLike for FenceFile {
             inner: self,
             fd_flags,
         })
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    // What is testable here is the readiness rule, not a `FenceFile`: building
+    // one goes through `FileCommon::new`, which reads the system clock, and a
+    // kernel unit test does not have one — the first attempt at these tests
+    // panicked in `time/clocks/system_wide.rs` and then poisoned the clock's
+    // `Once`, taking three unrelated tests with it. So the rule is a free
+    // function and these drive it directly. `read`, `access_mode` and the
+    // fdinfo line are unreachable from here and are covered by the guest
+    // gates, which exercise a real fence through `VIRTGPU_EXECBUFFER`.
+
+    #[ktest]
+    fn a_signalled_fence_reports_readable() {
+        assert_eq!(signalled_readiness(IoEvents::IN), IoEvents::IN);
+        assert!(signalled_readiness(IoEvents::IN).contains(IoEvents::IN));
+    }
+
+    #[ktest]
+    fn a_signalled_fence_reports_only_what_it_was_asked_about() {
+        assert_eq!(signalled_readiness(IoEvents::OUT), IoEvents::empty());
+        assert_eq!(signalled_readiness(IoEvents::empty()), IoEvents::empty());
+        assert_eq!(
+            signalled_readiness(IoEvents::IN | IoEvents::OUT),
+            IoEvents::IN,
+            "the fence must not claim writability nobody asked about",
+        );
     }
 }
