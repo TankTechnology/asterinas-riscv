@@ -156,14 +156,7 @@ pub(super) fn handle_to_fd(
     gem_handle: u32,
     flags: u32,
 ) -> Result<(Arc<DmaBufFile>, FdFlags)> {
-    /// `DRM_CLOEXEC`, which is `O_CLOEXEC` under another name.
-    const DRM_CLOEXEC: u32 = CreationFlags::O_CLOEXEC.bits();
-    /// `DRM_RDWR`, which is `O_RDWR` under another name.
-    const DRM_RDWR: u32 = AccessMode::O_RDWR as u32;
-
-    if flags & !(DRM_CLOEXEC | DRM_RDWR) != 0 {
-        return_errno_with_message!(Errno::EINVAL, "unsupported PRIME export flags");
-    }
+    let (access_mode, fd_flags) = export_flags(flags)?;
 
     let object_id = object_for_handle(&handle.inner.lock(), gem_handle)?;
 
@@ -179,11 +172,6 @@ pub(super) fn handle_to_fd(
         (object.size as u64, ensure_pool(&mut objects)?)
     };
 
-    let access_mode = if flags & DRM_RDWR != 0 {
-        AccessMode::O_RDWR
-    } else {
-        AccessMode::O_RDONLY
-    };
     let path = AnonInodeFs::new_path(|_| "anon_inode:dma-buf".to_string());
     let file = Arc::new(DmaBufFile {
         pool,
@@ -193,12 +181,42 @@ pub(super) fn handle_to_fd(
         common: FileCommon::new(path, StatusFlags::empty()),
     });
 
+    Ok((file, fd_flags))
+}
+
+/// Interprets `DRM_IOCTL_PRIME_HANDLE_TO_FD`'s `flags` argument.
+///
+/// `PRIME` reuses the open flags rather than defining its own: Linux's
+/// `DRM_CLOEXEC` *is* `O_CLOEXEC` and `DRM_RDWR` *is* `O_RDWR`. That aliasing
+/// is the reason this is a function with a test rather than four inline
+/// branches — a driver that invented its own values would accept a `flags`
+/// word libdrm never sends and reject the ones it does, and both failures look
+/// like the ioctl not being implemented.
+///
+/// Split from [`handle_to_fd`] so the decoding can be checked without a device:
+/// it is the whole of what that function does before it touches the object
+/// space, and it is the part with the uapi contract in it.
+fn export_flags(flags: u32) -> Result<(AccessMode, FdFlags)> {
+    /// `DRM_CLOEXEC`, which is `O_CLOEXEC` under another name.
+    const DRM_CLOEXEC: u32 = CreationFlags::O_CLOEXEC.bits();
+    /// `DRM_RDWR`, which is `O_RDWR` under another name.
+    const DRM_RDWR: u32 = AccessMode::O_RDWR as u32;
+
+    if flags & !(DRM_CLOEXEC | DRM_RDWR) != 0 {
+        return_errno_with_message!(Errno::EINVAL, "unsupported PRIME export flags");
+    }
+
+    let access_mode = if flags & DRM_RDWR != 0 {
+        AccessMode::O_RDWR
+    } else {
+        AccessMode::O_RDONLY
+    };
     let fd_flags = if flags & DRM_CLOEXEC != 0 {
         FdFlags::CLOEXEC
     } else {
         FdFlags::empty()
     };
-    Ok((file, fd_flags))
+    Ok((access_mode, fd_flags))
 }
 
 /// Imports a dma-buf descriptor as a new handle in this file's handle space.
@@ -215,4 +233,59 @@ pub(super) fn fd_to_handle(handle: &DriHandle, file: &DmaBufFile) -> Result<u32>
     inner.next_handle = inner.next_handle.saturating_add(1);
     inner.handles.insert(new_handle, file.object_id);
     Ok(new_handle)
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+
+    #[ktest]
+    fn prime_export_flags_alias_the_open_flags() {
+        // libdrm sends `DRM_CLOEXEC` and `DRM_RDWR`, which are `O_CLOEXEC` and
+        // `O_RDWR`. Asserted against the literals the uapi defines rather than
+        // against the constants this module uses, so a change to either side
+        // has to be a deliberate one.
+        assert_eq!(CreationFlags::O_CLOEXEC.bits(), 0o2000000);
+        assert_eq!(AccessMode::O_RDWR as u32, 0o2);
+    }
+
+    #[ktest]
+    fn no_flags_means_a_read_only_descriptor_that_survives_exec() {
+        let (access, fd_flags) = export_flags(0).expect("no flags is legal");
+        assert_eq!(access, AccessMode::O_RDONLY);
+        assert!(!fd_flags.contains(FdFlags::CLOEXEC));
+    }
+
+    #[ktest]
+    fn each_flag_selects_its_own_field() {
+        let cloexec = CreationFlags::O_CLOEXEC.bits();
+        let rdwr = AccessMode::O_RDWR as u32;
+
+        let (access, fd_flags) = export_flags(rdwr).expect("DRM_RDWR");
+        assert_eq!(access, AccessMode::O_RDWR);
+        assert!(!fd_flags.contains(FdFlags::CLOEXEC));
+
+        let (access, fd_flags) = export_flags(cloexec).expect("DRM_CLOEXEC");
+        assert_eq!(access, AccessMode::O_RDONLY);
+        assert!(fd_flags.contains(FdFlags::CLOEXEC));
+
+        let (access, fd_flags) = export_flags(cloexec | rdwr).expect("both");
+        assert_eq!(access, AccessMode::O_RDWR);
+        assert!(fd_flags.contains(FdFlags::CLOEXEC));
+    }
+
+    #[ktest]
+    fn a_flag_the_uapi_does_not_define_is_refused() {
+        // Refused rather than masked off. A client that sent something else
+        // meant something by it, and quietly handing back a descriptor with
+        // different properties than it asked for is how a consumer ends up
+        // writing to a mapping it was given read-only.
+        let undefined = 0o4000;
+        assert!(export_flags(undefined).is_err());
+        assert!(export_flags(CreationFlags::O_CLOEXEC.bits() | undefined).is_err());
+        // `O_ACCMODE`'s write-only bit is not `O_RDWR` and is not defined here.
+        assert!(export_flags(0o1).is_err());
+    }
 }
