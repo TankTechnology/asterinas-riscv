@@ -1509,6 +1509,33 @@ int main(void)
             source,
         )
 
+    def test_physical_graphics_control_starts_the_resolver_shim(self) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+        browser = source[source.index("start_browser() {") :]
+        browser = browser[: browser.index("\nboot_phase() {")]
+
+        # The isolated debug console replaces systemd's default.target with a
+        # target that wants only the console service, so nothing under
+        # basic.target.wants starts on its own and the shim has to be started
+        # here -- with the ignore-dependencies mode the browser units need.
+        self.assertIn(
+            "start --no-block --job-mode=ignore-dependencies \\\n"
+            "            asterinas-dns-shim.service",
+            browser,
+        )
+        # And before the browser starts, so the tunnel can publish a resolver
+        # before anything tries to resolve a name.
+        self.assertLess(
+            browser.index("asterinas-dns-shim.service"),
+            browser.index("browser_stage browser-start"),
+        )
+        # A shim that will not start costs the guest its resolver but not the
+        # desktop, so it is reported instead of failing the boot.
+        self.assertIn(
+            "boot_phase 'ASTERINAS_DESKTOP_DNS_SHIM_START status=1'",
+            browser,
+        )
+
     def test_physical_graphics_control_disarms_only_after_desktop_readiness(
         self,
     ) -> None:
