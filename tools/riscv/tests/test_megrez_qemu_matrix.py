@@ -17,6 +17,7 @@ from unittest import mock
 from tools.riscv.qemu_ppm import audit_ppm
 import tools.riscv.qemu_qmp as qmp
 from tools.riscv.qemu_qmp import capture_screendump
+from tools.riscv.qemu_uboot_devices import BOCHS_XRGB8888, MEGREZ_BOARD_GEOMETRY
 
 
 def ppm(width: int, height: int, pixels: bytes) -> bytes:
@@ -493,7 +494,14 @@ class QmpCaptureTests(unittest.TestCase):
             payload,
         )
 
-    def test_safe_reader_enforces_the_registered_capture_limit(self) -> None:
+    def test_safe_reader_enforces_the_capture_read_limit(self) -> None:
+        """The limit bounds the read; it does not know the geometry.
+
+        It used to be computed from `BOCHS_XRGB8888`, which made it a
+        1280x1024 limit wearing a general name and broke every capture of a
+        larger geometry. Anything under the bound has to come back whole,
+        whatever the display is.
+        """
         directory = self.root / "output"
         directory.mkdir()
         exact = directory / "exact"
@@ -511,6 +519,20 @@ class QmpCaptureTests(unittest.TestCase):
                 qmp._read_output(descriptor, "oversized")
         finally:
             os.close(descriptor)
+
+    def test_the_capture_limit_does_not_know_a_geometry(self) -> None:
+        """It must admit any display this harness can be pointed at.
+
+        The limit was `BOCHS_XRGB8888`'s pixel count, so a 1920x1080 capture
+        -- 6.2 MB against a 3.9 MB cap -- was refused before anything looked at
+        it. Pin the property rather than the number: the largest geometry the
+        tree defines has to fit.
+        """
+
+        for framebuffer in (BOCHS_XRGB8888, MEGREZ_BOARD_GEOMETRY.framebuffer):
+            with self.subTest(width=framebuffer.width, height=framebuffer.height):
+                payload = framebuffer.width * framebuffer.height * 3
+                self.assertLess(payload, qmp._MAX_CAPTURE_BYTES)
 
     def test_safe_reader_collects_short_reads_and_rejects_overflow_across_chunks(
         self,

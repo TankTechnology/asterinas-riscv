@@ -96,6 +96,56 @@ DRM_FIRMWARE = QemuDeviceSet(
     (DeviceKind.BOCHS_DISPLAY,),
     BOCHS_XRGB8888,
 )
+#: The board's scanout **geometry** (1920x1080, stride 7680), which is what
+#: `BOCHS_XRGB8888` never exercised: 1280x1024 is the only layout any run has
+#: ever used, and it is U-Boot's compiled-in default rather than a choice --
+#: see `QEMU_UBOOT_BOCHS_SIZE` in `prepare_qemu_uboot_booti.sh`.
+#:
+#: The geometry is `MEGREZ_FRAMEBUFFER` in `megrez_board_session.py` -- what
+#: the kernel has logged on hardware as `Registered firmware framebuffer:
+#: base=0xfd800000 ... resolution=1920x1080`. A test holds the two together,
+#: so this is a second spelling rather than a second source. The **address** is
+#: deliberately not the board's, for two independent reasons, and both are
+#: worth stating because each cost a failed run to find.
+#:
+#: 1. **0xfd800000 is not simulable at 2 GiB.** U-Boot carves its stack and
+#:    code out of the top of RAM -- `[0xfde96000, 0xffffffff]` -- and the
+#:    board's scanout `[0xfd800000, 0xfdfe9000)` overlaps it. U-Boot relocates
+#:    the device tree to 0xfde8f000, *inside the scanout*; the kernel boots on
+#:    that tree, `aster-framebuffer` initialises and writes the screen, and
+#:    destroys the tree it booted from (`Uncaught panic: /cpus is a required
+#:    node`, 91 ms in). Declaring it in `/reserved-memory` does not rescue it:
+#:    U-Boot's `boot_fdt_reserve_region()` swallows the `-EEXIST` that an
+#:    overlapping region returns (u-boot boot/image-fdt.c:72-89), so the
+#:    declaration is dropped silently. The board is not affected -- 16 GiB puts
+#:    its U-Boot ~15 GB away -- but a run claiming to exercise that address
+#:    would be claiming something false.
+#:
+#: 2. **A scanout that is not the display cannot be screenshotted.** With the
+#:    node pointing into DRAM instead (0x90000000, also tried), every guest
+#:    check passed and the allocator carve-out was visible in the boot log
+#:    (`Adding free frames ... 87081000..90000000`), but the QEMU capture then
+#:    holds only U-Boot's console text: two distinct colours, against the PPM
+#:    audit's `distinct_colors >= 3`. That is structural, not a bug -- QEMU
+#:    has no display where that buffer is -- so the screenshot claim is simply
+#:    unavailable for that arrangement and the gate reports the run as failed.
+#:
+#: What this set therefore covers is the geometry end to end, with the
+#: screenshot real, because the node points at the bochs BAR exactly as
+#: `BOCHS_XRGB8888` does. It does **not** cover a scanout inside DRAM.
+MEGREZ_BOARD_GEOMETRY = QemuDeviceSet(
+    "megrez-board-geometry",
+    (DeviceKind.BOCHS_DISPLAY,),
+    FramebufferContract(
+        address=0x4000_0000,
+        size=0x0100_0000,
+        width=1920,
+        height=1080,
+        stride=1920 * 4,
+        pixel_format="x8r8g8b8",
+    ),
+)
+
 # The only set that is not `-display none`: `egl-headless,gl=on` is what gives
 # the GL device a host context, and without one QEMU withholds the virgl
 # feature bit entirely.
@@ -114,6 +164,7 @@ _DEVICE_SETS = MappingProxyType(
         DRM_GEM.name: DRM_GEM,
         DRM_RENDER_NODE.name: DRM_RENDER_NODE,
         DRM_FIRMWARE.name: DRM_FIRMWARE,
+        MEGREZ_BOARD_GEOMETRY.name: MEGREZ_BOARD_GEOMETRY,
         DRM_VIRGL.name: DRM_VIRGL,
     }
 )

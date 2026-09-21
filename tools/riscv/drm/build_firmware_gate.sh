@@ -9,6 +9,12 @@ Usage: build_firmware_gate.sh [OUTPUT]
        build_firmware_gate.sh --print-tools
 
 Build the static RISC-V firmware gate initramfs.
+
+The probe pins the framebuffer layout it expects. The defaults are the
+generic QEMU `BOCHS_XRGB8888` contract (1280x1024, stride 5120); set
+GATE_MODE_WIDTH / GATE_MODE_HEIGHT / GATE_MODE_STRIDE to pin another. The
+caller is expected to take those numbers from the device set that writes the
+device tree node, so the expectation and the node cannot drift apart.
 EOF
 }
 
@@ -50,7 +56,24 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+mode_width="${GATE_MODE_WIDTH:-1280}"
+mode_height="${GATE_MODE_HEIGHT:-1024}"
+mode_stride="${GATE_MODE_STRIDE:-$((mode_width * 4))}"
+for value in "$mode_width" "$mode_height" "$mode_stride"; do
+    if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
+        printf 'error: framebuffer geometry must be positive integers, got %s\n' \
+            "$value" >&2
+        exit 2
+    fi
+done
+printf 'firmware gate geometry: %sx%s stride %s\n' \
+    "$mode_width" "$mode_height" "$mode_stride"
+
 "$COMPILER" -std=c11 -O2 -static -no-pie -Wall -Wextra -Werror \
-    -march=rv64gc -mabi=lp64d "$SOURCE" -o "$BUILD_DIRECTORY/init"
+    -march=rv64gc -mabi=lp64d \
+    -DMODE_WIDTH="${mode_width}U" \
+    -DMODE_HEIGHT="${mode_height}U" \
+    -DMODE_STRIDE="${mode_stride}U" \
+    "$SOURCE" -o "$BUILD_DIRECTORY/init"
 PYTHONPATH="$TOOLS_DIR" python3 "$TOOLS_DIR/make_qemu_uboot_initramfs.py" \
     "$OUTPUT" --init-elf "$BUILD_DIRECTORY/init"
