@@ -147,6 +147,27 @@ start_browser() {
         done
     fi
 
+    # The isolated debug console replaces systemd's default.target with
+    # asterinas-debug-console.target, and that target carries
+    # DefaultDependencies=no and wants only the console service. Nothing under
+    # basic.target.wants therefore starts on its own -- including the resolver
+    # shim, which is why the guest resolved nothing even with the tunnel up.
+    # The browser units survive the same cut only because they are started here
+    # with ignore-dependencies, so the shim is started the same way. It runs
+    # before the input-wait window so its probe has that long to answer and
+    # publish resolv.conf before the browser resolves anything.
+    if [ "$status" -eq 0 ]; then
+        systemctl_bounded reset-failed asterinas-dns-shim.service \
+            >/dev/null 2>&1 || true
+        if ! systemctl_bounded start --no-block --job-mode=ignore-dependencies \
+            asterinas-dns-shim.service >/dev/null 2>&1; then
+            # Reported, not fatal: browsing goes through the host proxy, which
+            # resolves the names it is asked for, so a missing shim costs the
+            # guest its own resolver but not the desktop.
+            boot_phase 'ASTERINAS_DESKTOP_DNS_SHIM_START status=1'
+        fi
+    fi
+
     browser_stage input-wait
     attempt=0
     while [ "$status" -eq 0 ]; do
