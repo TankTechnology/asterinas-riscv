@@ -24,9 +24,19 @@ fn register_device(name: String, device: Arc<GpuDevice>) {
     gpu_devs.insert(name, device);
 }
 
-/// Returns the first registered [`GpuDevice`].
+/// Returns the first registered [`GpuDevice`], if there is one.
+///
+/// `None` covers two situations: no GPU was discovered, and the registry was
+/// never initialized. On a real boot only the first can happen —
+/// `virtio_component_init` calls [`init`] unconditionally, so a machine with
+/// no virtio-gpu gets an empty table rather than no table. The second is what
+/// a kernel unit test sees, since nothing initializes the virtio transport
+/// there, and reaching for the table with `unwrap()` made this panic in a
+/// function whose whole signature is an admission that the answer may be
+/// `None` — which took down the sysfs tests that ask what driver is
+/// presenting.
 pub fn first_device() -> Option<Arc<GpuDevice>> {
-    let gpu_devs = GPU_DEVICE_TABLE.get().unwrap().lock();
+    let gpu_devs = GPU_DEVICE_TABLE.get()?.lock();
     gpu_devs.values().next().cloned()
 }
 
