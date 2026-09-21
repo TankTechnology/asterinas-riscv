@@ -23,13 +23,19 @@ from qemu_uboot_secure_io import PinnedOutputDirectory, PinnedRegularInput
 
 DRIVER_MARKER = b"DRM_FIRMWARE_DRIVER PASS"
 MAX_MARKER = b"DRM_FIRMWARE_MAX PASS"
-PRESENT_MARKER = b"DRM_FIRMWARE_PRESENT PASS"
-PATTERN_MARKER = b"DRM_FIRMWARE_PATTERN PASS"
-FBDEV_MARKER = b"DRM_FIRMWARE_FBDEV PASS"
+SETCRTC_MARKER = b"DRM_FIRMWARE_SETCRTC PASS"
+PAGEFLIP_MARKER = b"DRM_FIRMWARE_PAGEFLIP PASS"
+DIRTYFB_MARKER = b"DRM_FIRMWARE_DIRTYFB PASS"
 READY_MARKER = DRM_FIRMWARE_READY_LINE
-FAIL_PATTERN = re.compile(rb"DRM_FIRMWARE_FAIL stage=([A-Za-z0-9-]+) errno=(-?\d+)")
+# A failure is either an errno from a syscall or a named condition the probe
+# decided for itself, so both forms have to be matched: a probe that exits with
+# `detail=rect-not-copied` would otherwise read as a bare missing marker.
+FAIL_PATTERN = re.compile(
+    rb"DRM_FIRMWARE_FAIL stage=([A-Za-z0-9-]+) (?:errno=(-?\d+)|detail=([A-Za-z0-9-]+))"
+)
 MISMATCH_PATTERN = re.compile(
-    rb"DRM_FIRMWARE_MISMATCH x=(\d+) y=(\d+) found=([0-9a-fA-F]+) want=([0-9a-fA-F]+)"
+    rb"DRM_FIRMWARE_MISMATCH x=(\d+) y=(\d+) found=([0-9a-fA-F]+) want=([0-9a-fA-F]+) "
+    rb"stage=([A-Za-z0-9-]+) where=([A-Za-z0-9-]+)"
 )
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 FATAL_MARKERS = (
@@ -39,16 +45,20 @@ FATAL_MARKERS = (
 
 # The order is the claim. Each stage depends on the one before it: the driver
 # name decides which backend everything else is testing, the maximum decides
-# that the mode this probe is about to set is one the display admits, and the
-# pixel comparison is only meaningful once a present has actually happened. A
-# transcript with these markers in another order is not a pass with a reordered
-# log; it is a different sequence.
+# that the mode this probe sets is one the display admits, and the three
+# present paths are three different ioctls that must each put the right pixels
+# on the screen. A transcript with these markers in another order is not a pass
+# with a reordered log; it is a different sequence.
+#
+# The three are all present because covering only `SETCRTC` would leave
+# `PAGE_FLIP` -- which the X server uses for every frame after the first -- and
+# `DIRTYFB` to be discovered broken by a client rather than by this gate.
 STAGE_SEQUENCE = (
     ("firmware driver name", re.compile(re.escape(DRIVER_MARKER))),
     ("fixed maximum mode", re.compile(re.escape(MAX_MARKER))),
-    ("displays a frame", re.compile(re.escape(PRESENT_MARKER))),
-    ("writes a known pattern", re.compile(re.escape(PATTERN_MARKER))),
-    ("fbdev reads the pixels back", re.compile(re.escape(FBDEV_MARKER))),
+    ("setcrtc presents a frame", re.compile(re.escape(SETCRTC_MARKER))),
+    ("page flip presents a frame", re.compile(re.escape(PAGEFLIP_MARKER))),
+    ("dirtyfb copies only the damage", re.compile(re.escape(DIRTYFB_MARKER))),
     ("firmware ready marker", re.compile(re.escape(READY_MARKER))),
 )
 
@@ -85,26 +95,35 @@ def classify_transcript(transcript: bytes) -> FirmwareGateResult:
 
     # A pixel mismatch is the failure this gate exists to catch, and it is not
     # a stage failure: every ioctl succeeded and the picture is still wrong.
-    # Reported before the generic checks so the coordinates survive.
+    # Reported before the generic checks so the coordinates and the side of the
+    # damage they fell on survive -- "outside" and "inside" failing mean
+    # opposite things here, and neither is visible in a bare marker count.
     mismatch = MISMATCH_PATTERN.search(transcript)
     if mismatch is not None:
-        x, y, found, want = (group.decode() for group in mismatch.groups())
+        x, y, found, want, stage, where = (
+            group.decode() for group in mismatch.groups()
+        )
         return FirmwareGateResult(
             False,
-            f"scanout pixel ({x},{y}) is 0x{found} but should be 0x{want}",
+            f"{stage}: pixel ({x},{y}) {where} the damage is 0x{found}, "
+            f"should be 0x{want}",
             0,
-            "pixels",
+            stage,
         )
 
     # The probe diagnoses its own failure; prefer that over a generic "missing
-    # marker", which would not say which stage broke.
+    # marker", which would not say which stage broke. It reports either an
+    # errno from a syscall or a condition it decided for itself.
     failure = FAIL_PATTERN.search(transcript)
     if failure is not None:
         stage = failure.group(1).decode()
-        errno_value = int(failure.group(2))
-        return FirmwareGateResult(
-            False, f"guest reported {stage} failure: errno {errno_value}", 0, stage
-        )
+        errno_value = failure.group(2)
+        detail = failure.group(3)
+        if errno_value is not None:
+            reason = f"guest reported {stage} failure: errno {int(errno_value)}"
+        else:
+            reason = f"guest reported {stage} failure: {detail.decode()}"
+        return FirmwareGateResult(False, reason, 0, stage)
 
     offset = 0
     for index, (label, pattern) in enumerate(STAGE_SEQUENCE):
