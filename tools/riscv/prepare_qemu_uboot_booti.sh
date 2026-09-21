@@ -275,7 +275,15 @@ if [[ "${1:-}" == "prepare" ]]; then
     # forever instead of failing.  Feeding blank lines accepts the defaults and
     # terminates.  This is not hypothetical -- getting it wrong once spun `conf`
     # in a tight loop that wrote tens of gigabytes and filled the disk.
-    yes '' | make -C "${source_dir}" O="${build_dir}" \
+    #
+    # `{ yes '' || true; }` and not a bare `yes ''`: this script runs under
+    # `set -o pipefail`, and `yes` has no way to exit on its own -- it is killed
+    # by SIGPIPE the moment `make` closes the pipe, which is the normal end of
+    # this pipeline.  A bare `yes` therefore makes the whole pipeline report
+    # 141 even when the configuration succeeded, and `set -e` aborts the
+    # prepare right there.  Swallowing only `yes`'s status keeps `make`'s, so a
+    # genuinely failed `olddefconfig` still stops the script.
+    { yes '' || true; } | make -C "${source_dir}" O="${build_dir}" \
         CROSS_COMPILE=riscv64-linux-gnu- olddefconfig
 
     make -C "${source_dir}" O="${build_dir}" \
