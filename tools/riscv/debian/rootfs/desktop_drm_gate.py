@@ -91,24 +91,70 @@ DESKTOP_DRM_PIXEL_PREFIX = "DEBIAN_DESKTOP_DRM_PIXEL "
 DESKTOP_DRM_PIXEL_MILESTONE = DESKTOP_DRM_PIXEL_PREFIX + "ok=yes"
 DESKTOP_DRM_PIXEL_RE = re.compile(rb"DEBIAN_DESKTOP_DRM_PIXEL (ok=.*)")
 
-DESKTOP_DRM_MILESTONES = (
-    "DEBIAN_DESKTOP_DRM_UDEV state=active",
-    "DEBIAN_DESKTOP_DRM_LOGIND state=active",
-    "DEBIAN_DESKTOP_DRM_SESSION user=asterinas tty=tty1",
-    "DEBIAN_DESKTOP_DRM_INPUT keyboard=evdev pointer=evdev",
-    "DEBIAN_DESKTOP_DRM_XORG driver=modesetting device=virtio-gpu drm=active display=:0",
-    "DEBIAN_DESKTOP_DRM_CLIENTS window-manager=openbox file-manager=pcmanfm panel=lxpanel terminal=xterm",
-    "DEBIAN_DESKTOP_DRM_READY user=asterinas display=:0",
-)
+#: The DRM driver sysfs binds to the card node, per display device.
+#:
+#: The value is the kernel's spelling -- `virtio_gpu` with an underscore, not
+#: the QEMU device name -- because it is what the guest reads from
+#: `/sys/dev/char/<maj>:<min>/device/uevent` and reports.
+_DRM_DRIVER_FOR_DEVICE = {
+    "bochs-display": "simpledrm",
+    "virtio-gpu-device": "virtio_gpu",
+    "virtio-gpu-gl-device": "virtio_gpu",
+}
 
-#: The pixel verdict is listed *before* the renderer line because that is the
-#: order the guest emits them in, and `classify_desktop` rejects a transcript
-#: whose milestones are out of order. The guest emits it first on purpose: the
-#: gate stops waiting as soon as the renderer line arrives, so anything after
-#: it risks being cut off at teardown and never reaching the transcript at all.
-DESKTOP_DRM_VIRGL_MILESTONES = DESKTOP_DRM_MILESTONES + (
-    DESKTOP_DRM_PIXEL_MILESTONE,
-    DESKTOP_DRM_VIRGL_MILESTONE,
+
+def desktop_drm_milestones(
+    graphics_device: str, *, virgl: bool = False
+) -> tuple[str, ...]:
+    """The guest markers a run on `graphics_device` has to produce.
+
+    The Xorg line names the DRM driver, and which driver that is depends on the
+    display device: a virtio-gpu presents through `virtio_gpu`, while a bochs
+    display has no GPU at all and what presents is the firmware backend's
+    `simpledrm`.
+
+    Naming the driver here, and having the guest observe it there, is the whole
+    of the check. That line used to be the literal `device=virtio-gpu` on both
+    sides -- matched by this module, printed by the guest unconditionally -- so
+    the two agreed by construction and the milestone could not fail on any
+    machine, including one where it was simply false.
+
+    The pixel verdict is listed *before* the renderer line because that is the
+    order the guest emits them in, and `classify_desktop` rejects a transcript
+    whose milestones are out of order. The guest emits it first on purpose: the
+    gate stops waiting as soon as the renderer line arrives, so anything after
+    it risks being cut off at teardown and never reaching the transcript.
+    """
+
+    try:
+        driver = _DRM_DRIVER_FOR_DEVICE[graphics_device]
+    except KeyError as error:
+        raise ValueError(
+            f"no DRM driver is registered for the display device "
+            f"{graphics_device!r}"
+        ) from error
+
+    milestones = (
+        "DEBIAN_DESKTOP_DRM_UDEV state=active",
+        "DEBIAN_DESKTOP_DRM_LOGIND state=active",
+        "DEBIAN_DESKTOP_DRM_SESSION user=asterinas tty=tty1",
+        "DEBIAN_DESKTOP_DRM_INPUT keyboard=evdev pointer=evdev",
+        f"DEBIAN_DESKTOP_DRM_XORG driver=modesetting device={driver} "
+        "drm=active display=:0",
+        "DEBIAN_DESKTOP_DRM_CLIENTS window-manager=openbox file-manager=pcmanfm "
+        "panel=lxpanel terminal=xterm",
+        "DEBIAN_DESKTOP_DRM_READY user=asterinas display=:0",
+    )
+    if not virgl:
+        return milestones
+    return milestones + (DESKTOP_DRM_PIXEL_MILESTONE, DESKTOP_DRM_VIRGL_MILESTONE)
+
+
+#: The virtio-gpu expectations, kept as named constants because most callers
+#: want the ordinary desktop and should not have to name a device to get it.
+DESKTOP_DRM_MILESTONES = desktop_drm_milestones("virtio-gpu-device")
+DESKTOP_DRM_VIRGL_MILESTONES = desktop_drm_milestones(
+    "virtio-gpu-gl-device", virgl=True
 )
 
 
@@ -354,10 +400,8 @@ class DesktopDRMOperations(DesktopM3Operations):
         # every other milestone identically, and would otherwise be reported as
         # a passing virgl run.
         self._requires_virgl = config.graphics_device == "virtio-gpu-gl-device"
-        self._milestones = (
-            DESKTOP_DRM_VIRGL_MILESTONES
-            if self._requires_virgl
-            else DESKTOP_DRM_MILESTONES
+        self._milestones = desktop_drm_milestones(
+            config.graphics_device, virgl=self._requires_virgl
         )
 
     @property
