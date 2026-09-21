@@ -204,6 +204,7 @@ def _framebuffer_plan(device_set: QemuDeviceSet) -> tuple[BootCommand, ...]:
     if framebuffer is None:
         return ()
     node = f"/framebuffer@{framebuffer.address:x}"
+    reserved = f"/reserved-memory/framebuffer@{framebuffer.address:x}"
     return (
         BootCommand(
             "framebuffer-resize",
@@ -211,6 +212,49 @@ def _framebuffer_plan(device_set: QemuDeviceSet) -> tuple[BootCommand, ...]:
             "=>",
         ),
         BootCommand("framebuffer-pci-probe", "pci display 0.1.0", "=>"),
+        # Declare the scanout reserved *before* anything is booted, because
+        # U-Boot places the device tree and the initrd itself and has no way to
+        # know a region is spoken for. `boot_fdt_add_mem_rsv_regions()` runs
+        # immediately before `boot_relocate_fdt()`, so a `/reserved-memory`
+        # child is exactly the channel that reaches that decision
+        # (u-boot boot/bootm.c:1043-1044).
+        #
+        # Found the hard way. With the board's own contract -- 1920x1080 at
+        # 0xfd800000, which is inside the modelled 2 GiB -- U-Boot relocated
+        # the device tree to 0xfde8f000..0xfde95fff, entirely inside the
+        # scanout buffer. The kernel booted on a valid tree and then
+        # `aster-framebuffer` initialised, wrote to the framebuffer, and
+        # destroyed the tree it had booted from: `Uncaught panic: /cpus is a
+        # required node`, 76 ms in. The board is not immune to the class of
+        # fault -- only to this instance of it, because 16 GiB of DRAM puts
+        # U-Boot's stack carve-out far above 0xfd800000. A board whose RAM
+        # were smaller, or whose U-Boot chose differently, would corrupt its
+        # own device tree the same way.
+        BootCommand("framebuffer-reserve-node", "fdt mknode / reserved-memory", "=>"),
+        BootCommand(
+            "framebuffer-reserve-address-cells",
+            'fdt set /reserved-memory "#address-cells" <0x2>',
+            "=>",
+        ),
+        BootCommand(
+            "framebuffer-reserve-size-cells",
+            'fdt set /reserved-memory "#size-cells" <0x2>',
+            "=>",
+        ),
+        BootCommand("framebuffer-reserve-ranges", "fdt set /reserved-memory ranges", "=>"),
+        BootCommand(
+            "framebuffer-reserve-entry",
+            f"fdt mknode /reserved-memory {reserved.rsplit('/', 1)[-1]}",
+            "=>",
+        ),
+        BootCommand(
+            "framebuffer-reserve-reg",
+            f"fdt set {reserved} reg <0x0 {framebuffer.address:#x} "
+            f"0x0 {framebuffer.size:#x}>",
+            "=>",
+        ),
+        BootCommand("framebuffer-reserve-no-map", f"fdt set {reserved} no-map", "=>"),
+        BootCommand("framebuffer-reserve-verify", "fdt print /reserved-memory", "no-map"),
         BootCommand("framebuffer-node", f"fdt mknode / {node[1:]}", "=>"),
         BootCommand(
             "framebuffer-compatible",
