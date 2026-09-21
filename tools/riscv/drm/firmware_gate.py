@@ -162,6 +162,13 @@ def run_firmware_gate(
                 termination_grace=5.0,
                 profile=FIRMWARE_PROFILE,
                 device_set=DRM_FIRMWARE,
+                # A framebuffer device set is defined by being screenshottable,
+                # and the runner holds it to that: asking for a bochs display
+                # without asking for the picture it produces is refused. The
+                # capture is the runner's, from QEMU's monitor; the probe's own
+                # fbdev read-back is the claim this gate actually grades.
+                screenshot=output.path / "framebuffer.ppm",
+                display_audit=output.path / "display-audit.json",
             )
             classified = classify_transcript(
                 _read_serial_log(output.path / "serial.log")
