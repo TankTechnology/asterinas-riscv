@@ -701,6 +701,28 @@ mod tests {
     }
 
     #[ktest]
+    fn firmware_layout_accepts_the_megrez_board_mode() {
+        // The board's own numbers, from `MEGREZ_FRAMEBUFFER` in
+        // tools/riscv/megrez_board_session.py: 1920x1080 at 0xfd800000, a
+        // stride of exactly one row, `x8r8g8b8` — which is `BgrReserved`.
+        //
+        // This is the one board fact that can be checked without a board, and
+        // it is worth checking: the board's framebuffer is not the QEMU one,
+        // so no amount of passing on QEMU says the driver would have accepted
+        // the layout it will actually be handed. A refusal here is a board
+        // bring-up that fails at the first present with EINVAL.
+        //
+        // What it does not cover is equally worth stating: the board's region
+        // is at an address QEMU has no device at, so the virtual runs exercise
+        // the copy path at a synthesized geometry, never at this one.
+        assert_eq!(
+            validate_firmware_layout(1920, 1080, 7680, 1920 * 1080 * 4, PixelFormat::BgrReserved)
+                .unwrap(),
+            (1920, 1080, 7680)
+        );
+    }
+
+    #[ktest]
     fn firmware_layout_refuses_what_the_copy_could_not_honour() {
         // A stride narrower than one row would make rows overlap.
         assert!(
