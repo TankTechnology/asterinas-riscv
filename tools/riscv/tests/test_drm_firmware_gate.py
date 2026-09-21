@@ -24,33 +24,35 @@ from qemu_uboot_profiles import (  # noqa: E402
     profile_by_name,
 )
 from drm.firmware_gate import (  # noqa: E402
+    DIRTYFB_MARKER,
     DRIVER_MARKER,
-    FBDEV_MARKER,
     MAX_MARKER,
     MAX_TRANSCRIPT_BYTES,
-    PATTERN_MARKER,
-    PRESENT_MARKER,
+    PAGEFLIP_MARKER,
     READY_MARKER,
+    SETCRTC_MARKER,
     FirmwareGateConfig,
     classify_transcript,
     run_firmware_gate,
+)
+
+#: Every marker the guest emits, in the order it emits them.
+STAGE_MARKERS = (
+    DRIVER_MARKER,
+    MAX_MARKER,
+    SETCRTC_MARKER,
+    PAGEFLIP_MARKER,
+    DIRTYFB_MARKER,
+    READY_MARKER,
 )
 
 
 def a_transcript(*, skip: bytes | None = None) -> bytes:
     """The guest sequence this gate wants, optionally with one stage removed."""
 
-    markers = (
-        DRIVER_MARKER,
-        MAX_MARKER,
-        PRESENT_MARKER,
-        PATTERN_MARKER,
-        FBDEV_MARKER,
-        READY_MARKER,
-    )
     return b"".join(
         b"boot noise\n" + marker + b"\n"
-        for marker in markers
+        for marker in STAGE_MARKERS
         if marker != skip
     )
 
@@ -100,50 +102,68 @@ class DrmFirmwareClassifierTests(unittest.TestCase):
         self.assertEqual(result.stage_count, 6)
 
     def test_each_stage_is_required(self) -> None:
-        for index, marker in enumerate(
-            (
-                DRIVER_MARKER,
-                MAX_MARKER,
-                PRESENT_MARKER,
-                PATTERN_MARKER,
-                FBDEV_MARKER,
-                READY_MARKER,
-            )
-        ):
+        for index, marker in enumerate(STAGE_MARKERS):
             with self.subTest(stage=marker.decode()):
                 result = classify_transcript(a_transcript(skip=marker))
                 self.assertFalse(result.passed)
                 self.assertEqual(result.stage_count, index)
 
     def test_the_same_markers_in_another_order_are_not_a_pass(self) -> None:
-        # Every marker present, but the pixel comparison before the present
-        # that produces the pixels. Presence is not the claim; order is.
+        # Every marker present, but the page flip before the setcrtc that puts
+        # the first frame up. Presence is not the claim; order is.
         transcript = (
-            DRIVER_MARKER + MAX_MARKER + FBDEV_MARKER + PATTERN_MARKER
-            + PRESENT_MARKER + READY_MARKER
+            DRIVER_MARKER + MAX_MARKER + PAGEFLIP_MARKER + SETCRTC_MARKER
+            + DIRTYFB_MARKER + READY_MARKER
         )
         result = classify_transcript(transcript)
         self.assertFalse(result.passed)
         self.assertIn("unordered", result.reason)
 
-    def test_a_wrong_pixel_is_reported_with_its_coordinates(self) -> None:
+    def test_all_three_present_paths_are_required(self) -> None:
+        # Each is a different ioctl reaching the same place by a different
+        # route, so a gate that covered one would leave the other two to be
+        # found broken by a client. Named individually because a single
+        # "presented a frame" marker would not say which route was tested.
+        for marker, stage in (
+            (SETCRTC_MARKER, "setcrtc"),
+            (PAGEFLIP_MARKER, "page-flip"),
+            (DIRTYFB_MARKER, "dirtyfb"),
+        ):
+            with self.subTest(stage=stage):
+                result = classify_transcript(a_transcript(skip=marker))
+                self.assertFalse(result.passed)
+
+    def test_a_wrong_pixel_is_reported_with_its_coordinates_and_side(self) -> None:
+        # The side matters: a mismatch *outside* the damage means the whole
+        # frame was re-presented, which no marker count would show.
         transcript = (
-            a_transcript(skip=FBDEV_MARKER)
-            + b"DRM_FIRMWARE_MISMATCH x=640 y=512 found=00000000 want=ff802080\n"
+            a_transcript(skip=DIRTYFB_MARKER)
+            + b"DRM_FIRMWARE_MISMATCH x=640 y=512 found=00000000 want=ff802080 "
+            + b"stage=dirtyfb where=outside\n"
         )
         result = classify_transcript(transcript)
         self.assertFalse(result.passed)
-        self.assertEqual(result.failed_stage, "pixels")
+        self.assertEqual(result.failed_stage, "dirtyfb")
         self.assertIn("(640,512)", result.reason)
+        self.assertIn("outside the damage", result.reason)
         self.assertIn("0x00000000", result.reason)
         self.assertIn("0xff802080", result.reason)
 
     def test_the_guest_names_the_stage_that_failed(self) -> None:
-        transcript = a_transcript(skip=FBDEV_MARKER) + b"DRM_FIRMWARE_FAIL stage=setcrtc errno=-22\n"
-        result = classify_transcript(transcript)
-        self.assertFalse(result.passed)
-        self.assertEqual(result.failed_stage, "setcrtc")
-        self.assertEqual(result.reason, "guest reported setcrtc failure: errno -22")
+        for line, expected in (
+            (b"DRM_FIRMWARE_FAIL stage=setcrtc errno=-22\n",
+             "guest reported setcrtc failure: errno -22"),
+            # The probe also decides things the kernel cannot report, and a
+            # detail is not an errno; both have to reach the reason.
+            (b"DRM_FIRMWARE_FAIL stage=dirtyfb detail=rect-not-copied\n",
+             "guest reported dirtyfb failure: rect-not-copied"),
+        ):
+            with self.subTest(line=line.decode().strip()):
+                result = classify_transcript(
+                    a_transcript(skip=DIRTYFB_MARKER) + line
+                )
+                self.assertFalse(result.passed)
+                self.assertEqual(result.reason, expected)
 
     def test_a_panic_is_never_a_pass(self) -> None:
         transcript = a_transcript() + b"Uncaught panic\n"

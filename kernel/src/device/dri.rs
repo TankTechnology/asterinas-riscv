@@ -41,8 +41,8 @@ use ostd::{
 
 use self::{
     backend::{
-        CursorBackend, CursorGeometry, CursorScanoutBuffer, FirmwareFramebufferBackend,
-        ScanoutBackend, ScanoutBuffer,
+        CursorBackend, CursorGeometry, CursorScanoutBuffer, DamageRect,
+        FirmwareFramebufferBackend, ScanoutBackend, ScanoutBuffer,
     },
     cursor::{
         CursorBuffer, CursorImage, CursorState, DrmModeCursor, DrmModeCursor2, MODE_CURSOR_BO,
@@ -910,6 +910,55 @@ struct DrmModeFbDirtyCmd {
     color: u32,
     num_clips: u32,
     clips_ptr: u64,
+}
+
+/// `struct drm_clip_rect`: one damaged region in half-open coordinates.
+///
+/// Half-open as the kernel uses it — a rect from `(x1, y1)` to `(x2, y2)`
+/// covers `x1` up to but not including `x2` — even though the X11 protocol
+/// these usually come from draws both ends. A client that sends the closed
+/// form damages one extra row and column, which is a repaint it did not need,
+/// never a pixel it missed.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmClipRect {
+    x1: u16,
+    y1: u16,
+    x2: u16,
+    y2: u16,
+}
+
+/// The most damage regions one `MODE_DIRTYFB` may describe.
+///
+/// The count comes from userspace and names memory the kernel is about to
+/// walk, so it is bounded rather than trusted. A client wanting more than this
+/// is describing the whole frame, and an empty list already means that without
+/// the copy.
+const MAX_DIRTY_CLIPS: u32 = 256;
+
+/// Reads the damage list a `MODE_DIRTYFB` names, or an empty one if it named none.
+///
+/// An empty list is not "nothing was damaged": it is the whole frame, which is
+/// what a client passes when it cannot say. Returning an empty `Vec` here and
+/// letting the backend read it that way keeps that meaning in one place.
+fn read_dirty_clips(req: &DrmModeFbDirtyCmd) -> Result<Vec<DrmClipRect>> {
+    if req.num_clips == 0 || req.clips_ptr == 0 {
+        return Ok(Vec::new());
+    }
+    if req.num_clips > MAX_DIRTY_CLIPS {
+        return_errno_with_message!(Errno::EINVAL, "too many damage clip rectangles");
+    }
+
+    let mut clips = Vec::with_capacity(req.num_clips as usize);
+    for index in 0..req.num_clips as usize {
+        let offset = req.clips_ptr as usize + index * size_of::<DrmClipRect>();
+        clips.push(
+            current_userspace!()
+                .read_val(offset)
+                .map_err(|_| Error::with_message(Errno::EFAULT, "bad damage clip rectangle"))?,
+        );
+    }
+    Ok(clips)
 }
 
 /// The next magic token `DRM_IOCTL_GET_MAGIC` will hand out.
@@ -1895,39 +1944,76 @@ impl DriHandle {
     /// alone is never seen; on the firmware framebuffer nothing reads the pool
     /// until it is copied into the scanout. Presenting in full is therefore the
     /// only correct default, and each backend decides what that costs.
-    fn present_fb(&self, fb_id: u32) -> Result<()> {
-        let (buffer, width, height) = {
-            let inner = self.inner.lock();
-            let fb = inner
-                .framebuffers
-                .get(&fb_id)
-                .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
-            let objects = GEM_OBJECTS.lock();
-            let object = object_by_id(&objects, fb.object_id)?;
-            // The pool itself is handed over, not its address: a backend that
-            // copies pixels needs the memory, and only the virtio one can make
-            // do with where it physically is.
-            let pool = objects
-                .pool
-                .as_ref()
-                .ok_or_else(|| Error::with_message(Errno::ENOMEM, "no dumb buffer pool"))?;
-            let buffer = ScanoutBuffer::new(
-                Arc::clone(pool),
-                object.offset,
-                object.pitch as usize,
-                object.size as u32,
-                fb.width,
-                fb.height,
-            );
-            (buffer, fb.width, fb.height)
-        };
+    /// Builds the scanout buffer that a registered framebuffer names.
+    fn scanout_buffer(&self, fb_id: u32) -> Result<(ScanoutBuffer, u32, u32)> {
+        let inner = self.inner.lock();
+        let fb = inner
+            .framebuffers
+            .get(&fb_id)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
+        let objects = GEM_OBJECTS.lock();
+        let object = object_by_id(&objects, fb.object_id)?;
+        // The pool itself is handed over, not its address: a backend that
+        // copies pixels needs the memory, and only the virtio one can make do
+        // with where it physically is.
+        let pool = objects
+            .pool
+            .as_ref()
+            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "no dumb buffer pool"))?;
+        let buffer = ScanoutBuffer::new(
+            Arc::clone(pool),
+            object.offset,
+            object.pitch as usize,
+            object.size as u32,
+            fb.width,
+            fb.height,
+        );
+        Ok((buffer, fb.width, fb.height))
+    }
 
-        self.display.scanout.present_framebuffer(buffer)?;
-
+    /// Records which framebuffer the scanout is now showing.
+    fn note_current_scanout(&self, fb_id: u32, width: u32, height: u32) {
         let mut inner = self.inner.lock();
         inner.current_fb_id = Some(fb_id);
         inner.current_width = width;
         inner.current_height = height;
+    }
+
+    fn present_fb(&self, fb_id: u32) -> Result<()> {
+        let (buffer, width, height) = self.scanout_buffer(fb_id)?;
+        self.display.scanout.present_framebuffer(buffer)?;
+        self.note_current_scanout(fb_id, width, height);
+        Ok(())
+    }
+
+    /// Re-presents only the regions the client says it changed.
+    ///
+    /// `MODE_DIRTYFB` is how a client that has already presented a frame says
+    /// "this part of it moved". On virtio-gpu that is the same full transfer
+    /// either way — the host command has no sub-rectangle form — so the
+    /// backend's default re-presents everything. On the firmware backend the
+    /// copy is the CPU's, and one cursor-sized rectangle against a whole
+    /// 1920x1080 frame is the difference between a pointer that moves freely
+    /// and one that visibly lags.
+    fn dirty_fb(&self, fb_id: u32, clips: &[DrmClipRect]) -> Result<()> {
+        let (buffer, width, height) = self.scanout_buffer(fb_id)?;
+        // Validated against the framebuffer they address, because the backends
+        // index with these: a rectangle reaching past the buffer would be an
+        // out-of-range slice, not a wrong picture.
+        let mut damage = Vec::with_capacity(clips.len());
+        for clip in clips {
+            damage.push(DamageRect::new(
+                u32::from(clip.x1),
+                u32::from(clip.y1),
+                u32::from(clip.x2),
+                u32::from(clip.y2),
+                width,
+                height,
+            )?);
+        }
+
+        self.display.scanout.dirty_framebuffer(buffer, &damage)?;
+        self.note_current_scanout(fb_id, width, height);
         Ok(())
     }
 
@@ -2489,10 +2575,6 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ ModeDirtyFb => {
                 let req = cmd.read()?;
-                // The dirty clip rects are ignored: the framebuffer's pixels are
-                // already in guest memory, so we re-present the whole buffer to
-                // push the latest content to the host.
-                //
                 // `fb_id == 0` is the modesetting driver's *capability probe*
                 // (it calls `drmModeDirtyFB(fd, fb_id, NULL, 0)` before the first
                 // framebuffer exists). Returning success there keeps it on the
@@ -2500,7 +2582,12 @@ impl PerOpenFileOps for DriHandle {
                 if req.fb_id == 0 {
                     return Ok(0);
                 }
-                self.present_fb(req.fb_id)?;
+                // The clip rectangles decide how much is re-presented, and they
+                // are read before the framebuffer is looked up so that a client
+                // naming one that does not exist still gets EFAULT for its bad
+                // pointer rather than EINVAL for the id it cannot fix first.
+                let clips = read_dirty_clips(&req)?;
+                self.dirty_fb(req.fb_id, &clips)?;
                 Ok(0)
             }
             _ => {
