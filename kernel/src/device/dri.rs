@@ -146,11 +146,25 @@ const DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT: u64 = 6;
 ///
 /// The size is set by the 3D path, not the 2D one. A single scanout is 4 MiB
 /// at 1280x800, but a client that renders allocates several buffers at once —
-/// glamor alone holds more than one — and the pool is a bump allocator, so a
-/// freed buffer's span is not reused (see `release_object`). 16 MiB ran out
-/// during a probe that asked for five buffers in a row, which surfaces as
-/// `ENOMEM` from `gbm_bo_create` and, at the desktop, as a renderer that never
-/// appears. 64 MiB is the size the frozen branch ran virgl with.
+/// glamor alone holds more than one. 16 MiB ran out during a probe that asked
+/// for five buffers in a row, which surfaces as `ENOMEM` from `gbm_bo_create`
+/// and, at the desktop, as a renderer that never appears. 64 MiB is the size
+/// the frozen branch ran virgl with.
+///
+/// **The bump allocator is load-bearing, not laziness.** A freed span cannot be
+/// handed out again while any client might still be mapping it, and on this
+/// branch one always might: `Mappable::mappable()` returns the *whole pool*
+/// rather than the object's window — see the note on `DmaBufFile::mappable`,
+/// which is the same limitation seen from the PRIME side. So a client that
+/// mapped a buffer and then released it would find the bytes it still has
+/// mapped reassigned to someone else's buffer, and the corruption would show up
+/// in whichever process wrote last. Reclaiming the pool therefore requires a
+/// windowed `Mappable` first; until there is one, the cursor is a high-water
+/// mark and `next_offset` only ever grows.
+///
+/// The consequence to keep in mind: the ceiling is on **cumulative** allocation
+/// for the device's lifetime, not on what is live at once. Seven 1920x1080
+/// buffers exhaust it whether or not their handles were closed.
 const DUMB_POOL_SIZE: usize = 64 * 1024 * 1024;
 
 /// Maximum scanout width/height reported by `MODE_GETRESOURCES`.
@@ -1234,12 +1248,16 @@ fn object_for_handle(inner: &DriInner, handle: u32) -> Result<u32> {
 }
 
 /// Drops one reference to an object, freeing it when the last one goes.
-///
-/// The pool space is deliberately not reclaimed: the pool is a bump allocator,
-/// so a freed buffer's span is simply leaked within it. Fine for the handful of
-/// buffers a client allocates.
 fn release_object(object_id: u32) {
-    let mut objects = GEM_OBJECTS.lock();
+    release_object_locked(&mut GEM_OBJECTS.lock(), object_id);
+}
+
+/// [`release_object`], against an object space the caller already holds.
+///
+/// Split out so the lifetime rules can be driven directly by a test: the
+/// global is a `SpinLock` over exactly this type, and nothing in the rules
+/// below needs a device, a pool or a file to be true.
+fn release_object_locked(objects: &mut GemObjects, object_id: u32) {
     let Some(object) = objects.objects.get_mut(&object_id) else {
         return;
     };
@@ -1248,6 +1266,40 @@ fn release_object(object_id: u32) {
         objects.objects.remove(&object_id);
         // A name is only a handle on an object that still exists.
         objects.names.retain(|_, named| *named != object_id);
+    }
+}
+
+/// Drops the reference every handle in `handles` holds.
+///
+/// This is the path a *closed file* takes, and it has to exist: a client is
+/// entitled to name an object and let the descriptor's close be what gives the
+/// reference back, which is what Linux's `drm_file_free()` does — it deletes
+/// each handle through `drm_gem_handle_delete()`. `GEM_CLOSE` is the same
+/// place by an explicit route. Without this, every object a client named
+/// survives it for the device's lifetime, and since `GEM_OBJECTS` is
+/// device-wide the next client pays for the last one's omission.
+///
+/// Takes the handle table rather than the file that owns it, because that is
+/// all the rule needs: what makes it testable is that a handle table is a
+/// `BTreeMap<u32, u32>` and a test can write one by hand.
+fn release_handles_locked(objects: &mut GemObjects, handles: &BTreeMap<u32, u32>) {
+    for object_id in handles.values() {
+        release_object_locked(objects, *object_id);
+    }
+}
+
+/// Drops the reference every framebuffer in `framebuffers` holds.
+///
+/// Framebuffers are per-file like handles, so a closed file owes them the same
+/// accounting. They take their reference in `add_fb` and give it back in
+/// `rm_fb`; a file that closes without calling `rm_fb` is not withdrawing
+/// anything, so neither does this.
+fn release_framebuffers_locked(
+    objects: &mut GemObjects,
+    framebuffers: &BTreeMap<u32, Framebuffer>,
+) {
+    for framebuffer in framebuffers.values() {
+        release_object_locked(objects, framebuffer.object_id);
     }
 }
 
@@ -1274,13 +1326,7 @@ fn alloc_object(
     bpp: u32,
 ) -> Result<u32> {
     ensure_pool(objects)?;
-    let offset = objects.next_offset.align_up(PAGE_SIZE);
-    let end = offset
-        .checked_add(size)
-        .ok_or_else(|| Error::with_message(Errno::ENOMEM, "buffer size overflows"))?;
-    if end > DUMB_POOL_SIZE {
-        return_errno_with_message!(Errno::ENOMEM, "buffer pool is exhausted");
-    }
+    let offset = reserve_span(objects, size)?;
 
     let object_id = objects.next_object_id;
     objects.next_object_id += 1;
@@ -1297,8 +1343,27 @@ fn alloc_object(
             refs: 1,
         },
     );
-    objects.next_offset = end.align_up(PAGE_SIZE);
     Ok(object_id)
+}
+
+/// Reserves `size` page-aligned bytes at the pool cursor, returning the offset.
+///
+/// Split out of [`alloc_object`] so the accounting can be driven by a test:
+/// `ensure_pool` allocates 64 MiB of contiguous memory, which is a lot to ask
+/// of a test kernel, and none of the arithmetic here depends on the pool
+/// existing. The cursor only ever grows — see [`DUMB_POOL_SIZE`] for why that
+/// is a constraint rather than an oversight — so this is where the device's
+/// cumulative-allocation ceiling is actually enforced.
+fn reserve_span(objects: &mut GemObjects, size: usize) -> Result<usize> {
+    let offset = objects.next_offset.align_up(PAGE_SIZE);
+    let end = offset
+        .checked_add(size)
+        .ok_or_else(|| Error::with_message(Errno::ENOMEM, "buffer size overflows"))?;
+    if end > DUMB_POOL_SIZE {
+        return_errno_with_message!(Errno::ENOMEM, "buffer pool is exhausted");
+    }
+    objects.next_offset = end.align_up(PAGE_SIZE);
+    Ok(offset)
 }
 
 /// Gives `object_id` a handle in this file, returning the handle.
@@ -1909,8 +1974,16 @@ impl DriHandle {
     fn add_fb(&self, req: &DrmModeFbCmd) -> Result<u32> {
         let mut inner = self.inner.lock();
         let object_id = object_for_handle(&inner, req.handle)?;
-        let object = object_by_id(&GEM_OBJECTS.lock(), object_id)?;
-        // A row has to fit in the pitch, and the rows have to fit in the buffer.
+        let fb_id = inner.next_fb_id;
+
+        // A row has to fit in the pitch, and the rows have to fit in the
+        // buffer. Checked before the reference is taken, so a framebuffer that
+        // is refused does not leave one behind.
+        let mut objects = GEM_OBJECTS.lock();
+        let object = objects
+            .objects
+            .get_mut(&object_id)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM object"))?;
         let bytes_per_pixel = u64::from(req.bpp).div_ceil(8);
         let minimum_pitch = u64::from(req.width)
             .checked_mul(bytes_per_pixel)
@@ -1921,7 +1994,15 @@ impl DriHandle {
         if u64::from(req.pitch) < minimum_pitch || span > object.size as u64 {
             return_errno_with_message!(Errno::EINVAL, "framebuffer does not fit its buffer");
         }
-        let fb_id = inner.next_fb_id;
+
+        // The framebuffer takes its own reference, as Linux's `drm_framebuffer`
+        // does. Without one it names an object that any later `GEM_CLOSE` or
+        // `MODE_DESTROY_DUMB` on the same buffer silently retires, and the
+        // client's next `SETCRTC` or page flip fails with `EINVAL` on a
+        // framebuffer that still exists and was never withdrawn — a failure
+        // that says nothing about what actually happened.
+        object.refs = object.refs.saturating_add(1);
+
         inner.next_fb_id += 1;
         inner.framebuffers.insert(
             fb_id,
@@ -1936,12 +2017,17 @@ impl DriHandle {
 
     fn rm_fb(&self, fb_id: u32) -> Result<()> {
         let mut inner = self.inner.lock();
-        if inner.framebuffers.remove(&fb_id).is_none() {
+        let Some(framebuffer) = inner.framebuffers.remove(&fb_id) else {
             return_errno_with_message!(Errno::EINVAL, "unknown framebuffer id");
-        }
+        };
         if inner.current_fb_id == Some(fb_id) {
             inner.current_fb_id = None;
         }
+        drop(inner);
+        // The reference `add_fb` took. Until this runs the buffer is alive
+        // whether or not the handle it was made from still is, which is the
+        // point of holding it.
+        release_object(framebuffer.object_id);
         Ok(())
     }
 
@@ -2162,6 +2248,22 @@ impl Drop for DriHandle {
         if let (Some(resource_id), Some(cursor)) = (resource_id, self.display.cursor.as_ref()) {
             let _ = cursor.clear_cursor(resource_id, position.x, position.y);
         }
+
+        // Every handle this file named drops its reference, the way Linux's
+        // `drm_file_free()` does for each of them. `GEM_CLOSE` reaches the same
+        // place by an explicit route; this is the implicit one, and a client
+        // that never calls it has not leaked by intent — a descriptor's close
+        // is a legitimate way to give the references back. Skipping it left
+        // every object the file named alive for the device's lifetime, and
+        // `GEM_OBJECTS` is device-wide, so the next client inherited it.
+        //
+        // Lock order is the documented one: `cursor_operation` is still held,
+        // then `inner`, then `GEM_OBJECTS` — the same order `MODE_CURSOR` takes
+        // them in, so this cannot invert against it.
+        let inner = self.inner.lock();
+        let mut objects = GEM_OBJECTS.lock();
+        release_handles_locked(&mut objects, &inner.handles);
+        release_framebuffers_locked(&mut objects, &inner.framebuffers);
     }
 }
 
@@ -2894,5 +2996,237 @@ mod tests {
         // Declared with the 16-byte size where `struct drm_prime_handle` is
         // 12 bytes.
         assert!(PrimeHandleToFd::try_from_raw(RawIoctl::new(0xc010642d, 0)).is_none());
+    }
+
+    /// The object space's lifetime rules, driven directly.
+    ///
+    /// `GemObjects` is what `GEM_OBJECTS` guards, and none of the rules below
+    /// need a device, a pool or an open file to hold — which is the point of
+    /// the split. Before it, the only route to these rules was through a live
+    /// `/dev/dri/card0`, so they had no unit tests at all: the three that
+    /// existed here were about command numbers, and every rule about who owns
+    /// an object was reachable only by booting a guest and watching.
+    mod object_lifetime {
+        use super::*;
+
+        /// An object of `size` bytes in a space of its own.
+        fn allocate(objects: &mut GemObjects, size: usize) -> u32 {
+            alloc_object(objects, size, 4, 1, 1, 32).expect("allocation")
+        }
+
+        /// Stands in for one of the paths that takes a second reference:
+        /// `gem_open`, `prime_fd_to_handle`, or `prime_handle_to_fd`.
+        fn take_a_second_reference(objects: &mut GemObjects, object_id: u32) {
+            let object = objects.objects.get_mut(&object_id).expect("object");
+            object.refs = object.refs.saturating_add(1);
+        }
+
+        #[ktest]
+        fn a_new_object_holds_exactly_one_reference() {
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            assert_eq!(objects.objects[&id].refs, 1);
+        }
+
+        #[ktest]
+        fn the_last_release_frees_the_object_and_its_name() {
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            objects.names.insert(7, id);
+
+            release_object_locked(&mut objects, id);
+
+            assert!(!objects.objects.contains_key(&id), "object outlived its last reference");
+            assert!(
+                !objects.names.contains_key(&7),
+                "a name outlived the object it named, so GEM_OPEN would hand out \
+                 a handle to memory that is no longer anybody's",
+            );
+        }
+
+        #[ktest]
+        fn a_second_reference_keeps_the_object_alive() {
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            take_a_second_reference(&mut objects, id);
+
+            release_object_locked(&mut objects, id);
+            assert!(
+                objects.objects.contains_key(&id),
+                "the object died while a handle still named it",
+            );
+
+            release_object_locked(&mut objects, id);
+            assert!(!objects.objects.contains_key(&id));
+        }
+
+        #[ktest]
+        fn two_handles_onto_one_object_release_it_twice() {
+            // `gem_open` and `prime_fd_to_handle` both mint a handle *and* take
+            // a reference, so the count has to track the handle count rather
+            // than the object count. One release per handle is what makes the
+            // bookkeeping balanced; releasing once for two handles would leave
+            // a reference held forever.
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            take_a_second_reference(&mut objects, id);
+
+            let handles = BTreeMap::from([(1, id), (2, id)]);
+            release_handles_locked(&mut objects, &handles);
+            assert!(!objects.objects.contains_key(&id));
+        }
+
+        #[ktest]
+        fn releasing_a_handle_table_drops_every_reference_in_it() {
+            // The rule Linux's `drm_file_free()` provides: it deletes each
+            // handle through `drm_gem_handle_delete()`, so a client may name an
+            // object and let the descriptor's close be what gives the reference
+            // back. This driver did not, and every object a client named
+            // outlived it — device-wide, so the next client paid for it.
+            //
+            // Scoped honestly: this drives the rule, not the call site. What
+            // calls it is `DriHandle::drop`, which needs a `DisplayDevice` and
+            // so is out of reach of a ktest — the wiring is checked by the
+            // guest gates instead, and this is the half that can be checked
+            // here. The test name says which half.
+            let mut objects = GemObjects::new();
+            let first = allocate(&mut objects, PAGE_SIZE);
+            let second = allocate(&mut objects, PAGE_SIZE);
+            let handles = BTreeMap::from([(1, first), (2, second)]);
+
+            release_handles_locked(&mut objects, &handles);
+
+            assert!(
+                objects.objects.is_empty(),
+                "releasing a handle table left {} object(s) alive; a client that \
+                 names an object and closes without GEM_CLOSE is not leaking by \
+                 intent",
+                objects.objects.len(),
+            );
+        }
+
+        fn a_framebuffer_for(object_id: u32) -> BTreeMap<u32, Framebuffer> {
+            BTreeMap::from([(
+                1,
+                Framebuffer {
+                    object_id,
+                    width: 1,
+                    height: 1,
+                },
+            )])
+        }
+
+        #[ktest]
+        fn a_framebuffer_keeps_its_buffer_alive_after_the_handle_is_gone() {
+            // A client may `MODE_ADDFB` a buffer and then close or destroy the
+            // handle it used — `MODE_DESTROY_DUMB` is an explicit way to do
+            // exactly that. Linux's framebuffer holds its own reference, so the
+            // buffer survives until `RM_FB`; without one the client's next
+            // `SETCRTC` fails with `EINVAL` on a framebuffer that still exists
+            // and was never withdrawn.
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            take_a_second_reference(&mut objects, id); // `add_fb`
+            let framebuffers = a_framebuffer_for(id);
+
+            release_object_locked(&mut objects, id); // `GEM_CLOSE`
+            assert!(
+                objects.objects.contains_key(&id),
+                "the framebuffer's buffer died with the handle it was made from",
+            );
+
+            release_framebuffers_locked(&mut objects, &framebuffers); // `RM_FB`
+            assert!(!objects.objects.contains_key(&id));
+        }
+
+        #[ktest]
+        fn both_tables_together_release_everything_a_file_held() {
+            // What a closed file owes, once: one reference per handle and one
+            // per framebuffer. Driving them together is the point — a file that
+            // gets one of the two right still leaks, and the leak is the other
+            // client's problem because the space is device-wide.
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            take_a_second_reference(&mut objects, id); // `add_fb`
+            let handles = BTreeMap::from([(1, id)]);
+            let framebuffers = a_framebuffer_for(id);
+
+            release_handles_locked(&mut objects, &handles);
+            release_framebuffers_locked(&mut objects, &framebuffers);
+
+            assert!(
+                objects.objects.is_empty(),
+                "a file's tables left {} object(s) alive",
+                objects.objects.len(),
+            );
+        }
+
+        #[ktest]
+        fn releasing_an_object_that_is_already_gone_is_not_a_failure() {
+            // `drop` cannot report an error, and a handle released twice — once
+            // by `GEM_CLOSE` and again by the file's close — is the ordinary
+            // case rather than a mistake.
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            release_object_locked(&mut objects, id);
+            release_object_locked(&mut objects, id);
+        }
+
+        #[ktest]
+        fn every_span_is_page_aligned_and_does_not_overlap() {
+            let mut objects = GemObjects::new();
+            let mut spans = Vec::new();
+            for _ in 0..8 {
+                let id = allocate(&mut objects, 3 * PAGE_SIZE + 17);
+                let object = &objects.objects[&id];
+                assert_eq!(object.offset % PAGE_SIZE, 0, "span is not page-aligned");
+                spans.push((object.offset, object.offset + object.size));
+            }
+            spans.sort_unstable();
+            for pair in spans.windows(2) {
+                assert!(
+                    pair[0].1 <= pair[1].0,
+                    "spans {:?} and {:?} overlap, so two buffers share memory",
+                    pair[0],
+                    pair[1],
+                );
+            }
+        }
+
+        #[ktest]
+        fn the_ceiling_is_on_cumulative_allocation_not_on_live_objects() {
+            // The pool's cursor only grows, so the device's budget is spent by
+            // everything ever allocated rather than by what is alive now. This
+            // is the behaviour `DUMB_POOL_SIZE` is sized against, and pinning
+            // it here means a change that starts reclaiming has to say so —
+            // which matters, because reclaiming is only safe once `Mappable`
+            // can hand out a window instead of the whole pool.
+            let mut objects = GemObjects::new();
+            let span = 8 * 1024 * 1024;
+            let expected = DUMB_POOL_SIZE / span;
+
+            let mut allocated = 0;
+            while reserve_span(&mut objects, span).is_ok() {
+                allocated += 1;
+                assert!(allocated <= expected, "the pool did not bound allocation");
+            }
+
+            assert_eq!(
+                allocated, expected,
+                "a 1920x1080 allocation is ~8 MiB, so the ceiling is ~{} of them \
+                 for the device's whole lifetime",
+                expected,
+            );
+        }
+
+        #[ktest]
+        fn an_allocation_larger_than_the_pool_is_refused() {
+            let mut objects = GemObjects::new();
+            assert!(reserve_span(&mut objects, DUMB_POOL_SIZE + 1).is_err());
+            assert!(reserve_span(&mut objects, usize::MAX).is_err());
+            // And the refusal did not consume the cursor, so an ordinary
+            // allocation still fits afterwards.
+            assert!(reserve_span(&mut objects, PAGE_SIZE).is_ok());
+        }
     }
 }
