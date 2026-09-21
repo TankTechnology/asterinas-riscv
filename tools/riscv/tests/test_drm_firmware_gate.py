@@ -16,11 +16,15 @@ sys.path.insert(0, str(TOOLS))
 from qemu_uboot_commands import qemu_argv  # noqa: E402
 from qemu_uboot_devices import (  # noqa: E402
     DRM_FIRMWARE,
+    MEGREZ_BASIC,
+    DeviceKind,
     RuntimeDevicePaths,
     device_set_by_name,
 )
 from qemu_uboot_profiles import (  # noqa: E402
+    DRM_FIRMWARE_GATE,
     GENERIC_SV39_DRM_FIRMWARE_SMP4,
+    MEGREZ_SV48_SVADE_DRM_FIRMWARE,
     profile_by_name,
 )
 from drm.firmware_gate import (  # noqa: E402
@@ -93,6 +97,67 @@ class DrmFirmwareLaunchContractTests(unittest.TestCase):
         # With a virtio-gpu present the driver would select it, the firmware
         # backend would go unused, and this gate would pass without testing it.
         self.assertNotIn("virtio-gpu", joined)
+
+
+class MegrezDrmFirmwareProfileTests(unittest.TestCase):
+    """The board's machine contract is a different machine, not a rename.
+
+    Every DRM gate before this one ran on `qemu-virt` with `sv48=false` and
+    Sv39 paging. The board runs Sv48, with `svpbmt` and `zkr` absent. The
+    kernel's VA constants are computed from the paging mode
+    (`ADDRESS_WIDTH` 39 vs 48 feeds `KERNEL_BASE_VADDR`,
+    `LINEAR_MAPPING_BASE_VADDR`, `VMALLOC_BASE_VADDR`), so "the firmware
+    backend copies pixels into the framebuffer" is a claim that has to be
+    re-made under the mode the board will actually use. These assertions pin
+    the machine that re-makes it.
+    """
+
+    def test_the_megrez_profile_is_registered_and_is_sv48(self) -> None:
+        profile = profile_by_name("megrez-sv48-svade-drm-firmware")
+        self.assertIs(profile, MEGREZ_SV48_SVADE_DRM_FIRMWARE)
+        self.assertEqual(profile.mmu_type, "riscv,sv48")
+        self.assertEqual(profile.hart_count, 4)
+        self.assertEqual(profile.memory, "2G")
+        # `sv48` is not disabled here, which is what makes an Sv48 kernel
+        # bootable: the generic DRM profile's `sv48=false` would hang it at
+        # `Starting kernel ...` with no output at all.
+        self.assertNotIn("sv48=false", profile.cpu)
+        self.assertIn("svpbmt=false", profile.cpu)
+        self.assertIn("zkr=false", profile.cpu)
+
+    def test_the_megrez_run_grades_the_same_claim_as_the_generic_one(self) -> None:
+        """One claim, one scenario: only the machine may differ.
+
+        If the two runs graded different scenarios they could disagree about
+        what "passes", and the disagreement would be invisible -- both would
+        report a pass. Sharing the scenario object makes that impossible, and
+        sharing the bootargs keeps the guest command line out of the
+        difference: `console=ttyS0` is what puts the transcript on the serial
+        line this gate reads, and the Megrez profiles' other token
+        (`cpu_no_boost_1_6ghz`) appears in no Rust source in this tree, so it
+        cannot change what the kernel does.
+        """
+
+        self.assertIs(
+            MEGREZ_SV48_SVADE_DRM_FIRMWARE.validation, DRM_FIRMWARE_GATE
+        )
+        self.assertEqual(
+            MEGREZ_SV48_SVADE_DRM_FIRMWARE.bootargs,
+            GENERIC_SV39_DRM_FIRMWARE_SMP4.bootargs,
+        )
+        self.assertEqual(
+            MEGREZ_SV48_SVADE_DRM_FIRMWARE.validation.completion_line,
+            READY_MARKER,
+        )
+
+    def test_the_device_set_carries_a_framebuffer_and_no_gpu(self) -> None:
+        device_set = device_set_by_name("megrez-basic")
+        self.assertIs(device_set, MEGREZ_BASIC)
+        self.assertIsNotNone(device_set.framebuffer)
+        # The absent GPU is the experiment here too: with a virtio-gpu the
+        # driver would select it and the firmware backend would go untested.
+        self.assertNotIn(DeviceKind.VIRTIO_GPU, device_set.devices)
+        self.assertNotIn(DeviceKind.VIRTIO_GPU_GL, device_set.devices)
 
 
 class DrmFirmwareClassifierTests(unittest.TestCase):
@@ -213,6 +278,141 @@ class DrmFirmwareRunContractTests(unittest.TestCase):
         self.assertIs(captured["profile"], GENERIC_SV39_DRM_FIRMWARE_SMP4)
         self.assertIsNotNone(captured["screenshot"])
         self.assertIsNotNone(captured["display_audit"])
+
+    def test_the_configured_machine_and_device_set_reach_the_runner(self) -> None:
+        """The profile is an input, not a constant with a Megrez-shaped comment.
+
+        A gate that hardcoded the generic profile while accepting a `--profile`
+        flag would run the generic machine and report a pass, and the pass
+        would be read as evidence about the board. Nothing in the transcript
+        would say otherwise -- the two runs emit the same six markers. So what
+        is asserted here is that the configured objects arrive at the runner,
+        which is the only place the machine is decided.
+        """
+
+        captured: dict[str, object] = {}
+
+        def fake_runner(**arguments: object) -> object:
+            captured.update(arguments)
+            Path(arguments["serial_log"]).write_bytes(a_transcript())
+            return type("BaseResult", (), {"passed": True})()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "evidence"
+            output.mkdir()
+            result = run_firmware_gate(
+                FirmwareGateConfig(
+                    uboot=Path("/inputs/u-boot"),
+                    boot_disk=Path("/inputs/boot.ext4"),
+                    manifest=Path("/inputs/artifacts.json"),
+                    output_directory=output,
+                    profile=MEGREZ_SV48_SVADE_DRM_FIRMWARE,
+                    device_set=MEGREZ_BASIC,
+                ),
+                runner=fake_runner,
+            )
+
+        self.assertTrue(result.passed, result.reason)
+        self.assertIs(captured["profile"], MEGREZ_SV48_SVADE_DRM_FIRMWARE)
+        self.assertIs(captured["device_set"], MEGREZ_BASIC)
+        # The timeouts travel with the profile rather than with the gate, so a
+        # Megrez run cannot inherit the generic machine's by accident.
+        self.assertEqual(
+            captured["boot_timeout"],
+            MEGREZ_SV48_SVADE_DRM_FIRMWARE.validation.boot_timeout,
+        )
+
+    def test_the_dtb_audit_reaches_the_runner(self) -> None:
+        """A contract approximation is refused without it, before QEMU starts.
+
+        The runner demands a generated-DTB audit for every profile whose
+        fidelity is not VIRTUAL_PLATFORM: an approximation has to show its
+        device tree really carries the properties it claims. The generic Sv39
+        profile is a virtual platform, so this gate ran without one for its
+        whole life, and the first Megrez run died with `a generated DTB audit
+        is required for this machine contract` -- an error about the launch,
+        not about the board.
+        """
+
+        captured: dict[str, object] = {}
+
+        def fake_runner(**arguments: object) -> object:
+            captured.update(arguments)
+            Path(arguments["serial_log"]).write_bytes(a_transcript())
+            return type("BaseResult", (), {"passed": True})()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "evidence"
+            output.mkdir()
+            result = run_firmware_gate(
+                FirmwareGateConfig(
+                    uboot=Path("/inputs/u-boot"),
+                    boot_disk=Path("/inputs/boot.ext4"),
+                    manifest=Path("/inputs/artifacts.json"),
+                    output_directory=output,
+                    profile=MEGREZ_SV48_SVADE_DRM_FIRMWARE,
+                    device_set=MEGREZ_BASIC,
+                    dtb_audit=Path("/inputs/qemu-dtb-audit.json"),
+                ),
+                runner=fake_runner,
+            )
+
+        self.assertTrue(result.passed, result.reason)
+        self.assertEqual(captured["dtb_audit"], Path("/inputs/qemu-dtb-audit.json"))
+
+    def test_a_virtual_platform_profile_still_needs_no_audit(self) -> None:
+        """The default must stay `None`, or every existing gate breaks."""
+
+        captured: dict[str, object] = {}
+
+        def fake_runner(**arguments: object) -> object:
+            captured.update(arguments)
+            Path(arguments["serial_log"]).write_bytes(a_transcript())
+            return type("BaseResult", (), {"passed": True})()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "evidence"
+            output.mkdir()
+            run_firmware_gate(
+                FirmwareGateConfig(
+                    uboot=Path("/inputs/u-boot"),
+                    boot_disk=Path("/inputs/boot.ext4"),
+                    manifest=Path("/inputs/artifacts.json"),
+                    output_directory=output,
+                ),
+                runner=fake_runner,
+            )
+
+        self.assertIsNone(captured["dtb_audit"])
+
+    def test_an_unknown_profile_is_a_usage_error_not_a_gate_failure(self) -> None:
+        """A typo must not read as "the board failed".
+
+        `_parse_args` is the only caller of the resolvers, and both raise
+        `ValueError`, which argparse does not catch. Uncaught it exits 1 with a
+        traceback -- the same status a real gate failure returns, so a caller
+        checking the exit code would record a failing board rather than a
+        mistyped name.
+        """
+
+        from drm.firmware_gate import _parse_args  # noqa: PLC0415
+
+        for flag, value in (
+            ("--profile", "megrez-sv48-svade-drm-firmwarer"),
+            ("--device-set", "megrez-bais"),
+        ):
+            with self.subTest(flag=flag):
+                with self.assertRaises(SystemExit) as caught:
+                    _parse_args(
+                        [
+                            "--uboot", "/inputs/u-boot",
+                            "--boot-disk", "/inputs/boot.ext4",
+                            "--manifest", "/inputs/artifacts.json",
+                            "--output-directory", "/outputs",
+                            flag, value,
+                        ]
+                    )
+                self.assertIn("unknown", str(caught.exception))
 
     def test_failure_never_leaves_a_stale_pass_behind(self) -> None:
         def failing_runner(**_arguments: object) -> object:
