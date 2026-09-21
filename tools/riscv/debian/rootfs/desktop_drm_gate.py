@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+from functools import partial
 import secrets
 import sys
 import time
@@ -272,12 +273,25 @@ def desktop_drm_virgl_qemu_argv(**arguments: Any) -> tuple[str, ...]:
 
 
 def classify_desktop_drm(
-    transcript: bytes, *, expected_debian_release: str
+    transcript: bytes,
+    *,
+    expected_debian_release: str,
+    milestones: tuple[str, ...] = DESKTOP_DRM_MILESTONES,
 ) -> GateResult:
+    """Grade a 2D run against the markers its own display device should produce.
+
+    `milestones` defaults to the virtio-gpu expectations for callers that mean
+    the ordinary desktop, but a run on a `bochs-display` has to pass its own:
+    the Xorg line names the driver, and this device's driver is not that one.
+    The orchestrator passes `operations.MILESTONES`; without that, a firmware
+    run was graded against a virtio milestone it could never produce and failed
+    with a reason naming a string the guest had no business emitting.
+    """
+
     return classify_desktop(
         transcript,
         expected_debian_release=expected_debian_release,
-        milestones=DESKTOP_DRM_MILESTONES,
+        milestones=milestones,
         failure_marker=b"DEBIAN_DESKTOP_DRM_FAIL reason=",
     )
 
@@ -302,7 +316,10 @@ def observed_desktop_drm_pixels(transcript: bytes) -> bytes | None:
 
 
 def classify_desktop_drm_virgl(
-    transcript: bytes, *, expected_debian_release: str
+    transcript: bytes,
+    *,
+    expected_debian_release: str,
+    milestones: tuple[str, ...] = DESKTOP_DRM_VIRGL_MILESTONES,
 ) -> GateResult:
     """Classify a 3D run, where a software renderer is a failure.
 
@@ -316,7 +333,7 @@ def classify_desktop_drm_virgl(
     result = classify_desktop(
         transcript,
         expected_debian_release=expected_debian_release,
-        milestones=DESKTOP_DRM_VIRGL_MILESTONES,
+        milestones=milestones,
         failure_marker=b"DEBIAN_DESKTOP_DRM_FAIL reason=",
     )
     if result.passed:
@@ -617,11 +634,19 @@ def orchestrate_desktop_drm_gate(
 ) -> dict[str, object]:
     # A 3D run is graded on whether the renderer is virgl; a 2D run has no
     # renderer to grade and must not acquire a requirement for one.
+    #
+    # The milestones are bound here rather than left to the classifiers'
+    # defaults, because which ones apply depends on the display device this run
+    # launched: a `bochs-display` run has to be graded against the driver it
+    # actually presents through. Using the defaults graded a firmware run
+    # against the virtio expectations and reported a milestone missing that the
+    # guest had no business emitting.
     if classifier is None:
-        classifier = (
-            classify_desktop_drm_virgl
-            if operations.REQUIRES_VIRGL
-            else classify_desktop_drm
+        milestones = operations.MILESTONES
+        classifier = partial(
+            classify_desktop_drm_virgl if operations.REQUIRES_VIRGL
+            else classify_desktop_drm,
+            milestones=milestones,
         )
     return orchestrate_systemd_m2_gate(config, operations, classifier=classifier)
 

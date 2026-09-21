@@ -499,12 +499,36 @@ class DesktopDRMRendererTests(unittest.TestCase):
         )
 
     def test_the_gate_wires_the_3d_classifier_to_a_3d_device(self) -> None:
-        # Requiring virgl is only real if the run that needs it actually gets
-        # graded by the classifier that checks it. A correct classifier that
-        # nothing calls would look identical from the outside.
-        for device, expected in (
-            ("virtio-gpu-gl-device", classify_desktop_drm_virgl),
-            ("virtio-gpu-device", classify_desktop_drm),
+        """And wires the device's *own* milestones into whichever it picks.
+
+        Requiring virgl is only real if the run that needs it actually gets
+        graded by the classifier that checks it -- a correct classifier that
+        nothing calls would look identical from the outside.
+
+        The bound milestones are asserted and not just the function, because
+        the classifier used to be handed without them and fell back to the
+        virtio-gpu expectations. A `bochs-display` run was then graded against
+        a milestone naming a driver it does not have, and failed reporting that
+        milestone as missing -- which is also what a genuinely absent desktop
+        looks like, so the two were indistinguishable.
+        """
+
+        for device, expected, milestones in (
+            (
+                "virtio-gpu-gl-device",
+                classify_desktop_drm_virgl,
+                desktop_drm_milestones("virtio-gpu-gl-device", virgl=True),
+            ),
+            (
+                "virtio-gpu-device",
+                classify_desktop_drm,
+                desktop_drm_milestones("virtio-gpu-device"),
+            ),
+            (
+                "bochs-display",
+                classify_desktop_drm,
+                desktop_drm_milestones("bochs-display"),
+            ),
         ):
             with self.subTest(device=device):
                 operations = DesktopDRMOperations(self._config(device))
@@ -516,9 +540,9 @@ class DesktopDRMRendererTests(unittest.TestCase):
                     orchestrate_desktop_drm_gate(
                         self._config(device), operations
                     )
-                self.assertIs(
-                    orchestrate.call_args.kwargs["classifier"], expected
-                )
+                classifier = orchestrate.call_args.kwargs["classifier"]
+                self.assertIs(classifier.func, expected)
+                self.assertEqual(classifier.keywords["milestones"], milestones)
 
 
 if __name__ == "__main__":
