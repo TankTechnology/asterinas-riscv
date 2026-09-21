@@ -30,12 +30,14 @@ from tools.riscv.debian.rootfs.desktop_drm_gate import (
     classify_desktop_drm_virgl,
     desktop_drm_milestones,
     desktop_drm_qemu_argv,
+    desktop_drm_screenshot_geometry,
     observed_desktop_drm_pixels,
     observed_desktop_drm_renderer,
     orchestrate_desktop_drm_gate,
     reject_a_kernel_that_cannot_boot,
 )
 from tools.riscv.debian.rootfs.rootfs_gate import GateConfig, GateFailure
+from tools.riscv.qemu_uboot_devices import BOCHS_XRGB8888
 from tools.riscv.debian.rootfs.profiles import get_profile
 
 
@@ -174,6 +176,34 @@ class DebianDesktopDRMTests(unittest.TestCase):
 
 
 class DesktopDRMScreenshotContractTests(unittest.TestCase):
+    def test_the_screenshot_geometry_follows_the_display_device(self) -> None:
+        """A constant here is a run that cannot pass.
+
+        `capture_rendered_ppm` rejects any frame that is not the expected size,
+        and the bochs framebuffer U-Boot describes is 1280x1024 while the mode
+        the virtio-gpu driver synthesizes is 1280x800. The firmware path was
+        handed the virtio one and failed `unexpected PPM geometry` every time.
+        """
+
+        self.assertEqual(
+            desktop_drm_screenshot_geometry("virtio-gpu-device"),
+            (DESKTOP_DRM_EXPECTED_WIDTH, DESKTOP_DRM_EXPECTED_HEIGHT),
+        )
+        self.assertEqual(
+            desktop_drm_screenshot_geometry("bochs-display"),
+            (BOCHS_XRGB8888.width, BOCHS_XRGB8888.height),
+        )
+        # Stated as its own assertion because the two being equal is exactly
+        # the state that hid this: one constant served both devices.
+        self.assertNotEqual(
+            desktop_drm_screenshot_geometry("bochs-display"),
+            desktop_drm_screenshot_geometry("virtio-gpu-device"),
+        )
+
+    def test_an_unknown_display_device_has_no_geometry(self) -> None:
+        with self.assertRaises(ValueError):
+            desktop_drm_screenshot_geometry("some-other-display")
+
     def test_the_capture_accepts_what_this_gate_passes_it(self) -> None:
         """The screenshot call and the screenshot function have to agree.
 

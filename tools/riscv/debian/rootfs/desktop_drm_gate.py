@@ -150,6 +150,38 @@ def desktop_drm_milestones(
     return milestones + (DESKTOP_DRM_PIXEL_MILESTONE, DESKTOP_DRM_VIRGL_MILESTONE)
 
 
+#: The scanout geometry each display device presents.
+#:
+#: A virtio-gpu's mode is synthesized by the kernel's driver, so it is the same
+#: on every machine; a bochs display's is whatever QEMU programmed and U-Boot
+#: wrote into the device tree, which is `BOCHS_XRGB8888`. Taken from that
+#: contract rather than restated, so the two cannot disagree about how big the
+#: frame is.
+_SCREENSHOT_GEOMETRY = {
+    "bochs-display": (BOCHS_XRGB8888.width, BOCHS_XRGB8888.height),
+    "virtio-gpu-device": (DESKTOP_DRM_EXPECTED_WIDTH, DESKTOP_DRM_EXPECTED_HEIGHT),
+    "virtio-gpu-gl-device": (DESKTOP_DRM_EXPECTED_WIDTH, DESKTOP_DRM_EXPECTED_HEIGHT),
+}
+
+
+def desktop_drm_screenshot_geometry(graphics_device: str) -> tuple[int, int]:
+    """The frame size a screendump of `graphics_device` must have.
+
+    The capture rejects any other size, so a run whose display is a different
+    shape fails with `unexpected PPM geometry`. That is what the firmware path
+    did: it was handed the virtio mode's 1280x800 while the bochs framebuffer
+    U-Boot described is 1280x1024.
+    """
+
+    try:
+        return _SCREENSHOT_GEOMETRY[graphics_device]
+    except KeyError as error:
+        raise ValueError(
+            f"no screenshot geometry is registered for the display device "
+            f"{graphics_device!r}"
+        ) from error
+
+
 #: The virtio-gpu expectations, kept as named constants because most callers
 #: want the ordinary desktop and should not have to name a device to get it.
 DESKTOP_DRM_MILESTONES = desktop_drm_milestones("virtio-gpu-device")
@@ -559,13 +591,19 @@ class DesktopDRMOperations(DesktopM3Operations):
         if not self.CAPTURE_SCREENSHOT:
             return
 
+        # From the display device, not from a constant: the bochs framebuffer
+        # U-Boot describes is a different shape from the mode the virtio-gpu
+        # driver synthesizes, and one of the two would be rejected.
+        expected_width, expected_height = desktop_drm_screenshot_geometry(
+            config.graphics_device
+        )
         screenshot = session["directory"] / f"{self.ARTIFACT_PREFIX}.ppm"
         self._screenshot, self._screenshot_metadata = capture_rendered_ppm(
             session["monitor"],
             screenshot,
             time.monotonic() + config.command_timeout,
-            expected_width=DESKTOP_DRM_EXPECTED_WIDTH,
-            expected_height=DESKTOP_DRM_EXPECTED_HEIGHT,
+            expected_width=expected_width,
+            expected_height=expected_height,
             min_distinct_colors=DESKTOP_DRM_MIN_DISTINCT_COLORS,
             min_non_background_ratio=DESKTOP_DRM_MIN_NON_BACKGROUND_RATIO,
         )
