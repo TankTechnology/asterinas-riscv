@@ -86,6 +86,16 @@ DRM_RENDER_NODE = QemuDeviceSet(
     "drm-render-node",
     (DeviceKind.VIRTIO_GPU,),
 )
+#: A display and **no GPU at all**. The bochs device is what gives the firmware
+#: framebuffer contract a real region of memory to point at, and its absence of
+#: a virtio-gpu is the point: with no GPU to present through, the only way this
+#: machine can put a picture up is by copying into that region. A set that kept
+#: the GPU would let the driver select it and test nothing.
+DRM_FIRMWARE = QemuDeviceSet(
+    "drm-firmware",
+    (DeviceKind.BOCHS_DISPLAY,),
+    BOCHS_XRGB8888,
+)
 # The only set that is not `-display none`: `egl-headless,gl=on` is what gives
 # the GL device a host context, and without one QEMU withholds the virgl
 # feature bit entirely.
@@ -103,6 +113,7 @@ _DEVICE_SETS = MappingProxyType(
         DRM_CURSOR.name: DRM_CURSOR,
         DRM_GEM.name: DRM_GEM,
         DRM_RENDER_NODE.name: DRM_RENDER_NODE,
+        DRM_FIRMWARE.name: DRM_FIRMWARE,
         DRM_VIRGL.name: DRM_VIRGL,
     }
 )
