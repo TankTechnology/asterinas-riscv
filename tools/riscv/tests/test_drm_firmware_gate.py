@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -30,7 +31,9 @@ from drm.firmware_gate import (  # noqa: E402
     PATTERN_MARKER,
     PRESENT_MARKER,
     READY_MARKER,
+    FirmwareGateConfig,
     classify_transcript,
+    run_firmware_gate,
 )
 
 
@@ -151,6 +154,69 @@ class DrmFirmwareClassifierTests(unittest.TestCase):
     def test_a_transcript_over_the_cap_is_refused(self) -> None:
         with self.assertRaises(ValueError):
             classify_transcript(b"x" * (MAX_TRANSCRIPT_BYTES + 1))
+
+
+class DrmFirmwareRunContractTests(unittest.TestCase):
+    def test_the_run_asks_the_runner_for_the_picture_it_is_grading(self) -> None:
+        """A framebuffer device set is refused unless its display is captured.
+
+        This is not a detail of the runner: the gate did not pass a screenshot
+        or a display audit, and the run died before QEMU started with
+        `framebuffer device set requires positive display outputs`. Nothing
+        about the kernel could have shown that -- the gate simply could not
+        launch -- so the requirement is pinned here, where it fails in a
+        second instead of after a boot.
+        """
+
+        captured: dict[str, object] = {}
+
+        def fake_runner(**arguments: object) -> object:
+            captured.update(arguments)
+            Path(arguments["serial_log"]).write_bytes(a_transcript())
+            return type("BaseResult", (), {"passed": True})()
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "evidence"
+            output.mkdir()
+            result = run_firmware_gate(
+                FirmwareGateConfig(
+                    uboot=Path("/inputs/u-boot"),
+                    boot_disk=Path("/inputs/boot.ext4"),
+                    manifest=Path("/inputs/artifacts.json"),
+                    output_directory=output,
+                ),
+                runner=fake_runner,
+            )
+
+        self.assertTrue(result.passed, result.reason)
+        self.assertIs(captured["device_set"], DRM_FIRMWARE)
+        self.assertIs(captured["profile"], GENERIC_SV39_DRM_FIRMWARE_SMP4)
+        self.assertIsNotNone(captured["screenshot"])
+        self.assertIsNotNone(captured["display_audit"])
+
+    def test_failure_never_leaves_a_stale_pass_behind(self) -> None:
+        def failing_runner(**_arguments: object) -> object:
+            raise RuntimeError("launch failed")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "evidence"
+            output.mkdir()
+            (output / "result.json").write_text('{"passed": true}\n')
+
+            result = run_firmware_gate(
+                FirmwareGateConfig(
+                    uboot=Path("/inputs/u-boot"),
+                    boot_disk=Path("/inputs/boot.ext4"),
+                    manifest=Path("/inputs/artifacts.json"),
+                    output_directory=output,
+                ),
+                runner=failing_runner,
+            )
+
+            self.assertFalse(result.passed)
+            self.assertEqual(
+                json.loads((output / "result.json").read_text())["passed"], False
+            )
 
 
 if __name__ == "__main__":
