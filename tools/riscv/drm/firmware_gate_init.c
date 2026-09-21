@@ -48,14 +48,32 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-/* The mode U-Boot wrote into the device tree (`BOCHS_XRGB8888`): 1280x1024 at
- * a stride of 1280 32-bit pixels, so the visible row and the stride are the
- * same length here. A padded stride is legal and the driver accepts it, but
- * this gate pins the layout it was given rather than one it chose. */
+/* The mode U-Boot wrote into the device tree. The defaults are
+ * `BOCHS_XRGB8888`, which is what the generic QEMU runs use; the build script
+ * overrides them with -D when the run uses a different framebuffer contract,
+ * so the gate can pin the layout the board actually hands over (1920x1080 at
+ * a stride of 7680) instead of only the one this gate happened to grow up on.
+ *
+ * These are the *expected* values, and they are supposed to come from the
+ * same contract that wrote the device tree node -- the claim is "the driver
+ * reports and honours what the node said", not "the driver agrees with
+ * itself". A mismatch is a failure, which is why they are pinned rather than
+ * read back from the driver. */
+#ifndef MODE_WIDTH
 #define MODE_WIDTH 1280U
+#endif
+#ifndef MODE_HEIGHT
 #define MODE_HEIGHT 1024U
+#endif
+#ifndef MODE_STRIDE
+#define MODE_STRIDE (MODE_WIDTH * 4U)
+#endif
 #define MODE_BPP 32U
-#define MODE_PITCH (MODE_WIDTH * 4U)
+/* Kept as the name the offsets below already use. A padded stride is legal
+ * and the driver accepts it, so the stride is its own field rather than
+ * `MODE_WIDTH * 4` -- deriving it would make a padded contract compare the
+ * wrong pixels and still report a pass. */
+#define MODE_PITCH MODE_STRIDE
 #define MODE_SIZE ((uint64_t)MODE_PITCH * MODE_HEIGHT)
 
 /* The single CRTC the driver exposes; the same id its resource enumeration
