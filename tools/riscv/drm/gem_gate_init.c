@@ -48,7 +48,13 @@ struct drm_gem_open {
 #define DRM_IOCTL_MODE_MAP_DUMB _IOWR('d', 0xB3, struct drm_mode_map_dumb)
 #define DRM_IOCTL_GEM_CLOSE _IOW('d', 0x09, struct drm_gem_close)
 #define DRM_IOCTL_GEM_FLINK _IOWR('d', 0x0a, struct drm_gem_flink)
-#define DRM_IOCTL_GEM_OPEN _IOWR('d', 0x1b, struct drm_gem_open)
+/* `DRM_IOWR(0x0b, ...)`, per /usr/include/drm/drm.h:1100. It was written here
+ * as 0x1b -- which is `DRM_IOCTL_RM_MAP` -- and the kernel driver declared the
+ * same wrong number, so the two agreed and this gate stayed green while both
+ * were wrong. Correcting the driver turned that agreement into ENOTTY. A probe
+ * that transcribes its constants by hand is only as right as its source, and
+ * this one had a second copy of the driver's mistake. */
+#define DRM_IOCTL_GEM_OPEN _IOWR('d', 0x0b, struct drm_gem_open)
 
 #define GEM_WIDTH 64U
 #define GEM_HEIGHT 64U

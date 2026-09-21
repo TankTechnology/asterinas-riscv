@@ -136,7 +136,9 @@ struct drm_virtgpu_context_init {
 #define DRM_IOCTL_GEM_FLINK _IOWR('d', 0x0a, struct drm_gem_flink)
 #define DRM_IOCTL_GET_CAP _IOWR('d', 0x0c, struct drm_get_cap)
 #define DRM_IOCTL_SET_CLIENT_CAP _IOW('d', 0x0d, struct drm_set_client_cap)
-#define DRM_IOCTL_GEM_OPEN _IOWR('d', 0x1b, struct drm_gem_open)
+/* `DRM_IOWR(0x0b, ...)`, per /usr/include/drm/drm.h:1100 -- see the longer note
+ * in gem_gate_init.c. */
+#define DRM_IOCTL_GEM_OPEN _IOWR('d', 0x0b, struct drm_gem_open)
 #define DRM_IOCTL_SET_MASTER _IO('d', 0x1e)
 #define DRM_IOCTL_DROP_MASTER _IO('d', 0x1f)
 #define DRM_IOCTL_MODE_GETRESOURCES _IOWR('d', 0xa0, struct drm_mode_card_res)
