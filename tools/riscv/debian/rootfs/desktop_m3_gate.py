@@ -166,9 +166,22 @@ def _ppm_token(contents: bytes, offset: int) -> tuple[bytes, int]:
 
 
 def inspect_ppm(
-    contents: bytes, *, expected_width: int = 1280, expected_height: int = 1024
+    contents: bytes,
+    *,
+    expected_width: int = 1280,
+    expected_height: int = 1024,
+    min_distinct_colors: int = 2,
+    min_non_background_ratio: float = 0.01,
 ) -> dict[str, int]:
-    """Validate a bounded QEMU P6 screendump and reject a blank framebuffer."""
+    """Validate a bounded QEMU P6 screendump and reject a blank framebuffer.
+
+    The two thresholds default to what this function always required -- more
+    than one color, and more than one percent of the frame differing from it --
+    so callers that want only "the screen is not blank" keep that answer. A
+    caller that wants "the desktop has actually painted" raises them; see
+    `DESKTOP_DRM_MIN_DISTINCT_COLORS`, which asked for exactly that and was
+    passed to a function that did not take it.
+    """
 
     if len(contents) > MAX_SCREENSHOT_BYTES:
         raise GateFailure("PPM screenshot exceeds byte cap")
@@ -200,9 +213,13 @@ def inspect_ppm(
             non_background_pixels += 1
         if len(distinct) < 256:
             distinct.add(pixel)
-    if len(distinct) < 2:
+    # Both reasons are load-bearing, not just the verdict: the capture loop
+    # retries on exactly these two strings, so changing the wording would turn
+    # "not painted yet" into a hard failure.
+    if len(distinct) < max(2, min_distinct_colors):
         raise GateFailure("PPM framebuffer contains a single color")
-    if non_background_pixels < max(1, width * height // 100):
+    minimum_pixels = max(1, int(width * height * min_non_background_ratio))
+    if non_background_pixels < minimum_pixels:
         raise GateFailure("PPM framebuffer has insufficient rendered content")
     return {
         "width": width,
@@ -221,8 +238,14 @@ def capture_rendered_ppm(
     expected_width: int = 1280,
     expected_height: int = 1024,
     retry_interval: float = 1.0,
+    min_distinct_colors: int = 2,
+    min_non_background_ratio: float = 0.01,
 ) -> tuple[bytes, dict[str, int]]:
-    """Capture until the first non-blank frame, within one total deadline."""
+    """Capture until the first frame that satisfies the thresholds.
+
+    One total deadline, not one per attempt: the loop retries while the screen
+    is blank or too plain to be the desktop, and the deadline is what stops it.
+    """
 
     quoted = str(screenshot).replace("\\", "\\\\").replace('"', '\\"')
     while True:
@@ -235,6 +258,8 @@ def capture_rendered_ppm(
                 contents,
                 expected_width=expected_width,
                 expected_height=expected_height,
+                min_distinct_colors=min_distinct_colors,
+                min_non_background_ratio=min_non_background_ratio,
             )
             return contents, metadata
         except GateFailure as error:

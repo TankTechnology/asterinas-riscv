@@ -85,8 +85,23 @@ class Operations(Protocol):
 
 
 def _reason(error: BaseException, fallback: str) -> str:
+    """Name what went wrong, never less than the phase it went wrong in.
+
+    `GateFailure` and its kin carry a `reason`, and that is the best answer when
+    it is there. When it is not, an unexpected exception still has a type and a
+    message, and returning the bare phase name throws both away -- which is
+    what happened to a run that reported `protocol` and nothing else, leaving
+    nothing to act on. The type and message go in the returned string, so the
+    result file is enough to start from.
+    """
+
     candidate = getattr(error, "reason", None)
-    return candidate if isinstance(candidate, str) and candidate else fallback
+    if isinstance(candidate, str) and candidate:
+        return candidate
+    detail = str(error).strip()
+    if detail:
+        return f"{fallback}: {type(error).__name__}: {detail}"
+    return f"{fallback}: {type(error).__name__}"
 
 
 def orchestrate_systemd_m2_gate(
