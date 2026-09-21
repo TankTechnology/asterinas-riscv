@@ -492,6 +492,39 @@ DRM_GEM_GATE = ValidationScenario(
     post_terminal_timeout=0.25,
 )
 
+DRM_FIRMWARE_READY_LINE = b"ASTERINAS_DRM_FIRMWARE_R1_READY"
+DRM_FIRMWARE_GATE = ValidationScenario(
+    name="asterinas-drm-firmware-r1",
+    bootargs="console=ttyS0 loglevel=info init=/init",
+    scope=ResultScope.COMPLETE_BOOT,
+    milestones=(
+        *_ASTERINAS_COMMON_MILESTONES,
+        MilestoneExpectation(
+            BootMilestone.KERNEL_READY,
+            b"OSTD initialized. Preparing components.",
+        ),
+        MilestoneExpectation(
+            BootMilestone.ROOTFS_READY,
+            b"[kernel] rootfs is ready",
+        ),
+        MilestoneExpectation(
+            BootMilestone.USERSPACE_READY,
+            DRM_FIRMWARE_READY_LINE,
+        ),
+    ),
+    terminal=BootMilestone.USERSPACE_READY,
+    completion_line=DRM_FIRMWARE_READY_LINE,
+    forbidden_markers=(
+        b"Uncaught panic",
+        b"unexpected exception",
+    ),
+    audit_policy=AuditPolicy.REGISTERED_MILESTONES,
+    startup_timeout=30.0,
+    command_timeout=10.0,
+    boot_timeout=90.0,
+    post_terminal_timeout=0.25,
+)
+
 DRM_RENDER_NODE_READY_LINE = b"ASTERINAS_DRM_RENDER_R1_READY"
 DRM_RENDER_NODE_GATE = ValidationScenario(
     name="asterinas-drm-render-node-r1",
@@ -816,6 +849,13 @@ GENERIC_SV39_DRM_GEM_SMP4 = QemuUbootProfile(
     validation=DRM_GEM_GATE,
 )
 
+GENERIC_SV39_DRM_FIRMWARE_SMP4 = QemuUbootProfile(
+    name="generic-sv39-drm-firmware-smp4",
+    machine=QEMU_VIRT_SMP4,
+    boot_flow=UBOOT_BOOTI,
+    validation=DRM_FIRMWARE_GATE,
+)
+
 GENERIC_SV39_DRM_RENDER_NODE_SMP4 = QemuUbootProfile(
     name="generic-sv39-drm-render-node-smp4",
     machine=QEMU_VIRT_SMP4,
@@ -950,6 +990,7 @@ _PROFILES: Mapping[str, QemuUbootProfile] = MappingProxyType(
             GENERIC_SV39_LTP_SMP4,
             GENERIC_SV39_DRM_CURSOR_SMP4,
             GENERIC_SV39_DRM_GEM_SMP4,
+            GENERIC_SV39_DRM_FIRMWARE_SMP4,
             GENERIC_SV39_DRM_RENDER_NODE_SMP4,
             GENERIC_SV39_DRM_VIRGL_SMP4,
             MEGREZ_SV48_SVADE_FAST,

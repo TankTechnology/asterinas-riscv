@@ -20,6 +20,7 @@
 //! and (b) each buffer is backed by one contiguous guest-physical span that
 //! virtio-gpu's `RESOURCE_ATTACH_BACKING` accepts.
 
+mod backend;
 mod cursor;
 mod fence;
 mod prime;
@@ -38,10 +39,17 @@ use ostd::{
     task::Task,
 };
 
-use self::cursor::{
-    CursorBuffer, CursorImage, CursorState, DrmModeCursor, DrmModeCursor2, MODE_CURSOR_BO,
-    validate_cursor,
+use self::{
+    backend::{
+        CursorBackend, CursorGeometry, CursorScanoutBuffer, FirmwareFramebufferBackend,
+        ScanoutBackend, ScanoutBuffer,
+    },
+    cursor::{
+        CursorBuffer, CursorImage, CursorState, DrmModeCursor, DrmModeCursor2, MODE_CURSOR_BO,
+        validate_cursor,
+    },
 };
+use aster_framebuffer::framebuffer::{FRAMEBUFFER, FrameBuffer};
 use crate::{
     context::current_userspace,
     device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
@@ -72,6 +80,19 @@ pub(super) const DRM_MAJOR: u16 = 226;
 /// `"virtio_gpu"`, and anything else makes accelerated rendering silently
 /// unavailable.
 pub(super) const DRIVER_NAME: &str = "virtio_gpu";
+
+/// The driver name reported when nothing but a firmware framebuffer is present.
+///
+/// `simpledrm` is what Linux calls its DRM driver for exactly this situation —
+/// a display a bootloader programmed and left running, which the kernel can
+/// only copy into. Matching that name is deliberate: a client that recognizes
+/// it is looking at the same hardware situation and will do the right thing
+/// for it.
+///
+/// Deliberately not `virtio_gpu`, for the reason above: this name is how a
+/// client decides which driver to use, and claiming a device that is not there
+/// would send it to a 3D path that cannot exist on this machine.
+const FIRMWARE_DRIVER_NAME: &str = "simpledrm";
 const DRIVER_DATE: &str = "20260815";
 const DRIVER_DESC: &str = "Asterinas virtio-gpu driver";
 
@@ -84,6 +105,8 @@ const PLANE_ID: u32 = 1;
 
 /// `DRM_MODE_CONNECTOR_VIRTUAL`, the connector type Linux's virtio-gpu reports.
 const DRM_MODE_CONNECTOR_VIRTUAL: u32 = 15;
+/// `DRM_MODE_CONNECTOR_Unknown`, for a display whose connector cannot be named.
+const DRM_MODE_CONNECTOR_UNKNOWN: u32 = 0;
 /// `DRM_MODE_ENCODER_VIRTUAL`.
 const DRM_MODE_ENCODER_VIRTUAL: u32 = 5;
 /// `DRM_MODE_CONNECTED`.
@@ -172,7 +195,7 @@ impl DriNode {
 }
 
 /// Every DRM node this kernel exposes, as `(name, minor)` pairs, or an empty
-/// slice when no virtio-gpu device was found.
+/// slice when this machine has no display to drive.
 ///
 /// The sysfs view of these nodes is built from this list, so it appears only
 /// once the character devices themselves do.
@@ -182,7 +205,10 @@ pub(super) fn exposed_nodes() -> &'static [(&'static str, u32)] {
         (DriNode::Render.node_name(), DriNode::Render.minor()),
     ];
 
-    if first_device().is_none() {
+    // A firmware framebuffer is a display like any other: a machine that has
+    // only that one still gets a card node, which is the whole point of the
+    // firmware backend. Only a machine with neither has nothing to expose.
+    if display_source().is_none() {
         return &[];
     }
     &NODES
@@ -256,6 +282,115 @@ static GEM_OBJECTS: SpinLock<GemObjects> = SpinLock::new(GemObjects::new());
 #[derive(Debug)]
 struct Dri {
     node: DriNode,
+    /// What presents pixels, chosen once and shared by every open file.
+    display: Arc<DisplayDevice>,
+}
+
+/// Everything that turns pixels into a visible image on this machine.
+///
+/// Selected once, when the nodes are registered, rather than per open file.
+/// The choice cannot change while the machine runs — a virtio-gpu device does
+/// not appear later, and the firmware framebuffer is fixed at boot — and every
+/// open file has to reach the same scanout regardless.
+struct DisplayDevice {
+    /// The virtio-gpu device, when the machine has one.
+    ///
+    /// Absent on a machine whose only display is the firmware framebuffer.
+    /// The ioctls specific to virtio-gpu have nothing to talk to there, and
+    /// report so, rather than the driver refusing to exist.
+    gpu: Option<Arc<GpuDevice>>,
+    /// Presents framebuffers on the active scanout.
+    scanout: Arc<dyn ScanoutBackend>,
+    /// Hardware-cursor operations, absent for a backend that has no hardware
+    /// cursor to program.
+    cursor: Option<Arc<dyn CursorBackend>>,
+    /// The driver name `DRM_IOCTL_VERSION` reports.
+    ///
+    /// Per backend rather than constant, because it names the driver a client
+    /// should use, and "virtio_gpu" is a false answer on a machine that has no
+    /// virtio-gpu at all.
+    name: &'static str,
+    /// The connector type `MODE_GETCONNECTOR` reports.
+    connector_type: u32,
+}
+
+impl DisplayDevice {
+    /// The largest mode a client may ask for, for `MODE_GETRESOURCES`.
+    ///
+    /// A backend that only copies into a fixed framebuffer accepts exactly the
+    /// mode firmware chose, so advertising the range a programmable display
+    /// allows would offer modes that later fail to set. A backend that can
+    /// program the display keeps the permissive limit its host imposes.
+    fn max_mode(&self) -> (u32, u32) {
+        self.scanout
+            .fixed_mode()
+            .unwrap_or((MAX_RESOLUTION, MAX_RESOLUTION))
+    }
+}
+
+impl Debug for DisplayDevice {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Only which devices are present is worth printing: the backends are
+        // trait objects and have nothing to say about themselves.
+        let (virtio_gpu, hardware_cursor) = (self.gpu.is_some(), self.cursor.is_some());
+        f.debug_struct("DisplayDevice")
+            .field("driver", &self.name)
+            .field("virtio_gpu", &virtio_gpu)
+            .field("hardware_cursor", &hardware_cursor)
+            .finish()
+    }
+}
+
+/// What can present pixels on this machine, before anything is built from it.
+///
+/// Separated from construction so that the question "should a DRM node exist at
+/// all" can be asked cheaply, and so that the answer and the construction read
+/// the same check.
+enum DisplaySource {
+    Virtio(Arc<GpuDevice>),
+    Firmware(Arc<FrameBuffer>),
+}
+
+/// The display this machine has, if it has one this driver can present through.
+///
+/// virtio-gpu wins when both are present: it is the device with a 3D path and a
+/// hardware cursor, and on a machine that has one the firmware framebuffer is
+/// the console's, not the client's.
+fn display_source() -> Option<DisplaySource> {
+    if let Some(gpu) = first_device() {
+        return Some(DisplaySource::Virtio(gpu));
+    }
+    let framebuffer = FRAMEBUFFER.get()?;
+    FirmwareFramebufferBackend::accepts(framebuffer).then(|| {
+        DisplaySource::Firmware(Arc::clone(framebuffer))
+    })
+}
+
+/// Builds the presentation devices for a source.
+fn display_device(source: DisplaySource) -> Result<DisplayDevice> {
+    Ok(match source {
+        DisplaySource::Virtio(gpu) => DisplayDevice {
+            scanout: Arc::clone(&gpu) as Arc<dyn ScanoutBackend>,
+            cursor: Some(Arc::clone(&gpu) as Arc<dyn CursorBackend>),
+            gpu: Some(gpu),
+            name: DRIVER_NAME,
+            connector_type: DRM_MODE_CONNECTOR_VIRTUAL,
+        },
+        DisplaySource::Firmware(framebuffer) => DisplayDevice {
+            scanout: Arc::new(FirmwareFramebufferBackend::new(framebuffer)?),
+            // The firmware backend owns no display hardware, so it cannot
+            // place a cursor. `None` is what makes the driver refuse cursor
+            // requests outright, which is the answer that lets a client draw
+            // the pointer itself instead of waiting for one that never comes.
+            cursor: None,
+            gpu: None,
+            name: FIRMWARE_DRIVER_NAME,
+            // Not `DRM_MODE_CONNECTOR_VIRTUAL`: there is a real connector here,
+            // firmware is driving it, and this driver has no way to ask what
+            // kind it is. "Unknown" is what the uapi provides for exactly that.
+            connector_type: DRM_MODE_CONNECTOR_UNKNOWN,
+        },
+    })
 }
 
 /// Per-open-file DRM state.
@@ -267,7 +402,8 @@ struct Dri {
 struct DriHandle {
     /// The node this file was opened through, which decides what it may do.
     node: DriNode,
-    gpu: Arc<GpuDevice>,
+    /// What presents pixels, shared with every other open file of this node.
+    display: Arc<DisplayDevice>,
     /// Serializes implicit context creation for this file.
     context_operation: Mutex<()>,
     cursor_operation: Mutex<()>,
@@ -929,14 +1065,13 @@ impl Device for Dri {
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
-        let gpu = first_device()
-            .ok_or_else(|| Error::with_message(Errno::ENODEV, "no virtio-gpu device"))?;
-        let current_width = gpu.width();
-        let current_height = gpu.height();
+        // The scanout was already chosen when the node was registered, so the
+        // mode a fresh file starts at is the one the display actually has.
+        let (current_width, current_height) = self.display.scanout.dimensions();
 
         Ok(Box::new(DriHandle {
             node: self.node,
-            gpu,
+            display: Arc::clone(&self.display),
             context_operation: Mutex::new(()),
             cursor_operation: Mutex::new(()),
             events: Pollee::new(),
@@ -1103,6 +1238,15 @@ fn name_object(inner: &mut DriInner, object_id: u32) -> u32 {
 }
 
 impl DriHandle {
+    /// The virtio-gpu device, for the ioctls only it can serve.
+    ///
+    /// A machine whose only display is the firmware framebuffer has no 3D path
+    /// and no virtio-gpu control channel, and those ioctls say so rather than
+    /// being served by something that is not there.
+    fn gpu(&self) -> Result<&Arc<GpuDevice>> {
+        let gpu = self.display.gpu.as_ref();
+        gpu.ok_or_else(|| Error::with_message(Errno::ENODEV, "this DRM device has no virtio-gpu"))
+    }
 
     fn create_dumb(&self, req: &DrmModeCreateDumb) -> Result<DrmModeCreateDumb> {
         if req.flags != 0 {
@@ -1163,18 +1307,18 @@ impl DriHandle {
     /// rendering when the answer says the host offers no 3D.
     fn virtgpu_getparam(&self, req: &DrmVirtgpuGetparam) -> Result<()> {
         let value = match req.param {
-            VIRTGPU_PARAM_3D_FEATURES => u64::from(self.gpu.supports_virgl()),
+            VIRTGPU_PARAM_3D_FEATURES => u64::from(self.gpu()?.supports_virgl()),
             // The query-fix flag means the driver returns the capset the real
             // driver would, rather than a fixed stub.
-            VIRTGPU_PARAM_CAPSET_QUERY_FIX => u64::from(self.gpu.supports_virgl()),
+            VIRTGPU_PARAM_CAPSET_QUERY_FIX => u64::from(self.gpu()?.supports_virgl()),
             VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS => {
-                if !self.gpu.supports_virgl() {
+                if !self.gpu()?.supports_virgl() {
                     0
                 } else {
                     // Read the host's first capset rather than assuming virgl,
                     // so the mask describes this host and not our expectation.
                     let info = self
-                        .gpu
+                        .gpu()?
                         .capset_info(0)
                         .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
                     1u64 << info.id
@@ -1209,17 +1353,17 @@ impl DriHandle {
                 req.cap_set_id,
                 req.cap_set_ver,
                 req.size,
-                self.gpu.supports_virgl()
+                self.gpu()?.supports_virgl()
             );
         }
-        if !self.gpu.supports_virgl() {
+        if !self.gpu()?.supports_virgl() {
             return_errno_with_message!(Errno::EINVAL, "3D is not available");
         }
         if req.size == 0 {
             return_errno_with_message!(Errno::EINVAL, "capability request has zero size");
         }
         let info = self
-            .gpu
+            .gpu()?
             .capset_info(0)
             .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
         if trace {
@@ -1240,7 +1384,7 @@ impl DriHandle {
         // Fetch the whole blob and hand back only what was asked for, as Linux
         // does: the host answers for one version, not for one length.
         let blob = self
-            .gpu
+            .gpu()?
             .capset(info.id, req.cap_set_ver, info.max_size)
             .map_err(|_| Error::with_message(Errno::EIO, "capability set query failed"))?;
         if trace {
@@ -1268,11 +1412,11 @@ impl DriHandle {
             return Ok(context_id);
         }
         let info = self
-            .gpu
+            .gpu()?
             .capset_info(0)
             .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
         let context_id = NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
-        self.gpu
+        self.gpu()?
             .context_create(context_id, info.id, "asterinas")
             .map_err(|_| Error::with_message(Errno::EIO, "context creation failed"))?;
         self.inner.lock().context_id = Some(context_id);
@@ -1281,7 +1425,7 @@ impl DriHandle {
 
     /// Creates this file's 3D context, against the capability set it names.
     fn virtgpu_context_init(&self, req: &DrmVirtgpuContextInit) -> Result<()> {
-        if !self.gpu.supports_virgl() {
+        if !self.gpu()?.supports_virgl() {
             return_errno_with_message!(Errno::EINVAL, "3D is not available");
         }
         if req.num_params > VIRTGPU_MAX_CTX_PARAMS {
@@ -1337,7 +1481,7 @@ impl DriHandle {
         let capset_id =
             capset_id.ok_or_else(|| Error::with_message(Errno::EINVAL, "no capset id given"))?;
         let info = self
-            .gpu
+            .gpu()?
             .capset_info(0)
             .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
         if capset_id != info.id {
@@ -1345,7 +1489,7 @@ impl DriHandle {
         }
 
         let context_id = NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
-        self.gpu
+        self.gpu()?
             .context_create(context_id, capset_id, &debug_name)
             .map_err(|_| Error::with_message(Errno::EIO, "context creation failed"))?;
         self.inner.lock().context_id = Some(context_id);
@@ -1375,7 +1519,7 @@ impl DriHandle {
         &self,
         req: &DrmVirtgpuResourceCreate,
     ) -> Result<DrmVirtgpuResourceCreate> {
-        if !self.gpu.supports_virgl() {
+        if !self.gpu()?.supports_virgl() {
             return_errno_with_message!(Errno::EINVAL, "3D is not available");
         }
         if req.size == 0 {
@@ -1404,7 +1548,7 @@ impl DriHandle {
 
         // From the device's counter, not one of this module's own: the scanout
         // resource already holds id 1, and the host refuses a duplicate.
-        let resource_id = self.gpu.reserve_resource_id();
+        let resource_id = self.gpu()?.reserve_resource_id();
         let base = {
             let mut objects = GEM_OBJECTS.lock();
             let base = pool_paddr(&objects)?;
@@ -1419,7 +1563,7 @@ impl DriHandle {
         // A resource the host never heard of, or one whose memory it cannot
         // reach, is not usable: both steps have to succeed for the handle to be
         // worth returning.
-        let create = self.gpu.resource_create_3d(
+        let create = self.gpu()?.resource_create_3d(
             resource_id,
             req.target,
             req.format,
@@ -1437,7 +1581,7 @@ impl DriHandle {
             return_errno_with_message!(Errno::EIO, "3D resource creation failed");
         }
         if self
-            .gpu
+            .gpu()?
             .attach_backing(resource_id, (base + object.offset) as u64, object.size as u32)
             .is_err()
         {
@@ -1445,7 +1589,7 @@ impl DriHandle {
             return_errno_with_message!(Errno::EIO, "3D resource backing could not be attached");
         }
         if self
-            .gpu
+            .gpu()?
             .attach_resource_to_context(context_id, resource_id)
             .is_err()
         {
@@ -1502,7 +1646,7 @@ impl DriHandle {
     /// renderer keeps working on whatever the buffer held before, so the
     /// picture is wrong rather than absent — which is why both are served.
     fn virtgpu_transfer_3d(&self, to_host: bool, req: &DrmVirtgpuTransfer3d) -> Result<()> {
-        if !self.gpu.supports_virgl() {
+        if !self.gpu()?.supports_virgl() {
             return_errno_with_message!(Errno::EINVAL, "3D is not available");
         }
         let context_id = self.ensure_context()?;
@@ -1515,13 +1659,14 @@ impl DriHandle {
             .resource_id
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "buffer is not a 3D resource"))?;
 
+        let gpu = self.gpu()?;
         let transfer = if to_host {
             GpuDevice::transfer_to_host_3d
         } else {
             GpuDevice::transfer_from_host_3d
         };
         transfer(
-            &self.gpu,
+            gpu,
             context_id,
             resource_id,
             VirtioGpuBox {
@@ -1541,7 +1686,7 @@ impl DriHandle {
     }
 
     fn virtgpu_execbuffer(&self, req: &DrmVirtgpuExecbuffer) -> Result<DrmVirtgpuExecbuffer> {
-        if !self.gpu.supports_virgl() {
+        if !self.gpu()?.supports_virgl() {
             return_errno_with_message!(Errno::EINVAL, "3D is not available");
         }
         if req.size == 0 {
@@ -1567,7 +1712,7 @@ impl DriHandle {
         }
 
         let fence_id = u64::from(NEXT_FENCE_ID.fetch_add(1, Ordering::Relaxed));
-        self.gpu
+        self.gpu()?
             .submit_3d(context_id, &commands, fence_id)
             .map_err(|_| Error::with_message(Errno::EIO, "3D submission failed"))?;
 
@@ -1741,15 +1886,17 @@ impl DriHandle {
         self.present_fb(req.fb_id)
     }
 
-    /// Presents a framebuffer on the scanout, copying its pixels to the host.
+    /// Presents a framebuffer on the scanout, making its pixels visible.
     ///
     /// Shared by `MODE_SETCRTC`, `MODE_PAGE_FLIP`, and `MODE_DIRTYFB`: all three
-    /// ultimately make a framebuffer visible, and virtio-gpu only pulls fresh
-    /// pixels during `TRANSFER_TO_HOST_2D` + `FLUSH`, so every present must
-    /// re-run that transfer (a guest-side mmap write alone is never seen by the
-    /// host display).
+    /// ultimately make a framebuffer visible, and none of them can assume the
+    /// display already has the pixels. On virtio-gpu the host only pulls fresh
+    /// pixels during `TRANSFER_TO_HOST_2D` + `FLUSH`, so a guest-side mmap write
+    /// alone is never seen; on the firmware framebuffer nothing reads the pool
+    /// until it is copied into the scanout. Presenting in full is therefore the
+    /// only correct default, and each backend decides what that costs.
     fn present_fb(&self, fb_id: u32) -> Result<()> {
-        let (addr, size, width, height) = {
+        let (buffer, width, height) = {
             let inner = self.inner.lock();
             let fb = inner
                 .framebuffers
@@ -1757,13 +1904,25 @@ impl DriHandle {
                 .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
             let objects = GEM_OBJECTS.lock();
             let object = object_by_id(&objects, fb.object_id)?;
-            let base = pool_paddr(&objects)?;
-            (base + object.offset, object.size, fb.width, fb.height)
+            // The pool itself is handed over, not its address: a backend that
+            // copies pixels needs the memory, and only the virtio one can make
+            // do with where it physically is.
+            let pool = objects
+                .pool
+                .as_ref()
+                .ok_or_else(|| Error::with_message(Errno::ENOMEM, "no dumb buffer pool"))?;
+            let buffer = ScanoutBuffer::new(
+                Arc::clone(pool),
+                object.offset,
+                object.pitch as usize,
+                object.size as u32,
+                fb.width,
+                fb.height,
+            );
+            (buffer, fb.width, fb.height)
         };
 
-        self.gpu
-            .present_framebuffer(addr as u64, size as u32, width, height)
-            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu present failed"))?;
+        self.display.scanout.present_framebuffer(buffer)?;
 
         let mut inner = self.inner.lock();
         inner.current_fb_id = Some(fb_id);
@@ -1773,6 +1932,15 @@ impl DriHandle {
     }
 
     fn update_cursor(&self, request: DrmModeCursor2) -> Result<()> {
+        // Refused before anything else, because there is no cursor to program
+        // and no honest way to report success. A client that is told the
+        // hardware accepted a cursor will not draw one itself, so the pointer
+        // would simply vanish; an error is what lets it fall back to a software
+        // cursor. The firmware backend is the case this exists for.
+        let Some(cursor) = self.display.cursor.as_ref() else {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "this display has no hardware cursor");
+        };
+
         let _cursor_operation = self.cursor_operation.lock();
         let (update, position, backing) = {
             let inner = self.inner.lock();
@@ -1794,16 +1962,34 @@ impl DriHandle {
                 .map_err(|_| Error::with_message(Errno::EINVAL, "invalid cursor request"))?;
             let position = inner.cursor.position_for(update);
             let backing = match update.image {
-                Some(CursorImage::Buffer { handle, .. }) => {
+                Some(CursorImage::Buffer {
+                    handle,
+                    width,
+                    height,
+                    hot_x,
+                    hot_y,
+                }) => {
                     let object_id = object_for_handle(&inner, handle)?;
                     let objects = GEM_OBJECTS.lock();
                     let object = object_by_id(&objects, object_id)?;
-                    let base = pool_paddr(&objects)?;
-                    Some((
-                        (base + object.offset) as u64,
-                        u32::try_from(object.size).map_err(|_| {
-                            Error::with_message(Errno::EINVAL, "cursor buffer is too large")
-                        })?,
+                    let pool = objects
+                        .pool
+                        .as_ref()
+                        .ok_or_else(|| Error::with_message(Errno::ENOMEM, "no dumb buffer pool"))?;
+                    let size = u32::try_from(object.size).map_err(|_| {
+                        Error::with_message(Errno::EINVAL, "cursor buffer is too large")
+                    })?;
+                    Some(CursorScanoutBuffer::new(
+                        Arc::clone(pool),
+                        object.offset,
+                        size,
+                        CursorGeometry {
+                            width,
+                            height,
+                            hot_x,
+                            hot_y,
+                        },
+                        position,
                     ))
                 }
                 _ => None,
@@ -1812,36 +1998,18 @@ impl DriHandle {
         };
 
         let resource_id = match update.image {
-            Some(CursorImage::Buffer {
-                width,
-                height,
-                hot_x,
-                hot_y,
-                ..
-            }) => {
-                let (addr, size) = backing.ok_or_else(|| {
+            Some(CursorImage::Buffer { .. }) => {
+                let buffer = backing.ok_or_else(|| {
                     Error::with_message(Errno::EINVAL, "cursor buffer has no backing")
                 })?;
-                Some(
-                    self.gpu
-                        .update_cursor(
-                            addr, size, width, height, hot_x, hot_y, position.x, position.y,
-                        )
-                        .map_err(|_| {
-                            Error::with_message(Errno::EIO, "virtio-gpu cursor update failed")
-                        })?,
-                )
+                Some(cursor.update_cursor(buffer)?)
             }
             Some(CursorImage::Hide) => {
-                self.gpu.hide_cursor(position.x, position.y).map_err(|_| {
-                    Error::with_message(Errno::EIO, "virtio-gpu cursor hide failed")
-                })?;
+                cursor.hide_cursor(position.x, position.y)?;
                 None
             }
             None => {
-                self.gpu.move_cursor(position.x, position.y).map_err(|_| {
-                    Error::with_message(Errno::EIO, "virtio-gpu cursor move failed")
-                })?;
+                cursor.move_cursor(position.x, position.y)?;
                 None
             }
         };
@@ -1869,9 +2037,12 @@ impl Drop for DriHandle {
     fn drop(&mut self) {
         // The host keys 3D contexts by id for the device's lifetime, so one a
         // closed file left behind would outlive everything able to reach it.
+        // Guarded rather than unwrapped: `drop` cannot report a failure, and a
+        // file that never had a 3D context — which is every file on a machine
+        // with only a firmware framebuffer — has nothing to clean up.
         let context_id = self.inner.lock().context_id.take();
-        if let Some(context_id) = context_id {
-            let _ = self.gpu.context_destroy(context_id);
+        if let (Some(context_id), Some(gpu)) = (context_id, self.display.gpu.as_ref()) {
+            let _ = gpu.context_destroy(context_id);
         }
 
         let _cursor_operation = self.cursor_operation.lock();
@@ -1879,8 +2050,8 @@ impl Drop for DriHandle {
             let inner = self.inner.lock();
             (inner.cursor.resource_id, inner.cursor.position)
         };
-        if let Some(resource_id) = resource_id {
-            let _ = self.gpu.clear_cursor(resource_id, position.x, position.y);
+        if let (Some(resource_id), Some(cursor)) = (resource_id, self.display.cursor.as_ref()) {
+            let _ = cursor.clear_cursor(resource_id, position.x, position.y);
         }
     }
 }
@@ -2004,7 +2175,7 @@ impl PerOpenFileOps for DriHandle {
                 version.version_major = 0;
                 version.version_minor = 1;
                 version.version_patchlevel = 0;
-                copy_field(version.name, &mut version.name_len, DRIVER_NAME)?;
+                copy_field(version.name, &mut version.name_len, self.display.name)?;
                 copy_field(version.date, &mut version.date_len, DRIVER_DATE)?;
                 copy_field(version.desc, &mut version.desc_len, DRIVER_DESC)?;
                 cmd.write(&version)?;
@@ -2072,10 +2243,11 @@ impl PerOpenFileOps for DriHandle {
                 res.count_crtcs = 1;
                 res.count_connectors = 1;
                 res.count_encoders = 1;
+                let (max_width, max_height) = self.display.max_mode();
                 res.min_width = 0;
-                res.max_width = MAX_RESOLUTION;
+                res.max_width = max_width;
                 res.min_height = 0;
-                res.max_height = MAX_RESOLUTION;
+                res.max_height = max_height;
                 if res.crtc_id_ptr != 0 {
                     current_userspace!().write_val(res.crtc_id_ptr as usize, &CRTC_ID)?;
                 }
@@ -2125,7 +2297,7 @@ impl PerOpenFileOps for DriHandle {
                 conn.count_props = 0;
                 conn.count_encoders = 1;
                 conn.encoder_id = ENCODER_ID;
-                conn.connector_type = DRM_MODE_CONNECTOR_VIRTUAL;
+                conn.connector_type = self.display.connector_type;
                 conn.connector_type_id = 1;
                 conn.connection = DRM_MODE_CONNECTED;
                 conn.mm_width = 0;
@@ -2133,7 +2305,11 @@ impl PerOpenFileOps for DriHandle {
                 conn.subpixel = 0;
                 conn.pad = 0;
                 if conn.modes_ptr != 0 && capacity >= 1 {
-                    let mode = build_mode(self.gpu.width(), self.gpu.height());
+                    // The mode comes from the scanout, not from the GPU: a
+                    // firmware framebuffer has a mode the GPU knows nothing
+                    // about, and on a virtio-gpu machine the two agree.
+                    let (width, height) = self.display.scanout.dimensions();
+                    let mode = build_mode(width, height);
                     current_userspace!().write_val(conn.modes_ptr as usize, &mode)?;
                 }
                 if conn.encoders_ptr != 0 {
@@ -2412,16 +2588,28 @@ fn copy_field(dst: usize, len: &mut usize, src: &str) -> Result<()> {
 }
 
 pub(super) fn init_in_first_kthread() {
-    if first_device().is_none() {
+    let Some(source) = display_source() else {
         return;
-    }
+    };
+    let display = match display_device(source) {
+        Ok(display) => Arc::new(display),
+        // A display was found but could not be driven. Registering a node that
+        // cannot present would only move the failure to the first client that
+        // tried to use it, with less to go on.
+        Err(error) => {
+            ostd::error!("Not registering DRM nodes: {:?}", error);
+            return;
+        }
+    };
 
     char::register(Arc::new(Dri {
         node: DriNode::Card,
+        display: Arc::clone(&display),
     }))
     .expect("failed to register the DRM card device");
     char::register(Arc::new(Dri {
         node: DriNode::Render,
+        display,
     }))
     .expect("failed to register the DRM render device");
 }
