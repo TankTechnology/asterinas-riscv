@@ -872,6 +872,21 @@ GENERIC_SV39_DRM_VIRGL_SMP4 = QemuUbootProfile(
     validation=DRM_VIRGL_GATE,
 )
 
+# The firmware-scanout gate on the Megrez machine contract. It is the same
+# validation scenario as the generic profile on purpose: the claim "the
+# firmware backend presents frames through SETCRTC, PAGE_FLIP and DIRTYFB" is
+# one claim, and it should not be possible for the two runs to grade it
+# differently. What differs is the machine -- Sv48 instead of Sv39, `svpbmt`
+# and `zkr` absent instead of present, `rng-seed` removed -- so a kernel that
+# passes on `generic-sv39-drm-firmware-smp4` and fails here fails for a reason
+# the board would have found first.
+MEGREZ_SV48_SVADE_DRM_FIRMWARE = QemuUbootProfile(
+    name="megrez-sv48-svade-drm-firmware",
+    machine=MEGREZ_SVADE_FAST_MACHINE,
+    boot_flow=UBOOT_BOOTI,
+    validation=DRM_FIRMWARE_GATE,
+)
+
 MEGREZ_SV48_SVADE_FAST = QemuUbootProfile(
     name="megrez-sv48-svade-fast",
     machine=MEGREZ_SVADE_FAST_MACHINE,
@@ -993,6 +1008,7 @@ _PROFILES: Mapping[str, QemuUbootProfile] = MappingProxyType(
             GENERIC_SV39_DRM_FIRMWARE_SMP4,
             GENERIC_SV39_DRM_RENDER_NODE_SMP4,
             GENERIC_SV39_DRM_VIRGL_SMP4,
+            MEGREZ_SV48_SVADE_DRM_FIRMWARE,
             MEGREZ_SV48_SVADE_FAST,
             MEGREZ_SV48_SVADU_FAST,
             MEGREZ_SV48_SLOW,

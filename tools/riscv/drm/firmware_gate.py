@@ -15,9 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from qemu_uboot_booti import run_prepared
-from qemu_uboot_devices import DRM_FIRMWARE
+from qemu_uboot_devices import DRM_FIRMWARE, QemuDeviceSet, device_set_by_name
 from qemu_uboot_profiles import DRM_FIRMWARE_READY_LINE
-from qemu_uboot_profiles import GENERIC_SV39_DRM_FIRMWARE_SMP4 as FIRMWARE_PROFILE
+from qemu_uboot_profiles import GENERIC_SV39_DRM_FIRMWARE_SMP4
+from qemu_uboot_profiles import QemuUbootProfile, profile_by_name
 from qemu_uboot_secure_io import PinnedOutputDirectory, PinnedRegularInput
 
 
@@ -73,12 +74,31 @@ class FirmwareGateResult:
 
 @dataclass(frozen=True)
 class FirmwareGateConfig:
-    """Immutable inputs and evidence directory for one firmware-gate run."""
+    """Immutable inputs and evidence directory for one firmware-gate run.
+
+    The machine and the device set are inputs rather than constants because the
+    claim this gate makes -- "the firmware backend presents frames" -- is a
+    claim about a *machine*. It was proven on `qemu-virt` with Sv39; the board
+    it is being brought up for runs Sv48 with `svpbmt` and `zkr` absent, and a
+    path that works on one machine contract and not the other would otherwise
+    be discovered on hardware. Defaults are the generic Sv39 contract, so a run
+    that names neither gets exactly the machine this gate has always used.
+    """
 
     uboot: Path
     boot_disk: Path
     manifest: Path
     output_directory: Path
+    profile: QemuUbootProfile = GENERIC_SV39_DRM_FIRMWARE_SMP4
+    device_set: QemuDeviceSet = DRM_FIRMWARE
+    #: The generated-DTB audit written by `prepare`. The runner demands it for
+    #: every machine contract that is not `VIRTUAL_PLATFORM` -- a contract
+    #: approximation has to show its device tree really carries the properties
+    #: it claims, which a virtual platform's does by construction. The generic
+    #: Sv39 profile is a virtual platform, so this gate ran for a long time
+    #: without ever needing one; the board's contract is an approximation, and
+    #: without the audit the run is refused before QEMU starts.
+    dtb_audit: Path | None = None
 
 
 def classify_transcript(transcript: bytes) -> FirmwareGateResult:
@@ -161,8 +181,10 @@ def run_firmware_gate(
     *,
     runner: Callable[..., Any] = run_prepared,
 ) -> FirmwareGateResult:
-    """Run the registered SMP=4 firmware profile and publish final evidence."""
+    """Run the configured firmware profile and publish final evidence."""
 
+    profile = config.profile
+    device_set = config.device_set
     with PinnedOutputDirectory.open(config.output_directory) as output:
         output.remove_entry("result.json")
         output.sync()
@@ -175,12 +197,13 @@ def run_firmware_gate(
                 serial_log=output.path / "serial.log",
                 marker_event=output.path / "marker-event.txt",
                 result_path=output.path / "boot-result.json",
-                startup_timeout=FIRMWARE_PROFILE.validation.startup_timeout,
-                command_timeout=FIRMWARE_PROFILE.validation.command_timeout,
-                boot_timeout=FIRMWARE_PROFILE.validation.boot_timeout,
+                startup_timeout=profile.validation.startup_timeout,
+                command_timeout=profile.validation.command_timeout,
+                boot_timeout=profile.validation.boot_timeout,
                 termination_grace=5.0,
-                profile=FIRMWARE_PROFILE,
-                device_set=DRM_FIRMWARE,
+                profile=profile,
+                device_set=device_set,
+                dtb_audit=config.dtb_audit,
                 # A framebuffer device set is defined by being screenshottable,
                 # and the runner holds it to that: asking for a bochs display
                 # without asking for the picture it produces is refused. The
@@ -212,18 +235,56 @@ def run_firmware_gate(
         return result
 
 
+def _resolved(
+    resolver: Callable[[str], Any], value: str, kind: str
+) -> Any:
+    """Resolve a registered name, turning an unknown one into a usage error.
+
+    Both resolvers raise `ValueError`, which argparse does not catch: without
+    this a typo'd profile prints a traceback and exits 1, which a caller that
+    checks the exit code reads as a gate failure rather than as never having
+    launched.
+    """
+
+    try:
+        return resolver(value)
+    except ValueError as error:
+        raise SystemExit(f"error: unknown {kind}: {value}") from error
+
+
 def _parse_args(arguments: Sequence[str] | None) -> FirmwareGateConfig:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--uboot", required=True, type=Path)
     parser.add_argument("--boot-disk", required=True, type=Path)
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--output-directory", required=True, type=Path)
+    parser.add_argument(
+        "--profile",
+        default=GENERIC_SV39_DRM_FIRMWARE_SMP4.name,
+        help="registered QEMU U-Boot profile naming the machine contract",
+    )
+    parser.add_argument(
+        "--device-set",
+        default=DRM_FIRMWARE.name,
+        help="registered device set; the run is refused unless it has a "
+        "capturable display and no GPU",
+    )
+    parser.add_argument(
+        "--dtb-audit",
+        type=Path,
+        default=None,
+        help="generated-DTB audit from `prepare`; required by any profile "
+        "whose fidelity is not VIRTUAL_PLATFORM",
+    )
     parsed = parser.parse_args(arguments)
     return FirmwareGateConfig(
         uboot=parsed.uboot,
         boot_disk=parsed.boot_disk,
         manifest=parsed.manifest,
         output_directory=parsed.output_directory,
+        profile=_resolved(profile_by_name, parsed.profile, "profile"),
+        device_set=_resolved(device_set_by_name, parsed.device_set, "device set"),
+        dtb_audit=parsed.dtb_audit,
     )
 
 
