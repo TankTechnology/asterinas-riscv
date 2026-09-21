@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from tools.riscv.qemu_uboot_devices import BOCHS_XRGB8888
 from tools.riscv.debian.rootfs.contract import load_manifest
 from tools.riscv.debian.rootfs.desktop_m3_gate import (
     DesktopM3Operations,
@@ -123,6 +124,43 @@ def _qemu_trace_arguments() -> tuple[str, ...]:
     if not specification:
         return ()
     return ("-trace", specification)
+
+
+def _firmware_framebuffer_commands(graphics_device: str) -> tuple[str, ...]:
+    """Write the firmware framebuffer node for a display that has no GPU.
+
+    With `virtio-gpu` the driver presents through the device and never consults
+    the device tree. A `bochs-display` is the opposite case: there is no GPU at
+    all, so the only display the kernel can find is the one the bootloader
+    describes, and `ostd`'s `simple_framebuffer` parser reads it from here. No
+    node, no framebuffer, no DRM node -- and the run would fail for a reason
+    that has nothing to do with the driver.
+
+    The constants are `BOCHS_XRGB8888`, the same contract the U-Boot-profile
+    gates use. Imported rather than restated: a second copy of a base address
+    is exactly how two of them drift apart.
+    """
+
+    if graphics_device != "bochs-display":
+        return ()
+
+    framebuffer = BOCHS_XRGB8888
+    node = f"/framebuffer@{framebuffer.address:x}"
+    return (
+        # Confirms the display landed where the contract says before anything
+        # is written about it, so a moved BAR fails here rather than as pixels
+        # in the wrong place much later.
+        "pci display 0.1.0",
+        f"fdt mknode / {node[1:]}",
+        f'fdt set {node} compatible "simple-framebuffer"',
+        f"fdt set {node} reg <0x0 {framebuffer.address:#x} "
+        f"0x0 {framebuffer.size:#x}>",
+        f"fdt set {node} width <{framebuffer.width:#x}>",
+        f"fdt set {node} height <{framebuffer.height:#x}>",
+        f"fdt set {node} stride <{framebuffer.stride:#x}>",
+        f'fdt set {node} format "{framebuffer.pixel_format}"',
+        f'fdt set {node} status "okay"',
+    )
 
 
 def desktop_drm_qemu_argv(**arguments: Any) -> tuple[str, ...]:
@@ -395,16 +433,22 @@ class DesktopDRMOperations(DesktopM3Operations):
 
     def _boot_commands(self, config: GateConfig) -> tuple[str, ...]:
         guest_deadline = self._guest_deadline_seconds(config.boot_timeout)
-        return (
+        commands = [
             "virtio scan",
             "ext4load virtio 0:0 0x80200000 /asterinas.booti",
             "ext4load virtio 0:0 0x90000000 /qemu-virt.dtb",
             "fdt addr 0x90000000",
             "fdt resize 0x1000",
-            "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
-            "setenv initrd_size ${filesize}",
-            f'setenv bootargs "{self._bootargs(guest_deadline)}"',
+        ]
+        commands.extend(_firmware_framebuffer_commands(config.graphics_device))
+        commands.extend(
+            [
+                "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
+                "setenv initrd_size ${filesize}",
+                f'setenv bootargs "{self._bootargs(guest_deadline)}"',
+            ]
         )
+        return tuple(commands)
 
     @staticmethod
     def _guest_deadline_seconds(boot_timeout: float) -> int:
