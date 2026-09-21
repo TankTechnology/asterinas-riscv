@@ -1,0 +1,789 @@
+<title>Asterinas DRM 进展</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+
+  :root {
+    --ground:      #F5F7F8;
+    --surface:     #FFFFFF;
+    --sunk:        #ECF0F2;
+    --ink:         #141A20;
+    --ink-muted:   #58636F;
+    --ink-faint:   #8A939D;
+    --rule:        #DCE2E6;
+    --rule-strong: #C2CBD2;
+    --accent:      #1F6A66;
+    --accent-soft: #E0EDEB;
+    --ok:          #2A7351;
+    --ok-soft:     #E2EFE8;
+    --part:        #9A6612;
+    --part-soft:   #F4EAD6;
+    --absent:      #9E3D2A;
+    --absent-soft: #F5E4DF;
+    --code-ink:    #1B242C;
+    --shadow:      0 1px 2px rgba(20, 26, 32, .06), 0 8px 24px -16px rgba(20, 26, 32, .28);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:      #0F1418;
+      --surface:     #161C22;
+      --sunk:        #1D242B;
+      --ink:         #E6EAEE;
+      --ink-muted:   #9BA6B2;
+      --ink-faint:   #6E7A86;
+      --rule:        #262F38;
+      --rule-strong: #36414C;
+      --accent:      #5FB5AE;
+      --accent-soft: #16302F;
+      --ok:          #6EC08F;
+      --ok-soft:     #16301F;
+      --part:        #D6A24E;
+      --part-soft:   #2E2513;
+      --absent:      #E58A73;
+      --absent-soft: #311C17;
+      --code-ink:    #D3DBE2;
+      --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -16px rgba(0, 0, 0, .8);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground:      #0F1418;
+    --surface:     #161C22;
+    --sunk:        #1D242B;
+    --ink:         #E6EAEE;
+    --ink-muted:   #9BA6B2;
+    --ink-faint:   #6E7A86;
+    --rule:        #262F38;
+    --rule-strong: #36414C;
+    --accent:      #5FB5AE;
+    --accent-soft: #16302F;
+    --ok:          #6EC08F;
+    --ok-soft:     #16301F;
+    --part:        #D6A24E;
+    --part-soft:   #2E2513;
+    --absent:      #E58A73;
+    --absent-soft: #311C17;
+    --code-ink:    #D3DBE2;
+    --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px -16px rgba(0, 0, 0, .8);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", "Noto Sans SC", system-ui, -apple-system, sans-serif;
+    font-size: 16px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .page {
+    max-width: 60rem;
+    margin: 0 auto;
+    padding: 3.5rem 1.5rem 6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 3.5rem;
+  }
+
+  /* ---------- masthead ---------- */
+
+  .masthead { display: flex; flex-direction: column; gap: 1.25rem; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .72rem;
+    font-weight: 500;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  h1 {
+    font-size: clamp(2rem, 1.4rem + 2.6vw, 3rem);
+    font-weight: 700;
+    letter-spacing: -.02em;
+    line-height: 1.15;
+    text-wrap: balance;
+    margin: 0;
+  }
+
+  .standfirst {
+    font-size: 1.0625rem;
+    color: var(--ink-muted);
+    max-width: 44rem;
+    margin: 0;
+  }
+
+  .provenance {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem .75rem;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .76rem;
+    color: var(--ink-faint);
+    padding-top: .5rem;
+    border-top: 1px solid var(--rule);
+  }
+  .provenance b { color: var(--ink-muted); font-weight: 500; }
+
+  /* ---------- verdict ---------- */
+
+  .verdict {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 3px;
+    padding: 1.5rem 1.75rem;
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    gap: .85rem;
+  }
+  .verdict p { margin: 0; max-width: 46rem; }
+  .verdict p + p { color: var(--ink-muted); }
+
+  /* ---------- sections ---------- */
+
+  section { display: flex; flex-direction: column; gap: 1.5rem; }
+
+  .sec-head { display: flex; flex-direction: column; gap: .5rem; }
+
+  h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -.015em;
+    line-height: 1.3;
+    text-wrap: balance;
+    margin: 0;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--rule-strong);
+  }
+
+  h3 {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .78rem;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    margin: 0;
+  }
+
+  section > p { margin: 0; max-width: 46rem; }
+  section > p + p { margin-top: -.5rem; }
+
+  a { color: var(--accent); text-underline-offset: .18em; }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 2px; }
+
+  strong { font-weight: 700; }
+  em { font-style: normal; background: var(--accent-soft); padding: .05em .3em; border-radius: 2px; }
+
+  code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .875em;
+    color: var(--code-ink);
+    background: var(--sunk);
+    padding: .1em .35em;
+    border-radius: 3px;
+    word-break: break-word;
+  }
+
+  /* ---------- tables ---------- */
+
+  .scroller {
+    overflow-x: auto;
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    background: var(--surface);
+  }
+
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    min-width: 34rem;
+    font-size: .9rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  caption {
+    caption-side: top;
+    text-align: left;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .72rem;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding: 0 0 .6rem;
+  }
+
+  th, td {
+    text-align: left;
+    padding: .7rem .9rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+
+  thead th {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .74rem;
+    font-weight: 600;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    background: var(--sunk);
+    border-bottom: 1px solid var(--rule-strong);
+    white-space: nowrap;
+  }
+
+  tbody tr:last-child td { border-bottom: none; }
+
+  td.num {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .lead-col { color: var(--ink-muted); }
+
+  /* ---------- status chips ---------- */
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .35em;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .02em;
+    padding: .18em .5em;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .chip::before { content: ""; width: .45em; height: .45em; border-radius: 50%; background: currentColor; }
+  .chip.ok      { color: var(--ok);      background: var(--ok-soft); }
+  .chip.part    { color: var(--part);    background: var(--part-soft); }
+  .chip.absent  { color: var(--absent);  background: var(--absent-soft); }
+
+  /* ---------- ioctl register ---------- */
+
+  .register {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 3px;
+    padding: 1.25rem 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .reg-row { display: flex; flex-direction: column; gap: .45rem; }
+
+  .reg-label {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .72rem;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    display: flex;
+    align-items: baseline;
+    gap: .6rem;
+  }
+  .reg-label span { color: var(--ink-faint); font-weight: 400; letter-spacing: 0; text-transform: none; }
+
+  .reg-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .3rem;
+  }
+  .reg-items code { font-size: .74rem; background: var(--sunk); padding: .15em .45em; }
+
+  /* ---------- callout ---------- */
+
+  .callout {
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--part);
+    border-radius: 3px;
+    background: var(--surface);
+    padding: 1.1rem 1.3rem;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+  }
+  .callout p { margin: 0; max-width: 44rem; font-size: .9375rem; }
+
+  /* ---------- timeline ---------- */
+
+  .timeline { display: flex; flex-direction: column; gap: 0; }
+
+  .tl-item {
+    display: grid;
+    grid-template-columns: 6.5rem 1fr;
+    gap: 0 1.25rem;
+    padding: .85rem 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .tl-item:last-child { border-bottom: none; }
+
+  .tl-when {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .82rem;
+    font-weight: 600;
+    color: var(--accent);
+    padding-top: .1rem;
+  }
+
+  .tl-what { display: flex; flex-direction: column; gap: .15rem; }
+  .tl-what b { font-weight: 600; }
+  .tl-what span { color: var(--ink-muted); font-size: .9rem; }
+
+  /* ---------- evidence list ---------- */
+
+  .files { display: flex; flex-direction: column; gap: .55rem; }
+  .file-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+    gap: .35rem 1.25rem;
+    align-items: baseline;
+    padding-bottom: .55rem;
+    border-bottom: 1px solid var(--rule);
+    font-size: .875rem;
+  }
+  .file-row:last-child { border-bottom: none; padding-bottom: 0; }
+  .file-row code { font-size: .78rem; background: none; padding: 0; color: var(--accent); }
+  .file-row span { color: var(--ink-muted); }
+
+  footer {
+    border-top: 1px solid var(--rule-strong);
+    padding-top: 1.25rem;
+    font-size: .8125rem;
+    color: var(--ink-faint);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    display: flex;
+    flex-direction: column;
+    gap: .35rem;
+  }
+
+  @media (max-width: 34rem) {
+    .page { padding: 2rem 1rem 4rem; gap: 2.5rem; }
+    .tl-item { grid-template-columns: 1fr; gap: .15rem; }
+    .tl-when { padding-top: 0; }
+    .file-row { grid-template-columns: 1fr; gap: .1rem; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="page">
+
+  <header class="masthead">
+    <div class="eyebrow">状态梳理 · 2026-09-21</div>
+    <h1>Asterinas DRM 进展</h1>
+    <p class="standfirst">
+      这套 DRM 现在到哪一步、它相对一个「现代 DRM」处在什么位置、以及它和 Linux 的 DRM 是什么关系。
+      所有结论都标了证据档位 —— <span class="chip ok">已验证</span>
+      <span class="chip part">部分</span> <span class="chip absent">缺失</span>。
+    </p>
+    <div class="provenance">
+      <span><b>当前线</b> feat/drm-l3-gem-render-node @ 0a1b1209a</span>
+      <span><b>完整线</b> codex/drm-main-sync</span>
+      <span><b>目标</b> Asterinas RISC-V / Milk-V Megrez (EIC7700)</span>
+    </div>
+  </header>
+
+  <div class="verdict">
+    <p>
+      <strong>一句话：DRM 的「传统 KMS + GEM + render node」这一档是完整的，足以让未经修改的 Linux 用户态跑起来；但「现代 GPU 驱动」那一档 —— 原子提交、显式同步、调度器、显存管理 —— 还差得远。</strong>
+    </p>
+    <p>
+      而且最大的空白不在 DRM 子系统本身：<em>我们没有真正驱动任何一块真实的显示硬件</em>。
+      virtio-gpu 是虚拟设备，板子上用的是固件交接的 framebuffer。物理板子上
+      <code>/dev/dri/card0</code> <strong>从未被打开过</strong> —— 板子今天能跑的桌面走的是 Xorg fbdev。
+    </p>
+  </div>
+
+  <!-- ═══════════════ 1 ═══════════════ -->
+  <section>
+    <div class="sec-head">
+      <h2>一、有两条线，必须先分清</h2>
+      <p>不看这个，任何「进展到哪了」的说法都会误导 —— 仓库里同时存在一条功能完整得多的线，和一条正在分层重新落地的线。</p>
+    </div>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr>
+            <th>&nbsp;</th>
+            <th>完整线</th>
+            <th>当前线</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="lead-col">分支</td>
+            <td><code>codex/drm-main-sync</code></td>
+            <td><code>feat/drm-l3-gem-render-node</code></td>
+          </tr>
+          <tr>
+            <td class="lead-col">PR</td>
+            <td><strong>#139</strong> OPEN<br><span style="color:var(--ink-muted);font-size:.85rem">「M1–M22 + firmware framebuffer fallback」</span></td>
+            <td>分层落地中的一层</td>
+          </tr>
+          <tr>
+            <td class="lead-col">代码布局</td>
+            <td><code>kernel/src/device/drm/</code></td>
+            <td><code>kernel/src/device/dri.rs</code> + 4 个模块</td>
+          </tr>
+          <tr>
+            <td class="lead-col">文件数</td>
+            <td class="num">22</td>
+            <td class="num">5</td>
+          </tr>
+          <tr>
+            <td class="lead-col">ioctl 数</td>
+            <td class="num">49</td>
+            <td class="num">37</td>
+          </tr>
+          <tr>
+            <td class="lead-col">独有能力</td>
+            <td>atomic KMS · property / blob · syncobj（12 个）· vblank</td>
+            <td>—</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>为什么会有两条</h3>
+    <p>
+      PR #139 被判定为「rollup，不该这么交」。于是那套工作被拆成<strong>分层重新落地到当前 main</strong>，
+      每一层单独可评审：
+    </p>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>层</th><th>内容</th><th>状态</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="num">L1 + L2</td>
+            <td>Debian DRM 桌面 profile、session、gate<br><code>feat/debian-desktop-support</code></td>
+            <td><span class="chip ok">PR #140 OPEN</span></td>
+          </tr>
+          <tr>
+            <td class="num">L3</td>
+            <td>GEM 对象空间、render node 权限分离、virgl<br><code>feat/drm-l3-gem-render-node</code></td>
+            <td><span class="chip part">本线</span></td>
+          </tr>
+          <tr>
+            <td class="num">L4</td>
+            <td>固件 framebuffer 后端（<code>ScanoutBackend</code> / <code>FirmwareFramebufferBackend</code>）</td>
+            <td><span class="chip ok">已完成</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>当前线独缺、完整线才有的 20 个 ioctl</h3>
+
+    <div class="register">
+      <div class="reg-row">
+        <div class="reg-label">原子提交 <span>6</span></div>
+        <div class="reg-items">
+          <code>MODE_ATOMIC</code><code>MODE_ADDFB2</code><code>MODE_GETPROPERTY</code>
+          <code>MODE_CREATEPROPBLOB</code><code>MODE_GETPROPBLOB</code><code>MODE_DESTROYPROPBLOB</code>
+        </div>
+      </div>
+      <div class="reg-row">
+        <div class="reg-label">显式同步 <span>12</span></div>
+        <div class="reg-items">
+          <code>SYNCOBJ_CREATE</code><code>SYNCOBJ_DESTROY</code><code>SYNCOBJ_QUERY</code>
+          <code>SYNCOBJ_RESET</code><code>SYNCOBJ_SIGNAL</code><code>SYNCOBJ_WAIT</code>
+          <code>SYNCOBJ_TRANSFER</code><code>SYNCOBJ_EVENTFD</code><code>SYNCOBJ_FD_TO_HANDLE</code>
+          <code>SYNCOBJ_HANDLE_TO_FD</code><code>SYNCOBJ_TIMELINE_SIGNAL</code><code>SYNCOBJ_TIMELINE_WAIT</code>
+        </div>
+      </div>
+      <div class="reg-row">
+        <div class="reg-label">vblank <span>3</span></div>
+        <div class="reg-items">
+          <code>WAIT_VBLANK</code><code>CRTC_GET_SEQUENCE</code><code>CRTC_QUEUE_SEQUENCE</code>
+        </div>
+      </div>
+    </div>
+
+    <p style="color:var(--ink-muted);font-size:.9rem">
+      注：<code>MODE_ATOMIC</code> 与 <code>MODE_SETPROPERTY</code> 在当前分支上是 <strong>0 命中</strong> ——
+      也就是说当前线只有传统 KMS（<code>SETCRTC</code> / <code>PAGE_FLIP</code> / <code>DIRTYFB</code>）
+      加 property 的<em>读取</em>，没有原子提交。
+    </p>
+  </section>
+
+  <!-- ═══════════════ 2 ═══════════════ -->
+  <section>
+    <div class="sec-head">
+      <h2>二、已经验证的，和没有验证的</h2>
+    </div>
+
+    <h3>跑通过的</h3>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>场景</th><th>结果</th><th>证据档位</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>QEMU virtio-gpu（2D）+ virgl（3D）<br><span style="color:var(--ink-muted);font-size:.85rem">Debian 桌面 / Xorg modesetting</span></td>
+            <td><code>renderer=virgl</code>，0 X 错误</td>
+            <td><span class="chip ok">已复现</span></td>
+          </tr>
+          <tr>
+            <td>QEMU <strong>无 GPU</strong>，固件 framebuffer<br><span style="color:var(--ink-muted);font-size:.85rem">Debian 桌面</span></td>
+            <td><code>device=simpledrm</code>，截图 97.3% 画面被绘制</td>
+            <td><span class="chip ok">已复现</span></td>
+          </tr>
+          <tr>
+            <td>Megrez 机器契约 + 板子几何<br><span style="color:var(--ink-muted);font-size:.85rem">1920×1080 stride 7680，Sv39</span></td>
+            <td>六段全过；guest 与 QEMU 截图两份独立证据<br><span style="color:var(--ink-muted);font-size:.85rem">2,073,599 / 2,073,600 像素非黑</span></td>
+            <td><span class="chip ok">已复现</span></td>
+          </tr>
+          <tr>
+            <td>kmscube 真实渲染<br><span style="color:var(--ink-muted);font-size:.85rem">M19，完整线上</span></td>
+            <td>GBM → EGL → GLES2 → ADDFB2 → atomic commit → flip event</td>
+            <td><span class="chip part">单次记录</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>没有的</h3>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>缺口</th><th>说明</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>物理板子上的 DRM</strong></td>
+            <td><code>/dev/dri/card0</code> 在真机上<strong>从未被打开过</strong>。板子的桌面走 Xorg <strong>fbdev</strong>。</td>
+          </tr>
+          <tr>
+            <td><strong>原生显示控制器驱动</strong></td>
+            <td>没有 EIC7700 显示驱动。板子靠 U-Boot 交接的 RAM-only 1920×1080 固件 framebuffer。</td>
+          </tr>
+          <tr>
+            <td>GPU 调度器 / 显存管理</td>
+            <td>没有 <code>drm_sched</code> 等价物，没有 TTM / VRAM / 驱逐。</td>
+          </tr>
+          <tr>
+            <td>原子提交 / 显式同步</td>
+            <td>完整线上有；<strong>当前线没有</strong>。</td>
+          </tr>
+          <tr>
+            <td>本机负向对照</td>
+            <td>固件 gate 的 dirtyfb 判别力只在通用 profile 上证过，没在 Megrez 机器上证过。</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ═══════════════ 3 ═══════════════ -->
+  <section>
+    <div class="sec-head">
+      <h2>三、与「现代 DRM」的逐项对照</h2>
+      <p>右列是我们在该层的位置。这张表比任何文字都更能回答「到什么程度」。</p>
+    </div>
+
+    <div class="scroller">
+      <table>
+        <thead>
+          <tr><th>层</th><th>现代 DRM 的内容</th><th>我们</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="lead-col">设备节点</td>
+            <td><code>card0</code> · <code>renderD128</code> · <code>controlD64</code></td>
+            <td><span class="chip ok">前两个</span></td>
+          </tr>
+          <tr>
+            <td class="lead-col">传统 KMS</td>
+            <td>resources / CRTC / connector / encoder · SETCRTC · PAGE_FLIP · DIRTYFB · dumb buffer</td>
+            <td><span class="chip ok">完整</span></td>
+          </tr>
+          <tr>
+            <td class="lead-col">原子 KMS</td>
+            <td><code>MODE_ATOMIC</code> · property（可变/不可变）· property blob · plane（primary / cursor / overlay）· test-only 提交 · 非阻塞提交</td>
+            <td><span class="chip absent">当前线无</span></td>
+          </tr>
+          <tr>
+            <td class="lead-col">GEM</td>
+            <td>dumb buffer · GEM 对象 · flink / open · mmap</td>
+            <td><span class="chip ok">完整</span></td>
+          </tr>
+          <tr>
+            <td class="lead-col">PRIME / DMA-BUF</td>
+            <td>跨设备 fd 导入导出 · fence</td>
+            <td><span class="chip ok">基础</span></td>
+          </tr>
+          <tr>
+            <td class="lead-col">同步</td>
+            <td>syncobj（二值 + timeline）· sync_file · dma-fence</td>
+            <td><span class="chip absent">当前线无</span></td>
+          </tr>
+          <tr>
+            <td class="lead-col">内存管理</td>
+            <td>TTM / GEM shrinker · VRAM · 驱逐</td>
+            <td><span class="chip absent">无</span></td>
+          </tr>
+          <tr>
+            <td class="lead-col">调度</td>
+            <td><code>drm_sched</code> · GPU 作业提交 · 优先级</td>
+            <td><span class="chip absent">无</span></td>
+          </tr>
+          <tr>
+            <td class="lead-col">显示特性</td>
+            <td>vblank / CRTC sequence · gamma / CTM · HDR · VRR · writeback connector</td>
+            <td><span class="chip absent">当前线无</span></td>
+          </tr>
+          <tr>
+            <td class="lead-col">驱动</td>
+            <td>i915 · amdgpu · nouveau · msm · virtio-gpu · vkms · <strong>simpledrm</strong></td>
+            <td><span class="chip part">virtio-gpu + simpledrm</span></td>
+          </tr>
+          <tr>
+            <td class="lead-col">用户态</td>
+            <td>libdrm · Mesa（gallium / vulkan）· Xorg modesetting · Wayland · GBM</td>
+            <td><span class="chip ok">真实未修改的上游</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout">
+      <p><strong>关键判断：</strong>我们处在「足以让未经修改的 Linux 用户态跑起来」这一档 ——
+      这不是小事，因为这意味着 ioctl 编号、结构体布局、方向位必须和 Linux <em>逐位一致</em>。</p>
+      <p>但驱动那一档是空的：Asterinas 目前<strong>不能驱动任何一块真实的显示硬件</strong>。
+      这才是「现代 DRM 程度」里最大的那块空白，而不是缺哪个 ioctl。</p>
+    </div>
+  </section>
+
+  <!-- ═══════════════ 4 ═══════════════ -->
+  <section>
+    <div class="sec-head">
+      <h2>四、Linux 里有 DRM 吗</h2>
+      <p><strong>有 —— 而且 DRM 本来就是 Linux 的东西。</strong>我们不是在发明一个子系统，是在从零重新实现 Linux 的一个子系统 ABI。</p>
+    </div>
+
+    <div class="callout" style="border-left-color: var(--absent);">
+      <p><strong>先消歧义</strong>，因为这个词有两义：</p>
+      <p>
+        <strong>DRM = Direct Rendering Manager</strong> ← 我们说的、Linux 里有的、这个<br>
+        DRM = Digital Rights Management（数字版权管理）← 完全无关的另一件事
+      </p>
+    </div>
+
+    <h3>Direct Rendering Manager 的脉络</h3>
+
+    <div class="timeline">
+      <div class="tl-item">
+        <div class="tl-when">~1999</div>
+        <div class="tl-what">
+          <b>引入</b>
+          <span>为 XFree86 4.0 的 DRI 而生，解决多进程直接访问 GPU 的问题。最初只是 ioctl 的一层仲裁。</span>
+        </div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-when">2008</div>
+        <div class="tl-what">
+          <b>GEM — Graphics Execution Manager</b>
+          <span>统一的内存管理，取代之前的 buffer object。</span>
+        </div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-when">2009</div>
+        <div class="tl-what">
+          <b>KMS — Kernel Mode Setting</b>
+          <span>把模式设置从 X server 收进内核。这是为什么今天开机能看到文字控制台、能无缝切换 VT。</span>
+        </div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-when">2014–15</div>
+        <div class="tl-what">
+          <b>Atomic modesetting</b>
+          <span>模式设置变成事务性的、可测试的提交。</span>
+        </div>
+      </div>
+      <div class="tl-item">
+        <div class="tl-when">之后</div>
+        <div class="tl-what">
+          <b>PRIME / DMA-BUF · render node · syncobj · drm_sched</b>
+          <span>跨设备缓冲共享、无 master 的计算节点、显式同步、GPU 调度。</span>
+        </div>
+      </div>
+    </div>
+
+    <h3>和我们是什么关系</h3>
+    <p>
+      今天的 Linux DRM 包含<strong>几十个驱动</strong>（i915、amdgpu、nouveau、msm、virtio-gpu、vkms、simpledrm……）、
+      上百个文件。上游的 <code>libdrm</code>、Mesa、Xorg、Wayland <strong>全部通过这套 uapi 说话</strong>。
+    </p>
+    <p>
+      我们的做法是：Asterinas 有自己的内核，所以需要自己的 DRM；但<strong>照着 Linux 的 uapi 实现</strong>，
+      所以 Linux 那些<em>未经修改的</em>用户态程序能直接用。这正是 Debian 的 Xorg 和 Mesa 能在 Asterinas 上跑起来的原因，
+      也是为什么我们反复拿「libdrm / Mesa 的行为」当作正确性判据。
+    </p>
+    <p style="color:var(--ink-muted);font-size:.9rem">
+      代价是：编号、结构体布局、方向位错一位都不行。这个项目里被抓出来的若干缺陷
+      —— GEM_OPEN 的方向位被声明成 RM_MAP、驱动名被截断成 <code>virtio_gp</code>、若干结构体尺寸不符
+      —— 都是出在这一层。项目里有一个专门的 uapi 契约测试把全部 ioctl 钉住，原因就在这里。
+    </p>
+  </section>
+
+  <!-- ═══════════════ 附录 ═══════════════ -->
+  <section>
+    <div class="sec-head">
+      <h2>附录：证据索引</h2>
+    </div>
+
+    <div class="files">
+      <div class="file-row">
+        <code>kernel/src/device/dri.rs</code>
+        <span>当前线的 DRM 实现（2,898 行，37 个 ioctl）</span>
+      </div>
+      <div class="file-row">
+        <code>kernel/src/device/dri/</code>
+        <span><code>backend.rs</code>（Scanout / Cursor 后端，773 行）· <code>cursor.rs</code> · <code>fence.rs</code> · <code>prime.rs</code></span>
+      </div>
+      <div class="file-row">
+        <code>codex/drm-main-sync</code>
+        <span>完整线：<code>kernel/src/device/drm/</code> 下 22 个文件，含 <code>atomic.rs</code> / <code>syncobj.rs</code> / <code>vblank.rs</code> / <code>property.rs</code> / <code>plane.rs</code></span>
+      </div>
+      <div class="file-row">
+        <code>tools/riscv/drm/verify_megrez_drm_sim.sh</code>
+        <span>上板前一条命令复验：按 Sv39 构建内核，按几何构建 U-Boot，跑两组设备集</span>
+      </div>
+      <div class="file-row">
+        <code>tools/riscv/tests/test_drm_uapi_contract.py</code>
+        <span>把全部 ioctl 的编号与结构体尺寸钉死</span>
+      </div>
+      <div class="file-row">
+        <code>docs/porting/README.md</code>
+        <span>板子状态（注意：该页 2026-09-03 后未更新，网络一节已过期）</span>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>整理于 2026-09-21 · 当前线 feat/drm-l3-gem-render-node @ 0a1b1209a</span>
+    <span>文中所有数字取自源码与 git 历史，未使用记忆或转述</span>
+  </footer>
+
+</div>
