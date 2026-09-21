@@ -74,6 +74,20 @@ MILESTONES = {
 FINAL_MILESTONE_MARKERS = {
     "generic": MILESTONES["userspace"],
     "firmware-framebuffer": "Registered firmware framebuffer",
+    # The terminal line of the DRM firmware-gate probe
+    # (`tools/riscv/drm/firmware_gate_init.c`, built by
+    # `tools/riscv/drm/build_firmware_gate.sh`). That initramfs boots on the
+    # board unchanged -- the board session loads the kernel at 0x80200000 and
+    # the initrd at 0x83000000, which is exactly what the QEMU gate uses -- so
+    # this is how the probe that passes in simulation gets run on hardware.
+    #
+    # It matters that the probe is what runs first on a board bring-up: it
+    # reaches `/dev/dri/card0` and the three present paths without Xorg or a
+    # desktop in the way, and it says which stage failed. Nothing else in this
+    # tree probes `/dev/dri` on the board at all -- the readiness and graphics
+    # gates both stop at `/dev/fb0`. A test pins this value against
+    # `qemu_uboot_profiles.DRM_FIRMWARE_READY_LINE` so the two cannot drift.
+    "drm-firmware": "ASTERINAS_DRM_FIRMWARE_R1_READY",
     "installer": "DEBIAN_INSTALL_PASS",
     "verifier": "DEBIAN_VERIFY_PASS",
     "debian-shell-gate": "__DEBIAN_ROOTFS_SHELL_READY__",
