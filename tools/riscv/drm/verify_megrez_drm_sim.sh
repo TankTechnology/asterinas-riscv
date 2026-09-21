@@ -8,22 +8,27 @@
 # 上，固件 framebuffer 后端能不能经 SETCRTC / PAGE_FLIP / DIRTYFB 三条路径
 # 把正确的像素送上屏。
 #
-# 为什么不能拿现成的 DRM gate 结果顶上：那些 gate 都跑在 `qemu-virt` 的 Sv39
-# 契约上（`-cpu ...,sv48=false`），而板子跑的是 **Sv48** 内核——`OSDK.toml` 的
-# riscv scheme 不带 `riscv_sv39_mode`，不传 feature 就是 Sv48。内核的 VA 常量
-# 由分页模式算出（`ADDRESS_WIDTH` 39/48 决定 `KERNEL_BASE_VADDR`、
-# `LINEAR_MAPPING_BASE_VADDR`、`VMALLOC_BASE_VADDR`），所以"固件后端能把像素
-# 拷进 framebuffer"必须在板子的分页模式下重新成立。
+# **板子跑 Sv39**（`MEGREZ_KERNEL_FEATURES`，默认 `riscv_sv39_mode`），本脚本
+# 也就按 Sv39 构建并验证——所以这里测的正是板子要跑的那个内核。
 #
-# 内核必须与机器契约配套，而**用错方向不会报错**：
-#   - Sv39 内核在 Megrez 契约上**也能启动**（`sv48` 没被禁用，Sv48 蕴含
-#     Sv39），所以拿错内核不会失败，只会静静地测了另一个东西，然后报 pass。
-#     这正是本脚本默认自己构建内核的原因：模式无法从 Image 反查
-#     （`sv39_boot_l3pt` / `sv48_boot_l4pt` 两张表都是无条件汇编进去的），
-#     只能靠"用哪个 feature 构建"来保证。cargo 按 feature 缓存，已经对的时候
-#     构建是秒级的。
+# 为什么这件事必须**显式**，而不是"用默认的就好"：`OSDK.toml` 的 riscv scheme
+# 不带 `build.features`，`FEATURES ?=` 也是空的，所以 `make kernel
+# TARGET_ARCH=riscv64` 的默认产物是 **Sv48**。而分页模式无法从 Image 反查——
+# `sv39_boot_l3pt` / `sv48_boot_l4pt` 两张表都是无条件汇编进去的，两种构建的
+# 符号表里都有，启动代码又是 PC 相对跳转搜不到地址；尺寸也不行（6,179,880 对
+# 6,179,800，差 80 字节）。只能靠"用哪个 feature 构建"来保证。
+#
+# 用错方向的两个后果不对称，值得记住：
+#   - **Sv39 内核在 Megrez 契约上照样启动**（`sv48` 没被禁用，Sv48 蕴含 Sv39），
+#     所以拿错了不会失败，只会静静地测了另一个东西然后报 pass。
 #   - 反过来，Sv48 内核在 `sv48=false` 的通用 profile 上会挂在
-#     `Starting kernel ...`，没有任何输出。
+#     `Starting kernel ...`，零输出。
+# 选 Sv39 是稳妥的那一侧：它在两种机器契约上都能起。
+#
+# 内核的 VA 常量由分页模式算出（`ADDRESS_WIDTH` 39/48 决定
+# `KERNEL_BASE_VADDR`、`LINEAR_MAPPING_BASE_VADDR`、`VMALLOC_BASE_VADDR`），
+# 所以"固件后端能把像素拷进 framebuffer"这个结论是与模式绑定的——换了模式就
+# 得重跑，本脚本存在的意义就是让这件事是一条命令。
 #
 # **跑两组设备集，各自成立一个不同的主张**（见 qemu_uboot_devices.py）：
 #
@@ -52,6 +57,7 @@
 # 环境变量：
 #   ASTERINAS_RISCV_BOOTI    内核 Image；给了就跳过构建（模式自负）
 #   MEGREZ_SKIP_KERNEL_BUILD 置 1 时不构建内核，只用已有的
+#   MEGREZ_KERNEL_FEATURES   要构建/验证的分页模式，默认 riscv_sv39_mode
 #   QEMU_UBOOT_OUT_DIR       产物目录（每组设备集各自加后缀）
 #   QEMU_UBOOT_BUILD_DIR     U-Boot 构建目录
 #   MEGREZ_DRM_EVIDENCE_DIR  证据目录（每组设备集各自加后缀）
@@ -61,7 +67,13 @@ set -euo pipefail
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "${REPO_ROOT}"
 
+# The profile name is the *machine contract*: it says the device tree declares
+# `mmu-type = "riscv,sv48"`, which is a property of the DTB the board's boot
+# chain produces. It is not a statement about the kernel's paging mode -- an
+# Sv39 kernel runs on it happily. KERNEL_FEATURES is the kernel's mode, and it
+# is the one that has to be stated.
 PROFILE="megrez-sv48-svade-drm-firmware"
+KERNEL_FEATURES="${MEGREZ_KERNEL_FEATURES:-riscv_sv39_mode}"
 DEVICE_SETS=("megrez-basic" "megrez-board-geometry")
 
 # 本工作树的 `target` 是指向主检出目录的软链，而 secure I/O 拒绝穿过软链，
@@ -73,7 +85,7 @@ EVIDENCE_ROOT="${MEGREZ_DRM_EVIDENCE_DIR:-${OUT_DIR}/drm-evidence}"
 IMAGE="${ASTERINAS_RISCV_BOOTI:-${TARGET_REAL}/osdk/aster-kernel-osdk-bin.Image}"
 
 if [[ "${MEGREZ_SKIP_KERNEL_BUILD:-0}" != 1 && -z "${ASTERINAS_RISCV_BOOTI:-}" ]]; then
-    echo "== 构建 Sv48 内核（不传 FEATURES）=="
+    echo "== 构建内核（FEATURES=${KERNEL_FEATURES}）=="
     # 工作树里 osdk 不是 workspace 成员，Makefile 的 install_osdk 会失败，且
     # $(CARGO_OSDK) 是文件目标，必须用**命令行赋值**覆盖——环境变量会被
     # Makefile 的立即赋值悄悄盖掉。
@@ -85,12 +97,13 @@ if [[ "${MEGREZ_SKIP_KERNEL_BUILD:-0}" != 1 && -z "${ASTERINAS_RISCV_BOOTI:-}" ]
     # VDSO_LIBRARY_DIR 指向真实的那个：`~/Program/build-check/vdso` 里是 45 字节
     # 占位文件，用它构建会成功，然后内核在第一个线程上 panic。
     CARGO_NET_OFFLINE=true RELEASE=1 TARGET_ARCH=riscv64 \
+        FEATURES="${KERNEL_FEATURES}" \
         VDSO_LIBRARY_DIR="${VDSO_LIBRARY_DIR:-${HOME}/.local/share/linux_vdso}" \
         make kernel "${make_args[@]}"
 else
     echo "== 跳过内核构建，使用 ${IMAGE} =="
-    echo "   警告：内核的分页模式没有被本脚本验证。板子跑 Sv48；" >&2
-    echo "   若这是 Sv39 构建，本 gate 会照样通过，但测的不是板子的模式。" >&2
+    echo "   警告：内核的分页模式没有被本脚本验证。本脚本要的是 Sv39；" >&2
+    echo "   若这是默认构建（Sv48），gate 会照样通过，但测的不是这个模式。" >&2
 fi
 
 # 探针把期望的几何编译进去，那些数字必须来自**写出 DTB 节点的那份契约**，
