@@ -61,4 +61,20 @@ done
 if [[ -f "$ARTIFACT_DIR/qemu-serial.log" ]]; then
     sha256sum "$ARTIFACT_DIR"/qemu-serial.log "$ARTIFACT_DIR"/qemu.log 2>/dev/null || true
 fi
+
+# `cargo osdk test` exits 0 even when tests fail. Measured, not assumed: a run
+# whose log ended `test result: FAILED. 262 passed; 6 failed` returned status 0,
+# so `exit "$status"` alone reports a failing suite as a passing one. That is
+# the same shape as the trap this tree already knows about one level up -- a
+# run that executes nothing also exits 0 -- and it is worse here, because there
+# *is* a result to read and nothing reads it.
+#
+# A test name containing "failed" would be a false positive, so the match is
+# anchored to the harness's own summary lines.
+if [[ "$status" -eq 0 ]] && grep -qE '^test result: FAILED|^test result:.*[1-9][0-9]* failed' "$ARTIFACT_DIR/runner.log" 2>/dev/null; then
+    printf 'kernel ktest: the suite reported failures, but osdk exited 0:\n' >&2
+    grep -E '^test result: FAILED|^test result:.*[1-9][0-9]* failed' "$ARTIFACT_DIR/runner.log" >&2
+    status=1
+fi
+
 exit "$status"
