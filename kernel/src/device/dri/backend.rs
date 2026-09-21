@@ -669,11 +669,34 @@ mod tests {
                 .unwrap(),
             (1920, 1080, 1920 * 4)
         );
-        // And a stride padded past the visible row, which is legal.
+        // A stride padded past the visible row is legal, but it costs memory
+        // rather than saving it: eleven hundred rows of 7744 bytes need more
+        // room than the visible 1920x1080 of pixels does. The mapping that
+        // suffices for the unpadded mode is therefore *too small* here, and
+        // the extent the mode reaches is (height-1) strides plus one row.
+        let padded_stride = 1920 * 4 + 64;
+        let padded_extent = (1080 - 1) * padded_stride + 1920 * 4;
+        assert!(padded_extent > 1920 * 1080 * 4);
         assert_eq!(
-            validate_firmware_layout(1920, 1080, 1920 * 4 + 64, 1920 * 1080 * 4, PixelFormat::BgrReserved)
-                .unwrap(),
+            validate_firmware_layout(
+                1920,
+                1080,
+                padded_stride,
+                padded_extent,
+                PixelFormat::BgrReserved,
+            )
+            .unwrap(),
             (1920, 1080, 1920 * 4)
+        );
+        assert!(
+            validate_firmware_layout(
+                1920,
+                1080,
+                padded_stride,
+                1920 * 1080 * 4,
+                PixelFormat::BgrReserved,
+            )
+            .is_err()
         );
     }
 
