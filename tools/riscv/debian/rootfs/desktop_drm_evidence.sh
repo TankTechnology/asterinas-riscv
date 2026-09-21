@@ -337,11 +337,39 @@ record_first_seen xterm "component_running xterm"
     printf '\n'
 } >>"$CONSOLE"
 
+# The DRM driver bound to the card node, read from sysfs rather than restated.
+#
+# The Xorg line below used to print `device=virtio-gpu` as a literal, while the
+# gate matched that same literal as a milestone. The two agreed by construction,
+# so the milestone held on every machine -- including one with no virtio-gpu at
+# all, where it was simply false. The gate now names the driver it expects for
+# the display device it launched, which makes this an observation or a
+# disagreement.
+#
+# sysfs spells the driver the way the kernel registers it -- `virtio_gpu` with
+# an underscore, not the QEMU device name -- and that is the spelling the gate
+# expects. `absent` and `unnamed` are reported rather than substituted, so a
+# missing or nameless device reads as itself instead of as a driver that
+# happens to be wrong.
+drm_driver_name() {
+    local dev=/dev/dri/card0 major_minor maj min uevent name
+    [[ -c "$dev" ]] || { printf 'absent'; return; }
+    major_minor="$(stat -c '%t:%T' "$dev" 2>/dev/null)" || {
+        printf 'absent'; return;
+    }
+    maj=$((16#${major_minor%%:*}))
+    min=$((16#${major_minor##*:}))
+    uevent="/sys/dev/char/$maj:$min/device/uevent"
+    [[ -r "$uevent" ]] || { printf 'unnamed'; return; }
+    name="$(sed -n 's/^DRIVER=//p' "$uevent" 2>/dev/null | head -n 1)"
+    printf '%s' "${name:-unnamed}"
+}
+
 emit "DEBIAN_DESKTOP_DRM_UDEV state=active"
 emit "DEBIAN_DESKTOP_DRM_LOGIND state=active"
 emit "DEBIAN_DESKTOP_DRM_SESSION user=$USER_NAME tty=tty1"
 emit "DEBIAN_DESKTOP_DRM_INPUT keyboard=evdev pointer=evdev"
-emit 'DEBIAN_DESKTOP_DRM_XORG driver=modesetting device=virtio-gpu drm=active display=:0'
+emit "DEBIAN_DESKTOP_DRM_XORG driver=modesetting device=$(drm_driver_name) drm=active display=:0"
 emit 'DEBIAN_DESKTOP_DRM_CLIENTS window-manager=openbox file-manager=pcmanfm panel=lxpanel terminal=xterm'
 emit "DEBIAN_DESKTOP_DRM_READY user=$USER_NAME display=:0"
 emit_stat_snapshot ready
