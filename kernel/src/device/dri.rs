@@ -20,6 +20,7 @@
 //! and (b) each buffer is backed by one contiguous guest-physical span that
 //! virtio-gpu's `RESOURCE_ATTACH_BACKING` accepts.
 
+mod backend;
 mod cursor;
 mod fence;
 mod prime;
@@ -38,10 +39,17 @@ use ostd::{
     task::Task,
 };
 
-use self::cursor::{
-    CursorBuffer, CursorImage, CursorState, DrmModeCursor, DrmModeCursor2, MODE_CURSOR_BO,
-    validate_cursor,
+use self::{
+    backend::{
+        CursorBackend, CursorGeometry, CursorScanoutBuffer, DamageRect,
+        FirmwareFramebufferBackend, ScanoutBackend, ScanoutBuffer,
+    },
+    cursor::{
+        CursorBuffer, CursorImage, CursorState, DrmModeCursor, DrmModeCursor2, MODE_CURSOR_BO,
+        validate_cursor,
+    },
 };
+use aster_framebuffer::framebuffer::{FRAMEBUFFER, FrameBuffer};
 use crate::{
     context::current_userspace,
     device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
@@ -72,6 +80,19 @@ pub(super) const DRM_MAJOR: u16 = 226;
 /// `"virtio_gpu"`, and anything else makes accelerated rendering silently
 /// unavailable.
 pub(super) const DRIVER_NAME: &str = "virtio_gpu";
+
+/// The driver name reported when nothing but a firmware framebuffer is present.
+///
+/// `simpledrm` is what Linux calls its DRM driver for exactly this situation —
+/// a display a bootloader programmed and left running, which the kernel can
+/// only copy into. Matching that name is deliberate: a client that recognizes
+/// it is looking at the same hardware situation and will do the right thing
+/// for it.
+///
+/// Deliberately not `virtio_gpu`, for the reason above: this name is how a
+/// client decides which driver to use, and claiming a device that is not there
+/// would send it to a 3D path that cannot exist on this machine.
+const FIRMWARE_DRIVER_NAME: &str = "simpledrm";
 const DRIVER_DATE: &str = "20260815";
 const DRIVER_DESC: &str = "Asterinas virtio-gpu driver";
 
@@ -84,6 +105,8 @@ const PLANE_ID: u32 = 1;
 
 /// `DRM_MODE_CONNECTOR_VIRTUAL`, the connector type Linux's virtio-gpu reports.
 const DRM_MODE_CONNECTOR_VIRTUAL: u32 = 15;
+/// `DRM_MODE_CONNECTOR_Unknown`, for a display whose connector cannot be named.
+const DRM_MODE_CONNECTOR_UNKNOWN: u32 = 0;
 /// `DRM_MODE_ENCODER_VIRTUAL`.
 const DRM_MODE_ENCODER_VIRTUAL: u32 = 5;
 /// `DRM_MODE_CONNECTED`.
@@ -123,11 +146,25 @@ const DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT: u64 = 6;
 ///
 /// The size is set by the 3D path, not the 2D one. A single scanout is 4 MiB
 /// at 1280x800, but a client that renders allocates several buffers at once —
-/// glamor alone holds more than one — and the pool is a bump allocator, so a
-/// freed buffer's span is not reused (see `release_object`). 16 MiB ran out
-/// during a probe that asked for five buffers in a row, which surfaces as
-/// `ENOMEM` from `gbm_bo_create` and, at the desktop, as a renderer that never
-/// appears. 64 MiB is the size the frozen branch ran virgl with.
+/// glamor alone holds more than one. 16 MiB ran out during a probe that asked
+/// for five buffers in a row, which surfaces as `ENOMEM` from `gbm_bo_create`
+/// and, at the desktop, as a renderer that never appears. 64 MiB is the size
+/// the frozen branch ran virgl with.
+///
+/// **The bump allocator is load-bearing, not laziness.** A freed span cannot be
+/// handed out again while any client might still be mapping it, and on this
+/// branch one always might: `Mappable::mappable()` returns the *whole pool*
+/// rather than the object's window — see the note on `DmaBufFile::mappable`,
+/// which is the same limitation seen from the PRIME side. So a client that
+/// mapped a buffer and then released it would find the bytes it still has
+/// mapped reassigned to someone else's buffer, and the corruption would show up
+/// in whichever process wrote last. Reclaiming the pool therefore requires a
+/// windowed `Mappable` first; until there is one, the cursor is a high-water
+/// mark and `next_offset` only ever grows.
+///
+/// The consequence to keep in mind: the ceiling is on **cumulative** allocation
+/// for the device's lifetime, not on what is live at once. Seven 1920x1080
+/// buffers exhaust it whether or not their handles were closed.
 const DUMB_POOL_SIZE: usize = 64 * 1024 * 1024;
 
 /// Maximum scanout width/height reported by `MODE_GETRESOURCES`.
@@ -172,7 +209,7 @@ impl DriNode {
 }
 
 /// Every DRM node this kernel exposes, as `(name, minor)` pairs, or an empty
-/// slice when no virtio-gpu device was found.
+/// slice when this machine has no display to drive.
 ///
 /// The sysfs view of these nodes is built from this list, so it appears only
 /// once the character devices themselves do.
@@ -182,7 +219,10 @@ pub(super) fn exposed_nodes() -> &'static [(&'static str, u32)] {
         (DriNode::Render.node_name(), DriNode::Render.minor()),
     ];
 
-    if first_device().is_none() {
+    // A firmware framebuffer is a display like any other: a machine that has
+    // only that one still gets a card node, which is the whole point of the
+    // firmware backend. Only a machine with neither has nothing to expose.
+    if display_source().is_none() {
         return &[];
     }
     &NODES
@@ -256,6 +296,138 @@ static GEM_OBJECTS: SpinLock<GemObjects> = SpinLock::new(GemObjects::new());
 #[derive(Debug)]
 struct Dri {
     node: DriNode,
+    /// What presents pixels, chosen once and shared by every open file.
+    display: Arc<DisplayDevice>,
+}
+
+/// Everything that turns pixels into a visible image on this machine.
+///
+/// Selected once, when the nodes are registered, rather than per open file.
+/// The choice cannot change while the machine runs — a virtio-gpu device does
+/// not appear later, and the firmware framebuffer is fixed at boot — and every
+/// open file has to reach the same scanout regardless.
+struct DisplayDevice {
+    /// The virtio-gpu device, when the machine has one.
+    ///
+    /// Absent on a machine whose only display is the firmware framebuffer.
+    /// The ioctls specific to virtio-gpu have nothing to talk to there, and
+    /// report so, rather than the driver refusing to exist.
+    gpu: Option<Arc<GpuDevice>>,
+    /// Presents framebuffers on the active scanout.
+    scanout: Arc<dyn ScanoutBackend>,
+    /// Hardware-cursor operations, absent for a backend that has no hardware
+    /// cursor to program.
+    cursor: Option<Arc<dyn CursorBackend>>,
+    /// The driver name `DRM_IOCTL_VERSION` reports.
+    ///
+    /// Per backend rather than constant, because it names the driver a client
+    /// should use, and "virtio_gpu" is a false answer on a machine that has no
+    /// virtio-gpu at all.
+    name: &'static str,
+    /// The connector type `MODE_GETCONNECTOR` reports.
+    connector_type: u32,
+}
+
+impl DisplayDevice {
+    /// The largest mode a client may ask for, for `MODE_GETRESOURCES`.
+    ///
+    /// A backend that only copies into a fixed framebuffer accepts exactly the
+    /// mode firmware chose, so advertising the range a programmable display
+    /// allows would offer modes that later fail to set. A backend that can
+    /// program the display keeps the permissive limit its host imposes.
+    fn max_mode(&self) -> (u32, u32) {
+        self.scanout
+            .fixed_mode()
+            .unwrap_or((MAX_RESOLUTION, MAX_RESOLUTION))
+    }
+}
+
+impl Debug for DisplayDevice {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Only which devices are present is worth printing: the backends are
+        // trait objects and have nothing to say about themselves.
+        let (virtio_gpu, hardware_cursor) = (self.gpu.is_some(), self.cursor.is_some());
+        f.debug_struct("DisplayDevice")
+            .field("driver", &self.name)
+            .field("virtio_gpu", &virtio_gpu)
+            .field("hardware_cursor", &hardware_cursor)
+            .finish()
+    }
+}
+
+/// What can present pixels on this machine, before anything is built from it.
+///
+/// Separated from construction so that the question "should a DRM node exist at
+/// all" can be asked cheaply, and so that the answer and the construction read
+/// the same check.
+enum DisplaySource {
+    Virtio(Arc<GpuDevice>),
+    Firmware(Arc<FrameBuffer>),
+}
+
+impl DisplaySource {
+    /// The driver name `DRM_IOCTL_VERSION` and sysfs report for this source.
+    fn driver_name(&self) -> &'static str {
+        match self {
+            DisplaySource::Virtio(_) => DRIVER_NAME,
+            DisplaySource::Firmware(_) => FIRMWARE_DRIVER_NAME,
+        }
+    }
+}
+
+/// The display this machine has, if it has one this driver can present through.
+///
+/// virtio-gpu wins when both are present: it is the device with a 3D path and a
+/// hardware cursor, and on a machine that has one the firmware framebuffer is
+/// the console's, not the client's.
+fn display_source() -> Option<DisplaySource> {
+    if let Some(gpu) = first_device() {
+        return Some(DisplaySource::Virtio(gpu));
+    }
+    let framebuffer = FRAMEBUFFER.get()?;
+    FirmwareFramebufferBackend::accepts(framebuffer).then(|| {
+        DisplaySource::Firmware(Arc::clone(framebuffer))
+    })
+}
+
+/// The name of the driver that is actually presenting, for sysfs to report.
+///
+/// Read from the selected display rather than from `DRIVER_NAME`, which is a
+/// virtio-gpu constant: a machine whose only display is the firmware
+/// framebuffer has no virtio-gpu, and its `uevent` said so anyway. libdrm
+/// reads that file to describe the device, and a guest checking it would have
+/// been reading a constant -- which is the same defect as a guest that prints
+/// a constant, one layer down.
+pub(super) fn driver_name() -> &'static str {
+    display_source().map_or(DRIVER_NAME, |source| source.driver_name())
+}
+
+/// Builds the presentation devices for a source.
+fn display_device(source: DisplaySource) -> Result<DisplayDevice> {
+    let name = source.driver_name();
+    Ok(match source {
+        DisplaySource::Virtio(gpu) => DisplayDevice {
+            scanout: Arc::clone(&gpu) as Arc<dyn ScanoutBackend>,
+            cursor: Some(Arc::clone(&gpu) as Arc<dyn CursorBackend>),
+            gpu: Some(gpu),
+            name,
+            connector_type: DRM_MODE_CONNECTOR_VIRTUAL,
+        },
+        DisplaySource::Firmware(framebuffer) => DisplayDevice {
+            scanout: Arc::new(FirmwareFramebufferBackend::new(framebuffer)?),
+            // The firmware backend owns no display hardware, so it cannot
+            // place a cursor. `None` is what makes the driver refuse cursor
+            // requests outright, which is the answer that lets a client draw
+            // the pointer itself instead of waiting for one that never comes.
+            cursor: None,
+            gpu: None,
+            name,
+            // Not `DRM_MODE_CONNECTOR_VIRTUAL`: there is a real connector here,
+            // firmware is driving it, and this driver has no way to ask what
+            // kind it is. "Unknown" is what the uapi provides for exactly that.
+            connector_type: DRM_MODE_CONNECTOR_UNKNOWN,
+        },
+    })
 }
 
 /// Per-open-file DRM state.
@@ -267,7 +439,8 @@ struct Dri {
 struct DriHandle {
     /// The node this file was opened through, which decides what it may do.
     node: DriNode,
-    gpu: Arc<GpuDevice>,
+    /// What presents pixels, shared with every other open file of this node.
+    display: Arc<DisplayDevice>,
     /// Serializes implicit context creation for this file.
     context_operation: Mutex<()>,
     cursor_operation: Mutex<()>,
@@ -776,6 +949,55 @@ struct DrmModeFbDirtyCmd {
     clips_ptr: u64,
 }
 
+/// `struct drm_clip_rect`: one damaged region in half-open coordinates.
+///
+/// Half-open as the kernel uses it — a rect from `(x1, y1)` to `(x2, y2)`
+/// covers `x1` up to but not including `x2` — even though the X11 protocol
+/// these usually come from draws both ends. A client that sends the closed
+/// form damages one extra row and column, which is a repaint it did not need,
+/// never a pixel it missed.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmClipRect {
+    x1: u16,
+    y1: u16,
+    x2: u16,
+    y2: u16,
+}
+
+/// The most damage regions one `MODE_DIRTYFB` may describe.
+///
+/// The count comes from userspace and names memory the kernel is about to
+/// walk, so it is bounded rather than trusted. A client wanting more than this
+/// is describing the whole frame, and an empty list already means that without
+/// the copy.
+const MAX_DIRTY_CLIPS: u32 = 256;
+
+/// Reads the damage list a `MODE_DIRTYFB` names, or an empty one if it named none.
+///
+/// An empty list is not "nothing was damaged": it is the whole frame, which is
+/// what a client passes when it cannot say. Returning an empty `Vec` here and
+/// letting the backend read it that way keeps that meaning in one place.
+fn read_dirty_clips(req: &DrmModeFbDirtyCmd) -> Result<Vec<DrmClipRect>> {
+    if req.num_clips == 0 || req.clips_ptr == 0 {
+        return Ok(Vec::new());
+    }
+    if req.num_clips > MAX_DIRTY_CLIPS {
+        return_errno_with_message!(Errno::EINVAL, "too many damage clip rectangles");
+    }
+
+    let mut clips = Vec::with_capacity(req.num_clips as usize);
+    for index in 0..req.num_clips as usize {
+        let offset = req.clips_ptr as usize + index * size_of::<DrmClipRect>();
+        clips.push(
+            current_userspace!()
+                .read_val(offset)
+                .map_err(|_| Error::with_message(Errno::EFAULT, "bad damage clip rectangle"))?,
+        );
+    }
+    Ok(clips)
+}
+
 /// The next magic token `DRM_IOCTL_GET_MAGIC` will hand out.
 ///
 /// Device-wide and monotonic, so two files never share one. `DRM_IOCTL_AUTH_MAGIC`
@@ -929,14 +1151,13 @@ impl Device for Dri {
     }
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
-        let gpu = first_device()
-            .ok_or_else(|| Error::with_message(Errno::ENODEV, "no virtio-gpu device"))?;
-        let current_width = gpu.width();
-        let current_height = gpu.height();
+        // The scanout was already chosen when the node was registered, so the
+        // mode a fresh file starts at is the one the display actually has.
+        let (current_width, current_height) = self.display.scanout.dimensions();
 
         Ok(Box::new(DriHandle {
             node: self.node,
-            gpu,
+            display: Arc::clone(&self.display),
             context_operation: Mutex::new(()),
             cursor_operation: Mutex::new(()),
             events: Pollee::new(),
@@ -1027,12 +1248,16 @@ fn object_for_handle(inner: &DriInner, handle: u32) -> Result<u32> {
 }
 
 /// Drops one reference to an object, freeing it when the last one goes.
-///
-/// The pool space is deliberately not reclaimed: the pool is a bump allocator,
-/// so a freed buffer's span is simply leaked within it. Fine for the handful of
-/// buffers a client allocates.
 fn release_object(object_id: u32) {
-    let mut objects = GEM_OBJECTS.lock();
+    release_object_locked(&mut GEM_OBJECTS.lock(), object_id);
+}
+
+/// [`release_object`], against an object space the caller already holds.
+///
+/// Split out so the lifetime rules can be driven directly by a test: the
+/// global is a `SpinLock` over exactly this type, and nothing in the rules
+/// below needs a device, a pool or a file to be true.
+fn release_object_locked(objects: &mut GemObjects, object_id: u32) {
     let Some(object) = objects.objects.get_mut(&object_id) else {
         return;
     };
@@ -1041,6 +1266,40 @@ fn release_object(object_id: u32) {
         objects.objects.remove(&object_id);
         // A name is only a handle on an object that still exists.
         objects.names.retain(|_, named| *named != object_id);
+    }
+}
+
+/// Drops the reference every handle in `handles` holds.
+///
+/// This is the path a *closed file* takes, and it has to exist: a client is
+/// entitled to name an object and let the descriptor's close be what gives the
+/// reference back, which is what Linux's `drm_file_free()` does — it deletes
+/// each handle through `drm_gem_handle_delete()`. `GEM_CLOSE` is the same
+/// place by an explicit route. Without this, every object a client named
+/// survives it for the device's lifetime, and since `GEM_OBJECTS` is
+/// device-wide the next client pays for the last one's omission.
+///
+/// Takes the handle table rather than the file that owns it, because that is
+/// all the rule needs: what makes it testable is that a handle table is a
+/// `BTreeMap<u32, u32>` and a test can write one by hand.
+fn release_handles_locked(objects: &mut GemObjects, handles: &BTreeMap<u32, u32>) {
+    for object_id in handles.values() {
+        release_object_locked(objects, *object_id);
+    }
+}
+
+/// Drops the reference every framebuffer in `framebuffers` holds.
+///
+/// Framebuffers are per-file like handles, so a closed file owes them the same
+/// accounting. They take their reference in `add_fb` and give it back in
+/// `rm_fb`; a file that closes without calling `rm_fb` is not withdrawing
+/// anything, so neither does this.
+fn release_framebuffers_locked(
+    objects: &mut GemObjects,
+    framebuffers: &BTreeMap<u32, Framebuffer>,
+) {
+    for framebuffer in framebuffers.values() {
+        release_object_locked(objects, framebuffer.object_id);
     }
 }
 
@@ -1067,13 +1326,7 @@ fn alloc_object(
     bpp: u32,
 ) -> Result<u32> {
     ensure_pool(objects)?;
-    let offset = objects.next_offset.align_up(PAGE_SIZE);
-    let end = offset
-        .checked_add(size)
-        .ok_or_else(|| Error::with_message(Errno::ENOMEM, "buffer size overflows"))?;
-    if end > DUMB_POOL_SIZE {
-        return_errno_with_message!(Errno::ENOMEM, "buffer pool is exhausted");
-    }
+    let offset = reserve_span(objects, size)?;
 
     let object_id = objects.next_object_id;
     objects.next_object_id += 1;
@@ -1090,8 +1343,27 @@ fn alloc_object(
             refs: 1,
         },
     );
-    objects.next_offset = end.align_up(PAGE_SIZE);
     Ok(object_id)
+}
+
+/// Reserves `size` page-aligned bytes at the pool cursor, returning the offset.
+///
+/// Split out of [`alloc_object`] so the accounting can be driven by a test:
+/// `ensure_pool` allocates 64 MiB of contiguous memory, which is a lot to ask
+/// of a test kernel, and none of the arithmetic here depends on the pool
+/// existing. The cursor only ever grows — see [`DUMB_POOL_SIZE`] for why that
+/// is a constraint rather than an oversight — so this is where the device's
+/// cumulative-allocation ceiling is actually enforced.
+fn reserve_span(objects: &mut GemObjects, size: usize) -> Result<usize> {
+    let offset = objects.next_offset.align_up(PAGE_SIZE);
+    let end = offset
+        .checked_add(size)
+        .ok_or_else(|| Error::with_message(Errno::ENOMEM, "buffer size overflows"))?;
+    if end > DUMB_POOL_SIZE {
+        return_errno_with_message!(Errno::ENOMEM, "buffer pool is exhausted");
+    }
+    objects.next_offset = end.align_up(PAGE_SIZE);
+    Ok(offset)
 }
 
 /// Gives `object_id` a handle in this file, returning the handle.
@@ -1103,6 +1375,15 @@ fn name_object(inner: &mut DriInner, object_id: u32) -> u32 {
 }
 
 impl DriHandle {
+    /// The virtio-gpu device, for the ioctls only it can serve.
+    ///
+    /// A machine whose only display is the firmware framebuffer has no 3D path
+    /// and no virtio-gpu control channel, and those ioctls say so rather than
+    /// being served by something that is not there.
+    fn gpu(&self) -> Result<&Arc<GpuDevice>> {
+        let gpu = self.display.gpu.as_ref();
+        gpu.ok_or_else(|| Error::with_message(Errno::ENODEV, "this DRM device has no virtio-gpu"))
+    }
 
     fn create_dumb(&self, req: &DrmModeCreateDumb) -> Result<DrmModeCreateDumb> {
         if req.flags != 0 {
@@ -1163,18 +1444,18 @@ impl DriHandle {
     /// rendering when the answer says the host offers no 3D.
     fn virtgpu_getparam(&self, req: &DrmVirtgpuGetparam) -> Result<()> {
         let value = match req.param {
-            VIRTGPU_PARAM_3D_FEATURES => u64::from(self.gpu.supports_virgl()),
+            VIRTGPU_PARAM_3D_FEATURES => u64::from(self.gpu()?.supports_virgl()),
             // The query-fix flag means the driver returns the capset the real
             // driver would, rather than a fixed stub.
-            VIRTGPU_PARAM_CAPSET_QUERY_FIX => u64::from(self.gpu.supports_virgl()),
+            VIRTGPU_PARAM_CAPSET_QUERY_FIX => u64::from(self.gpu()?.supports_virgl()),
             VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS => {
-                if !self.gpu.supports_virgl() {
+                if !self.gpu()?.supports_virgl() {
                     0
                 } else {
                     // Read the host's first capset rather than assuming virgl,
                     // so the mask describes this host and not our expectation.
                     let info = self
-                        .gpu
+                        .gpu()?
                         .capset_info(0)
                         .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
                     1u64 << info.id
@@ -1209,17 +1490,17 @@ impl DriHandle {
                 req.cap_set_id,
                 req.cap_set_ver,
                 req.size,
-                self.gpu.supports_virgl()
+                self.gpu()?.supports_virgl()
             );
         }
-        if !self.gpu.supports_virgl() {
+        if !self.gpu()?.supports_virgl() {
             return_errno_with_message!(Errno::EINVAL, "3D is not available");
         }
         if req.size == 0 {
             return_errno_with_message!(Errno::EINVAL, "capability request has zero size");
         }
         let info = self
-            .gpu
+            .gpu()?
             .capset_info(0)
             .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
         if trace {
@@ -1240,7 +1521,7 @@ impl DriHandle {
         // Fetch the whole blob and hand back only what was asked for, as Linux
         // does: the host answers for one version, not for one length.
         let blob = self
-            .gpu
+            .gpu()?
             .capset(info.id, req.cap_set_ver, info.max_size)
             .map_err(|_| Error::with_message(Errno::EIO, "capability set query failed"))?;
         if trace {
@@ -1268,11 +1549,11 @@ impl DriHandle {
             return Ok(context_id);
         }
         let info = self
-            .gpu
+            .gpu()?
             .capset_info(0)
             .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
         let context_id = NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
-        self.gpu
+        self.gpu()?
             .context_create(context_id, info.id, "asterinas")
             .map_err(|_| Error::with_message(Errno::EIO, "context creation failed"))?;
         self.inner.lock().context_id = Some(context_id);
@@ -1281,7 +1562,7 @@ impl DriHandle {
 
     /// Creates this file's 3D context, against the capability set it names.
     fn virtgpu_context_init(&self, req: &DrmVirtgpuContextInit) -> Result<()> {
-        if !self.gpu.supports_virgl() {
+        if !self.gpu()?.supports_virgl() {
             return_errno_with_message!(Errno::EINVAL, "3D is not available");
         }
         if req.num_params > VIRTGPU_MAX_CTX_PARAMS {
@@ -1337,7 +1618,7 @@ impl DriHandle {
         let capset_id =
             capset_id.ok_or_else(|| Error::with_message(Errno::EINVAL, "no capset id given"))?;
         let info = self
-            .gpu
+            .gpu()?
             .capset_info(0)
             .map_err(|_| Error::with_message(Errno::EIO, "capset query failed"))?;
         if capset_id != info.id {
@@ -1345,7 +1626,7 @@ impl DriHandle {
         }
 
         let context_id = NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed);
-        self.gpu
+        self.gpu()?
             .context_create(context_id, capset_id, &debug_name)
             .map_err(|_| Error::with_message(Errno::EIO, "context creation failed"))?;
         self.inner.lock().context_id = Some(context_id);
@@ -1375,7 +1656,7 @@ impl DriHandle {
         &self,
         req: &DrmVirtgpuResourceCreate,
     ) -> Result<DrmVirtgpuResourceCreate> {
-        if !self.gpu.supports_virgl() {
+        if !self.gpu()?.supports_virgl() {
             return_errno_with_message!(Errno::EINVAL, "3D is not available");
         }
         if req.size == 0 {
@@ -1404,7 +1685,7 @@ impl DriHandle {
 
         // From the device's counter, not one of this module's own: the scanout
         // resource already holds id 1, and the host refuses a duplicate.
-        let resource_id = self.gpu.reserve_resource_id();
+        let resource_id = self.gpu()?.reserve_resource_id();
         let base = {
             let mut objects = GEM_OBJECTS.lock();
             let base = pool_paddr(&objects)?;
@@ -1419,7 +1700,7 @@ impl DriHandle {
         // A resource the host never heard of, or one whose memory it cannot
         // reach, is not usable: both steps have to succeed for the handle to be
         // worth returning.
-        let create = self.gpu.resource_create_3d(
+        let create = self.gpu()?.resource_create_3d(
             resource_id,
             req.target,
             req.format,
@@ -1437,7 +1718,7 @@ impl DriHandle {
             return_errno_with_message!(Errno::EIO, "3D resource creation failed");
         }
         if self
-            .gpu
+            .gpu()?
             .attach_backing(resource_id, (base + object.offset) as u64, object.size as u32)
             .is_err()
         {
@@ -1445,7 +1726,7 @@ impl DriHandle {
             return_errno_with_message!(Errno::EIO, "3D resource backing could not be attached");
         }
         if self
-            .gpu
+            .gpu()?
             .attach_resource_to_context(context_id, resource_id)
             .is_err()
         {
@@ -1502,7 +1783,7 @@ impl DriHandle {
     /// renderer keeps working on whatever the buffer held before, so the
     /// picture is wrong rather than absent — which is why both are served.
     fn virtgpu_transfer_3d(&self, to_host: bool, req: &DrmVirtgpuTransfer3d) -> Result<()> {
-        if !self.gpu.supports_virgl() {
+        if !self.gpu()?.supports_virgl() {
             return_errno_with_message!(Errno::EINVAL, "3D is not available");
         }
         let context_id = self.ensure_context()?;
@@ -1515,13 +1796,14 @@ impl DriHandle {
             .resource_id
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "buffer is not a 3D resource"))?;
 
+        let gpu = self.gpu()?;
         let transfer = if to_host {
             GpuDevice::transfer_to_host_3d
         } else {
             GpuDevice::transfer_from_host_3d
         };
         transfer(
-            &self.gpu,
+            gpu,
             context_id,
             resource_id,
             VirtioGpuBox {
@@ -1541,7 +1823,7 @@ impl DriHandle {
     }
 
     fn virtgpu_execbuffer(&self, req: &DrmVirtgpuExecbuffer) -> Result<DrmVirtgpuExecbuffer> {
-        if !self.gpu.supports_virgl() {
+        if !self.gpu()?.supports_virgl() {
             return_errno_with_message!(Errno::EINVAL, "3D is not available");
         }
         if req.size == 0 {
@@ -1567,7 +1849,7 @@ impl DriHandle {
         }
 
         let fence_id = u64::from(NEXT_FENCE_ID.fetch_add(1, Ordering::Relaxed));
-        self.gpu
+        self.gpu()?
             .submit_3d(context_id, &commands, fence_id)
             .map_err(|_| Error::with_message(Errno::EIO, "3D submission failed"))?;
 
@@ -1692,8 +1974,16 @@ impl DriHandle {
     fn add_fb(&self, req: &DrmModeFbCmd) -> Result<u32> {
         let mut inner = self.inner.lock();
         let object_id = object_for_handle(&inner, req.handle)?;
-        let object = object_by_id(&GEM_OBJECTS.lock(), object_id)?;
-        // A row has to fit in the pitch, and the rows have to fit in the buffer.
+        let fb_id = inner.next_fb_id;
+
+        // A row has to fit in the pitch, and the rows have to fit in the
+        // buffer. Checked before the reference is taken, so a framebuffer that
+        // is refused does not leave one behind.
+        let mut objects = GEM_OBJECTS.lock();
+        let object = objects
+            .objects
+            .get_mut(&object_id)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown GEM object"))?;
         let bytes_per_pixel = u64::from(req.bpp).div_ceil(8);
         let minimum_pitch = u64::from(req.width)
             .checked_mul(bytes_per_pixel)
@@ -1704,7 +1994,15 @@ impl DriHandle {
         if u64::from(req.pitch) < minimum_pitch || span > object.size as u64 {
             return_errno_with_message!(Errno::EINVAL, "framebuffer does not fit its buffer");
         }
-        let fb_id = inner.next_fb_id;
+
+        // The framebuffer takes its own reference, as Linux's `drm_framebuffer`
+        // does. Without one it names an object that any later `GEM_CLOSE` or
+        // `MODE_DESTROY_DUMB` on the same buffer silently retires, and the
+        // client's next `SETCRTC` or page flip fails with `EINVAL` on a
+        // framebuffer that still exists and was never withdrawn — a failure
+        // that says nothing about what actually happened.
+        object.refs = object.refs.saturating_add(1);
+
         inner.next_fb_id += 1;
         inner.framebuffers.insert(
             fb_id,
@@ -1719,12 +2017,17 @@ impl DriHandle {
 
     fn rm_fb(&self, fb_id: u32) -> Result<()> {
         let mut inner = self.inner.lock();
-        if inner.framebuffers.remove(&fb_id).is_none() {
+        let Some(framebuffer) = inner.framebuffers.remove(&fb_id) else {
             return_errno_with_message!(Errno::EINVAL, "unknown framebuffer id");
-        }
+        };
         if inner.current_fb_id == Some(fb_id) {
             inner.current_fb_id = None;
         }
+        drop(inner);
+        // The reference `add_fb` took. Until this runs the buffer is alive
+        // whether or not the handle it was made from still is, which is the
+        // point of holding it.
+        release_object(framebuffer.object_id);
         Ok(())
     }
 
@@ -1741,38 +2044,98 @@ impl DriHandle {
         self.present_fb(req.fb_id)
     }
 
-    /// Presents a framebuffer on the scanout, copying its pixels to the host.
+    /// Presents a framebuffer on the scanout, making its pixels visible.
     ///
     /// Shared by `MODE_SETCRTC`, `MODE_PAGE_FLIP`, and `MODE_DIRTYFB`: all three
-    /// ultimately make a framebuffer visible, and virtio-gpu only pulls fresh
-    /// pixels during `TRANSFER_TO_HOST_2D` + `FLUSH`, so every present must
-    /// re-run that transfer (a guest-side mmap write alone is never seen by the
-    /// host display).
-    fn present_fb(&self, fb_id: u32) -> Result<()> {
-        let (addr, size, width, height) = {
-            let inner = self.inner.lock();
-            let fb = inner
-                .framebuffers
-                .get(&fb_id)
-                .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
-            let objects = GEM_OBJECTS.lock();
-            let object = object_by_id(&objects, fb.object_id)?;
-            let base = pool_paddr(&objects)?;
-            (base + object.offset, object.size, fb.width, fb.height)
-        };
+    /// ultimately make a framebuffer visible, and none of them can assume the
+    /// display already has the pixels. On virtio-gpu the host only pulls fresh
+    /// pixels during `TRANSFER_TO_HOST_2D` + `FLUSH`, so a guest-side mmap write
+    /// alone is never seen; on the firmware framebuffer nothing reads the pool
+    /// until it is copied into the scanout. Presenting in full is therefore the
+    /// only correct default, and each backend decides what that costs.
+    /// Builds the scanout buffer that a registered framebuffer names.
+    fn scanout_buffer(&self, fb_id: u32) -> Result<(ScanoutBuffer, u32, u32)> {
+        let inner = self.inner.lock();
+        let fb = inner
+            .framebuffers
+            .get(&fb_id)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "unknown framebuffer id"))?;
+        let objects = GEM_OBJECTS.lock();
+        let object = object_by_id(&objects, fb.object_id)?;
+        // The pool itself is handed over, not its address: a backend that
+        // copies pixels needs the memory, and only the virtio one can make do
+        // with where it physically is.
+        let pool = objects
+            .pool
+            .as_ref()
+            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "no dumb buffer pool"))?;
+        let buffer = ScanoutBuffer::new(
+            Arc::clone(pool),
+            object.offset,
+            object.pitch as usize,
+            object.size as u32,
+            fb.width,
+            fb.height,
+        );
+        Ok((buffer, fb.width, fb.height))
+    }
 
-        self.gpu
-            .present_framebuffer(addr as u64, size as u32, width, height)
-            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu present failed"))?;
-
+    /// Records which framebuffer the scanout is now showing.
+    fn note_current_scanout(&self, fb_id: u32, width: u32, height: u32) {
         let mut inner = self.inner.lock();
         inner.current_fb_id = Some(fb_id);
         inner.current_width = width;
         inner.current_height = height;
+    }
+
+    fn present_fb(&self, fb_id: u32) -> Result<()> {
+        let (buffer, width, height) = self.scanout_buffer(fb_id)?;
+        self.display.scanout.present_framebuffer(buffer)?;
+        self.note_current_scanout(fb_id, width, height);
+        Ok(())
+    }
+
+    /// Re-presents only the regions the client says it changed.
+    ///
+    /// `MODE_DIRTYFB` is how a client that has already presented a frame says
+    /// "this part of it moved". On virtio-gpu that is the same full transfer
+    /// either way — the host command has no sub-rectangle form — so the
+    /// backend's default re-presents everything. On the firmware backend the
+    /// copy is the CPU's, and one cursor-sized rectangle against a whole
+    /// 1920x1080 frame is the difference between a pointer that moves freely
+    /// and one that visibly lags.
+    fn dirty_fb(&self, fb_id: u32, clips: &[DrmClipRect]) -> Result<()> {
+        let (buffer, width, height) = self.scanout_buffer(fb_id)?;
+        // Validated against the framebuffer they address, because the backends
+        // index with these: a rectangle reaching past the buffer would be an
+        // out-of-range slice, not a wrong picture.
+        let mut damage = Vec::with_capacity(clips.len());
+        for clip in clips {
+            damage.push(DamageRect::new(
+                u32::from(clip.x1),
+                u32::from(clip.y1),
+                u32::from(clip.x2),
+                u32::from(clip.y2),
+                width,
+                height,
+            )?);
+        }
+
+        self.display.scanout.dirty_framebuffer(buffer, &damage)?;
+        self.note_current_scanout(fb_id, width, height);
         Ok(())
     }
 
     fn update_cursor(&self, request: DrmModeCursor2) -> Result<()> {
+        // Refused before anything else, because there is no cursor to program
+        // and no honest way to report success. A client that is told the
+        // hardware accepted a cursor will not draw one itself, so the pointer
+        // would simply vanish; an error is what lets it fall back to a software
+        // cursor. The firmware backend is the case this exists for.
+        let Some(cursor) = self.display.cursor.as_ref() else {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "this display has no hardware cursor");
+        };
+
         let _cursor_operation = self.cursor_operation.lock();
         let (update, position, backing) = {
             let inner = self.inner.lock();
@@ -1794,16 +2157,34 @@ impl DriHandle {
                 .map_err(|_| Error::with_message(Errno::EINVAL, "invalid cursor request"))?;
             let position = inner.cursor.position_for(update);
             let backing = match update.image {
-                Some(CursorImage::Buffer { handle, .. }) => {
+                Some(CursorImage::Buffer {
+                    handle,
+                    width,
+                    height,
+                    hot_x,
+                    hot_y,
+                }) => {
                     let object_id = object_for_handle(&inner, handle)?;
                     let objects = GEM_OBJECTS.lock();
                     let object = object_by_id(&objects, object_id)?;
-                    let base = pool_paddr(&objects)?;
-                    Some((
-                        (base + object.offset) as u64,
-                        u32::try_from(object.size).map_err(|_| {
-                            Error::with_message(Errno::EINVAL, "cursor buffer is too large")
-                        })?,
+                    let pool = objects
+                        .pool
+                        .as_ref()
+                        .ok_or_else(|| Error::with_message(Errno::ENOMEM, "no dumb buffer pool"))?;
+                    let size = u32::try_from(object.size).map_err(|_| {
+                        Error::with_message(Errno::EINVAL, "cursor buffer is too large")
+                    })?;
+                    Some(CursorScanoutBuffer::new(
+                        Arc::clone(pool),
+                        object.offset,
+                        size,
+                        CursorGeometry {
+                            width,
+                            height,
+                            hot_x,
+                            hot_y,
+                        },
+                        position,
                     ))
                 }
                 _ => None,
@@ -1812,36 +2193,18 @@ impl DriHandle {
         };
 
         let resource_id = match update.image {
-            Some(CursorImage::Buffer {
-                width,
-                height,
-                hot_x,
-                hot_y,
-                ..
-            }) => {
-                let (addr, size) = backing.ok_or_else(|| {
+            Some(CursorImage::Buffer { .. }) => {
+                let buffer = backing.ok_or_else(|| {
                     Error::with_message(Errno::EINVAL, "cursor buffer has no backing")
                 })?;
-                Some(
-                    self.gpu
-                        .update_cursor(
-                            addr, size, width, height, hot_x, hot_y, position.x, position.y,
-                        )
-                        .map_err(|_| {
-                            Error::with_message(Errno::EIO, "virtio-gpu cursor update failed")
-                        })?,
-                )
+                Some(cursor.update_cursor(buffer)?)
             }
             Some(CursorImage::Hide) => {
-                self.gpu.hide_cursor(position.x, position.y).map_err(|_| {
-                    Error::with_message(Errno::EIO, "virtio-gpu cursor hide failed")
-                })?;
+                cursor.hide_cursor(position.x, position.y)?;
                 None
             }
             None => {
-                self.gpu.move_cursor(position.x, position.y).map_err(|_| {
-                    Error::with_message(Errno::EIO, "virtio-gpu cursor move failed")
-                })?;
+                cursor.move_cursor(position.x, position.y)?;
                 None
             }
         };
@@ -1869,9 +2232,12 @@ impl Drop for DriHandle {
     fn drop(&mut self) {
         // The host keys 3D contexts by id for the device's lifetime, so one a
         // closed file left behind would outlive everything able to reach it.
+        // Guarded rather than unwrapped: `drop` cannot report a failure, and a
+        // file that never had a 3D context — which is every file on a machine
+        // with only a firmware framebuffer — has nothing to clean up.
         let context_id = self.inner.lock().context_id.take();
-        if let Some(context_id) = context_id {
-            let _ = self.gpu.context_destroy(context_id);
+        if let (Some(context_id), Some(gpu)) = (context_id, self.display.gpu.as_ref()) {
+            let _ = gpu.context_destroy(context_id);
         }
 
         let _cursor_operation = self.cursor_operation.lock();
@@ -1879,9 +2245,25 @@ impl Drop for DriHandle {
             let inner = self.inner.lock();
             (inner.cursor.resource_id, inner.cursor.position)
         };
-        if let Some(resource_id) = resource_id {
-            let _ = self.gpu.clear_cursor(resource_id, position.x, position.y);
+        if let (Some(resource_id), Some(cursor)) = (resource_id, self.display.cursor.as_ref()) {
+            let _ = cursor.clear_cursor(resource_id, position.x, position.y);
         }
+
+        // Every handle this file named drops its reference, the way Linux's
+        // `drm_file_free()` does for each of them. `GEM_CLOSE` reaches the same
+        // place by an explicit route; this is the implicit one, and a client
+        // that never calls it has not leaked by intent — a descriptor's close
+        // is a legitimate way to give the references back. Skipping it left
+        // every object the file named alive for the device's lifetime, and
+        // `GEM_OBJECTS` is device-wide, so the next client inherited it.
+        //
+        // Lock order is the documented one: `cursor_operation` is still held,
+        // then `inner`, then `GEM_OBJECTS` — the same order `MODE_CURSOR` takes
+        // them in, so this cannot invert against it.
+        let inner = self.inner.lock();
+        let mut objects = GEM_OBJECTS.lock();
+        release_handles_locked(&mut objects, &inner.handles);
+        release_framebuffers_locked(&mut objects, &inner.framebuffers);
     }
 }
 
@@ -2004,7 +2386,7 @@ impl PerOpenFileOps for DriHandle {
                 version.version_major = 0;
                 version.version_minor = 1;
                 version.version_patchlevel = 0;
-                copy_field(version.name, &mut version.name_len, DRIVER_NAME)?;
+                copy_field(version.name, &mut version.name_len, self.display.name)?;
                 copy_field(version.date, &mut version.date_len, DRIVER_DATE)?;
                 copy_field(version.desc, &mut version.desc_len, DRIVER_DESC)?;
                 cmd.write(&version)?;
@@ -2072,10 +2454,11 @@ impl PerOpenFileOps for DriHandle {
                 res.count_crtcs = 1;
                 res.count_connectors = 1;
                 res.count_encoders = 1;
+                let (max_width, max_height) = self.display.max_mode();
                 res.min_width = 0;
-                res.max_width = MAX_RESOLUTION;
+                res.max_width = max_width;
                 res.min_height = 0;
-                res.max_height = MAX_RESOLUTION;
+                res.max_height = max_height;
                 if res.crtc_id_ptr != 0 {
                     current_userspace!().write_val(res.crtc_id_ptr as usize, &CRTC_ID)?;
                 }
@@ -2125,7 +2508,7 @@ impl PerOpenFileOps for DriHandle {
                 conn.count_props = 0;
                 conn.count_encoders = 1;
                 conn.encoder_id = ENCODER_ID;
-                conn.connector_type = DRM_MODE_CONNECTOR_VIRTUAL;
+                conn.connector_type = self.display.connector_type;
                 conn.connector_type_id = 1;
                 conn.connection = DRM_MODE_CONNECTED;
                 conn.mm_width = 0;
@@ -2133,7 +2516,11 @@ impl PerOpenFileOps for DriHandle {
                 conn.subpixel = 0;
                 conn.pad = 0;
                 if conn.modes_ptr != 0 && capacity >= 1 {
-                    let mode = build_mode(self.gpu.width(), self.gpu.height());
+                    // The mode comes from the scanout, not from the GPU: a
+                    // firmware framebuffer has a mode the GPU knows nothing
+                    // about, and on a virtio-gpu machine the two agree.
+                    let (width, height) = self.display.scanout.dimensions();
+                    let mode = build_mode(width, height);
                     current_userspace!().write_val(conn.modes_ptr as usize, &mode)?;
                 }
                 if conn.encoders_ptr != 0 {
@@ -2313,10 +2700,6 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ ModeDirtyFb => {
                 let req = cmd.read()?;
-                // The dirty clip rects are ignored: the framebuffer's pixels are
-                // already in guest memory, so we re-present the whole buffer to
-                // push the latest content to the host.
-                //
                 // `fb_id == 0` is the modesetting driver's *capability probe*
                 // (it calls `drmModeDirtyFB(fd, fb_id, NULL, 0)` before the first
                 // framebuffer exists). Returning success there keeps it on the
@@ -2324,7 +2707,12 @@ impl PerOpenFileOps for DriHandle {
                 if req.fb_id == 0 {
                     return Ok(0);
                 }
-                self.present_fb(req.fb_id)?;
+                // The clip rectangles decide how much is re-presented, and they
+                // are read before the framebuffer is looked up so that a client
+                // naming one that does not exist still gets EFAULT for its bad
+                // pointer rather than EINVAL for the id it cannot fix first.
+                let clips = read_dirty_clips(&req)?;
+                self.dirty_fb(req.fb_id, &clips)?;
                 Ok(0)
             }
             _ => {
@@ -2412,16 +2800,28 @@ fn copy_field(dst: usize, len: &mut usize, src: &str) -> Result<()> {
 }
 
 pub(super) fn init_in_first_kthread() {
-    if first_device().is_none() {
+    let Some(source) = display_source() else {
         return;
-    }
+    };
+    let display = match display_device(source) {
+        Ok(display) => Arc::new(display),
+        // A display was found but could not be driven. Registering a node that
+        // cannot present would only move the failure to the first client that
+        // tried to use it, with less to go on.
+        Err(error) => {
+            ostd::error!("Not registering DRM nodes: {:?}", error);
+            return;
+        }
+    };
 
     char::register(Arc::new(Dri {
         node: DriNode::Card,
+        display: Arc::clone(&display),
     }))
     .expect("failed to register the DRM card device");
     char::register(Arc::new(Dri {
         node: DriNode::Render,
+        display,
     }))
     .expect("failed to register the DRM render device");
 }
@@ -2596,5 +2996,237 @@ mod tests {
         // Declared with the 16-byte size where `struct drm_prime_handle` is
         // 12 bytes.
         assert!(PrimeHandleToFd::try_from_raw(RawIoctl::new(0xc010642d, 0)).is_none());
+    }
+
+    /// The object space's lifetime rules, driven directly.
+    ///
+    /// `GemObjects` is what `GEM_OBJECTS` guards, and none of the rules below
+    /// need a device, a pool or an open file to hold — which is the point of
+    /// the split. Before it, the only route to these rules was through a live
+    /// `/dev/dri/card0`, so they had no unit tests at all: the three that
+    /// existed here were about command numbers, and every rule about who owns
+    /// an object was reachable only by booting a guest and watching.
+    mod object_lifetime {
+        use super::*;
+
+        /// An object of `size` bytes in a space of its own.
+        fn allocate(objects: &mut GemObjects, size: usize) -> u32 {
+            alloc_object(objects, size, 4, 1, 1, 32).expect("allocation")
+        }
+
+        /// Stands in for one of the paths that takes a second reference:
+        /// `gem_open`, `prime_fd_to_handle`, or `prime_handle_to_fd`.
+        fn take_a_second_reference(objects: &mut GemObjects, object_id: u32) {
+            let object = objects.objects.get_mut(&object_id).expect("object");
+            object.refs = object.refs.saturating_add(1);
+        }
+
+        #[ktest]
+        fn a_new_object_holds_exactly_one_reference() {
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            assert_eq!(objects.objects[&id].refs, 1);
+        }
+
+        #[ktest]
+        fn the_last_release_frees_the_object_and_its_name() {
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            objects.names.insert(7, id);
+
+            release_object_locked(&mut objects, id);
+
+            assert!(!objects.objects.contains_key(&id), "object outlived its last reference");
+            assert!(
+                !objects.names.contains_key(&7),
+                "a name outlived the object it named, so GEM_OPEN would hand out \
+                 a handle to memory that is no longer anybody's",
+            );
+        }
+
+        #[ktest]
+        fn a_second_reference_keeps_the_object_alive() {
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            take_a_second_reference(&mut objects, id);
+
+            release_object_locked(&mut objects, id);
+            assert!(
+                objects.objects.contains_key(&id),
+                "the object died while a handle still named it",
+            );
+
+            release_object_locked(&mut objects, id);
+            assert!(!objects.objects.contains_key(&id));
+        }
+
+        #[ktest]
+        fn two_handles_onto_one_object_release_it_twice() {
+            // `gem_open` and `prime_fd_to_handle` both mint a handle *and* take
+            // a reference, so the count has to track the handle count rather
+            // than the object count. One release per handle is what makes the
+            // bookkeeping balanced; releasing once for two handles would leave
+            // a reference held forever.
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            take_a_second_reference(&mut objects, id);
+
+            let handles = BTreeMap::from([(1, id), (2, id)]);
+            release_handles_locked(&mut objects, &handles);
+            assert!(!objects.objects.contains_key(&id));
+        }
+
+        #[ktest]
+        fn releasing_a_handle_table_drops_every_reference_in_it() {
+            // The rule Linux's `drm_file_free()` provides: it deletes each
+            // handle through `drm_gem_handle_delete()`, so a client may name an
+            // object and let the descriptor's close be what gives the reference
+            // back. This driver did not, and every object a client named
+            // outlived it — device-wide, so the next client paid for it.
+            //
+            // Scoped honestly: this drives the rule, not the call site. What
+            // calls it is `DriHandle::drop`, which needs a `DisplayDevice` and
+            // so is out of reach of a ktest — the wiring is checked by the
+            // guest gates instead, and this is the half that can be checked
+            // here. The test name says which half.
+            let mut objects = GemObjects::new();
+            let first = allocate(&mut objects, PAGE_SIZE);
+            let second = allocate(&mut objects, PAGE_SIZE);
+            let handles = BTreeMap::from([(1, first), (2, second)]);
+
+            release_handles_locked(&mut objects, &handles);
+
+            assert!(
+                objects.objects.is_empty(),
+                "releasing a handle table left {} object(s) alive; a client that \
+                 names an object and closes without GEM_CLOSE is not leaking by \
+                 intent",
+                objects.objects.len(),
+            );
+        }
+
+        fn a_framebuffer_for(object_id: u32) -> BTreeMap<u32, Framebuffer> {
+            BTreeMap::from([(
+                1,
+                Framebuffer {
+                    object_id,
+                    width: 1,
+                    height: 1,
+                },
+            )])
+        }
+
+        #[ktest]
+        fn a_framebuffer_keeps_its_buffer_alive_after_the_handle_is_gone() {
+            // A client may `MODE_ADDFB` a buffer and then close or destroy the
+            // handle it used — `MODE_DESTROY_DUMB` is an explicit way to do
+            // exactly that. Linux's framebuffer holds its own reference, so the
+            // buffer survives until `RM_FB`; without one the client's next
+            // `SETCRTC` fails with `EINVAL` on a framebuffer that still exists
+            // and was never withdrawn.
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            take_a_second_reference(&mut objects, id); // `add_fb`
+            let framebuffers = a_framebuffer_for(id);
+
+            release_object_locked(&mut objects, id); // `GEM_CLOSE`
+            assert!(
+                objects.objects.contains_key(&id),
+                "the framebuffer's buffer died with the handle it was made from",
+            );
+
+            release_framebuffers_locked(&mut objects, &framebuffers); // `RM_FB`
+            assert!(!objects.objects.contains_key(&id));
+        }
+
+        #[ktest]
+        fn both_tables_together_release_everything_a_file_held() {
+            // What a closed file owes, once: one reference per handle and one
+            // per framebuffer. Driving them together is the point — a file that
+            // gets one of the two right still leaks, and the leak is the other
+            // client's problem because the space is device-wide.
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            take_a_second_reference(&mut objects, id); // `add_fb`
+            let handles = BTreeMap::from([(1, id)]);
+            let framebuffers = a_framebuffer_for(id);
+
+            release_handles_locked(&mut objects, &handles);
+            release_framebuffers_locked(&mut objects, &framebuffers);
+
+            assert!(
+                objects.objects.is_empty(),
+                "a file's tables left {} object(s) alive",
+                objects.objects.len(),
+            );
+        }
+
+        #[ktest]
+        fn releasing_an_object_that_is_already_gone_is_not_a_failure() {
+            // `drop` cannot report an error, and a handle released twice — once
+            // by `GEM_CLOSE` and again by the file's close — is the ordinary
+            // case rather than a mistake.
+            let mut objects = GemObjects::new();
+            let id = allocate(&mut objects, PAGE_SIZE);
+            release_object_locked(&mut objects, id);
+            release_object_locked(&mut objects, id);
+        }
+
+        #[ktest]
+        fn every_span_is_page_aligned_and_does_not_overlap() {
+            let mut objects = GemObjects::new();
+            let mut spans = Vec::new();
+            for _ in 0..8 {
+                let id = allocate(&mut objects, 3 * PAGE_SIZE + 17);
+                let object = &objects.objects[&id];
+                assert_eq!(object.offset % PAGE_SIZE, 0, "span is not page-aligned");
+                spans.push((object.offset, object.offset + object.size));
+            }
+            spans.sort_unstable();
+            for pair in spans.windows(2) {
+                assert!(
+                    pair[0].1 <= pair[1].0,
+                    "spans {:?} and {:?} overlap, so two buffers share memory",
+                    pair[0],
+                    pair[1],
+                );
+            }
+        }
+
+        #[ktest]
+        fn the_ceiling_is_on_cumulative_allocation_not_on_live_objects() {
+            // The pool's cursor only grows, so the device's budget is spent by
+            // everything ever allocated rather than by what is alive now. This
+            // is the behaviour `DUMB_POOL_SIZE` is sized against, and pinning
+            // it here means a change that starts reclaiming has to say so —
+            // which matters, because reclaiming is only safe once `Mappable`
+            // can hand out a window instead of the whole pool.
+            let mut objects = GemObjects::new();
+            let span = 8 * 1024 * 1024;
+            let expected = DUMB_POOL_SIZE / span;
+
+            let mut allocated = 0;
+            while reserve_span(&mut objects, span).is_ok() {
+                allocated += 1;
+                assert!(allocated <= expected, "the pool did not bound allocation");
+            }
+
+            assert_eq!(
+                allocated, expected,
+                "a 1920x1080 allocation is ~8 MiB, so the ceiling is ~{} of them \
+                 for the device's whole lifetime",
+                expected,
+            );
+        }
+
+        #[ktest]
+        fn an_allocation_larger_than_the_pool_is_refused() {
+            let mut objects = GemObjects::new();
+            assert!(reserve_span(&mut objects, DUMB_POOL_SIZE + 1).is_err());
+            assert!(reserve_span(&mut objects, usize::MAX).is_err());
+            // And the refusal did not consume the cursor, so an ordinary
+            // allocation still fits afterwards.
+            assert!(reserve_span(&mut objects, PAGE_SIZE).is_ok());
+        }
     }
 }

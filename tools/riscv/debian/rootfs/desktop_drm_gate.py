@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import os
 import re
+from functools import partial
 import secrets
 import sys
 import time
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from tools.riscv.qemu_uboot_devices import BOCHS_XRGB8888
 from tools.riscv.debian.rootfs.contract import load_manifest
 from tools.riscv.debian.rootfs.desktop_m3_gate import (
     DesktopM3Operations,
@@ -90,24 +92,102 @@ DESKTOP_DRM_PIXEL_PREFIX = "DEBIAN_DESKTOP_DRM_PIXEL "
 DESKTOP_DRM_PIXEL_MILESTONE = DESKTOP_DRM_PIXEL_PREFIX + "ok=yes"
 DESKTOP_DRM_PIXEL_RE = re.compile(rb"DEBIAN_DESKTOP_DRM_PIXEL (ok=.*)")
 
-DESKTOP_DRM_MILESTONES = (
-    "DEBIAN_DESKTOP_DRM_UDEV state=active",
-    "DEBIAN_DESKTOP_DRM_LOGIND state=active",
-    "DEBIAN_DESKTOP_DRM_SESSION user=asterinas tty=tty1",
-    "DEBIAN_DESKTOP_DRM_INPUT keyboard=evdev pointer=evdev",
-    "DEBIAN_DESKTOP_DRM_XORG driver=modesetting device=virtio-gpu drm=active display=:0",
-    "DEBIAN_DESKTOP_DRM_CLIENTS window-manager=openbox file-manager=pcmanfm panel=lxpanel terminal=xterm",
-    "DEBIAN_DESKTOP_DRM_READY user=asterinas display=:0",
-)
+#: The DRM driver sysfs binds to the card node, per display device.
+#:
+#: The value is the kernel's spelling -- `virtio_gpu` with an underscore, not
+#: the QEMU device name -- because it is what the guest reads from
+#: `/sys/dev/char/<maj>:<min>/device/uevent` and reports.
+_DRM_DRIVER_FOR_DEVICE = {
+    "bochs-display": "simpledrm",
+    "virtio-gpu-device": "virtio_gpu",
+    "virtio-gpu-gl-device": "virtio_gpu",
+}
 
-#: The pixel verdict is listed *before* the renderer line because that is the
-#: order the guest emits them in, and `classify_desktop` rejects a transcript
-#: whose milestones are out of order. The guest emits it first on purpose: the
-#: gate stops waiting as soon as the renderer line arrives, so anything after
-#: it risks being cut off at teardown and never reaching the transcript at all.
-DESKTOP_DRM_VIRGL_MILESTONES = DESKTOP_DRM_MILESTONES + (
-    DESKTOP_DRM_PIXEL_MILESTONE,
-    DESKTOP_DRM_VIRGL_MILESTONE,
+
+def desktop_drm_milestones(
+    graphics_device: str, *, virgl: bool = False
+) -> tuple[str, ...]:
+    """The guest markers a run on `graphics_device` has to produce.
+
+    The Xorg line names the DRM driver, and which driver that is depends on the
+    display device: a virtio-gpu presents through `virtio_gpu`, while a bochs
+    display has no GPU at all and what presents is the firmware backend's
+    `simpledrm`.
+
+    Naming the driver here, and having the guest observe it there, is the whole
+    of the check. That line used to be the literal `device=virtio-gpu` on both
+    sides -- matched by this module, printed by the guest unconditionally -- so
+    the two agreed by construction and the milestone could not fail on any
+    machine, including one where it was simply false.
+
+    The pixel verdict is listed *before* the renderer line because that is the
+    order the guest emits them in, and `classify_desktop` rejects a transcript
+    whose milestones are out of order. The guest emits it first on purpose: the
+    gate stops waiting as soon as the renderer line arrives, so anything after
+    it risks being cut off at teardown and never reaching the transcript.
+    """
+
+    try:
+        driver = _DRM_DRIVER_FOR_DEVICE[graphics_device]
+    except KeyError as error:
+        raise ValueError(
+            f"no DRM driver is registered for the display device "
+            f"{graphics_device!r}"
+        ) from error
+
+    milestones = (
+        "DEBIAN_DESKTOP_DRM_UDEV state=active",
+        "DEBIAN_DESKTOP_DRM_LOGIND state=active",
+        "DEBIAN_DESKTOP_DRM_SESSION user=asterinas tty=tty1",
+        "DEBIAN_DESKTOP_DRM_INPUT keyboard=evdev pointer=evdev",
+        f"DEBIAN_DESKTOP_DRM_XORG driver=modesetting device={driver} "
+        "drm=active display=:0",
+        "DEBIAN_DESKTOP_DRM_CLIENTS window-manager=openbox file-manager=pcmanfm "
+        "panel=lxpanel terminal=xterm",
+        "DEBIAN_DESKTOP_DRM_READY user=asterinas display=:0",
+    )
+    if not virgl:
+        return milestones
+    return milestones + (DESKTOP_DRM_PIXEL_MILESTONE, DESKTOP_DRM_VIRGL_MILESTONE)
+
+
+#: The scanout geometry each display device presents.
+#:
+#: A virtio-gpu's mode is synthesized by the kernel's driver, so it is the same
+#: on every machine; a bochs display's is whatever QEMU programmed and U-Boot
+#: wrote into the device tree, which is `BOCHS_XRGB8888`. Taken from that
+#: contract rather than restated, so the two cannot disagree about how big the
+#: frame is.
+_SCREENSHOT_GEOMETRY = {
+    "bochs-display": (BOCHS_XRGB8888.width, BOCHS_XRGB8888.height),
+    "virtio-gpu-device": (DESKTOP_DRM_EXPECTED_WIDTH, DESKTOP_DRM_EXPECTED_HEIGHT),
+    "virtio-gpu-gl-device": (DESKTOP_DRM_EXPECTED_WIDTH, DESKTOP_DRM_EXPECTED_HEIGHT),
+}
+
+
+def desktop_drm_screenshot_geometry(graphics_device: str) -> tuple[int, int]:
+    """The frame size a screendump of `graphics_device` must have.
+
+    The capture rejects any other size, so a run whose display is a different
+    shape fails with `unexpected PPM geometry`. That is what the firmware path
+    did: it was handed the virtio mode's 1280x800 while the bochs framebuffer
+    U-Boot described is 1280x1024.
+    """
+
+    try:
+        return _SCREENSHOT_GEOMETRY[graphics_device]
+    except KeyError as error:
+        raise ValueError(
+            f"no screenshot geometry is registered for the display device "
+            f"{graphics_device!r}"
+        ) from error
+
+
+#: The virtio-gpu expectations, kept as named constants because most callers
+#: want the ordinary desktop and should not have to name a device to get it.
+DESKTOP_DRM_MILESTONES = desktop_drm_milestones("virtio-gpu-device")
+DESKTOP_DRM_VIRGL_MILESTONES = desktop_drm_milestones(
+    "virtio-gpu-gl-device", virgl=True
 )
 
 
@@ -123,6 +203,43 @@ def _qemu_trace_arguments() -> tuple[str, ...]:
     if not specification:
         return ()
     return ("-trace", specification)
+
+
+def _firmware_framebuffer_commands(graphics_device: str) -> tuple[str, ...]:
+    """Write the firmware framebuffer node for a display that has no GPU.
+
+    With `virtio-gpu` the driver presents through the device and never consults
+    the device tree. A `bochs-display` is the opposite case: there is no GPU at
+    all, so the only display the kernel can find is the one the bootloader
+    describes, and `ostd`'s `simple_framebuffer` parser reads it from here. No
+    node, no framebuffer, no DRM node -- and the run would fail for a reason
+    that has nothing to do with the driver.
+
+    The constants are `BOCHS_XRGB8888`, the same contract the U-Boot-profile
+    gates use. Imported rather than restated: a second copy of a base address
+    is exactly how two of them drift apart.
+    """
+
+    if graphics_device != "bochs-display":
+        return ()
+
+    framebuffer = BOCHS_XRGB8888
+    node = f"/framebuffer@{framebuffer.address:x}"
+    return (
+        # Confirms the display landed where the contract says before anything
+        # is written about it, so a moved BAR fails here rather than as pixels
+        # in the wrong place much later.
+        "pci display 0.1.0",
+        f"fdt mknode / {node[1:]}",
+        f'fdt set {node} compatible "simple-framebuffer"',
+        f"fdt set {node} reg <0x0 {framebuffer.address:#x} "
+        f"0x0 {framebuffer.size:#x}>",
+        f"fdt set {node} width <{framebuffer.width:#x}>",
+        f"fdt set {node} height <{framebuffer.height:#x}>",
+        f"fdt set {node} stride <{framebuffer.stride:#x}>",
+        f'fdt set {node} format "{framebuffer.pixel_format}"',
+        f'fdt set {node} status "okay"',
+    )
 
 
 def desktop_drm_qemu_argv(**arguments: Any) -> tuple[str, ...]:
@@ -156,12 +273,25 @@ def desktop_drm_virgl_qemu_argv(**arguments: Any) -> tuple[str, ...]:
 
 
 def classify_desktop_drm(
-    transcript: bytes, *, expected_debian_release: str
+    transcript: bytes,
+    *,
+    expected_debian_release: str,
+    milestones: tuple[str, ...] = DESKTOP_DRM_MILESTONES,
 ) -> GateResult:
+    """Grade a 2D run against the markers its own display device should produce.
+
+    `milestones` defaults to the virtio-gpu expectations for callers that mean
+    the ordinary desktop, but a run on a `bochs-display` has to pass its own:
+    the Xorg line names the driver, and this device's driver is not that one.
+    The orchestrator passes `operations.MILESTONES`; without that, a firmware
+    run was graded against a virtio milestone it could never produce and failed
+    with a reason naming a string the guest had no business emitting.
+    """
+
     return classify_desktop(
         transcript,
         expected_debian_release=expected_debian_release,
-        milestones=DESKTOP_DRM_MILESTONES,
+        milestones=milestones,
         failure_marker=b"DEBIAN_DESKTOP_DRM_FAIL reason=",
     )
 
@@ -186,7 +316,10 @@ def observed_desktop_drm_pixels(transcript: bytes) -> bytes | None:
 
 
 def classify_desktop_drm_virgl(
-    transcript: bytes, *, expected_debian_release: str
+    transcript: bytes,
+    *,
+    expected_debian_release: str,
+    milestones: tuple[str, ...] = DESKTOP_DRM_VIRGL_MILESTONES,
 ) -> GateResult:
     """Classify a 3D run, where a software renderer is a failure.
 
@@ -200,7 +333,7 @@ def classify_desktop_drm_virgl(
     result = classify_desktop(
         transcript,
         expected_debian_release=expected_debian_release,
-        milestones=DESKTOP_DRM_VIRGL_MILESTONES,
+        milestones=milestones,
         failure_marker=b"DEBIAN_DESKTOP_DRM_FAIL reason=",
     )
     if result.passed:
@@ -316,10 +449,8 @@ class DesktopDRMOperations(DesktopM3Operations):
         # every other milestone identically, and would otherwise be reported as
         # a passing virgl run.
         self._requires_virgl = config.graphics_device == "virtio-gpu-gl-device"
-        self._milestones = (
-            DESKTOP_DRM_VIRGL_MILESTONES
-            if self._requires_virgl
-            else DESKTOP_DRM_MILESTONES
+        self._milestones = desktop_drm_milestones(
+            config.graphics_device, virgl=self._requires_virgl
         )
 
     @property
@@ -395,16 +526,22 @@ class DesktopDRMOperations(DesktopM3Operations):
 
     def _boot_commands(self, config: GateConfig) -> tuple[str, ...]:
         guest_deadline = self._guest_deadline_seconds(config.boot_timeout)
-        return (
+        commands = [
             "virtio scan",
             "ext4load virtio 0:0 0x80200000 /asterinas.booti",
             "ext4load virtio 0:0 0x90000000 /qemu-virt.dtb",
             "fdt addr 0x90000000",
             "fdt resize 0x1000",
-            "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
-            "setenv initrd_size ${filesize}",
-            f'setenv bootargs "{self._bootargs(guest_deadline)}"',
+        ]
+        commands.extend(_firmware_framebuffer_commands(config.graphics_device))
+        commands.extend(
+            [
+                "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
+                "setenv initrd_size ${filesize}",
+                f'setenv bootargs "{self._bootargs(guest_deadline)}"',
+            ]
         )
+        return tuple(commands)
 
     @staticmethod
     def _guest_deadline_seconds(boot_timeout: float) -> int:
@@ -471,13 +608,19 @@ class DesktopDRMOperations(DesktopM3Operations):
         if not self.CAPTURE_SCREENSHOT:
             return
 
+        # From the display device, not from a constant: the bochs framebuffer
+        # U-Boot describes is a different shape from the mode the virtio-gpu
+        # driver synthesizes, and one of the two would be rejected.
+        expected_width, expected_height = desktop_drm_screenshot_geometry(
+            config.graphics_device
+        )
         screenshot = session["directory"] / f"{self.ARTIFACT_PREFIX}.ppm"
         self._screenshot, self._screenshot_metadata = capture_rendered_ppm(
             session["monitor"],
             screenshot,
             time.monotonic() + config.command_timeout,
-            expected_width=DESKTOP_DRM_EXPECTED_WIDTH,
-            expected_height=DESKTOP_DRM_EXPECTED_HEIGHT,
+            expected_width=expected_width,
+            expected_height=expected_height,
             min_distinct_colors=DESKTOP_DRM_MIN_DISTINCT_COLORS,
             min_non_background_ratio=DESKTOP_DRM_MIN_NON_BACKGROUND_RATIO,
         )
@@ -491,11 +634,19 @@ def orchestrate_desktop_drm_gate(
 ) -> dict[str, object]:
     # A 3D run is graded on whether the renderer is virgl; a 2D run has no
     # renderer to grade and must not acquire a requirement for one.
+    #
+    # The milestones are bound here rather than left to the classifiers'
+    # defaults, because which ones apply depends on the display device this run
+    # launched: a `bochs-display` run has to be graded against the driver it
+    # actually presents through. Using the defaults graded a firmware run
+    # against the virtio expectations and reported a milestone missing that the
+    # guest had no business emitting.
     if classifier is None:
-        classifier = (
-            classify_desktop_drm_virgl
-            if operations.REQUIRES_VIRGL
-            else classify_desktop_drm
+        milestones = operations.MILESTONES
+        classifier = partial(
+            classify_desktop_drm_virgl if operations.REQUIRES_VIRGL
+            else classify_desktop_drm,
+            milestones=milestones,
         )
     return orchestrate_systemd_m2_gate(config, operations, classifier=classifier)
 

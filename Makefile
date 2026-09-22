@@ -1012,6 +1012,27 @@ test_riscv_drm_gem: test_riscv_drm_gem_unit
 		--manifest "$(DRM_GEM_MANIFEST)" \
 		--output-directory "$(DRM_GEM_GATE_OUTPUT)"
 
+.PHONY: test_riscv_drm_firmware_unit
+test_riscv_drm_firmware_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_firmware_gate -v
+
+.PHONY: test_riscv_drm_firmware
+test_riscv_drm_firmware: test_riscv_drm_firmware_unit
+	@test -n "$(DRM_FIRMWARE_UBOOT)" || \
+		{ echo "DRM_FIRMWARE_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DRM_FIRMWARE_BOOT_DISK)" || \
+		{ echo "DRM_FIRMWARE_BOOT_DISK is required" >&2; exit 2; }
+	@test -n "$(DRM_FIRMWARE_MANIFEST)" || \
+		{ echo "DRM_FIRMWARE_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DRM_FIRMWARE_GATE_OUTPUT)" || \
+		{ echo "DRM_FIRMWARE_GATE_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH=tools/riscv python3 -m drm.firmware_gate \
+		--uboot "$(DRM_FIRMWARE_UBOOT)" \
+		--boot-disk "$(DRM_FIRMWARE_BOOT_DISK)" \
+		--manifest "$(DRM_FIRMWARE_MANIFEST)" \
+		--output-directory "$(DRM_FIRMWARE_GATE_OUTPUT)"
+
 .PHONY: test_riscv_drm_render_node_unit
 test_riscv_drm_render_node_unit:
 	@python3 -W error::ResourceWarning -m unittest \

@@ -146,6 +146,46 @@ class ContractCompositionTests(unittest.TestCase):
         expected_framebuffer_plan = (
             BootCommand("framebuffer-resize", "fdt resize 0x2000", "=>"),
             BootCommand("framebuffer-pci-probe", "pci display 0.1.0", "=>"),
+            # The scanout is declared reserved before booti so U-Boot's own
+            # device-tree placement avoids it. Without this, a contract whose
+            # address sits under U-Boot's stack carve-out has the device tree
+            # relocated into the framebuffer and the kernel destroys the tree
+            # it booted from.
+            BootCommand("framebuffer-reserve-node", "fdt mknode / reserved-memory", "=>"),
+            BootCommand(
+                "framebuffer-reserve-address-cells",
+                'fdt set /reserved-memory "#address-cells" <0x2>',
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-reserve-size-cells",
+                'fdt set /reserved-memory "#size-cells" <0x2>',
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-reserve-ranges", "fdt set /reserved-memory ranges", "=>"
+            ),
+            BootCommand(
+                "framebuffer-reserve-entry",
+                "fdt mknode /reserved-memory framebuffer@40000000",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-reserve-reg",
+                "fdt set /reserved-memory/framebuffer@40000000 "
+                "reg <0x0 0x40000000 0x0 0x1000000>",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-reserve-no-map",
+                "fdt set /reserved-memory/framebuffer@40000000 no-map",
+                "=>",
+            ),
+            BootCommand(
+                "framebuffer-reserve-verify",
+                "fdt print /reserved-memory",
+                "no-map",
+            ),
             BootCommand(
                 "framebuffer-node",
                 "fdt mknode / framebuffer@40000000",
