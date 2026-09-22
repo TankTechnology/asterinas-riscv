@@ -108,6 +108,7 @@ if [ "$(uname -m)" = "x86_64" ]; then
 fi
 
 ./cgroup.sh
+./cgroup_events
 ./syslog/syslog
 ./syslog/provenance
 ./group_session
