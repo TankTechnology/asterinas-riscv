@@ -43,3 +43,6 @@ distro/etc_nixos/_config_for_test.nix
 
 __pycache__/
 *.pyc
+
+# Local isolated worktrees used for reproducible hardware experiments.
+.worktrees/
