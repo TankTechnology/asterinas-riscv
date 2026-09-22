@@ -80,6 +80,11 @@ configure_network_profile() {
         # explicitly.  Sources (Debian package: Firefox ESR 140.14.0):
         # https://searchfox.org/mozilla-esr140/source/remote/shared/RecommendedPreferences.sys.mjs
         # https://searchfox.org/mozilla-esr140/source/browser/app/profile/firefox.js
+        # `media.rdd-process.enabled=false` belongs to Firefox's automation set,
+        # but it also removes the process video decoders run in. With it set,
+        # `MediaSource.isTypeSupported` answers false for H.264, VP9, HEVC and
+        # Theora while every audio codec still answers true, so no player can
+        # create a <video> element and nothing plays. Leave it enabled.
         printf '%s\n' \
             'user_pref("browser.newtabpage.enabled", false);' \
             'user_pref("browser.pagethumbnails.capturing_disabled", true);' \
@@ -88,7 +93,7 @@ configure_network_profile() {
             'user_pref("dom.ipc.processCount", 1);' \
             'user_pref("dom.ipc.processPrelaunch.enabled", false);' \
             'user_pref("fission.autostart", false);' \
-            'user_pref("media.rdd-process.enabled", false);' \
+            'user_pref("media.rdd-process.enabled", true);' \
             'user_pref("network.captive-portal-service.enabled", false);' \
             'user_pref("network.connectivity-service.enabled", false);' \
             'user_pref("browser.download.folderList", 2);' \

@@ -47,16 +47,25 @@ class FakeProcessFactory:
 
 
 class EndpointState:
-    def __init__(self, *, upstream: bool = True, listener_after: int = 2) -> None:
+    def __init__(
+        self,
+        *,
+        upstream: bool = True,
+        listener_after: int = 2,
+        upstream_port: int = 17892,
+        listen_port: int = 17893,
+    ) -> None:
         self.upstream = upstream
         self.listener_after = listener_after
+        self.upstream_port = upstream_port
+        self.listen_port = listen_port
         self.listener_probes = 0
 
     def __call__(self, address: str, port: int, timeout: float) -> bool:
         self.assert_timeout(timeout)
-        if (address, port) == ("127.0.0.1", 17892):
+        if (address, port) == ("127.0.0.1", self.upstream_port):
             return self.upstream
-        if (address, port) == ("10.100.19.216", 17893):
+        if (address, port) == ("10.100.19.216", self.listen_port):
             self.listener_probes += 1
             return self.listener_probes >= self.listener_after
         raise AssertionError(f"unexpected endpoint: {address}:{port}")

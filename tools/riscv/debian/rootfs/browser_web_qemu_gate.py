@@ -25,10 +25,12 @@ from tools.riscv.debian.rootfs.browser_web_contract import (
     validate_uploaded_baidu_screenshot,
 )
 from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
+    GateError,
     select_bilibili_video,
     validate_baidu_home,
     validate_baidu_search_outcome,
     validate_bilibili_detail,
+    validate_bilibili_playback,
     validate_fixture_search,
 )
 from tools.riscv.debian.rootfs.browser_performance_provenance import (
@@ -63,7 +65,8 @@ _BROWSER_WEB_PREFIX_MILESTONES = (
 )
 _BROWSER_WEB_SUFFIX_MILESTONES = (
     "DEBIAN_BROWSER_WEB_SECURITY parent_uid=1000 caps=zero nnp=1 content_processes=audited",
-    "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass baidu_home=pass baidu_search=observed bilibili_home=pass bilibili_detail=pass bv=BV",
+    "DEBIAN_BROWSER_WEB_BILIBILI_PLAYBACK status=pass bv=BV",
+    "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass baidu_home=pass baidu_search=observed bilibili_home=pass bilibili_detail=pass bilibili_playback=pass bv=BV",
     "DEBIAN_BROWSER_WEB_TLS cert_verify=strict firefox_https=success override=absent",
 )
 
@@ -239,6 +242,10 @@ _TIMELINE_SELECTED_BV_LINE = re.compile(
 _TIMELINE_PLATFORM_LINE = re.compile(
     rb"DEBIAN_BROWSER_WEB_PLATFORM_READY baidu_home=pass bilibili_home=pass "
     rb"bilibili_detail=pass bv=(BV[0-9A-Za-z]{10}) tls=verified"
+)
+_TIMELINE_PLAYBACK_LINE = re.compile(
+    rb"DEBIAN_BROWSER_WEB_BILIBILI_PLAYBACK status=pass "
+    rb"bv=(BV[0-9A-Za-z]{10})"
 )
 
 
@@ -439,6 +446,7 @@ def _validate_timeline(contents: bytes) -> tuple[int, str]:
     pending_phase: bytes | None = None
     phase_pairs = 0
     selected_bv: bytes | None = None
+    playback_bv: bytes | None = None
     platform_bv: bytes | None = None
     previous_ns = -1
     legacy_clock_reset = False
@@ -463,6 +471,11 @@ def _validate_timeline(contents: bytes) -> tuple[int, str]:
                 if selected_bv is not None:
                     raise GateFailure("browser selected BV evidence is duplicated")
                 selected_bv = selected_match.group(1)
+                continue
+            if playback_match := _TIMELINE_PLAYBACK_LINE.fullmatch(line):
+                if playback_bv is not None:
+                    raise GateFailure("browser Bilibili playback evidence is duplicated")
+                playback_bv = playback_match.group(1)
                 continue
             if platform_match := _TIMELINE_PLATFORM_LINE.fullmatch(line):
                 if platform_bv is not None:
@@ -510,6 +523,7 @@ def _validate_timeline(contents: bytes) -> tuple[int, str]:
         or phase_pairs == 0
         or phase_pids != {browser_pid}
         or selected_bv is None
+        or playback_bv != selected_bv
         or platform_bv != selected_bv
     ):
         raise GateFailure("browser phase diagnostics are incomplete or inconsistent")
@@ -572,6 +586,13 @@ def validate_web_evidence(
         raise GateFailure("controlled Firefox download evidence is malformed")
     selected = select_bilibili_video(snapshots["bilibili-home"])
     validate_bilibili_detail(snapshots["bilibili-detail"], selected)
+    playback = snapshots["bilibili-detail"].get("playback")
+    if playback is None:
+        raise GateFailure("Bilibili playback evidence is missing")
+    try:
+        validate_bilibili_playback(playback, selected)
+    except GateError as error:
+        raise GateFailure(str(error)) from error
 
     for name in (
         "baidu-home",

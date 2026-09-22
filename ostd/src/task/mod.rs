@@ -4,7 +4,36 @@
 
 pub mod atomic_mode;
 mod kernel_stack;
-mod preempt;
+pub(crate) mod preempt;
+
+/// The number of preemption guards currently held on this CPU.
+///
+/// Exposed for diagnostics in the kernel crate: the interrupt path runs
+/// callbacks with local IRQs re-enabled while holding one, so a caller can
+/// check that a callback it invokes leaves the count as it found it.
+pub fn preempt_guard_count_for_diagnosis() -> u32 {
+    preempt::guard_count_for_diagnosis()
+}
+
+/// The CPU-local base this CPU is resolving every CPU-local cell through.
+///
+/// Every `cpu_local_cell!` access computes its address as this base plus a
+/// fixed offset, so a base that does not point at this CPU's own region makes
+/// all of them read and write another CPU's memory at once.
+pub fn cpu_local_base_for_diagnosis() -> usize {
+    crate::arch::cpu::local::get_base() as usize
+}
+
+/// The address of the current task, or zero in the bootstrap context.
+///
+/// The interrupt path records this before it runs code that may schedule, so
+/// a stack that was abandoned mid-way can be told apart from one that ran to
+/// completion on the same task.
+pub(crate) fn current_task_ptr_for_diagnosis() -> usize {
+    processor::current_task()
+        .map(|task| task.as_ptr() as usize)
+        .unwrap_or(0)
+}
 mod processor;
 pub mod scheduler;
 mod utils;
