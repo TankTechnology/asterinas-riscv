@@ -234,6 +234,11 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
                     "absolute_events": 4,
                     "left_down": 1,
                     "left_up": 1,
+                    "input_latency_count": 4,
+                    "input_latency_min_ms": 1.0,
+                    "input_latency_p50_ms": 2.0,
+                    "input_latency_p95_ms": 4.0,
+                    "input_latency_max_ms": 4.0,
                     "evdev_sha256": hashlib.sha256(
                         f"events-{cycle}".encode()
                     ).hexdigest(),
@@ -448,6 +453,32 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
         self.assertEqual(command[command.index("--boot-timeout") + 1], "1800")
         self.assertGreater(float(options["timeout"]), 1800)
 
+    def test_adapter_reuses_fully_validated_native_browser_evidence(self) -> None:
+        plan = self._browser_plan()
+        identities = {identity.name: identity for identity in plan.artifacts}
+        simulate_desktop(
+            plan,
+            self.output,
+            run_command=self._browser_runner([], plan),
+            artifact_validator=lambda candidate: identities,
+            repository_root=self.repository,
+        )
+
+        def unexpected_run(*_args: object, **_kwargs: object) -> object:
+            self.fail("reuse_native must not launch QEMU")
+
+        result = simulate_desktop(
+            plan,
+            self.output,
+            run_command=unexpected_run,
+            artifact_validator=lambda candidate: identities,
+            repository_root=self.repository,
+            reuse_native=True,
+        )
+
+        self.assertTrue(result.passed)
+        self.assertEqual(result.reason, "desktop-pass")
+
     def test_browser_adapter_rejects_identity_and_evidence_drift(self) -> None:
         plan = self._browser_plan()
         identities = {identity.name: identity for identity in plan.artifacts}
@@ -627,7 +658,9 @@ class MegrezDebugDesktopSimulationTests(unittest.TestCase):
             )
 
         self.assertEqual(status, 0)
-        simulate.assert_called_once_with(self.plan, self.output)
+        simulate.assert_called_once_with(
+            self.plan, self.output, reuse_native=False
+        )
         self.assertEqual(
             StageResult.from_bytes((self.output / "result.json").read_bytes()),
             expected,

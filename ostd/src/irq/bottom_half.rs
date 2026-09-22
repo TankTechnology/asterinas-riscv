@@ -63,7 +63,30 @@ fn process_l1(irq_num: u8) {
     // when the handler returns to prevent race conditions.
     // See <https://github.com/asterinas/asterinas/pull/1623#discussion_r1964709636> for more details.
     let irq_guard = disable_local();
+    let before = crate::task::preempt::guard_count_for_diagnosis();
+    let cpu_before = crate::cpu::CpuId::current_racy();
     let irq_guard = handler(irq_guard, irq_num);
+    // The bottom half runs softirq callbacks with local IRQs re-enabled while
+    // this guard is held, so it is the one place a guard can be carried out of
+    // the interrupt path on a scheduling decision. A count that differs here
+    // is that happening, caught at the interrupt that did it rather than at the
+    // next assertion the CPU trips over.
+    let after = crate::task::preempt::guard_count_for_diagnosis();
+    let cpu_after = crate::cpu::CpuId::current_racy();
+    if after != before || cpu_after != cpu_before {
+        crate::warn!(
+            "preempt guard count across the bottom half: {before} -> {after}, cpu {cpu_before:?} -> {cpu_after:?}, base={:#x}",
+            crate::arch::cpu::local::get_base(),
+        );
+    }
+    // Checked on every bottom half, so a page that something else is writing
+    // is named at the next interrupt rather than at the next assertion.
+    if !super::level::canary_intact() {
+        crate::warn!(
+            "the CPU-local page's sentinel was overwritten, so something other than the \
+             cpu_local_cell accesses is writing this page"
+        );
+    }
 
     // Interrupts should remain disabled when `process_bottom_half` returns,
     // so we simply forget the guard.

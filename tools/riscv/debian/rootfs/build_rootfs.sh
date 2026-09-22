@@ -1187,6 +1187,29 @@ finalize_browser_startup_caches() {
         die "staged journal catalog is absent"
 }
 
+# Runs the staged fc-cache over the staged font tree.
+#
+# This is the one staged command that cannot go through run_chroot in explicit
+# qemu mode. The proot this build installs does not translate the path argument
+# of faccessat: a guest program that calls access() is answered about the
+# build host's filesystem, not the stage. fc-cache asks whether it can read
+# /etc/fonts/fonts.conf with exactly that call, so under proot it reported the
+# default config file missing, then had no cache directory it was allowed to
+# write, then called every font directory a loop -- and the build failed on a
+# stage whose fonts.conf the package had installed correctly. A real chroot
+# has no path translation to get wrong, and explicit qemu mode already
+# requires the staged static qemu-riscv64-static, which needs no interpreter
+# of its own.
+run_fontconfig_scan() {
+    local stage="$1"
+
+    if [[ "$EXPLICIT_QEMU" == 1 ]]; then
+        chroot "$stage" /usr/bin/qemu-riscv64-static /usr/bin/fc-cache -f -v
+    else
+        chroot "$stage" /usr/bin/fc-cache -f -v
+    fi
+}
+
 generate_fontconfig_cache() {
     local stage="$1"
     local cache_file font_root
@@ -1206,7 +1229,7 @@ generate_fontconfig_cache() {
         # The host workspace stays private (umask 077), but system font
         # caches must be readable by the unprivileged desktop processes.
         umask 022
-        run_chroot "$stage" /usr/bin/fc-cache -f -v
+        run_fontconfig_scan "$stage"
     ) >>"$scan_log" 2>&1; then
         cat -- "$scan_log" >&2
         die "staged fontconfig cache rebuild failed"
@@ -1538,6 +1561,51 @@ configure_desktop() {
                 "$stage/usr/lib/asterinas/browser-web-marionette-gate"
             install -D -m 0755 -- "$script_directory/megrez_clock_sync.py" \
                 "$stage/usr/lib/asterinas/megrez-clock-sync"
+            # The board has no RTC, so every boot starts with a clock that is
+            # wrong by months and TLS then rejects every certificate. The sync
+            # reads the proxy's Date header over plain HTTP, which works while
+            # the clock is still wrong. It hangs off the desktop service rather
+            # than a target because this image's default target is not
+            # graphical.target, and the leading '-' keeps a sync failure from
+            # stopping the desktop.
+            install -D -m 0644 -- "$script_directory/asterinas_clock_sync.conf" \
+                "$stage/etc/systemd/system/asterinas-desktop-m5.service.d/clock-sync.conf"
+            # The board reaches the host and nothing beyond it, so the resolver
+            # the network evidence service writes in direct mode never happens
+            # in proxy mode, which is the mode every desktop boot uses. The
+            # guest is left with the build-time nameserver it cannot route to.
+            # This shim answers on loopback and tunnels to the host, and it
+            # only rewrites resolv.conf after its tunnel has answered, so a
+            # shim that cannot reach the host leaves the guest as it found it.
+            # Restart=always is what lets it come up on a later boot phase than
+            # the interface it tunnels over.
+            install -D -m 0755 -- "$script_directory/megrez_dns_shim.py" \
+                "$stage/usr/lib/asterinas/megrez-dns-shim"
+            cat >"$stage/etc/systemd/system/asterinas-dns-shim.service" <<'EOF'
+[Unit]
+Description=Asterinas guest DNS tunnel to the build host
+After=local-fs.target
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+TimeoutStartSec=30s
+# Status 3 means the shim was given no forwarder to tunnel through. Retrying
+# that forever would only fill the journal, and exiting zero -- which is what
+# this unit first did -- reported a clean shutdown and left the guest without a
+# resolver and without any sign of why. A tunnel that is merely not up yet
+# exits 1 and is retried, because the interface comes up after this unit.
+RestartPreventExitStatus=3
+ExecStart=/usr/lib/asterinas/megrez-dns-shim
+
+[Install]
+WantedBy=basic.target
+EOF
+            chmod 0644 -- "$stage/etc/systemd/system/asterinas-dns-shim.service"
+            install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+            ln -sf -- "../asterinas-dns-shim.service" \
+                "$stage/etc/systemd/system/basic.target.wants/asterinas-dns-shim.service"
             install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
             install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \

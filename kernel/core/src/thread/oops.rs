@@ -73,9 +73,29 @@ const MAX_OOPS_COUNT: usize = 10_000;
 
 static OOPS_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+/// How many times the panic handler has run on this kernel.
+static PANIC_HANDLER_ENTRIES: AtomicUsize = AtomicUsize::new(0);
+
 #[ostd::panic_handler]
 fn panic_handler(info: &core::panic::PanicInfo) -> ! {
     let message = info.message();
+
+    // Written to the serial port directly, and before anything else in the
+    // handler can fail. A guard taken further down this function is the one the
+    // atomic-mode check reports as outstanding when a later panic names it, so
+    // the ordinal says whether the panic being printed is the first event or a
+    // consequence of an earlier one that never got its report out.
+    let entry = PANIC_HANDLER_ENTRIES.fetch_add(1, Ordering::Relaxed);
+    ostd::early_println!(
+        "PANIC_ENTRY seq={} cpu={} raw_level={:#010b} irq_enabled={} unwind={} nested_irqs={} last_nested={:#018x}",
+        entry,
+        ostd::cpu::CpuId::current_racy().as_usize(),
+        ostd::irq::level_raw_for_diagnosis(),
+        ostd::irq::is_local_enabled_for_diagnosis(),
+        info.can_unwind(),
+        ostd::irq::nested_irq_count_for_diagnosis(),
+        ostd::irq::last_nested_irq_for_diagnosis(),
+    );
 
     if let Some(thread) = Thread::current() {
         let panic_on_oops = PANIC_ON_OOPS.load(Ordering::Relaxed);

@@ -122,6 +122,21 @@ The defaults select
 port, or output directory. An existing output directory is rejected rather
 than overwritten.
 
+The guest reaches the host and nothing beyond it, and glibc's resolver only
+ever asks port 53, so the guest cannot be given a nameserver directly. A host
+bridge carries its queries instead; start it beside the proxy and leave it
+running:
+
+```bash
+python3 -m tools.riscv.megrez_proxy_bridge --dns
+```
+
+It listens on `10.100.19.216:15354` and forwards each query to a resolver that
+speaks DNS over TCP. `start` warns, but does not refuse to boot, when nothing
+answers there: the guest-side shim leaves `/etc/resolv.conf` alone unless its
+tunnel has already answered a query, so a missing bridge costs the guest name
+resolution without pointing it at a port nothing answers.
+
 `run_riscv_megrez_desktop` performs only the bounded `start` action. It never
 boots RockOS, transfers or installs artifacts, rewrites the root partition, or
 runs a browser performance workload. Before `booti`, it verifies the byte count

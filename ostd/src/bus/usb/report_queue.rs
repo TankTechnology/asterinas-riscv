@@ -46,6 +46,16 @@ impl<const N: usize> CompletedReport<N> {
     }
 }
 
+/// Puts a fresh transfer back into a slot whose previous one did not deliver.
+fn rearm<const N: usize>(
+    slot: &mut ReportSlot<N>,
+    endpoint: &mut impl ReportEndpoint<N>,
+) -> Result<(), UsbKeyboardError> {
+    slot.report.fill(0);
+    slot.request = Some(endpoint.submit_report(slot.report.as_mut())?);
+    Ok(())
+}
+
 pub(super) struct BootReportQueue<const N: usize> {
     slots: [ReportSlot<N>; REPORT_QUEUE_DEPTH],
     next_completion: usize,
@@ -74,6 +84,15 @@ impl<const N: usize> BootReportQueue<N> {
         Ok(())
     }
 
+    /// Delivers the report the queue head holds, if one has arrived.
+    ///
+    /// Whenever this returns, the head of the queue holds a live transfer
+    /// again, or the error says why one could not be submitted. That
+    /// invariant matters more than it looks: `next_completion` only advances
+    /// past a slot that delivered a report, so a slot left without a request
+    /// is not idle but wedged. Every later poll would read that same empty
+    /// slot and report the same error forever, which turns one stalled
+    /// transfer into a device that is gone for the rest of the boot.
     pub(super) fn poll(
         &mut self,
         endpoint: &mut impl ReportEndpoint<N>,
@@ -85,6 +104,7 @@ impl<const N: usize> BootReportQueue<N> {
             Poll::Pending => return Ok(None),
             Poll::Ready(Err(error)) => {
                 slot.request = None;
+                rearm(slot, endpoint)?;
                 return Err(error);
             }
             Poll::Ready(Ok(completion)) => {
@@ -94,9 +114,11 @@ impl<const N: usize> BootReportQueue<N> {
         };
 
         if completion.status != TransferStatus::Completed {
+            rearm(slot, endpoint)?;
             return Err(UsbKeyboardError::Transfer);
         }
         if completion.actual_length > N {
+            rearm(slot, endpoint)?;
             return Err(UsbKeyboardError::InvalidReportLength);
         }
 
@@ -104,8 +126,7 @@ impl<const N: usize> BootReportQueue<N> {
             bytes: *slot.report,
             actual_length: completion.actual_length,
         };
-        slot.report.fill(0);
-        slot.request = Some(endpoint.submit_report(slot.report.as_mut())?);
+        rearm(slot, endpoint)?;
         self.next_completion = if self.next_completion + 1 == REPORT_QUEUE_DEPTH {
             0
         } else {
@@ -146,7 +167,7 @@ impl BootKeyboardReportQueue {
 
 #[cfg(ktest)]
 mod tests {
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
     use core::task::{Context, Poll};
 
     use usb_if::endpoint::{RequestId, TransferCompletion, TransferStatus};
@@ -408,8 +429,45 @@ mod tests {
             queue.poll(&mut endpoint, &mut context),
             Err(UsbKeyboardError::Enumeration)
         );
-        assert_eq!(endpoint.pending.len(), super::REPORT_QUEUE_DEPTH - 1);
-        assert_eq!(endpoint.operations.last(), Some(&Operation::Poll(1)));
+        // The failed slot is refilled before the error travels, so the queue
+        // stays whole and the caller can poll again.
+        assert_eq!(endpoint.pending.len(), super::REPORT_QUEUE_DEPTH);
+        assert_eq!(
+            &endpoint.operations[endpoint.operations.len() - 2..],
+            &[Operation::Poll(1), Operation::Submit(9)]
+        );
+    }
+
+    /// One failed transfer must not end the device.
+    ///
+    /// The head slot only advances after it delivers a report, so a failed
+    /// transfer that left the slot empty would make every later poll re-read
+    /// that same slot and report that same error forever. Both failure shapes
+    /// are exercised because they leave through different branches.
+    #[ktest]
+    fn keeps_the_queue_head_alive_after_a_failed_transfer() {
+        for (status, actual_length) in [
+            (TransferStatus::Stalled, super::BOOT_KEYBOARD_REPORT_LEN),
+            (TransferStatus::Completed, super::BOOT_KEYBOARD_REPORT_LEN + 1),
+        ] {
+            let reports = vec![REPORT_ONE; super::REPORT_QUEUE_DEPTH + 8];
+            let mut queue = BootKeyboardReportQueue::empty();
+            let mut endpoint = FakeEndpoint::with_reports(&reports);
+            queue.fill(&mut endpoint).unwrap();
+            endpoint.complete(1, status, actual_length);
+
+            let mut context = Context::from_waker(core::task::Waker::noop());
+            assert!(queue.poll(&mut endpoint, &mut context).is_err());
+
+            // The refilled slot carries the next report, so the same queue
+            // delivers again as soon as the device sends one.
+            endpoint.mark_ready(9);
+            assert_eq!(
+                queue.poll(&mut endpoint, &mut context),
+                Ok(Some(REPORT_ONE))
+            );
+            assert_eq!(endpoint.pending.len(), super::REPORT_QUEUE_DEPTH);
+        }
     }
 
     #[ktest]

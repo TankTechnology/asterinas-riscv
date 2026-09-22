@@ -22,6 +22,7 @@ impl !Sync for DisabledPreemptGuard {}
 unsafe impl InAtomicMode for DisabledPreemptGuard {}
 
 impl DisabledPreemptGuard {
+    #[track_caller]
     fn new() -> Self {
         super::cpu_local::inc_guard_count();
         Self { _private: () }
@@ -41,6 +42,7 @@ impl Drop for DisabledPreemptGuard {
 }
 
 /// Disables preemption.
+#[track_caller]
 pub fn disable_preempt() -> DisabledPreemptGuard {
     DisabledPreemptGuard::new()
 }
