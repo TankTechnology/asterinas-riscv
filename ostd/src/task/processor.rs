@@ -8,7 +8,6 @@ use crate::{
     arch::task::{context_switch, first_context_switch},
     cpu_local_cell,
     irq::DisabledLocalIrqGuard,
-    util::id_set::Id,
 };
 
 cpu_local_cell! {
@@ -133,21 +132,6 @@ fn before_switching_to(next_task: &Task, irq_guard: &DisabledLocalIrqGuard) {
 ///
 /// This function must be called only once after switching to a task.
 pub(super) unsafe fn after_switching_to() {
-    // The task we just switched to is not inside any interrupt, but the level
-    // cell is per-CPU and is only ever undone by the stack that raised it. A
-    // switch taken from inside the bottom half abandons that stack, so the
-    // incoming task inherits a level it never entered; left alone, the next
-    // interrupt on this CPU raises a value the encoding cannot represent.
-    let inherited = crate::irq::take_level_for_switch();
-    if inherited != 0 {
-        crate::early_println!(
-            "IRQ_LEVEL_LEAKED_ACROSS_SWITCH cpu={} inherited={:#010b} preempt_count={}",
-            crate::cpu::CpuId::current_racy().as_usize(),
-            inherited,
-            super::preempt::cpu_local::get_guard_count(),
-        );
-    }
-
     // Release the previous task.
     let prev = PREVIOUS_TASK_PTR.load();
     let prev = if !prev.is_null() {

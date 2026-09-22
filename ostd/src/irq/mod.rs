@@ -86,7 +86,7 @@ pub use top_half::{IrqCallbackFunction, IrqLine};
 
 use crate::{
     arch::{irq::HwIrqLine, trap::TrapFrame},
-    cpu::{CpuId, PrivilegeLevel},
+    cpu::PrivilegeLevel,
     util::id_set::Id,
 };
 
@@ -98,14 +98,6 @@ pub fn level_raw_for_diagnosis() -> u8 {
 /// Whether local interrupts are enabled on this CPU right now.
 pub fn is_local_enabled_for_diagnosis() -> bool {
     crate::arch::irq::is_local_enabled()
-}
-
-/// Puts the interrupt level back to the task context.
-///
-/// Returns the value it held, so the caller can report a level that was
-/// abandoned by the stack that raised it rather than undone by it.
-pub fn take_level_for_switch() -> u8 {
-    level::take_for_switch()
 }
 
 /// Records the most recent interrupt that was taken while the CPU was already
