@@ -247,7 +247,7 @@ impl Scheduler for ClassScheduler {
         let thread = task.as_thread()?.clone();
 
         let (still_in_rq, cpu) = {
-            let selected_cpu_id = self.select_cpu(&thread, flags);
+            let selected_cpu_id = self.select_cpu(&thread);
 
             if let Err(task_cpu_id) = task.cpu().set_if_is_none(selected_cpu_id) {
                 debug_assert!(flags != EnqueueFlags::Spawn);
@@ -311,7 +311,7 @@ impl ClassScheduler {
     }
 
     // TODO: Implement a better algorithm and replace the current naive implementation.
-    fn select_cpu(&self, thread: &Thread, _flags: EnqueueFlags) -> CpuId {
+    fn select_cpu(&self, thread: &Thread) -> CpuId {
         let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
         let guard = disable_local();
         let last_cpu = thread
@@ -464,10 +464,7 @@ impl LocalRunQueue for PerCpuClassRqSet {
             (false, 4)
         };
 
-        if matches!(
-            flags,
-            UpdateFlags::Wait | UpdateFlags::Exit | UpdateFlags::Migrate
-        ) {
+        if matches!(flags, UpdateFlags::Wait | UpdateFlags::Exit) {
             lookahead = 4;
         }
 
