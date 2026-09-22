@@ -87,93 +87,18 @@ pub use top_half::{IrqCallbackFunction, IrqLine};
 use crate::{
     arch::{irq::HwIrqLine, trap::TrapFrame},
     cpu::PrivilegeLevel,
-    util::id_set::Id,
 };
-
-/// The interrupt level cell exactly as stored, without decoding it.
-pub fn level_raw_for_diagnosis() -> u8 {
-    level::raw_for_diagnosis()
-}
-
-/// Whether local interrupts are enabled on this CPU right now.
-pub fn is_local_enabled_for_diagnosis() -> bool {
-    crate::arch::irq::is_local_enabled()
-}
-
-/// Records the most recent interrupt that was taken while the CPU was already
-/// handling one, together with the level it was taken at.
-///
-/// The encoding admits two levels only, so any interrupt that arrives at level
-/// one is the one that spends the last of it. Naming it at the moment it
-/// happens is what separates "a callback re-enabled interrupts" from "a level
-/// was never given back", and neither can be read off the state left behind.
-static LAST_NESTED_IRQ: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static NESTED_IRQ_COUNT: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
-
-/// The last interrupt taken while already handling one, if any.
-///
-/// Packed as `cpu << 32 | irq_num << 16 | raw_level_before`.
-pub fn last_nested_irq_for_diagnosis() -> u64 {
-    LAST_NESTED_IRQ.load(core::sync::atomic::Ordering::Relaxed)
-}
-
-/// How many interrupts have been taken while the CPU was already handling one.
-pub fn nested_irq_count_for_diagnosis() -> usize {
-    NESTED_IRQ_COUNT.load(core::sync::atomic::Ordering::Relaxed)
-}
 
 pub(crate) fn call_irq_callback_functions(
     trap_frame: &TrapFrame,
     hw_irq_line: &HwIrqLine,
     cpu_priv_at_irq: PrivilegeLevel,
 ) {
-    // Name the interrupt that would push the level to three. The encoding
-    // models at most two levels, and the value observed at the panic is
-    // always exactly three, so the third one is not an overflow but a path
-    // that re-enables local IRQs while already at level two.
-    if InterruptLevel::current().as_u8() >= 2 {
-        crate::warn!(
-            "IRQ {} entered while already at level 2, which the encoding cannot represent",
-            hw_irq_line.irq_num(),
-        );
-    }
-    // Recorded undecoded and via `early_println!`: this is the report that has
-    // to survive the failure it describes. Printing on every entry is far too
-    // loud to be usable --- this path runs hundreds of thousands of times a
-    // minute --- so the loud report is saved for the one event that matters:
-    // an interrupt that gives its level back wrong, or does not give it back.
-    let raw_level = level::raw_for_diagnosis();
-    if raw_level >> 1 != 0 {
-        NESTED_IRQ_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        LAST_NESTED_IRQ.store(
-            (crate::cpu::CpuId::current_racy().as_usize() as u64) << 32
-                | (hw_irq_line.irq_num() as u64) << 16
-                | raw_level as u64,
-            core::sync::atomic::Ordering::Relaxed,
-        );
-    }
-    let cpu = crate::cpu::CpuId::current_racy().as_usize();
-    let irq_num = hw_irq_line.irq_num();
     level::enter(
         move || {
             top_half::process(trap_frame, hw_irq_line);
-            bottom_half::process(irq_num);
+            bottom_half::process(hw_irq_line.irq_num());
         },
         cpu_priv_at_irq,
     );
-    // The level is per-CPU and is only ever undoed by the same stack that set
-    // it, so a handler that ends somewhere other than where it started leaves
-    // the value one increment high for good. That is the state every later
-    // report of this defect has shown, and this is the moment it is created.
-    let raw_after = level::raw_for_diagnosis();
-    if raw_after != raw_level {
-        crate::early_println!(
-            "IRQ_LEVEL_IMBALANCE cpu={} irq={} raw_before={:#010b} raw_after={:#010b}",
-            cpu,
-            irq_num,
-            raw_level,
-            raw_after,
-        );
-    }
 }
