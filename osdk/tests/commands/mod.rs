@@ -2,3 +2,4 @@
 
 mod new;
 mod run;
+mod test;

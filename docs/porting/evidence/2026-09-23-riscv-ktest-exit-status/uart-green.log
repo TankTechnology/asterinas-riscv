@@ -1,0 +1,209 @@
+Waiting for the asterinas-dev-v1-4f054ba7e4d3 lifecycle lock
+Using asterinas-dev-v1-4f054ba7e4d3-945a91b48668 (persistent caches; waiting for build lock if busy)
+[Info] [riscv] Forwarded QEMU guest port: 58994->22; 7933->8080 17007->6379 52236->5201 16928->31234 31996->31236 50233->11211
+[Info] [riscv] Forwarded QEMU guest port: 60933->22; 62591->8080 11953->6379 25944->5201 52487->31234 35586->31236 19872->11211
+     Locking 168 packages to latest Rust 1.99.0-nightly compatible versions
+   Compiling ostd v0.18.0 (/root/asterinas/ostd)
+   Compiling osdk-heap-allocator v0.18.0 (/root/asterinas/osdk/deps/heap-allocator)
+   Compiling aster-console v0.1.0 (/root/asterinas/kernel/comps/console)
+   Compiling osdk-test-kernel v0.18.0 (/root/asterinas/osdk/deps/test-kernel)
+   Compiling osdk-frame-allocator v0.18.0 (/root/asterinas/osdk/deps/frame-allocator)
+   Compiling aster-util v0.1.0 (/root/asterinas/kernel/libs/aster-util)
+   Compiling aster-softirq v0.1.0 (/root/asterinas/kernel/comps/softirq)
+   Compiling aster-uart v0.1.0 (/root/asterinas/kernel/comps/uart)
+   Compiling aster-uart-osdk-bin v0.1.0 (/root/asterinas/target/osdk/aster-uart-test-base)
+    Finished `release` profile [optimized] target(s) in 3.23s
+
+OpenSBI v1.7
+   ____                    _____ ____ _____
+  / __ \                  / ____|  _ \_   _|
+ | |  | |_ __   ___ _ __ | (___ | |_) || |
+ | |  | | '_ \ / _ \ '_ \ \___ \|  _ < | |
+ | |__| | |_) |  __/ | | |____) | |_) || |_
+  \____/| .__/ \___|_| |_|_____/|____/_____|
+        | |
+        |_|
+
+Platform Name               : riscv-virtio,qemu
+Platform Features           : medeleg
+Platform HART Count         : 4
+Platform IPI Device         : aclint-mswi
+Platform Timer Device       : aclint-mtimer @ 10000000Hz
+Platform Console Device     : uart8250
+Platform HSM Device         : ---
+Platform PMU Device         : ---
+Platform Reboot Device      : syscon-reboot
+Platform Shutdown Device    : syscon-poweroff
+Platform Suspend Device     : ---
+Platform CPPC Device        : ---
+Firmware Base               : 0x80000000
+Firmware Size               : 353 KB
+Firmware RW Offset          : 0x40000
+Firmware RW Size            : 97 KB
+Firmware Heap Offset        : 0x4c000
+Firmware Heap Size          : 49 KB (total), 3 KB (reserved), 12 KB (used), 33 KB (free)
+Firmware Scratch Size       : 4096 B (total), 1400 B (used), 2696 B (free)
+Runtime SBI Version         : 3.0
+Standard SBI Extensions     : time,rfnc,ipi,base,hsm,srst,pmu,dbcn,fwft,legacy,dbtr,sse
+Experimental SBI Extensions : none
+
+Domain0 Name                : root
+Domain0 Boot HART           : 2
+Domain0 HARTs               : 0*,1*,2*,3*
+Domain0 Region00            : 0x0000000000100000-0x0000000000100fff M: (I,R,W) S/U: (R,W)
+Domain0 Region01            : 0x0000000010000000-0x0000000010000fff M: (I,R,W) S/U: (R,W)
+Domain0 Region02            : 0x0000000002000000-0x000000000200ffff M: (I,R,W) S/U: ()
+Domain0 Region03            : 0x0000000080040000-0x000000008005ffff M: (R,W) S/U: ()
+Domain0 Region04            : 0x0000000080000000-0x000000008003ffff M: (R,X) S/U: ()
+Domain0 Region05            : 0x000000000c400000-0x000000000c5fffff M: (I,R,W) S/U: (R,W)
+Domain0 Region06            : 0x000000000c000000-0x000000000c3fffff M: (I,R,W) S/U: (R,W)
+Domain0 Region07            : 0x0000000000000000-0xffffffffffffffff M: () S/U: (R,W,X)
+Domain0 Next Address        : 0x0000000080200000
+Domain0 Next Arg1           : 0x000000027fe00000
+Domain0 Next Mode           : S-mode
+Domain0 SysReset            : yes
+Domain0 SysSuspend          : yes
+
+Boot HART ID                : 2
+Boot HART Domain            : root
+Boot HART Priv Version      : v1.12
+Boot HART Base ISA          : rv64imafdch
+Boot HART ISA Extensions    : sstc,zicntr,zihpm,zkr,zicboz,zicbom,svpbmt,sdtrig,svadu
+Boot HART PMP Count         : 16
+Boot HART PMP Granularity   : 2 bits
+Boot HART PMP Address Bits  : 54
+Boot HART MHPM Info         : 16 (0x0007fff8)
+Boot HART Debug Triggers    : 2 triggers
+Boot HART MIDELEG           : 0x0000000000001666
+Boot HART MEDELEG           : 0x0000000000f4b509
+Enter riscv_boot
+INFO: Initializing frame metadata for physical memory up to 280000000
+INFO: Adding free frames to the allocator: 80060000..80200000
+INFO: Adding free frames to the allocator: 8a3ca000..280000000
+INFO: Initializing the kernel page table
+INFO: Creating new I/O memory allocator builder, ranges: [
+    0x0..0x80060000,
+    0x280000000..0xffffffffffffffff,
+]
+DEBUG: Try to reserve security-sensitive MMIO range: 0xc000000..0xc600000 with cache policy: Uncacheable
+INFO: RISC-V icache coherence: harts=4, sbi_rfence=true
+INFO: Booting 3 processors
+INFO: Booting all application processors...
+INFO: Bootstrapping hart is 2, booting all other harts
+INFO: Starting hart 0
+DEBUG: Successfully started hart 0
+INFO: Starting hart 1
+DEBUG: Successfully started hart 1
+INFO: Starting hart 3
+DEBUG: Successfully started hart 3
+INFO: Detected ISA extensions: A | C | D | F | H | I | M | SSTC | SVPBMT | ZBB | ZICBOM | ZIHINTPAUSE | ZICBOZ | ZBA | ZBS | ZICNTR | ZICSR | ZIFENCEI | ZIHPM | ZBC | ZKR | ZIHINTNTL | ZFA | ZCA | ZCD | ZAWRS | SVVPTC | ZICCRSE | SVADU | ZAAMO | ZALRSC
+INFO: Detected ISA extensions: A | C | D | F | H | I | M | SSTC | SVPBMT | ZBB | ZICBOM | ZIHINTPAUSE | ZICBOZ | ZBA | ZBS | ZICNTR | ZICSR | ZIFENCEI | ZIHPM | ZBC | ZKR | ZIHINTNTL | ZFA | ZCA | ZCD | ZAWRS | SVVPTC | ZICCRSE | SVADU | ZAAMO | ZALRSC
+INFO: Processor 2 started. Spinning for tasks.
+INFO: Processor 3 started. Spinning for tasks.
+INFO: Detected ISA extensions: A | C | D | F | H | I | M | SSTC | SVPBMT | ZBB | ZICBOM | ZIHINTPAUSE | ZICBOZ | ZBA | ZBS | ZICNTR | ZICSR | ZIFENCEI | ZIHPM | ZBC | ZKR | ZIHINTNTL | ZFA | ZCA | ZCD | ZAWRS | SVVPTC | ZICCRSE | SVADU | ZAAMO | ZALRSC
+INFO: Processor 1 started. Spinning for tasks.
+INFO: All application processors started. The BSP continues to run.
+DEBUG: Try to reserve security-sensitive MMIO range: 0x100000..0x101000 with cache policy: Uncacheable
+
+[ktest runner] running 429 tests in 7 crates
+
+[ktest runner] skipping crate "aster-softirq".
+
+running 82 tests in crate "aster-uart"
+
+test aster_uart::arch::dw_apb::tests::dw_apb_rejects_disabled_status ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_accepts_the_megrez_contract ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_accepts_absent_and_ok_status ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_rx_enable_reports_mmio_errors ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_send_stops_after_a_write_error ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_probe_reads_only_the_shifted_lsr ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_rejects_missing_access_properties ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_rejects_unsupported_access_layout ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_send_fails_immediately_when_owned ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_tty_send_does_not_expand_newlines ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_flush_has_one_fixed_receive_budget ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_send_stops_at_one_total_poll_budget ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_receive_stops_on_empty_or_mmio_error ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_rejects_an_undersized_register_range ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_receive_reads_shifted_status_and_data ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_rejects_an_overflowing_register_range ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_send_releases_ownership_after_failure ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_send_uses_shifted_u32_access_and_crlf ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_readiness_follows_transmitter_ownership ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_rx_enable_preserves_nonstandard_ier_bits ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_tty_send_reports_a_stalled_owner_as_busy ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_rx_disable_preserves_nonstandard_ier_bits ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_send_does_not_restart_budget_after_a_prefix ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_uart_trait_delegates_send_receive_and_flush ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_rx_enable_rejects_unhandled_standard_sources ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_empty_tty_send_does_not_claim_the_transmitter ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_tty_send_reports_errors_and_accepted_prefixes ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_clears_busy_detect_through_shifted_iir_and_usr ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_deferred_rx_delivers_input_arriving_before_rearm ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_deferred_rx_retries_at_the_budget_without_unmasking ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_registration_probe_rejects_stuck_hardware_at_the_bound ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_top_half_masks_receive_before_requesting_deferred_work ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_quiesce_rejects_a_persistent_pending_cause_at_the_bound ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_registration_probe_rejects_an_mmio_error_without_writes ... [32mok[39m
+test aster_uart::arch::dw_apb::tests::dw_apb_registration_probe_accepts_ready_hardware_without_writes ... [32mok[39m
+test aster_uart::arch::sifive::tests::timeout_ticks_round_up ... [32mok[39m
+test aster_uart::arch::sifive::tests::tx_contention_is_nonblocking ... [32mok[39m
+test aster_uart::arch::sifive::tests::initial_tx_timeout_does_not_write ... [32mok[39m
+test aster_uart::arch::sifive::tests::mmio_config_rejects_invalid_ranges ... [32mok[39m
+test aster_uart::arch::sifive::tests::tty_immediate_path_preserves_newlines ... [32mok[39m
+test aster_uart::arch::sifive::tests::tx_holds_one_ownership_across_the_buffer ... [32mok[39m
+test aster_uart::arch::sifive::tests::diagnostic_contention_remains_best_effort ... [32mok[39m
+test aster_uart::arch::sifive::tests::tx_immediate_path_never_polls_a_full_fifo ... [32mok[39m
+test aster_uart::arch::sifive::tests::ready_fifo_does_not_arm_transmit_interrupt ... [32mok[39m
+test aster_uart::arch::sifive::tests::full_fifo_arms_transmit_watermark_interrupt ... [32mok[39m
+test aster_uart::arch::sifive::tests::tty_mmio_failure_becomes_a_console_io_error ... [32mok[39m
+test aster_uart::arch::sifive::tests::ready_fifo_wins_when_the_deadline_has_expired ... [32mok[39m
+test aster_uart::arch::sifive::tests::poll_send_ready_releases_transmitter_ownership ... [32mok[39m
+test aster_uart::arch::sifive::tests::disable_tx_interrupt_clears_the_enable_register ... [32mok[39m
+test aster_uart::arch::sifive::tests::readiness_reports_interrupt_enable_mmio_failure ... [32mok[39m
+test aster_uart::arch::sifive::tests::diagnostic_immediate_path_inserts_carriage_return ... [32mok[39m
+test aster_uart::arch::sifive::tests::mmio_config_accepts_only_available_device_tree_nodes ... [32mok[39m
+test aster_uart::arch::sifive::tests::preparation_enables_transmit_before_waiting_for_space ... [32mok[39m
+test aster_uart::arch::sifive::tests::diagnostic_mmio_failure_reaches_the_shared_policy_boundary ... [32mok[39m
+test aster_uart::arch::sifive::tests::readiness_recheck_disarms_an_interrupt_after_fifo_progress ... [32mok[39m
+test aster_uart::arch::sifive::tests::tx_interrupt_can_be_disabled_while_the_transmitter_is_owned ... [32mok[39m
+test aster_uart::arch::sifive::tests::concurrent_disable_repairs_an_outdated_interrupt_enable_write ... [32mok[39m
+test aster_uart::arch::tests::uart_selection_keeps_absolute_path ... [32mok[39m
+test aster_uart::arch::tests::uart_selection_strips_serial_options ... [32mok[39m
+test aster_uart::arch::tests::explicit_interrupt_source_validates_cells ... [32mok[39m
+test aster_uart::arch::tests::uart_selection_accepts_only_usable_ancestors ... [32mok[39m
+test aster_uart::arch::tests::uart_selection_rejects_present_empty_selector ... [32mok[39m
+test aster_uart::arch::tests::uart_selection_resolves_aliases_to_absolute_paths ... [32mok[39m
+test aster_uart::arch::tests::uart_selection_checks_the_complete_compatible_list ... [32mok[39m
+test aster_uart::arch::tests::uart_selection_does_not_fallback_for_an_empty_selector ... [32mok[39m
+test aster_uart::arch::tests::uart_selection_uses_fallback_only_when_property_is_absent ... [32mok[39m
+test aster_uart::arch::tests::uart_selection_accepts_only_enabled_explicit_status_values ... [32mok[39m
+test aster_uart::arch::tests::uart_selection_chooses_the_named_uart_among_multiple_nodes ... [32mok[39m
+test aster_uart::arch::tests::uart_selection_does_not_fallback_when_selected_node_is_missing ... [32mok[39m
+test aster_uart::console::tests::console_tty_send_reaches_the_uart ... [32mok[39m
+test aster_uart::console::tests::readiness_failure_notifies_an_armed_waiter ... [32mok[39m
+test aster_uart::console::tests::successful_recheck_notifies_an_armed_waiter ... [32mok[39m
+test aster_uart::console::tests::fast_ready_poll_notifies_a_concurrent_waiter ... [32mok[39m
+test aster_uart::console::tests::console_notifies_send_ready_after_a_send_attempt ... [32mok[39m
+test aster_uart::console::tests::busy_send_rearms_a_consumed_readiness_notification ... [32mok[39m
+test aster_uart::console::tests::console_does_not_notify_while_backpressure_remains ... [32mok[39m
+test aster_uart::console::tests::bounded_input_callbacks_stop_after_the_batch_budget ... [32mok[39m
+test aster_uart::console::tests::legacy_tty_send_uses_an_explicit_infallible_adapter ... [32mok[39m
+test aster_uart::console::tests::readiness_failure_turns_a_busy_send_into_an_io_error ... [32mok[39m
+test aster_uart::console::tests::console_does_not_notify_without_observed_backpressure ... [32mok[39m
+test aster_uart::console::tests::diagnostic_send_invalidates_observed_output_readiness ... [32mok[39m
+test aster_uart::console::tests::device_readiness_notification_does_not_repoll_the_uart ... [32mok[39m
+
+test result: [32mok[39m. 82 passed; 0 failed; 0 filtered out.
+
+[ktest runner] skipping crate "aster-util".
+
+[ktest runner] skipping crate "osdk-frame-allocator".
+
+[ktest runner] skipping crate "osdk-heap-allocator".
+
+[ktest runner] skipping crate "osdk-test-kernel".
+
+[ktest runner] skipping crate "ostd".
+
+[ktest runner] All crates tested.
