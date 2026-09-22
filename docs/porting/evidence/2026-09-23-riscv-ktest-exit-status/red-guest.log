@@ -1,0 +1,235 @@
+Waiting for the asterinas-dev-v1-4f054ba7e4d3 lifecycle lock
+Using asterinas-dev-v1-4f054ba7e4d3-945a91b48668 (persistent caches; waiting for build lock if busy)
+   Compiling cargo-osdk v0.18.0 (/root/asterinas/osdk)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.19s
+     Running tests/integration.rs (osdk/target/debug/deps/integration-be00d65d12846fcf)
+
+running 1 test
+
+thread 'commands::test::riscv_guest_test_result_reaches_host' (9748) panicked at tests/commands/test.rs:64:9:
+assertion `left == right` failed: guest_failure:
+OpenSBI v1.7
+   ____                    _____ ____ _____
+  / __ \                  / ____|  _ \_   _|
+ | |  | |_ __   ___ _ __ | (___ | |_) || |
+ | |  | | '_ \ / _ \ '_ \ \___ \|  _ < | |
+ | |__| | |_) |  __/ | | |____) | |_) || |_
+  \____/| .__/ \___|_| |_|_____/|____/_____|
+        | |
+        |_|
+
+Platform Name               : riscv-virtio,qemu
+Platform Features           : medeleg
+Platform HART Count         : 1
+Platform IPI Device         : aclint-mswi
+Platform Timer Device       : aclint-mtimer @ 10000000Hz
+Platform Console Device     : uart8250
+Platform HSM Device         : ---
+Platform PMU Device         : ---
+Platform Reboot Device      : syscon-reboot
+Platform Shutdown Device    : syscon-poweroff
+Platform Suspend Device     : ---
+Platform CPPC Device        : ---
+Firmware Base               : 0x80000000
+Firmware Size               : 317 KB
+Firmware RW Offset          : 0x40000
+Firmware RW Size            : 61 KB
+Firmware Heap Offset        : 0x46000
+Firmware Heap Size          : 37 KB (total), 2 KB (reserved), 11 KB (used), 23 KB (free)
+Firmware Scratch Size       : 4096 B (total), 1400 B (used), 2696 B (free)
+Runtime SBI Version         : 3.0
+Standard SBI Extensions     : time,rfnc,ipi,base,hsm,srst,pmu,dbcn,fwft,legacy,dbtr,sse
+Experimental SBI Extensions : none
+
+Domain0 Name                : root
+Domain0 Boot HART           : 0
+Domain0 HARTs               : 0*
+Domain0 Region00            : 0x0000000000100000-0x0000000000100fff M: (I,R,W) S/U: (R,W)
+Domain0 Region01            : 0x0000000010000000-0x0000000010000fff M: (I,R,W) S/U: (R,W)
+Domain0 Region02            : 0x0000000002000000-0x000000000200ffff M: (I,R,W) S/U: ()
+Domain0 Region03            : 0x0000000080040000-0x000000008004ffff M: (R,W) S/U: ()
+Domain0 Region04            : 0x0000000080000000-0x000000008003ffff M: (R,X) S/U: ()
+Domain0 Region05            : 0x000000000c400000-0x000000000c5fffff M: (I,R,W) S/U: (R,W)
+Domain0 Region06            : 0x000000000c000000-0x000000000c3fffff M: (I,R,W) S/U: (R,W)
+Domain0 Region07            : 0x0000000000000000-0xffffffffffffffff M: () S/U: (R,W,X)
+Domain0 Next Address        : 0x0000000080200000
+Domain0 Next Arg1           : 0x000000008fe00000
+Domain0 Next Mode           : S-mode
+Domain0 SysReset            : yes
+Domain0 SysSuspend          : yes
+
+Boot HART ID                : 0
+Boot HART Domain            : root
+Boot HART Priv Version      : v1.12
+Boot HART Base ISA          : rv64imafdch
+Boot HART ISA Extensions    : sstc,zicntr,zihpm,zicboz,zicbom,sdtrig,svadu
+Boot HART PMP Count         : 16
+Boot HART PMP Granularity   : 2 bits
+Boot HART PMP Address Bits  : 54
+Boot HART MHPM Info         : 16 (0x0007fff8)
+Boot HART Debug Triggers    : 2 triggers
+Boot HART MIDELEG           : 0x0000000000001666
+Boot HART MEDELEG           : 0x0000000000f4b509
+Enter riscv_boot
+INFO: Initializing frame metadata for physical memory up to 90000000
+INFO: Adding free frames to the allocator: 80050000..80200000
+INFO: Adding free frames to the allocator: 82751000..90000000
+INFO: Initializing the kernel page table
+INFO: Creating new I/O memory allocator builder, ranges: [
+    0x0..0x80050000,
+    0x90000000..0xffffffffffffffff,
+]
+DEBUG: Try to reserve security-sensitive MMIO range: 0xc000000..0xc600000 with cache policy: Uncacheable
+INFO: RISC-V icache coherence: harts=1, mode=local-fence-i
+
+[ktest runner] running 333 tests in 5 crates
+
+running 2 tests in crate "exit_status_probe"
+
+test exit_status_probe::guest_failure ... [31mFAILED[39m
+
+test result: [31mFAILED[39m. 0 passed; 1 failed; 1 filtered out.
+
+failures:
+
+---- /tmp/.tmpjPaDJh/exit_status_probe/src/lib.rs:3:0 - guest_failure ----
+
+[caught panic] Panicked at /tmp/.tmpjPaDJh/exit_status_probe/src/lib.rs:5:5
+intentional exit-status regression failure
+
+
+     Locking 141 packages to latest Rust 1.99.0-nightly compatible versions
+   Compiling compiler_builtins v0.1.160 (/root/.rustup/toolchains/nightly-2026-07-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/compiler-builtins/compiler-builtins)
+   Compiling core v0.0.0 (/root/.rustup/toolchains/nightly-2026-07-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core)
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.26
+   Compiling syn v1.0.109
+   Compiling autocfg v1.5.1
+   Compiling crossbeam-utils v0.8.23
+   Compiling unicode-segmentation v1.13.3
+   Compiling libc v0.2.189
+   Compiling getrandom v0.3.4
+   Compiling zerocopy v0.8.57
+   Compiling paste v1.0.15
+   Compiling rustversion v1.0.23
+   Compiling semver v1.0.28
+   Compiling cfg-if v1.0.5
+   Compiling thiserror v2.0.20
+   Compiling crossbeam-epoch v0.9.21
+   Compiling radium v0.7.0
+   Compiling anyhow v1.0.104
+   Compiling strsim v0.10.0
+   Compiling ident_case v1.0.1
+   Compiling unicode-xid v0.2.6
+   Compiling fnv v1.0.7
+   Compiling crab-usb v0.9.10
+   Compiling once_cell v1.21.4
+   Compiling lenient_semver_version_builder v0.4.2
+   Compiling num-traits v0.2.19
+   Compiling memoffset v0.9.1
+   Compiling lenient_semver_parser v0.4.2
+   Compiling convert_case v0.10.0
+   Compiling convert_case v0.8.0
+   Compiling lenient_semver v0.4.2
+   Compiling syn v2.0.119
+   Compiling syn v3.0.6
+   Compiling rand_core v0.9.5
+   Compiling darling_core v0.13.4
+   Compiling ax-crate-interface v0.5.8
+   Compiling thiserror-impl v2.0.20
+   Compiling num-derive v0.3.3
+   Compiling ppv-lite86 v0.2.21
+   Compiling rand_chacha v0.9.0
+   Compiling rand v0.9.5
+   Compiling num_enum_derive v0.7.6
+   Compiling derive_more-impl v2.1.1
+   Compiling zerocopy-derive v0.8.57
+   Compiling int-to-c-enum-derive v0.1.0 (/root/asterinas/ostd/libs/int-to-c-enum/derive)
+   Compiling trait-ffi v0.2.11
+   Compiling enum_dispatch v0.3.13
+   Compiling padding-struct v0.2.0 (/root/asterinas/ostd/libs/padding-struct)
+   Compiling ostd-pod-macros v0.4.0 (/root/asterinas/ostd/libs/ostd-pod/macros)
+   Compiling riscv-macros v0.3.0
+   Compiling darling_macro v0.13.4
+   Compiling ostd-macros v0.18.0 (/root/asterinas/ostd/libs/ostd-macros)
+   Compiling darling v0.13.4
+   Compiling inherit-methods-macro v0.1.0 (https://github.com/asterinas/inherit-methods-macro?rev=98f7e3e#98f7e3eb)
+   Compiling alloc v0.0.0 (/root/.rustup/toolchains/nightly-2026-07-21-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc)
+   Compiling futures-core v0.3.34
+   Compiling scopeguard v1.2.0
+   Compiling futures-sink v0.3.34
+   Compiling futures-task v0.3.34
+   Compiling pin-project-lite v0.2.17
+   Compiling slab v0.4.12
+   Compiling tap v1.0.1
+   Compiling futures-io v0.3.34
+   Compiling log v0.4.34
+   Compiling num_enum v0.7.6
+   Compiling derive_more v2.1.1
+   Compiling mbarrier v0.1.3
+   Compiling accessor v0.3.3
+   Compiling bit_field v0.10.3
+   Compiling funty v2.0.0
+   Compiling bitflags v2.13.2
+   Compiling nb v1.1.0
+   Compiling riscv-pac v0.2.0
+   Compiling embedded-hal v1.0.0
+   Compiling sbi-spec v0.0.7
+   Compiling tock-registers v0.10.1
+   Compiling gimli v0.33.0
+   Compiling id-arena v2.3.0
+   Compiling lock_api v0.4.14
+   Compiling futures-channel v0.3.34
+   Compiling ax-kernel-guard v0.3.13
+   Compiling wyz v0.5.1
+   Compiling critical-section v1.2.0
+   Compiling linux-boot-params v0.18.0 (/root/asterinas/ostd/libs/linux-bzimage/boot-params)
+   Compiling align_ext v0.1.0 (/root/asterinas/ostd/libs/align_ext)
+   Compiling ostd-test v0.18.0 (/root/asterinas/ostd/libs/ostd-test)
+   Compiling smallvec v1.16.1
+   Compiling gimli v0.28.1
+   Compiling intrusive-collections v0.9.7
+   Compiling fdt v0.1.5
+   Compiling volatile v0.6.1
+   Compiling futures-util v0.3.34
+   Compiling ax-kspin v0.3.17
+   Compiling sbi-rt v0.0.3
+   Compiling riscv v0.15.0
+   Compiling int-to-c-enum v0.1.0 (/root/asterinas/ostd/libs/int-to-c-enum)
+   Compiling bitflags v1.3.2
+   Compiling owo-colors v4.4.0
+   Compiling dma-api v0.9.3
+   Compiling spin v0.12.3
+   Compiling spin v0.9.9
+   Compiling crossbeam-queue v0.3.14
+   Compiling bitvec v1.1.1
+   Compiling crossbeam-skiplist v0.1.3
+   Compiling crossbeam v0.8.5
+   Compiling xhci v0.9.2
+   Compiling unwinding v0.2.9
+   Compiling futures v0.3.34
+   Compiling usb-if v0.7.2
+   Compiling id-alloc v0.1.0 (/root/asterinas/ostd/libs/id-alloc)
+   Compiling ostd-pod v0.4.0 (/root/asterinas/ostd/libs/ostd-pod)
+   Compiling ostd v0.18.0 (/root/asterinas/ostd)
+   Compiling exit_status_probe v0.1.0 (/tmp/.tmpjPaDJh/exit_status_probe)
+   Compiling osdk-frame-allocator v0.18.0 (/root/asterinas/osdk/deps/frame-allocator)
+   Compiling osdk-heap-allocator v0.18.0 (/root/asterinas/osdk/deps/heap-allocator)
+   Compiling osdk-test-kernel v0.18.0 (/root/asterinas/osdk/deps/test-kernel)
+   Compiling exit_status_probe-osdk-bin v0.1.0 (/tmp/.tmpjPaDJh/exit_status_probe/target/osdk/exit_status_probe-test-base)
+    Finished `release` profile [optimized] target(s) in 11.79s
+
+  left: Some(0)
+ right: Some(1)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test commands::test::riscv_guest_test_result_reaches_host ... FAILED
+
+failures:
+
+failures:
+    commands::test::riscv_guest_test_result_reaches_host
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 21 filtered out; finished in 12.36s
+
+error: test failed, to rerun pass `--test integration`

@@ -1,0 +1,10 @@
+Waiting for the asterinas-dev-v1-4f054ba7e4d3 lifecycle lock
+Using asterinas-dev-v1-4f054ba7e4d3-945a91b48668 (persistent caches; waiting for build lock if busy)
+   Compiling cargo-osdk v0.18.0 (/root/asterinas/osdk)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.22s
+     Running tests/integration.rs (osdk/target/debug/deps/integration-be00d65d12846fcf)
+
+running 1 test
+test commands::test::riscv_guest_test_result_reaches_host ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 21 filtered out; finished in 12.63s
