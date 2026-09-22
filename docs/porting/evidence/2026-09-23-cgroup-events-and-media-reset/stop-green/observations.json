@@ -1,0 +1,644 @@
+[
+  {
+    "kind": "unit-definition",
+    "elapsed": 0.06,
+    "value": {
+      "argv": [
+        "systemctl",
+        "cat",
+        "asterinas-desktop-m5.service"
+      ],
+      "status": 0,
+      "stdout": "# /etc/systemd/system/asterinas-desktop-m5.service\n[Unit]\nDescription=Asterinas Debian desktop session\nAfter=local-fs.target dbus.service\nWants=dbus.service\nConflicts=getty@tty1.service\n\n[Service]\nType=simple\nUser=root\nPrivateTmp=no\nSupplementaryGroups=video input tty\nTTYPath=/dev/tty1\nStandardInput=tty\nStandardOutput=journal+console\nStandardError=journal+console\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes\n# Keep the selected stream policy active.  In the browser-web profile this is\n# journal+console so Xorg/device diagnostics remain observable on the QEMU\n# serial contract; offline profiles still use journal-only below.\nStandardOutput=journal+console\nStandardError=journal+console\n# The template values remain named here for contract tests and profile audits.\n# StandardOutput=journal+console\n# StandardError=journal+console\nEnvironment=HOME=/home/asterinas\nEnvironment=ASTERINAS_DISPLAY_PROVIDER=fbdev\nEnvironment=ASTERINAS_BROWSER_WEB_SESSION=1\nExecStartPre=+/usr/lib/asterinas/desktop-m5-device-access\nExecStart=/usr/lib/asterinas/desktop-m5-session\nRestart=on-failure\nRestartSec=2s\n\n[Install]\nWantedBy=graphical.target\n\n# /etc/systemd/system/asterinas-desktop-m5.service.d/clock-sync.conf\n[Service]\nExecStartPre=-/usr/lib/asterinas/megrez-clock-sync\n",
+      "stderr": ""
+    }
+  },
+  {
+    "kind": "before-unit",
+    "elapsed": 0.139,
+    "value": {
+      "argv": [
+        "systemctl",
+        "show",
+        "asterinas-desktop-m5.service",
+        "--property=MainPID",
+        "--property=ControlPID",
+        "--property=ControlGroup",
+        "--property=ActiveState",
+        "--property=SubState",
+        "--property=Result",
+        "--property=KillMode",
+        "--property=KillSignal",
+        "--property=SendSIGKILL",
+        "--property=TimeoutStopUSec",
+        "--property=Type",
+        "--property=ExecMainCode",
+        "--property=ExecMainStatus"
+      ],
+      "status": 0,
+      "stdout": "Type=simple\nTimeoutStopUSec=1min 30s\nMainPID=171\nControlPID=0\nResult=success\nExecMainCode=0\nExecMainStatus=0\nControlGroup=/system.slice/asterinas-desktop-m5.service\nKillMode=control-group\nKillSignal=15\nSendSIGKILL=yes\nActiveState=active\nSubState=running\n",
+      "stderr": ""
+    }
+  },
+  {
+    "kind": "before-cgroup",
+    "elapsed": 0.143,
+    "value": {
+      "cgroup.procs": "171\n177\n178\n188\n190\n",
+      "cgroup.threads": "FileNotFoundError: [Errno 2] No such file or directory",
+      "cgroup.events": "populated 1\nfrozen 0\n"
+    }
+  },
+  {
+    "kind": "before-processes",
+    "elapsed": 0.179,
+    "value": [
+      {
+        "status": {
+          "Name": "systemd",
+          "State": "S (sleeping)",
+          "Tgid": "1",
+          "Pid": "1",
+          "PPid": "0",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "7fefc1fe28014a03"
+        },
+        "cmdline": "/sbin/init ",
+        "cgroup": "0::/init.scope\n",
+        "tasks": {
+          "1": {
+            "stat": "1 (systemd) S 0 1 1 0 -1 0 0 0 0 0 190 106 231 148 20 0 1 0 14 27815936 3017 18446744073709551615 183252373504 183252481780 274877214464 0 0 0 9218800259587721731 4096 1260 0 0 0 17 3 0 0 0 0 0 183252487192 183252492944 183253487616 274877214709 274877214720 274877214720 274877214720 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":1,\"tid\":1,\"snapshot_jiffies\":11774,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/1/task/1/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/1/task/1/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "systemd-journal",
+          "State": "S (sleeping)",
+          "Tgid": "100",
+          "Pid": "100",
+          "PPid": "1",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0008000400004a02"
+        },
+        "cmdline": "/usr/lib/systemd/systemd-journald ",
+        "cgroup": "0::/system.slice/systemd-journald.service\n"
+      },
+      {
+        "status": {
+          "Name": "dbus-daemon",
+          "State": "S (sleeping)",
+          "Tgid": "137",
+          "Pid": "137",
+          "PPid": "1",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000000000"
+        },
+        "cmdline": "/usr/bin/dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only ",
+        "cgroup": "0::/system.slice/dbus.service\n"
+      },
+      {
+        "status": {
+          "Name": "bash",
+          "State": "S (sleeping)",
+          "Tgid": "15",
+          "Pid": "15",
+          "PPid": "1",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000000000"
+        },
+        "cmdline": "/bin/bash --noprofile --rcfile /run/asterinas-debug-console.bashrc -i ",
+        "cgroup": "0::/system.slice/asterinas-debug-console.service\n",
+        "tasks": {
+          "15": {
+            "stat": "15 (bash) S 1 15 15 1088 15 0 0 0 0 0 34 110 61 121 20 0 1 0 148 12406784 816 18446744073709551615 183252426752 183253518192 274877655920 0 0 0 0 3670020 1266777851 0 0 0 17 1 0 0 0 0 0 183253523248 183253619736 183254388736 274877656331 274877656401 274877656401 274877657088 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":15,\"tid\":15,\"snapshot_jiffies\":11781,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/15/task/15/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/15/task/15/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "bash",
+          "State": "S (sleeping)",
+          "Tgid": "171",
+          "Pid": "171",
+          "PPid": "1",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000010000"
+        },
+        "cmdline": "bash /usr/lib/asterinas/desktop-m5-session ",
+        "cgroup": "0::/system.slice/asterinas-desktop-m5.service\n",
+        "tasks": {
+          "171": {
+            "stat": "171 (bash) S 1 171 171 1025 171 0 0 0 0 0 3 12 2 4 20 0 1 0 781 12140544 661 18446744073709551615 183252340736 183253432176 274877668080 0 0 0 65536 4100 65538 0 0 0 17 1 0 0 0 0 0 183253437232 183253533720 183254151168 274877668509 274877668552 274877668552 274877669376 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":171,\"tid\":171,\"snapshot_jiffies\":11784,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/171/task/171/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/171/task/171/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "tail",
+          "State": "S (sleeping)",
+          "Tgid": "177",
+          "Pid": "177",
+          "PPid": "171",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000000000"
+        },
+        "cmdline": "/usr/bin/tail -n 0 -f /home/asterinas/Xorg.0.log ",
+        "cgroup": "0::/system.slice/asterinas-desktop-m5.service\n",
+        "tasks": {
+          "177": {
+            "stat": "177 (tail) S 171 171 171 1025 171 0 0 0 0 0 0 0 0 0 20 0 1 0 832 10678272 353 18446744073709551615 183252434944 183252496344 274877155920 0 0 0 0 4102 0 0 0 0 17 0 0 0 0 0 0 183252498544 183252501192 183253131264 274877156423 274877156472 274877156472 274877157376 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":177,\"tid\":177,\"snapshot_jiffies\":11787,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/177/task/177/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/177/task/177/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "Xorg",
+          "State": "S (sleeping)",
+          "Tgid": "178",
+          "Pid": "178",
+          "PPid": "171",
+          "Threads": "2",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000000000"
+        },
+        "cmdline": "/usr/lib/xorg/Xorg :0 -noreset -nolisten tcp -ac -novtswitch -keeptty -extension GLX -configdir /etc/asterinas/display-providers/fbdev/xorg.conf.d -logfile /home/asterinas/Xorg.0.log vt1 ",
+        "cgroup": "0::/system.slice/asterinas-desktop-m5.service\n",
+        "tasks": {
+          "178": {
+            "stat": "178 (Xorg) S 171 171 171 1025 171 0 0 0 0 0 29 29 16 4 20 0 2 0 832 123359232 4238 18446744073709551615 183252488192 183254696808 274877319552 0 0 0 0 4096 1098933999 0 0 0 17 0 0 0 0 0 0 183254701424 183255014848 183255998464 274877320125 274877320312 274877320312 274877321216 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":178,\"tid\":178,\"snapshot_jiffies\":11790,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/178/task/178/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/178/task/178/stack'"
+          },
+          "184": {
+            "stat": "184 (InputThread) S 171 171 171 1025 171 0 0 0 0 0 0 0 16 4 20 0 2 0 832 123359232 4238 18446744073709551615 183252488192 183254696808 274877319552 0 0 0 18446744067266838271 4096 1098933999 0 0 0 17 1 0 0 0 0 0 183254701424 183255014848 183255998464 274877320125 274877320312 274877320312 274877321216 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":178,\"tid\":184,\"snapshot_jiffies\":11791,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/178/task/184/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/178/task/184/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "runuser",
+          "State": "S (sleeping)",
+          "Tgid": "188",
+          "Pid": "188",
+          "PPid": "171",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "fffffffe7ffb9eff"
+        },
+        "cmdline": "/usr/sbin/runuser --user asterinas --preserve-environment -- /usr/bin/openbox --sm-disable ",
+        "cgroup": "0::/system.slice/asterinas-desktop-m5.service\n",
+        "tasks": {
+          "188": {
+            "stat": "188 (runuser) S 171 171 171 1025 171 0 0 0 0 0 1 2 0 0 20 0 1 0 945 14278656 695 18446744073709551615 183252234240 183252304192 274877872672 0 0 0 18446744067266813695 4102 16384 0 0 0 17 1 0 0 0 0 0 183252309600 183252312128 183252815872 274877873177 274877873268 274877873268 274877874176 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":188,\"tid\":188,\"snapshot_jiffies\":11794,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/188/task/188/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/188/task/188/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "openbox",
+          "State": "S (sleeping)",
+          "Tgid": "190",
+          "Pid": "190",
+          "PPid": "188",
+          "Threads": "2",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000000000"
+        },
+        "cmdline": "/usr/bin/openbox --sm-disable ",
+        "cgroup": "0::/system.slice/asterinas-desktop-m5.service\n",
+        "tasks": {
+          "190": {
+            "stat": "190 (openbox) S 188 171 171 1025 171 0 0 0 0 0 31 25 0 0 20 0 2 0 951 113147904 4086 18446744073709551615 183252348928 183252669272 274876852864 0 0 0 0 0 1102143199 0 0 0 17 1 0 0 0 0 0 183252676096 183252684448 183252811776 274876853334 274876853364 274876853364 274876854272 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":190,\"tid\":190,\"snapshot_jiffies\":11798,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/190/task/190/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/190/task/190/stack'"
+          },
+          "203": {
+            "stat": "203 ([pango] fontcon) S 188 171 171 1025 171 0 0 0 0 0 13 32 0 0 20 0 2 0 951 113147904 4086 18446744073709551615 183252348928 183252669272 274876852864 0 0 0 0 0 1102143199 0 0 0 17 1 0 0 0 0 0 183252676096 183252684448 183252811776 274876853334 274876853364 274876853364 274876854272 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":190,\"tid\":203,\"snapshot_jiffies\":11799,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/190/task/203/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/190/task/203/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "bash",
+          "State": "S (sleeping)",
+          "Tgid": "244",
+          "Pid": "244",
+          "PPid": "15",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000010000"
+        },
+        "cmdline": "/bin/bash --noprofile --rcfile /run/asterinas-debug-console.bashrc -i ",
+        "cgroup": "0::/system.slice/asterinas-debug-console.service\n",
+        "tasks": {
+          "244": {
+            "stat": "244 (bash) S 15 244 15 1088 15 0 0 0 0 0 0 0 0 0 20 0 1 0 1147 12406784 816 18446744073709551615 183252426752 183253518192 274877655920 0 0 0 65536 4096 134283266 0 0 0 17 2 0 0 0 0 0 183253523248 183253619736 183254388736 274877656331 274877656401 274877656401 274877657088 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":244,\"tid\":244,\"snapshot_jiffies\":11802,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/244/task/244/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/244/task/244/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "python3",
+          "State": "R (running)",
+          "Tgid": "246",
+          "Pid": "246",
+          "PPid": "244",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000000000"
+        },
+        "cmdline": "python3 -u /run/lifecycle.py ",
+        "cgroup": "0::/system.slice/asterinas-debug-console.service\n"
+      }
+    ]
+  },
+  {
+    "kind": "stop-command",
+    "elapsed": 0.248,
+    "value": {
+      "argv": [
+        "systemctl",
+        "stop",
+        "--no-block",
+        "asterinas-desktop-m5.service"
+      ],
+      "status": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  },
+  {
+    "kind": "after-1s-unit",
+    "elapsed": 1.323,
+    "value": {
+      "argv": [
+        "systemctl",
+        "show",
+        "asterinas-desktop-m5.service",
+        "--property=MainPID",
+        "--property=ControlPID",
+        "--property=ControlGroup",
+        "--property=ActiveState",
+        "--property=SubState",
+        "--property=Result",
+        "--property=KillMode",
+        "--property=KillSignal",
+        "--property=SendSIGKILL",
+        "--property=TimeoutStopUSec",
+        "--property=Type",
+        "--property=ExecMainCode",
+        "--property=ExecMainStatus"
+      ],
+      "status": 0,
+      "stdout": "Type=simple\nTimeoutStopUSec=1min 30s\nMainPID=0\nControlPID=0\nResult=success\nExecMainCode=2\nExecMainStatus=15\nControlGroup=\nKillMode=control-group\nKillSignal=15\nSendSIGKILL=yes\nActiveState=inactive\nSubState=dead\n",
+      "stderr": ""
+    }
+  },
+  {
+    "kind": "after-1s-processes",
+    "elapsed": 1.34,
+    "value": [
+      {
+        "status": {
+          "Name": "systemd",
+          "State": "S (sleeping)",
+          "Tgid": "1",
+          "Pid": "1",
+          "PPid": "0",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "7fefc1fe28014a03"
+        },
+        "cmdline": "/sbin/init ",
+        "cgroup": "0::/init.scope\n",
+        "tasks": {
+          "1": {
+            "stat": "1 (systemd) S 0 1 1 0 -1 0 0 0 0 0 195 116 332 267 20 0 1 0 14 27815936 3018 18446744073709551615 183252373504 183252481780 274877214464 0 0 0 9218800259587721731 4096 1260 0 0 0 17 1 0 0 0 0 0 183252487192 183252492944 183253487616 274877214709 274877214720 274877214720 274877214720 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":1,\"tid\":1,\"snapshot_jiffies\":12927,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/1/task/1/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/1/task/1/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "systemd-journal",
+          "State": "S (sleeping)",
+          "Tgid": "100",
+          "Pid": "100",
+          "PPid": "1",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0008000400004a02"
+        },
+        "cmdline": "/usr/lib/systemd/systemd-journald ",
+        "cgroup": "0::/system.slice/systemd-journald.service\n"
+      },
+      {
+        "status": {
+          "Name": "dbus-daemon",
+          "State": "S (sleeping)",
+          "Tgid": "137",
+          "Pid": "137",
+          "PPid": "1",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000000000"
+        },
+        "cmdline": "/usr/bin/dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only ",
+        "cgroup": "0::/system.slice/dbus.service\n"
+      },
+      {
+        "status": {
+          "Name": "bash",
+          "State": "S (sleeping)",
+          "Tgid": "15",
+          "Pid": "15",
+          "PPid": "1",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000000000"
+        },
+        "cmdline": "/bin/bash --noprofile --rcfile /run/asterinas-debug-console.bashrc -i ",
+        "cgroup": "0::/system.slice/asterinas-debug-console.service\n",
+        "tasks": {
+          "15": {
+            "stat": "15 (bash) S 1 15 15 1088 15 0 0 0 0 0 35 113 62 129 20 0 1 0 148 12406784 816 18446744073709551615 183252426752 183253518192 274877655920 0 0 0 0 3670020 1266777851 0 0 0 17 3 0 0 0 0 0 183253523248 183253619736 183254388736 274877656331 274877656401 274877656401 274877657088 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":15,\"tid\":15,\"snapshot_jiffies\":12933,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/15/task/15/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/15/task/15/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "bash",
+          "State": "S (sleeping)",
+          "Tgid": "244",
+          "Pid": "244",
+          "PPid": "15",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000010000"
+        },
+        "cmdline": "/bin/bash --noprofile --rcfile /run/asterinas-debug-console.bashrc -i ",
+        "cgroup": "0::/system.slice/asterinas-debug-console.service\n",
+        "tasks": {
+          "244": {
+            "stat": "244 (bash) S 15 244 15 1088 15 0 0 0 0 0 0 0 0 0 20 0 1 0 1147 12406784 816 18446744073709551615 183252426752 183253518192 274877655920 0 0 0 65536 4096 134283266 0 0 0 17 2 0 0 0 0 0 183253523248 183253619736 183254388736 274877656331 274877656401 274877656401 274877657088 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":244,\"tid\":244,\"snapshot_jiffies\":12936,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/244/task/244/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/244/task/244/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "python3",
+          "State": "R (running)",
+          "Tgid": "246",
+          "Pid": "246",
+          "PPid": "244",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000000000"
+        },
+        "cmdline": "python3 -u /run/lifecycle.py ",
+        "cgroup": "0::/system.slice/asterinas-debug-console.service\n"
+      }
+    ]
+  },
+  {
+    "kind": "after-4s-unit",
+    "elapsed": 4.464,
+    "value": {
+      "argv": [
+        "systemctl",
+        "show",
+        "asterinas-desktop-m5.service",
+        "--property=MainPID",
+        "--property=ControlPID",
+        "--property=ControlGroup",
+        "--property=ActiveState",
+        "--property=SubState",
+        "--property=Result",
+        "--property=KillMode",
+        "--property=KillSignal",
+        "--property=SendSIGKILL",
+        "--property=TimeoutStopUSec",
+        "--property=Type",
+        "--property=ExecMainCode",
+        "--property=ExecMainStatus"
+      ],
+      "status": 0,
+      "stdout": "Type=simple\nTimeoutStopUSec=1min 30s\nMainPID=0\nControlPID=0\nResult=success\nExecMainCode=2\nExecMainStatus=15\nControlGroup=\nKillMode=control-group\nKillSignal=15\nSendSIGKILL=yes\nActiveState=inactive\nSubState=dead\n",
+      "stderr": ""
+    }
+  },
+  {
+    "kind": "after-4s-processes",
+    "elapsed": 4.482,
+    "value": [
+      {
+        "status": {
+          "Name": "systemd",
+          "State": "S (sleeping)",
+          "Tgid": "1",
+          "Pid": "1",
+          "PPid": "0",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "7fefc1fe28014a03"
+        },
+        "cmdline": "/sbin/init ",
+        "cgroup": "0::/init.scope\n",
+        "tasks": {
+          "1": {
+            "stat": "1 (systemd) S 0 1 1 0 -1 0 0 0 0 0 198 117 332 267 20 0 1 0 14 27815936 3018 18446744073709551615 183252373504 183252481780 274877214464 0 0 0 9218800259587721731 4096 1260 0 0 0 17 1 0 0 0 0 0 183252487192 183252492944 183253487616 274877214709 274877214720 274877214720 274877214720 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":1,\"tid\":1,\"snapshot_jiffies\":16023,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/1/task/1/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/1/task/1/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "systemd-journal",
+          "State": "S (sleeping)",
+          "Tgid": "100",
+          "Pid": "100",
+          "PPid": "1",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0008000400004a02"
+        },
+        "cmdline": "/usr/lib/systemd/systemd-journald ",
+        "cgroup": "0::/system.slice/systemd-journald.service\n"
+      },
+      {
+        "status": {
+          "Name": "dbus-daemon",
+          "State": "S (sleeping)",
+          "Tgid": "137",
+          "Pid": "137",
+          "PPid": "1",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000000000"
+        },
+        "cmdline": "/usr/bin/dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only ",
+        "cgroup": "0::/system.slice/dbus.service\n"
+      },
+      {
+        "status": {
+          "Name": "bash",
+          "State": "S (sleeping)",
+          "Tgid": "15",
+          "Pid": "15",
+          "PPid": "1",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000000000"
+        },
+        "cmdline": "/bin/bash --noprofile --rcfile /run/asterinas-debug-console.bashrc -i ",
+        "cgroup": "0::/system.slice/asterinas-debug-console.service\n",
+        "tasks": {
+          "15": {
+            "stat": "15 (bash) S 1 15 15 1088 15 0 0 0 0 0 37 121 65 165 20 0 1 0 148 12406784 817 18446744073709551615 183252426752 183253518192 274877655920 0 0 0 0 3670020 1266777851 0 0 0 17 3 0 0 0 0 0 183253523248 183253619736 183254388736 274877656331 274877656401 274877656401 274877657088 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":15,\"tid\":15,\"snapshot_jiffies\":16030,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/15/task/15/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/15/task/15/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "bash",
+          "State": "S (sleeping)",
+          "Tgid": "244",
+          "Pid": "244",
+          "PPid": "15",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000010000"
+        },
+        "cmdline": "/bin/bash --noprofile --rcfile /run/asterinas-debug-console.bashrc -i ",
+        "cgroup": "0::/system.slice/asterinas-debug-console.service\n",
+        "tasks": {
+          "244": {
+            "stat": "244 (bash) S 15 244 15 1088 15 0 0 0 0 0 0 0 0 0 20 0 1 0 1147 12406784 816 18446744073709551615 183252426752 183253518192 274877655920 0 0 0 65536 4096 134283266 0 0 0 17 2 0 0 0 0 0 183253523248 183253619736 183254388736 274877656331 274877656401 274877656401 274877657088 0\n",
+            "asterinas_syscall": "{\"version\":2,\"enabled\":false,\"pid\":244,\"tid\":244,\"snapshot_jiffies\":16034,\"current\":null,\"completed\":null,\"history\":[]}\n",
+            "wchan": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/244/task/244/wchan'",
+            "stack": "FileNotFoundError: [Errno 2] No such file or directory: '/proc/244/task/244/stack'"
+          }
+        }
+      },
+      {
+        "status": {
+          "Name": "python3",
+          "State": "R (running)",
+          "Tgid": "246",
+          "Pid": "246",
+          "PPid": "244",
+          "Threads": "1",
+          "SigPnd": "0000000000000000",
+          "ShdPnd": "0000000000000000",
+          "SigBlk": "0000000000000000"
+        },
+        "cmdline": "python3 -u /run/lifecycle.py ",
+        "cgroup": "0::/system.slice/asterinas-debug-console.service\n"
+      }
+    ]
+  },
+  {
+    "kind": "desktop-stop",
+    "elapsed": 4.551,
+    "value": "pass"
+  },
+  {
+    "kind": "awaiting-cpu-capture",
+    "elapsed": 4.551,
+    "value": "ready"
+  },
+  {
+    "kind": "journal",
+    "elapsed": 5.101,
+    "value": {
+      "argv": [
+        "journalctl",
+        "-u",
+        "asterinas-desktop-m5.service",
+        "-n",
+        "30",
+        "--no-pager"
+      ],
+      "status": 0,
+      "stdout": "Sep 22 17:10:17 ubuntu-MS-7D76 systemd[1]: Starting asterinas-desktop-m5.service - Asterinas Debian desktop session...\nSep 22 17:10:20 ubuntu-MS-7D76 megrez-clock-sync[170]: usage: megrez-clock-sync [-h] [--proxy PROXY] [--timeout TIMEOUT]\nSep 22 17:10:20 ubuntu-MS-7D76 megrez-clock-sync[170]: megrez-clock-sync: error: HTTP Date header is missing\nSep 22 17:10:20 ubuntu-MS-7D76 systemd[1]: Started asterinas-desktop-m5.service - Asterinas Debian desktop session.\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[171]: BROWSER_WEB_DESKTOP_STAGE=display-provider-ready guest_monotonic_ns=1790097020822663000 pid=0 provider=fbdev\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[171]: BROWSER_WEB_DESKTOP_STAGE=xorg-start guest_monotonic_ns=1790097020831317000 pid=0\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]: X.Org X Server 1.21.1.16\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]: X Protocol Version 11, Revision 0\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]: Current Operating System: Linux ubuntu-MS-7D76 5.13.0 #1 SMP Thu Jan  1 00:00:00 UTC 1970 riscv64\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]: Kernel command line: console=ttyS0 loglevel=off init=/init asterinas.debian_network=qemu-slirp systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct systemd.setenv=ASTERINAS_WEB_NETWORK_ADDRESS=10.0.2.15/24 systemd.setenv=ASTERINAS_WEB_NETWORK_GATEWAY=10.0.2.2 systemd.setenv=ASTERINAS_WEB_NETWORK_RESOLVER=10.0.2.3 systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL=http://10.0.2.2:17894/asterinas-network-probe.bin systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SIZE=65536 systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SHA256=7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2 systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_REQUESTS=20 systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=300 systemd.setenv=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight systemd.mask=asterinas-browser-web-evidence.service systemd.mask=asterinas-desktop-m5-network.service systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1 -- --root-init=systemd --debug-console=isolated-root\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]: xorg-server 2:21.1.16-1.3+deb13u4 (https://www.debian.org/support)\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]: Current version of pixman: 0.44.0\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]:         Before reporting problems, check http://wiki.x.org\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]:         to make sure that you have the latest version.\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]: Markers: (--) probed, (**) from config file, (==) default setting,\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]:         (++) from command line, (!!) notice, (II) informational,\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]:         (WW) warning, (EE) error, (NI) not implemented, (??) unknown.\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]: (++) Log file: \"/home/asterinas/Xorg.0.log\", Time: Tue Sep 22 17:10:20 2026\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]: (++) Using config directory: \"/etc/asterinas/display-providers/fbdev/xorg.conf.d\"\nSep 22 17:10:20 ubuntu-MS-7D76 desktop-m5-session[178]: (==) Using system config directory \"/usr/share/X11/xorg.conf.d\"\nSep 22 17:10:21 ubuntu-MS-7D76 desktop-m5-session[171]: BROWSER_WEB_DESKTOP_STAGE=x-socket-ready guest_monotonic_ns=1790097021969309000 pid=178\nSep 22 17:10:22 ubuntu-MS-7D76 runuser[188]: pam_unix(runuser:session): session opened for user asterinas(uid=1000) by (uid=0)\nSep 22 17:10:24 ubuntu-MS-7D76 runuser[188]: pam_unix(runuser:session): session closed for user asterinas\nSep 22 17:10:24 ubuntu-MS-7D76 systemd[1]: Stopping asterinas-desktop-m5.service - Asterinas Debian desktop session...\nSep 22 17:10:24 ubuntu-MS-7D76 desktop-m5-session[178]: (II) Server terminated successfully (0). Closing log file.\nSep 22 17:10:24 ubuntu-MS-7D76 systemd[1]: asterinas-desktop-m5.service: Deactivated successfully.\nSep 22 17:10:24 ubuntu-MS-7D76 systemd[1]: Stopped asterinas-desktop-m5.service - Asterinas Debian desktop session.\nSep 22 17:10:24 ubuntu-MS-7D76 systemd[1]: asterinas-desktop-m5.service: Consumed 3.928s CPU time.\n",
+      "stderr": ""
+    }
+  },
+  {
+    "kind": "complete",
+    "elapsed": 5.102,
+    "value": "collected"
+  },
+  {
+    "kind": "cgroup-c-regression",
+    "value": "pass"
+  }
+]

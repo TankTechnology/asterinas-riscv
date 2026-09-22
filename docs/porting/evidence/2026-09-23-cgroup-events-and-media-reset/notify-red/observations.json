@@ -1,0 +1,36 @@
+[
+  {
+    "kind": "watch-pinned",
+    "value": [
+      1,
+      2
+    ]
+  },
+  {
+    "kind": "entered",
+    "value": {
+      "events": [],
+      "states": [
+        "populated 1\nfrozen 0\n",
+        "populated 1\nfrozen 0\n"
+      ]
+    }
+  },
+  {
+    "kind": "exited",
+    "value": {
+      "events": [],
+      "states": [
+        "populated 0\nfrozen 0\n",
+        "populated 0\nfrozen 0\n"
+      ]
+    }
+  },
+  {
+    "kind": "watch-path-identity",
+    "value": {
+      "first": 1,
+      "second": 2
+    }
+  }
+]
