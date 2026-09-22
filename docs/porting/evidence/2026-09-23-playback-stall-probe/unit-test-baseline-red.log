@@ -1,0 +1,25 @@
+test_playback_timeout_reports_observed_video_and_probe_error (tools.riscv.tests.test_debian_browser_web.BrowserWebContractTests.test_playback_timeout_reports_observed_video_and_probe_error) ...
+  test_playback_timeout_reports_observed_video_and_probe_error (tools.riscv.tests.test_debian_browser_web.BrowserWebContractTests.test_playback_timeout_reports_observed_video_and_probe_error) (last='dict') ... FAIL
+  test_playback_timeout_reports_observed_video_and_probe_error (tools.riscv.tests.test_debian_browser_web.BrowserWebContractTests.test_playback_timeout_reports_observed_video_and_probe_error) (last='GateError') ... FAIL
+
+======================================================================
+FAIL: test_playback_timeout_reports_observed_video_and_probe_error (tools.riscv.tests.test_debian_browser_web.BrowserWebContractTests.test_playback_timeout_reports_observed_video_and_probe_error) (last='dict')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/asterinas/.worktrees/uart-rx-boundaries/tools/riscv/tests/test_debian_browser_web.py", line 3678, in test_playback_timeout_reports_observed_video_and_probe_error
+    self.assertIn("state=video", message)
+AssertionError: 'state=video' not found in "Bilibili playback did not advance within the bounded deadline: Bilibili playback script returned no JSON: response_type=Mock response=<Mock name='mock.command()' id='140696186056064'>"
+
+======================================================================
+FAIL: test_playback_timeout_reports_observed_video_and_probe_error (tools.riscv.tests.test_debian_browser_web.BrowserWebContractTests.test_playback_timeout_reports_observed_video_and_probe_error) (last='GateError')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/root/asterinas/.worktrees/uart-rx-boundaries/tools/riscv/tests/test_debian_browser_web.py", line 3678, in test_playback_timeout_reports_observed_video_and_probe_error
+    self.assertIn("state=video", message)
+AssertionError: 'state=video' not found in "Bilibili playback did not advance within the bounded deadline: Bilibili playback script returned no JSON: response_type=Mock response=<Mock name='mock.command()' id='140696186779120'>"
+
+----------------------------------------------------------------------
+Ran 1 test in 0.002s
+
+FAILED (failures=2)
+EXPECTED_BASELINE_FAILURE: both timeout-diagnostic assertions fail

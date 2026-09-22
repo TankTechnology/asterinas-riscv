@@ -1468,13 +1468,16 @@ def _probe(client: Marionette) -> dict[str, object]:
 
 
 def _playback_probe(client: Marionette) -> dict[str, object]:
+    # Promise handlers and event counters live on the sandbox's video wrapper.
+    # Keep that wrapper across samples, separate from read-only DOM snapshots
+    # that recreate the default sandbox.
     response = client.command(
         "WebDriver:ExecuteScript",
         {
             "script": _BILIBILI_PLAYBACK_SCRIPT,
             "args": [],
-            "newSandbox": True,
-            "sandbox": "default",
+            "newSandbox": False,
+            "sandbox": "asterinas-bilibili-playback",
             "line": 1,
             "filename": "asterinas-bilibili-playback",
         },
@@ -1562,6 +1565,7 @@ def _wait_for_bilibili_playback(
     last_source = ""
     last_report: tuple[object, ...] | None = None
     last_error: GateError | None = None
+    last_observation = "no valid playback sample received"
     while time.monotonic() < playback_deadline:
         try:
             sample = _playback_probe(client)
@@ -1572,6 +1576,16 @@ def _wait_for_bilibili_playback(
             if actual is None or actual.group(1) != expected.group(1):
                 raise GateError("Bilibili playback lost the selected live BV identity")
             state = sample["state"]
+            last_error = None
+            last_observation = (
+                f"state={state} ready_state={sample['readyState']} "
+                f"network_state={sample['networkState']} "
+                f"play_promise={sample['playPromise']} "
+                f"current_time={sample['currentTime']} "
+                f"buffered_end={sample['bufferedEnd']} "
+                f"decoded_frames={sample['decodedFrames']} "
+                f"events={sample['events']}"
+            )
             if state == "video":
                 source = sample["currentSrc"]
                 assert isinstance(source, str)
@@ -1692,8 +1706,9 @@ def _wait_for_bilibili_playback(
             last_error = error
         time.sleep(min(1.0, max(0.0, playback_deadline - time.monotonic())))
     raise GateError(
-        "Bilibili playback did not advance within the bounded deadline: "
-        f"{last_error or 'video element remained unavailable'}"
+        "Bilibili playback requirements were not met within the bounded deadline: "
+        f"last_observation=({last_observation})"
+        + (f"; last_probe_error={last_error}" if last_error is not None else "")
     )
 
 
