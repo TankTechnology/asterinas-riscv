@@ -35,10 +35,27 @@ const SSTATUS_UXL_64: usize = 0b10 << 32;
 /// Reference: <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#sstatus>.
 pub(in crate::arch) const SSTATUS_SUM: usize = 0b1 << 18;
 
+/// Supervisor Previous Privilege bit, selecting S-mode on trap return.
+/// Reference: <https://docs.riscv.org/reference/isa/v20260120/priv/supervisor.html>.
+const SSTATUS_SPP: usize = 1 << 8;
+
+#[cfg(not(ktest))]
 global_asm!(
     include_str!("trap.S"),
     SSTATUS_FS_MASK = const SSTATUS_FS_MASK,
-    SSTATUS_SUM = const SSTATUS_SUM
+    SSTATUS_SUM = const SSTATUS_SUM,
+    SSTATUS_SPP = const SSTATUS_SPP
+);
+
+// Keep the test helper in the same assembly unit so the production return
+// label remains private to this file.
+#[cfg(ktest)]
+global_asm!(
+    include_str!("trap.S"),
+    include_str!("return_test.S"),
+    SSTATUS_FS_MASK = const SSTATUS_FS_MASK,
+    SSTATUS_SUM = const SSTATUS_SUM,
+    SSTATUS_SPP = const SSTATUS_SPP
 );
 
 /// Initialize interrupt handling for the current HART.
@@ -187,6 +204,70 @@ mod tests {
 
     const HSTATUS_SPV: usize = 1 << 7;
     const SSTATUS_UXL_MASK: usize = 0b11 << 32;
+
+    unsafe extern "C" {
+        fn riscv_test_kernel_trap_return_gp(saved_gp: usize) -> usize;
+    }
+
+    #[ktest]
+    fn kernel_trap_return_preserves_current_cpu_gp() {
+        let _irq_guard = crate::irq::disable_local();
+        clear_previous_virtualization_mode();
+        let current_gp = crate::arch::cpu::local::get_base() as usize;
+
+        // A sleeping kernel page-fault handler can resume on another CPU. Its
+        // saved gp then differs from the live CPU-local base. The helper repairs
+        // gp before returning to Rust, so even the regression failure is safe.
+        // SAFETY: IRQs stay disabled through the synthetic S-mode return. The
+        // helper restores the stack, callee-saved registers, gp, and trap CSRs.
+        let observed_gp = unsafe { riscv_test_kernel_trap_return_gp(0) };
+        assert_eq!(observed_gp, current_gp, "kernel return restored stale gp");
+
+        // SAFETY: The same helper contract holds when no migration occurred.
+        let observed_gp = unsafe { riscv_test_kernel_trap_return_gp(current_gp) };
+        assert_eq!(observed_gp, current_gp);
+    }
+
+    #[ktest]
+    fn user_trap_return_restores_user_gp() {
+        let _irq_guard = crate::irq::disable_local();
+        clear_previous_virtualization_mode();
+        let current_gp = crate::arch::cpu::local::get_base();
+        let mut context = RawUserContext::default();
+        const USER_GP: usize = 0x1234_5678;
+        context.general.gp = USER_GP;
+        // This supervisor-only address faults before executing a user
+        // instruction, exercising both real user return and trap entry.
+        context.sepc = super::trap_entry as *const () as usize;
+        let saved_sie: usize;
+        let saved_sstatus: usize;
+        let saved_sepc: usize;
+        let saved_scause: usize;
+        let saved_stval: usize;
+        // SAFETY: IRQs are disabled and sscratch is zero in kernel context.
+        // Mask individual interrupt sources as U-mode ignores sstatus.SIE.
+        // No Rust executes with user gp; run_user restores the kernel gp.
+        unsafe {
+            asm!("csrrw {}, sie, zero", out(reg) saved_sie);
+            asm!("csrr {}, sstatus", out(reg) saved_sstatus);
+            asm!("csrr {}, sepc", out(reg) saved_sepc);
+            asm!("csrr {}, scause", out(reg) saved_scause);
+            asm!("csrr {}, stval", out(reg) saved_stval);
+            super::run_user(&mut context);
+            asm!("csrw sstatus, {}", in(reg) saved_sstatus);
+            asm!("csrw sepc, {}", in(reg) saved_sepc);
+            asm!("csrw scause, {}", in(reg) saved_scause);
+            asm!("csrw stval, {}", in(reg) saved_stval);
+            asm!("csrw sie, {}", in(reg) saved_sie);
+        }
+        assert_eq!(context.general.gp, USER_GP);
+        assert_eq!(crate::arch::cpu::local::get_base(), current_gp);
+        assert_eq!(
+            context.sstatus & super::SSTATUS_SPP,
+            0,
+            "trap did not originate in U-mode"
+        );
+    }
 
     #[ktest]
     fn defaults_to_64_bit_user_mode() {
