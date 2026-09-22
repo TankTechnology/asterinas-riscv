@@ -3642,6 +3642,45 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertGreaterEqual(observed["progress"], 0.5)
         self.assertEqual(client.command.call_count, 2)
 
+    def test_playback_timeout_reports_observed_video_and_probe_error(self) -> None:
+        url = "https://www.bilibili.com/video/BV1Ab411c7De/"
+        sample = {
+            "url": url,
+            "state": "video",
+            "currentSrc": "blob:" + url,
+            "sourceKind": "blob",
+            "errorCode": None,
+            "playPromise": "pending",
+            "currentTime": 63.953,
+            "readyState": 4,
+            "networkState": 2,
+            "paused": False,
+            "ended": False,
+            "videoWidth": 1920,
+            "videoHeight": 1080,
+            "decodedFrames": 1600,
+            "droppedFrames": 0,
+            "bufferedEnd": 65.0,
+            "events": {"playing": 0, "timeupdate": 0},
+        }
+        module = "tools.riscv.debian.rootfs.browser_web_marionette_gate"
+        for last in (sample, GateError("transport unavailable")):
+            # Take exactly two samples, then expire without a wall-clock wait.
+            with self.subTest(last=type(last).__name__), mock.patch(
+                module + ".time.monotonic", side_effect=[0, 0, 0, 0, 1, 1, 2]
+            ), mock.patch(module + ".time.sleep"), mock.patch(
+                module + "._playback_probe", side_effect=[sample, last]
+            ):
+                with self.assertRaises(GateError) as caught:
+                    _wait_for_bilibili_playback(mock.Mock(), url, 2)
+                message = str(caught.exception)
+                self.assertNotIn("video element remained unavailable", message)
+                self.assertIn("state=video", message)
+                self.assertIn("play_promise=pending", message)
+                self.assertIn("current_time=63.953", message)
+                if isinstance(last, GateError):
+                    self.assertIn("transport unavailable", message)
+
     def test_challenge_403_snapshot_always_fails(self) -> None:
         challenged = snapshot("https://www.baidu.com/")
         challenged["dom"]["baiduKeyword"] = True
