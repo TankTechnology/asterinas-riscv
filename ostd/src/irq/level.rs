@@ -139,21 +139,6 @@ pub(crate) fn raw_for_diagnosis() -> u8 {
     INTERRUPT_LEVEL.load()
 }
 
-/// Puts the level back to the task context, returning what it held before.
-///
-/// The level belongs to the stack that raised it: `enter` undoes it on the way
-/// out, and nothing else ever does. A task switch that happens *inside* an
-/// interrupt --- which the bottom half explicitly allows, since it runs
-/// callbacks with local IRQs re-enabled --- therefore abandons the level along
-/// with the stack that held it. The task that resumes on this CPU is not
-/// inside any interrupt, so the level it inherits is both stale and, being
-/// stale, one that the encoding may not be able to represent again.
-pub(crate) fn take_for_switch() -> u8 {
-    let stale = INTERRUPT_LEVEL.load();
-    INTERRUPT_LEVEL.store(0);
-    stale
-}
-
 const CANARY_VALUE: u32 = 0x5A5A_5A5A;
 
 cpu_local_cell! {
