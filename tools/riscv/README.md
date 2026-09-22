@@ -183,6 +183,47 @@ make test_riscv_uboot_booti_unit
 
 These tests validate immutable profile definitions, address ranges, generated commands, DTB policy, milestone accounting, result classification, cleanup, and artifact identity checks.
 
+## Basic LMBench compatibility smoke
+
+Build the repository-pinned LMBench package alone in the persistent dev container:
+
+```sh
+tools/docker/run_dev_container.sh -- nix-build test/initramfs/nix/default.nix \
+  --argstr target riscv64 -A benchmark.lmbench \
+  --out-link /root/asterinas/target/lmbench-riscv64
+```
+
+Install that package and its runtime closure in the guest.
+Nix-built executables use an absolute `/nix/store/...` ELF interpreter;
+copying only their `bin/` directory into a Debian guest is insufficient.
+Use `nix-store -qR` on the package output to list the required store paths.
+The existing benchmark initramfs already includes its Nix dependencies.
+
+Copy `tools/riscv/lmbench_smoke.py` to a guest with Python 3.10 or newer,
+then run it inside the guest:
+
+```sh
+python3 /path/to/lmbench_smoke.py \
+  --bin-dir /nix/store/<lmbench-package>/bin \
+  --output /tmp/lmbench-smoke.json
+```
+
+This executes 18 short checks: six syscalls, fork/exec/shell, pipe latency,
+two-process context switching, signal install/catch, 1 MiB memory read/write/copy,
+mmap, and page faults.
+It uses `-P 1 -W 0 -N 1`, `ENOUGH=10000`, and a ten-second per-case timeout.
+A missing measurement, nonzero exit, or timeout fails the run immediately.
+The report retains commands, outputs, binary hashes, durations, and units.
+`lat_proc` requires `/tmp/hello`; the runner verifies it with an empty environment
+and refuses to replace an existing different file.
+
+The Debian/QEMU smoke result establishes compatibility, not performance parity
+with Linux or physical-board performance.
+It is separate from the x86-oriented comparative benchmark runner and its
+longer sampling settings.
+[The first RISC-V run and replay instructions](../../docs/porting/evidence/2026-09-23-lmbench-basic.md)
+record all 18 checks passing in 8.417 seconds, excluding VM startup and staging.
+
 ## Linux Test Project syscall gate
 
 The isolated LTP gate cross-builds the pinned LTP `20260529` syscall suite,
