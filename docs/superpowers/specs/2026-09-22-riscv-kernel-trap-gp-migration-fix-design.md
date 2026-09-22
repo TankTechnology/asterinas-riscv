@@ -8,9 +8,12 @@ It is intentionally scoped to the architectural state-transfer bug. It does
 not change scheduler policy, heap allocation policy, or VM fault semantics.
 
 The existing bounded model and implementation mapping remain in
-`tools/verification/riscv_cpu_local_migration/`. This design discharges the
-model's open implementation obligation for returning from a kernel trap after
-migration.
+`tools/verification/riscv_cpu_local_migration/`.
+This design targets the model's open implementation obligation for returning
+from a kernel trap after migration.
+The implementation and deterministic test establish the return instruction's
+behavior given a correct live destination base; they do not prove every
+scheduler transition or the complete kernel's safety and liveness.
 
 ## Classification
 
@@ -53,12 +56,14 @@ The following execution is permitted by the current implementation:
 8. Code running on CPU B reads and mutates CPU A's IRQ, preemption, current-task,
    and heap-cache cells.
 
-This explains why the visible failures vary while sharing a CPU-local shape:
+This mechanism can explain varying failures with a common CPU-local shape:
 Firefox runs have failed in unrelated allocation paths at
 `RefCell<LocalCache>::borrow_mut`, and diagnostic runs have observed impossible
 IRQ/preemption state. The first corrupted CPU-local access determines the
 surface symptom; it need not occur in the page-fault handler that created the
 stale `gp`.
+Those failure sites alone do not establish that this transition occurred in
+each historical Firefox run; integration qualification remains separate.
 
 ## Architectural Ownership Model
 
@@ -269,4 +274,3 @@ impossible, the mechanism that prevents it must be explicit and testable.
   available.
 - No scheduler policy, VM fault blocking rule, allocator policy, or unrelated
   architecture behavior changes as part of this fix.
-

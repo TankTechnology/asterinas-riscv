@@ -1,0 +1,4 @@
+case	exit	states
+RestoreStaleGp	12	368 states generated, 123 distinct states found, 45 states left on queue.
+SwitchWhileBorrowed	12	26 states generated, 17 distinct states found, 12 states left on queue.
+Correct	0	12961 states generated, 2808 distinct states found, 0 states left on queue.
