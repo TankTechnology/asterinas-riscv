@@ -87,11 +87,7 @@ fn ap_init() {
 // the latency to switching from the idle task to a useful, runnable one.
 
 fn bsp_idle_loop() {
-    ostd::warn!(
-        "Idle thread for CPU #0 started, cpu_local base {:#x}, guard count {}",
-        ostd::task::cpu_local_base_for_diagnosis(),
-        ostd::task::preempt_guard_count_for_diagnosis(),
-    );
+    ostd::info!("Idle thread for CPU #0 started");
 
     // Spawn the first non-idle kernel thread on BSP.
     ThreadOptions::new(first_kthread)
@@ -120,16 +116,10 @@ fn bsp_idle_loop() {
 }
 
 fn ap_idle_loop() {
-    // The CPU-local base is what every CPU-local cell on this CPU is resolved
-    // through. Printing it per CPU shows at a glance whether a CPU is reading
-    // another CPU's cells, which would explain a level, a guard count and a
-    // current-task pointer all going wrong together.
-    ostd::warn!(
-        "Idle thread for CPU #{} started, cpu_local base {:#x}, guard count {}",
+    ostd::info!(
+        "Idle thread for CPU #{} started",
         // No races because this function runs on a certain AP.
         CpuId::current_racy().as_usize(),
-        ostd::task::cpu_local_base_for_diagnosis(),
-        ostd::task::preempt_guard_count_for_diagnosis(),
     );
 
     loop {
