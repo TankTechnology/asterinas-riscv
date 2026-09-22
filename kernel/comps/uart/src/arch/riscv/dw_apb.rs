@@ -495,7 +495,13 @@ fn try_initialize_rx_path(
     let mut irq_line = IrqLine::alloc().map_err(|_| RxInitError::IrqLineUnavailable)?;
 
     let taskless_console = uart_console.clone();
-    RX_TASKLESS.call_once(|| Taskless::new(move || process_deferred_rx(&taskless_console)));
+    RX_TASKLESS.call_once(|| {
+        Taskless::new(move || {
+            process_deferred_rx(&taskless_console, || {
+                RX_TASKLESS.get().unwrap().schedule_urgent();
+            });
+        })
+    });
     let callback_console = uart_console.clone();
     irq_line.on_active(move |_| {
         if callback_console.uart().prepare_deferred_rx() == Ok(true) {
@@ -519,9 +525,12 @@ fn try_initialize_rx_path(
     Ok(())
 }
 
-fn process_deferred_rx(uart_console: &Arc<UartConsole<DwApbUart<IoMemAccess>>>) {
+fn process_deferred_rx<A: DwApbAccess>(
+    uart_console: &UartConsole<DwApbUart<A>>,
+    reschedule: impl FnOnce(),
+) {
     if uart_console.trigger_input_callbacks_bounded(RX_BATCH_BUDGET) {
-        RX_TASKLESS.get().unwrap().schedule_urgent();
+        reschedule();
         return;
     }
 
@@ -613,6 +622,119 @@ mod tests {
             state.operations.push(Operation::Write32(offset, value));
             state.writes.pop_front().unwrap_or(Ok(()))
         }
+    }
+
+    // Model pending input and the RX enable bit, not physical FIFO timing.
+    // A timeout cause represents data below the hardware FIFO trigger level.
+    struct PendingRx {
+        bytes: VecDeque<u8>,
+        ier: u32,
+        after_empty: Option<u8>,
+    }
+
+    #[derive(Clone)]
+    struct ReceiveAccess(Arc<Mutex<PendingRx>>);
+
+    impl ReceiveAccess {
+        fn new(bytes: &[u8], after_empty: Option<u8>) -> Self {
+            Self(Arc::new(Mutex::new(PendingRx {
+                bytes: bytes.iter().copied().collect(),
+                ier: 0x80 | IER_RDI,
+                after_empty,
+            })))
+        }
+    }
+
+    impl DwApbAccess for ReceiveAccess {
+        fn read32(&self, offset: usize) -> Result<u32, ()> {
+            let mut state = self.0.lock();
+            Ok(match offset {
+                IER_OFFSET => state.ier,
+                IIR_OFFSET => {
+                    if state.ier & IER_RDI != 0 && !state.bytes.is_empty() {
+                        IIR_CTI
+                    } else {
+                        IIR_NO_INTERRUPT
+                    }
+                }
+                LSR_OFFSET if state.bytes.is_empty() => {
+                    // The sampled status is empty, then a byte arrives while
+                    // RX is masked, before the driver's subsequent IER access.
+                    if let Some(byte) = state.after_empty.take() {
+                        assert_eq!(state.ier & IER_RDI, 0);
+                        state.bytes.push_back(byte);
+                    }
+                    0
+                }
+                LSR_OFFSET => LSR_DR,
+                RBR_OFFSET => u32::from(state.bytes.pop_front().unwrap()),
+                _ => panic!("unexpected RX register read: {offset:#x}"),
+            })
+        }
+
+        fn write32(&self, offset: usize, value: u32) -> Result<(), ()> {
+            assert_eq!(offset, IER_OFFSET);
+            self.0.lock().ier = value;
+            Ok(())
+        }
+    }
+
+    static DELIVERED_RX: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+    static RECORD_RX: fn(ostd::mm::VmReader<ostd::mm::Infallible>) = |mut reader| {
+        let mut delivered = DELIVERED_RX.lock();
+        while reader.remain() > 0 {
+            delivered.push(reader.read_val::<u8>().unwrap());
+        }
+    };
+
+    #[ktest]
+    fn dw_apb_deferred_rx_retries_at_the_budget_without_unmasking() {
+        use aster_console::InputConsoleDevice;
+
+        DELIVERED_RX.lock().clear();
+        // One turn delivers at most four 16-byte console batches.
+        let input: Vec<u8> = (0..65).collect();
+        let access = ReceiveAccess::new(&input, None);
+        let console = UartConsole::new(DwApbUart::new(access.clone()));
+        console.register_receive_callback(&RECORD_RX);
+
+        assert_eq!(console.uart().prepare_deferred_rx(), Ok(true));
+        let mut retries = 0;
+        process_deferred_rx(&console, || retries += 1);
+        assert_eq!(retries, 1);
+        assert_eq!(access.0.lock().ier, 0x80);
+        assert_eq!(*DELIVERED_RX.lock(), input[..64]);
+
+        process_deferred_rx(&console, || retries += 1);
+        assert_eq!(retries, 1);
+        assert_eq!(*DELIVERED_RX.lock(), input);
+        assert_eq!(access.0.lock().ier, 0x80 | IER_RDI);
+        assert_eq!(console.uart().prepare_deferred_rx(), Ok(false));
+        DELIVERED_RX.lock().clear();
+    }
+
+    #[ktest]
+    fn dw_apb_deferred_rx_delivers_input_arriving_before_rearm() {
+        use aster_console::InputConsoleDevice;
+
+        DELIVERED_RX.lock().clear();
+        let access = ReceiveAccess::new(b"A", Some(b'B'));
+        let console = UartConsole::new(DwApbUart::new(access.clone()));
+        console.register_receive_callback(&RECORD_RX);
+
+        assert_eq!(console.uart().prepare_deferred_rx(), Ok(true));
+        process_deferred_rx(&console, || panic!("short batch should rearm RX"));
+        assert_eq!(*DELIVERED_RX.lock(), b"A");
+        assert_eq!(access.0.lock().ier, 0x80 | IER_RDI);
+
+        // The byte injected after the empty observation must trigger another
+        // receive interrupt once the real deferred handler has rearmed RX.
+        assert_eq!(console.uart().prepare_deferred_rx(), Ok(true));
+        process_deferred_rx(&console, || panic!("short batch should rearm RX"));
+        assert_eq!(*DELIVERED_RX.lock(), b"AB");
+        assert_eq!(access.0.lock().ier, 0x80 | IER_RDI);
+        assert_eq!(console.uart().prepare_deferred_rx(), Ok(false));
+        DELIVERED_RX.lock().clear();
     }
 
     #[ktest]
