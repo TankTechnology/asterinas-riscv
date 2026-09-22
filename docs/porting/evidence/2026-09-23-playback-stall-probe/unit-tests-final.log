@@ -1,0 +1,57 @@
+....A_WEB_TIMELINE marker=BOOT_MARIONETTE_CONNECTED guest_monotonic_ns=558559865561080 firefox_pid=116
+A_WEB_PHASE phase=new-session state=start firefox_pid=116
+A_WEB_PHASE phase=new-session state=done firefox_pid=116
+A_WEB_TIMELINE marker=BOOT_NEW_SESSION_DONE guest_monotonic_ns=558559865584380 firefox_pid=116
+A_WEB_PHASE phase=window-handles state=start firefox_pid=116
+A_WEB_PHASE phase=window-handles state=done firefox_pid=116
+A_WEB_TIMELINE marker=BOOT_FIRST_WINDOW_READY guest_monotonic_ns=558559865600820 firefox_pid=116
+A_WEB_PHASE phase=navigate-baidu-home state=start firefox_pid=116
+A_WEB_PHASE phase=navigate-baidu-home state=done firefox_pid=116
+A_WEB_PHASE phase=title-baidu-home state=start firefox_pid=116
+A_WEB_PHASE phase=title-baidu-home state=done firefox_pid=116
+A_WEB_PHASE phase=ping-baidu-home state=start firefox_pid=116
+A_WEB_PHASE phase=ping-baidu-home state=done firefox_pid=116
+A_WEB_JS_PING state=response url="https://www.baidu.com/" ready_state="interactive"
+A_WEB_PHASE phase=probe-baidu-home state=start firefox_pid=116
+A_WEB_PHASE phase=probe-baidu-home state=done firefox_pid=116
+A_WEB_PHASE phase=snapshot-baidu-home state=start firefox_pid=116
+A_WEB_PHASE phase=snapshot-baidu-home state=done firefox_pid=116
+A_WEB_TIMELINE marker=BOOT_DOM_READY guest_monotonic_ns=558559865680352 firefox_pid=116 page=baidu-home
+A_WEB_PHASE phase=evidence-baidu-home state=start firefox_pid=116
+A_WEB_PHASE phase=evidence-baidu-home state=done firefox_pid=116
+.....A_WEB_BILIBILI_PLAYBACK_SAMPLE state=video ready_state=4 play_promise=resolved paused=0 ended=0 current_time=0.000 progress=0.000 events_playing=1 events_timeupdate=2 source_kind=blob
+A_WEB_BILIBILI_PLAYBACK_SAMPLE state=video ready_state=4 play_promise=resolved paused=0 ended=0 current_time=0.700 progress=0.700 events_playing=1 events_timeupdate=2 source_kind=blob
+..A_WEB_TIMELINE marker=BOOT_MARIONETTE_CONNECTED guest_monotonic_ns=558559869100343 firefox_pid=116
+A_WEB_PHASE phase=navigate-bilibili-home state=start firefox_pid=116
+A_WEB_PHASE phase=navigate-bilibili-home state=done firefox_pid=116
+A_WEB_PHASE phase=probe-bilibili-home state=start firefox_pid=116
+A_WEB_PHASE phase=probe-bilibili-home state=done firefox_pid=116
+A_WEB_PHASE phase=snapshot-bilibili-home state=start firefox_pid=116
+A_WEB_PHASE phase=snapshot-bilibili-home state=done firefox_pid=116
+A_WEB_TIMELINE marker=BOOT_DOM_READY guest_monotonic_ns=558559869264346 firefox_pid=116 page=bilibili-home
+A_WEB_PHASE phase=evidence-bilibili-home state=start firefox_pid=116
+A_WEB_PHASE phase=evidence-bilibili-home state=done firefox_pid=116
+A_WEB_SELECTED_BV url=https://www.bilibili.com/video/BV1Ab411c7De/
+A_WEB_PHASE phase=navigate-bilibili-detail state=start firefox_pid=116
+A_WEB_PHASE phase=navigate-bilibili-detail state=done firefox_pid=116
+A_WEB_PHASE phase=probe-bilibili-detail state=start firefox_pid=116
+A_WEB_PHASE phase=probe-bilibili-detail state=done firefox_pid=116
+A_WEB_PHASE phase=play-bilibili-detail state=start firefox_pid=116
+A_WEB_PHASE phase=play-bilibili-detail state=done firefox_pid=116
+A_WEB_PHASE phase=snapshot-bilibili-detail state=start firefox_pid=116
+A_WEB_PHASE phase=snapshot-bilibili-detail state=done firefox_pid=116
+A_WEB_TIMELINE marker=BOOT_DOM_READY guest_monotonic_ns=558559869370517 firefox_pid=116 page=bilibili-detail
+A_WEB_PHASE phase=evidence-bilibili-detail state=start firefox_pid=116
+A_WEB_PHASE phase=evidence-bilibili-detail state=done firefox_pid=116
+DEBIAN_BROWSER_WEB_BILIBILI_PLAYBACK status=pass bv=BV1Ab411c7De
+.............................A_WEB_TIMELINE marker=BOOT_MARIONETTE_CONNECTED guest_monotonic_ns=558560607037758 firefox_pid=116
+................A_WEB_PROBE_COMMAND state=start
+A_WEB_PROBE_RETRY error="web readiness script returned no JSON: response_type=dict response={'value': None}"
+A_WEB_PROBE_COMMAND state=done
+.....A_WEB_BILIBILI_PLAYBACK_SAMPLE state=video ready_state=4 play_promise=pending paused=0 ended=0 current_time=63.953 progress=0.000 events_playing=0 events_timeupdate=0 source_kind=blob
+A_WEB_BILIBILI_PLAYBACK_SAMPLE state=video ready_state=4 play_promise=pending paused=0 ended=0 current_time=63.953 progress=0.000 events_playing=0 events_timeupdate=0 source_kind=blob
+........................
+----------------------------------------------------------------------
+Ran 85 tests in 0.815s
+
+OK
