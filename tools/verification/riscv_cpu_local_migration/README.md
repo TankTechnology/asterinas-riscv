@@ -91,10 +91,33 @@ logical mutable owners, matching the class of failure reported by `RefCell`.
 accepted trace leaves the task runnable with a live CPU-local cache borrow, so
 `NoSwitchWithLiveBorrow` fails.
 
-These are sensitivity controls, not conclusions about which defect exists in
-the current kernel. A passing corrected model says that the stated abstract
-rules exclude these failures; code review must still establish that the
-implementation follows the rules.
+These are sensitivity controls. The subsequent trap-return audit identified a
+concrete stale-`gp` restore in the RISC-V kernel return path: a kernel-origin
+user-address page fault can block, migrate, then restore the old CPU's `gp`.
+The assembly now preserves live kernel `gp` when saved `sstatus.SPP` is set,
+while retaining the saved user register when returning to U-mode. This closes
+that specific implementation gap; it does not establish that every observed
+Firefox hang had the same cause.
+
+## Executable trap-return regression
+
+From the repository root, use the persistent development container:
+
+```sh
+tools/docker/run_dev_container.sh -- bash tools/verification/riscv_cpu_local_migration/run-ktest.sh
+```
+
+The first test constructs a kernel trap frame containing a stale `gp`, executes
+the production `_trap_return` and `sret`, then checks the observed register. Its
+assembly continuation repairs `gp` before returning to Rust even on the broken
+implementation. The second test enters U-mode at a supervisor-only instruction
+address: the immediate fault saves the user `gp` through the real user-trap
+entry and restores kernel `gp`. No user instruction is allowed to execute.
+
+Both tests run with four CPUs booted. The kernel test deterministically supplies
+the post-migration mismatch; it does not force a real scheduler migration. Logs
+and explicit nonzero test counts are checked, so a zero-test run or a guest
+failure masked by an SBI/QEMU success exit cannot be accepted.
 
 ## Code correspondence and open obligations
 
@@ -103,6 +126,7 @@ implementation follows the rules.
 | CPU-local base selected by `gp` | `ostd/src/arch/riscv/cpu/local.rs`; `ostd/src/cpu/local/static_cpu_local.rs` | Direct mechanism: `get_base` reads `gp`, and static CPU-local addressing adds an object offset to that value. Open obligation: every kernel entry and resume must make `gp` identify the executing CPU before any CPU-local access. |
 | BSP/AP initial CPU-local identity | `ostd/src/arch/riscv/boot/bsp_boot.S`; `ostd/src/arch/riscv/boot/ap_boot.S` | Directly initialized: BSP loads `__cpu_local_start`; each AP loads its supplied CPU-local pointer. This covers boot only, not later trap or migration paths. |
 | `EnterUser` / `EnterKernel` | `ostd/src/arch/riscv/trap/trap.S` | Open proof obligation. `run_user` saves kernel `gp` on the kernel stack and user-trap return restores it. The correspondence requires the saved value to remain the executing CPU's base across every allowed scheduling path. |
+| Kernel-trap return after migration | `ostd/src/arch/riscv/trap/trap.S`; `trap/trap.rs`; `trap/return_test.S` | Enforced by the SPP-conditional restore, with a deterministic regression through the actual assembly. No stale kernel `gp` is loaded on S-mode return. The test assumes a correct live destination base; it does not prove all migration paths or hardware behavior. |
 | `Deschedule` / `Resume` | `ostd/src/arch/riscv/task/switch.S`; `ostd/src/arch/riscv/task/mod.rs` | Deliberate design: `TaskContext` saves `sp`, `ra`, and `s0`-`s11`, but not `gp`, consistent with CPU-owned rather than task-owned `gp`. Open obligation: no surrounding assembly path may later overwrite the CPU-owned value with stale task state. |
 | Unique running ownership | `ostd/src/task/processor.rs` | Direct runtime enforcement: `switched_to_cpu.compare_exchange` prevents the same task context from being used concurrently, and release occurs after switching away. This does not by itself prove correct `gp` identity. |
 | No switch with a live IRQ-disabled borrow | `ostd/src/task/processor.rs`; `ostd/src/task/atomic_mode.rs` | Direct runtime check: `prepare_task_switch` calls `might_sleep`, which panics if preemption is disabled or local IRQs are disabled. The model treats a successful switch as requiring that check to pass. |
