@@ -364,6 +364,11 @@ def _parser() -> argparse.ArgumentParser:
     simulate.add_argument("--tier", choices=("fast", "desktop"), required=True)
     simulate.add_argument("--output-directory", required=True, type=Path)
     simulate.add_argument("--uboot-build-directory", type=Path)
+    simulate.add_argument(
+        "--reuse-native",
+        action="store_true",
+        help="revalidate an existing desktop native result without rerunning QEMU",
+    )
 
     recovery = subparsers.add_parser(
         "recovery", help="bind a software-reboot QEMU result to a plan"
@@ -431,6 +436,8 @@ def main(
         if values.command == "simulate":
             plan = _load_plan(values.plan)
             if values.tier == "fast":
+                if values.reuse_native:
+                    raise WorkflowError("fast-simulation-cannot-reuse-native")
                 if values.uboot_build_directory is None:
                     raise WorkflowError(
                         "fast-simulation-uboot-build-directory-required"
@@ -446,6 +453,7 @@ def main(
                 result = simulate_desktop(
                     plan,
                     values.output_directory,
+                    reuse_native=values.reuse_native,
                 )
             _atomic_write(
                 values.output_directory / "result.json", result.canonical_bytes()

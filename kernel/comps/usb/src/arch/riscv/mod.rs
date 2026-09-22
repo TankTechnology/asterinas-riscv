@@ -10,7 +10,10 @@ use ostd::{
         boot::DEVICE_TREE,
         irq::{self as arch_irq, InterruptSourceInFdt},
     },
-    bus::usb::{PollingUsbHidHost, UsbDeviceInfo, UsbHidInfo, UsbHidReport, UsbKeyboardError},
+    bus::usb::{
+        MouseReportLayout, PollingUsbHidHost, UsbDeviceInfo, UsbHidInfo, UsbHidReport,
+        UsbKeyboardError,
+    },
     io::IoMem,
     irq::IrqLine,
     mm::{HasSize, dma::DmaWindow, io::VmIoOnce},
@@ -362,29 +365,42 @@ struct DeferredMouseState {
 }
 
 impl DeferredMouseState {
-    fn new(info: UsbDeviceInfo) -> Self {
+    fn new(info: UsbDeviceInfo, layout: Option<MouseReportLayout>) -> Self {
+        let layout = layout.unwrap_or(crate::mouse::BOOT_MOUSE_LAYOUT);
         ostd::info!(
             "USB boot mouse registered: {:04x}:{:04x} bus=usb name=usb_boot_mouse",
             info.vendor_id,
             info.product_id,
         );
         Self {
-            decoder: HidBootMouse::new(),
-            registered: register_mouse(info.vendor_id, info.product_id),
+            decoder: HidBootMouse::new(layout),
+            registered: register_mouse(info.vendor_id, info.product_id, layout),
         }
     }
 }
 
+/// Failed transfers in a row before the HID task gives up for good.
+///
+/// A failed transfer leaves the report queue re-armed, so a device that
+/// recovers delivers its next report on its own and the run resets to zero.
+/// This threshold is only for a controller that is really gone.
+const HID_FAILURE_RETIREMENT_THRESHOLD: u32 = 32;
+
 struct DeferredHidState {
     keyboard: Option<DeferredKeyboardState>,
     mouse: Option<DeferredMouseState>,
+    /// Failed transfers in a row since the last delivered report.
+    consecutive_failures: u32,
 }
 
 impl DeferredHidState {
     fn new(info: UsbHidInfo) -> Self {
         Self {
             keyboard: info.keyboard.map(DeferredKeyboardState::new),
-            mouse: info.mouse.map(DeferredMouseState::new),
+            mouse: info
+                .mouse
+                .map(|mouse| DeferredMouseState::new(mouse, info.mouse_layout)),
+            consecutive_failures: 0,
         }
     }
 }
@@ -432,10 +448,33 @@ fn process_deferred_hid(host: &Mutex<PollingUsbHidHost>, state: &mut DeferredHid
         let report = {
             let mut host = host.lock();
             match host.poll_report() {
-                Ok(Some(report)) => report,
+                Ok(Some(report)) => {
+                    state.consecutive_failures = 0;
+                    report
+                }
                 Ok(None) => return true,
                 Err(error) => {
-                    ostd::warn!("USB HID transfer stopped: {:?}", error);
+                    state.consecutive_failures += 1;
+                    if state.consecutive_failures < HID_FAILURE_RETIREMENT_THRESHOLD {
+                        // Only the keyboard reports its transfer errors up to
+                        // here, but the mouse lives in this same task. Ending
+                        // the task over one of them takes the other device
+                        // down too, and the report queue has already re-armed
+                        // the failed transfer, so stay up and let the next
+                        // interrupt try again.
+                        ostd::warn!(
+                            "USB HID transfer failed, retrying ({}/{}): {:?}",
+                            state.consecutive_failures,
+                            HID_FAILURE_RETIREMENT_THRESHOLD,
+                            error,
+                        );
+                        return true;
+                    }
+                    ostd::warn!(
+                        "USB HID retired after {} consecutive transfer failures: {:?}",
+                        state.consecutive_failures,
+                        error,
+                    );
                     return false;
                 }
             }
@@ -755,6 +794,7 @@ mod tests {
                 vendor_id: 0x0627,
                 product_id: 0x0002,
             }),
+            mouse_layout: None,
         });
 
         assert_eq!(aster_input::count_devices(), before + 2);

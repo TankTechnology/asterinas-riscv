@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""Own one bounded TCP bridge from a Megrez-visible port to Clash."""
+"""Own one bounded TCP bridge from a Megrez-visible port to the host.
+
+The board reaches the host and nothing beyond it. A bridge turns one port the
+board can open into one upstream the host can reach: the proxy its browser
+speaks to, and the name server its own resolver tunnels through.
+"""
 
 from __future__ import annotations
 
+import argparse
 import ipaddress
+import json
 import math
 import os
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Mapping
@@ -19,6 +27,13 @@ from typing import BinaryIO, Protocol
 
 
 MAX_STDERR_BYTES = 64 * 1024
+
+# The port the guest's DNS shim tunnels through. It is a second listener beside
+# the proxy's, and the guest learns it from the desktop boot's boot arguments,
+# so this constant is the one place the two have to agree.
+DNS_LISTEN_PORT = 15354
+DNS_UPSTREAM_ADDRESS = "223.5.5.5"
+DNS_UPSTREAM_PORT = 53
 
 
 class ProxyBridgeError(RuntimeError):
@@ -63,6 +78,11 @@ class ProxyBridgeConfig:
     listen_address: str = "10.100.19.216"
     listen_port: int = 17893
     upstream_address: str = "127.0.0.1"
+    # The legacy default. The Clash-compatible proxy this host actually runs
+    # listens elsewhere (7890), which is why the environment override below
+    # exists and why callers that need the live port must set it: a bridge
+    # built on the default reaches nothing, and that surfaced as a proxy the
+    # board could not use.
     upstream_port: int = 17892
     startup_timeout: float = 5.0
     shutdown_timeout: float = 2.0
@@ -102,6 +122,26 @@ def proxy_bridge_config_from_environment(
     return ProxyBridgeConfig(
         listen_address=listen_address,
         upstream_port=upstream_port,
+    )
+
+
+def dns_bridge_config(listen_address: str = "10.100.19.216") -> "ProxyBridgeConfig":
+    """The forwarder that carries the guest resolver's queries to a real one.
+
+    The guest cannot be given a nameserver directly: it reaches the host and
+    nothing beyond it, and glibc's resolver only ever asks port 53. The guest
+    shim answers on its own loopback and brings each query here, framed the way
+    RFC 1035 section 4.2.2 frames DNS over TCP. That framing is a two-byte
+    length prefix, and a plain TCP-to-UDP forwarder would relay the prefix to
+    the upstream as part of the question, so the upstream here has to be one
+    that speaks DNS over TCP itself. Public resolvers do.
+    """
+
+    return ProxyBridgeConfig(
+        listen_address=listen_address,
+        listen_port=DNS_LISTEN_PORT,
+        upstream_address=DNS_UPSTREAM_ADDRESS,
+        upstream_port=DNS_UPSTREAM_PORT,
     )
 
 
@@ -290,3 +330,45 @@ class ProxyBridge:
             "exit_status": status,
             "stderr_hex": self._stderr_hex,
         }
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Runs one bridge in the foreground until it is interrupted."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dns",
+        action="store_true",
+        help="serve the guest resolver's tunnel instead of the proxy",
+    )
+    parser.add_argument(
+        "--listen-address",
+        default=ProxyBridgeConfig.listen_address,
+        help="the address the board reaches the host on",
+    )
+    arguments = parser.parse_args(argv)
+
+    config = (
+        dns_bridge_config(arguments.listen_address)
+        if arguments.dns
+        else proxy_bridge_config_from_environment(
+            listen_address=arguments.listen_address
+        )
+    )
+    try:
+        bridge = ProxyBridge(config).start()
+    except ProxyBridgeError as error:
+        print(f"proxy bridge failed: {error}", file=sys.stderr)
+        return 1
+    try:
+        print(json.dumps(bridge.summary()), flush=True)
+        signal.pause()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        bridge.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

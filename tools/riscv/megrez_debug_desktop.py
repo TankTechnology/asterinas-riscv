@@ -380,6 +380,11 @@ def _validate_physical_graphics_result(
             "left_up": cycle.left_up,
             "evdev_sha256": cycle.evdev_sha256,
             "screenshot_sha256": cycle.screenshot_sha256,
+            "input_latency_count": cycle.input_latency_count,
+            "input_latency_min_ms": cycle.input_latency_min_ms,
+            "input_latency_p50_ms": cycle.input_latency_p50_ms,
+            "input_latency_p95_ms": cycle.input_latency_p95_ms,
+            "input_latency_max_ms": cycle.input_latency_max_ms,
         }
         for cycle in cycles
     )
@@ -445,6 +450,7 @@ def simulate_desktop(
     artifact_validator: ArtifactValidator = _validate_current_artifacts,
     repository_root: Path | None = None,
     timeout: float = DEFAULT_TIMEOUT,
+    reuse_native: bool = False,
 ) -> StageResult:
     """Run the plan-selected graphical gate against one exact schema-2 plan."""
 
@@ -452,6 +458,8 @@ def simulate_desktop(
         raise DesktopSimulationError("desktop-timeout-invalid")
     if not math.isfinite(timeout) or timeout <= 0:
         raise DesktopSimulationError("desktop-timeout-invalid")
+    if type(reuse_native) is not bool:
+        raise DesktopSimulationError("desktop-reuse-native-invalid")
     if plan.schema_version != 2 or plan.profile != "debian-browser":
         raise DesktopSimulationError("desktop-plan-profile-invalid")
     try:
@@ -467,7 +475,8 @@ def simulate_desktop(
     output, native_output = _safe_output(output_directory, repository_root=repository)
     try:
         _remove_stale(output / "result.json")
-        _remove_stale(native_output / "result.json")
+        if not reuse_native:
+            _remove_stale(native_output / "result.json")
         identities = artifact_validator(plan)
     except (DebugContractError, OSError, SimulationError) as error:
         raise DesktopSimulationError(str(error)) from error
@@ -489,24 +498,25 @@ def simulate_desktop(
         if browser_web
         else _desktop_command(identities, native_output)
     )
-    try:
-        execution = run_command(
-            command,
-            cwd=repository,
-            env=environment,
-            check=False,
-            capture_output=False,
-            text=True,
-            timeout=_remaining(deadline),
-        )
-    except subprocess.TimeoutExpired as error:
-        raise DesktopSimulationError("desktop-qemu-timeout") from error
-    except OSError as error:
-        raise DesktopSimulationError(f"desktop-qemu-launch: {error}") from error
-    if execution.returncode != 0:
-        raise DesktopSimulationError(
-            f"desktop-qemu-failed: exit {execution.returncode}"
-        )
+    if not reuse_native:
+        try:
+            execution = run_command(
+                command,
+                cwd=repository,
+                env=environment,
+                check=False,
+                capture_output=False,
+                text=True,
+                timeout=_remaining(deadline),
+            )
+        except subprocess.TimeoutExpired as error:
+            raise DesktopSimulationError("desktop-qemu-timeout") from error
+        except OSError as error:
+            raise DesktopSimulationError(f"desktop-qemu-launch: {error}") from error
+        if execution.returncode != 0:
+            raise DesktopSimulationError(
+                f"desktop-qemu-failed: exit {execution.returncode}"
+            )
 
     try:
         native = _load_guarded_result(native_output / "result.json")

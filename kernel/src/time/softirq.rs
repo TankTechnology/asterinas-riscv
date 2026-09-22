@@ -54,7 +54,17 @@ fn timer_softirq_handler() {
     let callbacks = TIMER_SOFTIRQ_CALLBACKS.read();
     if let Some(callbacks) = callbacks.get() {
         for callback in callbacks.iter() {
+            // This handler holds an RCU read guard across every callback while
+            // the interrupt path holds a preemption guard and has local IRQs
+            // re-enabled, so name the callback that changes the count.
+            let before = ostd::task::preempt_guard_count_for_diagnosis();
             (callback)();
+            let after = ostd::task::preempt_guard_count_for_diagnosis();
+            if after != before {
+                ostd::warn!(
+                    "timer softirq callback changed the preempt guard count: {before} -> {after}",
+                );
+            }
         }
     }
 }

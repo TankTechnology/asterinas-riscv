@@ -35,7 +35,11 @@ use crate::{
 const HOST_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 const KEYBOARD_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const BOOT_KEYBOARD_REPORT_LEN: usize = 8;
-const BOOT_MOUSE_REPORT_LEN: usize = 4;
+/// The boot mouse report: buttons, X displacement, Y displacement.
+const BOOT_MOUSE_REPORT_LEN: usize = 3;
+/// The mouse transfer buffer. A parsed layout is refused above this length, so
+/// the buffer always covers the report the device describes.
+const MOUSE_REPORT_LEN: usize = 8;
 const XHCI_MIN_CAPLENGTH: usize = 0x20;
 const XHCI_CAPABILITY_ACCESSORS_LEN: usize = 0x24;
 const XHCI_OPERATIONAL_PORT_REGISTERS_OFFSET: usize = 0x400;
@@ -70,7 +74,7 @@ pub enum UsbKeyboardError {
     DeviceOpen,
     /// The boot-keyboard interface could not be claimed.
     ClaimInterface,
-    /// The keyboard rejected HID boot protocol.
+    /// The device rejected HID boot protocol.
     SetBootProtocol,
     /// The interrupt-IN endpoint could not be opened.
     EndpointOpen,
@@ -91,7 +95,7 @@ pub enum UsbKeyboardStage {
     DeviceOpen,
     /// Claim the keyboard's HID interface.
     ClaimInterface,
-    /// Select HID boot protocol for the keyboard.
+    /// Select HID boot protocol for the device.
     SetBootProtocol,
 }
 
@@ -111,6 +115,8 @@ pub struct UsbHidInfo {
     pub keyboard: Option<UsbDeviceInfo>,
     /// The optional boot mouse discovered beside the keyboard.
     pub mouse: Option<UsbDeviceInfo>,
+    /// The layout the mouse reports in, once its descriptor has been parsed.
+    pub mouse_layout: Option<MouseReportLayout>,
 }
 
 /// One completed HID boot report from the shared xHCI host.
@@ -118,10 +124,10 @@ pub struct UsbHidInfo {
 pub enum UsbHidReport {
     /// An exact eight-byte boot-keyboard report.
     Keyboard([u8; BOOT_KEYBOARD_REPORT_LEN]),
-    /// A three- or four-byte boot-mouse report held in a fixed-size buffer.
+    /// A mouse report of at most `MOUSE_REPORT_LEN` bytes in a fixed buffer.
     Mouse {
         /// Report bytes; bytes after `actual_length` are zero.
-        bytes: [u8; BOOT_MOUSE_REPORT_LEN],
+        bytes: [u8; MOUSE_REPORT_LEN],
         /// Number of bytes completed by the interrupt transfer.
         actual_length: usize,
     },
@@ -140,6 +146,11 @@ enum BootHidKind {
     Keyboard,
     Mouse,
 }
+
+/// The `wValue` of a HID `SET_PROTOCOL` request selecting the boot report.
+const SET_BOOT_PROTOCOL: u16 = 0;
+/// The `wValue` selecting the format the device's report descriptor defines.
+const SET_REPORT_PROTOCOL: u16 = 1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DiscoveryDecision {
@@ -211,7 +222,7 @@ fn find_boot_hid_interface(
                     && endpoint.max_packet_size
                         >= match kind {
                             BootHidKind::Keyboard => BOOT_KEYBOARD_REPORT_LEN as u16,
-                            BootHidKind::Mouse => 3,
+                            BootHidKind::Mouse => BOOT_MOUSE_REPORT_LEN as u16,
                         }
             })
             .ok_or(BootHidInterfaceError::InvalidEndpoint)?;
@@ -614,14 +625,26 @@ struct BootKeyboardSession {
 struct BootMouseSession {
     _device: Device,
     endpoint: Endpoint,
-    reports: BootReportQueue<BOOT_MOUSE_REPORT_LEN>,
+    reports: BootReportQueue<MOUSE_REPORT_LEN>,
     info: UsbDeviceInfo,
+    layout: Option<MouseReportLayout>,
+    /// Failed transfers in a row since the last delivered report.
+    consecutive_failures: u32,
 }
+
+/// How many consecutive failed transfers retire a mouse.
+///
+/// The report queue re-arms itself after every failed transfer, so a device
+/// that recovers starts delivering reports again on its own and the run resets
+/// to zero. This threshold is only for a device that has genuinely gone away,
+/// where retrying forever would ask a dead endpoint for the rest of the boot.
+const MOUSE_FAILURE_RETIREMENT_THRESHOLD: u32 = 32;
 
 struct OpenedHidDevice {
     device: Device,
     endpoint: Endpoint,
     info: UsbDeviceInfo,
+    mouse_layout: Option<MouseReportLayout>,
 }
 
 impl<const N: usize> ReportEndpoint<N> for Endpoint {
@@ -640,6 +663,269 @@ impl<const N: usize> ReportEndpoint<N> for Endpoint {
             Poll::Ready(Ok(completion)) => Poll::Ready(Ok(completion)),
             Poll::Ready(Err(_)) => Poll::Ready(Err(UsbKeyboardError::Transfer)),
         }
+    }
+}
+
+/// The largest HID report descriptor reported here, covering the boot devices.
+const HID_REPORT_DESCRIPTOR_LEN: usize = 128;
+
+/// The number of usages one HID main item may carry before parsing gives up.
+const HID_LOCAL_USAGE_CAPACITY: usize = 8;
+
+const HID_ITEM_LONG: u8 = 0xfe;
+const HID_ITEM_SIZE_MASK: u8 = 0x03;
+const HID_ITEM_TYPE_MASK: u8 = 0x03;
+const HID_ITEM_TYPE_MAIN: u8 = 0x00;
+const HID_ITEM_TYPE_GLOBAL: u8 = 0x01;
+const HID_ITEM_TYPE_LOCAL: u8 = 0x02;
+const HID_ITEM_TAG_MASK: u8 = 0xf0;
+const HID_GLOBAL_USAGE_PAGE: u8 = 0x00;
+const HID_GLOBAL_REPORT_ID: u8 = 0x80;
+const HID_GLOBAL_REPORT_SIZE: u8 = 0x70;
+const HID_GLOBAL_REPORT_COUNT: u8 = 0x90;
+const HID_LOCAL_USAGE: u8 = 0x00;
+const HID_MAIN_INPUT: u8 = 0x80;
+const HID_USAGE_PAGE_GENERIC_DESKTOP: u16 = 0x01;
+const HID_USAGE_PAGE_BUTTON: u16 = 0x09;
+const HID_USAGE_X: u16 = 0x30;
+const HID_USAGE_Y: u16 = 0x31;
+const HID_USAGE_WHEEL: u16 = 0x38;
+
+/// Where every field the mouse decoder reads sits in one report.
+///
+/// The offsets come from the device's own report descriptor, so a device that
+/// describes twelve-bit axes, a wheel, or neither is read exactly as it
+/// describes itself. No field position is inferred from the report length.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MouseReportLayout {
+    /// Bit offset of the button mask.
+    pub buttons_offset: u8,
+    /// Width of the whole button mask, which is every button bit together.
+    pub buttons_bits: u8,
+    /// Bit offset of the horizontal displacement.
+    pub x_offset: u8,
+    /// Width of the horizontal displacement.
+    pub x_bits: u8,
+    /// Bit offset of the vertical displacement.
+    pub y_offset: u8,
+    /// Width of the vertical displacement.
+    pub y_bits: u8,
+    /// Bit offset of the wheel, when the device describes one.
+    pub wheel_offset: Option<u8>,
+    /// Width of the wheel.
+    pub wheel_bits: u8,
+    /// Total report length in bytes, which the transfer buffer must cover.
+    pub report_bytes: u8,
+}
+
+/// Reads one little-endian HID short item value of at most four bytes.
+fn item_value(bytes: &[u8]) -> u32 {
+    bytes.iter().enumerate().fold(0u32, |value, (shift, byte)| {
+        value | (u32::from(*byte) << (8 * shift))
+    })
+}
+
+/// Derives a mouse layout from one HID report descriptor.
+///
+/// Returns `None` for any descriptor this parser does not fully understand,
+/// including one that uses report IDs. Its caller then leaves the device in the
+/// boot protocol rather than reading a report whose shape is unknown.
+fn parse_mouse_report_descriptor(descriptor: &[u8]) -> Option<MouseReportLayout> {
+    let mut layout = MouseReportLayout {
+        buttons_offset: 0,
+        buttons_bits: 0,
+        x_offset: 0,
+        x_bits: 0,
+        y_offset: 0,
+        y_bits: 0,
+        wheel_offset: None,
+        wheel_bits: 0,
+        report_bytes: 0,
+    };
+    let mut offset_bits: u16 = 0;
+    let mut usage_page: u16 = 0;
+    let mut report_size: u16 = 0;
+    let mut report_count: u16 = 0;
+    let mut usages = [0u16; HID_LOCAL_USAGE_CAPACITY];
+    let mut usage_count = 0usize;
+    let mut index = 0usize;
+
+    while index < descriptor.len() {
+        let prefix = descriptor[index];
+        index += 1;
+        if prefix == HID_ITEM_LONG {
+            let size = usize::from(*descriptor.get(index)?);
+            index = index.checked_add(2 + size)?;
+            continue;
+        }
+        let size = match prefix & HID_ITEM_SIZE_MASK {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            _ => 4,
+        };
+        let value = item_value(descriptor.get(index..index.checked_add(size)?)?);
+        index += size;
+
+        match (prefix >> 2) & HID_ITEM_TYPE_MASK {
+            HID_ITEM_TYPE_GLOBAL => match prefix & HID_ITEM_TAG_MASK {
+                HID_GLOBAL_USAGE_PAGE => usage_page = value as u16,
+                // A report ID prefixes every report with a byte this parser
+                // does not model, so the layout would be wrong.
+                HID_GLOBAL_REPORT_ID => return None,
+                HID_GLOBAL_REPORT_SIZE => report_size = u16::try_from(value).ok()?,
+                HID_GLOBAL_REPORT_COUNT => report_count = u16::try_from(value).ok()?,
+                _ => {}
+            },
+            HID_ITEM_TYPE_LOCAL => {
+                if prefix & HID_ITEM_TAG_MASK == HID_LOCAL_USAGE
+                    && usage_count < HID_LOCAL_USAGE_CAPACITY
+                {
+                    usages[usage_count] = value as u16;
+                    usage_count += 1;
+                }
+            }
+            HID_ITEM_TYPE_MAIN => {
+                if prefix & HID_ITEM_TAG_MASK == HID_MAIN_INPUT {
+                    let bits = report_size.checked_mul(report_count)?;
+                    // Bit 0 of an input item's data is clear for a data field
+                    // and set for the constant padding between them.
+                    if value & 0x01 == 0 {
+                        for field in 0..usize::from(report_count) {
+                            let start = offset_bits + report_size * field as u16;
+                            let usage = usages.get(field).copied().filter(|_| field < usage_count);
+                            match (usage_page, usage) {
+                                // The button bits form one mask of
+                                // `report_count` one-bit fields, not one field.
+                                (HID_USAGE_PAGE_BUTTON, _) if field == 0 => {
+                                    layout.buttons_offset = start as u8;
+                                    layout.buttons_bits = bits as u8;
+                                }
+                                (HID_USAGE_PAGE_GENERIC_DESKTOP, Some(HID_USAGE_X)) => {
+                                    layout.x_offset = start as u8;
+                                    layout.x_bits = report_size as u8;
+                                }
+                                (HID_USAGE_PAGE_GENERIC_DESKTOP, Some(HID_USAGE_Y)) => {
+                                    layout.y_offset = start as u8;
+                                    layout.y_bits = report_size as u8;
+                                }
+                                (HID_USAGE_PAGE_GENERIC_DESKTOP, Some(HID_USAGE_WHEEL)) => {
+                                    layout.wheel_offset = Some(start as u8);
+                                    layout.wheel_bits = report_size as u8;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    offset_bits = offset_bits.checked_add(bits)?;
+                }
+                // Every main item clears the local items.
+                usage_count = 0;
+            }
+            _ => {}
+        }
+        if offset_bits > 64 {
+            return None;
+        }
+    }
+
+    if offset_bits == 0 || offset_bits % 8 != 0 || offset_bits > 64 {
+        return None;
+    }
+    if layout.buttons_bits == 0 || layout.x_bits == 0 || layout.y_bits == 0 {
+        return None;
+    }
+    layout.report_bytes = (offset_bits / 8) as u8;
+    Some(layout)
+}
+
+/// Reads one interface's HID report descriptor and derives its mouse layout.
+///
+/// A boot device still describes the report it sends under the report protocol,
+/// which is where a mouse wheel lives; the boot report the decoder otherwise
+/// reads has no such field. The request is advisory: a device that refuses it
+/// still opens, and its caller then keeps the boot protocol.
+fn fetch_mouse_layout(
+    device: &mut Device,
+    events: &EventHandler,
+    interface: BootHidInterface,
+) -> Option<MouseReportLayout> {
+    let setup = ControlSetup {
+        request_type: RequestType::Standard,
+        recipient: Recipient::Interface,
+        request: Request::GetDescriptor,
+        value: 0x2200,
+        index: u16::from(interface.number),
+    };
+    let mut descriptor = [0u8; HID_REPORT_DESCRIPTOR_LEN];
+    let length = match drive(device.control_in(setup, &mut descriptor), events) {
+        Ok(Ok(length)) => length.min(descriptor.len()),
+        Ok(Err(error)) => {
+            crate::info!(
+                "USB HID {:?} on interface {} report descriptor refused: {:?}",
+                interface.kind,
+                interface.number,
+                error,
+            );
+            return None;
+        }
+        Err(DriveError::Timeout) => {
+            crate::warn!(
+                "USB HID {:?} on interface {} report descriptor request timed out",
+                interface.kind,
+                interface.number,
+            );
+            return None;
+        }
+    };
+
+    match parse_mouse_report_descriptor(&descriptor[..length]) {
+        Some(layout) => {
+            crate::info!(
+                "USB HID {:?} on interface {} report layout: {:?}",
+                interface.kind,
+                interface.number,
+                layout,
+            );
+            Some(layout)
+        }
+        None => {
+            crate::info!(
+                "USB HID {:?} on interface {} report descriptor: {:02x?}",
+                interface.kind,
+                interface.number,
+                &descriptor[..length],
+            );
+            None
+        }
+    }
+}
+
+/// Asks one HID interface to report in `protocol`, or reports why it refused.
+///
+/// A refusal is not necessarily fatal: the boot protocol is the one report every
+/// HID boot device implements, so callers can fall back to it.
+fn set_hid_protocol(
+    xhci: &XhciHost,
+    device: &mut Device,
+    events: &EventHandler,
+    interface: BootHidInterface,
+    protocol: u16,
+) -> Result<(), UsbKeyboardError> {
+    let setup = ControlSetup {
+        request_type: RequestType::Class,
+        recipient: Recipient::Interface,
+        request: Request::Other(0x0b),
+        value: protocol,
+        index: u16::from(interface.number),
+    };
+    match drive(device.control_out(setup, &[]), events) {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(_)) => Err(UsbKeyboardError::SetBootProtocol),
+        Err(DriveError::Timeout) => Err(timeout_at(
+            UsbKeyboardStage::SetBootProtocol,
+            xhci.kernel_op.as_ref(),
+        )),
     }
 }
 
@@ -680,21 +966,47 @@ fn open_hid_device(
         }
     }
 
-    let set_protocol = ControlSetup {
-        request_type: RequestType::Class,
-        recipient: Recipient::Interface,
-        request: Request::Other(0x0b),
-        value: 0,
-        index: u16::from(interface.number),
+    let mut mouse_layout = fetch_mouse_layout(&mut device, events, interface);
+    // The boot report has no wheel field, so a mouse only reaches its wheel in
+    // the report protocol, and only once its descriptor says how to read it.
+    let protocol = match (interface.kind, mouse_layout) {
+        (BootHidKind::Mouse, Some(_)) => SET_REPORT_PROTOCOL,
+        _ => SET_BOOT_PROTOCOL,
     };
-    match drive(device.control_out(set_protocol, &[]), events) {
-        Ok(Ok(_)) => {}
-        Ok(Err(_)) => {
-            mem::forget(device);
-            return Err(UsbKeyboardError::SetBootProtocol);
+
+    match set_hid_protocol(xhci, &mut device, events, interface, protocol) {
+        Ok(()) => crate::info!(
+            "USB HID {:?} on interface {} selected protocol wValue={}",
+            interface.kind,
+            interface.number,
+            protocol,
+        ),
+        // Only a mouse asks for the report protocol, and it asks solely to
+        // reach its wheel. A device that stalls or times out on that one
+        // control transfer is still a mouse the user can move and click with,
+        // so keep it and stay in the boot report instead of refusing the whole
+        // device. Refusing it is what left the keyboard working and the mouse
+        // gone: the keyboard never asks for the report protocol, so it never
+        // took this path.
+        Err(error) if protocol == SET_REPORT_PROTOCOL => {
+            crate::warn!(
+                "USB HID {:?} on interface {} refused the report protocol ({:?}); \
+                 keeping the boot report, so this mouse reports no wheel",
+                interface.kind,
+                interface.number,
+                error,
+            );
+            if let Err(fallback) =
+                set_hid_protocol(xhci, &mut device, events, interface, SET_BOOT_PROTOCOL)
+            {
+                mem::forget(device);
+                return Err(fallback);
+            }
+            // The boot report is not the report the descriptor described, so
+            // the layout derived from that descriptor no longer applies.
+            mouse_layout = None;
         }
-        Err(DriveError::Timeout) => {
-            let error = timeout_at(UsbKeyboardStage::SetBootProtocol, xhci.kernel_op.as_ref());
+        Err(error) => {
             mem::forget(device);
             return Err(error);
         }
@@ -711,6 +1023,10 @@ fn open_hid_device(
         device,
         endpoint,
         info,
+        mouse_layout: match interface.kind {
+            BootHidKind::Mouse => mouse_layout,
+            BootHidKind::Keyboard => None,
+        },
     })
 }
 
@@ -838,6 +1154,8 @@ impl PollingUsbHidHost {
                 endpoint: opened.endpoint,
                 reports: BootReportQueue::empty(),
                 info: opened.info,
+                layout: opened.mouse_layout,
+                consecutive_failures: 0,
             };
             if let Err(error) = session.reports.fill(&mut session.endpoint) {
                 crate::warn!("USB boot mouse report queue unavailable: {:?}", error);
@@ -867,6 +1185,7 @@ impl PollingUsbHidHost {
         UsbHidInfo {
             keyboard: self.inner.keyboard.as_ref().map(|keyboard| keyboard.info),
             mouse: self.inner.mouse.as_ref().map(|mouse| mouse.info),
+            mouse_layout: self.inner.mouse.as_ref().and_then(|mouse| mouse.layout),
         }
     }
 
@@ -904,12 +1223,34 @@ impl PollingUsbHidHost {
             return Ok(None);
         };
         match mouse.reports.poll(&mut mouse.endpoint, &mut context) {
-            Ok(report) => Ok(report.map(|report| UsbHidReport::Mouse {
-                bytes: *report.bytes(),
-                actual_length: report.actual_length(),
-            })),
+            Ok(report) => {
+                mouse.consecutive_failures = 0;
+                Ok(report.map(|report| UsbHidReport::Mouse {
+                    bytes: *report.bytes(),
+                    actual_length: report.actual_length(),
+                }))
+            }
             Err(error) => {
-                crate::warn!("USB boot mouse transfer stopped: {:?}", error);
+                mouse.consecutive_failures += 1;
+                let failures = mouse.consecutive_failures;
+                if failures < MOUSE_FAILURE_RETIREMENT_THRESHOLD {
+                    // The queue re-armed the slot, so the next poll asks the
+                    // device again. Keeping the session is the point: removing
+                    // it here is what left a working keyboard next to a cursor
+                    // that could never come back until the next boot.
+                    crate::warn!(
+                        "USB boot mouse transfer failed, retrying ({}/{}): {:?}",
+                        failures,
+                        MOUSE_FAILURE_RETIREMENT_THRESHOLD,
+                        error,
+                    );
+                    return Ok(None);
+                }
+                crate::warn!(
+                    "USB boot mouse retired after {} consecutive transfer failures: {:?}",
+                    failures,
+                    error,
+                );
                 let failed_mouse = inner.mouse.take().unwrap();
                 mem::forget(failed_mouse);
                 Ok(None)
@@ -932,10 +1273,10 @@ mod tests {
     };
 
     use super::{
-        BootHidInterfaceError, BootHidKind, DriveError, UsbKeyboardError, UsbKeyboardStage,
-        XHCI_CAPABILITY_ACCESSORS_LEN, XHCI_MIN_CAPLENGTH, XhciMmioError, classify_boot_interface,
-        drive_with, find_boot_hid_interface, new_usb_kernel_op, validate_xhci_mapping_properties,
-        validate_xhci_mmio_with,
+        BootHidInterfaceError, BootHidKind, DriveError, MouseReportLayout, UsbKeyboardError,
+        UsbKeyboardStage, XHCI_CAPABILITY_ACCESSORS_LEN, XHCI_MIN_CAPLENGTH, XhciMmioError,
+        classify_boot_interface, drive_with, find_boot_hid_interface, new_usb_kernel_op,
+        parse_mouse_report_descriptor, validate_xhci_mapping_properties, validate_xhci_mmio_with,
     };
     use crate::{
         mm::{CachePolicy, dma::DmaWindow},
@@ -1284,6 +1625,50 @@ mod tests {
         for fields in [(0x03, 0x00, 0x02), (0x03, 0x01, 0x00), (0xff, 0x01, 0x02)] {
             assert_eq!(classify_boot_interface(fields.0, fields.1, fields.2), None);
         }
+    }
+
+    /// The report descriptor the attached Megrez mouse returned.
+    const MEGREZ_MOUSE_DESCRIPTOR: [u8; 64] = [
+        0x05, 0x01, 0x09, 0x02, 0xa1, 0x01, 0x09, 0x01, 0xa1, 0x00, 0x05, 0x09, 0x19, 0x01, 0x29,
+        0x03, 0x15, 0x00, 0x25, 0x01, 0x95, 0x03, 0x75, 0x01, 0x81, 0x02, 0x95, 0x01, 0x75, 0x05,
+        0x81, 0x01, 0x05, 0x01, 0x09, 0x30, 0x09, 0x31, 0x16, 0x00, 0xf8, 0x26, 0xff, 0x07, 0x75,
+        0x0c, 0x95, 0x02, 0x81, 0x06, 0x09, 0x38, 0x15, 0x81, 0x25, 0x7f, 0x75, 0x08, 0x95, 0x01,
+        0x81, 0x06, 0xc0, 0xc0,
+    ];
+
+    #[ktest]
+    fn derives_every_mouse_field_offset_from_the_descriptor() {
+        // The device describes three button bits, five constant padding bits,
+        // two twelve-bit displacements and an eight-bit wheel, so X starts at
+        // bit 8, Y at bit 20, the wheel at bit 32 and the report is five bytes.
+        assert_eq!(
+            parse_mouse_report_descriptor(&MEGREZ_MOUSE_DESCRIPTOR),
+            Some(MouseReportLayout {
+                buttons_offset: 0,
+                buttons_bits: 3,
+                x_offset: 8,
+                x_bits: 12,
+                y_offset: 20,
+                y_bits: 12,
+                wheel_offset: Some(32),
+                wheel_bits: 8,
+                report_bytes: 5,
+            })
+        );
+    }
+
+    #[ktest]
+    fn refuses_descriptors_it_cannot_read_in_full() {
+        // A report ID prefixes every report with a byte the layout omits.
+        let mut with_report_id = [0u8; 8];
+        with_report_id[..4].copy_from_slice(&[0x85, 0x01, 0x09, 0x01]);
+        assert_eq!(parse_mouse_report_descriptor(&with_report_id), None);
+        // A truncated descriptor never reaches the axes.
+        assert_eq!(
+            parse_mouse_report_descriptor(&MEGREZ_MOUSE_DESCRIPTOR[..20]),
+            None
+        );
+        assert_eq!(parse_mouse_report_descriptor(&[]), None);
     }
 
     #[ktest]

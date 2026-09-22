@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import stat
 import sys
 import tempfile
@@ -39,6 +40,77 @@ PHASE_MARKERS = (
     ("guest-watchdog-disarmed", "ASTERINAS_DESKTOP_WATCHDOG_DISARMED"),
     ("desktop-ready", "ASTERINAS_DESKTOP_BOOT_READY "),
 )
+# The board's lab link and the proxy it browses through.
+#
+# A desktop session is interactive, so unlike the isolation-oriented evidence
+# gates it must carry a configured interface and a reachable proxy. Leaving
+# them out gives the guest no interface at all, and the blackholed proxy the
+# gates use leaves every page load failing: the operator then loses the network
+# on every republish.
+BOARD_LINK_BOOTARGS = (
+    "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1",
+    "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e",
+)
+
+PROXY_HOST = "10.100.19.216"
+PROXY_PORT = 17893
+
+BOARD_PROXY_BOOTARGS = (
+    f"systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST={PROXY_HOST}",
+    f"systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT={PROXY_PORT}",
+)
+
+# The guest's own resolver tunnels through the same host, on the port the
+# operator's TCP-to-UDP DNS forwarder listens on. Browsing does not need it,
+# because the proxy resolves the names it is asked for, but nothing else on the
+# guest can resolve anything without it.
+DNS_PORT = 15354
+
+BOARD_DNS_BOOTARGS = (
+    f"systemd.setenv=ASTERINAS_DESKTOP_DNS_HOST={PROXY_HOST}",
+    f"systemd.setenv=ASTERINAS_DESKTOP_DNS_PORT={DNS_PORT}",
+)
+
+
+def warn_if_dns_unreachable(timeout: float = 5.0) -> None:
+    """Reports a missing DNS forwarder without refusing to boot.
+
+    The guest's shim leaves /etc/resolv.conf alone when its tunnel does not
+    answer, so a boot without this forwarder is the guest resolving nothing --
+    exactly the state before the shim existed. That is worth a warning, since
+    the operator cannot tell it apart from the shim being broken, but it is not
+    worth failing a boot whose browser never asks the guest to resolve.
+    """
+
+    try:
+        with socket.create_connection((PROXY_HOST, DNS_PORT), timeout=timeout):
+            return
+    except OSError as error:
+        print(
+            f"warning: no DNS forwarder is reachable at {PROXY_HOST}:{DNS_PORT}"
+            f" ({error}); the guest will not resolve names until one is started",
+            file=sys.stderr,
+        )
+
+
+def require_proxy_reachable(timeout: float = 5.0) -> None:
+    """Refuses to boot a desktop whose proxy nothing answers on.
+
+    The proxy is a bridge the operator starts on the host, so it can be absent
+    while every artifact still verifies. Without this check the board boots,
+    the browser loads, and the failure only surfaces as a page error after the
+    operator is already at the board.
+    """
+
+    try:
+        with socket.create_connection((PROXY_HOST, PROXY_PORT), timeout=timeout):
+            return
+    except OSError as error:
+        raise DesktopBootError(
+            f"no proxy is reachable at {PROXY_HOST}:{PROXY_PORT}: {error}. "
+            "Start the host-side proxy bridge before booting the desktop."
+        ) from error
+
 BOOTARGS = " ".join(
     (
         "console=ttyS0",
@@ -51,10 +123,11 @@ BOOTARGS = " ".join(
         "systemd.mask=asterinas-desktop-m5-network.service",
         "systemd.mask=serial-getty@ttyS0.service",
         "systemd.mask=console-getty.service",
+        *BOARD_LINK_BOOTARGS,
         "systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",
         "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy",
-        "systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=127.0.0.1",
-        "systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=9",
+        *BOARD_PROXY_BOOTARGS,
+        *BOARD_DNS_BOOTARGS,
         "--",
         "--root-init=systemd",
         "--debug-console=isolated-root",
@@ -419,6 +492,8 @@ def start_generation(
 ) -> dict[str, Any]:
     """Execute one bounded start, returning success or proven recovery."""
 
+    require_proxy_reachable()
+    warn_if_dns_unreachable()
     started = time.monotonic()
     try:
         operations.open(30)
