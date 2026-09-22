@@ -51,13 +51,7 @@ impl InterruptLevel {
                 Self::L1(cpu_priv_at_irq)
             }
             2 => Self::L2,
-            // Report the raw byte as well. `enter` adds 0b010 for every
-            // interrupt taken from the kernel, so a level of 3 cannot come
-            // from nesting alone once the increment is known to be atomic
-            // against interrupts --- the value says which of the two it is.
-            _ => unreachable!(
-                "level must between 0 and 2 (inclusive), raw={raw_level:#010b}"
-            ),
+            _ => unreachable!("level must between 0 and 2 (inclusive)"),
         }
     }
 
@@ -95,55 +89,14 @@ pub(super) fn enter<F: FnOnce()>(f: F, cpu_priv_at_irq: PrivilegeLevel) {
         let bit_1 = 0b10;
         bit_1 | bit_0
     };
-    // Record where this handler started. A level that ends up one layer too
-    // high means a handler entered and did not unwind, and only the CPU and
-    // the task identity say whether it was abandoned rather than merely slow.
-    let cpu_entered = crate::cpu::CpuId::current_racy();
-    let task_entered = crate::task::current_task_ptr_for_diagnosis();
     INTERRUPT_LEVEL.add_assign(increment);
 
     f();
 
-    let cpu_left = crate::cpu::CpuId::current_racy();
-    let task_left = crate::task::current_task_ptr_for_diagnosis();
-    if cpu_entered != cpu_left || task_entered != task_left {
-        crate::warn!(
-            "IRQ handler did not return to where it started: cpu {cpu_entered:?} -> {cpu_left:?}, \
-             task {task_entered:#x} -> {task_left:#x}, raw={:#010b}",
-            INTERRUPT_LEVEL.load(),
-        );
-    }
-
     INTERRUPT_LEVEL.sub_assign(increment);
 }
 
-/// A value nothing should ever write, sitting in the same CPU-local page as
-/// the cells that have been observed going wrong.
-///
-/// The level, the preemption guard count and the current-task pointer are
-/// three independent cells that have each been caught holding impossible
-/// values while the base, the allocation and the access atomicity all checked
-/// out. A sentinel in the same page separates "one cell's arithmetic is wrong"
-/// from "something else is writing this page".
-pub(crate) fn canary_intact() -> bool {
-    CANARY.load() == CANARY_VALUE
-}
-
-/// The interrupt level cell exactly as stored, without decoding it.
-///
-/// `current()` cannot be used from a diagnostic that runs while the level is
-/// already out of range: the decode is what panics. The raw byte can always be
-/// read, so a report taken at a failure names the state instead of recursing
-/// into the same failure.
-pub(crate) fn raw_for_diagnosis() -> u8 {
-    INTERRUPT_LEVEL.load()
-}
-
-const CANARY_VALUE: u32 = 0x5A5A_5A5A;
-
 cpu_local_cell! {
-    static CANARY: u32 = CANARY_VALUE;
-
     /// The interrupt level of the current IRQ.
     ///
     /// We pack two pieces of information into a single byte:

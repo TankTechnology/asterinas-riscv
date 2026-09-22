@@ -5,14 +5,6 @@ mod guard;
 
 pub use self::guard::{DisabledPreemptGuard, disable_preempt};
 
-/// The number of preemption guards currently held on this CPU.
-///
-/// Exposed so the interrupt path can check that a guard it took is still the
-/// only one outstanding after it has run code with local IRQs re-enabled.
-pub(crate) fn guard_count_for_diagnosis() -> u32 {
-    cpu_local::get_guard_count_for_diagnosis()
-}
-
 /// Halts the CPU until interrupts if no preemption is required.
 ///
 /// This function will return if:
