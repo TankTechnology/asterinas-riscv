@@ -1,0 +1,118 @@
+Waiting for the asterinas-dev-v1-4f054ba7e4d3 lifecycle lock
+Using asterinas-dev-v1-4f054ba7e4d3-945a91b48668 (persistent caches; waiting for build lock if busy)
+[Info] [riscv] Forwarded QEMU guest port: 48288->22; 59387->8080 46618->6379 6659->5201 59289->31234 52534->31236 42996->11211
+[Info] [riscv] Forwarded QEMU guest port: 12911->22; 59000->8080 17983->6379 23244->5201 45546->31234 22019->31236 12998->11211
+     Locking 168 packages to latest Rust 1.99.0-nightly compatible versions
+   Compiling aster-uart v0.1.0 (/root/asterinas/kernel/comps/uart)
+   Compiling aster-uart-osdk-bin v0.1.0 (/root/asterinas/target/osdk/aster-uart-test-base)
+    Finished `release` profile [optimized] target(s) in 1.13s
+
+OpenSBI v1.7
+   ____                    _____ ____ _____
+  / __ \                  / ____|  _ \_   _|
+ | |  | |_ __   ___ _ __ | (___ | |_) || |
+ | |  | | '_ \ / _ \ '_ \ \___ \|  _ < | |
+ | |__| | |_) |  __/ | | |____) | |_) || |_
+  \____/| .__/ \___|_| |_|_____/|____/_____|
+        | |
+        |_|
+
+Platform Name               : riscv-virtio,qemu
+Platform Features           : medeleg
+Platform HART Count         : 4
+Platform IPI Device         : aclint-mswi
+Platform Timer Device       : aclint-mtimer @ 10000000Hz
+Platform Console Device     : uart8250
+Platform HSM Device         : ---
+Platform PMU Device         : ---
+Platform Reboot Device      : syscon-reboot
+Platform Shutdown Device    : syscon-poweroff
+Platform Suspend Device     : ---
+Platform CPPC Device        : ---
+Firmware Base               : 0x80000000
+Firmware Size               : 353 KB
+Firmware RW Offset          : 0x40000
+Firmware RW Size            : 97 KB
+Firmware Heap Offset        : 0x4c000
+Firmware Heap Size          : 49 KB (total), 3 KB (reserved), 12 KB (used), 33 KB (free)
+Firmware Scratch Size       : 4096 B (total), 1400 B (used), 2696 B (free)
+Runtime SBI Version         : 3.0
+Standard SBI Extensions     : time,rfnc,ipi,base,hsm,srst,pmu,dbcn,fwft,legacy,dbtr,sse
+Experimental SBI Extensions : none
+
+Domain0 Name                : root
+Domain0 Boot HART           : 1
+Domain0 HARTs               : 0*,1*,2*,3*
+Domain0 Region00            : 0x0000000000100000-0x0000000000100fff M: (I,R,W) S/U: (R,W)
+Domain0 Region01            : 0x0000000010000000-0x0000000010000fff M: (I,R,W) S/U: (R,W)
+Domain0 Region02            : 0x0000000002000000-0x000000000200ffff M: (I,R,W) S/U: ()
+Domain0 Region03            : 0x0000000080040000-0x000000008005ffff M: (R,W) S/U: ()
+Domain0 Region04            : 0x0000000080000000-0x000000008003ffff M: (R,X) S/U: ()
+Domain0 Region05            : 0x000000000c400000-0x000000000c5fffff M: (I,R,W) S/U: (R,W)
+Domain0 Region06            : 0x000000000c000000-0x000000000c3fffff M: (I,R,W) S/U: (R,W)
+Domain0 Region07            : 0x0000000000000000-0xffffffffffffffff M: () S/U: (R,W,X)
+Domain0 Next Address        : 0x0000000080200000
+Domain0 Next Arg1           : 0x000000027fe00000
+Domain0 Next Mode           : S-mode
+Domain0 SysReset            : yes
+Domain0 SysSuspend          : yes
+
+Boot HART ID                : 1
+Boot HART Domain            : root
+Boot HART Priv Version      : v1.12
+Boot HART Base ISA          : rv64imafdch
+Boot HART ISA Extensions    : sstc,zicntr,zihpm,zkr,zicboz,zicbom,svpbmt,sdtrig,svadu
+Boot HART PMP Count         : 16
+Boot HART PMP Granularity   : 2 bits
+Boot HART PMP Address Bits  : 54
+Boot HART MHPM Info         : 16 (0x0007fff8)
+Boot HART Debug Triggers    : 2 triggers
+Boot HART MIDELEG           : 0x0000000000001666
+Boot HART MEDELEG           : 0x0000000000f4b509
+Enter riscv_boot
+INFO: Initializing frame metadata for physical memory up to 280000000
+INFO: Adding free frames to the allocator: 80060000..80200000
+INFO: Adding free frames to the allocator: 8a3c9000..280000000
+INFO: Initializing the kernel page table
+INFO: Creating new I/O memory allocator builder, ranges: [
+    0x0..0x80060000,
+    0x280000000..0xffffffffffffffff,
+]
+DEBUG: Try to reserve security-sensitive MMIO range: 0xc000000..0xc600000 with cache policy: Uncacheable
+INFO: RISC-V icache coherence: harts=4, sbi_rfence=true
+INFO: Booting 3 processors
+INFO: Booting all application processors...
+INFO: Bootstrapping hart is 1, booting all other harts
+INFO: Starting hart 0
+DEBUG: Successfully started hart 0
+INFO: Starting hart 2
+DEBUG: Successfully started hart 2
+INFO: Starting hart 3
+DEBUG: Successfully started hart 3
+INFO: Detected ISA extensions: A | C | D | F | H | I | M | SSTC | SVPBMT | ZBB | ZICBOM | ZIHINTPAUSE | ZICBOZ | ZBA | ZBS | ZICNTR | ZICSR | ZIFENCEI | ZIHPM | ZBC | ZKR | ZIHINTNTL | ZFA | ZCA | ZCD | ZAWRS | SVVPTC | ZICCRSE | SVADU | ZAAMO | ZALRSC
+INFO: Detected ISA extensions: A | C | D | F | H | I | M | SSTC | SVPBMT | ZBB | ZICBOM | ZIHINTPAUSE | ZICBOZ | ZBA | ZBS | ZICNTR | ZICSR | ZIFENCEI | ZIHPM | ZBC | ZKR | ZIHINTNTL | ZFA | ZCA | ZCD | ZAWRS | SVVPTC | ZICCRSE | SVADU | ZAAMO | ZALRSC
+INFO: Detected ISA extensions: A | C | D | F | H | I | M | SSTC | SVPBMT | ZBB | ZICBOM | ZIHINTPAUSE | ZICBOZ | ZBA | ZBS | ZICNTR | ZICSR | ZIFENCEI | ZIHPM | ZBC | ZKR | ZIHINTNTL | ZFA | ZCA | ZCD | ZAWRS | SVVPTC | ZICCRSE | SVADU | ZAAMO | ZALRSC
+INFO: Processor 2 started. Spinning for tasks.
+INFO: Processor 3 started. Spinning for tasks.
+INFO: Processor 1 started. Spinning for tasks.
+INFO: All application processors started. The BSP continues to run.
+
+[ktest runner] running 429 tests in 7 crates
+
+[ktest runner] skipping crate "aster-softirq".
+
+running 82 tests in crate "aster-uart"
+
+test aster_uart::arch::dw_apb::tests::dw_apb_deferred_rx_retries_at_the_budget_without_unmasking ... [31mFAILED[39m
+
+test result: [31mFAILED[39m. 0 passed; 1 failed; 81 filtered out.
+
+failures:
+
+---- /root/asterinas/kernel/comps/uart/src/arch/riscv/dw_apb.rs:690:4 - dw_apb_deferred_rx_retries_at_the_budget_without_unmasking ----
+
+[caught panic] Panicked at /root/asterinas/kernel/comps/uart/src/arch/riscv/dw_apb.rs:704:9
+assertion `left == right` failed
+  left: 0
+ right: 1
+
