@@ -68,7 +68,7 @@ impl datagram_common::Bound for BoundNetlinkRoute {
                 // There is at least a valid segment header, so we can create an error segment to
                 // report any errors found while parsing the segment body or attributes.
                 Ok(ContinueRead::SkippedErr(err_segment)) => {
-                    rtnl_kernel.report_error(err_segment, local_port);
+                    rtnl_kernel.report_error(err_segment, local_port, &self.net_ns);
                     continue;
                 }
                 // EFAULT indicates an error occurred while copying data from user space,

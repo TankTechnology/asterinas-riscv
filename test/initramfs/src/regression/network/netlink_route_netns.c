@@ -11,11 +11,18 @@
 #include <stdio.h>
 #include <sys/socket.h>
 
+#define SHARED_PORT 0x4e4c4e53U
+
 static struct nl_sock *route_socket(void)
 {
 	struct nl_sock *sock = nl_socket_alloc();
 	assert(sock != NULL);
-	assert(nl_connect(sock, NETLINK_ROUTE) == 0);
+	nl_socket_set_local_port(sock, SHARED_PORT);
+	int result = nl_connect(sock, NETLINK_ROUTE);
+	if (result != 0)
+		fprintf(stderr, "route socket bind failed: %d\n", result);
+	assert(result == 0);
+	assert(nl_socket_get_local_port(sock) == SHARED_PORT);
 	return sock;
 }
 

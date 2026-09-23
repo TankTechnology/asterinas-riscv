@@ -17,7 +17,6 @@ SUCCESS_MARKERS = {
     "ifconf": "SIOCGIFCONF regression passed.",
     "ifreq": "interface ioctl regression passed.",
     "ip-socket-netns": "IP socket namespace regression passed.",
-    "netlink-route-netns": "netlink route socket namespace regression passed.",
     "ifconf-gvisor": "gVisor SIOCGIFCONF cases passed.",
     "proc-net-dev": "/proc/net/dev regression passed.",
     "ipv6-udp": "ipv6_udp: PASS",
@@ -26,6 +25,10 @@ SUCCESS_MARKERS = {
     "vsock": "Vsock test passed.",
 }
 MULTI_FACT_MARKERS = {
+    "netlink-route-netns": (
+        "netlink route socket namespace regression passed.",
+        "netlink uevent port namespace regression passed.",
+    ),
     "ipv6-dual-stack": (
         "ASTERINAS_IPV6_DUAL_STACK_TCP_OK",
         "ipv6_udp: PASS",
