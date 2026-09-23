@@ -1,0 +1,40 @@
+Spawn the first kernel thread
+[kernel] unpacking initramfs.cpio.gz to rootfs ...
+[kernel] rootfs is ready
+
+                                  ......
+                                .-++++=:
+                               .=+++++=:
+                              :+++++++=:
+                            .-++++++++=.
+                           .=**++==+++=.
+                          :****+-.=+++=.
+                        .=****+: .++++=.
+                       .+****=.  .++++-
+                     .-*****=.   :++++-
+    .::-=============+*****+-----=++++=-:::::::.
+        ..:-*#########*********+++++++=======:.
+              .:+*#####****+++++++++++=====-..
+                 ..-+#******=..  -++++.
+                -+=...:*******=..=++++.
+              .+*+++=. ..=*****+-=++++.
+            .:***+=..     .-+**++++++=.
+           .-***+:          .-+++++++=
+          .*#*=.              .=+++++=
+        .-*#+..                .:=+++-
+       .=#=.                     .=++-
+      :*=.                         ...
+    .:-. Presented by the Asterinas developers
+    .. Released under Mozilla Public License v2.0
+
+test_tcp_privileged_ports: `socket(2, SOCK_STREAM, 0)` passed [got Success]
+test_tcp_privileged_ports: `bind(sk, (struct sockaddr *)&sk_addr, sizeof(sk_addr))` passed [got Permission denied]
+test_tcp_privileged_ports: `bind(sk, (struct sockaddr *)&sk_addr, sizeof(sk_addr))` passed [got Success]
+test_tcp_privileged_ports: `close(sk)` passed [got Success]
+test_tcp_privileged_ports summary: 4 tests passed, 0 tests failed
+test_udp_privileged_ports: `socket(2, SOCK_DGRAM, 0)` passed [got Success]
+test_udp_privileged_ports: `bind(sk, (struct sockaddr *)&sk_addr, sizeof(sk_addr))` passed [got Permission denied]
+test_udp_privileged_ports: `bind(sk, (struct sockaddr *)&sk_addr, sizeof(sk_addr))` passed [got Success]
+test_udp_privileged_ports: `close(sk)` passed [got Success]
+test_udp_privileged_ports summary: 4 tests passed, 0 tests failed
+IP socket namespace regression passed.

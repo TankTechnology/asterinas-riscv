@@ -296,6 +296,7 @@ impl StreamSocket {
                 &raw_option,
                 options.socket.reuse_addr(),
                 StreamObserver::new(self.pollee.clone()),
+                &self.net_ns,
             ) {
                 Ok(connecting_stream) => {
                     let iface_to_poll = connecting_stream.iface().clone();
@@ -505,7 +506,7 @@ impl Socket for StreamSocket {
 
         let can_reuse = self.options.read().socket.reuse_addr();
         let v6only = self.options.read().ipv6.v6only();
-        init_stream.bind(&endpoint, can_reuse, v6only)
+        init_stream.bind(&endpoint, can_reuse, v6only, &self.net_ns)
     }
 
     fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
@@ -554,6 +555,7 @@ impl Socket for StreamSocket {
                 &raw_option,
                 StreamObserver::new(self.pollee.clone()),
                 options.ipv6.v6only(),
+                &self.net_ns,
             ) {
                 Ok(listen_stream) => listen_stream,
                 Err((err, init_stream)) => {
