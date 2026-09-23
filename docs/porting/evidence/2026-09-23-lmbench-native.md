@@ -480,9 +480,20 @@ controls—yielding after each interface poll at `Nice::MIN`, and yielding at
 default nice priority—also timed out. Neither control is a fix, and neither
 was retained. The [short-sequence evidence](2026-09-23-lmbench-native/rpc-udp-network-sequence.json)
 includes the exact commands, boot and kernel hashes, outcomes, counters, and
-first-retry stages. The next narrow question is which preceding network
-operation or idle service makes the original RPC client vulnerable; these
-single-run comparisons cannot establish causality.
+first-retry stages.
+
+Further reduction showed that the additional `lat_connect` and `bw_tcp`
+servers are unnecessary in one run: RPC still timed out after just the UDP
+and TCP precursor tests. It also timed out with only the UDP precursor and
+with only the TCP precursor. More decisively, **no precursor test** was needed
+in one control: after starting the RPC server and waiting idle for 26 seconds,
+the original RPC client timed out in 5.209 seconds. A 10-second idle-delay
+control instead completed in 28.899 seconds. These are one boot each, so they
+do not establish a specific uptime threshold or prove an uptime-dependent
+kernel defect. They do show that prior network tests are **not necessary**
+for the timeout, correcting the initial precursor hypothesis. The next
+diagnostic should compare the scheduler and timer state around the first
+retry in an idle-delay failure, using this short control rather than ALL.
 
 ### Adapted native ALL qualification
 
