@@ -120,6 +120,33 @@ remaining gap is therefore localized to the RISC-V Asterinas interaction with
 LMBench's `benchmp` RPC/UDP measurement path. It is not evidence for a general
 rpcbind, libtirpc or UDP loopback failure, and this change does not hide it.
 
+### Bounded retry-interval experiment
+
+The initial attempt to repeat this experiment accidentally used an older
+browser kernel from the QEMU boot plan. Its RPC server could not bind an
+anonymous UDP port, so those attempts say nothing about the LMBench failure.
+Subsequent runs explicitly pinned the same kernel and Debian root image as the
+native ALL run (SHA256 values above). RPC registration and direct UDP/TCP
+service probes passed before each client trial.
+
+With `ENOUGH=10000`, the unmodified `lat_rpc -P 1 -p udp localhost` timed out
+in three consecutive trials after 14.061, 11.167 and 15.890 seconds. The
+process returned status zero while printing `localhost: RPC: Timed out`, which
+reinforces why the independent result auditor is necessary. In a separate boot
+with the same kernel, a diagnostic build changed only
+`CLSET_RETRY_TIMEOUT` from 2.5 ms to 25 ms. The same default-repetition
+command completed in 26.096 seconds and printed an RPC/UDP latency result.
+Both experiments used the original RPC server binary. A one-repetition
+(`-N 1`) command also passed with the unmodified client; the failure appears
+with the longer native sampling schedule.
+
+The structured [retry experiment summary](2026-09-23-lmbench-native/rpc-udp-retry.json)
+records the commands, artifact hashes, boot identities and observed outputs.
+This supports excessive retransmission as a specific hypothesis, not a proven
+kernel defect or an acceptable modification to the official benchmark. The
+next diagnostic should count socket queue occupancy and dropped UDP replies
+under the unchanged native command. Native ALL remains **108/109**, failing.
+
 ## Final verification
 
 The combined native-runner and daily-smoke unit suite passed all 28 tests. Rust,

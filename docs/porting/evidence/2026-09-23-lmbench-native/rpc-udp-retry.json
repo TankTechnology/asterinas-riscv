@@ -1,0 +1,28 @@
+{
+  "scope": "QEMU RISC-V Asterinas RPC/UDP diagnostic; not a native ALL pass",
+  "kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+  "root_image_sha256": "bd855c9855e6734cb5e154d488d7c1899f9c1949ac01dae87cd0fc88702e35cf",
+  "lmbench_revision": "afb47eddaf10a411c1ea3cb64965461f1308a6ea",
+  "original_lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
+  "diagnostic_lat_rpc_sha256": "be80d624416bfb349bac66e18000f600b0701fe850ee65d7153f210d4eb0b7ae",
+  "diagnostic_change": "CLSET_RETRY_TIMEOUT tv_usec: 2500 to 25000; RPC call timeout remains 25000 us",
+  "environment": {"ENOUGH": "10000"},
+  "native_parameter_command": "lat_rpc -P 1 -p udp localhost",
+  "original": {
+    "boot_id": "02a306d8-67c6-4645-a695-7f59eb3e0dab",
+    "server": "unmodified lat_rpc -s; UDP and TCP registration verified",
+    "trials": [
+      {"elapsed_seconds": 14.061, "exit_status": 0, "stderr": "localhost: RPC: Timed out"},
+      {"elapsed_seconds": 11.167, "exit_status": 0, "stderr": "localhost: RPC: Timed out"},
+      {"elapsed_seconds": 15.890, "exit_status": 0, "stderr": "localhost: RPC: Timed out"}
+    ]
+  },
+  "diagnostic": {
+    "boot_id": "8c494da5-7eea-4c99-a287-86552b435b56",
+    "server": "unmodified lat_rpc -s; UDP and TCP registration verified",
+    "elapsed_seconds": 26.096,
+    "exit_status": 0,
+    "stderr": "RPC/udp latency using localhost: 389.1224 microseconds"
+  },
+  "conclusion": "Long native RPC/UDP measurement fails with original client but passed once with a longer retry interval; root cause is not yet established."
+}
