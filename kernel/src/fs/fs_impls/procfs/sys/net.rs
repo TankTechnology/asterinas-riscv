@@ -59,7 +59,14 @@ static_dir!(
 );
 static_dir!(
     Ipv4DirOps,
-    &[("conf", InodeType::Dir, ConfDirOps::new_inode)]
+    &[
+        ("conf", InodeType::Dir, ConfDirOps::new_inode),
+        (
+            "ip_local_reserved_ports",
+            InodeType::File,
+            ReservedPortsFileOps::new_inode,
+        ),
+    ]
 );
 static_dir!(
     ConfDirOps,
@@ -81,6 +88,24 @@ static_dir!(
 enum TagKind {
     Default,
     Loopback,
+}
+
+struct ReservedPortsFileOps;
+
+impl ReservedPortsFileOps {
+    fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+        // The port allocator has no configurable reservations. Report its
+        // actual empty reservation set, but do not pretend to support writes.
+        ProcFile::new(Self, parent, mkmod!(a+r))
+    }
+}
+
+impl ProcFileOps for ReservedPortsFileOps {
+    fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+        let mut printer = VmPrinter::new_skip(writer, offset);
+        writeln!(printer)?;
+        Ok(printer.bytes_written())
+    }
 }
 
 struct TagFileOps(TagKind);

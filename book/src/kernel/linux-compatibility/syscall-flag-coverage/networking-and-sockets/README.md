@@ -78,6 +78,10 @@ Supported functionality in SCML:
 {{#include sendto_and_sendmsg.scml}}
 ```
 
+An IPv4 UDP socket bound to the wildcard address selects a loopback source
+address when sending to an IPv4 loopback destination. An explicitly bound
+source address is preserved.
+
 Unsupported flags:
 * `MSG_CONFIRM`
 * `MSG_DONTROUTE`

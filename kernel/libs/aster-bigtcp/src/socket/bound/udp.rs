@@ -11,7 +11,7 @@ use ostd::sync::SpinLock;
 use smoltcp::{
     iface::Context,
     socket::udp::UdpMetadata,
-    wire::{IpAddress, IpListenEndpoint, IpRepr, UdpRepr},
+    wire::{IpAddress, IpListenEndpoint, IpRepr, Ipv4Address, UdpRepr},
 };
 
 use super::{
@@ -208,6 +208,17 @@ impl<E: Ext> UdpSocket<E> {
             return Err(SendError::TooLarge);
         }
 
+        let mut meta = meta.into();
+        // Wildcard sockets belong to the default interface, but local
+        // delivery can cross interfaces. Choose a loopback source instead of
+        // its Ethernet address, preserving explicit binds and per-packet
+        // source addresses supplied by callers.
+        if meta.local_address.is_none()
+            && self.0.bound.endpoint().addr.is_unspecified()
+            && matches!(meta.endpoint.addr, IpAddress::Ipv4(addr) if addr.is_loopback())
+        {
+            meta.local_address = Some(IpAddress::Ipv4(Ipv4Address::LOCALHOST));
+        }
         let buffer = socket.send(size, meta)?;
         let result = f(buffer);
 
