@@ -38,6 +38,8 @@ pub struct NetworkDevice {
     poll_stat: PollStatistics,
 }
 
+const ETHERNET_HEADER_LEN: usize = 14;
+
 /// Structure to track the number of packets sent and received during a single polling process.
 struct PollStatistics {
     sent_packet: usize,
@@ -279,7 +281,8 @@ fn init_caps(features: &NetworkFeatures, config: &VirtioNetConfig) -> DeviceCapa
 
     if features.contains(NetworkFeatures::VIRTIO_NET_F_MTU) {
         // If `VIRTIO_NET_F_MTU` is negotiated, the MTU is decided by the device.
-        caps.max_transmission_unit = config.mtu as usize;
+        // smoltcp's Ethernet device limit includes the frame header.
+        caps.max_transmission_unit = config.mtu as usize + ETHERNET_HEADER_LEN;
     } else {
         // We do not support these features,
         // so this asserts that they are _not_ negotiated.
