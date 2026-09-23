@@ -17,6 +17,7 @@ sleep 0.2
 ./unix_client
 
 ./listen_backlog
+./ifconf
 ./msg_peek
 ./msg_trunc
 ./privileged_ports
