@@ -341,10 +341,11 @@ impl<D, E: Ext> EtherIface<D, E> {
         iface_cx: &mut Context,
         tx_token: T,
     ) -> Option<(IpPacket<'pkt>, T)> {
+        self.common.record_rx(data.len());
         match self.parse_ip_or_process_arp(data, iface_cx) {
             Ok(pkt) => Some((pkt, tx_token)),
             Err(Some(arp)) => {
-                Self::emit_arp(&arp, tx_token);
+                self.emit_arp(&arp, tx_token);
                 None
             }
             Err(None) => None,
@@ -445,7 +446,7 @@ impl<D, E: Ext> EtherIface<D, E> {
 
     fn dispatch<T: TxToken>(&self, pkt: &Packet, iface_cx: &mut Context, tx_token: T) {
         match self.resolve_ether_or_generate_arp(&pkt.ip_repr().dst_addr(), iface_cx) {
-            Ok(ether) => Self::emit_ip(&ether, pkt, &iface_cx.caps, tx_token),
+            Ok(ether) => self.emit_ip(&ether, pkt, &iface_cx.caps, tx_token),
             Err(Some(arp)) => {
                 let ArpRepr::EthernetIpv4 {
                     target_protocol_addr: next_hop,
@@ -455,7 +456,7 @@ impl<D, E: Ext> EtherIface<D, E> {
                     return;
                 };
                 if self.enqueue_pending_tx(pkt, iface_cx, next_hop) {
-                    Self::emit_arp(&arp, tx_token);
+                    self.emit_arp(&arp, tx_token);
                 }
             }
             Err(None) => (),
@@ -509,7 +510,7 @@ impl<D, E: Ext> EtherIface<D, E> {
                         dst_addr: ether_addr,
                         ethertype: EthernetProtocol::Ipv4,
                     };
-                    Self::emit_frame(&ether_repr, &packet.bytes, tx_token);
+                    self.emit_frame(&ether_repr, &packet.bytes, tx_token);
                 }
                 PendingTxAction::RequestArp(next_hop) => {
                     let Some(tx_token) = device.transmit(now) else {
@@ -523,7 +524,7 @@ impl<D, E: Ext> EtherIface<D, E> {
                         target_hardware_addr: EthernetAddress::BROADCAST,
                         target_protocol_addr: next_hop,
                     };
-                    Self::emit_arp(&arp, tx_token);
+                    self.emit_arp(&arp, tx_token);
                 }
                 PendingTxAction::Idle => return self.pending_tx.lock().next_poll_at_ms(),
             };
@@ -582,13 +583,14 @@ impl<D, E: Ext> EtherIface<D, E> {
 
     /// Consumes the token and emits an IP packet.
     fn emit_ip<T: TxToken>(
+        &self,
         ether_repr: &EthernetRepr,
         ip_pkt: &Packet,
         caps: &DeviceCapabilities,
         tx_token: T,
     ) {
         let payload = Self::serialize_ip(ip_pkt, caps);
-        Self::emit_frame(ether_repr, &payload, tx_token);
+        self.emit_frame(ether_repr, &payload, tx_token);
     }
 
     /// Serializes an IP packet into wire bytes (with checksums filled in).
@@ -601,16 +603,18 @@ impl<D, E: Ext> EtherIface<D, E> {
     }
 
     /// Consumes the token and emits an Ethernet frame with the given payload.
-    fn emit_frame<T: TxToken>(ether_repr: &EthernetRepr, payload: &[u8], tx_token: T) {
-        tx_token.consume(ether_repr.buffer_len() + payload.len(), |buffer| {
+    fn emit_frame<T: TxToken>(&self, ether_repr: &EthernetRepr, payload: &[u8], tx_token: T) {
+        let bytes = ether_repr.buffer_len() + payload.len();
+        tx_token.consume(bytes, |buffer| {
             let mut frame = EthernetFrame::new_unchecked(buffer);
             ether_repr.emit(&mut frame);
             frame.payload_mut().copy_from_slice(payload);
         });
+        self.common.record_tx(bytes);
     }
 
     /// Consumes the token and emits an ARP packet.
-    fn emit_arp<T: TxToken>(arp_repr: &ArpRepr, tx_token: T) {
+    fn emit_arp<T: TxToken>(&self, arp_repr: &ArpRepr, tx_token: T) {
         let ether_repr = match arp_repr {
             ArpRepr::EthernetIpv4 {
                 source_hardware_addr,
@@ -624,13 +628,15 @@ impl<D, E: Ext> EtherIface<D, E> {
             _ => return,
         };
 
-        tx_token.consume(ether_repr.buffer_len() + arp_repr.buffer_len(), |buffer| {
+        let bytes = ether_repr.buffer_len() + arp_repr.buffer_len();
+        tx_token.consume(bytes, |buffer| {
             let mut frame = EthernetFrame::new_unchecked(buffer);
             ether_repr.emit(&mut frame);
 
             let mut pkt = ArpPacket::new_unchecked(frame.payload_mut());
             arp_repr.emit(&mut pkt);
         });
+        self.common.record_tx(bytes);
     }
 }
 

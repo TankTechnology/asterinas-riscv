@@ -5,7 +5,9 @@ use core::ffi::CStr;
 
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr, Ipv6Cidr};
 
-use super::{BindPortConfig, BoundTcpPort, BoundUdpPort, InterfaceFlags, InterfaceType};
+use super::{
+    BindPortConfig, BoundTcpPort, BoundUdpPort, IfaceStatsSnapshot, InterfaceFlags, InterfaceType,
+};
 use crate::{errors::BindError, ext::Ext};
 
 /// A network interface.
@@ -64,6 +66,11 @@ impl<E: Ext> dyn Iface<E> {
     /// In Linux, the name is usually the driver name followed by a unit number.
     pub fn name(&self) -> &CStr {
         self.common().name()
+    }
+
+    /// Returns receive and transmit counters for this interface.
+    pub fn stats(&self) -> IfaceStatsSnapshot {
+        self.common().stats()
     }
 
     /// Returns the interface type.
