@@ -183,6 +183,51 @@ that `benchmp` itself was required to trigger the failure. Duration or repeated
 calls under these short RPC deadlines suffice; the exact mechanism remains
 unproven.
 
+### RPC transaction IDs and retry interval
+
+The Nix closure includes libtirpc 1.3.6. Its `clnt_dg_call` waits with `poll`,
+reads one datagram with `recvfrom`, and, on a mismatched reply transaction ID,
+deducts the requested poll interval from the 25 ms budget before retransmitting.
+This matters once short retries create stale replies. The source archive SHA256
+and exact observations are in the [XID and retry evidence](2026-09-23-lmbench-native/rpc-udp-xid-retry.json).
+
+A second temporary diagnostic kernel recorded the last RPC transaction IDs at
+UDP send, arrival and read. In a failed 50,000-call simple-client trial, the
+client completed 1,280 calls and closed with its last sent XID one ahead of its
+last received and read XID. The server socket had already received and queued
+that final request but had not read it. Neither socket reported an RX queue
+rejection. The original 2.5 ms interval therefore allowed requests to get
+ahead of the server in this run; the counters do not say why the server lagged.
+
+With the unchanged LMBench server and a 25 ms total deadline, a 20,000-call
+simple client failed at call 10,521 using 2.5 ms retries. In the same boot it
+completed all 20,000 with 25 ms retries, one send and one receive per call.
+In another boot, 5, 10 and 25 ms retries each completed 20,000 simple calls
+without retransmission. Forty empty-pipe polls requested at 2 ms actually
+waited 2.0515--2.1055 ms, so this small control did not reproduce an
+immediately expiring poll timer. The full native-parameter `lat_rpc` client
+still timed out with a 5 ms retry interval after 24.042 seconds. A passed short
+client cannot substitute for the native benchmark's sampling schedule.
+
+The 25 ms `lat_rpc` binary remains a clearly labeled diagnostic variant. It
+must not be reported as an unmodified official result. A one-command native
+ALL run with that single binary substitution produced the RPC/UDP row, but
+RPC/TCP timed out in that boot. The independent auditor again found **108/109**
+groups and rejected the run. The [diagnostic native report](2026-09-23-lmbench-native/rpc-retry25-native-all-report.json)
+records the boot, kernel and substituted binary hashes. RPC/TCP succeeded with
+the unmodified 25 ms total deadline in a later focused boot, showing that this
+failure is intermittent. A 250 ms total-deadline diagnostic also completed in
+that focused boot. These paired successes do not establish which part of TCP
+handling caused the earlier long-tail timeout.
+
+A combined diagnostic binary increased the RPC total deadline from 25 to
+250 ms and set the UDP retry interval to the same value. It completed both
+native-parameter `lat_rpc -P 1 -p udp localhost` and
+`lat_rpc -P 1 -p tcp localhost` in one focused QEMU boot. This remains a
+diagnostic benchmark adaptation, not a kernel fix or a claim that the
+unmodified upstream suite passes. The [TCP and combined controls](2026-09-23-lmbench-native/rpc-tcp-timeout-controls.json)
+record exact outputs and artifact identities.
+
 ## Final verification
 
 The combined native-runner and daily-smoke unit suite passed all 28 tests. Rust,
