@@ -11,9 +11,10 @@ use crate::{
                 cmdline::CmdlineFileOps, comm::CommFileOps, environ::EnvironFileOps,
                 exe::ExeSymOps, fd::FdDirOps, gid_map::GidMapFileOps, maps::MapsFileOps,
                 mem::MemFileOps, mountinfo::MountInfoFileOps, mounts::MountsFileOps,
-                mountstats::MountStatsFileOps, ns::NsDirOps, oom_score_adj::OomScoreAdjFileOps,
-                pagemap::PagemapFileOps, schedstat::SchedstatFileOps, setgroups::SetgroupsFileOps,
-                stat::StatFileOps, status::StatusFileOps, timens_offsets::TimeNsOffsetsFileOps,
+                mountstats::MountStatsFileOps, net::NetDirOps, ns::NsDirOps,
+                oom_score_adj::OomScoreAdjFileOps, pagemap::PagemapFileOps,
+                schedstat::SchedstatFileOps, setgroups::SetgroupsFileOps, stat::StatFileOps,
+                status::StatusFileOps, timens_offsets::TimeNsOffsetsFileOps,
                 uid_map::UidMapFileOps,
             },
             template::{
@@ -43,6 +44,7 @@ mod mem;
 mod mountinfo;
 mod mounts;
 mod mountstats;
+mod net;
 mod ns;
 mod oom_score_adj;
 mod pagemap;
@@ -128,6 +130,7 @@ impl TidDirOps {
         ("mem", InodeType::File, MemFileOps::new_inode),
         ("mountinfo", InodeType::File, MountInfoFileOps::new_inode),
         ("mountstats", InodeType::File, MountStatsFileOps::new_inode),
+        ("net", InodeType::Dir, NetDirOps::new_inode),
         ("ns", InodeType::Dir, NsDirOps::new_inode),
         ("pagemap", InodeType::File, PagemapFileOps::new_inode),
         (

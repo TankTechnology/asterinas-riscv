@@ -71,6 +71,7 @@ REGRESSION_TEST_DIRS ?= null
 
 FOCUSED_NETWORK_AUTO_TESTS := \
 	ifconf \
+	proc_net_dev \
 	ipv6_dual_stack \
 	ipv6_dual_stack_udp \
 	ipv6_udp \
@@ -165,6 +166,14 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ipv6_udp_test.sh"
 else ifeq ($(AUTO_TEST), ifconf)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ifconf_test.sh"
+else ifeq ($(AUTO_TEST), proc_net_dev)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_proc_net_dev_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+# The default RISC-V QEMU scheme has no NIC; this test also checks eth0.
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=procnetdev" \
+	--qemu-args="-device virtio-net-device,netdev=procnetdev"
+endif
 else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_udp_user_buffer_prefault_test.sh"
@@ -1200,6 +1209,10 @@ else ifeq ($(AUTO_TEST), ifconf)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ifconf"
+else ifeq ($(AUTO_TEST), proc_net_dev)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "proc-net-dev"
 else ifeq ($(AUTO_TEST), ifconf_gvisor)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \

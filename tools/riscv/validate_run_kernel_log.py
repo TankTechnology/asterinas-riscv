@@ -16,6 +16,7 @@ SUCCESS_MARKERS = {
     "conformance": "All conformance tests passed.",
     "ifconf": "SIOCGIFCONF regression passed.",
     "ifconf-gvisor": "gVisor SIOCGIFCONF cases passed.",
+    "proc-net-dev": "/proc/net/dev regression passed.",
     "ipv6-udp": "ipv6_udp: PASS",
     "regression": "All regression tests passed.",
     "udp-user-buffer-prefault": "UDP user buffer prefault regression passed.",

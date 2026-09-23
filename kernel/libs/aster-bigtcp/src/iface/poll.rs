@@ -18,6 +18,7 @@ use smoltcp::{
 use super::{
     common::IpPacket,
     poll_iface::PollableIfaceMut,
+    stats::IfaceStats,
     tcp_diagnostics::{
         SynAckStage, SynAckTrace, TCP_EGRESS_TRACE, TcpDiagnosticStage, TcpEgressStage,
         record_tcp_diagnostic,
@@ -119,6 +120,7 @@ pub(super) struct PollContext<'a, E: Ext> {
     udp_registry: &'a UdpSocketRegistry<E>,
     tcp_registry: &'a TcpSocketRegistry<E>,
     iface_index: u32,
+    loopback_stats: Option<&'a IfaceStats>,
     actions: &'a mut Vec<SocketTableAction<E>>,
 }
 
@@ -138,6 +140,7 @@ impl<'a, E: Ext> PollContext<'a, E> {
         udp_registry: &'a UdpSocketRegistry<E>,
         tcp_registry: &'a TcpSocketRegistry<E>,
         iface_index: u32,
+        loopback_stats: Option<&'a IfaceStats>,
         actions: &'a mut Vec<SocketTableAction<E>>,
     ) -> Self {
         Self {
@@ -146,6 +149,7 @@ impl<'a, E: Ext> PollContext<'a, E> {
             udp_registry,
             tcp_registry,
             iface_index,
+            loopback_stats,
             actions,
         }
     }
@@ -294,6 +298,12 @@ impl<E: Ext> PollContext<'_, E> {
         ip_repr: &IpRepr,
         tcp_repr: &TcpRepr,
     ) -> Option<(IpRepr, TcpRepr<'static>)> {
+        // Local TCP delivery bypasses the loopback device's packet tokens.
+        if let Some(stats) = self.loopback_stats {
+            let bytes = ip_repr.buffer_len() + tcp_repr.buffer_len();
+            stats.record_tx(bytes);
+            stats.record_rx(bytes);
+        }
         let is_syn_ack = tcp_repr.control == TcpControl::Syn && tcp_repr.ack_number.is_some();
         // Process packets belonging to existing connections first.
         // Note that we must do this first because SYN packets may match existing TIME-WAIT
@@ -455,6 +465,12 @@ impl<E: Ext> PollContext<'_, E> {
     }
 
     fn process_udp(&mut self, ip_repr: &IpRepr, udp_repr: &UdpRepr, udp_payload: &[u8]) -> bool {
+        // Local UDP delivery bypasses the loopback device's packet tokens.
+        if let Some(stats) = self.loopback_stats {
+            let bytes = ip_repr.buffer_len() + udp_repr.header_len() + udp_payload.len();
+            stats.record_tx(bytes);
+            stats.record_rx(bytes);
+        }
         let mut processed = false;
 
         for socket in self.sockets.udp_socket_iter() {
@@ -766,6 +782,7 @@ impl<E: Ext> PollContext<'_, E> {
                         self.udp_registry,
                         self.tcp_registry,
                         self.iface_index,
+                        self.loopback_stats,
                         self.actions,
                     );
                     let wire_ip_repr = demap_repr(ip_repr.clone());
@@ -898,6 +915,7 @@ impl<E: Ext> PollContext<'_, E> {
                     self.udp_registry,
                     self.tcp_registry,
                     self.iface_index,
+                    self.loopback_stats,
                     &mut actions,
                 );
                 let wire_ip_repr =
