@@ -51,6 +51,11 @@ sample intervals. Neither run is a physical-board performance measurement.
    `10.0.2.15`; an explicit loopback bind returned `127.0.0.1`. Source selection
    now fills in a loopback source for wildcard IPv4 local delivery, preserving
    both explicit socket binds and per-packet source overrides.
+7. The host QEMU harness sent a serial log-read command every two seconds
+   while LMBench ran. Focused active/quiet controls found RPC/UDP timeouts when
+   those commands overlapped the benchmark and successful original-binary runs
+   when collection was deferred. Full-suite validation therefore keeps the
+   management console idle during signal and local-network measurements.
 
 Several failures were in the new test harness, not the kernel. Copying the raw
 native driver over its built counterpart lost the build-time `<version>`
@@ -80,9 +85,9 @@ The input image is the frozen Debian browser fixture, SHA256
 QEMU uses RISC-V virt, TCG, four CPUs and 2 GiB RAM. The desktop is stopped for
 benchmark execution. Each boot uses a private root-disk copy; no board was used.
 
-## Unmodified binary QEMU result
+## Earlier unmodified binary QEMU result with active console polling
 
-The final run booted RISC-V `virt` under TCG with four CPUs and 2 GiB RAM.
+An earlier run booted RISC-V `virt` under TCG with four CPUs and 2 GiB RAM.
 Its boot ID was `1ee319bd-b45f-414b-a357-f4982c5ce55c`. The kernel SHA256 was
 `1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0`;
 the packaged runtime SHA256 was
@@ -99,8 +104,8 @@ non-positive or non-finite timeout before starting any process.
 The native driver completed in 586.841 seconds and returned zero. Independent
 auditing found 108 of 109 expected measurement groups, including RPC/TCP, and
 rejected the run because RPC/UDP was missing with `localhost: RPC: Timed out`.
-Thus the one-command workflow is operational and gives a precise incomplete
-result, but native ALL is not yet fully passing. The extracted `report.json`,
+Thus the one-command workflow was operational and gave a precise incomplete
+result under that test setup. The extracted `report.json`,
 configuration, native result text, logs, QEMU summary and regression results
 are stored in the adjacent `2026-09-23-lmbench-native/` directory.
 
@@ -458,8 +463,9 @@ ALL runs and the adapted run, so this single omission is an additional
 intermittent observation, not evidence of a UDP-related defect. The
 [diagnostic report](2026-09-23-lmbench-native/rpc-diagnostic-original-all-report.json)
 and [raw native result](2026-09-23-lmbench-native/rpc-diagnostic-original-all-results.txt)
-retain the complete audit. This run confirms that the original binary is
-still unsuitable for an unconditional 109/109 pass claim.
+retain the complete audit. At that point, this run ruled out an unconditional
+109/109 pass claim under the active-console test setup; the quiet-console
+controls below revised that assessment.
 
 ### Short native-network reproducer
 
@@ -471,29 +477,76 @@ same for `lat_tcp`; then run the original `ENOUGH=10000 lat_rpc -P 1 -p udp
 localhost`. It omits `lmhttp` and non-network benchmarks, so it does not claim
 to be equivalent to ALL. It completes in roughly one minute.
 
-The original RPC client timed out in this sequence on both the diagnostic
+With host serial log-read commands starting 35 seconds after guest launch,
+the original RPC client timed out in this sequence on both the diagnostic
 kernel and the uninstrumented production kernel. The diagnostic run's first
 retry occurred 2,216.4 microseconds after initial enqueue; the server's first
 notification ended **6,065.2 microseconds before** its first request read.
-The client recorded 6,691 retransmissions before exit. Two more single-run
-controls—yielding after each interface poll at `Nice::MIN`, and yielding at
-default nice priority—also timed out. Neither control is a fix, and neither
-was retained. The [short-sequence evidence](2026-09-23-lmbench-native/rpc-udp-network-sequence.json)
-includes the exact commands, boot and kernel hashes, outcomes, counters, and
-first-retry stages.
+The client recorded 6,691 retransmissions before exit. Two single-run
+poll-thread controls—yielding at `Nice::MIN`, and yielding at default nice—
+also timed out while the host was polling serial. Neither was retained.
+The [short-sequence evidence](2026-09-23-lmbench-native/rpc-udp-network-sequence.json)
+includes the commands, boot and kernel hashes, outcomes, and first-retry stages.
 
-Further reduction showed that the additional `lat_connect` and `bw_tcp`
-servers are unnecessary in one run: RPC still timed out after just the UDP
-and TCP precursor tests. It also timed out with only the UDP precursor and
-with only the TCP precursor. More decisively, **no precursor test** was needed
-in one control: after starting the RPC server and waiting idle for 26 seconds,
-the original RPC client timed out in 5.209 seconds. A 10-second idle-delay
-control instead completed in 28.899 seconds. These are one boot each, so they
-do not establish a specific uptime threshold or prove an uptime-dependent
-kernel defect. They do show that prior network tests are **not necessary**
-for the timeout, correcting the initial precursor hypothesis. The next
-diagnostic should compare the scheduler and timer state around the first
-retry in an idle-delay failure, using this short control rather than ALL.
+Reducing the guest workload initially appeared to implicate the preceding
+network tests: UDP-only, TCP-only, and even a 26-second idle wait before RPC
+each had a timeout. The runners revealed a confounder. They began sending a
+guest command over serial every two seconds after a 35-second startup delay;
+these commands overlapped the RPC trial. On the **same production kernel**,
+delaying host serial collection to 85 seconds gave a successful RPC result
+after both the 26-second idle wait and the native network sequence. Each A/B
+case is one boot, so this supports serial management activity as a material
+timing perturbation, not a guarantee that it is the only possible cause.
+The [serial-interference controls](2026-09-23-lmbench-native/rpc-udp-serial-interference.json)
+record the guest workloads, host collection timing, and four results.
+
+### Unmodified native ALL with quiet console
+
+The original `lat_rpc` SHA256
+`baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908`
+was then run through `cd /opt/lmbench/src && make results` in boot
+`ac873e67-0031-4fe4-b86d-d6174a761691`. The production kernel SHA256 was
+`1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0`.
+The host deferred serial log-read commands for the first 180 seconds, covering
+the signal and local-network phases. The native driver returned zero after
+597.156 seconds; independent auditing found **109/109** expected groups, no
+missing measurements and no error lines. The raw result contains the
+protection-fault signal measurement and RPC/UDP and RPC/TCP latencies of
+370.6451 and 751.8556 microseconds. See the
+[original quiet-run report](2026-09-23-lmbench-native/rpc-original-quiet-native-all-report.json),
+[raw result](2026-09-23-lmbench-native/rpc-original-quiet-native-all-results.txt),
+and [configuration](2026-09-23-lmbench-native/rpc-original-quiet-native-all-config.txt).
+This is one successful full run under a controlled console; it does not
+establish reliability under arbitrary concurrent management activity.
+
+### Final package qualification with original binaries
+
+The final runtime was rebuilt from the pinned fork without the earlier RPC
+timing patch. Its archive SHA256 is
+`7989ad15079a55acb2e337bbc0a4fd663f973e8ce0f228e5b8626a57777f6628`;
+the packaged `lat_rpc` SHA256 is the original
+`baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908`.
+Runtime metadata records no modified benchmark binaries, the upstream 25 ms
+RPC deadline, and the 2.5 ms UDP retry interval. The preceding quiet-console
+run used an earlier runtime archive, so the final archive was tested again.
+
+In QEMU boot `8c2af2f8-01ad-4c0e-bb62-dd48fc178ecb`, with production kernel
+SHA256
+`1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0`,
+the guest ran `cd /opt/lmbench/src && make results`. Host serial log-read
+commands were deferred for the first 180 seconds. The native driver returned
+zero after 595.977 seconds; independent auditing passed **109/109** expected
+measurement groups with no missing results or errors. The result includes
+protection-fault signal latency at 12.3792 microseconds, RPC/UDP at 378.2335
+microseconds, and RPC/TCP at 761.4541 microseconds. The
+[final audit report](2026-09-23-lmbench-native/rpc-final-original-quiet-native-all-report.json),
+[raw native result](2026-09-23-lmbench-native/rpc-final-original-quiet-native-all-results.txt),
+and [configuration](2026-09-23-lmbench-native/rpc-final-original-quiet-native-all-config.txt)
+are preserved. The package and smoke unit suite passed 28 tests, including
+both `make results` and the `make result` alias; `git diff --check` passed.
+These two full quiet-console passes establish the selected local ALL suite on
+this QEMU setup, not a guarantee under concurrent serial management load or
+on the physical board.
 
 ### Adapted native ALL qualification
 
@@ -507,14 +560,13 @@ groups, zero missing measurements and no error lines. The raw result includes
 RPC/UDP at 386.9503 microseconds and RPC/TCP at 783.7662 microseconds. See the
 [adapted native report](2026-09-23-lmbench-native/rpc-adapted-native-all-report.json).
 
-This demonstrates that the pinned fork's native scripts and selected ALL suite
-can complete on the QEMU fixture when its RPC timing budget is adapted. It
-does not establish that the unmodified benchmark passes; both full original
-runs were 108/109. The packaging change confines the timing adaptation to
-`lmbenchNative.lmbench`, leaving the ordinary benchmark package and short smoke
-unaltered. Runtime metadata declares the changed binary and both timing values.
+This earlier control demonstrated that the pinned fork's native scripts and
+selected ALL suite could complete with an adapted RPC timing budget. It was
+not evidence for the original binary. The subsequent quiet-console run above
+passed with the original binary, so the native package no longer needs this
+timing adaptation. The control report remains to explain the diagnostic path.
 
-## Final verification
+## Earlier adapted-package verification
 
 The combined native-runner and daily-smoke unit suite passed all 28 tests. Rust,
 C, Nix and Python format/syntax checks passed, as did `git diff --check`. A clean
@@ -533,5 +585,5 @@ files as the passing diagnostic archive; only runtime metadata and the bundled
 supervisor differ. The latter difference is timeout-input validation added
 after the diagnostic archive was created. The combined native-runner and smoke
 unit suite passed 28 tests again, and the adapted Nix package built cleanly.
-The production runtime archive SHA256 is
+The earlier adapted runtime archive SHA256 is
 `19066539ed4a52d3deb8789a70df35d9bfc82854f38f3010e3eeb9d78dd35e82`.

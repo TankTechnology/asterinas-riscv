@@ -200,10 +200,12 @@ except RuntimeError:
                 'assert sys.argv[1:] == ["run"]\n'
                 'subprocess.run(["make","-f","Makefile","-o","lmbench","results"],check=True)\n')
             (root / 'src/GNUmakefile').write_text(make_entry())
-            run = subprocess.run(['make', 'results'], cwd=root / 'src',
-                                 capture_output=True, text=True, timeout=3)
-            self.assertEqual(run.returncode, 0, run.stderr)
-            self.assertIn('NATIVE_RESULT', run.stdout)
+            for target in ('results', 'result'):
+                with self.subTest(target=target):
+                    run = subprocess.run(['make', target], cwd=root / 'src',
+                                         capture_output=True, text=True, timeout=3)
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertIn('NATIVE_RESULT', run.stdout)
 
 
 if __name__ == '__main__':
