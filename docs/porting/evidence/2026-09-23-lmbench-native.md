@@ -228,6 +228,36 @@ diagnostic benchmark adaptation, not a kernel fix or a claim that the
 unmodified upstream suite passes. The [TCP and combined controls](2026-09-23-lmbench-native/rpc-tcp-timeout-controls.json)
 record exact outputs and artifact identities.
 
+### Linux RISC-V full-system control
+
+To separate an Asterinas-specific failure from a general RISC-V binary or
+QEMU TCG limitation, the **unmodified** `lat_rpc` binary and its packaged
+libtirpc/rpcbind closure were run under a Linux RISC-V guest. This used the
+same frozen Debian root filesystem as the Asterinas experiment, copied to a
+private disk, and a minimal Ubuntu 5.15.0-1028-generic boot environment. QEMU
+10.2.1 used `virt`, four virtual CPUs, 2 GiB RAM and TCG; unlike the Asterinas
+boot, it loaded the Linux kernel directly with a minimal initramfs. The client
+command and `ENOUGH=10000` matched the focused Asterinas trials. RPC program
+404040 was registered over both UDP and TCP before each client run.
+
+Two full-system Linux runs completed the original
+`lat_rpc -P 1 -p udp localhost` command with measurements of 161.4145 and
+161.3454 microseconds, after 27 and 31 seconds respectively. Neither printed
+an RPC error. In contrast, the same original client timed out in three focused
+Asterinas QEMU trials (14.061, 11.167 and 15.890 seconds), and the original
+native ALL run omitted the RPC/UDP row. Three additional Linux user-mode
+emulator trials also completed, but they bypass the guest kernel and are a
+weaker comparison. The [structured Linux control](2026-09-23-lmbench-native/rpc-udp-linux-control.json)
+records commands, package and binary hashes, output values and retained log
+hashes. Raw local logs remain under
+`target/lmbench-native-20260923/linux-user-oracle/`.
+
+This control rules out a failure inherent to the pinned RISC-V binary or to
+full-system TCG alone. It does **not** isolate the Asterinas network stack:
+kernel scheduling, loopback delivery and RPC wakeups remain possible causes.
+Cross-kernel latency values are not treated as a performance comparison because
+the boot environments differ.
+
 ### Adapted native ALL qualification
 
 The combined diagnostic `lat_rpc` binary was substituted into an otherwise
