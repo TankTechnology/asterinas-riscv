@@ -7,10 +7,13 @@ use core::marker::PhantomData;
 
 use super::message::{RtnlMessage, RtnlSegment};
 use crate::{
-    net::socket::netlink::{
-        addr::PortNum,
-        message::{ErrorSegment, ProtocolSegment, SegHdrCommonFlags},
-        table::{NetlinkRouteProtocol, SupportedNetlinkProtocol},
+    net::{
+        net_ns::NetNamespace,
+        socket::netlink::{
+            addr::PortNum,
+            message::{ErrorSegment, ProtocolSegment, SegHdrCommonFlags},
+            table::{NetlinkRouteProtocol, SupportedNetlinkProtocol},
+        },
     },
     prelude::*,
 };
@@ -30,17 +33,22 @@ impl NetlinkRouteKernelSocket {
         }
     }
 
-    pub(super) fn handle_request(&self, request: &RtnlSegment, dst_port: PortNum) {
+    pub(super) fn handle_request(
+        &self,
+        request: &RtnlSegment,
+        dst_port: PortNum,
+        net_ns: &NetNamespace,
+    ) {
         debug!("netlink route request: {:?}", request);
 
         let request_header = request.header();
 
         let response_segments = match request {
-            RtnlSegment::NewLink(request_segment) => link::do_new_link(request_segment),
-            RtnlSegment::GetLink(request_segment) => link::do_get_link(request_segment),
-            RtnlSegment::GetAddr(request_segment) => addr::do_get_addr(request_segment),
-            RtnlSegment::SetLink(request_segment) => link::do_set_link(request_segment),
-            RtnlSegment::NewAddr(request_segment) => addr::do_new_addr(request_segment),
+            RtnlSegment::NewLink(request_segment) => link::do_new_link(request_segment, net_ns),
+            RtnlSegment::GetLink(request_segment) => link::do_get_link(request_segment, net_ns),
+            RtnlSegment::GetAddr(request_segment) => addr::do_get_addr(request_segment, net_ns),
+            RtnlSegment::SetLink(request_segment) => link::do_set_link(request_segment, net_ns),
+            RtnlSegment::NewAddr(request_segment) => addr::do_new_addr(request_segment, net_ns),
             _ => Err(Error::with_message(
                 Errno::EOPNOTSUPP,
                 "the netlink route request is not supported",
