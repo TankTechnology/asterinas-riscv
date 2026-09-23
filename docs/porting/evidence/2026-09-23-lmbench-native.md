@@ -80,7 +80,7 @@ The input image is the frozen Debian browser fixture, SHA256
 QEMU uses RISC-V virt, TCG, four CPUs and 2 GiB RAM. The desktop is stopped for
 benchmark execution. Each boot uses a private root-disk copy; no board was used.
 
-## Final QEMU result
+## Unmodified binary QEMU result
 
 The final run booted RISC-V `virt` under TCG with four CPUs and 2 GiB RAM.
 Its boot ID was `1ee319bd-b45f-414b-a357-f4982c5ce55c`. The kernel SHA256 was
@@ -228,6 +228,25 @@ diagnostic benchmark adaptation, not a kernel fix or a claim that the
 unmodified upstream suite passes. The [TCP and combined controls](2026-09-23-lmbench-native/rpc-tcp-timeout-controls.json)
 record exact outputs and artifact identities.
 
+### Adapted native ALL qualification
+
+The combined diagnostic `lat_rpc` binary was substituted into an otherwise
+unchanged native runtime archive. In QEMU boot
+`0637562f-1411-441e-93b2-7ae8fb6d5af8`, using production kernel SHA256
+`1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0`,
+the guest ran `cd /opt/lmbench/src && make results`. The native driver returned
+zero after 625.576 seconds. Independent auditing found all **109/109** expected
+groups, zero missing measurements and no error lines. The raw result includes
+RPC/UDP at 386.9503 microseconds and RPC/TCP at 783.7662 microseconds. See the
+[adapted native report](2026-09-23-lmbench-native/rpc-adapted-native-all-report.json).
+
+This demonstrates that the pinned fork's native scripts and selected ALL suite
+can complete on the QEMU fixture when its RPC timing budget is adapted. It
+does not establish that the unmodified benchmark passes; that remained 108/109
+in the original run. The packaging change confines the timing adaptation to
+`lmbenchNative.lmbench`, leaving the ordinary benchmark package and short smoke
+unaltered. Runtime metadata declares the changed binary and both timing values.
+
 ## Final verification
 
 The combined native-runner and daily-smoke unit suite passed all 28 tests. Rust,
@@ -236,3 +255,16 @@ RISC-V release kernel build with four CPUs and `riscv_sv39_mode` completed in th
 persistent development container. The final kernel source differs from the QEMU
 kernel only by removing temporary RPC diagnostics; the tested UDP source
 selection and procfs implementations are unchanged.
+
+For the adapted native package, the Nix build produced `lat_rpc` SHA256
+`1095906004c6532897aa72403d5d45b5fcb204dd395e57affff6e58367d690cd`,
+identical to the binary used in the passing 109/109 QEMU run. The ordinary
+benchmark package retained its upstream `lat_rpc` SHA256
+`baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908`.
+The production archive contains the same 283 other regular `/opt/lmbench`
+files as the passing diagnostic archive; only runtime metadata and the bundled
+supervisor differ. The latter difference is timeout-input validation added
+after the diagnostic archive was created. The combined native-runner and smoke
+unit suite passed 28 tests again, and the adapted Nix package built cleanly.
+The production runtime archive SHA256 is
+`19066539ed4a52d3deb8789a70df35d9bfc82854f38f3010e3eeb9d78dd35e82`.

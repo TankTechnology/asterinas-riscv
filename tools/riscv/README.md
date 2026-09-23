@@ -258,10 +258,15 @@ make results
 The GNUmakefile invokes the native Makefile with `-o lmbench`, which skips only
 its compilation prerequisite. Native scripts still perform configuration and
 execute the suite. Two declared script adaptations supply the server addresses
-required by this fork and replace the `egrep` wrapper with `grep -E`. The original
-Makefile, configuration/results scripts and benchmark executables remain intact.
-Package identities, original script hashes and adaptations are recorded in
-`asterinas-runtime.json`.
+required by this fork and replace the `egrep` wrapper with `grep -E`. The native
+RISC-V package also builds `lat_rpc` from the pinned fork with a QEMU timing
+adaptation: its total RPC deadline is 250 ms instead of 25 ms, and its UDP
+retry interval is 250 ms instead of 2.5 ms. The ordinary LMBench package and
+18-case smoke keep the original binary. The original Makefile and native
+configuration/results scripts remain intact. Package identities, original
+script hashes, the `lat_rpc` hash and every adaptation are recorded in
+`asterinas-runtime.json`. Results from this adapted binary are not comparable
+to an unmodified LMBench RPC timeout experiment.
 
 The automated configuration selects native **ALL**, one copy, 8 MiB, FASTMEM,
 file-system tests enabled, and loopback networking including RPC/HTTP.
