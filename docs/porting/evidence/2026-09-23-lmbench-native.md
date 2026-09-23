@@ -422,8 +422,8 @@ The code path is `UdpSocketBg::process` → `DatagramObserver::on_events` →
 thread uses `Fair(Nice::MIN)`; a default-nice server task need not preempt it
 on the same CPU. This is a concrete scheduling hypothesis consistent with the
 successful-run tail, not yet a verified explanation for the original ALL
-failures. A failing run with the same per-transaction kernel trace is still
-needed before changing production scheduling behavior.
+failures. A failing run with the same per-transaction kernel trace is reported
+below; it still does not justify changing production scheduling behavior.
 
 A further focused run counted successful first notifications delivered by
 `Waker::wake_up` while each socket notification call ran. The slowest request
@@ -460,6 +460,29 @@ intermittent observation, not evidence of a UDP-related defect. The
 and [raw native result](2026-09-23-lmbench-native/rpc-diagnostic-original-all-results.txt)
 retain the complete audit. This run confirms that the original binary is
 still unsuitable for an unconditional 109/109 pass claim.
+
+### Short native-network reproducer
+
+Running `lat_rpc` alone is a weak discriminator: one diagnostic-kernel call
+passed in 26.530 seconds with zero retransmissions. A shorter reproducer now
+follows the native script's local-network order: start `rpcbind`, `lat_rpc`,
+`lat_connect` and `bw_tcp` servers; start, measure and stop `lat_udp`; do the
+same for `lat_tcp`; then run the original `ENOUGH=10000 lat_rpc -P 1 -p udp
+localhost`. It omits `lmhttp` and non-network benchmarks, so it does not claim
+to be equivalent to ALL. It completes in roughly one minute.
+
+The original RPC client timed out in this sequence on both the diagnostic
+kernel and the uninstrumented production kernel. The diagnostic run's first
+retry occurred 2,216.4 microseconds after initial enqueue; the server's first
+notification ended **6,065.2 microseconds before** its first request read.
+The client recorded 6,691 retransmissions before exit. Two more single-run
+controls—yielding after each interface poll at `Nice::MIN`, and yielding at
+default nice priority—also timed out. Neither control is a fix, and neither
+was retained. The [short-sequence evidence](2026-09-23-lmbench-native/rpc-udp-network-sequence.json)
+includes the exact commands, boot and kernel hashes, outcomes, counters, and
+first-retry stages. The next narrow question is which preceding network
+operation or idle service makes the original RPC client vulnerable; these
+single-run comparisons cannot establish causality.
 
 ### Adapted native ALL qualification
 
