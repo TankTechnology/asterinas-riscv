@@ -73,6 +73,7 @@ FOCUSED_NETWORK_AUTO_TESTS := \
 	ifconf \
 	ifreq \
 	ip_socket_netns \
+	netlink_route_netns \
 	proc_net_dev \
 	ipv6_dual_stack \
 	ipv6_dual_stack_udp \
@@ -183,6 +184,13 @@ ifeq ($(TARGET_ARCH), riscv64)
 # The namespace regression binds an address on the original eth0.
 CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=ipsocketns" \
 	--qemu-args="-device virtio-net-device,netdev=ipsocketns"
+endif
+else ifeq ($(AUTO_TEST), netlink_route_netns)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_netlink_route_netns_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=routens" \
+	--qemu-args="-device virtio-net-device,netdev=routens"
 endif
 else ifeq ($(AUTO_TEST), proc_net_dev)
 ENABLE_REGRESSION_TEST := true
@@ -1239,6 +1247,10 @@ else ifeq ($(AUTO_TEST), ip_socket_netns)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ip-socket-netns"
+else ifeq ($(AUTO_TEST), netlink_route_netns)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "netlink-route-netns"
 else ifeq ($(AUTO_TEST), ifconf_gvisor)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \

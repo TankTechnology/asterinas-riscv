@@ -92,7 +92,7 @@ impl datagram_common::Bound for BoundNetlinkRoute {
                 header.pid = local_port;
             }
 
-            rtnl_kernel.handle_request(&segment, local_port);
+            rtnl_kernel.handle_request(&segment, local_port, &self.net_ns);
         }
 
         Ok(sum_lens)

@@ -78,7 +78,8 @@ where
     pub fn new(is_nonblocking: bool, socket_type: SockType) -> Arc<Self> {
         debug_assert!(socket_type == SockType::SOCK_RAW || socket_type == SockType::SOCK_DGRAM);
 
-        let unbound = UnboundNetlink::new();
+        let net_ns = current_net_ns();
+        let unbound = UnboundNetlink::new(net_ns.clone());
         let status_flags = if is_nonblocking {
             StatusFlags::O_NONBLOCK
         } else {
@@ -90,7 +91,7 @@ where
             socket_type,
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
-            net_ns: current_net_ns(),
+            net_ns,
             common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }

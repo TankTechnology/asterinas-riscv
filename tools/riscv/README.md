@@ -187,6 +187,20 @@ UDP automatic local-address selection, and TCP/UDP privileged-port binding.
 [The red/green QEMU evidence](../../docs/porting/evidence/2026-09-24-ip-socket-netns.md)
 records the observed behavior and separate dual-stack checks.
 
+## Route netlink socket namespace regression
+
+Run this short RISC-V QEMU gate when changing route netlink handling or
+network namespace behavior:
+
+```sh
+make run_kernel AUTO_TEST=netlink_route_netns TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+```
+
+It checks route link and address dumps from sockets created before and after
+`unshare(CLONE_NEWNET)`, then runs the existing `netlink_route` and `rtnl_err`
+regressions. [The red/green QEMU evidence](../../docs/porting/evidence/2026-09-24-netlink-route-netns.md)
+records the observed behavior and current isolation limit.
+
 ## Unit tests
 
 Run the repository-contract tests before launching QEMU:

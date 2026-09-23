@@ -11,7 +11,7 @@ use super::util::finish_response;
 use crate::{
     net::{
         iface::Iface,
-        net_ns::current_net_ns,
+        net_ns::NetNamespace,
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
             route::message::{
@@ -24,7 +24,10 @@ use crate::{
     util::net::CSocketAddrFamily,
 };
 
-pub(super) fn do_get_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegment>> {
+pub(super) fn do_get_addr(
+    request_segment: &AddrSegment,
+    net_ns: &NetNamespace,
+) -> Result<Vec<RtnlSegment>> {
     let dump_all = {
         let flags = GetRequestFlags::from_bits_truncate(request_segment.header().flags);
         flags.contains(GetRequestFlags::DUMP)
@@ -34,9 +37,7 @@ pub(super) fn do_get_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegme
     }
 
     let requested_family = request_segment.body().family;
-    // Only the interfaces visible in the current network namespace are
-    // reported.
-    let net_ns = current_net_ns();
+    // Report only addresses in the sending socket's network namespace.
     let mut addr_segments: Vec<AddrSegment> = net_ns
         .ifaces()
         .iter()
@@ -63,16 +64,17 @@ pub(super) fn do_get_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegme
 /// added. Adding an address that the interface already has (which is what
 /// systemd's loopback setup does with 127.0.0.1/8 and ::1/128) reports EEXIST
 /// like Linux; anything else fails with EOPNOTSUPP.
-pub(super) fn do_new_addr(request_segment: &AddrSegment) -> Result<Vec<RtnlSegment>> {
+pub(super) fn do_new_addr(
+    request_segment: &AddrSegment,
+    net_ns: &NetNamespace,
+) -> Result<Vec<RtnlSegment>> {
     let body = request_segment.body();
 
     let Some(index) = body.index else {
         return_errno_with_message!(Errno::ENODEV, "no interface index specified");
     };
 
-    // Only interfaces visible in the current network namespace can be
-    // addressed.
-    let net_ns = current_net_ns();
+    // Only interfaces visible to the sending socket can be addressed.
     let Some(iface) = net_ns
         .ifaces()
         .iter()
