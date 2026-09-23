@@ -258,6 +258,20 @@ kernel scheduling, loopback delivery and RPC wakeups remain possible causes.
 Cross-kernel latency values are not treated as a performance comparison because
 the boot environments differ.
 
+### Network poll-thread priority control
+
+The Asterinas network-interface polling thread normally runs at fair-scheduler
+`Nice::MIN`. In a temporary diagnostic kernel containing the existing UDP/XID
+counters, its policy alone was changed to `Nice::default()`. The release kernel
+booted the same Debian fixture and ran the unmodified RPC server and client.
+The client still printed `localhost: RPC: Timed out` after 12.012 seconds.
+Neither RPC UDP socket reported an RX queue drop, and the client closed with
+168 bytes of replies queued. The [priority-control result](2026-09-23-lmbench-native/rpc-udp-poll-priority.json)
+records the changed line, kernel hash, boot ID, raw-log hash and socket counts.
+The temporary source edit was restored after this experiment. Lowering this
+thread's priority alone is insufficient to recover the original benchmark;
+it does not exclude other scheduler or socket-wakeup delays.
+
 ### Adapted native ALL qualification
 
 The combined diagnostic `lat_rpc` binary was substituted into an otherwise
