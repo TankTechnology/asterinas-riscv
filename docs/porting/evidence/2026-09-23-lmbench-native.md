@@ -112,13 +112,14 @@ character operation, 25 ms timeout and original LMBench server completed 10,000
 calls in 3.84--4.20 seconds. Adding a fork and zero-timeout `select` between
 calls also completed 10,000 calls. The original `benchmp` client instead failed
 around call 5,883 while the instrumented server received more than 16,000
-requests, showing retransmission and missing replies in that specific client
-path. Increasing its per-call timeout tenfold did not resolve the failure.
+requests, showing frequent retransmission. Increasing its per-call timeout
+tenfold did not resolve the failure. A later longer simple-client run also
+failed; the defect is not exclusive to `benchmp`.
 
 The same pinned source completed RPC/UDP and RPC/TCP on x86-64 Linux. The
 remaining gap is therefore localized to the RISC-V Asterinas interaction with
-LMBench's `benchmp` RPC/UDP measurement path. It is not evidence for a general
-rpcbind, libtirpc or UDP loopback failure, and this change does not hide it.
+high-volume RPC/UDP under QEMU TCG. It is not evidence for a general rpcbind
+startup failure, and this change does not hide it.
 
 ### Bounded retry-interval experiment
 
@@ -144,8 +145,43 @@ The structured [retry experiment summary](2026-09-23-lmbench-native/rpc-udp-retr
 records the commands, artifact hashes, boot identities and observed outputs.
 This supports excessive retransmission as a specific hypothesis, not a proven
 kernel defect or an acceptable modification to the official benchmark. The
-next diagnostic should count socket queue occupancy and dropped UDP replies
-under the unchanged native command. Native ALL remains **108/109**, failing.
+next diagnostic counted socket delivery and queue occupancy under the unchanged
+native command. Native ALL remains **108/109**, failing.
+
+### UDP queue and delivery accounting
+
+A temporary diagnostic kernel on branch `codex/udp-rpc-instrument` at
+`14ec53a87` counted nonempty UDP datagrams accepted or rejected by each socket
+and printed final per-socket totals. It did not change the native LMBench
+client or server. On a QEMU run that reproduced the original timeout, the RPC
+client socket received 41,295 packets and dispatched 41,304; the server socket
+received and dispatched 41,305. Neither socket reported a full RX queue.
+The highest observed RX payload occupancy was 704 bytes on the server and 168
+bytes on the client; the client queue still held 168 bytes when it closed. A
+second run also timed out with roughly 55,000 accepted packets in each direction and zero
+RX queue rejections. The [structured queue evidence](2026-09-23-lmbench-native/rpc-udp-queue.json)
+records the kernel and boot identities, command, output and counters.
+
+These are socket-level counts, not proof that each response matched its RPC
+transaction ID. They rule out the proposed full receive queue in the observed
+runs. At failure, the client still had 168 bytes queued, consistent with some
+replies remaining unread when its 25 ms deadline expired. The next
+discriminating test is to trace transaction IDs and client poll wakeups;
+changing buffer sizes without that evidence would not address the observed
+failure.
+
+### Longer simple-client control
+
+The previously successful simple libtirpc client was run for 50,000 calls
+against the original LMBench RPC server, with a fork, zero-timeout `select`
+between calls, the original 2.5 ms retry interval and the 25 ms total timeout.
+It failed after 8,210 successful calls in 5.414 seconds. The client RX socket
+still held 28 bytes at close; both sockets again reported zero RX queue
+rejections. [The structured long-client result](2026-09-23-lmbench-native/rpc-udp-long-client.json)
+records the counts and artifact identity. This overturns the earlier inference
+that `benchmp` itself was required to trigger the failure. Duration or repeated
+calls under these short RPC deadlines suffice; the exact mechanism remains
+unproven.
 
 ## Final verification
 
