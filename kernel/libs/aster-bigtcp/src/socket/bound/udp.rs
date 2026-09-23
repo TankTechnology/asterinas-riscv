@@ -3,7 +3,7 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{
     marker::PhantomData,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use aster_softirq::BottomHalfDisabled;
@@ -27,10 +27,17 @@ use crate::{
 
 pub type UdpSocket<E> = Socket<UdpSocketInner<E>, E>;
 
+// Diagnostic only: counts payload-bearing datagrams rejected by the RX queue.
+static UDP_RX_QUEUE_DROPS: AtomicU64 = AtomicU64::new(0);
+
 /// States needed by [`UdpSocketBg`].
 pub struct UdpSocketInner<E: Ext> {
     socket: SpinLock<Box<RawUdpSocket>, BottomHalfDisabled>,
     need_dispatch: AtomicBool,
+    rx_packets: AtomicU64,
+    tx_packets: AtomicU64,
+    rx_drops: AtomicU64,
+    rx_max_queued_bytes: AtomicU64,
     accepts_ipv4: bool,
     ext: PhantomData<fn() -> E>,
 }
@@ -40,7 +47,12 @@ impl<E: Ext> Inner<E> for UdpSocketInner<E> {
     type Observer = E::UdpEventObserver;
 
     fn on_drop(this: &Arc<SocketBg<Self, E>>) {
-        this.inner.socket.lock().close();
+        let queued_on_close = {
+            let mut socket = this.inner.socket.lock();
+            let queued = socket.recv_queue();
+            socket.close();
+            queued
+        };
 
         // Keep the socket-table -> UDP-registry lock order used by poll.
         // Once removed locally, a concurrent registry lookup can at most see a
@@ -52,6 +64,22 @@ impl<E: Ext> Inner<E> for UdpSocketInner<E> {
             .common()
             .udp_registry()
             .unregister_socket(this);
+
+        let rx = this.inner.rx_packets.load(Ordering::Relaxed);
+        let tx = this.inner.tx_packets.load(Ordering::Relaxed);
+        let drops = this.inner.rx_drops.load(Ordering::Relaxed);
+        let max_queued = this.inner.rx_max_queued_bytes.load(Ordering::Relaxed);
+        if rx + tx >= 1000 {
+            ostd::early_println!(
+                "UDP_SOCKET_STATS port={} rx={} tx={} rx_drops={} max_queued={} queued_on_close={}",
+                this.bound.port(),
+                rx,
+                tx,
+                drops,
+                max_queued,
+                queued_on_close,
+            );
+        }
     }
 }
 
@@ -84,6 +112,7 @@ impl<E: Ext> UdpSocketBg<E> {
             return false;
         }
 
+        let queued_before = socket.recv_queue();
         socket.process(
             cx,
             smoltcp::phy::PacketMeta::default(),
@@ -91,6 +120,29 @@ impl<E: Ext> UdpSocketBg<E> {
             udp_repr,
             udp_payload,
         );
+        let queued_after = socket.recv_queue();
+        self.inner
+            .rx_max_queued_bytes
+            .fetch_max(queued_after as u64, Ordering::Relaxed);
+        let rejected = !udp_payload.is_empty() && queued_after == queued_before;
+        drop(socket);
+
+        if rejected {
+            self.inner.rx_drops.fetch_add(1, Ordering::Relaxed);
+            let drops = UDP_RX_QUEUE_DROPS.fetch_add(1, Ordering::Relaxed) + 1;
+            if drops.is_power_of_two() {
+                ostd::early_println!(
+                    "UDP_RX_QUEUE_DROP count={} port={} src_port={} payload={} queued_bytes={}",
+                    drops,
+                    udp_repr.dst_port,
+                    udp_repr.src_port,
+                    udp_payload.len(),
+                    queued_after,
+                );
+            }
+        } else {
+            self.inner.rx_packets.fetch_add(1, Ordering::Relaxed);
+        }
 
         self.notify_events(SocketEvents::CAN_RECV);
 
@@ -107,6 +159,7 @@ impl<E: Ext> UdpSocketBg<E> {
         socket
             .dispatch(cx, |cx, _meta, (ip_repr, udp_repr, udp_payload)| {
                 dispatch(cx, &ip_repr, &udp_repr, udp_payload);
+                self.inner.tx_packets.fetch_add(1, Ordering::Relaxed);
                 Ok::<(), ()>(())
             })
             .unwrap();
@@ -171,6 +224,10 @@ impl<E: Ext> UdpSocket<E> {
         let inner = UdpSocketInner {
             socket: SpinLock::new(socket),
             need_dispatch: AtomicBool::new(false),
+            rx_packets: AtomicU64::new(0),
+            tx_packets: AtomicU64::new(0),
+            rx_drops: AtomicU64::new(0),
+            rx_max_queued_bytes: AtomicU64::new(0),
             accepts_ipv4,
             ext: PhantomData,
         };
