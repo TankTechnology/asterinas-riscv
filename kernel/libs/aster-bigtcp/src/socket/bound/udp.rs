@@ -47,6 +47,7 @@ const RPC_REPLY_NOTIFY_END: u8 = 12;
 struct RpcTraceSlot {
     seq: AtomicU64,
     ns: AtomicU64,
+    wakes: AtomicU64,
     packed: AtomicU64,
 }
 
@@ -55,6 +56,7 @@ impl RpcTraceSlot {
         Self {
             seq: AtomicU64::new(0),
             ns: AtomicU64::new(0),
+            wakes: AtomicU64::new(0),
             packed: AtomicU64::new(0),
         }
     }
@@ -74,6 +76,7 @@ struct TraceEvent {
     stage: u8,
     port: u16,
     ns: u64,
+    wakes: u64,
 }
 
 impl TraceEvent {
@@ -82,6 +85,7 @@ impl TraceEvent {
         stage: 0,
         port: 0,
         ns: 0,
+        wakes: 0,
     };
 }
 
@@ -113,6 +117,8 @@ fn trace_rpc(stage: u8, port: u16, xid: u32) {
     let slot = &RPC_TRACE[seq as usize % RPC_TRACE_SLOTS];
     slot.seq.store(0, Ordering::Release);
     slot.ns.store(monotonic_ns(), Ordering::Relaxed);
+    slot.wakes
+        .store(ostd::sync::successful_wakeups(), Ordering::Relaxed);
     slot.packed.store(
         ((stage as u64) << 48) | ((port as u64) << 32) | xid as u64,
         Ordering::Relaxed,
@@ -139,6 +145,7 @@ fn capture_slowest_trace(xid: u32, rtt_ns: u64) {
             continue;
         }
         let ns = slot.ns.load(Ordering::Relaxed);
+        let wakes = slot.wakes.load(Ordering::Relaxed);
         let packed = slot.packed.load(Ordering::Relaxed);
         if slot.seq.load(Ordering::Acquire) == seq && packed as u32 == xid {
             if state.len == state.events.len() {
@@ -150,6 +157,7 @@ fn capture_slowest_trace(xid: u32, rtt_ns: u64) {
                 stage: (packed >> 48) as u8,
                 port: (packed >> 32) as u16,
                 ns,
+                wakes,
             };
             state.len += 1;
         }
@@ -166,12 +174,13 @@ fn dump_slowest_trace() {
     );
     for event in &state.events[..state.len] {
         ostd::early_println!(
-            "UDP_RPC_SLOWEST_EVENT seq={} stage={} port={} xid={} ns={}",
+            "UDP_RPC_SLOWEST_EVENT seq={} stage={} port={} xid={} ns={} wakes={}",
             event.seq,
             event.stage,
             event.port,
             state.xid,
             event.ns,
+            event.wakes,
         );
     }
 }
@@ -194,15 +203,17 @@ fn dump_first_retry_trace(xid: u32) {
             continue;
         }
         let ns = slot.ns.load(Ordering::Relaxed);
+        let wakes = slot.wakes.load(Ordering::Relaxed);
         let packed = slot.packed.load(Ordering::Relaxed);
         if slot.seq.load(Ordering::Acquire) == seq && packed as u32 == xid {
             ostd::early_println!(
-                "UDP_RPC_FIRST_EVENT seq={} stage={} port={} xid={} ns={}",
+                "UDP_RPC_FIRST_EVENT seq={} stage={} port={} xid={} ns={} wakes={}",
                 seq,
                 packed >> 48,
                 (packed >> 32) as u16,
                 xid,
                 ns,
+                wakes,
             );
         }
     }

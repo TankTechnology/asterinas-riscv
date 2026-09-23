@@ -20,7 +20,7 @@ pub use self::{
     rwlock::{RwLock, RwLockReadGuard, RwLockUpgradeableGuard, RwLockWriteGuard},
     rwmutex::{RwMutex, RwMutexReadGuard, RwMutexUpgradeableGuard, RwMutexWriteGuard},
     spin::{SpinLock, SpinLockGuard},
-    wait::{WaitQueue, Waiter, Waker},
+    wait::{WaitQueue, Waiter, Waker, successful_wakeups},
 };
 
 pub(crate) fn init() {

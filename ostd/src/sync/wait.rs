@@ -1,10 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use alloc::{collections::VecDeque, sync::Arc};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use super::{LocalIrqDisabled, SpinLock};
 use crate::task::{Task, scheduler};
+
+// Diagnostic only: counts Wakers that deliver their first notification.
+// This does not establish whether the associated task was parked yet.
+static SUCCESSFUL_WAKEUPS: AtomicU64 = AtomicU64::new(0);
+
+/// Returns the diagnostic count of first notifications delivered by Wakers.
+pub fn successful_wakeups() -> u64 {
+    SUCCESSFUL_WAKEUPS.load(Ordering::Relaxed)
+}
 
 // # Explanation on the memory orders
 //
@@ -264,6 +273,7 @@ impl Waker {
             return false;
         }
         scheduler::unpark_target(self.task.clone());
+        SUCCESSFUL_WAKEUPS.fetch_add(1, Ordering::Relaxed);
 
         true
     }
