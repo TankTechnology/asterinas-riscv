@@ -1,0 +1,49 @@
+{
+  "scope": "Focused original RPC/UDP client trace on the production Asterinas kernel; not a native ALL pass",
+  "kernel_image_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+  "boot_id": "9f96d266-8468-470f-9446-2f6dd5fc000b",
+  "root_image_sha256": "bd855c9855e6734cb5e154d488d7c1899f9c1949ac01dae87cd0fc88702e35cf",
+  "lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
+  "command": "ENOUGH=10000 LD_PRELOAD=/opt/rpc_trace.so lat_rpc -P 1 -p udp localhost",
+  "server": "unmodified lat_rpc -s; UDP and TCP registration verified",
+  "client_elapsed_seconds": 12.218,
+  "client_process_status": 0,
+  "client_output": "localhost: RPC: Timed out",
+  "tracer": {
+    "source_branch": "codex/udp-rpc-instrument",
+    "source_commit": "e8fbc3517",
+    "source_path": "tools/riscv/diagnostics/lmbench_rpc_trace.c",
+    "source_sha256": "d7100038602589b0a31bb7a6a1d68f4667df592f93b8e804702d6cdf29bbede2",
+    "shared_object_sha256": "83f4a88cac5eda2810c6364e6427bde6a5f2c9c033ed7a9a6a23844c722e88ff",
+    "method": "Interpose sendto, poll and recvfrom only in the original client; retain last 256 events per process"
+  },
+  "worker_trace": {
+    "pid": 244,
+    "total_events": 179654,
+    "retained_events": 256,
+    "raw_log": "rpc-udp-final-call-trace.log",
+    "raw_log_sha256": "76480f34130f74e302b87b8e9fa760a19af91846d099d99f5c48642f3e38176f",
+    "final_call": {
+      "xid": 1790897517,
+      "previous_reply_xid": 1790897516,
+      "first_send_event": 179618,
+      "last_read_event": 179653,
+      "elapsed_wall_ms": 9.1119,
+      "request_sends": 13,
+      "poll_timeouts": 3,
+      "poll_readable": 10,
+      "stale_replies_read": 10,
+      "matching_replies_read": 0,
+      "budget_deducted_on_poll_timeouts_ms": 6,
+      "budget_deducted_on_stale_replies_ms": 19,
+      "total_nominal_budget_deducted_ms": 25
+    }
+  },
+  "serial_log_sha256": "3e3f6baa7cb4feb96c4b863dd2a3fe5bedffaf870c47412f7ec6b9f61d1c84d5",
+  "libtirpc_source": {
+    "version": "1.3.6",
+    "clnt_dg_source_sha256": "644e6d7382498b321592774e329f2cafe376df9c0f8c421c8fcad580760906cc",
+    "budget_rule": "Subtract requested poll timeout on a poll expiration or mismatched reply XID"
+  },
+  "conclusion": "In this reproduced failure, repeated replies for the prior XID consumed the 25 ms libtirpc budget in 9.1119 ms of wall time. The trace proves the failing call's immediate mechanism but not the origin of the initial reply backlog."
+}
