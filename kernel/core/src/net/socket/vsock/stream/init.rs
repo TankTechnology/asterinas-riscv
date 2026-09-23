@@ -2,12 +2,15 @@
 
 use crate::{
     events::IoEvents,
-    net::socket::{
-        util::{SockShutdownCmd, check_port_privilege},
-        vsock::{
-            addr::{VMADDR_CID_HOST, VMADDR_PORT_ANY, VsockSocketAddr},
-            stream::{ConnectingStream, ListenStream},
-            transport::BoundPort,
+    net::{
+        net_ns::current_net_ns,
+        socket::{
+            util::{SockShutdownCmd, check_port_privilege},
+            vsock::{
+                addr::{VMADDR_CID_HOST, VMADDR_PORT_ANY, VsockSocketAddr},
+                stream::{ConnectingStream, ListenStream},
+                transport::BoundPort,
+            },
         },
     },
     prelude::*,
@@ -59,7 +62,7 @@ impl InitStream {
         }
 
         if let Ok(port) = u16::try_from(addr.port) {
-            check_port_privilege(port)?;
+            check_port_privilege(port, &current_net_ns())?;
         }
 
         // Linux does not support `SO_REUSEADDR`/`SO_REUSEPORT` for `AF_VSOCK`. Therefore, port
