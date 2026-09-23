@@ -178,6 +178,7 @@ class DesktopBootManifestTests(DesktopBootFixture):
         )
 
         self.assertEqual(transcript, operations.publication_transcript)
+        self.assertEqual(operations.calls[0], ("open", 120))
         self.assertEqual(
             [call[0] for call in operations.calls],
             ["open", "boot", "login", "publish", "recover", "close"],
