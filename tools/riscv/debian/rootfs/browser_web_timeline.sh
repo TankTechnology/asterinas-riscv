@@ -33,9 +33,10 @@ marker() {
 
 case "${1-}" in
     begin)
-        # The file is provisioned with its final owner in the immutable image.
-        # Avoid invoking install/chown during early boot: Asterinas may block
-        # that metadata path while sysinit is still bringing up the desktop.
+        # The static image provisions this file for persistent home. In the
+        # volatile home, the timeline unit creates it as the asterinas user.
+        # Avoid install/chown during early boot: metadata updates can block
+        # while sysinit is bringing up the desktop.
         : >"$TIMELINE"
         marker BOOT_SYSTEMD_BEGIN
         ;;

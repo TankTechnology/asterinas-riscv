@@ -1033,6 +1033,7 @@ class DevelopmentOverlayTests(unittest.TestCase):
                 "/usr/lib/asterinas/desktop-m5-device-access",
                 "/usr/lib/asterinas/desktop-m5-evidence",
                 "/etc/systemd/system/asterinas-browser-web.service",
+                "/etc/systemd/system/asterinas-desktop-m5-network.service.d/browser-web.conf",
                 "/etc/systemd/system/asterinas-browser-web-evidence.service",
                 "/etc/systemd/system/asterinas-browser-web-timeline-begin.service",
                 "/etc/systemd/system/asterinas-browser-web-timeline-basic.service",

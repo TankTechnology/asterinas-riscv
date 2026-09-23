@@ -126,6 +126,11 @@
       "mode": "0644"
     },
     {
+      "source": "browser_web_network.conf",
+      "destination": "/etc/systemd/system/asterinas-desktop-m5-network.service.d/browser-web.conf",
+      "mode": "0644"
+    },
+    {
       "source": "browser_web_evidence.service",
       "destination": "/etc/systemd/system/asterinas-browser-web-evidence.service",
       "mode": "0644"
