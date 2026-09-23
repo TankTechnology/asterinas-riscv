@@ -57,6 +57,14 @@ in rec {
     CPPFLAGS = "-fcommon -fpermissive";
   });
   lmbench = pkgs.callPackage ./benchmark/lmbench.nix { };
+  # Native make-results runtime; guest compilation is intentionally omitted.
+  lmbenchNative = {
+    inherit (benchmark) lmbench;
+    source = benchmark.lmbench.src;
+    make = pkgs.gnumake;
+    rpcbind = pkgs.rpcbind.override { useSystemd = false; };
+    nettools = pkgs.nettools;
+  };
   redis = (pkgs.redis.overrideAttrs (_: { doCheck = false; })).override {
     withSystemd = false;
   };
