@@ -486,11 +486,13 @@ where
 }
 
 /// Unblocks a target task.
-pub(crate) fn unpark_target(runnable: Arc<Task>) {
+pub(crate) fn unpark_target(runnable: Arc<Task>) -> bool {
     let preempt_cpu = scheduler_singleton().enqueue(runnable, EnqueueFlags::Wake);
+    let requested_preempt = preempt_cpu.is_some();
     if let Some(preempt_cpu_id) = preempt_cpu {
         set_need_preempt(preempt_cpu_id);
     }
+    requested_preempt
 }
 
 /// Enqueues a newly built task.

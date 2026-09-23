@@ -4,15 +4,27 @@ use alloc::{collections::VecDeque, sync::Arc};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use super::{LocalIrqDisabled, SpinLock};
-use crate::task::{Task, scheduler};
+use crate::task::{Task, scheduler, scheduler::info::CommonSchedInfo};
 
 // Diagnostic only: counts Wakers that deliver their first notification.
 // This does not establish whether the associated task was parked yet.
 static SUCCESSFUL_WAKEUPS: AtomicU64 = AtomicU64::new(0);
+static WAKE_TARGETS_WITHOUT_CPU: AtomicU64 = AtomicU64::new(0);
+static WAKE_PREEMPT_REQUESTS: AtomicU64 = AtomicU64::new(0);
 
 /// Returns the diagnostic count of first notifications delivered by Wakers.
 pub fn successful_wakeups() -> u64 {
     SUCCESSFUL_WAKEUPS.load(Ordering::Relaxed)
+}
+
+/// Returns how many first notifications targeted tasks without an assigned CPU.
+pub fn wake_targets_without_cpu() -> u64 {
+    WAKE_TARGETS_WITHOUT_CPU.load(Ordering::Relaxed)
+}
+
+/// Returns how many first notifications requested scheduler preemption.
+pub fn wake_preempt_requests() -> u64 {
+    WAKE_PREEMPT_REQUESTS.load(Ordering::Relaxed)
 }
 
 // # Explanation on the memory orders
@@ -272,7 +284,14 @@ impl Waker {
         if self.has_woken.swap(true, Ordering::Release) {
             return false;
         }
-        scheduler::unpark_target(self.task.clone());
+        let target_without_cpu = self.task.cpu().get().is_none();
+        let requested_preempt = scheduler::unpark_target(self.task.clone());
+        if target_without_cpu {
+            WAKE_TARGETS_WITHOUT_CPU.fetch_add(1, Ordering::Relaxed);
+        }
+        if requested_preempt {
+            WAKE_PREEMPT_REQUESTS.fetch_add(1, Ordering::Relaxed);
+        }
         SUCCESSFUL_WAKEUPS.fetch_add(1, Ordering::Relaxed);
 
         true
