@@ -20,6 +20,7 @@ macro_rules! __log_prefix {
 #[cfg_attr(not(target_arch = "riscv64"), path = "arch/other.rs")]
 mod arch;
 mod keyboard;
+#[cfg(target_arch = "riscv64")]
 mod mouse;
 
 #[init_component]
