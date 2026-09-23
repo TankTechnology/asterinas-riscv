@@ -257,8 +257,9 @@ make results
 
 The GNUmakefile invokes the native Makefile with `-o lmbench`, which skips only
 its compilation prerequisite. Native scripts still perform configuration and
-execute the suite. Two declared script adaptations supply the server addresses
-required by this fork and replace the `egrep` wrapper with `grep -E`. The native
+execute the suite. Three declared script adaptations supply the server addresses
+required by this fork, replace the `egrep` wrapper with `grep -E`, and skip
+the two modern `netstat -i` table headings before invoking `ifconfig`. The native
 RISC-V package uses the pinned fork's original `lat_rpc` binary, including its
 25 ms total RPC deadline and 2.5 ms UDP retry interval. The original Makefile
 and native configuration/results scripts remain intact. Package identities,
@@ -266,6 +267,8 @@ original script hashes, the `lat_rpc` hash and every adaptation are recorded
 in `asterinas-runtime.json`. Because the RPC retry interval is short, avoid
 sending repeated management-console commands while collecting native results;
 such commands caused intermittent RPC/UDP timeouts in QEMU diagnostics.
+The [interface metadata qualification](../../docs/porting/evidence/2026-09-24-ifreq.md)
+records the clean 109/109 QEMU run with these adaptations.
 
 The automated configuration selects native **ALL**, one copy, 8 MiB, FASTMEM,
 file-system tests enabled, and loopback networking including RPC/HTTP.

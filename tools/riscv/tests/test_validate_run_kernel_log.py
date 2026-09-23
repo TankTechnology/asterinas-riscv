@@ -19,6 +19,33 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_ifreq_gate_requires_one_clean_completion(self) -> None:
+        marker = "interface ioctl regression passed."
+        validate_transcript(marker + "\n", mode="ifreq")
+        for transcript in (
+            "boot output\n",
+            f"{marker}\n{marker}\n",
+            f"{marker}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaises(ValidationError):
+                    validate_transcript(transcript, mode="ifreq")
+
+    def test_ifreq_gate_is_wired_to_network_regression(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        guest = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/run_ifreq_test.sh"
+        ).read_text()
+        general = (
+            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
+        self.assertIn("else ifeq ($(AUTO_TEST), ifreq)", makefile)
+        self.assertIn('/test/run_ifreq_test.sh', makefile)
+        self.assertIn('--mode "ifreq"', makefile)
+        self.assertIn("/test/network/ifreq --expect-eth0", guest)
+        self.assertEqual(general.count("./ifreq"), 1)
+
     def test_proc_net_dev_gate_requires_one_clean_completion(self) -> None:
         marker = "/proc/net/dev regression passed."
         validate_transcript(marker + "\n", mode="proc-net-dev")
