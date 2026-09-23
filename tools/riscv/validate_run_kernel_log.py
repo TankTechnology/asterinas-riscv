@@ -14,6 +14,7 @@ from pathlib import Path
 SUCCESS_MARKERS = {
     "boot": "Successfully booted.",
     "conformance": "All conformance tests passed.",
+    "ifconf": "SIOCGIFCONF regression passed.",
     "ipv6-udp": "ipv6_udp: PASS",
     "regression": "All regression tests passed.",
     "udp-user-buffer-prefault": "UDP user buffer prefault regression passed.",

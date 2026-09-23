@@ -18,6 +18,7 @@ sleep 0.2
 
 ./broadcast_complex
 ./listen_backlog
+./ifconf
 ./msg_peek
 ./msg_trunc
 ./privileged_ports
