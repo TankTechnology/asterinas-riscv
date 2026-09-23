@@ -30,6 +30,183 @@ pub type UdpSocket<E> = Socket<UdpSocketInner<E>, E>;
 // Diagnostic only: counts payload-bearing datagrams rejected by the RX queue.
 static UDP_RX_QUEUE_DROPS: AtomicU64 = AtomicU64::new(0);
 const RPC_ARRIVAL_SLOTS: usize = 64;
+const RPC_TRACE_SLOTS: usize = 1024;
+const RPC_REQUEST_ENQUEUE: u8 = 1;
+const RPC_REQUEST_DISPATCH: u8 = 2;
+const RPC_REQUEST_ARRIVE: u8 = 3;
+const RPC_REQUEST_READ: u8 = 4;
+const RPC_REPLY_ENQUEUE: u8 = 5;
+const RPC_REPLY_DISPATCH: u8 = 6;
+const RPC_REPLY_ARRIVE: u8 = 7;
+const RPC_REPLY_READ: u8 = 8;
+const RPC_REQUEST_NOTIFY_BEGIN: u8 = 9;
+const RPC_REPLY_NOTIFY_BEGIN: u8 = 10;
+const RPC_REQUEST_NOTIFY_END: u8 = 11;
+const RPC_REPLY_NOTIFY_END: u8 = 12;
+
+struct RpcTraceSlot {
+    seq: AtomicU64,
+    ns: AtomicU64,
+    packed: AtomicU64,
+}
+
+impl RpcTraceSlot {
+    const fn new() -> Self {
+        Self {
+            seq: AtomicU64::new(0),
+            ns: AtomicU64::new(0),
+            packed: AtomicU64::new(0),
+        }
+    }
+}
+
+static RPC_TRACE: [RpcTraceSlot; RPC_TRACE_SLOTS] =
+    [const { RpcTraceSlot::new() }; RPC_TRACE_SLOTS];
+static RPC_TRACE_NEXT: AtomicU64 = AtomicU64::new(0);
+static FIRST_RETRY_XID: AtomicU32 = AtomicU32::new(0);
+static FIRST_TRACE_DUMPED: AtomicBool = AtomicBool::new(false);
+static SLOWEST_RTT_NS: AtomicU64 = AtomicU64::new(0);
+static SLOWEST_TRACE: SpinLock<SlowTrace, BottomHalfDisabled> = SpinLock::new(SlowTrace::new());
+
+#[derive(Clone, Copy)]
+struct TraceEvent {
+    seq: u64,
+    stage: u8,
+    port: u16,
+    ns: u64,
+}
+
+impl TraceEvent {
+    const EMPTY: Self = Self {
+        seq: 0,
+        stage: 0,
+        port: 0,
+        ns: 0,
+    };
+}
+
+#[derive(Clone, Copy)]
+struct SlowTrace {
+    xid: u32,
+    rtt_ns: u64,
+    events: [TraceEvent; 16],
+    len: usize,
+}
+
+impl SlowTrace {
+    const fn new() -> Self {
+        Self {
+            xid: 0,
+            rtt_ns: 0,
+            events: [TraceEvent::EMPTY; 16],
+            len: 0,
+        }
+    }
+}
+
+fn monotonic_ns() -> u64 {
+    u64::try_from(aster_time::read_monotonic_time().as_nanos()).unwrap_or(u64::MAX)
+}
+
+fn trace_rpc(stage: u8, port: u16, xid: u32) {
+    let seq = RPC_TRACE_NEXT.fetch_add(1, Ordering::Relaxed) + 1;
+    let slot = &RPC_TRACE[seq as usize % RPC_TRACE_SLOTS];
+    slot.seq.store(0, Ordering::Release);
+    slot.ns.store(monotonic_ns(), Ordering::Relaxed);
+    slot.packed.store(
+        ((stage as u64) << 48) | ((port as u64) << 32) | xid as u64,
+        Ordering::Relaxed,
+    );
+    slot.seq.store(seq, Ordering::Release);
+}
+
+fn capture_slowest_trace(xid: u32, rtt_ns: u64) {
+    if rtt_ns <= SLOWEST_RTT_NS.fetch_max(rtt_ns, Ordering::Relaxed) {
+        return;
+    }
+    let mut state = SLOWEST_TRACE.lock();
+    if rtt_ns <= state.rtt_ns {
+        return;
+    }
+    state.xid = xid;
+    state.rtt_ns = rtt_ns;
+    state.len = 0;
+    let end = RPC_TRACE_NEXT.load(Ordering::Acquire);
+    let begin = end.saturating_sub(RPC_TRACE_SLOTS as u64 - 1).max(1);
+    for seq in begin..=end {
+        let slot = &RPC_TRACE[seq as usize % RPC_TRACE_SLOTS];
+        if slot.seq.load(Ordering::Acquire) != seq {
+            continue;
+        }
+        let ns = slot.ns.load(Ordering::Relaxed);
+        let packed = slot.packed.load(Ordering::Relaxed);
+        if slot.seq.load(Ordering::Acquire) == seq && packed as u32 == xid {
+            if state.len == state.events.len() {
+                break;
+            }
+            let index = state.len;
+            state.events[index] = TraceEvent {
+                seq,
+                stage: (packed >> 48) as u8,
+                port: (packed >> 32) as u16,
+                ns,
+            };
+            state.len += 1;
+        }
+    }
+}
+
+fn dump_slowest_trace() {
+    let state = *SLOWEST_TRACE.lock();
+    ostd::early_println!(
+        "UDP_RPC_SLOWEST_TRACE xid={} rtt_ns={} events={}",
+        state.xid,
+        state.rtt_ns,
+        state.len,
+    );
+    for event in &state.events[..state.len] {
+        ostd::early_println!(
+            "UDP_RPC_SLOWEST_EVENT seq={} stage={} port={} xid={} ns={}",
+            event.seq,
+            event.stage,
+            event.port,
+            state.xid,
+            event.ns,
+        );
+    }
+}
+
+fn dump_first_retry_trace(xid: u32) {
+    if FIRST_TRACE_DUMPED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let end = RPC_TRACE_NEXT.load(Ordering::Acquire);
+    let begin = end.saturating_sub(RPC_TRACE_SLOTS as u64 - 1).max(1);
+    ostd::early_println!(
+        "UDP_RPC_FIRST_TRACE xid={} begin={} end={}",
+        xid,
+        begin,
+        end
+    );
+    for seq in begin..=end {
+        let slot = &RPC_TRACE[seq as usize % RPC_TRACE_SLOTS];
+        if slot.seq.load(Ordering::Acquire) != seq {
+            continue;
+        }
+        let ns = slot.ns.load(Ordering::Relaxed);
+        let packed = slot.packed.load(Ordering::Relaxed);
+        if slot.seq.load(Ordering::Acquire) == seq && packed as u32 == xid {
+            ostd::early_println!(
+                "UDP_RPC_FIRST_EVENT seq={} stage={} port={} xid={} ns={}",
+                seq,
+                packed >> 48,
+                (packed >> 32) as u16,
+                xid,
+                ns,
+            );
+        }
+    }
+}
 
 fn rpc_xid(data: &[u8]) -> u32 {
     if data.len() < 4 {
@@ -70,6 +247,7 @@ pub struct UdpSocketInner<E: Ext> {
     enqueue_dispatch_ge_5ms: AtomicU64,
     first_tx_xids: [AtomicU32; RPC_ARRIVAL_SLOTS],
     first_tx_ms: [AtomicU64; RPC_ARRIVAL_SLOTS],
+    first_tx_ns: [AtomicU64; RPC_ARRIVAL_SLOTS],
     request_retransmits: AtomicU64,
     request_reply_samples: AtomicU64,
     request_reply_max_ms: AtomicU64,
@@ -159,6 +337,9 @@ impl<E: Ext> Inner<E> for UdpSocketInner<E> {
                 this.inner.server_processing_ge_2ms.load(Ordering::Relaxed),
                 this.inner.server_processing_ge_5ms.load(Ordering::Relaxed),
             );
+            if this.inner.request_reply_samples.load(Ordering::Relaxed) > 1000 {
+                dump_slowest_trace();
+            }
         }
     }
 }
@@ -207,6 +388,11 @@ impl<E: Ext> UdpSocketBg<E> {
         let rejected = !udp_payload.is_empty() && queued_after == queued_before;
         if !rejected && udp_payload.len() >= 4 {
             let xid = rpc_xid(udp_payload);
+            match rpc_message_type(udp_payload) {
+                Some(0) => trace_rpc(RPC_REQUEST_ARRIVE, self.bound.port(), xid),
+                Some(1) => trace_rpc(RPC_REPLY_ARRIVE, self.bound.port(), xid),
+                _ => {}
+            }
             let slot = xid as usize % RPC_ARRIVAL_SLOTS;
             let now_ms = Jiffies::elapsed().as_u64();
             self.inner.arrival_ms[slot].store(now_ms, Ordering::Relaxed);
@@ -265,7 +451,37 @@ impl<E: Ext> UdpSocketBg<E> {
             }
         }
 
+        if !rejected {
+            match rpc_message_type(udp_payload) {
+                Some(0) => trace_rpc(
+                    RPC_REQUEST_NOTIFY_BEGIN,
+                    self.bound.port(),
+                    rpc_xid(udp_payload),
+                ),
+                Some(1) => trace_rpc(
+                    RPC_REPLY_NOTIFY_BEGIN,
+                    self.bound.port(),
+                    rpc_xid(udp_payload),
+                ),
+                _ => {}
+            }
+        }
         self.notify_events(SocketEvents::CAN_RECV);
+        if !rejected {
+            match rpc_message_type(udp_payload) {
+                Some(0) => trace_rpc(
+                    RPC_REQUEST_NOTIFY_END,
+                    self.bound.port(),
+                    rpc_xid(udp_payload),
+                ),
+                Some(1) => trace_rpc(
+                    RPC_REPLY_NOTIFY_END,
+                    self.bound.port(),
+                    rpc_xid(udp_payload),
+                ),
+                _ => {}
+            }
+        }
 
         true
     }
@@ -284,6 +500,15 @@ impl<E: Ext> UdpSocketBg<E> {
                     self.inner.last_tx_xid.store(xid, Ordering::Relaxed);
                     let slot = xid as usize % RPC_ARRIVAL_SLOTS;
                     let now_ms = Jiffies::elapsed().as_u64();
+                    match rpc_message_type(udp_payload) {
+                        Some(0) => {
+                            trace_rpc(RPC_REQUEST_DISPATCH, self.bound.port(), xid);
+                        }
+                        Some(1) => {
+                            trace_rpc(RPC_REPLY_DISPATCH, self.bound.port(), xid);
+                        }
+                        _ => {}
+                    }
                     if rpc_message_type(udp_payload).is_some()
                         && self.inner.send_enqueue_xids[slot].load(Ordering::Relaxed) == xid
                     {
@@ -309,11 +534,21 @@ impl<E: Ext> UdpSocketBg<E> {
                     match rpc_message_type(udp_payload) {
                         Some(0) => {
                             if self.inner.first_tx_xids[slot].load(Ordering::Relaxed) == xid {
+                                if udp_repr.dst_port != 111 {
+                                    let _ = FIRST_RETRY_XID.compare_exchange(
+                                        0,
+                                        xid,
+                                        Ordering::Relaxed,
+                                        Ordering::Relaxed,
+                                    );
+                                }
                                 self.inner
                                     .request_retransmits
                                     .fetch_add(1, Ordering::Relaxed);
                             } else {
                                 self.inner.first_tx_ms[slot].store(now_ms, Ordering::Relaxed);
+                                self.inner.first_tx_ns[slot]
+                                    .store(monotonic_ns(), Ordering::Relaxed);
                                 self.inner.first_tx_xids[slot].store(xid, Ordering::Relaxed);
                             }
                         }
@@ -438,6 +673,7 @@ impl<E: Ext> UdpSocket<E> {
             enqueue_dispatch_ge_5ms: AtomicU64::new(0),
             first_tx_xids: core::array::from_fn(|_| AtomicU32::new(0)),
             first_tx_ms: core::array::from_fn(|_| AtomicU64::new(0)),
+            first_tx_ns: core::array::from_fn(|_| AtomicU64::new(0)),
             request_retransmits: AtomicU64::new(0),
             request_reply_samples: AtomicU64::new(0),
             request_reply_max_ms: AtomicU64::new(0),
@@ -503,6 +739,11 @@ impl<E: Ext> UdpSocket<E> {
         let result = f(&mut *buffer);
         if rpc_message_type(buffer).is_some() {
             let xid = rpc_xid(buffer);
+            match rpc_message_type(buffer) {
+                Some(0) => trace_rpc(RPC_REQUEST_ENQUEUE, self.0.bound.port(), xid),
+                Some(1) => trace_rpc(RPC_REPLY_ENQUEUE, self.0.bound.port(), xid),
+                _ => {}
+            }
             let slot = xid as usize % RPC_ARRIVAL_SLOTS;
             self.0.inner.send_enqueue_ms[slot]
                 .store(Jiffies::elapsed().as_u64(), Ordering::Relaxed);
@@ -537,8 +778,32 @@ impl<E: Ext> UdpSocket<E> {
                 (data, *meta)
             }
         };
+        let mut first_retry_reply = None;
+        let mut slow_candidate = None;
         if data.len() >= 4 && behavior == ReceiveBehavior::Recv {
             let xid = rpc_xid(data);
+            match rpc_message_type(data) {
+                Some(0) => trace_rpc(RPC_REQUEST_READ, self.0.bound.port(), xid),
+                Some(1) => {
+                    trace_rpc(RPC_REPLY_READ, self.0.bound.port(), xid);
+                    if FIRST_RETRY_XID.load(Ordering::Relaxed) == xid {
+                        first_retry_reply = Some(xid);
+                    }
+                    let slot = xid as usize % RPC_ARRIVAL_SLOTS;
+                    // The setup probe talks to rpcbind on port 111. Its
+                    // latency is unrelated to the LMBench RPC measurement.
+                    if meta.endpoint.port != 111
+                        && self.0.inner.first_tx_xids[slot].load(Ordering::Relaxed) == xid
+                        && self.0.inner.last_tx_xid.load(Ordering::Relaxed) == xid
+                    {
+                        let first_ns = self.0.inner.first_tx_ns[slot].load(Ordering::Relaxed);
+                        if first_ns != 0 {
+                            slow_candidate = Some((xid, monotonic_ns().saturating_sub(first_ns)));
+                        }
+                    }
+                }
+                _ => {}
+            }
             self.0.inner.last_read_xid.store(xid, Ordering::Relaxed);
             let slot = xid as usize % RPC_ARRIVAL_SLOTS;
             if rpc_message_type(data) == Some(0) {
@@ -584,6 +849,13 @@ impl<E: Ext> UdpSocket<E> {
             }
         }
         let result = copy_fn(data, meta);
+        drop(socket);
+        if let Some((xid, rtt_ns)) = slow_candidate {
+            capture_slowest_trace(xid, rtt_ns);
+        }
+        if let Some(xid) = first_retry_reply {
+            dump_first_retry_trace(xid);
+        }
 
         Ok(result)
     }
