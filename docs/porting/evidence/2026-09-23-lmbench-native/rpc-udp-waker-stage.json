@@ -1,0 +1,131 @@
+{
+  "source_revision": "afb47eddaf10a411c1ea3cb64965461f1308a6ea",
+  "diagnostic_source_branch": "codex/udp-rpc-instrument",
+  "diagnostic_source_commit": "a177804cf",
+  "original_lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
+  "command": "ENOUGH=10000 lat_rpc -P 1 -p udp localhost",
+  "qemu": "RISC-V virt TCG, SMP=4, 2 GiB",
+  "run": "rpc-stage-waker-8",
+  "boot_id": "0a9620d0-7fcd-4030-86a3-9f149f4726ed",
+  "kernel_sha256": "9fa3a6e0baf0f279a528e85181a362e494224f1dc7b3b21010c74c2277ccfb96",
+  "benchmark": {
+    "status": 0,
+    "elapsed": 26.53,
+    "stdout": "",
+    "stderr": "RPC/udp latency using localhost: 433.4494 microseconds\n"
+  },
+  "client_timing_counters": "UDP_RPC_TIMING port=836 request_retransmits=0 request_reply_samples=62867 request_reply_max_ms=1 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
+  "slowest_matching_rpc": {
+    "xid": 1790620686,
+    "rtt_ns": 1438500,
+    "events": [
+      {
+        "seq": 498133,
+        "port": 836,
+        "xid": 1790620686,
+        "ns": 33153454300,
+        "global_delivered_wakes": 149611,
+        "stage": "request_enqueue"
+      },
+      {
+        "seq": 498134,
+        "port": 836,
+        "xid": 1790620686,
+        "ns": 33153464700,
+        "global_delivered_wakes": 149611,
+        "stage": "request_dispatch"
+      },
+      {
+        "seq": 498135,
+        "port": 63065,
+        "xid": 1790620686,
+        "ns": 33153472000,
+        "global_delivered_wakes": 149611,
+        "stage": "server_receive"
+      },
+      {
+        "seq": 498136,
+        "port": 63065,
+        "xid": 1790620686,
+        "ns": 33153473400,
+        "global_delivered_wakes": 149611,
+        "stage": "server_notify_begin"
+      },
+      {
+        "seq": 498137,
+        "port": 63065,
+        "xid": 1790620686,
+        "ns": 33153499100,
+        "global_delivered_wakes": 149612,
+        "stage": "server_notify_end"
+      },
+      {
+        "seq": 498138,
+        "port": 63065,
+        "xid": 1790620686,
+        "ns": 33154655000,
+        "global_delivered_wakes": 149613,
+        "stage": "server_read"
+      },
+      {
+        "seq": 498139,
+        "port": 63065,
+        "xid": 1790620686,
+        "ns": 33154742000,
+        "global_delivered_wakes": 149613,
+        "stage": "reply_enqueue"
+      },
+      {
+        "seq": 498140,
+        "port": 63065,
+        "xid": 1790620686,
+        "ns": 33154751500,
+        "global_delivered_wakes": 149613,
+        "stage": "reply_dispatch"
+      },
+      {
+        "seq": 498141,
+        "port": 836,
+        "xid": 1790620686,
+        "ns": 33154755900,
+        "global_delivered_wakes": 149613,
+        "stage": "client_receive"
+      },
+      {
+        "seq": 498142,
+        "port": 836,
+        "xid": 1790620686,
+        "ns": 33154757400,
+        "global_delivered_wakes": 149613,
+        "stage": "client_notify_begin"
+      },
+      {
+        "seq": 498143,
+        "port": 836,
+        "xid": 1790620686,
+        "ns": 33154778100,
+        "global_delivered_wakes": 149614,
+        "stage": "client_notify_end"
+      },
+      {
+        "seq": 498144,
+        "port": 836,
+        "xid": 1790620686,
+        "ns": 33154903400,
+        "global_delivered_wakes": 149615,
+        "stage": "client_read"
+      }
+    ]
+  },
+  "server_notification": {
+    "global_delivered_wakes_during_call": 1,
+    "notify_call_us": 25.7,
+    "notify_end_to_server_read_us": 1155.9
+  },
+  "client_notification": {
+    "global_delivered_wakes_during_call": 1,
+    "notify_call_us": 20.7,
+    "notify_end_to_client_read_us": 125.3
+  },
+  "interpretation": "A first notification was delivered by some Waker while each socket notification call ran; the server did not read the request for another 1155.9 us. The counter is global, so a concurrent unrelated wake cannot be excluded. Even an in-scope successful Waker call does not prove the task was already parked or runnable. This is a successful focused run with no retransmissions, not a reproduction of the native ALL failure."
+}

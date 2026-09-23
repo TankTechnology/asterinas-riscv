@@ -425,6 +425,42 @@ successful-run tail, not yet a verified explanation for the original ALL
 failures. A failing run with the same per-transaction kernel trace is still
 needed before changing production scheduling behavior.
 
+A further focused run counted successful first notifications delivered by
+`Waker::wake_up` while each socket notification call ran. The slowest request
+had one such notification during the server call (25.7 microseconds); the
+server read followed 1,155.9 microseconds later. The client call also
+overlapped one successful notification, and its read followed 125.3
+microseconds later. This run passed with zero retransmissions. The count is
+global, so unrelated concurrent wakeups cannot be excluded. A successful
+`Waker` call also does not prove that the target task was already parked.
+The [notification evidence](2026-09-23-lmbench-native/rpc-udp-waker-stage.json)
+retains the XID, stages, boot identity, kernel hash, and these limits.
+
+The same diagnostic kernel then ran the original package through the native
+`make results` driver. It captured the **first** non-rpcbind RPC/UDP retry:
+the original request reached the server within microseconds, but the server
+did not read it until **2,687.6 microseconds after** its first readiness
+notification ended. The client retried after **2,157.2 microseconds**, before
+that read. The first matching reply was read by the client 3,059.8
+microseconds after the original send. The global successful-notification
+counter increased by one during the first server notification. The
+[first-retry kernel stages](2026-09-23-lmbench-native/rpc-udp-first-retry-kernel-stage.json)
+preserve the XID and all 23 recorded stages. This is a concrete delay at the
+server side of the kernel-to-user boundary; it does not yet distinguish task
+scheduling from work done by the server before its socket read.
+
+The diagnostic native ALL run finished in 582.828 seconds. Its native driver
+returned zero, but the independent auditor rejected it: **107/109** expected
+groups were present. RPC/UDP again emitted `localhost: RPC: Timed out`; the
+protection-fault signal measurement was also absent, with no accompanying
+error line. The latter measurement was present in both earlier unmodified
+ALL runs and the adapted run, so this single omission is an additional
+intermittent observation, not evidence of a UDP-related defect. The
+[diagnostic report](2026-09-23-lmbench-native/rpc-diagnostic-original-all-report.json)
+and [raw native result](2026-09-23-lmbench-native/rpc-diagnostic-original-all-results.txt)
+retain the complete audit. This run confirms that the original binary is
+still unsuitable for an unconditional 109/109 pass claim.
+
 ### Adapted native ALL qualification
 
 The combined diagnostic `lat_rpc` binary was substituted into an otherwise
