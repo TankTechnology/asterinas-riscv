@@ -13,6 +13,7 @@ use crate::{
         },
         pseudofs::SockFs,
     },
+    net::net_ns::NetNamespace,
     prelude::*,
     util::{MultiRead, MultiWrite},
 };
@@ -73,6 +74,9 @@ mod private {
 
 /// Operations defined on a socket.
 pub trait Socket: private::SocketPrivate + Send + Sync {
+    /// Returns the network namespace captured when this socket was created.
+    fn net_ns(&self) -> &NetNamespace;
+
     /// Returns whether a send may report progress before a later user-buffer fault.
     fn supports_partial_send(&self) -> bool {
         false
@@ -149,7 +153,7 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
 
 impl<T: Socket + 'static> FileLike for T {
     fn ioctl(&self, raw_ioctl: crate::util::ioctl::RawIoctl) -> Result<i32> {
-        ioctl::handle(raw_ioctl)
+        ioctl::handle(raw_ioctl, self.net_ns())
     }
 
     fn read(&self, writer: &mut VmWriter) -> Result<usize> {

@@ -13,6 +13,7 @@ use crate::{
     },
     net::{
         iface::is_broadcast_endpoint,
+        net_ns::{NetNamespace, current_net_ns},
         socket::{
             Socket,
             ip::{
@@ -47,6 +48,7 @@ pub struct DatagramSocket {
     timeouts: SocketTimeouts,
 
     pollee: Pollee,
+    net_ns: Arc<NetNamespace>,
     common: FileCommon,
 }
 
@@ -81,6 +83,7 @@ impl DatagramSocket {
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
+            net_ns: current_net_ns(),
             common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }
@@ -153,6 +156,10 @@ impl SocketPrivate for DatagramSocket {
 }
 
 impl Socket for DatagramSocket {
+    fn net_ns(&self) -> &NetNamespace {
+        &self.net_ns
+    }
+
     fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
         let endpoint = socket_addr.try_into()?;
         self.check_endpoint_family(&endpoint)?;

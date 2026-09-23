@@ -96,10 +96,22 @@ int main(int argc, char **argv)
 			_exit(2);
 		}
 		request = query(fd, "lo", SIOCGIFFLAGS);
+		assert(request.ifr_flags & IFF_UP);
+		if (argc == 2) {
+			query(fd, "eth0", SIOCGIFFLAGS);
+			struct ifconf config = { 0 };
+			assert(ioctl(fd, SIOCGIFCONF, &config) == 0);
+			assert(config.ifc_len >= 2 * (int)sizeof(struct ifreq));
+		}
+
+		int new_fd = socket(AF_INET, SOCK_DGRAM, 0);
+		assert(new_fd >= 0);
+		request = query(new_fd, "lo", SIOCGIFFLAGS);
 		assert(!(request.ifr_flags & IFF_UP));
 		strcpy(request.ifr_name, "eth0");
-		assert(ioctl(fd, SIOCGIFFLAGS, &request) == -1);
+		assert(ioctl(new_fd, SIOCGIFFLAGS, &request) == -1);
 		assert(errno == ENODEV);
+		assert(close(new_fd) == 0);
 		_exit(0);
 	}
 	int status;
