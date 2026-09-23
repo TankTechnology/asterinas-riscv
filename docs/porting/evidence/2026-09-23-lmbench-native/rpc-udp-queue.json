@@ -1,0 +1,29 @@
+{
+  "scope": "QEMU RISC-V Asterinas socket-level diagnostic; native ALL still fails",
+  "instrumentation_branch": "codex/udp-rpc-instrument",
+  "instrumentation_commit": "14ec53a87",
+  "lmbench_revision": "afb47eddaf10a411c1ea3cb64965461f1308a6ea",
+  "benchmark_binary_modified": false,
+  "command": "ENOUGH=10000 lat_rpc -P 1 -p udp localhost",
+  "runs": [
+    {
+      "boot_id": "d3d3843e-beca-43fc-b55d-8e0d29f8d639",
+      "kernel_sha256": "bf78105163bcf694503083e3e7bcdcbd5c6c5db0ddfcfd1a8dd8ce6944fcb9e7",
+      "elapsed_seconds": 14.25,
+      "benchmark_exit_status": 0,
+      "benchmark_stderr": "localhost: RPC: Timed out",
+      "client_socket": {"port": 844, "rx_packets": 55420, "tx_packets": 55427, "rx_queue_rejections": 0},
+      "server_socket": {"port": 56973, "rx_packets": 55428, "tx_packets": 55428, "rx_queue_rejections": 0}
+    },
+    {
+      "boot_id": "d7f3cf9a-457e-427e-9121-796aa4a40e5c",
+      "kernel_sha256": "35ac4ac6a2c9bc44fbaa10939809c4b18d4feda7e442ef614def585343502536",
+      "elapsed_seconds": 12.186,
+      "benchmark_exit_status": 0,
+      "benchmark_stderr": "localhost: RPC: Timed out",
+      "client_socket": {"port": 844, "rx_packets": 41295, "tx_packets": 41304, "rx_queue_rejections": 0, "max_rx_queued_bytes": 168, "rx_queued_bytes_at_close": 168},
+      "server_socket": {"port": 50875, "rx_packets": 41305, "tx_packets": 41305, "rx_queue_rejections": 0, "max_rx_queued_bytes": 704, "rx_queued_bytes_at_close": 0}
+    }
+  ],
+  "interpretation": "The original client times out despite approximately matched socket-level request and reply totals. No receive-queue rejection or substantial RX backlog was observed, but 168 bytes remained in the client RX queue at close. Transaction IDs and poll wakeups remain unmeasured."
+}
