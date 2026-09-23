@@ -391,6 +391,37 @@ this traced run. The interposition adds overhead, and the client trace cannot
 attribute the initial response delay to a kernel, server or QEMU stage. It
 does not prove that every uninstrumented failure has the same first trigger.
 
+### Wakeup-stage timing control
+
+An isolated diagnostic kernel from `codex/udp-rpc-instrument` at `301071ab8`
+recorded nanosecond timestamps for each stage of one RPC transaction and
+retained the slowest matching request in a focused run. In a successful run
+with zero retransmissions, that request took 1.4396
+ms from first dispatch to client read. The server finished its readable-event
+notification **1,136.5 microseconds before** the server process read the
+request; the notification call itself took 51.0 microseconds. Request dispatch
+to server receive and reply dispatch to client receive each took under 5
+microseconds in this sample. Thus the observed slow tail lay mainly after
+readiness notification, not in packet transfer.
+
+A separate diagnostic control made the network polling thread voluntarily
+yield after each `iface.poll()`. Its one successful run also had zero
+retransmissions. The slowest request then spent 378.2 microseconds between
+server notification and read, but 1,064.8 microseconds between client
+notification and read; its overall 1.7548 ms round trip was longer. These are
+single maxima from different runs, so they do not prove that yielding helps or
+hurts. The control was reverted and is **not** in the production kernel. The
+[stage-level evidence](2026-09-23-lmbench-native/rpc-udp-wakeup-stage.json)
+records each event, timing, command, boot identity and kernel hash.
+
+The code path is `UdpSocketBg::process` → `DatagramObserver::on_events` →
+`Pollee::notify` → `Waker::wake_up` → scheduler enqueue. The background poll
+thread uses `Fair(Nice::MIN)`; a default-nice server task need not preempt it
+on the same CPU. This is a concrete scheduling hypothesis consistent with the
+successful-run tail, not yet a verified explanation for the original ALL
+failures. A failing run with the same per-transaction kernel trace is still
+needed before changing production scheduling behavior.
+
 ### Adapted native ALL qualification
 
 The combined diagnostic `lat_rpc` binary was substituted into an otherwise
