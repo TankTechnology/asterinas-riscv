@@ -1,6 +1,7 @@
 # Kernel Parameters
 
-This section documents kernel command-line parameters supported by Asterinas.
+This section documents kernel command-line parameters and runtime sysctl
+interfaces supported by Asterinas.
 
 ## Inherited from Linux
 
@@ -285,3 +286,12 @@ i8042.exist
 i8042.exist=1
 i8042.exist=0
 ```
+
+## Runtime sysctl interfaces
+
+### `net.ipv4.ip_local_reserved_ports`
+
+Reading `/proc/sys/net/ipv4/ip_local_reserved_ports` returns an empty list
+(a single newline), matching the port allocator's lack of configured
+reserved ports. The file is read-only; configuring reserved ports through
+this interface is not supported.

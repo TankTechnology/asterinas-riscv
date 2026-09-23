@@ -1,0 +1,24 @@
+{
+  "boot_id": "1ee319bd-b45f-414b-a357-f4982c5ce55c",
+  "machine": "QEMU RISC-V virt (TCG)",
+  "cpus": 4,
+  "memory_mib": 2048,
+  "input_sha256": {
+    "kernel": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+    "root_image": "bd855c9855e6734cb5e154d488d7c1899f9c1949ac01dae87cd0fc88702e35cf",
+    "runtime_bundle": "2cc35686d2fd2415ba0629cbf2db9fe4a94622bc0b4e5bcb816ce8ed8539202e"
+  },
+  "lmbench_revision": "afb47eddaf10a411c1ea3cb64965461f1308a6ea",
+  "native_exit_status": 0,
+  "supervisor_exit_status": 2,
+  "elapsed_seconds": 586.841,
+  "expected_groups": 109,
+  "observed_groups": 108,
+  "missing": [
+    "rpc-udp"
+  ],
+  "errors": [
+    "localhost: RPC: Timed out"
+  ],
+  "physical_board_used": false
+}

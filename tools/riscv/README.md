@@ -224,6 +224,69 @@ longer sampling settings.
 [The first RISC-V run and replay instructions](../../docs/porting/evidence/2026-09-23-lmbench-basic.md)
 record all 18 checks passing in 8.417 seconds, excluding VM startup and staging.
 
+## Native LMBench `make results`
+
+The native workflow uses [asterinas/lmbench](https://github.com/asterinas/lmbench)
+at the same revision as the existing benchmark package. It runs upstream
+`config-run`, `results`, and `lmbench`, retaining their benchmark selection,
+sampling loops and raw result format. The native target is **`results`**;
+our guest entry also accepts `result` as an alias.
+
+Build a self-contained runtime archive inside the persistent container:
+
+```sh
+tools/docker/run_dev_container.sh -- python3 tools/riscv/lmbench_native.py \
+  package --output target/lmbench-native/runtime.tar.gz
+```
+
+The archive contains the source, precompiled RISC-V executables, GNU make,
+rpcbind, net-tools and their complete Nix runtime closure. Install it once in
+a **disposable Debian guest**, with Python 3.10+, grep, awk, sed, tar and useradd.
+The guest kernel must expose `/proc/sys/net/ipv4/ip_local_reserved_ports`.
+Keep the archive's `.sha256` file when transferring it and verify before extraction:
+
+```sh
+sha256sum -c runtime.tar.gz.sha256
+tar xzf runtime.tar.gz -C /
+getent passwd rpc >/dev/null || useradd --system --no-create-home \
+  --shell /usr/sbin/nologin rpc
+. /opt/lmbench/activate
+cd /opt/lmbench/src
+make results
+```
+
+The GNUmakefile invokes the native Makefile with `-o lmbench`, which skips only
+its compilation prerequisite. Native scripts still perform configuration and
+execute the suite. Two declared script adaptations supply the server addresses
+required by this fork and replace the `egrep` wrapper with `grep -E`. The original
+Makefile, configuration/results scripts and benchmark executables remain intact.
+Package identities, original script hashes and adaptations are recorded in
+`asterinas-runtime.json`.
+
+The automated configuration selects native **ALL**, one copy, 8 MiB, FASTMEM,
+file-system tests enabled, and loopback networking including RPC/HTTP.
+ALL means the native driver's selection, not every executable in the repository:
+for example `lat_fcntl`, `lat_fifo`, `lat_sem`, `lat_unix_connect`, and `lat_usleep`
+are additional standalone benchmarks. It does
+not select raw disks or remote machines, and always disables mailing results.
+Native repetitions are retained. This is an on-demand suite qualification;
+use the separate 18-case smoke for cheap daily checks. The default deadline is
+900 seconds; an explicit `LMBENCH_TIMEOUT=600 make results` tightens the bound.
+TCG output is not a physical hardware performance score.
+
+Raw native results remain in `results/riscv64-unknown-linux-gnu/`. Each attempt
+also creates `asterinas-runs/run-*/` with its configuration, input answers,
+stdout/stderr, rpcbind log, raw-result copy and `report.json`. Upstream scripts
+can exit zero despite individual failures: our entry additionally audits expected
+measurements, table sizes, curves and diagnostic output, returning nonzero for
+missing measurements, errors or timeout. A TLB estimate absent under TCG is
+reported as missing rather than invented. Failed attempts retain their evidence.
+The runner reserves `/tmp/hello` and refuses an existing file or symbolic link;
+it reaps its process groups and cleans its own helper on normal exit or interruption.
+
+[Native workflow evidence and remaining gaps](../../docs/porting/evidence/2026-09-23-lmbench-native.md)
+record the tested kernel and suite identities.
+
 ## Linux Test Project syscall gate
 
 The isolated LTP gate cross-builds the pinned LTP `20260529` syscall suite,
