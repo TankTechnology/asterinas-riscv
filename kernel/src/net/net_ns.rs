@@ -11,13 +11,16 @@
 //!
 //! IP socket bind/connect, interface ioctls, and netlink route requests use the
 //! socket's namespace, captured at creation. Netlink port tables and multicast
-//! groups remain global. Packet polling of real devices stays global.
+//! groups are also per namespace. Packet polling of real devices stays global.
 
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use spin::Once;
 
-use super::iface::{self, Iface};
+use super::{
+    iface::{self, Iface},
+    socket::netlink::NetlinkSocketTable,
+};
 use crate::{
     fs::pseudofs::{NsCommonOps, NsType, StashedDentry},
     prelude::*,
@@ -32,6 +35,7 @@ pub struct NetNamespace {
     owner: Arc<UserNamespace>,
     default_ipv4_tag: AtomicI32,
     loopback_ipv4_tag: AtomicI32,
+    netlink_sockets: Arc<NetlinkSocketTable>,
     stashed_dentry: StashedDentry,
 }
 
@@ -46,6 +50,7 @@ impl NetNamespace {
                 owner: UserNamespace::get_init_singleton().clone(),
                 default_ipv4_tag: AtomicI32::new(0),
                 loopback_ipv4_tag: AtomicI32::new(0),
+                netlink_sockets: Arc::new(NetlinkSocketTable::new()),
                 stashed_dentry: StashedDentry::new(),
             })
         })
@@ -62,6 +67,7 @@ impl NetNamespace {
             owner,
             default_ipv4_tag: AtomicI32::new(0),
             loopback_ipv4_tag: AtomicI32::new(0),
+            netlink_sockets: Arc::new(NetlinkSocketTable::new()),
             stashed_dentry: StashedDentry::new(),
         })
     }
@@ -69,6 +75,10 @@ impl NetNamespace {
     /// Returns the interfaces visible in this namespace.
     pub fn ifaces(&self) -> &[Arc<Iface>] {
         &self.ifaces
+    }
+
+    pub(in crate::net) fn netlink_sockets(&self) -> &Arc<NetlinkSocketTable> {
+        &self.netlink_sockets
     }
 
     /// Returns the owner user namespace of this namespace.

@@ -63,7 +63,11 @@ impl<P: SupportedNetlinkProtocol> UnboundNetlink<P> {
         let bound_handle = {
             let mut endpoint = endpoint;
             endpoint.add_groups(self.groups);
-            <P as SupportedNetlinkProtocol>::bind(&endpoint, message_receiver)?
+            <P as SupportedNetlinkProtocol>::bind(
+                self.net_ns.netlink_sockets(),
+                &endpoint,
+                message_receiver,
+            )?
         };
 
         Ok(BoundNetlink::new(

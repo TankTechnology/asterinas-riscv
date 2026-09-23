@@ -64,7 +64,7 @@ impl NetlinkRouteKernelSocket {
                     .contains(SegHdrCommonFlags::ACK);
                 if segments.is_empty() && ack_requested {
                     let ack_segment = ErrorSegment::new_from_request(request_header, None);
-                    self.report_error(ack_segment, dst_port);
+                    self.report_error(ack_segment, dst_port, net_ns);
                     return;
                 }
                 segments
@@ -74,7 +74,7 @@ impl NetlinkRouteKernelSocket {
                 // Should we return `ErrorSegment` if ACK flag does not exist?
                 // Reference: <https://docs.kernel.org/userspace-api/netlink/intro.html#netlink-message-types>.
                 let err_segment = ErrorSegment::new_from_request(request_header, Some(error));
-                self.report_error(err_segment, dst_port);
+                self.report_error(err_segment, dst_port, net_ns);
                 return;
             }
         };
@@ -100,20 +100,25 @@ impl NetlinkRouteKernelSocket {
             let response = RtnlMessage::new(segments);
             debug!("netlink route response: {:?}", response);
 
-            NetlinkRouteProtocol::unicast(dst_port, response).unwrap();
+            NetlinkRouteProtocol::unicast(net_ns.netlink_sockets(), dst_port, response).unwrap();
         }
     }
 
-    pub(super) fn report_error(&self, err_segment: ErrorSegment, dst_port: PortNum) {
+    pub(super) fn report_error(
+        &self,
+        err_segment: ErrorSegment,
+        dst_port: PortNum,
+        net_ns: &NetNamespace,
+    ) {
         let response = RtnlMessage::new(vec![RtnlSegment::Error(err_segment)]);
 
         debug!("netlink route error: {:?}", response);
 
-        NetlinkRouteProtocol::unicast(dst_port, response).unwrap();
+        NetlinkRouteProtocol::unicast(net_ns.netlink_sockets(), dst_port, response).unwrap();
     }
 }
 
-/// FIXME: NETLINK_ROUTE_KERNEL should be a per-network namespace socket
+/// Request state is supplied by each sender's network namespace.
 static NETLINK_ROUTE_KERNEL: NetlinkRouteKernelSocket = NetlinkRouteKernelSocket::new();
 
 pub(super) fn get_netlink_route_kernel() -> &'static NetlinkRouteKernelSocket {
