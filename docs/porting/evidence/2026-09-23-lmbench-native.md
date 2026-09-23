@@ -363,6 +363,34 @@ suite reliable. The [audit report](2026-09-23-lmbench-native/rpc-original-second
 and [QEMU summary](2026-09-23-lmbench-native/rpc-original-second-native-all-qemu.json)
 preserve the outcome and input hashes.
 
+### First retransmission in a failing focused run
+
+A bounded client-side interposition run captured the first repeated RPC request
+instead of only the final timeout. In QEMU boot
+`f4e62537-62ce-45c5-8024-d0d295e89caf`, the first original focused call
+measured 438.1845 microseconds; a second call in the same boot printed
+`localhost: RPC: Timed out` after 7.454 seconds. The original `lat_rpc` binary
+and production kernel were unchanged. The trace library built from diagnostic
+branch commit `38279a98d` retained the retry plus 63 preceding and 64
+following events.
+
+Transaction `1790023225` was sent at event 38193. The following `poll`
+requested 2 ms and returned timeout after 2.078 ms; the client then resent
+the same transaction at event 38195. It read the matching reply 4.0673 ms
+after the initial send. The next transaction also crossed a 2 ms poll timeout
+and then read a reply for `1790023225`, starting the stale-reply sequence.
+At the final failed call, the same run showed 13 sends, ten stale replies and
+three poll timeouts; libtirpc deducted its full 25 ms budget in 9.0028 ms of
+wall time. The [first-retry summary](2026-09-23-lmbench-native/rpc-udp-first-retry.json),
+[first-retry trace](2026-09-23-lmbench-native/rpc-udp-first-retry-trace.log)
+and [final-call trace](2026-09-23-lmbench-native/rpc-udp-first-retry-final-call.log)
+preserve the evidence.
+
+This establishes that a real short poll timeout preceded the first retry in
+this traced run. The interposition adds overhead, and the client trace cannot
+attribute the initial response delay to a kernel, server or QEMU stage. It
+does not prove that every uninstrumented failure has the same first trigger.
+
 ### Adapted native ALL qualification
 
 The combined diagnostic `lat_rpc` binary was substituted into an otherwise
