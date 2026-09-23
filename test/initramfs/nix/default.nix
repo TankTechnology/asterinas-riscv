@@ -59,18 +59,7 @@ in rec {
   lmbench = pkgs.callPackage ./benchmark/lmbench.nix { };
   # Native make-results runtime; guest compilation is intentionally omitted.
   lmbenchNative = {
-    # QEMU TCG occasionally exceeds the upstream RPC deadlines. Keep the
-    # regular benchmark package unchanged and adapt only the native suite.
-    lmbench = benchmark.lmbench.overrideAttrs (old: {
-      postPatch = (old.postPatch or "") + ''
-        substituteInPlace src/lat_rpc.c \
-          --replace-fail "static struct timeval TIMEOUT = { 0, 25000 };" \
-                         "static struct timeval TIMEOUT = { 0, 250000 };"
-        substituteInPlace src/lat_rpc.c \
-          --replace-fail "tv.tv_usec = 2500;" \
-                         "tv.tv_usec = 250000;"
-      '';
-    });
+    lmbench = benchmark.lmbench;
     source = benchmark.lmbench.src;
     make = pkgs.gnumake;
     rpcbind = pkgs.rpcbind.override { useSystemd = false; };

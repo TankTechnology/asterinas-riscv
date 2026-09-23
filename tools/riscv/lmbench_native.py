@@ -276,14 +276,13 @@ def package(output: Path) -> None:
         metadata = {'revision': REVISION, 'platform': PLATFORM, 'packages': packages,
                     'closure': sorted(set(closure)), 'upstream_script_sha256': hashes,
                     'adaptations': ['explicit IPv4 loopback server arguments',
-                                    'grep -E instead of the egrep shell wrapper',
-                                    'native QEMU lat_rpc timeout and UDP retry: 250000 us'],
-                    'benchmark_binaries_modified': True,
-                    'benchmark_binary_modifications': ['lat_rpc'],
+                                    'grep -E instead of the egrep shell wrapper'],
+                    'benchmark_binaries_modified': False,
+                    'benchmark_binary_modifications': [],
                     'rpc_timing_us': {'upstream_total': 25000,
                                       'upstream_udp_retry': 2500,
-                                      'native_total': 250000,
-                                      'native_udp_retry': 250000},
+                                      'native_total': 25000,
+                                      'native_udp_retry': 2500},
                     'binary_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                                       for p in bindir.iterdir()
                                       if p.is_file() and p.read_bytes().startswith(b'\x7fELF')}}

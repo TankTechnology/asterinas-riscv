@@ -26,7 +26,8 @@
       "rpc_success": true,
       "network_precursors": [],
       "client_timing_counters": "UDP_RPC_TIMING port=836 request_retransmits=0 request_reply_samples=62867 request_reply_max_ms=1 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
-      "first_retry_xid": null
+      "first_retry_xid": null,
+      "host_first_serial_collection_delay_s": 35
     },
     {
       "run": "rpc-native-network-sequence-2",
@@ -71,7 +72,8 @@
         }
       ],
       "client_timing_counters": "UDP_RPC_TIMING port=872 request_retransmits=6691 request_reply_samples=18523 request_reply_max_ms=12 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
-      "first_retry_xid": 1790802192
+      "first_retry_xid": 1790802192,
+      "host_first_serial_collection_delay_s": 35
     },
     {
       "run": "rpc-native-network-sequence-production-1",
@@ -116,7 +118,8 @@
         }
       ],
       "client_timing_counters": null,
-      "first_retry_xid": null
+      "first_retry_xid": null,
+      "host_first_serial_collection_delay_s": 35
     },
     {
       "run": "rpc-native-sequence-yield-1",
@@ -161,7 +164,8 @@
         }
       ],
       "client_timing_counters": null,
-      "first_retry_xid": 1790042442
+      "first_retry_xid": 1790042442,
+      "host_first_serial_collection_delay_s": 35
     },
     {
       "run": "rpc-native-sequence-nice-yield-1",
@@ -206,7 +210,8 @@
         }
       ],
       "client_timing_counters": "UDP_RPC_TIMING port=869 request_retransmits=7753 request_reply_samples=30279 request_reply_max_ms=11 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
-      "first_retry_xid": 1790335728
+      "first_retry_xid": 1790335728,
+      "host_first_serial_collection_delay_s": 35
     },
     {
       "run": "rpc-native-precursors-production-1",
@@ -242,7 +247,8 @@
       ],
       "sleep_seconds_before_rpc": 0,
       "client_timing_counters": null,
-      "first_retry_xid": null
+      "first_retry_xid": null,
+      "host_first_serial_collection_delay_s": 35
     },
     {
       "run": "rpc-udp-precursor-production-1",
@@ -269,7 +275,8 @@
       ],
       "sleep_seconds_before_rpc": 0,
       "client_timing_counters": null,
-      "first_retry_xid": null
+      "first_retry_xid": null,
+      "host_first_serial_collection_delay_s": 35
     },
     {
       "run": "rpc-tcp-precursor-production-1",
@@ -296,7 +303,8 @@
       ],
       "sleep_seconds_before_rpc": 0,
       "client_timing_counters": null,
-      "first_retry_xid": null
+      "first_retry_xid": null,
+      "host_first_serial_collection_delay_s": 35
     },
     {
       "run": "rpc-delay-control-production-1",
@@ -313,7 +321,8 @@
       "network_precursors": [],
       "sleep_seconds_before_rpc": 26,
       "client_timing_counters": null,
-      "first_retry_xid": null
+      "first_retry_xid": null,
+      "host_first_serial_collection_delay_s": 35
     },
     {
       "run": "rpc-delay10-control-production-1",
@@ -329,6 +338,70 @@
       "rpc_success": true,
       "network_precursors": [],
       "sleep_seconds_before_rpc": 10,
+      "client_timing_counters": null,
+      "first_retry_xid": null,
+      "host_first_serial_collection_delay_s": 35
+    },
+    {
+      "run": "rpc-idle26-quiet-production-1",
+      "mode": "idle_26_seconds_before_rpc_quiet_serial",
+      "boot_id": "ca70950d-0fdb-46b8-a946-5d5520a56035",
+      "kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+      "rpc": {
+        "status": 0,
+        "elapsed": 26.28,
+        "stdout": "",
+        "stderr": "RPC/udp latency using localhost: 361.0222 microseconds\n"
+      },
+      "rpc_success": true,
+      "network_precursors": [],
+      "host_first_serial_collection_delay_s": 85,
+      "client_timing_counters": null,
+      "first_retry_xid": null
+    },
+    {
+      "run": "rpc-native-sequence-quiet-production-1",
+      "mode": "native_network_sequence_quiet_serial",
+      "boot_id": "4a2dfb21-b666-44f8-a74b-2fc88e81ea2e",
+      "kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+      "rpc": {
+        "status": 0,
+        "elapsed": 26.974,
+        "stdout": "",
+        "stderr": "RPC/udp latency using localhost: 374.2322 microseconds\n"
+      },
+      "rpc_success": true,
+      "network_precursors": [
+        {
+          "kind": "native-network-server",
+          "name": "lat_connect",
+          "status": 0
+        },
+        {
+          "kind": "native-network-server",
+          "name": "bw_tcp",
+          "status": 0
+        },
+        {
+          "kind": "native-network-precursor",
+          "name": "lat_udp",
+          "start_status": 0,
+          "status": 0,
+          "stop_status": 0,
+          "stdout": "",
+          "stderr": "UDP latency using localhost: 31956.8788 microseconds\n"
+        },
+        {
+          "kind": "native-network-precursor",
+          "name": "lat_tcp",
+          "start_status": 0,
+          "status": 0,
+          "stop_status": 0,
+          "stdout": "",
+          "stderr": "TCP latency using localhost: 221.8112 microseconds\n"
+        }
+      ],
+      "host_first_serial_collection_delay_s": 85,
       "client_timing_counters": null,
       "first_retry_xid": null
     }
@@ -501,5 +574,5 @@
     "initial_enqueue_to_first_retry_us": 2216.4,
     "first_server_notify_end_to_read_us": 6065.2
   },
-  "interpretation": "The original RPC client succeeded alone in one focused diagnostic run. It timed out after the network precursor sequence on both diagnostic and uninstrumented production kernels. On the production kernel it also timed out after UDP+TCP, UDP-only, or TCP-only precursor runs, and after a 26-second idle delay without precursors. A 10-second idle-delay control passed. All are single-boot observations; the idle-delay failure shows the preceding network tests are not necessary for a timeout, but these runs do not establish a time threshold or distinguish uptime from other background state. The two experimental poll-thread scheduling controls also timed out and were not retained."
+  "interpretation": "The earlier apparent precursor or idle-delay effect was confounded by host serial management commands. In two focused production-kernel A/B comparisons, the original RPC client timed out with host log-read commands starting 35 seconds after guest launch and passed when log reads were deferred until 85 seconds, after RPC completion. Network precursors are not necessary for a timeout, and a 26-second idle period alone is not established as causal. Experimental poll-thread scheduling controls were only tested under active host polling and also timed out; they are not production fixes. Each short case is a single boot and does not establish reliability under arbitrary concurrent load."
 }
