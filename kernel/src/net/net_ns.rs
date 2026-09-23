@@ -9,9 +9,9 @@
 //! loopback interface, initially down (as in Linux), which can be brought up
 //! from inside the namespace.
 //!
-//! IP socket bind/connect and interface ioctls use the socket's namespace,
-//! captured at creation. Netlink route requests still use the current thread's
-//! namespace. Packet polling of real devices stays global.
+//! IP socket bind/connect, interface ioctls, and netlink route requests use the
+//! socket's namespace, captured at creation. Netlink port tables and multicast
+//! groups remain global. Packet polling of real devices stays global.
 
 use core::sync::atomic::{AtomicI32, Ordering};
 
