@@ -173,6 +173,20 @@ This QEMU test validates the syscall and cross-hart software protocol. Physical
 instruction-cache behavior still requires a result from the exact board binary
 and configuration being claimed.
 
+## IP socket network namespace regression
+
+Run the short RISC-V QEMU gate when changing IP interface selection or socket
+network namespace behavior:
+
+```sh
+make run_kernel AUTO_TEST=ip_socket_netns TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+```
+
+It checks inherited and newly created UDP/TCP sockets after `unshare(CLONE_NEWNET)`,
+UDP automatic local-address selection, and TCP/UDP privileged-port binding.
+[The red/green QEMU evidence](../../docs/porting/evidence/2026-09-24-ip-socket-netns.md)
+records the observed behavior and separate dual-stack checks.
+
 ## Unit tests
 
 Run the repository-contract tests before launching QEMU:

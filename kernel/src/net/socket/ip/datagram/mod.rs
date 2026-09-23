@@ -125,6 +125,7 @@ impl DatagramSocket {
                     BindOptions {
                         can_reuse: false,
                         v6only: self.options.read().ipv6.v6only(),
+                        net_ns: self.net_ns.clone(),
                     },
                 )
             },
@@ -171,6 +172,7 @@ impl Socket for DatagramSocket {
             BindOptions {
                 can_reuse,
                 v6only: self.options.read().ipv6.v6only(),
+                net_ns: self.net_ns.clone(),
             },
         )
     }
@@ -192,6 +194,7 @@ impl Socket for DatagramSocket {
             BindOptions {
                 can_reuse: false,
                 v6only: self.options.read().ipv6.v6only(),
+                net_ns: self.net_ns.clone(),
             },
         )
     }
