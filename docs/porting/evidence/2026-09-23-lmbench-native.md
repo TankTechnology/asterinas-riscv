@@ -410,8 +410,11 @@ retransmissions. The slowest request then spent 378.2 microseconds between
 server notification and read, but 1,064.8 microseconds between client
 notification and read; its overall 1.7548 ms round trip was longer. These are
 single maxima from different runs, so they do not prove that yielding helps or
-hurts. The control was reverted and is **not** in the production kernel. The
-[stage-level evidence](2026-09-23-lmbench-native/rpc-udp-wakeup-stage.json)
+hurts. A second control combined the yield with default nice priority for the
+polling thread. Its slowest request spent 129.8 microseconds after server
+notification but 1,044.8 microseconds after client notification, for a 1.3888
+ms round trip. Both controls were reverted and are **not** in the production
+kernel. The [stage-level evidence](2026-09-23-lmbench-native/rpc-udp-wakeup-stage.json)
 records each event, timing, command, boot identity and kernel hash.
 
 The code path is `UdpSocketBg::process` → `DatagramObserver::on_events` →

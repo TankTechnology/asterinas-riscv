@@ -3,8 +3,8 @@
   "original_lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
   "command": "ENOUGH=10000 lat_rpc -P 1 -p udp localhost",
   "qemu": "RISC-V virt TCG, SMP=4, 2 GiB",
-  "diagnostic_scope": "The kernel records the slowest matching RPC response in each boot; both focused runs succeeded and had zero request retransmissions. A single maximum from each run is descriptive, not a distribution or failure reproduction.",
-  "control_change": "The yield_after_iface_poll diagnostic kernel added Thread::yield_now() immediately after iface.poll() in the background network polling loop. The control was reverted after this run.",
+  "diagnostic_scope": "The kernel records the slowest matching RPC response in each boot; all three focused runs succeeded and had zero request retransmissions. A single maximum from each run is descriptive, not a distribution or failure reproduction.",
+  "control_change": "The yield_after_iface_poll kernel added Thread::yield_now() after iface.poll(). The default_nice_and_yield_after_iface_poll kernel additionally changed the polling thread from Nice::MIN to Nice::default(). Both controls were reverted after the experiments.",
   "runs": [
     {
       "run": "rpc-stage-notify-5",
@@ -205,9 +205,109 @@
         "client_notify": 70.8,
         "client_notify_end_to_read": 1064.8
       }
+    },
+    {
+      "run": "rpc-stage-nice-yield-7",
+      "mode": "default_nice_and_yield_after_iface_poll",
+      "boot_id": "5ddaf056-e262-4a65-998d-1e362c6dde70",
+      "kernel_sha256": "c2d68255368f02026b46c7dd63d8b67cecdd46ee0a60660331ad69444913d07b",
+      "benchmark": {
+        "status": 0,
+        "elapsed": 24.774,
+        "stdout": "",
+        "stderr": "RPC/udp latency using localhost: 392.3661 microseconds\n"
+      },
+      "client_timing_counters": "UDP_RPC_TIMING port=836 request_retransmits=0 request_reply_samples=61659 request_reply_max_ms=2 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
+      "slowest_rtt_ns": 1388800,
+      "events": [
+        {
+          "seq": 4957,
+          "stage": "request_enqueue",
+          "port": 836,
+          "ns": 16780018200
+        },
+        {
+          "seq": 4958,
+          "stage": "request_dispatch",
+          "port": 836,
+          "ns": 16780028700
+        },
+        {
+          "seq": 4959,
+          "stage": "server_receive",
+          "port": 63891,
+          "ns": 16780033200
+        },
+        {
+          "seq": 4960,
+          "stage": "server_notify_begin",
+          "port": 63891,
+          "ns": 16780034700
+        },
+        {
+          "seq": 4961,
+          "stage": "server_notify_end",
+          "port": 63891,
+          "ns": 16780066500
+        },
+        {
+          "seq": 4962,
+          "stage": "server_read",
+          "port": 63891,
+          "ns": 16780196300
+        },
+        {
+          "seq": 4963,
+          "stage": "reply_enqueue",
+          "port": 63891,
+          "ns": 16780318100
+        },
+        {
+          "seq": 4964,
+          "stage": "reply_dispatch",
+          "port": 63891,
+          "ns": 16780328700
+        },
+        {
+          "seq": 4965,
+          "stage": "client_receive",
+          "port": 836,
+          "ns": 16780332900
+        },
+        {
+          "seq": 4966,
+          "stage": "client_notify_begin",
+          "port": 836,
+          "ns": 16780334600
+        },
+        {
+          "seq": 4967,
+          "stage": "client_notify_end",
+          "port": 836,
+          "ns": 16780372000
+        },
+        {
+          "seq": 4968,
+          "stage": "client_read",
+          "port": 836,
+          "ns": 16781416800
+        }
+      ],
+      "stage_durations_us": {
+        "request_enqueue_to_dispatch": 10.5,
+        "request_dispatch_to_server_receive": 4.5,
+        "server_receive_to_notify_begin": 1.5,
+        "server_notify": 31.8,
+        "server_notify_end_to_read": 129.8,
+        "server_read_to_reply_enqueue": 121.8,
+        "reply_enqueue_to_dispatch": 10.6,
+        "reply_dispatch_to_client_receive": 4.2,
+        "client_notify": 37.4,
+        "client_notify_end_to_read": 1044.8
+      }
     }
   ],
-  "interpretation": "In the baseline maximum, server notification returned 1136.5 us before the server read the request; the notification call itself took 51.0 us. The yield-control maximum had a shorter server wait (378.2 us) but a longer client wait (1064.8 us) and a larger overall RTT. These single-run maxima do not establish a scheduler fix, but place a substantial share of the observed slow tails after readiness notification.",
+  "interpretation": "The baseline maximum spent 1136.5 us between server notification completion and server read. Both yield controls shortened that interval for their respective slowest requests but spent over 1 ms between client notification completion and client read. Their total maxima were 1.7548 and 1.3888 ms versus 1.4396 ms in the baseline. These single-run maxima do not establish an overall improvement or a fix; they place substantial slow-tail time after readiness notification, at either endpoint.",
   "diagnostic_source_branch": "codex/udp-rpc-instrument",
   "diagnostic_source_commit": "301071ab8"
 }
