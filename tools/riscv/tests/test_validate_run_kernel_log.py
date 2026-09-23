@@ -19,6 +19,20 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_netlink_route_netns_gate_requires_both_namespace_cases(self) -> None:
+        route = "netlink route socket namespace regression passed."
+        uevent = "netlink uevent port namespace regression passed."
+        validate_transcript(f"{route}\n{uevent}\n", mode="netlink-route-netns")
+        for transcript in (
+            f"{route}\n",
+            f"{uevent}\n",
+            f"{route}\n{route}\n{uevent}\n",
+            f"{route}\n{uevent}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaises(ValidationError):
+                    validate_transcript(transcript, mode="netlink-route-netns")
+
     def test_ifreq_gate_requires_one_clean_completion(self) -> None:
         marker = "interface ioctl regression passed."
         validate_transcript(marker + "\n", mode="ifreq")

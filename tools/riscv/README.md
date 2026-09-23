@@ -187,19 +187,22 @@ UDP automatic local-address selection, and TCP/UDP privileged-port binding.
 [The red/green QEMU evidence](../../docs/porting/evidence/2026-09-24-ip-socket-netns.md)
 records the observed behavior and separate dual-stack checks.
 
-## Route netlink socket namespace regression
+## Netlink socket namespace regression
 
-Run this short RISC-V QEMU gate when changing route netlink handling or
-network namespace behavior:
+Run this short RISC-V QEMU gate when changing netlink handling or network
+namespace behavior:
 
 ```sh
 make run_kernel AUTO_TEST=netlink_route_netns TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
 ```
 
 It checks route link and address dumps from sockets created before and after
-`unshare(CLONE_NEWNET)`, then runs the existing `netlink_route` and `rtnl_err`
-regressions. [The red/green QEMU evidence](../../docs/porting/evidence/2026-09-24-netlink-route-netns.md)
-records the observed behavior and current isolation limit.
+`unshare(CLONE_NEWNET)`, reuse of the same route and UEVENT port IDs across
+namespaces, and rejection of duplicates within one namespace. It then runs
+the existing `netlink_route`, `rtnl_err`, and `uevent_err` regressions.
+[The request-namespace evidence](../../docs/porting/evidence/2026-09-24-netlink-route-netns.md)
+and [the port-table evidence](../../docs/porting/evidence/2026-09-24-netlink-table-netns.md)
+record the red/green runs and current multicast-test limit.
 
 ## Unit tests
 

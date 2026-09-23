@@ -6,23 +6,20 @@ use core::str::FromStr;
 use ostd::prelude::*;
 
 use crate::{
-    net::socket::{
-        Socket,
-        netlink::{
-            GroupIdSet, NetlinkSocketAddr, NetlinkUeventSocket,
-            kobject_uevent::{
-                UeventMessage,
-                message::{
-                    syn_uevent::{SyntheticUevent, Uuid},
-                    uevent::Uevent,
-                },
+    net::socket::netlink::{
+        GroupIdSet, NetlinkSocketAddr,
+        kobject_uevent::{
+            UeventMessage,
+            message::{
+                syn_uevent::{SyntheticUevent, Uuid},
+                uevent::Uevent,
             },
-            table::{NetlinkUeventProtocol, SupportedNetlinkProtocol},
         },
-        util::{RecvFlags, SocketAddr},
+        receiver::MessageQueue,
+        table::{NetlinkSocketTable, NetlinkUeventProtocol, SupportedNetlinkProtocol},
     },
     prelude::*,
-    util::net::SockType,
+    process::signal::Pollee,
 };
 
 #[ktest]
@@ -51,18 +48,19 @@ fn synthetic_uevent() {
 
 #[ktest]
 fn multicast_synthetic_uevent() {
-    crate::net::socket::netlink::init();
-
-    // Creates a new netlink uevent socket and joins the group for kobject uevents.
-    let socket = NetlinkUeventSocket::new(true, SockType::SOCK_DGRAM);
-    let socket_addr = SocketAddr::Netlink(NetlinkSocketAddr::new(100, GroupIdSet::new(0x1)));
-    socket.bind(socket_addr).unwrap();
+    let tables = Arc::new(NetlinkSocketTable::new());
+    let other_tables = Arc::new(NetlinkSocketTable::new());
+    let (queue, receiver) = MessageQueue::<UeventMessage>::new_pair(Pollee::new());
+    let (other_queue, other_receiver) = MessageQueue::<UeventMessage>::new_pair(Pollee::new());
+    let socket_addr = NetlinkSocketAddr::new(100, GroupIdSet::new(0x1));
+    let _bound_handle = NetlinkUeventProtocol::bind(&tables, &socket_addr, receiver).unwrap();
+    let _other_handle =
+        NetlinkUeventProtocol::bind(&other_tables, &socket_addr, other_receiver).unwrap();
 
     // Tries to receive and returns EAGAIN if no message is available.
     let mut buffer = vec![0u8; 1024];
     let mut writer = VmWriter::from(buffer.as_mut_slice()).to_fallible();
-    let flags = RecvFlags::empty();
-    let res = socket.try_recv(&mut writer, flags);
+    let res = queue.lock().dequeue_if(|_, _| Ok((false, ())));
     assert!(res.is_err_and(|err| err.error() == Errno::EAGAIN));
 
     // Broadcasts a uevent message.
@@ -81,11 +79,22 @@ fn multicast_synthetic_uevent() {
     };
     let uevent_message =
         UeventMessage::new(uevent, NetlinkSocketAddr::new(0, GroupIdSet::new(0x1)));
-    NetlinkUeventProtocol::multicast(GroupIdSet::new(0x1), uevent_message).unwrap();
+    NetlinkUeventProtocol::multicast(&tables, GroupIdSet::new(0x1), uevent_message).unwrap();
+    assert!(
+        other_queue
+            .lock()
+            .dequeue_if(|_, _| Ok((false, ())))
+            .is_err_and(|err| err.error() == Errno::EAGAIN)
+    );
 
-    let (output, _) = socket.try_recv(&mut writer, flags).unwrap();
-    assert!(output.flags().is_empty());
-    let s = core::str::from_utf8(&buffer[..output.len()]).unwrap();
+    let length = queue
+        .lock()
+        .dequeue_if(|message, length| {
+            message.write_to(&mut writer)?;
+            Ok((true, length))
+        })
+        .unwrap();
+    let s = core::str::from_utf8(&buffer[..length]).unwrap();
 
     assert_eq!(
         s,
