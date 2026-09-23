@@ -4,6 +4,7 @@ MKFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 CUR_DIR := $(patsubst %/,%,$(dir $(MKFILE_PATH)))
 INITRAMFS ?= $(CUR_DIR)/../../build/initramfs
 RUN_BASH := $(CUR_DIR)/run_conformance_test.sh
+FOCUSED_RUN_BASH := $(CUR_DIR)/run_ifconf_gvisor_test.sh
 TARGET_DIR := $(INITRAMFS)/opt
 CONFORMANCE_TEST_SUITE ?= ltp
 VALID_SUITES := ltp gvisor kselftest xfstests
@@ -15,9 +16,9 @@ $(if $(filter $(CONFORMANCE_TEST_SUITE),$(VALID_SUITES)),,\
 .PHONY: all
 all: $(TARGET_DIR)
 
-$(TARGET_DIR): $(RUN_BASH) $(SUITE_DIR)
+$(TARGET_DIR): $(RUN_BASH) $(FOCUSED_RUN_BASH) $(SUITE_DIR)
 	@# Copy bash script
-	@cp -f $(RUN_BASH) $@
+	@cp -f $(RUN_BASH) $(FOCUSED_RUN_BASH) $@
 
 $(SUITE_DIR):
 	@$(MAKE) --no-print-directory -C $(CONFORMANCE_TEST_SUITE)

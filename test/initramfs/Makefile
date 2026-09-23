@@ -5,6 +5,7 @@ SMP ?= 1
 VERBOSE ?= 1
 ENABLE_CONFORMANCE_TEST ?= false
 CONFORMANCE_TEST_SUITE ?= ltp
+CONFORMANCE_GVISOR_TEST ?= null
 CONFORMANCE_TEST_WORKDIR ?= /tmp
 ENABLE_REGRESSION_TEST ?= false
 REGRESSION_TEST_DIRS ?= null
@@ -79,6 +80,7 @@ $(INITRAMFS_IMAGE): $(INITRAMFS)
 		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
 		--arg regressionTestDirs '$(REGRESSION_TEST_DIRS)' \
 		--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
+		--arg conformanceGvisorTest '$(CONFORMANCE_GVISOR_TEST)' \
 		--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
 		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
 		--argstr dnsServer ${DNS_SERVER} \
@@ -97,6 +99,7 @@ $(INITRAMFS):
 		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
 		--arg regressionTestDirs '$(REGRESSION_TEST_DIRS)' \
 		--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
+		--arg conformanceGvisorTest '$(CONFORMANCE_GVISOR_TEST)' \
 		--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
 		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
 		--argstr dnsServer ${DNS_SERVER} \
