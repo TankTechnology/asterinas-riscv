@@ -10,7 +10,8 @@
 //! from inside the namespace.
 //!
 //! Socket bind/connect and netlink route dumps operate on the interface view
-//! of the *current* namespace; packet polling of real devices stays global.
+//! of the *current* namespace. Interface ioctls use the socket's namespace,
+//! captured at creation. Packet polling of real devices stays global.
 
 use core::sync::atomic::{AtomicI32, Ordering};
 

@@ -6,7 +6,7 @@ use ostd::mm::VmIo;
 
 use crate::{
     context::current_userspace,
-    net::net_ns::current_net_ns,
+    net::net_ns::NetNamespace,
     prelude::*,
     util::{
         ioctl::{InOutData, RawIoctl, ioc},
@@ -45,26 +45,25 @@ const _: () = assert!(size_of::<CIfReq>() == 40);
 
 type GetIfConf = ioc!(SIOCGIFCONF, 0x8912, InOutData<CIfConf>);
 
-pub(super) fn handle(raw_ioctl: RawIoctl) -> Result<i32> {
+pub(super) fn handle(raw_ioctl: RawIoctl, net_ns: &NetNamespace) -> Result<i32> {
     if let Some(cmd) = GetIfConf::try_from_raw(raw_ioctl) {
-        return get_ifconf(raw_ioctl, cmd);
+        return get_ifconf(raw_ioctl, cmd, net_ns);
     }
 
     match raw_ioctl.cmd() {
         SIOCGIFFLAGS | SIOCGIFADDR | SIOCGIFBRDADDR | SIOCGIFNETMASK | SIOCGIFMTU
-        | SIOCGIFHWADDR | SIOCGIFINDEX => get_ifreq(raw_ioctl),
+        | SIOCGIFHWADDR | SIOCGIFINDEX => get_ifreq(raw_ioctl, net_ns),
         _ => return_errno_with_message!(Errno::ENOTTY, "socket ioctl is not supported"),
     }
 }
 
-fn get_ifreq(raw_ioctl: RawIoctl) -> Result<i32> {
+fn get_ifreq(raw_ioctl: RawIoctl, net_ns: &NetNamespace) -> Result<i32> {
     let mut request: CIfReq = current_userspace!().read_val(raw_ioctl.arg())?;
     let name_len = request
         .name
         .iter()
         .position(|&byte| byte == 0)
         .unwrap_or(IFNAMSIZ);
-    let net_ns = current_net_ns();
     let iface = net_ns
         .ifaces()
         .iter()
@@ -128,10 +127,9 @@ fn set_ipv4_addr(request: &mut CIfReq, address: [u8; 4]) {
     request.data[4..8].copy_from_slice(&address);
 }
 
-fn get_ifconf(raw_ioctl: RawIoctl, cmd: GetIfConf) -> Result<i32> {
+fn get_ifconf(raw_ioctl: RawIoctl, cmd: GetIfConf, net_ns: &NetNamespace) -> Result<i32> {
     // The nested buffer belongs to the caller; only complete ifreq entries are copied.
     let config = cmd.read()?;
-    let net_ns = current_net_ns();
     let ifaces = net_ns
         .ifaces()
         .iter()
