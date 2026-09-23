@@ -326,6 +326,43 @@ does not establish why Asterinas QEMU accumulates the initial delayed replies
 while the Linux full-system control completes. Interposition adds overhead,
 so the trace is causal evidence for the failing call, not performance data.
 
+### Intermittent original-client outcome
+
+Later focused runs on the **same production kernel and original `lat_rpc`**
+completed with measured UDP/RPC latencies of 365.9399, 378.9856 and 372.8906
+microseconds. The last two calls ran consecutively in one QEMU boot. These
+passes revise the earlier three-failure observation: the original command is
+intermittent, not deterministically broken. A successful focused call alone
+does not qualify native ALL.
+
+The separate diagnostic kernel at `codex/udp-rpc-instrument` commit
+`4cbdf6af1` counted short delays at four UDP stages. In one boot, the client
+sent 44,224 RPC packets and recorded 21,809 retransmissions; its socket closed
+while serial diagnostic output interrupted the harness control marker, so that
+run has no trustworthy benchmark result. In another boot, the same original
+command completed in 26.757 seconds with 68,756 client packets and **zero**
+retransmissions. Both runs recorded no send-queue delay of at least 2 ms. The
+retransmission-heavy boot did record more server receive-to-read delays of at
+least 2 ms, but millisecond counters and instrumentation cannot identify the
+initial cause. The [structured intermittent-run evidence](2026-09-23-lmbench-native/rpc-udp-intermittency.json)
+retains the command, artifact hashes, boot identities, client output and raw
+counter lines.
+
+### Repeat unmodified native ALL qualification
+
+After the three successful focused calls, the production kernel and original
+runtime archive were run through `cd /opt/lmbench/src && make results` again in
+QEMU boot `9b0e5ecf-63ea-4c5b-a7ff-44aeb4dd11ff`. The native command ran for
+591.720 seconds. Its independent audit again found **108/109** measurement
+groups: RPC/UDP was missing and the raw output contained
+`localhost: RPC: Timed out`. The native driver itself returned zero, but the
+supervisor rejected the incomplete result and returned status 2. This second
+full run confirms that the focused successes do not make the unmodified ALL
+suite reliable. The [audit report](2026-09-23-lmbench-native/rpc-original-second-native-all-report.json),
+[raw native result](2026-09-23-lmbench-native/rpc-original-second-native-all-results.txt)
+and [QEMU summary](2026-09-23-lmbench-native/rpc-original-second-native-all-qemu.json)
+preserve the outcome and input hashes.
+
 ### Adapted native ALL qualification
 
 The combined diagnostic `lat_rpc` binary was substituted into an otherwise
@@ -340,8 +377,8 @@ RPC/UDP at 386.9503 microseconds and RPC/TCP at 783.7662 microseconds. See the
 
 This demonstrates that the pinned fork's native scripts and selected ALL suite
 can complete on the QEMU fixture when its RPC timing budget is adapted. It
-does not establish that the unmodified benchmark passes; that remained 108/109
-in the original run. The packaging change confines the timing adaptation to
+does not establish that the unmodified benchmark passes; both full original
+runs were 108/109. The packaging change confines the timing adaptation to
 `lmbenchNative.lmbench`, leaving the ordinary benchmark package and short smoke
 unaltered. Runtime metadata declares the changed binary and both timing values.
 
