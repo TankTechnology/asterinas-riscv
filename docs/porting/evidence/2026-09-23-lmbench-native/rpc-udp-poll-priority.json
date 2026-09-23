@@ -1,0 +1,38 @@
+{
+  "scope": "Temporary Asterinas scheduler control; not a production kernel change",
+  "diagnostic_branch_base": "dbb18d8d3",
+  "diagnostic_change": "kernel/src/net/iface/poll.rs: SchedPolicy::Fair(Nice::MIN) to SchedPolicy::Fair(Nice::default())",
+  "kernel_build": "make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1",
+  "kernel_image_sha256": "2a33ffa36fa6d81f4deded2081a9998bf890c15a78ee1f594e07af7e9c780601",
+  "boot_id": "59fdad9c-63c6-438d-98d1-8f32ae193be1",
+  "root_image_sha256": "bd855c9855e6734cb5e154d488d7c1899f9c1949ac01dae87cd0fc88702e35cf",
+  "lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
+  "command": "ENOUGH=10000 lat_rpc -P 1 -p udp localhost",
+  "server": "unmodified lat_rpc -s; rpcinfo confirmed program 404040 over UDP and TCP",
+  "client": {
+    "elapsed_seconds": 12.012,
+    "process_status": 0,
+    "output": "localhost: RPC: Timed out"
+  },
+  "client_socket": {
+    "port": 844,
+    "rx_packets": 64984,
+    "tx_packets": 64993,
+    "rx_drops": 0,
+    "max_queued_bytes": 224,
+    "queued_bytes_on_close": 168,
+    "last_tx_xid": 1790287570,
+    "last_rx_xid": 1790287570,
+    "last_read_xid": 1790287569
+  },
+  "server_socket": {
+    "port": 57808,
+    "rx_packets": 64994,
+    "tx_packets": 64994,
+    "rx_drops": 0,
+    "max_queued_bytes": 704,
+    "queued_bytes_on_close": 0
+  },
+  "serial_log_sha256": "24468b9c6130263a3d77cdeaf869179891cb6e000031cb4117c7cb58abcbd13c",
+  "conclusion": "Lowering the network poll thread's fair-scheduler priority alone did not prevent the original RPC/UDP timeout. The experiment does not exclude other scheduling or socket-wakeup delays."
+}
