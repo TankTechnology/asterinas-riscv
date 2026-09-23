@@ -59,17 +59,29 @@ pub struct UdpSocketInner<E: Ext> {
     arrival_ms: [AtomicU64; RPC_ARRIVAL_SLOTS],
     rx_read_delay_samples: AtomicU64,
     rx_read_delay_max_ms: AtomicU64,
+    rx_read_delay_ge_2ms: AtomicU64,
+    rx_read_delay_ge_5ms: AtomicU64,
     rx_read_delay_ge_25ms: AtomicU64,
+    send_enqueue_xids: [AtomicU32; RPC_ARRIVAL_SLOTS],
+    send_enqueue_ms: [AtomicU64; RPC_ARRIVAL_SLOTS],
+    enqueue_dispatch_samples: AtomicU64,
+    enqueue_dispatch_max_ms: AtomicU64,
+    enqueue_dispatch_ge_2ms: AtomicU64,
+    enqueue_dispatch_ge_5ms: AtomicU64,
     first_tx_xids: [AtomicU32; RPC_ARRIVAL_SLOTS],
     first_tx_ms: [AtomicU64; RPC_ARRIVAL_SLOTS],
     request_retransmits: AtomicU64,
     request_reply_samples: AtomicU64,
     request_reply_max_ms: AtomicU64,
+    request_reply_ge_2ms: AtomicU64,
+    request_reply_ge_5ms: AtomicU64,
     request_reply_ge_25ms: AtomicU64,
     request_read_xids: [AtomicU32; RPC_ARRIVAL_SLOTS],
     request_read_ms: [AtomicU64; RPC_ARRIVAL_SLOTS],
     server_processing_samples: AtomicU64,
     server_processing_max_ms: AtomicU64,
+    server_processing_ge_2ms: AtomicU64,
+    server_processing_ge_5ms: AtomicU64,
     server_processing_ge_25ms: AtomicU64,
     accepts_ipv4: bool,
     ext: PhantomData<fn() -> E>,
@@ -132,6 +144,20 @@ impl<E: Ext> Inner<E> for UdpSocketInner<E> {
                 this.inner.server_processing_samples.load(Ordering::Relaxed),
                 this.inner.server_processing_max_ms.load(Ordering::Relaxed),
                 this.inner.server_processing_ge_25ms.load(Ordering::Relaxed),
+            );
+            ostd::early_println!(
+                "UDP_RPC_SHORT_TAIL port={} enqueue_dispatch_samples={} enqueue_dispatch_max_ms={} enqueue_dispatch_ge_2ms={} enqueue_dispatch_ge_5ms={} rx_read_ge_2ms={} rx_read_ge_5ms={} request_reply_ge_2ms={} request_reply_ge_5ms={} server_processing_ge_2ms={} server_processing_ge_5ms={}",
+                this.bound.port(),
+                this.inner.enqueue_dispatch_samples.load(Ordering::Relaxed),
+                this.inner.enqueue_dispatch_max_ms.load(Ordering::Relaxed),
+                this.inner.enqueue_dispatch_ge_2ms.load(Ordering::Relaxed),
+                this.inner.enqueue_dispatch_ge_5ms.load(Ordering::Relaxed),
+                this.inner.rx_read_delay_ge_2ms.load(Ordering::Relaxed),
+                this.inner.rx_read_delay_ge_5ms.load(Ordering::Relaxed),
+                this.inner.request_reply_ge_2ms.load(Ordering::Relaxed),
+                this.inner.request_reply_ge_5ms.load(Ordering::Relaxed),
+                this.inner.server_processing_ge_2ms.load(Ordering::Relaxed),
+                this.inner.server_processing_ge_5ms.load(Ordering::Relaxed),
             );
         }
     }
@@ -196,6 +222,16 @@ impl<E: Ext> UdpSocketBg<E> {
                 self.inner
                     .request_reply_max_ms
                     .fetch_max(delay_ms, Ordering::Relaxed);
+                if delay_ms >= 2 {
+                    self.inner
+                        .request_reply_ge_2ms
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                if delay_ms >= 5 {
+                    self.inner
+                        .request_reply_ge_5ms
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 if delay_ms >= 25 {
                     self.inner
                         .request_reply_ge_25ms
@@ -248,6 +284,28 @@ impl<E: Ext> UdpSocketBg<E> {
                     self.inner.last_tx_xid.store(xid, Ordering::Relaxed);
                     let slot = xid as usize % RPC_ARRIVAL_SLOTS;
                     let now_ms = Jiffies::elapsed().as_u64();
+                    if rpc_message_type(udp_payload).is_some()
+                        && self.inner.send_enqueue_xids[slot].load(Ordering::Relaxed) == xid
+                    {
+                        let enqueue_ms = self.inner.send_enqueue_ms[slot].load(Ordering::Relaxed);
+                        let delay_ms = now_ms.saturating_sub(enqueue_ms);
+                        self.inner
+                            .enqueue_dispatch_samples
+                            .fetch_add(1, Ordering::Relaxed);
+                        self.inner
+                            .enqueue_dispatch_max_ms
+                            .fetch_max(delay_ms, Ordering::Relaxed);
+                        if delay_ms >= 2 {
+                            self.inner
+                                .enqueue_dispatch_ge_2ms
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                        if delay_ms >= 5 {
+                            self.inner
+                                .enqueue_dispatch_ge_5ms
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
                     match rpc_message_type(udp_payload) {
                         Some(0) => {
                             if self.inner.first_tx_xids[slot].load(Ordering::Relaxed) == xid {
@@ -271,6 +329,16 @@ impl<E: Ext> UdpSocketBg<E> {
                             self.inner
                                 .server_processing_max_ms
                                 .fetch_max(delay_ms, Ordering::Relaxed);
+                            if delay_ms >= 2 {
+                                self.inner
+                                    .server_processing_ge_2ms
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
+                            if delay_ms >= 5 {
+                                self.inner
+                                    .server_processing_ge_5ms
+                                    .fetch_add(1, Ordering::Relaxed);
+                            }
                             if delay_ms >= 25 {
                                 self.inner
                                     .server_processing_ge_25ms
@@ -359,17 +427,29 @@ impl<E: Ext> UdpSocket<E> {
             arrival_ms: core::array::from_fn(|_| AtomicU64::new(0)),
             rx_read_delay_samples: AtomicU64::new(0),
             rx_read_delay_max_ms: AtomicU64::new(0),
+            rx_read_delay_ge_2ms: AtomicU64::new(0),
+            rx_read_delay_ge_5ms: AtomicU64::new(0),
             rx_read_delay_ge_25ms: AtomicU64::new(0),
+            send_enqueue_xids: core::array::from_fn(|_| AtomicU32::new(0)),
+            send_enqueue_ms: core::array::from_fn(|_| AtomicU64::new(0)),
+            enqueue_dispatch_samples: AtomicU64::new(0),
+            enqueue_dispatch_max_ms: AtomicU64::new(0),
+            enqueue_dispatch_ge_2ms: AtomicU64::new(0),
+            enqueue_dispatch_ge_5ms: AtomicU64::new(0),
             first_tx_xids: core::array::from_fn(|_| AtomicU32::new(0)),
             first_tx_ms: core::array::from_fn(|_| AtomicU64::new(0)),
             request_retransmits: AtomicU64::new(0),
             request_reply_samples: AtomicU64::new(0),
             request_reply_max_ms: AtomicU64::new(0),
+            request_reply_ge_2ms: AtomicU64::new(0),
+            request_reply_ge_5ms: AtomicU64::new(0),
             request_reply_ge_25ms: AtomicU64::new(0),
             request_read_xids: core::array::from_fn(|_| AtomicU32::new(0)),
             request_read_ms: core::array::from_fn(|_| AtomicU64::new(0)),
             server_processing_samples: AtomicU64::new(0),
             server_processing_max_ms: AtomicU64::new(0),
+            server_processing_ge_2ms: AtomicU64::new(0),
+            server_processing_ge_5ms: AtomicU64::new(0),
             server_processing_ge_25ms: AtomicU64::new(0),
             accepts_ipv4,
             ext: PhantomData,
@@ -420,7 +500,14 @@ impl<E: Ext> UdpSocket<E> {
             meta.local_address = Some(IpAddress::Ipv4(Ipv4Address::LOCALHOST));
         }
         let buffer = socket.send(size, meta)?;
-        let result = f(buffer);
+        let result = f(&mut *buffer);
+        if rpc_message_type(buffer).is_some() {
+            let xid = rpc_xid(buffer);
+            let slot = xid as usize % RPC_ARRIVAL_SLOTS;
+            self.0.inner.send_enqueue_ms[slot]
+                .store(Jiffies::elapsed().as_u64(), Ordering::Relaxed);
+            self.0.inner.send_enqueue_xids[slot].store(xid, Ordering::Relaxed);
+        }
 
         self.0
             .inner
@@ -470,6 +557,18 @@ impl<E: Ext> UdpSocket<E> {
                     .inner
                     .rx_read_delay_max_ms
                     .fetch_max(delay_ms, Ordering::Relaxed);
+                if delay_ms >= 2 {
+                    self.0
+                        .inner
+                        .rx_read_delay_ge_2ms
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                if delay_ms >= 5 {
+                    self.0
+                        .inner
+                        .rx_read_delay_ge_5ms
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 if delay_ms >= 25 {
                     self.0
                         .inner
