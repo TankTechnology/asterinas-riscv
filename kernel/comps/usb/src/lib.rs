@@ -22,6 +22,7 @@ mod arch;
 // Only the RISC-V USB host stack drives a boot keyboard for now.
 #[cfg(target_arch = "riscv64")]
 mod keyboard;
+#[cfg(target_arch = "riscv64")]
 mod mouse;
 
 #[init_component]
