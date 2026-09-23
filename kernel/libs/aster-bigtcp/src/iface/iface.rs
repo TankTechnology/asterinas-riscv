@@ -20,6 +20,11 @@ pub trait Iface<E>: internal::IfaceInternal<E> + Send + Sync {
     /// Returns the Ethernet address, if the interface uses Ethernet framing.
     fn ethernet_addr(&self) -> Option<EthernetAddress>;
 
+    /// Returns the configured IPv4 default gateway, if any.
+    fn ipv4_gateway(&self) -> Option<Ipv4Address> {
+        None
+    }
+
     /// Transmits or receives packets queued in the iface, and updates socket status accordingly.
     fn poll(&self);
 

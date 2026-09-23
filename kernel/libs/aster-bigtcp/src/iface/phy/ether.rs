@@ -34,6 +34,7 @@ pub struct EtherIface<D, E: Ext> {
     driver: D,
     common: IfaceCommon<E>,
     ether_addr: EthernetAddress,
+    gateway: Option<Ipv4Address>,
     arp_table: SpinLock<BTreeMap<Ipv4Address, EthernetAddress>, BottomHalfDisabled>,
     /// Serialized IPv4 packets waiting for an ARP resolution.
     ///
@@ -289,6 +290,7 @@ impl<D: WithDevice, E: Ext> EtherIface<D, E> {
             driver,
             common,
             ether_addr,
+            gateway,
             arp_table: SpinLock::new(static_arp_entries.iter().copied().collect()),
             pending_tx: SpinLock::new(PendingTxState::new()),
         })
@@ -307,6 +309,10 @@ where
 {
     fn ethernet_addr(&self) -> Option<EthernetAddress> {
         Some(self.ether_addr)
+    }
+
+    fn ipv4_gateway(&self) -> Option<Ipv4Address> {
+        self.gateway
     }
 
     fn poll(&self) {
