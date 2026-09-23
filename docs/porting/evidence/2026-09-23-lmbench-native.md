@@ -272,6 +272,36 @@ The temporary source edit was restored after this experiment. Lowering this
 thread's priority alone is insufficient to recover the original benchmark;
 it does not exclude other scheduler or socket-wakeup delays.
 
+### RPC stage timing and retransmissions
+
+The diagnostic kernel then matched RPC transaction IDs in a bounded per-socket
+ring and sampled four stages at 1 ms timer resolution: request dispatch to
+reply arrival, request arrival to server read, server read to reply dispatch,
+and reply arrival to client read. The source is on the separate
+`codex/udp-rpc-instrument` diagnostic branch at `99a3b78db`; none of its
+counters are included in the production PR kernel.
+
+The unmodified RPC/UDP command still timed out in two focused boots. In the
+first, the longest observed UDP queue-to-read delay was 8 ms at the server and
+1 ms at the client, with no delay reaching 25 ms. In the second, the client
+recorded 10,530 retransmissions with the same transaction ID, while the
+longest matched first-request-dispatch-to-reply-arrival sample was 11 ms.
+Server queue-to-read peaked at 9 ms, server read-to-reply-dispatch at 7 ms,
+and client queue-to-read at 3 ms. Neither socket dropped an RX packet. At
+client close, 196 bytes of replies remained queued; the last read ID lagged
+the last sent ID by one. The [stage-timing result](2026-09-23-lmbench-native/rpc-udp-stage-timing.json)
+records both kernel hashes, boot IDs, command outputs and raw-log hashes.
+
+This rules out a single observed 25 ms UDP queue wait as the necessary trigger
+in those failures. It does not prove all RPC calls finished inside 25 ms:
+the counters sample matching IDs in a bounded ring and the instrumentation
+itself adds work. The pinned libtirpc 1.3.6 `clnt_dg_call` also deducts its
+requested poll interval from the total budget when it reads a reply with a
+different transaction ID, even if that poll returned early. Repeated short
+retries and stale replies can therefore consume the 25 ms budget without a
+single 25 ms kernel delay. A trace of the failing call's exact reply sequence
+is still needed to establish that as the final mechanism.
+
 ### Adapted native ALL qualification
 
 The combined diagnostic `lat_rpc` binary was substituted into an otherwise
