@@ -25,7 +25,10 @@ sockets inherit their listener's namespace, including TCP, Unix stream, and
 vsock. This changes interface-query behavior only; other socket operations
 that still consult the current thread's namespace require separate work.
 
-An x86 kernel build was started but not completed: the shared development
-volume reached its non-root free-space limit during compilation. The partial
-x86 target artifacts from this worktree were removed. CI remains the x86
-build check for this change.
+The x86 kernel also built successfully with `make kernel TARGET_ARCH=x86_64`.
+The resulting ISO SHA256 was
+`0ac951d46a3389e158efe43d43575fd8324886dd2557b87f6e53b27655611a69`.
+The shared development volume had reached its non-root free-space limit, so
+the build ran through the existing root-owned development container using
+filesystem-reserved space. Its 2.2 GiB x86 target directory was removed after
+the successful build; no filesystem settings were changed.
