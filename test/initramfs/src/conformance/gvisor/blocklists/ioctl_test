@@ -14,9 +14,3 @@ IoctlTest.FIOASYNCInvalidPID
 IoctlTest.FIOASYNCUnsetTarget
 IoctlTest.FIOGETOWNSucceeds
 IoctlTest.SIOCGPGRPSucceeds
-
-# TODO: Support IPv6 UDP sockets.
-IoctlTest/IoctlTestSIOCGIFCONF.ValidateNoArrayGetsLength/5
-IoctlTest/IoctlTestSIOCGIFCONF.ValidateNoPartialIfrsReturned/5
-IoctlTest/IoctlTestSIOCGIFCONF.ValidateNestedPointerCheck/5
-IoctlTest/IoctlTestSIOCGIFCONF.ValidateLoopbackIsPresent/5

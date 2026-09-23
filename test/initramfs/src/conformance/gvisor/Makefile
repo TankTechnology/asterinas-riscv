@@ -91,6 +91,10 @@ TESTS ?= \
 	xattr_test \
 	# The end of the list
 
+ifneq ($(GVISOR_TESTS),)
+TESTS := $(GVISOR_TESTS)
+endif
+
 MKFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 CUR_DIR := $(patsubst %/,%,$(dir $(MKFILE_PATH)))
 BUILD_DIR ?= $(CUR_DIR)/../../../build
