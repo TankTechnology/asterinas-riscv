@@ -19,6 +19,41 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_ifconf_gvisor_gate_accepts_only_one_clean_completion(self) -> None:
+        marker = "gVisor SIOCGIFCONF cases passed."
+        validate_transcript(marker + "\n", mode="ifconf-gvisor")
+        for transcript in (
+            "boot output\n",
+            f"{marker}\n{marker}\n",
+            f"{marker}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaises(ValidationError):
+                    validate_transcript(transcript, mode="ifconf-gvisor")
+
+    def test_ifconf_gvisor_gate_is_focused_and_wired(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        guest = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/conformance/run_ifconf_gvisor_test.sh"
+        )
+        guest_text = guest.read_text()
+        self.assertIn("else ifeq ($(AUTO_TEST), ifconf_gvisor)", makefile)
+        self.assertIn('CONFORMANCE_GVISOR_TEST := "ioctl_test"', makefile)
+        self.assertIn('/opt/run_ifconf_gvisor_test.sh', makefile)
+        self.assertIn('--mode "ifconf-gvisor"', makefile)
+        self.assertIn(
+            '--gtest_filter=IoctlTest/IoctlTestSIOCGIFCONF.*',
+            guest_text,
+        )
+        self.assertIn('[==========] 24 tests from 1 test suite ran.', guest_text)
+        self.assertIn('[  PASSED  ] 24 tests.', guest_text)
+        blocklist = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/conformance/gvisor/blocklists/ioctl_test"
+        ).read_text()
+        self.assertNotIn("IoctlTestSIOCGIFCONF", blocklist)
+
     def test_ifconf_gate_accepts_only_one_clean_completion(self) -> None:
         marker = "SIOCGIFCONF regression passed."
         validate_transcript(marker + "\n", mode="ifconf")

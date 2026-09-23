@@ -137,6 +137,15 @@ CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_TEST_DEV=$(XFSTESTS_TEST_DEV)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_SCRATCH_DEV=$(XFSTESTS_SCRATCH_DEV)"
 endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
+else ifeq ($(AUTO_TEST), ifconf_gvisor)
+ifneq ($(TARGET_ARCH), x86_64)
+$(error AUTO_TEST=ifconf_gvisor requires TARGET_ARCH=x86_64)
+endif
+ENABLE_CONFORMANCE_TEST := true
+CONFORMANCE_TEST_SUITE := gvisor
+CONFORMANCE_GVISOR_TEST := "ioctl_test"
+export ENABLE_CONFORMANCE_TEST CONFORMANCE_TEST_SUITE CONFORMANCE_GVISOR_TEST
+CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_ifconf_gvisor_test.sh"
 else ifeq ($(AUTO_TEST), regression)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="INTEL_TDX=$(INTEL_TDX)"
@@ -1191,6 +1200,10 @@ else ifeq ($(AUTO_TEST), ifconf)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ifconf"
+else ifeq ($(AUTO_TEST), ifconf_gvisor)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ifconf-gvisor"
 else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
