@@ -3,7 +3,7 @@
 use alloc::{boxed::Box, sync::Arc};
 use core::{
     marker::PhantomData,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
 
 use aster_softirq::BottomHalfDisabled;
@@ -30,6 +30,13 @@ pub type UdpSocket<E> = Socket<UdpSocketInner<E>, E>;
 // Diagnostic only: counts payload-bearing datagrams rejected by the RX queue.
 static UDP_RX_QUEUE_DROPS: AtomicU64 = AtomicU64::new(0);
 
+fn rpc_xid(data: &[u8]) -> u32 {
+    if data.len() < 4 {
+        return 0;
+    }
+    u32::from_be_bytes([data[0], data[1], data[2], data[3]])
+}
+
 /// States needed by [`UdpSocketBg`].
 pub struct UdpSocketInner<E: Ext> {
     socket: SpinLock<Box<RawUdpSocket>, BottomHalfDisabled>,
@@ -38,6 +45,11 @@ pub struct UdpSocketInner<E: Ext> {
     tx_packets: AtomicU64,
     rx_drops: AtomicU64,
     rx_max_queued_bytes: AtomicU64,
+    last_tx_xid: AtomicU32,
+    last_rx_xid: AtomicU32,
+    last_read_xid: AtomicU32,
+    rx_xid_mismatches: AtomicU64,
+    read_xid_mismatches: AtomicU64,
     accepts_ipv4: bool,
     ext: PhantomData<fn() -> E>,
 }
@@ -47,11 +59,12 @@ impl<E: Ext> Inner<E> for UdpSocketInner<E> {
     type Observer = E::UdpEventObserver;
 
     fn on_drop(this: &Arc<SocketBg<Self, E>>) {
-        let queued_on_close = {
+        let (queued_on_close, queued_xid) = {
             let mut socket = this.inner.socket.lock();
             let queued = socket.recv_queue();
+            let queued_xid = socket.peek().ok().map(|(data, _)| rpc_xid(data));
             socket.close();
-            queued
+            (queued, queued_xid)
         };
 
         // Keep the socket-table -> UDP-registry lock order used by poll.
@@ -71,13 +84,19 @@ impl<E: Ext> Inner<E> for UdpSocketInner<E> {
         let max_queued = this.inner.rx_max_queued_bytes.load(Ordering::Relaxed);
         if rx + tx >= 1000 {
             ostd::early_println!(
-                "UDP_SOCKET_STATS port={} rx={} tx={} rx_drops={} max_queued={} queued_on_close={}",
+                "UDP_SOCKET_STATS port={} rx={} tx={} rx_drops={} max_queued={} queued_on_close={} last_tx_xid={} last_rx_xid={} last_read_xid={} queued_xid={:?} rx_xid_mismatches={} read_xid_mismatches={}",
                 this.bound.port(),
                 rx,
                 tx,
                 drops,
                 max_queued,
                 queued_on_close,
+                this.inner.last_tx_xid.load(Ordering::Relaxed),
+                this.inner.last_rx_xid.load(Ordering::Relaxed),
+                this.inner.last_read_xid.load(Ordering::Relaxed),
+                queued_xid,
+                this.inner.rx_xid_mismatches.load(Ordering::Relaxed),
+                this.inner.read_xid_mismatches.load(Ordering::Relaxed),
             );
         }
     }
@@ -142,6 +161,13 @@ impl<E: Ext> UdpSocketBg<E> {
             }
         } else {
             self.inner.rx_packets.fetch_add(1, Ordering::Relaxed);
+            if udp_payload.len() >= 4 {
+                let xid = rpc_xid(udp_payload);
+                self.inner.last_rx_xid.store(xid, Ordering::Relaxed);
+                if xid != self.inner.last_tx_xid.load(Ordering::Relaxed) {
+                    self.inner.rx_xid_mismatches.fetch_add(1, Ordering::Relaxed);
+                }
+            }
         }
 
         self.notify_events(SocketEvents::CAN_RECV);
@@ -158,6 +184,11 @@ impl<E: Ext> UdpSocketBg<E> {
 
         socket
             .dispatch(cx, |cx, _meta, (ip_repr, udp_repr, udp_payload)| {
+                if udp_payload.len() >= 4 {
+                    self.inner
+                        .last_tx_xid
+                        .store(rpc_xid(udp_payload), Ordering::Relaxed);
+                }
                 dispatch(cx, &ip_repr, &udp_repr, udp_payload);
                 self.inner.tx_packets.fetch_add(1, Ordering::Relaxed);
                 Ok::<(), ()>(())
@@ -228,6 +259,11 @@ impl<E: Ext> UdpSocket<E> {
             tx_packets: AtomicU64::new(0),
             rx_drops: AtomicU64::new(0),
             rx_max_queued_bytes: AtomicU64::new(0),
+            last_tx_xid: AtomicU32::new(0),
+            last_rx_xid: AtomicU32::new(0),
+            last_read_xid: AtomicU32::new(0),
+            rx_xid_mismatches: AtomicU64::new(0),
+            read_xid_mismatches: AtomicU64::new(0),
             accepts_ipv4,
             ext: PhantomData,
         };
@@ -307,6 +343,16 @@ impl<E: Ext> UdpSocket<E> {
                 (data, *meta)
             }
         };
+        if data.len() >= 4 && behavior == ReceiveBehavior::Recv {
+            let xid = rpc_xid(data);
+            self.0.inner.last_read_xid.store(xid, Ordering::Relaxed);
+            if xid != self.0.inner.last_tx_xid.load(Ordering::Relaxed) {
+                self.0
+                    .inner
+                    .read_xid_mismatches
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
         let result = copy_fn(data, meta);
 
         Ok(result)
