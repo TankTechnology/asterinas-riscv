@@ -49,5 +49,6 @@ sleep 0.2
 ./tcp_msg_dontwait_send
 
 ./netlink_route
+./route_dump
 ./rtnl_err
 ./uevent_err
