@@ -19,6 +19,41 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_ifconf_gate_accepts_only_one_clean_completion(self) -> None:
+        marker = "SIOCGIFCONF regression passed."
+        validate_transcript(marker + "\n", mode="ifconf")
+        for transcript in (
+            "boot output\n",
+            f"{marker}\n{marker}\n",
+            f"{marker}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaises(ValidationError):
+                    validate_transcript(transcript, mode="ifconf")
+
+    def test_ifconf_gate_is_wired_into_make_and_guest(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        runner_path = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/run_ifconf_test.sh"
+        )
+        general_runner = (
+            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
+
+        self.assertIn("else ifeq ($(AUTO_TEST), ifconf)", makefile)
+        self.assertIn('/test/run_ifconf_test.sh', makefile)
+        self.assertIn('--mode "ifconf"', makefile)
+        self.assertEqual(
+            tuple(
+                line.strip()
+                for line in runner_path.read_text().splitlines()
+                if line.strip().startswith("/test/")
+            ),
+            ("/test/network/ifconf",),
+        )
+        self.assertEqual(general_runner.count("./ifconf"), 1)
+
     def test_accepts_ipv6_dual_stack_udp_transcript(self) -> None:
         try:
             validate_transcript(

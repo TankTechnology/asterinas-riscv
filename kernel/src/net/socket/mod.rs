@@ -24,6 +24,8 @@ pub mod unix;
 pub mod util;
 pub mod vsock;
 
+mod ioctl;
+
 mod private {
     use core::time::Duration;
 
@@ -146,6 +148,10 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
 }
 
 impl<T: Socket + 'static> FileLike for T {
+    fn ioctl(&self, raw_ioctl: crate::util::ioctl::RawIoctl) -> Result<i32> {
+        ioctl::handle(raw_ioctl)
+    }
+
     fn read(&self, writer: &mut VmWriter) -> Result<usize> {
         if !writer.has_avail() {
             // Linux always returns `Ok(0)` in this case, so we follow it.
