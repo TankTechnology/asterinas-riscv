@@ -544,6 +544,8 @@ microseconds, and RPC/TCP at 761.4541 microseconds. The
 and [configuration](2026-09-23-lmbench-native/rpc-final-original-quiet-native-all-config.txt)
 are preserved. The package and smoke unit suite passed 28 tests, including
 both `make results` and the `make result` alias; `git diff --check` passed.
+The report retains three nonfatal hardware/OS metadata warnings about
+`/proc/net/dev` and `SIOCGIFCONF`; they did not omit any audited measurement.
 These two full quiet-console passes establish the selected local ALL suite on
 this QEMU setup, not a guarantee under concurrent serial management load or
 on the physical board.
