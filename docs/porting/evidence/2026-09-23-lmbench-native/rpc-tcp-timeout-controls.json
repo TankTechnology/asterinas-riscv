@@ -1,0 +1,65 @@
+{
+  "scope": "Diagnostic-only focused controls on RISC-V QEMU TCG, 4 CPUs, 2 GiB, disposable Debian guest",
+  "unchanged_kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+  "native_all_retry25": {
+    "run": "native-retry25-38",
+    "boot_id": "4745098e-f02e-4ee8-b337-074bb4b2b3be",
+    "entry": "cd /opt/lmbench/src && make results",
+    "only_binary_change": "lat_rpc UDP retry interval from 2.5 to 25 ms",
+    "observed_groups": 108,
+    "expected_groups": 109,
+    "missing": ["rpc-tcp"],
+    "error": "localhost: RPC: Timed out",
+    "audit_passed": false
+  },
+  "focused_tcp": {
+    "run": "rpc-tcp-39",
+    "boot_id": "48e1fff0-c62e-47b7-a5be-f8db05882ed3",
+    "server": "unchanged official LMBench lat_rpc -s",
+    "command": "lat_rpc -P 1 -p tcp localhost",
+    "trials": [
+      {
+        "variant": "unmodified total timeout 25 ms",
+        "elapsed_seconds": 26.928,
+        "exit_status": 0,
+        "stderr": "RPC/tcp latency using localhost: 782.3695 microseconds",
+        "passed": true
+      },
+      {
+        "variant": "diagnostic total timeout 250 ms",
+        "elapsed_seconds": 25.569,
+        "exit_status": 0,
+        "stderr": "RPC/tcp latency using localhost: 790.9585 microseconds",
+        "passed": true
+      }
+    ]
+  },
+  "focused_combined": {
+    "run": "rpc-stable-40",
+    "boot_id": "9267d2ab-cfd1-4ba3-8ace-56988311562b",
+    "diagnostic_binary_sha256": "1095906004c6532897aa72403d5d45b5fcb204dd395e57affff6e58367d690cd",
+    "binary_changes": "RPC total timeout 25 to 250 ms; UDP retry 2.5 to 250 ms",
+    "server": "unchanged official LMBench lat_rpc -s",
+    "results": [
+      {
+        "command": "lat_rpc -P 1 -p udp localhost",
+        "elapsed_seconds": 25.645,
+        "exit_status": 0,
+        "stderr": "RPC/udp latency using localhost: 379.5100 microseconds",
+        "passed": true
+      },
+      {
+        "command": "lat_rpc -P 1 -p tcp localhost",
+        "elapsed_seconds": 27.882,
+        "exit_status": 0,
+        "stderr": "RPC/tcp latency using localhost: 795.6458 microseconds",
+        "passed": true
+      }
+    ]
+  },
+  "limits": [
+    "The original TCP benchmark succeeded in one focused boot but timed out in native ALL; its failure is intermittent.",
+    "The combined diagnostic binary has not been accepted as a production benchmark change.",
+    "Success of focused controls does not establish full native ALL coverage."
+  ]
+}
