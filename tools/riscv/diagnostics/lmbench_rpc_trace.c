@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // Diagnostic only: preload into the RISC-V lat_rpc client to retain its final
-// sendto, poll and recvfrom calls in /opt/rpc-trace-<pid>.log. Each process
-// writes at most 256 events when it exits. This is not a benchmark component.
+// sendto, poll and recvfrom calls in /opt/rpc-trace-<pid>.log and the first
+// repeated request in /opt/rpc-first-<pid>.log. Each process writes at most
+// 384 events when it exits. This is not a benchmark component.
 
 #define _GNU_SOURCE
 #include <arpa/inet.h>
@@ -20,6 +21,8 @@
 
 #define TRACE_RING 4096
 #define TRACE_DUMP 256
+#define FIRST_WINDOW_PRE 64
+#define FIRST_WINDOW_POST 64
 
 struct trace_event {
     unsigned long long seq;
@@ -35,6 +38,12 @@ struct trace_event {
 
 static struct trace_event trace_ring[TRACE_RING];
 static unsigned long long trace_next;
+static struct trace_event first_window[FIRST_WINDOW_PRE + FIRST_WINDOW_POST];
+static size_t first_count;
+static unsigned long long first_retry_seq;
+static unsigned int previous_send_xid;
+static int have_previous_send;
+
 
 static unsigned long long monotonic_ns(void) {
     struct timespec ts;
@@ -55,6 +64,22 @@ static void record(char op, int fd, int rc, int arg, unsigned int xid,
     struct trace_event *event = &trace_ring[seq % TRACE_RING];
     *event = (struct trace_event){seq, monotonic_ns(), op, fd, rc, arg,
                                   xid, revents, duration_ns};
+    if (first_retry_seq && seq > first_retry_seq &&
+        first_count < FIRST_WINDOW_PRE + FIRST_WINDOW_POST) {
+        first_window[first_count++] = *event;
+    }
+    if (op == 'S') {
+        if (!first_retry_seq && have_previous_send && xid == previous_send_xid) {
+            first_retry_seq = seq;
+            unsigned long long begin = seq >= FIRST_WINDOW_PRE - 1
+                ? seq - (FIRST_WINDOW_PRE - 1) : 0;
+            for (unsigned long long index = begin; index <= seq; ++index) {
+                first_window[first_count++] = trace_ring[index % TRACE_RING];
+            }
+        }
+        previous_send_xid = xid;
+        have_previous_send = 1;
+    }
 }
 
 ssize_t sendto(int fd, const void *buffer, size_t length, int flags,
@@ -109,6 +134,19 @@ __attribute__((destructor)) static void dump_trace(void) {
             (long)getpid(), end, end - begin);
     for (unsigned long long seq = begin; seq < end; ++seq) {
         const struct trace_event *event = &trace_ring[seq % TRACE_RING];
+        dprintf(fd, "%llu %llu %c fd=%d rc=%d arg=%d xid=%u revents=%d duration_ns=%llu\n",
+                event->seq, event->ns, event->op, event->fd, event->rc,
+                event->arg, event->xid, event->revents, event->duration_ns);
+    }
+    close(fd);
+    if (!first_count) return;
+    snprintf(path, sizeof(path), "/opt/rpc-first-%ld.log", (long)getpid());
+    fd = open(path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+    if (fd < 0) return;
+    dprintf(fd, "pid=%ld first_retry_seq=%llu retained=%zu\n",
+            (long)getpid(), first_retry_seq, first_count);
+    for (size_t index = 0; index < first_count; ++index) {
+        const struct trace_event *event = &first_window[index];
         dprintf(fd, "%llu %llu %c fd=%d rc=%d arg=%d xid=%u revents=%d duration_ns=%llu\n",
                 event->seq, event->ns, event->op, event->fd, event->rc,
                 event->arg, event->xid, event->revents, event->duration_ns);
