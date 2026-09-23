@@ -105,6 +105,9 @@ impl<E: Ext> dyn Iface<E> {
     ///
     /// IPv6 does not define broadcast addresses and uses multicast instead.
     pub fn broadcast_addr(&self) -> Option<Ipv4Address> {
+        if !self.flags().contains(InterfaceFlags::BROADCAST) {
+            return None;
+        }
         self.common().ipv4_cidr()?.broadcast()
     }
 

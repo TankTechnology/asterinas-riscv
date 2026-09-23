@@ -170,7 +170,8 @@ except RuntimeError:
             (root / 'scripts').mkdir()
             binary = root / 'bin' / PLATFORM
             binary.mkdir(parents=True)
-            startup = 'for server in $SERVERS; do $server -s; done\n'
+            startup = ('for server in $SERVERS; do $server -s; done\n'
+                       'case $1 in\n\t    *ame)\t;;\nesac\n')
             (root / 'scripts/lmbench').write_text('echo <version>\n' + startup)
             (binary / 'lmbench').write_text('echo built-version\n' + startup)
             (root / 'scripts/version').write_text("egrep 'MAJOR|MINOR' version.h\n")
@@ -178,6 +179,33 @@ except RuntimeError:
             self.assertIn('echo built-version', (binary / 'lmbench').read_text())
             self.assertNotIn('<version>', (binary / 'lmbench').read_text())
             self.assertIn('-s 127.0.0.1', (binary / 'lmbench').read_text())
+
+    def test_adapted_native_driver_skips_netstat_headers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'scripts').mkdir()
+            binary = root / 'bin' / PLATFORM
+            binary.mkdir(parents=True)
+            driver = ('#!/bin/sh\n'
+                      'for server in $SERVERS; do $server -s; done\n'
+                      'netstat() { printf "%s\\n" "Kernel Interface table" '
+                      '"Iface MTU RX-OK" "eth0 1500 23"; }\n'
+                      'ifconfig() { printf "IFACE=%s\\n" "$1"; }\n'
+                      'netstat -i | while read i\n'
+                      'do\n'
+                      '    set `echo $i`\n'
+                      '    case $1 in\n'
+                      '\t    *ame)\t;;\n'
+                      '\t    *)\t\tifconfig $1 ;;\n'
+                      '    esac\n'
+                      'done\n')
+            for path in (root / 'scripts/lmbench', binary / 'lmbench'):
+                path.write_text(driver)
+            (root / 'scripts/version').write_text("egrep 'MAJOR|MINOR' version.h\n")
+            patch_scripts(root)
+            result = subprocess.run(['sh', str(binary / 'lmbench')],
+                                    capture_output=True, text=True, check=True)
+            self.assertEqual(result.stdout, 'IFACE=eth0\n')
 
     def test_invalid_timeout_fails_before_starting_processes(self):
         for value in ('nan', 'inf', '0', '-1', 'invalid'):

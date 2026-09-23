@@ -45,6 +45,8 @@ pub struct EtherIface<D, E: Ext> {
     pending_tx: SpinLock<PendingTxState, BottomHalfDisabled>,
 }
 
+const ETHERNET_HEADER_LEN: usize = 14;
+
 /// The maximum number of packets queued for ARP resolution.
 const MAX_PENDING_TX: usize = 64;
 /// The maximum time an IPv4 packet waits for an ARP resolution.
@@ -329,8 +331,12 @@ where
     }
 
     fn mtu(&self) -> usize {
-        self.driver
-            .with(|device| device.capabilities().max_transmission_unit)
+        self.driver.with(|device| {
+            device
+                .capabilities()
+                .max_transmission_unit
+                .saturating_sub(ETHERNET_HEADER_LEN)
+        })
     }
 }
 

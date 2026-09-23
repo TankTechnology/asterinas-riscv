@@ -238,7 +238,12 @@ def patch_scripts(root: Path) -> None:
         content = script.read_text()
         if content.count(old) != 1:
             raise ValueError('upstream server startup changed; review the adaptation')
-        script.write_text(content.replace(old, new))
+        content = content.replace(old, new)
+        old_header = '*ame)\t;;'
+        if content.count(old_header) != 1:
+            raise ValueError('upstream netstat header handling changed; review the adaptation')
+        # Modern net-tools prints two headers, neither of which names an iface.
+        script.write_text(content.replace(old_header, '*ame|Kernel|Iface)\t;;'))
     version = root / 'scripts/version'
     old = "egrep 'MAJOR|MINOR'"
     content = version.read_text()
@@ -276,7 +281,8 @@ def package(output: Path) -> None:
         metadata = {'revision': REVISION, 'platform': PLATFORM, 'packages': packages,
                     'closure': sorted(set(closure)), 'upstream_script_sha256': hashes,
                     'adaptations': ['explicit IPv4 loopback server arguments',
-                                    'grep -E instead of the egrep shell wrapper'],
+                                    'grep -E instead of the egrep shell wrapper',
+                                    'skip modern netstat interface-table headers'],
                     'benchmark_binaries_modified': False,
                     'benchmark_binary_modifications': [],
                     'rpc_timing_us': {'upstream_total': 25000,

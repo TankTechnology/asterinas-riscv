@@ -15,6 +15,7 @@ SUCCESS_MARKERS = {
     "boot": "Successfully booted.",
     "conformance": "All conformance tests passed.",
     "ifconf": "SIOCGIFCONF regression passed.",
+    "ifreq": "interface ioctl regression passed.",
     "ifconf-gvisor": "gVisor SIOCGIFCONF cases passed.",
     "proc-net-dev": "/proc/net/dev regression passed.",
     "ipv6-udp": "ipv6_udp: PASS",

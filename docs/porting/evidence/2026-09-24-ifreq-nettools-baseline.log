@@ -1,0 +1,681 @@
+
+
+OpenSBI v1.7
+
+   ____                    _____ ____ _____
+
+  / __ \                  / ____|  _ \_   _|
+
+ | |  | |_ __   ___ _ __ | (___ | |_) || |
+
+ | |  | | '_ \ / _ \ '_ \ \___ \|  _ < | |
+
+ | |__| | |_) |  __/ | | |____) | |_) || |_
+
+  \____/| .__/ \___|_| |_|_____/|____/_____|
+
+        | |
+
+        |_|
+
+
+
+Platform Name               : riscv-virtio,qemu
+
+Platform Features           : medeleg
+
+Platform HART Count         : 4
+
+Platform IPI Device         : aclint-mswi
+
+Platform Timer Device       : aclint-mtimer @ 10000000Hz
+
+Platform Console Device     : uart8250
+
+Platform HSM Device         : ---
+
+Platform PMU Device         : ---
+
+Platform Reboot Device      : syscon-reboot
+
+Platform Shutdown Device    : syscon-poweroff
+
+Platform Suspend Device     : ---
+
+Platform CPPC Device        : ---
+
+Firmware Base               : 0x80000000
+
+Firmware Size               : 353 KB
+
+Firmware RW Offset          : 0x40000
+
+Firmware RW Size            : 97 KB
+
+Firmware Heap Offset        : 0x4c000
+
+Firmware Heap Size          : 49 KB (total), 3 KB (reserved), 12 KB (used), 33 KB (free)
+
+Firmware Scratch Size       : 4096 B (total), 1400 B (used), 2696 B (free)
+
+Runtime SBI Version         : 3.0
+
+Standard SBI Extensions     : time,rfnc,ipi,base,hsm,srst,pmu,dbcn,fwft,legacy,dbtr,sse
+
+Experimental SBI Extensions : none
+
+
+
+Domain0 Name                : root
+
+Domain0 Boot HART           : 0
+
+Domain0 HARTs               : 0*,1*,2*,3*
+
+Domain0 Region00            : 0x0000000000100000-0x0000000000100fff M: (I,R,W) S/U: (R,W)
+
+Domain0 Region01            : 0x0000000010000000-0x0000000010000fff M: (I,R,W) S/U: (R,W)
+
+Domain0 Region02            : 0x0000000002000000-0x000000000200ffff M: (I,R,W) S/U: ()
+
+Domain0 Region03            : 0x0000000080040000-0x000000008005ffff M: (R,W) S/U: ()
+
+Domain0 Region04            : 0x0000000080000000-0x000000008003ffff M: (R,X) S/U: ()
+
+Domain0 Region05            : 0x000000000c400000-0x000000000c5fffff M: (I,R,W) S/U: (R,W)
+
+Domain0 Region06            : 0x000000000c000000-0x000000000c3fffff M: (I,R,W) S/U: (R,W)
+
+Domain0 Region07            : 0x0000000000000000-0xffffffffffffffff M: () S/U: (R,W,X)
+
+Domain0 Next Address        : 0x0000000080200000
+
+Domain0 Next Arg1           : 0x00000000ffe00000
+
+Domain0 Next Mode           : S-mode
+
+Domain0 SysReset            : yes
+
+Domain0 SysSuspend          : yes
+
+
+
+Boot HART ID                : 0
+
+Boot HART Domain            : root
+
+Boot HART Priv Version      : v1.12
+
+Boot HART Base ISA          : rv64imafdch
+
+Boot HART ISA Extensions    : sstc,zicntr,zihpm,zkr,zicboz,zicbom,svpbmt,sdtrig,svade
+
+Boot HART PMP Count         : 16
+
+Boot HART PMP Granularity   : 2 bits
+
+Boot HART PMP Address Bits  : 54
+
+Boot HART MHPM Info         : 16 (0x0007fff8)
+
+Boot HART Debug Triggers    : 2 triggers
+
+Boot HART MIDELEG           : 0x0000000000001666
+
+Boot HART MEDELEG           : 0x0000000000f4b509
+
+
+
+
+
+U-Boot 2026.07 (Sep 01 2026 - 14:37:08 +0000)
+
+
+
+CPU:   riscv
+
+Model: riscv-virtio,qemu
+
+DRAM:  2 GiB
+
+using memory 0xfeead000-0xff6cd000 for malloc()
+
+
+Core:  31 devices, 14 uclasses, devicetree: board
+
+Flash: 32 MiB
+
+Loading Environment from nowhere... OK
+
+In:    serial,usbkbd
+
+Out:   serial,vidconsole
+
+Err:   serial,vidconsole
+
+No USB controllers found
+
+Net:   eth0: virtio-net#0
+
+[?25h
+
+Working FDT set to feeaa980
+
+[2K
+Hit any key to stop autoboot: 2[2K
+Hit any key to stop autoboot: 1[2K
+Hit any key to stop autoboot: 0
+
+
+
+Device 0: unknown device
+
+
+
+Device 0: QEMU VirtIO Block Device
+
+            Type: Hard Disk
+
+            Capacity: 64.0 MB = 0.0 GB (131072 x 512)
+
+... is now current device
+
+** No partition table - virtio 0 **
+
+Couldn't find partition virtio 0:1
+
+
+
+Device 1: QEMU VirtIO Block Device
+
+            Type: Hard Disk
+
+            Capacity: 2048.0 MB = 2.0 GB (4194304 x 512)
+
+... is now current device
+
+** No partition table - virtio 1 **
+
+Couldn't find partition virtio 1:1
+
+scanning bus for devices...
+
+
+
+Device 0: unknown device
+
+BOOTP broadcast 1
+
+DHCP client bound to address 10.0.2.15 (2 ms)
+
+Using virtio-net#0 device
+
+TFTP from server 10.0.2.2; our IP address is 10.0.2.15
+
+Filename 'boot.scr.uimg'.
+
+Load address: 0x8c100000
+
+Loading: *
+
+TFTP error: 'Access violation' (2)
+
+Not retrying...
+
+BOOTP broadcast 1
+
+DHCP client bound to address 10.0.2.15 (0 ms)
+
+Using virtio-net#0 device
+
+TFTP from server 10.0.2.2; our IP address is 10.0.2.15
+
+Filename 'boot.scr.uimg'.
+
+Load address: 0x84000000
+
+Loading: *
+
+TFTP error: 'Access violation' (2)
+
+Not retrying...
+
+=> setenv ast_sa __ASTERINAS_UBOOT_1_D1; setenv ast_sb 1F16AC49E4D029_STATUS__; setenv ast_da __ASTERINAS_UBOOT_1_D; setenv ast_db 11F16AC49E4D029_DONE__; if pci enum; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_1_D11F16AC49E4D029_STATUS__0
+
+__ASTERINAS_UBOOT_1_D11F16AC49E4D029_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_2_13; setenv ast_sb F72CC8A5BDF5EC_STATUS__; setenv ast_da __ASTERINAS_UBOOT_2_1; setenv ast_db 3F72CC8A5BDF5EC_DONE__; if pci bar 0.1.0; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+ID   Base                Size                Width  Type
+
+----------------------------------------------------------
+
+ 0   0x0000000040000000  0x0000000001000000  32     MEM   Prefetchable
+
+ 2   0x0000000041000000  0x0000000000001000  32     MEM
+
+__ASTERINAS_UBOOT_2_13F72CC8A5BDF5EC_STATUS__0
+
+__ASTERINAS_UBOOT_2_13F72CC8A5BDF5EC_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_3_D2; setenv ast_sb D418417264529B_STATUS__; setenv ast_da __ASTERINAS_UBOOT_3_D; setenv ast_db 2D418417264529B_DONE__; if virtio scan; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_3_D2D418417264529B_STATUS__0
+
+__ASTERINAS_UBOOT_3_D2D418417264529B_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_4_EE; setenv ast_sb 98B7FEF1951A5C_STATUS__; setenv ast_da __ASTERINAS_UBOOT_4_E; setenv ast_db E98B7FEF1951A5C_DONE__; if ext4load virtio 0:0 0x80200000 /asterinas.booti; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+6061088 bytes read in 9 ms (642.3 MiB/s)
+
+__ASTERINAS_UBOOT_4_EE98B7FEF1951A5C_STATUS__0
+
+__ASTERINAS_UBOOT_4_EE98B7FEF1951A5C_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_5_74; setenv ast_sb 6D977FC3DF5488_STATUS__; setenv ast_da __ASTERINAS_UBOOT_5_7; setenv ast_db 46D977FC3DF5488_DONE__; if ext4load virtio 0:0 0x90000000 /qemu-virt.dtb; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+8151 bytes read in 0 ms
+
+__ASTERINAS_UBOOT_5_746D977FC3DF5488_STATUS__0
+
+__ASTERINAS_UBOOT_5_746D977FC3DF5488_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_6_A2; setenv ast_sb 6FA550AE51E305_STATUS__; setenv ast_da __ASTERINAS_UBOOT_6_A; setenv ast_db 26FA550AE51E305_DONE__; if fdt addr 0x90000000; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+Working FDT set to 90000000
+
+__ASTERINAS_UBOOT_6_A26FA550AE51E305_STATUS__0
+
+__ASTERINAS_UBOOT_6_A26FA550AE51E305_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_7_40; setenv ast_sb F54819C6A37137_STATUS__; setenv ast_da __ASTERINAS_UBOOT_7_4; setenv ast_db 0F54819C6A37137_DONE__; if fdt resize 0x1000; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_7_40F54819C6A37137_STATUS__0
+
+__ASTERINAS_UBOOT_7_40F54819C6A37137_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_8_28; setenv ast_sb E6F6200C41F532_STATUS__; setenv ast_da __ASTERINAS_UBOOT_8_2; setenv ast_db 8E6F6200C41F532_DONE__; if fdt mknode / framebuffer@40000000; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_8_28E6F6200C41F532_STATUS__0
+
+__ASTERINAS_UBOOT_8_28E6F6200C41F532_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_9_2A; setenv ast_sb 5695006D2ED31D_STATUS__; setenv ast_da __ASTERINAS_UBOOT_9_2; setenv ast_db A5695006D2ED31D_DONE__; if fdt set /framebuffer@40000000 compatible "simple-framebuffer"; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_9_2A5695006D2ED31D_STATUS__0
+
+__ASTERINAS_UBOOT_9_2A5695006D2ED31D_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_10_87; setenv ast_sb CA8762D7B05E19_STATUS__; setenv ast_da __ASTERINAS_UBOOT_10_8; setenv ast_db 7CA8762D7B05E19_DONE__; if fdt set /framebuffer@40000000 reg <0x0 0x40000000 0x0 0x1000000>; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_10_87CA8762D7B05E19_STATUS__0
+
+__ASTERINAS_UBOOT_10_87CA8762D7B05E19_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_11_4D; setenv ast_sb BDFF11C4B001E9_STATUS__; setenv ast_da __ASTERINAS_UBOOT_11_4; setenv ast_db DBDFF11C4B001E9_DONE__; if fdt set /framebuffer@40000000 width <0x500>; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_11_4DBDFF11C4B001E9_STATUS__0
+
+__ASTERINAS_UBOOT_11_4DBDFF11C4B001E9_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_12_C5; setenv ast_sb 831A2F6FAF6510_STATUS__; setenv ast_da __ASTERINAS_UBOOT_12_C; setenv ast_db 5831A2F6FAF6510_DONE__; if fdt set /framebuffer@40000000 height <0x400>; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_12_C5831A2F6FAF6510_STATUS__0
+
+__ASTERINAS_UBOOT_12_C5831A2F6FAF6510_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_13_CD; setenv ast_sb 1BAF9296100CE5_STATUS__; setenv ast_da __ASTERINAS_UBOOT_13_C; setenv ast_db D1BAF9296100CE5_DONE__; if fdt set /framebuffer@40000000 stride <0x1400>; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_13_CD1BAF9296100CE5_STATUS__0
+
+__ASTERINAS_UBOOT_13_CD1BAF9296100CE5_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_14_1D; setenv ast_sb 580A9C02EAC32E_STATUS__; setenv ast_da __ASTERINAS_UBOOT_14_1; setenv ast_db D580A9C02EAC32E_DONE__; if fdt set /framebuffer@40000000 format "x8r8g8b8"; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_14_1D580A9C02EAC32E_STATUS__0
+
+__ASTERINAS_UBOOT_14_1D580A9C02EAC32E_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_15_3F; setenv ast_sb BCB0A9705EFD54_STATUS__; setenv ast_da __ASTERINAS_UBOOT_15_3; setenv ast_db FBCB0A9705EFD54_DONE__; if fdt set /framebuffer@40000000 status "okay"; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_15_3FBCB0A9705EFD54_STATUS__0
+
+__ASTERINAS_UBOOT_15_3FBCB0A9705EFD54_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_16_30; setenv ast_sb CD1F761775C0A9_STATUS__; setenv ast_da __ASTERINAS_UBOOT_16_3; setenv ast_db 0CD1F761775C0A9_DONE__; if ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+1044480 bytes read in 0 ms
+
+__ASTERINAS_UBOOT_16_30CD1F761775C0A9_STATUS__0
+
+__ASTERINAS_UBOOT_16_30CD1F761775C0A9_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_17_88; setenv ast_sb 72E425957BAE32_STATUS__; setenv ast_da __ASTERINAS_UBOOT_17_8; setenv ast_db 872E425957BAE32_DONE__; if setenv initrd_size ${filesize}; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_17_8872E425957BAE32_STATUS__0
+
+__ASTERINAS_UBOOT_17_8872E425957BAE32_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_18_A3; setenv ast_sb D1732DE4A138E2_STATUS__; setenv ast_da __ASTERINAS_UBOOT_18_A; setenv ast_db 3D1732DE4A138E2_DONE__; if setenv ast_bootargs_0 "console=ttyS0 loglevel=off init=/init asterinas.debian_network=qemu-slirp systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct systemd.setenv=ASTERINAS_WEB_NETWORK_ADDRESS=10.0.2.15/24 systemd.setenv=ASTERINAS_WEB_NETWORK_GATEWAY=10.0.2.2 systemd.setenv=ASTERINAS_WEB_NETWORK_RESOLVER=10.0.2.3 systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL=http://10.0.2.2:17894/asterinas-network-probe.bin systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SIZE=65536 systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SHA256=7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2 systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_REQUESTS=20 systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=300"; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_18_A3D1732DE4A138E2_STATUS__0
+
+__ASTERINAS_UBOOT_18_A3D1732DE4A138E2_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_19_02; setenv ast_sb 93E1D2DC0BA5E3_STATUS__; setenv ast_da __ASTERINAS_UBOOT_19_0; setenv ast_db 293E1D2DC0BA5E3_DONE__; if setenv ast_bootargs_1 "systemd.setenv=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight systemd.mask=asterinas-browser-web-evidence.service systemd.mask=asterinas-desktop-m5-network.service systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1 -- --root-init=systemd --debug-console=isolated-root"; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_19_0293E1D2DC0BA5E3_STATUS__0
+
+__ASTERINAS_UBOOT_19_0293E1D2DC0BA5E3_DONE__
+
+=> setenv ast_sa __ASTERINAS_UBOOT_20_3D; setenv ast_sb 0E98485F029C0A_STATUS__; setenv ast_da __ASTERINAS_UBOOT_20_3; setenv ast_db D0E98485F029C0A_DONE__; if setenv bootargs "${ast_bootargs_0} ${ast_bootargs_1}"; then echo ${ast_sa}${ast_sb}0; else echo ${ast_sa}${ast_sb}1; fi; echo ${ast_da}${ast_db}
+
+__ASTERINAS_UBOOT_20_3D0E98485F029C0A_STATUS__0
+
+__ASTERINAS_UBOOT_20_3D0E98485F029C0A_DONE__
+
+=> setenv ast_ba __ASTERINAS_DESKTOP_B; setenv ast_bb OOT_495C70589F481F93__; echo ${ast_ba}${ast_bb}; booti 0x80200000 0x83000000:${initrd_size} 0x90000000
+
+__ASTERINAS_DESKTOP_BOOT_495C70589F481F93__
+
+## Flattened Device Tree blob at 90000000
+
+   Booting using the fdt blob at 0x90000000
+
+Working FDT set to 90000000
+
+   Loading Device Tree to 00000000fde9c000, end 00000000fdea2fff ... OK
+
+Working FDT set to fde9c000
+
+
+
+Starting kernel ...
+
+
+
+Enter riscv_boot
+
+OSTD initialized. Preparing components.
+
+Spawn the first kernel thread
+
+[kernel] unpacking initramfs.cpio to rootfs ...
+
+[kernel] rootfs is ready
+
+
+
+                                  [38;2;87;180;249m.[39m[38;2;89;185;249m.[39m[38;2;91;189;250m.[39m[38;2;93;193;250m.[39m[38;2;94;197;250m.[39m[38;2;96;201;250m.[39m
+
+                                [38;2;83;172;249m.[39m[38;2;85;176;249m-[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m=[39m[38;2;96;201;250m:[39m
+
+                               [38;2;82;168;249m.[39m[38;2;83;172;249m=[39m[38;2;85;176;249m+[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m=[39m[38;2;96;201;250m:[39m
+
+                              [38;2;80;163;249m:[39m[38;2;82;168;249m+[39m[38;2;83;172;249m+[39m[38;2;85;176;249m+[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m=[39m[38;2;96;201;250m:[39m
+
+                            [38;2;76;155;248m.[39m[38;2;78;159;248m-[39m[38;2;80;163;249m+[39m[38;2;82;168;249m+[39m[38;2;83;172;249m+[39m[38;2;85;176;249m+[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m=[39m[38;2;96;201;250m.[39m
+
+                           [38;2;74;151;248m.[39m[38;2;76;155;248m=[39m[38;2;78;159;248m*[39m[38;2;80;163;249m*[39m[38;2;82;168;249m+[39m[38;2;83;172;249m+[39m[38;2;85;176;249m=[39m[38;2;87;180;249m=[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m=[39m[38;2;96;201;250m.[39m
+
+                          [38;2;73;147;248m:[39m[38;2;74;151;248m*[39m[38;2;76;155;248m*[39m[38;2;78;159;248m*[39m[38;2;80;163;249m*[39m[38;2;82;168;249m+[39m[38;2;83;172;249m-[39m[38;2;85;176;249m.[39m[38;2;87;180;249m=[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m=[39m[38;2;96;201;250m.[39m
+
+                        [38;2;69;138;248m.[39m[38;2;71;142;248m=[39m[38;2;73;147;248m*[39m[38;2;74;151;248m*[39m[38;2;76;155;248m*[39m[38;2;78;159;248m*[39m[38;2;80;163;249m+[39m[38;2;82;168;249m:[39m [38;2;85;176;249m.[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m=[39m[38;2;96;201;250m.[39m
+
+                       [38;2;67;134;248m.[39m[38;2;69;138;248m+[39m[38;2;71;142;248m*[39m[38;2;73;147;248m*[39m[38;2;74;151;248m*[39m[38;2;76;155;248m*[39m[38;2;78;159;248m=[39m[38;2;80;163;249m.[39m  [38;2;85;176;249m.[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m-[39m
+
+                     [38;2;63;125;247m.[39m[38;2;65;130;247m-[39m[38;2;67;134;248m*[39m[38;2;69;138;248m*[39m[38;2;71;142;248m*[39m[38;2;73;147;248m*[39m[38;2;74;151;248m*[39m[38;2;76;155;248m=[39m[38;2;78;159;248m.[39m   [38;2;85;176;249m:[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m-[39m
+
+    [38;2;33;54;245m.[39m[38;2;34;58;245m:[39m[38;2;36;62;245m:[39m[38;2;38;66;245m-[39m[38;2;40;70;245m=[39m[38;2;42;75;245m=[39m[38;2;43;79;245m=[39m[38;2;45;83;246m=[39m[38;2;47;87;246m=[39m[38;2;49;92;246m=[39m[38;2;51;96;246m=[39m[38;2;53;100;246m=[39m[38;2;54;104;246m=[39m[38;2;56;108;247m=[39m[38;2;58;113;247m=[39m[38;2;60;117;247m=[39m[38;2;62;121;247m=[39m[38;2;63;125;247m+[39m[38;2;65;130;247m*[39m[38;2;67;134;248m*[39m[38;2;69;138;248m*[39m[38;2;71;142;248m*[39m[38;2;73;147;248m*[39m[38;2;74;151;248m+[39m[38;2;76;155;248m-[39m[38;2;78;159;248m-[39m[38;2;80;163;249m-[39m[38;2;82;168;249m-[39m[38;2;83;172;249m-[39m[38;2;85;176;249m=[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m=[39m[38;2;96;201;250m-[39m[38;2;98;206;250m:[39m[38;2;100;210;250m:[39m[38;2;102;214;251m:[39m[38;2;103;218;251m:[39m[38;2;105;223;251m:[39m[38;2;107;227;251m:[39m[38;2;109;231;251m:[39m[38;2;111;235;251m.[39m
+
+        [38;2;40;70;245m.[39m[38;2;42;75;245m.[39m[38;2;43;79;245m:[39m[38;2;45;83;246m-[39m[38;2;47;87;246m*[39m[38;2;49;92;246m#[39m[38;2;51;96;246m#[39m[38;2;53;100;246m#[39m[38;2;54;104;246m#[39m[38;2;56;108;247m#[39m[38;2;58;113;247m#[39m[38;2;60;117;247m#[39m[38;2;62;121;247m#[39m[38;2;63;125;247m#[39m[38;2;65;130;247m*[39m[38;2;67;134;248m*[39m[38;2;69;138;248m*[39m[38;2;71;142;248m*[39m[38;2;73;147;248m*[39m[38;2;74;151;248m*[39m[38;2;76;155;248m*[39m[38;2;78;159;248m*[39m[38;2;80;163;249m*[39m[38;2;82;168;249m+[39m[38;2;83;172;249m+[39m[38;2;85;176;249m+[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m=[39m[38;2;96;201;250m=[39m[38;2;98;206;250m=[39m[38;2;100;210;250m=[39m[38;2;102;214;251m=[39m[38;2;103;218;251m=[39m[38;2;105;223;251m=[39m[38;2;107;227;251m:[39m[38;2;109;231;251m.[39m
+
+              [38;2;51;96;246m.[39m[38;2;53;100;246m:[39m[38;2;54;104;246m+[39m[38;2;56;108;247m*[39m[38;2;58;113;247m#[39m[38;2;60;117;247m#[39m[38;2;62;121;247m#[39m[38;2;63;125;247m#[39m[38;2;65;130;247m#[39m[38;2;67;134;248m*[39m[38;2;69;138;248m*[39m[38;2;71;142;248m*[39m[38;2;73;147;248m*[39m[38;2;74;151;248m+[39m[38;2;76;155;248m+[39m[38;2;78;159;248m+[39m[38;2;80;163;249m+[39m[38;2;82;168;249m+[39m[38;2;83;172;249m+[39m[38;2;85;176;249m+[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m=[39m[38;2;96;201;250m=[39m[38;2;98;206;250m=[39m[38;2;100;210;250m=[39m[38;2;102;214;251m=[39m[38;2;103;218;251m-[39m[38;2;105;223;251m.[39m[38;2;107;227;251m.[39m
+
+                 [38;2;56;108;247m.[39m[38;2;58;113;247m.[39m[38;2;60;117;247m-[39m[38;2;62;121;247m+[39m[38;2;63;125;247m#[39m[38;2;65;130;247m*[39m[38;2;67;134;248m*[39m[38;2;69;138;248m*[39m[38;2;71;142;248m*[39m[38;2;73;147;248m*[39m[38;2;74;151;248m*[39m[38;2;76;155;248m=[39m[38;2;78;159;248m.[39m[38;2;80;163;249m.[39m  [38;2;85;176;249m-[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m.[39m
+
+                [38;2;54;104;246m-[39m[38;2;56;108;247m+[39m[38;2;58;113;247m=[39m[38;2;60;117;247m.[39m[38;2;62;121;247m.[39m[38;2;63;125;247m.[39m[38;2;65;130;247m:[39m[38;2;67;134;248m*[39m[38;2;69;138;248m*[39m[38;2;71;142;248m*[39m[38;2;73;147;248m*[39m[38;2;74;151;248m*[39m[38;2;76;155;248m*[39m[38;2;78;159;248m*[39m[38;2;80;163;249m=[39m[38;2;82;168;249m.[39m[38;2;83;172;249m.[39m[38;2;85;176;249m=[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m.[39m
+
+              [38;2;51;96;246m.[39m[38;2;53;100;246m+[39m[38;2;54;104;246m*[39m[38;2;56;108;247m+[39m[38;2;58;113;247m+[39m[38;2;60;117;247m+[39m[38;2;62;121;247m=[39m[38;2;63;125;247m.[39m [38;2;67;134;248m.[39m[38;2;69;138;248m.[39m[38;2;71;142;248m=[39m[38;2;73;147;248m*[39m[38;2;74;151;248m*[39m[38;2;76;155;248m*[39m[38;2;78;159;248m*[39m[38;2;80;163;249m*[39m[38;2;82;168;249m+[39m[38;2;83;172;249m-[39m[38;2;85;176;249m=[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m+[39m[38;2;94;197;250m.[39m
+
+            [38;2;47;87;246m.[39m[38;2;49;92;246m:[39m[38;2;51;96;246m*[39m[38;2;53;100;246m*[39m[38;2;54;104;246m*[39m[38;2;56;108;247m+[39m[38;2;58;113;247m=[39m[38;2;60;117;247m.[39m[38;2;62;121;247m.[39m     [38;2;73;147;248m.[39m[38;2;74;151;248m-[39m[38;2;76;155;248m+[39m[38;2;78;159;248m*[39m[38;2;80;163;249m*[39m[38;2;82;168;249m+[39m[38;2;83;172;249m+[39m[38;2;85;176;249m+[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m=[39m[38;2;94;197;250m.[39m
+
+           [38;2;45;83;246m.[39m[38;2;47;87;246m-[39m[38;2;49;92;246m*[39m[38;2;51;96;246m*[39m[38;2;53;100;246m*[39m[38;2;54;104;246m+[39m[38;2;56;108;247m:[39m          [38;2;76;155;248m.[39m[38;2;78;159;248m-[39m[38;2;80;163;249m+[39m[38;2;82;168;249m+[39m[38;2;83;172;249m+[39m[38;2;85;176;249m+[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m=[39m
+
+          [38;2;43;79;245m.[39m[38;2;45;83;246m*[39m[38;2;47;87;246m#[39m[38;2;49;92;246m*[39m[38;2;51;96;246m=[39m[38;2;53;100;246m.[39m              [38;2;80;163;249m.[39m[38;2;82;168;249m=[39m[38;2;83;172;249m+[39m[38;2;85;176;249m+[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m=[39m
+
+        [38;2;40;70;245m.[39m[38;2;42;75;245m-[39m[38;2;43;79;245m*[39m[38;2;45;83;246m#[39m[38;2;47;87;246m+[39m[38;2;49;92;246m.[39m[38;2;51;96;246m.[39m                [38;2;82;168;249m.[39m[38;2;83;172;249m:[39m[38;2;85;176;249m=[39m[38;2;87;180;249m+[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m-[39m
+
+       [38;2;38;66;245m.[39m[38;2;40;70;245m=[39m[38;2;42;75;245m#[39m[38;2;43;79;245m=[39m[38;2;45;83;246m.[39m                     [38;2;85;176;249m.[39m[38;2;87;180;249m=[39m[38;2;89;185;249m+[39m[38;2;91;189;250m+[39m[38;2;93;193;250m-[39m
+
+      [38;2;36;62;245m:[39m[38;2;38;66;245m*[39m[38;2;40;70;245m=[39m[38;2;42;75;245m.[39m                         [38;2;89;185;249m.[39m[38;2;91;189;250m.[39m[38;2;93;193;250m.[39m
+
+    [38;2;33;54;245m.[39m[38;2;34;58;245m:[39m[38;2;36;62;245m-[39m[38;2;38;66;245m.[39m [38;2;42;75;245mP[39m[38;2;43;79;245mr[39m[38;2;45;83;246me[39m[38;2;47;87;246ms[39m[38;2;49;92;246me[39m[38;2;51;96;246mn[39m[38;2;53;100;246mt[39m[38;2;54;104;246me[39m[38;2;56;108;247md[39m [38;2;60;117;247mb[39m[38;2;62;121;247my[39m [38;2;65;130;247mt[39m[38;2;67;134;248mh[39m[38;2;69;138;248me[39m [38;2;73;147;248mA[39m[38;2;74;151;248ms[39m[38;2;76;155;248mt[39m[38;2;78;159;248me[39m[38;2;80;163;249mr[39m[38;2;82;168;249mi[39m[38;2;83;172;249mn[39m[38;2;85;176;249ma[39m[38;2;87;180;249ms[39m [38;2;91;189;250md[39m[38;2;93;193;250me[39m[38;2;94;197;250mv[39m[38;2;96;201;250me[39m[38;2;98;206;250ml[39m[38;2;100;210;250mo[39m[38;2;102;214;251mp[39m[38;2;103;218;251me[39m[38;2;105;223;251mr[39m[38;2;107;227;251ms[39m
+
+    [38;2;33;54;245m.[39m[38;2;34;58;245m.[39m [38;2;38;66;245mR[39m[38;2;40;70;245me[39m[38;2;42;75;245ml[39m[38;2;43;79;245me[39m[38;2;45;83;246ma[39m[38;2;47;87;246ms[39m[38;2;49;92;246me[39m[38;2;51;96;246md[39m [38;2;54;104;246mu[39m[38;2;56;108;247mn[39m[38;2;58;113;247md[39m[38;2;60;117;247me[39m[38;2;62;121;247mr[39m [38;2;65;130;247mM[39m[38;2;67;134;248mo[39m[38;2;69;138;248mz[39m[38;2;71;142;248mi[39m[38;2;73;147;248ml[39m[38;2;74;151;248ml[39m[38;2;76;155;248ma[39m [38;2;80;163;249mP[39m[38;2;82;168;249mu[39m[38;2;83;172;249mb[39m[38;2;85;176;249ml[39m[38;2;87;180;249mi[39m[38;2;89;185;249mc[39m [38;2;93;193;250mL[39m[38;2;94;197;250mi[39m[38;2;96;201;250mc[39m[38;2;98;206;250me[39m[38;2;100;210;250mn[39m[38;2;102;214;251ms[39m[38;2;103;218;251me[39m [38;2;107;227;251mv[39m[38;2;109;231;251m2[39m[38;2;111;235;251m.[39m[38;2;113;240;252m0[39m
+
+
+
+DEBIAN_STAGE1_PROGRESS step=start mode=systemd
+
+DEBIAN_STAGE1_PROGRESS step=probe-block device=/dev/vda
+
+DEBIAN_STAGE1_PROGRESS step=probe-complete result=no-match
+
+DEBIAN_STAGE1_PROGRESS step=probe-block device=/dev/vdb
+
+DEBIAN_STAGE1_PROGRESS step=probe-complete result=match
+
+DEBIAN_STAGE1_PROGRESS step=root-found device=/dev/vdb
+
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=root-mount
+
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=root-mount
+
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=dev-bind
+
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=dev-bind
+
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=api-directories
+
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=api-directories
+
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=run-mount
+
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=run-mount
+
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=debug-console
+
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=debug-console
+
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=tmp-mount
+
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=tmp-mount
+
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=chroot
+
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=chroot
+
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=chdir
+
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=chdir
+
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=exec
+
+[!p]104[?7h
+
+[0;1;39mWelcome to [0m[1mDebian GNU/Linux 13 (trixie)[0m[0;1;39m![0m
+
+
+
+
+[[0;32m  OK  [0m] Started [0;1;39masterinas-debug-console.se…[0mterinas opt-in root serial console.
+
+
+[[0;32m  OK  [0m] Reached target [0;1;39masterinas-debug-con…[0m opt-in root serial console target.
+
+
+         Starting [0;1;39masterinas-desktop-ready.s…[0mop readiness and watchdog disarm...
+
+
+[!p]104[?7h[6n[32766;32766H[6n[!p]104[?7h[6n[32766;32766H[6n[[0;1;31mFAILED[0m] Failed to start [0;1;39masterinas-desktop-…[0mktop readiness and watchdog disarm.
+
+
+See 'systemctl status asterinas-desktop-ready.service' for details.
+
+
+ASTERINAS_DEBUG_CONSOLE_READY uid=0
+
+/run/asterinas-tools/q
+
+root@asterinas-debug:/# /run/asterinas-tools/q
+
+A_WEB_TIMELINE marker=BOOT_SYSTEMD_BEGIN guest_monotonic_ns=4540000000 firefox_pid=0
+
+A_WEB_TIMELINE marker=BOOT_BASIC_TARGET guest_monotonic_ns=4950000000 firefox_pid=0
+
+__ASTERINAS_PHYSICAL_EXTERNAL__ status=0 setup_status=0 failure_step=none evidence_state=inactive evidence_pid=0 network_state=inactive network_pid=0
+
+_asterinas_debug_output=$(id -u); _asterinas_debug_status=$?; printf '__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_UID_BEGIN__\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_UID_VALUE__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_UID_STATUS__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_UID_END__\n' "$_asterinas_debug_output" "$_asterinas_debug_status"
+
+root@asterinas-debug:/# _asterinas_debug_output=$(id -u); _asterinas_debug_status=$?; printf '__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_UID_BEGIN__\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_UID_VALUE__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_UID_STATUS__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_UID_END__\n' "$_asterinas_debug_output" "$_asterinas_debug_status"
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_UID_BEGIN__
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_UID_VALUE__0
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_UID_STATUS__0
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_UID_END__
+
+_asterinas_debug_output=$(tr -d '\n' </proc/1/comm); _asterinas_debug_status=$?; printf '__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_PID1_BEGIN__\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_PID1_VALUE__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_PID1_STATUS__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_PID1_END__\n' "$_asterinas_debug_output" "$_asterinas_debug_status"
+
+root@asterinas-debug:/# _asterinas_debug_output=$(tr -d '\n' </proc/1/comm); _asterinas_debug_status=$?; printf '__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_PID1_BEGIN__\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_PID1_VALUE__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_PID1_STATUS__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_PID1_END__\n' "$_asterinas_debug_output" "$_asterinas_debug_status"
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_PID1_BEGIN__
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_PID1_VALUE__systemd
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_PID1_STATUS__0
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_PID1_END__
+
+_asterinas_debug_output=$(awk '$2 == "/" { print $1, $3; exit }' /proc/mounts); _asterinas_debug_status=$?; printf '__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_ROOT_BEGIN__\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_ROOT_VALUE__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_ROOT_STATUS__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_ROOT_END__\n' "$_asterinas_debug_output" "$_asterinas_debug_status"
+
+root@asterinas-debug:/# _asterinas_debug_output=$(awk '$2 == "/" { print $1, $3; exit }' /proc/mounts); _asterinas_debug_status=$?; printf '__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_ROOT_BEGIN__\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_ROOT_VALUE__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_ROOT_STATUS__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_ROOT_END__\n' "$_asterinas_debug_output" "$_asterinas_debug_status"
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_ROOT_BEGIN__
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_ROOT_VALUE__/dev/vdb ext2
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_ROOT_STATUS__0
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_ROOT_END__
+
+_asterinas_debug_output=$(_asterinas_debug_attempt=0; while ! systemctl is-active --quiet asterinas-desktop-m4-evidence.service && ! systemctl is-active --quiet asterinas-desktop-m5.service; do _asterinas_debug_attempt=$((_asterinas_debug_attempt + 1)); [ "$_asterinas_debug_attempt" -ge 45 ] && break; sleep 1; done; if systemctl is-active --quiet asterinas-desktop-m4-evidence.service || systemctl is-active --quiet asterinas-desktop-m5.service; then echo active; else echo inactive; false; fi); _asterinas_debug_status=$?; printf '__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_GRAPHICAL_BEGIN__\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_GRAPHICAL_VALUE__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_GRAPHICAL_STATUS__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_GRAPHICAL_END__\n' "$_asterinas_debug_output" "$_asterinas_debug_status"
+
+root@asterinas-debug:/# _asterinas_debug_output=$(_asterinas_debug_attempt=0; while ! systemctl is-active --quiet asterinas-desktop-m4-evidence.service && ! systemctl is-active --quiet asterinas-desktop-m5.service; do _asterinas_debug_attempt=$((_asterinas_debug_attempt + 1)); [ "$_asterinas_debug_attempt" -ge 45 ] && break; sleep 1; done; if systemctl is-active --quiet asterinas-desktop-m4-evidence.service || systemctl is-active --quiet asterinas-desktop-m5.service; then echo active; else echo inactive; false; fi); _asterinas_debug_status=$?; printf '__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_GRAPHICAL_BEGIN__\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_GRAPHICAL_VALUE__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_GRAPHICAL_STATUS__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_GRAPHICAL_END__\n' "$_asterinas_debug_output" "$_asterinas_debug_status"
+
+megrez-clock-sync[178]: {"marker":"ASTERINAS_CLOCK_SYNC_READY","proxy":"http://10.100.19.216:17893","source":"http-date","unix_seconds":1790199313}
+
+BROWSER_WEB_DESKTOP_STAGE=display-provider-ready guest_monotonic_ns=1790199313553651000 pid=0 provider=fbdev
+
+desktop-m5-session[184]: BROWSER_WEB_DESKTOP_STAGE=display-provider-ready guest_monotonic_ns=1790199313553651000 pid=0 provider=fbdev
+
+BROWSER_WEB_DESKTOP_STAGE=xorg-start guest_monotonic_ns=1790199313562603000 pid=0
+
+desktop-m5-session[184]: BROWSER_WEB_DESKTOP_STAGE=xorg-start guest_monotonic_ns=1790199313562603000 pid=0
+
+desktop-m5-session[191]: X.Org X Server 1.21.1.16
+
+desktop-m5-session[191]: X Protocol Version 11, Revision 0
+
+desktop-m5-session[191]: Current Operating System: Linux ubuntu-MS-7D76 5.13.0 #1 SMP Thu Jan  1 00:00:00 UTC 1970 riscv64
+
+desktop-m5-session[191]: Kernel command line: console=ttyS0 loglevel=off init=/init asterinas.debian_network=qemu-slirp systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct systemd.setenv=ASTERINAS_WEB_NETWORK_ADDRESS=10.0.2.15/24 systemd.setenv=ASTERINAS_WEB_NETWORK_GATEWAY=10.0.2.2 systemd.setenv=ASTERINAS_WEB_NETWORK_RESOLVER=10.0.2.3 systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL=http://10.0.2.2:17894/asterinas-network-probe.bin systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SIZE=65536 systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SHA256=7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2 systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_REQUESTS=20 systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=300 systemd.setenv=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight systemd.mask=asterinas-browser-web-evidence.service systemd.mask=asterinas-desktop-m5-network.service systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1 -- --root-init=systemd --debug-console=isolated-root
+
+desktop-m5-session[191]: xorg-server 2:21.1.16-1.3+deb13u4 (https://www.debian.org/support)
+
+desktop-m5-session[191]: Current version of pixman: 0.44.0
+
+desktop-m5-session[191]: 	Before reporting problems, check http://wiki.x.org
+
+desktop-m5-session[191]: 	to make sure that you have the latest version.
+
+desktop-m5-session[191]: Markers: (--) probed, (**) from config file, (==) default setting,
+
+desktop-m5-session[191]: 	(++) from command line, (!!) notice, (II) informational,
+
+desktop-m5-session[191]: 	(WW) warning, (EE) error, (NI) not implemented, (??) unknown.
+
+desktop-m5-session[191]: (++) Log file: "/home/asterinas/Xorg.0.log", Time: Wed Sep 23 21:35:13 2026
+
+desktop-m5-session[191]: (++) Using config directory: "/etc/asterinas/display-providers/fbdev/xorg.conf.d"
+
+desktop-m5-session[191]: (==) Using system config directory "/usr/share/X11/xorg.conf.d"
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_GRAPHICAL_BEGIN__
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_GRAPHICAL_VALUE__active
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_GRAPHICAL_STATUS__0
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_GRAPHICAL_END__
+
+_asterinas_debug_output=$(if systemctl is-active --quiet asterinas-desktop-m4.service || systemctl is-active --quiet asterinas-desktop-m5.service; then echo active; else echo inactive; false; fi); _asterinas_debug_status=$?; printf '__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_DESKTOP_BEGIN__\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_DESKTOP_VALUE__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_DESKTOP_STATUS__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_DESKTOP_END__\n' "$_asterinas_debug_output" "$_asterinas_debug_status"
+
+root@asterinas-debug:/# _asterinas_debug_output=$(if systemctl is-active --quiet asterinas-desktop-m4.service || systemctl is-active --quiet asterinas-desktop-m5.service; then echo active; else echo inactive; false; fi); _asterinas_debug_status=$?; printf '__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_DESKTOP_BEGIN__\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_DESKTOP_VALUE__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_DESKTOP_STATUS__%s\n__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_DESKTOP_END__\n' "$_asterinas_debug_output" "$_asterinas_debug_status"
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_DESKTOP_BEGIN__
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_DESKTOP_VALUE__active
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_DESKTOP_STATUS__0
+
+__ASTERINAS_DEBUG_3ea172da836090daec3215e058f70d37_DESKTOP_END__
+
+tar xzf /opt/lmbench-runtime.tar.gz -C /; s=$?; printf '\nCONTROL_%s status=%s uid=%s boot=%s\n' f2c3123cd44c0ab62d80c586 "$s" "$(id -u)" "$(cat /proc/sys/kernel/random/boot_id)"
+
+root@asterinas-debug:/# tar xzf /opt/lmbench-runtime.tar.gz -C /; s=$?; printf '\nCONTROL_%s status=%s uid=%s boot=%s\n' f2c3123cd44c0ab62d80c586 "$s" "$(id -u)" "$(cat /proc/sys/kernel/random/boot_id)"
+
+BROWSER_WEB_DESKTOP_STAGE=x-socket-ready guest_monotonic_ns=1790199314645634000 pid=191
+
+desktop-m5-session[184]: BROWSER_WEB_DESKTOP_STAGE=x-socket-ready guest_monotonic_ns=1790199314645634000 pid=191
+
+
+
+CONTROL_f2c3123cd44c0ab62d80c586 status=0 uid=0 boot=3dcf5367-cb80-40b1-9792-97e87d70e478
+
+python3 /opt/metadata-check.pyroot@asterinas-debug:/# python3 /opt/metadata-check.py; s=$?; printf '\nCONTROL_%s status=%s uid=%s boot=%s\n' e36deda5e2984aba35b84089 "$s" "$(id -u)" "$(cat /proc/sys/kernel/random/boot_id)"
+
+COMMAND netstat STATUS 1
+
+Kernel Interface table
+
+Iface             MTU    RX-OK RX-ERR RX-DRP RX-OVR    TX-OK TX-ERR TX-DRP TX-OVR Flg
+
+
+
+eth0: error fetching interface information: Inappropriate ioctl for device
+
+missing interface information: Inappropriate ioctl for device
+
+
+
+Traceback (most recent call last):
+
+  File [35m"/opt/metadata-check.py"[0m, line [35m14[0m, in [35m<module>[0m
+
+    assert [1;31mresult.returncode == 0[0m, name
+
+           [1;31m^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1;35mAssertionError[0m: [35mnetstat[0m
+
+
+
+CONTROL_e36deda5e2984aba35b84089 status=1 uid=0 boot=3dcf5367-cb80-40b1-9792-97e87d70e478
+
+root@asterinas-debug:/# qemu-system-riscv64: terminating on signal 15 from pid 132097 (python3)

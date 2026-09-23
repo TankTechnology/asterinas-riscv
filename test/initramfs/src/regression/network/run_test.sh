@@ -18,6 +18,7 @@ sleep 0.2
 
 ./listen_backlog
 ./ifconf
+./ifreq
 ./proc_net_dev
 ./msg_peek
 ./msg_trunc
