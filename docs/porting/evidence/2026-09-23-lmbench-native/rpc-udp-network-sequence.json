@@ -1,0 +1,381 @@
+{
+  "source_revision": "afb47eddaf10a411c1ea3cb64965461f1308a6ea",
+  "original_lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
+  "qemu": "RISC-V virt TCG, SMP=4, 2 GiB",
+  "command": "ENOUGH=10000 lat_rpc -P 1 -p udp localhost",
+  "network_sequence": [
+    "Start rpcbind -f and lat_rpc -s, confirm RPC registration with rpcinfo",
+    "Start lat_connect -s 127.0.0.1 and bw_tcp -s 127.0.0.1",
+    "Start lat_udp -s 127.0.0.1; run lat_udp -P 1 localhost; stop with lat_udp -S localhost",
+    "Start lat_tcp -s 127.0.0.1; run lat_tcp -P 1 localhost; stop with lat_tcp -S localhost",
+    "Run the original lat_rpc -P 1 -p udp localhost with ENOUGH=10000"
+  ],
+  "difference_from_native_all": "This focused sequence omits lmhttp and all non-network benchmarks, so it is a shorter reproduction rather than a full make results run.",
+  "runs": [
+    {
+      "run": "rpc-stage-waker-8",
+      "mode": "rpc_only_diagnostic",
+      "boot_id": "0a9620d0-7fcd-4030-86a3-9f149f4726ed",
+      "kernel_sha256": "9fa3a6e0baf0f279a528e85181a362e494224f1dc7b3b21010c74c2277ccfb96",
+      "rpc": {
+        "status": 0,
+        "elapsed": 26.53,
+        "stdout": "",
+        "stderr": "RPC/udp latency using localhost: 433.4494 microseconds\n"
+      },
+      "rpc_success": true,
+      "network_precursors": [],
+      "client_timing_counters": "UDP_RPC_TIMING port=836 request_retransmits=0 request_reply_samples=62867 request_reply_max_ms=1 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
+      "first_retry_xid": null
+    },
+    {
+      "run": "rpc-native-network-sequence-2",
+      "mode": "native_network_sequence_diagnostic",
+      "boot_id": "8f39bbcd-8e3c-4b8c-b825-e43ce255aa56",
+      "kernel_sha256": "9fa3a6e0baf0f279a528e85181a362e494224f1dc7b3b21010c74c2277ccfb96",
+      "rpc": {
+        "status": 0,
+        "elapsed": 6.117,
+        "stdout": "",
+        "stderr": "localhost: RPC: Timed out\n"
+      },
+      "rpc_success": false,
+      "network_precursors": [
+        {
+          "kind": "native-network-server",
+          "name": "lat_connect",
+          "status": 0
+        },
+        {
+          "kind": "native-network-server",
+          "name": "bw_tcp",
+          "status": 0
+        },
+        {
+          "kind": "native-network-precursor",
+          "name": "lat_udp",
+          "start_status": 0,
+          "status": 0,
+          "stop_status": 0,
+          "stdout": "",
+          "stderr": "UDP latency using localhost: 32579.0000 microseconds\n"
+        },
+        {
+          "kind": "native-network-precursor",
+          "name": "lat_tcp",
+          "start_status": 0,
+          "status": 0,
+          "stop_status": 0,
+          "stdout": "",
+          "stderr": "TCP latency using localhost: 210.8001 microseconds\n"
+        }
+      ],
+      "client_timing_counters": "UDP_RPC_TIMING port=872 request_retransmits=6691 request_reply_samples=18523 request_reply_max_ms=12 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
+      "first_retry_xid": 1790802192
+    },
+    {
+      "run": "rpc-native-network-sequence-production-1",
+      "mode": "native_network_sequence_production",
+      "boot_id": "c88c2bc9-5148-427e-8274-c6748bda5885",
+      "kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+      "rpc": {
+        "status": 0,
+        "elapsed": 13.482,
+        "stdout": "",
+        "stderr": "localhost: RPC: Timed out\n"
+      },
+      "rpc_success": false,
+      "network_precursors": [
+        {
+          "kind": "native-network-server",
+          "name": "lat_connect",
+          "status": 0
+        },
+        {
+          "kind": "native-network-server",
+          "name": "bw_tcp",
+          "status": 0
+        },
+        {
+          "kind": "native-network-precursor",
+          "name": "lat_udp",
+          "start_status": 0,
+          "status": 0,
+          "stop_status": 0,
+          "stdout": "",
+          "stderr": "UDP latency using localhost: 32578.4545 microseconds\n"
+        },
+        {
+          "kind": "native-network-precursor",
+          "name": "lat_tcp",
+          "start_status": 0,
+          "status": 0,
+          "stop_status": 0,
+          "stdout": "",
+          "stderr": "TCP latency using localhost: 226.9753 microseconds\n"
+        }
+      ],
+      "client_timing_counters": null,
+      "first_retry_xid": null
+    },
+    {
+      "run": "rpc-native-sequence-yield-1",
+      "mode": "native_network_sequence_yield_nice_min",
+      "boot_id": "d169b9d9-9ad5-4fcd-b89c-64e7d59b81a6",
+      "kernel_sha256": "fcf437bd0b1b494ea787b72c8214b827c91a63099ac949cf04c5da7972697dde",
+      "rpc": {
+        "status": 0,
+        "elapsed": 0.467,
+        "stdout": "",
+        "stderr": "localhost: RPC: Timed out\n"
+      },
+      "rpc_success": false,
+      "network_precursors": [
+        {
+          "kind": "native-network-server",
+          "name": "lat_connect",
+          "status": 0
+        },
+        {
+          "kind": "native-network-server",
+          "name": "bw_tcp",
+          "status": 0
+        },
+        {
+          "kind": "native-network-precursor",
+          "name": "lat_udp",
+          "start_status": 0,
+          "status": 0,
+          "stop_status": 0,
+          "stdout": "",
+          "stderr": "UDP latency using localhost: 30515.4722 microseconds\n"
+        },
+        {
+          "kind": "native-network-precursor",
+          "name": "lat_tcp",
+          "start_status": 0,
+          "status": 0,
+          "stop_status": 0,
+          "stdout": "",
+          "stderr": "TCP latency using localhost: 218.4268 microseconds\n"
+        }
+      ],
+      "client_timing_counters": null,
+      "first_retry_xid": 1790042442
+    },
+    {
+      "run": "rpc-native-sequence-nice-yield-1",
+      "mode": "native_network_sequence_yield_nice_default",
+      "boot_id": "864e68c3-113c-488d-8534-0f8238c944e8",
+      "kernel_sha256": "338419db31bfa0fb9d96b87285c33a93014ca8aebe09b499d788a976c27ff385",
+      "rpc": {
+        "status": 0,
+        "elapsed": 9.776,
+        "stdout": "",
+        "stderr": "localhost: RPC: Timed out\n"
+      },
+      "rpc_success": false,
+      "network_precursors": [
+        {
+          "kind": "native-network-server",
+          "name": "lat_connect",
+          "status": 0
+        },
+        {
+          "kind": "native-network-server",
+          "name": "bw_tcp",
+          "status": 0
+        },
+        {
+          "kind": "native-network-precursor",
+          "name": "lat_udp",
+          "start_status": 0,
+          "status": 0,
+          "stop_status": 0,
+          "stdout": "",
+          "stderr": "UDP latency using localhost: 31053.6176 microseconds\n"
+        },
+        {
+          "kind": "native-network-precursor",
+          "name": "lat_tcp",
+          "start_status": 0,
+          "status": 0,
+          "stop_status": 0,
+          "stdout": "",
+          "stderr": "TCP latency using localhost: 211.2367 microseconds\n"
+        }
+      ],
+      "client_timing_counters": "UDP_RPC_TIMING port=869 request_retransmits=7753 request_reply_samples=30279 request_reply_max_ms=11 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
+      "first_retry_xid": 1790335728
+    }
+  ],
+  "first_retry_in_focused_diagnostic_run": {
+    "xid": 1790802192,
+    "events": [
+      {
+        "seq": 102445,
+        "stage": "request_enqueue",
+        "port": 872,
+        "ns": 61066123600,
+        "global_delivered_wakes": 326898
+      },
+      {
+        "seq": 102446,
+        "stage": "request_dispatch",
+        "port": 872,
+        "ns": 61066133900,
+        "global_delivered_wakes": 326898
+      },
+      {
+        "seq": 102447,
+        "stage": "server_receive",
+        "port": 61238,
+        "ns": 61066139000,
+        "global_delivered_wakes": 326898
+      },
+      {
+        "seq": 102448,
+        "stage": "server_notify_begin",
+        "port": 61238,
+        "ns": 61066140300,
+        "global_delivered_wakes": 326898
+      },
+      {
+        "seq": 102449,
+        "stage": "server_notify_end",
+        "port": 61238,
+        "ns": 61066151300,
+        "global_delivered_wakes": 326899
+      },
+      {
+        "seq": 102450,
+        "stage": "request_enqueue",
+        "port": 872,
+        "ns": 61068340000,
+        "global_delivered_wakes": 326901
+      },
+      {
+        "seq": 102451,
+        "stage": "request_dispatch",
+        "port": 872,
+        "ns": 61068350300,
+        "global_delivered_wakes": 326901
+      },
+      {
+        "seq": 102452,
+        "stage": "server_receive",
+        "port": 61238,
+        "ns": 61068380000,
+        "global_delivered_wakes": 326901
+      },
+      {
+        "seq": 102453,
+        "stage": "server_notify_begin",
+        "port": 61238,
+        "ns": 61068381400,
+        "global_delivered_wakes": 326901
+      },
+      {
+        "seq": 102454,
+        "stage": "server_notify_end",
+        "port": 61238,
+        "ns": 61068384400,
+        "global_delivered_wakes": 326901
+      },
+      {
+        "seq": 102455,
+        "stage": "request_enqueue",
+        "port": 872,
+        "ns": 61070562600,
+        "global_delivered_wakes": 326903
+      },
+      {
+        "seq": 102456,
+        "stage": "request_dispatch",
+        "port": 872,
+        "ns": 61070573500,
+        "global_delivered_wakes": 326903
+      },
+      {
+        "seq": 102457,
+        "stage": "server_receive",
+        "port": 61238,
+        "ns": 61070578000,
+        "global_delivered_wakes": 326903
+      },
+      {
+        "seq": 102458,
+        "stage": "server_notify_begin",
+        "port": 61238,
+        "ns": 61070579400,
+        "global_delivered_wakes": 326903
+      },
+      {
+        "seq": 102459,
+        "stage": "server_notify_end",
+        "port": 61238,
+        "ns": 61070582300,
+        "global_delivered_wakes": 326903
+      },
+      {
+        "seq": 102460,
+        "stage": "server_read",
+        "port": 61238,
+        "ns": 61072216500,
+        "global_delivered_wakes": 326904
+      },
+      {
+        "seq": 102461,
+        "stage": "reply_enqueue",
+        "port": 61238,
+        "ns": 61072287900,
+        "global_delivered_wakes": 326904
+      },
+      {
+        "seq": 102462,
+        "stage": "reply_dispatch",
+        "port": 61238,
+        "ns": 61072298600,
+        "global_delivered_wakes": 326904
+      },
+      {
+        "seq": 102463,
+        "stage": "client_receive",
+        "port": 872,
+        "ns": 61072303700,
+        "global_delivered_wakes": 326904
+      },
+      {
+        "seq": 102464,
+        "stage": "client_notify_begin",
+        "port": 872,
+        "ns": 61072334400,
+        "global_delivered_wakes": 326904
+      },
+      {
+        "seq": 102465,
+        "stage": "client_notify_end",
+        "port": 872,
+        "ns": 61072363700,
+        "global_delivered_wakes": 326905
+      },
+      {
+        "seq": 102466,
+        "stage": "client_read",
+        "port": 872,
+        "ns": 61072452900,
+        "global_delivered_wakes": 326906
+      },
+      {
+        "seq": 102467,
+        "stage": "server_read",
+        "port": 61238,
+        "ns": 61072488800,
+        "global_delivered_wakes": 326906
+      }
+    ],
+    "initial_enqueue_to_first_retry_us": 2216.4,
+    "first_server_notify_end_to_read_us": 6065.2
+  },
+  "interpretation": "The original RPC client succeeded alone in one focused diagnostic run, but timed out after the native network precursor sequence on both diagnostic and uninstrumented production kernels. Two experimental poll-thread scheduling controls also timed out in single focused sequence runs. The sequence is useful for rapid reproduction; these single-run comparisons do not prove which precursor is causal or establish that yield or nice policy improves reliability."
+}
