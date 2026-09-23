@@ -300,7 +300,31 @@ requested poll interval from the total budget when it reads a reply with a
 different transaction ID, even if that poll returned early. Repeated short
 retries and stale replies can therefore consume the 25 ms budget without a
 single 25 ms kernel delay. A trace of the failing call's exact reply sequence
-is still needed to establish that as the final mechanism.
+was needed to establish that as the final mechanism.
+
+### Final failing RPC call
+
+A bounded `LD_PRELOAD` diagnostic recorded only the original client's
+`sendto`, `poll` and `recvfrom` calls on the **production** kernel. It left the
+RPC server and benchmark binary unchanged. The unmodified command again
+printed `localhost: RPC: Timed out` after 12.218 seconds. The worker retained
+its last 256 syscall events; the [raw trace](2026-09-23-lmbench-native/rpc-udp-final-call-trace.log)
+and [structured summary](2026-09-23-lmbench-native/rpc-udp-final-call.json)
+are checked in. The tracer and summarizer source are on the separate
+`codex/udp-rpc-instrument` branch at `e8fbc3517`.
+
+For the final call, the client first sent transaction ID `1790897517` at
+trace event 179618. It sent that same request 13 times. Of 13 polls, three
+expired and ten returned readable; all ten reads yielded the *previous*
+transaction ID `1790897516`, never the current one. The poll timeouts charged
+6 ms against libtirpc's 25 ms budget, and the ten mismatched replies charged
+another 19 ms. Those nominal deductions exhausted the budget, although only
+9.1119 ms of wall time elapsed between the first send and last read. The
+library then reported `RPC_TIMEDOUT`. This directly establishes the
+stale-reply/retransmission feedback mechanism for this traced failure; it
+does not establish why Asterinas QEMU accumulates the initial delayed replies
+while the Linux full-system control completes. Interposition adds overhead,
+so the trace is causal evidence for the failing call, not performance data.
 
 ### Adapted native ALL qualification
 
