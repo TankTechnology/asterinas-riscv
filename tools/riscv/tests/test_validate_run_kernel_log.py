@@ -19,6 +19,34 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_proc_net_dev_gate_requires_one_clean_completion(self) -> None:
+        marker = "/proc/net/dev regression passed."
+        validate_transcript(marker + "\n", mode="proc-net-dev")
+        for transcript in (
+            "boot output\n",
+            f"{marker}\n{marker}\n",
+            f"{marker}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaises(ValidationError):
+                    validate_transcript(transcript, mode="proc-net-dev")
+
+    def test_proc_net_dev_gate_is_wired_to_original_regression(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        guest = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/run_proc_net_dev_test.sh"
+        )
+        general = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
+        self.assertIn("else ifeq ($(AUTO_TEST), proc_net_dev)", makefile)
+        self.assertIn("/test/run_proc_net_dev_test.sh", makefile)
+        self.assertIn('--mode "proc-net-dev"', makefile)
+        self.assertIn("proc_net_dev", guest.read_text())
+        self.assertEqual(general.count("./proc_net_dev"), 1)
+
     def test_ifconf_gvisor_gate_accepts_only_one_clean_completion(self) -> None:
         marker = "gVisor SIOCGIFCONF cases passed."
         validate_transcript(marker + "\n", mode="ifconf-gvisor")
