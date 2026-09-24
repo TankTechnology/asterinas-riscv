@@ -45,8 +45,13 @@ pub fn sys_read(
     let read_len = {
         if buf_len != 0 {
             let user_space = ctx.user_space();
-            if file.as_socket().is_some() {
-                user_space.prefault(user_buf_addr, buf_len, crate::vm::perms::VmPerms::WRITE)?;
+            if let Some(socket) = file.as_socket() {
+                let prefault_len = buf_len.min(socket.max_recv_len().unwrap_or(usize::MAX));
+                user_space.prefault(
+                    user_buf_addr,
+                    prefault_len,
+                    crate::vm::perms::VmPerms::WRITE,
+                )?;
             }
             let mut writer = user_space.writer(user_buf_addr, buf_len)?;
             file.read(&mut writer)

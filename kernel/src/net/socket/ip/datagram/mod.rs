@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use aster_bigtcp::{socket::NeedIfacePoll, wire::IpEndpoint};
+use aster_bigtcp::{
+    socket::{NeedIfacePoll, UDP_RECV_PAYLOAD_LEN},
+    wire::IpEndpoint,
+};
 use bound::BoundDatagram;
 use unbound::{BindOptions, UnboundDatagram};
 
@@ -159,6 +162,10 @@ impl SocketPrivate for DatagramSocket {
 impl Socket for DatagramSocket {
     fn net_ns(&self) -> &NetNamespace {
         &self.net_ns
+    }
+
+    fn max_recv_len(&self) -> Option<usize> {
+        Some(UDP_RECV_PAYLOAD_LEN)
     }
 
     fn bind(&self, socket_addr: SocketAddr) -> Result<()> {

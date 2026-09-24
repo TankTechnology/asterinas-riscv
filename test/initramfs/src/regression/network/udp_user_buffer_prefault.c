@@ -2,15 +2,20 @@
 
 #include <arpa/inet.h>
 #include <assert.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 
 #define PAYLOAD_LEN (4 * 4096 + 137)
+#define LARGE_BUFFER_LEN (10 * 1024 * 1024)
+#define UDP_RECEIVE_CAPACITY 65536
 
 int main(void)
 {
@@ -59,6 +64,49 @@ int main(void)
 	assert(ntohl(peer_address.sin_addr.s_addr) == INADDR_LOOPBACK);
 	for (size_t index = 0; index < PAYLOAD_LEN; index++)
 		assert(receive_buffer[index] == 0);
+
+	/* An unreadable tail cannot be reached by one UDP receive. */
+	unsigned char *large_buffer = mmap(NULL, LARGE_BUFFER_LEN,
+					   PROT_READ | PROT_WRITE,
+					   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	assert(large_buffer != MAP_FAILED);
+	assert(mprotect(large_buffer + UDP_RECEIVE_CAPACITY,
+			LARGE_BUFFER_LEN - UDP_RECEIVE_CAPACITY,
+			PROT_NONE) == 0);
+
+	const char small_payload[] = "udp";
+	int failures = 0;
+	for (int operation = 0; operation < 3; operation++) {
+		assert(sendto(sender, small_payload, sizeof(small_payload), 0,
+			      (struct sockaddr *)&receiver_address,
+			      sizeof(receiver_address)) == sizeof(small_payload));
+
+		ssize_t received;
+		if (operation == 0) {
+			received = recvfrom(receiver, large_buffer,
+					    LARGE_BUFFER_LEN, 0, NULL, NULL);
+		} else if (operation == 1) {
+			struct iovec iov = {
+				.iov_base = large_buffer,
+				.iov_len = LARGE_BUFFER_LEN,
+			};
+			struct msghdr msg = {
+				.msg_iov = &iov,
+				.msg_iovlen = 1,
+			};
+			received = recvmsg(receiver, &msg, 0);
+		} else {
+			received = read(receiver, large_buffer, LARGE_BUFFER_LEN);
+		}
+		if (received != sizeof(small_payload) ||
+		    memcmp(large_buffer, small_payload, sizeof(small_payload))) {
+			fprintf(stderr, "UDP large-buffer operation %d: received=%zd errno=%d\n",
+				operation, received, errno);
+			failures++;
+		}
+	}
+	assert(failures == 0);
+	assert(munmap(large_buffer, LARGE_BUFFER_LEN) == 0);
 
 	assert(munmap(receive_buffer, PAYLOAD_LEN) == 0);
 	assert(munmap(send_buffer, PAYLOAD_LEN) == 0);

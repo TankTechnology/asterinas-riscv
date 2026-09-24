@@ -82,6 +82,11 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
         false
     }
 
+    /// Returns the maximum number of bytes one receive can write, if bounded.
+    fn max_recv_len(&self) -> Option<usize> {
+        None
+    }
+
     /// Assigns the specified address to the socket.
     fn bind(&self, _socket_addr: SocketAddr) -> Result<()> {
         return_errno_with_message!(Errno::EOPNOTSUPP, "bind() is not supported");

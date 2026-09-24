@@ -241,18 +241,27 @@ impl<'a> VmWriterArray<'a> {
 
     /// Resolves user-backed pages before a network stack may enter atomic mode.
     ///
+    /// Only the first `max_bytes` are prefaulted; the rest remains available to the writer.
     /// If a fault follows a valid prefix, the prefix is retained and the fault is deferred until
     /// an I/O operation actually reaches it.
-    pub(crate) fn prefault(&mut self, user_space: &CurrentUserSpace<'_>) -> Result<Option<Error>> {
+    pub(crate) fn prefault(
+        &mut self,
+        user_space: &CurrentUserSpace<'_>,
+        max_bytes: usize,
+    ) -> Result<Option<Error>> {
         let mut prefaulted = 0;
         for writer in &self.writers {
+            let current_len = writer.avail().min(max_bytes - prefaulted);
+            if current_len == 0 {
+                break;
+            }
             match prefault_range(
                 user_space,
                 writer.cursor().addr(),
-                writer.avail(),
+                current_len,
                 VmPerms::WRITE,
             ) {
-                Ok(()) => prefaulted += writer.avail(),
+                Ok(()) => prefaulted += current_len,
                 Err((error, current_prefaulted)) => {
                     prefaulted += current_prefaulted;
                     if prefaulted == 0 {

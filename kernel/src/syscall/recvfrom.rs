@@ -28,7 +28,8 @@ pub fn sys_recvfrom(
 
     let user_space = ctx.user_space();
     let mut writers = user_space.writer(buf, len)?;
-    user_space.prefault(buf, len, crate::vm::perms::VmPerms::WRITE)?;
+    let prefault_len = len.min(socket.max_recv_len().unwrap_or(usize::MAX));
+    user_space.prefault(buf, prefault_len, crate::vm::perms::VmPerms::WRITE)?;
 
     let (output, message_header) = {
         socket
