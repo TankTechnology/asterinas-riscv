@@ -564,6 +564,7 @@ def default_operations(
     download_path: Path = web_gate.FIXTURE_DOWNLOAD_FILE,
     firefox_uid_reader: Callable[[int], int] = web_gate.firefox_process_uid,
     clock: DailyUseClock | None = None,
+    context_cpu_diagnostic: bool = False,
 ) -> DailyUseOperations:
     """Adapt the existing local Firefox captures without granting publication access."""
 
@@ -644,7 +645,9 @@ def default_operations(
     return DailyUseOperations(
         fixture=fixture,
         local_timing=timing,
-        context_switch=_capture_context,
+        context_switch=lambda request: _capture_context(
+            request, cpu_diagnostic=context_cpu_diagnostic
+        ),
         composite=composite,
         system_sampler=lambda request: _capture_sampler(request, threads=False),
         thread_sampler=lambda request: _capture_sampler(request, threads=True),
@@ -818,11 +821,10 @@ def _owned_groups(entries, names):
 
 def _capture_fixture(request, download_path, uid_reader):
     url = resolve_fixture_index_url(request.fixture_index_url)
-    if os.path.lexists(download_path):
-        raise DailyUseGateError("phase-value-invalid")
     owner_uid = uid_reader(request.firefox_pid)
     if type(owner_uid) is not int or owner_uid < 0:
         raise DailyUseGateError("identity-invalid")
+    _remove_prior_fixture_download(download_path, owner_uid)
     _remaining(request)
     web_gate._navigate(request.client, url)
     probe, classified = web_gate._wait_for_probe(
@@ -873,6 +875,37 @@ def _capture_fixture(request, download_path, uid_reader):
         _json_bytes({"probe": probe, "snapshot": snapshot, "download": download}),
         probe_limitations,
     )
+
+
+def _remove_prior_fixture_download(path: Path, owner_uid: int) -> None:
+    """Clear only the exact test-owned download left by an earlier valid run."""
+
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != owner_uid
+        or metadata.st_size != web_gate.FIXTURE_DOWNLOAD_BYTES
+    ):
+        raise DailyUseGateError("phase-value-invalid")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+                raise DailyUseGateError("phase-value-invalid")
+            digest = hashlib.sha256(stream.read(web_gate.FIXTURE_DOWNLOAD_BYTES + 1))
+        current = path.lstat()
+        if (
+            digest.hexdigest() != web_gate.FIXTURE_DOWNLOAD_SHA256
+            or (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino)
+        ):
+            raise DailyUseGateError("phase-value-invalid")
+        path.unlink()
+    except OSError as error:
+        raise DailyUseGateError("phase-value-invalid") from error
 
 
 def _validate_fixture_resources(snapshot, url):
@@ -1128,7 +1161,9 @@ def _navigation_performance(report):
     )
 
 
-def _capture_context(request: CaptureRequest) -> ContextCapture:
+def _capture_context(
+    request: CaptureRequest, *, cpu_diagnostic: bool = False
+) -> ContextCapture:
     url = resolve_fixture_index_url(request.fixture_index_url)
     _remaining(request)
     client, original = request.client, request.original_window
@@ -1148,12 +1183,41 @@ def _capture_context(request: CaptureRequest) -> ContextCapture:
         metrics[name] = (end - start) / 1_000_000
         return result
 
+    open_cpu = None
     try:
+        if cpu_diagnostic:
+            before_read_ns = request.clock.monotonic_ns()
+            before = system_time.read_snapshot(
+                Path("/proc"),
+                (request.firefox_pid, request.xorg_pid),
+                before_read_ns,
+            )
+            before_read_end_ns = request.clock.monotonic_ns()
         window = _value(
             measure(
                 "openMs", lambda: client.command("WebDriver:NewWindow", {"type": "tab"})
             )
         )
+        if cpu_diagnostic:
+            after_read_ns = request.clock.monotonic_ns()
+            after = system_time.read_snapshot(
+                Path("/proc"),
+                (request.firefox_pid, request.xorg_pid),
+                after_read_ns,
+            )
+            after_read_end_ns = request.clock.monotonic_ns()
+            open_cpu = {
+                "interval": system_time.interval(
+                    before,
+                    after,
+                    clock_ticks_per_second=os.sysconf("SC_CLK_TCK"),
+                ),
+                "processScope": "firefox-parent-and-xorg",
+                "readOverheadMs": (
+                    before_read_end_ns - before_read_ns
+                    + after_read_end_ns - after_read_ns
+                ) / 1_000_000,
+            }
         if (
             type(window) is not dict
             or type(window.get("handle")) is not str
@@ -1210,9 +1274,12 @@ def _capture_context(request: CaptureRequest) -> ContextCapture:
         metrics,
         slow=max(*durations, metrics["totalMs"]) > 500,
     )
-    return ContextCapture(
-        performance, _json_bytes(performance), _passing_group("contexts")
+    artifact = (
+        {"performance": performance, "openCpu": open_cpu}
+        if cpu_diagnostic
+        else performance
     )
+    return ContextCapture(performance, _json_bytes(artifact), _passing_group("contexts"))
 
 
 def _capture_sampler(request: SamplerRequest, *, threads: bool) -> SamplerCapture:
@@ -1287,6 +1354,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--evidence-dir", type=Path, required=True)
     parser.add_argument("--mode", choices=("smoke", "profile"))
     parser.add_argument("--physical", action="store_true")
+    parser.add_argument("--context-cpu-diagnostic", action="store_true")
     parser.add_argument("--timeout-seconds", type=float)
     parser.add_argument("--port", type=int, default=2828)
     try:
@@ -1310,7 +1378,9 @@ def main(argv: list[str] | None = None) -> int:
             run_id,
             options.fixture_index_url,
         )
-        operations = default_operations()
+        operations = default_operations(
+            context_cpu_diagnostic=options.context_cpu_diagnostic
+        )
         setup_timeout = (
             PHYSICAL_SESSION_SETUP_TIMEOUT_SECONDS if options.physical else timeout
         )
