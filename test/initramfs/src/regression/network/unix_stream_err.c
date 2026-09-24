@@ -44,7 +44,7 @@ FN_TEST(scm_rights)
 	chdr = CMSG_FIRSTHDR(&mhdr);
 	chdr->cmsg_level = SOL_SOCKET;
 	chdr->cmsg_type = SCM_RIGHTS;
-	chdr->cmsg_len = CMSG_SPACE(sizeof(int) * 3);
+	chdr->cmsg_len = CMSG_LEN(sizeof(int) * 3);
 
 	cdata = (int *)CMSG_DATA(chdr);
 	TEST_SUCC(pipe(cfds));
