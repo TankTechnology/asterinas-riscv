@@ -652,3 +652,17 @@ entry has no automatic reboot fallback, so the earlier bounded one-time
 boots do not establish recovery from a hard hang in that menu entry. The
 repository's promotion gate still requires three cycles each for RockOS,
 fallback, Basic, and Probe, plus two Desktop cycles for this exact selector.
+
+Two short RockOS-only cycles have since passed for the exact candidate:
+[missing-selector fallback](megrez-menu-fallback-cycle-result.json) reached
+RockOS in 25.17 seconds from the U-Boot command, and the
+[RockOS entry](megrez-menu-rockos-cycle-result.json) did so in 33.67 seconds.
+Both returned to a fresh U-Boot prompt; each result records its raw local
+serial-log SHA-256. The board was then booted through the vendor RockOS entry.
+After closing and reopening the serial port, a fresh nonce-framed UID-0
+response established boot ID `7d0fd4f1-e54b-468c-82a2-7b30b395f2b2` on
+Linux `6.6.87`; partition 2 was unmounted and all three selector hashes were
+unchanged. These are one cycle each, not promotion qualification. Basic, Probe,
+and the unbounded Desktop menu entries have not been exercised for this
+candidate. The raw RockOS login transcripts stay in the local test directory
+to avoid publishing credential-bearing serial material.

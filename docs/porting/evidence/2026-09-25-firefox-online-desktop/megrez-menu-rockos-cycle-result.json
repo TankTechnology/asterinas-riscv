@@ -1,0 +1,12 @@
+{
+  "run_id": "374a8e943746cf2d568b7bfcc32e8b78",
+  "action": "cycle",
+  "mode": "rockos",
+  "menu_sha256": "5b2bd5c2378b164ff4028d3211b1c8f4f7cb74db1c7e94689bdda52d8ce37f13",
+  "passed": true,
+  "recovered": true,
+  "boot_to_ready_seconds": 33.672452892991714,
+  "menu_to_ready_seconds": 31.146996291005053,
+  "elapsed_seconds": 57.88832807505969,
+  "serial_sha256": "3dc8a3ff9c4876e7aae78a18158ff2dfee27665fb980d8ccbe97567dc19fd538"
+}
