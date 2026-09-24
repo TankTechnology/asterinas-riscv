@@ -166,3 +166,81 @@ The final [handoff record](physical-video-handoff.json) and its
 serial device and proved UID 0, the same boot ID, active desktop/browser
 services and disarmed watchdog. The temporary LAN fixture server was stopped;
 the board was left on Asterinas with working root debug-console access.
+
+## Firefox cost attribution and reversible acceleration checks
+
+The next short session used the same boot and Image, Firefox 143.0.3, and the
+same 300-frame, 10-second 720p VP8 clip. The [thread chart](firefox-thread-cost.png)
+([SVG](firefox-thread-cost.svg), [generator](plot-firefox-thread-cost.py)) is
+**thread-level CPU attribution, not a native function-stack flame graph**.
+The [sample](physical-thread-profile-result.json), [guest](physical-thread-profile-guest.py)
+and [host](physical-thread-profile-host.py) probes, [command record](physical-thread-profile-host-commands.json),
+and [serial capture](physical-thread-profile-serial.log.gz) retain the inputs.
+Each run sampled 16 half-second intervals; collecting `/proc` and Marionette
+data lengthened the sampling interval to about 10.5 seconds. This pair is a
+diagnostic comparison, not a controlled benchmark against RockOS.
+
+| Same 720p source | Dropped / 300 | Renderer user + kernel | SwComposite user + kernel | Combined runqueue wait |
+| --- | ---: | ---: | ---: | ---: |
+| Display 1280×720 | 143 | 6.52 + 0.58 s | 6.55 + 0.52 s | 4.25 s |
+| Display 640×360 | 6 | 4.43 + 0.62 s | 4.27 + 0.23 s | 3.93 s |
+
+The two hot threads consumed 14.17 seconds of CPU at native size versus
+9.55 seconds with the same encoded source displayed small. User-mode work
+accounts for 4.37 of the 4.62-second increase. Their combined runnable wait
+changed by only 0.33 seconds, and Xorg used 46 versus 43 CPU ticks. This
+points to size-dependent Firefox video presentation/software drawing as the
+main source of the *difference*. It does not yet identify the function or
+exclude a syscall or memory-management contribution to absolute cost.
+Thread CPU times can overlap on different cores, and runqueue wait must not
+be added to CPU time as a critical-path estimate.
+
+A reversible [CPU-affinity A/B/A probe](physical-affinity-result.json)
+([guest](physical-affinity-guest.py), [host](physical-affinity-host.py),
+[command record](physical-affinity-host-commands.json),
+[serial log](physical-affinity-serial.log.gz)) pinned `Renderer` to CPU 2
+and `SwComposite` to CPU 3 for the middle native-size run. Dropped counts
+were 138/300 before, 132/301 while pinned, and 136/300 after restoring
+the original all-core affinities. Both threads still accumulated around two
+seconds of runqueue wait. This small, non-replicated difference does not
+support an affinity fix or a 2× speedup; the probe and a host cleanup restored
+both affinity masks to CPUs 0–3.
+
+An isolated temporary Firefox profile tested `gfx.webrender.force-disabled`.
+Its [default result](physical-compositor-default-result.json) dropped
+123/300 native and 12/300 small; the [candidate result](physical-compositor-basic-result.json)
+dropped 129/300 native and 11/300 small. The corresponding [default](physical-compositor-default-serial.log.gz)
+and [candidate](physical-compositor-basic-serial.log.gz) captures retain the
+short runs. The [isolated launcher](physical-profiler-launch-guest.sh) records
+the candidate preference and local Marionette port; the [stop record](physical-profiler-stop.json)
+shows only the normal browser remained active afterward. The candidate did
+not help and the normal browser service was left unchanged.
+
+The [render-backend inventory](physical-render-backend-inventory.txt) found
+`/dev/fb0` and no `/dev/dri`. Xorg ran with the fbdev provider and
+`-extension GLX`. This boot therefore offered no measured GPU-backed path
+for Firefox. The open DRM rollup PR #139 describes virtio-gpu 3D for QEMU
+and a firmware-framebuffer fallback for Megrez; it explicitly does not claim
+native EIC7700 display/GPU programming or physical performance. Its merge
+cannot be counted as a verified acceleration of this board.
+
+The next fix needs function-level evidence from a Firefox build with the Gecko
+Profiler enabled, or equivalent RISC-V native stack sampling. The privileged
+[probe](physical-gecko-profiler-probe-output.txt) found `Services.profiler`
+undefined in this build; no `perf` binary was present, and the current
+RISC-V `ptrace` implementation lacks register reads needed by a conventional
+external stack sampler. The immediate engineering target is the hot
+`Renderer`/`SwComposite` video path, especially YUV conversion, scaling,
+and software rasterization. A candidate is accepted only after a same-boot,
+same-clip A/B/A run preserves correct output and cuts the combined hot-thread
+CPU cost from about 14.2 to at most 7.1 seconds per clip **and** reduces native
+display drops below 30/300 in repeated short runs. These are proposed 2×
+acceptance criteria, not results achieved here. Native hardware acceleration
+would need a separate Megrez display/GPU implementation and validation.
+
+The fixture server and temporary Firefox process were stopped. The final
+[handoff](physical-firefox-profile-handoff.json) independently reopened the
+stable UART twice and proved UID 0, the same boot ID, active desktop/browser
+services, and watchdog `0`; the [first](physical-firefox-profile-handoff-1.log.gz)
+and [second](physical-firefox-profile-handoff-2.log.gz) serial captures retain
+the responses. No persistent browser, boot, or affinity configuration changed.
