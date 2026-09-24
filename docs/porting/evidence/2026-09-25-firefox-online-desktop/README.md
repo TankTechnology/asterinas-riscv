@@ -534,3 +534,71 @@ snapshot recorded `mprotect=1084/52`, `sched_yield=338/16`, and
 scheduled-out waits and cannot be interpreted as kernel CPU time. On this
 short current-root trace, the direct `mprotect` and `sched_yield` bills remain
 too small to justify either as the sole target for a twofold Firefox gain.
+
+Three otherwise matching, uninstrumented QEMU startup controls reached the
+same Marionette boundary in [33.755](qemu-startup-control-1-result.json),
+[31.998](qemu-startup-control-2-result.json), and
+[32.744](qemu-startup-control-3-result.json) host seconds. The corresponding
+raw serial logs are retained as
+[run 1](qemu-startup-control-1.log.gz),
+[run 2](qemu-startup-control-2.log.gz), and
+[run 3](qemu-startup-control-3.log.gz); each uncompressed SHA-256 matches its
+result JSON. The one syscall-diagnostic run at 30.566 seconds was below this
+small control range. These runs show no obvious large startup penalty from the
+diagnostic but do not quantify its overhead: there is only one instrumented
+sample, and host wall time includes boot and QEMU variation.
+
+## Persistent-home repeatability and context-open CPU diagnostic
+
+The first opt-in context CPU attempt used a rebuilt Stage1 on the same signed
+root. Its daily-use gate stopped after `session` and `samplers-ready` with
+`phase-value-invalid`, before the context phase. A fresh root serial command
+found `/home/asterinas/Downloads/asterinas-browser-quality.bin` on the
+persistent HOME: regular file, UID 1000, 262,144 bytes, and the exact fixture
+SHA-256 `2312394bd99545d9de131c24efb781e765ac1aec243f2ed9347597a793a415e9`.
+The previous successful gate had left it there. The test-owned file was
+verified and removed for a second attempt, but its `/run` result was not
+uploaded before the bounded reboot; it is not counted as a passing run.
+
+The gate now clears only a prior download with that verified type, owner,
+length, and digest before triggering a new one; unexpected content or a
+symlink remains untouched and fails closed. It also has an opt-in
+`--context-cpu-diagnostic` that brackets `WebDriver:NewWindow` with procfs
+CPU snapshots without changing the ordinary performance result schema.
+The updated Stage1 SHA-256 was
+`ea446515661f2380568426b3c37da0b6a0698fc51f88d32c62807fce04890962`;
+U-Boot verified its CRC32 `64e4ff7c`, plus the unchanged ptrace kernel Image
+CRC32 `ab15b580` and DTB CRC32 `40ed4c65`. The one-time boot retained the
+RockOS default, used persistent HOME and the isolated root debug console,
+and armed 360-second userspace / 480-second kernel reboot limits. Its boot ID
+was `6a18b44a-b27b-4137-87df-50fa1ef78f51`, established through fresh
+nonce-framed UID-0 serial commands.
+
+The [uploaded archive](physical-context-cpu-repeat.tar.gz) has SHA-256
+`95db09739489575c7f58ceea08695a0fb03493ab96367194121ffda62fcbf7ea`
+and contains the gate log, result, and all six captured artifacts. Every
+artifact matched the [result manifest](physical-context-cpu-repeat-result.json)
+by size and SHA-256. The gate passed all seven functional groups; its two
+slow categories were input and context switching. In this one instrumented
+run, keyboard next-rAF was 731 ms, pointer next-rAF 128 ms, and
+[`NewWindow` took 823.481 ms](physical-context-cpu-repeat-context.json).
+The exact context-open snapshot interval lasted 827.509 ms; its two procfs
+reads cost 8.809 ms. Firefox's parent process accumulated 860 ms user and
+420 ms kernel CPU across its threads, while Xorg accumulated 20 ms user and
+10 ms kernel CPU. The interval contains 1,683 system context switches and
+zero major faults in the two observed processes. Firefox CPU can exceed the
+wall interval because multiple threads run in parallel. This short process
+snapshot excludes Firefox child processes and cannot identify a kernel
+function or establish a speedup; the anomalous input latency also prevents
+using this diagnostic run as a stable performance baseline.
+
+After the archive upload, a fresh nonce-framed Asterinas root command
+reported gate and upload statuses both zero and the archive SHA-256 returned
+by the host. An authenticated software reboot reached the existing U-Boot
+menu; RockOS entry 1 then booted successfully. A new root serial login
+verified RockOS boot ID `9b0a4e23-d3a4-4c9e-bc82-66bff9e717dd`, its ext4
+root on `/dev/mmcblk1p3`, unmounted Asterinas partition 2, and unchanged
+`default l0` selector. The experimental Stage1 was verified as unreferenced
+by the menu and removed from `/boot` after recovery; its host copy and SHA-256
+remain in the experiment record. This establishes recovery for this boot,
+not persistent Asterinas root-console access after an Asterinas menu reboot.
