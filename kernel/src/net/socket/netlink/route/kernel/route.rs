@@ -75,10 +75,11 @@ pub(super) fn do_get_route(
     if body.family == CSocketAddrFamily::AF_UNSPEC as u8
         || body.family == CSocketAddrFamily::AF_INET as u8
     {
-        if requested_table == LOCAL_TABLE as u32 {
-            dump_local_routes(request.header(), net_ns, &mut response_segments);
-        } else {
+        if requested_table != LOCAL_TABLE as u32 {
             dump_main_routes(request.header(), net_ns, &mut response_segments);
+        }
+        if requested_table != MAIN_TABLE as u32 {
+            dump_local_routes(request.header(), net_ns, &mut response_segments);
         }
     }
 

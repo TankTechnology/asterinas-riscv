@@ -57,8 +57,34 @@ also returned zero. The [structured result](iproute2-result.json),
 [request record](iproute2-request.json), and
 [serial transcript](iproute2-serial.log.gz) retain the commands and output.
 
+## All-table dump follow-up
+
+Linux `ip -4 route show` explicitly requests table 254, while
+`ip -4 route show table all` sends a dump without `RTA_TABLE`. Before the
+follow-up, Asterinas treated both requests as main-table-only. The added
+regression requests an unfiltered IPv4 dump and requires exactly two main
+routes and five local routes in the same bounded multipart response. It
+failed on the old handler because no local routes appeared; see the
+[all-table red log](all-red-qemu.log.gz). The same focused QEMU gate passed
+after the handler appended both tables, in main-then-local order; see the
+[all-table green log](all-green-qemu.log.gz). The raw C test also compiled with
+strict warnings and completed on Linux.
+
+The final production-kernel Image SHA-256 was
+`3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e`,
+read back from the new boot disk with the same hash. The frozen Debian root
+disk and U-Boot retained the hashes above. Boot ID
+`32758f0b-f036-4a31-981f-e3233fdf3717` and UID 0 were proved on the debug
+console. The real `ip -4 route show table all` command returned zero and
+printed the two main-table routes followed by the five local-table routes,
+with `table local` shown on the latter. The separate main-table and local-table
+queries, default-route filter, and `ip -4 route get 10.0.2.2` also returned
+zero. See the [all-table result](all-iproute2-result.json),
+[request record](all-iproute2-request.json), and
+[serial transcript](all-iproute2-serial.log.gz).
+
 This reports routes for the first configured IPv4 CIDR per interface. It does
-not add route modification, arbitrary policy tables, `table all`, or IPv6 local
-routes. The change has not been installed on the physical board. The pinned
+not add route modification, arbitrary policy tables, or IPv6 local routes.
+The change has not been installed on the physical board. The pinned
 native LMBench `make results` ALL suite passed 109/109 on an ancestor of this
 network stack; it was not repeated for this netlink-only change.
