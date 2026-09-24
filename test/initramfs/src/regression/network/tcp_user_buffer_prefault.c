@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -19,6 +20,7 @@
 #define SEND_CHUNK 257
 #define RECV_CHUNK 113
 #define LARGE_BUFFER_LEN (10 * 1024 * 1024)
+#define LARGE_SEND_PREFIX_LEN (1024 * 1024)
 #define TCP_RECEIVE_CAPACITY (128 * 1024)
 #define VALID_PREFIX_LEN 4096
 #define CROSS_FAULT_LEN (VALID_PREFIX_LEN + 904)
@@ -61,7 +63,7 @@ static void wait_for_payload(int fd)
 	exit(EXIT_FAILURE);
 }
 
-static void test_unix_stream_partial_sendmsg(void)
+static void test_unix_stream_invalid_tail(void)
 {
 	int sockets[2];
 	char good_buffer[] = "unix";
@@ -75,25 +77,118 @@ static void test_unix_stream_partial_sendmsg(void)
 		.msg_iovlen = 2,
 	};
 
-	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) < 0)
+	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sockets) < 0)
 		fail("socketpair");
-	if (sendmsg(sockets[0], &message, 0) !=
-	    (ssize_t)(sizeof(good_buffer) - 1))
-		fail("unix stream sendmsg partial iovec");
+	errno = 0;
+	if (sendmsg(sockets[0], &message, 0) != -1 || errno != EFAULT)
+		fail("unix stream sendmsg invalid tail");
+	errno = 0;
+	if (recv(sockets[1], received, sizeof(received), 0) != -1 ||
+	    errno != EAGAIN)
+		fail("unix stream sendmsg emitted bytes on EFAULT");
+	errno = 0;
+	if (writev(sockets[0], iov, 2) != -1 || errno != EFAULT)
+		fail("unix stream writev invalid tail");
+	errno = 0;
+	if (recv(sockets[1], received, sizeof(received), 0) != -1 ||
+	    errno != EAGAIN)
+		fail("unix stream writev emitted bytes on EFAULT");
+	send_all(sockets[0], good_buffer, sizeof(good_buffer) - 1);
 	if (recv(sockets[1], received, sizeof(received), 0) !=
 		    (ssize_t)sizeof(received) ||
 	    memcmp(received, good_buffer, sizeof(received)) != 0) {
-		fprintf(stderr, "unix stream partial iovec payload mismatch\n");
+		fprintf(stderr, "unix stream valid payload mismatch\n");
 		exit(EXIT_FAILURE);
 	}
 	close(sockets[0]);
 	close(sockets[1]);
 }
 
+static void test_unix_stream_large_prefix(void)
+{
+	char *buffer = malloc(LARGE_SEND_PREFIX_LEN);
+	if (buffer == NULL)
+		fail("large send malloc");
+	memset(buffer, 'L', LARGE_SEND_PREFIX_LEN);
+	struct iovec iov[2] = {
+		{ .iov_base = buffer, .iov_len = LARGE_SEND_PREFIX_LEN },
+		{ .iov_base = (void *)1, .iov_len = 1 },
+	};
+	struct msghdr message = { .msg_iov = iov, .msg_iovlen = 2 };
+	for (int use_writev = 0; use_writev < 2; use_writev++) {
+		int sockets[2];
+		if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0,
+			       sockets) < 0)
+			fail("large send socketpair");
+		ssize_t sent = use_writev ? writev(sockets[0], iov, 2)
+					  : sendmsg(sockets[0], &message, 0);
+		if (sent <= 0 || sent > LARGE_SEND_PREFIX_LEN) {
+			fprintf(stderr, "unix stream large invalid tail: call=%d sent=%zd errno=%d\n",
+				use_writev, sent, errno);
+			exit(EXIT_FAILURE);
+		}
+		char received = 0;
+		if (recv(sockets[1], &received, 1, 0) != 1 || received != 'L')
+			fail("unix stream large valid prefix");
+		close(sockets[0]);
+		close(sockets[1]);
+	}
+	free(buffer);
+}
+
+static void test_tcp_stream_large_prefix(void)
+{
+	struct sockaddr_in addr = {
+		.sin_family = AF_INET,
+		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+	};
+	socklen_t addr_len = sizeof(addr);
+	int listener = socket(AF_INET, SOCK_STREAM, 0);
+	if (listener < 0 ||
+	    bind(listener, (struct sockaddr *)&addr, addr_len) < 0 ||
+	    getsockname(listener, (struct sockaddr *)&addr, &addr_len) < 0 ||
+	    listen(listener, 1) < 0)
+		fail("large TCP listener");
+	int sender = socket(AF_INET, SOCK_STREAM, 0);
+	if (sender < 0 || connect(sender, (struct sockaddr *)&addr, addr_len) < 0)
+		fail("large TCP connect");
+	int receiver = accept(listener, NULL, NULL);
+	if (receiver < 0)
+		fail("large TCP accept");
+	close(listener);
+	int flags = fcntl(sender, F_GETFL);
+	if (flags < 0 || fcntl(sender, F_SETFL, flags | O_NONBLOCK) < 0)
+		fail("large TCP nonblocking");
+
+	char *buffer = malloc(LARGE_SEND_PREFIX_LEN);
+	if (buffer == NULL)
+		fail("large TCP malloc");
+	memset(buffer, 'T', LARGE_SEND_PREFIX_LEN);
+	struct iovec iov[2] = {
+		{ .iov_base = buffer, .iov_len = LARGE_SEND_PREFIX_LEN },
+		{ .iov_base = (void *)1, .iov_len = 1 },
+	};
+	struct msghdr message = { .msg_iov = iov, .msg_iovlen = 2 };
+	ssize_t sent = sendmsg(sender, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
+	if (sent <= 0 || sent > LARGE_SEND_PREFIX_LEN) {
+		fprintf(stderr, "TCP large invalid tail: sent=%zd errno=%d\n",
+			sent, errno);
+		exit(EXIT_FAILURE);
+	}
+	char received = 0;
+	if (recv(receiver, &received, 1, 0) != 1 || received != 'T')
+		fail("TCP large valid prefix");
+	free(buffer);
+	close(sender);
+	close(receiver);
+}
+
 int main(void)
 {
 	alarm(10);
-	test_unix_stream_partial_sendmsg();
+	test_unix_stream_invalid_tail();
+	test_unix_stream_large_prefix();
+	test_tcp_stream_large_prefix();
 
 	struct sockaddr_in addr = {
 		.sin_family = AF_INET,
@@ -244,9 +339,13 @@ int main(void)
 		.msg_iov = iov,
 		.msg_iovlen = 2,
 	};
-	if (sendmsg(server_fd, &message, 0) !=
-	    (ssize_t)(sizeof(good_buffer) - 1))
-		fail("sendmsg partial iovec");
+	errno = 0;
+	if (sendmsg(server_fd, &message, 0) != -1 || errno != EFAULT)
+		fail("sendmsg invalid tail");
+	errno = 0;
+	if (writev(server_fd, iov, 2) != -1 || errno != EFAULT)
+		fail("writev invalid tail");
+	send_all(server_fd, good_buffer, sizeof(good_buffer) - 1);
 
 	char receive_prefix = 0;
 	iov[0].iov_base = &receive_prefix;

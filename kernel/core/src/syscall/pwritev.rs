@@ -152,20 +152,26 @@ fn do_sys_writev(
         return Ok(0);
     }
 
-    if let Some(socket) = file.as_socket()
-        && !socket.supports_partial_send()
-    {
-        // A missing destination takes precedence over an invalid data buffer.
-        if let Err(error) = socket.peer_addr()
-            && error.error() == Errno::ENOTCONN
-        {
-            if matches!(socket.addr()?, SocketAddr::IPv4(..) | SocketAddr::IPv6(..)) {
-                return_errno_with_message!(Errno::EDESTADDRREQ, "destination address is missing");
+    if let Some(socket) = file.as_socket() {
+        let supports_partial_send = socket.supports_partial_send();
+        if !supports_partial_send {
+            // A missing destination takes precedence over an invalid data buffer.
+            if let Err(error) = socket.peer_addr()
+                && error.error() == Errno::ENOTCONN
+            {
+                if matches!(socket.addr()?, SocketAddr::IPv4(..) | SocketAddr::IPv6(..)) {
+                    return_errno_with_message!(
+                        Errno::EDESTADDRREQ,
+                        "destination address is missing"
+                    );
+                }
+                return Err(error);
             }
-            return Err(error);
         }
         if let Some(error) = reader_array.prefault(&user_space)? {
-            return Err(error);
+            if !supports_partial_send {
+                return Err(error);
+            }
         }
         let sent = socket.sendmsg(
             &mut reader_array,
