@@ -18,9 +18,80 @@
 #define UDP_RECEIVE_CAPACITY 65536
 #define VALID_PREFIX_LEN 4096
 
+static void test_writev_datagram_boundary(void)
+{
+	int receiver = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK, 0);
+	int sender = socket(AF_INET, SOCK_DGRAM, 0);
+	assert(receiver >= 0 && sender >= 0);
+	struct sockaddr_in address = {
+		.sin_family = AF_INET,
+		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+	};
+	assert(bind(receiver, (struct sockaddr *)&address, sizeof(address)) == 0);
+	socklen_t address_length = sizeof(address);
+	assert(getsockname(receiver, (struct sockaddr *)&address,
+			   &address_length) == 0);
+	assert(connect(sender, (struct sockaddr *)&address,
+		       sizeof(address)) == 0);
+
+	struct iovec split[] = {
+		{ .iov_base = "ab", .iov_len = 2 },
+		{ .iov_base = "cd", .iov_len = 2 },
+	};
+	errno = 0;
+	ssize_t sent = writev(sender, split, 2);
+	int send_errno = errno;
+	char received[8];
+	ssize_t length = -1;
+	for (int attempt = 0; attempt < 1000; attempt++) {
+		length = recv(receiver, received, sizeof(received), MSG_DONTWAIT);
+		if (length >= 0 || errno != EAGAIN)
+			break;
+		usleep(1000);
+	}
+	if (sent != 4 || length != 4 || memcmp(received, "abcd", 4)) {
+		fprintf(stderr,
+			"UDP writev split datagram: sent=%zd send_errno=%d received=%zd recv_errno=%d\n",
+			sent, send_errno, length, errno);
+		exit(EXIT_FAILURE);
+	}
+	errno = 0;
+	assert(recv(receiver, received, sizeof(received), MSG_DONTWAIT) == -1);
+	assert(errno == EAGAIN);
+
+	struct iovec fault[] = {
+		{ .iov_base = "XY", .iov_len = 2 },
+		{ .iov_base = (void *)1, .iov_len = 1 },
+	};
+	errno = 0;
+	sent = writev(sender, fault, 2);
+	send_errno = errno;
+	errno = 0;
+	length = recv(receiver, received, sizeof(received), MSG_DONTWAIT);
+	if (sent != -1 || send_errno != EFAULT || length != -1 ||
+	    errno != EAGAIN) {
+		fprintf(stderr,
+			"UDP writev invalid tail: sent=%zd errno=%d received=%zd recv_errno=%d\n",
+			sent, send_errno, length, errno);
+		exit(EXIT_FAILURE);
+	}
+	int unconnected = socket(AF_INET, SOCK_DGRAM, 0);
+	assert(unconnected >= 0);
+	errno = 0;
+	if (writev(unconnected, fault, 2) != -1 || errno != EDESTADDRREQ) {
+		fprintf(stderr, "UDP writev unconnected error: errno=%d\n", errno);
+		exit(EXIT_FAILURE);
+	}
+
+	close(unconnected);
+	close(sender);
+	close(receiver);
+}
+
 int main(void)
 {
 	alarm(10);
+	test_writev_datagram_boundary();
 
 	int receiver = socket(AF_INET, SOCK_DGRAM, 0);
 	assert(receiver >= 0);

@@ -1,0 +1,3 @@
+split: writev=4 errno=0 recv=4 recv_errno=0 payload=abcd extra=-1 extra_errno=11
+fault: writev=-1 errno=14 recv=-1 recv_errno=11
+unconnected: writev=-1 errno=89

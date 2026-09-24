@@ -4,6 +4,7 @@ use super::SyscallReturn;
 use crate::{
     fs,
     fs::file::file_table::{RawFileDesc, get_file_fast},
+    net::socket::util::{MessageHeader, SendFlags, SocketAddr},
     prelude::*,
     util::VmReaderArray,
 };
@@ -145,10 +146,39 @@ fn do_sys_writev(
     let mut file_table = ctx.thread_local.borrow_file_table_mut();
     let file = get_file_fast!(&mut file_table, raw_fd.try_into()?);
 
-    let mut total_len = 0;
-
     let user_space = ctx.user_space();
     let mut reader_array = VmReaderArray::from_user_io_vecs(&user_space, io_vec_ptr, io_vec_count)?;
+    if reader_array.readers_mut().is_empty() {
+        return Ok(0);
+    }
+
+    if let Some(socket) = file.as_socket()
+        && !socket.supports_partial_send()
+    {
+        // A missing destination takes precedence over an invalid data buffer.
+        if let Err(error) = socket.peer_addr()
+            && error.error() == Errno::ENOTCONN
+        {
+            if matches!(socket.addr()?, SocketAddr::IPv4(..) | SocketAddr::IPv6(..)) {
+                return_errno_with_message!(Errno::EDESTADDRREQ, "destination address is missing");
+            }
+            return Err(error);
+        }
+        if let Some(error) = reader_array.prefault(&user_space)? {
+            return Err(error);
+        }
+        let sent = socket.sendmsg(
+            &mut reader_array,
+            MessageHeader::new(None, Vec::new()),
+            SendFlags::empty(),
+        )?;
+        if sent > 0 {
+            fs::vfs::notify::on_modify(&file);
+        }
+        return Ok(sent);
+    }
+
+    let mut total_len = 0;
     for reader in reader_array.readers_mut() {
         debug_assert!(reader.has_remain());
 
