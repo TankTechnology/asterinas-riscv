@@ -31,6 +31,7 @@ fi
 ./execve/execve_comm
 ./execve/execve_err
 ./execve/execve_memfd
+./execve/execve_shebang_argv
 ./execve/execve_mt_parent
 
 ./exit/exit_code

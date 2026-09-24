@@ -220,6 +220,10 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_pty_test.sh"
 else ifeq ($(AUTO_TEST), memfd_exec)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_memfd_exec_test.sh"
+else ifeq ($(AUTO_TEST), shebang_argv)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "process" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_shebang_argv_test.sh"
 else ifeq ($(AUTO_TEST), sched_policy)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sched_policy_test.sh"
@@ -1287,6 +1291,10 @@ else ifeq ($(AUTO_TEST), memfd_exec)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "memfd exec regression passed." \
 		|| (echo "memfd exec regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), shebang_argv)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "shebang argv regression passed." \
+		|| (echo "shebang argv regression failed" && exit 1)
 else ifeq ($(AUTO_TEST), sched_policy)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "Scheduler policy regression passed." \
