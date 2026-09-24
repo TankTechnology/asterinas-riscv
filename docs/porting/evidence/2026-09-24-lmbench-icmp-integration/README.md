@@ -106,3 +106,6 @@ retain input identities and the earlier comparison.
 The full native `make results` ALL run was subsequently completed on this
 exact combined release Image, with 109/109 groups in
 [the final qualification](../2026-09-24-native-lmbench-integrated-release/README.md).
+
+After integrating the independent rustfmt and cross-architecture build fixes,
+the new release Image passed a further [18/18 short QEMU replay](merged-baseline/README.md).
