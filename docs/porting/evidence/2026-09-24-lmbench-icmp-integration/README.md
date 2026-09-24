@@ -109,3 +109,5 @@ exact combined release Image, with 109/109 groups in
 
 After integrating the independent rustfmt and cross-architecture build fixes,
 the new release Image passed a further [18/18 short QEMU replay](merged-baseline/README.md).
+The same exact Image then passed the native `make results` ALL suite with
+[109/109 groups](../2026-09-24-native-lmbench-merged-baseline/README.md).
