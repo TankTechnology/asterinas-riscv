@@ -68,10 +68,57 @@ after fixture navigation, while the regular readiness script stalled.  In the
 [ping result](qemu-fixture-ping-result.json), `GetTitle` again returned but a
 minimal `WebDriver:ExecuteScript` reading only `location.href` and
 `document.readyState` stalled.  The large readiness script's DOM traversal is
-therefore not necessary for the failure.  The title value was not captured in
-the host progress log, so these runs do not prove which document was active
-when `GetTitle` returned.  The next diagnostic should record that identity
-and the Marionette request/response boundary.
+therefore not necessary for the failure.  These two runs did not capture the
+returned title or the Marionette request/response boundary.
+
+The [transport excerpt](qemu-fixture-transport-excerpt.log) from the next
+[bounded run](qemu-fixture-transport-result.json) shows that fixture
+`Navigate` returned, `GetTitle` returned a title other than the expected
+fixture title, and the minimal `ExecuteScript` request was fully sent without
+a response before the host deadline.  A separate
+[15-second title-poll run](qemu-fixture-titlewait-result.json) returned an
+unexpected title on all fifteen polls and failed explicitly before sending
+any fixture script.  These results point to the fixture navigation not
+committing promptly under the current Marionette session; they do not yet
+show the actual returned title or the reason for the missing commit.
+
+A host-only [HTTP trace](qemu-fixture-http-excerpt.log) of the unmodified
+signed image then recorded a 200 response for the 8100-byte fixture page,
+followed by 200 responses for its PNG, audio, and capability JSON resources.
+The [gate result](qemu-fixture-hosttrace-complete-result.json) still timed out.
+In another run, delaying only the fixture's capability routine from 0.5 to
+60 seconds kept Marionette `ExecuteScript` responsive throughout the short
+[capture](qemu-fixture-delay-excerpt.log), although the
+[diagnostic gate](qemu-fixture-delay-result.json) correctly did not accept
+capabilities that had not yet run.  Page work can therefore affect the
+failure, but the HTTP trace and title-poll runs also show timing variation;
+none of these changed fixtures qualifies as a browser gate pass.
+
+The most precise capability result came from starting Firefox on the owned
+fixture before any public navigation.  A diagnostic page added synchronous
+step markers and reached `storage`, `wasm`, `worker`, `indexeddb`, `audio`,
+`fetch`, and `complete`.  The [guest probe excerpt](qemu-initial-fixture-capabilities-excerpt.log)
+shows repeated successful `ExecuteScript` replies but a fail-closed
+`false-capability:wasm` result: every other reported capability was true.
+The [run result](qemu-initial-fixture-steptrace-result.json) records the
+timeout.  An earlier [initial-page run](qemu-initial-fixture-result.json)
+reached the same probe phase without step markers.  This distinguishes a
+capability validation failure from a transport call that does not reply.
+
+The signed image contains Debian `firefox-esr` 140.16.0esr-1~deb13u1 and no
+JIT overlay marker.  A diagnostic-only overlay that skipped the external
+public HTTPS preflight, while retaining the owned fixture, queried its
+runtime directly: `typeof WebAssembly` and `typeof WebAssembly.instantiate`
+were both `undefined` in the [guest excerpt](qemu-wasm-runtime-excerpt.log).
+The [diagnostic result](qemu-wasm-runtime-diagnostic-result.json) is not a
+functional gate pass because the public check was skipped.  The 39-byte Wasm
+module is valid on the host (Node returned 42), and the
+[previously installed physical Firefox 143 JIT root](physical-wasm-diagnostic.json)
+exposed both APIs and returned 42 for that same module.  The ESR/JIT browser
+build difference is a concrete explanation for the QEMU `wasm=false` result;
+it does not explain every observed navigation stall or establish a kernel
+performance improvement.  The repository documents an opt-in, hash-pinned
+Firefox 143 JIT root build for this reason.
 
 ## Megrez temporary desktop
 

@@ -1,0 +1,12 @@
+A_WEB_PHASE phase=probe-fixture-initial state=start firefox_pid=194
+A_WEB_PROBE_COMMAND state=start
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_CAPABILITIES state=error error="false-capability:wasm" checks={"audio":true,"canvas":true,"cookie":true,"fetch":true,"indexedDb":true,"localStorage":true,"sessionStorage":true,"wasm":false,"worker":true}
+A_WEB_PROBE_RETRY error="fixture browser capabilities are incomplete: phase='home' state='error' error='false-capability:wasm'"
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
