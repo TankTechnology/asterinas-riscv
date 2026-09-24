@@ -23,7 +23,7 @@
 #define VALID_PREFIX_LEN 4096
 #define CROSS_FAULT_LEN (VALID_PREFIX_LEN + 904)
 #define WRAP_FIRST_SPAN 3000
-#define CONSUMED_BEFORE_WRAP (PAYLOAD_LEN + 3 + 6 + 3 * CROSS_FAULT_LEN)
+#define CONSUMED_BEFORE_WRAP (PAYLOAD_LEN + 3 + 3 + 6 + 4 * CROSS_FAULT_LEN)
 #define WRAP_PRIME_LEN \
 	(TCP_RECEIVE_CAPACITY - WRAP_FIRST_SPAN - CONSUMED_BEFORE_WRAP)
 
@@ -153,6 +153,11 @@ int main(void)
 			return EXIT_FAILURE;
 		}
 		send_all(client_fd, "xyz", 3);
+		char readv_request;
+		if (recv(client_fd, &readv_request, 1, MSG_WAITALL) != 1 ||
+		    readv_request != 'v')
+			fail("child readv request");
+		send_all(client_fd, "uvw", 3);
 		for (int operation = 0; operation < 6; operation++) {
 			char request;
 			if (recv(client_fd, &request, 1, MSG_WAITALL) != 1 ||
@@ -160,7 +165,7 @@ int main(void)
 				fail("child large-buffer request");
 			send_all(client_fd, "q", 1);
 		}
-		for (int operation = 0; operation < 3; operation++) {
+		for (int operation = 0; operation < 4; operation++) {
 			char request;
 			if (recv(client_fd, &request, 1, MSG_WAITALL) != 1 ||
 			    request != 'a' + operation)
@@ -262,6 +267,29 @@ int main(void)
 		fprintf(stderr, "partial iovec retry payload mismatch\n");
 		return EXIT_FAILURE;
 	}
+	char readv_request = 'v';
+	send_all(server_fd, &readv_request, 1);
+	char readv_prefix = 0;
+	struct iovec readv_iov[2] = {
+		{ .iov_base = &readv_prefix, .iov_len = 1 },
+		{ .iov_base = (void *)1, .iov_len = 2 },
+	};
+	errno = 0;
+	if (readv(server_fd, readv_iov, 2) != -1 || errno != EFAULT)
+		fail("readv partial iovec EFAULT");
+	char readv_recovery[3];
+	size_t readv_received = 0;
+	while (readv_received < sizeof(readv_recovery)) {
+		ssize_t n = recv(server_fd, readv_recovery + readv_received,
+				 sizeof(readv_recovery) - readv_received, 0);
+		if (n <= 0)
+			fail("recover readv payload");
+		readv_received += (size_t)n;
+	}
+	if (memcmp(readv_recovery, "uvw", sizeof(readv_recovery)) != 0) {
+		fprintf(stderr, "readv retry payload mismatch\n");
+		return EXIT_FAILURE;
+	}
 
 	/* A single receive cannot reach the inaccessible tail of this mapping. */
 	char *large_buffer = mmap(NULL, LARGE_BUFFER_LEN,
@@ -310,7 +338,7 @@ int main(void)
 	if (large_buffer_failures)
 		return EXIT_FAILURE;
 
-	for (int operation = 0; operation < 3; operation++) {
+	for (int operation = 0; operation < 4; operation++) {
 		char request = 'a' + operation;
 		send_all(server_fd, &request, 1);
 		wait_for_payload(server_fd);
@@ -330,8 +358,14 @@ int main(void)
 				.msg_iovlen = 1,
 			};
 			n = recvmsg(server_fd, &cross_message, 0);
-		} else {
+		} else if (operation == 2) {
 			n = read(server_fd, large_buffer, LARGE_BUFFER_LEN);
+		} else {
+			struct iovec cross_iov = {
+				.iov_base = large_buffer,
+				.iov_len = LARGE_BUFFER_LEN,
+			};
+			n = readv(server_fd, &cross_iov, 1);
 		}
 		if (n != -1 || errno != EFAULT) {
 			fprintf(stderr,
