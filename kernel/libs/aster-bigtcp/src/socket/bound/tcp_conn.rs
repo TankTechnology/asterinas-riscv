@@ -413,9 +413,10 @@ impl<E: Ext> TcpConnection<E> {
                         sent_bytes = current_sent_bytes;
                         (current_sent_bytes, Ok(()))
                     }
-                    Err((err, current_sent_bytes)) => {
-                        sent_bytes = current_sent_bytes;
-                        (current_sent_bytes, Err(err))
+                    Err((err, _)) => {
+                        // A failed copy must not commit the current contiguous
+                        // buffer. Earlier buffers may already have been sent.
+                        (0, Err(err))
                     }
                 }
             });
