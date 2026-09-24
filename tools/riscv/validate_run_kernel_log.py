@@ -22,6 +22,7 @@ SUCCESS_MARKERS = {
     "ipv6-udp": "ipv6_udp: PASS",
     "regression": "All regression tests passed.",
     "udp-user-buffer-prefault": "UDP user buffer prefault regression passed.",
+    "udp-msg-dontwait": "UDP MSG_DONTWAIT regression passed.",
     "vsock": "Vsock test passed.",
 }
 MULTI_FACT_MARKERS = {
