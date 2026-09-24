@@ -26,7 +26,24 @@ other ICMP message types, and broadcast destinations. The
 `aster-bigtcp` tests passing, including the two new Echo tests; the RISC-V
 kernel build passed separately.
 
-The candidate Image has **not yet been booted on Megrez**. The QEMU kernel
-tests prove packet processing but do not prove the physical Ethernet path or
-host ping. The running board and its RockOS-default boot menu were left on
-the existing Image for a later controlled boot-and-recovery check.
+The release candidate from commit `8a3086f9418c43b2da1f2b62ff1ecb0260fed2bf`
+was subsequently booted on Megrez. Its Image SHA-256 is
+`754fb3b29663a5173b3115d9c357c8f67af0834f6df9c8f895aeb84ebf071f80`.
+RockOS verified that SHA-256 after staging, and U-Boot verified the Image,
+DTB, and initramfs CRC32 values before `booti`. The candidate reached the
+debug root console, UID 0, systemd, graphical service, and ext2 root on
+`/dev/mmcblk0p2`; the boot ID was
+`82b3b011-49ab-456e-ade5-5faddc79432c`.
+
+Two short direct-host [ping runs](new-image-icmp-ping-1.txt)
+([repeat](new-image-icmp-ping-2.txt)) each received **2/2 replies** from
+`10.100.19.200` with TTL 64. A temporary HTTP service on that address
+returned a nonce-matching body to the host, and its port refused connections
+after cleanup. The [board validation summary](board-validation.json) records
+the exact artifact, boot, ICMP, TCP, and recovery observations. Each serial
+probe used a fresh connection and UID-0/boot-ID frame. The Asterinas guest
+then rebooted through the configured userspace recovery path to a fresh
+U-Boot prompt. The original default menu booted RockOS, whose root shell
+and new boot ID were verified through another fresh serial connection. The
+test-only Image was removed after verifying its SHA-256 and confirming that
+the menu did not reference it; `/boot` recovered 11,788,288 free bytes.
