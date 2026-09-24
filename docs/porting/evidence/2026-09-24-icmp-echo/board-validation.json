@@ -1,0 +1,36 @@
+{
+  "source_commit": "8a3086f9418c43b2da1f2b62ff1ecb0260fed2bf",
+  "candidate_image_sha256": "754fb3b29663a5173b3115d9c357c8f67af0834f6df9c8f895aeb84ebf071f80",
+  "candidate_image_size": 6058432,
+  "uboot_crc32": {
+    "booti": "68592857",
+    "dtb": "40ed4c65",
+    "initrd": "1f97beff"
+  },
+  "rockos_staging_sha256_passed": true,
+  "boot_profile": "debug-root-console, systemd, firmware framebuffer, writable ext2 p2, 180s synced userspace reboot, 300s emergency reboot",
+  "asterinas_boot_id": "82b3b011-49ab-456e-ade5-5faddc79432c",
+  "asterinas_root_reopens": 3,
+  "asterinas_root_uid": 0,
+  "ping": {
+    "old_image": "0/2",
+    "new_image_first": "2/2",
+    "new_image_second": "2/2",
+    "host_interface": "enp12s0",
+    "board_ipv4": "10.100.19.200"
+  },
+  "tcp": {
+    "bind_ipv4": "10.100.19.200",
+    "port": 18889,
+    "nonce_matched": true,
+    "connection_refused_after_cleanup": true
+  },
+  "software_reboot_to_uboot": true,
+  "rockos_default_booted": true,
+  "rockos_root_reopen_proved": true,
+  "rockos_boot_id": "2b5f3673-46a3-4378-a250-e8cde932f2f5",
+  "boot_partition": "/dev/mmcblk1p1",
+  "candidate_removed_after_test": true,
+  "boot_partition_free_bytes_after_cleanup": 11788288,
+  "serial_device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0"
+}
