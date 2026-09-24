@@ -80,7 +80,8 @@ FOCUSED_NETWORK_AUTO_TESTS := \
 	ipv6_udp \
 	tcp_user_buffer_prefault \
 	udp_user_buffer_prefault \
-	udp_msg_dontwait
+	udp_msg_dontwait \
+	tcp_msg_dontwait_send
 ifneq ($(filter $(AUTO_TEST),$(FOCUSED_NETWORK_AUTO_TESTS)),)
 REGRESSION_TEST_DIRS := [ "network" ]
 endif
@@ -207,6 +208,9 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_udp_user_buffer_prefault_test.sh
 else ifeq ($(AUTO_TEST), udp_msg_dontwait)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_udp_msg_dontwait_test.sh"
+else ifeq ($(AUTO_TEST), tcp_msg_dontwait_send)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_msg_dontwait_send_test.sh"
 else ifeq ($(AUTO_TEST), dynamic_clock)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_dynamic_clock_test.sh"
@@ -1267,6 +1271,10 @@ else ifeq ($(AUTO_TEST), udp_msg_dontwait)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "udp-msg-dontwait"
+else ifeq ($(AUTO_TEST), tcp_msg_dontwait_send)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "tcp-msg-dontwait-send"
 else ifeq ($(AUTO_TEST), dynamic_clock)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "Dynamic clock regression passed." \
