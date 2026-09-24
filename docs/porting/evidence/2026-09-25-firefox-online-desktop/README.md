@@ -32,8 +32,9 @@ twice reached Baidu's home page, then stalled after Marionette requested the
 controlled fixture home page.  The first run was stopped after about eight
 minutes; the second bounded diagnostic run ended with
 `browser-timeout:phase-probe-fixture-home`.  The fixture received twenty
-earlier network-probe requests but no request for
-`/browser-quality/index.html`.  Twelve GDB-stub samples during the second
+earlier network-probe requests.  Its summary intentionally does not record
+ordinary `/browser-quality/` page requests, so it cannot establish whether
+the browser requested the fixture page.  Twelve GDB-stub samples during the second
 stall showed active user-space PCs and idle kernel harts, without recurrence
 of the earlier vDSO/coarse-clock lock deadlock.  They do not identify the
 Firefox function or prove that the kernel is uninvolved.  The local raw
@@ -46,9 +47,31 @@ stall.  A verified development overlay replaced only
 the same signed root as its base and the same Sv39 kernel.  PCManFM and LXPanel
 therefore did not start.  The [raw gate result](qemu-shell-off-result.json)
 still failed at `browser-timeout:phase-probe-fixture-home` after Baidu loaded.
-The fixture again served twenty network-probe requests and received no browser
-workload request.  This excludes the new shell processes as a necessary cause
+This excludes the new shell processes as a necessary cause
 of this particular QEMU failure, but does not identify the remaining cause.
+
+Two more disposable overlays narrowed the failure.  In the
+[fixture-first result](qemu-fixture-first-result.json), the Marionette script
+omitted its initial Baidu navigation and still timed out at the same fixture
+probe.  In the [startup-fixture result](qemu-fixture-startup-result.json),
+Firefox was launched with the owned fixture as its initial URL and the normal
+gate again timed out at that probe.  A separate short graphical capture of
+this startup overlay [shows the fixture document rendered](qemu-fixture-startup-open.png)
+while a Baidu navigation was already in progress.  The owned HTTP page can
+therefore reach and render in Firefox; the remaining failure is at or after
+the Marionette navigation/readiness boundary.  These overlays were
+diagnostic only and are not part of the signed root.
+
+Two further diagnostic overlays split that boundary.  In the
+[title result](qemu-fixture-title-result.json), `WebDriver:GetTitle` returned
+after fixture navigation, while the regular readiness script stalled.  In the
+[ping result](qemu-fixture-ping-result.json), `GetTitle` again returned but a
+minimal `WebDriver:ExecuteScript` reading only `location.href` and
+`document.readyState` stalled.  The large readiness script's DOM traversal is
+therefore not necessary for the failure.  The title value was not captured in
+the host progress log, so these runs do not prove which document was active
+when `GetTitle` returned.  The next diagnostic should record that identity
+and the Marionette request/response boundary.
 
 ## Megrez temporary desktop
 

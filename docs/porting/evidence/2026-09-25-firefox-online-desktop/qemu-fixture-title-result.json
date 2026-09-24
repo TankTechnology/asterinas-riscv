@@ -1,0 +1,214 @@
+{
+  "debian_release": "13.7",
+  "final_root_sha256": null,
+  "input_sha256": {
+    "dtb": "c89975b7bd105e7b127b6828ca3443cd1cc159e0f7f77876c7797aacf3efbfb8",
+    "kernel": "a64142bd775fd46c958125d9a85256bd45e96d984d47695e09327bb496dbc01b",
+    "manifest": "d8e3e643afaf2118950aa72800eb168ac90a6b7481c46fb0dec0e48d6c42a850",
+    "package_checksums": "e827046a3f0f5ae381e39159436197e7c8e4c9ebfdc02aeee578138c74af4fad",
+    "packages_lock": "aa92c0471dbd9c08b3adfce97235f78dc625054296fe37adce5afa0a77ce9966",
+    "root_image": "f8c49e3529842382c82f0a3471026c4929b2dce3d084cb8127fa93c1dd17be77",
+    "stage1_initramfs": "ace8ef5b81070cf118784b2589ccfb75ba706fd0134b77026aceeefc9fce0823",
+    "u_boot": "320bf87beedb218070ad44c60ca82a4d1319fd490dbe9a054386635df21f23d4"
+  },
+  "network_fixture": {
+    "payload_path": "/asterinas-network-probe.bin",
+    "payload_sha256": "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2",
+    "payload_size": 65536,
+    "records_truncated": false,
+    "request_count": 20,
+    "requests": [
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739713915343878,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715835828516,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715840191849,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715844512241,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715848526803,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715852873525,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715856809026,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715860860039,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715864897201,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715868925743,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715872965465,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715877039847,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715881060579,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715885070071,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715889430643,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715893458385,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715897816027,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715901940000,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715906000062,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      },
+      {
+        "body_bytes": 65536,
+        "monotonic_ns": 739715910036214,
+        "path": "/asterinas-network-probe.bin",
+        "peer": "127.0.0.1",
+        "status": 200
+      }
+    ],
+    "schema_version": 1,
+    "workload_max_active": 0,
+    "workload_records_truncated": false,
+    "workload_request_count": 0,
+    "workload_requests": []
+  },
+  "network_mode": "direct",
+  "passed": false,
+  "profile": "browser-web",
+  "qemu_argv": [
+    [
+      "qemu-system-riscv64",
+      "-machine",
+      "virt",
+      "-cpu",
+      "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+      "-m",
+      "2G",
+      "-smp",
+      "4",
+      "-display",
+      "none",
+      "-netdev",
+      "user,id=net0",
+      "-device",
+      "virtio-net-device,netdev=net0",
+      "-serial",
+      "stdio",
+      "-no-reboot",
+      "-kernel",
+      "/tmp/asterinas-debian-qemu-b1-g27fiz4k/u-boot",
+      "-drive",
+      "if=none,format=raw,file=/proc/self/fd/13/boot.ext4,id=bootdisk,readonly=on",
+      "-device",
+      "bochs-display",
+      "-device",
+      "virtio-keyboard-device",
+      "-device",
+      "virtio-tablet-device",
+      "-device",
+      "virtio-blk-device,drive=bootdisk",
+      "-drive",
+      "if=none,format=raw,file=/proc/self/fd/13/debian-root.run.ext2,id=rootdisk,cache=writeback",
+      "-device",
+      "virtio-blk-device,drive=rootdisk",
+      "-monitor",
+      "unix:/tmp/asterinas-debian-qemu-b1-g27fiz4k/monitor.sock,server=on,wait=off"
+    ]
+  ],
+  "reason": "browser-timeout:phase-probe-fixture-home",
+  "screenshot": {},
+  "target": "browser"
+}
