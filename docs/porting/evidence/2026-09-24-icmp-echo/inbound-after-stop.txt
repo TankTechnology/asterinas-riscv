@@ -1,0 +1,2 @@
+exit=7
+curl: (7) Failed to connect to 10.100.19.200 port 18889 after 0 ms: 连接被拒绝
