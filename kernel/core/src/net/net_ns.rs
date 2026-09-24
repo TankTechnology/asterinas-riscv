@@ -138,6 +138,13 @@ pub fn current_net_ns() -> Arc<NetNamespace> {
         .unwrap_or_else(|| NetNamespace::get_init_singleton().clone())
 }
 
+impl Drop for NetNamespace {
+    fn drop(&mut self) {
+        // The initial namespace is static; each child owns its loopback poll thread.
+        self.loopback().sched_poll().stop();
+    }
+}
+
 impl NsCommonOps for NetNamespace {
     const TYPE: NsType = NsType::Net;
 
@@ -154,5 +161,30 @@ impl NsCommonOps for NetNamespace {
 
     fn stashed_dentry(&self) -> &StashedDentry {
         &self.stashed_dentry
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::thread::Thread;
+
+    #[ktest]
+    fn child_netns_poll_thread_releases_loopback() {
+        crate::time::clocks::init_for_ktest();
+        let net_ns = NetNamespace::new_child(UserNamespace::get_init_singleton().clone());
+        let loopback = Arc::downgrade(net_ns.loopback());
+        drop(net_ns);
+
+        for _ in 0..1000 {
+            if loopback.strong_count() == 0 {
+                break;
+            }
+            Thread::yield_now();
+        }
+
+        assert!(loopback.upgrade().is_none(), "loopback interface leaked");
     }
 }

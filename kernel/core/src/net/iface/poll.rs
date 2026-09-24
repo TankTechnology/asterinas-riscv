@@ -38,10 +38,15 @@ fn spawn_background_poll_thread(iface: Arc<Iface>) {
         let wait_queue = sched_poll.polling_wait_queue();
 
         loop {
-            let next_poll_at_ms = if let Some(next_poll_at_ms) = sched_poll.next_poll_at_ms() {
-                next_poll_at_ms
-            } else {
-                wait_queue.wait_until(|| sched_poll.next_poll_at_ms())
+            let next_poll_at_ms = wait_queue.wait_until(|| {
+                if sched_poll.is_stopped() {
+                    Some(None)
+                } else {
+                    sched_poll.next_poll_at_ms().map(Some)
+                }
+            });
+            let Some(next_poll_at_ms) = next_poll_at_ms else {
+                break;
             };
 
             let now_as_ms = Jiffies::elapsed().as_duration().as_millis() as u64;
@@ -63,7 +68,13 @@ fn spawn_background_poll_thread(iface: Arc<Iface>) {
             let _ = wait_queue.wait_until_or_timeout(
                 // If `sched_poll.next_poll_at_ms()` changes to an earlier time, we will end the
                 // waiting.
-                || (sched_poll.next_poll_at_ms()? < next_poll_at_ms).then_some(()),
+                || {
+                    if sched_poll.is_stopped() {
+                        Some(())
+                    } else {
+                        (sched_poll.next_poll_at_ms()? < next_poll_at_ms).then_some(())
+                    }
+                },
                 &duration,
             );
         }
