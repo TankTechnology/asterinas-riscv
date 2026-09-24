@@ -715,6 +715,12 @@ class SerialContractTests(unittest.TestCase):
     def _session(self) -> board.BoardSession:
         return _make_session()
 
+    def test_interrupt_does_not_repeat_the_last_uboot_command(self):
+        session = self._session()
+        with mock.patch.object(board.os, "write", return_value=1) as write:
+            session.interrupt()
+        write.assert_called_once_with(-1, b"\x03")
+
     def test_wait_for_logs_every_new_chunk_once(self):
         session = self._session()
         logged: list[str] = []
@@ -1646,9 +1652,10 @@ class BootTransactionTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(result, 0)
-        physical_session.send.assert_called_once_with("")
+        physical_session.interrupt.assert_called_once_with()
+        physical_session.send.assert_not_called()
         self.assertLess(
-            physical_session.mock_calls.index(mock.call.send("")),
+            physical_session.mock_calls.index(mock.call.interrupt()),
             physical_session.mock_calls.index(
                 mock.call.wait_for_uboot_prompt(timeout=60.0)
             ),
