@@ -1,0 +1,6 @@
+exit=1
+PING 10.100.19.200 (10.100.19.200) from 10.100.19.216 enp12s0: 56(84) bytes of data.
+
+--- 10.100.19.200 ping statistics ---
+2 packets transmitted, 0 received, 100% packet loss, time 1026ms
+

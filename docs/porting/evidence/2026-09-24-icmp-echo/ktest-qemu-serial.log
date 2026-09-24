@@ -1,0 +1,122 @@
+
+OpenSBI v1.7
+   ____                    _____ ____ _____
+  / __ \                  / ____|  _ \_   _|
+ | |  | |_ __   ___ _ __ | (___ | |_) || |
+ | |  | | '_ \ / _ \ '_ \ \___ \|  _ < | |
+ | |__| | |_) |  __/ | | |____) | |_) || |_
+  \____/| .__/ \___|_| |_|_____/|____/_____|
+        | |
+        |_|
+
+Platform Name               : riscv-virtio,qemu
+Platform Features           : medeleg
+Platform HART Count         : 1
+Platform IPI Device         : aclint-mswi
+Platform Timer Device       : aclint-mtimer @ 10000000Hz
+Platform Console Device     : uart8250
+Platform HSM Device         : ---
+Platform PMU Device         : ---
+Platform Reboot Device      : syscon-reboot
+Platform Shutdown Device    : syscon-poweroff
+Platform Suspend Device     : ---
+Platform CPPC Device        : ---
+Firmware Base               : 0x80000000
+Firmware Size               : 317 KB
+Firmware RW Offset          : 0x40000
+Firmware RW Size            : 61 KB
+Firmware Heap Offset        : 0x46000
+Firmware Heap Size          : 37 KB (total), 2 KB (reserved), 11 KB (used), 23 KB (free)
+Firmware Scratch Size       : 4096 B (total), 1400 B (used), 2696 B (free)
+Runtime SBI Version         : 3.0
+Standard SBI Extensions     : time,rfnc,ipi,base,hsm,srst,pmu,dbcn,fwft,legacy,dbtr,sse
+Experimental SBI Extensions : none
+
+Domain0 Name                : root
+Domain0 Boot HART           : 0
+Domain0 HARTs               : 0*
+Domain0 Region00            : 0x0000000000100000-0x0000000000100fff M: (I,R,W) S/U: (R,W)
+Domain0 Region01            : 0x0000000010000000-0x0000000010000fff M: (I,R,W) S/U: (R,W)
+Domain0 Region02            : 0x0000000002000000-0x000000000200ffff M: (I,R,W) S/U: ()
+Domain0 Region03            : 0x0000000080040000-0x000000008004ffff M: (R,W) S/U: ()
+Domain0 Region04            : 0x0000000080000000-0x000000008003ffff M: (R,X) S/U: ()
+Domain0 Region05            : 0x000000000c400000-0x000000000c5fffff M: (I,R,W) S/U: (R,W)
+Domain0 Region06            : 0x000000000c000000-0x000000000c3fffff M: (I,R,W) S/U: (R,W)
+Domain0 Region07            : 0x0000000000000000-0xffffffffffffffff M: () S/U: (R,W,X)
+Domain0 Next Address        : 0x0000000080200000
+Domain0 Next Arg1           : 0x000000027fe00000
+Domain0 Next Mode           : S-mode
+Domain0 SysReset            : yes
+Domain0 SysSuspend          : yes
+
+Boot HART ID                : 0
+Boot HART Domain            : root
+Boot HART Priv Version      : v1.12
+Boot HART Base ISA          : rv64imafdch
+Boot HART ISA Extensions    : sstc,zicntr,zihpm,zkr,zicboz,zicbom,svpbmt,sdtrig,svadu
+Boot HART PMP Count         : 16
+Boot HART PMP Granularity   : 2 bits
+Boot HART PMP Address Bits  : 54
+Boot HART MHPM Info         : 16 (0x0007fff8)
+Boot HART Debug Triggers    : 2 triggers
+Boot HART MIDELEG           : 0x0000000000001666
+Boot HART MEDELEG           : 0x0000000000f4b509
+Enter riscv_boot
+INFO: Initializing frame metadata for physical memory up to 280000000
+INFO: Adding free frames to the allocator: 80050000..80200000
+INFO: Adding free frames to the allocator: 8a67f000..280000000
+INFO: Initializing the kernel page table
+INFO: Creating new I/O memory allocator builder, ranges: [
+    0x0..0x80050000,
+    0x280000000..0xffffffffffffffff,
+]
+DEBUG: Try to reserve security-sensitive MMIO range: 0xc000000..0xc600000 with cache policy: Uncacheable
+INFO: RISC-V icache coherence: harts=1, mode=local-fence-i
+DEBUG: Try to reserve security-sensitive MMIO range: 0x100000..0x101000 with cache policy: Uncacheable
+
+[ktest runner] running 368 tests in 7 crates
+
+running 21 tests in crate "aster-bigtcp"
+
+test aster_bigtcp::iface::common::port_table_tests::address_index_tracks_first_bind_and_last_release ... [32mok[39m
+test aster_bigtcp::iface::common::port_table_tests::explicit_bind_requires_reuse_from_every_conflicting_owner ... [32mok[39m
+test aster_bigtcp::iface::common::port_table_tests::ephemeral_bind_uses_address_index_to_skip_wildcard_conflict ... [32mok[39m
+test aster_bigtcp::iface::phy::ether::tests::retry_records_arp_request_in_release_build ...INFO: bigtcp: ASTERINAS_NET_ARP_RATE source=dispatch emitted=1 target=10.0.0.2 now_ms=0 previous_ms=None pending=1
+INFO: bigtcp: ASTERINAS_NET_ARP_RATE source=retry emitted=1 target=10.0.0.2 now_ms=1000 previous_ms=Some(0) pending=1
+ [32mok[39m
+test aster_bigtcp::iface::phy::ether::tests::pending_arp_packets_expire_and_release_capacity ... [32mok[39m
+test aster_bigtcp::iface::phy::ether::tests::resolved_neighbor_bypasses_unresolved_queue_head ...INFO: bigtcp: ASTERINAS_NET_ARP_RATE source=dispatch emitted=1 target=10.0.0.2 now_ms=0 previous_ms=None pending=1
+ [32mok[39m
+test aster_bigtcp::iface::phy::ether::tests::pending_arp_requests_are_rate_limited_per_neighbor ...INFO: bigtcp: ASTERINAS_NET_ARP_RATE source=dispatch emitted=1 target=10.0.0.2 now_ms=0 previous_ms=None pending=1
+INFO: bigtcp: ASTERINAS_NET_ARP_RATE source=dispatch emitted=2 target=10.0.0.2 now_ms=1000 previous_ms=Some(0) pending=1
+ [32mok[39m
+test aster_bigtcp::iface::poll::icmp_tests::echo_request_replies_with_original_identifier_sequence_and_data ... [32mok[39m
+test aster_bigtcp::iface::poll::icmp_tests::echo_reply_rejects_bad_checksum_other_types_and_non_unicast_addresses ... [32mok[39m
+test aster_bigtcp::iface::poll::tests::mapped_dual_stack_udp_source_is_preserved ... [32mok[39m
+test aster_bigtcp::iface::poll::tests::native_ipv6_tcp_representation_is_unchanged ... [32mok[39m
+test aster_bigtcp::iface::poll::tests::native_ipv6_udp_representation_is_unchanged ... [32mok[39m
+test aster_bigtcp::iface::poll::tests::loopback_dual_stack_udp_source_uses_ipv4_source ... [32mok[39m
+test aster_bigtcp::iface::poll::tests::mapped_dual_stack_tcp_representation_is_demapped ... [32mok[39m
+test aster_bigtcp::iface::poll::tests::unspecified_dual_stack_udp_source_uses_iface_address ... [32mok[39m
+test aster_bigtcp::iface::poll::tests::unspecified_dual_stack_udp_source_uses_ipv4_loopback ... [32mok[39m
+test aster_bigtcp::iface::poll::tests::loopback_dual_stack_udp_source_uses_iface_for_external_destination ... [32mok[39m
+test aster_bigtcp::socket_table::tests::dual_stack_ports_conflict_in_both_bind_orders ... [32mok[39m
+test aster_bigtcp::socket_table::tests::ipv4_and_mapped_ipv6_connection_keys_are_equal ... [32mok[39m
+test aster_bigtcp::socket_table::tests::ipv4_port_remains_registered_until_last_owner_drops ... [32mok[39m
+test aster_bigtcp::socket_table::tests::native_ipv6_connection_key_stays_distinct_from_ipv4 ... [32mok[39m
+
+test result: [32mok[39m. 21 passed; 0 failed; 0 filtered out.
+
+[ktest runner] skipping crate "aster-softirq".
+
+[ktest runner] skipping crate "aster-util".
+
+[ktest runner] skipping crate "osdk-frame-allocator".
+
+[ktest runner] skipping crate "osdk-heap-allocator".
+
+[ktest runner] skipping crate "osdk-test-kernel".
+
+[ktest runner] skipping crate "ostd".
+
+[ktest runner] All crates tested.
