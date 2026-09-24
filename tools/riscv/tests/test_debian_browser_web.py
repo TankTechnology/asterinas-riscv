@@ -438,6 +438,44 @@ def proxy_web_evidence() -> dict[str, bytes]:
 
 
 class BrowserWebContractTests(unittest.TestCase):
+    def test_basic_only_boot_skips_formal_browser_evidence(self) -> None:
+        evidence = ROOTFS / "browser_web_evidence.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            console = Path(directory) / "console"
+            environment = {
+                "PATH": os.environ["PATH"],
+                "ASTERINAS_BROWSER_WEB_CONSOLE": str(console),
+                "ASTERINAS_BROWSER_WEB_BASIC_ONLY": "1",
+            }
+            skipped = subprocess.run(
+                ["bash", str(evidence)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            self.assertEqual(skipped.returncode, 0, skipped.stderr)
+            self.assertIn(
+                "DEBIAN_BROWSER_WEB_SKIP reason=basic-only",
+                console.read_text(),
+            )
+
+            environment["ASTERINAS_BROWSER_WEB_BASIC_ONLY"] = "0"
+            normal = subprocess.run(
+                ["bash", str(evidence)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+            self.assertNotEqual(normal.returncode, 0)
+            self.assertIn(
+                "DEBIAN_BROWSER_WEB_FAIL reason=network-mode-invalid",
+                console.read_text(),
+            )
+
     def test_desktop_shell_capture_adds_one_private_qmp_socket(self) -> None:
         monitor = Path("/tmp/private-qemu/monitor.sock")
         with mock.patch.object(
