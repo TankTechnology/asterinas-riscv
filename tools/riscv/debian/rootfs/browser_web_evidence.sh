@@ -4,6 +4,7 @@
 set -euo pipefail
 
 readonly CONSOLE="${ASTERINAS_BROWSER_WEB_CONSOLE:-/dev/console}"
+readonly BASIC_ONLY="${ASTERINAS_BROWSER_WEB_BASIC_ONLY:-0}"
 readonly TIMEOUT_SECONDS="${ASTERINAS_BROWSER_WEB_TIMEOUT_SECONDS:-5400}"
 readonly FORMAL_TIMEOUT_SECONDS="${ASTERINAS_BROWSER_WEB_FORMAL_TIMEOUT_SECONDS:-1200}"
 readonly PROC_ROOT="${ASTERINAS_BROWSER_WEB_PROC_ROOT:-/proc}"
@@ -38,6 +39,11 @@ readonly STABILITY_SECONDS=60
 
 emit() { printf '%s\n' "$1" >>"$CONSOLE"; }
 fail() { emit "DEBIAN_BROWSER_WEB_FAIL reason=$1"; exit 1; }
+case "$BASIC_ONLY" in
+    1) emit "DEBIAN_BROWSER_WEB_SKIP reason=basic-only"; exit 0 ;;
+    0) ;;
+    *) fail invalid-basic-only ;;
+esac
 systemctl_bounded() {
     /usr/bin/timeout 5 /usr/bin/systemctl "$@"
 }
