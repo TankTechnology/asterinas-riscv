@@ -83,6 +83,7 @@
     "browser_service_active": true,
     "software_reboot_watchdog": 0,
     "serial_closed": true,
-    "actual_reboot_persistence_of_new_entry": "not tested"
-  }
+    "actual_reboot_persistence_of_new_entry": "validated by controlled reboot and reselect; see board-reboot-result.json"
+  },
+  "reboot_followup": "board-reboot-result.json"
 }
