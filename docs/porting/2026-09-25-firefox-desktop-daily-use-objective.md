@@ -22,6 +22,33 @@ otherwise empty X root window.
 
 ## Current checkpoint
 
+The current `main` Firefox 143 JIT root (ext2 SHA-256
+`d4f4e88fb20a8938e7270f4ceaf9c79855ba3d038acbd6f1030fe269dfca9bd4`)
+is installed on Megrez partition 2 after a verified 4-GiB backup and
+byte-for-byte post-write comparison. Its six-state QEMU desktop gate passed.
+On the board, the persistent-home desktop visibly retained its wallpaper,
+three launchers, and bottom panel when Firefox was minimized; the taskbar
+restored the window. Fresh nonce-framed root serial commands established the
+boot identity, and the bounded experiment returned to RockOS with partition 2
+unmounted. The `basic-only` autogate fix was tested in the signed image: the
+service exited successfully without invoking the QEMU-specific fixture gate.
+
+Two short physical daily-use boots each passed all seven controlled functional
+groups. Their context-open times were 718 and 1,336 ms; Firefox-exec-to-first-
+window times were 48.3 and 68.3 seconds. They used different isolated-boot
+home conditions, so this is a variability warning, not a same-condition A/B
+comparison. The separate fixed 720p video baseline still drops roughly
+110–125 of 300 frames, and 51 of 60 symbolized `libxul` video PCs were in
+SWGL YUV conversion. No twofold speedup or qualified performance gain has
+been demonstrated. The RockOS-default menu and older Asterinas kernel entry
+remain unchanged; an unbounded Asterinas menu boot with persistent home and a
+debug-console reconnect after an actual Asterinas reboot remain open. The
+[signed-root evidence](evidence/2026-09-25-firefox-online-desktop/README.md)
+contains the image identities, captures, raw daily-use results, and recovery
+limits.
+
+## Earlier checkpoint before signed-root installation
+
 The online shell integration and a vDSO writer lock-order stability fix are
 on `main`. The signed Firefox 143 JIT image passed a short QEMU desktop gate:
 wallpaper, icons, bottom panel, Firefox minimize/restore, Files, Terminal,
@@ -66,8 +93,8 @@ are retained. No performance change or twofold speedup has been established.
 
 - Before this milestone, the online `browser-web` image inherited `pcmanfm`
   and `lxpanel` packages but started only Xorg and Openbox. The shell profile,
-  launchers, and session startup are now installed in the signed JIT QEMU
-  image; the previously installed board root does not yet contain them.
+  launchers, and session startup are now installed in the signed JIT image on
+  partition 2; the earlier board root did not contain them.
 - The current display path is Xorg `fbdev` on `/dev/fb0` with GLX disabled. The
   physical Firefox video probe in [PR #176](https://github.com/TankTechnology/asterinas-riscv/pull/176)
   saw no `/dev/dri`. QEMU virtio-gpu DRM results do not establish physical
@@ -163,9 +190,10 @@ claim.
 
 Keep the shell integration, kernel functionality fixes, performance probes,
 and display/DRM changes in separately reviewable commits or PRs. The next
-functional boundary is a signed-root Megrez boot with persistent shell and
-fresh serial control after reboot; the external Baidu challenge must remain
-separately classified. The next performance boundary is a bounded A/B/A of
+functional boundary is a persistent-home Asterinas menu boot with fresh root
+serial control after a separate actual Asterinas reboot; the external Baidu
+challenge must remain separately classified. The next performance boundary
+is a bounded A/B/A of
 one SWGL/YUV or physical display-path variant against the identified hot
 function, with matching Firefox and clip artifacts. The current `/dev/fb0`
 mapping and
