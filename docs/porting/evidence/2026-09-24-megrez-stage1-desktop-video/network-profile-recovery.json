@@ -1,0 +1,11 @@
+{
+  "status": "pass",
+  "before": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "e0d83ada-86ca-4c85-95de-6a14735a5f07",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "recovered_to_uboot": true,
+  "rockos_boot_after": "3e3b8f24-b292-481d-9cda-681a826c4ff9"
+}

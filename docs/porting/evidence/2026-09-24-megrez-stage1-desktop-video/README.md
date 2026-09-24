@@ -62,20 +62,65 @@ The browser-web profile also does not satisfy browser-M5's loopback-only
 namespace assertion, so that assertion was not applied. These checks do not
 prove displayed video frames or Bilibili playback.
 
-The simple host-served HTTP page was not reachable from this browser
-configuration: a Python URL open from Firefox's network namespace returned
-`EADDRNOTAVAIL`. Separately, `ip -o -4 addr show` printed `lo` and then did
-not finish within the 20-second serial query; it was interrupted, after which
-root control was re-proved. See `network-http-error.log` and
-`network-ip-timeout.log` in [`raw-logs.tar.gz`](raw-logs.tar.gz). This network behavior
-remains open and is separate from the passing local media check.
+The first host-served HTTP attempt returned `EADDRNOTAVAIL` because that
+canary's Desktop entry had no physical IPv4 boot profile. A later bounded
+diagnostic found `ip -o -4 addr show` completed and listed only `lo`; the
+following `ip -4 route show` command was the one that timed out. The original
+console traces remain in `network-http-error.log` and `network-ip-timeout.log`
+inside [`raw-logs.tar.gz`](raw-logs.tar.gz); the later diagnosis corrects the
+earlier interpretation of that combined serial query.
 
-At handoff, the board remained in this Asterinas boot. A final fresh serial
-connection proved UID 0 and the same boot ID; both readiness and Firefox
-services were `active`, and the watchdog still read `0`. RockOS remains the
-default U-Boot menu entry. The new Stage1 has not yet been checked by a
-separate persistent reboot cycle. See [`handoff.json`](handoff.json). No
-credentials are included in this evidence.
+At the first handoff, the board remained in the earlier Asterinas boot. A
+fresh serial connection proved UID 0 and the same boot ID; both readiness
+and Firefox services were `active`, and the watchdog read `0`. See
+[`handoff.json`](handoff.json). No credentials are included in this evidence.
+
+## Network-profile desktop follow-up
+
+The board was software-rebooted to a fresh U-Boot epoch and RockOS SSH
+recovered before selecting the immutable
+`/boot/extlinux/asterinas-current-network-canary-20260924.conf` menu (SHA-256
+`ef513c433a58aba33379481bfd11cebcc62db5e5434ef6deeaa0472505524aec`).
+Its Desktop entry uses the same kernel and corrected Stage1 hashes above,
+plus `asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1` and
+static neighbor entries for the gateway and test host. The default menu
+entry remains RockOS; the Basic and Probe entries were not changed.
+
+This new boot was `9548084c-0d9f-4654-81c1-f82adf69ea58`. Fresh serial
+root proof and a close/reopen check found PID 1 `systemd`, root filesystem
+`/dev/mmcblk0p2:ext2`, Firefox visible, readiness service `active/exited`,
+and watchdog `0`. Firefox's network namespace reported
+`10.100.19.200/21` on `eth0`; a Python HTTP request from that namespace
+received status 200 from the host at `10.100.19.216:17894`.
+See [`network-profile-recovery.json`](network-profile-recovery.json) and
+[`network-desktop.json`](network-desktop.json).
+
+The host served a simple page and the same 646-byte silent VP8/WebM fixture
+over HTTP. For the passing run, both the page and media had fresh URLs; the
+host server observed GETs for each from `10.100.19.200`, each with status 200.
+A subsequent request from Firefox's network namespace reproduced both 200
+responses; its retained [`HTTP server log`](http-server.log) records the two
+board-origin requests.
+The Firefox Marionette gate observed JavaScript, `canplay`, and eight `ended`
+events in 11.593 seconds, with no media error. Firefox remained PID 353,
+its service stayed active, the boot ID was unchanged, and the watchdog stayed
+`0`. The page declares a data-URL icon so an unrelated automatic favicon
+request does not violate the gate's resource allowlist. The Firefox 143
+`Navigate` response still needed the test-local adapter described above.
+See [`http-eight-loop.json`](http-eight-loop.json). This is a small, silent,
+local HTTP video check; it does not establish visible frame presentation,
+remote-site playback, or browser performance.
+
+After the video run, two independently reopened serial connections each
+proved UID 0 and the same boot ID, `active` readiness and Firefox services,
+watchdog `0`, and `eth0` IPv4 configuration. See
+[`network-handoff.json`](network-handoff.json). The network-profile menu has
+not been checked through a separate persistence reboot. `ip -4 route show`
+still times out: a bounded raw RTM_GETROUTE dump probe received
+`NLMSG_ERROR(-EOPNOTSUPP)` without a terminating dump reply. Route-netlink
+support remains a separate kernel gap. RockOS is still the default U-Boot
+entry. The new Stage1 has not yet been checked by a separate persistence
+reboot cycle.
 
 Host verification:
 

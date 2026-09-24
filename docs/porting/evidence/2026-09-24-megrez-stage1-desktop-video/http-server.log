@@ -1,0 +1,5 @@
+Serving HTTP on 10.100.19.216 port 17894 (http://10.100.19.216:17894/) ...
+10.100.19.200 - - [24/Sep/2026 14:12:22] "GET /index8-fresh.html HTTP/1.1" 200 -
+10.100.19.200 - - [24/Sep/2026 14:12:22] "GET /fresh-20260924.webm HTTP/1.1" 200 -
+
+Keyboard interrupt received, exiting.
