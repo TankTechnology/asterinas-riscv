@@ -36,9 +36,9 @@ The older 18-case QEMU smoke driver was replayed against the combined Image
 `a8423fca2a66ca09b97bce60e7d05ede211e0733f8439fafad3dfb34f6a391be`.
 Its Debian root, Stage1, DTB, U-Boot, and Nix-built LMBench bundle matched
 the hashes in the original successful smoke run.
-This replay **did not reach the benchmark cases** and is not a passing
-integration result.
-All four attempts booted Debian and obtained a UID-0 debug console, but the
+The first four replays **did not reach the benchmark cases** and are not
+passing integration results.
+They booted Debian and obtained a UID-0 debug console, but the
 older desktop setup reported a readiness failure and bounded `daemon-reload`
 timeouts.
 
@@ -58,6 +58,50 @@ Only scratch copies of the historical driver were changed to use a 90-second
 extraction bound and stage the script in the disposable root image;
 the tracked runner, kernel, benchmark bundle, and original root image were not
 changed.
-The parent native ALL result and combined focused tests above remain the
-qualification evidence until a short smoke or native ALL run completes on
-this exact combined Image.
+The parent native ALL result and combined focused tests above remained the
+qualification evidence at that point.
+
+## Console-only replay and release qualification
+
+The historical smoke driver also waited for graphics readiness and tried to
+stop the desktop service before measuring.
+For this compatibility check, a scratch copy instead waited for the root
+console marker, proved UID 0 and the boot ID with nonce-framed commands,
+verified the staged script SHA-256, and ran the same tracked 18-case guest
+runner without stopping the desktop.
+Its Nix-built binaries, workload arguments, timeouts, parser, and guest result
+format were unchanged.
+The final scratch [host driver](smoke-attempts/scratch-run.py) and
+[guest driver](smoke-attempts/scratch-guest.py) are retained for replay;
+they are evidence helpers rather than installed benchmark entry points.
+This is a bounded compatibility check, not a performance comparison.
+
+The combined **development** Image failed once while Python imported the
+existing `threading` bytecode (`bad marshal data`).
+Offline reads found the original and post-run bytecode files identical, and
+the original root image passed read-only `e2fsck`.
+The older shebang-fixed **release** Image
+`78ec31caa7cad3db6cd5f896bd2f7776c45317d071793a7f564d9f14bb82cac9`
+then passed the same console-only runner **18/18**.
+A repeat on the combined development Image
+`a8423fca2a66ca09b97bce60e7d05ede211e0733f8439fafad3dfb34f6a391be`
+also passed **18/18**.
+In both successful boots, the guest reported the expected `threading.pyc`
+SHA-256 `2eeabd656bcba85331faeed7c3aabb87c7560fe2dc5d3756d59901c054e76622`.
+The one-time import failure remains unexplained and is not evidence of a
+repeatable regression.
+
+The persistent project container built the exact integrated source with
+`make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1`.
+The resulting **release** Image SHA-256 is
+`43ee67d0c18c88e2314e2867c624d47cdcfbb61555e8435b0a1e77946f8b74f7`.
+Its QEMU gate exited zero; the [guest report](smoke-attempts/integration-release-smoke-report.json)
+records **18/18** passing cases, no timeouts, and 9.104 seconds of guest
+measurement time.
+The [outer result](smoke-attempts/integration-release-smoke-result.json),
+[serial capture](smoke-attempts/integration-release-smoke-serial.log.gz),
+and [parent control](smoke-attempts/parent-console-control-report.json)
+retain input identities and the earlier comparison.
+The original native `make results` ALL qualification remains the separate
+109/109 result on the LMBench branch; it was not rerun on this integrated
+release Image.
