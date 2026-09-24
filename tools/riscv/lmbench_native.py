@@ -32,7 +32,6 @@ import time
 REVISION = 'afb47eddaf10a411c1ea3cb64965461f1308a6ea'
 PLATFORM = 'riscv64-unknown-linux-gnu'
 ADAPTATIONS = ['explicit IPv4 loopback server arguments',
-               'grep -E instead of the egrep shell wrapper',
                'skip modern netstat interface-table headers']
 
 
@@ -248,12 +247,6 @@ def patch_scripts(root: Path) -> None:
             raise ValueError('upstream netstat header handling changed; review the adaptation')
         # Modern net-tools prints two headers, neither of which names an iface.
         script.write_text(content.replace(old_header, '*ame|Kernel|Iface)\t;;'))
-    version = root / 'scripts/version'
-    old = "egrep 'MAJOR|MINOR'"
-    content = version.read_text()
-    if content.count(old) != 1:
-        raise ValueError('upstream version probe changed; review the adaptation')
-    version.write_text(content.replace(old, "grep -E 'MAJOR|MINOR'"))
 
 
 def verify_archive(archive: Path) -> dict:
@@ -290,8 +283,8 @@ def verify_archive(archive: Path) -> dict:
             if ('case "$server" in' not in driver or '-s 127.0.0.1' not in driver or
                     '*ame|Kernel|Iface)\t;;' not in driver):
                 raise ValueError(f'runtime archive adaptations missing from {name}')
-        if "grep -E 'MAJOR|MINOR'" not in read('scripts/version').decode():
-            raise ValueError('runtime archive version probe adaptation is missing')
+        if "egrep 'MAJOR|MINOR'" not in read('scripts/version').decode():
+            raise ValueError('runtime archive does not preserve the native version probe')
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     return {'archive': str(archive), 'sha256': digest, 'revision': REVISION,
             'platform': PLATFORM, 'adaptations': ADAPTATIONS}
