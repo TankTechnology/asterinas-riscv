@@ -12,4 +12,8 @@ C_OBJS_FILTER += \
 	read_write_regs
 endif
 
+ifneq ($(HOST_PLATFORM), riscv64-linux)
+C_OBJS_FILTER += getregset_riscv
+endif
+
 include ../../common/Makefile
