@@ -27,8 +27,9 @@ The full native LMBench ALL result on the LMBench parent is recorded in
 and the ICMP candidate's Ethernet behavior was verified on Megrez in
 [the board qualification](../2026-09-24-icmp-echo/README.md). This integration
 check confirms the two changes build and pass their focused tests together;
-it does not claim a fresh native ALL run or a board LMBench performance score
-for the merged Image.
+the later native ALL result on this combined release Image is recorded in
+[the final qualification](../2026-09-24-native-lmbench-integrated-release/README.md).
+Neither result is a board LMBench performance score.
 
 ## Additional 18-case smoke attempt
 
@@ -102,6 +103,6 @@ The [outer result](smoke-attempts/integration-release-smoke-result.json),
 [serial capture](smoke-attempts/integration-release-smoke-serial.log.gz),
 and [parent control](smoke-attempts/parent-console-control-report.json)
 retain input identities and the earlier comparison.
-The original native `make results` ALL qualification remains the separate
-109/109 result on the LMBench branch; it was not rerun on this integrated
-release Image.
+The full native `make results` ALL run was subsequently completed on this
+exact combined release Image, with 109/109 groups in
+[the final qualification](../2026-09-24-native-lmbench-integrated-release/README.md).
