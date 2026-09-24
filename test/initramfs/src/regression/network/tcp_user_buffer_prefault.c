@@ -21,6 +21,7 @@
 #define LARGE_BUFFER_LEN (10 * 1024 * 1024)
 #define TCP_RECEIVE_CAPACITY (128 * 1024)
 #define VALID_PREFIX_LEN 4096
+#define CROSS_FAULT_LEN (VALID_PREFIX_LEN + 904)
 
 static void fail(const char *what)
 {
@@ -38,6 +39,22 @@ static void send_all(int fd, const char *buf, size_t len)
 		}
 		sent += (size_t)n;
 	}
+}
+
+static void wait_for_payload(int fd)
+{
+	char peek_buffer[CROSS_FAULT_LEN];
+	for (int attempt = 0; attempt < 2000; attempt++) {
+		ssize_t n = recv(fd, peek_buffer, sizeof(peek_buffer),
+				 MSG_PEEK | MSG_DONTWAIT);
+		if (n == sizeof(peek_buffer))
+			return;
+		if (n < 0 && errno != EAGAIN)
+			fail("peek cross-fault payload");
+		usleep(1000);
+	}
+	fprintf(stderr, "cross-fault payload did not arrive\n");
+	exit(EXIT_FAILURE);
 }
 
 static void test_unix_stream_partial_sendmsg(void)
@@ -135,6 +152,15 @@ int main(void)
 				fail("child large-buffer request");
 			send_all(client_fd, "q", 1);
 		}
+		for (int operation = 0; operation < 3; operation++) {
+			char request;
+			if (recv(client_fd, &request, 1, MSG_WAITALL) != 1 ||
+			    request != 'a' + operation)
+				fail("child cross-fault request");
+			char cross_data[CROSS_FAULT_LEN];
+			memset(cross_data, 'a' + operation, sizeof(cross_data));
+			send_all(client_fd, cross_data, sizeof(cross_data));
+		}
 
 		munmap(send_buf, PAYLOAD_LEN);
 		close(client_fd);
@@ -189,9 +215,11 @@ int main(void)
 	char receive_prefix = 0;
 	iov[0].iov_base = &receive_prefix;
 	iov[0].iov_len = 1;
-	if (recvmsg(server_fd, &message, 0) != 1 || receive_prefix != 'x')
-		fail("recvmsg partial iovec");
-	char receive_suffix[2];
+	errno = 0;
+	if (recvmsg(server_fd, &message, 0) != -1 || errno != EFAULT ||
+	    receive_prefix != 'x')
+		fail("recvmsg partial iovec EFAULT");
+	char receive_suffix[3];
 	size_t suffix_received = 0;
 	while (suffix_received < sizeof(receive_suffix)) {
 		ssize_t n = recv(server_fd, receive_suffix + suffix_received,
@@ -200,8 +228,8 @@ int main(void)
 			fail("recv partial iovec suffix");
 		suffix_received += (size_t)n;
 	}
-	if (memcmp(receive_suffix, "yz", sizeof(receive_suffix)) != 0) {
-		fprintf(stderr, "partial iovec receive suffix mismatch\n");
+	if (memcmp(receive_suffix, "xyz", sizeof(receive_suffix)) != 0) {
+		fprintf(stderr, "partial iovec retry payload mismatch\n");
 		return EXIT_FAILURE;
 	}
 
@@ -251,6 +279,55 @@ int main(void)
 	}
 	if (large_buffer_failures)
 		return EXIT_FAILURE;
+
+	for (int operation = 0; operation < 3; operation++) {
+		char request = 'a' + operation;
+		send_all(server_fd, &request, 1);
+		wait_for_payload(server_fd);
+
+		errno = 0;
+		ssize_t n;
+		if (operation == 0) {
+			n = recvfrom(server_fd, large_buffer, LARGE_BUFFER_LEN,
+				     0, NULL, NULL);
+		} else if (operation == 1) {
+			struct iovec cross_iov = {
+				.iov_base = large_buffer,
+				.iov_len = LARGE_BUFFER_LEN,
+			};
+			struct msghdr cross_message = {
+				.msg_iov = &cross_iov,
+				.msg_iovlen = 1,
+			};
+			n = recvmsg(server_fd, &cross_message, 0);
+		} else {
+			n = read(server_fd, large_buffer, LARGE_BUFFER_LEN);
+		}
+		if (n != -1 || errno != EFAULT) {
+			fprintf(stderr,
+				"TCP cross-fault operation %d: received=%zd errno=%d\n",
+				operation, n, errno);
+			return EXIT_FAILURE;
+		}
+
+		char valid_buffer[CROSS_FAULT_LEN];
+		size_t recovered = 0;
+		while (recovered < sizeof(valid_buffer)) {
+			n = recv(server_fd, valid_buffer + recovered,
+				 sizeof(valid_buffer) - recovered, 0);
+			if (n <= 0)
+				fail("recover cross-fault payload");
+			recovered += (size_t)n;
+		}
+		for (size_t i = 0; i < sizeof(valid_buffer); i++) {
+			if (valid_buffer[i] != 'a' + operation) {
+				fprintf(stderr,
+					"cross-fault payload mismatch at %zu\n",
+					i);
+				return EXIT_FAILURE;
+			}
+		}
+	}
 	munmap(large_buffer, LARGE_BUFFER_LEN);
 
 	munmap(recv_buf, PAYLOAD_LEN);
