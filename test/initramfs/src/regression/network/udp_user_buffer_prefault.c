@@ -77,8 +77,8 @@ int main(void)
 
 	const char small_payload[] = "udp";
 	int failures = 0;
-	for (int operation = 0; operation < 6; operation++) {
-		if (operation == 3)
+	for (int operation = 0; operation < 8; operation++) {
+		if (operation == 4)
 			assert(mprotect(large_buffer + VALID_PREFIX_LEN,
 					UDP_RECEIVE_CAPACITY - VALID_PREFIX_LEN,
 					PROT_NONE) == 0);
@@ -88,10 +88,10 @@ int main(void)
 		       sizeof(small_payload));
 
 		ssize_t received;
-		if (operation % 3 == 0) {
+		if (operation % 4 == 0) {
 			received = recvfrom(receiver, large_buffer,
 					    LARGE_BUFFER_LEN, 0, NULL, NULL);
-		} else if (operation % 3 == 1) {
+		} else if (operation % 4 == 1) {
 			struct iovec iov = {
 				.iov_base = large_buffer,
 				.iov_len = LARGE_BUFFER_LEN,
@@ -101,9 +101,15 @@ int main(void)
 				.msg_iovlen = 1,
 			};
 			received = recvmsg(receiver, &msg, 0);
-		} else {
+		} else if (operation % 4 == 2) {
 			received =
 				read(receiver, large_buffer, LARGE_BUFFER_LEN);
+		} else {
+			struct iovec iov = {
+				.iov_base = large_buffer,
+				.iov_len = LARGE_BUFFER_LEN,
+			};
+			received = readv(receiver, &iov, 1);
 		}
 		if (received != sizeof(small_payload) ||
 		    memcmp(large_buffer, small_payload,
@@ -123,6 +129,16 @@ int main(void)
 	errno = 0;
 	assert(recvfrom(receiver, large_buffer, LARGE_BUFFER_LEN, 0, NULL,
 			NULL) == -1);
+	assert(errno == EFAULT);
+	assert(sendto(sender, send_buffer, 5000, 0,
+		      (struct sockaddr *)&receiver_address,
+		      sizeof(receiver_address)) == 5000);
+	struct iovec fault_iov = {
+		.iov_base = large_buffer,
+		.iov_len = LARGE_BUFFER_LEN,
+	};
+	errno = 0;
+	assert(readv(receiver, &fault_iov, 1) == -1);
 	assert(errno == EFAULT);
 
 	assert(munmap(large_buffer, LARGE_BUFFER_LEN) == 0);
