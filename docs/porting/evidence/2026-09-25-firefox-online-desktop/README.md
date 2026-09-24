@@ -631,8 +631,20 @@ To create space on the nearly full boot partition, the unreferenced
 with SHA-256
 `f333402e9102e9094cead70cee6ed59e161fb0d226bff461e1a66cc1fca73607`,
 and only then removed from `/boot`. The candidate added about 7.2 MB; the
-boot filesystem still reports zero non-root available blocks, with 13,656
-1-KiB blocks free for root at the last check.
+boot filesystem initially reported zero non-root available blocks, with 13,656
+1-KiB blocks free for root.
+
+Two more unreferenced historical images were then archived to the same RockOS
+backup directory. `asterinas-da3e516e-26230a23.Image` has SHA-256
+`26230a23670778c8a5e87f0d67fdea7a6c2f49fa9bea6d34c3c7159638a81393`;
+`asterinas-firefox-readahead-sv48.booti` has SHA-256
+`eab648cf8b372a4903f07c75a1b8eef72bcc92523d3ebdf7cd6bb82ebebcab15`.
+Each was checked for selector references, copied and byte-compared before its
+`/boot` copy was removed. `/boot` now has 13,808 KiB available to non-root
+users (97% used). A fresh RockOS UID-0 command on boot ID
+`9b0a4e23-d3a4-4c9e-bc82-66bff9e717dd` verified the vendor and active
+selectors, canary, kernel and Desktop Stage1 hashes unchanged, with partition
+2 unmounted. The backups retain both historical images for restoration.
 
 The canary has **not** passed the menu's per-identity physical cycle gate and
 has **not** replaced `/boot/extlinux/asterinas.conf`. Its unbounded Desktop
