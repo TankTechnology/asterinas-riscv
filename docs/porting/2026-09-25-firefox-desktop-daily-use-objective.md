@@ -41,6 +41,11 @@ to `SwComposite` over ten seconds, while Xorg used about 0.9. A smaller
 displayed image lost 10/300 frames and used 7.66 plus 5.77 seconds in those
 threads. The Gecko profiler attempts produced no profile, so function-level
 attribution and a qualified performance optimization remain open.
+RISC-V `PTRACE_GETREGSET` for `NT_PRSTATUS` has since merged to `main` as
+[PR #177](https://github.com/TankTechnology/asterinas-riscv/pull/177).
+Its 33-check QEMU regression and an x86-64 kernel build passed on the merged
+tree. The physical board still runs the preceding kernel image; a PC profile
+and its sampling-overhead control have not yet been collected.
 
 ## Earlier baseline and architecture
 
@@ -66,7 +71,7 @@ attribution and a qualified performance optimization remain open.
   disabling WebRender established a speedup. This makes software presentation
   the leading video hypothesis, not a proven kernel hotspot.
 - [PR #177](https://github.com/TankTechnology/asterinas-riscv/pull/177)
-  adds RISC-V `PTRACE_GETREGSET` for stopped user-thread PC attribution. It is
+  added RISC-V `PTRACE_GETREGSET` for stopped user-thread PC attribution. It is
   diagnostic functionality, not a performance improvement or a kernel-PC
   profiler.
 
