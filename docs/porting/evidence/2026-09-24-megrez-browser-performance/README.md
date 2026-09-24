@@ -48,9 +48,48 @@ and [serial record](prior-video-thread-serial.json), and the
 The solid-color Canvas test does not reproduce that size sensitivity. It
 narrows the next target to video frame presentation, conversion, scaling, or
 software compositing; it does **not** isolate a kernel defect or prove which
-Firefox stage dominates. A changing full-color RGB frame at both sizes would
-separate general pixel-copy cost from the media/YUV path more clearly. There
-is no same-browser RockOS A/B result from this run.
+Firefox stage dominates. There is no same-browser RockOS A/B result from this
+run.
+
+## Changing RGB frames from the same clip
+
+A follow-up on the **same boot and Image** extracted two 1280×720 RGB PNGs
+from the earlier VP8 clip at 4 and 5 seconds with `ffmpeg -ss 4` and
+`ffmpeg -ss 5`, `-frames:v 1 -pix_fmt rgb24`. The source clip SHA-256 was
+`1aa863f2a73698241c9daa016c7bfcfa0f94b038ca9f0b29f296c3ca0b65eb95`;
+the committed [first](rgb-frame-a.png) and [second](rgb-frame-b.png) frames
+have SHA-256 values
+`d19de1f5b43f3b65bf909ae0118f0ff3a37092534466f5a6aba9f788cda63ab1`
+and `f617023387d06fe7685dea127bd0df500bdce10e44767f498449d19fc0444d3b`.
+The source is a moving, synthetic color test pattern with large flat regions.
+
+The [RGB page](rgb-frame-perf.html) preloaded both PNGs and alternated
+`drawImage` on each animation frame for eight seconds, at 640×360 and
+1280×720 in small–large–large–small order. All four pages were visible.
+The [result](physical-rgb-result.json), [host](physical-rgb-host.py) and
+[guest](physical-rgb-guest.py) probes, [serial capture](physical-rgb-serial.log.gz),
+and [command record](physical-rgb-host-commands.json) preserve the full data.
+
+| Run | Canvas | rAF frames / 8 s | p95 interval | Intervals >33 ms | Firefox CPU ticks | Xorg CPU ticks |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | 640×360 | 598 | 13.3 ms | 6 | 877 | 180 |
+| 2 | 1280×720 | 574 | 13.3 ms | 9 | 945 | 192 |
+| 3 | 1280×720 | 572 | 13.3 ms | 8 | 965 | 194 |
+| 4 | 640×360 | 580 | 13.3 ms | 9 | 848 | 179 |
+
+Changing decoded RGB images at native size also did not reproduce the video
+playback cliff. This weakens a general 720p canvas copy or X11 presentation
+explanation and makes the media-specific decode, YUV conversion, or video
+presentation path a better next target. It does not prove a single stage is
+responsible: two predecoded, low-detail frames are not a 30 fps video stream,
+and rAF timing is not a direct dropped-video-frame measurement.
+
+After this follow-up, the stable serial device was closed and reopened twice.
+Each [nonce-framed handoff](physical-rgb-handoff.json) proved UID 0 on the same
+boot, `systemd` on `/dev/mmcblk0p2` ext2, active desktop/browser services,
+and watchdog `0`; the [first](physical-rgb-handoff-1.log.gz) and
+[second](physical-rgb-handoff-2.log.gz) serial captures retain the responses.
+The temporary host fixture server was stopped. No board boot files changed.
 
 After the input test, two independent reopenings of the stable
 `/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0` device each
