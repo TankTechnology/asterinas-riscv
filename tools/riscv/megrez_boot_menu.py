@@ -263,6 +263,7 @@ def validate(document: dict) -> None:
             ["--root-init=systemd"],
             ["--root-init=systemd", "--debug-console=root"],
             ["--root-init=systemd", "--debug-console=root", "--volatile-home"],
+            ["--root-init=systemd", "--debug-console=isolated-root"],
         ),
         "invalid desktop root-init",
     )

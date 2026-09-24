@@ -84,7 +84,12 @@ geometry and USB-host properties are present, so a Desktop selector cannot be
 published with the raw board DTB. It records frozen local artifacts and the exact
 vendor configuration. `megrez_menu_board stage --from-uboot` boots RockOS and transfers
 only missing artifacts, verifies sizes/SHA-256, then publishes a canary. A
-`cycle --mode basic|probe|desktop|rockos|fallback` records one physical test and
+Desktop candidate may use `--root-init=systemd --debug-console=isolated-root`
+with persistent HOME, matching the physically tested desktop control mode;
+the selector rejects pairing that isolated console with `--volatile-home`.
+This only prepares a candidate and does not change the installed menu.
+
+A `cycle --mode basic|probe|desktop|rockos|fallback` records one physical test and
 returns to U-Boot. `--check-root` optionally runs read-only `e2fsck -fn` from
 RockOS, refusing a mounted Debian filesystem.
 
