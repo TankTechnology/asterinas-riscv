@@ -59,6 +59,10 @@ fi
 ./ptrace/ptrace
 ./ptrace/set_options
 
+if [ "$(uname -m)" = "riscv64" ]; then
+    ./ptrace/getregset_riscv
+fi
+
 if [ "$(uname -m)" = "x86_64" ]; then
     ./ptrace/debugger
     ./ptrace/read_write_regs
