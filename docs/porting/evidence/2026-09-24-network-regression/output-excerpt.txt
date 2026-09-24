@@ -1,0 +1,13 @@
+test_sendmsg_and_recvmsg summary: 12 tests passed, 0 tests failed
+TCP user buffer prefault regression passed.
+test_disable_sender_broadcast: `setsockopt(sender, 1, 6, &broadcast_opt, broadcast_opt_len)` passed [got Success]
+test_disable_sender_broadcast: `sendto(sender, "Hello from broadcast", sizeof("Hello from broadcast"), 0, (struct sockaddr *)&broadcast_addr, addr_len)` failed [got Success, but expected Permission denied]
+test_disable_sender_broadcast: `connect(sender, (struct sockaddr *)&broadcast_addr, addr_len)` failed [got Success, but expected Permission denied]
+test_disable_sender_broadcast: `send(sender, "Hello from broadcast", sizeof("Hello from broadcast"), 0)` failed [got Success, but expected Destination address required]
+test_connect_then_disable_broadcast: `connect(sender, (struct sockaddr *)&broadcast_addr, addr_len)` passed [got Success]
+test_connect_then_disable_broadcast: `send(sender, "Hello from broadcast", sizeof("Hello from broadcast"), 0)` passed [got Success]
+test_connect_then_disable_broadcast: `setsockopt(sender, 1, 6, &broadcast_opt, broadcast_opt_len)` passed [got Success]
+test_connect_then_disable_broadcast: `send(sender, "Hello from broadcast", sizeof("Hello from broadcast"), 0)` passed [got Success]
+test_connect_then_disable_broadcast: `sendto(sender, "Hello from broadcast", sizeof("Hello from broadcast"), 0, (struct sockaddr *)&broadcast_addr, addr_len)` failed [got Success, but expected Permission denied]
+test_connect_then_disable_broadcast: `connect(sender, (struct sockaddr *)&broadcast_addr, addr_len)` failed [got Success, but expected Permission denied]
+run_kernel validation failed: expected exactly one terminal marker: All regression tests passed.
