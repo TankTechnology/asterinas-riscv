@@ -1,0 +1,10 @@
+{
+  "identity": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "e0d83ada-86ca-4c85-95de-6a14735a5f07",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "state_tail": "cat /proc/sys/kernel/asterinas_reboot_watchdog; systemct \rl is-active asterinas-desktop-ready.service; systemctl is-active asterinas-brows \rer-web.service\n0\nactive\nactive\nroot@asterinas-debug:/# ",
+  "serial_device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0"
+}

@@ -1,0 +1,11 @@
+{
+  "identity": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "326a80f8-07d2-43ab-b540-440b964188f5",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "unit_tree": "ls -l /run/systemd/system/asterinas-desktop-ready.servic \re /run/systemd/system/asterinas-debug-console.service; test -e /run/asterinas-to \rols/physical-graphics-control; echo TOOL_RC=$?\nls: cannot access '/run/systemd/system/asterinas-desktop-ready.service': No such file or directory\n-rw-r--r-- 1 root root 411 Jan  1  1970 /run/systemd/system/asterinas-debug-console.service\nTOOL_RC=1\nroot@asterinas-debug:/# ",
+  "recovered_to_uboot": true,
+  "rockos_boot_after": "b70a14b4-8ea7-47b0-849c-95286875bd8c"
+}

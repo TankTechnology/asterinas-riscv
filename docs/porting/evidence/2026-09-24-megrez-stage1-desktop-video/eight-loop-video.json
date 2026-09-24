@@ -1,0 +1,27 @@
+{
+  "status": "pass",
+  "video_loops": 8,
+  "duration_per_loop_seconds": 1,
+  "identity_before": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "e0d83ada-86ca-4c85-95de-6a14735a5f07",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "html_sha256": "5eee37e9fa23db14e61b53de7a5f9c477a1a98d03f6262bb91b9f8a72504f9c2",
+  "firefox_pid": 252,
+  "before_proc_tail": "cat /proc/252/stat; grep -E \"^(State|VmRSS|Threads):\" /p \rroc/252/status\n252 (firefox) S 1 252 252 0 -1 0 0 0 0 0 3337 2225 8 19 20 0 63 0 3182 2849460224 74728 18446744073709551615 183252933512 183253073376 274877221632 0 0 0 0 4096 83183 0 0 0 17 1 0 0 0 0 0 183253083584 183253085824 183253798912 274877222098 274877222224 274877222224 274877222912 0\nState:\tS (sleeping)\nVmRSS:\t298912 kB\nThreads:\t63\nroot@asterinas-debug:/# ",
+  "start_tail": "OP_VIDEO_PASS\")' > /tmp/asterinas-local-video/gate8.log 2>&1; printf \"%s\\n\"  \r\"$?\" > /tmp/asterinas-local-video/gate8.rc ) </dev/null >/dev/null 2>&1 & echo V \rIDEO_PID=$!\n[1] 1413\nVIDEO_PID=1413\nroot@asterinas-debug:/# ",
+  "host_started_monotonic": 692088.547497509,
+  "gate_rc": 0,
+  "host_elapsed_seconds": 11.439,
+  "gate_tail": "tail -30 /tmp/asterinas-local-video/gate8.log\nASTERINAS_EIGHT_LOOP_VIDEO_PASS\nroot@asterinas-debug:/# ",
+  "after_proc_tail": "cat /proc/252/stat; grep -E \"^(State|VmRSS|Threads):\" /p \rroc/252/status\n252 (firefox) S 1 252 252 0 -1 0 0 0 0 0 3637 2355 8 19 20 0 65 0 3182 2849517568 74864 18446744073709551615 183252933512 183253073376 274877221632 0 0 0 0 4096 83183 0 0 0 17 3 0 0 0 0 0 183253083584 183253085824 183253798912 274877222098 274877222224 274877222224 274877222912 0\nState:\tS (sleeping)\nVmRSS:\t299456 kB\nThreads:\t65\nroot@asterinas-debug:/# ",
+  "identity_after": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "e0d83ada-86ca-4c85-95de-6a14735a5f07",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "post_state_tail": "cat /proc/sys/kernel/asterinas_reboot_watchdog; systemct \rl is-active asterinas-browser-web.service\n0\nactive\nroot@asterinas-debug:/# "
+}

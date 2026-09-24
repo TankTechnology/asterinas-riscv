@@ -1,0 +1,18 @@
+{
+  "physical": true,
+  "device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
+  "canary": "/extlinux/asterinas-current-stage1-canary-20260924.conf",
+  "status": "pass",
+  "rockos_boot_before": "b70a14b4-8ea7-47b0-849c-95286875bd8c",
+  "identity": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "e0d83ada-86ca-4c85-95de-6a14735a5f07",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "desktop_ready": true,
+  "ready_service_initial": "systemctl show -p ActiveState -p SubState -p Result aste \rrinas-desktop-ready.service; cat /proc/sys/kernel/asterinas_reboot_watchdog\nResult=success\nActiveState=active\nSubState=exited\n0\nroot@asterinas-debug:/# ",
+  "ready_service_final": "systemctl show -p ActiveState -p SubState -p Result aste \rrinas-desktop-ready.service\nResult=success\nActiveState=active\nSubState=exited\nroot@asterinas-debug:/# ",
+  "watchdog_disarmed": true,
+  "serial_sha256": "08cd4b36d81c8b66a2fb41035d8f7839f0703636af8cb35f19e658ce553e5491"
+}

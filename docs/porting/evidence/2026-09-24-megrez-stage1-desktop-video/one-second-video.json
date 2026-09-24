@@ -1,0 +1,21 @@
+{
+  "status": "pass",
+  "network_contract": "not applied: browser-web",
+  "identity_before": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "e0d83ada-86ca-4c85-95de-6a14735a5f07",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "firefox_pid": 252,
+  "start_tail": "t\" else r)(old(self,n,p));m.run_gate(\"127.0.0.1\",2828,80);print(\"ASTERINAS_LOCAL \r_VIDEO_PASS\")' > /tmp/asterinas-local-video/gate3.log 2>&1; printf \"%s\\n\" \"$?\" > \r /tmp/asterinas-local-video/gate3.rc ) </dev/null >/dev/null 2>&1 & echo VIDEO_P \rID=$!\n[1] 1378\nVIDEO_PID=1378\nroot@asterinas-debug:/# ",
+  "gate_rc": 0,
+  "gate_tail": "tail -30 /tmp/asterinas-local-video/gate3.log\nASTERINAS_LOCAL_VIDEO_PASS\nroot@asterinas-debug:/# ",
+  "identity_after": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "e0d83ada-86ca-4c85-95de-6a14735a5f07",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "post_state_tail": "cat /proc/sys/kernel/asterinas_reboot_watchdog; systemct \rl is-active asterinas-browser-web.service\n0\nactive\nroot@asterinas-debug:/# "
+}

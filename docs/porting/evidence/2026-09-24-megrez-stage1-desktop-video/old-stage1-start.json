@@ -1,0 +1,17 @@
+{
+  "physical": true,
+  "device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
+  "canary": "/extlinux/asterinas-current-canary-20260924.conf",
+  "status": "incomplete",
+  "rockos_boot_before": "9256dda9-6f6e-4901-8a89-2061aca0ce08",
+  "identity": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "326a80f8-07d2-43ab-b540-440b964188f5",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "desktop_ready": true,
+  "ready_service_initial": "systemctl show -p ActiveState -p SubState -p Result aste \rrinas-desktop-ready.service; cat /proc/sys/kernel/asterinas_reboot_watchdog\nResult=success\nActiveState=inactive\nSubState=dead\n1\nroot@asterinas-debug:/# ",
+  "ready_service_explicit_start": "systemctl start --no-block asterinas-desktop-ready.servi \rce; printf \"READY_START_RC=%s\\n\" \"$?\"\n\u001b[0;1;31mFailed to start asterinas-desktop-ready.service: Unit asterinas-desktop-ready.service not found.\u001b[0m\r\nREADY_START_RC=5\nroot@asterinas-debug:/# ",
+  "serial_sha256": "a3a8acc1e95b55b4689e6085462c135d7902b2615fc8fac3ff56d80d4adafb99"
+}
