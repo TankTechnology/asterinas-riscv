@@ -14,7 +14,7 @@ use super::util::finish_response;
 use crate::{
     net::{
         iface::Iface,
-        net_ns::current_net_ns,
+        net_ns::NetNamespace,
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
             route::message::{LinkAttr, LinkSegment, LinkSegmentBody, RtnlSegment},
@@ -36,12 +36,13 @@ const UNSPECIFIED_LINK_ADDR: EthernetAddress = EthernetAddress([0; 6]);
 /// Reference: <https://elixir.bootlin.com/linux/v7.1/source/include/net/pkt_sched.h#L13>.
 const DEFAULT_TX_QUEUE_LEN: u32 = 1000;
 
-pub(super) fn do_get_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
+pub(super) fn do_get_link(
+    request_segment: &LinkSegment,
+    net_ns: &NetNamespace,
+) -> Result<Vec<RtnlSegment>> {
     let filter_by = FilterBy::from_request(request_segment)?;
 
-    // Only the interfaces visible in the current network namespace are
-    // reported.
-    let net_ns = current_net_ns();
+    // Report only interfaces in the sending socket's network namespace.
     let mut response_segments: Vec<RtnlSegment> = net_ns
         .ifaces()
         .iter()
@@ -71,8 +72,11 @@ pub(super) fn do_get_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegme
 /// Shares the implementation with [`do_new_link`]: `RTM_NEWLINK` and
 /// `RTM_SETLINK` only differ in that the latter cannot create interfaces,
 /// which is unsupported anyway.
-pub(super) fn do_set_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
-    do_new_link(request_segment)
+pub(super) fn do_set_link(
+    request_segment: &LinkSegment,
+    net_ns: &NetNamespace,
+) -> Result<Vec<RtnlSegment>> {
+    do_new_link(request_segment, net_ns)
 }
 
 enum FilterBy<'a> {
@@ -195,13 +199,15 @@ fn iface_to_new_link(request_header: &CMsgSegHdr, iface: &Arc<Iface>) -> LinkSeg
 /// Only flag changes via `ifi_flags`/`ifi_change` are supported (this is what
 /// `ip link set <dev> up|down` uses); creating or deleting interfaces is not
 /// supported.
-pub(super) fn do_new_link(request_segment: &LinkSegment) -> Result<Vec<RtnlSegment>> {
+pub(super) fn do_new_link(
+    request_segment: &LinkSegment,
+    net_ns: &NetNamespace,
+) -> Result<Vec<RtnlSegment>> {
     let body = request_segment.body();
     let Some(index) = body.index else {
         return_errno_with_message!(Errno::ENODEV, "the interface index is not specified");
     };
 
-    let net_ns = current_net_ns();
     let iface = net_ns
         .ifaces()
         .iter()

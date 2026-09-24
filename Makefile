@@ -70,11 +70,18 @@ REGRESSION_TEST_DIRS ?= null
 # End of auto test features.
 
 FOCUSED_NETWORK_AUTO_TESTS := \
+	ifconf \
+	ifreq \
+	ip_socket_netns \
+	netlink_route_netns \
+	proc_net_dev \
 	ipv6_dual_stack \
 	ipv6_dual_stack_udp \
 	ipv6_udp \
 	tcp_user_buffer_prefault \
-	udp_user_buffer_prefault
+	udp_user_buffer_prefault \
+	udp_msg_dontwait \
+	tcp_msg_dontwait_send
 ifneq ($(filter $(AUTO_TEST),$(FOCUSED_NETWORK_AUTO_TESTS)),)
 REGRESSION_TEST_DIRS := [ "network" ]
 endif
@@ -136,6 +143,15 @@ CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_TEST_DEV=$(XFSTESTS_TEST_DEV)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_SCRATCH_DEV=$(XFSTESTS_SCRATCH_DEV)"
 endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
+else ifeq ($(AUTO_TEST), ifconf_gvisor)
+ifneq ($(TARGET_ARCH), x86_64)
+$(error AUTO_TEST=ifconf_gvisor requires TARGET_ARCH=x86_64)
+endif
+ENABLE_CONFORMANCE_TEST := true
+CONFORMANCE_TEST_SUITE := gvisor
+CONFORMANCE_GVISOR_TEST := "ioctl_test"
+export ENABLE_CONFORMANCE_TEST CONFORMANCE_TEST_SUITE CONFORMANCE_GVISOR_TEST
+CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_ifconf_gvisor_test.sh"
 else ifeq ($(AUTO_TEST), regression)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="INTEL_TDX=$(INTEL_TDX)"
@@ -143,6 +159,13 @@ ifeq ($(RISCV_ICACHE_REQUIRE_SMP4), 1)
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="RISCV_ICACHE_REQUIRE_SMP4=1"
 endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+ifneq ($(findstring network,$(REGRESSION_TEST_DIRS)),)
+# The network suite expects eth0, which the default RISC-V QEMU scheme lacks.
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=regression" \
+	--qemu-args="-device virtio-net-device,netdev=regression"
+endif
+endif
 else ifeq ($(AUTO_TEST), ipv6_dual_stack)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/network/run_dual_stack_test.sh"
@@ -152,9 +175,49 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ipv6_dual_stack_udp_test.sh"
 else ifeq ($(AUTO_TEST), ipv6_udp)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ipv6_udp_test.sh"
+else ifeq ($(AUTO_TEST), ifconf)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ifconf_test.sh"
+else ifeq ($(AUTO_TEST), ifreq)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ifreq_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+# The default RISC-V QEMU scheme has no NIC; this test also checks eth0.
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=ifreq" \
+	--qemu-args="-device virtio-net-device,netdev=ifreq"
+endif
+else ifeq ($(AUTO_TEST), ip_socket_netns)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ip_socket_netns_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+# The namespace regression binds an address on the original eth0.
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=ipsocketns" \
+	--qemu-args="-device virtio-net-device,netdev=ipsocketns"
+endif
+else ifeq ($(AUTO_TEST), netlink_route_netns)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_netlink_route_netns_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=routens" \
+	--qemu-args="-device virtio-net-device,netdev=routens"
+endif
+else ifeq ($(AUTO_TEST), proc_net_dev)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_proc_net_dev_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+# The default RISC-V QEMU scheme has no NIC; this test also checks eth0.
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=procnetdev" \
+	--qemu-args="-device virtio-net-device,netdev=procnetdev"
+endif
 else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_udp_user_buffer_prefault_test.sh"
+else ifeq ($(AUTO_TEST), udp_msg_dontwait)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_udp_msg_dontwait_test.sh"
+else ifeq ($(AUTO_TEST), tcp_msg_dontwait_send)
+ENABLE_REGRESSION_TEST := true
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_msg_dontwait_send_test.sh"
 else ifeq ($(AUTO_TEST), dynamic_clock)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_dynamic_clock_test.sh"
@@ -164,6 +227,10 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_pty_test.sh"
 else ifeq ($(AUTO_TEST), memfd_exec)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_memfd_exec_test.sh"
+else ifeq ($(AUTO_TEST), shebang_argv)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "process" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_shebang_argv_test.sh"
 else ifeq ($(AUTO_TEST), sched_policy)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sched_policy_test.sh"
@@ -1183,10 +1250,42 @@ else ifeq ($(AUTO_TEST), ipv6_udp)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ipv6-udp"
+else ifeq ($(AUTO_TEST), ifconf)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ifconf"
+else ifeq ($(AUTO_TEST), proc_net_dev)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "proc-net-dev"
+else ifeq ($(AUTO_TEST), ifreq)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ifreq"
+else ifeq ($(AUTO_TEST), ip_socket_netns)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ip-socket-netns"
+else ifeq ($(AUTO_TEST), netlink_route_netns)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "netlink-route-netns"
+else ifeq ($(AUTO_TEST), ifconf_gvisor)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ifconf-gvisor"
 else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "udp-user-buffer-prefault"
+else ifeq ($(AUTO_TEST), udp_msg_dontwait)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "udp-msg-dontwait"
+else ifeq ($(AUTO_TEST), tcp_msg_dontwait_send)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "tcp-msg-dontwait-send"
 else ifeq ($(AUTO_TEST), dynamic_clock)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "Dynamic clock regression passed." \
@@ -1199,6 +1298,10 @@ else ifeq ($(AUTO_TEST), memfd_exec)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "memfd exec regression passed." \
 		|| (echo "memfd exec regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), shebang_argv)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "shebang argv regression passed." \
+		|| (echo "shebang argv regression failed" && exit 1)
 else ifeq ($(AUTO_TEST), sched_policy)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "Scheduler policy regression passed." \

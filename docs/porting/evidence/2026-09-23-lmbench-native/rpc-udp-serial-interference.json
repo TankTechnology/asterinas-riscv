@@ -1,0 +1,65 @@
+{
+  "source_revision": "afb47eddaf10a411c1ea3cb64965461f1308a6ea",
+  "original_lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
+  "qemu": "RISC-V virt TCG, SMP=4, 2 GiB",
+  "command": "ENOUGH=10000 lat_rpc -P 1 -p udp localhost",
+  "host_collection_method": "Both modes passively record serial output. Active mode additionally sends a guest command to read /run/lifecycle.log starting 35 seconds after guest launch, then every 2 seconds. Quiet mode defers this command until 85 seconds after launch, beyond the bounded focused RPC trial.",
+  "runs": [
+    {
+      "run": "rpc-delay-control-production-1",
+      "workload": "rpc_only_idle_26s",
+      "host_serial_collection": "active",
+      "host_first_collection_delay_s": 35,
+      "boot_id": "43c9804a-50bb-4308-87ab-698dd6c706aa",
+      "kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+      "rpc_elapsed_s": 5.209,
+      "rpc_status": 0,
+      "rpc_stderr": "localhost: RPC: Timed out\n",
+      "rpc_measurement_present": false
+    },
+    {
+      "run": "rpc-idle26-quiet-production-1",
+      "workload": "rpc_only_idle_26s",
+      "host_serial_collection": "quiet",
+      "host_first_collection_delay_s": 85,
+      "boot_id": "ca70950d-0fdb-46b8-a946-5d5520a56035",
+      "kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+      "rpc_elapsed_s": 26.28,
+      "rpc_status": 0,
+      "rpc_stderr": "RPC/udp latency using localhost: 361.0222 microseconds\n",
+      "rpc_measurement_present": true
+    },
+    {
+      "run": "rpc-native-network-sequence-production-1",
+      "workload": "native_network_sequence",
+      "host_serial_collection": "active",
+      "host_first_collection_delay_s": 35,
+      "boot_id": "c88c2bc9-5148-427e-8274-c6748bda5885",
+      "kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+      "rpc_elapsed_s": 13.482,
+      "rpc_status": 0,
+      "rpc_stderr": "localhost: RPC: Timed out\n",
+      "rpc_measurement_present": false
+    },
+    {
+      "run": "rpc-native-sequence-quiet-production-1",
+      "workload": "native_network_sequence",
+      "host_serial_collection": "quiet",
+      "host_first_collection_delay_s": 85,
+      "boot_id": "4a2dfb21-b666-44f8-a74b-2fc88e81ea2e",
+      "kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+      "rpc_elapsed_s": 26.974,
+      "rpc_status": 0,
+      "rpc_stderr": "RPC/udp latency using localhost: 374.2322 microseconds\n",
+      "rpc_measurement_present": true
+    }
+  ],
+  "full_native_comparison": {
+    "active_original_report": "rpc-original-second-native-all-report.json",
+    "active_result": "108/109, RPC/UDP missing, RPC timeout error",
+    "quiet_original_report": "rpc-original-quiet-native-all-report.json",
+    "quiet_result": "109/109, no missing groups or error lines, original lat_rpc binary",
+    "full_quiet_host_first_collection_delay_s": 180
+  },
+  "interpretation": "Two focused one-boot A/B comparisons failed when the host sent serial log-read commands during RPC and passed when those commands were deferred. A full original native ALL run also passed when host polling was deferred past the signal and local-network benchmarks, whereas earlier active-polling full runs missed RPC/UDP. The evidence supports serial management activity as a material timing perturbation, but does not prove it is the only cause of all RPC timeouts or that the kernel is immune to other concurrent workloads."
+}

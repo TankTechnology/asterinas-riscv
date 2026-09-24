@@ -448,7 +448,10 @@ mod tests {
     fn keeps_the_queue_head_alive_after_a_failed_transfer() {
         for (status, actual_length) in [
             (TransferStatus::Stalled, super::BOOT_KEYBOARD_REPORT_LEN),
-            (TransferStatus::Completed, super::BOOT_KEYBOARD_REPORT_LEN + 1),
+            (
+                TransferStatus::Completed,
+                super::BOOT_KEYBOARD_REPORT_LEN + 1,
+            ),
         ] {
             let reports = vec![REPORT_ONE; super::REPORT_QUEUE_DEPTH + 8];
             let mut queue = BootKeyboardReportQueue::empty();

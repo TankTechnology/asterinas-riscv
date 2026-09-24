@@ -1,0 +1,74 @@
+{
+  "status": "pass",
+  "physical": true,
+  "previous_boot_id": "ce042e30-d629-4421-82e6-342ce1e139d8",
+  "new_boot_id": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384",
+  "serial_device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
+  "selected_menu": {
+    "path": "/boot/extlinux/asterinas-route-all-canary-20260924.conf",
+    "sha256": "3c5ab5c39edb3f39308a0f0dbd730aee4a1023d071daca0ae0496f36ef4ae600",
+    "default": "RockOS"
+  },
+  "selected_image": {
+    "path": "/boot/asterinas-route-all-3e3707b7e59f.booti",
+    "size": 6071408,
+    "sha256": "3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e"
+  },
+  "selection": "manual U-Boot reselect of the same immutable Desktop entry after authenticated Asterinas software reboot; RockOS remains default",
+  "routes": {
+    "main": [
+      "default via 10.100.16.1 dev eth0 ",
+      "10.100.16.0/21 dev eth0 proto kernel scope link src 10.100.19.200"
+    ],
+    "local": [
+      "local 127.0.0.0/8 dev lo proto kernel scope host src 127.0.0.1 ",
+      "local 127.0.0.1 dev lo proto kernel scope host src 127.0.0.1 ",
+      "broadcast 127.255.255.255 dev lo proto kernel scope link src 127.0.0.1 ",
+      "local 10.100.19.200 dev eth0 proto kernel scope host src 10.100.19.200 ",
+      "broadcast 10.100.23.255 dev eth0 proto kernel scope link src 10.100.19.200"
+    ],
+    "all": [
+      "default via 10.100.16.1 dev eth0 ",
+      "10.100.16.0/21 dev eth0 proto kernel scope link src 10.100.19.200 ",
+      "local 127.0.0.0/8 dev lo table local proto kernel scope host src 127.0.0.1 ",
+      "local 127.0.0.1 dev lo table local proto kernel scope host src 127.0.0.1 ",
+      "broadcast 127.255.255.255 dev lo table local proto kernel scope link src 127.0.0.1 ",
+      "local 10.100.19.200 dev eth0 table local proto kernel scope host src 10.100.19.200 ",
+      "broadcast 10.100.23.255 dev eth0 table local proto kernel scope link src 10.100.19.200"
+    ],
+    "get": [
+      "10.100.16.1 dev eth0 src 10.100.19.200 ",
+      "    cache"
+    ]
+  },
+  "firefox_network": {
+    "table_all_exit_status": 0,
+    "host_webm_http_status": 200,
+    "host_webm_bytes": 646
+  },
+  "desktop_ready": "active",
+  "browser_service": "active",
+  "software_reboot_watchdog": 0,
+  "handoff": [
+    {
+      "attempt": 1,
+      "passed": true,
+      "nonce": "f84738f652e38273",
+      "status": 0,
+      "uid": 0,
+      "boot_id": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384"
+    },
+    {
+      "attempt": 2,
+      "passed": true,
+      "nonce": "e129294d8b684d0c",
+      "status": 0,
+      "uid": 0,
+      "boot_id": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384"
+    }
+  ],
+  "limitations": [
+    "This proves the installed Image and independent menu survived reboot and worked when reselected; it does not make Asterinas the default boot entry.",
+    "No second full native LMBench ALL run or physical performance score was collected."
+  ]
+}

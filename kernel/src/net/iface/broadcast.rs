@@ -2,7 +2,10 @@
 
 use core::net::Ipv4Addr;
 
-use aster_bigtcp::wire::{IpAddress, IpEndpoint};
+use aster_bigtcp::{
+    iface::InterfaceFlags,
+    wire::{IpAddress, IpEndpoint},
+};
 use spin::Once;
 
 use crate::{net::iface::iter_all_ifaces, prelude::*};
@@ -20,7 +23,14 @@ pub(super) fn init() {
         broadcast_addrs.insert(Ipv4Addr::BROADCAST);
 
         for iface in iter_all_ifaces() {
-            let Some(broadcast_addr) = iface.broadcast_addr() else {
+            // Linux treats the directed broadcast of 127/8 as broadcast even
+            // though the loopback interface does not have IFF_BROADCAST.
+            let broadcast_addr = if iface.flags().contains(InterfaceFlags::LOOPBACK) {
+                iface.ipv4_cidr().and_then(|cidr| cidr.broadcast())
+            } else {
+                iface.broadcast_addr()
+            };
+            let Some(broadcast_addr) = broadcast_addr else {
                 continue;
             };
 

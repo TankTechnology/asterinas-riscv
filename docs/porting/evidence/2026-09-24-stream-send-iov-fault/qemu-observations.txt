@@ -1,0 +1,25 @@
+RISC-V virt QEMU, release build, SMP=4, riscv_sv39_mode:
+  make run_kernel AUTO_TEST=tcp_user_buffer_prefault TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+
+With the updated test and parent commit d1d199b55:
+  unix stream sendmsg invalid tail: Success
+  TCP user buffer prefault regression failed
+
+With the fix, kernel image SHA-256 e106f84051f053929131f2cf21c1eae23c4c3383c88b52f20b11a833b63d1089:
+  TCP user buffer prefault regression passed.
+  TCP user buffer prefault regression passed.
+
+Adjacent UDP regression with the same kernel image:
+  make run_kernel AUTO_TEST=udp_user_buffer_prefault TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+  UDP user buffer prefault regression passed.
+  run_kernel validation passed: mode=udp-user-buffer-prefault
+
+Adjacent TCP per-call nonblocking send regression with the same kernel image:
+  make run_kernel AUTO_TEST=tcp_msg_dontwait_send TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+  TCP MSG_DONTWAIT send regression passed.
+  run_kernel validation passed: mode=tcp-msg-dontwait-send
+
+Linux host (6.5.0-15-generic) oracle:
+  cc -std=gnu11 -Wall -Wextra -Werror test/initramfs/src/regression/network/tcp_user_buffer_prefault.c -o /tmp/tcp_user_buffer_prefault_linux
+  /tmp/tcp_user_buffer_prefault_linux
+  TCP user buffer prefault regression passed.

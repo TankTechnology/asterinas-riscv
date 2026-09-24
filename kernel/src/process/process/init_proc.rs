@@ -151,11 +151,18 @@ fn create_init_task(
     let (elf_load_info, elf_abs_path) = {
         let path_resolver = fs.resolver().read();
 
-        let program_to_load =
-            ProgramToLoad::build_from_file(elf_path.clone(), &path_resolver, argv, envp)?;
+        let elf_abs_path = path_resolver.make_abs_path(&elf_path).into_string();
+        let script_path = CString::new(elf_abs_path.as_str())
+            .map_err(|_| Error::with_message(Errno::EINVAL, "init path contains a nul byte"))?;
+        let program_to_load = ProgramToLoad::build_from_file(
+            elf_path.clone(),
+            script_path,
+            &path_resolver,
+            argv,
+            envp,
+        )?;
         let vmar = process.lock_vmar();
         let elf_load_info = program_to_load.load_to_vmar(vmar.unwrap(), &path_resolver)?;
-        let elf_abs_path = path_resolver.make_abs_path(&elf_path).into_string();
 
         (elf_load_info, elf_abs_path)
     };

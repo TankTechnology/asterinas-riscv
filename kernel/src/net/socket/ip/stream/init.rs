@@ -15,6 +15,7 @@ use crate::{
     events::IoEvents,
     net::{
         iface::BoundTcpPort,
+        net_ns::NetNamespace,
         socket::{
             ip::{
                 addr::IpAddressFamily,
@@ -93,6 +94,7 @@ impl InitStream {
         endpoint: &IpEndpoint,
         can_reuse: bool,
         v6only: bool,
+        net_ns: &NetNamespace,
     ) -> Result<()> {
         if self.bound_port.is_some() {
             return_errno_with_message!(Errno::EINVAL, "the socket is already bound to an address");
@@ -105,7 +107,7 @@ impl InitStream {
             );
         }
 
-        self.bound_port = Some(bind_port(endpoint, can_reuse, v6only)?);
+        self.bound_port = Some(bind_port(endpoint, can_reuse, v6only, net_ns)?);
 
         Ok(())
     }
@@ -120,6 +122,7 @@ impl InitStream {
         option: &RawTcpOption,
         can_reuse: bool,
         observer: StreamObserver,
+        net_ns: &NetNamespace,
     ) -> Result<ConnectingStream, (Error, Self)> {
         debug_assert!(
             self.is_connect_done,
@@ -154,7 +157,7 @@ impl InitStream {
         let bound_port = if let Some(bound_port) = self.bound_port {
             bound_port
         } else {
-            let endpoint = match get_ephemeral_endpoint(&resolved_remote) {
+            let endpoint = match get_ephemeral_endpoint(&resolved_remote, net_ns) {
                 Some(ep) => ep,
                 None => {
                     return Err((
@@ -166,7 +169,7 @@ impl InitStream {
                     ));
                 }
             };
-            match bind_port(&endpoint, can_reuse, false) {
+            match bind_port(&endpoint, can_reuse, false, net_ns) {
                 Ok(bound_port) => bound_port,
                 Err(err) => return Err((err, self)),
             }
@@ -208,6 +211,7 @@ impl InitStream {
         option: &RawTcpOption,
         observer: StreamObserver,
         v6only: bool,
+        net_ns: &NetNamespace,
     ) -> Result<ListenStream, (Error, Self)> {
         if !self.is_connect_done {
             // See the comments of `is_connect_done`.
@@ -234,7 +238,7 @@ impl InitStream {
                         IpEndpoint::new(IpAddress::Ipv6(Ipv6Address::UNSPECIFIED), 0)
                     }
                 };
-                match bind_port(&endpoint, false, v6only) {
+                match bind_port(&endpoint, false, v6only, net_ns) {
                     Ok(bound_port) => bound_port,
                     Err(err) => return Err((err, self)),
                 }
@@ -303,9 +307,14 @@ impl InitStream {
     }
 }
 
-fn bind_port(endpoint: &IpEndpoint, can_reuse: bool, v6only: bool) -> Result<BoundTcpPort> {
+fn bind_port(
+    endpoint: &IpEndpoint,
+    can_reuse: bool,
+    v6only: bool,
+    net_ns: &NetNamespace,
+) -> Result<BoundTcpPort> {
     let dual_stack =
         matches!(endpoint.addr, IpAddress::Ipv6(addr) if addr.is_unspecified()) && !v6only;
-    let (iface, config) = resolve_bind_iface_and_config(endpoint, can_reuse, dual_stack)?;
+    let (iface, config) = resolve_bind_iface_and_config(endpoint, can_reuse, dual_stack, net_ns)?;
     Ok(iface.bind_tcp(config)?)
 }

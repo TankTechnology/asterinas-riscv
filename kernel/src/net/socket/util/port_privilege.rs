@@ -3,7 +3,7 @@
 use core::ops::Range;
 
 use crate::{
-    net::net_ns::current_net_ns,
+    net::net_ns::NetNamespace,
     prelude::*,
     process::{credentials::capabilities::CapSet, posix_thread::AsPosixThread},
     security::lsm::hooks as lsm_hooks,
@@ -13,18 +13,18 @@ use crate::{
 const PRIVILEGED_PORTS: Range<u16> = 1..1024;
 
 /// Checks if the port is privileged and, if so, whether the thread is allowed to bind to it.
-pub fn check_port_privilege(port: u16) -> Result<()> {
+pub fn check_port_privilege(port: u16, net_ns: &NetNamespace) -> Result<()> {
     if !PRIVILEGED_PORTS.contains(&port) {
         return Ok(());
     }
 
     // The capability is checked against the owner user namespace of the
-    // current network namespace, so a process with capabilities in its own
+    // socket's network namespace, so a process with capabilities in its own
     // user namespace can bind privileged ports inside its sandbox (as in
     // Linux).
     let thread = current_thread!();
     let posix_thread = thread.as_posix_thread().unwrap();
-    let owner_user_ns = current_net_ns().owner().clone();
+    let owner_user_ns = net_ns.owner();
     if lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
         owner_user_ns.as_ref(),
         posix_thread,

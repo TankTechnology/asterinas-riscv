@@ -1,0 +1,12 @@
+{
+  "status": "pass",
+  "rockos_boot": "c523d5be-e98c-4394-b700-1a37bdf5bf08",
+  "kernel": "/boot/asterinas-route-052656e9b12c.booti",
+  "kernel_sha256": "052656e9b12ce1586a76e18c75acece62c748bb3e6c9430d764fd0d7436ff116",
+  "stage1": "/boot/stage1-cfec77d41d68.cpio",
+  "stage1_sha256": "cfec77d41d68dfcb67228dfa6791d9cea25227c427ee9943ba5f44d6bd269cd1",
+  "menu": "/boot/extlinux/asterinas-route-dump-canary-20260924.conf",
+  "menu_sha256": "9ba5c7d433766b6643f3319aff8e8e1b0c1146ef5b513f5f35073c08976e4dd3",
+  "default": "RockOS",
+  "boot_blocks_after": "17445 0 1024"
+}

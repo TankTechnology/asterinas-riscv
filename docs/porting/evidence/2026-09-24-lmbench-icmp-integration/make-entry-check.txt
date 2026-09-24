@@ -1,0 +1,14 @@
+Archive SHA-256: 54bf3c45ca425b8736e54e9723ff50d6c4c306af26ff033c25f89c4272236af3
+Runtime revision: afb47eddaf10a411c1ea3cb64965461f1308a6ea
+Platform: riscv64-unknown-linux-gnu
+
+The archive verifier passed. With the archived GNUmakefile and Makefile in the
+same temporary source directory, dry-run target expansion was:
+
+$ make -n result
+python3 ../asterinas-native.py run
+$ make -n results
+python3 ../asterinas-native.py run
+
+This check does not execute the benchmark; the native ALL guest result is
+recorded in ../2026-09-24-native-lmbench-no-egrep/.

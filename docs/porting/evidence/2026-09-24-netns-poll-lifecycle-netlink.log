@@ -1,0 +1,244 @@
+Spawn the first kernel thread
+[kernel] unpacking initramfs.cpio.gz to rootfs ...
+[kernel] rootfs is ready
+
+                                  ......
+                                .-++++=:
+                               .=+++++=:
+                              :+++++++=:
+                            .-++++++++=.
+                           .=**++==+++=.
+                          :****+-.=+++=.
+                        .=****+: .++++=.
+                       .+****=.  .++++-
+                     .-*****=.   :++++-
+    .::-=============+*****+-----=++++=-:::::::.
+        ..:-*#########*********+++++++=======:.
+              .:+*#####****+++++++++++=====-..
+                 ..-+#******=..  -++++.
+                -+=...:*******=..=++++.
+              .+*+++=. ..=*****+-=++++.
+            .:***+=..     .-+**++++++=.
+           .-***+:          .-+++++++=
+          .*#*=.              .=+++++=
+        .-*#+..                .:=+++-
+       .=#=.                     .=++-
+      :*=.                         ...
+    .:-. Presented by the Asterinas developers
+    .. Released under Mozilla Public License v2.0
+
+netlink route socket namespace regression passed.
+netlink uevent port namespace regression passed.
+test_if_nameindex: `find_lo_and_eth0_by_libc(if_ni)` passed [got Success]
+test_if_nameindex summary: 1 tests passed, 0 tests failed
+test_get_link_by_libnl: `nl_connect(sock, 0)` passed [got Success]
+test_get_link_by_libnl: `rtnl_link_alloc_cache(sock, 0, &link_cache)` passed [got Success]
+test_get_link_by_libnl: `((nl_cache_foreach(link_cache, find_lo_and_eth0_by_libnl, &found_links)), 0)` passed [got Success]
+test_get_link_by_libnl summary: 3 tests passed, 0 tests failed
+test_get_loopback_addresses: `nl_connect(sock, 0)` passed [got Success]
+test_get_loopback_addresses: `rtnl_addr_alloc_cache(sock, &addr_cache)` passed [got Success]
+test_get_loopback_addresses: `((nl_cache_foreach(addr_cache, find_loopback_addresses, &found)), 0)` passed [got Success]
+test_get_loopback_addresses summary: 3 tests passed, 0 tests failed
+test_get_address_attributes: `socket(16, SOCK_RAW, 0)` passed [got Success]
+test_get_address_attributes: `bind(sock_fd, (struct sockaddr *)&sa, sizeof(sa))` passed [got Success]
+test_get_address_attributes: `get_reported_addresses(sock_fd, 0)` passed [got Success]
+test_get_address_attributes: `get_reported_addresses(sock_fd, 2)` passed [got Success]
+test_get_address_attributes: `get_reported_addresses(sock_fd, 10)` passed [got Success]
+test_get_address_attributes: `close(sock_fd)` passed [got Success]
+test_get_address_attributes summary: 6 tests passed, 0 tests failed
+test_get_link_error: `socket(16, SOCK_RAW, 0)` passed [got Success]
+test_get_link_error: `bind(sock_fd, (struct sockaddr *)&sa, sizeof(sa))` passed [got Success]
+test_get_link_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_link_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_link_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_link_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_link_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_link_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_link_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_link_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_link_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_link_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_link_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_link_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_link_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_link_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_link_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_link_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_link_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_link_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_link_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_link_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_link_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_link_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_link_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_link_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_link_error: `close(sock_fd)` passed [got Success]
+test_get_link_error summary: 27 tests passed, 0 tests failed
+test_get_addr_error: `socket(16, SOCK_RAW, 0)` passed [got Success]
+test_get_addr_error: `bind(sock_fd, (struct sockaddr *)&sa, sizeof(sa))` passed [got Success]
+test_get_addr_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_addr_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_addr_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_addr_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_addr_error: `find_new_addr_until_done(buffer, recv_len, &found_new_addr)` passed [got Success]
+test_get_addr_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_addr_error: `find_new_addr_until_done(buffer, recv_len, &found_new_addr)` passed [got Success]
+test_get_addr_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_addr_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_addr_error: `find_new_addr_until_done(buffer, recv_len, &found_new_addr)` passed [got Success]
+test_get_addr_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_addr_error: `find_new_addr_until_done(buffer, recv_len, &found_new_addr)` passed [got Success]
+test_get_addr_error: `sendmsg(sock_fd, &msg, 0)` passed [got Success]
+test_get_addr_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_addr_error: `find_new_addr_until_done(buffer, recv_len, &found_new_addr)` passed [got Success]
+test_get_addr_error: `recv(sock_fd, buffer, 8192, 0)` passed [got Success]
+test_get_addr_error: `find_new_addr_until_done(buffer, recv_len, &found_new_addr)` passed [got Success]
+test_get_addr_error: `close(sock_fd)` passed [got Success]
+test_get_addr_error summary: 20 tests passed, 0 tests failed
+test_bufsize_msgsize: `socket(16, SOCK_RAW | SOCK_NONBLOCK, 0)` passed [got Success]
+test_bufsize_msgsize: `send(sock_fd, &req, sizeof(req), 0)` passed [got Success]
+test_bufsize_msgsize: `recv(sock_fd, buffer, 1, 0)` passed [got Success]
+test_bufsize_msgsize: `recv(sock_fd, buffer, 8192, 0)` passed [got Resource temporarily unavailable]
+test_bufsize_msgsize: `close(sock_fd)` passed [got Success]
+test_bufsize_msgsize summary: 5 tests passed, 0 tests failed
+test_enobufs: `socket(16, SOCK_RAW | SOCK_NONBLOCK, 0)` passed [got Success]
+test_enobufs: `fill_receive_buffer(sock_fd, &req)` passed [got Success]
+test_enobufs: `send(sock_fd, &req, sizeof(req), 0)` passed [got Success]
+test_enobufs: `recv(sock_fd, buffer, 1, 0)` passed [got No buffer space available]
+test_enobufs: `recv(sock_fd, buffer, 1, 0)` passed [got Success]
+test_enobufs: `close(sock_fd)` passed [got Success]
+test_enobufs summary: 6 tests passed, 0 tests failed
+test_getsockname: `getsockname(sk_unbound, psaddr, &addrlen)` passed [got Success]
+test_getsockname: `getsockname(sk_unbound, psaddr, &addrlen)` passed [got Success]
+test_getsockname: `getsockname(sk_bound, psaddr, &addrlen)` passed [got Success]
+test_getsockname: `getsockname(sk_connected, psaddr, &addrlen)` passed [got Success]
+test_getsockname summary: 4 tests passed, 0 tests failed
+test_getpeername: `getpeername(sk_unbound, psaddr, &addrlen)` passed [got Success]
+test_getpeername: `getpeername(sk_bound, psaddr, &addrlen)` passed [got Success]
+test_getpeername: `getpeername(sk_connected, psaddr, &addrlen)` passed [got Success]
+test_getpeername summary: 3 tests passed, 0 tests failed
+test_socket_type: `getsockopt(sk_unbound, 1, 3, &type, &type_len)` passed [got Success]
+test_socket_type: `socket(16, SOCK_RAW | SOCK_NONBLOCK, 0)` passed [got Success]
+test_socket_type: `getsockopt(sk_raw, 1, 3, &type, &type_len)` passed [got Success]
+test_socket_type: `close(sk_raw)` passed [got Success]
+test_socket_type summary: 4 tests passed, 0 tests failed
+test_send: `send(sk_bound, buf, 1, 0)` passed [got Success]
+test_send: `send(sk_bound, buf, 0, 0)` passed [got No data available]
+test_send: `write(sk_bound, buf, 1)` passed [got Success]
+test_send: `write(sk_bound, buf, 0)` passed [got No data available]
+test_send: `send(sk_connected, buf, 1, 0)` passed [got Connection refused]
+test_send: `send(sk_connected, buf, 0, 0)` passed [got No data available]
+test_send: `write(sk_connected, buf, 1)` passed [got Connection refused]
+test_send: `write(sk_connected, buf, 0)` passed [got No data available]
+test_send summary: 8 tests passed, 0 tests failed
+test_recv: `recv(sk_unbound, buf, 1, 0)` passed [got Resource temporarily unavailable]
+test_recv: `recv(sk_unbound, buf, 0, 0)` passed [got Resource temporarily unavailable]
+test_recv: `read(sk_unbound, buf, 1)` passed [got Resource temporarily unavailable]
+test_recv: `read(sk_unbound, buf, 0)` passed [got Success]
+test_recv: `recv(sk_bound, buf, 1, 0)` passed [got Resource temporarily unavailable]
+test_recv: `recv(sk_bound, buf, 0, 0)` passed [got Resource temporarily unavailable]
+test_recv: `read(sk_bound, buf, 1)` passed [got Resource temporarily unavailable]
+test_recv: `read(sk_bound, buf, 0)` passed [got Success]
+test_recv: `recv(sk_connected, buf, 1, 0)` passed [got Resource temporarily unavailable]
+test_recv: `recv(sk_connected, buf, 0, 0)` passed [got Resource temporarily unavailable]
+test_recv: `read(sk_connected, buf, 1)` passed [got Resource temporarily unavailable]
+test_recv: `read(sk_connected, buf, 0)` passed [got Success]
+test_recv summary: 12 tests passed, 0 tests failed
+test_bind: `bind(sk_unbound, psaddr, addrlen - 1)` passed [got Invalid argument]
+test_bind: `bind(sk_bound, psaddr, addrlen)` passed [got Invalid argument]
+test_bind: `bind(sk_connected, psaddr, addrlen)` passed [got Invalid argument]
+test_bind summary: 3 tests passed, 0 tests failed
+test_listen: `listen(sk_unbound, 2)` passed [got Operation not supported]
+test_listen: `listen(sk_bound, 2)` passed [got Operation not supported]
+test_listen: `listen(sk_connected, 2)` passed [got Operation not supported]
+test_listen summary: 3 tests passed, 0 tests failed
+test_accept: `accept(sk_unbound, psaddr, &addrlen)` passed [got Operation not supported]
+test_accept: `accept(sk_bound, psaddr, &addrlen)` passed [got Operation not supported]
+test_accept: `accept(sk_connected, psaddr, &addrlen)` passed [got Operation not supported]
+test_accept summary: 3 tests passed, 0 tests failed
+test_poll: `poll(&pfd, 1, 0)` passed [got Success]
+test_poll: `poll(&pfd, 1, 0)` passed [got Success]
+test_poll: `poll(&pfd, 1, 0)` passed [got Success]
+test_poll summary: 3 tests passed, 0 tests failed
+test_connect: `connect(sk_connected, psaddr, addrlen)` passed [got Success]
+test_connect summary: 1 tests passed, 0 tests failed
+test_getsockname: `getsockname(sk_unbound, psaddr, &addrlen)` passed [got Success]
+test_getsockname: `getsockname(sk_unbound, psaddr, &addrlen)` passed [got Success]
+test_getsockname: `getsockname(sk_bound, psaddr, &addrlen)` passed [got Success]
+test_getsockname: `getsockname(sk_connected, psaddr, &addrlen)` passed [got Success]
+test_getsockname summary: 4 tests passed, 0 tests failed
+test_getpeername: `getpeername(sk_unbound, psaddr, &addrlen)` passed [got Success]
+test_getpeername: `getpeername(sk_bound, psaddr, &addrlen)` passed [got Success]
+test_getpeername: `getpeername(sk_connected, psaddr, &addrlen)` passed [got Success]
+test_getpeername summary: 3 tests passed, 0 tests failed
+test_send: `send(sk_bound, buf, 1, 0)` passed [got Success]
+test_send: `send(sk_bound, buf, 0, 0)` passed [got No data available]
+test_send: `write(sk_bound, buf, 1)` passed [got Success]
+test_send: `write(sk_bound, buf, 0)` passed [got No data available]
+test_send: `send(sk_connected, buf, 1, 0)` passed [got Connection refused]
+test_send: `send(sk_connected, buf, 0, 0)` passed [got No data available]
+test_send: `write(sk_connected, buf, 1)` passed [got Connection refused]
+test_send: `write(sk_connected, buf, 0)` passed [got No data available]
+test_send summary: 8 tests passed, 0 tests failed
+test_recv: `recv(sk_unbound, buf, 1, 0)` passed [got Resource temporarily unavailable]
+test_recv: `recv(sk_unbound, buf, 0, 0)` passed [got Resource temporarily unavailable]
+test_recv: `read(sk_unbound, buf, 1)` passed [got Resource temporarily unavailable]
+test_recv: `read(sk_unbound, buf, 0)` passed [got Success]
+test_recv: `recv(sk_bound, buf, 1, 0)` passed [got Resource temporarily unavailable]
+test_recv: `recv(sk_bound, buf, 0, 0)` passed [got Resource temporarily unavailable]
+test_recv: `read(sk_bound, buf, 1)` passed [got Resource temporarily unavailable]
+test_recv: `read(sk_bound, buf, 0)` passed [got Success]
+test_recv: `recv(sk_connected, buf, 1, 0)` passed [got Resource temporarily unavailable]
+test_recv: `recv(sk_connected, buf, 0, 0)` passed [got Resource temporarily unavailable]
+test_recv: `read(sk_connected, buf, 1)` passed [got Resource temporarily unavailable]
+test_recv: `read(sk_connected, buf, 0)` passed [got Success]
+test_recv summary: 12 tests passed, 0 tests failed
+test_bind: `bind(sk_unbound, psaddr, addrlen - 1)` passed [got Invalid argument]
+test_bind: `bind(sk_bound, psaddr, addrlen)` passed [got Invalid argument]
+test_bind: `bind(sk_connected, psaddr, addrlen)` passed [got Invalid argument]
+test_bind summary: 3 tests passed, 0 tests failed
+test_listen: `listen(sk_unbound, 2)` passed [got Operation not supported]
+test_listen: `listen(sk_bound, 2)` passed [got Operation not supported]
+test_listen: `listen(sk_connected, 2)` passed [got Operation not supported]
+test_listen summary: 3 tests passed, 0 tests failed
+test_accept: `accept(sk_unbound, psaddr, &addrlen)` passed [got Operation not supported]
+test_accept: `accept(sk_bound, psaddr, &addrlen)` passed [got Operation not supported]
+test_accept: `accept(sk_connected, psaddr, &addrlen)` passed [got Operation not supported]
+test_accept summary: 3 tests passed, 0 tests failed
+test_poll: `poll(&pfd, 1, 0)` passed [got Success]
+test_poll: `poll(&pfd, 1, 0)` passed [got Success]
+test_poll: `poll(&pfd, 1, 0)` passed [got Success]
+test_poll summary: 3 tests passed, 0 tests failed
+test_connect: `connect(sk_connected, psaddr, addrlen)` passed [got Success]
+test_connect summary: 1 tests passed, 0 tests failed
+test_bind_to_group: `socket(16, SOCK_DGRAM | SOCK_NONBLOCK, 15)` passed [got Success]
+test_bind_to_group: `bind(sk_new, psaddr, addrlen)` passed [got Success]
+test_bind_to_group: `getsockname(sk_new, psaddr, &addrlen)` passed [got Success]
+test_bind_to_group: `bind(sk_new, psaddr, addrlen)` passed [got Success]
+test_bind_to_group: `getsockname(sk_new, psaddr, &addrlen)` passed [got Success]
+test_bind_to_group: `bind(sk_new, psaddr, addrlen)` passed [got Success]
+test_bind_to_group: `getsockname(sk_new, psaddr, &addrlen)` passed [got Success]
+test_bind_to_group: `bind(sk_new, psaddr, addrlen)` passed [got Invalid argument]
+test_bind_to_group: `close(sk_new)` passed [got Success]
+test_bind_to_group summary: 9 tests passed, 0 tests failed
+test_add_and_drop_membership: `socket(16, SOCK_DGRAM | SOCK_NONBLOCK, 15)` passed [got Success]
+test_add_and_drop_membership: `setsockopt(sk_new, 270, 1, &group, sizeof(group))` passed [got Success]
+test_add_and_drop_membership: `getsockname(sk_new, psaddr, &addrlen)` passed [got Success]
+test_add_and_drop_membership: `recv(sk_new, buf, 1, 0)` passed [got Resource temporarily unavailable]
+test_add_and_drop_membership: `bind(sk_new, psaddr, addrlen)` passed [got Success]
+test_add_and_drop_membership: `getsockname(sk_new, psaddr, &addrlen)` passed [got Success]
+test_add_and_drop_membership: `setsockopt(sk_new, 270, 1, &group, sizeof(group))` passed [got Success]
+test_add_and_drop_membership: `getsockname(sk_new, psaddr, &addrlen)` passed [got Success]
+test_add_and_drop_membership: `setsockopt(sk_new, 270, 2, &group, sizeof(group))` passed [got Success]
+test_add_and_drop_membership: `getsockname(sk_new, psaddr, &addrlen)` passed [got Success]
+test_add_and_drop_membership: `setsockopt(sk_new, 270, 2, &group, sizeof(group))` passed [got Success]
+test_add_and_drop_membership: `close(sk_new)` passed [got Success]
+test_add_and_drop_membership summary: 12 tests passed, 0 tests failed
+test_getsockopt_membership: `getsockopt(sk_unbound, 270, 1, &group, &group_size)` passed [got Protocol not available]
+test_getsockopt_membership: `getsockopt(sk_unbound, 270, 2, &group, &group_size)` passed [got Protocol not available]
+test_getsockopt_membership: `getsockopt(sk_bound, 270, 1, &group, &group_size)` passed [got Protocol not available]
+test_getsockopt_membership: `getsockopt(sk_bound, 270, 2, &group, &group_size)` passed [got Protocol not available]
+test_getsockopt_membership: `getsockopt(sk_connected, 270, 1, &group, &group_size)` passed [got Protocol not available]
+test_getsockopt_membership: `getsockopt(sk_connected, 270, 2, &group, &group_size)` passed [got Protocol not available]
+test_getsockopt_membership summary: 6 tests passed, 0 tests failed
+run_kernel validation passed: mode=netlink-route-netns

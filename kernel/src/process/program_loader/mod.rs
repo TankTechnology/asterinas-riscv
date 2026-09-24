@@ -35,6 +35,7 @@ impl ProgramToLoad {
     /// necessary.
     pub(super) fn build_from_file(
         mut elf_file: Path,
+        mut script_path: CString,
         path_resolver: &PathResolver,
         mut argv: Vec<CString>,
         envp: Vec<CString>,
@@ -71,10 +72,14 @@ impl ProgramToLoad {
             };
             check_executable_inode(interpreter.inode().as_ref())?;
 
-            // Update the argument list and the executable inode. Then, try again.
-            new_argv.extend(argv);
+            // Linux replaces the caller's argv[0] with the script path, then
+            // places it after the interpreter and its optional argument.
+            let interpreter_path = new_argv[0].clone();
+            new_argv.push(script_path);
+            new_argv.extend(argv.into_iter().skip(1));
             argv = new_argv;
             elf_file = interpreter;
+            script_path = interpreter_path;
         };
 
         let elf_headers = ElfHeaders::parse(&file_first_page[..len])?;

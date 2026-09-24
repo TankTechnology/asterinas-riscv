@@ -1,0 +1,7 @@
+IFCONF_EXIT=1
+test_ifconf_ipv4_interfaces: `ioctl(fd, 0x8912, &config)` failed [got Inappropriate ioctl for device, but expected Success]
+test_ifconf_ipv4_interfaces: `ioctl(fd, 0x8912, &config)` failed [got Inappropriate ioctl for device, but expected Success]
+test_ifconf_ipv4_interfaces: `ioctl(fd, 0x8912, &config)` failed [got Inappropriate ioctl for device, but expected Success]
+test_ifconf_ipv4_interfaces summary: 2 tests passed, 22 tests failed
+test_ifconf_bad_pointers: `ioctl(fd, 0x8912, &config)` failed [got Inappropriate ioctl for device, but expected Bad address]
+test_ifconf_bad_pointers summary: 0 tests passed, 1 tests failed
