@@ -159,6 +159,13 @@ ifeq ($(RISCV_ICACHE_REQUIRE_SMP4), 1)
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="RISCV_ICACHE_REQUIRE_SMP4=1"
 endif
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_regression_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+ifneq ($(findstring network,$(REGRESSION_TEST_DIRS)),)
+# The network suite expects eth0, which the default RISC-V QEMU scheme lacks.
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=regression" \
+	--qemu-args="-device virtio-net-device,netdev=regression"
+endif
+endif
 else ifeq ($(AUTO_TEST), ipv6_dual_stack)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/network/run_dual_stack_test.sh"
