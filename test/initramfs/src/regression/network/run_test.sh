@@ -50,5 +50,6 @@ sleep 0.2
 
 ./netlink_route
 ./route_dump
+./route_local_dump
 ./rtnl_err
 ./uevent_err
