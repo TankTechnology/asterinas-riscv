@@ -272,6 +272,18 @@ record.  Reboot persistence, the seven-group physical browser gate, the
 minimize defect, and a qualified performance A/B remain open.  The DRM branch
 was not merged.
 
+After the short experiments, two new nonce-framed commands used separate
+open/close cycles on
+`/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0`.
+Both returned UID 0 and the unchanged boot ID
+`c6846443-9d90-4ff5-854e-5c4132fcfbbc`; the first also returned
+`/dev/mmcblk0p2 ext2`, `asterinas-browser-web.service` active with PID 5928,
+and a visible Firefox X window. The runtime-only profiler service override
+was absent. This establishes live local root command control after serial
+reopen, not reboot persistence or a boot of the new image. The previous
+RockOS-selected Desktop boot file and the RockOS recovery entry were not
+modified.
+
 A separate Sv48/SMP=4 release Image was built for a later controlled Megrez
 boot: SHA-256
 `4d1e0ee4ef2cb23ae6bbbca3ec425b3177013d5bdf1c261bc2e990ade22c9025`.

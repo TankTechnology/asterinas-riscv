@@ -20,14 +20,34 @@ candidate only after its required graphics and resource costs are measured on
 this board. The target is genuine desktop use, not a Firefox window over an
 otherwise empty X root window.
 
-## What is known now
+## Current checkpoint
 
-- The current online `browser-web` image inherits `pcmanfm` and `lxpanel`
-  packages, but `desktop_m5_session.sh` starts only Xorg and Openbox. The
-  wallpaper, panel configuration, and launchers are installed only for the old
-  M4 image by `build_rootfs.sh`. This explains why the current Firefox session
-  does not show the M4 desktop shell; it is an image/session integration gap,
-  not evidence that the kernel cannot draw a wallpaper.
+The online shell integration and a vDSO writer lock-order stability fix are
+on `main`. The signed Firefox 143 JIT image passed a short QEMU desktop gate:
+wallpaper, icons, bottom panel, Firefox minimize/restore, Files, Terminal,
+and task switching. Two independent bounded QEMU browser runs passed the
+owned JavaScript/WebAssembly fixture, search, download, and Bilibili playback;
+both then failed the strict Baidu search group when Baidu presented its
+external challenge. The seven-group gate has **not** passed. See the
+[dated evidence](evidence/2026-09-25-firefox-online-desktop/README.md) for
+image identities, raw results, and the corrected captcha classification.
+
+The board still runs its previously installed kernel and root. A temporary
+desktop overlay demonstrated the shell, but minimize/icon behavior varied
+between attempts; no new signed root has been installed or reboot-qualified.
+The short native-size VP8 baseline still loses roughly 110–125 of 300 frames.
+One full-size run attributed 9.71 CPU-seconds to Firefox `Renderer` and 7.44
+to `SwComposite` over ten seconds, while Xorg used about 0.9. A smaller
+displayed image lost 10/300 frames and used 7.66 plus 5.77 seconds in those
+threads. The Gecko profiler attempts produced no profile, so function-level
+attribution and a qualified performance optimization remain open.
+
+## Earlier baseline and architecture
+
+- Before this milestone, the online `browser-web` image inherited `pcmanfm`
+  and `lxpanel` packages but started only Xorg and Openbox. The shell profile,
+  launchers, and session startup are now installed in the signed JIT QEMU
+  image; the previously installed board root does not yet contain them.
 - The current display path is Xorg `fbdev` on `/dev/fb0` with GLX disabled. The
   physical Firefox video probe in [PR #176](https://github.com/TankTechnology/asterinas-riscv/pull/176)
   saw no `/dev/dri`. QEMU virtio-gpu DRM results do not establish physical
@@ -122,9 +142,12 @@ claim.
 ## Review boundaries
 
 Keep the shell integration, kernel functionality fixes, performance probes,
-and display/DRM changes in separately reviewable commits or PRs. The immediate
-implementation item is the online image's missing desktop shell. The immediate
-performance item is one bounded attribution capture, with overhead measured,
-before another kernel tuning patch. Preserve the physical board's authenticated
-recovery path throughout experiments and report unsupported observations as
-such.
+and display/DRM changes in separately reviewable commits or PRs. The next
+functional boundary is a signed-root Megrez boot with persistent shell and
+fresh serial control after reboot; the external Baidu challenge must remain
+separately classified. The next performance boundary is a bounded
+function-level rendering/presentation profile with an overhead control before
+selecting another kernel or display patch. The current `/dev/fb0` mapping and
+Megrez's lack of Svpbmt make a blind RISC-V cache-policy change unsafe.
+Preserve the physical board's authenticated recovery path throughout
+experiments and report unsupported observations as such.
