@@ -132,8 +132,36 @@ The [first](board-handoff-1.serial.log.gz) and
 [second](board-handoff-2.serial.log.gz) handoff logs retain that proof.
 The serial descriptor was closed after the checks.
 
-This was one selected physical boot of the new Image.
-Persistence of this entry through another reboot was not tested; a normal
-unattended reboot still selects RockOS.
+## Controlled reboot and repeatability
+
+From boot ID `ce042e30-d629-4421-82e6-342ce1e139d8`, a fresh UID-0
+command requested `sync; reboot -f` with the software recovery watchdog at `0`.
+The [reboot transcript](board-reboot-boot.serial.log.gz) observed another
+OpenSBI/U-Boot epoch, read the same independent menu from MMC, and loaded the
+same versioned Image after the host selected Desktop again.
+The new boot ID was `80a2b08d-e2aa-4f6b-b3ae-9394770f8384`.
+
+On this second boot, the bounded main, local, and all-table queries again
+returned two, five, and seven routes, and destination lookup selected `eth0`
+with source `10.100.19.200`.
+See the [second route transcript](board-reboot-routes.serial.log.gz).
+Firefox's network namespace returned the full route dump and fetched the
+host-served WebM with HTTP 200 and 646 bytes; the
+[network transcript](board-reboot-firefox-network.serial.log.gz) retains both
+exit statuses.
+Desktop readiness became active, the browser service remained active, and
+the software reboot watchdog returned to `0`.
+Two separately reopened serial connections again proved UID 0, the new boot
+ID, `systemd` on the ext2 Debian root, the board address, and a successful
+route lookup.
+The [first](board-reboot-handoff-1.serial.log.gz),
+[second](board-reboot-handoff-2.serial.log.gz), and
+[structured reboot result](board-reboot-result.json) retain this handoff.
+The serial descriptor was closed after verification.
+
+This proves that the installed Image and independent menu survived a normal
+software reboot and worked when explicitly reselected.
+An unattended reboot still selects RockOS; the test did not change the
+default entry.
 The earlier 109/109 native LMBench result remains QEMU evidence from an
 ancestor kernel, not a physical-board score or a rerun on this Image.
