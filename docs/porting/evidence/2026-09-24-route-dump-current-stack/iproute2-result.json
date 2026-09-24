@@ -1,0 +1,13 @@
+{
+  "complete": true,
+  "command_sent": true,
+  "boot_id": "529bbb45-47ba-4f74-b955-278140045cf4",
+  "uid_zero": true,
+  "main_pass": true,
+  "default_pass": true,
+  "local_pass": true,
+  "ipv6_pass": true,
+  "get_bounded": true,
+  "addr_pass": true,
+  "boot_commands_sent": 10
+}
