@@ -1,0 +1,12 @@
+{
+  "status": "pass",
+  "identity": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "991075a6-1edf-4b2a-be49-e7dcb996552a",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "firefox_pid": 385,
+  "command": "nsenter -t 385 -n timeout 4 ip -4 route show; echo BROWSER_ROUTE_RC=$?; nsenter -t 385 -n python3 -c 'import urllib.request; base=\"http://10.100.19.216:17894/\"; [(lambda r: print(name, r.status, len(r.read())))(urllib.request.urlopen(base+name,timeout=7)) for name in (\"index8-fresh.html\",\"fresh-20260924.webm\")]'",
+  "output": "nsenter -t 385 -n timeout 4 ip -4 route show; echo BROWS \rER_ROUTE_RC=$?; nsenter -t 385 -n python3 -c 'import urllib.request; base=\"http: \r//10.100.19.216:17894/\"; [(lambda r: print(name, r.status, len(r.read())))(urlli \rb.request.urlopen(base+name,timeout=7)) for name in (\"index8-fresh.html\",\"fresh- \r20260924.webm\")]'\ndefault via 10.100.16.1 dev eth0 \n10.100.16.0/21 dev eth0 proto kernel scope link src 10.100.19.200 \nBROWSER_ROUTE_RC=0\nindex8-fresh.html 200 1502\nfresh-20260924.webm 200 646\nroot@asterinas-debug:/# "
+}
