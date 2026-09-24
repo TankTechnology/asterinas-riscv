@@ -1,0 +1,18 @@
+test_sendmsg_and_recvmsg summary: 12 tests passed, 0 tests failed
+TCP user buffer prefault regression passed.
+test_enable_broadcast summary: 6 tests passed, 0 tests failed
+test_basic_broadcast summary: 1 tests passed, 0 tests failed
+test_disable_sender_broadcast summary: 4 tests passed, 0 tests failed
+test_disable_receiver_broadcast summary: 3 tests passed, 0 tests failed
+test_connect_then_disable_broadcast summary: 6 tests passed, 0 tests failed
+test_sendmsg_and_recvmsg summary: 6 tests passed, 0 tests failed
+test_scm_rights: `socketpair(1, SOCK_STREAM | SOCK_NONBLOCK, 0, fildes)` passed [got Success]
+test_scm_rights: `pipe(cfds)` passed [got Success]
+test_scm_rights: `sendmsg(fildes[0], &mhdr, 0)` passed [got Success]
+test_scm_rights: `send(fildes[0], buf, 4, 0)` passed [got Success]
+test_scm_rights: `sendmsg(fildes[0], &mhdr, 0)` failed [got Operation not permitted, but expected Success]
+test_scm_rights: `send(fildes[0], buf, 4, 0)` passed [got Success]
+test_scm_rights: `recvmsg(fildes[1], &mhdr, 0)` failed [got Success, but `_ret == 5 && mhdr.msg_controllen == ((((sizeof(int) * 2) + sizeof (size_t) - 1) & (size_t) ~(sizeof (size_t) - 1)) + (((sizeof (struct cmsghdr)) + sizeof (size_t) - 1) & (size_t) ~(sizeof (size_t) - 1))) && (chdr = ((size_t) (&mhdr)->msg_controllen >= sizeof (struct cmsghdr) ? (struct cmsghdr *) (&mhdr)->msg_control : (struct cmsghdr *) 0)) && chdr->cmsg_level == 1 && chdr->cmsg_type == SCM_RIGHTS && chdr->cmsg_len == ((((sizeof(int) * 2) + sizeof (size_t) - 1) & (size_t) ~(sizeof (size_t) - 1)) + (((sizeof (struct cmsghdr)) + sizeof (size_t) - 1) & (size_t) ~(sizeof (size_t) - 1))) && (cdata = (int *)((chdr)->__cmsg_data)) && cdata[0] == cfds[1] + 1 && cdata[1] == cfds[1] + 2` is false]
+test_scm_rights: `recv(fildes[1], buf, sizeof(buf), 0)` failed [got Resource temporarily unavailable, but expected Success]
+test_scm_rights: `write(cfds[1], "x", 1)` passed [got Success]
+run_kernel validation failed: expected exactly one terminal marker: All regression tests passed.
