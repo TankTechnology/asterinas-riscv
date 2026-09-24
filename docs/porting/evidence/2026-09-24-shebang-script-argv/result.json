@@ -39,5 +39,19 @@
       "boot": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384"
     }
   ],
-  "serial_device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0"
+  "serial_device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
+  "debian_egrep_wrapper": {
+    "wrapper": "/usr/bin/egrep",
+    "contents": "#!/bin/sh\ncmd=${0##*/}\nexec grep -E \"$@\"\n",
+    "probe": "cd /run && test \"$(PATH=/usr/bin:/bin egrep '^MAJOR' egrep-proof)\" = 'MAJOR=3'",
+    "old_kernel": {
+      "image_sha256": "3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e",
+      "passed": false,
+      "stderr": "/bin/sh: 0: cannot open egrep: No such file"
+    },
+    "new_kernel": {
+      "image_sha256": "78ec31caa7cad3db6cd5f896bd2f7776c45317d071793a7f564d9f14bb82cac9",
+      "passed": true
+    }
+  }
 }

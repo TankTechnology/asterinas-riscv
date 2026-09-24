@@ -29,6 +29,19 @@ The adjacent `AUTO_TEST=memfd_exec` gate also passed on this kernel; its
 [log](memfd-qemu.log.gz) checks existing `execveat`/memfd behavior.
 The [structured result](result.json) binds the observations and identities.
 
+## Debian `egrep` wrapper control
+
+The frozen Debian root image contains `/usr/bin/egrep` as a 41-byte shell
+wrapper that executes `grep -E`. A separate focused QEMU probe ran the same
+`PATH=/usr/bin:/bin egrep '^MAJOR' egrep-proof` command from `/run` on the
+old and new Images, using the identical Debian root image. On the old Image,
+`/bin/sh` reported `cannot open egrep` and the probe failed; on the new Image,
+the command returned the expected `MAJOR=3` and the QEMU driver passed.
+The [old serial log](debian-egrep-red.serial.log.gz),
+[new serial log](debian-egrep-green.serial.log.gz), and
+[old](debian-egrep-red-qemu.json) and [new](debian-egrep-green-qemu.json)
+QEMU summaries record the exact kernel and root-image hashes.
+
 No new kernel was deployed to Megrez for this change. After the oracle, two
 separately reopened connections to the stable by-id serial device again
 proved UID 0 on the same old boot ID, `systemd` on ext2, active desktop and
@@ -37,8 +50,8 @@ browser services, watchdog 0, and a bounded route lookup. See the
 [second](board-handoff-2.serial.log.gz) handoff records. The serial descriptor
 was closed; the independent board boot menu and RockOS default were unchanged.
 
-This verifies the absolute-path shebang case that blocked a PATH-launched
-wrapper and the adjacent ELF `execveat` regression. Relative-path and nested
-shebang behavior, the actual Nix `egrep` wrapper on the new kernel, and a
-native LMBench ALL rerun remain unverified. The package's `grep -E` adaptation
-has therefore not been removed yet.
+This verifies the absolute-path shebang case, the actual Debian `egrep`
+wrapper, and the adjacent ELF `execveat` regression. Relative-path and nested
+shebang behavior remain unverified. At this stage, the LMBench package still
+has its `grep -E` adaptation; a native ALL run without that adaptation is the
+next qualification step.
