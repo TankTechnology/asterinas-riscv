@@ -1,0 +1,206 @@
+{
+  "metric": {
+    "run": "largecpu",
+    "state": "ended",
+    "reason": "",
+    "displayWidth": 1280,
+    "displayHeight": 720,
+    "sourceWidth": 1280,
+    "sourceHeight": 720,
+    "duration": 10,
+    "currentTime": 10,
+    "elapsedWallMs": 10437,
+    "totalVideoFrames": 301,
+    "droppedVideoFrames": 112,
+    "mozDecodedFrames": 300,
+    "mozParsedFrames": 300,
+    "mozPresentedFrames": 189,
+    "mozPaintedFrames": 179,
+    "readyState": 2,
+    "networkState": 1,
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0"
+  },
+  "before": {
+    "310": {
+      "comm": "Xorg",
+      "ppid": 299,
+      "utime": 4194,
+      "stime": 4552,
+      "rss": 15730
+    },
+    "4626": {
+      "comm": "firefox",
+      "ppid": 1,
+      "utime": 1837,
+      "stime": 1875,
+      "rss": 61250
+    },
+    "4708": {
+      "comm": "forkserver",
+      "ppid": 4626,
+      "utime": 14,
+      "stime": 43,
+      "rss": 7385
+    },
+    "4711": {
+      "comm": "Socket Process",
+      "ppid": 4708,
+      "utime": 14,
+      "stime": 8,
+      "rss": 10014
+    },
+    "4723": {
+      "comm": "Web Content",
+      "ppid": 4708,
+      "utime": 92,
+      "stime": 76,
+      "rss": 20702
+    },
+    "4731": {
+      "comm": "RDD Process",
+      "ppid": 4708,
+      "utime": 27,
+      "stime": 23,
+      "rss": 11396
+    },
+    "4760": {
+      "comm": "WebExtensions",
+      "ppid": 4708,
+      "utime": 428,
+      "stime": 227,
+      "rss": 24546
+    },
+    "4788": {
+      "comm": "Utility Process",
+      "ppid": 4708,
+      "utime": 12,
+      "stime": 8,
+      "rss": 9022
+    }
+  },
+  "after": {
+    "310": {
+      "comm": "Xorg",
+      "ppid": 299,
+      "utime": 4258,
+      "stime": 4586,
+      "rss": 15730
+    },
+    "4626": {
+      "comm": "firefox",
+      "ppid": 1,
+      "utime": 3769,
+      "stime": 2364,
+      "rss": 67480
+    },
+    "4708": {
+      "comm": "forkserver",
+      "ppid": 4626,
+      "utime": 14,
+      "stime": 43,
+      "rss": 7385
+    },
+    "4711": {
+      "comm": "Socket Process",
+      "ppid": 4708,
+      "utime": 14,
+      "stime": 8,
+      "rss": 10014
+    },
+    "4723": {
+      "comm": "Web Content",
+      "ppid": 4708,
+      "utime": 249,
+      "stime": 220,
+      "rss": 25411
+    },
+    "4731": {
+      "comm": "RDD Process",
+      "ppid": 4708,
+      "utime": 703,
+      "stime": 255,
+      "rss": 16195
+    },
+    "4760": {
+      "comm": "WebExtensions",
+      "ppid": 4708,
+      "utime": 431,
+      "stime": 234,
+      "rss": 24642
+    },
+    "4788": {
+      "comm": "Utility Process",
+      "ppid": 4708,
+      "utime": 12,
+      "stime": 9,
+      "rss": 9397
+    }
+  },
+  "cpu_rows": [
+    {
+      "pid": 4626,
+      "comm": "firefox",
+      "ppid": 1,
+      "user_ticks": 1932,
+      "system_ticks": 489,
+      "total_ticks": 2421
+    },
+    {
+      "pid": 4731,
+      "comm": "RDD Process",
+      "ppid": 4708,
+      "user_ticks": 676,
+      "system_ticks": 232,
+      "total_ticks": 908
+    },
+    {
+      "pid": 4723,
+      "comm": "Web Content",
+      "ppid": 4708,
+      "user_ticks": 157,
+      "system_ticks": 144,
+      "total_ticks": 301
+    },
+    {
+      "pid": 310,
+      "comm": "Xorg",
+      "ppid": 299,
+      "user_ticks": 64,
+      "system_ticks": 34,
+      "total_ticks": 98
+    },
+    {
+      "pid": 4760,
+      "comm": "WebExtensions",
+      "ppid": 4708,
+      "user_ticks": 3,
+      "system_ticks": 7,
+      "total_ticks": 10
+    },
+    {
+      "pid": 4788,
+      "comm": "Utility Process",
+      "ppid": 4708,
+      "user_ticks": 0,
+      "system_ticks": 1,
+      "total_ticks": 1
+    },
+    {
+      "pid": 4708,
+      "comm": "forkserver",
+      "ppid": 4626,
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 4711,
+      "comm": "Socket Process",
+      "ppid": 4708,
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    }
+  ],
+  "clk_tck": 100
+}
