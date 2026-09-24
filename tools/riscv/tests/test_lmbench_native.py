@@ -10,11 +10,69 @@ from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 import json
+import hashlib
+import io
+import tarfile
 
 from tools.riscv.lmbench_native import audit, make_entry, native_command, owned_hello, run_locked, PLATFORM, patch_scripts
 
 
 class NativeLmbenchTests(unittest.TestCase):
+    def _runtime_archive(self, output: Path, *, include_header_fix: bool) -> None:
+        runner = Path(__file__).resolve().parents[1] / 'lmbench_native.py'
+        adaptations = ['explicit IPv4 loopback server arguments',
+                       'grep -E instead of the egrep shell wrapper']
+        if include_header_fix:
+            adaptations.append('skip modern netstat interface-table headers')
+        metadata = {
+            'revision': 'afb47eddaf10a411c1ea3cb64965461f1308a6ea',
+            'platform': PLATFORM,
+            'adaptations': adaptations,
+            'benchmark_binaries_modified': False,
+            'runner_sha256': hashlib.sha256(runner.read_bytes()).hexdigest(),
+        }
+        header = '*ame|Kernel|Iface)' if include_header_fix else '*ame)'
+        driver = ('case "$server" in\n'
+                  '    *) "$server" -s 127.0.0.1 ;;\n'
+                  'esac\n'
+                  f'{header}\t;;\n')
+        members = {
+            'opt/lmbench/asterinas-runtime.json': json.dumps(metadata).encode(),
+            'opt/lmbench/asterinas-native.py': runner.read_bytes(),
+            'opt/lmbench/src/GNUmakefile': make_entry().encode(),
+            'opt/lmbench/scripts/lmbench': driver.encode(),
+            f'opt/lmbench/bin/{PLATFORM}/lmbench': driver.encode(),
+            'opt/lmbench/scripts/version': b"grep -E 'MAJOR|MINOR' version.h\n",
+        }
+        with tarfile.open(output, 'w:gz') as archive:
+            for name, content in members.items():
+                member = tarfile.TarInfo(name)
+                member.size = len(content)
+                archive.addfile(member, io.BytesIO(content))
+
+    def test_current_archive_verifies_before_boot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / 'runtime.tar.gz'
+            self._runtime_archive(archive, include_header_fix=True)
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parents[1] / 'lmbench_native.py'),
+                 'verify', '--archive', str(archive)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)['revision'],
+                             'afb47eddaf10a411c1ea3cb64965461f1308a6ea')
+
+    def test_old_archive_is_rejected_before_boot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / 'runtime.tar.gz'
+            self._runtime_archive(archive, include_header_fix=False)
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).resolve().parents[1] / 'lmbench_native.py'),
+                 'verify', '--archive', str(archive)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn('archive verification failed: runtime archive adaptations',
+                          result.stderr)
+            self.assertNotIn('Traceback', result.stderr)
+
     def test_native_target_skips_only_compilation(self):
         self.assertEqual(native_command('/bin/make', 'riscv64-unknown-linux-gnu'),
                          ['/bin/make', '--no-print-directory', '-f', 'Makefile',
