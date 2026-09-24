@@ -13,6 +13,15 @@ The [QEMU kernel-test log](bigtcp-ktest-qemu-serial.log.gz) records all **21/21*
 `aster-bigtcp` tests passing, including both ICMP Echo tests. The
 [native-runner unit log](lmbench-native-unit.log) records **23/23** passing.
 
+The actual packaged runtime archive was rechecked with
+`python3 tools/riscv/lmbench_native.py verify --archive`. Its SHA-256 remains
+`54bf3c45ca425b8736e54e9723ff50d6c4c306af26ff033c25f89c4272236af3`.
+With both packaged `GNUmakefile` and original `Makefile` extracted into one
+temporary source directory, `make -n result` and `make -n results` each expanded
+to `python3 ../asterinas-native.py run` ([output](make-entry-check.txt)). This
+confirms the leader-requested singular command selects the same runner without
+repeating the full suite.
+
 The full native LMBench ALL result on the LMBench parent is recorded in
 [the original qualification](../2026-09-24-native-lmbench-no-egrep/README.md),
 and the ICMP candidate's Ethernet behavior was verified on Megrez in
