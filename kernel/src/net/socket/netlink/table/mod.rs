@@ -19,7 +19,7 @@ use crate::{
 mod multicast;
 
 /// All bound netlink sockets in one network namespace.
-pub(in crate::net) struct NetlinkSocketTable {
+pub(crate) struct NetlinkSocketTable {
     route: RwMutex<ProtocolSocketTable<RtnlMessage>>,
     uevent: RwMutex<ProtocolSocketTable<UeventMessage>>,
 }
