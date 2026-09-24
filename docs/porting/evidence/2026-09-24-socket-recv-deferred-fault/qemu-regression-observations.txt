@@ -1,0 +1,17 @@
+udp red
+UDP large-buffer operation 3: received=-1 errno=14
+UDP large-buffer operation 5: received=-1 errno=14
+run_kernel validation failed: expected exactly one terminal marker: UDP user buffer prefault regression passed.
+
+udp green
+UDP user buffer prefault regression passed.
+run_kernel validation passed: mode=udp-user-buffer-prefault
+
+tcp red
+TCP large-buffer operation 3: received=-1 errno=14
+TCP large-buffer operation 5: received=-1 errno=14
+TCP user buffer prefault regression failed
+
+tcp green
+TCP user buffer prefault regression passed.
+TCP user buffer prefault regression passed.
