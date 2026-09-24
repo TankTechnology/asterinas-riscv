@@ -1181,6 +1181,19 @@ finalize_browser_startup_caches() {
         --root="$stage" update --usr
     run_chroot "$stage" /usr/bin/journalctl --update-catalog
     generate_fontconfig_cache "$stage"
+    if is_firefox_profile; then
+        # The minimal package installation can leave shared-mime-info's
+        # triggers unapplied. Without this database libfm treats desktop
+        # launchers as plain files and cannot resolve SVG wallpaper/icons.
+        (
+            umask 022
+            run_chroot "$stage" /usr/bin/update-mime-database /usr/share/mime
+        )
+        # The builder normally uses umask 077 for private workspaces. Cache
+        # generation may preserve that mode even with a subprocess umask, so
+        # explicitly make the system MIME database readable by UID 1000.
+        chmod -R a+rX -- "$stage/usr/share/mime"
+    fi
 
     [[ -s "$stage/etc/ld.so.cache" ]] || die "staged ldconfig cache is absent"
     [[ -s "$stage/var/lib/systemd/catalog/database" ]] ||
@@ -1463,6 +1476,48 @@ EOF
     chmod 0644 -- "$output"
 }
 
+install_online_desktop_shell() {
+    local stage="$1"
+    local script_directory
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+
+    install -d -m 0755 -o 1000 -g 1000 -- "$stage/home/asterinas/Desktop"
+    install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas/.config"
+    install -d -m 0755 -o 1000 -g 1000 -- \
+        "$stage/home/asterinas/.config/pcmanfm" \
+        "$stage/home/asterinas/.config/pcmanfm/Asterinas" \
+        "$stage/home/asterinas/.config/lxpanel" \
+        "$stage/home/asterinas/.config/lxpanel/Asterinas" \
+        "$stage/home/asterinas/.config/lxpanel/Asterinas/panels"
+    install -D -m 0644 -- \
+        "$script_directory/desktop_wallpaper.svg" \
+        "$stage/usr/share/asterinas/desktop-wallpaper.svg"
+    install -m 0644 -o 1000 -g 1000 -- \
+        "$script_directory/desktop_pcmanfm.conf" \
+        "$stage/home/asterinas/.config/pcmanfm/Asterinas/desktop-items-0.conf"
+    install -m 0644 -o 1000 -g 1000 -- \
+        "$script_directory/desktop_online_lxpanel.conf" \
+        "$stage/home/asterinas/.config/lxpanel/Asterinas/panels/panel"
+    install -D -m 0755 -- \
+        "$script_directory/browser_web_open_firefox.sh" \
+        "$stage/usr/lib/asterinas/browser-web-open-firefox"
+    install -D -m 0644 -- \
+        "$script_directory/asterinas_firefox.desktop" \
+        "$stage/usr/share/applications/asterinas-browser.desktop"
+    install -m 0755 -o 1000 -g 1000 -- \
+        "$script_directory/asterinas_firefox.desktop" \
+        "$stage/home/asterinas/Desktop/asterinas-browser.desktop"
+    local launcher
+    for launcher in files terminal; do
+        install -D -m 0644 -- \
+            "$script_directory/asterinas-$launcher.desktop" \
+            "$stage/usr/share/applications/asterinas-$launcher.desktop"
+        install -m 0755 -o 1000 -g 1000 -- \
+            "$script_directory/asterinas-$launcher.desktop" \
+            "$stage/home/asterinas/Desktop/asterinas-$launcher.desktop"
+    done
+}
+
 configure_desktop() {
     local stage="$1"
     local generation="$2"
@@ -1557,6 +1612,7 @@ configure_desktop() {
         done
     elif [[ "$generation" == m5 ]]; then
         if [[ "$browser_mode" == online ]]; then
+            install_online_desktop_shell "$stage"
             install -D -m 0755 -- "$script_directory/browser_web_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser-web-marionette-gate"
             install -D -m 0755 -- "$script_directory/megrez_clock_sync.py" \
@@ -2105,6 +2161,14 @@ browser_web_runtime_digest() {
     local source_directory="$1"
     local input
     local -a inputs=(
+        desktop_m5_session.sh
+        desktop_wallpaper.svg
+        desktop_pcmanfm.conf
+        desktop_online_lxpanel.conf
+        asterinas_firefox.desktop
+        asterinas-files.desktop
+        asterinas-terminal.desktop
+        browser_web_open_firefox.sh
         desktop_m5_network_evidence.sh
         desktop_m5_network_gate.py
         browser_web_firefox.sh

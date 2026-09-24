@@ -80,10 +80,17 @@ if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     fi
     emit_stage x-socket-ready "$xorg_pid"
     # Xorg owns the VT as the privileged display provider; keep the window
-    # manager unprivileged so the desktop surface cannot grant Firefox extra
+    # manager and desktop shell unprivileged so they cannot grant Firefox extra
     # capabilities through the session process.
     /usr/sbin/runuser --user asterinas --preserve-environment -- \
         /usr/bin/openbox --sm-disable >>"$SESSION_LOG" 2>&1 &
+    emit_stage window-manager-start "$!"
+    /usr/sbin/runuser --user asterinas --preserve-environment -- \
+        /usr/bin/pcmanfm --desktop --profile Asterinas >>"$SESSION_LOG" 2>&1 &
+    emit_stage desktop-start "$!"
+    /usr/sbin/runuser --user asterinas --preserve-environment -- \
+        /usr/bin/lxpanel --profile Asterinas >>"$SESSION_LOG" 2>&1 &
+    emit_stage panel-start "$!"
     wait "$xorg_pid"
     xorg_status=$?
     kill "$xorg_log_tailer_pid" 2>/dev/null || true

@@ -323,6 +323,20 @@ def check_cache_profile(
             )
 
     if profile == "browser-web":
+        mime_cache_path = _regular(root / "usr/share/mime/mime.cache", nonempty=True)
+        mime_globs_path = _regular(root / "usr/share/mime/globs2", nonempty=True)
+        if any(
+            path.stat().st_mode & 0o444 != 0o444
+            for path in (mime_cache_path, mime_globs_path)
+        ):
+            raise CacheCheckError("desktop MIME database is not readable by desktop users")
+        mime_cache = mime_cache_path.read_bytes()
+        if len(mime_cache) < 32 or not mime_cache.startswith(b"\0\x01\0\x02"):
+            raise CacheCheckError("desktop MIME cache has an invalid header")
+        mime_globs = mime_globs_path.read_text()
+        for glob in ("50:application/x-desktop:*.desktop", "50:image/svg+xml:*.svg"):
+            if glob not in mime_globs.splitlines():
+                raise CacheCheckError(f"desktop MIME database misses {glob}")
         browser_unit = service_name or "asterinas-browser-web.service"
         unit = _regular(
             root / "etc/systemd/system" / browser_unit, nonempty=True

@@ -2852,6 +2852,97 @@ WantedBy=multi-user.target
             ).is_symlink()
         )
 
+    def test_configures_browser_web_desktop_shell(self) -> None:
+        work_directory = self.directory / "configure-browser-web-desktop"
+        stage = work_directory / "stage"
+        for relative in (
+            "etc",
+            "etc/systemd/system",
+            "home",
+            "usr/bin",
+            "var/lib/dbus",
+            "var/lib/dpkg",
+            "var/cache/apt/archives",
+            "var/lib/apt/lists",
+            "var/log",
+            "tmp",
+            "var/tmp",
+        ):
+            (stage / relative).mkdir(parents=True, exist_ok=True)
+        (stage / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+        (stage / "etc/group").write_text("root:x:0:\n")
+        (stage / "etc/shadow").write_text("root:!:0:0:99999:7:::\n")
+        (stage / "etc/gshadow").write_text("root:!::\n")
+
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                'source "$1"; install_online_desktop_shell "$2"',
+                "builder-configure-online-desktop-test",
+                str(BUILD_SCRIPT),
+                str(stage),
+            ],
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        wallpaper = stage / "usr/share/asterinas/desktop-wallpaper.svg"
+        pcmanfm = stage / "home/asterinas/.config/pcmanfm/Asterinas/desktop-items-0.conf"
+        panel = stage / "home/asterinas/.config/lxpanel/Asterinas/panels/panel"
+        self.assertEqual(wallpaper.read_bytes(), DESKTOP_WALLPAPER.read_bytes())
+        self.assertIn("desktop-wallpaper.svg", pcmanfm.read_text())
+        self.assertIn("edge=bottom", panel.read_text())
+        for name in ("browser", "files", "terminal"):
+            self.assertIn(
+                f"id=asterinas-{name}.desktop",
+                panel.read_text(),
+            )
+        self.assertEqual(pcmanfm.stat().st_uid, 1000)
+        self.assertEqual(panel.stat().st_uid, 1000)
+        for relative in (
+            ".config/pcmanfm",
+            ".config/pcmanfm/Asterinas",
+            ".config/lxpanel",
+            ".config/lxpanel/Asterinas",
+            ".config/lxpanel/Asterinas/panels",
+        ):
+            self.assertEqual((stage / "home/asterinas" / relative).stat().st_uid, 1000)
+
+        desktop = stage / "home/asterinas/Desktop"
+        self.assertEqual(
+            sorted(path.name for path in desktop.glob("*.desktop")),
+            [
+                "asterinas-browser.desktop",
+                "asterinas-files.desktop",
+                "asterinas-terminal.desktop",
+            ],
+        )
+        browser = desktop / "asterinas-browser.desktop"
+        self.assertIn("Exec=", browser.read_text())
+        self.assertIn("firefox", browser.read_text().lower())
+        self.assertNotIn("netsurf", browser.read_text().lower())
+        self.assertEqual(stat.S_IMODE(browser.stat().st_mode), 0o755)
+        self.assertEqual(browser.stat().st_uid, 1000)
+        self.assertIn(
+            "Exec=xterm -title Asterinas-Terminal",
+            (desktop / "asterinas-terminal.desktop").read_text(),
+        )
+        self.assertIn("xdotool", get_profile("browser-web").requested_packages)
+        launcher = stage / "usr/lib/asterinas/browser-web-open-firefox"
+        self.assertEqual(stat.S_IMODE(launcher.stat().st_mode), 0o755)
+        self.assertIn("windowactivate", launcher.read_text())
+
+        session = (
+            REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m5_session.sh"
+        ).read_text()
+        self.assertIn("/usr/bin/pcmanfm --desktop --profile Asterinas", session)
+        self.assertIn("/usr/bin/lxpanel --profile Asterinas", session)
+        self.assertIn("/usr/sbin/runuser --user asterinas", session)
+
     def test_desktop_m4_evidence_requires_application_windows(self) -> None:
         self.assertIn(
             "ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS:-30",
