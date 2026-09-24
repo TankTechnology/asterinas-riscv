@@ -47,6 +47,18 @@ debug-console reconnect after an actual Asterinas reboot remain open. The
 contains the image identities, captures, raw daily-use results, and recovery
 limits.
 
+A follow-up persistent-home boot exposed a repeatability bug: the daily-use
+gate rejected its own previous fixture download before collecting a new run.
+The gate now safely clears only a verified test-owned copy. With that fix and
+an opt-in context-open CPU probe, the next short physical run passed 7/7 and
+uploaded its complete evidence before an authenticated reboot to RockOS.
+`NewWindow` took 823 ms; Firefox's parent accumulated 860 ms user and 420 ms
+kernel CPU across its threads during the 828-ms snapshot interval, while Xorg
+used 30 ms. This single instrumented run also had a 731-ms keyboard next-rAF
+outlier. It narrows the investigation but does not qualify a speedup or a
+kernel function hotspot. The [repeatability and context evidence](evidence/2026-09-25-firefox-online-desktop/README.md#persistent-home-repeatability-and-context-open-cpu-diagnostic)
+records the artifact hashes and RockOS recovery.
+
 ## Earlier checkpoint before signed-root installation
 
 The online shell integration and a vDSO writer lock-order stability fix are
