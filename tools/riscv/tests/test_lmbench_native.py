@@ -20,8 +20,7 @@ from tools.riscv.lmbench_native import audit, make_entry, native_command, owned_
 class NativeLmbenchTests(unittest.TestCase):
     def _runtime_archive(self, output: Path, *, include_header_fix: bool) -> None:
         runner = Path(__file__).resolve().parents[1] / 'lmbench_native.py'
-        adaptations = ['explicit IPv4 loopback server arguments',
-                       'grep -E instead of the egrep shell wrapper']
+        adaptations = ['explicit IPv4 loopback server arguments']
         if include_header_fix:
             adaptations.append('skip modern netstat interface-table headers')
         metadata = {
@@ -42,7 +41,7 @@ class NativeLmbenchTests(unittest.TestCase):
             'opt/lmbench/src/GNUmakefile': make_entry().encode(),
             'opt/lmbench/scripts/lmbench': driver.encode(),
             f'opt/lmbench/bin/{PLATFORM}/lmbench': driver.encode(),
-            'opt/lmbench/scripts/version': b"grep -E 'MAJOR|MINOR' version.h\n",
+            'opt/lmbench/scripts/version': b"egrep 'MAJOR|MINOR' version.h\n",
         }
         with tarfile.open(output, 'w:gz') as archive:
             for name, content in members.items():
@@ -237,6 +236,8 @@ except RuntimeError:
             self.assertIn('echo built-version', (binary / 'lmbench').read_text())
             self.assertNotIn('<version>', (binary / 'lmbench').read_text())
             self.assertIn('-s 127.0.0.1', (binary / 'lmbench').read_text())
+            self.assertEqual((root / 'scripts/version').read_text(),
+                             "egrep 'MAJOR|MINOR' version.h\n")
 
     def test_adapted_native_driver_skips_netstat_headers(self):
         with tempfile.TemporaryDirectory() as tmp:
