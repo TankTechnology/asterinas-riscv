@@ -46,6 +46,13 @@ RISC-V `PTRACE_GETREGSET` for `NT_PRSTATUS` has since merged to `main` as
 Its 33-check QEMU regression and an x86-64 kernel build passed on the merged
 tree. The physical board still runs the preceding kernel image; a PC profile
 and its sampling-overhead control have not yet been collected.
+The [bounded thread-PC sampler](../../tools/riscv/debian/rootfs/thread_pc_sampler.py)
+is now available for that canary. It snapshots `/proc/<pid>/maps`, samples
+named threads through `PTRACE_ATTACH`/`GETREGSET`/`DETACH`, records the time
+spent stopping each thread, and caps the sample count. Its host Linux attach
+and detach integration tests pass; it has not yet run against Firefox on the
+board. It records saved user PCs only, so it cannot by itself identify kernel
+execution or produce a call-stack flamegraph.
 
 ## Earlier baseline and architecture
 
