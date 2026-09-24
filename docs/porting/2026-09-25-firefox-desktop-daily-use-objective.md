@@ -69,6 +69,13 @@ One candidate RockOS cycle and one missing-selector fallback cycle passed;
 the board returned to RockOS with a fresh root-console reconnect. Basic,
 Probe, Desktop and the repeat counts required for promotion remain open.
 
+A short physical native-size video A/B/A then tested CSS `image-rendering:
+crisp-edges` against Firefox's default sampling on the same signed root.
+The candidate dropped 246 frames, versus 182 and 175 in its two same-boot
+controls, so it is rejected. The [three-run record](evidence/2026-09-25-firefox-online-desktop/README.md#native-size-video-sampling-aba-crisp-edges-rejected)
+keeps the 303-frame candidate quality counter and the recovery limits intact.
+No production browser preference changed, and the twofold target remains open.
+
 ## Earlier checkpoint before signed-root installation
 
 The online shell integration and a vDSO writer lock-order stability fix are
