@@ -271,7 +271,7 @@ tools/docker/run_dev_container.sh -- python3 tools/riscv/lmbench_native.py \
 ```
 
 Before booting a guest with an existing archive, check that it matches the
-current packager and carries all three declared script adaptations:
+current packager and carries both declared script adaptations:
 
 ```sh
 python3 tools/riscv/lmbench_native.py verify \
@@ -287,7 +287,10 @@ archive. The guest's `make results` command remains the single test trigger.
 The archive contains the source, precompiled RISC-V executables, GNU make,
 rpcbind, net-tools and their complete Nix runtime closure. Install it once in
 a **disposable Debian guest**, with Python 3.10+, grep, awk, sed, tar and useradd.
-The guest kernel must expose `/proc/sys/net/ipv4/ip_local_reserved_ports`.
+The guest kernel must expose `/proc/sys/net/ipv4/ip_local_reserved_ports`
+and preserve the script pathname in the interpreter's `argv` when running
+the Debian `/usr/bin/egrep` wrapper. The latter is fixed by the
+[shebang argument change](../../docs/porting/evidence/2026-09-24-shebang-script-argv/README.md).
 Keep the archive's `.sha256` file when transferring it and verify before extraction:
 
 ```sh
@@ -302,9 +305,10 @@ make results
 
 The GNUmakefile invokes the native Makefile with `-o lmbench`, which skips only
 its compilation prerequisite. Native scripts still perform configuration and
-execute the suite. Three declared script adaptations supply the server addresses
-required by this fork, replace the `egrep` wrapper with `grep -E`, and skip
-the two modern `netstat -i` table headings before invoking `ifconfig`. The native
+execute the suite. Two declared script adaptations supply the server addresses
+required by this fork and skip the two modern `netstat -i` table headings
+before invoking `ifconfig`. The upstream `scripts/version` uses its original
+`egrep` command. The native
 RISC-V package uses the pinned fork's original `lat_rpc` binary, including its
 25 ms total RPC deadline and 2.5 ms UDP retry interval. The original Makefile
 and native configuration/results scripts remain intact. Package identities,
@@ -312,8 +316,9 @@ original script hashes, the `lat_rpc` hash and every adaptation are recorded
 in `asterinas-runtime.json`. Because the RPC retry interval is short, avoid
 sending repeated management-console commands while collecting native results;
 such commands caused intermittent RPC/UDP timeouts in QEMU diagnostics.
-The [interface metadata qualification](../../docs/porting/evidence/2026-09-24-ifreq.md)
-records the clean 109/109 QEMU run with these adaptations.
+The [current qualification](../../docs/porting/evidence/2026-09-24-native-lmbench-no-egrep/README.md)
+records the clean 109/109 QEMU run with these two adaptations and the original
+version probe.
 
 The automated configuration selects native **ALL**, one copy, 8 MiB, FASTMEM,
 file-system tests enabled, and loopback networking including RPC/HTTP.
