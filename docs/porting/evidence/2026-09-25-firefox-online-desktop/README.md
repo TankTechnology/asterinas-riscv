@@ -666,3 +666,47 @@ unchanged. These are one cycle each, not promotion qualification. Basic, Probe,
 and the unbounded Desktop menu entries have not been exercised for this
 candidate. The raw RockOS login transcripts stay in the local test directory
 to avoid publishing credential-bearing serial material.
+
+## Native-size video sampling A/B/A: crisp edges rejected
+
+The current Firefox 143 source passes the video's `image-rendering` choice
+through [WebRender's image command](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_143_0_3_RELEASE/gfx/layers/wr/WebRenderCommandBuilder.cpp#L2152),
+and its [software video paint path](https://github.com/mozilla-firefox/firefox/blob/FIREFOX_143_0_3_RELEASE/layout/generic/nsVideoFrame.cpp#L576)
+uses the frame's sampling filter. Because the physical PC samples above
+clustered in SWGL's YUV linear row conversion, changing only the sampling
+style was a testable user-space candidate. The hash-pinned
+[`video_filter_probe.py`](../../../../tools/riscv/debian/rootfs/video_filter_probe.py)
+serves the same 300-frame VP8 file (SHA-256
+`1aa863f2a73698241c9daa016c7bfcfa0f94b038ca9f0b29f296c3ca0b65eb95`)
+at 1280×720; its `auto` and `crisp-edges` pages differ only in the run ID and
+the CSS sampling value. Its two unit checks and local HTTP GET/POST check
+passed before the board run.
+
+The [complete three-run record](physical-video-filter-aba-result.json) and
+[first control](physical-video-filter-filtera.json),
+[candidate](physical-video-filter-filterb.json), and
+[last control](physical-video-filter-filtera2.json) metrics came from one
+bounded boot of kernel SHA `6694c4c7ff5a...`, Stage1 SHA
+`ea446515661f...`, and the signed Firefox root SHA `d4f4e88fb20a...`.
+The Asterinas boot ID was `993bffc9-ab3f-4efa-8f55-6052c1ee0338`.
+
+| Run | Computed sampling | Decoded | Total quality frames | Dropped | Presented | Playback wall |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Control A | auto | 300 | 300 | 182 | 118 | 10.176 s |
+| Candidate | crisp-edges | 300 | 303 | 246 | 57 | 10.674 s |
+| Control A2 | auto | 300 | 300 | 175 | 125 | 10.247 s |
+
+The candidate regressed by at least 64 dropped frames relative to both same-
+boot controls. Its extra three total quality frames are retained rather than
+silently normalized; `mozDecodedFrames` remained 300 in all three runs. The
+initial runner rejected that 303-frame count before collecting the candidate
+CPU-after snapshot; the controls' CPU snapshots remain in the record. This
+result rejects the CSS sampling change as a video acceleration for this setup.
+The controls themselves were slower than the earlier 111–124-drop runs, so
+their values cannot be compared across boots as a kernel regression. No
+candidate visual-quality capture was made, and no user-facing default was
+changed. The board returned to U-Boot after an authenticated reboot request
+with independent safety timers armed; the precise trigger was not separated.
+A fresh RockOS root reconnect established boot ID
+`6a8f2d83-6d1c-4561-99bd-a88617b4487b`, unchanged vendor/active/canary
+selector hashes, and unmounted partition 2.
