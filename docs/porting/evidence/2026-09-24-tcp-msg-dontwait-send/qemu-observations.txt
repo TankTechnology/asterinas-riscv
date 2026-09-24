@@ -1,0 +1,20 @@
+RISC-V virt QEMU, release build, SMP=4, riscv_sv39_mode:
+  make run_kernel AUTO_TEST=tcp_msg_dontwait_send TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+
+With the final test and parent commit 42592e1e5 (blocking path despite MSG_DONTWAIT):
+  TCP MSG_DONTWAIT child status=14
+  run_kernel validation failed: expected exactly one terminal marker: TCP MSG_DONTWAIT send regression passed.
+
+With the fix, kernel image SHA-256 bf644bbd786c3e05dd71663daa5462dd51f853f21dc22a23896df09732f86c6d:
+  TCP MSG_DONTWAIT send regression passed.
+  run_kernel validation passed: mode=tcp-msg-dontwait-send
+
+Adjacent existing TCP regression with the same kernel image:
+  make run_kernel AUTO_TEST=tcp_user_buffer_prefault TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+  TCP user buffer prefault regression passed.
+  TCP user buffer prefault regression passed.
+
+Linux host oracle:
+  cc -std=gnu11 -Wall -Wextra -Werror test/initramfs/src/regression/network/tcp_msg_dontwait_send.c -o /tmp/tcp_msg_dontwait_send
+  /tmp/tcp_msg_dontwait_send
+  TCP MSG_DONTWAIT send regression passed.
