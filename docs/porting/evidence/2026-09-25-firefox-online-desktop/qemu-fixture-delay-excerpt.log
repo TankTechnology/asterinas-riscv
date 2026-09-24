@@ -1,0 +1,27 @@
+A_WEB_PROBE_COMMAND state=start
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PHASE phase=probe-fixture-home state=start firefox_pid=199
+A_WEB_PROBE_COMMAND state=start
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_CAPABILITIES state=running error="None" checks={}
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done
+A_WEB_PROBE_COMMAND state=done

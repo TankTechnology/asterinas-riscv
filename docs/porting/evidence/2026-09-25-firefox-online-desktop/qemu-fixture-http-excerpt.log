@@ -1,0 +1,15 @@
+browser-web-progress: A_WEB_PHASE phase=navigate-fixture-home state=start firefox_pid=194
+browser-web-progress: A_WEB_PHASE phase=navigate-fixture-home state=done firefox_pid=194
+browser-web-progress: A_WEB_PHASE phase=probe-fixture-home state=start firefox_pid=194
+FIXTURE_HTTP_BEGIN ns=740857173374096 path=/browser-quality/index.html
+FIXTURE_HTTP_RESPONSE ns=740857173390376 path=/browser-quality/index.html status=200 bytes=8100
+FIXTURE_HTTP_END ns=740857173469497 path=/browser-quality/index.html
+FIXTURE_HTTP_BEGIN ns=740857695291077 path=/browser-quality/pattern.png
+FIXTURE_HTTP_RESPONSE ns=740857695311697 path=/browser-quality/pattern.png status=200 bytes=122
+FIXTURE_HTTP_END ns=740857695391198 path=/browser-quality/pattern.png
+FIXTURE_HTTP_BEGIN ns=740858334460775 path=/browser-quality/tone.wav
+FIXTURE_HTTP_RESPONSE ns=740858334481005 path=/browser-quality/tone.wav status=200 bytes=2044
+FIXTURE_HTTP_END ns=740858334583316 path=/browser-quality/tone.wav
+FIXTURE_HTTP_BEGIN ns=740858476326258 path=/browser-quality/capabilities.json
+FIXTURE_HTTP_RESPONSE ns=740858476346888 path=/browser-quality/capabilities.json status=200 bytes=57
+FIXTURE_HTTP_END ns=740858476436939 path=/browser-quality/capabilities.json

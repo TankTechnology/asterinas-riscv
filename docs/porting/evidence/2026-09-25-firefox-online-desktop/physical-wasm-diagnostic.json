@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "scope": "previously-installed-megrez-root",
+  "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+  "firefox_version": "Mozilla Firefox 143.0.3",
+  "jit_overlay_marker_sha256": "93bc24c92f47df6abccaa280bd2b345c4b52f0da60e4ac6d638fdcedec806c21",
+  "marionette": {
+    "wasm_type": "object",
+    "instantiate_type": "function",
+    "minimal_module_sha256": "ccf59f0f7a7625ee380ed228905aadfa11072ac14cea1c53d1e7f3953d4d48c6",
+    "minimal_module_answer": 42
+  }
+}
