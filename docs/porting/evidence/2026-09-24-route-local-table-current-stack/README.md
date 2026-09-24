@@ -85,6 +85,55 @@ zero. See the [all-table result](all-iproute2-result.json),
 
 This reports routes for the first configured IPv4 CIDR per interface. It does
 not add route modification, arbitrary policy tables, or IPv6 local routes.
-The change has not been installed on the physical board. The pinned
-native LMBench `make results` ALL suite passed 109/109 on an ancestor of this
-network stack; it was not repeated for this netlink-only change.
+The pinned native LMBench `make results` ALL suite passed 109/109 on an ancestor
+of this network stack; it was not repeated for this netlink-only change.
+
+## Physical Megrez canary for local and all-table routes
+
+The current production Image at commit `9690d59f2d09e374bea036a1a26d79dc215e5e86`
+has SHA-256 `3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e`.
+The host served that exact 6,071,408-byte file to RockOS, which checked its
+hash before installation and read it back from `/boot` with the same hash.
+The [independent candidate menu](board-candidate-menu.conf.gz) changed only the
+Desktop kernel path relative to the previous canary; its SHA-256 is
+`3c5ab5c39edb3f39308a0f0dbd730aee4a1023d071daca0ae0496f36ef4ae600`.
+RockOS remained the default, and the previous Image and menu were retained.
+
+The previous Asterinas boot software-rebooted into a fresh OpenSBI/U-Boot epoch
+and RockOS boot ID `f2602d5d-3c82-4c21-8d5f-fac05acfcc43`.
+After installation, a normal RockOS reboot reached another fresh U-Boot epoch.
+The host selected the independent menu's Desktop entry, and U-Boot loaded
+`/asterinas-route-all-3e3707b7e59f.booti`.
+The new Asterinas boot ID was `ce042e30-d629-4421-82e6-342ce1e139d8`.
+The [RockOS recovery](board-rockos-reboot.serial.log.gz),
+[selected boot](board-candidate-boot.serial.log.gz), and
+[structured result](board-result.json) retain the identities and selected files.
+
+With a four-second bound on each command, `ip -4 route show` returned the
+default and connected routes, `ip -4 route show table local` returned five
+loopback/Ethernet local and broadcast routes, and
+`ip -4 route show table all` returned those five plus the two main routes.
+`ip -4 route get 10.100.16.1` selected `eth0` and source `10.100.19.200`;
+the default-route filter also succeeded.
+The same all-table query succeeded inside Firefox's network namespace.
+The [framed route transcript](board-routes.serial.log.gz) contains the command
+outputs and exit statuses.
+
+Firefox then opened a minimal LAN page and completed its one-second VP8/WebM
+clip without a decode error or dropped frame (5/5 frames).
+See the [browser transcript](board-browser-media.serial.log.gz).
+After desktop readiness became active and the reboot watchdog read `0`, two
+separately reopened connections to
+`/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0`
+each returned a fresh nonce-framed UID-0 response with the same boot ID,
+`systemd` on `/dev/mmcblk0p2` (ext2), active desktop and browser services,
+the board address, and a successful route lookup.
+The [first](board-handoff-1.serial.log.gz) and
+[second](board-handoff-2.serial.log.gz) handoff logs retain that proof.
+The serial descriptor was closed after the checks.
+
+This was one selected physical boot of the new Image.
+Persistence of this entry through another reboot was not tested; a normal
+unattended reboot still selects RockOS.
+The earlier 109/109 native LMBench result remains QEMU evidence from an
+ancestor kernel, not a physical-board score or a rerun on this Image.

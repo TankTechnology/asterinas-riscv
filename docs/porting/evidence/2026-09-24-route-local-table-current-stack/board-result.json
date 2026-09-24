@@ -1,0 +1,88 @@
+{
+  "status": "pass",
+  "physical": true,
+  "branch": "codex/route-local-table-current-stack",
+  "commit": "9690d59f2d09e374bea036a1a26d79dc215e5e86",
+  "image": {
+    "path": "/boot/asterinas-route-all-3e3707b7e59f.booti",
+    "size": 6071408,
+    "sha256": "3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e"
+  },
+  "menu": {
+    "path": "/boot/extlinux/asterinas-route-all-canary-20260924.conf",
+    "sha256": "3c5ab5c39edb3f39308a0f0dbd730aee4a1023d071daca0ae0496f36ef4ae600",
+    "default": "RockOS"
+  },
+  "stage1": {
+    "path": "/boot/stage1-cfec77d41d68.cpio",
+    "sha256": "cfec77d41d68dfcb67228dfa6791d9cea25227c427ee9943ba5f44d6bd269cd1"
+  },
+  "serial_device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
+  "rockos_boot_id": "f2602d5d-3c82-4c21-8d5f-fac05acfcc43",
+  "asterinas_boot_id": "ce042e30-d629-4421-82e6-342ce1e139d8",
+  "routes": {
+    "main": [
+      "default via 10.100.16.1 dev eth0 ",
+      "10.100.16.0/21 dev eth0 proto kernel scope link src 10.100.19.200"
+    ],
+    "local": [
+      "local 127.0.0.0/8 dev lo proto kernel scope host src 127.0.0.1 ",
+      "local 127.0.0.1 dev lo proto kernel scope host src 127.0.0.1 ",
+      "broadcast 127.255.255.255 dev lo proto kernel scope link src 127.0.0.1 ",
+      "local 10.100.19.200 dev eth0 proto kernel scope host src 10.100.19.200 ",
+      "broadcast 10.100.23.255 dev eth0 proto kernel scope link src 10.100.19.200"
+    ],
+    "all": [
+      "default via 10.100.16.1 dev eth0 ",
+      "10.100.16.0/21 dev eth0 proto kernel scope link src 10.100.19.200 ",
+      "local 127.0.0.0/8 dev lo table local proto kernel scope host src 127.0.0.1 ",
+      "local 127.0.0.1 dev lo table local proto kernel scope host src 127.0.0.1 ",
+      "broadcast 127.255.255.255 dev lo table local proto kernel scope link src 127.0.0.1 ",
+      "local 10.100.19.200 dev eth0 table local proto kernel scope host src 10.100.19.200 ",
+      "broadcast 10.100.23.255 dev eth0 table local proto kernel scope link src 10.100.19.200"
+    ],
+    "get": [
+      "10.100.16.1 dev eth0 src 10.100.19.200 ",
+      "    cache"
+    ],
+    "default": [
+      "default via 10.100.16.1 dev eth0"
+    ]
+  },
+  "firefox_media": {
+    "url": "http://10.100.19.216:17894/index.html",
+    "current_time_seconds": 1,
+    "duration_seconds": 1,
+    "ended": true,
+    "decode_error": null,
+    "total_frames": 5,
+    "dropped_frames": 0
+  },
+  "handoff": [
+    {
+      "attempt": 1,
+      "passed": true,
+      "nonce": "4b8d6472a1349a71",
+      "status": 0,
+      "uid": 0,
+      "boot_id": "ce042e30-d629-4421-82e6-342ce1e139d8"
+    },
+    {
+      "attempt": 2,
+      "passed": true,
+      "nonce": "91de8837b1d97f66",
+      "status": 0,
+      "uid": 0,
+      "boot_id": "ce042e30-d629-4421-82e6-342ce1e139d8"
+    }
+  ],
+  "recovery_state": {
+    "rockos_default_retained": true,
+    "old_image_and_menu_retained": true,
+    "desktop_ready_active": true,
+    "browser_service_active": true,
+    "software_reboot_watchdog": 0,
+    "serial_closed": true,
+    "actual_reboot_persistence_of_new_entry": "not tested"
+  }
+}
