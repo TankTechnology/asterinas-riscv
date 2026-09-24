@@ -5,6 +5,7 @@
 set -e
 
 /test/network/netlink_route_netns
+/test/network/route_get
 /test/network/netlink_uevent_port_netns
 /test/network/netlink_route
 /test/network/rtnl_err
