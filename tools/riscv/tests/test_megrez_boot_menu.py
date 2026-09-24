@@ -258,11 +258,16 @@ class BootMenuTests(unittest.TestCase):
         script = menu.publication_script(value, "http://192.168.1.1:8000")
         self.assertEqual(script.count("install -D -m 0444"), 3)
 
-    def test_rejects_isolated_console_as_a_desktop_entry(self):
+    def test_accepts_persistent_home_with_isolated_root_console(self):
         value = document()
         value["desktop_args"] = (
             menu.BASE_ARGS + " -- --root-init=systemd --debug-console=isolated-root"
         )
+        value["extlinux"] = menu.render(value)
+        menu.validate(value)
+        self.assertIn(value["desktop_args"], value["extlinux"])
+
+        value["desktop_args"] += " --volatile-home"
         value["extlinux"] = menu.render(value)
         with self.assertRaisesRegex(menu.BootManifestError, "root-init"):
             menu.validate(value)
