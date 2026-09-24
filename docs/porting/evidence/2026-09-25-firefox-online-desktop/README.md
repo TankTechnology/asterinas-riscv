@@ -288,3 +288,19 @@ A separate Sv48/SMP=4 release Image was built for a later controlled Megrez
 boot: SHA-256
 `4d1e0ee4ef2cb23ae6bbbca3ec425b3177013d5bdf1c261bc2e990ade22c9025`.
 It was not installed or booted during this record.
+
+## RISC-V user-PC diagnostic prerequisite
+
+[PR #177](https://github.com/TankTechnology/asterinas-riscv/pull/177)
+was integrated on `main` as merge commit `c65c40766`. The merged tree passed
+`make run_kernel AUTO_TEST=riscv_ptrace_regset TARGET_ARCH=riscv64 SMP=4
+FEATURES=riscv_sv39_mode RELEASE=1`: `TRACEME` and external
+`ATTACH`/`DETACH` returned 33 checks passed and zero failed. The
+[QEMU assertion excerpt](ptrace-regset-qemu-excerpt.log) retains the individual
+checks and terminal marker. `cargo fmt --all --check`, `git diff --cached
+--check`, and the x86-64 release kernel build also passed; the latter's
+[build excerpt](ptrace-regset-x86-build-excerpt.log) records the release build
+and ISO creation. This adds stopped-user-thread register reads for later PC
+sampling, not a Firefox profile or a measured speedup. The physical board
+still boots the older `052656e9b12c...` kernel, so this diagnostic has not
+yet been exercised on Megrez.
