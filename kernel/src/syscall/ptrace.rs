@@ -3,7 +3,7 @@
 use ostd::mm::VmIo;
 
 use super::SyscallReturn;
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 use crate::arch::ptrace as arch_ptrace;
 use crate::{
     prelude::*,
@@ -134,6 +134,29 @@ pub fn sys_ptrace(
 
             let regs = tracee.ptrace_get_regs()?;
             ctx.user_space().write_val(data, &regs)?;
+        }
+        #[cfg(target_arch = "riscv64")]
+        PtraceRequest::PTRACE_GETREGSET => {
+            let tracee = ctx.posix_thread.get_tracee(tid)?;
+            let tracee = tracee.as_posix_thread().unwrap();
+            let regs = tracee.ptrace_get_regset()?;
+            if addr != NT_PRSTATUS {
+                return_errno_with_message!(Errno::EINVAL, "unsupported ptrace regset");
+            }
+
+            let iov: CUserIovec = ctx.user_space().read_val(data)?;
+            if iov.len % size_of::<usize>() != 0 {
+                return_errno_with_message!(Errno::EINVAL, "unaligned ptrace regset length");
+            }
+            let len = iov.len.min(size_of::<arch_ptrace::CUserRegsStruct>());
+            if len != 0 {
+                ctx.user_space()
+                    .write_bytes(iov.base, &regs.as_bytes()[..len])?;
+            }
+            let len_addr = data.checked_add(size_of::<usize>()).ok_or_else(|| {
+                Error::with_message(Errno::EFAULT, "invalid ptrace iovec address")
+            })?;
+            ctx.user_space().write_val(len_addr, &len)?;
         }
         #[cfg(target_arch = "x86_64")]
         PtraceRequest::PTRACE_SETREGS => {
@@ -273,8 +296,20 @@ enum PtraceRequest {
     // PTRACE_SYSEMU = 31,
     // /// Single-steps the thread, and the next syscall will not be executed.
     // PTRACE_SYSEMU_SINGLESTEP = 32,
-    // /// Gets register contents.
-    // PTRACE_GETREGSET = 0x4204,
+    /// Gets the RISC-V `NT_PRSTATUS` general-purpose register set.
+    #[cfg(target_arch = "riscv64")]
+    PTRACE_GETREGSET = 0x4204,
     // /// Sets register contents.
     // PTRACE_SETREGSET = 0x4205,
+}
+
+#[cfg(target_arch = "riscv64")]
+const NT_PRSTATUS: usize = 1;
+
+#[cfg(target_arch = "riscv64")]
+#[repr(C)]
+#[derive(Clone, Copy, Pod)]
+struct CUserIovec {
+    base: Vaddr,
+    len: usize,
 }
