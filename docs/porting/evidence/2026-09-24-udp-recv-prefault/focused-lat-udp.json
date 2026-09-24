@@ -1,0 +1,28 @@
+{
+  "benchmark": "asterinas/lmbench lat_udp",
+  "binary_sha256": "a57f785a430d194589c887218182f2ecbaad2b574ef31d89dbb49f537176303e",
+  "argv": [
+    "-P",
+    "1",
+    "-W",
+    "0",
+    "-N",
+    "3",
+    "localhost"
+  ],
+  "platform": "RISC-V QEMU full-system TCG, same Debian root image and benchmark binary",
+  "before": {
+    "kernel_image_sha256": "c4c22a9e6c51247eb20f266a58791089b704cf2f981566201dd99dc3041d216c",
+    "latency_us": 34003.129
+  },
+  "after": {
+    "kernel_image_sha256": "6662070404f0ef93dcdafc28f32f713665ab980b1a30f35a5d51310aadf8d261",
+    "latency_us": 327.4862
+  },
+  "improvement_ratio": 103.8,
+  "linux_full_system_control": {
+    "latency_us": 97.6223,
+    "kernel": "Ubuntu 5.15.0-1028 RISC-V",
+    "note": "Different guest image and kernel; context only, not a like-for-like speed comparison"
+  }
+}
