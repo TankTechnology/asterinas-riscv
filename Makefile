@@ -242,6 +242,13 @@ else ifeq ($(AUTO_TEST), kcmp)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "process" ]
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_kcmp_test.sh"
+else ifeq ($(AUTO_TEST), riscv_ptrace_regset)
+ifneq ($(TARGET_ARCH), riscv64)
+$(error AUTO_TEST=riscv_ptrace_regset requires TARGET_ARCH=riscv64)
+endif
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "process" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_riscv_ptrace_regset_test.sh"
 else ifeq ($(AUTO_TEST), riscv_icache_smp4)
 ifneq ($(TARGET_ARCH), riscv64)
 $(error AUTO_TEST=riscv_icache_smp4 requires TARGET_ARCH=riscv64)
@@ -1310,6 +1317,10 @@ else ifeq ($(AUTO_TEST), kcmp)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "kcmp regression passed." \
 		|| (echo "kcmp regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), riscv_ptrace_regset)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "RISC-V ptrace regset regression passed." \
+		|| (echo "RISC-V ptrace regset regression failed" && exit 1)
 else ifeq ($(AUTO_TEST), riscv_icache_smp4)
 	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "RISC-V SMP4 icache regression passed." \
