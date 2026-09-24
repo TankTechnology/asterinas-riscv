@@ -9,9 +9,9 @@ use smoltcp::{
     },
     phy::{ChecksumCapabilities, Device, RxToken, TxToken},
     wire::{
-        IPV4_HEADER_LEN, IPV4_MIN_MTU, Icmpv4DstUnreachable, Icmpv4Repr, IpAddress, IpProtocol,
-        IpRepr, Ipv4Address, Ipv4Packet, Ipv4Repr, Ipv6Address, Ipv6Packet, Ipv6Repr, TcpControl,
-        TcpPacket, TcpRepr, UdpPacket, UdpRepr,
+        IPV4_HEADER_LEN, IPV4_MIN_MTU, Icmpv4DstUnreachable, Icmpv4Packet, Icmpv4Repr, IpAddress,
+        IpProtocol, IpRepr, Ipv4Address, Ipv4Packet, Ipv4Repr, Ipv6Address, Ipv6Packet, Ipv6Repr,
+        TcpControl, TcpPacket, TcpRepr, UdpPacket, UdpRepr,
     },
 };
 
@@ -61,6 +61,43 @@ fn is_loopback_addr(addr: IpAddress) -> bool {
         IpAddress::Ipv4(addr) => addr.is_loopback(),
         IpAddress::Ipv6(addr) => addr.is_loopback(),
     }
+}
+
+fn icmpv4_echo_reply<'pkt>(
+    ip_repr: &Ipv4Repr,
+    payload: &'pkt [u8],
+    checksum_caps: &ChecksumCapabilities,
+) -> Option<Packet<'pkt>> {
+    if !IpAddress::Ipv4(ip_repr.src_addr).is_unicast()
+        || !IpAddress::Ipv4(ip_repr.dst_addr).is_unicast()
+    {
+        return None;
+    }
+
+    let request = Icmpv4Packet::new_checked(payload).ok()?;
+    let Icmpv4Repr::EchoRequest {
+        ident,
+        seq_no,
+        data,
+    } = Icmpv4Repr::parse(&request, checksum_caps).ok()?
+    else {
+        return None;
+    };
+    let reply = Icmpv4Repr::EchoReply {
+        ident,
+        seq_no,
+        data,
+    };
+    Some(Packet::new_ipv4(
+        Ipv4Repr {
+            src_addr: ip_repr.dst_addr,
+            dst_addr: ip_repr.src_addr,
+            next_header: IpProtocol::Icmp,
+            payload_len: reply.buffer_len(),
+            hop_limit: 64,
+        },
+        IpPayload::Icmpv4(reply),
+    ))
 }
 
 fn demap_repr(repr: IpRepr) -> IpRepr {
@@ -217,6 +254,7 @@ impl<E: Ext> PollContext<'_, E> {
             IpProtocol::Udp => {
                 self.parse_and_process_udp(&IpRepr::Ipv4(repr), pkt.payload(), &checksum_caps)
             }
+            IpProtocol::Icmp => icmpv4_echo_reply(&repr, pkt.payload(), &checksum_caps),
             _ => None,
         }
     }
@@ -521,12 +559,8 @@ impl<E: Ext> PollContext<'_, E> {
         }
 
         if self.is_unicast_local(ip_repr.src_addr()) {
-            // In this case, the generating ICMP message will have a local IP address as the
-            // destination. However, since we don't have the ability to handle ICMP messages, we'll
-            // just skip the generation.
-            //
-            // TODO: Generate the ICMP message here once we're able to handle incoming ICMP
-            // messages.
+            // There is no local socket delivery path for ICMP errors yet. Echo replies are
+            // handled separately on ingress; they do not make this error deliverable.
             return None;
         }
 
@@ -574,6 +608,101 @@ impl<E: Ext> PollContext<'_, E> {
                 .ipv6_addr()
                 .is_some_and(|addr| addr == dst_addr),
         }
+    }
+}
+
+#[cfg(ktest)]
+mod icmp_tests {
+    use alloc::{vec, vec::Vec};
+
+    use ostd::prelude::*;
+    use smoltcp::{
+        iface::packet::IpPayload,
+        phy::ChecksumCapabilities,
+        wire::{Icmpv4Packet, Icmpv4Repr, IpProtocol, IpRepr, Ipv4Address, Ipv4Repr},
+    };
+
+    use super::icmpv4_echo_reply;
+
+    fn request_bytes(repr: Icmpv4Repr<'_>) -> Vec<u8> {
+        let mut bytes = vec![0; repr.buffer_len()];
+        repr.emit(
+            &mut Icmpv4Packet::new_unchecked(&mut bytes[..]),
+            &ChecksumCapabilities::default(),
+        );
+        bytes
+    }
+
+    fn ip_repr() -> Ipv4Repr {
+        Ipv4Repr {
+            src_addr: Ipv4Address::new(192, 0, 2, 1),
+            dst_addr: Ipv4Address::new(192, 0, 2, 2),
+            next_header: IpProtocol::Icmp,
+            payload_len: 0,
+            hop_limit: 64,
+        }
+    }
+
+    #[ktest]
+    fn echo_request_replies_with_original_identifier_sequence_and_data() {
+        let request = Icmpv4Repr::EchoRequest {
+            ident: 0x1234,
+            seq_no: 7,
+            data: b"echo-data",
+        };
+        let bytes = request_bytes(request);
+        let ip_repr = Ipv4Repr {
+            payload_len: bytes.len(),
+            ..ip_repr()
+        };
+
+        let reply = icmpv4_echo_reply(&ip_repr, &bytes, &ChecksumCapabilities::default()).unwrap();
+        let expected_payload = Icmpv4Repr::EchoReply {
+            ident: 0x1234,
+            seq_no: 7,
+            data: b"echo-data",
+        };
+        assert_eq!(reply.payload(), &IpPayload::Icmpv4(expected_payload));
+        assert_eq!(
+            reply.ip_repr(),
+            IpRepr::Ipv4(Ipv4Repr {
+                src_addr: ip_repr.dst_addr,
+                dst_addr: ip_repr.src_addr,
+                next_header: IpProtocol::Icmp,
+                payload_len: expected_payload.buffer_len(),
+                hop_limit: 64,
+            })
+        );
+    }
+
+    #[ktest]
+    fn echo_reply_rejects_bad_checksum_other_types_and_non_unicast_addresses() {
+        let request = Icmpv4Repr::EchoRequest {
+            ident: 1,
+            seq_no: 2,
+            data: b"payload",
+        };
+        let mut bytes = request_bytes(request);
+        bytes[2] ^= 1;
+        assert!(icmpv4_echo_reply(&ip_repr(), &bytes, &ChecksumCapabilities::default()).is_none());
+
+        let other_type = request_bytes(Icmpv4Repr::EchoReply {
+            ident: 1,
+            seq_no: 2,
+            data: b"payload",
+        });
+        assert!(
+            icmpv4_echo_reply(&ip_repr(), &other_type, &ChecksumCapabilities::default()).is_none()
+        );
+
+        let valid_bytes = request_bytes(request);
+        let broadcast = Ipv4Repr {
+            dst_addr: Ipv4Address::BROADCAST,
+            ..ip_repr()
+        };
+        assert!(
+            icmpv4_echo_reply(&broadcast, &valid_bytes, &ChecksumCapabilities::default()).is_none()
+        );
     }
 }
 
@@ -936,8 +1065,7 @@ impl<E: Ext> PollContext<'_, E> {
                 }
 
                 if !socket.can_process(udp_repr.dst_port) {
-                    // TODO: Generate the ICMP message here once we're able to handle incoming ICMP
-                    // messages.
+                    // TODO: Generate this error after local ICMP error delivery is available.
                     let _ = this.process_udp(&wire_ip_repr, udp_repr, udp_payload);
                     return;
                 }
