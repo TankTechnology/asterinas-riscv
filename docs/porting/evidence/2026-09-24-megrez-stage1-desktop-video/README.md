@@ -119,8 +119,22 @@ not been checked through a separate persistence reboot. `ip -4 route show`
 still times out: a bounded raw RTM_GETROUTE dump probe received
 `NLMSG_ERROR(-EOPNOTSUPP)` without a terminating dump reply. Route-netlink
 support remains a separate kernel gap. RockOS is still the default U-Boot
-entry. The new Stage1 has not yet been checked by a separate persistence
-reboot cycle.
+entry.
+
+Finally, the root console issued `sync; reboot -f`; fresh OpenSBI and U-Boot
+output preceded a second selection of the same immutable network-profile
+Desktop menu. The new boot ID was
+`5dbd13d5-58f2-42ac-ac43-2e5b91bb7106`, different from the first canary.
+The debug console appeared, then the X socket, Firefox process and visible
+window became ready. Without manually starting the readiness unit, it reached
+`active/exited`, Firefox's service was active, the watchdog read `0`, and
+`eth0` again held `10.100.19.200/21`. Serial close/reopen checks retained UID
+0 and the new boot ID. A request from Firefox's network namespace returned
+HTTP 200 for the test page after the reboot; the host log records the board's
+request. See [`reboot-cycle.json`](reboot-cycle.json),
+[`reboot HTTP log`](reboot-http-server.log), and
+[`reboot serial log`](reboot-serial.log.gz). This verifies one persistent
+reboot of the selected canary, not a repeated boot-stability campaign.
 
 Host verification:
 
