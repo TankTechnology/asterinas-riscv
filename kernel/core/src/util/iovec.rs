@@ -303,6 +303,11 @@ pub(crate) trait MultiWrite {
         self.sum_lens() == 0
     }
 
+    /// Whether running out of writable space would reach a prefaulted user-page error.
+    fn has_deferred_fault(&self) -> bool {
+        false
+    }
+
     /// Skips the first `nbytes` bytes of data, or skips to the end if the writers have
     /// insufficient bytes.
     fn skip_some(&mut self, nbytes: usize);
@@ -385,6 +390,10 @@ impl MultiWrite for PrefaultedVmWriter<'_> {
         self.writer.avail()
     }
 
+    fn has_deferred_fault(&self) -> bool {
+        self.has_deferred_fault
+    }
+
     fn skip_some(&mut self, nbytes: usize) {
         self.writer.skip(self.writer.avail().min(nbytes));
     }
@@ -411,6 +420,10 @@ impl MultiWrite for VmWriterArray<'_> {
 
     fn sum_lens(&self) -> usize {
         self.0.iter().map(|vm_writer| vm_writer.avail()).sum()
+    }
+
+    fn has_deferred_fault(&self) -> bool {
+        self.has_deferred_fault
     }
 
     fn skip_some(&mut self, mut nbytes: usize) {
