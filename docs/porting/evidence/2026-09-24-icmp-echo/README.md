@@ -22,7 +22,7 @@ checksum-valid ICMPv4 Echo Request addressed to a local unicast IPv4 address.
 It reverses source and destination addresses and preserves the identifier,
 sequence number, and data. The unit tests also reject an invalid checksum,
 other ICMP message types, and broadcast destinations. The
-[RISC-V QEMU kernel-test log](ktest-qemu-serial.log) shows **21/21**
+[RISC-V QEMU kernel-test log](ktest-qemu-serial.log.gz) shows **21/21**
 `aster-bigtcp` tests passing, including the two new Echo tests; the RISC-V
 kernel build passed separately.
 
