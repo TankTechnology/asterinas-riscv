@@ -1057,6 +1057,41 @@ class DailyUseAdapterTests(unittest.TestCase):
         with self.assertRaises(web.GateError):
             operations.fixture(self.request())
 
+    def test_fixture_replaces_only_a_verified_prior_test_download(self):
+        expected = bytes(range(256)) * 1024
+        self.download.write_bytes(expected)
+        command = self.client.command
+
+        def observe_download(name, parameters=None):
+            if name == "WebDriver:ExecuteScript" and "quality-download" in parameters[
+                "script"
+            ]:
+                self.assertFalse(self.download.exists())
+            return command(name, parameters)
+
+        with mock.patch.object(self.client, "command", side_effect=observe_download):
+            capture = self.operations().fixture(self.request())
+        self.assertEqual(capture.function_groups[-1]["state"], "pass")
+        self.assertEqual(self.download.read_bytes(), expected)
+
+        self.download.unlink()
+        self.download.write_bytes(expected)
+        foreign_owner = gate.default_operations(
+            download_path=self.download,
+            firefox_uid_reader=lambda pid: os.geteuid() + 1,
+        )
+        with self.assertRaises(ValueError):
+            foreign_owner.fixture(self.request())
+        self.assertEqual(self.download.read_bytes(), expected)
+
+        self.download.unlink()
+        target = self.root / "private"
+        target.write_bytes(expected)
+        self.download.symlink_to(target)
+        with self.assertRaises(ValueError):
+            self.operations().fixture(self.request())
+        self.assertEqual(target.read_bytes(), expected)
+
     def test_fixture_maps_owned_capability_failures_and_rejects_foreign_resource(
         self,
     ):
@@ -1463,6 +1498,42 @@ class DailyUseAdapterTests(unittest.TestCase):
                 self.operations().context_switch(self.request())
         self.assertEqual(self.client.handles, ["original"])
         self.assertEqual(self.client.selected, "original")
+
+    def test_context_cpu_diagnostic_is_opt_in_and_keeps_wall_metrics(self):
+        with mock.patch.object(gate.system_time, "read_snapshot") as read:
+            ordinary = self.operations().context_switch(self.request())
+        read.assert_not_called()
+        self.assertNotIn("openCpu", json.loads(ordinary.artifact))
+
+        before, after = object(), object()
+        cpu_interval = {"duration_ms": 125.0, "processes": []}
+        with (
+            mock.patch.object(
+                gate.system_time, "read_snapshot", side_effect=(before, after)
+            ) as read,
+            mock.patch.object(
+                gate.system_time, "interval", return_value=cpu_interval
+            ) as interval,
+        ):
+            capture = self.operations(context_cpu_diagnostic=True).context_switch(
+                self.request()
+            )
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual(
+            [call.args[1] for call in read.call_args_list],
+            [(101, 202), (101, 202)],
+        )
+        interval.assert_called_once()
+        self.assertIs(interval.call_args.args[0], before)
+        self.assertIs(interval.call_args.args[1], after)
+        artifact = json.loads(capture.artifact)
+        self.assertEqual(artifact["performance"], capture.performance)
+        self.assertEqual(artifact["openCpu"]["interval"], cpu_interval)
+        self.assertEqual(
+            artifact["openCpu"]["processScope"], "firefox-parent-and-xorg"
+        )
+        self.assertGreaterEqual(artifact["openCpu"]["readOverheadMs"], 0)
+        self.assertEqual(self.client.handles, ["original"])
 
     def test_context_deadline_expiry_still_attempts_finally_cleanup(self):
         now = [1.0]
