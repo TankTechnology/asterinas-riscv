@@ -11,12 +11,15 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #define PAYLOAD_LEN (4 * 4096 + 137)
 #define SEND_CHUNK 257
 #define RECV_CHUNK 113
+#define LARGE_BUFFER_LEN (10 * 1024 * 1024)
+#define TCP_RECEIVE_CAPACITY (128 * 1024)
 
 static void fail(const char *what)
 {
@@ -124,6 +127,13 @@ int main(void)
 			return EXIT_FAILURE;
 		}
 		send_all(client_fd, "xyz", 3);
+		for (int operation = 0; operation < 3; operation++) {
+			char request;
+			if (recv(client_fd, &request, 1, MSG_WAITALL) != 1 ||
+			    request != 'A' + operation)
+				fail("child large-buffer request");
+			send_all(client_fd, "q", 1);
+		}
 
 		munmap(send_buf, PAYLOAD_LEN);
 		close(client_fd);
@@ -193,6 +203,49 @@ int main(void)
 		fprintf(stderr, "partial iovec receive suffix mismatch\n");
 		return EXIT_FAILURE;
 	}
+
+	/* A single receive cannot reach the inaccessible tail of this mapping. */
+	char *large_buffer = mmap(NULL, LARGE_BUFFER_LEN,
+				  PROT_READ | PROT_WRITE,
+				  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (large_buffer == MAP_FAILED)
+		fail("large-buffer mmap");
+	if (mprotect(large_buffer + TCP_RECEIVE_CAPACITY,
+		     LARGE_BUFFER_LEN - TCP_RECEIVE_CAPACITY, PROT_NONE) < 0)
+		fail("large-buffer mprotect");
+
+	int large_buffer_failures = 0;
+	for (int operation = 0; operation < 3; operation++) {
+		char request = 'A' + operation;
+		send_all(server_fd, &request, 1);
+		errno = 0;
+		ssize_t n;
+		if (operation == 0) {
+			n = recvfrom(server_fd, large_buffer, LARGE_BUFFER_LEN,
+				     0, NULL, NULL);
+		} else if (operation == 1) {
+			struct iovec large_iov = {
+				.iov_base = large_buffer,
+				.iov_len = LARGE_BUFFER_LEN,
+			};
+			struct msghdr large_message = {
+				.msg_iov = &large_iov,
+				.msg_iovlen = 1,
+			};
+			n = recvmsg(server_fd, &large_message, 0);
+		} else {
+			n = read(server_fd, large_buffer, LARGE_BUFFER_LEN);
+		}
+		if (n != 1 || large_buffer[0] != 'q') {
+			fprintf(stderr,
+				"TCP large-buffer operation %d: received=%zd errno=%d\n",
+				operation, n, errno);
+			large_buffer_failures++;
+		}
+	}
+	if (large_buffer_failures)
+		return EXIT_FAILURE;
+	munmap(large_buffer, LARGE_BUFFER_LEN);
 
 	munmap(recv_buf, PAYLOAD_LEN);
 	close(server_fd);
