@@ -42,8 +42,10 @@ returned a nonce-matching body to the host, and its port refused connections
 after cleanup. The [board validation summary](board-validation.json) records
 the exact artifact, boot, ICMP, TCP, and recovery observations. Each serial
 probe used a fresh connection and UID-0/boot-ID frame. The Asterinas guest
-then rebooted through the configured userspace recovery path to a fresh
-U-Boot prompt. The original default menu booted RockOS, whose root shell
+then reached a fresh U-Boot prompt after the configured recovery deadline.
+The serial capture begins with the new firmware epoch, so it does not
+distinguish the userspace timer from the kernel fallback. The original
+default menu booted RockOS, whose root shell
 and new boot ID were verified through another fresh serial connection. The
 test-only Image was removed after verifying its SHA-256 and confirming that
 the menu did not reference it; `/boot` recovered 11,788,288 free bytes.
