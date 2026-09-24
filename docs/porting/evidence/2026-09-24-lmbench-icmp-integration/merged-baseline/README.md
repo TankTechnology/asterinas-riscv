@@ -31,6 +31,7 @@ syscall and memory behavior after the baseline fixes. The native
 pre-fix integrated release Image is recorded in the
 [full native result](../../2026-09-24-native-lmbench-integrated-release/README.md).
 The baseline fixes do not modify the RISC-V LMBench runner, network stack,
-or benchmark binaries, but the full native suite was not rerun on the
-post-fix Image. QEMU timings are compatibility evidence, not board or Linux
-performance comparisons.
+or benchmark binaries. The full native suite was subsequently rerun on the
+same post-fix Image, with [109/109 groups](../../2026-09-24-native-lmbench-merged-baseline/README.md).
+QEMU timings are compatibility evidence, not board or Linux performance
+comparisons.
