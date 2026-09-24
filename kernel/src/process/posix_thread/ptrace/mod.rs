@@ -9,7 +9,7 @@ use ostd::arch::cpu::context::{FsBase, GeneralRegs, GsBase};
 use ostd::{arch::cpu::context::UserContext, sync::Waiter};
 
 use super::{AsPosixThread, PosixThread, SleepingState};
-#[cfg(target_arch = "x86_64")]
+#[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
 use crate::arch::ptrace as arch_ptrace;
 use crate::{
     prelude::*,
@@ -218,6 +218,15 @@ impl PosixThread {
     pub fn ptrace_get_regs(&self) -> Result<arch_ptrace::CUserRegsStruct> {
         let status = self.get_tracee_status()?;
         status.get_regs()
+    }
+
+    /// Gets the RISC-V `NT_PRSTATUS` general-purpose register snapshot.
+    ///
+    /// Returns `ESRCH` unless the thread is ptrace-stopped.
+    #[cfg(target_arch = "riscv64")]
+    pub fn ptrace_get_regset(&self) -> Result<arch_ptrace::CUserRegsStruct> {
+        let status = self.get_tracee_status()?;
+        status.get_regset()
     }
 
     /// Sets the general-purpose registers of this thread for ptrace.
@@ -666,7 +675,7 @@ impl TraceeStatus {
         user_ctx: &mut UserContext,
     ) {
         #[cfg(not(target_arch = "x86_64"))]
-        let _ = (ctx, user_ctx);
+        let _ = ctx;
 
         debug_assert!(!self.is_ptrace_stopped());
 
@@ -684,6 +693,12 @@ impl TraceeStatus {
             state.general_regs = Some(*user_ctx.general_regs());
             state.set_orig_syscall_ret(ctx.thread_local.orig_syscall_ret());
         }
+        #[cfg(target_arch = "riscv64")]
+        {
+            state.riscv_regs = Some(arch_ptrace::CUserRegsStruct::from_user_context(user_ctx));
+        }
+        #[cfg(target_arch = "loongarch64")]
+        let _ = user_ctx;
         self.is_stopped.store(true, Ordering::Relaxed);
     }
 
@@ -740,6 +755,10 @@ impl TraceeStatus {
                 state.gs_base = None;
                 state.clear_orig_syscall_ret();
             }
+            #[cfg(target_arch = "riscv64")]
+            {
+                state.riscv_regs = None;
+            }
             state.is_tracing_syscall = false;
             self.is_stopped.store(false, Ordering::Relaxed);
             return PtraceStopResult::Interrupted;
@@ -758,6 +777,10 @@ impl TraceeStatus {
             supp.gs_base().set(state.gs_base.take().unwrap());
             ctx.thread_local
                 .set_orig_syscall_ret(state.take_orig_syscall_ret());
+        }
+        #[cfg(target_arch = "riscv64")]
+        {
+            state.riscv_regs = None;
         }
 
         PtraceStopResult::Continued(signal)
@@ -847,6 +870,13 @@ impl TraceeStatus {
         let mut regs = arch_ptrace::CUserRegsStruct::from_regs(general_regs, fs_base, gs_base);
         regs.orig_rax = state.orig_syscall_ret;
         Ok(regs)
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    fn get_regset(&self) -> Result<arch_ptrace::CUserRegsStruct> {
+        let state = self.state.lock();
+        self.check_ptrace_stopped(&state)?;
+        Ok(state.riscv_regs.unwrap())
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -993,6 +1023,9 @@ struct TraceeState {
     /// The general-purpose registers of the tracee at the time of ptrace-stop.
     #[cfg(target_arch = "x86_64")]
     general_regs: Option<GeneralRegs>,
+    /// RISC-V general-purpose registers captured at the ptrace-stop.
+    #[cfg(target_arch = "riscv64")]
+    riscv_regs: Option<arch_ptrace::CUserRegsStruct>,
     /// The FS base of the tracee at the time of ptrace-stop.
     #[cfg(target_arch = "x86_64")]
     fs_base: Option<FsBase>,
@@ -1015,6 +1048,8 @@ impl TraceeState {
             is_tracing_syscall: false,
             #[cfg(target_arch = "x86_64")]
             general_regs: None,
+            #[cfg(target_arch = "riscv64")]
+            riscv_regs: None,
             #[cfg(target_arch = "x86_64")]
             fs_base: None,
             #[cfg(target_arch = "x86_64")]
