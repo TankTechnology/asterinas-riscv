@@ -1,0 +1,13 @@
+asterinas-browser-web.service: Deactivated successfully.
+asterinas-browser-web.service: Deactivated successfully.
+asterinas-browser-web.service: Main process exited, code=killed, status=12/USR2
+asterinas-browser-web.service: Deactivated successfully.
+ASTERINAS_FIREFOX_WEB wrapper-start pid=5621
+1790280043007	Marionette	INFO	Stopped listening on port 2828
+asterinas-browser-web.service: Deactivated successfully.
+ASTERINAS_FIREFOX_WEB wrapper-start pid=5928
+PROFILE_PATH=absent
+TEMP_OVERRIDE=absent
+MainPID=5928
+NRestarts=0
+ActiveState=active
