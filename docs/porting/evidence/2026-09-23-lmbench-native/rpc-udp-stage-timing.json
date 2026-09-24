@@ -1,0 +1,60 @@
+{
+  "scope": "Temporary kernel RPC timing counters; not production code or a native ALL pass",
+  "diagnostic_branch": "codex/udp-rpc-instrument",
+  "diagnostic_commit": "99a3b78db",
+  "timing_clock": "OSTD Jiffies, 1000 Hz",
+  "matching_method": "64-slot per-socket ring indexed by RPC transaction ID; only matching IDs are sampled",
+  "root_image_sha256": "bd855c9855e6734cb5e154d488d7c1899f9c1949ac01dae87cd0fc88702e35cf",
+  "lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
+  "command": "ENOUGH=10000 lat_rpc -P 1 -p udp localhost",
+  "server": "unmodified lat_rpc -s; UDP and TCP registration verified",
+  "rx_to_read_trial": {
+    "kernel_image_sha256": "3d6d9d30d0766407af7b4a4bd3ac87c8972f1d512c1d44df401eec43a5a5eaf4",
+    "boot_id": "afdead3e-7289-48fd-9ae4-81376287b04c",
+    "client_elapsed_seconds": 3.004,
+    "client_process_status": 0,
+    "client_output": "localhost: RPC: Timed out",
+    "client_rx_read_max_ms": 1,
+    "server_rx_read_max_ms": 8,
+    "rx_read_ge_25ms": 0,
+    "rx_drops": 0,
+    "serial_log_sha256": "638a7d776a4733a6de759cffe3666bd2f2040504b2f25a32ad93196fabb00fd9"
+  },
+  "four_stage_trial": {
+    "kernel_image_sha256": "7a571071f2017aadd0d7fcb50d660254b5382c78a09591ff72f4f0f66d4aed6c",
+    "boot_id": "532ff01d-bafc-4123-a2dc-ae54a726ef30",
+    "client_elapsed_seconds": 9.793,
+    "client_process_status": 0,
+    "client_output": "localhost: RPC: Timed out",
+    "client_socket": {
+      "port": 844,
+      "tx_packets": 32356,
+      "rx_packets": 32349,
+      "request_retransmits": 10530,
+      "matching_request_reply_samples": 32349,
+      "matching_request_reply_max_ms": 11,
+      "matching_request_reply_ge_25ms": 0,
+      "reply_rx_read_max_ms": 3,
+      "queued_bytes_on_close": 196,
+      "last_tx_xid": 1790934742,
+      "last_rx_xid": 1790934742,
+      "last_read_xid": 1790934741,
+      "rx_drops": 0
+    },
+    "server_socket": {
+      "port": 53630,
+      "rx_packets": 32357,
+      "tx_packets": 32357,
+      "request_rx_read_max_ms": 9,
+      "request_read_reply_dispatch_max_ms": 7,
+      "rx_drops": 0
+    },
+    "serial_log_sha256": "f97db7ca27a843fdb78ddca2d2d5bdd57277710aa3f0e199c2902b458ac2314a"
+  },
+  "libtirpc_source": {
+    "version": "1.3.6",
+    "clnt_dg_source_sha256": "644e6d7382498b321592774e329f2cafe376df9c0f8c421c8fcad580760906cc",
+    "relevant_behavior": "clnt_dg_call deducts the requested poll interval on mismatched reply XIDs; its 2.5 ms retry is truncated to 2 ms for poll."
+  },
+  "conclusion": "The observed failures combine many short-interval retransmissions with replies queued at client close, without a measured 25 ms delay in any sampled kernel stage. A final-call libtirpc trace is needed before claiming a complete root cause."
+}

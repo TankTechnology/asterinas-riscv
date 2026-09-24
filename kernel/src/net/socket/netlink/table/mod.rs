@@ -2,7 +2,6 @@
 
 use multicast::MulticastGroup;
 pub(super) use multicast::MulticastMessage;
-use spin::Once;
 
 use super::{
     addr::{GroupIdSet, MAX_GROUPS, NetlinkProtocolId, NetlinkSocketAddr, PortNum},
@@ -19,16 +18,14 @@ use crate::{
 
 mod multicast;
 
-static NETLINK_SOCKET_TABLE: Once<NetlinkSocketTable> = Once::new();
-
-/// All bound netlink sockets.
-struct NetlinkSocketTable {
+/// All bound netlink sockets in one network namespace.
+pub(crate) struct NetlinkSocketTable {
     route: RwMutex<ProtocolSocketTable<RtnlMessage>>,
     uevent: RwMutex<ProtocolSocketTable<UeventMessage>>,
 }
 
 impl NetlinkSocketTable {
-    fn new() -> Self {
+    pub(in crate::net) fn new() -> Self {
         Self {
             route: RwMutex::new(ProtocolSocketTable::new()),
             uevent: RwMutex::new(ProtocolSocketTable::new()),
@@ -43,30 +40,35 @@ pub trait SupportedNetlinkProtocol {
     /// `getsockopt(SOL_SOCKET, SO_PROTOCOL)`.
     fn protocol_id() -> NetlinkProtocolId;
 
-    fn socket_table() -> &'static RwMutex<ProtocolSocketTable<Self::Message>>;
+    fn socket_table(tables: &NetlinkSocketTable) -> &RwMutex<ProtocolSocketTable<Self::Message>>;
 
     fn bind(
+        tables: &Arc<NetlinkSocketTable>,
         addr: &NetlinkSocketAddr,
         receiver: MessageReceiver<Self::Message>,
     ) -> Result<BoundHandle<Self::Message>> {
-        let mut socket_table = Self::socket_table().write();
-        socket_table.bind(Self::socket_table(), addr, receiver)
+        let mut socket_table = Self::socket_table(tables).write();
+        socket_table.bind(tables.clone(), Self::socket_table, addr, receiver)
     }
 
-    fn unicast(dst_port: PortNum, message: Self::Message) -> Result<()>
+    fn unicast(tables: &NetlinkSocketTable, dst_port: PortNum, message: Self::Message) -> Result<()>
     where
         Self::Message: QueueableMessage,
     {
-        let socket_table = Self::socket_table().read();
+        let socket_table = Self::socket_table(tables).read();
         socket_table.unicast(dst_port, message)
     }
 
     #[cfg_attr(not(ktest), expect(dead_code))]
-    fn multicast(dst_groups: GroupIdSet, message: Self::Message) -> Result<()>
+    fn multicast(
+        tables: &NetlinkSocketTable,
+        dst_groups: GroupIdSet,
+        message: Self::Message,
+    ) -> Result<()>
     where
         Self::Message: MulticastMessage,
     {
-        let socket_table = Self::socket_table().read();
+        let socket_table = Self::socket_table(tables).read();
         socket_table.multicast(dst_groups, message)
     }
 }
@@ -80,8 +82,8 @@ impl SupportedNetlinkProtocol for NetlinkRouteProtocol {
         StandardNetlinkProtocol::ROUTE as u32
     }
 
-    fn socket_table() -> &'static RwMutex<ProtocolSocketTable<Self::Message>> {
-        &NETLINK_SOCKET_TABLE.get().unwrap().route
+    fn socket_table(tables: &NetlinkSocketTable) -> &RwMutex<ProtocolSocketTable<Self::Message>> {
+        &tables.route
     }
 }
 
@@ -94,8 +96,8 @@ impl SupportedNetlinkProtocol for NetlinkUeventProtocol {
         StandardNetlinkProtocol::KOBJECT_UEVENT as u32
     }
 
-    fn socket_table() -> &'static RwMutex<ProtocolSocketTable<Self::Message>> {
-        &NETLINK_SOCKET_TABLE.get().unwrap().uevent
+    fn socket_table(tables: &NetlinkSocketTable) -> &RwMutex<ProtocolSocketTable<Self::Message>> {
+        &tables.uevent
     }
 }
 
@@ -131,7 +133,8 @@ impl<Message: 'static> ProtocolSocketTable<Message> {
     /// as specified in `addr.groups()`.
     fn bind(
         &mut self,
-        socket_table: &'static RwMutex<ProtocolSocketTable<Message>>,
+        tables: Arc<NetlinkSocketTable>,
+        socket_table_fn: fn(&NetlinkSocketTable) -> &RwMutex<ProtocolSocketTable<Message>>,
         addr: &NetlinkSocketAddr,
         receiver: MessageReceiver<Message>,
     ) -> Result<BoundHandle<Message>> {
@@ -157,7 +160,12 @@ impl<Message: 'static> ProtocolSocketTable<Message> {
             group.add_member(port);
         }
 
-        Ok(BoundHandle::new(socket_table, port, addr.groups()))
+        Ok(BoundHandle::new(
+            tables,
+            socket_table_fn,
+            port,
+            addr.groups(),
+        ))
     }
 
     fn unicast(&self, dst_port: PortNum, message: Message) -> Result<()>
@@ -199,21 +207,24 @@ impl<Message: 'static> ProtocolSocketTable<Message> {
 /// When dropping a `BoundHandle`,
 /// the port will be automatically released.
 pub struct BoundHandle<Message: 'static> {
-    socket_table: &'static RwMutex<ProtocolSocketTable<Message>>,
+    tables: Arc<NetlinkSocketTable>,
+    socket_table_fn: fn(&NetlinkSocketTable) -> &RwMutex<ProtocolSocketTable<Message>>,
     port: PortNum,
     groups: GroupIdSet,
 }
 
 impl<Message: 'static> BoundHandle<Message> {
     fn new(
-        socket_table: &'static RwMutex<ProtocolSocketTable<Message>>,
+        tables: Arc<NetlinkSocketTable>,
+        socket_table_fn: fn(&NetlinkSocketTable) -> &RwMutex<ProtocolSocketTable<Message>>,
         port: PortNum,
         groups: GroupIdSet,
     ) -> Self {
         debug_assert_ne!(port, UNSPECIFIED_PORT);
 
         Self {
-            socket_table,
+            tables,
+            socket_table_fn,
             port,
             groups,
         }
@@ -228,7 +239,7 @@ impl<Message: 'static> BoundHandle<Message> {
     }
 
     pub(super) fn add_groups(&mut self, groups: GroupIdSet) {
-        let mut protocol_sockets = self.socket_table.write();
+        let mut protocol_sockets = (self.socket_table_fn)(&self.tables).write();
 
         for group_id in groups.ids_iter() {
             let group = &mut protocol_sockets.multicast_groups[group_id as usize];
@@ -239,7 +250,7 @@ impl<Message: 'static> BoundHandle<Message> {
     }
 
     pub(super) fn drop_groups(&mut self, groups: GroupIdSet) {
-        let mut protocol_sockets = self.socket_table.write();
+        let mut protocol_sockets = (self.socket_table_fn)(&self.tables).write();
 
         for group_id in groups.ids_iter() {
             let group = &mut protocol_sockets.multicast_groups[group_id as usize];
@@ -250,7 +261,7 @@ impl<Message: 'static> BoundHandle<Message> {
     }
 
     pub(super) fn bind_groups(&mut self, groups: GroupIdSet) {
-        let mut protocol_sockets = self.socket_table.write();
+        let mut protocol_sockets = (self.socket_table_fn)(&self.tables).write();
 
         for group_id in self.groups.ids_iter() {
             let group = &mut protocol_sockets.multicast_groups[group_id as usize];
@@ -268,7 +279,7 @@ impl<Message: 'static> BoundHandle<Message> {
 
 impl<Message: 'static> Drop for BoundHandle<Message> {
     fn drop(&mut self) {
-        let mut protocol_sockets = self.socket_table.write();
+        let mut protocol_sockets = (self.socket_table_fn)(&self.tables).write();
 
         protocol_sockets.unicast_sockets.remove(&self.port);
 
@@ -277,10 +288,6 @@ impl<Message: 'static> Drop for BoundHandle<Message> {
             group.remove_member(self.port);
         }
     }
-}
-
-pub(super) fn init() {
-    NETLINK_SOCKET_TABLE.call_once(NetlinkSocketTable::new);
 }
 
 /// Returns whether the `protocol` is valid.

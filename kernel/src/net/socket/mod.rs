@@ -13,6 +13,7 @@ use crate::{
         },
         pseudofs::SockFs,
     },
+    net::net_ns::NetNamespace,
     prelude::*,
     util::{MultiRead, MultiWrite},
 };
@@ -23,6 +24,8 @@ pub mod options;
 pub mod unix;
 pub mod util;
 pub mod vsock;
+
+mod ioctl;
 
 mod private {
     use core::time::Duration;
@@ -71,9 +74,17 @@ mod private {
 
 /// Operations defined on a socket.
 pub trait Socket: private::SocketPrivate + Send + Sync {
+    /// Returns the network namespace captured when this socket was created.
+    fn net_ns(&self) -> &NetNamespace;
+
     /// Returns whether a send may report progress before a later user-buffer fault.
     fn supports_partial_send(&self) -> bool {
         false
+    }
+
+    /// Returns the maximum number of bytes one receive can write, if bounded.
+    fn max_recv_len(&self) -> Option<usize> {
+        None
     }
 
     /// Assigns the specified address to the socket.
@@ -145,16 +156,25 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
     fn common(&self) -> &FileCommon;
 }
 
-impl<T: Socket + 'static> FileLike for T {
-    fn read(&self, writer: &mut VmWriter) -> Result<usize> {
-        if !writer.has_avail() {
-            // Linux always returns `Ok(0)` in this case, so we follow it.
-            return Ok(0);
-        }
+/// Reads one message or stream segment through the socket file interface.
+pub(crate) fn read_socket(socket: &dyn Socket, writer: &mut dyn MultiWrite) -> Result<usize> {
+    if writer.is_empty() {
+        // Linux returns zero for an empty read buffer.
+        return Ok(0);
+    }
 
-        // TODO: Set correct flags
-        self.recvmsg(writer, RecvFlags::empty())
-            .map(|(output, _)| output.len())
+    socket
+        .recvmsg(writer, RecvFlags::empty())
+        .map(|(output, _)| output.len())
+}
+
+impl<T: Socket + 'static> FileLike for T {
+    fn ioctl(&self, raw_ioctl: crate::util::ioctl::RawIoctl) -> Result<i32> {
+        ioctl::handle(raw_ioctl, self.net_ns())
+    }
+
+    fn read(&self, writer: &mut VmWriter) -> Result<usize> {
+        read_socket(self, writer)
     }
 
     fn write(&self, reader: &mut VmReader) -> Result<usize> {

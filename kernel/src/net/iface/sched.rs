@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use aster_bigtcp::iface::ScheduleNextPoll;
 use ostd::sync::WaitQueue;
@@ -11,6 +11,7 @@ pub struct PollScheduler {
     next_poll_at_ms: AtomicU64,
     /// The wait queue that the background polling thread will sleep on.
     polling_wait_queue: WaitQueue,
+    stopped: AtomicBool,
 }
 
 impl PollScheduler {
@@ -26,6 +27,7 @@ impl PollScheduler {
         Self {
             next_poll_at_ms: AtomicU64::new(Self::NO_POLL),
             polling_wait_queue: WaitQueue::new(),
+            stopped: AtomicBool::new(false),
         }
     }
 
@@ -40,6 +42,15 @@ impl PollScheduler {
 
     pub(super) fn polling_wait_queue(&self) -> &WaitQueue {
         &self.polling_wait_queue
+    }
+
+    pub(super) fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+
+    pub(in crate::net) fn stop(&self) {
+        self.stopped.store(true, Ordering::Release);
+        self.polling_wait_queue.wake_all();
     }
 }
 

@@ -413,9 +413,10 @@ impl<E: Ext> TcpConnection<E> {
                         sent_bytes = current_sent_bytes;
                         (current_sent_bytes, Ok(()))
                     }
-                    Err((err, current_sent_bytes)) => {
-                        sent_bytes = current_sent_bytes;
-                        (current_sent_bytes, Err(err))
+                    Err((err, _)) => {
+                        // A failed copy must not commit the current contiguous
+                        // buffer. Earlier buffers may already have been sent.
+                        (0, Err(err))
                     }
                 }
             });
@@ -478,12 +479,16 @@ impl<E: Ext> TcpConnection<E> {
     /// Receives some data.
     ///
     /// Polling the iface _may_ be required after this method succeeds.
-    pub fn recv<CopyFn, CopyErr>(
+    /// `preflight_fn` sees the queued byte count under the socket lock before any bytes are
+    /// consumed. It must not block or access user memory.
+    pub fn recv<PreflightFn, CopyFn, CopyErr>(
         &self,
         behavior: ReceiveBehavior,
+        mut preflight_fn: PreflightFn,
         mut copy_fn: CopyFn,
     ) -> Result<(NonZeroUsize, NeedIfacePoll), IoError<RecvError, CopyErr>>
     where
+        PreflightFn: FnMut(usize) -> Result<(), CopyErr>,
         CopyFn: FnMut(&[u8]) -> Result<usize, (CopyErr, usize)>,
     {
         let common = self.iface().common();
@@ -494,6 +499,9 @@ impl<E: Ext> TcpConnection<E> {
         if socket.is_recv_shut && socket.recv_queue() == 0 {
             return Err(IoError::Socket(RecvError::Finished));
         }
+
+        // Check the whole queued range before consuming the first contiguous ring segment.
+        preflight_fn(socket.recv_queue()).map_err(IoError::Copy)?;
 
         let mut total_recv_bytes = 0;
         let mut need_wrap_continuation = behavior.will_consume_data();
@@ -512,9 +520,10 @@ impl<E: Ext> TcpConnection<E> {
                         recv_bytes = current_recv_bytes;
                         (current_recv_bytes, Ok(()))
                     }
-                    Err((err, current_recv_bytes)) => {
-                        recv_bytes = current_recv_bytes;
-                        (current_recv_bytes, Err(err))
+                    Err((err, _)) => {
+                        // A failed user copy must not consume the TCP bytes it partly copied.
+                        // The caller may retry the entire range after fixing the buffer.
+                        (0, Err(err))
                     }
                 }
             };

@@ -17,12 +17,15 @@ use crate::{
         file::{FileCommon, FileLike, StatusFlags},
         pseudofs::SockFs,
     },
-    net::socket::{
-        Socket,
-        options::{Error as SocketError, SocketOption, macros::sock_option_mut},
-        private::SocketPrivate,
-        util::{MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr},
-        vsock::addr::{UNSPECIFIED_VSOCK_ADDR, VsockSocketAddr},
+    net::{
+        net_ns::{NetNamespace, current_net_ns},
+        socket::{
+            Socket,
+            options::{Error as SocketError, SocketOption, macros::sock_option_mut},
+            private::SocketPrivate,
+            util::{MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr},
+            vsock::addr::{UNSPECIFIED_VSOCK_ADDR, VsockSocketAddr},
+        },
     },
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},
@@ -34,6 +37,7 @@ pub struct VsockStreamSocket {
     // Note that for vsock, all pollee notifications and invalidations live in the transport module
     // (e.g., `super::transport`) rather than in this module.
     pollee: Pollee,
+    net_ns: Arc<NetNamespace>,
     common: FileCommon,
 }
 
@@ -54,6 +58,7 @@ impl VsockStreamSocket {
         Ok(Arc::new(Self {
             state: Mutex::new(Takeable::new(State::Init(InitStream::new()))),
             pollee: Pollee::new(),
+            net_ns: current_net_ns(),
             common: FileCommon::new(SockFs::new_path(), status_flags),
         }))
     }
@@ -159,6 +164,7 @@ impl VsockStreamSocket {
         let accepted = Arc::new(Self {
             state: Mutex::new(Takeable::new(State::Connected(connected))),
             pollee,
+            net_ns: self.net_ns.clone(),
             common: FileCommon::new(SockFs::new_path(), status_flags),
         });
 
@@ -250,6 +256,10 @@ impl SocketPrivate for VsockStreamSocket {
 }
 
 impl Socket for VsockStreamSocket {
+    fn net_ns(&self) -> &NetNamespace {
+        &self.net_ns
+    }
+
     fn supports_partial_send(&self) -> bool {
         true
     }

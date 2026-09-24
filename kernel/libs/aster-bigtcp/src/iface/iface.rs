@@ -5,7 +5,9 @@ use core::ffi::CStr;
 
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr, Ipv6Cidr};
 
-use super::{BindPortConfig, BoundTcpPort, BoundUdpPort, InterfaceFlags, InterfaceType};
+use super::{
+    BindPortConfig, BoundTcpPort, BoundUdpPort, IfaceStatsSnapshot, InterfaceFlags, InterfaceType,
+};
 use crate::{errors::BindError, ext::Ext};
 
 /// A network interface.
@@ -17,6 +19,11 @@ use crate::{errors::BindError, ext::Ext};
 pub trait Iface<E>: internal::IfaceInternal<E> + Send + Sync {
     /// Returns the Ethernet address, if the interface uses Ethernet framing.
     fn ethernet_addr(&self) -> Option<EthernetAddress>;
+
+    /// Returns the configured IPv4 default gateway, if any.
+    fn ipv4_gateway(&self) -> Option<Ipv4Address> {
+        None
+    }
 
     /// Transmits or receives packets queued in the iface, and updates socket status accordingly.
     fn poll(&self);
@@ -66,6 +73,11 @@ impl<E: Ext> dyn Iface<E> {
         self.common().name()
     }
 
+    /// Returns receive and transmit counters for this interface.
+    pub fn stats(&self) -> IfaceStatsSnapshot {
+        self.common().stats()
+    }
+
     /// Returns the interface type.
     pub fn type_(&self) -> InterfaceType {
         self.common().type_()
@@ -98,6 +110,9 @@ impl<E: Ext> dyn Iface<E> {
     ///
     /// IPv6 does not define broadcast addresses and uses multicast instead.
     pub fn broadcast_addr(&self) -> Option<Ipv4Address> {
+        if !self.flags().contains(InterfaceFlags::BROADCAST) {
+            return None;
+        }
         self.common().ipv4_cidr()?.broadcast()
     }
 

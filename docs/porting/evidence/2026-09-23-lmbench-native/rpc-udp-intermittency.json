@@ -1,0 +1,84 @@
+{
+  "source_revision": "afb47eddaf10a411c1ea3cb64965461f1308a6ea",
+  "runtime_archive_sha256": "2cc35686d2fd2415ba0629cbf2db9fe4a94622bc0b4e5bcb816ce8ed8539202e",
+  "original_lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
+  "command": "ENOUGH=10000 lat_rpc -P 1 -p udp localhost",
+  "runs": [
+    {
+      "run": "rpc-short-tail-1",
+      "boot_id": "ddeefe9b-6dae-4848-b7bb-35187f9bc985",
+      "kernel_sha256": "d65a21828d619fa61101a04a67680fa6679373effe8196bb25c56f5acfc1743b",
+      "kernel_kind": "diagnostic",
+      "measurements": [],
+      "kernel_counters": [
+        "UDP_SOCKET_STATS port=844 rx=44211 tx=44224 rx_drops=0 max_queued=168 queued_on_close=0 last_tx_xid=1790961188 last_rx_xid=1790961187 last_read_xid=1790961187 queued_xid=None rx_xid_mismatches=19968 read_xid_mismatches=21797 rx_read_delay_samples=44211 rx_read_delay_max_ms=2 rx_read_delay_ge_25ms=0",
+        "UDP_RPC_TIMING port=844 request_retransmits=21809 request_reply_samples=44211 request_reply_max_ms=9 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
+        "UDP_RPC_SHORT_TAIL port=844 enqueue_dispatch_samples=44224 enqueue_dispatch_max_ms=1 enqueue_dispatch_ge_2ms=0 enqueue_dispatch_ge_5ms=0 rx_read_ge_2ms=14 rx_read_ge_5ms=0 request_reply_ge_2ms=12783 request_reply_ge_5ms=94 server_processing_ge_2ms=0 server_processing_ge_5ms=0",
+        "UDP_SOCKET_STATS port=52443 rx=44225 tx=44225 rx_drops=0 max_queued=572 queued_on_close=0 last_tx_xid=1790961188 last_rx_xid=1790961188 last_read_xid=1790961188 queued_xid=None rx_xid_mismatches=43756 read_xid_mismatches=22416 rx_read_delay_samples=44225 rx_read_delay_max_ms=8 rx_read_delay_ge_25ms=0"
+      ],
+      "harness_outcome": "serial control marker interleaved with kernel diagnostic output; benchmark result was not collected"
+    },
+    {
+      "run": "rpc-short-tail-2",
+      "boot_id": "a807a870-67b2-40b0-b047-31eb28973a74",
+      "kernel_sha256": "d65a21828d619fa61101a04a67680fa6679373effe8196bb25c56f5acfc1743b",
+      "kernel_kind": "diagnostic",
+      "measurements": [
+        {
+          "status": 0,
+          "elapsed": 26.757,
+          "stdout": "",
+          "stderr": "RPC/udp latency using localhost: 374.4895 microseconds\n"
+        }
+      ],
+      "kernel_counters": [
+        "UDP_SOCKET_STATS port=835 rx=68756 tx=68756 rx_drops=0 max_queued=28 queued_on_close=0 last_tx_xid=1790900835 last_rx_xid=1790900835 last_read_xid=1790900835 queued_xid=None rx_xid_mismatches=0 read_xid_mismatches=0 rx_read_delay_samples=68756 rx_read_delay_max_ms=2 rx_read_delay_ge_25ms=0",
+        "UDP_RPC_TIMING port=835 request_retransmits=0 request_reply_samples=68756 request_reply_max_ms=2 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
+        "UDP_RPC_SHORT_TAIL port=835 enqueue_dispatch_samples=68756 enqueue_dispatch_max_ms=1 enqueue_dispatch_ge_2ms=0 enqueue_dispatch_ge_5ms=0 rx_read_ge_2ms=39 rx_read_ge_5ms=0 request_reply_ge_2ms=433 request_reply_ge_5ms=0 server_processing_ge_2ms=0 server_processing_ge_5ms=0",
+        "UDP_SOCKET_STATS port=62831 rx=68757 tx=68757 rx_drops=0 max_queued=44 queued_on_close=0 last_tx_xid=1790900835 last_rx_xid=1790900835 last_read_xid=1790900835 queued_xid=None rx_xid_mismatches=68757 read_xid_mismatches=68757 rx_read_delay_samples=68757 rx_read_delay_max_ms=2 rx_read_delay_ge_25ms=0",
+        "UDP_RPC_TIMING port=62831 request_retransmits=0 request_reply_samples=0 request_reply_max_ms=0 request_reply_ge_25ms=0 server_processing_samples=68757 server_processing_max_ms=1 server_processing_ge_25ms=0",
+        "UDP_RPC_SHORT_TAIL port=62831 enqueue_dispatch_samples=68757 enqueue_dispatch_max_ms=1 enqueue_dispatch_ge_2ms=0 enqueue_dispatch_ge_5ms=0 rx_read_ge_2ms=433 rx_read_ge_5ms=0 request_reply_ge_2ms=0 request_reply_ge_5ms=0 server_processing_ge_2ms=0 server_processing_ge_5ms=0"
+      ],
+      "harness_outcome": "complete"
+    },
+    {
+      "run": "rpc-production-current-1",
+      "boot_id": "4dc6d347-41bc-4ba6-9cae-2e0132ba9713",
+      "kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+      "kernel_kind": "production",
+      "measurements": [
+        {
+          "status": 0,
+          "elapsed": 26.14,
+          "stdout": "",
+          "stderr": "RPC/udp latency using localhost: 365.9399 microseconds\n"
+        }
+      ],
+      "harness_outcome": "complete"
+    },
+    {
+      "run": "rpc-production-repeat-2",
+      "boot_id": "af3acb16-1b6d-4958-90ca-a7056ae68ec3",
+      "kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+      "kernel_kind": "production",
+      "measurements": [
+        {
+          "trial": 1,
+          "status": 0,
+          "elapsed": 23.181,
+          "stdout": "",
+          "stderr": "RPC/udp latency using localhost: 378.9856 microseconds\n"
+        },
+        {
+          "trial": 2,
+          "status": 0,
+          "elapsed": 25.968,
+          "stdout": "",
+          "stderr": "RPC/udp latency using localhost: 372.8906 microseconds\n"
+        }
+      ],
+      "harness_outcome": "complete"
+    }
+  ],
+  "interpretation": "Three unmodified focused calls succeeded on the same production kernel that had timed out in earlier focused runs; the diagnostic kernel showed both a retransmission-heavy run with incomplete harness collection and a clean successful run. The failure is intermittent. Counter data alone do not identify the first delaying component."
+}

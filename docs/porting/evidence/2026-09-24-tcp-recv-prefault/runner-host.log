@@ -1,0 +1,275 @@
+QEMU_INTERACTION_PHASE boot=1 phase=x-socket
+CONTROL_e0ed3a2585bd4b9c4d9c0d01 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_db3a7180d0b88f47d037bc73 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_b3e7852abc8bb4c3786d58b2 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_e1cf41f93cf8b75e60b4e692 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_94ebfb857b16c8fd618f9020 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_322f6153c56db4a40c1143aa status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_0855e9e13f440f4d84fbd3e2 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_c9c13e5743ce77f216def76a status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_c1a35e61309a306d3b2c8f27 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_5b23aa36d8ffdc472b866136 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_1b362b9cfb932d79e73d2374 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_03f32aef0cd36fd87d2589f9 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_027907324b5d5db543f0d98f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_86ec73dafed09c7d9c4b8039 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_2a11a0f4ead3ae0e551b3fec status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_348d4f25d4438a0031c76fce status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_9f31f2e5d02faf0a32405c5f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_201effe5fda8785627aadd21 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_94c3dcc5cf07a0056b638449 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_2acdae617f1b01f54462d69f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_fe5701e84017ec09c50490f6 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_13d76f5cd62e93e200139285 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_dc4a3ada65185a950ae13a83 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_4c1b56427d05a0039c968674 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_b5ed1f0dd3c716ad0c9f477e status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_6e39297ddc451b8bfbab88d9 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_b4a766d445c22c6c37a826c4 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_15ac2ceabdb9903dffc552c5 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_660d0c1bbbe1f1f084905e6e status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_6a9132020196903d43f4da8a status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_e44de67e11adc0c72870dedf status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_5ea8e45b72a7f7b718f7b56a status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_69aacb1e11491d8bedf6665a status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_ef3986f0612b5a79524b614f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_86892313a23b8f6aa6e63359 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_9b92e3b91d36c965434eb9f1 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_9ae89c22c65629892ed6557a status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_cc7a5596121508a4133932f7 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_24c36da6ffd851af0a4431ef status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_da8b47d52f7b18a788ffb500 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_85c28dfd5a737999e951a1f5 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_e299140ef2e75743e388380f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_7abcb2322da98db446c37063 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_0b4ab0523aef23a73047c932 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_52e38f67a910a7f46b93ace1 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_4ca618f519d1618136349e63 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_70b31c2b47777932373d617b status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_73cf03055b968652fd5a237b status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_0837ad3b9fb6eca8266d5c85 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_4d8ca3c78b446a8d5405f7b7 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_e8f94c6c66c754af71e4d796 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_3d56800cf9155fb801a656fb status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_b8bdb092b342113dd5163d9b status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_270ce4c0578f1927695ea334 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_bddb6e4c5b8576966ef17abe status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_78f460dd0315bbc4d8823924 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_380a0deda24c3434650197f5 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_018957a2014f6a16e4a63cc1 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_817eee0188686dfd5a42a90a status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_d72b4db47f141bf35fd8cf72 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_582c7e3971c6964b0fdf2baf status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_5d8819c008a4e672f99b1b17 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_5b45a89630960349610614cd status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_b209a553add4244e09df9761 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_b6ca10ba6478a29c199177b7 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_996676ed3ae260ada82c14a6 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_66ace0767f55146ca12e4d82 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_4d356c956f08669795115867 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_dc8f5a5b35a902333ad7a1ef status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_67f1a4ef6ff6988cd094baff status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_c71238550ed07d4d5115fd62 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_a9932dd6bf8b6667fd501497 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_18a9578a220c11448b5a7074 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_3f9451aa256dcdbf5f42c027 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_acc31197f651144de15fa5fb status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_521661d390727c8152a3223f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_4a4d03949f4dbc1b7162cdfd status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_3cc7cb957be4dfb65533aee9 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_9053354e939b7b06101225cf status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_42a7015dbe4ebbd6b8a99854 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_571be573fe3bfc8b5f500950 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_2901aff8986d4da60054a006 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_49a2e725437a7407773aeb44 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_badb9c395c3f307285cf33ca status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_3884f08ac50b4c251815ca65 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_1e7f206a649de2ee9734d8f3 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_70ca30f238ba79dd6798dd19 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_5af66965a7e67d35ffac4879 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_f386a20e11240fc9a07cf856 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_dd9333f5a6a2c8888230b3f5 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_d3a488ac73a02f0efe7fc0fd status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_e9b84060762884d0118059ec status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_907cb685fb86ef0f9114e66b status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_3c1ce0455c50f7cd87e2fdb0 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_a3a3c77b02c462421fc6216d status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_b2d86107245ab2838aa786bc status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_2c4d80021a147572d5900edd status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_ef7691edfa985a4a1cff412a status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_2c6b141e8c07edf14d3cb1a3 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_32d355b3c41cdc58d842e9ce status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_148788ff2d35f9135b4eb494 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_98926aa4c7087c5c19314ec6 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_a0bb584fdf0c15b850062e33 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_4fb40b0b32f4195822476a66 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_c018bacd1173f3ba610ba12c status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_cf8809836ce8f4f33170e08b status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_a6f40d4eaf67b30ee6e32904 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_eb8f530dd61fcb12d954de6f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_2dfb77c2fc1057a0fbc5806c status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_e183c7c2b805c9e2ca0547b0 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_0762126b35e4c72989bad03b status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_8bad154f1cbc1d215965e094 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_2f0ff64f5db196e819016d7d status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_f95172a7a70a2d08175eeac6 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_fb69073d785130783a178c86 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_5f4bda166d28100ee4e81654 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_13ab2365030bdb7ec2e55609 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_82ef03e5d2153ca584a92f87 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_e46b397cbca72e04f1659516 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_08b0095c1c1e2e02c41345f3 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_348fdd6c3fe74ce18a3fd5e6 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_ee8bc2f398b8856a3d87451f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_455529339d77abd94d44b059 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_a98ec260a2467890e08de62f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_d1247cbe60196d837823ac85 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_4c10e85e0cd6d81083a4a1cc status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_aab7406d012855448552852c status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_1579ba5b1bf92df92cb5bbdd status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_a11becc5f3c01b2a9e3d3a12 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_d9075d2412ca4dcc8ba860c1 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_a81626c71c03621581255b54 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_12e41702e403cc53faec2e6e status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_19f25a2007637752b3ad251e status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_ffae7fe7b1a725f4729d4fea status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_820bef0b09535f443de5852e status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_17d8013efd160204be831cd1 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_19c33ea86b9c4a7f36a8094a status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_37561c7ed114addbcfee5490 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_63c2ded3bb6132099a8d0382 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_c7c14f7332184f6830e59b47 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_6703dbb01fe71a8c3453e437 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_197a199bf0e736a334ebf100 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_482b9cbf3cc2e1db88213ca4 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_ae8c456680d5c257adc5a8db status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_693a6ee6a2384f225c19e0d1 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_d7ad26f8d13e7f786aeb6239 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_db1b92610dcd333d741b1c97 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_bb76f27292b70e0094d893fc status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_d65f709a1949e9680fac0354 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_d12f6b7b7959ab448919616e status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_1e2ebf60fdc1b2b86b6437fd status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_f28bbac4561a6a408f7ef47f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_e29ed2b9aeffd0b1a347d763 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_848bd5282bf17cc665b0f6de status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_01d44a6d115018c90761f9a8 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_ecfab35457d1600e9419c8d9 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_afb579d9cda20725fa0da04d status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_4b3b1954292c4a937bb7412e status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_947b630512bd9fdc611573f4 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_0a88d00119dab557265b07ce status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_11a34fbe62eb5f1889ba3e68 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_274c2009e59f84ec266cf14f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_d0e9ff95a947d1fbe1f11f0f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_8d4aacc668eea25fe2b8eba5 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_a0c39a137de05e1fc7f35ffb status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_7853b2aae8e2a4aa890ffe51 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_c7dd62f0d5b0f86d6646eadd status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_569bded87916f44f2f7b5a5e status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_eecbf12dbfd4adff1d6964e2 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_262049ffb3f9c696d2f3f745 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_d809328540ea9cdefba2fe07 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_8419ac0e726cf11062afe075 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_eb755bef55b55164d308b82c status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_29d24a2502d88e0155a63604 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_e9363f7d0fb3f9acbaaf58f7 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_8afeff7ab64003d6d29830cc status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_3b1652718419888ab375f16f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_a5cd0ad6f0e87c70f8256ea5 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_2e11a0e5574bd264dccd4aba status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_893fcf5911d53495ba9a158f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_9bfa1324038d58649f0e9aca status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_042d4eaf85d160f3d1a4b442 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_32e8d5c6d28518cd934864cf status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_f37bb8ab97ba6f3a1540be67 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_089a4d91113f3ea3e8275895 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_bebcaecb5fa45268aed736e6 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_5ef5813c3408ec1cc619d4b0 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_42a086c3cf5ff172256c0ff7 status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_ce0c4ecc6802c4b4468a053f status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+CONTROL_c16f41e97fefcb10121e435e status=0 uid=0 boot=a32eecd6-b508-40fd-a36d-198fc18b31bc
+{
+  "passed": true,
+  "reason": "pass",
+  "input_sha256": {
+    "kernel": "320c133bc50a0ad164c30faa2f9db384924b48bf560fb54b4cbf7cbcec2ac8c1",
+    "u_boot": "738775f52dcfad98dfae4b851a6dc3118db30bbe6455c7df3573a84133db8a5d",
+    "dtb": "586d1136aed48f8935a35febe0cf7d68fe44892215ab81209def62ffdb000142",
+    "stage1_initramfs": "872e38f947e18c225f2df47a645d419c04c42d536a6c5f518226dbc9d243593d",
+    "root_image": "bd855c9855e6734cb5e154d488d7c1899f9c1949ac01dae87cd0fc88702e35cf",
+    "manifest": "1465d690e049a9ddd8eec2b8e7c4611dbea2fd112f53bcae224b6dd17ce16243",
+    "packages_lock": "aa92c0471dbd9c08b3adfce97235f78dc625054296fe37adce5afa0a77ce9966",
+    "package_checksums": "e827046a3f0f5ae381e39159436197e7c8e4c9ebfdc02aeee578138c74af4fad"
+  },
+  "final_root_sha256": "8b73331faf9efa2ec5e3d325bd12c54479265901d619b16c868c7064d6a70383",
+  "profile": "browser-web",
+  "debian_release": "13.7",
+  "experiment": "native",
+  "physical": false,
+  "debug_console": {
+    "uid": 0,
+    "pid1": "systemd",
+    "root_device": "/dev/vdb",
+    "root_filesystem": "ext2",
+    "graphical_state": "active",
+    "desktop_state": "active"
+  },
+  "target": "browser",
+  "network_fixture": {
+    "payload_path": "/asterinas-network-probe.bin",
+    "payload_sha256": "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2",
+    "payload_size": 65536,
+    "records_truncated": false,
+    "request_count": 0,
+    "requests": [],
+    "schema_version": 1,
+    "workload_max_active": 0,
+    "workload_records_truncated": false,
+    "workload_request_count": 0,
+    "workload_requests": []
+  },
+  "qemu_argv": [
+    [
+      "qemu-system-riscv64",
+      "-machine",
+      "virt",
+      "-cpu",
+      "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+      "-m",
+      "2G",
+      "-smp",
+      "4",
+      "-display",
+      "none",
+      "-netdev",
+      "user,id=net0",
+      "-device",
+      "virtio-net-device,netdev=net0",
+      "-serial",
+      "stdio",
+      "-no-reboot",
+      "-kernel",
+      "/tmp/asterinas-debian-qemu-b1-e8msd2v_/u-boot",
+      "-drive",
+      "if=none,format=raw,file=/proc/self/fd/12/boot.ext4,id=bootdisk,readonly=on",
+      "-device",
+      "bochs-display",
+      "-device",
+      "virtio-keyboard-device",
+      "-device",
+      "virtio-tablet-device",
+      "-device",
+      "virtio-blk-device,drive=bootdisk",
+      "-drive",
+      "if=none,format=raw,file=/proc/self/fd/12/debian-root.run.ext2,id=rootdisk,cache=directsync",
+      "-device",
+      "virtio-blk-device,drive=rootdisk",
+      "-monitor",
+      "unix:/tmp/asterinas-debian-qemu-b1-e8msd2v_/monitor.sock,server=on,wait=off",
+      "-qmp",
+      "unix:/tmp/asterinas-debian-qemu-b1-e8msd2v_/physical-input.qmp,server=on,wait=off"
+    ]
+  ],
+  "screenshot": {}
+}

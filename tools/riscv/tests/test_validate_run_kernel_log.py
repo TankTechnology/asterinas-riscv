@@ -19,6 +19,152 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_netlink_route_netns_gate_requires_route_and_namespace_cases(self) -> None:
+        route = "netlink route socket namespace regression passed."
+        lookup = "IPv4 route lookup regression passed."
+        local = "IPv4 local route dump regression passed."
+        all_tables = "IPv4 all route tables regression passed."
+        uevent = "netlink uevent port namespace regression passed."
+        validate_transcript(f"{route}\n{lookup}\n{local}\n{all_tables}\n{uevent}\n", mode="netlink-route-netns")
+        for transcript in (
+            f"{route}\n",
+            f"{uevent}\n",
+            f"{route}\n{uevent}\n",
+            f"{route}\n{lookup}\n",
+            f"{route}\n{lookup}\n{uevent}\n",
+            f"{route}\n{lookup}\n{local}\n{uevent}\n",
+            f"{route}\n{route}\n{lookup}\n{local}\n{all_tables}\n{uevent}\n",
+            f"{route}\n{lookup}\n{local}\n{all_tables}\n{uevent}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaises(ValidationError):
+                    validate_transcript(transcript, mode="netlink-route-netns")
+
+    def test_ifreq_gate_requires_one_clean_completion(self) -> None:
+        marker = "interface ioctl regression passed."
+        validate_transcript(marker + "\n", mode="ifreq")
+        for transcript in (
+            "boot output\n",
+            f"{marker}\n{marker}\n",
+            f"{marker}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaises(ValidationError):
+                    validate_transcript(transcript, mode="ifreq")
+
+    def test_ifreq_gate_is_wired_to_network_regression(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        guest = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/run_ifreq_test.sh"
+        ).read_text()
+        general = (
+            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
+        self.assertIn("else ifeq ($(AUTO_TEST), ifreq)", makefile)
+        self.assertIn('/test/run_ifreq_test.sh', makefile)
+        self.assertIn('--mode "ifreq"', makefile)
+        self.assertIn("/test/network/ifreq --expect-eth0", guest)
+        self.assertEqual(general.count("./ifreq"), 1)
+
+    def test_proc_net_dev_gate_requires_one_clean_completion(self) -> None:
+        marker = "/proc/net/dev regression passed."
+        validate_transcript(marker + "\n", mode="proc-net-dev")
+        for transcript in (
+            "boot output\n",
+            f"{marker}\n{marker}\n",
+            f"{marker}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaises(ValidationError):
+                    validate_transcript(transcript, mode="proc-net-dev")
+
+    def test_proc_net_dev_gate_is_wired_to_original_regression(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        guest = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/run_proc_net_dev_test.sh"
+        )
+        general = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
+        self.assertIn("else ifeq ($(AUTO_TEST), proc_net_dev)", makefile)
+        self.assertIn("/test/run_proc_net_dev_test.sh", makefile)
+        self.assertIn('--mode "proc-net-dev"', makefile)
+        self.assertIn("proc_net_dev", guest.read_text())
+        self.assertEqual(general.count("./proc_net_dev"), 1)
+
+    def test_ifconf_gvisor_gate_accepts_only_one_clean_completion(self) -> None:
+        marker = "gVisor SIOCGIFCONF cases passed."
+        validate_transcript(marker + "\n", mode="ifconf-gvisor")
+        for transcript in (
+            "boot output\n",
+            f"{marker}\n{marker}\n",
+            f"{marker}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaises(ValidationError):
+                    validate_transcript(transcript, mode="ifconf-gvisor")
+
+    def test_ifconf_gvisor_gate_is_focused_and_wired(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        guest = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/conformance/run_ifconf_gvisor_test.sh"
+        )
+        guest_text = guest.read_text()
+        self.assertIn("else ifeq ($(AUTO_TEST), ifconf_gvisor)", makefile)
+        self.assertIn('CONFORMANCE_GVISOR_TEST := "ioctl_test"', makefile)
+        self.assertIn('/opt/run_ifconf_gvisor_test.sh', makefile)
+        self.assertIn('--mode "ifconf-gvisor"', makefile)
+        self.assertIn(
+            '--gtest_filter=IoctlTest/IoctlTestSIOCGIFCONF.*',
+            guest_text,
+        )
+        self.assertIn('[==========] 24 tests from 1 test suite ran.', guest_text)
+        self.assertIn('[  PASSED  ] 24 tests.', guest_text)
+        blocklist = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/conformance/gvisor/blocklists/ioctl_test"
+        ).read_text()
+        self.assertNotIn("IoctlTestSIOCGIFCONF", blocklist)
+
+    def test_ifconf_gate_accepts_only_one_clean_completion(self) -> None:
+        marker = "SIOCGIFCONF regression passed."
+        validate_transcript(marker + "\n", mode="ifconf")
+        for transcript in (
+            "boot output\n",
+            f"{marker}\n{marker}\n",
+            f"{marker}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaises(ValidationError):
+                    validate_transcript(transcript, mode="ifconf")
+
+    def test_ifconf_gate_is_wired_into_make_and_guest(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        runner_path = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/run_ifconf_test.sh"
+        )
+        general_runner = (
+            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
+
+        self.assertIn("else ifeq ($(AUTO_TEST), ifconf)", makefile)
+        self.assertIn('/test/run_ifconf_test.sh', makefile)
+        self.assertIn('--mode "ifconf"', makefile)
+        self.assertEqual(
+            tuple(
+                line.strip()
+                for line in runner_path.read_text().splitlines()
+                if line.strip().startswith("/test/")
+            ),
+            ("/test/network/ifconf",),
+        )
+        self.assertEqual(general_runner.count("./ifconf"), 1)
+
     def test_accepts_ipv6_dual_stack_udp_transcript(self) -> None:
         try:
             validate_transcript(

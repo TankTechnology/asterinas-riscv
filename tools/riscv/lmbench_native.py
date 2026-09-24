@@ -24,12 +24,15 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
 
 REVISION = 'afb47eddaf10a411c1ea3cb64965461f1308a6ea'
 PLATFORM = 'riscv64-unknown-linux-gnu'
+ADAPTATIONS = ['explicit IPv4 loopback server arguments',
+               'skip modern netstat interface-table headers']
 
 
 def native_command(make: str, platform: str) -> list[str]:
@@ -238,13 +241,53 @@ def patch_scripts(root: Path) -> None:
         content = script.read_text()
         if content.count(old) != 1:
             raise ValueError('upstream server startup changed; review the adaptation')
-        script.write_text(content.replace(old, new))
-    version = root / 'scripts/version'
-    old = "egrep 'MAJOR|MINOR'"
-    content = version.read_text()
-    if content.count(old) != 1:
-        raise ValueError('upstream version probe changed; review the adaptation')
-    version.write_text(content.replace(old, "grep -E 'MAJOR|MINOR'"))
+        content = content.replace(old, new)
+        old_header = '*ame)\t;;'
+        if content.count(old_header) != 1:
+            raise ValueError('upstream netstat header handling changed; review the adaptation')
+        # Modern net-tools prints two headers, neither of which names an iface.
+        script.write_text(content.replace(old_header, '*ame|Kernel|Iface)\t;;'))
+
+
+def verify_archive(archive: Path) -> dict:
+    """Reject a stale native runtime before paying for a full guest run."""
+    with tarfile.open(archive, 'r:gz') as tar:
+        def read(name: str) -> bytes:
+            try:
+                member = tar.getmember('opt/lmbench/' + name)
+            except KeyError as error:
+                raise ValueError(f'runtime archive is missing {name}') from error
+            if not member.isfile() or member.size > 1024 * 1024:
+                raise ValueError(f'invalid runtime archive member: {name}')
+            file = tar.extractfile(member)
+            if file is None:
+                raise ValueError(f'cannot read runtime archive member: {name}')
+            return file.read()
+
+        metadata = json.loads(read('asterinas-runtime.json'))
+        if metadata.get('revision') != REVISION or metadata.get('platform') != PLATFORM:
+            raise ValueError('runtime archive revision or platform differs from this runner')
+        if metadata.get('adaptations') != ADAPTATIONS:
+            raise ValueError('runtime archive adaptations differ from this runner')
+        if metadata.get('benchmark_binaries_modified') is not False:
+            raise ValueError('runtime archive does not preserve benchmark binaries')
+        runner = read('asterinas-native.py')
+        runner_hash = hashlib.sha256(runner).hexdigest()
+        if (metadata.get('runner_sha256') != runner_hash or
+                runner_hash != hashlib.sha256(Path(__file__).read_bytes()).hexdigest()):
+            raise ValueError('runtime archive runner differs from this runner')
+        if read('src/GNUmakefile').decode() != make_entry():
+            raise ValueError('runtime archive make entry differs from this runner')
+        for name in ('scripts/lmbench', 'bin/' + PLATFORM + '/lmbench'):
+            driver = read(name).decode()
+            if ('case "$server" in' not in driver or '-s 127.0.0.1' not in driver or
+                    '*ame|Kernel|Iface)\t;;' not in driver):
+                raise ValueError(f'runtime archive adaptations missing from {name}')
+        if "egrep 'MAJOR|MINOR'" not in read('scripts/version').decode():
+            raise ValueError('runtime archive does not preserve the native version probe')
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    return {'archive': str(archive), 'sha256': digest, 'revision': REVISION,
+            'platform': PLATFORM, 'adaptations': ADAPTATIONS}
 
 
 def package(output: Path) -> None:
@@ -275,9 +318,14 @@ def package(output: Path) -> None:
         (root / 'activate').write_text('export PATH=' + packages['make'] + '/bin:"$PATH"\n')
         metadata = {'revision': REVISION, 'platform': PLATFORM, 'packages': packages,
                     'closure': sorted(set(closure)), 'upstream_script_sha256': hashes,
-                    'adaptations': ['explicit IPv4 loopback server arguments',
-                                    'grep -E instead of the egrep shell wrapper'],
+                    'adaptations': ADAPTATIONS,
+                    'runner_sha256': hashlib.sha256((root / 'asterinas-native.py').read_bytes()).hexdigest(),
                     'benchmark_binaries_modified': False,
+                    'benchmark_binary_modifications': [],
+                    'rpc_timing_us': {'upstream_total': 25000,
+                                      'upstream_udp_retry': 2500,
+                                      'native_total': 25000,
+                                      'native_udp_retry': 2500},
                     'binary_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                                       for p in bindir.iterdir()
                                       if p.is_file() and p.read_bytes().startswith(b'\x7fELF')}}
@@ -287,7 +335,7 @@ def package(output: Path) -> None:
             for path in sorted(set(closure)):
                 tar.add(path, arcname=path.lstrip('/'))
             tar.add(root, arcname='opt/lmbench')
-    digest = hashlib.sha256(output.read_bytes()).hexdigest()
+    digest = verify_archive(output)['sha256']
     output.with_suffix(output.suffix + '.sha256').write_text(digest + '  ' + output.name + '\n')
     print(json.dumps({'archive': str(output), 'sha256': digest}))
 
@@ -394,10 +442,19 @@ def main() -> int:
     sub = parser.add_subparsers(dest='command', required=True)
     pack = sub.add_parser('package')
     pack.add_argument('--output', type=Path, required=True)
+    verify = sub.add_parser('verify')
+    verify.add_argument('--archive', type=Path, required=True)
     sub.add_parser('run')
     args = parser.parse_args()
     if args.command == 'package':
         package(args.output.resolve())
+        return 0
+    if args.command == 'verify':
+        try:
+            print(json.dumps(verify_archive(args.archive.resolve())))
+        except (OSError, ValueError, tarfile.TarError, UnicodeDecodeError) as error:
+            print(f'archive verification failed: {error}', file=sys.stderr)
+            return 1
         return 0
     return run()
 

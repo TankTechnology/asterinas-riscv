@@ -38,6 +38,7 @@ pub mod route;
 
 use addr::AddrSegment;
 use link::LinkSegment;
+use route::RouteSegment;
 
 use crate::{
     net::socket::netlink::message::{
@@ -55,6 +56,8 @@ pub enum RtnlSegment {
     NewAddr(AddrSegment),
     GetAddr(AddrSegment),
     GetLink(LinkSegment),
+    GetRoute(RouteSegment),
+    NewRoute(RouteSegment),
     Done(DoneSegment),
     Error(ErrorSegment),
 }
@@ -68,6 +71,9 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::NewAddr(addr_segment) | RtnlSegment::GetAddr(addr_segment) => {
                 addr_segment.header()
             }
+            RtnlSegment::GetRoute(route_segment) | RtnlSegment::NewRoute(route_segment) => {
+                route_segment.header()
+            }
             RtnlSegment::Done(done_segment) => done_segment.header(),
             RtnlSegment::Error(error_segment) => error_segment.header(),
         }
@@ -80,6 +86,9 @@ impl ProtocolSegment for RtnlSegment {
             | RtnlSegment::GetLink(link_segment) => link_segment.header_mut(),
             RtnlSegment::NewAddr(addr_segment) | RtnlSegment::GetAddr(addr_segment) => {
                 addr_segment.header_mut()
+            }
+            RtnlSegment::GetRoute(route_segment) | RtnlSegment::NewRoute(route_segment) => {
+                route_segment.header_mut()
             }
             RtnlSegment::Done(done_segment) => done_segment.header_mut(),
             RtnlSegment::Error(error_segment) => error_segment.header_mut(),
@@ -107,6 +116,9 @@ impl ProtocolSegment for RtnlSegment {
             Ok(CSegmentType::NEWADDR) => {
                 AddrSegment::read_from(&header, reader)?.map(RtnlSegment::NewAddr)
             }
+            Ok(CSegmentType::GETROUTE) => {
+                RouteSegment::read_from(&header, reader)?.map(RtnlSegment::GetRoute)
+            }
             _ => {
                 let payload_len = header.calc_payload_len_with_padding(reader)?;
                 reader.skip_some(payload_len);
@@ -124,9 +136,13 @@ impl ProtocolSegment for RtnlSegment {
         match self {
             RtnlSegment::NewLink(link_segment) => link_segment.write_to(writer)?,
             RtnlSegment::NewAddr(addr_segment) => addr_segment.write_to(writer)?,
+            RtnlSegment::NewRoute(route_segment) => route_segment.write_to(writer)?,
             RtnlSegment::Done(done_segment) => done_segment.write_to(writer)?,
             RtnlSegment::Error(error_segment) => error_segment.write_to(writer)?,
-            RtnlSegment::SetLink(_) | RtnlSegment::GetAddr(_) | RtnlSegment::GetLink(_) => {
+            RtnlSegment::SetLink(_)
+            | RtnlSegment::GetAddr(_)
+            | RtnlSegment::GetLink(_)
+            | RtnlSegment::GetRoute(_) => {
                 unreachable!("kernel should not write set/get requests to user space");
             }
         }

@@ -1,0 +1,11 @@
+{
+  "status": "pass",
+  "asterinas_before": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "5dbd13d5-58f2-42ac-ac43-2e5b91bb7106",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "recovered_to_uboot": true,
+  "rockos_boot_after": "c523d5be-e98c-4394-b700-1a37bdf5bf08"
+}

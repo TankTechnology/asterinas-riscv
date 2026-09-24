@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -11,12 +12,22 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #define PAYLOAD_LEN (4 * 4096 + 137)
 #define SEND_CHUNK 257
 #define RECV_CHUNK 113
+#define LARGE_BUFFER_LEN (10 * 1024 * 1024)
+#define LARGE_SEND_PREFIX_LEN (1024 * 1024)
+#define TCP_RECEIVE_CAPACITY (128 * 1024)
+#define VALID_PREFIX_LEN 4096
+#define CROSS_FAULT_LEN (VALID_PREFIX_LEN + 904)
+#define WRAP_FIRST_SPAN 3000
+#define CONSUMED_BEFORE_WRAP (PAYLOAD_LEN + 3 + 3 + 6 + 4 * CROSS_FAULT_LEN)
+#define WRAP_PRIME_LEN \
+	(TCP_RECEIVE_CAPACITY - WRAP_FIRST_SPAN - CONSUMED_BEFORE_WRAP)
 
 static void fail(const char *what)
 {
@@ -36,7 +47,23 @@ static void send_all(int fd, const char *buf, size_t len)
 	}
 }
 
-static void test_unix_stream_partial_sendmsg(void)
+static void wait_for_payload(int fd)
+{
+	char peek_buffer[CROSS_FAULT_LEN];
+	for (int attempt = 0; attempt < 2000; attempt++) {
+		ssize_t n = recv(fd, peek_buffer, sizeof(peek_buffer),
+				 MSG_PEEK | MSG_DONTWAIT);
+		if (n == sizeof(peek_buffer))
+			return;
+		if (n < 0 && errno != EAGAIN)
+			fail("peek cross-fault payload");
+		usleep(1000);
+	}
+	fprintf(stderr, "cross-fault payload did not arrive\n");
+	exit(EXIT_FAILURE);
+}
+
+static void test_unix_stream_invalid_tail(void)
 {
 	int sockets[2];
 	char good_buffer[] = "unix";
@@ -50,25 +77,118 @@ static void test_unix_stream_partial_sendmsg(void)
 		.msg_iovlen = 2,
 	};
 
-	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) < 0)
+	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0, sockets) < 0)
 		fail("socketpair");
-	if (sendmsg(sockets[0], &message, 0) !=
-	    (ssize_t)(sizeof(good_buffer) - 1))
-		fail("unix stream sendmsg partial iovec");
+	errno = 0;
+	if (sendmsg(sockets[0], &message, 0) != -1 || errno != EFAULT)
+		fail("unix stream sendmsg invalid tail");
+	errno = 0;
+	if (recv(sockets[1], received, sizeof(received), 0) != -1 ||
+	    errno != EAGAIN)
+		fail("unix stream sendmsg emitted bytes on EFAULT");
+	errno = 0;
+	if (writev(sockets[0], iov, 2) != -1 || errno != EFAULT)
+		fail("unix stream writev invalid tail");
+	errno = 0;
+	if (recv(sockets[1], received, sizeof(received), 0) != -1 ||
+	    errno != EAGAIN)
+		fail("unix stream writev emitted bytes on EFAULT");
+	send_all(sockets[0], good_buffer, sizeof(good_buffer) - 1);
 	if (recv(sockets[1], received, sizeof(received), 0) !=
 		    (ssize_t)sizeof(received) ||
 	    memcmp(received, good_buffer, sizeof(received)) != 0) {
-		fprintf(stderr, "unix stream partial iovec payload mismatch\n");
+		fprintf(stderr, "unix stream valid payload mismatch\n");
 		exit(EXIT_FAILURE);
 	}
 	close(sockets[0]);
 	close(sockets[1]);
 }
 
+static void test_unix_stream_large_prefix(void)
+{
+	char *buffer = malloc(LARGE_SEND_PREFIX_LEN);
+	if (buffer == NULL)
+		fail("large send malloc");
+	memset(buffer, 'L', LARGE_SEND_PREFIX_LEN);
+	struct iovec iov[2] = {
+		{ .iov_base = buffer, .iov_len = LARGE_SEND_PREFIX_LEN },
+		{ .iov_base = (void *)1, .iov_len = 1 },
+	};
+	struct msghdr message = { .msg_iov = iov, .msg_iovlen = 2 };
+	for (int use_writev = 0; use_writev < 2; use_writev++) {
+		int sockets[2];
+		if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0,
+			       sockets) < 0)
+			fail("large send socketpair");
+		ssize_t sent = use_writev ? writev(sockets[0], iov, 2)
+					  : sendmsg(sockets[0], &message, 0);
+		if (sent <= 0 || sent > LARGE_SEND_PREFIX_LEN) {
+			fprintf(stderr, "unix stream large invalid tail: call=%d sent=%zd errno=%d\n",
+				use_writev, sent, errno);
+			exit(EXIT_FAILURE);
+		}
+		char received = 0;
+		if (recv(sockets[1], &received, 1, 0) != 1 || received != 'L')
+			fail("unix stream large valid prefix");
+		close(sockets[0]);
+		close(sockets[1]);
+	}
+	free(buffer);
+}
+
+static void test_tcp_stream_large_prefix(void)
+{
+	struct sockaddr_in addr = {
+		.sin_family = AF_INET,
+		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
+	};
+	socklen_t addr_len = sizeof(addr);
+	int listener = socket(AF_INET, SOCK_STREAM, 0);
+	if (listener < 0 ||
+	    bind(listener, (struct sockaddr *)&addr, addr_len) < 0 ||
+	    getsockname(listener, (struct sockaddr *)&addr, &addr_len) < 0 ||
+	    listen(listener, 1) < 0)
+		fail("large TCP listener");
+	int sender = socket(AF_INET, SOCK_STREAM, 0);
+	if (sender < 0 || connect(sender, (struct sockaddr *)&addr, addr_len) < 0)
+		fail("large TCP connect");
+	int receiver = accept(listener, NULL, NULL);
+	if (receiver < 0)
+		fail("large TCP accept");
+	close(listener);
+	int flags = fcntl(sender, F_GETFL);
+	if (flags < 0 || fcntl(sender, F_SETFL, flags | O_NONBLOCK) < 0)
+		fail("large TCP nonblocking");
+
+	char *buffer = malloc(LARGE_SEND_PREFIX_LEN);
+	if (buffer == NULL)
+		fail("large TCP malloc");
+	memset(buffer, 'T', LARGE_SEND_PREFIX_LEN);
+	struct iovec iov[2] = {
+		{ .iov_base = buffer, .iov_len = LARGE_SEND_PREFIX_LEN },
+		{ .iov_base = (void *)1, .iov_len = 1 },
+	};
+	struct msghdr message = { .msg_iov = iov, .msg_iovlen = 2 };
+	ssize_t sent = sendmsg(sender, &message, MSG_DONTWAIT | MSG_NOSIGNAL);
+	if (sent <= 0 || sent > LARGE_SEND_PREFIX_LEN) {
+		fprintf(stderr, "TCP large invalid tail: sent=%zd errno=%d\n",
+			sent, errno);
+		exit(EXIT_FAILURE);
+	}
+	char received = 0;
+	if (recv(receiver, &received, 1, 0) != 1 || received != 'T')
+		fail("TCP large valid prefix");
+	free(buffer);
+	close(sender);
+	close(receiver);
+}
+
 int main(void)
 {
 	alarm(10);
-	test_unix_stream_partial_sendmsg();
+	test_unix_stream_invalid_tail();
+	test_unix_stream_large_prefix();
+	test_tcp_stream_large_prefix();
 
 	struct sockaddr_in addr = {
 		.sin_family = AF_INET,
@@ -84,11 +204,15 @@ int main(void)
 		fail("getsockname");
 	if (listen(listen_fd, 1) < 0)
 		fail("listen");
+	int sync_pipe[2];
+	if (pipe(sync_pipe) < 0)
+		fail("pipe");
 
 	pid_t child = fork();
 	if (child < 0)
 		fail("fork");
 	if (child == 0) {
+		close(sync_pipe[0]);
 		int client_fd = socket(AF_INET, SOCK_STREAM, 0);
 		if (client_fd < 0)
 			fail("child socket");
@@ -124,11 +248,55 @@ int main(void)
 			return EXIT_FAILURE;
 		}
 		send_all(client_fd, "xyz", 3);
+		char readv_request;
+		if (recv(client_fd, &readv_request, 1, MSG_WAITALL) != 1 ||
+		    readv_request != 'v')
+			fail("child readv request");
+		send_all(client_fd, "uvw", 3);
+		for (int operation = 0; operation < 6; operation++) {
+			char request;
+			if (recv(client_fd, &request, 1, MSG_WAITALL) != 1 ||
+			    request != 'A' + operation)
+				fail("child large-buffer request");
+			send_all(client_fd, "q", 1);
+		}
+		for (int operation = 0; operation < 4; operation++) {
+			char request;
+			if (recv(client_fd, &request, 1, MSG_WAITALL) != 1 ||
+			    request != 'a' + operation)
+				fail("child cross-fault request");
+			char cross_data[CROSS_FAULT_LEN];
+			memset(cross_data, 'a' + operation, sizeof(cross_data));
+			send_all(client_fd, cross_data, sizeof(cross_data));
+		}
+		char request;
+		if (recv(client_fd, &request, 1, MSG_WAITALL) != 1 ||
+		    request != 'p')
+			fail("child ring-prime request");
+		char prime_data[4096];
+		memset(prime_data, 'p', sizeof(prime_data));
+		for (size_t sent = 0; sent < WRAP_PRIME_LEN;) {
+			size_t len = WRAP_PRIME_LEN - sent;
+			if (len > sizeof(prime_data))
+				len = sizeof(prime_data);
+			send_all(client_fd, prime_data, len);
+			sent += len;
+		}
+		if (recv(client_fd, &request, 1, MSG_WAITALL) != 1 ||
+		    request != 'w')
+			fail("child ring-wrap request");
+		char wrapped_data[CROSS_FAULT_LEN];
+		memset(wrapped_data, 'w', sizeof(wrapped_data));
+		send_all(client_fd, wrapped_data, sizeof(wrapped_data));
+		if (write(sync_pipe[1], "x", 1) != 1)
+			fail("child ring-wrap signal");
 
 		munmap(send_buf, PAYLOAD_LEN);
 		close(client_fd);
+		close(sync_pipe[1]);
 		_exit(EXIT_SUCCESS);
 	}
+	close(sync_pipe[1]);
 
 	int server_fd = accept(listen_fd, NULL, NULL);
 	if (server_fd < 0)
@@ -171,16 +339,21 @@ int main(void)
 		.msg_iov = iov,
 		.msg_iovlen = 2,
 	};
-	if (sendmsg(server_fd, &message, 0) !=
-	    (ssize_t)(sizeof(good_buffer) - 1))
-		fail("sendmsg partial iovec");
+	errno = 0;
+	if (sendmsg(server_fd, &message, 0) != -1 || errno != EFAULT)
+		fail("sendmsg invalid tail");
+	errno = 0;
+	if (writev(server_fd, iov, 2) != -1 || errno != EFAULT)
+		fail("writev invalid tail");
+	send_all(server_fd, good_buffer, sizeof(good_buffer) - 1);
 
 	char receive_prefix = 0;
 	iov[0].iov_base = &receive_prefix;
 	iov[0].iov_len = 1;
-	if (recvmsg(server_fd, &message, 0) != 1 || receive_prefix != 'x')
-		fail("recvmsg partial iovec");
-	char receive_suffix[2];
+	errno = 0;
+	if (recvmsg(server_fd, &message, 0) != -1 || errno != EFAULT)
+		fail("recvmsg partial iovec EFAULT");
+	char receive_suffix[3];
 	size_t suffix_received = 0;
 	while (suffix_received < sizeof(receive_suffix)) {
 		ssize_t n = recv(server_fd, receive_suffix + suffix_received,
@@ -189,14 +362,192 @@ int main(void)
 			fail("recv partial iovec suffix");
 		suffix_received += (size_t)n;
 	}
-	if (memcmp(receive_suffix, "yz", sizeof(receive_suffix)) != 0) {
-		fprintf(stderr, "partial iovec receive suffix mismatch\n");
+	if (memcmp(receive_suffix, "xyz", sizeof(receive_suffix)) != 0) {
+		fprintf(stderr, "partial iovec retry payload mismatch\n");
 		return EXIT_FAILURE;
 	}
+	char readv_request = 'v';
+	send_all(server_fd, &readv_request, 1);
+	char readv_prefix = 0;
+	struct iovec readv_iov[2] = {
+		{ .iov_base = &readv_prefix, .iov_len = 1 },
+		{ .iov_base = (void *)1, .iov_len = 2 },
+	};
+	errno = 0;
+	if (readv(server_fd, readv_iov, 2) != -1 || errno != EFAULT)
+		fail("readv partial iovec EFAULT");
+	char readv_recovery[3];
+	size_t readv_received = 0;
+	while (readv_received < sizeof(readv_recovery)) {
+		ssize_t n = recv(server_fd, readv_recovery + readv_received,
+				 sizeof(readv_recovery) - readv_received, 0);
+		if (n <= 0)
+			fail("recover readv payload");
+		readv_received += (size_t)n;
+	}
+	if (memcmp(readv_recovery, "uvw", sizeof(readv_recovery)) != 0) {
+		fprintf(stderr, "readv retry payload mismatch\n");
+		return EXIT_FAILURE;
+	}
+
+	/* A single receive cannot reach the inaccessible tail of this mapping. */
+	char *large_buffer = mmap(NULL, LARGE_BUFFER_LEN,
+				  PROT_READ | PROT_WRITE,
+				  MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (large_buffer == MAP_FAILED)
+		fail("large-buffer mmap");
+	if (mprotect(large_buffer + TCP_RECEIVE_CAPACITY,
+		     LARGE_BUFFER_LEN - TCP_RECEIVE_CAPACITY, PROT_NONE) < 0)
+		fail("large-buffer mprotect");
+
+	int large_buffer_failures = 0;
+	for (int operation = 0; operation < 6; operation++) {
+		if (operation == 3 &&
+		    mprotect(large_buffer + VALID_PREFIX_LEN,
+			     TCP_RECEIVE_CAPACITY - VALID_PREFIX_LEN,
+			     PROT_NONE) < 0)
+			fail("valid-prefix mprotect");
+		char request = 'A' + operation;
+		send_all(server_fd, &request, 1);
+		errno = 0;
+		ssize_t n;
+		if (operation % 3 == 0) {
+			n = recvfrom(server_fd, large_buffer, LARGE_BUFFER_LEN,
+				     0, NULL, NULL);
+		} else if (operation % 3 == 1) {
+			struct iovec large_iov = {
+				.iov_base = large_buffer,
+				.iov_len = LARGE_BUFFER_LEN,
+			};
+			struct msghdr large_message = {
+				.msg_iov = &large_iov,
+				.msg_iovlen = 1,
+			};
+			n = recvmsg(server_fd, &large_message, 0);
+		} else {
+			n = read(server_fd, large_buffer, LARGE_BUFFER_LEN);
+		}
+		if (n != 1 || large_buffer[0] != 'q') {
+			fprintf(stderr,
+				"TCP large-buffer operation %d: received=%zd errno=%d\n",
+				operation, n, errno);
+			large_buffer_failures++;
+		}
+	}
+	if (large_buffer_failures)
+		return EXIT_FAILURE;
+
+	for (int operation = 0; operation < 4; operation++) {
+		char request = 'a' + operation;
+		send_all(server_fd, &request, 1);
+		wait_for_payload(server_fd);
+
+		errno = 0;
+		ssize_t n;
+		if (operation == 0) {
+			n = recvfrom(server_fd, large_buffer, LARGE_BUFFER_LEN,
+				     0, NULL, NULL);
+		} else if (operation == 1) {
+			struct iovec cross_iov = {
+				.iov_base = large_buffer,
+				.iov_len = LARGE_BUFFER_LEN,
+			};
+			struct msghdr cross_message = {
+				.msg_iov = &cross_iov,
+				.msg_iovlen = 1,
+			};
+			n = recvmsg(server_fd, &cross_message, 0);
+		} else if (operation == 2) {
+			n = read(server_fd, large_buffer, LARGE_BUFFER_LEN);
+		} else {
+			struct iovec cross_iov = {
+				.iov_base = large_buffer,
+				.iov_len = LARGE_BUFFER_LEN,
+			};
+			n = readv(server_fd, &cross_iov, 1);
+		}
+		if (n != -1 || errno != EFAULT) {
+			fprintf(stderr,
+				"TCP cross-fault operation %d: received=%zd errno=%d\n",
+				operation, n, errno);
+			return EXIT_FAILURE;
+		}
+
+		char valid_buffer[CROSS_FAULT_LEN];
+		size_t recovered = 0;
+		while (recovered < sizeof(valid_buffer)) {
+			n = recv(server_fd, valid_buffer + recovered,
+				 sizeof(valid_buffer) - recovered, 0);
+			if (n <= 0)
+				fail("recover cross-fault payload");
+			recovered += (size_t)n;
+		}
+		for (size_t i = 0; i < sizeof(valid_buffer); i++) {
+			if (valid_buffer[i] != 'a' + operation) {
+				fprintf(stderr,
+					"cross-fault payload mismatch at %zu\n",
+					i);
+				return EXIT_FAILURE;
+			}
+		}
+	}
+	char request = 'p';
+	send_all(server_fd, &request, 1);
+	char prime_buffer[4096];
+	for (size_t received = 0; received < WRAP_PRIME_LEN;) {
+		size_t len = WRAP_PRIME_LEN - received;
+		if (len > sizeof(prime_buffer))
+			len = sizeof(prime_buffer);
+		ssize_t n = recv(server_fd, prime_buffer, len, 0);
+		if (n <= 0)
+			fail("prime receive ring");
+		received += (size_t)n;
+	}
+	request = 'w';
+	send_all(server_fd, &request, 1);
+	char signal_byte;
+	if (read(sync_pipe[0], &signal_byte, 1) != 1)
+		fail("wait for ring-wrap payload");
+	usleep(20000);
+	/* The first 3000 bytes are contiguous; the rest wraps to the ring head. */
+	errno = 0;
+	ssize_t peek_result = recvfrom(server_fd, large_buffer,
+				       LARGE_BUFFER_LEN, MSG_PEEK, NULL, NULL);
+	if (peek_result != -1 || errno != EFAULT) {
+		fprintf(stderr,
+			"TCP wrapped peek fault: received=%zd errno=%d\n",
+			peek_result, errno);
+		return EXIT_FAILURE;
+	}
+	errno = 0;
+	ssize_t wrapped_result = recvfrom(server_fd, large_buffer,
+					  LARGE_BUFFER_LEN, 0, NULL, NULL);
+	if (wrapped_result != -1 || errno != EFAULT) {
+		fprintf(stderr,
+			"TCP wrapped cross-fault: received=%zd errno=%d\n",
+			wrapped_result, errno);
+		return EXIT_FAILURE;
+	}
+	char recovered_wrap[CROSS_FAULT_LEN];
+	for (size_t received = 0; received < sizeof(recovered_wrap);) {
+		ssize_t n = recv(server_fd, recovered_wrap + received,
+				 sizeof(recovered_wrap) - received, 0);
+		if (n <= 0)
+			fail("recover ring-wrap payload");
+		received += (size_t)n;
+	}
+	for (size_t i = 0; i < sizeof(recovered_wrap); i++) {
+		if (recovered_wrap[i] != 'w') {
+			fprintf(stderr, "wrapped payload mismatch at %zu\n", i);
+			return EXIT_FAILURE;
+		}
+	}
+	munmap(large_buffer, LARGE_BUFFER_LEN);
 
 	munmap(recv_buf, PAYLOAD_LEN);
 	close(server_fd);
 	close(listen_fd);
+	close(sync_pipe[0]);
 	int status;
 	if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
 	    WEXITSTATUS(status) != EXIT_SUCCESS)

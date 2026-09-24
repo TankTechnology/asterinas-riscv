@@ -1,0 +1,57 @@
+{
+  "linux_oracle": {
+    "output": "SCRIPT0=/tmp/asterinas-shebang-argv-oracle.sh ARG1=payload",
+    "child_exit": 0
+  },
+  "board_old_kernel": {
+    "boot_id": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384",
+    "image_sha256": "3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e",
+    "child_exit": 2,
+    "error": "/bin/sh cannot open caller-supplied-argv0"
+  },
+  "qemu_red": {
+    "gate": "AUTO_TEST=shebang_argv",
+    "passed": false,
+    "observed": "shell cannot open caller-supplied-argv0"
+  },
+  "qemu_green": {
+    "gate": "AUTO_TEST=shebang_argv",
+    "passed": true,
+    "image_sha256": "78ec31caa7cad3db6cd5f896bd2f7776c45317d071793a7f564d9f14bb82cac9"
+  },
+  "adjacent_qemu": {
+    "gate": "AUTO_TEST=memfd_exec",
+    "passed": true
+  },
+  "final_handoff": [
+    {
+      "attempt": 1,
+      "nonce": "ef8fe0c2b9b5ce22",
+      "valid": true,
+      "uid": 0,
+      "boot": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384"
+    },
+    {
+      "attempt": 2,
+      "nonce": "27731b200831f19c",
+      "valid": true,
+      "uid": 0,
+      "boot": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384"
+    }
+  ],
+  "serial_device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
+  "debian_egrep_wrapper": {
+    "wrapper": "/usr/bin/egrep",
+    "contents": "#!/bin/sh\ncmd=${0##*/}\nexec grep -E \"$@\"\n",
+    "probe": "cd /run && test \"$(PATH=/usr/bin:/bin egrep '^MAJOR' egrep-proof)\" = 'MAJOR=3'",
+    "old_kernel": {
+      "image_sha256": "3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e",
+      "passed": false,
+      "stderr": "/bin/sh: 0: cannot open egrep: No such file"
+    },
+    "new_kernel": {
+      "image_sha256": "78ec31caa7cad3db6cd5f896bd2f7776c45317d071793a7f564d9f14bb82cac9",
+      "passed": true
+    }
+  }
+}

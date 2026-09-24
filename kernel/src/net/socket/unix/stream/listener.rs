@@ -17,15 +17,18 @@ use super::{
 use crate::{
     events::IoEvents,
     fs::file::FileLike,
-    net::socket::{
-        SocketAddr,
-        unix::{
-            addr::{UnixSocketAddrBound, UnixSocketAddrKey},
-            cred::SocketCred,
-            scm_graph::{PermanentEdge, SocketNode, StreamBacklogNode},
-            stream::socket::OptionSet,
+    net::{
+        net_ns::NetNamespace,
+        socket::{
+            SocketAddr,
+            unix::{
+                addr::{UnixSocketAddrBound, UnixSocketAddrKey},
+                cred::SocketCred,
+                scm_graph::{PermanentEdge, SocketNode, StreamBacklogNode},
+                stream::socket::OptionSet,
+            },
+            util::SockShutdownCmd,
         },
-        util::SockShutdownCmd,
     },
     prelude::*,
     process::signal::Pollee,
@@ -67,6 +70,7 @@ impl Listener {
         &self,
         socket_type: SockType,
         is_nonblocking: bool,
+        net_ns: Arc<NetNamespace>,
     ) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
         debug_assert!(
             socket_type == SockType::SOCK_STREAM || socket_type == SockType::SOCK_SEQPACKET
@@ -77,8 +81,13 @@ impl Listener {
         let peer_addr = connected.peer_addr().into();
         let options = OptionSet::new_accepted(connected.is_pass_cred());
 
-        let socket =
-            UnixStreamSocket::new_connected(connected, options, is_nonblocking, socket_type);
+        let socket = UnixStreamSocket::new_connected(
+            connected,
+            options,
+            is_nonblocking,
+            socket_type,
+            net_ns,
+        );
         Ok((socket, peer_addr))
     }
 

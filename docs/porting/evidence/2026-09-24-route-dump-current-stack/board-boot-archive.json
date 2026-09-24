@@ -1,0 +1,8 @@
+{
+  "status": "pass",
+  "rockos_boot": "c523d5be-e98c-4394-b700-1a37bdf5bf08",
+  "archived_from": "/boot/asterinas-77d7e42c-220572e8.Image",
+  "archived_to": "/home/debian/asterinas-boot-archive/asterinas-77d7e42c-220572e8.Image",
+  "sha256": "62ed08fec13656978fea996e5a9508f10fd36a77e7534737f5844c844f7638a2",
+  "boot_blocks_after": "23371 0 1024"
+}

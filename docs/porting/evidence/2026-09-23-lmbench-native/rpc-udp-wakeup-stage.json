@@ -1,0 +1,313 @@
+{
+  "source_revision": "afb47eddaf10a411c1ea3cb64965461f1308a6ea",
+  "original_lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
+  "command": "ENOUGH=10000 lat_rpc -P 1 -p udp localhost",
+  "qemu": "RISC-V virt TCG, SMP=4, 2 GiB",
+  "diagnostic_scope": "The kernel records the slowest matching RPC response in each boot; all three focused runs succeeded and had zero request retransmissions. A single maximum from each run is descriptive, not a distribution or failure reproduction.",
+  "control_change": "The yield_after_iface_poll kernel added Thread::yield_now() after iface.poll(). The default_nice_and_yield_after_iface_poll kernel additionally changed the polling thread from Nice::MIN to Nice::default(). Both controls were reverted after the experiments.",
+  "runs": [
+    {
+      "run": "rpc-stage-notify-5",
+      "mode": "baseline",
+      "boot_id": "8ecfda9f-5379-4aeb-b70e-695a4cde9d3a",
+      "kernel_sha256": "350958ca5613a4010e7a3a01e3e1b5805eb1ff688f4477788ca5aa03868b61ae",
+      "benchmark": {
+        "status": 0,
+        "elapsed": 24.702,
+        "stdout": "",
+        "stderr": "RPC/udp latency using localhost: 390.0342 microseconds\n"
+      },
+      "client_timing_counters": "UDP_RPC_TIMING port=835 request_retransmits=0 request_reply_samples=61840 request_reply_max_ms=2 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
+      "slowest_rtt_ns": 1439600,
+      "events": [
+        {
+          "seq": 45625,
+          "stage": "request_enqueue",
+          "port": 835,
+          "ns": 18432579800
+        },
+        {
+          "seq": 45626,
+          "stage": "request_dispatch",
+          "port": 835,
+          "ns": 18432589200
+        },
+        {
+          "seq": 45627,
+          "stage": "server_receive",
+          "port": 63853,
+          "ns": 18432593500
+        },
+        {
+          "seq": 45628,
+          "stage": "server_notify_begin",
+          "port": 63853,
+          "ns": 18432594800
+        },
+        {
+          "seq": 45629,
+          "stage": "server_notify_end",
+          "port": 63853,
+          "ns": 18432645800
+        },
+        {
+          "seq": 45630,
+          "stage": "server_read",
+          "port": 63853,
+          "ns": 18433782300
+        },
+        {
+          "seq": 45631,
+          "stage": "reply_enqueue",
+          "port": 63853,
+          "ns": 18433908000
+        },
+        {
+          "seq": 45632,
+          "stage": "reply_dispatch",
+          "port": 63853,
+          "ns": 18433918600
+        },
+        {
+          "seq": 45633,
+          "stage": "client_receive",
+          "port": 835,
+          "ns": 18433923100
+        },
+        {
+          "seq": 45634,
+          "stage": "client_notify_begin",
+          "port": 835,
+          "ns": 18433924500
+        },
+        {
+          "seq": 45635,
+          "stage": "client_notify_end",
+          "port": 835,
+          "ns": 18433944000
+        },
+        {
+          "seq": 45636,
+          "stage": "client_read",
+          "port": 835,
+          "ns": 18434028100
+        }
+      ],
+      "stage_durations_us": {
+        "request_enqueue_to_dispatch": 9.4,
+        "request_dispatch_to_server_receive": 4.3,
+        "server_receive_to_notify_begin": 1.3,
+        "server_notify": 51.0,
+        "server_notify_end_to_read": 1136.5,
+        "server_read_to_reply_enqueue": 125.7,
+        "reply_enqueue_to_dispatch": 10.6,
+        "reply_dispatch_to_client_receive": 4.5,
+        "client_notify": 19.5,
+        "client_notify_end_to_read": 84.1
+      }
+    },
+    {
+      "run": "rpc-stage-yield-6",
+      "mode": "yield_after_iface_poll",
+      "boot_id": "357d93cb-4940-4cba-9a23-c729d5bc7ea5",
+      "kernel_sha256": "ac5ca34abf2533fe0a7eb2eb33dc066c2003231a31d0fb2e4da98adc66c6cb06",
+      "benchmark": {
+        "status": 0,
+        "elapsed": 27.271,
+        "stdout": "",
+        "stderr": "RPC/udp latency using localhost: 399.0523 microseconds\n"
+      },
+      "client_timing_counters": "UDP_RPC_TIMING port=836 request_retransmits=0 request_reply_samples=67519 request_reply_max_ms=2 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
+      "slowest_rtt_ns": 1754800,
+      "events": [
+        {
+          "seq": 551821,
+          "stage": "request_enqueue",
+          "port": 836,
+          "ns": 34656834200
+        },
+        {
+          "seq": 551822,
+          "stage": "request_dispatch",
+          "port": 836,
+          "ns": 34656843200
+        },
+        {
+          "seq": 551823,
+          "stage": "server_receive",
+          "port": 57230,
+          "ns": 34656847200
+        },
+        {
+          "seq": 551824,
+          "stage": "server_notify_begin",
+          "port": 57230,
+          "ns": 34656848600
+        },
+        {
+          "seq": 551825,
+          "stage": "server_notify_end",
+          "port": 57230,
+          "ns": 34656870800
+        },
+        {
+          "seq": 551826,
+          "stage": "server_read",
+          "port": 57230,
+          "ns": 34657249000
+        },
+        {
+          "seq": 551827,
+          "stage": "reply_enqueue",
+          "port": 57230,
+          "ns": 34657419900
+        },
+        {
+          "seq": 551828,
+          "stage": "reply_dispatch",
+          "port": 57230,
+          "ns": 34657445300
+        },
+        {
+          "seq": 551829,
+          "stage": "client_receive",
+          "port": 836,
+          "ns": 34657458100
+        },
+        {
+          "seq": 551830,
+          "stage": "client_notify_begin",
+          "port": 836,
+          "ns": 34657461900
+        },
+        {
+          "seq": 551831,
+          "stage": "client_notify_end",
+          "port": 836,
+          "ns": 34657532700
+        },
+        {
+          "seq": 551832,
+          "stage": "client_read",
+          "port": 836,
+          "ns": 34658597500
+        }
+      ],
+      "stage_durations_us": {
+        "request_enqueue_to_dispatch": 9.0,
+        "request_dispatch_to_server_receive": 4.0,
+        "server_receive_to_notify_begin": 1.4,
+        "server_notify": 22.2,
+        "server_notify_end_to_read": 378.2,
+        "server_read_to_reply_enqueue": 170.9,
+        "reply_enqueue_to_dispatch": 25.4,
+        "reply_dispatch_to_client_receive": 12.8,
+        "client_notify": 70.8,
+        "client_notify_end_to_read": 1064.8
+      }
+    },
+    {
+      "run": "rpc-stage-nice-yield-7",
+      "mode": "default_nice_and_yield_after_iface_poll",
+      "boot_id": "5ddaf056-e262-4a65-998d-1e362c6dde70",
+      "kernel_sha256": "c2d68255368f02026b46c7dd63d8b67cecdd46ee0a60660331ad69444913d07b",
+      "benchmark": {
+        "status": 0,
+        "elapsed": 24.774,
+        "stdout": "",
+        "stderr": "RPC/udp latency using localhost: 392.3661 microseconds\n"
+      },
+      "client_timing_counters": "UDP_RPC_TIMING port=836 request_retransmits=0 request_reply_samples=61659 request_reply_max_ms=2 request_reply_ge_25ms=0 server_processing_samples=0 server_processing_max_ms=0 server_processing_ge_25ms=0",
+      "slowest_rtt_ns": 1388800,
+      "events": [
+        {
+          "seq": 4957,
+          "stage": "request_enqueue",
+          "port": 836,
+          "ns": 16780018200
+        },
+        {
+          "seq": 4958,
+          "stage": "request_dispatch",
+          "port": 836,
+          "ns": 16780028700
+        },
+        {
+          "seq": 4959,
+          "stage": "server_receive",
+          "port": 63891,
+          "ns": 16780033200
+        },
+        {
+          "seq": 4960,
+          "stage": "server_notify_begin",
+          "port": 63891,
+          "ns": 16780034700
+        },
+        {
+          "seq": 4961,
+          "stage": "server_notify_end",
+          "port": 63891,
+          "ns": 16780066500
+        },
+        {
+          "seq": 4962,
+          "stage": "server_read",
+          "port": 63891,
+          "ns": 16780196300
+        },
+        {
+          "seq": 4963,
+          "stage": "reply_enqueue",
+          "port": 63891,
+          "ns": 16780318100
+        },
+        {
+          "seq": 4964,
+          "stage": "reply_dispatch",
+          "port": 63891,
+          "ns": 16780328700
+        },
+        {
+          "seq": 4965,
+          "stage": "client_receive",
+          "port": 836,
+          "ns": 16780332900
+        },
+        {
+          "seq": 4966,
+          "stage": "client_notify_begin",
+          "port": 836,
+          "ns": 16780334600
+        },
+        {
+          "seq": 4967,
+          "stage": "client_notify_end",
+          "port": 836,
+          "ns": 16780372000
+        },
+        {
+          "seq": 4968,
+          "stage": "client_read",
+          "port": 836,
+          "ns": 16781416800
+        }
+      ],
+      "stage_durations_us": {
+        "request_enqueue_to_dispatch": 10.5,
+        "request_dispatch_to_server_receive": 4.5,
+        "server_receive_to_notify_begin": 1.5,
+        "server_notify": 31.8,
+        "server_notify_end_to_read": 129.8,
+        "server_read_to_reply_enqueue": 121.8,
+        "reply_enqueue_to_dispatch": 10.6,
+        "reply_dispatch_to_client_receive": 4.2,
+        "client_notify": 37.4,
+        "client_notify_end_to_read": 1044.8
+      }
+    }
+  ],
+  "interpretation": "The baseline maximum spent 1136.5 us between server notification completion and server read. Both yield controls shortened that interval for their respective slowest requests but spent over 1 ms between client notification completion and client read. Their total maxima were 1.7548 and 1.3888 ms versus 1.4396 ms in the baseline. These single-run maxima do not establish an overall improvement or a fix; they place substantial slow-tail time after readiness notification, at either endpoint.",
+  "diagnostic_source_branch": "codex/udp-rpc-instrument",
+  "diagnostic_source_commit": "301071ab8"
+}

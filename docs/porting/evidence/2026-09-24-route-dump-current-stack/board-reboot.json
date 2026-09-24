@@ -1,0 +1,23 @@
+{
+  "status": "pass",
+  "menu": "/extlinux/asterinas-route-dump-canary-20260924.conf",
+  "before": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "991075a6-1edf-4b2a-be49-e7dcb996552a",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "after": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "3b62c322-6ed9-4094-95ad-7d7a1ec93c2c",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "state": "systemctl show -p ActiveState -p SubState -p Result aste \rrinas-desktop-ready.service; systemctl is-active asterinas-browser-web.service;  \rcat /proc/sys/kernel/asterinas_reboot_watchdog; ip -o -4 addr show dev eth0\nResult=success\nActiveState=active\nSubState=exited\nactive\n0\n2: eth0    inet 10.100.19.200/21 brd 10.100.23.255 scope global eth0\nroot@asterinas-debug:/# ",
+  "final": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "3b62c322-6ed9-4094-95ad-7d7a1ec93c2c",
+    "root": "/dev/mmcblk0p2:ext2"
+  }
+}
