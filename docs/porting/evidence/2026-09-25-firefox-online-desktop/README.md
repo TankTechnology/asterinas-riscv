@@ -304,3 +304,11 @@ and ISO creation. This adds stopped-user-thread register reads for later PC
 sampling, not a Firefox profile or a measured speedup. The physical board
 still boots the older `052656e9b12c...` kernel, so this diagnostic has not
 yet been exercised on Megrez.
+
+The merged tree also passed the Megrez-oriented Sv48/SMP=4 release gate,
+`make run_kernel AUTO_TEST=riscv_ptrace_regset TARGET_ARCH=riscv64 SMP=4
+RELEASE=1`: 23 `TRACEME` and 10 external `ATTACH`/`DETACH` checks passed,
+zero failed. The [Sv48 terminal excerpt](ptrace-regset-sv48-qemu-excerpt.log)
+records this distinct run. Its uninstalled Image is 6,082,688 bytes, SHA-256
+`6694c4c7ff5aeb715c5c3acf9a9c2f0f6318eaba7d7848a61b9d88bc63333180`.
+QEMU Sv48 coverage does not establish the board's boot or desktop behavior.

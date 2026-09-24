@@ -1,0 +1,3 @@
+test_getregset_riscv_prstatus summary: 23 tests passed, 0 tests failed
+test_attach_getregset_riscv_prstatus summary: 10 tests passed, 0 tests failed
+RISC-V ptrace regset regression passed.
