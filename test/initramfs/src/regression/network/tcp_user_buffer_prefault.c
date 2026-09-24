@@ -22,6 +22,10 @@
 #define TCP_RECEIVE_CAPACITY (128 * 1024)
 #define VALID_PREFIX_LEN 4096
 #define CROSS_FAULT_LEN (VALID_PREFIX_LEN + 904)
+#define WRAP_FIRST_SPAN 3000
+#define CONSUMED_BEFORE_WRAP (PAYLOAD_LEN + 3 + 6 + 3 * CROSS_FAULT_LEN)
+#define WRAP_PRIME_LEN \
+	(TCP_RECEIVE_CAPACITY - WRAP_FIRST_SPAN - CONSUMED_BEFORE_WRAP)
 
 static void fail(const char *what)
 {
@@ -105,11 +109,15 @@ int main(void)
 		fail("getsockname");
 	if (listen(listen_fd, 1) < 0)
 		fail("listen");
+	int sync_pipe[2];
+	if (pipe(sync_pipe) < 0)
+		fail("pipe");
 
 	pid_t child = fork();
 	if (child < 0)
 		fail("fork");
 	if (child == 0) {
+		close(sync_pipe[0]);
 		int client_fd = socket(AF_INET, SOCK_STREAM, 0);
 		if (client_fd < 0)
 			fail("child socket");
@@ -161,11 +169,34 @@ int main(void)
 			memset(cross_data, 'a' + operation, sizeof(cross_data));
 			send_all(client_fd, cross_data, sizeof(cross_data));
 		}
+		char request;
+		if (recv(client_fd, &request, 1, MSG_WAITALL) != 1 ||
+		    request != 'p')
+			fail("child ring-prime request");
+		char prime_data[4096];
+		memset(prime_data, 'p', sizeof(prime_data));
+		for (size_t sent = 0; sent < WRAP_PRIME_LEN;) {
+			size_t len = WRAP_PRIME_LEN - sent;
+			if (len > sizeof(prime_data))
+				len = sizeof(prime_data);
+			send_all(client_fd, prime_data, len);
+			sent += len;
+		}
+		if (recv(client_fd, &request, 1, MSG_WAITALL) != 1 ||
+		    request != 'w')
+			fail("child ring-wrap request");
+		char wrapped_data[CROSS_FAULT_LEN];
+		memset(wrapped_data, 'w', sizeof(wrapped_data));
+		send_all(client_fd, wrapped_data, sizeof(wrapped_data));
+		if (write(sync_pipe[1], "x", 1) != 1)
+			fail("child ring-wrap signal");
 
 		munmap(send_buf, PAYLOAD_LEN);
 		close(client_fd);
+		close(sync_pipe[1]);
 		_exit(EXIT_SUCCESS);
 	}
+	close(sync_pipe[1]);
 
 	int server_fd = accept(listen_fd, NULL, NULL);
 	if (server_fd < 0)
@@ -216,8 +247,7 @@ int main(void)
 	iov[0].iov_base = &receive_prefix;
 	iov[0].iov_len = 1;
 	errno = 0;
-	if (recvmsg(server_fd, &message, 0) != -1 || errno != EFAULT ||
-	    receive_prefix != 'x')
+	if (recvmsg(server_fd, &message, 0) != -1 || errno != EFAULT)
 		fail("recvmsg partial iovec EFAULT");
 	char receive_suffix[3];
 	size_t suffix_received = 0;
@@ -328,11 +358,63 @@ int main(void)
 			}
 		}
 	}
+	char request = 'p';
+	send_all(server_fd, &request, 1);
+	char prime_buffer[4096];
+	for (size_t received = 0; received < WRAP_PRIME_LEN;) {
+		size_t len = WRAP_PRIME_LEN - received;
+		if (len > sizeof(prime_buffer))
+			len = sizeof(prime_buffer);
+		ssize_t n = recv(server_fd, prime_buffer, len, 0);
+		if (n <= 0)
+			fail("prime receive ring");
+		received += (size_t)n;
+	}
+	request = 'w';
+	send_all(server_fd, &request, 1);
+	char signal_byte;
+	if (read(sync_pipe[0], &signal_byte, 1) != 1)
+		fail("wait for ring-wrap payload");
+	usleep(20000);
+	/* The first 3000 bytes are contiguous; the rest wraps to the ring head. */
+	errno = 0;
+	ssize_t peek_result = recvfrom(server_fd, large_buffer,
+				       LARGE_BUFFER_LEN, MSG_PEEK, NULL, NULL);
+	if (peek_result != -1 || errno != EFAULT) {
+		fprintf(stderr,
+			"TCP wrapped peek fault: received=%zd errno=%d\n",
+			peek_result, errno);
+		return EXIT_FAILURE;
+	}
+	errno = 0;
+	ssize_t wrapped_result = recvfrom(server_fd, large_buffer,
+					  LARGE_BUFFER_LEN, 0, NULL, NULL);
+	if (wrapped_result != -1 || errno != EFAULT) {
+		fprintf(stderr,
+			"TCP wrapped cross-fault: received=%zd errno=%d\n",
+			wrapped_result, errno);
+		return EXIT_FAILURE;
+	}
+	char recovered_wrap[CROSS_FAULT_LEN];
+	for (size_t received = 0; received < sizeof(recovered_wrap);) {
+		ssize_t n = recv(server_fd, recovered_wrap + received,
+				 sizeof(recovered_wrap) - received, 0);
+		if (n <= 0)
+			fail("recover ring-wrap payload");
+		received += (size_t)n;
+	}
+	for (size_t i = 0; i < sizeof(recovered_wrap); i++) {
+		if (recovered_wrap[i] != 'w') {
+			fprintf(stderr, "wrapped payload mismatch at %zu\n", i);
+			return EXIT_FAILURE;
+		}
+	}
 	munmap(large_buffer, LARGE_BUFFER_LEN);
 
 	munmap(recv_buf, PAYLOAD_LEN);
 	close(server_fd);
 	close(listen_fd);
+	close(sync_pipe[0]);
 	int status;
 	if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
 	    WEXITSTATUS(status) != EXIT_SUCCESS)
