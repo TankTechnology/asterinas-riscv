@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use aster_bigtcp::{
-    socket::{NeedIfacePoll, RawTcpOption, RawTcpSetOption},
+    socket::{NeedIfacePoll, RawTcpOption, RawTcpSetOption, TCP_RECV_BUF_LEN},
     time::Duration,
     wire::IpEndpoint,
 };
@@ -489,6 +489,10 @@ impl SocketPrivate for StreamSocket {
 impl Socket for StreamSocket {
     fn net_ns(&self) -> &NetNamespace {
         &self.net_ns
+    }
+
+    fn max_recv_len(&self) -> Option<usize> {
+        Some(TCP_RECV_BUF_LEN)
     }
 
     fn supports_partial_send(&self) -> bool {
