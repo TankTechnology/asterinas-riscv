@@ -647,9 +647,13 @@ impl Socket for StreamSocket {
             warn!("sending control message is not supported");
         }
 
-        self.block_on(IoEvents::OUT, self.timeouts.send_timeout(), || {
+        if flags.contains(SendFlags::MSG_DONTWAIT) {
             self.try_send(reader, flags)
-        })
+        } else {
+            self.block_on(IoEvents::OUT, self.timeouts.send_timeout(), || {
+                self.try_send(reader, flags)
+            })
+        }
 
         // TODO: Trigger `SIGPIPE` if the error code is `EPIPE` and `MSG_NOSIGNAL` is not specified
     }
