@@ -9,6 +9,13 @@ The QEMU gate's [summary](qemu-summary.json) confirms that exact input, Debian
 13.7, a nonce-framed local root debug console, `physical=false`, and an
 overall pass. The guest boot ID was `7dc0540d-70c2-4ae4-94b3-8fe4892de011`.
 
+The boot serial also reported a failure of
+`asterinas-desktop-ready.service`. Its `startup-ready` command requires an
+armed software-reboot watchdog, while this QEMU command line has no
+`asterinas.reboot_after` parameter. The debug-console gate separately
+observed active graphical and desktop services and the benchmark ran to
+completion. This run does not qualify the physical-board readiness unit.
+
 The guest ran `cd /opt/lmbench/src && make results` using the pinned
 `asterinas/lmbench` revision `afb47eddaf10a411c1ea3cb64965461f1308a6ea`.
 The packaged runtime SHA256 was
