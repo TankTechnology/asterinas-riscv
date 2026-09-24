@@ -229,3 +229,12 @@ mapping and
 Megrez's lack of Svpbmt make a blind RISC-V cache-policy change unsafe.
 Preserve the physical board's authenticated recovery path throughout
 experiments and report unsupported observations as such.
+
+The current [R4 DRM draft](https://github.com/TankTechnology/asterinas-riscv/pull/141)
+adds a Megrez firmware-framebuffer backend that copies scanout data with the
+CPU; it has not opened `/dev/dri/card0` on the physical board. Its
+[R3 dependency](https://github.com/TankTechnology/asterinas-riscv/pull/142)
+has a 64-MiB GEM pool without reclamation. These are functional admission
+candidates, not measured 720p acceleration. Keep their validation separate
+from the current signed-root video baseline and fix resource lifetime before
+claiming a durable daily-use graphics path.
