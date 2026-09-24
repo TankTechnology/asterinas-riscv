@@ -1592,6 +1592,39 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("/usr/bin/timeout 2 /usr/bin/cat", evidence)
         self.assertIn("/usr/bin/timeout 2 /usr/bin/sleep 1", evidence)
 
+    def test_evidence_marks_baidu_captcha_with_trailing_capability_fields(self) -> None:
+        evidence = (ROOTFS / "browser_web_evidence.sh").read_text()
+        lines = evidence.splitlines()
+        index = next(
+            index
+            for index, line in enumerate(lines)
+            if "if [[" in line and "baidu_outcome=external-captcha" in line
+        )
+        branch = "\n".join(lines[index : index + 3])
+        script = (
+            "content=$1\n"
+            "emit() { printf '%s\\n' \"$1\"; }\n"
+            f"{branch}\n"
+        )
+        prefix = (
+            "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass baidu_home=pass "
+            "baidu_search=observed bilibili_home=pass bilibili_detail=pass "
+            "bilibili_playback=pass bv=BV1nMYb6KEhF tls=verified"
+        )
+        for outcome, expected in (
+            ("external-captcha", "DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha\n"),
+            ("pass", ""),
+        ):
+            payload = f"{prefix} baidu_outcome={outcome} capabilities=pass download=pass"
+            with self.subTest(outcome=outcome):
+                completed = subprocess.run(
+                    ["bash", "-c", script, "-", payload],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(completed.stdout, expected)
+
     def test_m5_profile_keeps_formal_markers_without_debug_console_flood(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
         offline_evidence = (ROOTFS / "desktop_m5_evidence.sh").read_text()

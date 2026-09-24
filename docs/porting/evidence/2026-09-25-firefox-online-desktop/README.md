@@ -149,6 +149,19 @@ fingerprinting warnings. The run does **not** qualify as a seven-group gate
 pass. The external search block is distinct from the earlier ESR fixture
 failure; the controlled and Bilibili paths now have positive QEMU evidence.
 
+The [independent bounded retry](qemu-jit-browser-retry-result.json) on the
+same signed image and kernel reached the same boundary. Its
+[phase excerpt](qemu-jit-browser-retry-excerpt.log) again shows completed
+fixture navigation/download and Bilibili playback, followed by
+`baidu-search-not-pass`. The source gate's captcha marker had a suffix-matching
+bug: it checked for `baidu_outcome=external-captcha` only at the end of the
+content string, although capability and download fields follow it. The
+source fix adds the missing following-space match and a shell-behavior
+regression test; it preserves the strict final search pass requirement.
+This fix was made **after** the signed image build, so neither QEMU result
+contains the corrected marker. A future signed build must include the new
+source before it is considered for installation.
+
 ## Megrez temporary desktop
 
 The board boot ID was `c6846443-9d90-4ff5-854e-5c4132fcfbbc`; the selected
