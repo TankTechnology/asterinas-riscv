@@ -62,7 +62,66 @@ out. The [structured result](iproute2-result.json) and
 The C `route_dump.c` regression was compiled into the RISC-V initramfs and
 passed 52 checks on Linux; the namespace regression ran inside Asterinas.
 Targeted Rust formatting with edition 2024 and `git diff --check` passed.
-No physical-board kernel was replaced for this test.
+
+## Physical-board canary
+
+The preceding Asterinas desktop boot was software-rebooted through a fresh
+firmware epoch, and RockOS SSH recovered with boot ID
+`c523d5be-e98c-4394-b700-1a37bdf5bf08`. RockOS remained the default
+entry. `/boot` had no space available to an unprivileged user. An old
+15,483,184-byte Image not referenced by any extlinux menu was moved intact
+to `/home/debian/asterinas-boot-archive/` on the RockOS root partition;
+its SHA-256 before and after was
+`62ed08fec13656978fea996e5a9508f10fd36a77e7534737f5844c844f7638a2`.
+The existing working Asterinas kernel and Stage1 were retained. See the
+[recovery](board-rockos-recovery.json) and [archive](board-boot-archive.json)
+records.
+
+The new Image was installed as `/boot/asterinas-route-052656e9b12c.booti`
+with the same SHA-256 as the QEMU Image above. The independent
+[`board-menu.conf.gz`](board-menu.conf.gz) (SHA-256 of the uncompressed menu),
+`9ba5c7d433766b6643f3319aff8e8e1b0c1146ef5b513f5f35073c08976e4dd3`,
+changes only its Desktop kernel path; it retains the corrected Stage1
+`cfec77d41d68dfcb67228dfa6791d9cea25227c427ee9943ba5f44d6bd269cd1`,
+the static `10.100.19.200/21` profile, the opt-in root debug console, the
+420-second recovery timer, and RockOS as default. Both installed files were
+read back and hash-checked before boot. See [installation](board-install.json).
+
+The host selected this menu over
+`/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0`.
+The new Asterinas boot ID was `991075a6-1edf-4b2a-be49-e7dcb996552a`.
+Fresh nonce-framed responses and a serial close/reopen proved UID 0, PID 1
+`systemd`, root `/dev/mmcblk0p2:ext2`, and the same boot ID. Firefox became
+visible, the readiness service completed without a manual start, and the
+watchdog read `0`. See [desktop summary](board-desktop.json) and
+[serial transcript](board-desktop-serial.log.gz).
+
+On the board, bounded `ip -4 route show` returned zero and reported:
+
+```text
+default via 10.100.16.1 dev eth0
+10.100.16.0/21 dev eth0 proto kernel scope link src 10.100.19.200
+```
+
+The default-route filter returned zero. The unsupported local-table query
+returned status 2 promptly; IPv6 main-table and `ip -brief addr` queries
+returned zero. An initial host parser accidentally matched the echoed shell
+command; the raw nonce-framed output was re-parsed at its own result lines.
+The [structured route result](board-route.json) and
+[raw serial log](board-route-serial.log.gz) retain that evidence.
+
+Inside Firefox's network namespace, `ip -4 route show` also returned zero.
+Python fetched the host-served HTML page and 646-byte WebM file with HTTP 200;
+the [guest result](board-browser-http.json) and
+[host server log](board-http-server.log) record both requests from
+`10.100.19.200`. This verifies LAN reachability after changing the kernel,
+not playback on this particular boot. After the HTTP check, two independently
+reopened serial connections again proved UID 0 and the same boot ID, active
+readiness and Firefox services, watchdog `0`, and `eth0` at
+`10.100.19.200/21`. See [handoff](board-handoff.json). The board was left on
+this Asterinas canary with serial access closed; a separate persistence reboot
+of this new route-dump canary has not been performed. No credentials are in
+the evidence.
 
 This change reports configured IPv4 main-table connected and default routes.
 It does not add route modification, other tables, single-destination lookup,
