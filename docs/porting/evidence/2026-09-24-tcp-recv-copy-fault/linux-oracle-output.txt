@@ -1,0 +1,16 @@
+Linux 6.5.0-15-generic x86_64 GNU/Linux
+recvmsg-split-three: payload=3 request=3 valid=1 ret=-1 errno=14 queued=3->3 first=x
+recvmsg-split-two: payload=2 request=2 valid=1 ret=-1 errno=14 queued=2->2 first=x
+recvmsg-split-three-short: payload=1 request=3 valid=1 ret=1 errno=0 queued=1->0 first=x
+read-cross: payload=5000 request=8192 valid=4096 ret=-1 errno=14 queued=5000->5000 first=x
+recvfrom-cross: payload=5000 request=8192 valid=4096 ret=-1 errno=14 queued=5000->5000 first=x
+recvmsg-single-cross: payload=5000 request=8192 valid=4096 ret=-1 errno=14 queued=5000->5000 first=x
+recvmsg-split-cross: payload=5000 request=8192 valid=4096 ret=-1 errno=14 queued=5000->5000 first=x
+read-short: payload=1 request=8192 valid=4096 ret=1 errno=0 queued=1->0 first=x
+recvfrom-short: payload=1 request=8192 valid=4096 ret=1 errno=0 queued=1->0 first=x
+recvmsg-single-short: payload=1 request=8192 valid=4096 ret=1 errno=0 queued=1->0 first=x
+recvmsg-split-short: payload=1 request=8192 valid=4096 ret=1 errno=0 queued=1->0 first=x
+read-exact: payload=4096 request=8192 valid=4096 ret=4096 errno=0 queued=4096->0 first=x
+recvfrom-exact: payload=4096 request=8192 valid=4096 ret=4096 errno=0 queued=4096->0 first=x
+recvmsg-single-exact: payload=4096 request=8192 valid=4096 ret=4096 errno=0 queued=4096->0 first=x
+recvmsg-split-exact: payload=4096 request=8192 valid=4096 ret=4096 errno=0 queued=4096->0 first=x

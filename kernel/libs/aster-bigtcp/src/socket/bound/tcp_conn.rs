@@ -512,9 +512,10 @@ impl<E: Ext> TcpConnection<E> {
                         recv_bytes = current_recv_bytes;
                         (current_recv_bytes, Ok(()))
                     }
-                    Err((err, current_recv_bytes)) => {
-                        recv_bytes = current_recv_bytes;
-                        (current_recv_bytes, Err(err))
+                    Err((err, _)) => {
+                        // A failed user copy must not consume the TCP bytes it partly copied.
+                        // The caller may retry the entire range after fixing the buffer.
+                        (0, Err(err))
                     }
                 }
             };
