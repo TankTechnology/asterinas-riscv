@@ -461,6 +461,11 @@ class BoardSession:
         os.write(self.fd, b"\r")
         time.sleep(0.2)
 
+    def interrupt(self) -> None:
+        """Wakes U-Boot without repeating a previous `booti` command."""
+
+        os.write(self.fd, b"\x03")
+
     def command(
         self, command: str, expect: str | None = None, timeout: float = 15
     ) -> str:
@@ -1198,9 +1203,9 @@ def main(argv: list[str]) -> int:
         final_marker=FINAL_MILESTONE_MARKERS[args.final_profile],
     )
     try:
-        # A board already stopped at U-Boot is silent after the serial port is
-        # reopened. Wake the prompt before waiting for evidence from this session.
-        session.send("")
+        # An empty command repeats the previous U-Boot command, which may be
+        # `booti`. Ctrl-C requests a prompt without repeating boot history.
+        session.interrupt()
         boot = session.wait_for_uboot_prompt(timeout=args.uboot_timeout)
         gate = GATE_PATTERN.search(boot)
         print(f"U-Boot: {gate.group(1) if gate else 'unknown'}")
