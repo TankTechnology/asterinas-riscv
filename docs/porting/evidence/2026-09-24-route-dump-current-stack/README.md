@@ -118,10 +118,35 @@ the [guest result](board-browser-http.json) and
 not playback on this particular boot. After the HTTP check, two independently
 reopened serial connections again proved UID 0 and the same boot ID, active
 readiness and Firefox services, watchdog `0`, and `eth0` at
-`10.100.19.200/21`. See [handoff](board-handoff.json). The board was left on
-this Asterinas canary with serial access closed; a separate persistence reboot
-of this new route-dump canary has not been performed. No credentials are in
-the evidence.
+`10.100.19.200/21`. See [handoff](board-handoff.json).
+
+The route-dump canary was then software-rebooted through a fresh OpenSBI and
+U-Boot epoch, selecting the same independent menu. The boot ID changed from
+`991075a6-1edf-4b2a-be49-e7dcb996552a` to
+`3b62c322-6ed9-4094-95ad-7d7a1ec93c2c`. Fresh nonce-framed UID-0
+responses proved PID 1 `systemd` and root `/dev/mmcblk0p2:ext2` after the
+reboot and again after closing and reopening the serial connection. Firefox
+returned, readiness and browser services were active, the watchdog read `0`,
+and `eth0` retained `10.100.19.200/21`. A bounded route query again returned
+zero with the same default and connected routes. See the
+[reboot summary](board-reboot.json), [route result](board-reboot-route.json),
+and [serial transcript](board-reboot-serial.log.gz).
+
+On that new boot, the browser fetched a host-served HTML page and a 646-byte
+VP8/WebM file, both with HTTP 200 from `10.100.19.200`. A short Firefox
+Marionette check completed eight media playback loops in 11.6 seconds: the
+media reached `canplay` and `ended` with positive playback time. The Firefox
+process remained alive with the same PID and the watchdog remained `0`.
+See the [playback result](board-reboot-http-video.json),
+[guest serial transcript](board-reboot-video-serial.log.gz), and
+[host HTTP log](board-reboot-http-server.log). This silent, tiny media check
+does not prove visible frame presentation or sustained playback.
+
+After playback, two separately reopened serial connections again proved the
+same boot ID, UID 0, active services, watchdog `0`, the board IP, and a
+successful default-route query. See the [final handoff](board-reboot-handoff.json).
+The board was left on this Asterinas canary with serial access closed, and the
+host HTTP server was stopped. No credentials are in the evidence.
 
 This change reports configured IPv4 main-table connected and default routes.
 It does not add route modification, other tables, single-destination lookup,
