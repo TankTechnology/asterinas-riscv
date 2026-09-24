@@ -1,9 +1,9 @@
 # Firefox online desktop and short Megrez video baseline
 
-Date: 2026-09-25.  This record separates the signed QEMU image from a
-temporary, memory-only desktop experiment on the previously installed Megrez
-system.  The latter does **not** establish that the new image survives a board
-reboot.
+Date: 2026-09-25. This record began with a signed QEMU image and a temporary,
+memory-only desktop experiment on the previously installed Megrez system.
+Later sections document signed-root installation and bounded physical boots;
+the earlier live-overlay experiment alone did not establish reboot behavior.
 
 ## Signed QEMU desktop
 
@@ -383,3 +383,142 @@ optimization. The leading next comparison is a targeted SWGL/YUV or physical
 display-path variant with the same clip and A/B/A gate, after the signed
 desktop root and recovery path are physically qualified. A speculative
 framebuffer cache-policy switch is not justified by these samples.
+
+## Current-main signed root and physical daily-use gate
+
+The current `main` browser-web image was rebuilt with the pinned Firefox 143
+JIT overlay. The 2-GiB ext2 SHA-256 was
+`7710b74f10fd47f9ac5caa0ea570c4b3993bb4fe2d58501e37db6a7e771f678a`;
+the manifest SHA-256 was
+`cd17d518ab113d4b692c7aceec3dd9007caeb6a0d4a44b95120ef017784aa77e`.
+The root contract and `e2fsck -fn` passed. The
+[72.838-second QEMU desktop gate](qemu-current-main-desktop-result.json)
+completed six captures. Visual review of the
+[minimized state](qemu-current-main-minimized.png) found the wallpaper,
+three launchers, and bottom panel.
+
+Before installing it on Megrez, RockOS made a complete 4-GiB backup of
+partition 2 at
+`/home/debian/asterinas/backups/p2-before-browser-web-20260925.img`
+(SHA-256
+`a2ecd0582e66ba209772e316883ae3ddbabc66c2a1d170ef5b037594ea0f8733`).
+The recovery script's checksum and unmounted-partition check passed; no
+restore was needed. The new 2-GiB image was staged on RockOS partition 3,
+checksum-verified there, written to the start of partition 2, and compared
+byte-for-byte with the source. The RockOS-default boot selection and older
+Asterinas menu entry were preserved. One-time U-Boot commands selected the
+ptrace Image SHA-256 `6694c4c7ff5aeb715c5c3acf9a9c2f0f6318eaba7d7848a61b9d88bc63333180`.
+The Stage1 and DTB CRC32 values remained `1f97beff` and `40ed4c65`.
+The host serial device was
+`/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0`.
+
+With the persistent provisioned home, a fresh UID-0 serial check identified
+boot `f693e9b9-0223-455d-8c7d-6221267c25bf`, graphical services, and
+Firefox. The [1920×1080 capture](physical-current-main-desktop.png)
+shows Firefox with the wallpaper, launchers, and panel. Another one-time boot,
+`33baa8e0-c8e5-466f-9fd2-e9037c8f13ce`, retained the same persistent home:
+the [minimized capture](physical-current-main-minimized.png) shows all three
+launchers, wallpaper, and panel, and clicking the Firefox panel item restored
+the window to `Normal`. The earlier old-root intermittent missing-icons result
+did not reproduce in these signed-root captures. A separate `--volatile-home`
+boot covered the pre-provisioned home and produced an empty desktop; that
+is an overlay configuration effect, not evidence of a framebuffer regression.
+
+The isolated physical smoke boot `911b49f8-fb23-407d-b02d-b03ed2c6ca1c`
+ran the [daily-use gate](physical-current-main-daily-use-result.json) once,
+with a 30-second per-phase timeout. The
+[raw capture archive](physical-current-main-daily-use.tar.gz) has SHA-256
+`1d0f6c87200fcde70a353013f8d13d96f1786cccb5f10134c22081970560ee74`.
+All seven functional groups passed: document, storage, execution,
+rendering/media, navigation, download, and contexts. The single run measured
+48.307 seconds from Firefox exec to first window, keyboard next-frame p95
+10 ms, pointer next-frame p95 89 ms, scroll next-frame p95 65 ms, local
+navigation command 156.491 ms, and response-to-DOM 187 ms. Context opening
+took 718.246 ms and was classified `slow` against its 500-ms target; total
+open/select/return/close time was 884.983 ms. These are smoke measurements
+with synthetic input and distinct browser/guest clock domains, not a Linux
+comparison or a twofold speedup claim.
+
+The generic browser-web autogate also ran on the physical image after Baidu
+home, but its Marionette fixture check rejected the board's physical-LAN URL
+because that gate enforces a frozen QEMU-slirp URL. It is not a failed
+physical browser capability. A later invocation in the same boot was rejected
+before any workload because the autogate had already written the unique
+first-window timeline marker. The isolated daily-use boot masked the autogate
+in `/run` before starting `basic.target`, avoiding that collision. A source
+follow-up makes the autogate exit successfully in explicit `basic-only` mode;
+the separately rebuilt and tested image is recorded below. After the final
+bounded boot's safety reboot, a fresh nonce-framed
+serial login proved RockOS UID 0, Linux `6.6.87`, and partition 2 unmounted.
+
+The performance samples keep kernel and user CPU time separate but do not
+attribute kernel PCs. During the smoke workload, Firefox consumed multiple
+hart-seconds over each roughly 2.4-second interval. For example, in the
+172.131–174.668-second guest interval, the main Firefox thread consumed
+1.62 s user + 0.46 s kernel, and `Renderer` consumed 1.15 s user + 0.28 s
+kernel; their run-queue waits were 276 ms and 160 ms. This interval overlaps
+several test actions, so it cannot be assigned wholly to context opening.
+No patch has yet been shown to halve a relevant latency or double throughput.
+The video-PC evidence above makes SWGL YUV conversion a concrete user-space
+target. Context opening and its CPU/run-queue interval are a second target for
+a short controlled A/B before changing scheduling, memory, or the display
+driver.
+
+## Basic-only autogate fix and signed-root repeat
+
+The physical-LAN fixture failure above exposed a startup contract mismatch:
+the `ASTERINAS_BROWSER_WEB_BASIC_ONLY=1` setting disabled Firefox's background
+fetchers but did not stop the QEMU-specific browser-web evidence service.
+The evidence script now emits `DEBIAN_BROWSER_WEB_SKIP reason=basic-only` and
+exits successfully before network or fixture validation in that explicit
+mode. Its normal mode still runs the full checks. A shell-behavior regression
+test first failed against the old script, then passed with the guard; all 88
+browser-web unit tests passed.
+
+The corrected, signed Firefox 143 root has ext2 SHA-256
+`d4f4e88fb20a8938e7270f4ceaf9c79855ba3d038acbd6f1030fe269dfca9bd4`,
+manifest SHA-256
+`c6afd5b3c0bda56a71b8ade1bd085f49a5f607ea3aebdcb66403d84dda378771`,
+and the same package-lock SHA-256
+`aa92c0471dbd9c08b3adfce97235f78dc625054296fe37adce5afa0a77ce9966`.
+Its root contract and `e2fsck -fn` passed; `debugfs` confirmed the installed
+evidence script contains the guard. The
+[73.124-second QEMU desktop gate](qemu-basic-only-desktop-result.json)
+completed all six captures; the visually inspected
+[minimized frame](qemu-basic-only-minimized.png) retains the wallpaper,
+launchers, and panel. This QEMU boot did not set `basic-only`, so its normal
+browser evidence path remained enabled.
+
+RockOS staged this exact 2-GiB image and verified its SHA-256. The install
+script rechecked the original 4-GiB backup and unmounted partition 2, then
+reported `INSTALL_PASS` after a byte-for-byte readback of the written image.
+The old menu/kernel and RockOS default stayed in place. A one-time boot of
+the same ptrace Image, Stage1, and DTB entered Asterinas with boot ID
+`52199f0b-0ba0-4809-8ba9-74e636f20473`; a fresh nonce-framed serial
+command proved UID 0 and ext2 root. With the persistent home and full
+physical network settings, the `basic-only` autogate service finished with
+`Result=success`, `ExecMainStatus=0`, while Firefox stayed active. A manual
+restart of only that evidence service gave the same status. The first-window
+timeline marker was still absent before the separate daily-use gate, and no
+full-gate diagnostic log appeared.
+
+The [physical daily-use repeat](physical-basic-only-daily-use-result.json)
+passed all seven functional groups once. The
+[raw archive](physical-basic-only-daily-use.tar.gz) has SHA-256
+`7108c92d35d236a2a8c80d75432a4350866139e46502a91aa25f35650c42f3c3`;
+all six declared artifact hashes and sizes verified after upload. The run
+measured 68.335 seconds from Firefox exec to first window; keyboard and
+pointer next-frame p95 were 9 and 49 ms, and scroll next-frame p95 was
+27 ms. Local navigation command time was 142.8 ms and response-to-DOM was
+246 ms. Context opening took 1,335.569 ms, again `slow`; total context
+open/select/return/close time was 1,664.064 ms. These values differ
+substantially from the preceding isolated smoke boot and should be treated as
+short-run variability, not an A/B speedup or regression attributed to the
+basic-only guard. The physical
+[minimized screenshot](physical-basic-only-minimized.png) shows the persistent
+wallpaper, three launchers, and bottom panel. Clicking its Firefox taskbar
+item restored the browser while the service remained active.
+After the bounded reboot, a fresh serial login reached RockOS root on Linux
+`6.6.87`; partition 2 was again unmounted and the RockOS default remained
+selected. The console was not logged continuously through the reset, so this
+records recovery rather than attributing the reset to one specific fallback.
