@@ -19,15 +19,18 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
-    def test_netlink_route_netns_gate_requires_both_namespace_cases(self) -> None:
+    def test_netlink_route_netns_gate_requires_lookup_and_namespace_cases(self) -> None:
         route = "netlink route socket namespace regression passed."
+        lookup = "IPv4 route lookup regression passed."
         uevent = "netlink uevent port namespace regression passed."
-        validate_transcript(f"{route}\n{uevent}\n", mode="netlink-route-netns")
+        validate_transcript(f"{route}\n{lookup}\n{uevent}\n", mode="netlink-route-netns")
         for transcript in (
             f"{route}\n",
             f"{uevent}\n",
-            f"{route}\n{route}\n{uevent}\n",
-            f"{route}\n{uevent}\nKernel panic - not syncing\n",
+            f"{route}\n{uevent}\n",
+            f"{route}\n{lookup}\n",
+            f"{route}\n{route}\n{lookup}\n{uevent}\n",
+            f"{route}\n{lookup}\n{uevent}\nKernel panic - not syncing\n",
         ):
             with self.subTest(transcript=transcript):
                 with self.assertRaises(ValidationError):
