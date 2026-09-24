@@ -120,6 +120,35 @@ it does not explain every observed navigation stall or establish a kernel
 performance improvement.  The repository documents an opt-in, hash-pinned
 Firefox 143 JIT root build for this reason.
 
+## Signed Firefox 143 JIT QEMU follow-up
+
+A second `browser-web` image was built with the documented, hash-pinned
+Firefox 143.0.3 JIT overlay. Its ext2 SHA-256 is
+`48a01cbccbad28785595abeea32f5cf3cc6f54a213f7d841eff35d029aecb15d`;
+the schema-seven manifest SHA-256 is
+`92b7b9d82ab809f07eb890d16673c8ce09a1c0edc72eb7b36cf67e9f077b9ce0`.
+The root contract verified locally. The image still records Debian
+`firefox-esr` in its package lock because the opt-in JIT package is a
+separately hashed overlay; its manifest records the overlay marker
+`93bc24c92f47df6abccaa280bd2b345c4b52f0da60e4ac6d638fdcedec806c21`.
+It used the same Sv39/SMP=4 kernel Image as the ESR run. This is a browser
+build comparison, not a kernel A/B.
+
+The [short QEMU desktop run](qemu-jit-desktop-result.json) completed in
+76.437 seconds. The visually inspected [minimized capture](qemu-jit-minimized.png)
+shows the wallpaper, all three desktop launchers, and the bottom taskbar.
+The full [browser run](qemu-jit-browser-result.json) passed the owned fixture
+home, its JavaScript/WebAssembly capability check, fixture search and download,
+Bilibili home/detail, and actual Bilibili video playback. The decisive guest
+[phase excerpt](qemu-jit-browser-excerpt.log) includes these completions. It
+then failed the required Baidu search outcome at
+`DEBIAN_BROWSER_WEB_FAIL reason=baidu-search-not-pass`: the gate had accepted
+its separate `external-captcha` outcome before the subsequent strict
+`baidu_outcome=pass` check, and Firefox logged Baidu challenge-site WebGL
+fingerprinting warnings. The run does **not** qualify as a seven-group gate
+pass. The external search block is distinct from the earlier ESR fixture
+failure; the controlled and Bilibili paths now have positive QEMU evidence.
+
 ## Megrez temporary desktop
 
 The board boot ID was `c6846443-9d90-4ff5-854e-5c4132fcfbbc`; the selected
@@ -171,6 +200,19 @@ different boots and do not qualify an A/B speedup or a no-regression claim.
 The size sensitivity points to video presentation work as a priority for
 function-level profiling; it does not by itself isolate decode, scaling,
 compositing, X11 copy, scanout, or a kernel cost.
+
+One additional 10-second full-size run on the same older physical boot
+[sampled the whole Firefox process tree](physical-video-cpu-split.json), not
+only its parent. It ended with 112 dropped frames out of 301 reported frames,
+consistent with the previous full-size range. At `CLK_TCK=100`, the Firefox
+parent consumed 19.32 s user + 4.89 s system; its RDD media process consumed
+6.76 s user + 2.32 s system; Web Content consumed 1.57 s user + 1.44 s system;
+Xorg consumed 0.64 s user + 0.34 s system. This identifies parent and RDD
+threads as the main CPU consumers during this clip. The sums are CPU time
+across four harts, not elapsed latency or a decomposition of kernel functions.
+Sampling process counters does not identify a specific copy, compositor,
+decoder, syscall, or kernel bottleneck; a function-level profile is still
+needed before selecting a performance patch.
 
 The new Sv39 kernel and signed root were not installed on Megrez for this
 record.  Reboot persistence, the seven-group physical browser gate, the
