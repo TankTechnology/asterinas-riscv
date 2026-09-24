@@ -672,6 +672,29 @@ python3 tools/riscv/debian/rootfs/firefox_startup_profile.py \
   --boot-timeout 360
 ```
 
+For the online desktop shell, run the short graphical QEMU capture with the
+same frozen inputs. It waits for X, PCManFM, LXPanel, and Firefox's first
+window; then captures Firefox open, minimized, restored, the Files and
+Terminal launcher clicks, and a taskbar switch back to Firefox. The six PPMs
+and serial log are retained in a private output directory for visual review.
+A successful process or a changed
+frame alone does not establish that the intended application window appeared;
+inspect the captures before recording desktop acceptance.
+
+```bash
+python3 tools/riscv/debian/rootfs/browser_web_desktop_shell_qemu_gate.py \
+  --kernel /path/to/kernel.Image \
+  --uboot /path/to/u-boot \
+  --dtb /path/to/qemu-virt.dtb \
+  --stage1-initramfs /path/to/initramfs.cpio \
+  --root-image /path/to/debian-root.ext2 \
+  --root-manifest /path/to/rootfs-manifest.json \
+  --packages-lock /path/to/packages.lock \
+  --package-checksums /path/to/package-checksums \
+  --output-directory /path/to/private-desktop-capture \
+  --boot-timeout 360
+```
+
 追加 `--firefox-process-diagnostic` 可在 Firefox exec 后启用有界的 `ps` 和
 `/proc` 快照；它会增加少量串口扰动，只用于定位主进程/子进程状态。若要把
 高频 epoll 调用归因到具体 caller/fd，可再追加

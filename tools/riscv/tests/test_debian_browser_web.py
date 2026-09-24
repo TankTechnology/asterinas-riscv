@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest import mock
 import zlib
 
+from tools.riscv.debian.rootfs import browser_web_desktop_shell_qemu_gate as shell_gate
 from tools.riscv.debian.rootfs import browser_web_marionette_gate as web_gate
 from tools.riscv.debian.rootfs import browser_web_qemu_gate as web_qemu_gate
 from tools.riscv.debian.rootfs.browser_m5_qemu_gate import BROWSER_M5_MILESTONES
@@ -437,6 +438,23 @@ def proxy_web_evidence() -> dict[str, bytes]:
 
 
 class BrowserWebContractTests(unittest.TestCase):
+    def test_desktop_shell_capture_adds_one_private_qmp_socket(self) -> None:
+        monitor = Path("/tmp/private-qemu/monitor.sock")
+        with mock.patch.object(
+            BrowserWebQemuOperations, "_qemu_argv", return_value=("qemu",)
+        ):
+            argv = shell_gate.DesktopShellQemuOperations._qemu_argv(
+                monitor_socket=monitor
+            )
+        self.assertEqual(
+            argv,
+            (
+                "qemu",
+                "-qmp",
+                "unix:/tmp/private-qemu/desktop-shell-qmp.sock,server=on,wait=off",
+            ),
+        )
+
     @staticmethod
     def _framebuffer_metadata(
         *, width: int = 2, height: int = 2, stride: int = 12
@@ -1043,6 +1061,14 @@ class BrowserWebContractTests(unittest.TestCase):
 
     def test_browser_web_runtime_digest_changes_with_every_gate_input(self) -> None:
         inputs = (
+            "desktop_m5_session.sh",
+            "desktop_wallpaper.svg",
+            "desktop_pcmanfm.conf",
+            "desktop_online_lxpanel.conf",
+            "asterinas_firefox.desktop",
+            "asterinas-files.desktop",
+            "asterinas-terminal.desktop",
+            "browser_web_open_firefox.sh",
             "desktop_m5_network_evidence.sh",
             "desktop_m5_network_gate.py",
             "browser_web_firefox.sh",
@@ -1758,6 +1784,7 @@ class BrowserWebContractTests(unittest.TestCase):
             '--root="$stage" update --usr',
             'chroot "$stage" /usr/bin/journalctl --update-catalog',
             'chroot "$stage" /usr/bin/fc-cache -f',
+            'run_chroot "$stage" /usr/bin/update-mime-database /usr/share/mime',
             ': >"$stage/etc/.updated"',
             ': >"$stage/var/.updated"',
         ):
@@ -1775,6 +1802,7 @@ class BrowserWebContractTests(unittest.TestCase):
             for relative in (
                 "etc/systemd/system",
                 "usr/share/asterinas",
+                "usr/share/mime",
                 "usr/lib/udev",
                 "usr/lib/systemd/system",
                 "var/lib/systemd/catalog",
@@ -1809,6 +1837,12 @@ class BrowserWebContractTests(unittest.TestCase):
             (root / "usr/lib/udev/hwdb.bin").write_bytes(b"KSLPHHRH" + b"\0" * 24)
             (root / "var/lib/systemd/catalog/database").write_bytes(
                 b"RHHHKSLP" + b"\0" * 24
+            )
+            (root / "usr/share/mime/mime.cache").write_bytes(
+                b"\0\x01\0\x02" + b"\0" * 32
+            )
+            (root / "usr/share/mime/globs2").write_text(
+                "50:application/x-desktop:*.desktop\n50:image/svg+xml:*.svg\n"
             )
             font_directory = root / "usr/share/fonts/fixture"
             font_directory.mkdir(parents=True)
@@ -1850,6 +1884,26 @@ class BrowserWebContractTests(unittest.TestCase):
             os.utime(root / "etc/ld.so.cache", ns=(100, 100))
             with mock.patch.object(cache_check, "EXPECTED_OWNER_UID", os.getuid()):
                 self.assertIn("ldconfig=riscv64", cache_check.check_cache_profile(root))
+                mime_cache = root / "usr/share/mime/mime.cache"
+                mime_cache.chmod(0o600)
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "readable"):
+                    cache_check.check_cache_profile(root)
+                mime_cache.chmod(0o644)
+                mime_cache.unlink()
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "mime.cache"):
+                    cache_check.check_cache_profile(root)
+                mime_cache.write_bytes(b"\0\x01\0\x02" + b"\0" * 32)
+                mime_cache.write_bytes(b"invalid-cache")
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "MIME"):
+                    cache_check.check_cache_profile(root)
+                mime_cache.write_bytes(b"\0\x01\0\x02" + b"\0" * 32)
+                mime_globs = root / "usr/share/mime/globs2"
+                mime_globs.write_text("50:image/svg+xml:*.svg\n")
+                with self.assertRaisesRegex(cache_check.CacheCheckError, "desktop"):
+                    cache_check.check_cache_profile(root)
+                mime_globs.write_text(
+                    "50:application/x-desktop:*.desktop\n50:image/svg+xml:*.svg\n"
+                )
                 font_cache = root / "var/cache/fontconfig/fixture.cache-9"
                 font_cache.chmod(0o600)
                 with self.assertRaisesRegex(cache_check.CacheCheckError, "fontconfig"):
