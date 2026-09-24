@@ -602,3 +602,41 @@ root on `/dev/mmcblk1p3`, unmounted Asterinas partition 2, and unchanged
 by the menu and removed from `/boot` after recovery; its host copy and SHA-256
 remain in the experiment record. This establishes recovery for this boot,
 not persistent Asterinas root-console access after an Asterinas menu reboot.
+
+## Current desktop menu candidate, not promoted
+
+The installed `/boot/extlinux/asterinas.conf` still selects the older
+`asterinas-485b9079c204.booti` kernel and `stage1-d62ab8325e03.cpio` for
+Desktop, with `--volatile-home`. Its SHA-256 is
+`02280720efe7a1ad0ac084cdc20429406631e12d2e16f05638544bab0883fb26`.
+The RockOS vendor `/boot/extlinux/extlinux.conf` remains SHA-256
+`eb5f39a6e2db71ccc93ae005c488fd9f7ef353e75426e5a51e8923a9cbf2ebc5`
+and `default l0`.
+
+The menu builder now accepts the physically tested persistent-home
+`--debug-console=isolated-root` mode. A [candidate manifest](megrez-current-desktop-menu-manifest.json)
+and [selector](megrez-current-desktop-menu.conf) were prepared from the exact
+RockOS vendor file, current ptrace kernel, existing Basic/Probe Stage1,
+prepared board DTB, and the repeatable daily-use Stage1. The candidate
+selector SHA-256 is
+`5b2bd5c2378b164ff4028d3211b1c8f4f7cb74db1c7e94689bdda52d8ce37f13`.
+RockOS verified the two new immutable files and the canary selector at
+`/boot/extlinux/asterinas-menu-5b2bd5c2378b.conf`; the publisher reported
+`ASTERINAS_MENU_CANARY_READY`. The active selector was verified unchanged
+afterwards, and partition 2 remained unmounted.
+
+To create space on the nearly full boot partition, the unreferenced
+`asterinas-790ab694-34bc1cc0.Image` was copied byte-for-byte to
+`/home/debian/asterinas/backups/boot-archive-20260925/` on RockOS, verified
+with SHA-256
+`f333402e9102e9094cead70cee6ed59e161fb0d226bff461e1a66cc1fca73607`,
+and only then removed from `/boot`. The candidate added about 7.2 MB; the
+boot filesystem still reports zero non-root available blocks, with 13,656
+1-KiB blocks free for root at the last check.
+
+The canary has **not** passed the menu's per-identity physical cycle gate and
+has **not** replaced `/boot/extlinux/asterinas.conf`. Its unbounded Desktop
+entry has no automatic reboot fallback, so the earlier bounded one-time
+boots do not establish recovery from a hard hang in that menu entry. The
+repository's promotion gate still requires three cycles each for RockOS,
+fallback, Basic, and Probe, plus two Desktop cycles for this exact selector.

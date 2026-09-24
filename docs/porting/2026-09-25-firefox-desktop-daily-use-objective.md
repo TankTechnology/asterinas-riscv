@@ -59,6 +59,13 @@ outlier. It narrows the investigation but does not qualify a speedup or a
 kernel function hotspot. The [repeatability and context evidence](evidence/2026-09-25-firefox-online-desktop/README.md#persistent-home-repeatability-and-context-open-cpu-diagnostic)
 records the artifact hashes and RockOS recovery.
 
+The next persistent-home, isolated-console Desktop menu generation has been
+prepared and staged as an immutable canary. Its active selector is still the
+older kernel/Stage1 with volatile HOME. Promotion remains contingent on the
+same-menu physical cycle gate and a credible recovery path for an unbounded
+Desktop boot; the [candidate record](evidence/2026-09-25-firefox-online-desktop/README.md#current-desktop-menu-candidate-not-promoted)
+separates preparation from deployment.
+
 ## Earlier checkpoint before signed-root installation
 
 The online shell integration and a vDSO writer lock-order stability fix are
