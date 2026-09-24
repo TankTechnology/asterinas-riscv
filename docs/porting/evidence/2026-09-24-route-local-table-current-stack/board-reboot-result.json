@@ -1,25 +1,20 @@
 {
   "status": "pass",
   "physical": true,
-  "branch": "codex/route-local-table-current-stack",
-  "commit": "9690d59f2d09e374bea036a1a26d79dc215e5e86",
-  "image": {
-    "path": "/boot/asterinas-route-all-3e3707b7e59f.booti",
-    "size": 6071408,
-    "sha256": "3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e"
-  },
-  "menu": {
+  "previous_boot_id": "ce042e30-d629-4421-82e6-342ce1e139d8",
+  "new_boot_id": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384",
+  "serial_device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
+  "selected_menu": {
     "path": "/boot/extlinux/asterinas-route-all-canary-20260924.conf",
     "sha256": "3c5ab5c39edb3f39308a0f0dbd730aee4a1023d071daca0ae0496f36ef4ae600",
     "default": "RockOS"
   },
-  "stage1": {
-    "path": "/boot/stage1-cfec77d41d68.cpio",
-    "sha256": "cfec77d41d68dfcb67228dfa6791d9cea25227c427ee9943ba5f44d6bd269cd1"
+  "selected_image": {
+    "path": "/boot/asterinas-route-all-3e3707b7e59f.booti",
+    "size": 6071408,
+    "sha256": "3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e"
   },
-  "serial_device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
-  "rockos_boot_id": "f2602d5d-3c82-4c21-8d5f-fac05acfcc43",
-  "asterinas_boot_id": "ce042e30-d629-4421-82e6-342ce1e139d8",
+  "selection": "manual U-Boot reselect of the same immutable Desktop entry after authenticated Asterinas software reboot; RockOS remains default",
   "routes": {
     "main": [
       "default via 10.100.16.1 dev eth0 ",
@@ -44,46 +39,36 @@
     "get": [
       "10.100.16.1 dev eth0 src 10.100.19.200 ",
       "    cache"
-    ],
-    "default": [
-      "default via 10.100.16.1 dev eth0"
     ]
   },
-  "firefox_media": {
-    "url": "http://10.100.19.216:17894/index.html",
-    "current_time_seconds": 1,
-    "duration_seconds": 1,
-    "ended": true,
-    "decode_error": null,
-    "total_frames": 5,
-    "dropped_frames": 0
+  "firefox_network": {
+    "table_all_exit_status": 0,
+    "host_webm_http_status": 200,
+    "host_webm_bytes": 646
   },
+  "desktop_ready": "active",
+  "browser_service": "active",
+  "software_reboot_watchdog": 0,
   "handoff": [
     {
       "attempt": 1,
       "passed": true,
-      "nonce": "4b8d6472a1349a71",
+      "nonce": "f84738f652e38273",
       "status": 0,
       "uid": 0,
-      "boot_id": "ce042e30-d629-4421-82e6-342ce1e139d8"
+      "boot_id": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384"
     },
     {
       "attempt": 2,
       "passed": true,
-      "nonce": "91de8837b1d97f66",
+      "nonce": "e129294d8b684d0c",
       "status": 0,
       "uid": 0,
-      "boot_id": "ce042e30-d629-4421-82e6-342ce1e139d8"
+      "boot_id": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384"
     }
   ],
-  "recovery_state": {
-    "rockos_default_retained": true,
-    "old_image_and_menu_retained": true,
-    "desktop_ready_active": true,
-    "browser_service_active": true,
-    "software_reboot_watchdog": 0,
-    "serial_closed": true,
-    "actual_reboot_persistence_of_new_entry": "validated by controlled reboot and reselect; see board-reboot-result.json"
-  },
-  "reboot_followup": "board-reboot-result.json"
+  "limitations": [
+    "This proves the installed Image and independent menu survived reboot and worked when reselected; it does not make Asterinas the default boot entry.",
+    "No second full native LMBench ALL run or physical performance score was collected."
+  ]
 }
