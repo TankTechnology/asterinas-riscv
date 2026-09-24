@@ -223,7 +223,9 @@ macro_rules! vdso_data_field_offset {
 ///
 /// See [the module-level documentations](self) for more about the vDSO mechanism.
 struct Vdso {
-    /// A `VdsoData` instance.
+    /// A `VdsoData` instance. Writers must disable local IRQs while holding
+    /// this lock: timer softirqs acquire the coarse clock lock before this one.
+    /// An interrupt of a writer holding this lock would invert that order.
     data: SpinLock<VdsoData>,
     /// A VMO that contains the entire vDSO, including the library text and the vDSO data.
     vmo: Arc<Vmo>,
@@ -293,7 +295,7 @@ impl Vdso {
     }
 
     fn update_high_res_instant(&self, instant: Instant, instant_cycles: u64) {
-        let mut data = self.data.lock();
+        let mut data = self.data.disable_irq().lock();
 
         data.update_high_res_instant(instant, instant_cycles);
 
@@ -312,7 +314,7 @@ impl Vdso {
     }
 
     fn update_coarse_res_time(&self, real_time: Duration, monotonic_time: Duration) {
-        let mut data = self.data.lock();
+        let mut data = self.data.disable_irq().lock();
 
         data.update_coarse_res_time(real_time, monotonic_time);
 
@@ -400,7 +402,7 @@ pub(crate) fn disable_clock_fast_path_for_time_namespaces() {
     let Some(vdso) = VDSO.get() else {
         return;
     };
-    let mut data = vdso.data.lock();
+    let mut data = vdso.data.disable_irq().lock();
     vdso.begin_update_data_frame(&mut data);
     data.set_clock_mode(VdsoClockMode::None);
     vdso.data_frame
