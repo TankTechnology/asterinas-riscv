@@ -101,3 +101,68 @@ The [handoff summary](physical-canvas-handoff.json) and its
 The serial descriptor and temporary host fixture server were closed. The board
 was left on the working Asterinas desktop with the root debug console accessible;
 an unattended reboot still defaults to RockOS. No board boot files were changed.
+
+## Video-path isolation and mitigation attempt
+
+A later short follow-up used the **same boot, Image, Firefox and Xorg processes**.
+The original [720p VP8 clip](clip720.webm) has SHA-256
+`1aa863f2a73698241c9daa016c7bfcfa0f94b038ca9f0b29f296c3ca0b65eb95`.
+The [video-to-Canvas page](media-path-perf.html) kept the video element visible
+at 320×180 and drew each `requestVideoFrameCallback` frame to Canvas. The
+[samples](physical-media-path-v3-result.json), [guest](physical-media-path-v3-guest.py)
+and [host](physical-media-path-v3-host.py) probes, and
+[serial capture](physical-media-path-v3-serial.log.gz) preserve the exact run.
+
+| Mode | Output | Dropped / 300 | Video-frame callbacks | `drawImage(video)` p50 / p95 |
+| --- | --- | ---: | ---: | ---: |
+| Direct video | 320×180 | 6 | 240 | — |
+| Video + Canvas | 1280×720 | 236 | 53 | 86 / 152 ms |
+| Video + Canvas | 640×360 | 242 | 55 | 90 / 134 ms |
+
+This identifies a costly **synchronous video-to-Canvas transfer** in this
+Firefox build; it is not proof that direct `<video>` playback takes the same
+internal path. An earlier pilot with a 1×1 video element was discarded because
+that element itself yielded only about 60 callbacks and over 226 dropped frames
+regardless of Canvas size. The corrected probe retained a normally visible
+320×180 video control. Callback counts are not interchangeable with Firefox's
+`getVideoPlaybackQuality().droppedVideoFrames` counter.
+
+For direct video, [CSS scaling](video-transform-perf.html) tested a 640×360
+layout stretched to the same 1280×720 visible rectangle. In the ABBA
+[result](physical-video-transform-result.json), direct native video dropped
+124 and 134 frames; the stretched variant dropped 143 and 140. Thus merely
+changing layout size did not help. The [guest](physical-video-transform-guest.py),
+[host](physical-video-transform-host.py) and
+[serial log](physical-video-transform-serial.log.gz) retain the experiment.
+
+A [360p VP8 derivative](clip360.webm) was encoded from the original clip with
+`ffmpeg -i clip720.webm -vf scale=640:360 -c:v libvpx -b:v 500k -an`;
+it contains 300 frames at 30 fps and has SHA-256
+`a083aa58898dbabc0f98f3c16208815dd4b4d160a151f4af6f044b314c725c49`.
+At the same 1280×720 visible size, the [source-size ABBA result](physical-video-source-result.json)
+was 143/139 dropped with the original 720p source and 92/96 with the 360p
+source. The derivative also changes VP8 encoding complexity, so this is a
+practical source-size comparison, not a pure pixel-count experiment. The
+[page](video-source-perf.html), [guest](physical-video-source-guest.py),
+[host](physical-video-source-host.py) and
+[serial log](physical-video-source-serial.log.gz) retain the run.
+
+Keeping the original 720p source, the [display-size result](physical-video-size-result.json)
+was 87 and 83 dropped at 960×540, and 18 dropped in one 800×450 run. The
+[guest](physical-video-size-guest.py), [host](physical-video-size-host.py) and
+[serial log](physical-video-size-serial.log.gz) retain these points. Earlier
+640×360 display runs dropped 5–10 frames. A smaller player is the only
+verified immediate mitigation; 800×450 needs repetition before being used as
+a dependable limit. The native 1280×720 workload remains substantially
+impaired. Firefox `Renderer` and `SwComposite` dominate its sampled CPU time,
+while Xorg consumed comparatively little. These data do not establish a kernel
+defect or justify a speculative framebuffer change. No global Firefox or
+website CSS was changed, since that would degrade unrelated pages without
+fixing full-size playback.
+
+The final [handoff record](physical-video-handoff.json) and its
+[first](physical-video-handoff-1.log.gz) and
+[second](physical-video-handoff-2.log.gz) independently reopened the stable
+serial device and proved UID 0, the same boot ID, active desktop/browser
+services and disarmed watchdog. The temporary LAN fixture server was stopped;
+the board was left on Asterinas with working root debug-console access.
