@@ -51,6 +51,7 @@ its original value, `24418932`, after each run.
 This test proves reclamation after a quiescent child namespace closes. The
 existing QEMU gates exercise namespace creation, interface requests, and
 ordinary TCP wakeups, but do not exhaustively cover all teardown races. The
-native LMBench ALL run was not repeated; its previously qualified 109/109
-result was on the earlier kernel and is not a new measurement for this change.
-No physical board was used.
+native LMBench ALL run was repeated on this exact final image: the
+[current-stack qualification](2026-09-24-lmbench-current-stack/README.md)
+records a zero exit status, 109/109 selected measurement groups, and no
+missing groups, errors, or metadata warnings. No physical board was used.
