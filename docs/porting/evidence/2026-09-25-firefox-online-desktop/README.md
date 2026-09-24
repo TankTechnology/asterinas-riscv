@@ -312,3 +312,74 @@ zero failed. The [Sv48 terminal excerpt](ptrace-regset-sv48-qemu-excerpt.log)
 records this distinct run. Its uninstalled Image is 6,082,688 bytes, SHA-256
 `6694c4c7ff5aeb715c5c3acf9a9c2f0f6318eaba7d7848a61b9d88bc63333180`.
 QEMU Sv48 coverage does not establish the board's boot or desktop behavior.
+
+## Megrez ptrace canary and bounded video PC attribution
+
+The Sv48 Image above was copied to RockOS `/boot` under the new name
+`asterinas-ptrace-6694c4c7ff5aeb71.booti`; the old Desktop kernel and
+RockOS-default menu were left intact. A one-time U-Boot `booti` used the
+existing Stage1 `stage1-cfec77d41d68.cpio`, the prepared DTB
+`megrez-465cb129333c.dtb`, and the preceding Desktop boot arguments plus a
+300-second userspace sync-reboot deadline ahead of the 420-second kernel
+fallback. U-Boot checked CRC32 `ab15b580` (new Image), `1f97beff` (Stage1),
+and `40ed4c65` (DTB) before each of two boots. The
+[canary excerpts](physical-ptrace-canary-excerpt.log) show kernel entry, the
+root debug console, `/dev/mmcblk0p2` as ext2, and active graphical/desktop
+services on both boots. The first boot ID was
+`8cf172d1-9498-40b3-94fc-777ff382171e`; the second was
+`afc83897-a872-4d9c-8e6b-985b73dcf83f`. Fresh, nonce-framed serial
+connections verified UID 0 and each boot ID. Firefox remained active after
+the first pilot attach/detach. The first boot later appeared at the U-Boot
+prompt after the 300-second safety deadline; that transition was not logged
+continuously, so its exact reboot cause is not independently proven. The
+second boot confirms the same canary can start after an actual reset. No
+signed new desktop root was installed; both boots used the older board root.
+
+On the first boot, the [bounded PC sampler](../../../../tools/riscv/debian/rootfs/thread_pc_sampler.py)
+read the `Renderer` and `SwComposite` threads with RISC-V
+`PTRACE_GETREGSET(NT_PRSTATUS)`. A three-sample idle pilot returned nonzero
+PCs and left Firefox running. The active run took 40 samples per thread at
+200-ms intervals while the same 300-frame, ten-second, 1280×720 VP8 clip
+played. The [raw PCs](physical-pc-active.jsonl),
+[memory maps](physical-pc-active.maps.gz), and
+[baseline/sample/baseline metrics](physical-video-pc-ab.json) are retained.
+The uncompressed maps file SHA-256 is
+`3977994a89e629f1a1ba81d3f66cfe482c0fc6063b9fe08e6636aa37566ec5f9`;
+the JSONL SHA-256 is
+`ffb727c75c5c1ec373117ebf639719f2931e3cc3f37446c69f9e7bceefe01634`.
+
+| Run | Sampler | Dropped / 300 | Playback wall time |
+| --- | --- | ---: | ---: |
+| Baseline A | off | 112 | 10.287 s |
+| Sample | 40 × 2 thread stops | 116 | 10.211 s |
+| Baseline B | off | 111 | 10.411 s |
+
+The sampler spent 129.1 ms stopping/detaching `Renderer` and 145.5 ms on
+`SwComposite` across the 7.8-second sampling window. These are probe costs,
+not the video's total overhead. The dropped-frame result is within the
+preceding short-run range, but one A/B/A triplet does not prove negligible
+sampling bias or any speedup.
+
+The board's `/usr/lib/firefox/libxul.so` SHA-256 was
+`54076bf72d585b3591aa0edb814fee6a6012c6a9545aca43cd989359da23d1b7`,
+matching the signed-image copy. Its Build ID is
+`1c9f58ed7ccb6730d65e3957f560dc732b577218`, which matches the RISC-V
+`firefox-dbgsym` 143.0.3-1 package at the
+[Debian snapshot binary record](https://snapshot.debian.org/mr/binary/firefox-dbgsym/143.0.3-1/binfiles)
+(archive SHA-1 `9fd945c6bbc6f6ba4e4855580e026dec88f4ef25`). Using each PC's
+`/proc/maps` file offset and `riscv64-linux-gnu-addr2line` against that exact
+debug file gives:
+
+| Thread | `linear_row_yuv<false>` | `linear_blit<true>` | Other `libxul` | `libc` |
+| --- | ---: | ---: | ---: | ---: |
+| `Renderer` | 26 | 4 | 2 | 8 |
+| `SwComposite` | 25 | 3 | 0 | 12 |
+
+Thus 51 of 60 `libxul` samples landed in SWGL's YUV row conversion routine.
+The 20 `libc` PCs were not used to infer active CPU time. This is concrete
+user-space presentation-path evidence for the native-size video problem; it
+does not measure kernel PCs, stack ancestry, or the impact of a candidate
+optimization. The leading next comparison is a targeted SWGL/YUV or physical
+display-path variant with the same clip and A/B/A gate, after the signed
+desktop root and recovery path are physically qualified. A speculative
+framebuffer cache-policy switch is not justified by these samples.

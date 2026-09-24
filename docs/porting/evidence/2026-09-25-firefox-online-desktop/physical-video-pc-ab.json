@@ -1,0 +1,83 @@
+[
+  {
+    "run": "pcbasea",
+    "metric": {
+      "run": "pcbasea",
+      "state": "ended",
+      "reason": "",
+      "displayWidth": 1280,
+      "displayHeight": 720,
+      "sourceWidth": 1280,
+      "sourceHeight": 720,
+      "duration": 10,
+      "currentTime": 10,
+      "elapsedWallMs": 10287,
+      "totalVideoFrames": 300,
+      "droppedVideoFrames": 112,
+      "mozDecodedFrames": 300,
+      "mozParsedFrames": 300,
+      "mozPresentedFrames": 188,
+      "mozPaintedFrames": 185,
+      "readyState": 2,
+      "networkState": 1,
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0"
+    },
+    "cpu_before": "boot_id=8cf172d1-9498-40b3-94fc-777ff382171e\nrenderer 18 68\nsw 3 16",
+    "cpu_after": "boot_id=8cf172d1-9498-40b3-94fc-777ff382171e\nrenderer 888 156\nsw 773 50",
+    "sample_status": null
+  },
+  {
+    "run": "pcsample",
+    "metric": {
+      "run": "pcsample",
+      "state": "ended",
+      "reason": "",
+      "displayWidth": 1280,
+      "displayHeight": 720,
+      "sourceWidth": 1280,
+      "sourceHeight": 720,
+      "duration": 10,
+      "currentTime": 10,
+      "elapsedWallMs": 10211,
+      "totalVideoFrames": 300,
+      "droppedVideoFrames": 116,
+      "mozDecodedFrames": 300,
+      "mozParsedFrames": 300,
+      "mozPresentedFrames": 184,
+      "mozPaintedFrames": 178,
+      "readyState": 2,
+      "networkState": 1,
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0"
+    },
+    "cpu_before": "boot_id=8cf172d1-9498-40b3-94fc-777ff382171e\nrenderer 929 159\nsw 815 52",
+    "cpu_after": "boot_id=8cf172d1-9498-40b3-94fc-777ff382171e\nrenderer 1871 233\nsw 1701 99",
+    "sample_status": "boot_id=8cf172d1-9498-40b3-94fc-777ff382171e\nTHREAD_PC_SAMPLER PASS threads=2 samples=40"
+  },
+  {
+    "run": "pcbaseb",
+    "metric": {
+      "run": "pcbaseb",
+      "state": "ended",
+      "reason": "",
+      "displayWidth": 1280,
+      "displayHeight": 720,
+      "sourceWidth": 1280,
+      "sourceHeight": 720,
+      "duration": 10,
+      "currentTime": 10,
+      "elapsedWallMs": 10411,
+      "totalVideoFrames": 300,
+      "droppedVideoFrames": 111,
+      "mozDecodedFrames": 300,
+      "mozParsedFrames": 300,
+      "mozPresentedFrames": 189,
+      "mozPaintedFrames": 184,
+      "readyState": 2,
+      "networkState": 1,
+      "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0"
+    },
+    "cpu_before": "boot_id=8cf172d1-9498-40b3-94fc-777ff382171e\nrenderer 1907 234\nsw 1736 102",
+    "cpu_after": "boot_id=8cf172d1-9498-40b3-94fc-777ff382171e\nrenderer 2861 314\nsw 2652 146",
+    "sample_status": null
+  }
+]

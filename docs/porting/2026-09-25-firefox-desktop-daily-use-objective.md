@@ -32,27 +32,35 @@ external challenge. The seven-group gate has **not** passed. See the
 [dated evidence](evidence/2026-09-25-firefox-online-desktop/README.md) for
 image identities, raw results, and the corrected captcha classification.
 
-The board still runs its previously installed kernel and root. A temporary
-desktop overlay demonstrated the shell, but minimize/icon behavior varied
-between attempts; no new signed root has been installed or reboot-qualified.
+The board's normal menu still selects its previously installed kernel and
+root. A temporary desktop overlay demonstrated the shell, but minimize/icon
+behavior varied between attempts; no new signed root has been installed or
+reboot-qualified.
 The short native-size VP8 baseline still loses roughly 110–125 of 300 frames.
 One full-size run attributed 9.71 CPU-seconds to Firefox `Renderer` and 7.44
 to `SwComposite` over ten seconds, while Xorg used about 0.9. A smaller
 displayed image lost 10/300 frames and used 7.66 plus 5.77 seconds in those
-threads. The Gecko profiler attempts produced no profile, so function-level
-attribution and a qualified performance optimization remain open.
+threads. The Gecko profiler attempts produced no profile; a qualified
+performance optimization remains open.
 RISC-V `PTRACE_GETREGSET` for `NT_PRSTATUS` has since merged to `main` as
 [PR #177](https://github.com/TankTechnology/asterinas-riscv/pull/177).
 Its 33-check QEMU regression and an x86-64 kernel build passed on the merged
-tree. The physical board still runs the preceding kernel image; a PC profile
-and its sampling-overhead control have not yet been collected.
+tree. A separate Sv48/SMP=4 gate also passed 33/0, then the Sv48 release Image
+completed two one-time physical boots with the preceding board root. The
+RockOS-default menu and old Desktop Image stayed available. A signed desktop
+root has still not been installed or reboot-qualified.
 The [bounded thread-PC sampler](../../tools/riscv/debian/rootfs/thread_pc_sampler.py)
-is now available for that canary. It snapshots `/proc/<pid>/maps`, samples
-named threads through `PTRACE_ATTACH`/`GETREGSET`/`DETACH`, records the time
-spent stopping each thread, and caps the sample count. Its host Linux attach
-and detach integration tests pass; it has not yet run against Firefox on the
-board. It records saved user PCs only, so it cannot by itself identify kernel
-execution or produce a call-stack flamegraph.
+snapshots `/proc/<pid>/maps`, samples named threads through
+`PTRACE_ATTACH`/`GETREGSET`/`DETACH`, records stop time, and caps the sample
+count. Its host Linux integration tests and a physical pilot passed. During a
+short physical VP8 A/B/A gate, native-size playback dropped 112/300 frames
+without sampling, 116/300 with sampling, then 111/300 without sampling. With
+the matching Debian Firefox 143 debug file, 51 of 60 `libxul` user-PC samples
+from `Renderer` and `SwComposite` resolved to SWGL `linear_row_yuv<false>`.
+This points to user-space YUV presentation work; the probe cannot identify
+kernel execution or produce a call-stack flamegraph. The
+[raw evidence and limits](evidence/2026-09-25-firefox-online-desktop/README.md)
+are retained. No performance change or twofold speedup has been established.
 
 ## Earlier baseline and architecture
 
@@ -157,9 +165,10 @@ Keep the shell integration, kernel functionality fixes, performance probes,
 and display/DRM changes in separately reviewable commits or PRs. The next
 functional boundary is a signed-root Megrez boot with persistent shell and
 fresh serial control after reboot; the external Baidu challenge must remain
-separately classified. The next performance boundary is a bounded
-function-level rendering/presentation profile with an overhead control before
-selecting another kernel or display patch. The current `/dev/fb0` mapping and
+separately classified. The next performance boundary is a bounded A/B/A of
+one SWGL/YUV or physical display-path variant against the identified hot
+function, with matching Firefox and clip artifacts. The current `/dev/fb0`
+mapping and
 Megrez's lack of Svpbmt make a blind RISC-V cache-policy change unsafe.
 Preserve the physical board's authenticated recovery path throughout
 experiments and report unsupported observations as such.
