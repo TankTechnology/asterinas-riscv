@@ -177,6 +177,14 @@ Firefox while PCManFM was already running, so launch order alone does not
 explain it.  This live-overlay result must be repeated on a boot of the signed
 image before assigning the defect to Asterinas, Xorg/fbdev, or PCManFM.
 
+A later repeat on the **same old boot and temporary overlay**, after several
+Firefox service restarts, showed a different outcome. Firefox was restored and
+minimized again after the Files and Terminal windows were closed; the
+[new capture](megrez-minimized-retry-icons-visible.png) retained all three
+desktop icons, wallpaper, and bottom panel. The earlier loss is therefore
+intermittent in this setup, not a deterministic minimize failure. Neither
+capture qualifies the signed image's physical behavior or reboot persistence.
+
 ## Bounded video measurement
 
 The [raw run record](physical-video-runs.json) uses the same
@@ -213,6 +221,38 @@ across four harts, not elapsed latency or a decomposition of kernel functions.
 Sampling process counters does not identify a specific copy, compositor,
 decoder, syscall, or kernel bottleneck; a function-level profile is still
 needed before selecting a performance patch.
+
+Two more bounded runs sampled per-thread CPU counters on the same unmodified
+Firefox 143 root: [full-size](physical-video-large-threads.json) and
+[half-size](physical-video-small-threads.json). The source was the same 1280×720
+300-frame VP8 clip; only its displayed size changed. Full-size dropped
+124/300 frames versus 10/300 at 640×360. In the Firefox parent, `Renderer`
+used 9.71 versus 7.66 CPU-seconds, and `SwComposite` 7.44 versus 5.77.
+These two software-graphics threads consumed 17.15 CPU-seconds during the
+full-size run, each approaching a full core over ten seconds. This is a
+stronger reason to investigate the rendering/presentation path than the
+process total alone. Short-lived RDD decode threads appeared after the initial
+thread snapshot and are excluded from these per-thread deltas; the preceding
+whole-process sample remains the valid RDD estimate. The samples do not
+resolve functions or separate user-space rasterization from waits on the
+framebuffer or kernel scheduling.
+
+A temporary, runtime-only Firefox profiler configuration was tested and
+removed. `SIGUSR2` terminated the browser with signal 12 rather than writing
+a profile. A separate run with `MOZ_PROFILER_SHUTDOWN` played the same clip
+(119/300 drops), received a normal `Ctrl+Q`, and exited cleanly, but the
+profile file was absent. The [service-status excerpt](physical-profiler-status.log)
+records the failed signal path, normal exit, absent profile, restored service,
+and removed override. There is no Gecko flamegraph from this experiment.
+
+The current kernel exposes `/dev/fb0` as a direct `IoMem` mapping; it does
+not itself composite Firefox's pixels. On RISC-V its firmware framebuffer
+uses `CachePolicy::Uncacheable`. Changing this to `WriteCombining` without
+hardware qualification is unsafe on Megrez: the board's documented EIC7700
+configuration lacks Svpbmt, so the RISC-V PTE code would silently fall back
+to a cacheable mapping instead of PBMT_NC. A graphics-memory policy change
+requires a board-specific cache/scanout contract and same-clip A/B, while a
+DRM path remains a separate later integration task.
 
 The new Sv39 kernel and signed root were not installed on Megrez for this
 record.  Reboot persistence, the seven-group physical browser gate, the
