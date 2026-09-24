@@ -380,6 +380,10 @@ install -d -m 0700 /run/asterinas-browser-daily-use-profile
 `--firefox-pid`, `--xorg-pid`, and `--evidence-dir` are parser-required.
 Supply `--fixture-index-url` as shown for every operator invocation, rather
 than relying on the fixture URL resolved from the guest environment.
+With a persistent HOME, a prior passing run can leave the test fixture's fixed
+download filename in `Downloads`. Before repeating the gate, it removes that
+file only when its owner, regular-file type, size, and SHA-256 match the known
+fixture. Unexpected content or a symlink fails closed and is retained.
 `--mode` accepts only `smoke` and `profile`.
 When it is omitted, the gate selects `smoke` without `--physical` and `profile`
 with it; their default timeouts are respectively 30 and 120 seconds.
@@ -388,6 +392,14 @@ it does not prove display scanout or force `profile` when `--mode smoke` is
 explicitly selected.
 An optional `--timeout-seconds` must remain positive and no greater than
 120 seconds.
+For a separate attribution run, `--context-cpu-diagnostic` adds an `openCpu`
+object to `browser-context-switch.json`. It brackets only
+`WebDriver:NewWindow` with `/proc` snapshots for the Firefox parent and Xorg,
+recording user/kernel CPU, faults, system CPU and context-switch deltas, plus
+the snapshot-read overhead. It does not include Firefox child processes and
+does not turn wall time or blocking waits into kernel CPU time. Run the normal
+gate again without this flag as the latency control; the diagnostic run alone
+cannot establish a speedup.
 
 The terminal contract is exactly one verdict line:
 
