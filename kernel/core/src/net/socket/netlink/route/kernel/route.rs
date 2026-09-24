@@ -7,7 +7,7 @@ use aster_bigtcp::iface::InterfaceType;
 use super::util::finish_response;
 use crate::{
     net::{
-        net_ns::current_net_ns,
+        net_ns::NetNamespace,
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
             route::message::{RouteAttr, RouteSegment, RouteSegmentBody, RtScope, RtnlSegment},
@@ -22,7 +22,10 @@ const KERNEL_PROTOCOL: u8 = 2;
 const BOOT_PROTOCOL: u8 = 3;
 const UNICAST_ROUTE: u8 = 1;
 
-pub(super) fn do_get_route(request: &RouteSegment) -> Result<Vec<RtnlSegment>> {
+pub(super) fn do_get_route(
+    request: &RouteSegment,
+    net_ns: &NetNamespace,
+) -> Result<Vec<RtnlSegment>> {
     let flags = GetRequestFlags::from_bits_truncate(request.header().flags);
     if !flags.contains(GetRequestFlags::DUMP) {
         return_errno_with_message!(Errno::EOPNOTSUPP, "GETROUTE only supports dump requests");
@@ -62,7 +65,6 @@ pub(super) fn do_get_route(request: &RouteSegment) -> Result<Vec<RtnlSegment>> {
     if body.family == CSocketAddrFamily::AF_UNSPEC as u8
         || body.family == CSocketAddrFamily::AF_INET as u8
     {
-        let net_ns = current_net_ns();
         for iface in net_ns.ifaces() {
             if iface.type_() == InterfaceType::LOOPBACK {
                 continue;

@@ -2,10 +2,12 @@
 
 #define _GNU_SOURCE
 #include <assert.h>
+#include <linux/rtnetlink.h>
 #include <netlink/cache.h>
 #include <netlink/netlink.h>
 #include <netlink/route/addr.h>
 #include <netlink/route/link.h>
+#include <netlink/route/route.h>
 #include <sched.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -66,22 +68,43 @@ static bool has_eth0_ipv4(struct nl_sock *sock)
 	return found;
 }
 
+static bool has_main_ipv4_route(struct nl_sock *sock)
+{
+	struct nl_cache *routes = NULL;
+	assert(rtnl_route_alloc_cache(sock, AF_INET, 0, &routes) == 0);
+	bool found = false;
+	for (struct nl_object *obj = nl_cache_get_first(routes); obj != NULL;
+	     obj = nl_cache_get_next(obj)) {
+		struct rtnl_route *route = (struct rtnl_route *)obj;
+		if (rtnl_route_get_family(route) == AF_INET &&
+		    rtnl_route_get_table(route) == RT_TABLE_MAIN) {
+			found = true;
+			break;
+		}
+	}
+	nl_cache_free(routes);
+	return found;
+}
+
 int main(void)
 {
 	struct nl_sock *old_sock = route_socket();
 	assert(has_link(old_sock, "lo"));
 	assert(has_link(old_sock, "eth0"));
 	assert(has_eth0_ipv4(old_sock));
+	assert(has_main_ipv4_route(old_sock));
 
 	assert(unshare(CLONE_NEWNET) == 0);
 	struct nl_sock *new_sock = route_socket();
 	assert(has_link(new_sock, "lo"));
 	assert(!has_link(new_sock, "eth0"));
 	assert(!has_eth0_ipv4(new_sock));
+	assert(!has_main_ipv4_route(new_sock));
 
 	// The pre-unshare socket must still query its original namespace.
 	assert(has_link(old_sock, "eth0"));
 	assert(has_eth0_ipv4(old_sock));
+	assert(has_main_ipv4_route(old_sock));
 
 	nl_socket_free(new_sock);
 	nl_socket_free(old_sock);
