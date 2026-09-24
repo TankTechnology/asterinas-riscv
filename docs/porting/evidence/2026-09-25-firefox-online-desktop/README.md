@@ -522,3 +522,15 @@ After the bounded reboot, a fresh serial login reached RockOS root on Linux
 `6.6.87`; partition 2 was again unmounted and the RockOS default remained
 selected. The console was not logged continuously through the reset, so this
 records recovery rather than attributing the reset to one specific fallback.
+
+One separate opt-in QEMU [syscall startup profile](qemu-basic-only-syscall-startup-result.json)
+on the corrected signed root reached Firefox's Marionette port in 30.566
+host seconds. The [raw serial log](qemu-basic-only-syscall-startup.log.gz) is
+178,467 bytes and contains 516 synchronous syscall-profile lines, so this run
+is diagnostic rather than a latency comparator. Its last Firefox PID-189
+snapshot recorded `mprotect=1084/52`, `sched_yield=338/16`, and
+`openat=1995/74` (completed calls / cumulative elapsed jiffies); OSTD uses
+1,000 jiffies per second. The much larger `futex=2236/124241` total includes
+scheduled-out waits and cannot be interpreted as kernel CPU time. On this
+short current-root trace, the direct `mprotect` and `sched_yield` bills remain
+too small to justify either as the sole target for a twofold Firefox gain.
