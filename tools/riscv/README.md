@@ -270,6 +270,20 @@ tools/docker/run_dev_container.sh -- python3 tools/riscv/lmbench_native.py \
   package --output target/lmbench-native/runtime.tar.gz
 ```
 
+Before booting a guest with an existing archive, check that it matches the
+current packager and carries all three declared script adaptations:
+
+```sh
+python3 tools/riscv/lmbench_native.py verify \
+  --archive target/lmbench-native/runtime.tar.gz
+```
+
+This read-only preflight checks the pinned revision, RISC-V platform, packaged
+runner hash, GNUmakefile entry, and adapted scripts. It rejects older archives
+before a roughly ten-minute native ALL run. Packaging performs the same check
+before writing the checksum file; a changed runner requires rebuilding the
+archive. The guest's `make results` command remains the single test trigger.
+
 The archive contains the source, precompiled RISC-V executables, GNU make,
 rpcbind, net-tools and their complete Nix runtime closure. Install it once in
 a **disposable Debian guest**, with Python 3.10+, grep, awk, sed, tar and useradd.
