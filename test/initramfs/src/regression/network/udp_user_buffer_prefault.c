@@ -16,6 +16,7 @@
 #define PAYLOAD_LEN (4 * 4096 + 137)
 #define LARGE_BUFFER_LEN (10 * 1024 * 1024)
 #define UDP_RECEIVE_CAPACITY 65536
+#define VALID_PREFIX_LEN 4096
 
 int main(void)
 {
@@ -76,16 +77,21 @@ int main(void)
 
 	const char small_payload[] = "udp";
 	int failures = 0;
-	for (int operation = 0; operation < 3; operation++) {
+	for (int operation = 0; operation < 6; operation++) {
+		if (operation == 3)
+			assert(mprotect(large_buffer + VALID_PREFIX_LEN,
+					UDP_RECEIVE_CAPACITY - VALID_PREFIX_LEN,
+					PROT_NONE) == 0);
 		assert(sendto(sender, small_payload, sizeof(small_payload), 0,
 			      (struct sockaddr *)&receiver_address,
-			      sizeof(receiver_address)) == sizeof(small_payload));
+			      sizeof(receiver_address)) ==
+		       sizeof(small_payload));
 
 		ssize_t received;
-		if (operation == 0) {
+		if (operation % 3 == 0) {
 			received = recvfrom(receiver, large_buffer,
 					    LARGE_BUFFER_LEN, 0, NULL, NULL);
-		} else if (operation == 1) {
+		} else if (operation % 3 == 1) {
 			struct iovec iov = {
 				.iov_base = large_buffer,
 				.iov_len = LARGE_BUFFER_LEN,
@@ -96,16 +102,29 @@ int main(void)
 			};
 			received = recvmsg(receiver, &msg, 0);
 		} else {
-			received = read(receiver, large_buffer, LARGE_BUFFER_LEN);
+			received =
+				read(receiver, large_buffer, LARGE_BUFFER_LEN);
 		}
 		if (received != sizeof(small_payload) ||
-		    memcmp(large_buffer, small_payload, sizeof(small_payload))) {
-			fprintf(stderr, "UDP large-buffer operation %d: received=%zd errno=%d\n",
+		    memcmp(large_buffer, small_payload,
+			   sizeof(small_payload))) {
+			fprintf(stderr,
+				"UDP large-buffer operation %d: received=%zd errno=%d\n",
 				operation, received, errno);
 			failures++;
 		}
 	}
 	assert(failures == 0);
+
+	/* A packet that reaches the unreadable page must still report EFAULT. */
+	assert(sendto(sender, send_buffer, 5000, 0,
+		      (struct sockaddr *)&receiver_address,
+		      sizeof(receiver_address)) == 5000);
+	errno = 0;
+	assert(recvfrom(receiver, large_buffer, LARGE_BUFFER_LEN, 0, NULL,
+			NULL) == -1);
+	assert(errno == EFAULT);
+
 	assert(munmap(large_buffer, LARGE_BUFFER_LEN) == 0);
 
 	assert(munmap(receive_buffer, PAYLOAD_LEN) == 0);

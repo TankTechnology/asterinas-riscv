@@ -1,0 +1,7 @@
+udp recvfrom 1
+udp recvmsg 1
+udp read 1
+tcp recvfrom 1
+tcp recvmsg 1
+tcp read 1
+udp long -1 14

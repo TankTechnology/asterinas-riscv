@@ -156,20 +156,25 @@ pub trait Socket: private::SocketPrivate + Send + Sync {
     fn common(&self) -> &FileCommon;
 }
 
+/// Reads one message or stream segment through the socket file interface.
+pub(crate) fn read_socket(socket: &dyn Socket, writer: &mut dyn MultiWrite) -> Result<usize> {
+    if writer.is_empty() {
+        // Linux returns zero for an empty read buffer.
+        return Ok(0);
+    }
+
+    socket
+        .recvmsg(writer, RecvFlags::empty())
+        .map(|(output, _)| output.len())
+}
+
 impl<T: Socket + 'static> FileLike for T {
     fn ioctl(&self, raw_ioctl: crate::util::ioctl::RawIoctl) -> Result<i32> {
         ioctl::handle(raw_ioctl, self.net_ns())
     }
 
     fn read(&self, writer: &mut VmWriter) -> Result<usize> {
-        if !writer.has_avail() {
-            // Linux always returns `Ok(0)` in this case, so we follow it.
-            return Ok(0);
-        }
-
-        // TODO: Set correct flags
-        self.recvmsg(writer, RecvFlags::empty())
-            .map(|(output, _)| output.len())
+        read_socket(self, writer)
     }
 
     fn write(&self, reader: &mut VmReader) -> Result<usize> {

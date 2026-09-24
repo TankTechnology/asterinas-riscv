@@ -5,7 +5,7 @@ use crate::{
     fs::file::file_table::{RawFileDesc, get_file_fast},
     net::socket::util::RecvFlags,
     prelude::*,
-    util::net::write_socket_addr_to_user,
+    util::{PrefaultedVmWriter, net::write_socket_addr_to_user},
 };
 
 pub fn sys_recvfrom(
@@ -27,9 +27,11 @@ pub fn sys_recvfrom(
     let socket = file.as_socket_or_err()?;
 
     let user_space = ctx.user_space();
-    let mut writers = user_space.writer(buf, len)?;
-    let prefault_len = len.min(socket.max_recv_len().unwrap_or(usize::MAX));
-    user_space.prefault(buf, prefault_len, crate::vm::perms::VmPerms::WRITE)?;
+    let mut writers = PrefaultedVmWriter::new(
+        user_space.writer(buf, len)?,
+        &user_space,
+        socket.max_recv_len().unwrap_or(usize::MAX),
+    )?;
 
     let (output, message_header) = {
         socket

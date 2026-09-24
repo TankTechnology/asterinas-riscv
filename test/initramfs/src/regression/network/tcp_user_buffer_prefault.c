@@ -20,6 +20,7 @@
 #define RECV_CHUNK 113
 #define LARGE_BUFFER_LEN (10 * 1024 * 1024)
 #define TCP_RECEIVE_CAPACITY (128 * 1024)
+#define VALID_PREFIX_LEN 4096
 
 static void fail(const char *what)
 {
@@ -127,7 +128,7 @@ int main(void)
 			return EXIT_FAILURE;
 		}
 		send_all(client_fd, "xyz", 3);
-		for (int operation = 0; operation < 3; operation++) {
+		for (int operation = 0; operation < 6; operation++) {
 			char request;
 			if (recv(client_fd, &request, 1, MSG_WAITALL) != 1 ||
 			    request != 'A' + operation)
@@ -215,15 +216,20 @@ int main(void)
 		fail("large-buffer mprotect");
 
 	int large_buffer_failures = 0;
-	for (int operation = 0; operation < 3; operation++) {
+	for (int operation = 0; operation < 6; operation++) {
+		if (operation == 3 &&
+		    mprotect(large_buffer + VALID_PREFIX_LEN,
+			     TCP_RECEIVE_CAPACITY - VALID_PREFIX_LEN,
+			     PROT_NONE) < 0)
+			fail("valid-prefix mprotect");
 		char request = 'A' + operation;
 		send_all(server_fd, &request, 1);
 		errno = 0;
 		ssize_t n;
-		if (operation == 0) {
+		if (operation % 3 == 0) {
 			n = recvfrom(server_fd, large_buffer, LARGE_BUFFER_LEN,
 				     0, NULL, NULL);
-		} else if (operation == 1) {
+		} else if (operation % 3 == 1) {
 			struct iovec large_iov = {
 				.iov_base = large_buffer,
 				.iov_len = LARGE_BUFFER_LEN,
