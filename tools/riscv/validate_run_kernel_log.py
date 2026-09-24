@@ -30,6 +30,7 @@ MULTI_FACT_MARKERS = {
     "netlink-route-netns": (
         "netlink route socket namespace regression passed.",
         "IPv4 route lookup regression passed.",
+        "IPv4 local route dump regression passed.",
         "netlink uevent port namespace regression passed.",
     ),
     "ipv6-dual-stack": (
