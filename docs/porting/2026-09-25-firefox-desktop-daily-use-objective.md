@@ -65,6 +65,9 @@ older kernel/Stage1 with volatile HOME. Promotion remains contingent on the
 same-menu physical cycle gate and a credible recovery path for an unbounded
 Desktop boot; the [candidate record](evidence/2026-09-25-firefox-online-desktop/README.md#current-desktop-menu-candidate-not-promoted)
 separates preparation from deployment.
+One candidate RockOS cycle and one missing-selector fallback cycle passed;
+the board returned to RockOS with a fresh root-console reconnect. Basic,
+Probe, Desktop and the repeat counts required for promotion remain open.
 
 ## Earlier checkpoint before signed-root installation
 
