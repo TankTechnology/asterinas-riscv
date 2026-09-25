@@ -33,7 +33,7 @@ use core::{
 
 use aster_framebuffer::{framebuffer::FrameBuffer, pixel::PixelFormat};
 use aster_virtio::device::gpu::device::GpuDevice;
-use ostd::mm::HasSize;
+use ostd::mm::{HasSize, VmIo, io::util::HasVmReaderWriter};
 
 use super::cursor::{CursorPosition, MAX_CURSOR_SIZE};
 use crate::{prelude::*, vm::page_cache::Vmo};
@@ -46,6 +46,10 @@ const MAX_PHASE_SAMPLES_PER_PRESENT: u64 = 4;
 /// Sample a few scanout rows per present without timestamping every row.
 static PHASE_PROFILE: AtomicBool = AtomicBool::new(false);
 aster_cmdline::define_flag_param!("asterinas.drm_phase_profile", PHASE_PROFILE);
+
+/// Copy directly from committed GEM pages to the firmware framebuffer.
+static DIRECT_COPY: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.drm_direct_copy", DIRECT_COPY);
 
 /// A framebuffer ready for presentation.
 ///
@@ -195,6 +199,7 @@ struct PhaseStats {
     bytes: u64,
     read_ns: u64,
     write_ns: u64,
+    direct_ns: u64,
 }
 
 impl PhaseStats {
@@ -203,6 +208,7 @@ impl PhaseStats {
         self.bytes = self.bytes.saturating_add(other.bytes);
         self.read_ns = self.read_ns.saturating_add(other.read_ns);
         self.write_ns = self.write_ns.saturating_add(other.write_ns);
+        self.direct_ns = self.direct_ns.saturating_add(other.direct_ns);
     }
 }
 
@@ -462,11 +468,12 @@ impl FirmwareFramebufferBackend {
         let mut totals = self.phase_stats.lock();
         totals.add(sample);
         ostd::info!(
-            "ASTERINAS_DRM_PHASE sampled_rows={} sampled_bytes={} read_ns={} write_and_sync_ns={}",
+            "ASTERINAS_DRM_PHASE sampled_rows={} sampled_bytes={} read_ns={} write_and_sync_ns={} direct_copy_and_sync_ns={}",
             totals.rows,
             totals.bytes,
             totals.read_ns,
             totals.write_ns,
+            totals.direct_ns,
         );
     }
 
@@ -479,6 +486,16 @@ impl FirmwareFramebufferBackend {
         sample: bool,
         phase: &mut PhaseStats,
     ) -> Result<()> {
+        if DIRECT_COPY.load(Ordering::Relaxed) {
+            return self.copy_row_direct(
+                source,
+                source_offset,
+                destination_offset,
+                scratch.len(),
+                sample,
+                phase,
+            );
+        }
         let before = sample.then(aster_time::read_monotonic_time);
         let mut writer = VmWriter::from(&mut *scratch).to_fallible();
         source.read(source_offset, &mut writer)?;
@@ -496,6 +513,54 @@ impl FirmwareFramebufferBackend {
             phase.write_ns = phase.write_ns.saturating_add(
                 u64::try_from(after_write.saturating_sub(after_read).as_nanos())
                     .unwrap_or(u64::MAX),
+            );
+        }
+        Ok(())
+    }
+
+    fn copy_row_direct(
+        &self,
+        source: &Vmo,
+        source_offset: usize,
+        destination_offset: usize,
+        length: usize,
+        sample: bool,
+        phase: &mut PhaseStats,
+    ) -> Result<()> {
+        let source_end = source_offset
+            .checked_add(length)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "scanout source extent overflows"))?;
+        if source_end > source.size() {
+            return_errno_with_message!(Errno::EINVAL, "scanout source extent is outside GEM pool");
+        }
+        let destination_end = destination_offset.checked_add(length).ok_or_else(|| {
+            Error::with_message(Errno::EINVAL, "scanout destination extent overflows")
+        })?;
+
+        let before = sample.then(aster_time::read_monotonic_time);
+        let mut copied = 0usize;
+        while copied < length {
+            let position = source_offset + copied;
+            let page_offset = position % PAGE_SIZE;
+            let chunk_len = (PAGE_SIZE - page_offset).min(length - copied);
+            let page = source.commit_on(position / PAGE_SIZE)?;
+            let mut reader = page.reader();
+            reader.skip(page_offset).limit(chunk_len);
+            let mut reader = reader.to_fallible();
+            self.framebuffer
+                .io_mem()
+                .write(destination_offset + copied, &mut reader)?;
+            copied += chunk_len;
+        }
+        self.framebuffer
+            .io_mem()
+            .sync_to_device(destination_offset..destination_end)?;
+        if let Some(before) = before {
+            let finished = aster_time::read_monotonic_time();
+            phase.rows += 1;
+            phase.bytes = phase.bytes.saturating_add(length as u64);
+            phase.direct_ns = phase.direct_ns.saturating_add(
+                u64::try_from(finished.saturating_sub(before).as_nanos()).unwrap_or(u64::MAX),
             );
         }
         Ok(())
