@@ -13,7 +13,7 @@ use ostd::{
     arch::boot::DEVICE_TREE,
     boot::boot_info,
     io::IoMem,
-    mm::{HasPaddr, HasSize, VmIoOnce},
+    mm::{HasPaddr, VmIoOnce},
 };
 
 use crate::vm::page_cache::Vmo;
