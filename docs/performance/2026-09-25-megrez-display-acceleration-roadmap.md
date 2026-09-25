@@ -31,10 +31,11 @@ Do not reboot the current desktop merely to repeat reference-system discovery.
   event. Its `SET_CLIENT_CAP(ATOMIC)` succeeds while no atomic property/ioctl
   model is exposed; that must be made truthful before enabling atomic clients.
 - The controlled 1920 x 1080 boot measured one 8.29 MB full present in 78.627 ms
-  and five mostly idle dirty presents averaging 1.274 ms. There is no active
-  Firefox scroll delta yet. Earlier physical Firefox profiling found Firefox
-  CPU use far above Xorg CPU use in a different software-display build, so
-  removing the copy alone cannot be assumed to halve end-to-end browser latency.
+  and five mostly idle dirty presents averaging 1.274 ms. A subsequent short
+  Firefox/X11 operation added 101 dirty presents and 3.377 s of cumulative
+  present time over a 17-second observation window. The URL and visible frames
+  were not independently verified, so this is attribution evidence, not a
+  measured user-input latency or speedup. See the P0 evidence note below.
 
 ## Three implementation choices
 
@@ -183,3 +184,4 @@ and its UAPI is available. Neither subsystem is a prerequisite for P1.
 - [Linux DRM KMS and vblank documentation](https://docs.kernel.org/gpu/drm-kms.html)
 - [Linux DMA mapping and cache synchronization documentation](https://docs.kernel.org/core-api/dma-api-howto.html)
 - [Asterinas current physical boot evidence](2026-09-25-drm-main-physical-boot.md)
+- [P0 Firefox/Xorg/scanout observation](2026-09-25-megrez-firefox-display-p0.md)

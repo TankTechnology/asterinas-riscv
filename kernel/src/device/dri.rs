@@ -22,6 +22,8 @@
 
 mod backend;
 mod cursor;
+#[cfg(target_arch = "riscv64")]
+mod eic7700;
 mod fence;
 mod prime;
 
@@ -1225,6 +1227,8 @@ fn ensure_pool(objects: &mut GemObjects) -> Result<Arc<Vmo>> {
     let pool = VmoOptions::new(DUMB_POOL_SIZE)
         .flags(VmoFlags::CONTIGUOUS)
         .alloc()?;
+    #[cfg(target_arch = "riscv64")]
+    eic7700::log_handoff_probe(&pool);
     objects.pool = Some(pool.clone());
     Ok(pool)
 }
