@@ -26,6 +26,8 @@
 //! `Vmo` and letting each backend derive what it needs costs the virtio path one
 //! `paddr()` call and keeps the copy path in terms of `VmIo`.
 
+use core::time::Duration;
+
 use aster_framebuffer::{framebuffer::FrameBuffer, pixel::PixelFormat};
 use aster_virtio::device::gpu::device::GpuDevice;
 use ostd::mm::HasSize;
@@ -83,9 +85,7 @@ impl ScanoutBuffer {
             .paddr()
             .and_then(|base| base.checked_add(self.source_offset_bytes))
             .map(|address| address as u64)
-            .ok_or_else(|| {
-                Error::with_message(Errno::ENOMEM, "scanout backing is not contiguous")
-            })
+            .ok_or_else(|| Error::with_message(Errno::ENOMEM, "scanout backing is not contiguous"))
     }
 }
 
@@ -149,6 +149,49 @@ impl DamageRect {
             return_errno_with_message!(Errno::EINVAL, "damage is outside the scanout");
         }
         Ok(Self { x1, y1, x2, y2 })
+    }
+
+    fn copied_bytes(&self) -> u64 {
+        u64::from(self.x2 - self.x1)
+            .saturating_mul(u64::from(self.y2 - self.y1))
+            .saturating_mul(BGRX8888_BYTES_PER_PIXEL as u64)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PresentKind {
+    Full,
+    Dirty,
+}
+
+#[derive(Clone, Copy, Default)]
+struct PresentClassStats {
+    count: u64,
+    bytes: u64,
+    total_ns: u64,
+    max_ns: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct FirmwarePresentStats {
+    full: PresentClassStats,
+    dirty: PresentClassStats,
+    total_successes: u64,
+}
+
+impl FirmwarePresentStats {
+    /// Returns a snapshot only at exponentially spaced milestones.
+    fn record_success(&mut self, kind: PresentKind, bytes: u64, elapsed_ns: u64) -> Option<Self> {
+        let class = match kind {
+            PresentKind::Full => &mut self.full,
+            PresentKind::Dirty => &mut self.dirty,
+        };
+        class.count = class.count.saturating_add(1);
+        class.bytes = class.bytes.saturating_add(bytes);
+        class.total_ns = class.total_ns.saturating_add(elapsed_ns);
+        class.max_ns = class.max_ns.max(elapsed_ns);
+        self.total_successes = self.total_successes.saturating_add(1);
+        self.total_successes.is_power_of_two().then_some(*self)
     }
 }
 
@@ -231,14 +274,8 @@ impl ScanoutBackend for GpuDevice {
 
     fn present_framebuffer(&self, buffer: ScanoutBuffer) -> Result<()> {
         let addr = buffer.paddr()?;
-        GpuDevice::present_framebuffer(
-            self,
-            addr,
-            buffer.size_bytes,
-            buffer.width,
-            buffer.height,
-        )
-        .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu present failed"))
+        GpuDevice::present_framebuffer(self, addr, buffer.size_bytes, buffer.width, buffer.height)
+            .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu present failed"))
     }
 }
 
@@ -317,6 +354,7 @@ pub(super) struct FirmwareFramebufferBackend {
     row_bytes: usize,
     /// One row of scratch space, so a copy never needs a second full buffer.
     scratch_row: Mutex<Vec<u8>>,
+    present_stats: Mutex<FirmwarePresentStats>,
 }
 
 impl FirmwareFramebufferBackend {
@@ -340,7 +378,31 @@ impl FirmwareFramebufferBackend {
             height,
             row_bytes,
             scratch_row: Mutex::new(vec![0; row_bytes]),
+            present_stats: Mutex::new(FirmwarePresentStats::default()),
         })
+    }
+
+    fn record_present(&self, kind: PresentKind, bytes: u64, started: Duration) {
+        let elapsed = aster_time::read_monotonic_time().saturating_sub(started);
+        let elapsed_ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
+        let report = {
+            let mut stats = self.present_stats.lock();
+            stats.record_success(kind, bytes, elapsed_ns)
+        };
+        if let Some(report) = report {
+            ostd::info!(
+                "ASTERINAS_DRM_SCANOUT successes={} full_count={} full_bytes={} full_total_ns={} full_max_ns={} dirty_count={} dirty_bytes={} dirty_total_ns={} dirty_max_ns={}",
+                report.total_successes,
+                report.full.count,
+                report.full.bytes,
+                report.full.total_ns,
+                report.full.max_ns,
+                report.dirty.count,
+                report.dirty.bytes,
+                report.dirty.total_ns,
+                report.dirty.max_ns,
+            );
+        }
     }
 
     /// Refuses a buffer whose geometry the firmware scanout cannot accept.
@@ -441,6 +503,7 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
 
     fn present_framebuffer(&self, buffer: ScanoutBuffer) -> Result<()> {
         self.validate_buffer(&buffer)?;
+        let started = aster_time::read_monotonic_time();
         let (source, height, pitch) = (&buffer.source, buffer.height, buffer.pitch_bytes);
         let mut scratch_row = self.scratch_row.lock();
         for row in 0..height as usize {
@@ -453,12 +516,18 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
             let mut writer = VmWriter::from(scratch_row.as_mut_slice()).to_fallible();
             source.read(source_offset, &mut writer)?;
 
-            let destination_offset = row.checked_mul(self.framebuffer.line_size()).ok_or_else(
-                || Error::with_message(Errno::EINVAL, "scanout destination offset overflows"),
-            )?;
+            let destination_offset =
+                row.checked_mul(self.framebuffer.line_size())
+                    .ok_or_else(|| {
+                        Error::with_message(Errno::EINVAL, "scanout destination offset overflows")
+                    })?;
             self.framebuffer
                 .write_bytes_at(destination_offset, scratch_row.as_slice())?;
         }
+        drop(scratch_row);
+        let copied_bytes =
+            u64::try_from(self.row_bytes.saturating_mul(height as usize)).unwrap_or(u64::MAX);
+        self.record_present(PresentKind::Full, copied_bytes, started);
         Ok(())
     }
 
@@ -475,6 +544,10 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
             return self.present_framebuffer(buffer);
         }
         self.validate_buffer(&buffer)?;
+        let copied_bytes = damage
+            .iter()
+            .fold(0u64, |sum, rect| sum.saturating_add(rect.copied_bytes()));
+        let started = aster_time::read_monotonic_time();
 
         let (source, pitch, base) = (
             &buffer.source,
@@ -511,6 +584,8 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
                     .write_bytes_at(destination_offset, &scratch_row[..span_bytes])?;
             }
         }
+        drop(scratch_row);
+        self.record_present(PresentKind::Dirty, copied_bytes, started);
         Ok(())
     }
 }
@@ -645,7 +720,9 @@ mod tests {
         let backend = ScanoutOnly;
         let damage = [DamageRect::new(0, 0, 1, 1, 640, 400).unwrap()];
         // The default re-presents in full rather than doing nothing.
-        backend.dirty_framebuffer(a_buffer().unwrap(), &damage).unwrap();
+        backend
+            .dirty_framebuffer(a_buffer().unwrap(), &damage)
+            .unwrap();
     }
 
     #[ktest]
@@ -665,8 +742,14 @@ mod tests {
         // The 1920x1080 mode the Megrez board boots with, whose stride is
         // exactly one row of 32-bit pixels.
         assert_eq!(
-            validate_firmware_layout(1920, 1080, 1920 * 4, 1920 * 1080 * 4, PixelFormat::BgrReserved)
-                .unwrap(),
+            validate_firmware_layout(
+                1920,
+                1080,
+                1920 * 4,
+                1920 * 1080 * 4,
+                PixelFormat::BgrReserved
+            )
+            .unwrap(),
             (1920, 1080, 1920 * 4)
         );
         // A stride padded past the visible row is legal, but it costs memory
@@ -688,16 +771,14 @@ mod tests {
             .unwrap(),
             (1920, 1080, 1920 * 4)
         );
-        assert!(
-            validate_firmware_layout(
-                1920,
-                1080,
-                padded_stride,
-                1920 * 1080 * 4,
-                PixelFormat::BgrReserved,
-            )
-            .is_err()
-        );
+        assert!(validate_firmware_layout(
+            1920,
+            1080,
+            padded_stride,
+            1920 * 1080 * 4,
+            PixelFormat::BgrReserved,
+        )
+        .is_err());
     }
 
     #[ktest]
@@ -725,33 +806,41 @@ mod tests {
     #[ktest]
     fn firmware_layout_refuses_what_the_copy_could_not_honour() {
         // A stride narrower than one row would make rows overlap.
-        assert!(
-            validate_firmware_layout(1920, 1080, 1920 * 3, 1920 * 1080 * 4, PixelFormat::BgrReserved)
-                .is_err()
-        );
+        assert!(validate_firmware_layout(
+            1920,
+            1080,
+            1920 * 3,
+            1920 * 1080 * 4,
+            PixelFormat::BgrReserved
+        )
+        .is_err());
         // Arithmetic that would overflow rather than a large-but-valid mode.
         assert!(
-            validate_firmware_layout(1, 2, usize::MAX, usize::MAX, PixelFormat::BgrReserved).is_err()
-        );
-        // A mapping one byte short of the last pixel the mode addresses.
-        assert!(
-            validate_firmware_layout(
-                1920,
-                1080,
-                1920 * 4,
-                1920 * 1080 * 4 - 1,
-                PixelFormat::BgrReserved,
-            )
-            .is_err()
-        );
-        // A format this backend would have to convert, not copy.
-        assert!(
-            validate_firmware_layout(1920, 1080, 1920 * 4, 1920 * 1080 * 4, PixelFormat::Rgb888)
+            validate_firmware_layout(1, 2, usize::MAX, usize::MAX, PixelFormat::BgrReserved)
                 .is_err()
         );
+        // A mapping one byte short of the last pixel the mode addresses.
+        assert!(validate_firmware_layout(
+            1920,
+            1080,
+            1920 * 4,
+            1920 * 1080 * 4 - 1,
+            PixelFormat::BgrReserved,
+        )
+        .is_err());
+        // A format this backend would have to convert, not copy.
+        assert!(validate_firmware_layout(
+            1920,
+            1080,
+            1920 * 4,
+            1920 * 1080 * 4,
+            PixelFormat::Rgb888
+        )
+        .is_err());
         // A mode with no pixels.
         assert!(
-            validate_firmware_layout(0, 1080, 0, 1920 * 1080 * 4, PixelFormat::BgrReserved).is_err()
+            validate_firmware_layout(0, 1080, 0, 1920 * 1080 * 4, PixelFormat::BgrReserved)
+                .is_err()
         );
     }
 
@@ -764,10 +853,68 @@ mod tests {
         let height = 8;
         let stride = width * 4 + 16;
         let visible = (height - 1) * stride + width * 4;
-        assert!(validate_firmware_layout(width, height, stride, visible, PixelFormat::BgrReserved).is_ok());
         assert!(
-            validate_firmware_layout(width, height, stride, visible - 1, PixelFormat::BgrReserved)
-                .is_err()
+            validate_firmware_layout(width, height, stride, visible, PixelFormat::BgrReserved)
+                .is_ok()
         );
+        assert!(validate_firmware_layout(
+            width,
+            height,
+            stride,
+            visible - 1,
+            PixelFormat::BgrReserved
+        )
+        .is_err());
+    }
+
+    #[ktest]
+    fn firmware_present_stats_separate_full_and_dirty_copies() {
+        let mut stats = FirmwarePresentStats::default();
+        assert!(stats
+            .record_success(PresentKind::Full, 8_294_400, 20_000_000)
+            .is_some());
+        assert!(stats
+            .record_success(PresentKind::Dirty, 1_024, 50_000)
+            .is_some());
+        assert!(stats
+            .record_success(PresentKind::Dirty, 2_048, 70_000)
+            .is_none());
+        assert!(stats
+            .record_success(PresentKind::Full, 8_294_400, 18_000_000)
+            .is_some());
+
+        assert_eq!(stats.full.count, 2);
+        assert_eq!(stats.full.bytes, 16_588_800);
+        assert_eq!(stats.full.total_ns, 38_000_000);
+        assert_eq!(stats.full.max_ns, 20_000_000);
+        assert_eq!(stats.dirty.count, 2);
+        assert_eq!(stats.dirty.bytes, 3_072);
+        assert_eq!(stats.dirty.total_ns, 120_000);
+        assert_eq!(stats.dirty.max_ns, 70_000);
+    }
+
+    #[ktest]
+    fn firmware_present_stats_saturate_without_losing_maximum() {
+        let mut stats = FirmwarePresentStats::default();
+        stats.full.count = u64::MAX - 1;
+        stats.full.bytes = u64::MAX - 1;
+        stats.full.total_ns = u64::MAX - 1;
+        stats.record_success(PresentKind::Full, 4, 7);
+        stats.record_success(PresentKind::Full, 4, 3);
+
+        assert_eq!(stats.full.count, u64::MAX);
+        assert_eq!(stats.full.bytes, u64::MAX);
+        assert_eq!(stats.full.total_ns, u64::MAX);
+        assert_eq!(stats.full.max_ns, 7);
+    }
+
+    #[ktest]
+    fn dirty_copy_bytes_count_the_region_actually_copied() {
+        let small = DamageRect::new(0, 0, 16, 16, 1920, 1080).unwrap();
+        let wide = DamageRect::new(0, 4, 1920, 8, 1920, 1080).unwrap();
+        assert_eq!(small.copied_bytes(), 1_024);
+        assert_eq!(wide.copied_bytes(), 30_720);
+        // Overlapping clips cause overlapping copies, so both count.
+        assert_eq!(small.copied_bytes() + wide.copied_bytes(), 31_744);
     }
 }
