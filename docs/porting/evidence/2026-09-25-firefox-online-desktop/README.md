@@ -603,6 +603,69 @@ by the menu and removed from `/boot` after recovery; its host copy and SHA-256
 remain in the experiment record. This establishes recovery for this boot,
 not persistent Asterinas root-console access after an Asterinas menu reboot.
 
+## Physical Firefox thread attribution and persistent-HOME timeline
+
+A later one-time boot used the same ptrace kernel, DTB, signed root, persistent
+HOME, isolated root console, and 360/480-second software-reboot bounds. Its
+new Stage1 SHA-256 was
+`8d51465db7117e7a3e4b8c353eb67ac79b98312edcd42fb4908a720c2b052af3`;
+U-Boot verified its CRC32 `af859304`. The [boot serial log](physical-thread-context-boot.serial.log.gz)
+records the loaded artifacts and root-console marker. The Asterinas boot ID
+was `774167e8-ad46-405e-aaf6-30ffc5e7ee7d`, verified by a fresh nonce-framed
+UID-0 command after the serial owner reopened the device.
+
+The first diagnostic gate stopped before its `session` phase with
+`phase-value-invalid`. The persistent `/home/asterinas/browser-web-timeline.log`
+contained one older `BOOT_SYSTEMD_BEGIN`, four older Firefox exec markers and
+the current PID-197 exec marker. The startup parser required exactly one exec
+marker across the whole file, so prior boots made the current run fail.
+For this **diagnostic run only**, the original 2,044-byte timeline was copied
+to `/run/threadctx0925a-timeline-original.log` (SHA-256
+`75698e900b1d5dfa019e489ad10e84bb16f08b596a68bdb36673c61ccc7a14f5`)
+and the test-owned timeline was narrowed to its unique current PID-197 exec
+marker. The first failed gate is not counted as a pass. The repository parser
+now scopes exec/ready markers to the checked Firefox PID while still rejecting
+duplicates for that PID; its host unit test covers this repeated-boot case.
+That source fix was built into a later Stage1 but was **not** the code running
+in this physical diagnostic.
+
+The rerun passed all seven functional groups, with one slow context-switch
+category. The [complete uploaded bundle](physical-thread-context-upload.json.gz)
+is 193,115 bytes before compression, SHA-256
+`4a68879a5f4b071ee3f9c27ea6b5a35bea2490aa132ae5f6e703c11176d186f2`,
+and parsed against experiment ID `01225401548dc3280dc1964b663f69ae` with
+all artifact digests validated. The [result](physical-thread-context-result.json)
+and [context capture](physical-thread-context-context.json) are extracted
+unchanged. `NewWindow` took 683.794 ms in this one instrumented run. Its
+801.947-ms process CPU interval recorded Firefox parent 950 ms user and 330 ms
+kernel CPU; Xorg used 20/10 ms. Among the bounded Firefox-parent threads,
+the main thread used 550/140 ms user/kernel CPU and `Renderer` used 250/130 ms.
+Their schedstat runnable waits were 67.33 and 26.97 ms respectively. This
+points to CPU execution in those two threads as the next attribution target;
+it does not identify a kernel function or establish that kernel work alone can
+halve wall latency. The four procfs reads cost 213.414 ms, much more than the
+earlier process-only probe, so this run is unsuitable as an uninstrumented
+latency comparator. Firefox child processes are outside this per-thread scope.
+
+An authenticated Asterinas software reboot reached a fresh OpenSBI/U-Boot
+epoch, and the [recovery log](physical-thread-context-recovery.serial.log.gz)
+shows the vendor RockOS entry reaching its login prompt. A new root login and
+nonce-framed command verified RockOS boot ID
+`7e83acc3-2c92-4bca-8d25-29df223d690d`, 1.8-GHz `performance`, the unchanged
+vendor, active, and candidate selector hashes, and unmounted partition 2.
+The experimental Stage1 was hash-checked, found unreferenced, and removed
+from `/boot`; available boot space returned to 13,808 KiB.
+
+The rebuilt Stage1 containing the PID-scoped timeline parser has SHA-256
+`923ed363d794b8c3b0d2b374ce59d61415af93fe5563d14476b8e0a4c0d60ace`.
+It passed a [68.779-second QEMU desktop gate](qemu-thread-context-desktop-result.json)
+using the unchanged signed Firefox root. All six screen captures completed;
+the visually inspected [minimized frame](qemu-thread-context-minimized.png)
+shows the wallpaper, launchers, panel, and Firefox task button. This QEMU
+gate checks boot and desktop interaction; it does not exercise the physical
+persistent-HOME timeline regression, which has only host unit-test coverage
+for the revised parser so far.
+
 ## Current desktop menu candidate, not promoted
 
 The installed `/boot/extlinux/asterinas.conf` still selects the older
@@ -662,10 +725,29 @@ serial-log SHA-256. The board was then booted through the vendor RockOS entry.
 After closing and reopening the serial port, a fresh nonce-framed UID-0
 response established boot ID `7d0fd4f1-e54b-468c-82a2-7b30b395f2b2` on
 Linux `6.6.87`; partition 2 was unmounted and all three selector hashes were
-unchanged. These are one cycle each, not promotion qualification. Basic, Probe,
-and the unbounded Desktop menu entries have not been exercised for this
-candidate. The raw RockOS login transcripts stay in the local test directory
-to avoid publishing credential-bearing serial material.
+unchanged. These are one cycle each, not promotion qualification. At that
+point Basic, Probe, and the unbounded Desktop entry had not been exercised.
+The raw RockOS login transcripts stay in the local test directory to avoid
+publishing credential-bearing serial material.
+
+The same candidate subsequently completed three short Basic and three Probe
+menu cycles in two batches. The [first batch](physical-menu-basic-probe-cycle-1.json)
+and [second batch](physical-menu-basic-probe-cycle-2.json) record each
+boot-to-ready time (Basic 4.94–5.12 s; Probe 4.74–4.93 s) and the SHA-256 of
+their [first](physical-menu-basic-probe-cycle-1.serial.log.gz) and
+[second](physical-menu-basic-probe-cycle-2.serial.log.gz) raw serial logs.
+Each Basic boot reached its shell, answered a nonce-tagged API-mount check,
+and rebooted; each Probe printed `count=1 status=pass` and rebooted. The raw
+logs include a fresh OpenSBI/U-Boot epoch after every guest cycle. These
+batches were run with the existing `boot_cycle` helper, but their combined
+result format is **not** accepted by the per-cycle promotion script, so they
+do not qualify the selector for promotion. After the batches, the vendor
+RockOS entry reached its login prompt; a fresh root serial reconnect produced
+the [recovery record](physical-menu-basic-probe-recovery.txt): boot ID
+`0b6e671b-d889-4c3f-ac4d-6a1b8e398e62`, 1.8 GHz `performance`, the
+unchanged three selector hashes, and partition 2 unmounted. The unbounded
+Desktop entry and actual reboot persistence of its isolated root console
+remain untested for this selector.
 
 ## Native-size video sampling A/B/A: crisp edges rejected
 

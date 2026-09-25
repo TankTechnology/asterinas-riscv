@@ -395,11 +395,14 @@ An optional `--timeout-seconds` must remain positive and no greater than
 For a separate attribution run, `--context-cpu-diagnostic` adds an `openCpu`
 object to `browser-context-switch.json`. It brackets only
 `WebDriver:NewWindow` with `/proc` snapshots for the Firefox parent and Xorg,
-recording user/kernel CPU, faults, system CPU and context-switch deltas, plus
-the snapshot-read overhead. It does not include Firefox child processes and
-does not turn wall time or blocking waits into kernel CPU time. Run the normal
-gate again without this flag as the latency control; the diagnostic run alone
-cannot establish a speedup.
+recording user/kernel CPU, faults, system CPU and context-switch deltas. It
+also records user/kernel CPU and runqueue-wait deltas for the parent's threads
+present in both snapshots, plus snapshot-read overhead and thread churn.
+It does not include Firefox child processes or CPU consumed by threads that
+start and finish wholly inside the interval. It does not turn wall time or
+blocking waits into kernel CPU time. Run the normal gate again without this
+flag as the latency control; the diagnostic run alone cannot establish a
+speedup.
 
 The terminal contract is exactly one verdict line:
 
