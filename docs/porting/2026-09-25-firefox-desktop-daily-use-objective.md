@@ -148,6 +148,9 @@ These timings are a working baseline, not a verified speedup. The
 [startup evidence](evidence/2026-09-25-firefox-startup-serialization/README.md)
 also records the pinned official Speedometer 3.1 source and the board's
 Firefox/display mismatch that must be resolved before a comparative score.
+A bounded QEMU default/diagnostic/default run found only a roughly half-second
+startup difference from local-only instruction-cache synchronization; that
+unsafe diagnostic remains disabled in normal boots.
 
 ## Earlier checkpoint before signed-root installation
 
