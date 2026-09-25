@@ -25,7 +25,8 @@ pub(super) use self::store::{effective_level_filter, parse_level_filter};
 mod store;
 
 /// Maximum retained records; storage is static and no allocation is lazy.
-pub const RECORD_CAPACITY: usize = 256;
+/// Keep enough of early boot for journald to read after it starts.
+pub const RECORD_CAPACITY: usize = 512;
 
 static KLOG: KernelLog = KernelLog {
     records: SpinLock::new(RecordRing::new()),

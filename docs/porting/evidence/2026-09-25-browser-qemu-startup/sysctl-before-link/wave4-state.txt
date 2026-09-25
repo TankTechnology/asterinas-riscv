@@ -1,0 +1,59 @@
+boot=5ba29d4a-5a5e-4599-985f-01407b3dd9db
+
+-- failed units --
+  UNIT                       LOAD   ACTIVE SUB    DESCRIPTION
+● asterinas-dns-shim.service loaded failed failed Asterinas guest DNS tunnel to the build host
+
+Legend: LOAD   → Reflects whether the unit definition was properly loaded.
+        ACTIVE → The high-level unit activation state, i.e. generalization of SUB.
+        SUB    → The low-level unit activation state, values depend on unit type.
+
+1 loaded units listed.
+
+-- browser --
+● asterinas-browser-web.service - Asterinas Debian online Firefox workload
+     Loaded: loaded (/etc/systemd/system/asterinas-browser-web.service; enabled; preset: enabled)
+     Active: active (running) since Fri 2026-09-25 12:14:39 UTC; 21s ago
+ Invocation: 81dbf793fabe4a748de2b809b515c849
+    Process: 55 ExecStartPre=/usr/lib/asterinas/desktop-m5-device-access (code=exited, status=0/SUCCESS)
+   Main PID: 117 (firefox)
+      Tasks: 7 (limit: 629145)
+        CPU: 21.085s
+     CGroup: /system.slice/asterinas-browser-web.service
+             ├─117 /usr/bin/firefox --no-remote --new-instance --marionette --profile /home/asterinas/.mozilla/asterinas-browser-web about:blank
+             ├─123 /usr/bin/tail -n 0 -f /home/asterinas/firefox-web-stderr.log
+             ├─356 /usr/lib/firefox/firefox -contentproc -ipcHandle 0 -signalPipe 1 -initialChannelId {cb7db85d-41d5-4d41-85fc-6a97bbbb89e6} -parentPid 117 -greomni /usr/lib/firefox/omni.ja -appomni /usr/lib/firefox/browser/omni.ja -appDir /usr/lib/firefox/browser 1 forkserver
+             ├─361 /usr/lib/firefox/firefox -contentproc -ipcHandle 0 -signalPipe 1 -initialChannelId {cb7db85d-41d5-4d41-85fc-6a97bbbb89e6} -parentPid 117 -greomni /usr/lib/firefox/omni.ja -appomni /usr/lib/firefox/browser/omni.ja -appDir /usr/lib/firefox/browser 1 forkserver
+             ├─415 /usr/lib/firefox/firefox -contentproc -ipcHandle 0 -signalPipe 1 -initialChannelId {cb7db85d-41d5-4d41-85fc-6a97bbbb89e6} -parentPid 117 -greomni /usr/lib/firefox/omni.ja -appomni /usr/lib/firefox/browser/omni.ja -appDir /usr/lib/firefox/browser 1 forkserver
+             ├─421 /usr/lib/firefox/firefox -contentproc -ipcHandle 0 -signalPipe 1 -initialChannelId {cb7db85d-41d5-4d41-85fc-6a97bbbb89e6} -parentPid 117 -greomni /usr/lib/firefox/omni.ja -appomni /usr/lib/firefox/browser/omni.ja -appDir /usr/lib/firefox/browser 1 forkserver
+             └─466 /usr/lib/firefox/firefox -contentproc -ipcHandle 0 -signalPipe 1 -initialChannelId {cb7db85d-41d5-4d41-85fc-6a97bbbb89e6} -parentPid 117 -greomni /usr/lib/firefox/omni.ja -appomni /usr/lib/firefox/browser/omni.ja -appDir /usr/lib/firefox/browser 1 forkserver
+
+Sep 25 12:14:50 ubuntu-MS-7D76 browser-web-firefox[123]:  (t=6.26297) |[1][GFX1-]: glxtest: MOZ_AVOID_OPENGL_ALTOGETHER envvar set (t=6.267) |[2][GFX1-]: No GPUs detected via PCI
+Sep 25 12:14:50 ubuntu-MS-7D76 browser-web-firefox[123]:  (t=6.267) [GFX1-]: No GPUs detected via PCI
+Sep 25 12:14:52 ubuntu-MS-7D76 browser-web-firefox[123]: [Parent 117, Main Thread] WARNING: Could not load a pixbuf from icon theme.
+Sep 25 12:14:52 ubuntu-MS-7D76 browser-web-firefox[123]: This may indicate that pixbuf loaders or the mime database could not be found.: 'glib warning', file toolkit/xre/nsSigHandlers.cpp:201
+Sep 25 12:14:52 ubuntu-MS-7D76 browser-web-firefox[123]: (firefox:117): Gtk-WARNING **: 12:14:52.671: Could not load a pixbuf from icon theme.
+Sep 25 12:14:52 ubuntu-MS-7D76 browser-web-firefox[123]: This may indicate that pixbuf loaders or the mime database could not be found.
+Sep 25 12:14:53 ubuntu-MS-7D76 browser-web-firefox[123]: 1790338493264        Marionette        INFO        Listening on port 2828
+Sep 25 12:14:53 ubuntu-MS-7D76 browser-web-firefox[123]: [Parent 117, Main Thread] WARNING: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)
+Sep 25 12:14:53 ubuntu-MS-7D76 browser-web-firefox[123]: : 'glib warning', file toolkit/xre/nsSigHandlers.cpp:201
+Sep 25 12:14:53 ubuntu-MS-7D76 browser-web-firefox[123]: ** (firefox:117): WARNING **: 12:14:53.434: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)
+
+-- file owner --
+1000:1000 600 /home/asterinas/browser-web-timeline.log
+
+-- proc sysctl --
+4194304
+
+-- valid limit --
+write_exit=0
+32768
+
+-- invalid limit --
+bash: echo: write error: Invalid argument
+write_exit=1
+32768
+
+-- restore limit --
+write_exit=0
+4194304

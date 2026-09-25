@@ -116,12 +116,18 @@ fn before_switching_to(next_task: &Task, irq_guard: &DisabledLocalIrqGuard) {
     next_task.kstack.flush_tlb(irq_guard);
 
     // Ensure that we are not switching to a task that is already running.
+    let mut warned = false;
     while next_task
         .switched_to_cpu
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
         .is_err()
     {
-        crate::warn!("Switching to a task already running in the foreground");
+        // The previous CPU may still be completing its context switch. Report
+        // this handoff once, rather than logging on every failed spin attempt.
+        if !warned {
+            crate::warn!("Switching to a task already running in the foreground");
+            warned = true;
+        }
         core::hint::spin_loop();
     }
 }

@@ -136,9 +136,18 @@ done
 input_devices=("$INPUT_DIRECTORY"/event*)
 
 /usr/bin/install -d -m 0755 -- "$STABLE_INPUT_DIRECTORY"
-/usr/bin/rm -f -- "$STABLE_INPUT_DIRECTORY/keyboard" "$STABLE_INPUT_DIRECTORY/pointer"
-/usr/bin/ln -s -- "$keyboard_node" "$STABLE_INPUT_DIRECTORY/keyboard"
-/usr/bin/ln -s -- "$pointer_node" "$STABLE_INPUT_DIRECTORY/pointer"
+# The desktop and browser services can reach this point concurrently if their
+# flock calls do not serialize. Build links in a private directory and atomically
+# replace each public name, so neither service observes the other's remove/create
+# window or fails because the other service already created a link.
+link_directory=$(/usr/bin/mktemp -d "$STABLE_INPUT_DIRECTORY/.device-links.XXXXXX")
+trap '/usr/bin/rm -rf -- "$link_directory"' EXIT
+/usr/bin/ln -s -- "$keyboard_node" "$link_directory/keyboard"
+/usr/bin/ln -s -- "$pointer_node" "$link_directory/pointer"
+/usr/bin/mv -Tf -- "$link_directory/keyboard" "$STABLE_INPUT_DIRECTORY/keyboard"
+/usr/bin/mv -Tf -- "$link_directory/pointer" "$STABLE_INPUT_DIRECTORY/pointer"
+/usr/bin/rmdir -- "$link_directory"
+trap - EXIT
 
 if ! chown asterinas:video /dev/fb0 || ! chmod 0660 /dev/fb0; then
     if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then

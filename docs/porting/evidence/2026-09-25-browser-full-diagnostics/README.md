@@ -1,5 +1,9 @@
 # Megrez browser diagnostic wave, 2026-09-25
 
+The [QEMU startup follow-up](../2026-09-25-browser-qemu-startup/README.md)
+records the subsequent scheduler-log, `pid_max`, desktop-link, and early-log
+fixes. The physical playback result below remains the video baseline.
+
 This run closes the earlier evidence gap: the **same bounded boot** now has
 workload phase markers, Firefox/Xorg/desktop logs, the complete available boot
 journal, dmesg, unit status, process CPU counters, and sampled Firefox PCs.

@@ -687,12 +687,14 @@ pub const FIRST_POSIX_TID: Tid = 1;
 struct PosixTidAllocator {
     next: Tid,
     last: Tid,
+    max: Tid,
     allocated: BTreeSet<Tid>,
 }
 
 static POSIX_TID_ALLOCATOR: Mutex<PosixTidAllocator> = Mutex::new(PosixTidAllocator {
     next: FIRST_POSIX_TID,
     last: 0,
+    max: PID_MAX,
     allocated: BTreeSet::new(),
 });
 
@@ -730,9 +732,10 @@ impl Drop for PosixTidReservation {
 /// Reserves an automatically selected or explicitly requested TID.
 pub(in crate::process) fn reserve_posix_tid(requested: Option<Tid>) -> Result<PosixTidReservation> {
     let mut allocator = POSIX_TID_ALLOCATOR.lock();
+    let max = allocator.max;
 
     let tid = if let Some(requested) = requested {
-        if requested < FIRST_POSIX_TID || requested >= PID_MAX {
+        if requested < FIRST_POSIX_TID || requested >= max {
             return_errno_with_message!(Errno::EINVAL, "the requested PID is out of range");
         }
         if !allocator.allocated.insert(requested) {
@@ -744,7 +747,7 @@ pub(in crate::process) fn reserve_posix_tid(requested: Option<Tid>) -> Result<Po
         let mut candidate = start;
         loop {
             if allocator.allocated.insert(candidate) {
-                allocator.next = if candidate + 1 < PID_MAX {
+                allocator.next = if candidate + 1 < max {
                     candidate + 1
                 } else {
                     FIRST_POSIX_TID
@@ -752,7 +755,7 @@ pub(in crate::process) fn reserve_posix_tid(requested: Option<Tid>) -> Result<Po
                 break candidate;
             }
 
-            candidate = if candidate + 1 < PID_MAX {
+            candidate = if candidate + 1 < max {
                 candidate + 1
             } else {
                 FIRST_POSIX_TID
@@ -784,11 +787,27 @@ pub fn last_tid() -> Tid {
     POSIX_TID_ALLOCATOR.lock().last
 }
 
-/// The maximum allowed process ID.
-//
-// FIXME: The current value is chosen arbitrarily.
-// This value can be modified by the user by writing to `/proc/sys/kernel/pid_max`.
-pub const PID_MAX: u32 = u32::MAX / 2;
+/// The upper bound accepted by `/proc/sys/kernel/pid_max`.
+pub const PID_MAX: u32 = 4_194_304;
+
+/// Returns the current exclusive upper bound for allocated POSIX TIDs.
+pub fn pid_max() -> Tid {
+    POSIX_TID_ALLOCATOR.lock().max
+}
+
+/// Updates the PID limit and the allocator cursor atomically.
+pub fn set_pid_max(max: Tid) -> Result<()> {
+    if !(301..=PID_MAX).contains(&max) {
+        return_errno_with_message!(Errno::EINVAL, "pid_max is out of range");
+    }
+
+    let mut allocator = POSIX_TID_ALLOCATOR.lock();
+    allocator.max = max;
+    if allocator.next >= max {
+        allocator.next = FIRST_POSIX_TID;
+    }
+    Ok(())
+}
 
 /// The sleeping state of a thread.
 #[derive(Clone, Copy, Debug)]
