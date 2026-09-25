@@ -117,6 +117,9 @@ DESKTOP_M4_WELCOME_PAGE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_welcome.html"
 )
 DESKTOP_WALLPAPER = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_wallpaper.svg"
+DESKTOP_ANIME_WALLPAPER = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_anime_wallpaper.png"
+)
 DESKTOP_PCMANFM_CONFIG = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_pcmanfm.conf"
 )
@@ -2776,6 +2779,7 @@ WantedBy=multi-user.target
         evidence = stage / "usr/lib/asterinas/desktop-m4-evidence"
         welcome = stage / "usr/share/asterinas/desktop-m4-welcome.html"
         wallpaper = stage / "usr/share/asterinas/desktop-wallpaper.svg"
+        anime_wallpaper = stage / "usr/share/asterinas/desktop-anime-wallpaper.png"
         pcmanfm_config = (
             stage / "home/asterinas/.config/pcmanfm/Asterinas/desktop-items-0.conf"
         )
@@ -2784,6 +2788,7 @@ WantedBy=multi-user.target
         self.assertEqual(evidence.read_bytes(), DESKTOP_M4_EVIDENCE_SCRIPT.read_bytes())
         self.assertEqual(welcome.read_bytes(), DESKTOP_M4_WELCOME_PAGE.read_bytes())
         self.assertEqual(wallpaper.read_bytes(), DESKTOP_WALLPAPER.read_bytes())
+        self.assertEqual(anime_wallpaper.read_bytes(), DESKTOP_ANIME_WALLPAPER.read_bytes())
         for name in ("files", "terminal"):
             icon = stage / f"usr/share/asterinas/desktop-{name}-icon.svg"
             source = (
@@ -2802,6 +2807,7 @@ WantedBy=multi-user.target
         self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o755)
         self.assertEqual(stat.S_IMODE(welcome.stat().st_mode), 0o644)
         self.assertEqual(stat.S_IMODE(wallpaper.stat().st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(anime_wallpaper.stat().st_mode), 0o644)
         self.assertEqual(stat.S_IMODE(pcmanfm_config.stat().st_mode), 0o644)
         self.assertEqual(stat.S_IMODE(lxpanel_config.stat().st_mode), 0o644)
         self.assertEqual(pcmanfm_config.stat().st_uid, 1000)
@@ -2911,10 +2917,13 @@ WantedBy=multi-user.target
         self.assertEqual(result.returncode, 0, result.stderr)
 
         wallpaper = stage / "usr/share/asterinas/desktop-wallpaper.svg"
+        anime_wallpaper = stage / "usr/share/asterinas/desktop-anime-wallpaper.png"
         pcmanfm = stage / "home/asterinas/.config/pcmanfm/Asterinas/desktop-items-0.conf"
         panel = stage / "home/asterinas/.config/lxpanel/Asterinas/panels/panel"
         self.assertEqual(wallpaper.read_bytes(), DESKTOP_WALLPAPER.read_bytes())
-        self.assertIn("desktop-wallpaper.svg", pcmanfm.read_text())
+        self.assertEqual(anime_wallpaper.read_bytes(), DESKTOP_ANIME_WALLPAPER.read_bytes())
+        self.assertIn("wallpaper_mode=crop", pcmanfm.read_text())
+        self.assertIn("desktop-anime-wallpaper.png", pcmanfm.read_text())
         self.assertIn("edge=bottom", panel.read_text())
         for name in ("browser", "files", "terminal"):
             self.assertIn(

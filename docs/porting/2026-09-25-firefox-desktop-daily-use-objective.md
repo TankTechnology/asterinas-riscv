@@ -79,11 +79,14 @@ added 213 ms, so this is attribution evidence, not a comparable latency
 baseline or a measured acceleration. The [thread-level record](evidence/2026-09-25-firefox-online-desktop/README.md#physical-firefox-thread-attribution-and-persistent-home-timeline)
 includes the uploaded bundle, QEMU visual capture, and RockOS recovery.
 
-The desktop wallpaper is now a subdued navy/blue vector background, with a
-quiet left edge for launchers. The LXPanel uses its dark tint so its light menu
-and clock text remain readable, and Files/Terminal use brighter SVG icons.
-A 1280×1024 QEMU interaction capture verified the wallpaper, three launchers
-and bottom panel; physical HDMI appearance remains to be checked.
+The desktop now defaults to an original anime-style coastal-town wallpaper,
+with a quiet left edge for launchers. PCManFM crops proportionally to fill the
+active canvas; LXPanel retains its dark tint and Files/Terminal retain brighter
+SVG icons. A 1280×1024 QEMU interaction capture verified the image, three
+launchers and bottom panel. A fresh RockOS serial query found a connected
+2560×1600 monitor, while Asterinas still inherits a 1920×1080 firmware
+framebuffer. The wallpaper fills that current canvas; native-resolution HDMI
+output and the physical appearance of the new asset remain to be tested.
 
 The next persistent-home, isolated-console Desktop menu generation has been
 prepared and staged as an immutable canary. Its active selector is still the

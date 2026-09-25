@@ -1492,6 +1492,9 @@ install_online_desktop_shell() {
     install -D -m 0644 -- \
         "$script_directory/desktop_wallpaper.svg" \
         "$stage/usr/share/asterinas/desktop-wallpaper.svg"
+    install -D -m 0644 -- \
+        "$script_directory/desktop_anime_wallpaper.png" \
+        "$stage/usr/share/asterinas/desktop-anime-wallpaper.png"
     local icon
     for icon in files terminal; do
         install -D -m 0644 -- \
@@ -1601,6 +1604,9 @@ configure_desktop() {
         install -D -m 0644 -- \
             "$script_directory/desktop_wallpaper.svg" \
             "$stage/usr/share/asterinas/desktop-wallpaper.svg"
+        install -D -m 0644 -- \
+            "$script_directory/desktop_anime_wallpaper.png" \
+            "$stage/usr/share/asterinas/desktop-anime-wallpaper.png"
         local icon
         for icon in files terminal; do
             install -D -m 0644 -- \
@@ -2175,6 +2181,7 @@ browser_web_runtime_digest() {
     local -a inputs=(
         desktop_m5_session.sh
         desktop_wallpaper.svg
+        desktop_anime_wallpaper.png
         desktop_files_icon.svg
         desktop_terminal_icon.svg
         desktop_pcmanfm.conf
