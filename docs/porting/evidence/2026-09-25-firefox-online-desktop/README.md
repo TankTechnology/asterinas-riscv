@@ -710,3 +710,12 @@ with independent safety timers armed; the precise trigger was not separated.
 A fresh RockOS root reconnect established boot ID
 `6a8f2d83-6d1c-4561-99bd-a88617b4487b`, unchanged vendor/active/canary
 selector hashes, and unmounted partition 2.
+
+## Megrez CPU clock attribution
+
+A short opt-in board probe measured Asterinas at 1.400 GHz on the boot hart.
+RockOS A/B/A at 1.8/1.4/1.8 GHz and read-only PLL register snapshots support
+the frequency attribution. This identifies a CPU-clock gap, not a browser
+speedup; the 1.8 GHz CPU OPP declares a higher voltage and the board voltage
+path is not yet established. The [clock attribution record](cpu-clock-attribution.md)
+links the raw logs, exact artifact hashes, and RockOS recovery evidence.
