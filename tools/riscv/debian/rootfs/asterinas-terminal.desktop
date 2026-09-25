@@ -4,6 +4,6 @@ Type=Application
 Name=Terminal
 Comment=Open an Asterinas shell
 Exec=xterm -title Asterinas-Terminal
-Icon=utilities-terminal
+Icon=/usr/share/asterinas/desktop-terminal-icon.svg
 Terminal=false
 Categories=System;TerminalEmulator;

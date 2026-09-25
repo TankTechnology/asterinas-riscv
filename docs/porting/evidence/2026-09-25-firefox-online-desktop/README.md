@@ -728,6 +728,17 @@ The QEMU root began with an empty timeline, so this run exercises the reset
 command but does not prove that old persistent-home markers are erased on the
 board. A bounded board boot with this derived root is still required.
 
+A final icon pass replaced the low-contrast theme defaults for Files and
+Terminal with small, filter-free SVG icons. Both desktop launchers and LXPanel
+use the same assets; the full root builder installs them for the basic and
+online desktop profiles. The refreshed development root SHA-256 is
+`e67b49e5160ad93323c48e1dde205235c00221543348999e3648b436425e8a3a`.
+The [66.602-second QEMU result](qemu-wallpaper-icons-result.json) completed
+all six interaction captures, and the [final minimized frame](qemu-wallpaper-icons-minimized.png)
+visually confirms Files, Firefox, and Terminal icons against the new wallpaper
+and the dark panel. This later icon variant has not yet been installed on the
+physical board.
+
 ## Current desktop menu candidate, not promoted
 
 The installed `/boot/extlinux/asterinas.conf` still selects the older
