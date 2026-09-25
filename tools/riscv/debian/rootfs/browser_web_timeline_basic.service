@@ -6,6 +6,7 @@ Before=basic.target
 
 [Service]
 Type=oneshot
+User=asterinas
 ExecStart=/usr/lib/asterinas/browser-web-timeline basic
 RemainAfterExit=yes
 
