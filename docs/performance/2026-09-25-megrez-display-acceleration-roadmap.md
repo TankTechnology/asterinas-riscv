@@ -76,6 +76,12 @@ Do not reboot the current desktop merely to repeat reference-system discovery.
   pixels and input-to-visible-frame latency are still unverified; the path
   remains opt-in. See the
   [native scanout gate](2026-09-26-megrez-native-scanout-gate.md).
+- The native backend now reserves its entire 64 MiB GEM pool below the DC's
+  4 GiB address limit before selection, falling back to firmware display if
+  bounded allocation fails. A six-stage QEMU display gate and one selected
+  physical boot passed; the earlier intermittent Xorg `EINVAL` remains
+  unexplained because that boot did not record its pool address. See the
+  [bounded native DMA gate](2026-09-26-megrez-bounded-native-dma.md).
 - The actual RockOS image has GPU userspace packages but no active PowerVR
   render node: its running `6.6.87` kernel does not match the installed
   `pvrsrvkm` module's `6.6.87-win2030` vermagic. Establish a matching RockOS

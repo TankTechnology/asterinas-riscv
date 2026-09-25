@@ -188,7 +188,19 @@ impl Eic7700Scanout {
             self.mode_width,
             self.mode_height,
         )
-        .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid native scanout buffer"))?;
+        .ok_or_else(|| {
+            ostd::warn!(
+                "ASTERINAS_DC_NATIVE reject addr={:#x} size={} width={} height={} pitch={} mode={}x{}",
+                address,
+                buffer.size_bytes(),
+                buffer.dimensions().0,
+                buffer.dimensions().1,
+                buffer.pitch_bytes(),
+                self.mode_width,
+                self.mode_height,
+            );
+            Error::with_message(Errno::EINVAL, "invalid native scanout buffer")
+        })?;
         if buffer.pitch_bytes() != self.mode_pitch {
             return_errno_with_message!(Errno::EINVAL, "scanout pitch differs from DC mode");
         }
