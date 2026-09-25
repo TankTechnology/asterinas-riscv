@@ -96,12 +96,20 @@ impl ScanoutBuffer {
     /// Only meaningful for a backend that hands the address to something else;
     /// the pool is allocated contiguous, so a failure here means the pool was
     /// not set up as this module assumes.
-    fn paddr(&self) -> Result<u64> {
+    pub(super) fn paddr(&self) -> Result<u64> {
         self.source
             .paddr()
             .and_then(|base| base.checked_add(self.source_offset_bytes))
             .map(|address| address as u64)
             .ok_or_else(|| Error::with_message(Errno::ENOMEM, "scanout backing is not contiguous"))
+    }
+
+    pub(super) fn pitch_bytes(&self) -> usize {
+        self.pitch_bytes
+    }
+
+    pub(super) fn size_bytes(&self) -> usize {
+        self.size_bytes as usize
     }
 }
 
@@ -171,6 +179,10 @@ impl DamageRect {
         u64::from(self.x2 - self.x1)
             .saturating_mul(u64::from(self.y2 - self.y1))
             .saturating_mul(BGRX8888_BYTES_PER_PIXEL as u64)
+    }
+
+    pub(super) fn bounds(&self) -> (u32, u32, u32, u32) {
+        (self.x1, self.y1, self.x2, self.y2)
     }
 }
 
