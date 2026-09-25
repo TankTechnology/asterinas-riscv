@@ -11,6 +11,7 @@ import unittest
 import subprocess
 
 from tools.riscv.firefox_debug_tool import manifest, summarize
+from tools.riscv.debian.rootfs import firefox_startup_profile
 from tools.riscv.debian.rootfs.firefox_startup_profile import (
     _UBOOT_COMMAND_SAFE_LIMIT,
     _diagnostic_kernel_args,
@@ -20,7 +21,67 @@ from tools.riscv.debian.rootfs.firefox_startup_profile import (
 )
 
 
+class _StaticSerial:
+    def __init__(self, transcript: bytes) -> None:
+        self.transcript = transcript
+
+    def wait_for(self, marker: bytes, deadline: float, *, start: int = 0) -> bytes:
+        if self.transcript.find(marker, start) < 0:
+            raise TimeoutError(f"missing {marker!r}")
+        return self.transcript
+
+    def wait_for_any(self, markers, deadline: float, *, start: int = 0) -> bytes:
+        found = [(self.transcript.find(marker, start), marker) for marker in markers]
+        found = [entry for entry in found if entry[0] >= 0]
+        if not found:
+            raise TimeoutError("missing startup marker")
+        return min(found)[1]
+
+
 class FirefoxDebugToolTests(unittest.TestCase):
+    def test_startup_capture_accepts_serial_events_without_user_console_markers(self) -> None:
+        self.assertTrue(hasattr(firefox_startup_profile, "_capture_startup_markers"))
+        records = firefox_startup_profile._capture_startup_markers(
+            _StaticSerial(
+                b"BROWSER_WEB_DESKTOP_STAGE=x-socket-ready pid=10\n"
+                b"ASTERINAS_FIREFOX_WEB_EXEC pid=20\n"
+                b"Marionette\tINFO\tListening on port 2828\n"
+            ),
+            42.0,
+            0.0,
+        )
+
+        self.assertEqual(
+            [record["name"] for record in records],
+            ["x-socket-ready", "firefox-exec", "marionette"],
+        )
+
+    def test_startup_capture_rejects_missing_marionette_endpoint(self) -> None:
+        with self.assertRaisesRegex(TimeoutError, "Marionette"):
+            firefox_startup_profile._capture_startup_markers(
+                _StaticSerial(
+                    b"BROWSER_WEB_DESKTOP_STAGE=x-socket-ready pid=10\n"
+                    b"ASTERINAS_FIREFOX_WEB_EXEC pid=20\n"
+                ),
+                42.0,
+                0.0,
+            )
+
+    def test_startup_capture_accepts_firefox_exec_before_x_socket_log(self) -> None:
+        records = firefox_startup_profile._capture_startup_markers(
+            _StaticSerial(
+                b"ASTERINAS_FIREFOX_WEB_EXEC pid=20\n"
+                b"BROWSER_WEB_DESKTOP_STAGE=x-socket-ready pid=10\n"
+                b"Marionette\tINFO\tListening on port 2828\n"
+            ),
+            42.0,
+            0.0,
+        )
+        self.assertEqual(
+            [record["name"] for record in records],
+            ["firefox-exec", "x-socket-ready", "marionette"],
+        )
+
     def test_startup_profile_publishes_private_structured_timing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "startup-profile.json"
