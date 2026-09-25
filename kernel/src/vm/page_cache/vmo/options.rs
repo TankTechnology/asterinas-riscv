@@ -2,10 +2,10 @@
 
 //! Options for allocating root and child VMOs.
 
-use core::sync::atomic::AtomicUsize;
+use core::{ops::Range, sync::atomic::AtomicUsize};
 
 use align_ext::AlignExt;
-use ostd::mm::{FrameAllocOptions, Segment};
+use ostd::mm::{FrameAllocOptions, Paddr, Segment};
 use xarray::XArray;
 
 use super::{Vmo, VmoFlags, WritableMappingStatus};
@@ -96,7 +96,25 @@ impl VmoOptions {
             backend,
             ..
         } = self;
-        let vmo = alloc_vmo(size, flags, backend)?;
+        let vmo = alloc_vmo(size, flags, backend, None)?;
+        Ok(Arc::new(vmo))
+    }
+
+    /// Allocates a physically contiguous VMO wholly inside `paddr_range`.
+    ///
+    /// This is for devices whose DMA address registers cannot reach all RAM.
+    /// The physical window is exclusive at its upper end. Resizable and backed
+    /// VMOs are refused because later page growth or recommit would escape it.
+    pub(crate) fn alloc_contiguous_in(self, paddr_range: Range<Paddr>) -> Result<Arc<Vmo>> {
+        if self.flags.contains(VmoFlags::RESIZABLE) || self.backend.is_some() {
+            return_errno_with_message!(Errno::EINVAL, "bounded VMO must be fixed and anonymous");
+        }
+        let vmo = alloc_vmo(
+            self.size,
+            self.flags | VmoFlags::CONTIGUOUS,
+            self.backend,
+            Some(paddr_range),
+        )?;
         Ok(Arc::new(vmo))
     }
 }
@@ -105,9 +123,10 @@ fn alloc_vmo(
     size: usize,
     flags: VmoFlags,
     backend: Option<Weak<dyn PageCacheBackend>>,
+    paddr_range: Option<Range<Paddr>>,
 ) -> Result<Vmo> {
     let size = size.align_up(PAGE_SIZE);
-    let pages = committed_pages_if_continuous(flags, size)?;
+    let pages = committed_pages_if_continuous(flags, size, paddr_range)?;
     let writable_mapping_status = WritableMappingStatus::default();
     Ok(Vmo {
         backend,
@@ -118,12 +137,21 @@ fn alloc_vmo(
     })
 }
 
-fn committed_pages_if_continuous(flags: VmoFlags, size: usize) -> Result<XArray<CachePage>> {
+fn committed_pages_if_continuous(
+    flags: VmoFlags,
+    size: usize,
+    paddr_range: Option<Range<Paddr>>,
+) -> Result<XArray<CachePage>> {
     if flags.contains(VmoFlags::CONTIGUOUS) {
-        // if the vmo is continuous, we need to allocate frames for the vmo
+        // Contiguous VMOs commit every page now, before a device can use them.
         let frames_num = size / PAGE_SIZE;
-        let segment: Segment<CachePageMeta> = FrameAllocOptions::new()
-            .alloc_segment_with(frames_num, |_| CachePageMeta::default())?;
+        let allocator = FrameAllocOptions::new();
+        let segment: Segment<CachePageMeta> = match paddr_range {
+            Some(range) => {
+                allocator.alloc_segment_with_in(frames_num, range, |_| CachePageMeta::default())?
+            }
+            None => allocator.alloc_segment_with(frames_num, |_| CachePageMeta::default())?,
+        };
         let committed_pages = XArray::new();
         let mut locked_pages = committed_pages.lock();
         let mut cursor = locked_pages.cursor_mut(0);
@@ -163,6 +191,43 @@ mod test {
             .alloc()
             .unwrap();
         assert_eq!(vmo.size(), 10 * PAGE_SIZE);
+    }
+
+    #[ktest]
+    fn contiguous_vmo_stays_inside_requested_physical_window() {
+        let limit = u32::MAX as usize + 1;
+        let size = 3 * PAGE_SIZE;
+        let vmo = VmoOptions::new(size).alloc_contiguous_in(0..limit).unwrap();
+        let start = vmo.paddr().unwrap();
+        assert!(start.checked_add(size).unwrap() <= limit);
+    }
+
+    #[ktest]
+    fn contiguous_vmo_rejects_empty_physical_window() {
+        assert!(
+            VmoOptions::new(PAGE_SIZE)
+                .alloc_contiguous_in(PAGE_SIZE..PAGE_SIZE)
+                .is_err()
+        );
+    }
+
+    #[ktest]
+    fn bounded_contiguous_vmo_rejects_resizable_source() {
+        assert!(
+            VmoOptions::new_anon(PAGE_SIZE)
+                .alloc_contiguous_in(0..(u32::MAX as usize + 1))
+                .is_err()
+        );
+    }
+
+    #[ktest]
+    fn bounded_contiguous_vmo_rejects_extent_larger_than_window() {
+        let limit = u32::MAX as usize + 1;
+        assert!(
+            VmoOptions::new(2 * PAGE_SIZE)
+                .alloc_contiguous_in(limit - PAGE_SIZE..limit)
+                .is_err()
+        );
     }
 
     #[ktest]
