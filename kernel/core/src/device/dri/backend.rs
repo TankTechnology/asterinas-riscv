@@ -48,7 +48,10 @@ static PHASE_PROFILE: AtomicBool = AtomicBool::new(false);
 aster_cmdline::define_flag_param!("asterinas.drm_phase_profile", PHASE_PROFILE);
 
 /// Copy directly from committed GEM pages to the firmware framebuffer.
-static DIRECT_COPY: AtomicBool = AtomicBool::new(false);
+///
+/// The earlier row-staging path remains available with
+/// `asterinas.drm_direct_copy=0` for a selected recovery boot.
+static DIRECT_COPY: AtomicBool = AtomicBool::new(true);
 aster_cmdline::define_flag_param!("asterinas.drm_direct_copy", DIRECT_COPY);
 
 /// A framebuffer ready for presentation.
