@@ -30,3 +30,22 @@ For the next standard browser baseline, a local copy of the unmodified [WebKit S
 RockOS fetched its `index.html` from the host over the board Ethernet link with HTTP 200.
 RockOS currently runs Firefox 131.0.2 at 2560×1600; the signed Asterinas Firefox evidence uses 143.0.3, and Asterinas still inherits a 1920×1080 firmware framebuffer.
 No Speedometer score was collected, and scores from those unmatched browser/display configurations would not establish an Asterinas-versus-RockOS speed ratio.
+
+## Bounded instruction-cache diagnostic
+
+The same QEMU inputs were used for a default / diagnostic / default startup sequence.
+The middle boot alone set `asterinas.vm_local_icache=1` through the sampler's `--local-icache-diagnostic` option.
+All three boots kept `asterinas.vm_profile=1` and stopped at the listening Marionette endpoint.
+The diagnostic changes executable-page cache synchronization semantics and is not an SMP correctness mode.
+
+| Run | Marionette host elapsed | Executable-page faults at 147,456 total faults | Accumulated executable-fault jiffies |
+| --- | ---: | ---: | ---: |
+| Default A | 26.644 s | 6,215 | 1,116 |
+| Local-only diagnostic | 26.198 s | 6,285 | 880 |
+| Default B | 27.041 s | 6,152 | 1,333 |
+
+The first [default profile](startup-profile.json), [diagnostic profile](startup-local-icache-profile.json), and [final default profile](startup-control-b-profile.json) have matching raw [first](startup.serial.log.gz), [diagnostic](startup-local-icache.serial.log.gz), and [final](startup-control-b.serial.log.gz) serial transcripts.
+The aggregate fault counters were read at the same 147,456-fault reporting boundary, but their per-boot fault mix differs.
+The diagnostic boot was 0.45 seconds faster than the faster default boot, approximately 1.7% of that default's end-to-end startup time.
+One TCG A/B/A sequence does not establish a production speedup or justify weakening cross-hart instruction-cache synchronization.
+It also cannot explain the measured physical 720p video-size cliff, whose sampled hot PCs are in Firefox user-space SWGL conversion.
