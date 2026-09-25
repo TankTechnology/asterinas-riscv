@@ -1,0 +1,153 @@
+{
+  "boot_id": "d2e3d7fd-89d1-4219-a68b-8594fb2b8f9a",
+  "collector_exit_codes": {
+    "dmesg": "0",
+    "journal": "0",
+    "units": "0",
+    "workload": "0"
+  },
+  "firefox_version": "143.0.3",
+  "journal_warning_counts_by_phase": {
+    "journal_missed_kernel_messages": {
+      "outside_workload": 5
+    },
+    "kmsg_overrun": {
+      "outside_workload": 3
+    },
+    "scheduler_switch_contention": {
+      "outside_workload": 1009,
+      "speedometer": 3
+    },
+    "scm_rights_resource_warning": {
+      "outside_workload": 39
+    },
+    "unsupported_wall_wait": {
+      "video_pc_sample": 131
+    }
+  },
+  "pc_samples": {
+    "locations": {
+      "/usr/lib/riscv64-linux-gnu/libc.so.6": 13,
+      "void linear_blit<true>": 8,
+      "void linear_row_yuv<false>": 39
+    },
+    "total": 60
+  },
+  "phases": [
+    {
+      "browser_cpu": {
+        "system_seconds": 0.61,
+        "user_seconds": 0.93
+      },
+      "dropped_frames": null,
+      "name": "idle_before",
+      "rdd_cpu": {
+        "system_seconds": 0.0,
+        "user_seconds": 0.0
+      },
+      "renderer_and_swcomposite_cpu_seconds": 0.0,
+      "score": null,
+      "wall_seconds": 10.243,
+      "xorg_cpu": {
+        "system_seconds": 0.0,
+        "user_seconds": 0.0
+      }
+    },
+    {
+      "browser_cpu": {
+        "system_seconds": 40.54,
+        "user_seconds": 149.02
+      },
+      "dropped_frames": null,
+      "name": "speedometer",
+      "rdd_cpu": {
+        "system_seconds": 0.01,
+        "user_seconds": 0.01
+      },
+      "renderer_and_swcomposite_cpu_seconds": 9.16,
+      "score": "0.4348",
+      "wall_seconds": 116.494,
+      "xorg_cpu": {
+        "system_seconds": 0.17,
+        "user_seconds": 0.83
+      }
+    },
+    {
+      "browser_cpu": {
+        "system_seconds": 6.54,
+        "user_seconds": 26.12
+      },
+      "dropped_frames": 127,
+      "name": "video_base_a",
+      "rdd_cpu": {
+        "system_seconds": 1.93,
+        "user_seconds": 7.23
+      },
+      "renderer_and_swcomposite_cpu_seconds": 15.33,
+      "score": null,
+      "wall_seconds": 12.165,
+      "xorg_cpu": {
+        "system_seconds": 0.09,
+        "user_seconds": 0.49
+      }
+    },
+    {
+      "browser_cpu": {
+        "system_seconds": 5.4,
+        "user_seconds": 24.56
+      },
+      "dropped_frames": 141,
+      "name": "video_pc_sample",
+      "rdd_cpu": {
+        "system_seconds": 1.66,
+        "user_seconds": 7.39
+      },
+      "renderer_and_swcomposite_cpu_seconds": 14.47,
+      "score": null,
+      "wall_seconds": 11.175,
+      "xorg_cpu": {
+        "system_seconds": 0.07,
+        "user_seconds": 0.4
+      }
+    },
+    {
+      "browser_cpu": {
+        "system_seconds": 5.75,
+        "user_seconds": 26.74
+      },
+      "dropped_frames": 133,
+      "name": "video_base_b",
+      "rdd_cpu": {
+        "system_seconds": 1.64,
+        "user_seconds": 7.73
+      },
+      "renderer_and_swcomposite_cpu_seconds": 15.45,
+      "score": null,
+      "wall_seconds": 11.486,
+      "xorg_cpu": {
+        "system_seconds": 0.08,
+        "user_seconds": 0.43
+      }
+    },
+    {
+      "browser_cpu": {
+        "system_seconds": 0.06,
+        "user_seconds": 0.23
+      },
+      "dropped_frames": null,
+      "name": "idle_after",
+      "rdd_cpu": {
+        "system_seconds": 0.0,
+        "user_seconds": 0.0
+      },
+      "renderer_and_swcomposite_cpu_seconds": 0.0,
+      "score": null,
+      "wall_seconds": 10.258,
+      "xorg_cpu": {
+        "system_seconds": 0.0,
+        "user_seconds": 0.0
+      }
+    }
+  ],
+  "workload_error": null
+}
