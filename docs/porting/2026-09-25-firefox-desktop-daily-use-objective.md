@@ -22,9 +22,25 @@ otherwise empty X root window.
 
 ## Current checkpoint
 
-The current `main` Firefox 143 JIT root (ext2 SHA-256
+The latest signed `browser-web` root (ext2 SHA-256
+`c9716e8a6f40ca9492df05a745057203bc869e18c4e7b61899c58e2f4b41a8e8`)
+is installed on Megrez partition 2 with the previous Firefox profile and
+Downloads restored.
+Its six-state QEMU desktop gate passed in 67.304 seconds.
+An uncovered physical screenshot confirms the anime wallpaper fills the
+1920×1080 framebuffer behind three launchers and the bottom panel.
+Mousepad saved text, Ristretto displayed an image, Xarchiver listed a ZIP,
+and Atril rendered a PDF on the board.
+`dbus-x11` fixed Atril's direct launch; the isolated debug-console target now
+starts the recovery service automatically.
+Two short Asterinas boots observed that service active and returned through
+firmware to a reconnected RockOS root console.
+The [desktop-application evidence](evidence/2026-09-25-desktop-apps/README.md)
+contains images, identities, hashes, and remaining limits.
+
+An earlier Firefox 143 JIT root (ext2 SHA-256
 `d4f4e88fb20a8938e7270f4ceaf9c79855ba3d038acbd6f1030fe269dfca9bd4`)
-is installed on Megrez partition 2 after a verified 4-GiB backup and
+was installed on Megrez partition 2 after a verified 4-GiB backup and
 byte-for-byte post-write comparison. Its six-state QEMU desktop gate passed.
 On the board, the persistent-home desktop visibly retained its wallpaper,
 three launchers, and bottom panel when Firefox was minimized; the taskbar
@@ -85,8 +101,8 @@ active canvas; LXPanel retains its dark tint and Files/Terminal retain brighter
 SVG icons. A 1280×1024 QEMU interaction capture verified the image, three
 launchers and bottom panel. A fresh RockOS serial query found a connected
 2560×1600 monitor, while Asterinas still inherits a 1920×1080 firmware
-framebuffer. The wallpaper fills that current canvas; native-resolution HDMI
-output and the physical appearance of the new asset remain to be tested.
+framebuffer. The wallpaper now visibly fills the physical 1920×1080 desktop;
+native-resolution HDMI output remains to be tested.
 
 The next persistent-home, isolated-console Desktop menu generation has been
 prepared and staged as an immutable canary. Its active selector is still the
