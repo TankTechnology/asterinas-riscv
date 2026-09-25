@@ -242,6 +242,28 @@ runs to learn measurement spread. QEMU checks functionality and repeatability;
 physical runs establish perceived performance. Do not replace this with an
 hours-long load test or compare unrelated Firefox builds as a speedup claim.
 
+For a comparable browser score, use published workloads rather than another
+project-specific page. First check whether the existing Firefox package can
+finish [Speedometer 3.1](https://browserbench.org/Speedometer3.1/) on Megrez;
+it measures web-app responsiveness and exports JSON. A clean profile, focused
+window, fixed display mode, and the same browser package are required for an
+Asterinas/RockOS comparison. Use
+[JetStream 2.2](https://browserbench.org/JetStream2.2/) only to separate
+JavaScript/WebAssembly compute from desktop rendering, and
+[MotionMark 1.3](https://browserbench.org/MotionMark1.3.2/) only when graphics
+throughput is the question; its score depends on display size and refresh
+rate. Each first run is a feasibility check, not a performance claim.
+
+Browser *launch* needs a different published test:
+[Mozilla Talos `ts_paint`](https://firefox-source-docs.mozilla.org/testing/perfdocs/talos.html)
+measures process start through the startup page's paint and load events.
+Its `mach talos-test` harness expects a Mozilla source/build environment, so
+establish that it can drive our packaged RISC-V Firefox before promising a
+board startup score. [Browsertime](https://firefox-source-docs.mozilla.org/testing/perfdocs/browsertime.html)
+can drive a selected Firefox binary for page-load timing, but page-load time
+must not be reported as browser startup. Keep our local fixture and video
+gates for functional regressions and path diagnosis, not as standard scores.
+
 ### 3. Attribute the slow path before changing it
 
 For browser startup and navigation, separate CPU execution, runnable delay,
