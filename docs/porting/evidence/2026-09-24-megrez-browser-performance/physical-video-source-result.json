@@ -1,0 +1,318 @@
+{
+  "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+  "image_sha256": "3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e",
+  "samples": [
+    {
+      "run": 1,
+      "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+      "url": "http://10.100.19.216:17895/video-source-perf.html?mode=direct&w=1280&h=720&src=clip720.webm&run=1",
+      "navigate_seconds": 0.811,
+      "elapsed_seconds": 10.248,
+      "page": {
+        "phase": "done",
+        "text": "{\"mode\":\"direct\",\"source\":\"clip720.webm\",\"width\":1280,\"height\":720,\"layoutWidth\":1280,\"layoutHeight\":720,\"renderedWidth\":1280,\"renderedHeight\":720,\"videoWidth\":1280,\"videoHeight\":720,\"ended\":true,\"readyState\":2,\"error\":null,\"totalFrames\":300,\"droppedFrames\":143,\"callbackCount\":230,\"drawCount\":0,\"callbackOver50\":25,\"drawSumMs\":0,\"drawP50Ms\":null,\"drawP95Ms\":null,\"drawMaxMs\":null,\"firstCallbackMs\":744.1,\"lastCallbackMs\":10835.16,\"lastPresentedFrames\":300,\"lastMediaTime\":9.967,\"playbackWallMs\":10130,\"visibility\":\"visible\"}",
+        "visibility": "visible",
+        "url": "http://10.100.19.216:17895/video-source-perf.html?mode=direct&w=1280&h=720&src=clip720.webm&run=1",
+        "readyState": "complete",
+        "result": {
+          "mode": "direct",
+          "source": "clip720.webm",
+          "width": 1280,
+          "height": 720,
+          "layoutWidth": 1280,
+          "layoutHeight": 720,
+          "renderedWidth": 1280,
+          "renderedHeight": 720,
+          "videoWidth": 1280,
+          "videoHeight": 720,
+          "ended": true,
+          "readyState": 2,
+          "error": null,
+          "totalFrames": 300,
+          "droppedFrames": 143,
+          "callbackCount": 230,
+          "drawCount": 0,
+          "callbackOver50": 25,
+          "drawSumMs": 0,
+          "drawP50Ms": null,
+          "drawP95Ms": null,
+          "drawMaxMs": null,
+          "firstCallbackMs": 744.1,
+          "lastCallbackMs": 10835.16,
+          "lastPresentedFrames": 300,
+          "lastMediaTime": 9.967,
+          "playbackWallMs": 10130,
+          "visibility": "visible"
+        }
+      },
+      "firefox_ticks": 1841,
+      "xorg_ticks": 46,
+      "hot_threads": [
+        {
+          "tid": "1557",
+          "name": "Renderer",
+          "ticks": 756
+        },
+        {
+          "tid": "1902",
+          "name": "SwComposite",
+          "ticks": 744
+        },
+        {
+          "tid": "360",
+          "name": "firefox",
+          "ticks": 131
+        },
+        {
+          "tid": "1567",
+          "name": "Compositor",
+          "ticks": 55
+        },
+        {
+          "tid": "1295",
+          "name": "IPC I/O Parent",
+          "ticks": 50
+        },
+        {
+          "tid": "1292",
+          "name": "glean.dispatche",
+          "ticks": 27
+        }
+      ]
+    },
+    {
+      "run": 2,
+      "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+      "url": "http://10.100.19.216:17895/video-source-perf.html?mode=direct&w=1280&h=720&src=clip360.webm&run=2",
+      "navigate_seconds": 0.927,
+      "elapsed_seconds": 10.223,
+      "page": {
+        "phase": "done",
+        "text": "{\"mode\":\"direct\",\"source\":\"clip360.webm\",\"width\":1280,\"height\":720,\"layoutWidth\":1280,\"layoutHeight\":720,\"renderedWidth\":1280,\"renderedHeight\":720,\"videoWidth\":640,\"videoHeight\":360,\"ended\":true,\"readyState\":2,\"error\":null,\"totalFrames\":300,\"droppedFrames\":92,\"callbackCount\":234,\"drawCount\":0,\"callbackOver50\":22,\"drawSumMs\":0,\"drawP50Ms\":null,\"drawP95Ms\":null,\"drawMaxMs\":null,\"firstCallbackMs\":679.68,\"lastCallbackMs\":10996.3,\"lastPresentedFrames\":300,\"lastMediaTime\":9.967,\"playbackWallMs\":10351,\"visibility\":\"visible\"}",
+        "visibility": "visible",
+        "url": "http://10.100.19.216:17895/video-source-perf.html?mode=direct&w=1280&h=720&src=clip360.webm&run=2",
+        "readyState": "complete",
+        "result": {
+          "mode": "direct",
+          "source": "clip360.webm",
+          "width": 1280,
+          "height": 720,
+          "layoutWidth": 1280,
+          "layoutHeight": 720,
+          "renderedWidth": 1280,
+          "renderedHeight": 720,
+          "videoWidth": 640,
+          "videoHeight": 360,
+          "ended": true,
+          "readyState": 2,
+          "error": null,
+          "totalFrames": 300,
+          "droppedFrames": 92,
+          "callbackCount": 234,
+          "drawCount": 0,
+          "callbackOver50": 22,
+          "drawSumMs": 0,
+          "drawP50Ms": null,
+          "drawP95Ms": null,
+          "drawMaxMs": null,
+          "firstCallbackMs": 679.68,
+          "lastCallbackMs": 10996.3,
+          "lastPresentedFrames": 300,
+          "lastMediaTime": 9.967,
+          "playbackWallMs": 10351,
+          "visibility": "visible"
+        }
+      },
+      "firefox_ticks": 2169,
+      "xorg_ticks": 59,
+      "hot_threads": [
+        {
+          "tid": "1557",
+          "name": "Renderer",
+          "ticks": 916
+        },
+        {
+          "tid": "1902",
+          "name": "SwComposite",
+          "ticks": 866
+        },
+        {
+          "tid": "360",
+          "name": "firefox",
+          "ticks": 156
+        },
+        {
+          "tid": "1567",
+          "name": "Compositor",
+          "ticks": 61
+        },
+        {
+          "tid": "1295",
+          "name": "IPC I/O Parent",
+          "ticks": 52
+        },
+        {
+          "tid": "1292",
+          "name": "glean.dispatche",
+          "ticks": 32
+        }
+      ]
+    },
+    {
+      "run": 3,
+      "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+      "url": "http://10.100.19.216:17895/video-source-perf.html?mode=direct&w=1280&h=720&src=clip360.webm&run=3",
+      "navigate_seconds": 0.585,
+      "elapsed_seconds": 10.309,
+      "page": {
+        "phase": "done",
+        "text": "{\"mode\":\"direct\",\"source\":\"clip360.webm\",\"width\":1280,\"height\":720,\"layoutWidth\":1280,\"layoutHeight\":720,\"renderedWidth\":1280,\"renderedHeight\":720,\"videoWidth\":640,\"videoHeight\":360,\"ended\":true,\"readyState\":2,\"error\":null,\"totalFrames\":300,\"droppedFrames\":96,\"callbackCount\":239,\"drawCount\":0,\"callbackOver50\":11,\"drawSumMs\":0,\"drawP50Ms\":null,\"drawP95Ms\":null,\"drawMaxMs\":null,\"firstCallbackMs\":498.74,\"lastCallbackMs\":10605.24,\"lastPresentedFrames\":300,\"lastMediaTime\":9.967,\"playbackWallMs\":10132,\"visibility\":\"visible\"}",
+        "visibility": "visible",
+        "url": "http://10.100.19.216:17895/video-source-perf.html?mode=direct&w=1280&h=720&src=clip360.webm&run=3",
+        "readyState": "complete",
+        "result": {
+          "mode": "direct",
+          "source": "clip360.webm",
+          "width": 1280,
+          "height": 720,
+          "layoutWidth": 1280,
+          "layoutHeight": 720,
+          "renderedWidth": 1280,
+          "renderedHeight": 720,
+          "videoWidth": 640,
+          "videoHeight": 360,
+          "ended": true,
+          "readyState": 2,
+          "error": null,
+          "totalFrames": 300,
+          "droppedFrames": 96,
+          "callbackCount": 239,
+          "drawCount": 0,
+          "callbackOver50": 11,
+          "drawSumMs": 0,
+          "drawP50Ms": null,
+          "drawP95Ms": null,
+          "drawMaxMs": null,
+          "firstCallbackMs": 498.74,
+          "lastCallbackMs": 10605.24,
+          "lastPresentedFrames": 300,
+          "lastMediaTime": 9.967,
+          "playbackWallMs": 10132,
+          "visibility": "visible"
+        }
+      },
+      "firefox_ticks": 2089,
+      "xorg_ticks": 57,
+      "hot_threads": [
+        {
+          "tid": "1557",
+          "name": "Renderer",
+          "ticks": 892
+        },
+        {
+          "tid": "1902",
+          "name": "SwComposite",
+          "ticks": 859
+        },
+        {
+          "tid": "360",
+          "name": "firefox",
+          "ticks": 117
+        },
+        {
+          "tid": "1567",
+          "name": "Compositor",
+          "ticks": 59
+        },
+        {
+          "tid": "1295",
+          "name": "IPC I/O Parent",
+          "ticks": 52
+        },
+        {
+          "tid": "1292",
+          "name": "glean.dispatche",
+          "ticks": 31
+        }
+      ]
+    },
+    {
+      "run": 4,
+      "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+      "url": "http://10.100.19.216:17895/video-source-perf.html?mode=direct&w=1280&h=720&src=clip720.webm&run=4",
+      "navigate_seconds": 0.742,
+      "elapsed_seconds": 10.248,
+      "page": {
+        "phase": "done",
+        "text": "{\"mode\":\"direct\",\"source\":\"clip720.webm\",\"width\":1280,\"height\":720,\"layoutWidth\":1280,\"layoutHeight\":720,\"renderedWidth\":1280,\"renderedHeight\":720,\"videoWidth\":1280,\"videoHeight\":720,\"ended\":true,\"readyState\":2,\"error\":null,\"totalFrames\":300,\"droppedFrames\":139,\"callbackCount\":225,\"drawCount\":0,\"callbackOver50\":21,\"drawSumMs\":0,\"drawP50Ms\":null,\"drawP95Ms\":null,\"drawMaxMs\":null,\"firstCallbackMs\":653.56,\"lastCallbackMs\":10842.34,\"lastPresentedFrames\":300,\"lastMediaTime\":9.967,\"playbackWallMs\":10193,\"visibility\":\"visible\"}",
+        "visibility": "visible",
+        "url": "http://10.100.19.216:17895/video-source-perf.html?mode=direct&w=1280&h=720&src=clip720.webm&run=4",
+        "readyState": "complete",
+        "result": {
+          "mode": "direct",
+          "source": "clip720.webm",
+          "width": 1280,
+          "height": 720,
+          "layoutWidth": 1280,
+          "layoutHeight": 720,
+          "renderedWidth": 1280,
+          "renderedHeight": 720,
+          "videoWidth": 1280,
+          "videoHeight": 720,
+          "ended": true,
+          "readyState": 2,
+          "error": null,
+          "totalFrames": 300,
+          "droppedFrames": 139,
+          "callbackCount": 225,
+          "drawCount": 0,
+          "callbackOver50": 21,
+          "drawSumMs": 0,
+          "drawP50Ms": null,
+          "drawP95Ms": null,
+          "drawMaxMs": null,
+          "firstCallbackMs": 653.56,
+          "lastCallbackMs": 10842.34,
+          "lastPresentedFrames": 300,
+          "lastMediaTime": 9.967,
+          "playbackWallMs": 10193,
+          "visibility": "visible"
+        }
+      },
+      "firefox_ticks": 1881,
+      "xorg_ticks": 48,
+      "hot_threads": [
+        {
+          "tid": "1902",
+          "name": "SwComposite",
+          "ticks": 770
+        },
+        {
+          "tid": "1557",
+          "name": "Renderer",
+          "ticks": 767
+        },
+        {
+          "tid": "360",
+          "name": "firefox",
+          "ticks": 131
+        },
+        {
+          "tid": "1567",
+          "name": "Compositor",
+          "ticks": 54
+        },
+        {
+          "tid": "1295",
+          "name": "IPC I/O Parent",
+          "ticks": 50
+        },
+        {
+          "tid": "1292",
+          "name": "glean.dispatche",
+          "ticks": 27
+        }
+      ]
+    }
+  ]
+}

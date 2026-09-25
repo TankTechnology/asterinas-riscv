@@ -1,0 +1,7 @@
+[
+  {
+    "label": "stop-secondary",
+    "nonce": "f320a40340ddec18",
+    "output": "_a=$(tr \"\\0\" \" \" < /proc/3544/cmdline); case \"$_a\" in *a sterinas-profiler-profile*) kill -TERM 3544;; *) exit 1;; esac; sleep 2; pgrep - a firefox; systemctl is-active asterinas-browser-web.service; _s=$?; printf '\\nE ND_%s status=%s uid=%s boot=%s\\n' f320a40340ddec18 \"$_s\" \"$(id -u)\" \"$(cat /proc /sys/kernel/random/boot_id)\"\n360 /usr/bin/firefox --no-remote --new-instance --marionette --profile /home/asterinas/.mozilla/asterinas-browser-web about:blank\nactive\n\nEND_f320a40340ddec18 status=0 uid=0 boot=c6846443-9d90-4ff5-854e-5c4132fcfbbc\nroot@asterinas-debug:/# "
+  }
+]
