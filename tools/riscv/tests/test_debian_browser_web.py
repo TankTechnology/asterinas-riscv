@@ -1684,6 +1684,33 @@ class BrowserWebContractTests(unittest.TestCase):
             online_evidence,
         )
 
+    def test_physical_timeline_reset_discards_prior_boot_markers(self) -> None:
+        source = (ROOTFS / "browser_web_timeline.sh").read_text()
+        with tempfile.TemporaryDirectory() as directory:
+            timeline = Path(directory) / "timeline.log"
+            timeline.write_text("old Firefox exec and ready markers\n")
+            script = Path(directory) / "timeline.sh"
+            script.write_text(
+                source.replace(
+                    "readonly TIMELINE=/home/asterinas/browser-web-timeline.log",
+                    f"readonly TIMELINE={timeline}",
+                )
+            )
+            result = subprocess.run(
+                ["bash", str(script), "reset-physical"],
+                env={**os.environ, "ASTERINAS_BROWSER_WEB_CONSOLE": "/dev/null"},
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertRegex(
+                timeline.read_text(),
+                r"\AA_WEB_TIMELINE marker=BOOT_PHYSICAL_BROWSER_BEGIN "
+                r"guest_monotonic_ns=[1-9][0-9]* firefox_pid=0\n\Z",
+            )
+
     def test_startup_timeline_requires_ordered_guest_monotonic_phases(self) -> None:
         evidence = web_evidence()
         validate_web_evidence(evidence)

@@ -32,6 +32,13 @@ marker() {
 }
 
 case "${1-}" in
+    reset-physical)
+        # The isolated debug-console target starts the desktop with
+        # ignore-dependencies, so sysinit.target's normal begin service never
+        # runs. Clear a persistent HOME just before this browser launch.
+        : >"$TIMELINE"
+        marker BOOT_PHYSICAL_BROWSER_BEGIN
+        ;;
     begin)
         # The file is provisioned with its final owner in the immutable image.
         # Avoid invoking install/chown during early boot: Asterinas may block
