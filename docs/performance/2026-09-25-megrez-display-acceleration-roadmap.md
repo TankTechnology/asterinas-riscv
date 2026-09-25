@@ -44,6 +44,12 @@ Do not reboot the current desktop merely to repeat reference-system discovery.
   display GEM memory with `DMA_ATTR_WRITE_COMBINE`; Asterinas currently maps
   its VMO-backed dumb-buffer pool with the normal write-back page policy. See
   the [handoff evidence](2026-09-25-megrez-dc-handoff.md).
+- A later opt-in row-phase sample of a short Firefox/X11 operation attributed
+  about 54% of sampled row time to GEM reads and 46% to framebuffer writes
+  including synchronization. Xorg CPU time rose by 3.504 s while DRM dirty
+  present time rose by 3.361 s. Optimizing only one side of the copy is
+  unlikely to remove the dominant cost; a DMA-safe zero-copy path remains the
+  P1 target. See the [phase evidence](2026-09-26-megrez-firefox-phase-profile.md).
 
 ## Three implementation choices
 
@@ -194,3 +200,4 @@ and its UAPI is available. Neither subsystem is a prerequisite for P1.
 - [Asterinas current physical boot evidence](2026-09-25-drm-main-physical-boot.md)
 - [P0 Firefox/Xorg/scanout observation](2026-09-25-megrez-firefox-display-p0.md)
 - [Live EIC7700 display handoff and DMA blocker](2026-09-25-megrez-dc-handoff.md)
+- [P0 row-phase profile of a short Firefox operation](2026-09-26-megrez-firefox-phase-profile.md)
