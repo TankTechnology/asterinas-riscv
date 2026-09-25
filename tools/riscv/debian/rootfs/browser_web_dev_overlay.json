@@ -3,6 +3,16 @@
   "profile": "browser-web",
   "files": [
     {
+      "source": "desktop_wallpaper.svg",
+      "destination": "/usr/share/asterinas/desktop-wallpaper.svg",
+      "mode": "0644"
+    },
+    {
+      "source": "desktop_online_lxpanel.conf",
+      "destination": "/home/asterinas/.config/lxpanel/Asterinas/panels/panel",
+      "mode": "0644"
+    },
+    {
       "source": "desktop_m5_network_evidence.sh",
       "destination": "/usr/lib/asterinas/desktop-m5-network-evidence",
       "mode": "0755"

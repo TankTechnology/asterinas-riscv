@@ -2,34 +2,45 @@
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
   <defs>
-    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#071426"/>
-      <stop offset="0.52" stop-color="#12375a"/>
-      <stop offset="1" stop-color="#167a82"/>
+    <linearGradient id="night" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#101a2c"/>
+      <stop offset="0.55" stop-color="#182940"/>
+      <stop offset="1" stop-color="#243457"/>
     </linearGradient>
-    <radialGradient id="glow" cx="50%" cy="48%" r="58%">
-      <stop offset="0" stop-color="#91f2e5" stop-opacity="0.28"/>
-      <stop offset="1" stop-color="#91f2e5" stop-opacity="0"/>
+    <radialGradient id="blue-light" gradientUnits="userSpaceOnUse" cx="1510" cy="330" r="920">
+      <stop offset="0" stop-color="#4386a8" stop-opacity="0.48"/>
+      <stop offset="0.58" stop-color="#356486" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#356486" stop-opacity="0"/>
     </radialGradient>
+    <radialGradient id="violet-light" gradientUnits="userSpaceOnUse" cx="1370" cy="990" r="880">
+      <stop offset="0" stop-color="#72639a" stop-opacity="0.36"/>
+      <stop offset="1" stop-color="#72639a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ridge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3a7891" stop-opacity="0.02"/>
+      <stop offset="0.55" stop-color="#4b789e" stop-opacity="0.24"/>
+      <stop offset="1" stop-color="#726eaa" stop-opacity="0.18"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8ec5d4" stop-opacity="0"/>
+      <stop offset="0.55" stop-color="#8ec5d4" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#b4a8d6" stop-opacity="0.08"/>
+    </linearGradient>
   </defs>
-  <rect width="1920" height="1080" fill="url(#background)"/>
-  <rect width="1920" height="1080" fill="url(#glow)"/>
-  <g transform="translate(960 472)" fill="none" stroke-linecap="round">
-    <ellipse rx="210" ry="82" transform="rotate(-18)" stroke="#65e0d2" stroke-width="8" opacity="0.88"/>
-    <ellipse rx="210" ry="82" transform="rotate(42)" stroke="#b6f7ee" stroke-width="4" opacity="0.62"/>
-    <circle r="56" fill="#ecfffb" stroke="#65e0d2" stroke-width="8"/>
-    <circle cx="194" cy="-78" r="14" fill="#ffffff" stroke="none"/>
-  </g>
-  <text x="960" y="700" text-anchor="middle" fill="#f3fffd"
-        font-family="DejaVu Sans, sans-serif" font-size="82" font-weight="600"
-        letter-spacing="8">ASTERINAS</text>
-  <text x="960" y="764" text-anchor="middle" fill="#bde9e4"
-        font-family="DejaVu Sans, sans-serif" font-size="30" letter-spacing="5">
-    DEBIAN · RISC-V
-  </text>
-  <path d="M480 842 H1440" stroke="#78d8cf" stroke-width="2" opacity="0.45"/>
-  <text x="960" y="900" text-anchor="middle" fill="#c7dfdf"
-        font-family="DejaVu Sans, sans-serif" font-size="24">
-    A Linux-compatible desktop powered by the Asterinas kernel
-  </text>
+  <rect width="1920" height="1080" fill="url(#night)"/>
+  <rect width="1920" height="1080" fill="url(#blue-light)"/>
+  <rect width="1920" height="1080" fill="url(#violet-light)"/>
+  <path d="M720 1080 C930 860 1140 810 1400 760 C1620 718 1780 620 1920 420
+           L1920 1080 Z" fill="url(#ridge)"/>
+  <path d="M990 1080 C1180 876 1320 820 1530 756 C1710 701 1810 616 1920 480"
+        fill="none" stroke="url(#line)" stroke-width="2"/>
+  <path d="M1170 1080 C1310 905 1480 839 1650 764 C1780 707 1870 646 1920 595"
+        fill="none" stroke="url(#line)" stroke-width="2" opacity="0.72"/>
+  <path d="M870 0 C1030 198 1210 278 1400 326 C1600 378 1780 353 1920 290"
+        fill="none" stroke="url(#line)" stroke-width="2" opacity="0.55"/>
+  <path d="M1060 0 C1190 155 1340 219 1530 262 C1690 297 1820 280 1920 244"
+        fill="none" stroke="url(#line)" stroke-width="2" opacity="0.38"/>
+  <circle cx="1600" cy="354" r="5" fill="#b6e6df" opacity="0.78"/>
+  <circle cx="1600" cy="354" r="18" fill="none" stroke="#b6e6df"
+          stroke-width="1.5" opacity="0.35"/>
 </svg>

@@ -663,8 +663,70 @@ using the unchanged signed Firefox root. All six screen captures completed;
 the visually inspected [minimized frame](qemu-thread-context-minimized.png)
 shows the wallpaper, launchers, panel, and Firefox task button. This QEMU
 gate checks boot and desktop interaction; it does not exercise the physical
-persistent-HOME timeline regression, which has only host unit-test coverage
-for the revised parser so far.
+persistent-HOME timeline regression.
+
+The subsequent one-time Megrez boot **did** exercise that parser fix without
+editing the persistent timeline. The same signed root, ptrace kernel and DTB
+booted with rebuilt Stage1 SHA-256
+`923ed363d794b8c3b0d2b374ce59d61415af93fe5563d14476b8e0a4c0d60ace`
+(U-Boot CRC32 `cfad507e`). The [boot log](physical-pid-filter-boot.serial.log.gz)
+and fresh nonce-framed root command identify Asterinas boot
+`1686a27e-d27a-40ed-9e6a-22a47696ef14`. The timeline still held prior
+PID-197 exec/ready markers when current Firefox PID 183 appended its exec;
+no file narrowing or deletion occurred in this run. The
+[complete uploaded bundle](physical-pid-filter-upload.json.gz), uncompressed
+SHA-256 `f4aaf992d56d1fe919991f868baa97aa860d78bfcc6c65ff701ae0329c16ceae`,
+validated against experiment ID `5e26d675bab0683d246576fe5494c7fb`.
+Its [result](physical-pid-filter-result.json) passed 7/7 functional groups,
+with one slow context category, and its uninstrumented
+[`NewWindow` time](physical-pid-filter-context.json) was 723.647 ms. This
+establishes the fix for this distinct-PID repeat, not for a hypothetical
+future boot that reuses PID 183.
+
+The same live boot revealed why the old entries persisted: the isolated root
+console selects `asterinas-debug-console.target`, and
+`physical-graphics-control` starts the browser with
+`--job-mode=ignore-dependencies`. `sysinit.target` was inactive and the
+`asterinas-browser-web-timeline-begin.service` had
+`ExecMainStartTimestampMonotonic=0`, despite being enabled. Its truncation
+therefore never ran. The follow-up source change resets the user-owned
+timeline just before that special browser launch and records
+`BOOT_PHYSICAL_BROWSER_BEGIN`. Ordinary QEMU/systemd startup keeps its earlier
+timeline path. This source change still needs a physical boot with a derived
+root and new Stage1; the PID-filtered run used the old root script.
+
+The board recovered by authenticated software reboot. The
+[recovery serial log](physical-pid-filter-recovery.serial.log.gz) contains a
+fresh firmware epoch and RockOS login prompt. A new RockOS UID-0 session
+confirmed boot ID `7d3786f6-d284-44f4-a8d4-26e261cd2a12`, 1.8 GHz,
+partition 2 unmounted, and all selector hashes unchanged. The tested Stage1
+was hash-checked, found unreferenced and removed from `/boot`.
+
+## Desktop wallpaper and panel contrast
+
+The wallpaper now uses a dark navy-to-indigo vector gradient and subtle curves
+on the right, leaving the left side quiet behind Files, Firefox and Terminal.
+It removes the large central logo and caption. The online LXPanel enables its
+dark tint: the prior light panel rendered its light menu and clock text with
+poor contrast. The final derived development root SHA-256 is
+`1d268d30824cc51eab8af1b7b33bbea88b30b18156773ca59aec2083629655ce`;
+it also contains the physical timeline-reset script. The
+[QEMU desktop result](qemu-wallpaper-panel-result.json) completed six
+interaction captures in 65.962 seconds. The visually inspected
+[minimized frame](qemu-wallpaper-panel-minimized.png) shows the new wallpaper,
+three desktop launchers and legible bottom panel at 1280×1024. This is QEMU
+visual evidence, not a physical HDMI appearance or performance result.
+
+The same derived root and Stage1 SHA-256
+`ee523e36a3a56c46a4149753b797c2af3bba98b027fbae48ca36d9dece284e57`
+also passed the [three-cycle QEMU physical-input gate](qemu-physical-reset-result.json).
+Its [serial record](qemu-physical-reset.serial.log.gz) has browser-start
+`status=0`, three keyboard/tablet interaction PASS markers, and final status 0.
+The first attempt at this gate never launched because `/dev/shm` does not
+support the gate's `O_DIRECT` root disk; the passing rerun used ext4 output.
+The QEMU root began with an empty timeline, so this run exercises the reset
+command but does not prove that old persistent-home markers are erased on the
+board. A bounded board boot with this derived root is still required.
 
 ## Current desktop menu candidate, not promoted
 
