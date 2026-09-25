@@ -25,10 +25,32 @@ The running RockOS kernel reports `6.6.87`, while the installed
 The running configuration says `CONFIG_DRM_IMG_VOLCANIC=m`, but no module is
 loaded, the `51400000.gpu` platform device has no bound driver, and
 `/dev/dri` contains only the `es_drm` card node, with no render node.
-`modprobe`/`modinfo` are absent in this RockOS image. Thus this boot is not
-a validated hardware-rendering baseline despite the installed userspace
-package. We did not force-load the mismatched module or alter the RockOS
-recovery installation.
+The module tools exist under `/usr/sbin` but are outside the interactive
+user's default `PATH`. This boot is not a validated hardware-rendering baseline
+despite the installed userspace package. We did not force-load the
+mismatched module or alter the RockOS recovery installation.
+
+The mismatch has a concrete cause. `/boot/extlinux/extlinux.conf` selects
+`/boot/vmlinuz-6.6.87-win2030`, but that file contains a custom `6.6.87`
+kernel built on 2025-09-01. The package's matching `6.6.87-win2030` image
+survives as `/boot/vmlinuz-6.6.87-win2030-origin`. In addition,
+`/etc/modprobe.d/blacklist-pvr.conf` explicitly blacklists `pvrsrvkm`; `dpkg`
+does not own that blacklist file. The installed module's OF alias matches
+`img,gpu` and has no module dependencies. The vendor Vulkan ICD points to
+`libVK_IMG.so`; `/lib/firmware/rgx.fw.30.3.408.101` and
+`rgx.sh.30.3.408.101` are present. These files indicate the intended driver
+combination, but they do not prove that this board has rendered a frame.
+
+A decompressed copy of the matching package kernel was staged at
+`/home/debian/asterinas/rockos-gpu-reference-20260926/Image` with SHA-256
+`790380493872e387781a96ff99b64737daaf6f4c05b5894ba500a6aa39273b81`.
+The initrd and package Megrez DTB SHA-256 values are
+`64cab5cd753da2b4c48b5f1f16544edd2562d2eb6e4022c93b686d220e7405e2`
+and `02a8d43d581b4aa8e957e231ee90eba19ffd7e8cfcf74694e86a1fb9c6b37f17`.
+No persistent boot entry was changed. A temporary hardware-reference boot is
+deferred until a recovery method is available: this U-Boot has no `wdt`
+command, and the current RockOS boot exposes no `/dev/watchdog`. An early
+hang in an untested kernel would otherwise leave no verified remote reset.
 
 The RockOS driver Makefile defaults `RGX_BVNC` and `RGX_BNC` to
 `30.3.408.101`, but a build default is not a readout of this board's silicon.
