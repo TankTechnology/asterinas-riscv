@@ -540,6 +540,29 @@ struct DrmSetClientCap {
     value: u64,
 }
 
+/// Accept only the client modes whose corresponding KMS interface exists.
+/// In particular, accepting ATOMIC would send clients to property and commit
+/// ioctls that this driver has not implemented.
+fn validate_client_cap(cap: DrmSetClientCap) -> Result<()> {
+    match cap.capability {
+        DRM_CLIENT_CAP_STEREO_3D
+        | DRM_CLIENT_CAP_UNIVERSAL_PLANES
+        | DRM_CLIENT_CAP_ASPECT_RATIO => {
+            if cap.value > 1 {
+                return_errno_with_message!(Errno::EINVAL, "invalid DRM client cap value");
+            }
+            Ok(())
+        }
+        DRM_CLIENT_CAP_ATOMIC | DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT => {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "DRM client cap is not implemented");
+        }
+        DRM_CLIENT_CAP_WRITEBACK_CONNECTORS => {
+            return_errno_with_message!(Errno::EINVAL, "writeback requires atomic KMS");
+        }
+        _ => return_errno_with_message!(Errno::EINVAL, "unsupported DRM client cap"),
+    }
+}
+
 /// `struct drm_auth`; the magic token alone.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
@@ -2455,19 +2478,8 @@ impl PerOpenFileOps for DriHandle {
             }
             cmd @ SetClientCap => {
                 let cap = cmd.read()?;
-                // Accept the client caps a modesetting client enables and ignore
-                // the on/off value; the corresponding features are simply absent.
-                match cap.capability {
-                    DRM_CLIENT_CAP_STEREO_3D
-                    | DRM_CLIENT_CAP_UNIVERSAL_PLANES
-                    | DRM_CLIENT_CAP_ATOMIC
-                    | DRM_CLIENT_CAP_ASPECT_RATIO
-                    | DRM_CLIENT_CAP_WRITEBACK_CONNECTORS
-                    | DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT => Ok(0),
-                    _ => {
-                        return_errno_with_message!(Errno::EINVAL, "unsupported DRM client cap")
-                    }
-                }
+                validate_client_cap(cap)?;
+                Ok(0)
             }
             cmd @ ModeGetResources => {
                 let mut res = cmd.read()?;
@@ -2860,6 +2872,26 @@ mod tests {
     use super::ioctl_defs::*;
     use super::*;
     use crate::util::ioctl::NoData;
+
+    /// Linux requires an unsupported atomic KMS client cap to fail so clients
+    /// keep using the legacy ioctls this driver actually implements.
+    #[ktest]
+    fn atomic_client_cap_requires_atomic_kms_support() {
+        assert_eq!(
+            validate_client_cap(DrmSetClientCap {
+                capability: DRM_CLIENT_CAP_ATOMIC,
+                value: 1,
+            })
+            .unwrap_err()
+            .error(),
+            Errno::EOPNOTSUPP,
+        );
+        assert!(validate_client_cap(DrmSetClientCap {
+            capability: DRM_CLIENT_CAP_UNIVERSAL_PLANES,
+            value: 1,
+        })
+        .is_ok());
+    }
 
     /// The command number and argument size the Linux uapi gives each ioctl
     /// this driver serves.
