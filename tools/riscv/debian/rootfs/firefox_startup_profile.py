@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""Collect one bounded Firefox startup transcript without running the web gate.
+"""Collect one bounded Firefox startup transcript without driving the web gate.
 
 This intentionally reuses the frozen browser-web QEMU artifact contract, but
-stops after the ordered desktop/Firefox startup markers.  It is for profiling,
+stops after the desktop/Firefox startup markers. It is for profiling,
 not a pass/fail browser-quality gate.
 """
 
@@ -39,21 +39,55 @@ from tools.riscv.debian.rootfs.rootfs_gate_backend import _safe_output
 
 
 _MARKERS = (
-    ("basic", b"A_WEB_TIMELINE marker=BOOT_BASIC_TARGET"),
     ("x-socket-ready", b"BROWSER_WEB_DESKTOP_STAGE=x-socket-ready"),
     ("firefox-exec", b"ASTERINAS_FIREFOX_WEB_EXEC"),
-    ("marionette", b"BOOT_MARIONETTE_PORT_READY"),
+    ("marionette", b"Marionette\tINFO\tListening on port 2828"),
 )
 
 
-def _wait_for_marker_line(serial, marker: bytes, deadline: float) -> bytes:
+def _wait_for_marker_line(
+    serial, marker: bytes, deadline: float, *, start: int = 0
+) -> bytes:
     """Wait until a marker's whole newline-terminated evidence record arrives."""
 
-    transcript = serial.wait_for(marker, deadline)
-    marker_start = transcript.rfind(marker)
+    transcript = serial.wait_for(marker, deadline, start=start)
+    marker_start = transcript.find(marker, start)
     if marker_start < 0:
         raise GateFailure("startup marker wait returned inconsistent evidence")
     return serial.wait_for(b"\n", deadline, start=marker_start + len(marker))
+
+
+def _capture_startup_markers(
+    serial, deadline: float, started: float
+) -> list[dict[str, object]]:
+    """Capture startup events even when concurrent services log out of order."""
+
+    records: list[dict[str, object]] = []
+    pending = dict(_MARKERS)
+    while pending:
+        try:
+            marker = serial.wait_for_any(tuple(pending.values()), deadline)
+        except TimeoutError as error:
+            missing = ", ".join(repr(value) for value in pending.values())
+            raise TimeoutError(f"startup markers not seen: {missing}") from error
+        name = next(name for name, value in pending.items() if value == marker)
+        complete = _wait_for_marker_line(serial, marker, deadline)
+        marker_start = complete.find(marker)
+        line_end = complete.find(b"\n", marker_start + len(marker))
+        elapsed = time.monotonic() - started
+        records.append(
+            {
+                "name": name,
+                "host_elapsed_seconds": round(elapsed, 3),
+                "evidence": complete[marker_start:line_end].decode("ascii", "replace"),
+            }
+        )
+        del pending[name]
+        print(
+            f"STARTUP_PROFILE_MARKER name={name} elapsed={elapsed:.3f}",
+            flush=True,
+        )
+    return records
 
 
 def _write_profile_result(
@@ -293,31 +327,7 @@ def run(
         )
         serial.wait_for(marker.encode(), deadline)
         serial.wait_for(b"Starting kernel ...", deadline)
-        for name, marker in _MARKERS:
-            try:
-                complete = _wait_for_marker_line(serial, marker, deadline)
-                marker_start = complete.rfind(marker)
-                line_end = complete.find(b"\n", marker_start + len(marker))
-                evidence = complete[marker_start:line_end].decode("ascii", "replace")
-                elapsed = time.monotonic() - started
-                marker_records.append(
-                    {
-                        "name": name,
-                        "host_elapsed_seconds": round(elapsed, 3),
-                        "evidence": evidence,
-                    }
-                )
-                print(
-                    f"STARTUP_PROFILE_MARKER name={name} elapsed={elapsed:.3f}",
-                    flush=True,
-                )
-            except BaseException as error:
-                print(
-                    f"STARTUP_PROFILE_MISSING name={name} "
-                    f"elapsed={time.monotonic() - started:.3f} error={error}",
-                    flush=True,
-                )
-                break
+        marker_records = _capture_startup_markers(serial, deadline, started)
         transcript = serial.transcript
         (config.output_directory / "startup.serial.log").write_bytes(transcript)
         elapsed = time.monotonic() - started

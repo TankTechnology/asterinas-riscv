@@ -668,10 +668,10 @@ make test_riscv_debian_rootfs_gate \
 ```
 
 For Firefox-only startup profiling, use the bounded one-boot sampler. It waits
-for `BOOT_BASIC_TARGET`, X socket readiness, Firefox `exec`, and Marionette,
-then exits without running the full web protocol. The sampler adds only
-`asterinas.vm_profile=1` and keeps the final transcript in the root-owned
-output directory:
+for serial-visible X socket readiness, Firefox `exec`, and Marionette in their
+actual arrival order, then exits without driving the web protocol. The sampler
+adds only `asterinas.vm_profile=1` and keeps the final transcript in the
+root-owned output directory:
 
 ```bash
 python3 tools/riscv/debian/rootfs/firefox_startup_profile.py \
