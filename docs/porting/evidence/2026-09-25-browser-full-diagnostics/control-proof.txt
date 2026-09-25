@@ -1,0 +1,13 @@
+Stable serial: /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0
+Selected boot: kernel /boot/asterinas-ptrace-6694c4c7ff5aeb71.booti SHA256 6694c4c7ff5aeb715c5c3acf9a9c2f0f6318eaba7d7848a61b9d88bc63333180
+Selected boot: Stage1 /boot/stage1-cfec77d41d68.cpio SHA256 cfec77d41d68dfcb67228dfa6791d9cea25227c427ee9943ba5f44d6bd269cd1
+Selected boot: DTB /boot/megrez-465cb129333c.dtb SHA256 465cb129333cc334a3161fabb43d37df8738ac4baa86fcdb50260691a22a84ba
+Asterinas boot ID: d2e3d7fd-89d1-4219-a68b-8594fb2b8f9a
+Asterinas final command response: FINAL_970ba3837e862909 uid=0 boot=d2e3d7fd-89d1-4219-a68b-8594fb2b8f9a
+Asterinas recovery command: sync; reboot -f
+Observed U-Boot prompt: =>
+Restored RockOS command response: RESTORE_a76132b95427325f uid=0 boot=109902ec-2e5b-461d-a05c-3b1d6db867f1
+RockOS fresh serial-open response: REOPEN_984dd0020a044384 uid=0 boot=109902ec-2e5b-461d-a05c-3b1d6db867f1
+Guest archive SHA256: 3b901e6ec8ddbe0d41812984d74fd91bbb4c68a922341bce6fe5cbecd80361b5
+Host-received archive SHA256: 3b901e6ec8ddbe0d41812984d74fd91bbb4c68a922341bce6fe5cbecd80361b5
+Collector and workload exit codes: 0
