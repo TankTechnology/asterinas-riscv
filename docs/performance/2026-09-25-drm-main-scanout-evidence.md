@@ -1,6 +1,8 @@
 # DRM desktop on current main: scanout evidence
 
-The live Megrez Firefox session was not restarted or altered during this work.
+The live Megrez Firefox session was not restarted during the initial QEMU and
+integration work. A later controlled physical boot is recorded in
+[the physical boot evidence](2026-09-25-drm-main-physical-boot.md).
 The candidate was built in the isolated branch `codex/drm-main-perf-20260925`.
 Its DRM integration merge is `8e9b4aa16aa56ef592482ca6d6386b51c985164b`.
 Both the DRM demo head `c0a65e67562132b8f112cb993a96b46962a02583`
@@ -63,7 +65,7 @@ The result JSON records the same kernel SHA-256 for both device sets.
 On EIC7700, firmware framebuffer writes may require the platform L3 flush
 path when Svpbmt and Zicbom are unavailable.
 QEMU has Svpbmt and therefore does not measure that board-specific cost.
-The next controlled physical boot should keep the root serial management
+The planned controlled physical boot should keep the root serial management
 channel, capture the next scanout report before and after a short Firefox
 interaction (allow five seconds for each boundary), and read per-thread
 `schedstat` for Firefox and Xorg.
