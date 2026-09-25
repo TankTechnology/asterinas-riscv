@@ -36,6 +36,14 @@ Do not reboot the current desktop merely to repeat reference-system discovery.
   present time over a 17-second observation window. The URL and visible frames
   were not independently verified, so this is attribution evidence, not a
   measured user-input latency or speedup. See the P0 evidence note below.
+- A separate selected boot with the read-only `asterinas.dc_probe=1` diagnostic
+  verified the live primary scanout at `0xfd800000`, a 7680-byte stride, and a
+  64 MiB contiguous GEM pool at `0xf8000000`. These ranges do not overlap and
+  both fit a 32-bit register, but that does **not** establish DMA coherency or
+  authorize pointing the controller at the current GEM pool. RockOS allocates
+  display GEM memory with `DMA_ATTR_WRITE_COMBINE`; Asterinas currently maps
+  its VMO-backed dumb-buffer pool with the normal write-back page policy. See
+  the [handoff evidence](2026-09-25-megrez-dc-handoff.md).
 
 ## Three implementation choices
 
@@ -185,3 +193,4 @@ and its UAPI is available. Neither subsystem is a prerequisite for P1.
 - [Linux DMA mapping and cache synchronization documentation](https://docs.kernel.org/core-api/dma-api-howto.html)
 - [Asterinas current physical boot evidence](2026-09-25-drm-main-physical-boot.md)
 - [P0 Firefox/Xorg/scanout observation](2026-09-25-megrez-firefox-display-p0.md)
+- [Live EIC7700 display handoff and DMA blocker](2026-09-25-megrez-dc-handoff.md)
