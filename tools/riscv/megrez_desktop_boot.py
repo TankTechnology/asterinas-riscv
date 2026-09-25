@@ -401,7 +401,9 @@ def prepare_generation(
     )
     must_recover = False
     try:
-        operations.open(30)
+        # A software RockOS reboot can spend over 30 seconds shutting down
+        # and enumerating U-Boot USB before the prompt is available.
+        operations.open(120)
         operations.boot_rockos(240)
         operations.login(username, password, 60)
         must_recover = True

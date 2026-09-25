@@ -5,10 +5,8 @@ Description=Asterinas Debian online Firefox workload
 # parallel and let wait-x provide the real readiness barrier; tying browser
 # activation to the desktop unit otherwise causes an unbounded dependency
 # wait and Firefox never starts.
-Wants=asterinas-desktop-m5-network.service
 Requires=asterinas-browser-web-timeline-basic.service
-Requires=asterinas-desktop-m5-network.service
-After=asterinas-browser-web-timeline-basic.service asterinas-desktop-m5-network.service
+After=asterinas-browser-web-timeline-basic.service
 
 [Service]
 Type=exec
