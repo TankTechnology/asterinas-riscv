@@ -1072,6 +1072,13 @@ class BrowserWebContractTests(unittest.TestCase):
             "iputils-ping",
             "libavcodec-extra61",
             "xdotool",
+            "mousepad",
+            "ristretto",
+            "atril",
+            "xarchiver",
+            "zip",
+            "unzip",
+            "dbus-x11",
         ):
             self.assertIn(package, profile.requested_packages)
             self.assertIn(package, profile.identity_packages)
@@ -1487,6 +1494,32 @@ class BrowserWebContractTests(unittest.TestCase):
                 path.write_text(json.dumps(forged))
                 with self.subTest(mutation=mutation), self.assertRaises(ContractError):
                     load_manifest(path)
+
+    def test_schema_seven_loads_previous_browser_web_package_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manifest.json"
+            payload = self._schema7_payload()
+            previous_identity = (
+                "mousepad",
+                "ristretto",
+                "atril",
+                "xarchiver",
+                "zip",
+                "unzip",
+                "dbus-x11",
+            )
+            for package in previous_identity:
+                payload["gate_packages"].pop(package)
+            path.write_text(json.dumps(payload))
+            manifest = load_manifest(path)
+            self.assertEqual(
+                set(dict(manifest.gate_packages)), set(payload["gate_packages"])
+            )
+
+            payload["gate_packages"]["atril"] = "1"
+            path.write_text(json.dumps(payload))
+            with self.assertRaises(ContractError):
+                load_manifest(path)
 
     @mock.patch(
         "tools.riscv.debian.rootfs.contract._write_validated_manifest_atomically"
