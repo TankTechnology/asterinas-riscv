@@ -10,6 +10,7 @@ readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
 readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
 readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
 readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
+readonly DESKTOP_DRM_OUTPUT_DIR="target/debian-riscv/desktop-drm/rootfs"
 readonly DESKTOP_M9_SOFTWARE_OUTPUT_DIR="target/debian-riscv/desktop-m9-software/rootfs"
 readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
 readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
@@ -199,7 +200,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web) ;;
+        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-drm | desktop-m9-software | browser-m5 | browser-web) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -226,6 +227,8 @@ configure_profile() {
         OUTPUT_DIR="$DESKTOP_M4_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m5-network && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
+    elif [[ "$PROFILE" == desktop-drm && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$DESKTOP_DRM_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m9-software && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M9_SOFTWARE_OUTPUT_DIR"
     elif [[ "$PROFILE" == browser-m5 && "$has_output_dir" == 0 ]]; then
@@ -1031,6 +1034,9 @@ EOF
             "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
     elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
         configure_desktop "$stage" "${PROFILE#desktop-}"
+    elif [[ "$PROFILE" == desktop-drm ]]; then
+        configure_desktop "$stage" drm
+        configure_logind_diagnostic "$stage"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
         configure_desktop "$stage" m4
         configure_desktop_m5_network "$stage"
@@ -1044,17 +1050,7 @@ EOF
         # Keep logind diagnosis independent from the Firefox workload.  The
         # service is bounded and emits evidence while the desktop waits, so a
         # stalled seat/udev path cannot be mistaken for a Firefox failure.
-        install -D -m 0755 -- \
-            "$script_directory/logind_diagnostic.sh" \
-            "$stage/usr/lib/asterinas/logind-diagnostic"
-        install -D -m 0644 -- \
-            "$script_directory/logind_diagnostic.service" \
-            "$stage/etc/systemd/system/asterinas-logind-diagnostic.service"
-        install -d -m 0755 -- \
-            "$stage/etc/systemd/system/sysinit.target.wants"
-        ln -s -- \
-            ../asterinas-logind-diagnostic.service \
-            "$stage/etc/systemd/system/sysinit.target.wants/asterinas-logind-diagnostic.service"
+        configure_logind_diagnostic "$stage"
     elif [[ "$PROFILE" == browser-web ]]; then
         configure_desktop "$stage" "m5" online
         configure_desktop_m5_network "$stage" m5 false lightweight
@@ -1080,6 +1076,9 @@ EOF
         "$stage/var/log/"* \
         "$stage/tmp/"* \
         "$stage/var/tmp/"*
+    if [[ "$PROFILE" == desktop-drm ]]; then
+        finalize_browser_startup_caches "$stage"
+    fi
     if profile_uses_startup_caches "$PROFILE"; then
         # Both browser profiles must enter the guest with the target-owned
         # systemd/sysusers, dynamic-linker, journal, and font caches already
@@ -1133,6 +1132,24 @@ EOF
         fi
     fi
     find "$stage" -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+}
+
+configure_logind_diagnostic() {
+    local stage="$1"
+    local script_directory
+
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    install -D -m 0755 -- \
+        "$script_directory/logind_diagnostic.sh" \
+        "$stage/usr/lib/asterinas/logind-diagnostic"
+    install -D -m 0644 -- \
+        "$script_directory/logind_diagnostic.service" \
+        "$stage/etc/systemd/system/asterinas-logind-diagnostic.service"
+    install -d -m 0755 -- \
+        "$stage/etc/systemd/system/sysinit.target.wants"
+    ln -s -- \
+        ../asterinas-logind-diagnostic.service \
+        "$stage/etc/systemd/system/sysinit.target.wants/asterinas-logind-diagnostic.service"
 }
 
 profile_uses_startup_caches() {
@@ -1577,7 +1594,7 @@ configure_desktop() {
     grep -q '^asterinas:' "$stage/etc/gshadow" ||
         printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
     install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
-    if [[ "$generation" == m4 ]]; then
+    if [[ "$generation" == m4 || "$generation" == drm ]]; then
         install -d -m 0755 -o 1000 -g 1000 -- \
             "$stage/home/asterinas/Asterinas Files" \
             "$stage/home/asterinas/Desktop"
@@ -1850,11 +1867,15 @@ EOF
     install -D -m 0755 -- \
         "$session_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-session"
+    local device_access_source="$script_directory/desktop_m3_device_access.sh"
+    if [[ "$generation" == drm ]]; then
+        device_access_source="$script_directory/desktop_drm_device_access.sh"
+    fi
     install -D -m 0755 -- \
         "$script_directory/desktop_display_provider.sh" \
         "$stage/usr/lib/asterinas/desktop-display-provider"
     install -D -m 0755 -- \
-        "$script_directory/desktop_m3_device_access.sh" \
+        "$device_access_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-device-access"
     install -D -m 0755 -- \
         "$script_directory/desktop_input_identity.py" \
@@ -1995,6 +2016,51 @@ EOF
 
     local fbdev_config_directory="$stage/etc/asterinas/display-providers/fbdev/xorg.conf.d"
     install -d -m 0755 -- "$fbdev_config_directory"
+    if [[ "$generation" == drm ]]; then
+        local drm_config_directory="$stage/etc/asterinas/display-providers/drm/xorg.conf.d"
+        install -d -m 0755 -- "$drm_config_directory"
+        cat >"$drm_config_directory/20-asterinas.conf" <<'EOF'
+Section "Device"
+    Identifier "Asterinas virtio-gpu"
+    Driver "modesetting"
+    Option "AccelMethod" "glamor"
+    Option "DRI" "3"
+EndSection
+
+Section "Screen"
+    Identifier "Asterinas screen"
+    Device "Asterinas virtio-gpu"
+EndSection
+
+Section "InputDevice"
+    Identifier "Asterinas keyboard"
+    Driver "evdev"
+    Option "Device" "/dev/input/event0"
+EndSection
+
+Section "InputDevice"
+    Identifier "Asterinas pointer"
+    Driver "evdev"
+    Option "Device" "/dev/input/event1"
+EndSection
+
+Section "ServerLayout"
+    Identifier "Asterinas layout"
+    Screen 0 "Asterinas screen"
+    InputDevice "Asterinas keyboard" "CoreKeyboard"
+    InputDevice "Asterinas pointer" "CorePointer"
+EndSection
+
+Section "ServerFlags"
+    Option "AutoAddDevices" "false"
+    Option "BlankTime" "0"
+    Option "StandbyTime" "0"
+    Option "SuspendTime" "0"
+    Option "OffTime" "0"
+EndSection
+EOF
+        chmod 0644 -- "$drm_config_directory/20-asterinas.conf"
+    fi
     cat >"$fbdev_config_directory/20-asterinas.conf" <<'EOF'
 Section "Device"
     Identifier "Asterinas framebuffer"
