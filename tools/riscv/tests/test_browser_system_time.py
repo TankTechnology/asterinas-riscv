@@ -364,6 +364,83 @@ class SamplerTests(unittest.TestCase):
             self.assertEqual(json.loads(output.read_text()), report)
             self.assertEqual(output.stat().st_mode & 0o777, 0o600)
 
+    def test_thread_interval_splits_user_kernel_and_reports_churn(self) -> None:
+        before = {
+            "guest_monotonic_ns": 1_000_000_000,
+            "process_starttime_ticks": 77,
+            "vanished_tids": [],
+            "threads": {
+                42: {
+                    "comm": "GeckoMain",
+                    "utime_ticks": 10,
+                    "stime_ticks": 20,
+                    "starttime_ticks": 77,
+                    "last_cpu": 1,
+                    "schedstat": {
+                        "cpu_runtime_ns": 300_000_000,
+                        "runqueue_wait_ns": 10_000_000,
+                        "dispatch_count": 2,
+                    },
+                },
+                43: {
+                    "comm": "short-lived",
+                    "utime_ticks": 0,
+                    "stime_ticks": 0,
+                    "starttime_ticks": 78,
+                    "last_cpu": 0,
+                    "schedstat": {
+                        "cpu_runtime_ns": 0,
+                        "runqueue_wait_ns": 0,
+                        "dispatch_count": 0,
+                    },
+                },
+            },
+        }
+        after = {
+            "guest_monotonic_ns": 2_000_000_000,
+            "process_starttime_ticks": 77,
+            "vanished_tids": [45],
+            "threads": {
+                42: {
+                    "comm": "GeckoMain",
+                    "utime_ticks": 15,
+                    "stime_ticks": 32,
+                    "starttime_ticks": 77,
+                    "last_cpu": 2,
+                    "schedstat": {
+                        "cpu_runtime_ns": 470_000_000,
+                        "runqueue_wait_ns": 30_000_000,
+                        "dispatch_count": 7,
+                    },
+                },
+                44: {
+                    "comm": "new-thread",
+                    "utime_ticks": 0,
+                    "stime_ticks": 0,
+                    "starttime_ticks": 79,
+                    "last_cpu": 2,
+                    "schedstat": {
+                        "cpu_runtime_ns": 0,
+                        "runqueue_wait_ns": 0,
+                        "dispatch_count": 0,
+                    },
+                },
+            },
+        }
+        result = browser_system_time.thread_interval(
+            before, after, clock_ticks_per_second=100
+        )
+        self.assertEqual(result["duration_ms"], 1000)
+        self.assertEqual(result["new_tids"], [44])
+        self.assertEqual(result["gone_tids"], [43])
+        self.assertEqual(result["vanished_tids"], [45])
+        self.assertEqual(result["threads"][0]["cpu_user_ms"], 50)
+        self.assertEqual(result["threads"][0]["cpu_kernel_ms"], 120)
+        self.assertEqual(
+            result["threads"][0]["schedstat"]["delta"]["runqueue_wait_ns"],
+            20_000_000,
+        )
+
     def test_thread_sampler_stops_after_terminal_event_with_a_final_snapshot(
         self,
     ) -> None:

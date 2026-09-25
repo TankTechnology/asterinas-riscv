@@ -540,6 +540,79 @@ def run_sampler(
     return report
 
 
+def thread_interval(
+    before: dict[str, object],
+    after: dict[str, object],
+    *,
+    clock_ticks_per_second: int,
+) -> dict[str, object]:
+    """Compare two bounded TID snapshots from one process and guest clock."""
+
+    hz = clock_ticks_per_second
+    if isinstance(hz, bool) or not isinstance(hz, int) or hz <= 0:
+        raise TimeEvidenceError("thread clock tick rate is invalid")
+    if (
+        before["process_starttime_ticks"] != after["process_starttime_ticks"]
+        or after["guest_monotonic_ns"] <= before["guest_monotonic_ns"]
+    ):
+        raise TimeEvidenceError("thread process identity or clock changed")
+    prior = before["threads"]
+    current = after["threads"]
+    common = prior.keys() & current.keys()
+    new_tids = sorted(current.keys() - prior.keys())
+    gone_tids = sorted(prior.keys() - current.keys())
+    vanished_tids = sorted(set(before["vanished_tids"]) | set(after["vanished_tids"]))
+    duration_ns = after["guest_monotonic_ns"] - before["guest_monotonic_ns"]
+    max_thread_ticks = max(50, 3 * duration_ns * hz // 1_000_000_000)
+    deltas: list[dict[str, object]] = []
+    for tid in sorted(common):
+        old, new = prior[tid], current[tid]
+        user_ticks = new["utime_ticks"] - old["utime_ticks"]
+        kernel_ticks = new["stime_ticks"] - old["stime_ticks"]
+        if (
+            old["starttime_ticks"] != new["starttime_ticks"]
+            or user_ticks < 0
+            or kernel_ticks < 0
+            or user_ticks + kernel_ticks > max_thread_ticks
+        ):
+            raise TimeEvidenceError("thread identity or CPU tick rate is invalid")
+        old_schedstat = old["schedstat"]
+        new_schedstat = new["schedstat"]
+        schedstat_delta = {
+            key: new_schedstat[key] - old_schedstat[key]
+            for key in ("cpu_runtime_ns", "runqueue_wait_ns", "dispatch_count")
+        }
+        if any(value < 0 for value in schedstat_delta.values()):
+            raise TimeEvidenceError("thread schedstat counter regressed")
+        max_thread_runtime_ns = max(50 * 1_000_000_000 // hz, 3 * duration_ns)
+        if schedstat_delta["cpu_runtime_ns"] > max_thread_runtime_ns:
+            raise TimeEvidenceError("thread schedstat runtime rate is invalid")
+        deltas.append(
+            {
+                "tid": tid,
+                "comm": new["comm"],
+                "cpu_user_ms": user_ticks * 1000 / hz,
+                "cpu_kernel_ms": kernel_ticks * 1000 / hz,
+                "last_cpu_before": old["last_cpu"],
+                "last_cpu_after": new["last_cpu"],
+                "schedstat": {
+                    "before": old_schedstat,
+                    "after": new_schedstat,
+                    "delta": schedstat_delta,
+                },
+            }
+        )
+    return {
+        "guest_monotonic_start_ns": before["guest_monotonic_ns"],
+        "guest_monotonic_end_ns": after["guest_monotonic_ns"],
+        "duration_ms": duration_ns / 1_000_000,
+        "threads": deltas,
+        "new_tids": new_tids,
+        "gone_tids": gone_tids,
+        "vanished_tids": vanished_tids,
+    }
+
+
 def run_thread_sampler(
     proc_root: Path,
     pid: int,
@@ -597,79 +670,10 @@ def run_thread_sampler(
     intervals: list[dict[str, object]] = []
     limitations: set[str] = set()
     for before, after in zip(snapshots, snapshots[1:]):
-        if (
-            before["process_starttime_ticks"] != after["process_starttime_ticks"]
-            or after["guest_monotonic_ns"] <= before["guest_monotonic_ns"]
-        ):
-            raise TimeEvidenceError("thread process identity or clock changed")
-        prior = before["threads"]
-        current = after["threads"]
-        common = prior.keys() & current.keys()
-        new_tids = sorted(current.keys() - prior.keys())
-        gone_tids = sorted(prior.keys() - current.keys())
-        vanished_tids = sorted(
-            set(before["vanished_tids"]) | set(after["vanished_tids"])
-        )
-        if new_tids or gone_tids or vanished_tids:
+        item = thread_interval(before, after, clock_ticks_per_second=hz)
+        if any(item[key] for key in ("new_tids", "gone_tids", "vanished_tids")):
             limitations.add("thread-churn")
-        duration_ns = after["guest_monotonic_ns"] - before["guest_monotonic_ns"]
-        max_thread_ticks = max(50, 3 * duration_ns * hz // 1_000_000_000)
-        deltas: list[dict[str, object]] = []
-        for tid in sorted(common):
-            old, new = prior[tid], current[tid]
-            user_ticks = new["utime_ticks"] - old["utime_ticks"]
-            kernel_ticks = new["stime_ticks"] - old["stime_ticks"]
-            if (
-                old["starttime_ticks"] != new["starttime_ticks"]
-                or user_ticks < 0
-                or kernel_ticks < 0
-                or user_ticks + kernel_ticks > max_thread_ticks
-            ):
-                raise TimeEvidenceError("thread identity or CPU tick rate is invalid")
-            old_schedstat = old["schedstat"]
-            new_schedstat = new["schedstat"]
-            schedstat_delta = {
-                key: new_schedstat[key] - old_schedstat[key]
-                for key in (
-                    "cpu_runtime_ns",
-                    "runqueue_wait_ns",
-                    "dispatch_count",
-                )
-            }
-            if any(value < 0 for value in schedstat_delta.values()):
-                raise TimeEvidenceError("thread schedstat counter regressed")
-            max_thread_runtime_ns = max(
-                50 * 1_000_000_000 // hz,
-                3 * duration_ns,
-            )
-            if schedstat_delta["cpu_runtime_ns"] > max_thread_runtime_ns:
-                raise TimeEvidenceError("thread schedstat runtime rate is invalid")
-            deltas.append(
-                {
-                    "tid": tid,
-                    "comm": new["comm"],
-                    "cpu_user_ms": user_ticks * 1000 / hz,
-                    "cpu_kernel_ms": kernel_ticks * 1000 / hz,
-                    "last_cpu_before": old["last_cpu"],
-                    "last_cpu_after": new["last_cpu"],
-                    "schedstat": {
-                        "before": old_schedstat,
-                        "after": new_schedstat,
-                        "delta": schedstat_delta,
-                    },
-                }
-            )
-        intervals.append(
-            {
-                "guest_monotonic_start_ns": before["guest_monotonic_ns"],
-                "guest_monotonic_end_ns": after["guest_monotonic_ns"],
-                "duration_ms": duration_ns / 1_000_000,
-                "threads": deltas,
-                "new_tids": new_tids,
-                "gone_tids": gone_tids,
-                "vanished_tids": vanished_tids,
-            }
-        )
+        intervals.append(item)
 
     affinity: dict[str, list[int] | None] = {}
     for tid in snapshots[0]["threads"]:

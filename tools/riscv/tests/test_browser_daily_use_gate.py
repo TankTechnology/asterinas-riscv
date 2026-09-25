@@ -1260,6 +1260,33 @@ class DailyUseAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(DailyUseGateError, "phase-value-invalid"):
             operations.first_window_ready(101)
 
+    def test_startup_ignores_prior_boots_with_other_firefox_pids(self):
+        timeline = self.root / "timeline"
+        timeline.write_text(
+            "A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC "
+            "guest_monotonic_ns=2000000000 firefox_pid=90\n"
+            "A_WEB_TIMELINE marker=BOOT_FIRST_WINDOW_READY "
+            "guest_monotonic_ns=2500000000 firefox_pid=90\n"
+            "A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC "
+            "guest_monotonic_ns=1000000000 firefox_pid=101\n"
+        )
+        operations = gate.default_operations(
+            timeline_path=timeline,
+            download_path=self.download,
+            firefox_uid_reader=lambda pid: os.geteuid(),
+            clock=gate.DailyUseClock(
+                monotonic=lambda: 2.0, monotonic_ns=lambda: 1_500_000_000
+            ),
+        )
+
+        operations.first_window_ready(101)
+
+        metrics = gate._startup_performance(timeline.read_text(), 101)["metrics"]
+        self.assertEqual(metrics["durationMs"], 500.0)
+        self.assertEqual(metrics["firefoxPid"], 101)
+        with self.assertRaisesRegex(DailyUseGateError, "phase-value-invalid"):
+            operations.first_window_ready(101)
+
     def test_timing_uses_existing_capture_and_preserves_negative_fetch_start(self):
         from tools.riscv.debian.rootfs import browser_perf_capture as perf
 
@@ -1500,20 +1527,34 @@ class DailyUseAdapterTests(unittest.TestCase):
         self.assertEqual(self.client.selected, "original")
 
     def test_context_cpu_diagnostic_is_opt_in_and_keeps_wall_metrics(self):
-        with mock.patch.object(gate.system_time, "read_snapshot") as read:
+        with (
+            mock.patch.object(gate.system_time, "read_snapshot") as read,
+            mock.patch.object(gate.system_time, "read_thread_snapshot") as threads,
+        ):
             ordinary = self.operations().context_switch(self.request())
         read.assert_not_called()
+        threads.assert_not_called()
         self.assertNotIn("openCpu", json.loads(ordinary.artifact))
 
         before, after = object(), object()
+        threads_before, threads_after = object(), object()
         cpu_interval = {"duration_ms": 125.0, "processes": []}
+        thread_interval = {"duration_ms": 120.0, "threads": []}
         with (
             mock.patch.object(
                 gate.system_time, "read_snapshot", side_effect=(before, after)
             ) as read,
             mock.patch.object(
+                gate.system_time,
+                "read_thread_snapshot",
+                side_effect=(threads_before, threads_after),
+            ) as threads,
+            mock.patch.object(
                 gate.system_time, "interval", return_value=cpu_interval
             ) as interval,
+            mock.patch.object(
+                gate.system_time, "thread_interval", return_value=thread_interval
+            ) as thread_delta,
         ):
             capture = self.operations(context_cpu_diagnostic=True).context_switch(
                 self.request()
@@ -1526,9 +1567,16 @@ class DailyUseAdapterTests(unittest.TestCase):
         interval.assert_called_once()
         self.assertIs(interval.call_args.args[0], before)
         self.assertIs(interval.call_args.args[1], after)
+        self.assertEqual(threads.call_count, 2)
+        self.assertEqual([call.args[1] for call in threads.call_args_list], [101, 101])
+        thread_delta.assert_called_once()
+        self.assertIs(thread_delta.call_args.args[0], threads_before)
+        self.assertIs(thread_delta.call_args.args[1], threads_after)
         artifact = json.loads(capture.artifact)
         self.assertEqual(artifact["performance"], capture.performance)
         self.assertEqual(artifact["openCpu"]["interval"], cpu_interval)
+        self.assertEqual(artifact["openCpu"]["threadInterval"], thread_interval)
+        self.assertEqual(artifact["openCpu"]["threadScope"], "firefox-parent")
         self.assertEqual(
             artifact["openCpu"]["processScope"], "firefox-parent-and-xorg"
         )
