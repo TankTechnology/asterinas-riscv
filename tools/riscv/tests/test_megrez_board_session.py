@@ -505,6 +505,35 @@ class ArgumentContractTests(unittest.TestCase):
             _required_args() + crc_args + ["--final-profile", "arbitrary-marker"]
         )
 
+    def test_drm_firmware_marker_matches_the_probe_that_emits_it(self):
+        """One string, two modules: the session waits for what the probe prints.
+
+        The marker is emitted by a C program, so on the Python side it exists
+        only as the QEMU gate's completion line and the board session's copy of
+        it. If the two drift the session waits for a line that never arrives
+        and reports a timeout, which reads like the board failing rather than
+        like a typo.
+
+        The profile exists because that probe boots on the board unchanged: the
+        session loads the kernel at 0x80200000 and the initrd at 0x83000000,
+        which is exactly the layout the QEMU gate boots. It is also the only
+        thing in this tree that reaches `/dev/dri/card0` on the board -- the
+        readiness and graphics gates both stop at `/dev/fb0`.
+        """
+
+        import qemu_uboot_profiles
+
+        self.assertEqual(
+            board.FINAL_MILESTONE_MARKERS["drm-firmware"],
+            qemu_uboot_profiles.DRM_FIRMWARE_READY_LINE.decode(),
+        )
+        args = board.parse_args(
+            _required_args()
+            + ["--expected-crc32", "booti=0123abcd,dtb=89abcdef,initrd=00000001"]
+            + ["--final-profile", "drm-firmware"]
+        )
+        self.assertEqual(args.final_profile, "drm-firmware")
+
     def test_firmware_framebuffer_requires_tty0_before_serial_open(self):
         crc_args = [
             "--expected-crc32",

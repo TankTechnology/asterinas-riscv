@@ -405,13 +405,37 @@ mod tests {
     use ostd::prelude::ktest;
     use spin::Once;
 
-    use super::{termio::CTermios, *};
+    use super::{
+        termio::{CLocalFlags, CTermios},
+        *,
+    };
     use crate::{events::Observer, process::signal::PollAdaptor};
 
     static TEST_TTY: Once<Weak<Tty<LockCheckingDriver>>> = Once::new();
 
+    /// Observes whether the echo callback ran, and whether the line discipline
+    /// could be locked while it did.
+    ///
+    /// These record what is, not what was hoped for. The driver and the test
+    /// that used it were written against "echo runs without the line
+    /// discipline lock", but that never held and could not have: `push_input`
+    /// takes the lock and then calls `push_char`, which invokes the echo
+    /// callback synchronously (`line_discipline.rs:141`, through
+    /// `output_char`). The design that puts it there -- "Use one lock for
+    /// `LineDiscipline`" -- is fourteen months older than the test
+    /// (`5a9a63e1a`, 2025-06-09, against 2026-08-06, `1e61c3293`), so the
+    /// assertion described a structure that had already been replaced, and no
+    /// commit ever made it pass.
+    ///
+    /// The check is kept rather than deleted because the question is worth
+    /// pinning: a driver whose echo re-entered the line discipline would
+    /// deadlock on this very lock, and none of the real ones do -- `hvc` and
+    /// the serial drivers write to the console and return. Pinning the answer
+    /// means that moving echo outside the lock becomes a deliberate change
+    /// with a test to update, rather than an unnoticed one.
     struct LockCheckingDriver {
-        echo_saw_unlocked_ldisc: AtomicBool,
+        echo_ran: AtomicBool,
+        echo_saw_free_ldisc: AtomicBool,
     }
 
     struct ShortWriteDriver;
@@ -448,7 +472,8 @@ mod tests {
         fn echo_callback(&self) -> impl FnMut(&[u8]) + '_ {
             move |_| {
                 let tty = TEST_TTY.get().unwrap().upgrade().unwrap();
-                self.echo_saw_unlocked_ldisc
+                self.echo_ran.store(true, Ordering::Relaxed);
+                self.echo_saw_free_ldisc
                     .store(tty.ldisc.try_lock().is_some(), Ordering::Relaxed);
             }
         }
@@ -530,18 +555,36 @@ mod tests {
         assert_eq!(crate::device::sysfs::active_vt_attr_value(12), "tty12\n");
     }
 
+    /// Echo runs, and runs with the line discipline already locked.
+    ///
+    /// ECHO has to be turned on explicitly. `LineDiscipline::new` starts from
+    /// `CTermios2::default()`, whose flags are all clear, and `push_char` only
+    /// reaches `output_char` when ECHO is set -- so without the two lines below
+    /// the callback never fires and a test that only checked the lock would
+    /// pass while exercising nothing at all.
     #[ktest]
-    fn tty_echo_runs_without_the_line_discipline_lock() {
+    fn tty_echo_runs_under_the_line_discipline_lock() {
         let tty = Tty::new(
             0,
             LockCheckingDriver {
-                echo_saw_unlocked_ldisc: AtomicBool::new(false),
+                echo_ran: AtomicBool::new(false),
+                echo_saw_free_ldisc: AtomicBool::new(false),
             },
         );
         TEST_TTY.call_once(|| Arc::downgrade(&tty));
 
+        let mut termios = CTermios::default();
+        termios.local_flags_mut().insert(CLocalFlags::ECHO);
+        tty.ldisc.lock().set_termios(termios);
+
         assert_eq!(tty.push_input(b"x").unwrap(), 1);
-        assert!(tty.driver.echo_saw_unlocked_ldisc.load(Ordering::Relaxed));
+
+        // The echo happened...
+        assert!(tty.driver.echo_ran.load(Ordering::Relaxed));
+        // ...and it happened with the lock held, which is the design -- see the
+        // note on `LockCheckingDriver`. The field is named for the reading, and
+        // an earlier version of this test asserted the opposite.
+        assert!(!tty.driver.echo_saw_free_ldisc.load(Ordering::Relaxed));
     }
 
     #[ktest]

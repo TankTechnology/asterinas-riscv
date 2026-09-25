@@ -1,0 +1,111 @@
+diff --git a/kernel/src/vm/page_cache/vmo/mod.rs b/kernel/src/vm/page_cache/vmo/mod.rs
+index 2eed38abd..02b4ffcdd 100644
+--- a/kernel/src/vm/page_cache/vmo/mod.rs
++++ b/kernel/src/vm/page_cache/vmo/mod.rs
+@@ -45,6 +45,14 @@ static PAGECACHE_READ_COUNT: AtomicU64 = AtomicU64::new(0);
+ static PAGECACHE_READ_JIFFIES: AtomicU64 = AtomicU64::new(0);
+ const PAGECACHE_PROFILE_PID_SLOTS: usize = 256;
+ const PAGECACHE_PROFILE_PID_LOG_INTERVAL: u64 = 256;
++
++/// How far past a sequential read to fetch, in pages (64 KiB).
++///
++/// Sized to a handful of device requests rather than a whole file: the point
++/// is to give the backend something adjacent to merge, and a window this small
++/// costs little even when the guess is wrong because the pages are read once
++/// and then served from the cache.
++const READAHEAD_PAGES: usize = 16;
+ static PAGECACHE_PROFILE_PID_KEYS: [AtomicU32; PAGECACHE_PROFILE_PID_SLOTS] =
+     [const { AtomicU32::new(0) }; PAGECACHE_PROFILE_PID_SLOTS];
+ static PAGECACHE_PROFILE_PID_READS: [AtomicU64; PAGECACHE_PROFILE_PID_SLOTS] =
+@@ -856,12 +864,54 @@ impl<'a> BackedVmo<'a> {
+             return Ok(Vec::new());
+         }
+ 
+-        let mut pages = Vec::with_capacity(end_idx - start_idx);
+-        let mut new_locked_pages = Vec::with_capacity(end_idx - start_idx);
++        // Readahead. Callers ask for exactly the pages one read or one fault
++        // touches, so a sequential reader pays a separate backend round trip
++        // per page even though the backend can merge adjacent pages into a
++        // single device operation. Fetching a window past the requested range
++        // turns those round trips into one larger read; the extra pages are
++        // committed into the cache like any other, so a reader that keeps
++        // going sequentially hits them without further I/O.
++        //
++        // The window is only widened when the access looks sequential, which
++        // is inferred from the cache itself: if the page just before this
++        // range is already resident then whatever is reading walked forward
++        // from it, and if it is not then this is a cold or scattered access
++        // that should read exactly what it asked for. That needs no per-file
++        // cursor state and no new fields, and it degrades to no readahead
++        // rather than to wrong readahead.
++        //
++        // Pages past the end of the caller's range are still bounded by the
++        // VMO size, which is what keeps this safe: the block backend rejects a
++        // whole batch if any page in it is out of bounds, so over-reading past
++        // the object would turn a working read into an error. The VMO size is
++        // exactly the page-aligned object size, so this bound is the same one
++        // `end_idx` is clamped to above.
++        // A caller that already asked for a window this wide has batched its
++        // own I/O and does not need help -- a page fault, for instance, is
++        // already surrounded by fault-around, so its request arrives as a
++        // multi-page window. Reading ahead there would both duplicate that
++        // work and widen a window that exists to be bounded ("fault around",
++        // not "read the file"), so the only requests this widens are the
++        // single-page ones that a buffered read actually issues.
++        let already_batched = end_idx - start_idx >= READAHEAD_PAGES;
++
++        let readahead_end_idx = if commit_mode.skips_backend_read()
++            || already_batched
++            || !self.looks_sequential(start_idx)
++        {
++            end_idx
++        } else {
++            end_idx
++                .saturating_add(READAHEAD_PAGES)
++                .min(self.vmo.size().div_ceil(PAGE_SIZE))
++        };
++
++        let mut pages = Vec::with_capacity(readahead_end_idx - start_idx);
++        let mut new_locked_pages = Vec::with_capacity(readahead_end_idx - start_idx);
+         let mut existing_pages = Vec::new();
+         {
+             let mut locked_pages = self.vmo.pages.lock();
+-            for index in start_idx..end_idx {
++            for index in start_idx..readahead_end_idx {
+                 let mut cursor = locked_pages.cursor_mut(index as u64);
+                 let page = if let Some(page) = cursor.load() {
+                     let page = page.clone();
+@@ -916,9 +966,33 @@ impl<'a> BackedVmo<'a> {
+             })?;
+         }
+         io_batch.wait_all()?;
++
++        // The caller asked for `end_idx`, not for the readahead window. Pages
++        // past it were fetched only to populate the cache, so drop them from
++        // the result rather than handing the caller more than it asked for.
++        if readahead_end_idx > end_idx {
++            pages.retain(|(index, _)| *index < end_idx);
++        }
+         Ok(pages)
+     }
+ 
++    /// Returns whether the access starting at `start_idx` continues a forward
++    /// walk rather than landing somewhere cold.
++    ///
++    /// The signal is the page immediately before the range: a sequential
++    /// reader has just brought it in, so it is resident, while a scattered
++    /// reader is unlikely to have touched it. Reading that answer out of the
++    /// cache costs one lookup and keeps the policy stateless, which matters
++    /// because a `BackedVmo` is a short-lived wrapper around a `Vmo` and has
++    /// nowhere of its own to remember a previous access.
++    ///
++    /// A first access into the range is treated as sequential: offset 0 is
++    /// where a reader starts, and a freshly opened file is read from the
++    /// beginning far more often than it is read from a random offset.
++    fn looks_sequential(&self, start_idx: usize) -> bool {
++        start_idx == 0 || self.vmo.is_page_resident((start_idx - 1) * PAGE_SIZE)
++    }
++
+     /// Writes back dirty pages in the specified byte range to the backend storage.
+     pub(super) fn flush_dirty_pages(&self, range: &Range<usize>) -> Result<()> {
+         let locked_pages = self.vmo.pages.lock();

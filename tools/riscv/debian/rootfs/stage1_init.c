@@ -86,6 +86,15 @@ static const unsigned char BROWSER_WEB_ROOT_LABEL[EXT2_LABEL_LENGTH] = {
     'A', 'S', 'T', 'E', 'R', '_', 'B', 'R',
     'O', 'W', 'S', 'E', 'R', 'W', 'E', 'B',
 };
+/*
+ * The desktop-drm profile's identity, from profiles.py.  It is the one label
+ * whose image is built by the desktop-drm gate rather than by the M-series
+ * profiles above, and leaving it out does not fail loudly: the probe simply
+ * reports no match on a root it was handed, and the boot ends in
+ * root-device-timeout.
+ */
+static const unsigned char DESKTOP_DRM_ROOT_LABEL[EXT2_LABEL_LENGTH] =
+    "ASTER_DEBIANDRM";
 
 enum RootInitMode {
     ROOT_INIT_INTERACTIVE,
@@ -268,6 +277,7 @@ static int ext2_superblock_matches_mode(
            ext2_superblock_matches(superblock, APPLICATION_DESKTOP_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, NETWORK_DESKTOP_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, SOFTWARE_DESKTOP_ROOT_LABEL) ||
+           ext2_superblock_matches(superblock, DESKTOP_DRM_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, BROWSER_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, BROWSER_WEB_ROOT_LABEL);
 }

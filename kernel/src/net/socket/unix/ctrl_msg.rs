@@ -484,8 +484,7 @@ fn classify_scm_file(file: &Arc<dyn FileLike>) -> ScmFileClass {
     // families also cannot own AF_UNIX file descriptions. A pidfd retains only a weak process
     // reference, so it cannot keep that process or any file description in its table alive.
     if is_proven_leaf(
-        file.downcast_ref::<InodeHandle>()
-            .is_some_and(InodeHandle::is_scm_rights_proven_leaf),
+        file.is_scm_rights_proven_leaf(),
         file.downcast_ref::<EpollFile>().is_some(),
         file.as_socket().is_some(),
         file.downcast_ref::<PidFile>().is_some(),

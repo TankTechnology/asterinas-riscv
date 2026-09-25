@@ -175,6 +175,22 @@ pub trait FileLike: Pollable + Send + Sync + Any {
     /// Returns the common state shared by file-like objects.
     fn common(&self) -> &FileCommon;
 
+    /// Returns whether this file provably owns no other file description.
+    ///
+    /// Answering `true` is what allows the descriptor to be passed to another
+    /// process over a socket. The default must stay conservative: a file may
+    /// strongly retain arbitrary [`FileLike`] objects however harmless its own
+    /// type looks, and a wrong `true` lets a caller keep another process's
+    /// files alive. Override it only after showing that neither this object nor
+    /// anything it holds can reach the file table.
+    ///
+    /// The SCM_RIGHTS classifier asks this, so an implementation that is a
+    /// plain [`FileLike`] — rather than an inode handle, whose answer comes
+    /// from its per-open operations — is still reached.
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        false
+    }
+
     /// Dumps information to appear in the `fdinfo` file under procfs.
     ///
     /// This method must not break atomic mode because it will be called with the file table's spin

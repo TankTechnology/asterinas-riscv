@@ -516,6 +516,172 @@ make test_riscv_drm_cursor \
 This gate proves the current-main VirtIO transport and DRM cursor ioctl path;
 it is not evidence for the Megrez display controller or physical scanout.
 
+## GEM object-space gate
+
+The GEM gate boots the same generic Sv39, SMP=4 profile with one
+`virtio-gpu-device` and proves that handles name objects in a single
+device-wide space rather than buffers owned by one open file. Its guest
+allocates one dumb buffer, flinks it, reopens the name under a second handle,
+and requires that handle to map to the same pool offset; it then closes one
+handle and requires the other to stay usable, and requires a released handle
+and a never-created name to be rejected.
+
+Run the host contract tests with:
+
+```bash
+make test_riscv_drm_gem_unit
+```
+
+Build the initramfs and prepare a boot disk the same way as the cursor gate,
+substituting the `drm-gem` profile:
+
+```bash
+tools/riscv/drm/build_gem_gate.sh \
+  target/qemu-uboot/drm-gem/initramfs.cpio.gz
+
+ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel-osdk-bin.Image" \
+ASTERINAS_INITRAMFS="$PWD/target/qemu-uboot/drm-gem/initramfs.cpio.gz" \
+QEMU_UBOOT_PROFILE=generic-sv39-drm-gem-smp4 \
+QEMU_UBOOT_OUT_DIR="$PWD/target/qemu-uboot/drm-gem/prepared" \
+QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
+tools/riscv/prepare_qemu_uboot_booti.sh prepare
+
+make test_riscv_drm_gem \
+  DRM_GEM_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DRM_GEM_BOOT_DISK="$PWD/target/qemu-uboot/drm-gem/prepared/boot.ext4" \
+  DRM_GEM_MANIFEST="$PWD/target/qemu-uboot/drm-gem/prepared/artifacts.json" \
+  DRM_GEM_GATE_OUTPUT="$PWD/target/qemu-uboot/drm-gem/evidence"
+```
+
+Unlike the cursor gate, this one has no QEMU-side trace to cross-check: GEM
+handles are kernel bookkeeping the emulator never observes. Its evidence is the
+guest sequence plus the object-identity claims the probe itself makes, and the
+probe's own self-test runs on the host so a wrong ioctl number or struct layout
+fails before QEMU is involved.
+
+## Render-node gate
+
+The render node gate proves `/dev/dri/renderD128` exists and that it grants the
+narrower permission set Linux gives it, rather than being a second name for
+`card0`.
+
+Its guest opens the render node and checks both halves of the split. The
+permitted half must not be refused — `VERSION` and `GET_CAP` must succeed, and
+`GEM_CLOSE` must reach its handler and fail with `EINVAL` on a handle the node
+never had, which is itself the evidence that the call was allowed through.
+The withheld half must be refused with `EACCES`: `SET_CLIENT_CAP`, `SET_MASTER`,
+`DROP_MASTER`, `GEM_FLINK`, `GEM_OPEN`, and every modeset ioctl. These mirror
+the entries of Linux's `drm_ioctls[]` that lack `DRM_RENDER_ALLOW`.
+
+The gate then re-runs the withheld set against `card0`, where none of them may
+be refused. That control is what makes the result mean anything: without it, a
+kernel that refused those ioctls on *every* node would pass.
+
+```bash
+make test_riscv_drm_render_node_unit
+make test_riscv_drm_render_node \
+  DRM_RENDER_NODE_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DRM_RENDER_NODE_BOOT_DISK="$PWD/target/qemu-uboot/drm-render-node/prepared/boot.ext4" \
+  DRM_RENDER_NODE_MANIFEST="$PWD/target/qemu-uboot/drm-render-node/prepared/artifacts.json" \
+  DRM_RENDER_NODE_GATE_OUTPUT="$PWD/target/qemu-uboot/drm-render-node/evidence"
+```
+
+`tools/riscv/drm/build_render_node_gate.sh` and the
+`generic-sv39-drm-render-node-smp4` profile prepare the boot disk, exactly as
+for the two gates above.
+
+## virgl capability gate
+
+The virgl gate proves the driver negotiates the host's 3D feature and reports
+it correctly, which is the first thing a 3D client asks: Mesa calls
+`VIRTGPU_GETPARAM` and falls back to software rendering when the answer says
+there is no 3D.
+
+The guest opens `/dev/dri/renderD128` — where a 3D client belongs, and where the
+render-node permission split has to let the queries through — and walks the
+same path a client does:
+
+1. three parameters via `VIRTGPU_GETPARAM`: `3D_FEATURES`, `CAPSET_QUERY_FIX`,
+   and `SUPPORTED_CAPSET_IDs`, with an unknown parameter required to be refused
+   rather than answered with a zero the kernel invented;
+2. the capability blob via `VIRTGPU_GET_CAPS`, which must be real: the probe
+   fills its buffer with a pattern first, so a returned success that copied
+   nothing leaves the probe's own bytes in place and is rejected;
+3. a context via `VIRTGPU_CONTEXT_INIT`, which must succeed once and be refused
+   with `EEXIST` the second time, matching the one-context-per-file contract.
+
+On a host without 3D the same three steps must be *refused* with `EINVAL`
+rather than half-work, so the probe asserts the direction its own report calls
+for.
+
+**The device is what decides the answer, so the gate derives its expectation
+from the device rather than taking one as configuration.** `drm-virgl` launches
+`virtio-gpu-gl-device` with `-display egl-headless,gl=on`; a host GL context is
+what makes QEMU offer the virgl feature bit at all. Running the *same boot disk*
+with `--device-set drm-gem` launches a plain `virtio-gpu-device` and the same
+probe must report no 3D — a control that needs no second kernel build.
+
+```bash
+make test_riscv_drm_virgl_param \
+  DRM_VIRGL_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DRM_VIRGL_BOOT_DISK="$PWD/target/qemu-uboot/drm-virgl/prepared/boot.ext4" \
+  DRM_VIRGL_MANIFEST="$PWD/target/qemu-uboot/drm-virgl/prepared/artifacts.json" \
+  DRM_VIRGL_GATE_OUTPUT="$PWD/target/qemu-uboot/drm-virgl/evidence"
+
+# the control, against the same boot disk
+make test_riscv_drm_virgl_param DRM_VIRGL_DEVICE_SET=drm-gem \
+  DRM_VIRGL_GATE_OUTPUT="$PWD/target/qemu-uboot/drm-virgl/evidence-control" \
+  DRM_VIRGL_UBOOT=... DRM_VIRGL_BOOT_DISK=... DRM_VIRGL_MANIFEST=...
+```
+
+A pass reads `3d=1 capsets=0x2` with a non-empty capability blob, a 3D resource
+with both handles, and a verified backing on the GL device (bit 1 is the virgl
+capset); and `3d=0 capsets=0x0` with no blob, no resource, and no backing on the
+control.
+
+### Recorded timings
+
+Each run reports the microseconds spent in three phases, and the gate records
+them in `result.json`:
+
+| phase | what it covers | GL device | control |
+|---|---|---|---|
+| `caps_context_us` | capability blob + context creation | 19,319 | 3,842 |
+| `resource_us` | 3D resource + backing attach + context attach | 160,980 | 2,723 |
+| `submit_us` | command stream submission (+ fence) | 17,946 | 1,808 |
+| `backing_us` | mmap 4 KiB, write, msync, read back, munmap | 19,021 | — |
+
+Measured 2026-09-18 under QEMU TCG emulation, SMP=4, `-m 2G`.
+
+**These describe the emulator as much as the driver and are recorded, not
+thresholded** — no gate holds them to a bound. Two things to read carefully:
+the ~10x gap between the GL and control runs is mostly the three extra host
+round-trips that only a 3D device answers (each a virtqueue notify plus a
+spin-wait for the used entry), and `resource_us` is much the largest because it
+is three round-trips where the other phases are one or two. They are a
+regression baseline for this path, not a statement about rendering speed.
+
+This gate covers capability negotiation, contexts, 3D resources, and
+submission. A client can walk the whole path: read the renderer's description,
+open a context against it, create a buffer the host can read, and submit a
+command stream.
+
+**A client that asks for a completion fence gets a real descriptor.** Setting
+`VIRTGPU_EXECBUF_FENCE_FD_OUT` installs an anonymous `[drm-fence]` file and
+returns its fd; the probe polls it and requires `POLLIN` immediately.
+
+There is no wake-up machinery because there is nothing to wake up for. The
+submission is synchronous — the driver waits for the host before returning — so
+the fence is created in the state a client is waiting to reach. The alternative,
+answering `fence_fd = -1`, is what a client would then `poll`, and `poll(-1)` is
+`EBADF`: it would not fail, it would wait forever. That was the hang the earlier
+fence work diagnosed, and this is the shape that avoids it.
+
+`CONTEXT_INIT` accepts the parameters this driver implements and refuses the
+rest rather than accepting and ignoring them: a second ring count is rejected
+because submission is single-ring, and a non-zero ring-poll mask is rejected
+because polling is not implemented.
+
 ## Simulation-first Megrez debug attempt
 
 The Megrez debug workflow binds one immutable Asterinas artifact plan to a

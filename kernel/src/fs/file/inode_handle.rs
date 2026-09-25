@@ -568,6 +568,14 @@ impl FileLike for InodeHandle {
         &self.common
     }
 
+    /// The inode handle's answer is its per-open operations', so that the
+    /// classification stays one decision in one place. Written with the type
+    /// qualification because the inherent method of the same name would
+    /// otherwise be shadowed by this one.
+    fn is_scm_rights_proven_leaf(&self) -> bool {
+        InodeHandle::is_scm_rights_proven_leaf(self)
+    }
+
     fn dump_proc_fdinfo(self: Arc<Self>, fd_flags: FdFlags) -> Box<dyn Display> {
         struct FdInfo {
             inner: Arc<InodeHandle>,
