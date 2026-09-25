@@ -525,6 +525,15 @@ DRM_FIRMWARE_GATE = ValidationScenario(
     post_terminal_timeout=0.25,
 )
 
+# Exercise the opt-in page-to-framebuffer copy with the same pixel probe.
+# The guarded runner rejects runtime bootarg overrides for milestone gates,
+# so this selection must be a registered scenario in its own right.
+DRM_FIRMWARE_DIRECT_COPY_GATE = replace(
+    DRM_FIRMWARE_GATE,
+    name="asterinas-drm-firmware-direct-copy",
+    bootargs="console=ttyS0 loglevel=info init=/init asterinas.drm_direct_copy=1",
+)
+
 DRM_RENDER_NODE_READY_LINE = b"ASTERINAS_DRM_RENDER_R1_READY"
 DRM_RENDER_NODE_GATE = ValidationScenario(
     name="asterinas-drm-render-node-r1",
@@ -887,6 +896,13 @@ MEGREZ_SV48_SVADE_DRM_FIRMWARE = QemuUbootProfile(
     validation=DRM_FIRMWARE_GATE,
 )
 
+MEGREZ_SV48_SVADE_DRM_FIRMWARE_DIRECT_COPY = QemuUbootProfile(
+    name="megrez-sv48-svade-drm-firmware-direct-copy",
+    machine=MEGREZ_SVADE_FAST_MACHINE,
+    boot_flow=UBOOT_BOOTI,
+    validation=DRM_FIRMWARE_DIRECT_COPY_GATE,
+)
+
 MEGREZ_SV48_SVADE_FAST = QemuUbootProfile(
     name="megrez-sv48-svade-fast",
     machine=MEGREZ_SVADE_FAST_MACHINE,
@@ -1009,6 +1025,7 @@ _PROFILES: Mapping[str, QemuUbootProfile] = MappingProxyType(
             GENERIC_SV39_DRM_RENDER_NODE_SMP4,
             GENERIC_SV39_DRM_VIRGL_SMP4,
             MEGREZ_SV48_SVADE_DRM_FIRMWARE,
+            MEGREZ_SV48_SVADE_DRM_FIRMWARE_DIRECT_COPY,
             MEGREZ_SV48_SVADE_FAST,
             MEGREZ_SV48_SVADU_FAST,
             MEGREZ_SV48_SLOW,
