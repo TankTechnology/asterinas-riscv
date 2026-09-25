@@ -9,6 +9,16 @@ readonly INPUT_DIRECTORY="${ASTERINAS_DESKTOP_M3_INPUT_DIRECTORY:-/dev/input}"
 readonly STABLE_INPUT_DIRECTORY="${ASTERINAS_DESKTOP_M3_STABLE_INPUT_DIRECTORY:-/run/asterinas-input}"
 readonly XKB_CACHE_DIR="/var/lib/xkb"
 
+# The desktop and browser services both run this helper during graphical boot.
+# Serialize the tmpfs mount and input-link replacement so one service cannot
+# remove a link between the other's unlink and create operations.  The lock
+# lives in volatile /run and is released automatically when this process exits.
+exec 9>/run/asterinas-desktop-device-access.lock
+if ! /usr/bin/flock -w 125 9; then
+    printf '%s\n' 'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: device setup lock timed out' >&2
+    exit 1
+fi
+
 if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     # Keep diagnostics off the synchronous console path.  On Asterinas the
     # console driver can block a service while servicing terminal queries;
