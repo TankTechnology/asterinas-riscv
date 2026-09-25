@@ -8,6 +8,17 @@
       "mode": "0644"
     },
     {
+      "source": "desktop_anime_wallpaper.png",
+      "destination": "/usr/share/asterinas/desktop-anime-wallpaper.png",
+      "mode": "0644",
+      "create": true
+    },
+    {
+      "source": "desktop_pcmanfm.conf",
+      "destination": "/home/asterinas/.config/pcmanfm/Asterinas/desktop-items-0.conf",
+      "mode": "0644"
+    },
+    {
       "source": "desktop_files_icon.svg",
       "destination": "/usr/share/asterinas/desktop-files-icon.svg",
       "mode": "0644",

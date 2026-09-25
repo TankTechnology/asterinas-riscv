@@ -1011,6 +1011,8 @@ class DevelopmentOverlayTests(unittest.TestCase):
             destinations,
             {
                 "/usr/share/asterinas/desktop-wallpaper.svg",
+                "/usr/share/asterinas/desktop-anime-wallpaper.png",
+                "/home/asterinas/.config/pcmanfm/Asterinas/desktop-items-0.conf",
                 "/usr/share/asterinas/desktop-files-icon.svg",
                 "/usr/share/asterinas/desktop-terminal-icon.svg",
                 "/home/asterinas/.config/lxpanel/Asterinas/panels/panel",
@@ -1052,6 +1054,7 @@ class DevelopmentOverlayTests(unittest.TestCase):
         self.assertEqual(
             {entry.destination for entry in spec.files if entry.create},
             {
+                "/usr/share/asterinas/desktop-anime-wallpaper.png",
                 "/usr/share/asterinas/desktop-files-icon.svg",
                 "/usr/share/asterinas/desktop-terminal-icon.svg",
                 "/usr/lib/asterinas/browser_interaction_perf.py",
