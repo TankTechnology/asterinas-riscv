@@ -69,6 +69,18 @@ Do not reboot the current desktop merely to repeat reference-system discovery.
   the first native backend must synchronize `DIRTYFB` writes, and a separate
   back-buffer path is required for a tear-free claim. See the
   [ioctl trace](2026-09-26-megrez-drm-ioctl-trace.md).
+- An opt-in fixed-mode EIC7700 backend now cleans the GEM buffer and submits
+  its physical address directly. One selected physical boot kept the 1920 ×
+  1080 Xorg/Firefox session and root serial control alive, recorded no DC
+  underflow at sampled milestones, and avoided the firmware copy path. HDMI
+  pixels and input-to-visible-frame latency are still unverified; the path
+  remains opt-in. See the
+  [native scanout gate](2026-09-26-megrez-native-scanout-gate.md).
+- The actual RockOS image has GPU userspace packages but no active PowerVR
+  render node: its running `6.6.87` kernel does not match the installed
+  `pvrsrvkm` module's `6.6.87-win2030` vermagic. Establish a matching RockOS
+  hardware-render baseline before treating its GPU UAPI as a tested contract.
+  See the [PowerVR inventory](2026-09-26-megrez-powervr-inventory.md).
 
 ## Three implementation choices
 
@@ -223,3 +235,5 @@ and its UAPI is available. Neither subsystem is a prerequisite for P1.
 - [Opt-in direct GEM-page copy and physical result](2026-09-26-megrez-direct-copy.md)
 - [Opt-in GEM cache-clean probe and physical result](2026-09-26-megrez-dma-clean-probe.md)
 - [Physical desktop DRM ioctl sequence](2026-09-26-megrez-drm-ioctl-trace.md)
+- [Opt-in native DC scanout and selected-board gate](2026-09-26-megrez-native-scanout-gate.md)
+- [RockOS PowerVR package, module, and UAPI inventory](2026-09-26-megrez-powervr-inventory.md)
