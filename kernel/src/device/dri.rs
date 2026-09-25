@@ -421,7 +421,11 @@ fn display_device(source: DisplaySource) -> Result<DisplayDevice> {
             scanout: {
                 #[cfg(target_arch = "riscv64")]
                 if eic7700::native_scanout_requested() {
-                    match eic7700::Eic7700Scanout::new(&framebuffer) {
+                    let native = eic7700::Eic7700Scanout::new(&framebuffer).and_then(|native| {
+                        prepare_native_pool()?;
+                        Ok(native)
+                    });
+                    match native {
                         Ok(native) => Arc::new(native) as Arc<dyn ScanoutBackend>,
                         Err(error) => {
                             ostd::warn!("ASTERINAS_DC_NATIVE fallback=firmware error={error:?}");
@@ -447,6 +451,31 @@ fn display_device(source: DisplaySource) -> Result<DisplayDevice> {
             connector_type: DRM_MODE_CONNECTOR_UNKNOWN,
         },
     })
+}
+
+/// Reserves the entire GEM pool in the DC's 32-bit DMA aperture before
+/// selecting native scanout. A failed bounded allocation leaves the default
+/// firmware presenter available instead of failing Xorg's first mode set.
+#[cfg(target_arch = "riscv64")]
+fn prepare_native_pool() -> Result<()> {
+    const DC_DMA_LIMIT: usize = 1usize << 32;
+
+    // Display selection precedes DRM-node registration, so no client can have
+    // created a pool yet. Keep the expensive zeroing outside the spin lock.
+    let pool = VmoOptions::new(DUMB_POOL_SIZE).alloc_contiguous_in(0..DC_DMA_LIMIT)?;
+    let address = pool
+        .paddr()
+        .ok_or_else(|| Error::with_message(Errno::ENOMEM, "native GEM pool has no memory"))?;
+    let mut objects = GEM_OBJECTS.lock();
+    debug_assert!(objects.pool.is_none());
+    objects.pool = Some(pool);
+    drop(objects);
+    ostd::info!(
+        "ASTERINAS_DC_NATIVE pool_addr={:#x} pool_size={:#x}",
+        address,
+        DUMB_POOL_SIZE,
+    );
+    Ok(())
 }
 
 /// Per-open-file DRM state.
