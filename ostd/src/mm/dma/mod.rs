@@ -17,6 +17,12 @@
 //! even with IRQs disabled. For example, it is valid to drop a [`DmaStream`]
 //! from an IRQ handler after the device has finished processing it.
 
+#[cfg(target_arch = "riscv64")]
+use core::ops::Range;
+
+#[cfg(target_arch = "riscv64")]
+use crate::{Error, mm::Paddr};
+
 #[cfg(ktest)]
 mod test;
 
@@ -32,3 +38,13 @@ pub use dma_stream::{DmaDirection, DmaStream, FromAndToDevice, FromDevice, ToDev
 pub use dma_window::DmaWindow;
 #[cfg(target_arch = "riscv64")]
 pub use usb_kernel_op::UsbKernelOp;
+
+/// Cleans an EIC7700 Die 0 DRAM range written through a cacheable CPU mapping.
+///
+/// The caller must keep the contiguous backing allocated until the device is
+/// finished reading it. This does not provide a DMA mapping or synchronize
+/// concurrent CPU writes with the device.
+#[cfg(target_arch = "riscv64")]
+pub fn sync_eic7700_dram_to_device(physical_range: Range<Paddr>) -> Result<(), Error> {
+    crate::arch::mm::sync_eic7700_dram_to_device(physical_range)
+}

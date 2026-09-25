@@ -13,13 +13,15 @@ use ostd::{
     arch::boot::DEVICE_TREE,
     boot::boot_info,
     io::IoMem,
-    mm::VmIoOnce,
+    mm::{VmIoOnce, dma::sync_eic7700_dram_to_device},
 };
 
 use crate::vm::page_cache::Vmo;
 
 const DC_REG_START: usize = 0x502c_1400;
 const DC_REG_SIZE: usize = 0x1400;
+const FULL_HD_FRAME_BYTES: usize = 1920 * 1080 * 4;
+const DMA_CLEAN_CHUNK_BYTES: usize = 256 * 1024;
 
 pub(super) fn log_handoff_probe(pool: &Vmo) {
     if !boot_info()
@@ -76,4 +78,42 @@ pub(super) fn log_handoff_probe(pool: &Vmo) {
         pool_addr,
         pool.size(),
     );
+
+    if !boot_info()
+        .kernel_cmdline
+        .split_whitespace()
+        .any(|word| word == "asterinas.dc_dma_probe=1")
+    {
+        return;
+    }
+
+    let Some(end) = pool_addr.checked_add(FULL_HD_FRAME_BYTES) else {
+        ostd::warn!("ASTERINAS_DC_DMA_PROBE skipped=address_overflow");
+        return;
+    };
+    if FULL_HD_FRAME_BYTES > pool.size() {
+        ostd::warn!("ASTERINAS_DC_DMA_PROBE skipped=pool_too_small");
+        return;
+    }
+
+    let started = aster_time::read_monotonic_time();
+    let clean_result = (pool_addr..end)
+        .step_by(DMA_CLEAN_CHUNK_BYTES)
+        .try_for_each(|start| {
+            sync_eic7700_dram_to_device(start..end.min(start.saturating_add(DMA_CLEAN_CHUNK_BYTES)))
+        });
+    match clean_result {
+        Ok(()) => {
+            let elapsed_ns = aster_time::read_monotonic_time()
+                .saturating_sub(started)
+                .as_nanos();
+            ostd::info!(
+                "ASTERINAS_DC_DMA_PROBE clean_bytes={} clean_ns={} pool_addr={:#x}",
+                FULL_HD_FRAME_BYTES,
+                elapsed_ns,
+                pool_addr,
+            );
+        }
+        Err(error) => ostd::warn!("ASTERINAS_DC_DMA_PROBE skipped=sync_failed error={error:?}"),
+    }
 }
