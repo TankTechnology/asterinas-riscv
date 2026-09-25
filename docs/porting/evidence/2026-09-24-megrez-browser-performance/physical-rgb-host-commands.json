@@ -1,0 +1,44 @@
+[
+  {
+    "label": "preflight",
+    "nonce": "c9fa0f0d2a0648c6",
+    "status": 0,
+    "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc"
+  },
+  {
+    "label": "create-transfer",
+    "nonce": "c1f206db7e4210db",
+    "status": 0,
+    "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc"
+  },
+  {
+    "label": "transfer-1",
+    "nonce": "534082c7bdcd335c",
+    "status": 0,
+    "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc"
+  },
+  {
+    "label": "transfer-2",
+    "nonce": "50ce2f04492720f2",
+    "status": 0,
+    "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc"
+  },
+  {
+    "label": "transfer-3",
+    "nonce": "2679453ad3357c63",
+    "status": 0,
+    "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc"
+  },
+  {
+    "label": "extract-guest",
+    "nonce": "f5c3d98f3705cbe2",
+    "status": 0,
+    "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc"
+  },
+  {
+    "label": "canvas-probe",
+    "nonce": "70587bc79026c500",
+    "status": 0,
+    "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc"
+  }
+]

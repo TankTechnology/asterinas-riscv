@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Asterinas changing RGB frame probe</title>
+<style>html,body{margin:0;background:#101820;color:#fff;font:14px sans-serif}canvas{display:block}</style>
+<canvas id="surface"></canvas>
+<div id="status" data-phase="loading" style="display:none"></div>
+<script>
+const status = document.querySelector('#status');
+window.addEventListener('error', event => {
+  status.dataset.phase = 'error';
+  status.textContent = event.message;
+});
+const params = new URLSearchParams(location.search);
+const width = Number(params.get('w'));
+const height = Number(params.get('h'));
+const canvas = document.querySelector('#surface');
+canvas.width = width;
+canvas.height = height;
+const ctx = canvas.getContext('2d', {alpha:false});
+if (!ctx) {
+  status.dataset.phase = 'error';
+  status.textContent = 'No 2D canvas context';
+} else {
+  const paths = ['rgb-frame-a.png', 'rgb-frame-b.png'];
+  const images = paths.map(path => {
+    const img = new Image();
+    img.src = path;
+    return img;
+  });
+  Promise.all(images.map(img => img.decode())).then(() => {
+    if (images.some(img => img.naturalWidth !== 1280 || img.naturalHeight !== 720)) {
+      throw new Error('Unexpected source image size');
+    }
+    const times = [];
+    let start, previous, frame = 0;
+    status.dataset.phase = 'running';
+    function tick(now) {
+      if (start === undefined) start = previous = now;
+      times.push(now - previous);
+      previous = now;
+      ctx.drawImage(images[frame++ % 2], 0, 0, width, height);
+      if (now - start < 8000) {
+        requestAnimationFrame(tick);
+      } else {
+        const sorted = times.slice(1).sort((a,b) => a-b);
+        const at = p => sorted[Math.min(sorted.length-1, Math.floor(p*sorted.length))];
+        const result = {
+          width, height, sourceWidth:1280, sourceHeight:720,
+          frames: times.length, durationMs: now-start,
+          p50Ms: at(.5), p95Ms: at(.95),
+          over33Ms: sorted.filter(x => x>33.3).length,
+          over50Ms: sorted.filter(x => x>50).length,
+          visibility: document.visibilityState
+        };
+        status.dataset.phase = 'done';
+        status.textContent = JSON.stringify(result);
+      }
+    }
+    requestAnimationFrame(tick);
+  }).catch(error => {
+    status.dataset.phase = 'error';
+    status.textContent = String(error);
+  });
+}
+</script>

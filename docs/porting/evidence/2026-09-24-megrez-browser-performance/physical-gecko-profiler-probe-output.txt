@@ -1,0 +1,6 @@
+_pid=$(pgrep -xo firefox); nsenter -t "$_pid" -n env AST ERINAS_MARIONETTE_DEBUG_ERRORS=1 timeout 30 python3 -u /run/gecko-profiler-probe .py; _s=$?; printf '\nEND_%s status=%s uid=%s boot=%s\n' 73b08df3ec84fe6c "$_s"  "$(id -u)" "$(cat /proc/sys/kernel/random/boot_id)"
+SET_CONTEXT {'value': None}
+PROFILER_PROBE {"services":"object","chromeUtils":"object","profiler":"undefined","firefoxVersion":"143.0.3","forceDisabled":true,"software":false}
+
+END_73b08df3ec84fe6c status=0 uid=0 boot=c6846443-9d90-4ff5-854e-5c4132fcfbbc
+root@asterinas-debug:/#

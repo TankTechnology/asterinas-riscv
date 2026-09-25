@@ -1,0 +1,32 @@
+[
+  {
+    "label": "preflight",
+    "nonce": "42601a8fed4c7e58",
+    "status": 0
+  },
+  {
+    "label": "create-transfer",
+    "nonce": "23d2817695a3c32b",
+    "status": 0
+  },
+  {
+    "label": "transfer-1",
+    "nonce": "2008b190479d2afe",
+    "status": 0
+  },
+  {
+    "label": "transfer-2",
+    "nonce": "80082fec69e26a41",
+    "status": 0
+  },
+  {
+    "label": "extract-guest",
+    "nonce": "e1f90855bbbec15b",
+    "status": 0
+  },
+  {
+    "label": "launch",
+    "nonce": "b94d25072311ae3b",
+    "status": 0
+  }
+]

@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Asterinas physical Firefox input probe</title>
+<style>body{font:24px sans-serif;margin:40px}input{font:24px sans-serif;padding:12px;width:650px}#token{margin-top:30px;background:#1784a1;color:white;padding:24px}</style>
+<label>Type here <input id="input" autocomplete="off"></label>
+<div id="token">0</div>
+<div id="results" data-count="0" style="display:none"></div>
+<script>
+const input = document.querySelector('#input');
+const token = document.querySelector('#token');
+const results = document.querySelector('#results');
+const samples = [];
+input.addEventListener('input', event => {
+  if (!event.isTrusted || samples.length >= 16) return;
+  const started = performance.now();
+  token.textContent = String(samples.length + 1);
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    samples.push(performance.now() - started);
+    results.dataset.count = String(samples.length);
+    results.textContent = JSON.stringify(samples);
+  }));
+});
+</script>

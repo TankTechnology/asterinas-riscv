@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Asterinas canvas presentation probe</title>
+<style>html,body{margin:0;background:#101820;color:#fff;font:14px sans-serif}canvas{display:block}</style>
+<canvas id="surface"></canvas>
+<div id="status" data-phase="init" style="display:none"></div>
+<script>
+const status = document.querySelector('#status');
+window.addEventListener('error', event => {
+  status.dataset.phase = 'error';
+  status.textContent = event.message;
+});
+const params = new URLSearchParams(location.search);
+const width = Number(params.get('w'));
+const height = Number(params.get('h'));
+const canvas = document.querySelector('#surface');
+canvas.width = width;
+canvas.height = height;
+const ctx = canvas.getContext('2d', {alpha:false});
+status.dataset.phase = ctx ? 'running' : 'no-context';
+const times = [];
+const start = performance.now();
+let previous = start;
+let frame = 0;
+window.perfResult = null;
+function tick(now) {
+  times.push(now - previous);
+  previous = now;
+  ctx.fillStyle = frame++ % 2 ? '#186eb5' : '#b56e18';
+  ctx.fillRect(0, 0, width, height);
+  if (now - start < 8000) {
+    requestAnimationFrame(tick);
+  } else {
+    const sorted = times.slice(1).sort((a,b) => a-b);
+    const at = p => sorted[Math.min(sorted.length-1, Math.floor(p*sorted.length))];
+    window.perfResult = {
+      width, height, frames: times.length, durationMs: now-start,
+      p50Ms: at(.5), p95Ms: at(.95), over33Ms: sorted.filter(x => x>33.3).length,
+      over50Ms: sorted.filter(x => x>50).length,
+      visibility: document.visibilityState
+    };
+    status.dataset.phase = 'done';
+    status.textContent = JSON.stringify(window.perfResult);
+  }
+}
+requestAnimationFrame(tick);
+</script>

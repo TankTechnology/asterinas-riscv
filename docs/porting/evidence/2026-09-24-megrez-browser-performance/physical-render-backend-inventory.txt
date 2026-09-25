@@ -1,0 +1,18 @@
+uname -a; cat /proc/cpuinfo | head -30; ls -l /dev/dri / dev/fb* 2>&1; pgrep -a Xorg; find /var/log -maxdepth 2 -iname "*Xorg*" -type f - print; python3 -c 'import os,subprocess; p=int(subprocess.check_output(["pgrep", "-xo","firefox"])); [(print(t,open(f"/proc/{p}/task/{t}/comm").read().strip(),so rted(os.sched_getaffinity(int(t))))) for t in os.listdir(f"/proc/{p}/task") if o pen(f"/proc/{p}/task/{t}/comm").read().strip() in ("Renderer","SwComposite")]';  _s=$?; printf '\nEND_%s status=%s uid=%s boot=%s\n' dde0d82f0ed901c2 "$_s" "$(id  -u)" "$(cat /proc/sys/kernel/random/boot_id)"
+Linux ubuntu-MS-7D76 5.13.0 #1 SMP Thu Jan  1 00:00:00 UTC 1970 riscv64 GNU/Linux
+processor	: 0
+
+processor	: 1
+
+processor	: 2
+
+processor	: 3
+
+ls: cannot access '/dev/dri': No such file or directory
+crw-rw---- 1 asterinas video 29, 0 Jan  1  1970 /dev/fb0
+310 /usr/lib/xorg/Xorg :0 -noreset -nolisten tcp -ac -novtswitch -keeptty -extension GLX -configdir /run/asterinas-physical-display-providers/fbdev/xorg.conf.d -logfile /home/asterinas/Xorg.0.log vt1
+1902 SwComposite [0, 1, 2, 3]
+1557 Renderer [0, 1, 2, 3]
+
+END_dde0d82f0ed901c2 status=0 uid=0 boot=c6846443-9d90-4ff5-854e-5c4132fcfbbc
+root@asterinas-debug:/#

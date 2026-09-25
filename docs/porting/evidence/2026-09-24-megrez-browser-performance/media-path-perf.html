@@ -1,0 +1,97 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Asterinas video presentation path probe</title>
+<style>
+  html,body{margin:0;background:#101820;color:#fff;font:14px sans-serif}
+  video{display:block;position:absolute;top:0;right:0;z-index:2}
+  canvas{display:block;position:absolute;top:0;left:0;z-index:1}
+</style>
+<video id="clip" autoplay muted playsinline src="clip720.webm"></video>
+<canvas id="surface"></canvas>
+<div id="status" data-phase="loading" style="display:none"></div>
+<script>
+const params = new URLSearchParams(location.search);
+const mode = params.get('mode');
+const width = Number(params.get('w'));
+const height = Number(params.get('h'));
+const video = document.querySelector('#clip');
+const canvas = document.querySelector('#surface');
+const status = document.querySelector('#status');
+const ctx = canvas.getContext('2d', {alpha:false});
+let callbackCount = 0;
+let drawCount = 0;
+let callbackOver50 = 0;
+let lastCallback;
+let firstCallback;
+let lastPresentedFrames = 0;
+let lastMediaTime = 0;
+let playbackStarted;
+const drawDurations = [];
+window.addEventListener('error', event => {
+  status.dataset.phase = 'error';
+  status.textContent = event.message;
+});
+video.width = mode === 'canvas' ? 320 : width;
+video.height = mode === 'canvas' ? 180 : height;
+canvas.width = width;
+canvas.height = height;
+canvas.style.display = mode === 'canvas' ? 'block' : 'none';
+if (mode !== 'canvas' && mode !== 'direct') {
+  status.dataset.phase = 'error';
+  status.textContent = 'unknown mode';
+} else if (typeof video.requestVideoFrameCallback !== 'function') {
+  status.dataset.phase = 'error';
+  status.textContent = 'requestVideoFrameCallback unsupported';
+} else {
+  video.addEventListener('playing', () => {
+    status.dataset.phase = 'running';
+    playbackStarted = performance.now();
+  }, {once:true});
+  video.addEventListener('error', () => {
+    status.dataset.phase = 'error';
+    status.textContent = 'video error ' + (video.error && video.error.code);
+  });
+  function onFrame(now, metadata) {
+    if (firstCallback === undefined) firstCallback = now;
+    if (lastCallback !== undefined && now - lastCallback > 50) callbackOver50++;
+    lastCallback = now;
+    callbackCount++;
+    lastPresentedFrames = metadata.presentedFrames;
+    lastMediaTime = metadata.mediaTime;
+    if (mode === 'canvas') {
+      const drawStarted = performance.now();
+      ctx.drawImage(video, 0, 0, width, height);
+      drawDurations.push(performance.now() - drawStarted);
+      drawCount++;
+    }
+    if (!video.ended) video.requestVideoFrameCallback(onFrame);
+  }
+  video.requestVideoFrameCallback(onFrame);
+  video.addEventListener('ended', () => {
+    const quality = video.getVideoPlaybackQuality();
+    const sortedDraws = drawDurations.slice().sort((a,b) => a-b);
+    const drawAt = p => sortedDraws.length ?
+      sortedDraws[Math.min(sortedDraws.length-1, Math.floor(p*sortedDraws.length))] : null;
+    const result = {
+      mode, width, height, videoWidth: video.videoWidth,
+      videoHeight: video.videoHeight, ended: video.ended,
+      readyState: video.readyState, error: video.error && video.error.code,
+      totalFrames: quality.totalVideoFrames,
+      droppedFrames: quality.droppedVideoFrames,
+      callbackCount, drawCount, callbackOver50,
+      drawSumMs: drawDurations.reduce((a,b) => a+b, 0),
+      drawP50Ms: drawAt(.5), drawP95Ms: drawAt(.95), drawMaxMs: drawAt(1),
+      firstCallbackMs: firstCallback, lastCallbackMs: lastCallback,
+      lastPresentedFrames, lastMediaTime,
+      playbackWallMs: performance.now() - playbackStarted,
+      visibility: document.visibilityState
+    };
+    status.dataset.phase = 'done';
+    status.textContent = JSON.stringify(result);
+  }, {once:true});
+  video.play().catch(error => {
+    status.dataset.phase = 'error';
+    status.textContent = String(error);
+  });
+}
+</script>
