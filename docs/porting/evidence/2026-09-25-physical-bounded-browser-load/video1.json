@@ -1,0 +1,78 @@
+{
+  "run": 1,
+  "boot_id": "66f1a216-ff18-47d8-8621-959aa8b5f98c",
+  "url": "http://10.100.19.216:18753/_asterinas_video.html?mode=direct&w=1280&h=720&src=clip720.webm&run=1",
+  "navigate_seconds": 1.776,
+  "elapsed_seconds": 10.338,
+  "page": {
+    "phase": "done",
+    "text": "{\"mode\":\"direct\",\"source\":\"clip720.webm\",\"width\":1280,\"height\":720,\"layoutWidth\":1280,\"layoutHeight\":720,\"renderedWidth\":1280,\"renderedHeight\":720,\"videoWidth\":1280,\"videoHeight\":720,\"ended\":true,\"readyState\":2,\"error\":null,\"totalFrames\":300,\"droppedFrames\":123,\"callbackCount\":231,\"drawCount\":0,\"callbackOver50\":24,\"drawSumMs\":0,\"drawP50Ms\":null,\"drawP95Ms\":null,\"drawMaxMs\":null,\"firstCallbackMs\":1438.2,\"lastCallbackMs\":11764.22,\"lastPresentedFrames\":309,\"lastMediaTime\":9.967,\"playbackWallMs\":10384,\"visibility\":\"visible\"}",
+    "visibility": "visible",
+    "url": "http://10.100.19.216:18753/_asterinas_video.html?mode=direct&w=1280&h=720&src=clip720.webm&run=1",
+    "readyState": "complete",
+    "result": {
+      "mode": "direct",
+      "source": "clip720.webm",
+      "width": 1280,
+      "height": 720,
+      "layoutWidth": 1280,
+      "layoutHeight": 720,
+      "renderedWidth": 1280,
+      "renderedHeight": 720,
+      "videoWidth": 1280,
+      "videoHeight": 720,
+      "ended": true,
+      "readyState": 2,
+      "error": null,
+      "totalFrames": 300,
+      "droppedFrames": 123,
+      "callbackCount": 231,
+      "drawCount": 0,
+      "callbackOver50": 24,
+      "drawSumMs": 0,
+      "drawP50Ms": null,
+      "drawP95Ms": null,
+      "drawMaxMs": null,
+      "firstCallbackMs": 1438.2,
+      "lastCallbackMs": 11764.22,
+      "lastPresentedFrames": 309,
+      "lastMediaTime": 9.967,
+      "playbackWallMs": 10384,
+      "visibility": "visible"
+    }
+  },
+  "firefox_ticks": 2009,
+  "xorg_ticks": 56,
+  "hot_threads": [
+    {
+      "tid": "8713",
+      "name": "Renderer",
+      "ticks": 825
+    },
+    {
+      "tid": "8795",
+      "name": "SwComposite",
+      "ticks": 741
+    },
+    {
+      "tid": "8632",
+      "name": "firefox",
+      "ticks": 197
+    },
+    {
+      "tid": "8723",
+      "name": "Compositor",
+      "ticks": 58
+    },
+    {
+      "tid": "8668",
+      "name": "IPC I/O Parent",
+      "ticks": 49
+    },
+    {
+      "tid": "8803",
+      "name": "WRRenderBackend",
+      "ticks": 37
+    }
+  ]
+}
