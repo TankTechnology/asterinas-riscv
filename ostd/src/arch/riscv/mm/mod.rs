@@ -51,6 +51,16 @@ pub(crate) fn sync_io_mem_to_device(
     eic7700_cache::sync_to_device(physical_range)
 }
 
+/// Cleans a CPU-written Die 0 DRAM range before an EIC7700 device reads it.
+///
+/// This is usable for pinned, contiguous memory that remains mapped with the
+/// ordinary write-back policy, such as a display GEM VMO. The caller must keep
+/// the backing memory alive while the device reads it. This operation only
+/// establishes visibility; it does not create or retain a DMA mapping.
+pub(crate) fn sync_eic7700_dram_to_device(physical_range: Range<Paddr>) -> Result<()> {
+    eic7700_cache::sync_to_device(physical_range)
+}
+
 pub(crate) fn has_uncached_dram_alias() -> bool {
     eic7700_cache::has_uncached_dram_alias()
 }
