@@ -218,12 +218,26 @@ class ArgumentContractTests(unittest.TestCase):
         args = board.parse_args(_required_args() + crc_args + ["--bootargs", admitted])
         self.assertEqual(args.final_profile, "debug-root-console")
         for rejected in (
-            prefix + "--debug-console=isolated-root",
             prefix + "--volatile-home --debug-console=isolated-root",
             prefix + "--debug-console=isolated-root --volatile-home --volatile-home",
         ):
             with self.subTest(rejected=rejected):
                 _parse_fails(_required_args() + crc_args + ["--bootargs", rejected])
+
+    def test_debug_root_console_admits_isolated_persistent_desktop_contract(self):
+        args = board.parse_args(
+            _required_args()
+            + [
+                "--expected-crc32",
+                "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                "--final-profile",
+                "debug-root-console",
+                "--bootargs",
+                "console=tty0 loglevel=off init=/init -- "
+                "--root-init=systemd --debug-console=isolated-root",
+            ]
+        )
+        self.assertEqual(args.final_profile, "debug-root-console")
 
     def test_debug_root_console_admits_root_volatile_desktop_contract(self):
         args = board.parse_args(
