@@ -58,6 +58,8 @@ pub(crate) unsafe fn late_init_on_bsp() {
     // been performed.
     unsafe { timer::init_on_bsp() };
 
+    probe_cpu_clock_if_requested();
+
     // SAFETY: We're on the BSP and we're ready to boot all APs.
     unsafe { crate::boot::smp::boot_all_aps() };
 
@@ -97,6 +99,45 @@ pub(crate) unsafe fn init_on_ap() {
 /// Returns the frequency of TSC. The unit is Hz.
 pub fn tsc_freq() -> u64 {
     timer::get_timebase_freq()
+}
+
+/// Measures core cycles against the independent device-tree timebase when
+/// explicitly requested for board performance diagnosis.
+fn probe_cpu_clock_if_requested() {
+    let cmdline = crate::boot::EARLY_INFO.get().unwrap().kernel_cmdline;
+    if !cmdline
+        .split_ascii_whitespace()
+        .any(|arg| arg == "asterinas.cpu_clock_probe=1")
+    {
+        return;
+    }
+
+    let timebase_hz = tsc_freq();
+    let sample_ticks = (timebase_hz / 100).max(1); // About 10 ms per sample.
+    for sample in 1..=3 {
+        let cycle_start = riscv::register::cycle::read64();
+        let time_start = riscv::register::time::read64();
+        let time_end = loop {
+            let now = riscv::register::time::read64();
+            if now.wrapping_sub(time_start) >= sample_ticks {
+                break now;
+            }
+            core::hint::spin_loop();
+        };
+        let cycle_end = riscv::register::cycle::read64();
+        let elapsed_ticks = time_end.wrapping_sub(time_start);
+        let elapsed_cycles = cycle_end.wrapping_sub(cycle_start);
+        let core_hz =
+            u128::from(elapsed_cycles) * u128::from(timebase_hz) / u128::from(elapsed_ticks);
+        crate::early_println!(
+            "CPU clock probe: sample={} cycles={} time_ticks={} timebase_hz={} estimated_core_hz={}",
+            sample,
+            elapsed_cycles,
+            elapsed_ticks,
+            timebase_hz,
+            core_hz
+        );
+    }
 }
 
 pub(crate) fn request_timer_interrupt_after(duration: core::time::Duration) {

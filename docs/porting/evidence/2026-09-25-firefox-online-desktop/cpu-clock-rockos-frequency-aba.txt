@@ -1,0 +1,15 @@
+/tmp/cpu-throughput-probe: OK
+/tmp/rockos_frequency_ab.py: OK
+variant=rockos_1800_a freq_khz=1800000
+sample=1 cpu=0 iterations=20000000 wall_ns=66801000 thread_cpu_ns=66773000 checksum=7ead77efdc3bdb43
+sample=2 cpu=0 iterations=20000000 wall_ns=67098000 thread_cpu_ns=66905000 checksum=7ead77efdc3bdb43
+sample=3 cpu=0 iterations=20000000 wall_ns=67729000 thread_cpu_ns=67131000 checksum=7ead77efdc3bdb43
+variant=rockos_1400 freq_khz=1400000
+sample=1 cpu=0 iterations=20000000 wall_ns=85952000 thread_cpu_ns=85948000 checksum=7ead77efdc3bdb43
+sample=2 cpu=0 iterations=20000000 wall_ns=85913000 thread_cpu_ns=85911000 checksum=7ead77efdc3bdb43
+sample=3 cpu=0 iterations=20000000 wall_ns=86003000 thread_cpu_ns=85912000 checksum=7ead77efdc3bdb43
+variant=rockos_1800_b freq_khz=1800000
+sample=1 cpu=0 iterations=20000000 wall_ns=66927000 thread_cpu_ns=66785000 checksum=7ead77efdc3bdb43
+sample=2 cpu=0 iterations=20000000 wall_ns=66768000 thread_cpu_ns=66766000 checksum=7ead77efdc3bdb43
+sample=3 cpu=0 iterations=20000000 wall_ns=66752000 thread_cpu_ns=66751000 checksum=7ead77efdc3bdb43
+restored_governor=performance restored_freq_khz=1800000
