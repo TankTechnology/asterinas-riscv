@@ -809,7 +809,7 @@ class DebianStage1Tests(unittest.TestCase):
         ready_service = runtime / "systemd/system/asterinas-desktop-ready.service"
         ready_link = (
             runtime
-            / "systemd/system/asterinas-debug-console.target.wants/"
+            / "systemd/system/getty.target.wants/"
             "asterinas-desktop-ready.service"
         )
 
@@ -879,6 +879,13 @@ class DebianStage1Tests(unittest.TestCase):
             default_target.resolve(),
             root / "run/systemd/system/asterinas-debug-console.target",
         )
+        ready_link = (
+            root
+            / "run/systemd/system/asterinas-debug-console.target.wants/"
+            "asterinas-desktop-ready.service"
+        )
+        self.assertTrue(ready_link.is_symlink())
+        self.assertEqual(os.readlink(ready_link), "../asterinas-desktop-ready.service")
 
     def test_isolated_debug_console_rejects_existing_default_target(self) -> None:
         binary = self.directory / "debug-console-harness"

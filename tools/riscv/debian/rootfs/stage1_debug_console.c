@@ -136,6 +136,7 @@ static int create_file(const char *path, const char *content, size_t length)
 
 static int prepare_debug_console(const char *root, int isolated)
 {
+    enum { READY_SERVICE_LINK = 7 };
     static const char *const directory_suffixes[] = {
         "/run",
         "/run/systemd",
@@ -164,7 +165,14 @@ static int prepare_debug_console(const char *root, int isolated)
     for (size_t index = 0;
          index < sizeof(destination_suffixes) / sizeof(destination_suffixes[0]);
          ++index) {
-        if (make_path(paths[index], root, destination_suffixes[index]) != 0 ||
+        const char *suffix = destination_suffixes[index];
+        if (index == READY_SERVICE_LINK && !isolated) {
+            // The standard desktop starts getty.target, not the isolated
+            // debug-console target. Its readiness gate must be pulled in.
+            suffix = "/run/systemd/system/getty.target.wants/"
+                     "asterinas-desktop-ready.service";
+        }
+        if (make_path(paths[index], root, suffix) != 0 ||
             destination_absent(paths[index]) != 0) {
             return -1;
         }
