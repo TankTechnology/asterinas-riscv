@@ -1,0 +1,250 @@
+{
+  "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+  "image_sha256": "3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e",
+  "samples": [
+    {
+      "run": 1,
+      "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+      "url": "http://10.100.19.216:17895/rgb-frame-perf.html?w=640&h=360&run=1",
+      "navigate_seconds": 0.817,
+      "elapsed_seconds": 8.278,
+      "page": {
+        "phase": "done",
+        "text": "{\"width\":640,\"height\":360,\"sourceWidth\":1280,\"sourceHeight\":720,\"frames\":598,\"durationMs\":8010.6,\"p50Ms\":13.180000000000291,\"p95Ms\":13.300000000000182,\"over33Ms\":6,\"over50Ms\":2,\"visibility\":\"visible\"}",
+        "visibility": "visible",
+        "url": "http://10.100.19.216:17895/rgb-frame-perf.html?w=640&h=360&run=1",
+        "readyState": "complete",
+        "result": {
+          "width": 640,
+          "height": 360,
+          "sourceWidth": 1280,
+          "sourceHeight": 720,
+          "frames": 598,
+          "durationMs": 8010.6,
+          "p50Ms": 13.180000000000291,
+          "p95Ms": 13.300000000000182,
+          "over33Ms": 6,
+          "over50Ms": 2,
+          "visibility": "visible"
+        }
+      },
+      "firefox_ticks": 877,
+      "xorg_ticks": 180,
+      "hot_threads": [
+        {
+          "tid": "1557",
+          "name": "Renderer",
+          "ticks": 210
+        },
+        {
+          "tid": "360",
+          "name": "firefox",
+          "ticks": 185
+        },
+        {
+          "tid": "1292",
+          "name": "glean.dispatche",
+          "ticks": 106
+        },
+        {
+          "tid": "1567",
+          "name": "Compositor",
+          "ticks": 97
+        },
+        {
+          "tid": "1905",
+          "name": "WRRenderBackend",
+          "ticks": 91
+        },
+        {
+          "tid": "1902",
+          "name": "SwComposite",
+          "ticks": 74
+        }
+      ]
+    },
+    {
+      "run": 2,
+      "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+      "url": "http://10.100.19.216:17895/rgb-frame-perf.html?w=1280&h=720&run=2",
+      "navigate_seconds": 0.79,
+      "elapsed_seconds": 8.015,
+      "page": {
+        "phase": "done",
+        "text": "{\"width\":1280,\"height\":720,\"sourceWidth\":1280,\"sourceHeight\":720,\"frames\":574,\"durationMs\":8012.739999999999,\"p50Ms\":13.199999999999818,\"p95Ms\":13.319999999999936,\"over33Ms\":9,\"over50Ms\":8,\"visibility\":\"visible\"}",
+        "visibility": "visible",
+        "url": "http://10.100.19.216:17895/rgb-frame-perf.html?w=1280&h=720&run=2",
+        "readyState": "complete",
+        "result": {
+          "width": 1280,
+          "height": 720,
+          "sourceWidth": 1280,
+          "sourceHeight": 720,
+          "frames": 574,
+          "durationMs": 8012.739999999999,
+          "p50Ms": 13.199999999999818,
+          "p95Ms": 13.319999999999936,
+          "over33Ms": 9,
+          "over50Ms": 8,
+          "visibility": "visible"
+        }
+      },
+      "firefox_ticks": 945,
+      "xorg_ticks": 192,
+      "hot_threads": [
+        {
+          "tid": "1557",
+          "name": "Renderer",
+          "ticks": 242
+        },
+        {
+          "tid": "360",
+          "name": "firefox",
+          "ticks": 179
+        },
+        {
+          "tid": "1292",
+          "name": "glean.dispatche",
+          "ticks": 114
+        },
+        {
+          "tid": "1905",
+          "name": "WRRenderBackend",
+          "ticks": 106
+        },
+        {
+          "tid": "1567",
+          "name": "Compositor",
+          "ticks": 99
+        },
+        {
+          "tid": "1902",
+          "name": "SwComposite",
+          "ticks": 86
+        }
+      ]
+    },
+    {
+      "run": 3,
+      "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+      "url": "http://10.100.19.216:17895/rgb-frame-perf.html?w=1280&h=720&run=3",
+      "navigate_seconds": 0.71,
+      "elapsed_seconds": 8.12,
+      "page": {
+        "phase": "done",
+        "text": "{\"width\":1280,\"height\":720,\"sourceWidth\":1280,\"sourceHeight\":720,\"frames\":572,\"durationMs\":8012.799999999999,\"p50Ms\":13.199999999999818,\"p95Ms\":13.299999999999955,\"over33Ms\":8,\"over50Ms\":7,\"visibility\":\"visible\"}",
+        "visibility": "visible",
+        "url": "http://10.100.19.216:17895/rgb-frame-perf.html?w=1280&h=720&run=3",
+        "readyState": "complete",
+        "result": {
+          "width": 1280,
+          "height": 720,
+          "sourceWidth": 1280,
+          "sourceHeight": 720,
+          "frames": 572,
+          "durationMs": 8012.799999999999,
+          "p50Ms": 13.199999999999818,
+          "p95Ms": 13.299999999999955,
+          "over33Ms": 8,
+          "over50Ms": 7,
+          "visibility": "visible"
+        }
+      },
+      "firefox_ticks": 965,
+      "xorg_ticks": 194,
+      "hot_threads": [
+        {
+          "tid": "1557",
+          "name": "Renderer",
+          "ticks": 264
+        },
+        {
+          "tid": "360",
+          "name": "firefox",
+          "ticks": 176
+        },
+        {
+          "tid": "1292",
+          "name": "glean.dispatche",
+          "ticks": 117
+        },
+        {
+          "tid": "1905",
+          "name": "WRRenderBackend",
+          "ticks": 102
+        },
+        {
+          "tid": "1567",
+          "name": "Compositor",
+          "ticks": 100
+        },
+        {
+          "tid": "1902",
+          "name": "SwComposite",
+          "ticks": 87
+        }
+      ]
+    },
+    {
+      "run": 4,
+      "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+      "url": "http://10.100.19.216:17895/rgb-frame-perf.html?w=640&h=360&run=4",
+      "navigate_seconds": 0.767,
+      "elapsed_seconds": 8.128,
+      "page": {
+        "phase": "done",
+        "text": "{\"width\":640,\"height\":360,\"sourceWidth\":1280,\"sourceHeight\":720,\"frames\":580,\"durationMs\":8006.64,\"p50Ms\":13.199999999999818,\"p95Ms\":13.299999999999955,\"over33Ms\":9,\"over50Ms\":5,\"visibility\":\"visible\"}",
+        "visibility": "visible",
+        "url": "http://10.100.19.216:17895/rgb-frame-perf.html?w=640&h=360&run=4",
+        "readyState": "complete",
+        "result": {
+          "width": 640,
+          "height": 360,
+          "sourceWidth": 1280,
+          "sourceHeight": 720,
+          "frames": 580,
+          "durationMs": 8006.64,
+          "p50Ms": 13.199999999999818,
+          "p95Ms": 13.299999999999955,
+          "over33Ms": 9,
+          "over50Ms": 5,
+          "visibility": "visible"
+        }
+      },
+      "firefox_ticks": 848,
+      "xorg_ticks": 179,
+      "hot_threads": [
+        {
+          "tid": "1557",
+          "name": "Renderer",
+          "ticks": 215
+        },
+        {
+          "tid": "360",
+          "name": "firefox",
+          "ticks": 161
+        },
+        {
+          "tid": "1292",
+          "name": "glean.dispatche",
+          "ticks": 102
+        },
+        {
+          "tid": "1567",
+          "name": "Compositor",
+          "ticks": 93
+        },
+        {
+          "tid": "1905",
+          "name": "WRRenderBackend",
+          "ticks": 89
+        },
+        {
+          "tid": "1902",
+          "name": "SwComposite",
+          "ticks": 75
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,392 @@
+{
+  "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+  "image_sha256": "3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e",
+  "samples": [
+    {
+      "run": 1,
+      "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+      "url": "http://10.100.19.216:17895/video-source-perf.html?mode=direct&w=1280&h=720&src=clip720.webm&run=1",
+      "navigate_seconds": 0.693,
+      "elapsed_seconds": 10.983,
+      "page": {
+        "phase": "done",
+        "text": "{\"mode\":\"direct\",\"source\":\"clip720.webm\",\"width\":1280,\"height\":720,\"layoutWidth\":1280,\"layoutHeight\":720,\"renderedWidth\":1280,\"renderedHeight\":720,\"videoWidth\":1280,\"videoHeight\":720,\"ended\":true,\"readyState\":2,\"error\":null,\"totalFrames\":300,\"droppedFrames\":143,\"callbackCount\":224,\"drawCount\":0,\"callbackOver50\":26,\"drawSumMs\":0,\"drawP50Ms\":null,\"drawP95Ms\":null,\"drawMaxMs\":null,\"firstCallbackMs\":814.1,\"lastCallbackMs\":10878.26,\"lastPresentedFrames\":300,\"lastMediaTime\":9.967,\"playbackWallMs\":10516,\"visibility\":\"visible\"}",
+        "visibility": "visible",
+        "url": "http://10.100.19.216:17895/video-source-perf.html?mode=direct&w=1280&h=720&src=clip720.webm&run=1",
+        "readyState": "complete",
+        "result": {
+          "mode": "direct",
+          "source": "clip720.webm",
+          "width": 1280,
+          "height": 720,
+          "layoutWidth": 1280,
+          "layoutHeight": 720,
+          "renderedWidth": 1280,
+          "renderedHeight": 720,
+          "videoWidth": 1280,
+          "videoHeight": 720,
+          "ended": true,
+          "readyState": 2,
+          "error": null,
+          "totalFrames": 300,
+          "droppedFrames": 143,
+          "callbackCount": 224,
+          "drawCount": 0,
+          "callbackOver50": 26,
+          "drawSumMs": 0,
+          "drawP50Ms": null,
+          "drawP95Ms": null,
+          "drawMaxMs": null,
+          "firstCallbackMs": 814.1,
+          "lastCallbackMs": 10878.26,
+          "lastPresentedFrames": 300,
+          "lastMediaTime": 9.967,
+          "playbackWallMs": 10516,
+          "visibility": "visible"
+        }
+      },
+      "firefox_ticks": 1794,
+      "xorg_ticks": 46,
+      "hot_threads": [
+        {
+          "tid": "1557",
+          "name": "Renderer",
+          "ticks": 752
+        },
+        {
+          "tid": "1902",
+          "name": "SwComposite",
+          "ticks": 724
+        },
+        {
+          "tid": "360",
+          "name": "firefox",
+          "ticks": 110
+        },
+        {
+          "tid": "1567",
+          "name": "Compositor",
+          "ticks": 51
+        },
+        {
+          "tid": "1295",
+          "name": "IPC I/O Parent",
+          "ticks": 49
+        },
+        {
+          "tid": "1556",
+          "name": "Softwar~cThread",
+          "ticks": 28
+        }
+      ],
+      "thread_sample": {
+        "samples": 16,
+        "duration_ms": 10540.514,
+        "limitations": [
+          "thread-churn"
+        ],
+        "raw_report_path": "/run/firefox-video-threads-3940-1-4489532758000.json",
+        "top_threads": [
+          {
+            "tid": 1557,
+            "name": "Renderer",
+            "user_ms": 6520.0,
+            "kernel_ms": 580.0,
+            "runqueue_wait_ms": 2119.015
+          },
+          {
+            "tid": 1902,
+            "name": "SwComposite",
+            "user_ms": 6550.0,
+            "kernel_ms": 520.0,
+            "runqueue_wait_ms": 2134.931
+          },
+          {
+            "tid": 360,
+            "name": "firefox",
+            "user_ms": 430.0,
+            "kernel_ms": 290.0,
+            "runqueue_wait_ms": 746.8889999999999
+          },
+          {
+            "tid": 1567,
+            "name": "Compositor",
+            "user_ms": 290.0,
+            "kernel_ms": 210.0,
+            "runqueue_wait_ms": 1699.2960000000003
+          },
+          {
+            "tid": 1295,
+            "name": "IPC I/O Parent",
+            "user_ms": 160.0,
+            "kernel_ms": 300.0,
+            "runqueue_wait_ms": 1302.6349999999998
+          },
+          {
+            "tid": 1292,
+            "name": "glean.dispatche",
+            "user_ms": 130.0,
+            "kernel_ms": 90.0,
+            "runqueue_wait_ms": 2259.7439999999997
+          },
+          {
+            "tid": 1905,
+            "name": "WRRenderBackend",
+            "user_ms": 190.0,
+            "kernel_ms": 30.0,
+            "runqueue_wait_ms": 558.704
+          },
+          {
+            "tid": 1556,
+            "name": "Softwar~cThread",
+            "user_ms": 100.0,
+            "kernel_ms": 80.0,
+            "runqueue_wait_ms": 619.592
+          },
+          {
+            "tid": 1311,
+            "name": "IPDL Background",
+            "user_ms": 50.0,
+            "kernel_ms": 60.0,
+            "runqueue_wait_ms": 783.0470000000001
+          },
+          {
+            "tid": 1304,
+            "name": "Socket Thread",
+            "user_ms": 20.0,
+            "kernel_ms": 30.0,
+            "runqueue_wait_ms": 137.516
+          },
+          {
+            "tid": 1903,
+            "name": "WRSceneBuilder#",
+            "user_ms": 20.0,
+            "kernel_ms": 20.0,
+            "runqueue_wait_ms": 575.262
+          },
+          {
+            "tid": 1300,
+            "name": "Timer",
+            "user_ms": 10.0,
+            "kernel_ms": 20.0,
+            "runqueue_wait_ms": 197.54500000000002
+          },
+          {
+            "tid": 561,
+            "name": "pool-spawner",
+            "user_ms": 0.0,
+            "kernel_ms": 0.0,
+            "runqueue_wait_ms": 0.0
+          },
+          {
+            "tid": 562,
+            "name": "gmain",
+            "user_ms": 0.0,
+            "kernel_ms": 0.0,
+            "runqueue_wait_ms": 0.0
+          },
+          {
+            "tid": 1302,
+            "name": "Netlink Monitor",
+            "user_ms": 0.0,
+            "kernel_ms": 0.0,
+            "runqueue_wait_ms": 0.0
+          }
+        ]
+      },
+      "thread_sample_errors": []
+    },
+    {
+      "run": 2,
+      "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+      "url": "http://10.100.19.216:17895/video-source-perf.html?mode=direct&w=640&h=360&src=clip720.webm&run=2",
+      "navigate_seconds": 0.656,
+      "elapsed_seconds": 10.83,
+      "page": {
+        "phase": "done",
+        "text": "{\"mode\":\"direct\",\"source\":\"clip720.webm\",\"width\":640,\"height\":360,\"layoutWidth\":640,\"layoutHeight\":360,\"renderedWidth\":640,\"renderedHeight\":360,\"videoWidth\":1280,\"videoHeight\":720,\"ended\":true,\"readyState\":2,\"error\":null,\"totalFrames\":300,\"droppedFrames\":6,\"callbackCount\":232,\"drawCount\":0,\"callbackOver50\":22,\"drawSumMs\":0,\"drawP50Ms\":null,\"drawP95Ms\":null,\"drawMaxMs\":null,\"firstCallbackMs\":600.9,\"lastCallbackMs\":11018.06,\"lastPresentedFrames\":300,\"lastMediaTime\":9.967,\"playbackWallMs\":10467,\"visibility\":\"visible\"}",
+        "visibility": "visible",
+        "url": "http://10.100.19.216:17895/video-source-perf.html?mode=direct&w=640&h=360&src=clip720.webm&run=2",
+        "readyState": "complete",
+        "result": {
+          "mode": "direct",
+          "source": "clip720.webm",
+          "width": 640,
+          "height": 360,
+          "layoutWidth": 640,
+          "layoutHeight": 360,
+          "renderedWidth": 640,
+          "renderedHeight": 360,
+          "videoWidth": 1280,
+          "videoHeight": 720,
+          "ended": true,
+          "readyState": 2,
+          "error": null,
+          "totalFrames": 300,
+          "droppedFrames": 6,
+          "callbackCount": 232,
+          "drawCount": 0,
+          "callbackOver50": 22,
+          "drawSumMs": 0,
+          "drawP50Ms": null,
+          "drawP95Ms": null,
+          "drawMaxMs": null,
+          "firstCallbackMs": 600.9,
+          "lastCallbackMs": 11018.06,
+          "lastPresentedFrames": 300,
+          "lastMediaTime": 9.967,
+          "playbackWallMs": 10467,
+          "visibility": "visible"
+        }
+      },
+      "firefox_ticks": 1445,
+      "xorg_ticks": 43,
+      "hot_threads": [
+        {
+          "tid": "1557",
+          "name": "Renderer",
+          "ticks": 548
+        },
+        {
+          "tid": "1902",
+          "name": "SwComposite",
+          "ticks": 480
+        },
+        {
+          "tid": "360",
+          "name": "firefox",
+          "ticks": 134
+        },
+        {
+          "tid": "1567",
+          "name": "Compositor",
+          "ticks": 72
+        },
+        {
+          "tid": "1905",
+          "name": "WRRenderBackend",
+          "ticks": 53
+        },
+        {
+          "tid": "1295",
+          "name": "IPC I/O Parent",
+          "ticks": 52
+        }
+      ],
+      "thread_sample": {
+        "samples": 16,
+        "duration_ms": 10463.469000000001,
+        "limitations": [],
+        "raw_report_path": "/run/firefox-video-threads-3940-2-4501843628000.json",
+        "top_threads": [
+          {
+            "tid": 1557,
+            "name": "Renderer",
+            "user_ms": 4430.0,
+            "kernel_ms": 620.0,
+            "runqueue_wait_ms": 2063.552
+          },
+          {
+            "tid": 1902,
+            "name": "SwComposite",
+            "user_ms": 4270.0,
+            "kernel_ms": 230.0,
+            "runqueue_wait_ms": 1861.5400000000004
+          },
+          {
+            "tid": 360,
+            "name": "firefox",
+            "user_ms": 490.0,
+            "kernel_ms": 400.0,
+            "runqueue_wait_ms": 621.7800000000001
+          },
+          {
+            "tid": 1567,
+            "name": "Compositor",
+            "user_ms": 390.0,
+            "kernel_ms": 300.0,
+            "runqueue_wait_ms": 1661.314
+          },
+          {
+            "tid": 1905,
+            "name": "WRRenderBackend",
+            "user_ms": 410.0,
+            "kernel_ms": 100.0,
+            "runqueue_wait_ms": 1361.517
+          },
+          {
+            "tid": 1295,
+            "name": "IPC I/O Parent",
+            "user_ms": 170.0,
+            "kernel_ms": 310.0,
+            "runqueue_wait_ms": 967.8389999999998
+          },
+          {
+            "tid": 1292,
+            "name": "glean.dispatche",
+            "user_ms": 230.0,
+            "kernel_ms": 170.0,
+            "runqueue_wait_ms": 2900.9489999999996
+          },
+          {
+            "tid": 1556,
+            "name": "Softwar~cThread",
+            "user_ms": 90.0,
+            "kernel_ms": 80.0,
+            "runqueue_wait_ms": 483.3610000000001
+          },
+          {
+            "tid": 1903,
+            "name": "WRSceneBuilder#",
+            "user_ms": 80.0,
+            "kernel_ms": 80.0,
+            "runqueue_wait_ms": 1355.5190000000002
+          },
+          {
+            "tid": 1311,
+            "name": "IPDL Background",
+            "user_ms": 60.0,
+            "kernel_ms": 70.0,
+            "runqueue_wait_ms": 592.465
+          },
+          {
+            "tid": 1304,
+            "name": "Socket Thread",
+            "user_ms": 10.0,
+            "kernel_ms": 40.0,
+            "runqueue_wait_ms": 117.79799999999999
+          },
+          {
+            "tid": 1300,
+            "name": "Timer",
+            "user_ms": 10.0,
+            "kernel_ms": 20.0,
+            "runqueue_wait_ms": 120.147
+          },
+          {
+            "tid": 561,
+            "name": "pool-spawner",
+            "user_ms": 0.0,
+            "kernel_ms": 0.0,
+            "runqueue_wait_ms": 0.0
+          },
+          {
+            "tid": 562,
+            "name": "gmain",
+            "user_ms": 0.0,
+            "kernel_ms": 0.0,
+            "runqueue_wait_ms": 0.0
+          },
+          {
+            "tid": 1302,
+            "name": "Netlink Monitor",
+            "user_ms": 0.0,
+            "kernel_ms": 0.0,
+            "runqueue_wait_ms": 0.0
+          }
+        ]
+      },
+      "thread_sample_errors": []
+    }
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc",
+  "browser_pid": 360,
+  "window": "4194306",
+  "url": "http://10.100.19.216:17895/input-perf.html",
+  "samples_ms": [
+    23,
+    15,
+    21,
+    12,
+    11,
+    9,
+    15,
+    10,
+    9,
+    13,
+    10,
+    10,
+    9,
+    8,
+    10,
+    6
+  ],
+  "p50_ms": 10.0,
+  "p95_ms": 23,
+  "max_ms": 23,
+  "trusted_input_events": 16
+}

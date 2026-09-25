@@ -1,0 +1,14 @@
+[
+  {
+    "attempt": 1,
+    "nonce": "488b422f4e4e1b7b",
+    "valid": true,
+    "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc"
+  },
+  {
+    "attempt": 2,
+    "nonce": "8d55d85a912ce26e",
+    "valid": true,
+    "boot_id": "c6846443-9d90-4ff5-854e-5c4132fcfbbc"
+  }
+]
