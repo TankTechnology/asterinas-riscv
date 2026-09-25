@@ -69,8 +69,27 @@ These register offsets agree with the
 [ESWIN Linux clock-driver submission](https://lists.openwall.net/linux-kernel/2026/03/03/527).
 The board's live CPU OPP table declares 800,000 µV for 1.4 GHz and
 900,000 µV for 1.8 GHz. That is an operating-point contract, not a
-measurement of the actual rail voltage. RockOS's regulator summary did not
-show a CPU regulator, so its voltage control path remains unresolved.
+measurement of the actual rail voltage. The
+[Milk-V Megrez frequency guide](https://milkv.io/docs/megrez/getting-started/boost)
+likewise says that switching RockOS to 1.8 GHz raises the CPU rail to 900 mV.
+However, a same-boot, read-only
+[PVT sensor A/B/A](cpu-clock-rockos-voltage-aba.txt) on RockOS boot ID
+`b6eabb99-32e0-42d2-b078-33ae82d03c93` reported 793–794 mV at
+1.8 GHz, 793–794 mV at 1.4 GHz, and 793–794 mV after restoring 1.8 GHz.
+The sensor labels this reading `CPU Core Voltage`; this is not an independent
+voltmeter measurement. RockOS's boot log says its clock driver failed to get
+the CPU voltage GPIO, even though a later line says it changed voltage to
+900 mV. The source of that log line and the actual regulator control need
+board-specific confirmation before treating the message as proof of a rail
+transition. The CPU was left at its original `performance`/1.8 GHz setting.
+The public [Megrez V1.1 schematic, sheet 30](https://github.com/milkv-megrez/megrez-files/blob/main/hardware/v1.1/Megrez_V1.1_Schematic_20250108.pdf?raw=true#page=30)
+draws `VDD_CPU` as a fixed-output regulator circuit and labels the net
+`0.92V`; the live board revision and populated regulator have not been
+established from that drawing. Its sheet 3 lists an INA226 CPU-rail monitor,
+but RockOS's `ina2xx 6-0045` probe failed with `-121`, so it yielded no
+independent rail reading. The PVT A/B/A and schematic therefore identify a
+specific board-contract discrepancy to resolve, not a safe basis for setting
+an Asterinas CPU frequency.
 The [NuttX EIC7700 clock implementation](https://apache.googlesource.com/nuttx/+/1686bb6c9eb741a4ed852c724c2ed609fbda0cad%5E%21/)
 documents the clock-source parking and bus-ratio ordering needed for a safe
 PLL transition. No Asterinas PLL write was attempted.

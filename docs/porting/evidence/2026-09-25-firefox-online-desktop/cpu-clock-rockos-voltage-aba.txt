@@ -1,0 +1,10 @@
+b6eabb99-32e0-42d2-b078-33ae82d03c93
+label=before governor=performance freq_khz=1800000 cpu_mv=793,794,793,794,794,
+label=middle governor=userspace freq_khz=1400000 cpu_mv=793,794,793,793,794,
+label=restored governor=performance freq_khz=1800000 cpu_mv=793,794,793,793,794,
+[    1.465950] eswin-clock 51828000.sys-crg:clock-controller: failed to get cpu volatge gpio
+[    4.990069] cpu volatge change to 900 mV, target rate 1800000000
+CPU Core Voltage
+[    6.876561] ina2xx 6-0045: supply vs not found, using dummy regulator
+[    6.883509] ina2xx 6-0045: error configuring the device: -121
+ls: cannot access '/sys/bus/i2c/devices/6-0045/hwmon': No such file or directory
