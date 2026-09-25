@@ -56,6 +56,11 @@ Do not reboot the current desktop merely to repeat reference-system discovery.
   dirty-present nanoseconds per copied byte by about 15%, with uncertain
   Firefox page state. This is a useful interim improvement, but not the 2×
   user-experience goal. See the [direct-copy evidence](2026-09-26-megrez-direct-copy.md).
+- A selected physical boot cleaned one 8.29 MB GEM frame through the EIC7700
+  cache operation in 6.746 ms, while leaving the display registers untouched.
+  This supports an isolated direct-scanout gate, but does not yet prove an
+  actual DMA read or a visible speedup. See the
+  [DMA-clean evidence](2026-09-26-megrez-dma-clean-probe.md).
 
 ## Three implementation choices
 
@@ -208,3 +213,4 @@ and its UAPI is available. Neither subsystem is a prerequisite for P1.
 - [Live EIC7700 display handoff and DMA blocker](2026-09-25-megrez-dc-handoff.md)
 - [P0 row-phase profile of a short Firefox operation](2026-09-26-megrez-firefox-phase-profile.md)
 - [Opt-in direct GEM-page copy and physical result](2026-09-26-megrez-direct-copy.md)
+- [Opt-in GEM cache-clean probe and physical result](2026-09-26-megrez-dma-clean-probe.md)
