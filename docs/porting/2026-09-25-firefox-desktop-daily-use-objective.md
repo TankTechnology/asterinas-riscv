@@ -81,7 +81,11 @@ at 1.400 GHz in three 10 ms windows. RockOS on the same board ran at 1.8 GHz
 and its controlled 1.8/1.4/1.8 GHz static-binary comparison reproduced the
 expected compute-throughput gap. The live board OPP table declares 800 mV at
 1.4 GHz and 900 mV at 1.8 GHz; the actual CPU rail and safe transition path
-are still unverified. The [clock attribution and recovery record](evidence/2026-09-25-firefox-online-desktop/cpu-clock-attribution.md)
+are still unverified. A RockOS PVT sensor A/B/A subsequently read 793–794 mV
+at both frequencies while the clock driver's boot log reported a missing CPU
+voltage GPIO. This conflicts with the vendor's stated 900 mV requirement at
+1.8 GHz and blocks a safe Asterinas frequency change until the board-level
+voltage path is established. The [clock attribution and recovery record](evidence/2026-09-25-firefox-online-desktop/cpu-clock-attribution.md)
 includes the raw logs. This explains some CPU-bound cost but is not a measured
 Firefox speedup. No Asterinas clock register was changed; the twofold desktop
 and video goals remain open.
