@@ -76,6 +76,16 @@ controls, so it is rejected. The [three-run record](evidence/2026-09-25-firefox-
 keeps the 303-frame candidate quality counter and the recovery limits intact.
 No production browser preference changed, and the twofold target remains open.
 
+A new opt-in physical CPU-clock probe has now measured the Asterinas boot hart
+at 1.400 GHz in three 10 ms windows. RockOS on the same board ran at 1.8 GHz
+and its controlled 1.8/1.4/1.8 GHz static-binary comparison reproduced the
+expected compute-throughput gap. The live board OPP table declares 800 mV at
+1.4 GHz and 900 mV at 1.8 GHz; the actual CPU rail and safe transition path
+are still unverified. The [clock attribution and recovery record](evidence/2026-09-25-firefox-online-desktop/cpu-clock-attribution.md)
+includes the raw logs. This explains some CPU-bound cost but is not a measured
+Firefox speedup. No Asterinas clock register was changed; the twofold desktop
+and video goals remain open.
+
 ## Earlier checkpoint before signed-root installation
 
 The online shell integration and a vDSO writer lock-order stability fix are
