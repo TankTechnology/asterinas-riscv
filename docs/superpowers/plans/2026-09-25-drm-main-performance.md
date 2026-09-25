@@ -2,7 +2,7 @@
 
 **Goal:** Preserve the working Megrez DRM desktop while restoring current-main scheduler behavior and making firmware scanout cost observable without per-frame logging.
 
-**Architecture:** Build an isolated integration branch from main and merge the detached DRM demo head into it. Keep the main scheduler and procfs implementation authoritative. Add aggregate counters only to the firmware framebuffer backend; report at exponentially spaced successful presents through the existing kernel log, so ordinary browser use produces a small, bounded number of records.
+**Architecture:** Build an isolated integration branch from main and merge the detached DRM demo head into it. Keep the main scheduler and procfs implementation authoritative. Add aggregate counters only to the firmware framebuffer backend; report at exponential milestones with a five-second fallback during active presentation through the existing kernel log, so short interactions remain observable without per-frame logging.
 
 **Boundaries:** Do not merge this branch into main, restart the board, alter the live Firefox profile, or claim a speedup from a QEMU run. The current board remains available to the user. The first deployable artifact requires a separate physical handoff with root serial access verified before and after opening the port.
 
@@ -20,7 +20,7 @@
 ### Task 3: Add bounded firmware scanout telemetry
 
 - [x] Time successful `present_framebuffer` and `dirty_framebuffer` calls with the monotonic kernel clock, calculate copied bytes from validated geometry, and update one mutex-protected aggregate after the copy completes.
-- [x] Emit one summary when the total successful present count reaches a power of two. Include full/dirty counts, total bytes, cumulative duration and maximum duration; never log every frame or include browser URLs.
+- [x] Emit a summary when the total successful present count reaches a power of two or five seconds have elapsed since the last report and another present succeeds. Include full/dirty counts, total bytes, cumulative duration and maximum duration; never log every frame or include browser URLs.
 - [x] Run each focused test with an exact-name filter and verify one test executes, check formatting, build the optimized RISC-V kernel, and pass the bounded QEMU firmware gate. The first prefix-filter invocation exited zero but ran zero tests; it was not counted.
 
 ### Task 4: Record the deployment decision

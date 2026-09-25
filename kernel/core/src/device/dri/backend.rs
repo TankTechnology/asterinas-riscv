@@ -37,6 +37,7 @@ use crate::{prelude::*, vm::page_cache::Vmo};
 
 /// Bytes per pixel of the `BgrReserved8888` format the firmware path requires.
 const BGRX8888_BYTES_PER_PIXEL: usize = 4;
+const PRESENT_REPORT_INTERVAL: Duration = Duration::from_secs(5);
 
 /// A framebuffer ready for presentation.
 ///
@@ -177,11 +178,18 @@ struct FirmwarePresentStats {
     full: PresentClassStats,
     dirty: PresentClassStats,
     total_successes: u64,
+    last_reported_at: Option<Duration>,
 }
 
 impl FirmwarePresentStats {
-    /// Returns a snapshot only at exponentially spaced milestones.
-    fn record_success(&mut self, kind: PresentKind, bytes: u64, elapsed_ns: u64) -> Option<Self> {
+    /// Returns a snapshot at exponential milestones and after a bounded interval.
+    fn record_success(
+        &mut self,
+        kind: PresentKind,
+        bytes: u64,
+        elapsed_ns: u64,
+        finished_at: Duration,
+    ) -> Option<Self> {
         let class = match kind {
             PresentKind::Full => &mut self.full,
             PresentKind::Dirty => &mut self.dirty,
@@ -191,7 +199,15 @@ impl FirmwarePresentStats {
         class.total_ns = class.total_ns.saturating_add(elapsed_ns);
         class.max_ns = class.max_ns.max(elapsed_ns);
         self.total_successes = self.total_successes.saturating_add(1);
-        self.total_successes.is_power_of_two().then_some(*self)
+        let interval_elapsed = self
+            .last_reported_at
+            .is_none_or(|last| finished_at.saturating_sub(last) >= PRESENT_REPORT_INTERVAL);
+        if self.total_successes.is_power_of_two() || interval_elapsed {
+            self.last_reported_at = Some(finished_at);
+            Some(*self)
+        } else {
+            None
+        }
     }
 }
 
@@ -382,27 +398,34 @@ impl FirmwareFramebufferBackend {
         })
     }
 
-    fn record_present(&self, kind: PresentKind, bytes: u64, started: Duration) {
-        let elapsed = aster_time::read_monotonic_time().saturating_sub(started);
+    fn record_present(
+        &self,
+        kind: PresentKind,
+        bytes: u64,
+        started: Duration,
+        finished: Duration,
+    ) -> Option<FirmwarePresentStats> {
+        let elapsed = finished.saturating_sub(started);
         let elapsed_ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
-        let report = {
-            let mut stats = self.present_stats.lock();
-            stats.record_success(kind, bytes, elapsed_ns)
-        };
-        if let Some(report) = report {
-            ostd::info!(
-                "ASTERINAS_DRM_SCANOUT successes={} full_count={} full_bytes={} full_total_ns={} full_max_ns={} dirty_count={} dirty_bytes={} dirty_total_ns={} dirty_max_ns={}",
-                report.total_successes,
-                report.full.count,
-                report.full.bytes,
-                report.full.total_ns,
-                report.full.max_ns,
-                report.dirty.count,
-                report.dirty.bytes,
-                report.dirty.total_ns,
-                report.dirty.max_ns,
-            );
-        }
+        self.present_stats
+            .lock()
+            .record_success(kind, bytes, elapsed_ns, finished)
+    }
+
+    fn log_present(report: FirmwarePresentStats) {
+        ostd::info!(
+            "ASTERINAS_DRM_SCANOUT at_ns={} successes={} full_count={} full_bytes={} full_total_ns={} full_max_ns={} dirty_count={} dirty_bytes={} dirty_total_ns={} dirty_max_ns={}",
+            report.last_reported_at.unwrap_or_default().as_nanos(),
+            report.total_successes,
+            report.full.count,
+            report.full.bytes,
+            report.full.total_ns,
+            report.full.max_ns,
+            report.dirty.count,
+            report.dirty.bytes,
+            report.dirty.total_ns,
+            report.dirty.max_ns,
+        );
     }
 
     /// Refuses a buffer whose geometry the firmware scanout cannot accept.
@@ -524,10 +547,14 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
             self.framebuffer
                 .write_bytes_at(destination_offset, scratch_row.as_slice())?;
         }
-        drop(scratch_row);
         let copied_bytes =
             u64::try_from(self.row_bytes.saturating_mul(height as usize)).unwrap_or(u64::MAX);
-        self.record_present(PresentKind::Full, copied_bytes, started);
+        let finished = aster_time::read_monotonic_time();
+        let report = self.record_present(PresentKind::Full, copied_bytes, started, finished);
+        drop(scratch_row);
+        if let Some(report) = report {
+            Self::log_present(report);
+        }
         Ok(())
     }
 
@@ -584,8 +611,12 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
                     .write_bytes_at(destination_offset, &scratch_row[..span_bytes])?;
             }
         }
+        let finished = aster_time::read_monotonic_time();
+        let report = self.record_present(PresentKind::Dirty, copied_bytes, started, finished);
         drop(scratch_row);
-        self.record_present(PresentKind::Dirty, copied_bytes, started);
+        if let Some(report) = report {
+            Self::log_present(report);
+        }
         Ok(())
     }
 }
@@ -871,16 +902,21 @@ mod tests {
     fn firmware_present_stats_separate_full_and_dirty_copies() {
         let mut stats = FirmwarePresentStats::default();
         assert!(stats
-            .record_success(PresentKind::Full, 8_294_400, 20_000_000)
+            .record_success(PresentKind::Full, 8_294_400, 20_000_000, Duration::ZERO)
             .is_some());
         assert!(stats
-            .record_success(PresentKind::Dirty, 1_024, 50_000)
+            .record_success(PresentKind::Dirty, 1_024, 50_000, Duration::from_secs(1))
             .is_some());
         assert!(stats
-            .record_success(PresentKind::Dirty, 2_048, 70_000)
+            .record_success(PresentKind::Dirty, 2_048, 70_000, Duration::from_secs(2))
             .is_none());
         assert!(stats
-            .record_success(PresentKind::Full, 8_294_400, 18_000_000)
+            .record_success(
+                PresentKind::Full,
+                8_294_400,
+                18_000_000,
+                Duration::from_secs(3)
+            )
             .is_some());
 
         assert_eq!(stats.full.count, 2);
@@ -899,8 +935,8 @@ mod tests {
         stats.full.count = u64::MAX - 1;
         stats.full.bytes = u64::MAX - 1;
         stats.full.total_ns = u64::MAX - 1;
-        stats.record_success(PresentKind::Full, 4, 7);
-        stats.record_success(PresentKind::Full, 4, 3);
+        stats.record_success(PresentKind::Full, 4, 7, Duration::ZERO);
+        stats.record_success(PresentKind::Full, 4, 3, Duration::from_secs(1));
 
         assert_eq!(stats.full.count, u64::MAX);
         assert_eq!(stats.full.bytes, u64::MAX);
@@ -916,5 +952,23 @@ mod tests {
         assert_eq!(wide.copied_bytes(), 30_720);
         // Overlapping clips cause overlapping copies, so both count.
         assert_eq!(small.copied_bytes() + wide.copied_bytes(), 31_744);
+    }
+
+    #[ktest]
+    fn firmware_present_stats_report_after_five_seconds_without_power_of_two() {
+        let mut stats = FirmwarePresentStats::default();
+        for second in 0..4 {
+            stats.record_success(PresentKind::Full, 4, 1, Duration::from_secs(second));
+        }
+        assert!(stats
+            .record_success(PresentKind::Dirty, 4, 1, Duration::from_secs(7))
+            .is_none());
+        let report = stats
+            .record_success(PresentKind::Dirty, 4, 1, Duration::from_secs(8))
+            .expect("a short observation window needs a bounded report");
+        assert_eq!(report.total_successes, 6);
+        assert!(stats
+            .record_success(PresentKind::Dirty, 4, 1, Duration::from_secs(9))
+            .is_none());
     }
 }
