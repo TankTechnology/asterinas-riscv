@@ -52,7 +52,10 @@ case "${1-}" in
         ;;
     wait-x)
         marker BOOT_NETWORK_READY
-        deadline=$((SECONDS + 300))
+        # The board may correct its wall clock while Xorg starts. Bash's
+        # SECONDS can jump with that correction and expire this wait early.
+        # Use the same monotonic clock as the boot timeline instead.
+        deadline_ns=$(( $(guest_monotonic_ns) + 300000000000 ))
         # A stale X11 socket can survive a failed Xorg start.  Treat the
         # socket as a hint only; xdpyinfo must complete against the live
         # server before Firefox is allowed to exec.
@@ -62,7 +65,7 @@ case "${1-}" in
                 marker BOOT_X_SOCKET_READY
                 exit 0
             fi
-            if ((SECONDS >= deadline)); then
+            if (( $(guest_monotonic_ns) >= deadline_ns )); then
                 printf '%s\n' 'ASTERINAS_BROWSER_WEB wait-x failed: bounded xdpyinfo probe did not succeed' >&2
                 exit 1
             fi
