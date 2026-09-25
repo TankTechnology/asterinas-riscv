@@ -24,6 +24,8 @@ mod backend;
 mod cursor;
 #[cfg(target_arch = "riscv64")]
 mod eic7700;
+#[cfg(target_arch = "riscv64")]
+mod eic7700_contract;
 mod fence;
 mod prime;
 
@@ -416,7 +418,22 @@ fn display_device(source: DisplaySource) -> Result<DisplayDevice> {
             connector_type: DRM_MODE_CONNECTOR_VIRTUAL,
         },
         DisplaySource::Firmware(framebuffer) => DisplayDevice {
-            scanout: Arc::new(FirmwareFramebufferBackend::new(framebuffer)?),
+            scanout: {
+                #[cfg(target_arch = "riscv64")]
+                if eic7700::native_scanout_requested() {
+                    match eic7700::Eic7700Scanout::new(&framebuffer) {
+                        Ok(native) => Arc::new(native) as Arc<dyn ScanoutBackend>,
+                        Err(error) => {
+                            ostd::warn!("ASTERINAS_DC_NATIVE fallback=firmware error={error:?}");
+                            Arc::new(FirmwareFramebufferBackend::new(framebuffer)?)
+                        }
+                    }
+                } else {
+                    Arc::new(FirmwareFramebufferBackend::new(framebuffer)?)
+                }
+                #[cfg(not(target_arch = "riscv64"))]
+                Arc::new(FirmwareFramebufferBackend::new(framebuffer)?)
+            },
             // The firmware backend owns no display hardware, so it cannot
             // place a cursor. `None` is what makes the driver refuse cursor
             // requests outright, which is the answer that lets a client draw
@@ -2698,6 +2715,12 @@ impl PerOpenFileOps for DriHandle {
                 }
                 if req.fb_id == 0 {
                     return_errno_with_message!(Errno::EINVAL, "page flip to no framebuffer");
+                }
+                // No backend currently queues flip-complete events or supports
+                // asynchronous flips. Accepting either flag would leave an
+                // event-driven client waiting forever after a successful ioctl.
+                if req.flags != 0 {
+                    return_errno_with_message!(Errno::EOPNOTSUPP, "page flip flags are unsupported");
                 }
                 self.present_fb(req.fb_id)?;
                 Ok(0)
