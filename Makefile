@@ -880,6 +880,41 @@ test_riscv_debian_desktop_m5_qemu_gate:
 		--output-directory "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" --smp 4 \
 		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
 
+# The DRM desktop gate uses the artifacts built for the virtio-gpu work, which
+# are not the ones the other Debian variables point at, so it carries its own
+# defaults rather than inheriting the browser tree's.
+DEBIAN_DRM_UBOOT ?= $(CURDIR)/target/qemu-uboot/cache/u-boot-build/u-boot
+DEBIAN_DRM_KERNEL ?= $(CURDIR)/target/osdk/aster-kernel-osdk-bin.Image
+DEBIAN_DRM_DTB ?= $(CURDIR)/target/qemu-uboot/drm-virgl/prepared/qemu-virt.dtb
+# The stage1 must be the one built for this rootfs. The xfce variant next to
+# it is the same size and also contains an `init`, so it looks interchangeable
+# and is not: it mounts the root and hands off to a layout this image does not
+# have, failing with a bare `exec /init failed`.
+DEBIAN_DRM_STAGE1_INITRAMFS ?= $(CURDIR)/target/debian-riscv/desktop-drm/stage1/initramfs.cpio
+DEBIAN_DRM_ROOT_IMAGE ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/debian-root.ext2
+DEBIAN_DRM_ROOT_MANIFEST ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/rootfs-manifest.json
+DEBIAN_DRM_PACKAGES_LOCK ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/packages.lock
+DEBIAN_DRM_PACKAGE_CHECKSUMS ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/source-metadata/package-checksums
+DEBIAN_DRM_GATE_OUTPUT ?= $(CURDIR)/target/debian-riscv/desktop-drm/drm-gate
+# Asking for the GL device is what selects the 3D path; the gate then also
+# requires the guest to prove it reached virgl rather than llvmpipe.
+DEBIAN_DRM_GRAPHICS_DEVICE ?= virtio-gpu-gl-device
+
+.PHONY: test_riscv_debian_desktop_drm_gate
+test_riscv_debian_desktop_drm_gate:
+	@python3 -m tools.riscv.debian.rootfs.desktop_drm_gate \
+		--kernel "$(DEBIAN_DRM_KERNEL)" \
+		--uboot "$(DEBIAN_DRM_UBOOT)" \
+		--dtb "$(DEBIAN_DRM_DTB)" \
+		--stage1-initramfs "$(DEBIAN_DRM_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_DRM_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_DRM_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_DRM_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_DRM_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_DRM_GATE_OUTPUT)" --smp 4 \
+		--graphics-device "$(DEBIAN_DRM_GRAPHICS_DEVICE)" \
+		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
+
 .PHONY: test_riscv_debian_debug_console_qemu_gate
 test_riscv_debian_debug_console_qemu_gate:
 	@test -n "$(DEBIAN_KERNEL)" || \
@@ -1124,6 +1159,104 @@ test_riscv_drm_cursor: test_riscv_drm_cursor_unit
 		--boot-disk "$(DRM_CURSOR_BOOT_DISK)" \
 		--manifest "$(DRM_CURSOR_MANIFEST)" \
 		--output-directory "$(DRM_CURSOR_GATE_OUTPUT)"
+
+# The DRM ioctl command numbers the driver declares, held against the numbers
+# the Linux uapi headers define. An ioctl number is `direction | size | type |
+# number` packed into 32 bits and `ioc!` never reads its first argument, so a
+# declaration can name one ioctl and encode another; libdrm then gets ENOTTY,
+# which reads as "not implemented". Four debugging cycles went into that class
+# of defect. This needs no kernel build and finishes in well under a second.
+.PHONY: test_riscv_drm_uapi_contract
+test_riscv_drm_uapi_contract:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_uapi_contract -v
+
+.PHONY: test_riscv_drm_gem_unit
+test_riscv_drm_gem_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_gem_gate -v
+
+.PHONY: test_riscv_drm_gem
+test_riscv_drm_gem: test_riscv_drm_gem_unit
+	@test -n "$(DRM_GEM_UBOOT)" || \
+		{ echo "DRM_GEM_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DRM_GEM_BOOT_DISK)" || \
+		{ echo "DRM_GEM_BOOT_DISK is required" >&2; exit 2; }
+	@test -n "$(DRM_GEM_MANIFEST)" || \
+		{ echo "DRM_GEM_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DRM_GEM_GATE_OUTPUT)" || \
+		{ echo "DRM_GEM_GATE_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH=tools/riscv python3 -m drm.gem_gate \
+		--uboot "$(DRM_GEM_UBOOT)" \
+		--boot-disk "$(DRM_GEM_BOOT_DISK)" \
+		--manifest "$(DRM_GEM_MANIFEST)" \
+		--output-directory "$(DRM_GEM_GATE_OUTPUT)"
+
+.PHONY: test_riscv_drm_firmware_unit
+test_riscv_drm_firmware_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_firmware_gate -v
+
+.PHONY: test_riscv_drm_firmware
+test_riscv_drm_firmware: test_riscv_drm_firmware_unit
+	@test -n "$(DRM_FIRMWARE_UBOOT)" || \
+		{ echo "DRM_FIRMWARE_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DRM_FIRMWARE_BOOT_DISK)" || \
+		{ echo "DRM_FIRMWARE_BOOT_DISK is required" >&2; exit 2; }
+	@test -n "$(DRM_FIRMWARE_MANIFEST)" || \
+		{ echo "DRM_FIRMWARE_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DRM_FIRMWARE_GATE_OUTPUT)" || \
+		{ echo "DRM_FIRMWARE_GATE_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH=tools/riscv python3 -m drm.firmware_gate \
+		--uboot "$(DRM_FIRMWARE_UBOOT)" \
+		--boot-disk "$(DRM_FIRMWARE_BOOT_DISK)" \
+		--manifest "$(DRM_FIRMWARE_MANIFEST)" \
+		--output-directory "$(DRM_FIRMWARE_GATE_OUTPUT)"
+
+.PHONY: test_riscv_drm_render_node_unit
+test_riscv_drm_render_node_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_render_node_gate -v
+
+.PHONY: test_riscv_drm_render_node
+test_riscv_drm_render_node: test_riscv_drm_render_node_unit
+	@test -n "$(DRM_RENDER_NODE_UBOOT)" || \
+		{ echo "DRM_RENDER_NODE_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DRM_RENDER_NODE_BOOT_DISK)" || \
+		{ echo "DRM_RENDER_NODE_BOOT_DISK is required" >&2; exit 2; }
+	@test -n "$(DRM_RENDER_NODE_MANIFEST)" || \
+		{ echo "DRM_RENDER_NODE_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DRM_RENDER_NODE_GATE_OUTPUT)" || \
+		{ echo "DRM_RENDER_NODE_GATE_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH=tools/riscv python3 -m drm.render_node_gate \
+		--uboot "$(DRM_RENDER_NODE_UBOOT)" \
+		--boot-disk "$(DRM_RENDER_NODE_BOOT_DISK)" \
+		--manifest "$(DRM_RENDER_NODE_MANIFEST)" \
+		--output-directory "$(DRM_RENDER_NODE_GATE_OUTPUT)"
+
+.PHONY: test_riscv_drm_virgl_param_unit
+test_riscv_drm_virgl_param_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_virgl_param_gate -v
+
+# Run with `DRM_VIRGL_DEVICE_SET=drm-gem` and the same boot disk for the
+# control: the same probe on a device without GL has to report no 3D.
+.PHONY: test_riscv_drm_virgl_param
+test_riscv_drm_virgl_param: test_riscv_drm_virgl_param_unit
+	@test -n "$(DRM_VIRGL_UBOOT)" || \
+		{ echo "DRM_VIRGL_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DRM_VIRGL_BOOT_DISK)" || \
+		{ echo "DRM_VIRGL_BOOT_DISK is required" >&2; exit 2; }
+	@test -n "$(DRM_VIRGL_MANIFEST)" || \
+		{ echo "DRM_VIRGL_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DRM_VIRGL_GATE_OUTPUT)" || \
+		{ echo "DRM_VIRGL_GATE_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH=tools/riscv python3 -m drm.virgl_param_gate \
+		--uboot "$(DRM_VIRGL_UBOOT)" \
+		--boot-disk "$(DRM_VIRGL_BOOT_DISK)" \
+		--manifest "$(DRM_VIRGL_MANIFEST)" \
+		--output-directory "$(DRM_VIRGL_GATE_OUTPUT)" \
+		--device-set "$(if $(DRM_VIRGL_DEVICE_SET),$(DRM_VIRGL_DEVICE_SET),drm-virgl)"
 
 .PHONY: test_riscv_uboot_booti_unit
 test_riscv_uboot_booti_unit:

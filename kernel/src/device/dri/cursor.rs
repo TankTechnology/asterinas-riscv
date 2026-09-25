@@ -7,6 +7,14 @@ use crate::prelude::*;
 pub(super) const MODE_CURSOR_BO: u32 = 0x01;
 pub(super) const MODE_CURSOR_MOVE: u32 = 0x02;
 
+/// The largest cursor image the hardware accepts, per side.
+///
+/// This is the virtio-gpu device's limit, and it is also what
+/// [`validate_cursor`] refuses anything larger than. The two are the same
+/// number because the check exists to enforce the device's limit, so they are
+/// written once and read twice rather than repeated.
+pub(super) const MAX_CURSOR_SIZE: u32 = 64;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
 pub(super) struct DrmModeCursor {
@@ -163,7 +171,11 @@ pub(super) fn validate_cursor(
         });
     }
 
-    if request.width == 0 || request.height == 0 || request.width > 64 || request.height > 64 {
+    if request.width == 0
+        || request.height == 0
+        || request.width > MAX_CURSOR_SIZE
+        || request.height > MAX_CURSOR_SIZE
+    {
         return Err(CursorValidationError::InvalidDimensions);
     }
     if request.hot_x < 0
