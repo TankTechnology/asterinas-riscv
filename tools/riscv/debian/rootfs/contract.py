@@ -14,13 +14,17 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import urlsplit
 
-from tools.riscv.debian.rootfs.profiles import RootfsProfile, get_profile
+from tools.riscv.debian.rootfs.profiles import (
+    BROWSER_WEB_DESKTOP_PACKAGES,
+    RootfsProfile,
+    get_profile,
+)
 from tools.riscv.debian.rootfs.signed_sources import M5_SOURCES
 
 
@@ -164,6 +168,7 @@ def load_manifest(path: Path) -> RootfsManifest:
         profile = _profile_for_manifest(
             schema_version,
             _string(manifest["profile"], "profile"),
+            _mapping(manifest["gate_packages"], "gate_packages"),
         )
     else:
         raise ContractError(f"unsupported manifest schema version: {schema_version}")
@@ -284,7 +289,11 @@ def validate_frozen_root(
     """Validates a base image and its complete frozen-build identity."""
 
     _require_integer(manifest.schema_version, "schema_version")
-    profile = _profile_for_manifest(manifest.schema_version, manifest.profile)
+    profile = _profile_for_manifest(
+        manifest.schema_version,
+        manifest.profile,
+        dict(manifest.gate_packages),
+    )
     _validate_profile_tool_versions(profile, manifest.tool_versions)
     _require_exact(manifest.suite, _SUITE, "suite")
     if _DEBIAN_RELEASE_RE.fullmatch(manifest.debian_release) is None:
@@ -726,12 +735,36 @@ def _require_exact(actual: object, expected: object, path: str) -> None:
         raise ContractError(f"unexpected {path}: {actual!r}; expected {expected!r}")
 
 
-def _profile_for_manifest(schema_version: int, name: str) -> RootfsProfile:
+def _profile_for_manifest(
+    schema_version: int,
+    name: str,
+    gate_packages: Collection[str] | None = None,
+) -> RootfsProfile:
     try:
         profile = get_profile(name)
     except ValueError as error:
         raise ContractError(str(error)) from error
     _require_exact(profile.schema_version, schema_version, "profile schema version")
+    if schema_version == 7 and name == "browser-web" and gate_packages is not None:
+        # Earlier signed browser-web roots use the same manifest schema and
+        # filesystem identity, but predate the desktop application additions.
+        # Admit only their complete historical gate set, never a partial set.
+        desktop_packages = set(BROWSER_WEB_DESKTOP_PACKAGES)
+        previous_identity = tuple(
+            package
+            for package in profile.identity_packages
+            if package not in desktop_packages
+        )
+        if set(gate_packages) == set(previous_identity):
+            profile = replace(
+                profile,
+                requested_packages=tuple(
+                    package
+                    for package in profile.requested_packages
+                    if package not in desktop_packages
+                ),
+                identity_packages=previous_identity,
+            )
     return profile
 
 
