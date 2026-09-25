@@ -26,7 +26,10 @@
 //! `Vmo` and letting each backend derive what it needs costs the virtio path one
 //! `paddr()` call and keeps the copy path in terms of `VmIo`.
 
-use core::time::Duration;
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
 
 use aster_framebuffer::{framebuffer::FrameBuffer, pixel::PixelFormat};
 use aster_virtio::device::gpu::device::GpuDevice;
@@ -38,6 +41,11 @@ use crate::{prelude::*, vm::page_cache::Vmo};
 /// Bytes per pixel of the `BgrReserved8888` format the firmware path requires.
 const BGRX8888_BYTES_PER_PIXEL: usize = 4;
 const PRESENT_REPORT_INTERVAL: Duration = Duration::from_secs(5);
+const MAX_PHASE_SAMPLES_PER_PRESENT: u64 = 4;
+
+/// Sample a few scanout rows per present without timestamping every row.
+static PHASE_PROFILE: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.drm_phase_profile", PHASE_PROFILE);
 
 /// A framebuffer ready for presentation.
 ///
@@ -179,6 +187,23 @@ struct FirmwarePresentStats {
     dirty: PresentClassStats,
     total_successes: u64,
     last_reported_at: Option<Duration>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct PhaseStats {
+    rows: u64,
+    bytes: u64,
+    read_ns: u64,
+    write_ns: u64,
+}
+
+impl PhaseStats {
+    fn add(&mut self, other: Self) {
+        self.rows = self.rows.saturating_add(other.rows);
+        self.bytes = self.bytes.saturating_add(other.bytes);
+        self.read_ns = self.read_ns.saturating_add(other.read_ns);
+        self.write_ns = self.write_ns.saturating_add(other.write_ns);
+    }
 }
 
 impl FirmwarePresentStats {
@@ -371,6 +396,7 @@ pub(super) struct FirmwareFramebufferBackend {
     /// One row of scratch space, so a copy never needs a second full buffer.
     scratch_row: Mutex<Vec<u8>>,
     present_stats: Mutex<FirmwarePresentStats>,
+    phase_stats: Mutex<PhaseStats>,
 }
 
 impl FirmwareFramebufferBackend {
@@ -395,6 +421,7 @@ impl FirmwareFramebufferBackend {
             row_bytes,
             scratch_row: Mutex::new(vec![0; row_bytes]),
             present_stats: Mutex::new(FirmwarePresentStats::default()),
+            phase_stats: Mutex::new(PhaseStats::default()),
         })
     }
 
@@ -426,6 +453,52 @@ impl FirmwareFramebufferBackend {
             report.dirty.total_ns,
             report.dirty.max_ns,
         );
+    }
+
+    fn log_phase(&self, sample: PhaseStats) {
+        if sample.rows == 0 {
+            return;
+        }
+        let mut totals = self.phase_stats.lock();
+        totals.add(sample);
+        ostd::info!(
+            "ASTERINAS_DRM_PHASE sampled_rows={} sampled_bytes={} read_ns={} write_and_sync_ns={}",
+            totals.rows,
+            totals.bytes,
+            totals.read_ns,
+            totals.write_ns,
+        );
+    }
+
+    fn copy_row(
+        &self,
+        source: &Vmo,
+        source_offset: usize,
+        destination_offset: usize,
+        scratch: &mut [u8],
+        sample: bool,
+        phase: &mut PhaseStats,
+    ) -> Result<()> {
+        let before = sample.then(aster_time::read_monotonic_time);
+        let mut writer = VmWriter::from(&mut *scratch).to_fallible();
+        source.read(source_offset, &mut writer)?;
+        drop(writer);
+        let after_read = sample.then(aster_time::read_monotonic_time);
+        self.framebuffer
+            .write_bytes_at(destination_offset, scratch)?;
+        if let (Some(before), Some(after_read)) = (before, after_read) {
+            let after_write = aster_time::read_monotonic_time();
+            phase.rows += 1;
+            phase.bytes = phase.bytes.saturating_add(scratch.len() as u64);
+            phase.read_ns = phase.read_ns.saturating_add(
+                u64::try_from(after_read.saturating_sub(before).as_nanos()).unwrap_or(u64::MAX),
+            );
+            phase.write_ns = phase.write_ns.saturating_add(
+                u64::try_from(after_write.saturating_sub(after_read).as_nanos())
+                    .unwrap_or(u64::MAX),
+            );
+        }
+        Ok(())
     }
 
     /// Refuses a buffer whose geometry the firmware scanout cannot accept.
@@ -529,6 +602,8 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
         let started = aster_time::read_monotonic_time();
         let (source, height, pitch) = (&buffer.source, buffer.height, buffer.pitch_bytes);
         let mut scratch_row = self.scratch_row.lock();
+        let profile = PHASE_PROFILE.load(Ordering::Relaxed);
+        let mut phase = PhaseStats::default();
         for row in 0..height as usize {
             let source_offset = row
                 .checked_mul(pitch)
@@ -536,22 +611,32 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
                 .ok_or_else(|| {
                     Error::with_message(Errno::EINVAL, "scanout source offset overflows")
                 })?;
-            let mut writer = VmWriter::from(scratch_row.as_mut_slice()).to_fallible();
-            source.read(source_offset, &mut writer)?;
-
             let destination_offset =
                 row.checked_mul(self.framebuffer.line_size())
                     .ok_or_else(|| {
                         Error::with_message(Errno::EINVAL, "scanout destination offset overflows")
                     })?;
-            self.framebuffer
-                .write_bytes_at(destination_offset, scratch_row.as_slice())?;
+            let sample =
+                profile && (row == 0 || row == height as usize / 2 || row + 1 == height as usize);
+            self.copy_row(
+                source,
+                source_offset,
+                destination_offset,
+                &mut scratch_row,
+                sample,
+                &mut phase,
+            )?;
         }
         let copied_bytes =
             u64::try_from(self.row_bytes.saturating_mul(height as usize)).unwrap_or(u64::MAX);
         let finished = aster_time::read_monotonic_time();
         let report = self.record_present(PresentKind::Full, copied_bytes, started, finished);
         drop(scratch_row);
+        if profile && report.is_some() {
+            self.log_phase(phase);
+        } else if profile {
+            self.phase_stats.lock().add(phase);
+        }
         if let Some(report) = report {
             Self::log_present(report);
         }
@@ -582,6 +667,8 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
             buffer.source_offset_bytes,
         );
         let mut scratch_row = self.scratch_row.lock();
+        let profile = PHASE_PROFILE.load(Ordering::Relaxed);
+        let mut phase = PhaseStats::default();
         for rect in damage {
             let x_offset = (rect.x1 as usize)
                 .checked_mul(BGRX8888_BYTES_PER_PIXEL)
@@ -598,22 +685,35 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
                     .ok_or_else(|| {
                         Error::with_message(Errno::EINVAL, "damage source offset overflows")
                     })?;
-                let mut writer = VmWriter::from(&mut scratch_row[..span_bytes]).to_fallible();
-                source.read(source_offset, &mut writer)?;
-
                 let destination_offset = row
                     .checked_mul(self.framebuffer.line_size())
                     .and_then(|offset| offset.checked_add(x_offset))
                     .ok_or_else(|| {
                         Error::with_message(Errno::EINVAL, "damage destination offset overflows")
                     })?;
-                self.framebuffer
-                    .write_bytes_at(destination_offset, &scratch_row[..span_bytes])?;
+                let sample = profile
+                    && phase.rows < MAX_PHASE_SAMPLES_PER_PRESENT
+                    && (row == rect.y1 as usize
+                        || row == (rect.y1 as usize + rect.y2 as usize) / 2
+                        || row + 1 == rect.y2 as usize);
+                self.copy_row(
+                    source,
+                    source_offset,
+                    destination_offset,
+                    &mut scratch_row[..span_bytes],
+                    sample,
+                    &mut phase,
+                )?;
             }
         }
         let finished = aster_time::read_monotonic_time();
         let report = self.record_present(PresentKind::Dirty, copied_bytes, started, finished);
         drop(scratch_row);
+        if profile && report.is_some() {
+            self.log_phase(phase);
+        } else if profile {
+            self.phase_stats.lock().add(phase);
+        }
         if let Some(report) = report {
             Self::log_present(report);
         }
