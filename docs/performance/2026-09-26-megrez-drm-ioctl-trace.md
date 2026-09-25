@@ -62,3 +62,17 @@ the fallback until the controller's DMA read and register handoff are verified.
 Raw local records are in `/home/ubuntu/.codex/asterinas-dri-trace-20260926/`:
 `manifest.json`, `candidate-boot.result.json`, `dri-ioctl-summary.txt`, and
 `firefox-ioctl-sample.txt`.
+
+## Handoff after the trace
+
+The trace boot was replaced by a temporary ordinary Asterinas boot of the
+same Image, with no `dri_trace`, `drm_phase_profile`, or `drm_direct_copy`
+boot argument. The new default direct-copy implementation therefore remained
+selected without diagnostic logging. The board reported boot ID
+`7e02d435-fc02-4a1e-99fe-f460460c1eb3`; nonce-framed UID-0 commands on
+the reopened serial connection confirmed that ID. Xorg again reached
+1920 x 1080; Firefox reported `MainPID=126`, `NRestarts=0`, and
+`SubState=running`; the software recovery timer was disarmed after admission
+and read back as `0`. The kernel log contained no `DRI_IOCTL` trace lines.
+The permanent U-Boot default remains RockOS. The final local control record
+is `/home/ubuntu/.codex/asterinas-normal-desktop-20260926/final-control.txt`.
