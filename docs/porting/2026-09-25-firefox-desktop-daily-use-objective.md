@@ -80,10 +80,10 @@ baseline or a measured acceleration. The [thread-level record](evidence/2026-09-
 includes the uploaded bundle, QEMU visual capture, and RockOS recovery.
 
 The desktop wallpaper is now a subdued navy/blue vector background, with a
-quiet left edge for launchers. The online LXPanel uses its dark tint so its
-light menu and clock text remain readable. A 1280×1024 QEMU interaction
-capture verified the wallpaper, three launchers and bottom panel; physical
-HDMI appearance remains to be checked.
+quiet left edge for launchers. The LXPanel uses its dark tint so its light menu
+and clock text remain readable, and Files/Terminal use brighter SVG icons.
+A 1280×1024 QEMU interaction capture verified the wallpaper, three launchers
+and bottom panel; physical HDMI appearance remains to be checked.
 
 The next persistent-home, isolated-console Desktop menu generation has been
 prepared and staged as an immutable canary. Its active selector is still the

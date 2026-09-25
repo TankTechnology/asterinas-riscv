@@ -8,9 +8,41 @@
       "mode": "0644"
     },
     {
+      "source": "desktop_files_icon.svg",
+      "destination": "/usr/share/asterinas/desktop-files-icon.svg",
+      "mode": "0644",
+      "create": true
+    },
+    {
+      "source": "desktop_terminal_icon.svg",
+      "destination": "/usr/share/asterinas/desktop-terminal-icon.svg",
+      "mode": "0644",
+      "create": true
+    },
+    {
       "source": "desktop_online_lxpanel.conf",
       "destination": "/home/asterinas/.config/lxpanel/Asterinas/panels/panel",
       "mode": "0644"
+    },
+    {
+      "source": "asterinas-files.desktop",
+      "destination": "/usr/share/applications/asterinas-files.desktop",
+      "mode": "0644"
+    },
+    {
+      "source": "asterinas-files.desktop",
+      "destination": "/home/asterinas/Desktop/asterinas-files.desktop",
+      "mode": "0755"
+    },
+    {
+      "source": "asterinas-terminal.desktop",
+      "destination": "/usr/share/applications/asterinas-terminal.desktop",
+      "mode": "0644"
+    },
+    {
+      "source": "asterinas-terminal.desktop",
+      "destination": "/home/asterinas/Desktop/asterinas-terminal.desktop",
+      "mode": "0755"
     },
     {
       "source": "desktop_m5_network_evidence.sh",

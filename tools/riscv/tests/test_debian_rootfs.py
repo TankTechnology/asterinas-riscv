@@ -2784,6 +2784,14 @@ WantedBy=multi-user.target
         self.assertEqual(evidence.read_bytes(), DESKTOP_M4_EVIDENCE_SCRIPT.read_bytes())
         self.assertEqual(welcome.read_bytes(), DESKTOP_M4_WELCOME_PAGE.read_bytes())
         self.assertEqual(wallpaper.read_bytes(), DESKTOP_WALLPAPER.read_bytes())
+        for name in ("files", "terminal"):
+            icon = stage / f"usr/share/asterinas/desktop-{name}-icon.svg"
+            source = (
+                REPOSITORY_ROOT
+                / f"tools/riscv/debian/rootfs/desktop_{name}_icon.svg"
+            )
+            self.assertEqual(icon.read_bytes(), source.read_bytes())
+            self.assertEqual(stat.S_IMODE(icon.stat().st_mode), 0o644)
         self.assertEqual(
             pcmanfm_config.read_bytes(), DESKTOP_PCMANFM_CONFIG.read_bytes()
         )
@@ -2943,6 +2951,17 @@ WantedBy=multi-user.target
             "Exec=xterm -title Asterinas-Terminal",
             (desktop / "asterinas-terminal.desktop").read_text(),
         )
+        for name in ("files", "terminal"):
+            icon = stage / f"usr/share/asterinas/desktop-{name}-icon.svg"
+            source = (
+                REPOSITORY_ROOT
+                / f"tools/riscv/debian/rootfs/desktop_{name}_icon.svg"
+            )
+            self.assertEqual(icon.read_bytes(), source.read_bytes())
+            self.assertIn(
+                f"Icon=/usr/share/asterinas/desktop-{name}-icon.svg",
+                (desktop / f"asterinas-{name}.desktop").read_text(),
+            )
         self.assertIn("xdotool", get_profile("browser-web").requested_packages)
         launcher = stage / "usr/lib/asterinas/browser-web-open-firefox"
         self.assertEqual(stat.S_IMODE(launcher.stat().st_mode), 0o755)
