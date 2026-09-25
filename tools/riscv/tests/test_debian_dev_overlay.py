@@ -1010,6 +1010,8 @@ class DevelopmentOverlayTests(unittest.TestCase):
         self.assertEqual(
             destinations,
             {
+                "/usr/share/asterinas/desktop-wallpaper.svg",
+                "/home/asterinas/.config/lxpanel/Asterinas/panels/panel",
                 "/usr/lib/asterinas/desktop-m5-network-evidence",
                 "/usr/lib/asterinas/megrez-safe-reboot",
                 "/usr/lib/asterinas/browser-web-marionette-gate",

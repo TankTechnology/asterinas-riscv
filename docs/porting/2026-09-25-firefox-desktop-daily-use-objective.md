@@ -65,13 +65,25 @@ prior boots' Firefox exec markers made the startup parser reject the current
 session. A diagnostic-only narrowing of that test-owned timeline enabled one
 complete 7/7 run; the repository parser now filters markers to the verified
 Firefox PID, with a passing regression test. The rebuilt Stage1 passed a
-68.779-second QEMU desktop gate, but the parser fix has not yet been rerun on
-the board. In the instrumented physical run, `NewWindow` took 684 ms; the
+68.779-second QEMU desktop gate. A subsequent unedited persistent-home board
+boot confirmed that PID-scoped parsing passed 7/7 with the old timeline still
+present; `NewWindow` took 724 ms, and RockOS recovery was verified. The
+isolated-console boot also showed that its `ignore-dependencies` browser start
+skips the normal timeline-begin unit. A source fix now resets that user-owned
+timeline immediately before the special physical browser start; the reset
+still needs a board run with a derived root. In the instrumented physical run,
+`NewWindow` took 684 ms; the
 Firefox main and `Renderer` threads consumed 690 and 380 ms of CPU across the
 802-ms interval, with 67 and 27 ms of runnable wait. The four procfs reads
 added 213 ms, so this is attribution evidence, not a comparable latency
 baseline or a measured acceleration. The [thread-level record](evidence/2026-09-25-firefox-online-desktop/README.md#physical-firefox-thread-attribution-and-persistent-home-timeline)
 includes the uploaded bundle, QEMU visual capture, and RockOS recovery.
+
+The desktop wallpaper is now a subdued navy/blue vector background, with a
+quiet left edge for launchers. The online LXPanel uses its dark tint so its
+light menu and clock text remain readable. A 1280×1024 QEMU interaction
+capture verified the wallpaper, three launchers and bottom panel; physical
+HDMI appearance remains to be checked.
 
 The next persistent-home, isolated-console Desktop menu generation has been
 prepared and staged as an immutable canary. Its active selector is still the
