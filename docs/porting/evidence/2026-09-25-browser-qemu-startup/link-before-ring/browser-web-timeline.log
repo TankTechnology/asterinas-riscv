@@ -1,0 +1,7 @@
+A_WEB_TIMELINE marker=BOOT_SYSTEMD_BEGIN guest_monotonic_ns=1850000000 firefox_pid=0
+A_WEB_TIMELINE marker=BOOT_BASIC_TARGET guest_monotonic_ns=2200000000 firefox_pid=0
+A_WEB_TIMELINE marker=BOOT_NETWORK_READY guest_monotonic_ns=3800000000 firefox_pid=0
+A_WEB_TIMELINE marker=BOOT_X_SOCKET_READY guest_monotonic_ns=6280000000 firefox_pid=0
+A_WEB_TIMELINE marker=BOOT_FIREFOX_WRAPPER_START guest_monotonic_ns=6290000000 firefox_pid=112
+A_WEB_TIMELINE marker=BOOT_FIREFOX_EXEC guest_monotonic_ns=6320000000 firefox_pid=112
+A_WEB_TIMELINE marker=BOOT_MARIONETTE_PORT_READY guest_monotonic_ns=16210000000 firefox_pid=112

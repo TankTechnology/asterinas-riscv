@@ -1,0 +1,436 @@
+[    1.757122] ubuntu-MS-7D76 systemd-journald[19]: Journal started
+[    1.760037] ubuntu-MS-7D76 systemd-journald[19]: Runtime Journal (/run/log/journal/7e77624663b143ab8a4b090284a299f7) is 8M, max 102M, 94M free.
+[    1.761510] ubuntu-MS-7D76 systemd-journald[19]: Missed 121 kernel messages
+[    1.761510] ubuntu-MS-7D76 unknown: 
+[    1.762808] ubuntu-MS-7D76 unknown: systemd
+[    1.763116] ubuntu-MS-7D76 [1]: 
+[    1.763417] ubuntu-MS-7D76 unknown: Listening on systemd-journald.socket - Journal Sockets.
+[    1.763562] ubuntu-MS-7D76 unknown: 
+[    1.763680] ubuntu-MS-7D76 unknown: 
+[    1.763862] ubuntu-MS-7D76 unknown: systemd
+[    1.763990] ubuntu-MS-7D76 [1]: 
+[    1.764174] ubuntu-MS-7D76 unknown: systemd-pcrextend.socket - TPM PCR Measurements skipped, unmet condition check ConditionSecurity=measured-uki
+[    1.764341] ubuntu-MS-7D76 unknown: 
+[    1.764497] ubuntu-MS-7D76 unknown: 
+[    1.764658] ubuntu-MS-7D76 unknown: systemd
+[    1.764800] ubuntu-MS-7D76 [1]: 
+[    1.764931] ubuntu-MS-7D76 unknown: systemd-pcrlock.socket - Make TPM PCR Policy skipped, unmet condition check ConditionSecurity=measured-uki
+[    1.765085] ubuntu-MS-7D76 unknown: 
+[    1.765205] ubuntu-MS-7D76 unknown: 
+[    1.765320] ubuntu-MS-7D76 unknown: systemd
+[    1.765435] ubuntu-MS-7D76 [1]: 
+[    1.765564] ubuntu-MS-7D76 unknown: systemd-udevd-control.socket
+[    1.765694] ubuntu-MS-7D76 : 
+[    1.765811] ubuntu-MS-7D76 unknown: Socket service systemd-udevd.service not loaded, refusing.
+[    1.765927] ubuntu-MS-7D76 unknown: 
+[    1.766082] ubuntu-MS-7D76 unknown: 
+[    1.766204] ubuntu-MS-7D76 unknown: systemd
+[    1.766316] ubuntu-MS-7D76 [1]: 
+[    1.766449] ubuntu-MS-7D76 unknown: Failed to listen on systemd-udevd-control.socket - udev Control Socket.
+[    1.766572] ubuntu-MS-7D76 unknown: 
+[    1.766683] ubuntu-MS-7D76 unknown: 
+[    1.766819] ubuntu-MS-7D76 unknown: systemd
+[    1.766939] ubuntu-MS-7D76 [1]: 
+[    1.767569] ubuntu-MS-7D76 unknown: systemd-udevd-kernel.socket
+[    1.767812] ubuntu-MS-7D76 : 
+[    1.767945] ubuntu-MS-7D76 unknown: Socket service systemd-udevd.service not loaded, refusing.
+[    1.768105] ubuntu-MS-7D76 unknown: 
+[    1.768225] ubuntu-MS-7D76 unknown: 
+[    1.768338] ubuntu-MS-7D76 unknown: systemd
+[    1.768452] ubuntu-MS-7D76 [1]: 
+[    1.768592] ubuntu-MS-7D76 unknown: Failed to listen on systemd-udevd-kernel.socket - udev Kernel Socket.
+[    1.768721] ubuntu-MS-7D76 unknown: 
+[    1.768860] ubuntu-MS-7D76 unknown: 
+[    1.769006] ubuntu-MS-7D76 unknown: systemd
+[    1.769147] ubuntu-MS-7D76 [1]: 
+[    1.769292] ubuntu-MS-7D76 unknown: dev-hugepages.mount - Huge Pages File System skipped, unmet condition check ConditionPathExists=/sys/kernel/mm/hugepages
+[    1.769438] ubuntu-MS-7D76 unknown: 
+[    1.769554] ubuntu-MS-7D76 unknown: 
+[    1.769675] ubuntu-MS-7D76 unknown: systemd
+[    1.769790] ubuntu-MS-7D76 [1]: 
+[    1.769928] ubuntu-MS-7D76 unknown: dev-mqueue.mount - POSIX Message Queue File System skipped, unmet condition check ConditionPathExists=/proc/sys/fs/mqueue
+[    1.770087] ubuntu-MS-7D76 unknown: 
+[    1.770213] ubuntu-MS-7D76 unknown: 
+[    1.770337] ubuntu-MS-7D76 unknown: systemd
+[    1.770451] ubuntu-MS-7D76 [1]: 
+[    1.770593] ubuntu-MS-7D76 unknown: Mounting run-lock.mount - Legacy Locks Directory /run/lock...
+[    1.770715] ubuntu-MS-7D76 unknown: 
+[    1.770831] ubuntu-MS-7D76 unknown: 
+[    1.770953] ubuntu-MS-7D76 unknown: systemd
+[    1.771094] ubuntu-MS-7D76 [1]: 
+[    1.771227] ubuntu-MS-7D76 unknown: sys-kernel-debug.mount - Kernel Debug File System skipped, unmet condition check ConditionPathExists=/sys/kernel/debug
+[    1.771347] ubuntu-MS-7D76 unknown: 
+[    1.771458] ubuntu-MS-7D76 unknown: 
+[    1.771620] ubuntu-MS-7D76 unknown: systemd
+[    1.771751] ubuntu-MS-7D76 [1]: 
+[    1.771879] ubuntu-MS-7D76 unknown: sys-kernel-tracing.mount - Kernel Trace File System skipped, unmet condition check ConditionPathExists=/sys/kernel/tracing
+[    1.771999] ubuntu-MS-7D76 unknown: 
+[    1.772139] ubuntu-MS-7D76 unknown: 
+[    1.772268] ubuntu-MS-7D76 unknown: systemd
+[    1.772385] ubuntu-MS-7D76 [1]: 
+[    1.772522] ubuntu-MS-7D76 unknown: kmod-static-nodes.service - Create List of Static Device Nodes skipped, unmet condition check ConditionPathExists=/usr/bin/kmod
+[    1.772714] ubuntu-MS-7D76 unknown: 
+[    1.772845] ubuntu-MS-7D76 unknown: 
+[    1.772965] ubuntu-MS-7D76 unknown: systemd
+[    1.773122] ubuntu-MS-7D76 [1]: 
+[    1.773256] ubuntu-MS-7D76 unknown: Starting modprobe@configfs.service - Load Kernel Module configfs...
+[    1.773375] ubuntu-MS-7D76 unknown: 
+[    1.773485] ubuntu-MS-7D76 unknown: 
+[    1.773651] ubuntu-MS-7D76 unknown: systemd
+[    1.773784] ubuntu-MS-7D76 [1]: 
+[    1.773909] ubuntu-MS-7D76 unknown: Starting modprobe@efi_pstore.service - Load Kernel Module efi_pstore...
+[    1.774028] ubuntu-MS-7D76 unknown: 
+[    1.775294] ubuntu-MS-7D76 unknown: 
+[    1.775448] ubuntu-MS-7D76 unknown: systemd
+[    1.775569] ubuntu-MS-7D76 [1]: 
+[    1.775697] ubuntu-MS-7D76 unknown: Starting modprobe@fuse.service - Load Kernel Module fuse...
+[    1.775818] ubuntu-MS-7D76 unknown: 
+[    1.775932] ubuntu-MS-7D76 unknown: 
+[    1.776088] ubuntu-MS-7D76 unknown: systemd
+[    1.776212] ubuntu-MS-7D76 [1]: 
+[    1.776336] ubuntu-MS-7D76 unknown: systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+[    1.776458] ubuntu-MS-7D76 unknown: 
+[    1.776574] ubuntu-MS-7D76 unknown: 
+[    1.776698] ubuntu-MS-7D76 unknown: systemd
+[    1.776812] ubuntu-MS-7D76 [1]: 
+[    1.776936] ubuntu-MS-7D76 unknown: systemd-journald.service
+[    1.777078] ubuntu-MS-7D76 : 
+[    1.777206] ubuntu-MS-7D76 unknown: unit configures an IP firewall, but the local system does not support BPF/cgroup firewalling.
+[    1.777330] ubuntu-MS-7D76 unknown: 
+[    1.777470] ubuntu-MS-7D76 unknown: 
+[    1.777595] ubuntu-MS-7D76 unknown: systemd
+[    1.777710] ubuntu-MS-7D76 [1]: 
+[    1.777840] ubuntu-MS-7D76 unknown: systemd-journald.service
+[    1.777956] ubuntu-MS-7D76 : 
+[    1.778112] ubuntu-MS-7D76 unknown: (This warning is only shown for the first unit using IP firewalling.)
+[    1.778245] ubuntu-MS-7D76 unknown: 
+[    1.778359] ubuntu-MS-7D76 unknown: 
+[    1.778478] ubuntu-MS-7D76 unknown: systemd
+[    1.778592] ubuntu-MS-7D76 [1]: 
+[    1.778734] ubuntu-MS-7D76 unknown: Starting systemd-journald.service - Journal Service...
+[    1.778856] ubuntu-MS-7D76 unknown: 
+[    1.778983] ubuntu-MS-7D76 unknown: 
+[    1.779132] ubuntu-MS-7D76 unknown: systemd
+[    1.779270] ubuntu-MS-7D76 [1]: 
+[    1.779398] ubuntu-MS-7D76 unknown: Starting systemd-modules-load.service - Load Kernel Modules...
+[    1.779516] ubuntu-MS-7D76 unknown: 
+[    1.779627] ubuntu-MS-7D76 unknown: 
+[    1.779740] ubuntu-MS-7D76 unknown: systemd
+[    1.779897] ubuntu-MS-7D76 [1]: 
+[    1.780027] ubuntu-MS-7D76 unknown: systemd-pcrmachine.service - TPM PCR Machine ID Measurement skipped, unmet condition check ConditionSecurity=measured-uki
+[    1.780181] ubuntu-MS-7D76 unknown: 
+[    1.780299] ubuntu-MS-7D76 unknown: 
+[    1.780419] ubuntu-MS-7D76 unknown: systemd
+[    1.780532] ubuntu-MS-7D76 [1]: 
+[    1.780676] ubuntu-MS-7D76 unknown: Starting systemd-remount-fs.service - Remount Root and Kernel File Systems...
+[    1.780801] ubuntu-MS-7D76 unknown: 
+[    1.780912] ubuntu-MS-7D76 unknown: 
+[    1.781033] ubuntu-MS-7D76 unknown: (modprobe)
+[    1.781217] ubuntu-MS-7D76 [16]: 
+[    1.781349] ubuntu-MS-7D76 modprobe@configfs.service: Unable to locate executable '/sbin/modprobe': No such file or directory
+[    1.781501] ubuntu-MS-7D76 unknown: 
+[    1.781618] ubuntu-MS-7D76 unknown: 
+[    1.781742] ubuntu-MS-7D76 unknown: systemd
+[    1.781858] ubuntu-MS-7D76 [1]: 
+[    1.781983] ubuntu-MS-7D76 unknown: Starting systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully...
+[    1.783762] ubuntu-MS-7D76 unknown: 
+[    1.783935] ubuntu-MS-7D76 unknown: 
+[    1.784090] ubuntu-MS-7D76 unknown: systemd
+[    1.784213] ubuntu-MS-7D76 [1]: 
+[    1.784340] ubuntu-MS-7D76 unknown: systemd-tpm2-setup-early.service - Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[    1.784468] ubuntu-MS-7D76 unknown: 
+[    1.784584] ubuntu-MS-7D76 unknown: 
+[    1.784738] ubuntu-MS-7D76 unknown: (modprobe)
+[    1.784886] ubuntu-MS-7D76 [17]: 
+[    1.785023] ubuntu-MS-7D76 modprobe@efi_pstore.service: Unable to locate executable '/sbin/modprobe': No such file or directory
+[    1.785180] ubuntu-MS-7D76 unknown: 
+[    1.785323] ubuntu-MS-7D76 unknown: 
+[    1.785493] ubuntu-MS-7D76 unknown: (modprobe)
+[    1.785614] ubuntu-MS-7D76 [18]: 
+[    1.785748] ubuntu-MS-7D76 modprobe@fuse.service: Unable to locate executable '/sbin/modprobe': No such file or directory
+[    1.785907] ubuntu-MS-7D76 unknown: 
+[    1.786037] ubuntu-MS-7D76 unknown: 
+[    1.786189] ubuntu-MS-7D76 unknown: systemd
+[    1.786310] ubuntu-MS-7D76 [1]: 
+[    1.786436] ubuntu-MS-7D76 unknown: Starting systemd-udev-trigger.service - Coldplug All udev Devices...
+[    1.786574] ubuntu-MS-7D76 unknown: 
+[    1.786714] ubuntu-MS-7D76 unknown: 
+[    1.786845] ubuntu-MS-7D76 unknown: systemd
+[    1.786972] ubuntu-MS-7D76 [1]: 
+[    1.787133] ubuntu-MS-7D76 modprobe@configfs.service: Deactivated successfully.
+[    1.787292] ubuntu-MS-7D76 unknown: 
+[    1.787412] ubuntu-MS-7D76 unknown: 
+[    1.787534] ubuntu-MS-7D76 unknown: systemd
+[    1.787647] ubuntu-MS-7D76 [1]: 
+[    1.787781] ubuntu-MS-7D76 unknown: Finished modprobe@configfs.service - Load Kernel Module configfs.
+[    1.787898] ubuntu-MS-7D76 unknown: 
+[    1.788010] ubuntu-MS-7D76 kernel: contains unsupported clone flags: CLONE_NEWUSER
+[    1.788253] ubuntu-MS-7D76 kernel: A_SIGKILL_PROVENANCE stage=enqueue sender=19/19 target=24/24 origin=user callpoint=kill-or-pidfd route=process
+[    1.788409] ubuntu-MS-7D76 kernel: PID 24: terminating on signal SIGKILL
+[    1.788546] ubuntu-MS-7D76 unknown: 
+[    1.788682] ubuntu-MS-7D76 unknown: systemd
+[    1.788801] ubuntu-MS-7D76 [1]: 
+[    1.788925] ubuntu-MS-7D76 modprobe@efi_pstore.service: Deactivated successfully.
+[    1.789047] ubuntu-MS-7D76 unknown: 
+[    1.789189] ubuntu-MS-7D76 unknown: 
+[    1.789311] ubuntu-MS-7D76 unknown: systemd
+[    1.789424] ubuntu-MS-7D76 [1]: 
+[    1.789583] ubuntu-MS-7D76 unknown: Finished modprobe@efi_pstore.service - Load Kernel Module efi_pstore.
+[    1.789714] ubuntu-MS-7D76 unknown: 
+[    1.789828] ubuntu-MS-7D76 unknown: 
+[    1.789949] ubuntu-MS-7D76 unknown: systemd
+[    1.790095] ubuntu-MS-7D76 [1]: 
+[    1.790235] ubuntu-MS-7D76 modprobe@fuse.service: Deactivated successfully.
+[    1.790382] ubuntu-MS-7D76 unknown: 
+[    1.790518] ubuntu-MS-7D76 unknown: 
+[    1.790642] ubuntu-MS-7D76 unknown: systemd
+[    1.790755] ubuntu-MS-7D76 [1]: 
+[    1.790878] ubuntu-MS-7D76 unknown: Finished modprobe@fuse.service - Load Kernel Module fuse.
+[    1.791014] ubuntu-MS-7D76 unknown: 
+[    1.791153] ubuntu-MS-7D76 unknown: 
+[    1.791278] ubuntu-MS-7D76 unknown: systemd
+[    1.791393] ubuntu-MS-7D76 [1]: 
+[    1.791546] ubuntu-MS-7D76 unknown: sys-fs-fuse-connections.mount - FUSE Control File System skipped, unmet condition check ConditionPathExists=/sys/fs/fuse/connections
+[    1.791672] ubuntu-MS-7D76 unknown: 
+[    1.791788] ubuntu-MS-7D76 unknown: 
+[    1.791912] ubuntu-MS-7D76 unknown: systemd
+[    1.792097] ubuntu-MS-7D76 [1]: 
+[    1.792231] ubuntu-MS-7D76 unknown: Mounting sys-kernel-config.mount - Kernel Configuration File System...
+[    1.792351] ubuntu-MS-7D76 unknown: 
+[    1.792470] ubuntu-MS-7D76 unknown: 
+[    1.792596] ubuntu-MS-7D76 unknown: systemd
+[    1.792715] ubuntu-MS-7D76 [1]: 
+[    1.792838] ubuntu-MS-7D76 unknown: Finished systemd-modules-load.service - Load Kernel Modules.
+[    1.792963] ubuntu-MS-7D76 unknown: 
+[    1.793116] ubuntu-MS-7D76 unknown: 
+[    1.793249] ubuntu-MS-7D76 unknown: systemd
+[    1.793370] ubuntu-MS-7D76 [1]: 
+[    1.793492] ubuntu-MS-7D76 unknown: Finished systemd-remount-fs.service - Remount Root and Kernel File Systems.
+[    1.793611] ubuntu-MS-7D76 unknown: 
+[    1.793722] ubuntu-MS-7D76 unknown: 
+[    1.793841] ubuntu-MS-7D76 unknown: systemd
+[    1.793984] ubuntu-MS-7D76 [1]: 
+[    1.794148] ubuntu-MS-7D76 unknown: Starting asterinas-browser-web-timeline-begin.service - Asterinas online browser boot timeline origin...
+[    1.794291] ubuntu-MS-7D76 unknown: 
+[    1.794414] ubuntu-MS-7D76 unknown: 
+[    1.794537] ubuntu-MS-7D76 unknown: systemd
+[    1.794662] ubuntu-MS-7D76 [1]: 
+[    1.794790] ubuntu-MS-7D76 unknown: systemd-hwdb-update.service - Rebuild Hardware Database skipped, unmet condition check ConditionNeedsUpdate=/etc
+[    1.794909] ubuntu-MS-7D76 unknown: 
+[    1.795086] ubuntu-MS-7D76 unknown: 
+[    1.795220] ubuntu-MS-7D76 unknown: systemd
+[    1.795351] ubuntu-MS-7D76 [1]: 
+[    1.795494] ubuntu-MS-7D76 unknown: systemd-pstore.service - Platform Persistent Storage Archival skipped, unmet condition check ConditionDirectoryNotEmpty=/sys/fs/pstore
+[    1.795618] ubuntu-MS-7D76 unknown: 
+[    1.795728] ubuntu-MS-7D76 unknown: 
+[    1.795853] ubuntu-MS-7D76 unknown: systemd
+[    1.795984] ubuntu-MS-7D76 [1]: 
+[    1.796129] ubuntu-MS-7D76 unknown: Starting systemd-random-seed.service - Load/Save OS Random Seed...
+[    1.796268] ubuntu-MS-7D76 unknown: 
+[    1.796383] ubuntu-MS-7D76 unknown: 
+[    1.796501] ubuntu-MS-7D76 unknown: systemd
+[    1.796627] ubuntu-MS-7D76 [1]: 
+[    1.796755] ubuntu-MS-7D76 unknown: Starting systemd-sysctl.service - Apply Kernel Variables...
+[    1.796878] ubuntu-MS-7D76 unknown: 
+[    1.796994] ubuntu-MS-7D76 unknown: 
+[    1.797147] ubuntu-MS-7D76 unknown: systemd
+[    1.797274] ubuntu-MS-7D76 [1]: 
+[    1.797397] ubuntu-MS-7D76 unknown: systemd-tpm2-setup.service - TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+[    1.797515] ubuntu-MS-7D76 unknown: 
+[    1.797627] ubuntu-MS-7D76 unknown: 
+[    1.797800] ubuntu-MS-7D76 unknown: systemd
+[    1.797935] ubuntu-MS-7D76 [1]: 
+[    1.798118] ubuntu-MS-7D76 unknown: Finished systemd-udev-trigger.service - Coldplug All udev Devices.
+[    1.798272] ubuntu-MS-7D76 unknown: 
+[    1.798391] ubuntu-MS-7D76 unknown: 
+[    1.798518] ubuntu-MS-7D76 unknown: systemd
+[    1.798634] ubuntu-MS-7D76 [1]: 
+[    1.798796] ubuntu-MS-7D76 unknown: Mounted run-lock.mount - Legacy Locks Directory /run/lock.
+[    1.798927] ubuntu-MS-7D76 unknown: 
+[    1.799038] ubuntu-MS-7D76 unknown: 
+[    1.799212] ubuntu-MS-7D76 unknown: systemd
+[    1.799347] ubuntu-MS-7D76 [1]: 
+[    1.799490] ubuntu-MS-7D76 unknown: Mounted sys-kernel-config.mount - Kernel Configuration File System.
+[    1.799648] ubuntu-MS-7D76 unknown: 
+[    1.799783] ubuntu-MS-7D76 unknown: 
+[    1.799974] ubuntu-MS-7D76 unknown: systemd-journald
+[    1.800145] ubuntu-MS-7D76 [19]: 
+[    1.800318] ubuntu-MS-7D76 unknown: Collecting audit messages is disabled.
+[    1.800442] ubuntu-MS-7D76 unknown: 
+[    1.800595] ubuntu-MS-7D76 unknown: 
+[    1.800727] ubuntu-MS-7D76 unknown: systemd
+[    1.800842] ubuntu-MS-7D76 [1]: 
+[    1.800965] ubuntu-MS-7D76 unknown: Finished systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully.
+[    1.801125] ubuntu-MS-7D76 unknown: 
+[    1.801245] ubuntu-MS-7D76 unknown: 
+[    1.801371] ubuntu-MS-7D76 unknown: systemd
+[    1.801514] ubuntu-MS-7D76 [1]: 
+[    1.801661] ubuntu-MS-7D76 unknown: Reached target local-fs-pre.target - Preparation for Local File Systems.
+[    1.801785] ubuntu-MS-7D76 unknown: 
+[    1.801894] ubuntu-MS-7D76 unknown: 
+[    1.802012] ubuntu-MS-7D76 unknown: systemd
+[    1.802140] ubuntu-MS-7D76 [1]: 
+[    1.802268] ubuntu-MS-7D76 unknown: Reached target local-fs.target - Local File Systems.
+[    1.802390] ubuntu-MS-7D76 unknown: 
+[    1.802508] ubuntu-MS-7D76 unknown: 
+[    1.802625] ubuntu-MS-7D76 unknown: systemd
+[    1.802748] ubuntu-MS-7D76 [1]: 
+[    1.802869] ubuntu-MS-7D76 unknown: Listening on systemd-sysext.socket - System Extension Image Management.
+[    1.802985] ubuntu-MS-7D76 unknown: 
+[    1.803116] ubuntu-MS-7D76 unknown: 
+[    1.803238] ubuntu-MS-7D76 unknown: systemd
+[    1.803351] ubuntu-MS-7D76 [1]: 
+[    1.803472] ubuntu-MS-7D76 unknown: systemd-binfmt.service - Set Up Additional Binary Formats skipped, unmet condition check ConditionPathIsMountPoint=/proc/sys/fs/binfmt_misc
+[    1.803593] ubuntu-MS-7D76 unknown: 
+[    1.807627] ubuntu-MS-7D76 unknown: 
+[    1.807835] ubuntu-MS-7D76 unknown: systemd
+[    1.807965] ubuntu-MS-7D76 [1]: 
+[    1.808145] ubuntu-MS-7D76 unknown: Started systemd-journald.service - Journal Service.
+[    1.808313] ubuntu-MS-7D76 unknown: 
+[    1.810172] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.811101] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.812874] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.813836] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.814965] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.815772] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.817893] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.818874] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.820822] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.821765] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.822785] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.823026] ubuntu-MS-7D76 systemd[1]: Starting systemd-journal-flush.service - Flush Journal to Persistent Storage...
+[    1.827811] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.833783] ubuntu-MS-7D76 systemd[1]: Finished systemd-random-seed.service - Load/Save OS Random Seed.
+[    1.850524] ubuntu-MS-7D76 kernel: writing to `/proc/sys/kernel/pid_max` is not supported
+[    1.851100] ubuntu-MS-7D76 systemd-sysctl[30]: Couldn't write 'core' to 'kernel/core_pattern', ignoring: No such file or directory
+[    1.853085] ubuntu-MS-7D76 systemd-sysctl[30]: Couldn't write '4194304' to 'kernel/pid_max': Operation not supported
+[    1.853964] ubuntu-MS-7D76 systemd[1]: systemd-sysctl.service: Main process exited, code=exited, status=1/FAILURE
+[    1.855886] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.863661] ubuntu-MS-7D76 systemd[1]: systemd-sysctl.service: Failed with result 'exit-code'.
+[    1.865443] ubuntu-MS-7D76 systemd[1]: Failed to start systemd-sysctl.service - Apply Kernel Variables.
+[    1.890551] ubuntu-MS-7D76 systemd-journald[19]: Runtime Journal (/run/log/journal/7e77624663b143ab8a4b090284a299f7) is 8M, max 102M, 94M free.
+[    1.892769] ubuntu-MS-7D76 unknown: 
+[    1.892956] ubuntu-MS-7D76 unknown: systemd-journald
+[    1.893116] ubuntu-MS-7D76 [19]: 
+[    1.893266] ubuntu-MS-7D76 unknown: Received client request to flush runtime journal.
+[    1.893395] ubuntu-MS-7D76 unknown: 
+[    1.894204] ubuntu-MS-7D76 systemd[1]: Finished asterinas-browser-web-timeline-begin.service - Asterinas online browser boot timeline origin.
+[    1.898322] ubuntu-MS-7D76 systemd[1]: systemd-sysusers.service - Create System Users skipped, no trigger condition checks were met.
+[    1.901402] ubuntu-MS-7D76 systemd[1]: Finished systemd-journal-flush.service - Flush Journal to Persistent Storage.
+[    1.914933] ubuntu-MS-7D76 systemd[1]: Starting systemd-tmpfiles-setup.service - Create System Files and Directories...
+[    1.945791] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.979195] ubuntu-MS-7D76 systemd-tmpfiles[48]: /usr/lib/tmpfiles.d/legacy.conf:14: Duplicate line for path "/run/lock", ignoring.
+[    2.065358] ubuntu-MS-7D76 systemd[1]: Finished systemd-tmpfiles-setup.service - Create System Files and Directories.
+[    2.068405] ubuntu-MS-7D76 systemd[1]: ldconfig.service - Rebuild Dynamic Linker Cache skipped, no trigger condition checks were met.
+[    2.069252] ubuntu-MS-7D76 systemd[1]: systemd-firstboot.service - First Boot Wizard skipped, unmet condition check ConditionFirstBoot=yes
+[    2.069923] ubuntu-MS-7D76 systemd[1]: first-boot-complete.target - First Boot Complete skipped, unmet condition check ConditionFirstBoot=yes
+[    2.070824] ubuntu-MS-7D76 systemd[1]: systemd-journal-catalog-update.service - Rebuild Journal Catalog skipped, unmet condition check ConditionNeedsUpdate=/var
+[    2.071688] ubuntu-MS-7D76 systemd[1]: systemd-machine-id-commit.service - Save Transient machine-id to Disk skipped, unmet condition check ConditionPathIsMountPoint=/etc/machine-id
+[    2.073024] ubuntu-MS-7D76 systemd[1]: systemd-update-done.service - Update is Completed skipped, no trigger condition checks were met.
+[    2.073735] ubuntu-MS-7D76 systemd[1]: Reached target sysinit.target - System Initialization.
+[    2.076988] ubuntu-MS-7D76 systemd[1]: Started apt-daily.timer - Daily apt download activities.
+[    2.078541] ubuntu-MS-7D76 systemd[1]: Started apt-daily-upgrade.timer - Daily apt upgrade and clean activities.
+[    2.080153] ubuntu-MS-7D76 systemd[1]: Started dpkg-db-backup.timer - Daily dpkg database backup timer.
+[    2.082016] ubuntu-MS-7D76 systemd[1]: Started fstrim.timer - Discard unused filesystem blocks once a week.
+[    2.083400] ubuntu-MS-7D76 systemd[1]: Started man-db.timer - Daily man-db regeneration.
+[    2.084401] ubuntu-MS-7D76 systemd[1]: Started systemd-tmpfiles-clean.timer - Daily Cleanup of Temporary Directories.
+[    2.085454] ubuntu-MS-7D76 systemd[1]: Reached target timers.target - Timer Units.
+[    2.086984] ubuntu-MS-7D76 systemd[1]: Listening on dbus.socket - D-Bus System Message Bus Socket.
+[    2.088543] ubuntu-MS-7D76 systemd[1]: Listening on systemd-hostnamed.socket - Hostname Service Socket.
+[    2.089563] ubuntu-MS-7D76 systemd[1]: Reached target sockets.target - Socket Units.
+[    2.096884] ubuntu-MS-7D76 systemd[1]: Starting asterinas-browser-web-timeline-basic.service - Asterinas online browser basic-target timeline...
+[    2.098160] ubuntu-MS-7D76 systemd[1]: systemd-pcrphase-sysinit.service - TPM PCR Barrier (Initialization) skipped, unmet condition check ConditionSecurity=measured-uki
+[    2.127789] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.157703] ubuntu-MS-7D76 systemd[1]: Finished asterinas-browser-web-timeline-basic.service - Asterinas online browser basic-target timeline.
+[    2.159929] ubuntu-MS-7D76 systemd[1]: Reached target basic.target - Basic System.
+[    2.162575] ubuntu-MS-7D76 systemd[1]: System is tainted: unmerged-bin
+[    2.168736] ubuntu-MS-7D76 systemd[1]: Starting asterinas-browser-web.service - Asterinas Debian online Firefox workload...
+[    2.175568] ubuntu-MS-7D76 systemd[1]: Started asterinas-dns-shim.service - Asterinas guest DNS tunnel to the build host.
+[    2.186142] ubuntu-MS-7D76 systemd[1]: Started asterinas-safe-reboot.service - Asterinas synchronized Megrez recovery.
+[    2.193150] ubuntu-MS-7D76 systemd[1]: Starting asterinas-desktop-m5-network.service - Asterinas Debian M5 wired-network evidence...
+[    2.201146] ubuntu-MS-7D76 systemd[1]: Started dbus.service - D-Bus System Message Bus.
+[    2.216113] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.238139] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.256813] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.259798] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.268169] ubuntu-MS-7D76 systemd[1]: Starting asterinas-desktop-m5.service - Asterinas Debian desktop session...
+[    2.276841] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.286296] ubuntu-MS-7D76 systemd[1]: getty-static.service - getty on tty2-tty6 if dbus and logind are not available skipped, unmet condition check ConditionPathExists=!/usr/bin/dbus-daemon
+[    2.287139] ubuntu-MS-7D76 systemd[1]: systemd-pcrphase.service - TPM PCR Barrier (User) skipped, unmet condition check ConditionSecurity=measured-uki
+[    2.299310] ubuntu-MS-7D76 systemd[1]: Starting systemd-user-sessions.service - Permit User Sessions...
+[    2.326846] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.368369] ubuntu-MS-7D76 systemd[1]: Finished systemd-user-sessions.service - Permit User Sessions.
+[    2.389375] ubuntu-MS-7D76 systemd[1]: Started asterinas-debug-console.service - Asterinas opt-in root serial console.
+[    2.390201] ubuntu-MS-7D76 systemd[1]: console-getty.service - Console Getty skipped, unmet condition check ConditionPathExists=!/run/asterinas-debug-console.enabled
+[    2.390961] ubuntu-MS-7D76 systemd[1]: Reached target getty.target - Login Prompts.
+[    2.391726] ubuntu-MS-7D76 systemd[1]: Reached target multi-user.target - Multi-User System.
+[    2.714830] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.753795] ubuntu-MS-7D76 megrez-dns-shim[56]: dns shim unconfigured: ASTERINAS_DESKTOP_DNS_HOST is unset or invalid
+[    2.787257] ubuntu-MS-7D76 systemd[1]: asterinas-dns-shim.service: Main process exited, code=exited, status=3/NOTIMPLEMENTED
+[    2.788970] ubuntu-MS-7D76 systemd[1]: asterinas-dns-shim.service: Failed with result 'exit-code'.
+[    3.046807] ubuntu-MS-7D76 kernel: stealing TTY from another session is not supported
+[    3.667764] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    3.672139] ubuntu-MS-7D76 unknown: 
+[    3.672329] ubuntu-MS-7D76 unknown: systemd-journald
+[    3.672458] ubuntu-MS-7D76 [19]: 
+[    3.672620] ubuntu-MS-7D76 unknown: Time jumped backwards, rotating.
+[    3.672781] ubuntu-MS-7D76 unknown: 
+[    3.675285] ubuntu-MS-7D76 systemd[1]: Started asterinas-browser-web.service - Asterinas Debian online Firefox workload.
+[    3.782426] ubuntu-MS-7D76 browser-web-firefox[113]: ASTERINAS_FIREFOX_WEB wrapper-start pid=113
+[    4.224805] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    4.808662] ubuntu-MS-7D76 megrez-clock-sync[129]: {"marker":"ASTERINAS_CLOCK_SYNC_READY","proxy":"http://10.100.19.216:17893","source":"http-date","unix_seconds":1790338291}
+[    4.857150] ubuntu-MS-7D76 systemd[1]: Started asterinas-desktop-m5.service - Asterinas Debian desktop session.
+[    5.296807] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    5.333322] ubuntu-MS-7D76 desktop-m5-session[138]: BROWSER_WEB_DESKTOP_STAGE=display-provider-ready guest_monotonic_ns=1790338291524291000 pid=0 provider=fbdev
+[    5.339775] ubuntu-MS-7D76 desktop-m5-session[138]: BROWSER_WEB_DESKTOP_STAGE=xorg-start guest_monotonic_ns=1790338291531577000 pid=0
+[    5.449493] ubuntu-MS-7D76 desktop-m5-session[149]: X.Org X Server 1.21.1.16
+[    5.449493] ubuntu-MS-7D76 desktop-m5-session[149]: X Protocol Version 11, Revision 0
+[    5.451242] ubuntu-MS-7D76 desktop-m5-session[149]: Current Operating System: Linux ubuntu-MS-7D76 5.13.0 #1 SMP Thu Jan  1 00:00:00 UTC 1970 riscv64
+[    5.451242] ubuntu-MS-7D76 desktop-m5-session[149]: Kernel command line: console=ttyS0 loglevel=off init=/init asterinas.debian_network=qemu-slirp systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct systemd.setenv=ASTERINAS_WEB_NETWORK_ADDRESS=10.0.2.15/24 systemd.setenv=ASTERINAS_WEB_NETWORK_GATEWAY=10.0.2.2 systemd.setenv=ASTERINAS_WEB_NETWORK_RESOLVER=10.0.2.3 systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_URL=http://10.0.2.2:17894/asterinas-network-probe.bin systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SIZE=65536 systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_SHA256=7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2 systemd.setenv=ASTERINAS_DESKTOP_FIXTURE_REQUESTS=20 systemd.setenv=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=300 systemd.setenv=ASTERINAS_DESKTOP_M5_NETWORK_MODE=lightweight -- --root-init=systemd --debug-console=root
+[    5.451242] ubuntu-MS-7D76 desktop-m5-session[149]: xorg-server 2:21.1.16-1.3+deb13u4 (https://www.debian.org/support)
+[    5.451242] ubuntu-MS-7D76 desktop-m5-session[149]: Current version of pixman: 0.44.0
+[    5.464861] ubuntu-MS-7D76 desktop-m5-session[149]:         Before reporting problems, check http://wiki.x.org
+[    5.464861] ubuntu-MS-7D76 desktop-m5-session[149]:         to make sure that you have the latest version.
+[    5.464861] ubuntu-MS-7D76 desktop-m5-session[149]: Markers: (--) probed, (**) from config file, (==) default setting,
+[    5.464861] ubuntu-MS-7D76 desktop-m5-session[149]:         (++) from command line, (!!) notice, (II) informational,
+[    5.464861] ubuntu-MS-7D76 desktop-m5-session[149]:         (WW) warning, (EE) error, (NI) not implemented, (??) unknown.
+[    5.464861] ubuntu-MS-7D76 desktop-m5-session[149]: (++) Log file: "/home/asterinas/Xorg.0.log", Time: Fri Sep 25 12:11:31 2026
+[    5.464861] ubuntu-MS-7D76 desktop-m5-session[149]: (++) Using config directory: "/etc/asterinas/display-providers/fbdev/xorg.conf.d"
+[    5.464861] ubuntu-MS-7D76 desktop-m5-session[149]: (==) Using system config directory "/usr/share/X11/xorg.conf.d"
+[    5.481268] ubuntu-MS-7D76 dbus-daemon[59]: [system] Activating via systemd: service name='org.freedesktop.login1' unit='dbus-org.freedesktop.login1.service' requested by ':1.1' (uid=0 pid=149 comm="/usr/lib/xorg/Xorg :0 -noreset -nolisten tcp -ac -")
+[    5.484174] ubuntu-MS-7D76 dbus-daemon[59]: [system] Activation via systemd failed for unit 'dbus-org.freedesktop.login1.service': Unit dbus-org.freedesktop.login1.service failed to load properly, please adjust/correct and reload service manager: File exists
+[    6.039927] ubuntu-MS-7D76 browser-web-firefox[113]: ASTERINAS_FIREFOX_WEB_EXEC pid=113
+[    6.418372] ubuntu-MS-7D76 desktop-m5-session[138]: BROWSER_WEB_DESKTOP_STAGE=x-socket-ready guest_monotonic_ns=1790338292602630000 pid=149
+[    6.468070] ubuntu-MS-7D76 runuser[175]: pam_unix(runuser:session): session opened for user asterinas(uid=1000) by (uid=0)
+[    6.753280] ubuntu-MS-7D76 systemd[1]: Finished asterinas-desktop-m5-network.service - Asterinas Debian M5 wired-network evidence.
+[    6.755565] ubuntu-MS-7D76 systemd[1]: Reached target graphical.target - Graphical Interface.
+[    6.771335] ubuntu-MS-7D76 systemd[1]: Starting asterinas-browser-web-evidence.service - Asterinas Debian online Firefox evidence...
+[    6.825352] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    7.901850] ubuntu-MS-7D76 kernel: Switching to a task already running in the foreground
+[    9.196817] ubuntu-MS-7D76 kernel: only socket-level options are supported
+[   10.415381] ubuntu-MS-7D76 dbus-daemon[59]: [system] Activating via systemd: service name='org.freedesktop.login1' unit='dbus-org.freedesktop.login1.service' requested by ':1.2' (uid=1000 pid=113 comm="/usr/bin/firefox --no-remote --new-instance --mari")
+[   10.418134] ubuntu-MS-7D76 dbus-daemon[59]: [system] Activation via systemd failed for unit 'dbus-org.freedesktop.login1.service': Unit dbus-org.freedesktop.login1.service failed to load properly, please adjust/correct and reload service manager: File exists
+[   10.423718] ubuntu-MS-7D76 dbus-daemon[59]: [system] Activating via systemd: service name='org.freedesktop.timedate1' unit='dbus-org.freedesktop.timedate1.service' requested by ':1.2' (uid=1000 pid=113 comm="/usr/bin/firefox --no-remote --new-instance --mari")
+[   10.443423] ubuntu-MS-7D76 systemd[1]: Starting systemd-timedated.service - Time & Date Service...
+[   10.496783] ubuntu-MS-7D76 kernel: UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[   10.855900] ubuntu-MS-7D76 systemd[1]: Started systemd-timedated.service - Time & Date Service.
+[   10.857591] ubuntu-MS-7D76 dbus-daemon[59]: [system] Successfully activated service 'org.freedesktop.timedate1'
+[   12.250340] ubuntu-MS-7D76 browser-web-firefox[130]: Crash Annotation GraphicsCriticalError: |[0][GFX1-]: glxtest: ManageChildProcess failed
+[   12.250340] ubuntu-MS-7D76 browser-web-firefox[130]:  (t=6.16828) [GFX1-]: glxtest: ManageChildProcess failed
+[   12.253937] ubuntu-MS-7D76 browser-web-firefox[130]: Crash Annotation GraphicsCriticalError: |[0][GFX1-]: glxtest: ManageChildProcess failed
+[   12.253937] ubuntu-MS-7D76 browser-web-firefox[130]:  (t=6.16828) |[1][GFX1-]: glxtest: MOZ_AVOID_OPENGL_ALTOGETHER envvar set (t=6.17228) [GFX1-]: glxtest: MOZ_AVOID_OPENGL_ALTOGETHER envvar set
+[   12.253937] ubuntu-MS-7D76 browser-web-firefox[130]: Crash Annotation GraphicsCriticalError: |[0][GFX1-]: glxtest: ManageChildProcess failed
+[   12.253937] ubuntu-MS-7D76 browser-web-firefox[130]:  (t=6.16828) |[1][GFX1-]: glxtest: MOZ_AVOID_OPENGL_ALTOGETHER envvar set (t=6.17228) |[2][GFX1-]: No GPUs detected via PCI
+[   12.253937] ubuntu-MS-7D76 browser-web-firefox[130]:  (t=6.17228) [GFX1-]: No GPUs detected via PCI
+[   13.857150] ubuntu-MS-7D76 browser-web-firefox[130]: [Parent 113, Main Thread] WARNING: Could not load a pixbuf from icon theme.
+[   13.857150] ubuntu-MS-7D76 browser-web-firefox[130]: This may indicate that pixbuf loaders or the mime database could not be found.: 'glib warning', file toolkit/xre/nsSigHandlers.cpp:201
+[   13.861046] ubuntu-MS-7D76 browser-web-firefox[130]: (firefox:113): Gtk-WARNING **: 12:11:40.051: Could not load a pixbuf from icon theme.
+[   13.861046] ubuntu-MS-7D76 browser-web-firefox[130]: This may indicate that pixbuf loaders or the mime database could not be found.
+[   14.496101] ubuntu-MS-7D76 browser-web-firefox[130]: 1790338300689        Marionette        INFO        Listening on port 2828
+[   14.671174] ubuntu-MS-7D76 browser-web-firefox[130]: [Parent 113, Main Thread] WARNING: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)
+[   14.671174] ubuntu-MS-7D76 browser-web-firefox[130]: : 'glib warning', file toolkit/xre/nsSigHandlers.cpp:201
+[   14.673384] ubuntu-MS-7D76 browser-web-firefox[130]: ** (firefox:113): WARNING **: 12:11:40.865: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)
+[   18.213353] ubuntu-MS-7D76 browser-web-evidence[418]: find: ‘/sys/class/net’: No such file or directory
+[   19.271529] ubuntu-MS-7D76 browser-web-evidence[428]: find: ‘/sys/class/net’: No such file or directory
+[   20.329234] ubuntu-MS-7D76 browser-web-evidence[451]: find: ‘/sys/class/net’: No such file or directory
+[   21.353701] ubuntu-MS-7D76 browser-web-evidence[457]: find: ‘/sys/class/net’: No such file or directory
