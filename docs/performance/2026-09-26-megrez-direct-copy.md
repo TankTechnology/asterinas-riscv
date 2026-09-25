@@ -1,12 +1,15 @@
 # Direct GEM-page copy into the firmware framebuffer
 
 This is an interim software-display improvement, not native EIC7700
-scanout or GPU acceleration. With `asterinas.drm_direct_copy=1`, the
-firmware backend walks committed GEM pages and writes each page chunk
+scanout or GPU acceleration. The firmware backend walks committed GEM pages
+and writes each page chunk
 directly into the bootloader framebuffer, then performs the same device
 synchronization as the original path. It removes the intermediate scratch
-row and its extra memory copy. The default path is unchanged when the flag
-is absent. The selected physical boot also used
+row and its extra memory copy. The path was initially selected with
+`asterinas.drm_direct_copy=1` for the QEMU and physical gates; it is now the
+default firmware backend path. A selected boot can restore the original
+row-staging path with `asterinas.drm_direct_copy=0`. The selected physical
+boot also used
 `asterinas.drm_phase_profile=1` to sample up to four rows per present.
 
 The RISC-V/Sv39/SMP4 release Image SHA-256 was
@@ -16,6 +19,17 @@ at commit `8d8c60e8d`. Its registered QEMU profile
 stages, including pixel checks for `SETCRTC`, `PAGE_FLIP`, and `DIRTYFB`.
 That test exercises the flag and a 1920 × 1080 Megrez contract approximation;
 it does not model EIC7700 DMA coherency.
+
+After making direct copy the default, the new RISC-V/Sv39/SMP4 release Image
+had SHA-256
+`8371e2f43f8b8f00221a6d9fc1e63dddd750f3306d636d51ffbd62393957f956`.
+The ordinary firmware profile, with no direct-copy flag, passed all six stages
+on both 1280 × 1024 and 1920 × 1080 QEMU device sets. The test reused the
+previously built U-Boot and static gate initramfs; the gate C source is
+byte-identical in both worktrees, and the new kernel was checked byte for byte
+after replacing it in each boot disk. Fresh result files are under
+`target/qemu-uboot/default-direct-20260926/`. This verifies the new default
+selection as well as the previously gated direct-copy implementation.
 
 The new candidate was published as separate, hash-verified files under
 `/home/debian/asterinas/direct-copy-8d8c60e8d/` on RockOS partition 3.
@@ -50,9 +64,11 @@ was material, but the windows are short and the amount and type of Firefox
 work may differ. The direct path still moves every changed pixel through the
 CPU and remains much too slow for the target of at least 2× improvement in
 trusted-input-to-visible-frame p95 latency. The next P1 milestone is a
-DMA-safe, user-mappable display pool followed by fixed-mode scanout/flip;
-the current write-back VMO mapping is not safe to hand to this non-coherent
-display controller without a demonstrated synchronization protocol.
+fixed-mode scanout/flip with a verified cache-synchronization and buffer
+lifetime protocol. The existing write-back VMO is a candidate only after an
+actual display-DMA pixel check; otherwise a DMA-safe, user-mappable display
+pool is needed. See the later
+[cache-clean probe](2026-09-26-megrez-dma-clean-probe.md).
 
 Raw local serial/counter evidence is at
 `/home/ubuntu/.codex/asterinas-direct-copy-20260926/firefox-direct-copy-sample.txt`;
