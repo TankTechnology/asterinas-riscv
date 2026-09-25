@@ -139,6 +139,16 @@ includes the raw logs. This explains some CPU-bound cost but is not a measured
 Firefox speedup. No Asterinas clock register was changed; the twofold desktop
 and video goals remain open.
 
+The latest QEMU run found a graphical-boot race between the desktop and
+Firefox device-access helpers and an invalid event-order assumption in the
+startup sampler. Both fixes are on `main`. With the fixed development root,
+Firefox `exec` appeared at 17.811 seconds and Marionette at 26.643 seconds
+in one TCG boot, and the root-console/desktop/network gate passed separately.
+These timings are a working baseline, not a verified speedup. The
+[startup evidence](evidence/2026-09-25-firefox-startup-serialization/README.md)
+also records the pinned official Speedometer 3.1 source and the board's
+Firefox/display mismatch that must be resolved before a comparative score.
+
 ## Earlier checkpoint before signed-root installation
 
 The online shell integration and a vDSO writer lock-order stability fix are
