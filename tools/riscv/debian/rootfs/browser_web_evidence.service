@@ -1,5 +1,6 @@
 [Unit]
 Description=Asterinas Debian online Firefox evidence
+ConditionKernelCommandLine=!systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1
 After=basic.target
 Wants=network-online.target asterinas-desktop-m5.service
 After=network-online.target asterinas-desktop-m5.service

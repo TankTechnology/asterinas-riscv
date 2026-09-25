@@ -1126,6 +1126,7 @@ class BrowserWebContractTests(unittest.TestCase):
             "browser_web_evidence.sh",
             "browser_web.service",
             "browser_web_evidence.service",
+            "browser_web_network.conf",
             "physical_graphics_interaction.html",
             "physical_graphics_gate.py",
             "physical_external_services_quiesce.sh",
@@ -1419,7 +1420,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertEqual(drm.returncode, 65)
         self.assertEqual(drm.stdout, "")
 
-    def test_browser_waits_for_network_and_evidence_waits_for_desktop(self) -> None:
+    def test_daily_browser_skips_full_network_evidence(self) -> None:
         service = (ROOTFS / "browser_web_evidence.service").read_text()
         self.assertIn(
             "Wants=network-online.target asterinas-desktop-m5.service", service
@@ -1437,22 +1438,34 @@ class BrowserWebContractTests(unittest.TestCase):
         )
         self.assertIn("Environment=PYTHONDONTWRITEBYTECODE=1", service)
         browser_service = (ROOTFS / "browser_web.service").read_text()
-        self.assertIn("Requires=asterinas-desktop-m5-network.service", browser_service)
+        self.assertNotIn("asterinas-desktop-m5-network.service", browser_service)
         self.assertIn(
-            "After=asterinas-browser-web-timeline-basic.service "
-            "asterinas-desktop-m5-network.service",
-            browser_service,
+            "After=asterinas-browser-web-timeline-basic.service", browser_service
         )
+        self.assertIn("Requires=asterinas-desktop-m5-network.service", service)
+        self.assertIn(
+            "ConditionKernelCommandLine=!systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",
+            service,
+        )
+        network_drop_in = (ROOTFS / "browser_web_network.conf").read_text()
+        self.assertIn(
+            "ConditionKernelCommandLine=!systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",
+            network_drop_in,
+        )
+        self.assertIn("TimeoutStartSec=600s", network_drop_in)
         builder = (ROOTFS / "build_rootfs.sh").read_text()
         self.assertIn(
             '"$stage/etc/systemd/system/'
             'asterinas-desktop-m5-network.service.d/browser-web.conf"',
             builder,
         )
-        self.assertIn(
-            "[Service]\nTimeoutStartSec=600s",
-            builder,
-        )
+        self.assertIn('"$script_directory/browser_web_network.conf"', builder)
+        runtime_inputs = builder[
+            builder.index("browser_web_runtime_digest()") : builder.index(
+                "publish_artifacts()"
+            )
+        ]
+        self.assertIn("browser_web_network.conf", runtime_inputs)
 
     def test_gate_versions_accept_architecture_all_identity_packages(self) -> None:
         profile = get_profile("browser-web")
@@ -1857,6 +1870,8 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("2> >(tee", (ROOTFS / "browser_web_evidence.sh").read_text())
         begin_unit = (ROOTFS / "browser_web_timeline_begin.service").read_text()
         basic_unit = (ROOTFS / "browser_web_timeline_basic.service").read_text()
+        self.assertIn("User=asterinas", begin_unit)
+        self.assertIn("User=asterinas", basic_unit)
         self.assertIn("After=systemd-remount-fs.service", begin_unit)
         for boundary in (
             "systemd-sysusers.service",

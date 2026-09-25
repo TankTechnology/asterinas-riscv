@@ -6,6 +6,7 @@ Before=systemd-sysusers.service ldconfig.service systemd-journal-catalog-update.
 
 [Service]
 Type=oneshot
+User=asterinas
 ExecStart=/usr/lib/asterinas/browser-web-timeline begin
 RemainAfterExit=yes
 

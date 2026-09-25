@@ -1723,10 +1723,8 @@ EOF
                 "$stage/etc/systemd/system/asterinas-browser-web.service"
             install -d -m 0755 -- \
                 "$stage/etc/systemd/system/asterinas-desktop-m5-network.service.d"
-            cat >"$stage/etc/systemd/system/asterinas-desktop-m5-network.service.d/browser-web.conf" <<'EOF'
-[Service]
-TimeoutStartSec=600s
-EOF
+            install -m 0644 -- "$script_directory/browser_web_network.conf" \
+                "$stage/etc/systemd/system/asterinas-desktop-m5-network.service.d/browser-web.conf"
             install -D -m 0644 -- "$script_directory/browser_web_evidence.service" \
                 "$stage/etc/systemd/system/asterinas-browser-web-evidence.service"
             install -D -m 0644 -- "$script_directory/browser_web_timeline_begin.service" \
@@ -2204,6 +2202,7 @@ browser_web_runtime_digest() {
         browser_web_evidence.sh
         browser_web.service
         browser_web_evidence.service
+        browser_web_network.conf
         physical_graphics_interaction.html
         physical_graphics_gate.py
         physical_external_services_quiesce.sh
