@@ -1492,6 +1492,12 @@ install_online_desktop_shell() {
     install -D -m 0644 -- \
         "$script_directory/desktop_wallpaper.svg" \
         "$stage/usr/share/asterinas/desktop-wallpaper.svg"
+    local icon
+    for icon in files terminal; do
+        install -D -m 0644 -- \
+            "$script_directory/desktop_${icon}_icon.svg" \
+            "$stage/usr/share/asterinas/desktop-$icon-icon.svg"
+    done
     install -m 0644 -o 1000 -g 1000 -- \
         "$script_directory/desktop_pcmanfm.conf" \
         "$stage/home/asterinas/.config/pcmanfm/Asterinas/desktop-items-0.conf"
@@ -1595,6 +1601,12 @@ configure_desktop() {
         install -D -m 0644 -- \
             "$script_directory/desktop_wallpaper.svg" \
             "$stage/usr/share/asterinas/desktop-wallpaper.svg"
+        local icon
+        for icon in files terminal; do
+            install -D -m 0644 -- \
+                "$script_directory/desktop_${icon}_icon.svg" \
+                "$stage/usr/share/asterinas/desktop-$icon-icon.svg"
+        done
         install -m 0644 -o 1000 -g 1000 -- \
             "$script_directory/desktop_pcmanfm.conf" \
             "$stage/home/asterinas/.config/pcmanfm/Asterinas/desktop-items-0.conf"
@@ -2163,6 +2175,8 @@ browser_web_runtime_digest() {
     local -a inputs=(
         desktop_m5_session.sh
         desktop_wallpaper.svg
+        desktop_files_icon.svg
+        desktop_terminal_icon.svg
         desktop_pcmanfm.conf
         desktop_online_lxpanel.conf
         asterinas_firefox.desktop

@@ -4,6 +4,6 @@ Type=Application
 Name=Files
 Comment=Browse files and folders
 Exec=pcmanfm /home/asterinas
-Icon=system-file-manager
+Icon=/usr/share/asterinas/desktop-files-icon.svg
 Terminal=false
 Categories=System;FileManager;

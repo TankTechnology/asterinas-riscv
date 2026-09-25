@@ -1011,7 +1011,13 @@ class DevelopmentOverlayTests(unittest.TestCase):
             destinations,
             {
                 "/usr/share/asterinas/desktop-wallpaper.svg",
+                "/usr/share/asterinas/desktop-files-icon.svg",
+                "/usr/share/asterinas/desktop-terminal-icon.svg",
                 "/home/asterinas/.config/lxpanel/Asterinas/panels/panel",
+                "/usr/share/applications/asterinas-files.desktop",
+                "/home/asterinas/Desktop/asterinas-files.desktop",
+                "/usr/share/applications/asterinas-terminal.desktop",
+                "/home/asterinas/Desktop/asterinas-terminal.desktop",
                 "/usr/lib/asterinas/desktop-m5-network-evidence",
                 "/usr/lib/asterinas/megrez-safe-reboot",
                 "/usr/lib/asterinas/browser-web-marionette-gate",
@@ -1046,6 +1052,8 @@ class DevelopmentOverlayTests(unittest.TestCase):
         self.assertEqual(
             {entry.destination for entry in spec.files if entry.create},
             {
+                "/usr/share/asterinas/desktop-files-icon.svg",
+                "/usr/share/asterinas/desktop-terminal-icon.svg",
                 "/usr/lib/asterinas/browser_interaction_perf.py",
                 "/usr/lib/asterinas/browser_workload_contract.py",
                 "/usr/lib/asterinas/browser_composite_capture.py",

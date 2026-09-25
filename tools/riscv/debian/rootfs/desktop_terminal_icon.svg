@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <rect x="2" y="2" width="44" height="44" rx="12" fill="#514d78"/>
+  <rect x="8" y="10" width="32" height="28" rx="5" fill="#202b44"/>
+  <path d="m15 19 6 5-6 5" fill="none" stroke="#bce9f2"
+        stroke-linecap="round" stroke-linejoin="round" stroke-width="3"/>
+  <path d="M25 29h8" stroke="#d8c5ff" stroke-linecap="round" stroke-width="3"/>
+</svg>
