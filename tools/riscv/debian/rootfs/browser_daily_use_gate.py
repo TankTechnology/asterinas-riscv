@@ -1050,7 +1050,11 @@ def _startup_performance(raw, firefox_pid):
         )
         if match is None:
             raise DailyUseGateError("phase-value-invalid")
-        records.append((match[1], int(match[2]), int(match[3]), line_index))
+        # A persistent HOME can retain complete timelines from earlier boots.
+        # Only the process whose identity this gate checked may establish the
+        # current startup interval. Duplicate markers for that PID still fail.
+        if int(match[3]) == firefox_pid:
+            records.append((match[1], int(match[2]), int(match[3]), line_index))
     execution = [record for record in records if record[0] == "BOOT_FIREFOX_EXEC"]
     ready = [record for record in records if record[0] == "BOOT_FIRST_WINDOW_READY"]
     if (
@@ -1192,6 +1196,9 @@ def _capture_context(
                 (request.firefox_pid, request.xorg_pid),
                 before_read_ns,
             )
+            before_threads = system_time.read_thread_snapshot(
+                Path("/proc"), request.firefox_pid, request.clock.monotonic_ns()
+            )
             before_read_end_ns = request.clock.monotonic_ns()
         window = _value(
             measure(
@@ -1205,6 +1212,9 @@ def _capture_context(
                 (request.firefox_pid, request.xorg_pid),
                 after_read_ns,
             )
+            after_threads = system_time.read_thread_snapshot(
+                Path("/proc"), request.firefox_pid, request.clock.monotonic_ns()
+            )
             after_read_end_ns = request.clock.monotonic_ns()
             open_cpu = {
                 "interval": system_time.interval(
@@ -1212,7 +1222,13 @@ def _capture_context(
                     after,
                     clock_ticks_per_second=os.sysconf("SC_CLK_TCK"),
                 ),
+                "threadInterval": system_time.thread_interval(
+                    before_threads,
+                    after_threads,
+                    clock_ticks_per_second=os.sysconf("SC_CLK_TCK"),
+                ),
                 "processScope": "firefox-parent-and-xorg",
+                "threadScope": "firefox-parent",
                 "readOverheadMs": (
                     before_read_end_ns - before_read_ns
                     + after_read_end_ns - after_read_ns

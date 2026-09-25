@@ -1,0 +1,18 @@
+{
+  "menu_sha256": "5b2bd5c2378b164ff4028d3211b1c8f4f7cb74db1c7e94689bdda52d8ce37f13",
+  "cycles": [
+    {
+      "boot_to_ready_seconds": 4.987447196035646,
+      "menu_to_ready_seconds": 2.5575100269634277,
+      "mode": "basic",
+      "elapsed_seconds": 23.3409191359533
+    },
+    {
+      "boot_to_ready_seconds": 4.739004430011846,
+      "menu_to_ready_seconds": 2.245549384970218,
+      "mode": "probe",
+      "elapsed_seconds": 20.72581304598134
+    }
+  ],
+  "serial_sha256": "94e5f8d5cd928d773fa3dd83af86aa7227b58dd9c8d167aff5871af500ee5661"
+}

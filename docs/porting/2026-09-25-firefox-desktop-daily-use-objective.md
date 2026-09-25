@@ -59,6 +59,20 @@ outlier. It narrows the investigation but does not qualify a speedup or a
 kernel function hotspot. The [repeatability and context evidence](evidence/2026-09-25-firefox-online-desktop/README.md#persistent-home-repeatability-and-context-open-cpu-diagnostic)
 records the artifact hashes and RockOS recovery.
 
+A further short physical run added per-thread CPU and schedstat capture to
+`NewWindow`. The first attempt found a persistent-HOME timeline regression:
+prior boots' Firefox exec markers made the startup parser reject the current
+session. A diagnostic-only narrowing of that test-owned timeline enabled one
+complete 7/7 run; the repository parser now filters markers to the verified
+Firefox PID, with a passing regression test. The rebuilt Stage1 passed a
+68.779-second QEMU desktop gate, but the parser fix has not yet been rerun on
+the board. In the instrumented physical run, `NewWindow` took 684 ms; the
+Firefox main and `Renderer` threads consumed 690 and 380 ms of CPU across the
+802-ms interval, with 67 and 27 ms of runnable wait. The four procfs reads
+added 213 ms, so this is attribution evidence, not a comparable latency
+baseline or a measured acceleration. The [thread-level record](evidence/2026-09-25-firefox-online-desktop/README.md#physical-firefox-thread-attribution-and-persistent-home-timeline)
+includes the uploaded bundle, QEMU visual capture, and RockOS recovery.
+
 The next persistent-home, isolated-console Desktop menu generation has been
 prepared and staged as an immutable canary. Its active selector is still the
 older kernel/Stage1 with volatile HOME. Promotion remains contingent on the
@@ -66,8 +80,12 @@ same-menu physical cycle gate and a credible recovery path for an unbounded
 Desktop boot; the [candidate record](evidence/2026-09-25-firefox-online-desktop/README.md#current-desktop-menu-candidate-not-promoted)
 separates preparation from deployment.
 One candidate RockOS cycle and one missing-selector fallback cycle passed;
-the board returned to RockOS with a fresh root-console reconnect. Basic,
-Probe, Desktop and the repeat counts required for promotion remain open.
+the board returned to RockOS with a fresh root-console reconnect. Three
+Basic and three Probe short cycles later passed through the staged
+candidate menu, with a fresh RockOS root reconnect and unchanged selectors.
+Their batched evidence does not satisfy the promotion script's independent
+per-cycle record format; Desktop reboot persistence and hard-hang recovery
+remain the decisive open checks.
 
 A short physical native-size video A/B/A then tested CSS `image-rendering:
 crisp-edges` against Firefox's default sampling on the same signed root.

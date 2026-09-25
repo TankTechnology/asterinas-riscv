@@ -1,0 +1,30 @@
+{
+  "menu_sha256": "5b2bd5c2378b164ff4028d3211b1c8f4f7cb74db1c7e94689bdda52d8ce37f13",
+  "cycles": [
+    {
+      "boot_to_ready_seconds": 4.936412486014888,
+      "menu_to_ready_seconds": 2.4113742919871584,
+      "mode": "basic",
+      "elapsed_seconds": 23.190827395999804
+    },
+    {
+      "boot_to_ready_seconds": 4.837437856011093,
+      "menu_to_ready_seconds": 2.3119779579574242,
+      "mode": "probe",
+      "elapsed_seconds": 20.819947641110048
+    },
+    {
+      "boot_to_ready_seconds": 5.116906487033702,
+      "menu_to_ready_seconds": 2.591481511015445,
+      "mode": "basic",
+      "elapsed_seconds": 23.377755210036412
+    },
+    {
+      "boot_to_ready_seconds": 4.926038596080616,
+      "menu_to_ready_seconds": 2.4005997490603477,
+      "mode": "probe",
+      "elapsed_seconds": 20.907838903949596
+    }
+  ],
+  "serial_sha256": "153fcc16d481809782d4f04df66b9e01bf8b3139ac88c45474595beeb867d65d"
+}
