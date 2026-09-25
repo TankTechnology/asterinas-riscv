@@ -1,0 +1,1 @@
+{"clockDomain": "guest-monotonic", "metrics": {"closeMs": 130.466, "handleCountAfter": 1, "handleCountBefore": 1, "openMs": 723.647, "returnMs": 18.779, "selectMs": 9.368, "totalMs": 882.2600000000001}, "name": "context-switch", "reason": null, "state": "slow"}

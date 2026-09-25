@@ -233,6 +233,15 @@ start_browser() {
             >/dev/null 2>&1 || status=$?
     fi
     if [ "$status" -eq 0 ]; then
+        # ignore-dependencies skips the sysinit timeline unit. Reset as the
+        # file owner so stale markers from a persistent HOME cannot be
+        # accepted as this boot's Firefox startup evidence.
+        /usr/bin/timeout --kill-after=1s 8s \
+            /usr/sbin/runuser --user asterinas -- \
+            /usr/lib/asterinas/browser-web-timeline reset-physical \
+            >/dev/null 2>&1 || status=$?
+    fi
+    if [ "$status" -eq 0 ]; then
         browser_stage browser-start
         systemctl_bounded start --no-block --job-mode=ignore-dependencies \
             asterinas-browser-web.service >/dev/null 2>&1 || status=$?

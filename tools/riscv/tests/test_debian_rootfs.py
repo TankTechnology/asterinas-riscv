@@ -1536,6 +1536,18 @@ int main(void)
             browser,
         )
 
+    def test_physical_browser_resets_persistent_timeline_before_firefox(self) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+        browser = source[source.index("start_browser() {") :]
+        browser = browser[: browser.index("\nboot_phase() {")]
+
+        self.assertIn("browser-web-timeline reset-physical", browser)
+        self.assertIn("runuser --user asterinas", browser)
+        self.assertLess(
+            browser.index("browser-web-timeline reset-physical"),
+            browser.index("browser_stage browser-start"),
+        )
+
     def test_physical_graphics_control_disarms_only_after_desktop_readiness(
         self,
     ) -> None:
