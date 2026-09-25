@@ -63,6 +63,12 @@ Do not reboot the current desktop merely to repeat reference-system discovery.
   This supports an isolated direct-scanout gate, but does not yet prove an
   actual DMA read or a visible speedup. See the
   [DMA-clean evidence](2026-09-26-megrez-dma-clean-probe.md).
+- An opt-in DRM ioctl trace on the default direct-copy candidate found one
+  `SETCRTC`, 94 additional `DIRTYFB` calls during a short Firefox operation,
+  and no `PAGE_FLIP`. The current Xorg session repaints a mapped front buffer;
+  the first native backend must synchronize `DIRTYFB` writes, and a separate
+  back-buffer path is required for a tear-free claim. See the
+  [ioctl trace](2026-09-26-megrez-drm-ioctl-trace.md).
 
 ## Three implementation choices
 
@@ -216,3 +222,4 @@ and its UAPI is available. Neither subsystem is a prerequisite for P1.
 - [P0 row-phase profile of a short Firefox operation](2026-09-26-megrez-firefox-phase-profile.md)
 - [Opt-in direct GEM-page copy and physical result](2026-09-26-megrez-direct-copy.md)
 - [Opt-in GEM cache-clean probe and physical result](2026-09-26-megrez-dma-clean-probe.md)
+- [Physical desktop DRM ioctl sequence](2026-09-26-megrez-drm-ioctl-trace.md)
