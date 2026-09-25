@@ -702,13 +702,13 @@ confirmed boot ID `7d3786f6-d284-44f4-a8d4-26e261cd2a12`, 1.8 GHz,
 partition 2 unmounted, and all selector hashes unchanged. The tested Stage1
 was hash-checked, found unreferenced and removed from `/boot`.
 
-## Desktop wallpaper and panel contrast
+## Earlier vector wallpaper and panel contrast
 
-The wallpaper now uses a dark navy-to-indigo vector gradient and subtle curves
+The first wallpaper pass used a dark navy-to-indigo vector gradient and subtle curves
 on the right, leaving the left side quiet behind Files, Firefox and Terminal.
 It removes the large central logo and caption. The online LXPanel enables its
 dark tint: the prior light panel rendered its light menu and clock text with
-poor contrast. The final derived development root SHA-256 is
+poor contrast. That derived development root SHA-256 is
 `1d268d30824cc51eab8af1b7b33bbea88b30b18156773ca59aec2083629655ce`;
 it also contains the physical timeline-reset script. The
 [QEMU desktop result](qemu-wallpaper-panel-result.json) completed six
@@ -734,10 +734,46 @@ use the same assets; the full root builder installs them for the basic and
 online desktop profiles. The refreshed development root SHA-256 is
 `e67b49e5160ad93323c48e1dde205235c00221543348999e3648b436425e8a3a`.
 The [66.602-second QEMU result](qemu-wallpaper-icons-result.json) completed
-all six interaction captures, and the [final minimized frame](qemu-wallpaper-icons-minimized.png)
+all six interaction captures, and the [icon-pass minimized frame](qemu-wallpaper-icons-minimized.png)
 visually confirms Files, Firefox, and Terminal icons against the new wallpaper
 and the dark panel. This later icon variant has not yet been installed on the
 physical board.
+
+## Anime wallpaper and connected monitor geometry
+
+The previous 1280×1024 desktop screenshots were QEMU's Bochs display, not the
+physical monitor's limit. A fresh nonce-framed, UID-0 RockOS serial query on
+boot ID `7d3786f6-d284-44f4-a8d4-26e261cd2a12` recorded the connected
+HDMI mode list and a 2560×1600 RockOS framebuffer in the
+[read-only display record](rockos-display-modes.json). The list includes
+2560×1600 and 2560×1440. In contrast, [U-Boot's physical serial log](../2026-08-26-debian-desktop-m4-apps.md)
+and the [Asterinas video record](physical-video-runs.json) establish a
+1920×1080 firmware framebuffer for the current Asterinas boot path. This is a
+scanout-mode gap: a larger image alone cannot raise Asterinas to 2560×1600.
+
+An original [anime-style coastal-town wallpaper](../../../../tools/riscv/debian/rootfs/desktop_anime_wallpaper.png)
+was generated in a 1586×992, approximately 16:10 composition. Its SHA-256 is
+`a784c14458f701ba3a4ee2cea0d24ed3297d2608de6c92067b5f2fca2c6348eb`;
+the exact [generation prompts and provenance](anime-wallpaper-generation.md)
+are retained. PCManFM now uses `wallpaper_mode=crop`, which its
+[upstream release notes](https://github.com/lxde/pcmanfm/blob/master/NEWS)
+describe as proportional scaling to fill the monitor. This avoids stretching
+the scene on QEMU's 5:4 display, the current physical 16:9 output, and a
+future 16:10 mode.
+
+The new derived development root SHA-256 is
+`cbe7b44e7d32a0440b681407e76c4d07b52fff3b62ae294d1f7a04fd0175987b`.
+The [QEMU desktop result](qemu-anime-result.json) completed all six graphical
+interaction captures in 67.071 seconds. Its visually inspected
+[minimized frame](qemu-anime-minimized.png) covers the full 1280×1024 canvas
+without borders, with readable launchers and panel. The anime asset has not
+yet been installed on the physical Asterinas root.
+
+The existing [Megrez firmware-framebuffer DRM PR](https://github.com/TankTechnology/asterinas-riscv/pull/141)
+also consumes the 1920×1080 firmware handoff; it is not an EIC7700 HDMI
+modesetting driver and does not by itself unlock the monitor's 2560×1600 mode.
+Native-resolution work therefore needs a separately tested firmware mode
+change or a native display controller/HDMI driver. Neither is claimed here.
 
 ## Current desktop menu candidate, not promoted
 

@@ -1101,6 +1101,7 @@ class BrowserWebContractTests(unittest.TestCase):
         inputs = (
             "desktop_m5_session.sh",
             "desktop_wallpaper.svg",
+            "desktop_anime_wallpaper.png",
             "desktop_files_icon.svg",
             "desktop_terminal_icon.svg",
             "desktop_pcmanfm.conf",
