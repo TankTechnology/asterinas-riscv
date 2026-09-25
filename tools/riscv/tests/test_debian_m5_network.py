@@ -612,9 +612,29 @@ configure_and_normalize_rootfs
         )
         self.assertIn("Type=simple", safe_reboot_unit.read_text(encoding="utf-8"))
         self.assertNotIn("Type=oneshot", safe_reboot_unit.read_text(encoding="utf-8"))
+        self.assertIn(
+            "WantedBy=multi-user.target asterinas-debug-console.target",
+            safe_reboot_unit.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "DefaultDependencies=no", safe_reboot_unit.read_text(encoding="utf-8")
+        )
+        self.assertNotIn(
+            "Before=asterinas-desktop-m5-network.service",
+            safe_reboot_unit.read_text(encoding="utf-8"),
+        )
         self.assertTrue(
             (
-                stage / "etc/systemd/system/basic.target.wants" / safe_reboot_unit.name
+                stage
+                / "etc/systemd/system/multi-user.target.wants"
+                / safe_reboot_unit.name
+            ).is_symlink()
+        )
+        self.assertTrue(
+            (
+                stage
+                / "etc/systemd/system/asterinas-debug-console.target.wants"
+                / safe_reboot_unit.name
             ).is_symlink()
         )
         self.assertTrue(

@@ -1261,7 +1261,7 @@ configure_desktop_m5_network() {
     local desktop_generation="${2:-m4}"
     local install_netsurf_evidence="${3:-true}"
     local network_mode="${4:-full}"
-    local script_directory
+    local script_directory safe_reboot_target
     local service_name="asterinas-desktop-m5-network"
     local desktop_ordering=""
     local browser_service_name="asterinas-desktop-m6-browser"
@@ -1279,11 +1279,13 @@ configure_desktop_m5_network() {
     install -D -m 0755 -- \
         "$script_directory/megrez_safe_reboot.sh" \
         "$stage/usr/lib/asterinas/megrez-safe-reboot"
+    # The isolated root-console boot bypasses basic.target and multi-user.target.
+    # Start the recovery timer from its own target without pulling in either one.
     cat >"$stage/etc/systemd/system/$safe_reboot_service_name.service" <<'EOF'
 [Unit]
 Description=Asterinas synchronized Megrez recovery
+DefaultDependencies=no
 After=local-fs.target
-Before=asterinas-desktop-m5-network.service
 
 [Service]
 Type=simple
@@ -1291,14 +1293,17 @@ ExecStart=/usr/lib/asterinas/megrez-safe-reboot
 RemainAfterExit=yes
 
 [Install]
-WantedBy=basic.target
+WantedBy=multi-user.target asterinas-debug-console.target
 EOF
     chmod 0644 -- \
         "$stage/etc/systemd/system/$safe_reboot_service_name.service"
-    install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
-    ln -s -- \
-        "../$safe_reboot_service_name.service" \
-        "$stage/etc/systemd/system/basic.target.wants/$safe_reboot_service_name.service"
+    for safe_reboot_target in multi-user asterinas-debug-console; do
+        install -d -m 0755 -- \
+            "$stage/etc/systemd/system/$safe_reboot_target.target.wants"
+        ln -s -- \
+            "../$safe_reboot_service_name.service" \
+            "$stage/etc/systemd/system/$safe_reboot_target.target.wants/$safe_reboot_service_name.service"
+    done
     cat >"$stage/etc/systemd/system/$service_name.service" <<EOF
 [Unit]
 Description=Asterinas Debian M5 wired-network evidence

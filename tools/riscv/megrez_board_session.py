@@ -933,6 +933,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         if root_init not in (
             ["--root-init=systemd", "--debug-console=root"],
             ["--root-init=systemd", "--debug-console=root", "--volatile-home"],
+            ["--root-init=systemd", "--debug-console=isolated-root"],
             [
                 "--root-init=systemd",
                 "--debug-console=isolated-root",
