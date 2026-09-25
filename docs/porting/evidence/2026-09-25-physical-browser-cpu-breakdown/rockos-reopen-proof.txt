@@ -1,0 +1,4 @@
+Serial device: /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0
+RESTORE_3f1f943c4d657c52 uid=0 boot=9053b6c6-d420-45fc-928a-7a7bea210b99
+Host serial descriptor closed and reopened.
+REOPEN_212652f25d3404fa uid=0 boot=9053b6c6-d420-45fc-928a-7a7bea210b99
