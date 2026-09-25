@@ -50,6 +50,12 @@ Do not reboot the current desktop merely to repeat reference-system discovery.
   present time rose by 3.361 s. Optimizing only one side of the copy is
   unlikely to remove the dominant cost; a DMA-safe zero-copy path remains the
   P1 target. See the [phase evidence](2026-09-26-megrez-firefox-phase-profile.md).
+- An opt-in GEM-page-to-firmware-framebuffer copy removes the scratch-row
+  transfer while keeping the working firmware scanout. QEMU pixel tests and a
+  selected physical desktop boot passed. A similar short window reduced
+  dirty-present nanoseconds per copied byte by about 15%, with uncertain
+  Firefox page state. This is a useful interim improvement, but not the 2×
+  user-experience goal. See the [direct-copy evidence](2026-09-26-megrez-direct-copy.md).
 
 ## Three implementation choices
 
@@ -201,3 +207,4 @@ and its UAPI is available. Neither subsystem is a prerequisite for P1.
 - [P0 Firefox/Xorg/scanout observation](2026-09-25-megrez-firefox-display-p0.md)
 - [Live EIC7700 display handoff and DMA blocker](2026-09-25-megrez-dc-handoff.md)
 - [P0 row-phase profile of a short Firefox operation](2026-09-26-megrez-firefox-phase-profile.md)
+- [Opt-in direct GEM-page copy and physical result](2026-09-26-megrez-direct-copy.md)
