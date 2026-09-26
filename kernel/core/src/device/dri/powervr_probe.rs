@@ -6,6 +6,8 @@ use core::array;
 
 use ostd::{arch::boot::DEVICE_TREE, boot::boot_info, io::IoMem, mm::VmIoOnce};
 
+mod power;
+
 // Pinned to the prepared Megrez DTB. The GPU must not be touched until its
 // clock, reset, and power-domain ownership has been established separately.
 const GPU_REG_START: usize = 0x5140_0000;
@@ -142,7 +144,7 @@ fn inspect_gpu_crg_dt() -> Result<(), &'static str> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct CrgSnapshot {
     aclk: u32,
     cfg: u32,
@@ -188,7 +190,8 @@ pub(super) fn probe_on_request() {
     };
     let dt_requested = requested("asterinas.gpu_dt_probe=1");
     let crg_requested = requested("asterinas.gpu_crg_probe=1");
-    if !dt_requested && !crg_requested {
+    let power_requested = requested("asterinas.gpu_powered_id_probe=1");
+    if !dt_requested && !crg_requested && !power_requested {
         return;
     }
     if dt_requested {
@@ -223,6 +226,9 @@ pub(super) fn probe_on_request() {
                 aster_logger::println!("ASTERINAS_GPU_CRG_PROBE status=skipped reason={}", reason)
             }
         }
+    }
+    if power_requested {
+        power::probe_on_request();
     }
 }
 
