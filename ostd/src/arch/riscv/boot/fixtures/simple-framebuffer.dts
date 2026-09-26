@@ -1,4 +1,5 @@
 /dts-v1/;
+/memreserve/ 0x81002000 0x3000;
 
 / {
 	#address-cells = <2>;
