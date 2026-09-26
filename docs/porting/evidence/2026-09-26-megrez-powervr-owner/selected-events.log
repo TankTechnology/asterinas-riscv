@@ -1,0 +1,15 @@
+ASTERINAS_GPU_DT_PROBE status=ready base=0x51400000 size=0xfffff clocks=3 resets=5 interrupts=1 dma=noncoherent mmio=untouched power=unverified
+ASTERINAS_GPU_CRG_PROBE status=observed aclk=0x00000020 cfg=0x00000000 gray=0x00000000 reset=0x00000000 gates=0b000 deasserted=0b00000 crg=read-only gpu_mmio=untouched
+ASTERINAS_GPU_POWERED_ID status=starting
+ASTERINAS_GPU_POWERED_ID raw=0x001e000301980065
+ASTERINAS_GPU_POWERED_ID status=validated bvnc=30.3.408.101 crg_restored=1 firmware=untouched render=unavailable
+ASTERINAS_GPU_POWERED_ID raw=0x001e000301980065
+ASTERINAS_POWERVR_OWNER status=ready bvnc=30.3.408.101 crg_restored=1 firmware=untouched render=unavailable
+ASTERINAS_GPU_POWERED_ID raw=0x001e000301980065
+ASTERINAS_POWERVR_OWNER session=opened bvnc=30.3.408.101 gates=0b111 deasserted=0b11111
+ASTERINAS_POWERVR_OWNER session=closed crg_restored=1 aclk=0x00000020 cfg=0x00000000 gray=0x00000000 reset=0x00000000
+ASTERINAS_GPU_POWERED_ID raw=0x001e000301980065
+ASTERINAS_POWERVR_OWNER session=opened bvnc=30.3.408.101 gates=0b111 deasserted=0b11111
+ASTERINAS_POWERVR_OWNER session=closed crg_restored=1 aclk=0x00000020 cfg=0x00000000 gray=0x00000000 reset=0x00000000
+OWNER_TEST root_open=ok second=EBUSY duplicate_holds=EBUSY reopen_after_close=ok
+OWNER_TEST world_writable_nonroot=EPERM

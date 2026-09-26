@@ -1,0 +1,24 @@
+[  220.705427] ASTERINAS_PVR_TASK12_e50c734dd54381c9_START
+[  223.801394] eswin zdbg1107 SysDevDeInit
+[  223.805262] eswin print SysDevDeInit: gpu reset assert ok
+[  223.810687] eswin print SysDevDeInit: gpu clk disable ok
+[  227.077990] pvrsrvkm 51400000.gpu: EM: created perf domain
+[  227.085516] DeviceConfigCreate:471, zdbg1107 eswin print : read back aclk  800000000HZ
+[  227.093546] eswin print DeviceConfigCreate: gpu clk enable ok
+[  227.099298] eswin print DeviceConfigCreate: gpu clk disable ok
+[  227.105138] eswin print : set aclk to 800000000HZ
+[  227.109937] eswin print : read back aclk  800000000HZ
+[  227.115079] eswin print DeviceConfigCreate: gpu clk enable ok
+[  227.121444] eswin print DeviceConfigCreate: gpu clk reset ok
+[  227.127127] DeviceConfigCreate: --------------->dev_name=51400000.gpu
+[  227.133588] DeviceConfigCreate: --------------->reg_base=51400000, reg_size=fffff
+[  227.141087] DeviceConfigCreate: --------------->ui32IRQ=153
+[  227.146718] PVR_K:  713: Read BVNC 30.3.408.101 from HW device registers
+[  227.153429] PVR_K:  713: RGX Device registered with BVNC 30.3.408.101
+[  227.160460] [drm] Initialized pvr 24.2.6643903 20170530 for 51400000.gpu on minor 1
+[  231.649603] PVR_K:  732: AXI fabric coherency (RGX_CR_SOC_AXI): 0xc
+[  231.657817] PVR_K:  732: RGX Firmware image 'rgx.fw.30.3.408.101' loaded
+[  231.672079] PVR_K:  732: Shader binary image 'rgx.sh.30.3.408.101' loaded
+[  238.962690] dw-hdmi-eswin 502a0000.hdmi: got edid: width[0] x height[0]
+[  239.077322] dw-hdmi-eswin 502a0000.hdmi: got edid: width[0] x height[0]
+[  239.930466] ASTERINAS_PVR_TASK12_e50c734dd54381c9_END
