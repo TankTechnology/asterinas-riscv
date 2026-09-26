@@ -58,10 +58,12 @@ fn parse_framebuffer_info() -> Option<BootloaderFramebufferArg> {
     simple_framebuffer::parse(DEVICE_TREE.get().unwrap())
 }
 
-fn parse_memory_regions() -> MemoryRegionArray {
+fn parse_memory_regions(device_tree_paddr: usize) -> MemoryRegionArray {
     let mut regions = MemoryRegionArray::new();
 
-    for region in DEVICE_TREE.get().unwrap().memory().regions() {
+    let device_tree = DEVICE_TREE.get().unwrap();
+
+    for region in device_tree.memory().regions() {
         if region.size.unwrap_or(0) > 0 {
             regions
                 .push(MemoryRegion::new(
@@ -73,7 +75,7 @@ fn parse_memory_regions() -> MemoryRegionArray {
         }
     }
 
-    if let Some(node) = DEVICE_TREE.get().unwrap().find_node("/reserved-memory") {
+    if let Some(node) = device_tree.find_node("/reserved-memory") {
         for child in node.children() {
             if let Some(reg_iter) = child.reg() {
                 for region in reg_iter {
@@ -88,6 +90,8 @@ fn parse_memory_regions() -> MemoryRegionArray {
             }
         }
     }
+
+    reserve_device_tree_memory(device_tree, device_tree_paddr, &mut regions);
 
     // Add the kernel region.
     regions.push(MemoryRegion::kernel()).unwrap();
@@ -111,6 +115,32 @@ fn parse_memory_regions() -> MemoryRegionArray {
     }
 
     regions.into_non_overlapping()
+}
+
+fn reserve_device_tree_memory(
+    device_tree: &Fdt<'_>,
+    device_tree_paddr: usize,
+    regions: &mut MemoryRegionArray,
+) {
+    for reservation in device_tree.memory_reservations() {
+        if reservation.size() > 0 {
+            regions
+                .push(MemoryRegion::new(
+                    reservation.address() as usize,
+                    reservation.size(),
+                    MemoryRegionType::Reserved,
+                ))
+                .unwrap();
+        }
+    }
+
+    regions
+        .push(MemoryRegion::new(
+            device_tree_paddr,
+            device_tree.total_size(),
+            MemoryRegionType::Module,
+        ))
+        .unwrap();
 }
 
 fn parse_initramfs_range(fdt: &Fdt) -> Option<(usize, usize)> {
@@ -490,7 +520,7 @@ unsafe extern "C" fn riscv_boot(hart_id: usize, device_tree_paddr: usize) -> ! {
         initramfs: parse_initramfs(),
         acpi_arg: parse_acpi_arg(),
         framebuffer_arg: parse_framebuffer_info(),
-        memory_regions: parse_memory_regions(),
+        memory_regions: parse_memory_regions(device_tree_paddr),
     });
 
     // SAFETY: The safety is guaranteed by the safety preconditions and the fact that we call it
@@ -500,8 +530,42 @@ unsafe extern "C" fn riscv_boot(hart_id: usize, device_tree_paddr: usize) -> ! {
 
 #[cfg(ktest)]
 mod tests {
-    use super::{contains_range, has_supervisor_external_context, is_covered_by_ranges};
-    use crate::prelude::ktest;
+    use fdt::Fdt;
+
+    use super::{
+        contains_range, has_supervisor_external_context, is_covered_by_ranges,
+        reserve_device_tree_memory,
+    };
+    use crate::{
+        boot::memory_region::{MemoryRegion, MemoryRegionArray, MemoryRegionType},
+        prelude::ktest,
+    };
+
+    #[ktest]
+    fn reserves_device_tree_header_memory_and_blob() {
+        let fdt = Fdt::new(include_bytes!("fixtures/simple-framebuffer.dtb")).unwrap();
+        let mut regions = MemoryRegionArray::new();
+        regions
+            .push(MemoryRegion::new(
+                0x8100_0000,
+                0x10_0000,
+                MemoryRegionType::Usable,
+            ))
+            .unwrap();
+        reserve_device_tree_memory(&fdt, 0x8100_8000, &mut regions);
+        let regions = regions.into_non_overlapping();
+
+        assert!(regions.iter().any(|region| {
+            region.base() == 0x8100_2000
+                && region.len() == 0x3000
+                && region.typ() == MemoryRegionType::Reserved
+        }));
+        assert!(regions.iter().any(|region| {
+            region.base() == 0x8100_8000
+                && region.len() == 0x1000
+                && region.typ() == MemoryRegionType::Module
+        }));
+    }
 
     #[ktest]
     fn range_containment_rejects_invalid_and_overflowing_regions() {
