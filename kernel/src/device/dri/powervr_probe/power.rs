@@ -2,15 +2,35 @@
 
 //! Opt-in, reversible PowerVR ID read after an exact Megrez CRG gate.
 
-use core::{hint::spin_loop, time::Duration};
+use core::{
+    hint::spin_loop,
+    sync::atomic::{AtomicU8, Ordering},
+    time::Duration,
+};
 
+use device_id::{DeviceId, MinorId};
 use ostd::{io::IoMem, mm::VmIoOnce, sync::Mutex};
 use spin::Once;
 
 use super::{
-    inspect_gpu_crg_dt, print_gpu_crg_snapshot, CrgSnapshot, CRG_BASE, CRG_GATE_BIT,
-    GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET, GPU_REG_SIZE, GPU_REG_START,
-    GPU_RESET_OFFSET,
+    CRG_BASE, CRG_GATE_BIT, CrgSnapshot, GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET,
+    GPU_REG_SIZE, GPU_REG_START, GPU_RESET_OFFSET, inspect_gpu_crg_dt, print_gpu_crg_snapshot,
+};
+use crate::{
+    device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
+    events::IoEvents,
+    fs::{
+        file::{PerOpenFileOps, StatusFlags},
+        vfs::inode::FileOps,
+    },
+    prelude::*,
+    process::{
+        UserNamespace,
+        credentials::capabilities::CapSet,
+        posix_thread::AsPosixThread,
+        signal::{PollHandle, Pollable},
+    },
+    security::lsm::hooks as lsm_hooks,
 };
 
 const EXPECTED_INITIAL: CrgSnapshot = CrgSnapshot {
@@ -21,6 +41,13 @@ const EXPECTED_INITIAL: CrgSnapshot = CrgSnapshot {
 };
 const EXPECTED_GPU_ID: u64 = 0x001e_0003_0198_0065;
 const GPU_ID_OFFSET: usize = 0x20;
+const LEASE_IDLE: u8 = 0;
+const LEASE_CLAIMING: u8 = 1;
+const LEASE_ACTIVE: u8 = 2;
+const LEASE_POISONED: u8 = 3;
+
+static POWER_LEASE: AtomicU8 = AtomicU8::new(LEASE_IDLE);
+static CONTROL_MAJOR: Once<char::MajorIdOwner> = Once::new();
 
 trait PowerIo {
     fn snapshot(&mut self) -> Result<CrgSnapshot, &'static str>;
@@ -57,17 +84,18 @@ fn write_reset_checked(io: &mut impl PowerIo, value: u32) -> Result<(), &'static
     Ok(())
 }
 
-fn restore_crg(io: &mut impl PowerIo, initial: CrgSnapshot) -> Result<(), &'static str> {
+fn restore_crg(io: &mut impl PowerIo, initial: CrgSnapshot) -> Result<CrgSnapshot, &'static str> {
     // Assert reset before gating clocks, matching the RockOS device deinit.
     // Attempt all writes even if one fails so a partial restore is visible.
     let mut restored = write_reset_checked(io, initial.reset).is_ok();
     for (index, value) in [(2, initial.gray), (1, initial.cfg), (0, initial.aclk)] {
         restored &= write_clock_checked(io, index, value).is_ok();
     }
-    if !restored || io.snapshot()? != initial {
+    let observed = io.snapshot()?;
+    if !restored || observed != initial {
         return Err("crg_restore_failed");
     }
-    Ok(())
+    Ok(observed)
 }
 
 fn start_power_session(io: &mut impl PowerIo) -> Result<CrgSnapshot, &'static str> {
@@ -159,6 +187,49 @@ fn run_powered_id(io: &mut impl PowerIo) -> Result<u64, &'static str> {
     Ok(EXPECTED_GPU_ID)
 }
 
+fn claim_power(io: &mut impl PowerIo, lease: &AtomicU8) -> Result<CrgSnapshot, &'static str> {
+    lease
+        .compare_exchange(
+            LEASE_IDLE,
+            LEASE_CLAIMING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map_err(|_| "gpu_control_busy")?;
+    match start_power_session(io) {
+        Ok(initial) => {
+            lease.store(LEASE_ACTIVE, Ordering::Release);
+            Ok(initial)
+        }
+        Err(reason) => {
+            let next = if reason == "crg_restore_failed" {
+                LEASE_POISONED
+            } else {
+                LEASE_IDLE
+            };
+            lease.store(next, Ordering::Release);
+            Err(reason)
+        }
+    }
+}
+
+fn release_power(
+    io: &mut impl PowerIo,
+    lease: &AtomicU8,
+    initial: CrgSnapshot,
+) -> Result<CrgSnapshot, &'static str> {
+    let result = restore_crg(io, initial);
+    lease.store(
+        if result.is_ok() {
+            LEASE_IDLE
+        } else {
+            LEASE_POISONED
+        },
+        Ordering::Release,
+    );
+    result
+}
+
 struct HardwarePowerIo {
     clocks: IoMem,
     reset: IoMem,
@@ -187,6 +258,145 @@ fn hardware_power_io() -> Result<&'static Mutex<HardwarePowerIo>, &'static str> 
         .call_once(|| HardwarePowerIo::new().map(Mutex::new))
         .as_ref()
         .map_err(|reason| *reason)
+}
+
+fn check_control_access() -> Result<()> {
+    let thread = current_thread!();
+    let posix_thread = thread.as_posix_thread().unwrap();
+    let initial_user_ns = UserNamespace::get_init_singleton();
+    lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+        initial_user_ns.as_ref(),
+        posix_thread,
+        CapSet::SYS_RAWIO,
+    ))
+}
+
+#[derive(Debug)]
+struct PowerControlDevice {
+    id: DeviceId,
+}
+
+impl Device for PowerControlDevice {
+    fn type_(&self) -> DeviceType {
+        DeviceType::Char
+    }
+
+    fn id(&self) -> DeviceId {
+        self.id
+    }
+
+    fn devtmpfs_meta(&self) -> Option<DevtmpfsInodeMeta<'_>> {
+        Some(DevtmpfsInodeMeta::new("powervr-control"))
+    }
+
+    fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
+        check_control_access()?;
+        let owner =
+            hardware_power_io().map_err(|reason| Error::with_message(Errno::ENODEV, reason))?;
+        let mut io = owner.lock();
+        let initial = claim_power(&mut *io, &POWER_LEASE).map_err(|reason| {
+            Error::with_message(
+                if reason == "gpu_control_busy" {
+                    Errno::EBUSY
+                } else {
+                    Errno::EIO
+                },
+                reason,
+            )
+        })?;
+        aster_logger::println!(
+            "ASTERINAS_POWERVR_OWNER session=opened bvnc=30.3.408.101 gates={:#05b} deasserted={:#07b}",
+            0b111,
+            0b11111,
+        );
+        Ok(Box::new(PowerControlFile { initial }))
+    }
+}
+
+struct PowerControlFile {
+    initial: CrgSnapshot,
+}
+
+impl Drop for PowerControlFile {
+    fn drop(&mut self) {
+        let Ok(owner) = hardware_power_io() else {
+            POWER_LEASE.store(LEASE_POISONED, Ordering::Release);
+            aster_logger::println!(
+                "ASTERINAS_POWERVR_OWNER session=close_failed reason=owner_unavailable"
+            );
+            return;
+        };
+        let mut io = owner.lock();
+        match release_power(&mut *io, &POWER_LEASE, self.initial) {
+            Ok(observed) => aster_logger::println!(
+                "ASTERINAS_POWERVR_OWNER session=closed crg_restored=1 aclk={:#010x} cfg={:#010x} gray={:#010x} reset={:#010x}",
+                observed.aclk,
+                observed.cfg,
+                observed.gray,
+                observed.reset,
+            ),
+            Err(reason) => aster_logger::println!(
+                "ASTERINAS_POWERVR_OWNER session=close_failed reason={}",
+                reason
+            ),
+        }
+    }
+}
+
+impl Pollable for PowerControlFile {
+    fn poll(&self, _mask: IoEvents, _poller: Option<&mut PollHandle>) -> IoEvents {
+        IoEvents::empty()
+    }
+}
+
+impl FileOps for PowerControlFile {
+    fn read_at(
+        &self,
+        _offset: usize,
+        _writer: &mut VmWriter,
+        _status_flags: StatusFlags,
+    ) -> Result<usize> {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "GPU control does not support read");
+    }
+
+    fn write_at(
+        &self,
+        _offset: usize,
+        _reader: &mut VmReader,
+        _status_flags: StatusFlags,
+    ) -> Result<usize> {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "GPU control does not support write");
+    }
+}
+
+impl PerOpenFileOps for PowerControlFile {
+    fn check_seekable(&self) -> Result<()> {
+        return_errno!(Errno::ESPIPE);
+    }
+
+    fn is_offset_aware(&self) -> bool {
+        false
+    }
+}
+
+pub(super) fn register_control_on_request(emit_crg_snapshot: bool) -> Result<(), &'static str> {
+    inspect_gpu_crg_dt()?;
+    let owner = hardware_power_io()?;
+    let mut io = owner.lock();
+    if emit_crg_snapshot {
+        print_gpu_crg_snapshot(io.snapshot()?);
+    }
+    run_powered_id(&mut *io)?;
+    if io.snapshot()? != EXPECTED_INITIAL {
+        return Err("crg_restore_failed");
+    }
+    drop(io);
+    let major = char::allocate_major().map_err(|_| "gpu_major_unavailable")?;
+    let id = DeviceId::new(major.get(), MinorId::new(0));
+    char::register(Arc::new(PowerControlDevice { id }))
+        .map_err(|_| "gpu_control_registration_failed")?;
+    CONTROL_MAJOR.call_once(|| major);
+    Ok(())
 }
 
 impl PowerIo for HardwarePowerIo {
@@ -408,6 +618,41 @@ mod tests {
             assert_eq!(session.io.snapshot().unwrap().clock_gates(), 0b111);
         }
         assert_eq!(io.state, EXPECTED_INITIAL);
+    }
+
+    #[ktest]
+    fn exclusive_power_lease_restores_on_release() {
+        let mut io = FakePowerIo::new(EXPECTED_GPU_ID);
+        let lease = AtomicU8::new(LEASE_IDLE);
+        let original = claim_power(&mut io, &lease).unwrap();
+        assert_eq!(lease.load(Ordering::Acquire), LEASE_ACTIVE);
+        assert_eq!(claim_power(&mut io, &lease), Err("gpu_control_busy"));
+        assert_eq!(io.state.clock_gates(), 0b111);
+        assert_eq!(
+            release_power(&mut io, &lease, original),
+            Ok(EXPECTED_INITIAL)
+        );
+        assert_eq!(lease.load(Ordering::Acquire), LEASE_IDLE);
+        assert_eq!(io.state, EXPECTED_INITIAL);
+    }
+
+    #[ktest]
+    fn failed_power_lease_releases_or_poisons_ownership() {
+        let mut io = FakePowerIo::new(0);
+        let lease = AtomicU8::new(LEASE_IDLE);
+        assert_eq!(claim_power(&mut io, &lease), Err("unexpected_gpu_id"));
+        assert_eq!(lease.load(Ordering::Acquire), LEASE_IDLE);
+        assert_eq!(io.state, EXPECTED_INITIAL);
+
+        let mut io = FakePowerIo::new(EXPECTED_GPU_ID);
+        io.reject_reset = Some(0);
+        let original = claim_power(&mut io, &lease).unwrap();
+        assert_eq!(
+            release_power(&mut io, &lease, original),
+            Err("crg_restore_failed")
+        );
+        assert_eq!(lease.load(Ordering::Acquire), LEASE_POISONED);
+        assert_eq!(claim_power(&mut io, &lease), Err("gpu_control_busy"));
     }
 
     #[ktest]

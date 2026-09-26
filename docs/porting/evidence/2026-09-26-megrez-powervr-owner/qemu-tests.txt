@@ -1,0 +1,5 @@
+qemu_virt_has_no_megrez_gpu_node: 1 passed; 0 failed (RISC-V QEMU ktest)
+prepared_megrez_gpu_resources_are_accepted: 1 passed; 0 failed (RISC-V QEMU ktest)
+changed_gpu_resources_are_rejected_before_mmio: 1 passed; 0 failed (RISC-V QEMU ktest)
+exclusive_power_lease_restores_on_release: 1 passed; 0 failed (RISC-V QEMU ktest)
+failed_power_lease_releases_or_poisons_ownership: 1 passed; 0 failed (RISC-V QEMU ktest)
