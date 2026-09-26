@@ -4,11 +4,13 @@
 
 use core::{hint::spin_loop, time::Duration};
 
-use ostd::{io::IoMem, mm::VmIoOnce};
+use ostd::{io::IoMem, mm::VmIoOnce, sync::Mutex};
+use spin::Once;
 
 use super::{
-    CRG_BASE, CRG_GATE_BIT, CrgSnapshot, GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET,
-    GPU_REG_START, GPU_RESET_OFFSET, inspect_gpu_crg_dt, print_gpu_crg_snapshot,
+    inspect_gpu_crg_dt, print_gpu_crg_snapshot, CrgSnapshot, CRG_BASE, CRG_GATE_BIT,
+    GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET, GPU_REG_SIZE, GPU_REG_START,
+    GPU_RESET_OFFSET,
 };
 
 const EXPECTED_INITIAL: CrgSnapshot = CrgSnapshot {
@@ -68,7 +70,7 @@ fn restore_crg(io: &mut impl PowerIo, initial: CrgSnapshot) -> Result<(), &'stat
     Ok(())
 }
 
-fn run_powered_id(io: &mut impl PowerIo) -> Result<u64, &'static str> {
+fn start_power_session(io: &mut impl PowerIo) -> Result<CrgSnapshot, &'static str> {
     let initial = io.snapshot()?;
     if initial != EXPECTED_INITIAL {
         return Err("unexpected_initial_crg");
@@ -101,21 +103,71 @@ fn run_powered_id(io: &mut impl PowerIo) -> Result<u64, &'static str> {
         {
             return Err("powered_crg_readback_mismatch");
         }
-        io.read_gpu_id()
+        let id = io.read_gpu_id()?;
+        if id != EXPECTED_GPU_ID {
+            return Err("unexpected_gpu_id");
+        }
+        Ok(())
     })();
 
-    restore_crg(io, initial)?;
-    let id = attempt?;
-    if id != EXPECTED_GPU_ID {
-        return Err("unexpected_gpu_id");
+    if let Err(reason) = attempt {
+        restore_crg(io, initial)?;
+        return Err(reason);
     }
-    Ok(id)
+    Ok(initial)
+}
+
+#[must_use]
+struct PowerSession<'a, I: PowerIo> {
+    io: &'a mut I,
+    initial: CrgSnapshot,
+    restored: bool,
+}
+
+impl<'a, I: PowerIo> PowerSession<'a, I> {
+    fn start(io: &'a mut I) -> Result<Self, &'static str> {
+        let initial = start_power_session(io)?;
+        Ok(Self {
+            io,
+            initial,
+            restored: false,
+        })
+    }
+
+    fn restore(mut self) -> Result<(), &'static str> {
+        restore_crg(self.io, self.initial)?;
+        self.restored = true;
+        Ok(())
+    }
+}
+
+impl<I: PowerIo> Drop for PowerSession<'_, I> {
+    fn drop(&mut self) {
+        if !self.restored {
+            if let Err(reason) = restore_crg(self.io, self.initial) {
+                aster_logger::println!(
+                    "ASTERINAS_GPU_POWERED_ID status=restore_failed reason={}",
+                    reason
+                );
+            }
+        }
+    }
+}
+
+fn run_powered_id(io: &mut impl PowerIo) -> Result<u64, &'static str> {
+    PowerSession::start(io)?.restore()?;
+    Ok(EXPECTED_GPU_ID)
 }
 
 struct HardwarePowerIo {
     clocks: IoMem,
     reset: IoMem,
+    gpu: IoMem,
 }
+
+// The IoMem allocator does not recycle acquired ranges. Keep the CRG and GPU
+// mappings together so a later selected GPU session can reuse this owner.
+static HARDWARE_POWER_IO: Once<Result<Mutex<HardwarePowerIo>, &'static str>> = Once::new();
 
 impl HardwarePowerIo {
     fn new() -> Result<Self, &'static str> {
@@ -124,8 +176,17 @@ impl HardwarePowerIo {
                 .map_err(|_| "clock_registers_unavailable")?,
             reset: IoMem::acquire(CRG_BASE + GPU_RESET_OFFSET..CRG_BASE + GPU_RESET_OFFSET + 4)
                 .map_err(|_| "reset_register_unavailable")?,
+            gpu: IoMem::acquire(GPU_REG_START..GPU_REG_START + GPU_REG_SIZE)
+                .map_err(|_| "gpu_registers_unavailable")?,
         })
     }
+}
+
+fn hardware_power_io() -> Result<&'static Mutex<HardwarePowerIo>, &'static str> {
+    HARDWARE_POWER_IO
+        .call_once(|| HardwarePowerIo::new().map(Mutex::new))
+        .as_ref()
+        .map_err(|reason| *reason)
 }
 
 impl PowerIo for HardwarePowerIo {
@@ -171,11 +232,10 @@ impl PowerIo for HardwarePowerIo {
     }
 
     fn read_gpu_id(&mut self) -> Result<u64, &'static str> {
-        let gpu = IoMem::acquire(
-            GPU_REG_START + GPU_ID_OFFSET..GPU_REG_START + GPU_ID_OFFSET + size_of::<u64>(),
-        )
-        .map_err(|_| "gpu_id_register_unavailable")?;
-        let id = gpu.read_once::<u64>(0).map_err(|_| "gpu_id_read_failed")?;
+        let id = self
+            .gpu
+            .read_once::<u64>(GPU_ID_OFFSET)
+            .map_err(|_| "gpu_id_read_failed")?;
         aster_logger::println!("ASTERINAS_GPU_POWERED_ID raw={:#018x}", id);
         Ok(id)
     }
@@ -189,8 +249,8 @@ pub(super) fn probe_on_request(emit_crg_snapshot: bool) {
         aster_logger::println!("ASTERINAS_GPU_POWERED_ID status=skipped reason={}", reason);
         return;
     }
-    let mut io = match HardwarePowerIo::new() {
-        Ok(io) => io,
+    let mut io = match hardware_power_io() {
+        Ok(io) => io.lock(),
         Err(reason) => {
             if emit_crg_snapshot {
                 aster_logger::println!("ASTERINAS_GPU_CRG_PROBE status=skipped reason={}", reason);
@@ -210,7 +270,7 @@ pub(super) fn probe_on_request(emit_crg_snapshot: bool) {
         }
     }
     aster_logger::println!("ASTERINAS_GPU_POWERED_ID status=starting");
-    match run_powered_id(&mut io) {
+    match run_powered_id(&mut *io) {
         Ok(_) => aster_logger::println!(
             "ASTERINAS_GPU_POWERED_ID status=validated bvnc=30.3.408.101 crg_restored=1 firmware=untouched render=unavailable"
         ),
@@ -326,6 +386,28 @@ mod tests {
                 Action::Clock(0, 0x20),
             ]
         );
+    }
+
+    #[ktest]
+    fn powered_session_retains_clocks_until_explicit_restore() {
+        let mut io = FakePowerIo::new(EXPECTED_GPU_ID);
+        let original = start_power_session(&mut io).unwrap();
+        assert_eq!(original, EXPECTED_INITIAL);
+        assert_eq!(io.state.clock_gates(), 0b111);
+        assert_eq!(io.state.deasserted_resets(), 0b11111);
+
+        restore_crg(&mut io, original).unwrap();
+        assert_eq!(io.state, EXPECTED_INITIAL);
+    }
+
+    #[ktest]
+    fn dropping_power_session_restores_original_crg() {
+        let mut io = FakePowerIo::new(EXPECTED_GPU_ID);
+        {
+            let session = PowerSession::start(&mut io).unwrap();
+            assert_eq!(session.io.snapshot().unwrap().clock_gates(), 0b111);
+        }
+        assert_eq!(io.state, EXPECTED_INITIAL);
     }
 
     #[ktest]
