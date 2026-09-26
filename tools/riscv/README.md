@@ -909,6 +909,16 @@ least 0.5 seconds. A missing input record, DOM transition,
 screenshot, HDMI update, recovery prompt, or any panic/xHCI/framebuffer fatal
 marker produces `passed:false` while retaining the diagnostic evidence.
 
+The external-HDMI path also needs host `ffmpeg` and `ffprobe`. It decodes the
+final Firefox screenshot and HDMI capture, requires both to be 1920 × 1080,
+checks that the Firefox image contains the cyan test page, and compares a
+96 × 54 pixel sample. At least 95% of sampled pixels must agree within 32 per
+channel and mean absolute channel error must be at most 12. A fresh image of
+the wrong display now fails the gate; passing comparison metrics are retained
+as `hdmi-pixel-check.json`. These conservative thresholds need validation
+against the actual capture device before release qualification. Browser frame
+callbacks still do not measure physical input-to-visible-frame latency.
+
 When external capture hardware is unavailable during experimental development,
 select the explicitly weaker `operator-attested` mode. It preserves real USB
 evdev input, trusted Firefox DOM state, the serial guest PNG, final Firefox PID

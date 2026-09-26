@@ -11,6 +11,7 @@ import base64
 import io
 import json
 import os
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 import struct
@@ -261,6 +262,46 @@ class PhysicalMarkerTests(unittest.TestCase):
 
 
 class HdmiEvidenceTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg unavailable")
+    def test_real_operations_compare_retained_hdmi_with_final_firefox_pixels(self) -> None:
+        from tools.riscv.tests.test_hdmi_pixel_oracle import pattern_png
+
+        gate = load_gate(self)
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory)
+            output = (
+                repository / "target" / "current-main-physical-graphics"
+                / "physical" / "evidence"
+            )
+            operations = gate.RealPhysicalGraphicsOperations(
+                SimpleNamespace(artifacts=(), plan_sha256="a" * 64),
+                "/dev/null", output, repository / "capture.png", repository=repository,
+            )
+            operations.invalidate()
+            screenshot = pattern_png(width=1920, height=1080)
+            path = output / "hdmi-evidence.png"
+            operations._output.atomic_write(path.name, screenshot, mode=0o600)
+            hdmi = gate.FileEvidence(
+                path=path, size=len(screenshot),
+                sha256=hashlib.sha256(screenshot).hexdigest(), format="png",
+            )
+
+            operations.verify_hdmi_pixels(screenshot, hdmi)
+            self.assertEqual(operations._pixel_comparison.matched_fraction, 1.0)
+            wrong = pattern_png(width=1920, height=1080, wrong=True)
+            operations._output.atomic_write("wrong-hdmi.png", wrong, mode=0o600)
+            wrong_hdmi = gate.FileEvidence(
+                path=output / "wrong-hdmi.png", size=len(wrong),
+                sha256=hashlib.sha256(wrong).hexdigest(), format="png",
+            )
+            with self.assertRaisesRegex(gate.HostGateError, "HDMI pixel comparison failed"):
+                operations.verify_hdmi_pixels(screenshot, wrong_hdmi)
+            self.assertIsNone(operations._pixel_comparison)
+            stale_metrics = output / "hdmi-pixel-check.json"
+            stale_metrics.write_text('{"matched_fraction":1.0}')
+            operations.invalidate()
+            self.assertFalse(stale_metrics.exists())
+
     def test_ingests_png_and_jpeg_with_digest_and_private_mode(self) -> None:
         gate = load_gate(self)
         self.assertTrue(hasattr(gate, "ingest_hdmi"), "HDMI ingestion is missing")
@@ -801,6 +842,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
             fail_final: bool = False,
             fail_boot_after_start: bool = False,
             cycle_error: BaseException | None = None,
+            fail_hdmi_pixels: bool = False,
         ):
             self.gate = gate
             self.recover = recover
@@ -809,6 +851,7 @@ class PhysicalLifecycleTests(unittest.TestCase):
             self.fail_final = fail_final
             self.fail_boot_after_start = fail_boot_after_start
             self.cycle_error = cycle_error
+            self.fail_hdmi_pixels = fail_hdmi_pixels
             self._guest_started = False
             self.events: list[str] = []
             self._transcript: list[str] = ["boot noise"]
@@ -894,6 +937,11 @@ class PhysicalLifecycleTests(unittest.TestCase):
                 sha256=hashlib.sha256(payload).hexdigest(),
                 format="png",
             )
+
+        def verify_hdmi_pixels(self, _screenshot: bytes, _hdmi) -> None:
+            self.events.append("hdmi-pixels")
+            if self.fail_hdmi_pixels:
+                raise self.gate.HostGateError("HDMI pixels do not match")
 
         def retain_operator_display(self, nonce: str, _timeout: float):
             self.events.append("operator-display")
@@ -1051,7 +1099,25 @@ class PhysicalLifecycleTests(unittest.TestCase):
             operations.events.index("recovery"),
         )
         self.assertEqual(operations.events.count("publish:True"), 1)
+        self.assertLess(
+            operations.events.index("hdmi"), operations.events.index("hdmi-pixels")
+        )
+        self.assertLess(
+            operations.events.index("hdmi-pixels"), operations.events.index("final-state")
+        )
         self.assertEqual(operations.events[-1], "close")
+
+    def test_wrong_hdmi_pixels_fail_but_still_recover(self) -> None:
+        gate = load_gate(self)
+        operations = self.Operations(gate, fail_hdmi_pixels=True)
+        result = gate.run_physical_graphics(
+            self._plan(), gate.PhysicalGraphicsConfig(), operations,
+            nonces=self.NONCES, artifact_validator=lambda _plan: {},
+        )
+        self.assertFalse(result.passed)
+        self.assertTrue(result.recovered)
+        self.assertIn("hdmi-pixels-do-not-match", result.reason)
+        self.assertNotIn("final-state", operations.events)
 
     def test_one_cycle_operator_attestation_preserves_terminal_checks(self) -> None:
         gate = load_gate(self)
@@ -2463,6 +2529,7 @@ class DocumentationTests(unittest.TestCase):
         )[0]
         for module in (
             "tools.riscv.tests.test_physical_graphics_gate",
+            "tools.riscv.tests.test_hdmi_pixel_oracle",
             "tools.riscv.tests.test_megrez_physical_graphics",
             "tools.riscv.tests.test_physical_graphics_qemu_gate",
         ):
@@ -2489,6 +2556,8 @@ class DocumentationTests(unittest.TestCase):
         prepare_recipe = makefile.split("prepare_riscv_megrez_physical_graphics:", 1)[
             1
         ].split(".PHONY:", 1)[0]
+        self.assertIn("command -v ffmpeg", prepare_recipe)
+        self.assertIn("command -v ffprobe", prepare_recipe)
         self.assertIn(
             "MEGREZ_PHYSICAL_GRAPHICS_OUTPUT ?= "
             "$(CURDIR)/target/current-main-physical-graphics/physical/evidence",
