@@ -17,8 +17,17 @@ const FRAMEBUFFER_SUBSYSTEM_TARGET: &str = "../../../../bus/platform";
 /// The same link, one level deeper: the DRM nodes hang off `/sys/dev/char`.
 const DRM_SUBSYSTEM_TARGET: &str = "../../../../bus/platform";
 
-/// The virtio device id of a GPU device (virtio spec 5.7).
-const VIRTIO_ID_GPU: u32 = 16;
+/// The virtio device id of a GPU device (virtio spec 5.7), formatted as Linux
+/// writes it in the device uevent.
+const VIRTIO_GPU_MODALIAS: &str = "virtio:d00000010";
+
+/// The character nodes and identity of one DRM device. A display controller
+/// and a separate render GPU must not share their `device/drm` listing.
+struct DrmSysDevice<'a> {
+    nodes: &'a [(&'static str, u32)],
+    driver: &'static str,
+    modalias: &'static str,
+}
 
 pub(super) fn init_in_first_process() -> Result<()> {
     let class_node = build_class_node()?;
@@ -28,7 +37,12 @@ pub(super) fn init_in_first_process() -> Result<()> {
     let root = crate::fs::sysfs::systree_singleton().root();
     root.add_child(class_node as Arc<dyn SysObj>)?;
     root.add_child(bus_node as Arc<dyn SysObj>)?;
-    if let Some(dev_node) = build_dev_node(super::dri::exposed_nodes())? {
+    let drm_device = DrmSysDevice {
+        nodes: super::dri::exposed_nodes(),
+        driver: super::dri::driver_name(),
+        modalias: VIRTIO_GPU_MODALIAS,
+    };
+    if let Some(dev_node) = build_dev_node(&[drm_device])? {
         root.add_child(dev_node as Arc<dyn SysObj>)?;
     }
     Ok(())
@@ -48,80 +62,77 @@ pub(super) fn init_in_first_process() -> Result<()> {
 /// `/sys/dev` is the one part of the device model that is keyed by the
 /// character device's own major:minor rather than by a bus or class, which is
 /// why it is built here and not from a class node.
-fn build_dev_node(nodes: &[(&str, u32)]) -> SysTreeResult<Option<Arc<AttrLessSysNode>>> {
-    if nodes.is_empty() {
+fn build_dev_node(devices: &[DrmSysDevice<'_>]) -> SysTreeResult<Option<Arc<AttrLessSysNode>>> {
+    if devices.iter().all(|device| device.nodes.is_empty()) {
         return Ok(None);
     }
 
     let dev_node = AttrLessSysNode::new("dev");
     let char_node = AttrLessSysNode::new("char");
 
-    for (node_name, minor) in nodes {
-        // The node's own `uevent`, which is a different file from the one
-        // inside `device/` below and has a different consumer. See
-        // `char_node_uevent`.
-        let node = DevSysNode::new(
-            &alloc::format!("{}:{}", super::dri::DRM_MAJOR, minor),
-            &char_node_uevent(node_name, *minor),
-        );
+    for drm_device in devices {
+        for (node_name, minor) in drm_device.nodes {
+            // The node's own `uevent`, which is a different file from the one
+            // inside `device/` below and has a different consumer. See
+            // `char_node_uevent`.
+            let node = DevSysNode::new(
+                &alloc::format!("{}:{}", super::dri::DRM_MAJOR, minor),
+                &char_node_uevent(node_name, *minor),
+            );
 
-        // The device the node belongs to. Linux reaches it through a symlink
-        // into `/sys/devices`; the traversable shape is what libdrm uses, and
-        // it does not care whether the link is real.
-        let device_node = DevSysNode::new("device", &drm_uevent());
-        device_node.add_child(
-            SysfsSymlink::new("subsystem", DRM_SUBSYSTEM_TARGET) as Arc<dyn SysObj>
-        )?;
+            // The device the node belongs to. Linux reaches it through a symlink
+            // into `/sys/devices`; the traversable shape is what libdrm uses, and
+            // it does not care whether the link is real.
+            let device_node = DevSysNode::new(
+                "device",
+                &drm_uevent(drm_device.driver, drm_device.modalias),
+            );
+            device_node.add_child(
+                SysfsSymlink::new("subsystem", DRM_SUBSYSTEM_TARGET) as Arc<dyn SysObj>
+            )?;
 
-        // Every node of the device, not just this one.
-        //
-        // This directory belongs to the *device*, not to the character node.
-        // On Linux every `/sys/dev/char/<major>:<minor>/device/drm` for the
-        // same device lists the same entries, because `device` is one symlink
-        // they all resolve through. libdrm relies on that:
-        // `drmGetDeviceNameFromFd2()` answers "which card node is this fd?" by
-        // opening this directory and taking the first entry whose name starts
-        // with `card`, so a render-node fd can only find its card node if the
-        // render node's own listing contains it. Listing only the node that
-        // was asked about leaves `card*` absent for `renderD128`, so the call
-        // returns NULL, glamor turns that into `open(NULL, O_RDWR|O_CLOEXEC)`,
-        // that fails with EFAULT, and `glamor_dri3_open_client` -- whose only
-        // BadAlloc is that open -- answers every `DRI3Open` with BadAlloc. A
-        // client that never receives a DRM fd never renders on the GPU.
-        //
-        // Emitting the whole device here is also what makes the two nodes
-        // agree, so the answer does not depend on which fd the caller held.
-        let drm_node = AttrLessSysNode::new("drm");
-        for (name, _) in nodes {
-            drm_node.add_child(AttrLessSysNode::new(name) as Arc<dyn SysObj>)?;
+            // Every node of the device, not just this one.
+            //
+            // This directory belongs to the *device*, not to the character node.
+            // On Linux every `/sys/dev/char/<major>:<minor>/device/drm` for the
+            // same device lists the same entries, because `device` is one symlink
+            // they all resolve through. libdrm relies on that:
+            // `drmGetDeviceNameFromFd2()` answers "which card node is this fd?" by
+            // opening this directory and taking the first entry whose name starts
+            // with `card`, so a render-node fd can only find its card node if the
+            // render node's own listing contains it. Listing only the node that
+            // was asked about leaves `card*` absent for `renderD128`, so the call
+            // returns NULL, glamor turns that into `open(NULL, O_RDWR|O_CLOEXEC)`,
+            // that fails with EFAULT, and `glamor_dri3_open_client` -- whose only
+            // BadAlloc is that open -- answers every `DRI3Open` with BadAlloc. A
+            // client that never receives a DRM fd never renders on the GPU.
+            //
+            // Emitting the whole device here is also what makes the two nodes
+            // agree, so the answer does not depend on which fd the caller held.
+            let drm_node = AttrLessSysNode::new("drm");
+            for (name, _) in drm_device.nodes {
+                drm_node.add_child(AttrLessSysNode::new(name) as Arc<dyn SysObj>)?;
+            }
+            device_node.add_child(drm_node as Arc<dyn SysObj>)?;
+
+            node.add_child(device_node as Arc<dyn SysObj>)?;
+            char_node.add_child(node as Arc<dyn SysObj>)?;
         }
-        device_node.add_child(drm_node as Arc<dyn SysObj>)?;
-
-        node.add_child(device_node as Arc<dyn SysObj>)?;
-        char_node.add_child(node as Arc<dyn SysObj>)?;
     }
 
     dev_node.add_child(char_node as Arc<dyn SysObj>)?;
     Ok(Some(dev_node))
 }
 
-/// The `uevent` contents of a virtio-gpu DRM device.
+/// The `uevent` contents of one DRM device.
 ///
 /// Linux writes this file from the driver core, which has no counterpart here,
 /// so the DRM driver supplies what it knows. `MODALIAS` carries the weight:
 /// libdrm reads `OF_FULLNAME` and `OF_COMPATIBLE_0` first and falls back to
-/// everything *after the last colon* in `MODALIAS` for both, so one line
-/// answers both queries. `virtio:d%08X` of the device id is verbatim what
-/// Linux's virtio bus writes there.
-fn drm_uevent() -> String {
-    alloc::format!(
-        "DRIVER={}\nMODALIAS=virtio:d{:08X}\n",
-        // The selected backend's name, not the virtio-gpu constant: a machine
-        // whose only display is the firmware framebuffer has no virtio-gpu,
-        // and libdrm reads this file to describe the device.
-        super::dri::driver_name(),
-        VIRTIO_ID_GPU
-    )
+/// everything *after the last colon* in `MODALIAS` for both, so the owner of
+/// each device supplies its own driver and bus identity.
+fn drm_uevent(driver: &str, modalias: &str) -> String {
+    alloc::format!("DRIVER={}\nMODALIAS={}\n", driver, modalias)
 }
 
 /// The `uevent` of a character device node itself.
@@ -320,12 +331,20 @@ mod test {
 
     use super::*;
 
+    fn virtio_device<'a>(nodes: &'a [(&'static str, u32)]) -> DrmSysDevice<'a> {
+        DrmSysDevice {
+            nodes,
+            driver: "virtio_gpu",
+            modalias: VIRTIO_GPU_MODALIAS,
+        }
+    }
+
     /// The shape libdrm walks to decide that `/dev/dri/card0` is a real
     /// device: a bus symlink it can readlink, a `uevent` it can read an
     /// identifier out of, and a `drm` directory it can list for the node name.
     #[ktest]
     fn drm_dev_node_matches_the_shape_libdrm_walks() {
-        let dev = build_dev_node(&[("card0", 0), ("renderD128", 128)])
+        let dev = build_dev_node(&[virtio_device(&[("card0", 0), ("renderD128", 128)])])
             .unwrap()
             .unwrap();
         let char = dev.child("char").unwrap().cast_to_branch().unwrap();
@@ -393,6 +412,63 @@ mod test {
         );
     }
 
+    /// The display controller and GPU renderer are distinct devices on
+    /// Megrez. A render fd must name its own card, not the display card.
+    #[ktest]
+    fn separate_drm_devices_do_not_share_their_node_lists() {
+        let display_device = DrmSysDevice {
+            nodes: &[("card0", 0)],
+            driver: "simpledrm",
+            modalias: "platform:simple-framebuffer",
+        };
+        let gpu_device = DrmSysDevice {
+            nodes: &[("card1", 1), ("renderD128", 128)],
+            driver: "pvrsrvkm",
+            modalias: "platform:pvrsrvkm",
+        };
+        let dev = build_dev_node(&[display_device, gpu_device])
+            .unwrap()
+            .unwrap();
+        let char = dev.child("char").unwrap().cast_to_branch().unwrap();
+        let display = char
+            .child("226:0")
+            .unwrap()
+            .cast_to_branch()
+            .unwrap()
+            .child("device")
+            .unwrap()
+            .cast_to_branch()
+            .unwrap();
+        let render = char
+            .child("226:128")
+            .unwrap()
+            .cast_to_branch()
+            .unwrap()
+            .child("device")
+            .unwrap()
+            .cast_to_branch()
+            .unwrap();
+
+        let display_nodes = display.child("drm").unwrap().cast_to_branch().unwrap();
+        let render_nodes = render.child("drm").unwrap().cast_to_branch().unwrap();
+        assert!(display_nodes.child("card0").is_some());
+        assert!(display_nodes.child("card1").is_none());
+        assert!(render_nodes.child("card1").is_some());
+        assert!(render_nodes.child("card0").is_none());
+        assert!(
+            display
+                .show_attr("uevent")
+                .unwrap()
+                .contains("DRIVER=simpledrm\nMODALIAS=platform:simple-framebuffer\n")
+        );
+        assert!(
+            render
+                .show_attr("uevent")
+                .unwrap()
+                .contains("DRIVER=pvrsrvkm\nMODALIAS=platform:pvrsrvkm\n")
+        );
+    }
+
     /// The line `drmGetDeviceNameFromFd2()` searches for, and the form it has
     /// to be in: `DEVNAME` is relative to `/dev`, so `dri/card0` yields
     /// `/dev/dri/card0` and `/dev/dri/card0` would yield `/dev//dev/dri/card0`.
@@ -413,14 +489,17 @@ mod test {
     /// it has to contain a colon.
     #[ktest]
     fn drm_uevent_carries_a_modalias_libdrm_can_fall_back_to() {
-        let uevent = drm_uevent();
+        let uevent = drm_uevent("virtio_gpu", VIRTIO_GPU_MODALIAS);
         assert!(uevent.contains("MODALIAS=virtio:d00000010\n"));
 
         let modalias = uevent
             .lines()
             .find_map(|line| line.strip_prefix("MODALIAS="))
             .unwrap();
-        assert_eq!(modalias.rsplit_once(':').map(|(_, rest)| rest), Some("d00000010"));
+        assert_eq!(
+            modalias.rsplit_once(':').map(|(_, rest)| rest),
+            Some("d00000010")
+        );
     }
 
     /// Nothing to describe means nothing in the tree, rather than a device
@@ -428,6 +507,7 @@ mod test {
     #[ktest]
     fn drm_dev_node_is_absent_without_a_device() {
         assert!(build_dev_node(&[]).unwrap().is_none());
+        assert!(build_dev_node(&[virtio_device(&[])]).unwrap().is_none());
     }
 
     #[ktest]

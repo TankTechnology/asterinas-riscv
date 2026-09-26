@@ -140,3 +140,15 @@ The second tracing boot was likewise software-rebooted back to the default
 RockOS entry. Reopening the exclusive serial port returned nonce-framed UID 0,
 `uname -r=6.6.87`, and boot ID
 `9d656fea-5d66-4761-b860-1a413ef518f1`.
+
+## DRM device topology prerequisite
+
+RockOS presents `card0` for the EIC7700 display controller and `card1` plus
+`renderD128` for PowerVR. Asterinas previously built one `device/drm` sysfs
+listing from all exposed DRM nodes. If a separate GPU were registered with
+that builder, libdrm could associate its render fd with the display card.
+The builder now accepts each DRM device's node list and identity separately;
+the kernel test constructs the RockOS-like split and checks both sibling lists
+and `device/uevent` strings. The current boot still supplies a single
+descriptor for its existing DRM implementation. No PowerVR node is registered
+by this change, and it provides no GPU acceleration or HDMI pixel evidence.
