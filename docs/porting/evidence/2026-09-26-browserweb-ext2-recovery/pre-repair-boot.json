@@ -1,0 +1,11 @@
+{
+  "boot_id": "d4b111f1-9ad1-4406-acbc-828a556f4bbd",
+  "error": "RuntimeError: desktop readiness was not established before watchdog deadline",
+  "gpu_crg_probe": "status=observed in boot serial transcript",
+  "gpu_dt_probe": "status=ready observed in boot serial transcript",
+  "kernel_entered": true,
+  "recovered_to_rockos": true,
+  "rockos_reboot_reached_uboot": true,
+  "source_commit": "311b7f676",
+  "status": "failed"
+}
