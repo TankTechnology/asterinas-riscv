@@ -28,6 +28,8 @@ mod eic7700;
 mod eic7700_contract;
 mod fence;
 mod prime;
+#[cfg(target_arch = "riscv64")]
+mod powervr_probe;
 
 /// The dma-buf descriptor, reachable so that the SCM_RIGHTS classifier can
 /// recognize one. See [`prime::DmaBufFile`].
@@ -2868,6 +2870,9 @@ fn copy_field(dst: usize, len: &mut usize, src: &str) -> Result<()> {
 }
 
 pub(super) fn init_in_first_kthread() {
+    #[cfg(target_arch = "riscv64")]
+    powervr_probe::probe_on_request();
+
     let Some(source) = display_source() else {
         return;
     };
