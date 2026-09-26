@@ -1,0 +1,401 @@
+{
+  "outer_ioctl": "0xc0206440",
+  "total_calls": 188,
+  "distinct_functions": 26,
+  "first_seen_order": [
+    [
+      1,
+      0
+    ],
+    [
+      1,
+      2
+    ],
+    [
+      1,
+      15
+    ],
+    [
+      6,
+      6
+    ],
+    [
+      1,
+      10
+    ],
+    [
+      6,
+      9
+    ],
+    [
+      6,
+      22
+    ],
+    [
+      6,
+      24
+    ],
+    [
+      6,
+      11
+    ],
+    [
+      6,
+      8
+    ],
+    [
+      6,
+      16
+    ],
+    [
+      1,
+      4
+    ],
+    [
+      130,
+      14
+    ],
+    [
+      130,
+      13
+    ],
+    [
+      2,
+      0
+    ],
+    [
+      6,
+      3
+    ],
+    [
+      6,
+      4
+    ],
+    [
+      2,
+      7
+    ],
+    [
+      2,
+      2
+    ],
+    [
+      130,
+      15
+    ],
+    [
+      6,
+      18
+    ],
+    [
+      130,
+      10
+    ],
+    [
+      137,
+      5
+    ],
+    [
+      137,
+      0
+    ],
+    [
+      137,
+      4
+    ],
+    [
+      13,
+      0
+    ]
+  ],
+  "functions": [
+    {
+      "bridge": 6,
+      "function": 8,
+      "calls": 57,
+      "buffer_sizes": [
+        [
+          56,
+          20
+        ]
+      ]
+    },
+    {
+      "bridge": 6,
+      "function": 16,
+      "calls": 57,
+      "buffer_sizes": [
+        [
+          40,
+          12
+        ]
+      ]
+    },
+    {
+      "bridge": 6,
+      "function": 11,
+      "calls": 14,
+      "buffer_sizes": [
+        [
+          16,
+          12
+        ]
+      ]
+    },
+    {
+      "bridge": 6,
+      "function": 24,
+      "calls": 14,
+      "buffer_sizes": [
+        [
+          20,
+          44
+        ]
+      ]
+    },
+    {
+      "bridge": 6,
+      "function": 18,
+      "calls": 6,
+      "buffer_sizes": [
+        [
+          36,
+          4
+        ]
+      ]
+    },
+    {
+      "bridge": 1,
+      "function": 4,
+      "calls": 5,
+      "buffer_sizes": [
+        [
+          8,
+          12
+        ]
+      ]
+    },
+    {
+      "bridge": 6,
+      "function": 6,
+      "calls": 4,
+      "buffer_sizes": [
+        [
+          8,
+          28
+        ]
+      ]
+    },
+    {
+      "bridge": 2,
+      "function": 2,
+      "calls": 3,
+      "buffer_sizes": [
+        [
+          16,
+          4
+        ]
+      ]
+    },
+    {
+      "bridge": 2,
+      "function": 7,
+      "calls": 3,
+      "buffer_sizes": [
+        [
+          17,
+          4
+        ]
+      ]
+    },
+    {
+      "bridge": 6,
+      "function": 3,
+      "calls": 3,
+      "buffer_sizes": [
+        [
+          8,
+          12
+        ]
+      ]
+    },
+    {
+      "bridge": 6,
+      "function": 4,
+      "calls": 3,
+      "buffer_sizes": [
+        [
+          8,
+          4
+        ]
+      ]
+    },
+    {
+      "bridge": 2,
+      "function": 0,
+      "calls": 2,
+      "buffer_sizes": [
+        [
+          0,
+          28
+        ]
+      ]
+    },
+    {
+      "bridge": 13,
+      "function": 0,
+      "calls": 2,
+      "buffer_sizes": [
+        [
+          48,
+          4
+        ]
+      ]
+    },
+    {
+      "bridge": 130,
+      "function": 13,
+      "calls": 2,
+      "buffer_sizes": [
+        [
+          41,
+          12
+        ]
+      ]
+    },
+    {
+      "bridge": 137,
+      "function": 4,
+      "calls": 2,
+      "buffer_sizes": [
+        [
+          108,
+          8
+        ]
+      ]
+    },
+    {
+      "bridge": 1,
+      "function": 0,
+      "calls": 1,
+      "buffer_sizes": [
+        [
+          16,
+          17
+        ]
+      ]
+    },
+    {
+      "bridge": 1,
+      "function": 2,
+      "calls": 1,
+      "buffer_sizes": [
+        [
+          0,
+          12
+        ]
+      ]
+    },
+    {
+      "bridge": 1,
+      "function": 10,
+      "calls": 1,
+      "buffer_sizes": [
+        [
+          12,
+          4
+        ]
+      ]
+    },
+    {
+      "bridge": 1,
+      "function": 15,
+      "calls": 1,
+      "buffer_sizes": [
+        [
+          0,
+          12
+        ]
+      ]
+    },
+    {
+      "bridge": 6,
+      "function": 9,
+      "calls": 1,
+      "buffer_sizes": [
+        [
+          1,
+          24
+        ]
+      ]
+    },
+    {
+      "bridge": 6,
+      "function": 22,
+      "calls": 1,
+      "buffer_sizes": [
+        [
+          4,
+          8
+        ]
+      ]
+    },
+    {
+      "bridge": 130,
+      "function": 10,
+      "calls": 1,
+      "buffer_sizes": [
+        [
+          256,
+          12
+        ]
+      ]
+    },
+    {
+      "bridge": 130,
+      "function": 14,
+      "calls": 1,
+      "buffer_sizes": [
+        [
+          60,
+          12
+        ]
+      ]
+    },
+    {
+      "bridge": 130,
+      "function": 15,
+      "calls": 1,
+      "buffer_sizes": [
+        [
+          58,
+          12
+        ]
+      ]
+    },
+    {
+      "bridge": 137,
+      "function": 0,
+      "calls": 1,
+      "buffer_sizes": [
+        [
+          44,
+          12
+        ]
+      ]
+    },
+    {
+      "bridge": 137,
+      "function": 5,
+      "calls": 1,
+      "buffer_sizes": [
+        [
+          0,
+          12
+        ]
+      ]
+    }
+  ],
+  "outer_ioctl_failures": [],
+  "bridge_operation_status": "not captured by the fixed-width envelope trace"
+}
