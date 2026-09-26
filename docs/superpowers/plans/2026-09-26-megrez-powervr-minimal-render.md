@@ -43,6 +43,14 @@
 - [ ] Expose a root-only, exclusive control endpoint for the trusted service. Check initial-namespace `CAP_SYS_RAWIO` at open, deny a second owner, and keep Firefox and ordinary desktop users off this endpoint. Do not expose an unrestricted `/dev/mem` path as the service API.
 - [ ] Verify in QEMU that a non-Megrez DTB leaves the device absent, and use mocked register I/O to test power-up, failure unwinding, exclusive ownership, and exact restoration. In the first selected physical boot, require nonce-framed UID 0 and boot ID over the stable serial port, then close and reopen it to confirm control. No firmware is started in this task.
 
+The powered-ID path now uses a scoped CRG session that restores the initial
+register state on normal exit and on drop. Its hardware I/O object retains the
+CRG and full GPU MMIO mappings behind one lock because OSTD does not recycle
+acquired `IoMem` ranges. RISC-V QEMU covers the session and rollback behavior;
+the retained full-aperture mapping has not yet been tried on the board. The
+selected-boot gate, exclusive control endpoint, and firmware lifecycle remain
+open.
+
 ## Task 3: Establish DMA and firmware startup
 
 - [ ] Allocate pinned, zeroed GPU memory through `DmaCoherent`/`DmaStream` with checked size limits and ownership tied to the GPU session. Establish and test the board's actual device-address range; do not assume CPU virtual addresses are GPU addresses.
