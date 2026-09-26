@@ -29,7 +29,8 @@ tests, cached Docker build.
   its entry point once from `dri::init_in_first_kthread`, before display
   selection. The first operation checks `asterinas.gpu_dt_probe=1`.
 - [x] Inspect `DEVICE_TREE` for `img,gpu`; validate the first `reg`, property
-  byte lengths, `dma-noncoherent`, and `status`. Emit one bounded status line.
+  byte lengths, `dma-noncoherent`, and `status`. Emit one bounded serial status line
+  that remains observable with `loglevel=off`.
   Do not call `IoMem::acquire`, create `/dev/dri` nodes, or change clocks.
 - [x] Run the focused kernel tests, RISC-V kernel build, and existing DRM host
   tests. Save QEMU output and `git diff --check` result.

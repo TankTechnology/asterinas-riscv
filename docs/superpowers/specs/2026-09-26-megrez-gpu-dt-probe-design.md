@@ -11,7 +11,7 @@ could hang the selected boot.
 The kernel will therefore add an opt-in, **DT-only** diagnostic behind
 `asterinas.gpu_dt_probe=1`. It checks the exact prepared-board resource shape
 without acquiring `IoMem`, changing clocks or resets, loading firmware, or
-registering a DRM node. One bounded `ASTERINAS_GPU_DT_PROBE` log line records
+registering a DRM node. One bounded `ASTERINAS_GPU_DT_PROBE` serial line records
 either `status=ready` with address and resource counts, or `status=skipped`
 with a specific reason. The ordinary boot remains unaffected.
 
