@@ -116,7 +116,9 @@ macro_rules! import_generic_syscall_entries {
             ptrace::sys_ptrace,
             pwrite64::sys_pwrite64,
             pwritev::{sys_pwritev, sys_pwritev2, sys_writev},
+            quotactl::sys_quotactl,
             read::sys_read,
+            readahead::sys_readahead,
             readlink::sys_readlinkat,
             reboot::sys_reboot,
             recvfrom::sys_recvfrom,
@@ -285,6 +287,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_OPENAT = 56                  => sys_openat(args[..4]);
             SYS_CLOSE = 57                   => sys_close(args[..1]);
             SYS_PIPE2 = 59                   => sys_pipe2(args[..2]);
+            SYS_QUOTACTL = 60                => sys_quotactl(args[..4]);
             SYS_GETDENTS64 = 61              => sys_getdents64(args[..3]);
             SYS_LSEEK = 62                   => sys_lseek(args[..3]);
             SYS_READ = 63                    => sys_read(args[..3]);
@@ -415,6 +418,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_SHUTDOWN = 210               => sys_shutdown(args[..2]);
             SYS_SENDMSG = 211                => sys_sendmsg(args[..3]);
             SYS_RECVMSG = 212                => sys_recvmsg(args[..3]);
+            SYS_READAHEAD = 213              => sys_readahead(args[..3]);
             SYS_BRK = 214                    => sys_brk(args[..1]);
             SYS_MUNMAP = 215                 => sys_munmap(args[..2]);
             SYS_MREMAP = 216                 => sys_mremap(args[..5]);

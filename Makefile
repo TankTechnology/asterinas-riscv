@@ -166,6 +166,14 @@ CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=regression" \
 	--qemu-args="-device virtio-net-device,netdev=regression"
 endif
 endif
+else ifeq ($(AUTO_TEST), ext2_firefox_recovery)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_firefox_recovery_test.sh"
+else ifeq ($(AUTO_TEST), fs_syscall_compat)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_fs_syscall_compat_test.sh"
 else ifeq ($(AUTO_TEST), ipv6_dual_stack)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/network/run_dual_stack_test.sh"
@@ -1378,6 +1386,15 @@ ifneq ($(filter $(AUTO_TEST),conformance regression boot vsock),)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "$(AUTO_TEST)" $(if $(filter 1,$(RISCV_ICACHE_REQUIRE_SMP4)),--require-riscv-icache-smp4,)
+else ifeq ($(AUTO_TEST), ext2_firefox_recovery)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ext2-firefox-recovery" \
+		--ext2-image "$(CURDIR)/test/initramfs/build/ext2.img"
+else ifeq ($(AUTO_TEST), fs_syscall_compat)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "fs-syscall-compat"
 else ifeq ($(AUTO_TEST), ipv6_dual_stack)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \

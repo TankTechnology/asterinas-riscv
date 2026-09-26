@@ -111,7 +111,9 @@ use super::{
     ptrace::sys_ptrace,
     pwrite64::sys_pwrite64,
     pwritev::{sys_pwritev, sys_pwritev2, sys_writev},
+    quotactl::sys_quotactl,
     read::sys_read,
+    readahead::sys_readahead,
     readlink::{sys_readlink, sys_readlinkat},
     reboot::sys_reboot,
     recvfrom::sys_recvfrom,
@@ -357,7 +359,9 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_REBOOT = 169           => sys_reboot(args[..4]);
     SYS_SETHOSTNAME = 170      => sys_sethostname(args[..2]);
     SYS_SETDOMAINNAME = 171    => sys_setdomainname(args[..2]);
+    SYS_QUOTACTL = 179         => sys_quotactl(args[..4]);
     SYS_GETTID = 186           => sys_gettid(args[..0]);
+    SYS_READAHEAD = 187        => sys_readahead(args[..3]);
     SYS_SETXATTR = 188         => sys_setxattr(args[..5]);
     SYS_LSETXATTR = 189        => sys_lsetxattr(args[..5]);
     SYS_FSETXATTR = 190        => sys_fsetxattr(args[..5]);
