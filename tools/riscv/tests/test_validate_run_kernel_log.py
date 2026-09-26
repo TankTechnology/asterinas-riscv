@@ -4,10 +4,16 @@
 
 from __future__ import annotations
 
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
-from tools.riscv.validate_run_kernel_log import ValidationError, validate_transcript
+from tools.riscv.validate_run_kernel_log import (
+    ValidationError,
+    validate_ext2_image,
+    validate_transcript,
+)
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
@@ -19,6 +25,73 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_fs_syscall_compat_gate_requires_one_clean_completion(self) -> None:
+        marker = "ASTERINAS_FS_SYSCALL_COMPAT_OK readahead=5 quotactl=1"
+        validate_transcript(marker + "\n", mode="fs-syscall-compat")
+        for transcript in (
+            "boot output\n",
+            f"{marker}\n{marker}\n",
+            f"{marker}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaises(ValidationError):
+                    validate_transcript(transcript, mode="fs-syscall-compat")
+
+    def test_fs_syscall_compat_gate_is_wired_to_fs_tests(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        guest = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/run_fs_syscall_compat_test.sh"
+        ).read_text()
+        self.assertIn("else ifeq ($(AUTO_TEST), fs_syscall_compat)", makefile)
+        self.assertIn("/test/run_fs_syscall_compat_test.sh", makefile)
+        self.assertIn('--mode "fs-syscall-compat"', makefile)
+        self.assertIn("/test/fs/quotactl/quotactl", guest)
+        self.assertIn("/test/fs/readahead/readahead", guest)
+
+    def test_ext2_firefox_recovery_gate_requires_one_clean_completion(self) -> None:
+        marker = "ASTERINAS_EXT2_FIREFOX_RECOVERY_OK cycles=16"
+        validate_transcript(marker + "\n", mode="ext2-firefox-recovery")
+        for transcript in (
+            "boot output\n",
+            f"{marker}\n{marker}\n",
+            f"{marker}\nKernel panic - not syncing\n",
+        ):
+            with self.subTest(transcript=transcript):
+                with self.assertRaises(ValidationError):
+                    validate_transcript(transcript, mode="ext2-firefox-recovery")
+
+    def test_ext2_firefox_recovery_gate_is_wired_to_fs_workload(self) -> None:
+        makefile = (REPOSITORY_ROOT / "Makefile").read_text()
+        guest = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/run_ext2_firefox_recovery_test.sh"
+        ).read_text()
+        self.assertIn("else ifeq ($(AUTO_TEST), ext2_firefox_recovery)", makefile)
+        self.assertIn("/test/run_ext2_firefox_recovery_test.sh", makefile)
+        self.assertIn('--mode "ext2-firefox-recovery"', makefile)
+        self.assertIn('--ext2-image "$(CURDIR)/test/initramfs/build/ext2.img"', makefile)
+        self.assertIn("/test/fs/ext2/firefox_state", guest)
+        self.assertIn("umount /ext2", guest)
+
+    def test_ext2_recovery_gate_rejects_corrupt_result_image(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            image = Path(temporary) / "result.ext2"
+            with image.open("wb") as output:
+                output.truncate(8 * 1024 * 1024)
+            subprocess.run(
+                ["mke2fs", "-q", "-F", "-t", "ext2", str(image)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            validate_ext2_image(image)
+            with image.open("r+b") as output:
+                output.seek(1024)
+                output.write(b"\0" * 1024)
+            with self.assertRaisesRegex(ValidationError, "e2fsck"):
+                validate_ext2_image(image)
+
     def test_netlink_route_netns_gate_requires_route_and_namespace_cases(self) -> None:
         route = "netlink route socket namespace regression passed."
         lookup = "IPv4 route lookup regression passed."

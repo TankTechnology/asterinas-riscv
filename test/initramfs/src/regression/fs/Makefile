@@ -10,6 +10,8 @@ SUBDIRS := \
 	overlayfs \
 	procfs \
 	pseudofs \
+	quotactl \
+	readahead \
 	statx \
 	symlink \
 	sync \
