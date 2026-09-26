@@ -78,12 +78,18 @@ pub(super) fn probe_on_request() {
     }
 
     match inspect_gpu_dt() {
-        Ok(()) => ostd::info!(
-            "ASTERINAS_GPU_DT_PROBE status=ready base={:#x} size={:#x} clocks=3 resets=5 interrupts=1 dma=noncoherent mmio=untouched power=unverified",
-            GPU_REG_START,
-            GPU_REG_SIZE,
-        ),
-        Err(reason) => ostd::warn!("ASTERINAS_GPU_DT_PROBE status=skipped reason={}", reason),
+        Ok(()) => {
+            aster_logger::println!(
+                "ASTERINAS_GPU_DT_PROBE status=ready base={:#x} size={:#x} clocks=3 resets=5 interrupts=1 dma=noncoherent mmio=untouched power=unverified",
+                GPU_REG_START,
+                GPU_REG_SIZE,
+            );
+            ostd::info!("PowerVR device-tree resource shape validated without touching MMIO");
+        }
+        Err(reason) => {
+            aster_logger::println!("ASTERINAS_GPU_DT_PROBE status=skipped reason={}", reason);
+            ostd::warn!("PowerVR device-tree probe skipped: {}", reason);
+        }
     }
 }
 
