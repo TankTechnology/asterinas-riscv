@@ -75,6 +75,9 @@ cross-device PRIME sharing with the display path. Only after an Asterinas
 hardware pixel probe passes should Xorg acceleration and Firefox's compositor/WebGL be
 enabled in a selected boot. The current display scanout experiment remains
 useful independently of that work.
+The separately gated Asterinas [powered identity probe](../porting/evidence/2026-09-26-megrez-gpu-powered-id/README.md)
+now reads the expected hardware BVNC and restores all clock/reset registers;
+it does not change the render-driver or userspace requirements above.
 
 Raw package, sysfs, module and Xorg observations are in
 `/home/ubuntu/.codex/asterinas-native-scanout-20260926/rockos-gpu-inventory*.json`.
