@@ -4,6 +4,11 @@
 
 set -e
 
+# Keep syscall compatibility probes ahead of the larger filesystem suite so
+# their result remains visible even when a later integration test fails.
+./quotactl/quotactl
+./readahead/readahead
+
 check_file_size() {
     local file_name="$1"
     local expected_size="$2"

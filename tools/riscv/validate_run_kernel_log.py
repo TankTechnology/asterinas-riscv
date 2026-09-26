@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 from pathlib import Path
 
 
 SUCCESS_MARKERS = {
     "boot": "Successfully booted.",
     "conformance": "All conformance tests passed.",
+    "ext2-firefox-recovery": "ASTERINAS_EXT2_FIREFOX_RECOVERY_OK cycles=16",
+    "fs-syscall-compat": "ASTERINAS_FS_SYSCALL_COMPAT_OK readahead=5 quotactl=1",
     "ifconf": "SIOCGIFCONF regression passed.",
     "ifreq": "interface ioctl regression passed.",
     "ip-socket-netns": "IP socket namespace regression passed.",
@@ -56,6 +59,29 @@ ICACHE_SMP4_MARKER = re.compile(
 
 class ValidationError(ValueError):
     """The transcript does not prove the requested acceptance result."""
+
+
+def validate_ext2_image(image: Path) -> None:
+    """Require a clean read-only host fsck after the guest has unmounted ext2."""
+
+    if image.is_symlink() or not image.is_file():
+        raise ValidationError(f"ext2 result image is not a regular file: {image}")
+    try:
+        result = subprocess.run(
+            ["e2fsck", "-fn", str(image)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValidationError(f"e2fsck failed to run: {error}") from error
+    if result.returncode != 0:
+        raise ValidationError(
+            f"e2fsck rejected ext2 result image (exit={result.returncode}): "
+            f"{result.stdout[-500:]}"
+        )
 
 
 def _is_logical_marker(line: str, marker: str) -> bool:
@@ -105,6 +131,7 @@ def parse_args() -> argparse.Namespace:
         required=True,
     )
     parser.add_argument("--require-riscv-icache-smp4", action="store_true")
+    parser.add_argument("--ext2-image", type=Path)
     return parser.parse_args()
 
 
@@ -117,6 +144,10 @@ def main() -> int:
             mode=args.mode,
             require_riscv_icache_smp4=args.require_riscv_icache_smp4,
         )
+        if args.mode == "ext2-firefox-recovery":
+            if args.ext2_image is None:
+                raise ValidationError("ext2 recovery mode requires --ext2-image")
+            validate_ext2_image(args.ext2_image)
     except (OSError, ValidationError) as error:
         print(f"run_kernel validation failed: {error}")
         return 1

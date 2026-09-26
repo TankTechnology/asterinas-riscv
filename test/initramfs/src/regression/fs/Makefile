@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 
 SUBDIRS := \
-	empty_write \
 	ext2 \
 	fdatasync \
 	getcwd \
@@ -11,8 +10,8 @@ SUBDIRS := \
 	overlayfs \
 	procfs \
 	pseudofs \
-	ramfs \
-	rename \
+	quotactl \
+	readahead \
 	statx \
 	symlink \
 	sync \

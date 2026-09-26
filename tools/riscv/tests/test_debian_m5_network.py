@@ -695,6 +695,15 @@ configure_and_normalize_rootfs
     def test_safe_reboot_uses_uptime_and_syncs_before_reboot(self) -> None:
         fake_bin = self.directory / "safe-reboot-bin"
         fake_bin.mkdir()
+        unit_dir = self.directory / "safe-reboot-units"
+        unit_dir.mkdir()
+        for name in (
+            "asterinas-browser-web-evidence.service",
+            "asterinas-browser-web.service",
+            "asterinas-desktop-m5-network.service",
+            "asterinas-desktop-m5.service",
+        ):
+            (unit_dir / name).touch()
         actions = self.directory / "safe-reboot-actions"
         console = self.directory / "safe-reboot-console"
         sleep_count = self.directory / "safe-reboot-sleep-count"
@@ -714,7 +723,7 @@ configure_and_normalize_rootfs
             encoding="utf-8",
         )
         sleep.chmod(0o755)
-        for name in ("sync", "reboot"):
+        for name in ("systemctl", "sync", "reboot"):
             command = fake_bin / name
             command.write_text(
                 "#!/bin/sh\n"
@@ -723,6 +732,15 @@ configure_and_normalize_rootfs
                 encoding="utf-8",
             )
             command.chmod(0o755)
+        pgrep = fake_bin / "pgrep"
+        pgrep.write_text(
+            "#!/bin/sh\n"
+            'printf \'pgrep:%s\\n\' "$*" '
+            '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        pgrep.chmod(0o755)
         environment = os.environ.copy()
         environment.update(
             PATH=f"{fake_bin}:/usr/bin:/bin",
@@ -731,6 +749,7 @@ configure_and_normalize_rootfs
             ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
             ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
             ASTERINAS_SAFE_REBOOT_SLEEP_COUNT=str(sleep_count),
+            ASTERINAS_SAFE_REBOOT_UNIT_DIR=str(unit_dir),
         )
 
         result = subprocess.run(
@@ -745,14 +764,400 @@ configure_and_normalize_rootfs
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             actions.read_text(encoding="utf-8").splitlines(),
-            ["sleep:5", "sleep:5", "sync:", "reboot:-f"],
+            [
+                "sleep:5",
+                "sleep:5",
+                "systemctl:stop asterinas-browser-web-evidence.service asterinas-browser-web.service asterinas-desktop-m5-network.service asterinas-desktop-m5.service",
+                "pgrep:-u 1000",
+                "sync:",
+                "reboot:-f",
+            ],
         )
         self.assertEqual(
             console.read_text(encoding="utf-8").splitlines(),
             [
                 "ASTERINAS_USERSPACE_REBOOT_ARMED uptime=100 deadline=130",
-                "ASTERINAS_USERSPACE_REBOOT_SYNC deadline=130",
+                "ASTERINAS_USERSPACE_REBOOT_QUIESCE_START deadline=130 units=4",
+                "ASTERINAS_USERSPACE_REBOOT_PROCESS state=observed count=0",
+                "ASTERINAS_USERSPACE_REBOOT_QUIESCE_DONE processes=0",
+                "ASTERINAS_USERSPACE_REBOOT_SYNC_START deadline=130",
+                "ASTERINAS_USERSPACE_REBOOT_SYNC_DONE deadline=130",
             ],
+        )
+
+    def test_safe_reboot_derives_userspace_deadline_from_kernel_cmdline(
+        self,
+    ) -> None:
+        fake_bin = self.directory / "safe-reboot-cmdline-bin"
+        fake_bin.mkdir()
+        unit_dir = self.directory / "safe-reboot-cmdline-units"
+        unit_dir.mkdir()
+        for name in (
+            "asterinas-browser-web-evidence.service",
+            "asterinas-browser-web.service",
+            "asterinas-desktop-m5-network.service",
+            "asterinas-desktop-m5.service",
+        ):
+            (unit_dir / name).touch()
+        actions = self.directory / "safe-reboot-cmdline-actions"
+        actions.write_text("", encoding="utf-8")
+        console = self.directory / "safe-reboot-cmdline-console"
+        console.write_text("", encoding="utf-8")
+        uptime = self.directory / "safe-reboot-cmdline-uptime"
+        uptime.write_text("120.25 80.00\n", encoding="utf-8")
+        cmdline = self.directory / "safe-reboot-cmdline"
+        cmdline.write_text(
+            "console=ttyS0 asterinas.reboot_after=300 init=/init\n",
+            encoding="utf-8",
+        )
+        for name in ("systemctl", "sync", "reboot"):
+            command = fake_bin / name
+            command.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s:%s\\n\' "$(basename "$0")" "$*" '
+                '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n',
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+        pgrep = fake_bin / "pgrep"
+        pgrep.write_text(
+            "#!/bin/sh\n"
+            'printf \'pgrep:%s\\n\' "$*" '
+            '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n'
+            "exit 1\n",
+            encoding="utf-8",
+        )
+        pgrep.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_SAFE_REBOOT_UPTIME_FILE=str(uptime),
+            ASTERINAS_SAFE_REBOOT_CMDLINE_PATH=str(cmdline),
+            ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
+            ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
+            ASTERINAS_SAFE_REBOOT_UNIT_DIR=str(unit_dir),
+        )
+        environment.pop("ASTERINAS_SAFE_REBOOT_AFTER", None)
+
+        result = subprocess.run(
+            ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            actions.read_text(encoding="utf-8").splitlines(),
+            [
+                "systemctl:stop asterinas-browser-web-evidence.service asterinas-browser-web.service asterinas-desktop-m5-network.service asterinas-desktop-m5.service",
+                "pgrep:-u 1000",
+                "sync:",
+                "reboot:-f",
+            ],
+        )
+        self.assertEqual(
+            console.read_text(encoding="utf-8").splitlines(),
+            [
+                "ASTERINAS_USERSPACE_REBOOT_ARMED uptime=120 deadline=120",
+                "ASTERINAS_USERSPACE_REBOOT_QUIESCE_START deadline=120 units=4",
+                "ASTERINAS_USERSPACE_REBOOT_PROCESS state=observed count=0",
+                "ASTERINAS_USERSPACE_REBOOT_QUIESCE_DONE processes=0",
+                "ASTERINAS_USERSPACE_REBOOT_SYNC_START deadline=120",
+                "ASTERINAS_USERSPACE_REBOOT_SYNC_DONE deadline=120",
+            ],
+        )
+
+    def test_safe_reboot_refuses_work_past_kernel_deadline_budget(self) -> None:
+        fake_bin = self.directory / "safe-reboot-deadline-bin"
+        fake_bin.mkdir()
+        unit_dir = self.directory / "safe-reboot-deadline-units"
+        unit_dir.mkdir()
+        (unit_dir / "asterinas-desktop-m5.service").touch()
+        actions = self.directory / "safe-reboot-deadline-actions"
+        console = self.directory / "safe-reboot-deadline-console"
+        uptime = self.directory / "safe-reboot-deadline-uptime"
+        uptime.write_text("80.00 70.00\n", encoding="utf-8")
+        cmdline = self.directory / "safe-reboot-deadline-cmdline"
+        cmdline.write_text("asterinas.reboot_after=100\n", encoding="utf-8")
+        for name in ("systemctl", "pgrep", "sync", "reboot"):
+            command = fake_bin / name
+            command.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s:%s\\n\' "$(basename "$0")" "$*" '
+                '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n'
+                + ("exit 1\n" if name == "pgrep" else ""),
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_SAFE_REBOOT_UPTIME_FILE=str(uptime),
+            ASTERINAS_SAFE_REBOOT_CMDLINE_PATH=str(cmdline),
+            ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
+            ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
+            ASTERINAS_SAFE_REBOOT_UNIT_DIR=str(unit_dir),
+        )
+        environment.pop("ASTERINAS_SAFE_REBOOT_AFTER", None)
+
+        result = subprocess.run(
+            ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        if actions.exists():
+            self.assertNotIn("sync:", actions.read_text(encoding="utf-8"))
+            self.assertNotIn("reboot:", actions.read_text(encoding="utf-8"))
+        self.assertIn(
+            "ASTERINAS_USERSPACE_REBOOT_FAIL reason=kernel-deadline-exhausted",
+            console.read_text(encoding="utf-8").splitlines(),
+        )
+
+    def test_safe_reboot_stops_root_evidence_and_skips_absent_browser_units(self) -> None:
+        fake_bin = self.directory / "safe-reboot-network-bin"
+        fake_bin.mkdir()
+        unit_dir = self.directory / "safe-reboot-network-units"
+        unit_dir.mkdir()
+        (unit_dir / "asterinas-desktop-m5-evidence.service").touch()
+        (unit_dir / "asterinas-desktop-m5-network.service").touch()
+        (unit_dir / "asterinas-desktop-m5.service").touch()
+        actions = self.directory / "safe-reboot-network-actions"
+        console = self.directory / "safe-reboot-network-console"
+        uptime = self.directory / "safe-reboot-network-uptime"
+        uptime.write_text("100.00 80.00\n", encoding="utf-8")
+        for name in ("systemctl", "pgrep", "sync", "reboot"):
+            command = fake_bin / name
+            command.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s:%s\\n\' "$(basename "$0")" "$*" '
+                '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n'
+                + (
+                    'for unit in "$@"; do\n'
+                    '  case "$unit" in *.service) '
+                    '[ -f "$ASTERINAS_SAFE_REBOOT_UNIT_DIR/$unit" ] || exit 1;; esac\n'
+                    'done\n'
+                    if name == "systemctl"
+                    else "exit 1\n" if name == "pgrep" else ""
+                ),
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_SAFE_REBOOT_AFTER="100",
+            ASTERINAS_SAFE_REBOOT_UPTIME_FILE=str(uptime),
+            ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
+            ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
+            ASTERINAS_SAFE_REBOOT_UNIT_DIR=str(unit_dir),
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        action_lines = actions.read_text(encoding="utf-8").splitlines()
+        self.assertIn(
+            "systemctl:stop asterinas-desktop-m5-evidence.service asterinas-desktop-m5-network.service asterinas-desktop-m5.service",
+            action_lines,
+        )
+        self.assertNotIn("browser-web", "\n".join(action_lines))
+        self.assertEqual(action_lines[-2:], ["sync:", "reboot:-f"])
+
+    def test_safe_reboot_requires_units_stopped_after_kill_escalation(self) -> None:
+        fake_bin = self.directory / "safe-reboot-unit-stuck-bin"
+        fake_bin.mkdir()
+        unit_dir = self.directory / "safe-reboot-unit-stuck-units"
+        unit_dir.mkdir()
+        (unit_dir / "asterinas-desktop-m5-evidence.service").touch()
+        actions = self.directory / "safe-reboot-unit-stuck-actions"
+        console = self.directory / "safe-reboot-unit-stuck-console"
+        uptime = self.directory / "safe-reboot-unit-stuck-uptime"
+        uptime.write_text("100.00 80.00\n", encoding="utf-8")
+        for name in ("systemctl", "pgrep", "sync", "reboot"):
+            command = fake_bin / name
+            command.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s:%s\\n\' "$(basename "$0")" "$*" '
+                '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n'
+                + (
+                    'if [ "$1" = stop ]; then exit 1; fi\n'
+                    if name == "systemctl"
+                    else "exit 1\n" if name == "pgrep" else ""
+                ),
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_SAFE_REBOOT_AFTER="100",
+            ASTERINAS_SAFE_REBOOT_UPTIME_FILE=str(uptime),
+            ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
+            ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
+            ASTERINAS_SAFE_REBOOT_UNIT_DIR=str(unit_dir),
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        action_lines = actions.read_text(encoding="utf-8").splitlines()
+        self.assertIn("systemctl:kill --kill-who=all --signal=KILL asterinas-desktop-m5-evidence.service", action_lines)
+        self.assertEqual(
+            action_lines.count("systemctl:stop asterinas-desktop-m5-evidence.service"),
+            2,
+        )
+        self.assertFalse(any(line.startswith("sync:") for line in action_lines))
+        self.assertIn(
+            "ASTERINAS_USERSPACE_REBOOT_FAIL reason=unit-quiesce",
+            console.read_text(encoding="utf-8").splitlines(),
+        )
+
+    def test_safe_reboot_refuses_sync_when_process_scan_fails(self) -> None:
+        fake_bin = self.directory / "safe-reboot-pgrep-error-bin"
+        fake_bin.mkdir()
+        unit_dir = self.directory / "safe-reboot-pgrep-error-units"
+        unit_dir.mkdir()
+        (unit_dir / "asterinas-desktop-m5.service").touch()
+        actions = self.directory / "safe-reboot-pgrep-error-actions"
+        console = self.directory / "safe-reboot-pgrep-error-console"
+        uptime = self.directory / "safe-reboot-pgrep-error-uptime"
+        uptime.write_text("100.00 80.00\n", encoding="utf-8")
+        for name in ("systemctl", "pgrep", "sync", "reboot"):
+            command = fake_bin / name
+            command.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s:%s\\n\' "$(basename "$0")" "$*" '
+                '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n'
+                + ("exit 2\n" if name == "pgrep" else ""),
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_SAFE_REBOOT_AFTER="100",
+            ASTERINAS_SAFE_REBOOT_UPTIME_FILE=str(uptime),
+            ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
+            ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
+            ASTERINAS_SAFE_REBOOT_UNIT_DIR=str(unit_dir),
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        action_lines = actions.read_text(encoding="utf-8").splitlines()
+        self.assertIn("pgrep:-u 1000", action_lines)
+        self.assertFalse(any(line.startswith("sync:") for line in action_lines))
+        self.assertFalse(any(line.startswith("reboot:") for line in action_lines))
+        self.assertIn(
+            "ASTERINAS_USERSPACE_REBOOT_FAIL reason=invalid-process-list",
+            console.read_text(encoding="utf-8").splitlines(),
+        )
+
+    def test_safe_reboot_refuses_sync_while_user_writers_survive(self) -> None:
+        fake_bin = self.directory / "safe-reboot-stuck-bin"
+        fake_bin.mkdir()
+        unit_dir = self.directory / "safe-reboot-stuck-units"
+        unit_dir.mkdir()
+        (unit_dir / "asterinas-desktop-m5.service").touch()
+        actions = self.directory / "safe-reboot-stuck-actions"
+        actions.write_text("", encoding="utf-8")
+        console = self.directory / "safe-reboot-stuck-console"
+        console.write_text("", encoding="utf-8")
+        uptime = self.directory / "safe-reboot-stuck-uptime"
+        uptime.write_text("100.00 80.00\n", encoding="utf-8")
+        commands = {
+            "systemctl": "exit 0\n",
+            "pgrep": "printf '41\\n'\nexit 0\n",
+            "pkill": "exit 0\n",
+            "sleep": "exit 0\n",
+            "sync": "exit 0\n",
+            "reboot": "exit 0\n",
+        }
+        for name, body in commands.items():
+            command = fake_bin / name
+            command.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s:%s\\n\' "$(basename "$0")" "$*" '
+                '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n'
+                f"{body}",
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_SAFE_REBOOT_AFTER="100",
+            ASTERINAS_SAFE_REBOOT_UPTIME_FILE=str(uptime),
+            ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
+            ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
+            ASTERINAS_SAFE_REBOOT_UNIT_DIR=str(unit_dir),
+            ASTERINAS_SAFE_REBOOT_TERM_WAIT_SECONDS="1",
+            ASTERINAS_SAFE_REBOOT_KILL_WAIT_SECONDS="1",
+        )
+
+        result = subprocess.run(
+            ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        action_lines = actions.read_text(encoding="utf-8").splitlines()
+        self.assertIn("pkill:-TERM -u 1000", action_lines)
+        self.assertIn("pkill:-KILL -u 1000", action_lines)
+        self.assertFalse(any(line.startswith("sync:") for line in action_lines))
+        self.assertFalse(any(line.startswith("reboot:") for line in action_lines))
+        console_lines = console.read_text(encoding="utf-8").splitlines()
+        self.assertIn(
+            "ASTERINAS_USERSPACE_REBOOT_PROCESS state=signal signal=TERM count=1",
+            console_lines,
+        )
+        self.assertIn(
+            "ASTERINAS_USERSPACE_REBOOT_PROCESS state=signal signal=KILL count=1",
+            console_lines,
+        )
+        self.assertIn(
+            "ASTERINAS_USERSPACE_REBOOT_FAIL reason=writers-remain-1",
+            console_lines,
+        )
+        self.assertFalse(
+            any("ASTERINAS_USERSPACE_REBOOT_QUIESCE_DONE" in line for line in console_lines)
+        )
+        self.assertFalse(
+            any("ASTERINAS_USERSPACE_REBOOT_SYNC_DONE" in line for line in console_lines)
         )
 
     def _fake_network_tools(
