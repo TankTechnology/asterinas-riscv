@@ -117,6 +117,12 @@ decode. The trace also cannot see a library that bypasses libc's `ioctl`
 symbol. It is retained at
 `/home/ubuntu/.codex/asterinas-evidence/2026-09-26/powervr-gles-bridge-decode.log`.
 These counts describe one minimal draw, not all of Firefox or the full DDK.
+The [machine-readable bridge inventory](2026-09-26-megrez-powervr-bridge-inventory.json)
+is generated from that trace with
+`tools/riscv/drm/pvr_bridge_inventory.py --expect-calls 188 --expect-functions 26`.
+It retains the first-seen function order, call counts, input/output buffer
+sizes, and nonzero outer ioctl returns. It deliberately marks the inner bridge
+operation status as unknown; a zero outer return cannot establish success.
 The vendor's [bridge group table](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/include/pvr_bridge.h)
 and [Volcanic MM commands](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/generated/volcanic/mm_bridge/common_mm_bridge.h)
 identify group 6 as memory management: function 8 allocates a RAM-backed PMR,
