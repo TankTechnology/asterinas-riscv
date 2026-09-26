@@ -1,0 +1,7 @@
+e2fsck 1.47.1 (20-May-2024)
+Pass 1: Checking inodes, blocks, and sizes
+Pass 2: Checking directory structure
+Pass 3: Checking directory connectivity
+Pass 4: Checking reference counts
+Pass 5: Checking group summary information
+ASTER_BROWSERWEB: 37568/131072 files (2.0% non-contiguous), 419472/524288 blocks

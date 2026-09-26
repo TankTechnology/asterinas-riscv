@@ -6,6 +6,7 @@ use core::array;
 
 use ostd::{arch::boot::DEVICE_TREE, boot::boot_info, io::IoMem, mm::VmIoOnce};
 
+mod dma;
 mod power;
 
 // Pinned to the prepared Megrez DTB. The GPU must not be touched until its
