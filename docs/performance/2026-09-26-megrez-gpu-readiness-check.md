@@ -130,6 +130,21 @@ and `(137,4)` as
 This makes GPU memory allocation/mapping and command
 submission the concrete first implementation contracts.
 
+## Asterinas powered identity gate
+
+The opt-in `asterinas.gpu_powered_id_probe=1` selected boot now validates the
+prepared GPU/CRG bindings, enables the three clocks and five reset lines,
+reads the PowerVR core ID `0x001e000301980065` (BVNC 30.3.408.101), and
+restores the exact initial CRG state. The same boot reached root serial control
+and the Firefox/Xorg desktop; see the
+[physical evidence](../porting/evidence/2026-09-26-megrez-gpu-powered-id/README.md).
+An initial attempt exposed an `IoMem` ownership detail: mappings are not
+recycled on drop, so sequential read-only and powered probes must share one
+mapping. That was fixed and physically validated. This identity gate did not
+load firmware or execute GPU work. The existing Asterinas `renderD128` is
+associated with its display DRM device, the root image lacks `rgx` firmware,
+and the current Firefox wrapper selects software graphics.
+
 After the reference run, a software reboot returned to U-Boot, the original
 default RockOS entry reached a login prompt, and a separately reopened
 exclusive serial connection returned nonce-framed UID 0, `uname -r=6.6.87`,
@@ -160,7 +175,9 @@ metadata). The DRM entry point calls `PVRSRVCommonDeviceCreate`,
 `PVRSRVDeviceInit`, and `PVRSRVCommonDeviceInitialise` before the bridge can
 serve a client. Those calls cross firmware, GPU MMU, power, memory objects, and
 synchronization code. The observed 26 bridge functions are only the userspace
-calls of one draw; they do not replace device initialization. The next
-hardware milestone therefore needs a separately gated, read-only probe of the
-powered GPU identity and firmware contract, with the RockOS recovery path
-preserved. Only after that can a real render node and its bridge be exposed.
+calls of one draw; they do not replace device initialization. The powered
+identity gate is complete; the next implementation boundary is firmware
+loading and GPU memory/firmware initialization against the pinned RockOS
+driver, followed by command submission and synchronization. A real PowerVR
+render node should be exposed only when a hardware pixel probe passes through
+that path.
