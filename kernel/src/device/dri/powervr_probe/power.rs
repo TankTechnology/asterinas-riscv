@@ -8,7 +8,7 @@ use ostd::{io::IoMem, mm::VmIoOnce};
 
 use super::{
     CRG_BASE, CRG_GATE_BIT, CrgSnapshot, GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET,
-    GPU_REG_START, GPU_RESET_OFFSET, inspect_gpu_crg_dt,
+    GPU_REG_START, GPU_RESET_OFFSET, inspect_gpu_crg_dt, print_gpu_crg_snapshot,
 };
 
 const EXPECTED_INITIAL: CrgSnapshot = CrgSnapshot {
@@ -181,18 +181,34 @@ impl PowerIo for HardwarePowerIo {
     }
 }
 
-pub(super) fn probe_on_request() {
+pub(super) fn probe_on_request(emit_crg_snapshot: bool) {
     if let Err(reason) = inspect_gpu_crg_dt() {
+        if emit_crg_snapshot {
+            aster_logger::println!("ASTERINAS_GPU_CRG_PROBE status=skipped reason={}", reason);
+        }
         aster_logger::println!("ASTERINAS_GPU_POWERED_ID status=skipped reason={}", reason);
         return;
     }
     let mut io = match HardwarePowerIo::new() {
         Ok(io) => io,
         Err(reason) => {
+            if emit_crg_snapshot {
+                aster_logger::println!("ASTERINAS_GPU_CRG_PROBE status=skipped reason={}", reason);
+            }
             aster_logger::println!("ASTERINAS_GPU_POWERED_ID status=skipped reason={}", reason);
             return;
         }
     };
+    if emit_crg_snapshot {
+        match io.snapshot() {
+            Ok(snapshot) => print_gpu_crg_snapshot(snapshot),
+            Err(reason) => {
+                aster_logger::println!("ASTERINAS_GPU_CRG_PROBE status=skipped reason={}", reason);
+                aster_logger::println!("ASTERINAS_GPU_POWERED_ID status=skipped reason={}", reason);
+                return;
+            }
+        }
+    }
     aster_logger::println!("ASTERINAS_GPU_POWERED_ID status=starting");
     match run_powered_id(&mut io) {
         Ok(_) => aster_logger::println!(
