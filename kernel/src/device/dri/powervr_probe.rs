@@ -181,6 +181,18 @@ fn read_gpu_crg() -> Result<CrgSnapshot, &'static str> {
     })
 }
 
+fn print_gpu_crg_snapshot(snapshot: CrgSnapshot) {
+    aster_logger::println!(
+        "ASTERINAS_GPU_CRG_PROBE status=observed aclk={:#010x} cfg={:#010x} gray={:#010x} reset={:#010x} gates={:#05b} deasserted={:#07b} crg=read-only gpu_mmio=untouched",
+        snapshot.aclk,
+        snapshot.cfg,
+        snapshot.gray,
+        snapshot.reset,
+        snapshot.clock_gates(),
+        snapshot.deasserted_resets(),
+    );
+}
+
 pub(super) fn probe_on_request() {
     let requested = |name| {
         boot_info()
@@ -210,25 +222,20 @@ pub(super) fn probe_on_request() {
             }
         }
     }
-    if crg_requested {
+    // IoMem acquisitions are not currently recycled on Drop. When both
+    // probes are selected, the powered probe must print the snapshot from
+    // its own mapping instead of acquiring the CRG range a second time.
+    if crg_requested && !power_requested {
         let result = inspect_gpu_crg_dt().and_then(|()| read_gpu_crg());
         match result {
-            Ok(snapshot) => aster_logger::println!(
-                "ASTERINAS_GPU_CRG_PROBE status=observed aclk={:#010x} cfg={:#010x} gray={:#010x} reset={:#010x} gates={:#05b} deasserted={:#07b} crg=read-only gpu_mmio=untouched",
-                snapshot.aclk,
-                snapshot.cfg,
-                snapshot.gray,
-                snapshot.reset,
-                snapshot.clock_gates(),
-                snapshot.deasserted_resets(),
-            ),
+            Ok(snapshot) => print_gpu_crg_snapshot(snapshot),
             Err(reason) => {
                 aster_logger::println!("ASTERINAS_GPU_CRG_PROBE status=skipped reason={}", reason)
             }
         }
     }
     if power_requested {
-        power::probe_on_request();
+        power::probe_on_request(crg_requested);
     }
 }
 
