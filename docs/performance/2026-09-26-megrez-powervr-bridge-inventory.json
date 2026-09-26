@@ -397,5 +397,6 @@
     }
   ],
   "outer_ioctl_failures": [],
+  "bridge_status_counts": {},
   "bridge_operation_status": "not captured by the fixed-width envelope trace"
 }

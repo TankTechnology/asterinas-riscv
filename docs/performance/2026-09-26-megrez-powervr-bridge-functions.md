@@ -59,3 +59,10 @@ output struct's `eError` field. It also ends after the pixel readback without
 showing a complete teardown sequence. The first service prototype must capture
 bridge-level status and fd-close cleanup before this list is treated as a
 minimal supported ABI.
+
+The tracer now has a separate `ASTERINAS_IOCTLTRACE_PVR_STATUS=1` opt-in for
+the next matching RockOS reference run. It uses the packed output structs'
+checked `eError` offsets and a fault-safe self-process read. Unknown command
+IDs, short outputs, and unreadable pointers yield `status=unavailable`, never a
+guessed success. This new mode has passed host checks for known offsets and an
+unreadable page, but no new physical RockOS trace has been collected yet.
