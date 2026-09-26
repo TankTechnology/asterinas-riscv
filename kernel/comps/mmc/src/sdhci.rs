@@ -208,6 +208,7 @@ pub enum HostError {
     DataCrc,
     DataEndBit,
     Dma,
+    CardStatus,
     Unsupported,
 }
 

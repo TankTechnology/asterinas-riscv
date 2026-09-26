@@ -143,6 +143,20 @@ class MilestoneDetectionTests(unittest.TestCase):
 
 
 class ArgumentContractTests(unittest.TestCase):
+    def test_uboot_staging_rejects_unprotected_writable_boot(self):
+        prefix = "init=/init asterinas.mmc_write_partition2 asterinas.reboot_after=900"
+        for bootargs in (
+            prefix
+            + " systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=850"
+            + " -- --root-init=systemd",
+            "init=/init asterinas.mmc_write_partition2"
+            " systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=780"
+            " -- --root-init=systemd",
+        ):
+            with self.subTest(bootargs=bootargs):
+                with self.assertRaises(ValueError):
+                    board.uboot_bootargs_commands(bootargs)
+
     def test_writable_partition_emergency_reboot_requires_earlier_sync_reboot(self):
         required = _required_args() + [
             "--expected-crc32",
@@ -154,7 +168,6 @@ class ArgumentContractTests(unittest.TestCase):
         )
         tail = " -- --root-init=systemd --debug-console=root"
         for setenv in (
-            "",
             "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=900 ",
             "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=850 ",
             "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=abc ",
@@ -172,6 +185,10 @@ class ArgumentContractTests(unittest.TestCase):
             ]
         )
         self.assertIn("ASTERINAS_SAFE_REBOOT_AFTER=780", admitted.bootargs)
+        derived = board.parse_args(
+            required + ["--bootargs", prefix.rstrip() + tail]
+        )
+        self.assertIn("asterinas.reboot_after=900", derived.bootargs)
         _parse_fails(
             required
             + [
