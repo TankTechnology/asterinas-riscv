@@ -1,0 +1,23 @@
+{
+  "bridge_lines": 188,
+  "bridge_trace_sha256": "8a87cfe037bab72891f59268e5271979f628cb4dc25927c9d3def108737e5afe",
+  "display_manager_after": "active",
+  "pixel_output": "renderer='PowerVR A-Series AXM-8-256' left=(255, 255, 255, 255) right=(0, 0, 0, 255) device=/dev/dri/renderD128",
+  "reference_boot_id": "be015c69-468b-4ff9-9a15-f5f957b0e205",
+  "render_node_after": "present",
+  "status": "pixel_after_reload_ok",
+  "steps": {
+    "after_reload": 0,
+    "after_unload": 0,
+    "ensure_module": 0,
+    "kernel_events": 0,
+    "mark_end": 0,
+    "mark_start": 0,
+    "pixel": 0,
+    "reload": 0,
+    "start_lightdm": 0,
+    "stop_lightdm": 0,
+    "unload": 0
+  },
+  "trace_token": "e50c734dd54381c9"
+}

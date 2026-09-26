@@ -32,24 +32,21 @@
 
 ## Task 1: Pin the reusable software contract
 
-- [ ] Record SHA-256 and package versions for `rgx.fw.30.3.408.101`, `rgx.sh.30.3.408.101`, `libVK_IMG.so`, and the RockOS EGL/GLES/GBM libraries from the working reference boot. Keep licensed binaries out of Git; put an exact manifest and local staging instructions in `docs/porting/evidence/`.
+- [x] Record SHA-256 and package versions for `rgx.fw.30.3.408.101`, `rgx.sh.30.3.408.101`, `libVK_IMG.so`, and the RockOS EGL/GLES/GBM libraries from the working reference boot. The [manifest and local staging instructions](../../porting/evidence/2026-09-26-megrez-powervr-task1-rockos-lifecycle/README.md) keep licensed binaries out of Git.
 - [x] Decode the observed 26 bridge function IDs against RockOS commit `bf2ec5d53002c16bc1bc593b92516eb6c2866176`, including input/output sizes and the returned bridge status. The matching RockOS kernel passed the 16 × 16 pixel test with all 188 inner bridge statuses zero. See [reference evidence](../../porting/evidence/2026-09-26-megrez-powervr-bridge-status/README.md).
-- [ ] Record firmware initialization and shutdown events in the same bounded trace. A root daemon prototype is viable only if the needed DDK server logic can be isolated from Linux-specific memory and scheduler internals; otherwise port the minimal server logic behind the same kernel ownership boundary. Do not implement 26 empty ioctl stubs.
+- [x] Record firmware loading and the driver/hardware shutdown boundary in the [same bounded RockOS trace](../../porting/evidence/2026-09-26-megrez-powervr-task1-rockos-lifecycle/README.md). The driver does not print a separate firmware shutdown acknowledgement; clean module removal, render-node disappearance, reset assertion, and clock disable establish the observable shutdown. The pinned DDK source places GPU MMU, firmware, and device teardown inside the kernel server, so a root daemon can only translate client requests after Asterinas owns those facilities. Do not implement 26 empty ioctl stubs.
 
 ## Task 2: Add a selected-boot GPU owner
 
-- [ ] Add an opt-in `asterinas.powervr=1` gate. Validate the exact Megrez DT resource shape, compatible string, BVNC, and expected powered-off CRG state before mutation. Preserve the default RockOS boot entry and the existing Asterinas software desktop boot.
-- [ ] Refactor the powered-ID code so the same owner holds CRG and GPU `IoMem` mappings for the complete session; do not reacquire released `IoMem` intervals. On error or final close, assert reset before gating clocks and log the restored CRG readback.
-- [ ] Expose a root-only, exclusive control endpoint for the trusted service. Check initial-namespace `CAP_SYS_RAWIO` at open, deny a second owner, and keep Firefox and ordinary desktop users off this endpoint. Do not expose an unrestricted `/dev/mem` path as the service API.
-- [ ] Verify in QEMU that a non-Megrez DTB leaves the device absent, and use mocked register I/O to test power-up, failure unwinding, exclusive ownership, and exact restoration. In the first selected physical boot, require nonce-framed UID 0 and boot ID over the stable serial port, then close and reopen it to confirm control. No firmware is started in this task.
+- [x] Add an opt-in `asterinas.powervr=1` gate. Validate the exact Megrez DT resource shape, compatible string, BVNC, and expected powered-off CRG state before mutation. Preserve the default RockOS boot entry and the existing Asterinas software desktop boot.
+- [x] Reuse the same owner-held CRG and GPU `IoMem` mappings for the complete session; do not reacquire released `IoMem` intervals. On error or final close, assert reset before gating clocks and log the actual restored CRG readback.
+- [x] Expose a root-only, exclusive `/dev/powervr-control` endpoint for the trusted service. Check initial-namespace `CAP_SYS_RAWIO` at open, deny a second owner, and keep Firefox and ordinary desktop users off this endpoint. No unrestricted `/dev/mem` API is exposed.
+- [x] Verify in QEMU that a non-Megrez DTB leaves the device absent, and use mocked register I/O to test power-up, failure unwinding, exclusive ownership, and exact restoration. The selected physical boot used nonce-framed UID 0 and boot ID over the stable serial port, then closed and reopened it to confirm control. No firmware was started. See [Task 2 evidence](../../porting/evidence/2026-09-26-megrez-powervr-owner/README.md).
 
-The powered-ID path now uses a scoped CRG session that restores the initial
-register state on normal exit and on drop. Its hardware I/O object retains the
-CRG and full GPU MMIO mappings behind one lock because OSTD does not recycle
-acquired `IoMem` ranges. RISC-V QEMU covers the session and rollback behavior;
-the retained full-aperture mapping has not yet been tried on the board. The
-selected-boot gate, exclusive control endpoint, and firmware lifecycle remain
-open.
+The owner holds CRG and GPU MMIO mappings behind one lock because OSTD does
+not recycle acquired `IoMem` ranges. The selected boot retains the existing
+software desktop profile. The control endpoint only manages the power lease;
+firmware, DMA, GPU MMU, command submission, and rendering remain in Tasks 3–5.
 
 ## Task 3: Establish DMA and firmware startup
 

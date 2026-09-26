@@ -30,6 +30,7 @@ const GPU_RESET_BINDINGS: [u32; 15] = [20, 1, 1, 20, 1, 2, 20, 1, 4, 20, 1, 8, 2
 
 #[derive(Clone, Copy)]
 struct GpuResources<'a> {
+    compatible_exact: bool,
     base: usize,
     size: Option<usize>,
     clocks_bytes: Option<usize>,
@@ -40,6 +41,9 @@ struct GpuResources<'a> {
 }
 
 fn validate_gpu_resources(resources: GpuResources<'_>) -> Result<(), &'static str> {
+    if !resources.compatible_exact {
+        return Err("unexpected_gpu_compatible");
+    }
     if resources.status != Some("okay") {
         return Err("gpu_node_disabled");
     }
@@ -70,6 +74,9 @@ fn inspect_gpu_dt() -> Result<(), &'static str> {
         return Err("unexpected_register_aperture");
     }
     validate_gpu_resources(GpuResources {
+        compatible_exact: node
+            .property("compatible")
+            .is_some_and(|property| property.value == b"img,gpu\0"),
         base: region.starting_address as usize,
         size: region.size,
         clocks_bytes: node.property("clocks").map(|property| property.value.len()),
@@ -203,7 +210,8 @@ pub(super) fn probe_on_request() {
     let dt_requested = requested("asterinas.gpu_dt_probe=1");
     let crg_requested = requested("asterinas.gpu_crg_probe=1");
     let power_requested = requested("asterinas.gpu_powered_id_probe=1");
-    if !dt_requested && !crg_requested && !power_requested {
+    let owner_requested = requested("asterinas.powervr=1");
+    if !dt_requested && !crg_requested && !power_requested && !owner_requested {
         return;
     }
     if dt_requested {
@@ -225,7 +233,7 @@ pub(super) fn probe_on_request() {
     // IoMem acquisitions are not currently recycled on Drop. When both
     // probes are selected, the powered probe must print the snapshot from
     // its own mapping instead of acquiring the CRG range a second time.
-    if crg_requested && !power_requested {
+    if crg_requested && !power_requested && !owner_requested {
         let result = inspect_gpu_crg_dt().and_then(|()| read_gpu_crg());
         match result {
             Ok(snapshot) => print_gpu_crg_snapshot(snapshot),
@@ -237,6 +245,16 @@ pub(super) fn probe_on_request() {
     if power_requested {
         power::probe_on_request(crg_requested);
     }
+    if owner_requested {
+        match power::register_control_on_request(crg_requested && !power_requested) {
+            Ok(()) => aster_logger::println!(
+                "ASTERINAS_POWERVR_OWNER status=ready bvnc=30.3.408.101 crg_restored=1 firmware=untouched render=unavailable"
+            ),
+            Err(reason) => {
+                aster_logger::println!("ASTERINAS_POWERVR_OWNER status=skipped reason={}", reason)
+            }
+        }
+    }
 }
 
 #[cfg(ktest)]
@@ -247,6 +265,7 @@ mod tests {
 
     fn prepared_resources() -> GpuResources<'static> {
         GpuResources {
+            compatible_exact: true,
             base: 0x5140_0000,
             size: Some(0xfffff),
             clocks_bytes: Some(24),
@@ -264,6 +283,12 @@ mod tests {
 
     #[ktest]
     fn changed_gpu_resources_are_rejected_before_mmio() {
+        let mut resources = prepared_resources();
+        resources.compatible_exact = false;
+        assert_eq!(
+            validate_gpu_resources(resources),
+            Err("unexpected_gpu_compatible")
+        );
         let mut resources = prepared_resources();
         resources.base = 0x5141_0000;
         assert_eq!(
@@ -309,6 +334,10 @@ mod tests {
     fn qemu_virt_has_no_megrez_gpu_node() {
         assert_eq!(inspect_gpu_dt().err(), Some("no_gpu_node"));
         assert_eq!(inspect_gpu_crg_dt().err(), Some("no_gpu_node"));
+        assert_eq!(
+            power::register_control_on_request(false),
+            Err("no_gpu_node")
+        );
     }
 
     #[ktest]
