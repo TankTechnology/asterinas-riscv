@@ -54,15 +54,9 @@ service handles these vendor command IDs, the RockOS driver initializes the
 GPU, firmware, and GPU MMU *before* it dispatches them. Replaying this table
 against an uninitialized device cannot draw pixels.
 
-The trace records the outer ioctl result only; it does not read each generated
-output struct's `eError` field. It also ends after the pixel readback without
-showing a complete teardown sequence. The first service prototype must capture
-bridge-level status and fd-close cleanup before this list is treated as a
-minimal supported ABI.
-
-The tracer now has a separate `ASTERINAS_IOCTLTRACE_PVR_STATUS=1` opt-in for
-the next matching RockOS reference run. It uses the packed output structs'
-checked `eError` offsets and a fault-safe self-process read. Unknown command
-IDs, short outputs, and unreadable pointers yield `status=unavailable`, never a
-guessed success. This new mode has passed host checks for known offsets and an
-unreadable page, but no new physical RockOS trace has been collected yet.
+The [follow-up RockOS reference run](../porting/evidence/2026-09-26-megrez-powervr-bridge-status/README.md)
+captured each generated output struct's `eError` field: all 188 observed calls
+returned zero both from the outer ioctl and the inner bridge status. The trace
+still ends after pixel readback and does not establish the complete fd-close or
+firmware teardown sequence. Those lifetimes remain necessary before this
+observed client surface can be treated as a sufficient service ABI.
