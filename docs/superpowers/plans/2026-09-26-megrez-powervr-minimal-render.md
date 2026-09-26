@@ -33,7 +33,7 @@
 ## Task 1: Pin the reusable software contract
 
 - [ ] Record SHA-256 and package versions for `rgx.fw.30.3.408.101`, `rgx.sh.30.3.408.101`, `libVK_IMG.so`, and the RockOS EGL/GLES/GBM libraries from the working reference boot. Keep licensed binaries out of Git; put an exact manifest and local staging instructions in `docs/porting/evidence/`.
-- [ ] Decode the observed 26 bridge function IDs against RockOS commit `bf2ec5d53002c16bc1bc593b92516eb6c2866176`, including input/output sizes and the returned bridge status. Re-run the 16 × 16 test on the matching RockOS kernel and require both correct pixels and no bridge-level error. Outer `ioctl` return zero alone is insufficient.
+- [x] Decode the observed 26 bridge function IDs against RockOS commit `bf2ec5d53002c16bc1bc593b92516eb6c2866176`, including input/output sizes and the returned bridge status. The matching RockOS kernel passed the 16 × 16 pixel test with all 188 inner bridge statuses zero. See [reference evidence](../../porting/evidence/2026-09-26-megrez-powervr-bridge-status/README.md).
 - [ ] Record firmware initialization and shutdown events in the same bounded trace. A root daemon prototype is viable only if the needed DDK server logic can be isolated from Linux-specific memory and scheduler internals; otherwise port the minimal server logic behind the same kernel ownership boundary. Do not implement 26 empty ioctl stubs.
 
 ## Task 2: Add a selected-boot GPU owner
