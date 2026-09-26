@@ -26,9 +26,46 @@ See the [ext2 documentation](https://docs.kernel.org/6.1/filesystems/ext2.html),
 [fsync manual](https://man7.org/linux/man-pages/man2/fsync.2.html), and
 [e2fsck exit-code manual](https://man7.org/linux/man-pages/man8/e2fsck.8.html).
 
-## Immediate operating rule
+## Storage-path finding and target behavior
 
-1. Before every writable selected boot, check the **unmounted** partition
+The Megrez path used here is an **SDHC card**, not eMMC. Ext2's `sync()`
+submits a block-device `Flush`, but `kernel/comps/mmc/src/block.rs` currently
+answers `BioType::Flush` with `BioStatus::Complete` without acquiring the
+write-path lock or checking card state. `card.rs` waits for SDHCI transfer
+completion on writes but does not check a post-write CMD13 status or discover
+SD cache capability. A no-op flush might be valid for a card with no volatile
+cache after all writes are known complete; the current code has not established
+those prerequisites. This is a **durability-contract gap**, not proof that it
+caused the observed ext2 damage. Linux's
+[MMC block driver](https://github.com/torvalds/linux/blob/master/drivers/mmc/core/block.c)
+is a reference for bounded post-write status checks and card-specific cache
+handling.
+
+The current ext2 driver does not implement journal replay. It defines
+`HAS_JOURNAL` as a compatible feature but does not reject it during mount;
+it rejects the `RECOVER` incompatible bit. Therefore `tune2fs -j` alone is
+**not** a safe conversion for Asterinas: a nominally clean journaled volume
+could be written without journal transactions. Reject journaled volumes until
+the implementation actually supports their transaction and replay rules.
+
+The target desktop path is: a read-only, recoverable base system image plus a
+persistent **journaled** filesystem for `/home` and writable system state.
+The smallest standards-compatible implementation path is ext3-style metadata
+journaling on the existing ext2 layout: group each directory entry, inode,
+bitmap and block-pointer update into one transaction; write file data before
+committing related metadata; flush the commit record to proven-stable media;
+replay committed transactions before mounting read-write; and recover orphaned
+unlinked inodes. This reuses the current inode/block format but is still a
+substantial kernel feature, not a mount option. Linux's
+[ext2 journaling explanation](https://docs.kernel.org/6.1/filesystems/ext2.html)
+and [ext4 journal contract](https://docs.kernel.org/filesystems/ext4/journal.html)
+describe the required crash boundary. Unsynced latest application data may
+still be lost; the guarantee sought here is a mountable, structurally
+consistent filesystem and correct `fsync` behavior.
+
+## Temporary experiment containment, not a daily-use policy
+
+1. During risky development boots only, check the **unmounted** partition
    from RockOS (`/dev/mmcblk1p2`, UUID
    `c2ce5134-afcc-4d7c-b71e-7e6d4a8f2b10`) with `e2fsck -fn` and require
    exit 0. Asterinas names this partition `/dev/mmcblk0p2`. Keep the raw
@@ -39,8 +76,9 @@ See the [ext2 documentation](https://docs.kernel.org/6.1/filesystems/ext2.html),
    automatic boot step.
 3. Use the bounded userspace shutdown path and verify its `SYNC_DONE` marker
    before relying on a clean reboot. Preserve the kernel watchdog and the
-   RockOS default as recovery paths. Run another offline read-only fsck after
-   each short experiment; a 4 GiB check took only seconds in the DMA session.
+   RockOS default as recovery paths. Offline fsck remains a test oracle and
+   emergency repair tool; it must not become a step the desktop user performs
+   on every boot.
 4. Do not treat the selected GPU boot script as exempt from the writable-boot
    guard. `megrez_board_session.py` validates the userspace/kernel deadline
    pair in its CLI parser, but direct users of `uboot_bootargs_commands()`
@@ -69,9 +107,20 @@ See the [ext2 documentation](https://docs.kernel.org/6.1/filesystems/ext2.html),
 For experimental GPU boots, a read-only base plus tmpfs/overlay upper layer
 can keep Firefox's write-heavy profile away from the persistent ext2 image,
 at the cost of losing that profile on reboot. This is a containment measure,
-not a durable desktop solution. A persistent journaled filesystem is the
-longer-term route to robust daily use; the current Asterinas filesystem
-registry includes ext2 and overlayfs but no ext4 implementation. Simply
-reformatting this partition as ext4 would make it unmountable by today's
-kernel. Linux's [ext4 journal documentation](https://docs.kernel.org/filesystems/ext4/journal.html)
-describes the metadata protection that a future implementation would need.
+not a durable desktop solution. The current Asterinas filesystem registry
+includes ext2 and overlayfs but no ext4 implementation. Simply reformatting
+this partition as ext4 would make it unmountable by today's kernel.
+
+## Acceptance without operator fsck
+
+- In QEMU, use cloned images and deterministic resets at metadata and journal
+  commit points. The automated test may use offline `e2fsck` to validate the
+  result; a normal Asterinas boot must perform journal replay itself.
+- After each reset, require a mountable filesystem, no dangling directory
+  entries or multiply-claimed blocks, and no `ESTALE` in a fresh Firefox
+  profile. Check `fsync` and parent-directory durability separately.
+- On the board, verify SD write completion and flush behavior with card
+  capability/status evidence and a readback after a real reboot. Then run one
+  short Firefox workload, reboot at controlled points, and require recovery
+  without RockOS repair. Retain RockOS as the recovery entry while this gate
+  is developed.
