@@ -37,17 +37,19 @@ fail() {
 
 DEADLINE="${ASTERINAS_SAFE_REBOOT_AFTER:-}"
 KERNEL_DEADLINE=''
-if [[ -z "$DEADLINE" ]]; then
-    [[ "$CMDLINE_PATH" == /* && -f "$CMDLINE_PATH" && ! -L "$CMDLINE_PATH" ]] ||
-        fail invalid-cmdline-file
-    read -r -a cmdline_tokens <"$CMDLINE_PATH" || fail cmdline-read
-    for token in "${cmdline_tokens[@]}"; do
-        [[ "$token" == asterinas.reboot_after=* ]] || continue
-        [[ -z "$KERNEL_DEADLINE" ]] || fail ambiguous-kernel-deadline
-        KERNEL_DEADLINE="${token#asterinas.reboot_after=}"
-    done
-    [[ -n "$KERNEL_DEADLINE" ]] || exit 0
+[[ "$CMDLINE_PATH" == /* && -f "$CMDLINE_PATH" && ! -L "$CMDLINE_PATH" ]] ||
+    fail invalid-cmdline-file
+read -r -a cmdline_tokens <"$CMDLINE_PATH" || fail cmdline-read
+for token in "${cmdline_tokens[@]}"; do
+    [[ "$token" == asterinas.reboot_after=* ]] || continue
+    [[ -z "$KERNEL_DEADLINE" ]] || fail ambiguous-kernel-deadline
+    KERNEL_DEADLINE="${token#asterinas.reboot_after=}"
+done
+if [[ -n "$KERNEL_DEADLINE" ]]; then
     [[ "$KERNEL_DEADLINE" =~ ^[1-9][0-9]*$ ]] || fail invalid-kernel-deadline
+fi
+if [[ -z "$DEADLINE" ]]; then
+    [[ -n "$KERNEL_DEADLINE" ]] || exit 0
     DEADLINE=$((KERNEL_DEADLINE > KERNEL_REBOOT_GUARD_SECONDS ?
         KERNEL_DEADLINE - KERNEL_REBOOT_GUARD_SECONDS : 1))
 fi

@@ -903,23 +903,30 @@ configure_and_normalize_rootfs
         )
         environment.pop("ASTERINAS_SAFE_REBOOT_AFTER", None)
 
-        result = subprocess.run(
-            ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
-            env=environment,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
+        for explicit_deadline in (None, "1"):
+            with self.subTest(explicit_deadline=explicit_deadline):
+                actions.write_text("", encoding="utf-8")
+                console.write_text("", encoding="utf-8")
+                if explicit_deadline is None:
+                    environment.pop("ASTERINAS_SAFE_REBOOT_AFTER", None)
+                else:
+                    environment["ASTERINAS_SAFE_REBOOT_AFTER"] = explicit_deadline
+                result = subprocess.run(
+                    ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
 
-        self.assertNotEqual(result.returncode, 0)
-        if actions.exists():
-            self.assertNotIn("sync:", actions.read_text(encoding="utf-8"))
-            self.assertNotIn("reboot:", actions.read_text(encoding="utf-8"))
-        self.assertIn(
-            "ASTERINAS_USERSPACE_REBOOT_FAIL reason=kernel-deadline-exhausted",
-            console.read_text(encoding="utf-8").splitlines(),
-        )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn("sync:", actions.read_text(encoding="utf-8"))
+                self.assertNotIn("reboot:", actions.read_text(encoding="utf-8"))
+                self.assertIn(
+                    "ASTERINAS_USERSPACE_REBOOT_FAIL reason=kernel-deadline-exhausted",
+                    console.read_text(encoding="utf-8").splitlines(),
+                )
 
     def test_safe_reboot_stops_root_evidence_and_skips_absent_browser_units(self) -> None:
         fake_bin = self.directory / "safe-reboot-network-bin"

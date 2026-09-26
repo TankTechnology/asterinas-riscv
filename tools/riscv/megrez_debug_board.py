@@ -32,6 +32,7 @@ from tools.riscv.megrez_board_session import (
     BoardSession,
     open_serial,
     read_available,
+    validate_writable_recovery,
 )
 from tools.riscv.megrez_debug_contract import (
     ArtifactIdentity,
@@ -229,6 +230,10 @@ class BoardTermination(RuntimeError):
 def _uboot_bootargs_commands(bootargs: str) -> tuple[str, ...]:
     """Stage exact boot arguments without exceeding U-Boot's line buffer."""
 
+    try:
+        validate_writable_recovery(bootargs)
+    except ValueError as error:
+        raise BoardRunFailure(f"uboot-bootargs-recovery: {error}") from error
     tokens = bootargs.split()
     if not tokens or " ".join(tokens) != bootargs:
         raise BoardRunFailure("uboot-bootargs-not-canonical")
