@@ -547,6 +547,7 @@ test_riscv_physical_graphics_unit:
 	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
 		python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_physical_graphics_gate \
+		tools.riscv.tests.test_hdmi_pixel_oracle \
 		tools.riscv.tests.test_megrez_physical_graphics \
 		tools.riscv.tests.test_physical_graphics_qemu_gate -v
 
@@ -706,6 +707,10 @@ prepare_riscv_megrez_physical_graphics:
 	@if [ "$(MEGREZ_PHYSICAL_GRAPHICS_DISPLAY)" = hdmi ]; then \
 		test -n "$(MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE)" || \
 			{ echo "MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE is required for hdmi" >&2; exit 2; }; \
+		command -v ffmpeg >/dev/null 2>&1 || \
+			{ echo "ffmpeg is required for HDMI pixel comparison" >&2; exit 2; }; \
+		command -v ffprobe >/dev/null 2>&1 || \
+			{ echo "ffprobe is required for HDMI pixel comparison" >&2; exit 2; }; \
 	else \
 		test -z "$(MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE)" || \
 			{ echo "MEGREZ_PHYSICAL_GRAPHICS_HDMI_CAPTURE conflicts with operator-attested" >&2; exit 2; }; \
