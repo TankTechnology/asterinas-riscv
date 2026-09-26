@@ -152,3 +152,15 @@ the kernel test constructs the RockOS-like split and checks both sibling lists
 and `device/uevent` strings. The current boot still supplies a single
 descriptor for its existing DRM implementation. No PowerVR node is registered
 by this change, and it provides no GPU acceleration or HDMI pixel evidence.
+
+The [RockOS vendor source tree at the pinned commit](https://github.com/rockos-riscv/rockos-kernel/tree/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic)
+contains 875 files across `generated`, `hwdefs`, `include`, and `services`
+(851 C/header/assembly files, about 16 MiB in total by the GitHub tree
+metadata). The DRM entry point calls `PVRSRVCommonDeviceCreate`,
+`PVRSRVDeviceInit`, and `PVRSRVCommonDeviceInitialise` before the bridge can
+serve a client. Those calls cross firmware, GPU MMU, power, memory objects, and
+synchronization code. The observed 26 bridge functions are only the userspace
+calls of one draw; they do not replace device initialization. The next
+hardware milestone therefore needs a separately gated, read-only probe of the
+powered GPU identity and firmware contract, with the RockOS recovery path
+preserved. Only after that can a real render node and its bridge be exposed.
