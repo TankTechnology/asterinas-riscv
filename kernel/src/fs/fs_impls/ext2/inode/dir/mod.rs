@@ -95,7 +95,7 @@ impl Inode {
 
         parent_inner.delete_entry(&entry_info)?;
         parent_inner.dec_link_count(1);
-        parent_inner.set_mtime_ctime(utils::now());
+        parent_inner.mark_dir_modified();
 
         Ok(())
     }
@@ -163,7 +163,7 @@ impl Inode {
         if is_dir {
             parent_inner.inc_link_count(1);
         }
-        parent_inner.set_mtime_ctime(utils::now());
+        parent_inner.mark_dir_modified();
         fs.insert_inode(child.clone());
         Ok(child)
     }
@@ -185,7 +185,7 @@ impl Inode {
             None => dir_inner.grow_dir_block(&fs)?,
         };
         dir_inner.add_entry(&slot, name, old.ino, dir_entry_file_type)?;
-        dir_inner.set_mtime_ctime(utils::now());
+        dir_inner.mark_dir_modified();
 
         let old_inner = guards.inner_mut(old.ino());
         old_inner.set_ctime(utils::now());
@@ -216,7 +216,7 @@ impl Inode {
 
         let parent_inner = guards.inner_mut(self.ino());
         parent_inner.delete_entry(&entry_info)?;
-        parent_inner.set_mtime_ctime(utils::now());
+        parent_inner.mark_dir_modified();
 
         // Update timestamps before dropping the target link count.
         let child_inner = guards.inner_mut(child.ino());
@@ -357,7 +357,7 @@ impl Inode {
             if old_is_dir && has_replaced {
                 dir_inner.dec_link_count(1);
             }
-            dir_inner.set_mtime_ctime(utils::now());
+            dir_inner.mark_dir_modified();
         } else {
             let target_inner = guards.inner_mut(target.ino);
             if has_replaced {
@@ -368,14 +368,14 @@ impl Inode {
             if old_is_dir && !has_replaced {
                 target_inner.inc_link_count(1);
             }
-            target_inner.set_mtime_ctime(utils::now());
+            target_inner.mark_dir_modified();
             let source_inner = guards.inner_mut(self.ino);
             let old_info = &source_inner.find_entry_info(old_name)?;
             source_inner.delete_entry(old_info)?;
             if old_is_dir {
                 source_inner.dec_link_count(1);
             }
-            source_inner.set_mtime_ctime(utils::now());
+            source_inner.mark_dir_modified();
         }
 
         // Step 4.2: update replaced inode link count.
@@ -398,8 +398,7 @@ impl Inode {
         if old_is_dir && !is_same_dir {
             let dotdot_entry_info = old_inner.find_entry_info("..")?;
             old_inner.set_entry_target(&dotdot_entry_info, target.ino, DirEntryFileType::Dir)?;
-            old_inner.remove_flags(FileFlags::INDEX_DIR);
-            old_inner.set_mtime_ctime(utils::now());
+            old_inner.mark_dir_modified();
         } else {
             old_inner.set_ctime(utils::now());
         }
@@ -409,6 +408,13 @@ impl Inode {
 }
 
 impl InodeInner {
+    /// Linear directory updates invalidate Linux's on-disk HTree lookup index.
+    fn mark_dir_modified(&mut self) {
+        debug_assert_eq!(self.inode_type(), InodeType::Dir);
+        self.remove_flags(FileFlags::INDEX_DIR);
+        self.set_mtime_ctime(utils::now());
+    }
+
     /// Initializes an empty directory with `.` and `..` entries.
     fn make_empty(&mut self, fs: &Ext2, ino: Ext2Ino, parent_ino: Ext2Ino) -> Result<()> {
         // Allocate one block for the directory.
@@ -846,5 +852,22 @@ mod test {
             f.ext2.super_block().free_blocks_count(),
             free_blocks_before + 1
         );
+    }
+
+    #[ktest]
+    fn mutating_indexed_directory_disables_stale_hash_index() {
+        let (f, root) = default_fixture();
+        let old = create_file(&root, "user.js");
+        let old_ino = old.ino();
+        create_file(&root, "user.js.tmp");
+
+        root.inner.write().desc.flags.insert(FileFlags::INDEX_DIR);
+        root.rename("user.js.tmp", &root, "user.js").unwrap();
+        assert_ne!(root.lookup("user.js").unwrap().ino(), old_ino);
+        assert!(!root.inner.read().desc.flags.contains(FileFlags::INDEX_DIR));
+
+        f.ext2.sync_all().unwrap();
+        let raw = read_raw_inode_from_disk(&f, root.ino());
+        assert_eq!(raw.flags & FileFlags::INDEX_DIR.bits(), 0);
     }
 }
