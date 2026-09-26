@@ -49,6 +49,20 @@
  * is only about the device. */
 #define DRM_IOC_TYPE 'd'
 
+/* RockOS's vendor PowerVR bridge is one outer DRM ioctl for many operations.
+ * Decode only its fixed-width envelope, and only when explicitly requested;
+ * the ordinary desktop trace remains unchanged and never dumps payloads. */
+struct pvr_bridge_request {
+    uint32_t bridge_id;
+    uint32_t bridge_func_id;
+    uint64_t in_data_ptr;
+    uint64_t out_data_ptr;
+    uint32_t in_data_size;
+    uint32_t out_data_size;
+};
+_Static_assert(sizeof(struct pvr_bridge_request) == 32, "PVR bridge UAPI size");
+#define PVR_BRIDGE_IOCTL _IOWR('d', 0x40, struct pvr_bridge_request)
+
 /* A bounded line: enough for the directive and its outcome, short enough that
  * a partial write cannot interleave badly with another thread's. */
 #define LINE_MAX 160
@@ -65,6 +79,7 @@ static ssize_t (*real_writev)(int, const struct iovec *, int);
 static ssize_t (*real_sendmsg)(int, const struct msghdr *, int);
 static int out_fd = -1;
 static int tracing;
+static int trace_pvr_bridge;
 
 /* Appends one line, retrying nothing: a lost line is better than a shim that
  * blocks. Called with no locks held that the caller could also take.
@@ -713,6 +728,7 @@ __attribute__((constructor)) static void start_tracing(void)
         return;
     out_fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
     tracing = out_fd >= 0;
+    trace_pvr_bridge = getenv("ASTERINAS_IOCTLTRACE_PVR_BRIDGE") != NULL;
 }
 
 /* Waiting on a lock and waiting on a socket look the same from `/proc`: both
@@ -766,6 +782,8 @@ int ioctl(int fd, unsigned long request, ...)
 {
     va_list arguments;
     void *argument;
+    struct pvr_bridge_request pvr_bridge;
+    int have_pvr_bridge;
     int result, saved;
 
     va_start(arguments, request);
@@ -779,6 +797,11 @@ int ioctl(int fd, unsigned long request, ...)
         return -1;
     }
 
+    have_pvr_bridge = tracing && trace_pvr_bridge &&
+                      request == PVR_BRIDGE_IOCTL && argument != NULL;
+    if (have_pvr_bridge)
+        memcpy(&pvr_bridge, argument, sizeof(pvr_bridge));
+
     result = real_ioctl(fd, request, argument);
     saved = errno;
 
@@ -791,6 +814,16 @@ int ioctl(int fd, unsigned long request, ...)
         used = append_fd_path(line, used, fd);
         used = append(line, used, " cmd=");
         used = append_hex(line, used, request);
+        if (have_pvr_bridge) {
+            used = append(line, used, " bridge=");
+            used = append_dec(line, used, pvr_bridge.bridge_id);
+            used = append(line, used, " func=");
+            used = append_dec(line, used, pvr_bridge.bridge_func_id);
+            used = append(line, used, " in=");
+            used = append_dec(line, used, pvr_bridge.in_data_size);
+            used = append(line, used, " out=");
+            used = append_dec(line, used, pvr_bridge.out_data_size);
+        }
         used = append(line, used, " ret=");
         used = append_dec(line, used, result);
         if (result < 0) {

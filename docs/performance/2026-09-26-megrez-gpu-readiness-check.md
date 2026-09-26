@@ -60,6 +60,12 @@ identified a PowerVR A-Series AXM-8-256 integrated GPU and the proprietary
 24.2@6643903 driver. `eglinfo -B` identified the same hardware for OpenGL ES
 3.2, although it also listed a separate software OpenGL/softpipe platform.
 Device enumeration alone therefore remains an insufficient acceleration test.
+The kernel boot log separately states `Read BVNC 30.3.408.101 from HW device
+registers`, which is stronger than inferring BVNC from the firmware filename.
+[Mesa's published PowerVR device list](https://docs.mesa3d.org/drivers/powervr.html)
+does not list this exact BVNC among active, partial, or unsupported targets.
+The upstream Mesa path must be treated as unverified for this board; the
+working reference is the RockOS vendor stack.
 
 The new `tools/riscv/drm/gles-pixel-probe.py` creates an EGL context from the
 specified GBM render node, draws a white quadrilateral over the left half of a
@@ -76,6 +82,9 @@ reference measurement, not an Asterinas speedup. The broader `--validate`
 reported 21 Success, six Failure, and six Unknown outcomes; a zero process
 exit code does not mean every validation scene passed. During a separate
 bounded run, the client had both `/dev/dri/card0` and `renderD128` open.
+The kernel also logged `PVRSRV_ERROR_OBJECT_STILL_REFERENCED` after the broad
+validation run. Its cause was not isolated in this short experiment; a stable
+desktop claim needs repeated bounded pixel and resource-lifetime checks.
 The serial transcript is retained at
 `/home/ubuntu/.codex/asterinas-evidence/2026-09-26/megrez-gpu-reference.serial.log`.
 Asterinas still lacks a verified PowerVR render driver and its
@@ -92,9 +101,42 @@ the tested `libVK_IMG.so`/GLES stack. The next kernel work must inventory the
 vendor bridge, its memory and firmware lifecycle, and the exact dma-buf/fence
 contract before exposing a PowerVR render node on Asterinas.
 
+An opt-in extension to `tools/riscv/perf/ioctltrace.c` records the fixed-width
+vendor bridge envelope (`bridge_id`, `bridge_func_id`, input and output byte
+counts), without copying payloads or pointer values. A second selected
+`6.6.87-win2030` boot ran the same successful 16×16 pixel probe with
+`ASTERINAS_IOCTLTRACE_PVR_BRIDGE=1`. The captured 331-line trace contains
+210 DRM ioctls: 188 vendor `PVR_SRVKM_CMD` (`0xc0206440`), 12
+`DRM_IOCTL_VERSION`, five `PVR_SRVKM_INIT`, four sync-rename, and one
+sync-force-software-only. The 188 bridge calls cover 26 distinct
+`(bridge_id, bridge_func_id)` pairs. `(6,8)` and `(6,16)` each occur 57 times;
+`(6,24)` and `(6,11)` occur 14 times each. Every outer ioctl in this small
+successful probe returned zero. The bridge's own operation status may reside
+inside its output buffer, which this low-overhead trace deliberately does not
+decode. The trace also cannot see a library that bypasses libc's `ioctl`
+symbol. It is retained at
+`/home/ubuntu/.codex/asterinas-evidence/2026-09-26/powervr-gles-bridge-decode.log`.
+These counts describe one minimal draw, not all of Firefox or the full DDK.
+The vendor's [bridge group table](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/include/pvr_bridge.h)
+and [Volcanic MM commands](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/generated/volcanic/mm_bridge/common_mm_bridge.h)
+identify group 6 as memory management: function 8 allocates a RAM-backed PMR,
+16 reserves and maps a range, 24 queries heap details, and 11 creates a heap.
+The [RGX group table](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/include/rgx_bridge.h)
+identifies group 130 as TA/3D and 137 as transfer. Their generated headers
+name observed `(130,10)` as
+[`RGXKickTA3D2`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/generated/volcanic/rgxta3d_bridge/common_rgxta3d_bridge.h)
+and `(137,4)` as
+[`RGXTDMSubmitTransfer2`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/generated/volcanic/rgxtq2_bridge/common_rgxtq2_bridge.h).
+This makes GPU memory allocation/mapping and command
+submission the concrete first implementation contracts.
+
 After the reference run, a software reboot returned to U-Boot, the original
 default RockOS entry reached a login prompt, and a separately reopened
 exclusive serial connection returned nonce-framed UID 0, `uname -r=6.6.87`,
 and new boot ID `62b2a783-2532-45de-92e0-6173edaf4ac8`. The selected GPU
 boot therefore left no persistent boot-entry change. This restoration is
 control-path evidence, not an Asterinas desktop or HDMI validation.
+The second tracing boot was likewise software-rebooted back to the default
+RockOS entry. Reopening the exclusive serial port returned nonce-framed UID 0,
+`uname -r=6.6.87`, and boot ID
+`9d656fea-5d66-4761-b860-1a413ef518f1`.
