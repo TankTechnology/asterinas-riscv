@@ -54,6 +54,7 @@ from tools.riscv.megrez_debug_board import (
 )
 from tools.riscv.megrez_debug_contract import DebugPlan
 from tools.riscv.megrez_debug_simulation import _validate_current_artifacts
+from tools.riscv.hdmi_pixel_oracle import PixelComparison, PixelMismatch, compare_hdmi_pixels
 
 
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
@@ -446,6 +447,8 @@ class PhysicalGraphicsOperations(Protocol):
     ) -> DailyUseTerminalStatus: ...
 
     def retain_hdmi(self, timeout: float) -> FileEvidence: ...
+
+    def verify_hdmi_pixels(self, screenshot: bytes, hdmi: FileEvidence) -> None: ...
 
     def retain_operator_display(
         self, nonce: str, timeout: float
@@ -1112,6 +1115,7 @@ def run_physical_graphics(
 
             if config.display_mode is DisplayEvidenceMode.EXTERNAL_HDMI:
                 hdmi = operations.retain_hdmi(config.hdmi_timeout)
+                operations.verify_hdmi_pixels(retained_screenshots[-1], hdmi)
             else:
                 operator_display = operations.retain_operator_display(
                     selected_nonces[-1], config.hdmi_timeout
@@ -1479,6 +1483,7 @@ class RealPhysicalGraphicsOperations:
         "physical-graphics-cycle-3.png",
         "hdmi-evidence.png",
         "hdmi-evidence.jpg",
+        "hdmi-pixel-check.json",
         "operator-display-attestation.json",
     )
 
@@ -1536,6 +1541,7 @@ class RealPhysicalGraphicsOperations:
         self._guest_deadline: float | None = None
         self._debug_console_ready = False
         self._recovery_cursor = 0
+        self._pixel_comparison: PixelComparison | None = None
 
     @property
     def transcript(self) -> str:
@@ -1551,6 +1557,7 @@ class RealPhysicalGraphicsOperations:
         self._guest_deadline = None
         self._debug_console_ready = False
         self._recovery_cursor = 0
+        self._pixel_comparison = None
         output_path = _safe_output_directory(self._output_path, self._repository)
         if self._hdmi_capture is not None:
             try:
@@ -2009,6 +2016,21 @@ class RealPhysicalGraphicsOperations:
             format=image_format,
         )
 
+    def verify_hdmi_pixels(self, screenshot: bytes, hdmi: FileEvidence) -> None:
+        """Require actual HDMI pixels to match the final Firefox witness."""
+
+        self._pixel_comparison = None
+        output = self._require_output()
+        if hdmi.path.parent.absolute() != output.path.absolute():
+            raise HostGateError("HDMI pixels have no retained capture")
+        payload, _metadata = _read_held_regular(hdmi.path)
+        if len(payload) != hdmi.size or hashlib.sha256(payload).hexdigest() != hdmi.sha256:
+            raise HostGateError("HDMI pixels changed after retention")
+        try:
+            self._pixel_comparison = compare_hdmi_pixels(screenshot, payload)
+        except PixelMismatch as error:
+            raise HostGateError(f"HDMI pixel comparison failed: {error}") from error
+
     def retain_operator_display(
         self, nonce: str, timeout: float
     ) -> OperatorDisplayEvidence:
@@ -2175,6 +2197,17 @@ class RealPhysicalGraphicsOperations:
             if output.sha256(hdmi.path.name) != hdmi.sha256:
                 raise HostGateError("retained HDMI digest changed before publication")
             output_names.append(hdmi.path.name)
+        if self._pixel_comparison is not None:
+            comparison = (
+                json.dumps(
+                    asdict(self._pixel_comparison),
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                + "\n"
+            ).encode()
+            output.atomic_write("hdmi-pixel-check.json", comparison, mode=0o600)
+            output_names.append("hdmi-pixel-check.json")
         if result.operator_display is not None:
             attestation = (
                 json.dumps(
