@@ -1,0 +1,8 @@
+{
+  "error": "RuntimeError: powered GPU ID validation and CRG restore marker missing",
+  "kernel_entered": true,
+  "recovered_to_rockos": true,
+  "rockos_reboot_reached_uboot": true,
+  "source_commit": "f63748815",
+  "status": "failed"
+}
