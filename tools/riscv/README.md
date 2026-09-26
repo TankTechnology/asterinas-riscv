@@ -1312,6 +1312,12 @@ white left half over black, and reads two pixels. Exit status zero requires
 both the requested renderer and correct pixels; a software fallback or absent
 node fails. This measures GPU drawing, not the HDMI scanout. The separate
 physical HDMI pixel gate is still required to qualify visible output.
+For the RockOS vendor reference, the existing `perf/ioctltrace.c` shim can
+also decode the 32-byte PowerVR bridge envelope when
+`ASTERINAS_IOCTLTRACE_PVR_BRIDGE=1` is set alongside
+`ASTERINAS_IOCTLTRACE_OUT` and `LD_PRELOAD`. It records bridge/function IDs
+and byte counts, never the pointed-to payload. This is a diagnostic trace,
+not an ioctl conformance test; the bridge's inner status is not decoded.
 
 Configure the already deployed, measured MMC release once. This operation is
 local-only: it validates and hashes the existing plan, RockOS receipt, and

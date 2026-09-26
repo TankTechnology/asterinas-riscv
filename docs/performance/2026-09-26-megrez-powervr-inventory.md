@@ -47,28 +47,32 @@ A decompressed copy of the matching package kernel was staged at
 The initrd and package Megrez DTB SHA-256 values are
 `64cab5cd753da2b4c48b5f1f16544edd2562d2eb6e4022c93b686d220e7405e2`
 and `02a8d43d581b4aa8e957e231ee90eba19ffd7e8cfcf74694e86a1fb9c6b37f17`.
-No persistent boot entry was changed. A temporary hardware-reference boot is
-deferred until a recovery method is available: this U-Boot has no `wdt`
-command, and the current RockOS boot exposes no `/dev/watchdog`. An early
-hang in an untested kernel would otherwise leave no verified remote reset.
+No persistent boot entry was changed. The operator later confirmed a person
+could physically reset the board, so the temporary matching-kernel boot was
+performed and the default RockOS kernel was restored afterward. This U-Boot
+still has no `wdt` command and RockOS exposes no `/dev/watchdog`; an early
+hang would have needed that physical reset. See the
+[reference result](2026-09-26-megrez-gpu-readiness-check.md).
 
 The RockOS driver Makefile defaults `RGX_BVNC` and `RGX_BNC` to
-`30.3.408.101`, but a build default is not a readout of this board's silicon.
-The upstream Mesa PowerVR Vulkan driver documents support by exact BVNC, and
-its current actively developed list does not contain that Makefile default.
-Therefore the upstream DRM/Mesa path and RockOS's vendor bridge cannot be
-treated as interchangeable. Read the physical BVNC from a working driver or
-hardware probe, then decide which kernel UAPI and userspace stack can actually
-support it. A product name alone is insufficient for that decision.
+`30.3.408.101`. The selected matching-kernel boot then reported
+`Read BVNC 30.3.408.101 from HW device registers`, establishing the actual
+board identity rather than relying on that build default. The
+[Mesa PowerVR support list](https://docs.mesa3d.org/drivers/powervr.html)
+does not include this exact BVNC. The upstream DRM/Mesa path is therefore
+unverified here; the tested Vulkan/GLES path is RockOS's vendor DDK bridge.
 
-The GPU development gate should first establish a separate, recoverable
-RockOS boot where the running kernel and `pvrsrvkm` module match. Confirm a
-render node, a hardware renderer, and a minimal EGL/Vulkan pixel probe there;
-capture the exact opened nodes, ioctls, firmware files, and dma-buf/fence
-traffic. Then implement an Asterinas render node and its memory/firmware/
-submission/synchronization contract against that trace, followed by
-cross-device PRIME sharing with the display path. Only after a hardware pixel
-probe passes should Xorg acceleration and Firefox's compositor/WebGL be
+The reference boot now confirms a PowerVR render node, hardware Vulkan/GLES
+identity, a minimal GLES pixel probe, and a bounded scene benchmark. The
+first 16×16 render trace records 188
+vendor bridge ioctls across 26 function IDs, dominated by memory allocation
+and mapping; see the [readiness evidence](2026-09-26-megrez-gpu-readiness-check.md).
+The remaining reference work is to decode bridge output status, firmware
+lifecycle, and cross-device dma-buf/fence traffic. Then implement an
+Asterinas render node and its memory, firmware, submission, and
+synchronization contract against that trace, followed by
+cross-device PRIME sharing with the display path. Only after an Asterinas
+hardware pixel probe passes should Xorg acceleration and Firefox's compositor/WebGL be
 enabled in a selected boot. The current display scanout experiment remains
 useful independently of that work.
 
