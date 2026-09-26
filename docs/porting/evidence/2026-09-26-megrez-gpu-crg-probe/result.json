@@ -1,0 +1,13 @@
+{
+  "boot_id": "84dc1f2b-6221-4aff-9550-144bf686d334",
+  "desktop_ready": true,
+  "firefox_pid": 92,
+  "gpu_crg_probe": "status=observed in boot serial transcript",
+  "gpu_dt_probe": "status=ready observed in boot serial transcript",
+  "kernel_entered": true,
+  "reopened_root_same_boot": true,
+  "rockos_reboot_reached_uboot": true,
+  "source_commit": "9ca5f7f2d",
+  "status": "ready",
+  "watchdog_disarmed": true
+}
