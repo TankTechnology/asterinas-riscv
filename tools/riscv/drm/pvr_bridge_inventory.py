@@ -19,7 +19,7 @@ import sys
 
 BRIDGE_CALL = re.compile(
     r"^IOCTL .*\bcmd=0xc0206440 bridge=(\d+) func=(\d+) "
-    r"in=(\d+) out=(\d+) ret=(-?\d+)$"
+    r"in=(\d+) out=(\d+)(?: status=(\d+|unavailable))? ret=(-?\d+)$"
 )
 
 
@@ -28,18 +28,26 @@ def summarize(lines: list[str]) -> dict[str, object]:
     sizes: dict[tuple[int, int], set[tuple[int, int]]] = {}
     first_seen: list[tuple[int, int]] = []
     outer_failures: list[dict[str, int]] = []
+    status_counts: Counter[str] = Counter()
 
     for line_number, line in enumerate(lines, 1):
         match = BRIDGE_CALL.fullmatch(line.strip())
         if match is None:
             continue
-        bridge, function, input_size, output_size, result = map(int, match.groups())
+        bridge = int(match.group(1))
+        function = int(match.group(2))
+        input_size = int(match.group(3))
+        output_size = int(match.group(4))
+        status = match.group(5)
+        result = int(match.group(6))
         key = (bridge, function)
         if key not in counts:
             first_seen.append(key)
             sizes[key] = set()
         counts[key] += 1
         sizes[key].add((input_size, output_size))
+        if status is not None:
+            status_counts[status] += 1
         if result != 0:
             outer_failures.append(
                 {"line": line_number, "bridge": bridge, "function": function, "ret": result}
@@ -65,7 +73,12 @@ def summarize(lines: list[str]) -> dict[str, object]:
             )
         ],
         "outer_ioctl_failures": outer_failures,
-        "bridge_operation_status": "not captured by the fixed-width envelope trace",
+        "bridge_status_counts": dict(sorted(status_counts.items())),
+        "bridge_operation_status": (
+            "captured from pinned RockOS DDK output structs"
+            if status_counts
+            else "not captured by the fixed-width envelope trace"
+        ),
     }
 
 

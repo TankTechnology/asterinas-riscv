@@ -51,7 +51,9 @@
 
 /* RockOS's vendor PowerVR bridge is one outer DRM ioctl for many operations.
  * Decode only its fixed-width envelope, and only when explicitly requested;
- * the ordinary desktop trace remains unchanged and never dumps payloads. */
+ * the ordinary desktop trace remains unchanged and never dumps payloads.
+ * ASTERINAS_IOCTLTRACE_PVR_STATUS=1 additionally reads only the 32-bit eError
+ * field from the 26 observed output structs of pinned DDK 24.2@6643903. */
 struct pvr_bridge_request {
     uint32_t bridge_id;
     uint32_t bridge_func_id;
@@ -80,6 +82,67 @@ static ssize_t (*real_sendmsg)(int, const struct msghdr *, int);
 static int out_fd = -1;
 static int tracing;
 static int trace_pvr_bridge;
+static int trace_pvr_status;
+
+/* The generated RockOS DDK 24.2@6643903 bridge OUT structs are packed, and
+ * their eError field is not always first. Only decode the 26 functions seen in
+ * the bounded 16x16 GLES probe; a different DDK must supply a new table.
+ * Values are byte offsets, not field indexes. */
+static int pvr_bridge_error_offset(uint32_t bridge, uint32_t function)
+{
+    switch (bridge) {
+    case 1: /* services */
+        if (function == 10) return 0;
+        if (function == 0 || function == 2 || function == 4 || function == 15) return 8;
+        break;
+    case 2: /* sync */
+        if (function == 0) return 16;
+        if (function == 2 || function == 7) return 0;
+        break;
+    case 6: /* memory */
+        if (function == 3 || function == 8 || function == 11 || function == 16) return 8;
+        if (function == 4 || function == 18 || function == 22) return 0;
+        if (function == 6) return 24;
+        if (function == 9) return 16;
+        if (function == 24) return 32;
+        break;
+    case 13: /* cache */
+        if (function == 0) return 0;
+        break;
+    case 130: /* TA/3D */
+        if (function == 10) return 0;
+        if (function == 13 || function == 14 || function == 15) return 8;
+        break;
+    case 137: /* transfer */
+        if (function == 4) return 0;
+        if (function == 0 || function == 5) return 8;
+        break;
+    }
+    return -1;
+}
+
+/* process_vm_readv against our own process fails with EFAULT for an invalid
+ * client pointer. memcpy here would turn an optional diagnostic into a crash.
+ * The output status is intentionally the only payload data read or logged. */
+static int read_pvr_bridge_status(uint32_t bridge, uint32_t function,
+                                  const void *output, uint32_t output_size,
+                                  uint32_t *status)
+{
+    int offset = pvr_bridge_error_offset(bridge, function);
+    struct iovec local, remote;
+    uintptr_t address = (uintptr_t)output;
+
+    if (offset < 0 || !output || !status ||
+        output_size < (uint32_t)offset + sizeof(*status) ||
+        address > UINTPTR_MAX - (uintptr_t)offset)
+        return 0;
+    local.iov_base = status;
+    local.iov_len = sizeof(*status);
+    remote.iov_base = (void *)(address + (uintptr_t)offset);
+    remote.iov_len = sizeof(*status);
+    return process_vm_readv(getpid(), &local, 1, &remote, 1, 0) ==
+           (ssize_t)sizeof(*status);
+}
 
 /* Appends one line, retrying nothing: a lost line is better than a shim that
  * blocks. Called with no locks held that the caller could also take.
@@ -729,6 +792,7 @@ __attribute__((constructor)) static void start_tracing(void)
     out_fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
     tracing = out_fd >= 0;
     trace_pvr_bridge = getenv("ASTERINAS_IOCTLTRACE_PVR_BRIDGE") != NULL;
+    trace_pvr_status = getenv("ASTERINAS_IOCTLTRACE_PVR_STATUS") != NULL;
 }
 
 /* Waiting on a lock and waiting on a socket look the same from `/proc`: both
@@ -823,6 +887,19 @@ int ioctl(int fd, unsigned long request, ...)
             used = append_dec(line, used, pvr_bridge.in_data_size);
             used = append(line, used, " out=");
             used = append_dec(line, used, pvr_bridge.out_data_size);
+            if (trace_pvr_status && result == 0) {
+                uint32_t bridge_status;
+                if (read_pvr_bridge_status(pvr_bridge.bridge_id,
+                                           pvr_bridge.bridge_func_id,
+                                           (const void *)(uintptr_t)pvr_bridge.out_data_ptr,
+                                           pvr_bridge.out_data_size,
+                                           &bridge_status)) {
+                    used = append(line, used, " status=");
+                    used = append_dec(line, used, bridge_status);
+                } else {
+                    used = append(line, used, " status=unavailable");
+                }
+            }
         }
         used = append(line, used, " ret=");
         used = append_dec(line, used, result);
