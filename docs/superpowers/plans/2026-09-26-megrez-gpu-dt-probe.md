@@ -34,14 +34,14 @@ tests, cached Docker build.
   Do not call `IoMem::acquire`, create `/dev/dri` nodes, or change clocks.
 - [x] Run the focused kernel tests, RISC-V kernel build, and existing DRM host
   tests. Save QEMU output and `git diff --check` result.
-- [ ] Document the non-hardware boundary and commit/push on `main`.
+- [x] Document the non-hardware boundary and commit/push on `main`.
 
 ### Task 3: Physical gate
 
-- [ ] Prepare a selected boot with the exact known-good DTB and a single
+- [x] Prepare a selected boot with the exact known-good DTB and a single
   `asterinas.gpu_dt_probe=1` argument. Confirm the staged Image/DTB hashes
   before boot and retain default RockOS recovery.
-- [ ] Capture the probe line plus fresh UID 0/boot ID responses; close/reopen
+- [x] Capture the probe line plus fresh UID 0/boot ID responses; close/reopen
   serial and verify again. Reboot back to default RockOS if the selected boot
   becomes unstable. Keep the board in a controllable state.
 
