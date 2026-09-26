@@ -123,6 +123,8 @@ is generated from that trace with
 It retains the first-seen function order, call counts, input/output buffer
 sizes, and nonzero outer ioctl returns. It deliberately marks the inner bridge
 operation status as unknown; a zero outer return cannot establish success.
+The [command-name map](2026-09-26-megrez-powervr-bridge-functions.md)
+matches all 26 observed pairs to the pinned vendor generated headers.
 The vendor's [bridge group table](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/include/pvr_bridge.h)
 and [Volcanic MM commands](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/generated/volcanic/mm_bridge/common_mm_bridge.h)
 identify group 6 as memory management: function 8 allocates a RAM-backed PMR,
