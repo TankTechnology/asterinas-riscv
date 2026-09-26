@@ -1895,6 +1895,11 @@ EOF
     install -D -m 0755 -- \
         "$script_directory/../../drm/egl-pixel-probe.py" \
         "$stage/usr/lib/asterinas/egl-pixel-probe"
+    # A GBM/GLES2 probe for physical render nodes. It requires an explicit
+    # renderer expectation, so a software fallback cannot satisfy a GPU gate.
+    install -D -m 0755 -- \
+        "$script_directory/../../drm/gles-pixel-probe.py" \
+        "$stage/usr/lib/asterinas/gles-pixel-probe"
     install -d -m 0755 -- "$stage/etc/systemd/system/dbus.service.d"
     cat >"$stage/etc/systemd/system/dbus.service.d/asterinas-readiness.conf" <<'EOF'
 [Service]
