@@ -1,8 +1,9 @@
 # Asterinas RISC-V downstream
 
 `asterinas-riscv` is an independently maintained RISC-V downstream of
-Asterinas. Its default branch is a tested integration line that periodically
-merges changes from `asterinas/asterinas:main`.
+Asterinas. Its `main` branch is our product integration line. We selectively
+port relevant changes from `asterinas/asterinas:main` while retaining our
+published history and Megrez-specific development.
 
 ## Upstream relationship
 
@@ -32,12 +33,30 @@ results remain **previously verified** when current board access is unavailable.
 
 ## Synchronizing upstream
 
-Fetch and merge upstream without rewriting published history:
+The two main branches last shared commit `4bad9d34a` on 2026-08-05. As of
+2026-09-27, official `main` is `3eb661e12` and downstream `main` before the
+current intake is `a53c5212a` (344 official-only and 1856 downstream-only
+commits). A wholesale history merge would mix unrelated work and make board
+regressions difficult to isolate. Keep one main development checkout and take
+small, independently verifiable changes instead:
 
-```bash
-git fetch upstream main
-git switch main
-git merge --no-ff upstream/main
-```
+1. Fetch official `main` and record its commit ID. Compare each candidate with
+   our implementation; classify it as already covered, applicable, requiring
+   adaptation, or irrelevant to our supported platforms.
+2. Port one coherent change at a time. Preserve the official commit ID in the
+   downstream commit message and keep board-specific extensions explicit.
+3. Run the focused regression first, then build and boot RISC-V QEMU. Changes
+   that affect Megrez boot, storage, or display need the corresponding physical
+   gate before being reported as board-verified. Do not infer current board
+   status from older artifacts.
+4. Push only the tested downstream commit to `origin/main`. Do not keep a
+   long-lived integration worktree for each intake.
 
-Run the RISC-V validation matrix before pushing the merge to `origin/main`.
+First intake, against official `3eb661e12`:
+
+| Official commit | Disposition | Reason |
+| --- | --- | --- |
+| `d238e948a` | Ported; QEMU validated | DT header reservations and the DT blob must stay out of the frame allocator; adapted around downstream framebuffer reservation. |
+| `ac790aa89` | Separate boot intake | BSS initialization changes the early assembly path and needs the Sv39/Sv48 boot matrix. |
+| `0fa78e601` | Separate memory-management intake | Svade A/D handling overlaps downstream PTE and early-boot changes; review together with existing tests. |
+| `abbdf55ad` | Deferred | Ext2 BIO batching is performance work and does not solve the current SDHC flush/durability gap. |
