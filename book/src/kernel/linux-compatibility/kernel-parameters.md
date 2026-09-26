@@ -59,6 +59,19 @@ virtio_mmio.device=1K@0x1001e000:74
 ```
 
 ## Asterinas-specific
+
+### `asterinas.powervr_dma_probe`
+
+On an explicitly selected Megrez PowerVR development boot, setting
+`asterinas.powervr_dma_probe=1` makes the root-only `/dev/powervr-control`
+allocate one pinned DMA page when opened. It verifies that the zeroed page has
+an uncached CPU mapping and an identity-mapped device address in the supported
+Die 0 DRAM range, then releases the page when the control session closes.
+
+This diagnostic requires `asterinas.powervr=1`. It does not start GPU firmware,
+prove that the GPU can read the page, or enable hardware rendering. It is
+disabled by default.
+
 ### `earlycon`
 
 Enable the early console to output logs during the early stages of system boot.

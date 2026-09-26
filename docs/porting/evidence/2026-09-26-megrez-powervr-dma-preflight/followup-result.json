@@ -1,0 +1,50 @@
+{
+  "status": "firmware_staged_cpu_dma_revalidated_firmware_execution_unverified",
+  "image_sha256": "1be091998c174dbeb5d7d9fd0934d9e1b4570bf849111d330b599b3b94fd5e87",
+  "firmware_in_selected_rootfs": {
+    "rgx.fw.30.3.408.101_sha256": "25e9e7ff4645292ceb991617dba028e350a5c17088a105230dbaaaf995f4413b",
+    "rgx.sh.30.3.408.101_sha256": "9b7a9779c982ef3c29be2f77378c6b037fc264b978f9416eadc6cee553bba67b",
+    "loaded_by_gpu": false
+  },
+  "filesystem_recovery": {
+    "device_on_rockos": "/dev/mmcblk1p2",
+    "uuid": "c2ce5134-afcc-4d7c-b71e-7e6d4a8f2b10",
+    "unmounted_during_fsck": true,
+    "backup_on_rockos": "/home/debian/asterinas/aster-browserweb-pre-fsck-20260926.img",
+    "backup_bytes": 4294967296,
+    "source_and_backup_sha256": "1c177ab69982de341d0aad822713ca8b3c008afb4e0b6f7a8a36af51f691c040",
+    "pre_repair_readonly_fsck_exit": 4,
+    "repair_fsck_exit": 1,
+    "post_repair_readonly_fsck_exit": 0,
+    "after_clean_desktop_boot_readonly_fsck_exit": 0,
+    "root_cause_identified": false
+  },
+  "post_repair_selected_boot": {
+    "boot_id": "24193bc4-4948-419b-bb60-3b8d394ad8e1",
+    "reopened_serial_uid0_same_boot": true,
+    "watchdog_disarmed": true,
+    "firefox_pid": 89,
+    "firefox_elapsed_at_second_check": "04:25",
+    "xorg_pid": 173,
+    "openbox_pid": 244,
+    "dma_cpu_probe": "passed",
+    "dma_paddr_and_daddr": "0x2f6193000",
+    "crg_restored": true,
+    "gpu_visibility": "unverified",
+    "monitor_pixels_verified": false
+  },
+  "clean_return": {
+    "rockos_kernel": "6.6.87",
+    "persistent_default_changed": false,
+    "after_reboot_fsck_errors": 0
+  },
+  "final_selected_boot": {
+    "boot_id": "57416ac8-c26d-4e85-8cfa-f8fef9e0bf08",
+    "reopened_serial_uid0_same_boot": true,
+    "watchdog_disarmed": true,
+    "firefox_pid": 89,
+    "xorg_pid": 171,
+    "openbox_pid": 249,
+    "persistent_rockos_default_unchanged": true
+  }
+}

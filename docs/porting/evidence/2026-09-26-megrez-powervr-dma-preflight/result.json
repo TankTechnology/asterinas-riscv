@@ -1,0 +1,41 @@
+{
+  "status": "cpu_dma_preflight_passed_gpu_visibility_unverified",
+  "source_base_commit": "700b85afe",
+  "image_sha256": "1be091998c174dbeb5d7d9fd0934d9e1b4570bf849111d330b599b3b94fd5e87",
+  "dtb_sha256": "465cb129333cc334a3161fabb43d37df8738ac4baa86fcdb50260691a22a84ba",
+  "stage1_sha256": "ea446515661f2380568426b3c37da0b6a0698fc51f88d32c62807fce04890962",
+  "selected_boot_id": "607998e4-bb5e-407f-a1c3-3c897e8cb51b",
+  "serial_device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
+  "reopened_uid0_same_boot": true,
+  "watchdog_disarmed": true,
+  "dma": {
+    "pages": 1,
+    "page_bytes": 4096,
+    "cpu_physical_address": "0xde203000",
+    "device_address": "0xde203000",
+    "uncached_alias_address": "0xc05e203000",
+    "zero_and_cpu_readback": "passed",
+    "gpu_readback": "not_tested"
+  },
+  "control_close": {
+    "crg_restored": true,
+    "aclk": "0x00000020",
+    "cfg": "0x00000000",
+    "gray": "0x00000000",
+    "reset": "0x00000000"
+  },
+  "desktop_after": {
+    "service": "asterinas-browser-web.service",
+    "pid": 89,
+    "restarts": 0,
+    "substate": "running",
+    "monitor_pixels_verified": false
+  },
+  "firmware_files_in_asterinas_rootfs": {
+    "rgx.fw.30.3.408.101": false,
+    "rgx.sh.30.3.408.101": false
+  },
+  "first_candidate": {
+    "result": "UART long command incomplete during desktop start; candidate reset, reached U-Boot; explicit run bootcmd_rockos restored RockOS 6.6.87 and reopened root control before the short-command retry"
+  }
+}
