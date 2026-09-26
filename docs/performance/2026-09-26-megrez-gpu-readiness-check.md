@@ -34,7 +34,61 @@ Without a capture device, the EIC7700 dump/writeback registers in the RockOS
 driver may provide a separate internal pixel witness, but that would verify
 the controller's composition before HDMI rather than the monitor's pixels.
 The register contract and DMA coherency must be checked before enabling a
-writeback experiment on Asterinas. The safe PowerVR reference boot also
-remains pending a verified reset route: RockOS's installed `pvrsrvkm` module
-does not match its running kernel, and an early hang in a temporary matching
-kernel cannot currently be recovered remotely.
+writeback experiment on Asterinas.
+
+## Matching RockOS PowerVR reference, 2026-09-26
+
+The operator confirmed a person was available to reset the board if a
+temporary kernel hung. We verified the staged `6.6.87-win2030` Image, initrd,
+and DTB by both SHA-256 on RockOS and CRC32 after U-Boot loaded each item from
+MMC. The boot used `booti` with RAM-only arguments; it did not change
+`extlinux.conf` or the default entry. The selected kernel reached a login
+prompt. A fresh, nonce-framed root shell reported boot ID
+`fad44d27-e989-4da8-8520-448a120a7cda`, `uname -r` of
+`6.6.87-win2030`, and matching `pvrsrvkm` vermagic.
+
+`modprobe pvrsrvkm` returned zero. The kernel reported loading
+`rgx.fw.30.3.408.101` and `rgx.sh.30.3.408.101`; DRM exposed `es_drm` on
+`card0` and `pvrsrvkm` on `card1`, plus `renderD128`. `vulkaninfo --summary`
+identified a PowerVR A-Series AXM-8-256 integrated GPU and the proprietary
+24.2@6643903 driver. `eglinfo -B` identified the same hardware for OpenGL ES
+3.2, although it also listed a separate software OpenGL/softpipe platform.
+Device enumeration alone therefore remains an insufficient acceleration test.
+
+The new `tools/riscv/drm/gles-pixel-probe.py` creates an EGL context from the
+specified GBM render node, draws a white quadrilateral over the left half of a
+black 16×16 FBO, and reads back a left and a right pixel. On RockOS,
+`--expect-renderer PowerVR` returned `left=(255,255,255,255)` and
+`right=(0,0,0,255)` with exit status zero. Deliberately requiring `llvmpipe`
+returned a renderer mismatch and exit status one. This verifies actual GPU
+rendering through the reference render node without a capture card; it does
+not verify HDMI output or Asterinas GPU support.
+
+One bounded `glmark2-es2` desktop blur scene at 800×600, with
+`--frame-end readpixels`, reported 671 FPS and 1.491 ms/frame. This is a
+reference measurement, not an Asterinas speedup. The broader `--validate`
+reported 21 Success, six Failure, and six Unknown outcomes; a zero process
+exit code does not mean every validation scene passed. During a separate
+bounded run, the client had both `/dev/dri/card0` and `renderD128` open.
+The serial transcript is retained at
+`/home/ubuntu/.codex/asterinas-evidence/2026-09-26/megrez-gpu-reference.serial.log`.
+Asterinas still lacks a verified PowerVR render driver and its
+matching firmware/userspace contract.
+
+The tested RockOS userspace uses the vendor DDK path. Its
+[kernel DRM entry point](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/env/linux/pvr_drm.c#L408-L428)
+dispatches `PVR_SRVKM_CMD` to `PVRSRV_BridgeDispatchKM` and has a separate
+`PVR_SRVKM_INIT` command. The `/usr/include/drm/pvr_drm.h` installed on RockOS
+also declares the upstream DRM PowerVR `DEV_QUERY`/`CREATE_BO`/`SUBMIT_JOBS`
+interface, but those are not the vendor entry points shown by this loaded
+driver. Porting only that public header's ioctls would therefore not satisfy
+the tested `libVK_IMG.so`/GLES stack. The next kernel work must inventory the
+vendor bridge, its memory and firmware lifecycle, and the exact dma-buf/fence
+contract before exposing a PowerVR render node on Asterinas.
+
+After the reference run, a software reboot returned to U-Boot, the original
+default RockOS entry reached a login prompt, and a separately reopened
+exclusive serial connection returned nonce-framed UID 0, `uname -r=6.6.87`,
+and new boot ID `62b2a783-2532-45de-92e0-6173edaf4ac8`. The selected GPU
+boot therefore left no persistent boot-entry change. This restoration is
+control-path evidence, not an Asterinas desktop or HDMI validation.

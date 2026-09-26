@@ -82,16 +82,18 @@ Do not reboot the current desktop merely to repeat reference-system discovery.
   physical boot passed; the earlier intermittent Xorg `EINVAL` remains
   unexplained because that boot did not record its pool address. See the
   [bounded native DMA gate](2026-09-26-megrez-bounded-native-dma.md).
-- The actual RockOS image has GPU userspace packages but no active PowerVR
-  render node: its running `6.6.87` kernel does not match the installed
-  `pvrsrvkm` module's `6.6.87-win2030` vermagic. Establish a matching RockOS
-  hardware-render baseline before treating its GPU UAPI as a tested contract.
-  See the [PowerVR inventory](2026-09-26-megrez-powervr-inventory.md).
+- The default RockOS `6.6.87` kernel does not match the installed
+  `pvrsrvkm` module's `6.6.87-win2030` vermagic. A temporary matching-kernel
+  boot now establishes a real PowerVR reference: firmware load, Vulkan/GLES
+  hardware identity, a GBM/GLES pixel readback, and a short desktop-blur
+  benchmark all succeeded. The broader glmark2 validation still has six
+  failures and six unknown results. See the
+  [readiness evidence](2026-09-26-megrez-gpu-readiness-check.md).
 - The default RockOS boot uses a custom `6.6.87` image even though the package
   kernel and PowerVR module are `6.6.87-win2030`; a local blacklist also
-  disables `pvrsrvkm`. The matching package image is staged for a selected
-  reference boot, pending a verified reset path. No persistent boot entry was
-  changed. Asterinas now rejects `DRM_CLIENT_CAP_ATOMIC` until its atomic
+  disables `pvrsrvkm`. The matching package image was booted once from RAM
+  with a human reset fallback; no persistent boot entry was changed.
+  Asterinas now rejects `DRM_CLIENT_CAP_ATOMIC` until its atomic
   property/commit API exists; the 1920 × 1080 QEMU firmware gate still passed
   six stages after this change.
 
