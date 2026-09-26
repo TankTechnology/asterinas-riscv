@@ -1,0 +1,2 @@
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_accepts_only_identity_mapped_die0_pages_below_40_bits ... ok
+test result: ok. 1 passed; 0 failed; 303 filtered out.

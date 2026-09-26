@@ -1,0 +1,97 @@
+e2fsck 1.47.1 (20-May-2024)
+Superblock last write time (Sat Sep 26 20:18:07 2026,
+	now = Sat Sep 19 05:42:13 2026) is in the future.
+Fix? no
+
+Pass 1: Checking inodes, blocks, and sizes
+Deleted inode 36138 has zero dtime.  Fix? no
+
+Inode 106538, i_blocks is 128, should be 104.  Fix? no
+
+
+Running additional passes to resolve blocks claimed by more than one inode...
+Pass 1B: Rescanning for multiply-claimed blocks
+Multiply-claimed block(s) in inode 36145: 375452 375525 375527
+Multiply-claimed block(s) in inode 36161: 375525
+Multiply-claimed block(s) in inode 36168: 375452
+Multiply-claimed block(s) in inode 106526: 375527
+Pass 1C: Scanning directories for inodes with multiply-claimed blocks
+Pass 1D: Reconciling multiply-claimed blocks
+(There are 4 inodes containing multiply-claimed blocks.)
+
+File /home/asterinas/.mozilla/asterinas-browser-web/broadcast-listeners.json (inode #36145, mod time Sat Sep 26 19:57:49 2026)
+  has 3 multiply-claimed block(s), shared with 3 file(s):
+	/home/asterinas/.mozilla/asterinas-browser-web/datareporting/glean/events/events (inode #106526, mod time Sat Sep 26 19:13:58 2026)
+	/home/asterinas/.mozilla/asterinas-browser-web/64fd0bdb.sqlite-shm (inode #36161, mod time Sat Sep 26 19:11:47 2026)
+	/home/asterinas/.mozilla/asterinas-browser-web/7a24c5ae.sqlite-shm (inode #36168, mod time Sat Sep 26 20:08:39 2026)
+Clone multiply-claimed blocks? no
+
+Delete file? no
+
+File /home/asterinas/.mozilla/asterinas-browser-web/64fd0bdb.sqlite-shm (inode #36161, mod time Sat Sep 26 19:11:47 2026)
+  has 1 multiply-claimed block(s), shared with 1 file(s):
+	/home/asterinas/.mozilla/asterinas-browser-web/broadcast-listeners.json (inode #36145, mod time Sat Sep 26 19:57:49 2026)
+Clone multiply-claimed blocks? no
+
+Delete file? no
+
+File /home/asterinas/.mozilla/asterinas-browser-web/7a24c5ae.sqlite-shm (inode #36168, mod time Sat Sep 26 20:08:39 2026)
+  has 1 multiply-claimed block(s), shared with 1 file(s):
+	/home/asterinas/.mozilla/asterinas-browser-web/broadcast-listeners.json (inode #36145, mod time Sat Sep 26 19:57:49 2026)
+Clone multiply-claimed blocks? no
+
+Delete file? no
+
+File /home/asterinas/.mozilla/asterinas-browser-web/datareporting/glean/events/events (inode #106526, mod time Sat Sep 26 19:13:58 2026)
+  has 1 multiply-claimed block(s), shared with 1 file(s):
+	/home/asterinas/.mozilla/asterinas-browser-web/broadcast-listeners.json (inode #36145, mod time Sat Sep 26 19:57:49 2026)
+Clone multiply-claimed blocks? no
+
+Delete file? no
+
+Pass 2: Checking directory structure
+Entry 'prefs.js' in /home/asterinas/.mozilla/asterinas-browser-web (842) has an incorrect filetype (was 1, should be 2).
+Fix? no
+
+Entry 'prefs.js' in /home/asterinas/.mozilla/asterinas-browser-web (842) is a link to directory /home/asterinas/.mozilla/asterinas-browser-web/startupCache (36148).
+Clear? no
+
+Entry 'user.js' in /home/asterinas/.mozilla/asterinas-browser-web (842) has deleted/unused inode 36138.  Clear? no
+
+Entry '.startup-incomplete' in /home/asterinas/.mozilla/asterinas-browser-web (842) has deleted/unused inode 36171.  Clear? no
+
+Pass 3: Checking directory connectivity
+Pass 4: Checking reference counts
+Inode 35926 ref count is 3, should be 2.  Fix? no
+
+Inode 36148 ref count is 2, should be 3.  Fix? no
+
+Unattached zero-length inode 36166.  Clear? no
+
+Unattached inode 36166
+Connect to /lost+found? no
+
+Unattached zero-length inode 106689.  Clear? no
+
+Unattached inode 106689
+Connect to /lost+found? no
+
+Unattached zero-length inode 106918.  Clear? no
+
+Unattached inode 106918
+Connect to /lost+found? no
+
+Pass 5: Checking group summary information
+Block bitmap differences:  -375448 -375499 -375517 -375521 -375526 -375566 -(375929--375933) +(376079--376082) -(376084--376086) +(376087--376088) -(394136--394150)
+Fix? no
+
+Inode bitmap differences:  -36138 -36171 -(36173--36174) +106689 +106918
+Fix? no
+
+Directories count wrong for group #4 (223, counted=221).
+Fix? no
+
+
+ASTER_BROWSERWEB: ********** WARNING: Filesystem still has errors **********
+
+ASTER_BROWSERWEB: 37573/131072 files (2.0% non-contiguous), 419492/524288 blocks

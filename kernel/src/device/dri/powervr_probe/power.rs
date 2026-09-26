@@ -14,7 +14,8 @@ use spin::Once;
 
 use super::{
     CRG_BASE, CRG_GATE_BIT, CrgSnapshot, GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET,
-    GPU_REG_SIZE, GPU_REG_START, GPU_RESET_OFFSET, inspect_gpu_crg_dt, print_gpu_crg_snapshot,
+    GPU_REG_SIZE, GPU_REG_START, GPU_RESET_OFFSET, dma::GpuDmaAllocation, inspect_gpu_crg_dt,
+    print_gpu_crg_snapshot,
 };
 use crate::{
     device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
@@ -309,16 +310,37 @@ impl Device for PowerControlDevice {
             0b111,
             0b11111,
         );
-        Ok(Box::new(PowerControlFile { initial }))
+        drop(io);
+        let mut file = PowerControlFile { initial, dma: None };
+        if ostd::boot::boot_info()
+            .kernel_cmdline
+            .split_whitespace()
+            .any(|word| word == "asterinas.powervr_dma_probe=1")
+        {
+            let dma = GpuDmaAllocation::new(1)
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+            dma.cpu_probe()
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+            aster_logger::println!(
+                "ASTERINAS_POWERVR_DMA status=cpu_alias_ready paddr={:#x} daddr={:#x} alias={:#x?} pages=1 gpu_visibility=unverified",
+                dma.paddr(),
+                dma.daddr(),
+                dma.uncached_alias_paddr(),
+            );
+            file.dma = Some(dma);
+        }
+        Ok(Box::new(file))
     }
 }
 
 struct PowerControlFile {
     initial: CrgSnapshot,
+    dma: Option<GpuDmaAllocation>,
 }
 
 impl Drop for PowerControlFile {
     fn drop(&mut self) {
+        self.dma.take();
         let Ok(owner) = hardware_power_io() else {
             POWER_LEASE.store(LEASE_POISONED, Ordering::Release);
             aster_logger::println!(

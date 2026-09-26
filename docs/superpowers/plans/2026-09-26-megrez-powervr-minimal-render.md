@@ -50,6 +50,17 @@ firmware, DMA, GPU MMU, command submission, and rendering remain in Tasks 3–5.
 
 ## Task 3: Establish DMA and firmware startup
 
+The [physical DMA preflight](../../porting/evidence/2026-09-26-megrez-powervr-dma-preflight/README.md)
+allocated one pinned page and proved the CPU-side uncached alias, address
+bounds, and RockOS-compatible identity address on the board. The two matching
+firmware files are staged in the selected root image and verified by SHA-256.
+GPU-side visibility, GPU MMU ownership, firmware execution and handshake remain
+open; none of the Task 3 acceptance items below is complete. The same board
+session exposed ext2 metadata corruption in the Firefox profile. A complete
+partition backup preceded offline repair, and a read-only fsck passed after a
+subsequent clean desktop boot. This is a stability gate for further writable
+GPU experiments, not evidence that the ext2 root cause is fixed.
+
 - [ ] Allocate pinned, zeroed GPU memory through `DmaCoherent`/`DmaStream` with checked size limits and ownership tied to the GPU session. Establish and test the board's actual device-address range; do not assume CPU virtual addresses are GPU addresses.
 - [ ] For the DT-declared noncoherent GPU, demonstrate a correct CPU/device visibility path using RISC-V cache synchronization or an uncached alias. Reject the selected boot if neither is available. Map only owned buffers into the GPU MMU and require the GPU page tables to reference those allocations.
 - [ ] Load the exact BVNC-matched firmware and shader blobs from the selected root image. Report firmware handshake and GPU fault/timeout counters. Bound every wait and ensure reset/cleanup on failed handshake.
