@@ -46,6 +46,12 @@ MMC. The boot used `booti` with RAM-only arguments; it did not change
 prompt. A fresh, nonce-framed root shell reported boot ID
 `fad44d27-e989-4da8-8520-448a120a7cda`, `uname -r` of
 `6.6.87-win2030`, and matching `pvrsrvkm` vermagic.
+U-Boot printed `ERROR: reserving fdt memory region failed` for a 4 KiB
+reservation before `Starting kernel`; the Linux boot nevertheless completed.
+The first host script treated that diagnostic as a fatal U-Boot error and
+stopped listening, so a fresh serial session checked the login prompt and
+kernel identity. The reservation warning remains a separate boot-contract
+item to inspect before reusing this selected kernel as a default.
 
 `modprobe pvrsrvkm` returned zero. The kernel reported loading
 `rgx.fw.30.3.408.101` and `rgx.sh.30.3.408.101`; DRM exposed `es_drm` on
