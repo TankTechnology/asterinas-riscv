@@ -1303,6 +1303,16 @@ treated as proof of a fatal graphics failure.
 
 ## One-command Megrez desktop and Firefox diagnosis
 
+For a render driver candidate, `/usr/lib/asterinas/gles-pixel-probe` gives a
+short, independent hardware-render check. Run it against the intended render
+node with an explicit renderer identity, for example
+`timeout 20 /usr/lib/asterinas/gles-pixel-probe /dev/dri/renderD128
+--expect-renderer PowerVR`. It creates a GBM-backed GLES2 context, draws a
+white left half over black, and reads two pixels. Exit status zero requires
+both the requested renderer and correct pixels; a software fallback or absent
+node fails. This measures GPU drawing, not the HDMI scanout. The separate
+physical HDMI pixel gate is still required to qualify visible output.
+
 Configure the already deployed, measured MMC release once. This operation is
 local-only: it validates and hashes the existing plan, RockOS receipt, and
 measurement log, then writes one private bundle. It does not open the serial
