@@ -18,6 +18,12 @@ The raw ID matches the expected B.V.N.C fields from the pinned RockOS
 Volcanic driver. The `crg_restored=1` result means the probe read back the
 exact initial clock/reset tuple after restoration. The probe did not load
 firmware, submit work, create a render node, or accelerate Firefox. The
+existing `/dev/dri/renderD128` belongs to Asterinas's display DRM device,
+not to a PowerVR driver. The current Firefox launch wrapper explicitly sets
+`MOZ_AVOID_OPENGL_ALTOGETHER=1`, and this root image has no `rgx` firmware.
+An additional nonce-framed root check after the validated boot found `card0`
+and `renderD128`, but no `/lib/firmware/rgx*`, `eglinfo`, or `glxinfo`.
+None of those conditions changed in this probe. The
 source contract is RockOS commit
 `bf2ec5d53002c16bc1bc593b92516eb6c2866176`: its
 [`sysconfig.c`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/system/eswin_cpu/sysconfig.c)
