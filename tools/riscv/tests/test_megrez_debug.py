@@ -1988,6 +1988,14 @@ class MegrezDebugBoardCliTests(unittest.TestCase):
 
 
 class MegrezDebugRealBoardOperationsTests(unittest.TestCase):
+    def test_uboot_staging_rejects_writable_boot_without_sync_recovery(self) -> None:
+        bootargs = (
+            "init=/init asterinas.mmc_write_partition2 "
+            "-- --root-init=systemd"
+        )
+        with self.assertRaises(BoardRunFailure):
+            board_module._uboot_bootargs_commands(bootargs)
+
     def test_long_bootargs_are_staged_below_the_uboot_line_limit(self) -> None:
         bootargs = physical_bootargs(180).replace(
             " -- ",

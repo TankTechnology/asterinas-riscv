@@ -2,6 +2,8 @@
 
 //! Bounded SDHC card discovery and read-only sector access.
 
+use ostd::timer::{Jiffies, TIMER_FREQ};
+
 use crate::sdhci::{Command, HostError, ResponseType};
 
 const DISCOVERY_CLOCK_HZ: u32 = 400_000;
@@ -17,6 +19,11 @@ const SECTOR_SIZE: usize = 512;
 const MAX_BLOCKS_PER_COMMAND: usize = u16::MAX as usize;
 const CSD_COMMAND_CLASS_SWITCH: u16 = 1 << 10;
 const SWITCH_STATUS_HIGH_SPEED: u8 = 1 << 1;
+const STATUS_POLLS: usize = 1_000_000;
+const R1_ERROR_MASK: u32 = 0xfff9_a000;
+const R1_READY_FOR_DATA: u32 = 1 << 8;
+const R1_TRAN_STATE: u32 = 4 << 9;
+const R1_STATE_MASK: u32 = 0xf << 9;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SdSpec {
@@ -364,6 +371,32 @@ impl Card {
             CardTiming::DefaultSpeed => DATA_CLOCK_HZ,
             CardTiming::HighSpeed => HIGH_SPEED_CLOCK_HZ,
         }
+    }
+
+    /// Waits for card programming to finish after completed host transfers.
+    /// This does not flush an enabled SD extension-register write cache.
+    pub fn wait_ready_for_data(self, host: &mut impl HostController) -> Result<(), HostError> {
+        let start = Jiffies::elapsed().as_u64();
+        for _ in 0..STATUS_POLLS {
+            if Jiffies::elapsed().as_u64().saturating_sub(start) >= TIMER_FREQ {
+                return Err(HostError::Timeout);
+            }
+            let status = host
+                .command(Command::new(
+                    13,
+                    (self.rca as u32) << 16,
+                    ResponseType::Short,
+                    None,
+                ))?
+                .short()?;
+            if status & R1_ERROR_MASK != 0 {
+                return Err(HostError::CardStatus);
+            }
+            if status & R1_READY_FOR_DATA != 0 && status & R1_STATE_MASK == R1_TRAN_STATE {
+                return Ok(());
+            }
+        }
+        Err(HostError::Timeout)
     }
 
     /// Reads one 512-byte sector with CMD17 and bounded host waits.
@@ -1122,6 +1155,44 @@ mod tests {
         assert_eq!(&sectors[0..8], &[0, 0, 0, 0, 1, 0, 0, 0]);
         assert_eq!(&sectors[SECTOR_SIZE..SECTOR_SIZE + 4], &[128, 0, 0, 0]);
         assert_eq!(host.data_resets, 0);
+        host.assert_done();
+    }
+
+    #[ktest]
+    fn flush_waits_for_programming_and_checks_card_errors() {
+        let card = Card {
+            rca: 1,
+            nr_sectors: 8,
+            timing: CardTiming::DefaultSpeed,
+            speed_selection: SpeedSelection::DefaultSpeedUnsupported,
+        };
+        let mut host = FakeHost::discovery(1u128 << 126);
+        host.steps = vec![
+            Step::Command(13, 1 << 16, Response::Short(7 << 9)),
+            Step::Command(
+                13,
+                1 << 16,
+                Response::Short(R1_READY_FOR_DATA | R1_TRAN_STATE),
+            ),
+        ]
+        .into();
+        card.wait_ready_for_data(&mut host).unwrap();
+        host.assert_done();
+
+        host.steps = vec![Step::Command(
+            13,
+            1 << 16,
+            Response::Short(R1_READY_FOR_DATA | R1_TRAN_STATE | (1 << 19)),
+        )]
+        .into();
+        assert_eq!(
+            card.wait_ready_for_data(&mut host),
+            Err(HostError::CardStatus)
+        );
+        host.assert_done();
+
+        host.steps = vec![Step::CommandError(13, 1 << 16, HostError::Timeout)].into();
+        assert_eq!(card.wait_ready_for_data(&mut host), Err(HostError::Timeout));
         host.assert_done();
     }
 

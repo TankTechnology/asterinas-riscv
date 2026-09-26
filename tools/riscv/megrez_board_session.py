@@ -971,7 +971,7 @@ def validate_writable_recovery(bootargs: str) -> None:
         for token in kernel_args
         if token.startswith("asterinas.reboot_after=")
     ]
-    if "asterinas.mmc_write_partition2" not in kernel_args or not kernel_tokens:
+    if "asterinas.mmc_write_partition2" not in kernel_args:
         return
 
     safe_tokens = [
@@ -981,17 +981,26 @@ def validate_writable_recovery(bootargs: str) -> None:
     ]
     if (
         len(kernel_tokens) != 1
-        or len(safe_tokens) != 1
+        or len(safe_tokens) > 1
         or tokens.count("--") != 1
         or "--root-init=systemd" not in tokens[separator + 1 :]
+        or any(
+            token.startswith("systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=")
+            for token in tokens[separator + 1 :]
+        )
         or re.fullmatch(r"[1-9][0-9]*", kernel_tokens[0]) is None
-        or re.fullmatch(r"[1-9][0-9]*", safe_tokens[0]) is None
+        or (
+            safe_tokens
+            and re.fullmatch(r"[1-9][0-9]*", safe_tokens[0]) is None
+        )
     ):
         raise ValueError(
             "writable partition emergency recovery requires one userspace sync reboot"
         )
     kernel_seconds = int(kernel_tokens[0])
-    safe_seconds = int(safe_tokens[0])
+    # The installed safe-reboot service derives an earlier userspace deadline
+    # from the kernel timer when no explicit systemd override is present.
+    safe_seconds = int(safe_tokens[0]) if safe_tokens else max(1, kernel_seconds - 180)
     if (
         kernel_seconds > 0xFFFF_FFFF
         or safe_seconds + WRITABLE_RECOVERY_HEADROOM_SECONDS > kernel_seconds
@@ -1004,6 +1013,9 @@ def validate_writable_recovery(bootargs: str) -> None:
 def uboot_bootargs_commands(bootargs: str) -> tuple[str, ...]:
     """Stage boot arguments without overflowing the board's U-Boot line buffer."""
 
+    # Callers beyond the CLI use this helper to stage selected board boots.
+    # Keep the writable-partition recovery contract at the staging boundary.
+    validate_writable_recovery(bootargs)
     tokens = bootargs.split()
     if not tokens:
         raise ValueError("bootargs must not be empty")

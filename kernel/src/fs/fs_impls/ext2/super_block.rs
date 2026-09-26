@@ -241,6 +241,9 @@ impl TryFrom<RawSuperBlock> for SuperBlock {
         }
 
         let feature_compat = FeatureCompatSet::from_bits_truncate(sb.feature_compat);
+        if feature_compat.contains(FeatureCompatSet::HAS_JOURNAL) {
+            return_errno_with_message!(Errno::EINVAL, "ext2 journal replay is unsupported");
+        }
 
         let allowed_incompat = FeatureInCompatSet::FILETYPE.bits();
         if (sb.feature_incompat & !allowed_incompat) != 0 {
@@ -869,6 +872,13 @@ mod test {
 
     use super::*;
     use crate::fs::fs_impls::ext2::test_utils::make_valid_raw_super_block;
+
+    #[ktest]
+    fn rejects_journaled_volumes_without_replay_support() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
+        assert!(SuperBlock::try_from(raw).is_err());
+    }
 
     #[ktest]
     fn max_file_size_matches_ext2_4k_limit() {

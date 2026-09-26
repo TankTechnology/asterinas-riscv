@@ -29,21 +29,33 @@ See the [ext2 documentation](https://docs.kernel.org/6.1/filesystems/ext2.html),
 ## Storage-path finding and target behavior
 
 The Megrez path used here is an **SDHC card**, not eMMC. Ext2's `sync()`
-submits a block-device `Flush`, but `kernel/comps/mmc/src/block.rs` currently
-answers `BioType::Flush` with `BioStatus::Complete` without acquiring the
-write-path lock or checking card state. `card.rs` waits for SDHCI transfer
-completion on writes but does not check a post-write CMD13 status or discover
-SD cache capability. A no-op flush might be valid for a card with no volatile
-cache after all writes are known complete; the current code has not established
-those prerequisites. This is a **durability-contract gap**, not proof that it
-caused the observed ext2 damage. Linux's
+submits a block-device `Flush`. The September 27 change makes the MMC block
+driver serialize this request with writes and poll CMD13 until the card reports
+ready in transfer state, with a one-second timer bound and a finite poll cap;
+card-reported errors and timeouts become I/O errors.
+The former implementation returned `BioStatus::Complete` without checking the
+card at all. This is still **not a complete durability contract**: discovery
+does not determine whether the SD extension-register write cache is enabled,
+and the driver does not issue CMD49 Flush Cache. The [SD Association's cache
+description](https://www.sdcard.org/press/thoughtleadership/applications-in-action-introducing-the-newest-application-performance-class/)
+states that data in that cache is not guaranteed until its flush completes.
+Neither the old no-op nor the new CMD13 check proves that the observed ext2
+damage came from the card. Linux's
 [MMC block driver](https://github.com/torvalds/linux/blob/master/drivers/mmc/core/block.c)
-is a reference for bounded post-write status checks and card-specific cache
-handling.
+and [SD card driver](https://github.com/torvalds/linux/blob/master/drivers/mmc/core/sd.c)
+are references for card-specific cache handling.
 
-The current ext2 driver does not implement journal replay. It defines
-`HAS_JOURNAL` as a compatible feature but does not reject it during mount;
-it rejects the `RECOVER` incompatible bit. Therefore `tune2fs -j` alone is
+The September 27 verification passed a RISC-V/Sv39/SMP4 kernel build, focused
+ext2 journal-rejection and MMC status-poll kernel tests, and the existing
+16-cycle QEMU Firefox-state gate. The QEMU guest printed
+`ASTERINAS_EXT2_FIREFOX_RECOVERY_OK cycles=16` after `sync` and unmount;
+the host's read-only `e2fsck -fn` exited 0. Host-side board staging and
+safe-reboot suites also passed. These are clean-shutdown and contract tests,
+not a simulated SD power-loss or journal-replay test.
+
+The current ext2 driver does not implement journal replay. It now rejects
+`HAS_JOURNAL` as well as the already unsupported `RECOVER` incompatible bit.
+Therefore `tune2fs -j` alone is
 **not** a safe conversion for Asterinas: a nominally clean journaled volume
 could be written without journal transactions. Reject journaled volumes until
 the implementation actually supports their transaction and replay rules.
@@ -79,14 +91,14 @@ consistent filesystem and correct `fsync` behavior.
    RockOS default as recovery paths. Offline fsck remains a test oracle and
    emergency repair tool; it must not become a step the desktop user performs
    on every boot.
-4. Do not treat the selected GPU boot script as exempt from the writable-boot
-   guard. `megrez_board_session.py` validates the userspace/kernel deadline
-   pair in its CLI parser, but direct users of `uboot_bootargs_commands()`
-   bypass that check. Also, `megrez_safe_reboot.sh` currently parses the kernel
-   deadline only when `ASTERINAS_SAFE_REBOOT_AFTER` is absent; with an explicit
-   deadline it loses its internal kernel-deadline bound. Fix and test both
-   guards before more unattended writable board boots. These are verified
-   guard gaps, not proven causes of the previous corruption.
+4. The September 27 host-side staging helpers now enforce the writable-boot
+   recovery guard even when called outside their CLI parsers. A missing kernel
+   timer is rejected; an explicit userspace deadline must precede it with
+   headroom. The safe-reboot script now reads the kernel timer even when an
+   explicit userspace deadline is supplied, preserving bounded quiesce and
+   sync operations. The service can also derive its userspace deadline from
+   the kernel timer when no override is present. These fixed guard gaps are
+   not proven causes of the previous corruption.
 
 ## Short diagnostic sequence
 

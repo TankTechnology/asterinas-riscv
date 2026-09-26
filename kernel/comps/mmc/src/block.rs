@@ -113,7 +113,7 @@ impl aster_block::BlockDevice for MegrezMmcBlock {
     fn enqueue(&self, bio: SubmittedBio) -> Result<(), BioEnqueueError> {
         let status = match bio.type_() {
             BioType::Write => self.write_bio(&bio),
-            BioType::Flush => BioStatus::Complete,
+            BioType::Flush => self.flush_bio(),
             BioType::Read => self.read_bio(&bio),
         };
         bio.complete(status);
@@ -187,6 +187,17 @@ impl aster_block::BlockDevice for MegrezMmcBlock {
 }
 
 impl MegrezMmcBlock {
+    fn flush_bio(&self) -> BioStatus {
+        // Serialize with writes before checking the card's programming state.
+        // SD extension-register cache handling is tracked separately.
+        let mut state = self.state.lock();
+        let (host, card) = &mut *state;
+        match card.wait_ready_for_data(host) {
+            Ok(()) => BioStatus::Complete,
+            Err(_) => BioStatus::IoError,
+        }
+    }
+
     fn read_bio(&self, bio: &SubmittedBio) -> BioStatus {
         let logical_lba = bio.sid_range().start.to_raw();
         let mut state = self.state.lock();
