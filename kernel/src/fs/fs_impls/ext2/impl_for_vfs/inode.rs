@@ -19,7 +19,7 @@ use crate::{
         fs_impls::ext2::{FilePerm, Inode as Ext2Inode},
         utils::DirentVisitor,
         vfs::{
-            file_system::FileSystem,
+            file_system::{FileSystem, FsFlags},
             inode::{
                 Extension, FallocMode, FileOps, Inode, Metadata, MknodType, RenameMode,
                 SymbolicLink,
@@ -236,8 +236,11 @@ impl Inode for Ext2Inode {
     }
 
     fn sync_all(&self) -> Result<()> {
-        self.sync_all()?;
         let fs = self.fs()?;
+        if fs.fs_flags().contains(FsFlags::RDONLY) {
+            return Ok(());
+        }
+        self.sync_all()?;
         let block_group = fs.block_group(self.block_group_idx());
         block_group.sync_inode_table()?;
         fs.sync_allocation_metadata()?;
@@ -248,8 +251,11 @@ impl Inode for Ext2Inode {
     }
 
     fn sync_data(&self) -> Result<()> {
-        self.sync_data()?;
         let fs = self.fs()?;
+        if fs.fs_flags().contains(FsFlags::RDONLY) {
+            return Ok(());
+        }
+        self.sync_data()?;
         let block_group = fs.block_group(self.block_group_idx());
         block_group.sync_inode_table()?;
         fs.sync_allocation_metadata()?;

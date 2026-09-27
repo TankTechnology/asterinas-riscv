@@ -59,6 +59,12 @@ impl Inode {
         }
 
         let fs = self.fs()?;
+        if fs
+            .fs_flags()
+            .contains(crate::fs::vfs::file_system::FsFlags::RDONLY)
+        {
+            return Ok(false);
+        }
         let group = fs.block_group(self.block_group_idx);
         if !group.is_inode_allocated(self.ino) {
             return Ok(false);

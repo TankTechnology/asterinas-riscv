@@ -21,14 +21,14 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use aster_block::bio::BioCompleteFn;
+use aster_block::bio::{BioCompleteFn, BioStatus};
 use device_id::DeviceId;
 
 use super::{
     block_group::{BlockGroup, RawBlockGroup},
     inode::{FilePerm, Inode, InodeDesc, RawInode},
     prelude::*,
-    super_block::{RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock},
+    super_block::{FsState, RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock},
 };
 use crate::{
     fs::{
@@ -124,6 +124,15 @@ impl Ext2 {
             let raw_super_block = device.read_val::<RawSuperBlock>(SUPER_BLOCK_OFFSET)?;
             SuperBlock::try_from(raw_super_block)?
         };
+        let state = super_block.state();
+        if !flags.contains(FsFlags::RDONLY)
+            && (!state.contains(FsState::VALID) || state.contains(FsState::ERROR))
+        {
+            return_errno_with_message!(
+                Errno::EUCLEAN,
+                "ext2 requires repair before writable mount"
+            );
+        }
         let block_size = super_block.block_size();
         if block_size != BLOCK_SIZE {
             return_errno_with_message!(Errno::EINVAL, "currently only 4096-byte block size");
@@ -215,8 +224,25 @@ impl Ext2 {
     }
 
     /// Sets the per file system flags.
-    pub(super) fn set_fs_flags(&self, flags: FsFlags) {
+    pub(super) fn set_fs_flags(&self, flags: FsFlags) -> Result<()> {
+        let old_flags = self.fs_flags();
+        if old_flags.contains(FsFlags::RDONLY) && !flags.contains(FsFlags::RDONLY) {
+            let state = self.super_block.read().state();
+            if !state.contains(FsState::VALID) || state.contains(FsState::ERROR) {
+                return_errno_with_message!(
+                    Errno::EUCLEAN,
+                    "ext2 requires repair before writable remount"
+                );
+            }
+        }
+        if !old_flags.contains(FsFlags::RDONLY) && flags.contains(FsFlags::RDONLY) {
+            self.sync_all()?;
+            if self.block_device.sync()? != BioStatus::Complete {
+                return_errno_with_message!(Errno::EIO, "failed to flush block device");
+            }
+        }
         self.flags.store(flags, Ordering::Relaxed);
+        Ok(())
     }
 
     /// Returns a reference to the block group at `group_idx`.
@@ -742,6 +768,50 @@ mod test {
         },
         time::clocks,
     };
+
+    #[ktest]
+    fn unclean_ext2_allows_readonly_but_rejects_writable_mount() {
+        clocks::init_for_ktest();
+        let fixture = Ext2FixtureBuilder::new(1, 128).build().unwrap();
+        let disk = fixture.disk.clone();
+        let mut raw = disk
+            .segment()
+            .read_val::<RawSuperBlock>(SUPER_BLOCK_OFFSET)
+            .unwrap();
+
+        for state in [
+            FsState::empty(),
+            FsState::ERROR,
+            FsState::VALID | FsState::ERROR,
+        ] {
+            raw.state = state.bits();
+            disk.write_super_block(&raw);
+            assert_errno!(
+                Ext2::open(disk.clone() as Arc<dyn BlockDevice>, FsFlags::empty(), None),
+                Errno::EUCLEAN
+            );
+            let readonly =
+                Ext2::open(disk.clone() as Arc<dyn BlockDevice>, FsFlags::RDONLY, None).unwrap();
+            assert_errno!(readonly.set_fs_flags(FsFlags::empty()), Errno::EUCLEAN);
+            disk.set_fail_flush(true);
+            FileSystemTrait::sync(readonly.as_ref()).unwrap();
+            let root = readonly.root_inode().unwrap();
+            crate::fs::vfs::inode::Inode::sync_all(root.as_ref()).unwrap();
+            crate::fs::vfs::inode::Inode::sync_data(root.as_ref()).unwrap();
+            disk.set_fail_flush(false);
+        }
+
+        raw.state = FsState::VALID.bits();
+        disk.write_super_block(&raw);
+        let readwrite =
+            Ext2::open(disk.clone() as Arc<dyn BlockDevice>, FsFlags::empty(), None).unwrap();
+        disk.set_fail_flush(true);
+        assert_errno!(readwrite.set_fs_flags(FsFlags::RDONLY), Errno::EIO);
+        assert!(!readwrite.fs_flags().contains(FsFlags::RDONLY));
+        disk.set_fail_flush(false);
+        readwrite.set_fs_flags(FsFlags::RDONLY).unwrap();
+        readwrite.set_fs_flags(FsFlags::empty()).unwrap();
+    }
 
     fn expected_overhead_blocks(sb: &SuperBlock) -> u32 {
         let nr_block_groups = sb.nr_block_groups() as usize;

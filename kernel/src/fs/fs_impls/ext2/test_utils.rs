@@ -119,6 +119,10 @@ impl Ext2MemoryDisk {
     pub(super) fn set_fail_reads(&self, fail_reads: bool) {
         self.fail_reads.store(fail_reads, Ordering::Relaxed);
     }
+
+    pub(super) fn set_fail_flush(&self, fail_flush: bool) {
+        self.fail_flush.store(fail_flush, Ordering::Relaxed);
+    }
 }
 
 impl Debug for Ext2MemoryDisk {
