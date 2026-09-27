@@ -13,6 +13,10 @@ It does not claim that QEMU reproduces unmodeled clocks, resets, cache controlle
 The isolated gate below writes a new file to a scratch ext2 image, calls
 `reboot(2)` directly without a userspace `sync(2)`, and reads the file after a
 second boot in the same QEMU process. It then checks the disk with `e2fsck -fn`.
+The `--watchdog` variant waits for `asterinas.reboot_after=3` instead of calling
+`reboot(2)`. A responsive kernel syncs from a worker thread and reboots; if that
+work cannot finish, the emergency reboot remains available after a ten-second
+grace period.
 The output directory must be new; the gate does not touch a board or an installed
 root filesystem. This verifies orderly software reboot writeback, not power-loss
 durability or SD-card cache behavior.
@@ -21,6 +25,8 @@ durability or SD-card cache behavior.
 tools/docker/run_dev_container.sh -- make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
 tools/docker/run_dev_container.sh -- python3 tools/riscv/reboot_sync_gate.py \
   --output-dir target/reboot-sync-gate-$(date +%Y%m%d-%H%M%S)
+tools/docker/run_dev_container.sh -- python3 tools/riscv/reboot_sync_gate.py \
+  --watchdog --output-dir target/reboot-sync-watchdog-$(date +%Y%m%d-%H%M%S)
 ```
 
 The output contains `qemu-serial.log`, `e2fsck.log`, `result.json`, and the

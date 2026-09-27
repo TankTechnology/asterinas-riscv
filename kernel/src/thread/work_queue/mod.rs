@@ -105,6 +105,16 @@ pub fn submit_work_item(work_item: Arc<WorkItem>, work_priority: WorkPriority) -
     }
 }
 
+/// Tries to submit preallocated recovery work after the high-priority queue is ready.
+///
+/// Unlike `submit_work_item`, this can be called by an early boot timer without
+/// panicking if the first kernel thread has not initialized worker pools yet.
+pub(crate) fn try_submit_high_priority_work_item(work_item: Arc<WorkItem>) -> bool {
+    WORKQUEUE_GLOBAL_HIGH_PRI
+        .get()
+        .is_some_and(|queue| queue.enqueue(work_item))
+}
+
 /// A work queue maintains a series of work items to be handled
 /// asynchronously in a process context.
 pub struct WorkQueue {

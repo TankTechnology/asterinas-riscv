@@ -2,6 +2,7 @@
 
 //! Opt-in RISC-V software reboot recovery.
 
+use alloc::{boxed::Box, sync::Arc};
 use core::{
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
     time::Duration,
@@ -15,8 +16,16 @@ use ostd::{
 };
 use spin::Once;
 
+use crate::{
+    fs::vfs::path::MountNamespace,
+    thread::work_queue::{self, work_item::WorkItem},
+};
+
+const GRACEFUL_REBOOT_GRACE: Duration = Duration::from_secs(10);
+
 static REBOOT_AFTER_SECONDS: AtomicU32 = AtomicU32::new(0);
 static RECOVERY_STATE: RecoveryState = RecoveryState::new();
+static GRACEFUL_REBOOT_WORK: Once<Arc<WorkItem>> = Once::new();
 
 aster_cmdline::define_kv_param!("asterinas.reboot_after", REBOOT_AFTER_SECONDS);
 
@@ -34,6 +43,7 @@ pub(super) fn arm_if_requested() {
         return;
     }
 
+    GRACEFUL_REBOOT_WORK.call_once(|| WorkItem::new(Box::new(graceful_reboot)));
     RECOVERY_STATE.freeze_deadline(deadline);
     timer::register_high_resolution_callback_on_cpu(on_timer_interrupt);
     RECOVERY_STATE.publish_armed();
@@ -55,16 +65,33 @@ pub(crate) fn disarm() -> bool {
 }
 
 fn on_timer_interrupt() {
-    let Some(remaining) =
-        remaining_before_deadline(read_monotonic_time(), RECOVERY_STATE.armed_deadline())
-    else {
-        return;
-    };
-    let Some(action) = timer_action(&RECOVERY_STATE, remaining) else {
+    let Some(action) = timer_action(&RECOVERY_STATE, read_monotonic_time()) else {
         return;
     };
     match action {
-        TimerAction::Restart => power::emergency_restart(ExitCode::Failure),
+        TimerAction::BeginGraceful => {
+            if !RECOVERY_STATE.try_begin_graceful(read_monotonic_time()) {
+                return;
+            }
+            let Some(work) = GRACEFUL_REBOOT_WORK.get() else {
+                if RECOVERY_STATE.is_armed() {
+                    power::emergency_restart(ExitCode::Failure);
+                }
+                return;
+            };
+            if !work_queue::try_submit_high_priority_work_item(work.clone()) {
+                if RECOVERY_STATE.is_armed() {
+                    power::emergency_restart(ExitCode::Failure);
+                }
+                return;
+            }
+            timer::request_interrupt_after(GRACEFUL_REBOOT_GRACE);
+        }
+        TimerAction::Emergency => {
+            if RECOVERY_STATE.is_armed() {
+                power::emergency_restart(ExitCode::Failure);
+            }
+        }
         TimerAction::Rearm(remaining) => {
             // Another one-shot timer may expire before the recovery deadline.
             // Re-arm the shared hardware deadline for the remaining interval.
@@ -73,18 +100,44 @@ fn on_timer_interrupt() {
     }
 }
 
+fn graceful_reboot() {
+    if !RECOVERY_STATE.is_armed() {
+        return;
+    }
+    ostd::early_println!("ASTERINAS_SOFTWARE_REBOOT_SYNC_START");
+    if let Err(error) = MountNamespace::get_init_singleton().sync() {
+        ostd::error!("software reboot filesystem sync failed: {:?}", error);
+        return;
+    }
+    if RECOVERY_STATE.is_armed() {
+        ostd::early_println!("ASTERINAS_SOFTWARE_REBOOT_SYNC_COMPLETE");
+        power::restart(ExitCode::Failure);
+    }
+}
+
 #[derive(Debug, PartialEq)]
 enum TimerAction {
-    Restart,
+    BeginGraceful,
+    Emergency,
     Rearm(Duration),
 }
 
-fn timer_action(state: &RecoveryState, remaining: Duration) -> Option<TimerAction> {
-    if !state.is_armed() {
-        return None;
-    }
+fn timer_action(state: &RecoveryState, now: Duration) -> Option<TimerAction> {
+    let deadline = state.armed_deadline()?;
+    let next_deadline = if state.graceful_started() {
+        state
+            .graceful_fallback_deadline()
+            .unwrap_or(deadline.saturating_add(GRACEFUL_REBOOT_GRACE))
+    } else {
+        deadline
+    };
+    let remaining = remaining_before_deadline(now, Some(next_deadline))?;
     if remaining.is_zero() {
-        Some(TimerAction::Restart)
+        if state.graceful_started() {
+            Some(TimerAction::Emergency)
+        } else {
+            Some(TimerAction::BeginGraceful)
+        }
     } else {
         Some(TimerAction::Rearm(remaining))
     }
@@ -104,14 +157,18 @@ fn remaining_before_deadline(now: Duration, deadline: Option<Duration>) -> Optio
 
 struct RecoveryState {
     deadline: Once<Duration>,
+    fallback_deadline: Once<Duration>,
     is_armed: AtomicBool,
+    graceful_started: AtomicBool,
 }
 
 impl RecoveryState {
     const fn new() -> Self {
         Self {
             deadline: Once::new(),
+            fallback_deadline: Once::new(),
             is_armed: AtomicBool::new(false),
+            graceful_started: AtomicBool::new(false),
         }
     }
 
@@ -130,6 +187,22 @@ impl RecoveryState {
 
     fn disarm(&self) -> bool {
         self.is_armed.swap(false, Ordering::AcqRel)
+    }
+
+    fn graceful_started(&self) -> bool {
+        self.graceful_started.load(Ordering::Acquire)
+    }
+
+    fn try_begin_graceful(&self, now: Duration) -> bool {
+        self.fallback_deadline
+            .call_once(|| now.saturating_add(GRACEFUL_REBOOT_GRACE));
+        self.graceful_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    fn graceful_fallback_deadline(&self) -> Option<Duration> {
+        self.fallback_deadline.get().copied()
     }
 
     fn armed_deadline(&self) -> Option<Duration> {
@@ -175,20 +248,31 @@ mod tests {
     }
 
     #[ktest]
-    fn time_at_deadline_requests_restart() {
-        let deadline = Duration::from_secs(100);
+    fn time_at_deadline_starts_orderly_reboot() {
+        let state = RecoveryState::new();
+        state.freeze_deadline(Duration::from_secs(100));
+        state.publish_armed();
+
         assert_eq!(
-            remaining_before_deadline(deadline, Some(deadline)),
-            Some(Duration::ZERO)
+            timer_action(&state, Duration::from_secs(100)),
+            Some(TimerAction::BeginGraceful)
         );
     }
 
     #[ktest]
-    fn delayed_timer_interrupt_still_requests_restart() {
-        let deadline = Duration::from_secs(100);
+    fn orderly_reboot_retains_an_emergency_deadline() {
+        let state = RecoveryState::new();
+        state.freeze_deadline(Duration::from_secs(100));
+        state.publish_armed();
+        assert!(state.try_begin_graceful(Duration::from_secs(140)));
+
         assert_eq!(
-            remaining_before_deadline(Duration::from_secs(140), Some(deadline)),
-            Some(Duration::ZERO)
+            timer_action(&state, Duration::from_secs(149)),
+            Some(TimerAction::Rearm(Duration::from_secs(1)))
+        );
+        assert_eq!(
+            timer_action(&state, Duration::from_secs(150)),
+            Some(TimerAction::Emergency)
         );
     }
 
@@ -240,10 +324,9 @@ mod tests {
         let state = RecoveryState::new();
         state.freeze_deadline(Duration::from_secs(100));
         state.publish_armed();
-        let remaining =
-            remaining_before_deadline(Duration::from_secs(100), state.armed_deadline()).unwrap();
+        assert!(state.try_begin_graceful(Duration::from_secs(100)));
 
         assert!(state.disarm());
-        assert_eq!(timer_action(&state, remaining), None);
+        assert_eq!(timer_action(&state, Duration::from_secs(110)), None);
     }
 }

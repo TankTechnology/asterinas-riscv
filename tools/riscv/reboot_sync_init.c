@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
-// A freestanding RISC-V init that deliberately calls reboot without sync.
+// A freestanding RISC-V init that never calls sync.
 // The same QEMU process boots twice against one ext2 disk. The second boot
-// must observe the first boot's newly created file, then power off.
+// must observe the first boot's newly created file, then power off. The first
+// boot either calls reboot(2) or waits for the opt-in software reboot timer.
 
 typedef unsigned long size_t;
 
@@ -99,5 +100,9 @@ void _start(void) {
         (long)sizeof(payload) - 1) stop("first-write");
     if (call5(NR_CLOSE, fd, 0, 0, 0, 0) != 0) stop("first-close");
     emit("REBOOT_SYNC_FIRST_WRITTEN boot=1\n");
+#ifdef REBOOT_SYNC_WATCHDOG
+    for (;;) (void)call5(NR_SCHED_YIELD, 0, 0, 0, 0, 0);
+#else
     request_reboot(REBOOT_RESTART);
+#endif
 }
