@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use ostd::power::{ExitCode, poweroff, restart};
+use ostd::power::{poweroff, restart, ExitCode};
 
 use super::SyscallReturn;
 use crate::{
     prelude::*,
-    process::{UserNamespace, credentials::capabilities::CapSet},
+    process::{credentials::capabilities::CapSet, UserNamespace},
     security::lsm::hooks as lsm_hooks,
 };
 
@@ -58,7 +58,11 @@ pub fn sys_reboot(
 
     let cmd = RebootCmd::try_from(op)?;
 
-    // TODO: Perform any necessary cleanup before powering off or restarting.
+    // A direct reboot(2) must persist dirty filesystems too: callers may not
+    // have run sync(2), and the power operation does not return on success.
+    // Propagate flush errors instead of silently losing data on restart.
+    super::sync::sys_sync(ctx)?;
+
     match cmd {
         RebootCmd::Restart => restart(ExitCode::Success),
         RebootCmd::Halt | RebootCmd::PowerOff => poweroff(ExitCode::Success),
