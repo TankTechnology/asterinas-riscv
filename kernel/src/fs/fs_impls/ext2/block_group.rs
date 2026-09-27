@@ -60,6 +60,8 @@ pub(super) struct BlockGroup {
     nr_inode_table_blocks_per_group: u32,
     /// Cached geometry: inodes per group.
     nr_inodes_per_group: u32,
+    /// Number of valid inode IDs in this group (the last group can be short).
+    nr_inodes_in_group: u32,
     /// Cached geometry: inode size in bytes.
     inode_size: usize,
     /// Inode table page cache backend.
@@ -120,7 +122,7 @@ impl BlockGroup {
             &group_desc,
         )?;
         let inode_bitmap =
-            Self::load_inode_bitmap(block_device.as_ref(), nr_inodes_per_group, &group_desc)?;
+            Self::load_inode_bitmap(block_device.as_ref(), nr_inodes_in_group, &group_desc)?;
 
         group_desc.validate_metadata_blocks(
             &block_bitmap,
@@ -151,6 +153,7 @@ impl BlockGroup {
             last_block: last_block_no,
             nr_inode_table_blocks_per_group,
             nr_inodes_per_group,
+            nr_inodes_in_group,
             inode_size,
             _inode_table_backend: backend,
             inode_table_cache,
@@ -411,21 +414,21 @@ impl BlockGroup {
 
     /// Frees one inode within this group.
     ///
-    /// Returns `true` if the allocation state transitioned allocated-to-free,
-    /// `false` if it was already free (logs warning).
-    pub(super) fn free_inode(&self, ino: Ext2Ino, inode_type: InodeType) -> Result<bool> {
+    /// Returns an error if the inode was already free.
+    pub(super) fn free_inode(&self, ino: Ext2Ino, inode_type: InodeType) -> Result<()> {
         let inode_idx = self.inode_idx_in_group(ino);
         let mut metadata = self.metadata.write();
 
         if !metadata.inode_bitmap.is_allocated(inode_idx) {
-            warn!("free_inode: inode idx {} already freed", inode_idx);
-            return Ok(false);
+            error!("free_inode: refusing to free already-free inode {}", ino);
+            return_errno_with_message!(Errno::EIO, "freeing an already-free inode");
         }
 
         let free_inodes_count = metadata
             .desc
             .free_inodes_count
             .checked_add(1)
+            .filter(|&count| count as u32 <= self.nr_inodes_in_group)
             .ok_or_else(|| Error::with_message(Errno::EIO, "group free inode counter overflow"))?;
         let used_dirs_count = if inode_type.is_directory() {
             Some(
@@ -447,7 +450,7 @@ impl BlockGroup {
             metadata.desc.used_dirs_count = used_dirs_count;
         }
 
-        Ok(true)
+        Ok(())
     }
 
     /// Reads an inode descriptor from the group's inode table `PageCache`.
@@ -558,7 +561,7 @@ impl BlockGroup {
     /// Loads the inode bitmap for this group.
     fn load_inode_bitmap(
         block_device: &dyn BlockDevice,
-        nr_inodes_per_group: u32,
+        nr_inodes_in_group: u32,
         desc: &BlockGroupDesc,
     ) -> Result<IdBitmap> {
         let bitmap_bid = desc.inode_bitmap_bid;
@@ -571,7 +574,7 @@ impl BlockGroup {
             return_errno_with_message!(Errno::EIO, "failed to read inode bitmap");
         }
 
-        let capacity = nr_inodes_per_group as usize;
+        let capacity = nr_inodes_in_group as usize;
         debug_assert!(capacity <= IdBitmap::capacity() as usize);
 
         Ok(IdBitmap::from_buf(buf.into_boxed_slice(), capacity as u16))
@@ -599,6 +602,45 @@ impl BlockGroup {
 
     fn ranges_overlap(a: &Range<u32>, b: &Range<u32>) -> bool {
         !a.is_empty() && !b.is_empty() && a.start < b.end && b.start < a.end
+    }
+}
+
+#[cfg(ktest)]
+mod test {
+    use ostd::prelude::*;
+
+    use super::*;
+    use crate::{
+        fs::fs_impls::ext2::test_utils::{Ext2FixtureBuilder, assert_errno},
+        time::clocks,
+    };
+
+    #[ktest]
+    fn partial_last_group_rejects_out_of_range_inode_mutations() {
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(2, 256)
+            .with_total_inodes(1025)
+            .with_free_inodes(1, 0)
+            .build()
+            .unwrap();
+        let group = f.ext2.block_group(1);
+        {
+            let mut metadata = group.metadata.write();
+            assert_eq!(metadata.inode_bitmap.alloc(), Some(0));
+            metadata.desc.free_inodes_count = 1;
+        }
+
+        assert!(group.alloc_ino(InodeType::File).unwrap().is_none());
+        assert_errno!(group.free_inode(1025, InodeType::File), Errno::EIO);
+        assert!(group.is_inode_allocated(1025));
+        assert_eq!(group.free_inodes_count(), 1);
+        assert_errno!(f.ext2.read_inode(1026), Errno::EIO);
+
+        // This fixture deliberately changed only cached metadata, not its
+        // backing memory disk. Discard the synthetic dirty state on teardown.
+        let mut metadata = group.metadata.write();
+        metadata.desc.clear_dirty();
+        metadata.inode_bitmap.clear_dirty();
     }
 }
 
