@@ -92,15 +92,9 @@ impl InodeBlockManager {
         IoRangeIter::new(block_range, tree)
     }
 
-    /// Truncates blocks to the new_size (best-effort).
-    pub(super) fn truncate_to_byte_len(&self, new_size: usize) {
-        let fs = match self.fs() {
-            Ok(fs) => fs,
-            Err(err) => {
-                error!("truncate: failed to get fs reference, err: {:?}", err);
-                return;
-            }
-        };
+    /// Truncates blocks to the new size, retaining unfreed pointers on error.
+    pub(super) fn truncate_to_byte_len(&self, new_size: usize) -> Result<()> {
+        let fs = self.fs()?;
         let mut tree = self.block_ptr_tree.write();
         tree.truncate_to_byte_len(&fs, new_size)
     }

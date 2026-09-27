@@ -50,19 +50,17 @@ impl IndirectBlockManager {
             .expect("indirect block must be cached after ensure_cached"))
     }
 
-    /// Reads all non-zero child block pointers from an indirect block.
-    pub(super) fn read_child_bids(&mut self, bid: Ext2Bid) -> Result<Vec<Ext2Bid>> {
-        let ptrs_per_block = BLOCK_SIZE / size_of::<u32>();
+    /// Returns non-zero child pointers with their slots, propagating read errors.
+    pub(super) fn read_child_bids(&mut self, bid: Ext2Bid) -> Result<Vec<(usize, Ext2Bid)>> {
         let block = self.find(bid)?;
-        let mut child_bids = Vec::new();
-        for idx in 0..ptrs_per_block {
-            match block.read_bid(idx) {
-                Ok(0) => continue,
-                Ok(child_bid) => child_bids.push(child_bid),
-                Err(_) => break,
+        let mut children = Vec::new();
+        for idx in 0..BLOCK_SIZE / size_of::<Ext2Bid>() {
+            let child_bid = block.read_bid(idx)?;
+            if child_bid != 0 {
+                children.push((idx, child_bid));
             }
         }
-        Ok(child_bids)
+        Ok(children)
     }
 
     /// Inserts an indirect block into the cache.

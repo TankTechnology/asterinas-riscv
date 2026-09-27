@@ -83,6 +83,12 @@ impl Inode {
             return_errno!(Errno::ENOTEMPTY);
         }
 
+        let parent_inner = guards.inner_mut(self.ino());
+        parent_inner.delete_entry(&entry_info)?;
+        parent_inner.dec_link_count(1);
+        parent_inner.mark_dir_modified();
+
+        let child_inner = guards.inner_mut(child.ino());
         child_inner.set_ctime(utils::now());
         child_inner.dec_link_count(2);
 
@@ -90,12 +96,6 @@ impl Inode {
             child_inner.write_back_inode_desc(&fs, entry_info.ino)?;
             let _ = fs.remove_inode(entry_info.ino);
         }
-
-        let parent_inner = guards.inner_mut(self.ino());
-
-        parent_inner.delete_entry(&entry_info)?;
-        parent_inner.dec_link_count(1);
-        parent_inner.mark_dir_modified();
 
         Ok(())
     }
@@ -860,6 +860,37 @@ mod test {
             f.ext2.super_block().free_blocks_count(),
             free_blocks_before + 1
         );
+    }
+
+    #[ktest]
+    fn unlink_after_write_without_sync_releases_data_blocks() {
+        let (f, root) = default_fixture();
+        let file = create_file(&root, "temporary");
+        let ino = file.ino();
+        let free_before_write = f.ext2.super_block().free_blocks_count();
+        let payload = vec![0x6au8; BLOCK_SIZE];
+        let mut reader = VmReader::from(payload.as_slice()).to_fallible();
+        file.write_direct_at(0, &mut reader).unwrap();
+        assert_eq!(
+            f.ext2.super_block().free_blocks_count(),
+            free_before_write - 1
+        );
+
+        root.unlink("temporary").unwrap();
+        drop(file);
+
+        assert_eq!(f.ext2.super_block().free_blocks_count(), free_before_write);
+        assert!(
+            !f.ext2
+                .block_group(0)
+                .metadata()
+                .inode_bitmap
+                .is_allocated((ino - 1) as u16)
+        );
+        f.ext2.sync_all().unwrap();
+        let raw_inode = read_raw_inode_from_disk(&f, ino);
+        assert_eq!(raw_inode.sector_count, 0);
+        assert_eq!(raw_inode.block[0], 0);
     }
 
     #[ktest]

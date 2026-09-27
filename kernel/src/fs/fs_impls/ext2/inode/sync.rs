@@ -64,24 +64,21 @@ impl Inode {
             return Ok(false);
         }
 
-        if let Some(xattr) = self.xattr.as_ref() {
-            xattr.delete_xattr_block()?;
-        }
-
         let mut inner = self.inner.write();
         let old_size = inner.file_size();
         let block_manager = inner.block_manager().ok().cloned();
         if block_manager.is_some() {
             inner.resize_page_cache(0, old_size)?;
         }
+        if let Some(block_manager) = block_manager {
+            block_manager.truncate_to_byte_len(0)?;
+        }
+        if let Some(xattr) = self.xattr.as_ref() {
+            xattr.delete_xattr_block()?;
+        }
         inner.set_dtime(utils::now());
         inner.set_file_size(0);
         inner.set_file_acl(0)?;
-        if inner.desc.sector_count > 0
-            && let Some(block_manager) = block_manager
-        {
-            block_manager.truncate_to_byte_len(0);
-        }
         inner.write_back_inode_desc(&fs, self.ino)?;
 
         fs.free_inode(self.ino, self.type_)?;

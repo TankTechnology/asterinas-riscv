@@ -167,43 +167,27 @@ impl BlockPtrTree {
         ))
     }
 
-    /// Truncates blocks to the new byte length (best-effort).
+    /// Truncates blocks to the new byte length.
     ///
-    /// This is a best-effort operation. Errors are logged but not propagated.
-    /// Leaked blocks from partial failures are recoverable by e2fsck. Linux
-    /// also follows this practice (see
-    /// <https://elixir.bootlin.com/linux/v7.0/source/fs/ext2/inode.c#L1172>).
+    /// On failure, pointers to blocks not yet freed remain reachable so that
+    /// the operation can be retried without releasing the inode bitmap first.
     pub(in crate::fs::fs_impls::ext2::inode) fn truncate_to_byte_len(
         &mut self,
         fs: &Ext2,
         new_size: usize,
-    ) {
+    ) -> Result<()> {
         // First logical block to free = ceil(new_size / block_size).
-        let iblock = match Iblock::try_from(new_size.div_ceil(BLOCK_SIZE)) {
-            Ok(ib) => ib,
-            Err(_) => {
-                error!("truncate: size exceeds ext2 limits, new_size={}", new_size);
-                return;
-            }
-        };
-
-        let walk = match self.walk_at(iblock) {
-            Ok(w) => w,
-            Err(err) => {
-                error!("truncate: failed to compute block walk, err: {:?}", err);
-                return;
-            }
-        };
+        let iblock = Iblock::try_from(new_size.div_ceil(BLOCK_SIZE))
+            .map_err(|_| Error::with_message(Errno::EINVAL, "truncate size exceeds ext2 limits"))?;
+        let walk = self.walk_at(iblock)?;
 
         if walk.is_direct_data_block() {
-            if let Err(err) = self.truncate_direct_slots(fs, walk.root_slot() as usize) {
-                error!("truncate: truncate_direct_slots failed, err: {:?}", err);
-            }
-        } else if let Err(err) = self.truncate_indirect_path(fs, &walk) {
-            error!("truncate: truncate_indirect_path failed, err: {:?}", err);
+            self.truncate_direct_slots(fs, walk.root_slot() as usize)?;
+        } else {
+            self.truncate_indirect_path(fs, &walk)?;
         }
 
-        self.free_indirect_roots_after(fs, walk.root_slot() as usize);
+        self.free_indirect_roots_after(fs, walk.root_slot() as usize)
     }
 
     /// Returns a conservative hole run starting from `iblock`, capped at
@@ -306,8 +290,9 @@ impl BlockPtrTree {
         // by `free_indirect_right_side`.
         let detach_level = self.find_detach_level(walk, &trimmed)?;
 
-        if let Some(detached_bid) = self.detach_subtree_root(walk, &trimmed, detach_level)? {
-            self.free_block_subtree(fs, detached_bid, walk.subtree_indirect_levels(detach_level));
+        if let Some(detached_bid) = self.subtree_root(walk, &trimmed, detach_level)? {
+            self.free_block_subtree(fs, detached_bid, walk.subtree_indirect_levels(detach_level))?;
+            self.clear_subtree_root(walk, &trimmed, detach_level)?;
         }
 
         self.free_indirect_right_side(fs, walk, &trimmed, detach_level)?;
@@ -355,8 +340,8 @@ impl BlockPtrTree {
         Ok(detach_level)
     }
 
-    fn detach_subtree_root(
-        &mut self,
+    fn subtree_root(
+        &self,
         walk: &BlockPointerWalk,
         trimmed: &BlockPointerWalk,
         detach_level: usize,
@@ -365,17 +350,13 @@ impl BlockPtrTree {
             // Subtree root is referenced directly from `inode.block_ptrs[]`.
             let slot = walk.root_slot() as usize;
             let bid = self.raw_block_ptrs.block_ptrs[slot];
-            self.raw_block_ptrs.block_ptrs[slot] = 0;
             bid
         } else {
             // Subtree root is a slot inside a parent indirect block.
             let parent_bid = trimmed.parent_bid_at(detach_level);
             let slot = walk.slot_at(detach_level) as usize;
             let mut indirect_blocks_manager = self.indirect_blocks_manager.lock();
-            let parent_block = indirect_blocks_manager.find_mut(parent_bid)?;
-            let bid = parent_block.read_bid(slot)?;
-            parent_block.write_bid(slot, 0)?;
-            bid
+            indirect_blocks_manager.find(parent_bid)?.read_bid(slot)?
         };
 
         if detached_bid != 0 {
@@ -385,6 +366,24 @@ impl BlockPtrTree {
         }
     }
 
+    fn clear_subtree_root(
+        &mut self,
+        walk: &BlockPointerWalk,
+        trimmed: &BlockPointerWalk,
+        detach_level: usize,
+    ) -> Result<()> {
+        if detach_level == 0 {
+            self.raw_block_ptrs.block_ptrs[walk.root_slot() as usize] = 0;
+        } else {
+            let parent_bid = trimmed.parent_bid_at(detach_level);
+            self.indirect_blocks_manager
+                .lock()
+                .find_mut(parent_bid)?
+                .write_bid(walk.slot_at(detach_level) as usize, 0)?;
+        }
+        Ok(())
+    }
+
     fn free_indirect_right_side(
         &mut self,
         fs: &Ext2,
@@ -392,7 +391,6 @@ impl BlockPtrTree {
         trimmed: &BlockPointerWalk,
         detach_level: usize,
     ) -> Result<()> {
-        let ptrs_per_block = PTRS_PER_BLOCK;
         // From `detach_level` down to level 1, clear all slots to the right of the
         // truncation slot and free their subtrees.
         for level in (1..=detach_level).rev() {
@@ -400,55 +398,36 @@ impl BlockPtrTree {
 
             let start_idx = (walk.slot_at(level) as usize) + 1;
             let child_indirect_levels = walk.subtree_indirect_levels(level);
-            // Collect block numbers before releasing the lock; `free_block_subtree`
-            // may re-acquire the indirect block manager recursively.
-            let child_blocks = {
-                let mut indirect_blocks_manager = self.indirect_blocks_manager.lock();
-                let block = indirect_blocks_manager.find_mut(current_bid)?;
-                let mut child_blocks = Vec::new();
-                for idx in start_idx..ptrs_per_block {
-                    let bid = block.read_bid(idx)?;
-                    if bid == 0 {
-                        continue;
-                    }
-                    block.write_bid(idx, 0)?;
-                    child_blocks.push(bid);
-                }
-                child_blocks
-            };
-            for bid in child_blocks {
-                self.free_block_subtree(fs, bid, child_indirect_levels);
+            // Snapshot the non-zero pointers before recursing, without holding
+            // the manager lock while a child subtree is freed.
+            let children = self
+                .indirect_blocks_manager
+                .lock()
+                .read_child_bids(current_bid)?;
+            for (idx, bid) in children.into_iter().filter(|(idx, _)| *idx >= start_idx) {
+                self.free_block_subtree(fs, bid, child_indirect_levels)?;
+                self.indirect_blocks_manager
+                    .lock()
+                    .find_mut(current_bid)?
+                    .write_bid(idx, 0)?;
             }
         }
         Ok(())
     }
 
-    fn free_indirect_roots_after(&mut self, fs: &Ext2, root_slot: usize) {
+    fn free_indirect_roots_after(&mut self, fs: &Ext2, root_slot: usize) -> Result<()> {
         // The conditions are cumulative: truncating before the single-indirect
         // root frees slots 12, 13, and 14; truncating at or before the
         // single-indirect root frees slots 13 and 14; truncating at or before
         // the double-indirect root frees slot 14.
-        if root_slot < 12 {
-            let bid = self.raw_block_ptrs.block_ptrs[12];
+        for slot in (root_slot + 1).max(12)..RAW_BLOCK_PTRS_LEN {
+            let bid = self.raw_block_ptrs.block_ptrs[slot];
             if bid != 0 {
-                self.raw_block_ptrs.block_ptrs[12] = 0;
-                self.free_block_subtree(fs, bid, 1);
+                self.free_block_subtree(fs, bid, (slot - 11) as u32)?;
+                self.raw_block_ptrs.block_ptrs[slot] = 0;
             }
         }
-        if root_slot <= 12 {
-            let bid = self.raw_block_ptrs.block_ptrs[13];
-            if bid != 0 {
-                self.raw_block_ptrs.block_ptrs[13] = 0;
-                self.free_block_subtree(fs, bid, 2);
-            }
-        }
-        if root_slot <= 13 {
-            let bid = self.raw_block_ptrs.block_ptrs[14];
-            if bid != 0 {
-                self.raw_block_ptrs.block_ptrs[14] = 0;
-                self.free_block_subtree(fs, bid, 3);
-            }
-        }
+        Ok(())
     }
 
     /// Translates a logical block number into a block-pointer path and walks
@@ -613,61 +592,44 @@ impl BlockPtrTree {
     }
 
     /// Frees all blocks in a pointer subtree.
-    fn free_block_subtree(&mut self, fs: &Ext2, block_bid: Ext2Bid, indirect_levels: u32) {
+    fn free_block_subtree(
+        &mut self,
+        fs: &Ext2,
+        block_bid: Ext2Bid,
+        indirect_levels: u32,
+    ) -> Result<()> {
         if block_bid == 0 {
-            return;
+            return Ok(());
         }
 
         if indirect_levels == 0 {
-            if let Err(err) = fs.free_blocks(block_bid, 1) {
-                // Best-effort free path logs errors and proceeds.
-                error!(
-                    "free_block_subtree: failed to free data block {}: {:?}",
-                    block_bid, err
-                );
-                return;
-            }
+            fs.free_blocks(block_bid, 1)?;
             self.raw_block_ptrs.sector_count = self
                 .raw_block_ptrs
                 .sector_count
                 .saturating_sub(SECTORS_PER_BLOCK);
-            return;
+            return Ok(());
         }
 
-        let child_blocks = {
-            let mut indirect_blocks_manager = self.indirect_blocks_manager.lock();
-            match indirect_blocks_manager.read_child_bids(block_bid) {
-                Ok(children) => {
-                    indirect_blocks_manager.remove(block_bid);
-                    children
-                }
-                Err(_) => {
-                    // Skip the damaged subtree after logging the read failure so
-                    // cleanup can continue for the remaining subtree.
-                    error!(
-                        "free_block_subtree: failed to read indirect block {} (indirect_levels {})",
-                        block_bid, indirect_levels
-                    );
-                    return;
-                }
-            }
-        };
-
-        for bid in child_blocks {
-            self.free_block_subtree(fs, bid, indirect_levels - 1);
+        let children = self
+            .indirect_blocks_manager
+            .lock()
+            .read_child_bids(block_bid)?;
+        for (idx, bid) in children {
+            self.free_block_subtree(fs, bid, indirect_levels - 1)?;
+            self.indirect_blocks_manager
+                .lock()
+                .find_mut(block_bid)?
+                .write_bid(idx, 0)?;
         }
 
-        if let Err(err) = fs.free_blocks(block_bid, 1) {
-            error!(
-                "free_block_subtree: failed to free indirect block {}: {:?}",
-                block_bid, err
-            );
-            return;
-        }
+        fs.free_blocks(block_bid, 1)?;
+        self.indirect_blocks_manager.lock().remove(block_bid);
         self.raw_block_ptrs.sector_count = self
             .raw_block_ptrs
             .sector_count
             .saturating_sub(SECTORS_PER_BLOCK);
+        Ok(())
     }
 
     /// Allocates indirect metadata blocks and data blocks for a missing path.
@@ -1662,6 +1624,7 @@ mod test {
 
     #[ktest]
     fn truncate_indirect_frees_shared_path() {
+        clocks::init_for_ktest();
         let f = Ext2FixtureBuilder::new(1, 256)
             .with_free_blocks(64, 64)
             .build()
@@ -1675,7 +1638,9 @@ mod test {
         alloc_single_block(&mut block_ptr_tree, ext2, first_double_iblock + 1).unwrap();
         alloc_single_block(&mut block_ptr_tree, ext2, first_double_iblock + 2).unwrap();
 
-        block_ptr_tree.truncate_to_byte_len(ext2, (first_double_iblock as usize + 1) * BLOCK_SIZE);
+        block_ptr_tree
+            .truncate_to_byte_len(ext2, (first_double_iblock as usize + 1) * BLOCK_SIZE)
+            .unwrap();
         assert!(
             block_ptr_tree
                 .lookup_block(first_double_iblock)
@@ -1698,6 +1663,7 @@ mod test {
 
     #[ktest]
     fn truncate_releases_all_indirect_blocks() {
+        clocks::init_for_ktest();
         let f = Ext2FixtureBuilder::new(1, 256)
             .with_free_blocks(64, 64)
             .build()
@@ -1715,7 +1681,7 @@ mod test {
         assert_ne!(block_ptr_tree.raw_block_ptrs.block_ptrs[13], 0);
         assert_ne!(block_ptr_tree.raw_block_ptrs.block_ptrs[14], 0);
 
-        block_ptr_tree.truncate_to_byte_len(ext2, 0);
+        block_ptr_tree.truncate_to_byte_len(ext2, 0).unwrap();
         assert_eq!(block_ptr_tree.raw_block_ptrs.block_ptrs[12], 0);
         assert_eq!(block_ptr_tree.raw_block_ptrs.block_ptrs[13], 0);
         assert_eq!(block_ptr_tree.raw_block_ptrs.block_ptrs[14], 0);
@@ -1733,6 +1699,7 @@ mod test {
 
     #[ktest]
     fn free_block_subtree_recursively_releases_blocks() {
+        clocks::init_for_ktest();
         let f = Ext2FixtureBuilder::new(1, 256)
             .with_free_blocks(64, 64)
             .build()
@@ -1752,11 +1719,41 @@ mod test {
         );
 
         let free_before = ext2.super_block().free_blocks_count();
-        block_ptr_tree.free_block_subtree(ext2, root, 3);
+        block_ptr_tree.free_block_subtree(ext2, root, 3).unwrap();
         block_ptr_tree.raw_block_ptrs.block_ptrs[14] = 0;
         let free_after = ext2.super_block().free_blocks_count();
 
         assert_eq!(free_after - free_before, 4);
         assert_eq!(block_ptr_tree.raw_block_ptrs.sector_count, 0);
+    }
+
+    #[ktest]
+    fn truncate_read_error_preserves_indirect_root_for_retry() {
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 256)
+            .with_free_blocks(64, 64)
+            .build()
+            .unwrap();
+        let ext2 = &f.ext2;
+        let mut allocated_tree = make_block_ptr_tree([0; RAW_BLOCK_PTRS_LEN], 0, ext2);
+        alloc_single_block(&mut allocated_tree, ext2, 12).unwrap();
+        allocated_tree.sync_indirect_blocks().unwrap();
+
+        let original = *allocated_tree.raw_block_ptrs();
+        let mut tree = BlockPtrTree::new(original, Arc::downgrade(ext2));
+        let free_before = ext2.super_block().free_blocks_count();
+
+        f.disk.set_fail_reads(true);
+        let err = tree.truncate_to_byte_len(ext2, 0).unwrap_err();
+        assert_eq!(err.error(), Errno::EIO);
+        assert_eq!(tree.raw_block_ptrs.block_ptrs[12], original.block_ptrs[12]);
+        assert_eq!(tree.raw_block_ptrs.sector_count, original.sector_count);
+        assert_eq!(ext2.super_block().free_blocks_count(), free_before);
+
+        f.disk.set_fail_reads(false);
+        tree.truncate_to_byte_len(ext2, 0).unwrap();
+        assert_eq!(tree.raw_block_ptrs.block_ptrs[12], 0);
+        assert_eq!(tree.raw_block_ptrs.sector_count, 0);
+        assert_eq!(ext2.super_block().free_blocks_count(), free_before + 2);
     }
 }
