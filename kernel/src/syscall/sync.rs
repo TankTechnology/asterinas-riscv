@@ -2,17 +2,18 @@
 
 use super::SyscallReturn;
 use crate::{
-    fs::file::{
-        StatusFlags,
-        file_table::{RawFileDesc, get_file_fast},
+    fs::{
+        file::{
+            file_table::{get_file_fast, RawFileDesc},
+            StatusFlags,
+        },
+        vfs::file_system::sync_all_live_file_systems,
     },
     prelude::*,
 };
 
-pub fn sys_sync(ctx: &Context) -> Result<SyscallReturn> {
-    let current_ns_proxy = ctx.thread_local.borrow_ns_proxy();
-    let current_mnt_ns = current_ns_proxy.unwrap().mnt_ns();
-    current_mnt_ns.sync()?;
+pub fn sys_sync(_ctx: &Context) -> Result<SyscallReturn> {
+    sync_all_live_file_systems()?;
     Ok(SyscallReturn::Return(0))
 }
 

@@ -8,6 +8,76 @@ use device_id::DeviceId;
 use super::inode::Inode;
 use crate::prelude::*;
 
+/// Tracks live filesystem instances without keeping an unmounted filesystem alive.
+struct LiveFileSystems {
+    entries: Mutex<BTreeMap<usize, Weak<dyn FileSystem>>>,
+}
+
+impl LiveFileSystems {
+    const fn new() -> Self {
+        Self {
+            entries: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    fn register(&self, fs: &Arc<dyn FileSystem>) {
+        let key = Arc::as_ptr(fs) as *const () as usize;
+        let mut entries = self.entries.lock();
+        entries.retain(|_, weak| weak.strong_count() != 0);
+        entries.insert(key, Arc::downgrade(fs));
+    }
+
+    fn snapshot(&self) -> Vec<Arc<dyn FileSystem>> {
+        let mut filesystems = Vec::new();
+        self.entries.lock().retain(|_, weak| {
+            if let Some(fs) = weak.upgrade() {
+                filesystems.push(fs);
+                true
+            } else {
+                false
+            }
+        });
+        filesystems
+    }
+
+    fn sync_all(&self) -> Result<()> {
+        // Never hold the registry lock while doing filesystem I/O.
+        sync_file_systems(self.snapshot())
+    }
+}
+
+static LIVE_FILE_SYSTEMS: LiveFileSystems = LiveFileSystems::new();
+
+/// Records a filesystem whenever a mount is constructed.
+pub(in crate::fs) fn register_live_file_system(fs: &Arc<dyn FileSystem>) {
+    LIVE_FILE_SYSTEMS.register(fs);
+}
+
+/// Flushes every live filesystem, including those outside the caller's mount namespace.
+pub(crate) fn sync_all_live_file_systems() -> Result<()> {
+    LIVE_FILE_SYSTEMS.sync_all()
+}
+
+/// Flushes all supplied filesystems, reporting the first error after trying the rest.
+pub(in crate::fs) fn sync_file_systems(filesystems: Vec<Arc<dyn FileSystem>>) -> Result<()> {
+    let mut first_error = None;
+    for filesystem in filesystems {
+        if let Err(error) = filesystem.sync() {
+            ostd::error!(
+                "failed to sync filesystem {} (source {:?}): {:?}",
+                filesystem.name(),
+                filesystem.source(),
+                error
+            );
+            first_error.get_or_insert(error);
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
 /// Common interface implemented by each concrete file system instance.
 pub trait FileSystem: Any + Sync + Send {
     /// Gets the name of this FS type such as `"ext4"` or `"sysfs"`.
@@ -166,6 +236,67 @@ impl From<u32> for FsFlags {
 impl From<FsFlags> for u32 {
     fn from(value: FsFlags) -> Self {
         value.bits()
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::fs::{fs_impls::ramfs::RamFs, vfs::path::Mount};
+
+    struct SyncCountingFs {
+        backing: Arc<RamFs>,
+        sync_calls: AtomicUsize,
+        event_stats: FsEventSubscriberStats,
+    }
+
+    impl FileSystem for SyncCountingFs {
+        fn name(&self) -> &'static str {
+            "sync-counting-fs"
+        }
+
+        fn sync(&self) -> Result<()> {
+            self.sync_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+
+        fn root_inode(&self) -> Arc<dyn Inode> {
+            self.backing.root_inode()
+        }
+
+        fn sb(&self) -> SuperBlock {
+            self.backing.sb()
+        }
+
+        fn fs_event_subscriber_stats(&self) -> &FsEventSubscriberStats {
+            &self.event_stats
+        }
+    }
+
+    #[ktest]
+    fn global_sync_includes_live_filesystem_outside_mount_namespace() {
+        crate::time::clocks::init_for_ktest();
+
+        let fs = Arc::new(SyncCountingFs {
+            backing: RamFs::new(),
+            sync_calls: AtomicUsize::new(0),
+            event_stats: FsEventSubscriberStats::new(),
+        });
+        let first_mount = Mount::new_root(fs.clone(), Weak::new()).unwrap();
+        let second_mount = Mount::new_root(fs.clone(), Weak::new()).unwrap();
+        let weak_fs = Arc::downgrade(&fs);
+
+        sync_all_live_file_systems().unwrap();
+        assert_eq!(fs.sync_calls.load(Ordering::Relaxed), 1);
+
+        drop(first_mount);
+        drop(second_mount);
+        drop(fs);
+        assert!(weak_fs.upgrade().is_none());
     }
 }
 

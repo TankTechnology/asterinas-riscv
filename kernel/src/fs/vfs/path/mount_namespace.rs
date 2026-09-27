@@ -15,7 +15,7 @@ use crate::{
         fs_impls::ramfs::RamFs,
         pseudofs::{NsCommonOps, NsType, StashedDentry},
         vfs::{
-            file_system::FileSystem,
+            file_system::{sync_file_systems, FileSystem},
             path::{Dentry, Mount, Path, PathResolver},
         },
     },
@@ -340,26 +340,6 @@ impl MountNamespace {
         }
 
         Ok(())
-    }
-}
-
-/// Syncs the filesystems collected from a mount namespace.
-fn sync_file_systems(filesystems: Vec<Arc<dyn FileSystem>>) -> Result<()> {
-    let mut first_error = None;
-    for filesystem in filesystems {
-        if let Err(error) = filesystem.sync() {
-            ostd::error!(
-                "failed to sync filesystem {} (source {:?}): {:?}",
-                filesystem.name(),
-                filesystem.source(),
-                error
-            );
-            first_error.get_or_insert(error);
-        }
-    }
-    match first_error {
-        Some(error) => Err(error),
-        None => Ok(()),
     }
 }
 
