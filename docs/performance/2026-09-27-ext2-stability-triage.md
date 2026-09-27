@@ -369,3 +369,31 @@ the final ext2 image SHA-256 was
 Logs are under `.local-test/ext2-reclaim-20260927/logs-free-guard/`.
 This is clean-boot validation; it does not establish sudden-power-loss
 consistency or journal replay. No controlled power-cut test was performed.
+
+## Follow-up: inode-release errors and short last groups
+
+The inode-free path had the same silent duplicate-release behavior: an
+already-clear inode bit produced a warning and success. It also changed the
+group bitmap before checking whether the filesystem-wide free-inode count
+could be incremented. Both paths now return `EIO` before any metadata change.
+The group count is bounded by the actual number of inodes in that group.
+
+The final group can contain fewer valid inode numbers than a full group, but
+its cached bitmap previously exposed the full per-group capacity. An
+inconsistent free counter could therefore make allocation reserve an inode
+number beyond the filesystem's inode count before reporting an error. The
+bitmap now uses the last group's actual capacity, and inode reads reject
+numbers above the superblock limit before indexing the group bitmap.
+
+Focused RISC-V kernel tests passed for duplicate release, a filesystem-wide
+counter at its limit, and a partial last group with deliberately inconsistent
+cached metadata. The RISC-V/Sv39/SMP4 kernel build passed. A normal QEMU
+launch reused the clean cloned ext2 image and completed the 16-cycle
+Firefox-state workload, `sync`, unmount, and host transcript validation.
+Offline `e2fsck -fn` returned 0 and the earlier persistent marker still read
+`asterinas-ext2-recovery-v1`. The kernel Image SHA-256 was
+`442162410e7d55af2a4f3223e1990c773faaa4d344119224cb6b6b8e02c74524`;
+the final ext2 image SHA-256 was
+`3dd0cd300ae0707bb5ba24d116d0e0318242ba7e87cf8069e62683d16c53f986`.
+Logs are under `.local-test/ext2-reclaim-20260927/logs-inode-guard/`.
+No controlled power-cut test or new physical-board boot was performed.
