@@ -174,6 +174,18 @@ else ifeq ($(AUTO_TEST), ext2_after_sync_cut)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_after_sync_cut_test.sh"
+else ifeq ($(AUTO_TEST), ext2_file_fsync_cut)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_cut_point_test.sh file"
+else ifeq ($(AUTO_TEST), ext2_directory_fsync_cut)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_cut_point_test.sh directory"
+else ifeq ($(AUTO_TEST), ext2_flush_eio)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_flush_eio_test.sh"
 else ifeq ($(AUTO_TEST), fs_syscall_compat)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]

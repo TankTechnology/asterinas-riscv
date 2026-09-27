@@ -210,7 +210,8 @@ impl BlockGroup {
     }
 
     /// Syncs per-group inode state and bitmap metadata.
-    pub(super) fn sync_all(&self, group_descs: &USegment) -> Result<()> {
+    /// Returns whether the group descriptor was staged for device writeback.
+    pub(super) fn sync_all(&self, group_descs: &USegment) -> Result<bool> {
         self.sync_inodes()?;
         self.sync_metadata(group_descs)
     }
@@ -460,8 +461,9 @@ impl BlockGroup {
     ///
     /// Dirty bitmaps are written to disk here. If the group descriptor is dirty,
     /// this method updates the caller-provided descriptor table segment; the
-    /// caller is responsible for writing that segment to disk.
-    fn sync_metadata(&self, group_descs: &USegment) -> Result<()> {
+    /// caller is responsible for writing that segment to disk. The return value
+    /// reports whether that descriptor needs writing.
+    pub(super) fn sync_metadata(&self, group_descs: &USegment) -> Result<bool> {
         let mut metadata = self.metadata.write();
 
         // Sync block bitmap.
@@ -499,14 +501,15 @@ impl BlockGroup {
         }
 
         // Sync group descriptor.
-        if metadata.desc.is_dirty() {
+        let desc_dirty = metadata.desc.is_dirty();
+        if desc_dirty {
             let raw_group = RawBlockGroup::from(*metadata.desc);
             let offset = self.group_idx * size_of::<RawBlockGroup>();
             group_descs.write_val(offset, &raw_group)?;
             metadata.desc.clear_dirty();
         }
 
-        Ok(())
+        Ok(desc_dirty)
     }
 
     /// Returns the 0-based group-local inode index.
