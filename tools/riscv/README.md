@@ -32,6 +32,18 @@ tools/docker/run_dev_container.sh -- python3 tools/riscv/reboot_sync_gate.py \
 The output contains `qemu-serial.log`, `e2fsck.log`, `result.json`, and the
 scratch image for review.
 
+For a short, clean-exit check of block flush errors, run one selected ext2
+case on a fresh QEMU image. `blkdebug` injects one `EIO`; the guest must report
+it from `fsync` or `msync(MS_SYNC)` and then shut down normally. These selected
+cases do not run the separate directory-fsync cut-point experiment.
+
+```bash
+python3 tools/riscv/ext2_durability_gate.py --case flush-eio \
+  --output-dir .local-test/ext2-flush-eio-$(date +%Y%m%d-%H%M%S)
+python3 tools/riscv/ext2_durability_gate.py --case msync-eio \
+  --output-dir .local-test/ext2-msync-eio-$(date +%Y%m%d-%H%M%S)
+```
+
 ## Megrez selectable boot menu
 
 The schema-v3 selector provides RockOS, Asterinas Basic, Probe, and Desktop.

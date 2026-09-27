@@ -19,6 +19,7 @@ REPO = Path(__file__).resolve().parents[2]
 PAYLOAD = "asterinas-durability-cut-v1\n"
 CUT_MARKER = "ASTERINAS_EXT2_CUT_READY stage=directory_fsync"
 EIO_MARKER = "ASTERINAS_EXT2_FLUSH_EIO_OK errno=5"
+MSYNC_EIO_MARKER = "ASTERINAS_EXT2_MSYNC_EIO_OK errno=5"
 GUEST_TIMEOUT_SECONDS = 240
 
 
@@ -66,14 +67,19 @@ def docker_container(run_log: Path) -> str:
 def kill_guest(case: Path) -> None:
     container = docker_container(case / "run.log")
     processes = command(["docker", "exec", container, "ps", "-eww", "-o", "pid=,args="])
-    expected_drive = f"id=x0,file={guest_path(case / 'ext2.img')}"
+    image = guest_path(case / "ext2.img")
+    config = guest_path(case / "blkdebug.conf")
+    expected_drives = (
+        f"id=x0,file={image}",
+        f"id=x0,file=blkdebug:{config}:{image}",
+    )
     matches = []
     for line in processes.stdout.splitlines():
         parts = line.strip().split(None, 1)
         if (
             len(parts) == 2
             and parts[1].startswith("qemu-system-riscv64 ")
-            and expected_drive in parts[1]
+            and any(drive in parts[1] for drive in expected_drives)
         ):
             matches.append(parts[0])
     if len(matches) != 1:
@@ -107,7 +113,9 @@ def launch_guest(case: Path, auto_test: str, *, blkdebug: bool) -> subprocess.Po
     ]
     if blkdebug:
         config = case / "blkdebug.conf"
-        config.write_text('[inject-error]\nevent = "flush_to_disk"\nerrno = "5"\n')
+        config.write_text(
+            '[inject-error]\nevent = "flush_to_disk"\nerrno = "5"\nonce = "on"\n'
+        )
         drive = f"blkdebug:{guest_path(config)}:{guest_path(case / 'ext2.img')}"
         env.append(f"ASTERINAS_EXT2_DRIVE_FILE={drive}")
     args = [
@@ -186,20 +194,43 @@ def run_flush_eio(case: Path) -> dict[str, object]:
     return {"marker": EIO_MARKER, "qemu_exit": 0}
 
 
+def run_msync_eio(case: Path) -> dict[str, object]:
+    prepare_image(case)
+    process = launch_guest(case, "ext2_msync_eio", blkdebug=True)
+    try:
+        guest_exit = process.wait(timeout=GUEST_TIMEOUT_SECONDS)
+    finally:
+        stop_guest(case, process)
+    log = (case / "qemu.log").read_text(errors="replace")
+    if guest_exit != 0 or MSYNC_EIO_MARKER not in log:
+        raise GateError(
+            f"msync EIO test failed: qemu exit={guest_exit}, "
+            f"marker={MSYNC_EIO_MARKER in log}"
+        )
+    return {"marker": MSYNC_EIO_MARKER, "qemu_exit": 0}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--case", choices=("directory-fsync-cut", "flush-eio", "msync-eio")
+    )
     args = parser.parse_args()
     output = args.output_dir.resolve()
     if not output.is_relative_to(REPO) or output.exists():
         parser.error("output directory must be new and inside this repository")
     output.mkdir(parents=True)
     result: dict[str, object] = {"status": "running", "cases": {}}
+    cases = (
+        ("directory-fsync-cut", run_directory_cut),
+        ("flush-eio", run_flush_eio),
+        ("msync-eio", run_msync_eio),
+    )
+    if args.case is not None:
+        cases = tuple(case for case in cases if case[0] == args.case)
     try:
-        for name, runner in (
-            ("directory-fsync-cut", run_directory_cut),
-            ("flush-eio", run_flush_eio),
-        ):
+        for name, runner in cases:
             result["cases"][name] = runner(output / name)
             print(f"{name}: passed", flush=True)
         result["status"] = "passed"
@@ -210,7 +241,7 @@ def main() -> None:
     finally:
         result["qemu_log_sha256"] = {
             name: hashlib.sha256(log.read_bytes()).hexdigest()
-            for name in ("directory-fsync-cut", "flush-eio")
+            for name, _ in cases
             if (log := output / name / "qemu.log").exists()
         }
         (output / "result.json").write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
