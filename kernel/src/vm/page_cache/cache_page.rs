@@ -76,6 +76,10 @@ pub struct CachePageMeta {
     /// cleared without the page lock only from the BIO completion callback after
     /// the VMO writeback path has handed off the writeback state.
     is_writing_back: AtomicBool,
+    /// A shared writable mapping can change this page without taking the page
+    /// lock. Until reverse mappings can rearm its PTEs after writeback, keep
+    /// flushing pages that have received a mmap write fault.
+    mmap_writable: AtomicBool,
     // TODO: Add a reverse mapping from the page to VMO for eviction.
 }
 
@@ -85,6 +89,7 @@ impl Default for CachePageMeta {
             state: AtomicPageState::new(PageState::Uninit),
             lock: AtomicBool::new(false),
             is_writing_back: AtomicBool::new(false),
+            mmap_writable: AtomicBool::new(false),
         }
     }
 }
@@ -153,6 +158,13 @@ pub trait CachePageExt: Sized {
             .store(PageState::Dirty, Ordering::Release);
     }
 
+    /// Conservatively tracks a page whose shared PTE may remain writable.
+    /// The page must be initialized before this is called.
+    fn mark_mmap_writable(&self) {
+        debug_assert!(!self.is_uninit());
+        self.metadata().mmap_writable.store(true, Ordering::Release);
+    }
+
     /// Allocates a new cache page which content and state are uninitialized.
     fn alloc_uninit() -> Result<CachePage> {
         let meta = CachePageMeta::default();
@@ -184,18 +196,20 @@ pub trait CachePageExt: Sized {
 
     /// Checks if the page is up-to-date.
     fn is_up_to_date(&self) -> bool {
-        matches!(
-            self.metadata().state.load(Ordering::Acquire),
-            PageState::UpToDate
-        )
+        !self.metadata().mmap_writable.load(Ordering::Acquire)
+            && matches!(
+                self.metadata().state.load(Ordering::Acquire),
+                PageState::UpToDate
+            )
     }
 
     /// Checks if the page is dirty.
     fn is_dirty(&self) -> bool {
-        matches!(
-            self.metadata().state.load(Ordering::Acquire),
-            PageState::Dirty
-        )
+        self.metadata().mmap_writable.load(Ordering::Acquire)
+            || matches!(
+                self.metadata().state.load(Ordering::Acquire),
+                PageState::Dirty
+            )
     }
 }
 

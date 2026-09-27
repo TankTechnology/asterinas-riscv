@@ -668,47 +668,8 @@ mod test {
         f.ext2.sync_all().unwrap();
     }
 
-    // TODO: Enable this test once page-table dirty bits are propagated back to
-    // the VMO. Currently the hardware dirty flag set by mmap writes is not
-    // reflected in the VMO's dirty tracking, so a subsequent buffered write to
-    // the same page overwrites the mmap-dirtied region with zeros (the page
-    // cache sees the page as clean and re-zeroes the hole portion). Once the
-    // VM subsystem flushes PTE dirty bits back to the VMO, this test should
-    // pass and can be re-enabled.
-    // #[ktest]
-    // fn file_sparse_buffered_write_preserves_mmap_dirty_tail() {
-    //     let (_f, root) = default_fixture();
-    //     let file = create_file(&root, "mmap_dirty_tail");
-    //     let vmo = VfsInodeTrait::page_cache(file.as_ref()).unwrap().as_vmo();
-
-    //     VfsInodeTrait::resize(file.as_ref(), BLOCK_SIZE * 3).unwrap();
-
-    //     let block_start = BLOCK_SIZE;
-    //     let mmap_offset = block_start + 200;
-    //     let mmap_payload = [0x5au8; 32];
-
-    //     let page = vmo.commit_on(block_start / PAGE_SIZE).unwrap();
-    //     page.write_bytes(mmap_offset % PAGE_SIZE, &mmap_payload)
-    //         .unwrap();
-    //     vmo.mark_page_dirty(block_start).unwrap();
-
-    //     let buffered_offset = block_start + 100;
-    //     let buffered_payload = [0xa5u8; 100];
-    //     assert_eq!(
-    //         write_file_at(
-    //             &file,
-    //             buffered_offset,
-    //             &buffered_payload,
-    //             StatusFlags::empty()
-    //         )
-    //         .unwrap(),
-    //         buffered_payload.len()
-    //     );
-
-    //     let read_back =
-    //         read_file_at(&file, mmap_offset, mmap_payload.len(), StatusFlags::empty()).unwrap();
-    //     assert_eq!(read_back, mmap_payload);
-    // }
+    // Shared mmap writeback and buffered-write interleaving are exercised
+    // through the syscall path in regression/fs/ext2/firefox_state.c.
 
     #[ktest]
     fn falloc_allocate_returns_enospc_after_consuming_blocks() {

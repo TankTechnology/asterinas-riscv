@@ -503,6 +503,18 @@ impl VmMapping {
         required_perms: VmPerms,
         rss_delta: &mut RssDelta,
     ) -> Result<()> {
+        let is_write = required_perms.contains(VmPerms::WRITE);
+        if is_write
+            && self.is_shared
+            && let Some(vmo) = self.vmo()
+        {
+            let page_offset = page_aligned_addr - self.map_to_addr;
+            if page_offset < vmo.valid_size() {
+                let page_idx = (vmo.offset() + page_offset) / PAGE_SIZE;
+                vmo.vmo().mark_mmap_writable_page(page_idx)?;
+            }
+        }
+
         'retry: loop {
             let preempt_guard = disable_preempt();
             let mut cursor = vm_space.cursor_mut(
@@ -511,7 +523,6 @@ impl VmMapping {
             )?;
 
             let (va, item) = cursor.query().unwrap();
-            let is_write = required_perms.contains(VmPerms::WRITE);
             let access = if is_write {
                 PageAccess::Write
             } else {
@@ -645,7 +656,9 @@ impl VmMapping {
             // If read access to private VMO-backed mapping triggers a page fault,
             // the map should be readonly. If user next tries to write to the frame,
             // another page fault will be triggered which will performs a COW (Copy-On-Write).
-            is_readonly = !self.is_shared;
+            // A backend-backed shared page starts read-only. Its first write
+            // fault marks the cache page before write permission is granted.
+            is_readonly = !self.is_shared || (vmo.vmo().has_backend() && !write);
             Ok((page, is_readonly))
         }
     }
