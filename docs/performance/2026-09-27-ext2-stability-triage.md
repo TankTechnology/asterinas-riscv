@@ -535,3 +535,19 @@ readback, and offline `e2fsck -fn` exit 0. The kernel Image SHA-256 was
 the gate output is `target/reboot-sync-global-fs-20260927/result.json`.
 This tests normal software restart, not sudden-power-loss consistency or a
 new development-board desktop boot.
+
+## Current-main normal-writeback regression after global sync
+
+After the global-sync change, a fresh 128 MiB ext2 QEMU image ran the existing
+16-cycle Firefox-state workload. The guest printed
+`ASTERINAS_EXT2_FIREFOX_WORKLOAD_OK cycles=16`, completed `sync` and unmount,
+and printed `ASTERINAS_EXT2_FIREFOX_RECOVERY_OK cycles=16`. The transcript
+validator passed. Read-only offline `e2fsck -fn` returned 0 and `debugfs`
+read back the exact `asterinas-ext2-recovery-v1` marker. The final image
+SHA-256 was
+`cab6a32dba41a0dff77d34a1ddfcad573f35fcd4a77ce2a01b687efe86937914`;
+the kernel Image SHA-256 was
+`157add131032cbbad5ac7cf2a06e143606942320210a44a6501ae1e7678877d5`.
+The transcript and image are under `target/ext2-recovery-current-main-20260927/`.
+This is a bounded clean-shutdown regression. It does not test a crash cut,
+physical SD persistence, or a new desktop boot on the board.
