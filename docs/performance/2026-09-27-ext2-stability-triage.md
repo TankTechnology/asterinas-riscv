@@ -490,3 +490,23 @@ This verifies the normal restart path and the per-filesystem error policy. It
 does not establish ext2 crash consistency, physical SD persistence, or a new
 desktop boot on the development board. No controlled power-cut experiment was
 performed.
+
+## Follow-up: overlay syncfs flushes the writable upper filesystem
+
+Overlayfs previously returned success from `FileSystem::sync()` without
+flushing its writable upper filesystem. An application calling `syncfs(2)` on
+an overlay file could therefore receive a false durability result. Overlayfs
+now forwards that operation to the upper mount's filesystem and preserves its
+error. This matches the relevant upper-filesystem behavior in
+[Linux overlayfs](https://github.com/torvalds/linux/blob/master/fs/overlayfs/super.c).
+
+A focused RISC-V kernel test reproduced the bug with an upper filesystem that
+returns `EIO`: overlay sync incorrectly returned success before the fix, then
+returned `EIO` and invoked the upper sync exactly once afterward. The release
+RISC-V kernel build and normal QEMU software-reboot gate passed; the gate
+booted twice, read back the exact first-boot payload, and had offline
+`e2fsck -fn` exit 0. The kernel Image SHA-256 was
+`59dd8ad1562a1dacf7736eb747d74a1a538d5599002ca7ef53a0775bdaad6003`;
+the gate output is `target/reboot-sync-overlay-flush-20260927/result.json`.
+This is an error-propagation test of overlayfs and a normal-startup regression
+check, not a controlled power-cut or a physical-board validation.

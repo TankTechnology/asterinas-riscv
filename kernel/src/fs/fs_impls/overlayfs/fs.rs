@@ -197,8 +197,10 @@ impl FileSystem for OverlayFs {
     }
 
     fn sync(&self) -> Result<()> {
-        // TODO: Issue sync to all upper inodes.
-        Ok(())
+        // All overlay writes land on the upper filesystem. In particular,
+        // syncfs(2) on an overlay file must not report success before its
+        // upper filesystem has flushed data and metadata.
+        self.upper.path.mount_node().fs().sync()
     }
 
     fn sb(&self) -> SuperBlock {
@@ -1243,6 +1245,8 @@ impl FsType for OverlayFsType {
 // TODO: Enrich the tests to cover more cases.
 #[cfg(ktest)]
 mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
     use ostd::{mm::VmIo, prelude::ktest};
 
     use super::*;
@@ -1257,6 +1261,57 @@ mod tests {
             Arc::downgrade(MountNamespace::get_init_singleton()),
         )
         .unwrap()
+    }
+
+    struct SyncTrackingFs {
+        backing: Arc<RamFs>,
+        sync_calls: AtomicUsize,
+        event_stats: FsEventSubscriberStats,
+    }
+
+    impl FileSystem for SyncTrackingFs {
+        fn name(&self) -> &'static str {
+            "sync-tracking-fs"
+        }
+
+        fn sync(&self) -> Result<()> {
+            self.sync_calls.fetch_add(1, Ordering::Relaxed);
+            return_errno!(Errno::EIO);
+        }
+
+        fn root_inode(&self) -> Arc<dyn Inode> {
+            self.backing.root_inode()
+        }
+
+        fn sb(&self) -> SuperBlock {
+            self.backing.sb()
+        }
+
+        fn fs_event_subscriber_stats(&self) -> &FsEventSubscriberStats {
+            &self.event_stats
+        }
+    }
+
+    #[ktest]
+    fn overlay_sync_reports_upper_filesystem_flush_error() {
+        crate::time::clocks::init_for_ktest();
+
+        let upper_fs = Arc::new(SyncTrackingFs {
+            backing: RamFs::new(),
+            sync_calls: AtomicUsize::new(0),
+            event_stats: FsEventSubscriberStats::new(),
+        });
+        let upper_mount = Mount::new_root(
+            upper_fs.clone(),
+            Arc::downgrade(MountNamespace::get_init_singleton()),
+        )
+        .unwrap();
+        let upper = Path::new_fs_root(upper_mount);
+        let lower = Path::new_fs_root(new_dummy_mount());
+        let overlay = OverlayFs::new(upper.clone(), vec![lower], upper).unwrap();
+
+        assert_eq!(overlay.sync().unwrap_err().error(), Errno::EIO);
+        assert_eq!(upper_fs.sync_calls.load(Ordering::Relaxed), 1);
     }
 
     fn create_overlay_fs() -> Arc<dyn FileSystem> {
