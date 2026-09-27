@@ -33,9 +33,12 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--watchdog", action="store_true", help="wait for the recovery timer")
     parser.add_argument("--timeout", type=int, default=90, help="QEMU deadline in seconds")
+    parser.add_argument("--loglevel", type=int, default=4, help="kernel console log level")
     args = parser.parse_args()
     if args.timeout <= 0:
         parser.error("--timeout must be positive")
+    if not 0 <= args.loglevel <= 7:
+        parser.error("--loglevel must be between 0 and 7")
 
     kernel = args.kernel.resolve(strict=True)
     output = args.output_dir.resolve()
@@ -92,7 +95,7 @@ def main() -> None:
         "-monitor", "none",
         "-kernel", str(kernel),
         "-initrd", str(initramfs),
-        "-append", "console=ttyS0 loglevel=4 init=/init"
+        "-append", f"console=ttyS0 loglevel={args.loglevel} init=/init"
         + (" asterinas.reboot_after=3" if args.watchdog else ""),
         "-drive", f"if=none,format=raw,id=x0,file={disk}",
         "-device", "virtio-blk-device,drive=x0",
