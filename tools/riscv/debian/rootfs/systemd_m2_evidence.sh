@@ -19,6 +19,7 @@ fail() {
     exit 1
 }
 
+emit "DEBIAN_SYSTEMD_M2_PROGRESS step=entry"
 architecture="$(uname -m)" || fail architecture
 [[ "$architecture" == riscv64 ]] || fail architecture
 
@@ -49,7 +50,9 @@ temporary="$STATE_DIRECTORY/.boot-count.$$"
 printf '%s\n' "$next" >"$temporary" || fail boot-count-write
 chmod 0644 "$temporary" || fail boot-count-write
 mv -f -- "$temporary" "$COUNTER" || fail boot-count-write
+emit "DEBIAN_SYSTEMD_M2_PROGRESS step=before-sync"
 sync || fail sync
+emit "DEBIAN_SYSTEMD_M2_PROGRESS step=after-sync"
 
 emit "DEBIAN_SYSTEMD_M2_TMPFS boot=$next"
 if ((next == 1)); then
@@ -59,7 +62,7 @@ if ((next == 1)); then
 fi
 emit "DEBIAN_SYSTEMD_M2_READY boot=$next arch=$architecture release=$debian_release"
 if ((next == 1)); then
-    reboot -f || fail reboot
+    systemctl --no-block --no-wall reboot || fail reboot
 else
     emit "DEBIAN_SYSTEMD_M2_PASS boot=2"
 fi

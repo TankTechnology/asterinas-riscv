@@ -113,6 +113,7 @@ struct RootInitConfig {
 
 struct ProductionContext {
     struct RootInitConfig root_init;
+    int needs_ephemeral_tools;
 };
 
 static char *const INTERACTIVE_ROOT_INIT_ARGV[] = {
@@ -280,6 +281,14 @@ static int ext2_superblock_matches_mode(
            ext2_superblock_matches(superblock, DESKTOP_DRM_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, BROWSER_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, BROWSER_WEB_ROOT_LABEL);
+}
+
+static int root_needs_ephemeral_tools(
+    const unsigned char superblock[EXT2_SUPERBLOCK_SIZE])
+{
+    /* The M2 evidence program lives on the rootfs.  Its extra initramfs bind
+     * mount otherwise delays normal systemd shutdown. */
+    return !ext2_superblock_matches(superblock, SYSTEMD_ROOT_LABEL);
 }
 
 static const char *discover_root(struct Stage1Ops *ops,
@@ -860,6 +869,16 @@ static int run_root_init_self_test(const char *case_name)
             ext2_superblock_matches(superblock, INTERACTIVE_ROOT_LABEL)) {
             return fail_self_test(case_name, "M2 root label was not isolated");
         }
+    } else if (strcmp(case_name, "systemd-tools-mount-policy") == 0) {
+        unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
+        make_valid_superblock(superblock, SYSTEMD_ROOT_LABEL);
+        if (root_needs_ephemeral_tools(superblock)) {
+            return fail_self_test(case_name, "M2 unexpectedly needs a tools bind mount");
+        }
+        make_valid_superblock(superblock, DESKTOP_ROOT_LABEL);
+        if (!root_needs_ephemeral_tools(superblock)) {
+            return fail_self_test(case_name, "desktop lost its tools bind mount");
+        }
     } else if (strcmp(case_name, "systemd-desktop-root-label") == 0) {
         unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
         make_valid_superblock(superblock, DESKTOP_ROOT_LABEL);
@@ -1024,6 +1043,7 @@ int main(int argc, char **argv)
                strcmp(case_name, "virtio-and-mmc-ambiguous") == 0 ||
                strcmp(case_name, "bad-ext2-magic") == 0 ||
                strcmp(case_name, "wrong-label") == 0 ||
+               strcmp(case_name, "systemd-tools-mount-policy") == 0 ||
                strcmp(case_name, "non-block-device") == 0 ||
                strcmp(case_name, "delayed-valid-device") == 0 ||
                strcmp(case_name, "device-before-deadline") == 0 ||
@@ -1067,7 +1087,7 @@ static enum ProbeResult production_probe_device(
     void *context, const char *candidate_path,
     char path[ROOT_DEVICE_PATH_SIZE])
 {
-    const struct ProductionContext *production_context = context;
+    struct ProductionContext *production_context = context;
 
     int fd;
     do {
@@ -1101,6 +1121,8 @@ static enum ProbeResult production_probe_device(
         report_progress("probe-complete", "result", "no-match");
         return PROBE_NO_MATCH;
     }
+    production_context->needs_ephemeral_tools =
+        root_needs_ephemeral_tools(superblock);
     report_progress("probe-complete", "result", "match");
 
     (void)snprintf(path, ROOT_DEVICE_PATH_SIZE, "%s", candidate_path);
@@ -1201,6 +1223,9 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
             return -1;
         }
         result = mount("tmpfs", "/newroot/run", "tmpfs", 0, NULL);
+        if (result != 0 || !production_context->needs_ephemeral_tools) {
+            break;
+        }
         if (result == 0 &&
             ensure_directory("/newroot/run/asterinas-tools") != 0) {
             result = -1;
@@ -1357,6 +1382,7 @@ static void run_basic_shell(void)
 int main(int argc, char **argv)
 {
     struct ProductionContext context;
+    context.needs_ephemeral_tools = 1;
     int root_init_result = parse_root_init(argc, argv, &context.root_init);
     if (configure_console() != 0) {
         fail_and_hold("console-open");

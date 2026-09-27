@@ -1009,6 +1009,13 @@ if [[ $- == *i* ]]; then
     PS1='asterinas-debian# '
 fi
 EOF
+    if [[ "$PROFILE" != minimal-m1 ]]; then
+        # systemd's shutdown helper skips its final sync when it detects a
+        # container.  Preserve ext2 metadata on Asterinas' reboot path.
+        install -D -m 0755 -- \
+            "$script_directory/shutdown_sync.sh" \
+            "$stage/usr/lib/systemd/system-shutdown/asterinas-sync"
+    fi
     if [[ "$PROFILE" == systemd-m2 ]]; then
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
         install -D -m 0755 -- \
