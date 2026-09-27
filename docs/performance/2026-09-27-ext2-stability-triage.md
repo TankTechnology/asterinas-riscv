@@ -469,3 +469,24 @@ Logs are under `.local-test/ext2-reclaim-20260927/logs-inode-alloc/`
 and `.local-test/ext2-reclaim-20260927/logs-inode-alloc-final/`.
 These checks do not establish crash consistency. No controlled power cut or
 physical-board boot was performed.
+
+## Follow-up: sync all mounted filesystems before software restart
+
+`MountNamespace::sync()` previously returned on the first filesystem flush
+error, leaving later mounted filesystems unsynced. This also affected a direct
+`reboot(2)`, which calls `sync(2)` before restarting. The namespace now collects
+each distinct mounted filesystem and attempts every flush, logs each failure,
+then returns the first error. A flush error still prevents a direct reboot;
+other filesystems no longer miss their flush because an earlier one failed.
+
+A focused RISC-V kernel test first reproduced the early-return bug and then
+passed with the fix: the first filesystem returned `EIO` and the second was
+still synced exactly once. The release RISC-V kernel build passed. A normal
+QEMU software-reboot gate then booted twice, read back the exact first-boot
+payload, and passed read-only offline `e2fsck -fn`. Its kernel Image SHA-256
+was `e85a72a462400b84cd8551358d52dbb1c34ad23ebffc7c0228fadb00dec66b9c`;
+the result is in `target/reboot-sync-mount-continue-20260927/result.json`.
+This verifies the normal restart path and the per-filesystem error policy. It
+does not establish ext2 crash consistency, physical SD persistence, or a new
+desktop boot on the development board. No controlled power-cut experiment was
+performed.
