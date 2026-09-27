@@ -141,20 +141,70 @@ reopen, and offline `e2fsck -fn` of unmounted `/dev/mmcblk1p2` returned 0.
 results were both 0. The local logs and artifact hashes are under
 `.local-test/sd-cache-20260927/`.
 
-The installed `/usr/lib/asterinas/megrez-safe-reboot` is older than the source
-script: its SHA-256 is `2fb32a62ad5f4ad511c4a61a29eb6110ea9513d848aa58da46e77707a48f16e4`,
-whereas the source script is
-`ce81169cce45543ef43d633e6a176ae93d14da5cace366be35a1554a27498554`.
-The installed script calls `sync`, then prints
-`ASTERINAS_USERSPACE_REBOOT_SYNC deadline=1`, then requests `reboot -f`;
-that sequence was observed on serial. It does not quiesce writers or emit the
-current source's `SYNC_DONE` marker. Therefore this test proves that the
-explicit guest `sync` and the old shutdown script's `sync` returned, plus a
-clean offline image, **not** that the newer writer-quiescing shutdown script
-is deployed. No controlled physical power cut has been performed because no
-operator is available. Only
-an operator-timed cut after a known flush point can distinguish SD-medium
-power-loss behavior from ext2 behavior under sudden power failure.
+The first writable candidate used an older installed safe-reboot script with
+SHA-256 `2fb32a62ad5f4ad511c4a61a29eb6110ea9513d848aa58da46e77707a48f16e4`.
+It called `sync` without first quiescing desktop writers. With RockOS in
+control and the Debian partition unmounted, the script was backed up on the
+separate RockOS partition and atomically replaced with the current source,
+SHA-256 `ce81169cce45543ef43d633e6a176ae93d14da5cace366be35a1554a27498554`.
+The source and installed hashes matched, and read-only offline `e2fsck -fn`
+returned 0 before and after deployment. The second writable candidate then
+booted the same release kernel, performed a unique persistent write and
+explicit `sync`, and ran the new safe-reboot path. Serial output included
+`ASTERINAS_USERSPACE_REBOOT_QUIESCE_DONE processes=0` and
+`ASTERINAS_USERSPACE_REBOOT_SYNC_DONE`. After the software reboot, RockOS
+returned with a different boot ID, its root serial channel passed a
+close-and-reopen challenge, offline `e2fsck -fn` returned 0, and `debugfs`
+read back the exact unique payload. The candidate result and serial log are
+under `.local-test/sd-cache-20260927/`.
+
+The two focused QEMU checks now have a one-command host gate:
+
+```bash
+python3 tools/riscv/ext2_durability_gate.py \
+  --output-dir .local-test/ext2-durability-$(date +%Y%m%d-%H%M%S)
+```
+
+It creates a fresh ext2 image for each case, waits for the exact guest marker,
+kills only that case's QEMU process after directory `fsync`, and checks both
+offline metadata consistency and exact file contents. A separate fresh-image
+run injects virtual-disk flush `EIO` and requires guest errno 5. The September
+27 run passed both cases; the result JSON and full QEMU logs are under
+`.local-test/sd-cache-20260927/durability-gate-run1/`. This is a short virtual
+disk regression gate. No controlled physical power cut was performed or is
+part of the current stability plan. The board results do not establish
+SD-medium persistence under sudden power failure.
+
+A normal graphical-target probe also completed a software-reboot cycle with
+offline `e2fsck -fn` exit 0 and exact persistent payload readback. Xorg,
+Openbox, the desktop background and panel were running, but the Firefox unit
+restarted repeatedly and had no live browser process. The captured systemd
+journal identified `ASTERINAS_FIREFOX_WEB_FAIL reason=invalid-network-profile`:
+that probe's boot arguments omitted the explicit `ASTERINAS_WEB_NETWORK_MODE`
+required by the browser profile. This is a test configuration error, not
+evidence that the kernel failed to start Firefox. The browser launcher now
+uses exit status 64 for an invalid profile, and its systemd unit suppresses
+restarts for that permanent configuration error. A corrected one-boot probe
+uses explicit `direct` mode and the basic-only browser profile, which does not
+navigate public websites. The corrected board boot reached an active
+`graphical.target` and Firefox unit; Firefox PID 144 was unchanged across a
+12-second check and the unit reported `NRestarts=0`. Safe reboot printed both
+quiesce and sync completion markers. RockOS returned, offline `e2fsck -fn`
+exited 0, the exact persistent probe value was read back, and its root serial
+channel passed a close-and-reopen challenge. The boot result is saved at
+`.local-test/sd-cache-20260927/browser-boot.result.json`.
+
+After this successful boot, the updated browser launcher and unit were copied
+to the unmounted Debian partition from RockOS. The old files were hash-checked
+and backed up on RockOS's separate partition first; temporary replacements
+were hash-checked before atomic renames. Offline `e2fsck -fn` returned 0 on
+both sides of deployment. A fresh read-only mount confirmed installed SHA-256
+`e947056776dede86d53c6a7409062fd2469ab7dc8848249846f664b903670631`
+for the launcher and
+`422b26cd9e1a36fdf4f4c3221de93a9d1ed15c0158d84de219d68b72957a306b`
+for the unit. The RockOS root serial channel remained available after another
+close-and-reopen check. The deployed invalid-configuration exit behavior has
+host-side tests and hash verification; it has not needed another board boot.
 
 The current ext2 driver does not implement journal replay. It now rejects
 `HAS_JOURNAL` as well as the already unsupported `RECOVER` incompatible bit.

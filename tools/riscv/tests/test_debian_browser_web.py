@@ -848,6 +848,14 @@ class BrowserWebContractTests(unittest.TestCase):
             )
             self.assertIn('user_pref("network.proxy.http_port", 17893);', profile)
 
+    def test_invalid_browser_network_profile_does_not_restart_forever(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result = self._prepare_firefox_profile(Path(temporary), mode="")
+        self.assertEqual(result.returncode, 64)
+        self.assertIn("ASTERINAS_FIREFOX_WEB_FAIL reason=invalid-network-profile", result.stderr)
+        service = (ROOTFS / "browser_web.service").read_text()
+        self.assertIn("RestartPreventExitStatus=64", service)
+
     def test_firefox_direct_profile_removes_proxy_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
