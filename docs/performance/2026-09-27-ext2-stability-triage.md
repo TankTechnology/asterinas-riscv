@@ -293,6 +293,37 @@ describe the required crash boundary. Unsynced latest application data may
 still be lost; the guarantee sought here is a mountable, structurally
 consistent filesystem and correct `fsync` behavior.
 
+## September 27 follow-up: reject already-unclean writable mounts
+
+The ext2 driver parsed the superblock's `VALID` and `ERROR` state bits but
+ignored them when opening a filesystem. A volume already marked unclean or
+erroneous could therefore be mounted read-write again, allowing further
+changes before repair. A writable mount and a read-only-to-writable remount
+now return `EUCLEAN` in either state. A read-only mount remains available for
+recovery; its filesystem and inode sync paths skip writeback, and dropping an
+inode cannot reclaim blocks from it. A writable-to-read-only remount first
+syncs and flushes, and keeps the old writable state if the flush fails.
+
+A focused RISC-V QEMU kernel test covers all three abnormal state-bit
+combinations, read-only sync and inode fsync/fdatasync, remount rejection,
+and a failed device flush during writable-to-read-only remount. It passed
+after a red run showed that read-only inode fsync still issued a device
+Flush. The release kernel then passed the short normal software-reboot gate:
+two QEMU boots, exact payload readback and `e2fsck -fn` exit 0. Local
+evidence is under `.local-test/ext2-unclean-mount-20260927/` and
+`target/reboot-sync-ext2-unclean-20260927/`.
+
+This guard detects **existing on-disk state bits**. Asterinas does not yet
+clear `VALID` on writable mount and restore it only after a safely quiesced
+unmount or shutdown. Consequently, an Asterinas crash can still leave a
+misleading `VALID` bit. The complete protocol needs to exclude concurrent
+writes during the clean-state transition and account for open-but-unlinked
+inodes; ordinary `sync` while a filesystem stays writable cannot certify
+that transition. Linux's [ext2 implementation](https://code.googlesource.com/linux/torvalds/linux/+/75f2c0b3690702c90863c2e138cb5520670845ea/fs/ext2/super.c)
+distinguishes the mounted state from the clean unmount state and keeps the
+valid bit clear for open unlinked files. This remains separate from the
+journaling work and has not been verified by physical power interruption.
+
 ## Temporary experiment containment, not a daily-use policy
 
 1. During risky development boots only, check the **unmounted** partition

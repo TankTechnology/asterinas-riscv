@@ -607,8 +607,7 @@ impl SuperBlock {
         sb_bid + (SUPER_BLOCK_SIZE.div_ceil(self.block_size) as u32)
     }
 
-    #[expect(dead_code)]
-    const fn state(&self) -> FsState {
+    pub(super) const fn state(&self) -> FsState {
         self.state
     }
 

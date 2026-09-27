@@ -25,6 +25,9 @@ impl FileSystem for Ext2 {
     }
 
     fn sync(&self) -> Result<()> {
+        if self.fs_flags().contains(FsFlags::RDONLY) {
+            return Ok(());
+        }
         self.sync_all()?;
         if self.block_device().sync()? != BioStatus::Complete {
             return_errno_with_message!(Errno::EIO, "failed to flush block device");
@@ -66,7 +69,7 @@ impl FileSystem for Ext2 {
     }
 
     fn set_fs_flags(&self, flags: FsFlags, _data: Option<&str>, _ctx: &Context) -> Result<()> {
-        self.set_fs_flags(flags);
+        self.set_fs_flags(flags)?;
         warn!("ext2-specific handling for filesystem flags is not implemented");
         Ok(())
     }
