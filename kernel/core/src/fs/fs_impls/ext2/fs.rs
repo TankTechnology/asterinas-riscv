@@ -591,6 +591,7 @@ impl Ext2 {
 
             let ino = (group_idx as u32) * nr_inodes_per_group + inode_idx + 1;
             if ino < sb.first_ino() || ino > total_inodes {
+                group.free_inode(ino, inode_type)?;
                 return_errno_with_message!(Errno::EIO, "allocated inode number out of valid range");
             }
             sb.dec_free_inodes()?;
@@ -1029,16 +1030,35 @@ mod test {
             Errno::EIO
         );
 
-        // All inode bitmap bits set -> no allocatable inode.
+        // A zero group count with free bitmap bits is corruption, even when
+        // the filesystem-wide counter still claims free inodes.
+        let f_zero_group = Ext2FixtureBuilder::new(1, 128)
+            .with_free_inodes(1, 0)
+            .inode_bitmap(InodeBitmapInit::ReservedOnly)
+            .build()
+            .unwrap();
+        assert_errno!(
+            f_zero_group.ext2.alloc_ino(ROOT_INO, InodeType::File),
+            Errno::EIO
+        );
+
+        let f_clean_full = Ext2FixtureBuilder::new(1, 128)
+            .with_free_inodes(0, 0)
+            .inode_bitmap(InodeBitmapInit::Full)
+            .build()
+            .unwrap();
+        assert_errno!(
+            f_clean_full.ext2.alloc_ino(ROOT_INO, InodeType::File),
+            Errno::ENOSPC
+        );
+
+        // A positive free count and a full bitmap disagree: report corruption.
         let f_full = Ext2FixtureBuilder::new(1, 128)
             .with_free_inodes(8, 8)
             .inode_bitmap(InodeBitmapInit::Full)
             .build()
             .unwrap();
-        assert_errno!(
-            f_full.ext2.alloc_ino(ROOT_INO, InodeType::File),
-            Errno::ENOSPC
-        );
+        assert_errno!(f_full.ext2.alloc_ino(ROOT_INO, InodeType::File), Errno::EIO);
 
         let f_free = Ext2FixtureBuilder::new(1, 128)
             .with_free_inodes(8, 8)
@@ -1068,6 +1088,24 @@ mod test {
         );
         assert_eq!(f_free.ext2.super_block().free_inodes_count(), before_sb);
         assert_eq!(f_free.ext2.block_group(0).free_inodes_count(), before_group);
+    }
+
+    #[ktest]
+    fn inode_alloc_invalid_reserved_bit_leaves_bitmap_and_counts_unchanged() {
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 128)
+            .with_free_inodes(1000, 1000)
+            .inode_bitmap(InodeBitmapInit::Empty)
+            .build()
+            .unwrap();
+        let group = f.ext2.block_group(0);
+        assert!(!group.is_inode_allocated(1));
+
+        assert_errno!(f.ext2.alloc_ino(ROOT_INO, InodeType::File), Errno::EIO);
+        assert!(!group.is_inode_allocated(1));
+        assert_eq!(group.free_inodes_count(), 1000);
+        assert_eq!(f.ext2.super_block().free_inodes_count(), 1000);
+        f.ext2.sync_all().unwrap();
     }
 
     #[ktest]

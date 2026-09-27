@@ -397,3 +397,31 @@ the final ext2 image SHA-256 was
 `3dd0cd300ae0707bb5ba24d116d0e0318242ba7e87cf8069e62683d16c53f986`.
 Logs are under `.local-test/ext2-reclaim-20260927/logs-inode-guard/`.
 No controlled power-cut test or new physical-board boot was performed.
+
+## Follow-up: inode allocation on inconsistent bitmaps
+
+When a group descriptor reported free inodes but its bitmap had no free bit,
+the allocator previously treated that inconsistency as ordinary `ENOSPC`.
+The opposite mismatch, a zero group count with free bitmap bits, was also
+treated as exhausted space. Both mismatches now report `EIO`; a genuinely
+full bitmap with a zero free count still reports `ENOSPC`. A read-only
+full-bitmap check avoids marking an unchanged cached bitmap dirty. If a
+corrupted bitmap exposes a reserved inode number, the group allocator used
+to mark its bit and decrement its counter before the filesystem rejected the
+number. That error path now rolls back the group allocation before returning
+`EIO`.
+
+Focused RISC-V kernel tests passed for these discrepancies. The reserved-inode
+test verifies that the bitmap and both free-inode counters retain their
+original values after rejection. The final RISC-V/Sv39/SMP4 kernel build and
+a clean QEMU launch passed. The guest completed the 16-cycle
+Firefox-state workload, `sync`, and unmount; offline `e2fsck -fn` returned 0,
+and `debugfs` read the exact earlier marker
+`asterinas-ext2-recovery-v1`. The kernel Image SHA-256 was
+`a1316472448e62523f9e8c801b791aecefac43218dc363c4892bdb6b5c213bd5`;
+the final ext2 image SHA-256 was
+`45d07a8e0dc00968c2b5e158e7128e1647454749dae3511d4d29cc8ec1bfd813`.
+Logs are under `.local-test/ext2-reclaim-20260927/logs-inode-alloc/`
+and `.local-test/ext2-reclaim-20260927/logs-inode-alloc-final/`.
+These checks do not establish crash consistency. No controlled power cut or
+physical-board boot was performed.
