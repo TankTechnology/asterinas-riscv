@@ -1,14 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::sync::atomic::AtomicU64;
-
-use aster_util::printer::VmPrinter;
+use core::{fmt::Write, sync::atomic::AtomicU64};
 
 use super::TidDirOps;
 use crate::{
     events::IoEvents,
     fs::{
-        file::{AccessMode, PerOpenFileOps, StatusFlags, mkmod},
+        file::{mkmod, AccessMode, PerOpenFileOps, StatusFlags},
         procfs::template::{ProcFile, ProcFileOpsByHandle},
         vfs::{
             file_system::FsFlags,
@@ -101,16 +99,12 @@ impl MountInfoFileOps {
         ProcFile::new(Self(dir.clone()), parent, mkmod!(a+r))
     }
 
-    /// Reads mount information for `/proc/[pid]/mountinfo`.
+    /// Renders mount information for `/proc/[pid]/mountinfo`.
     ///
     /// Provides detailed mount information including mount IDs, parent relationships,
     /// and device numbers.
-    fn read_mount_info(
-        path_resolver: &PathResolver,
-        offset: usize,
-        writer: &mut VmWriter,
-    ) -> Result<usize> {
-        let mut printer = VmPrinter::new_skip(writer, offset);
+    fn render_mount_info(path_resolver: &PathResolver) -> Result<String> {
+        let mut snapshot = String::new();
 
         for mount in path_resolver.collect_visible_mounts() {
             let mount_id = mount.id();
@@ -149,10 +143,11 @@ impl MountInfoFileOps {
                 fs_flags,
             };
 
-            writeln!(printer, "{}", entry)?;
+            writeln!(snapshot, "{}", entry)
+                .map_err(|_| Error::with_message(Errno::EIO, "cannot format mountinfo"))?;
         }
 
-        Ok(printer.bytes_written())
+        Ok(snapshot)
     }
 }
 
@@ -188,6 +183,7 @@ impl ProcFileOpsByHandle for MountInfoFileOps {
             mount_namespace,
             observed_event,
             path_resolver,
+            snapshot: Mutex::new(None),
         }))
     }
 }
@@ -197,6 +193,7 @@ struct MountInfoFileHandle {
     mount_namespace: Arc<MountNamespace>,
     observed_event: AtomicU64,
     path_resolver: PathResolver,
+    snapshot: Mutex<Option<(u64, String)>>,
 }
 
 impl Pollable for MountInfoFileHandle {
@@ -213,7 +210,20 @@ impl FileOps for MountInfoFileHandle {
         writer: &mut VmWriter,
         _status_flags: StatusFlags,
     ) -> Result<usize> {
-        MountInfoFileOps::read_mount_info(&self.path_resolver, offset, writer)
+        let mount_event = self.mount_namespace.mount_event();
+        let mut cached = self.snapshot.lock();
+        if !matches!(cached.as_ref(), Some((event, _)) if *event == mount_event) {
+            *cached = Some((
+                mount_event,
+                MountInfoFileOps::render_mount_info(&self.path_resolver)?,
+            ));
+        }
+
+        let bytes = cached.as_ref().unwrap().1.as_bytes();
+        let start = offset.min(bytes.len());
+        let end = start + (bytes.len() - start).min(writer.avail());
+        let mut reader = VmReader::from(&bytes[start..end]);
+        Ok(writer.write_fallible(&mut reader).map_err(|(err, _)| err)?)
     }
 
     fn write_at(
