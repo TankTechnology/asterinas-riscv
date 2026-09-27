@@ -248,6 +248,20 @@ class BootMenuTests(unittest.TestCase):
             with self.assertRaises(menu.BootManifestError):
                 menu.validate(value)
 
+    def test_rejects_desktop_bootargs_that_overflow_megrez_uboot(self):
+        value = document()
+        suffix = " -- --root-init=systemd"
+        prefix = menu.BASE_ARGS + " test.padding="
+        padding = "x" * (1023 - len(prefix.encode()) - len(suffix.encode()))
+        value["desktop_args"] = prefix + padding + suffix
+        value["extlinux"] = menu.render(value)
+        menu.validate(value)
+
+        value["desktop_args"] = prefix + padding + "x" + suffix
+        value["extlinux"] = menu.render(value)
+        with self.assertRaisesRegex(menu.BootManifestError, "U-Boot bootargs"):
+            menu.validate(value)
+
     def test_shared_desktop_stage1_needs_no_extra_copy(self):
         value = document()
         value["artifacts"]["desktop_stage1"] = copy.deepcopy(
