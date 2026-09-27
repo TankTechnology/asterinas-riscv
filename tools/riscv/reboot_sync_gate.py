@@ -32,6 +32,11 @@ def main() -> None:
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--watchdog", action="store_true", help="wait for the recovery timer")
+    parser.add_argument(
+        "--readonly-remount",
+        action="store_true",
+        help="remount ext2 read-only before the first software reboot",
+    )
     parser.add_argument("--timeout", type=int, default=90, help="QEMU deadline in seconds")
     parser.add_argument("--loglevel", type=int, default=4, help="kernel console log level")
     args = parser.parse_args()
@@ -61,6 +66,8 @@ def main() -> None:
     ]
     if args.watchdog:
         compiler.append("-DREBOOT_SYNC_WATCHDOG")
+    if args.readonly_remount:
+        compiler.append("-DREBOOT_SYNC_READONLY_REMOUNT")
     run(*compiler, str(INIT_SOURCE), "-o", str(init))
 
     initramfs = output / "initramfs.cpio"
@@ -119,6 +126,7 @@ def main() -> None:
         "failures": log.count("REBOOT_SYNC_FAIL"),
         "sync_started": log.count("ASTERINAS_SOFTWARE_REBOOT_SYNC_START"),
         "sync_completed": log.count("ASTERINAS_SOFTWARE_REBOOT_SYNC_COMPLETE"),
+        "readonly_remount": log.count("REBOOT_SYNC_READONLY_REMOUNT boot=1"),
     }
     with (output / "e2fsck.log").open("wb") as stream:
         fsck = subprocess.run(
@@ -131,6 +139,7 @@ def main() -> None:
     )
     result = {
         "mode": "watchdog" if args.watchdog else "reboot-syscall",
+        "readonly_remount": args.readonly_remount,
         "kernel_sha256": hashlib.sha256(kernel.read_bytes()).hexdigest(),
         "qemu_exit": guest.returncode,
         "e2fsck_exit": fsck.returncode,
@@ -145,6 +154,7 @@ def main() -> None:
         "failures": 0,
         "sync_started": 1 if args.watchdog else 0,
         "sync_completed": 1 if args.watchdog else 0,
+        "readonly_remount": 1 if args.readonly_remount else 0,
     }
     if (
         guest.returncode != 0

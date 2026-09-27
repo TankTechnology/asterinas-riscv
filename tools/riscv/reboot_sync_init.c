@@ -20,6 +20,9 @@ typedef unsigned long size_t;
 #define O_CREAT 0100
 #define O_EXCL 0200
 #define ENOENT 2
+#define EROFS 30
+#define MS_RDONLY 1
+#define MS_REMOUNT 32
 #define REBOOT_MAGIC1 0xfee1dead
 #define REBOOT_MAGIC2 0x28121969
 #define REBOOT_RESTART 0x01234567
@@ -121,8 +124,27 @@ void _start(void) {
     if (fd < 0) stop("first-create");
     if (call5(NR_WRITE, fd, (long)payload, sizeof(payload) - 1, 0, 0) !=
         (long)sizeof(payload) - 1) stop("first-write");
+#ifndef REBOOT_SYNC_READONLY_REMOUNT
     if (call5(NR_CLOSE, fd, 0, 0, 0, 0) != 0) stop("first-close");
+#endif
     emit("REBOOT_SYNC_FIRST_WRITTEN boot=1\n");
+#ifdef REBOOT_SYNC_READONLY_REMOUNT
+    if (call5(NR_MOUNT, 0, (long)"/ext2", 0,
+              MS_RDONLY | MS_REMOUNT, 0) != 0)
+        stop("readonly-remount");
+    if (call5(NR_WRITE, fd, (long)payload, 1, 0, 0) != -EROFS)
+        stop("readonly-existing-fd-write");
+    if (call5(NR_CLOSE, fd, 0, 0, 0, 0) != 0) stop("readonly-existing-fd-close");
+    long readonly_fd = call5(NR_OPENAT, AT_FDCWD, (long)path, O_WRONLY, 0, 0);
+    if (readonly_fd != -EROFS) {
+        emit("REBOOT_SYNC_READONLY_OPEN_RETURN=");
+        emit_number(readonly_fd);
+        emit("\n");
+        if (readonly_fd >= 0) (void)call5(NR_CLOSE, readonly_fd, 0, 0, 0, 0);
+        stop("readonly-write-probe");
+    }
+    emit("REBOOT_SYNC_READONLY_REMOUNT boot=1\n");
+#endif
 #ifdef REBOOT_SYNC_WATCHDOG
     for (;;) (void)call5(NR_SCHED_YIELD, 0, 0, 0, 0, 0);
 #else
