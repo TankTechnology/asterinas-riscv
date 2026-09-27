@@ -557,6 +557,40 @@ return JSON.stringify({
   decodedFrames
 });"""
 
+_MEDIA_CAPABILITY_SCRIPT = r"""const video = document.createElement('video');
+const audio = document.createElement('audio');
+const canPlay = (element, mime) => {
+  try { return element.canPlayType(mime); } catch (_) { return ''; }
+};
+const mse = (mime) => {
+  try {
+    return typeof MediaSource === 'function' &&
+      typeof MediaSource.isTypeSupported === 'function' &&
+      MediaSource.isTypeSupported(mime);
+  } catch (_) { return false; }
+};
+return JSON.stringify({
+  url: location.href,
+  readyState: document.readyState,
+  video: {
+    h264Aac: canPlay(video, 'video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
+    h264: canPlay(video, 'video/mp4; codecs="avc1.64001F"'),
+    vp9: canPlay(video, 'video/webm; codecs="vp09.00.10.08"'),
+    av1: canPlay(video, 'video/mp4; codecs="av01.0.08M.08"')
+  },
+  audio: {
+    aac: canPlay(audio, 'audio/mp4; codecs="mp4a.40.2"'),
+    opus: canPlay(audio, 'audio/webm; codecs="opus"')
+  },
+  mse: {
+    h264Aac: mse('video/mp4; codecs="avc1.42E01E, mp4a.40.2"'),
+    h264: mse('video/mp4; codecs="avc1.64001F"'),
+    vp9: mse('video/webm; codecs="vp09.00.10.08"')
+  },
+  eme: typeof navigator.requestMediaKeySystemAccess === 'function',
+  webCodecs: typeof VideoDecoder === 'function'
+});"""
+
 _DOM_FIELDS = {
     "baiduLogo",
     "baiduKeyword",
@@ -1483,6 +1517,52 @@ def _playback_probe(client: Marionette) -> dict[str, object]:
     return _playback_sample_mapping(parsed)
 
 
+def _media_capability_probe(client: Marionette) -> dict[str, object]:
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _MEDIA_CAPABILITY_SCRIPT,
+            "args": [],
+            "newSandbox": True,
+            "sandbox": "default",
+            "line": 1,
+            "filename": "asterinas-media-capability-probe",
+        },
+    )
+    value = _script_value(response)
+    if not isinstance(value, str):
+        raise GateError("media capability script returned no JSON")
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise GateError("media capability script returned malformed JSON") from error
+    if not isinstance(parsed, dict) or set(parsed) != {
+        "url", "readyState", "video", "audio", "mse", "eme", "webCodecs"
+    }:
+        raise GateError("media capability evidence has unexpected fields")
+    if parsed["url"] != "about:blank" or parsed["readyState"] not in {
+        "interactive", "complete"
+    }:
+        raise GateError("media capability probe did not run on about:blank")
+    expected_groups = {
+        "video": {"h264Aac", "h264", "vp9", "av1"},
+        "audio": {"aac", "opus"},
+        "mse": {"h264Aac", "h264", "vp9"},
+    }
+    for group, expected_keys in expected_groups.items():
+        values = parsed[group]
+        if not isinstance(values, dict) or set(values) != expected_keys:
+            raise GateError("media capability values are malformed")
+        if group == "mse":
+            if not all(isinstance(value, bool) for value in values.values()):
+                raise GateError("media MSE capability values are malformed")
+        elif not all(isinstance(value, str) for value in values.values()):
+            raise GateError("media canPlayType values are malformed")
+    if not isinstance(parsed["eme"], bool) or not isinstance(parsed["webCodecs"], bool):
+        raise GateError("media capability feature flags are malformed")
+    return parsed
+
+
 def _playback_source_kind(source: str) -> str:
     if source.startswith("blob:"):
         return "blob"
@@ -2226,6 +2306,54 @@ def run_baidu_home_gate(
     return home
 
 
+def run_media_capability_gate(
+    host: str, port: int, timeout: float, evidence_dir: Path, firefox_pid: int
+) -> dict[str, object]:
+    """Capture Firefox's codec/MSE capability surface without public traffic."""
+
+    deadline = time.monotonic() + timeout
+
+    def phase(name: str, state: str, error: BaseException | None = None) -> None:
+        line = f"A_WEB_PHASE phase={name} state={state} firefox_pid={firefox_pid}"
+        if error is not None:
+            line += (
+                f" exception_type={type(error).__name__}"
+                f" exception={json.dumps(str(error), ensure_ascii=True)}"
+            )
+        print(line, file=sys.stderr, flush=True)
+
+    client = _connect(host, port, deadline, phase=phase)
+
+    def run_phase(name: str, operation: Callable[[], object]) -> object:
+        phase(name, "start")
+        try:
+            result = operation()
+        except BaseException as error:
+            phase(name, "exception", error)
+            raise
+        phase(name, "done")
+        return result
+
+    _timeline("BOOT_MARIONETTE_CONNECTED", firefox_pid)
+    capabilities: dict[str, object] | None = None
+    try:
+        _start_webdriver_session(client, run_phase, firefox_pid)
+        result = run_phase("probe-media-capabilities", lambda: _media_capability_probe(client))
+        assert isinstance(result, dict)
+        capabilities = result
+        (evidence_dir / "media-capabilities.json").parent.mkdir(
+            mode=0o700, parents=True, exist_ok=True
+        )
+        (evidence_dir / "media-capabilities.json").write_text(
+            json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+    finally:
+        client.close()
+    if capabilities is None:
+        raise GateError("media capability evidence is missing")
+    return capabilities
+
+
 def run_gate(
     host: str, port: int, timeout: float, evidence_dir: Path, firefox_pid: int
 ) -> tuple[str, str]:
@@ -2401,7 +2529,9 @@ def run_gate(
 
 def main(arguments: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="browser_web_marionette_gate")
-    parser.add_argument("--scope", choices=("full", "baidu-home"), default="full")
+    parser.add_argument(
+        "--scope", choices=("full", "baidu-home", "media-capabilities"), default="full"
+    )
     parser.add_argument(
         "--screenshot-backend",
         choices=("marionette", "framebuffer"),
@@ -2421,7 +2551,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         parser.error("Marionette endpoint is outside the loopback contract")
     if not 0 < values.timeout <= 1200 or not values.evidence_dir.is_absolute():
         parser.error("timeout or evidence directory is outside the bounded contract")
-    if values.scope != "baidu-home" and values.screenshot_backend != "marionette":
+    if values.scope not in {"baidu-home", "media-capabilities"} and values.screenshot_backend != "marionette":
         parser.error("framebuffer screenshot backend requires baidu-home scope")
     try:
         validate_network_namespace(values.firefox_pid)
@@ -2465,6 +2595,30 @@ def main(arguments: Sequence[str] | None = None) -> int:
             print(
                 json.dumps(
                     marker,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+            return 0
+        if values.scope == "media-capabilities":
+            if values.screenshot_backend != "marionette":
+                parser.error("media capability scope does not support framebuffer screenshots")
+            capabilities = run_media_capability_gate(
+                values.host,
+                values.port,
+                values.timeout,
+                values.evidence_dir,
+                values.firefox_pid,
+            )
+            print(
+                json.dumps(
+                    {
+                        "marker": "DEBIAN_BROWSER_WEB_MEDIA_CAPABILITIES",
+                        "rdd_mode": os.environ.get(
+                            "ASTERINAS_FIREFOX_MEDIA_RDD_MODE", "off"
+                        ),
+                        "capabilities": capabilities,
+                    },
                     sort_keys=True,
                     separators=(",", ":"),
                 )
