@@ -493,6 +493,8 @@ pub(super) enum BlockBitmapInit {
 
 #[derive(Clone)]
 pub(super) enum InodeBitmapInit {
+    /// Leaves every group-0 inode bit clear to model a corrupted bitmap.
+    Empty,
     /// Marks only reserved group-0 inodes `[1, first_ino)`.
     ReservedOnly,
     /// Marks reserved group-0 inodes plus explicit extra group-0 inodes.
@@ -723,6 +725,7 @@ impl Ext2FixtureBuilder {
         {
             let mut bitmap = [0u8; BLOCK_SIZE];
             match &inode_init {
+                InodeBitmapInit::Empty => {}
                 InodeBitmapInit::ReservedOnly => {
                     for bit in 0..(sb.first_ino() as usize).saturating_sub(1) {
                         set_bit_lsb0(&mut bitmap, bit);

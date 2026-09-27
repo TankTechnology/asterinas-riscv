@@ -49,6 +49,11 @@ impl IdBitmap {
         self.len
     }
 
+    /// Returns whether all valid IDs are allocated.
+    pub const fn is_full(&self) -> bool {
+        self.first_available_id == self.len
+    }
+
     /// Returns the capacity of the ID bitmap.
     ///
     /// The capacity is the size of the underlying buffer in bits.

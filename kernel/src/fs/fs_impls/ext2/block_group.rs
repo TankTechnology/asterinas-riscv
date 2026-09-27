@@ -390,15 +390,25 @@ impl BlockGroup {
         let mut metadata = self.metadata.write();
 
         if metadata.desc.free_inodes_count == 0 {
+            if !metadata.inode_bitmap.is_full() {
+                return_errno_with_message!(
+                    Errno::EIO,
+                    "inode bitmap disagrees with free inode count"
+                );
+            }
             return Ok(None);
         }
         if inode_type.is_directory() && metadata.desc.used_dirs_count == u16::MAX {
             return_errno_with_message!(Errno::EIO, "group used directory counter overflow");
         }
 
-        let Some(inode_idx) = metadata.inode_bitmap.alloc() else {
-            return Ok(None);
-        };
+        if metadata.inode_bitmap.is_full() {
+            return_errno_with_message!(Errno::EIO, "inode bitmap disagrees with free inode count");
+        }
+        let inode_idx = metadata
+            .inode_bitmap
+            .alloc()
+            .ok_or_else(|| Error::with_message(Errno::EIO, "inode bitmap allocation failed"))?;
 
         metadata.desc.free_inodes_count = metadata
             .desc
