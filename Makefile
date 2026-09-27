@@ -186,6 +186,10 @@ else ifeq ($(AUTO_TEST), ext2_flush_eio)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_flush_eio_test.sh"
+else ifeq ($(AUTO_TEST), ext2_msync_eio)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_msync_eio_test.sh"
 else ifeq ($(AUTO_TEST), ext2_rename_same_inode)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]

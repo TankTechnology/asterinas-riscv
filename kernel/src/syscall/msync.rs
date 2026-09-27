@@ -47,18 +47,22 @@ pub fn sys_msync(addr: Vaddr, len: usize, flag: i32, ctx: &Context) -> Result<Sy
         .iter()
         .filter_map(|m| m.inode().cloned())
         .collect::<Vec<_>>();
-    let task_fn = move || {
-        for inode in inodes {
-            // TODO: Sync a necessary range instead of syncing the whole inode.
-            let _ = inode.sync_all();
-        }
-    };
-
     // If neither MS_SYNC nor MS_ASYNC is specified, Linux defaults to MS_ASYNC behavior.
     if flags.contains(MsyncFlags::MS_SYNC) {
-        task_fn();
+        for inode in inodes {
+            // TODO: Sync a necessary range instead of syncing the whole inode.
+            inode.sync_all()?;
+        }
     } else {
-        ThreadOptions::new(task_fn).spawn();
+        ThreadOptions::new(move || {
+            for inode in inodes {
+                // TODO: Sync a necessary range instead of syncing the whole inode.
+                if let Err(error) = inode.sync_all() {
+                    error!("asynchronous msync writeback failed: {error:?}");
+                }
+            }
+        })
+        .spawn();
     }
 
     Ok(SyscallReturn::Return(0))

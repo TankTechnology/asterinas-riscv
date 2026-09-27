@@ -47,6 +47,9 @@ Supported functionality in SCML:
 Silently-ignored flags:
 * `MS_INVALIDATE` is ignored because all processes use the same page cache
 
+`MS_SYNC` waits for file writeback and returns its I/O errors to the caller.
+`MS_ASYNC` schedules writeback; errors from that background task are logged.
+
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/msync.2.html).
 

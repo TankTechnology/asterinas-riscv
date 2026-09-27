@@ -158,7 +158,7 @@ close-and-reopen challenge, offline `e2fsck -fn` returned 0, and `debugfs`
 read back the exact unique payload. The candidate result and serial log are
 under `.local-test/sd-cache-20260927/`.
 
-The two focused QEMU checks now have a one-command host gate:
+The original QEMU cut and `fsync`-error checks have a one-command host gate:
 
 ```bash
 python3 tools/riscv/ext2_durability_gate.py \
@@ -174,6 +174,15 @@ run injects virtual-disk flush `EIO` and requires guest errno 5. The September
 disk regression gate. No controlled physical power cut was performed or is
 part of the current stability plan. The board results do not establish
 SD-medium persistence under sudden power failure.
+
+The gate also has a separate `msync(MS_SYNC)` error case. Before its syscall
+fix, a mapped ext2 file's block flush returned `EIO`, but `msync` returned 0.
+The synchronous branch now reports the inode writeback error, while the
+asynchronous branch logs background failures. A single-failure `blkdebug`
+case verified the guest saw `EIO` and then exited normally. The original
+`fsync` error case passed with the same one-shot injection. Both can be run
+without the directory-fsync cut case using `--case msync-eio` or
+`--case flush-eio`; neither result establishes physical SD persistence.
 
 A normal graphical-target probe also completed a software-reboot cycle with
 offline `e2fsck -fn` exit 0 and exact persistent payload readback. Xorg,

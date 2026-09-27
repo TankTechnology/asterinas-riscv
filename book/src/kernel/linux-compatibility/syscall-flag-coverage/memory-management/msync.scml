@@ -4,7 +4,7 @@ msync(
     flags = MS_ASYNC | MS_INVALIDATE
 );
 
-// Flush memory region to disk synchronously
+// Flush memory region to disk synchronously; report writeback errors to caller
 msync(
     addr, length,
     flags = MS_SYNC | MS_INVALIDATE
