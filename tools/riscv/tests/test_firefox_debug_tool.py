@@ -196,6 +196,19 @@ class FirefoxDebugToolTests(unittest.TestCase):
         self.assertIn(f"logfile={log_dir}/qemu.log", args)
         self.assertNotIn("file=./test/initramfs/build", args)
 
+        injected = subprocess.run(
+            ["bash", "tools/qemu_args.sh", "riscv"],
+            env={
+                **os.environ,
+                "ASTERINAS_EXT2_DRIVE_FILE": "blkdebug:/tmp/flush.conf:/tmp/ext2.img",
+            },
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        self.assertIn("id=x0,file=blkdebug:/tmp/flush.conf:/tmp/ext2.img", injected)
+        self.assertIn(f"id=x1,file={repo_root}/test/initramfs/build/exfat.img", injected)
+
     def test_kernel_ktest_wrapper_isolated_and_persistent(self) -> None:
         wrapper = Path("tools/riscv/kernel_ktest.sh")
         subprocess.run(["bash", "-n", wrapper], check=True)

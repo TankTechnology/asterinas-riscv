@@ -28,6 +28,7 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd -P )
 REPO_ROOT=$( cd -- "${SCRIPT_DIR}/.." && pwd -P )
 TEST_BUILD_DIR=${ASTERINAS_TEST_BUILD_DIR:-${REPO_ROOT}/test/initramfs/build}
 QEMU_LOG_DIR=${ASTERINAS_QEMU_LOG_DIR:-${REPO_ROOT}}
+EXT2_DRIVE_FILE=${ASTERINAS_EXT2_DRIVE_FILE:-${TEST_BUILD_DIR}/ext2.img}
 
 OVMF=${OVMF:-"on"}
 VHOST=${VHOST:-"off"}
@@ -94,7 +95,7 @@ if [ "$1" = "riscv" ]; then
         -display none \
         -monitor chardev:mux \
         -chardev stdio,id=mux,mux=on,signal=off,logfile=${QEMU_LOG_DIR}/qemu.log \
-        -drive if=none,format=raw,id=x0,file=${TEST_BUILD_DIR}/ext2.img \
+        -drive if=none,format=raw,id=x0,file=${EXT2_DRIVE_FILE} \
         -drive if=none,format=raw,id=x1,file=${TEST_BUILD_DIR}/exfat.img \
         -drive if=none,format=raw,id=x2,file=${TEST_BUILD_DIR}/ltp_dev.img \
         -device virtio-blk-device,drive=x0 \

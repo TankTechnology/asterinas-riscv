@@ -43,8 +43,11 @@ errors fail the write or flush instead of being reported as success. A card
 with a disabled cache needs only the programming-state check. The
 [SD physical-layer specification](https://www.sdcard.org/cms/wp-content/themes/sdcard-org/dl.php?f=Part1_Physical_Layer_Simplified_Specification_Ver7.10.pdf)
 requires Cache Flush before power-off when the optional cache is enabled.
-This code has passed host-model tests and cross compilation, but its new CMD48
-and CMD49 paths have **not yet run in Asterinas on the board**.
+This code has passed host-model tests and cross compilation. The subsequent
+board boot reported an **enabled** SD write cache, and an explicit guest
+`sync` returned success; this exercised the enabled-cache flush path. The
+serial log does not expose a separate CMD49 completion trace, and there has
+been no physical power cut.
 Neither the old no-op nor CMD13 alone proves that the observed ext2 damage
 came from the card. Linux's
 [MMC block driver](https://github.com/torvalds/linux/blob/master/drivers/mmc/core/block.c)
@@ -96,18 +99,62 @@ remained intact. This establishes the QEMU virtual-disk results, not physical
 SD power-loss durability. The earlier 16-cycle result must be treated as a
 test of `ltp_dev.img`, not of the intended `ext2.img`.
 
+The next cut-point experiment omitted the global `sync`: it wrote and
+`fsync`ed a new file, renamed it, `fsync`ed the parent directory, then killed
+QEMU immediately after the guest marker. The final name and payload survived,
+but `e2fsck -fn` returned 4 because the allocated inode and data block were
+absent from their allocation bitmaps. A file-only `fsync` cut was also
+inconsistent, but that is not conclusive by itself because it had not synced
+the parent directory entry. The implementation fault was that inode-level
+`fsync` flushed the inode table and block device while leaving ext2 allocation
+bitmaps and group descriptors in memory. Inode `sync_all` and `sync_data` now
+write those allocation records and the superblock before the device flush;
+the group-descriptor dirty status is carried into the final metadata write so
+that clearing the in-memory dirty bit does not suppress it. A fresh image at
+the same directory-`fsync` cut retained the exact payload and passed offline
+`e2fsck -fn` with exit 0.
+
+A separate `blkdebug` test injected `EIO` specifically on virtual-disk
+`flush_to_disk`. The guest's `fsync` returned `-1/EIO`, matching the injected
+failure, rather than falsely reporting durable data. These two tests cover
+the identified virtual ext2 writeback bug and flush error propagation. They
+cannot establish physical SD persistence across an abrupt power loss.
+
 The release kernel, Stage1, and DTB for a board probe were built, hash
 checked, and staged on RockOS's separate partition without changing the
-default boot entry. No one is currently available to recover the board if a
-new kernel wedges before its software reboot path; there is no verified
-remote hardware reset. Therefore the candidate has not been booted and no
-controlled physical power cut has been performed. Keep RockOS as the default
-and perform that experiment only with an operator present. After a successful
-candidate boot, record the detected cache state, a nonce-framed root command
-response and boot ID after serial reopen, the exact write and `sync` result,
-then compare the unmounted partition and payload before and after one
-operator-timed power cut. Only that comparison can separate the SD medium's
-power-loss behavior from Asterinas ext2 writeback.
+default boot entry. A read-only Basic boot first reached the kernel, but its
+Stage1 lacked BusyBox. After packing the cached RISC-V static BusyBox into a
+separate test archive, Basic reached its shell. In both runs the pre-armed
+hardware watchdog reset the board, and the host restored RockOS and verified
+root identity and boot ID after closing and reopening the serial port. This
+proves a recovery path for this short diagnostic boot; the watchdog's window
+is too short for a full desktop start.
+
+The first writable candidate then booted with the existing kernel software
+reboot deadline. The nonce-framed local root console survived serial reopen,
+the ext2 root was verified as `/dev/mmcblk0p2`, and writing a unique value to
+`/var/tmp/asterinas-sd-cache-probe` plus `sync` returned 0. The kernel logged
+`[mmc] SD cache state: Enabled(...)`. A software reboot reached U-Boot;
+RockOS was restored, its new root boot ID was verified across another serial
+reopen, and offline `e2fsck -fn` of unmounted `/dev/mmcblk1p2` returned 0.
+`debugfs` read back the exact written value. The preboot and postboot fsck
+results were both 0. The local logs and artifact hashes are under
+`.local-test/sd-cache-20260927/`.
+
+The installed `/usr/lib/asterinas/megrez-safe-reboot` is older than the source
+script: its SHA-256 is `2fb32a62ad5f4ad511c4a61a29eb6110ea9513d848aa58da46e77707a48f16e4`,
+whereas the source script is
+`ce81169cce45543ef43d633e6a176ae93d14da5cace366be35a1554a27498554`.
+The installed script calls `sync`, then prints
+`ASTERINAS_USERSPACE_REBOOT_SYNC deadline=1`, then requests `reboot -f`;
+that sequence was observed on serial. It does not quiesce writers or emit the
+current source's `SYNC_DONE` marker. Therefore this test proves that the
+explicit guest `sync` and the old shutdown script's `sync` returned, plus a
+clean offline image, **not** that the newer writer-quiescing shutdown script
+is deployed. No controlled physical power cut has been performed because no
+operator is available. Only
+an operator-timed cut after a known flush point can distinguish SD-medium
+power-loss behavior from ext2 behavior under sudden power failure.
 
 The current ext2 driver does not implement journal replay. It now rejects
 `HAS_JOURNAL` as well as the already unsupported `RECOVER` incompatible bit.

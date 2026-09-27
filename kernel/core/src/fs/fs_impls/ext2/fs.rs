@@ -521,10 +521,21 @@ impl Ext2 {
         // `metadata.write()` guard.  Because groups are synced sequentially and
         // their descriptor offsets are disjoint, no two writers touch the same
         // bytes, so the segment is always consistent.
+        let mut group_desc_dirty = false;
         for group in &self.block_groups {
-            group.sync_all(&self.group_descriptors_segment)?;
+            group_desc_dirty |= group.sync_all(&self.group_descriptors_segment)?;
         }
-        self.sync_metadata()
+        self.sync_metadata(group_desc_dirty)
+    }
+
+    /// Persists allocation bitmaps, group descriptors, and the superblock
+    /// before an inode-level fsync reports that its block flush completed.
+    pub(super) fn sync_allocation_metadata(&self) -> Result<()> {
+        let mut group_desc_dirty = false;
+        for group in &self.block_groups {
+            group_desc_dirty |= group.sync_metadata(&self.group_descriptors_segment)?;
+        }
+        self.sync_metadata(group_desc_dirty)
     }
 
     /// Allocates a new inode number.
@@ -617,11 +628,10 @@ impl Ext2 {
     }
 
     /// Flushes the superblock and all dirty group descriptors to the device.
-    fn sync_metadata(&self) -> Result<()> {
+    fn sync_metadata(&self, group_desc_dirty: bool) -> Result<()> {
         let mut sb_guard = self.super_block.write();
 
-        let any_group_dirty = self.block_groups.iter().any(|group| group.is_desc_dirty());
-        if !sb_guard.is_dirty() && !any_group_dirty {
+        if !sb_guard.is_dirty() && !group_desc_dirty {
             return Ok(());
         }
 
