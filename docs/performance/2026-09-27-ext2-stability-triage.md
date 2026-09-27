@@ -34,13 +34,19 @@ driver serialize this request with writes and poll CMD13 until the card reports
 ready in transfer state, with a one-second timer bound and a finite poll cap;
 card-reported errors and timeouts become I/O errors.
 The former implementation returned `BioStatus::Complete` without checking the
-card at all. This is still **not a complete durability contract**: discovery
-does not determine whether the SD extension-register write cache is enabled,
-and the driver does not issue CMD49 Flush Cache. The [SD Association's cache
-description](https://www.sdcard.org/press/thoughtleadership/applications-in-action-introducing-the-newest-application-performance-class/)
-states that data in that cache is not guaranteed until its flush completes.
-Neither the old no-op nor the new CMD13 check proves that the observed ext2
-damage came from the card. Linux's
+card at all. The follow-up change reads SCR and, for cards advertising SD
+extension commands, uses CMD48 to discover the performance extension and
+whether its write cache is enabled. A block flush now waits for the card's
+programming state, issues CMD49 Cache Flush for an enabled cache, waits for
+completion, and reads the flush bit back with CMD48. Discovery or flush
+errors fail the write or flush instead of being reported as success. A card
+with a disabled cache needs only the programming-state check. The
+[SD physical-layer specification](https://www.sdcard.org/cms/wp-content/themes/sdcard-org/dl.php?f=Part1_Physical_Layer_Simplified_Specification_Ver7.10.pdf)
+requires Cache Flush before power-off when the optional cache is enabled.
+This code has passed host-model tests and cross compilation, but its new CMD48
+and CMD49 paths have **not yet run in Asterinas on the board**.
+Neither the old no-op nor CMD13 alone proves that the observed ext2 damage
+came from the card. Linux's
 [MMC block driver](https://github.com/torvalds/linux/blob/master/drivers/mmc/core/block.c)
 and [SD card driver](https://github.com/torvalds/linux/blob/master/drivers/mmc/core/sd.c)
 are references for card-specific cache handling.
@@ -52,6 +58,56 @@ ext2 journal-rejection and MMC status-poll kernel tests, and the existing
 the host's read-only `e2fsck -fn` exited 0. Host-side board staging and
 safe-reboot suites also passed. These are clean-shutdown and contract tests,
 not a simulated SD power-loss or journal-replay test.
+
+## September 27 follow-up: card preflight and the QEMU cut point
+
+The board is currently in RockOS, with an authenticated root serial channel.
+RockOS reports SD card `SR128` with SCR `0245848700000000`; the CMD48/49
+support bit is set. That proves extension-command capability, **not** that
+this particular card implements or has enabled a write cache. Before any
+candidate boot, read-only `e2fsck -fn` on the unmounted Debian partition
+(`RockOS /dev/mmcblk1p2`) returned 4: a Firefox profile `lock` directory
+entry referred to a deleted inode, and inode bitmap counts disagreed. The
+whole 4 GiB partition was copied to RockOS and then to the host; both copies
+had SHA-256
+`b7d20d3911a3f522bd6bf91c1effa859def01112c77bfccefcc574b80f34cdae`.
+Checking that host image reproduced the same errors. Only then did one
+offline `e2fsck -fy` repair the unmounted board partition (exit 1); a
+subsequent `e2fsck -fn` returned 0. These are **pre-existing** structural
+errors, not an outcome of the new cache code or an intentional power cut.
+The full local evidence and immutable candidate hashes are under
+`.local-test/sd-cache-20260927/`.
+
+The first QEMU cut-point attempt revealed a test-harness mistake: the
+RISC-V virtio device declaration order made `/dev/vda` refer to
+`ltp_dev.img`, while the offline check inspected `ext2.img`. The test payload
+was present and fsck-clean on `ltp_dev.img`, but this did not test the named
+image. The device declaration order is now corrected, the guest scripts
+require `/dev/vda /ext2 ext2` in `/proc/mounts`, and the recovery validator
+uses `ASTERINAS_TEST_BUILD_DIR` when a cloned image is supplied. It also
+checks an exact guest-written payload in that image, so a clean but wrong
+image cannot pass. In a fresh
+short run, QEMU was killed after the guest printed its post-`sync` marker.
+The intended `ext2.img` contained the renamed payload with exact contents,
+and offline `e2fsck -fn` returned 0. The 16-cycle Firefox-state gate was then
+rerun with the corrected mapping on the same `ext2.img`; its `sync`, unmount,
+transcript validator, and offline fsck all passed, and the cut-point payload
+remained intact. This establishes the QEMU virtual-disk results, not physical
+SD power-loss durability. The earlier 16-cycle result must be treated as a
+test of `ltp_dev.img`, not of the intended `ext2.img`.
+
+The release kernel, Stage1, and DTB for a board probe were built, hash
+checked, and staged on RockOS's separate partition without changing the
+default boot entry. No one is currently available to recover the board if a
+new kernel wedges before its software reboot path; there is no verified
+remote hardware reset. Therefore the candidate has not been booted and no
+controlled physical power cut has been performed. Keep RockOS as the default
+and perform that experiment only with an operator present. After a successful
+candidate boot, record the detected cache state, a nonce-framed root command
+response and boot ID after serial reopen, the exact write and `sync` result,
+then compare the unmounted partition and payload before and after one
+operator-timed power cut. Only that comparison can separate the SD medium's
+power-loss behavior from Asterinas ext2 writeback.
 
 The current ext2 driver does not implement journal replay. It now rejects
 `HAS_JOURNAL` as well as the already unsupported `RECOVER` incompatible bit.

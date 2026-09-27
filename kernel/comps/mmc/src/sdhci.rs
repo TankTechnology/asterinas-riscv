@@ -116,6 +116,14 @@ impl Command {
         Self::new_data(51, 0, DataDirection::Read, 8, 1)
     }
 
+    pub const fn read_extension(argument: u32) -> Self {
+        Self::new_data(48, argument, DataDirection::Read, 512, 1)
+    }
+
+    pub const fn write_extension(argument: u32) -> Self {
+        Self::new_data(49, argument, DataDirection::Write, 512, 1)
+    }
+
     pub const fn switch_function(argument: u32) -> Self {
         Self::new_data(6, argument, DataDirection::Read, 64, 1)
     }

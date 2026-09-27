@@ -61,8 +61,8 @@ class ValidationError(ValueError):
     """The transcript does not prove the requested acceptance result."""
 
 
-def validate_ext2_image(image: Path) -> None:
-    """Require a clean read-only host fsck after the guest has unmounted ext2."""
+def validate_ext2_image(image: Path, *, required_payload: bool = False) -> None:
+    """Require a clean result image and, for the recovery gate, its guest payload."""
 
     if image.is_symlink() or not image.is_file():
         raise ValidationError(f"ext2 result image is not a regular file: {image}")
@@ -82,6 +82,20 @@ def validate_ext2_image(image: Path) -> None:
             f"e2fsck rejected ext2 result image (exit={result.returncode}): "
             f"{result.stdout[-500:]}"
         )
+    if required_payload:
+        try:
+            payload = subprocess.run(
+                ["debugfs", "-R", "cat /asterinas_recovery_target", str(image)],
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise ValidationError(f"debugfs failed to run: {error}") from error
+        if payload.returncode != 0 or payload.stdout != "asterinas-ext2-recovery-v1\n":
+            raise ValidationError("ext2 result image lacks the guest recovery payload")
 
 
 def _is_logical_marker(line: str, marker: str) -> bool:
@@ -147,7 +161,7 @@ def main() -> int:
         if args.mode == "ext2-firefox-recovery":
             if args.ext2_image is None:
                 raise ValidationError("ext2 recovery mode requires --ext2-image")
-            validate_ext2_image(args.ext2_image)
+            validate_ext2_image(args.ext2_image, required_payload=True)
     except (OSError, ValidationError) as error:
         print(f"run_kernel validation failed: {error}")
         return 1

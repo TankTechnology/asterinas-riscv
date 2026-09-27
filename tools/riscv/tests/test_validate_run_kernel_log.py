@@ -70,8 +70,13 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         self.assertIn("else ifeq ($(AUTO_TEST), ext2_firefox_recovery)", makefile)
         self.assertIn("/test/run_ext2_firefox_recovery_test.sh", makefile)
         self.assertIn('--mode "ext2-firefox-recovery"', makefile)
-        self.assertIn('--ext2-image "$(CURDIR)/test/initramfs/build/ext2.img"', makefile)
+        self.assertIn(
+            '--ext2-image "$${ASTERINAS_TEST_BUILD_DIR:-$(CURDIR)/test/initramfs/build}/ext2.img"',
+            makefile,
+        )
+        self.assertIn("/dev/vda /ext2 ext2", guest)
         self.assertIn("/test/fs/ext2/firefox_state", guest)
+        self.assertIn("/ext2/asterinas_recovery_target", guest)
         self.assertIn("umount /ext2", guest)
 
     def test_ext2_recovery_gate_rejects_corrupt_result_image(self) -> None:
@@ -86,6 +91,8 @@ class ValidateRunKernelLogTests(unittest.TestCase):
                 text=True,
             )
             validate_ext2_image(image)
+            with self.assertRaisesRegex(ValidationError, "lacks the guest recovery payload"):
+                validate_ext2_image(image, required_payload=True)
             with image.open("r+b") as output:
                 output.seek(1024)
                 output.write(b"\0" * 1024)
