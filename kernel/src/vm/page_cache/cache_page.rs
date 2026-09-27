@@ -138,6 +138,21 @@ pub trait CachePageExt: Sized {
         self.wait_queue().wake_all();
     }
 
+    /// Reports whether device writeback is still in flight for this page.
+    fn is_writing_back(&self) -> bool {
+        self.metadata().is_writing_back.load(Ordering::Acquire)
+    }
+
+    /// Restores dirty state before a failed writeback wakes its waiters.
+    ///
+    /// The completion callback cannot take the page lock. A concurrent writer
+    /// may already have marked the page dirty, in which case this is idempotent.
+    fn redirty_failed_writeback(&self) {
+        self.metadata()
+            .state
+            .store(PageState::Dirty, Ordering::Release);
+    }
+
     /// Allocates a new cache page which content and state are uninitialized.
     fn alloc_uninit() -> Result<CachePage> {
         let meta = CachePageMeta::default();
@@ -315,11 +330,6 @@ impl<PageRef: Borrow<CachePage>> LockedCachePage<PageRef> {
     pub fn wait_until_finish_writing_back(&self) {
         self.wait_queue
             .wait_until(|| (!self.is_writing_back()).then_some(()));
-    }
-
-    /// Checks if the page is currently being written back to storage.
-    pub(super) fn is_writing_back(&self) -> bool {
-        self.metadata().is_writing_back.load(Ordering::Acquire)
     }
 }
 

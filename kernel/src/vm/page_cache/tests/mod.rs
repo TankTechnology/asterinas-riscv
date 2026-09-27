@@ -9,7 +9,10 @@ use ostd::{mm::VmIo, prelude::ktest};
 
 use self::utils::{IoCompletion, IoKind, MockPageCacheBackend, wait_until};
 use super::{PageCache, PageCacheBackend, VmoCommitError};
-use crate::{prelude::*, thread::kernel_thread::ThreadOptions};
+use crate::{
+    prelude::*,
+    thread::{Thread, kernel_thread::ThreadOptions},
+};
 
 mod utils;
 
@@ -151,6 +154,155 @@ fn concurrent_write_and_flush() {
     assert_eq!(backend.persisted_page_bytes(0), latest_dirty_pattern);
 }
 
+/// A failed device completion must leave buffered bytes available for an
+/// explicit later flush, even when userspace does not write the page again.
+#[ktest]
+fn failed_write_completion_retries_cached_data() {
+    let backend = MockPageCacheBackend::new(1);
+    backend.set_completion(IoKind::Write, IoCompletion::Deferred);
+
+    let page_cache = new_backend_page_cache(&backend, 1);
+    let payload = vec![0x6d; PAGE_SIZE];
+    page_cache.write_bytes(0, &payload).unwrap();
+
+    let first_result = Arc::new(Mutex::new(None::<Result<()>>));
+    let first_flush = {
+        let page_cache = page_cache.clone();
+        let first_result = first_result.clone();
+        ThreadOptions::new(move || {
+            *first_result.lock() = Some(page_cache.flush_range(0..PAGE_SIZE));
+        })
+        .spawn()
+    };
+    backend.wait_for_deferred_bios(IoKind::Write, 1);
+    assert!(backend.complete_next_deferred_bio(IoKind::Write, false));
+    first_flush.join();
+    assert_eq!(
+        first_result.lock().take().unwrap().unwrap_err().error(),
+        Errno::EIO
+    );
+    assert_eq!(backend.persisted_page_bytes(0), vec![0; PAGE_SIZE]);
+
+    // A persistent error fails once per explicit flush; it must not loop in
+    // the completion callback or silently turn the next fsync into success.
+    let second_result = Arc::new(Mutex::new(None::<Result<()>>));
+    let second_flush = {
+        let page_cache = page_cache.clone();
+        let second_result = second_result.clone();
+        ThreadOptions::new(move || {
+            *second_result.lock() = Some(page_cache.flush_range(0..PAGE_SIZE));
+        })
+        .spawn()
+    };
+    backend.wait_for_deferred_bios(IoKind::Write, 1);
+    assert!(backend.complete_next_deferred_bio(IoKind::Write, false));
+    second_flush.join();
+    assert_eq!(
+        second_result.lock().take().unwrap().unwrap_err().error(),
+        Errno::EIO
+    );
+    assert_eq!(backend.write_count(0), 2);
+
+    backend.set_completion(IoKind::Write, IoCompletion::Immediate);
+    page_cache.flush_range(0..PAGE_SIZE).unwrap();
+    assert_eq!(backend.write_count(0), 3);
+    assert_eq!(backend.persisted_page_bytes(0), payload);
+}
+
+/// A writer that updates a page during failed writeback keeps its newer bytes
+/// through the retry rather than reverting to the failed I/O snapshot.
+#[ktest]
+fn failed_write_completion_preserves_concurrent_update() {
+    let backend = MockPageCacheBackend::new(1);
+    backend.set_completion(IoKind::Write, IoCompletion::Deferred);
+
+    let page_cache = new_backend_page_cache(&backend, 1);
+    let first_payload = vec![0x41; PAGE_SIZE];
+    let latest_payload = vec![0x52; PAGE_SIZE];
+    page_cache.write_bytes(0, &first_payload).unwrap();
+
+    let first_result = Arc::new(Mutex::new(None::<Result<()>>));
+    let first_flush = {
+        let page_cache = page_cache.clone();
+        let first_result = first_result.clone();
+        ThreadOptions::new(move || {
+            *first_result.lock() = Some(page_cache.flush_range(0..PAGE_SIZE));
+        })
+        .spawn()
+    };
+    backend.wait_for_deferred_bios(IoKind::Write, 1);
+    page_cache.write_bytes(0, &latest_payload).unwrap();
+    assert!(backend.complete_next_deferred_bio(IoKind::Write, false));
+    first_flush.join();
+    assert_eq!(
+        first_result.lock().take().unwrap().unwrap_err().error(),
+        Errno::EIO
+    );
+
+    backend.set_completion(IoKind::Write, IoCompletion::Immediate);
+    page_cache.flush_range(0..PAGE_SIZE).unwrap();
+    assert_eq!(backend.write_count(0), 2);
+    assert_eq!(backend.persisted_page_bytes(0), latest_payload);
+}
+
+/// A second flush must wait for an in-flight clean-looking page. If the first
+/// write fails, the second flush may retry it but cannot report early success.
+#[ktest]
+fn concurrent_flush_waits_for_failed_writeback() {
+    let backend = MockPageCacheBackend::new(1);
+    backend.set_completion(IoKind::Write, IoCompletion::Deferred);
+
+    let page_cache = new_backend_page_cache(&backend, 1);
+    let payload = vec![0x37; PAGE_SIZE];
+    page_cache.write_bytes(0, &payload).unwrap();
+
+    let first_result = Arc::new(Mutex::new(None::<Result<()>>));
+    let first_flush = {
+        let page_cache = page_cache.clone();
+        let first_result = first_result.clone();
+        ThreadOptions::new(move || {
+            *first_result.lock() = Some(page_cache.flush_range(0..PAGE_SIZE));
+        })
+        .spawn()
+    };
+    backend.wait_for_deferred_bios(IoKind::Write, 1);
+
+    let second_started = Arc::new(Mutex::new(false));
+    let second_finished = Arc::new(Mutex::new(false));
+    let premature_finish = Arc::new(Mutex::new(false));
+    let completer = {
+        let backend = backend.clone();
+        let second_started = second_started.clone();
+        let second_finished = second_finished.clone();
+        let premature_finish = premature_finish.clone();
+        ThreadOptions::new(move || {
+            wait_until(|| *second_started.lock());
+            for _ in 0..1000 {
+                Thread::yield_now();
+            }
+            *premature_finish.lock() = *second_finished.lock();
+            backend.set_completion(IoKind::Write, IoCompletion::Immediate);
+            assert!(backend.complete_next_deferred_bio(IoKind::Write, false));
+        })
+        .spawn()
+    };
+
+    *second_started.lock() = true;
+    let second_result = page_cache.flush_range(0..PAGE_SIZE);
+    *second_finished.lock() = true;
+    completer.join();
+    first_flush.join();
+
+    assert!(!*premature_finish.lock());
+    assert_eq!(
+        first_result.lock().take().unwrap().unwrap_err().error(),
+        Errno::EIO
+    );
+    second_result.unwrap();
+    assert_eq!(backend.write_count(0), 2);
+    assert_eq!(backend.persisted_page_bytes(0), payload);
+}
+
 /// Re-dirties a page while another task runs `flush_range()` and
 /// `evict_range()`, ensuring the newest dirty page is kept cached.
 #[ktest]
@@ -209,6 +361,62 @@ fn concurrent_write_and_evict() {
     page_cache.flush_range(0..PAGE_SIZE).unwrap();
     assert_eq!(backend.write_count(0), 2);
     assert_eq!(backend.persisted_page_bytes(0), latest_dirty_pattern);
+}
+
+/// Eviction selected during writeback must recheck the page after an I/O
+/// failure, so the bytes retained for an explicit retry are not discarded.
+#[ktest]
+fn failed_writeback_keeps_page_during_eviction() {
+    let backend = MockPageCacheBackend::new(1);
+    backend.set_completion(IoKind::Write, IoCompletion::Deferred);
+
+    let page_cache = new_backend_page_cache(&backend, 1);
+    let payload = vec![0x73; PAGE_SIZE];
+    page_cache.write_bytes(0, &payload).unwrap();
+
+    let first_result = Arc::new(Mutex::new(None::<Result<()>>));
+    let first_flush = {
+        let page_cache = page_cache.clone();
+        let first_result = first_result.clone();
+        ThreadOptions::new(move || {
+            *first_result.lock() = Some(page_cache.flush_range(0..PAGE_SIZE));
+        })
+        .spawn()
+    };
+    backend.wait_for_deferred_bios(IoKind::Write, 1);
+
+    let evict_started = Arc::new(Mutex::new(false));
+    let evict_finished = Arc::new(Mutex::new(false));
+    let evict_thread = {
+        let page_cache = page_cache.clone();
+        let evict_started = evict_started.clone();
+        let evict_finished = evict_finished.clone();
+        ThreadOptions::new(move || {
+            *evict_started.lock() = true;
+            page_cache.evict_range(0..PAGE_SIZE).unwrap();
+            *evict_finished.lock() = true;
+        })
+        .spawn()
+    };
+    wait_until(|| *evict_started.lock());
+    for _ in 0..1000 {
+        Thread::yield_now();
+    }
+    let eviction_waited_for_writeback = !*evict_finished.lock();
+
+    assert!(backend.complete_next_deferred_bio(IoKind::Write, false));
+    first_flush.join();
+    evict_thread.join();
+    assert!(eviction_waited_for_writeback);
+    assert_eq!(
+        first_result.lock().take().unwrap().unwrap_err().error(),
+        Errno::EIO
+    );
+
+    backend.set_completion(IoKind::Write, IoCompletion::Immediate);
+    page_cache.flush_range(0..PAGE_SIZE).unwrap();
+    assert_eq!(backend.write_count(0), 2);
+    assert_eq!(backend.persisted_page_bytes(0), payload);
 }
 
 /// Commits a page while a concurrent truncate shrinks the page cache, ensuring

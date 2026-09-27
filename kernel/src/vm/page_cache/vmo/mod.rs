@@ -927,14 +927,21 @@ impl<'a> BackedVmo<'a> {
         }
 
         let page_idx_range = get_page_idx_range(range);
-        let dirty_pages =
-            self.collect_pages_if(locked_pages, page_idx_range, |_, page| page.is_dirty());
+        // An in-flight page looks clean while its BIO is pending. Include it
+        // so a concurrent fsync waits for completion and observes a failure
+        // that restores the dirty state before the writeback flag is cleared.
+        let pages_to_sync = self.collect_pages_if(locked_pages, page_idx_range, |_, page| {
+            page.is_dirty() || page.is_writing_back()
+        });
 
-        let mut io_batch = IoBatch::with_capacity(dirty_pages.len());
-        for (idx, page) in dirty_pages {
+        let mut io_batch = IoBatch::with_capacity(pages_to_sync.len());
+        for (idx, page) in pages_to_sync {
             let locked_page = page.lock();
-            self.backend
-                .write_page_async(idx, locked_page, &mut io_batch)?;
+            locked_page.wait_until_finish_writing_back();
+            if locked_page.is_dirty() {
+                self.backend
+                    .write_page_async(idx, locked_page, &mut io_batch)?;
+            }
         }
 
         io_batch.wait_all().map_err(Into::into)
@@ -957,7 +964,7 @@ impl<'a> BackedVmo<'a> {
         let page_idx_range = get_page_idx_range(range);
         let pages_to_evict =
             self.collect_pages_if(locked_pages, page_idx_range, |_, page| page.is_up_to_date());
-        self.wait_for_writeback_and_remove_pages(pages_to_evict);
+        self.wait_for_writeback_and_remove_pages(pages_to_evict, |page| page.is_up_to_date());
 
         Ok(())
     }
@@ -977,7 +984,7 @@ impl<'a> BackedVmo<'a> {
 
         let page_idx_range = get_page_idx_range(range);
         let pages_to_decommit = self.collect_pages_if(locked_pages, page_idx_range, |_, _| true);
-        self.wait_for_writeback_and_remove_pages(pages_to_decommit);
+        self.wait_for_writeback_and_remove_pages(pages_to_decommit, |_| true);
 
         Ok(())
     }
@@ -1092,7 +1099,11 @@ impl<'a> BackedVmo<'a> {
     /// Waiting before removal also prevents a later commit from installing a
     /// new page for the same index and starting duplicate BIOs while the old
     /// page is still under writeback.
-    fn wait_for_writeback_and_remove_pages(&self, pages_to_remove: Vec<(usize, CachePage)>) {
+    fn wait_for_writeback_and_remove_pages(
+        &self,
+        pages_to_remove: Vec<(usize, CachePage)>,
+        should_remove: impl Fn(&CachePage) -> bool,
+    ) {
         for (_, page) in pages_to_remove.iter() {
             let locked_page = page.lock_guard();
             locked_page.wait_until_finish_writing_back();
@@ -1101,6 +1112,11 @@ impl<'a> BackedVmo<'a> {
         let mut locked_pages = self.vmo.pages.lock();
 
         for (page_idx, page) in pages_to_remove {
+            // Writeback can fail while we wait, restoring Dirty state. Eviction
+            // must keep such a page so a later flush can retry its contents.
+            if !should_remove(&page) {
+                continue;
+            }
             let mut cursor = locked_pages.cursor_mut(page_idx as u64);
 
             // The caller will hold the higher-level lock that excludes concurrent
