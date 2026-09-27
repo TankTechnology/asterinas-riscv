@@ -586,19 +586,17 @@ impl<T: BlockAsPageCacheBackend> PageCacheBackend for T {
         let submit_page = page.clone();
 
         let complete_fn: BioCompleteFn = Box::new(move |status| {
+            let failed = status != BioStatus::Complete;
+            if failed {
+                // The current flush reports this error through IoBatch. Keep
+                // the page dirty so a later explicit flush can retry it, and
+                // publish that state before waking any writeback waiters.
+                submit_page.redirty_failed_writeback();
+            }
             submit_page.clear_writing_back();
-            if status != BioStatus::Complete {
-                // TODO: Record the writeback error (e.g., EIO) in the VMO
-                // (or the corresponding inode) so that a subsequent sync syscall
-                // can detect and report it to userspace.
-                //
-                // Following Linux's design, we intentionally do **not** re-dirty the
-                // page here. Re-dirtying would cause the writeback mechanism to retry
-                // the I/O indefinitely, which could stall the entire system if the
-                // underlying device has a persistent hardware fault. Instead, the page
-                // is left clean and the data is considered lost.
+            if failed {
                 ostd::error!(
-                    "writeback I/O failed for page index {idx} with status {status:?}; data may be lost"
+                    "writeback I/O failed for page index {idx} with status {status:?}; page remains dirty"
                 );
             }
         });
