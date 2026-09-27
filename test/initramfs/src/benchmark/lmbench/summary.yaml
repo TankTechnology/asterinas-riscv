@@ -39,7 +39,11 @@ benchmarks:
   - tcp_virtio_connect_lat
   - tcp_virtio_lat
   - udp_virtio_lat
-  - # mem_copy_bw
-  - # mem_read_bw
-  - # mem_write_bw
-  - # vfs_fcntl_lat
+  # Hidden from the overview charts on purpose. See the note in
+  # test/initramfs/src/benchmark/README.md about benchmarks whose results we do
+  # not want to publish yet. They are still run by CI and their detail pages
+  # remain available; only the overview charts omit them.
+  # - mem_copy_bw
+  # - mem_read_bw
+  # - mem_write_bw
+  # - vfs_fcntl_lat
