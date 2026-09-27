@@ -310,3 +310,21 @@ this partition as ext4 would make it unmountable by today's kernel.
   short Firefox workload, reboot at controlled points, and require recovery
   without RockOS repair. Retain RockOS as the recovery entry while this gate
   is developed.
+
+## Follow-up: propagate ext2 block-reclaim failures
+
+The inode block-pointer truncation path previously logged and ignored errors
+from indirect-block reads and block release. Deleted-inode reclaim could then
+free the inode bitmap even though blocks were still allocated or referenced.
+The path now reports failure, clears each pointer only after its subtree has
+been freed, and leaves the inode allocated if reclaim fails. A failed regular
+file shrink also reports the error to its caller. Directory removal now deletes
+the parent entry before dropping the child link count, matching unlink's error
+ordering.
+
+Focused RISC-V/Sv39 kernel tests cover an injected indirect-block read error
+followed by a successful retry, direct and multi-level truncation, and unlink
+immediately after a write. The normal RISC-V kernel build also passes. These
+checks do not establish crash atomicity: ext2 still has no journal or orphan
+replay, and the separate intermittent QEMU second-boot failure remains under
+investigation. No controlled power-cut experiment was run for this follow-up.
