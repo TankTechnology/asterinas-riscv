@@ -54,6 +54,24 @@ static void emit(const char *text) {
     }
 }
 
+static void emit_number(long value) {
+    char reversed[24];
+    char number[24];
+    size_t count = 0;
+    size_t output = 0;
+    if (value < 0) {
+        number[output++] = '-';
+        value = -value;
+    }
+    do {
+        reversed[count++] = '0' + (value % 10);
+        value /= 10;
+    } while (value != 0);
+    while (count != 0) number[output++] = reversed[--count];
+    number[output] = '\0';
+    emit(number);
+}
+
 static void stop(const char *stage) {
     emit("REBOOT_SYNC_FAIL stage=");
     emit(stage);
@@ -91,7 +109,12 @@ void _start(void) {
         emit("REBOOT_SYNC_PASS boot=2\n");
         request_reboot(REBOOT_POWER_OFF);
     }
-    if (fd != -ENOENT) stop("first-lookup");
+    if (fd != -ENOENT) {
+        emit("REBOOT_SYNC_LOOKUP_RETURN=");
+        emit_number(fd);
+        emit("\n");
+        stop("first-lookup");
+    }
 
     fd = call5(NR_OPENAT, AT_FDCWD, (long)path,
                O_WRONLY | O_CREAT | O_EXCL, 0600, 0);

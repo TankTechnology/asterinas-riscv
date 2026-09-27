@@ -243,6 +243,41 @@ again passed offline fsck with the marker intact. Logs are under
 `rename-recovery-boot2/`. These were two clean virtual boots, not a physical
 SD power cut or a new board validation of `367f4f8c5`.
 
+## September 27 follow-up: BIO completion ordering and startup
+
+The current Sv48 release candidate intermittently returned `EIO` on the first
+lookup in a freshly mounted, fsck-clean ext2 image. At the default console
+log level, two of three short QEMU reboot-gate repetitions failed; increasing
+the log level made the same kernel pass, pointing to a timing race rather than
+an on-disk format error. The block layer published a BIO's final status before
+running its completion callback. A synchronous reader could therefore return
+from `IoBatch::wait_all()` before the callback copied bytes into the page
+cache and marked the page up to date. The same ordering could also allow a
+write waiter to miss a callback's failed-writeback state update.
+
+BIO completion now runs the callback before publishing the final status, and
+waiters acquire that status before using the callback's results. A focused
+block-layer kernel test failed with the former order and passed with the fix;
+all three block-layer tests passed. The fixed Sv48 release image, SHA-256
+`9141a0d63183932849eb84f598b147cd79f5c7180a77eeb623e693a964177f76`,
+passed five consecutive default-log-level QEMU reboot gates and one
+timer-triggered reboot gate. Each had two boots, exact payload readback, and
+read-only `e2fsck -fn` exit 0. Separate one-shot `blkdebug` gates still
+reported `EIO` from both `fsync` and `msync(MS_SYNC)` and exited normally.
+The local evidence is under `.local-test/fs-board-software-reboot-20260927/`,
+`target/reboot-sync-sv48-fixed-20260927-*`, and the matching
+`.local-test/flush-eio-bio-completion-20260927/` and
+`.local-test/msync-eio-bio-completion-20260927/` directories.
+
+A read-only Basic boot of that release image on Megrez reached the Asterinas
+kernel and Basic console. Its pre-armed hardware watchdog returned the board
+to U-Boot, the default entry started RockOS, and a fresh root command
+challenge succeeded after closing and reopening the host serial connection.
+The board result is in `.local-test/fs-board-software-reboot-20260927/basic-canary.result.json`.
+Basic did not mount or write the Debian ext2 partition. This qualifies an
+early boot and recovery path, not a full desktop startup or sudden-power-loss
+durability.
+
 The target desktop path is: a read-only, recoverable base system image plus a
 persistent **journaled** filesystem for `/home` and writable system state.
 The smallest standards-compatible implementation path is ext3-style metadata

@@ -7,22 +7,22 @@ use aster_util::mem_obj_slice::Slice;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
 use io_util::{
-    IoError,
     batch::{IoBatch, IoCompletion},
+    IoError,
 };
 use ostd::{
-    Error,
     mm::{
-        HasSize, Infallible, USegment, VmIo, VmReader, VmWriter,
         dma::DmaStream,
         io::util::{HasVmReaderWriter, VmReaderWriterResult},
+        HasSize, Infallible, USegment, VmIo, VmReader, VmWriter,
     },
     sync::{LocalIrqDisabled, SpinLock, WaitQueue},
+    Error,
 };
 use spin::Once;
 
-use super::{BlockDevice, id::Sid};
-use crate::{BLOCK_SIZE, SECTOR_SIZE, impl_block_device::general_complete_fn, prelude::*};
+use super::{id::Sid, BlockDevice};
+use crate::{impl_block_device::general_complete_fn, prelude::*, BLOCK_SIZE, SECTOR_SIZE};
 
 /// The unit for block I/O.
 ///
@@ -250,7 +250,13 @@ impl SubmittedBio {
             ..
         } = self;
 
-        // Set the status.
+        drop(segments);
+
+        // The callback may copy read data into a cache page or restore dirty
+        // state after failed writeback. Publish completion only after it has
+        // finished, so a synchronous waiter can safely use that page.
+        general_complete_fn(metadata.type_(), status, complete_fn);
+
         let result = metadata.status.compare_exchange(
             BioStatus::Submit as u32,
             status as u32,
@@ -258,10 +264,6 @@ impl SubmittedBio {
             Ordering::Relaxed,
         );
         assert!(result.is_ok());
-
-        drop(segments);
-
-        general_complete_fn(metadata.type_(), status, complete_fn);
 
         metadata.wait_queue.wake_all();
     }
@@ -299,7 +301,7 @@ impl BioMetadata {
     }
 
     pub fn status(&self) -> BioStatus {
-        BioStatus::try_from(self.status.load(Ordering::Relaxed)).unwrap()
+        BioStatus::try_from(self.status.load(Ordering::Acquire)).unwrap()
     }
 }
 
@@ -733,6 +735,30 @@ mod tests {
     use ostd::prelude::ktest;
 
     use super::*;
+
+    /// A synchronous page-cache read must not return before its completion
+    /// callback has published the bytes into the cache page.
+    #[ktest]
+    fn bio_completion_is_published_after_callback() {
+        let bio = Bio::new(BioType::Read, Sid::new(0), Vec::new(), None);
+        let metadata = bio.metadata.clone();
+        metadata
+            .status
+            .store(BioStatus::Submit as u32, Ordering::Release);
+        let callback_metadata = metadata.clone();
+        let submitted = SubmittedBio {
+            metadata: metadata.clone(),
+            sid_offset: 0,
+            complete_fn: Some(Box::new(move |_| {
+                assert_eq!(callback_metadata.status(), BioStatus::Submit);
+            })),
+            segments: Vec::new(),
+        };
+
+        submitted.complete(BioStatus::Complete);
+        assert_eq!(metadata.status(), BioStatus::Complete);
+        assert!(metadata.wait().is_ok());
+    }
 
     #[ktest]
     fn device_fills_only_from_device_segments() {
