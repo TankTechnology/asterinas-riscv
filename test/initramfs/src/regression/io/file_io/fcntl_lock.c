@@ -174,6 +174,74 @@ FN_TEST(socketpair_setlkw_and_close_releases_lock)
 }
 END_TEST()
 
+FN_TEST(ofd_lock_is_owned_by_open_file_description)
+{
+	int fd = TEST_SUCC(open(TEST_FILE, O_RDWR));
+	int duplicate = TEST_SUCC(dup(fd));
+	int independent = TEST_SUCC(open(TEST_FILE, O_RDWR));
+	struct flock lock = {
+		.l_type = F_WRLCK,
+		.l_whence = SEEK_SET,
+		.l_start = 0,
+		.l_len = 0,
+		.l_pid = 0,
+	};
+
+	struct flock invalid_pid = lock;
+	invalid_pid.l_pid = 1;
+	TEST_ERRNO(fcntl(fd, F_OFD_SETLK, &invalid_pid), EINVAL);
+	TEST_SUCC(fcntl(fd, F_OFD_SETLKW, &lock));
+	struct flock query = lock;
+	TEST_SUCC(fcntl(duplicate, F_OFD_GETLK, &query));
+	TEST_RES(query.l_type, _ret == F_UNLCK);
+	query = lock;
+	TEST_SUCC(fcntl(independent, F_GETLK, &query));
+	TEST_RES(query.l_pid, _ret == -1);
+	TEST_ERRNO(fcntl(independent, F_OFD_SETLK, &lock), EAGAIN);
+	TEST_ERRNO(try_write_lock(fd, 0, 0), EAGAIN);
+	TEST_SUCC(close(fd));
+	TEST_ERRNO(fcntl(independent, F_OFD_SETLK, &lock), EAGAIN);
+	TEST_SUCC(close(duplicate));
+	TEST_SUCC(fcntl(independent, F_OFD_SETLK, &lock));
+	TEST_SUCC(close(independent));
+}
+END_TEST()
+
+FN_TEST(ofd_lock_survives_fork_until_last_description_closes)
+{
+	int fd = TEST_SUCC(open(TEST_FILE, O_RDWR));
+	int channel[2];
+	TEST_SUCC(pipe(channel));
+	struct flock lock = {
+		.l_type = F_WRLCK,
+		.l_whence = SEEK_SET,
+		.l_pid = 0,
+	};
+	TEST_SUCC(fcntl(fd, F_OFD_SETLK, &lock));
+
+	pid_t child = TEST_SUCC(fork());
+	if (child == 0) {
+		CHECK(close(channel[1]));
+		char release;
+		CHECK_WITH(read(channel[0], &release, 1), _ret == 1);
+		CHECK(close(fd));
+		_exit(0);
+	}
+	TEST_SUCC(close(channel[0]));
+	TEST_SUCC(close(fd));
+	int independent = TEST_SUCC(open(TEST_FILE, O_RDWR));
+	TEST_ERRNO(fcntl(independent, F_OFD_SETLK, &lock), EAGAIN);
+	TEST_RES(write(channel[1], "x", 1), _ret == 1);
+	int status = 0;
+	TEST_RES(waitpid(child, &status, 0), _ret == child &&
+					     WIFEXITED(status) &&
+					     WEXITSTATUS(status) == 0);
+	TEST_SUCC(fcntl(independent, F_OFD_SETLK, &lock));
+	TEST_SUCC(close(independent));
+	TEST_SUCC(close(channel[1]));
+}
+END_TEST()
+
 FN_TEST(process_exit_releases_locks)
 {
 	int fd = TEST_SUCC(open(TEST_FILE, O_RDWR));

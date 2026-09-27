@@ -10,13 +10,24 @@ use crate::{prelude::*, process::Pid};
 
 mod range;
 
-/// Identifies the file table that owns a [`RangeLock`].
+/// Identifies the process file table or open file description that owns a lock.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RangeLockOwner(usize);
+pub enum RangeLockOwner {
+    FileTable(usize),
+    OpenFileDescription(usize),
+}
 
 impl RangeLockOwner {
     pub(in crate::fs) fn from_address(address: usize) -> Self {
-        Self(address)
+        Self::FileTable(address)
+    }
+
+    pub(in crate::fs) fn from_open_file_description(id: usize) -> Self {
+        Self::OpenFileDescription(id)
+    }
+
+    pub fn is_open_file_description(self) -> bool {
+        matches!(self, Self::OpenFileDescription(_))
     }
 }
 

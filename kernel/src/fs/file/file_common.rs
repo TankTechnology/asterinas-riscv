@@ -2,12 +2,12 @@
 
 //! State shared by all references to a file description.
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{AtomicStatusFlags, FileLike, StatusFlags, file_handle::StatusFlagsUpdate};
 use crate::{
     events::{IoEvents, Observer},
-    fs::vfs::path::Path,
+    fs::vfs::{inode_ext::InodeExt, path::Path, range_lock::RangeLockOwner},
     prelude::*,
     process::{
         Pid, Process,
@@ -23,7 +23,10 @@ pub struct FileCommon {
     path: Path,
     status_flags: AtomicStatusFlags,
     owner: FileOwner,
+    ofd_lock_id: usize,
 }
+
+static NEXT_OFD_LOCK_ID: AtomicUsize = AtomicUsize::new(1);
 
 impl FileCommon {
     /// Creates common state for a file description.
@@ -32,6 +35,7 @@ impl FileCommon {
             path,
             status_flags: AtomicStatusFlags::new(status_flags),
             owner: FileOwner::new(),
+            ofd_lock_id: NEXT_OFD_LOCK_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -78,6 +82,24 @@ impl FileCommon {
     /// Returns the asynchronous I/O signal owner.
     pub fn owner(&self) -> &FileOwner {
         &self.owner
+    }
+
+    /// Returns the owner shared by all descriptors of this open file description.
+    pub fn ofd_lock_owner(&self) -> RangeLockOwner {
+        RangeLockOwner::from_open_file_description(self.ofd_lock_id)
+    }
+}
+
+impl Drop for FileCommon {
+    fn drop(&mut self) {
+        if let Some(lock_list) = self
+            .path
+            .inode()
+            .fs_lock_context()
+            .map(|context| context.range_lock_list())
+        {
+            lock_list.unlock_all(self.ofd_lock_owner());
+        }
     }
 }
 
