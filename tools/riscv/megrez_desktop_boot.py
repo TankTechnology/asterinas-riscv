@@ -221,6 +221,12 @@ class DesktopBootManifest:
         rows = plan.get("artifacts")
         if plan.get("schema_version") != 2 or not isinstance(rows, list):
             raise DesktopBootError("unsupported desktop boot plan")
+        persistent_home = plan.get("persistent_home", False)
+        if not isinstance(persistent_home, bool):
+            raise DesktopBootError("persistent_home must be a boolean")
+        bootargs = (
+            BOOTARGS.removesuffix(" --volatile-home") if persistent_home else BOOTARGS
+        )
         names = [row.get("name") for row in rows if isinstance(row, dict)]
         if len(names) != len(set(names)):
             raise DesktopBootError("plan contains duplicate artifact names")
@@ -270,7 +276,7 @@ class DesktopBootManifest:
             "stage1_protocol_version": 1,
             "plan_sha256": hashlib.sha256(payload).hexdigest(),
             "expected_root_sha256": root_sha,
-            "bootargs": BOOTARGS,
+            "bootargs": bootargs,
             "artifacts": {
                 name: _published_artifact(artifacts[name], include_path=False)
                 for name in ARTIFACT_NAMES

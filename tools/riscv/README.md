@@ -163,6 +163,14 @@ The defaults select
 port, or output directory. An existing output directory is rejected rather
 than overwritten.
 
+The plan defaults to a disposable home (`--volatile-home`) for repeatable
+bring-up. Set `"persistent_home": true` in the plan to use the provisioned
+Debian home, including its wallpaper and launcher settings. This changes the
+boot arguments and therefore creates a distinct immutable generation; publish
+that generation before starting it. The value must be a JSON boolean, not a
+string. Keep the default for isolated tests that must not modify the user's
+home.
+
 The guest reaches the host and nothing beyond it, and glibc's resolver only
 ever asks port 53, so the guest cannot be given a nameserver directly. A host
 bridge carries its queries instead; start it beside the proxy and leave it

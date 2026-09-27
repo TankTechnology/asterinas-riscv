@@ -252,6 +252,8 @@ def validate(document: dict) -> None:
         and re.fullmatch(r"[A-Za-z0-9 ._=/,:@+%~-]+", args) is not None,
         "unsafe desktop arguments",
     )
+    # The board's U-Boot appends a NUL and rejects bootargs above 1024 bytes.
+    require(len(args.encode()) + 1 <= 1024, "U-Boot bootargs exceed 1023 bytes")
     tokens = args.split()
     require(
         tokens.count("--") == 1 and tokens.count("init=/init") == 1,

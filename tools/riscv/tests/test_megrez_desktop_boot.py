@@ -72,6 +72,23 @@ class DesktopBootManifestTests(DesktopBootFixture):
         self.assertEqual(manifest.canonical_bytes(), manifest.canonical_bytes())
         self.assertNotIn(str(self.root), manifest.canonical_bytes().decode())
 
+    def test_persistent_home_is_explicit_and_has_distinct_generation(self) -> None:
+        disposable = boot.DesktopBootManifest.from_plan(self.plan)
+        self.assertIn("--volatile-home", disposable.bootargs)
+
+        document = json.loads(self.plan.read_text())
+        document["persistent_home"] = True
+        self.plan.write_text(json.dumps(document))
+        persistent = boot.DesktopBootManifest.from_plan(self.plan)
+        self.assertNotIn("--volatile-home", persistent.bootargs)
+        self.assertIn("--debug-console=isolated-root", persistent.bootargs)
+        self.assertNotEqual(persistent.generation_sha256, disposable.generation_sha256)
+
+        document["persistent_home"] = "true"
+        self.plan.write_text(json.dumps(document))
+        with self.assertRaisesRegex(boot.DesktopBootError, "persistent_home"):
+            boot.DesktopBootManifest.from_plan(self.plan)
+
     def test_generation_uses_safe_sha_prefixed_p3_paths(self) -> None:
         manifest = boot.DesktopBootManifest.from_plan(self.plan)
         commands = boot.uboot_load_commands(manifest)
