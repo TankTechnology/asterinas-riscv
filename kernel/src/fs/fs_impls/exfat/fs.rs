@@ -11,7 +11,7 @@ use core::{
 
 use aster_block::{
     BlockDevice,
-    bio::{BioCompleteFn, BioSegment},
+    bio::{BioCompleteFn, BioSegment, BioStatus},
     id::BlockId,
 };
 use device_id::DeviceId;
@@ -159,6 +159,13 @@ impl ExfatFs {
 
     pub(super) fn sync_meta_at(&self, range: Range<usize>) -> Result<()> {
         self.meta_cache.flush_range(range)?;
+        Ok(())
+    }
+
+    pub(super) fn flush_device(&self) -> Result<()> {
+        if self.block_device.sync()? != BioStatus::Complete {
+            return_errno_with_message!(Errno::EIO, "failed to flush exfat block device");
+        }
         Ok(())
     }
 
@@ -428,7 +435,7 @@ impl FileSystem for ExfatFs {
             inode.sync_all()?;
         }
         self.meta_cache.flush_range(0..self.fs_size())?;
-        Ok(())
+        self.flush_device()
     }
 
     fn root_inode(&self) -> Arc<dyn Inode> {

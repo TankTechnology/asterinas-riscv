@@ -190,6 +190,22 @@ else ifeq ($(AUTO_TEST), ext2_msync_eio)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_msync_eio_test.sh"
+else ifeq ($(AUTO_TEST), exfat_syncfs_eio)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_exfat_flush_eio_test.sh syncfs"
+else ifeq ($(AUTO_TEST), exfat_fsync_eio)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_exfat_flush_eio_test.sh fsync"
+else ifeq ($(AUTO_TEST), exfat_sync_clean)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_exfat_flush_eio_test.sh clean"
+else ifeq ($(AUTO_TEST), exfat_sync_verify)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_exfat_flush_eio_test.sh verify"
 else ifeq ($(AUTO_TEST), ext2_rename_same_inode)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
@@ -1420,6 +1436,22 @@ else ifeq ($(AUTO_TEST), ext2_firefox_recovery)
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ext2-firefox-recovery" \
 		--ext2-image "$${ASTERINAS_TEST_BUILD_DIR:-$(CURDIR)/test/initramfs/build}/ext2.img"
+else ifeq ($(AUTO_TEST), exfat_syncfs_eio)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "exfat-syncfs-eio"
+else ifeq ($(AUTO_TEST), exfat_fsync_eio)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "exfat-fsync-eio"
+else ifeq ($(AUTO_TEST), exfat_sync_clean)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "exfat-sync-clean"
+else ifeq ($(AUTO_TEST), exfat_sync_verify)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "exfat-sync-verify"
 else ifeq ($(AUTO_TEST), ext2_rename_same_inode)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \

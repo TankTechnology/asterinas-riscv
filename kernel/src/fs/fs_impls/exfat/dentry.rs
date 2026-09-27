@@ -262,7 +262,7 @@ impl ExfatDentrySet {
             flags: FatChainFlags::FAT_CHAIN_NOT_IN_USE.bits(),
             reserved1: 0,
             name_len: name.0.len() as u8,
-            name_hash: name.checksum(),
+            name_hash: name.checksum(&fs.upcase_table().lock())?,
             reserved2: 0,
             valid_size: 0,
             reserved3: 0,
@@ -397,8 +397,8 @@ impl ExfatDentrySet {
             })
             .collect();
 
-        let name = ExfatName::from_name_dentries(&name_dentries, upcase_table)?;
-        if name.checksum() != self.get_stream_dentry().name_hash {
+        let name = ExfatName::from_name_dentries(&name_dentries, upcase_table.clone())?;
+        if name.checksum(&upcase_table.lock())? != self.get_stream_dentry().name_hash {
             return_errno_with_message!(Errno::EINVAL, "name hash mismatched")
         }
         Ok(name)
@@ -686,19 +686,17 @@ impl ExfatName {
         }
     }
 
-    pub fn checksum(&self) -> u16 {
-        let bytes = self
-            .0
-            .iter()
-            .flat_map(|character| character.to_le_bytes())
-            .collect::<Vec<u8>>();
-        const EMPTY_RANGE: Range<usize> = 0..0;
-        calc_checksum_16(&bytes, EMPTY_RANGE, 0)
+    pub fn checksum(&self, upcase_table: &ExfatUpcaseTable) -> Result<u16> {
+        let mut checksum = 0u16;
+        for &character in &self.0 {
+            let upcase = upcase_table.char_to_upcase(character)?;
+            checksum = calc_checksum_16(&upcase.to_le_bytes(), 0..0, checksum);
+        }
+        Ok(checksum)
     }
 
     pub fn from_str(name: &str, _upcase_table: Arc<SpinLock<ExfatUpcaseTable>>) -> Result<Self> {
         let name = ExfatName(name.encode_utf16().collect());
-        // upcase_table.lock().transform_to_upcase(&mut name.0)?;
         name.verify()?;
         Ok(name)
     }

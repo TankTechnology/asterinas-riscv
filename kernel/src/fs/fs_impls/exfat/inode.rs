@@ -503,7 +503,7 @@ impl ExfatInodeInner {
         let target_upcase = if !case_sensitive {
             fs.upcase_table().lock().str_to_upcase(target_name)?
         } else {
-            target_name.to_string()
+            target_name.encode_utf16().collect()
         };
 
         // FIXME: This isn't expected by the compiler.
@@ -533,7 +533,7 @@ impl ExfatInodeInner {
             let name_upcase = if !case_sensitive {
                 fs.upcase_table().lock().str_to_upcase(&name)?
             } else {
-                name
+                name.encode_utf16().collect()
             };
 
             if name_upcase.eq(&target_upcase) {
@@ -1584,7 +1584,7 @@ impl Inode for ExfatInode {
         let fs = self.inner.read().fs();
         let fs_guard = fs.lock();
 
-        let inode = self.inner.read().lookup_by_name(name, true, &fs_guard)?;
+        let inode = self.inner.read().lookup_by_name(name, false, &fs_guard)?;
 
         // FIXME: we need to step by following line to avoid deadlock.
         if inode.type_() != InodeType::File {
@@ -1618,7 +1618,7 @@ impl Inode for ExfatInode {
         let fs = self.inner.read().fs();
         let fs_guard = fs.lock();
 
-        let inode = self.inner.read().lookup_by_name(name, true, &fs_guard)?;
+        let inode = self.inner.read().lookup_by_name(name, false, &fs_guard)?;
 
         if inode.inner.read().inode_type != InodeType::Dir {
             return_errno!(Errno::ENOTDIR)
@@ -1652,7 +1652,7 @@ impl Inode for ExfatInode {
         let inode = {
             let fs = inner.fs();
             let fs_guard = fs.lock();
-            inner.lookup_by_name(name, true, &fs_guard)?
+            inner.lookup_by_name(name, false, &fs_guard)?
         };
 
         inner.upgrade().update_atime()?;
@@ -1698,7 +1698,7 @@ impl Inode for ExfatInode {
         let old_inode = self
             .inner
             .read()
-            .lookup_by_name(old_name, true, &fs_guard)?;
+            .lookup_by_name(old_name, false, &fs_guard)?;
         // FIXME: Users may be confused, since inode with the same upper case name will be removed.
         let lookup_exist_result = target_
             .inner
@@ -1751,7 +1751,7 @@ impl Inode for ExfatInode {
         let fs_guard = fs.lock();
         inner.sync_all(&fs_guard)?;
 
-        fs.block_device().sync()?;
+        fs.flush_device()?;
 
         Ok(())
     }
@@ -1762,7 +1762,7 @@ impl Inode for ExfatInode {
         let fs_guard = fs.lock();
         inner.sync_data(&fs_guard)?;
 
-        fs.block_device().sync()?;
+        fs.flush_device()?;
 
         Ok(())
     }
