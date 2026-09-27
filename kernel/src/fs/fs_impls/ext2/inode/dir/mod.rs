@@ -259,6 +259,14 @@ impl Inode {
                 .transpose()?
         };
 
+        // Renaming one hard link over another link to the same inode is a no-op.
+        if replaced_inode
+            .as_ref()
+            .is_some_and(|replaced| replaced.ino() == old_ino)
+        {
+            return Ok(());
+        }
+
         // The `DirDentry.children` lock in the VFS layer keeps the parent
         // directory entry stable during this operation, so we only need to
         // lock all related inodes in order, without rechecking the lookup
@@ -869,5 +877,23 @@ mod test {
         f.ext2.sync_all().unwrap();
         let raw = read_raw_inode_from_disk(&f, root.ino());
         assert_eq!(raw.flags & FileFlags::INDEX_DIR.bits(), 0);
+    }
+
+    #[ktest]
+    fn rename_two_hardlinks_to_same_inode_is_noop() {
+        let (f, root) = default_fixture();
+        let source = create_file(&root, "source");
+        root.link(&source, "target").unwrap();
+        assert_eq!(source.link_count(), 2);
+
+        root.rename("source", &root, "target").unwrap();
+
+        assert_eq!(root.lookup("source").unwrap().ino(), source.ino());
+        assert_eq!(root.lookup("target").unwrap().ino(), source.ino());
+        assert_eq!(source.link_count(), 2);
+
+        f.ext2.sync_all().unwrap();
+        let raw = read_raw_inode_from_disk(&f, source.ino());
+        assert_eq!(raw.link_count, 2);
     }
 }

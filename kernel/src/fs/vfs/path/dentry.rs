@@ -814,6 +814,10 @@ impl DirDentry<'_> {
                 }
             }
 
+            if Self::rename_is_same_inode_noop(mode, &old_dentry, new_dentry.as_ref()) {
+                return Ok(());
+            }
+
             old_dir_inode.rename(old_name, old_dir_inode, new_name, mode)?;
 
             match mode {
@@ -861,6 +865,10 @@ impl DirDentry<'_> {
                 && let Some(new_dentry) = new_dentry.as_ref()
             {
                 new_dir.check_sticky_bit_permission(new_dentry.inode())?;
+            }
+
+            if Self::rename_is_same_inode_noop(mode, &old_dentry, new_dentry.as_ref()) {
+                return Ok(());
             }
 
             old_dir_inode.rename(old_name, new_dir_inode, new_name, mode)?;
@@ -924,6 +932,16 @@ impl DirDentry<'_> {
             }
             _ => Ok(()),
         }
+    }
+
+    fn rename_is_same_inode_noop(
+        mode: RenameMode,
+        old_dentry: &Arc<Dentry>,
+        new_dentry: Option<&Arc<Dentry>>,
+    ) -> bool {
+        mode == RenameMode::Replace
+            && new_dentry
+                .is_some_and(|new_dentry| Arc::ptr_eq(old_dentry.inode(), new_dentry.inode()))
     }
 
     /// Revalidates a cached entry.

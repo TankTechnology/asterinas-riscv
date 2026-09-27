@@ -16,6 +16,7 @@ SUCCESS_MARKERS = {
     "boot": "Successfully booted.",
     "conformance": "All conformance tests passed.",
     "ext2-firefox-recovery": "ASTERINAS_EXT2_FIREFOX_RECOVERY_OK cycles=16",
+    "ext2-rename-same-inode": "ASTERINAS_EXT2_RENAME_SAME_INODE_OK",
     "fs-syscall-compat": "ASTERINAS_FS_SYSCALL_COMPAT_OK readahead=5 quotactl=1",
     "ifconf": "SIOCGIFCONF regression passed.",
     "ifreq": "interface ioctl regression passed.",
@@ -158,10 +159,12 @@ def main() -> int:
             mode=args.mode,
             require_riscv_icache_smp4=args.require_riscv_icache_smp4,
         )
-        if args.mode == "ext2-firefox-recovery":
+        if args.mode in {"ext2-firefox-recovery", "ext2-rename-same-inode"}:
             if args.ext2_image is None:
-                raise ValidationError("ext2 recovery mode requires --ext2-image")
-            validate_ext2_image(args.ext2_image, required_payload=True)
+                raise ValidationError(f"{args.mode} mode requires --ext2-image")
+            validate_ext2_image(
+                args.ext2_image, required_payload=args.mode == "ext2-firefox-recovery"
+            )
     except (OSError, ValidationError) as error:
         print(f"run_kernel validation failed: {error}")
         return 1
