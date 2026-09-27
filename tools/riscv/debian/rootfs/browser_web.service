@@ -23,6 +23,7 @@ StandardError=journal+console
 ExecStartPre=+/usr/lib/asterinas/desktop-m5-device-access
 ExecStart=/usr/lib/asterinas/browser-web-firefox
 Restart=on-failure
+RestartPreventExitStatus=64
 RestartSec=2s
 
 [Install]

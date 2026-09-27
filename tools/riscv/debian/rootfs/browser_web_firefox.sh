@@ -66,7 +66,7 @@ configure_network_profile() {
 
     validate_network_profile || {
         printf 'ASTERINAS_FIREFOX_WEB_FAIL reason=invalid-network-profile\n' >&2
-        return 1
+        return 64
     }
     /usr/bin/mkdir -p -- "$PROFILE"
     temporary="$(/usr/bin/mktemp "$PROFILE/user.js.tmp.XXXXXX")"
