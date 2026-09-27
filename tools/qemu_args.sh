@@ -81,8 +81,8 @@ fi
 if [ "$1" = "riscv" ]; then
     # NOTE: The initramfs assumes that ext2.img, exfat.img, and ltp_dev.img appear as
     # `/dev/vda`, `/dev/vdb`, and `/dev/vdc`, respectively. RISC-V virtio-mmio
-    # block devices are discovered in reverse command-line order, so list them
-    # in the reverse of the desired device-node order.
+    # block devices are discovered in command-line order, so declare the
+    # devices in the desired device-node order.
     # TODO: Once UUID-based mounting is implemented, this strict ordering will no longer be required.
     QEMU_ARGS="\
         -cpu $RISCV_QEMU_CPU \
@@ -97,9 +97,9 @@ if [ "$1" = "riscv" ]; then
         -drive if=none,format=raw,id=x0,file=${TEST_BUILD_DIR}/ext2.img \
         -drive if=none,format=raw,id=x1,file=${TEST_BUILD_DIR}/exfat.img \
         -drive if=none,format=raw,id=x2,file=${TEST_BUILD_DIR}/ltp_dev.img \
-        -device virtio-blk-device,drive=x2 \
-        -device virtio-blk-device,drive=x1 \
         -device virtio-blk-device,drive=x0 \
+        -device virtio-blk-device,drive=x1 \
+        -device virtio-blk-device,drive=x2 \
         -device virtio-keyboard-device \
         -device virtio-serial-device \
         $CONSOLE_ARGS \

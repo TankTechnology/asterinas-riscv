@@ -170,6 +170,10 @@ else ifeq ($(AUTO_TEST), ext2_firefox_recovery)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_firefox_recovery_test.sh"
+else ifeq ($(AUTO_TEST), ext2_after_sync_cut)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_after_sync_cut_test.sh"
 else ifeq ($(AUTO_TEST), fs_syscall_compat)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
@@ -1395,7 +1399,7 @@ else ifeq ($(AUTO_TEST), ext2_firefox_recovery)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ext2-firefox-recovery" \
-		--ext2-image "$(CURDIR)/test/initramfs/build/ext2.img"
+		--ext2-image "$${ASTERINAS_TEST_BUILD_DIR:-$(CURDIR)/test/initramfs/build}/ext2.img"
 else ifeq ($(AUTO_TEST), fs_syscall_compat)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \

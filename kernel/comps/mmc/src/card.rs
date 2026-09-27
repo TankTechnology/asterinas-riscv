@@ -66,6 +66,7 @@ impl Csd {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Scr {
     spec: SdSpec,
+    extension_commands: bool,
 }
 
 impl Scr {
@@ -80,7 +81,10 @@ impl Scr {
             2 => SdSpec::V2OrLater,
             _ => return Err(HostError::Unsupported),
         };
-        Ok(Self { spec })
+        Ok(Self {
+            spec,
+            extension_commands: raw & (1 << 34) != 0,
+        })
     }
 
     #[cfg(ktest)]
@@ -91,6 +95,77 @@ impl Scr {
     const fn supports_switch(self) -> bool {
         !matches!(self.spec, SdSpec::V1_0)
     }
+
+    const fn supports_extension_commands(self) -> bool {
+        self.extension_commands
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheState {
+    Unsupported,
+    Disabled,
+    Enabled(ExtensionAddress),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ExtensionAddress {
+    function: u8,
+    page: u8,
+    offset: u16,
+}
+
+impl ExtensionAddress {
+    fn argument(self, relative_offset: u16, length: u16) -> Result<u32, HostError> {
+        let offset = self
+            .offset
+            .checked_add(relative_offset)
+            .ok_or(HostError::Unsupported)?;
+        if self.function > 15 || offset > 511 || length == 0 || length > 512 {
+            return Err(HostError::Unsupported);
+        }
+        Ok(((self.function as u32) << 27)
+            | ((self.page as u32) << 18)
+            | ((offset as u32) << 9)
+            | (length as u32 - 1))
+    }
+}
+
+fn performance_address(general: &[u8; SECTOR_SIZE]) -> Result<Option<ExtensionAddress>, HostError> {
+    let revision = u16::from_le_bytes([general[0], general[1]]);
+    let length = u16::from_le_bytes([general[2], general[3]]) as usize;
+    if revision != 0 || !(16..=SECTOR_SIZE).contains(&length) {
+        return Err(HostError::Unsupported);
+    }
+    let mut next = 16usize;
+    for _ in 0..general[4] {
+        if next < 16 || next.checked_add(48).is_none_or(|end| end > length) {
+            return Err(HostError::Unsupported);
+        }
+        let entry = &general[next..next + 48];
+        let following = u16::from_le_bytes([entry[40], entry[41]]) as usize;
+        if u16::from_le_bytes([entry[0], entry[1]]) == 2 && entry[42] == 1 {
+            let raw = u32::from_le_bytes(entry[44..48].try_into().unwrap());
+            let address = ExtensionAddress {
+                function: ((raw >> 18) & 0xf) as u8,
+                page: ((raw >> 9) & 0xff) as u8,
+                offset: (raw & 0x1ff) as u16,
+            };
+            // The cache control and flush registers must fit in this page.
+            if address.offset > 250 {
+                return Err(HostError::Unsupported);
+            }
+            return Ok(Some(address));
+        }
+        if following == 0 {
+            break;
+        }
+        if following <= next {
+            return Err(HostError::Unsupported);
+        }
+        next = following;
+    }
+    Ok(None)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -399,6 +474,70 @@ impl Card {
         Err(HostError::Timeout)
     }
 
+    /// Discover the SD extension-register cache state without changing it.
+    /// A transport or layout error must never be mistaken for no cache.
+    pub fn detect_cache(self, host: &mut impl HostController) -> Result<CacheState, HostError> {
+        app_command(host, self.rca)?;
+        let mut scr = [0u8; 8];
+        read_register(host, Command::send_scr(), &mut scr)?;
+        if !Scr::parse(scr)?.supports_extension_commands() {
+            return Ok(CacheState::Unsupported);
+        }
+
+        let general_address = ExtensionAddress {
+            function: 0,
+            page: 0,
+            offset: 0,
+        };
+        let mut general = [0u8; SECTOR_SIZE];
+        read_register(
+            host,
+            Command::read_extension(general_address.argument(0, 512)?),
+            &mut general,
+        )?;
+        let Some(performance_address) = performance_address(&general)? else {
+            return Ok(CacheState::Unsupported);
+        };
+        let mut performance = [0u8; SECTOR_SIZE];
+        read_register(
+            host,
+            Command::read_extension(performance_address.argument(0, 512)?),
+            &mut performance,
+        )?;
+        if performance[4] & 1 == 0 {
+            return Ok(CacheState::Unsupported);
+        }
+        if performance[260] & 1 == 0 {
+            return Ok(CacheState::Disabled);
+        }
+        Ok(CacheState::Enabled(performance_address))
+    }
+
+    /// Flush an enabled SD write cache and verify that the card cleared the
+    /// flush bit. This is separate from CMD13's programming-state check.
+    pub fn flush_cache(
+        self,
+        host: &mut impl HostController,
+        state: CacheState,
+    ) -> Result<(), HostError> {
+        self.wait_ready_for_data(host)?;
+        let CacheState::Enabled(address) = state else {
+            return Ok(());
+        };
+        write_extension_byte(host, address.argument(261, 1)?, 1)?;
+        self.wait_ready_for_data(host)?;
+        let mut result = [0u8; SECTOR_SIZE];
+        read_register(
+            host,
+            Command::read_extension(address.argument(261, 1)?),
+            &mut result,
+        )?;
+        if result[0] & 1 != 0 {
+            return Err(HostError::Timeout);
+        }
+        Ok(())
+    }
+
     /// Reads one 512-byte sector with CMD17 and bounded host waits.
     pub fn read_sector(
         self,
@@ -569,10 +708,34 @@ fn read_register(
         return Err(HostError::Unsupported);
     }
     let result = (|| {
-        host.command(command)?.short()?;
+        if host.command(command)?.short()? & R1_ERROR_MASK != 0 {
+            return Err(HostError::CardStatus);
+        }
         host.wait_buffer_read_ready()?;
         for word in output.as_chunks_mut::<4>().0 {
             word.copy_from_slice(&host.read_data_word()?.to_le_bytes());
+        }
+        host.wait_transfer_complete()
+    })();
+    if result.is_err() {
+        host.reset_data_line();
+    }
+    result
+}
+
+fn write_extension_byte(
+    host: &mut impl HostController,
+    argument: u32,
+    value: u8,
+) -> Result<(), HostError> {
+    let result = (|| {
+        if host.command(Command::write_extension(argument))?.short()? & R1_ERROR_MASK != 0 {
+            return Err(HostError::CardStatus);
+        }
+        host.wait_buffer_write_ready()?;
+        host.write_data_word(value as u32)?;
+        for _ in 1..SECTOR_SIZE / 4 {
+            host.write_data_word(0)?;
         }
         host.wait_transfer_complete()
     })();
@@ -641,6 +804,166 @@ mod tests {
         let unsupported = SwitchStatus::parse(&unsupported).unwrap();
         assert!(!unsupported.supports_high_speed());
         assert_eq!(unsupported.selected_access_mode(), 0x0f);
+    }
+
+    #[ktest]
+    fn sd_cache_capability_parser_rejects_bad_layouts() {
+        assert!(
+            !Scr::parse(0u64.to_be_bytes())
+                .unwrap()
+                .supports_extension_commands()
+        );
+        assert!(
+            Scr::parse((1u64 << 34).to_be_bytes())
+                .unwrap()
+                .supports_extension_commands()
+        );
+
+        let mut general = [0u8; SECTOR_SIZE];
+        general[2..4].copy_from_slice(&(SECTOR_SIZE as u16).to_le_bytes());
+        general[4] = 1;
+        general[16..18].copy_from_slice(&2u16.to_le_bytes());
+        general[16 + 42] = 1;
+        let raw = (3u32 << 18) | (4u32 << 9);
+        general[16 + 44..16 + 48].copy_from_slice(&raw.to_le_bytes());
+        assert_eq!(
+            performance_address(&general),
+            Ok(Some(ExtensionAddress {
+                function: 3,
+                page: 4,
+                offset: 0
+            }))
+        );
+        general[2..4].copy_from_slice(&20u16.to_le_bytes());
+        assert_eq!(performance_address(&general), Err(HostError::Unsupported));
+        general[2..4].copy_from_slice(&(SECTOR_SIZE as u16).to_le_bytes());
+        general[16 + 44..16 + 48].copy_from_slice(&(251u32).to_le_bytes());
+        assert_eq!(performance_address(&general), Err(HostError::Unsupported));
+    }
+
+    #[ktest]
+    fn sd_cache_flush_issues_cmd49_and_checks_completion() {
+        let card = Card {
+            rca: 1,
+            nr_sectors: 8,
+            timing: CardTiming::DefaultSpeed,
+            speed_selection: SpeedSelection::DefaultSpeedUnsupported,
+        };
+        let address = ExtensionAddress {
+            function: 3,
+            page: 4,
+            offset: 0,
+        };
+        let base = address.argument(0, 512).unwrap();
+        let flush = address.argument(261, 1).unwrap();
+        let mut host = FakeHost::discovery(1u128 << 126);
+        host.steps = vec![
+            Step::Command(55, 1 << 16, Response::Short(0)),
+            Step::DataCommand(51, 0, 8, 1, Response::Short(0)),
+            Step::DataCommand(48, 511, 512, 1, Response::Short(0)),
+            Step::DataCommand(48, base, 512, 1, Response::Short(0)),
+            Step::Command(
+                13,
+                1 << 16,
+                Response::Short(R1_READY_FOR_DATA | R1_TRAN_STATE),
+            ),
+            Step::DataCommand(49, flush, 512, 1, Response::Short(0)),
+            Step::Command(
+                13,
+                1 << 16,
+                Response::Short(R1_READY_FOR_DATA | R1_TRAN_STATE),
+            ),
+            Step::DataCommand(48, flush, 512, 1, Response::Short(0)),
+        ]
+        .into();
+        let scr = (1u64 << 34).to_be_bytes();
+        let mut general = [0u8; SECTOR_SIZE];
+        general[2..4].copy_from_slice(&(SECTOR_SIZE as u16).to_le_bytes());
+        general[4] = 1;
+        general[16..18].copy_from_slice(&2u16.to_le_bytes());
+        general[16 + 42] = 1;
+        general[16 + 44..16 + 48].copy_from_slice(&((3u32 << 18) | (4u32 << 9)).to_le_bytes());
+        let mut performance = [0u8; SECTOR_SIZE];
+        performance[4] = 1;
+        performance[260] = 1;
+        for bytes in [
+            scr.as_slice(),
+            general.as_slice(),
+            performance.as_slice(),
+            [0u8; SECTOR_SIZE].as_slice(),
+        ] {
+            host.words.extend(
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .copied()
+                    .map(u32::from_le_bytes),
+            );
+        }
+        let state = card.detect_cache(&mut host).unwrap();
+        assert_eq!(state, CacheState::Enabled(address));
+        card.flush_cache(&mut host, state).unwrap();
+        assert_eq!(host.written_words.len(), SECTOR_SIZE / 4);
+        assert_eq!(host.written_words[0], 1);
+        assert!(host.written_words[1..].iter().all(|word| *word == 0));
+        host.assert_done();
+    }
+
+    #[ktest]
+    fn sd_cache_flush_rejects_uncleared_bit_and_transport_error() {
+        let card = Card {
+            rca: 1,
+            nr_sectors: 8,
+            timing: CardTiming::DefaultSpeed,
+            speed_selection: SpeedSelection::DefaultSpeedUnsupported,
+        };
+        let address = ExtensionAddress {
+            function: 2,
+            page: 0,
+            offset: 0,
+        };
+        let flush = address.argument(261, 1).unwrap();
+        let mut host = FakeHost::discovery(1u128 << 126);
+        host.steps = vec![
+            Step::Command(
+                13,
+                1 << 16,
+                Response::Short(R1_READY_FOR_DATA | R1_TRAN_STATE),
+            ),
+            Step::DataCommand(49, flush, 512, 1, Response::Short(0)),
+            Step::Command(
+                13,
+                1 << 16,
+                Response::Short(R1_READY_FOR_DATA | R1_TRAN_STATE),
+            ),
+            Step::DataCommand(48, flush, 512, 1, Response::Short(0)),
+        ]
+        .into();
+        host.words = core::iter::once(1)
+            .chain(core::iter::repeat_n(0, 127))
+            .collect();
+        assert_eq!(
+            card.flush_cache(&mut host, CacheState::Enabled(address)),
+            Err(HostError::Timeout)
+        );
+        host.assert_done();
+
+        host.steps = vec![
+            Step::Command(
+                13,
+                1 << 16,
+                Response::Short(R1_READY_FOR_DATA | R1_TRAN_STATE),
+            ),
+            Step::CommandError(49, flush, HostError::CommandCrc),
+        ]
+        .into();
+        assert_eq!(
+            card.flush_cache(&mut host, CacheState::Enabled(address)),
+            Err(HostError::CommandCrc)
+        );
+        assert_eq!(host.data_resets, 1);
+        host.assert_done();
     }
 
     #[derive(Debug)]

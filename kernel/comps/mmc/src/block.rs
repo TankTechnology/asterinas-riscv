@@ -18,7 +18,12 @@ use aster_block::{
 use device_id::{DeviceId, MinorId};
 use ostd::sync::{Mutex, SpinLock};
 
-use crate::{MMC_BLOCK_MAJOR_ID, MMC_WRITE_PARTITION2, arch::MmioHost, card::Card};
+use crate::{
+    MMC_BLOCK_MAJOR_ID, MMC_WRITE_PARTITION2,
+    arch::MmioHost,
+    card::{CacheState, Card},
+    sdhci::HostError,
+};
 
 const DEVICE_MINORS: u32 = 16;
 // Match the standard SDHCI 512-KiB request boundary while remaining far below
@@ -73,7 +78,7 @@ pub(super) fn register(host: MmioHost, card: Card) -> Result<(), ()> {
     let id = DeviceId::new(MMC_BLOCK_MAJOR_ID.get().unwrap().get(), MinorId::new(0));
     let partition2_write_armed = MMC_WRITE_PARTITION2.load(Ordering::Relaxed);
     let device = Arc::new_cyclic(|weak_self| MegrezMmcBlock {
-        state: Mutex::new((host, card)),
+        state: Mutex::new((host, card, None)),
         id,
         partitions: SpinLock::new(None),
         weak_self: weak_self.clone(),
@@ -91,7 +96,7 @@ pub(super) fn register(host: MmioHost, card: Card) -> Result<(), ()> {
 }
 
 struct MegrezMmcBlock {
-    state: Mutex<(MmioHost, Card)>,
+    state: Mutex<(MmioHost, Card, Option<CacheState>)>,
     id: DeviceId,
     partitions: SpinLock<Option<Vec<Arc<PartitionNode>>>>,
     weak_self: Weak<Self>,
@@ -187,21 +192,38 @@ impl aster_block::BlockDevice for MegrezMmcBlock {
 }
 
 impl MegrezMmcBlock {
+    fn cache_state(
+        host: &mut MmioHost,
+        card: Card,
+        state: &mut Option<CacheState>,
+    ) -> Result<CacheState, HostError> {
+        if let Some(state) = state {
+            return Ok(*state);
+        }
+        let detected = card.detect_cache(host)?;
+        ostd::info!("[mmc] SD cache state: {:?}", detected);
+        *state = Some(detected);
+        Ok(detected)
+    }
+
     fn flush_bio(&self) -> BioStatus {
-        // Serialize with writes before checking the card's programming state.
-        // SD extension-register cache handling is tracked separately.
         let mut state = self.state.lock();
-        let (host, card) = &mut *state;
-        match card.wait_ready_for_data(host) {
+        let (host, card, cache) = &mut *state;
+        let result =
+            Self::cache_state(host, *card, cache).and_then(|cache| card.flush_cache(host, cache));
+        match result {
             Ok(()) => BioStatus::Complete,
-            Err(_) => BioStatus::IoError,
+            Err(error) => {
+                ostd::error!("[mmc] SD cache flush failed: {:?}", error);
+                BioStatus::IoError
+            }
         }
     }
 
     fn read_bio(&self, bio: &SubmittedBio) -> BioStatus {
         let logical_lba = bio.sid_range().start.to_raw();
         let mut state = self.state.lock();
-        let (host, card) = &mut *state;
+        let (host, card, _) = &mut *state;
         let Some(mut lba) = physical_lba(logical_lba, bio.sid_offset(), card.nr_sectors()) else {
             return BioStatus::IoError;
         };
@@ -241,7 +263,11 @@ impl MegrezMmcBlock {
         }
 
         let mut state = self.state.lock();
-        let (host, card) = &mut *state;
+        let (host, card, cache) = &mut *state;
+        if let Err(error) = Self::cache_state(host, *card, cache) {
+            ostd::error!("[mmc] refusing SD write without cache state: {:?}", error);
+            return BioStatus::IoError;
+        }
         let Some(mut lba) = physical_lba(first_lba, bio.sid_offset(), card.nr_sectors()) else {
             return BioStatus::IoError;
         };
