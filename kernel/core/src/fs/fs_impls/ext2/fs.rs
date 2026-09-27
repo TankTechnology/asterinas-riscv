@@ -351,8 +351,36 @@ impl Ext2 {
         if !sb.is_data_block_valid(start, count) {
             return_errno_with_message!(Errno::EIO, "freeing invalid data block range");
         }
+        let end = start
+            .checked_add(count)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "free block range overflow"))?;
+        if sb
+            .free_blocks_count()
+            .checked_add(count)
+            .is_none_or(|new_count| new_count > sb.total_blocks())
+        {
+            return_errno_with_message!(Errno::EIO, "free block count overflow in filesystem");
+        }
         let nr_blocks_per_group = sb.nr_blocks_per_group();
         let first_data_block = sb.first_data_block();
+
+        // Allocated runs normally stay within one group. For a caller-supplied
+        // cross-group range, reject any bad segment before freeing the first.
+        let first_group_idx = (start - first_data_block) / nr_blocks_per_group;
+        let last_group_idx = (end - 1 - first_data_block) / nr_blocks_per_group;
+        if first_group_idx != last_group_idx {
+            let mut current_block = start;
+            let mut remaining_blocks = count;
+            while remaining_blocks > 0 {
+                let group_idx = ((current_block - first_data_block) / nr_blocks_per_group) as usize;
+                let group = &self.block_groups[group_idx];
+                let group_start_bit = current_block - group.first_block();
+                let blocks_in_group = remaining_blocks.min(group.last_block() - current_block + 1);
+                group.validate_free_blocks(group_start_bit..(group_start_bit + blocks_in_group))?;
+                current_block += blocks_in_group;
+                remaining_blocks -= blocks_in_group;
+            }
+        }
 
         let mut current_block = start;
         let mut remaining_blocks = count;
@@ -863,6 +891,32 @@ mod test {
         f.ext2.free_blocks(range.start, alloc_len).unwrap();
         assert_eq!(f.ext2.block_group(0).free_blocks_count(), before_group_free);
         assert_eq!(f.ext2.super_block().free_blocks_count(), before_sb_free);
+    }
+
+    #[ktest]
+    fn block_free_rejects_already_free_bit_without_partial_release() {
+        clocks::init_for_ktest();
+        let f = Ext2FixtureBuilder::new(1, 128)
+            .with_free_blocks(31, 31)
+            .block_bitmap(BlockBitmapInit::MetadataOnly)
+            .build()
+            .unwrap();
+        let goal = f.sb.group_first_block_no(0);
+        let range = f.ext2.alloc_blocks(2, goal).unwrap();
+        assert_eq!(range.len(), 2);
+
+        f.ext2.free_blocks(range.start, 1).unwrap();
+        let sb_free = f.ext2.super_block().free_blocks_count();
+        let group = f.ext2.block_group(0);
+        let group_free = group.free_blocks_count();
+
+        assert_errno!(f.ext2.free_blocks(range.start, 2), Errno::EIO);
+        assert_eq!(f.ext2.super_block().free_blocks_count(), sb_free);
+        assert_eq!(group.free_blocks_count(), group_free);
+        let second_bit = (range.start + 1 - group.first_block()) as u16;
+        assert!(group.metadata().block_bitmap.is_allocated(second_bit));
+
+        f.ext2.free_blocks(range.start + 1, 1).unwrap();
     }
 
     #[ktest]
