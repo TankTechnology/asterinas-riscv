@@ -510,3 +510,28 @@ booted twice, read back the exact first-boot payload, and had offline
 the gate output is `target/reboot-sync-overlay-flush-20260927/result.json`.
 This is an error-propagation test of overlayfs and a normal-startup regression
 check, not a controlled power-cut or a physical-board validation.
+
+## Follow-up: global sync includes other mount namespaces
+
+`sync(2)` previously walked only the calling thread's mount namespace. A
+privileged reboot caller in a different namespace could therefore skip a
+filesystem that was still live elsewhere. This is narrower than the
+[Linux `sync(2)` contract](https://man7.org/linux/man-pages/man2/sync.2.html),
+which covers pending changes across filesystems. The VFS now keeps weak
+references to filesystems as mounts are constructed. A global sync takes a
+snapshot of the live instances, drops the registry lock, and syncs each
+instance once, continuing after errors and returning the first error. Weak
+references do not keep an unmounted filesystem alive; stale entries are
+removed during registration and snapshot creation. The per-namespace sync
+method remains available for namespace-scoped callers.
+
+A focused RISC-V kernel test passed for a live filesystem mounted outside a
+namespace, two mounts sharing one filesystem instance, and release after the
+mounts are dropped. The earlier error-continuation test also passed after the
+shared sync helper moved into the VFS filesystem module. The release RISC-V
+kernel build and normal QEMU reboot gate passed: two boots, exact payload
+readback, and offline `e2fsck -fn` exit 0. The kernel Image SHA-256 was
+`157add131032cbbad5ac7cf2a06e143606942320210a44a6501ae1e7678877d5`;
+the gate output is `target/reboot-sync-global-fs-20260927/result.json`.
+This tests normal software restart, not sudden-power-loss consistency or a
+new development-board desktop boot.
