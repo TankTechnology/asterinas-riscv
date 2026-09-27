@@ -341,6 +341,12 @@ it verifies the service responsible for seats, sessions, and device ownership.
 The second boot remains a persistence and normal-reboot check; it intentionally
 does not duplicate the logind check. Neither marker claims that a display
 server or desktop session has started.
+Systemd profiles include a final shutdown `sync` hook because Asterinas can be
+classified as a container and systemd then skips its own final sync. The M2
+Stage1 boot omits the initramfs tools bind mount, which M2 does not use and
+which can stall its normal shutdown. The gate's serial markers show the two
+boots; check a copy stopped immediately after the first firmware restart with
+`e2fsck -fn` when validating ext2 metadata persistence.
 Stage1 must receive the exact init argument `--root-init=systemd`; the gate
 places it after the kernel command-line `--` separator so Asterinas forwards it
 as init argv.

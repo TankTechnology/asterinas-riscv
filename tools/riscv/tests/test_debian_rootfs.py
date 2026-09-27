@@ -98,6 +98,9 @@ BUILD_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/build_rootfs.sh"
 SYSTEMD_M2_EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/systemd_m2_evidence.sh"
 )
+SHUTDOWN_SYNC_SCRIPT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/shutdown_sync.sh"
+)
 DESKTOP_M3_EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m3_evidence.sh"
 )
@@ -974,6 +977,7 @@ class DebianStage1Tests(unittest.TestCase):
             "root-init-unknown",
             "root-init-control-character",
             "systemd-root-label",
+            "systemd-tools-mount-policy",
             "systemd-desktop-root-label",
             "systemd-application-desktop-root-label",
             "systemd-network-desktop-root-label",
@@ -2524,9 +2528,12 @@ class DebianRootfsBuilderTests(unittest.TestCase):
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
         self.assertEqual((state_directory / "boot-count").read_text(), "2\n")
-        self.assertEqual(reboot_log.read_text(), "-f\n")
+        self.assertEqual(reboot_log.read_text(), "systemctl:--no-block --no-wall reboot\n")
         self.assertEqual(sync_log.read_text(), "sync\nsync\n")
         evidence = console.read_text()
+        self.assertEqual(evidence.count("DEBIAN_SYSTEMD_M2_PROGRESS step=entry"), 2)
+        self.assertEqual(evidence.count("DEBIAN_SYSTEMD_M2_PROGRESS step=before-sync"), 2)
+        self.assertEqual(evidence.count("DEBIAN_SYSTEMD_M2_PROGRESS step=after-sync"), 2)
         self.assertIn("DEBIAN_SYSTEMD_M2_TMPFS boot=1", evidence)
         self.assertIn("DEBIAN_SYSTEMD_M2_TMPFS boot=2", evidence)
         self.assertIn("DEBIAN_SYSTEMD_M2_LOGIND boot=1 state=active", evidence)
@@ -2605,13 +2612,21 @@ WantedBy=multi-user.target
 
                 self.assertEqual(result.returncode, 0, result.stderr)
                 evidence = stage / "usr/lib/asterinas/systemd-m2-evidence"
+                shutdown_sync = (
+                    stage / "usr/lib/systemd/system-shutdown/asterinas-sync"
+                )
                 unit = stage / "etc/systemd/system/asterinas-debian-m2.service"
                 wants = stage / "etc/systemd/system/multi-user.target.wants" / unit.name
                 if profile == "minimal-m1":
                     self.assertFalse(evidence.exists())
+                    self.assertFalse(shutdown_sync.exists())
                     self.assertFalse(unit.exists())
                     self.assertFalse(wants.exists())
                 else:
+                    self.assertEqual(
+                        shutdown_sync.read_bytes(), SHUTDOWN_SYNC_SCRIPT.read_bytes()
+                    )
+                    self.assertEqual(stat.S_IMODE(shutdown_sync.stat().st_mode), 0o755)
                     self.assertEqual(
                         evidence.read_bytes(),
                         SYSTEMD_M2_EVIDENCE_SCRIPT.read_bytes(),
@@ -3308,7 +3323,12 @@ esac
             "uname": "#!/bin/sh\nprintf 'riscv64\\n'\n",
             "stat": "#!/bin/sh\ncase \"$*\" in\n  *' /tmp') printf 'tmpfs\\n' ;;\n  *) printf 'ext2/ext3\\n' ;;\nesac\n",
             "dpkg-query": "#!/bin/sh\nprintf 'systemd\\t257.8-1\\nsystemd-sysv\\t257.8-1\\n'\n",
-            "systemctl": "#!/bin/sh\ncase \"$*\" in\n  'start systemd-logind.service'|'is-active --quiet systemd-logind.service') exit 0 ;;\n  *) exit 1 ;;\nesac\n",
+            "systemctl": (
+                "#!/bin/sh\ncase \"$*\" in\n"
+                "  'start systemd-logind.service'|'is-active --quiet systemd-logind.service') exit 0 ;;\n"
+                f"  '--no-block --no-wall reboot') printf 'systemctl:%s\\n' \"$*\" >>'{reboot_log}'; exit 0 ;;\n"
+                "  *) exit 1 ;;\nesac\n"
+            ),
             "sync": f"#!/bin/sh\nprintf 'sync\\n' >>'{sync_log}'\n",
             "reboot": f"#!/bin/sh\nprintf '%s\\n' \"$*\" >>'{reboot_log}'\n",
         }
