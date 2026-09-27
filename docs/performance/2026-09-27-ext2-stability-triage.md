@@ -328,3 +328,17 @@ immediately after a write. The normal RISC-V kernel build also passes. These
 checks do not establish crash atomicity: ext2 still has no journal or orphan
 replay, and the separate intermittent QEMU second-boot failure remains under
 investigation. No controlled power-cut experiment was run for this follow-up.
+
+The committed kernel (`7caf94884`, RISC-V Image SHA-256
+`6a990c0a0249b60d2e5b51c384af478ed4de628f64822576a0b30aeab3014c9f`)
+also passed two separate, normal QEMU launches against the same cloned ext2
+image. The first completed the existing 16-cycle Firefox-state workload,
+`sync`, unmount, and host validation. The second completed the hard-link
+rename regression, `sync`, unmount, and host validation. After both launches,
+read-only `e2fsck -fn` exited 0 and `debugfs` still read the exact first-boot
+payload `asterinas-ext2-recovery-v1`. The final image SHA-256 is
+`873e90066061d9768c3b00c101a75b67783e0513d788d23ce90e1984a91c8a11`;
+logs and the cloned images are under `.local-test/ext2-reclaim-20260927/`.
+Both QEMU boots had a silent interval before the test marker but continued and
+passed within their bounded runs. These two launches do not test a reboot
+within one QEMU process, nor do they prove physical SD persistence.
