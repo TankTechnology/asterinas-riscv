@@ -213,6 +213,27 @@ Therefore `tune2fs -j` alone is
 could be written without journal transactions. Reject journaled volumes until
 the implementation actually supports their transaction and replay rules.
 
+## September 27 follow-up: hard-link rename and repeated clean boots
+
+A focused QEMU regression found a separate ext2/VFS namespace bug: renaming
+one hard link over a second name for the same inode deleted the source name
+and decremented the inode's link count. Commit `367f4f8c5` makes that operation
+a no-op in ext2 and leaves both VFS dentries intact. Same-directory and
+cross-directory user-space cases passed on a fresh RISC-V/Sv39/SMP4 ext2
+image; a direct ext2 kernel test failed before the fix and passed afterward.
+The guest synced and unmounted the image, and read-only `e2fsck -fn` exited 0.
+This is a demonstrated semantic defect, not an established cause of the
+earlier Firefox-profile corruption.
+
+The corrected image also passed the existing 16-cycle Firefox-state workload.
+After its first clean QEMU exit, offline `e2fsck -fn` returned 0 and `debugfs`
+read the exact persistent marker. A second, separate QEMU launch reused the
+same writable image, completed another 16 cycles, synced and unmounted, then
+again passed offline fsck with the marker intact. Logs are under
+`.local-test/sd-cache-20260927/rename-green/`, `rename-recovery/`, and
+`rename-recovery-boot2/`. These were two clean virtual boots, not a physical
+SD power cut or a new board validation of `367f4f8c5`.
+
 The target desktop path is: a read-only, recoverable base system image plus a
 persistent **journaled** filesystem for `/home` and writable system state.
 The smallest standards-compatible implementation path is ext3-style metadata
