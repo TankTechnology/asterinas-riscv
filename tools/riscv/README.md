@@ -8,6 +8,24 @@ The checks are evidence, not hardware emulation.
 A passing profile proves the declared CPU, MMU, DTB, U-Boot `booti`, and userspace contracts.
 It does not claim that QEMU reproduces unmodeled clocks, resets, cache controllers, or board peripherals.
 
+## QEMU reboot writeback gate
+
+The isolated gate below writes a new file to a scratch ext2 image, calls
+`reboot(2)` directly without a userspace `sync(2)`, and reads the file after a
+second boot in the same QEMU process. It then checks the disk with `e2fsck -fn`.
+The output directory must be new; the gate does not touch a board or an installed
+root filesystem. This verifies orderly software reboot writeback, not power-loss
+durability or SD-card cache behavior.
+
+```bash
+tools/docker/run_dev_container.sh -- make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+tools/docker/run_dev_container.sh -- python3 tools/riscv/reboot_sync_gate.py \
+  --output-dir target/reboot-sync-gate-$(date +%Y%m%d-%H%M%S)
+```
+
+The output contains `qemu-serial.log`, `e2fsck.log`, `result.json`, and the
+scratch image for review.
+
 ## Megrez selectable boot menu
 
 The schema-v3 selector provides RockOS, Asterinas Basic, Probe, and Desktop.
