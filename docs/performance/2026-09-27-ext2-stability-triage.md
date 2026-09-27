@@ -551,3 +551,41 @@ the kernel Image SHA-256 was
 The transcript and image are under `target/ext2-recovery-current-main-20260927/`.
 This is a bounded clean-shutdown regression. It does not test a crash cut,
 physical SD persistence, or a new desktop boot on the board.
+
+## Follow-up: shared mmap writes reach ext2 writeback
+
+The previous 16-cycle gate covered buffered writes but not shared mmap writes.
+A new check in `firefox_state.c` mapped a sparse ext2 file, wrote through the
+mapping, called `msync(MS_SYNC)`, and read the file through `O_DIRECT` so the
+read could not be satisfied from the page cache. Before the fix, `msync`
+returned success but the direct read found old data. The QEMU gate failed
+with `ASTERINAS_EXT2_MMAP_PERSIST_ERROR disk_data_mismatch`. The VM fault path
+had installed writable PTEs for backend-backed shared mappings without
+marking their page-cache pages dirty.
+
+Backend-backed shared pages now start read-only. Their first write fault
+marks the committed cache page before granting PTE write permission. Without
+reverse mappings to rearm writable PTEs after writeback, the page remains
+conservatively eligible for later writeback. This covers writes that continue
+through the same mapping after an earlier `msync`, at the cost of repeating
+I/O for pages that have once received a write fault. The long-term optimization
+is to harvest or rearm PTE dirty state and clear this conservative flag when
+safe; it must preserve `fsync`, global `sync`, and direct-I/O coherence.
+
+The extended gate passed with a read fault followed by a write fault, two
+successive `msync` calls with another mapped write between them, and an
+interleaved buffered write. A separate sparse mapped page retained its mapped
+tail after a buffered write allocated part of the same page. Each expected
+payload was verified by direct
+reads. The full 16-cycle workload, guest `sync` and unmount, transcript
+validator, and read-only offline `e2fsck -fn` also passed. The result image
+SHA-256 was
+`f0a225713526833a04905e5d496a9443139330e1d6834878b5e6478c4768b99c`
+under `target/ext2-mmap-green-20260927/`. This establishes sequential mmap
+writeback in QEMU, not concurrent mmap-write/fsync ordering or physical-board
+desktop stability. A separate normal `reboot(2)` gate then completed two
+boots, read back the exact first-boot ext2 payload, and had offline
+`e2fsck -fn` exit 0. Its kernel Image SHA-256 was
+`7968de1bbe80b0f420de0ca70b4894225de00332b932043452371a050bdf5281`;
+the result is `target/reboot-sync-mmap-writeback-20260927/result.json`. No
+controlled power cut was performed.

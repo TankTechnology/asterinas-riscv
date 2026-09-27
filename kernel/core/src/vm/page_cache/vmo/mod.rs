@@ -314,6 +314,15 @@ impl Vmo {
         Ok(())
     }
 
+    /// Prepares a backend page for a shared writable mapping. The first write
+    /// fault must call this before granting PTE write permission.
+    pub(crate) fn mark_mmap_writable_page(&self, page_idx: usize) -> Result<()> {
+        if self.has_backend() {
+            self.commit_on(page_idx)?.mark_mmap_writable();
+        }
+        Ok(())
+    }
+
     fn commit_on_internal(&self, page_idx: usize, commit_mode: CommitMode) -> Result<CachePage> {
         if let Some(backed_vmo) = self.as_backed_vmo() {
             return backed_vmo.commit_on_internal(page_idx, commit_mode);
@@ -553,7 +562,7 @@ impl Vmo {
     }
 
     /// Returns whether this VMO has a backend.
-    fn has_backend(&self) -> bool {
+    pub(crate) fn has_backend(&self) -> bool {
         self.backend.is_some()
     }
 }

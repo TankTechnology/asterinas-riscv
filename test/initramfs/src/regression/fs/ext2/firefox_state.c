@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
+#define _GNU_SOURCE
+
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -15,6 +18,8 @@
 #define PREFERENCES_PATH BASE_DIR "/prefs.js"
 #define TEMPORARY_PATH BASE_DIR "/prefs.js.tmp"
 #define WAL_PATH BASE_DIR "/places.sqlite-wal"
+#define MMAP_PATH BASE_DIR "/mapped-state"
+#define MMAP_SIZE 4096
 
 static void fail(const char *operation)
 {
@@ -68,6 +73,7 @@ int main(void)
 	unlink_optional(PREFERENCES_PATH);
 	unlink_optional(WAL_PATH);
 	unlink_optional(CACHE_PATH);
+	unlink_optional(MMAP_PATH);
 	if (rmdir(BASE_DIR) < 0 && errno != ENOENT)
 		fail("rmdir stale profile");
 	if (mkdir(BASE_DIR, 0755) < 0)
@@ -94,6 +100,87 @@ int main(void)
 			       O_CREAT | O_WRONLY | O_TRUNC);
 		unlink_optional(CACHE_PATH);
 	}
+
+	int mapped_fd = open(MMAP_PATH, O_CREAT | O_RDWR | O_TRUNC, 0644);
+	if (mapped_fd < 0)
+		fail("open mapped state");
+	if (ftruncate(mapped_fd, MMAP_SIZE) < 0)
+		fail("truncate mapped state");
+	char *mapped = mmap(NULL, MMAP_SIZE, PROT_READ | PROT_WRITE,
+			    MAP_SHARED, mapped_fd, 0);
+	if (mapped == MAP_FAILED)
+		fail("mmap state");
+	volatile char initial_byte = mapped[0];
+	(void)initial_byte;
+	memcpy(mapped + 128, "mmap-persist-v1", sizeof("mmap-persist-v1"));
+	if (msync(mapped, MMAP_SIZE, MS_SYNC) < 0)
+		fail("msync state");
+
+	char *direct_buf = aligned_alloc(MMAP_SIZE, MMAP_SIZE);
+	if (direct_buf == NULL)
+		fail("allocate direct buffer");
+	int direct_fd = open(MMAP_PATH, O_RDONLY | O_DIRECT);
+	if (direct_fd < 0)
+		fail("open direct state");
+	if (pread(direct_fd, direct_buf, MMAP_SIZE, 0) != MMAP_SIZE)
+		fail("read direct state");
+	if (memcmp(direct_buf + 128, "mmap-persist-v1",
+		   sizeof("mmap-persist-v1")) != 0) {
+		fputs("ASTERINAS_EXT2_MMAP_PERSIST_ERROR disk_data_mismatch\n", stderr);
+		exit(EXIT_FAILURE);
+	}
+	if (pwrite(mapped_fd, "buffer", sizeof("buffer"), 64) !=
+	    sizeof("buffer"))
+		fail("buffered state write");
+	if (memcmp(mapped + 128, "mmap-persist-v1",
+		   sizeof("mmap-persist-v1")) != 0) {
+		fputs("ASTERINAS_EXT2_MMAP_PERSIST_ERROR buffered_write_clobbered_mapping\n", stderr);
+		exit(EXIT_FAILURE);
+	}
+	mapped[256] = 'Q';
+	if (msync(mapped, MMAP_SIZE, MS_SYNC) < 0)
+		fail("msync state again");
+	if (pread(direct_fd, direct_buf, MMAP_SIZE, 0) != MMAP_SIZE)
+		fail("read direct state again");
+	if (direct_buf[256] != 'Q') {
+		fputs("ASTERINAS_EXT2_MMAP_PERSIST_ERROR second_write_missing\n", stderr);
+		exit(EXIT_FAILURE);
+	}
+	if (memcmp(direct_buf + 64, "buffer", sizeof("buffer")) != 0)
+		fail("buffered state missing");
+	if (ftruncate(mapped_fd, MMAP_SIZE * 2) < 0)
+		fail("extend mapped state");
+	char *sparse = mmap(NULL, MMAP_SIZE, PROT_READ | PROT_WRITE,
+			    MAP_SHARED, mapped_fd, MMAP_SIZE);
+	if (sparse == MAP_FAILED)
+		fail("mmap sparse state");
+	sparse[200] = 'S';
+	if (pwrite(mapped_fd, "buffer2", sizeof("buffer2"),
+		   MMAP_SIZE + 100) != sizeof("buffer2"))
+		fail("buffered sparse write");
+	if (sparse[200] != 'S') {
+		fputs("ASTERINAS_EXT2_MMAP_PERSIST_ERROR sparse_tail_clobbered\n", stderr);
+		exit(EXIT_FAILURE);
+	}
+	if (msync(sparse, MMAP_SIZE, MS_SYNC) < 0)
+		fail("msync sparse state");
+	if (pread(direct_fd, direct_buf, MMAP_SIZE, MMAP_SIZE) != MMAP_SIZE)
+		fail("read direct sparse state");
+	if (direct_buf[200] != 'S' ||
+	    memcmp(direct_buf + 100, "buffer2", sizeof("buffer2")) != 0) {
+		fputs("ASTERINAS_EXT2_MMAP_PERSIST_ERROR sparse_disk_data_mismatch\n", stderr);
+		exit(EXIT_FAILURE);
+	}
+	if (munmap(sparse, MMAP_SIZE) < 0)
+		fail("munmap sparse state");
+	free(direct_buf);
+	if (close(direct_fd) < 0)
+		fail("close direct state");
+	if (munmap(mapped, MMAP_SIZE) < 0)
+		fail("munmap state");
+	if (close(mapped_fd) < 0)
+		fail("close mapped state");
+	unlink_optional(MMAP_PATH);
 
 	unlink_optional(PREFERENCES_PATH);
 	unlink_optional(WAL_PATH);
