@@ -14,14 +14,17 @@ use crate::{
     fs::{
         fs_impls::ramfs::RamFs,
         pseudofs::{NsCommonOps, NsType, StashedDentry},
-        vfs::path::{Dentry, Mount, Path, PathResolver},
+        vfs::{
+            file_system::FileSystem,
+            path::{Dentry, Mount, Path, PathResolver},
+        },
     },
     prelude::*,
     process::{
-        UserNamespace,
         credentials::capabilities::CapSet,
         posix_thread::PosixThread,
         signal::{PollHandle, Pollee},
+        UserNamespace,
     },
     security::lsm::hooks as lsm_hooks,
 };
@@ -276,13 +279,14 @@ impl MountNamespace {
     pub fn sync(&self) -> Result<()> {
         let mut mount_queue = VecDeque::new();
         let mut visited_filesystems = hashbrown::HashSet::new();
+        let mut filesystems = Vec::new();
         mount_queue.push_back(self.root().clone());
 
         while let Some(current_mount) = mount_queue.pop_front() {
             let fs_ptr = Arc::as_ptr(current_mount.fs());
             // Only sync each filesystem once.
             if visited_filesystems.insert(fs_ptr) {
-                current_mount.sync()?;
+                filesystems.push(current_mount.fs().clone());
             }
 
             let children = current_mount.children.read();
@@ -291,7 +295,7 @@ impl MountNamespace {
             }
         }
 
-        Ok(())
+        sync_file_systems(filesystems)
     }
 
     /// Checks whether a given mount belongs to this mount namespace.
@@ -339,6 +343,26 @@ impl MountNamespace {
     }
 }
 
+/// Syncs the filesystems collected from a mount namespace.
+fn sync_file_systems(filesystems: Vec<Arc<dyn FileSystem>>) -> Result<()> {
+    let mut first_error = None;
+    for filesystem in filesystems {
+        if let Err(error) = filesystem.sync() {
+            ostd::error!(
+                "failed to sync filesystem {} (source {:?}): {:?}",
+                filesystem.name(),
+                filesystem.source(),
+                error
+            );
+            first_error.get_or_insert(error);
+        }
+    }
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
 // When a mount namespace is dropped, it means that the corresponding mount
 // tree is no longer valid. Therefore, all mounts in its mount tree should be
 // detached from their parents and cleared of their mountpoints.
@@ -380,5 +404,75 @@ impl NsCommonOps for MountNamespace {
 
     fn stashed_dentry(&self) -> &StashedDentry {
         &self.stashed_dentry
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::fs::vfs::{
+        file_system::{FsEventSubscriberStats, SuperBlock},
+        inode::Inode,
+    };
+
+    // Bare kernel tests do not initialize the clocks required by RamFs.
+    struct SyncCountingFs {
+        sync_calls: AtomicUsize,
+        fail_sync: bool,
+        event_stats: FsEventSubscriberStats,
+    }
+
+    impl SyncCountingFs {
+        fn new(fail_sync: bool) -> Arc<Self> {
+            Arc::new(Self {
+                sync_calls: AtomicUsize::new(0),
+                fail_sync,
+                event_stats: FsEventSubscriberStats::new(),
+            })
+        }
+    }
+
+    impl FileSystem for SyncCountingFs {
+        fn name(&self) -> &'static str {
+            "sync-counting-fs"
+        }
+
+        fn sync(&self) -> Result<()> {
+            self.sync_calls.fetch_add(1, Ordering::Relaxed);
+            if self.fail_sync {
+                return_errno!(Errno::EIO);
+            }
+            Ok(())
+        }
+
+        fn root_inode(&self) -> Arc<dyn Inode> {
+            unreachable!("the sync test does not mount this filesystem")
+        }
+
+        fn sb(&self) -> SuperBlock {
+            unreachable!("the sync test does not inspect superblocks")
+        }
+
+        fn fs_event_subscriber_stats(&self) -> &FsEventSubscriberStats {
+            &self.event_stats
+        }
+    }
+
+    #[ktest]
+    fn sync_attempts_every_filesystem_after_an_error() {
+        let failing_fs = SyncCountingFs::new(true);
+        let later_fs = SyncCountingFs::new(false);
+        let filesystems: Vec<Arc<dyn FileSystem>> = vec![failing_fs.clone(), later_fs.clone()];
+
+        assert_eq!(
+            sync_file_systems(filesystems).unwrap_err().error(),
+            Errno::EIO
+        );
+        assert_eq!(failing_fs.sync_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(later_fs.sync_calls.load(Ordering::Relaxed), 1);
     }
 }
