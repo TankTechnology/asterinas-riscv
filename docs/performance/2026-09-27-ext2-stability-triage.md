@@ -620,3 +620,24 @@ boots, read back the exact first-boot ext2 payload, and had offline
 `7968de1bbe80b0f420de0ca70b4894225de00332b932043452371a050bdf5281`;
 the result is `target/reboot-sync-mmap-writeback-20260927/result.json`. No
 controlled power cut was performed.
+
+## Final read-only remount check
+
+A short QEMU test exposed another gap: after an ext2 volume was remounted
+read-only, a regular file opened for writing still accepted a `write(2)`.
+The VFS now checks both the mount and filesystem read-only flags when opening
+a regular file for writing and when an existing regular-file descriptor is
+used for `write`, `pwrite`, `ftruncate`, or `fallocate`. Device-file writes
+remain available, including the debug console. The opt-in
+`reboot_sync_gate.py --readonly-remount` case checks an already-open file
+descriptor and a new writable open after remount, then reboots normally,
+reads the exact payload on boot two, and runs offline `e2fsck -fn`.
+The QEMU run passed both boots and fsck exit 0; its kernel Image SHA-256 was
+`9f1480262cc9323412b33b0ea27e9cd295c3d14c4c92148c4c8538d02ef720fa`.
+The original reboot gate also passed on the same kernel.
+
+The board's safe-reboot script has **not** been changed to remount the root
+read-only: existing shared writable mappings need a separate remount audit.
+This work does not establish a clean ext2 superblock state lifecycle or
+crash consistency. The current handoff is the verified software-reboot and
+read-only-file-descriptor fix, with no controlled power-cut experiment.

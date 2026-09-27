@@ -167,6 +167,10 @@ impl Path {
             );
         }
 
+        if inode_type.is_regular_file() && open_args.access_mode.is_writable() {
+            self.check_mount_writable()?;
+        }
+
         if inode_type.is_regular_file()
             && creation_flags.contains(CreationFlags::O_TRUNC)
             && !status_flags.contains(StatusFlags::O_PATH)
@@ -266,7 +270,7 @@ impl Path {
     }
 
     /// Checks whether the path is on a writable mount and filesystem.
-    fn check_mount_writable(&self) -> Result<()> {
+    pub(crate) fn check_mount_writable(&self) -> Result<()> {
         if self.mount.flags().contains(PerMountFlags::RDONLY)
             || self.fs().flags().contains(FsFlags::RDONLY)
         {

@@ -362,6 +362,9 @@ impl FileLike for InodeHandle {
         if !self.rights.contains(Rights::WRITE) {
             return_errno_with_message!(Errno::EBADF, "the file is not opened writable");
         }
+        if self.path().inode().type_().is_regular_file() {
+            self.path().check_mount_writable()?;
+        }
 
         let (file_ops, is_offset_aware) = self.file_ops_and_is_offset_aware();
         let status_flags = self.status_flags();
@@ -400,6 +403,9 @@ impl FileLike for InodeHandle {
         let file_ops = self.file_ops_for_positional_io()?;
         if !self.rights.contains(Rights::WRITE) {
             return_errno_with_message!(Errno::EBADF, "the file is not opened writable");
+        }
+        if self.path().inode().type_().is_regular_file() {
+            self.path().check_mount_writable()?;
         }
 
         let status_flags = self.status_flags();
@@ -470,6 +476,7 @@ impl FileLike for InodeHandle {
         if !self.rights.contains(Rights::WRITE) {
             return_errno_with_message!(Errno::EINVAL, "the file is not opened writable");
         }
+        self.path().check_mount_writable()?;
 
         if self.status_flags().contains(StatusFlags::O_APPEND) {
             // FIXME: It's allowed to `ftruncate` an append-only file on Linux.
@@ -526,6 +533,7 @@ impl FileLike for InodeHandle {
         if !self.rights.contains(Rights::WRITE) {
             return_errno_with_message!(Errno::EBADF, "the file is not opened writable");
         }
+        self.path().check_mount_writable()?;
 
         let inode = self.path().inode().as_ref();
         let inode_type = inode.type_();
