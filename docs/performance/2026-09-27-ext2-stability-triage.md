@@ -342,3 +342,30 @@ logs and the cloned images are under `.local-test/ext2-reclaim-20260927/`.
 Both QEMU boots had a silent interval before the test marker but continued and
 passed within their bounded runs. These two launches do not test a reboot
 within one QEMU process, nor do they prove physical SD persistence.
+
+## Follow-up: reject duplicate block frees before changing metadata
+
+The group block-free path previously logged an already-clear allocation bit
+but still returned success. For a range containing both an already-free block
+and an allocated block, it could clear the second bit and update counters while
+the caller believed the entire release succeeded. It also checked a group
+counter overflow only after changing the bitmap. The path now validates every
+bit and the resulting group and filesystem counters first, returning `EIO`
+without changing metadata for an invalid request. A free spanning groups is
+preflighted across all affected groups before the first mutation.
+
+A focused RISC-V kernel test exercises a mixed free/allocated range and checks
+that both counters and the still-allocated bit remain unchanged on `EIO`. The
+old implementation reached its duplicate-free warning and did not complete
+the test; the corrected test exited successfully. The RISC-V/Sv39/SMP4 kernel
+build passed. A subsequent normal QEMU boot reused the previously clean cloned
+ext2 image, completed the 16-cycle Firefox-state workload, synced and
+unmounted, and passed the host transcript validator. Offline `e2fsck -fn`
+returned 0, and `debugfs` read the exact earlier persistent marker. The
+kernel Image SHA-256 was
+`3dce5ccc9122882c0c9d58ffb00d3792817c8931b1e9d33183e56e71cf7ee8c7`;
+the final ext2 image SHA-256 was
+`eb6f8700d4613af9c1dc13dfe6b7162a80ec39b9af284377ec3403c8e1e97555`.
+Logs are under `.local-test/ext2-reclaim-20260927/logs-free-guard/`.
+This is clean-boot validation; it does not establish sudden-power-loss
+consistency or journal replay. No controlled power-cut test was performed.

@@ -328,45 +328,55 @@ impl BlockGroup {
     /// Frees a range of blocks within this group.
     ///
     /// Frees a contiguous range of group-relative block bits.
-    /// Returns the number of blocks actually freed.
+    /// All bits and the resulting counter are checked before any bit changes.
     pub(super) fn free_blocks(&self, bit_range: Range<u32>) -> Result<u32> {
-        let start_bit = bit_range.start;
-        let group_count = bit_range.len() as u32;
-        // Validate system zone overlap using filesystem-wide coordinates.
-        let abs_range = (self.first_block + start_bit)..(self.first_block + bit_range.end);
-
         let mut metadata = self.metadata.write();
-
-        if self.overlaps_system_zone_with(&metadata.desc, abs_range) {
-            return_errno_with_message!(Errno::EIO, "freeing blocks in system zone");
-        }
-
-        // Clear bits one by one and count only allocated-to-free transitions.
-        let range_start = start_bit as u16;
-        let range_end = (start_bit + group_count) as u16;
-        let mut actually_freed: u32 = 0;
-        for block_bit in range_start..range_end {
-            if !metadata.block_bitmap.is_allocated(block_bit) {
-                warn!(
-                    "free_blocks: bit already cleared for block {}",
-                    self.first_block + start_bit + (block_bit - range_start) as u32
-                );
-            } else {
-                metadata.block_bitmap.free(block_bit);
-                actually_freed += 1;
-            }
+        let new_free_count = self.checked_free_block_count(&metadata, &bit_range)?;
+        for block_bit in bit_range.start as u16..bit_range.end as u16 {
+            metadata.block_bitmap.free(block_bit);
         }
 
         // Persistent in-memory bitmap cache; writeback is deferred to sync_metadata.
+        metadata.desc.free_blocks_count = new_free_count;
+        Ok(bit_range.len() as u32)
+    }
 
-        let freed_count = actually_freed as u16;
-        metadata.desc.free_blocks_count = metadata
+    /// Checks a range before a filesystem-wide free that spans groups.
+    pub(super) fn validate_free_blocks(&self, bit_range: Range<u32>) -> Result<()> {
+        self.checked_free_block_count(&self.metadata.read(), &bit_range)?;
+        Ok(())
+    }
+
+    fn checked_free_block_count(
+        &self,
+        metadata: &BlockGroupMetadata,
+        bit_range: &Range<u32>,
+    ) -> Result<u16> {
+        let group_size = self.last_block - self.first_block + 1;
+        if bit_range.start >= bit_range.end || bit_range.end > group_size {
+            return_errno_with_message!(Errno::EIO, "freeing blocks outside block group");
+        }
+        let abs_range = (self.first_block + bit_range.start)..(self.first_block + bit_range.end);
+        if self.overlaps_system_zone_with(&metadata.desc, abs_range) {
+            return_errno_with_message!(Errno::EIO, "freeing blocks in system zone");
+        }
+        let count = bit_range.len() as u16;
+        let new_free_count = metadata
             .desc
             .free_blocks_count
-            .checked_add(freed_count)
+            .checked_add(count)
+            .filter(|&count| count as u32 <= group_size)
             .ok_or_else(|| Error::with_message(Errno::EIO, "free block count overflow in group"))?;
-
-        Ok(actually_freed)
+        for bit in bit_range.start as u16..bit_range.end as u16 {
+            if !metadata.block_bitmap.is_allocated(bit) {
+                error!(
+                    "free_blocks: refusing to free already-free block {}",
+                    self.first_block + bit as u32
+                );
+                return_errno_with_message!(Errno::EIO, "freeing an already-free block");
+            }
+        }
+        Ok(new_free_count)
     }
 
     /// Attempts to allocate one inode within this group.
