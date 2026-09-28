@@ -58,6 +58,14 @@ class DesktopBootFixture(unittest.TestCase):
 
 
 class DesktopBootManifestTests(DesktopBootFixture):
+    def test_desktop_boot_keeps_a_userspace_sync_recovery_window(self) -> None:
+        manifest = boot.DesktopBootManifest.from_plan(self.plan)
+        self.assertIn("asterinas.reboot_after=300", manifest.bootargs)
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=180", manifest.bootargs
+        )
+        self.assertLessEqual(len(manifest.bootargs.encode()) + 1, 1024)
+
     def test_manifest_is_canonical_and_content_addressed(self) -> None:
         manifest = boot.DesktopBootManifest.from_plan(self.plan)
         document = json.loads(manifest.canonical_bytes())

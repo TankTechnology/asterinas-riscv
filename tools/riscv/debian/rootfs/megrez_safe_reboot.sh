@@ -17,6 +17,9 @@ readonly KERNEL_DEADLINE_RESERVE_SECONDS=15
 readonly SYNC_RESERVE_SECONDS=20
 readonly USER_ID=1000
 readonly UNIT_DIR="${ASTERINAS_SAFE_REBOOT_UNIT_DIR:-/etc/systemd/system}"
+readonly DESKTOP_READY_FILE="${ASTERINAS_SAFE_REBOOT_DESKTOP_READY_FILE:-/run/asterinas-desktop-ready}"
+readonly BOOT_ID_FILE="${ASTERINAS_SAFE_REBOOT_BOOT_ID_FILE:-/proc/sys/kernel/random/boot_id}"
+readonly WATCHDOG_FILE="${ASTERINAS_SAFE_REBOOT_WATCHDOG_FILE:-/proc/sys/kernel/asterinas_reboot_watchdog}"
 readonly -a WRITE_HEAVY_UNITS=(
     asterinas-browser-web.service
     asterinas-desktop-m5-network.service
@@ -73,6 +76,23 @@ read_uptime_seconds() {
     uptime_seconds="${uptime%%.*}"
 }
 
+desktop_handoff_ready() {
+    local marker_boot current_boot watchdog_state
+
+    # /run is boot-local and root-owned.  Bind the marker to this exact boot
+    # and require the kernel watchdog to have been disarmed by desktop readiness.
+    [[ "$DESKTOP_READY_FILE" == /* && -f "$DESKTOP_READY_FILE" &&
+       ! -L "$DESKTOP_READY_FILE" && -O "$DESKTOP_READY_FILE" &&
+       "$BOOT_ID_FILE" == /* && -f "$BOOT_ID_FILE" && ! -L "$BOOT_ID_FILE" &&
+       "$WATCHDOG_FILE" == /* && -f "$WATCHDOG_FILE" && ! -L "$WATCHDOG_FILE" ]] ||
+        return 1
+    read -r marker_boot <"$DESKTOP_READY_FILE" || return 1
+    read -r current_boot <"$BOOT_ID_FILE" || return 1
+    read -r watchdog_state <"$WATCHDOG_FILE" || return 1
+    [[ "$marker_boot" =~ ^[0-9a-f-]{36}$ &&
+       "$marker_boot" == "$current_boot" && "$watchdog_state" == 0 ]]
+}
+
 bounded_timeout() {
     local desired="$1" reserve="$2" limit remaining
     shift 2
@@ -91,6 +111,10 @@ read_uptime_seconds
 
 emit "ASTERINAS_USERSPACE_REBOOT_ARMED uptime=$uptime_seconds deadline=$DEADLINE"
 while ((uptime_seconds < DEADLINE)); do
+    if desktop_handoff_ready; then
+        emit "ASTERINAS_USERSPACE_REBOOT_DISARMED reason=desktop-ready"
+        exit 0
+    fi
     remaining=$((DEADLINE - uptime_seconds))
     sleep_seconds=$((remaining < MAX_SLEEP_SECONDS ? remaining : MAX_SLEEP_SECONDS))
     sleep "$sleep_seconds" || fail sleep
@@ -98,6 +122,10 @@ while ((uptime_seconds < DEADLINE)); do
     read_uptime_seconds
     ((uptime_seconds >= previous_uptime_seconds)) || fail uptime-regressed
 done
+if desktop_handoff_ready; then
+    emit "ASTERINAS_USERSPACE_REBOOT_DISARMED reason=desktop-ready"
+    exit 0
+fi
 
 # Asterinas' reboot syscall intentionally jumps straight to the platform
 # restart path. Stop every known writer and prove that the desktop user has no

@@ -70,6 +70,11 @@ static const char CONSOLE_GETTY_DROP_IN[] =
     "[Unit]\n"
     "ConditionPathExists=!/run/asterinas-debug-console.enabled\n";
 
+static const char SAFE_REBOOT_DROP_IN[] =
+    "[Service]\n"
+    "ExecStart=\n"
+    "ExecStart=/run/asterinas-tools/megrez-safe-reboot\n";
+
 static int make_path(char path[STAGE1_PATH_SIZE], const char *root,
                      const char *suffix)
 {
@@ -142,6 +147,7 @@ static int prepare_debug_console(const char *root, int isolated)
         "/run/systemd",
         "/run/systemd/system",
         "/run/systemd/system/console-getty.service.d",
+        "/run/systemd/system/asterinas-safe-reboot.service.d",
         "/run/systemd/system/getty.target.wants",
         "/run/systemd/system/asterinas-debug-console.target.wants",
     };
@@ -157,6 +163,7 @@ static int prepare_debug_console(const char *root, int isolated)
         "/run/systemd/system/asterinas-desktop-ready.service",
         "/run/systemd/system/asterinas-debug-console.target.wants/"
         "asterinas-desktop-ready.service",
+        "/run/systemd/system/asterinas-safe-reboot.service.d/10-stage1.conf",
     };
     char paths[sizeof(destination_suffixes) / sizeof(destination_suffixes[0])]
               [STAGE1_PATH_SIZE];
@@ -215,6 +222,8 @@ static int prepare_debug_console(const char *root, int isolated)
         create_file(paths[6], DESKTOP_READY_SERVICE,
                     sizeof(DESKTOP_READY_SERVICE) - 1) != 0 ||
         symlink("../asterinas-desktop-ready.service", paths[7]) != 0 ||
+        create_file(paths[8], SAFE_REBOOT_DROP_IN,
+                    sizeof(SAFE_REBOOT_DROP_IN) - 1) != 0 ||
         (isolated &&
          symlink("../system/asterinas-debug-console.target",
                  default_target_path) != 0)) {

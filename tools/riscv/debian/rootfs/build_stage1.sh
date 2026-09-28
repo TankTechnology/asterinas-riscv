@@ -53,6 +53,7 @@ if (( $# == 1 )); then
                 usr/lib/asterinas/physical-external-services-quiesce \
                 usr/lib/asterinas/desktop-input-identity \
                 usr/lib/asterinas/physical-graphics-control \
+                usr/lib/asterinas/megrez-safe-reboot \
                 usr/lib/asterinas/physical-graphics-gate \
                 usr/lib/asterinas/physical-graphics-interaction.html \
                 usr/lib/asterinas/physical-system-probe \
@@ -91,6 +92,7 @@ CLOCK_SYNC_SOURCE="$SCRIPT_DIR/megrez_clock_sync.py"
 PHYSICAL_EXTERNAL_SOURCE="$SCRIPT_DIR/physical_external_services_quiesce.sh"
 DESKTOP_INPUT_IDENTITY_SOURCE="$SCRIPT_DIR/desktop_input_identity.py"
 PHYSICAL_GRAPHICS_CONTROL_SOURCE="$SCRIPT_DIR/physical_graphics_control.sh"
+SAFE_REBOOT_SOURCE="$SCRIPT_DIR/megrez_safe_reboot.sh"
 PHYSICAL_GRAPHICS_GATE_SOURCE="$SCRIPT_DIR/physical_graphics_gate.py"
 PHYSICAL_GRAPHICS_PAGE_SOURCE="$SCRIPT_DIR/physical_graphics_interaction.html"
 PHYSICAL_SYSTEM_PROBE_SOURCE="$SCRIPT_DIR/physical_system_probe.sh"
@@ -218,6 +220,8 @@ install -D -m 0755 -- "$DESKTOP_INPUT_IDENTITY_SOURCE" \
     "$STAGE/usr/lib/asterinas/desktop-input-identity"
 install -D -m 0755 -- "$PHYSICAL_GRAPHICS_CONTROL_SOURCE" \
     "$STAGE/usr/lib/asterinas/physical-graphics-control"
+install -D -m 0755 -- "$SAFE_REBOOT_SOURCE" \
+    "$STAGE/usr/lib/asterinas/megrez-safe-reboot"
 install -D -m 0755 -- "$PHYSICAL_GRAPHICS_GATE_SOURCE" \
     "$STAGE/usr/lib/asterinas/physical-graphics-gate"
 install -D -m 0644 -- "$PHYSICAL_GRAPHICS_PAGE_SOURCE" \
@@ -254,6 +258,7 @@ touch -d "@$SOURCE_DATE_EPOCH" \
     "$STAGE/usr/lib/asterinas/physical-external-services-quiesce" \
     "$STAGE/usr/lib/asterinas/desktop-input-identity" \
     "$STAGE/usr/lib/asterinas/physical-graphics-control" \
+    "$STAGE/usr/lib/asterinas/megrez-safe-reboot" \
     "$STAGE/usr/lib/asterinas/physical-graphics-gate" \
     "$STAGE/usr/lib/asterinas/physical-graphics-interaction.html" \
     "$STAGE/usr/lib/asterinas/physical-system-probe"
@@ -287,6 +292,7 @@ printf '%s\n' \
     usr/lib/asterinas/physical-external-services-quiesce \
     usr/lib/asterinas/desktop-input-identity \
     usr/lib/asterinas/physical-graphics-control \
+    usr/lib/asterinas/megrez-safe-reboot \
     usr/lib/asterinas/physical-graphics-gate \
     usr/lib/asterinas/physical-graphics-interaction.html \
     usr/lib/asterinas/physical-system-probe \
@@ -324,6 +330,7 @@ EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/megrez-clock-sync\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-external-services-quiesce\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/desktop-input-identity\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-graphics-control\n'
+EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/megrez-safe-reboot\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-graphics-gate\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-graphics-interaction.html\n'
 EXPECTED_ARCHIVE_ENTRIES+=$'usr/lib/asterinas/physical-system-probe\n'
