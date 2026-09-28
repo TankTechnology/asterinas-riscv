@@ -65,3 +65,18 @@ serial command logs under `.local-test/desktop-goal-20260927/` in the
 `asterinas-main-publish` checkout.
 Neither `/dev/dri` nodes nor Xorg's fbdev path prove GPU rendering or HDMI
 scanout.
+
+## Software recovery
+
+After the desktop had remained active beyond 544 guest seconds, the root
+serial console issued `systemctl reboot --no-wall`.
+The command printed system-bus transport errors while shutdown was underway,
+so its exit status alone is not recovery evidence.
+Serial then observed the RockOS login prompt, and SSH reported `rockos-eswin`,
+Linux `6.6.87`, boot ID `bad777d7-8aa7-4ea9-af5d-833bed151420`, and root
+`/dev/mmcblk1p3`.
+Two separate reopened root serial connections returned fresh nonce-framed
+UID 0 responses with that same boot ID.
+`/dev/mmcblk1p2` was unmounted and `tune2fs -l` reported its ext2 filesystem
+state as `clean`.
+The board was left in RockOS with the serial connection closed.
