@@ -119,6 +119,7 @@ BOOTARGS = " ".join(
         "init=/init",
         "asterinas.mmc_write_partition2",
         "asterinas.reboot_after=300",
+        "systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=180",
         "systemd.mask=asterinas-browser-web-evidence.service",
         "systemd.mask=asterinas-desktop-m5-network.service",
         "systemd.mask=serial-getty@ttyS0.service",

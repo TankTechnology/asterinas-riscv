@@ -870,6 +870,85 @@ configure_and_normalize_rootfs
             ],
         )
 
+    def test_safe_reboot_hands_off_only_to_ready_current_boot(self) -> None:
+        fake_bin = self.directory / "desktop-handoff-bin"
+        fake_bin.mkdir()
+        units = self.directory / "desktop-handoff-units"
+        units.mkdir()
+        actions = self.directory / "desktop-handoff-actions"
+        console = self.directory / "desktop-handoff-console"
+        uptime = self.directory / "desktop-handoff-uptime"
+        cmdline = self.directory / "desktop-handoff-cmdline"
+        cmdline.write_text("asterinas.reboot_after=300\n", encoding="utf-8")
+        ready = self.directory / "desktop-handoff-ready"
+        boot_id = self.directory / "desktop-handoff-boot-id"
+        boot_id.write_text("11111111-2222-3333-4444-555555555555\n", encoding="utf-8")
+        watchdog = self.directory / "desktop-handoff-watchdog"
+        sleep = fake_bin / "sleep"
+        sleep.write_text(
+            "#!/bin/sh\n"
+            'printf "sleep:%s\\n" "$*" >>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n'
+            'printf "110.00 100.00\\n" >"$ASTERINAS_SAFE_REBOOT_UPTIME_FILE"\n'
+            'printf "%s\\n" "$READY_BOOT" >"$ASTERINAS_SAFE_REBOOT_DESKTOP_READY_FILE"\n'
+            'printf "%s\\n" "$WATCHDOG_VALUE" >"$ASTERINAS_SAFE_REBOOT_WATCHDOG_FILE"\n',
+            encoding="utf-8",
+        )
+        sleep.chmod(0o755)
+        for name in ("systemctl", "sync", "reboot"):
+            command = fake_bin / name
+            command.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s:%s\\n\' "$(basename "$0")" "$*" '
+                '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n',
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+        pgrep = fake_bin / "pgrep"
+        pgrep.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        pgrep.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_SAFE_REBOOT_AFTER="110",
+            ASTERINAS_SAFE_REBOOT_CMDLINE_PATH=str(cmdline),
+            ASTERINAS_SAFE_REBOOT_UPTIME_FILE=str(uptime),
+            ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
+            ASTERINAS_SAFE_REBOOT_UNIT_DIR=str(units),
+            ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
+            ASTERINAS_SAFE_REBOOT_DESKTOP_READY_FILE=str(ready),
+            ASTERINAS_SAFE_REBOOT_BOOT_ID_FILE=str(boot_id),
+            ASTERINAS_SAFE_REBOOT_WATCHDOG_FILE=str(watchdog),
+        )
+        for marker_boot, watchdog_value, should_disarm in (
+            ("11111111-2222-3333-4444-555555555555", "0", True),
+            ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "0", False),
+            ("11111111-2222-3333-4444-555555555555", "1", False),
+        ):
+            with self.subTest(marker_boot=marker_boot, watchdog=watchdog_value):
+                ready.unlink(missing_ok=True)
+                actions.write_text("", encoding="utf-8")
+                console.write_text("", encoding="utf-8")
+                uptime.write_text("100.00 90.00\n", encoding="utf-8")
+                watchdog.write_text("1\n", encoding="utf-8")
+                environment["READY_BOOT"] = marker_boot
+                environment["WATCHDOG_VALUE"] = watchdog_value
+                result = subprocess.run(
+                    ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                entries = actions.read_text(encoding="utf-8").splitlines()
+                notices = console.read_text(encoding="utf-8").splitlines()
+                self.assertEqual("reboot:-f" in entries, not should_disarm)
+                self.assertEqual(
+                    any("ASTERINAS_USERSPACE_REBOOT_DISARMED" in line for line in notices),
+                    should_disarm,
+                )
+
     def test_safe_reboot_refuses_work_past_kernel_deadline_budget(self) -> None:
         fake_bin = self.directory / "safe-reboot-deadline-bin"
         fake_bin.mkdir()

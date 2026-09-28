@@ -349,6 +349,23 @@ startup_ready() {
         boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-readback'
         return 1
     }
+    # The userspace sync/reboot timer is independent of the kernel watchdog.
+    # Publish a boot-bound handoff only after the kernel disarm is confirmed;
+    # otherwise it must still shut down the writable ext2 root safely.
+    ready_boot=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null) || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=boot-id-read'
+        return 1
+    }
+    ready_temp=$(mktemp /run/.asterinas-desktop-ready.XXXXXXXX) || {
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=handoff-create'
+        return 1
+    }
+    if ! printf '%s\n' "$ready_boot" >"$ready_temp" ||
+        ! mv -f -T -- "$ready_temp" /run/asterinas-desktop-ready; then
+        rm -f -- "$ready_temp"
+        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=handoff-publish'
+        return 1
+    fi
     boot_phase 'ASTERINAS_DESKTOP_WATCHDOG_DISARMED'
     boot_phase "ASTERINAS_DESKTOP_BOOT_READY firefox_pid=$pid"
 }

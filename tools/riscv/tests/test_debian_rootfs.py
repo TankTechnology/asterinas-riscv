@@ -134,6 +134,9 @@ STAGE1_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_init.c"
 STAGE1_DEBUG_CONSOLE_SOURCE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_debug_console.c"
 )
+STAGE1_SAFE_REBOOT_SOURCE = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_safe_reboot.sh"
+)
 STAGE1_PROBE_SOURCE = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/stage1_probe.c"
 STAGE1_BROWSER_GATE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/browser_web_marionette_gate.py"
@@ -861,6 +864,27 @@ class DebianStage1Tests(unittest.TestCase):
         self.assertFalse((runtime / "systemd/system/default.target").exists())
         self.assertFalse((runtime / "systemd/system.control/default.target").exists())
 
+    def test_debug_console_uses_stage1_safe_reboot(self) -> None:
+        binary = self.directory / "debug-console-harness"
+        compilation = self.compile_debug_console_harness(binary)
+        self.assertEqual(compilation.returncode, 0, compilation.stderr)
+        root = self.directory / "root"
+        root.mkdir()
+
+        result = subprocess.run(
+            [binary, root], check=False, capture_output=True, text=True
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        drop_in = (
+            root / "run/systemd/system/asterinas-safe-reboot.service.d/10-stage1.conf"
+        )
+        self.assertEqual(
+            drop_in.read_text(),
+            "[Service]\nExecStart=\n"
+            "ExecStart=/run/asterinas-tools/megrez-safe-reboot\n",
+        )
+
     def test_isolated_debug_console_selects_runtime_default_target(self) -> None:
         binary = self.directory / "debug-console-harness"
         compilation = self.compile_debug_console_harness(binary)
@@ -1453,6 +1477,7 @@ int main(void)
                 "usr/lib/asterinas/physical-external-services-quiesce",
                 "usr/lib/asterinas/desktop-input-identity",
                 "usr/lib/asterinas/physical-graphics-control",
+                "usr/lib/asterinas/megrez-safe-reboot",
                 "usr/lib/asterinas/physical-graphics-gate",
                 "usr/lib/asterinas/physical-graphics-interaction.html",
                 "usr/lib/asterinas/physical-system-probe",
@@ -1461,6 +1486,19 @@ int main(void)
                 "usr/lib/asterinas/s",
             ],
         )
+
+    def test_stage1_carries_safe_reboot_override(self) -> None:
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+        output = self.directory / "safe-reboot" / "initramfs.cpio"
+
+        result = self.run_builder(str(output), environment=environment)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entries = {entry[0]: entry for entry in _parse_newc_entries(output.read_bytes())}
+        helper = entries["usr/lib/asterinas/megrez-safe-reboot"]
+        self.assertEqual(stat.S_IMODE(helper[1]), 0o755)
+        self.assertEqual(helper[5], STAGE1_SAFE_REBOOT_SOURCE.read_bytes())
 
     def test_stage1_carries_nonblocking_desktop_input_identity(self) -> None:
         environment = os.environ.copy()
@@ -1576,6 +1614,20 @@ int main(void)
         self.assertIn("ASTERINAS_DESKTOP_FIREFOX_READY", source)
         self.assertIn("ASTERINAS_DESKTOP_WATCHDOG_DISARMED", source)
         self.assertIn("ASTERINAS_DESKTOP_BOOT_READY", source)
+
+    def test_desktop_readiness_hands_off_safe_reboot_after_kernel_disarm(self) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+        startup = source[source.index("startup_ready() {") :]
+        startup = startup[: startup.index("\nstartup_snapshot() {")]
+
+        disarm = startup.index("printf '0\\n' >\"$watchdog\"")
+        readback = startup.index('"$(cat "$watchdog" 2>/dev/null || true)" = 0')
+        handoff = startup.index("/run/asterinas-desktop-ready")
+        complete = startup.index("ASTERINAS_DESKTOP_BOOT_READY")
+        self.assertLess(disarm, readback)
+        self.assertLess(readback, handoff)
+        self.assertLess(handoff, complete)
+        self.assertIn("/proc/sys/kernel/random/boot_id", startup)
 
     def test_startup_readiness_uses_one_monotonic_deadline(self) -> None:
         source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
@@ -2075,6 +2127,13 @@ int main(void)
                     1700000000,
                 ),
                 (
+                    "usr/lib/asterinas/megrez-safe-reboot",
+                    stat.S_IFREG | 0o755,
+                    0,
+                    0,
+                    1700000000,
+                ),
+                (
                     "usr/lib/asterinas/physical-graphics-gate",
                     stat.S_IFREG | 0o755,
                     0,
@@ -2138,12 +2197,13 @@ int main(void)
         )
         self.assertEqual(entries[19][5], STAGE1_DESKTOP_INPUT_IDENTITY.read_bytes())
         self.assertEqual(entries[20][5], STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_bytes())
-        self.assertEqual(entries[21][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
-        self.assertEqual(entries[22][5], STAGE1_PHYSICAL_GRAPHICS_PAGE.read_bytes())
-        self.assertEqual(entries[23][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
-        self.assertEqual(entries[24][5], b"physical-graphics-control")
-        self.assertEqual(entries[25][5], b"physical-external-services-quiesce")
-        self.assertEqual(entries[26][5], b"physical-system-probe")
+        self.assertEqual(entries[21][5], STAGE1_SAFE_REBOOT_SOURCE.read_bytes())
+        self.assertEqual(entries[22][5], STAGE1_PHYSICAL_GRAPHICS_GATE.read_bytes())
+        self.assertEqual(entries[23][5], STAGE1_PHYSICAL_GRAPHICS_PAGE.read_bytes())
+        self.assertEqual(entries[24][5], STAGE1_PHYSICAL_SYSTEM_PROBE.read_bytes())
+        self.assertEqual(entries[25][5], b"physical-graphics-control")
+        self.assertEqual(entries[26][5], b"physical-external-services-quiesce")
+        self.assertEqual(entries[27][5], b"physical-system-probe")
 
     def test_builder_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):
