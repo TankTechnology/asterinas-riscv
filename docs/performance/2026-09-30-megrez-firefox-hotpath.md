@@ -108,13 +108,32 @@ drops, 8.230 seconds of Renderer CPU run, 7.685 seconds of SwComposite CPU
 run, and 0.522 seconds of Xorg CPU run. Preloading and the removal of ptrace
 sampling changed the measurement conditions; this is a better-defined window,
 not evidence of a graphics speedup. The current DRM scanout counters still
-need an on-demand readout to isolate display submission to this window. A
-read-on-demand `/proc/asterinas_drm_scanout` counter and matching bracketing
-logic in `video_manual_phase.py` have now been implemented and passed a
-single RISC-V QEMU kernel test and three host parser tests. They have **not**
-yet been run on the board. The next selected boot must enable the DRM provider
-and phase profile, verify that Xorg holds `/dev/dri/card0`, and repeat the same
-clip. A zero or unavailable counter is not evidence of a fast scanout path.
+need an on-demand readout to isolate display submission to this window.
+
+## On-demand DRM window on the board
+
+The read-on-demand `/proc/asterinas_drm_scanout` counter and matching
+bracketing logic in `video_manual_phase.py` passed a single RISC-V QEMU kernel
+test and three host parser tests, then ran on a selected release kernel on the
+board. The [bounded experiment](evidence/2026-09-30-megrez-video-drm-window/)
+used the same clip after manual preload. Xorg's DRM process held
+`/dev/dri/card0`; the later fbdev process held `/dev/fb0` on the **same** boot.
+
+| Provider | Dropped / 301 reported | Renderer + SwComposite CPU | Xorg CPU | Firmware DRM dirty-present time |
+| --- | ---: | ---: | ---: | ---: |
+| DRM | 141 | 13.777 s | 5.093 s | 4.819 s across 159 presents |
+| fbdev | 118 | 15.718 s | 0.499 s | 0; no DRM presents |
+
+The DRM window copied 587,443,200 bytes in 10.265 seconds; the present-call
+time alone occupied about 47% of that interval. This makes the firmware copy
+path a measured display bottleneck. The Firefox render threads also consume
+more than one CPU's worth of time, so removing the copy alone does not solve
+the software YUV/composition bottleneck. The lower Firefox CPU sum in the DRM
+run accompanies fewer painted frames, and is **not** a measured speedup.
+One run per provider cannot establish a stable drop-rate difference. The
+counter does not prove HDMI pixels were shown, and it records no GPU work.
+YUV conversion and composition still need separate stage timing beyond the
+earlier saved-PC localization.
 
 ## Next gates
 

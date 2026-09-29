@@ -1,0 +1,6 @@
+printf 'BEGIN_bf1996a9ca849e18\n'; /run/activate-drm.sh;  printf 'END_bf1996a9ca849e18=%s\n' "$?"
+BEGIN_bf1996a9ca849e18
+DRM_MEASUREMENT_READY xorg_pid=2134
+at_ns=446371291000 phase_profile=1 successes=3 full_count=1 full_bytes=8294400 full_total_ns=58814000 dirty_count=2 dirty_bytes=8296704 dirty_total_ns=58916000 sampled_rows=9 sampled_bytes=46368 read_ns=0 write_and_sync_ns=0 direct_copy_and_sync_ns=350000
+END_bf1996a9ca849e18=0
+root@asterinas-debug:/# 

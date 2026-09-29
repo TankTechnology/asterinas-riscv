@@ -1,0 +1,14 @@
+printf 'BEGIN_d886f0d2cb6e4d4c\n'; id -u; cat /proc/sys/ kernel/random/boot_id; cat /proc/sys/kernel/asterinas_reboot_watchdog; cat /run/ asterinas-desktop-ready; systemctl is-active asterinas-desktop-m5.service asteri nas-browser-web.service; pgrep -a Xorg; B=$(systemctl show -p MainPID --value as terinas-browser-web.service); cat /proc/$B/comm; DISPLAY=:0 XAUTHORITY=/home/ast erinas/.Xauthority timeout 5 xdpyinfo >/dev/null && echo x11-ok; X=$(pgrep -x Xo rg | head -n 1); ls -l /proc/$X/fd | grep /dev/fb0; printf 'END_d886f0d2cb6e4d4c =%s\n' "$?"
+BEGIN_d886f0d2cb6e4d4c
+0
+ae17015f-216f-409a-a5b6-fdfe9e14cd5e
+0
+ae17015f-216f-409a-a5b6-fdfe9e14cd5e
+active
+active
+2490 /usr/lib/xorg/Xorg :0 -noreset -nolisten tcp -ac -novtswitch -keeptty -extension GLX -configdir /run/asterinas-physical-display-providers/fbdev/xorg.conf.d -logfile /home/asterinas/Xorg.0.log vt1
+firefox
+x11-ok
+lrwx------ 1 root root 0 Sep 29 22:27 11 -> /dev/fb0
+END_d886f0d2cb6e4d4c=0
+root@asterinas-debug:/# 
