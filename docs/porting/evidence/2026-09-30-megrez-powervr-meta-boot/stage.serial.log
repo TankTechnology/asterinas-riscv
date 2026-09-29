@@ -1,0 +1,16 @@
+
+root@asterinas-debug:/run/asterinas-powervr-boot-preflight-20260930# printf 'BEG IN_61655bebc53d884f\n'; cd /run/asterinas-powervr-boot-preflight-20260930 && cur l -fsS --noproxy "*" -O http://10.100.19.216:17898/powervr_dma_stage.py && sha25 6sum powervr_dma_stage.py && python3 powervr_dma_stage.py --segments-dir /run/as terinas-powervr-boot-config-20260930 --manifest /run/asterinas-powervr-boot-conf ig-20260930/manifest.json; printf 'END_61655bebc53d884f=%s\n' "$?"
+BEGIN_61655bebc53d884f
+b0dd4b63f058c333d4c0c8b9843dd0ba39f6a09e98d3074a12bea5bcc682f4dd  powervr_dma_stage.py
+ASTERINAS_GPU_POWERED_ID raw=0x001e000301980065
+ASTERINAS_POWERVR_OWNER session=opened bvnc=30.3.408.101 gates=0b111 deasserted=0b11111
+ASTERINAS_POWERVR_DMA_STAGE status=enabled gpu_visibility=unverified
+ASTERINAS_POWERVR_DMA_STAGE segment=0 bytes=52064 pages=13 daddr=0x1f09c0000 cpu_readback=ok gpu_visibility=unverified
+ASTERINAS_POWERVR_DMA_STAGE segment=1 bytes=18432 pages=5 daddr=0x1f09b8000 cpu_readback=ok gpu_visibility=unverified
+ASTERINAS_POWERVR_DMA_STAGE segment=2 bytes=73312 pages=18 daddr=0x1f0a00000 cpu_readback=ok gpu_visibility=unverified
+ASTERINAS_POWERVR_DMA_STAGE segment=3 bytes=9984 pages=3 daddr=0x1f0a34000 cpu_readback=ok gpu_visibility=unverified
+ASTERINAS_POWERVR_MMU status=all_tables_prepared root_daddr=0x1f0a23000 code_vaddr=0xe1c0000000 data_vaddr=0xe1c000e000 coremem_code_vaddr=0xe1c0014000 coremem_data_vaddr=0xe1c0027000 gpu_root_installed=0 gpu_visibility=unverified
+ASTERINAS_POWERVR_OWNER session=closed crg_restored=1 aclk=0x00000020 cfg=0x00000000 gray=0x00000000 reset=0x00000000
+four firmware segments staged and closed; GPU visibility remains unverified
+END_61655bebc53d884f=0
+root@asterinas-debug:/run/asterinas-powervr-boot-preflight-20260930#

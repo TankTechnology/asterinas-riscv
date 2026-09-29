@@ -1,0 +1,30 @@
+
+root@asterinas-debug:/run/asterinas-powervr-boot-preflight-20260930# printf 'BEG IN_6765b06d7e24839e\n'; python3 /run/asterinas-powervr-boot-preflight-20260930/r gx_meta_boot.py /lib/firmware/rgx.fw.30.3.408.101 --output-dir /run/asterinas-po wervr-boot-config-20260930; printf 'END_6765b06d7e24839e=%s\n' "$?"
+BEGIN_6765b06d7e24839e
+{
+  "boot_config_bytes": 296,
+  "boot_config_ldr_writes": 17,
+  "boot_config_offset": 512,
+  "boot_config_pairs": 34,
+  "boot_config_sha256": "2c70442a16a343dbae1312d3d1f54fedf773a26d544ff4702c58cb8fcd88d4d5",
+  "firmware_sha256": "25e9e7ff4645292ceb991617dba028e350a5c17088a105230dbaaaf995f4413b",
+  "firmware_vaddrs": [
+    969588867072,
+    969588924416,
+    969588948992,
+    969589026816
+  ],
+  "ldr_blocks": 56,
+  "meta_dma": true,
+  "meta_threads": 2,
+  "processor": "META",
+  "segment_sha256": {
+    "code": "77bb4e9e42f25a40e67e9002c5f76fa7c5a702cb5efe42ffaad57594dc244118",
+    "coremem_code": "7f75ec7ac5c8247ba486a9baad62506a76c1b41a7d67857ca6c63af530de3074",
+    "coremem_data": "ec65090b65fdf0202c5321bd83d315764f99e4724791a564c16e050af756a3d9",
+    "data": "d1e3c7ec9dce4f150a39c11a865ccfd80375c70758e079b23bf58d398876b6fd"
+  },
+  "slc_vivt": true
+}
+END_6765b06d7e24839e=0
+root@asterinas-debug:/run/asterinas-powervr-boot-preflight-20260930#
