@@ -32,6 +32,20 @@ class VideoFilterProbeTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     render_page(run, size, sampling)
 
+    def test_manual_start_arms_the_same_clip_without_autoplay(self):
+        automatic = render_page("videoa", "large", "auto")
+        manual = render_page("videoa", "large", "auto", start="manual")
+        self.assertIn(b'<video id="clip" muted playsinline autoplay', automatic)
+        self.assertIn(b'<video id="clip" muted playsinline preload="auto" width=', manual)
+        self.assertNotIn(b"autoplay", manual)
+        self.assertIn(b"window.startProbe = () =>", manual)
+        self.assertIn(b'<button id="start-probe" hidden>', manual)
+        self.assertIn(b"startButton.addEventListener('click', window.startProbe);", manual)
+        self.assertIn(b"if (false) startButton.click();", manual)
+        self.assertIn(b"if (true) startButton.click();", automatic)
+        with self.assertRaises(ValueError):
+            render_page("videoa", "large", "auto", start="later")
+
 
 if __name__ == "__main__":
     unittest.main()
