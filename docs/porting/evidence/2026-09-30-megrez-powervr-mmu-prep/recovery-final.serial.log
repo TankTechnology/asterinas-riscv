@@ -1,0 +1,14 @@
+
+root@asterinas-debug:/# printf 'BEGIN_8a213a11e7f4d38f\n'; test "$(id -u)" = 0 &
+& cat /proc/sys/kernel/random/boot_id && test "$(cat /proc/sys/kernel/asterinas_
+reboot_watchdog)" = 0 && test -f /run/asterinas-desktop-ready && systemctl is-ac
+tive asterinas-desktop-m5.service asterinas-browser-web.service && _xpid=$(pgrep
+ -xo Xorg) && for p in /proc/$_xpid/fd/*; do readlink "$p"; done | grep -E "/dev
+/(fb0|dri/card0)" | sort -u; printf 'END_8a213a11e7f4d38f=%s\n' "$?"
+BEGIN_8a213a11e7f4d38f
+11eb3028-78f4-47cb-952b-8e6318352e0e
+active
+active
+/dev/fb0
+END_8a213a11e7f4d38f=0
+root@asterinas-debug:/#

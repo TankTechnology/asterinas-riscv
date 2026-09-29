@@ -92,6 +92,15 @@ readbacks passed, the session restored CRG state, and a fresh serial
 connection confirmed the same root-controlled desktop boot. It does not
 establish GPU visibility, MMU mappings, firmware startup, or a pixel result.
 
+The next [selected MMUv4 preflight](../../porting/evidence/2026-09-30-megrez-powervr-mmu-prep/README.md)
+builds real DMA-backed catalogue, directory, and page-table pages for the
+firmware **code** allocation at the vendor's firmware heap base. Focused QEMU
+tests and one board session verified CPU readback of those entries, owned-buffer
+lifetime, overlap rejection, CRG restoration, and Asterinas-to-RockOS-to-Asterinas
+software recovery. The root was **not installed in the GPU**, so this is not
+GPU-side visibility, a completed MMU mapping, firmware execution, or a Task 3
+acceptance gate. Data/coremem placement and cache/fault/timeout handling remain.
+
 - [ ] Allocate pinned, zeroed GPU memory through `DmaCoherent`/`DmaStream` with checked size limits and ownership tied to the GPU session. Establish and test the board's actual device-address range; do not assume CPU virtual addresses are GPU addresses.
 - [ ] For the DT-declared noncoherent GPU, demonstrate a correct CPU/device visibility path using RISC-V cache synchronization or an uncached alias. Reject the selected boot if neither is available. Map only owned buffers into the GPU MMU and require the GPU page tables to reference those allocations.
 - [ ] Load the exact BVNC-matched firmware and shader blobs from the selected root image. Report firmware handshake and GPU fault/timeout counters. Bound every wait and ensure reset/cleanup on failed handshake.

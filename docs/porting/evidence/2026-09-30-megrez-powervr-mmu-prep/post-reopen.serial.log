@@ -1,0 +1,17 @@
+
+root@asterinas-debug:/# printf 'BEGIN_660380154bef4e30\n'; id -u && cat /proc/sy
+s/kernel/random/boot_id && cat /proc/sys/kernel/asterinas_reboot_watchdog && sys
+temctl is-active asterinas-desktop-m5.service asterinas-browser-web.service && t
+est -f /run/asterinas-desktop-ready && echo DESKTOP_READY && cat /proc/cmdline |
+ grep -o "asterinas.powervr_dma_stage=1"; printf 'END_660380154bef4e30=%s\n' "$?
+"
+BEGIN_660380154bef4e30
+0
+54daa6eb-7c6d-43c7-9ca7-e1eb095a7eae
+0
+active
+active
+DESKTOP_READY
+asterinas.powervr_dma_stage=1
+END_660380154bef4e30=0
+root@asterinas-debug:/#
