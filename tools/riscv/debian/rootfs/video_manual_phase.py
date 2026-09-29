@@ -21,6 +21,44 @@ from browser_m5_marionette_gate import Marionette
 
 
 RUN_ID = re.compile(r"[a-z0-9]{1,20}")
+SCANOUT_PATH = Path("/proc/asterinas_drm_scanout")
+SCANOUT_COUNTERS = (
+    "successes", "full_count", "full_bytes", "full_total_ns",
+    "dirty_count", "dirty_bytes", "dirty_total_ns", "sampled_rows",
+    "sampled_bytes", "read_ns", "write_and_sync_ns", "direct_copy_and_sync_ns",
+)
+
+
+def parse_scanout_snapshot(line: str) -> dict[str, int] | None:
+    if line.strip() == "unavailable":
+        return None
+    fields = dict(field.split("=", 1) for field in line.split())
+    required = {"at_ns", "phase_profile", *SCANOUT_COUNTERS}
+    if fields.keys() != required:
+        raise ValueError(f"unexpected DRM scanout fields: {sorted(fields.keys())}")
+    return {key: int(value) for key, value in fields.items()}
+
+
+def scanout_snapshot() -> dict[str, int] | None:
+    try:
+        return parse_scanout_snapshot(SCANOUT_PATH.read_text())
+    except FileNotFoundError:
+        return None
+
+
+def scanout_delta(
+    before: dict[str, int] | None, after: dict[str, int] | None,
+) -> dict[str, int] | None:
+    if before is None or after is None:
+        return None
+    if before["phase_profile"] != after["phase_profile"]:
+        raise ValueError("DRM phase profiling changed during playback")
+    result = {key: after[key] - before[key] for key in SCANOUT_COUNTERS}
+    if any(value < 0 for value in result.values()) or after["at_ns"] < before["at_ns"]:
+        raise ValueError("DRM scanout counters went backwards during playback")
+    result["phase_profile"] = after["phase_profile"]
+    result["window_ns"] = after["at_ns"] - before["at_ns"]
+    return result
 
 
 def thread_stats(pid: int) -> dict[int, tuple[str, int, int]]:
@@ -111,6 +149,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
 
         before_browser = thread_stats(args.browser_pid)
         before_xorg = thread_stats(args.xorg_pid)
+        before_scanout = scanout_snapshot()
         before_ns = time.monotonic_ns()
         if script(
             client,
@@ -129,6 +168,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
                 break
             time.sleep(0.2)
         after_ns = time.monotonic_ns()
+        after_scanout = scanout_snapshot()
         after_browser = thread_stats(args.browser_pid)
         after_xorg = thread_stats(args.xorg_pid)
         if metric is None or metric.get("state") != "ended" or metric.get("run") != args.run_id:
@@ -143,6 +183,7 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "metric": metric,
             "firefox_threads": thread_deltas(before_browser, after_browser),
             "xorg_threads": thread_deltas(before_xorg, after_xorg),
+            "drm_scanout": scanout_delta(before_scanout, after_scanout),
         }
         with args.output.open("x") as stream:
             json.dump(record, stream, sort_keys=True)

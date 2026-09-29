@@ -11,6 +11,7 @@ use template::{
 use self::{
     cmdline::CmdLineFileOps,
     cpuinfo::CpuInfoFileOps,
+    drm_scanout::DrmScanoutFileOps,
     loadavg::LoadAvgFileOps,
     meminfo::MemInfoFileOps,
     mounts::MountsSymOps,
@@ -44,6 +45,7 @@ use crate::{
 
 mod cmdline;
 mod cpuinfo;
+mod drm_scanout;
 mod filesystems;
 mod loadavg;
 mod meminfo;
@@ -154,6 +156,11 @@ impl RootDirOps {
     }
 
     const STATIC_ENTRIES: &'static [StaticEntry] = &[
+        (
+            "asterinas_drm_scanout",
+            InodeType::File,
+            DrmScanoutFileOps::new_inode,
+        ),
         ("cmdline", InodeType::File, CmdLineFileOps::new_inode),
         ("cpuinfo", InodeType::File, CpuInfoFileOps::new_inode),
         (

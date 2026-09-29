@@ -108,7 +108,13 @@ drops, 8.230 seconds of Renderer CPU run, 7.685 seconds of SwComposite CPU
 run, and 0.522 seconds of Xorg CPU run. Preloading and the removal of ptrace
 sampling changed the measurement conditions; this is a better-defined window,
 not evidence of a graphics speedup. The current DRM scanout counters still
-need an on-demand readout to isolate display submission to this window.
+need an on-demand readout to isolate display submission to this window. A
+read-on-demand `/proc/asterinas_drm_scanout` counter and matching bracketing
+logic in `video_manual_phase.py` have now been implemented and passed a
+single RISC-V QEMU kernel test and three host parser tests. They have **not**
+yet been run on the board. The next selected boot must enable the DRM provider
+and phase profile, verify that Xorg holds `/dev/dri/card0`, and repeat the same
+clip. A zero or unavailable counter is not evidence of a fast scanout path.
 
 ## Next gates
 

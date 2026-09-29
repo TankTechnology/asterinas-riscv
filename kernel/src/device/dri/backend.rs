@@ -34,6 +34,7 @@ use core::{
 use aster_framebuffer::{framebuffer::FrameBuffer, pixel::PixelFormat};
 use aster_virtio::device::gpu::device::GpuDevice;
 use ostd::mm::{HasSize, VmIo, io::util::HasVmReaderWriter};
+use spin::Once;
 
 use super::cursor::{CursorPosition, MAX_CURSOR_SIZE};
 use crate::{prelude::*, vm::page_cache::Vmo};
@@ -215,6 +216,88 @@ struct PhaseStats {
     read_ns: u64,
     write_ns: u64,
     direct_ns: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+struct FirmwareBackendStats {
+    present: FirmwarePresentStats,
+    phase: PhaseStats,
+}
+
+#[derive(Clone, Copy)]
+struct FirmwareScanoutSnapshot {
+    at_ns: u64,
+    successes: u64,
+    full_count: u64,
+    full_bytes: u64,
+    full_total_ns: u64,
+    dirty_count: u64,
+    dirty_bytes: u64,
+    dirty_total_ns: u64,
+    sampled_rows: u64,
+    sampled_bytes: u64,
+    read_ns: u64,
+    write_and_sync_ns: u64,
+    direct_copy_and_sync_ns: u64,
+}
+
+impl FirmwareBackendStats {
+    fn record_success(
+        &mut self,
+        kind: PresentKind,
+        bytes: u64,
+        elapsed_ns: u64,
+        finished_at: Duration,
+        phase: Option<PhaseStats>,
+    ) -> Option<(FirmwarePresentStats, PhaseStats)> {
+        let report = self
+            .present
+            .record_success(kind, bytes, elapsed_ns, finished_at);
+        if let Some(phase) = phase {
+            self.phase.add(phase);
+        }
+        report.map(|present| (present, self.phase))
+    }
+
+    fn snapshot(&self, at: Duration) -> FirmwareScanoutSnapshot {
+        FirmwareScanoutSnapshot {
+            at_ns: u64::try_from(at.as_nanos()).unwrap_or(u64::MAX),
+            successes: self.present.total_successes,
+            full_count: self.present.full.count,
+            full_bytes: self.present.full.bytes,
+            full_total_ns: self.present.full.total_ns,
+            dirty_count: self.present.dirty.count,
+            dirty_bytes: self.present.dirty.bytes,
+            dirty_total_ns: self.present.dirty.total_ns,
+            sampled_rows: self.phase.rows,
+            sampled_bytes: self.phase.bytes,
+            read_ns: self.phase.read_ns,
+            write_and_sync_ns: self.phase.write_ns,
+            direct_copy_and_sync_ns: self.phase.direct_ns,
+        }
+    }
+}
+
+impl FirmwareScanoutSnapshot {
+    fn to_proc_line(self, phase_profile: bool) -> String {
+        alloc::format!(
+            "at_ns={} phase_profile={} successes={} full_count={} full_bytes={} full_total_ns={} dirty_count={} dirty_bytes={} dirty_total_ns={} sampled_rows={} sampled_bytes={} read_ns={} write_and_sync_ns={} direct_copy_and_sync_ns={}\n",
+            self.at_ns,
+            u8::from(phase_profile),
+            self.successes,
+            self.full_count,
+            self.full_bytes,
+            self.full_total_ns,
+            self.dirty_count,
+            self.dirty_bytes,
+            self.dirty_total_ns,
+            self.sampled_rows,
+            self.sampled_bytes,
+            self.read_ns,
+            self.write_and_sync_ns,
+            self.direct_copy_and_sync_ns,
+        )
+    }
 }
 
 impl PhaseStats {
@@ -416,8 +499,24 @@ pub(super) struct FirmwareFramebufferBackend {
     row_bytes: usize,
     /// One row of scratch space, so a copy never needs a second full buffer.
     scratch_row: Mutex<Vec<u8>>,
-    present_stats: Mutex<FirmwarePresentStats>,
-    phase_stats: Mutex<PhaseStats>,
+    stats: Mutex<FirmwareBackendStats>,
+}
+
+static FIRMWARE_BACKEND: Once<Arc<FirmwareFramebufferBackend>> = Once::new();
+
+pub(super) fn firmware_backend(framebuffer: Arc<FrameBuffer>) -> Result<Arc<dyn ScanoutBackend>> {
+    let backend = Arc::new(FirmwareFramebufferBackend::new(framebuffer)?);
+    FIRMWARE_BACKEND.call_once(|| Arc::clone(&backend));
+    Ok(backend)
+}
+
+/// Returns a read-on-demand snapshot without adding per-frame log traffic.
+pub(super) fn firmware_snapshot_line() -> Option<String> {
+    let backend = FIRMWARE_BACKEND.get()?;
+    let stats = backend.stats.lock();
+    let snapshot = stats.snapshot(aster_time::read_monotonic_time());
+    drop(stats);
+    Some(snapshot.to_proc_line(PHASE_PROFILE.load(Ordering::Relaxed)))
 }
 
 impl FirmwareFramebufferBackend {
@@ -441,8 +540,7 @@ impl FirmwareFramebufferBackend {
             height,
             row_bytes,
             scratch_row: Mutex::new(vec![0; row_bytes]),
-            present_stats: Mutex::new(FirmwarePresentStats::default()),
-            phase_stats: Mutex::new(PhaseStats::default()),
+            stats: Mutex::new(FirmwareBackendStats::default()),
         })
     }
 
@@ -452,12 +550,13 @@ impl FirmwareFramebufferBackend {
         bytes: u64,
         started: Duration,
         finished: Duration,
-    ) -> Option<FirmwarePresentStats> {
+        phase: Option<PhaseStats>,
+    ) -> Option<(FirmwarePresentStats, PhaseStats)> {
         let elapsed = finished.saturating_sub(started);
         let elapsed_ns = u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX);
-        self.present_stats
+        self.stats
             .lock()
-            .record_success(kind, bytes, elapsed_ns, finished)
+            .record_success(kind, bytes, elapsed_ns, finished, phase)
     }
 
     fn log_present(report: FirmwarePresentStats) {
@@ -476,12 +575,7 @@ impl FirmwareFramebufferBackend {
         );
     }
 
-    fn log_phase(&self, sample: PhaseStats) {
-        if sample.rows == 0 {
-            return;
-        }
-        let mut totals = self.phase_stats.lock();
-        totals.add(sample);
+    fn log_phase(totals: PhaseStats) {
         ostd::info!(
             "ASTERINAS_DRM_PHASE sampled_rows={} sampled_bytes={} read_ns={} write_and_sync_ns={} direct_copy_and_sync_ns={}",
             totals.rows,
@@ -710,15 +804,19 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
         let copied_bytes =
             u64::try_from(self.row_bytes.saturating_mul(height as usize)).unwrap_or(u64::MAX);
         let finished = aster_time::read_monotonic_time();
-        let report = self.record_present(PresentKind::Full, copied_bytes, started, finished);
+        let report = self.record_present(
+            PresentKind::Full,
+            copied_bytes,
+            started,
+            finished,
+            profile.then_some(phase),
+        );
         drop(scratch_row);
-        if profile && report.is_some() {
-            self.log_phase(phase);
-        } else if profile {
-            self.phase_stats.lock().add(phase);
-        }
-        if let Some(report) = report {
-            Self::log_present(report);
+        if let Some((present, totals)) = report {
+            if profile && phase.rows != 0 {
+                Self::log_phase(totals);
+            }
+            Self::log_present(present);
         }
         Ok(())
     }
@@ -787,15 +885,19 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
             }
         }
         let finished = aster_time::read_monotonic_time();
-        let report = self.record_present(PresentKind::Dirty, copied_bytes, started, finished);
+        let report = self.record_present(
+            PresentKind::Dirty,
+            copied_bytes,
+            started,
+            finished,
+            profile.then_some(phase),
+        );
         drop(scratch_row);
-        if profile && report.is_some() {
-            self.log_phase(phase);
-        } else if profile {
-            self.phase_stats.lock().add(phase);
-        }
-        if let Some(report) = report {
-            Self::log_present(report);
+        if let Some((present, totals)) = report {
+            if profile && phase.rows != 0 {
+                Self::log_phase(totals);
+            }
+            Self::log_present(present);
         }
         Ok(())
     }
@@ -1107,6 +1209,39 @@ mod tests {
         assert_eq!(stats.dirty.bytes, 3_072);
         assert_eq!(stats.dirty.total_ns, 120_000);
         assert_eq!(stats.dirty.max_ns, 70_000);
+    }
+
+    #[ktest]
+    fn firmware_scanout_snapshot_keeps_present_and_phase_in_one_record() {
+        let mut stats = FirmwareBackendStats::default();
+        stats.record_success(
+            PresentKind::Dirty,
+            4_096,
+            2_000_000,
+            Duration::from_secs(1),
+            None,
+        );
+        stats.record_success(
+            PresentKind::Dirty,
+            8_192,
+            3_000_000,
+            Duration::from_secs(2),
+            Some(PhaseStats {
+                rows: 3,
+                bytes: 1_024,
+                read_ns: 0,
+                write_ns: 0,
+                direct_ns: 40_000,
+            }),
+        );
+        let snapshot = stats.snapshot(Duration::from_secs(3));
+        assert_eq!(snapshot.successes, 2);
+        assert_eq!(snapshot.dirty_count, 2);
+        assert_eq!(snapshot.dirty_bytes, 12_288);
+        assert_eq!(snapshot.dirty_total_ns, 5_000_000);
+        assert_eq!(snapshot.sampled_rows, 3);
+        assert_eq!(snapshot.direct_copy_and_sync_ns, 40_000);
+        assert_eq!(snapshot.at_ns, 3_000_000_000);
     }
 
     #[ktest]

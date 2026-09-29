@@ -48,7 +48,7 @@ use ostd::{
 use self::{
     backend::{
         CursorBackend, CursorGeometry, CursorScanoutBuffer, DamageRect,
-        FirmwareFramebufferBackend, ScanoutBackend, ScanoutBuffer,
+        FirmwareFramebufferBackend, ScanoutBackend, ScanoutBuffer, firmware_backend,
     },
     cursor::{
         CursorBuffer, CursorImage, CursorState, DrmModeCursor, DrmModeCursor2, MODE_CURSOR_BO,
@@ -408,6 +408,10 @@ pub(super) fn driver_name() -> &'static str {
     display_source().map_or(DRIVER_NAME, |source| source.driver_name())
 }
 
+pub(super) fn firmware_snapshot_line() -> Option<String> {
+    backend::firmware_snapshot_line()
+}
+
 /// Builds the presentation devices for a source.
 fn display_device(source: DisplaySource) -> Result<DisplayDevice> {
     let name = source.driver_name();
@@ -431,14 +435,14 @@ fn display_device(source: DisplaySource) -> Result<DisplayDevice> {
                         Ok(native) => Arc::new(native) as Arc<dyn ScanoutBackend>,
                         Err(error) => {
                             ostd::warn!("ASTERINAS_DC_NATIVE fallback=firmware error={error:?}");
-                            Arc::new(FirmwareFramebufferBackend::new(framebuffer)?)
+                            firmware_backend(framebuffer)?
                         }
                     }
                 } else {
-                    Arc::new(FirmwareFramebufferBackend::new(framebuffer)?)
+                    firmware_backend(framebuffer)?
                 }
                 #[cfg(not(target_arch = "riscv64"))]
-                Arc::new(FirmwareFramebufferBackend::new(framebuffer)?)
+                firmware_backend(framebuffer)?
             },
             // The firmware backend owns no display hardware, so it cannot
             // place a cursor. `None` is what makes the driver refuse cursor
