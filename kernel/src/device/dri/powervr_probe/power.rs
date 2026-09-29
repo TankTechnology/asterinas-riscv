@@ -439,6 +439,12 @@ impl FileOps for PowerControlFile {
             staged.pages,
             staged.daddr,
         );
+        if let Some(root) = staged.mmu_code_root {
+            aster_logger::println!(
+                "ASTERINAS_POWERVR_MMU status=code_table_prepared root_daddr={:#x} gpu_root_installed=0 gpu_visibility=unverified",
+                root,
+            );
+        }
         Ok(len)
     }
 }

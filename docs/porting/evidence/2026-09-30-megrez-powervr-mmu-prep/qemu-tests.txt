@@ -1,0 +1,16 @@
+RISC-V QEMU kernel tests (one exact test selected per run)
+
+test aster_kernel::device::dri::powervr_probe::mmu::tests::gpu_mmu4_encodes_rockos_page_table_entries ... ok
+test result: ok. 1 passed; 0 failed; 325 filtered out.
+
+test aster_kernel::device::dri::powervr_probe::mmu::tests::gpu_mmu4_rejects_unaligned_and_out_of_range_addresses ... ok
+test result: ok. 1 passed; 0 failed; 325 filtered out.
+
+test aster_kernel::device::dri::powervr_probe::mmu::tests::gpu_mmu4_page_indices_cross_pt_and_pd_boundaries ... ok
+test result: ok. 1 passed; 0 failed; 325 filtered out.
+
+test aster_kernel::device::dri::powervr_probe::mmu::tests::gpu_mmu4_maps_only_an_owned_dma_allocation_across_table_boundary ... ok
+test result: ok. 1 passed; 0 failed; 326 filtered out.
+
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_prepares_owned_code_mapping_after_all_four_segments ... ok
+test result: ok. 1 passed; 0 failed; 327 filtered out.
