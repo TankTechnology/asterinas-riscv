@@ -1,0 +1,10 @@
+
+root@asterinas-debug:/# printf 'BEGIN_af27592f27bafcd9\n'; _pid=$(pgrep -xo fire fox); nsenter -t "$_pid" -n curl -fsS --max-time 5 http://10.100.19.216:17897/ni ce_share_probe.py -o /run/nice_share_probe.py && printf "5b3a6c2823840e4e8727a3d 9fb2cd4e4ed01c48ec0577d0ade310460f18003cf  /run/nice_share_probe.py\n" | sha256s um -c - && python3 -u /run/nice_share_probe.py; printf 'END_af27592f27bafcd9=%s\ n' "$?"
+BEGIN_af27592f27bafcd9
+/run/nice_share_probe.py: OK
+BOOT_ID d5e68c9c-bd7e-452d-b5d9-56c73a1574b4
+SHARE phase=equal name=foreground nice=0 cpu_ms=996.528 iterations=713643
+SHARE phase=equal name=background nice=0 cpu_ms=1001.413 iterations=632202
+SHARE phase=deprioritized name=foreground nice=0 cpu_ms=1805.72 iterations=1511744
+SHARE phase=deprioritized name=background nice=10 cpu_ms=192.699 iterations=159352
+END_af27592f27bafcd9=0
