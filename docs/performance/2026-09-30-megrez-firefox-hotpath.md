@@ -135,6 +135,28 @@ counter does not prove HDMI pixels were shown, and it records no GPU work.
 YUV conversion and composition still need separate stage timing beyond the
 earlier saved-PC localization.
 
+## Selected native scanout follow-up
+
+The same release Image and clip ran with the opt-in EIC7700 native scanout
+flag. The [bounded board record](evidence/2026-09-30-megrez-video-native-window/)
+confirms DRM Xorg held `/dev/dri/card0`, the native backend submitted a GEM
+address, and the firmware-copy counter was unavailable. The 10.193-second
+playback reported 123 dropped of 300 frames, 7.752 seconds of Renderer CPU,
+7.343 seconds of SwComposite CPU, and 0.866 seconds of Xorg CPU. This is a
+single run on a different selected boot from the firmware-copy and fbdev
+trials, so its drop count is not a stable comparative speedup. More
+importantly, removing the firmware-copy backend still left roughly 41% of
+frames dropped, far from the 5% acceptance target.
+
+The board's Firefox 143.0.3 did not expose the Gecko profiler component or
+`nsIProfiler` even when the documented temporary Marionette system-access
+flag allowed a chrome-context probe. Startup profiling variables produced no
+profile on service stop. Thus the existing saved-PC samples still localize
+the software YUV and blit work, but **do not yield separate millisecond
+budgets** for those two stages. The temporary browser flag was removed and
+the usual fbdev desktop and Firefox were verified through a fresh root serial
+connection and Marionette session.
+
 ## Next gates
 
 1. Complete the PowerVR firmware layout and bounded DMA/GPU-MMU ownership

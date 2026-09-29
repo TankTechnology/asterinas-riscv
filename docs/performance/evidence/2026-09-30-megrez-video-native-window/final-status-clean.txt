@@ -1,0 +1,12 @@
+0
+f000cb81-3032-4f99-b3f0-20ee94134a98
+0
+f000cb81-3032-4f99-b3f0-20ee94134a98
+asterinas.dc_native_scanout=1
+active
+active
+1499 /usr/lib/xorg/Xorg :0 -noreset -nolisten tcp -ac -novtswitch -keeptty -extension GLX -configdir /run/asterinas-physical-display-providers/fbdev/xorg.conf.d -logfile /home/asterinas/Xorg.0.log vt1
+lrwx------ 1 root root 0 Sep 29 22:53 11 -> /dev/fb0
+  dimensions:    1920x1080 pixels (508x286 millimeters)
+PROFILER_OVERRIDE_REMOVED
+PROFILE_FLAG_REMOVED
