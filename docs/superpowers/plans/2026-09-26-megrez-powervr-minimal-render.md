@@ -73,8 +73,10 @@ acceptance item.
 The subsequent [bounded META LDR scan](../../porting/evidence/2026-09-30-megrez-powervr-fw-layout/README.md)
 walked all 56 linked blocks of the staged image, checked the load/zero
 destinations against its allocations, and identified the vendor's coremem-data
-zero skip. It did not materialize firmware memory, configure GPU MMU mappings,
-or execute the 17 requested boot-configuration writes.
+zero skip. It now materializes four root-private, temporary CPU buffers with
+recorded SHA-256 values. Those buffers have not been loaded into GPU-owned
+DMA, mapped through the GPU MMU, or augmented with the 17 requested
+boot-configuration writes.
 
 - [ ] Allocate pinned, zeroed GPU memory through `DmaCoherent`/`DmaStream` with checked size limits and ownership tied to the GPU session. Establish and test the board's actual device-address range; do not assume CPU virtual addresses are GPU addresses.
 - [ ] For the DT-declared noncoherent GPU, demonstrate a correct CPU/device visibility path using RISC-V cache synchronization or an uncached alias. Reject the selected boot if neither is available. Map only owned buffers into the GPU MMU and require the GPU page tables to reference those allocations.

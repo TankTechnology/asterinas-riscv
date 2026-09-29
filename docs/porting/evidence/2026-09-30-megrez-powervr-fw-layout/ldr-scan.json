@@ -16,6 +16,12 @@
     "coremem_data": 796,
     "data": 10220
   },
+  "segment_sha256": {
+    "code": "7c22b80949c48e35420a04f5f71b0faeadb9a657c370f89d24657f2418080e2e",
+    "coremem_code": "7f75ec7ac5c8247ba486a9baad62506a76c1b41a7d67857ca6c63af530de3074",
+    "coremem_data": "ec65090b65fdf0202c5321bd83d315764f99e4724791a564c16e050af756a3d9",
+    "data": "d1e3c7ec9dce4f150a39c11a865ccfd80375c70758e079b23bf58d398876b6fd"
+  },
   "boot_config_writes": 17,
   "skipped_coremem_data_zero_bytes": 7418
 }

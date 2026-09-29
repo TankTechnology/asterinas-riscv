@@ -39,9 +39,21 @@ ZEROMEM skip applied to 7,418 bytes; the scanner restricts that skip to the
 image-declared coremem span rather than accepting arbitrary addresses.
 [`ldr-scan.json`](ldr-scan.json) contains this metadata. The scanner's host
 and guest SHA-256 both matched
-`5902a287d3d97f7cacb538bb7763b8768d7ab29ee3b69ac8e691fb064f1a21c5`.
-No LDR command was executed, no firmware buffers were materialized, and no
-GPU address translation or firmware handshake was exercised.
+`353076cf91ba51068b5d428a29f3cf496b2fdd3e7e1835a4423f9d3f7b71ef5e`.
+The scanner now applies the LOADMEM and ZEROMEM commands in order to four
+private `/run/asterinas-powervr-staged-20260930/*.bin` files on the board.
+The directory mode is `0700`, each file mode is `0600`, and their SHA-256
+values match the four `segment_sha256` fields in `ldr-scan.json`. No firmware
+or prepared segment bytes are committed. With 4 KiB page rounding the four
+segments require 13 code, 5 data, 18 coremem-code, and 3 coremem-data pages.
+These hashes cover only the LDR-populated buffers; the META boot configuration
+depends on GPU device virtual addresses and has not been applied. No GPU
+address translation, DMA visibility, firmware handshake, or pixel rendering
+was exercised. A fresh nonce-framed serial connection after staging still
+returned UID 0 and the same boot ID. The [staging serial transcript](materialized-stage.serial.log)
+and [postcheck transcript](materialized-postcheck.serial.log) retain the
+observed file modes and independent `sha256sum` output; carriage returns from
+terminal line wrapping were removed for readability.
 
 [`layout.json`](layout.json) contains only metadata and a digest; licensed
 firmware bytes are not stored in Git. The parser is

@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter
+import hashlib
 import json
+import os
 from pathlib import Path
 import struct
 import sys
@@ -44,7 +46,7 @@ def _l2_payload(image: bytes, pointer: int, payload_end: int) -> bytes:
 
 def _section_for_write(
     address: int, size: int, sections: list[dict[str, int | str]]
-) -> str:
+) -> tuple[str, int]:
     if size <= 0:
         raise ValueError("zero-length LDR memory write")
     for candidate in (address, address & ~GLOBAL_RANGE_BIT):
@@ -57,7 +59,7 @@ def _section_for_write(
                         f"LDR write exceeds its firmware allocation: "
                         f"address={address:#x} size={size}"
                     )
-                return str(section["type"])
+                return str(section["type"]), section["alloc_offset"] + candidate - base
     raise ValueError(f"LDR write address is outside firmware allocations: {address:#x} size={size}")
 
 
@@ -72,7 +74,7 @@ def _is_bounded_coremem_data_zero(
     )
 
 
-def scan_ldr(image: bytes) -> dict[str, object]:
+def _prepare_ldr(image: bytes) -> tuple[dict[str, object], dict[str, bytearray]]:
     layout = inspect_firmware(image)
     payload_end = len(image) - FW_BLOCK_SIZE
     if payload_end < LDR_HEADER.size:
@@ -84,6 +86,9 @@ def scan_ldr(image: bytes) -> dict[str, object]:
     seen: set[int] = set()
     commands: Counter[str] = Counter()
     write_bytes: Counter[str] = Counter()
+    buffers = {
+        kind: bytearray(size) for kind, size in layout["allocation_bytes"].items()
+    }
     boot_config_writes = 0
     skipped_coremem_data_zero_bytes = 0
     while pointer != END_OF_CHAIN:
@@ -110,7 +115,8 @@ def scan_ldr(image: bytes) -> dict[str, object]:
                 raise ValueError("META LDR memory command is missing arguments")
             target, operand = struct.unpack_from("<II", image, pointer + L1_HEADER.size)
             if command == 0:
-                size = len(_l2_payload(image, operand, payload_end))
+                payload = _l2_payload(image, operand, payload_end)
+                size = len(payload)
             else:
                 size = operand
             if command == 4 and _is_bounded_coremem_data_zero(
@@ -119,9 +125,13 @@ def scan_ldr(image: bytes) -> dict[str, object]:
                 skipped_coremem_data_zero_bytes += size
             else:
                 try:
-                    section = _section_for_write(target, size, layout["sections"])
+                    address = target if command == 0 else target & ~GLOBAL_RANGE_BIT
+                    section, offset = _section_for_write(address, size, layout["sections"])
                 except ValueError as error:
                     raise ValueError(f"L1={pointer:#x} {name}: {error}") from error
+                buffers[section][offset : offset + size] = (
+                    payload if command == 0 else bytes(size)
+                )
                 write_bytes[section] += size
         elif command == 5:
             if length < 12:
@@ -137,26 +147,57 @@ def scan_ldr(image: bytes) -> dict[str, object]:
                 boot_config_writes += 1
         pointer = next_pointer
 
-    return {
+    summary = {
         "firmware_sha256": layout["sha256"],
         "processor": layout["processor"],
         "l1_start": LDR_HEADER.unpack_from(image)[2],
         "blocks": len(seen),
         "command_counts": dict(sorted(commands.items())),
         "write_bytes": dict(sorted(write_bytes.items())),
+        "segment_sha256": {
+            kind: hashlib.sha256(buffer).hexdigest()
+            for kind, buffer in sorted(buffers.items())
+        },
         "boot_config_writes": boot_config_writes,
         "skipped_coremem_data_zero_bytes": skipped_coremem_data_zero_bytes,
     }
+    return summary, buffers
+
+
+def scan_ldr(image: bytes) -> dict[str, object]:
+    summary, _ = _prepare_ldr(image)
+    return summary
+
+
+def _stage_buffers(output_dir: Path, buffers: dict[str, bytearray]) -> None:
+    output_dir.mkdir(mode=0o700)
+    written: list[Path] = []
+    try:
+        output_dir.chmod(0o700)
+        for kind, buffer in sorted(buffers.items()):
+            path = output_dir / f"{kind}.bin"
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                written.append(path)
+                stream.write(buffer)
+    except Exception:
+        for path in written:
+            path.unlink(missing_ok=True)
+        output_dir.rmdir()
+        raise
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("firmware", type=Path)
+    parser.add_argument("--output-dir", type=Path, help="new private directory for prepared segments")
     args = parser.parse_args()
     try:
         if args.firmware.stat().st_size > 16 * 1024 * 1024:
             raise ValueError("firmware exceeds the 16 MiB preflight limit")
-        result = scan_ldr(args.firmware.read_bytes())
+        result, buffers = _prepare_ldr(args.firmware.read_bytes())
+        if args.output_dir is not None:
+            _stage_buffers(args.output_dir, buffers)
     except (OSError, ValueError) as error:
         parser.error(str(error))
     json.dump(result, sys.stdout, indent=2)
