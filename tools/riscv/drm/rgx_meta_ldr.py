@@ -74,7 +74,11 @@ def _is_bounded_coremem_data_zero(
     )
 
 
-def _prepare_ldr(image: bytes) -> tuple[dict[str, object], dict[str, bytearray]]:
+def _prepare_ldr(
+    image: bytes,
+) -> tuple[
+    dict[str, object], dict[str, bytearray], list[tuple[int, int]], list[tuple[int, int]]
+]:
     layout = inspect_firmware(image)
     payload_end = len(image) - FW_BLOCK_SIZE
     if payload_end < LDR_HEADER.size:
@@ -90,6 +94,8 @@ def _prepare_ldr(image: bytes) -> tuple[dict[str, object], dict[str, bytearray]]
         kind: bytearray(size) for kind, size in layout["allocation_bytes"].items()
     }
     boot_config_writes = 0
+    boot_config_pairs: list[tuple[int, int]] = []
+    code_writes: list[tuple[int, int]] = []
     skipped_coremem_data_zero_bytes = 0
     while pointer != END_OF_CHAIN:
         if pointer in seen:
@@ -133,6 +139,8 @@ def _prepare_ldr(image: bytes) -> tuple[dict[str, object], dict[str, bytearray]]
                     payload if command == 0 else bytes(size)
                 )
                 write_bytes[section] += size
+                if section == "code":
+                    code_writes.append((offset, offset + size))
         elif command == 5:
             if length < 12:
                 raise ValueError("META LDR config command is missing its L2 pointer")
@@ -141,10 +149,11 @@ def _prepare_ldr(image: bytes) -> tuple[dict[str, object], dict[str, bytearray]]
             if len(data) % 12:
                 raise ValueError("META LDR config data has a partial register write")
             for offset in range(0, len(data), 12):
-                (operation,) = struct.unpack_from("<I", data, offset)
+                operation, register, value = struct.unpack_from("<III", data, offset)
                 if operation != 2:
                     raise ValueError(f"unsupported META LDR config operation {operation}")
                 boot_config_writes += 1
+                boot_config_pairs.append((register, value))
         pointer = next_pointer
 
     summary = {
@@ -161,11 +170,11 @@ def _prepare_ldr(image: bytes) -> tuple[dict[str, object], dict[str, bytearray]]
         "boot_config_writes": boot_config_writes,
         "skipped_coremem_data_zero_bytes": skipped_coremem_data_zero_bytes,
     }
-    return summary, buffers
+    return summary, buffers, boot_config_pairs, code_writes
 
 
 def scan_ldr(image: bytes) -> dict[str, object]:
-    summary, _ = _prepare_ldr(image)
+    summary, _, _, _ = _prepare_ldr(image)
     return summary
 
 
@@ -195,7 +204,7 @@ def main() -> int:
     try:
         if args.firmware.stat().st_size > 16 * 1024 * 1024:
             raise ValueError("firmware exceeds the 16 MiB preflight limit")
-        result, buffers = _prepare_ldr(args.firmware.read_bytes())
+        result, buffers, _, _ = _prepare_ldr(args.firmware.read_bytes())
         if args.output_dir is not None:
             _stage_buffers(args.output_dir, buffers)
     except (OSError, ValueError) as error:

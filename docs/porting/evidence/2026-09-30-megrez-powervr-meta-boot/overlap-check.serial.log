@@ -1,0 +1,8 @@
+
+root@asterinas-debug:/run/asterinas-powervr-boot-preflight-20260930# printf 'BEG IN_d9839d4d8242cd85\n'; cd /run/asterinas-powervr-boot-preflight-20260930 && cur l -fsS --noproxy "*" -o rgx_meta_ldr.py http://10.100.19.216:17898/rgx_meta_ldr. py && curl -fsS --noproxy "*" -o rgx_meta_boot.py http://10.100.19.216:17898/rgx _meta_boot.py && sha256sum rgx_meta_ldr.py rgx_meta_boot.py && python3 -c "from  rgx_meta_boot import prepare_meta_boot; s,b=prepare_meta_boot(open(\"/lib/firmwa re/rgx.fw.30.3.408.101\",\"rb\").read()); print(s[\"boot_config_sha256\"], s[\"s egment_sha256\"][\"code\"])"; printf 'END_d9839d4d8242cd85=%s\n' "$?"
+BEGIN_d9839d4d8242cd85
+488e44a81af61fe3ff9e3b11614ea00a5611749502f825b25cbd1b53d01a0fe5  rgx_meta_ldr.py
+8e68c7efa53087a48b7d3360b18c5739dcec0bd6ba59221514717ee5ac74a97e  rgx_meta_boot.py
+2c70442a16a343dbae1312d3d1f54fedf773a26d544ff4702c58cb8fcd88d4d5 77bb4e9e42f25a40e67e9002c5f76fa7c5a702cb5efe42ffaad57594dc244118
+END_d9839d4d8242cd85=0
+root@asterinas-debug:/run/aster
