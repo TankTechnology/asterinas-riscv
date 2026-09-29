@@ -2,7 +2,13 @@
 
 //! Bounded DMA ownership for the selected Megrez PowerVR session.
 
-use ostd::mm::{HasDaddr, HasPaddr, HasSize, PAGE_SIZE, dma::DmaCoherent, io::VmIoOnce};
+use alloc::{vec, vec::Vec};
+
+use ostd::mm::{
+    HasDaddr, HasPaddr, HasSize, PAGE_SIZE,
+    dma::DmaCoherent,
+    io::{VmIo, VmIoOnce},
+};
 
 // RockOS bf2ec5d5 eswin_cpu/sysconfig.c uses an identity UMA physical heap
 // and a 40-bit DMA mask. Restrict initial allocations to Die 0 DRAM, where
@@ -11,6 +17,74 @@ const DIE0_DRAM_START: usize = 0x8000_0000;
 const DIE0_DRAM_END: usize = 0x4_8000_0000;
 const GPU_DMA_LIMIT: usize = 1 << 40;
 const MAX_PROBE_PAGES: usize = 256;
+const STAGE_HEADER_SIZE: usize = 12;
+const STAGE_SEGMENT_SIZES: [usize; 4] = [52_064, 18_432, 73_312, 9_984];
+
+pub(super) fn parse_stage_frame(frame: &[u8]) -> Result<(usize, &[u8]), &'static str> {
+    if frame.len() < STAGE_HEADER_SIZE || &frame[..4] != b"PVR1" {
+        return Err("gpu_dma_stage_invalid_header");
+    }
+    let segment = u32::from_le_bytes(
+        frame[4..8]
+            .try_into()
+            .map_err(|_| "gpu_dma_stage_invalid_header")?,
+    ) as usize;
+    let length = u32::from_le_bytes(
+        frame[8..12]
+            .try_into()
+            .map_err(|_| "gpu_dma_stage_invalid_header")?,
+    ) as usize;
+    if STAGE_SEGMENT_SIZES.get(segment) != Some(&length)
+        || frame.len() != STAGE_HEADER_SIZE + length
+    {
+        return Err("gpu_dma_stage_invalid_segment");
+    }
+    Ok((segment, &frame[STAGE_HEADER_SIZE..]))
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct StagedSegment {
+    pub(super) segment: usize,
+    pub(super) bytes: usize,
+    pub(super) pages: usize,
+    pub(super) daddr: usize,
+}
+
+#[derive(Default)]
+pub(super) struct GpuFirmwareStage {
+    segments: [Option<GpuDmaAllocation>; 4],
+}
+
+impl GpuFirmwareStage {
+    pub(super) fn stage_frame(&mut self, frame: &[u8]) -> Result<StagedSegment, &'static str> {
+        let (segment, payload) = parse_stage_frame(frame)?;
+        if self.segments[segment].is_some() {
+            return Err("gpu_dma_stage_duplicate_segment");
+        }
+        let pages = payload.len().div_ceil(PAGE_SIZE);
+        let allocation = GpuDmaAllocation::new(pages)?;
+        allocation
+            .memory
+            .write_bytes(0, payload)
+            .map_err(|_| "gpu_dma_stage_cpu_write_failed")?;
+        let mut readback: Vec<u8> = vec![0; payload.len()];
+        allocation
+            .memory
+            .read_bytes(0, &mut readback)
+            .map_err(|_| "gpu_dma_stage_cpu_read_failed")?;
+        if readback != payload {
+            return Err("gpu_dma_stage_cpu_readback_mismatch");
+        }
+        let staged = StagedSegment {
+            segment,
+            bytes: payload.len(),
+            pages,
+            daddr: allocation.daddr(),
+        };
+        self.segments[segment] = Some(allocation);
+        Ok(staged)
+    }
+}
 
 fn validate_dma_range(paddr: usize, daddr: usize, size: usize) -> Result<(), &'static str> {
     if size == 0 || !size.is_multiple_of(PAGE_SIZE) {
@@ -88,7 +162,7 @@ impl GpuDmaAllocation {
 mod tests {
     use ostd::prelude::ktest;
 
-    use super::validate_dma_range;
+    use super::{GpuFirmwareStage, parse_stage_frame, validate_dma_range};
 
     #[ktest]
     fn gpu_dma_accepts_only_identity_mapped_die0_pages_below_40_bits() {
@@ -112,6 +186,58 @@ mod tests {
         assert_eq!(
             validate_dma_range(usize::MAX - 4095, usize::MAX - 4095, 4096),
             Err("gpu_dma_outside_die0_dram")
+        );
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_accepts_one_exact_segment_frame() {
+        let mut frame = b"PVR1".to_vec();
+        frame.extend_from_slice(&0u32.to_le_bytes());
+        frame.extend_from_slice(&52_064u32.to_le_bytes());
+        frame.extend(core::iter::repeat_n(0xa5, 52_064));
+
+        let (segment, payload) = parse_stage_frame(&frame).unwrap();
+        assert_eq!(segment, 0);
+        assert_eq!(payload.len(), 52_064);
+        assert!(payload.iter().all(|byte| *byte == 0xa5));
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_rejects_wrong_identity_and_truncated_or_trailing_data() {
+        let mut frame = b"PVR1".to_vec();
+        frame.extend_from_slice(&1u32.to_le_bytes());
+        frame.extend_from_slice(&18_432u32.to_le_bytes());
+        frame.extend(core::iter::repeat_n(0x5a, 18_432));
+
+        assert_eq!(parse_stage_frame(&frame).unwrap().0, 1);
+        frame[0] = b'X';
+        assert!(parse_stage_frame(&frame).is_err());
+        frame[0] = b'P';
+        frame.pop();
+        assert!(parse_stage_frame(&frame).is_err());
+        frame.push(0);
+        frame.push(0);
+        assert!(parse_stage_frame(&frame).is_err());
+        frame.pop();
+        frame[4..8].copy_from_slice(&4u32.to_le_bytes());
+        assert!(parse_stage_frame(&frame).is_err());
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_keeps_one_owned_cpu_verified_copy_per_segment() {
+        let mut frame = b"PVR1".to_vec();
+        frame.extend_from_slice(&3u32.to_le_bytes());
+        frame.extend_from_slice(&9_984u32.to_le_bytes());
+        frame.extend(core::iter::repeat_n(0x5a, 9_984));
+
+        let mut stage = GpuFirmwareStage::default();
+        let staged = stage.stage_frame(&frame).unwrap();
+        assert_eq!(staged.segment, 3);
+        assert_eq!(staged.bytes, 9_984);
+        assert_eq!(staged.pages, 3);
+        assert_eq!(
+            stage.stage_frame(&frame),
+            Err("gpu_dma_stage_duplicate_segment")
         );
     }
 }

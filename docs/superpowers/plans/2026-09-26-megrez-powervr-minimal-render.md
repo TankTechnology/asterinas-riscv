@@ -78,6 +78,19 @@ recorded SHA-256 values. Those buffers have not been loaded into GPU-owned
 DMA, mapped through the GPU MMU, or augmented with the 17 requested
 boot-configuration writes.
 
+The next selected-boot preflight has a root-only DMA staging endpoint behind
+`asterinas.powervr=1 asterinas.powervr_dma_stage=1`. The
+[`powervr_dma_stage.py`](../../../tools/riscv/drm/powervr_dma_stage.py) client
+checks all four sizes and pinned SHA-256 values before opening the control
+device, then writes four exact frames within one exclusive session. The
+kernel bounds each frame, uses pinned uncached `DmaCoherent` allocations, and
+checks a CPU readback. QEMU tests cover frame rejection, duplicate segments,
+and one actual DMA copy; the test wrapper now rejects zero selected tests.
+This is an implemented **CPU-side preflight**, not yet exercised on the board.
+It does not establish GPU visibility, MMU mappings, firmware startup, or a
+pixel result. A selected board boot and fresh serial recovery check are still
+required before treating the DMA staging step as physically validated.
+
 - [ ] Allocate pinned, zeroed GPU memory through `DmaCoherent`/`DmaStream` with checked size limits and ownership tied to the GPU session. Establish and test the board's actual device-address range; do not assume CPU virtual addresses are GPU addresses.
 - [ ] For the DT-declared noncoherent GPU, demonstrate a correct CPU/device visibility path using RISC-V cache synchronization or an uncached alias. Reject the selected boot if neither is available. Map only owned buffers into the GPU MMU and require the GPU page tables to reference those allocations.
 - [ ] Load the exact BVNC-matched firmware and shader blobs from the selected root image. Report firmware handshake and GPU fault/timeout counters. Bound every wait and ensure reset/cleanup on failed handshake.
