@@ -21,13 +21,15 @@ FILTERS = {"auto": "auto", "crisp": "crisp-edges"}
 
 HTML = """<!doctype html><meta charset="utf-8"><title>Asterinas 300-frame VP8 probe</title>
 <style>body{margin:0;background:#111;color:white;font:20px sans-serif}#status{padding:12px}</style>
-<video id="clip" muted playsinline autoplay width="WIDTH" height="HEIGHT" style="image-rendering: FILTER" src="/clip720.webm"></video><div id="status">Preparing</div>
+<video id="clip" muted playsinlinePRELOADAUTOPLAY width="WIDTH" height="HEIGHT" style="image-rendering: FILTER" src="/clip720.webm"></video><div id="status">Preparing</div><button id="start-probe" hidden>Start</button>
 <script>
 (() => {
   const video = document.getElementById('clip');
+  const startButton = document.getElementById('start-probe');
   const run = 'RUNID';
   let playingAt = null;
   let done = false;
+  let started = false;
   const finish = async (state, reason='') => {
     if (done) return; done = true;
     const q = video.getVideoPlaybackQuality ? video.getVideoPlaybackQuality() : null;
@@ -51,14 +53,30 @@ HTML = """<!doctype html><meta charset="utf-8"><title>Asterinas 300-frame VP8 pr
   video.addEventListener('playing', () => { if (playingAt === null) playingAt=performance.now(); });
   video.addEventListener('ended', () => finish('ended'));
   video.addEventListener('error', () => finish('error', String(video.error?.code ?? 'unknown')));
-  setTimeout(() => finish('timeout'), 30000);
-  video.play().catch(error => finish('play-error', String(error)));
+  video.addEventListener('loadeddata', () => {
+    if (!started) document.getElementById('status').textContent = 'Ready';
+  });
+  window.startProbe = () => {
+    if (started || done) return false;
+    started = true;
+    startButton.dataset.started = '1';
+    setTimeout(() => finish('timeout'), 30000);
+    video.play().catch(error => finish('play-error', String(error)));
+    return true;
+  };
+  startButton.addEventListener('click', window.startProbe);
+  if (AUTO_START) startButton.click();
 })();
 </script>"""
 
 
-def render_page(run: str, size: str, sampling: str) -> bytes:
-    if RUN.fullmatch(run) is None or size not in SIZES or sampling not in FILTERS:
+def render_page(run: str, size: str, sampling: str, *, start: str = "auto") -> bytes:
+    if (
+        RUN.fullmatch(run) is None
+        or size not in SIZES
+        or sampling not in FILTERS
+        or start not in ("auto", "manual")
+    ):
         raise ValueError("invalid video probe variant")
     width, height = SIZES[size]
     return (
@@ -66,6 +84,9 @@ def render_page(run: str, size: str, sampling: str) -> bytes:
         .replace("WIDTH", str(width))
         .replace("HEIGHT", str(height))
         .replace("FILTER", FILTERS[sampling])
+        .replace("PRELOAD", ' preload="auto"' if start == "manual" else "")
+        .replace("AUTOPLAY", " autoplay" if start == "auto" else "")
+        .replace("AUTO_START", "true" if start == "auto" else "false")
         .encode()
     )
 
@@ -83,9 +104,13 @@ def make_handler(root: Path):
             if any(len(values.get(key, ())) != 1 for key in ("run", "size", "filter")):
                 self.send_error(400)
                 return
+            if len(values.get("start", ())) > 1:
+                self.send_error(400)
+                return
             try:
                 body = render_page(
-                    values["run"][0], values["size"][0], values["filter"][0]
+                    values["run"][0], values["size"][0], values["filter"][0],
+                    start=values.get("start", ["auto"])[0],
                 )
             except ValueError:
                 self.send_error(400)

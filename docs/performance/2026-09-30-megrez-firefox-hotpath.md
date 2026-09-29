@@ -98,6 +98,18 @@ command, fence, and readback path. The override was removed and a fresh serial
 connection verified that both desktop services were active again with Xorg
 holding `/dev/fb0` on the same boot.
 
+## Manual-start measurement window
+
+A later [bounded manual-start run](evidence/2026-09-30-megrez-video-manual-phase/)
+preloaded the same clip and took thread CPU snapshots immediately before the
+single playback trigger and after its `ended` result. On the fbdev/software
+desktop, the 10.192-second counter window contained 300 frames, 115 reported
+drops, 8.230 seconds of Renderer CPU run, 7.685 seconds of SwComposite CPU
+run, and 0.522 seconds of Xorg CPU run. Preloading and the removal of ptrace
+sampling changed the measurement conditions; this is a better-defined window,
+not evidence of a graphics speedup. The current DRM scanout counters still
+need an on-demand readout to isolate display submission to this window.
+
 ## Next gates
 
 1. Complete the PowerVR firmware layout and bounded DMA/GPU-MMU ownership
