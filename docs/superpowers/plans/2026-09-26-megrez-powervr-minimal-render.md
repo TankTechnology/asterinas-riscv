@@ -99,7 +99,17 @@ tests and one board session verified CPU readback of those entries, owned-buffer
 lifetime, overlap rejection, CRG restoration, and Asterinas-to-RockOS-to-Asterinas
 software recovery. The root was **not installed in the GPU**, so this is not
 GPU-side visibility, a completed MMU mapping, firmware execution, or a Task 3
-acceptance gate. Data/coremem placement and cache/fault/timeout handling remain.
+acceptance gate. At that point, data/coremem placement and
+cache/fault/timeout handling remained.
+
+The [four-segment MMU preflight](../../porting/evidence/2026-09-30-megrez-powervr-four-segment-mmu/README.md)
+now maps code, data, coremem code, and coremem data under one owned root with
+unmapped guard pages; the coremem-code PTEs are read-only. QEMU inspected the
+actual PTEs, and the selected board boot staged all four segments, restored CRG
+state, and completed an Asterinas-to-RockOS-to-Asterinas software recovery with
+fresh root serial and desktop checks. These are still CPU-side page-table
+results. The META boot configuration must use the selected data/coremem GPU
+addresses before the root is installed or firmware is started.
 
 - [ ] Allocate pinned, zeroed GPU memory through `DmaCoherent`/`DmaStream` with checked size limits and ownership tied to the GPU session. Establish and test the board's actual device-address range; do not assume CPU virtual addresses are GPU addresses.
 - [ ] For the DT-declared noncoherent GPU, demonstrate a correct CPU/device visibility path using RISC-V cache synchronization or an uncached alias. Reject the selected boot if neither is available. Map only owned buffers into the GPU MMU and require the GPU page tables to reference those allocations.

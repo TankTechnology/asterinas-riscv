@@ -1,0 +1,16 @@
+
+root@asterinas-debug:/# printf 'BEGIN_658c1e4cec55e81b\n'; id -u; cat /proc/sys/
+kernel/random/boot_id; cat /proc/sys/kernel/asterinas_reboot_watchdog; systemctl
+ is-active asterinas-desktop-m5.service asterinas-browser-web.service; cat /run/
+asterinas-desktop-ready; ls -l /proc/$(pgrep -x Xorg | head -1)/fd | grep /dev/f
+b0; printf 'END_658c1e4cec55e81b=%s\n' "$?"
+BEGIN_658c1e4cec55e81b
+0
+9735fe49-cc2b-4862-b5c9-7cc89b0d77fb
+0
+active
+active
+9735fe49-cc2b-4862-b5c9-7cc89b0d77fb
+lrwx------ 1 root root 0 Sep 29 21:08 10 -> /dev/fb0
+END_658c1e4cec55e81b=0
+root@asterinas-debug:/#

@@ -1,0 +1,16 @@
+
+root@asterinas-debug:/# printf 'BEGIN_d568638c59c9b119\n'; id -u; cat /proc/sys/
+kernel/random/boot_id; cat /proc/sys/kernel/asterinas_reboot_watchdog; cat /run/
+asterinas-desktop-ready; systemctl is-active asterinas-desktop-m5.service asteri
+nas-browser-web.service; readlink /proc/$(pgrep -x Xorg | head -1)/fd/0; printf
+'END_d568638c59c9b119=%s\n' "$?"
+BEGIN_d568638c59c9b119
+0
+12102991-afc8-4574-9995-7ad456354980
+0
+12102991-afc8-4574-9995-7ad456354980
+active
+active
+/dev/null
+END_d568638c59c9b119=0
+root@asterinas-debug:/#
