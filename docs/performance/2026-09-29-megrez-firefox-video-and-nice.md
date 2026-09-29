@@ -20,6 +20,10 @@ clip SHA-256 is `1aa863f2a73698241c9daa016c7bfcfa0f94b038ca9f0b29f296c3ca0b65eb9
 The guest probe recorded `getVideoPlaybackQuality()` and per-thread
 `/proc/<pid>/task/*/schedstat` before and after playback. Probe and serial
 transcripts are in [the evidence directory](evidence/2026-09-29-megrez-firefox-perf/).
+The second boot reused the `large3`/`small2` run names, so the optional host
+metrics upload returned HTTP 409; the guest's direct Marionette reads and
+serial summaries succeeded. The second-boot raw host metrics JSON was not
+retained.
 
 | Image | 1280×720 dropped / 300 | 640×360 dropped / 300 |
 | --- | ---: | ---: |
