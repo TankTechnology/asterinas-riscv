@@ -21,6 +21,10 @@ const GPU_DMA_LIMIT: usize = 1 << 40;
 const MAX_PROBE_PAGES: usize = 256;
 const STAGE_HEADER_SIZE: usize = 12;
 const STAGE_SEGMENT_SIZES: [usize; 4] = [52_064, 18_432, 73_312, 9_984];
+const FW_HEAP_BASE: usize = 0xe1c0_000000;
+// The pinned DDK accepts firmware heaps no smaller than 4 MiB. Keep this
+// selected layout within that minimum, even if RockOS configures a larger one.
+const FW_HEAP_MIN_END: usize = FW_HEAP_BASE + (1 << 22);
 
 pub(super) fn parse_stage_frame(frame: &[u8]) -> Result<(usize, &[u8]), &'static str> {
     if frame.len() < STAGE_HEADER_SIZE || &frame[..4] != b"PVR1" {
@@ -58,6 +62,7 @@ pub(super) struct GpuFirmwareStage {
     segments: [Option<GpuDmaAllocation>; 4],
     staged_mask: u8,
     mmu: Option<GpuMmu4>,
+    mmu_vaddrs: Option<[usize; 4]>,
 }
 
 impl GpuFirmwareStage {
@@ -90,19 +95,36 @@ impl GpuFirmwareStage {
         self.segments[segment] = Some(allocation);
         self.staged_mask |= 1 << segment;
         if self.staged_mask == 0b1111 {
-            // For META firmware the pinned RockOS DDK asserts that FW code is
-            // its first firmware-heap allocation at this GPU virtual address.
-            // The LDR destination addresses are a different address space.
-            const FW_CODE_VADDR: usize = 0xe1c0_000000;
-            let code = self.segments[0]
-                .take()
-                .ok_or("gpu_dma_stage_code_missing")?;
+            // The META bootloader requires code at the firmware heap base.
+            // Data/coremem VAs are supplied separately to RGXProcessFWImage;
+            // place them at owned page boundaries with unmapped guard pages.
+            // LDR section destinations are META addresses, not these GPU VAs.
             let mut mmu = GpuMmu4::new()?;
-            mmu.map_owned(FW_CODE_VADDR, code, false, true)?;
+            let mut next_vaddr = FW_HEAP_BASE;
+            let mut vaddrs = [0; 4];
+            for (index, slot) in self.segments.iter_mut().enumerate() {
+                let allocation = slot.take().ok_or("gpu_dma_stage_segment_missing")?;
+                let next_end = next_vaddr
+                    .checked_add(allocation.size())
+                    .ok_or("gpu_dma_stage_firmware_heap_overflow")?;
+                if next_end > FW_HEAP_MIN_END {
+                    return Err("gpu_dma_stage_firmware_heap_overflow");
+                }
+                vaddrs[index] = next_vaddr;
+                mmu.map_owned(next_vaddr, allocation, index == 2, true)?;
+                next_vaddr = next_end
+                    .checked_add(PAGE_SIZE)
+                    .ok_or("gpu_dma_stage_firmware_heap_overflow")?;
+            }
             staged.mmu_code_root = Some(mmu.root_daddr());
+            self.mmu_vaddrs = Some(vaddrs);
             self.mmu = Some(mmu);
         }
         Ok(staged)
+    }
+
+    pub(super) fn mapped_firmware_vaddrs(&self) -> Option<[usize; 4]> {
+        self.mmu_vaddrs
     }
 }
 
@@ -210,7 +232,10 @@ impl GpuDmaAllocation {
 mod tests {
     use ostd::prelude::ktest;
 
-    use super::{GpuFirmwareStage, GpuMmu4, parse_stage_frame, validate_dma_range};
+    use super::{
+        GpuFirmwareStage, GpuMmu4, PAGE_SIZE, STAGE_SEGMENT_SIZES, parse_stage_frame,
+        validate_dma_range,
+    };
 
     #[ktest]
     fn gpu_dma_accepts_only_identity_mapped_die0_pages_below_40_bits() {
@@ -290,15 +315,17 @@ mod tests {
     }
 
     #[ktest]
-    fn gpu_dma_stage_prepares_owned_code_mapping_after_all_four_segments() {
+    fn gpu_dma_stage_maps_four_owned_firmware_segments_with_guard_pages() {
         let mut stage = GpuFirmwareStage::default();
         let mut root = None;
+        let mut daddrs = [0; 4];
         for (segment, size) in [52_064, 18_432, 73_312, 9_984].into_iter().enumerate() {
             let mut frame = b"PVR1".to_vec();
             frame.extend_from_slice(&(segment as u32).to_le_bytes());
             frame.extend_from_slice(&(size as u32).to_le_bytes());
             frame.extend(core::iter::repeat_n(0x5a, size));
             let result = stage.stage_frame(&frame).unwrap();
+            daddrs[segment] = result.daddr;
             if segment < 3 {
                 assert_eq!(result.mmu_code_root, None);
             } else {
@@ -307,6 +334,25 @@ mod tests {
         }
         assert!(root.is_some());
         assert_eq!(stage.mmu.as_ref().map(GpuMmu4::root_daddr), root);
+        assert_eq!(
+            stage.mapped_firmware_vaddrs(),
+            Some([0xe1c0_000000, 0xe1c0_00e000, 0xe1c0_014000, 0xe1c0_027000,])
+        );
+        let mmu = stage.mmu.as_ref().unwrap();
+        let vaddrs = stage.mapped_firmware_vaddrs().unwrap();
+        for (index, vaddr) in vaddrs.into_iter().enumerate() {
+            let first_pte = mmu.test_pte(vaddr).unwrap();
+            assert_eq!(first_pte & 0xff_ffff_f000, daddrs[index] as u64);
+            assert_eq!(first_pte & 1, 1);
+            assert_eq!((first_pte >> 1) & 1, u64::from(index == 2));
+            let pages = STAGE_SEGMENT_SIZES[index].div_ceil(PAGE_SIZE);
+            let last_pte = mmu.test_pte(vaddr + (pages - 1) * PAGE_SIZE).unwrap();
+            assert_eq!(
+                last_pte & 0xff_ffff_f000,
+                (daddrs[index] + (pages - 1) * PAGE_SIZE) as u64
+            );
+            assert_eq!(mmu.test_pte(vaddr + pages * PAGE_SIZE), Ok(0));
+        }
         let mut duplicate = b"PVR1".to_vec();
         duplicate.extend_from_slice(&0u32.to_le_bytes());
         duplicate.extend_from_slice(&52_064u32.to_le_bytes());

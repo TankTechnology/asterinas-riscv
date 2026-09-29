@@ -440,9 +440,16 @@ impl FileOps for PowerControlFile {
             staged.daddr,
         );
         if let Some(root) = staged.mmu_code_root {
+            let Some(vaddrs) = staging.mapped_firmware_vaddrs() else {
+                return_errno_with_message!(Errno::EIO, "GPU firmware MMU layout missing");
+            };
             aster_logger::println!(
-                "ASTERINAS_POWERVR_MMU status=code_table_prepared root_daddr={:#x} gpu_root_installed=0 gpu_visibility=unverified",
+                "ASTERINAS_POWERVR_MMU status=all_tables_prepared root_daddr={:#x} code_vaddr={:#x} data_vaddr={:#x} coremem_code_vaddr={:#x} coremem_data_vaddr={:#x} gpu_root_installed=0 gpu_visibility=unverified",
                 root,
+                vaddrs[0],
+                vaddrs[1],
+                vaddrs[2],
+                vaddrs[3],
             );
         }
         Ok(len)

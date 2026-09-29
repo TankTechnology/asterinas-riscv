@@ -123,6 +123,26 @@ impl GpuMmu4 {
         self.root.daddr()
     }
 
+    #[cfg(ktest)]
+    pub(super) fn test_pte(&self, virt: usize) -> Result<u64, &'static str> {
+        let (pc_index, pd_index, pt_index) = page_indices(virt)?;
+        let Some(directory) = self
+            .directories
+            .iter()
+            .find(|directory| directory.pc_index == pc_index)
+        else {
+            return Ok(0);
+        };
+        let Some(table) = directory
+            .tables
+            .iter()
+            .find(|table| table.pd_index == pd_index)
+        else {
+            return Ok(0);
+        };
+        table.page.read_u64(pt_index * 8)
+    }
+
     pub(super) fn map_owned(
         &mut self,
         virt: usize,
