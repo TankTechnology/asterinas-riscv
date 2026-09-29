@@ -1,0 +1,41 @@
+
+root@asterinas-debug:/# printf 'BEGIN_d1c2531505c71de0\n'; curl -fsS --max-time  10 http://10.100.19.216:17898/rgx_meta_ldr.py -o /run/rgx_meta_ldr.py && test !  -e /run/asterinas-powervr-staged-20260930 && python3 /run/rgx_meta_ldr.py /lib/f irmware/rgx.fw.30.3.408.101 --output-dir /run/asterinas-powervr-staged-20260930  && stat -c "%a %n" /run/asterinas-powervr-staged-20260930 /run/asterinas-powervr -staged-20260930/*.bin && sha256sum /run/asterinas-powervr-staged-20260930/*.bin ; printf 'END_d1c2531505c71de0=%s\n' "$?"
+BEGIN_d1c2531505c71de0
+{
+  "firmware_sha256": "25e9e7ff4645292ceb991617dba028e350a5c17088a105230dbaaaf995f4413b",
+  "processor": "META",
+  "l1_start": 4496,
+  "blocks": 56,
+  "command_counts": {
+    "comment": 3,
+    "config": 2,
+    "loadmem": 41,
+    "start_threads": 1,
+    "zeromem": 9
+  },
+  "write_bytes": {
+    "code": 45848,
+    "coremem_code": 62040,
+    "coremem_data": 796,
+    "data": 10220
+  },
+  "segment_sha256": {
+    "code": "7c22b80949c48e35420a04f5f71b0faeadb9a657c370f89d24657f2418080e2e",
+    "coremem_code": "7f75ec7ac5c8247ba486a9baad62506a76c1b41a7d67857ca6c63af530de3074",
+    "coremem_data": "ec65090b65fdf0202c5321bd83d315764f99e4724791a564c16e050af756a3d9",
+    "data": "d1e3c7ec9dce4f150a39c11a865ccfd80375c70758e079b23bf58d398876b6fd"
+  },
+  "boot_config_writes": 17,
+  "skipped_coremem_data_zero_bytes": 7418
+}
+700 /run/asterinas-powervr-staged-20260930
+600 /run/asterinas-powervr-staged-20260930/code.bin
+600 /run/asterinas-powervr-staged-20260930/coremem_code.bin
+600 /run/asterinas-powervr-staged-20260930/coremem_data.bin
+600 /run/asterinas-powervr-staged-20260930/data.bin
+7c22b80949c48e35420a04f5f71b0faeadb9a657c370f89d24657f2418080e2e  /run/asterinas-powervr-staged-20260930/code.bin
+7f75ec7ac5c8247ba486a9baad62506a76c1b41a7d67857ca6c63af530de3074  /run/asterinas-powervr-staged-20260930/coremem_code.bin
+ec65090b65fdf0202c5321bd83d315764f99e4724791a564c16e050af756a3d9  /run/asterinas-powervr-staged-20260930/coremem_data.bin
+d1e3c7ec9dce4f150a39c11a865ccfd80375c70758e079b23bf58d398876b6fd  /run/asterinas-powervr-staged-20260930/data.bin
+END_d1c2531505c71de0=0
+root@asterinas-debug:/#

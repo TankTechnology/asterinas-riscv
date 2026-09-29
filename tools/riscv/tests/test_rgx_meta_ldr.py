@@ -3,8 +3,13 @@
 
 """Check META LDR bounds before firmware bytes can reach GPU-owned memory."""
 
+import hashlib
+import json
+import os
 import struct
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -16,13 +21,13 @@ from tools.riscv.tests.test_rgx_firmware_layout import firmware_image  # noqa: E
 
 def ldr_image(
     *, load_address=0x40000000, load_size=4,
-    zero_address=0x38880000, final_next=0xFFFFFFFF
+    zero_address=0x38880000, zero_size=8, final_next=0xFFFFFFFF
 ):
     image = bytearray(firmware_image())
     struct.pack_into("<IIIHH", image, 0, 0x01AA5500, 0x10, 0x100, 0, 0)
     struct.pack_into("<HHI2I", image, 0x100, 5, 16, 0x120, 0x200, 0)
     struct.pack_into("<HHI2I", image, 0x120, 0, 16, 0x140, load_address, 0x220)
-    struct.pack_into("<HHI2I", image, 0x140, 4, 16, 0x160, zero_address, 8)
+    struct.pack_into("<HHI2I", image, 0x140, 4, 16, 0x160, zero_address, zero_size)
     struct.pack_into("<HHI", image, 0x160, 3, 8, final_next)
     struct.pack_into("<HH3IH", image, 0x200, 0, 18, 2, 0x04830030, 4, 0)
     struct.pack_into("<HH", image, 0x220, 0, load_size + 6)
@@ -56,6 +61,61 @@ class RgxMetaLdrTests(unittest.TestCase):
         self.assertEqual(result["write_bytes"], {"code": 4})
         with self.assertRaisesRegex(ValueError, "outside"):
             scan_ldr(ldr_image(zero_address=0x82020000))
+
+    def test_materializes_loads_and_later_zeros_in_command_order(self):
+        result = scan_ldr(ldr_image(zero_address=0x40000001, zero_size=2))
+        expected = bytearray(52064)
+        expected[:4] = bytes(range(4))
+        expected[1:3] = b"\0\0"
+        self.assertEqual(
+            result["segment_sha256"]["code"], hashlib.sha256(expected).hexdigest()
+        )
+        self.assertEqual(
+            result["segment_sha256"]["data"], hashlib.sha256(bytes(18432)).hexdigest()
+        )
+
+    def test_global_address_alias_writes_the_same_code_allocation(self):
+        local = scan_ldr(ldr_image())
+        global_alias = scan_ldr(ldr_image(load_address=0xC0000000))
+        self.assertEqual(global_alias["segment_sha256"], local["segment_sha256"])
+
+    def test_zero_command_does_not_treat_coremem_code_as_direct_write(self):
+        with self.assertRaisesRegex(ValueError, "outside"):
+            scan_ldr(ldr_image(zero_address=0x800061A0))
+
+    def test_cli_stages_private_segments_only_after_full_validation(self):
+        script = Path(__file__).resolve().parents[1] / "drm/rgx_meta_ldr.py"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "fw.bin"
+            source.write_bytes(ldr_image())
+            output = root / "staged"
+            result = subprocess.run(
+                [sys.executable, str(script), str(source), "--output-dir", str(output)],
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads(result.stdout)
+            self.assertEqual(os.stat(output).st_mode & 0o777, 0o700)
+            self.assertEqual(
+                {path.name for path in output.iterdir()},
+                {"code.bin", "data.bin", "coremem_code.bin", "coremem_data.bin"},
+            )
+            for kind, digest in summary["segment_sha256"].items():
+                path = output / f"{kind}.bin"
+                self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+
+            bad = bytearray(ldr_image())
+            struct.pack_into("<Q", bad, len(bad) - 4096 + 16, 0)
+            source.write_bytes(bad)
+            rejected = root / "rejected"
+            result = subprocess.run(
+                [sys.executable, str(script), str(source), "--output-dir", str(rejected)],
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(rejected.exists())
 
     def test_rejects_truncated_load_payload_and_unsupported_command(self):
         bad_payload = bytearray(ldr_image())

@@ -1,0 +1,8 @@
+
+root@asterinas-debug:/# printf 'BEGIN_63d1e3d4a3aa4e0e\n'; id -u; cat /proc/sys/ kernel/random/boot_id; sha256sum /run/rgx_meta_ldr.py; test ! -e /dev/dri/render D129; printf 'END_63d1e3d4a3aa4e0e=%s\n' "$?"
+BEGIN_63d1e3d4a3aa4e0e
+0
+d5e68c9c-bd7e-452d-b5d9-56c73a1574b4
+353076cf91ba51068b5d428a29f3cf496b2fdd3e7e1835a4423f9d3f7b71ef5e  /run/rgx_meta_ldr.py
+END_63d1e3d4a3aa4e0e=0
+root@asterinas-debug:/#
