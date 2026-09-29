@@ -11,7 +11,10 @@ from pathlib import Path
 
 SEGMENTS = (("code", 52_064), ("data", 18_432), ("coremem_code", 73_312), ("coremem_data", 9_984))
 EXPECTED_FIRMWARE_SHA256 = "25e9e7ff4645292ceb991617dba028e350a5c17088a105230dbaaaf995f4413b"
-DEFAULT_MANIFEST = Path(__file__).resolve().parents[3] / "docs/porting/evidence/2026-09-30-megrez-powervr-fw-layout/ldr-scan.json"
+DEFAULT_MANIFEST = (
+    Path(__file__).resolve().parent.parent.parent.parent
+    / "docs/porting/evidence/2026-09-30-megrez-powervr-fw-layout/ldr-scan.json"
+)
 
 
 def checked_frames(segments_dir: Path, manifest: Path) -> list[bytes]:

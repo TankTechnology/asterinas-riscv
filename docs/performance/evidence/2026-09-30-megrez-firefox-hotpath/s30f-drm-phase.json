@@ -1,0 +1,63 @@
+{
+  "note": "Cumulative firmware-copy DRM counters bracket the Marionette run including navigation and cleanup; this is not an exact 10-second playback phase.",
+  "phase": {
+    "after": {
+      "direct_copy_and_sync_ns": 27154000,
+      "read_ns": 0,
+      "sampled_bytes": 3279244,
+      "sampled_rows": 783,
+      "write_and_sync_ns": 0
+    },
+    "before": {
+      "direct_copy_and_sync_ns": 10178000,
+      "read_ns": 0,
+      "sampled_bytes": 1236872,
+      "sampled_rows": 291,
+      "write_and_sync_ns": 0
+    },
+    "delta": {
+      "direct_copy_and_sync_ns": 16976000,
+      "read_ns": 0,
+      "sampled_bytes": 2042372,
+      "sampled_rows": 492,
+      "write_and_sync_ns": 0
+    }
+  },
+  "scanout": {
+    "after": {
+      "at_ns": 379736214000,
+      "dirty_bytes": 689758128,
+      "dirty_count": 255,
+      "dirty_max_ns": 57344000,
+      "dirty_total_ns": 5187260000,
+      "full_bytes": 8294400,
+      "full_count": 1,
+      "full_max_ns": 55934000,
+      "full_total_ns": 55934000,
+      "successes": 256
+    },
+    "before": {
+      "at_ns": 354893922000,
+      "dirty_bytes": 243360112,
+      "dirty_count": 93,
+      "dirty_max_ns": 57344000,
+      "dirty_total_ns": 1798586000,
+      "full_bytes": 8294400,
+      "full_count": 1,
+      "full_max_ns": 55934000,
+      "full_total_ns": 55934000,
+      "successes": 94
+    },
+    "delta": {
+      "at_ns": 24842292000,
+      "dirty_bytes": 446398016,
+      "dirty_count": 162,
+      "dirty_total_ns": 3388674000,
+      "full_bytes": 0,
+      "full_count": 0,
+      "full_total_ns": 0,
+      "successes": 162
+    }
+  },
+  "window_seconds": 24.842292
+}

@@ -60,6 +60,22 @@ After promotion, routine startup needs only a reboot/reset and menu selection:
 | Probe | Automatic, non-writing boot check | Requests reboot; 90-second software deadline |
 | Desktop | Existing Debian, X and Firefox | Explicit shutdown; no automatic deadline |
 
+On a root image that includes the current `megrez-safe-reboot`, an operator
+with the isolated root console can request a planned desktop reboot after the
+current-boot desktop-ready marker has disarmed the kernel timer:
+
+```bash
+ASTERINAS_SAFE_REBOOT_MANUAL=1 ASTERINAS_SAFE_REBOOT_AFTER=1 \
+  ASTERINAS_SAFE_REBOOT_CONSOLE=/dev/ttyS0 \
+  /usr/lib/asterinas/megrez-safe-reboot
+```
+
+The manual mode refuses a stale marker or an armed watchdog. It stops known
+writers, waits for the desktop user to exit, syncs the ext2 root, and requests
+the software reboot. The automatic timer still exits without rebooting after
+desktop handoff. Older installed root images do not have this manual mode;
+update the root image before using the command above.
+
 The menu defaults to RockOS after ten seconds. The board's preceding 30-second
 firmware delay is unchanged. No routine build, upload, CRC command, manual DTB
 patch, or `booti` sequence is required. A hard-locked kernel still requires a

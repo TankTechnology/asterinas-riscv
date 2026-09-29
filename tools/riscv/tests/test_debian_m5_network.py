@@ -1007,6 +1007,76 @@ configure_and_normalize_rootfs
                     console.read_text(encoding="utf-8").splitlines(),
                 )
 
+    def test_safe_reboot_manual_after_verified_desktop_handoff(self) -> None:
+        fake_bin = self.directory / "manual-reboot-bin"
+        fake_bin.mkdir()
+        units = self.directory / "manual-reboot-units"
+        units.mkdir()
+        (units / "asterinas-desktop-m5.service").touch()
+        actions = self.directory / "manual-reboot-actions"
+        console = self.directory / "manual-reboot-console"
+        uptime = self.directory / "manual-reboot-uptime"
+        uptime.write_text("31380.00 100.00\n", encoding="utf-8")
+        cmdline = self.directory / "manual-reboot-cmdline"
+        cmdline.write_text("asterinas.reboot_after=300\n", encoding="utf-8")
+        ready = self.directory / "manual-reboot-ready"
+        boot_id = self.directory / "manual-reboot-boot-id"
+        current_boot = "11111111-2222-3333-4444-555555555555"
+        boot_id.write_text(current_boot + "\n", encoding="utf-8")
+        watchdog = self.directory / "manual-reboot-watchdog"
+        watchdog.write_text("0\n", encoding="utf-8")
+        for name in ("systemctl", "pgrep", "sync", "reboot"):
+            command = fake_bin / name
+            command.write_text(
+                "#!/bin/sh\n"
+                'printf \'%s:%s\\n\' "$(basename "$0")" "$*" '
+                '>>"$ASTERINAS_SAFE_REBOOT_ACTIONS"\n'
+                + ("exit 1\n" if name == "pgrep" else ""),
+                encoding="utf-8",
+            )
+            command.chmod(0o755)
+        environment = os.environ.copy()
+        environment.update(
+            PATH=f"{fake_bin}:/usr/bin:/bin",
+            ASTERINAS_SAFE_REBOOT_MANUAL="1",
+            ASTERINAS_SAFE_REBOOT_AFTER="1",
+            ASTERINAS_SAFE_REBOOT_CMDLINE_PATH=str(cmdline),
+            ASTERINAS_SAFE_REBOOT_UPTIME_FILE=str(uptime),
+            ASTERINAS_SAFE_REBOOT_CONSOLE=str(console),
+            ASTERINAS_SAFE_REBOOT_UNIT_DIR=str(units),
+            ASTERINAS_SAFE_REBOOT_ACTIONS=str(actions),
+            ASTERINAS_SAFE_REBOOT_DESKTOP_READY_FILE=str(ready),
+            ASTERINAS_SAFE_REBOOT_BOOT_ID_FILE=str(boot_id),
+            ASTERINAS_SAFE_REBOOT_WATCHDOG_FILE=str(watchdog),
+        )
+        cases = (
+            (current_boot, "0", True),
+            ("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "0", False),
+            (current_boot, "1", False),
+        )
+        for marker_boot, watchdog_value, should_reboot in cases:
+            with self.subTest(marker_boot=marker_boot, watchdog=watchdog_value):
+                ready.write_text(marker_boot + "\n", encoding="utf-8")
+                watchdog.write_text(watchdog_value + "\n", encoding="utf-8")
+                actions.write_text("", encoding="utf-8")
+                console.write_text("", encoding="utf-8")
+                result = subprocess.run(
+                    ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+                    env=environment,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                )
+                self.assertEqual(result.returncode == 0, should_reboot, result.stderr)
+                entries = actions.read_text(encoding="utf-8").splitlines()
+                self.assertEqual("reboot:-f" in entries, should_reboot)
+                if not should_reboot:
+                    self.assertIn(
+                        "ASTERINAS_USERSPACE_REBOOT_FAIL reason=manual-reboot-not-ready",
+                        console.read_text(encoding="utf-8").splitlines(),
+                    )
+
     def test_safe_reboot_stops_root_evidence_and_skips_absent_browser_units(self) -> None:
         fake_bin = self.directory / "safe-reboot-network-bin"
         fake_bin.mkdir()

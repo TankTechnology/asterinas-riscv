@@ -37,6 +37,11 @@ fail() {
 
 [[ "$TERM_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-term-wait
 [[ "$KILL_WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-kill-wait
+readonly MANUAL_REBOOT="${ASTERINAS_SAFE_REBOOT_MANUAL:-0}"
+[[ "$MANUAL_REBOOT" == 0 || "$MANUAL_REBOOT" == 1 ]] || fail invalid-manual-reboot
+if [[ "$MANUAL_REBOOT" == 1 && -z "${ASTERINAS_SAFE_REBOOT_AFTER:-}" ]]; then
+    fail manual-deadline-required
+fi
 
 DEADLINE="${ASTERINAS_SAFE_REBOOT_AFTER:-}"
 KERNEL_DEADLINE=''
@@ -97,7 +102,7 @@ bounded_timeout() {
     local desired="$1" reserve="$2" limit remaining
     shift 2
     limit="$desired"
-    if [[ -n "$KERNEL_DEADLINE" ]]; then
+    if [[ -n "$KERNEL_DEADLINE" && "$MANUAL_REBOOT" == 0 ]]; then
         read_uptime_seconds
         remaining=$((SOFT_DEADLINE - uptime_seconds - reserve))
         ((remaining > 0)) || fail kernel-deadline-exhausted
@@ -108,10 +113,13 @@ bounded_timeout() {
 
 uptime_seconds=0
 read_uptime_seconds
+if [[ "$MANUAL_REBOOT" == 1 ]] && ! desktop_handoff_ready; then
+    fail manual-reboot-not-ready
+fi
 
 emit "ASTERINAS_USERSPACE_REBOOT_ARMED uptime=$uptime_seconds deadline=$DEADLINE"
 while ((uptime_seconds < DEADLINE)); do
-    if desktop_handoff_ready; then
+    if [[ "$MANUAL_REBOOT" == 0 ]] && desktop_handoff_ready; then
         emit "ASTERINAS_USERSPACE_REBOOT_DISARMED reason=desktop-ready"
         exit 0
     fi
@@ -122,7 +130,7 @@ while ((uptime_seconds < DEADLINE)); do
     read_uptime_seconds
     ((uptime_seconds >= previous_uptime_seconds)) || fail uptime-regressed
 done
-if desktop_handoff_ready; then
+if [[ "$MANUAL_REBOOT" == 0 ]] && desktop_handoff_ready; then
     emit "ASTERINAS_USERSPACE_REBOOT_DISARMED reason=desktop-ready"
     exit 0
 fi
@@ -130,7 +138,9 @@ fi
 # Asterinas' reboot syscall intentionally jumps straight to the platform
 # restart path. Stop every known writer and prove that the desktop user has no
 # surviving process before syncing the non-journaled ext2 root. Keep all
-# escalation paths bounded inside the kernel's remaining reboot guard.
+# escalation paths bounded inside the kernel's remaining reboot guard, unless
+# the current desktop boot has already disarmed that watchdog and root has
+# explicitly requested a manual safe reboot.
 [[ "$UNIT_DIR" == /* && -d "$UNIT_DIR" && ! -L "$UNIT_DIR" ]] ||
     fail invalid-unit-dir
 present_units=()
@@ -180,7 +190,7 @@ wait_for_user_processes() {
     local elapsed=0
 
     while ((elapsed < limit)); do
-        if [[ -n "$KERNEL_DEADLINE" ]]; then
+        if [[ -n "$KERNEL_DEADLINE" && "$MANUAL_REBOOT" == 0 ]]; then
             read_uptime_seconds
             ((uptime_seconds + SYNC_RESERVE_SECONDS < SOFT_DEADLINE)) || return 1
         fi

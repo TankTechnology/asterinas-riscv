@@ -1,0 +1,9 @@
+ASTERINAS_GPU_POWERED_ID raw=0x001e000301980065
+ASTERINAS_POWERVR_OWNER session=opened bvnc=30.3.408.101 gates=0b111 deasserted=0b11111
+ASTERINAS_POWERVR_DMA_STAGE status=enabled gpu_visibility=unverified
+ASTERINAS_POWERVR_DMA_STAGE segment=0 bytes=52064 pages=13 daddr=0x2f1c80000 cpu_readback=ok gpu_visibility=unverified
+ASTERINAS_POWERVR_DMA_STAGE segment=1 bytes=18432 pages=5 daddr=0x1f0108000 cpu_readback=ok gpu_visibility=unverified
+ASTERINAS_POWERVR_DMA_STAGE segment=2 bytes=73312 pages=18 daddr=0x1f0140000 cpu_readback=ok gpu_visibility=unverified
+ASTERINAS_POWERVR_DMA_STAGE segment=3 bytes=9984 pages=3 daddr=0x1f0174000 cpu_readback=ok gpu_visibility=unverified
+ASTERINAS_POWERVR_OWNER session=closed crg_restored=1 aclk=0x00000020 cfg=0x00000000 gray=0x00000000 reset=0x00000000
+four firmware segments staged and closed; GPU visibility remains unverified
