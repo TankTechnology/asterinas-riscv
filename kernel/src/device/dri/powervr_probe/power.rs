@@ -14,8 +14,9 @@ use spin::Once;
 
 use super::{
     CRG_BASE, CRG_GATE_BIT, CrgSnapshot, GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET,
-    GPU_REG_SIZE, GPU_REG_START, GPU_RESET_OFFSET, dma::GpuDmaAllocation, inspect_gpu_crg_dt,
-    print_gpu_crg_snapshot,
+    GPU_REG_SIZE, GPU_REG_START, GPU_RESET_OFFSET,
+    dma::{GpuDmaAllocation, GpuFirmwareStage},
+    inspect_gpu_crg_dt, print_gpu_crg_snapshot,
 };
 use crate::{
     device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
@@ -311,7 +312,11 @@ impl Device for PowerControlDevice {
             0b11111,
         );
         drop(io);
-        let mut file = PowerControlFile { initial, dma: None };
+        let mut file = PowerControlFile {
+            initial,
+            dma: None,
+            staging: None,
+        };
         if ostd::boot::boot_info()
             .kernel_cmdline
             .split_whitespace()
@@ -329,6 +334,16 @@ impl Device for PowerControlDevice {
             );
             file.dma = Some(dma);
         }
+        if ostd::boot::boot_info()
+            .kernel_cmdline
+            .split_whitespace()
+            .any(|word| word == "asterinas.powervr_dma_stage=1")
+        {
+            file.staging = Some(Mutex::new(GpuFirmwareStage::default()));
+            aster_logger::println!(
+                "ASTERINAS_POWERVR_DMA_STAGE status=enabled gpu_visibility=unverified"
+            );
+        }
         Ok(Box::new(file))
     }
 }
@@ -336,20 +351,27 @@ impl Device for PowerControlDevice {
 struct PowerControlFile {
     initial: CrgSnapshot,
     dma: Option<GpuDmaAllocation>,
+    staging: Option<Mutex<GpuFirmwareStage>>,
 }
 
 impl Drop for PowerControlFile {
     fn drop(&mut self) {
-        self.dma.take();
         let Ok(owner) = hardware_power_io() else {
             POWER_LEASE.store(LEASE_POISONED, Ordering::Release);
+            core::mem::forget((self.dma.take(), self.staging.take()));
             aster_logger::println!(
                 "ASTERINAS_POWERVR_OWNER session=close_failed reason=owner_unavailable"
             );
             return;
         };
         let mut io = owner.lock();
-        match release_power(&mut *io, &POWER_LEASE, self.initial) {
+        let restored = release_power(&mut *io, &POWER_LEASE, self.initial);
+        drop(io);
+        if restored.is_err() {
+            // A device that could not be reset must not retain a pointer to freed DMA.
+            core::mem::forget((self.dma.take(), self.staging.take()));
+        }
+        match restored {
             Ok(observed) => aster_logger::println!(
                 "ASTERINAS_POWERVR_OWNER session=closed crg_restored=1 aclk={:#010x} cfg={:#010x} gray={:#010x} reset={:#010x}",
                 observed.aclk,
@@ -384,10 +406,40 @@ impl FileOps for PowerControlFile {
     fn write_at(
         &self,
         _offset: usize,
-        _reader: &mut VmReader,
+        reader: &mut VmReader,
         _status_flags: StatusFlags,
     ) -> Result<usize> {
-        return_errno_with_message!(Errno::EOPNOTSUPP, "GPU control does not support write");
+        let Some(staging) = &self.staging else {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "GPU DMA staging is disabled");
+        };
+        check_control_access()?;
+        let len = reader.remain();
+        if !(12..=12 + 73_312).contains(&len) {
+            return_errno_with_message!(Errno::EINVAL, "invalid GPU DMA staging frame size");
+        }
+        let mut frame = vec![0; len];
+        reader.read_fallible(&mut VmWriter::from(frame.as_mut_slice()))?;
+        let mut staging = staging.lock();
+        let staged = staging.stage_frame(&frame).map_err(|reason| {
+            Error::with_message(
+                if reason == "gpu_dma_stage_duplicate_segment" {
+                    Errno::EBUSY
+                } else if reason.starts_with("gpu_dma_stage_invalid") {
+                    Errno::EINVAL
+                } else {
+                    Errno::EIO
+                },
+                reason,
+            )
+        })?;
+        aster_logger::println!(
+            "ASTERINAS_POWERVR_DMA_STAGE segment={} bytes={} pages={} daddr={:#x} cpu_readback=ok gpu_visibility=unverified",
+            staged.segment,
+            staged.bytes,
+            staged.pages,
+            staged.daddr,
+        );
+        Ok(len)
     }
 }
 

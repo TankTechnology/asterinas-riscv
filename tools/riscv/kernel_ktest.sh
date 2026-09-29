@@ -62,19 +62,28 @@ if [[ -f "$ARTIFACT_DIR/qemu-serial.log" ]]; then
     sha256sum "$ARTIFACT_DIR"/qemu-serial.log "$ARTIFACT_DIR"/qemu.log 2>/dev/null || true
 fi
 
-# `cargo osdk test` exits 0 even when tests fail. Measured, not assumed: a run
-# whose log ended `test result: FAILED. 262 passed; 6 failed` returned status 0,
-# so `exit "$status"` alone reports a failing suite as a passing one. That is
-# the same shape as the trap this tree already knows about one level up -- a
-# run that executes nothing also exits 0 -- and it is worse here, because there
-# *is* a result to read and nothing reads it.
-#
-# A test name containing "failed" would be a false positive, so the match is
-# anchored to the harness's own summary lines.
-if [[ "$status" -eq 0 ]] && grep -qE '^test result: FAILED|^test result:.*[1-9][0-9]* failed' "$ARTIFACT_DIR/runner.log" 2>/dev/null; then
-    printf 'kernel ktest: the suite reported failures, but osdk exited 0:\n' >&2
-    grep -E '^test result: FAILED|^test result:.*[1-9][0-9]* failed' "$ARTIFACT_DIR/runner.log" >&2
-    status=1
+# The test harness writes results to the QEMU serial file, not runner.log.
+# OSDK can return zero when tests fail or when the filter selects no tests.
+if [[ "$status" -eq 0 ]]; then
+    if ! python3 - "$ARTIFACT_DIR/qemu-serial.log" <<'PY'
+import pathlib
+import re
+import sys
+
+path = pathlib.Path(sys.argv[1])
+if not path.is_file():
+    sys.exit("kernel ktest: missing QEMU serial result")
+serial = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", path.read_text(errors="replace"))
+results = re.findall(r"(?m)^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed;", serial)
+passed = sum(int(row[1]) for row in results)
+failed = sum(int(row[2]) for row in results)
+if "[ktest runner] All crates tested." not in serial or not results or not passed or failed or any(row[0] == "FAILED" for row in results):
+    sys.exit(f"kernel ktest: incomplete or failed result (passed={passed}, failed={failed})")
+print(f"kernel ktest: verified {passed} selected test(s), 0 failed")
+PY
+    then
+        status=1
+    fi
 fi
 
 exit "$status"
