@@ -1,0 +1,49 @@
+{
+  "sha256": "25e9e7ff4645292ceb991617dba028e350a5c17088a105230dbaaaf995f4413b",
+  "image_bytes": 126976,
+  "bvnc": "30.3.408.101",
+  "ddk": "24.2.6643903",
+  "processor": "META",
+  "fw_page_size": 0,
+  "flags": "0x80020810",
+  "allocation_bytes": {
+    "code": 52064,
+    "data": 18432,
+    "coremem_code": 73312,
+    "coremem_data": 9984
+  },
+  "sections": [
+    {
+      "id": 0,
+      "type": "code",
+      "base": 1073741824,
+      "max_size": 266240,
+      "alloc_size": 52064,
+      "alloc_offset": 0
+    },
+    {
+      "id": 1,
+      "type": "data",
+      "base": 948436992,
+      "max_size": 90112,
+      "alloc_size": 18432,
+      "alloc_offset": 0
+    },
+    {
+      "id": 2,
+      "type": "coremem_code",
+      "base": 2147508640,
+      "max_size": 73312,
+      "alloc_size": 73312,
+      "alloc_offset": 0
+    },
+    {
+      "id": 3,
+      "type": "coremem_data",
+      "base": 2181046272,
+      "max_size": 9984,
+      "alloc_size": 9984,
+      "alloc_offset": 0
+    }
+  ]
+}

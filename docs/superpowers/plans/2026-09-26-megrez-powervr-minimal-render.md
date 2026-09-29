@@ -61,6 +61,16 @@ partition backup preceded offline repair, and a read-only fsck passed after a
 subsequent clean desktop boot. This is a stability gate for further writable
 GPU experiments, not evidence that the ext2 root cause is fixed.
 
+A [read-only firmware-layout preflight](../../porting/evidence/2026-09-30-megrez-powervr-fw-layout/README.md)
+on the selected desktop boot confirmed that the matched blob has four **META**
+sections and needs 153,792 bytes of unaligned code/data allocations. The
+RockOS DDK takes its META LDR processing path for this image. Firmware loading
+must therefore validate and process that LDR stream, prepare its boot
+configuration, and establish the vendor GPU MMU mappings; treating the host's
+RISC-V architecture as the firmware processor or copying the blob verbatim
+would be incorrect. This preflight does not satisfy any startup or DMA-visibility
+acceptance item.
+
 - [ ] Allocate pinned, zeroed GPU memory through `DmaCoherent`/`DmaStream` with checked size limits and ownership tied to the GPU session. Establish and test the board's actual device-address range; do not assume CPU virtual addresses are GPU addresses.
 - [ ] For the DT-declared noncoherent GPU, demonstrate a correct CPU/device visibility path using RISC-V cache synchronization or an uncached alias. Reject the selected boot if neither is available. Map only owned buffers into the GPU MMU and require the GPU page tables to reference those allocations.
 - [ ] Load the exact BVNC-matched firmware and shader blobs from the selected root image. Report firmware handshake and GPU fault/timeout counters. Bound every wait and ensure reset/cleanup on failed handshake.
