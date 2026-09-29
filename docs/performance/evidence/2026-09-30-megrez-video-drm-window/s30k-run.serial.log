@@ -1,0 +1,5 @@
+printf 'BEGIN_6a261efd576799ca\n'; B=$(systemctl show -p  MainPID --value asterinas-browser-web.service); X=$(pgrep -x Xorg | head -n 1);  test -n "$B" && test -n "$X" && nsenter -t "$B" -n timeout 65 python3 -u /run/a sterinas-video-drm-phase-20260930/video_manual_phase.py --browser-pid "$B" --xor g-pid "$X" --base-url http://10.100.19.216:17897 --run-id s30k --clip-sha256 1aa 863f2a73698241c9daa016c7bfcfa0f94b038ca9f0b29f296c3ca0b65eb95 --output /run/aste rinas-video-drm-phase-20260930/s30k-record.json; printf 'END_6a261efd576799ca=%s \n' "$?"
+BEGIN_6a261efd576799ca
+VIDEO_MANUAL_PHASE {"dropped": 118, "firefox_render_cpu_ns": 15717697000, "frames": 301, "run": "s30k", "window_ms": 10114.581}
+END_6a261efd576799ca=0
+root@asterinas-debug:/# 

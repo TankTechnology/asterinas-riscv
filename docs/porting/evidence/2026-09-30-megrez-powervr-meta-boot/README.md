@@ -51,3 +51,27 @@ The next hardware gate is installing the GPU-private root and performing a
 bounded firmware-ready handshake with fault/timeout evidence and a verified
 RockOS recovery path. Only after that can command submission, fences, and a
 readback pixel test establish actual GPU rendering.
+
+## Pinned vendor start path now available
+
+The exact [Volcanic `rgxstartstop.c`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/volcanic/rgxstartstop.c)
+was retrieved from the same RockOS commit after the source rate limit reset;
+its SHA-256 is
+`6b3d0f243e0028d9c18a1f7194194dd30fc9bab925bb0c15a75d69d074d8a4a8`.
+The paired [Volcanic layer implementation](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/volcanic/rgxlayer_impl.c)
+has SHA-256
+`6b189b407837445c8387043fccb6a0cddb03cf1736b8f71af5d288d604b1d675`.
+Its `RGXDoFWSlaveBoot` returns false in this vendor build, so the board uses
+the **META master-boot branch**; the slave-port writes in `RGXStartFirmware`
+are not the start sequence to reproduce.
+
+For BVNC `30.3.408.101`, the pinned chip config reports
+`HOST_SECURITY_VERSION=1`, `ECC_RAMS=0`, `MMU_VERSION=4`, META MTP219, and
+`SYS_BUS_SECURE_RESET`. The applicable `RGXStart` sequence disables the initial
+secure-bus guard, performs the staged soft-reset sequence, selects META master
+boot, sets up the META wrapper and applicable MMU/AXI registers, installs the
+firmware-private page-catalogue base, marks the device powered, and only then
+deasserts META reset with a 32-cycle wait on each side. This is a source
+contract for the next implementation, **not a passed hardware boot**. A
+bounded firmware-ready/fault observation and recovery design is still required
+before executing that sequence on the board.
