@@ -75,3 +75,17 @@ deasserts META reset with a 32-cycle wait on each side. This is a source
 contract for the next implementation, **not a passed hardware boot**. A
 bounded firmware-ready/fault observation and recovery design is still required
 before executing that sequence on the board.
+
+The [vendor power-up path](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/rgxpower.c)
+does not treat `RGXStart` returning as proof of firmware execution. It
+invalidates and polls the shared `RGXFWIF_SYSINIT.bFirmwareStarted` field for
+true, with a timeout and fault dump on failure. Asterinas currently owns and
+maps only the four firmware image segments and GPU MMU tables; it does **not**
+allocate or populate that FW interface object. The next step must establish
+the matching FWIF allocation, GPU mapping, initial data, and a bounded
+readback before a firmware-ready claim is possible. Writing the catalogue base
+and releasing META reset alone would be an unsafe and unverifiable shortcut.
+The pinned [FW interface structure](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/include/volcanic/rgx_fwif_km.h)
+contains runtime configuration, trace and system-data pointers, coremem DMA
+metadata, and `bFirmwareStarted`; a zeroed four-byte flag by itself cannot
+stand in for this boot contract.
