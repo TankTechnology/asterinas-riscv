@@ -14,6 +14,11 @@ mod snd;
 mod sysfs;
 pub mod tty;
 
+/// Returns the firmware scanout counters when that DRM backend is active.
+pub(crate) fn drm_scanout_snapshot_line() -> Option<String> {
+    dri::firmware_snapshot_line()
+}
+
 use alloc::borrow::Cow;
 
 use device_id::DeviceId;
