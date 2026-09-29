@@ -56,7 +56,9 @@ Firefox running, responsive X11, and Xorg holding `/dev/fb0`.
 The installed safe-reboot helper also refused an initially requested manual
 reboot because its timeout calculation still applied the expired boot deadline.
 The repository's corrected helper was hash-verified and used only from `/run`;
-no persistent board file or default boot selection was changed. The original
-failure and complete RockOS recovery transcript remain in the private local
-experiment directory; credentials and raw login traffic are not in this
+no persistent Asterinas rootfs file or default boot selection was changed.
+RockOS retains the three checked test artifacts under
+`/home/debian/asterinas/video-drm-20260930/` for replay or recovery. The
+original failure and complete RockOS recovery transcript remain in the private
+local experiment directory; credentials and raw login traffic are not in this
 evidence directory.
