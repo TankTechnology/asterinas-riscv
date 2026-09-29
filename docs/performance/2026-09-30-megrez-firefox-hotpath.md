@@ -66,6 +66,38 @@ PowerVR render node. The current Firefox profile uses software rendering.
 There was no HDMI capture, so monitor output, tearing, and physical frame
 presentation remain unverified. No GPU hardware rendering is claimed.
 
+## Selected DRM copy-path follow-up
+
+The ordinary desktop profile above used Xorg `fbdev` and held `/dev/fb0`, not
+`/dev/dri/card0`. The selected `c9310e0d0` release kernel was then booted with
+`asterinas.drm_phase_profile=1`. A temporary `/run/systemd` override selected
+the installed Xorg `modesetting` provider; `/proc` confirmed that Xorg held
+`/dev/dri/card0`. The unchanged 10-second 720p clip reported 136 dropped of
+300 decoded frames and 10.278 seconds of playback wall time. The two Firefox
+render threads used 14.461 CPU seconds, and Xorg used 5.274 CPU seconds during
+the Marionette navigation/playback window. The raw [playback
+record](evidence/2026-09-30-megrez-firefox-hotpath/s30f-record.json) includes
+the per-thread counters.
+
+The [kernel counter snapshots](evidence/2026-09-30-megrez-firefox-hotpath/s30f-drm-phase.json)
+bracketed the whole Marionette command, a 24.842-second interval that includes
+navigation and script overhead. Dirty DRM presents increased by 162, copied
+446,398,016 bytes, and spent 3.389 seconds in the firmware-framebuffer copy
+path, averaging 20.92 ms per dirty present. The opt-in row sample recorded
+492 rows and 16.976 ms of direct copy and sync; its separate GEM-read and
+framebuffer-write fields were zero because this kernel selected direct copy.
+These cumulative differences are **not exact costs of the 10-second video
+alone**. The prior fbdev trial and this DRM trial also use different display
+providers and different single runs, so their dropped-frame counts do not
+establish a speedup.
+
+This follow-up exposes an expensive DRM firmware-copy path while leaving the
+main Firefox SWGL YUV/composition hotspot intact. Eliminating that copy is a
+display-path target; hardware rendering still requires a working PowerVR
+command, fence, and readback path. The override was removed and a fresh serial
+connection verified that both desktop services were active again with Xorg
+holding `/dev/fb0` on the same boot.
+
 ## Next gates
 
 1. Complete the PowerVR firmware layout and bounded DMA/GPU-MMU ownership

@@ -86,10 +86,11 @@ device, then writes four exact frames within one exclusive session. The
 kernel bounds each frame, uses pinned uncached `DmaCoherent` allocations, and
 checks a CPU readback. QEMU tests cover frame rejection, duplicate segments,
 and one actual DMA copy; the test wrapper now rejects zero selected tests.
-This is an implemented **CPU-side preflight**, not yet exercised on the board.
-It does not establish GPU visibility, MMU mappings, firmware startup, or a
-pixel result. A selected board boot and fresh serial recovery check are still
-required before treating the DMA staging step as physically validated.
+The [selected main boot](../../porting/evidence/2026-09-30-megrez-powervr-dma-board/README.md)
+has now exercised this **CPU-side preflight** on the board. All four segment
+readbacks passed, the session restored CRG state, and a fresh serial
+connection confirmed the same root-controlled desktop boot. It does not
+establish GPU visibility, MMU mappings, firmware startup, or a pixel result.
 
 - [ ] Allocate pinned, zeroed GPU memory through `DmaCoherent`/`DmaStream` with checked size limits and ownership tied to the GPU session. Establish and test the board's actual device-address range; do not assume CPU virtual addresses are GPU addresses.
 - [ ] For the DT-declared noncoherent GPU, demonstrate a correct CPU/device visibility path using RISC-V cache synchronization or an uncached alias. Reject the selected boot if neither is available. Map only owned buffers into the GPU MMU and require the GPU page tables to reference those allocations.

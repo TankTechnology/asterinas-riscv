@@ -4,6 +4,8 @@
 import hashlib
 import json
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,6 +18,19 @@ SIZES = {"code": 52_064, "data": 18_432, "coremem_code": 73_312, "coremem_data":
 
 
 class CheckedFramesTests(unittest.TestCase):
+    def test_client_starts_from_shallow_guest_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            relocated = Path(directory) / "powervr_dma_stage.py"
+            shutil.copyfile(Path(__file__).resolve().parents[1] / "drm/powervr_dma_stage.py", relocated)
+            result = subprocess.run(
+                [sys.executable, str(relocated), "--help"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("--manifest", result.stdout)
+
     def test_validates_all_four_segments_before_emitting_exact_frames(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
