@@ -29,7 +29,19 @@ configuration, establish GPU MMU mappings and cache visibility, then perform
 a bounded handshake and fault check.
 An additional read-only check found the LDR stream pointer `0x1190` in the
 first 16-byte header and command `0x5` (CONFIG) at that address. The complete
-LDR stream has not yet been validated or executed.
+LDR chain was then bounds-checked by
+[`rgx_meta_ldr.py`](../../../../tools/riscv/drm/rgx_meta_ldr.py): 56 linked
+blocks contained 41 LOADMEM, 9 ZEROMEM, 2 CONFIG, 1 START_THREADS, and 3
+comment commands. The CONFIG blocks requested 17 boot-configuration register
+writes. The checked write lengths were 45,848 code, 10,220 data, 62,040
+coremem code, and 796 coremem data bytes. The vendor's coremem-data
+ZEROMEM skip applied to 7,418 bytes; the scanner restricts that skip to the
+image-declared coremem span rather than accepting arbitrary addresses.
+[`ldr-scan.json`](ldr-scan.json) contains this metadata. The scanner's host
+and guest SHA-256 both matched
+`5902a287d3d97f7cacb538bb7763b8768d7ab29ee3b69ac8e691fb064f1a21c5`.
+No LDR command was executed, no firmware buffers were materialized, and no
+GPU address translation or firmware handshake was exercised.
 
 [`layout.json`](layout.json) contains only metadata and a digest; licensed
 firmware bytes are not stored in Git. The parser is

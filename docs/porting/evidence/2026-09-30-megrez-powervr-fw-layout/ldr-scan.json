@@ -1,0 +1,21 @@
+{
+  "firmware_sha256": "25e9e7ff4645292ceb991617dba028e350a5c17088a105230dbaaaf995f4413b",
+  "processor": "META",
+  "l1_start": 4496,
+  "blocks": 56,
+  "command_counts": {
+    "comment": 3,
+    "config": 2,
+    "loadmem": 41,
+    "start_threads": 1,
+    "zeromem": 9
+  },
+  "write_bytes": {
+    "code": 45848,
+    "coremem_code": 62040,
+    "coremem_data": 796,
+    "data": 10220
+  },
+  "boot_config_writes": 17,
+  "skipped_coremem_data_zero_bytes": 7418
+}
