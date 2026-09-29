@@ -79,13 +79,40 @@ before executing that sequence on the board.
 The [vendor power-up path](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/rgxpower.c)
 does not treat `RGXStart` returning as proof of firmware execution. It
 invalidates and polls the shared `RGXFWIF_SYSINIT.bFirmwareStarted` field for
-true, with a timeout and fault dump on failure. Asterinas currently owns and
-maps only the four firmware image segments and GPU MMU tables; it does **not**
-allocate or populate that FW interface object. The next step must establish
-the matching FWIF allocation, GPU mapping, initial data, and a bounded
-readback before a firmware-ready claim is possible. Writing the catalogue base
+true, with a timeout and fault dump on failure. Asterinas owns and maps the
+four firmware image segments and, since the configuration-heap mapping below,
+three zeroed configuration slots. It does **not** populate a valid FW interface
+object. The next step must establish the matching FWIF structure layout,
+initial data, dependent allocations, and a bounded readback before a
+firmware-ready claim is possible. Writing the catalogue base
 and releasing META reset alone would be an unsafe and unverifiable shortcut.
 The pinned [FW interface structure](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/include/volcanic/rgx_fwif_km.h)
 contains runtime configuration, trace and system-data pointers, coremem DMA
 metadata, and `bFirmwareStarted`; a zeroed four-byte flag by itself cannot
 stand in for this boot contract.
+
+## Firmware configuration heap mapping
+
+The same pinned RockOS source defines a 32 MiB firmware raw heap in
+[`config_kernel.h`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/config_kernel.h)
+and reserves its final three 64 KiB granules in
+[`rgx_heap_firmware.h`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/include/rgx_heap_firmware.h).
+The allocation order in `rgxfwutils.c` is connection control, OSINIT, then
+SYSINIT. Their GPU virtual addresses are `0xe1c1fd0000`, `0xe1c1fe0000`, and
+`0xe1c1ff0000`. The configuration region ends at `0xe1c2000000`.
+
+The kernel now owns one zero-initialized, uncached Die 0 DMA allocation per
+granule and maps all three in the same unpublished GPU MMU root as the image
+segments. The entries are writable and set `PMMETA_PROTECT`. The stage log
+reports the three addresses with `fw_config_initialized=0` and
+`gpu_root_installed=0`; the GPU has not used these mappings.
+
+The new RISC-V QEMU ktest checks both ends of each 64 KiB slot, physical-page
+continuity, PTE flags, the gap before the configuration heap, and the unmapped
+address after it. It passed with `1 passed; 0 failed` in
+[`fw-config-ktest.serial.log`](fw-config-ktest.serial.log). The pre-existing
+four-segment mapping ktest also passed separately. A normal RISC-V kernel build
+and targeted `rustfmt --check` passed. The whole-workspace formatting check
+still reports unrelated pre-existing changes, so it is not used as a pass
+claim for this patch. None of these tests proves firmware execution, a GPU
+rendered pixel, or a real-board boot of this new kernel image.
