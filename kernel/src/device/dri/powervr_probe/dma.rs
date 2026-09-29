@@ -25,6 +25,12 @@ const FW_HEAP_BASE: usize = 0xe1c0_000000;
 // The pinned DDK accepts firmware heaps no smaller than 4 MiB. Keep this
 // selected layout within that minimum, even if RockOS configures a larger one.
 const FW_HEAP_MIN_END: usize = FW_HEAP_BASE + (1 << 22);
+// RockOS bf2ec5d5 config_kernel.h and rgx_heap_firmware.h reserve the final
+// three 64 KiB granules of a 32 MiB raw heap for FW connection, OS and system
+// init data. These fixed VAs are part of the META firmware ABI.
+const FW_RAW_HEAP_SIZE: usize = 1 << 25;
+const FW_CONFIG_SLOT_SIZE: usize = 0x10000;
+const FW_CONFIG_START: usize = FW_HEAP_BASE + FW_RAW_HEAP_SIZE - 3 * FW_CONFIG_SLOT_SIZE;
 
 pub(super) fn parse_stage_frame(frame: &[u8]) -> Result<(usize, &[u8]), &'static str> {
     if frame.len() < STAGE_HEADER_SIZE || &frame[..4] != b"PVR1" {
@@ -116,6 +122,11 @@ impl GpuFirmwareStage {
                     .checked_add(PAGE_SIZE)
                     .ok_or("gpu_dma_stage_firmware_heap_overflow")?;
             }
+            for slot in 0..3 {
+                let allocation = GpuDmaAllocation::new(FW_CONFIG_SLOT_SIZE / PAGE_SIZE)?;
+                let vaddr = FW_CONFIG_START + slot * FW_CONFIG_SLOT_SIZE;
+                mmu.map_owned(vaddr, allocation, false, true)?;
+            }
             staged.mmu_code_root = Some(mmu.root_daddr());
             self.mmu_vaddrs = Some(vaddrs);
             self.mmu = Some(mmu);
@@ -125,6 +136,16 @@ impl GpuFirmwareStage {
 
     pub(super) fn mapped_firmware_vaddrs(&self) -> Option<[usize; 4]> {
         self.mmu_vaddrs
+    }
+
+    pub(super) fn mapped_fw_config_vaddrs(&self) -> Option<[usize; 3]> {
+        self.mmu.as_ref().map(|_| {
+            [
+                FW_CONFIG_START,
+                FW_CONFIG_START + FW_CONFIG_SLOT_SIZE,
+                FW_CONFIG_START + 2 * FW_CONFIG_SLOT_SIZE,
+            ]
+        })
     }
 }
 
@@ -361,5 +382,36 @@ mod tests {
             stage.stage_frame(&duplicate),
             Err("gpu_dma_stage_duplicate_segment")
         );
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_maps_vendor_firmware_config_heap() {
+        let mut stage = GpuFirmwareStage::default();
+        for (segment, size) in STAGE_SEGMENT_SIZES.into_iter().enumerate() {
+            let mut frame = b"PVR1".to_vec();
+            frame.extend_from_slice(&(segment as u32).to_le_bytes());
+            frame.extend_from_slice(&(size as u32).to_le_bytes());
+            frame.extend(core::iter::repeat_n(0x5a, size));
+            stage.stage_frame(&frame).unwrap();
+        }
+
+        let mmu = stage.mmu.as_ref().unwrap();
+        // RockOS bf2ec5d5: the final 3 x 64 KiB of the 32 MiB raw FW heap
+        // hold connection control, OSINIT, and SYSINIT in that order.
+        let config_start = 0xe1c1_fd0000;
+        assert_eq!(
+            stage.mapped_fw_config_vaddrs(),
+            Some([config_start, config_start + 0x10000, config_start + 0x20000])
+        );
+        for slot in 0..3 {
+            let start = config_start + slot * 0x10000;
+            let first = mmu.test_pte(start).unwrap();
+            let last = mmu.test_pte(start + 0xf000).unwrap();
+            assert_eq!(first & 0x7c00_0000_0000_0003, 0x7c00_0000_0000_0001);
+            assert_eq!(last & 0x7c00_0000_0000_0003, 0x7c00_0000_0000_0001);
+            assert_eq!(last & 0xff_ffff_f000, (first & 0xff_ffff_f000) + 0xf000);
+        }
+        assert_eq!(mmu.test_pte(config_start - PAGE_SIZE), Ok(0));
+        assert_eq!(mmu.test_pte(config_start + 0x30000), Ok(0));
     }
 }

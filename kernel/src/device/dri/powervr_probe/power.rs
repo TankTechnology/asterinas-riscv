@@ -443,13 +443,19 @@ impl FileOps for PowerControlFile {
             let Some(vaddrs) = staging.mapped_firmware_vaddrs() else {
                 return_errno_with_message!(Errno::EIO, "GPU firmware MMU layout missing");
             };
+            let Some(config_vaddrs) = staging.mapped_fw_config_vaddrs() else {
+                return_errno_with_message!(Errno::EIO, "GPU firmware config MMU layout missing");
+            };
             aster_logger::println!(
-                "ASTERINAS_POWERVR_MMU status=all_tables_prepared root_daddr={:#x} code_vaddr={:#x} data_vaddr={:#x} coremem_code_vaddr={:#x} coremem_data_vaddr={:#x} gpu_root_installed=0 gpu_visibility=unverified",
+                "ASTERINAS_POWERVR_MMU status=all_tables_prepared root_daddr={:#x} code_vaddr={:#x} data_vaddr={:#x} coremem_code_vaddr={:#x} coremem_data_vaddr={:#x} connection_vaddr={:#x} osinit_vaddr={:#x} sysinit_vaddr={:#x} fw_config_initialized=0 gpu_root_installed=0 gpu_visibility=unverified",
                 root,
                 vaddrs[0],
                 vaddrs[1],
                 vaddrs[2],
                 vaddrs[3],
+                config_vaddrs[0],
+                config_vaddrs[1],
+                config_vaddrs[2],
             );
         }
         Ok(len)
