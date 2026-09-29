@@ -1,0 +1,8 @@
+test_setpriority_updates_fair_scheduler: `setpriority(PRIO_PROCESS, 0, 5)` passed [got Success]
+test_setpriority_updates_fair_scheduler: `getpriority(PRIO_PROCESS, 0)` passed [got Success]
+test_setpriority_updates_fair_scheduler: `syscall(275, 0, &attr, sizeof(attr), 0)` passed [got Success]
+test_setpriority_updates_fair_scheduler summary: 3 tests passed, 0 tests failed
+test_setpriority_updates_existing_worker: `setpriority(PRIO_PROCESS, 0, 10)` passed [got Success]
+test_setpriority_updates_existing_worker: `syscall(275, worker_tid, &attr, sizeof(attr), 0)` passed [got Success]
+test_setpriority_updates_existing_worker summary: 2 tests passed, 0 tests failed
+Scheduler policy regression passed.

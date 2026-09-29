@@ -1,0 +1,27 @@
+
+root@asterinas-debug:/# printf 'BEGIN_2e0e4f50c961aa4d\n'; _pid=$(pgrep -xo fire fox); _xpid=$(pgrep -xo Xorg); nsenter -t "$_pid" -n curl -fsS --max-time 5 http ://10.100.19.216:17897/probe_guest.py -o /run/perf_guest.py && nsenter -t "$_pid " -n env BROWSER_PID="$_pid" XORG_PID="$_xpid" timeout 65 python3 -u /run/perf_g uest.py; printf 'END_2e0e4f50c961aa4d=%s\n' "$?"
+BEGIN_2e0e4f50c961aa4d
+PERF_SUMMARY run=large3 dropped=148 frames=300
+PERF_THREAD run=large3 process=firefox name=Renderer tid=612 user=759 kernel=73 run_ns=8327756000 wait_ns=2365409000
+PERF_THREAD run=large3 process=firefox name=SwComposite tid=847 user=715 kernel=33 run_ns=7483448000 wait_ns=2354392000
+PERF_THREAD run=large3 process=firefox name=firefox tid=268 user=380 kernel=116 run_ns=4964853000 wait_ns=1173299000
+PERF_THREAD run=large3 process=firefox name=Compositor tid=622 user=41 kernel=26 run_ns=675431000 wait_ns=1845262000
+PERF_THREAD run=large3 process=firefox name=WRRenderBackend tid=850 user=46 kernel=11 run_ns=573300000 wait_ns=1140546000
+PERF_THREAD run=large3 process=firefox name=glean.dispatche tid=414 user=30 kernel=22 run_ns=505542000 wait_ns=3076853000
+PERF_THREAD run=large3 process=firefox name=IPC I/O Parent tid=432 user=14 kernel=23 run_ns=367342000 wait_ns=943035000
+PERF_THREAD run=large3 process=firefox name=Softwar~cThread tid=611 user=13 kernel=11 run_ns=236597000 wait_ns=754929000
+PERF_THREAD run=large3 process=xorg name=Xorg tid=183 user=52 kernel=14 run_ns=661708000 wait_ns=165641000
+PERF_THREAD run=large3 process=xorg name=InputThread tid=228 user=0 kernel=0 run_ns=0 wait_ns=0
+PERF_SUMMARY run=small2 dropped=12 frames=300
+PERF_THREAD run=small2 process=firefox name=Renderer tid=612 user=500 kernel=53 run_ns=5536663000 wait_ns=1969021000
+PERF_THREAD run=small2 process=firefox name=SwComposite tid=847 user=486 kernel=25 run_ns=5114116000 wait_ns=1470424000
+PERF_THREAD run=small2 process=firefox name=firefox tid=268 user=160 kernel=81 run_ns=2406918000 wait_ns=1141743000
+PERF_THREAD run=small2 process=firefox name=Compositor tid=622 user=43 kernel=27 run_ns=709233000 wait_ns=1597039000
+PERF_THREAD run=small2 process=firefox name=WRRenderBackend tid=850 user=41 kernel=13 run_ns=531565000 wait_ns=1505688000
+PERF_THREAD run=small2 process=firefox name=glean.dispatche tid=414 user=27 kernel=22 run_ns=488287000 wait_ns=2834993000
+PERF_THREAD run=small2 process=firefox name=IPC I/O Parent tid=432 user=14 kernel=22 run_ns=356611000 wait_ns=722183000
+PERF_THREAD run=small2 process=firefox name=firefox tid=594 user=26 kernel=7 run_ns=325468000 wait_ns=256305000
+PERF_THREAD run=small2 process=xorg name=Xorg tid=183 user=34 kernel=13 run_ns=466094000 wait_ns=171478000
+PERF_THREAD run=small2 process=xorg name=InputThread tid=228 user=0 kernel=0 run_ns=0 wait_ns=0
+END_2e0e4f50c961aa4d=0
+root@asterinas-debug:/#

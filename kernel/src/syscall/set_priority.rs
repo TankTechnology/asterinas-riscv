@@ -6,8 +6,9 @@ use super::SyscallReturn;
 use crate::{
     prelude::*,
     process::{ResourceType::RLIMIT_NICE, credentials::capabilities::CapSet},
-    sched::Nice,
+    sched::{Nice, SchedPolicy},
     syscall::get_priority::{PriorityTarget, get_processes},
+    thread::AsThread,
 };
 
 pub fn sys_set_priority(which: i32, who: u32, prio: i32, ctx: &Context) -> Result<SyscallReturn> {
@@ -43,10 +44,25 @@ pub fn sys_set_priority(which: i32, who: u32, prio: i32, ctx: &Context) -> Resul
         if new_nice < cur_nice && new_nice < limit && !caller_caps.contains(CapSet::SYS_NICE) {
             return_errno!(Errno::EACCES);
         }
-        // FIXME: `setpriority` updates only the per-process nice value. Fair
-        // scheduler state is kept in each thread's fair-class policy, so it
-        // should be updated from the same source of truth.
         process.nice().store(new_nice, Ordering::Relaxed);
+        // The existing priority ABI selects processes. Apply the new weight
+        // to every live fair/batch thread in the selected process; updating
+        // the process value alone leaves the scheduler at the old weight.
+        let threads: Vec<_> = process
+            .tasks()
+            .lock()
+            .as_slice()
+            .iter()
+            .filter_map(|task| task.as_thread().cloned())
+            .collect();
+        for thread in threads {
+            let attr = thread.sched_attr();
+            match attr.policy() {
+                SchedPolicy::Fair(_) => attr.set_policy(SchedPolicy::Fair(new_nice)),
+                SchedPolicy::Batch(_) => attr.set_policy(SchedPolicy::Batch(new_nice)),
+                _ => {}
+            }
+        }
     }
 
     Ok(SyscallReturn::Return(0))

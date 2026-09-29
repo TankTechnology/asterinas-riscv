@@ -1,0 +1,12 @@
+
+root@asterinas-debug:/# printf 'BEGIN_df05193b31a0f3b9\n'; _pid=$(pgrep -xo fire fox); nsenter -t "$_pid" -n curl -fsS --max-time 5 http://10.100.19.216:17897/ru n_nice_red.sh -o /run/run_nice_weight.sh && nsenter -t "$_pid" -n sh /run/run_ni ce_weight.sh; printf 'END_df05193b31a0f3b9=%s\n' "$?"
+BEGIN_df05193b31a0f3b9
+ld-linux-riscv64-lp64d.so.1: OK
+libc.so.6: OK
+nice_weight: OK
+test_setpriority_updates_fair_scheduler: `setpriority(PRIO_PROCESS, 0, 5)` passed [got Success]
+test_setpriority_updates_fair_scheduler: `getpriority(PRIO_PROCESS, 0)` passed [got Success]
+test_setpriority_updates_fair_scheduler: `syscall(275, 0, &attr, sizeof(attr), 0)` passed [got Success]
+test_setpriority_updates_fair_scheduler summary: 3 tests passed, 0 tests failed
+END_df05193b31a0f3b9=0
+root@asterinas-debug:/#
