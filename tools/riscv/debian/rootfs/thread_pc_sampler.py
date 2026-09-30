@@ -120,6 +120,7 @@ def main() -> int:
     maps = Path(f"/proc/{args.pid}/maps").read_text()
     args.output.with_suffix(".maps").write_text(maps)
     with args.output.open("x") as stream:
+        start_ns = time.monotonic_ns()
         metadata = {
             "kind": "metadata",
             "arch": machine,
@@ -127,12 +128,12 @@ def main() -> int:
             "threads": [{"tid": tid, "comm": name} for tid, name in threads],
             "samples_per_thread": args.samples,
             "interval_ms": args.interval_ms,
+            "start_monotonic_ns": start_ns,
             "maps": str(args.output.with_suffix(".maps")),
         }
         stream.write(json.dumps(metadata) + "\n")
         stream.flush()
 
-        start_ns = time.monotonic_ns()
         for round_index in range(args.samples):
             target_ns = start_ns + round_index * args.interval_ms * 1_000_000
             remaining_ns = target_ns - time.monotonic_ns()
@@ -140,12 +141,14 @@ def main() -> int:
                 time.sleep(remaining_ns / 1_000_000_000)
             for tid, name in threads:
                 pc, ra, stop_ns = sample_thread(tid, pc_index)
+                sampled_ns = time.monotonic_ns()
                 stream.write(
                     json.dumps(
                         {
                             "kind": "sample",
                             "round": round_index,
-                            "elapsed_ms": round((time.monotonic_ns() - start_ns) / 1_000_000, 3),
+                            "elapsed_ms": round((sampled_ns - start_ns) / 1_000_000, 3),
+                            "monotonic_ns": sampled_ns,
                             "tid": tid,
                             "comm": name,
                             "pc": pc,

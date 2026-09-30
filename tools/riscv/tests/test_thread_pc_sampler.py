@@ -49,6 +49,12 @@ class ThreadPcSamplerTests(unittest.TestCase):
                     self.assertEqual(len(samples), 3)
                     self.assertTrue(all(sample["tid"] == child.pid for sample in samples))
                     self.assertTrue(all(sample["pc"] > 0 for sample in samples))
+                    start_ns = records[0]["start_monotonic_ns"]
+                    self.assertTrue(all(sample["monotonic_ns"] >= start_ns for sample in samples))
+                    self.assertEqual(
+                        [sample["monotonic_ns"] for sample in samples],
+                        sorted(sample["monotonic_ns"] for sample in samples),
+                    )
                     self.assertIsNone(child.poll(), "tracee must run after detach")
             finally:
                 child.terminate()

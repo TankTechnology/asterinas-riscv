@@ -180,6 +180,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "clip_sha256": args.clip_sha256,
             "page": page,
             "window_ns": after_ns - before_ns,
+            "playback_start_monotonic_ns": before_ns,
+            "playback_end_monotonic_ns": after_ns,
             "metric": metric,
             "firefox_threads": thread_deltas(before_browser, after_browser),
             "xorg_threads": thread_deltas(before_xorg, after_xorg),
