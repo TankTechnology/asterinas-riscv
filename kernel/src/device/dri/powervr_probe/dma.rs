@@ -11,7 +11,7 @@ use ostd::mm::{
 };
 
 use super::{
-    fwif::{ALIGN_CHECKS_KM, OS_OBJECTS, SYSTEM_OBJECTS, meta_fwif_address},
+    fwif::{ALIGN_CHECKS_KM, OS_OBJECTS, SYSINIT_HEAP_BASES, SYSTEM_OBJECTS, meta_fwif_address},
     mmu::GpuMmu4,
 };
 
@@ -255,6 +255,9 @@ impl GpuFirmwareStage {
                 FW_SYSINIT_VADDR + 192,
                 meta_fwif_address(FW_ALIGN_VADDR, false, false)?,
             )?;
+            for (offset, base) in SYSINIT_HEAP_BASES {
+                mmu.write_mapped_u64(FW_SYSINIT_VADDR + offset, base)?;
+            }
             // The selected driver starts with a cleared ready flag and marker 1.
             mmu.write_mapped_u32(FW_SYSINIT_VADDR + 208, 0)?;
             mmu.write_mapped_u32(FW_SYSINIT_VADDR + 212, 1)?;
@@ -669,5 +672,34 @@ mod tests {
         assert_eq!(mmu.read_mapped_u32(align + 4 + 31 * 4), Ok(8));
         assert_eq!(mmu.read_mapped_u32(align + 4 + 32 * 4), Ok(0));
         assert_eq!(mmu.test_pte(align + PAGE_SIZE), Ok(0));
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_initializes_vendor_sysinit_heap_bases() {
+        let mut stage = GpuFirmwareStage::default();
+        for (segment, size) in STAGE_SEGMENT_SIZES.into_iter().enumerate() {
+            let mut frame = b"PVR1".to_vec();
+            frame.extend_from_slice(&(segment as u32).to_le_bytes());
+            frame.extend_from_slice(&(size as u32).to_le_bytes());
+            frame.extend(core::iter::repeat_n(0x5a, size));
+            stage.stage_frame(&frame).unwrap();
+        }
+
+        let mmu = stage.mmu.as_ref().unwrap();
+        let sysinit = super::FW_SYSINIT_VADDR;
+        // These are the selected Volcanic rgxheapconfig.h values, compiled by
+        // both RISC-V and native FWIF ABI probes for the pinned RockOS tree.
+        for (offset, expected) in [
+            (8, 0xda00_000000u64),
+            (16, 0xe000_000000),
+            (24, 0xec00_000000),
+            (32, 0xec40_000000),
+            (40, 0xf000_000000),
+            (48, 0xed00_000000),
+        ] {
+            let low = mmu.read_mapped_u32(sysinit + offset).unwrap() as u64;
+            let high = mmu.read_mapped_u32(sysinit + offset + 4).unwrap() as u64;
+            assert_eq!((high << 32) | low, expected);
+        }
     }
 }

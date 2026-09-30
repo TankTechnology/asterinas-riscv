@@ -18,8 +18,8 @@ cross compiler used the explicitly isolated
 [probe-only libc stubs](../../../../tools/riscv/drm/rgx_fwif_abi_stubs/README.md)
 because the development container lacks RISC-V libc headers. Both compilers
 produced section SHA-256
-`fda7ec59b6e1b34448de2547b9fa4b004e2f66347845d033664ddf55af7e7489`.
-The expanded probe records 84 size, offset, and configuration values. It also
+`00f35468aead404d0c1c13a0249c76b8f593397bd9962eb7f5362b470ad1709b`.
+The expanded probe records 90 size, offset, and configuration values. It also
 extracts the vendor's 32-word `RGXFW_ALIGN_CHECKS_INIT_KM` into a separate
 ELF section. Both architectures produced identical alignment-check bytes
 (SHA-256 `59ecbcd04bf00585bbb0bc17e8b8561cc21169b5c5c73fb18f4f1000a911c682`),
@@ -199,3 +199,25 @@ pointers. The focused QEMU tests and RISC-V build are recorded in
 [the test evidence](fwif-sysinit-extra-ktest.txt). These checks establish
 CPU-owned mappings and values only. The GPU root is not installed, firmware
 has not been started, and no command completion or pixel readback is claimed.
+
+## Selected GPU heap bases in SYSINIT
+
+The selected [Volcanic heap configuration](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/include/volcanic/rgxheapconfig.h)
+provides six 64-bit virtual bases copied by `RGXSetupFwSysData`. The ABI
+probe extracts their values as well as the SYSINIT field offsets. RISC-V and
+native probes match byte for byte. The pinned Volcanic headers do not define
+the `FIX_HW_BRN_65273_BIT_MASK` alternative-heap condition.
+
+| SYSINIT field | Offset | Selected base |
+| --- | ---: | ---: |
+| PDS executable | 8 | `0xda00000000` |
+| USC executable | 16 | `0xe000000000` |
+| FBCDC state table | 24 | `0xec00000000` |
+| FBCDC large state table | 32 | `0xec40000000` |
+| Texture state | 40 | `0xf000000000` |
+| PDS indirect state | 48 | `0xed00000000` |
+
+The stage writes each field through its owned SYSINIT DMA mapping and checks
+the CPU readback. These virtual bases describe application heaps; this step
+does not allocate those heaps or execute firmware. The focused QEMU test and
+regressions are in [the heap-base test evidence](fwif-sysinit-heaps-ktest.txt).
