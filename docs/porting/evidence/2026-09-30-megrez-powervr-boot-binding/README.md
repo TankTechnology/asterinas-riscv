@@ -75,6 +75,12 @@ That artifact is ready for the next serial-loaded board run. Its success
 marker is `PVR_RELEASE_PASS`; a failure prints `PVR_RELEASE_FAIL` and leaves
 the kernel watchdog responsible for returning to RockOS.
 
+The 2026-10-01 host-runner attempt stopped before U-Boot: the board was at a
+RockOS login prompt, so the unauthenticated reboot request was rejected. The
+runner was interrupted before any artifact upload; its retained serial log is
+`target/powervr-release-physical-20261001/serial.log`. This is a control-channel
+precondition failure, not a GPU release result.
+
 ```sh
 python3 rgx_meta_boot.py /lib/firmware/rgx.fw.30.3.408.101 \
   --output-dir /run/pvr-prepared
