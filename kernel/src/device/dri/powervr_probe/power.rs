@@ -14,11 +14,15 @@ use spin::Once;
 
 use super::{
     catalogue::{
-        clear_selected_catalogue, install_selected_catalogue, selected_catalogue_state, CatalogueIo,
+        clear_selected_catalogue, install_selected_catalogue, selected_catalogue_state,
+        validate_selected_catalogue, CatalogueIo,
     },
     dma::{GpuDmaAllocation, GpuFirmwareStage, FIRMWARE_STATUS_SIZE},
     inspect_gpu_crg_dt, print_gpu_crg_snapshot,
-    start::{prepare_selected_meta, StartIo},
+    start::{
+        prepare_selected_meta, release_selected_meta, wait_selected_firmware, FirmwareStartIo,
+        StartIo,
+    },
     CrgSnapshot, CRG_BASE, CRG_GATE_BIT, GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET,
     GPU_REG_SIZE, GPU_REG_START, GPU_RESET_OFFSET,
 };
@@ -413,6 +417,39 @@ struct PowerControlFile {
     meta_release_attempted: AtomicBool,
 }
 
+fn is_release_command(command: &[u8]) -> bool {
+    command == b"PVRR"
+}
+
+struct FirmwareWait<'a> {
+    staging: &'a mut GpuFirmwareStage,
+}
+
+impl FirmwareStartIo for FirmwareWait<'_> {
+    fn monotonic_time(&mut self) -> Duration {
+        aster_time::read_monotonic_time()
+    }
+
+    fn observe_start(&mut self) -> Result<bool, &'static str> {
+        self.staging.firmware_status()?.startup_observed()
+    }
+
+    fn wait_interval(&mut self) -> Result<(), &'static str> {
+        let deadline = aster_time::read_monotonic_time()
+            .checked_add(Duration::from_millis(1))
+            .ok_or("gpu_firmware_wait_deadline_overflow")?;
+        let mut spins = 0usize;
+        while aster_time::read_monotonic_time() < deadline {
+            spin_loop();
+            spins = spins.saturating_add(1);
+            if spins >= 1_000_000 {
+                return Err("gpu_firmware_wait_clock_stalled");
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Drop for PowerControlFile {
     fn drop(&mut self) {
         let Ok(owner) = hardware_power_io() else {
@@ -459,6 +496,83 @@ impl Pollable for PowerControlFile {
     }
 }
 
+impl PowerControlFile {
+    fn release_firmware(&self) -> Result<usize> {
+        if !ostd::boot::boot_info()
+            .kernel_cmdline
+            .split_whitespace()
+            .any(|word| word == "asterinas.powervr_release=1")
+        {
+            return_errno_with_message!(Errno::EPERM, "GPU firmware release is disabled");
+        }
+        let Some(staging) = &self.staging else {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "GPU DMA staging is disabled");
+        };
+        let mut staging = staging.lock();
+        // Serialize the check with the staging lock so two writers cannot
+        // both pass the guard and release META twice.
+        if self.meta_release_attempted.load(Ordering::Acquire) {
+            return_errno_with_message!(Errno::EBUSY, "GPU firmware release already attempted");
+        }
+        let Some(root) = staging.mmu_root_daddr() else {
+            return_errno_with_message!(Errno::EINVAL, "GPU firmware is not fully staged");
+        };
+        staging
+            .validate_meta_boot_config()
+            .map_err(|reason| Error::with_message(Errno::EINVAL, reason))?;
+
+        let owner =
+            hardware_power_io().map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        let mut io = owner.lock();
+        selected_powered_core_clock_hz(
+            io.snapshot()
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?,
+        )
+        .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        prepare_selected_meta(&mut *io)
+            .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        if self.catalogue_touched.load(Ordering::Acquire) {
+            // The optional MMU preflight may already have installed this
+            // session's catalogue. Reuse it after a readback check instead
+            // of treating the valid non-zero state as initial-state drift.
+        } else {
+            let mut catalogue_touched = false;
+            let catalogue_result =
+                install_selected_catalogue(&mut *io, root, &mut catalogue_touched);
+            if catalogue_touched {
+                // `install_selected_catalogue` marks this before its first
+                // register write. Preserve that fact even when a later
+                // readback fails, so Drop clears a partially installed
+                // catalogue before freeing the page-table DMA.
+                self.catalogue_touched.store(true, Ordering::Release);
+            }
+            catalogue_result.map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        }
+        validate_selected_catalogue(&mut *io, root)
+            .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        release_selected_meta(&mut *io, &self.meta_release_attempted)
+            .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        drop(io);
+
+        wait_selected_firmware(&mut FirmwareWait {
+            staging: &mut staging,
+        })
+        .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        let status = staging
+            .firmware_status()
+            .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        let (started, compatibility, ddk_version, ddk_build) = status.startup_summary();
+        aster_logger::println!(
+            "ASTERINAS_POWERVR_META status=started started={} compatibility={} ddk={}.{} gpu_visibility=observed",
+            started,
+            compatibility,
+            ddk_version,
+            ddk_build,
+        );
+        Ok(4)
+    }
+}
+
 impl FileOps for PowerControlFile {
     fn read_at(
         &self,
@@ -493,6 +607,14 @@ impl FileOps for PowerControlFile {
         };
         check_control_access()?;
         let len = reader.remain();
+        if len == 4 {
+            let mut command = [0; 4];
+            reader.read_fallible(&mut VmWriter::from(command.as_mut_slice()))?;
+            if !is_release_command(&command) {
+                return_errno_with_message!(Errno::EINVAL, "invalid GPU control command");
+            }
+            return self.release_firmware();
+        }
         if !(12..=12 + 73_312).contains(&len) {
             return_errno_with_message!(Errno::EINVAL, "invalid GPU DMA staging frame size");
         }
@@ -1136,5 +1258,13 @@ mod tests {
         assert_eq!(io.state, EXPECTED_INITIAL);
         assert!(!io.actions.contains(&Action::ReadId));
         assert_eq!(io.actions.last(), Some(&Action::Clock(0, 0x20)));
+    }
+
+    #[ktest]
+    fn release_command_requires_exact_magic() {
+        assert!(is_release_command(b"PVRR"));
+        assert!(!is_release_command(b"PVRR\n"));
+        assert!(!is_release_command(b"PVR1"));
+        assert!(!is_release_command(b"PVRRxxxx"));
     }
 }

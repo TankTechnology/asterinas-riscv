@@ -143,6 +143,15 @@ impl FirmwareStatus {
         }
         bytes
     }
+
+    pub(super) fn startup_summary(&self) -> (u32, u32, u32, u32) {
+        (
+            self.started,
+            self.compatibility_updated,
+            self.ddk_version,
+            self.ddk_build,
+        )
+    }
 }
 
 #[derive(Default)]
@@ -391,6 +400,10 @@ impl GpuFirmwareStage {
 
     pub(super) fn mapped_firmware_vaddrs(&self) -> Option<[usize; 4]> {
         self.mmu_vaddrs
+    }
+
+    pub(super) fn mmu_root_daddr(&self) -> Option<usize> {
+        self.mmu.as_ref().map(GpuMmu4::root_daddr)
     }
 
     pub(super) fn initialize_gpu_util_ns(&self, now_ns: u64) -> Result<(), &'static str> {
