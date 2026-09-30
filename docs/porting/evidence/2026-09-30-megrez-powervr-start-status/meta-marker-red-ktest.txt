@@ -1,0 +1,10 @@
+test aster_kernel::device::dri::powervr_probe::start::tests::selected_meta_release_readback_failure_requires_running_cleanup ... FAILED
+
+test result: FAILED. 0 passed; 1 failed; 352 filtered out.
+
+failures:
+
+---- /root/asterinas/kernel/src/device/dri/powervr_probe/start.rs:232:4 - selected_meta_release_readback_failure_requires_running_cleanup ----
+
+[caught panic] Panicked at /root/asterinas/kernel/src/device/dri/powervr_probe/start.rs:242:9
+assertion failed: attempted.load(Ordering::Acquire)

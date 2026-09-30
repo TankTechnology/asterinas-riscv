@@ -5,19 +5,34 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "drm"))
-from powervr_dma_stage import EXPECTED_FIRMWARE_SHA256, checked_frames, require_stage_opt_in
+from powervr_dma_stage import EXPECTED_FIRMWARE_SHA256, checked_frames, decode_status, require_stage_opt_in
 
 
 SIZES = {"code": 52_064, "data": 18_432, "coremem_code": 73_312, "coremem_data": 9_984}
 
 
 class CheckedFramesTests(unittest.TestCase):
+    def test_status_preserves_faults_and_rejects_incompatible_frames(self):
+        payload = b"PVS1" + struct.pack("<11I", 1, 1, 123, 2, 0x40, 3, 1, 0x190001, 42, 0x1234, 1)
+        observed = decode_status(payload)
+        self.assertEqual(observed["meta_release_attempted"], 1)
+        self.assertEqual(observed["firmware_started"], 1)
+        self.assertEqual(observed["firmware_faults"], 2)
+        self.assertEqual(observed["hwr_state"], 0x40)
+        self.assertEqual(observed["hwr_count"], 3)
+        self.assertEqual(observed["ddk_build"], 42)
+        with self.assertRaisesRegex(ValueError, "status frame"):
+            decode_status(payload[:-1])
+        with self.assertRaisesRegex(ValueError, "status frame"):
+            decode_status(b"PVS2" + payload[4:])
+
     def test_requires_both_kernel_opt_ins_before_staging(self):
         require_stage_opt_in("console=tty0 asterinas.powervr=1 asterinas.powervr_dma_stage=1")
         with self.assertRaisesRegex(ValueError, "asterinas.powervr=1"):

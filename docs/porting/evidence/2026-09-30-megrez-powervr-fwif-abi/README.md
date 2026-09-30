@@ -18,8 +18,9 @@ cross compiler used the explicitly isolated
 [probe-only libc stubs](../../../../tools/riscv/drm/rgx_fwif_abi_stubs/README.md)
 because the development container lacks RISC-V libc headers. Both compilers
 produced section SHA-256
-`37aeb0d7730fe58776a245861c014aaccddb65523dd4dee2a931b254a8083a02`.
-The expanded probe records 99 size, offset, and configuration values. It also
+`2d65ab9fed175fe799999bab7fc8ed14ddafd5beba656ffec5b17cd7b3045530`.
+The expanded probe records 106 size, offset, and configuration values, including
+the diagnostic status fields added in the [startup/status checkpoint](../2026-09-30-megrez-powervr-start-status/README.md). It also
 extracts the vendor's 32-word `RGXFW_ALIGN_CHECKS_INIT_KM` into a separate
 ELF section. Both architectures produced identical alignment-check bytes
 (SHA-256 `59ecbcd04bf00585bbb0bc17e8b8561cc21169b5c5c73fb18f4f1000a911c682`),
