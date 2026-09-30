@@ -136,6 +136,15 @@ identifies remaining META boot-configuration wiring, utilization initialization,
 HWPerf metadata and selected config checks before the physical startup adapter.
 No firmware startup or Task 3 acceptance item is claimed by these tests.
 
+The [META owner-binding checkpoint](../../porting/evidence/2026-09-30-megrez-powervr-boot-binding/README.md)
+now validates all 296 prepared boot-configuration bytes against live owned
+segment addresses before the selected reset/catalogue preflight. It also
+measures and initializes native GPU-utilization time fields. RISC-V QEMU tests
+record negative failures and positive passes for both changes; the user client
+can reject unprepared/mismatched inputs before opening the device. The earlier
+physical preflight already supplied Python-prepared code, but lacked these
+kernel owner checks. Firmware release, execution and pixels remain unverified.
+
 - [ ] Allocate pinned, zeroed GPU memory through `DmaCoherent`/`DmaStream` with checked size limits and ownership tied to the GPU session. Establish and test the board's actual device-address range; do not assume CPU virtual addresses are GPU addresses.
 - [ ] For the DT-declared noncoherent GPU, demonstrate a correct CPU/device visibility path using RISC-V cache synchronization or an uncached alias. Reject the selected boot if neither is available. Map only owned buffers into the GPU MMU and require the GPU page tables to reference those allocations.
 - [ ] Load the exact BVNC-matched firmware and shader blobs from the selected root image. Report firmware handshake and GPU fault/timeout counters. Bound every wait and ensure reset/cleanup on failed handshake.

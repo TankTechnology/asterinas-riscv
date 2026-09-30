@@ -19,6 +19,43 @@ SIZES = {"code": 52_064, "data": 18_432, "coremem_code": 73_312, "coremem_data":
 
 
 class CheckedFramesTests(unittest.TestCase):
+    def test_requires_prepared_config_and_matching_addresses_before_staging(self):
+        template = (Path(__file__).resolve().parents[3] /
+                    "kernel/src/device/dri/powervr_probe/meta_boot_config.bin").read_bytes()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            digests = {}
+            for name, size in SIZES.items():
+                payload = bytearray(size)
+                if name == "code":
+                    payload[512:808] = template
+                (root / f"{name}.bin").write_bytes(payload)
+                digests[name] = hashlib.sha256(payload).hexdigest()
+            record = {
+                "processor": "META", "firmware_sha256": EXPECTED_FIRMWARE_SHA256,
+                "segment_sha256": digests,
+                "firmware_vaddrs": [0xE1C0000000, 0xE1C000E000, 0xE1C0014000, 0xE1C0027000],
+                "boot_config_offset": 512, "boot_config_bytes": 296,
+                "boot_config_pairs": 34, "boot_config_ldr_writes": 17,
+                "boot_config_sha256": hashlib.sha256(template).hexdigest(),
+                "meta_threads": 2, "meta_dma": True, "slc_vivt": True,
+            }
+            manifest = root / "manifest.json"
+            manifest.write_text(json.dumps(record))
+            self.assertEqual(len(checked_frames(root, manifest, require_boot_config=True)), 4)
+            record["firmware_vaddrs"][1] += 4096
+            manifest.write_text(json.dumps(record))
+            with self.assertRaisesRegex(ValueError, "boot configuration"):
+                checked_frames(root, manifest, require_boot_config=True)
+            record["firmware_vaddrs"][1] -= 4096
+            payload = bytearray((root / "code.bin").read_bytes())
+            payload[540] ^= 1
+            (root / "code.bin").write_bytes(payload)
+            record["segment_sha256"]["code"] = hashlib.sha256(payload).hexdigest()
+            manifest.write_text(json.dumps(record))
+            with self.assertRaisesRegex(ValueError, "boot configuration"):
+                checked_frames(root, manifest, require_boot_config=True)
+
     def test_status_preserves_faults_and_rejects_incompatible_frames(self):
         payload = b"PVS1" + struct.pack("<11I", 1, 1, 123, 2, 0x40, 3, 1, 0x190001, 42, 0x1234, 1)
         observed = decode_status(payload)
@@ -39,6 +76,12 @@ class CheckedFramesTests(unittest.TestCase):
             require_stage_opt_in("console=tty0 asterinas.powervr_dma_stage=1")
         with self.assertRaisesRegex(ValueError, "asterinas.powervr_dma_stage=1"):
             require_stage_opt_in("console=tty0 asterinas.powervr=1")
+        with self.assertRaisesRegex(ValueError, "asterinas.powervr_boot_config_preflight=1"):
+            require_stage_opt_in("asterinas.powervr=1 asterinas.powervr_dma_stage=1", boot_config_check=True)
+        require_stage_opt_in(
+            "asterinas.powervr=1 asterinas.powervr_dma_stage=1 asterinas.powervr_boot_config_preflight=1",
+            boot_config_check=True,
+        )
 
     def test_client_starts_from_shallow_guest_path(self):
         with tempfile.TemporaryDirectory() as directory:
