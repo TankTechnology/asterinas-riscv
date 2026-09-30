@@ -11,7 +11,10 @@ use ostd::mm::{
 };
 
 use super::{
-    fwif::{ALIGN_CHECKS_KM, OS_OBJECTS, SYSINIT_HEAP_BASES, SYSTEM_OBJECTS, meta_fwif_address},
+    fwif::{
+        ALIGN_CHECKS_KM, OS_OBJECTS, RUNTIME_HCS_DEADLINE_MS, RUNTIME_WATCHDOG_PERIOD_US,
+        SYSINIT_HEAP_BASES, SYSTEM_OBJECTS, meta_fwif_address,
+    },
     mmu::GpuMmu4,
 };
 
@@ -157,6 +160,13 @@ impl GpuFirmwareStage {
                 )?;
                 mmu.map_owned(next_object_vaddr, allocation, object.gpu_read_only, true)?;
                 mmu.write_mapped_u32(FW_SYSINIT_VADDR + object.sysinit_offset, fwaddr)?;
+                if object.sysinit_offset == 160 {
+                    // RGXSetupFwSysData sets these native-mode defaults in
+                    // RGXFWIF_RUNTIME_CFG before the firmware sees SYSINIT.
+                    mmu.write_mapped_u32(next_object_vaddr + 8, 1)?;
+                    mmu.write_mapped_u32(next_object_vaddr + 32, RUNTIME_HCS_DEADLINE_MS)?;
+                    mmu.write_mapped_u32(next_object_vaddr + 36, RUNTIME_WATCHDOG_PERIOD_US)?;
+                }
                 next_object_vaddr = end
                     .checked_add(PAGE_SIZE)
                     .ok_or("gpu_dma_stage_firmware_heap_overflow")?;
@@ -258,6 +268,13 @@ impl GpuFirmwareStage {
             for (offset, base) in SYSINIT_HEAP_BASES {
                 mmu.write_mapped_u64(FW_SYSINIT_VADDR + offset, base)?;
             }
+            // RGXSetMetaDMAAddress uses the coremem-data GPU VA and the
+            // separate cached META pointer established by RGXSetFirmwareAddress.
+            mmu.write_mapped_u64(FW_SYSINIT_VADDR + 224, vaddrs[3] as u64)?;
+            mmu.write_mapped_u32(
+                FW_SYSINIT_VADDR + 232,
+                meta_fwif_address(vaddrs[3], true, true)?,
+            )?;
             // The selected driver starts with a cleared ready flag and marker 1.
             mmu.write_mapped_u32(FW_SYSINIT_VADDR + 208, 0)?;
             mmu.write_mapped_u32(FW_SYSINIT_VADDR + 212, 1)?;
@@ -701,5 +718,32 @@ mod tests {
             let high = mmu.read_mapped_u32(sysinit + offset + 4).unwrap() as u64;
             assert_eq!((high << 32) | low, expected);
         }
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_links_coremem_dma_and_selected_runtime_defaults() {
+        let mut stage = GpuFirmwareStage::default();
+        for (segment, size) in STAGE_SEGMENT_SIZES.into_iter().enumerate() {
+            let mut frame = b"PVR1".to_vec();
+            frame.extend_from_slice(&(segment as u32).to_le_bytes());
+            frame.extend_from_slice(&(size as u32).to_le_bytes());
+            frame.extend(core::iter::repeat_n(0x5a, size));
+            stage.stage_frame(&frame).unwrap();
+        }
+
+        let mmu = stage.mmu.as_ref().unwrap();
+        let coremem_data = stage.mapped_firmware_vaddrs().unwrap()[3];
+        let sysinit = super::FW_SYSINIT_VADDR;
+        let encoded_gpu_va = mmu.read_mapped_u32(sysinit + 224).unwrap() as u64
+            | ((mmu.read_mapped_u32(sysinit + 228).unwrap() as u64) << 32);
+        assert_eq!(encoded_gpu_va, coremem_data as u64);
+        assert_eq!(mmu.read_mapped_u32(sysinit + 232), Ok(0x1002_7000));
+        assert_eq!(mmu.read_mapped_u32(sysinit + 236), Ok(0));
+
+        let runtime = 0xe1c0_048000;
+        assert_eq!(mmu.read_mapped_u32(runtime + 8), Ok(1));
+        assert_eq!(mmu.read_mapped_u32(runtime + 32), Ok(u32::MAX));
+        assert_eq!(mmu.read_mapped_u32(runtime + 36), Ok(2_000_000));
+        assert_eq!(mmu.read_mapped_u32(runtime + 12), Ok(0));
     }
 }
