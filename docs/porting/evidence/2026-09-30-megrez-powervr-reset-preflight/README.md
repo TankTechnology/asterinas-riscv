@@ -50,11 +50,20 @@ The root-only staging command exited 0 after staging four firmware segments.
 Twice after closing and reopening the stable serial device, nonce-framed
 commands reported UID 0, the same boot ID, and reboot watchdog 0. Both
 checks also reported the desktop and browser services active with one Xorg
-process. The host staging verifier exited 1 **after** the successful stage:
+process. A subsequent manual safe reboot, guarded by the current-boot desktop
+ready marker and the verified reboot-script SHA-256, reached U-Boot. Selecting
+the vendor RockOS entry started Linux 6.6.87. A nonce-framed root command
+reported UID 0 and new RockOS boot ID
+`2e6d0321-293a-4c67-810f-f21a3b8392fc`; two more checks after closing and
+reopening the stable serial device confirmed that same root identity. The
+board was left in RockOS with a root serial control channel. This proves
+software recovery for this selected boot, not recovery from an actual GPU
+firmware hang, which has not yet been attempted.
+
+The host staging verifier exited 1 **after** the successful stage:
 it searched `dmesg` for markers that were visible in the serial transcript
 but absent from `dmesg`. The kernel stage was not rerun. This verifier issue
-does not change the GPU visibility status. Recovery of this fixed boot to
-RockOS has not yet been checked.
+does not change the GPU visibility status.
 
 The next hardware gate is a bounded probe that must install the root in the
 vendor order, release META reset, poll the FWIF

@@ -111,6 +111,14 @@ fresh root serial and desktop checks. These are still CPU-side page-table
 results. The META boot configuration must use the selected data/coremem GPU
 addresses before the root is installed or firmware is started.
 
+The [selected reset/MMU preflight](../../porting/evidence/2026-09-30-megrez-powervr-reset-preflight/README.md)
+now prepares the META master-boot registers while holding reset, installs and
+reads back context 0's catalogue base on the physical GPU, then invalidates
+that base and restores CRG state on close. The first physical run exposed the
+hardware's `RGX_CR_MMU_CBASE_MAPPING_INVALID_EN` reset bit; the corrected run
+passed and recovered by software reboot to a fresh RockOS root serial shell.
+GPU page walks, firmware execution, ready handshake, and pixels remain open.
+
 - [ ] Allocate pinned, zeroed GPU memory through `DmaCoherent`/`DmaStream` with checked size limits and ownership tied to the GPU session. Establish and test the board's actual device-address range; do not assume CPU virtual addresses are GPU addresses.
 - [ ] For the DT-declared noncoherent GPU, demonstrate a correct CPU/device visibility path using RISC-V cache synchronization or an uncached alias. Reject the selected boot if neither is available. Map only owned buffers into the GPU MMU and require the GPU page tables to reference those allocations.
 - [ ] Load the exact BVNC-matched firmware and shader blobs from the selected root image. Report firmware handshake and GPU fault/timeout counters. Bound every wait and ensure reset/cleanup on failed handshake.
