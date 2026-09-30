@@ -9,6 +9,47 @@ const META_DATA_BASE: u32 = 0x1000_0000;
 const META_UNCACHED: u32 = 0x8000_0000;
 const SLC_UNCACHED: u32 = 0x6000_0000;
 
+/// First system objects referenced by the selected RockOS SYSINIT layout.
+/// GPU page-table read-only and CPU access are independent permissions.
+pub(super) struct SystemObject {
+    pub(super) bytes: usize,
+    pub(super) sysinit_offset: usize,
+    pub(super) firmware_cached: bool,
+    pub(super) gpu_cached: bool,
+    pub(super) gpu_read_only: bool,
+}
+
+pub(super) const SYSTEM_OBJECTS: [SystemObject; 4] = [
+    SystemObject {
+        bytes: 864, // RGXFWIF_TRACEBUF
+        sysinit_offset: 164,
+        firmware_cached: false,
+        gpu_cached: false,
+        gpu_read_only: false,
+    },
+    SystemObject {
+        bytes: 3656, // RGXFWIF_SYSDATA
+        sysinit_offset: 168,
+        firmware_cached: false,
+        gpu_cached: false,
+        gpu_read_only: false,
+    },
+    SystemObject {
+        bytes: 11824, // RGXFWIF_GPU_UTIL_FW
+        sysinit_offset: 172,
+        firmware_cached: true,
+        gpu_cached: false,
+        gpu_read_only: false,
+    },
+    SystemObject {
+        bytes: 184, // RGXFWIF_RUNTIME_CFG
+        sysinit_offset: 160,
+        firmware_cached: false,
+        gpu_cached: false,
+        gpu_read_only: true,
+    },
+];
+
 /// Convert a GPU VA in the selected firmware raw heap to the META pointer ABI.
 pub(super) fn meta_fwif_address(
     gpu_virt: usize,

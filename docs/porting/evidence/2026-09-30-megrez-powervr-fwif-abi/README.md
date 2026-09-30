@@ -36,8 +36,10 @@ allocates HWR info (2,464 B), kernel and firmware CCB controls (16 B each),
 64 B command entries, return slots, OS data (1,096 B), and a power sync
 primitive before copying OSINIT. Its system path allocates trace control
 (864 B), system data (3,656 B), GPU utilization data (11,824 B), runtime
-configuration (184 B), register configuration (12,296 B), and other dependent
-objects before copying SYSINIT. The pointer graph is therefore substantially
+configuration (184 B), and other dependent objects before copying SYSINIT.
+The 12,296 B register configuration allocation is conditional on
+`SUPPORT_USER_REGISTER_CONFIGURATION`, which this selected `config_kernel.h`
+does not enable. The pointer graph is therefore substantially
 larger than the three currently mapped, zeroed configuration slots.
 
 For reproduction, extract the pinned driver's `include` and
@@ -63,12 +65,16 @@ ready flag alone is not a safe or sufficient success check.
 
 The first kernel use of this layout adds bounded 32-bit CPU reads and writes
 through the `GpuMmu4` allocation owner. A field must be aligned and wholly
-inside an owned mapping; writes to read-only mappings are rejected. This is
+inside an owned mapping. The GPU page-table read-only bit does not prohibit
+CPU writes through the owner's uncached DMA alias: the vendor's
+`RGX_FWSHAREDMEM_GPU_RO_ALLOCFLAGS` explicitly includes `CPU_WRITEABLE`. This is
 needed to initialize FWIF fields and later poll `bFirmwareStarted` without
 losing the uncached CPU alias when the allocation moves into the GPU MMU.
 The [focused RISC-V QEMU ktest](mmu-owned-field-ktest.txt) exercised the
 vendor-derived offset 208, a mapping boundary, a misaligned read, and a
-read-only mapping: `1 passed; 0 failed`. The ordinary RISC-V kernel build and
+GPU-read-only mapping: `1 passed; 0 failed`. A follow-up test corrected the
+CPU/GPU permission distinction and passed with `1 passed; 0 failed`.
+The ordinary RISC-V kernel build and
 targeted rustfmt check also passed. The new accessor has **not** yet been
 tested on the board or used to start firmware.
 
@@ -104,3 +110,28 @@ sets that fabric-level field even for GPU-uncached allocations. The META
 pointer cache bits and PTE AXCACHE field describe different parts of the
 access path; their differing values are not by themselves evidence of a
 mapping error or of cache coherence.
+
+## First owned SYSINIT objects
+
+The staging path now allocates four zeroed firmware-main objects in Die 0 DMA
+memory, maps them with one unmapped guard page after each object, and writes
+their encoded META addresses into the selected SYSINIT slot:
+
+| Object | Bytes | GPU VA | SYSINIT offset | META address | GPU PTE |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Trace control | 864 | `0xe1c0040000` | 164 | `0xf0040000` | read/write |
+| System data | 3,656 | `0xe1c0042000` | 168 | `0xf0042000` | read/write |
+| GPU utility | 11,824 | `0xe1c0044000` | 172 | `0x70044000` | read/write |
+| Runtime config | 184 | `0xe1c0048000` | 160 | `0xf0048000` | read-only |
+
+SYSINIT starts with `bFirmwareStarted=0` at offset 208 and marker 1 at
+offset 212. The GPU utility object uses the vendor's firmware-cached flag;
+the other three use uncached firmware addresses. The focused
+[QEMU kernel results](fwif-sysinit-links-ktest.txt) check the four pointers,
+PTE permissions, guard pages and unchanged config/firmware segment mappings.
+The ordinary RISC-V Sv39/SMP=4 kernel build and targeted rustfmt check also
+passed. The existing `fw_config_initialized=0` log still means the complete
+FWIF graph has not been initialized. The GPU page-table root is still not
+installed. Other required SYSINIT and
+OSINIT dependencies remain uninitialized; this change does **not** start the
+firmware, submit GPU commands, or prove hardware drawing.

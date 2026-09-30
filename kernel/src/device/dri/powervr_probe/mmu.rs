@@ -88,7 +88,6 @@ struct PageDirectory {
 struct OwnedMap {
     start: usize,
     end: usize,
-    read_only: bool,
     allocation: GpuDmaAllocation,
 }
 
@@ -149,9 +148,6 @@ impl GpuMmu4 {
 
     pub(super) fn write_mapped_u32(&self, virt: usize, value: u32) -> Result<(), &'static str> {
         let (mapping, offset) = self.mapped_u32(virt)?;
-        if mapping.read_only {
-            return Err("gpu_mmu_read_only");
-        }
         mapping.allocation.write_u32(offset, value)?;
         if mapping.allocation.read_u32(offset)? != value {
             return Err("gpu_mmu_field_readback_mismatch");
@@ -282,7 +278,6 @@ impl GpuMmu4 {
                 self.mapped.push(OwnedMap {
                     start: virt,
                     end,
-                    read_only,
                     allocation,
                 });
                 Ok(receipt)
@@ -331,7 +326,7 @@ mod tests {
     }
 
     #[ktest]
-    fn gpu_mmu4_accesses_only_writable_mapped_firmware_fields() {
+    fn gpu_mmu4_cpu_accesses_owned_fields_with_independent_gpu_permissions() {
         let mut mmu = GpuMmu4::new().unwrap();
         let sysinit = 0xe1c1_ff0000;
         mmu.map_owned(sysinit, GpuDmaAllocation::new(1).unwrap(), false, true)
@@ -354,7 +349,9 @@ mod tests {
         mmu.map_owned(code, GpuDmaAllocation::new(1).unwrap(), true, true)
             .unwrap();
         assert_eq!(mmu.read_mapped_u32(code), Ok(0));
-        assert_eq!(mmu.write_mapped_u32(code, 1), Err("gpu_mmu_read_only"));
+        assert_eq!(mmu.test_pte(code).unwrap() & 2, 2);
+        assert_eq!(mmu.write_mapped_u32(code, 1), Ok(()));
+        assert_eq!(mmu.read_mapped_u32(code), Ok(1));
     }
 
     #[ktest]
