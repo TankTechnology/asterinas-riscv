@@ -11,7 +11,7 @@ use ostd::mm::{
 };
 
 use super::{
-    fwif::{OS_OBJECTS, SYSTEM_OBJECTS, meta_fwif_address},
+    fwif::{ALIGN_CHECKS_KM, OS_OBJECTS, SYSTEM_OBJECTS, meta_fwif_address},
     mmu::GpuMmu4,
 };
 
@@ -36,6 +36,9 @@ const FW_CONFIG_SLOT_SIZE: usize = 0x10000;
 const FW_CONFIG_START: usize = FW_HEAP_BASE + FW_RAW_HEAP_SIZE - 3 * FW_CONFIG_SLOT_SIZE;
 const FW_SYSTEM_OBJECT_START: usize = FW_HEAP_BASE + 0x40000;
 const FW_OS_OBJECT_START: usize = FW_HEAP_BASE + 0x50000;
+const FW_FAULT_VADDR: usize = FW_HEAP_BASE + 0x70000;
+const FW_COUNTER_VADDR: usize = FW_FAULT_VADDR + 2 * PAGE_SIZE;
+const FW_ALIGN_VADDR: usize = FW_COUNTER_VADDR + 2 * PAGE_SIZE;
 const FW_SYSINIT_VADDR: usize = FW_CONFIG_START + 2 * FW_CONFIG_SLOT_SIZE;
 const FW_OSINIT_VADDR: usize = FW_CONFIG_START + FW_CONFIG_SLOT_SIZE;
 
@@ -197,6 +200,60 @@ impl GpuFirmwareStage {
             mmu.write_mapped_u32(
                 osdata_vaddr.ok_or("gpu_dma_stage_osdata_missing")? + 572,
                 meta_fwif_address(sync_vaddr, false, false)?,
+            )?;
+            if sync_vaddr + 2 * PAGE_SIZE > FW_FAULT_VADDR {
+                return Err("gpu_dma_stage_system_extra_overlap");
+            }
+            let fault = GpuDmaAllocation::new(1)?;
+            let mut fault_pattern = vec![0; PAGE_SIZE];
+            for word in fault_pattern.chunks_exact_mut(size_of::<u32>()) {
+                word.copy_from_slice(&0xdead_beefu32.to_le_bytes());
+            }
+            fault
+                .memory
+                .write_bytes(0, &fault_pattern)
+                .map_err(|_| "gpu_dma_fault_page_write_failed")?;
+            let mut fault_readback = vec![0; PAGE_SIZE];
+            fault
+                .memory
+                .read_bytes(0, &mut fault_readback)
+                .map_err(|_| "gpu_dma_fault_page_read_failed")?;
+            if fault_readback != fault_pattern {
+                return Err("gpu_dma_fault_page_readback_mismatch");
+            }
+            let fault_phys = fault.daddr() as u64;
+            mmu.map_owned(FW_FAULT_VADDR, fault, false, true)?;
+            mmu.write_mapped_u32(FW_SYSINIT_VADDR, fault_phys as u32)?;
+            mmu.write_mapped_u32(FW_SYSINIT_VADDR + 4, (fault_phys >> 32) as u32)?;
+
+            let counter = GpuDmaAllocation::new(1)?;
+            mmu.map_owned(FW_COUNTER_VADDR, counter, false, true)?;
+            mmu.write_mapped_u32(
+                FW_SYSINIT_VADDR + 184,
+                meta_fwif_address(FW_COUNTER_VADDR, true, false)?,
+            )?;
+            mmu.write_mapped_u32(FW_SYSINIT_VADDR + 188, (PAGE_SIZE / 4) as u32)?;
+
+            let align = GpuDmaAllocation::new(1)?;
+            let mut align_data = vec![0; 4 + ALIGN_CHECKS_KM.len() + 4];
+            align_data[..4].copy_from_slice(&((ALIGN_CHECKS_KM.len() / 4) as u32).to_le_bytes());
+            align_data[4..4 + ALIGN_CHECKS_KM.len()].copy_from_slice(ALIGN_CHECKS_KM);
+            align
+                .memory
+                .write_bytes(0, &align_data)
+                .map_err(|_| "gpu_dma_align_checks_write_failed")?;
+            let mut align_readback = vec![0; align_data.len()];
+            align
+                .memory
+                .read_bytes(0, &mut align_readback)
+                .map_err(|_| "gpu_dma_align_checks_read_failed")?;
+            if align_readback != align_data {
+                return Err("gpu_dma_align_checks_readback_mismatch");
+            }
+            mmu.map_owned(FW_ALIGN_VADDR, align, false, true)?;
+            mmu.write_mapped_u32(
+                FW_SYSINIT_VADDR + 192,
+                meta_fwif_address(FW_ALIGN_VADDR, false, false)?,
             )?;
             // The selected driver starts with a cleared ready flag and marker 1.
             mmu.write_mapped_u32(FW_SYSINIT_VADDR + 208, 0)?;
@@ -575,5 +632,42 @@ mod tests {
         assert_eq!(mmu.read_mapped_u32(0xe1c0_06b000 + 572), Ok(0xf006_d000));
         assert_eq!(mmu.read_mapped_u32(0xe1c0_06d000), Ok(0));
         assert_eq!(mmu.test_pte(0xe1c0_06e000), Ok(0));
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_prepares_sysinit_fault_counter_and_alignment_checks() {
+        let mut stage = GpuFirmwareStage::default();
+        for (segment, size) in STAGE_SEGMENT_SIZES.into_iter().enumerate() {
+            let mut frame = b"PVR1".to_vec();
+            frame.extend_from_slice(&(segment as u32).to_le_bytes());
+            frame.extend_from_slice(&(size as u32).to_le_bytes());
+            frame.extend(core::iter::repeat_n(0x5a, size));
+            stage.stage_frame(&frame).unwrap();
+        }
+
+        let mmu = stage.mmu.as_ref().unwrap();
+        let sysinit = super::FW_SYSINIT_VADDR;
+        let fault = 0xe1c0_070000;
+        let fault_phys = mmu.test_pte(fault).unwrap() & 0xff_ffff_f000;
+        let encoded_phys = mmu.read_mapped_u32(sysinit).unwrap() as u64
+            | ((mmu.read_mapped_u32(sysinit + 4).unwrap() as u64) << 32);
+        assert_eq!(encoded_phys, fault_phys);
+        assert_eq!(mmu.read_mapped_u32(fault), Ok(0xdead_beef));
+        assert_eq!(mmu.read_mapped_u32(fault + PAGE_SIZE - 4), Ok(0xdead_beef));
+        assert_eq!(mmu.test_pte(fault + PAGE_SIZE), Ok(0));
+
+        let counter = 0xe1c0_072000;
+        assert_eq!(mmu.read_mapped_u32(sysinit + 184), Ok(0x7007_2000));
+        assert_eq!(mmu.read_mapped_u32(sysinit + 188), Ok(1024));
+        assert_eq!(mmu.read_mapped_u32(counter), Ok(0));
+        assert_eq!(mmu.test_pte(counter + PAGE_SIZE), Ok(0));
+
+        let align = 0xe1c0_074000;
+        assert_eq!(mmu.read_mapped_u32(sysinit + 192), Ok(0xf007_4000));
+        assert_eq!(mmu.read_mapped_u32(align), Ok(32));
+        assert_eq!(mmu.read_mapped_u32(align + 4), Ok(440));
+        assert_eq!(mmu.read_mapped_u32(align + 4 + 31 * 4), Ok(8));
+        assert_eq!(mmu.read_mapped_u32(align + 4 + 32 * 4), Ok(0));
+        assert_eq!(mmu.test_pte(align + PAGE_SIZE), Ok(0));
     }
 }

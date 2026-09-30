@@ -34,6 +34,11 @@ riscv64-linux-gnu-objcopy -O binary --only-section=.rgx_fwif_abi \
 objcopy -O binary --only-section=.rgx_fwif_abi \
     "$output/native.o" "$output/native.bin"
 cmp "$output/riscv64.bin" "$output/native.bin"
+riscv64-linux-gnu-objcopy -O binary --only-section=.rgx_fwif_alignchecks \
+    "$output/riscv64.o" "$output/align-checks-riscv64.bin"
+objcopy -O binary --only-section=.rgx_fwif_alignchecks \
+    "$output/native.o" "$output/align-checks-native.bin"
+cmp "$output/align-checks-riscv64.bin" "$output/align-checks-native.bin"
 python3 "$script_dir/decode_rgx_fwif_abi.py" "$output/riscv64.bin" \
     > "$output/layout.json"
 echo "PowerVR FWIF ABI probe: RISC-V and native sections match"

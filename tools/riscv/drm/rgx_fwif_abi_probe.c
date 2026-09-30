@@ -6,6 +6,7 @@
 #include <stddef.h>
 
 #include "rgx_fwif_km.h"
+#include "rgx_fwif_alignchecks.h"
 
 struct rgx_abi_entry {
     char name[64];
@@ -41,6 +42,14 @@ const struct rgx_abi_entry rgx_fwif_abi[] = {
     OFFSET(RGXFWIF_OSINIT, sRGXCompChecks),
     SIZE(RGXFWIF_SYSINIT),
     OFFSET(RGXFWIF_SYSINIT, sFaultPhysAddr),
+    OFFSET(RGXFWIF_SYSINIT, sPDSExecBase),
+    OFFSET(RGXFWIF_SYSINIT, sUSCExecBase),
+    OFFSET(RGXFWIF_SYSINIT, sFBCDCStateTableBase),
+    OFFSET(RGXFWIF_SYSINIT, sFBCDCLargeStateTableBase),
+    OFFSET(RGXFWIF_SYSINIT, sTextureHeapBase),
+    OFFSET(RGXFWIF_SYSINIT, sPDSIndirectHeapBase),
+    OFFSET(RGXFWIF_SYSINIT, ui64HWPerfFilter),
+    OFFSET(RGXFWIF_SYSINIT, ui32FilterFlags),
     OFFSET(RGXFWIF_SYSINIT, sRuntimeCfg),
     OFFSET(RGXFWIF_SYSINIT, sTraceBufCtl),
     OFFSET(RGXFWIF_SYSINIT, sFwSysData),
@@ -58,6 +67,8 @@ const struct rgx_abi_entry rgx_fwif_abi[] = {
     OFFSET(RGXFWIF_SYSINIT, ui32MarkerVal),
     OFFSET(RGXFWIF_SYSINIT, ui32FirmwareStartedTimeStamp),
     OFFSET(RGXFWIF_SYSINIT, sCorememDataStore),
+    OFFSET(RGXFWIF_SYSINIT, eGPIOValidationMode),
+    OFFSET(RGXFWIF_SYSINIT, sBvncKmFeatureFlags),
     SIZE(RGXFWIF_DMA_ADDR),
     OFFSET(RGXFWIF_DMA_ADDR, psDevVirtAddr),
     OFFSET(RGXFWIF_DMA_ADDR, pbyFWAddr),
@@ -69,6 +80,11 @@ const struct rgx_abi_entry rgx_fwif_abi[] = {
     OFFSET(RGXFWIF_RUNTIME_CFG, ui32SOCClockSpeed),
 #endif
     OFFSET(RGXFWIF_RUNTIME_CFG, ui32HCSDeadlineMS),
+    OFFSET(RGXFWIF_RUNTIME_CFG, ui32PowUnitsState),
+    OFFSET(RGXFWIF_RUNTIME_CFG, ui32RACUnitsState),
+    OFFSET(RGXFWIF_RUNTIME_CFG, ui32WdgPeriodUs),
+    OFFSET(RGXFWIF_RUNTIME_CFG, ui32TSIntervalMs),
+    OFFSET(RGXFWIF_RUNTIME_CFG, ui32VzConnectionCooldownPeriodInSec),
     SIZE(RGXFWIF_TRACEBUF),
     SIZE(RGXFWIF_SYSDATA),
     SIZE(RGXFWIF_OSDATA),
@@ -76,11 +92,23 @@ const struct rgx_abi_entry rgx_fwif_abi[] = {
     OFFSET(RGXFWIF_OSDATA, sPowerSync),
     SIZE(RGXFWIF_HWRINFOBUF),
     SIZE(RGXFWIF_CCB_CTL),
+    OFFSET(RGXFWIF_CCB_CTL, ui32WriteOffset),
+    OFFSET(RGXFWIF_CCB_CTL, ui32ReadOffset),
+    OFFSET(RGXFWIF_CCB_CTL, ui32WrapMask),
     SIZE(RGXFWIF_KCCB_CMD),
     SIZE(RGXFWIF_FWCCB_CMD),
     SIZE(RGXFWIF_GPU_UTIL_FW),
     SIZE(RGXFWIF_REG_CFG),
     SIZE(RGXFWIF_HWPERF_CTRL),
     SIZE(RGXFWIF_COUNTER_DUMP_CTL),
+    OFFSET(RGXFWIF_COUNTER_DUMP_CTL, sBuffer),
+    OFFSET(RGXFWIF_COUNTER_DUMP_CTL, ui32SizeInDwords),
+    OFFSET(RGXFWIF_SYSDATA, ui32ConfigFlags),
+    OFFSET(RGXFWIF_SYSDATA, ui32ConfigFlagsExt),
+    OFFSET(RGXFWIF_GPU_UTIL_FW, ui64GpuLastWord),
     SIZE(RGXFWIF_COMPCHECKS),
+    { "RGXFW_ALIGN_CHECKS_UM_MAX", RGXFW_ALIGN_CHECKS_UM_MAX },
 };
+
+__attribute__((used, section(".rgx_fwif_alignchecks")))
+const unsigned int rgx_fwif_alignchecks_km[] = { RGXFW_ALIGN_CHECKS_INIT_KM };

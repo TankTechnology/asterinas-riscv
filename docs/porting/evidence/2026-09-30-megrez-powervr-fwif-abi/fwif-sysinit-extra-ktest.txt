@@ -1,0 +1,29 @@
+RISC-V Sv39 QEMU FWIF SYSINIT extra-object test and staging regressions.
+
+sys-extra-green
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_prepares_sysinit_fault_counter_and_alignment_checks ... ok
+test result: ok. 1 passed; 0 failed; 334 filtered out.
+[ktest runner] All crates tested.
+
+gpu_dma_stage_links_owned_osinit_ccbs_and_power_sync
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_links_owned_osinit_ccbs_and_power_sync ... ok
+test result: ok. 1 passed; 0 failed; 334 filtered out.
+[ktest runner] All crates tested.
+
+gpu_dma_stage_links_owned_sysinit_buffers_without_installing_root
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_links_owned_sysinit_buffers_without_installing_root ... ok
+test result: ok. 1 passed; 0 failed; 334 filtered out.
+[ktest runner] All crates tested.
+
+gpu_dma_stage_maps_vendor_firmware_config_heap
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_maps_vendor_firmware_config_heap ... ok
+test result: ok. 1 passed; 0 failed; 334 filtered out.
+[ktest runner] All crates tested.
+
+gpu_dma_stage_maps_four_owned_firmware_segments_with_guard_pages
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_maps_four_owned_firmware_segments_with_guard_pages ... ok
+test result: ok. 1 passed; 0 failed; 334 filtered out.
+[ktest runner] All crates tested.
+
+CARGO_NET_OFFLINE=true make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode: passed
+rustfmt --edition 2024 --check on dma.rs and fwif.rs: passed
