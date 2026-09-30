@@ -114,5 +114,7 @@ address after it. It passed with `1 passed; 0 failed` in
 four-segment mapping ktest also passed separately. A normal RISC-V kernel build
 and targeted `rustfmt --check` passed. The whole-workspace formatting check
 still reports unrelated pre-existing changes, so it is not used as a pass
-claim for this patch. None of these tests proves firmware execution, a GPU
-rendered pixel, or a real-board boot of this new kernel image.
+claim for this patch. The subsequent
+[real-board staging check](../2026-09-30-megrez-powervr-fw-config-board/README.md)
+booted this kernel image and verified the three mappings. Neither test proves
+firmware execution or a GPU-rendered pixel.

@@ -11,13 +11,20 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "drm"))
-from powervr_dma_stage import EXPECTED_FIRMWARE_SHA256, checked_frames
+from powervr_dma_stage import EXPECTED_FIRMWARE_SHA256, checked_frames, require_stage_opt_in
 
 
 SIZES = {"code": 52_064, "data": 18_432, "coremem_code": 73_312, "coremem_data": 9_984}
 
 
 class CheckedFramesTests(unittest.TestCase):
+    def test_requires_both_kernel_opt_ins_before_staging(self):
+        require_stage_opt_in("console=tty0 asterinas.powervr=1 asterinas.powervr_dma_stage=1")
+        with self.assertRaisesRegex(ValueError, "asterinas.powervr=1"):
+            require_stage_opt_in("console=tty0 asterinas.powervr_dma_stage=1")
+        with self.assertRaisesRegex(ValueError, "asterinas.powervr_dma_stage=1"):
+            require_stage_opt_in("console=tty0 asterinas.powervr=1")
+
     def test_client_starts_from_shallow_guest_path(self):
         with tempfile.TemporaryDirectory() as directory:
             relocated = Path(directory) / "powervr_dma_stage.py"
