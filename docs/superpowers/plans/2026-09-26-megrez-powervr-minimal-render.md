@@ -134,6 +134,12 @@ run still needs to be rerun with the repository's initramfs adapter. The
 release has not yet been exercised on the physical board; no firmware-ready or
 physical pixel acceptance item is satisfied by this checkpoint.
 
+An offline release-gate initramfs is now available. It embeds the four
+manifest-checked segments and a static RISC-V init, so the next board run does
+not depend on a guest network service or a downloaded script. The init emits
+`PVR_RELEASE_PASS` only after the four frames, `PVRR`, and a status read return;
+the board still needs a fresh run to turn that into physical evidence.
+
 The [native startup wait policy](../../porting/evidence/2026-09-30-megrez-powervr-start-status/native-start-wait.md)
 now rejects firmware faults and recovery even when started is set, and bounds
 waiting by both a one-second deadline and 1,000 observations. Exact RISC-V QEMU
