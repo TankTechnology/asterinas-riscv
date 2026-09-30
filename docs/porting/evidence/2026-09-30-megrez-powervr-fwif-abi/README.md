@@ -18,9 +18,15 @@ cross compiler used the explicitly isolated
 [probe-only libc stubs](../../../../tools/riscv/drm/rgx_fwif_abi_stubs/README.md)
 because the development container lacks RISC-V libc headers. Both compilers
 produced section SHA-256
-`f02770440039f98ef331d30317073f931fdfaefff52d3d461ce9cdafd89b5ae3`.
-The decoded [layout](layout.json) is the input for the next FWIF allocation
-and initialization change.
+`fda7ec59b6e1b34448de2547b9fa4b004e2f66347845d033664ddf55af7e7489`.
+The expanded probe records 84 size, offset, and configuration values. It also
+extracts the vendor's 32-word `RGXFW_ALIGN_CHECKS_INIT_KM` into a separate
+ELF section. Both architectures produced identical alignment-check bytes
+(SHA-256 `59ecbcd04bf00585bbb0bc17e8b8561cc21169b5c5c73fb18f4f1000a911c682`),
+which are stored in
+[`align_checks_km.bin`](../../../../kernel/src/device/dri/powervr_probe/align_checks_km.bin).
+The decoded [layout](layout.json) is the reference for FWIF allocation and
+initialization.
 
 The most relevant fields are:
 
@@ -40,7 +46,8 @@ configuration (184 B), and other dependent objects before copying SYSINIT.
 The 12,296 B register configuration allocation is conditional on
 `SUPPORT_USER_REGISTER_CONFIGURATION`, which this selected `config_kernel.h`
 does not enable. The pointer graph is therefore substantially
-larger than the three currently mapped, zeroed configuration slots.
+larger than the three configuration slots; the owned dependencies added so
+far are described below.
 
 For reproduction, extract the pinned driver's `include` and
 `hwdefs/volcanic` directories, plus `config_kernel.h`, without modifying
@@ -170,3 +177,25 @@ Sv39/SMP=4 kernel build and targeted rustfmt check passed. This code has not
 been booted on Megrez; it does not install the GPU MMU root, start firmware,
 submit commands or provide a fence/pixel result. The remaining SYSINIT fields,
 device registers and fault handling must be established before a start attempt.
+
+## Additional SYSINIT dependencies
+
+The selected RockOS initialization also requires a fault-read page, a
+power-sampling counter buffer, and firmware/host structure alignment checks.
+The staging path now owns these allocations in Die 0 DMA memory, keeps an
+unmapped guard page after each, and initializes their fields using the
+cross-checked FWIF offsets:
+
+| Object | GPU VA | SYSINIT field | Initial value |
+| --- | ---: | ---: | --- |
+| Fault-read page | `0xe1c0070000` | physical address at offset 0 | every 32-bit word `0xdeadbeef` |
+| Counter buffer | `0xe1c0072000` | pointer/size at offsets 184/188 | `0x70072000`, 1,024 words |
+| Alignment checks | `0xe1c0074000` | pointer at offset 192 | `0xf0074000`; 32 KM words, then zero UM count |
+
+The alignment-check allocation reserves a full page, covering the vendor's
+128-word maximum UM array as well as the count and KM values. The fault page
+is passed as a device physical address, unlike the two META firmware
+pointers. The focused QEMU tests and RISC-V build are recorded in
+[the test evidence](fwif-sysinit-extra-ktest.txt). These checks establish
+CPU-owned mappings and values only. The GPU root is not installed, firmware
+has not been started, and no command completion or pixel readback is claimed.

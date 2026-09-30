@@ -9,6 +9,10 @@ const META_DATA_BASE: u32 = 0x1000_0000;
 const META_UNCACHED: u32 = 0x8000_0000;
 const SLC_UNCACHED: u32 = 0x6000_0000;
 
+// Compiled from the pinned Volcanic RGXFW_ALIGN_CHECKS_INIT_KM macro with
+// matching RISC-V and native ELF sections; see the FWIF ABI evidence.
+pub(super) const ALIGN_CHECKS_KM: &[u8; 128] = include_bytes!("align_checks_km.bin");
+
 /// First system objects referenced by the selected RockOS SYSINIT layout.
 /// GPU page-table read-only and CPU access are independent permissions.
 pub(super) struct SystemObject {
