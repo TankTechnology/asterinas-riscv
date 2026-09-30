@@ -16,7 +16,7 @@ use super::{
     catalogue::{
         clear_selected_catalogue, install_selected_catalogue, selected_catalogue_state, CatalogueIo,
     },
-    dma::{GpuDmaAllocation, GpuFirmwareStage},
+    dma::{GpuDmaAllocation, GpuFirmwareStage, FIRMWARE_STATUS_SIZE},
     inspect_gpu_crg_dt, print_gpu_crg_snapshot,
     start::{prepare_selected_meta, StartIo},
     CrgSnapshot, CRG_BASE, CRG_GATE_BIT, GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET,
@@ -463,10 +463,23 @@ impl FileOps for PowerControlFile {
     fn read_at(
         &self,
         _offset: usize,
-        _writer: &mut VmWriter,
+        writer: &mut VmWriter,
         _status_flags: StatusFlags,
     ) -> Result<usize> {
-        return_errno_with_message!(Errno::EOPNOTSUPP, "GPU control does not support read");
+        check_control_access()?;
+        let Some(staging) = &self.staging else {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "GPU DMA staging is disabled");
+        };
+        if writer.avail() < FIRMWARE_STATUS_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "GPU status buffer is too short");
+        }
+        let bytes = staging
+            .lock()
+            .firmware_status()
+            .map_err(|reason| Error::with_message(Errno::EIO, reason))?
+            .encode(self.meta_release_attempted.load(Ordering::Acquire));
+        writer.write_fallible(&mut VmReader::from(bytes.as_slice()))?;
+        Ok(bytes.len())
     }
 
     fn write_at(
@@ -675,6 +688,12 @@ impl StartIo for HardwarePowerIo {
         self.gpu
             .write_once(offset, &value)
             .map_err(|_| "gpu_start_write_failed")
+    }
+
+    fn delay_meta_cycles(&mut self) -> Result<(), &'static str> {
+        // At the selected 800 MHz core clock, the existing 15 us CRG pulse
+        // delay comfortably exceeds the vendor's minimum 32 GPU cycles.
+        PowerIo::delay_reset_pulse(self)
     }
 }
 

@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import struct
 
 SEGMENTS = (("code", 52_064), ("data", 18_432), ("coremem_code", 73_312), ("coremem_data", 9_984))
 EXPECTED_FIRMWARE_SHA256 = "25e9e7ff4645292ceb991617dba028e350a5c17088a105230dbaaaf995f4413b"
@@ -15,6 +16,18 @@ DEFAULT_MANIFEST = (
     Path(__file__).resolve().parent.parent.parent.parent
     / "docs/porting/evidence/2026-09-30-megrez-powervr-fw-layout/ldr-scan.json"
 )
+STATUS_SIZE = 48
+STATUS_FIELDS = (
+    "meta_release_attempted", "firmware_started", "started_timestamp",
+    "firmware_faults", "hwr_state", "hwr_count", "compatibility_updated",
+    "ddk_version", "ddk_build", "build_options", "connection_fw_state",
+)
+
+
+def decode_status(payload: bytes) -> dict[str, int]:
+    if len(payload) != STATUS_SIZE or payload[:4] != b"PVS1":
+        raise ValueError("incompatible PowerVR status frame")
+    return dict(zip(STATUS_FIELDS, struct.unpack("<11I", payload[4:])))
 
 
 def require_stage_opt_in(cmdline: str) -> None:
@@ -48,16 +61,22 @@ def main() -> int:
     parser.add_argument("--segments-dir", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--device", type=Path, default=Path("/dev/powervr-control"))
+    parser.add_argument("--status", action="store_true", help="read diagnostic firmware state before closing")
     args = parser.parse_args()
     try:
         require_stage_opt_in(Path("/proc/cmdline").read_text())
         frames = checked_frames(args.segments_dir, args.manifest)
-        descriptor = os.open(args.device, os.O_WRONLY | os.O_CLOEXEC)
+        descriptor = os.open(args.device, (os.O_RDWR if args.status else os.O_WRONLY) | os.O_CLOEXEC)
         try:
             for segment, frame in enumerate(frames):
                 written = os.write(descriptor, frame)
                 if written != len(frame):
                     raise OSError(f"segment {segment} incomplete write: {written}/{len(frame)}")
+            if args.status:
+                print(json.dumps({
+                    "diagnostic_only": True,
+                    "firmware_status": decode_status(os.read(descriptor, STATUS_SIZE)),
+                }, sort_keys=True))
         finally:
             os.close(descriptor)
     except (OSError, ValueError) as error:

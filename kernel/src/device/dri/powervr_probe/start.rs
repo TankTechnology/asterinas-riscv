@@ -2,6 +2,8 @@
 
 //! Selected Volcanic META reset and bus preparation with the processor held.
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 // Values are measured from the pinned RockOS Volcanic headers by
 // tools/riscv/drm/measure_rgx_start_registers.sh. This is only the prefix of
 // RGXStart: the firmware catalogue and META release are separate operations.
@@ -31,6 +33,7 @@ pub(super) trait StartIo {
     fn write32(&mut self, offset: usize, value: u32) -> Result<(), &'static str>;
     fn read64(&mut self, offset: usize) -> Result<u64, &'static str>;
     fn write64(&mut self, offset: usize, value: u64) -> Result<(), &'static str>;
+    fn delay_meta_cycles(&mut self) -> Result<(), &'static str>;
 }
 
 fn write32_fenced(io: &mut impl StartIo, offset: usize, value: u32) -> Result<(), &'static str> {
@@ -93,17 +96,53 @@ pub(super) fn prepare_selected_meta(io: &mut impl StartIo) -> Result<(), &'stati
     Ok(())
 }
 
+/// Complete the selected META master-boot reset sequence after its catalogue
+/// and firmware objects have been installed. The owner-provided flag is set
+/// before the first release write, including when the write or readback fails.
+pub(super) fn release_selected_meta(
+    io: &mut impl StartIo,
+    release_attempted: &AtomicBool,
+) -> Result<(), &'static str> {
+    if io.read64(SOFT_RESET)? != GARTEN_RESET {
+        return Err("gpu_meta_reset_not_held");
+    }
+    if io.read32(META_BOOT)? != 1 {
+        return Err("gpu_meta_master_boot_not_selected");
+    }
+
+    // RockOS DeassertMetaReset waits at least 32 GPU cycles on either side
+    // of the write and reads SOFT_RESET to fence the release.
+    io.delay_meta_cycles()?;
+    release_attempted.store(true, Ordering::Release);
+    io.write64(SOFT_RESET, 0)?;
+    if io.read64(SOFT_RESET)? != 0 {
+        return Err("gpu_meta_release_readback_mismatch");
+    }
+    io.delay_meta_cycles()?;
+    Ok(())
+}
+
 #[cfg(ktest)]
 mod tests {
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
 
     use ostd::prelude::ktest;
 
     use super::*;
 
+    #[derive(Debug, Eq, PartialEq)]
+    enum Operation {
+        Read32(usize),
+        Read64(usize),
+        Write64(usize, u64),
+        Delay,
+    }
+
     #[derive(Default)]
     struct FakeIo {
         writes: Vec<(usize, u64)>,
+        operations: Vec<Operation>,
+        release_readback_mismatch: bool,
     }
 
     impl FakeIo {
@@ -118,6 +157,7 @@ mod tests {
 
     impl StartIo for FakeIo {
         fn read32(&mut self, offset: usize) -> Result<u32, &'static str> {
+            self.operations.push(Operation::Read32(offset));
             Ok(self.read(offset) as u32)
         }
 
@@ -127,13 +167,81 @@ mod tests {
         }
 
         fn read64(&mut self, offset: usize) -> Result<u64, &'static str> {
+            self.operations.push(Operation::Read64(offset));
+            if self.release_readback_mismatch && offset == SOFT_RESET && self.read(offset) == 0 {
+                return Ok(GARTEN_RESET);
+            }
             Ok(self.read(offset))
         }
 
         fn write64(&mut self, offset: usize, value: u64) -> Result<(), &'static str> {
             self.writes.push((offset, value));
+            self.operations.push(Operation::Write64(offset, value));
             Ok(())
         }
+
+        fn delay_meta_cycles(&mut self) -> Result<(), &'static str> {
+            self.operations.push(Operation::Delay);
+            Ok(())
+        }
+    }
+
+    #[ktest]
+    fn selected_meta_release_is_fenced_between_cycle_waits() {
+        let mut io = FakeIo::default();
+        prepare_selected_meta(&mut io).unwrap();
+        io.operations.clear();
+        let attempted = AtomicBool::new(false);
+
+        assert_eq!(release_selected_meta(&mut io, &attempted), Ok(()));
+        assert!(attempted.load(Ordering::Acquire));
+        assert_eq!(io.read(SOFT_RESET), 0);
+        assert_eq!(
+            io.operations,
+            vec![
+                Operation::Read64(SOFT_RESET),
+                Operation::Read32(META_BOOT),
+                Operation::Delay,
+                Operation::Write64(SOFT_RESET, 0),
+                Operation::Read64(SOFT_RESET),
+                Operation::Delay,
+            ]
+        );
+    }
+
+    #[ktest]
+    fn selected_meta_release_rejects_unprepared_registers() {
+        let mut io = FakeIo::default();
+        let attempted = AtomicBool::new(false);
+        assert_eq!(
+            release_selected_meta(&mut io, &attempted),
+            Err("gpu_meta_reset_not_held")
+        );
+        assert!(io.writes.is_empty());
+        assert!(!attempted.load(Ordering::Acquire));
+
+        prepare_selected_meta(&mut io).unwrap();
+        io.write32(META_BOOT, 0).unwrap();
+        assert_eq!(
+            release_selected_meta(&mut io, &attempted),
+            Err("gpu_meta_master_boot_not_selected")
+        );
+        assert!(!attempted.load(Ordering::Acquire));
+        assert_eq!(io.read(SOFT_RESET), GARTEN_RESET);
+    }
+
+    #[ktest]
+    fn selected_meta_release_readback_failure_requires_running_cleanup() {
+        let mut io = FakeIo::default();
+        prepare_selected_meta(&mut io).unwrap();
+        io.release_readback_mismatch = true;
+        let attempted = AtomicBool::new(false);
+        assert_eq!(
+            release_selected_meta(&mut io, &attempted),
+            Err("gpu_meta_release_readback_mismatch")
+        );
+        assert!(attempted.load(Ordering::Acquire));
+        assert_eq!(io.writes.last(), Some(&(SOFT_RESET, 0)));
     }
 
     #[ktest]

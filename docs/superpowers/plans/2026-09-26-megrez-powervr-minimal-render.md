@@ -119,6 +119,15 @@ hardware's `RGX_CR_MMU_CBASE_MAPPING_INVALID_EN` reset bit; the corrected run
 passed and recovered by software reboot to a fresh RockOS root serial shell.
 GPU page walks, firmware execution, ready handshake, and pixels remain open.
 
+The [META release/status preparation](../../porting/evidence/2026-09-30-megrez-powervr-start-status/README.md)
+adds the vendor's fenced release sequence, recording the attempt before its
+first write so failed readback uses reset-before-DMA-release cleanup. It also
+adds bounded, capability-gated reads of owned FWIF status and a `--status` staging
+client. Selected RISC-V QEMU tests cover ordering, initial-state rejection,
+failure marking, held-META regression, and diagnostic fault preservation.
+The release operation is not called by the device interface yet; no firmware
+ready or physical pixel acceptance item is satisfied by this checkpoint.
+
 - [ ] Allocate pinned, zeroed GPU memory through `DmaCoherent`/`DmaStream` with checked size limits and ownership tied to the GPU session. Establish and test the board's actual device-address range; do not assume CPU virtual addresses are GPU addresses.
 - [ ] For the DT-declared noncoherent GPU, demonstrate a correct CPU/device visibility path using RISC-V cache synchronization or an uncached alias. Reject the selected boot if neither is available. Map only owned buffers into the GPU MMU and require the GPU page tables to reference those allocations.
 - [ ] Load the exact BVNC-matched firmware and shader blobs from the selected root image. Report firmware handshake and GPU fault/timeout counters. Bound every wait and ensure reset/cleanup on failed handshake.

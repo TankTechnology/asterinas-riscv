@@ -80,6 +80,48 @@ pub(super) struct StagedSegment {
     pub(super) mmu_code_root: Option<usize>,
 }
 
+pub(super) const FIRMWARE_STATUS_SIZE: usize = 48;
+
+/// Diagnostic observations of asynchronously updated firmware memory. These
+/// fields are not an atomic snapshot or proof of successful initialization.
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct FirmwareStatus {
+    started: u32,
+    started_timestamp: u32,
+    firmware_faults: u32,
+    hwr_state: u32,
+    hwr_count: u32,
+    compatibility_updated: u32,
+    ddk_version: u32,
+    ddk_build: u32,
+    build_options: u32,
+    connection_fw_state: u32,
+}
+
+impl FirmwareStatus {
+    pub(super) fn encode(self, meta_release_attempted: bool) -> [u8; FIRMWARE_STATUS_SIZE] {
+        let mut bytes = [0; FIRMWARE_STATUS_SIZE];
+        bytes[..4].copy_from_slice(b"PVS1");
+        let words = [
+            u32::from(meta_release_attempted),
+            self.started,
+            self.started_timestamp,
+            self.firmware_faults,
+            self.hwr_state,
+            self.hwr_count,
+            self.compatibility_updated,
+            self.ddk_version,
+            self.ddk_build,
+            self.build_options,
+            self.connection_fw_state,
+        ];
+        for (word, chunk) in words.into_iter().zip(bytes[4..].chunks_exact_mut(4)) {
+            chunk.copy_from_slice(&word.to_le_bytes());
+        }
+        bytes
+    }
+}
+
 #[derive(Default)]
 pub(super) struct GpuFirmwareStage {
     segments: [Option<GpuDmaAllocation>; 4],
@@ -87,6 +129,8 @@ pub(super) struct GpuFirmwareStage {
     mmu: Option<GpuMmu4>,
     mmu_vaddrs: Option<[usize; 4]>,
     runtime_cfg_vaddr: Option<usize>,
+    sysdata_vaddr: Option<usize>,
+    hwr_info_vaddr: Option<usize>,
 }
 
 impl GpuFirmwareStage {
@@ -172,6 +216,9 @@ impl GpuFirmwareStage {
                 )?;
                 mmu.map_owned(next_object_vaddr, allocation, object.gpu_read_only, true)?;
                 mmu.write_mapped_u32(FW_SYSINIT_VADDR + object.sysinit_offset, fwaddr)?;
+                if object.sysinit_offset == 168 {
+                    self.sysdata_vaddr = Some(next_object_vaddr);
+                }
                 if object.sysinit_offset == 160 {
                     self.runtime_cfg_vaddr = Some(next_object_vaddr);
                     // RGXSetupFwSysData sets these native-mode defaults in
@@ -215,6 +262,9 @@ impl GpuFirmwareStage {
                 let fwaddr = meta_fwif_address(next_object_vaddr, object.firmware_cached, false)?;
                 mmu.map_owned(next_object_vaddr, allocation, object.gpu_read_only, true)?;
                 mmu.write_mapped_u32(FW_OSINIT_VADDR + object.osinit_offset, fwaddr)?;
+                if object.osinit_offset == 28 {
+                    self.hwr_info_vaddr = Some(next_object_vaddr);
+                }
                 if let Some(mask) = object.ccb_wrap_mask {
                     mmu.write_mapped_u32(next_object_vaddr + 8, mask)?;
                 }
@@ -314,6 +364,30 @@ impl GpuFirmwareStage {
 
     pub(super) fn mapped_firmware_vaddrs(&self) -> Option<[usize; 4]> {
         self.mmu_vaddrs
+    }
+
+    pub(super) fn firmware_status(&self) -> Result<FirmwareStatus, &'static str> {
+        let mmu = self.mmu.as_ref().ok_or("gpu_dma_stage_mmu_missing")?;
+        let sysdata = self.sysdata_vaddr.ok_or("gpu_dma_stage_sysdata_missing")?;
+        let hwr = self
+            .hwr_info_vaddr
+            .ok_or("gpu_dma_stage_hwr_info_missing")?;
+        // Measured from the pinned Volcanic headers with RISC-V and native
+        // compilers by rgx_fwif_abi_probe.c. Reads use the owner's uncached
+        // CPU alias and stay within the bounded firmware allocations.
+        let compatibility = FW_OSINIT_VADDR + 40;
+        Ok(FirmwareStatus {
+            started: mmu.read_mapped_u32(FW_SYSINIT_VADDR + 208)?,
+            started_timestamp: mmu.read_mapped_u32(FW_SYSINIT_VADDR + 216)?,
+            firmware_faults: mmu.read_mapped_u32(sysdata + 3536)?,
+            hwr_state: mmu.read_mapped_u32(sysdata + 3608)?,
+            hwr_count: mmu.read_mapped_u32(hwr + 2304)?,
+            compatibility_updated: mmu.read_mapped_u32(compatibility + 56)?,
+            ddk_version: mmu.read_mapped_u32(compatibility + 32)?,
+            ddk_build: mmu.read_mapped_u32(compatibility + 36)?,
+            build_options: mmu.read_mapped_u32(compatibility + 40)?,
+            connection_fw_state: mmu.read_mapped_u32(FW_CONFIG_START)?,
+        })
     }
 
     pub(super) fn set_core_clock_hz(&mut self, core_hz: u32) -> Result<(), &'static str> {
@@ -625,6 +699,54 @@ mod tests {
         }
         assert_eq!(mmu.test_pte(config_start - PAGE_SIZE), Ok(0));
         assert_eq!(mmu.test_pte(config_start + 0x30000), Ok(0));
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_reads_firmware_status_from_owned_mappings() {
+        let mut stage = GpuFirmwareStage::default();
+        assert_eq!(stage.firmware_status(), Err("gpu_dma_stage_mmu_missing"));
+        for (segment, size) in STAGE_SEGMENT_SIZES.into_iter().enumerate() {
+            let mut frame = b"PVR1".to_vec();
+            frame.extend_from_slice(&(segment as u32).to_le_bytes());
+            frame.extend_from_slice(&(size as u32).to_le_bytes());
+            frame.extend(core::iter::repeat_n(0x5a, size));
+            stage.stage_frame(&frame).unwrap();
+        }
+        let initial = stage.firmware_status().unwrap();
+        assert_eq!(initial.started, 0);
+        assert_eq!(initial.firmware_faults, 0);
+        assert_eq!(initial.compatibility_updated, 0);
+
+        let mmu = stage.mmu.as_ref().unwrap();
+        for (address, value) in [
+            (super::FW_SYSINIT_VADDR + 208, 1),
+            (super::FW_SYSINIT_VADDR + 216, 123),
+            (0xe1c0_042000 + 3536, 2),
+            (0xe1c0_042000 + 3608, 0x40),
+            (0xe1c0_050000 + 2304, 3),
+            (super::FW_OSINIT_VADDR + 40 + 56, 1),
+            (super::FW_OSINIT_VADDR + 40 + 32, 0x0019_0001),
+            (super::FW_OSINIT_VADDR + 40 + 36, 42),
+            (super::FW_OSINIT_VADDR + 40 + 40, 0x1234),
+            (super::FW_CONFIG_START, 1),
+        ] {
+            mmu.write_mapped_u32(address, value).unwrap();
+        }
+        let observed = stage.firmware_status().unwrap();
+        assert_eq!(observed.started, 1);
+        assert_eq!(observed.started_timestamp, 123);
+        assert_eq!(observed.firmware_faults, 2);
+        assert_eq!(observed.hwr_state, 0x40);
+        assert_eq!(observed.hwr_count, 3);
+        assert_eq!(observed.compatibility_updated, 1);
+        assert_eq!(observed.ddk_version, 0x0019_0001);
+        assert_eq!(observed.ddk_build, 42);
+        assert_eq!(observed.build_options, 0x1234);
+        assert_eq!(observed.connection_fw_state, 1);
+        let bytes = observed.encode(true);
+        assert_eq!(&bytes[..4], b"PVS1");
+        assert_eq!(&bytes[4..8], &1u32.to_le_bytes());
+        assert_eq!(&bytes[16..20], &2u32.to_le_bytes());
     }
 
     #[ktest]
