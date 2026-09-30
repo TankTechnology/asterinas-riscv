@@ -253,3 +253,35 @@ The separate [clock handoff evidence](fwif-clock-ktest.txt) records the two
 focused QEMU kernel tests and normal RISC-V build. It verifies CPU-visible
 field values and the selected clock-divider arithmetic, not a live board
 readback or firmware use of the values.
+
+## Selected runtime power-unit state and board clock readback
+
+The pinned RockOS BVNC 30.3.408.101 configuration has one cluster and power
+island version 1. Its `rgxbvnc.c` derives one available power unit, and the
+selected `config_kernel.h` enables all available units. Ray-tracing arch 0
+leaves the RAC count zero. The staging path therefore initializes
+`RGXFWIF_RUNTIME_CFG.ui32PowUnitsState` (offset 20) to `1` and
+`ui32RACUnitsState` (offset 24) to `0`; previously both were zero. This is a
+selected-device value, not a portable default. The [focused QEMU ktest](fwif-runtime-pow-ktest.txt)
+checks both owned fields; the release RISC-V build and rustfmt check passed.
+
+The [board record](fwif-runtime-pow-board.txt) is from the release Image built
+with these values (SHA-256
+`a4fc74046245b286305ac786b40e291409e75d98e682bf06ca2ff2d5fcc20c56`).
+RockOS's U-Boot verified the one-shot Image, Stage1 and DTB CRCs before boot.
+On Asterinas boot `b36ee7a2-3081-49d4-84d4-402cb48f0d0a`, the matched
+firmware's four segments had CPU readback `ok` and the live GPU ACLK readback
+derived `800000000` Hz. The control session closed and restored its original
+CRG registers. Two fresh, separately opened UART command sessions then proved
+UID 0, the same boot ID, a matching desktop-ready marker, watchdog 0, and an
+active desktop service. The selected boot was a one-shot U-Boot `booti`; the
+default RockOS entry and persistent boot files were not changed. The current
+manual safe-reboot helper was re-staged and syntax/hash-verified under `/run`
+after boot; the older installed helper lacks its manual mode. No post-boot
+RockOS return was performed in this run.
+
+These observations are CPU-side staging and clock evidence only. The log still
+reports `gpu_root_installed=0`, `fw_config_initialized=0`, and
+`gpu_visibility=unverified`. No GPU firmware execution, synchronized GPU
+command, pixel readback, or physical HDMI capture is claimed. Firmware bytes
+are not stored in Git.

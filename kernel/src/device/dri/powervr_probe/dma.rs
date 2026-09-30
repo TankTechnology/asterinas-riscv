@@ -12,8 +12,9 @@ use ostd::mm::{
 
 use super::{
     fwif::{
-        ALIGN_CHECKS_KM, OS_OBJECTS, RUNTIME_HCS_DEADLINE_MS, RUNTIME_WATCHDOG_PERIOD_US,
-        SYSINIT_HEAP_BASES, SYSTEM_OBJECTS, meta_fwif_address,
+        ALIGN_CHECKS_KM, OS_OBJECTS, RUNTIME_HCS_DEADLINE_MS, RUNTIME_POW_UNITS_MASK,
+        RUNTIME_RAC_UNITS_MASK, RUNTIME_WATCHDOG_PERIOD_US, SYSINIT_HEAP_BASES, SYSTEM_OBJECTS,
+        meta_fwif_address,
     },
     mmu::GpuMmu4,
 };
@@ -166,6 +167,8 @@ impl GpuFirmwareStage {
                     // RGXSetupFwSysData sets these native-mode defaults in
                     // RGXFWIF_RUNTIME_CFG before the firmware sees SYSINIT.
                     mmu.write_mapped_u32(next_object_vaddr + 8, 1)?;
+                    mmu.write_mapped_u32(next_object_vaddr + 20, RUNTIME_POW_UNITS_MASK)?;
+                    mmu.write_mapped_u32(next_object_vaddr + 24, RUNTIME_RAC_UNITS_MASK)?;
                     mmu.write_mapped_u32(next_object_vaddr + 32, RUNTIME_HCS_DEADLINE_MS)?;
                     mmu.write_mapped_u32(next_object_vaddr + 36, RUNTIME_WATCHDOG_PERIOD_US)?;
                 }
@@ -762,6 +765,8 @@ mod tests {
         assert_eq!(mmu.read_mapped_u32(runtime + 32), Ok(u32::MAX));
         assert_eq!(mmu.read_mapped_u32(runtime + 36), Ok(2_000_000));
         assert_eq!(mmu.read_mapped_u32(runtime + 12), Ok(0));
+        assert_eq!(mmu.read_mapped_u32(runtime + 20), Ok(1));
+        assert_eq!(mmu.read_mapped_u32(runtime + 24), Ok(0));
     }
 
     #[ktest]

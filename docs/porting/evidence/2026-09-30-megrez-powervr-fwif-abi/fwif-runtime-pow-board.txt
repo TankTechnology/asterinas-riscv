@@ -1,0 +1,30 @@
+Board: Megrez EIC7700, one-shot U-Boot booti, default RockOS entry retained
+UART: /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0
+Selected Image SHA-256: a4fc74046245b286305ac786b40e291409e75d98e682bf06ca2ff2d5fcc20c56
+Stage1 SHA-256: 666d58af0673e2af52c9f1f36b5438095c759d95b3efcd800180054606bb3d71
+DTB SHA-256: 465cb129333cc334a3161fabb43d37df8738ac4baa86fcdb50260691a22a84ba
+Boot ID: b36ee7a2-3081-49d4-84d4-402cb48f0d0a
+Firmware SHA-256: 25e9e7ff4645292ceb991617dba028e350a5c17088a105230dbaaaf995f4413b
+
+One root-only /dev/powervr-control session, then closed:
+  ASTERINAS_POWERVR_DMA_STAGE segment=0 bytes=52064 pages=13 cpu_readback=ok gpu_visibility=unverified
+  ASTERINAS_POWERVR_DMA_STAGE segment=1 bytes=18432 pages=5 cpu_readback=ok gpu_visibility=unverified
+  ASTERINAS_POWERVR_DMA_STAGE segment=2 bytes=73312 pages=18 cpu_readback=ok gpu_visibility=unverified
+  ASTERINAS_POWERVR_DMA_STAGE segment=3 bytes=9984 pages=3 cpu_readback=ok gpu_visibility=unverified
+  ASTERINAS_POWERVR_FWIF_CLOCK core_hz=800000000 source=gpu_aclk_readback gpu_visibility=unverified
+  ASTERINAS_POWERVR_MMU status=all_tables_prepared fw_config_initialized=0 gpu_root_installed=0 gpu_visibility=unverified
+  ASTERINAS_POWERVR_OWNER session=closed crg_restored=1 aclk=0x00000020 cfg=0x00000000 gray=0x00000000 reset=0x00000000
+  stage_rc=0
+
+Control checked twice, closing and reopening UART between checks:
+  pass=1 uid=0 boot_id=b36ee7a2-3081-49d4-84d4-402cb48f0d0a ready_marker=match watchdog=0 desktop=active
+  pass=2 uid=0 boot_id=b36ee7a2-3081-49d4-84d4-402cb48f0d0a ready_marker=match watchdog=0 desktop=active
+  reopen_verified=1
+
+The installed /usr/lib/asterinas/megrez-safe-reboot lacked manual mode, so the
+first manual reboot request failed without stopping the desktop. The current
+project helper was transferred to /run/megrez-safe-reboot.sh and SHA-256 and
+bash -n checked. It performed one orderly Asterinas-to-U-Boot transition for
+the selected kernel boot. After the selected boot it was re-staged under /run
+and checked again. This temporary helper does not survive a later reboot.
+No firmware execution, GPU readback or pixel output was measured.
