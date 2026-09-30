@@ -10,7 +10,10 @@ use ostd::mm::{
     io::{VmIo, VmIoOnce},
 };
 
-use super::{fwif::meta_fwif_address, mmu::GpuMmu4};
+use super::{
+    fwif::{SYSTEM_OBJECTS, meta_fwif_address},
+    mmu::GpuMmu4,
+};
 
 // RockOS bf2ec5d5 eswin_cpu/sysconfig.c uses an identity UMA physical heap
 // and a 40-bit DMA mask. Restrict initial allocations to Die 0 DRAM, where
@@ -31,6 +34,8 @@ const FW_HEAP_MIN_END: usize = FW_HEAP_BASE + (1 << 22);
 pub(super) const FW_RAW_HEAP_SIZE: usize = 1 << 25;
 const FW_CONFIG_SLOT_SIZE: usize = 0x10000;
 const FW_CONFIG_START: usize = FW_HEAP_BASE + FW_RAW_HEAP_SIZE - 3 * FW_CONFIG_SLOT_SIZE;
+const FW_SYSTEM_OBJECT_START: usize = FW_HEAP_BASE + 0x40000;
+const FW_SYSINIT_VADDR: usize = FW_CONFIG_START + 2 * FW_CONFIG_SLOT_SIZE;
 
 pub(super) fn parse_stage_frame(frame: &[u8]) -> Result<(usize, &[u8]), &'static str> {
     if frame.len() < STAGE_HEADER_SIZE || &frame[..4] != b"PVR1" {
@@ -122,11 +127,38 @@ impl GpuFirmwareStage {
                     .checked_add(PAGE_SIZE)
                     .ok_or("gpu_dma_stage_firmware_heap_overflow")?;
             }
+            if next_vaddr > FW_SYSTEM_OBJECT_START {
+                return Err("gpu_dma_stage_system_object_overlap");
+            }
             for slot in 0..3 {
                 let allocation = GpuDmaAllocation::new(FW_CONFIG_SLOT_SIZE / PAGE_SIZE)?;
                 let vaddr = FW_CONFIG_START + slot * FW_CONFIG_SLOT_SIZE;
                 mmu.map_owned(vaddr, allocation, false, true)?;
             }
+            let mut next_object_vaddr = FW_SYSTEM_OBJECT_START;
+            for object in SYSTEM_OBJECTS {
+                let pages = object.bytes.div_ceil(PAGE_SIZE);
+                let allocation = GpuDmaAllocation::new(pages)?;
+                let end = next_object_vaddr
+                    .checked_add(allocation.size())
+                    .ok_or("gpu_dma_stage_firmware_heap_overflow")?;
+                if end > FW_HEAP_MIN_END {
+                    return Err("gpu_dma_stage_firmware_heap_overflow");
+                }
+                let fwaddr = meta_fwif_address(
+                    next_object_vaddr,
+                    object.firmware_cached,
+                    object.gpu_cached,
+                )?;
+                mmu.map_owned(next_object_vaddr, allocation, object.gpu_read_only, true)?;
+                mmu.write_mapped_u32(FW_SYSINIT_VADDR + object.sysinit_offset, fwaddr)?;
+                next_object_vaddr = end
+                    .checked_add(PAGE_SIZE)
+                    .ok_or("gpu_dma_stage_firmware_heap_overflow")?;
+            }
+            // The selected driver starts with a cleared ready flag and marker 1.
+            mmu.write_mapped_u32(FW_SYSINIT_VADDR + 208, 0)?;
+            mmu.write_mapped_u32(FW_SYSINIT_VADDR + 212, 1)?;
             staged.mmu_code_root = Some(mmu.root_daddr());
             self.mmu_vaddrs = Some(vaddrs);
             self.mmu = Some(mmu);
@@ -432,5 +464,35 @@ mod tests {
         }
         assert_eq!(mmu.test_pte(config_start - PAGE_SIZE), Ok(0));
         assert_eq!(mmu.test_pte(config_start + 0x30000), Ok(0));
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_links_owned_sysinit_buffers_without_installing_root() {
+        let mut stage = GpuFirmwareStage::default();
+        for (segment, size) in STAGE_SEGMENT_SIZES.into_iter().enumerate() {
+            let mut frame = b"PVR1".to_vec();
+            frame.extend_from_slice(&(segment as u32).to_le_bytes());
+            frame.extend_from_slice(&(size as u32).to_le_bytes());
+            frame.extend(core::iter::repeat_n(0x5a, size));
+            stage.stage_frame(&frame).unwrap();
+        }
+
+        let mmu = stage.mmu.as_ref().unwrap();
+        let sysinit = super::FW_CONFIG_START + 2 * super::FW_CONFIG_SLOT_SIZE;
+        // Offsets and object sizes come from the pinned RockOS FWIF ABI probe.
+        for (offset, expected, vaddr, pages, gpu_read_only) in [
+            (160, 0xf004_8000, 0xe1c0_048000, 1, true),
+            (164, 0xf004_0000, 0xe1c0_040000, 1, false),
+            (168, 0xf004_2000, 0xe1c0_042000, 1, false),
+            (172, 0x7004_4000, 0xe1c0_044000, 3, false),
+        ] {
+            assert_eq!(mmu.read_mapped_u32(sysinit + offset), Ok(expected));
+            let first_pte = mmu.test_pte(vaddr).unwrap();
+            assert_eq!(first_pte & 1, 1);
+            assert_eq!((first_pte >> 1) & 1, u64::from(gpu_read_only));
+            assert_eq!(mmu.test_pte(vaddr + pages * PAGE_SIZE), Ok(0));
+        }
+        assert_eq!(mmu.read_mapped_u32(sysinit + 208), Ok(0));
+        assert_eq!(mmu.read_mapped_u32(sysinit + 212), Ok(1));
     }
 }
