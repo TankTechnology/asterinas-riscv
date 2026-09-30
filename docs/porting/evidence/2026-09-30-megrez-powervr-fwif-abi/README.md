@@ -18,8 +18,8 @@ cross compiler used the explicitly isolated
 [probe-only libc stubs](../../../../tools/riscv/drm/rgx_fwif_abi_stubs/README.md)
 because the development container lacks RISC-V libc headers. Both compilers
 produced section SHA-256
-`00f35468aead404d0c1c13a0249c76b8f593397bd9962eb7f5362b470ad1709b`.
-The expanded probe records 90 size, offset, and configuration values. It also
+`d81d6cc7c59f1dca038bea8bf9a17fbb487f79b11aa497e59b140b1571b8e65a`.
+The expanded probe records 92 size, offset, and configuration values. It also
 extracts the vendor's 32-word `RGXFW_ALIGN_CHECKS_INIT_KM` into a separate
 ELF section. Both architectures produced identical alignment-check bytes
 (SHA-256 `59ecbcd04bf00585bbb0bc17e8b8561cc21169b5c5c73fb18f4f1000a911c682`),
@@ -221,3 +221,24 @@ The stage writes each field through its owned SYSINIT DMA mapping and checks
 the CPU readback. These virtual bases describe application heaps; this step
 does not allocate those heaps or execute firmware. The focused QEMU test and
 regressions are in [the heap-base test evidence](fwif-sysinit-heaps-ktest.txt).
+
+## Coremem DMA link and fixed runtime defaults
+
+The pinned driver's `RGXSetMetaDMAAddress` stores the coremem-data GPU VA in
+`SYSINIT.sCorememDataStore.psDevVirtAddr` at offset 224 and a separate META
+firmware pointer at offset 232. The fourth staged firmware segment begins at
+`0xe1c0027000`; its selected code/data allocation flags are firmware-cached
+and GPU-cached, so its META pointer is `0x10027000`. Both fields now point to
+the already-owned segment mapping. No new GPU allocation is implied.
+
+The driver also initializes `RGXFWIF_RUNTIME_CFG` before firmware start. The
+staging path sets native-mode `bActivePMLatencyPersistant=1`, the selected
+HCS deadline `0xffffffff`, and watchdog period `2,000,000` microseconds. The
+last two values were cross-compiled from the pinned `config_kernel.h`. The
+selected RockOS sysconfig obtains the GPU core clock from the active `aclk`
+readback; the Asterinas start path must do the same before it can populate the
+core-clock fields. The old RockOS log's 800 MHz observation is not a verified
+clock value for a future Asterinas boot. This and other FWIF fields remain
+unresolved, so no firmware start or GPU execution is claimed. The
+[focused QEMU and build evidence](fwif-coremem-runtime-ktest.txt) records the
+owned mapping and field checks.
