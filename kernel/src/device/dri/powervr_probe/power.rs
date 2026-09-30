@@ -534,6 +534,15 @@ impl FileOps for PowerControlFile {
             staging
                 .set_core_clock_hz(clock_hz)
                 .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+            let now_ns = u64::try_from(aster_time::read_monotonic_time().as_nanos())
+                .map_err(|_| Error::with_message(Errno::EIO, "gpu_util_timestamp_overflow"))?;
+            staging
+                .initialize_gpu_util_ns(now_ns)
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+            aster_logger::println!(
+                "ASTERINAS_POWERVR_GPU_UTIL status=cpu_initialized monotonic_ns={} native_drivers=1 dms=8 gpu_visibility=unverified",
+                now_ns,
+            );
             aster_logger::println!(
                 "ASTERINAS_POWERVR_FWIF_CLOCK core_hz={} source=gpu_aclk_readback gpu_visibility=unverified",
                 clock_hz,
@@ -547,6 +556,18 @@ impl FileOps for PowerControlFile {
             let config_fwaddrs = staging
                 .mapped_fw_config_fwaddrs()
                 .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+            if ostd::boot::boot_info()
+                .kernel_cmdline
+                .split_whitespace()
+                .any(|word| word == "asterinas.powervr_boot_config_preflight=1")
+            {
+                staging
+                    .validate_meta_boot_config()
+                    .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+                aster_logger::println!(
+                    "ASTERINAS_POWERVR_META_BOOT status=cpu_config_checked bytes=296 gpu_visibility=unverified meta_release=not_attempted"
+                );
+            }
             aster_logger::println!(
                 "ASTERINAS_POWERVR_MMU status=all_tables_prepared root_daddr={:#x} code_vaddr={:#x} data_vaddr={:#x} coremem_code_vaddr={:#x} coremem_data_vaddr={:#x} connection_vaddr={:#x} osinit_vaddr={:#x} sysinit_vaddr={:#x} connection_fwaddr={:#x} osinit_fwaddr={:#x} sysinit_fwaddr={:#x} fw_config_initialized=0 gpu_root_installed=0 gpu_visibility=unverified",
                 root,

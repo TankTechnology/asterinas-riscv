@@ -40,10 +40,10 @@ Neither negative QEMU process was killed or counted as passing.
 | --- | --- | --- |
 | Native runtime priority/isolation/time-slice defaults | Zero matches `RGXSetupFwSysData`; do not copy non-native priority defaults | None for the selected native defaults |
 | Active-PM latency | The selected [eswin_cpu/sysinfo.h](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/system/eswin_cpu/sysinfo.h) defines 0; the zeroed SYSINIT/runtime fields match | None for this field |
-| GPU utilization initial words | Vendor fills timestamps and IDLE state; current stage leaves zeroes | Measure the remaining offsets and reproduce the initialization |
+| GPU utilization initial words | Vendor fills timestamps and IDLE state | The later [owner-binding checkpoint](../2026-09-30-megrez-powervr-boot-binding/README.md) measures and initializes these fields |
 | SYSINIT HWPerf BVNC metadata | Vendor fills BVNC, feature flags and counter blocks; current stage leaves zeroes | Audit the selected feature/block values and their use |
 | SYS/OS config and HWR debug options | Some fields remain zero without a completed selected apphint comparison | Record the intended minimal configuration and validate required fields |
-| META boot configuration | The Python builder exists, but the default staging manifest describes unpatched segment payloads | Connect the checked boot configuration to the actual owned GPU addresses before release |
+| META boot configuration | The earlier physical reset preflight already used Python-prepared code; the default staging manifest describes raw payloads | The later [owner-binding checkpoint](../2026-09-30-megrez-powervr-boot-binding/README.md) validates the prepared bytes against actual owned GPU addresses |
 | Hardware wait adapter / startup request | Not installed | Connect only after the initialization checks, then validate bounded failure cleanup and RockOS recovery |
 
 Read-only serial checks before and after reopening still returned UID 0, Linux,
