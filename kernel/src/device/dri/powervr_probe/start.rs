@@ -2,7 +2,44 @@
 
 //! Selected Volcanic META reset and bus preparation with the processor held.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, Ordering},
+    time::Duration,
+};
+
+pub(super) trait FirmwareStartIo {
+    fn monotonic_time(&mut self) -> Duration;
+    fn observe_start(&mut self) -> Result<bool, &'static str>;
+    fn wait_interval(&mut self) -> Result<(), &'static str>;
+}
+
+/// Observe the native started flag with a one-second deadline and an
+/// independent read limit. The observer must reject firmware faults before
+/// reporting startup; a successful observation does not prove command execution.
+pub(super) fn wait_selected_firmware(io: &mut impl FirmwareStartIo) -> Result<(), &'static str> {
+    let deadline = io
+        .monotonic_time()
+        .checked_add(Duration::from_secs(1))
+        .ok_or("gpu_firmware_start_deadline_overflow")?;
+    // The eventual hardware adapter must use a bounded wait interval and
+    // keep the GPU owner and its DMA allocations alive throughout this call.
+    for attempt in 0..1000 {
+        if io.monotonic_time() >= deadline {
+            return Err("gpu_firmware_start_timeout");
+        }
+        if io.observe_start()? {
+            return if io.monotonic_time() < deadline {
+                Ok(())
+            } else {
+                Err("gpu_firmware_start_timeout")
+            };
+        }
+        if attempt != 999 {
+            io.wait_interval()?;
+        }
+    }
+    Err("gpu_firmware_start_timeout")
+}
 
 // Values are measured from the pinned RockOS Volcanic headers by
 // tools/riscv/drm/measure_rgx_start_registers.sh. This is only the prefix of
@@ -125,10 +162,107 @@ pub(super) fn release_selected_meta(
 #[cfg(ktest)]
 mod tests {
     use alloc::{vec, vec::Vec};
+    use core::time::Duration;
 
     use ostd::prelude::ktest;
 
     use super::*;
+
+    struct FakeFirmwareWait {
+        observations: Vec<Result<bool, &'static str>>,
+        reads: usize,
+        waits: usize,
+        elapsed: Duration,
+        step: Duration,
+        wait_error: Option<&'static str>,
+    }
+
+    impl FirmwareStartIo for FakeFirmwareWait {
+        fn monotonic_time(&mut self) -> Duration {
+            self.elapsed
+        }
+
+        fn observe_start(&mut self) -> Result<bool, &'static str> {
+            let observation = self
+                .observations
+                .get(self.reads)
+                .copied()
+                .unwrap_or(Ok(false));
+            self.reads += 1;
+            observation
+        }
+
+        fn wait_interval(&mut self) -> Result<(), &'static str> {
+            self.waits += 1;
+            if let Some(reason) = self.wait_error {
+                return Err(reason);
+            }
+            self.elapsed += self.step;
+            Ok(())
+        }
+    }
+
+    #[ktest]
+    fn selected_firmware_start_wait_is_bounded_and_propagates_faults() {
+        let mut io = FakeFirmwareWait {
+            observations: vec![Ok(false), Ok(false), Ok(true)],
+            reads: 0,
+            waits: 0,
+            elapsed: Duration::ZERO,
+            step: Duration::from_millis(1),
+            wait_error: None,
+        };
+        assert_eq!(wait_selected_firmware(&mut io), Ok(()));
+        assert_eq!((io.reads, io.waits), (3, 2));
+
+        // A success flag first available at the deadline is not accepted.
+        io.reads = 0;
+        io.waits = 0;
+        io.elapsed = Duration::ZERO;
+        io.step = Duration::from_millis(500);
+        assert_eq!(
+            wait_selected_firmware(&mut io),
+            Err("gpu_firmware_start_timeout")
+        );
+        assert_eq!((io.reads, io.waits), (2, 2));
+
+        // Even a stalled clock must leave the wait after a finite number of reads.
+        io.observations.clear();
+        io.reads = 0;
+        io.waits = 0;
+        io.elapsed = Duration::ZERO;
+        io.step = Duration::ZERO;
+        assert_eq!(
+            wait_selected_firmware(&mut io),
+            Err("gpu_firmware_start_timeout")
+        );
+        assert_eq!((io.reads, io.waits), (1000, 999));
+
+        io.observations = vec![Err("gpu_firmware_fault_observed"), Ok(true)];
+        io.reads = 0;
+        io.waits = 0;
+        assert_eq!(
+            wait_selected_firmware(&mut io),
+            Err("gpu_firmware_fault_observed")
+        );
+        assert_eq!((io.reads, io.waits), (1, 0));
+
+        io.observations = vec![Ok(false), Ok(true)];
+        io.reads = 0;
+        io.waits = 0;
+        io.wait_error = Some("test_wait_failed");
+        assert_eq!(wait_selected_firmware(&mut io), Err("test_wait_failed"));
+        assert_eq!((io.reads, io.waits), (1, 1));
+
+        io.reads = 0;
+        io.waits = 0;
+        io.elapsed = Duration::MAX;
+        assert_eq!(
+            wait_selected_firmware(&mut io),
+            Err("gpu_firmware_start_deadline_overflow")
+        );
+        assert_eq!((io.reads, io.waits), (0, 0));
+    }
 
     #[derive(Debug, Eq, PartialEq)]
     enum Operation {

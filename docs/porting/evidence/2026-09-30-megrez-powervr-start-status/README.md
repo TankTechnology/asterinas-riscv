@@ -6,6 +6,10 @@ for this change. The existing device write path still only stages firmware and
 runs explicitly selected reset/catalogue preflights; it does not call the new
 release operation.
 
+The subsequent [native startup wait](native-start-wait.md) adds fault-prioritized
+startup observation and a deadline/read-count bound. It is also not connected to
+the physical startup path yet.
+
 The selected RockOS `bf2ec5d5` `rgxstartstop.c::DeassertMetaReset` waits at least
 32 GPU cycles before and after writing `SOFT_RESET=0`, and reads that register
 after the write. The new kernel operation checks that GARTEN is held and META

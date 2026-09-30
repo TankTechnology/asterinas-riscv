@@ -99,6 +99,27 @@ pub(super) struct FirmwareStatus {
 }
 
 impl FirmwareStatus {
+    /// Observe native firmware startup, rejecting fault/recovery indications
+    /// even when the started flag is already set. This is not a ready verdict
+    /// for command submission or a guest compatibility check.
+    pub(super) fn startup_observed(&self) -> Result<bool, &'static str> {
+        if self.firmware_faults != 0 {
+            return Err("gpu_firmware_fault_observed");
+        }
+        // Pinned Volcanic RGXFWIF_HWR_* flags: reset, general lockup,
+        // DM stalling, FW fault and restart requested. HARDWARE_OK and
+        // DM_RUNNING_OK may coexist with these and cannot override them.
+        const HWR_FAILURE_FLAGS: u32 = (1 << 1) | (1 << 3) | (1 << 5) | (1 << 6) | (1 << 7);
+        if self.hwr_count != 0 || self.hwr_state & HWR_FAILURE_FLAGS != 0 {
+            return Err("gpu_firmware_recovery_observed");
+        }
+        match self.started {
+            0 => Ok(false),
+            1 => Ok(true),
+            _ => Err("gpu_firmware_invalid_started_flag"),
+        }
+    }
+
     pub(super) fn encode(self, meta_release_attempted: bool) -> [u8; FIRMWARE_STATUS_SIZE] {
         let mut bytes = [0; FIRMWARE_STATUS_SIZE];
         bytes[..4].copy_from_slice(b"PVS1");
@@ -716,6 +737,7 @@ mod tests {
         assert_eq!(initial.started, 0);
         assert_eq!(initial.firmware_faults, 0);
         assert_eq!(initial.compatibility_updated, 0);
+        assert_eq!(initial.startup_observed(), Ok(false));
 
         let mmu = stage.mmu.as_ref().unwrap();
         for (address, value) in [
@@ -732,7 +754,7 @@ mod tests {
         ] {
             mmu.write_mapped_u32(address, value).unwrap();
         }
-        let observed = stage.firmware_status().unwrap();
+        let mut observed = stage.firmware_status().unwrap();
         assert_eq!(observed.started, 1);
         assert_eq!(observed.started_timestamp, 123);
         assert_eq!(observed.firmware_faults, 2);
@@ -743,6 +765,34 @@ mod tests {
         assert_eq!(observed.ddk_build, 42);
         assert_eq!(observed.build_options, 0x1234);
         assert_eq!(observed.connection_fw_state, 1);
+        assert_eq!(
+            observed.startup_observed(),
+            Err("gpu_firmware_fault_observed")
+        );
+        observed.firmware_faults = 0;
+        assert_eq!(
+            observed.startup_observed(),
+            Err("gpu_firmware_recovery_observed")
+        );
+        observed.hwr_count = 0;
+        for fault_bit in [1, 3, 5, 6, 7] {
+            observed.hwr_state = 1 | (1 << fault_bit);
+            assert_eq!(
+                observed.startup_observed(),
+                Err("gpu_firmware_recovery_observed")
+            );
+        }
+        observed.hwr_state = 1 | (1 << 4);
+        // Native startup does not depend on guest compatibility/connection flags.
+        observed.compatibility_updated = 0;
+        observed.connection_fw_state = 0;
+        assert_eq!(observed.startup_observed(), Ok(true));
+        observed.started = 2;
+        assert_eq!(
+            observed.startup_observed(),
+            Err("gpu_firmware_invalid_started_flag")
+        );
+        observed.firmware_faults = 2;
         let bytes = observed.encode(true);
         assert_eq!(&bytes[..4], b"PVS1");
         assert_eq!(&bytes[4..8], &1u32.to_le_bytes());
