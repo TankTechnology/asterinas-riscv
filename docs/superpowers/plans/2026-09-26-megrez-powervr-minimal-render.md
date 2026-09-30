@@ -128,6 +128,14 @@ failure marking, held-META regression, and diagnostic fault preservation.
 The release operation is not called by the device interface yet; no firmware
 ready or physical pixel acceptance item is satisfied by this checkpoint.
 
+The [native startup wait policy](../../porting/evidence/2026-09-30-megrez-powervr-start-status/native-start-wait.md)
+now rejects firmware faults and recovery even when started is set, and bounds
+waiting by both a one-second deadline and 1,000 observations. Exact RISC-V QEMU
+tests recorded negative failures and positive passes. The initialization audit
+identifies remaining META boot-configuration wiring, utilization initialization,
+HWPerf metadata and selected config checks before the physical startup adapter.
+No firmware startup or Task 3 acceptance item is claimed by these tests.
+
 - [ ] Allocate pinned, zeroed GPU memory through `DmaCoherent`/`DmaStream` with checked size limits and ownership tied to the GPU session. Establish and test the board's actual device-address range; do not assume CPU virtual addresses are GPU addresses.
 - [ ] For the DT-declared noncoherent GPU, demonstrate a correct CPU/device visibility path using RISC-V cache synchronization or an uncached alias. Reject the selected boot if neither is available. Map only owned buffers into the GPU MMU and require the GPU page tables to reference those allocations.
 - [ ] Load the exact BVNC-matched firmware and shader blobs from the selected root image. Report firmware handshake and GPU fault/timeout counters. Bound every wait and ensure reset/cleanup on failed handshake.
