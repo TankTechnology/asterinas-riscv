@@ -7,6 +7,7 @@ use core::array;
 use ostd::{arch::boot::DEVICE_TREE, boot::boot_info, io::IoMem, mm::VmIoOnce};
 
 mod dma;
+mod fwif;
 mod mmu;
 mod power;
 

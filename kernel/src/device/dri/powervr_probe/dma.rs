@@ -10,7 +10,7 @@ use ostd::mm::{
     io::{VmIo, VmIoOnce},
 };
 
-use super::mmu::GpuMmu4;
+use super::{fwif::meta_fwif_address, mmu::GpuMmu4};
 
 // RockOS bf2ec5d5 eswin_cpu/sysconfig.c uses an identity UMA physical heap
 // and a 40-bit DMA mask. Restrict initial allocations to Die 0 DRAM, where
@@ -21,14 +21,14 @@ const GPU_DMA_LIMIT: usize = 1 << 40;
 const MAX_PROBE_PAGES: usize = 256;
 const STAGE_HEADER_SIZE: usize = 12;
 const STAGE_SEGMENT_SIZES: [usize; 4] = [52_064, 18_432, 73_312, 9_984];
-const FW_HEAP_BASE: usize = 0xe1c0_000000;
+pub(super) const FW_HEAP_BASE: usize = 0xe1c0_000000;
 // The pinned DDK accepts firmware heaps no smaller than 4 MiB. Keep this
 // selected layout within that minimum, even if RockOS configures a larger one.
 const FW_HEAP_MIN_END: usize = FW_HEAP_BASE + (1 << 22);
 // RockOS bf2ec5d5 config_kernel.h and rgx_heap_firmware.h reserve the final
 // three 64 KiB granules of a 32 MiB raw heap for FW connection, OS and system
 // init data. These fixed VAs are part of the META firmware ABI.
-const FW_RAW_HEAP_SIZE: usize = 1 << 25;
+pub(super) const FW_RAW_HEAP_SIZE: usize = 1 << 25;
 const FW_CONFIG_SLOT_SIZE: usize = 0x10000;
 const FW_CONFIG_START: usize = FW_HEAP_BASE + FW_RAW_HEAP_SIZE - 3 * FW_CONFIG_SLOT_SIZE;
 
@@ -146,6 +146,17 @@ impl GpuFirmwareStage {
                 FW_CONFIG_START + 2 * FW_CONFIG_SLOT_SIZE,
             ]
         })
+    }
+
+    pub(super) fn mapped_fw_config_fwaddrs(&self) -> Result<[u32; 3], &'static str> {
+        let [connection, osinit, sysinit] = self
+            .mapped_fw_config_vaddrs()
+            .ok_or("gpu_dma_stage_firmware_layout_missing")?;
+        Ok([
+            meta_fwif_address(connection, false, false)?,
+            meta_fwif_address(osinit, true, false)?,
+            meta_fwif_address(sysinit, true, false)?,
+        ])
     }
 }
 
@@ -387,6 +398,10 @@ mod tests {
     #[ktest]
     fn gpu_dma_stage_maps_vendor_firmware_config_heap() {
         let mut stage = GpuFirmwareStage::default();
+        assert_eq!(
+            stage.mapped_fw_config_fwaddrs(),
+            Err("gpu_dma_stage_firmware_layout_missing")
+        );
         for (segment, size) in STAGE_SEGMENT_SIZES.into_iter().enumerate() {
             let mut frame = b"PVR1".to_vec();
             frame.extend_from_slice(&(segment as u32).to_le_bytes());
@@ -402,6 +417,10 @@ mod tests {
         assert_eq!(
             stage.mapped_fw_config_vaddrs(),
             Some([config_start, config_start + 0x10000, config_start + 0x20000])
+        );
+        assert_eq!(
+            stage.mapped_fw_config_fwaddrs(),
+            Ok([0xf1fd_0000, 0x71fe_0000, 0x71ff_0000])
         );
         for slot in 0..3 {
             let start = config_start + slot * 0x10000;
