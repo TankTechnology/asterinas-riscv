@@ -1,0 +1,9 @@
+RISC-V QEMU focused test:
+  gpu_dma_stage_links_coremem_dma_and_selected_runtime_defaults
+  test result: ok. 1 passed; 0 failed; 339 filtered out.
+  kernel ktest: verified 1 selected test(s), 0 failed
+  selected serial log SHA-256: 07824d08bb13a7bf62368ce3ba5e60e4e513a9e1c8b267df050d31cfbdd171cb
+
+The test checks owned runtime offsets 20 and 24 read back as 1 and 0,
+alongside the previously selected coremem and runtime fields. A RISC-V
+Sv39/SMP=4 RELEASE=1 kernel build and targeted rustfmt check passed.

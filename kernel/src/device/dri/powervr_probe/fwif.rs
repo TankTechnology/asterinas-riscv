@@ -30,6 +30,12 @@ pub(super) const SYSINIT_HEAP_BASES: [(usize, u64); 6] = [
 // until its hardware source can be verified at the firmware-start boundary.
 pub(super) const RUNTIME_HCS_DEADLINE_MS: u32 = u32::MAX;
 pub(super) const RUNTIME_WATCHDOG_PERIOD_US: u32 = 2_000_000;
+// Selected BVNC 30.3.408.101: NUM_CLUSTERS=1 and POWER_ISLAND_VERSION=1.
+// RockOS rgxbvnc.c derives max(1, NUM_CLUSTERS / 2) = one power unit;
+// config_kernel.h enables all available units. RAY_TRACING_ARCH=0 leaves
+// MAXRACCount at zero, so the native-mode RAC mask stays zero.
+pub(super) const RUNTIME_POW_UNITS_MASK: u32 = 1;
+pub(super) const RUNTIME_RAC_UNITS_MASK: u32 = 0;
 
 /// First system objects referenced by the selected RockOS SYSINIT layout.
 /// GPU page-table read-only and CPU access are independent permissions.
