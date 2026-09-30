@@ -1,0 +1,174 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! Selected PowerVR firmware page-catalogue register transaction.
+
+use ostd::mm::PAGE_SIZE;
+
+// RockOS bf2ec5d5, rgxstartstop.c::RGXWriteKernelCatBase and the pinned
+// rgx_cr_defs_km.h. HOST_SECURITY_VERSION=1 uses the unqualified registers.
+const MAPPING_CONTEXT: usize = 0xe140;
+const MAPPING_BASE: usize = 0xe148;
+const MAPPING_BASE_MASK: u32 = 0x0fff_ffff;
+const GPU_DMA_LIMIT: usize = 1 << 40;
+
+pub(super) trait CatalogueIo {
+    fn read32(&mut self, offset: usize) -> Result<u32, &'static str>;
+    fn write32(&mut self, offset: usize, value: u32) -> Result<(), &'static str>;
+}
+
+fn encode_selected_root(root_daddr: usize) -> Result<u32, &'static str> {
+    if root_daddr == 0 || root_daddr >= GPU_DMA_LIMIT || !root_daddr.is_multiple_of(PAGE_SIZE) {
+        return Err("gpu_catalogue_invalid_root");
+    }
+    let encoded = u32::try_from(root_daddr >> 12).map_err(|_| "gpu_catalogue_invalid_root")?;
+    if encoded & !MAPPING_BASE_MASK != 0 {
+        return Err("gpu_catalogue_invalid_root");
+    }
+    Ok(encoded)
+}
+
+/// Install only context 0's base before firmware startup. `touched` is
+/// set immediately before the first register write, so the owner can clear
+/// the mapping before freeing any page-table DMA after a partial failure.
+pub(super) fn install_selected_catalogue(
+    io: &mut impl CatalogueIo,
+    root_daddr: usize,
+    touched: &mut bool,
+) -> Result<(), &'static str> {
+    let encoded = encode_selected_root(root_daddr)?;
+    if io.read32(MAPPING_CONTEXT)? != 0 || io.read32(MAPPING_BASE)? != 0 {
+        return Err("gpu_catalogue_initial_state_drift");
+    }
+    *touched = true;
+    io.write32(MAPPING_CONTEXT, 0)?;
+    if io.read32(MAPPING_CONTEXT)? != 0 {
+        return Err("gpu_catalogue_context_readback_mismatch");
+    }
+    io.write32(MAPPING_BASE, encoded)?;
+    if io.read32(MAPPING_BASE)? != encoded {
+        return Err("gpu_catalogue_base_readback_mismatch");
+    }
+    Ok(())
+}
+
+/// Select context 0 before clearing its base. The caller must poison
+/// ownership and retain the page-table DMA if either readback fails.
+pub(super) fn clear_selected_catalogue(io: &mut impl CatalogueIo) -> Result<(), &'static str> {
+    io.write32(MAPPING_CONTEXT, 0)?;
+    if io.read32(MAPPING_CONTEXT)? != 0 {
+        return Err("gpu_catalogue_clear_failed");
+    }
+    io.write32(MAPPING_BASE, 0)?;
+    if io.read32(MAPPING_BASE)? != 0 {
+        return Err("gpu_catalogue_clear_failed");
+    }
+    Ok(())
+}
+
+#[cfg(ktest)]
+mod tests {
+    use alloc::{vec, vec::Vec};
+
+    use ostd::prelude::ktest;
+
+    use super::{CatalogueIo, clear_selected_catalogue, install_selected_catalogue};
+
+    #[derive(Default)]
+    struct FakeRegisters {
+        context: u32,
+        base: u32,
+        writes: Vec<(usize, u32)>,
+    }
+
+    impl CatalogueIo for FakeRegisters {
+        fn read32(&mut self, offset: usize) -> Result<u32, &'static str> {
+            match offset {
+                0xe140 => Ok(self.context),
+                0xe148 => Ok(self.base),
+                _ => Err("unexpected_gpu_register"),
+            }
+        }
+
+        fn write32(&mut self, offset: usize, value: u32) -> Result<(), &'static str> {
+            match offset {
+                0xe140 => self.context = value,
+                0xe148 => self.base = value,
+                _ => return Err("unexpected_gpu_register"),
+            }
+            self.writes.push((offset, value));
+            Ok(())
+        }
+    }
+
+    #[ktest]
+    fn selected_catalogue_base_is_encoded_read_back_and_cleared() {
+        let mut io = FakeRegisters::default();
+        let mut touched = false;
+        assert_eq!(
+            install_selected_catalogue(&mut io, 0x1_f16a_3000, &mut touched),
+            Ok(())
+        );
+        assert!(touched);
+        assert_eq!(io.context, 0);
+        assert_eq!(io.base, 0x1f16a3);
+        assert_eq!(clear_selected_catalogue(&mut io), Ok(()));
+        assert_eq!(io.base, 0);
+        assert_eq!(
+            io.writes,
+            vec![(0xe140, 0), (0xe148, 0x1f16a3), (0xe140, 0), (0xe148, 0)]
+        );
+    }
+
+    #[ktest]
+    fn selected_catalogue_rejects_bad_root_without_register_mutation() {
+        let mut io = FakeRegisters::default();
+        let mut touched = false;
+        assert!(install_selected_catalogue(&mut io, 0, &mut touched).is_err());
+        assert!(install_selected_catalogue(&mut io, 0x1_f16a_3001, &mut touched).is_err());
+        assert!(install_selected_catalogue(&mut io, 1 << 40, &mut touched).is_err());
+        assert!(io.writes.is_empty());
+        assert!(!touched);
+
+        io.base = 7;
+        assert!(install_selected_catalogue(&mut io, 0x1_f16a_3000, &mut touched).is_err());
+        assert_eq!(io.base, 7);
+        assert!(io.writes.is_empty());
+        assert!(!touched);
+    }
+
+    #[ktest]
+    fn selected_catalogue_cleanup_selects_context_zero_before_clearing() {
+        struct BankedRegisters {
+            context: usize,
+            bases: [u32; 8],
+        }
+
+        impl CatalogueIo for BankedRegisters {
+            fn read32(&mut self, offset: usize) -> Result<u32, &'static str> {
+                match offset {
+                    0xe140 => Ok(self.context as u32),
+                    0xe148 => Ok(self.bases[self.context]),
+                    _ => Err("unexpected_gpu_register"),
+                }
+            }
+
+            fn write32(&mut self, offset: usize, value: u32) -> Result<(), &'static str> {
+                match offset {
+                    0xe140 => self.context = value as usize,
+                    0xe148 => self.bases[self.context] = value,
+                    _ => return Err("unexpected_gpu_register"),
+                }
+                Ok(())
+            }
+        }
+
+        let mut io = BankedRegisters {
+            context: 7,
+            bases: [0x1f16a3, 0, 0, 0, 0, 0, 0, 17],
+        };
+        assert_eq!(clear_selected_catalogue(&mut io), Ok(()));
+        assert_eq!(io.context, 0);
+        assert_eq!(io.bases[0], 0);
+        assert_eq!(io.bases[7], 17);
+    }
+}
