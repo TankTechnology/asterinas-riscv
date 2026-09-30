@@ -17,6 +17,13 @@ DEFAULT_MANIFEST = (
 )
 
 
+def require_stage_opt_in(cmdline: str) -> None:
+    parameters = set(cmdline.split())
+    for flag in ("asterinas.powervr=1", "asterinas.powervr_dma_stage=1"):
+        if flag not in parameters:
+            raise ValueError(f"PowerVR DMA staging requires {flag}")
+
+
 def checked_frames(segments_dir: Path, manifest: Path) -> list[bytes]:
     record = json.loads(manifest.read_text())
     if record.get("processor") != "META" or record.get("firmware_sha256") != EXPECTED_FIRMWARE_SHA256:
@@ -43,6 +50,7 @@ def main() -> int:
     parser.add_argument("--device", type=Path, default=Path("/dev/powervr-control"))
     args = parser.parse_args()
     try:
+        require_stage_opt_in(Path("/proc/cmdline").read_text())
         frames = checked_frames(args.segments_dir, args.manifest)
         descriptor = os.open(args.device, os.O_WRONLY | os.O_CLOEXEC)
         try:
