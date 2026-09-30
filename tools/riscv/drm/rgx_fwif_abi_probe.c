@@ -55,6 +55,7 @@ const struct rgx_abi_entry rgx_fwif_abi[] = {
     OFFSET(RGXFWIF_SYSINIT, sTextureHeapBase),
     OFFSET(RGXFWIF_SYSINIT, sPDSIndirectHeapBase),
     OFFSET(RGXFWIF_SYSINIT, ui64HWPerfFilter),
+    OFFSET(RGXFWIF_SYSINIT, sSLC3FenceDevVAddr),
     OFFSET(RGXFWIF_SYSINIT, ui32FilterFlags),
     OFFSET(RGXFWIF_SYSINIT, sRuntimeCfg),
     OFFSET(RGXFWIF_SYSINIT, sTraceBufCtl),

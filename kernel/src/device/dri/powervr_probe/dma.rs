@@ -38,6 +38,9 @@ const FW_HEAP_MIN_END: usize = FW_HEAP_BASE + (1 << 22);
 pub(super) const FW_RAW_HEAP_SIZE: usize = 1 << 25;
 const FW_CONFIG_SLOT_SIZE: usize = 0x10000;
 const FW_CONFIG_START: usize = FW_HEAP_BASE + FW_RAW_HEAP_SIZE - 3 * FW_CONFIG_SLOT_SIZE;
+// The selected BVNC has SLC_VIVT. RockOS _AllocateSLC3Fence gives its
+// one-byte fence a cache-line-aligned mapping in the firmware main heap.
+const FW_SLC3_FENCE_VADDR: usize = FW_HEAP_BASE + 0x30000;
 const FW_SYSTEM_OBJECT_START: usize = FW_HEAP_BASE + 0x40000;
 const FW_OS_OBJECT_START: usize = FW_HEAP_BASE + 0x50000;
 const FW_FAULT_VADDR: usize = FW_HEAP_BASE + 0x70000;
@@ -137,14 +140,21 @@ impl GpuFirmwareStage {
                     .checked_add(PAGE_SIZE)
                     .ok_or("gpu_dma_stage_firmware_heap_overflow")?;
             }
-            if next_vaddr > FW_SYSTEM_OBJECT_START {
-                return Err("gpu_dma_stage_system_object_overlap");
+            if next_vaddr > FW_SLC3_FENCE_VADDR
+                || FW_SLC3_FENCE_VADDR + PAGE_SIZE > FW_SYSTEM_OBJECT_START
+            {
+                return Err("gpu_dma_stage_slc3_fence_overlap");
             }
             for slot in 0..3 {
                 let allocation = GpuDmaAllocation::new(FW_CONFIG_SLOT_SIZE / PAGE_SIZE)?;
                 let vaddr = FW_CONFIG_START + slot * FW_CONFIG_SLOT_SIZE;
                 mmu.map_owned(vaddr, allocation, false, true)?;
             }
+            let slc3_fence = GpuDmaAllocation::new(1)?;
+            // RockOS allocates this FW_MAIN fence without PMMETA_PROTECT.
+            mmu.map_owned(FW_SLC3_FENCE_VADDR, slc3_fence, false, false)?;
+            // Pinned FWIF ABI: RGXFWIF_SYSINIT.sSLC3FenceDevVAddr at 64.
+            mmu.write_mapped_u64(FW_SYSINIT_VADDR + 64, FW_SLC3_FENCE_VADDR as u64)?;
             let mut next_object_vaddr = FW_SYSTEM_OBJECT_START;
             for object in SYSTEM_OBJECTS {
                 let pages = object.bytes.div_ceil(PAGE_SIZE);
@@ -646,6 +656,29 @@ mod tests {
         }
         assert_eq!(mmu.read_mapped_u32(sysinit + 208), Ok(0));
         assert_eq!(mmu.read_mapped_u32(sysinit + 212), Ok(1));
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_maps_slc3_fence_and_links_sysinit() {
+        let mut stage = GpuFirmwareStage::default();
+        for (segment, size) in STAGE_SEGMENT_SIZES.into_iter().enumerate() {
+            let mut frame = b"PVR1".to_vec();
+            frame.extend_from_slice(&(segment as u32).to_le_bytes());
+            frame.extend_from_slice(&(size as u32).to_le_bytes());
+            frame.extend(core::iter::repeat_n(0x5a, size));
+            stage.stage_frame(&frame).unwrap();
+        }
+
+        let mmu = stage.mmu.as_ref().unwrap();
+        let fence = 0xe1c0_030000;
+        // Measured from the pinned RISC-V and native FWIF ABI probes.
+        let fence_pointer = u64::from(mmu.read_mapped_u32(super::FW_SYSINIT_VADDR + 64).unwrap())
+            | (u64::from(mmu.read_mapped_u32(super::FW_SYSINIT_VADDR + 68).unwrap()) << 32);
+        assert_eq!(fence_pointer, fence as u64);
+        let pte = mmu.test_pte(fence).unwrap();
+        assert_eq!(pte & 0x7c00_0000_0000_0003, 0x3c00_0000_0000_0001);
+        assert_eq!(mmu.read_mapped_u32(fence), Ok(0));
+        assert_eq!(mmu.test_pte(fence + PAGE_SIZE), Ok(0));
     }
 
     #[ktest]
