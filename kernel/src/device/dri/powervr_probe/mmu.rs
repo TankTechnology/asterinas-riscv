@@ -88,7 +88,8 @@ struct PageDirectory {
 struct OwnedMap {
     start: usize,
     end: usize,
-    _allocation: GpuDmaAllocation,
+    read_only: bool,
+    allocation: GpuDmaAllocation,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -121,6 +122,41 @@ impl GpuMmu4 {
 
     pub(super) fn root_daddr(&self) -> usize {
         self.root.daddr()
+    }
+
+    fn mapped_u32(&self, virt: usize) -> Result<(&OwnedMap, usize), &'static str> {
+        if self.poisoned {
+            return Err("gpu_mmu_table_poisoned");
+        }
+        if !virt.is_multiple_of(size_of::<u32>()) {
+            return Err("gpu_mmu_invalid_field_address");
+        }
+        let end = virt
+            .checked_add(size_of::<u32>())
+            .ok_or("gpu_mmu_invalid_field_address")?;
+        let mapping = self
+            .mapped
+            .iter()
+            .find(|mapping| mapping.start <= virt && end <= mapping.end)
+            .ok_or("gpu_mmu_unmapped_field")?;
+        Ok((mapping, virt - mapping.start))
+    }
+
+    pub(super) fn read_mapped_u32(&self, virt: usize) -> Result<u32, &'static str> {
+        let (mapping, offset) = self.mapped_u32(virt)?;
+        mapping.allocation.read_u32(offset)
+    }
+
+    pub(super) fn write_mapped_u32(&self, virt: usize, value: u32) -> Result<(), &'static str> {
+        let (mapping, offset) = self.mapped_u32(virt)?;
+        if mapping.read_only {
+            return Err("gpu_mmu_read_only");
+        }
+        mapping.allocation.write_u32(offset, value)?;
+        if mapping.allocation.read_u32(offset)? != value {
+            return Err("gpu_mmu_field_readback_mismatch");
+        }
+        Ok(())
     }
 
     #[cfg(ktest)]
@@ -246,7 +282,8 @@ impl GpuMmu4 {
                 self.mapped.push(OwnedMap {
                     start: virt,
                     end,
-                    _allocation: allocation,
+                    read_only,
+                    allocation,
                 });
                 Ok(receipt)
             }
@@ -291,6 +328,33 @@ mod tests {
             mmu.map_owned(virt, GpuDmaAllocation::new(1).unwrap(), false, true),
             Err("gpu_mmu_mapping_overlap")
         );
+    }
+
+    #[ktest]
+    fn gpu_mmu4_accesses_only_writable_mapped_firmware_fields() {
+        let mut mmu = GpuMmu4::new().unwrap();
+        let sysinit = 0xe1c1_ff0000;
+        mmu.map_owned(sysinit, GpuDmaAllocation::new(1).unwrap(), false, true)
+            .unwrap();
+        // Pinned RGXFWIF_SYSINIT.bFirmwareStarted is a 32-bit field at 208.
+        let started = sysinit + 208;
+        assert_eq!(mmu.read_mapped_u32(started), Ok(0));
+        assert_eq!(mmu.write_mapped_u32(started, 1), Ok(()));
+        assert_eq!(mmu.read_mapped_u32(started), Ok(1));
+        assert_eq!(
+            mmu.write_mapped_u32(sysinit + 4096, 1),
+            Err("gpu_mmu_unmapped_field")
+        );
+        assert_eq!(
+            mmu.read_mapped_u32(started + 1),
+            Err("gpu_mmu_invalid_field_address")
+        );
+
+        let code = 0xe1c0_000000;
+        mmu.map_owned(code, GpuDmaAllocation::new(1).unwrap(), true, true)
+            .unwrap();
+        assert_eq!(mmu.read_mapped_u32(code), Ok(0));
+        assert_eq!(mmu.write_mapped_u32(code, 1), Err("gpu_mmu_read_only"));
     }
 
     #[ktest]
