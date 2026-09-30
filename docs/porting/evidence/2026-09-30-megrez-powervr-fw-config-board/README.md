@@ -19,6 +19,10 @@ serial connection, commands still worked. The debug-console and browser-web
 services were active, the desktop-ready marker matched the boot ID, and Xorg
 reported the fbdev desktop at 1920×1080. This checks the system and control
 path, not the actual HDMI pixels.
+The [later fresh serial command](later-control.serial.log) still found UID 0,
+the same boot ID and desktop marker, both services active, and 1,520 seconds
+of uptime. The test did not reboot this selected Asterinas boot back to
+RockOS.
 
 The [sanitized DMA transcript](stage.serial.log) records four firmware
 segments with CPU readback `ok` (52,064, 18,432, 73,312, and 9,984 bytes).
