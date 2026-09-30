@@ -13,14 +13,15 @@ use ostd::{io::IoMem, mm::VmIoOnce, sync::Mutex};
 use spin::Once;
 
 use super::{
-    CRG_BASE, CRG_GATE_BIT, CrgSnapshot, GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET,
-    GPU_REG_SIZE, GPU_REG_START, GPU_RESET_OFFSET,
-    catalogue::{CatalogueIo, clear_selected_catalogue, install_selected_catalogue},
+    catalogue::{clear_selected_catalogue, install_selected_catalogue, CatalogueIo},
     dma::{GpuDmaAllocation, GpuFirmwareStage},
     inspect_gpu_crg_dt, print_gpu_crg_snapshot,
+    start::{prepare_selected_meta, StartIo},
+    CrgSnapshot, CRG_BASE, CRG_GATE_BIT, GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET,
+    GPU_REG_SIZE, GPU_REG_START, GPU_RESET_OFFSET,
 };
 use crate::{
-    device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
+    device::{registry::char, Device, DeviceType, DevtmpfsInodeMeta},
     events::IoEvents,
     fs::{
         file::{PerOpenFileOps, StatusFlags},
@@ -28,10 +29,10 @@ use crate::{
     },
     prelude::*,
     process::{
-        UserNamespace,
         credentials::capabilities::CapSet,
         posix_thread::AsPosixThread,
         signal::{PollHandle, Pollable},
+        UserNamespace,
     },
     security::lsm::hooks as lsm_hooks,
 };
@@ -526,6 +527,25 @@ impl FileOps for PowerControlFile {
             if ostd::boot::boot_info()
                 .kernel_cmdline
                 .split_whitespace()
+                .any(|word| word == "asterinas.powervr_reset_preflight=1")
+            {
+                let owner = hardware_power_io()
+                    .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+                let mut io = owner.lock();
+                selected_powered_core_clock_hz(
+                    io.snapshot()
+                        .map_err(|reason| Error::with_message(Errno::EIO, reason))?,
+                )
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+                prepare_selected_meta(&mut *io)
+                    .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+                aster_logger::println!(
+                    "ASTERINAS_POWERVR_META status=reset_prepared meta_held=1 release=not_attempted gpu_visibility=unverified"
+                );
+            }
+            if ostd::boot::boot_info()
+                .kernel_cmdline
+                .split_whitespace()
                 .any(|word| word == "asterinas.powervr_mmu_preflight=1")
             {
                 let owner = hardware_power_io()
@@ -588,6 +608,32 @@ impl CatalogueIo for HardwarePowerIo {
         self.gpu
             .write_once(offset, &value)
             .map_err(|_| "gpu_catalogue_register_write_failed")
+    }
+}
+
+impl StartIo for HardwarePowerIo {
+    fn read32(&mut self, offset: usize) -> Result<u32, &'static str> {
+        self.gpu
+            .read_once(offset)
+            .map_err(|_| "gpu_start_read_failed")
+    }
+
+    fn write32(&mut self, offset: usize, value: u32) -> Result<(), &'static str> {
+        self.gpu
+            .write_once(offset, &value)
+            .map_err(|_| "gpu_start_write_failed")
+    }
+
+    fn read64(&mut self, offset: usize) -> Result<u64, &'static str> {
+        self.gpu
+            .read_once(offset)
+            .map_err(|_| "gpu_start_read_failed")
+    }
+
+    fn write64(&mut self, offset: usize, value: u64) -> Result<(), &'static str> {
+        self.gpu
+            .write_once(offset, &value)
+            .map_err(|_| "gpu_start_write_failed")
     }
 }
 
