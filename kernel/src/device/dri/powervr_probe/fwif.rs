@@ -13,6 +13,18 @@ const SLC_UNCACHED: u32 = 0x6000_0000;
 // matching RISC-V and native ELF sections; see the FWIF ABI evidence.
 pub(super) const ALIGN_CHECKS_KM: &[u8; 128] = include_bytes!("align_checks_km.bin");
 
+// RGXSetupFwSysData copies these selected Volcanic rgxheapconfig.h bases into
+// 64-bit RGXFWIF_SYSINIT fields. The pinned BVNC's Volcanic headers do not
+// define the BRN 65273 alternative-heap condition.
+pub(super) const SYSINIT_HEAP_BASES: [(usize, u64); 6] = [
+    (8, 0xda00_000000),  // sPDSExecBase
+    (16, 0xe000_000000), // sUSCExecBase
+    (24, 0xec00_000000), // sFBCDCStateTableBase
+    (32, 0xec40_000000), // sFBCDCLargeStateTableBase
+    (40, 0xf000_000000), // sTextureHeapBase
+    (48, 0xed00_000000), // sPDSIndirectHeapBase
+];
+
 /// First system objects referenced by the selected RockOS SYSINIT layout.
 /// GPU page-table read-only and CPU access are independent permissions.
 pub(super) struct SystemObject {

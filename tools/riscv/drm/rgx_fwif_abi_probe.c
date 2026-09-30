@@ -7,6 +7,7 @@
 
 #include "rgx_fwif_km.h"
 #include "rgx_fwif_alignchecks.h"
+#include "rgxheapconfig.h"
 
 struct rgx_abi_entry {
     char name[64];
@@ -108,6 +109,12 @@ const struct rgx_abi_entry rgx_fwif_abi[] = {
     OFFSET(RGXFWIF_GPU_UTIL_FW, ui64GpuLastWord),
     SIZE(RGXFWIF_COMPCHECKS),
     { "RGXFW_ALIGN_CHECKS_UM_MAX", RGXFW_ALIGN_CHECKS_UM_MAX },
+    { "RGX_PDSCODEDATA_HEAP_BASE", RGX_PDSCODEDATA_HEAP_BASE },
+    { "RGX_USCCODE_HEAP_BASE", RGX_USCCODE_HEAP_BASE },
+    { "RGX_FBCDC_HEAP_BASE", RGX_FBCDC_HEAP_BASE },
+    { "RGX_FBCDC_LARGE_HEAP_BASE", RGX_FBCDC_LARGE_HEAP_BASE },
+    { "RGX_TEXTURE_STATE_HEAP_BASE", RGX_TEXTURE_STATE_HEAP_BASE },
+    { "RGX_PDS_INDIRECT_STATE_HEAP_BASE", RGX_PDS_INDIRECT_STATE_HEAP_BASE },
 };
 
 __attribute__((used, section(".rgx_fwif_alignchecks")))

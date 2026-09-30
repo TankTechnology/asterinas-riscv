@@ -155,6 +155,33 @@ impl GpuMmu4 {
         Ok(())
     }
 
+    fn mapped_u64(&self, virt: usize) -> Result<(&OwnedMap, usize), &'static str> {
+        if self.poisoned {
+            return Err("gpu_mmu_table_poisoned");
+        }
+        if !virt.is_multiple_of(size_of::<u64>()) {
+            return Err("gpu_mmu_invalid_field_address");
+        }
+        let end = virt
+            .checked_add(size_of::<u64>())
+            .ok_or("gpu_mmu_invalid_field_address")?;
+        let mapping = self
+            .mapped
+            .iter()
+            .find(|mapping| mapping.start <= virt && end <= mapping.end)
+            .ok_or("gpu_mmu_unmapped_field")?;
+        Ok((mapping, virt - mapping.start))
+    }
+
+    pub(super) fn write_mapped_u64(&self, virt: usize, value: u64) -> Result<(), &'static str> {
+        let (mapping, offset) = self.mapped_u64(virt)?;
+        mapping.allocation.write_u64(offset, value)?;
+        if mapping.allocation.read_u64(offset)? != value {
+            return Err("gpu_mmu_field_readback_mismatch");
+        }
+        Ok(())
+    }
+
     #[cfg(ktest)]
     pub(super) fn test_pte(&self, virt: usize) -> Result<u64, &'static str> {
         let (pc_index, pd_index, pt_index) = page_indices(virt)?;
@@ -336,6 +363,17 @@ mod tests {
         assert_eq!(mmu.read_mapped_u32(started), Ok(0));
         assert_eq!(mmu.write_mapped_u32(started, 1), Ok(()));
         assert_eq!(mmu.read_mapped_u32(started), Ok(1));
+        assert_eq!(mmu.write_mapped_u64(sysinit + 8, 0xda00_000000), Ok(()));
+        assert_eq!(mmu.read_mapped_u32(sysinit + 8), Ok(0));
+        assert_eq!(mmu.read_mapped_u32(sysinit + 12), Ok(0xda));
+        assert_eq!(
+            mmu.write_mapped_u64(sysinit + 4096, 1),
+            Err("gpu_mmu_unmapped_field")
+        );
+        assert_eq!(
+            mmu.write_mapped_u64(sysinit + 4, 1),
+            Err("gpu_mmu_invalid_field_address")
+        );
         assert_eq!(
             mmu.write_mapped_u32(sysinit + 4096, 1),
             Err("gpu_mmu_unmapped_field")
