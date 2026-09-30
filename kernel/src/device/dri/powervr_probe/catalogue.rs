@@ -36,6 +36,21 @@ fn encode_selected_root(root_daddr: usize) -> Result<u32, &'static str> {
     Ok(encoded)
 }
 
+/// Verify context 0's catalogue base without changing any GPU register.
+/// Release callers use this after a possibly repeated preflight and before
+/// the first META reset-release write.
+pub(super) fn validate_selected_catalogue(
+    io: &mut impl CatalogueIo,
+    root_daddr: usize,
+) -> Result<(), &'static str> {
+    let encoded = encode_selected_root(root_daddr)?;
+    let (context, base) = selected_catalogue_state(io)?;
+    if context != 0 || base != encoded {
+        return Err("gpu_catalogue_installed_state_drift");
+    }
+    Ok(())
+}
+
 /// Install only context 0's base before firmware startup. `touched` is
 /// set immediately before the first register write, so the owner can clear
 /// the mapping before freeing any page-table DMA after a partial failure.
@@ -84,6 +99,35 @@ mod tests {
     use ostd::prelude::ktest;
 
     use super::{clear_selected_catalogue, install_selected_catalogue, CatalogueIo};
+
+    #[ktest]
+    fn selected_catalogue_validation_rejects_drift_without_writes() {
+        let mut io = FakeRegisters::after_hardware_reset();
+        assert_eq!(
+            super::validate_selected_catalogue(&mut io, 0x1_f16a_3000),
+            Err("gpu_catalogue_installed_state_drift")
+        );
+        let mut touched = false;
+        install_selected_catalogue(&mut io, 0x1_f16a_3000, &mut touched).unwrap();
+        io.writes.clear();
+        assert_eq!(
+            super::validate_selected_catalogue(&mut io, 0x1_f16a_3000),
+            Ok(())
+        );
+        for (context, base) in [(1, 0x1f16a3), (0, 0x1f16a4), (0, 0x101f16a3)] {
+            io.context = context;
+            io.base = base;
+            assert_eq!(
+                super::validate_selected_catalogue(&mut io, 0x1_f16a_3000),
+                Err("gpu_catalogue_installed_state_drift")
+            );
+        }
+        assert_eq!(
+            super::validate_selected_catalogue(&mut io, 0),
+            Err("gpu_catalogue_invalid_root")
+        );
+        assert!(io.writes.is_empty());
+    }
 
     #[derive(Default)]
     struct FakeRegisters {

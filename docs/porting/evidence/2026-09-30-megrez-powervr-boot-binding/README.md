@@ -39,6 +39,26 @@ Validation runs before the selected META reset and catalogue setup. Its marker
 is `ASTERINAS_POWERVR_META_BOOT status=cpu_config_checked`, with GPU visibility
 explicitly unverified. The default raw staging/preflight path remains available.
 
+## Explicit release gate
+
+The control endpoint now accepts the exact four-byte command `PVRR`, but only
+when the boot command line also contains `asterinas.powervr_release=1`. The
+release path takes the staging lock before checking its one-shot flag, verifies
+the prepared boot bytes again, prepares the selected META reset sequence,
+installs context 0's catalogue, and performs a read-only catalogue validation
+before the first reset-release write. It then waits at most one second (and
+1,000 bounded observations) for the native started flag, rejecting firmware
+fault and HWR recovery indications. A failed attempt leaves the owner in the
+reset-before-DMA cleanup path; a successful attempt reports
+`gpu_visibility=observed` but still does not imply command execution or pixels.
+
+The board run on 2026-09-30 did not reach this command: its first attempt tried
+to download the staging scripts with `curl`, but the selected Asterinas boot
+has no network service, so the command waited until the 300-second software
+reboot returned the board to RockOS. The next physical run must inject the
+scripts offline (serial transfer or initramfs) and use a longer bounded boot
+window. No firmware release, GPU execution, or pixel result is claimed.
+
 ```sh
 python3 rgx_meta_boot.py /lib/firmware/rgx.fw.30.3.408.101 \
   --output-dir /run/pvr-prepared

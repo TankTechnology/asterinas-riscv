@@ -123,10 +123,16 @@ The [META release/status preparation](../../porting/evidence/2026-09-30-megrez-p
 adds the vendor's fenced release sequence, recording the attempt before its
 first write so failed readback uses reset-before-DMA-release cleanup. It also
 adds bounded, capability-gated reads of owned FWIF status and a `--status` staging
-client. Selected RISC-V QEMU tests cover ordering, initial-state rejection,
-failure marking, held-META regression, and diagnostic fault preservation.
-The release operation is not called by the device interface yet; no firmware
-ready or physical pixel acceptance item is satisfied by this checkpoint.
+client. The control device now exposes a one-shot `PVRR` release command behind
+the explicit `asterinas.powervr_release=1` boot flag. It revalidates the
+prepared META bytes, installs and rechecks context 0's catalogue, releases
+reset, and waits for the native started flag while rejecting fault/HWR state.
+Focused QEMU coverage already includes ordering, initial-state rejection,
+failure marking, held-META regression and diagnostic fault preservation; a new
+catalogue-drift regression test is added, but its direct `aster-kernel` QEMU
+run still needs to be rerun with the repository's initramfs adapter. The
+release has not yet been exercised on the physical board; no firmware-ready or
+physical pixel acceptance item is satisfied by this checkpoint.
 
 The [native startup wait policy](../../porting/evidence/2026-09-30-megrez-powervr-start-status/native-start-wait.md)
 now rejects firmware faults and recovery even when started is set, and bounds
