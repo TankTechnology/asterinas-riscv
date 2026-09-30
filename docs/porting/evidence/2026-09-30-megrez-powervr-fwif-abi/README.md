@@ -58,3 +58,16 @@ Before releasing META reset, the kernel still needs owned GPU mappings for
 every enabled dependent object, valid firmware addresses and initial values,
 MMU-root installation, and a bounded start/fault/recovery sequence. A firmware
 ready flag alone is not a safe or sufficient success check.
+
+## Owned field access in the prepared GPU MMU
+
+The first kernel use of this layout adds bounded 32-bit CPU reads and writes
+through the `GpuMmu4` allocation owner. A field must be aligned and wholly
+inside an owned mapping; writes to read-only mappings are rejected. This is
+needed to initialize FWIF fields and later poll `bFirmwareStarted` without
+losing the uncached CPU alias when the allocation moves into the GPU MMU.
+The [focused RISC-V QEMU ktest](mmu-owned-field-ktest.txt) exercised the
+vendor-derived offset 208, a mapping boundary, a misaligned read, and a
+read-only mapping: `1 passed; 0 failed`. The ordinary RISC-V kernel build and
+targeted rustfmt check also passed. The new accessor has **not** yet been
+tested on the board or used to start firmware.
