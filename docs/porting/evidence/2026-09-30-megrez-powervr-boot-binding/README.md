@@ -59,6 +59,22 @@ reboot returned the board to RockOS. The next physical run must inject the
 scripts offline (serial transfer or initramfs) and use a longer bounded boot
 window. No firmware release, GPU execution, or pixel result is claimed.
 
+The offline initramfs builder now packages the four checked segments and a
+static RISC-V init that sends the frames and `PVRR` directly. It requires the
+generated prepared manifest, so a stale LDR scan cannot accidentally bypass
+the boot-config check:
+
+```sh
+tools/docker/run_dev_container.sh -- python3 tools/riscv/drm/powervr_release_gate.py \
+  --segments-dir target/powervr-boot-config/prepared \
+  --manifest target/powervr-boot-config/prepared/manifest.json \
+  --output target/powervr-boot-config/board-preflight/powervr-release-initramfs.cpio.gz
+```
+
+That artifact is ready for the next serial-loaded board run. Its success
+marker is `PVR_RELEASE_PASS`; a failure prints `PVR_RELEASE_FAIL` and leaves
+the kernel watchdog responsible for returning to RockOS.
+
 ```sh
 python3 rgx_meta_boot.py /lib/firmware/rgx.fw.30.3.408.101 \
   --output-dir /run/pvr-prepared
