@@ -5,16 +5,16 @@
 use alloc::{vec, vec::Vec};
 
 use ostd::mm::{
-    HasDaddr, HasPaddr, HasSize, PAGE_SIZE,
     dma::DmaCoherent,
     io::{VmIo, VmIoOnce},
+    HasDaddr, HasPaddr, HasSize, PAGE_SIZE,
 };
 
 use super::{
     fwif::{
-        ALIGN_CHECKS_KM, OS_OBJECTS, RUNTIME_HCS_DEADLINE_MS, RUNTIME_POW_UNITS_MASK,
-        RUNTIME_RAC_UNITS_MASK, RUNTIME_WATCHDOG_PERIOD_US, SYSINIT_HEAP_BASES, SYSTEM_OBJECTS,
-        meta_fwif_address,
+        meta_fwif_address, ALIGN_CHECKS_KM, HWPERF_RUNTIME_DMA_OFFSET, OS_OBJECTS,
+        RUNTIME_HCS_DEADLINE_MS, RUNTIME_POW_UNITS_MASK, RUNTIME_RAC_UNITS_MASK,
+        RUNTIME_WATCHDOG_PERIOD_US, SYSINIT_HEAP_BASES, SYSTEM_OBJECTS,
     },
     mmu::GpuMmu4,
 };
@@ -171,6 +171,18 @@ impl GpuFirmwareStage {
                     mmu.write_mapped_u32(next_object_vaddr + 24, RUNTIME_RAC_UNITS_MASK)?;
                     mmu.write_mapped_u32(next_object_vaddr + 32, RUNTIME_HCS_DEADLINE_MS)?;
                     mmu.write_mapped_u32(next_object_vaddr + 36, RUNTIME_WATCHDOG_PERIOD_US)?;
+                }
+                if object.sysinit_offset == 180 {
+                    // RGXSetMetaDMAAddress links both the GPU VA and its
+                    // encoded META pointer into RUNTIME_CFG for META DMA.
+                    let runtime = self
+                        .runtime_cfg_vaddr
+                        .ok_or("gpu_dma_stage_runtime_cfg_missing")?;
+                    mmu.write_mapped_u64(
+                        runtime + HWPERF_RUNTIME_DMA_OFFSET,
+                        next_object_vaddr as u64,
+                    )?;
+                    mmu.write_mapped_u32(runtime + HWPERF_RUNTIME_DMA_OFFSET + 8, fwaddr)?;
                 }
                 next_object_vaddr = end
                     .checked_add(PAGE_SIZE)
@@ -436,8 +448,8 @@ mod tests {
     use ostd::prelude::ktest;
 
     use super::{
-        GpuFirmwareStage, GpuMmu4, PAGE_SIZE, STAGE_SEGMENT_SIZES, parse_stage_frame,
-        validate_dma_range,
+        parse_stage_frame, validate_dma_range, GpuFirmwareStage, GpuMmu4, PAGE_SIZE,
+        STAGE_SEGMENT_SIZES,
     };
 
     #[ktest]
@@ -624,6 +636,7 @@ mod tests {
             (164, 0xf004_0000, 0xe1c0_040000, 1, false),
             (168, 0xf004_2000, 0xe1c0_042000, 1, false),
             (172, 0x7004_4000, 0xe1c0_044000, 3, false),
+            (180, 0x1004_a000, 0xe1c0_04a000, 1, false),
         ] {
             assert_eq!(mmu.read_mapped_u32(sysinit + offset), Ok(expected));
             let first_pte = mmu.test_pte(vaddr).unwrap();
@@ -767,6 +780,37 @@ mod tests {
         assert_eq!(mmu.read_mapped_u32(runtime + 12), Ok(0));
         assert_eq!(mmu.read_mapped_u32(runtime + 20), Ok(1));
         assert_eq!(mmu.read_mapped_u32(runtime + 24), Ok(0));
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_links_selected_hwperf_control_and_meta_dma_address() {
+        let mut stage = GpuFirmwareStage::default();
+        for (segment, size) in STAGE_SEGMENT_SIZES.into_iter().enumerate() {
+            let mut frame = b"PVR1".to_vec();
+            frame.extend_from_slice(&(segment as u32).to_le_bytes());
+            frame.extend_from_slice(&(size as u32).to_le_bytes());
+            frame.extend(core::iter::repeat_n(0x5a, size));
+            stage.stage_frame(&frame).unwrap();
+        }
+
+        let mmu = stage.mmu.as_ref().unwrap();
+        let control = 0xe1c0_04a000;
+        let runtime = 0xe1c0_048000;
+        assert_eq!(
+            mmu.read_mapped_u32(super::FW_SYSINIT_VADDR + 180),
+            Ok(0x1004_a000)
+        );
+        assert_eq!(mmu.read_mapped_u32(runtime + 168), Ok(control as u32));
+        assert_eq!(
+            mmu.read_mapped_u32(runtime + 172),
+            Ok((control >> 32) as u32)
+        );
+        assert_eq!(mmu.read_mapped_u32(runtime + 176), Ok(0x1004_a000));
+        // The selected driver zero-allocates the 16-block structure; the
+        // firmware fills the block table after it starts.
+        assert_eq!(mmu.read_mapped_u32(control + 12), Ok(0));
+        assert_eq!(mmu.read_mapped_u32(control + 16 + 15 * 64), Ok(0));
+        assert_eq!(mmu.test_pte(control + PAGE_SIZE), Ok(0));
     }
 
     #[ktest]

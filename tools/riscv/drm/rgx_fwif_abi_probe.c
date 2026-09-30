@@ -6,6 +6,11 @@
 #include <stddef.h>
 
 #include "rgx_fwif_km.h"
+// The selected firmware-only count macro uses the pinned chip feature values.
+#include "configs/rgxconfig_km_30.V.408.101.h"
+#define RGX_FIRMWARE
+#include "rgx_fwif_hwperf.h"
+#undef RGX_FIRMWARE
 #include "rgx_fwif_alignchecks.h"
 #include "rgxheapconfig.h"
 
@@ -86,6 +91,7 @@ const struct rgx_abi_entry rgx_fwif_abi[] = {
     OFFSET(RGXFWIF_RUNTIME_CFG, ui32WdgPeriodUs),
     OFFSET(RGXFWIF_RUNTIME_CFG, ui32TSIntervalMs),
     OFFSET(RGXFWIF_RUNTIME_CFG, ui32VzConnectionCooldownPeriodInSec),
+    OFFSET(RGXFWIF_RUNTIME_CFG, sHWPerfCtlDMABuf),
     SIZE(RGXFWIF_TRACEBUF),
     SIZE(RGXFWIF_SYSDATA),
     SIZE(RGXFWIF_OSDATA),
@@ -101,6 +107,11 @@ const struct rgx_abi_entry rgx_fwif_abi[] = {
     SIZE(RGXFWIF_GPU_UTIL_FW),
     SIZE(RGXFWIF_REG_CFG),
     SIZE(RGXFWIF_HWPERF_CTRL),
+    SIZE(RGXFWIF_HWPERF_CTL),
+    OFFSET(RGXFWIF_HWPERF_CTL, ui32NumBlocks),
+    OFFSET(RGXFWIF_HWPERF_CTL, sBlkCfg),
+    SIZE(RGXFWIF_HWPERF_CTL_BLK),
+    { "RGX_HWPERF_MAX_DEFINED_BLKS", RGX_HWPERF_MAX_DEFINED_BLKS },
     SIZE(RGXFWIF_COUNTER_DUMP_CTL),
     OFFSET(RGXFWIF_COUNTER_DUMP_CTL, sBuffer),
     OFFSET(RGXFWIF_COUNTER_DUMP_CTL, ui32SizeInDwords),

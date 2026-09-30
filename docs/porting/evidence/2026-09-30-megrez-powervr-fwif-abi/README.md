@@ -18,8 +18,8 @@ cross compiler used the explicitly isolated
 [probe-only libc stubs](../../../../tools/riscv/drm/rgx_fwif_abi_stubs/README.md)
 because the development container lacks RISC-V libc headers. Both compilers
 produced section SHA-256
-`d81d6cc7c59f1dca038bea8bf9a17fbb487f79b11aa497e59b140b1571b8e65a`.
-The expanded probe records 92 size, offset, and configuration values. It also
+`1590e5b231bf90078c2d8b574e69125b90a3ba93b0e9030e05c06439dbd8f1f8`.
+The expanded probe records 98 size, offset, and configuration values. It also
 extracts the vendor's 32-word `RGXFW_ALIGN_CHECKS_INIT_KM` into a separate
 ELF section. Both architectures produced identical alignment-check bytes
 (SHA-256 `59ecbcd04bf00585bbb0bc17e8b8561cc21169b5c5c73fb18f4f1000a911c682`),
@@ -27,6 +27,24 @@ which are stored in
 [`align_checks_km.bin`](../../../../kernel/src/device/dri/powervr_probe/align_checks_km.bin).
 The decoded [layout](layout.json) is the reference for FWIF allocation and
 initialization.
+
+The selected [Volcanic HWPerf header](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/include/volcanic/rgx_fwif_hwperf.h)
+and [BVNC configuration](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/hwdefs/volcanic/km/configs/rgxconfig_km_30.V.408.101.h)
+give `RGX_HWPERF_MAX_DEFINED_BLKS=16`. The measured
+`RGXFWIF_HWPERF_CTL` size is 80 B with a 64 B block and its first block at
+offset 16. The [vendor allocation path](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/volcanic/rgxfwutils.c)
+therefore requests 1040 B and rounds it to 1056 B for 32 B META DMA blocks.
+It sets `SYSINIT.sHWPerfCtl` at offset 180 and the runtime configuration's
+`sHWPerfCtlDMABuf` at offset 168 to the GPU VA and encoded META pointer.
+The current staging path now owns this buffer and links both addresses; it
+keeps the zero-allocation header uninitialized as the vendor host path does.
+The [focused QEMU test before the fix](hwperf-red-ktest.txt) failed with a null
+SYSINIT pointer, and the [same test afterward](hwperf-green-ktest.txt) passed
+with `1 passed; 0 failed`. The [existing SYSINIT mapping test](hwperf-existing-ktest.txt),
+extended to cover the new pointer and GPU mapping, also passed. This does not
+show that firmware has executed. The offline RISC-V release kernel build
+completed; the resulting Image SHA-256 is
+`23f1bdad4deaf3221ce85900bab9f00c14f086c4497a297e9997de6fbce44416`.
 
 The most relevant fields are:
 

@@ -26,8 +26,8 @@ pub(super) const SYSINIT_HEAP_BASES: [(usize, u64); 6] = [
 ];
 
 // Defaults from the selected RockOS config_kernel.h. The core clock is set
-// after staging from the active GPU ACLK readback. SOC clock remains unset
-// until its hardware source can be verified at the firmware-start boundary.
+// after staging from the active GPU ACLK readback. RockOS sysconfig.c leaves
+// ui32SOCClockSpeed zero in this selected configuration.
 pub(super) const RUNTIME_HCS_DEADLINE_MS: u32 = u32::MAX;
 pub(super) const RUNTIME_WATCHDOG_PERIOD_US: u32 = 2_000_000;
 // Selected BVNC 30.3.408.101: NUM_CLUSTERS=1 and POWER_ISLAND_VERSION=1.
@@ -36,6 +36,14 @@ pub(super) const RUNTIME_WATCHDOG_PERIOD_US: u32 = 2_000_000;
 // MAXRACCount at zero, so the native-mode RAC mask stays zero.
 pub(super) const RUNTIME_POW_UNITS_MASK: u32 = 1;
 pub(super) const RUNTIME_RAC_UNITS_MASK: u32 = 0;
+
+// Pinned Volcanic ABI: RGXHWPerfMaxDefinedBlks returns 16 for BVNC
+// 30.3.408.101. RGXSetupFWInterface allocates sizeof(RGXFWIF_HWPERF_CTL)
+// plus 15 blocks, then rounds to the selected META DMA block size (32 B).
+pub(super) const HWPERF_CONTROL_BLOCKS: usize = 16;
+pub(super) const HWPERF_CONTROL_BYTES: usize =
+    (80 + (HWPERF_CONTROL_BLOCKS - 1) * 64).next_multiple_of(32);
+pub(super) const HWPERF_RUNTIME_DMA_OFFSET: usize = 168;
 
 /// First system objects referenced by the selected RockOS SYSINIT layout.
 /// GPU page-table read-only and CPU access are independent permissions.
@@ -47,7 +55,7 @@ pub(super) struct SystemObject {
     pub(super) gpu_read_only: bool,
 }
 
-pub(super) const SYSTEM_OBJECTS: [SystemObject; 4] = [
+pub(super) const SYSTEM_OBJECTS: [SystemObject; 5] = [
     SystemObject {
         bytes: 864, // RGXFWIF_TRACEBUF
         sysinit_offset: 164,
@@ -75,6 +83,13 @@ pub(super) const SYSTEM_OBJECTS: [SystemObject; 4] = [
         firmware_cached: false,
         gpu_cached: false,
         gpu_read_only: true,
+    },
+    SystemObject {
+        bytes: HWPERF_CONTROL_BYTES, // RGXFWIF_HWPERF_CTL and its 16 blocks
+        sysinit_offset: 180,
+        firmware_cached: true,
+        gpu_cached: true,
+        gpu_read_only: false,
     },
 ];
 
