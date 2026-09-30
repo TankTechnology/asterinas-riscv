@@ -71,3 +71,36 @@ vendor-derived offset 208, a mapping boundary, a misaligned read, and a
 read-only mapping: `1 passed; 0 failed`. The ordinary RISC-V kernel build and
 targeted rustfmt check also passed. The new accessor has **not** yet been
 tested on the board or used to start firmware.
+
+## META firmware address encoding
+
+The pinned driver's
+[`RGXSetFirmwareAddress`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/volcanic/rgxfwutils.c)
+subtracts the raw firmware-heap base from a GPU VA, then adds the META data
+base and cache bits defined by
+[`rgx_meta.h`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/include/rgx_meta.h).
+The result is a 32-bit firmware pointer, **not** the low 32 bits of the GPU VA.
+The driver's
+[`rgxfwutils.h` allocation flags](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/rgxfwutils.h)
+select GPU uncached for all three config allocations, but FIRMWARE_CACHED
+for OSINIT and SYSINIT only. Thus their selected encoded addresses are:
+
+| Config object | GPU VA | META firmware address |
+| --- | ---: | ---: |
+| Connection control | `0xe1c1fd0000` | `0xf1fd0000` |
+| OSINIT | `0xe1c1fe0000` | `0x71fe0000` |
+| SYSINIT | `0xe1c1ff0000` | `0x71ff0000` |
+
+The new kernel encoder checks alignment and the 32 MiB raw-heap bounds; the
+staging path computes and logs these addresses while still reporting
+`fw_config_initialized=0` and `gpu_root_installed=0`. The two
+[focused RISC-V QEMU tests](fwif-address-ktest.txt) each passed with zero
+failures. The ordinary RISC-V kernel build and targeted formatting check
+also passed. This version of the encoder has **not** run on the board.
+
+The GPU PTE still has `AXCACHE_WBRWALLOC`: the selected driver's
+[`RGXDerivePTEProt8`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/rgxmmuinit.c)
+sets that fabric-level field even for GPU-uncached allocations. The META
+pointer cache bits and PTE AXCACHE field describe different parts of the
+access path; their differing values are not by themselves evidence of a
+mapping error or of cache coherence.
