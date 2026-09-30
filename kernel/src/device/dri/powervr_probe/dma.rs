@@ -11,7 +11,7 @@ use ostd::mm::{
 };
 
 use super::{
-    fwif::{SYSTEM_OBJECTS, meta_fwif_address},
+    fwif::{OS_OBJECTS, SYSTEM_OBJECTS, meta_fwif_address},
     mmu::GpuMmu4,
 };
 
@@ -35,7 +35,9 @@ pub(super) const FW_RAW_HEAP_SIZE: usize = 1 << 25;
 const FW_CONFIG_SLOT_SIZE: usize = 0x10000;
 const FW_CONFIG_START: usize = FW_HEAP_BASE + FW_RAW_HEAP_SIZE - 3 * FW_CONFIG_SLOT_SIZE;
 const FW_SYSTEM_OBJECT_START: usize = FW_HEAP_BASE + 0x40000;
+const FW_OS_OBJECT_START: usize = FW_HEAP_BASE + 0x50000;
 const FW_SYSINIT_VADDR: usize = FW_CONFIG_START + 2 * FW_CONFIG_SLOT_SIZE;
+const FW_OSINIT_VADDR: usize = FW_CONFIG_START + FW_CONFIG_SLOT_SIZE;
 
 pub(super) fn parse_stage_frame(frame: &[u8]) -> Result<(usize, &[u8]), &'static str> {
     if frame.len() < STAGE_HEADER_SIZE || &frame[..4] != b"PVR1" {
@@ -156,6 +158,46 @@ impl GpuFirmwareStage {
                     .checked_add(PAGE_SIZE)
                     .ok_or("gpu_dma_stage_firmware_heap_overflow")?;
             }
+            if next_object_vaddr > FW_OS_OBJECT_START {
+                return Err("gpu_dma_stage_os_object_overlap");
+            }
+            next_object_vaddr = FW_OS_OBJECT_START;
+            let mut osdata_vaddr = None;
+            for object in OS_OBJECTS {
+                let pages = object.bytes.div_ceil(PAGE_SIZE);
+                let allocation = GpuDmaAllocation::new(pages)?;
+                let end = next_object_vaddr
+                    .checked_add(allocation.size())
+                    .ok_or("gpu_dma_stage_firmware_heap_overflow")?;
+                if end > FW_HEAP_MIN_END {
+                    return Err("gpu_dma_stage_firmware_heap_overflow");
+                }
+                let fwaddr = meta_fwif_address(next_object_vaddr, object.firmware_cached, false)?;
+                mmu.map_owned(next_object_vaddr, allocation, object.gpu_read_only, true)?;
+                mmu.write_mapped_u32(FW_OSINIT_VADDR + object.osinit_offset, fwaddr)?;
+                if let Some(mask) = object.ccb_wrap_mask {
+                    mmu.write_mapped_u32(next_object_vaddr + 8, mask)?;
+                }
+                if object.osinit_offset == 36 {
+                    osdata_vaddr = Some(next_object_vaddr);
+                }
+                next_object_vaddr = end
+                    .checked_add(PAGE_SIZE)
+                    .ok_or("gpu_dma_stage_firmware_heap_overflow")?;
+            }
+            let sync_vaddr = next_object_vaddr;
+            let allocation = GpuDmaAllocation::new(1)?;
+            if sync_vaddr
+                .checked_add(allocation.size())
+                .is_none_or(|end| end > FW_HEAP_MIN_END)
+            {
+                return Err("gpu_dma_stage_firmware_heap_overflow");
+            }
+            mmu.map_owned(sync_vaddr, allocation, false, true)?;
+            mmu.write_mapped_u32(
+                osdata_vaddr.ok_or("gpu_dma_stage_osdata_missing")? + 572,
+                meta_fwif_address(sync_vaddr, false, false)?,
+            )?;
             // The selected driver starts with a cleared ready flag and marker 1.
             mmu.write_mapped_u32(FW_SYSINIT_VADDR + 208, 0)?;
             mmu.write_mapped_u32(FW_SYSINIT_VADDR + 212, 1)?;
@@ -494,5 +536,44 @@ mod tests {
         }
         assert_eq!(mmu.read_mapped_u32(sysinit + 208), Ok(0));
         assert_eq!(mmu.read_mapped_u32(sysinit + 212), Ok(1));
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_links_owned_osinit_ccbs_and_power_sync() {
+        let mut stage = GpuFirmwareStage::default();
+        for (segment, size) in STAGE_SEGMENT_SIZES.into_iter().enumerate() {
+            let mut frame = b"PVR1".to_vec();
+            frame.extend_from_slice(&(segment as u32).to_le_bytes());
+            frame.extend_from_slice(&(size as u32).to_le_bytes());
+            frame.extend(core::iter::repeat_n(0x5a, size));
+            stage.stage_frame(&frame).unwrap();
+        }
+
+        let mmu = stage.mmu.as_ref().unwrap();
+        let osinit = super::FW_CONFIG_START + super::FW_CONFIG_SLOT_SIZE;
+        for (offset, expected, vaddr, pages, gpu_read_only) in [
+            (28, 0xf005_0000, 0xe1c0_050000, 1, false),
+            (0, 0xf005_2000, 0xe1c0_052000, 1, false),
+            (4, 0x7005_4000, 0xe1c0_054000, 16, true),
+            (8, 0xf006_5000, 0xe1c0_065000, 1, false),
+            (12, 0xf006_7000, 0xe1c0_067000, 1, false),
+            (16, 0xf006_9000, 0xe1c0_069000, 1, false),
+            (36, 0xf006_b000, 0xe1c0_06b000, 1, false),
+        ] {
+            assert_eq!(mmu.read_mapped_u32(osinit + offset), Ok(expected));
+            let pte = mmu.test_pte(vaddr).unwrap();
+            assert_eq!(pte & 1, 1);
+            assert_eq!((pte >> 1) & 1, u64::from(gpu_read_only));
+            assert_eq!(
+                mmu.test_pte(vaddr + (pages - 1) * PAGE_SIZE).unwrap() & 1,
+                1
+            );
+            assert_eq!(mmu.test_pte(vaddr + pages * PAGE_SIZE), Ok(0));
+        }
+        assert_eq!(mmu.read_mapped_u32(0xe1c0_052000 + 8), Ok(1023));
+        assert_eq!(mmu.read_mapped_u32(0xe1c0_067000 + 8), Ok(31));
+        assert_eq!(mmu.read_mapped_u32(0xe1c0_06b000 + 572), Ok(0xf006_d000));
+        assert_eq!(mmu.read_mapped_u32(0xe1c0_06d000), Ok(0));
+        assert_eq!(mmu.test_pte(0xe1c0_06e000), Ok(0));
     }
 }

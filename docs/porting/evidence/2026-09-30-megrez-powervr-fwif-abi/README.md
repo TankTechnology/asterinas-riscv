@@ -135,3 +135,38 @@ FWIF graph has not been initialized. The GPU page-table root is still not
 installed. Other required SYSINIT and
 OSINIT dependencies remain uninitialized; this change does **not** start the
 firmware, submit GPU commands, or prove hardware drawing.
+
+## Owned OSINIT control queues
+
+The next staging step maps OSINIT's HWR buffer, kernel CCB control and command
+ring, kernel return slots, firmware CCB control and command ring, and OS data.
+The selected `config_kernel.h` sets `PVRSRV_APPHINT_KCCB_SIZE_LOG2=10`; the
+selected `rgxfwutils.c` sets firmware CCB log2 to 5 without
+`SUPPORT_PDVFS` or `SUPPORT_WORKLOAD_ESTIMATION`. The ring capacities are
+therefore 1,024 and 32 commands. Both control blocks have their wrap masks
+initialized at offset 8, respectively 1,023 and 31.
+
+| OSINIT field offset | Object | GPU VA | META address | GPU access |
+| ---: | --- | ---: | ---: | --- |
+| 28 | HWR info, 2,464 B | `0xe1c0050000` | `0xf0050000` | read/write |
+| 0 | Kernel CCB control, 16 B | `0xe1c0052000` | `0xf0052000` | read/write |
+| 4 | Kernel CCB, 65,536 B | `0xe1c0054000` | `0x70054000` | read-only |
+| 8 | Kernel return slots, 4,096 B | `0xe1c0065000` | `0xf0065000` | read/write |
+| 12 | Firmware CCB control, 16 B | `0xe1c0067000` | `0xf0067000` | read/write |
+| 16 | Firmware CCB, 2,048 B | `0xe1c0069000` | `0xf0069000` | read/write |
+| 36 | OS data, 1,096 B | `0xe1c006b000` | `0xf006b000` | read/write |
+
+The OS data's `sPowerSync` field at offset 572 points to a separate zeroed
+firmware-main DMA page at GPU VA `0xe1c006d000`, encoded as `0xf006d000`.
+The pinned driver obtains this address through
+[`SyncPrimGetFirmwareAddr`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/shared/common/sync.c)
+after its
+[`RGXAllocUFOBlock`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/volcanic/rgxinit.c)
+allocates from FW_MAIN and calls `RGXSetFirmwareAddress`. Each object has an
+unmapped guard page. The [focused QEMU tests](fwif-osinit-ccb-ktest.txt)
+verify OSINIT pointers, ring masks, PTE permissions, power-sync pointer and
+the earlier staging layout: four selected tests passed. The normal RISC-V
+Sv39/SMP=4 kernel build and targeted rustfmt check passed. This code has not
+been booted on Megrez; it does not install the GPU MMU root, start firmware,
+submit commands or provide a fence/pixel result. The remaining SYSINIT fields,
+device registers and fault handling must be established before a start attempt.
