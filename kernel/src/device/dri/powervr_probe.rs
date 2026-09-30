@@ -11,6 +11,7 @@ mod dma;
 mod fwif;
 mod mmu;
 mod power;
+mod start;
 
 // Pinned to the prepared Megrez DTB. The GPU must not be touched until its
 // clock, reset, and power-domain ownership has been established separately.
