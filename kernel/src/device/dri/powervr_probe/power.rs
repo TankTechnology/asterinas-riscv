@@ -4,7 +4,7 @@
 
 use core::{
     hint::spin_loop,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, Ordering},
     time::Duration,
 };
 
@@ -15,6 +15,7 @@ use spin::Once;
 use super::{
     CRG_BASE, CRG_GATE_BIT, CrgSnapshot, GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET,
     GPU_REG_SIZE, GPU_REG_START, GPU_RESET_OFFSET,
+    catalogue::{CatalogueIo, clear_selected_catalogue, install_selected_catalogue},
     dma::{GpuDmaAllocation, GpuFirmwareStage},
     inspect_gpu_crg_dt, print_gpu_crg_snapshot,
 };
@@ -339,6 +340,7 @@ impl Device for PowerControlDevice {
             initial,
             dma: None,
             staging: None,
+            catalogue_touched: AtomicBool::new(false),
         };
         if ostd::boot::boot_info()
             .kernel_cmdline
@@ -375,6 +377,7 @@ struct PowerControlFile {
     initial: CrgSnapshot,
     dma: Option<GpuDmaAllocation>,
     staging: Option<Mutex<GpuFirmwareStage>>,
+    catalogue_touched: AtomicBool,
 }
 
 impl Drop for PowerControlFile {
@@ -388,24 +391,39 @@ impl Drop for PowerControlFile {
             return;
         };
         let mut io = owner.lock();
+        let catalogue_cleared = if self.catalogue_touched.load(Ordering::Acquire) {
+            clear_selected_catalogue(&mut *io).is_ok()
+        } else {
+            true
+        };
         let restored = release_power(&mut *io, &POWER_LEASE, self.initial);
+        if !catalogue_cleared {
+            POWER_LEASE.store(LEASE_POISONED, Ordering::Release);
+        }
         drop(io);
-        if restored.is_err() {
-            // A device that could not be reset must not retain a pointer to freed DMA.
+        if !catalogue_cleared || restored.is_err() {
+            // A device that may still hold the catalogue address must not
+            // retain a pointer to freed page-table DMA.
             core::mem::forget((self.dma.take(), self.staging.take()));
         }
-        match restored {
-            Ok(observed) => aster_logger::println!(
-                "ASTERINAS_POWERVR_OWNER session=closed crg_restored=1 aclk={:#010x} cfg={:#010x} gray={:#010x} reset={:#010x}",
-                observed.aclk,
-                observed.cfg,
-                observed.gray,
-                observed.reset,
-            ),
-            Err(reason) => aster_logger::println!(
-                "ASTERINAS_POWERVR_OWNER session=close_failed reason={}",
-                reason
-            ),
+        if !catalogue_cleared {
+            aster_logger::println!(
+                "ASTERINAS_POWERVR_OWNER session=close_failed reason=gpu_catalogue_clear_failed"
+            );
+        } else {
+            match restored {
+                Ok(observed) => aster_logger::println!(
+                    "ASTERINAS_POWERVR_OWNER session=closed crg_restored=1 aclk={:#010x} cfg={:#010x} gray={:#010x} reset={:#010x}",
+                    observed.aclk,
+                    observed.cfg,
+                    observed.gray,
+                    observed.reset,
+                ),
+                Err(reason) => aster_logger::println!(
+                    "ASTERINAS_POWERVR_OWNER session=close_failed reason={}",
+                    reason
+                ),
+            }
         }
     }
 }
@@ -505,6 +523,25 @@ impl FileOps for PowerControlFile {
                 config_fwaddrs[1],
                 config_fwaddrs[2],
             );
+            if ostd::boot::boot_info()
+                .kernel_cmdline
+                .split_whitespace()
+                .any(|word| word == "asterinas.powervr_mmu_preflight=1")
+            {
+                let owner = hardware_power_io()
+                    .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+                let mut io = owner.lock();
+                let mut touched = false;
+                let installed = install_selected_catalogue(&mut *io, root, &mut touched);
+                if touched {
+                    self.catalogue_touched.store(true, Ordering::Release);
+                }
+                installed.map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+                aster_logger::println!(
+                    "ASTERINAS_POWERVR_MMU status=catalogue_register_readback root_daddr={:#x} context=0 gpu_visibility=unverified",
+                    root,
+                );
+            }
         }
         Ok(len)
     }
@@ -538,6 +575,20 @@ pub(super) fn register_control_on_request(emit_crg_snapshot: bool) -> Result<(),
         .map_err(|_| "gpu_control_registration_failed")?;
     CONTROL_MAJOR.call_once(|| major);
     Ok(())
+}
+
+impl CatalogueIo for HardwarePowerIo {
+    fn read32(&mut self, offset: usize) -> Result<u32, &'static str> {
+        self.gpu
+            .read_once(offset)
+            .map_err(|_| "gpu_catalogue_register_read_failed")
+    }
+
+    fn write32(&mut self, offset: usize, value: u32) -> Result<(), &'static str> {
+        self.gpu
+            .write_once(offset, &value)
+            .map_err(|_| "gpu_catalogue_register_write_failed")
+    }
 }
 
 impl PowerIo for HardwarePowerIo {

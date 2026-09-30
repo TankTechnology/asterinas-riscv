@@ -100,8 +100,8 @@ pub(super) struct GpuMmuMapReceipt {
     pub(super) last_pte: u64,
 }
 
-/// Owns the DMA pages referenced by the GPU page tables. The root is not
-/// installed in any GPU register until the firmware boot path is complete.
+/// Owns the DMA pages referenced by the GPU page tables. The root remains
+/// uninstalled unless the separate, opt-in catalogue preflight succeeds.
 pub(super) struct GpuMmu4 {
     root: GpuDmaAllocation,
     directories: Vec<PageDirectory>,
