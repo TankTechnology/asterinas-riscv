@@ -23,17 +23,41 @@ SHA-256 is `3395f4c7d4cd237f9029b9ea08a8a092679cd3f94c2072049db8ff161c13e2b0`.
 The [focused QEMU kernel test](ktest.txt) selected one test and reported
 `1 passed; 0 failed`. Its fake register bank checks the source-derived reset
 sequence and that no write releases the META reset before catalogue setup.
-The offline RISC-V release build succeeded with Image SHA-256
+The first offline RISC-V release Image had SHA-256
 `1516590ee3fb74184d96ef4cdaf2ec6c728c8c910b9c4b06593daf03b5318bce`.
-These are build and simulated-register checks only. The new Image has not
-been booted on the board. The preceding Asterinas desktop boot was still
-responsive through the root serial console when checked, but it runs an
-older Image.
+It booted the board, but the catalogue step returned EIO. A diagnostic boot
+read back `context=0x00000000 base=0x10000000` before the write. Bit 28 is
+`RGX_CR_MMU_CBASE_MAPPING_INVALID_EN`, so the original all-zero precondition
+was wrong. Clearing the register to zero would also have made address zero a
+valid catalogue base. The fix accepts the exact invalid state and restores it
+on cleanup; it still rejects any nonzero address bits or unexpected context.
 
-The next hardware gate is a one-shot boot with both preflight flags, fresh
-nonce-bound serial control after reconnect, GPU register evidence, and
-software recovery to RockOS. A separate bounded probe must then install
-the root in the vendor order, release META reset, poll the FWIF
+The fixed release Image has SHA-256
+`139b7a7c9d519215b5026c07122edb63363651ab5628a1f0c690e2934ed699c7`.
+Two focused QEMU kernel tests selected one test each and reported `1 passed;
+0 failed`: catalogue install/readback/clear, and rejection of an invalid root
+without register mutation. The release build also completed. On the board,
+one-shot boot `fbb8674c-00c5-4bfb-b857-bd4bf7adb300` returned:
+
+```text
+ASTERINAS_POWERVR_META status=reset_prepared meta_held=1 release=not_attempted gpu_visibility=unverified
+ASTERINAS_POWERVR_MMU status=catalogue_prestate context=0x00000000 base=0x10000000
+ASTERINAS_POWERVR_MMU status=catalogue_register_readback root_daddr=0x1f1a43000 context=0 gpu_visibility=unverified
+ASTERINAS_POWERVR_OWNER session=closed crg_restored=1 aclk=0x00000020 cfg=0x00000000 gray=0x00000000 reset=0x00000000
+```
+
+The root-only staging command exited 0 after staging four firmware segments.
+Twice after closing and reopening the stable serial device, nonce-framed
+commands reported UID 0, the same boot ID, and reboot watchdog 0. Both
+checks also reported the desktop and browser services active with one Xorg
+process. The host staging verifier exited 1 **after** the successful stage:
+it searched `dmesg` for markers that were visible in the serial transcript
+but absent from `dmesg`. The kernel stage was not rerun. This verifier issue
+does not change the GPU visibility status. Recovery of this fixed boot to
+RockOS has not yet been checked.
+
+The next hardware gate is a bounded probe that must install the root in the
+vendor order, release META reset, poll the FWIF
 `bFirmwareStarted` flag, capture faults on timeout, and stop/reset the GPU
 before freeing any mapped DMA. Command completion and pixel readback remain
 necessary before desktop or Firefox acceleration can be claimed.

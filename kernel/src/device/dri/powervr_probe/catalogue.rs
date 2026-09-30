@@ -9,11 +9,20 @@ use ostd::mm::PAGE_SIZE;
 const MAPPING_CONTEXT: usize = 0xe140;
 const MAPPING_BASE: usize = 0xe148;
 const MAPPING_BASE_MASK: u32 = 0x0fff_ffff;
+// RGX_CR_MMU_CBASE_MAPPING_INVALID_EN. The selected board read back exactly
+// this reset value before any catalogue write, with all address bits clear.
+const MAPPING_BASE_INVALID: u32 = 0x1000_0000;
 const GPU_DMA_LIMIT: usize = 1 << 40;
 
 pub(super) trait CatalogueIo {
     fn read32(&mut self, offset: usize) -> Result<u32, &'static str>;
     fn write32(&mut self, offset: usize, value: u32) -> Result<(), &'static str>;
+}
+
+pub(super) fn selected_catalogue_state(
+    io: &mut impl CatalogueIo,
+) -> Result<(u32, u32), &'static str> {
+    Ok((io.read32(MAPPING_CONTEXT)?, io.read32(MAPPING_BASE)?))
 }
 
 fn encode_selected_root(root_daddr: usize) -> Result<u32, &'static str> {
@@ -36,16 +45,19 @@ pub(super) fn install_selected_catalogue(
     touched: &mut bool,
 ) -> Result<(), &'static str> {
     let encoded = encode_selected_root(root_daddr)?;
-    if io.read32(MAPPING_CONTEXT)? != 0 || io.read32(MAPPING_BASE)? != 0 {
+    let (initial_context, initial_base) = selected_catalogue_state(io)?;
+    if initial_context != 0 || initial_base != MAPPING_BASE_INVALID {
         return Err("gpu_catalogue_initial_state_drift");
     }
     *touched = true;
     io.write32(MAPPING_CONTEXT, 0)?;
-    if io.read32(MAPPING_CONTEXT)? != 0 {
+    let observed_context = io.read32(MAPPING_CONTEXT)?;
+    if observed_context != 0 {
         return Err("gpu_catalogue_context_readback_mismatch");
     }
     io.write32(MAPPING_BASE, encoded)?;
-    if io.read32(MAPPING_BASE)? != encoded {
+    let observed_base = io.read32(MAPPING_BASE)?;
+    if observed_base != encoded {
         return Err("gpu_catalogue_base_readback_mismatch");
     }
     Ok(())
@@ -58,8 +70,8 @@ pub(super) fn clear_selected_catalogue(io: &mut impl CatalogueIo) -> Result<(), 
     if io.read32(MAPPING_CONTEXT)? != 0 {
         return Err("gpu_catalogue_clear_failed");
     }
-    io.write32(MAPPING_BASE, 0)?;
-    if io.read32(MAPPING_BASE)? != 0 {
+    io.write32(MAPPING_BASE, MAPPING_BASE_INVALID)?;
+    if io.read32(MAPPING_BASE)? != MAPPING_BASE_INVALID {
         return Err("gpu_catalogue_clear_failed");
     }
     Ok(())
@@ -71,13 +83,22 @@ mod tests {
 
     use ostd::prelude::ktest;
 
-    use super::{CatalogueIo, clear_selected_catalogue, install_selected_catalogue};
+    use super::{clear_selected_catalogue, install_selected_catalogue, CatalogueIo};
 
     #[derive(Default)]
     struct FakeRegisters {
         context: u32,
         base: u32,
         writes: Vec<(usize, u32)>,
+    }
+
+    impl FakeRegisters {
+        fn after_hardware_reset() -> Self {
+            Self {
+                base: 0x1000_0000,
+                ..Self::default()
+            }
+        }
     }
 
     impl CatalogueIo for FakeRegisters {
@@ -102,7 +123,7 @@ mod tests {
 
     #[ktest]
     fn selected_catalogue_base_is_encoded_read_back_and_cleared() {
-        let mut io = FakeRegisters::default();
+        let mut io = FakeRegisters::after_hardware_reset();
         let mut touched = false;
         assert_eq!(
             install_selected_catalogue(&mut io, 0x1_f16a_3000, &mut touched),
@@ -112,20 +133,30 @@ mod tests {
         assert_eq!(io.context, 0);
         assert_eq!(io.base, 0x1f16a3);
         assert_eq!(clear_selected_catalogue(&mut io), Ok(()));
-        assert_eq!(io.base, 0);
+        assert_eq!(io.base, 0x1000_0000);
         assert_eq!(
             io.writes,
-            vec![(0xe140, 0), (0xe148, 0x1f16a3), (0xe140, 0), (0xe148, 0)]
+            vec![
+                (0xe140, 0),
+                (0xe148, 0x1f16a3),
+                (0xe140, 0),
+                (0xe148, 0x1000_0000)
+            ]
         );
     }
 
     #[ktest]
     fn selected_catalogue_rejects_bad_root_without_register_mutation() {
-        let mut io = FakeRegisters::default();
+        let mut io = FakeRegisters::after_hardware_reset();
         let mut touched = false;
         assert!(install_selected_catalogue(&mut io, 0, &mut touched).is_err());
         assert!(install_selected_catalogue(&mut io, 0x1_f16a_3001, &mut touched).is_err());
         assert!(install_selected_catalogue(&mut io, 1 << 40, &mut touched).is_err());
+        assert!(io.writes.is_empty());
+        assert!(!touched);
+
+        io.base = 0;
+        assert!(install_selected_catalogue(&mut io, 0x1_f16a_3000, &mut touched).is_err());
         assert!(io.writes.is_empty());
         assert!(!touched);
 
@@ -168,7 +199,7 @@ mod tests {
         };
         assert_eq!(clear_selected_catalogue(&mut io), Ok(()));
         assert_eq!(io.context, 0);
-        assert_eq!(io.bases[0], 0);
+        assert_eq!(io.bases[0], 0x1000_0000);
         assert_eq!(io.bases[7], 17);
     }
 }
