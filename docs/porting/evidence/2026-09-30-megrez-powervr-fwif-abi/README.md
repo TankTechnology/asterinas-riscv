@@ -236,9 +236,20 @@ staging path sets native-mode `bActivePMLatencyPersistant=1`, the selected
 HCS deadline `0xffffffff`, and watchdog period `2,000,000` microseconds. The
 last two values were cross-compiled from the pinned `config_kernel.h`. The
 selected RockOS sysconfig obtains the GPU core clock from the active `aclk`
-readback; the Asterinas start path must do the same before it can populate the
-core-clock fields. The old RockOS log's 800 MHz observation is not a verified
-clock value for a future Asterinas boot. This and other FWIF fields remain
+readback. Asterinas now re-reads `GPU_ACLK_CTRL` while holding its exclusive
+powered session and writes the derived frequency to
+`SYSINIT.ui32InitialCoreClockSpeed` (offset 196) and
+`RUNTIME_CFG.ui32CoreClockSpeed` (offset 12). The pinned EIC7700 clock driver
+defines the ACLK parent as fixed 1.6 GHz and divider bits `[7:4]`, where
+encoded values 0, 1, and 2 all divide by two. The currently selected CRG
+value `0x80000020` therefore derives 800 MHz, but this value is recalculated
+from a fresh register read on each staged session. A gated clock or unexpected
+powered CRG state aborts staging. The SOC clock and other FWIF fields remain
 unresolved, so no firmware start or GPU execution is claimed. The
 [focused QEMU and build evidence](fwif-coremem-runtime-ktest.txt) records the
 owned mapping and field checks.
+
+The separate [clock handoff evidence](fwif-clock-ktest.txt) records the two
+focused QEMU kernel tests and normal RISC-V build. It verifies CPU-visible
+field values and the selected clock-divider arithmetic, not a live board
+readback or firmware use of the values.

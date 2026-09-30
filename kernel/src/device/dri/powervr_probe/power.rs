@@ -43,6 +43,9 @@ const EXPECTED_INITIAL: CrgSnapshot = CrgSnapshot {
 };
 const EXPECTED_GPU_ID: u64 = 0x001e_0003_0198_0065;
 const GPU_ID_OFFSET: usize = 0x20;
+// RockOS bf2ec5d5 clk-eic7700.c fixes SPLL0_FOUT1 at 1.6 GHz and uses a
+// special divider for GPU_ACLK_CTRL[7:4]: values 0, 1 and 2 all mean /2.
+const GPU_ACLK_PARENT_HZ: u32 = 1_600_000_000;
 const LEASE_IDLE: u8 = 0;
 const LEASE_CLAIMING: u8 = 1;
 const LEASE_ACTIVE: u8 = 2;
@@ -57,6 +60,26 @@ trait PowerIo {
     fn write_reset(&mut self, value: u32) -> Result<(), &'static str>;
     fn delay_reset_pulse(&mut self) -> Result<(), &'static str>;
     fn read_gpu_id(&mut self) -> Result<u64, &'static str>;
+}
+
+fn gpu_core_clock_hz(aclk: u32) -> Result<u32, &'static str> {
+    if aclk & CRG_GATE_BIT == 0 {
+        return Err("gpu_clock_gated");
+    }
+    let encoded_divider = (aclk >> 4) & 0xf;
+    let divider = encoded_divider.max(2);
+    Ok(GPU_ACLK_PARENT_HZ / divider)
+}
+
+fn selected_powered_core_clock_hz(snapshot: CrgSnapshot) -> Result<u32, &'static str> {
+    if snapshot.aclk & !(CRG_GATE_BIT | 0xf0) != 0
+        || snapshot.cfg != CRG_GATE_BIT
+        || snapshot.gray != CRG_GATE_BIT
+        || snapshot.reset != 0x1f
+    {
+        return Err("gpu_power_state_drift");
+    }
+    gpu_core_clock_hz(snapshot.aclk)
 }
 
 fn write_clock_checked(
@@ -440,6 +463,25 @@ impl FileOps for PowerControlFile {
             staged.daddr,
         );
         if let Some(root) = staged.mmu_code_root {
+            // Re-read the active clock under the exclusive GPU power lease;
+            // staged firmware objects must not inherit an assumed frequency.
+            let clock_hz = {
+                let owner = hardware_power_io()
+                    .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+                let mut io = owner.lock();
+                let snapshot = io
+                    .snapshot()
+                    .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+                selected_powered_core_clock_hz(snapshot)
+                    .map_err(|reason| Error::with_message(Errno::EIO, reason))?
+            };
+            staging
+                .set_core_clock_hz(clock_hz)
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+            aster_logger::println!(
+                "ASTERINAS_POWERVR_FWIF_CLOCK core_hz={} source=gpu_aclk_readback gpu_visibility=unverified",
+                clock_hz,
+            );
             let Some(vaddrs) = staging.mapped_firmware_vaddrs() else {
                 return_errno_with_message!(Errno::EIO, "GPU firmware MMU layout missing");
             };
@@ -694,6 +736,41 @@ mod tests {
                 Action::Clock(1, 0),
                 Action::Clock(0, 0x20),
             ]
+        );
+    }
+
+    #[ktest]
+    fn gpu_clock_readback_decodes_selected_special_divider() {
+        assert_eq!(gpu_core_clock_hz(0x8000_0020), Ok(800_000_000));
+        assert_eq!(gpu_core_clock_hz(0x8000_0000), Ok(800_000_000));
+        assert_eq!(gpu_core_clock_hz(0x8000_0010), Ok(800_000_000));
+        assert_eq!(gpu_core_clock_hz(0x8000_0030), Ok(533_333_333));
+        assert_eq!(gpu_core_clock_hz(0x20), Err("gpu_clock_gated"));
+    }
+
+    #[ktest]
+    fn gpu_clock_handoff_rejects_power_state_drift() {
+        let active = CrgSnapshot {
+            aclk: 0x8000_0020,
+            cfg: CRG_GATE_BIT,
+            gray: CRG_GATE_BIT,
+            reset: 0x1f,
+        };
+        assert_eq!(selected_powered_core_clock_hz(active), Ok(800_000_000));
+        assert_eq!(
+            selected_powered_core_clock_hz(CrgSnapshot { cfg: 0, ..active }),
+            Err("gpu_power_state_drift")
+        );
+        assert_eq!(
+            selected_powered_core_clock_hz(CrgSnapshot {
+                aclk: active.aclk | 1,
+                ..active
+            }),
+            Err("gpu_power_state_drift")
+        );
+        assert_eq!(
+            selected_powered_core_clock_hz(CrgSnapshot { reset: 0, ..active }),
+            Err("gpu_power_state_drift")
         );
     }
 

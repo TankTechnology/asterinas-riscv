@@ -82,6 +82,7 @@ pub(super) struct GpuFirmwareStage {
     staged_mask: u8,
     mmu: Option<GpuMmu4>,
     mmu_vaddrs: Option<[usize; 4]>,
+    runtime_cfg_vaddr: Option<usize>,
 }
 
 impl GpuFirmwareStage {
@@ -161,6 +162,7 @@ impl GpuFirmwareStage {
                 mmu.map_owned(next_object_vaddr, allocation, object.gpu_read_only, true)?;
                 mmu.write_mapped_u32(FW_SYSINIT_VADDR + object.sysinit_offset, fwaddr)?;
                 if object.sysinit_offset == 160 {
+                    self.runtime_cfg_vaddr = Some(next_object_vaddr);
                     // RGXSetupFwSysData sets these native-mode defaults in
                     // RGXFWIF_RUNTIME_CFG before the firmware sees SYSINIT.
                     mmu.write_mapped_u32(next_object_vaddr + 8, 1)?;
@@ -287,6 +289,21 @@ impl GpuFirmwareStage {
 
     pub(super) fn mapped_firmware_vaddrs(&self) -> Option<[usize; 4]> {
         self.mmu_vaddrs
+    }
+
+    pub(super) fn set_core_clock_hz(&mut self, core_hz: u32) -> Result<(), &'static str> {
+        if core_hz == 0 {
+            return Err("gpu_dma_stage_invalid_clock");
+        }
+        let mmu = self.mmu.as_mut().ok_or("gpu_dma_stage_mmu_missing")?;
+        let runtime = self
+            .runtime_cfg_vaddr
+            .ok_or("gpu_dma_stage_runtime_cfg_missing")?;
+        // RGXFWIF_SYSINIT.ui32InitialCoreClockSpeed and
+        // RGXFWIF_RUNTIME_CFG.ui32CoreClockSpeed in the pinned Volcanic ABI.
+        mmu.write_mapped_u32(runtime + 12, core_hz)?;
+        mmu.write_mapped_u32(FW_SYSINIT_VADDR + 196, core_hz)?;
+        Ok(())
     }
 
     pub(super) fn mapped_fw_config_vaddrs(&self) -> Option<[usize; 3]> {
@@ -745,5 +762,33 @@ mod tests {
         assert_eq!(mmu.read_mapped_u32(runtime + 32), Ok(u32::MAX));
         assert_eq!(mmu.read_mapped_u32(runtime + 36), Ok(2_000_000));
         assert_eq!(mmu.read_mapped_u32(runtime + 12), Ok(0));
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_sets_both_firmware_clock_fields_after_readback() {
+        let mut stage = GpuFirmwareStage::default();
+        assert_eq!(
+            stage.set_core_clock_hz(800_000_000),
+            Err("gpu_dma_stage_mmu_missing")
+        );
+        for (segment, size) in STAGE_SEGMENT_SIZES.into_iter().enumerate() {
+            let mut frame = b"PVR1".to_vec();
+            frame.extend_from_slice(&(segment as u32).to_le_bytes());
+            frame.extend_from_slice(&(size as u32).to_le_bytes());
+            frame.extend(core::iter::repeat_n(0x5a, size));
+            stage.stage_frame(&frame).unwrap();
+        }
+
+        assert_eq!(
+            stage.set_core_clock_hz(0),
+            Err("gpu_dma_stage_invalid_clock")
+        );
+        stage.set_core_clock_hz(800_000_000).unwrap();
+        let mmu = stage.mmu.as_ref().unwrap();
+        assert_eq!(
+            mmu.read_mapped_u32(super::FW_SYSINIT_VADDR + 196),
+            Ok(800_000_000)
+        );
+        assert_eq!(mmu.read_mapped_u32(0xe1c0_048000 + 12), Ok(800_000_000));
     }
 }

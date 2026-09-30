@@ -25,9 +25,9 @@ pub(super) const SYSINIT_HEAP_BASES: [(usize, u64); 6] = [
     (48, 0xed00_000000), // sPDSIndirectHeapBase
 ];
 
-// Defaults from the selected RockOS config_kernel.h. The core/SOC clock
-// fields are deliberately left unset until the active board clocks can be
-// read back at the firmware-start boundary.
+// Defaults from the selected RockOS config_kernel.h. The core clock is set
+// after staging from the active GPU ACLK readback. SOC clock remains unset
+// until its hardware source can be verified at the firmware-start boundary.
 pub(super) const RUNTIME_HCS_DEADLINE_MS: u32 = u32::MAX;
 pub(super) const RUNTIME_WATCHDOG_PERIOD_US: u32 = 2_000_000;
 
