@@ -13,7 +13,9 @@ use ostd::{io::IoMem, mm::VmIoOnce, sync::Mutex};
 use spin::Once;
 
 use super::{
-    catalogue::{clear_selected_catalogue, install_selected_catalogue, CatalogueIo},
+    catalogue::{
+        clear_selected_catalogue, install_selected_catalogue, selected_catalogue_state, CatalogueIo,
+    },
     dma::{GpuDmaAllocation, GpuFirmwareStage},
     inspect_gpu_crg_dt, print_gpu_crg_snapshot,
     start::{prepare_selected_meta, StartIo},
@@ -551,12 +553,29 @@ impl FileOps for PowerControlFile {
                 let owner = hardware_power_io()
                     .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
                 let mut io = owner.lock();
+                let (initial_context, initial_base) = selected_catalogue_state(&mut *io)
+                    .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+                aster_logger::println!(
+                    "ASTERINAS_POWERVR_MMU status=catalogue_prestate context={:#010x} base={:#010x}",
+                    initial_context,
+                    initial_base,
+                );
                 let mut touched = false;
                 let installed = install_selected_catalogue(&mut *io, root, &mut touched);
                 if touched {
                     self.catalogue_touched.store(true, Ordering::Release);
                 }
-                installed.map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+                if let Err(reason) = installed {
+                    let observed = selected_catalogue_state(&mut *io).ok();
+                    aster_logger::println!(
+                        "ASTERINAS_POWERVR_MMU status=catalogue_install_failed reason={} touched={} root_daddr={:#x} observed={:?}",
+                        reason,
+                        touched,
+                        root,
+                        observed,
+                    );
+                    return Err(Error::with_message(Errno::EIO, reason));
+                }
                 aster_logger::println!(
                     "ASTERINAS_POWERVR_MMU status=catalogue_register_readback root_daddr={:#x} context=0 gpu_visibility=unverified",
                     root,
