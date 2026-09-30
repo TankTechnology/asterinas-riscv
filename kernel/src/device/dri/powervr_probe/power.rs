@@ -259,6 +259,32 @@ fn release_power(
     result
 }
 
+fn close_power_session(
+    io: &mut (impl PowerIo + CatalogueIo),
+    lease: &AtomicU8,
+    initial: CrgSnapshot,
+    catalogue_touched: bool,
+    firmware_may_run: bool,
+) -> Result<CrgSnapshot, &'static str> {
+    if firmware_may_run {
+        // Once META has been released, changing its live page tables could
+        // race a DMA read. RockOS deinitialization asserts CRG reset before
+        // gating clocks. Do not access GPU MMIO after that reset; a failed
+        // restore poisons the lease so its allocations remain owned.
+        return release_power(io, lease, initial);
+    }
+
+    // The processor was held in reset throughout a preflight session, so
+    // the catalogue can be cleared while register access is still enabled.
+    let catalogue_cleared = !catalogue_touched || clear_selected_catalogue(io).is_ok();
+    let restored = release_power(io, lease, initial);
+    if !catalogue_cleared {
+        lease.store(LEASE_POISONED, Ordering::Release);
+        return Err("gpu_catalogue_clear_failed");
+    }
+    restored
+}
+
 struct HardwarePowerIo {
     clocks: IoMem,
     reset: IoMem,
@@ -344,6 +370,7 @@ impl Device for PowerControlDevice {
             dma: None,
             staging: None,
             catalogue_touched: AtomicBool::new(false),
+            meta_release_attempted: AtomicBool::new(false),
         };
         if ostd::boot::boot_info()
             .kernel_cmdline
@@ -381,6 +408,9 @@ struct PowerControlFile {
     dma: Option<GpuDmaAllocation>,
     staging: Option<Mutex<GpuFirmwareStage>>,
     catalogue_touched: AtomicBool,
+    // Set immediately before the first write that may release META. Until
+    // then the live-catalogue cleanup path remains safe for preflight.
+    meta_release_attempted: AtomicBool,
 }
 
 impl Drop for PowerControlFile {
@@ -394,39 +424,31 @@ impl Drop for PowerControlFile {
             return;
         };
         let mut io = owner.lock();
-        let catalogue_cleared = if self.catalogue_touched.load(Ordering::Acquire) {
-            clear_selected_catalogue(&mut *io).is_ok()
-        } else {
-            true
-        };
-        let restored = release_power(&mut *io, &POWER_LEASE, self.initial);
-        if !catalogue_cleared {
-            POWER_LEASE.store(LEASE_POISONED, Ordering::Release);
-        }
+        let restored = close_power_session(
+            &mut *io,
+            &POWER_LEASE,
+            self.initial,
+            self.catalogue_touched.load(Ordering::Acquire),
+            self.meta_release_attempted.load(Ordering::Acquire),
+        );
         drop(io);
-        if !catalogue_cleared || restored.is_err() {
-            // A device that may still hold the catalogue address must not
-            // retain a pointer to freed page-table DMA.
+        if restored.is_err() {
+            // A failed CRG restore or catalogue clear must not free memory
+            // that could still be referenced by the GPU.
             core::mem::forget((self.dma.take(), self.staging.take()));
         }
-        if !catalogue_cleared {
-            aster_logger::println!(
-                "ASTERINAS_POWERVR_OWNER session=close_failed reason=gpu_catalogue_clear_failed"
-            );
-        } else {
-            match restored {
-                Ok(observed) => aster_logger::println!(
-                    "ASTERINAS_POWERVR_OWNER session=closed crg_restored=1 aclk={:#010x} cfg={:#010x} gray={:#010x} reset={:#010x}",
-                    observed.aclk,
-                    observed.cfg,
-                    observed.gray,
-                    observed.reset,
-                ),
-                Err(reason) => aster_logger::println!(
-                    "ASTERINAS_POWERVR_OWNER session=close_failed reason={}",
-                    reason
-                ),
-            }
+        match restored {
+            Ok(observed) => aster_logger::println!(
+                "ASTERINAS_POWERVR_OWNER session=closed crg_restored=1 aclk={:#010x} cfg={:#010x} gray={:#010x} reset={:#010x}",
+                observed.aclk,
+                observed.cfg,
+                observed.gray,
+                observed.reset,
+            ),
+            Err(reason) => aster_logger::println!(
+                "ASTERINAS_POWERVR_OWNER session=close_failed reason={}",
+                reason
+            ),
         }
     }
 }
@@ -761,6 +783,8 @@ mod tests {
         Reset(u32),
         Delay,
         ReadId,
+        CatalogueContext(u32),
+        CatalogueBase(u32),
     }
 
     struct FakePowerIo {
@@ -768,6 +792,8 @@ mod tests {
         id: u64,
         actions: Vec<Action>,
         reject_reset: Option<u32>,
+        catalogue_context: u32,
+        catalogue_base: u32,
     }
 
     impl FakePowerIo {
@@ -782,6 +808,8 @@ mod tests {
                 id,
                 actions: Vec::new(),
                 reject_reset: None,
+                catalogue_context: 0,
+                catalogue_base: 0x1000_0000,
             }
         }
     }
@@ -820,6 +848,103 @@ mod tests {
             self.actions.push(Action::ReadId);
             Ok(self.id)
         }
+    }
+
+    impl CatalogueIo for FakePowerIo {
+        fn read32(&mut self, offset: usize) -> Result<u32, &'static str> {
+            match offset {
+                0xe140 => Ok(self.catalogue_context),
+                0xe148 => Ok(self.catalogue_base),
+                _ => Err("unexpected_gpu_register"),
+            }
+        }
+
+        fn write32(&mut self, offset: usize, value: u32) -> Result<(), &'static str> {
+            match offset {
+                0xe140 => {
+                    self.catalogue_context = value;
+                    self.actions.push(Action::CatalogueContext(value));
+                }
+                0xe148 => {
+                    self.catalogue_base = value;
+                    self.actions.push(Action::CatalogueBase(value));
+                }
+                _ => return Err("unexpected_gpu_register"),
+            }
+            Ok(())
+        }
+    }
+
+    #[ktest]
+    fn firmware_session_resets_gpu_before_releasing_page_tables() {
+        let mut io = FakePowerIo::new(EXPECTED_GPU_ID);
+        let lease = AtomicU8::new(LEASE_IDLE);
+        let original = claim_power(&mut io, &lease).unwrap();
+        io.catalogue_base = 0x1f16a3;
+        io.actions.clear();
+
+        assert_eq!(
+            close_power_session(&mut io, &lease, original, true, true),
+            Ok(EXPECTED_INITIAL)
+        );
+        assert_eq!(lease.load(Ordering::Acquire), LEASE_IDLE);
+        assert_eq!(io.state, EXPECTED_INITIAL);
+        assert_eq!(
+            io.actions,
+            vec![
+                Action::Reset(0),
+                Action::Clock(2, 0),
+                Action::Clock(1, 0),
+                Action::Clock(0, 0x20),
+            ]
+        );
+    }
+
+    #[ktest]
+    fn failed_firmware_reset_poison_lease_and_retains_catalogue() {
+        let mut io = FakePowerIo::new(EXPECTED_GPU_ID);
+        let lease = AtomicU8::new(LEASE_IDLE);
+        let original = claim_power(&mut io, &lease).unwrap();
+        io.catalogue_base = 0x1f16a3;
+        io.reject_reset = Some(0);
+        io.actions.clear();
+
+        assert_eq!(
+            close_power_session(&mut io, &lease, original, true, true),
+            Err("crg_restore_failed")
+        );
+        assert_eq!(lease.load(Ordering::Acquire), LEASE_POISONED);
+        assert_eq!(io.catalogue_base, 0x1f16a3);
+        assert!(io.actions.iter().all(|action| !matches!(
+            action,
+            Action::CatalogueContext(_) | Action::CatalogueBase(_)
+        )));
+    }
+
+    #[ktest]
+    fn held_meta_session_clears_catalogue_before_power_restore() {
+        let mut io = FakePowerIo::new(EXPECTED_GPU_ID);
+        let lease = AtomicU8::new(LEASE_IDLE);
+        let original = claim_power(&mut io, &lease).unwrap();
+        io.catalogue_base = 0x1f16a3;
+        io.actions.clear();
+
+        assert_eq!(
+            close_power_session(&mut io, &lease, original, true, false),
+            Ok(EXPECTED_INITIAL)
+        );
+        assert_eq!(io.catalogue_base, 0x1000_0000);
+        assert_eq!(
+            io.actions,
+            vec![
+                Action::CatalogueContext(0),
+                Action::CatalogueBase(0x1000_0000),
+                Action::Reset(0),
+                Action::Clock(2, 0),
+                Action::Clock(1, 0),
+                Action::Clock(0, 0x20),
+            ]
+        );
     }
 
     #[ktest]
