@@ -75,6 +75,7 @@
   "RGXFWIF_SYSINIT.sPDSIndirectHeapBase": 48,
   "RGXFWIF_SYSINIT.sRegCfg": 176,
   "RGXFWIF_SYSINIT.sRuntimeCfg": 160,
+  "RGXFWIF_SYSINIT.sSLC3FenceDevVAddr": 64,
   "RGXFWIF_SYSINIT.sTextureHeapBase": 40,
   "RGXFWIF_SYSINIT.sTraceBufCtl": 164,
   "RGXFWIF_SYSINIT.sUSCExecBase": 16,

@@ -18,8 +18,8 @@ cross compiler used the explicitly isolated
 [probe-only libc stubs](../../../../tools/riscv/drm/rgx_fwif_abi_stubs/README.md)
 because the development container lacks RISC-V libc headers. Both compilers
 produced section SHA-256
-`1590e5b231bf90078c2d8b574e69125b90a3ba93b0e9030e05c06439dbd8f1f8`.
-The expanded probe records 98 size, offset, and configuration values. It also
+`37aeb0d7730fe58776a245861c014aaccddb65523dd4dee2a931b254a8083a02`.
+The expanded probe records 99 size, offset, and configuration values. It also
 extracts the vendor's 32-word `RGXFW_ALIGN_CHECKS_INIT_KM` into a separate
 ELF section. Both architectures produced identical alignment-check bytes
 (SHA-256 `59ecbcd04bf00585bbb0bc17e8b8561cc21169b5c5c73fb18f4f1000a911c682`),
@@ -85,6 +85,21 @@ Before releasing META reset, the kernel still needs owned GPU mappings for
 every enabled dependent object, valid firmware addresses and initial values,
 MMU-root installation, and a bounded start/fault/recovery sequence. A firmware
 ready flag alone is not a safe or sufficient success check.
+
+## SLC3 fence required by the selected firmware
+
+The pinned BVNC enables `SLC_VIVT` and reports a 1024-bit SLC cache line.
+`RGXSetupFwSysData` therefore calls `_AllocateSLC3Fence` before firmware
+startup. That allocation requests one byte aligned to a cache line in the
+firmware main heap, with GPU read/write access and no `PMMETA_PROTECT` flag.
+The RISC-V and native ABI probe sections match and place
+`RGXFWIF_SYSINIT.sSLC3FenceDevVAddr` at offset 64. The selected kernel now
+owns one uncached DMA page at GPU VA `0xe1c0030000`, writes that VA to the
+SYSINIT field, and leaves the surrounding guard gap unmapped. The focused
+QEMU test first failed with a zero SYSINIT pointer, then passed with
+`1 passed; 0 failed` after the allocation and mapping were added. This is a
+host-side page-table/CPU-readback result; the GPU has not walked this page or
+executed the firmware.
 
 ## Owned field access in the prepared GPU MMU
 
