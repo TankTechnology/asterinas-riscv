@@ -545,6 +545,12 @@ build_riscv_debian_browser_web_dev_overlay:
 		--spec "$(DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC)" \
 		--output-dir "$(DEBIAN_BROWSER_WEB_DEV_ROOTFS)"
 
+.PHONY: build_riscv_debian_systemd_ext4
+build_riscv_debian_systemd_ext4:
+	@tools/riscv/debian/rootfs/build_rootfs.sh \
+		--profile systemd-ext4-m3 \
+		--output-dir "$(CURDIR)/target/debian-riscv/systemd-ext4-m3/rootfs"
+
 .PHONY: test_riscv_megrez_debian_shell
 test_riscv_megrez_debian_shell:
 	@python3 -W error::ResourceWarning -m unittest \
