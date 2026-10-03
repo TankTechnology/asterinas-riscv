@@ -392,6 +392,25 @@ impl Ext2 {
     /// changed, so a crash can expose either a clean journal or a committed
     /// transaction that recovery can replay. Home-block writes must happen
     /// before [`Self::checkpoint_journal`] is called.
+    pub(super) fn begin_journal_transaction(&self) -> Result<JournalTransaction> {
+        if self.fs_flags().contains(FsFlags::RDONLY) {
+            return_errno_with_message!(Errno::EROFS, "read-only ext4 journal write");
+        }
+        let (journal_ino, journal_dev) = {
+            let super_block = self.super_block.read();
+            (super_block.journal_inode(), super_block.journal_device())
+        };
+        if journal_ino == 0 || journal_dev != 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "external ext4 journals are unsupported");
+        }
+        let inode = self.read_inode(journal_ino)?;
+        let journal = JournalSuperBlock::parse(&self.read_journal_block(&inode, 0)?)?;
+        if journal.needs_recovery() {
+            return_errno_with_message!(Errno::EBUSY, "ext4 journal has an outstanding transaction");
+        }
+        JournalTransaction::new(journal.sequence)
+    }
+
     pub(super) fn write_journal_transaction(&self, transaction: JournalTransaction) -> Result<()> {
         if self.fs_flags().contains(FsFlags::RDONLY) {
             return_errno_with_message!(Errno::EROFS, "read-only ext4 journal write");
