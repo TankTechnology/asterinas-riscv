@@ -23,12 +23,12 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use aster_block::bio::{BioCompleteFn, BioStatus};
 use device_id::DeviceId;
-use ostd::mm::VmWriter;
+use ostd::mm::{VmReader, VmWriter};
 
 use super::{
     block_group::{BlockGroup, RawBlockGroup},
     inode::{FilePerm, Inode, InodeDesc, RawInode},
-    journal::JournalSuperBlock,
+    journal::{parse_descriptor, parse_header, parse_revoke, validate_commit, JournalSuperBlock},
     prelude::*,
     super_block::{
         FeatureCompatSet, FeatureInCompatSet, FsState, RawSuperBlock, SuperBlock,
@@ -76,6 +76,14 @@ pub struct Ext2 {
     next_generation: AtomicU32,
     /// Weak self reference for inode back-pointers.
     self_ref: Weak<Ext2>,
+}
+
+fn next_journal_block(position: u32, first: u32, max_length: u32) -> u32 {
+    if position + 1 >= max_length {
+        first
+    } else {
+        position + 1
+    }
 }
 
 /// Policy for how `statfs` reports the total block count.
@@ -223,24 +231,139 @@ impl Ext2 {
                 .feature_compat()
                 .contains(FeatureCompatSet::HAS_JOURNAL)
         {
-            ext2.validate_journal(mount_options.noload_journal)?;
+            ext2.recover_journal(mount_options.noload_journal)?;
         }
 
         Ok(ext2)
     }
 
-    fn validate_journal(&self, noload: bool) -> Result<()> {
+    fn recover_journal(&self, noload: bool) -> Result<()> {
         let journal_inode = self.read_inode(8)?;
         let mut block = vec![0; BLOCK_SIZE];
         let mut writer = VmWriter::from(block.as_mut_slice()).to_fallible();
-        journal_inode.read_at(0, &mut writer, StatusFlags::O_NOATIME)?;
-        let journal = JournalSuperBlock::parse(&block)?;
-        if journal.needs_recovery() && !noload {
-            return_errno_with_message!(
-                Errno::EOPNOTSUPP,
-                "ext4 journal replay is not yet supported; mount with noload"
-            );
+        if journal_inode.read_at(0, &mut writer, StatusFlags::O_NOATIME)? != BLOCK_SIZE {
+            return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal superblock");
         }
+        let journal = JournalSuperBlock::parse(&block)?;
+        if !journal.needs_recovery() || noload {
+            return Ok(());
+        }
+
+        let mut position = journal.start;
+        let mut sequence = journal.sequence;
+        let mut visited = 0;
+        while visited < journal.max_length {
+            let descriptor = self.read_journal_block(&journal_inode, position)?;
+            let tags = parse_descriptor(&descriptor, sequence)?;
+            position = next_journal_block(position, journal.first, journal.max_length);
+
+            let mut payloads = Vec::with_capacity(tags.len());
+            for tag in tags {
+                let payload = self.read_journal_block(&journal_inode, position)?;
+                payloads.push((tag, payload));
+                position = next_journal_block(position, journal.first, journal.max_length);
+            }
+
+            let possible_revoke = self.read_journal_block(&journal_inode, position)?;
+            let mut revoked = Vec::new();
+            if !possible_revoke.iter().all(|byte| *byte == 0) {
+                let header = parse_header(&possible_revoke)?;
+                if header.block_type == 5 {
+                    revoked = parse_revoke(&possible_revoke, sequence)?;
+                    position = next_journal_block(position, journal.first, journal.max_length);
+                }
+            }
+            let commit = self.read_journal_block(&journal_inode, position)?;
+            validate_commit(&commit, sequence)?;
+            position = next_journal_block(position, journal.first, journal.max_length);
+
+            for (tag, mut payload) in payloads {
+                if revoked.contains(&tag.block_number) || tag.flags & 4 != 0 {
+                    continue;
+                }
+                if tag.flags & 1 != 0 {
+                    payload[0..4].copy_from_slice(&0xc03b3998u32.to_be_bytes());
+                }
+                self.block_device
+                    .write_bytes(Bid::new(tag.block_number as u64).to_offset(), &payload)
+                    .map_err(|_| {
+                        Error::with_message(Errno::EIO, "failed to replay ext4 journal")
+                    })?;
+            }
+
+            visited += 1;
+            sequence = sequence.wrapping_add(1);
+            if position == journal.start {
+                break;
+            }
+            let next = self.read_journal_block(&journal_inode, position)?;
+            if next.iter().all(|byte| *byte == 0) {
+                break;
+            }
+        }
+
+        block[24..28].fill(0);
+        let mut reader = VmReader::from(block.as_slice()).to_fallible();
+        journal_inode.write_at(0, &mut reader)?;
+        journal_inode.sync_all()?;
+        self.block_device
+            .sync()
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to flush ext4 journal"))?;
+        self.super_block.write().clear_journal_recovery();
+        self.sync_recovery_superblock()?;
+        self.block_device
+            .sync()
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to flush ext4 recovery state"))?;
+        Ok(())
+    }
+
+    fn read_journal_block(&self, inode: &Arc<Inode>, index: u32) -> Result<Vec<u8>> {
+        let mut block = vec![0; BLOCK_SIZE];
+        let mut writer = VmWriter::from(block.as_mut_slice()).to_fallible();
+        if inode.read_at(
+            index as usize * BLOCK_SIZE,
+            &mut writer,
+            StatusFlags::O_NOATIME,
+        )? != BLOCK_SIZE
+        {
+            return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal block");
+        }
+        Ok(block)
+    }
+
+    fn sync_recovery_superblock(&self) -> Result<()> {
+        let mut sb_guard = self.super_block.write();
+        if !sb_guard.is_dirty() {
+            return Ok(());
+        }
+        sb_guard.set_wtime(utils::now());
+        let raw_sb = RawSuperBlock::from(&**sb_guard);
+        let nr_block_groups = sb_guard.nr_block_groups() as usize;
+        let primary_offset = SUPER_BLOCK_OFFSET;
+        if self
+            .block_device
+            .write_bytes(primary_offset, raw_sb.as_bytes())
+            .is_err()
+        {
+            return_errno_with_message!(Errno::EIO, "failed to write ext4 recovery superblock");
+        }
+        for group_idx in 1..nr_block_groups {
+            if !sb_guard.is_backup_group(group_idx) {
+                continue;
+            }
+            let offset = Bid::new(sb_guard.bid(group_idx) as u64).to_offset();
+            if self
+                .block_device
+                .write_bytes(offset, raw_sb.as_bytes())
+                .is_err()
+            {
+                return_errno_with_message!(
+                    Errno::EIO,
+                    "failed to write ext4 recovery backup superblock"
+                );
+            }
+        }
+        sb_guard.clear_dirty();
         Ok(())
     }
 
