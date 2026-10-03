@@ -645,6 +645,14 @@ impl SuperBlock {
         self.feature_incompat.remove(FeatureInCompatSet::RECOVER);
     }
 
+    pub(super) fn journal_inode(&self) -> u32 {
+        self.journal_ino
+    }
+
+    pub(super) fn journal_device(&self) -> u32 {
+        self.journal_dev
+    }
+
     #[expect(dead_code)]
     const fn feature_ro_compat(&self) -> FeatureRoCompatSet {
         self.feature_ro_compat
