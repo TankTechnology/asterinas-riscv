@@ -19,9 +19,9 @@ tools/riscv/debian/rootfs/convert_ext2_to_ext4_journal.sh \
 
 The converter copies the image, creates an ext3/ext4 journal while retaining
 the ext2 block and inode layout, and runs read-only `e2fsck` before and after
-the change. Asterinas currently requires `-o noload` for writable journaled
-mounts because journal replay and transaction writeback are still under
-development.
+the change. Clean journaled mounts are accepted by Asterinas; a volume whose
+superblock advertises `RECOVER` still requires `-o noload` because journal
+replay and transaction writeback are under development.
 
 The isolated builder profile `systemd-ext4-m3` creates this same ext4 feature
 subset directly and records `filesystem.type=ext4` in its schema-9 manifest.
