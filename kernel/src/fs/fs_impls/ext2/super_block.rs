@@ -243,7 +243,12 @@ impl SuperBlock {
             return_errno_with_message!(Errno::EINVAL, "ext2 journal replay is unsupported");
         }
 
-        let allowed_incompat = FeatureInCompatSet::FILETYPE.bits();
+        let allowed_incompat = FeatureInCompatSet::FILETYPE.bits()
+            | if allow_journal {
+                FeatureInCompatSet::RECOVER.bits()
+            } else {
+                0
+            };
         if (sb.feature_incompat & !allowed_incompat) != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported incompat feature");
         }
@@ -632,7 +637,7 @@ impl SuperBlock {
     }
 
     #[expect(dead_code)]
-    const fn feature_incompat(&self) -> FeatureInCompatSet {
+    pub(super) const fn feature_incompat(&self) -> FeatureInCompatSet {
         self.feature_incompat
     }
 
@@ -662,7 +667,7 @@ bitflags! {
 
 bitflags! {
     /// Incompatible feature set.
-    struct FeatureInCompatSet: u32 {
+    pub(super) struct FeatureInCompatSet: u32 {
         /// Compression is used.
         const COMPRESSION = 1 << 0;
         /// Directory entries contain a type field.
@@ -894,6 +899,15 @@ mod test {
         let mut raw = make_valid_raw_super_block(1);
         raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
         assert!(SuperBlock::try_from_with_journal(raw, true).is_ok());
+    }
+
+    #[ktest]
+    fn accepts_recovery_feature_only_for_ext4_mount() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
+        raw.feature_incompat |= FeatureInCompatSet::RECOVER.bits();
+        assert!(SuperBlock::try_from_with_journal(raw, true).is_ok());
+        assert!(SuperBlock::try_from_with_journal(raw, false).is_err());
     }
 
     #[ktest]
