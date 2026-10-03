@@ -23,11 +23,10 @@ the change. Clean journaled mounts are accepted by Asterinas, and the current
 JBD2 path can replay basic descriptor/data/commit/revoke transactions. Volumes
 using unsupported journal checksum or 64-bit features remain outside this
 compatibility profile. Extent inodes now have validated read-side mapping,
-allocation into existing indexed leaves, root-index leaf creation when there
-is an unused index slot, and depth-one indexed truncation with empty-leaf
-compaction. Full tree splitting/compaction remains rejected; the
-published profile therefore continues to disable `extent` until its full
-tree-splitting path is journaled.
+allocation into existing indexed leaves, root growth into indexed leaves, and
+depth-one indexed truncation with empty-leaf compaction. Deeper tree splitting
+and compaction remain rejected, so the profile deliberately disables
+`metadata_csum`, `64bit`, `flex_bg`, and `orphan_file` while enabling `extent`.
 
 The isolated builder profile `systemd-ext4-m3` creates this same ext4 feature
 subset directly and records `filesystem.type=ext4` in its schema-9 manifest.
