@@ -113,6 +113,56 @@ pub(super) struct JournalTransaction {
     blocks: Vec<(u32, Vec<u8>)>,
 }
 
+/// Validated placement cursor for the circular JBD2 journal area.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct JournalRing {
+    first: u32,
+    max_length: u32,
+    next: u32,
+}
+
+impl JournalRing {
+    pub(super) fn new(journal: JournalSuperBlock) -> Result<Self> {
+        let next = if journal.start == 0 {
+            journal.first
+        } else {
+            journal.start
+        };
+        if next < journal.first || next >= journal.max_length {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal ring cursor");
+        }
+        Ok(Self {
+            first: journal.first,
+            max_length: journal.max_length,
+            next,
+        })
+    }
+
+    pub(super) fn reserve(&mut self, blocks: usize) -> Result<Vec<u32>> {
+        if blocks == 0 {
+            return_errno_with_message!(Errno::EINVAL, "zero ext4 journal blocks requested");
+        }
+        let capacity = (self.max_length - self.first) as usize;
+        if blocks > capacity {
+            return_errno_with_message!(Errno::ENOSPC, "ext4 journal transaction exceeds ring");
+        }
+        let mut positions = Vec::with_capacity(blocks);
+        for _ in 0..blocks {
+            positions.push(self.next);
+            self.next = if self.next + 1 >= self.max_length {
+                self.first
+            } else {
+                self.next + 1
+            };
+        }
+        Ok(positions)
+    }
+
+    pub(super) const fn cursor(self) -> u32 {
+        self.next
+    }
+}
+
 impl JournalTransaction {
     pub(super) fn new(sequence: u32) -> Result<Self> {
         if sequence == 0 {
@@ -371,6 +421,20 @@ mod test {
             transaction.add_block(block, &[0; BLOCK_SIZE]).unwrap();
         }
         assert!(transaction.encode().is_err());
+    }
+
+    #[ktest]
+    fn reserves_journal_ring_positions_with_wraparound() {
+        let mut block = clean_block();
+        block[JBD2_MAX_LENGTH_OFFSET..JBD2_MAX_LENGTH_OFFSET + 4]
+            .copy_from_slice(&8u32.to_be_bytes());
+        block[JBD2_FIRST_OFFSET..JBD2_FIRST_OFFSET + 4].copy_from_slice(&3u32.to_be_bytes());
+        block[JBD2_START_OFFSET..JBD2_START_OFFSET + 4].copy_from_slice(&6u32.to_be_bytes());
+        let journal = JournalSuperBlock::parse(&block).unwrap();
+        let mut ring = JournalRing::new(journal).unwrap();
+        assert_eq!(ring.reserve(4).unwrap(), vec![6, 7, 3, 4]);
+        assert_eq!(ring.cursor(), 5);
+        assert!(ring.reserve(6).is_err());
     }
 
     fn header(block_type: u32) -> [u8; BLOCK_SIZE] {
