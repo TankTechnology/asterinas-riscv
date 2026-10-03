@@ -26,6 +26,16 @@ outside this compatibility profile.
 
 The isolated builder profile `systemd-ext4-m3` creates this same ext4 feature
 subset directly and records `filesystem.type=ext4` in its schema-9 manifest.
+The Makefile entry point is `make build_riscv_debian_systemd_ext4`; after the
+container build, verify the published image with:
+
+```bash
+tools/riscv/debian/rootfs/verify_ext4_journal.sh \
+  --image target/debian-riscv/systemd-ext4-m3/rootfs/debian-root.ext2 \
+  --manifest target/debian-riscv/systemd-ext4-m3/rootfs/rootfs-manifest.json \
+  --packages-lock target/debian-riscv/systemd-ext4-m3/rootfs/packages.lock
+```
+
 Pass Stage1 `--root-fs=ext4 --root-init=systemd` when booting that profile;
 existing profiles retain their ext2 handoff. `-o noload` remains available for
 explicit diagnostics when recovery metadata is malformed or unsupported.
