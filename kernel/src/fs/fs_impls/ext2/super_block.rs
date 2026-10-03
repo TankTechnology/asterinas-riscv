@@ -248,7 +248,7 @@ impl SuperBlock {
         let feature_incompat = FeatureInCompatSet::from_bits_truncate(sb.feature_incompat);
         let group_desc_size = if feature_incompat.contains(FeatureInCompatSet::BIT64) {
             let size = usize::from(sb.reserved_word_pad);
-            if size < size_of::<RawBlockGroup>() || size % 8 != 0 {
+            if size < size_of::<RawBlockGroup>() || size > BLOCK_SIZE || size % 8 != 0 {
                 return_errno_with_message!(Errno::EINVAL, "invalid ext4 group descriptor size");
             }
             size
@@ -964,6 +964,15 @@ mod test {
         raw.reserved_word_pad = 64;
         let sb = SuperBlock::try_from_with_journal(raw, true).unwrap();
         assert_eq!(sb.group_desc_size(), 64);
+    }
+
+    #[ktest]
+    fn rejects_oversized_64bit_group_descriptors() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
+        raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
+        raw.reserved_word_pad = (BLOCK_SIZE + 8) as u16;
+        assert!(SuperBlock::try_from_with_journal(raw, true).is_err());
     }
 
     #[ktest]
