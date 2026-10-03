@@ -265,13 +265,18 @@ pub(super) fn parse_header(block: &[u8]) -> Result<JournalHeader> {
     })
 }
 
-pub(super) fn parse_descriptor(block: &[u8], sequence: u32) -> Result<Vec<JournalTag>> {
+pub(super) fn parse_descriptor(
+    block: &[u8],
+    sequence: u32,
+    expected_uuid: &[u8; JBD2_UUID_SIZE],
+) -> Result<Vec<JournalTag>> {
     let header = parse_header(block)?;
     if header.block_type != JBD2_DESCRIPTOR_BLOCK || header.sequence != sequence {
         return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal descriptor");
     }
 
     let mut tags = Vec::new();
+    let mut descriptor_uuid = None;
     let mut offset = JBD2_SUPERBLOCK_HEADER_SIZE;
     loop {
         if offset.checked_add(JBD2_TAG_SIZE).is_none() || offset + JBD2_TAG_SIZE > block.len() {
@@ -295,6 +300,13 @@ pub(super) fn parse_descriptor(block: &[u8], sequence: u32) -> Result<Vec<Journa
             if offset + JBD2_UUID_SIZE > block.len() {
                 return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal tag UUID");
             }
+            let uuid = &block[offset..offset + JBD2_UUID_SIZE];
+            if descriptor_uuid.is_some_and(|previous| previous != uuid)
+                || descriptor_uuid.is_none() && uuid != expected_uuid
+            {
+                return_errno_with_message!(Errno::EUCLEAN, "mismatched ext4 journal tag UUID");
+            }
+            descriptor_uuid = Some(uuid);
             offset += JBD2_UUID_SIZE;
         }
         if tag.flags & JBD2_FLAG_LAST_TAG != 0 {
@@ -433,7 +445,7 @@ mod test {
         assert_eq!(&blocks[0][20..36], &[0x42; 16]);
         assert_eq!(read_be_u32(&blocks[0], 36), 32);
         assert_eq!(read_be_u32(&blocks[0], 40), JBD2_FLAG_LAST_TAG | JBD2_FLAG_SAME_UUID);
-        assert_eq!(parse_descriptor(&blocks[0], 7).unwrap().len(), 2);
+        assert_eq!(parse_descriptor(&blocks[0], 7, &[0x42; 16]).unwrap().len(), 2);
         assert_eq!(&blocks[1][..4], &[0; 4]);
         assert_eq!(blocks[2], vec![0x5a; BLOCK_SIZE]);
         assert_eq!(read_be_u32(&blocks[3], 4), JBD2_COMMIT_BLOCK);
@@ -484,7 +496,7 @@ mod test {
         block[36..40].copy_from_slice(&32u32.to_be_bytes());
         block[40..44].copy_from_slice(&(JBD2_FLAG_LAST_TAG | JBD2_FLAG_SAME_UUID).to_be_bytes());
         assert_eq!(
-            parse_descriptor(&block, 7).unwrap(),
+            parse_descriptor(&block, 7, &[0x42; 16]).unwrap(),
             vec![
                 JournalTag {
                     block_number: 31,
@@ -503,8 +515,8 @@ mod test {
         let mut block = header(JBD2_DESCRIPTOR_BLOCK);
         block[12..16].copy_from_slice(&31u32.to_be_bytes());
         block[16..20].copy_from_slice(&JBD2_FLAG_LAST_TAG.to_be_bytes());
-        assert!(parse_descriptor(&block[..35], 7).is_err());
-        assert_eq!(parse_descriptor(&block[..36], 7).unwrap().len(), 1);
+        assert!(parse_descriptor(&block[..35], 7, &[0; 16]).is_err());
+        assert_eq!(parse_descriptor(&block[..36], 7, &[0x42; 16]).unwrap().len(), 1);
     }
 
     #[ktest]
