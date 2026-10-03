@@ -495,18 +495,6 @@ impl ExtentTree {
             }
         };
 
-        let mut old_words = vec![0u32; BLOCK_SIZE / size_of::<u32>()];
-        old_words[0] = u32::from(EXTENT_MAGIC) | ((extents.len() as u32) << 16);
-        old_words[1] = ((BLOCK_SIZE - EXTENT_HEADER_SIZE) / EXTENT_ENTRY_SIZE) as u32;
-        if let Err(err) = write_extent_words(&mut old_words, extents)
-            .and_then(|_| self.write_extent_block(fs, old_leaf, &old_words))
-        {
-            let _ = fs.free_blocks(new_leaf, 1);
-            let _ = fs.free_blocks(old_leaf, 1);
-            let _ = fs.free_blocks(data.start, data.end - data.start);
-            return Err(err);
-        }
-
         let new_extent = Extent {
             logical: iblock,
             physical: data.start,
@@ -514,32 +502,84 @@ impl ExtentTree {
                 .map_err(|_| Error::with_message(Errno::EIO, "ext4 extent length overflow"))?,
             unwritten: false,
         };
-        let mut new_words = vec![0u32; BLOCK_SIZE / size_of::<u32>()];
-        new_words[0] = u32::from(EXTENT_MAGIC) | (1 << 16);
-        new_words[1] = ((BLOCK_SIZE - EXTENT_HEADER_SIZE) / EXTENT_ENTRY_SIZE) as u32;
-        if let Err(err) = write_extent_words(&mut new_words, &[new_extent])
-            .and_then(|_| self.write_extent_block(fs, new_leaf, &new_words))
+
+        let split = extents
+            .iter()
+            .position(|extent| extent.logical > iblock)
+            .unwrap_or(extents.len());
+        let (mut left_extents, right_extents) = if split == 0 {
+            (vec![new_extent], extents.to_vec())
+        } else if split == extents.len() {
+            let mut left = extents.to_vec();
+            left.push(new_extent);
+            (left, Vec::new())
+        } else {
+            let mut left = extents[..split].to_vec();
+            left.push(new_extent);
+            (left, extents[split..].to_vec())
+        };
+        if right_extents.is_empty() {
+            // Keep both index entries populated when the insertion is after
+            // the existing tail by moving the new extent to the right leaf.
+            let moved = left_extents.pop().expect("root split left extent");
+            let right_extents = vec![moved];
+            return self.write_root_split_leaves(
+                raw,
+                fs,
+                header,
+                old_leaf,
+                new_leaf,
+                &left_extents,
+                &right_extents,
+                data,
+            );
+        }
+        self.write_root_split_leaves(
+            raw,
+            fs,
+            header,
+            old_leaf,
+            new_leaf,
+            &left_extents,
+            &right_extents,
+            data,
+        )
+    }
+
+    fn write_root_split_leaves(
+        &mut self,
+        raw: &mut RawBlockPtrs,
+        fs: &Ext2,
+        header: ExtentHeader,
+        left_leaf: Ext2Bid,
+        right_leaf: Ext2Bid,
+        left_extents: &[Extent],
+        right_extents: &[Extent],
+        data: Range<Ext2Bid>,
+    ) -> Result<ResolvedBlockRange> {
+        let mut left_words = vec![0u32; BLOCK_SIZE / size_of::<u32>()];
+        left_words[1] = ((BLOCK_SIZE - EXTENT_HEADER_SIZE) / EXTENT_ENTRY_SIZE) as u32;
+        let mut right_words = vec![0u32; BLOCK_SIZE / size_of::<u32>()];
+        right_words[1] = ((BLOCK_SIZE - EXTENT_HEADER_SIZE) / EXTENT_ENTRY_SIZE) as u32;
+        if let Err(err) = write_extent_words(&mut left_words, left_extents)
+            .and_then(|_| write_extent_words(&mut right_words, right_extents))
+            .and_then(|_| self.write_extent_block(fs, left_leaf, &left_words))
+            .and_then(|_| self.write_extent_block(fs, right_leaf, &right_words))
         {
-            let _ = fs.free_blocks(new_leaf, 1);
-            let _ = fs.free_blocks(old_leaf, 1);
+            let _ = fs.free_blocks(right_leaf, 1);
+            let _ = fs.free_blocks(left_leaf, 1);
             let _ = fs.free_blocks(data.start, data.end - data.start);
             return Err(err);
         }
 
-        let (first_bid, first_logical, second_bid, second_logical) =
-            if new_extent.logical < extents[0].logical {
-                (new_leaf, new_extent.logical, old_leaf, extents[0].logical)
-            } else {
-                (old_leaf, extents[0].logical, new_leaf, new_extent.logical)
-            };
         self.root.fill(0);
         self.root[0] = u32::from(EXTENT_MAGIC) | (2 << 16);
         self.root[1] = (header.max_entries as u32) | (1 << 16);
-        self.root[3] = first_logical;
-        self.root[4] = first_bid;
+        self.root[3] = left_extents[0].logical;
+        self.root[4] = left_leaf;
         self.root[5] = 0;
-        self.root[6] = second_logical;
-        self.root[7] = second_bid;
+        self.root[6] = right_extents[0].logical;
+        self.root[7] = right_leaf;
         self.root[8] = 0;
         raw.block_ptrs = self.root;
         raw.sector_count = raw
