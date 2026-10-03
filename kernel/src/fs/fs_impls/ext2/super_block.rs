@@ -245,7 +245,7 @@ impl SuperBlock {
 
         let allowed_incompat = FeatureInCompatSet::FILETYPE.bits()
             | if allow_journal {
-                FeatureInCompatSet::RECOVER.bits()
+                FeatureInCompatSet::RECOVER.bits() | FeatureInCompatSet::EXTENTS.bits()
             } else {
                 0
             };
@@ -690,6 +690,8 @@ bitflags! {
         const JOURNAL_DEV = 1 << 3;
         /// Metablock block group.
         const META_BG = 1 << 4;
+        /// Inodes use ext4 extent trees rather than indirect block pointers.
+        const EXTENTS = 1 << 6;
     }
 }
 
@@ -923,6 +925,14 @@ mod test {
     }
 
     #[ktest]
+    fn accepts_extent_feature_only_for_ext4_mount() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_incompat |= FeatureInCompatSet::EXTENTS.bits();
+        assert!(SuperBlock::try_from_with_journal(raw, true).is_ok());
+        assert!(SuperBlock::try_from_with_journal(raw, false).is_err());
+    }
+
+    #[ktest]
     fn max_file_size_matches_ext2_4k_limit() {
         let raw = make_valid_raw_super_block(1);
         let sb = SuperBlock::try_from(raw).unwrap();
@@ -946,7 +956,7 @@ mod test {
         assert!(sb.is_backup_group(7));
         assert!(sb.is_backup_group(9)); // 3^2
         assert!(sb.is_backup_group(25)); // 5^2
-                                         // 2, 4, 6 are not backups with sparse_super.
+        // 2, 4, 6 are not backups with sparse_super.
         assert!(!sb.is_backup_group(2));
         assert!(!sb.is_backup_group(4));
         assert!(!sb.is_backup_group(6));
