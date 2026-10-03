@@ -284,6 +284,12 @@ impl Ext2 {
                 if revoked.contains(&tag.block_number) || tag.flags & JOURNAL_FLAG_DELETED != 0 {
                     continue;
                 }
+                if tag.block_number >= self.super_block.read().total_blocks() {
+                    return_errno_with_message!(
+                        Errno::EUCLEAN,
+                        "ext4 journal target is out of range"
+                    );
+                }
                 if tag.flags & JOURNAL_FLAG_ESCAPE != 0 {
                     payload[0..4].copy_from_slice(&0xc03b3998u32.to_be_bytes());
                 }
@@ -314,6 +320,20 @@ impl Ext2 {
             .map_err(|_| Error::with_message(Errno::EIO, "failed to flush ext4 journal"))?;
         self.super_block.write().clear_journal_recovery();
         self.sync_recovery_superblock()?;
+        let sb = **self.super_block.read();
+        let descriptor_segment = self.group_descriptors_segment.clone();
+        let descriptor_bio =
+            BioSegment::new_from_segment(descriptor_segment.into(), BioDirection::FromDevice);
+        if self
+            .block_device
+            .read_blocks(Bid::new(sb.group_descriptors_bid(0) as u64), descriptor_bio)?
+            != BioStatus::Complete
+        {
+            return_errno_with_message!(Errno::EIO, "failed to refresh ext4 group descriptors");
+        }
+        for group in &self.block_groups {
+            group.refresh_after_recovery(&sb)?;
+        }
         self.block_device
             .sync()
             .map_err(|_| Error::with_message(Errno::EIO, "failed to flush ext4 recovery state"))?;
