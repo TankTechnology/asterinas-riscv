@@ -1210,7 +1210,13 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
     switch (step) {
     case HANDOFF_MOUNT_ROOT:
         if (production_context->root_init.root_filesystem_ext4) {
-            result = mount(root_device, "/newroot", "ext4", 0, "noload");
+            /*
+             * Let the ext4 driver replay a dirty journal during the normal
+             * Debian handoff.  `noload` is intentionally not the default:
+             * it would make a power-loss recovery image appear mounted while
+             * silently discarding its pending metadata transactions.
+             */
+            result = mount(root_device, "/newroot", "ext4", 0, NULL);
         } else {
             result = mount(root_device, "/newroot", "ext2", 0, NULL);
         }
