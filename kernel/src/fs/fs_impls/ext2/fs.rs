@@ -29,8 +29,9 @@ use super::{
     block_group::{BlockGroup, RawBlockGroup},
     inode::{FilePerm, Inode, InodeDesc, RawInode},
     journal::{
-        parse_descriptor, parse_header, parse_revoke, validate_commit, JournalSuperBlock,
-        JournalTag, JOURNAL_FLAG_DELETED, JOURNAL_FLAG_ESCAPE,
+        parse_descriptor, parse_header, parse_revoke, validate_commit, JournalRing,
+        JournalSuperBlock, JournalTag, JournalTransaction, JOURNAL_FLAG_DELETED,
+        JOURNAL_FLAG_ESCAPE, JBD2_SEQUENCE_OFFSET, JBD2_START_OFFSET,
     },
     prelude::*,
     super_block::{FeatureCompatSet, FsState, RawSuperBlock, SuperBlock, SUPER_BLOCK_OFFSET},
@@ -378,6 +379,89 @@ impl Ext2 {
             return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal block");
         }
         Ok(block)
+    }
+
+    /// Writes one encoded JBD2 transaction and publishes it as recoverable.
+    ///
+    /// The journal blocks are durable before the superblock's `start` field is
+    /// changed, so a crash can expose either a clean journal or a committed
+    /// transaction that recovery can replay. Home-block writes must happen
+    /// before [`Self::checkpoint_journal`] is called.
+    pub(super) fn write_journal_transaction(&self, transaction: JournalTransaction) -> Result<()> {
+        if self.fs_flags().contains(FsFlags::RDONLY) {
+            return_errno_with_message!(Errno::EROFS, "read-only ext4 journal write");
+        }
+        let (journal_inode, journal_dev) = {
+            let super_block = self.super_block.read();
+            (super_block.journal_inode(), super_block.journal_device())
+        };
+        if journal_inode == 0 || journal_dev != 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "external ext4 journals are unsupported");
+        }
+        let inode = self.read_inode(journal_inode)?;
+        let superblock = self.read_journal_block(&inode, 0)?;
+        let journal = JournalSuperBlock::parse(&superblock)?;
+        if journal.needs_recovery() {
+            return_errno_with_message!(Errno::EBUSY, "ext4 journal has an outstanding transaction");
+        }
+        if transaction.sequence() != journal.sequence {
+            return_errno_with_message!(Errno::EAGAIN, "stale ext4 journal sequence");
+        }
+        let encoded = transaction.encode()?;
+        let mut ring = JournalRing::new(journal)?;
+        let positions = ring.reserve(encoded.len())?;
+        for (position, block) in positions.iter().zip(encoded.iter()) {
+            let mut reader = VmReader::from(block.as_slice()).to_fallible();
+            if inode.write_at(*position as usize * BLOCK_SIZE, &mut reader)? != BLOCK_SIZE {
+                return_errno_with_message!(Errno::EIO, "short ext4 journal write");
+            }
+        }
+        inode.sync_all()?;
+        self.block_device
+            .sync()
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to flush ext4 journal blocks"))?;
+
+        let mut published = superblock;
+        published[JBD2_SEQUENCE_OFFSET..JBD2_SEQUENCE_OFFSET + 4]
+            .copy_from_slice(&journal.sequence.to_be_bytes());
+        published[JBD2_START_OFFSET..JBD2_START_OFFSET + 4]
+            .copy_from_slice(&positions[0].to_be_bytes());
+        let mut reader = VmReader::from(published.as_slice()).to_fallible();
+        if inode.write_at(0, &mut reader)? != BLOCK_SIZE {
+            return_errno_with_message!(Errno::EIO, "short ext4 journal superblock write");
+        }
+        inode.sync_all()?;
+        self.block_device
+            .sync()
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to publish ext4 journal"))?;
+        Ok(())
+    }
+
+    /// Marks a previously published transaction checkpointed after all home
+    /// blocks have reached stable storage.
+    pub(super) fn checkpoint_journal(&self, sequence: u32) -> Result<()> {
+        let journal_ino = self.super_block.read().journal_inode();
+        if journal_ino == 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "filesystem has no internal journal");
+        }
+        let inode = self.read_inode(journal_ino)?;
+        let mut block = self.read_journal_block(&inode, 0)?;
+        let journal = JournalSuperBlock::parse(&block)?;
+        if !journal.needs_recovery() || journal.sequence != sequence {
+            return_errno_with_message!(Errno::EAGAIN, "journal checkpoint sequence mismatch");
+        }
+        block[JBD2_SEQUENCE_OFFSET..JBD2_SEQUENCE_OFFSET + 4]
+            .copy_from_slice(&sequence.wrapping_add(1).to_be_bytes());
+        block[JBD2_START_OFFSET..JBD2_START_OFFSET + 4].fill(0);
+        let mut reader = VmReader::from(block.as_slice()).to_fallible();
+        if inode.write_at(0, &mut reader)? != BLOCK_SIZE {
+            return_errno_with_message!(Errno::EIO, "short ext4 journal checkpoint write");
+        }
+        inode.sync_all()?;
+        self.block_device
+            .sync()
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to checkpoint ext4 journal"))?;
+        Ok(())
     }
 
     fn sync_recovery_superblock(&self) -> Result<()> {

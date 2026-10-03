@@ -11,8 +11,8 @@ const JBD2_SUPERBLOCK_HEADER_SIZE: usize = 12;
 const JBD2_BLOCK_SIZE_OFFSET: usize = 12;
 const JBD2_MAX_LENGTH_OFFSET: usize = 16;
 const JBD2_FIRST_OFFSET: usize = 20;
-const JBD2_SEQUENCE_OFFSET: usize = 24;
-const JBD2_START_OFFSET: usize = 28;
+pub(super) const JBD2_SEQUENCE_OFFSET: usize = 24;
+pub(super) const JBD2_START_OFFSET: usize = 28;
 const JBD2_FEATURE_COMPAT_OFFSET: usize = 36;
 const JBD2_FEATURE_INCOMPAT_OFFSET: usize = 40;
 const JBD2_FEATURE_RO_COMPAT_OFFSET: usize = 44;
@@ -186,6 +186,10 @@ impl JournalTransaction {
         }
         self.blocks.push((block_number, payload.to_vec()));
         Ok(())
+    }
+
+    pub(super) const fn sequence(&self) -> u32 {
+        self.sequence
     }
 
     pub(super) fn encode(self) -> Result<Vec<Vec<u8>>> {
