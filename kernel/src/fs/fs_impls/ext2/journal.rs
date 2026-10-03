@@ -11,7 +11,11 @@ const JBD2_SUPERBLOCK_HEADER_SIZE: usize = 12;
 const JBD2_BLOCK_SIZE_OFFSET: usize = 12;
 const JBD2_MAX_LENGTH_OFFSET: usize = 16;
 const JBD2_FIRST_OFFSET: usize = 20;
-const JBD2_START_OFFSET: usize = 24;
+const JBD2_SEQUENCE_OFFSET: usize = 24;
+const JBD2_START_OFFSET: usize = 28;
+const JBD2_FEATURE_COMPAT_OFFSET: usize = 36;
+const JBD2_FEATURE_INCOMPAT_OFFSET: usize = 40;
+const JBD2_FEATURE_RO_COMPAT_OFFSET: usize = 44;
 const JBD2_DESCRIPTOR_BLOCK: u32 = 1;
 const JBD2_COMMIT_BLOCK: u32 = 2;
 const JBD2_REVOKE_BLOCK: u32 = 5;
@@ -20,6 +24,7 @@ const JBD2_FLAG_ESCAPE: u32 = 1;
 const JBD2_FLAG_SAME_UUID: u32 = 2;
 const JBD2_FLAG_DELETED: u32 = 4;
 const JBD2_FLAG_LAST_TAG: u32 = 8;
+const JBD2_FEATURE_INCOMPAT_REVOKE: u32 = 1;
 pub(super) const JOURNAL_FLAG_ESCAPE: u32 = JBD2_FLAG_ESCAPE;
 pub(super) const JOURNAL_FLAG_DELETED: u32 = JBD2_FLAG_DELETED;
 
@@ -48,6 +53,15 @@ impl JournalSuperBlock {
         let max_length = read_be_u32(block, JBD2_MAX_LENGTH_OFFSET);
         let first = read_be_u32(block, JBD2_FIRST_OFFSET);
         let start = read_be_u32(block, JBD2_START_OFFSET);
+        let feature_compat = read_be_u32(block, JBD2_FEATURE_COMPAT_OFFSET);
+        let feature_incompat = read_be_u32(block, JBD2_FEATURE_INCOMPAT_OFFSET);
+        let feature_ro_compat = read_be_u32(block, JBD2_FEATURE_RO_COMPAT_OFFSET);
+        if feature_compat != 0
+            || feature_incompat & !JBD2_FEATURE_INCOMPAT_REVOKE != 0
+            || feature_ro_compat != 0
+        {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported ext4 journal features");
+        }
         if block_size as usize != BLOCK_SIZE || max_length <= 1 || first == 0 || first >= max_length
         {
             return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal geometry");
@@ -55,12 +69,13 @@ impl JournalSuperBlock {
         if start != 0 && (start < first || start >= max_length) {
             return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal start");
         }
-        if start != 0 && read_be_u32(block, 8) == 0 {
+        let sequence = read_be_u32(block, JBD2_SEQUENCE_OFFSET);
+        if start != 0 && sequence == 0 {
             return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal sequence");
         }
 
         Ok(Self {
-            sequence: read_be_u32(block, 8),
+            sequence,
             block_size,
             max_length,
             first,
@@ -184,6 +199,7 @@ mod test {
         block[JBD2_MAX_LENGTH_OFFSET..JBD2_MAX_LENGTH_OFFSET + 4]
             .copy_from_slice(&1024u32.to_be_bytes());
         block[JBD2_FIRST_OFFSET..JBD2_FIRST_OFFSET + 4].copy_from_slice(&1u32.to_be_bytes());
+        block[JBD2_SEQUENCE_OFFSET..JBD2_SEQUENCE_OFFSET + 4].copy_from_slice(&1u32.to_be_bytes());
         block
     }
 
@@ -191,6 +207,7 @@ mod test {
     fn parses_clean_journal() {
         let journal = JournalSuperBlock::parse(&clean_block()).unwrap();
         assert!(!journal.needs_recovery());
+        assert_eq!(journal.sequence, 1);
         assert_eq!(journal.max_length, 1024);
     }
 
@@ -198,7 +215,10 @@ mod test {
     fn detects_pending_transaction() {
         let mut block = clean_block();
         block[JBD2_START_OFFSET..JBD2_START_OFFSET + 4].copy_from_slice(&2u32.to_be_bytes());
-        assert!(JournalSuperBlock::parse(&block).unwrap().needs_recovery());
+        block[JBD2_SEQUENCE_OFFSET..JBD2_SEQUENCE_OFFSET + 4].copy_from_slice(&7u32.to_be_bytes());
+        let journal = JournalSuperBlock::parse(&block).unwrap();
+        assert!(journal.needs_recovery());
+        assert_eq!(journal.sequence, 7);
     }
 
     #[ktest]
@@ -210,11 +230,19 @@ mod test {
     }
 
     #[ktest]
+    fn rejects_unimplemented_journal_features() {
+        let mut block = clean_block();
+        block[JBD2_FEATURE_INCOMPAT_OFFSET..JBD2_FEATURE_INCOMPAT_OFFSET + 4]
+            .copy_from_slice(&0x2u32.to_be_bytes());
+        assert!(JournalSuperBlock::parse(&block).is_err());
+    }
+
+    #[ktest]
     fn rejects_recovery_outside_the_journal_ring() {
         let mut block = clean_block();
         block[JBD2_START_OFFSET..JBD2_START_OFFSET + 4].copy_from_slice(&1u32.to_be_bytes());
         block[JBD2_FIRST_OFFSET..JBD2_FIRST_OFFSET + 4].copy_from_slice(&2u32.to_be_bytes());
-        block[8..12].copy_from_slice(&7u32.to_be_bytes());
+        block[JBD2_SEQUENCE_OFFSET..JBD2_SEQUENCE_OFFSET + 4].copy_from_slice(&7u32.to_be_bytes());
         assert!(JournalSuperBlock::parse(&block).is_err());
     }
 

@@ -247,7 +247,14 @@ impl Ext2 {
     }
 
     fn recover_journal(&self, noload: bool) -> Result<()> {
-        let journal_inode = self.read_inode(8)?;
+        let (journal_ino, journal_dev) = {
+            let super_block = self.super_block.read();
+            (super_block.journal_inode(), super_block.journal_device())
+        };
+        if journal_ino == 0 || journal_dev != 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "external ext4 journals are unsupported");
+        }
+        let journal_inode = self.read_inode(journal_ino)?;
         let mut block = vec![0; BLOCK_SIZE];
         let mut writer = VmWriter::from(block.as_mut_slice()).to_fallible();
         if journal_inode.read_at(0, &mut writer, StatusFlags::O_NOATIME)? != BLOCK_SIZE {
