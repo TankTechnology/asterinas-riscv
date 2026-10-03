@@ -107,6 +107,8 @@ pub(super) struct SuperBlock {
     block_group_idx: usize,
     /// Compatible feature set.
     feature_compat: FeatureCompatSet,
+    /// On-disk group descriptor size (32 or 64 bytes for ext4 64-bit mode).
+    group_desc_size: usize,
     /// Incompatible feature set.
     feature_incompat: FeatureInCompatSet,
     /// Read-only-compatible feature set.
@@ -243,17 +245,28 @@ impl SuperBlock {
             return_errno_with_message!(Errno::EINVAL, "ext2 journal replay is unsupported");
         }
 
+        let feature_incompat = FeatureInCompatSet::from_bits_truncate(sb.feature_incompat);
+        let group_desc_size = if feature_incompat.contains(FeatureInCompatSet::BIT64) {
+            let size = usize::from(sb.reserved_word_pad);
+            if size < size_of::<RawBlockGroup>() || size % 8 != 0 {
+                return_errno_with_message!(Errno::EINVAL, "invalid ext4 group descriptor size");
+            }
+            size
+        } else {
+            size_of::<RawBlockGroup>()
+        };
+
         let allowed_incompat = FeatureInCompatSet::FILETYPE.bits()
             | if allow_journal {
-                FeatureInCompatSet::RECOVER.bits() | FeatureInCompatSet::EXTENTS.bits()
+                FeatureInCompatSet::RECOVER.bits()
+                    | FeatureInCompatSet::EXTENTS.bits()
+                    | FeatureInCompatSet::BIT64.bits()
             } else {
                 0
             };
         if (sb.feature_incompat & !allowed_incompat) != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported incompat feature");
         }
-        let feature_incompat = FeatureInCompatSet::from_bits_truncate(sb.feature_incompat);
-
         let allowed_ro_compat = FeatureRoCompatSet::SPARSE_SUPER.bits()
             | FeatureRoCompatSet::LARGE_FILE.bits()
             | FeatureRoCompatSet::BTREE_DIR.bits();
@@ -292,6 +305,7 @@ impl SuperBlock {
             inode_size,
             block_group_idx: sb.block_group_idx as _,
             feature_compat,
+            group_desc_size,
             feature_incompat,
             feature_ro_compat,
             uuid: sb.uuid,
@@ -641,6 +655,10 @@ impl SuperBlock {
         self.feature_incompat
     }
 
+    pub(super) const fn group_desc_size(&self) -> usize {
+        self.group_desc_size
+    }
+
     pub(super) fn clear_journal_recovery(&mut self) {
         self.feature_incompat.remove(FeatureInCompatSet::RECOVER);
     }
@@ -696,6 +714,8 @@ bitflags! {
         const META_BG = 1 << 4;
         /// Inodes use ext4 extent trees rather than indirect block pointers.
         const EXTENTS = 1 << 6;
+        /// Group descriptors contain high block-number fields.
+        const BIT64 = 1 << 7;
     }
 }
 
@@ -934,6 +954,16 @@ mod test {
         raw.feature_incompat |= FeatureInCompatSet::EXTENTS.bits();
         assert!(SuperBlock::try_from_with_journal(raw, true).is_ok());
         assert!(SuperBlock::try_from_with_journal(raw, false).is_err());
+    }
+
+    #[ktest]
+    fn accepts_64bit_group_descriptor_layout_for_ext4_mount() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
+        raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
+        raw.reserved_word_pad = 64;
+        let sb = SuperBlock::try_from_with_journal(raw, true).unwrap();
+        assert_eq!(sb.group_desc_size(), 64);
     }
 
     #[ktest]
