@@ -28,7 +28,10 @@ use ostd::mm::{VmReader, VmWriter};
 use super::{
     block_group::{BlockGroup, RawBlockGroup},
     inode::{FilePerm, Inode, InodeDesc, RawInode},
-    journal::{parse_descriptor, parse_header, parse_revoke, validate_commit, JournalSuperBlock},
+    journal::{
+        parse_descriptor, parse_header, parse_revoke, validate_commit, JournalSuperBlock,
+        JOURNAL_FLAG_DELETED, JOURNAL_FLAG_ESCAPE,
+    },
     prelude::*,
     super_block::{
         FeatureCompatSet, FeatureInCompatSet, FsState, RawSuperBlock, SuperBlock,
@@ -278,10 +281,10 @@ impl Ext2 {
             position = next_journal_block(position, journal.first, journal.max_length);
 
             for (tag, mut payload) in payloads {
-                if revoked.contains(&tag.block_number) || tag.flags & 4 != 0 {
+                if revoked.contains(&tag.block_number) || tag.flags & JOURNAL_FLAG_DELETED != 0 {
                     continue;
                 }
-                if tag.flags & 1 != 0 {
+                if tag.flags & JOURNAL_FLAG_ESCAPE != 0 {
                     payload[0..4].copy_from_slice(&0xc03b3998u32.to_be_bytes());
                 }
                 self.block_device
