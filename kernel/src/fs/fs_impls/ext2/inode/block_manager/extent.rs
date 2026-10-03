@@ -13,7 +13,7 @@
 use ostd::mm::io::util::HasVmReaderWriter;
 
 use super::block_ptr_tree::{RawBlockPtrs, ResolvedBlockRange};
-use crate::fs::fs_impls::ext2::{Ext2, prelude::*};
+use crate::fs::fs_impls::ext2::{prelude::*, Ext2};
 
 const EXTENT_MAGIC: u16 = 0xf30a;
 const EXTENT_HEADER_SIZE: usize = 12;
@@ -81,6 +81,16 @@ impl ExtentTree {
             }
             validate_entries(&child, child_header, fs.super_block().total_blocks())?;
             let mut extents = self.node_extents(&child, child_header.entries)?;
+            if let Some(existing) = initialize_unwritten_extent(
+                &mut extents,
+                iblock,
+                max_blocks,
+                child_header.max_entries,
+            )? {
+                write_extent_words(&mut child, &extents)?;
+                self.write_extent_block(fs, child_bid, &child)?;
+                return Ok(ResolvedBlockRange::Existing(existing));
+            }
             if let Some(existing) = find_extent_range(&extents, iblock, max_blocks)? {
                 return Ok(ResolvedBlockRange::Existing(existing));
             }
@@ -130,6 +140,13 @@ impl ExtentTree {
         }
 
         let mut extents = self.root_extents(header.entries)?;
+        if let Some(existing) =
+            initialize_unwritten_extent(&mut extents, iblock, max_blocks, header.max_entries)?
+        {
+            self.write_root_extents(&extents)?;
+            raw.block_ptrs = self.root;
+            return Ok(ResolvedBlockRange::Existing(existing));
+        }
         if let Some(existing) = find_extent_range(&extents, iblock, max_blocks)? {
             return Ok(ResolvedBlockRange::Existing(existing));
         }
@@ -272,7 +289,9 @@ impl ExtentTree {
                 (u64::from(read_half(&self.root, offset + 6)?) << 32)
                     | u64::from(read_word(&self.root, offset + 4)?),
             )
-            .map_err(|_| Error::with_message(Errno::EOPNOTSUPP, "ext4 extent block is too large"))?;
+            .map_err(|_| {
+                Error::with_message(Errno::EOPNOTSUPP, "ext4 extent block is too large")
+            })?;
             let mut child = self.read_block(child_bid)?;
             let child_header = ExtentHeader::from_words(&child)?;
             if child_header.depth != 0 {
@@ -291,14 +310,16 @@ impl ExtentTree {
                     fs.free_blocks(extent.physical, u32::from(extent.length))?;
                     leaf_freed = leaf_freed
                         .checked_add(u32::from(extent.length))
-                        .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 block count overflow"))?;
+                        .ok_or_else(|| {
+                            Error::with_message(Errno::EIO, "ext4 block count overflow")
+                        })?;
                 } else if end > keep_blocks {
                     let retained_len = keep_blocks - extent.logical;
                     let freed_len = u32::from(extent.length) - retained_len;
                     fs.free_blocks(extent.physical + retained_len, freed_len)?;
-                    leaf_freed = leaf_freed
-                        .checked_add(freed_len)
-                        .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 block count overflow"))?;
+                    leaf_freed = leaf_freed.checked_add(freed_len).ok_or_else(|| {
+                        Error::with_message(Errno::EIO, "ext4 block count overflow")
+                    })?;
                     retained.push(Extent {
                         length: u16::try_from(retained_len).map_err(|_| {
                             Error::with_message(Errno::EIO, "ext4 extent length overflow")
@@ -549,9 +570,9 @@ impl ExtentTree {
         let mut bytes = vec![0u8; BLOCK_SIZE];
         for (index, word) in words.iter().enumerate() {
             let offset = index * size_of::<u32>();
-            let end = offset
-                .checked_add(size_of::<u32>())
-                .ok_or_else(|| Error::with_message(Errno::EIO, "failed to encode ext4 extent block"))?;
+            let end = offset.checked_add(size_of::<u32>()).ok_or_else(|| {
+                Error::with_message(Errno::EIO, "failed to encode ext4 extent block")
+            })?;
             let target = bytes.get_mut(offset..end).ok_or_else(|| {
                 Error::with_message(Errno::EIO, "failed to encode ext4 extent block")
             })?;
@@ -710,6 +731,76 @@ fn find_extent_range(
     Ok(None)
 }
 
+/// Converts the portion of an unwritten extent covered by a write into an
+/// initialized extent. The blocks are already allocated and zero-filled by
+/// ext4, so only the extent metadata needs to change.
+fn initialize_unwritten_extent(
+    extents: &mut Vec<Extent>,
+    iblock: Iblock,
+    max_blocks: u32,
+    max_entries: usize,
+) -> Result<Option<Range<Ext2Bid>>> {
+    let Some(index) = extents.iter().position(|extent| {
+        extent.unwritten
+            && iblock >= extent.logical
+            && iblock < extent.logical.saturating_add(u32::from(extent.length))
+    }) else {
+        return Ok(None);
+    };
+
+    let extent = extents[index];
+    let extent_end = extent
+        .logical
+        .checked_add(u32::from(extent.length))
+        .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "ext4 extent overflows"))?;
+    let initialized_len = max_blocks.min(extent_end - iblock);
+    if initialized_len == 0 {
+        return Ok(None);
+    }
+    let prefix_len = iblock - extent.logical;
+    let suffix_len = extent_end - iblock - initialized_len;
+    let replacement_count = usize::from(prefix_len > 0) + 1 + usize::from(suffix_len > 0);
+    if extents.len() + replacement_count - 1 > max_entries {
+        return_errno_with_message!(Errno::EOPNOTSUPP, "ext4 extent leaf has no split capacity");
+    }
+
+    let mut replacement = Vec::with_capacity(replacement_count);
+    if prefix_len > 0 {
+        replacement.push(Extent {
+            length: u16::try_from(prefix_len)
+                .map_err(|_| Error::with_message(Errno::EIO, "ext4 extent length overflow"))?,
+            ..extent
+        });
+    }
+    let initialized_physical = extent
+        .physical
+        .checked_add(prefix_len)
+        .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "ext4 extent overflows"))?;
+    replacement.push(Extent {
+        logical: iblock,
+        physical: initialized_physical,
+        length: u16::try_from(initialized_len)
+            .map_err(|_| Error::with_message(Errno::EIO, "ext4 extent length overflow"))?,
+        unwritten: false,
+    });
+    if suffix_len > 0 {
+        replacement.push(Extent {
+            logical: iblock + initialized_len,
+            physical: initialized_physical
+                .checked_add(initialized_len)
+                .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "ext4 extent overflows"))?,
+            length: u16::try_from(suffix_len)
+                .map_err(|_| Error::with_message(Errno::EIO, "ext4 extent length overflow"))?,
+            unwritten: true,
+        });
+    }
+    extents.splice(index..=index, replacement);
+    let end = initialized_physical
+        .checked_add(initialized_len)
+        .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "ext4 extent overflows"))?;
+    Ok(Some(initialized_physical..end))
+}
+
 fn zero_blocks(fs: &Ext2, blocks: &Range<Ext2Bid>) -> Result<()> {
     let mut io_batch = IoBatch::with_capacity(1);
     let segment = BioSegment::alloc((blocks.end - blocks.start) as usize, BioDirection::ToDevice);
@@ -855,6 +946,36 @@ mod test {
         root[4] = 4;
         root[5] = 100;
         root
+    }
+
+    #[ktest]
+    fn initializes_partial_unwritten_extent() {
+        let mut extents = vec![Extent {
+            logical: 10,
+            physical: Ext2Bid::try_from(200).unwrap(),
+            length: 8,
+            unwritten: true,
+        }];
+        let range = initialize_unwritten_extent(&mut extents, 13, 2, 4)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            range,
+            Ext2Bid::try_from(203).unwrap()..Ext2Bid::try_from(205).unwrap()
+        );
+        assert_eq!(extents.len(), 3);
+        assert_eq!(
+            (extents[0].logical, extents[0].length, extents[0].unwritten),
+            (10, 3, true)
+        );
+        assert_eq!(
+            (extents[1].logical, extents[1].length, extents[1].unwritten),
+            (13, 2, false)
+        );
+        assert_eq!(
+            (extents[2].logical, extents[2].length, extents[2].unwritten),
+            (15, 3, true)
+        );
     }
 
     #[ktest]
