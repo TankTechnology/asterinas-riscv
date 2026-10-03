@@ -14,8 +14,9 @@
 //! It was the default Linux filesystem throughout the 1990s and remains
 //! the on-disk foundation for ext3 and ext4. The ext2 path covers the base
 //! feature set, while the registered ext4 compatibility path additionally
-//! handles journal replay and read-side extent mappings. Extent allocation,
-//! inline data, and journaled write transactions remain separate work.
+//! handles journal replay and validated extent mappings. Non-indexed extent
+//! allocation/truncate are supported; indexed-tree mutation, inline data, and
+//! journaled write transactions remain separate work.
 //!
 //! # On-disk layout
 //!

@@ -22,8 +22,9 @@ the ext2 block and inode layout, and runs read-only `e2fsck` before and after
 the change. Clean journaled mounts are accepted by Asterinas, and the current
 JBD2 path can replay basic descriptor/data/commit/revoke transactions. Volumes
 using unsupported journal checksum or 64-bit features remain outside this
-compatibility profile. Extent inodes now have validated read-side mapping
-support, while indexed-tree allocation and truncate remain rejected; the
+compatibility profile. Extent inodes now have validated read-side mapping and
+limited allocation/truncate support for non-indexed roots, while indexed-tree
+mutation remains rejected; the
 published profile therefore continues to disable `extent` until its full
 tree-splitting path is journaled.
 

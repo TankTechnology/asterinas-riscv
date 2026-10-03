@@ -19,6 +19,7 @@ const EXTENT_HEADER_SIZE: usize = 12;
 const EXTENT_ENTRY_SIZE: usize = 12;
 const EXTENT_ROOT_WORDS: usize = 15;
 const MAX_EXTENT_DEPTH: u16 = 5;
+const EXTENT_SECTORS_PER_BLOCK: u32 = (BLOCK_SIZE / SECTOR_SIZE) as u32;
 
 #[derive(Debug)]
 pub(super) struct ExtentTree {
@@ -137,6 +138,66 @@ impl ExtentTree {
         raw.block_ptrs = self.root;
         raw.sector_count = new_sector_count;
         Ok(ResolvedBlockRange::NewlyAllocated(allocated))
+    }
+
+    /// Releases data blocks at and beyond `new_size` for a depth-zero tree.
+    ///
+    /// Indexed trees still need path compaction and journaled index updates;
+    /// keeping that case explicit prevents silently leaking or orphaning
+    /// blocks when a large ext4 file is truncated.
+    pub(super) fn truncate_to_byte_len(
+        &mut self,
+        raw: &mut RawBlockPtrs,
+        fs: &Ext2,
+        new_size: usize,
+    ) -> Result<()> {
+        let header = ExtentHeader::from_words(&self.root)?;
+        validate_entries(&self.root, header, fs.super_block().total_blocks())?;
+        if header.depth != 0 {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "indexed ext4 extent truncation unsupported"
+            );
+        }
+        let keep_blocks = u32::try_from(new_size.div_ceil(BLOCK_SIZE))
+            .map_err(|_| Error::with_message(Errno::EINVAL, "truncate size exceeds ext4 limits"))?;
+        let extents = self.root_extents(header.entries)?;
+        let mut retained = Vec::with_capacity(extents.len());
+        let mut freed_sectors = 0u32;
+        for extent in extents {
+            let end = extent
+                .logical
+                .checked_add(u32::from(extent.length))
+                .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "ext4 extent overflows"))?;
+            if extent.logical >= keep_blocks {
+                fs.free_blocks(extent.physical, u32::from(extent.length))?;
+                freed_sectors = freed_sectors
+                    .checked_add(u32::from(extent.length) * EXTENT_SECTORS_PER_BLOCK)
+                    .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 block count overflow"))?;
+            } else if end > keep_blocks {
+                let retained_len = keep_blocks - extent.logical;
+                let freed_len = u32::from(extent.length) - retained_len;
+                fs.free_blocks(extent.physical + retained_len, freed_len)?;
+                freed_sectors = freed_sectors
+                    .checked_add(freed_len * EXTENT_SECTORS_PER_BLOCK)
+                    .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 block count overflow"))?;
+                retained.push(Extent {
+                    length: u16::try_from(retained_len).map_err(|_| {
+                        Error::with_message(Errno::EIO, "ext4 extent length overflow")
+                    })?,
+                    ..extent
+                });
+            } else {
+                retained.push(extent);
+            }
+        }
+        self.write_root_extents(&retained)?;
+        raw.block_ptrs = self.root;
+        raw.sector_count = raw
+            .sector_count
+            .checked_sub(freed_sectors)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 inode block count underflow"))?;
+        Ok(())
     }
 
     fn root_extents(&self, entries: usize) -> Result<Vec<Extent>> {
@@ -441,7 +502,9 @@ mod test {
     use ostd::prelude::*;
 
     use super::*;
-    use crate::fs::fs_impls::ext2::test_utils::Ext2FixtureBuilder;
+    use crate::fs::{
+        ext2::inode::RAW_BLOCK_PTRS_LEN, fs_impls::ext2::test_utils::Ext2FixtureBuilder,
+    };
 
     fn direct_root() -> [u32; EXTENT_ROOT_WORDS] {
         let mut root = [0; EXTENT_ROOT_WORDS];
@@ -467,5 +530,28 @@ mod test {
         let fixture = Ext2FixtureBuilder::new(1, 256).build().unwrap();
         let tree = ExtentTree::new([0; EXTENT_ROOT_WORDS], Arc::downgrade(&fixture.ext2));
         assert!(tree.lookup_block_range(0, 1).is_err());
+    }
+
+    #[ktest]
+    fn truncates_direct_extent_and_accounts_blocks() {
+        let fixture = Ext2FixtureBuilder::new(1, 256).build().unwrap();
+        let allocated = fixture
+            .ext2
+            .alloc_blocks(4, fixture.sb.first_data_block())
+            .unwrap();
+        let mut root = direct_root();
+        root[5] = allocated.start;
+        let mut tree = ExtentTree::new(root, Arc::downgrade(&fixture.ext2));
+        let mut pointers = RawBlockPtrs::new(32, [0; RAW_BLOCK_PTRS_LEN]);
+
+        tree.truncate_to_byte_len(&mut pointers, &fixture.ext2, 2 * BLOCK_SIZE)
+            .unwrap();
+
+        assert_eq!(
+            tree.lookup_block_range(0, 4).unwrap(),
+            allocated.start..allocated.start + 2
+        );
+        assert_eq!(tree.lookup_block_range(2, 1).unwrap(), 0..0);
+        assert_eq!(pointers.sector_count, 16);
     }
 }
