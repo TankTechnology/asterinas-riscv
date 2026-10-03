@@ -21,8 +21,10 @@ The converter copies the image, creates an ext3/ext4 journal while retaining
 the ext2 block and inode layout, and runs read-only `e2fsck` before and after
 the change. Clean journaled mounts are accepted by Asterinas, and the current
 JBD2 path can replay basic descriptor/data/commit/revoke transactions. Volumes
-using unsupported journal checksum, 64-bit, or ext4 extent features remain
-outside this compatibility profile.
+using unsupported journal checksum or 64-bit features remain outside this
+compatibility profile. Extent inodes now have validated read-side mapping
+support, but extent allocation/truncate is still rejected; the published
+profile therefore continues to disable `extent`.
 
 The isolated builder profile `systemd-ext4-m3` creates this same ext4 feature
 subset directly and records `filesystem.type=ext4` in its schema-9 manifest.
