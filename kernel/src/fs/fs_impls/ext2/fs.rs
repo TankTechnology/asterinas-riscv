@@ -408,7 +408,7 @@ impl Ext2 {
         if journal.needs_recovery() {
             return_errno_with_message!(Errno::EBUSY, "ext4 journal has an outstanding transaction");
         }
-        JournalTransaction::new(journal.sequence)
+        JournalTransaction::new(journal.sequence, journal.uuid)
     }
 
     pub(super) fn write_journal_transaction(&self, transaction: JournalTransaction) -> Result<()> {
