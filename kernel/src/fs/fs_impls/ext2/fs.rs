@@ -461,6 +461,37 @@ impl Ext2 {
         Ok(())
     }
 
+    /// Writes one filesystem metadata block through JBD2 when an internal
+    /// journal is present, falling back to a direct write for ext2 volumes.
+    /// The home block is not made visible until the committed journal copy is
+    /// durable; it is checkpointed only after the home write and device flush.
+    pub(super) fn write_metadata_block(&self, bid: Ext2Bid, payload: &[u8]) -> Result<()> {
+        if payload.len() != BLOCK_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "invalid filesystem metadata block size");
+        }
+        let transaction = match self.begin_journal_transaction() {
+            Ok(transaction) => Some(transaction),
+            Err(err) if err.error() == Errno::EOPNOTSUPP => None,
+            Err(err) => return Err(err),
+        };
+        let Some(mut transaction) = transaction else {
+            self.block_device
+                .write_bytes(Bid::new(bid as u64).to_offset(), payload)
+                .map_err(|_| Error::with_message(Errno::EIO, "failed to write metadata block"))?;
+            return Ok(());
+        };
+        transaction.add_block(bid, payload)?;
+        let sequence = transaction.sequence();
+        self.write_journal_transaction(transaction)?;
+        self.block_device
+            .write_bytes(Bid::new(bid as u64).to_offset(), payload)
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to write journaled metadata block"))?;
+        self.block_device
+            .sync()
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to flush metadata block"))?;
+        self.checkpoint_journal(sequence)
+    }
+
     /// Marks a previously published transaction checkpointed after all home
     /// blocks have reached stable storage.
     pub(super) fn checkpoint_journal(&self, sequence: u32) -> Result<()> {

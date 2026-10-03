@@ -546,17 +546,18 @@ impl ExtentTree {
     }
 
     fn write_extent_block(&self, fs: &Ext2, bid: Ext2Bid, words: &[u32]) -> Result<()> {
-        let frame = FrameAllocOptions::new().zeroed(false).alloc_frame()?;
+        let mut bytes = vec![0u8; BLOCK_SIZE];
         for (index, word) in words.iter().enumerate() {
-            frame
-                .write_val(index * size_of::<u32>(), word)
-                .map_err(|_| {
-                    Error::with_message(Errno::EIO, "failed to encode ext4 extent block")
-                })?;
+            let offset = index * size_of::<u32>();
+            let end = offset
+                .checked_add(size_of::<u32>())
+                .ok_or_else(|| Error::with_message(Errno::EIO, "failed to encode ext4 extent block"))?;
+            let target = bytes.get_mut(offset..end).ok_or_else(|| {
+                Error::with_message(Errno::EIO, "failed to encode ext4 extent block")
+            })?;
+            target.copy_from_slice(&word.to_le_bytes());
         }
-        let segment =
-            BioSegment::new_from_segment(Segment::<()>::from(frame).into(), BioDirection::ToDevice);
-        fs.write_blocks(bid, segment)
+        fs.write_metadata_block(bid, &bytes)
     }
 
     fn lookup_node(
