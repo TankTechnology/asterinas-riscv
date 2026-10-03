@@ -686,7 +686,10 @@ impl Ext2 {
         {
             let sb = self.super_block.read();
             // Apply ext2 inode-number validity rules before indexing groups.
-            if (ino != ROOT_INO && ino < sb.first_ino()) || ino > sb.total_inodes() {
+            let journal_ino = sb.journal_inode();
+            if (ino != ROOT_INO && ino != journal_ino && ino < sb.first_ino())
+                || ino > sb.total_inodes()
+            {
                 return_errno_with_message!(Errno::EINVAL, "inode number out of valid range");
             }
         }
@@ -695,6 +698,13 @@ impl Ext2 {
             .find_group(ino)
             .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
         group.write_back_inode_desc(ino, raw_inode)?;
+
+        // The journal inode is the backing store for journal transactions. Its
+        // descriptor must be written directly; trying to journal this write
+        // would recursively start a transaction through the same inode.
+        if ino == self.super_block.read().journal_inode() {
+            return Ok(());
+        }
 
         if !self
             .super_block
