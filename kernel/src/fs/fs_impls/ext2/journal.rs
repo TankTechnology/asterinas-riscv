@@ -23,6 +23,7 @@ const JBD2_FLAG_LAST_TAG: u32 = 8;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct JournalSuperBlock {
+    pub(super) sequence: u32,
     pub(super) block_size: u32,
     pub(super) max_length: u32,
     pub(super) first: u32,
@@ -53,6 +54,7 @@ impl JournalSuperBlock {
         }
 
         Ok(Self {
+            sequence: read_be_u32(block, 8),
             block_size,
             max_length,
             first,

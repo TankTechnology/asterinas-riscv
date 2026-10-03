@@ -641,6 +641,10 @@ impl SuperBlock {
         self.feature_incompat
     }
 
+    pub(super) fn clear_journal_recovery(&mut self) {
+        self.feature_incompat.remove(FeatureInCompatSet::RECOVER);
+    }
+
     #[expect(dead_code)]
     const fn feature_ro_compat(&self) -> FeatureRoCompatSet {
         self.feature_ro_compat
