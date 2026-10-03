@@ -15,10 +15,10 @@
 //! the on-disk foundation for ext3 and ext4. The ext2 path covers the base
 //! feature set, while the registered ext4 compatibility path additionally
 //! handles journal replay and validated extent mappings. Non-indexed extent
-//! allocation/truncate, allocation into existing indexed leaves, and
-//! depth-one root-index leaf creation are supported; full tree
-//! splitting/compaction, inline data, and journaled write transactions remain
-//! separate work.
+//! allocation/truncate, allocation into existing indexed leaves, depth-one
+//! root-index leaf creation, and depth-one indexed truncation are supported;
+//! full tree splitting/compaction, inline data, and journaled write
+//! transactions remain separate work.
 //!
 //! # On-disk layout
 //!
