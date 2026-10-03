@@ -73,7 +73,7 @@ impl ExtentTree {
                 }
                 return Ok(ResolvedBlockRange::Existing(existing));
             }
-            let (child_bid, mut child) = self.indexed_leaf(iblock, header)?;
+            let (child_index, child_bid, mut child) = self.indexed_leaf(iblock, header)?;
             let child_header = ExtentHeader::from_words(&child)?;
             if child_header.depth != 0 {
                 return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent leaf depth");
@@ -83,14 +83,29 @@ impl ExtentTree {
             if let Some(existing) = find_extent_range(&extents, iblock, max_blocks)? {
                 return Ok(ResolvedBlockRange::Existing(existing));
             }
-            let allocated = self.allocate_extent_data(
-                &extents,
-                child_header.max_entries,
-                raw.block_ptrs[0],
-                fs,
-                iblock,
-                max_blocks,
-            )?;
+            let allocated = if extents.len() < child_header.max_entries {
+                self.allocate_extent_data(
+                    &extents,
+                    child_header.max_entries,
+                    raw.block_ptrs[0],
+                    fs,
+                    iblock,
+                    max_blocks,
+                )?
+            } else {
+                self.allocate_indexed_leaf(
+                    raw,
+                    fs,
+                    header,
+                    child_index,
+                    &extents,
+                    iblock,
+                    max_blocks,
+                )?
+            };
+            if extents.len() >= child_header.max_entries {
+                return Ok(ResolvedBlockRange::NewlyAllocated(allocated));
+            }
             extents.push(Extent {
                 logical: iblock,
                 physical: allocated.start,
@@ -324,7 +339,11 @@ impl ExtentTree {
         Ok(())
     }
 
-    fn indexed_leaf(&self, iblock: Iblock, header: ExtentHeader) -> Result<(Ext2Bid, Vec<u32>)> {
+    fn indexed_leaf(
+        &self,
+        iblock: Iblock,
+        header: ExtentHeader,
+    ) -> Result<(usize, Ext2Bid, Vec<u32>)> {
         let mut selected = None;
         for index in 0..header.entries {
             let offset = EXTENT_HEADER_SIZE + index * EXTENT_ENTRY_SIZE;
@@ -334,15 +353,115 @@ impl ExtentTree {
             }
             let child = (u64::from(read_half(&self.root, offset + 8)?) << 32)
                 | u64::from(read_word(&self.root, offset + 4)?);
-            selected = Some(child);
+            selected = Some((index, child));
         }
-        let child = selected.ok_or_else(|| {
+        let (index, child) = selected.ok_or_else(|| {
             Error::with_message(Errno::EOPNOTSUPP, "ext4 extent index has no matching leaf")
         })?;
         let child = Ext2Bid::try_from(child).map_err(|_| {
             Error::with_message(Errno::EOPNOTSUPP, "ext4 extent block is too large")
         })?;
-        Ok((child, self.read_block(child)?))
+        Ok((index, child, self.read_block(child)?))
+    }
+
+    /// Adds a fresh leaf when the selected depth-one leaf is full. This is the
+    /// non-splitting case: the inode root must still have an unused index slot.
+    fn allocate_indexed_leaf(
+        &mut self,
+        raw: &mut RawBlockPtrs,
+        fs: &Ext2,
+        header: ExtentHeader,
+        selected_index: usize,
+        extents: &[Extent],
+        iblock: Iblock,
+        max_blocks: u32,
+    ) -> Result<Range<Ext2Bid>> {
+        if header.entries >= header.max_entries {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "ext4 extent index is full");
+        }
+        if extents.iter().any(|extent| {
+            extent.unwritten
+                && iblock >= extent.logical
+                && iblock
+                    < extent
+                        .logical
+                        .checked_add(u32::from(extent.length))
+                        .unwrap_or(u32::MAX)
+        }) {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "writing unwritten ext4 extents is unsupported"
+            );
+        }
+        let next_logical = ((selected_index + 1)..header.entries)
+            .map(|index| read_word(&self.root, EXTENT_HEADER_SIZE + index * EXTENT_ENTRY_SIZE))
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .next()
+            .map_or(u64::from(u32::MAX) + 1, u64::from);
+        let count = max_blocks
+            .min(u32::try_from(next_logical.saturating_sub(u64::from(iblock))).unwrap_or(u32::MAX))
+            .min(0x7fff);
+        if count == 0 {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent hole");
+        }
+        let goal = extents
+            .last()
+            .and_then(|extent| extent.physical.checked_add(u32::from(extent.length)))
+            .unwrap_or(raw.block_ptrs[0]);
+        let leaf = fs.alloc_blocks(1, goal)?;
+        let data = match fs.alloc_blocks(count, leaf.end) {
+            Ok(data) => data,
+            Err(err) => {
+                let _ = fs.free_blocks(leaf.start, 1);
+                return Err(err);
+            }
+        };
+        if let Err(err) = zero_blocks(fs, &data) {
+            let _ = fs.free_blocks(data.start, data.end - data.start);
+            let _ = fs.free_blocks(leaf.start, 1);
+            return Err(err);
+        }
+
+        let mut leaf_words = vec![0u32; BLOCK_SIZE / size_of::<u32>()];
+        leaf_words[1] = ((BLOCK_SIZE - EXTENT_HEADER_SIZE) / EXTENT_ENTRY_SIZE) as u32;
+        let extent = Extent {
+            logical: iblock,
+            physical: data.start,
+            length: u16::try_from(data.end - data.start)
+                .map_err(|_| Error::with_message(Errno::EIO, "ext4 extent length overflow"))?,
+            unwritten: false,
+        };
+        write_extent_words(&mut leaf_words, &[extent])?;
+        if let Err(err) = self.write_extent_block(fs, leaf.start, &leaf_words) {
+            let _ = fs.free_blocks(data.start, data.end - data.start);
+            let _ = fs.free_blocks(leaf.start, 1);
+            return Err(err);
+        }
+
+        let insert_at = ((selected_index + 1)..header.entries)
+            .find(|index| {
+                read_word(&self.root, EXTENT_HEADER_SIZE + index * EXTENT_ENTRY_SIZE)
+                    .is_ok_and(|logical| logical > iblock)
+            })
+            .unwrap_or(header.entries);
+        for index in (insert_at..header.entries).rev() {
+            let from = EXTENT_HEADER_SIZE + index * EXTENT_ENTRY_SIZE;
+            let to = from + EXTENT_ENTRY_SIZE;
+            self.root
+                .copy_within(from / 4..(from + EXTENT_ENTRY_SIZE) / 4, to / 4);
+        }
+        let offset = EXTENT_HEADER_SIZE + insert_at * EXTENT_ENTRY_SIZE;
+        self.root[offset / 4] = iblock;
+        self.root[(offset + 4) / 4] = leaf.start;
+        self.root[(offset + 8) / 4] = 0;
+        self.root[0] = u32::from(EXTENT_MAGIC) | ((header.entries as u32 + 1) << 16);
+        raw.block_ptrs = self.root;
+        raw.sector_count = raw
+            .sector_count
+            .checked_add((data.end - data.start + 1) * EXTENT_SECTORS_PER_BLOCK)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 inode block count overflow"))?;
+        Ok(data)
     }
 
     fn write_extent_block(&self, fs: &Ext2, bid: Ext2Bid, words: &[u32]) -> Result<()> {
@@ -728,5 +847,40 @@ mod test {
         assert!(matches!(allocated, ResolvedBlockRange::NewlyAllocated(_)));
         assert_eq!(tree.lookup_block_range(4, 1).unwrap().len(), 1);
         assert_eq!(pointers.sector_count, 40);
+    }
+
+    #[ktest]
+    fn creates_leaf_when_indexed_leaf_is_full() {
+        let fixture = Ext2FixtureBuilder::new(1, 256).build().unwrap();
+        let child = fixture
+            .ext2
+            .alloc_blocks(1, fixture.sb.first_data_block())
+            .unwrap();
+        let data = fixture.ext2.alloc_blocks(4, child.end).unwrap();
+        let mut child_words = vec![0u32; BLOCK_SIZE / size_of::<u32>()];
+        child_words[0] = u32::from(EXTENT_MAGIC) | (4 << 16);
+        child_words[1] = 4;
+        for index in 0..4 {
+            let offset = EXTENT_HEADER_SIZE + index * EXTENT_ENTRY_SIZE;
+            child_words[offset / 4] = index as u32 * 2;
+            child_words[(offset + 4) / 4] = 1;
+            child_words[(offset + 8) / 4] = data.start + index as u32;
+        }
+        let mut root = [0u32; EXTENT_ROOT_WORDS];
+        root[0] = u32::from(EXTENT_MAGIC) | (1 << 16);
+        root[1] = 4 | (1 << 16);
+        root[3] = 0;
+        root[4] = child.start;
+        let mut tree = ExtentTree::new(root, Arc::downgrade(&fixture.ext2));
+        tree.write_extent_block(&fixture.ext2, child.start, &child_words)
+            .unwrap();
+        let mut pointers = RawBlockPtrs::new(40, [0; RAW_BLOCK_PTRS_LEN]);
+
+        tree.resolve_block_range(&mut pointers, &fixture.ext2, 1, 1)
+            .unwrap();
+
+        assert_eq!((tree.root[0] >> 16) as usize, 2);
+        assert_eq!(tree.lookup_block_range(1, 1).unwrap().len(), 1);
+        assert_eq!(pointers.sector_count, 56);
     }
 }
