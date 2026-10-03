@@ -33,10 +33,7 @@ use super::{
         JournalTag, JOURNAL_FLAG_DELETED, JOURNAL_FLAG_ESCAPE,
     },
     prelude::*,
-    super_block::{
-        FeatureCompatSet, FeatureInCompatSet, FsState, RawSuperBlock, SuperBlock,
-        SUPER_BLOCK_OFFSET,
-    },
+    super_block::{FeatureCompatSet, FsState, RawSuperBlock, SuperBlock, SUPER_BLOCK_OFFSET},
 };
 use crate::{
     fs::{
@@ -180,18 +177,6 @@ impl Ext2 {
         }
 
         let mount_options = Ext2MountOptions::parse(data);
-        if allow_journal
-            && !flags.contains(FsFlags::RDONLY)
-            && super_block
-                .feature_incompat()
-                .contains(FeatureInCompatSet::RECOVER)
-            && !mount_options.noload_journal
-        {
-            return_errno_with_message!(
-                Errno::EOPNOTSUPP,
-                "ext4 journal replay is not yet supported; mount with noload"
-            );
-        }
 
         let nr_inodes_per_group = super_block.nr_inodes_per_group();
 
