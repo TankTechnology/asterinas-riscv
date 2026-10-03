@@ -30,7 +30,7 @@ use super::{
     inode::{FilePerm, Inode, InodeDesc, RawInode},
     journal::{
         parse_descriptor, parse_header, parse_revoke, validate_commit, JournalSuperBlock,
-        JOURNAL_FLAG_DELETED, JOURNAL_FLAG_ESCAPE,
+        JournalTag, JOURNAL_FLAG_DELETED, JOURNAL_FLAG_ESCAPE,
     },
     prelude::*,
     super_block::{
@@ -87,6 +87,27 @@ fn next_journal_block(position: u32, first: u32, max_length: u32) -> u32 {
     } else {
         position + 1
     }
+}
+
+/// Returns whether a journal revoke supersedes a descriptor transaction.
+///
+/// JBD2 sequence numbers are unsigned and wrap, so a plain `>=` comparison
+/// would eventually make a newly wrapped transaction look older than every
+/// revoke in the ring.  The half-range comparison is the ordering rule used
+/// for serial numbers in the journal protocol.
+fn journal_revoke_supersedes(
+    target_block: u32,
+    transaction_sequence: u32,
+    revokes: &[(u32, u32)],
+) -> bool {
+    revokes.iter().any(|&(block, revoke_sequence)| {
+        block == target_block && revoke_sequence.wrapping_sub(transaction_sequence) < 0x8000_0000
+    })
+}
+
+struct JournalReplayTransaction {
+    sequence: u32,
+    payloads: Vec<(JournalTag, Vec<u8>)>,
 }
 
 /// Policy for how `statfs` reports the total block count.
@@ -255,6 +276,8 @@ impl Ext2 {
         let mut position = journal.start;
         let mut sequence = journal.sequence;
         let mut visited = 0;
+        let mut transactions = Vec::new();
+        let mut revokes = Vec::new();
         while visited < journal.max_length {
             let descriptor = self.read_journal_block(&journal_inode, position)?;
             let tags = parse_descriptor(&descriptor, sequence)?;
@@ -268,11 +291,11 @@ impl Ext2 {
             }
 
             let possible_revoke = self.read_journal_block(&journal_inode, position)?;
-            let mut revoked = Vec::new();
             if !possible_revoke.iter().all(|byte| *byte == 0) {
                 let header = parse_header(&possible_revoke)?;
                 if header.block_type == 5 {
-                    revoked = parse_revoke(&possible_revoke, sequence)?;
+                    let revoked = parse_revoke(&possible_revoke, sequence)?;
+                    revokes.extend(revoked.into_iter().map(|block| (block, sequence)));
                     position = next_journal_block(position, journal.first, journal.max_length);
                 }
             }
@@ -280,11 +303,32 @@ impl Ext2 {
             validate_commit(&commit, sequence)?;
             position = next_journal_block(position, journal.first, journal.max_length);
 
-            for (tag, mut payload) in payloads {
-                if revoked.contains(&tag.block_number) || tag.flags & JOURNAL_FLAG_DELETED != 0 {
+            transactions.push(JournalReplayTransaction { sequence, payloads });
+
+            visited += 1;
+            sequence = sequence.wrapping_add(1);
+            if position == journal.start {
+                break;
+            }
+            let next = self.read_journal_block(&journal_inode, position)?;
+            if next.iter().all(|byte| *byte == 0) {
+                break;
+            }
+        }
+
+        // Revoke records can appear in a later transaction than the
+        // descriptor they supersede.  Delay all writes until the complete
+        // committed prefix has been scanned so an old transaction cannot
+        // overwrite a block that was subsequently freed and reused.
+        let total_blocks = self.super_block.read().total_blocks();
+        for transaction in transactions {
+            for (tag, mut payload) in transaction.payloads {
+                if tag.flags & JOURNAL_FLAG_DELETED != 0
+                    || journal_revoke_supersedes(tag.block_number, transaction.sequence, &revokes)
+                {
                     continue;
                 }
-                if tag.block_number >= self.super_block.read().total_blocks() {
+                if tag.block_number >= total_blocks {
                     return_errno_with_message!(
                         Errno::EUCLEAN,
                         "ext4 journal target is out of range"
@@ -298,16 +342,6 @@ impl Ext2 {
                     .map_err(|_| {
                         Error::with_message(Errno::EIO, "failed to replay ext4 journal")
                     })?;
-            }
-
-            visited += 1;
-            sequence = sequence.wrapping_add(1);
-            if position == journal.start {
-                break;
-            }
-            let next = self.read_journal_block(&journal_inode, position)?;
-            if next.iter().all(|byte| *byte == 0) {
-                break;
             }
         }
 
@@ -958,6 +992,22 @@ mod test {
         },
         time::clocks,
     };
+
+    #[ktest]
+    fn journal_revoke_applies_across_transactions() {
+        let revokes = vec![(77, 12)];
+        assert!(journal_revoke_supersedes(77, 11, &revokes));
+        assert!(journal_revoke_supersedes(77, 12, &revokes));
+        assert!(!journal_revoke_supersedes(77, 13, &revokes));
+        assert!(!journal_revoke_supersedes(78, 11, &revokes));
+    }
+
+    #[ktest]
+    fn journal_revoke_sequence_wrap_is_ordered() {
+        let revokes = vec![(77, 1)];
+        assert!(journal_revoke_supersedes(77, u32::MAX, &revokes));
+        assert!(!journal_revoke_supersedes(77, 2, &revokes));
+    }
 
     #[ktest]
     fn unclean_ext2_allows_readonly_but_rejects_writable_mount() {
