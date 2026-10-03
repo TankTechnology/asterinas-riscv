@@ -141,10 +141,8 @@ pub(super) struct SuperBlock {
     reserved: Reserved,
 }
 
-impl TryFrom<RawSuperBlock> for SuperBlock {
-    type Error = Error;
-
-    fn try_from(sb: RawSuperBlock) -> Result<Self> {
+impl SuperBlock {
+    pub(super) fn try_from_with_journal(sb: RawSuperBlock, allow_journal: bool) -> Result<Self> {
         if sb.magic != MAGIC_NUM {
             return_errno_with_message!(Errno::EINVAL, "bad ext2 magic number");
         }
@@ -241,7 +239,7 @@ impl TryFrom<RawSuperBlock> for SuperBlock {
         }
 
         let feature_compat = FeatureCompatSet::from_bits_truncate(sb.feature_compat);
-        if feature_compat.contains(FeatureCompatSet::HAS_JOURNAL) {
+        if feature_compat.contains(FeatureCompatSet::HAS_JOURNAL) && !allow_journal {
             return_errno_with_message!(Errno::EINVAL, "ext2 journal replay is unsupported");
         }
 
@@ -311,6 +309,18 @@ impl TryFrom<RawSuperBlock> for SuperBlock {
             first_meta_bg: sb.first_meta_bg,
             reserved: sb.reserved,
         })
+    }
+
+    fn try_from(sb: RawSuperBlock) -> Result<Self> {
+        Self::try_from_with_journal(sb, false)
+    }
+}
+
+impl TryFrom<RawSuperBlock> for SuperBlock {
+    type Error = Error;
+
+    fn try_from(sb: RawSuperBlock) -> Result<Self> {
+        SuperBlock::try_from(sb)
     }
 }
 
@@ -617,7 +627,7 @@ impl SuperBlock {
     }
 
     #[expect(dead_code)]
-    const fn feature_compat(&self) -> FeatureCompatSet {
+    pub(super) const fn feature_compat(&self) -> FeatureCompatSet {
         self.feature_compat
     }
 
@@ -634,7 +644,7 @@ impl SuperBlock {
 
 bitflags! {
     /// Compatible feature set.
-    struct FeatureCompatSet: u32 {
+    pub(super) struct FeatureCompatSet: u32 {
         /// Preallocate some number of blocks to a directory when creating a new one.
         const DIR_PREALLOC = 1 << 0;
         /// AFS server inodes exist.
@@ -880,6 +890,13 @@ mod test {
     }
 
     #[ktest]
+    fn accepts_journaled_volume_for_explicit_ext4_mount() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
+        assert!(SuperBlock::try_from_with_journal(raw, true).is_ok());
+    }
+
+    #[ktest]
     fn max_file_size_matches_ext2_4k_limit() {
         let raw = make_valid_raw_super_block(1);
         let sb = SuperBlock::try_from(raw).unwrap();
@@ -903,7 +920,7 @@ mod test {
         assert!(sb.is_backup_group(7));
         assert!(sb.is_backup_group(9)); // 3^2
         assert!(sb.is_backup_group(25)); // 5^2
-        // 2, 4, 6 are not backups with sparse_super.
+                                         // 2, 4, 6 are not backups with sparse_super.
         assert!(!sb.is_backup_group(2));
         assert!(!sb.is_backup_group(4));
         assert!(!sb.is_backup_group(6));

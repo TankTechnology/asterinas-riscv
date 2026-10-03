@@ -28,14 +28,16 @@ use super::{
     block_group::{BlockGroup, RawBlockGroup},
     inode::{FilePerm, Inode, InodeDesc, RawInode},
     prelude::*,
-    super_block::{FsState, RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock},
+    super_block::{
+        FeatureCompatSet, FsState, RawSuperBlock, SuperBlock, SUPER_BLOCK_OFFSET,
+    },
 };
 use crate::{
     fs::{
         ext2::utils,
         vfs::file_system::{AtomicFsFlags, FsEventSubscriberStats, FsFlags},
     },
-    process::{Gid, UserNamespace, credentials::capabilities::CapSet, posix_thread::AsPosixThread},
+    process::{credentials::capabilities::CapSet, posix_thread::AsPosixThread, Gid, UserNamespace},
     security::lsm::hooks as lsm_hooks,
     thread::Thread,
 };
@@ -91,6 +93,7 @@ enum StatBlockAccounting {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct Ext2MountOptions {
     stat_block_accounting: StatBlockAccounting,
+    noload_journal: bool,
 }
 
 impl Ext2MountOptions {
@@ -105,6 +108,7 @@ impl Ext2MountOptions {
             match token.trim() {
                 "bsddf" => options.stat_block_accounting = StatBlockAccounting::ExcludeOverhead,
                 "minixdf" => options.stat_block_accounting = StatBlockAccounting::IncludeOverhead,
+                "noload" => options.noload_journal = true,
                 _ => {}
             }
         }
@@ -119,10 +123,11 @@ impl Ext2 {
         device: Arc<dyn BlockDevice>,
         flags: FsFlags,
         data: Option<&str>,
+        allow_journal: bool,
     ) -> Result<Arc<Self>> {
         let super_block = {
             let raw_super_block = device.read_val::<RawSuperBlock>(SUPER_BLOCK_OFFSET)?;
-            SuperBlock::try_from(raw_super_block)?
+            SuperBlock::try_from_with_journal(raw_super_block, allow_journal)?
         };
         let state = super_block.state();
         if !flags.contains(FsFlags::RDONLY)
@@ -139,6 +144,18 @@ impl Ext2 {
         }
 
         let mount_options = Ext2MountOptions::parse(data);
+        if allow_journal
+            && !flags.contains(FsFlags::RDONLY)
+            && super_block
+                .feature_compat()
+                .contains(FeatureCompatSet::HAS_JOURNAL)
+            && !mount_options.noload_journal
+        {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "ext4 journal replay is not yet supported; mount with noload"
+            );
+        }
 
         let nr_inodes_per_group = super_block.nr_inodes_per_group();
 
@@ -760,9 +777,9 @@ mod test {
     use crate::{
         fs::{
             fs_impls::ext2::test_utils::{
-                BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
-                RawInodeBuilder, assert_errno, create_file, default_fixture, make_valid_group_desc,
-                make_valid_super_block,
+                assert_errno, create_file, default_fixture, make_valid_group_desc,
+                make_valid_super_block, BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk,
+                InodeBitmapInit, RawInodeBuilder,
             },
             vfs::file_system::FileSystem as FileSystemTrait,
         },
@@ -787,11 +804,21 @@ mod test {
             raw.state = state.bits();
             disk.write_super_block(&raw);
             assert_errno!(
-                Ext2::open(disk.clone() as Arc<dyn BlockDevice>, FsFlags::empty(), None),
+                Ext2::open(
+                    disk.clone() as Arc<dyn BlockDevice>,
+                    FsFlags::empty(),
+                    None,
+                    false,
+                ),
                 Errno::EUCLEAN
             );
-            let readonly =
-                Ext2::open(disk.clone() as Arc<dyn BlockDevice>, FsFlags::RDONLY, None).unwrap();
+            let readonly = Ext2::open(
+                disk.clone() as Arc<dyn BlockDevice>,
+                FsFlags::RDONLY,
+                None,
+                false,
+            )
+            .unwrap();
             assert_errno!(readonly.set_fs_flags(FsFlags::empty()), Errno::EUCLEAN);
             disk.set_fail_flush(true);
             FileSystemTrait::sync(readonly.as_ref()).unwrap();
@@ -803,8 +830,13 @@ mod test {
 
         raw.state = FsState::VALID.bits();
         disk.write_super_block(&raw);
-        let readwrite =
-            Ext2::open(disk.clone() as Arc<dyn BlockDevice>, FsFlags::empty(), None).unwrap();
+        let readwrite = Ext2::open(
+            disk.clone() as Arc<dyn BlockDevice>,
+            FsFlags::empty(),
+            None,
+            false,
+        )
+        .unwrap();
         disk.set_fail_flush(true);
         assert_errno!(readwrite.set_fs_flags(FsFlags::RDONLY), Errno::EIO);
         assert!(!readwrite.fs_flags().contains(FsFlags::RDONLY));
@@ -856,6 +888,7 @@ mod test {
             f.disk.clone() as Arc<dyn BlockDevice>,
             FsFlags::empty(),
             Some("minixdf"),
+            false,
         )
         .unwrap();
 
