@@ -19,14 +19,16 @@ tools/riscv/debian/rootfs/convert_ext2_to_ext4_journal.sh \
 
 The converter copies the image, creates an ext3/ext4 journal while retaining
 the ext2 block and inode layout, and runs read-only `e2fsck` before and after
-the change. Clean journaled mounts are accepted by Asterinas; a volume whose
-superblock advertises `RECOVER` still requires `-o noload` because journal
-replay and transaction writeback are under development.
+the change. Clean journaled mounts are accepted by Asterinas, and the current
+JBD2 path can replay basic descriptor/data/commit/revoke transactions. Volumes
+using unsupported journal checksum, 64-bit, or ext4 extent features remain
+outside this compatibility profile.
 
 The isolated builder profile `systemd-ext4-m3` creates this same ext4 feature
 subset directly and records `filesystem.type=ext4` in its schema-9 manifest.
 Pass Stage1 `--root-fs=ext4 --root-init=systemd` when booting that profile;
-existing profiles retain their ext2 handoff.
+existing profiles retain their ext2 handoff. `-o noload` remains available for
+explicit diagnostics when recovery metadata is malformed or unsupported.
 
 Run all commands from the repository root. Build and use the dedicated rootfs
 image described in `tools/docker/riscv-rootfs/README.md`; its default

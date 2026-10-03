@@ -20,6 +20,8 @@ const JBD2_FLAG_ESCAPE: u32 = 1;
 const JBD2_FLAG_SAME_UUID: u32 = 2;
 const JBD2_FLAG_DELETED: u32 = 4;
 const JBD2_FLAG_LAST_TAG: u32 = 8;
+pub(super) const JOURNAL_FLAG_ESCAPE: u32 = JBD2_FLAG_ESCAPE;
+pub(super) const JOURNAL_FLAG_DELETED: u32 = JBD2_FLAG_DELETED;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct JournalSuperBlock {
