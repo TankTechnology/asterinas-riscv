@@ -64,8 +64,9 @@ impl FsType for Ext2Type {
 }
 
 /// Ext4 volumes using the ext2 block and inode layout are opened through the
-/// same implementation while journal replay is being integrated. Writable
-/// mounts must explicitly request `noload`.
+/// same compatibility implementation. Dirty internal journals are replayed
+/// before a writable mount is exposed; callers can explicitly request
+/// `noload` for diagnostic read-only-style inspection.
 pub(super) struct Ext4Type {
     cache: FsCache<DeviceId>,
 }
