@@ -262,6 +262,7 @@ impl Ext2 {
             return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal superblock");
         }
         let journal = JournalSuperBlock::parse(&block)?;
+        self.validate_journal_uuid(journal)?;
         if !journal.needs_recovery() || noload {
             return Ok(());
         }
@@ -392,6 +393,17 @@ impl Ext2 {
         Ok(block)
     }
 
+    fn validate_journal_uuid(&self, journal: JournalSuperBlock) -> Result<()> {
+        let expected = self.super_block.read().journal_uuid();
+        if expected != [0; 16] && expected != journal.uuid {
+            return_errno_with_message!(
+                Errno::EUCLEAN,
+                "ext4 journal UUID does not match superblock"
+            );
+        }
+        Ok(())
+    }
+
     /// Writes one encoded JBD2 transaction and publishes it as recoverable.
     ///
     /// The journal blocks are durable before the superblock's `start` field is
@@ -411,6 +423,7 @@ impl Ext2 {
         }
         let inode = self.read_inode(journal_ino)?;
         let journal = JournalSuperBlock::parse(&self.read_journal_block(&inode, 0)?)?;
+        self.validate_journal_uuid(journal)?;
         if journal.needs_recovery() {
             return_errno_with_message!(Errno::EBUSY, "ext4 journal has an outstanding transaction");
         }
@@ -431,6 +444,7 @@ impl Ext2 {
         let inode = self.read_inode(journal_inode)?;
         let superblock = self.read_journal_block(&inode, 0)?;
         let journal = JournalSuperBlock::parse(&superblock)?;
+        self.validate_journal_uuid(journal)?;
         if journal.needs_recovery() {
             return_errno_with_message!(Errno::EBUSY, "ext4 journal has an outstanding transaction");
         }
