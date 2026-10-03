@@ -28,9 +28,7 @@ use super::{
     block_group::{BlockGroup, RawBlockGroup},
     inode::{FilePerm, Inode, InodeDesc, RawInode},
     prelude::*,
-    super_block::{
-        FeatureCompatSet, FsState, RawSuperBlock, SuperBlock, SUPER_BLOCK_OFFSET,
-    },
+    super_block::{FeatureInCompatSet, FsState, RawSuperBlock, SuperBlock, SUPER_BLOCK_OFFSET},
 };
 use crate::{
     fs::{
@@ -147,8 +145,8 @@ impl Ext2 {
         if allow_journal
             && !flags.contains(FsFlags::RDONLY)
             && super_block
-                .feature_compat()
-                .contains(FeatureCompatSet::HAS_JOURNAL)
+                .feature_incompat()
+                .contains(FeatureInCompatSet::RECOVER)
             && !mount_options.noload_journal
         {
             return_errno_with_message!(
