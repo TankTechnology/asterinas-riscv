@@ -48,11 +48,15 @@ impl JournalSuperBlock {
         let max_length = read_be_u32(block, JBD2_MAX_LENGTH_OFFSET);
         let first = read_be_u32(block, JBD2_FIRST_OFFSET);
         let start = read_be_u32(block, JBD2_START_OFFSET);
-        if block_size as usize != BLOCK_SIZE || max_length == 0 || first >= max_length {
+        if block_size as usize != BLOCK_SIZE || max_length <= 1 || first == 0 || first >= max_length
+        {
             return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal geometry");
         }
-        if start >= max_length && start != 0 {
+        if start != 0 && (start < first || start >= max_length) {
             return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal start");
+        }
+        if start != 0 && read_be_u32(block, 8) == 0 {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal sequence");
         }
 
         Ok(Self {
@@ -202,6 +206,15 @@ mod test {
         let mut block = clean_block();
         block[JBD2_BLOCK_SIZE_OFFSET..JBD2_BLOCK_SIZE_OFFSET + 4]
             .copy_from_slice(&1024u32.to_be_bytes());
+        assert!(JournalSuperBlock::parse(&block).is_err());
+    }
+
+    #[ktest]
+    fn rejects_recovery_outside_the_journal_ring() {
+        let mut block = clean_block();
+        block[JBD2_START_OFFSET..JBD2_START_OFFSET + 4].copy_from_slice(&1u32.to_be_bytes());
+        block[JBD2_FIRST_OFFSET..JBD2_FIRST_OFFSET + 4].copy_from_slice(&2u32.to_be_bytes());
+        block[8..12].copy_from_slice(&7u32.to_be_bytes());
         assert!(JournalSuperBlock::parse(&block).is_err());
     }
 
