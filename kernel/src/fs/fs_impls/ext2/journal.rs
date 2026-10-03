@@ -16,7 +16,9 @@ pub(super) const JBD2_START_OFFSET: usize = 28;
 const JBD2_FEATURE_COMPAT_OFFSET: usize = 36;
 const JBD2_FEATURE_INCOMPAT_OFFSET: usize = 40;
 const JBD2_FEATURE_RO_COMPAT_OFFSET: usize = 44;
-const JBD2_SUPERBLOCK_MIN_SIZE: usize = JBD2_FEATURE_RO_COMPAT_OFFSET + 4;
+const JBD2_UUID_OFFSET: usize = 48;
+const JBD2_UUID_SIZE: usize = 16;
+const JBD2_SUPERBLOCK_MIN_SIZE: usize = JBD2_UUID_OFFSET + JBD2_UUID_SIZE;
 const JBD2_DESCRIPTOR_BLOCK: u32 = 1;
 const JBD2_COMMIT_BLOCK: u32 = 2;
 const JBD2_REVOKE_BLOCK: u32 = 5;
@@ -31,6 +33,7 @@ pub(super) const JOURNAL_FLAG_DELETED: u32 = JBD2_FLAG_DELETED;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct JournalSuperBlock {
+    pub(super) uuid: [u8; JBD2_UUID_SIZE],
     pub(super) sequence: u32,
     pub(super) block_size: u32,
     pub(super) max_length: u32,
@@ -75,7 +78,10 @@ impl JournalSuperBlock {
             return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal sequence");
         }
 
+        let mut uuid = [0; JBD2_UUID_SIZE];
+        uuid.copy_from_slice(&block[JBD2_UUID_OFFSET..JBD2_UUID_OFFSET + JBD2_UUID_SIZE]);
         Ok(Self {
+            uuid,
             sequence,
             block_size,
             max_length,
@@ -110,6 +116,7 @@ pub(super) struct JournalTag {
 #[derive(Debug)]
 pub(super) struct JournalTransaction {
     sequence: u32,
+    uuid: [u8; JBD2_UUID_SIZE],
     blocks: Vec<(u32, Vec<u8>)>,
 }
 
@@ -164,12 +171,13 @@ impl JournalRing {
 }
 
 impl JournalTransaction {
-    pub(super) fn new(sequence: u32) -> Result<Self> {
+    pub(super) fn new(sequence: u32, uuid: [u8; JBD2_UUID_SIZE]) -> Result<Self> {
         if sequence == 0 {
             return_errno_with_message!(Errno::EINVAL, "zero ext4 journal sequence");
         }
         Ok(Self {
             sequence,
+            uuid,
             blocks: Vec::new(),
         })
     }
@@ -196,7 +204,8 @@ impl JournalTransaction {
         if self.blocks.is_empty() {
             return_errno_with_message!(Errno::EINVAL, "empty ext4 journal transaction");
         }
-        let tag_capacity = (BLOCK_SIZE - JBD2_SUPERBLOCK_HEADER_SIZE) / JBD2_TAG_SIZE;
+        let tag_capacity =
+            (BLOCK_SIZE - JBD2_SUPERBLOCK_HEADER_SIZE - JBD2_UUID_SIZE) / JBD2_TAG_SIZE;
         if self.blocks.len() > tag_capacity {
             return_errno_with_message!(Errno::E2BIG, "ext4 journal transaction is too large");
         }
@@ -204,18 +213,26 @@ impl JournalTransaction {
         put_be_u32(&mut descriptor, 0, JBD2_MAGIC);
         put_be_u32(&mut descriptor, 4, JBD2_DESCRIPTOR_BLOCK);
         put_be_u32(&mut descriptor, 8, self.sequence);
+        let mut offset = JBD2_SUPERBLOCK_HEADER_SIZE;
         for (index, (block_number, payload)) in self.blocks.iter().enumerate() {
-            let offset = JBD2_SUPERBLOCK_HEADER_SIZE + index * JBD2_TAG_SIZE;
             let mut flags = if index + 1 == self.blocks.len() {
                 JBD2_FLAG_LAST_TAG
             } else {
                 0
             };
+            if index != 0 {
+                flags |= JBD2_FLAG_SAME_UUID;
+            }
             if read_be_u32(payload, 0) == JBD2_MAGIC {
                 flags |= JBD2_FLAG_ESCAPE;
             }
             put_be_u32(&mut descriptor, offset, *block_number);
             put_be_u32(&mut descriptor, offset + 4, flags);
+            offset += JBD2_TAG_SIZE;
+            if index == 0 {
+                descriptor[offset..offset + JBD2_UUID_SIZE].copy_from_slice(&self.uuid);
+                offset += JBD2_UUID_SIZE;
+            }
         }
 
         let mut encoded = vec![descriptor];
@@ -274,6 +291,12 @@ pub(super) fn parse_descriptor(block: &[u8], sequence: u32) -> Result<Vec<Journa
         }
         tags.push(tag);
         offset += JBD2_TAG_SIZE;
+        if tag.flags & JBD2_FLAG_SAME_UUID == 0 {
+            if offset + JBD2_UUID_SIZE > block.len() {
+                return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal tag UUID");
+            }
+            offset += JBD2_UUID_SIZE;
+        }
         if tag.flags & JBD2_FLAG_LAST_TAG != 0 {
             break;
         }
@@ -394,7 +417,7 @@ mod test {
 
     #[ktest]
     fn encodes_transaction_and_escapes_payload_magic() {
-        let mut transaction = JournalTransaction::new(7).unwrap();
+        let mut transaction = JournalTransaction::new(7, [0x42; 16]).unwrap();
         let mut payload = vec![0; BLOCK_SIZE];
         payload[..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
         transaction.add_block(31, &payload).unwrap();
@@ -407,8 +430,10 @@ mod test {
         assert_eq!(read_be_u32(&blocks[0], 8), 7);
         assert_eq!(read_be_u32(&blocks[0], 12), 31);
         assert_eq!(read_be_u32(&blocks[0], 16), JBD2_FLAG_ESCAPE);
-        assert_eq!(read_be_u32(&blocks[0], 20), 32);
-        assert_eq!(read_be_u32(&blocks[0], 24), JBD2_FLAG_LAST_TAG);
+        assert_eq!(&blocks[0][20..36], &[0x42; 16]);
+        assert_eq!(read_be_u32(&blocks[0], 36), 32);
+        assert_eq!(read_be_u32(&blocks[0], 40), JBD2_FLAG_LAST_TAG | JBD2_FLAG_SAME_UUID);
+        assert_eq!(parse_descriptor(&blocks[0], 7).unwrap().len(), 2);
         assert_eq!(&blocks[1][..4], &[0; 4]);
         assert_eq!(blocks[2], vec![0x5a; BLOCK_SIZE]);
         assert_eq!(read_be_u32(&blocks[3], 4), JBD2_COMMIT_BLOCK);
@@ -416,12 +441,13 @@ mod test {
 
     #[ktest]
     fn rejects_duplicate_or_oversized_transaction_targets() {
-        let mut transaction = JournalTransaction::new(1).unwrap();
+        let mut transaction = JournalTransaction::new(1, [0; 16]).unwrap();
         transaction.add_block(4, &[0; BLOCK_SIZE]).unwrap();
         assert!(transaction.add_block(4, &[0; BLOCK_SIZE]).is_err());
 
-        let mut transaction = JournalTransaction::new(2).unwrap();
-        for block in 1..=64 {
+        let mut transaction = JournalTransaction::new(2, [0; 16]).unwrap();
+        let capacity = (BLOCK_SIZE - JBD2_SUPERBLOCK_HEADER_SIZE - JBD2_UUID_SIZE) / JBD2_TAG_SIZE;
+        for block in 1..=capacity as u32 + 1 {
             transaction.add_block(block, &[0; BLOCK_SIZE]).unwrap();
         }
         assert!(transaction.encode().is_err());
@@ -454,8 +480,9 @@ mod test {
         let mut block = header(JBD2_DESCRIPTOR_BLOCK);
         block[12..16].copy_from_slice(&31u32.to_be_bytes());
         block[16..20].copy_from_slice(&0u32.to_be_bytes());
-        block[20..24].copy_from_slice(&32u32.to_be_bytes());
-        block[24..28].copy_from_slice(&JBD2_FLAG_LAST_TAG.to_be_bytes());
+        block[20..36].fill(0x42);
+        block[36..40].copy_from_slice(&32u32.to_be_bytes());
+        block[40..44].copy_from_slice(&(JBD2_FLAG_LAST_TAG | JBD2_FLAG_SAME_UUID).to_be_bytes());
         assert_eq!(
             parse_descriptor(&block, 7).unwrap(),
             vec![
@@ -465,10 +492,19 @@ mod test {
                 },
                 JournalTag {
                     block_number: 32,
-                    flags: JBD2_FLAG_LAST_TAG,
+                    flags: JBD2_FLAG_LAST_TAG | JBD2_FLAG_SAME_UUID,
                 },
             ]
         );
+    }
+
+    #[ktest]
+    fn rejects_truncated_descriptor_uuid() {
+        let mut block = header(JBD2_DESCRIPTOR_BLOCK);
+        block[12..16].copy_from_slice(&31u32.to_be_bytes());
+        block[16..20].copy_from_slice(&JBD2_FLAG_LAST_TAG.to_be_bytes());
+        assert!(parse_descriptor(&block[..35], 7).is_err());
+        assert_eq!(parse_descriptor(&block[..36], 7).unwrap().len(), 1);
     }
 
     #[ktest]
