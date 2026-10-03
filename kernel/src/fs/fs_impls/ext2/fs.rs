@@ -694,8 +694,37 @@ impl Ext2 {
         let group = self
             .find_group(ino)
             .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
+        group.write_back_inode_desc(ino, raw_inode)?;
 
-        group.write_back_inode_desc(ino, raw_inode)
+        if !self
+            .super_block
+            .read()
+            .feature_compat()
+            .contains(FeatureCompatSet::HAS_JOURNAL)
+        {
+            return Ok(());
+        }
+
+        let inode_idx = ((ino - 1) % self.super_block.read().nr_inodes_per_group()) as usize;
+        let inode_offset = inode_idx
+            .checked_mul(group.inode_size())
+            .ok_or_else(|| Error::with_message(Errno::EIO, "inode table offset overflow"))?;
+        let block_offset = inode_offset / BLOCK_SIZE;
+        let in_block_offset = inode_offset % BLOCK_SIZE;
+        if in_block_offset + size_of::<RawInode>() > BLOCK_SIZE {
+            return_errno_with_message!(Errno::EUCLEAN, "inode crosses filesystem block boundary");
+        }
+        let block_bid = group
+            .inode_table_bid()
+            .checked_add(block_offset as u32)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "inode table block overflow"))?;
+        let mut block = vec![0u8; BLOCK_SIZE];
+        self.block_device
+            .read_bytes(Bid::new(block_bid as u64).to_offset(), &mut block)
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to read inode table block"))?;
+        block[in_block_offset..in_block_offset + size_of::<RawInode>()]
+            .copy_from_slice(raw_inode.as_bytes());
+        self.write_metadata_block(block_bid, &block)
     }
 
     /// Allocates up to `count` contiguous blocks.

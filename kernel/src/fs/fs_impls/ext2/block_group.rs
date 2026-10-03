@@ -518,6 +518,14 @@ impl BlockGroup {
         Ok(())
     }
 
+    pub(super) fn inode_table_bid(&self) -> Ext2Bid {
+        self.metadata.read().desc.inode_table_bid
+    }
+
+    pub(super) fn inode_size(&self) -> usize {
+        self.inode_size
+    }
+
     /// Writes dirty bitmaps and stages the group descriptor under a single lock.
     ///
     /// Dirty bitmaps are written to disk here. If the group descriptor is dirty,
