@@ -3,6 +3,7 @@
 //! Physical-block lifecycle management for a single ext2 inode.
 
 mod block_ptr_tree;
+mod extent;
 mod indirect_block_manager;
 
 use core::sync::atomic::{AtomicUsize, Ordering};

@@ -12,9 +12,10 @@
 //! The Second Extended File System (ext2) is a classic Linux filesystem
 //! introduced in 1993 as a replacement for the original ext filesystem.
 //! It was the default Linux filesystem throughout the 1990s and remains
-//! the on-disk foundation for ext3 and ext4. This implementation covers
-//! the base ext2 feature set; it does not include ext3/ext4 extensions
-//! such as journaling, extents, or inline data.
+//! the on-disk foundation for ext3 and ext4. The ext2 path covers the base
+//! feature set, while the registered ext4 compatibility path additionally
+//! handles journal replay and read-side extent mappings. Extent allocation,
+//! inline data, and journaled write transactions remain separate work.
 //!
 //! # On-disk layout
 //!
