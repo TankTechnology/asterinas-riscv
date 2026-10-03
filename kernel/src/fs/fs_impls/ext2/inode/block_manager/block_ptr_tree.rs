@@ -196,8 +196,8 @@ impl BlockPtrTree {
         fs: &Ext2,
         new_size: usize,
     ) -> Result<()> {
-        if self.extent_tree.is_some() {
-            return_errno_with_message!(Errno::EOPNOTSUPP, "ext4 extent truncation unsupported");
+        if let Some(extent_tree) = self.extent_tree.as_mut() {
+            return extent_tree.truncate_to_byte_len(&mut self.raw_block_ptrs, fs, new_size);
         }
         // First logical block to free = ceil(new_size / block_size).
         let iblock = Iblock::try_from(new_size.div_ceil(BLOCK_SIZE))
