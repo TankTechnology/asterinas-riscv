@@ -2159,10 +2159,10 @@ create_and_verify_image() {
     truncate -s "$ROOT_SIZE_BYTES" "$root_image"
     local -a mkfs_options=(-q -F -t "$ROOT_FILESYSTEM_TYPE" -b "$ROOT_BLOCK_SIZE_BYTES")
     if [[ "$ROOT_FILESYSTEM_TYPE" == ext4 ]]; then
-        # Keep the ext2 inode/block mapping while adding a real journal. The
-        # kernel ext4 compatibility path does not yet understand extents or
-        # metadata checksums.
-        mkfs_options+=(-O '^extent,^metadata_csum,^64bit,^flex_bg,^orphan_file,^huge_file,^dir_nlink,^extra_isize')
+        # Exercise the ext4 extent mapping while keeping features whose
+        # checksums, high block fields, or orphan-file replay are not yet
+        # implemented out of this compatibility profile.
+        mkfs_options+=(-O '^metadata_csum,^64bit,^flex_bg,^orphan_file,^huge_file,^dir_nlink,^extra_isize')
     fi
     mke2fs "${mkfs_options[@]}" \
         -L "$ROOT_LABEL" -U "$ROOT_UUID" -d "$stage" "$root_image"

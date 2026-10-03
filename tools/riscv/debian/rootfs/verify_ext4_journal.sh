@@ -37,7 +37,7 @@ features="$(dumpe2fs -h "$image" 2>/dev/null | sed -n 's/^Filesystem features:[[
     printf 'ext4 journal feature is missing\n' >&2
     exit 1
 }
-for forbidden in extent metadata_csum 64bit flex_bg orphan_file; do
+for forbidden in metadata_csum 64bit flex_bg orphan_file; do
     [[ "$features" != *"$forbidden"* ]] || {
         printf 'unsupported ext4 feature is present: %s\n' "$forbidden" >&2
         exit 1
