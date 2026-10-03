@@ -5,6 +5,24 @@ boots it twice on current Asterinas. The first boot writes and syncs a random
 nonce; the second boot must read the same nonce from the same writable root
 disk. The runtime is headless, has four harts, and uses `-nic none`.
 
+## Ext4 journal migration
+
+The current signed profiles remain ext2 while the ext4 journal replay path is
+being integrated. To produce a journaled compatibility image without changing
+the frozen source image, run:
+
+```bash
+tools/riscv/debian/rootfs/convert_ext2_to_ext4_journal.sh \
+  --input target/debian-riscv/rootfs/debian-root.ext2 \
+  --output target/debian-riscv/rootfs/debian-root.ext4
+```
+
+The converter copies the image, creates an ext3/ext4 journal while retaining
+the ext2 block and inode layout, and runs read-only `e2fsck` before and after
+the change. Asterinas currently requires `-o noload` for writable journaled
+mounts because journal replay and transaction writeback are still under
+development.
+
 Run all commands from the repository root. Build and use the dedicated rootfs
 image described in `tools/docker/riscv-rootfs/README.md`; its default
 explicit-QEMU/proot path does not modify host binfmt state.
