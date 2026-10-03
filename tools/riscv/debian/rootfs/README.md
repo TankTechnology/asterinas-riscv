@@ -23,9 +23,9 @@ the change. Clean journaled mounts are accepted by Asterinas, and the current
 JBD2 path can replay basic descriptor/data/commit/revoke transactions. Volumes
 using unsupported journal checksum or 64-bit features remain outside this
 compatibility profile. Extent inodes now have validated read-side mapping,
-allocation into existing indexed leaves, and root-index leaf creation when
-there is an unused index slot. Limited truncate support is available for
-non-indexed roots, while full tree splitting/compaction remains rejected; the
+allocation into existing indexed leaves, root-index leaf creation when there
+is an unused index slot, and depth-one indexed truncation with empty-leaf
+compaction. Full tree splitting/compaction remains rejected; the
 published profile therefore continues to disable `extent` until its full
 tree-splitting path is journaled.
 
