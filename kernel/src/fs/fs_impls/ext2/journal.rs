@@ -101,6 +101,86 @@ pub(super) struct JournalTag {
     pub(super) flags: u32,
 }
 
+/// A single metadata transaction in the unchecksummed JBD2 v2 format.
+///
+/// The encoder deliberately keeps the transaction in memory and emits one
+/// descriptor block followed by one payload block per target and a commit
+/// block. Ring placement and durable writes belong to the filesystem layer,
+/// which can then order journal writes before home-block writes.
+#[derive(Debug)]
+pub(super) struct JournalTransaction {
+    sequence: u32,
+    blocks: Vec<(u32, Vec<u8>)>,
+}
+
+impl JournalTransaction {
+    pub(super) fn new(sequence: u32) -> Result<Self> {
+        if sequence == 0 {
+            return_errno_with_message!(Errno::EINVAL, "zero ext4 journal sequence");
+        }
+        Ok(Self {
+            sequence,
+            blocks: Vec::new(),
+        })
+    }
+
+    pub(super) fn add_block(&mut self, block_number: u32, payload: &[u8]) -> Result<()> {
+        if block_number == 0 {
+            return_errno_with_message!(Errno::EINVAL, "zero ext4 journal target block");
+        }
+        if payload.len() != BLOCK_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "invalid ext4 journal payload size");
+        }
+        if self.blocks.iter().any(|(block, _)| *block == block_number) {
+            return_errno_with_message!(Errno::EEXIST, "duplicate ext4 journal target block");
+        }
+        self.blocks.push((block_number, payload.to_vec()));
+        Ok(())
+    }
+
+    pub(super) fn encode(self) -> Result<Vec<Vec<u8>>> {
+        if self.blocks.is_empty() {
+            return_errno_with_message!(Errno::EINVAL, "empty ext4 journal transaction");
+        }
+        let tag_capacity = (BLOCK_SIZE - JBD2_SUPERBLOCK_HEADER_SIZE) / JBD2_TAG_SIZE;
+        if self.blocks.len() > tag_capacity {
+            return_errno_with_message!(Errno::E2BIG, "ext4 journal transaction is too large");
+        }
+        let mut descriptor = vec![0; BLOCK_SIZE];
+        put_be_u32(&mut descriptor, 0, JBD2_MAGIC);
+        put_be_u32(&mut descriptor, 4, JBD2_DESCRIPTOR_BLOCK);
+        put_be_u32(&mut descriptor, 8, self.sequence);
+        for (index, (block_number, payload)) in self.blocks.iter().enumerate() {
+            let offset = JBD2_SUPERBLOCK_HEADER_SIZE + index * JBD2_TAG_SIZE;
+            let mut flags = if index + 1 == self.blocks.len() {
+                JBD2_FLAG_LAST_TAG
+            } else {
+                0
+            };
+            if read_be_u32(payload, 0) == JBD2_MAGIC {
+                flags |= JBD2_FLAG_ESCAPE;
+            }
+            put_be_u32(&mut descriptor, offset, *block_number);
+            put_be_u32(&mut descriptor, offset + 4, flags);
+        }
+
+        let mut encoded = vec![descriptor];
+        for (_, payload) in self.blocks {
+            let mut payload = payload;
+            if read_be_u32(&payload, 0) == JBD2_MAGIC {
+                payload[..4].fill(0);
+            }
+            encoded.push(payload);
+        }
+        let mut commit = vec![0; BLOCK_SIZE];
+        put_be_u32(&mut commit, 0, JBD2_MAGIC);
+        put_be_u32(&mut commit, 4, JBD2_COMMIT_BLOCK);
+        put_be_u32(&mut commit, 8, self.sequence);
+        encoded.push(commit);
+        Ok(encoded)
+    }
+}
+
 pub(super) fn parse_header(block: &[u8]) -> Result<JournalHeader> {
     if block.len() < JBD2_SUPERBLOCK_HEADER_SIZE {
         return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal block");
@@ -187,6 +267,10 @@ fn read_be_u32(block: &[u8], offset: usize) -> u32 {
     ])
 }
 
+fn put_be_u32(block: &mut [u8], offset: usize, value: u32) {
+    block[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+}
+
 #[cfg(ktest)]
 mod test {
     use ostd::prelude::*;
@@ -252,6 +336,41 @@ mod test {
         block[JBD2_FIRST_OFFSET..JBD2_FIRST_OFFSET + 4].copy_from_slice(&2u32.to_be_bytes());
         block[JBD2_SEQUENCE_OFFSET..JBD2_SEQUENCE_OFFSET + 4].copy_from_slice(&7u32.to_be_bytes());
         assert!(JournalSuperBlock::parse(&block).is_err());
+    }
+
+    #[ktest]
+    fn encodes_transaction_and_escapes_payload_magic() {
+        let mut transaction = JournalTransaction::new(7).unwrap();
+        let mut payload = vec![0; BLOCK_SIZE];
+        payload[..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+        transaction.add_block(31, &payload).unwrap();
+        transaction.add_block(32, &[0x5a; BLOCK_SIZE]).unwrap();
+
+        let blocks = transaction.encode().unwrap();
+        assert_eq!(blocks.len(), 4);
+        assert_eq!(read_be_u32(&blocks[0], 0), JBD2_MAGIC);
+        assert_eq!(read_be_u32(&blocks[0], 4), JBD2_DESCRIPTOR_BLOCK);
+        assert_eq!(read_be_u32(&blocks[0], 8), 7);
+        assert_eq!(read_be_u32(&blocks[0], 12), 31);
+        assert_eq!(read_be_u32(&blocks[0], 16), JBD2_FLAG_ESCAPE);
+        assert_eq!(read_be_u32(&blocks[0], 20), 32);
+        assert_eq!(read_be_u32(&blocks[0], 24), JBD2_FLAG_LAST_TAG);
+        assert_eq!(&blocks[1][..4], &[0; 4]);
+        assert_eq!(blocks[2], vec![0x5a; BLOCK_SIZE]);
+        assert_eq!(read_be_u32(&blocks[3], 4), JBD2_COMMIT_BLOCK);
+    }
+
+    #[ktest]
+    fn rejects_duplicate_or_oversized_transaction_targets() {
+        let mut transaction = JournalTransaction::new(1).unwrap();
+        transaction.add_block(4, &[0; BLOCK_SIZE]).unwrap();
+        assert!(transaction.add_block(4, &[0; BLOCK_SIZE]).is_err());
+
+        let mut transaction = JournalTransaction::new(2).unwrap();
+        for block in 1..=64 {
+            transaction.add_block(block, &[0; BLOCK_SIZE]).unwrap();
+        }
+        assert!(transaction.encode().is_err());
     }
 
     fn header(block_type: u32) -> [u8; BLOCK_SIZE] {
