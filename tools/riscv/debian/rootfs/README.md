@@ -23,8 +23,9 @@ the change. Clean journaled mounts are accepted by Asterinas, and the current
 JBD2 path can replay basic descriptor/data/commit/revoke transactions. Volumes
 using unsupported journal checksum or 64-bit features remain outside this
 compatibility profile. Extent inodes now have validated read-side mapping
-support, but extent allocation/truncate is still rejected; the published
-profile therefore continues to disable `extent`.
+support, while indexed-tree allocation and truncate remain rejected; the
+published profile therefore continues to disable `extent` until its full
+tree-splitting path is journaled.
 
 The isolated builder profile `systemd-ext4-m3` creates this same ext4 feature
 subset directly and records `filesystem.type=ext4` in its schema-9 manifest.
