@@ -7,8 +7,8 @@ disk. The runtime is headless, has four harts, and uses `-nic none`.
 
 ## Ext4 journal migration
 
-The established signed profiles remain ext2 while the ext4 journal replay path
-is being integrated. To produce a journaled compatibility image without changing
+The established signed profiles remain ext2 while the ext4 profile is being
+validated. To produce a journaled compatibility image without changing
 the frozen source image, run:
 
 ```bash

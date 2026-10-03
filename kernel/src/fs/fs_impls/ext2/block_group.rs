@@ -166,6 +166,44 @@ impl BlockGroup {
         self.group_idx
     }
 
+    /// Reloads metadata caches after an on-disk journal replay.
+    pub(super) fn refresh_after_recovery(&self, sb: &SuperBlock) -> Result<()> {
+        let descriptor_offset = Bid::new(sb.group_descriptors_bid(0) as u64).to_offset()
+            + self.group_idx * size_of::<RawBlockGroup>();
+        let raw_group = self
+            .block_device
+            .read_val::<RawBlockGroup>(descriptor_offset)?;
+        let group_desc = BlockGroupDesc::from(raw_group);
+        let block_bitmap = Self::load_block_bitmap(
+            self.block_device.as_ref(),
+            self.first_block,
+            self.last_block,
+            &group_desc,
+        )?;
+        let nr_inodes_in_group = self.nr_inodes_in_group;
+        let inode_bitmap =
+            Self::load_inode_bitmap(self.block_device.as_ref(), nr_inodes_in_group, &group_desc)?;
+        group_desc
+            .validate_free_counts(self.last_block - self.first_block + 1, nr_inodes_in_group)?;
+        group_desc.validate_metadata_blocks(
+            &block_bitmap,
+            self.first_block,
+            self.last_block,
+            sb.nr_inode_table_blocks_per_group(),
+        )?;
+
+        {
+            let mut metadata = self.metadata.write();
+            metadata.desc = Dirty::new(group_desc);
+            metadata.block_bitmap = Dirty::new(block_bitmap);
+            metadata.inode_bitmap = Dirty::new(inode_bitmap);
+        }
+        self.inode_table_cache
+            .invalidate_range(0..self.nr_inodes_per_group as usize * self.inode_size)?;
+        self.inode_cache.write().clear();
+        Ok(())
+    }
+
     /// Returns whether an inode is marked allocated in this group.
     pub(super) fn is_inode_allocated(&self, ino: Ext2Ino) -> bool {
         let inode_idx = self.inode_idx_in_group(ino);
@@ -621,7 +659,7 @@ mod test {
 
     use super::*;
     use crate::{
-        fs::fs_impls::ext2::test_utils::{Ext2FixtureBuilder, assert_errno},
+        fs::fs_impls::ext2::test_utils::{assert_errno, Ext2FixtureBuilder},
         time::clocks,
     };
 
