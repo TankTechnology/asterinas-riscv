@@ -64,15 +64,16 @@ impl ExtentTree {
         let header = ExtentHeader::from_words(&self.root)?;
         validate_entries(&self.root, header, fs.super_block().total_blocks())?;
         if header.depth != 0 {
-            if header.depth != 1 {
-                let existing = self.lookup_block_range(iblock, max_blocks)?;
-                if existing.is_empty() {
-                    return_errno_with_message!(
-                        Errno::EOPNOTSUPP,
-                        "multi-level ext4 extent allocation unsupported"
-                    );
+            if header.depth > 1 {
+                if let Some(result) = self.resolve_existing_indexed_path(
+                    raw, fs, &self.root, header, iblock, max_blocks,
+                )? {
+                    return Ok(result);
                 }
-                return Ok(ResolvedBlockRange::Existing(existing));
+                return_errno_with_message!(
+                    Errno::EOPNOTSUPP,
+                    "full multi-level ext4 extent leaf requires tree split"
+                );
             }
             let (child_index, child_bid, mut child) = self.indexed_leaf(iblock, header)?;
             let child_header = ExtentHeader::from_words(&child)?;
@@ -98,7 +99,7 @@ impl ExtentTree {
                 self.allocate_extent_data(
                     &extents,
                     child_header.max_entries,
-                    raw.block_ptrs[0],
+                    fs.super_block().first_data_block(),
                     fs,
                     iblock,
                     max_blocks,
@@ -185,7 +186,7 @@ impl ExtentTree {
             .filter(|extent| extent.logical < iblock)
             .next_back()
             .and_then(|extent| extent.physical.checked_add(u32::from(extent.length)))
-            .unwrap_or(raw.block_ptrs[0]);
+            .unwrap_or(fs.super_block().first_data_block());
         let allocated = fs.alloc_blocks(count, goal)?;
         zero_blocks(fs, &allocated)?;
         let new_extent = Extent {
@@ -466,6 +467,101 @@ impl ExtentTree {
         Ok((index, child, self.read_block(child)?))
     }
 
+    /// Resolves an existing path in a multi-level extent tree and allocates
+    /// into a leaf with spare entries. No index insertion or tree split is
+    /// needed because the path and all index blocks remain unchanged.
+    fn resolve_existing_indexed_path(
+        &self,
+        raw: &mut RawBlockPtrs,
+        fs: &Ext2,
+        words: &[u32],
+        header: ExtentHeader,
+        iblock: Iblock,
+        max_blocks: u32,
+    ) -> Result<Option<ResolvedBlockRange>> {
+        let (_, child_bid, mut child) = self.indexed_child(words, header, iblock)?;
+        let child_header = ExtentHeader::from_words(&child)?;
+        validate_entries(&child, child_header, fs.super_block().total_blocks())?;
+        if child_header.depth != 0 {
+            return self.resolve_existing_indexed_path(
+                raw,
+                fs,
+                &child,
+                child_header,
+                iblock,
+                max_blocks,
+            );
+        }
+
+        let mut extents = self.node_extents(&child, child_header.entries)?;
+        if let Some(existing) =
+            initialize_unwritten_extent(&mut extents, iblock, max_blocks, child_header.max_entries)?
+        {
+            write_extent_words(&mut child, &extents)?;
+            self.write_extent_block(fs, child_bid, &child)?;
+            return Ok(Some(ResolvedBlockRange::Existing(existing)));
+        }
+        if let Some(existing) = find_extent_range(&extents, iblock, max_blocks)? {
+            return Ok(Some(ResolvedBlockRange::Existing(existing)));
+        }
+        if extents.len() >= child_header.max_entries {
+            return Ok(None);
+        }
+        let allocated = self.allocate_extent_data(
+            &extents,
+            child_header.max_entries,
+            fs.super_block().first_data_block(),
+            fs,
+            iblock,
+            max_blocks,
+        )?;
+        extents.push(Extent {
+            logical: iblock,
+            physical: allocated.start,
+            length: u16::try_from(allocated.end - allocated.start)
+                .map_err(|_| Error::with_message(Errno::EIO, "ext4 extent length overflow"))?,
+            unwritten: false,
+        });
+        extents.sort_by_key(|extent| extent.logical);
+        if let Err(err) = write_extent_words(&mut child, &extents)
+            .and_then(|_| self.write_extent_block(fs, child_bid, &child))
+        {
+            let _ = fs.free_blocks(allocated.start, allocated.end - allocated.start);
+            return Err(err);
+        }
+        raw.sector_count = raw
+            .sector_count
+            .checked_add((allocated.end - allocated.start) * EXTENT_SECTORS_PER_BLOCK)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 inode block count overflow"))?;
+        Ok(Some(ResolvedBlockRange::NewlyAllocated(allocated)))
+    }
+
+    fn indexed_child(
+        &self,
+        words: &[u32],
+        header: ExtentHeader,
+        iblock: Iblock,
+    ) -> Result<(usize, Ext2Bid, Vec<u32>)> {
+        let mut selected = None;
+        for index in 0..header.entries {
+            let offset = EXTENT_HEADER_SIZE + index * EXTENT_ENTRY_SIZE;
+            let logical = read_word(words, offset)?;
+            if logical > iblock {
+                break;
+            }
+            let child = (u64::from(read_half(words, offset + 8)?) << 32)
+                | u64::from(read_word(words, offset + 4)?);
+            selected = Some((index, child));
+        }
+        let (index, child) = selected.ok_or_else(|| {
+            Error::with_message(Errno::EOPNOTSUPP, "ext4 extent index has no matching leaf")
+        })?;
+        let child = Ext2Bid::try_from(child).map_err(|_| {
+            Error::with_message(Errno::EOPNOTSUPP, "ext4 extent block is too large")
+        })?;
+        Ok((index, child, self.read_block(child)?))
+    }
+
     /// Adds a fresh leaf when the selected depth-one leaf is full. This is the
     /// non-splitting case: the inode root must still have an unused index slot.
     fn allocate_indexed_leaf(
@@ -510,7 +606,7 @@ impl ExtentTree {
         let goal = extents
             .last()
             .and_then(|extent| extent.physical.checked_add(u32::from(extent.length)))
-            .unwrap_or(raw.block_ptrs[0]);
+            .unwrap_or(fs.super_block().first_data_block());
         let leaf = fs.alloc_blocks(1, goal)?;
         let data = match fs.alloc_blocks(count, leaf.end) {
             Ok(data) => data,
