@@ -37,8 +37,9 @@ tools/riscv/debian/rootfs/verify_ext4_journal.sh \
 ```
 
 Pass Stage1 `--root-fs=ext4 --root-init=systemd` when booting that profile;
-existing profiles retain their ext2 handoff. `-o noload` remains available for
-explicit diagnostics when recovery metadata is malformed or unsupported.
+existing profiles retain their ext2 handoff. The normal Stage1 ext4 handoff
+allows journal replay; `-o noload` remains available for explicit diagnostic
+mounts when recovery metadata is malformed or unsupported.
 
 Run all commands from the repository root. Build and use the dedicated rootfs
 image described in `tools/docker/riscv-rootfs/README.md`; its default

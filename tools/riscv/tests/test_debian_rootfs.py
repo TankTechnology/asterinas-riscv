@@ -1726,6 +1726,18 @@ int main(void)
         self.assertNotIn("O_WRONLY", mount_run)
         self.assertNotIn("/newroot/usr", mount_run)
 
+    def test_stage1_ext4_handoff_allows_journal_replay(self) -> None:
+        source = STAGE1_SOURCE.read_text()
+        normalized = " ".join(source.split())
+        self.assertIn(
+            'mount(root_device, "/newroot", "ext4", 0, NULL)',
+            normalized,
+        )
+        self.assertNotIn(
+            'mount(root_device, "/newroot", "ext4", 0, "noload")',
+            normalized,
+        )
+
     def test_physical_gate_imports_its_stage1_carried_dependencies(self) -> None:
         stage_tools = self.directory / "stage-tools"
         stage_tools.mkdir()
