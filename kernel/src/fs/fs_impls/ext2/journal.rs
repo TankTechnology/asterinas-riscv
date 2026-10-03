@@ -188,6 +188,8 @@ fn read_be_u32(block: &[u8], offset: usize) -> u32 {
 
 #[cfg(ktest)]
 mod test {
+    use ostd::prelude::*;
+
     use super::*;
 
     fn clean_block() -> [u8; BLOCK_SIZE] {
