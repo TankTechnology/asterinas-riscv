@@ -273,7 +273,7 @@ impl Ext2 {
         let mut revokes = Vec::new();
         while visited < journal.max_length {
             let descriptor = self.read_journal_block(&journal_inode, position)?;
-            let tags = parse_descriptor(&descriptor, sequence)?;
+            let tags = parse_descriptor(&descriptor, sequence, &journal.uuid)?;
             position = next_journal_block(position, journal.first, journal.max_length);
 
             let mut payloads = Vec::with_capacity(tags.len());
