@@ -159,11 +159,11 @@ impl BlockPtrTree {
         max_blocks: u32,
     ) -> Result<ResolvedBlockRange> {
         if self.extent_tree.is_some() {
-            let existing_range = self.lookup_block_range(iblock, max_blocks)?;
-            if existing_range.is_empty() {
-                return_errno_with_message!(Errno::EOPNOTSUPP, "ext4 extent allocation unsupported");
-            }
-            return Ok(ResolvedBlockRange::Existing(existing_range));
+            return self
+                .extent_tree
+                .as_mut()
+                .expect("extent tree checked above")
+                .resolve_block_range(&mut self.raw_block_ptrs, fs, iblock, max_blocks);
         }
         if max_blocks == 0 {
             return_errno_with_message!(Errno::EINVAL, "zero block allocation requested");
