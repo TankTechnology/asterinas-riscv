@@ -338,7 +338,12 @@ impl Ext2 {
             }
         }
 
-        block[24..28].fill(0);
+        // The clean journal's sequence is the next transaction sequence, not
+        // the sequence that was just replayed.  Advancing it prevents the
+        // first post-recovery write from reusing an already committed ID.
+        block[JBD2_SEQUENCE_OFFSET..JBD2_SEQUENCE_OFFSET + 4]
+            .copy_from_slice(&sequence.to_be_bytes());
+        block[JBD2_START_OFFSET..JBD2_START_OFFSET + 4].fill(0);
         let mut reader = VmReader::from(block.as_slice()).to_fallible();
         journal_inode.write_at(0, &mut reader)?;
         journal_inode.sync_all()?;
