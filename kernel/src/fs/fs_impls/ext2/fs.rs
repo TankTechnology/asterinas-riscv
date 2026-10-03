@@ -23,16 +23,22 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use aster_block::bio::{BioCompleteFn, BioStatus};
 use device_id::DeviceId;
+use ostd::mm::VmWriter;
 
 use super::{
     block_group::{BlockGroup, RawBlockGroup},
     inode::{FilePerm, Inode, InodeDesc, RawInode},
+    journal::JournalSuperBlock,
     prelude::*,
-    super_block::{FeatureInCompatSet, FsState, RawSuperBlock, SuperBlock, SUPER_BLOCK_OFFSET},
+    super_block::{
+        FeatureCompatSet, FeatureInCompatSet, FsState, RawSuperBlock, SuperBlock,
+        SUPER_BLOCK_OFFSET,
+    },
 };
 use crate::{
     fs::{
         ext2::utils,
+        file::StatusFlags,
         vfs::file_system::{AtomicFsFlags, FsEventSubscriberStats, FsFlags},
     },
     process::{credentials::capabilities::CapSet, posix_thread::AsPosixThread, Gid, UserNamespace},
@@ -212,7 +218,30 @@ impl Ext2 {
             self_ref: weak_self.clone(),
         });
 
+        if allow_journal
+            && super_block
+                .feature_compat()
+                .contains(FeatureCompatSet::HAS_JOURNAL)
+        {
+            ext2.validate_journal(mount_options.noload_journal)?;
+        }
+
         Ok(ext2)
+    }
+
+    fn validate_journal(&self, noload: bool) -> Result<()> {
+        let journal_inode = self.read_inode(8)?;
+        let mut block = vec![0; BLOCK_SIZE];
+        let mut writer = VmWriter::from(block.as_mut_slice()).to_fallible();
+        journal_inode.read_at(0, &mut writer, StatusFlags::O_NOATIME)?;
+        let journal = JournalSuperBlock::parse(&block)?;
+        if journal.needs_recovery() && !noload {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "ext4 journal replay is not yet supported; mount with noload"
+            );
+        }
+        Ok(())
     }
 
     /// Returns the block device.
