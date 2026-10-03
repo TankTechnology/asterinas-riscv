@@ -7,8 +7,8 @@ disk. The runtime is headless, has four harts, and uses `-nic none`.
 
 ## Ext4 journal migration
 
-The current signed profiles remain ext2 while the ext4 journal replay path is
-being integrated. To produce a journaled compatibility image without changing
+The established signed profiles remain ext2 while the ext4 journal replay path
+is being integrated. To produce a journaled compatibility image without changing
 the frozen source image, run:
 
 ```bash
@@ -22,6 +22,11 @@ the ext2 block and inode layout, and runs read-only `e2fsck` before and after
 the change. Asterinas currently requires `-o noload` for writable journaled
 mounts because journal replay and transaction writeback are still under
 development.
+
+The isolated builder profile `systemd-ext4-m3` creates this same ext4 feature
+subset directly and records `filesystem.type=ext4` in its schema-9 manifest.
+Pass Stage1 `--root-fs=ext4 --root-init=systemd` when booting that profile;
+existing profiles retain their ext2 handoff.
 
 Run all commands from the repository root. Build and use the dedicated rootfs
 image described in `tools/docker/riscv-rootfs/README.md`; its default

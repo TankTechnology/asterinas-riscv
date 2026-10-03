@@ -71,6 +71,8 @@ static const unsigned char INTERACTIVE_ROOT_LABEL[EXT2_LABEL_LENGTH] = {
 };
 static const unsigned char SYSTEMD_ROOT_LABEL[EXT2_LABEL_LENGTH] =
     "ASTER_DEBIANM2";
+static const unsigned char SYSTEMD_EXT4_ROOT_LABEL[EXT2_LABEL_LENGTH] =
+    "ASTER_DEBIANE4";
 static const unsigned char DESKTOP_ROOT_LABEL[EXT2_LABEL_LENGTH] =
     "ASTER_DEBIANM3";
 static const unsigned char APPLICATION_DESKTOP_ROOT_LABEL[EXT2_LABEL_LENGTH] =
@@ -282,6 +284,7 @@ static int ext2_superblock_matches_mode(
         return ext2_superblock_matches(superblock, INTERACTIVE_ROOT_LABEL);
     }
     return ext2_superblock_matches(superblock, SYSTEMD_ROOT_LABEL) ||
+           ext2_superblock_matches(superblock, SYSTEMD_EXT4_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, DESKTOP_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, APPLICATION_DESKTOP_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, NETWORK_DESKTOP_ROOT_LABEL) ||

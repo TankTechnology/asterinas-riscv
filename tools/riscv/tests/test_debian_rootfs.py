@@ -2549,6 +2549,21 @@ class DebianRootfsBuilderTests(unittest.TestCase):
         )
         self.assertEqual(result.stderr, "")
 
+    def test_prints_exact_systemd_ext4_m3_package_contract(self) -> None:
+        result = _run_builder(
+            "--profile",
+            "systemd-ext4-m3",
+            "--print-packages",
+            cwd=self.directory,
+        )
+
+        profile = get_profile("systemd-ext4-m3")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), list(profile.requested_packages))
+        self.assertEqual(profile.filesystem_type, "ext4")
+        self.assertTrue(profile.journal)
+        self.assertEqual(result.stderr, "")
+
     def test_prints_exact_desktop_m3_package_contract(self) -> None:
         result = _run_builder(
             "--profile",
@@ -4352,6 +4367,27 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
         manifest = load_manifest(self.output)
         validated = validate_frozen_root(self.image, manifest, self.packages_lock)
         self.assertEqual(validated.profile, "systemd-m2")
+
+    def test_writes_schema9_ext4_journal_profile_manifest(self) -> None:
+        lock_text = _lock_text(SYSTEMD_M2_PACKAGE_ROWS)
+        self.packages_lock.write_text(lock_text, encoding="utf-8")
+        self.package_checksums.write_text(
+            _package_checksums_text(SYSTEMD_M2_PACKAGE_ROWS),
+            encoding="utf-8",
+        )
+        arguments = self.writer_arguments()
+        arguments.extend(("--profile", "systemd-ext4-m3"))
+
+        result = self.run_writer(arguments)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(self.output.read_text())
+        self.assertEqual(payload["schema_version"], 9)
+        self.assertEqual(payload["profile"], "systemd-ext4-m3")
+        self.assertEqual(payload["filesystem"]["type"], "ext4")
+        manifest = load_manifest(self.output)
+        validated = validate_frozen_root(self.image, manifest, self.packages_lock)
+        self.assertEqual(validated.profile, "systemd-ext4-m3")
 
     def test_refuses_output_equal_to_any_input(self) -> None:
         input_paths = (
