@@ -248,8 +248,21 @@ impl SuperBlock {
         let feature_incompat = FeatureInCompatSet::from_bits_truncate(sb.feature_incompat);
         let group_desc_size = if feature_incompat.contains(FeatureInCompatSet::BIT64) {
             let size = usize::from(sb.reserved_word_pad);
-            if size < size_of::<RawBlockGroup>() || size > BLOCK_SIZE || size % 8 != 0 {
+            if size < 64 || size > BLOCK_SIZE || !size.is_power_of_two() {
                 return_errno_with_message!(Errno::EINVAL, "invalid ext4 group descriptor size");
+            }
+            // These ext4 counters live in the otherwise preserved tail at
+            // offsets 0x150..0x15c. Never truncate them to the low words while
+            // the allocator and block IDs are still 32-bit.
+            let high_counts = (0x150 - 0x108) / size_of::<u32>();
+            if sb.reserved.0[high_counts..high_counts + 3]
+                .iter()
+                .any(|high| *high != 0)
+            {
+                return_errno_with_message!(
+                    Errno::EOPNOTSUPP,
+                    "ext4 block counters exceed supported range"
+                );
             }
             size
         } else {
@@ -497,7 +510,7 @@ impl SuperBlock {
 
     /// Returns the number of group descriptor blocks in each superblock copy.
     pub(super) const fn group_descriptor_blocks_count(&self) -> u32 {
-        let group_desc_bytes = (self.nr_block_groups() as usize) * size_of::<RawBlockGroup>();
+        let group_desc_bytes = (self.nr_block_groups() as usize) * self.group_desc_size();
         group_desc_bytes.div_ceil(self.block_size) as u32
     }
 
@@ -973,6 +986,23 @@ mod test {
         raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
         raw.reserved_word_pad = (BLOCK_SIZE + 8) as u16;
         assert!(SuperBlock::try_from_with_journal(raw, true).is_err());
+    }
+
+    #[ktest]
+    fn rejects_invalid_64bit_layout_without_truncating_counters() {
+        for size in [32, 40, 56, 72, 96] {
+            let mut raw = make_valid_raw_super_block(1);
+            raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
+            raw.reserved_word_pad = size;
+            assert!(SuperBlock::try_from_with_journal(raw, true).is_err());
+        }
+        for offset in [0x150, 0x154, 0x158] {
+            let mut raw = make_valid_raw_super_block(1);
+            raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
+            raw.reserved_word_pad = 64;
+            raw.reserved.0[(offset - 0x108) / size_of::<u32>()] = 1;
+            assert!(SuperBlock::try_from_with_journal(raw, true).is_err());
+        }
     }
 
     #[ktest]
