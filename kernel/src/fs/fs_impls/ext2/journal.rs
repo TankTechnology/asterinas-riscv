@@ -16,6 +16,7 @@ const JBD2_START_OFFSET: usize = 28;
 const JBD2_FEATURE_COMPAT_OFFSET: usize = 36;
 const JBD2_FEATURE_INCOMPAT_OFFSET: usize = 40;
 const JBD2_FEATURE_RO_COMPAT_OFFSET: usize = 44;
+const JBD2_SUPERBLOCK_MIN_SIZE: usize = JBD2_FEATURE_RO_COMPAT_OFFSET + 4;
 const JBD2_DESCRIPTOR_BLOCK: u32 = 1;
 const JBD2_COMMIT_BLOCK: u32 = 2;
 const JBD2_REVOKE_BLOCK: u32 = 5;
@@ -39,7 +40,7 @@ pub(super) struct JournalSuperBlock {
 
 impl JournalSuperBlock {
     pub(super) fn parse(block: &[u8]) -> Result<Self> {
-        if block.len() < JBD2_SUPERBLOCK_HEADER_SIZE {
+        if block.len() < JBD2_SUPERBLOCK_MIN_SIZE {
             return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal superblock");
         }
         if read_be_u32(block, 0) != JBD2_MAGIC {
@@ -229,6 +230,11 @@ mod test {
         block[JBD2_BLOCK_SIZE_OFFSET..JBD2_BLOCK_SIZE_OFFSET + 4]
             .copy_from_slice(&1024u32.to_be_bytes());
         assert!(JournalSuperBlock::parse(&block).is_err());
+    }
+
+    #[ktest]
+    fn rejects_truncated_feature_header() {
+        assert!(JournalSuperBlock::parse(&[0; JBD2_SUPERBLOCK_HEADER_SIZE]).is_err());
     }
 
     #[ktest]
