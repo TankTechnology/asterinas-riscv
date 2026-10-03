@@ -23,7 +23,22 @@ mount -t sysfs none /sys
 mount -t proc none /proc
 mount -t cgroup2 none /sys/fs/cgroup
 mount -t configfs none /sys/kernel/config
-mount -t ext2 /dev/vda /ext2
+ROOTFS_TYPE=ext2
+case " $(cat /proc/cmdline) " in
+    *" rootfs_type=ext4 "*) ROOTFS_TYPE=ext4 ;;
+esac
+case "$1" in
+    */run_ext4_regression_test.sh) ROOTFS_TYPE=ext4 ;;
+esac
+case "$*" in
+    *run_ext4_regression_test.sh*) ROOTFS_TYPE=ext4 ;;
+esac
+echo "ASTERINAS_INIT_ROOTFS type=$ROOTFS_TYPE argc=$# arg1=$1"
+if ! mount -t "$ROOTFS_TYPE" /dev/vda /ext2; then
+    echo "ASTERINAS_INIT_ROOTFS_ERROR type=$ROOTFS_TYPE"
+    poweroff -f
+fi
+printf '%s\n' "$ROOTFS_TYPE" > /tmp/asterinas_requested_fs_type
 mount -t exfat /dev/vdb /exfat
 
 # When the init process starts,

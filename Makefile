@@ -190,6 +190,11 @@ else ifeq ($(AUTO_TEST), ext2_msync_eio)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_msync_eio_test.sh"
+else ifeq ($(AUTO_TEST), ext4_regression)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext4_regression_test.sh"
 else ifeq ($(AUTO_TEST), exfat_syncfs_eio)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
