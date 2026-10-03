@@ -106,6 +106,7 @@ enum RootInitMode {
 
 struct RootInitConfig {
     enum RootInitMode mode;
+    int root_filesystem_ext4;
     int debug_root_console;
     int debug_console_isolated;
     int volatile_home;
@@ -203,6 +204,7 @@ static int parse_root_init(int argc, char **argv,
                            struct RootInitConfig *config)
 {
     config->mode = ROOT_INIT_INTERACTIVE;
+    config->root_filesystem_ext4 = 0;
     config->debug_root_console = 0;
     config->debug_console_isolated = 0;
     config->volatile_home = 0;
@@ -220,6 +222,12 @@ static int parse_root_init(int argc, char **argv,
             selected_mode = ROOT_INIT_BASIC;
         } else if (strcmp(argv[index], "--root-init=probe-auto") == 0) {
             selected_mode = ROOT_INIT_PROBE_AUTO;
+        } else if (strcmp(argv[index], "--root-fs=ext4") == 0) {
+            if (config->root_filesystem_ext4) {
+                return -1;
+            }
+            config->root_filesystem_ext4 = 1;
+            continue;
         } else if (strcmp(argv[index], "--volatile-home") == 0) {
             if (config->volatile_home) {
                 return -1;
@@ -1198,7 +1206,11 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
     int result = -1;
     switch (step) {
     case HANDOFF_MOUNT_ROOT:
-        result = mount(root_device, "/newroot", "ext2", 0, NULL);
+        if (production_context->root_init.root_filesystem_ext4) {
+            result = mount(root_device, "/newroot", "ext4", 0, "noload");
+        } else {
+            result = mount(root_device, "/newroot", "ext2", 0, NULL);
+        }
         break;
     case HANDOFF_BIND_DEV:
         if (ensure_directory("/newroot/dev") != 0) {
