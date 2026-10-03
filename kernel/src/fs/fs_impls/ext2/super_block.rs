@@ -653,6 +653,10 @@ impl SuperBlock {
         self.journal_dev
     }
 
+    pub(super) const fn journal_uuid(&self) -> [u8; 16] {
+        self.journal_uuid
+    }
+
     #[expect(dead_code)]
     const fn feature_ro_compat(&self) -> FeatureRoCompatSet {
         self.feature_ro_compat
@@ -956,7 +960,7 @@ mod test {
         assert!(sb.is_backup_group(7));
         assert!(sb.is_backup_group(9)); // 3^2
         assert!(sb.is_backup_group(25)); // 5^2
-        // 2, 4, 6 are not backups with sparse_super.
+                                         // 2, 4, 6 are not backups with sparse_super.
         assert!(!sb.is_backup_group(2));
         assert!(!sb.is_backup_group(4));
         assert!(!sb.is_backup_group(6));
