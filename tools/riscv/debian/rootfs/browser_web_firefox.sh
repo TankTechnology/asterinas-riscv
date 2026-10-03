@@ -8,6 +8,7 @@ readonly FIREFOX_HOME="${HOME:-/home/asterinas}"
 readonly XAUTHORITY="$FIREFOX_HOME/.Xauthority"
 readonly PROFILE="$FIREFOX_HOME/.mozilla/asterinas-browser-web"
 readonly BASIC_ONLY="${ASTERINAS_BROWSER_WEB_BASIC_ONLY:-0}"
+readonly MEDIA_RDD_MODE="${ASTERINAS_FIREFOX_MEDIA_RDD_MODE:-on}"
 readonly PROXY_HOST="${ASTERINAS_DESKTOP_PROXY_HOST:-}"
 readonly PROXY_PORT="${ASTERINAS_DESKTOP_PROXY_PORT:-}"
 NETWORK_MODE="${ASTERINAS_WEB_NETWORK_MODE:-}"
@@ -61,12 +62,20 @@ validate_network_profile() {
     [[ "$BASIC_ONLY" == 0 || "$BASIC_ONLY" == 1 ]] || return 1
 }
 
+validate_media_rdd_mode() {
+    [[ "$MEDIA_RDD_MODE" == off || "$MEDIA_RDD_MODE" == on ]]
+}
+
 configure_network_profile() {
     local temporary
 
     validate_network_profile || {
         printf 'ASTERINAS_FIREFOX_WEB_FAIL reason=invalid-network-profile\n' >&2
         return 64
+    }
+    validate_media_rdd_mode || {
+        printf 'ASTERINAS_FIREFOX_WEB_FAIL reason=invalid-media-rdd-mode\n' >&2
+        return 1
     }
     /usr/bin/mkdir -p -- "$PROFILE"
     temporary="$(/usr/bin/mktemp "$PROFILE/user.js.tmp.XXXXXX")"
@@ -93,7 +102,6 @@ configure_network_profile() {
             'user_pref("dom.ipc.processCount", 1);' \
             'user_pref("dom.ipc.processPrelaunch.enabled", false);' \
             'user_pref("fission.autostart", false);' \
-            'user_pref("media.rdd-process.enabled", true);' \
             'user_pref("network.captive-portal-service.enabled", false);' \
             'user_pref("network.connectivity-service.enabled", false);' \
             'user_pref("browser.download.folderList", 2);' \
@@ -101,6 +109,20 @@ configure_network_profile() {
             'user_pref("browser.download.useDownloadDir", true);' \
             'user_pref("browser.helperApps.neverAsk.saveToDisk", "application/octet-stream");' \
             >"$temporary"
+        if [[ "$MEDIA_RDD_MODE" == on ]]; then
+            # Linux Firefox normally decodes through the Remote Data Decoder
+            # (RDD) process.  The old QEMU profile disabled it to save memory,
+            # which also removes the normal FFmpeg/MSE media path.  Keep the
+            # proven default on, but make the real Linux path an explicit,
+            # reproducible A/B setting for codec bring-up.
+            printf '%s\n' \
+                'user_pref("media.rdd-process.enabled", true);' \
+                'user_pref("media.rdd-ffmpeg.enabled", true);' \
+                'user_pref("media.ffmpeg.enabled", true);' \
+                >>"$temporary"
+        else
+            printf '%s\n' 'user_pref("media.rdd-process.enabled", false);' >>"$temporary"
+        fi
         if [[ "$NETWORK_MODE" == proxy ]]; then
             printf '%s\n' \
                 'user_pref("network.proxy.type", 1);' \
@@ -147,6 +169,7 @@ fi
     exit 2
 }
 configure_network_profile
+printf 'ASTERINAS_FIREFOX_MEDIA_RDD mode=%s\n' "$MEDIA_RDD_MODE"
 unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
 printf '%s\n' "$$" >"$PID_FILE"
 
@@ -201,6 +224,10 @@ export MOZ_LOG="${ASTERINAS_FIREFOX_VERBOSE_LOG:-timestamp,Widget:2,Marionette:2
 export MOZ_LOG_FILE="$MOZILLA_LOG"
 export MOZ_SANDBOX_LOGGING=1
 export MOZ_AVOID_OPENGL_ALTOGETHER=1
+if [[ "${ASTERINAS_FIREFOX_MEDIA_DIAGNOSTIC:-0}" == 1 ]]; then
+    export MOZ_LOG="${ASTERINAS_FIREFOX_VERBOSE_LOG:-timestamp,Widget:2,Marionette:2,PlatformDecoderModule:5,FFmpegDecoderModule:5,MediaDecoderStateMachine:3}"
+    printf 'ASTERINAS_FIREFOX_MEDIA_DIAGNOSTIC enabled mode=%s\n' "$MEDIA_RDD_MODE" >&2
+fi
 # Optional sequential page-cache warm-up for bring-up on very slow virtual
 # block devices.  It is disabled in the normal image and never changes the
 # Firefox command line or sandbox policy.
