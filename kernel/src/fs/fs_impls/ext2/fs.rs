@@ -30,8 +30,8 @@ use super::{
     inode::{FilePerm, Inode, InodeDesc, RawInode},
     journal::{
         parse_descriptor, parse_header, parse_revoke, validate_commit, JournalRing,
-        JournalSuperBlock, JournalTag, JournalTransaction, JOURNAL_FLAG_DELETED,
-        JOURNAL_FLAG_ESCAPE, JBD2_SEQUENCE_OFFSET, JBD2_START_OFFSET,
+        JournalSuperBlock, JournalTag, JournalTransaction, JBD2_SEQUENCE_OFFSET, JBD2_START_OFFSET,
+        JOURNAL_FLAG_DELETED, JOURNAL_FLAG_ESCAPE,
     },
     prelude::*,
     super_block::{FeatureCompatSet, FsState, RawSuperBlock, SuperBlock, SUPER_BLOCK_OFFSET},
@@ -293,6 +293,12 @@ impl Ext2 {
                 }
             }
             let commit = self.read_journal_block(&journal_inode, position)?;
+            if commit.iter().all(|byte| *byte == 0) {
+                // A crash may leave a descriptor and payload blocks durable
+                // without the commit record. JBD2 treats that transaction as
+                // uncommitted and discards it during recovery.
+                break;
+            }
             validate_commit(&commit, sequence)?;
             position = next_journal_block(position, journal.first, journal.max_length);
 
@@ -485,7 +491,9 @@ impl Ext2 {
         self.write_journal_transaction(transaction)?;
         self.block_device
             .write_bytes(Bid::new(bid as u64).to_offset(), payload)
-            .map_err(|_| Error::with_message(Errno::EIO, "failed to write journaled metadata block"))?;
+            .map_err(|_| {
+                Error::with_message(Errno::EIO, "failed to write journaled metadata block")
+            })?;
         self.block_device
             .sync()
             .map_err(|_| Error::with_message(Errno::EIO, "failed to flush metadata block"))?;
