@@ -10,6 +10,8 @@ readonly CONSOLE="${ASTERINAS_EXT4_CONSOLE:-/dev/console}"
 readonly DEBIAN_VERSION_FILE="${ASTERINAS_EXT4_DEBIAN_VERSION_FILE:-/etc/debian_version}"
 readonly COUNTER="$STATE_DIRECTORY/boot-count"
 readonly PERSISTENCE_FILE="$STATE_DIRECTORY/persistence"
+readonly TEST_USER=debian
+readonly TEST_SERVICE=asterinas-debian-user.service
 
 emit() {
     # A serial getty may leave its login prompt without a trailing newline.
@@ -46,6 +48,44 @@ run_shell_workload() {
     rm -rf -- "$work" || fail process-filesystem
 }
 
+check_login_and_user() {
+    if ! id "$TEST_USER" >/dev/null 2>&1; then
+        useradd --create-home --shell /bin/bash "$TEST_USER" || fail user-create
+        printf '%s\n' "$TEST_USER:asterinas" | chpasswd || fail user-password
+    fi
+    local uid
+    uid="$(id -u "$TEST_USER")" || fail user-identity
+    [[ "$uid" -ge 1000 ]] || fail user-identity
+    su - "$TEST_USER" -c \
+        'test "$(id -u)" -ge 1000 && test "$HOME" = /home/debian' ||
+        fail login
+}
+
+configure_and_test_service() {
+    cat >/etc/systemd/system/"$TEST_SERVICE" <<'EOF'
+[Unit]
+Description=Asterinas Debian user service
+
+[Service]
+Type=simple
+ExecStart=/bin/sleep 30
+EOF
+    systemctl daemon-reload || fail service-reload
+    systemctl enable "$TEST_SERVICE" || fail service-enable
+    systemctl start "$TEST_SERVICE" || fail service-start
+    systemctl is-active --quiet "$TEST_SERVICE" || fail service-active
+    systemctl stop "$TEST_SERVICE" || fail service-stop
+    if systemctl is-active --quiet "$TEST_SERVICE"; then
+        fail service-inactive
+    fi
+}
+
+check_network() {
+    /usr/bin/curl --fail --silent --show-error --location --max-time 20 \
+        http://deb.debian.org/debian/README | /bin/grep -q Debian ||
+        fail network-request
+}
+
 check_pid1_and_root() {
     local pid1 root_filesystem
     pid1="$(tr -d '[:space:]' </proc/1/comm)" || fail pid1
@@ -71,6 +111,13 @@ install_hello() {
     [[ "$(/usr/bin/hello)" == 'Hello, world!' ]] || fail hello
     [[ "$(dpkg-query -W -f='${Status}\n' hello)" == 'install ok installed' ]] ||
         fail dpkg
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y hello || fail apt-remove
+    if dpkg-query -W -f='${Status}\n' hello >/dev/null 2>&1; then
+        fail apt-remove
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends hello ||
+        fail apt-reinstall
+    [[ "$(/usr/bin/hello)" == 'Hello, world!' ]] || fail hello-reinstall
     # These locks are runtime artefacts. Removing them leaves a clean ext4
     # image for the post-boot checker while preserving apt lists and dpkg state.
     rm -f -- \
@@ -98,11 +145,14 @@ chmod 0644 -- "$temporary" || fail boot-count-write
 mv -f -- "$temporary" "$COUNTER" || fail boot-count-write
 
 if ((next == 1)); then
+    check_login_and_user
+    configure_and_test_service
     install_hello
+    check_network
     printf '%s\n' ext4-debian-apt-smoke >"$PERSISTENCE_FILE" ||
         fail persistence-write
     sync || fail sync
-    emit "DEBIAN_EXT4_READY boot=1 arch=$architecture release=$debian_release pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=1 package=hello dpkg=1 network=1 persist=1"
+    emit "DEBIAN_EXT4_READY boot=1 arch=$architecture release=$debian_release pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=1 package=hello dpkg=1 login=1 user=1 apt_install=1 apt_remove=1 service=1 network=1 persist=1"
     systemctl --no-block --no-wall reboot || fail reboot
 else
     [[ "$(/bin/cat -- "$PERSISTENCE_FILE")" == ext4-debian-apt-smoke ]] ||
@@ -110,7 +160,14 @@ else
     [[ "$(/usr/bin/hello)" == 'Hello, world!' ]] || fail hello-persist
     [[ "$(dpkg-query -W -f='${Status}\n' hello)" == 'install ok installed' ]] ||
         fail dpkg-persist
+    id "$TEST_USER" >/dev/null 2>&1 || fail user-persist
+    su - "$TEST_USER" -c 'test "$(id -u)" -ge 1000' || fail login-persist
+    systemctl is-enabled --quiet "$TEST_SERVICE" || fail service-persist
+    systemctl start "$TEST_SERVICE" || fail service-restart
+    systemctl is-active --quiet "$TEST_SERVICE" || fail service-restart
+    systemctl stop "$TEST_SERVICE" || fail service-stop
+    check_network
     sync || fail sync
-    emit "DEBIAN_EXT4_READY boot=2 arch=$architecture release=$debian_release pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=0 package=hello dpkg=1 network=1 persist=1"
+    emit "DEBIAN_EXT4_READY boot=2 arch=$architecture release=$debian_release pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=0 package=hello dpkg=1 login=1 user=1 apt_install=1 apt_remove=1 service=1 network=1 persist=1"
     emit 'DEBIAN_EXT4_PASS boot=2 persist=1'
 fi

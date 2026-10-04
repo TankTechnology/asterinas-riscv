@@ -33,7 +33,7 @@ DEBIAN_STAGE1_PROGRESS step=handoff-done action=tmp-mount
 DEBIAN_STAGE1_PROGRESS step=handoff-done action=chroot
 DEBIAN_STAGE1_PROGRESS step=handoff-done action=chdir
 DEBIAN_STAGE1_PROGRESS step=handoff-enter action=exec
-DEBIAN_EXT4_READY boot=1 arch=riscv64 release=13.6 pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=1 package=hello dpkg=1 network=1 persist=1
+DEBIAN_EXT4_READY boot=1 arch=riscv64 release=13.6 pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=1 package=hello dpkg=1 login=1 user=1 apt_install=1 apt_remove=1 service=1 network=1 persist=1
 U-Boot 2025
 Starting kernel ...
 DEBIAN_STAGE1_PROGRESS step=start mode=systemd
@@ -46,7 +46,7 @@ DEBIAN_STAGE1_PROGRESS step=handoff-done action=tmp-mount
 DEBIAN_STAGE1_PROGRESS step=handoff-done action=chroot
 DEBIAN_STAGE1_PROGRESS step=handoff-done action=chdir
 DEBIAN_STAGE1_PROGRESS step=handoff-enter action=exec
-DEBIAN_EXT4_READY boot=2 arch=riscv64 release=13.6 pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=0 package=hello dpkg=1 network=1 persist=1
+DEBIAN_EXT4_READY boot=2 arch=riscv64 release=13.6 pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=0 package=hello dpkg=1 login=1 user=1 apt_install=1 apt_remove=1 service=1 network=1 persist=1
 DEBIAN_EXT4_PASS boot=2 persist=1
 """
 
@@ -64,6 +64,14 @@ class SystemdExt4ClassifierTests(unittest.TestCase):
         )
         result = classify_systemd_ext4(broken, expected_debian_release="13.6")
         self.assertFalse(result.passed)
+
+    def test_rejects_missing_login_or_service_evidence(self) -> None:
+        for field in ("login", "service"):
+            broken = _transcript().replace(f"{field}=1", f"{field}=0")
+            result = classify_systemd_ext4(
+                broken, expected_debian_release="13.6"
+            )
+            self.assertFalse(result.passed, field)
 
     def test_qemu_contract_has_one_slirp_virtio_nic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
