@@ -23,7 +23,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use aster_block::bio::{BioCompleteFn, BioStatus};
 use device_id::DeviceId;
-use ostd::mm::{VmReader, VmWriter};
+use ostd::mm::{HasSize, VmReader, VmWriter};
 
 use super::{
     block_group::{BlockGroup, RawBlockGroup},
@@ -1174,26 +1174,27 @@ impl Ext2 {
         sb_guard.set_free_inodes_count(total_free_inodes);
         sb_guard.set_wtime(utils::now());
 
-        let mut raw_sb = RawSuperBlock::from(&**sb_guard);
-        self.write_sb_and_group_descs(
-            &raw_sb,
-            SUPER_BLOCK_OFFSET,
-            sb_guard.group_descriptors_bid(0),
-        )?;
-
+        let mut writes = Vec::new();
+        let raw_sb = RawSuperBlock::from(&**sb_guard);
+        writes.push((raw_sb, SUPER_BLOCK_OFFSET, sb_guard.group_descriptors_bid(0)));
         for group_idx in 1..nr_block_groups {
             if !sb_guard.is_backup_group(group_idx) {
                 continue;
             }
-            raw_sb.block_group_idx = group_idx as u16;
-            self.write_sb_and_group_descs(
-                &raw_sb,
+            let mut backup_sb = raw_sb;
+            backup_sb.block_group_idx = group_idx as u16;
+            writes.push((
+                backup_sb,
                 Bid::new(sb_guard.bid(group_idx) as u64).to_offset(),
                 sb_guard.group_descriptors_bid(group_idx),
-            )?;
+            ));
         }
 
-        sb_guard.clear_dirty();
+        drop(sb_guard);
+        for (raw_sb, sb_offset, group_desc_bid) in writes {
+            self.write_sb_and_group_descs(&raw_sb, sb_offset, group_desc_bid)?;
+        }
+        self.super_block.write().clear_dirty();
         Ok(())
     }
 
@@ -1204,6 +1205,42 @@ impl Ext2 {
         sb_offset: usize,
         group_desc_bid: Ext2Bid,
     ) -> Result<()> {
+        if raw_sb.feature_compat & FeatureCompatSet::HAS_JOURNAL.bits() != 0 {
+            let group_desc_bytes = self.group_descriptors_segment.size();
+            let mut blocks = Vec::with_capacity(group_desc_bytes.div_ceil(BLOCK_SIZE) + 1);
+            for index in 0..group_desc_bytes.div_ceil(BLOCK_SIZE) {
+                let mut payload = vec![0; BLOCK_SIZE];
+                let offset = index * BLOCK_SIZE;
+                let len = (group_desc_bytes - offset).min(BLOCK_SIZE);
+                self.group_descriptors_segment
+                    .read_bytes(offset, &mut payload[..len])?;
+                blocks.push((group_desc_bid + index as u32, payload));
+            }
+
+            // The superblock lives at byte 1024 inside its containing block.
+            // Preserve unrelated bytes while journaling the complete home block.
+            let superblock_bid = (sb_offset / BLOCK_SIZE) as u32;
+            let superblock_base = superblock_bid as usize * BLOCK_SIZE;
+            let mut superblock_payload = vec![0; BLOCK_SIZE];
+            self.block_device
+                .read_bytes(superblock_base, &mut superblock_payload)
+                .map_err(|_| Error::with_message(Errno::EIO, "failed to read superblock block"))?;
+            let superblock_offset = sb_offset - superblock_base;
+            let raw_superblock = raw_sb.as_bytes();
+            if superblock_offset + raw_superblock.len() > BLOCK_SIZE {
+                return_errno_with_message!(Errno::EUCLEAN, "superblock crosses block boundary");
+            }
+            superblock_payload[superblock_offset..superblock_offset + raw_superblock.len()]
+                .copy_from_slice(raw_superblock);
+            blocks.push((superblock_bid, superblock_payload));
+
+            let block_refs: Vec<(Ext2Bid, &[u8])> = blocks
+                .iter()
+                .map(|(bid, payload)| (*bid, payload.as_slice()))
+                .collect();
+            return self.write_metadata_blocks(&block_refs);
+        }
+
         let group_desc_segment = self.group_descriptors_segment.clone();
         let bio_segment = BioSegment::new_from_segment(group_desc_segment, BioDirection::ToDevice);
         self.write_blocks(group_desc_bid, bio_segment)
