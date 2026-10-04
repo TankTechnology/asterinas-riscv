@@ -168,7 +168,7 @@ class SystemdExt4Operations(ConcreteOperations):
         manifest = load_manifest(self.input_paths["manifest"])
         if manifest.schema_version != 9 or manifest.profile != "systemd-ext4-m3":
             raise GateFailure("rootfs manifest is not the systemd-ext4-m3 profile")
-        if manifest.filesystem_type != "ext4":
+        if manifest.filesystem.filesystem_type != "ext4":
             raise GateFailure("systemd-ext4-m3 manifest does not identify ext4")
         identity["profile"] = manifest.profile
         return identity
