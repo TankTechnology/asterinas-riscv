@@ -48,7 +48,14 @@ check_pid1_and_root() {
     pid1="$(tr -d '[:space:]' </proc/1/comm)" || fail pid1
     [[ "$pid1" == systemd ]] || fail pid1
     root_filesystem="$(stat -f -c '%T' /)" || fail root-filesystem
-    [[ "$root_filesystem" == ext4 ]] || fail root-filesystem
+    # Asterinas currently reports the ext4 superblock through the Linux
+    # ext2/ext3 statfs compatibility value.  The Stage1 boot contract and the
+    # signed schema-9 manifest provide the ext4 identity; accept all values
+    # emitted by the kernel while still requiring a real filesystem query.
+    case "$root_filesystem" in
+        ext2/ext3 | ext4) ;;
+        *) fail root-filesystem ;;
+    esac
 }
 
 install_hello() {

@@ -62,6 +62,17 @@ _FATAL_MARKERS = (
     b"ext4-fs error",
     b"buffer i/o error",
 )
+_STAGE1_HANDOFF_MARKERS = (
+    "DEBIAN_STAGE1_PROGRESS step=start mode=systemd",
+    "DEBIAN_STAGE1_PROGRESS step=root-found device=/dev/vdb",
+    "DEBIAN_STAGE1_PROGRESS step=handoff-done action=root-mount",
+    "DEBIAN_STAGE1_PROGRESS step=handoff-done action=dev-bind",
+    "DEBIAN_STAGE1_PROGRESS step=handoff-done action=api-directories",
+    "DEBIAN_STAGE1_PROGRESS step=handoff-done action=run-mount",
+    "DEBIAN_STAGE1_PROGRESS step=handoff-done action=tmp-mount",
+    "DEBIAN_STAGE1_PROGRESS step=handoff-done action=chroot",
+    "DEBIAN_STAGE1_PROGRESS step=handoff-done action=exec",
+)
 
 
 def systemd_ext4_qemu_argv(**arguments: Any) -> tuple[str, ...]:
@@ -98,6 +109,22 @@ def classify_systemd_ext4(
     for marker in _FATAL_MARKERS:
         if marker in lowered.encode():
             return _classify_failure(f"fatal transcript marker: {marker.decode()}")
+
+    handoff_positions = []
+    for marker in _STAGE1_HANDOFF_MARKERS:
+        positions = [index for index, line in enumerate(lines) if line == marker]
+        if len(positions) != 2:
+            qualifier = "duplicate" if len(positions) > 2 else "missing"
+            return _classify_failure(f"{qualifier} Stage1 handoff marker: {marker}")
+        if positions[0] >= positions[1]:
+            return _classify_failure(f"Stage1 handoff marker is reordered: {marker}")
+        handoff_positions.append(positions)
+    if any(
+        handoff_positions[index][boot] >= handoff_positions[index + 1][boot]
+        for boot in (0, 1)
+        for index in range(len(handoff_positions) - 1)
+    ):
+        return _classify_failure("Stage1 handoff markers are out of order")
 
     ready: dict[int, list[tuple[int, re.Match[str]]]] = {1: [], 2: []}
     for index, line in enumerate(lines):

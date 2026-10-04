@@ -23,9 +23,27 @@ def _transcript() -> str:
     return """OpenSBI v1
 U-Boot 2025
 Starting kernel ...
+DEBIAN_STAGE1_PROGRESS step=start mode=systemd
+DEBIAN_STAGE1_PROGRESS step=root-found device=/dev/vdb
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=root-mount
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=dev-bind
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=api-directories
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=run-mount
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=tmp-mount
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=chroot
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=exec
 DEBIAN_EXT4_READY boot=1 arch=riscv64 release=13.6 pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=1 package=hello dpkg=1 network=1 persist=1
 U-Boot 2025
 Starting kernel ...
+DEBIAN_STAGE1_PROGRESS step=start mode=systemd
+DEBIAN_STAGE1_PROGRESS step=root-found device=/dev/vdb
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=root-mount
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=dev-bind
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=api-directories
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=run-mount
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=tmp-mount
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=chroot
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=exec
 DEBIAN_EXT4_READY boot=2 arch=riscv64 release=13.6 pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=0 package=hello dpkg=1 network=1 persist=1
 DEBIAN_EXT4_PASS boot=2 persist=1
 """
