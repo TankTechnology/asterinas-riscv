@@ -1031,10 +1031,21 @@ EOF
     fi
     if [[ "$PROFILE" == systemd-m2 || "$PROFILE" == systemd-ext4-m3 ]]; then
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-        install -D -m 0755 -- \
-            "$script_directory/systemd_m2_evidence.sh" \
-            "$stage/usr/lib/asterinas/systemd-m2-evidence"
-        cat >"$stage/etc/systemd/system/asterinas-debian-m2.service" <<'EOF'
+        local evidence_script evidence_path evidence_command service_name
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            evidence_script="$script_directory/systemd_ext4_evidence.sh"
+            evidence_path="$stage/usr/lib/asterinas/systemd-ext4-evidence"
+            evidence_command=/usr/lib/asterinas/systemd-ext4-evidence
+            service_name=asterinas-debian-ext4.service
+        else
+            evidence_script="$script_directory/systemd_m2_evidence.sh"
+            evidence_path="$stage/usr/lib/asterinas/systemd-m2-evidence"
+            evidence_command=/usr/lib/asterinas/systemd-m2-evidence
+            service_name=asterinas-debian-m2.service
+        fi
+        install -D -m 0755 -- "$evidence_script" "$evidence_path"
+        if [[ "$PROFILE" == systemd-m2 ]]; then
+            cat >"$stage/etc/systemd/system/$service_name" <<'EOF'
 [Unit]
 Description=Asterinas Debian M2 evidence
 After=local-fs.target
@@ -1048,10 +1059,26 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+        else
+            cat >"$stage/etc/systemd/system/$service_name" <<EOF
+[Unit]
+Description=Asterinas Debian ${PROFILE} evidence
+After=local-fs.target network.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=$evidence_command
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        fi
         mkdir -p -- "$stage/etc/systemd/system/multi-user.target.wants"
         ln -s -- \
-            ../asterinas-debian-m2.service \
-            "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
+            "../$service_name" \
+            "$stage/etc/systemd/system/multi-user.target.wants/$service_name"
     elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
         configure_desktop "$stage" "${PROFILE#desktop-}"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then

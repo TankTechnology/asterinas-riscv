@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MPL-2.0
+
+"""Boot the signed Debian ext4 profile through Stage1 and systemd twice.
+
+The first boot executes the Debian shell, filesystem, process and syscall
+workload, then updates apt and installs ``hello`` from the guest network.  The
+service requests a normal reboot.  The second boot proves that the package and
+an explicit state file survived the ext4 journal replay before emitting PASS.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import secrets
+import sys
+import time
+from typing import Any, Mapping
+
+from tools.riscv.debian.rootfs.gate_protocol import (
+    GateResult,
+    _normalize_transcript,
+    qemu_argv,
+)
+from tools.riscv.debian.rootfs.gate_runtime import (
+    GateTermination,
+    TerminationSignalState,
+)
+from tools.riscv.debian.rootfs.rootfs_gate import (
+    GateConfig,
+    GateFailure,
+    parse_gate_args,
+)
+from tools.riscv.debian.rootfs.rootfs_gate_backend import (
+    ConcreteOperations,
+    _safe_output,
+)
+from tools.riscv.debian.rootfs.systemd_m2_gate import (
+    orchestrate_systemd_m2_gate,
+)
+from tools.riscv.debian.rootfs.contract import load_manifest
+
+
+SYSTEMD_EXT4_BOOTARGS = (
+    "console=ttyS0 loglevel=4 init=/init "
+    "-- --root-fs=ext4 --root-init=systemd"
+)
+_READY_RE = re.compile(
+    r"\ADEBIAN_EXT4_READY boot=([12]) arch=([^ ]+) release=([^ ]+) "
+    r"pid1=([^ ]+) rootfs=([^ ]+) shell=([01]) process=([01]) "
+    r"filesystem=([01]) syscall=([01]) apt_update=([01]) package=([^ ]+) "
+    r"dpkg=([01]) network=([01]) persist=([01])\Z"
+)
+_PASS = "DEBIAN_EXT4_PASS boot=2 persist=1"
+_FATAL_MARKERS = (
+    b"DEBIAN_EXT4_FAIL reason=",
+    b"debian_rootfs_fail reason=",
+    b"kernel panic",
+    b"uncaught panic:",
+    b"printing stack trace:",
+    b"ext4-fs error",
+    b"buffer i/o error",
+)
+
+
+def systemd_ext4_qemu_argv(**arguments: Any) -> tuple[str, ...]:
+    """Use the normal reboot contract with one user-mode VirtIO NIC."""
+
+    base = qemu_argv(**{**arguments, "allow_reboot": True})
+    nic_index = base.index("-nic")
+    if base[nic_index : nic_index + 2] != ("-nic", "none"):
+        raise ValueError("unexpected QEMU NIC contract")
+    return (
+        *base[:nic_index],
+        "-netdev",
+        "user,id=debian-ext4",
+        "-device",
+        "virtio-net-device,netdev=debian-ext4",
+        *base[nic_index + 2 :],
+    )
+
+
+def _classify_failure(reason: str) -> GateResult:
+    return GateResult(False, reason, None)
+
+
+def classify_systemd_ext4(
+    transcript: bytes | str, *, expected_debian_release: str
+) -> GateResult:
+    """Require two ordered ext4 root boots and the apt/persistence evidence."""
+
+    normalized = _normalize_transcript(transcript)
+    if isinstance(normalized, GateResult):
+        return normalized
+    text, lines = normalized
+    lowered = text.lower()
+    for marker in _FATAL_MARKERS:
+        if marker in lowered.encode():
+            return _classify_failure(f"fatal transcript marker: {marker.decode()}")
+
+    ready: dict[int, list[tuple[int, re.Match[str]]]] = {1: [], 2: []}
+    for index, line in enumerate(lines):
+        match = _READY_RE.fullmatch(line)
+        if match is not None:
+            ready[int(match.group(1), 10)].append((index, match))
+    if len(ready[1]) != 1:
+        return _classify_failure("missing or duplicate ext4 boot 1 READY marker")
+    if len(ready[2]) != 1:
+        return _classify_failure("missing or duplicate ext4 boot 2 READY marker")
+    pass_positions = [index for index, line in enumerate(lines) if line == _PASS]
+    if len(pass_positions) != 1:
+        return _classify_failure("missing or duplicate ext4 PASS marker")
+    starts = [index for index, line in enumerate(lines) if line == "Starting kernel ..."]
+    if len(starts) != 2:
+        return _classify_failure("normal reboot requires exactly two kernel starts")
+    firmware = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith("OpenSBI ") or line.startswith("U-Boot ")
+    ]
+    first_index, first = ready[1][0]
+    second_index, second = ready[2][0]
+    if not (starts[0] < first_index < starts[1] < second_index < pass_positions[0]):
+        return _classify_failure("ext4 boot markers are reordered")
+    if not any(first_index < index < starts[1] for index in firmware):
+        return _classify_failure("firmware restart evidence is missing")
+
+    for boot, match in ((1, first), (2, second)):
+        fields = match.groupdict()
+        if match.group(2) != "riscv64":
+            return _classify_failure(f"boot {boot} architecture identity mismatch")
+        if match.group(3) != expected_debian_release:
+            return _classify_failure(f"boot {boot} Debian release identity mismatch")
+        if match.group(4) != "systemd" or match.group(5) != "ext4":
+            return _classify_failure(f"boot {boot} root PID/filesystem identity mismatch")
+        if any(match.group(index) != "1" for index in (6, 7, 8, 9, 12, 13, 14)):
+            return _classify_failure(f"boot {boot} shell workload evidence is incomplete")
+        if match.group(11) != "hello":
+            return _classify_failure(f"boot {boot} package identity mismatch")
+        expected_apt = "1" if boot == 1 else "0"
+        if match.group(10) != expected_apt:
+            return _classify_failure(f"boot {boot} apt evidence mismatch")
+        del fields
+    return GateResult(True, "pass", None)
+
+
+class SystemdExt4Operations(ConcreteOperations):
+    """Concrete QEMU operations for the systemd-ext4-m3 profile."""
+
+    @staticmethod
+    def _qemu_argv(**arguments: Any) -> tuple[str, ...]:
+        return systemd_ext4_qemu_argv(**arguments)
+
+    def invalidate(self, config: GateConfig) -> None:
+        self._require_config(config)
+        self._require_output().invalidate(
+            "boot.ext4",
+            "debian-root.run.ext2",
+            "systemd-ext4.serial.log",
+            "result.json",
+        )
+
+    def validate_inputs(
+        self, config: GateConfig, snapshots: Mapping[str, str]
+    ) -> Mapping[str, object]:
+        identity = dict(ConcreteOperations.validate_inputs(self, config, snapshots))
+        manifest = load_manifest(self.input_paths["manifest"])
+        if manifest.schema_version != 9 or manifest.profile != "systemd-ext4-m3":
+            raise GateFailure("rootfs manifest is not the systemd-ext4-m3 profile")
+        if manifest.filesystem_type != "ext4":
+            raise GateFailure("systemd-ext4-m3 manifest does not identify ext4")
+        identity["profile"] = manifest.profile
+        return identity
+
+    def launch(self, config: GateConfig, prepared: Any) -> dict[str, Any]:
+        return super().launch(config, prepared, 1)
+
+    def _boot_once(
+        self,
+        session: Mapping[str, Any],
+        config: GateConfig,
+        *,
+        wait_prompt: bool,
+        start: int = 0,
+    ) -> None:
+        deadline = time.monotonic() + config.boot_timeout
+        serial = session["serial"]
+        if wait_prompt:
+            serial.wait_for(b"=> ", deadline, start=start)
+        commands = (
+            "virtio scan",
+            "ext4load virtio 0:0 0x80200000 /asterinas.booti",
+            "ext4load virtio 0:0 0x88000000 /qemu-virt.dtb",
+            "fdt addr 0x88000000",
+            "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
+            "setenv initrd_size ${filesize}",
+            f'setenv bootargs "{SYSTEMD_EXT4_BOOTARGS}"',
+        )
+        for index, command in enumerate(commands, 1):
+            self._send_uboot(session, command, index, deadline)
+        marker = f"__ASTERINAS_EXT4_BOOT_{secrets.token_hex(8).upper()}__"
+        split = len(marker) // 2
+        serial.send(
+            (
+                f"setenv ast_ba {marker[:split]}; "
+                f"setenv ast_bb {marker[split:]}; "
+                "echo ${ast_ba}${ast_bb}; booti 0x80200000 "
+                "0x83000000:${initrd_size} 0x88000000\n"
+            ).encode(),
+            deadline,
+        )
+        serial.wait_for(marker.encode(), deadline)
+        serial.wait_for(b"Starting kernel ...", deadline, start=start)
+
+    def run_protocol(self, session: Mapping[str, Any], config: GateConfig) -> None:
+        self._boot_once(session, config, wait_prompt=True)
+        serial = session["serial"]
+        ready1 = b"DEBIAN_EXT4_READY boot=1"
+        transcript = serial.wait_for(ready1, time.monotonic() + config.boot_timeout)
+        restart_start = transcript.rfind(ready1) + len(ready1)
+        reboot_deadline = time.monotonic() + config.boot_timeout
+        autoboot = b"Hit any key to stop autoboot"
+        transcript = serial.wait_for(autoboot, reboot_deadline, start=restart_start)
+        prompt_start = transcript.rfind(autoboot) + len(autoboot)
+        serial.send(b" \n", reboot_deadline)
+        serial.wait_for(b"=> ", reboot_deadline, start=prompt_start)
+        second_boot_start = serial.checkpoint()
+        self._boot_once(
+            session,
+            config,
+            wait_prompt=False,
+            start=second_boot_start,
+        )
+        serial.wait_for(
+            b"DEBIAN_EXT4_PASS boot=2",
+            time.monotonic() + config.boot_timeout,
+        )
+
+    def publish(
+        self,
+        config: GateConfig,
+        prepared: Any,
+        transcript: bytes,
+        result: dict[str, object],
+    ) -> None:
+        del prepared
+        self._require_config(config)
+        result["qemu_argv"] = self._attempted_argv
+        output = self._require_output()
+        output.atomic_write("systemd-ext4.serial.log", transcript)
+        output.atomic_write("result.json", (json.dumps(result, indent=2, sort_keys=True) + "\n").encode())
+
+
+def main(arguments: list[str] | None = None) -> int:
+    try:
+        config = parse_gate_args(arguments)
+        _safe_output(config.output_directory)
+        with TerminationSignalState(), SystemdExt4Operations(config) as operations:
+            result = orchestrate_systemd_m2_gate(
+                config,
+                operations,
+                classifier=classify_systemd_ext4,
+            )
+        return 0 if result["passed"] else 1
+    except SystemExit as error:
+        return int(error.code or 0)
+    except GateTermination as error:
+        print(
+            f"debian-systemd-ext4-gate: terminated by signal {error.signum}",
+            file=sys.stderr,
+        )
+        return 128 + error.signum
+    except BaseException as error:
+        reason = error.reason if isinstance(error, GateFailure) else str(error)
+        print(f"debian-systemd-ext4-gate: {reason}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
