@@ -500,7 +500,7 @@ impl Ext2 {
         Ok(())
     }
 
-    fn stage_metadata_block(&self, bid: Ext2Bid, payload: &[u8]) {
+    pub(super) fn stage_metadata_block(&self, bid: Ext2Bid, payload: &[u8]) {
         let mut pending = self.pending_metadata.lock();
         if let Some((_, previous)) = pending.iter_mut().find(|(target, _)| *target == bid) {
             previous.copy_from_slice(payload);
@@ -515,6 +515,13 @@ impl Ext2 {
             .iter()
             .find(|(target, _)| *target == bid)
             .map(|(_, payload)| payload.clone())
+    }
+
+    pub(super) fn has_journal(&self) -> bool {
+        self.super_block
+            .read()
+            .feature_compat()
+            .contains(FeatureCompatSet::HAS_JOURNAL)
     }
 
     /// Commits all supplied metadata blocks in one JBD2 transaction. No home
