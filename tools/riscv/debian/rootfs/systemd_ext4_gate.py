@@ -71,7 +71,8 @@ _STAGE1_HANDOFF_MARKERS = (
     "DEBIAN_STAGE1_PROGRESS step=handoff-done action=run-mount",
     "DEBIAN_STAGE1_PROGRESS step=handoff-done action=tmp-mount",
     "DEBIAN_STAGE1_PROGRESS step=handoff-done action=chroot",
-    "DEBIAN_STAGE1_PROGRESS step=handoff-done action=exec",
+    "DEBIAN_STAGE1_PROGRESS step=handoff-done action=chdir",
+    "DEBIAN_STAGE1_PROGRESS step=handoff-enter action=exec",
 )
 
 

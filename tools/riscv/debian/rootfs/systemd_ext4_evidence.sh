@@ -12,7 +12,10 @@ readonly COUNTER="$STATE_DIRECTORY/boot-count"
 readonly PERSISTENCE_FILE="$STATE_DIRECTORY/persistence"
 
 emit() {
-    printf '%s\n' "$1" >>"$CONSOLE"
+    # A serial getty may leave its login prompt without a trailing newline.
+    # Start each evidence record on its own line so the classifier can require
+    # exact, unprefixed markers instead of accepting a prompt suffix.
+    printf '\n%s\n' "$1" >>"$CONSOLE"
 }
 
 fail() {
