@@ -183,9 +183,6 @@ impl JournalTransaction {
     }
 
     pub(super) fn add_block(&mut self, block_number: u32, payload: &[u8]) -> Result<()> {
-        if block_number == 0 {
-            return_errno_with_message!(Errno::EINVAL, "zero ext4 journal target block");
-        }
         if payload.len() != BLOCK_SIZE {
             return_errno_with_message!(Errno::EINVAL, "invalid ext4 journal payload size");
         }
