@@ -29,6 +29,7 @@ SUCCESS_MARKERS = {
     "proc-net-dev": "/proc/net/dev regression passed.",
     "ipv6-udp": "ipv6_udp: PASS",
     "regression": "All regression tests passed.",
+    "ext4-directory-journal": "ASTERINAS_EXT4_DIRECTORY_JOURNAL_OK operations=create,delete,rename,growth,sync",
     "udp-user-buffer-prefault": "UDP user buffer prefault regression passed.",
     "udp-msg-dontwait": "UDP MSG_DONTWAIT regression passed.",
     "tcp-msg-dontwait-send": "TCP MSG_DONTWAIT send regression passed.",

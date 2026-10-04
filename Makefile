@@ -198,6 +198,11 @@ ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext4_regression_test.sh"
+else ifeq ($(AUTO_TEST), ext4_directory_journal)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext4_directory_journal_test.sh"
 else ifeq ($(AUTO_TEST), ext4_uncommitted_cut)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
@@ -1457,6 +1462,10 @@ ifneq ($(filter $(AUTO_TEST),conformance regression boot vsock),)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "$(AUTO_TEST)" $(if $(filter 1,$(RISCV_ICACHE_REQUIRE_SMP4)),--require-riscv-icache-smp4,)
+else ifeq ($(AUTO_TEST), ext4_directory_journal)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ext4-directory-journal"
 else ifeq ($(AUTO_TEST), ext2_firefox_recovery)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
