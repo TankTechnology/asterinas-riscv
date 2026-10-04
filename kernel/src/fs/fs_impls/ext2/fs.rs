@@ -29,12 +29,12 @@ use super::{
     block_group::{BlockGroup, RawBlockGroup},
     inode::{FilePerm, Inode, InodeDesc, RawInode},
     journal::{
-        parse_descriptor, parse_header, parse_revoke, validate_commit, JournalRing,
-        JournalSuperBlock, JournalTag, JournalTransaction, JBD2_SEQUENCE_OFFSET, JBD2_START_OFFSET,
-        JOURNAL_FLAG_DELETED, JOURNAL_FLAG_ESCAPE,
+        JBD2_SEQUENCE_OFFSET, JBD2_START_OFFSET, JOURNAL_FLAG_DELETED, JOURNAL_FLAG_ESCAPE,
+        JournalRing, JournalSuperBlock, JournalTag, JournalTransaction, parse_descriptor,
+        parse_header, parse_revoke, validate_commit,
     },
     prelude::*,
-    super_block::{FeatureCompatSet, FsState, RawSuperBlock, SuperBlock, SUPER_BLOCK_OFFSET},
+    super_block::{FeatureCompatSet, FsState, RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock},
 };
 use crate::{
     fs::{
@@ -42,7 +42,7 @@ use crate::{
         file::StatusFlags,
         vfs::file_system::{AtomicFsFlags, FsEventSubscriberStats, FsFlags},
     },
-    process::{credentials::capabilities::CapSet, posix_thread::AsPosixThread, Gid, UserNamespace},
+    process::{Gid, UserNamespace, credentials::capabilities::CapSet, posix_thread::AsPosixThread},
     security::lsm::hooks as lsm_hooks,
     thread::Thread,
 };
@@ -75,6 +75,9 @@ pub struct Ext2 {
     fs_event_subscriber_stats: FsEventSubscriberStats,
     /// Per-filesystem inode generation counter.
     next_generation: AtomicU32,
+    /// Serializes journal publication, home writes, and checkpointing. Acquired
+    /// after ordinary inode locks; the journal inode never starts a transaction.
+    journal_write_lock: Mutex<()>,
     /// Weak self reference for inode back-pointers.
     self_ref: Weak<Ext2>,
 }
@@ -233,6 +236,7 @@ impl Ext2 {
             flags: AtomicFsFlags::new(flags),
             fs_event_subscriber_stats: FsEventSubscriberStats::new(),
             next_generation: AtomicU32::new(utils::duration_to_ext2_secs(utils::now())),
+            journal_write_lock: Mutex::new(()),
             self_ref: weak_self.clone(),
         });
 
@@ -354,9 +358,7 @@ impl Ext2 {
         let mut reader = VmReader::from(block.as_slice()).to_fallible();
         journal_inode.write_at(0, &mut reader)?;
         journal_inode.sync_all()?;
-        self.block_device
-            .sync()
-            .map_err(|_| Error::with_message(Errno::EIO, "failed to flush ext4 journal"))?;
+        self.flush_journal_device()?;
         self.super_block.write().clear_journal_recovery();
         self.sync_recovery_superblock()?;
         let sb = **self.super_block.read();
@@ -373,9 +375,7 @@ impl Ext2 {
         for group in &self.block_groups {
             group.refresh_after_recovery(&sb)?;
         }
-        self.block_device
-            .sync()
-            .map_err(|_| Error::with_message(Errno::EIO, "failed to flush ext4 recovery state"))?;
+        self.flush_journal_device()?;
         Ok(())
     }
 
@@ -461,9 +461,7 @@ impl Ext2 {
             }
         }
         inode.sync_all()?;
-        self.block_device
-            .sync()
-            .map_err(|_| Error::with_message(Errno::EIO, "failed to flush ext4 journal blocks"))?;
+        self.flush_journal_device()?;
 
         let mut published = superblock;
         published[JBD2_SEQUENCE_OFFSET..JBD2_SEQUENCE_OFFSET + 4]
@@ -475,9 +473,7 @@ impl Ext2 {
             return_errno_with_message!(Errno::EIO, "short ext4 journal superblock write");
         }
         inode.sync_all()?;
-        self.block_device
-            .sync()
-            .map_err(|_| Error::with_message(Errno::EIO, "failed to publish ext4 journal"))?;
+        self.flush_journal_device()?;
         Ok(())
     }
 
@@ -486,32 +482,67 @@ impl Ext2 {
     /// The home block is not made visible until the committed journal copy is
     /// durable; it is checkpointed only after the home write and device flush.
     pub(super) fn write_metadata_block(&self, bid: Ext2Bid, payload: &[u8]) -> Result<()> {
-        if payload.len() != BLOCK_SIZE {
-            return_errno_with_message!(Errno::EINVAL, "invalid filesystem metadata block size");
+        self.write_metadata_blocks(&[(bid, payload)])
+    }
+
+    /// Commits all supplied metadata blocks in one JBD2 transaction. No home
+    /// block is written before publication, and the journal remains recoverable
+    /// if a home write or its durability barrier fails. Callers must supply a
+    /// consistent snapshot and prevent independent cache writeback of it.
+    pub(super) fn write_metadata_blocks(&self, blocks: &[(Ext2Bid, &[u8])]) -> Result<()> {
+        if self.fs_flags().contains(FsFlags::RDONLY) {
+            return_errno_with_message!(Errno::EROFS, "read-only filesystem metadata write");
         }
+        if blocks.is_empty() {
+            return_errno_with_message!(Errno::EINVAL, "empty filesystem metadata transaction");
+        }
+        let total_blocks = self.super_block.read().total_blocks();
+        for (index, &(bid, payload)) in blocks.iter().enumerate() {
+            if payload.len() != BLOCK_SIZE || bid >= total_blocks {
+                return_errno_with_message!(Errno::EINVAL, "invalid filesystem metadata block");
+            }
+            if blocks[..index].iter().any(|&(previous, _)| previous == bid) {
+                return_errno_with_message!(Errno::EEXIST, "duplicate filesystem metadata block");
+            }
+        }
+        let _guard = self.journal_write_lock.lock();
         let transaction = match self.begin_journal_transaction() {
             Ok(transaction) => Some(transaction),
             Err(err) if err.error() == Errno::EOPNOTSUPP => None,
             Err(err) => return Err(err),
         };
         let Some(mut transaction) = transaction else {
-            self.block_device
-                .write_bytes(Bid::new(bid as u64).to_offset(), payload)
-                .map_err(|_| Error::with_message(Errno::EIO, "failed to write metadata block"))?;
+            for &(bid, payload) in blocks {
+                self.block_device
+                    .write_bytes(Bid::new(bid as u64).to_offset(), payload)
+                    .map_err(|_| {
+                        Error::with_message(Errno::EIO, "failed to write metadata block")
+                    })?;
+            }
             return Ok(());
         };
-        transaction.add_block(bid, payload)?;
+        for &(bid, payload) in blocks {
+            transaction.add_block(bid, payload)?;
+        }
         let sequence = transaction.sequence();
         self.write_journal_transaction(transaction)?;
-        self.block_device
-            .write_bytes(Bid::new(bid as u64).to_offset(), payload)
-            .map_err(|_| {
-                Error::with_message(Errno::EIO, "failed to write journaled metadata block")
-            })?;
-        self.block_device
-            .sync()
-            .map_err(|_| Error::with_message(Errno::EIO, "failed to flush metadata block"))?;
+        for &(bid, payload) in blocks {
+            self.block_device
+                .write_bytes(Bid::new(bid as u64).to_offset(), payload)
+                .map_err(|_| {
+                    Error::with_message(Errno::EIO, "failed to write journaled metadata block")
+                })?;
+        }
+        self.flush_journal_device()?;
         self.checkpoint_journal(sequence)
+    }
+
+    /// Checks completion as well as submission of a journal durability barrier.
+    fn flush_journal_device(&self) -> Result<()> {
+        if self.block_device.sync()? != BioStatus::Complete {
+            return_errno_with_message!(Errno::EIO, "failed to flush journal block device");
+        }
+        Ok(())
     }
 
     /// Marks a previously published transaction checkpointed after all home
@@ -535,9 +566,7 @@ impl Ext2 {
             return_errno_with_message!(Errno::EIO, "short ext4 journal checkpoint write");
         }
         inode.sync_all()?;
-        self.block_device
-            .sync()
-            .map_err(|_| Error::with_message(Errno::EIO, "failed to checkpoint ext4 journal"))?;
+        self.flush_journal_device()?;
         Ok(())
     }
 
@@ -1187,9 +1216,9 @@ mod test {
     use crate::{
         fs::{
             fs_impls::ext2::test_utils::{
-                assert_errno, create_file, default_fixture, make_valid_group_desc,
-                make_valid_super_block, BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk,
-                InodeBitmapInit, RawInodeBuilder,
+                BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
+                RawInodeBuilder, assert_errno, create_file, default_fixture, make_valid_group_desc,
+                make_valid_super_block,
             },
             vfs::file_system::FileSystem as FileSystemTrait,
         },
@@ -1210,6 +1239,65 @@ mod test {
         let revokes = vec![(77, 1)];
         assert!(journal_revoke_supersedes(77, u32::MAX, &revokes));
         assert!(!journal_revoke_supersedes(77, 2, &revokes));
+    }
+
+    #[ktest]
+    fn journal_barrier_propagates_completion_failure() {
+        let fixture = Ext2FixtureBuilder::new(1, 128).build().unwrap();
+        fixture.ext2.flush_journal_device().unwrap();
+        fixture.disk.set_fail_flush(true);
+        assert_errno!(fixture.ext2.flush_journal_device(), Errno::EIO);
+        fixture.disk.set_fail_flush(false);
+        fixture.ext2.flush_journal_device().unwrap();
+    }
+
+    #[ktest]
+    fn metadata_batch_validates_all_targets_before_writing() {
+        let fixture = Ext2FixtureBuilder::new(1, 128).build().unwrap();
+        let payload = [0x5a; BLOCK_SIZE];
+        let bid = fixture.sb.total_blocks() - 1;
+        let offset = Bid::new(bid as u64).to_offset();
+        let mut original = [0; BLOCK_SIZE];
+        fixture
+            .disk
+            .segment()
+            .read_bytes(offset, &mut original)
+            .unwrap();
+        assert_errno!(
+            fixture
+                .ext2
+                .write_metadata_blocks(&[(bid, &payload), (bid, &payload)]),
+            Errno::EEXIST
+        );
+        assert_errno!(
+            fixture
+                .ext2
+                .write_metadata_blocks(&[(bid, &payload), (bid - 1, &payload[..1])]),
+            Errno::EINVAL
+        );
+        assert_errno!(
+            fixture
+                .ext2
+                .write_metadata_blocks(&[(bid, &payload), (fixture.sb.total_blocks(), &payload)]),
+            Errno::EINVAL
+        );
+        let mut actual = [0; BLOCK_SIZE];
+        fixture
+            .disk
+            .segment()
+            .read_bytes(offset, &mut actual)
+            .unwrap();
+        assert_eq!(actual, original);
+        fixture
+            .ext2
+            .write_metadata_blocks(&[(bid, &payload), (bid - 1, &payload)])
+            .unwrap();
+        fixture
+            .disk
+            .segment()
+            .read_bytes(offset, &mut actual)
+            .unwrap();
+        assert_eq!(actual, payload);
     }
 
     #[ktest]
