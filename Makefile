@@ -62,6 +62,7 @@ EXTRA_BLOCKLISTS ?= ""
 # Parameters for xfstests.
 XFSTESTS_RUNLIST ?= /opt/xfstests/short.list
 XFSTESTS_DISK_SIZE ?= 12G
+XFSTESTS_FS_TYPE ?= ext2
 XFSTESTS_TEST_DEV ?= /dev/vdd
 XFSTESTS_SCRATCH_DEV ?= /dev/vde
 # Specify whether to build regression tests under `test/initramfs/src/regression`.
@@ -142,9 +143,21 @@ CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_WORKDIR=$(CONFORMANCE_TES
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="EXTRA_BLOCKLISTS=$(EXTRA_BLOCKLISTS)"
 ifeq ($(CONFORMANCE_TEST_SUITE), xfstests)
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_RUNLIST=$(XFSTESTS_RUNLIST)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_FS_TYPE=$(XFSTESTS_FS_TYPE)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_TEST_DEV=$(XFSTESTS_TEST_DEV)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_SCRATCH_DEV=$(XFSTESTS_SCRATCH_DEV)"
 endif
+CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
+else ifeq ($(AUTO_TEST), xfstests_ext4)
+ENABLE_CONFORMANCE_TEST := true
+CONFORMANCE_TEST_SUITE := xfstests
+XFSTESTS_RUNLIST := /opt/xfstests/ext4-pr.list
+XFSTESTS_FS_TYPE := ext4
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_SUITE=$(CONFORMANCE_TEST_SUITE)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_RUNLIST=$(XFSTESTS_RUNLIST)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_FS_TYPE=$(XFSTESTS_FS_TYPE)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_TEST_DEV=$(XFSTESTS_TEST_DEV)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_SCRATCH_DEV=$(XFSTESTS_SCRATCH_DEV)"
 CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
 else ifeq ($(AUTO_TEST), ifconf_gvisor)
 ifneq ($(TARGET_ARCH), x86_64)
@@ -1475,6 +1488,10 @@ else ifeq ($(AUTO_TEST), ext4_concurrency)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ext4-concurrency"
+else ifeq ($(AUTO_TEST), xfstests_ext4)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "xfstests-ext4"
 else ifeq ($(AUTO_TEST), ext2_firefox_recovery)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
