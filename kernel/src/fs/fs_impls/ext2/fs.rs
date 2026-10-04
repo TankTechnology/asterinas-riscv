@@ -908,7 +908,7 @@ impl Ext2 {
         ))
     }
 
-    fn stage_inode_desc(&self, ino: Ext2Ino, raw_inode: &RawInode) -> Result<()> {
+    pub(super) fn stage_inode_desc(&self, ino: Ext2Ino, raw_inode: &RawInode) -> Result<()> {
         let group = self
             .find_group(ino)
             .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
