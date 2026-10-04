@@ -31,6 +31,7 @@ SUCCESS_MARKERS = {
     "regression": "All regression tests passed.",
     "ext4-directory-journal": "ASTERINAS_EXT4_DIRECTORY_JOURNAL_OK operations=create,delete,rename,growth,sync",
     "ext4-concurrency": "ASTERINAS_EXT4_CONCURRENCY_OK workers=4 iterations=64 rename=rmdir fsync=1 syncfs=1",
+    "ext4-semantics": "ASTERINAS_EXT4_SEMANTICS_OK permissions=1 symlink=1 hardlink=1 sparse=1 fallocate=1 rename=1 xattr=1 fsync=1 syncfs=1",
     "xfstests-ext4": "ASTERINAS_XFSTESTS_OK fs=ext4 runlist=ext4-pr",
     "udp-user-buffer-prefault": "UDP user buffer prefault regression passed.",
     "udp-msg-dontwait": "UDP MSG_DONTWAIT regression passed.",
