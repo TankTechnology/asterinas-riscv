@@ -496,13 +496,25 @@ impl Ext2 {
         {
             return self.write_metadata_blocks(&[(bid, payload)]);
         }
+        self.stage_metadata_block(bid, payload);
+        Ok(())
+    }
+
+    fn stage_metadata_block(&self, bid: Ext2Bid, payload: &[u8]) {
         let mut pending = self.pending_metadata.lock();
         if let Some((_, previous)) = pending.iter_mut().find(|(target, _)| *target == bid) {
             previous.copy_from_slice(payload);
         } else {
             pending.push((bid, payload.to_vec()));
         }
-        Ok(())
+    }
+
+    fn pending_metadata_block(&self, bid: Ext2Bid) -> Option<Vec<u8>> {
+        self.pending_metadata
+            .lock()
+            .iter()
+            .find(|(target, _)| *target == bid)
+            .map(|(_, payload)| payload.clone())
     }
 
     /// Commits all supplied metadata blocks in one JBD2 transaction. No home
@@ -777,10 +789,15 @@ impl Ext2 {
             .inode_table_bid()
             .checked_add(block_offset as u32)
             .ok_or_else(|| Error::with_message(Errno::EIO, "inode table block overflow"))?;
-        let mut block = vec![0u8; BLOCK_SIZE];
-        self.block_device
-            .read_bytes(Bid::new(block_bid as u64).to_offset(), &mut block)
-            .map_err(|_| Error::with_message(Errno::EIO, "failed to read inode table block"))?;
+        let mut block = if let Some(block) = self.pending_metadata_block(block_bid) {
+            block
+        } else {
+            let mut block = vec![0u8; BLOCK_SIZE];
+            self.block_device
+                .read_bytes(Bid::new(block_bid as u64).to_offset(), &mut block)
+                .map_err(|_| Error::with_message(Errno::EIO, "failed to read inode table block"))?;
+            block
+        };
         block[in_block_offset..in_block_offset + size_of::<RawInode>()]
             .copy_from_slice(raw_inode.as_bytes());
         self.write_metadata_block(block_bid, &block)
