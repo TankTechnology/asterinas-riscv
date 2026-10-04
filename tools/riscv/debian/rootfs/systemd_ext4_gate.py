@@ -3,10 +3,12 @@
 
 """Boot the signed Debian ext4 profile through Stage1 and systemd twice.
 
-The first boot executes the Debian shell, filesystem, process and syscall
-workload, then updates apt and installs ``hello`` from the guest network.  The
-service requests a normal reboot.  The second boot proves that the package and
-an explicit state file survived the ext4 journal replay before emitting PASS.
+The first boot exercises login, user management, the Debian shell, filesystem,
+process and syscall workload, then updates apt, installs/removes/reinstalls
+``hello``, controls a systemd service, and makes an HTTP request.  The service
+requests a normal reboot.  The second boot proves that the account, package,
+service enablement, network, and explicit state file survived ext4 journal
+replay before emitting PASS.
 """
 
 from __future__ import annotations
@@ -50,7 +52,8 @@ _READY_RE = re.compile(
     r"\ADEBIAN_EXT4_READY boot=([12]) arch=([^ ]+) release=([^ ]+) "
     r"pid1=([^ ]+) rootfs=([^ ]+) shell=([01]) process=([01]) "
     r"filesystem=([01]) syscall=([01]) apt_update=([01]) package=([^ ]+) "
-    r"dpkg=([01]) network=([01]) persist=([01])\Z"
+    r"dpkg=([01]) login=([01]) user=([01]) apt_install=([01]) "
+    r"apt_remove=([01]) service=([01]) network=([01]) persist=([01])\Z"
 )
 _PASS = "DEBIAN_EXT4_PASS boot=2 persist=1"
 _FATAL_MARKERS = (
@@ -162,7 +165,8 @@ def classify_systemd_ext4(
             return _classify_failure(f"boot {boot} Debian release identity mismatch")
         if match.group(4) != "systemd" or match.group(5) != "ext4":
             return _classify_failure(f"boot {boot} root PID/filesystem identity mismatch")
-        if any(match.group(index) != "1" for index in (6, 7, 8, 9, 12, 13, 14)):
+        required_fields = (6, 7, 8, 9, 12, 13, 14, 15, 16, 17, 18, 19)
+        if any(match.group(index) != "1" for index in required_fields):
             return _classify_failure(f"boot {boot} shell workload evidence is incomplete")
         if match.group(11) != "hello":
             return _classify_failure(f"boot {boot} package identity mismatch")

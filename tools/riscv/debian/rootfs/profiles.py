@@ -78,6 +78,7 @@ _PROFILES = {
             "bash",
             "ca-certificates",
             "coreutils",
+            "curl",
             "dbus",
             "procps",
             "systemd-sysv",
@@ -85,6 +86,7 @@ _PROFILES = {
         ),
         identity_packages=_M1_IDENTITY_PACKAGES
         + (
+            "curl",
             "systemd",
             "systemd-sysv",
             "dbus",
