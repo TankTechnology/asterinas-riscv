@@ -262,6 +262,14 @@ impl BlockGroup {
         self.sync_metadata(group_descs)
     }
 
+    pub(super) fn sync_inodes_without_table(&self) -> Result<()> {
+        let inodes: Vec<Arc<Inode>> = self.inode_cache.read().values().cloned().collect();
+        for inode in inodes {
+            inode.sync_all()?;
+        }
+        Ok(())
+    }
+
     /// Syncs cached inodes.
     fn sync_inodes(&self) -> Result<()> {
         // Clone the `Arc` handles under the read lock, then drop the lock before
@@ -583,6 +591,18 @@ impl BlockGroup {
             metadata.desc.clear_dirty();
         }
 
+        Ok(desc_dirty)
+    }
+
+    pub(super) fn stage_descriptor(&self, group_descs: &USegment) -> Result<bool> {
+        let mut metadata = self.metadata.write();
+        let desc_dirty = metadata.desc.is_dirty();
+        if desc_dirty {
+            let raw_group = RawBlockGroup::from(*metadata.desc);
+            let offset = self.group_idx * self.group_desc_size;
+            group_descs.write_val(offset, &raw_group)?;
+            metadata.desc.clear_dirty();
+        }
         Ok(desc_dirty)
     }
 
