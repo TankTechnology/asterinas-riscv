@@ -45,7 +45,7 @@ run_shell_workload() {
 
 check_pid1_and_root() {
     local pid1 root_filesystem
-    pid1="$(ps -p 1 -o comm= | tr -d '[:space:]')" || fail pid1
+    pid1="$(tr -d '[:space:]' </proc/1/comm)" || fail pid1
     [[ "$pid1" == systemd ]] || fail pid1
     root_filesystem="$(stat -f -c '%T' /)" || fail root-filesystem
     [[ "$root_filesystem" == ext4 ]] || fail root-filesystem
