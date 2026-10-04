@@ -32,6 +32,7 @@ SUCCESS_MARKERS = {
     "ext4-directory-journal": "ASTERINAS_EXT4_DIRECTORY_JOURNAL_OK operations=create,delete,rename,growth,sync",
     "ext4-concurrency": "ASTERINAS_EXT4_CONCURRENCY_OK workers=4 iterations=64 rename=rmdir fsync=1 syncfs=1",
     "ext4-semantics": "ASTERINAS_EXT4_SEMANTICS_OK permissions=1 symlink=1 hardlink=1 sparse=1 fallocate=1 rename=1 xattr=1 fsync=1 syncfs=1",
+    "debian-apt-smoke": "ASTERINAS_DEBIAN_APT_OK boot=1 shell=1 process=1 filesystem=1 syscall=1 apt_update=1 package=hello dpkg=1 network=1 ext4=1",
     "xfstests-ext4": "ASTERINAS_XFSTESTS_OK fs=ext4 runlist=ext4-pr",
     "udp-user-buffer-prefault": "UDP user buffer prefault regression passed.",
     "udp-msg-dontwait": "UDP MSG_DONTWAIT regression passed.",
