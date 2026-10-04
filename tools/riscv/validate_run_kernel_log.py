@@ -30,6 +30,7 @@ SUCCESS_MARKERS = {
     "ipv6-udp": "ipv6_udp: PASS",
     "regression": "All regression tests passed.",
     "ext4-directory-journal": "ASTERINAS_EXT4_DIRECTORY_JOURNAL_OK operations=create,delete,rename,growth,sync",
+    "ext4-concurrency": "ASTERINAS_EXT4_CONCURRENCY_OK workers=4 iterations=64 rename=rmdir fsync=1 syncfs=1",
     "udp-user-buffer-prefault": "UDP user buffer prefault regression passed.",
     "udp-msg-dontwait": "UDP MSG_DONTWAIT regression passed.",
     "tcp-msg-dontwait-send": "TCP MSG_DONTWAIT send regression passed.",
