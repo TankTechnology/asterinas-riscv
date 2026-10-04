@@ -78,6 +78,8 @@ pub struct Ext2 {
     /// Serializes journal publication, home writes, and checkpointing. Acquired
     /// after ordinary inode locks; the journal inode never starts a transaction.
     journal_write_lock: Mutex<()>,
+    /// Metadata blocks staged by inode/extent writeback until filesystem sync.
+    pending_metadata: Mutex<Vec<(Ext2Bid, Vec<u8>)>>,
     /// Weak self reference for inode back-pointers.
     self_ref: Weak<Ext2>,
 }
@@ -237,6 +239,7 @@ impl Ext2 {
             fs_event_subscriber_stats: FsEventSubscriberStats::new(),
             next_generation: AtomicU32::new(utils::duration_to_ext2_secs(utils::now())),
             journal_write_lock: Mutex::new(()),
+            pending_metadata: Mutex::new(Vec::new()),
             self_ref: weak_self.clone(),
         });
 
@@ -482,7 +485,24 @@ impl Ext2 {
     /// The home block is not made visible until the committed journal copy is
     /// durable; it is checkpointed only after the home write and device flush.
     pub(super) fn write_metadata_block(&self, bid: Ext2Bid, payload: &[u8]) -> Result<()> {
-        self.write_metadata_blocks(&[(bid, payload)])
+        if payload.len() != BLOCK_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "invalid filesystem metadata block size");
+        }
+        if !self
+            .super_block
+            .read()
+            .feature_compat()
+            .contains(FeatureCompatSet::HAS_JOURNAL)
+        {
+            return self.write_metadata_blocks(&[(bid, payload)]);
+        }
+        let mut pending = self.pending_metadata.lock();
+        if let Some((_, previous)) = pending.iter_mut().find(|(target, _)| *target == bid) {
+            previous.copy_from_slice(payload);
+        } else {
+            pending.push((bid, payload.to_vec()));
+        }
+        Ok(())
     }
 
     /// Commits all supplied metadata blocks in one JBD2 transaction. No home
@@ -1043,16 +1063,23 @@ impl Ext2 {
     /// Persists allocation bitmaps, group descriptors, and the superblock
     /// before an inode-level fsync reports that its block flush completed.
     pub(super) fn sync_allocation_metadata(&self) -> Result<()> {
+        let pending = core::mem::take(&mut *self.pending_metadata.lock());
+        let pending_for_restore = pending.clone();
         let mut bitmap_payloads = Vec::new();
         for group in &self.block_groups {
             bitmap_payloads.extend(group.allocation_bitmap_snapshots());
         }
-        if !bitmap_payloads.is_empty() {
-            let blocks: Vec<(Ext2Bid, &[u8])> = bitmap_payloads
+        if !pending.is_empty() || !bitmap_payloads.is_empty() {
+            let mut metadata_payloads = pending;
+            metadata_payloads.extend(bitmap_payloads);
+            let blocks: Vec<(Ext2Bid, &[u8])> = metadata_payloads
                 .iter()
                 .map(|(bid, payload)| (*bid, payload.as_slice()))
                 .collect();
-            self.write_metadata_blocks(&blocks)?;
+            if let Err(err) = self.write_metadata_blocks(&blocks) {
+                self.pending_metadata.lock().extend(pending_for_restore);
+                return Err(err);
+            }
             for group in &self.block_groups {
                 group.clear_allocation_bitmap_dirty();
             }
