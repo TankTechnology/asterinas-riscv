@@ -47,6 +47,22 @@ use crate::{
     thread::Thread,
 };
 
+static JOURNAL_FAULT_STAGE: AtomicU32 = AtomicU32::new(0);
+
+aster_cmdline::define_kv_param!("asterinas.ext4_fault_stage", JOURNAL_FAULT_STAGE);
+
+const FAULT_AFTER_DESCRIPTOR: u32 = 1;
+const FAULT_AFTER_COMMIT: u32 = 2;
+const FAULT_BEFORE_HOME_FLUSH: u32 = 3;
+const FAULT_BEFORE_CHECKPOINT: u32 = 4;
+
+fn inject_journal_fault(stage: u32) {
+    if JOURNAL_FAULT_STAGE.swap(0, Ordering::Relaxed) == stage {
+        ostd::early_println!("ASTERINAS_EXT4_FAULT_STOP stage={}", stage);
+        ostd::power::emergency_restart(ostd::power::ExitCode::Failure);
+    }
+}
+
 /// The root inode number defined by the ext2 on-disk format.
 pub(super) const ROOT_INO: u32 = 2;
 
@@ -465,6 +481,7 @@ impl Ext2 {
         }
         inode.sync_all()?;
         self.flush_journal_device()?;
+        inject_journal_fault(FAULT_AFTER_DESCRIPTOR);
 
         let mut published = superblock;
         published[JBD2_SEQUENCE_OFFSET..JBD2_SEQUENCE_OFFSET + 4]
@@ -477,6 +494,7 @@ impl Ext2 {
         }
         inode.sync_all()?;
         self.flush_journal_device()?;
+        inject_journal_fault(FAULT_AFTER_COMMIT);
         Ok(())
     }
 
@@ -572,7 +590,9 @@ impl Ext2 {
                     Error::with_message(Errno::EIO, "failed to write journaled metadata block")
                 })?;
         }
+        inject_journal_fault(FAULT_BEFORE_HOME_FLUSH);
         self.flush_journal_device()?;
+        inject_journal_fault(FAULT_BEFORE_CHECKPOINT);
         self.checkpoint_journal(sequence)
     }
 
@@ -1079,9 +1099,17 @@ impl Ext2 {
         // bytes, so the segment is always consistent.
         let mut group_desc_dirty = false;
         for group in &self.block_groups {
-            group_desc_dirty |= group.sync_all(&self.group_descriptors_segment)?;
+            if self.has_journal() {
+                group.sync_inodes_without_table()?;
+            } else {
+                group_desc_dirty |= group.sync_all(&self.group_descriptors_segment)?;
+            }
         }
-        self.sync_metadata(group_desc_dirty)
+        if self.has_journal() {
+            self.sync_allocation_metadata()
+        } else {
+            self.sync_metadata(group_desc_dirty)
+        }
     }
 
     /// Persists allocation bitmaps, group descriptors, and the superblock
@@ -1090,8 +1118,12 @@ impl Ext2 {
         let pending = core::mem::take(&mut *self.pending_metadata.lock());
         let pending_for_restore = pending.clone();
         let mut bitmap_payloads = Vec::new();
+        let mut group_desc_dirty = false;
         for group in &self.block_groups {
             bitmap_payloads.extend(group.allocation_bitmap_snapshots());
+            if self.has_journal() {
+                group_desc_dirty |= group.stage_descriptor(&self.group_descriptors_segment)?;
+            }
         }
         if !pending.is_empty() || !bitmap_payloads.is_empty() {
             let mut metadata_payloads = pending;
@@ -1108,9 +1140,10 @@ impl Ext2 {
                 group.clear_allocation_bitmap_dirty();
             }
         }
-        let mut group_desc_dirty = false;
         for group in &self.block_groups {
-            group_desc_dirty |= group.sync_metadata(&self.group_descriptors_segment)?;
+            if !self.has_journal() {
+                group_desc_dirty |= group.sync_metadata(&self.group_descriptors_segment)?;
+            }
         }
         self.sync_metadata(group_desc_dirty)
     }

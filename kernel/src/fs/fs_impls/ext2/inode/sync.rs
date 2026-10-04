@@ -24,7 +24,7 @@ impl Inode {
         // Step 2: flush dirty data pages.
         let fs = self.fs()?;
         let mut inner = self.inner.write();
-        inner.sync_data_pages()?;
+        inner.sync_data_pages(&fs)?;
 
         // Step 3: flush inode-local indirect metadata before inode-table state.
         inner.sync_indirect_blocks()?;
@@ -43,7 +43,7 @@ impl Inode {
         let mut inner = self.inner.write();
 
         // Step 1: flush dirty data pages.
-        inner.sync_data_pages()?;
+        inner.sync_data_pages(&fs)?;
 
         // Step 2: flush inode-local indirect metadata before inode-table state.
         inner.sync_indirect_blocks()?;
@@ -128,9 +128,13 @@ impl InodeInner {
         Ok(())
     }
 
-    fn sync_data_pages(&self) -> Result<()> {
+    fn sync_data_pages(&self, fs: &Ext2) -> Result<()> {
         let file_size = self.file_size();
         if file_size == 0 {
+            return Ok(());
+        }
+
+        if self.inode_type() == InodeType::Dir && fs.has_journal() {
             return Ok(());
         }
 
