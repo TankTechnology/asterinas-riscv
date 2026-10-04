@@ -586,6 +586,33 @@ impl BlockGroup {
         Ok(desc_dirty)
     }
 
+    /// Snapshots dirty allocation bitmaps without clearing their dirty state.
+    /// The filesystem layer can submit all group bitmaps in one journal
+    /// transaction and clear them only after the transaction is checkpointed.
+    pub(super) fn allocation_bitmap_snapshots(&self) -> Vec<(Ext2Bid, Vec<u8>)> {
+        let metadata = self.metadata.read();
+        let mut blocks = Vec::with_capacity(2);
+        if metadata.block_bitmap.is_dirty() {
+            blocks.push((
+                metadata.desc.block_bitmap_bid,
+                metadata.block_bitmap.as_bytes().to_vec(),
+            ));
+        }
+        if metadata.inode_bitmap.is_dirty() {
+            blocks.push((
+                metadata.desc.inode_bitmap_bid,
+                metadata.inode_bitmap.as_bytes().to_vec(),
+            ));
+        }
+        blocks
+    }
+
+    pub(super) fn clear_allocation_bitmap_dirty(&self) {
+        let mut metadata = self.metadata.write();
+        metadata.block_bitmap.clear_dirty();
+        metadata.inode_bitmap.clear_dirty();
+    }
+
     /// Returns the 0-based group-local inode index.
     fn inode_idx_in_group(&self, ino: Ext2Ino) -> u16 {
         debug_assert!(ino > 0);
@@ -672,7 +699,7 @@ mod test {
 
     use super::*;
     use crate::{
-        fs::fs_impls::ext2::test_utils::{assert_errno, Ext2FixtureBuilder},
+        fs::fs_impls::ext2::test_utils::{Ext2FixtureBuilder, assert_errno},
         time::clocks,
     };
 

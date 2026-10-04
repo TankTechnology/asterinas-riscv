@@ -1043,6 +1043,20 @@ impl Ext2 {
     /// Persists allocation bitmaps, group descriptors, and the superblock
     /// before an inode-level fsync reports that its block flush completed.
     pub(super) fn sync_allocation_metadata(&self) -> Result<()> {
+        let mut bitmap_payloads = Vec::new();
+        for group in &self.block_groups {
+            bitmap_payloads.extend(group.allocation_bitmap_snapshots());
+        }
+        if !bitmap_payloads.is_empty() {
+            let blocks: Vec<(Ext2Bid, &[u8])> = bitmap_payloads
+                .iter()
+                .map(|(bid, payload)| (*bid, payload.as_slice()))
+                .collect();
+            self.write_metadata_blocks(&blocks)?;
+            for group in &self.block_groups {
+                group.clear_allocation_bitmap_dirty();
+            }
+        }
         let mut group_desc_dirty = false;
         for group in &self.block_groups {
             group_desc_dirty |= group.sync_metadata(&self.group_descriptors_segment)?;
