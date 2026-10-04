@@ -1115,8 +1115,6 @@ impl Ext2 {
     /// Persists allocation bitmaps, group descriptors, and the superblock
     /// before an inode-level fsync reports that its block flush completed.
     pub(super) fn sync_allocation_metadata(&self) -> Result<()> {
-        let pending = core::mem::take(&mut *self.pending_metadata.lock());
-        let pending_for_restore = pending.clone();
         let mut bitmap_payloads = Vec::new();
         let mut group_desc_dirty = false;
         for group in &self.block_groups {
@@ -1125,6 +1123,14 @@ impl Ext2 {
                 group_desc_dirty |= group.stage_descriptor(&self.group_descriptors_segment)?;
             }
         }
+        if self.has_journal() {
+            // Stage superblock and descriptor blocks before taking the pending
+            // snapshot so every filesystem metadata class is published by the
+            // same journal transaction.
+            self.sync_metadata(group_desc_dirty)?;
+        }
+        let pending = core::mem::take(&mut *self.pending_metadata.lock());
+        let pending_for_restore = pending.clone();
         if !pending.is_empty() || !bitmap_payloads.is_empty() {
             let mut metadata_payloads = pending;
             metadata_payloads.extend(bitmap_payloads);
@@ -1145,7 +1151,11 @@ impl Ext2 {
                 group_desc_dirty |= group.sync_metadata(&self.group_descriptors_segment)?;
             }
         }
-        self.sync_metadata(group_desc_dirty)
+        if self.has_journal() {
+            Ok(())
+        } else {
+            self.sync_metadata(group_desc_dirty)
+        }
     }
 
     /// Allocates a new inode number.
@@ -1318,11 +1328,10 @@ impl Ext2 {
                 .copy_from_slice(raw_superblock);
             blocks.push((superblock_bid, superblock_payload));
 
-            let block_refs: Vec<(Ext2Bid, &[u8])> = blocks
-                .iter()
-                .map(|(bid, payload)| (*bid, payload.as_slice()))
-                .collect();
-            return self.write_metadata_blocks(&block_refs);
+            for (bid, payload) in blocks {
+                self.stage_metadata_block(bid, &payload);
+            }
+            return Ok(());
         }
 
         let group_desc_segment = self.group_descriptors_segment.clone();
