@@ -886,7 +886,11 @@ impl Ext2 {
             .find_group(ino)
             .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
 
-        if let Err(err) = self.write_back_inode_desc(ino, &raw_inode) {
+        // A newly allocated inode must not be published through its own journal
+        // transaction before the parent directory entry is durable.  Stage it
+        // in the inode-table cache instead; the filesystem sync path flushes
+        // the inode, directory, and allocation metadata as one writeback unit.
+        if let Err(err) = self.stage_inode_desc(ino, &raw_inode) {
             if block_group.free_inode(ino, inode_type).is_ok() {
                 let _ = self.super_block.write().inc_free_inodes();
             }
@@ -902,6 +906,13 @@ impl Ext2 {
             block_group_idx,
             self.self_ref.clone(),
         ))
+    }
+
+    fn stage_inode_desc(&self, ino: Ext2Ino, raw_inode: &RawInode) -> Result<()> {
+        let group = self
+            .find_group(ino)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
+        group.write_back_inode_desc(ino, raw_inode)
     }
 
     /// Frees an inode by number.
