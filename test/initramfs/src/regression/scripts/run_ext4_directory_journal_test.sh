@@ -28,6 +28,7 @@ mv -f "$base/a/file-2" "$base/b/replaced"
 test -f "$base/a/renamed-0"
 test -f "$base/b/moved-1"
 test "$(cat "$base/b/replaced")" = "payload-2"
+/test/fs/sync/sync
 sync
 
 rm -rf "$base"
