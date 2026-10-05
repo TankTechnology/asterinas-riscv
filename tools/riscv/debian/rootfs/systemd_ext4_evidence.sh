@@ -12,6 +12,8 @@ readonly COUNTER="$STATE_DIRECTORY/boot-count"
 readonly PERSISTENCE_FILE="$STATE_DIRECTORY/persistence"
 readonly TEST_USER=debian
 readonly TEST_SERVICE=asterinas-debian-user.service
+readonly LOGIN_DIRECTORY=/run/asterinas-debian-login
+readonly LOGIN_FILE="$LOGIN_DIRECTORY/complete"
 
 emit() {
     # A serial getty may leave its login prompt without a trailing newline.
@@ -86,6 +88,21 @@ check_network() {
         fail network-request
 }
 
+wait_for_interactive_login() {
+    install -d -m 0777 -- "$LOGIN_DIRECTORY" || fail login-directory
+    rm -f -- "$LOGIN_FILE" || fail login-reset
+    emit 'DEBIAN_EXT4_LOGIN_READY boot=1'
+    for _ in $(seq 1 120); do
+        if [[ -e "$LOGIN_FILE" ]]; then
+            [[ "$(stat -c '%U' -- "$LOGIN_FILE")" == "$TEST_USER" ]] ||
+                fail login-owner
+            return
+        fi
+        /bin/sleep 1
+    done
+    fail login-timeout
+}
+
 check_pid1_and_root() {
     local pid1 root_filesystem
     pid1="$(tr -d '[:space:]' </proc/1/comm)" || fail pid1
@@ -149,6 +166,7 @@ if ((next == 1)); then
     configure_and_test_service
     install_hello
     check_network
+    wait_for_interactive_login
     printf '%s\n' ext4-debian-apt-smoke >"$PERSISTENCE_FILE" ||
         fail persistence-write
     sync || fail sync

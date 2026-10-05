@@ -1044,6 +1044,11 @@ EOF
             service_name=asterinas-debian-m2.service
         fi
         install -D -m 0755 -- "$evidence_script" "$evidence_path"
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            install -D -m 0755 -- \
+                "$script_directory/asterinas_login.sh" \
+                "$stage/usr/local/sbin/asterinas-login"
+        fi
         if [[ "$PROFILE" == systemd-m2 ]]; then
             cat >"$stage/etc/systemd/system/$service_name" <<'EOF'
 [Unit]
@@ -1063,8 +1068,7 @@ EOF
             cat >"$stage/etc/systemd/system/$service_name" <<EOF
 [Unit]
 Description=Asterinas Debian ${PROFILE} evidence
-After=local-fs.target network.target
-Before=multi-user.target
+After=local-fs.target network.target getty.target
 
 [Service]
 Type=oneshot
@@ -1079,6 +1083,27 @@ EOF
         ln -s -- \
             "../$service_name" \
             "$stage/etc/systemd/system/multi-user.target.wants/$service_name"
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            # Asterinas exposes the usable interactive serial tty as ttyS0.
+            # Keep Debian's console-getty ordering and lifecycle, but point
+            # its terminal directly at ttyS0. The serial-getty template adds
+            # a dev-ttyS0.device dependency that is not materialized by the
+            # current Asterinas device manager.
+            install -d -m 0755 -- \
+                "$stage/etc/systemd/system/console-getty.service.d"
+            cat >"$stage/etc/systemd/system/console-getty.service.d/asterinas-serial.conf" <<'EOF'
+[Service]
+TTYPath=/dev/ttyS0
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=tty
+TTYReset=yes
+TTYVHangup=no
+TTYVTDisallocate=no
+ExecStart=
+ExecStart=-/sbin/agetty -o '-- \\u' --noclear --keep-baud -l /usr/local/sbin/asterinas-login 115200,38400,9600 - $TERM
+EOF
+        fi
     elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
         configure_desktop "$stage" "${PROFILE#desktop-}"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
