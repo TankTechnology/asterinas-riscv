@@ -33,6 +33,7 @@ DEBIAN_STAGE1_PROGRESS step=handoff-done action=tmp-mount
 DEBIAN_STAGE1_PROGRESS step=handoff-done action=chroot
 DEBIAN_STAGE1_PROGRESS step=handoff-done action=chdir
 DEBIAN_STAGE1_PROGRESS step=handoff-enter action=exec
+ASTERINAS_LOGIN_PASS uid=1000 home=/home/debian shell=/bin/bash tty=/dev/console term=linux
 DEBIAN_EXT4_READY boot=1 arch=riscv64 release=13.6 pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=1 package=hello dpkg=1 login=1 user=1 apt_install=1 apt_remove=1 service=1 network=1 persist=1
 U-Boot 2025
 Starting kernel ...
@@ -128,19 +129,31 @@ class SystemdExt4BuilderTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             evidence = stage / "usr/lib/asterinas/systemd-ext4-evidence"
+            login_helper = stage / "usr/local/sbin/asterinas-login"
             unit = stage / "etc/systemd/system/asterinas-debian-ext4.service"
             wanted = (
                 stage
                 / "etc/systemd/system/multi-user.target.wants/asterinas-debian-ext4.service"
             )
+            serial_override = (
+                stage
+                / "etc/systemd/system/console-getty.service.d/asterinas-serial.conf"
+            )
             self.assertEqual(
                 evidence.read_bytes(),
                 (BUILD_SCRIPT.parent / "systemd_ext4_evidence.sh").read_bytes(),
+            )
+            self.assertEqual(
+                login_helper.read_bytes(),
+                (BUILD_SCRIPT.parent / "asterinas_login.sh").read_bytes(),
             )
             self.assertIn(
                 "ExecStart=/usr/lib/asterinas/systemd-ext4-evidence", unit.read_text()
             )
             self.assertTrue(wanted.is_symlink())
+            self.assertIn("TTYPath=/dev/ttyS0", serial_override.read_text())
+            self.assertIn("StandardInput=tty-force", serial_override.read_text())
+            self.assertIn("TTYReset=yes", serial_override.read_text())
 
 
 class SystemdExt4BootargsTests(unittest.TestCase):

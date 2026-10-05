@@ -56,6 +56,7 @@ _READY_RE = re.compile(
     r"apt_remove=([01]) service=([01]) network=([01]) persist=([01])\Z"
 )
 _PASS = "DEBIAN_EXT4_PASS boot=2 persist=1"
+_LOGIN_PASS = "ASTERINAS_LOGIN_PASS uid=1000 home=/home/debian shell=/bin/bash"
 _FATAL_MARKERS = (
     b"DEBIAN_EXT4_FAIL reason=",
     b"debian_rootfs_fail reason=",
@@ -142,6 +143,9 @@ def classify_systemd_ext4(
     pass_positions = [index for index, line in enumerate(lines) if line == _PASS]
     if len(pass_positions) != 1:
         return _classify_failure("missing or duplicate ext4 PASS marker")
+    login_positions = [index for index, line in enumerate(lines) if line.startswith(_LOGIN_PASS)]
+    if len(login_positions) != 1:
+        return _classify_failure("missing or duplicate interactive login marker")
     starts = [index for index, line in enumerate(lines) if line == "Starting kernel ..."]
     if len(starts) != 2:
         return _classify_failure("normal reboot requires exactly two kernel starts")
@@ -154,6 +158,8 @@ def classify_systemd_ext4(
     second_index, second = ready[2][0]
     if not (starts[0] < first_index < starts[1] < second_index < pass_positions[0]):
         return _classify_failure("ext4 boot markers are reordered")
+    if not (starts[0] < login_positions[0] < first_index):
+        return _classify_failure("interactive login marker is reordered")
     if not any(first_index < index < starts[1] for index in firmware):
         return _classify_failure("firmware restart evidence is missing")
 
@@ -248,6 +254,48 @@ class SystemdExt4Operations(ConcreteOperations):
     def run_protocol(self, session: Mapping[str, Any], config: GateConfig) -> None:
         self._boot_once(session, config, wait_prompt=True)
         serial = session["serial"]
+        login_ready = b"DEBIAN_EXT4_LOGIN_READY boot=1"
+        serial.wait_for(login_ready, time.monotonic() + config.boot_timeout)
+        login_start = serial.checkpoint()
+        serial.send(b"debian\n", time.monotonic() + config.boot_timeout)
+        serial.wait_for(b"Password:", time.monotonic() + config.boot_timeout, start=login_start)
+        serial.send(b"asterinas\n", time.monotonic() + config.boot_timeout)
+        login_deadline = time.monotonic() + config.boot_timeout
+        serial.wait_for(
+            b"Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY",
+            login_deadline,
+            start=login_start,
+        )
+        # Asterinas' serial getty does not always redraw bash's prompt after
+        # the login banner.  The banner is emitted only after PAM has opened
+        # the user session; leave a short scheduling window before sending
+        # the shell probe instead of depending on prompt rendering.
+        # login(1) prints the Debian banner before it has finished handing the
+        # controlling tty to the user's shell.  Give bash enough time to run
+        # its startup files so the first probe line is not consumed during
+        # that handoff.
+        time.sleep(5.0)
+        # A newline wakes shells whose prompt is not rendered on this serial
+        # console, while still leaving an ordinary interactive session.
+        serial.send(b"\n", time.monotonic() + config.boot_timeout)
+        time.sleep(1.0)
+        login_command = (
+            "if [ \"$(id -u)\" = 1000 ] && [ \"$HOME\" = /home/debian ] "
+            "&& [ \"$SHELL\" = /bin/bash ] && [ -n \"$TERM\" ] "
+            "&& [ -n \"$PATH\" ] && [ -c \"$(tty)\" ]; then "
+            "touch /run/asterinas-debian-login/complete; "
+            "printf 'ASTERINAS_LOGIN_PASS uid=%s home=%s shell=%s tty=%s term=%s\\n' "
+            "\"$(id -u)\" \"$HOME\" \"$SHELL\" \"$(tty)\" \"$TERM\"; "
+            "else echo ASTERINAS_LOGIN_FAIL; fi\n"
+        )
+        serial.send(login_command.encode(), time.monotonic() + config.boot_timeout)
+        login_result = serial.wait_for_any(
+            (b"ASTERINAS_LOGIN_PASS", b"ASTERINAS_LOGIN_FAIL"),
+            time.monotonic() + config.boot_timeout,
+        )
+        if login_result == b"ASTERINAS_LOGIN_FAIL":
+            raise GateFailure("interactive login probe failed")
+        serial.send(b"exit\n", time.monotonic() + config.boot_timeout)
         ready1 = b"DEBIAN_EXT4_READY boot=1"
         transcript = serial.wait_for(ready1, time.monotonic() + config.boot_timeout)
         restart_start = transcript.rfind(ready1) + len(ready1)
