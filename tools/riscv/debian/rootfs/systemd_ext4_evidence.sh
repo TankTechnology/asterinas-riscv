@@ -58,8 +58,14 @@ check_login_and_user() {
     local uid
     uid="$(id -u "$TEST_USER")" || fail user-identity
     [[ "$uid" -ge 1000 ]] || fail user-identity
+    /usr/bin/passwd --status "$TEST_USER" | /bin/grep -q '^debian P ' ||
+        fail passwd-status
+    local protected=/root/asterinas-root-only
+    umask 077
+    printf '%s\n' root-only >"$protected" || fail permissions-root-file
+    chmod 0600 -- "$protected" || fail permissions-root-mode
     su - "$TEST_USER" -c \
-        'test "$(id -u)" -ge 1000 && test "$HOME" = /home/debian' ||
+        'test "$(id -u)" -ge 1000 && test "$HOME" = /home/debian && ! test -r /root/asterinas-root-only' ||
         fail login
 }
 
