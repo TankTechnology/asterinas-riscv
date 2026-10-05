@@ -34,6 +34,7 @@ DEBIAN_STAGE1_PROGRESS step=handoff-done action=chroot
 DEBIAN_STAGE1_PROGRESS step=handoff-done action=chdir
 DEBIAN_STAGE1_PROGRESS step=handoff-enter action=exec
 ASTERINAS_LOGIN_PASS uid=1000 home=/home/debian shell=/bin/bash tty=/dev/console term=linux
+DEBIAN_EXT4_M5_PASS boot=1 apt=1 maintainer=1 triggers=1 locks=1 recovery=1 packages=1 upgrade=1
 DEBIAN_EXT4_READY boot=1 arch=riscv64 release=13.6 pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=1 package=hello dpkg=1 login=1 user=1 apt_install=1 apt_remove=1 service=1 network=1 persist=1
 U-Boot 2025
 Starting kernel ...
@@ -47,6 +48,7 @@ DEBIAN_STAGE1_PROGRESS step=handoff-done action=tmp-mount
 DEBIAN_STAGE1_PROGRESS step=handoff-done action=chroot
 DEBIAN_STAGE1_PROGRESS step=handoff-done action=chdir
 DEBIAN_STAGE1_PROGRESS step=handoff-enter action=exec
+DEBIAN_EXT4_M5_PASS boot=2 apt=1 maintainer=1 triggers=1 locks=1 recovery=1 packages=1 upgrade=1 persist=1
 DEBIAN_EXT4_READY boot=2 arch=riscv64 release=13.6 pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=0 package=hello dpkg=1 login=1 user=1 apt_install=1 apt_remove=1 service=1 network=1 persist=1
 DEBIAN_EXT4_PASS boot=2 persist=1
 """

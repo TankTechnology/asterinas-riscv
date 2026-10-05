@@ -964,6 +964,7 @@ test_riscv_debian_systemd_m2_gate:
 		--output-directory "$(DEBIAN_SYSTEMD_M2_GATE_OUTPUT)" --smp 4
 
 .PHONY: test_riscv_debian_systemd_ext4_gate
+DEBIAN_SYSTEMD_EXT4_BOOT_TIMEOUT ?= 900
 test_riscv_debian_systemd_ext4_gate:
 	@test -n "$(DEBIAN_KERNEL)" || \
 		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
@@ -992,7 +993,8 @@ test_riscv_debian_systemd_ext4_gate:
 		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
-		--output-directory "$(DEBIAN_SYSTEMD_EXT4_GATE_OUTPUT)" --smp 4
+		--output-directory "$(DEBIAN_SYSTEMD_EXT4_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout "$(DEBIAN_SYSTEMD_EXT4_BOOT_TIMEOUT)"
 
 .PHONY: test_riscv_debian_desktop_m5_qemu_gate
 test_riscv_debian_desktop_m5_qemu_gate:
