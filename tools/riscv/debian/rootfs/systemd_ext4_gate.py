@@ -57,6 +57,10 @@ _READY_RE = re.compile(
 )
 _PASS = "DEBIAN_EXT4_PASS boot=2 persist=1"
 _LOGIN_PASS = "ASTERINAS_LOGIN_PASS uid=1000 home=/home/debian shell=/bin/bash"
+_M5_PASS = {
+    1: "DEBIAN_EXT4_M5_PASS boot=1 apt=1 maintainer=1 triggers=1 locks=1 recovery=1 packages=1 upgrade=1",
+    2: "DEBIAN_EXT4_M5_PASS boot=2 apt=1 maintainer=1 triggers=1 locks=1 recovery=1 packages=1 upgrade=1 persist=1",
+}
 _FATAL_MARKERS = (
     b"DEBIAN_EXT4_FAIL reason=",
     b"debian_rootfs_fail reason=",
@@ -146,6 +150,12 @@ def classify_systemd_ext4(
     login_positions = [index for index, line in enumerate(lines) if line.startswith(_LOGIN_PASS)]
     if len(login_positions) != 1:
         return _classify_failure("missing or duplicate interactive login marker")
+    m5_positions = {
+        boot: [index for index, line in enumerate(lines) if line == marker]
+        for boot, marker in _M5_PASS.items()
+    }
+    if any(len(positions) != 1 for positions in m5_positions.values()):
+        return _classify_failure("missing or duplicate M5 package lifecycle marker")
     starts = [index for index, line in enumerate(lines) if line == "Starting kernel ..."]
     if len(starts) != 2:
         return _classify_failure("normal reboot requires exactly two kernel starts")
@@ -160,6 +170,12 @@ def classify_systemd_ext4(
         return _classify_failure("ext4 boot markers are reordered")
     if not (starts[0] < login_positions[0] < first_index):
         return _classify_failure("interactive login marker is reordered")
+    if not (
+        first_index > m5_positions[1][0]
+        and second_index > m5_positions[2][0]
+        and m5_positions[1][0] < starts[1] < m5_positions[2][0]
+    ):
+        return _classify_failure("M5 package lifecycle markers are reordered")
     if not any(first_index < index < starts[1] for index in firmware):
         return _classify_failure("firmware restart evidence is missing")
 

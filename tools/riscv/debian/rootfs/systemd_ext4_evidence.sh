@@ -150,6 +150,65 @@ install_hello() {
         /var/lib/dpkg/lock-frontend
 }
 
+run_m5_package_lifecycle() {
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        openssh-server python3-minimal || fail m5-install
+    [[ "$(dpkg-query -W -f='${Status}\n' openssh-server)" == 'install ok installed' ]] ||
+        fail m5-openssh
+    [[ "$(dpkg-query -W -f='${Status}\n' python3-minimal)" == 'install ok installed' ]] ||
+        fail m5-python
+    /usr/bin/python3 -c 'import sys; assert sys.version_info >= (3, 13)' ||
+        fail m5-python-runtime
+    [[ -x /usr/sbin/sshd && -f /etc/ssh/sshd_config ]] || fail m5-maintainer
+
+    # Exercise an actual upgrade/reconfiguration path and its maintainer
+    # scripts, then settle all pending dpkg triggers.
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall \
+        openssh-server python3-minimal || fail m5-upgrade
+    dpkg --configure -a || fail m5-configure
+    dpkg-trigger --no-await ldconfig || fail m5-trigger-queue
+    dpkg --triggers-only --pending || fail m5-trigger-run
+    [[ -z "$(dpkg-query -W -f='${Triggers-Pending}' libc-bin)" ]] ||
+        fail m5-trigger-pending
+
+    # An expected package failure must leave dpkg recoverable.
+    if DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        asterinas-package-that-does-not-exist; then
+        fail m5-failure-injection
+    fi
+    dpkg --audit | /bin/grep -q . && fail m5-audit || true
+    DEBIAN_FRONTEND=noninteractive apt-get -f install -y || fail m5-recovery
+
+    # Verify that the frontend lock is honored without leaving a stale lock.
+    # Remove an already-installed package first; otherwise apt can take its
+    # no-op fast path without touching the dpkg lock at all.
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y hello || fail m5-lock-setup
+    if dpkg-query -W -f='${Status}\n' hello >/dev/null 2>&1; then
+        fail m5-lock-setup
+    fi
+    (
+        /usr/bin/python3 -c \
+            'import fcntl, time; f=open("/var/lib/dpkg/lock-frontend", "w"); fcntl.lockf(f, fcntl.LOCK_EX); time.sleep(5)'
+    ) &
+    local lock_holder=$!
+    /bin/sleep 1
+    kill -0 "$lock_holder" 2>/dev/null || fail m5-lock-holder
+    if DEBIAN_FRONTEND=noninteractive apt-get \
+        -o DPkg::Lock::Timeout=0 install -y --no-install-recommends hello; then
+        kill "$lock_holder" 2>/dev/null || true
+        wait "$lock_holder" 2>/dev/null || true
+        fail m5-lock
+    fi
+    wait "$lock_holder" || fail m5-lock-holder
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends hello ||
+        fail m5-lock-recovery
+    [[ "$(/usr/bin/hello)" == 'Hello, world!' ]] || fail m5-lock-recovery
+    compgen -G '/var/cache/apt/archives/openssh-server_*.deb' >/dev/null ||
+        compgen -G '/var/cache/apt/archives/python3-minimal_*.deb' >/dev/null ||
+        fail m5-cache
+    dpkg --audit | /bin/grep -q . && fail m5-final-audit || true
+}
+
 emit "DEBIAN_EXT4_PROGRESS step=entry"
 architecture="$(uname -m)" || fail architecture
 [[ "$architecture" == riscv64 ]] || fail architecture
@@ -171,11 +230,13 @@ if ((next == 1)); then
     check_login_and_user
     configure_and_test_service
     install_hello
+    run_m5_package_lifecycle
     check_network
     wait_for_interactive_login
     printf '%s\n' ext4-debian-apt-smoke >"$PERSISTENCE_FILE" ||
         fail persistence-write
     sync || fail sync
+    emit 'DEBIAN_EXT4_M5_PASS boot=1 apt=1 maintainer=1 triggers=1 locks=1 recovery=1 packages=1 upgrade=1'
     emit "DEBIAN_EXT4_READY boot=1 arch=$architecture release=$debian_release pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=1 package=hello dpkg=1 login=1 user=1 apt_install=1 apt_remove=1 service=1 network=1 persist=1"
     systemctl --no-block --no-wall reboot || fail reboot
 else
@@ -192,6 +253,11 @@ else
     systemctl stop "$TEST_SERVICE" || fail service-stop
     check_network
     sync || fail sync
+    [[ "$(dpkg-query -W -f='${Status}\n' openssh-server)" == 'install ok installed' ]] || fail m5-persist-openssh
+    [[ "$(dpkg-query -W -f='${Status}\n' python3-minimal)" == 'install ok installed' ]] || fail m5-persist-python
+    /usr/bin/python3 -c 'import sys; assert sys.version_info >= (3, 13)' || fail m5-persist-python-runtime
+    dpkg --audit | /bin/grep -q . && fail m5-persist-audit || true
+    emit 'DEBIAN_EXT4_M5_PASS boot=2 apt=1 maintainer=1 triggers=1 locks=1 recovery=1 packages=1 upgrade=1 persist=1'
     emit "DEBIAN_EXT4_READY boot=2 arch=$architecture release=$debian_release pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=0 package=hello dpkg=1 login=1 user=1 apt_install=1 apt_remove=1 service=1 network=1 persist=1"
     emit 'DEBIAN_EXT4_PASS boot=2 persist=1'
 fi
