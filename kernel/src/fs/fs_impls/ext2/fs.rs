@@ -785,6 +785,14 @@ impl Ext2 {
         let group = self
             .find_group(ino)
             .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
+
+        // The inode-table page cache can contain dirty descriptors from other
+        // inodes in the same filesystem block.  Serialize the complete
+        // read/modify/stage sequence and read the block from that cache.  A
+        // direct device read here would return a stale block and could
+        // overwrite concurrent inode updates when the journal image is
+        // assembled.
+        let _journal_guard = self.has_journal().then(|| self.journal_write_lock.lock());
         group.write_back_inode_desc(ino, raw_inode)?;
 
         // The journal inode is the backing store for journal transactions. Its
@@ -820,9 +828,7 @@ impl Ext2 {
             block
         } else {
             let mut block = vec![0u8; BLOCK_SIZE];
-            self.block_device
-                .read_bytes(Bid::new(block_bid as u64).to_offset(), &mut block)
-                .map_err(|_| Error::with_message(Errno::EIO, "failed to read inode table block"))?;
+            group.read_inode_table_block(block_offset, &mut block)?;
             block
         };
         block[in_block_offset..in_block_offset + size_of::<RawInode>()]

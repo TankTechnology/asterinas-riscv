@@ -531,6 +531,24 @@ impl BlockGroup {
         Ok(())
     }
 
+    /// Reads an inode-table block from the page cache, including dirty
+    /// descriptors that have not reached the block device yet.
+    pub(super) fn read_inode_table_block(
+        &self,
+        block_offset: usize,
+        payload: &mut [u8],
+    ) -> Result<()> {
+        if payload.len() != BLOCK_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "invalid inode-table block size");
+        }
+        let offset = block_offset
+            .checked_mul(BLOCK_SIZE)
+            .ok_or_else(|| Error::with_message(Errno::EOVERFLOW, "inode-table offset overflow"))?;
+        self.inode_table_cache
+            .read_bytes(offset, payload)
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to read inode-table cache"))
+    }
+
     pub(super) fn inode_table_bid(&self) -> Ext2Bid {
         self.metadata.read().desc.inode_table_bid
     }
