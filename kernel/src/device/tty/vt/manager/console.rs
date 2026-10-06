@@ -15,6 +15,12 @@ use crate::{
     process::{Process, signal::sig_num::SigNum},
 };
 
+// Some firmware scanout BARs are expensive to write from a synchronous VT
+// renderer. Allow a serial-managed graphical boot to defer all VT painting
+// to userspace while retaining the VT ABI and the framebuffer device.
+static FRAMEBUFFER_CONSOLE_ENABLED: AtomicBool = AtomicBool::new(true);
+aster_cmdline::define_flag_param!("asterinas.vt_framebuffer", FRAMEBUFFER_CONSOLE_ENABLED);
+
 /// The virtual terminal console.
 pub(in crate::device::tty::vt) struct VtConsole {
     keyboard: SpinLock<VtKeyboard, LocalIrqDisabled>,
@@ -285,6 +291,7 @@ impl VtConsole {
 
         let mut backend = self.backend.lock();
         if !matches!(*backend, VtConsoleBackend::Framebuffer(_))
+            && FRAMEBUFFER_CONSOLE_ENABLED.load(Ordering::Relaxed)
             && let Some(fb) = FRAMEBUFFER.get()
         {
             let mut console = FramebufferConsole::new(fb.clone());

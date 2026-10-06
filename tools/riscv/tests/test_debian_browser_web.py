@@ -1140,11 +1140,14 @@ class BrowserWebContractTests(unittest.TestCase):
             "physical_external_services_quiesce.sh",
             "browser_interaction_perf.py",
             "desktop_display_provider.sh",
+            "desktop_fbdev_no_input.conf",
             "browser_performance_provenance.py",
             "firefox_diagnostic_snapshot.py",
             "browser_web_trust_check.py",
             "browser_web_online_rootfs_check.py",
             "firefox_jit_overlay.py",
+            "physical_graphics_control.sh",
+            "desktop_m3_device_access.sh",
         )
 
         def digest(source_directory: Path) -> str:
