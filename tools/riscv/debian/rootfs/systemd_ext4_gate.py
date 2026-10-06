@@ -48,6 +48,7 @@ SYSTEMD_EXT4_BOOTARGS = (
     "console=ttyS0 loglevel=4 init=/init "
     "-- --root-fs=ext4 --root-init=systemd"
 )
+NETWORK_RECOVERY_ONLY = False
 _READY_RE = re.compile(
     r"\ADEBIAN_EXT4_READY boot=([12]) arch=([^ ]+) release=([^ ]+) "
     r"pid1=([^ ]+) rootfs=([^ ]+) shell=([01]) process=([01]) "
@@ -56,13 +57,31 @@ _READY_RE = re.compile(
     r"apt_remove=([01]) service=([01]) network=([01]) persist=([01])\Z"
 )
 _PASS = "DEBIAN_EXT4_PASS boot=2 persist=1"
+_NETWORK_MANAGER_RECOVERY_RE = re.compile(
+    r"^DEBIAN_EXT4_NETWORK_RECOVERY interface=[^ ]+ manager=1$"
+)
 _LOGIN_PASS = "ASTERINAS_LOGIN_PASS uid=1000 home=/home/debian shell=/bin/bash"
 _M5_PASS = {
     1: "DEBIAN_EXT4_M5_PASS boot=1 apt=1 maintainer=1 triggers=1 locks=1 recovery=1 packages=1 upgrade=1",
     2: "DEBIAN_EXT4_M5_PASS boot=2 apt=1 maintainer=1 triggers=1 locks=1 recovery=1 packages=1 upgrade=1 persist=1",
 }
+_REQUIRED_PROGRESS = (
+    ("DEBIAN_EXT4_PROGRESS step=loopback-sockets-done", 2),
+    ("DEBIAN_EXT4_PROGRESS step=service-restart-journald-done", 1),
+    ("DEBIAN_EXT4_PROGRESS step=oneshot-done", 1),
+    ("DEBIAN_EXT4_PROGRESS step=timer-done", 1),
+    ("DEBIAN_EXT4_PROGRESS step=forking-done", 1),
+    ("DEBIAN_EXT4_PROGRESS step=service-restart-on-failure-done", 1),
+    ("DEBIAN_EXT4_PROGRESS step=service-dependency-order-done", 1),
+    ("DEBIAN_EXT4_PROGRESS step=socket-activation-done", 1),
+    ("DEBIAN_EXT4_PROGRESS step=dbus-logind-session-done", 1),
+    ("DEBIAN_EXT4_PROGRESS step=apt-interruption-recovery-done", 1),
+    ("DEBIAN_EXT4_PROGRESS step=network-recovery-done", 2),
+    ("DEBIAN_EXT4_PROGRESS step=ext4-consistency-done", 1),
+)
 _FATAL_MARKERS = (
     b"DEBIAN_EXT4_FAIL reason=",
+    b"DEBIAN_ROOTFS_FAIL reason=",
     b"debian_rootfs_fail reason=",
     b"kernel panic",
     b"uncaught panic:",
@@ -82,6 +101,14 @@ _STAGE1_HANDOFF_MARKERS = (
     "DEBIAN_STAGE1_PROGRESS step=handoff-done action=chdir",
     "DEBIAN_STAGE1_PROGRESS step=handoff-enter action=exec",
 )
+
+
+def wait_for_guest_marker(serial: Any, marker: bytes, deadline: float, *, start: int = 0) -> bytes:
+    """Stop immediately when the guest reports failure instead of timing out."""
+    observed = serial.wait_for_any((marker, *_FATAL_MARKERS), deadline, start=start)
+    if observed != marker:
+        raise GateFailure(f"guest failure while waiting for {marker.decode()}: {observed.decode()}")
+    return serial.transcript
 
 
 def systemd_ext4_qemu_argv(**arguments: Any) -> tuple[str, ...]:
@@ -156,6 +183,17 @@ def classify_systemd_ext4(
     }
     if any(len(positions) != 1 for positions in m5_positions.values()):
         return _classify_failure("missing or duplicate M5 package lifecycle marker")
+    for marker, expected_count in _REQUIRED_PROGRESS:
+        positions = [index for index, line in enumerate(lines) if line == marker]
+        if len(positions) != expected_count:
+            return _classify_failure(f"missing or duplicate required progress marker: {marker}")
+    network_manager_recoveries = [
+        line for line in lines if _NETWORK_MANAGER_RECOVERY_RE.fullmatch(line)
+    ]
+    if len(network_manager_recoveries) != 2:
+        return _classify_failure(
+            "network manager restart recovery evidence is missing or incomplete"
+        )
     starts = [index for index, line in enumerate(lines) if line == "Starting kernel ..."]
     if len(starts) != 2:
         return _classify_failure("normal reboot requires exactly two kernel starts")
@@ -196,6 +234,71 @@ def classify_systemd_ext4(
         if match.group(10) != expected_apt:
             return _classify_failure(f"boot {boot} apt evidence mismatch")
         del fields
+    return GateResult(True, "pass", None)
+
+
+def classify_network_recovery(
+    transcript: bytes | str, *, expected_debian_release: str
+) -> GateResult:
+    """Require two boots whose network manager restart completed successfully."""
+
+    del expected_debian_release
+    normalized = _normalize_transcript(transcript)
+    if isinstance(normalized, GateResult):
+        return normalized
+    text, lines = normalized
+    lowered = text.lower()
+    for marker in _FATAL_MARKERS:
+        if marker in lowered.encode():
+            return _classify_failure(f"fatal transcript marker: {marker.decode()}")
+    starts = [index for index, line in enumerate(lines) if line == "Starting kernel ..."]
+    if len(starts) != 2:
+        return _classify_failure("network recovery requires exactly two kernel starts")
+    ordered_positions = []
+    for boot, start in enumerate(starts, 1):
+        end = starts[1] if boot == 1 else len(lines)
+        required = (
+            *_STAGE1_HANDOFF_MARKERS,
+            "DEBIAN_EXT4_PROGRESS step=network-recovery-start",
+            "DEBIAN_EXT4_PROGRESS step=network-recovery-done",
+            f"DEBIAN_EXT4_NETWORK_ONLY boot={boot}",
+        )
+        positions = []
+        for marker in required:
+            matches = [index for index in range(start, end) if lines[index] == marker]
+            if len(matches) != 1:
+                return _classify_failure(f"boot {boot} missing or duplicate marker: {marker}")
+            positions.append(matches[0])
+        if positions != sorted(positions):
+            return _classify_failure(f"boot {boot} network recovery markers are reordered")
+        managers = [
+            index for index in range(start, end)
+            if _NETWORK_MANAGER_RECOVERY_RE.fullmatch(lines[index])
+        ]
+        if len(managers) != 1 or not positions[-2] < managers[0] < positions[-1]:
+            return _classify_failure(f"boot {boot} network manager recovery evidence is incomplete")
+        ordered_positions.append(positions[-1])
+    boot_markers = [
+        line for line in lines if line.startswith("DEBIAN_EXT4_NETWORK_ONLY boot=")
+    ]
+    if boot_markers != ["DEBIAN_EXT4_NETWORK_ONLY boot=1", "DEBIAN_EXT4_NETWORK_ONLY boot=2"]:
+        return _classify_failure("network recovery boot markers are missing or reordered")
+    managers = [line for line in lines if _NETWORK_MANAGER_RECOVERY_RE.fullmatch(line)]
+    if len(managers) != 2:
+        return _classify_failure("network manager restart recovery evidence is incomplete")
+    if lines.count("DEBIAN_EXT4_NETWORK_ONLY_PASS boots=2 manager=1") != 1:
+        return _classify_failure("network recovery completion marker is missing")
+    if lines.index("DEBIAN_EXT4_NETWORK_ONLY_PASS boots=2 manager=1") <= ordered_positions[1]:
+        return _classify_failure("network recovery completion marker is reordered")
+    if any(line.startswith("DEBIAN_EXT4_NETWORK_RECOVERY ") and
+           not _NETWORK_MANAGER_RECOVERY_RE.fullmatch(line) for line in lines):
+        return _classify_failure("network recovery contains a fallback or malformed manager marker")
+    if not any(
+        ordered_positions[0] < index < starts[1]
+        and line.startswith(("OpenSBI ", "U-Boot "))
+        for index, line in enumerate(lines)
+    ):
+        return _classify_failure("network recovery firmware restart evidence is missing")
     return GateResult(True, "pass", None)
 
 
@@ -242,6 +345,11 @@ class SystemdExt4Operations(ConcreteOperations):
         serial = session["serial"]
         if wait_prompt:
             serial.wait_for(b"=> ", deadline, start=start)
+        bootargs = SYSTEMD_EXT4_BOOTARGS
+        if NETWORK_RECOVERY_ONLY:
+            bootargs = bootargs.replace(
+                " -- --root-fs=ext4", " asterinas.network_recovery_only=1 -- --root-fs=ext4"
+            )
         commands = (
             "virtio scan",
             "ext4load virtio 0:0 0x80200000 /asterinas.booti",
@@ -249,7 +357,7 @@ class SystemdExt4Operations(ConcreteOperations):
             "fdt addr 0x88000000",
             "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
             "setenv initrd_size ${filesize}",
-            f'setenv bootargs "{SYSTEMD_EXT4_BOOTARGS}"',
+            f'setenv bootargs "{bootargs}"',
         )
         for index, command in enumerate(commands, 1):
             self._send_uboot(session, command, index, deadline)
@@ -268,10 +376,13 @@ class SystemdExt4Operations(ConcreteOperations):
         serial.wait_for(b"Starting kernel ...", deadline, start=start)
 
     def run_protocol(self, session: Mapping[str, Any], config: GateConfig) -> None:
+        if NETWORK_RECOVERY_ONLY:
+            self._run_network_recovery_protocol(session, config)
+            return
         self._boot_once(session, config, wait_prompt=True)
         serial = session["serial"]
         login_ready = b"DEBIAN_EXT4_LOGIN_READY boot=1"
-        serial.wait_for(login_ready, time.monotonic() + config.boot_timeout)
+        wait_for_guest_marker(serial, login_ready, time.monotonic() + config.boot_timeout)
         login_start = serial.checkpoint()
         serial.send(b"debian\n", time.monotonic() + config.boot_timeout)
         serial.wait_for(b"Password:", time.monotonic() + config.boot_timeout, start=login_start)
@@ -313,7 +424,7 @@ class SystemdExt4Operations(ConcreteOperations):
             raise GateFailure("interactive login probe failed")
         serial.send(b"exit\n", time.monotonic() + config.boot_timeout)
         ready1 = b"DEBIAN_EXT4_READY boot=1"
-        transcript = serial.wait_for(ready1, time.monotonic() + config.boot_timeout)
+        transcript = wait_for_guest_marker(serial, ready1, time.monotonic() + config.boot_timeout)
         restart_start = transcript.rfind(ready1) + len(ready1)
         reboot_deadline = time.monotonic() + config.boot_timeout
         autoboot = b"Hit any key to stop autoboot"
@@ -328,8 +439,33 @@ class SystemdExt4Operations(ConcreteOperations):
             wait_prompt=False,
             start=second_boot_start,
         )
-        serial.wait_for(
+        wait_for_guest_marker(serial,
             b"DEBIAN_EXT4_PASS boot=2",
+            time.monotonic() + config.boot_timeout,
+        )
+
+    def _run_network_recovery_protocol(
+        self, session: Mapping[str, Any], config: GateConfig
+    ) -> None:
+        self._boot_once(session, config, wait_prompt=True)
+        serial = session["serial"]
+        wait_for_guest_marker(
+            serial,
+            b"DEBIAN_EXT4_NETWORK_ONLY boot=1",
+            time.monotonic() + config.boot_timeout,
+        )
+        restart_start = serial.checkpoint()
+        reboot_deadline = time.monotonic() + config.boot_timeout
+        autoboot = b"Hit any key to stop autoboot"
+        transcript = serial.wait_for(autoboot, reboot_deadline, start=restart_start)
+        prompt_start = transcript.rfind(autoboot) + len(autoboot)
+        serial.send(b" \n", reboot_deadline)
+        serial.wait_for(b"=> ", reboot_deadline, start=prompt_start)
+        second_boot_start = serial.checkpoint()
+        self._boot_once(session, config, wait_prompt=False, start=second_boot_start)
+        wait_for_guest_marker(
+            serial,
+            b"DEBIAN_EXT4_NETWORK_ONLY_PASS boots=2 manager=1",
             time.monotonic() + config.boot_timeout,
         )
 
@@ -350,13 +486,18 @@ class SystemdExt4Operations(ConcreteOperations):
 
 def main(arguments: list[str] | None = None) -> int:
     try:
-        config = parse_gate_args(arguments)
+        global NETWORK_RECOVERY_ONLY
+        raw_arguments = list(sys.argv[1:] if arguments is None else arguments)
+        NETWORK_RECOVERY_ONLY = "--network-recovery-only" in raw_arguments
+        config = parse_gate_args(
+            [argument for argument in raw_arguments if argument != "--network-recovery-only"]
+        )
         _safe_output(config.output_directory)
         with TerminationSignalState(), SystemdExt4Operations(config) as operations:
             result = orchestrate_systemd_m2_gate(
                 config,
                 operations,
-                classifier=classify_systemd_ext4,
+                classifier=(classify_network_recovery if NETWORK_RECOVERY_ONLY else classify_systemd_ext4),
             )
         return 0 if result["passed"] else 1
     except SystemExit as error:
