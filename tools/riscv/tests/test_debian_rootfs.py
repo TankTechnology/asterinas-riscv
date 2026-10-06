@@ -2819,8 +2819,9 @@ WantedBy=multi-user.target
             identity_helper.read_bytes(), DESKTOP_INPUT_IDENTITY_SOURCE.read_bytes()
         )
         self.assertEqual(stat.S_IMODE(identity_helper.stat().st_mode), 0o755)
-        self.assertIn("chown asterinas:video /dev/fb0", device_access.read_text())
-        self.assertIn("chmod 0660 /dev/fb0", device_access.read_text())
+        self.assertIn("display_nodes=(/dev/fb0)", device_access.read_text())
+        self.assertIn('chown asterinas:video "${display_nodes[@]}"', device_access.read_text())
+        self.assertIn('chmod 0660 "${display_nodes[@]}"', device_access.read_text())
         self.assertIn("chown asterinas:input", device_access.read_text())
         self.assertNotIn(
             'if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" != 1 ]]; then',

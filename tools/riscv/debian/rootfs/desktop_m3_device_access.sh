@@ -17,6 +17,8 @@ case "$OFFLINE_DESKTOP" in
         exit 1
         ;;
 esac
+readonly DISPLAY_PROVIDER="${ASTERINAS_DISPLAY_PROVIDER:-fbdev}"
+readonly DISPLAY_DEVICE="$([[ "$DISPLAY_PROVIDER" == drm ]] && printf '%s' /dev/dri/card0 || printf '%s' /dev/fb0)"
 
 # The desktop and browser services both run this helper during graphical boot.
 # Serialize the tmpfs mount and input-link replacement so one service cannot
@@ -106,13 +108,13 @@ fi
 # devices exist: AutoAddDevices is disabled, and event numbers vary with the
 # order in which the two physical xHCI controllers finish initialization.
 readonly device_deadline=$((SECONDS + 120))
-while [[ ! -c /dev/fb0 ]]; do
+while [[ ! -c "$DISPLAY_DEVICE" ]]; do
     if ((SECONDS >= device_deadline)); then
         if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
-            printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=device-access-failed reason=fb0-timeout' \
+            printf '%s\n' "BROWSER_WEB_DESKTOP_STAGE=device-access-failed reason=${DISPLAY_DEVICE#/}-timeout" \
                 >>/run/browser-web-device-stage.log
         fi
-        printf '%s\n' 'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: /dev/fb0 did not appear' >&2
+        printf '%s\n' "ASTERINAS_DESKTOP_DEVICE_ACCESS failed: $DISPLAY_DEVICE did not appear" >&2
         exit 1
     fi
     /usr/bin/sleep 1
@@ -163,16 +165,23 @@ else
     trap - EXIT
 fi
 
-if ! chown asterinas:video /dev/fb0 || ! chmod 0660 /dev/fb0; then
+display_nodes=()
+if [[ "$DISPLAY_PROVIDER" == drm ]]; then
+    display_nodes=(/dev/dri/card0 /dev/dri/renderD*)
+else
+    display_nodes=(/dev/fb0)
+fi
+if ! chown asterinas:video "${display_nodes[@]}" ||
+    ! chmod 0660 "${display_nodes[@]}"; then
     if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
-        printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=device-access-failed reason=fb0-permissions' \
+        printf '%s\n' "BROWSER_WEB_DESKTOP_STAGE=device-access-failed reason=${DISPLAY_DEVICE#/}-permissions" \
             >>/run/browser-web-device-stage.log
     fi
-    printf '%s\n' 'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: cannot configure /dev/fb0' >&2
+    printf '%s\n' "ASTERINAS_DESKTOP_DEVICE_ACCESS failed: cannot configure $DISPLAY_DEVICE" >&2
     exit 1
 fi
 if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
-    printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=fb0-ready' >>/run/browser-web-device-stage.log
+    printf '%s\n' "BROWSER_WEB_DESKTOP_STAGE=${DISPLAY_DEVICE#/}-ready" >>/run/browser-web-device-stage.log
 fi
 if ((${#input_devices[@]} > 0)); then
     if ! chown asterinas:input "${input_devices[@]}" || ! chmod 0660 "${input_devices[@]}"; then
