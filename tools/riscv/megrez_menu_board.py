@@ -19,7 +19,7 @@ import time
 from tools.riscv import megrez_boot_menu as menu
 from tools.riscv.debian.rootfs.gate_runtime import SerialConsole
 from tools.riscv.megrez_board_session import BoardSession, open_serial
-from tools.riscv.megrez_debug_board import _lock_serial
+from tools.riscv.megrez_debug_board import RealBoardOperations, _lock_serial
 from tools.riscv.megrez_rockos_attestation import (
     RealRockOsAttestationOperations,
     ROCKOS_PROMPT,
@@ -182,10 +182,41 @@ def desktop_ready(session):
     return ready
 
 
-def boot_cycle(operations, document, mode, username, password, nonce, check_root=False):
+def watchdog_mode_allowed(mode: str) -> bool:
+    """Return whether watchdog arming is safe for this menu operation.
+
+    The watchdog is a recovery guard for bounded Asterinas cycles only.  It
+    must never be armed for RockOS, fallback, or the interactive desktop
+    entry, where a normal userspace recovery path is required instead.
+    """
+
+    return mode in ("basic", "probe")
+
+
+def boot_cycle(
+    operations,
+    document,
+    mode,
+    username,
+    password,
+    nonce,
+    check_root=False,
+    hardware_watchdog=False,
+):
+    if hardware_watchdog and not watchdog_mode_allowed(mode):
+        raise menu.BootManifestError(
+            f"hardware watchdog is not permitted for {mode} cycle"
+        )
     session = operations._require_session()
     os.write(session.fd, b"\x03")
-    session.wait_for_uboot_prompt(10)
+    session.wait_for_uboot_prompt(45 if hardware_watchdog else 10)
+    if hardware_watchdog:
+        # This performs clock/reset prerequisite readback, component-ID
+        # validation, writes the bounded timeout, and verifies the armed
+        # control state before any Asterinas entry is selected.
+        RealBoardOperations._arm_hardware_watchdog(
+            session, time.monotonic() + 15
+        )
     path = menu_path(document)
     started = time.monotonic()
     if mode == "fallback":
@@ -328,10 +359,19 @@ def main():
     parser.add_argument("--address", default="10.100.19.216")
     parser.add_argument("--port", type=int, default=18082)
     parser.add_argument("--check-root", action="store_true")
+    parser.add_argument(
+        "--hardware-watchdog",
+        action="store_true",
+        help="arm the verified EIC7700 watchdog for a bounded Basic or Probe cycle",
+    )
     parser.add_argument("--from-uboot", action="store_true")
     args = parser.parse_args()
     document = json.loads(args.manifest.read_text())
     menu.validate(document)
+    if args.hardware_watchdog and not watchdog_mode_allowed(args.mode):
+        parser.error(
+            "--hardware-watchdog requires a Basic or read-only probe cycle"
+        )
     if args.action == "promote":
         if args.evidence is None:
             parser.error("promote requires --evidence")
@@ -385,6 +425,7 @@ def main():
                         password,
                         nonce,
                         args.check_root,
+                        args.hardware_watchdog,
                     )
                 )
         result.update(passed=True, recovered=True)
