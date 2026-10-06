@@ -62,6 +62,7 @@ EXTRA_BLOCKLISTS ?= ""
 # Parameters for xfstests.
 XFSTESTS_RUNLIST ?= /opt/xfstests/short.list
 XFSTESTS_DISK_SIZE ?= 12G
+XFSTESTS_FS_TYPE ?= ext2
 XFSTESTS_TEST_DEV ?= /dev/vdd
 XFSTESTS_SCRATCH_DEV ?= /dev/vde
 # Specify whether to build regression tests under `test/initramfs/src/regression`.
@@ -130,6 +131,9 @@ CARGO_OSDK_COMMON_ARGS :=
 CARGO_OSDK_BUILD_ARGS := --kcmd-args="loglevel=$(LOG_LEVEL)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="earlycon"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="console=$(CONSOLE)"
+ifneq ($(EXT4_JOURNAL_FAULT_STAGE),)
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="asterinas.ext4_fault_stage=$(EXT4_JOURNAL_FAULT_STAGE)"
+endif
 CARGO_OSDK_TEST_ARGS :=
 
 ifeq ($(AUTO_TEST), conformance)
@@ -139,9 +143,21 @@ CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_WORKDIR=$(CONFORMANCE_TES
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="EXTRA_BLOCKLISTS=$(EXTRA_BLOCKLISTS)"
 ifeq ($(CONFORMANCE_TEST_SUITE), xfstests)
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_RUNLIST=$(XFSTESTS_RUNLIST)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_FS_TYPE=$(XFSTESTS_FS_TYPE)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_TEST_DEV=$(XFSTESTS_TEST_DEV)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_SCRATCH_DEV=$(XFSTESTS_SCRATCH_DEV)"
 endif
+CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
+else ifeq ($(AUTO_TEST), xfstests_ext4)
+ENABLE_CONFORMANCE_TEST := true
+CONFORMANCE_TEST_SUITE := xfstests
+XFSTESTS_RUNLIST := /opt/xfstests/ext4-pr.list
+XFSTESTS_FS_TYPE := ext4
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_SUITE=$(CONFORMANCE_TEST_SUITE)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_RUNLIST=$(XFSTESTS_RUNLIST)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_FS_TYPE=$(XFSTESTS_FS_TYPE)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_TEST_DEV=$(XFSTESTS_TEST_DEV)"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_SCRATCH_DEV=$(XFSTESTS_SCRATCH_DEV)"
 CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_conformance_test.sh"
 else ifeq ($(AUTO_TEST), ifconf_gvisor)
 ifneq ($(TARGET_ARCH), x86_64)
@@ -190,6 +206,45 @@ else ifeq ($(AUTO_TEST), ext2_msync_eio)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext2_msync_eio_test.sh"
+else ifeq ($(AUTO_TEST), ext4_regression)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext4_regression_test.sh"
+else ifeq ($(AUTO_TEST), ext4_directory_journal)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext4_directory_journal_test.sh"
+else ifeq ($(AUTO_TEST), ext4_concurrency)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext4_concurrency_test.sh"
+else ifeq ($(AUTO_TEST), ext4_semantics)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext4_semantics_test.sh"
+else ifeq ($(AUTO_TEST), debian_apt_smoke)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_debian_apt_smoke_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=debianapt" \
+	--qemu-args="-device virtio-net-device,netdev=debianapt"
+endif
+else ifeq ($(AUTO_TEST), ext4_uncommitted_cut)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext4_uncommitted_cut_test.sh"
+else ifeq ($(AUTO_TEST), ext4_recovery_verify)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext4_recovery_verify_test.sh"
 else ifeq ($(AUTO_TEST), exfat_syncfs_eio)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
@@ -526,6 +581,7 @@ test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_debian_dev_overlay \
 		tools.riscv.tests.test_debian_rootfs \
+		tools.riscv.tests.test_debian_systemd_ext4_gate \
 		tools.riscv.tests.test_debian_m5_network \
 		tools.riscv.tests.test_debian_m6_browser \
 		tools.riscv.tests.test_debian_m7_baidu \
@@ -544,6 +600,12 @@ build_riscv_debian_browser_web_dev_overlay:
 		--base-dir "$(DEBIAN_BROWSER_WEB_BASE_ROOTFS)" \
 		--spec "$(DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC)" \
 		--output-dir "$(DEBIAN_BROWSER_WEB_DEV_ROOTFS)"
+
+.PHONY: build_riscv_debian_systemd_ext4
+build_riscv_debian_systemd_ext4:
+	@tools/riscv/debian/rootfs/build_rootfs.sh \
+		--profile systemd-ext4-m3 \
+		--output-dir "$(CURDIR)/target/debian-riscv/systemd-ext4-m3/rootfs"
 
 .PHONY: test_riscv_megrez_debian_shell
 test_riscv_megrez_debian_shell:
@@ -900,6 +962,39 @@ test_riscv_debian_systemd_m2_gate:
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_SYSTEMD_M2_GATE_OUTPUT)" --smp 4
+
+.PHONY: test_riscv_debian_systemd_ext4_gate
+DEBIAN_SYSTEMD_EXT4_BOOT_TIMEOUT ?= 900
+test_riscv_debian_systemd_ext4_gate:
+	@test -n "$(DEBIAN_KERNEL)" || \
+		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || \
+		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || \
+		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
+		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
+		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
+		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
+		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
+		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_SYSTEMD_EXT4_GATE_OUTPUT)" || \
+		{ echo "DEBIAN_SYSTEMD_EXT4_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.systemd_ext4_gate \
+		--kernel "$(DEBIAN_KERNEL)" \
+		--uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_SYSTEMD_EXT4_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout "$(DEBIAN_SYSTEMD_EXT4_BOOT_TIMEOUT)"
 
 .PHONY: test_riscv_debian_desktop_m5_qemu_gate
 test_riscv_debian_desktop_m5_qemu_gate:
@@ -1433,6 +1528,26 @@ ifneq ($(filter $(AUTO_TEST),conformance regression boot vsock),)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "$(AUTO_TEST)" $(if $(filter 1,$(RISCV_ICACHE_REQUIRE_SMP4)),--require-riscv-icache-smp4,)
+else ifeq ($(AUTO_TEST), ext4_directory_journal)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ext4-directory-journal"
+else ifeq ($(AUTO_TEST), ext4_concurrency)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ext4-concurrency"
+else ifeq ($(AUTO_TEST), ext4_semantics)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "ext4-semantics"
+else ifeq ($(AUTO_TEST), debian_apt_smoke)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "debian-apt-smoke"
+else ifeq ($(AUTO_TEST), xfstests_ext4)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "xfstests-ext4"
 else ifeq ($(AUTO_TEST), ext2_firefox_recovery)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \

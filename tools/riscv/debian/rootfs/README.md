@@ -5,6 +5,46 @@ boots it twice on current Asterinas. The first boot writes and syncs a random
 nonce; the second boot must read the same nonce from the same writable root
 disk. The runtime is headless, has four harts, and uses `-nic none`.
 
+## Ext4 journal migration
+
+The established signed profiles remain ext2 while the ext4 profile is being
+validated. To produce a journaled compatibility image without changing
+the frozen source image, run:
+
+```bash
+tools/riscv/debian/rootfs/convert_ext2_to_ext4_journal.sh \
+  --input target/debian-riscv/rootfs/debian-root.ext2 \
+  --output target/debian-riscv/rootfs/debian-root.ext4
+```
+
+The converter copies the image, creates an ext3/ext4 journal while retaining
+the ext2 block and inode layout, and runs read-only `e2fsck` before and after
+the change. Clean journaled mounts are accepted by Asterinas, and the current
+JBD2 path can replay basic descriptor/data/commit/revoke transactions. Volumes
+using unsupported journal checksum or 64-bit features remain outside this
+compatibility profile. Extent inodes now have validated read-side mapping,
+allocation into existing indexed leaves, root growth into indexed leaves, and
+depth-one indexed truncation with empty-leaf compaction. Deeper tree splitting
+and compaction remain rejected, so the profile deliberately disables
+`metadata_csum`, `64bit`, `flex_bg`, and `orphan_file` while enabling `extent`.
+
+The isolated builder profile `systemd-ext4-m3` creates this same ext4 feature
+subset directly and records `filesystem.type=ext4` in its schema-9 manifest.
+The Makefile entry point is `make build_riscv_debian_systemd_ext4`; after the
+container build, verify the published image with:
+
+```bash
+tools/riscv/debian/rootfs/verify_ext4_journal.sh \
+  --image target/debian-riscv/systemd-ext4-m3/rootfs/debian-root.ext2 \
+  --manifest target/debian-riscv/systemd-ext4-m3/rootfs/rootfs-manifest.json \
+  --packages-lock target/debian-riscv/systemd-ext4-m3/rootfs/packages.lock
+```
+
+Pass Stage1 `--root-fs=ext4 --root-init=systemd` when booting that profile;
+existing profiles retain their ext2 handoff. The normal Stage1 ext4 handoff
+allows journal replay; `-o noload` remains available for explicit diagnostic
+mounts when recovery metadata is malformed or unsupported.
+
 Run all commands from the repository root. Build and use the dedicated rootfs
 image described in `tools/docker/riscv-rootfs/README.md`; its default
 explicit-QEMU/proot path does not modify host binfmt state.

@@ -10,9 +10,9 @@ use core::{
 };
 
 use aster_block::{
-    BlockDevice,
     bio::{BioCompleteFn, BioSegment, BioStatus},
     id::BlockId,
+    BlockDevice, SECTOR_SIZE,
 };
 use device_id::DeviceId;
 use hashbrown::HashMap;
@@ -22,7 +22,7 @@ pub(super) use ostd::mm::VmIo;
 
 use super::{
     bitmap::ExfatBitmap,
-    fat::{ClusterID, ExfatChain, FAT_ENTRY_SIZE, FatChainFlags, FatValue},
+    fat::{ClusterID, ExfatChain, FatChainFlags, FatValue, FAT_ENTRY_SIZE},
     inode::ExfatInode,
     super_block::{ExfatBootSector, ExfatSuperBlock},
     upcase_table::ExfatUpcaseTable,
@@ -93,11 +93,6 @@ impl ExfatFs {
             mutex: Mutex::new(()),
             fs_event_subscriber_stats: FsEventSubscriberStats::new(),
         });
-
-        // TODO: if the main superblock is corrupted, should we load the backup?
-
-        // Verify boot region
-        Self::verify_boot_region(exfat_fs.block_device())?;
 
         let weak_fs = Arc::downgrade(&exfat_fs);
 
@@ -242,8 +237,63 @@ impl ExfatFs {
         Ok(())
     }
 
-    fn verify_boot_region(block_device: &dyn BlockDevice) -> Result<()> {
-        // TODO: Check boot signature and boot checksum.
+    fn verify_boot_region(block_device: &dyn BlockDevice, sector_size: usize) -> Result<()> {
+        const BOOT_REGION_SECTORS: usize = 12;
+        const CHECKSUM_SECTOR: usize = BOOT_REGION_SECTORS - 1;
+        const BOOT_SIGNATURE_OFFSET: usize = 510;
+        const VOLUME_FLAGS_OFFSET: usize = 106;
+        const PERCENT_IN_USE_OFFSET: usize = 112;
+
+        if !sector_size.is_power_of_two() || sector_size < SECTOR_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "invalid exFAT sector size");
+        }
+        let region_size = sector_size
+            .checked_mul(BOOT_REGION_SECTORS)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "exFAT boot region is too large"))?;
+        let device_size = block_device
+            .metadata()
+            .nr_sectors
+            .checked_mul(SECTOR_SIZE)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid block device size"))?;
+        let backup_offset = region_size;
+        if device_size < backup_offset + region_size {
+            return_errno_with_message!(Errno::EINVAL, "exFAT boot regions are truncated");
+        }
+
+        let mut main = vec![0; region_size];
+        let mut backup = vec![0; region_size];
+        block_device.read_bytes(0, &mut main)?;
+        block_device.read_bytes(backup_offset, &mut backup)?;
+
+        for region in [&main, &backup] {
+            let signature = u16::from_le_bytes(
+                region[BOOT_SIGNATURE_OFFSET..BOOT_SIGNATURE_OFFSET + 2]
+                    .try_into()
+                    .unwrap(),
+            );
+            if signature != BOOT_SIGNATURE {
+                return_errno_with_message!(Errno::EINVAL, "invalid exFAT boot signature");
+            }
+
+            let mut checksum = 0u32;
+            for (index, &byte) in region[..CHECKSUM_SECTOR * sector_size].iter().enumerate() {
+                if index == VOLUME_FLAGS_OFFSET
+                    || index == VOLUME_FLAGS_OFFSET + 1
+                    || index == PERCENT_IN_USE_OFFSET
+                {
+                    continue;
+                }
+                checksum = checksum.rotate_right(1).wrapping_add(byte as u32);
+            }
+
+            let checksum_sector = &region[CHECKSUM_SECTOR * sector_size..];
+            for chunk in checksum_sector.chunks_exact(size_of::<u32>()) {
+                let stored = u32::from_le_bytes(chunk.try_into().unwrap());
+                if stored != checksum {
+                    return_errno_with_message!(Errno::EINVAL, "invalid exFAT boot checksum");
+                }
+            }
+        }
         Ok(())
     }
 
@@ -283,6 +333,8 @@ impl ExfatFs {
         if boot_sector.sector_per_cluster_bits + boot_sector.sector_size_bits > 25 {
             return_errno_with_message!(Errno::EINVAL, "bogus sector size bits per cluster");
         }
+
+        Self::verify_boot_region(block_device, 1usize << boot_sector.sector_size_bits)?;
 
         let super_block = ExfatSuperBlock::try_from(boot_sector)?;
 

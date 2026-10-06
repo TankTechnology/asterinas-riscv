@@ -39,6 +39,7 @@ from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     _wait_across_windows,
     _wait_baidu_search_outcome,
     _playback_probe,
+    _media_capability_probe,
     _wait_for_bilibili_playback,
     _write_evidence,
     _probe_mapping,
@@ -50,6 +51,7 @@ from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     probe_fixture_capabilities,
     run_baidu_home_gate,
     run_bilibili_playback_gate,
+    run_media_capability_gate,
     select_bilibili_video,
     validate_gecko_profiler_environment,
     validate_baidu_home,
@@ -727,6 +729,8 @@ class BrowserWebContractTests(unittest.TestCase):
         'user_pref("dom.ipc.processPrelaunch.enabled", false);',
         'user_pref("fission.autostart", false);',
         'user_pref("media.rdd-process.enabled", true);',
+        'user_pref("media.rdd-ffmpeg.enabled", true);',
+        'user_pref("media.ffmpeg.enabled", true);',
         'user_pref("network.captive-portal-service.enabled", false);',
         'user_pref("network.connectivity-service.enabled", false);',
     }
@@ -745,6 +749,7 @@ class BrowserWebContractTests(unittest.TestCase):
         proxy_host: str = "",
         proxy_port: str = "",
         basic_only: bool = False,
+        rdd_mode: str = "on",
     ) -> subprocess.CompletedProcess[str]:
         environment = {
             **os.environ,
@@ -753,6 +758,7 @@ class BrowserWebContractTests(unittest.TestCase):
             "ASTERINAS_BROWSER_WEB_BASIC_ONLY": "1" if basic_only else "0",
             "ASTERINAS_DESKTOP_PROXY_HOST": proxy_host,
             "ASTERINAS_DESKTOP_PROXY_PORT": proxy_port,
+            "ASTERINAS_FIREFOX_MEDIA_RDD_MODE": rdd_mode,
         }
         return subprocess.run(
             ["/bin/bash", str(ROOTFS / "browser_web_firefox.sh"), "--prepare-profile"],
@@ -855,6 +861,37 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("ASTERINAS_FIREFOX_WEB_FAIL reason=invalid-network-profile", result.stderr)
         service = (ROOTFS / "browser_web.service").read_text()
         self.assertIn("RestartPreventExitStatus=64", service)
+
+    def test_firefox_media_rdd_profile_is_explicitly_switchable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            enabled = self._prepare_firefox_profile(
+                home, mode="direct", rdd_mode="on"
+            )
+            self.assertEqual(enabled.returncode, 0, enabled.stderr)
+            profile = (home / ".mozilla/asterinas-browser-web/user.js").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('user_pref("media.rdd-process.enabled", true);', profile)
+            self.assertIn('user_pref("media.rdd-ffmpeg.enabled", true);', profile)
+            self.assertIn('user_pref("media.ffmpeg.enabled", true);', profile)
+            self.assertNotIn('user_pref("media.rdd-process.enabled", false);', profile)
+
+            disabled = self._prepare_firefox_profile(
+                home, mode="direct", rdd_mode="off"
+            )
+            self.assertEqual(disabled.returncode, 0, disabled.stderr)
+            profile = (home / ".mozilla/asterinas-browser-web/user.js").read_text(
+                encoding="utf-8"
+            )
+            self.assertIn('user_pref("media.rdd-process.enabled", false);', profile)
+            self.assertNotIn('user_pref("media.rdd-process.enabled", true);', profile)
+
+            invalid = self._prepare_firefox_profile(
+                home, mode="direct", rdd_mode="invalid"
+            )
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn("invalid-media-rdd-mode", invalid.stderr)
 
     def test_firefox_direct_profile_removes_proxy_state(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -3263,6 +3300,31 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertNotIn("getEntriesByType", script)
         self.assertNotIn("querySelectorAll('a[href*=", script)
 
+    def test_media_capability_probe_is_strict_and_uses_a_fresh_sandbox(self) -> None:
+        client = mock.Mock()
+        capabilities = {
+            "url": "about:blank",
+            "readyState": "complete",
+            "video": {"h264Aac": "maybe", "h264": "probably", "vp9": "probably", "av1": ""},
+            "audio": {"aac": "probably", "opus": "probably"},
+            "mse": {"h264Aac": True, "h264": True, "vp9": True},
+            "eme": False,
+            "webCodecs": False,
+        }
+        client.command.return_value = {"value": json.dumps(capabilities)}
+        self.assertEqual(_media_capability_probe(client), capabilities)
+        command, arguments = client.command.call_args.args
+        self.assertEqual(command, "WebDriver:ExecuteScript")
+        self.assertTrue(arguments["newSandbox"])
+        self.assertIn("canPlayType", arguments["script"])
+        self.assertIn("MediaSource.isTypeSupported", arguments["script"])
+
+        forged = dict(capabilities)
+        forged["url"] = "https://www.bilibili.com/"
+        client.command.return_value = {"value": json.dumps(forged)}
+        with self.assertRaisesRegex(GateError, "about:blank"):
+            _media_capability_probe(client)
+
     def test_marionette_gate_reports_screenshot_and_search_phases(self) -> None:
         gate = (ROOTFS / "browser_web_marionette_gate.py").read_text()
         for phase in (
@@ -3279,6 +3341,9 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertIn('phase(name, "start")', gate)
         self.assertIn('phase(name, "exception", error)', gate)
         self.assertIn('phase(name, "done")', gate)
+        self.assertIn('"media-capabilities"', gate)
+        self.assertIn('"DEBIAN_BROWSER_WEB_MEDIA_CAPABILITIES"', gate)
+        self.assertIn('"probe-media-capabilities"', gate)
 
     def test_gecko_profiler_diagnostic_is_bounded_and_opt_in(self) -> None:
         gate = (ROOTFS / "browser_web_marionette_gate.py").read_text()

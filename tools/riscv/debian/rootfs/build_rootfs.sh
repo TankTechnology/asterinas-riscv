@@ -7,6 +7,7 @@ umask 077
 
 readonly DEFAULT_OUTPUT_DIR="target/debian-riscv/rootfs"
 readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
+readonly SYSTEMD_EXT4_M3_OUTPUT_DIR="target/debian-riscv/systemd-ext4-m3/rootfs"
 readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
 readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
 readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
@@ -56,6 +57,8 @@ PROFILE="minimal-m1"
 FIREFOX_JIT_PACKAGE_DIR=""
 ROOT_LABEL="ASTER_DEBIANROOT"
 ROOT_UUID="7b7ad749-77d0-4e59-89e4-e117244a70aa"
+ROOT_FILESYSTEM_TYPE="ext2"
+ROOT_FILESYSTEM_JOURNAL=0
 declare -a INSTALL_PACKAGES=(
     bash
     ca-certificates
@@ -200,7 +203,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web | desktop-drm) ;;
+        minimal-m1 | systemd-m2 | systemd-ext4-m3 | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web | desktop-drm) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -212,13 +215,20 @@ configure_profile() {
         PYTHONPATH="$repository_root" python3 -m \
             tools.riscv.debian.rootfs.profiles --profile "$PROFILE"
     )
-    ((${#profile_fields[@]} >= 4)) || die "invalid rootfs profile data: $PROFILE"
+    ((${#profile_fields[@]} >= 6)) || die "invalid rootfs profile data: $PROFILE"
     ROOT_LABEL="${profile_fields[0]}"
     ROOT_UUID="${profile_fields[1]}"
     [[ "${profile_fields[2]}" =~ ^[1-9][0-9]*$ ]] ||
         die "invalid rootfs profile size: $PROFILE"
     ROOT_SIZE_BYTES="${profile_fields[2]}"
-    INSTALL_PACKAGES=("${profile_fields[@]:3}")
+    ROOT_FILESYSTEM_TYPE="${profile_fields[3]}"
+    [[ "$ROOT_FILESYSTEM_TYPE" == ext2 || "$ROOT_FILESYSTEM_TYPE" == ext4 ]] ||
+        die "invalid root filesystem type: $ROOT_FILESYSTEM_TYPE"
+    [[ "${profile_fields[4]}" == journal || "${profile_fields[4]}" == nojournal ]] ||
+        die "invalid root filesystem journal mode: $PROFILE"
+    ROOT_FILESYSTEM_JOURNAL=0
+    [[ "${profile_fields[4]}" == journal ]] && ROOT_FILESYSTEM_JOURNAL=1
+    INSTALL_PACKAGES=("${profile_fields[@]:5}")
     if [[ "$PROFILE" == systemd-m2 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$SYSTEMD_M2_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m3 && "$has_output_dir" == 0 ]]; then
@@ -235,6 +245,8 @@ configure_profile() {
         OUTPUT_DIR="$BROWSER_WEB_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-drm && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_DRM_OUTPUT_DIR"
+    elif [[ "$PROFILE" == systemd-ext4-m3 && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$SYSTEMD_EXT4_M3_OUTPUT_DIR"
     fi
 }
 
@@ -1011,17 +1023,52 @@ fi
 EOF
     if [[ "$PROFILE" != minimal-m1 ]]; then
         # systemd's shutdown helper skips its final sync when it detects a
-        # container.  Preserve ext2 metadata on Asterinas' reboot path.
+        # container. Preserve root filesystem metadata on Asterinas' reboot
+        # path.
         install -D -m 0755 -- \
             "$script_directory/shutdown_sync.sh" \
             "$stage/usr/lib/systemd/system-shutdown/asterinas-sync"
     fi
-    if [[ "$PROFILE" == systemd-m2 ]]; then
+    if [[ "$PROFILE" == systemd-m2 || "$PROFILE" == systemd-ext4-m3 ]]; then
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-        install -D -m 0755 -- \
-            "$script_directory/systemd_m2_evidence.sh" \
-            "$stage/usr/lib/asterinas/systemd-m2-evidence"
-        cat >"$stage/etc/systemd/system/asterinas-debian-m2.service" <<'EOF'
+        local evidence_script evidence_path evidence_command service_name
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            evidence_script="$script_directory/systemd_ext4_evidence.sh"
+            evidence_path="$stage/usr/lib/asterinas/systemd-ext4-evidence"
+            evidence_command=/usr/lib/asterinas/systemd-ext4-evidence
+            service_name=asterinas-debian-ext4.service
+        else
+            evidence_script="$script_directory/systemd_m2_evidence.sh"
+            evidence_path="$stage/usr/lib/asterinas/systemd-m2-evidence"
+            evidence_command=/usr/lib/asterinas/systemd-m2-evidence
+            service_name=asterinas-debian-m2.service
+        fi
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            # Keep the socket-activation probe identical to the standalone M2
+            # systemd gate.  Python's socket wrapper cannot prove that
+            # systemd passed LISTEN_FDS/LISTEN_PID and has hidden failures in
+            # this path in the past; these static helpers inspect fd 3 and
+            # accept the inherited listening socket directly.
+            local systemd_test_source="$script_directory/../../systemd/src"
+            local systemd_test_cc="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
+            local systemd_test_program
+            command -v "$systemd_test_cc" >/dev/null 2>&1 ||
+                die "missing RISC-V C compiler for systemd socket probe: $systemd_test_cc"
+            for systemd_test_program in socktest sockclient; do
+                "$systemd_test_cc" -O2 -static -no-pie -fno-stack-protector \
+                    -o "$stage/usr/bin/$systemd_test_program" \
+                    "$systemd_test_source/$systemd_test_program.c"
+                chmod 0755 "$stage/usr/bin/$systemd_test_program"
+            done
+        fi
+        install -D -m 0755 -- "$evidence_script" "$evidence_path"
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            install -D -m 0755 -- \
+                "$script_directory/asterinas_login.sh" \
+                "$stage/usr/local/sbin/asterinas-login"
+        fi
+        if [[ "$PROFILE" == systemd-m2 ]]; then
+            cat >"$stage/etc/systemd/system/$service_name" <<'EOF'
 [Unit]
 Description=Asterinas Debian M2 evidence
 After=local-fs.target
@@ -1035,10 +1082,46 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+        else
+            cat >"$stage/etc/systemd/system/$service_name" <<EOF
+[Unit]
+Description=Asterinas Debian ${PROFILE} evidence
+After=local-fs.target network.target getty.target
+
+[Service]
+Type=oneshot
+ExecStart=$evidence_command
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        fi
         mkdir -p -- "$stage/etc/systemd/system/multi-user.target.wants"
         ln -s -- \
-            ../asterinas-debian-m2.service \
-            "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
+            "../$service_name" \
+            "$stage/etc/systemd/system/multi-user.target.wants/$service_name"
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            # Asterinas exposes the usable interactive serial tty as ttyS0.
+            # Keep Debian's console-getty ordering and lifecycle, but point
+            # its terminal directly at ttyS0. The serial-getty template adds
+            # a dev-ttyS0.device dependency that is not materialized by the
+            # current Asterinas device manager.
+            install -d -m 0755 -- \
+                "$stage/etc/systemd/system/console-getty.service.d"
+            cat >"$stage/etc/systemd/system/console-getty.service.d/asterinas-serial.conf" <<'EOF'
+[Service]
+TTYPath=/dev/ttyS0
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=tty
+TTYReset=yes
+TTYVHangup=no
+TTYVTDisallocate=no
+ExecStart=
+ExecStart=-/sbin/agetty -o '-- \\u' --noclear --keep-baud -l /usr/local/sbin/asterinas-login 115200,38400,9600 - $TERM
+EOF
+        fi
     elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
         configure_desktop "$stage" "${PROFILE#desktop-}"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
@@ -2142,9 +2225,16 @@ create_and_verify_image() {
     local dumpe2fs_output="$WORK_DIR/dumpe2fs.txt"
     local dumped_bash="$WORK_DIR/bash"
 
-    log "phase 8/8: creating and verifying ext2 image"
+    log "phase 8/8: creating and verifying $ROOT_FILESYSTEM_TYPE image"
     truncate -s "$ROOT_SIZE_BYTES" "$root_image"
-    mke2fs -q -F -t ext2 -b "$ROOT_BLOCK_SIZE_BYTES" \
+    local -a mkfs_options=(-q -F -t "$ROOT_FILESYSTEM_TYPE" -b "$ROOT_BLOCK_SIZE_BYTES")
+    if [[ "$ROOT_FILESYSTEM_TYPE" == ext4 ]]; then
+        # Exercise the ext4 extent mapping while keeping features whose
+        # checksums, high block fields, or orphan-file replay are not yet
+        # implemented out of this compatibility profile.
+        mkfs_options+=(-O '^metadata_csum,^64bit,^flex_bg,^orphan_file,^huge_file,^dir_nlink,^extra_isize')
+    fi
+    mke2fs "${mkfs_options[@]}" \
         -L "$ROOT_LABEL" -U "$ROOT_UUID" -d "$stage" "$root_image"
     [[ "$(stat -c '%s' "$root_image")" == "$ROOT_SIZE_BYTES" ]] ||
         die "root image does not match the configured profile size"
@@ -2156,8 +2246,13 @@ create_and_verify_image() {
         die "root image UUID verification failed"
     grep -Eq "^Block size:[[:space:]]+$ROOT_BLOCK_SIZE_BYTES$" "$dumpe2fs_output" ||
         die "root image block-size verification failed"
-    ! grep -Eq '^Filesystem features:.*(^|[[:space:]])has_journal([[:space:]]|$)' \
-        "$dumpe2fs_output" || die "root image unexpectedly contains an ext3 journal"
+    if [[ "$ROOT_FILESYSTEM_JOURNAL" == 1 ]]; then
+        grep -Eq '^Filesystem features:.*(^|[[:space:]])has_journal([[:space:]]|$)' \
+            "$dumpe2fs_output" || die "ext4 root image is missing its journal"
+    else
+        ! grep -Eq '^Filesystem features:.*(^|[[:space:]])has_journal([[:space:]]|$)' \
+            "$dumpe2fs_output" || die "root image unexpectedly contains an ext3 journal"
+    fi
 
     debugfs_require_path "$root_image" /bin/bash
     debugfs_require_path "$root_image" /lib/ld-linux-riscv64-lp64d.so.1

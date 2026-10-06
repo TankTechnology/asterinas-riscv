@@ -21,6 +21,8 @@ class RootfsProfile:
     requested_packages: tuple[str, ...]
     identity_packages: tuple[str, ...]
     root_size_bytes: int = 1024 * 1024 * 1024
+    filesystem_type: str = "ext2"
+    journal: bool = False
 
 
 _M1_IDENTITY_PACKAGES = (
@@ -66,6 +68,33 @@ _PROFILES = {
             "systemd-sysv",
             "dbus",
         ),
+    ),
+    "systemd-ext4-m3": RootfsProfile(
+        name="systemd-ext4-m3",
+        schema_version=9,
+        root_label="ASTER_DEBIANE4",
+        root_uuid="d6f1c3c9-0e34-4e98-9e2e-6fca8e3dd1b4",
+        requested_packages=(
+            "bash",
+            "ca-certificates",
+            "coreutils",
+            "curl",
+            "dbus",
+            "iproute2",
+            "procps",
+            "systemd-sysv",
+            "util-linux",
+        ),
+        identity_packages=_M1_IDENTITY_PACKAGES
+        + (
+            "curl",
+            "systemd",
+            "systemd-sysv",
+            "dbus",
+            "iproute2",
+        ),
+        filesystem_type="ext4",
+        journal=True,
     ),
     "desktop-m3": RootfsProfile(
         name="desktop-m3",
@@ -359,6 +388,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
     print(profile.root_label)
     print(profile.root_uuid)
     print(profile.root_size_bytes)
+    print(profile.filesystem_type)
+    print("journal" if profile.journal else "nojournal")
     print(*profile.requested_packages, sep="\n")
     return 0
 
