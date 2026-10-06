@@ -49,6 +49,50 @@ class DebianDesktopDRMTests(unittest.TestCase):
         self.assertIn("libdrm2", profile.identity_packages)
         self.assertNotIn("xserver-xorg-video-fbdev", profile.requested_packages)
 
+    def test_rootfs_builder_wires_drm_profile_to_drm_desktop_provider(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[3]
+            / "tools/riscv/debian/rootfs/build_rootfs.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'elif [[ "$PROFILE" == desktop-drm ]]; then',
+            source,
+        )
+        self.assertIn(
+            'configure_desktop "$stage" drm "offline" drm',
+            source,
+        )
+        self.assertIn(
+            'Environment=ASTERINAS_DISPLAY_PROVIDER=$display_provider',
+            source,
+        )
+        self.assertIn(
+            '"$display_provider" == drm',
+            source,
+        )
+
+    def test_drm_provider_does_not_reuse_fbdev_xorg_configuration(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[3]
+            / "tools/riscv/debian/rootfs/build_rootfs.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'display-providers/$display_provider/xorg.conf.d/20-asterinas.conf',
+            source,
+        )
+        self.assertIn('Driver "modesetting"', source)
+        self.assertIn('Option "AccelMethod" "glamor"', source)
+
+    def test_device_access_uses_drm_nodes_for_drm_provider(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[3]
+            / "tools/riscv/debian/rootfs/desktop_m3_device_access.sh"
+        ).read_text(encoding="utf-8")
+        self.assertIn('DISPLAY_PROVIDER="${ASTERINAS_DISPLAY_PROVIDER:-fbdev}"', source)
+        self.assertIn('/dev/dri/card0', source)
+        self.assertIn('/dev/dri/renderD*', source)
+        self.assertIn('display_nodes=(/dev/fb0)', source)
+
     def test_qemu_contract_selects_virtio_gpu(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

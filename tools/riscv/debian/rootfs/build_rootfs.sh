@@ -1068,6 +1068,8 @@ EOF
     elif [[ "$PROFILE" == browser-web ]]; then
         configure_desktop "$stage" "m5" online
         configure_desktop_m5_network "$stage" m5 false lightweight
+    elif [[ "$PROFILE" == desktop-drm ]]; then
+        configure_desktop "$stage" drm "offline" drm
     fi
     : >"$stage/etc/machine-id"
     if [[ "$PROFILE" == browser-web ]]; then
@@ -1546,6 +1548,7 @@ configure_desktop() {
     local stage="$1"
     local generation="$2"
     local browser_mode="${3:-offline}"
+    local display_provider="${4:-fbdev}"
     local script_directory
     local repository_root
     local session_source
@@ -1601,7 +1604,7 @@ configure_desktop() {
     grep -q '^asterinas:' "$stage/etc/gshadow" ||
         printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
     install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
-    if [[ "$generation" == m4 ]]; then
+    if [[ "$generation" == m4 || "$generation" == drm ]]; then
         install -d -m 0755 -o 1000 -g 1000 -- \
             "$stage/home/asterinas/Asterinas Files" \
             "$stage/home/asterinas/Desktop"
@@ -1936,7 +1939,7 @@ StandardError=$desktop_standard_error
 # StandardOutput=$desktop_standard_output
 # StandardError=$desktop_standard_error
 Environment=HOME=/home/asterinas
-Environment=ASTERINAS_DISPLAY_PROVIDER=fbdev
+Environment=ASTERINAS_DISPLAY_PROVIDER=$display_provider
 $(if [[ "$generation" == m5 && "$browser_mode" == online ]]; then printf '%s\n' 'Environment=ASTERINAS_BROWSER_WEB_SESSION=1'; fi)
 ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
 ExecStart=/usr/lib/asterinas/desktop-$generation-session
@@ -2038,9 +2041,50 @@ EOF
     ln -s -- /lib/systemd/system/graphical.target \
         "$stage/etc/systemd/system/default.target"
 
-    local fbdev_config_directory="$stage/etc/asterinas/display-providers/fbdev/xorg.conf.d"
-    install -d -m 0755 -- "$fbdev_config_directory"
-    cat >"$fbdev_config_directory/20-asterinas.conf" <<'EOF'
+    local provider_config_directory="$stage/etc/asterinas/display-providers/$display_provider/xorg.conf.d"
+    install -d -m 0755 -- "$provider_config_directory"
+    if [[ "$display_provider" == drm ]]; then
+        cat >"$provider_config_directory/20-asterinas.conf" <<'EOF'
+Section "Device"
+    Identifier "Asterinas DRM"
+    Driver "modesetting"
+    Option "AccelMethod" "glamor"
+EndSection
+
+Section "Screen"
+    Identifier "Asterinas screen"
+    Device "Asterinas DRM"
+EndSection
+
+Section "InputDevice"
+    Identifier "Asterinas keyboard"
+    Driver "evdev"
+    Option "Device" "/run/asterinas-input/keyboard"
+EndSection
+
+Section "InputDevice"
+    Identifier "Asterinas pointer"
+    Driver "evdev"
+    Option "Device" "/run/asterinas-input/pointer"
+EndSection
+
+Section "ServerLayout"
+    Identifier "Asterinas layout"
+    Screen 0 "Asterinas screen"
+    InputDevice "Asterinas keyboard" "CoreKeyboard"
+    InputDevice "Asterinas pointer" "CorePointer"
+EndSection
+
+Section "ServerFlags"
+    Option "AutoAddDevices" "false"
+    Option "BlankTime" "0"
+    Option "StandbyTime" "0"
+    Option "SuspendTime" "0"
+    Option "OffTime" "0"
+EndSection
+EOF
+    else
+        cat >"$provider_config_directory/20-asterinas.conf" <<'EOF'
 Section "Device"
     Identifier "Asterinas framebuffer"
     Driver "fbdev"
@@ -2079,13 +2123,16 @@ Section "ServerFlags"
     Option "OffTime" "0"
 EndSection
 EOF
-    chmod 0644 -- "$fbdev_config_directory/20-asterinas.conf"
-    install -D -m 0644 -- \
-        "$script_directory/desktop_fbdev_no_input.conf" \
-        "$fbdev_config_directory/20-asterinas-no-input.conf"
+    fi
+    chmod 0644 -- "$provider_config_directory/20-asterinas.conf"
+    if [[ "$display_provider" == fbdev ]]; then
+        install -D -m 0644 -- \
+            "$script_directory/desktop_fbdev_no_input.conf" \
+            "$provider_config_directory/20-asterinas-no-input.conf"
+    fi
     install -d -m 0755 -- "$stage/etc/X11/xorg.conf.d"
     rm -f -- "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
-    ln -s -- ../../asterinas/display-providers/fbdev/xorg.conf.d/20-asterinas.conf \
+    ln -s -- ../../asterinas/display-providers/$display_provider/xorg.conf.d/20-asterinas.conf \
         "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
 }
 
