@@ -1043,6 +1043,24 @@ EOF
             evidence_command=/usr/lib/asterinas/systemd-m2-evidence
             service_name=asterinas-debian-m2.service
         fi
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            # Keep the socket-activation probe identical to the standalone M2
+            # systemd gate.  Python's socket wrapper cannot prove that
+            # systemd passed LISTEN_FDS/LISTEN_PID and has hidden failures in
+            # this path in the past; these static helpers inspect fd 3 and
+            # accept the inherited listening socket directly.
+            local systemd_test_source="$script_directory/../../systemd/src"
+            local systemd_test_cc="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
+            local systemd_test_program
+            command -v "$systemd_test_cc" >/dev/null 2>&1 ||
+                die "missing RISC-V C compiler for systemd socket probe: $systemd_test_cc"
+            for systemd_test_program in socktest sockclient; do
+                "$systemd_test_cc" -O2 -static -no-pie -fno-stack-protector \
+                    -o "$stage/usr/bin/$systemd_test_program" \
+                    "$systemd_test_source/$systemd_test_program.c"
+                chmod 0755 "$stage/usr/bin/$systemd_test_program"
+            done
+        fi
         install -D -m 0755 -- "$evidence_script" "$evidence_path"
         if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
             install -D -m 0755 -- \
