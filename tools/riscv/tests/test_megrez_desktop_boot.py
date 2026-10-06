@@ -296,6 +296,12 @@ class DesktopBootMakefileTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, recipe)
 
+    def test_makefile_exposes_explicit_desktop_device_profile(self) -> None:
+        recipe = self._recipe("run_riscv_megrez_desktop")
+        self.assertIn("MEGREZ_DESKTOP_BOOT_DEVICE_PROFILE ?= full", self.makefile)
+        self.assertIn("--device-profile", recipe)
+        self.assertIn("$(MEGREZ_DESKTOP_BOOT_DEVICE_PROFILE)", recipe)
+
     def test_makefile_prepare_is_explicit_and_overridable(self) -> None:
         recipe = self._recipe("prepare_riscv_megrez_desktop_boot")
         self.assertIn("tools.riscv.megrez_desktop_boot prepare", recipe)
@@ -309,7 +315,110 @@ class DesktopBootMakefileTests(unittest.TestCase):
         self.assertIn("--factory-login", recipe)
 
 
+class DesktopDeviceProfileTests(unittest.TestCase):
+    def test_minimal_profile_disables_risky_board_devices_for_one_boot(self) -> None:
+        commands = boot.uboot_device_profile_commands("minimal")
+
+        self.assertEqual(
+            commands,
+            (
+                "fdt set /soc/ethernet@50400000 status disabled",
+                "fdt set /soc/ethernet@50410000 status disabled",
+                "fdt set /soc/usb0@50480000/dwc3@50480000 status disabled",
+                "fdt set /soc/usb1@50490000/dwc3@50490000 status disabled",
+            ),
+        )
+
+    def test_full_profile_keeps_existing_device_tree_unchanged(self) -> None:
+        self.assertEqual(boot.uboot_device_profile_commands("full"), ())
+
+    def test_unknown_profile_is_rejected_before_serial_use(self) -> None:
+        with self.assertRaisesRegex(ValueError, "unknown desktop device profile"):
+            boot.uboot_device_profile_commands("unsafe")
+
+    def test_minimal_profile_uses_offline_local_firefox_bootargs(self) -> None:
+        online_args = (
+            "console=ttyS0 "
+            "systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=10.100.19.216 "
+            "systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=17893 "
+            "systemd.setenv=ASTERINAS_DESKTOP_DNS_HOST=10.100.19.216 "
+            "systemd.setenv=ASTERINAS_DESKTOP_DNS_PORT=15354 "
+            "-- --root-init=systemd"
+        )
+        minimal_args = boot.profile_bootargs("minimal", online_args)
+        self.assertNotIn("ASTERINAS_DESKTOP_PROXY_HOST", minimal_args)
+        self.assertNotIn("ASTERINAS_DESKTOP_PROXY_PORT", minimal_args)
+        self.assertNotIn("ASTERINAS_DESKTOP_DNS_HOST", minimal_args)
+        self.assertNotIn("ASTERINAS_DESKTOP_DNS_PORT", minimal_args)
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_OFFLINE=1",
+            minimal_args,
+        )
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct",
+            minimal_args,
+        )
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_START_URL="
+            "file:///usr/share/asterinas/physical-graphics/index.html",
+            minimal_args,
+        )
+        bootargs, stage1_args = minimal_args.split(" -- ", 1)
+        self.assertIn("ASTERINAS_DESKTOP_OFFLINE", bootargs)
+        self.assertIn("ASTERINAS_WEB_NETWORK_MODE", bootargs)
+        self.assertIn("ASTERINAS_DESKTOP_START_URL", bootargs)
+        self.assertIn("ASTERINAS_BROWSER_WEB_SESSION", bootargs)
+        for token in (
+            "ASTERINAS_DESKTOP_OFFLINE=1",
+            "ASTERINAS_WEB_NETWORK_MODE=direct",
+            "ASTERINAS_DESKTOP_START_URL="
+            "file:///usr/share/asterinas/physical-graphics/index.html",
+            "ASTERINAS_BROWSER_WEB_SESSION=1",
+        ):
+            self.assertIn(token, bootargs.split())
+        self.assertNotIn("systemd.setenv=", stage1_args)
+        self.assertFalse(any(token.startswith("ASTERINAS_") for token in stage1_args.split()))
+        self.assertEqual(boot.profile_bootargs("full", "console=ttyS0"), "console=ttyS0")
+
+
 class DesktopBootStartTests(DesktopBootFixture):
+    def setUp(self) -> None:
+        super().setUp()
+        # These exercise serial orchestration with fake operations, not the
+        # workstation's optional network bridge.
+        for name in ("require_proxy_reachable", "warn_if_dns_unreachable"):
+            patcher = mock.patch.object(boot, name)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_recovery_already_consumed_by_readiness_is_retained(self) -> None:
+        recovery = b"OpenSBI v1.5\nU-Boot 2024\nrockos-eswin login:"
+        operations = boot.RealStartOperations("unused")
+        operations._boot_started = time.monotonic() - 300
+        operations._serial = mock.Mock(transcript=b"guest failure\n" + recovery)
+        operations._session = mock.Mock()
+
+        self.assertEqual(operations.await_recovery(360), recovery)
+        operations._session.wait_for_uboot_prompt.assert_not_called()
+
+    def test_recovery_wait_accepts_a_direct_rockos_boundary(self) -> None:
+        operations = boot.RealStartOperations("unused")
+        operations._boot_started = time.monotonic()
+        operations._session = mock.Mock()
+        operations._session.wait_for_recovery_boundary.return_value = (
+            "OpenSBI v1.5\nU-Boot 2024\nrockos-eswin login:"
+        )
+
+        recovery = operations.await_recovery(30)
+
+        self.assertIn(b"rockos-eswin login:", recovery)
+        operations._session.wait_for_recovery_boundary.assert_called_once()
+        operations._session.wait_for_uboot_prompt.assert_not_called()
+
+    def test_rockos_login_without_new_firmware_epoch_is_not_recovery(self) -> None:
+        self.assertEqual(boot._recovery_plane(b"rockos-eswin login:"), "unknown")
+        self.assertEqual(boot._recovery_plane(b"OpenSBI\nU-Boot\n"), "unknown")
+
     def _ready_transcript(self) -> bytes:
         return "\n".join(marker for _, marker in boot.PHASE_MARKERS).encode()
 
@@ -365,6 +474,7 @@ class DesktopBootStartTests(DesktopBootFixture):
                     "firefox_uid": 1000,
                     "visible_windows": 1,
                     "watchdog": 0,
+                    "local_page": True,
                     "debug_console": True,
                     "x11_socket": True,
                 }
@@ -385,6 +495,55 @@ class DesktopBootStartTests(DesktopBootFixture):
             [call[0] for call in operations.calls],
             ["open", "load", "boot", "wait_ready", "probe", "close"],
         )
+
+    def test_minimal_profile_does_not_require_network_proxy(self) -> None:
+        manifest = boot.DesktopBootManifest.from_plan(self.plan)
+
+        class Operations:
+            device_profile = "minimal"
+            boot_epoch_started = False
+            phase_times = {
+                name: float(index) for index, (name, _) in enumerate(boot.PHASE_MARKERS)
+            }
+            transcript = b"\n".join(marker.encode() for _, marker in boot.PHASE_MARKERS)
+
+            def open(self, timeout):
+                return None
+
+            def load(self, supplied, timeout):
+                return {
+                    name: supplied.artifacts[name].size for name in boot.ARTIFACT_NAMES
+                }
+
+            def boot(self, supplied, timeout):
+                self.boot_epoch_started = True
+
+            def wait_ready(self, timeout):
+                return self.transcript
+
+            def probe(self, timeout):
+                return {
+                    "boot_id": "11111111-2222-3333-4444-555555555555",
+                    "firefox_pid": 122,
+                    "firefox_uid": 1000,
+                    "visible_windows": 1,
+                    "watchdog": 0,
+                    "local_page": True,
+                    "debug_console": True,
+                    "x11_socket": True,
+                }
+
+            def close(self):
+                return None
+
+        operations = Operations()
+        with mock.patch.object(
+            boot, "require_proxy_reachable", side_effect=AssertionError("proxy")
+        ), mock.patch.object(
+            boot, "warn_if_dns_unreachable", side_effect=AssertionError("dns")
+        ):
+            result = boot.start_generation(manifest, operations)
+        self.assertEqual(result["status"], "pass")
 
     def test_start_waits_for_firmware_recovery_after_guest_failure(self) -> None:
         manifest = boot.DesktopBootManifest.from_plan(self.plan)
@@ -440,6 +599,48 @@ class DesktopBootStartTests(DesktopBootFixture):
             "reason=firefox-window remaining=209",
         )
         self.assertIn(("recover", 360), operations.calls)
+
+    def test_start_records_direct_rockos_recovery_boundary(self) -> None:
+        manifest = boot.DesktopBootManifest.from_plan(self.plan)
+
+        class Operations:
+            device_profile = "minimal"
+            def __init__(self):
+                self.transcript = b"ASTERINAS_DESKTOP_BOOT_WAIT reason=browser-start remaining=90\n"
+                self.phase_times = {
+                    name: float(index)
+                    for index, (name, _) in enumerate(boot.PHASE_MARKERS[:5])
+                }
+                self.boot_epoch_started = False
+
+            def open(self, timeout):
+                return None
+
+            def load(self, supplied, timeout):
+                return {
+                    name: supplied.artifacts[name].size for name in boot.ARTIFACT_NAMES
+                }
+
+            def boot(self, supplied, timeout):
+                self.boot_epoch_started = True
+
+            def wait_ready(self, timeout):
+                raise TimeoutError("desktop readiness deadline expired")
+
+            def probe(self, timeout):
+                raise AssertionError("probe must not run")
+
+            def await_recovery(self, timeout):
+                return b"OpenSBI v1.5\nU-Boot 2024\nrockos-eswin login:"
+
+            def close(self):
+                return None
+
+        result = boot.start_generation(manifest, Operations())
+        self.assertEqual(result["status"], "fail")
+        self.assertTrue(result["recovery_boundary_observed"])
+        self.assertEqual(result["recovery_plane"], "rockos")
+        self.assertFalse(result["recovered_to_uboot"])
 
     def test_boot_command_failure_after_epoch_still_waits_for_recovery(self) -> None:
         manifest = boot.DesktopBootManifest.from_plan(self.plan)
@@ -532,7 +733,7 @@ class DesktopBootStartTests(DesktopBootFixture):
             def __init__(self) -> None:
                 self.commands = []
 
-            def command(self, command, timeout=15):
+            def command(self, command, timeout=15, expect=None):
                 self.commands.append(command)
                 return "1 bytes read\n=> "
 
@@ -560,6 +761,35 @@ class DesktopBootStartTests(DesktopBootFixture):
                 for forbidden in ("tftp", "loady", "curl", "wget", "mmc write")
             )
         )
+
+    def test_minimal_profile_edits_only_the_volatile_boot_dtb(self) -> None:
+        manifest = boot.DesktopBootManifest.from_plan(self.plan)
+
+        class Session:
+            def __init__(self) -> None:
+                self.commands = []
+
+            def command(self, command, timeout=15, expect=None):
+                self.commands.append(command)
+                return "Enter riscv_boot\n=> " if command.startswith("booti ") else "=> "
+
+            def start_boot_attempt(self):
+                return None
+
+        session = Session()
+        operations = boot.RealStartOperations("unused", device_profile="minimal")
+        operations._fd = 0
+        operations._session = session
+        with mock.patch(
+            "tools.riscv.debian.rootfs.gate_runtime.SerialConsole",
+            return_value=mock.Mock(),
+        ):
+            operations.boot(manifest, 30)
+
+        profile = boot.uboot_device_profile_commands("minimal")
+        self.assertEqual(tuple(session.commands[2:6]), profile)
+        self.assertNotIn("saveenv", " ".join(session.commands))
+        self.assertNotIn("mmc write", " ".join(session.commands))
 
     def test_missing_partition3_generation_has_prepare_instruction(self) -> None:
         manifest = boot.DesktopBootManifest.from_plan(self.plan)

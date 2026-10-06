@@ -479,6 +479,7 @@ MEGREZ_FIREFOX_DAILY_USE_MMC_INITRAMFS ?=
 MEGREZ_FIREFOX_DAILY_USE_MMC_DTB ?=
 MEGREZ_DESKTOP_BOOT_PLAN ?= $(CURDIR)/target/megrez-desktop-boot/build/plan.json
 MEGREZ_DESKTOP_BOOT_DEVICE ?= /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0
+MEGREZ_DESKTOP_BOOT_DEVICE_PROFILE ?= full
 MEGREZ_DESKTOP_BOOT_HOST_ADDRESS ?= 10.100.19.216
 MEGREZ_DESKTOP_BOOT_PORT ?= 18080
 MEGREZ_DESKTOP_BOOT_OUTPUT_ROOT ?= $(CURDIR)/target/megrez-desktop-boot
@@ -694,6 +695,7 @@ run_riscv_megrez_desktop:
 	@python3 -m tools.riscv.megrez_desktop_boot start \
 		--plan "$(MEGREZ_DESKTOP_BOOT_PLAN)" \
 		--device "$(MEGREZ_DESKTOP_BOOT_DEVICE)" \
+		--device-profile "$(MEGREZ_DESKTOP_BOOT_DEVICE_PROFILE)" \
 		--output "$(MEGREZ_DESKTOP_BOOT_START_OUTPUT)"
 
 .PHONY: test_riscv_megrez_preboard
