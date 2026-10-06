@@ -234,7 +234,11 @@ SYSTEMD_M2_PACKAGE_ROWS = tuple(
 
 SYSTEMD_EXT4_PACKAGE_ROWS = tuple(
     sorted(
-        SYSTEMD_M2_PACKAGE_ROWS + (("curl", "riscv64", "8.14.1-2+deb13u5"),)
+        SYSTEMD_M2_PACKAGE_ROWS
+        + (
+            ("curl", "riscv64", "8.14.1-2+deb13u5"),
+            ("iproute2", "riscv64", "6.15.0-1"),
+        )
     )
 )
 
