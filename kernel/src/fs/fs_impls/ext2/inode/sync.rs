@@ -147,7 +147,7 @@ impl InodeInner {
         }
     }
 
-    fn sync_indirect_blocks(&self) -> Result<()> {
+    pub(super) fn sync_indirect_blocks(&self) -> Result<()> {
         match &self.payload {
             super::InodePayload::DataBacked { block_manager, .. } => {
                 block_manager.sync_indirect_blocks()
