@@ -12,6 +12,7 @@ from email.utils import format_datetime, parsedate_to_datetime
 import http.client
 import json
 import math
+import os
 import subprocess
 from typing import Any
 from urllib.parse import urlsplit
@@ -103,6 +104,15 @@ def main(arguments: Sequence[str] | None = None) -> int:
     parser.add_argument("--proxy", default=DEFAULT_PROXY_URL)
     parser.add_argument("--timeout", type=float, default=15.0)
     values = parser.parse_args(arguments)
+    if os.environ.get("ASTERINAS_DESKTOP_OFFLINE") == "1":
+        print(
+            json.dumps(
+                {"marker": "ASTERINAS_CLOCK_SYNC_SKIPPED", "reason": "offline"},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        return 0
     try:
         evidence = synchronize_clock(values.proxy, timeout=values.timeout)
     except (OSError, ValueError, subprocess.SubprocessError) as error:

@@ -1629,6 +1629,53 @@ int main(void)
         self.assertLess(handoff, complete)
         self.assertIn("/proc/sys/kernel/random/boot_id", startup)
 
+    def test_physical_graphics_control_has_offline_local_firefox_mode(self) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+        self.assertIn("ASTERINAS_DESKTOP_OFFLINE", source)
+        self.assertIn("input-disabled", source)
+
+    def test_offline_start_publishes_the_no_input_display_config(self) -> None:
+        source_root = self.directory / "display-source"
+        config_directory = source_root / "fbdev/xorg.conf.d"
+        config_directory.mkdir(parents=True)
+        config = (REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_fbdev_no_input.conf").read_text()
+        (config_directory / "20-asterinas-no-input.conf").write_text(config)
+        runtime_root = self.directory / "display-runtime"
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+        start = source[source.index("start_browser() {") : source.index("\nboot_phase() {")]
+        start = start.replace("/etc/asterinas/display-providers", str(source_root))
+        start = start.replace("/run/asterinas-physical-display-providers", str(runtime_root))
+        result = subprocess.run(
+            ["/bin/sh", "-c", "offline_desktop=1\n"
+             "systemctl_bounded() { return 0; }\n"
+             "browser_stage() { :; }\n"
+             "runuser() { return 0; }\n" + start + "\nstart_browser 0\n"],
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        published = runtime_root / "fbdev/xorg.conf.d/20-asterinas.conf"
+        self.assertTrue(published.is_file(), "offline display provider has no configuration")
+        self.assertEqual(published.read_text(), config)
+        environment = os.environ.copy()
+        environment["ASTERINAS_DISPLAY_PROVIDER_ROOT"] = str(runtime_root)
+        environment["ASTERINAS_DISPLAY_PROVIDER"] = "fbdev"
+        provider = subprocess.run(
+            ["/bin/bash", REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_display_provider.sh"],
+            env=environment, capture_output=True, text=True, timeout=5,
+        )
+        self.assertEqual(provider.returncode, 0, provider.stderr)
+        self.assertEqual(provider.stdout.strip(), str(published.parent))
+
+    def test_browser_device_access_allows_offline_framebuffer_without_usb(self) -> None:
+        source = (REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m3_device_access.sh").read_text()
+        self.assertIn("ASTERINAS_DESKTOP_OFFLINE", source)
+        self.assertIn("desktop-input-disabled", source)
+
+    def test_builder_installs_a_no_input_framebuffer_xorg_profile(self) -> None:
+        builder = BUILD_SCRIPT.read_text()
+        self.assertIn("20-asterinas-no-input.conf", builder)
+        self.assertIn('"$script_directory/desktop_fbdev_no_input.conf"', builder)
+
     def test_startup_readiness_uses_one_monotonic_deadline(self) -> None:
         source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
         startup = source[source.index("startup_ready() {") :]

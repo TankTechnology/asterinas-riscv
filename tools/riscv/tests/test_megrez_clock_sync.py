@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import subprocess
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from tools.riscv.debian.rootfs.megrez_clock_sync import synchronize_clock
+from tools.riscv.debian.rootfs.megrez_clock_sync import main, synchronize_clock
 
 
 class _Response:
@@ -42,6 +43,28 @@ class _Connection:
 
 
 class MegrezClockSyncTests(unittest.TestCase):
+    def test_systemd_clock_sync_gate_checks_offline_kernel_command_line(self) -> None:
+        gate = Path(__file__).parents[1] / "debian/rootfs/asterinas_clock_sync.conf"
+        source = gate.read_text()
+
+        self.assertIn("ExecStartPre=-/bin/sh -c", source)
+        self.assertIn("cat /proc/cmdline", source)
+        self.assertIn("ASTERINAS_DESKTOP_OFFLINE=1", source)
+        self.assertIn("/usr/lib/asterinas/megrez-clock-sync", source)
+
+    def test_offline_desktop_skips_network_clock_sync(self) -> None:
+        with mock.patch.dict("os.environ", {"ASTERINAS_DESKTOP_OFFLINE": "1"}):
+            with mock.patch(
+                "tools.riscv.debian.rootfs.megrez_clock_sync.synchronize_clock"
+            ) as sync:
+                with mock.patch("builtins.print") as print_:
+                    self.assertEqual(main([]), 0)
+
+        sync.assert_not_called()
+        print_.assert_called_once_with(
+            '{"marker":"ASTERINAS_CLOCK_SYNC_SKIPPED","reason":"offline"}'
+        )
+
     def test_http_proxy_date_is_validated_and_applied_without_https(self) -> None:
         connection = _Connection()
         factory = mock.Mock(return_value=connection)

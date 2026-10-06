@@ -2080,6 +2080,9 @@ Section "ServerFlags"
 EndSection
 EOF
     chmod 0644 -- "$fbdev_config_directory/20-asterinas.conf"
+    install -D -m 0644 -- \
+        "$script_directory/desktop_fbdev_no_input.conf" \
+        "$fbdev_config_directory/20-asterinas-no-input.conf"
     install -d -m 0755 -- "$stage/etc/X11/xorg.conf.d"
     rm -f -- "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
     ln -s -- ../../asterinas/display-providers/fbdev/xorg.conf.d/20-asterinas.conf \
@@ -2232,11 +2235,14 @@ browser_web_runtime_digest() {
         physical_external_services_quiesce.sh
         browser_interaction_perf.py
         desktop_display_provider.sh
+        desktop_fbdev_no_input.conf
         browser_performance_provenance.py
         firefox_diagnostic_snapshot.py
         browser_web_trust_check.py
         browser_web_online_rootfs_check.py
         firefox_jit_overlay.py
+        physical_graphics_control.sh
+        desktop_m3_device_access.sh
     )
 
     for input in "${inputs[@]}"; do

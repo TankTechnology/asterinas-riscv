@@ -40,6 +40,7 @@ PHASE_MARKERS = (
     ("guest-watchdog-disarmed", "ASTERINAS_DESKTOP_WATCHDOG_DISARMED"),
     ("desktop-ready", "ASTERINAS_DESKTOP_BOOT_READY "),
 )
+OFFLINE_START_URL = "file:///usr/share/asterinas/physical-graphics/index.html"
 # The board's lab link and the proxy it browses through.
 #
 # A desktop session is interactive, so unlike the isolation-oriented evidence
@@ -135,6 +136,91 @@ BOOTARGS = " ".join(
         "--volatile-home",
     )
 )
+
+
+def uboot_device_profile_commands(profile: str) -> tuple[str, ...]:
+    """Return volatile DT edits for one bounded desktop boot.
+
+    ``minimal`` is deliberately narrower than the normal desktop profile: it
+    leaves the framebuffer and storage path intact while preventing the two
+    peripherals whose platform bring-up can otherwise touch an unqualified
+    clock/reset or bus path.  The commands are applied to U-Boot's in-memory
+    DTB only; they are never saved to the environment or written to MMC.
+    """
+
+    if profile == "full":
+        return ()
+    if profile == "minimal":
+        return (
+            "fdt set /soc/ethernet@50400000 status disabled",
+            "fdt set /soc/ethernet@50410000 status disabled",
+            "fdt set /soc/usb0@50480000/dwc3@50480000 status disabled",
+            "fdt set /soc/usb1@50490000/dwc3@50490000 status disabled",
+        )
+    raise ValueError(f"unknown desktop device profile: {profile}")
+
+
+def profile_bootargs(profile: str, bootargs: str) -> str:
+    """Add only the volatile userspace policy for a bounded device profile."""
+
+    uboot_device_profile_commands(profile)
+    if profile == "full":
+        return bootargs
+    # The published manifest normally contains the proxy/DNS environment for
+    # the online browser gate.  Remove those assignments before adding the
+    # offline policy instead of relying on duplicate systemd.setenv entries
+    # having a defined precedence across boot versions.
+    offline_keys = {
+        "ASTERINAS_DESKTOP_PROXY_HOST",
+        "ASTERINAS_DESKTOP_PROXY_PORT",
+        "ASTERINAS_DESKTOP_DNS_HOST",
+        "ASTERINAS_DESKTOP_DNS_PORT",
+        "ASTERINAS_WEB_NETWORK_MODE",
+        "ASTERINAS_DESKTOP_OFFLINE",
+        "ASTERINAS_DESKTOP_START_URL",
+        "ASTERINAS_BROWSER_WEB_SESSION",
+    }
+    tokens = bootargs.split()
+    try:
+        separator = tokens.index("--")
+    except ValueError:
+        kernel_tokens = tokens
+        stage1_tokens: list[str] = []
+        has_separator = False
+    else:
+        kernel_tokens = tokens[:separator]
+        stage1_tokens = tokens[separator + 1 :]
+        has_separator = True
+
+    def retain(token: str) -> bool:
+        return not any(
+            token.startswith(f"systemd.setenv={key}=")
+            or token.startswith(f"{key}=")
+            for key in offline_keys
+        )
+
+    retained_kernel = tuple(token for token in kernel_tokens if retain(token))
+    retained_stage1 = tuple(token for token in stage1_tokens if retain(token))
+    offline_policy = (
+        # Asterinas' cmdline dispatcher forwards bare KEY=VALUE entries in
+        # the init environment.  Keep these explicit copies alongside the
+        # systemd.setenv form: the former reaches stage1/systemd even when a
+        # systemd build does not consume its kernel-command-line environment
+        # extension, while the latter preserves the native systemd contract.
+        "ASTERINAS_DESKTOP_OFFLINE=1",
+        "ASTERINAS_WEB_NETWORK_MODE=direct",
+        f"ASTERINAS_DESKTOP_START_URL={OFFLINE_START_URL}",
+        "ASTERINAS_BROWSER_WEB_SESSION=1",
+        "systemd.setenv=ASTERINAS_DESKTOP_OFFLINE=1",
+        "systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=direct",
+        f"systemd.setenv=ASTERINAS_DESKTOP_START_URL={OFFLINE_START_URL}",
+        "systemd.setenv=ASTERINAS_BROWSER_WEB_SESSION=1",
+    )
+    if has_separator:
+        return " ".join(
+            retained_kernel + offline_policy + ("--",) + retained_stage1
+        )
+    return " ".join(retained_kernel + offline_policy)
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _NONCE = re.compile(r"[0-9a-f]{16,64}\Z")
 _BASE_URL = re.compile(r"https?://[A-Za-z0-9._:-]+\Z")
@@ -460,8 +546,12 @@ def observe_ready_phases(
     return observed
 
 
-def _validate_admission(evidence: dict[str, Any]) -> None:
+def _validate_admission(
+    evidence: dict[str, Any], *, require_local_page: bool = False
+) -> None:
     required_true = ("debug_console", "x11_socket")
+    if require_local_page:
+        required_true += ("local_page",)
     if any(evidence.get(name) is not True for name in required_true):
         raise DesktopBootError("read-only desktop admission predicate failed")
     if (
@@ -496,13 +586,37 @@ def _readiness_failure_context(transcript: bytes) -> str:
     return detail
 
 
+def _recovery_plane(transcript: bytes) -> str:
+    """Classify fresh post-boot output without treating a banner as access.
+
+    Asterinas software reboot normally follows the board's default extlinux
+    entry and reaches RockOS directly; it does not necessarily stop at the
+    U-Boot prompt.  The caller still performs authenticated RockOS attestation
+    before handing control back to an operator.  This classifier only records
+    which recovery boundary was observed on the serial stream.
+    """
+
+    if all(marker in transcript for marker in (b"OpenSBI", b"U-Boot", b"=> ")):
+        return "uboot"
+    if (
+        all(marker in transcript for marker in (b"OpenSBI", b"U-Boot"))
+        and b"rockos-eswin login:" in transcript
+    ):
+        return "rockos"
+    return "unknown"
+
+
 def start_generation(
     manifest: DesktopBootManifest, operations: StartOperations
 ) -> dict[str, Any]:
     """Execute one bounded start, returning success or proven recovery."""
 
-    require_proxy_reachable()
-    warn_if_dns_unreachable()
+    # The minimal profile deliberately disables both GMACs. Requiring the
+    # host proxy in that mode would make an offline framebuffer/desktop canary
+    # depend on the network path it is meant to isolate.
+    if getattr(operations, "device_profile", "full") == "full":
+        require_proxy_reachable()
+        warn_if_dns_unreachable()
     started = time.monotonic()
     try:
         operations.open(30)
@@ -520,7 +634,11 @@ def start_generation(
         if tuple(phases) != expected_phase_names:
             raise DesktopBootError("host phase timestamps are incomplete")
         evidence = operations.probe(30)
-        _validate_admission(evidence)
+        _validate_admission(
+            evidence,
+            require_local_page=getattr(operations, "device_profile", "full")
+            == "minimal",
+        )
         return {
             "schema_version": 1,
             "status": "pass",
@@ -558,11 +676,11 @@ def start_generation(
         except (DesktopBootError, OSError, RuntimeError, TimeoutError) as failure:
             recovery = b""
             recovery_error = str(failure)
-        recovered = all(
-            marker in recovery for marker in (b"OpenSBI", b"U-Boot", b"=> ")
-        )
+        recovery_plane = _recovery_plane(recovery)
+        recovered = recovery_plane == "uboot"
+        recovery_boundary_observed = recovery_plane in ("uboot", "rockos")
         reason = str(error) + _readiness_failure_context(operations.transcript)
-        if recovery_error is not None:
+        if recovery_error is not None and not recovery_boundary_observed:
             reason = f"{reason}; recovery failed: {recovery_error}"
         return {
             "schema_version": 1,
@@ -576,6 +694,8 @@ def start_generation(
             "phases": operations.phase_times,
             "artifacts": _result_artifacts(manifest),
             "recovered_to_uboot": recovered,
+            "recovery_boundary_observed": recovery_boundary_observed,
+            "recovery_plane": recovery_plane,
             "recovery_sha256": hashlib.sha256(recovery).hexdigest(),
             "serial_sha256": hashlib.sha256(operations.transcript).hexdigest(),
         }
@@ -626,8 +746,18 @@ def _publication_server(
 class RealStartOperations:
     """Exclusive, non-interactive serial implementation of one start epoch."""
 
-    def __init__(self, device: str, *, progress_stream: Any | None = None) -> None:
+    def __init__(
+        self,
+        device: str,
+        *,
+        device_profile: str = "full",
+        progress_stream: Any | None = None,
+    ) -> None:
         self._device = device
+        # Validate before opening the serial device so a typo cannot result in
+        # a partially prepared boot transaction.
+        uboot_device_profile_commands(device_profile)
+        self._device_profile = device_profile
         self._progress_stream = progress_stream or sys.stdout
         self._fd: int | None = None
         self._session: Any = None
@@ -656,6 +786,10 @@ class RealStartOperations:
     @property
     def boot_epoch_started(self) -> bool:
         return self._boot_epoch_started
+
+    @property
+    def device_profile(self) -> str:
+        return self._device_profile
 
     def _record_phase(self, name: str) -> None:
         if name in self._phase_times or self._boot_started is None:
@@ -743,8 +877,11 @@ class RealStartOperations:
         commands = (
             "fdt addr 0xf0000000",
             "fdt resize 0x1000",
+            *uboot_device_profile_commands(self._device_profile),
             f"setenv initrd_size 0x{initramfs.size:x}",
-            *uboot_bootargs_commands(manifest.bootargs),
+            *uboot_bootargs_commands(
+                profile_bootargs(self._device_profile, manifest.bootargs)
+            ),
         )
         for command in commands:
             remaining = deadline - time.monotonic()
@@ -799,14 +936,18 @@ class RealStartOperations:
             "uid=$(awk '/^Uid:/{print $2}' /proc/$pid/status); "
             "windows=$(DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority "
             "xdotool search --onlyvisible --class firefox 2>/dev/null | wc -l); "
+            "local_page=0; tr '\\0' '\\n' </proc/$pid/cmdline | "
+            "grep -Fqx 'file:///usr/share/asterinas/physical-graphics/index.html' "
+            "&& local_page=1; "
             "x11=0; test -S /tmp/.X11-unix/X0 && x11=1; "
             "printf '__ASTERINAS_DESKTOP_ADMISSION_%s__ boot_id=%s "
             "firefox_pid=%s firefox_uid=%s visible_windows=%s watchdog=%s "
+            "local_page=%s "
             "debug_console=1 x11_socket=%s "
             "__ASTERINAS_DESKTOP_ADMISSION_END_%s__\\n' "
             f"'{nonce}' "
             '"$(cat /proc/sys/kernel/random/boot_id)" "$pid" "$uid" "$windows" '
-            '"$(cat /proc/sys/kernel/asterinas_reboot_watchdog)" "$x11" '
+            '"$(cat /proc/sys/kernel/asterinas_reboot_watchdog)" "$local_page" "$x11" '
             f"'{nonce}'"
         )
         start = self._serial.checkpoint()
@@ -817,19 +958,21 @@ class RealStartOperations:
         pattern = re.compile(
             re.escape(marker) + r" boot_id=([0-9a-f-]{36}) firefox_pid=([0-9]+) "
             r"firefox_uid=([0-9]+) visible_windows=([0-9]+) "
-            r"watchdog=([01]) debug_console=1 x11_socket=([01]) "
+            r"watchdog=([01])(?: local_page=([01]))? "
+            r"debug_console=1 x11_socket=([01]) "
             + re.escape(end_marker)
         )
         matches = pattern.findall(text)
         if len(matches) != 1:
             raise DesktopBootError("read-only desktop admission response is missing")
-        boot_id, pid, uid, windows, watchdog, x11 = matches[0]
+        boot_id, pid, uid, windows, watchdog, local_page, x11 = matches[0]
         return {
             "boot_id": boot_id,
             "firefox_pid": int(pid),
             "firefox_uid": int(uid),
             "visible_windows": int(windows),
             "watchdog": int(watchdog),
+            "local_page": local_page == "1",
             "debug_console": True,
             "x11_socket": x11 == "1",
         }
@@ -837,11 +980,21 @@ class RealStartOperations:
     def await_recovery(self, timeout: float) -> bytes:
         if self._boot_started is None:
             raise DesktopBootError("guest boot epoch was not established")
+        # Readiness consumes the same fd. The reboot can occur while it waits
+        # for a missing desktop marker, so retain its fresh recovery epoch
+        # rather than waiting for a second reboot that will never arrive.
+        if self._serial is not None:
+            retained = self._serial.transcript
+            epoch = retained.find(b"OpenSBI")
+            if epoch >= 0:
+                recovery = retained[epoch:]
+                if _recovery_plane(recovery) != "unknown":
+                    return recovery
         remaining = min(timeout, self._boot_started + timeout - time.monotonic())
         if remaining <= 0:
             raise TimeoutError("firmware recovery deadline expired")
-        recovery = self._require_session().wait_for_uboot_prompt(remaining)
-        return recovery.encode()
+        recovery = self._require_session().wait_for_recovery_boundary(remaining)
+        return recovery.encode() if isinstance(recovery, str) else recovery
 
     def close(self) -> None:
         if self._fd is not None:
@@ -888,6 +1041,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     start.add_argument("--plan", type=Path, required=True)
     start.add_argument("--device", required=True)
+    start.add_argument("--device-profile", choices=("full", "minimal"), default="full")
     start.add_argument("--output", type=Path, required=True)
     return parser
 
@@ -944,7 +1098,7 @@ def _prepare_main(args: argparse.Namespace) -> int:
 
 def _start_main(args: argparse.Namespace) -> int:
     manifest = DesktopBootManifest.from_plan(args.plan)
-    operations = RealStartOperations(args.device)
+    operations = RealStartOperations(args.device, device_profile=args.device_profile)
     try:
         result = start_generation(manifest, operations)
     finally:

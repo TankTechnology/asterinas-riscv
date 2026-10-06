@@ -3,11 +3,11 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use ostd::{
-    Error, Result,
-    boot::{BootloaderFramebufferArg, BootloaderFramebufferFormat, boot_info},
+    boot::{boot_info, BootloaderFramebufferArg, BootloaderFramebufferFormat},
     io::IoMem,
     mm::{CachePolicy, HasSize, VmIo},
     sync::Mutex,
+    Error, Result,
 };
 use spin::Once;
 
@@ -90,10 +90,14 @@ impl FrameBufferConfig {
 }
 
 fn framebuffer_cache_policy() -> CachePolicy {
-    #[cfg(target_arch = "x86_64")]
+    // A firmware framebuffer is ordinary idempotent video memory from the
+    // CPU's perspective.  On RISC-V, PBMT_NC is the cache policy that permits
+    // repeated reads and writes without treating the BAR as strongly ordered
+    // device I/O; the latter can stall QEMU's bochs framebuffer reads.
+    #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
     return CachePolicy::WriteCombining;
 
-    #[cfg(not(target_arch = "x86_64"))]
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "riscv64")))]
     CachePolicy::Uncacheable
 }
 
@@ -280,11 +284,21 @@ impl PixelOffset<'_> {
 mod tests {
     use ostd::{
         boot::{BootloaderFramebufferArg, BootloaderFramebufferFormat},
+        mm::CachePolicy,
         prelude::ktest,
     };
 
     use super::FrameBufferConfig;
     use crate::pixel::PixelFormat;
+
+    #[cfg(target_arch = "riscv64")]
+    #[ktest]
+    fn uses_idempotent_cache_policy_for_riscv_framebuffer() {
+        assert_eq!(
+            super::framebuffer_cache_policy(),
+            CachePolicy::WriteCombining
+        );
+    }
 
     #[ktest]
     fn maps_every_boot_pixel_format() {

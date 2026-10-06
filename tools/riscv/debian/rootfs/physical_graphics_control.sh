@@ -3,6 +3,12 @@
 
 set -u
 
+offline_desktop=${ASTERINAS_DESKTOP_OFFLINE:-0}
+case "$offline_desktop" in
+    0|1) ;;
+    *) exit 2 ;;
+esac
+
 systemctl_bounded() {
     /usr/bin/timeout --kill-after=1s 10s /usr/bin/systemctl "$@"
 }
@@ -105,9 +111,14 @@ start_browser() {
     runtime_provider_root=/run/asterinas-physical-display-providers
     runtime_config_directory=$runtime_provider_root/fbdev/xorg.conf.d
     runtime_config=$runtime_config_directory/20-asterinas.conf
-    source_config=/etc/asterinas/display-providers/fbdev/xorg.conf.d/20-asterinas.conf
-    [ -f "$source_config" ] || source_config=/etc/X11/xorg.conf.d/20-asterinas.conf
     status=0
+    source_config=/etc/asterinas/display-providers/fbdev/xorg.conf.d/20-asterinas.conf
+    if [ "$offline_desktop" -eq 1 ]; then
+        source_config=/etc/asterinas/display-providers/fbdev/xorg.conf.d/20-asterinas-no-input.conf
+        [ -f "$source_config" ] || status=126
+    else
+        [ -f "$source_config" ] || source_config=/etc/X11/xorg.conf.d/20-asterinas.conf
+    fi
     if [ "$reset_existing" -eq 1 ]; then
         systemctl_bounded stop --no-block asterinas-browser-web.service \
             >/dev/null 2>&1 || status=$?
@@ -156,7 +167,7 @@ start_browser() {
     # with ignore-dependencies, so the shim is started the same way. It runs
     # before the input-wait window so its probe has that long to answer and
     # publish resolv.conf before the browser resolves anything.
-    if [ "$status" -eq 0 ]; then
+    if [ "$status" -eq 0 ] && [ "$offline_desktop" -eq 0 ]; then
         systemctl_bounded reset-failed asterinas-dns-shim.service \
             >/dev/null 2>&1 || true
         if ! systemctl_bounded start --no-block --job-mode=ignore-dependencies \
@@ -168,23 +179,29 @@ start_browser() {
         fi
     fi
 
-    browser_stage input-wait
-    attempt=0
-    while [ "$status" -eq 0 ]; do
-        set -- $(input_identity)
-        if [ "$4" != missing ] && [ "$5" != missing ] && [ "$4" != "$5" ]; then
-            keyboard_node=$4
-            mouse_node=$5
-            break
-        fi
-        attempt=$((attempt + 1))
-        if [ "$attempt" -ge 30 ]; then
-            [ "$status" -ne 0 ] || status=125
-            break
-        fi
-        /usr/bin/sleep 1
-    done
-    [ "$status" -ne 0 ] || browser_stage input-ready
+    keyboard_node=missing
+    mouse_node=missing
+    if [ "$offline_desktop" -eq 1 ]; then
+        browser_stage input-disabled
+    else
+        browser_stage input-wait
+        attempt=0
+        while [ "$status" -eq 0 ]; do
+            set -- $(input_identity)
+            if [ "$4" != missing ] && [ "$5" != missing ] && [ "$4" != "$5" ]; then
+                keyboard_node=$4
+                mouse_node=$5
+                break
+            fi
+            attempt=$((attempt + 1))
+            if [ "$attempt" -ge 30 ]; then
+                [ "$status" -ne 0 ] || status=125
+                break
+            fi
+            /usr/bin/sleep 1
+        done
+        [ "$status" -ne 0 ] || browser_stage input-ready
+    fi
 
     if [ "$status" -eq 0 ]; then
         [ -f "$source_config" ] || status=126
@@ -192,13 +209,16 @@ start_browser() {
     if [ "$status" -eq 0 ]; then
         /usr/bin/mkdir -p "$runtime_config_directory" || status=126
     fi
-    if [ "$status" -eq 0 ]; then
+    if [ "$status" -eq 0 ] && [ "$offline_desktop" -eq 1 ]; then
+        /usr/bin/cp "$source_config" "$runtime_config" || status=126
+    fi
+    if [ "$status" -eq 0 ] && [ "$offline_desktop" -eq 0 ]; then
         /usr/bin/sed \
             -e '/Identifier "Asterinas keyboard"/,/EndSection/ s#Option "Device" "[^"]*"#Option "Device" "/dev/input/'"$keyboard_node"'"#' \
             -e '/Identifier "Asterinas pointer"/,/EndSection/ s#Option "Device" "[^"]*"#Option "Device" "/dev/input/'"$mouse_node"'"#' \
             "$source_config" >"$runtime_config" || status=126
     fi
-    if [ "$status" -eq 0 ]; then
+    if [ "$status" -eq 0 ] && [ "$offline_desktop" -eq 0 ]; then
         grep -Fq "Option \"Device\" \"/dev/input/$keyboard_node\"" "$runtime_config" &&
             grep -Fq "Option \"Device\" \"/dev/input/$mouse_node\"" "$runtime_config" || status=126
     fi
@@ -232,7 +252,7 @@ start_browser() {
         systemctl_bounded reset-failed asterinas-browser-web.service \
             >/dev/null 2>&1 || status=$?
     fi
-    if [ "$status" -eq 0 ]; then
+    if [ "$status" -eq 0 ] && [ "$offline_desktop" -eq 0 ]; then
         # ignore-dependencies skips the sysinit timeline unit. Reset as the
         # file owner so stale markers from a persistent HOME cannot be
         # accepted as this boot's Firefox startup evidence.
