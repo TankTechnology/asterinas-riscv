@@ -52,6 +52,27 @@ def document():
 
 
 class BootMenuTests(unittest.TestCase):
+    def test_watchdog_is_limited_to_bounded_asterinas_cycles(self):
+        self.assertTrue(board.watchdog_mode_allowed("basic"))
+        self.assertTrue(board.watchdog_mode_allowed("probe"))
+        for mode in ("rockos", "fallback", "desktop"):
+            with self.subTest(mode=mode):
+                self.assertFalse(board.watchdog_mode_allowed(mode))
+
+    def test_watchdog_rejects_unbounded_menu_modes_before_serial_io(self):
+        operations = Mock()
+        with self.assertRaisesRegex(menu.BootManifestError, "not permitted"):
+            board.boot_cycle(
+                operations,
+                document(),
+                "desktop",
+                "debian",
+                "fixture",
+                "0" * 32,
+                hardware_watchdog=True,
+            )
+        operations._require_session.assert_not_called()
+
     @unittest.skipUnless(
         shutil.which("dtc") and shutil.which("fdtput") and shutil.which("fdtget"),
         "device-tree tools are required",
