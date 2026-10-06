@@ -128,3 +128,12 @@ The kernel build also completes with `TARGET_ARCH=riscv64 SMP=4
 FEATURES=riscv_sv39_mode`. The framebuffer read probe still needs to be
 re-run with that freshly packaged kernel; the current QEMU 10.2.1 run stopped
 at the debug-console handoff before producing the probe marker.
+
+## Superseded handoff result, 2026-10-06
+
+The timeout above is retained as historical failure evidence. A follow-up
+QEMU run isolated the delay to synchronous VT framebuffer painting and added
+the opt-in `asterinas.vt_framebuffer=off` boot parameter. With a release
+kernel, the fresh root handoff, UID 0 console, `/dev/fb0` single-read probe,
+Xorg service, and local Firefox Marionette page all passed. See
+`2026-10-06-qemu-rootfs-firefox-handoff.md` for the exact markers and limits.
