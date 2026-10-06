@@ -83,6 +83,32 @@ effective.
 No physical board boot was attempted. The board recovery boundary therefore
 remains unchanged.
 
+## Fresh-main QEMU replay, 2026-10-06
+
+The newly built `riscv64/SMP=4/riscv_sv39_mode` kernel was installed into a
+copy of the offline QEMU boot disk and started with the same volatile
+framebuffer device tree.  The host-side QEMU process ran inside the pinned
+development image for 230 seconds.  It reached framebuffer registration,
+virtio block probing, `root-found`, and the complete Stage1 mount sequence,
+but did not produce a second `root@asterinas-debug:` prompt or any desktop
+readiness marker before the bounded timeout.  Consequently the guarded
+`/dev/fb0` read was not issued in this run.
+
+The run is retained as a failure evidence point rather than a display result:
+
+```text
+kernel: target/osdk/aster-kernel-osdk-bin.Image
+boot disk: boot-pbmt-nc.ext4 (copy of the offline canary disk)
+QEMU result: CANARY_RESULT=timeout
+commands sent: 19 (booti was sent)
+markers: DEBIAN_STAGE1_PROGRESS step=root-found
+```
+
+This separates the next investigation from the earlier Xorg/fbdev read stall:
+first restore a bounded debug-console handoff with the fresh main kernel,
+then issue the single timed framebuffer read, and only after both are green
+consider a physical boot.  The board was not touched.
+
 The follow-up regression set is green:
 
 ```text
