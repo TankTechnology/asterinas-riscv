@@ -128,3 +128,10 @@ write), 0.171x (random read), and 0.154x (random write). These are a stacked
 ext4 control, not a claim about `main`: the current main-based kernel still
 returns `ENODEV` for an ext4 mount. Retain the full comparison JSON and raw
 logs before using the numbers for optimization decisions.
+
+The native SQLite ext4 workload is provided by
+`debian/sqlite_ext4_case.sh` (with `debian/sqlite_ext4.sh` as the chroot
+wrapper). It measures a fixed 10,000-row transaction, full synchronous DELETE
+journal, index creation, and count query in microseconds. Its stacked ext4
+control result was 1.080x Asterinas/Linux at the median and 1.122x at p95;
+the main-based kernel remains excluded until ext4 support lands on main.
