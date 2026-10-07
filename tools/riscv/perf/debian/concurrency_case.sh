@@ -11,11 +11,11 @@ case "$mode" in
         sample=$(printf '%s\n' "$output" | awk '/^Time:/ { split($2, a, "."); print a[1] * 1000000 + a[2] * 1000; exit }')
         ;;
     schbench)
-        output=$(/nix/store/czasgjl1wx0jc4kx576n9gd156kp1wkw-schbench-riscv64-unknown-linux-gnu-v1.0/bin/schbench -F 256 -n 5 -r 10 -i 20)
+        output=$(/nix/store/czasgjl1wx0jc4kx576n9gd156kp1wkw-schbench-riscv64-unknown-linux-gnu-v1.0/bin/schbench -F 256 -n 5 -r 10 -i 20 2>&1)
         printf '%s\n' "$output"
         # schbench reports the highlighted tail as `* 99.0th: N`; use the
         # request-latency tail (the second highlighted line), not wakeup time.
-        sample=$(printf '%s\n' "$output" | grep '99.0th' | tail -n 1 | awk '{ print $3 }')
+        sample=$(printf '%s\n' "$output" | awk '/Request Latencies/ { request = 1; next } /percentiles/ { request = 0 } request && /99\.0th:/ { print $3; exit }')
         ;;
     *) echo "unsupported benchmark: $mode" >&2; exit 2 ;;
 esac
