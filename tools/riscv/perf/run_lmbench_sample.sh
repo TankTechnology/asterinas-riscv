@@ -37,10 +37,10 @@ if ! docker exec "$container" timeout 120 /usr/local/qemu/bin/qemu-system-riscv6
     exit 1
 fi
 cat "$log"
-if [[ -n $expected_userspace ]] && ! grep -q "^LMBENCH_EXECUTION_USERSPACE=$expected_userspace$" "$log"; then
+if [[ -n $expected_userspace ]] && ! tr -d '\r' <"$log" | grep -q "^LMBENCH_EXECUTION_USERSPACE=$expected_userspace$"; then
     echo "missing LMBENCH_EXECUTION_USERSPACE=$expected_userspace marker" >&2
     exit 1
 fi
-sample=$(awk -v label="$label" 'index($0, label) == 1 { for (i = 1; i < NF; i++) if ($(i + 1) ~ /^microseconds/) { print $i; exit } }' "$log")
+sample=$(tr -d '\r' <"$log" | awk -v label="$label" 'index($0, label) == 1 { for (i = 1; i < NF; i++) if ($(i + 1) ~ /^microseconds/) { print $i; exit } }')
 [[ -n $sample ]] || { echo "missing PERF_SAMPLE marker" >&2; exit 1; }
 printf 'PERF_SAMPLE=%s\n' "$sample"
