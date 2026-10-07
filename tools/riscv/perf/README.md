@@ -231,3 +231,14 @@ the measured kernel predates the clean metadata fix. PR #179 commit
 `43100fe79` now prevents the previously reproducible ext4 ESTALE-on-reopen
 failure; formal Debian LMBench runs must be rebuilt after that commit with
 exact binary and kernel hashes retained.
+
+The formal runner is available at `debian/lmbench_chroot_case.sh`. It emits
+`LMBENCH_EXECUTION_USERSPACE=debian_chroot` and invokes each benchmark through
+`chroot /ext2`; `debian/prepare_lmbench_rootfs.sh` installs only binaries whose
+interpreter has been patched to Debian's RISC-V loader. Pass the expected
+userspace as the final argument to `run_lmbench_sample.sh` so a sample fails
+if the benchmark escapes back into the initramfs. A first clean boot
+validation of `lat_syscall null` completed on the ext4-fix kernel at 4.8344
+microseconds, with the raw log and input hashes retained outside the
+repository. This validates the execution boundary, not the complete repeated
+comparison matrix.

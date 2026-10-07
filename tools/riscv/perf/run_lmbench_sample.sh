@@ -3,17 +3,18 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 CONTAINER SYSTEM KERNEL INITRAMFS ROOTFS [LABEL]" >&2
+    echo "usage: $0 CONTAINER SYSTEM KERNEL INITRAMFS ROOTFS [LABEL [EXPECTED_USERSPACE]]" >&2
     exit 2
 }
 
-[[ $# -ge 5 && $# -le 6 && ( $2 == asterinas || $2 == linux ) ]] || usage
+[[ $# -ge 5 && $# -le 7 && ( $2 == asterinas || $2 == linux ) ]] || usage
 container=$1
 system=$2
 kernel=$3
 initramfs=$4
 rootfs=$5
 label=${6:-Simple syscall}
+expected_userspace=${7:-}
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 
@@ -36,6 +37,10 @@ if ! docker exec "$container" timeout 120 /usr/local/qemu/bin/qemu-system-riscv6
     exit 1
 fi
 cat "$log"
+if [[ -n $expected_userspace ]] && ! grep -q "^LMBENCH_EXECUTION_USERSPACE=$expected_userspace$" "$log"; then
+    echo "missing LMBENCH_EXECUTION_USERSPACE=$expected_userspace marker" >&2
+    exit 1
+fi
 sample=$(awk -v label="$label" 'index($0, label) == 1 { for (i = 1; i < NF; i++) if ($(i + 1) ~ /^microseconds/) { print $i; exit } }' "$log")
 [[ -n $sample ]] || { echo "missing PERF_SAMPLE marker" >&2; exit 1; }
 printf 'PERF_SAMPLE=%s\n' "$sample"
