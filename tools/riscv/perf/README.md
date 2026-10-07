@@ -119,5 +119,12 @@ The Debian ext4 control path is now available for Linux: the disposable Debian
 3.18 packages, and the Linux initramfs loads the matching virtio-mmio,
 virtio-blk, ext4, jbd2, and CRC32C modules. Four Linux fio cases have completed
 one warmup plus five samples with a 256 MiB test file and fixed QEMU settings;
-their arrays and raw logs are retained externally. The Asterinas ext4 cases must
-use this same rootfs and runner before any ratio is considered valid.
+their arrays and raw logs are retained externally. `build_asterinas_initramfs.sh`
+and `run_asterinas_fio_sample.sh` provide the matching Asterinas runner. On the
+stacked ext4 PR #179 kernel, after journal recovery on a clean copy of the same
+rootfs, all four Asterinas cases completed one warmup plus five samples. The
+resulting throughput ratios were 0.182x (sequential read), 0.185x (sequential
+write), 0.171x (random read), and 0.154x (random write). These are a stacked
+ext4 control, not a claim about `main`: the current main-based kernel still
+returns `ENODEV` for an ext4 mount. Retain the full comparison JSON and raw
+logs before using the numbers for optimization decisions.
