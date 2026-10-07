@@ -31,6 +31,25 @@ population standard deviation for both systems plus
 higher throughput for bandwidth tests, so the benchmark's `direction` must be
 interpreted with its unit.
 
+Use `collect_samples.py --output /artifacts/case/system -- command ...` to
+retain every invocation's stdout, stderr, exit status and duration. The command
+must emit exactly one `PERF_SAMPLE=<number>` line containing the measured guest
+metric, not boot/build/wrapper wall time. The default is one discarded warmup
+and five measured runs; non-zero exit, timeout, or invalid markers abort the
+collection without publishing `samples.json`. Existing output directories are
+never overwritten. Copy the resulting numeric arrays into the aggregation
+input only after verifying the matching system provenance.
+
+The timeout terminates local child processes only. A Docker/SSH wrapper must
+also enforce its own in-container/remote deadline and cleanup; killing the
+client does not guarantee that its guest QEMU has stopped. Before another run,
+verify that no prior guest remains. This collector does not replace the input
+manifest, kernel/rootfs retention, or fixed-configuration checks.
+
+The reported p95 across repeated run values describes run-to-run variation.
+It is not per-operation tail latency; retain fio/schbench latency distributions
+separately when reporting those tails.
+
 Example input:
 
 ```json
