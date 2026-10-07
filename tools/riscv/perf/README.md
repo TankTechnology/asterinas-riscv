@@ -46,6 +46,16 @@ client does not guarantee that its guest QEMU has stopped. Before another run,
 verify that no prior guest remains. This collector does not replace the input
 manifest, kernel/rootfs retention, or fixed-configuration checks.
 
+Before calling the matrix complete, run:
+
+```sh
+python3 tools/riscv/perf/audit_baseline.py /path/to/manifest.json
+```
+
+The audit exits non-zero until Debian LMBench coverage and a main-branch ext4
+baseline are present. Stacked PR measurements remain useful optimization
+controls, but cannot satisfy those two release-gate conditions.
+
 The reported p95 across repeated run values describes run-to-run variation.
 It is not per-operation tail latency; retain fio/schbench latency distributions
 separately when reporting those tails.
