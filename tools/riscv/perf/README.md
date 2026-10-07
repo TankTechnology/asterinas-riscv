@@ -240,5 +240,8 @@ userspace as the final argument to `run_lmbench_sample.sh` so a sample fails
 if the benchmark escapes back into the initramfs. A first clean boot
 validation of `lat_syscall null` completed on the ext4-fix kernel at 4.8344
 microseconds, with the raw log and input hashes retained outside the
-repository. This validates the execution boundary, not the complete repeated
-comparison matrix.
+repository. `debian/build_lmbench_binaries.sh` can instead compile the four
+needed binaries with `riscv64-linux-gnu-gcc` against the Debian RISC-V
+sysroot; that path was validated in a clean boot at 4.7409 microseconds. Both
+results validate the execution boundary, not the complete repeated comparison
+matrix.

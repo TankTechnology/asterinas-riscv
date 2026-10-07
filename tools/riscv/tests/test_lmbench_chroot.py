@@ -26,6 +26,12 @@ class DebianChrootLmbenchTests(unittest.TestCase):
         self.assertIn("ld-linux-riscv64-lp64d.so.1", text)
         self.assertIn("debugfs -w", text)
 
+    def test_cross_build_uses_debian_sysroot_and_pinned_loader(self):
+        text = (PERF / "debian/build_lmbench_binaries.sh").read_text()
+        self.assertIn("riscv64-linux-gnu-gcc", text)
+        self.assertIn("rpath,/lib:/usr/lib/riscv64-linux-gnu", text)
+        self.assertIn("libtirpc.so.3.0.0", text)
+
 
 if __name__ == "__main__":
     unittest.main()
