@@ -245,3 +245,25 @@ needed binaries with `riscv64-linux-gnu-gcc` against the Debian RISC-V
 sysroot; that path was validated in a clean boot at 4.7409 microseconds. Both
 results validate the execution boundary, not the complete repeated comparison
 matrix.
+
+## Formal Debian-chroot LMBench samples
+
+The first complete four-case LMBench run now uses source-built RISC-V binaries,
+the same Debian ext4 rootfs, fixed `virt`/`rv64,svpbmt=true,zkr=true`/8G/SMP4
+QEMU topology, one warmup, and five samples per system. The results below are
+formal Debian-chroot evidence for the ext4-fix kernel in PR #179; they are not
+yet a main-branch ext4 baseline.
+
+| Case | Asterinas median | Linux median | Asterinas/Linux |
+| --- | ---: | ---: | ---: |
+| `lat_syscall null` | 5.1156 us | 1.2816 us | 3.992x |
+| `lat_proc fork` | 2,989.29 us | 3,717.17 us | 0.804x |
+| `stat` | 15.3043 us | 8.1289 us | 1.883x |
+| TCP loopback latency | 383.0582 us | 219.8374 us | 1.742x |
+
+Each comparison JSON records median, p95, standard deviation, exact kernel and
+rootfs hashes, benchmark hash, userspace boundary, QEMU configuration, and raw
+sample directories under the retained artifact directory. The audit now passes
+all four LMBench cases; the overall goal remains incomplete solely because the
+ext4/fio/SQLite/network/concurrency controls are still stacked on PR #179 rather
+than measured from a merged main baseline.
