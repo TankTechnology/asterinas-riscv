@@ -113,3 +113,11 @@ The existing Asterinas samples attach three block devices whereas the Linux
 diagnostic samples attach none. Both use Nix-built benchmark initramfs binaries,
 not the required Debian userspace. Recollect both systems with identical device
 topology and Debian userspace before publishing baseline or optimization claims.
+
+The Debian ext4 control path is now available for Linux: the disposable Debian
+13.7 rootfs contains Debian-native `fio` 3.39, `sqlite3` 3.46.1, and `iperf3`
+3.18 packages, and the Linux initramfs loads the matching virtio-mmio,
+virtio-blk, ext4, jbd2, and CRC32C modules. Four Linux fio cases have completed
+one warmup plus five samples with a 256 MiB test file and fixed QEMU settings;
+their arrays and raw logs are retained externally. The Asterinas ext4 cases must
+use this same rootfs and runner before any ratio is considered valid.
