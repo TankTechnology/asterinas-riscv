@@ -226,6 +226,15 @@ ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext4_semantics_test.sh"
+else ifeq ($(AUTO_TEST), debian_apt_smoke)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "fs" ]
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_debian_apt_smoke_test.sh"
+ifeq ($(TARGET_ARCH), riscv64)
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=debianapt" \
+	--qemu-args="-device virtio-net-device,netdev=debianapt"
+endif
 else ifeq ($(AUTO_TEST), ext4_uncommitted_cut)
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
@@ -572,6 +581,7 @@ test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_debian_dev_overlay \
 		tools.riscv.tests.test_debian_rootfs \
+		tools.riscv.tests.test_debian_systemd_ext4_gate \
 		tools.riscv.tests.test_debian_m5_network \
 		tools.riscv.tests.test_debian_m6_browser \
 		tools.riscv.tests.test_debian_m7_baidu \
@@ -952,6 +962,39 @@ test_riscv_debian_systemd_m2_gate:
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_SYSTEMD_M2_GATE_OUTPUT)" --smp 4
+
+.PHONY: test_riscv_debian_systemd_ext4_gate
+DEBIAN_SYSTEMD_EXT4_BOOT_TIMEOUT ?= 900
+test_riscv_debian_systemd_ext4_gate:
+	@test -n "$(DEBIAN_KERNEL)" || \
+		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_UBOOT)" || \
+		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_DTB)" || \
+		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
+		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
+		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
+		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
+		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
+		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
+	@test -n "$(DEBIAN_SYSTEMD_EXT4_GATE_OUTPUT)" || \
+		{ echo "DEBIAN_SYSTEMD_EXT4_GATE_OUTPUT is required" >&2; exit 2; }
+	@python3 -m tools.riscv.debian.rootfs.systemd_ext4_gate \
+		--kernel "$(DEBIAN_KERNEL)" \
+		--uboot "$(DEBIAN_UBOOT)" \
+		--dtb "$(DEBIAN_DTB)" \
+		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(DEBIAN_ROOT_IMAGE)" \
+		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
+		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
+		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
+		--output-directory "$(DEBIAN_SYSTEMD_EXT4_GATE_OUTPUT)" --smp 4 \
+		--boot-timeout "$(DEBIAN_SYSTEMD_EXT4_BOOT_TIMEOUT)"
 
 .PHONY: test_riscv_debian_desktop_m5_qemu_gate
 test_riscv_debian_desktop_m5_qemu_gate:
@@ -1497,6 +1540,10 @@ else ifeq ($(AUTO_TEST), ext4_semantics)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
 		--mode "ext4-semantics"
+else ifeq ($(AUTO_TEST), debian_apt_smoke)
+	@python3 tools/riscv/validate_run_kernel_log.py \
+		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \
+		--mode "debian-apt-smoke"
 else ifeq ($(AUTO_TEST), xfstests_ext4)
 	@python3 tools/riscv/validate_run_kernel_log.py \
 		--log "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" \

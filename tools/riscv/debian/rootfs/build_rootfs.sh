@@ -1031,10 +1031,44 @@ EOF
     fi
     if [[ "$PROFILE" == systemd-m2 || "$PROFILE" == systemd-ext4-m3 ]]; then
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-        install -D -m 0755 -- \
-            "$script_directory/systemd_m2_evidence.sh" \
-            "$stage/usr/lib/asterinas/systemd-m2-evidence"
-        cat >"$stage/etc/systemd/system/asterinas-debian-m2.service" <<'EOF'
+        local evidence_script evidence_path evidence_command service_name
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            evidence_script="$script_directory/systemd_ext4_evidence.sh"
+            evidence_path="$stage/usr/lib/asterinas/systemd-ext4-evidence"
+            evidence_command=/usr/lib/asterinas/systemd-ext4-evidence
+            service_name=asterinas-debian-ext4.service
+        else
+            evidence_script="$script_directory/systemd_m2_evidence.sh"
+            evidence_path="$stage/usr/lib/asterinas/systemd-m2-evidence"
+            evidence_command=/usr/lib/asterinas/systemd-m2-evidence
+            service_name=asterinas-debian-m2.service
+        fi
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            # Keep the socket-activation probe identical to the standalone M2
+            # systemd gate.  Python's socket wrapper cannot prove that
+            # systemd passed LISTEN_FDS/LISTEN_PID and has hidden failures in
+            # this path in the past; these static helpers inspect fd 3 and
+            # accept the inherited listening socket directly.
+            local systemd_test_source="$script_directory/../../systemd/src"
+            local systemd_test_cc="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
+            local systemd_test_program
+            command -v "$systemd_test_cc" >/dev/null 2>&1 ||
+                die "missing RISC-V C compiler for systemd socket probe: $systemd_test_cc"
+            for systemd_test_program in socktest sockclient; do
+                "$systemd_test_cc" -O2 -static -no-pie -fno-stack-protector \
+                    -o "$stage/usr/bin/$systemd_test_program" \
+                    "$systemd_test_source/$systemd_test_program.c"
+                chmod 0755 "$stage/usr/bin/$systemd_test_program"
+            done
+        fi
+        install -D -m 0755 -- "$evidence_script" "$evidence_path"
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            install -D -m 0755 -- \
+                "$script_directory/asterinas_login.sh" \
+                "$stage/usr/local/sbin/asterinas-login"
+        fi
+        if [[ "$PROFILE" == systemd-m2 ]]; then
+            cat >"$stage/etc/systemd/system/$service_name" <<'EOF'
 [Unit]
 Description=Asterinas Debian M2 evidence
 After=local-fs.target
@@ -1048,10 +1082,46 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+        else
+            cat >"$stage/etc/systemd/system/$service_name" <<EOF
+[Unit]
+Description=Asterinas Debian ${PROFILE} evidence
+After=local-fs.target network.target getty.target
+
+[Service]
+Type=oneshot
+ExecStart=$evidence_command
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        fi
         mkdir -p -- "$stage/etc/systemd/system/multi-user.target.wants"
         ln -s -- \
-            ../asterinas-debian-m2.service \
-            "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
+            "../$service_name" \
+            "$stage/etc/systemd/system/multi-user.target.wants/$service_name"
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            # Asterinas exposes the usable interactive serial tty as ttyS0.
+            # Keep Debian's console-getty ordering and lifecycle, but point
+            # its terminal directly at ttyS0. The serial-getty template adds
+            # a dev-ttyS0.device dependency that is not materialized by the
+            # current Asterinas device manager.
+            install -d -m 0755 -- \
+                "$stage/etc/systemd/system/console-getty.service.d"
+            cat >"$stage/etc/systemd/system/console-getty.service.d/asterinas-serial.conf" <<'EOF'
+[Service]
+TTYPath=/dev/ttyS0
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=tty
+TTYReset=yes
+TTYVHangup=no
+TTYVTDisallocate=no
+ExecStart=
+ExecStart=-/sbin/agetty -o '-- \\u' --noclear --keep-baud -l /usr/local/sbin/asterinas-login 115200,38400,9600 - $TERM
+EOF
+        fi
     elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
         configure_desktop "$stage" "${PROFILE#desktop-}"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then

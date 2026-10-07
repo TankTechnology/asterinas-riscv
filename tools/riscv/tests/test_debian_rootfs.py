@@ -232,6 +232,16 @@ SYSTEMD_M2_PACKAGE_ROWS = tuple(
     )
 )
 
+SYSTEMD_EXT4_PACKAGE_ROWS = tuple(
+    sorted(
+        SYSTEMD_M2_PACKAGE_ROWS
+        + (
+            ("curl", "riscv64", "8.14.1-2+deb13u5"),
+            ("iproute2", "riscv64", "6.15.0-1"),
+        )
+    )
+)
+
 
 def _lock_text(rows: tuple[tuple[str, str, str], ...] = PACKAGE_ROWS) -> str:
     return "".join("\t".join(row) + "\n" for row in rows)
@@ -4381,10 +4391,10 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
         self.assertEqual(validated.profile, "systemd-m2")
 
     def test_writes_schema9_ext4_journal_profile_manifest(self) -> None:
-        lock_text = _lock_text(SYSTEMD_M2_PACKAGE_ROWS)
+        lock_text = _lock_text(SYSTEMD_EXT4_PACKAGE_ROWS)
         self.packages_lock.write_text(lock_text, encoding="utf-8")
         self.package_checksums.write_text(
-            _package_checksums_text(SYSTEMD_M2_PACKAGE_ROWS),
+            _package_checksums_text(SYSTEMD_EXT4_PACKAGE_ROWS),
             encoding="utf-8",
         )
         arguments = self.writer_arguments()
