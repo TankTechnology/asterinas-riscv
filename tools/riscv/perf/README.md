@@ -144,6 +144,14 @@ setup measured **1.053x** median and **1.618x** p95. It is reported as
 connect-plus-transaction latency because iperf3's one-byte mode exits with a
 zero-duration error; raw failure evidence is retained and excluded.
 
+PR #179 also includes a protocol-neutral virtio-net change (`321e6c3f5`) that
+reclaims completed TX descriptors before checking queue capacity. It rebuilt
+cleanly, but the fixed five-sample rerun measured 210.2 versus 596.1 Mbit/s
+(Asterinas/Linux **0.353x** median), statistically unchanged from the previous
+209.9 Mbit/s control (**1.002x** of the previous median). The optimization is
+therefore retained as a correctness/progress fix, not claimed as a throughput
+win; details and raw samples are in `iperf3-network-optimization-pr179.json`.
+
 The common Debian operation controls are now collected on the same stacked
 ext4 kernel and fixed QEMU configuration. Each value is the elapsed time for a
 fixed loop inside the guest (one warmup plus five samples), so these are
