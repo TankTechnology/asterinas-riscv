@@ -28,4 +28,8 @@ if ! docker exec "$container" timeout 120 /usr/local/qemu/bin/qemu-system-riscv6
 fi
 cat "$log"
 sample=$(awk -F= '/^PERF_SAMPLE=/ { print $2; exit }' "$log")
+if [[ -z $sample ]] && grep -q 'Request Latencies' "$log"; then
+    sample=$(awk '/99\.0th:/ { value=$3 } END { if (value != "") print value }' "$log")
+    [[ -n $sample ]] && printf 'PERF_SAMPLE=%s\n' "$sample"
+fi
 [[ -n $sample ]] || { echo "missing PERF_SAMPLE marker" >&2; exit 1; }

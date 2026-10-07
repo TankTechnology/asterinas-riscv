@@ -167,5 +167,8 @@ The SMP concurrency control now has a native Debian `hackbench` case using
 `-g 8 -l 1000 -p -T` on four vCPUs. Its median turnaround was 23,721,000 us on
 Asterinas versus 9,188,000 us on Linux (ratio **2.582x**); p95 and standard
 deviation are retained in `hackbench-comparison-pr179.json`. The schbench
-binary runs and emits its wakeup/request percentile tables, but its in-guest
-parser still needs a portability fix before a numeric comparison is published.
+binary uses `-F 256 -n 5 -r 10 -i 20`; its request-latency 99th percentile
+median was 70,528 us on Asterinas versus 37,824 us on Linux (ratio **1.865x**).
+The host runner extracts this value from the retained QEMU log because the
+minimal guest shell cannot reliably parse the multi-line report. Full
+p95/stddev are in `schbench-comparison-pr179.json`.
