@@ -135,3 +135,11 @@ wrapper). It measures a fixed 10,000-row transaction, full synchronous DELETE
 journal, index creation, and count query in microseconds. Its stacked ext4
 control result was 1.080x Asterinas/Linux at the median and 1.122x at p95;
 the main-based kernel remains excluded until ext4 support lands on main.
+
+The Debian `iperf3` network runner uses guest `10.0.2.15`, QEMU user networking,
+and a `virtio-net-device` with the host as the fixed server. The stacked ext4
+control reached 209.9 versus 596.1 Mbit/s (Asterinas/Linux **0.352x** median,
+**0.361x** p95). A separate fixed one-second transaction around connection
+setup measured **1.053x** median and **1.618x** p95. It is reported as
+connect-plus-transaction latency because iperf3's one-byte mode exits with a
+zero-duration error; raw failure evidence is retained and excluded.
