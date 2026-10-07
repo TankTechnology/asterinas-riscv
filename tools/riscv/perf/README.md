@@ -131,6 +131,11 @@ provenance are retained in `lmbench-debian-syscall-comparison.json`; process,
 filesystem, and network LMBench cases remain required before this section is
 considered complete.
 
+The matching `lat_proc fork` case measured 3,110.7 us on Asterinas versus
+3,571.0 us on Linux (0.871x median, 1.125x p95); the p95 reversal is driven by
+one retained Asterinas outlier. Full provenance is in
+`lmbench-debian-process-comparison.json`.
+
 The Debian ext4 control path is now available for Linux: the disposable Debian
 13.7 rootfs contains Debian-native `fio` 3.39, `sqlite3` 3.46.1, and `iperf3`
 3.18 packages, and the Linux initramfs loads the matching virtio-mmio,
