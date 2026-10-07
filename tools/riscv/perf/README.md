@@ -224,3 +224,10 @@ from **947,101 us** to **625,985 us** (0.661x of the previous Asterinas run);
 the Linux control is **576,596 us**, so the optimized Asterinas/Linux ratio is
 **1.086x** at median and **1.065x** at p95. Full samples and provenance are in
 `fsync-optimization-comparison-pr179.json`.
+
+Evidence correction: the historical LMBench JSON files are diagnostic only;
+their binaries ran from a Nix-built initramfs rather than a Debian chroot, and
+the measured kernel predates the clean metadata fix. PR #179 commit
+`43100fe79` now prevents the previously reproducible ext4 ESTALE-on-reopen
+failure; formal Debian LMBench runs must be rebuilt after that commit with
+exact binary and kernel hashes retained.
