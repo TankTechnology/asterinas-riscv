@@ -172,3 +172,10 @@ median was 70,528 us on Asterinas versus 37,824 us on Linux (ratio **1.865x**).
 The host runner extracts this value from the retained QEMU log because the
 minimal guest shell cannot reliably parse the multi-line report. Full
 p95/stddev are in `schbench-comparison-pr179.json`.
+
+The ext4 dirty-state optimization in PR #179 (`3990e528a`) was rebuilt in
+RELEASE mode and rerun with the same fsync workload. Median elapsed time fell
+from **947,101 us** to **625,985 us** (0.661x of the previous Asterinas run);
+the Linux control is **576,596 us**, so the optimized Asterinas/Linux ratio is
+**1.086x** at median and **1.065x** at p95. Full samples and provenance are in
+`fsync-optimization-comparison-pr179.json`.
