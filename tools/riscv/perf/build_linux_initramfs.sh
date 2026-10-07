@@ -28,6 +28,7 @@ case $fs_type in
     ext2|ext4) ;;
     *) echo "unsupported filesystem type: $fs_type" >&2; exit 1 ;;
 esac
+runner_file=${RUNNER_FILE:-}
 [[ -r $base ]] || { echo "base initramfs is not readable: $base" >&2; exit 1; }
 [[ $benchmark = /* ]] || { echo "benchmark must be an absolute path" >&2; exit 1; }
 command -v cpio >/dev/null || { echo "cpio is required" >&2; exit 1; }
@@ -43,6 +44,13 @@ if [[ -n $module_root ]]; then
     }
     mkdir -p "$work/lib"
     cp -a "$module_root/usr/lib/modules" "$work/lib/"
+fi
+if [[ -n $runner_file ]]; then
+    [[ -r $runner_file ]] || { echo "runner file is not readable: $runner_file" >&2; exit 1; }
+    mkdir -p "$work/benchmark"
+    cp "$runner_file" "$work/benchmark/linux-benchmark"
+    chmod 0755 "$work/benchmark/linux-benchmark"
+    benchmark=/benchmark/linux-benchmark
 fi
 
 cat >"$work/init" <<EOF
