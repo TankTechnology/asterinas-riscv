@@ -143,3 +143,22 @@ control reached 209.9 versus 596.1 Mbit/s (Asterinas/Linux **0.352x** median,
 setup measured **1.053x** median and **1.618x** p95. It is reported as
 connect-plus-transaction latency because iperf3's one-byte mode exits with a
 zero-duration error; raw failure evidence is retained and excluded.
+
+The common Debian operation controls are now collected on the same stacked
+ext4 kernel and fixed QEMU configuration. Each value is the elapsed time for a
+fixed loop inside the guest (one warmup plus five samples), so these are
+workload-level controls rather than isolated syscall latencies:
+
+| Case | Asterinas median | Linux median | Asterinas/Linux |
+| --- | ---: | ---: | ---: |
+| 100 fork+exec `/bin/true` | 429,418 us | 503,064 us | **0.854x** |
+| 1,000 path `stat` calls | 6,929,490 us | 6,385,665 us | **1.085x** |
+| 1,000 descriptor `fstat` calls | 434,910 us | 525,307 us | **0.828x** |
+| 50 single-block `fsync` writes | 947,101 us | 576,596 us | **1.643x** |
+
+The fstat case uses Python `os.fstat` because Asterinas does not currently
+expose `/proc/self/fd` symlinks. The fsync case includes the fixed `dd`
+process/command overhead. Full p95/stddev and raw logs are retained in
+`common-ops-comparison-pr179.json` and the corresponding `*-common-*` sample
+directories; these results point to fsync/writeback as the next optimization
+target.
