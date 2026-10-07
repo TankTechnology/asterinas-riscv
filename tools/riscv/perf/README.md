@@ -93,14 +93,14 @@ the Asterinas initramfs. `build_linux_initramfs.sh` repacks that userspace with
 a Linux `/init`; `run_linux_lmbench_sample.sh` boots the guest and emits a
 single `PERF_SAMPLE` marker for `collect_samples.py`.
 
-The first completed control cases use `virt`, `rv64,svpbmt=true,zkr=true`, 8G,
+The initial diagnostic control cases use `virt`, `rv64,svpbmt=true,zkr=true`, 8G,
 SMP4, and `mitigations=off`. They intentionally do not attach a block device:
 these syscall/process cases do not need one, while the Debian kernel package's
 virtio block driver is not built into this minimal initramfs. Block-backed
 ext4, network, and SMP cases must use a Linux initramfs/rootfs with the matching
 virtio drivers before they are compared.
 
-Retained results currently include:
+Diagnostic results currently include (not the formal Debian baseline):
 
 | Case | Asterinas median | Linux median | Asterinas/Linux |
 | --- | ---: | ---: | ---: |
@@ -109,3 +109,7 @@ Retained results currently include:
 
 These are latency ratios (lower is better); the p95 and population standard
 deviation remain in the external artifact directory alongside every raw run.
+The existing Asterinas samples attach three block devices whereas the Linux
+diagnostic samples attach none. Both use Nix-built benchmark initramfs binaries,
+not the required Debian userspace. Recollect both systems with identical device
+topology and Debian userspace before publishing baseline or optimization claims.
