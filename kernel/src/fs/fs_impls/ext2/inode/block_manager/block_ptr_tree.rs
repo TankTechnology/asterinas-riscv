@@ -6,7 +6,10 @@ use device_id::{decode_device_numbers, encode_device_numbers};
 use ostd::mm::io::util::HasVmReaderWriter;
 use smallvec::SmallVec;
 
-use super::indirect_block_manager::{IndirectBlock, IndirectBlockManager};
+use super::{
+    extent::ExtentTree,
+    indirect_block_manager::{IndirectBlock, IndirectBlockManager},
+};
 use crate::fs::ext2::{fs::Ext2, inode::RAW_BLOCK_PTRS_LEN, prelude::*};
 
 const PTRS_PER_BLOCK: usize = BLOCK_SIZE / size_of::<u32>();
@@ -33,6 +36,7 @@ const MAX_BLOCK_POINTER_LEVELS: usize = 4;
 pub(in crate::fs::fs_impls::ext2::inode) struct BlockPtrTree {
     raw_block_ptrs: Dirty<RawBlockPtrs>,
     indirect_blocks_manager: Mutex<IndirectBlockManager>,
+    extent_tree: Option<ExtentTree>,
 }
 
 impl BlockPtrTree {
@@ -40,8 +44,11 @@ impl BlockPtrTree {
     pub(in crate::fs::fs_impls::ext2::inode) fn new(
         raw_block_ptrs: RawBlockPtrs,
         fs: Weak<Ext2>,
+        has_extents: bool,
     ) -> Self {
         Self {
+            extent_tree: has_extents
+                .then(|| ExtentTree::new(raw_block_ptrs.block_ptrs, fs.clone())),
             raw_block_ptrs: Dirty::new(raw_block_ptrs),
             indirect_blocks_manager: Mutex::new(IndirectBlockManager::new(fs)),
         }
@@ -92,6 +99,9 @@ impl BlockPtrTree {
 
     /// Flushes all dirty cached indirect blocks to the device.
     pub(in crate::fs::fs_impls::ext2::inode) fn sync_indirect_blocks(&self) -> Result<()> {
+        if self.extent_tree.is_some() {
+            return Ok(());
+        }
         self.indirect_blocks_manager.lock().sync()
     }
 
@@ -101,6 +111,9 @@ impl BlockPtrTree {
         iblock: Iblock,
         max_blocks: u32,
     ) -> Result<Range<Ext2Bid>> {
+        if let Some(extent_tree) = &self.extent_tree {
+            return extent_tree.lookup_block_range(iblock, max_blocks);
+        }
         if max_blocks == 0 {
             return_errno_with_message!(Errno::EINVAL, "zero block range requested");
         }
@@ -145,6 +158,13 @@ impl BlockPtrTree {
         iblock: Iblock,
         max_blocks: u32,
     ) -> Result<ResolvedBlockRange> {
+        if self.extent_tree.is_some() {
+            return self
+                .extent_tree
+                .as_mut()
+                .expect("extent tree checked above")
+                .resolve_block_range(&mut self.raw_block_ptrs, fs, iblock, max_blocks);
+        }
         if max_blocks == 0 {
             return_errno_with_message!(Errno::EINVAL, "zero block allocation requested");
         }
@@ -176,6 +196,9 @@ impl BlockPtrTree {
         fs: &Ext2,
         new_size: usize,
     ) -> Result<()> {
+        if let Some(extent_tree) = self.extent_tree.as_mut() {
+            return extent_tree.truncate_to_byte_len(&mut self.raw_block_ptrs, fs, new_size);
+        }
         // First logical block to free = ceil(new_size / block_size).
         let iblock = Iblock::try_from(new_size.div_ceil(BLOCK_SIZE))
             .map_err(|_| Error::with_message(Errno::EINVAL, "truncate size exceeds ext2 limits"))?;
@@ -202,6 +225,12 @@ impl BlockPtrTree {
         iblock: Iblock,
         max_blocks: u32,
     ) -> Result<u32> {
+        if self.extent_tree.is_some() {
+            if self.lookup_block(iblock)?.is_some() {
+                return Ok(0);
+            }
+            return Ok(1.min(max_blocks));
+        }
         if max_blocks == 0 {
             return Ok(0);
         }
@@ -1235,6 +1264,7 @@ mod test {
         BlockPtrTree::new(
             RawBlockPtrs::new(sector_count, block_ptrs),
             Arc::downgrade(fs),
+            false,
         )
     }
 
@@ -1740,7 +1770,7 @@ mod test {
         allocated_tree.sync_indirect_blocks().unwrap();
 
         let original = *allocated_tree.raw_block_ptrs();
-        let mut tree = BlockPtrTree::new(original, Arc::downgrade(ext2));
+        let mut tree = BlockPtrTree::new(original, Arc::downgrade(ext2), false);
         let free_before = ext2.super_block().free_blocks_count();
 
         f.disk.set_fail_reads(true);

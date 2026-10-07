@@ -24,7 +24,7 @@ impl Inode {
         // Step 2: flush dirty data pages.
         let fs = self.fs()?;
         let mut inner = self.inner.write();
-        inner.sync_data_pages()?;
+        inner.sync_data_pages(&fs)?;
 
         // Step 3: flush inode-local indirect metadata before inode-table state.
         inner.sync_indirect_blocks()?;
@@ -43,7 +43,7 @@ impl Inode {
         let mut inner = self.inner.write();
 
         // Step 1: flush dirty data pages.
-        inner.sync_data_pages()?;
+        inner.sync_data_pages(&fs)?;
 
         // Step 2: flush inode-local indirect metadata before inode-table state.
         inner.sync_indirect_blocks()?;
@@ -109,9 +109,32 @@ impl InodeInner {
         Ok(())
     }
 
-    fn sync_data_pages(&self) -> Result<()> {
+    /// Stages inode metadata without publishing a standalone journal
+    /// transaction.  Deletion must be ordered with the parent directory
+    /// update; publishing the zero-link inode first can leave an allocation
+    /// leak if the directory transaction is interrupted.
+    pub(super) fn stage_inode_desc(&mut self, fs: &Ext2, ino: Ext2Ino) -> Result<()> {
+        if !self.is_dirty() {
+            return Ok(());
+        }
+
+        let raw_block_ptrs = self.raw_block_ptrs();
+        self.desc.block_ptrs = raw_block_ptrs.block_ptrs;
+        self.desc.sector_count = raw_block_ptrs.sector_count;
+
+        let raw_inode = RawInode::from(&*self.desc);
+        fs.stage_inode_desc(ino, &raw_inode)?;
+        self.clear_dirty();
+        Ok(())
+    }
+
+    fn sync_data_pages(&self, fs: &Ext2) -> Result<()> {
         let file_size = self.file_size();
         if file_size == 0 {
+            return Ok(());
+        }
+
+        if self.inode_type() == InodeType::Dir && fs.has_journal() {
             return Ok(());
         }
 
@@ -124,7 +147,7 @@ impl InodeInner {
         }
     }
 
-    fn sync_indirect_blocks(&self) -> Result<()> {
+    pub(super) fn sync_indirect_blocks(&self) -> Result<()> {
         match &self.payload {
             super::InodePayload::DataBacked { block_manager, .. } => {
                 block_manager.sync_indirect_blocks()

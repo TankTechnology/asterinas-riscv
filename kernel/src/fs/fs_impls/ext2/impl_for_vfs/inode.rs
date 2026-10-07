@@ -242,7 +242,9 @@ impl Inode for Ext2Inode {
         }
         self.sync_all()?;
         let block_group = fs.block_group(self.block_group_idx());
-        block_group.sync_inode_table()?;
+        if !fs.has_journal() {
+            block_group.sync_inode_table()?;
+        }
         fs.sync_allocation_metadata()?;
         if fs.block_device().sync()? != BioStatus::Complete {
             return_errno_with_message!(Errno::EIO, "failed to flush block device");
@@ -257,7 +259,9 @@ impl Inode for Ext2Inode {
         }
         self.sync_data()?;
         let block_group = fs.block_group(self.block_group_idx());
-        block_group.sync_inode_table()?;
+        if !fs.has_journal() {
+            block_group.sync_inode_table()?;
+        }
         fs.sync_allocation_metadata()?;
         if fs.block_device().sync()? != BioStatus::Complete {
             return_errno_with_message!(Errno::EIO, "failed to flush block device");

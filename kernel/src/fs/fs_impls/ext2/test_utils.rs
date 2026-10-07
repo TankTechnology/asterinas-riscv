@@ -8,19 +8,19 @@ use core::{
 };
 
 use aster_block::{
-    BLOCK_SIZE, BlockDevice, BlockDeviceMeta, SECTOR_SIZE,
     bio::{BioEnqueueError, BioStatus, BioType, SubmittedBio},
     id::Bid,
+    BlockDevice, BlockDeviceMeta, BLOCK_SIZE, SECTOR_SIZE,
 };
 use device_id::{DeviceId, MajorId, MinorId};
-use ostd::mm::{FrameAllocOptions, HasSize, Segment, VmIo, io::util::HasVmReaderWriter};
+use ostd::mm::{io::util::HasVmReaderWriter, FrameAllocOptions, HasSize, Segment, VmIo};
 
 use super::{
     block_group::RawBlockGroup,
     fs::{Ext2, ROOT_INO},
-    inode::{FilePerm, Inode, RAW_BLOCK_PTRS_LEN, RawInode},
+    inode::{FilePerm, Inode, RawInode, RAW_BLOCK_PTRS_LEN},
     super_block::{
-        ErrorsBehavior, FsState, MAGIC_NUM, OsId, RawSuperBlock, RevLevel, SUPER_BLOCK_OFFSET,
+        ErrorsBehavior, FsState, OsId, RawSuperBlock, RevLevel, MAGIC_NUM, SUPER_BLOCK_OFFSET,
     },
 };
 use crate::{
@@ -779,7 +779,7 @@ impl Ext2FixtureBuilder {
         let device: Arc<dyn BlockDevice> = self
             .custom_device
             .unwrap_or_else(|| disk.clone() as Arc<dyn BlockDevice>);
-        let ext2 = Ext2::open(device, FsFlags::empty(), None)?;
+        let ext2 = Ext2::open(device, FsFlags::empty(), None, false)?;
 
         Ok(Ext2Fixture {
             disk,
