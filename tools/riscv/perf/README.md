@@ -136,6 +136,11 @@ The matching `lat_proc fork` case measured 3,110.7 us on Asterinas versus
 one retained Asterinas outlier. Full provenance is in
 `lmbench-debian-process-comparison.json`.
 
+The Debian ext4 filesystem case (`lat_syscall stat`) measured 18.7352 us on
+Asterinas versus 10.9409 us on Linux (1.712x median, 1.682x p95). Each sample
+uses a fresh rootfs clone to avoid stale ext4 handles after forced shutdowns;
+details are retained in `lmbench-debian-fs-comparison.json`.
+
 The Debian ext4 control path is now available for Linux: the disposable Debian
 13.7 rootfs contains Debian-native `fio` 3.39, `sqlite3` 3.46.1, and `iperf3`
 3.18 packages, and the Linux initramfs loads the matching virtio-mmio,
