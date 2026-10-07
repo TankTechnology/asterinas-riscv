@@ -14,7 +14,7 @@ pub(super) use attr::{
     route::RouteAttr,
 };
 pub(super) use segment::{
-    RtnlSegment,
+    QdiscSegment, RtnlSegment,
     addr::{AddrMessageFlags, AddrSegment, AddrSegmentBody, RtScope},
     link::{LinkSegment, LinkSegmentBody},
     route::{RouteSegment, RouteSegmentBody},
