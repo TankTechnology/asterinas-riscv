@@ -84,3 +84,28 @@ performance number; use the native `make results` run for the baseline. The
 existing `bench_linux_and_aster.sh` remains useful for the suites that already
 provide a Linux control, but its x86-oriented defaults must not be reused for a
 RISC-V claim without recording the changed machine configuration.
+
+## RISC-V Linux control progress
+
+The Linux control uses Debian's official `linux-image-6.12.94+deb13-riscv64`
+payload (Linux 6.12.94, `riscv64`) and the same benchmark binaries copied into
+the Asterinas initramfs. `build_linux_initramfs.sh` repacks that userspace with
+a Linux `/init`; `run_linux_lmbench_sample.sh` boots the guest and emits a
+single `PERF_SAMPLE` marker for `collect_samples.py`.
+
+The first completed control cases use `virt`, `rv64,svpbmt=true,zkr=true`, 8G,
+SMP4, and `mitigations=off`. They intentionally do not attach a block device:
+these syscall/process cases do not need one, while the Debian kernel package's
+virtio block driver is not built into this minimal initramfs. Block-backed
+ext4, network, and SMP cases must use a Linux initramfs/rootfs with the matching
+virtio drivers before they are compared.
+
+Retained results currently include:
+
+| Case | Asterinas median | Linux median | Asterinas/Linux |
+| --- | ---: | ---: | ---: |
+| LMBench simple syscall | 5.5113 us | 1.2079 us | 4.56x |
+| LMBench fork+exit | 3201.2 us | 2971.6667 us | 1.08x |
+
+These are latency ratios (lower is better); the p95 and population standard
+deviation remain in the external artifact directory alongside every raw run.
