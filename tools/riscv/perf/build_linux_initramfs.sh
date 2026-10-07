@@ -77,6 +77,7 @@ echo "Linux initramfs ready"
 "$benchmark" '$argument'
 status=\$?
 echo "Linux benchmark exit status: \$status"
+sync
 poweroff -f
 halt -f
 sleep 3600

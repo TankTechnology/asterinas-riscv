@@ -39,6 +39,7 @@ echo "Asterinas Debian ext4 benchmark ready"
 /benchmark/asterinas-benchmark '$argument'
 status=\$?
 echo "Asterinas benchmark exit status: \$status"
+sync
 poweroff -f
 sleep 3600
 EOF
