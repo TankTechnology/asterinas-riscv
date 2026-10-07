@@ -162,3 +162,10 @@ process/command overhead. Full p95/stddev and raw logs are retained in
 `common-ops-comparison-pr179.json` and the corresponding `*-common-*` sample
 directories; these results point to fsync/writeback as the next optimization
 target.
+
+The SMP concurrency control now has a native Debian `hackbench` case using
+`-g 8 -l 1000 -p -T` on four vCPUs. Its median turnaround was 23,721,000 us on
+Asterinas versus 9,188,000 us on Linux (ratio **2.582x**); p95 and standard
+deviation are retained in `hackbench-comparison-pr179.json`. The schbench
+binary runs and emits its wakeup/request percentile tables, but its in-guest
+parser still needs a portability fix before a numeric comparison is published.
