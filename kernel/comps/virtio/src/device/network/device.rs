@@ -201,6 +201,10 @@ impl NetworkDevice {
 
     /// Sends a packet to network.
     fn send(&mut self, packet: &[u8]) -> Result<(), NetError> {
+        // Reclaim completed descriptors before checking capacity. Otherwise a
+        // queue that has just been completed by the device can transiently
+        // report Busy and unnecessarily stall the TCP poll loop.
+        self.free_processed_tx_buffers();
         if !self.can_send() {
             return Err(NetError::Busy);
         }
