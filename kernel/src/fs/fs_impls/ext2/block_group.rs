@@ -27,7 +27,7 @@
 //! - `inode_cache` — protects the per-group live inode map. Uses
 //!   double-checked locking (read then promote to write on miss).
 
-use core::fmt;
+use core::{fmt, sync::atomic::AtomicBool};
 
 use aster_block::bio::BioCompleteFn;
 use ostd::const_assert;
@@ -70,6 +70,8 @@ pub(super) struct BlockGroup {
     _inode_table_backend: Arc<InodeTableBackend>,
     /// Inode table page cache.
     inode_table_cache: PageCache,
+    /// Whether a cached inode descriptor has been staged into the inode table.
+    inode_table_dirty: AtomicBool,
     /// Per-group inode cache keyed by group-local inode index.
     ///
     /// Ext2 keeps this cache locally because the VFS layer does not provide
@@ -161,6 +163,7 @@ impl BlockGroup {
             inode_size,
             _inode_table_backend: backend,
             inode_table_cache,
+            inode_table_dirty: AtomicBool::new(false),
             inode_cache: RwMutex::new(BTreeMap::new()),
         })
     }
@@ -286,10 +289,21 @@ impl BlockGroup {
 
     /// Syncs the inode table back to disk.
     pub(super) fn sync_inode_table(&self) -> Result<()> {
+        if !self
+            .inode_table_dirty
+            .swap(false, core::sync::atomic::Ordering::AcqRel)
+        {
+            return Ok(());
+        }
         // TODO: support sync specific inode with inode number.
         let size = self.nr_inodes_per_group as usize * self.inode_size;
         let range = 0..size;
-        self.inode_table_cache.flush_range(range)
+        if let Err(error) = self.inode_table_cache.flush_range(range) {
+            self.inode_table_dirty
+                .store(true, core::sync::atomic::Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Returns a read guard over the combined group metadata.
@@ -528,6 +542,8 @@ impl BlockGroup {
         let inode_idx = self.inode_idx_in_group(ino);
         let offset_bytes = (inode_idx as usize) * self.inode_size;
         self.inode_table_cache.write_val(offset_bytes, raw)?;
+        self.inode_table_dirty
+            .store(true, core::sync::atomic::Ordering::Release);
         Ok(())
     }
 
