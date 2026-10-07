@@ -44,10 +44,15 @@ def audit(manifest_path: Path) -> dict:
     # LMBench must be a Debian userspace result, not the earlier Nix/native
     # diagnostic (which is deliberately retained but is not a baseline).
     lmbench_candidates = sorted(root.glob("lmbench-debian-*-comparison*.json"))
+    lmbench_cases = {
+        case: (root / f"lmbench-debian-{case}-comparison.json").is_file()
+        for case in ("syscall", "process", "fs", "net")
+    }
     checks["lmbench"] = {
-        "present": bool(lmbench_candidates),
+        "present": all(lmbench_cases.values()),
         "paths": [p.name for p in lmbench_candidates],
-        "diagnostic_only": not bool(lmbench_candidates),
+        "cases": lmbench_cases,
+        "diagnostic_only": not all(lmbench_cases.values()),
     }
 
     required_config = set()

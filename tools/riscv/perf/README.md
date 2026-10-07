@@ -124,6 +124,13 @@ diagnostic samples attach none. Both use Nix-built benchmark initramfs binaries,
 not the required Debian userspace. Recollect both systems with identical device
 topology and Debian userspace before publishing baseline or optimization claims.
 
+The Debian ext4 LMBench runner now covers the same fixed QEMU/rootfs contract.
+The first completed case, `lat_syscall null`, measured 5.7806 us on Asterinas
+versus 1.2911 us on Linux (4.477x median, 4.521x p95). Raw samples and
+provenance are retained in `lmbench-debian-syscall-comparison.json`; process,
+filesystem, and network LMBench cases remain required before this section is
+considered complete.
+
 The Debian ext4 control path is now available for Linux: the disposable Debian
 13.7 rootfs contains Debian-native `fio` 3.39, `sqlite3` 3.46.1, and `iperf3`
 3.18 packages, and the Linux initramfs loads the matching virtio-mmio,

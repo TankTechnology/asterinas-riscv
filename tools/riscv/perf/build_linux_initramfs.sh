@@ -3,11 +3,11 @@
 set -euo pipefail
 
 usage() {
-    echo "usage: $0 BASE_INITRAMFS OUTPUT_INITRAMFS BENCHMARK [--no-block|--block] [MODULE_ROOT] [FS_TYPE]" >&2
+    echo "usage: $0 BASE_INITRAMFS OUTPUT_INITRAMFS BENCHMARK [--no-block|--block] [MODULE_ROOT] [FS_TYPE] [ARGUMENT]" >&2
     exit 2
 }
 
-[[ $# -ge 3 && $# -le 6 ]] || usage
+[[ $# -ge 3 && $# -le 7 ]] || usage
 base=$1
 output=$2
 benchmark=$3
@@ -24,6 +24,7 @@ if [[ $# -ge 5 && ${4:-} != --no-block && ${4:-} != --block ]]; then
     usage
 fi
 fs_type=${6:-ext2}
+argument=${7:-}
 case $fs_type in
     ext2|ext4) ;;
     *) echo "unsupported filesystem type: $fs_type" >&2; exit 1 ;;
@@ -35,7 +36,7 @@ command -v cpio >/dev/null || { echo "cpio is required" >&2; exit 1; }
 command -v gzip >/dev/null || { echo "gzip is required" >&2; exit 1; }
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'chmod -R u+rwX "$work" 2>/dev/null || true; rm -rf "$work" 2>/dev/null || true' EXIT
 gzip -dc "$base" | (cd "$work" && cpio -idm --quiet)
 if [[ -n $module_root ]]; then
     [[ -d $module_root/usr/lib/modules ]] || {
@@ -72,7 +73,7 @@ if [ "$mount_block" -eq 1 ]; then
     mount -t "$fs_type" /dev/vda /ext2
 fi
 echo "Linux initramfs ready"
-"$benchmark"
+"$benchmark" '$argument'
 status=\$?
 echo "Linux benchmark exit status: \$status"
 poweroff -f

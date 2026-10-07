@@ -48,7 +48,8 @@ class BaselineAuditTests(unittest.TestCase):
             }
             for name in names.values():
                 (root / name).write_text("{}")
-            (root / "lmbench-debian-main-comparison.json").write_text("{}")
+            for case in ("syscall", "process", "fs", "net"):
+                (root / f"lmbench-debian-{case}-comparison.json").write_text("{}")
             manifest = {
                 "comparison_status": "main_ext4_baseline_complete",
                 **names,
