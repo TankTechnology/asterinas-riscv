@@ -44,14 +44,37 @@ def audit(manifest_path: Path) -> dict:
     # LMBench must be a Debian userspace result, not the earlier Nix/native
     # diagnostic (which is deliberately retained but is not a baseline).
     lmbench_candidates = sorted(root.glob("lmbench-debian-*-comparison*.json"))
-    lmbench_cases = {
-        case: (root / f"lmbench-debian-{case}-comparison.json").is_file()
-        for case in ("syscall", "process", "fs", "net")
-    }
+    lmbench_cases = {}
+    lmbench_errors = {}
+    for case in ("syscall", "process", "fs", "net"):
+        path = root / f"lmbench-debian-{case}-comparison.json"
+        errors = []
+        try:
+            result = json.loads(path.read_text())
+            configuration = result.get("configuration", {})
+            if configuration.get("execution_userspace") != "debian_chroot":
+                errors.append("Debian chroot execution is not proven")
+            for key in ("benchmark_binary_sha256", "asterinas_kernel_sha256",
+                        "linux_kernel_sha256", "rootfs_sha256"):
+                value = configuration.get(key, "")
+                if not isinstance(value, str) or len(value) != 64:
+                    errors.append(f"missing {key}")
+            for system in ("asterinas", "linux"):
+                relative = result.get("raw_samples", {}).get(system)
+                sample_path = root / relative / "samples.json" if relative else None
+                if sample_path is None or not sample_path.is_file():
+                    errors.append(f"missing {system} raw samples")
+            if not result.get("results"):
+                errors.append("missing measured results")
+        except (OSError, ValueError, AttributeError, TypeError):
+            errors.append("missing or invalid result JSON")
+        lmbench_cases[case] = not errors
+        lmbench_errors[case] = errors
     checks["lmbench"] = {
         "present": all(lmbench_cases.values()),
         "paths": [p.name for p in lmbench_candidates],
         "cases": lmbench_cases,
+        "errors": lmbench_errors,
         "diagnostic_only": not all(lmbench_cases.values()),
     }
 

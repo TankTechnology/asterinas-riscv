@@ -124,8 +124,10 @@ diagnostic samples attach none. Both use Nix-built benchmark initramfs binaries,
 not the required Debian userspace. Recollect both systems with identical device
 topology and Debian userspace before publishing baseline or optimization claims.
 
-The Debian ext4 LMBench runner now covers the same fixed QEMU/rootfs contract.
-The first completed case, `lat_syscall null`, measured 5.7806 us on Asterinas
+The fixed-topology LMBench diagnostic attaches the same Debian ext4 rootfs,
+but still executes Nix-built binaries from the initramfs, not Debian chroot.
+None of the following measurements satisfies the Debian userspace baseline.
+The `lat_syscall null` diagnostic measured 5.7806 us on Asterinas
 versus 1.2911 us on Linux (4.477x median, 4.521x p95). Raw samples and
 provenance are retained in `lmbench-debian-syscall-comparison.json`; process,
 filesystem, and network LMBench cases remain required before this section is
@@ -136,9 +138,11 @@ The matching `lat_proc fork` case measured 3,110.7 us on Asterinas versus
 one retained Asterinas outlier. Full provenance is in
 `lmbench-debian-process-comparison.json`.
 
-The Debian ext4 filesystem case (`lat_syscall stat`) measured 18.7352 us on
+The ext4 diagnostic (`lat_syscall stat`) measured 18.7352 us on
 Asterinas versus 10.9409 us on Linux (1.712x median, 1.682x p95). Each sample
-uses a fresh rootfs clone to avoid stale ext4 handles after forced shutdowns;
+uses a fresh rootfs clone; repeated boots of the writable image reproducibly
+returned ESTALE after the first successful run. This remains an unresolved
+filesystem durability/reopen failure, not a proven fixture-only problem;
 details are retained in `lmbench-debian-fs-comparison.json`.
 
 The LMBench TCP loopback case measured 357.92 us on Asterinas versus 230.05 us

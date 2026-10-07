@@ -35,7 +35,7 @@ class BaselineAuditTests(unittest.TestCase):
             self.assertFalse(result["checks"]["lmbench"]["present"])
             self.assertFalse(result["checks"]["main_ext4"]["present"])
 
-    def test_complete_shape_requires_lmbench_and_main_ext4(self):
+    def test_empty_result_files_cannot_prove_completion(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             names = {
@@ -60,7 +60,10 @@ class BaselineAuditTests(unittest.TestCase):
             }
             path = root / "manifest.json"
             path.write_text(json.dumps(manifest))
-            self.assertTrue(audit(path)["complete"])
+            result = audit(path)
+            self.assertFalse(result["complete"])
+            self.assertIn("Debian chroot execution is not proven",
+                          result["checks"]["lmbench"]["errors"]["syscall"])
 
 
 if __name__ == "__main__":
