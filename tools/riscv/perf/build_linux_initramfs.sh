@@ -59,6 +59,7 @@ cat >"$work/init" <<EOF
 set -eu
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
+ip link set lo up 2>/dev/null || true
 if [ "$mount_block" -eq 1 ]; then
     mount -t devtmpfs devtmpfs /dev
     if [ -d /lib/modules ]; then

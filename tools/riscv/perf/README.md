@@ -141,6 +141,12 @@ Asterinas versus 10.9409 us on Linux (1.712x median, 1.682x p95). Each sample
 uses a fresh rootfs clone to avoid stale ext4 handles after forced shutdowns;
 details are retained in `lmbench-debian-fs-comparison.json`.
 
+The LMBench TCP loopback case measured 357.92 us on Asterinas versus 230.05 us
+on Linux (1.556x median, 1.547x p95). The QEMU virtio-net device is present,
+but this case measures guest loopback; host-facing virtio-net remains covered by
+the iperf3 throughput/connect benchmark. Results are retained in
+`lmbench-debian-net-comparison.json`.
+
 The Debian ext4 control path is now available for Linux: the disposable Debian
 13.7 rootfs contains Debian-native `fio` 3.39, `sqlite3` 3.46.1, and `iperf3`
 3.18 packages, and the Linux initramfs loads the matching virtio-mmio,

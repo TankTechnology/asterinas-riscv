@@ -36,6 +36,6 @@ if ! docker exec "$container" timeout 120 /usr/local/qemu/bin/qemu-system-riscv6
     exit 1
 fi
 cat "$log"
-sample=$(awk -v label="$label" 'index($0, label ":") == 1 { print $3; exit }' "$log")
+sample=$(awk -v label="$label" 'index($0, label) == 1 { for (i = 1; i < NF; i++) if ($(i + 1) ~ /^microseconds/) { print $i; exit } }' "$log")
 [[ -n $sample ]] || { echo "missing PERF_SAMPLE marker" >&2; exit 1; }
 printf 'PERF_SAMPLE=%s\n' "$sample"
