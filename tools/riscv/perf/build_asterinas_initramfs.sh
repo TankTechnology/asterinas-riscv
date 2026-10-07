@@ -25,9 +25,9 @@ chmod 0755 "$work/benchmark/asterinas-benchmark"
 cat >"$work/init" <<'EOF'
 #!/bin/sh
 set -eu
+mkdir -p /proc /sys /ext2
 mount -t proc proc /proc
 mount -t sysfs sysfs /sys
-mkdir -p /ext2
 mount -t ext4 /dev/vda /ext2
 echo "Asterinas Debian ext4 benchmark ready"
 /benchmark/asterinas-benchmark
