@@ -94,6 +94,15 @@ pub struct Ext2 {
     /// Serializes journal publication, home writes, and checkpointing. Acquired
     /// after ordinary inode locks; the journal inode never starts a transaction.
     journal_write_lock: Mutex<()>,
+    /// Serializes the page-cache read/modify snapshot of inode-table blocks.
+    /// This lock is deliberately narrower than the pending-metadata lock:
+    /// snapshotting must not hold a page-cache operation while waiting for
+    /// journal publication or metadata collection.
+    inode_table_write_lock: Mutex<()>,
+    /// Serializes metadata collection and journal submission across concurrent
+    /// inode fsyncs. The journal publication lock alone is too narrow because
+    /// staging and pending-metadata extraction happen before publication.
+    metadata_sync_lock: Mutex<()>,
     /// Metadata blocks staged by inode/extent writeback until filesystem sync.
     pending_metadata: Mutex<Vec<(Ext2Bid, Vec<u8>)>>,
     /// Weak self reference for inode back-pointers.
@@ -255,6 +264,8 @@ impl Ext2 {
             fs_event_subscriber_stats: FsEventSubscriberStats::new(),
             next_generation: AtomicU32::new(utils::duration_to_ext2_secs(utils::now())),
             journal_write_lock: Mutex::new(()),
+            inode_table_write_lock: Mutex::new(()),
+            metadata_sync_lock: Mutex::new(()),
             pending_metadata: Mutex::new(Vec::new()),
             self_ref: weak_self.clone(),
         });
@@ -527,12 +538,15 @@ impl Ext2 {
         }
     }
 
-    fn pending_metadata_block(&self, bid: Ext2Bid) -> Option<Vec<u8>> {
+    /// Drops journal payloads for blocks that are being released. A directory
+    /// mutation may have staged a page-cache snapshot before truncation frees
+    /// the block; retaining that snapshot would let the next owner of the
+    /// physical block receive stale contents at the next journal commit.
+    fn discard_pending_metadata_range(&self, start: Ext2Bid, count: u32) {
+        let end = start.saturating_add(count);
         self.pending_metadata
             .lock()
-            .iter()
-            .find(|(target, _)| *target == bid)
-            .map(|(_, payload)| payload.clone())
+            .retain(|(bid, _)| *bid < start || *bid >= end);
     }
 
     pub(super) fn has_journal(&self) -> bool {
@@ -785,6 +799,43 @@ impl Ext2 {
         let group = self
             .find_group(ino)
             .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
+
+        let journal_ino = self.super_block.read().journal_inode();
+        let has_journal = self.has_journal();
+
+        // Serialize page-cache read/modify/stage snapshots without taking the
+        // journal publication lock, which is also used by checkpointing.
+        if has_journal && ino != journal_ino {
+            let _inode_table_guard = self.inode_table_write_lock.lock();
+            let (block_bid, block) = {
+                group.write_back_inode_desc(ino, raw_inode)?;
+                let inode_idx =
+                    ((ino - 1) % self.super_block.read().nr_inodes_per_group()) as usize;
+                let inode_offset = inode_idx.checked_mul(group.inode_size()).ok_or_else(|| {
+                    Error::with_message(Errno::EIO, "inode table offset overflow")
+                })?;
+                let block_offset = inode_offset / BLOCK_SIZE;
+                let in_block_offset = inode_offset % BLOCK_SIZE;
+                if in_block_offset + size_of::<RawInode>() > BLOCK_SIZE {
+                    return_errno_with_message!(
+                        Errno::EUCLEAN,
+                        "inode crosses filesystem block boundary"
+                    );
+                }
+                let block_bid = group
+                    .inode_table_bid()
+                    .checked_add(block_offset as u32)
+                    .ok_or_else(|| Error::with_message(Errno::EIO, "inode table block overflow"))?;
+                let mut block = vec![0u8; BLOCK_SIZE];
+                group.read_inode_table_block(block_offset, &mut block)?;
+                block[in_block_offset..in_block_offset + size_of::<RawInode>()]
+                    .copy_from_slice(raw_inode.as_bytes());
+                (block_bid, block)
+            };
+            self.stage_metadata_block(block_bid, &block);
+            return Ok(());
+        }
+
         group.write_back_inode_desc(ino, raw_inode)?;
 
         // The journal inode is the backing store for journal transactions. Its
@@ -794,40 +845,10 @@ impl Ext2 {
             return Ok(());
         }
 
-        if !self
-            .super_block
-            .read()
-            .feature_compat()
-            .contains(FeatureCompatSet::HAS_JOURNAL)
-        {
+        if !has_journal {
             return Ok(());
         }
-
-        let inode_idx = ((ino - 1) % self.super_block.read().nr_inodes_per_group()) as usize;
-        let inode_offset = inode_idx
-            .checked_mul(group.inode_size())
-            .ok_or_else(|| Error::with_message(Errno::EIO, "inode table offset overflow"))?;
-        let block_offset = inode_offset / BLOCK_SIZE;
-        let in_block_offset = inode_offset % BLOCK_SIZE;
-        if in_block_offset + size_of::<RawInode>() > BLOCK_SIZE {
-            return_errno_with_message!(Errno::EUCLEAN, "inode crosses filesystem block boundary");
-        }
-        let block_bid = group
-            .inode_table_bid()
-            .checked_add(block_offset as u32)
-            .ok_or_else(|| Error::with_message(Errno::EIO, "inode table block overflow"))?;
-        let mut block = if let Some(block) = self.pending_metadata_block(block_bid) {
-            block
-        } else {
-            let mut block = vec![0u8; BLOCK_SIZE];
-            self.block_device
-                .read_bytes(Bid::new(block_bid as u64).to_offset(), &mut block)
-                .map_err(|_| Error::with_message(Errno::EIO, "failed to read inode table block"))?;
-            block
-        };
-        block[in_block_offset..in_block_offset + size_of::<RawInode>()]
-            .copy_from_slice(raw_inode.as_bytes());
-        self.write_metadata_block(block_bid, &block)
+        Ok(())
     }
 
     /// Allocates up to `count` contiguous blocks.
@@ -836,6 +857,7 @@ impl Ext2 {
             return_errno_with_message!(Errno::EINVAL, "zero block allocation requested");
         }
 
+        let _metadata_sync_guard = self.metadata_sync_lock.lock();
         let mut sb = self.super_block.write();
         let nr_block_groups = sb.nr_block_groups() as usize;
         let sb_free_blocks = sb.free_blocks_count();
@@ -885,6 +907,7 @@ impl Ext2 {
             return Ok(());
         }
 
+        let _metadata_sync_guard = self.metadata_sync_lock.lock();
         let mut sb = self.super_block.write();
         if !sb.is_data_block_valid(start, count) {
             return_errno_with_message!(Errno::EIO, "freeing invalid data block range");
@@ -918,7 +941,16 @@ impl Ext2 {
                 current_block += blocks_in_group;
                 remaining_blocks -= blocks_in_group;
             }
+        } else {
+            let group = &self.block_groups[first_group_idx as usize];
+            let group_start_bit = start - group.first_block();
+            group.validate_free_blocks(group_start_bit..(group_start_bit + count))?;
         }
+
+        // Invalidate staged snapshots only after the entire range has been
+        // validated. Otherwise a failed free request could discard a payload
+        // for a block that remains allocated.
+        self.discard_pending_metadata_range(start, count);
 
         let mut current_block = start;
         let mut remaining_blocks = count;
@@ -1002,10 +1034,7 @@ impl Ext2 {
     }
 
     pub(super) fn stage_inode_desc(&self, ino: Ext2Ino, raw_inode: &RawInode) -> Result<()> {
-        let group = self
-            .find_group(ino)
-            .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
-        group.write_back_inode_desc(ino, raw_inode)
+        self.write_back_inode_desc(ino, raw_inode)
     }
 
     /// Frees an inode by number.
@@ -1115,6 +1144,7 @@ impl Ext2 {
     /// Persists allocation bitmaps, group descriptors, and the superblock
     /// before an inode-level fsync reports that its block flush completed.
     pub(super) fn sync_allocation_metadata(&self) -> Result<()> {
+        let _metadata_sync_guard = self.metadata_sync_lock.lock();
         let mut bitmap_payloads = Vec::new();
         let mut group_desc_dirty = false;
         for group in &self.block_groups {
@@ -1270,7 +1300,11 @@ impl Ext2 {
 
         let mut writes = Vec::new();
         let raw_sb = RawSuperBlock::from(&**sb_guard);
-        writes.push((raw_sb, SUPER_BLOCK_OFFSET, sb_guard.group_descriptors_bid(0)));
+        writes.push((
+            raw_sb,
+            SUPER_BLOCK_OFFSET,
+            sb_guard.group_descriptors_bid(0),
+        ));
         for group_idx in 1..nr_block_groups {
             if !sb_guard.is_backup_group(group_idx) {
                 continue;

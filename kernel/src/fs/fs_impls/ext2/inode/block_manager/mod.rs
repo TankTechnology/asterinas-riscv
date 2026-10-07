@@ -232,9 +232,16 @@ impl BlockAsPageCacheBackend for InodeBlockManager {
         // TODO: Refactor `lookup_block` and `resolve_block_range`. Currently
         // `bio_segment.nblocks()` is always 1, so the point lookup works correctly, but the
         // semantics are misleading because `bio_segment` can represent a contiguous block range.
-        // The block is already allocated; write it directly.
-        if let Some(bid) = self.lookup_block(iblock)? {
-            return fs.write_blocks_async(bid, bio_segment, Some(complete_fn), io_batch);
+        // The block is already allocated; write it directly. Keep the
+        // block-pointer read lock until the BIO has been submitted. Otherwise
+        // truncate/free can release and reallocate the physical block between
+        // lookup and submission, allowing stale writeback to corrupt the new
+        // owner's data or indirect metadata before the write is submitted.
+        {
+            let tree = self.block_ptr_tree.read();
+            if let Some(bid) = tree.lookup_block(iblock)? {
+                return fs.write_blocks_async(bid, bio_segment, Some(complete_fn), io_batch);
+            }
         }
 
         // Encounter a hole; allocate a block. Since we dropped the read lock

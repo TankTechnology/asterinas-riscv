@@ -537,6 +537,24 @@ impl BlockGroup {
         InodeDesc::try_from(&raw_inode)
     }
 
+    /// Reads an inode-table block from the page cache, including dirty
+    /// descriptors that have not reached the block device yet.
+    pub(super) fn read_inode_table_block(
+        &self,
+        block_offset: usize,
+        payload: &mut [u8],
+    ) -> Result<()> {
+        if payload.len() != BLOCK_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "invalid inode-table block size");
+        }
+        let offset = block_offset
+            .checked_mul(BLOCK_SIZE)
+            .ok_or_else(|| Error::with_message(Errno::EOVERFLOW, "inode-table offset overflow"))?;
+        self.inode_table_cache
+            .read_bytes(offset, payload)
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to read inode-table cache"))
+    }
+
     /// Writes an inode descriptor to the group's inode table `PageCache`.
     pub(super) fn write_back_inode_desc(&self, ino: Ext2Ino, raw: &RawInode) -> Result<()> {
         let inode_idx = self.inode_idx_in_group(ino);

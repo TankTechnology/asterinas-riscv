@@ -444,7 +444,7 @@ impl InodeInner {
         }
     }
 
-    fn page_cache(&self) -> &PageCache {
+    pub(super) fn page_cache(&self) -> &PageCache {
         self.payload
             .page_cache()
             .expect("data-backed inode must have a page cache")
