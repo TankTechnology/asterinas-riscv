@@ -1,0 +1,585 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MPL-2.0
+
+"""Bounded Marionette content gate for the offline Firefox workload."""
+
+from __future__ import annotations
+
+import argparse
+import errno
+import json
+import math
+import os
+import socket
+import sys
+import time
+from collections.abc import Callable, Sequence
+
+
+PROBE_URL = "file:///usr/share/asterinas/browser-m5/index.html"
+VIDEO_URL = "file:///usr/share/asterinas/browser-m5/browser-m5.webm"
+EXPECTED_MARKERS = (
+    ("js-result", "ASTERINAS_BROWSER_M5_JS_PASS"),
+    ("video-canplay-result", "ASTERINAS_BROWSER_M5_VIDEO_CANPLAY"),
+    ("video-ended-result", "ASTERINAS_BROWSER_M5_VIDEO_ENDED"),
+)
+PENDING_MARKERS = (
+    ("js-result", "JavaScript pending"),
+    ("video-canplay-result", "Local silent video pending"),
+    ("video-ended-result", "Local silent video completion pending"),
+)
+PASS_LINE = "DEBIAN_BROWSER_M5_CONTENT js=pass media=vp8-webm canplay=pass ended=pass network_mode=private-loopback source=file direct_nonloopback_ip=unavailable"
+# A 1280x1024 PNG returned as base64 can legitimately exceed 1 MiB on a
+# graphics-heavy public page.  Keep the transport bounded, but size it for the
+# online screenshot contract instead of the tiny repository-owned HTML probe.
+MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+MAX_RECOVERY_SECONDS = 10.0
+
+_EXPRESSION = r"""return JSON.stringify({
+  url: location.href,
+  markers: Array.from(document.querySelectorAll(
+    '#js-result, #video-canplay-result, #video-ended-result'
+  )).map(node => [node.id, node.textContent]),
+  media: (() => {
+    const video = document.querySelector('video');
+    return video === null ? null : {
+      currentSrc: video.currentSrc,
+      ended: video.ended,
+      readyState: video.readyState,
+      error: video.error === null ? null : video.error.code,
+      duration: Number.isFinite(video.duration) ? video.duration : null,
+      currentTime: Number.isFinite(video.currentTime) ? video.currentTime : null
+    };
+  })(),
+  resources: performance.getEntriesByType('resource').map(entry => entry.name)
+});"""
+
+
+class GateError(RuntimeError):
+    """The browser did not provide exact, trustworthy content evidence."""
+
+
+class CommandNotSentTimeout(TimeoutError):
+    """The deadline expired before any command bytes could have been sent."""
+
+
+class Marionette:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        timeout: float,
+        phase: Callable[[str, str, BaseException | None], None] | None = None,
+    ) -> None:
+        if host not in {"127.0.0.1", "::1"}:
+            raise GateError("Marionette endpoint must be loopback")
+        self._diagnostics = os.environ.get("ASTERINAS_MARIONETTE_DIAGNOSTICS") == "1"
+        self._request_id = 0
+        self._pending_request: int | None = None
+        self._timed_out = False
+        self._command_name = "greeting"
+        self._reset_progress()
+        self._stage = "tcp_connect"
+        self._deadline = time.monotonic() + timeout
+        self._phase = phase or (lambda _phase, _state, _error=None: None)
+        self._phase("tcp-connect", "start", None)
+        try:
+            self._socket = socket.create_connection((host, port), timeout=timeout)
+        except BaseException as error:
+            self._diagnostic("failure", error)
+            self._phase("tcp-connect", "exception", error)
+            raise
+        self._phase("tcp-connect", "done", None)
+        self._next_id = 1
+        self._phase("greeting", "start", None)
+        try:
+            hello = self._receive()
+            if hello != {"applicationType": "gecko", "marionetteProtocol": 3}:
+                raise GateError("unexpected Marionette protocol greeting")
+        except BaseException as error:
+            self._diagnostic("failure", error)
+            self._phase("greeting", "exception", error)
+            self.close()
+            raise
+        self._phase("greeting", "done", None)
+
+    def _reset_progress(self) -> None:
+        self._send_complete = False
+        self._header_bytes = 0
+        self._body_expected: int | None = None
+        self._body_received = 0
+        # A timeout can occur in either field. Keep the consumed bytes until
+        # this exact response is validated; another command must not replace it.
+        self._frame_header = bytearray()
+        self._frame_body = bytearray()
+
+    def _diagnostic(self, event: str, error: BaseException | None = None) -> None:
+        if not self._diagnostics:
+            return
+        # Four records per command at most, independent of frame size or TCP
+        # fragmentation. Never include scripts, URLs, nonces or response data.
+        record = {
+            "version": 1,
+            "event": event,
+            "pid": os.getpid(),
+            "monotonic_ns": time.monotonic_ns(),
+            "request_id": self._request_id,
+            "command": self._command_name,
+            "stage": self._stage,
+            "send_complete": self._send_complete,
+            "header_bytes": self._header_bytes,
+            "body_expected": self._body_expected,
+            "body_received": self._body_received,
+        }
+        if error is not None:
+            record["error_type"] = type(error).__name__
+            record["errno"] = error.errno if isinstance(error, OSError) else None
+        try:
+            print(
+                "A_WEB_MARIONETTE_TRANSPORT "
+                + json.dumps(record, separators=(",", ":")),
+                file=sys.stderr,
+                flush=True,
+            )
+        except (OSError, ValueError):
+            # A diagnostic sink failure must not replace the protocol error.
+            pass
+
+    def _remaining(self) -> float:
+        remaining = self._deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Marionette gate deadline expired")
+        return remaining
+
+    def set_timeout(self, timeout: float) -> None:
+        """Start a fresh bounded phase without inheriting setup time."""
+
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("Marionette timeout must be finite and positive")
+        self._deadline = time.monotonic() + timeout
+
+    def _read_exact(self, length: int, *, header: bool = False) -> bytes:
+        data = bytearray() if header else self._frame_body
+        while len(data) < length:
+            self._socket.settimeout(self._remaining())
+            chunk = self._socket.recv(length - len(data))
+            if not chunk:
+                raise GateError("truncated Marionette message")
+            data.extend(chunk)
+            if header:
+                self._header_bytes += len(chunk)
+            else:
+                self._body_received += len(chunk)
+        return bytes(data)
+
+    def _receive(self) -> object:
+        if self._body_expected is None:
+            self._stage = "response_header"
+            while True:
+                byte = self._read_exact(1, header=True)
+                if byte == b":":
+                    break
+                if not byte.isdigit() or len(self._frame_header) >= 10:
+                    raise GateError("invalid Marionette frame length")
+                self._frame_header.extend(byte)
+            if not self._frame_header:
+                raise GateError("missing Marionette frame length")
+            length = int(self._frame_header)
+            if length > MAX_MESSAGE_BYTES:
+                raise GateError("oversized Marionette message")
+            self._body_expected = length
+            self._stage = "response_body"
+            self._diagnostic("frame_header")
+        self._stage = "response_body"
+        payload = self._read_exact(self._body_expected)
+        self._stage = "response_json"
+        try:
+            return json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise GateError("invalid Marionette JSON") from error
+
+    def command(self, name: str, parameters: object | None = None) -> object:
+        if self._pending_request is not None:
+            raise GateError("unresolved Marionette response prevents another command")
+        try:
+            self._remaining()
+        except TimeoutError as error:
+            raise CommandNotSentTimeout(str(error)) from error
+        identifier = self._next_id
+        self._next_id += 1
+        self._request_id = identifier
+        self._command_name = name
+        self._reset_progress()
+        self._timed_out = False
+        self._stage = "send"
+        self._diagnostic("begin")
+        try:
+            result = self._command(identifier, name, parameters)
+        except BaseException as error:
+            self._timed_out = (
+                isinstance(error, TimeoutError) and self._pending_request is not None
+            )
+            self._diagnostic("failure", error)
+            if isinstance(error, TimeoutError) and self._pending_request is None:
+                raise CommandNotSentTimeout(str(error)) from error
+            raise
+        self._stage = "complete"
+        self._diagnostic("complete")
+        return result
+
+    def _command(self, identifier: int, name: str, parameters: object | None) -> object:
+        payload = json.dumps(
+            [0, identifier, name, parameters or {}], separators=(",", ":")
+        ).encode()
+        self._socket.settimeout(self._remaining())
+        # From this point a failed sendall may have transmitted a partial frame.
+        # Earlier preparation/deadline failures cannot poison response framing.
+        self._pending_request = identifier
+        self._socket.sendall(str(len(payload)).encode("ascii") + b":" + payload)
+        self._send_complete = True
+        self._diagnostic("send_complete")
+        response = self._receive()
+        error, result = self._response_fields(response, identifier)
+        if error is not None:
+            # Keep the public failure contract stable, but expose the exact
+            # Marionette error when an investigator explicitly opts in.  This
+            # is essential for separating a missing browsing context from a
+            # JavaScript/runtime failure without making normal gate logs noisy.
+            if os.environ.get("ASTERINAS_MARIONETTE_DEBUG_ERRORS") == "1":
+                try:
+                    detail = json.dumps(error, sort_keys=True, separators=(",", ":"))
+                except (TypeError, ValueError):
+                    detail = repr(error)
+                print(
+                    f"A_WEB_MARIONETTE_ERROR command={name} error={detail}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            raise GateError(f"Marionette command failed: {name}")
+        return result
+
+    def _response_fields(
+        self, response: object, identifier: int
+    ) -> tuple[object, object]:
+        self._stage = "response_identity"
+        if not isinstance(response, list) or len(response) != 4:
+            raise GateError("malformed Marionette response")
+        kind, response_id, error, result = response
+        if (
+            type(kind) is not int
+            or type(response_id) is not int
+            or kind != 1
+            or response_id != identifier
+        ):
+            raise GateError("unexpected Marionette response identity")
+        self._pending_request = None
+        return error, result
+
+    def recover_timed_out_command(self, timeout: float) -> object:
+        """Drain only the fully sent request that timed out, without sending bytes.
+
+        Partial response framing survives the timeout. An incomplete send or a
+        mismatched response leaves the connection unusable for further commands.
+        The original operation remains failed even if its late reply succeeds.
+        """
+        if (
+            type(timeout) not in (int, float)
+            or not math.isfinite(timeout)
+            or not 0 < timeout <= MAX_RECOVERY_SECONDS
+        ):
+            raise ValueError("Marionette recovery timeout is outside its bound")
+        if (
+            not self._timed_out
+            or not self._send_complete
+            or self._pending_request is None
+        ):
+            raise GateError("no recoverable timed-out Marionette command")
+        self.set_timeout(timeout)
+        self._timed_out = False
+        try:
+            response = self._receive()
+        except TimeoutError:
+            self._timed_out = True
+            raise
+        # A remote command error still completes the outstanding response. The
+        # caller already has the original timeout and needs only protocol safety.
+        _error, result = self._response_fields(response, self._pending_request)
+        return result
+
+    def close(self) -> None:
+        self._socket.close()
+
+
+def snapshot_complete(snapshot: object) -> bool:
+    if not isinstance(snapshot, dict) or set(snapshot) != {
+        "url",
+        "markers",
+        "media",
+        "resources",
+    }:
+        raise GateError("browser snapshot has unexpected fields")
+    if snapshot["url"] != PROBE_URL:
+        raise GateError("browser snapshot is not the repository-owned probe")
+    markers = snapshot["markers"]
+    if not isinstance(markers, list) or len(markers) != len(EXPECTED_MARKERS):
+        raise GateError("browser content markers are missing or duplicated")
+    passed = 0
+    pending_seen = False
+    for index, marker in enumerate(markers):
+        if marker == list(EXPECTED_MARKERS[index]):
+            if pending_seen:
+                raise GateError("browser content markers are reordered")
+            passed += 1
+        elif marker == list(PENDING_MARKERS[index]):
+            pending_seen = True
+        else:
+            raise GateError("browser content marker is forged")
+    resources = snapshot["resources"]
+    if not isinstance(resources, list) or not all(
+        isinstance(item, str) for item in resources
+    ):
+        raise GateError("browser resource evidence is malformed")
+    if any(resource != VIDEO_URL for resource in resources) or len(resources) > 1:
+        raise GateError("browser workload used an unexpected or external resource")
+    complete = passed == len(EXPECTED_MARKERS)
+    media = snapshot["media"]
+    expected_media_keys = {
+        "currentSrc",
+        "ended",
+        "readyState",
+        "error",
+        "duration",
+        "currentTime",
+    }
+    if not isinstance(media, dict) or set(media) != expected_media_keys:
+        raise GateError("browser media evidence is malformed")
+    current_src = media["currentSrc"]
+    ended = media["ended"]
+    ready_state = media["readyState"]
+    error = media["error"]
+    duration = media["duration"]
+    current_time = media["currentTime"]
+    if not isinstance(current_src, str) or current_src not in {"", VIDEO_URL}:
+        raise GateError("browser media used an unexpected or external source")
+    if not isinstance(ended, bool):
+        raise GateError("browser media ended state is malformed")
+    if (
+        isinstance(ready_state, bool)
+        or not isinstance(ready_state, int)
+        or not 0 <= ready_state <= 4
+    ):
+        raise GateError("browser media ready state is malformed")
+    if error is not None:
+        raise GateError("browser media reported a decode error")
+    if duration is not None and (
+        isinstance(duration, bool)
+        or not isinstance(duration, (int, float))
+        or not math.isfinite(duration)
+        or duration <= 0
+    ):
+        raise GateError("browser media duration is malformed")
+    if current_time is not None and (
+        isinstance(current_time, bool)
+        or not isinstance(current_time, (int, float))
+        or not math.isfinite(current_time)
+        or current_time < 0
+    ):
+        raise GateError("browser media current time is malformed")
+    if complete and (
+        current_src != VIDEO_URL
+        or not ended
+        or ready_state < 2
+        or duration is None
+        or current_time is None
+        or current_time <= 0
+        or abs(current_time - duration) > max(0.05, duration * 0.05)
+    ):
+        raise GateError("completed markers disagree with live media state")
+    return complete
+
+
+def validate_snapshot(snapshot: object) -> None:
+    if not snapshot_complete(snapshot):
+        raise GateError("browser content markers are still pending")
+
+
+def validate_network_namespace(firefox_pid: int) -> None:
+    if firefox_pid <= 1:
+        raise GateError("Firefox PID is outside the valid contract")
+    try:
+        gate_namespace = os.readlink("/proc/self/ns/net")
+        firefox_namespace = os.readlink(f"/proc/{firefox_pid}/ns/net")
+    except OSError as error:
+        raise GateError("cannot inspect Firefox network namespace") from error
+    if gate_namespace != firefox_namespace:
+        raise GateError("content gate did not join the Firefox network namespace")
+    try:
+        interfaces = [name for _, name in socket.if_nameindex()]
+    except OSError as error:
+        raise GateError("cannot inspect private network interfaces") from error
+    if interfaces != ["lo"]:
+        raise GateError("Firefox network namespace is not loopback-only")
+
+
+def _connect(
+    host: str,
+    port: int,
+    deadline: float,
+    phase: Callable[[str, str, BaseException | None], None] | None = None,
+) -> Marionette:
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise GateError("Marionette endpoint did not become ready before deadline")
+        try:
+            if phase is None:
+                return Marionette(host, port, remaining)
+            return Marionette(host, port, remaining, phase=phase)
+        except OSError as error:
+            if error.errno != errno.ECONNREFUSED:
+                raise
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise GateError(
+                    "Marionette endpoint did not become ready before deadline"
+                ) from error
+            time.sleep(min(0.1, remaining))
+
+
+def status_once(host: str, port: int, timeout: float) -> dict[str, object]:
+    """Probe Marionette readiness without creating or changing a session."""
+
+    def phase(name: str, state: str, error: BaseException | None = None) -> None:
+        fields = (
+            f"A_M5_PHASE phase={name} state={state} "
+            f"monotonic_ns={time.monotonic_ns()} wall_ns={time.time_ns()}"
+        )
+        if error is not None:
+            fields += (
+                f" exception_type={type(error).__name__}"
+                f" exception={json.dumps(str(error), ensure_ascii=True)}"
+            )
+        print(fields, file=sys.stderr, flush=True)
+
+    try:
+        client = _connect(host, port, time.monotonic() + timeout, phase=phase)
+    except socket.timeout as error:
+        raise GateError(
+            "Marionette diagnostic timed out before greeting completed"
+        ) from error
+
+    def command(stage: str, name: str, parameters: object | None = None) -> object:
+        phase(stage, "start")
+        try:
+            result = client.command(name, parameters)
+        except BaseException as error:
+            phase(stage, "exception", error)
+            if isinstance(error, socket.timeout):
+                raise GateError(
+                    f"Marionette diagnostic timed out during {stage}"
+                ) from error
+            raise
+        phase(stage, "done")
+        return result
+
+    try:
+        status = command("status", "WebDriver:Status")
+        if not isinstance(status, dict) or not isinstance(status.get("ready"), bool):
+            raise GateError("Marionette returned an invalid readiness status")
+        message = status.get("message")
+        if message is not None and not isinstance(message, str):
+            raise GateError("Marionette returned an invalid readiness message")
+        return status
+    finally:
+        client.close()
+
+
+def run_gate(host: str, port: int, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    client = _connect(host, port, deadline)
+    try:
+        session = client.command(
+            "WebDriver:NewSession", {"strictFileInteractability": True}
+        )
+        if not isinstance(session, dict) or not isinstance(
+            session.get("sessionId"), str
+        ):
+            raise GateError("Marionette did not create a session")
+        navigation = client.command("WebDriver:Navigate", {"url": PROBE_URL})
+        if navigation is not None:
+            raise GateError("Marionette returned an invalid Navigate result")
+        while True:
+            handles = client.command("WebDriver:GetWindowHandles")
+            if not isinstance(handles, list) or not handles:
+                raise GateError("Marionette returned no browser windows")
+            snapshots = []
+            for handle in handles:
+                if not isinstance(handle, str):
+                    raise GateError("Marionette returned an invalid window handle")
+                client.command(
+                    "WebDriver:SwitchToWindow", {"handle": handle, "focus": False}
+                )
+                result = client.command(
+                    "WebDriver:ExecuteScript",
+                    {
+                        "script": _EXPRESSION,
+                        "args": [],
+                        "newSandbox": True,
+                        "sandbox": "default",
+                        "line": 1,
+                        "filename": "asterinas-browser-m5-gate",
+                    },
+                )
+                value = result.get("value") if isinstance(result, dict) else None
+                if isinstance(value, str):
+                    try:
+                        snapshot = json.loads(value)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(snapshot, dict) and snapshot.get("url") == PROBE_URL:
+                        snapshots.append(snapshot)
+            if len(snapshots) != 1:
+                raise GateError("expected exactly one offline probe browser window")
+            if snapshot_complete(snapshots[0]):
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise GateError(
+                    "browser content markers did not complete before deadline"
+                )
+            time.sleep(min(0.1, remaining))
+        client.command("WebDriver:DeleteSession")
+    finally:
+        client.close()
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="browser_m5_marionette_gate")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=2828)
+    parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--firefox-pid", type=int, required=True)
+    parser.add_argument("--diagnose-once", action="store_true")
+    values = parser.parse_args(arguments)
+    if not 1 <= values.port <= 65535 or not 0 < values.timeout <= 600:
+        parser.error("port or timeout is outside the bounded contract")
+    try:
+        validate_network_namespace(values.firefox_pid)
+        if values.diagnose_once:
+            status = status_once(values.host, values.port, values.timeout)
+        else:
+            run_gate(values.host, values.port, values.timeout)
+    except (GateError, OSError, TimeoutError) as error:
+        parser.error(str(error))
+    if values.diagnose_once:
+        print(
+            f"DEBIAN_BROWSER_M5_DIAGNOSTIC ready={str(status['ready']).lower()} status="
+            + json.dumps(status, separators=(",", ":"), sort_keys=True)
+        )
+        return 0
+    print(PASS_LINE)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

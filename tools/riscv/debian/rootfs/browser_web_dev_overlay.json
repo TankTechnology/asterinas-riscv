@@ -1,0 +1,202 @@
+{
+  "schema_version": 1,
+  "profile": "browser-web",
+  "files": [
+    {
+      "source": "desktop_wallpaper.svg",
+      "destination": "/usr/share/asterinas/desktop-wallpaper.svg",
+      "mode": "0644"
+    },
+    {
+      "source": "desktop_anime_wallpaper.png",
+      "destination": "/usr/share/asterinas/desktop-anime-wallpaper.png",
+      "mode": "0644",
+      "create": true
+    },
+    {
+      "source": "desktop_pcmanfm.conf",
+      "destination": "/home/asterinas/.config/pcmanfm/Asterinas/desktop-items-0.conf",
+      "mode": "0644"
+    },
+    {
+      "source": "desktop_files_icon.svg",
+      "destination": "/usr/share/asterinas/desktop-files-icon.svg",
+      "mode": "0644",
+      "create": true
+    },
+    {
+      "source": "desktop_terminal_icon.svg",
+      "destination": "/usr/share/asterinas/desktop-terminal-icon.svg",
+      "mode": "0644",
+      "create": true
+    },
+    {
+      "source": "desktop_online_lxpanel.conf",
+      "destination": "/home/asterinas/.config/lxpanel/Asterinas/panels/panel",
+      "mode": "0644"
+    },
+    {
+      "source": "asterinas-files.desktop",
+      "destination": "/usr/share/applications/asterinas-files.desktop",
+      "mode": "0644"
+    },
+    {
+      "source": "asterinas-files.desktop",
+      "destination": "/home/asterinas/Desktop/asterinas-files.desktop",
+      "mode": "0755"
+    },
+    {
+      "source": "asterinas-terminal.desktop",
+      "destination": "/usr/share/applications/asterinas-terminal.desktop",
+      "mode": "0644"
+    },
+    {
+      "source": "asterinas-terminal.desktop",
+      "destination": "/home/asterinas/Desktop/asterinas-terminal.desktop",
+      "mode": "0755"
+    },
+    {
+      "source": "desktop_m5_network_evidence.sh",
+      "destination": "/usr/lib/asterinas/desktop-m5-network-evidence",
+      "mode": "0755"
+    },
+    {
+      "source": "megrez_safe_reboot.sh",
+      "destination": "/usr/lib/asterinas/megrez-safe-reboot",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web_marionette_gate.py",
+      "destination": "/usr/lib/asterinas/browser-web-marionette-gate",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_m5_marionette_gate.py",
+      "destination": "/usr/lib/asterinas/browser_m5_marionette_gate.py",
+      "mode": "0644"
+    },
+    {
+      "source": "browser_interaction_perf.py",
+      "destination": "/usr/lib/asterinas/browser_interaction_perf.py",
+      "mode": "0644",
+      "create": true
+    },
+    {
+      "source": "browser_workload_contract.py",
+      "destination": "/usr/lib/asterinas/browser_workload_contract.py",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "browser_composite_capture.py",
+      "destination": "/usr/lib/asterinas/browser_composite_capture.py",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "browser_performance_provenance.py",
+      "destination": "/usr/lib/asterinas/browser-performance-provenance",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "physical_graphics_gate.py",
+      "destination": "/usr/lib/asterinas/physical-graphics-gate",
+      "mode": "0755"
+    },
+    {
+      "source": "physical_external_services_quiesce.sh",
+      "destination": "/usr/lib/asterinas/physical-external-services-quiesce",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "physical_graphics_interaction.html",
+      "destination": "/usr/share/asterinas/physical-graphics/index.html",
+      "mode": "0644"
+    },
+    {
+      "source": "firefox_diagnostic_snapshot.py",
+      "destination": "/usr/lib/asterinas/firefox-diagnostic-snapshot",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "browser_web_firefox.sh",
+      "destination": "/usr/lib/asterinas/browser-web-firefox",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web_evidence.sh",
+      "destination": "/usr/lib/asterinas/browser-web-evidence",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web_timeline.sh",
+      "destination": "/usr/lib/asterinas/browser-web-timeline",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web_trust_check.py",
+      "destination": "/usr/share/asterinas/browser-web-trust-check.py",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web_online_rootfs_check.py",
+      "destination": "/usr/share/asterinas/browser-web-online-rootfs-check.py",
+      "mode": "0755"
+    },
+    {
+      "source": "desktop_m5_session.sh",
+      "destination": "/usr/lib/asterinas/desktop-m5-session",
+      "mode": "0755"
+    },
+    {
+      "source": "desktop_display_provider.sh",
+      "destination": "/usr/lib/asterinas/desktop-display-provider",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "desktop_m3_device_access.sh",
+      "destination": "/usr/lib/asterinas/desktop-m5-device-access",
+      "mode": "0755"
+    },
+    {
+      "source": "desktop_input_identity.py",
+      "destination": "/usr/lib/asterinas/desktop-input-identity",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "browser_web_evidence.sh",
+      "destination": "/usr/lib/asterinas/desktop-m5-evidence",
+      "mode": "0755"
+    },
+    {
+      "source": "browser_web.service",
+      "destination": "/etc/systemd/system/asterinas-browser-web.service",
+      "mode": "0644"
+    },
+    {
+      "source": "browser_web_network.conf",
+      "destination": "/etc/systemd/system/asterinas-desktop-m5-network.service.d/browser-web.conf",
+      "mode": "0644"
+    },
+    {
+      "source": "browser_web_evidence.service",
+      "destination": "/etc/systemd/system/asterinas-browser-web-evidence.service",
+      "mode": "0644"
+    },
+    {
+      "source": "browser_web_timeline_begin.service",
+      "destination": "/etc/systemd/system/asterinas-browser-web-timeline-begin.service",
+      "mode": "0644"
+    },
+    {
+      "source": "browser_web_timeline_basic.service",
+      "destination": "/etc/systemd/system/asterinas-browser-web-timeline-basic.service",
+      "mode": "0644"
+    }
+  ]
+}

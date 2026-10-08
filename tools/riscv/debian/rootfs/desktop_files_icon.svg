@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48">
+  <rect x="2" y="2" width="44" height="44" rx="12" fill="#284e68"/>
+  <path d="M9 17a4 4 0 0 1 4-4h8l3 4h11a4 4 0 0 1 4 4v13a4 4 0 0 1-4 4H13a4 4 0 0 1-4-4Z"
+        fill="#62b2cf"/>
+  <path d="M9 23h30v11a4 4 0 0 1-4 4H13a4 4 0 0 1-4-4Z" fill="#9cdeeb"/>
+  <path d="M14 28h20" stroke="#ecfffc" stroke-linecap="round" stroke-width="2" opacity="0.72"/>
+</svg>

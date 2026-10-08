@@ -1,0 +1,26 @@
+[Unit]
+Description=Asterinas Debian online Firefox evidence
+ConditionKernelCommandLine=!systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1
+After=basic.target
+Wants=network-online.target asterinas-desktop-m5.service
+After=network-online.target asterinas-desktop-m5.service
+Requires=asterinas-browser-web.service
+After=asterinas-browser-web.service
+Requires=asterinas-desktop-m5-network.service
+After=asterinas-desktop-m5-network.service
+
+[Service]
+Type=oneshot
+Environment=ASTERINAS_BROWSER_WEB_TIMEOUT_SECONDS=540
+Environment=ASTERINAS_BROWSER_WEB_FORMAL_TIMEOUT_SECONDS=480
+# Keep Python's import cache off the persistent ext2 root.  The browser gate
+# is a boot-time observer, so source imports are preferable to racing package
+# bytecode cache validation or rewriting while the desktop is starting.
+Environment=PYTHONPYCACHEPREFIX=/run/asterinas-browser-web-pycache
+Environment=PYTHONDONTWRITEBYTECODE=1
+TimeoutStartSec=570s
+ExecStart=/usr/lib/asterinas/browser-web-evidence
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target
