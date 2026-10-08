@@ -11,7 +11,10 @@ use crate::{
 };
 
 // Include the AP boot assembly code
-global_asm!(include_str!("ap_boot.S"));
+global_asm!(
+    include_str!("ap_boot.S"),
+    SATP_MODE = const super::BOOT_SATP_MODE,
+);
 
 pub(crate) fn count_processors() -> Option<u32> {
     let mut hart_count = 0;
