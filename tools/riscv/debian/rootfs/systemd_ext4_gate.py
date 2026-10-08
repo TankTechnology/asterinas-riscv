@@ -92,7 +92,6 @@ _FATAL_MARKERS = (
 )
 _STAGE1_HANDOFF_MARKERS = (
     "DEBIAN_STAGE1_PROGRESS step=start mode=systemd",
-    "DEBIAN_STAGE1_PROGRESS step=root-found device=/dev/vdb",
     "DEBIAN_STAGE1_PROGRESS step=handoff-done action=root-mount",
     "DEBIAN_STAGE1_PROGRESS step=handoff-done action=dev-bind",
     "DEBIAN_STAGE1_PROGRESS step=handoff-done action=api-directories",
@@ -101,6 +100,9 @@ _STAGE1_HANDOFF_MARKERS = (
     "DEBIAN_STAGE1_PROGRESS step=handoff-done action=chroot",
     "DEBIAN_STAGE1_PROGRESS step=handoff-done action=chdir",
     "DEBIAN_STAGE1_PROGRESS step=handoff-enter action=exec",
+)
+_STAGE1_ROOT_FOUND_RE = re.compile(
+    r"DEBIAN_STAGE1_PROGRESS step=root-found device=/dev/vd[a-z]+"
 )
 
 
@@ -147,6 +149,11 @@ def classify_systemd_ext4(
         if marker in lowered.encode():
             return _classify_failure(f"fatal transcript marker: {marker.decode()}")
 
+    root_found = [
+        index for index, line in enumerate(lines) if _STAGE1_ROOT_FOUND_RE.fullmatch(line)
+    ]
+    if len(root_found) != 2 or root_found[0] >= root_found[1]:
+        return _classify_failure("missing or reordered Stage1 root-found marker")
     handoff_positions = []
     for marker in _STAGE1_HANDOFF_MARKERS:
         positions = [index for index, line in enumerate(lines) if line == marker]

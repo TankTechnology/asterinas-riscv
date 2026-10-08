@@ -79,7 +79,13 @@ DEBIAN_EXT4_PASS boot=2 persist=1
 def _network_recovery_transcript() -> str:
     lines = []
     for boot in (1, 2):
-        lines.extend(("U-Boot 2026", "Starting kernel ...", *_STAGE1_HANDOFF_MARKERS))
+        lines.extend((
+            "U-Boot 2026",
+            "Starting kernel ...",
+            _STAGE1_HANDOFF_MARKERS[0],
+            "DEBIAN_STAGE1_PROGRESS step=root-found device=/dev/vdb",
+            *_STAGE1_HANDOFF_MARKERS[1:],
+        ))
         lines.extend((
             "DEBIAN_EXT4_PROGRESS step=network-recovery-start",
             "DEBIAN_EXT4_PROGRESS step=network-recovery-done",
@@ -91,6 +97,11 @@ def _network_recovery_transcript() -> str:
 
 
 class SystemdExt4ClassifierTests(unittest.TestCase):
+    def test_accepts_vda_root_device(self) -> None:
+        transcript = _transcript().replace("device=/dev/vdb", "device=/dev/vda")
+        result = classify_systemd_ext4(transcript, expected_debian_release="13.6")
+        self.assertTrue(result.passed, result.reason)
+
     def test_stage1_failure_stops_marker_wait(self) -> None:
         serial = Mock()
         serial.wait_for_any.return_value = b"DEBIAN_ROOTFS_FAIL reason="
