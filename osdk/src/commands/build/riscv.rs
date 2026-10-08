@@ -21,7 +21,7 @@ const IMAGE_SIZE_START_OFFSET_BYTES: usize = 0x10;
 const IMAGE_SIZE_END_OFFSET_BYTES: usize = 0x18;
 
 const FIXED_HEADER_PREFIX: [u8; IMAGE_SIZE_START_OFFSET_BYTES] = [
-    0x6f, 0x00, 0x00, 0x04, // `jal x0, +64`
+    0x6f, 0x10, 0x00, 0x00, // `jal x0, +4096`
     0, 0, 0, 0, // Reserved instruction
     0x00, 0x00, 0x20, 0x00, 0, 0, 0, 0, // 2-MiB text offset
 ];
