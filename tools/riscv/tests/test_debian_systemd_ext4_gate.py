@@ -199,6 +199,8 @@ class SystemdExt4ClassifierTests(unittest.TestCase):
 class SystemdExt4BuilderTests(unittest.TestCase):
     def test_service_enable_is_bounded_and_diagnostic(self) -> None:
         evidence = (BUILD_SCRIPT.parent / "systemd_ext4_evidence.sh").read_text()
+        self.assertIn("step=ext4-symlink-done", evidence)
+        self.assertIn("step=service-enable-runtime-done", evidence)
         self.assertIn(
             "/usr/bin/timeout --signal=TERM --kill-after=5s 20s",
             evidence,

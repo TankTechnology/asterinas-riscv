@@ -170,6 +170,21 @@ ExecStart=/bin/sleep 30
 EOF
     systemctl daemon-reload || fail service-reload
     emit 'DEBIAN_EXT4_PROGRESS step=service-reload-done'
+    local direct_link=/etc/systemd/system/asterinas-debian-direct-link
+    /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
+        ln -s "$TEST_SERVICE" "$direct_link" || fail ext4-symlink-create
+    [[ "$(readlink -- "$direct_link")" == "$TEST_SERVICE" ]] ||
+        fail ext4-symlink-read
+    rm -f -- "$direct_link" || fail ext4-symlink-remove
+    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-done'
+    if ! /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
+        systemctl enable --runtime "$TEST_SERVICE"; then
+        /usr/bin/journalctl --no-pager -n 80 -u systemd-logind.service \
+            -u "$TEST_SERVICE" >>"$CONSOLE" 2>&1 || true
+        fail service-enable-runtime
+    fi
+    systemctl disable --runtime "$TEST_SERVICE" || fail service-disable-runtime
+    emit 'DEBIAN_EXT4_PROGRESS step=service-enable-runtime-done'
     # Keep the gate fail-fast when the manager's unit-file transaction cannot
     # complete.  An unbounded D-Bus call used to hide the actual ext4/systemd
     # failure behind the outer QEMU timeout and left no actionable evidence.
