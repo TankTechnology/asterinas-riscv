@@ -2288,6 +2288,10 @@ create_and_verify_image() {
         die "root image UUID verification failed"
     grep -Eq "^Block size:[[:space:]]+$ROOT_BLOCK_SIZE_BYTES$" "$dumpe2fs_output" ||
         die "root image block-size verification failed"
+    if [[ "$ROOT_FILESYSTEM_TYPE" == ext4 ]]; then
+        grep -Eq '^Inode size:[[:space:]]+128$' "$dumpe2fs_output" ||
+            die "ext4 root image inode-size compatibility check failed"
+    fi
     if [[ "$ROOT_FILESYSTEM_JOURNAL" == 1 ]]; then
         grep -Eq '^Filesystem features:.*(^|[[:space:]])has_journal([[:space:]]|$)' \
             "$dumpe2fs_output" || die "ext4 root image is missing its journal"
