@@ -17,7 +17,7 @@ use crate::{
         options::{
             AcceptConn, Broadcast, KeepAlive, Linger, PassCred, PeerCred, PeerGroups, Priority,
             RecvBuf, RecvBufForce, RecvTimeout, ReuseAddr, ReusePort, SendBuf, SendBufForce,
-            SendTimeout, SocketOption, SocketType,
+            SendTimeout, SocketOption, SocketType, Timestamp,
             macros::{sock_option_mut, sock_option_ref},
         },
         unix::{CUserCred, UNIX_DATAGRAM_DEFAULT_BUF_SIZE, UNIX_STREAM_DEFAULT_BUF_SIZE},
@@ -182,6 +182,11 @@ impl SocketOptionSet {
             }
             _socket_peer_groups @ PeerGroups => {
                 return_errno_with_message!(Errno::ENODATA, "the socket does not have peer groups");
+            }
+            socket_timestamp @ Timestamp => {
+                // Accept SO_TIMESTAMP so systemd-journald can fall back to its
+                // own clock when the kernel does not attach SCM_TIMESTAMP.
+                let _ = socket_timestamp.get().unwrap();
             }
             _ => return_errno_with_message!(
                 Errno::ENOPROTOOPT,
