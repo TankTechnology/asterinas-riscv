@@ -3,6 +3,7 @@
 mod bin;
 mod grub;
 mod qcow2;
+mod riscv;
 
 use std::{
     ffi::OsString,
@@ -187,6 +188,11 @@ pub fn do_cached_build(
         BootMethod::VmmDirect => {
             let aster_bin = if config.target_arch == Arch::Aarch64 {
                 make_aarch64_image(&osdk_output_directory, &boot_elf)
+            } else if config.target_arch == Arch::RiscV64
+                && grub.boot_protocol == BootProtocol::Linux
+            {
+                riscv::make_riscv_image(&osdk_output_directory, &boot_elf)
+                    .expect("failed to build RISC-V Image")
             } else if grub.boot_protocol == BootProtocol::Linux {
                 make_install_bzimage(
                     &osdk_output_directory,

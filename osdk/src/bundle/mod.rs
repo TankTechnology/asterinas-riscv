@@ -192,7 +192,10 @@ impl Bundle {
                 // switching boot methods (for example, from a Grub ISO to `vmm-direct`),
                 // which would otherwise cause boot failures.
                 let aster_bin_type = self.manifest.aster_bin.as_ref().unwrap().typ();
-                let expects_linux = matches!(aster_bin_type, AsterBinType::BzImage(_));
+                let expects_linux = matches!(
+                    aster_bin_type,
+                    AsterBinType::BzImage(_) | AsterBinType::RiscvImage
+                );
                 let actual_linux = config_action.grub.boot_protocol == BootProtocol::Linux;
                 if expects_linux != actual_linux {
                     return Err(

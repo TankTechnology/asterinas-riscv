@@ -24,6 +24,7 @@ pub struct AsterBin {
 pub enum AsterBinType {
     Elf(AsterElfMeta),
     BzImage(AsterBzImageMeta),
+    RiscvImage,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
