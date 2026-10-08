@@ -23,10 +23,12 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use aster_block::bio::BioCompleteFn;
 use device_id::DeviceId;
+use ostd::mm::io::util::HasVmReaderWriter;
 
 use super::{
     block_group::{BlockGroup, RawBlockGroup},
     inode::{FilePerm, Inode, InodeDesc, RawInode},
+    journal,
     prelude::*,
     super_block::{
         FeatureCompatSet, FeatureInCompatSet, RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock,
@@ -135,22 +137,6 @@ impl Ext2 {
         }
 
         let mount_options = Ext2MountOptions::parse(data);
-        if allow_journal
-            && !flags.contains(FsFlags::RDONLY)
-            && super_block
-                .feature_compat()
-                .contains(FeatureCompatSet::HAS_JOURNAL)
-            && super_block
-                .feature_incompat()
-                .contains(FeatureInCompatSet::RECOVER)
-            && !mount_options.noload_journal
-        {
-            return_errno_with_message!(
-                Errno::EOPNOTSUPP,
-                "ext4 journal replay is not yet supported; mount with noload"
-            );
-        }
-
         let nr_inodes_per_group = super_block.nr_inodes_per_group();
 
         let group_descriptors_segment = {
@@ -208,7 +194,86 @@ impl Ext2 {
             self_ref: weak_self.clone(),
         });
 
+        if allow_journal
+            && !flags.contains(FsFlags::RDONLY)
+            && super_block
+                .feature_compat()
+                .contains(FeatureCompatSet::HAS_JOURNAL)
+            && super_block
+                .feature_incompat()
+                .contains(FeatureInCompatSet::RECOVER)
+            && !mount_options.noload_journal
+        {
+            ext2.replay_journal()?;
+        }
+
         Ok(ext2)
+    }
+
+    /// Replays committed JBD2 transactions before exposing a dirty filesystem.
+    ///
+    /// The current implementation handles the depth-zero, contiguous journal
+    /// inode emitted by the Debian rootfs builder. It validates the complete
+    /// transaction set before writing any target blocks and clears the journal
+    /// start marker only after replay succeeds.
+    fn replay_journal(&self) -> Result<()> {
+        let journal_inode = self.read_inode(8)?;
+        let journal_sb_bid = journal_inode
+            .lookup_block(0)?
+            .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "journal inode has no superblock"))?;
+        let journal_sb = self.read_raw_block(journal_sb_bid)?;
+        let sb = journal::SuperBlock::parse(&journal_sb)?;
+        if !sb.needs_recovery() {
+            return Ok(());
+        }
+
+        let count = sb.max_length.saturating_sub(sb.start);
+        if count == 0 {
+            return_errno_with_message!(Errno::EUCLEAN, "journal recovery has empty log");
+        }
+        let physical = journal_inode.lookup_block_range(sb.start, count)?;
+        if physical.len() != count as usize {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "journal extent is not contiguous");
+        }
+        let blocks = self.read_raw_blocks(physical.start, count)?;
+        let refs: Vec<&[u8]> = blocks.iter().map(Vec::as_slice).collect();
+        let replay = journal::scan_log(&refs, sb.sequence)?;
+        for block in replay {
+            self.write_raw_block(block.block_number, &block.data)?;
+        }
+
+        let mut clean_sb = journal_sb;
+        clean_sb[28..32].copy_from_slice(&0u32.to_be_bytes());
+        self.write_raw_block(journal_sb_bid, &clean_sb)
+    }
+
+    fn read_raw_block(&self, bid: Ext2Bid) -> Result<Vec<u8>> {
+        let blocks = self.read_raw_blocks(bid, 1)?;
+        Ok(blocks.into_iter().next().unwrap())
+    }
+
+    fn read_raw_blocks(&self, bid: Ext2Bid, count: u32) -> Result<Vec<Vec<u8>>> {
+        let bio_segment = BioSegment::alloc(count as usize, BioDirection::FromDevice);
+        self.read_blocks(bid, bio_segment.clone())?;
+        let mut bytes = vec![0u8; count as usize * BLOCK_SIZE];
+        bio_segment
+            .reader()?
+            .read_fallible(&mut VmWriter::from(bytes.as_mut_slice()).to_fallible())?;
+        Ok(bytes
+            .chunks_exact(BLOCK_SIZE)
+            .map(<[u8]>::to_vec)
+            .collect())
+    }
+
+    fn write_raw_block(&self, bid: Ext2Bid, block: &[u8]) -> Result<()> {
+        if block.len() != BLOCK_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "invalid raw block size");
+        }
+        let bio_segment = BioSegment::alloc(1, BioDirection::ToDevice);
+        bio_segment
+            .writer()?
+            .write_fallible(&mut VmReader::from(block).to_fallible())?;
+        self.write_blocks(bid, bio_segment)
     }
 
     /// Returns the block device.

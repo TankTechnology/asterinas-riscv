@@ -58,6 +58,14 @@ impl InodeBlockManager {
         tree.lookup_block(iblock)
     }
 
+    pub(super) fn lookup_block_range(
+        &self,
+        iblock: Iblock,
+        max_blocks: u32,
+    ) -> Result<Range<Ext2Bid>> {
+        self.block_ptr_tree.read().lookup_block_range(iblock, max_blocks)
+    }
+
     /// Returns a snapshot of the raw block pointer state.
     pub(super) fn raw_block_ptrs(&self) -> RawBlockPtrs {
         *self.block_ptr_tree.read().raw_block_ptrs()

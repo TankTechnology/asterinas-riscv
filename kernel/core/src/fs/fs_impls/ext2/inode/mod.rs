@@ -217,6 +217,20 @@ impl Inode {
     pub(super) fn page_cache(&self) -> Option<Arc<Vmo>> {
         self.inner.read().page_cache_clone()
     }
+
+    /// Resolves a contiguous range of filesystem blocks for internal metadata
+    /// consumers such as the JBD2 journal replay path.
+    pub(super) fn lookup_block_range(
+        &self,
+        iblock: Iblock,
+        max_blocks: u32,
+    ) -> Result<Range<Ext2Bid>> {
+        self.inner.read().block_manager()?.lookup_block_range(iblock, max_blocks)
+    }
+
+    pub(super) fn lookup_block(&self, iblock: Iblock) -> Result<Option<Ext2Bid>> {
+        self.inner.read().block_manager()?.lookup_block(iblock)
+    }
 }
 
 impl Drop for Inode {
