@@ -969,6 +969,7 @@ class DebianStage1Tests(unittest.TestCase):
         compilation = self.compile_stage1(binary, "DEBIAN_STAGE1_SELF_TEST")
         self.assertEqual(compilation.returncode, 0, compilation.stderr)
         cases = (
+            "devtmpfs-mount",
             "one-valid-device",
             "one-valid-mmc-device",
             "no-match",

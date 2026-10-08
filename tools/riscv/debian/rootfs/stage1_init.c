@@ -438,7 +438,26 @@ static const char *handoff_root(struct Stage1Ops *ops, const char *root_device,
     return "exec-returned";
 }
 
+static int prepare_device_filesystem(
+    int (*mount_fs)(const char *, const char *, const char *,
+                    unsigned long, const void *))
+{
+    return mount_fs("devtmpfs", "/dev", "devtmpfs", MS_NOSUID, NULL);
+}
+
 #if defined(DEBIAN_STAGE1_SELF_TEST)
+
+static int mock_mount_result;
+static int mock_device_mount(const char *source, const char *target,
+                              const char *type, unsigned long flags,
+                              const void *data)
+{
+    if (strcmp(source, "devtmpfs") != 0 || strcmp(target, "/dev") != 0 ||
+        strcmp(type, "devtmpfs") != 0 || flags != MS_NOSUID || data != NULL) {
+        return -2;
+    }
+    return mock_mount_result;
+}
 
 struct MockContext {
     const char *case_name;
@@ -1041,7 +1060,14 @@ int main(int argc, char **argv)
     int result;
     enum HandoffStep failing_step;
     const char *expected_reason;
-    if (handoff_case(case_name, &failing_step, &expected_reason)) {
+    if (strcmp(case_name, "devtmpfs-mount") == 0) {
+        mock_mount_result = 0;
+        result = prepare_device_filesystem(mock_device_mount);
+        mock_mount_result = -1;
+        if (result != 0 || prepare_device_filesystem(mock_device_mount) != -1) {
+            return fail_self_test(case_name, "device mount contract was wrong");
+        }
+    } else if (handoff_case(case_name, &failing_step, &expected_reason)) {
         result = run_handoff_self_test(case_name, failing_step, expected_reason);
     } else if (strncmp(case_name, "root-init-", sizeof("root-init-") - 1) ==
                    0 ||
@@ -1414,6 +1440,12 @@ int main(int argc, char **argv)
     }
     if (root_init_result != 0) {
         fail_and_hold("root-init-argument");
+    }
+    /* Initramfs userspace owns the device filesystem mount. The kernel only
+     * supplies /dev/console there; registered block devices live in devtmpfs.
+     * Keep the open console descriptors while replacing the bootstrap /dev. */
+    if (prepare_device_filesystem(mount) != 0) {
+        fail_and_hold("devtmpfs-mount");
     }
     const char *mode = "interactive";
     if (context.root_init.mode == ROOT_INIT_SYSTEMD) {
