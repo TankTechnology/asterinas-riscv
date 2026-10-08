@@ -251,13 +251,7 @@ fn open_fs(
     let data = data.as_deref().map(CStr::to_string_lossy);
 
     let mut fs_creation_ctx = FsCreationCtx::new(source, flags.into(), data.as_deref(), ctx);
-    match fs_type.get_or_create(&mut fs_creation_ctx) {
-        Ok(fs) => Ok(fs),
-        Err(error) => {
-            error!("mount type={} source={:?} failed: {:?}", fs_type.name(), source, error);
-            Err(error)
-        }
-    }
+    fs_type.get_or_create(&mut fs_creation_ctx)
 }
 
 bitflags! {
