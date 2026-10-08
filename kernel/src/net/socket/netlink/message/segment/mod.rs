@@ -115,5 +115,13 @@ pub enum CSegmentType {
     NEWROUTE = 24,
     DELROUTE = 25,
     GETROUTE = 26,
+    GETNEIGH = 30,
+    GETRULE = 34,
+    GETQDISC = 38,
+    GETTCLASS = 42,
+    GETACTION = 46,
+    GETTFILTER = 58,
+    GETNEXTHOP = 104,
+    GETCHAIN = 106,
     // TODO: The list is not exhaustive.
 }
