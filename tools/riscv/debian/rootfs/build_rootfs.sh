@@ -2270,7 +2270,10 @@ create_and_verify_image() {
     if [[ "$ROOT_FILESYSTEM_TYPE" == ext4 ]]; then
         # Exercise the ext4 extent mapping while keeping features whose
         # checksums, high block fields, or orphan-file replay are not yet
-        # implemented out of this compatibility profile.
+        # implemented out of this compatibility profile. A 128-byte inode
+        # matches the ext4 compatibility layout supported by the kernel and
+        # keeps Debian root images mountable in the RISC-V guest.
+        mkfs_options+=(-I 128)
         mkfs_options+=(-O '^metadata_csum,^64bit,^flex_bg,^orphan_file,^huge_file,^dir_nlink,^extra_isize')
     fi
     mke2fs "${mkfs_options[@]}" \
