@@ -141,10 +141,8 @@ pub(super) struct SuperBlock {
     reserved: Reserved,
 }
 
-impl TryFrom<RawSuperBlock> for SuperBlock {
-    type Error = Error;
-
-    fn try_from(sb: RawSuperBlock) -> Result<Self> {
+impl SuperBlock {
+    pub(super) fn try_from_with_journal(sb: RawSuperBlock, allow_journal: bool) -> Result<Self> {
         if sb.magic != MAGIC_NUM {
             return_errno_with_message!(Errno::EINVAL, "bad ext2 magic number");
         }
@@ -241,6 +239,9 @@ impl TryFrom<RawSuperBlock> for SuperBlock {
         }
 
         let feature_compat = FeatureCompatSet::from_bits_truncate(sb.feature_compat);
+        if feature_compat.contains(FeatureCompatSet::HAS_JOURNAL) && !allow_journal {
+            return_errno_with_message!(Errno::EINVAL, "ext2 journal replay is unsupported");
+        }
 
         let allowed_incompat = FeatureInCompatSet::FILETYPE.bits();
         if (sb.feature_incompat & !allowed_incompat) != 0 {
@@ -615,7 +616,7 @@ impl SuperBlock {
     }
 
     #[expect(dead_code)]
-    const fn feature_compat(&self) -> FeatureCompatSet {
+    pub(super) const fn feature_compat(&self) -> FeatureCompatSet {
         self.feature_compat
     }
 
@@ -630,9 +631,17 @@ impl SuperBlock {
     }
 }
 
+impl TryFrom<RawSuperBlock> for SuperBlock {
+    type Error = Error;
+
+    fn try_from(sb: RawSuperBlock) -> Result<Self> {
+        Self::try_from_with_journal(sb, false)
+    }
+}
+
 bitflags! {
     /// Compatible feature set.
-    struct FeatureCompatSet: u32 {
+    pub(super) struct FeatureCompatSet: u32 {
         /// Preallocate some number of blocks to a directory when creating a new one.
         const DIR_PREALLOC = 1 << 0;
         /// AFS server inodes exist.
