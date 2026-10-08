@@ -225,7 +225,10 @@ impl Inode {
         iblock: Iblock,
         max_blocks: u32,
     ) -> Result<Range<Ext2Bid>> {
-        self.inner.read().block_manager()?.lookup_block_range(iblock, max_blocks)
+        self.inner
+            .read()
+            .block_manager()?
+            .lookup_block_range(iblock, max_blocks)
     }
 
     pub(super) fn lookup_block(&self, iblock: Iblock) -> Result<Option<Ext2Bid>> {

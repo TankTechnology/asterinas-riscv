@@ -63,7 +63,9 @@ impl InodeBlockManager {
         iblock: Iblock,
         max_blocks: u32,
     ) -> Result<Range<Ext2Bid>> {
-        self.block_ptr_tree.read().lookup_block_range(iblock, max_blocks)
+        self.block_ptr_tree
+            .read()
+            .lookup_block_range(iblock, max_blocks)
     }
 
     /// Returns a snapshot of the raw block pointer state.

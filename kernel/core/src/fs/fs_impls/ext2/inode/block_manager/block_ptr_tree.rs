@@ -218,7 +218,8 @@ impl BlockPtrTree {
                 return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent range");
             }
             let physical_hi = u16::from_le_bytes(bytes[offset + 6..offset + 8].try_into().unwrap());
-            let physical_lo = u32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap());
+            let physical_lo =
+                u32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap());
             let physical = (u64::from(physical_hi) << 32) | u64::from(physical_lo);
             let physical = u32::try_from(physical)
                 .map_err(|_| Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block"))?;
@@ -231,9 +232,9 @@ impl BlockPtrTree {
             if iblock < logical {
                 return_errno_with_message!(Errno::EOPNOTSUPP, "non-append ext4 extent allocation");
             }
-            next_logical = logical
-                .checked_add(length)
-                .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "ext4 extent logical overflow"))?;
+            next_logical = logical.checked_add(length).ok_or_else(|| {
+                Error::with_message(Errno::EUCLEAN, "ext4 extent logical overflow")
+            })?;
             goal = physical.saturating_add(length);
         }
 

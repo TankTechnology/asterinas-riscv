@@ -218,9 +218,9 @@ impl Ext2 {
     /// start marker only after replay succeeds.
     fn replay_journal(&self) -> Result<()> {
         let journal_inode = self.read_inode(8)?;
-        let journal_sb_bid = journal_inode
-            .lookup_block(0)?
-            .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "journal inode has no superblock"))?;
+        let journal_sb_bid = journal_inode.lookup_block(0)?.ok_or_else(|| {
+            Error::with_message(Errno::EUCLEAN, "journal inode has no superblock")
+        })?;
         let journal_sb = self.read_raw_block(journal_sb_bid)?;
         let sb = journal::SuperBlock::parse(&journal_sb)?;
         if !sb.needs_recovery() {
@@ -259,10 +259,7 @@ impl Ext2 {
         bio_segment
             .reader()?
             .read_fallible(&mut VmWriter::from(bytes.as_mut_slice()).to_fallible())?;
-        Ok(bytes
-            .chunks_exact(BLOCK_SIZE)
-            .map(<[u8]>::to_vec)
-            .collect())
+        Ok(bytes.chunks_exact(BLOCK_SIZE).map(<[u8]>::to_vec).collect())
     }
 
     fn write_raw_block(&self, bid: Ext2Bid, block: &[u8]) -> Result<()> {

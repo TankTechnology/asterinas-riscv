@@ -58,9 +58,7 @@ impl MemoryController {
         let value = if value == "max" {
             u64::MAX
         } else {
-            value
-                .parse::<u64>()
-                .map_err(|_| Error::InvalidOperation)?
+            value.parse::<u64>().map_err(|_| Error::InvalidOperation)?
         };
         limit.store(value, Ordering::Relaxed);
         Ok(len)
