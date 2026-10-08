@@ -49,6 +49,18 @@ impl NetlinkRouteKernelSocket {
             RtnlSegment::GetLink(request_segment) => link::do_get_link(request_segment, net_ns),
             RtnlSegment::GetAddr(request_segment) => addr::do_get_addr(request_segment, net_ns),
             RtnlSegment::GetRoute(request_segment) => route::do_get_route(request_segment, net_ns),
+            RtnlSegment::GetQdisc(_) => Ok(vec![RtnlSegment::Done(
+                crate::net::socket::netlink::message::DoneSegment::new_from_request(
+                    request_header,
+                    None,
+                ),
+            )]),
+            RtnlSegment::Unsupported(_) => Ok(vec![RtnlSegment::Done(
+                crate::net::socket::netlink::message::DoneSegment::new_from_request(
+                    request_header,
+                    None,
+                ),
+            )]),
             RtnlSegment::SetLink(request_segment) => link::do_set_link(request_segment, net_ns),
             RtnlSegment::NewAddr(request_segment) => addr::do_new_addr(request_segment, net_ns),
             _ => Err(Error::with_message(

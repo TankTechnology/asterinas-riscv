@@ -107,6 +107,8 @@ pub(super) struct SuperBlock {
     block_group_idx: usize,
     /// Compatible feature set.
     feature_compat: FeatureCompatSet,
+    /// On-disk group descriptor size (32 or 64 bytes for ext4 64-bit mode).
+    group_desc_size: usize,
     /// Incompatible feature set.
     feature_incompat: FeatureInCompatSet,
     /// Read-only-compatible feature set.
@@ -141,10 +143,8 @@ pub(super) struct SuperBlock {
     reserved: Reserved,
 }
 
-impl TryFrom<RawSuperBlock> for SuperBlock {
-    type Error = Error;
-
-    fn try_from(sb: RawSuperBlock) -> Result<Self> {
+impl SuperBlock {
+    pub(super) fn try_from_with_journal(sb: RawSuperBlock, allow_journal: bool) -> Result<Self> {
         if sb.magic != MAGIC_NUM {
             return_errno_with_message!(Errno::EINVAL, "bad ext2 magic number");
         }
@@ -241,16 +241,45 @@ impl TryFrom<RawSuperBlock> for SuperBlock {
         }
 
         let feature_compat = FeatureCompatSet::from_bits_truncate(sb.feature_compat);
-        if feature_compat.contains(FeatureCompatSet::HAS_JOURNAL) {
+        if feature_compat.contains(FeatureCompatSet::HAS_JOURNAL) && !allow_journal {
             return_errno_with_message!(Errno::EINVAL, "ext2 journal replay is unsupported");
         }
 
-        let allowed_incompat = FeatureInCompatSet::FILETYPE.bits();
+        let feature_incompat = FeatureInCompatSet::from_bits_truncate(sb.feature_incompat);
+        let group_desc_size = if feature_incompat.contains(FeatureInCompatSet::BIT64) {
+            let size = usize::from(sb.reserved_word_pad);
+            if size < 64 || size > BLOCK_SIZE || !size.is_power_of_two() {
+                return_errno_with_message!(Errno::EINVAL, "invalid ext4 group descriptor size");
+            }
+            // These ext4 counters live in the otherwise preserved tail at
+            // offsets 0x150..0x15c. Never truncate them to the low words while
+            // the allocator and block IDs are still 32-bit.
+            let high_counts = (0x150 - 0x108) / size_of::<u32>();
+            if sb.reserved.0[high_counts..high_counts + 3]
+                .iter()
+                .any(|high| *high != 0)
+            {
+                return_errno_with_message!(
+                    Errno::EOPNOTSUPP,
+                    "ext4 block counters exceed supported range"
+                );
+            }
+            size
+        } else {
+            size_of::<RawBlockGroup>()
+        };
+
+        let allowed_incompat = FeatureInCompatSet::FILETYPE.bits()
+            | if allow_journal {
+                FeatureInCompatSet::RECOVER.bits()
+                    | FeatureInCompatSet::EXTENTS.bits()
+                    | FeatureInCompatSet::BIT64.bits()
+            } else {
+                0
+            };
         if (sb.feature_incompat & !allowed_incompat) != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported incompat feature");
         }
-        let feature_incompat = FeatureInCompatSet::from_bits_truncate(sb.feature_incompat);
-
         let allowed_ro_compat = FeatureRoCompatSet::SPARSE_SUPER.bits()
             | FeatureRoCompatSet::LARGE_FILE.bits()
             | FeatureRoCompatSet::BTREE_DIR.bits();
@@ -289,6 +318,7 @@ impl TryFrom<RawSuperBlock> for SuperBlock {
             inode_size,
             block_group_idx: sb.block_group_idx as _,
             feature_compat,
+            group_desc_size,
             feature_incompat,
             feature_ro_compat,
             uuid: sb.uuid,
@@ -311,6 +341,18 @@ impl TryFrom<RawSuperBlock> for SuperBlock {
             first_meta_bg: sb.first_meta_bg,
             reserved: sb.reserved,
         })
+    }
+
+    fn try_from(sb: RawSuperBlock) -> Result<Self> {
+        Self::try_from_with_journal(sb, false)
+    }
+}
+
+impl TryFrom<RawSuperBlock> for SuperBlock {
+    type Error = Error;
+
+    fn try_from(sb: RawSuperBlock) -> Result<Self> {
+        SuperBlock::try_from(sb)
     }
 }
 
@@ -468,7 +510,7 @@ impl SuperBlock {
 
     /// Returns the number of group descriptor blocks in each superblock copy.
     pub(super) const fn group_descriptor_blocks_count(&self) -> u32 {
-        let group_desc_bytes = (self.nr_block_groups() as usize) * size_of::<RawBlockGroup>();
+        let group_desc_bytes = (self.nr_block_groups() as usize) * self.group_desc_size();
         group_desc_bytes.div_ceil(self.block_size) as u32
     }
 
@@ -617,13 +659,33 @@ impl SuperBlock {
     }
 
     #[expect(dead_code)]
-    const fn feature_compat(&self) -> FeatureCompatSet {
+    pub(super) const fn feature_compat(&self) -> FeatureCompatSet {
         self.feature_compat
     }
 
     #[expect(dead_code)]
-    const fn feature_incompat(&self) -> FeatureInCompatSet {
+    pub(super) const fn feature_incompat(&self) -> FeatureInCompatSet {
         self.feature_incompat
+    }
+
+    pub(super) const fn group_desc_size(&self) -> usize {
+        self.group_desc_size
+    }
+
+    pub(super) fn clear_journal_recovery(&mut self) {
+        self.feature_incompat.remove(FeatureInCompatSet::RECOVER);
+    }
+
+    pub(super) fn journal_inode(&self) -> u32 {
+        self.journal_ino
+    }
+
+    pub(super) fn journal_device(&self) -> u32 {
+        self.journal_dev
+    }
+
+    pub(super) const fn journal_uuid(&self) -> [u8; 16] {
+        self.journal_uuid
     }
 
     #[expect(dead_code)]
@@ -634,7 +696,7 @@ impl SuperBlock {
 
 bitflags! {
     /// Compatible feature set.
-    struct FeatureCompatSet: u32 {
+    pub(super) struct FeatureCompatSet: u32 {
         /// Preallocate some number of blocks to a directory when creating a new one.
         const DIR_PREALLOC = 1 << 0;
         /// AFS server inodes exist.
@@ -652,7 +714,7 @@ bitflags! {
 
 bitflags! {
     /// Incompatible feature set.
-    struct FeatureInCompatSet: u32 {
+    pub(super) struct FeatureInCompatSet: u32 {
         /// Compression is used.
         const COMPRESSION = 1 << 0;
         /// Directory entries contain a type field.
@@ -663,6 +725,10 @@ bitflags! {
         const JOURNAL_DEV = 1 << 3;
         /// Metablock block group.
         const META_BG = 1 << 4;
+        /// Inodes use ext4 extent trees rather than indirect block pointers.
+        const EXTENTS = 1 << 6;
+        /// Group descriptors contain high block-number fields.
+        const BIT64 = 1 << 7;
     }
 }
 
@@ -880,6 +946,66 @@ mod test {
     }
 
     #[ktest]
+    fn accepts_journaled_volume_for_explicit_ext4_mount() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
+        assert!(SuperBlock::try_from_with_journal(raw, true).is_ok());
+    }
+
+    #[ktest]
+    fn accepts_recovery_feature_only_for_ext4_mount() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
+        raw.feature_incompat |= FeatureInCompatSet::RECOVER.bits();
+        assert!(SuperBlock::try_from_with_journal(raw, true).is_ok());
+        assert!(SuperBlock::try_from_with_journal(raw, false).is_err());
+    }
+
+    #[ktest]
+    fn accepts_extent_feature_only_for_ext4_mount() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_incompat |= FeatureInCompatSet::EXTENTS.bits();
+        assert!(SuperBlock::try_from_with_journal(raw, true).is_ok());
+        assert!(SuperBlock::try_from_with_journal(raw, false).is_err());
+    }
+
+    #[ktest]
+    fn accepts_64bit_group_descriptor_layout_for_ext4_mount() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
+        raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
+        raw.reserved_word_pad = 64;
+        let sb = SuperBlock::try_from_with_journal(raw, true).unwrap();
+        assert_eq!(sb.group_desc_size(), 64);
+    }
+
+    #[ktest]
+    fn rejects_oversized_64bit_group_descriptors() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_compat |= FeatureCompatSet::HAS_JOURNAL.bits();
+        raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
+        raw.reserved_word_pad = (BLOCK_SIZE + 8) as u16;
+        assert!(SuperBlock::try_from_with_journal(raw, true).is_err());
+    }
+
+    #[ktest]
+    fn rejects_invalid_64bit_layout_without_truncating_counters() {
+        for size in [32, 40, 56, 72, 96] {
+            let mut raw = make_valid_raw_super_block(1);
+            raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
+            raw.reserved_word_pad = size;
+            assert!(SuperBlock::try_from_with_journal(raw, true).is_err());
+        }
+        for offset in [0x150, 0x154, 0x158] {
+            let mut raw = make_valid_raw_super_block(1);
+            raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
+            raw.reserved_word_pad = 64;
+            raw.reserved.0[(offset - 0x108) / size_of::<u32>()] = 1;
+            assert!(SuperBlock::try_from_with_journal(raw, true).is_err());
+        }
+    }
+
+    #[ktest]
     fn max_file_size_matches_ext2_4k_limit() {
         let raw = make_valid_raw_super_block(1);
         let sb = SuperBlock::try_from(raw).unwrap();
@@ -903,7 +1029,7 @@ mod test {
         assert!(sb.is_backup_group(7));
         assert!(sb.is_backup_group(9)); // 3^2
         assert!(sb.is_backup_group(25)); // 5^2
-        // 2, 4, 6 are not backups with sparse_super.
+                                         // 2, 4, 6 are not backups with sparse_super.
         assert!(!sb.is_backup_group(2));
         assert!(!sb.is_backup_group(4));
         assert!(!sb.is_backup_group(6));

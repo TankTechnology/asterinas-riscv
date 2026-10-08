@@ -87,13 +87,14 @@ impl Inode {
         parent_inner.delete_entry(&entry_info)?;
         parent_inner.dec_link_count(1);
         parent_inner.mark_dir_modified();
+        parent_inner.stage_directory_blocks(&fs)?;
 
         let child_inner = guards.inner_mut(child.ino());
         child_inner.set_ctime(utils::now());
         child_inner.dec_link_count(2);
 
         if child_inner.link_count() == 0 {
-            child_inner.write_back_inode_desc(&fs, entry_info.ino)?;
+            child_inner.stage_inode_desc(&fs, entry_info.ino)?;
             let _ = fs.remove_inode(entry_info.ino);
         }
 
@@ -164,6 +165,10 @@ impl Inode {
             parent_inner.inc_link_count(1);
         }
         parent_inner.mark_dir_modified();
+        parent_inner.stage_directory_blocks(&fs)?;
+        if is_dir {
+            child.inner.write().stage_directory_blocks(&fs)?;
+        }
         fs.insert_inode(child.clone());
         Ok(child)
     }
@@ -186,6 +191,7 @@ impl Inode {
         };
         dir_inner.add_entry(&slot, name, old.ino, dir_entry_file_type)?;
         dir_inner.mark_dir_modified();
+        dir_inner.stage_directory_blocks(&fs)?;
 
         let old_inner = guards.inner_mut(old.ino());
         old_inner.set_ctime(utils::now());
@@ -217,13 +223,14 @@ impl Inode {
         let parent_inner = guards.inner_mut(self.ino());
         parent_inner.delete_entry(&entry_info)?;
         parent_inner.mark_dir_modified();
+        parent_inner.stage_directory_blocks(&fs)?;
 
         // Update timestamps before dropping the target link count.
         let child_inner = guards.inner_mut(child.ino());
         child_inner.set_ctime(utils::now());
         child_inner.dec_link_count(1);
         if child_inner.link_count() == 0 {
-            child_inner.write_back_inode_desc(&fs, entry_info.ino)?;
+            child_inner.stage_inode_desc(&fs, entry_info.ino)?;
             let _ = fs.remove_inode(entry_info.ino);
         }
         Ok(())
@@ -396,7 +403,7 @@ impl Inode {
             replaced_inner.dec_link_count(1);
 
             if replaced_inner.link_count() == 0 {
-                replaced_inner.write_back_inode_desc(&fs, replaced.ino())?;
+                replaced_inner.stage_inode_desc(&fs, replaced.ino())?;
                 let _ = fs.remove_inode(replaced.ino());
             }
         }
@@ -411,11 +418,38 @@ impl Inode {
             old_inner.set_ctime(utils::now());
         }
 
+        guards.inner_mut(self.ino).stage_directory_blocks(&fs)?;
+        if target.ino != self.ino {
+            guards.inner_mut(target.ino).stage_directory_blocks(&fs)?;
+        }
+        if old_is_dir {
+            guards.inner_mut(old_inode.ino()).stage_directory_blocks(&fs)?;
+        }
+
         Ok(())
     }
 }
 
 impl InodeInner {
+    fn stage_directory_blocks(&self, fs: &Ext2) -> Result<()> {
+        if self.inode_type() != InodeType::Dir || !fs.has_journal() {
+            return Ok(());
+        }
+        let block_manager = self.block_manager()?;
+        let block_count = self.file_size().div_ceil(BLOCK_SIZE);
+        for logical_block in 0..block_count {
+            let Some(bid) = block_manager.lookup_block(logical_block.try_into().map_err(
+                |_| Error::with_message(Errno::EIO, "directory block index overflow"),
+            )?)? else {
+                continue;
+            };
+            let mut payload = vec![0u8; BLOCK_SIZE];
+            self.page_cache().read_bytes(logical_block * BLOCK_SIZE, &mut payload)?;
+            fs.stage_metadata_block(bid, &payload);
+        }
+        Ok(())
+    }
+
     /// Linear directory updates invalidate Linux's on-disk HTree lookup index.
     fn mark_dir_modified(&mut self) {
         debug_assert_eq!(self.inode_type(), InodeType::Dir);

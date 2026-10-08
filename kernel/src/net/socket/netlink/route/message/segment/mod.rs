@@ -34,10 +34,12 @@
 pub mod addr;
 mod legacy;
 pub mod link;
+pub mod qdisc;
 pub mod route;
 
 use addr::AddrSegment;
 use link::LinkSegment;
+use qdisc::QdiscSegment;
 use route::RouteSegment;
 
 use crate::{
@@ -57,6 +59,8 @@ pub enum RtnlSegment {
     GetAddr(AddrSegment),
     GetLink(LinkSegment),
     GetRoute(RouteSegment),
+    GetQdisc(QdiscSegment),
+    Unsupported(CMsgSegHdr),
     NewRoute(RouteSegment),
     Done(DoneSegment),
     Error(ErrorSegment),
@@ -74,6 +78,8 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::GetRoute(route_segment) | RtnlSegment::NewRoute(route_segment) => {
                 route_segment.header()
             }
+            RtnlSegment::GetQdisc(qdisc_segment) => qdisc_segment.header(),
+            RtnlSegment::Unsupported(header) => header,
             RtnlSegment::Done(done_segment) => done_segment.header(),
             RtnlSegment::Error(error_segment) => error_segment.header(),
         }
@@ -90,6 +96,8 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::GetRoute(route_segment) | RtnlSegment::NewRoute(route_segment) => {
                 route_segment.header_mut()
             }
+            RtnlSegment::GetQdisc(qdisc_segment) => qdisc_segment.header_mut(),
+            RtnlSegment::Unsupported(header) => header,
             RtnlSegment::Done(done_segment) => done_segment.header_mut(),
             RtnlSegment::Error(error_segment) => error_segment.header_mut(),
         }
@@ -100,32 +108,52 @@ impl ProtocolSegment for RtnlSegment {
             .read_val_opt::<CMsgSegHdr>()?
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "the reader length is too small"))?;
 
-        let segment = match CSegmentType::try_from(header.type_) {
-            Ok(CSegmentType::GETLINK) => {
-                LinkSegment::read_from(&header, reader)?.map(RtnlSegment::GetLink)
-            }
-            Ok(CSegmentType::NEWLINK) => {
-                LinkSegment::read_from(&header, reader)?.map(RtnlSegment::NewLink)
-            }
-            Ok(CSegmentType::GETADDR) => {
-                AddrSegment::read_from(&header, reader)?.map(RtnlSegment::GetAddr)
-            }
-            Ok(CSegmentType::SETLINK) => {
-                LinkSegment::read_from(&header, reader)?.map(RtnlSegment::SetLink)
-            }
-            Ok(CSegmentType::NEWADDR) => {
-                AddrSegment::read_from(&header, reader)?.map(RtnlSegment::NewAddr)
-            }
-            Ok(CSegmentType::GETROUTE) => {
-                RouteSegment::read_from(&header, reader)?.map(RtnlSegment::GetRoute)
-            }
-            _ => {
-                let payload_len = header.calc_payload_len_with_padding(reader)?;
-                reader.skip_some(payload_len);
-                ContinueRead::skipped_with_error(
-                    Errno::EOPNOTSUPP,
-                    "the segment type is not supported",
-                )
+        let segment = if matches!(
+            header.type_,
+            x if x == CSegmentType::GETNEIGH as u16
+                || x == CSegmentType::GETRULE as u16
+                || x == CSegmentType::GETACTION as u16
+                || x == CSegmentType::GETTFILTER as u16
+                || x == CSegmentType::GETNEXTHOP as u16
+                || x == CSegmentType::GETCHAIN as u16
+        ) {
+            let payload_len = header.calc_payload_len_with_padding(reader)?;
+            reader.skip_some(payload_len);
+            ContinueRead::Parsed(RtnlSegment::Unsupported(header))
+        } else {
+            match CSegmentType::try_from(header.type_) {
+                Ok(CSegmentType::GETLINK) => {
+                    LinkSegment::read_from(&header, reader)?.map(RtnlSegment::GetLink)
+                }
+                Ok(CSegmentType::NEWLINK) => {
+                    LinkSegment::read_from(&header, reader)?.map(RtnlSegment::NewLink)
+                }
+                Ok(CSegmentType::GETADDR) => {
+                    AddrSegment::read_from(&header, reader)?.map(RtnlSegment::GetAddr)
+                }
+                Ok(CSegmentType::SETLINK) => {
+                    LinkSegment::read_from(&header, reader)?.map(RtnlSegment::SetLink)
+                }
+                Ok(CSegmentType::NEWADDR) => {
+                    AddrSegment::read_from(&header, reader)?.map(RtnlSegment::NewAddr)
+                }
+                Ok(CSegmentType::GETROUTE) => {
+                    RouteSegment::read_from(&header, reader)?.map(RtnlSegment::GetRoute)
+                }
+                Ok(CSegmentType::GETQDISC) => {
+                    QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetQdisc)
+                }
+                Ok(CSegmentType::GETTCLASS) => {
+                    QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetQdisc)
+                }
+                _ => {
+                    let payload_len = header.calc_payload_len_with_padding(reader)?;
+                    reader.skip_some(payload_len);
+                    ContinueRead::skipped_with_error(
+                        Errno::EOPNOTSUPP,
+                        "the segment type is not supported",
+                    )
+                }
             }
         };
 
@@ -142,7 +170,9 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::SetLink(_)
             | RtnlSegment::GetAddr(_)
             | RtnlSegment::GetLink(_)
-            | RtnlSegment::GetRoute(_) => {
+            | RtnlSegment::GetRoute(_)
+            | RtnlSegment::GetQdisc(_)
+            | RtnlSegment::Unsupported(_) => {
                 unreachable!("kernel should not write set/get requests to user space");
             }
         }
