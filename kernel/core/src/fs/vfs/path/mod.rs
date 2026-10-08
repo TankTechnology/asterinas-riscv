@@ -424,13 +424,16 @@ impl Path {
         }
 
         let mut topology_guard = MountTopology::write_lock();
-        self.mount.do_mount(
+        let child_mount = self.mount.do_mount(
             fs_and_root,
             flags,
             &self.dentry,
             source,
             &mut topology_guard,
-        )
+        )?;
+        drop(topology_guard);
+        current_mnt_ns.notify_mount_change();
+        Ok(child_mount)
     }
 
     /// Unmounts the filesystem mounted at the current path.
@@ -466,7 +469,8 @@ impl Path {
         };
         let parent_mount = self.mount.parent().unwrap().upgrade().unwrap();
         let child_mount = parent_mount.do_unmount(&mountpoint, &mut topology_guard)?;
-
+        drop(topology_guard);
+        current_mnt_ns.notify_mount_change();
         Ok(child_mount)
     }
 
@@ -499,7 +503,10 @@ impl Path {
 
         let mut topology_guard = MountTopology::write_lock();
         self.mount
-            .remount(mount_flags, fs_flags, data, ctx, &mut topology_guard)
+            .remount(mount_flags, fs_flags, data, ctx, &mut topology_guard)?;
+        drop(topology_guard);
+        current_mnt_ns.notify_mount_change();
+        Ok(())
     }
 
     /// Creates a bind mount from the current path to the destination path.
@@ -571,6 +578,8 @@ impl Path {
         let attachment =
             new_mount.prepare_mount_tree_attachment(dst_path, pending_changes, &topology_guard)?;
         attachment.attach(&mut topology_guard);
+        drop(topology_guard);
+        current_mnt_ns.notify_mount_change();
         Ok(())
     }
 
@@ -699,7 +708,8 @@ impl Path {
             self.mount
                 .prepare_mount_tree_attachment(dst_path, pending_changes, &topology_guard)?;
         attachment.attach(&mut topology_guard);
-
+        drop(topology_guard);
+        current_mnt_ns.notify_mount_change();
         Ok(())
     }
 
@@ -740,6 +750,8 @@ impl Path {
             &topology_guard,
         )?;
         pending_changes.commit(&mut topology_guard);
+        drop(topology_guard);
+        current_mnt_ns.notify_mount_change();
         Ok(())
     }
 }

@@ -1,20 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use aster_util::printer::VmPrinter;
+use core::{fmt::Write, sync::atomic::AtomicU64};
 
 use super::TidDirOps;
 use crate::{
     fs::{
-        file::mkmod,
-        procfs::template::{ProcFile, ProcFileOps},
+        file::{mkmod, AccessMode, PerOpenFileOps, StatusFlags},
+        procfs::template::{ProcFile, ProcFileOpsByHandle},
         vfs::{
             file_system::FsFlags,
-            inode::Inode,
-            path::{Mount, Path, PathResolver, PerMountFlags, RecyclableMountId},
+            inode::{FileOps, Inode},
+            path::{Mount, MountNamespace, Path, PathResolver, PerMountFlags, RecyclableMountId},
         },
     },
     prelude::*,
-    process::posix_thread::AsPosixThread,
+    events::IoEvents,
+    process::{posix_thread::AsPosixThread, signal::{PollHandle, Pollable}},
     thread::Thread,
 };
 
@@ -102,13 +103,8 @@ impl MountInfoFileOps {
     ///
     /// Provides detailed mount information including mount IDs, parent relationships,
     /// and device numbers.
-    fn read_mount_info(
-        &self,
-        path_resolver: &PathResolver,
-        offset: usize,
-        writer: &mut VmWriter,
-    ) -> Result<usize> {
-        let mut printer = VmPrinter::new_skip(writer, offset);
+    fn render_mount_info(path_resolver: &PathResolver) -> Result<String> {
+        let mut snapshot = String::new();
 
         for mount in path_resolver.collect_visible_mounts() {
             let mount_id = mount.id();
@@ -149,26 +145,101 @@ impl MountInfoFileOps {
                 fs_flags,
             };
 
-            writeln!(printer, "{}", entry)?;
+            writeln!(snapshot, "{}", entry)
+                .map_err(|_| Error::with_message(Errno::EIO, "cannot format mountinfo"))?;
         }
 
-        Ok(printer.bytes_written())
+        Ok(snapshot)
     }
 }
 
-impl ProcFileOps for MountInfoFileOps {
+impl ProcFileOpsByHandle for MountInfoFileOps {
     fn owner_thread(&self) -> Option<Arc<Thread>> {
         self.0.thread()
     }
 
-    fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+    fn open(
+        &self,
+        _access_mode: AccessMode,
+        _status_flags: StatusFlags,
+    ) -> Result<Box<dyn PerOpenFileOps>> {
         let Some(thread) = self.0.thread() else {
             return_errno_with_message!(Errno::ESRCH, "the thread does not exist");
         };
         let posix_thread = thread.as_posix_thread().unwrap();
+        let path_resolver = {
+            let fs = posix_thread.read_fs();
+            fs.resolver().read().clone()
+        };
+        let mount_namespace = {
+            let ns_proxy = posix_thread.ns_proxy().lock();
+            let Some(ns_proxy) = ns_proxy.as_ref() else {
+                return_errno_with_message!(Errno::ESRCH, "the thread does not exist");
+            };
+            ns_proxy.mnt_ns().clone()
+        };
+        let observed_event = AtomicU64::new(mount_namespace.mount_event());
+        Ok(Box::new(MountInfoFileHandle {
+            mount_namespace,
+            observed_event,
+            path_resolver,
+            snapshot: Mutex::new(None),
+        }))
+    }
+}
 
-        let fs = posix_thread.read_fs();
-        let path_resolver = fs.resolver().read();
-        self.read_mount_info(&path_resolver, offset, writer)
+struct MountInfoFileHandle {
+    mount_namespace: Arc<MountNamespace>,
+    observed_event: AtomicU64,
+    path_resolver: PathResolver,
+    snapshot: Mutex<Option<(u64, String)>>,
+}
+
+impl Pollable for MountInfoFileHandle {
+    fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
+        self.mount_namespace
+            .poll_mount_changes(&self.observed_event, mask, poller)
+    }
+}
+
+impl FileOps for MountInfoFileHandle {
+    fn read_at(
+        &self,
+        offset: usize,
+        writer: &mut VmWriter,
+        _status_flags: StatusFlags,
+    ) -> Result<usize> {
+        let mount_event = self.mount_namespace.mount_event();
+        let mut cached = self.snapshot.lock();
+        if !matches!(cached.as_ref(), Some((event, _)) if *event == mount_event) {
+            *cached = Some((
+                mount_event,
+                MountInfoFileOps::render_mount_info(&self.path_resolver)?,
+            ));
+        }
+        let bytes = cached.as_ref().unwrap().1.as_bytes();
+        let start = offset.min(bytes.len());
+        let end = start + (bytes.len() - start).min(writer.avail());
+        let mut reader = VmReader::from(&bytes[start..end]);
+        Ok(writer.write_fallible(&mut reader).map_err(|(err, _)| err)?)
+    }
+
+    fn write_at(
+        &self,
+        _offset: usize,
+        _reader: &mut VmReader,
+        _status_flags: StatusFlags,
+    ) -> Result<usize> {
+        return_errno_with_message!(Errno::EPERM, "`/proc/*/mountinfo` is not writable");
+    }
+}
+
+impl PerOpenFileOps for MountInfoFileHandle {
+    fn check_seekable(&self) -> Result<()> {
+        Ok(())
+    }
+
+    fn is_offset_aware(&self) -> bool {
+        true
     }
 }
