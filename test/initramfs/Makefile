@@ -5,9 +5,10 @@ SMP ?= 1
 VERBOSE ?= 1
 ENABLE_CONFORMANCE_TEST ?= false
 CONFORMANCE_TEST_SUITE ?= ltp
+CONFORMANCE_GVISOR_TEST ?= null
 CONFORMANCE_TEST_WORKDIR ?= /tmp
-CONFORMANCE_TEST_SELECTOR ?=
 ENABLE_REGRESSION_TEST ?= false
+REGRESSION_TEST_DIRS ?= null
 # Specify platform macros when building regression tests (supported: asterinas, linux).
 # - asterinas: Define both `__asterinas__` and `__linux__`. Tests may fail in Linux.
 # - linux: Define only `__linux__`. Tests may fail in Asterinas.
@@ -19,8 +20,7 @@ NIXPKGS_CACHE_TTL := 2592000 # In seconds
 MKFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 CUR_DIR := $(patsubst %/,%,$(dir $(MKFILE_PATH)))
 BUILD_DIR := $(CUR_DIR)/build
-INITRAMFS_DIR := $(BUILD_DIR)/initramfs
-ROOTFS_IMAGE := $(BUILD_DIR)/rootfs.img
+INITRAMFS := $(BUILD_DIR)/initramfs
 INITRAMFS_SKIP_GZIP ?= 0
 ifeq ($(INITRAMFS_SKIP_GZIP),1)
 INITRAMFS_IMAGE := $(BUILD_DIR)/initramfs.cpio
@@ -35,9 +35,8 @@ LTP_DEV_IMAGE := $(BUILD_DIR)/ltp_dev.img
 SSD_IMAGE := $(BUILD_DIR)/nvme0n1.img
 XFSTESTS_TEST_IMAGE := $(BUILD_DIR)/xfstests_test.img
 XFSTESTS_SCRATCH_IMAGE := $(BUILD_DIR)/xfstests_scratch.img
-XFSTESTS_FS_TYPE ?= ext2
 XFSTESTS_DISK_SIZE ?= 12G
-include $(CUR_DIR)/src/conformance/xfstests/build_config.mk
+XFSTESTS_FS_TYPE ?= ext2
 
 # Include benchmark, if BENCHMARK is set.
 ifeq ($(BENCHMARK), none)
@@ -46,75 +45,68 @@ else
 ENABLE_BENCHMARK_TEST = true
 endif
 
+BUILD_XFSTESTS_IMAGES = false
+ifeq ($(ENABLE_CONFORMANCE_TEST), true)
+ifeq ($(CONFORMANCE_TEST_SUITE), xfstests)
+BUILD_XFSTESTS_IMAGES = true
+endif
+endif
+
 # Decreases the level of verbosity of diagnostic messages from Nix.
 ifeq ($(VERBOSE), 0)
 NIX_QUIET = --quiet -Q
 endif
 
-BOOT_IMAGE_NIX_ARGS := \
-	--tarball-ttl $(NIXPKGS_CACHE_TTL) \
-	--argstr target $(TARGET_ARCH) \
-	--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
-	--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
-	--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
-	--argstr benchmarkName $(BENCHMARK) \
-	--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
-	--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
-	--argstr conformanceTestSelector "$(CONFORMANCE_TEST_SELECTOR)" \
-	--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
-	--argstr dnsServer ${DNS_SERVER} \
-	--arg smp $(SMP)
+.PHONY: all
+all: build
 
-.PHONY: initramfs-boot-images
+.PHONY: build
 ifeq ($(TARGET_ARCH), loongarch64)
-initramfs-boot-images: data-disk-images
+build: $(EXT2_IMAGE) $(EXFAT_IMAGE)
 	@echo "For loongarch, we generate a fake initramfs to successfully test or build."
 	@touch $(INITRAMFS_IMAGE)
+else ifeq ($(BUILD_XFSTESTS_IMAGES), true)
+build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(LTP_DEV_IMAGE) $(SSD_IMAGE) $(XFSTESTS_TEST_IMAGE) $(XFSTESTS_SCRATCH_IMAGE)
 else
-initramfs-boot-images: $(INITRAMFS_IMAGE) data-disk-images
-endif
-
-.PHONY: data-disk-images
-ifeq ($(TARGET_ARCH), loongarch64)
-data-disk-images: $(EXT2_IMAGE) $(EXFAT_IMAGE)
-else ifeq ($(XFSTESTS_NEEDS_BLOCK_DEVICES), true)
-data-disk-images: $(EXT2_IMAGE) $(EXFAT_IMAGE) $(LTP_DEV_IMAGE) $(SSD_IMAGE) $(XFSTESTS_TEST_IMAGE) $(XFSTESTS_SCRATCH_IMAGE)
-else
-data-disk-images: $(EXT2_IMAGE) $(EXFAT_IMAGE) $(LTP_DEV_IMAGE) $(SSD_IMAGE)
+build: $(INITRAMFS_IMAGE) $(EXT2_IMAGE) $(EXFAT_IMAGE) $(LTP_DEV_IMAGE) $(SSD_IMAGE)
 endif
 
 .PHONY: $(INITRAMFS_IMAGE)
-$(INITRAMFS_IMAGE): $(INITRAMFS_DIR)
+$(INITRAMFS_IMAGE): $(INITRAMFS)
 	@nix-build \
-		$(BOOT_IMAGE_NIX_ARGS) \
+		--tarball-ttl $(NIXPKGS_CACHE_TTL) \
+		--argstr target $(TARGET_ARCH) \
+		--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
+		--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
+		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
+		--arg regressionTestDirs '$(REGRESSION_TEST_DIRS)' \
+		--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
+		--arg conformanceGvisorTest '$(CONFORMANCE_GVISOR_TEST)' \
+		--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
+		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
+		--argstr dnsServer ${DNS_SERVER} \
 		--arg initramfsCompressed $(INITRAMFS_COMPRESSED) \
+		--arg smp $(SMP) \
 		--out-link $@ \
 		nix -A initramfs-image
 
-.PHONY: $(INITRAMFS_DIR)
-$(INITRAMFS_DIR):
+.PHONY: $(INITRAMFS)
+$(INITRAMFS):
 	@nix-build \
-		$(BOOT_IMAGE_NIX_ARGS) \
+		--tarball-ttl $(NIXPKGS_CACHE_TTL) \
+		--argstr target $(TARGET_ARCH) \
+		--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
+		--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
+		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
+		--arg regressionTestDirs '$(REGRESSION_TEST_DIRS)' \
+		--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
+		--arg conformanceGvisorTest '$(CONFORMANCE_GVISOR_TEST)' \
+		--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
+		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
+		--argstr dnsServer ${DNS_SERVER} \
+		--arg smp $(SMP) \
 		--out-link $@ \
 		nix -A initramfs
-
-.PHONY: rootfs-image
-rootfs-image: $(ROOTFS_IMAGE)
-
-.PHONY: rootfs-boot-images
-ifeq ($(TARGET_ARCH), loongarch64)
-rootfs-boot-images:
-	$(error Rootfs image is not supported for loongarch64)
-else
-rootfs-boot-images: rootfs-image data-disk-images
-endif
-
-.PHONY: $(ROOTFS_IMAGE)
-$(ROOTFS_IMAGE):
-	@nix-build \
-		$(BOOT_IMAGE_NIX_ARGS) \
-		--out-link $@ \
-		nix -A rootfs-image
 
 # Prebuild x86_64 packages
 x86_64_pkgs:
@@ -139,7 +131,6 @@ x86_64_pkgs:
 		-A benchmark.sysbench \
 		-A conformance.ltp \
 		-A conformance.kselftest \
-		-A conformance.xfstests \
 		-A regression.package
 
 # Prebuild riscv64 packages
@@ -154,22 +145,6 @@ riscv64_pkgs:
 		--arg enableBenchmarkTest false \
 		--arg enableConformanceTest true \
 		--out-link /nix/var/nix/gcroots/auto/riscv64-pkgs \
-		-A busybox \
-		-A conformance.ltp \
-		-A regression.package
-
-# Prebuild aarch64 packages
-# Note: This may cause GitHub Runner ResourceExhausted errors when publish nix docker image.
-# If such errors occur, try building each package individually and clear the build cache.
-aarch64_pkgs:
-	@nix-build \
-		nix/default.nix \
-		--tarball-ttl $(NIXPKGS_CACHE_TTL) \
-		$(NIX_QUIET) \
-		--argstr target aarch64 \
-		--arg enableBenchmarkTest false \
-		--arg enableConformanceTest true \
-		--out-link /nix/var/nix/gcroots/auto/aarch64-pkgs \
 		-A busybox \
 		-A conformance.ltp \
 		-A regression.package
@@ -216,28 +191,28 @@ $(LTP_DEV_IMAGE):
 
 $(SSD_IMAGE):
 	@mkdir -p $(BUILD_DIR)
-	@dd if=/dev/zero of=$(SSD_IMAGE) bs=2G count=1
+	@dd if=/dev/zero of=$(SSD_IMAGE) bs=256M count=1
 	@mke2fs -t ext2 -F $(SSD_IMAGE)
 
 $(XFSTESTS_TEST_IMAGE):
 	@mkdir -p $(BUILD_DIR)
-	@truncate -s $(XFSTESTS_DISK_SIZE) $@
-	@$(XFSTESTS_MKFS) $@
+	@truncate -s $(XFSTESTS_DISK_SIZE) $(XFSTESTS_TEST_IMAGE)
+	@mkfs -t $(XFSTESTS_FS_TYPE) $(XFSTESTS_TEST_IMAGE)
 
 $(XFSTESTS_SCRATCH_IMAGE):
 	@mkdir -p $(BUILD_DIR)
-	@truncate -s $(XFSTESTS_DISK_SIZE) $@
-	@$(XFSTESTS_MKFS) $@
+	@truncate -s $(XFSTESTS_DISK_SIZE) $(XFSTESTS_SCRATCH_IMAGE)
+	@mkfs -t $(XFSTESTS_FS_TYPE) $(XFSTESTS_SCRATCH_IMAGE)
 
 .PHONY: format
 format:
 	@$(MAKE) --no-print-directory -C src/regression format
-	@../../tools/nixfmt.sh nix
+	@nixfmt nix
 
 .PHONY: check
 check:
 	@$(MAKE) --no-print-directory -C src/regression check
-	@../../tools/nixfmt.sh --check nix
+	@nixfmt --check nix
 
 .PHONY: clean
 clean:
