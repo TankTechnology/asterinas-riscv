@@ -48,6 +48,7 @@ case "$*" in
         ;;
 esac
 printf 'ASTERINAS_INIT_ROOTFS type=%s argc=%s arg1=%s\n' "$ROOTFS_TYPE" "$#" "$1"
+printf '%s\n' "$ROOTFS_TYPE" > /tmp/asterinas_requested_fs_type
 
 if [ -b /dev/vda ]; then
     mount -t "$ROOTFS_TYPE" /dev/vda /ext2
