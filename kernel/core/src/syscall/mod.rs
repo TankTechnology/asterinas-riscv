@@ -123,6 +123,7 @@ mod pwritev;
 mod read;
 mod readlink;
 mod reboot;
+mod rseq;
 mod recvfrom;
 mod recvmsg;
 mod removexattr;

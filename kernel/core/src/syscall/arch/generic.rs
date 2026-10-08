@@ -105,6 +105,7 @@ macro_rules! import_generic_syscall_entries {
             reboot::sys_reboot,
             recvfrom::sys_recvfrom,
             recvmsg::sys_recvmsg,
+            rseq::sys_rseq,
             removexattr::{sys_fremovexattr, sys_lremovexattr, sys_removexattr},
             rename::sys_renameat2,
             rt_sigaction::sys_rt_sigaction,
@@ -403,6 +404,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_PREADV2 = 286                => sys_preadv2(args[..6]);
             SYS_PWRITEV2 = 287               => sys_pwritev2(args[..6]);
             SYS_STATX = 291                  => sys_statx(args[..5]);
+            SYS_RSEQ = 293                   => sys_rseq(args[..4]);
             SYS_PIDFD_SEND_SIGNAL = 424      => sys_pidfd_send_signal(args[..4]);
             SYS_MOVE_MOUNT = 429             => sys_move_mount(args[..5]);
             SYS_FSOPEN = 430                 => sys_fsopen(args[..2]);
