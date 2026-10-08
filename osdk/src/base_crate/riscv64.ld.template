@@ -15,6 +15,32 @@ SECTIONS
     PROVIDE(__executable_start = __kernel_start);
 
     .boot                   : AT(ADDR(.boot)) {
+        /* Linux RISC-V Image header. The first instruction skips the header,
+         * while the declared size includes the zero-filled BSS tail. */
+        BYTE(0x6f)
+        BYTE(0x10)
+        BYTE(0x00)
+        BYTE(0x04)
+        LONG(0)
+        QUAD(0x200000)
+        QUAD(__kernel_end - KERNEL_VMA)
+        QUAD(0)
+        LONG(2)
+        LONG(0)
+        QUAD(0)
+        BYTE(0x52)
+        BYTE(0x49)
+        BYTE(0x53)
+        BYTE(0x43)
+        BYTE(0x56)
+        BYTE(0)
+        BYTE(0)
+        BYTE(0)
+        BYTE(0x52)
+        BYTE(0x53)
+        BYTE(0x43)
+        BYTE(0x05)
+        LONG(0)
         KEEP(*(.boot))
         # FIXME: We want to create a separate .boot.stack section so that the
         # executable doesn't contain the boot stack (which is just hundreds of
