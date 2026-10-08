@@ -1748,6 +1748,16 @@ int main(void)
             normalized,
         )
 
+    def test_stage1_mounts_cgroup_v2_before_systemd(self) -> None:
+        source = STAGE1_SOURCE.read_text()
+        normalized = " ".join(source.split())
+        api_dirs = normalized[normalized.index("case HANDOFF_PREPARE_API_DIRS:") :]
+        api_dirs = api_dirs[: api_dirs.index("case HANDOFF_CHROOT:")]
+        self.assertIn(
+            'mount("none", "/newroot/sys/fs/cgroup", "cgroup2", 0, NULL)',
+            api_dirs,
+        )
+
     def test_physical_gate_imports_its_stage1_carried_dependencies(self) -> None:
         stage_tools = self.directory / "stage-tools"
         stage_tools.mkdir()

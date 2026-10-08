@@ -1295,7 +1295,11 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
             ensure_directory("/newroot/sys/fs") != 0) {
             return -1;
         }
-        result = ensure_directory("/newroot/sys/fs/cgroup");
+        if (ensure_directory("/newroot/sys/fs/cgroup") != 0) {
+            return -1;
+        }
+        /* systemd requires the unified hierarchy during early boot. */
+        result = mount("none", "/newroot/sys/fs/cgroup", "cgroup2", 0, NULL);
         break;
     case HANDOFF_CHROOT:
         result = chroot("/newroot");
