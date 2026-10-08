@@ -716,6 +716,8 @@ bitflags! {
         const DIR_SYNC = 1 << 16;
         /// Top of directory hierarchies.
         const TOP_DIR = 1 << 17;
+        /// Inode data is addressed through an ext4 extent tree.
+        const EXTENTS = 1 << 19;
         /// Reserved for the ext2 library.
         const RESERVED = 1 << 31;
     }
