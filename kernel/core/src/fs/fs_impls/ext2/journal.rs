@@ -149,6 +149,78 @@ pub(super) fn decode_transaction(blocks: &[&[u8]], sequence: u32) -> Result<Vec<
     Ok(replay)
 }
 
+/// Scan a linearized journal log and produce the final replay set.
+///
+/// The caller supplies blocks in journal order, beginning at `s_first` (with
+/// wrap-around already normalized by the caller).  A transaction without a
+/// commit record is treated as the crash tail and discarded.  Revoke records
+/// remove older replay entries, while a later write to the same target block
+/// replaces the older entry.  This gives the recovery writer a deterministic,
+/// last-writer-wins set without performing device I/O.
+pub(super) fn scan_log(blocks: &[&[u8]], first_sequence: u32) -> Result<Vec<ReplayBlock>> {
+    let mut replay: Vec<ReplayBlock> = Vec::new();
+    let mut offset = 0;
+    let mut sequence = first_sequence;
+    while offset < blocks.len() {
+        if blocks[offset].len() < HEADER_SIZE {
+            break;
+        }
+        let header = parse_header(blocks[offset])?;
+        match header.block_type {
+            DESCRIPTOR => {
+                if header.sequence != sequence {
+                    return_errno_with_message!(
+                        Errno::EUCLEAN,
+                        "non-contiguous ext4 journal sequence"
+                    );
+                }
+                let tags = parse_descriptor(blocks[offset], sequence)?;
+                let data_start = offset + 1;
+                let data_end = data_start + tags.len();
+                if data_end > blocks.len() {
+                    break;
+                }
+                let mut end = data_end;
+                if end < blocks.len()
+                    && blocks[end].len() >= HEADER_SIZE
+                    && be32(blocks[end], 4) == REVOKE
+                {
+                    end += 1;
+                }
+                if end >= blocks.len() {
+                    break;
+                }
+                if parse_header(blocks[end])?.block_type != COMMIT {
+                    return_errno_with_message!(
+                        Errno::EUCLEAN,
+                        "journal transaction missing commit"
+                    );
+                }
+                let transaction = decode_transaction(&blocks[offset..=end], sequence)?;
+                for block in transaction {
+                    replay.retain(|old| old.block_number != block.block_number);
+                    replay.push(block);
+                }
+                offset = end + 1;
+                sequence = sequence.wrapping_add(1);
+            }
+            REVOKE => {
+                let revoke = parse_revoke(blocks[offset], sequence)?;
+                let commit = offset + 1;
+                if commit >= blocks.len() {
+                    break;
+                }
+                validate_commit(blocks[commit], sequence)?;
+                replay.retain(|block| !revoke.contains(&block.block_number));
+                offset = commit + 1;
+                sequence = sequence.wrapping_add(1);
+            }
+            _ => return_errno_with_message!(Errno::EUCLEAN, "unexpected ext4 journal block"),
+        }
+    }
+    Ok(replay)
+}
+
 pub(super) fn parse_header(block: &[u8]) -> Result<Header> {
     if block.len() < HEADER_SIZE || be32(block, 0) != MAGIC {
         return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal block header");
@@ -347,5 +419,37 @@ mod test {
         assert!(decode_transaction(&[&descriptor, &data_a, &data_b, &revoke], 7).is_err());
         commit[8..12].copy_from_slice(&8u32.to_be_bytes());
         assert!(decode_transaction(&[&descriptor, &data_a, &data_b, &revoke, &commit], 7).is_err());
+    }
+
+    #[ktest]
+    fn scans_transactions_with_cross_transaction_revoke_and_tail() {
+        let mut descriptor = [0; BLOCK_SIZE];
+        descriptor[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        descriptor[4..8].copy_from_slice(&DESCRIPTOR.to_be_bytes());
+        descriptor[8..12].copy_from_slice(&7u32.to_be_bytes());
+        descriptor[12..16].copy_from_slice(&31u32.to_be_bytes());
+        descriptor[16..20].copy_from_slice(&(FLAG_LAST_TAG | FLAG_SAME_UUID).to_be_bytes());
+        let data = [0x33; BLOCK_SIZE];
+        let mut commit = [0; BLOCK_SIZE];
+        commit[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        commit[4..8].copy_from_slice(&COMMIT.to_be_bytes());
+        commit[8..12].copy_from_slice(&7u32.to_be_bytes());
+
+        let mut revoke = [0; BLOCK_SIZE];
+        revoke[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        revoke[4..8].copy_from_slice(&REVOKE.to_be_bytes());
+        revoke[8..12].copy_from_slice(&8u32.to_be_bytes());
+        revoke[12..16].copy_from_slice(&20u32.to_be_bytes());
+        revoke[16..20].copy_from_slice(&31u32.to_be_bytes());
+        let mut commit_revoke = commit;
+        commit_revoke[8..12].copy_from_slice(&8u32.to_be_bytes());
+        let tail = [0; 8];
+
+        let replay = scan_log(
+            &[&descriptor, &data, &commit, &revoke, &commit_revoke, &tail],
+            7,
+        )
+        .unwrap();
+        assert!(replay.is_empty());
     }
 }
