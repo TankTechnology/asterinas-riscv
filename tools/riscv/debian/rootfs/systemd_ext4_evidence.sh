@@ -14,6 +14,7 @@ readonly TEST_USER=debian
 readonly TEST_SERVICE=asterinas-debian-user.service
 readonly LOGIN_DIRECTORY=/run/asterinas-debian-login
 readonly LOGIN_FILE="$LOGIN_DIRECTORY/complete"
+readonly USERSPACE_M6_MARKER=/etc/asterinas-userspace-m6
 NETWORK_RECOVERY_ONLY=0
 if /bin/grep -qw 'asterinas.network_recovery_only=1' /proc/cmdline 2>/dev/null; then
     NETWORK_RECOVERY_ONLY=1
@@ -804,6 +805,122 @@ run_m5_package_lifecycle() {
     emit 'DEBIAN_EXT4_PROGRESS step=m5-lifecycle-done'
 }
 
+run_userspace_m6_workload() {
+    local work=/var/lib/asterinas-debian-userspace
+    local db="$work/userspace.sqlite"
+    mkdir -p -- "$work" /var/www/asterinas || fail userspace-directories
+    printf '%s\n' 'Asterinas Debian userspace' >/var/www/asterinas/index.html || fail userspace-web-root
+
+    emit 'DEBIAN_USERSPACE_PROGRESS step=interpreters-start'
+    command -v python3 >/dev/null && python3 -c 'import json; assert json.loads("{\"ok\": true}")["ok"]' || fail userspace-python
+    command -v perl >/dev/null && perl -e 'print "perl-ok"' >/run/asterinas-perl.out || fail userspace-perl
+    [[ "$(cat /run/asterinas-perl.out)" == perl-ok ]] || fail userspace-perl-content
+    command -v gcc >/dev/null && command -v g++ >/dev/null || fail userspace-c-compiler
+    command -v rustc >/dev/null && command -v cargo >/dev/null || fail userspace-rust-toolchain
+    command -v curl >/dev/null && command -v git >/dev/null || fail userspace-cli-tools
+    command -v tar >/dev/null && command -v gzip >/dev/null && command -v find >/dev/null || fail userspace-archive-tools
+    command -v ps >/dev/null && command -v ip >/dev/null || fail userspace-process-network-tools
+    command -v sqlite3 >/dev/null || fail userspace-sqlite
+
+    cat >"$work/hello.c" <<'EOF'
+#include <stdio.h>
+int main(void) { puts("c-userspace-ok"); return 0; }
+EOF
+    gcc -O2 -Wall -Werror "$work/hello.c" -o "$work/hello-c" || fail userspace-gcc-build
+    [[ "$($work/hello-c)" == c-userspace-ok ]] || fail userspace-gcc-run
+    cat >"$work/hello.cc" <<'EOF'
+#include <iostream>
+int main() { std::cout << "cpp-userspace-ok" << std::endl; }
+EOF
+    g++ -O2 -Wall -Werror "$work/hello.cc" -o "$work/hello-cpp" || fail userspace-gpp-build
+    [[ "$($work/hello-cpp)" == cpp-userspace-ok ]] || fail userspace-gpp-run
+    cat >"$work/main.rs" <<'EOF'
+fn main() { println!("rust-userspace-ok"); }
+EOF
+    rustc -C debuginfo=0 "$work/main.rs" -o "$work/hello-rust" || fail userspace-rust-build
+    [[ "$($work/hello-rust)" == rust-userspace-ok ]] || fail userspace-rust-run
+    mkdir -p -- "$work/cargo/src"
+    cat >"$work/cargo/Cargo.toml" <<'EOF'
+[package]
+name = "asterinas-userspace"
+version = "0.1.0"
+edition = "2021"
+EOF
+    cp -- "$work/main.rs" "$work/cargo/src/main.rs"
+    cargo build --offline --manifest-path "$work/cargo/Cargo.toml" --release >/dev/null 2>&1 || fail userspace-cargo-build
+    [[ "$($work/cargo/target/release/asterinas-userspace)" == rust-userspace-ok ]] || fail userspace-cargo-run
+    emit 'DEBIAN_USERSPACE_PROGRESS step=toolchains-done'
+
+    sqlite3 "$db" 'create table if not exists probes (name text primary key, value text); delete from probes; insert into probes values ("sqlite", "ok");' || fail userspace-sqlite-write
+    [[ "$(sqlite3 "$db" 'select value from probes where name="sqlite";')" == ok ]] || fail userspace-sqlite-read
+    printf '%s\n' archive-payload >"$work/payload"
+    tar -C "$work" -cf "$work/payload.tar" payload || fail userspace-tar
+    gzip -c "$work/payload.tar" >"$work/payload.tar.gz" || fail userspace-gzip
+    gzip -dc "$work/payload.tar.gz" | tar -xOf - -C / payload 2>/dev/null | grep -qx archive-payload || fail userspace-archive-read
+    find "$work" -name 'hello-c' -type f | grep -qx "$work/hello-c" || fail userspace-find
+    ps -p 1 -o comm= | grep -qx systemd || fail userspace-procps
+    ip -o link show >/dev/null || fail userspace-iproute2
+    git -C "$work" init -q && git -C "$work" config user.email root@asterinas && git -C "$work" config user.name Asterinas && git -C "$work" add payload && git -C "$work" commit -qm initial || fail userspace-git
+    curl --fail --silent --show-error --output "$work/curl.out" file:///var/www/asterinas/index.html || fail userspace-curl
+    grep -qx 'Asterinas Debian userspace' "$work/curl.out" || fail userspace-curl-content
+
+    ssh-keygen -A >/dev/null 2>&1 || fail userspace-ssh-keys
+    /usr/sbin/sshd -t || fail userspace-sshd-config
+    systemctl enable --now ssh.service >/dev/null 2>&1 || fail userspace-ssh-service
+    [[ -s /etc/ssh/ssh_host_ed25519_key && -s /etc/ssh/ssh_host_rsa_key ]] ||
+        fail userspace-ssh-hostkeys
+    systemctl enable --now cron.service >/dev/null 2>&1 || fail userspace-cron-service
+    anacron -T >/dev/null 2>&1 || fail userspace-anacron
+    printf '1 0 asterinas-userspace echo anacron-ok > %s/anacron.out\n' "$work" >"$work/anacrontab"
+    /usr/bin/timeout 30 anacron -f -n -d -t "$work/anacrontab" || fail userspace-anacron-job
+    [[ "$(cat "$work/anacron.out")" == anacron-ok ]] || fail userspace-anacron-output
+
+    cat >/etc/rsyslog.d/99-asterinas-userspace.conf <<'EOF'
+*.* /var/log/asterinas-userspace-forwarded.log
+EOF
+    mkdir -p /etc/systemd/journald.conf.d
+    cat >/etc/systemd/journald.conf.d/asterinas-userspace.conf <<'EOF'
+[Journal]
+ForwardToSyslog=yes
+EOF
+    systemctl restart rsyslog.service || fail userspace-rsyslog-service
+    systemctl restart systemd-journald.service || fail userspace-journald-service
+    logger -t asterinas-userspace journald-forwarding-ok
+    for _ in $(seq 1 20); do
+        grep -q journald-forwarding-ok /var/log/asterinas-userspace-forwarded.log 2>/dev/null && break
+        sleep 1
+    done
+    grep -q journald-forwarding-ok /var/log/asterinas-userspace-forwarded.log || fail userspace-journald-forwarding
+
+    cat >/etc/nginx/sites-available/asterinas-userspace <<'EOF'
+server { listen 127.0.0.1:8088; location / { default_type text/plain; return 200 'Asterinas Debian userspace'; } }
+EOF
+    mkdir -p /var/log/nginx /var/lib/nginx || fail userspace-nginx-directories
+    rm -f /etc/nginx/sites-enabled/default
+    ln -sf ../sites-available/asterinas-userspace /etc/nginx/sites-enabled/asterinas-userspace
+    nginx -t >>"$CONSOLE" 2>&1 || fail userspace-nginx-config
+    systemctl enable --now nginx.service >/dev/null 2>&1 || fail userspace-nginx-service
+    sleep 1
+    ss -lnt >>"$CONSOLE" 2>&1 || true
+    curl --fail --silent --show-error --connect-timeout 5 --output "$work/http.out" http://127.0.0.1:8088/ 2>>"$CONSOLE" || fail userspace-nginx-http
+    [[ "$(cat "$work/http.out")" == 'Asterinas Debian userspace' ]] || fail userspace-nginx-http
+    emit 'DEBIAN_USERSPACE_PROGRESS step=services-done'
+    printf '%s\n' userspace-m6-pass >"$work/pass"
+    emit 'DEBIAN_USERSPACE_PROGRESS step=toolchains-services-done'
+}
+
+check_userspace_m6_persistence() {
+    local work=/var/lib/asterinas-debian-userspace
+    [[ -f "$work/pass" && "$(cat "$work/pass")" == userspace-m6-pass ]] || fail userspace-persistence
+    [[ "$(sqlite3 "$work/userspace.sqlite" 'select value from probes where name="sqlite";')" == ok ]] || fail userspace-sqlite-persistence
+    systemctl is-active --quiet ssh.service || fail userspace-ssh-persistence
+    systemctl is-active --quiet cron.service || fail userspace-cron-persistence
+    systemctl is-active --quiet rsyslog.service || fail userspace-rsyslog-persistence
+    systemctl is-active --quiet nginx.service || fail userspace-nginx-persistence
+    curl --fail --silent http://127.0.0.1:8088/ | grep -qx 'Asterinas Debian userspace' || fail userspace-http-persistence
+    emit 'DEBIAN_USERSPACE_PROGRESS step=persistence-services-done'
+}
+
 emit "DEBIAN_EXT4_PROGRESS step=entry"
 architecture="$(uname -m)" || fail architecture
 [[ "$architecture" == riscv64 ]] || fail architecture
@@ -838,6 +955,9 @@ if ((next == 1)); then
         exit 0
     fi
     run_m5_package_lifecycle
+    if [[ -e "$USERSPACE_M6_MARKER" ]]; then
+        run_userspace_m6_workload
+    fi
     run_ext4_consistency_workload
     check_loopback_sockets || fail loopback-sockets
     emit 'DEBIAN_EXT4_PROGRESS step=network-done'
@@ -874,6 +994,10 @@ else
     [[ "$(dpkg-query -W -f='${Status}\n' python3-minimal)" == 'install ok installed' ]] || fail m5-persist-python
     [[ "$(dpkg-query -W -f='${Status}\n' iproute2)" == 'install ok installed' ]] || fail m5-persist-iproute2
     /usr/bin/python3 -c 'import sys; assert sys.version_info >= (3, 13)' || fail m5-persist-python-runtime
+    if [[ -e "$USERSPACE_M6_MARKER" ]]; then
+        check_userspace_m6_persistence
+        emit 'DEBIAN_USERSPACE_PASS boot=2 services=1 toolchains=1 database=1 persistence=1'
+    fi
     dpkg --audit | /bin/grep -q . && fail m5-persist-audit || true
     emit 'DEBIAN_EXT4_M5_PASS boot=2 apt=1 maintainer=1 triggers=1 locks=1 recovery=1 packages=1 upgrade=1 persist=1'
     emit "DEBIAN_EXT4_READY boot=2 arch=$architecture release=$debian_release pid1=systemd rootfs=ext4 shell=1 process=1 filesystem=1 syscall=1 apt_update=0 package=hello dpkg=1 login=1 user=1 apt_install=1 apt_remove=1 service=1 network=1 persist=1"

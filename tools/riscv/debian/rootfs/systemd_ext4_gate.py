@@ -65,6 +65,7 @@ _M5_PASS = {
     1: "DEBIAN_EXT4_M5_PASS boot=1 apt=1 maintainer=1 triggers=1 locks=1 recovery=1 packages=1 upgrade=1",
     2: "DEBIAN_EXT4_M5_PASS boot=2 apt=1 maintainer=1 triggers=1 locks=1 recovery=1 packages=1 upgrade=1 persist=1",
 }
+_USERSPACE_PASS = "DEBIAN_USERSPACE_PASS boot=2 services=1 toolchains=1 database=1 persistence=1"
 _REQUIRED_PROGRESS = (
     ("DEBIAN_EXT4_PROGRESS step=loopback-sockets-done", 2),
     ("DEBIAN_EXT4_PROGRESS step=service-restart-journald-done", 1),
@@ -133,7 +134,7 @@ def _classify_failure(reason: str) -> GateResult:
 
 
 def classify_systemd_ext4(
-    transcript: bytes | str, *, expected_debian_release: str
+    transcript: bytes | str, *, expected_debian_release: str, userspace: bool = False
 ) -> GateResult:
     """Require two ordered ext4 root boots and the apt/persistence evidence."""
 
@@ -183,6 +184,8 @@ def classify_systemd_ext4(
     }
     if any(len(positions) != 1 for positions in m5_positions.values()):
         return _classify_failure("missing or duplicate M5 package lifecycle marker")
+    if userspace and lines.count(_USERSPACE_PASS) != 1:
+        return _classify_failure("missing or duplicate Debian userspace marker")
     for marker, expected_count in _REQUIRED_PROGRESS:
         positions = [index for index, line in enumerate(lines) if line == marker]
         if len(positions) != expected_count:
@@ -216,6 +219,17 @@ def classify_systemd_ext4(
         return _classify_failure("M5 package lifecycle markers are reordered")
     if not any(first_index < index < starts[1] for index in firmware):
         return _classify_failure("firmware restart evidence is missing")
+    if userspace:
+        userspace_index = lines.index(_USERSPACE_PASS)
+        if not (starts[1] < userspace_index < second_index):
+            return _classify_failure("userspace workload marker is reordered")
+        for marker, begin, end in (
+            ("DEBIAN_USERSPACE_PROGRESS step=toolchains-services-done", starts[0], first_index),
+            ("DEBIAN_USERSPACE_PROGRESS step=persistence-services-done", starts[1], userspace_index),
+        ):
+            positions = [index for index, line in enumerate(lines) if line == marker]
+            if len(positions) != 1 or not begin < positions[0] < end:
+                return _classify_failure(f"missing, duplicate or reordered userspace marker: {marker}")
 
     for boot, match in ((1, first), (2, second)):
         fields = match.groupdict()
@@ -323,12 +337,21 @@ class SystemdExt4Operations(ConcreteOperations):
     ) -> Mapping[str, object]:
         identity = dict(ConcreteOperations.validate_inputs(self, config, snapshots))
         manifest = load_manifest(self.input_paths["manifest"])
-        if manifest.schema_version != 9 or manifest.profile != "systemd-ext4-m3":
-            raise GateFailure("rootfs manifest is not the systemd-ext4-m3 profile")
+        if manifest.profile not in {"systemd-ext4-m3", "systemd-ext4-m6-userspace"}:
+            raise GateFailure("rootfs manifest is not a supported systemd ext4 profile")
+        if manifest.schema_version != {"systemd-ext4-m3": 9, "systemd-ext4-m6-userspace": 10}[manifest.profile]:
+            raise GateFailure("unsupported systemd ext4 manifest schema")
         if manifest.filesystem.filesystem_type != "ext4":
             raise GateFailure("systemd-ext4-m3 manifest does not identify ext4")
         identity["profile"] = manifest.profile
+        self.userspace = manifest.profile == "systemd-ext4-m6-userspace"
         return identity
+
+    def classify(self, transcript: bytes | str, *, expected_debian_release: str) -> GateResult:
+        return classify_systemd_ext4(
+            transcript, expected_debian_release=expected_debian_release,
+            userspace=self.userspace,
+        )
 
     def launch(self, config: GateConfig, prepared: Any) -> dict[str, Any]:
         return super().launch(config, prepared, 1)
@@ -497,7 +520,7 @@ def main(arguments: list[str] | None = None) -> int:
             result = orchestrate_systemd_m2_gate(
                 config,
                 operations,
-                classifier=(classify_network_recovery if NETWORK_RECOVERY_ONLY else classify_systemd_ext4),
+                classifier=(classify_network_recovery if NETWORK_RECOVERY_ONLY else operations.classify),
             )
         return 0 if result["passed"] else 1
     except SystemExit as error:
