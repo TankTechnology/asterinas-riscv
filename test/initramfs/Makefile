@@ -30,6 +30,8 @@ INITRAMFS_IMAGE := $(BUILD_DIR)/initramfs.cpio.gz
 INITRAMFS_COMPRESSED := true
 endif
 EXT2_IMAGE := $(BUILD_DIR)/ext2.img
+EXT2_FS_TYPE ?= ext2
+EXT2_IMAGE_STAMP := $(BUILD_DIR)/.ext2-image-$(EXT2_FS_TYPE)
 EXFAT_IMAGE := $(BUILD_DIR)/exfat.img
 LTP_DEV_IMAGE := $(BUILD_DIR)/ltp_dev.img
 SSD_IMAGE := $(BUILD_DIR)/nvme0n1.img
@@ -174,10 +176,14 @@ initramfs_pkgs:
 		--out-link /nix/var/nix/gcroots/auto/x86_64-initramfs-with-benchmark \
 		-A initramfs-image
 
-$(EXT2_IMAGE):
+
+$(EXT2_IMAGE): $(EXT2_IMAGE_STAMP)
+
+$(EXT2_IMAGE_STAMP):
 	@mkdir -p $(BUILD_DIR)
 	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1
-	@mke2fs $(EXT2_IMAGE)
+	@mkfs -t $(EXT2_FS_TYPE) -F $(EXT2_IMAGE)
+	@touch $@
 
 $(EXFAT_IMAGE):
 	@mkdir -p $(BUILD_DIR)
