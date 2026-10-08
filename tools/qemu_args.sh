@@ -41,6 +41,21 @@ QEMU_DISPLAY=${QEMU_DISPLAY:-"vnc=0.0.0.0:${VNC_PORT:-42}"}
 CONSOLE=${CONSOLE:-"hvc0"}
 XFSTESTS_NEEDS_BLOCK_DEVICES=${XFSTESTS_NEEDS_BLOCK_DEVICES:-false}
 
+# Keep artifact references stable when QEMU is launched from a Docker wrapper or
+# another working directory.  Durability gates may override the ext2 backing
+# file (for example with a blkdebug filter), while the auxiliary images remain
+# the repository build artifacts.
+REPO_ROOT=$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )
+INITRAMFS_BUILD_DIR="$REPO_ROOT/test/initramfs/build"
+EXT2_DRIVE_FILE=${ASTERINAS_EXT2_DRIVE_FILE:-$INITRAMFS_BUILD_DIR/ext2.img}
+EXFAT_DRIVE_FILE=${ASTERINAS_EXFAT_DRIVE_FILE:-$INITRAMFS_BUILD_DIR/exfat.img}
+LTP_DRIVE_FILE=${ASTERINAS_LTP_DRIVE_FILE:-$INITRAMFS_BUILD_DIR/ltp_dev.img}
+if [ -n "${ASTERINAS_QEMU_LOG_DIR:-}" ]; then
+    QEMU_LOG_FILE="$ASTERINAS_QEMU_LOG_DIR/qemu.log"
+else
+    QEMU_LOG_FILE="qemu.log"
+fi
+
 if [ "$XFSTESTS_NEEDS_BLOCK_DEVICES" != "true" ] && \
    [ "$XFSTESTS_NEEDS_BLOCK_DEVICES" != "false" ]; then
     echo "Invalid XFSTESTS_NEEDS_BLOCK_DEVICES=${XFSTESTS_NEEDS_BLOCK_DEVICES}" 1>&2
@@ -77,6 +92,12 @@ else
 fi
 
 VIRTIO_NET_FEATURES=",csum=off,ctrl_guest_offloads=off,ctrl_mac_addr=off,ctrl_rx_extra=off,ctrl_rx=off,ctrl_vlan=off,ctrl_vq=off,event_idx=off,guest_announce=off,guest_csum=off,guest_ecn=off,guest_tso4=off,guest_tso6=off,guest_ufo=off,guest_uso4=off,guest_uso6=off,host_ecn=off,host_tso4=off,host_tso6=off,host_ufo=off,host_uso=off,indirect_desc=off,mrg_rxbuf=off,queue_reset=off"
+
+if [ "$NETDEV" = "none" ]; then
+    RISCV_NET_ARGS="-nic none"
+else
+    RISCV_NET_ARGS="$NETDEV_ARGS -device virtio-net-device,netdev=net01$VIRTIO_NET_FEATURES"
+fi
 
 if [ "$CONSOLE" = "hvc0" ]; then
     # Kernel logs are printed to all consoles. Redirect serial output to a file to avoid duplicate logs.
@@ -132,15 +153,16 @@ if [ "$1" = "riscv" ]; then
         -nographic \
         -display none \
         -monitor chardev:mux \
-        -chardev stdio,id=mux,mux=on,signal=off,logfile=qemu.log \
+        -chardev stdio,id=mux,mux=on,signal=off,logfile=$QEMU_LOG_FILE \
         $ROOTFS_DRIVE_ARGS \
-        -drive if=none,format=raw,id=x0,file=./test/initramfs/build/ext2.img \
-        -drive if=none,format=raw,id=x1,file=./test/initramfs/build/exfat.img \
-        -drive if=none,format=raw,id=x2,file=./test/initramfs/build/ltp_dev.img \
+        -drive if=none,format=raw,id=x0,file=$EXT2_DRIVE_FILE \
+        -drive if=none,format=raw,id=x1,file=$EXFAT_DRIVE_FILE \
+        -drive if=none,format=raw,id=x2,file=$LTP_DRIVE_FILE \
         $ROOTFS_RISCV_DEVICE_ARGS \
         -device virtio-blk-device,drive=x2 \
         -device virtio-blk-device,drive=x1 \
         -device virtio-blk-device,drive=x0 \
+        $RISCV_NET_ARGS \
         -device virtio-keyboard-device \
         -device virtio-serial-device \
         $CONSOLE_ARGS \
