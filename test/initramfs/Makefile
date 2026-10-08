@@ -177,17 +177,20 @@ initramfs_pkgs:
 		-A initramfs-image
 
 
-$(EXT2_IMAGE): $(EXT2_IMAGE_STAMP)
-
 $(EXT2_IMAGE_STAMP):
 	@mkdir -p $(BUILD_DIR)
-	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1
-	@if [ "$(EXT2_FS_TYPE)" = ext4 ]; then \
-		mkfs.ext4 -F -I 128 -N 139264 -O extents,^64bit,^metadata_csum,^metadata_csum_seed,^flex_bg,^dir_nlink,^extra_isize,^huge_file $(EXT2_IMAGE); \
-	else \
-		mkfs -t $(EXT2_FS_TYPE) -F $(EXT2_IMAGE); \
-	fi
 	@touch $@
+
+$(EXT2_IMAGE): $(EXT2_IMAGE_STAMP)
+	@current_type="$$(blkid -s TYPE -o value $(EXT2_IMAGE) 2>/dev/null || true)"; \
+	if [ ! -f $(EXT2_IMAGE) ] || [ "$$current_type" != "$(EXT2_FS_TYPE)" ]; then \
+		dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1; \
+		if [ "$(EXT2_FS_TYPE)" = ext4 ]; then \
+			mkfs.ext4 -F -I 128 -N 139264 -O extents,^64bit,^metadata_csum,^metadata_csum_seed,^flex_bg,^dir_nlink,^extra_isize,^huge_file $(EXT2_IMAGE); \
+		else \
+			mkfs -t $(EXT2_FS_TYPE) -F $(EXT2_IMAGE); \
+		fi; \
+	fi
 
 $(EXFAT_IMAGE):
 	@mkdir -p $(BUILD_DIR)
