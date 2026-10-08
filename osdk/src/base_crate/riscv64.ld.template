@@ -15,12 +15,9 @@ SECTIONS
     PROVIDE(__executable_start = __kernel_start);
 
     .boot                   : AT(ADDR(.boot)) {
-        /* Linux RISC-V Image header. The first instruction skips the header,
-         * while the declared size includes the zero-filled BSS tail. */
-        BYTE(0x6f)
-        BYTE(0x10)
-        BYTE(0x00)
-        BYTE(0x04)
+        /* Linux RISC-V Image header. Jump over the header and alignment gap
+         * to _start; the declared size includes the zero-filled BSS tail. */
+        LONG(0x0000106f) /* jal x0, +4096 */
         LONG(0)
         QUAD(0x200000)
         QUAD(__kernel_end - KERNEL_VMA)
@@ -130,4 +127,5 @@ SECTIONS
     }
 
     __kernel_end = .;
+    ASSERT(_start == KERNEL_LMA + 4096, "RISC-V Image entry must match header jump")
 }
