@@ -170,7 +170,16 @@ ExecStart=/bin/sleep 30
 EOF
     systemctl daemon-reload || fail service-reload
     emit 'DEBIAN_EXT4_PROGRESS step=service-reload-done'
-    systemctl enable "$TEST_SERVICE" || fail service-enable
+    # Keep the gate fail-fast when the manager's unit-file transaction cannot
+    # complete.  An unbounded D-Bus call used to hide the actual ext4/systemd
+    # failure behind the outer QEMU timeout and left no actionable evidence.
+    if ! /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
+        systemctl enable "$TEST_SERVICE"; then
+        /usr/bin/systemctl --no-pager status "$TEST_SERVICE" >>"$CONSOLE" 2>&1 || true
+        /usr/bin/journalctl --no-pager -n 80 -u systemd-logind.service \
+            -u "$TEST_SERVICE" >>"$CONSOLE" 2>&1 || true
+        fail service-enable
+    fi
     emit 'DEBIAN_EXT4_PROGRESS step=service-enable-done'
     systemctl start "$TEST_SERVICE" || fail service-start
     emit 'DEBIAN_EXT4_PROGRESS step=service-start-command-done'

@@ -197,6 +197,17 @@ class SystemdExt4ClassifierTests(unittest.TestCase):
 
 
 class SystemdExt4BuilderTests(unittest.TestCase):
+    def test_service_enable_is_bounded_and_diagnostic(self) -> None:
+        evidence = (BUILD_SCRIPT.parent / "systemd_ext4_evidence.sh").read_text()
+        self.assertIn(
+            "/usr/bin/timeout --signal=TERM --kill-after=5s 20s",
+            evidence,
+        )
+        self.assertIn(
+            "journalctl --no-pager -n 80 -u systemd-logind.service",
+            evidence,
+        )
+
     def test_unexpected_exit_emits_fatal_serial_marker(self) -> None:
         evidence = (BUILD_SCRIPT.parent / "systemd_ext4_evidence.sh").read_text()
         # Load only the declarations and exit handler, not the guest workload.
