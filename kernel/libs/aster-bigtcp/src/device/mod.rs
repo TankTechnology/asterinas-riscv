@@ -4,12 +4,9 @@
 
 use core::{any::Any, fmt::Debug};
 
-use smoltcp::{
-    iface::{Config, Interface},
-    phy::Device,
-};
+use smoltcp::iface::{Config, Interface};
 pub use smoltcp::{
-    phy::{Checksum, ChecksumCapabilities, DeviceCapabilities, Medium},
+    phy::{Checksum, ChecksumCapabilities, Device, DeviceCapabilities, Medium, RxToken, TxToken},
     wire::EthernetAddress,
 };
 
@@ -78,6 +75,11 @@ pub trait WithDevice: Send + Sync {
     fn with<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&mut dyn AnyNetworkDevice) -> R;
+}
+
+/// Notifies a network device after a polling pass has completed.
+pub trait NotifyDevice {
+    fn notify_poll_end(&mut self);
 }
 
 /// Creates a smoltcp [`Interface`] with the specified capabilities.
