@@ -85,7 +85,13 @@ impl FsType for Ext4Type {
         let disk = fs_creation_ctx.resolve_block_device()?.clone();
         let flags = fs_creation_ctx.flags();
         let args = fs_creation_ctx.args();
-        Ext2::open(disk, flags, args, true).map(|fs| fs as Arc<dyn FileSystem>)
+        match Ext2::open(disk, flags, args, true) {
+            Ok(fs) => Ok(fs as Arc<dyn FileSystem>),
+            Err(error) => {
+                error!("ext4 mount failed: {:?}", error);
+                Err(error)
+            }
+        }
     }
 
     fn obtain_key_and_cache(
