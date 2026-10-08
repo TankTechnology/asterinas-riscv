@@ -167,8 +167,19 @@ Description=Asterinas Debian user service
 [Service]
 Type=simple
 ExecStart=/bin/sleep 30
+
+[Install]
+WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload || fail service-reload
+    if ! /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
+        systemctl daemon-reload; then
+        /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
+            /usr/bin/systemctl --no-pager status >>"$CONSOLE" 2>&1 || true
+        /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
+            /usr/bin/journalctl --no-pager -n 80 -u systemd-logind.service \
+                -u dbus.service >>"$CONSOLE" 2>&1 || true
+        fail service-reload
+    fi
     emit 'DEBIAN_EXT4_PROGRESS step=service-reload-done'
     local direct_link=/etc/systemd/system/asterinas-debian-direct-link
     /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
@@ -177,6 +188,20 @@ EOF
         fail ext4-symlink-read
     rm -f -- "$direct_link" || fail ext4-symlink-remove
     emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-done'
+    # Exercise the exact unit-wants directory and relative target that
+    # systemd's EnableUnitFiles transaction uses. Keep every filesystem probe
+    # bounded so a VFS stall produces an actionable marker.
+    local local_wants_dir=/etc/systemd/system/multi-user.target.wants
+    local local_wants_link="$local_wants_dir/.asterinas-debian-direct-link"
+    /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
+        mkdir -p -- "$local_wants_dir" || fail ext4-wants-directory-create
+    /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
+        ln -s "../$TEST_SERVICE" "$local_wants_link" || fail ext4-wants-symlink-create
+    [[ "$(readlink -- "$local_wants_link")" == "../$TEST_SERVICE" ]] ||
+        fail ext4-wants-symlink-read
+    /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
+        rm -f -- "$local_wants_link" || fail ext4-wants-symlink-remove
+    emit 'DEBIAN_EXT4_PROGRESS step=ext4-wants-symlink-done'
     if ! /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
         systemctl enable --runtime "$TEST_SERVICE"; then
         /usr/bin/journalctl --no-pager -n 80 -u systemd-logind.service \
