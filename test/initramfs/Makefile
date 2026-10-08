@@ -31,7 +31,7 @@ INITRAMFS_COMPRESSED := true
 endif
 EXT2_IMAGE := $(BUILD_DIR)/ext2.img
 EXT2_FS_TYPE ?= ext2
-EXT2_IMAGE_STAMP := $(BUILD_DIR)/.ext2-image-$(EXT2_FS_TYPE)-compat-v2
+EXT2_IMAGE_STAMP := $(BUILD_DIR)/.ext2-image-$(EXT2_FS_TYPE)-compat-v3
 EXFAT_IMAGE := $(BUILD_DIR)/exfat.img
 LTP_DEV_IMAGE := $(BUILD_DIR)/ltp_dev.img
 SSD_IMAGE := $(BUILD_DIR)/nvme0n1.img
@@ -183,7 +183,7 @@ $(EXT2_IMAGE_STAMP):
 	@mkdir -p $(BUILD_DIR)
 	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1
 	@if [ "$(EXT2_FS_TYPE)" = ext4 ]; then \
-		mkfs.ext4 -F -I 128 -O extents,^64bit,^metadata_csum,^metadata_csum_seed,^flex_bg,^dir_nlink,^extra_isize,^huge_file $(EXT2_IMAGE); \
+		mkfs.ext4 -F -I 128 -N 139264 -O extents,^64bit,^metadata_csum,^metadata_csum_seed,^flex_bg,^dir_nlink,^extra_isize,^huge_file $(EXT2_IMAGE); \
 	else \
 		mkfs -t $(EXT2_FS_TYPE) -F $(EXT2_IMAGE); \
 	fi
