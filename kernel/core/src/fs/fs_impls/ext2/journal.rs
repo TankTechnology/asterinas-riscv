@@ -452,4 +452,42 @@ mod test {
         .unwrap();
         assert!(replay.is_empty());
     }
+
+    #[ktest]
+    fn later_transaction_wins_for_same_target_block() {
+        let mut descriptor_a = [0; BLOCK_SIZE];
+        descriptor_a[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        descriptor_a[4..8].copy_from_slice(&DESCRIPTOR.to_be_bytes());
+        descriptor_a[8..12].copy_from_slice(&11u32.to_be_bytes());
+        descriptor_a[12..16].copy_from_slice(&44u32.to_be_bytes());
+        descriptor_a[16..20].copy_from_slice(&(FLAG_LAST_TAG | FLAG_SAME_UUID).to_be_bytes());
+
+        let mut descriptor_b = descriptor_a;
+        descriptor_b[8..12].copy_from_slice(&12u32.to_be_bytes());
+        let data_a = [0x11; BLOCK_SIZE];
+        let data_b = [0x22; BLOCK_SIZE];
+
+        let mut commit_a = [0; BLOCK_SIZE];
+        commit_a[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        commit_a[4..8].copy_from_slice(&COMMIT.to_be_bytes());
+        commit_a[8..12].copy_from_slice(&11u32.to_be_bytes());
+        let mut commit_b = commit_a;
+        commit_b[8..12].copy_from_slice(&12u32.to_be_bytes());
+
+        let replay = scan_log(
+            &[
+                &descriptor_a,
+                &data_a,
+                &commit_a,
+                &descriptor_b,
+                &data_b,
+                &commit_b,
+            ],
+            11,
+        )
+        .unwrap();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].block_number, 44);
+        assert_eq!(replay[0].data, data_b);
+    }
 }
