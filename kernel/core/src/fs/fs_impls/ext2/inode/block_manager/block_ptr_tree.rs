@@ -124,10 +124,7 @@ impl BlockPtrTree {
             return_errno_with_message!(Errno::EINVAL, "zero block allocation requested");
         }
         if self.extent_tree {
-            return_errno_with_message!(
-                Errno::EOPNOTSUPP,
-                "ext4 extent allocation is not yet supported"
-            );
+            return self.resolve_extent_range(fs, iblock, max_blocks);
         }
 
         let walk = self.walk_at(iblock)?;
@@ -192,6 +189,93 @@ impl BlockPtrTree {
         Ok(iblock..iblock)
     }
 
+    /// Allocates data for an inline, depth-zero extent tree.
+    ///
+    /// This covers the common small-file case used during Debian boot (for
+    /// example `/etc/machine-id`). Extent index blocks remain unsupported.
+    fn resolve_extent_range(
+        &mut self,
+        fs: &Ext2,
+        iblock: Iblock,
+        max_blocks: u32,
+    ) -> Result<ResolvedBlockRange> {
+        let bytes = self.raw_block_ptrs.extent_bytes();
+        let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
+        let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
+        if entries > max_entries || entries > 4 || max_entries == 0 || depth != 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported ext4 extent tree");
+        }
+
+        let mut next_logical = 0u32;
+        let mut goal = self.raw_block_ptrs.block_ptrs[0];
+        for index in 0..entries {
+            let offset = 12 + index * 12;
+            let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            let raw_length = u16::from_le_bytes(bytes[offset + 4..offset + 6].try_into().unwrap());
+            let length = u32::from(raw_length & 0x7fff);
+            if length == 0 || logical != next_logical {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent range");
+            }
+            let physical_hi = u16::from_le_bytes(bytes[offset + 6..offset + 8].try_into().unwrap());
+            let physical_lo = u32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap());
+            let physical = (u64::from(physical_hi) << 32) | u64::from(physical_lo);
+            let physical = u32::try_from(physical)
+                .map_err(|_| Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block"))?;
+            if iblock >= logical && iblock < logical + length {
+                let start = physical + (iblock - logical);
+                return Ok(ResolvedBlockRange::Existing(
+                    start..start + (length - (iblock - logical)).min(max_blocks),
+                ));
+            }
+            if iblock < logical {
+                return_errno_with_message!(Errno::EOPNOTSUPP, "non-append ext4 extent allocation");
+            }
+            next_logical = logical
+                .checked_add(length)
+                .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "ext4 extent logical overflow"))?;
+            goal = physical.saturating_add(length);
+        }
+
+        if iblock != next_logical || entries == max_entries {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "non-append ext4 extent allocation");
+        }
+
+        let count = max_blocks.min(0x7fff).min((max_entries - entries) as u32);
+        let data_blocks = fs.alloc_blocks(count, goal)?;
+        Self::zero_new_blocks(fs, &data_blocks)?;
+        let mut guard = BlockAllocGuard::new(fs, 0);
+        guard.track_data_blocks(data_blocks.clone());
+        self.append_extent(next_logical, &data_blocks)?;
+        self.raw_block_ptrs.sector_count = self
+            .raw_block_ptrs
+            .sector_count
+            .checked_add(data_blocks.len() as u32 * SECTORS_PER_BLOCK)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "inode block count overflow"))?;
+        guard.commit();
+        Ok(ResolvedBlockRange::NewlyAllocated(data_blocks))
+    }
+
+    fn append_extent(&mut self, logical: u32, data_blocks: &Range<Ext2Bid>) -> Result<()> {
+        let mut bytes = self.raw_block_ptrs.extent_bytes();
+        let entries = u16::from_le_bytes([bytes[2], bytes[3]]);
+        let offset = 12 + usize::from(entries) * 12;
+        let length = u16::try_from(data_blocks.len())
+            .map_err(|_| Error::with_message(Errno::EOVERFLOW, "extent length overflow"))?;
+        bytes[offset..offset + 4].copy_from_slice(&logical.to_le_bytes());
+        bytes[offset + 4..offset + 6].copy_from_slice(&length.to_le_bytes());
+        bytes[offset + 6..offset + 8].copy_from_slice(&0u16.to_le_bytes());
+        bytes[offset + 8..offset + 12].copy_from_slice(&data_blocks.start.to_le_bytes());
+        let new_entries = entries
+            .checked_add(1)
+            .ok_or_else(|| Error::with_message(Errno::EOVERFLOW, "extent entry overflow"))?;
+        bytes[2..4].copy_from_slice(&new_entries.to_le_bytes());
+        for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
+            *value = u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
+        }
+        Ok(())
+    }
+
     /// Truncates blocks to the new byte length (best-effort).
     ///
     /// This is a best-effort operation. Errors are logged but not propagated.
@@ -237,6 +321,21 @@ impl BlockPtrTree {
     pub(in inode) fn approx_hole_blocks(&self, iblock: Iblock, max_blocks: u32) -> Result<u32> {
         if max_blocks == 0 {
             return Ok(0);
+        }
+        if self.extent_tree {
+            if !self.lookup_extent_range(iblock, 1)?.is_empty() {
+                return Ok(0);
+            }
+            let bytes = self.raw_block_ptrs.extent_bytes();
+            let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
+            for index in 0..entries.min(4) {
+                let offset = 12 + index * 12;
+                let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+                if logical > iblock {
+                    return Ok(max_blocks.min(logical - iblock));
+                }
+            }
+            return Ok(max_blocks);
         }
         let walk = self.walk_at(iblock)?;
 
