@@ -14,6 +14,7 @@ use crate::fs::ext2::{fs::Ext2, inode::RAW_BLOCK_PTRS_LEN, prelude::*};
 const PTRS_PER_BLOCK: usize = BLOCK_SIZE / size_of::<u32>();
 const SECTORS_PER_BLOCK: u32 = (BLOCK_SIZE / SECTOR_SIZE) as u32;
 const MAX_BLOCK_POINTER_LEVELS: usize = 4;
+const EXTENT_MAGIC: u16 = 0xf30a;
 
 /// An ext2 inode's block-pointer tree.
 ///
@@ -35,12 +36,14 @@ const MAX_BLOCK_POINTER_LEVELS: usize = 4;
 pub(in inode) struct BlockPtrTree {
     raw_block_ptrs: Dirty<RawBlockPtrs>,
     indirect_blocks_manager: Mutex<IndirectBlockManager>,
+    extent_tree: bool,
 }
 
 impl BlockPtrTree {
     /// Creates a new block-pointer tree from the on-disk raw pointers.
     pub(in inode) fn new(raw_block_ptrs: RawBlockPtrs, fs: Weak<Ext2>) -> Self {
         Self {
+            extent_tree: raw_block_ptrs.is_extent_tree(),
             raw_block_ptrs: Dirty::new(raw_block_ptrs),
             indirect_blocks_manager: Mutex::new(IndirectBlockManager::new(fs)),
         }
@@ -74,6 +77,10 @@ impl BlockPtrTree {
     ) -> Result<Range<Ext2Bid>> {
         if max_blocks == 0 {
             return_errno_with_message!(Errno::EINVAL, "zero block range requested");
+        }
+
+        if self.extent_tree {
+            return self.lookup_extent_range(iblock, max_blocks);
         }
 
         let walk = self.walk_at(iblock)?;
@@ -116,6 +123,12 @@ impl BlockPtrTree {
         if max_blocks == 0 {
             return_errno_with_message!(Errno::EINVAL, "zero block allocation requested");
         }
+        if self.extent_tree {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "ext4 extent allocation is not yet supported"
+            );
+        }
 
         let walk = self.walk_at(iblock)?;
         if walk.is_complete() {
@@ -133,6 +146,50 @@ impl BlockPtrTree {
         Ok(ResolvedBlockRange::NewlyAllocated(
             guard.data_blocks.clone(),
         ))
+    }
+
+    fn lookup_extent_range(&self, iblock: Iblock, max_blocks: u32) -> Result<Range<Ext2Bid>> {
+        let bytes = self.raw_block_ptrs.extent_bytes();
+        let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
+        let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
+        if entries > max_entries || entries > 4 || depth != 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported ext4 extent tree");
+        }
+        let mut previous_end = 0u32;
+        for index in 0..entries {
+            let offset = 12 + index * 12;
+            let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            let raw_length = u16::from_le_bytes(bytes[offset + 4..offset + 6].try_into().unwrap());
+            let length = u32::from(raw_length & 0x7fff);
+            if length == 0 || logical < previous_end {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent range");
+            }
+            let physical_hi = u16::from_le_bytes(bytes[offset + 6..offset + 8].try_into().unwrap());
+            let physical_lo =
+                u32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap());
+            let physical = (u64::from(physical_hi) << 32) | u64::from(physical_lo);
+            let physical_end = physical
+                .checked_add(u64::from(length))
+                .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "ext4 extent block overflow"))?;
+            let physical_end = u32::try_from(physical_end)
+                .map_err(|_| Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block"))?;
+            if iblock >= logical && iblock < logical + length {
+                let start = physical
+                    .checked_add(u64::from(iblock - logical))
+                    .and_then(|value| u32::try_from(value).ok())
+                    .ok_or_else(|| {
+                        Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block")
+                    })?;
+                let available = length - (iblock - logical);
+                return Ok(start..start + available.min(max_blocks));
+            }
+            previous_end = logical.checked_add(length).ok_or_else(|| {
+                Error::with_message(Errno::EUCLEAN, "ext4 extent logical overflow")
+            })?;
+            let _ = physical_end;
+        }
+        Ok(iblock..iblock)
     }
 
     /// Truncates blocks to the new byte length (best-effort).
@@ -883,6 +940,19 @@ impl RawBlockPtrs {
             sector_count,
             block_ptrs,
         }
+    }
+
+    fn extent_bytes(&self) -> [u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()] {
+        let mut bytes = [0; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
+        for (index, value) in self.block_ptrs.iter().enumerate() {
+            bytes[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn is_extent_tree(&self) -> bool {
+        let bytes = self.extent_bytes();
+        u16::from_le_bytes([bytes[0], bytes[1]]) == EXTENT_MAGIC
     }
 
     /// Reads the ext2 special-file device encoding stored in `i_block`.
@@ -1714,5 +1784,26 @@ mod test {
 
         assert_eq!(free_after - free_before, 4);
         assert_eq!(block_ptr_tree.raw_block_ptrs.sector_count, 0);
+    }
+
+    #[ktest]
+    fn lookup_inline_extent_range() {
+        let f = Ext2FixtureBuilder::new(1, 256).build().unwrap();
+        let mut bytes = [0u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
+        bytes[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+        bytes[2..4].copy_from_slice(&1u16.to_le_bytes());
+        bytes[4..6].copy_from_slice(&4u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&0u16.to_le_bytes());
+        bytes[12..16].copy_from_slice(&3u32.to_le_bytes());
+        bytes[16..18].copy_from_slice(&5u16.to_le_bytes());
+        bytes[20..24].copy_from_slice(&700u32.to_le_bytes());
+        let mut block_ptrs = [0u32; RAW_BLOCK_PTRS_LEN];
+        for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+            block_ptrs[index] = u32::from_le_bytes(chunk.try_into().unwrap());
+        }
+        let tree = make_block_ptr_tree(block_ptrs, 0, &f.ext2);
+        assert_eq!(tree.lookup_block_range(3, 8).unwrap(), 700..705);
+        assert_eq!(tree.lookup_block(7).unwrap(), Some(704));
+        assert_eq!(tree.lookup_block(8).unwrap(), None);
     }
 }

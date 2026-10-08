@@ -243,7 +243,8 @@ impl SuperBlock {
             return_errno_with_message!(Errno::EINVAL, "ext2 journal replay is unsupported");
         }
 
-        let allowed_incompat = FeatureInCompatSet::FILETYPE.bits();
+        let allowed_incompat =
+            FeatureInCompatSet::FILETYPE.bits() | FeatureInCompatSet::EXTENTS.bits();
         if (sb.feature_incompat & !allowed_incompat) != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported incompat feature");
         }
@@ -621,7 +622,7 @@ impl SuperBlock {
     }
 
     #[expect(dead_code)]
-    const fn feature_incompat(&self) -> FeatureInCompatSet {
+    pub(super) const fn feature_incompat(&self) -> FeatureInCompatSet {
         self.feature_incompat
     }
 
@@ -659,7 +660,7 @@ bitflags! {
 
 bitflags! {
     /// Incompatible feature set.
-    struct FeatureInCompatSet: u32 {
+    pub(super) struct FeatureInCompatSet: u32 {
         /// Compression is used.
         const COMPRESSION = 1 << 0;
         /// Directory entries contain a type field.
@@ -670,6 +671,8 @@ bitflags! {
         const JOURNAL_DEV = 1 << 3;
         /// Metablock block group.
         const META_BG = 1 << 4;
+        /// Inodes use ext4 extent trees for file block mapping.
+        const EXTENTS = 1 << 6;
     }
 }
 
