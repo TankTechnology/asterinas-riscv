@@ -27,6 +27,8 @@ OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
 NO_DEFAULT_FEATURES ?= 0
 COVERAGE ?= 0
+INITRAMFS ?= on
+CMDLINE ?=
 
 # Specify the primary system console (supported: tty0, ttyS0, hvc0).
 # - tty0: The active virtual terminal (VT).
@@ -130,6 +132,9 @@ CARGO_OSDK_COMMON_ARGS :=
 CARGO_OSDK_BUILD_ARGS := --kcmd-args="loglevel=$(LOG_LEVEL)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="earlycon"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="console=$(CONSOLE)"
+ifneq ($(strip $(CMDLINE)),)
+CARGO_OSDK_BUILD_ARGS += $(foreach arg,$(CMDLINE),--kcmd-args="$(arg)")
+endif
 ifneq ($(strip $(EXT4_JOURNAL_FAULT_STAGE)),)
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="asterinas.ext4_fault_stage=$(EXT4_JOURNAL_FAULT_STAGE)"
 endif
@@ -456,9 +461,13 @@ ifeq ($(ENABLE_KVM), 1)
 	endif
 endif
 
-# Skip GZIP to make encoding and decoding of initramfs faster
+# Select the initramfs image explicitly so `cargo osdk run` cannot silently
+# fall back to a root-filesystem-only boot when the test image is compressed.
 ifeq ($(INITRAMFS_SKIP_GZIP),1)
 CARGO_OSDK_INITRAMFS_OPTION := --initramfs=$(abspath test/initramfs/build/initramfs.cpio)
+CARGO_OSDK_COMMON_ARGS += $(CARGO_OSDK_INITRAMFS_OPTION)
+else
+CARGO_OSDK_INITRAMFS_OPTION := --initramfs=$(abspath test/initramfs/build/initramfs.cpio.gz)
 CARGO_OSDK_COMMON_ARGS += $(CARGO_OSDK_INITRAMFS_OPTION)
 endif
 
