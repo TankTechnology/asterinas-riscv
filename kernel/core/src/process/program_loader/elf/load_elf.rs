@@ -252,7 +252,17 @@ fn map_segment_vmos(
     let map_range = if elf.is_shared_object() {
         // Relocatable object.
 
-        let align = elf.max_load_align();
+        // ELF may advertise an alignment larger than the process address space
+        // (for example, 1 << 42 on Sv39). Linux cannot satisfy that literal
+        // constraint either, so treat representable-but-too-large alignments as
+        // page alignment. Keep the top-bit case intact: its overflow is rejected
+        // as ENOMEM, matching Linux and the regression test contract.
+        let requested_align = elf.max_load_align();
+        let align = if requested_align > VMAR_CAP_ADDR && requested_align <= usize::MAX / 2 {
+            PAGE_SIZE
+        } else {
+            requested_align
+        };
 
         // Given that `elf_va_range` is guaranteed to be below `VMAR_CAP_ADDR`, as long as
         // `VMAR_CAP_ADDR * 2` does not overflow, the following `align_up(align)` cannot overflow
