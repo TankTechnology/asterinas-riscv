@@ -133,3 +133,53 @@ pub(super) fn parse_revoke(block: &[u8], sequence: u32) -> Result<Vec<u32>> {
 fn be32(block: &[u8], offset: usize) -> u32 {
     u32::from_be_bytes(block[offset..offset + 4].try_into().unwrap())
 }
+
+#[cfg(ktest)]
+mod test {
+    use super::*;
+
+    fn superblock() -> [u8; BLOCK_SIZE] {
+        let mut block = [0; BLOCK_SIZE];
+        block[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        block[4..8].copy_from_slice(&SUPER_V2.to_be_bytes());
+        block[12..16].copy_from_slice(&(BLOCK_SIZE as u32).to_be_bytes());
+        block[16..20].copy_from_slice(&1024u32.to_be_bytes());
+        block[20..24].copy_from_slice(&1u32.to_be_bytes());
+        block
+    }
+
+    #[ktest]
+    fn accepts_clean_superblock() {
+        let journal = SuperBlock::parse(&superblock()).unwrap();
+        assert_eq!(journal.max_length, 1024);
+        assert!(!journal.needs_recovery());
+    }
+
+    #[ktest]
+    fn rejects_truncated_superblock() {
+        assert!(SuperBlock::parse(&[0; 24]).is_err());
+    }
+
+    #[ktest]
+    fn validates_descriptor_commit_and_revoke() {
+        let mut descriptor = [0; BLOCK_SIZE];
+        descriptor[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        descriptor[4..8].copy_from_slice(&DESCRIPTOR.to_be_bytes());
+        descriptor[8..12].copy_from_slice(&7u32.to_be_bytes());
+        descriptor[12..16].copy_from_slice(&31u32.to_be_bytes());
+        descriptor[20..24].copy_from_slice(&FLAG_LAST_TAG.to_be_bytes());
+        assert_eq!(parse_descriptor(&descriptor, 7).unwrap()[0].block_number, 31);
+
+        let mut commit = [0; BLOCK_SIZE];
+        commit[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        commit[4..8].copy_from_slice(&COMMIT.to_be_bytes());
+        commit[8..12].copy_from_slice(&7u32.to_be_bytes());
+        validate_commit(&commit, 7).unwrap();
+
+        let mut revoke = commit;
+        revoke[4..8].copy_from_slice(&REVOKE.to_be_bytes());
+        revoke[12..16].copy_from_slice(&20u32.to_be_bytes());
+        revoke[16..20].copy_from_slice(&99u32.to_be_bytes());
+        assert_eq!(parse_revoke(&revoke, 7).unwrap(), vec![99]);
+    }
+}
