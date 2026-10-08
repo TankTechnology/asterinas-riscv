@@ -10,8 +10,11 @@ if [ "$(cat /tmp/asterinas_requested_fs_type 2>/dev/null || true)" != ext4 ]; th
 fi
 
 # Asterinas assigns Virtio-Net 10.0.2.15/24 with the 10.0.2.2 gateway during
-# device initialization. Reuse that kernel configuration; only the resolver
-# file is part of the Debian userspace setup performed by this gate.
+# device initialization. Bring the interface up explicitly for this
+# initramfs-launched gate, then provide the resolver used by QEMU user-mode
+# networking.
+ifconfig eth0 10.0.2.15
+route add default gw 10.0.2.2 eth0 2>/dev/null || true
 rm -f /ext2/etc/resolv.conf
 printf 'nameserver 10.0.2.3\n' > /ext2/etc/resolv.conf
 
