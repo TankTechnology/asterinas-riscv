@@ -1,0 +1,13 @@
+
+root@asterinas-debug:/# printf 'BEGIN_0fc9cb546256694a\n'; id -u; cat /proc/sys/ kernel/random/boot_id; cat /proc/uptime; cat /run/asterinas-desktop-ready; pgrep  -xo firefox; systemctl show asterinas-safe-reboot.service -p ActiveState -p Sub State -p ExecMainStatus; printf 'END_0fc9cb546256694a=%s\n' "$?"
+BEGIN_0fc9cb546256694a
+0
+d5e68c9c-bd7e-452d-b5d9-56c73a1574b4
+410.04 1414.80
+d5e68c9c-bd7e-452d-b5d9-56c73a1574b4
+268
+ExecMainStatus=0
+ActiveState=active
+SubState=exited
+END_0fc9cb546256694a=0
+root@asterinas-debug:/#

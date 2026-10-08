@@ -1,0 +1,39 @@
+{
+  "scope": "Focused unmodified RISC-V lat_rpc UDP control; not a native ALL pass",
+  "lmbench_revision": "afb47eddaf10a411c1ea3cb64965461f1308a6ea",
+  "lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
+  "root_image_sha256": "bd855c9855e6734cb5e154d488d7c1899f9c1949ac01dae87cd0fc88702e35cf",
+  "runtime_archive_sha256": "9cb006a0b953265ec371f9d4d8568ef74f8086d00bc98347caed79db56a82c20",
+  "command": "lat_rpc -P 1 -p udp localhost",
+  "server": "unmodified lat_rpc -s; rpcinfo confirmed program 404040 over UDP and TCP",
+  "environment": {"ENOUGH": "10000"},
+  "asterinas_full_system": {
+    "qemu": "RISC-V virt, TCG, 4 CPUs, 2 GiB RAM",
+    "kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+    "trials": [
+      {"elapsed_seconds": 14.061, "process_status": 0, "output": "localhost: RPC: Timed out"},
+      {"elapsed_seconds": 11.167, "process_status": 0, "output": "localhost: RPC: Timed out"},
+      {"elapsed_seconds": 15.890, "process_status": 0, "output": "localhost: RPC: Timed out"}
+    ]
+  },
+  "linux_full_system": {
+    "qemu_version": "10.2.1",
+    "qemu": "RISC-V virt, rv64, TCG, 4 CPUs, 2 GiB RAM, direct Linux kernel boot",
+    "kernel_package": "Ubuntu riscv64 linux-image-5.15.0-1028-generic 5.15.0-1028.32",
+    "kernel_package_sha256": "ebea6e2f99b144de46d3a7bfc541f46e63bac10af7bd4ac1ad19bf2a84593df3",
+    "kernel_image_sha256": "704b9b58d98ddedc92adf9a7c24821404889cb07d28139a17cfbba3bd0a0dd9b",
+    "initramfs": "Ubuntu riscv64 busybox-static 1.30.1 plus virtio_blk.ko from matching linux-modules; mounts the private Debian ext2 image",
+    "busybox_package_sha256": "422458c96f45145778047188275d59b4eaef60e73b1c31fb6185877837009ca2",
+    "modules_package_sha256": "40c0d9822ae38e5027d28b9ccb73b90bec3463bf05455b7e9afa8163e9fc9fb7",
+    "trials": [
+      {"elapsed_seconds": 27, "process_status": 0, "latency_microseconds": 161.4145, "result": "PASS", "serial_log_sha256": "0b970e70e9a17ebfd48147f5bfe7c4a25491f149486f592b60c6f6ec5bb2e938"},
+      {"elapsed_seconds": 31, "process_status": 0, "latency_microseconds": 161.3454, "result": "PASS", "serial_log_sha256": "bf0370458ac332cf33ab24526fa40a28659538c3e2da16b9bff3741b4510ae43"}
+    ]
+  },
+  "linux_user_mode": {
+    "qemu": "qemu-riscv64 user-mode with isolated Linux network namespace",
+    "measurements_microseconds": [13.8141, 13.4234, 13.9155],
+    "note": "This does not exercise a RISC-V guest kernel; the first trial's individual output log was overwritten by the repeat script."
+  },
+  "conclusion": "The original RISC-V binary completes in Linux full-system QEMU TCG. The Asterinas failure is specific to its guest path, but these controls do not distinguish networking from scheduling or wakeup behavior."
+}

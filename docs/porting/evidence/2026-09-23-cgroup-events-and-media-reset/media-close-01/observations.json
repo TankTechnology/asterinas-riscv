@@ -1,0 +1,2439 @@
+[
+  {
+    "kind": "session",
+    "elapsed": 14.89,
+    "value": {
+      "sessionId": "33382522-5d11-416c-bfe6-81296a0451e4",
+      "capabilities": {
+        "acceptInsecureCerts": false,
+        "browserName": "firefox",
+        "browserVersion": "143.0.3",
+        "platformName": "linux",
+        "proxy": {
+          "proxyType": "direct"
+        },
+        "unhandledPromptBehavior": "dismiss and notify",
+        "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0",
+        "moz:buildID": "20250929153833",
+        "moz:headless": false,
+        "moz:platformVersion": "5.13.0",
+        "moz:processID": 243,
+        "moz:profile": "/run/asterinas-physical-home/.mozilla/asterinas-browser-web",
+        "moz:shutdownTimeout": 60000,
+        "pageLoadStrategy": "normal",
+        "timeouts": {
+          "implicit": 0,
+          "pageLoad": 300000,
+          "script": 30000
+        },
+        "setWindowRect": true,
+        "strictFileInteractability": true,
+        "moz:accessibilityChecks": false,
+        "moz:webdriverClick": true,
+        "moz:windowless": false
+      }
+    }
+  },
+  {
+    "kind": "before-close",
+    "elapsed": 17.242,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": false,
+        "ended": false,
+        "readyState": 0,
+        "networkState": 2,
+        "duration": null,
+        "currentTime": 0,
+        "bufferedEnd": null,
+        "videoWidth": 0,
+        "videoHeight": 0,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "pending",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 0,
+          "canplay": 0,
+          "playing": 0,
+          "timeupdate": 0,
+          "waiting": 0,
+          "stalled": 0,
+          "ended": 0,
+          "error": 0
+        },
+        "lastEvent": null,
+        "decodedFrames": 0,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 8,
+        "phase": "initial",
+        "events": {
+          "waiting": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "before-close",
+    "elapsed": 17.544,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": false,
+        "ended": false,
+        "readyState": 4,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 0.258103,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 2,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 0,
+          "error": 0
+        },
+        "lastEvent": "timeupdate",
+        "decodedFrames": 1,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 13,
+        "phase": "playing",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 2
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "server-close",
+    "elapsed": 17.546,
+    "value": {
+      "declared_bytes": 646,
+      "sent_bytes": 32
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 17.674,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": false,
+        "ended": false,
+        "readyState": 4,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 0.344081,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 2,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 0,
+          "error": 0
+        },
+        "lastEvent": "timeupdate",
+        "decodedFrames": 1,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 14,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 2
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 17.967,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": false,
+        "ended": false,
+        "readyState": 4,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 0.678639,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 3,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 0,
+          "error": 0
+        },
+        "lastEvent": "timeupdate",
+        "decodedFrames": 3,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 17,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 3
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 18.244,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": false,
+        "ended": false,
+        "readyState": 4,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 0.949586,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 4,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 0,
+          "error": 0
+        },
+        "lastEvent": "timeupdate",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 20,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 18.531,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 23,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 18.804,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 26,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 19.082,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 28,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 19.412,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 32,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 19.665,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 34,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 19.906,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 37,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 20.169,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 39,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 20.407,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 42,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 20.65,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 44,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 20.888,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 46,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 21.123,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 49,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 21.394,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 51,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 21.631,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 54,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 21.868,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 56,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 22.103,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 58,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 22.339,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 61,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 22.576,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 63,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 22.813,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 65,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 23.051,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 68,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 23.287,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 70,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 23.522,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 72,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 23.803,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 75,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 24.051,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 78,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 24.375,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 81,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 24.628,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 83,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 25.042,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 87,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 25.312,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 90,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 25.622,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 93,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 25.859,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 95,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 26.095,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 98,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 26.328,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 100,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 26.564,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 102,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 26.868,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 105,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 27.108,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 108,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 27.342,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 110,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 27.577,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 112,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 27.828,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 115,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 28.135,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 118,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 28.373,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 120,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 28.611,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 123,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 28.85,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 124,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 29.093,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 127,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  },
+  {
+    "kind": "after-close",
+    "elapsed": 29.363,
+    "value": {
+      "probe": {
+        "url": "http://127.0.0.1:18766/",
+        "state": "video",
+        "currentSrc": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "src": "blob:http://127.0.0.1:18766/9ccafa53-029f-40a2-bc1d-dd95041b665a",
+        "sourceKind": "blob",
+        "paused": true,
+        "ended": true,
+        "readyState": 2,
+        "networkState": 2,
+        "duration": 1,
+        "currentTime": 1,
+        "bufferedEnd": 1,
+        "videoWidth": 160,
+        "videoHeight": 90,
+        "errorCode": null,
+        "errorMessage": null,
+        "playPromise": "resolved",
+        "playError": null,
+        "events": {
+          "loadedmetadata": 1,
+          "canplay": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "waiting": 1,
+          "stalled": 0,
+          "ended": 1,
+          "error": 0
+        },
+        "lastEvent": "ended",
+        "decodedFrames": 5,
+        "droppedFrames": 0
+      },
+      "page": {
+        "ticks": 129,
+        "phase": "complete-source",
+        "events": {
+          "waiting": 1,
+          "playing": 1,
+          "timeupdate": 6,
+          "ended": 1
+        },
+        "networkError": null
+      }
+    }
+  }
+]

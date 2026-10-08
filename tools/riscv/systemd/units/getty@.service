@@ -1,0 +1,17 @@
+[Unit]
+Description=Getty on %I
+After=multi-user.target
+Before=getty.target
+IgnoreOnIsolate=yes
+
+[Service]
+# busybox getty: `getty <baud> <tty>` — opens /dev/%I, sets termios, prompts
+# "hostname login:", then exec()s /bin/login. The "-" prefix tells systemd to
+# treat a clean getty exit (login shell exit) as success and restart it.
+ExecStart=-/bin/getty 115200 %I
+Type=idle
+Restart=always
+RestartSec=0
+KillMode=process
+IgnoreSIGPIPE=no
+SendSIGHUP=yes

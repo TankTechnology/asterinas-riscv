@@ -1,0 +1,11 @@
+[Unit]
+Description=Journal Service
+After=systemd-journald.socket systemd-journald-dev-log.socket
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-journald
+Restart=always
+RestartSec=0
+StandardOutput=null
+Sockets=systemd-journald.socket systemd-journald-dev-log.socket
+RuntimeDirectory=systemd/journal

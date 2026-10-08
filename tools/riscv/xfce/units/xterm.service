@@ -1,0 +1,17 @@
+[Unit]
+Description=XTerm terminal emulator (on the Xfce session)
+After=xorg.service xfce-session.service
+Requires=xorg.service
+PartOf=graphical.target
+StartLimitIntervalSec=0
+
+[Service]
+KeyringMode=inherit
+Type=simple
+Environment=DISPLAY=:0
+Environment=HOME=/root
+# Let xfwm4 claim the session first so the terminal gets window decorations.
+ExecStartPre=/bin/sleep 6
+ExecStart=/usr/bin/xterm -geometry 80x24+40+40
+Restart=on-failure
+RestartSec=2s

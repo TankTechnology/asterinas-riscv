@@ -1,0 +1,7 @@
+A_WEB_PHASE phase=probe-fixture-home state=done firefox_pid=151
+A_WEB_PHASE phase=verify-fixture-download state=done firefox_pid=151
+A_WEB_PHASE phase=play-bilibili-detail state=done firefox_pid=151
+DEBIAN_BROWSER_WEB_BILIBILI_PLAYBACK status=pass bv=BV1KGen6sEKJ
+DEBIAN_BROWSER_WEB_PLATFORM_READY baidu_home=pass bilibili_home=pass bilibili_detail=pass bv=BV1KGen6sEKJ tls=verified
+A_WEB_PHASE phase=snapshot-baidu-search state=done firefox_pid=151
+DEBIAN_BROWSER_WEB_FAIL reason=baidu-search-not-pass

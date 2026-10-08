@@ -1,0 +1,863 @@
+{
+  "metric": {
+    "run": "smallthreads",
+    "state": "ended",
+    "reason": "",
+    "displayWidth": 640,
+    "displayHeight": 360,
+    "sourceWidth": 1280,
+    "sourceHeight": 720,
+    "duration": 10,
+    "currentTime": 10,
+    "elapsedWallMs": 10634,
+    "totalVideoFrames": 300,
+    "droppedVideoFrames": 10,
+    "mozDecodedFrames": 300,
+    "mozParsedFrames": 300,
+    "mozPresentedFrames": 290,
+    "mozPaintedFrames": 283,
+    "readyState": 2,
+    "networkState": 1,
+    "userAgent": "Mozilla/5.0 (X11; Linux x86_64; rv:143.0) Gecko/20100101 Firefox/143.0"
+  },
+  "clk_tck": 100,
+  "before_threads": 67,
+  "after_threads": 68,
+  "threads": [
+    {
+      "pid": 5928,
+      "tid": 6003,
+      "comm": "Renderer",
+      "user_ticks": 610,
+      "system_ticks": 156,
+      "total_ticks": 766
+    },
+    {
+      "pid": 5928,
+      "tid": 6043,
+      "comm": "SwComposite",
+      "user_ticks": 542,
+      "system_ticks": 35,
+      "total_ticks": 577
+    },
+    {
+      "pid": 5928,
+      "tid": 5928,
+      "comm": "firefox",
+      "user_ticks": 321,
+      "system_ticks": 144,
+      "total_ticks": 465
+    },
+    {
+      "pid": 310,
+      "tid": 310,
+      "comm": "Xorg",
+      "user_ticks": 48,
+      "system_ticks": 34,
+      "total_ticks": 82
+    },
+    {
+      "pid": 5928,
+      "tid": 6014,
+      "comm": "Compositor",
+      "user_ticks": 45,
+      "system_ticks": 33,
+      "total_ticks": 78
+    },
+    {
+      "pid": 5928,
+      "tid": 5970,
+      "comm": "glean.dispatche",
+      "user_ticks": 34,
+      "system_ticks": 26,
+      "total_ticks": 60
+    },
+    {
+      "pid": 5928,
+      "tid": 6047,
+      "comm": "WRRenderBackend",
+      "user_ticks": 46,
+      "system_ticks": 11,
+      "total_ticks": 57
+    },
+    {
+      "pid": 5928,
+      "tid": 5973,
+      "comm": "IPC I/O Parent",
+      "user_ticks": 13,
+      "system_ticks": 27,
+      "total_ticks": 40
+    },
+    {
+      "pid": 5928,
+      "tid": 6045,
+      "comm": "WRSceneBuilder#",
+      "user_ticks": 19,
+      "system_ticks": 10,
+      "total_ticks": 29
+    },
+    {
+      "pid": 5928,
+      "tid": 6002,
+      "comm": "Softwar~cThread",
+      "user_ticks": 12,
+      "system_ticks": 11,
+      "total_ticks": 23
+    },
+    {
+      "pid": 5928,
+      "tid": 5993,
+      "comm": "firefox",
+      "user_ticks": 20,
+      "system_ticks": 2,
+      "total_ticks": 22
+    },
+    {
+      "pid": 5928,
+      "tid": 5977,
+      "comm": "IPDL Background",
+      "user_ticks": 2,
+      "system_ticks": 9,
+      "total_ticks": 11
+    },
+    {
+      "pid": 5928,
+      "tid": 6291,
+      "comm": "sqldb:p~lite #7",
+      "user_ticks": 8,
+      "system_ticks": 2,
+      "total_ticks": 10
+    },
+    {
+      "pid": 5928,
+      "tid": 5974,
+      "comm": "Timer",
+      "user_ticks": 2,
+      "system_ticks": 3,
+      "total_ticks": 5
+    },
+    {
+      "pid": 5928,
+      "tid": 6308,
+      "comm": "DOM Worker",
+      "user_ticks": 3,
+      "system_ticks": 2,
+      "total_ticks": 5
+    },
+    {
+      "pid": 5928,
+      "tid": 6078,
+      "comm": "sqldb:p~lite #3",
+      "user_ticks": 2,
+      "system_ticks": 2,
+      "total_ticks": 4
+    },
+    {
+      "pid": 5928,
+      "tid": 5976,
+      "comm": "Socket Thread",
+      "user_ticks": 1,
+      "system_ticks": 1,
+      "total_ticks": 2
+    },
+    {
+      "pid": 5928,
+      "tid": 5990,
+      "comm": "Cache2 I/O",
+      "user_ticks": 0,
+      "system_ticks": 1,
+      "total_ticks": 1
+    },
+    {
+      "pid": 5928,
+      "tid": 5994,
+      "comm": "firefox",
+      "user_ticks": 1,
+      "system_ticks": 0,
+      "total_ticks": 1
+    },
+    {
+      "pid": 5928,
+      "tid": 6013,
+      "comm": "Glyph rasterize",
+      "user_ticks": 1,
+      "system_ticks": 0,
+      "total_ticks": 1
+    },
+    {
+      "pid": 310,
+      "tid": 433,
+      "comm": "InputThread",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5952,
+      "comm": "pool-spawner",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5953,
+      "comm": "gmain",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5975,
+      "comm": "Netlink Monitor",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5978,
+      "comm": "Backgro~Pool #1",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5980,
+      "comm": "[pango] fontcon",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5982,
+      "comm": "HTML5 Parser",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5983,
+      "comm": "StyleThread#1",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5984,
+      "comm": "StyleThread#2",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5986,
+      "comm": "gdbus",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5988,
+      "comm": "JS Watchdog",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5991,
+      "comm": "Cookie",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5995,
+      "comm": "firefox",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5996,
+      "comm": "firefox",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5997,
+      "comm": "BgIOThr~Pool #1",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5998,
+      "comm": "Worker Launcher",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 5999,
+      "comm": "QuotaManager IO",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6005,
+      "comm": "WRWorker#0",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6006,
+      "comm": "WRWorker#1",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6007,
+      "comm": "WRWorker#2",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6008,
+      "comm": "WRWorker#3",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6009,
+      "comm": "WRWorkerLP#0",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6010,
+      "comm": "WRWorkerLP#1",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6011,
+      "comm": "WRWorkerLP#2",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6012,
+      "comm": "WRWorkerLP#3",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6015,
+      "comm": "ImageIO",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6016,
+      "comm": "IPC Launch",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6019,
+      "comm": "Permission",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6036,
+      "comm": "TRR Background",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6037,
+      "comm": "DNS Resolver #1",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6039,
+      "comm": "GMPThread",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6041,
+      "comm": "ImageBridgeChld",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6042,
+      "comm": "ProcessHangMon",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6046,
+      "comm": "WRSceneBuilderL",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6063,
+      "comm": "AudioIPC Server",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6064,
+      "comm": "AudioIPC Server",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6065,
+      "comm": "AudioIPC Device",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6067,
+      "comm": "sqldb:c~lite #1",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6068,
+      "comm": "sqldb:c~lite #2",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6083,
+      "comm": "sqldb:p~lite #4",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6087,
+      "comm": "sqldb:p~lite #5",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6088,
+      "comm": "URL Classifier",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6093,
+      "comm": "sqldb:d~lite #6",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6096,
+      "comm": "MemoryPoller",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6113,
+      "comm": "glean.mps",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "tid": 6292,
+      "comm": "RemoteLzyStream",
+      "user_ticks": 0,
+      "system_ticks": 0,
+      "total_ticks": 0
+    }
+  ],
+  "aggregate": [
+    {
+      "pid": 5928,
+      "comm": "Renderer",
+      "total_ticks": 766
+    },
+    {
+      "pid": 5928,
+      "comm": "SwComposite",
+      "total_ticks": 577
+    },
+    {
+      "pid": 5928,
+      "comm": "firefox",
+      "total_ticks": 488
+    },
+    {
+      "pid": 310,
+      "comm": "Xorg",
+      "total_ticks": 82
+    },
+    {
+      "pid": 5928,
+      "comm": "Compositor",
+      "total_ticks": 78
+    },
+    {
+      "pid": 5928,
+      "comm": "glean.dispatche",
+      "total_ticks": 60
+    },
+    {
+      "pid": 5928,
+      "comm": "WRRenderBackend",
+      "total_ticks": 57
+    },
+    {
+      "pid": 5928,
+      "comm": "IPC I/O Parent",
+      "total_ticks": 40
+    },
+    {
+      "pid": 5928,
+      "comm": "WRSceneBuilder#",
+      "total_ticks": 29
+    },
+    {
+      "pid": 5928,
+      "comm": "Softwar~cThread",
+      "total_ticks": 23
+    },
+    {
+      "pid": 5928,
+      "comm": "IPDL Background",
+      "total_ticks": 11
+    },
+    {
+      "pid": 5928,
+      "comm": "sqldb:p~lite #7",
+      "total_ticks": 10
+    },
+    {
+      "pid": 5928,
+      "comm": "Timer",
+      "total_ticks": 5
+    },
+    {
+      "pid": 5928,
+      "comm": "DOM Worker",
+      "total_ticks": 5
+    },
+    {
+      "pid": 5928,
+      "comm": "sqldb:p~lite #3",
+      "total_ticks": 4
+    },
+    {
+      "pid": 5928,
+      "comm": "Socket Thread",
+      "total_ticks": 2
+    },
+    {
+      "pid": 5928,
+      "comm": "Cache2 I/O",
+      "total_ticks": 1
+    },
+    {
+      "pid": 5928,
+      "comm": "Glyph rasterize",
+      "total_ticks": 1
+    },
+    {
+      "pid": 310,
+      "comm": "InputThread",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "pool-spawner",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "gmain",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "Netlink Monitor",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "Backgro~Pool #1",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "[pango] fontcon",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "HTML5 Parser",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "StyleThread#1",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "StyleThread#2",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "gdbus",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "JS Watchdog",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "Cookie",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "BgIOThr~Pool #1",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "Worker Launcher",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "QuotaManager IO",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "WRWorker#0",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "WRWorker#1",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "WRWorker#2",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "WRWorker#3",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "WRWorkerLP#0",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "WRWorkerLP#1",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "WRWorkerLP#2",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "WRWorkerLP#3",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "ImageIO",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "IPC Launch",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "Permission",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "TRR Background",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "DNS Resolver #1",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "GMPThread",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "ImageBridgeChld",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "ProcessHangMon",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "WRSceneBuilderL",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "AudioIPC Server",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "AudioIPC Device",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "sqldb:c~lite #1",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "sqldb:c~lite #2",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "sqldb:p~lite #4",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "sqldb:p~lite #5",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "URL Classifier",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "sqldb:d~lite #6",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "MemoryPoller",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "glean.mps",
+      "total_ticks": 0
+    },
+    {
+      "pid": 5928,
+      "comm": "RemoteLzyStream",
+      "total_ticks": 0
+    }
+  ]
+}

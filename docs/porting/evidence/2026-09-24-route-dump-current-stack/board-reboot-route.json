@@ -1,0 +1,10 @@
+{
+  "status": "pass",
+  "identity": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "3b62c322-6ed9-4094-95ad-7d7a1ec93c2c",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "output": "timeout 4 ip -4 route show; echo ROUTE_RC=$?\ndefault via 10.100.16.1 dev eth0 \n10.100.16.0/21 dev eth0 proto kernel scope link src 10.100.19.200 \nROUTE_RC=0\nroot@asterinas-debug:/# "
+}

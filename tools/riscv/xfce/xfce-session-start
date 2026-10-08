@@ -1,0 +1,37 @@
+#!/bin/sh
+# SPDX-License-Identifier: MPL-2.0
+# XFCE-M3 session entry point (guest-side, /usr/bin/xfce-session-start).
+#
+# Wraps the whole Xfce session in dbus-run-session: M1 proved the *system* bus,
+# but xfconfd and the at-spi2 helpers live on the *session* bus, so the session
+# gets its own bus instance (dbus-run-session was already shipped by M1/M2).
+# xfce4-session then brings up xfwm4 + xfce4-panel + xfdesktop (default
+# session) and honors /etc/xdg/autostart (xfsettingsd, at-spi2).
+
+export DISPLAY="${DISPLAY:-:0}"
+export HOME=/root
+export XDG_CONFIG_HOME=/root/.config
+export XDG_CACHE_HOME=/root/.cache
+export XDG_DATA_HOME=/root/.local/share
+export XDG_CONFIG_DIRS=/etc/xdg
+export XDG_DATA_DIRS=/usr/share
+export XDG_RUNTIME_DIR=/run/xfce-root
+# The rootfs fonts.conf predates this stack; point fontconfig at the config
+# that shipped with the cross-built fontconfig 2.16 if the legacy one is
+# absent (it is present, this is just a belt-and-braces default).
+export FONTCONFIG_FILE="${FONTCONFIG_FILE:-/etc/fonts/fonts.conf}"
+# No a11y stack in this guest: skip the at-spi2 bridge entirely (its bus
+# config bakes host paths; without this every GTK app pays a failed
+# bus-launch retry).
+export NO_AT_BRIDGE=1
+
+mkdir -p "$XDG_RUNTIME_DIR" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME"
+chmod 700 "$XDG_RUNTIME_DIR"
+
+# This rootfs has no journald socket, so unit stdout is dropped; log to the
+# serial console instead so the boot driver can see session progress.
+exec > /dev/ttyS0 2>&1
+
+# Log to serial so the boot driver can see session progress.
+echo "xfce-session-start: launching dbus-run-session -- xfce4-session"
+exec /usr/bin/dbus-run-session -- /usr/bin/xfce4-session 2>&1

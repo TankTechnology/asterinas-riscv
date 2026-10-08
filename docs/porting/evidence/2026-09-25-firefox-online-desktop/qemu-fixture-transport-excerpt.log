@@ -1,0 +1,12 @@
+A_WEB_MARIONETTE_TRANSPORT {"version":1,"event":"begin","pid":531,"monotonic_ns":51504089300,"request_id":13,"command":"WebDriver:Navigate","stage":"send","send_complete":false,"header_bytes":0,"body_expected":null,"body_received":0}
+A_WEB_MARIONETTE_TRANSPORT {"version":1,"event":"send_complete","pid":531,"monotonic_ns":51504689300,"request_id":13,"command":"WebDriver:Navigate","stage":"send","send_complete":true,"header_bytes":0,"body_expected":null,"body_received":0}
+A_WEB_MARIONETTE_TRANSPORT {"version":1,"event":"frame_header","pid":531,"monotonic_ns":51736987000,"request_id":13,"command":"WebDriver:Navigate","stage":"response_body","send_complete":true,"header_bytes":3,"body_expected":26,"body_received":0}
+A_WEB_MARIONETTE_TRANSPORT {"version":1,"event":"complete","pid":531,"monotonic_ns":51737821100,"request_id":13,"command":"WebDriver:Navigate","stage":"complete","send_complete":true,"header_bytes":3,"body_expected":26,"body_received":26}
+A_WEB_MARIONETTE_TRANSPORT {"version":1,"event":"begin","pid":531,"monotonic_ns":51738233400,"request_id":14,"command":"WebDriver:GetTitle","stage":"send","send_complete":false,"header_bytes":0,"body_expected":null,"body_received":0}
+A_WEB_MARIONETTE_TRANSPORT {"version":1,"event":"send_complete","pid":531,"monotonic_ns":51739027600,"request_id":14,"command":"WebDriver:GetTitle","stage":"send","send_complete":true,"header_bytes":0,"body_expected":null,"body_received":0}
+A_WEB_MARIONETTE_TRANSPORT {"version":1,"event":"frame_header","pid":531,"monotonic_ns":51746814600,"request_id":14,"command":"WebDriver:GetTitle","stage":"response_body","send_complete":true,"header_bytes":3,"body_expected":51,"body_received":0}
+A_WEB_MARIONETTE_TRANSPORT {"version":1,"event":"complete","pid":531,"monotonic_ns":51747381200,"request_id":14,"command":"WebDriver:GetTitle","stage":"complete","send_complete":true,"header_bytes":3,"body_expected":51,"body_received":51}
+A_WEB_PHASE phase=fixture-title-other state=observed firefox_pid=190
+A_WEB_PHASE phase=ping-fixture-home state=start firefox_pid=190
+A_WEB_MARIONETTE_TRANSPORT {"version":1,"event":"begin","pid":531,"monotonic_ns":51748002700,"request_id":15,"command":"WebDriver:ExecuteScript","stage":"send","send_complete":false,"header_bytes":0,"body_expected":null,"body_received":0}
+A_WEB_MARIONETTE_TRANSPORT {"version":1,"event":"send_complete","pid":531,"monotonic_ns":51748637400,"request_id":15,"command":"WebDriver:ExecuteScript","stage":"send","send_complete":true,"header_bytes":0,"body_expected":null,"body_received":0}

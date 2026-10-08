@@ -1,0 +1,13 @@
+
+root@asterinas-debug:/run/asterinas-powervr-boot-preflight-20260930# printf 'BEG IN_4513e1f92bbd0412\n'; id -u && cat /proc/sys/kernel/random/boot_id && cat /pro c/sys/kernel/asterinas_reboot_watchdog && systemctl is-active asterinas-desktop- m5.service asterinas-browser-web.service && cat /run/asterinas-desktop-ready &&  pgrep -a Xorg && test -e /dev/fb0 && sha256sum /run/asterinas-powervr-boot-confi g-20260930/code.bin; printf 'END_4513e1f92bbd0412=%s\n' "$?"
+BEGIN_4513e1f92bbd0412
+0
+9735fe49-cc2b-4862-b5c9-7cc89b0d77fb
+0
+active
+active
+9735fe49-cc2b-4862-b5c9-7cc89b0d77fb
+175 /usr/lib/xorg/Xorg :0 -noreset -nolisten tcp -ac -novtswitch -keeptty -extension GLX -configdir /run/asterinas-physical-display-providers/fbdev/xorg.conf.d -logfile /home/asterinas/Xorg.0.log vt1
+77bb4e9e42f25a40e67e9002c5f76fa7c5a702cb5efe42ffaad57594dc244118  /run/asterinas-powervr-boot-config-20260930/code.bin
+END_4513e1f92bbd0412=0
+root@asterinas-debug:/run/asterinas-powervr-boot-preflight-20260930#

@@ -1,0 +1,1682 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="description" content="Asterinas 在 Milk-V Megrez 上从上电到用户态的六图启动流程。">
+  <title>Megrez × Asterinas：从上电到用户态</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%2307100f'/%3E%3Cpath d='M12 44V20h8l12 15 12-15h8v24h-8V32L32 47 20 32v12z' fill='%23f0b44d'/%3E%3C/svg%3E">
+  <script>
+    try {
+      const savedTheme = localStorage.getItem("megrez-boot-theme");
+      if (savedTheme === "light" || savedTheme === "dark") {
+        document.documentElement.dataset.theme = savedTheme;
+      } else if (window.matchMedia("(prefers-color-scheme: light)").matches) {
+        document.documentElement.dataset.theme = "light";
+      }
+    } catch (_) {
+      document.documentElement.dataset.theme = "dark";
+    }
+  </script>
+  <style>
+    :root {
+      --ink: #07100f;
+      --ink-raised: #0c1715;
+      --panel: rgba(14, 27, 24, 0.88);
+      --panel-solid: #0e1b18;
+      --line: rgba(233, 215, 172, 0.16);
+      --line-strong: rgba(233, 215, 172, 0.34);
+      --paper: #f2ead8;
+      --muted: #a9b4aa;
+      --amber: #f0b44d;
+      --amber-soft: rgba(240, 180, 77, 0.15);
+      --green: #76d39b;
+      --green-soft: rgba(118, 211, 155, 0.14);
+      --blue: #77bde8;
+      --blue-soft: rgba(119, 189, 232, 0.14);
+      --red: #ee7d68;
+      --red-soft: rgba(238, 125, 104, 0.14);
+      --shadow: 0 28px 70px rgba(0, 0, 0, 0.34);
+      --display: "IBM Plex Mono", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+      --body: "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+    }
+
+    html[data-theme="light"] {
+      --ink: #ede9de;
+      --ink-raised: #f7f2e7;
+      --panel: rgba(250, 247, 238, 0.91);
+      --panel-solid: #faf7ee;
+      --line: rgba(36, 57, 50, 0.15);
+      --line-strong: rgba(36, 57, 50, 0.32);
+      --paper: #18322c;
+      --muted: #61726a;
+      --amber: #9e6500;
+      --amber-soft: rgba(158, 101, 0, 0.11);
+      --green: #157648;
+      --green-soft: rgba(21, 118, 72, 0.11);
+      --blue: #176a9c;
+      --blue-soft: rgba(23, 106, 156, 0.11);
+      --red: #b13e2d;
+      --red-soft: rgba(177, 62, 45, 0.11);
+      --shadow: 0 28px 70px rgba(46, 40, 24, 0.15);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+      background: var(--ink);
+    }
+
+    body {
+      min-width: 0;
+      margin: 0;
+      overflow-x: hidden;
+      color: var(--paper);
+      font-family: var(--body);
+      line-height: 1.68;
+      background:
+        linear-gradient(90deg, var(--line) 1px, transparent 1px) 0 0 / 48px 48px,
+        linear-gradient(var(--line) 1px, transparent 1px) 0 0 / 48px 48px,
+        radial-gradient(circle at 82% 9%, var(--amber-soft), transparent 31rem),
+        radial-gradient(circle at 6% 44%, var(--blue-soft), transparent 30rem),
+        var(--ink);
+      transition: color 180ms ease, background-color 180ms ease;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      opacity: 0.32;
+      background-image:
+        radial-gradient(circle at 24px 24px, var(--amber) 1px, transparent 1.5px),
+        linear-gradient(115deg, transparent 47%, var(--line) 48%, transparent 49%);
+      background-size: 96px 96px, 220px 220px;
+      mask-image: linear-gradient(to bottom, black, transparent 82%);
+    }
+
+    button,
+    a {
+      font: inherit;
+    }
+
+    a {
+      color: inherit;
+    }
+
+    code,
+    .mono {
+      font-family: var(--display);
+    }
+
+    :focus-visible {
+      outline: 3px solid var(--amber);
+      outline-offset: 4px;
+    }
+
+    .archive-notice {
+      position: relative;
+      z-index: 3;
+      margin: 0;
+      padding: 0.8rem clamp(1.25rem, 5vw, 5rem);
+      border-bottom: 1px solid var(--line-strong);
+      color: var(--paper);
+      background: var(--amber-soft);
+      text-align: center;
+    }
+
+    .archive-notice a {
+      color: var(--amber);
+      font-weight: 700;
+    }
+
+    .hero {
+      position: relative;
+      max-width: 1540px;
+      min-height: 82vh;
+      margin: 0 auto;
+      padding: clamp(5.5rem, 11vw, 10rem) clamp(1.25rem, 5vw, 5rem) 5rem;
+      display: grid;
+      align-content: center;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "06";
+      position: absolute;
+      right: clamp(1rem, 5vw, 5rem);
+      top: 7%;
+      color: transparent;
+      font-family: var(--display);
+      font-size: clamp(12rem, 31vw, 34rem);
+      font-weight: 700;
+      line-height: 1;
+      -webkit-text-stroke: 1px var(--line-strong);
+      opacity: 0.52;
+      pointer-events: none;
+    }
+
+    .signal-line {
+      width: min(15rem, 45vw);
+      height: 3px;
+      margin-bottom: 1.7rem;
+      background: linear-gradient(90deg, var(--amber), var(--amber) 72%, transparent);
+      transform-origin: left;
+      animation: signal-in 900ms cubic-bezier(.2, .8, .2, 1) both;
+    }
+
+    .eyebrow {
+      position: relative;
+      z-index: 1;
+      margin: 0 0 1.2rem;
+      color: var(--amber);
+      font-family: var(--display);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      position: relative;
+      z-index: 1;
+      max-width: 1000px;
+      margin-bottom: 1.4rem;
+      font-family: var(--display);
+      font-size: clamp(3.3rem, 8.5vw, 8.8rem);
+      font-weight: 650;
+      letter-spacing: -0.065em;
+      line-height: 0.94;
+      text-wrap: balance;
+      animation: rise-in 760ms 90ms both;
+    }
+
+    .hero-deck {
+      position: relative;
+      z-index: 1;
+      max-width: 740px;
+      margin-bottom: 2.4rem;
+      color: var(--muted);
+      font-size: clamp(1rem, 1.8vw, 1.3rem);
+      animation: rise-in 760ms 180ms both;
+    }
+
+    .hero-meta {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.7rem;
+      animation: rise-in 760ms 260ms both;
+    }
+
+    .chip,
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.48rem;
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      padding: 0.48rem 0.78rem;
+      background: var(--panel);
+      font-family: var(--display);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .chip::before,
+    .badge::before {
+      content: "";
+      width: 0.48rem;
+      height: 0.48rem;
+      border-radius: 50%;
+      background: currentColor;
+      box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 15%, transparent);
+    }
+
+    .verified { color: var(--green); }
+    .qemu,
+    .inferred { color: var(--blue); }
+    .pending { color: var(--amber); }
+    .stop { color: var(--red); }
+
+    .legend-strip {
+      border-block: 1px solid var(--line-strong);
+      background: color-mix(in srgb, var(--panel-solid) 88%, transparent);
+      backdrop-filter: blur(14px);
+    }
+
+    .legend-inner {
+      max-width: 1540px;
+      margin: 0 auto;
+      padding: 1rem clamp(1.25rem, 5vw, 5rem);
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.8rem 1.1rem;
+    }
+
+    .legend-title {
+      margin-right: auto;
+      color: var(--muted);
+      font-family: var(--display);
+      font-size: 0.75rem;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+
+    .current-progress {
+      max-width: 1400px;
+      margin: 2.5rem auto 0;
+      border: 1px solid var(--line-strong);
+      border-left: 4px solid var(--amber);
+      padding: clamp(1.25rem, 3vw, 2.2rem);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .current-progress h2 {
+      margin-bottom: 0.55rem;
+      font-family: var(--display);
+      font-size: clamp(1.5rem, 3vw, 2.4rem);
+      letter-spacing: -0.035em;
+    }
+
+    .progress-summary {
+      max-width: 1120px;
+      margin-bottom: 1.2rem;
+      color: var(--paper);
+      font-size: 1rem;
+    }
+
+    .progress-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.8rem;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .progress-list li {
+      min-width: 0;
+      border: 1px solid var(--line);
+      padding: 1rem;
+      background: var(--ink-raised);
+    }
+
+    .progress-list strong,
+    .progress-list span {
+      display: block;
+    }
+
+    .progress-list strong {
+      margin-bottom: 0.35rem;
+      color: var(--paper);
+    }
+
+    .progress-list span {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .progress-list .progress-evidence,
+    .progress-list .progress-next-gate {
+      margin-bottom: 0.55rem;
+      color: var(--green);
+      font-family: var(--display);
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+
+    .progress-list .current {
+      border-color: var(--amber);
+      background: var(--amber-soft);
+    }
+
+    .progress-list .you-are-here {
+      margin-bottom: 0.55rem;
+      color: var(--paper);
+      font-family: var(--display);
+      font-size: 0.7rem;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+    }
+
+    .progress-next {
+      margin: 1rem 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .current-location {
+      margin: 1rem 0 0;
+      border-left: 3px solid var(--amber);
+      padding: 0.8rem 1rem;
+      color: var(--paper);
+      background: var(--amber-soft);
+      font-family: var(--display);
+      font-size: 0.86rem;
+    }
+
+    .page-shell {
+      max-width: 1540px;
+      margin: 0 auto;
+      padding: 5rem clamp(1.25rem, 5vw, 5rem) 8rem;
+      display: grid;
+      grid-template-columns: 180px minmax(0, 1fr);
+      gap: clamp(2rem, 5vw, 5rem);
+    }
+
+    .stage-nav {
+      position: sticky;
+      top: 1.25rem;
+      align-self: start;
+      display: grid;
+      gap: 0.45rem;
+      font-family: var(--display);
+      font-size: 0.74rem;
+    }
+
+    .stage-nav::before {
+      content: "SIGNAL PATH";
+      margin-bottom: 0.8rem;
+      color: var(--amber);
+      font-weight: 700;
+      letter-spacing: 0.18em;
+    }
+
+    .stage-nav a {
+      position: relative;
+      border-left: 1px solid var(--line-strong);
+      padding: 0.65rem 0.8rem;
+      color: var(--muted);
+      text-decoration: none;
+      transition: color 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+
+    .stage-nav a:hover,
+    .stage-nav a[aria-current="true"] {
+      border-left-color: var(--amber);
+      color: var(--paper);
+      background: linear-gradient(90deg, var(--amber-soft), transparent);
+    }
+
+    main {
+      min-width: 0;
+    }
+
+    .chapter {
+      position: relative;
+      min-width: 0;
+      margin-bottom: clamp(5rem, 11vw, 10rem);
+      scroll-margin-top: 2rem;
+    }
+
+    .chapter-heading {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 1.2rem 1.6rem;
+      align-items: start;
+      margin-bottom: 1.5rem;
+    }
+
+    .chapter-index {
+      min-width: 4rem;
+      padding-top: 0.2rem;
+      color: var(--amber);
+      font-family: var(--display);
+      font-size: clamp(1.5rem, 3vw, 2.7rem);
+      line-height: 1;
+    }
+
+    .chapter h2 {
+      margin-bottom: 0.55rem;
+      font-family: var(--display);
+      font-size: clamp(1.9rem, 4vw, 4.1rem);
+      font-weight: 600;
+      letter-spacing: -0.045em;
+      line-height: 1.08;
+    }
+
+    .answer {
+      max-width: 840px;
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 1.03rem;
+    }
+
+    .diagram-card {
+      position: relative;
+      min-width: 0;
+      border: 1px solid var(--line-strong);
+      border-radius: 2px;
+      overflow: hidden;
+      background:
+        linear-gradient(135deg, var(--amber-soft), transparent 22%),
+        var(--panel);
+      box-shadow: var(--shadow);
+      cursor: zoom-in;
+      transition: transform 180ms ease, border-color 180ms ease;
+    }
+
+    .diagram-card:hover {
+      border-color: color-mix(in srgb, var(--amber) 58%, var(--line-strong));
+      transform: translateY(-2px);
+    }
+
+    .diagram-card::before,
+    .diagram-card::after {
+      content: "";
+      position: absolute;
+      z-index: 2;
+      width: 1rem;
+      height: 1rem;
+      pointer-events: none;
+    }
+
+    .diagram-card::before {
+      top: 0.7rem;
+      left: 0.7rem;
+      border-top: 2px solid var(--amber);
+      border-left: 2px solid var(--amber);
+    }
+
+    .diagram-card::after {
+      right: 0.7rem;
+      bottom: 0.7rem;
+      border-right: 2px solid var(--amber);
+      border-bottom: 2px solid var(--amber);
+    }
+
+    .diagram-toolbar {
+      position: relative;
+      z-index: 3;
+      min-height: 3.1rem;
+      border-bottom: 1px solid var(--line);
+      padding: 0.78rem 1.1rem 0.72rem 2.2rem;
+      display: flex;
+      justify-content: space-between;
+      gap: 1rem;
+      color: var(--muted);
+      font-family: var(--display);
+      font-size: 0.7rem;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+
+    .diagram-toolbar strong {
+      color: var(--paper);
+      font-weight: 600;
+    }
+
+    .diagram-scroll {
+      min-width: 0;
+      min-height: 360px;
+      max-height: min(78vh, 900px);
+      padding: clamp(1rem, 3vw, 2.5rem);
+      overflow: auto;
+      display: grid;
+      align-items: start;
+      justify-items: safe center;
+      scrollbar-color: var(--amber) transparent;
+    }
+
+    pre.mermaid {
+      width: max-content;
+      min-width: min(100%, 680px);
+      max-width: none;
+      margin: 0;
+      color: var(--paper);
+      font-family: var(--display);
+      white-space: pre;
+    }
+
+    pre.mermaid svg {
+      display: block;
+      min-width: 680px;
+      height: auto;
+      max-width: none !important;
+    }
+
+    pre.mermaid[data-diagram="power-sequence"] svg,
+    pre.mermaid[data-diagram="fault-recovery"] svg {
+      min-width: 980px;
+    }
+
+    .source-fallback {
+      width: 100% !important;
+      min-width: 0 !important;
+      padding: 1rem;
+      overflow: auto;
+      white-space: pre-wrap !important;
+      background: var(--ink-raised);
+    }
+
+    .render-warning {
+      margin: 0;
+      border-bottom: 1px solid var(--red);
+      padding: 0.8rem 1rem;
+      color: var(--red);
+      background: var(--red-soft);
+      font-family: var(--display);
+      font-size: 0.78rem;
+    }
+
+    .notes-grid,
+    .evidence-grid,
+    .boundary-grid {
+      margin-top: 1.1rem;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1rem;
+    }
+
+    .note,
+    .evidence-card,
+    .boundary-card {
+      border: 1px solid var(--line);
+      padding: 1.1rem 1.2rem;
+      background: color-mix(in srgb, var(--panel-solid) 70%, transparent);
+    }
+
+    .note h3,
+    .evidence-card h3,
+    .boundary-card h3 {
+      margin-bottom: 0.5rem;
+      font-family: var(--display);
+      font-size: 0.88rem;
+      letter-spacing: 0.02em;
+    }
+
+    .note p,
+    .evidence-card p,
+    .boundary-card p,
+    .boundary-card ul {
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .boundary-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .boundary-card.can {
+      border-top: 3px solid var(--green);
+    }
+
+    .boundary-card.cannot {
+      border-top: 3px solid var(--red);
+    }
+
+    .boundary-card li + li {
+      margin-top: 0.45rem;
+    }
+
+    .safety-panel {
+      margin-top: 1.2rem;
+      border: 1px solid var(--red);
+      padding: clamp(1rem, 3vw, 1.6rem);
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 1rem;
+      color: var(--paper);
+      background: var(--red-soft);
+    }
+
+    .safety-panel strong {
+      color: var(--red);
+      font-family: var(--display);
+      font-size: 1.35rem;
+    }
+
+    .safety-panel p {
+      margin: 0;
+    }
+
+    .evidence-section {
+      border-top: 1px solid var(--line-strong);
+      padding-top: 3rem;
+    }
+
+    .evidence-section > h2 {
+      font-family: var(--display);
+      font-size: clamp(2rem, 4vw, 4rem);
+      letter-spacing: -0.045em;
+    }
+
+    .evidence-card {
+      min-height: 190px;
+      border-top: 3px solid var(--amber);
+    }
+
+    .evidence-card[data-evidence="board"] { border-top-color: var(--green); }
+    .evidence-card[data-evidence="qemu"] { border-top-color: var(--blue); }
+
+    .commit {
+      display: block;
+      margin-bottom: 0.8rem;
+      color: var(--amber);
+      font-family: var(--display);
+      font-size: 1.15rem;
+      font-weight: 700;
+    }
+
+    footer {
+      border-top: 1px solid var(--line-strong);
+      padding: 2rem clamp(1.25rem, 5vw, 5rem) 3rem;
+      color: var(--muted);
+      font-family: var(--display);
+      font-size: 0.76rem;
+      text-align: center;
+    }
+
+    .floating-controls {
+      position: fixed;
+      right: 1rem;
+      bottom: 1rem;
+      z-index: 20;
+      display: flex;
+      gap: 0.55rem;
+    }
+
+    .icon-button,
+    .back-to-top,
+    .dialog-button {
+      min-width: 2.8rem;
+      min-height: 2.8rem;
+      border: 1px solid var(--line-strong);
+      border-radius: 0;
+      display: inline-grid;
+      place-items: center;
+      color: var(--paper);
+      background: var(--panel-solid);
+      box-shadow: 0 12px 30px rgba(0, 0, 0, 0.2);
+      cursor: pointer;
+      text-decoration: none;
+      transition: border-color 160ms ease, color 160ms ease, transform 160ms ease;
+    }
+
+    .icon-button:hover,
+    .back-to-top:hover,
+    .dialog-button:hover {
+      border-color: var(--amber);
+      color: var(--amber);
+      transform: translateY(-2px);
+    }
+
+    #diagram-dialog {
+      width: min(96vw, 1580px);
+      height: min(92vh, 1040px);
+      max-width: none;
+      max-height: none;
+      border: 1px solid var(--line-strong);
+      padding: 0;
+      color: var(--paper);
+      background: var(--panel-solid);
+      box-shadow: 0 35px 100px rgba(0, 0, 0, 0.72);
+    }
+
+    #diagram-dialog::backdrop {
+      background: rgba(2, 8, 7, 0.86);
+      backdrop-filter: blur(10px);
+    }
+
+    .dialog-head {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      border-bottom: 1px solid var(--line-strong);
+      padding: 0.7rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      background: var(--panel-solid);
+    }
+
+    .dialog-title {
+      margin: 0;
+      color: var(--muted);
+      font-family: var(--display);
+      font-size: 0.75rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .dialog-actions {
+      display: flex;
+      gap: 0.45rem;
+    }
+
+    .dialog-button {
+      min-height: 2.35rem;
+      min-width: 2.35rem;
+      padding: 0.3rem 0.7rem;
+      box-shadow: none;
+      font-family: var(--display);
+      font-size: 0.72rem;
+    }
+
+    #diagram-stage {
+      width: 100%;
+      height: calc(100% - 4rem);
+      overflow: auto;
+      display: grid;
+      place-items: start;
+      background:
+        linear-gradient(90deg, var(--line) 1px, transparent 1px) 0 0 / 32px 32px,
+        linear-gradient(var(--line) 1px, transparent 1px) 0 0 / 32px 32px,
+        var(--ink-raised);
+    }
+
+    .focus-canvas {
+      min-width: max-content;
+      min-height: max-content;
+      padding: 4rem;
+      transform-origin: top left;
+      transition: transform 140ms ease;
+    }
+
+    .focus-canvas svg {
+      display: block;
+      min-width: min(1100px, 82vw);
+      height: auto;
+      max-width: none !important;
+    }
+
+    @keyframes signal-in {
+      from { transform: scaleX(0); opacity: 0; }
+      to { transform: scaleX(1); opacity: 1; }
+    }
+
+    @keyframes rise-in {
+      from { transform: translateY(18px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
+    @media (max-width: 1050px) {
+      .notes-grid,
+      .evidence-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .evidence-card {
+        min-height: 0;
+      }
+    }
+
+    @media (max-width: 840px) {
+      .hero {
+        min-height: 72vh;
+        padding-top: 7rem;
+      }
+
+      .hero::after {
+        top: 13%;
+        right: -1rem;
+        font-size: 15rem;
+      }
+
+      .legend-title {
+        width: 100%;
+      }
+
+      .current-progress {
+        margin: 1.25rem;
+      }
+
+      .progress-list {
+        grid-template-columns: 1fr;
+      }
+
+      .page-shell {
+        padding-top: 2rem;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 2.6rem;
+      }
+
+      .stage-nav {
+        position: sticky;
+        top: 0;
+        z-index: 15;
+        width: calc(100% + 2.5rem);
+        margin-left: -1.25rem;
+        padding: 0.65rem 1.25rem;
+        grid-auto-flow: column;
+        grid-auto-columns: max-content;
+        overflow-x: auto;
+        background: var(--panel-solid);
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+        scrollbar-width: thin;
+      }
+
+      .stage-nav::before {
+        display: none;
+      }
+
+      .stage-nav a {
+        border-left: 0;
+        border-bottom: 1px solid var(--line-strong);
+        padding: 0.55rem 0.7rem;
+      }
+
+      .stage-nav a:hover,
+      .stage-nav a[aria-current="true"] {
+        border-bottom-color: var(--amber);
+        background: linear-gradient(0deg, var(--amber-soft), transparent);
+      }
+
+      .chapter-heading {
+        grid-template-columns: 1fr;
+        gap: 0.6rem;
+      }
+
+      .chapter-index {
+        min-width: 0;
+      }
+
+      .diagram-scroll {
+        min-height: 300px;
+        max-height: 68vh;
+        align-items: start;
+        justify-items: safe center;
+      }
+
+      .boundary-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .safety-panel {
+        grid-template-columns: 1fr;
+      }
+
+      .diagram-toolbar span:last-child {
+        display: none;
+      }
+
+      .floating-controls {
+        right: 0.7rem;
+        bottom: 0.7rem;
+      }
+    }
+
+    @media (max-width: 520px) {
+      h1 {
+        font-size: clamp(3rem, 17vw, 4.8rem);
+      }
+
+      .hero-meta .chip {
+        width: 100%;
+      }
+
+      pre.mermaid svg {
+        min-width: 620px;
+      }
+
+      .dialog-head {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      #diagram-stage {
+        height: calc(100% - 7rem);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <aside class="archive-notice">
+    历史快照（冻结于 2026-07-20）。实时状态请查看
+    <a href="/docs/porting/README.md">docs/porting/README.md</a>。
+  </aside>
+  <header class="hero" id="top">
+    <div class="signal-line" aria-hidden="true"></div>
+    <p class="eyebrow">Milk-V Megrez · RISC-V boot field map · 2026-07-20</p>
+    <h1>从上电<br>到用户态</h1>
+    <p class="hero-deck">
+      六张可放大的 Mermaid 图，把开发机生成的字节、Megrez 固件接力、
+      U-Boot 的唯一一次 <code>booti</code>，以及 Asterinas 内部启动连成一条可审计信号路径。
+    </p>
+    <div class="hero-meta" aria-label="当前启动状态摘要">
+      <span class="chip verified">真机已到 PID 1</span>
+      <span class="chip qemu">QEMU 已到 PID 1</span>
+      <span class="chip qemu">QEMU 软件恢复已闭环</span>
+      <span class="chip verified">真机软件恢复已观察</span>
+      <span class="chip pending">显示 / 交互待完成</span>
+      <span class="chip stop">无恢复能力时停止</span>
+    </div>
+  </header>
+
+  <aside class="legend-strip" aria-label="证据标签说明">
+    <div class="legend-inner">
+      <span class="legend-title">Evidence signal</span>
+      <span class="badge verified">已验证</span>
+      <span class="badge inferred">合理推断</span>
+      <span class="badge pending">待真机验证</span>
+      <span class="badge stop">停止 / 危险边界</span>
+    </div>
+  </aside>
+
+  <section class="current-progress" id="current-progress" aria-labelledby="current-progress-title">
+    <p class="eyebrow">Current position</p>
+    <h2 id="current-progress-title">我们目前做到哪里了？</h2>
+    <p class="progress-summary">Megrez 真机已进入 PID 1，并在同一轮恢复到 U-Boot；当前缺口已经收敛为可见控制台和基础交互。</p>
+    <ol class="progress-list" aria-label="Asterinas 在 Megrez 上的当前启动进度">
+      <li>
+        <span class="progress-evidence">Megrez 真机记录 · 6df0f28f</span>
+        <strong>到达 [kernel] rootfs is ready，随后 init ENOENT</strong>
+        <span>boot hart 2；hart 0/1/3 已启动。默认 Sv48、OSTD、内核组件和 rootfs 均有真机证据。原因已定位：RAM bootargs 覆盖 DTB，丢失 init=/init。这不是当前 QEMU 候选。</span>
+      </li>
+      <li>
+        <span class="progress-evidence">Megrez 当前真机 · 3ef99e6bd</span>
+        <strong>PID 1 已进入用户态，write(fd=1, requested=50) = 50</strong>
+        <span><code>console_registry=empty</code>；UART 日志中没有用户态 hello，且 Asterinas 未接收 framebuffer。同一受控会话随后观察到完整 OpenSBI → U-Boot → prompt 恢复序列。</span>
+      </li>
+      <li>
+        <span class="progress-evidence">QEMU PID 1 基线 · 593d5bb19</span>
+        <strong>真实通用 U-Boot booti 已进入 PID 1</strong>
+        <span>QEMU 先复现 stale RAM bootargs 导致的 init ENOENT，再用修正后的 RAM bootargs 进入用户态；它仍只证明通用虚拟硬件的软件链路。</span>
+      </li>
+      <li>
+        <span class="progress-evidence">16 GiB 慢速包络 · 70734c14e</span>
+        <strong>direct QEMU slow PASS</strong>
+        <span>4 HART、Sv48/Svade、用户态 marker 和进程清理均通过；它不是 U-Boot 或真机验证。</span>
+      </li>
+      <li>
+        <span class="progress-evidence">冻结 QEMU 恢复证据 · 7f691c479</span>
+        <strong>timer 与 panic 的真实 U-Boot booti 恢复均 PASS</strong>
+        <span>冻结 QEMU 流程均只执行一次 booti，完成资源清理且未修改启动盘；QEMU 不能证明 EIC7700 厂商 SBI reset，timer 与 SBI 都停止时软件恢复无能为力。</span>
+      </li>
+      <li class="current" aria-current="step">
+        <span class="you-are-here">YOU ARE HERE</span>
+        <span class="progress-next-gate">下一阶段：显示控制台与交互</span>
+        <strong>先显示 shell，再完成基础输入输出</strong>
+        <span>第一门：让 tty0 在 HDMI framebuffer 上可见。第二门：让 shell 接收输入并回显基础命令。</span>
+      </li>
+    </ol>
+    <p class="progress-next">今天先用串口提供输入、HDMI 显示 shell；USB 键盘作为独立的后续外设里程碑。</p>
+  </section>
+
+  <div class="page-shell">
+    <nav class="stage-nav" aria-label="启动阶段导航">
+      <a href="#current-progress">00 当前进展</a>
+      <a href="#worlds" aria-current="true">01 三个世界</a>
+      <a href="#power-sequence">02 上电时序</a>
+      <a href="#board-gates">03 真机门禁</a>
+      <a href="#kernel-startup">04 内核启动</a>
+      <a href="#memory-layout">05 内存布局</a>
+      <a href="#fault-recovery">06 故障恢复</a>
+      <a href="#evidence-boundary">证据边界</a>
+    </nav>
+
+    <main>
+      <section class="chapter" id="worlds">
+        <header class="chapter-heading">
+          <span class="chapter-index">01</span>
+          <div>
+            <h2>三个世界，四类启动字节</h2>
+            <p class="answer">这张图回答：谁负责构建、谁负责搬运，以及从哪一刻开始才真正运行 Asterinas。</p>
+          </div>
+        </header>
+        <div class="diagram-card" data-diagram-card="worlds" tabindex="0" role="button" aria-label="放大三个世界与启动产物图">
+          <div class="diagram-toolbar"><strong>control + artifact flow</strong><span>点击图表进入聚焦视图</span></div>
+          <div class="diagram-scroll">
+            <pre class="mermaid" data-diagram="worlds">
+flowchart LR
+    subgraph HOST["开发机 · 构建世界"]
+        H0["干净 commit&lt;br/&gt;固定容器与工具链"] --> H1["RISC-V ELF&lt;br/&gt;默认 Sv48"]
+        H1 --> H2["平坦 Linux Image&lt;br/&gt;Image v0.2 header 已链接在原位"]
+        H3["最小 initramfs&lt;br/&gt;包含 /init"]
+        H4["SHA-256 / CRC32&lt;br/&gt;大小与 HEAD 身份"]
+        H2 --> H4
+        H3 --> H4
+    end
+
+    subgraph FIRMWARE["Megrez · 固件世界"]
+        B["Boot ROM / DDR"] --> S["OpenSBI · M-mode"] --> U["U-Boot · S-mode payload"]
+        R["RockOS&lt;br/&gt;传输 / 哈希 / 恢复跳板"] --> U
+        D["真实 Megrez DTB&lt;br/&gt;硬件 + /chosen 契约"] --> U
+    end
+
+    subgraph ASTER["Asterinas · OS 世界"]
+        A0["boot assembly"] --> A1["早期页表 / 高半地址"] --> A2["Rust OSTD"]
+        A2 --> A3["Safe Rust kernel"] --> A4["rootfs / PID 1"]
+    end
+
+    H4 -->|"新文件名 + 三次哈希一致"| R
+    U -->|"booti: Image + initramfs + DTB"| A0
+    S -. "SBI console / timer / IPI / system reset" .-> A2
+    D -. "a1 = DTB address" .-> A0
+    H3 -. "rootfs + /init" .-> A3
+
+    classDef host fill:#182c28,stroke:#f0b44d,color:#f2ead8;
+    classDef firmware fill:#17242d,stroke:#77bde8,color:#f2ead8;
+    classDef kernel fill:#162a22,stroke:#76d39b,color:#f2ead8;
+    classDef bridge fill:#2c2314,stroke:#f0b44d,color:#f2ead8;
+    class H0,H1,H2,H3,H4 host;
+    class B,S,U,D firmware;
+    class A0,A1,A2,A3,A4 kernel;
+    class R bridge;
+            </pre>
+          </div>
+        </div>
+        <div class="notes-grid">
+          <article class="note"><h3>ELF ≠ booti Image</h3><p>QEMU 可直接理解 ELF 段；U-Boot <code>booti</code> 读取的是平坦 Image，不能在已经链接好的 raw image 前再插入 64 字节。</p></article>
+          <article class="note"><h3>RockOS 是跳板</h3><p>RockOS 用来传输、校验、安装新文件并正常重启；它不是 Asterinas 运行链的一层。</p></article>
+          <article class="note"><h3>DTB 是数据契约</h3><p>它描述 CPU、内存、设备和 <code>/chosen</code>。U-Boot 搬运它，Asterinas 解析它，但 DTB 本身不是固件。</p></article>
+        </div>
+      </section>
+
+      <section class="chapter" id="power-sequence">
+        <header class="chapter-heading">
+          <span class="chapter-index">02</span>
+          <div>
+            <h2>上电后的控制权时序</h2>
+            <p class="answer">这张图回答：CPU 从复位向量到 PID 1，控制权经过哪些特权层，寄存器和 SBI 服务在哪一刻进入流程。</p>
+          </div>
+        </header>
+        <div class="diagram-card" data-diagram-card="power-sequence" tabindex="0" role="button" aria-label="放大上电控制权时序图">
+          <div class="diagram-toolbar"><strong>power-on sequence</strong><span>横向滚动查看完整时序</span></div>
+          <div class="diagram-scroll">
+            <pre class="mermaid" data-diagram="power-sequence">
+sequenceDiagram
+    autonumber
+    participant R as Boot ROM / DDR
+    participant S as OpenSBI (M-mode)
+    participant U as U-Boot
+    participant A as boot assembly
+    participant O as Rust OSTD
+    participant K as Asterinas kernel
+    participant I as initramfs / PID 1
+
+    R->>R: 初始化时钟、LPDDR5 与最早期硬件
+    R->>S: 进入 M-mode 固件
+    S->>U: 以 S-mode payload 启动 U-Boot
+    U->>U: 从 SD 加载 Image / DTB / initramfs
+    U->>U: 校验 header、CRC、地址与 /chosen
+    Note over U,A: a0 = hart ID · a1 = DTB address
+    U->>A: 唯一一次 booti，跳转 Image 入口
+    A->>A: 默认 Sv48，建立早期页表并写 satp
+    A->>A: sfence.vma，切换高半 PC / SP
+    A->>O: 调用 riscv_boot
+    O-->>S: SBI console / timer / IPI / system reset
+    O->>O: 解析 DTB、内存与 initramfs
+    O->>O: 启动其余 3 个 AP
+    O->>K: start_kernel
+    K->>K: 初始化组件、随机源、驱动与调度器
+    K->>I: 解包 rootfs，exec /init
+    I->>K: PID 1 发起系统调用并输出用户态 marker
+            </pre>
+          </div>
+        </div>
+        <div class="notes-grid">
+          <article class="note"><h3><code>Starting kernel ...</code></h3><p>只证明 U-Boot 接受三个输入并完成跳转；它不证明页表、OSTD 或 Rust 已运行。</p></article>
+          <article class="note"><h3>OpenSBI 仍驻留</h3><p>Asterinas 在 S-mode 运行，同时继续调用 M-mode 的 SBI 控制台、定时器、核间中断与系统复位服务。</p></article>
+          <article class="note"><h3>成功必须越过 PID 1</h3><p>只看到 OSTD 或内核 banner 还不够；最小闭环是用户态程序真正发起系统调用并输出 marker。</p></article>
+        </div>
+      </section>
+
+      <section class="chapter" id="board-gates">
+        <header class="chapter-heading">
+          <span class="chapter-index">03</span>
+          <div>
+            <h2>真机 <code>booti</code> 前的停止门</h2>
+            <p class="answer">这张图回答：哪些错误必须在不可逆跳转前挡住，以及为什么“再试一次”不是验证方法。</p>
+          </div>
+        </header>
+        <div class="diagram-card" data-diagram-card="board-gates" tabindex="0" role="button" aria-label="放大真机启动门禁图">
+          <div class="diagram-toolbar"><strong>board launch gates</strong><span>红色节点代表立即停止</span></div>
+          <div class="diagram-scroll">
+            <pre class="mermaid" data-diagram="board-gates">
+flowchart TD
+    A["冻结源码与产物身份&lt;br/&gt;HEAD / SHA-256 / CRC / size"] --> B{"unit + fast QEMU&lt;br/&gt;六阶段 + 独立 probe 符合预期?"}
+    B -->|否| X1["STOP&lt;br/&gt;只修模拟或产物"]
+    B -->|是| C{"整个观察期都有&lt;br/&gt;外部复位 / 断电能力?"}
+    C -->|否| X2["STOP&lt;br/&gt;不执行真机 booti"]
+    C -->|是| D{"FTDI 串口只有&lt;br/&gt;一个所有者?"}
+    D -->|否| X3["STOP&lt;br/&gt;释放冲突进程"]
+    D -->|是| E["RockOS: 新文件名传入 /tmp&lt;br/&gt;不覆盖旧镜像"]
+    E --> F{"开发机 → /tmp → /boot&lt;br/&gt;三次 SHA-256 一致?"}
+    F -->|否| X4["STOP&lt;br/&gt;重新传输，不跳转"]
+    F -->|是| G["U-Boot: version / bdinfo / mmc&lt;br/&gt;加载但不执行"]
+    G --> H{"Image / initramfs / DTB&lt;br/&gt;CRC、header、地址不重叠?"}
+    H -->|否| X5["STOP&lt;br/&gt;重新冻结本轮事实"]
+    H -->|是| I["仅 RAM setenv + fdt set&lt;br/&gt;禁止 saveenv"]
+    I --> J{"RAM bootargs 与 DTB /chosen&lt;br/&gt;逐字相等?"}
+    J -->|否| X6["STOP&lt;br/&gt;修正后重新打印证明"]
+    J -->|是| K["唯一一次 booti&lt;br/&gt;0x80200000 / 0x83000000 / 0xf0000000"]
+    K --> L["纯监听并保存原始串口&lt;br/&gt;按第一缺失 marker 分类"]
+
+    classDef pass fill:#162a22,stroke:#76d39b,color:#f2ead8;
+    classDef decision fill:#2c2314,stroke:#f0b44d,color:#f2ead8;
+    classDef stop fill:#321c19,stroke:#ee7d68,color:#f2ead8;
+    class A,E,G,I,K,L pass;
+    class B,C,D,F,H,J decision;
+    class X1,X2,X3,X4,X5,X6 stop;
+            </pre>
+          </div>
+        </div>
+        <div class="safety-panel">
+          <strong>NO RECOVERY · NO BOOTI</strong>
+          <p>串口只能有一个所有者；RAM 环境与 DTB /chosen/bootargs 必须逐字一致；禁止 saveenv；每份产物只执行一次 booti。整个观察期都具备外部复位或断电能力，否则停在 U-Boot。</p>
+        </div>
+        <div class="notes-grid">
+          <article class="note"><h3>精确 bootargs</h3><p><code>cpu_no_boost_1_6ghz loglevel=info init=/init</code>。非空 RAM <code>bootargs</code> 会覆盖 DTB，仅修改 DTB 不够。</p></article>
+          <article class="note"><h3>传输身份</h3><p>文件先进入 <code>/tmp/*.part</code>，完成后 rename；哈希一致才以本轮唯一文件名安装到 <code>/boot</code> 并 <code>sync</code>。</p></article>
+          <article class="note"><h3>命令发送</h3><p>U-Boot 长命令需要逐字符节流并核对完整回显；回显完整也不等于命令已经完成。</p></article>
+        </div>
+      </section>
+
+      <section class="chapter" id="kernel-startup">
+        <header class="chapter-heading">
+          <span class="chapter-index">04</span>
+          <div>
+            <h2>Asterinas 内部如何醒来</h2>
+            <p class="answer">这张图回答：从 Image 第一条指令到用户态之间，分页、OSTD、AP、组件、随机源与 rootfs 如何接力。</p>
+          </div>
+        </header>
+        <div class="diagram-card" data-diagram-card="kernel-startup" tabindex="0" role="button" aria-label="放大 Asterinas 内部启动图">
+          <div class="diagram-toolbar"><strong>inside the image</strong><span>默认 Sv48，不把 Sv39 画成并列主路径</span></div>
+          <div class="diagram-scroll">
+            <pre class="mermaid" data-diagram="kernel-startup">
+flowchart TD
+    A["Image 入口 0x80200000&lt;br/&gt;header 0x0000..0x003f"] --> B["jal +0x40&lt;br/&gt;进入 boot body"]
+    B --> C["保存 a0 / a1&lt;br/&gt;hart ID / DTB address"]
+    C --> D["准备默认 Sv48 根页表&lt;br/&gt;文件偏移 +0x1000"]
+    D --> E["写 satp 并读回"]
+    E --> F{"硬件接受 Sv48?"}
+    F -->|是| G["启用 Sv48"]
+    F -->|拒绝| H["satp 拒绝才进入 Sv39 fallback&lt;br/&gt;根页表 +0x3000"]
+    H --> I{"硬件接受 Sv39?"}
+    I -->|否| X["早期停止&lt;br/&gt;需要分页 marker"]
+    I -->|是| J["启用 Sv39 · 诊断路径"]
+    G --> K["sfence.vma&lt;br/&gt;切换高半 PC / SP / GP"]
+    J --> K
+    K --> L["Enter riscv_boot"]
+    L --> M["解析 DTB / EarlyBootInfo&lt;br/&gt;建立 frame allocator 与内核页表"]
+    M --> N["启动其余 3 个 AP"]
+    N --> O["OSTD initialized"]
+    O --> P["组件 / 驱动 / 调度器"]
+    P --> Q["Zkr → DTB rng-seed → timestamp fallback"]
+    Q --> R["解包 initramfs&lt;br/&gt;[kernel] rootfs is ready"]
+    R --> S["exec /init · PID 1"]
+    S --> T["RISC-V userspace marker"]
+
+    classDef path fill:#162a22,stroke:#76d39b,color:#f2ead8;
+    classDef decision fill:#2c2314,stroke:#f0b44d,color:#f2ead8;
+    classDef fallback fill:#17242d,stroke:#77bde8,color:#f2ead8;
+    classDef stop fill:#321c19,stroke:#ee7d68,color:#f2ead8;
+    class A,B,C,D,E,G,K,L,M,N,O,P,Q,R,S,T path;
+    class F,I decision;
+    class H,J fallback;
+    class X stop;
+            </pre>
+          </div>
+        </div>
+        <p class="current-location">真机已验证边界：PID 1 已进入用户态，第一次 write 返回成功。UART 日志中没有用户态 hello；Asterinas 未接收 framebuffer，因此也没有 HDMI 输出路径。当前首个缺失边界是 console route；它不是 exec 或系统调用阻断。</p>
+        <div class="notes-grid">
+          <article class="note"><h3>默认 Sv48</h3><p><code>6df0f28f</code> 已在真机越过 Sv48、OSTD、3 AP 和 rootfs。Sv39 只在 <code>satp</code> 拒绝或 marker 指向分页时作为诊断。</p></article>
+          <article class="note"><h3>A/D 位</h3><p>QEMU 的 Svade/Svadu 两端用于暴露软件页表假设；它不能证明 EIC7700 真正采用哪种 A/D 行为。</p></article>
+          <article class="note"><h3>随机源 fallback</h3><p>缺少 Zkr 与 DTB seed 时，时间戳 fallback 会打印不安全警告但继续启动；这适合 bring-up，不是最终熵方案。</p></article>
+        </div>
+      </section>
+
+      <section class="chapter" id="memory-layout">
+        <header class="chapter-heading">
+          <span class="chapter-index">05</span>
+          <div>
+            <h2>一次历史实验的内存布局</h2>
+            <p class="answer">这张图回答：为什么 U-Boot 必须在跳转前重新核对地址范围；图中不是永久 ABI，也不按比例绘制。</p>
+          </div>
+        </header>
+        <div class="diagram-card" data-diagram-card="memory-layout" tabindex="0" role="button" aria-label="放大历史内存布局图">
+          <div class="diagram-toolbar"><strong>16 GiB dram · historical snapshot</strong><span>每轮都必须重做范围审计</span></div>
+          <div class="diagram-scroll">
+            <pre class="mermaid" data-diagram="memory-layout">
+flowchart TB
+    TOP["Megrez DRAM: 0x80000000 .. 0x47fffffff&lt;br/&gt;16 GiB · 图示不按比例"]
+    TOP --> A["0x80000000 .. 0x8007ffff&lt;br/&gt;OpenSBI 保留区"]
+    A --> GAP1["安全间隙"]
+    GAP1 --> B["0x80200000 起&lt;br/&gt;Asterinas flat Image / 入口"]
+    B --> C["0x83000000 起&lt;br/&gt;最小 initramfs"]
+    C --> GAP2["可用 DRAM / 需避开 DT reserved-memory"]
+    GAP2 --> D["0xdfff0000 .. 0xe0ffffff&lt;br/&gt;固件保留区"]
+    D --> LMB["0xe8507000 .. 0xefffffff&lt;br/&gt;U-Boot LMB 保留范围的一部分"]
+    LMB --> E["0xf0000000 .. 历史 0xf0029fff&lt;br/&gt;工作 DTB（扩容后）"]
+    E --> F["0xfd593000&lt;br/&gt;历史 U-Boot relocation"]
+    F --> G["0xfd800000&lt;br/&gt;历史 framebuffer"]
+    G --> END["0x47fffffff&lt;br/&gt;DRAM 末端"]
+    WARNING["下一轮必须重新执行 bdinfo&lt;br/&gt;并按本轮 size / CRC / reserved ranges 重算"] -.-> B
+    WARNING -.-> C
+    WARNING -.-> E
+
+    classDef firmware fill:#17242d,stroke:#77bde8,color:#f2ead8;
+    classDef payload fill:#162a22,stroke:#76d39b,color:#f2ead8;
+    classDef gap fill:#101b18,stroke:#60766d,color:#a9b4aa,stroke-dasharray:5 4;
+    classDef warning fill:#321c19,stroke:#ee7d68,color:#f2ead8;
+    class A,D,LMB,F,G firmware;
+    class B,C,E payload;
+    class GAP1,GAP2,TOP,END gap;
+    class WARNING warning;
+            </pre>
+          </div>
+        </div>
+        <div class="safety-panel">
+          <strong>HISTORICAL · NOT A CONSTANT</strong>
+          <p>下一轮必须重新执行 bdinfo。历史地址可解释门禁结构，但不能无条件复制到另一块板、另一版固件或另一份 Image；文件大小变化会改变末端地址。</p>
+        </div>
+        <div class="notes-grid">
+          <article class="note"><h3>真机地址</h3><p>历史模板使用 Image <code>0x80200000</code>、initramfs <code>0x83000000</code>、DTB <code>0xf0000000</code>。</p></article>
+          <article class="note"><h3>QEMU 不同</h3><p>通用 QEMU U-Boot 流程的 DTB 地址为 <code>0x88000000</code>；不能把它与真机 <code>0xf0000000</code> 混用。</p></article>
+          <article class="note"><h3>Image 内部布局</h3><p>header 位于 <code>+0x0000</code>，boot body <code>+0x0040</code>，Sv48 root <code>+0x1000</code>，Sv39 root <code>+0x3000</code>。</p></article>
+        </div>
+      </section>
+
+      <section class="chapter" id="fault-recovery">
+        <header class="chapter-heading">
+          <span class="chapter-index">06</span>
+          <div>
+            <h2>第一缺失标记与恢复路径</h2>
+            <p class="answer">这张图回答：串口最后一条可信输出把故障限制在哪一层，以及完全静默时为什么不能继续敲命令。</p>
+          </div>
+        </header>
+        <div class="diagram-card" data-diagram-card="fault-recovery" tabindex="0" role="button" aria-label="放大串口故障定位与恢复图">
+          <div class="diagram-toolbar"><strong>first missing marker</strong><span>一次运行，只归因第一条缺失边界</span></div>
+          <div class="diagram-scroll">
+            <pre class="mermaid" data-diagram="fault-recovery">
+flowchart TD
+    A{"看到 Starting kernel ... ?"}
+    A -->|否| F1["Image / DTB / initramfs&lt;br/&gt;或 U-Boot 门禁"]
+    A -->|是| B{"看到 Enter riscv_boot?"}
+    B -->|否| C{"本轮是带 pre/post-satp marker 的诊断 Image?"}
+    C -->|否| F2["普通 Image：入口至 riscv_boot 前&lt;br/&gt;无法再细分"]
+    C -->|是| D{"看到 pre-satp SBI marker?"}
+    D -->|否| F3["入口 / header / 指令&lt;br/&gt;或最早期异常"]
+    D -->|是| P{"看到 post-satp marker?"}
+    P -->|否| F4["Sv48 / PTE A-D / TLB&lt;br/&gt;或异常委托"]
+    P -->|是| F5["高半 PC / SP / GP&lt;br/&gt;或 Rust 跳转"]
+    B -->|是| E{"看到 OSTD initialized?"}
+    E -->|否| F6["DTB / EarlyBootInfo&lt;br/&gt;或 start_kernel"]
+    E -->|是| G{"看到随机源选择?"}
+    G -->|否| F7["kernel::init 早期&lt;br/&gt;或随机源"]
+    G -->|是| H{"看到 [kernel] rootfs is ready?"}
+    H -->|否| F8["组件 / 驱动&lt;br/&gt;或 initramfs 解包"]
+    H -->|是| I{"看到 PID 1 诊断 marker?"}
+    I -->|否| F9["/init / VDSO / exec&lt;br/&gt;或首次 U-mode 入口"]
+    I -->|是| W{"看到 write 返回 50?"}
+    W -->|否| F10["用户页 fault / syscall&lt;br/&gt;或 write 路径"]
+    W -->|是| V{"看到用户态 hello?"}
+    V -->|否| F11["console 注册 / 路由&lt;br/&gt;UART 或 framebuffer"]
+    V -->|是| PASS["可见用户态输出闭环"]
+    PASS --> R{"观察到完整恢复序列?"}
+
+    F1 --> QUIET["纯监听并保存日志&lt;br/&gt;静默时不要继续发送试探字符"]
+    F2 --> QUIET
+    F3 --> QUIET
+    F4 --> QUIET
+    F5 --> QUIET
+    F6 --> QUIET
+    F7 --> QUIET
+    F8 --> QUIET
+    F9 --> QUIET
+    F10 --> QUIET
+    F11 --> QUIET
+    QUIET --> R{"观察到完整恢复序列?"}
+    R -->|是| U["新 OpenSBI → 新 U-Boot → prompt&lt;br/&gt;归档本轮证据"]
+    R -->|否| X["操作员外部复位 / 断电&lt;br/&gt;WDT0 不能作为恢复保障"]
+    X --> U
+
+    classDef decision fill:#2c2314,stroke:#f0b44d,color:#f2ead8;
+    classDef fault fill:#321c19,stroke:#ee7d68,color:#f2ead8;
+    classDef pass fill:#162a22,stroke:#76d39b,color:#f2ead8;
+    classDef recovery fill:#17242d,stroke:#77bde8,color:#f2ead8;
+    class A,B,C,D,P,E,G,H,I,W,V,R decision;
+    class F1,F2,F3,F4,F5,F6,F7,F8,F9,F10,F11,QUIET,X fault;
+    class PASS pass;
+    class U recovery;
+            </pre>
+          </div>
+        </div>
+        <p class="current-location">真机已验证边界：PID 1 的 write 返回成功，但 UART 日志中没有用户态 hello；Asterinas 未接收 framebuffer，因此 HDMI 尚无输出路径。同一受控会话随后观察到新的 OpenSBI banner → U-Boot banner → U-Boot prompt。下一阶段只处理显示、控制台路由与输入，不再回退到 PID 1 之前重复排查。</p>
+        <div class="notes-grid">
+          <article class="note"><h3>Marker 是边界，不是装饰</h3><p>每条 marker 都应位于一次不可逆转换前后；没有 marker 指向时，不要一次重写多层启动代码。</p></article>
+          <article class="note"><h3>WDT0 结论</h3><p>历史实验确认 counter 递减，但超过 705 秒仍未出现新 banner 或 prompt，因此 WDT0 不能作为恢复保障。</p></article>
+          <article class="note"><h3>成功 marker</h3><p class="mono">&gt;&gt;&gt; Hello from RISC-V userspace on Asterinas! &lt;&lt;&lt;</p></article>
+        </div>
+        <p class="answer">完整恢复必须依次看到新的 OpenSBI banner → U-Boot banner → U-Boot prompt；任何不完整序列都不能记为 PASS。</p>
+      </section>
+
+      <section class="evidence-section" id="evidence-boundary">
+        <p class="eyebrow">Do not merge these evidence lines</p>
+        <h2>五条证据线，五种边界</h2>
+        <p class="answer">这些结论来自不同 Image 与不同运行环境，不得串成同一份 Image 的连续运行。当前 3ef99e6bd 真机证据证明 PID 1 与恢复；它不证明 framebuffer、UART 或输入设备已经可用。</p>
+        <div class="evidence-grid">
+          <article class="evidence-card" data-evidence="board">
+            <span class="commit">6df0f28f</span>
+            <h3>Megrez 真机</h3>
+            <p>默认 Sv48、boot hart 2、其余 3 AP、OSTD、组件、timestamp RNG 与 rootfs 已通过；真机到 rootfs 后 init ENOENT，根因是 RAM bootargs 覆盖 DTB。</p>
+          </article>
+          <article class="evidence-card" data-evidence="board">
+            <span class="commit">3ef99e6bd</span>
+            <h3>Megrez 真机 PID 1 与恢复</h3>
+            <p>PID 1 进入用户态，首次 50 字节 write 返回成功；UART 日志未见 hello，Asterinas 也未接收 framebuffer。同一受控会话随后出现新的完整固件周期与 U-Boot prompt。</p>
+          </article>
+          <article class="evidence-card" data-evidence="qemu">
+            <span class="commit">593d5bb19</span>
+            <h3>fast QEMU / U-Boot corrected 到用户态</h3>
+            <p>direct Sv48 的 Svade/Svadu 两端均到 PID 1；通用真实 U-Boot 精确复现 stale bootargs，并在 corrected 路径到达用户态。</p>
+          </article>
+          <article class="evidence-card" data-evidence="qemu">
+            <span class="commit">70734c14e</span>
+            <h3>16 GiB direct QEMU slow PASS</h3>
+            <p>4 HART、Sv48/Svade、用户态 marker 与进程清理均通过；它不是 U-Boot 或 EIC7700 真机验证。</p>
+          </article>
+          <article class="evidence-card" data-evidence="qemu">
+            <span class="commit">7f691c479</span>
+            <h3>QEMU 软件恢复 timer / panic PASS</h3>
+            <p>冻结的默认 Sv48 Image 在 timer 与 panic 场景都通过真实 U-Boot <code>booti</code> 软件恢复；每场景均清理 QEMU、socat 与临时文件，启动盘未被修改，但这不能证明 EIC7700 厂商 SBI reset。</p>
+          </article>
+        </div>
+
+        <div class="boundary-grid">
+          <article class="boundary-card can">
+            <h3>QEMU 已覆盖的软件链路</h3>
+            <ul>
+              <li>RISC-V Image 布局与通用 <code>booti</code> 软件链路</li>
+              <li>默认 Sv48、4 HART、Svade/Svadu 两端的软件假设</li>
+              <li>stale RAM bootargs 导致 init ENOENT 的机制</li>
+              <li>无 Zkr、无 DTB seed 时的 timestamp fallback</li>
+              <li>16 GiB 地址容量近似下进入 PID 1</li>
+            </ul>
+          </article>
+          <article class="boundary-card cannot">
+            <h3>QEMU 不能替真机回答</h3>
+            <ul>
+              <li>厂商 OpenSBI / U-Boot、MMC 与真实启动 hart 行为</li>
+              <li>真机 DTB 已现场审计，原始文件未入库；模拟只使用净化的 QEMU virt DTB</li>
+              <li>EIC7700 MMIO / 中断 / 时钟 / reset / PMP / cache</li>
+              <li>真实 reserved-memory、no-map、CMA 与 cache/coherency</li>
+              <li>MMC / PMIC / WDT、断电恢复、长期 SMP 与熵质量</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <footer>
+    STATIC FIELD MAP · 不执行命令 · 不访问串口 · 所有真机地址在下一轮实验前重新审计
+  </footer>
+
+  <div class="floating-controls" aria-label="页面工具">
+    <button class="icon-button" id="theme-toggle" type="button" aria-label="切换深浅主题" title="切换深浅主题">◐</button>
+    <a class="back-to-top" href="#top" aria-label="返回顶部" title="返回顶部">↑</a>
+  </div>
+
+  <dialog id="diagram-dialog" aria-label="放大的启动流程图">
+    <div class="dialog-head">
+      <p class="dialog-title" id="dialog-title">Diagram focus</p>
+      <div class="dialog-actions">
+        <button class="dialog-button" id="zoom-out" type="button" aria-label="缩小图表">−</button>
+        <button class="dialog-button" id="zoom-reset" type="button" aria-label="复位缩放">100%</button>
+        <button class="dialog-button" id="zoom-in" type="button" aria-label="放大图表">＋</button>
+        <button class="dialog-button" id="dialog-close" type="button">关闭</button>
+      </div>
+    </div>
+    <div id="diagram-stage"></div>
+  </dialog>
+
+  <noscript><p class="render-warning">浏览器已禁用 JavaScript；下面保留 Mermaid 源码，但无法渲染或放大。</p></noscript>
+  <script
+    src="https://cdn.jsdelivr.net/npm/mermaid@11.16.0/dist/mermaid.min.js"
+    integrity="sha384-T/0lMUdJpd2S1ZHtRiofG3htU3xPCrFVeAQ1UUE2TJwlEJSV5NUwn30kP28n238E"
+    crossorigin="anonymous"></script>
+  <script>
+    (() => {
+      "use strict";
+
+      // Exact success string is kept here so the static artifact remains searchable.
+      const USERSPACE_MARKER = ">>> Hello from RISC-V userspace on Asterinas! <<<";
+      const diagramNodes = [...document.querySelectorAll("pre.mermaid")];
+      const diagramSources = new Map(
+        diagramNodes.map((node) => [node.dataset.diagram, node.textContent.trim()]),
+      );
+      const dialog = document.getElementById("diagram-dialog");
+      const stage = document.getElementById("diagram-stage");
+      const dialogTitle = document.getElementById("dialog-title");
+      const themeToggle = document.getElementById("theme-toggle");
+      const MIN_ZOOM = 0.5;
+      const MAX_ZOOM = 3;
+      const ZOOM_STEP = 0.25;
+      let scale = 1;
+      let completedRenderCount = 0;
+      let renderQueue = Promise.resolve();
+
+      function mermaidTheme(theme) {
+        return theme === "light" ? "base" : "dark";
+      }
+
+      function themeVariables(theme) {
+        const light = theme === "light";
+        return {
+          fontFamily: '"IBM Plex Mono", "JetBrains Mono", monospace',
+          fontSize: "15px",
+          background: light ? "#faf7ee" : "#0e1b18",
+          primaryColor: light ? "#f0e8d4" : "#162a22",
+          primaryTextColor: light ? "#18322c" : "#f2ead8",
+          primaryBorderColor: light ? "#9e6500" : "#f0b44d",
+          lineColor: light ? "#526860" : "#91a49b",
+          secondaryColor: light ? "#e4edf1" : "#17242d",
+          tertiaryColor: light ? "#f2dfd9" : "#321c19",
+          noteBkgColor: light ? "#f0e8d4" : "#2c2314",
+          noteTextColor: light ? "#18322c" : "#f2ead8",
+          noteBorderColor: light ? "#9e6500" : "#f0b44d",
+          actorBkg: light ? "#f0e8d4" : "#162a22",
+          actorBorder: light ? "#9e6500" : "#f0b44d",
+          actorTextColor: light ? "#18322c" : "#f2ead8",
+          signalColor: light ? "#526860" : "#d0c8b5",
+          signalTextColor: light ? "#18322c" : "#f2ead8",
+          labelBoxBkgColor: light ? "#faf7ee" : "#0e1b18",
+          labelBoxBorderColor: light ? "#9e6500" : "#f0b44d",
+          labelTextColor: light ? "#18322c" : "#f2ead8",
+        };
+      }
+
+      function restoreSources() {
+        diagramNodes.forEach((node) => {
+          node.removeAttribute("data-processed");
+          node.classList.remove("source-fallback");
+          node.textContent = diagramSources.get(node.dataset.diagram);
+        });
+      }
+
+      function showRenderWarning(message) {
+        document.querySelectorAll(".render-warning[data-runtime]").forEach((node) => node.remove());
+        const warning = document.createElement("p");
+        warning.className = "render-warning";
+        warning.dataset.runtime = "true";
+        warning.textContent = `图形库未加载：${message}。已保留可读的 Mermaid 源码。`;
+        const firstCard = document.querySelector(".diagram-card");
+        firstCard?.prepend(warning);
+        diagramNodes.forEach((node) => node.classList.add("source-fallback"));
+      }
+
+      function revealDiagramStarts() {
+        diagramNodes.forEach((node) => {
+          const firstNode = node.querySelector("g.node");
+          const scroller = node.closest(".diagram-scroll");
+          if (!firstNode || !scroller) return;
+
+          const target = firstNode.getBoundingClientRect();
+          const viewport = scroller.getBoundingClientRect();
+          const targetCenter = scroller.scrollLeft
+            + target.left - viewport.left + target.width / 2;
+          scroller.scrollLeft = Math.max(0, targetCenter - scroller.clientWidth / 2);
+          scroller.scrollTop = 0;
+        });
+      }
+
+      async function renderDiagrams() {
+        const requestedTheme = document.documentElement.dataset.theme;
+        restoreSources();
+        if (!window.mermaid) {
+          showRenderWarning("无法取得固定版本 Mermaid 11.16.0");
+          return;
+        }
+        document.querySelectorAll(".render-warning[data-runtime]").forEach((node) => node.remove());
+        window.mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          theme: mermaidTheme(requestedTheme),
+          themeVariables: themeVariables(requestedTheme),
+          flowchart: { curve: "basis", htmlLabels: true, useMaxWidth: false },
+          sequence: { useMaxWidth: false, wrap: true, diagramMarginX: 28, diagramMarginY: 18 },
+        });
+        try {
+          await window.mermaid.run({ nodes: diagramNodes, suppressErrors: false });
+          revealDiagramStarts();
+          completedRenderCount += 1;
+          document.documentElement.dataset.renderedTheme = requestedTheme;
+          document.documentElement.dataset.renderSequence = String(completedRenderCount);
+        } catch (error) {
+          restoreSources();
+          showRenderWarning(error instanceof Error ? error.message : String(error));
+        }
+      }
+
+      function queueRender() {
+        renderQueue = renderQueue.then(renderDiagrams, renderDiagrams);
+        return renderQueue;
+      }
+
+      function setTheme(theme) {
+        document.documentElement.dataset.theme = theme;
+        try {
+          localStorage.setItem("megrez-boot-theme", theme);
+        } catch (_) {
+          // The page still works when storage is unavailable.
+        }
+        if (dialog.open) dialog.close();
+        queueRender();
+      }
+
+      themeToggle.addEventListener("click", () => {
+        const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+        setTheme(next);
+      });
+
+      function applyZoom() {
+        const canvas = stage.querySelector(".focus-canvas");
+        if (!canvas) return;
+        canvas.style.transform = `scale(${scale})`;
+        document.getElementById("zoom-reset").textContent = `${Math.round(scale * 100)}%`;
+      }
+
+      function changeZoom(delta) {
+        const steppedScale = Math.round((scale + delta) / ZOOM_STEP) * ZOOM_STEP;
+        scale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, steppedScale));
+        applyZoom();
+      }
+
+      function openDiagram(card) {
+        const svg = card.querySelector("svg");
+        if (!svg) return;
+        const canvas = document.createElement("div");
+        canvas.className = "focus-canvas";
+        canvas.append(svg.cloneNode(true));
+        stage.replaceChildren(canvas);
+        dialogTitle.textContent = card.closest(".chapter")?.querySelector("h2")?.textContent || "Diagram focus";
+        scale = 1;
+        applyZoom();
+        dialog.showModal();
+      }
+
+      document.querySelectorAll("[data-diagram-card]").forEach((card) => {
+        card.addEventListener("click", () => openDiagram(card));
+        card.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openDiagram(card);
+          }
+        });
+      });
+
+      document.getElementById("zoom-in").addEventListener("click", (event) => {
+        event.stopPropagation();
+        changeZoom(ZOOM_STEP);
+      });
+      document.getElementById("zoom-out").addEventListener("click", (event) => {
+        event.stopPropagation();
+        changeZoom(-ZOOM_STEP);
+      });
+      document.getElementById("zoom-reset").addEventListener("click", (event) => {
+        event.stopPropagation();
+        scale = 1;
+        applyZoom();
+      });
+      document.getElementById("dialog-close").addEventListener("click", () => dialog.close());
+      stage.addEventListener("wheel", (event) => {
+        if (!dialog.open) return;
+        event.preventDefault();
+        changeZoom(event.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP);
+      }, { passive: false });
+      dialog.addEventListener("click", (event) => {
+        if (event.target === dialog) dialog.close();
+      });
+      dialog.addEventListener("close", () => {
+        stage.replaceChildren();
+        scale = 1;
+      });
+
+      const navigationLinks = [...document.querySelectorAll(".stage-nav a")];
+      const sections = navigationLinks
+        .map((link) => document.querySelector(link.getAttribute("href")))
+        .filter(Boolean);
+      const observer = new IntersectionObserver((entries) => {
+        const mostVisibleEntry = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => b.intersectionRatio - a.intersectionRatio)[0];
+        if (!mostVisibleEntry) return;
+        navigationLinks.forEach((link) => {
+          const active = link.getAttribute("href") === `#${mostVisibleEntry.target.id}`;
+          if (active) link.setAttribute("aria-current", "true");
+          else link.removeAttribute("aria-current");
+        });
+      }, { rootMargin: "-18% 0px -58%", threshold: [0.05, 0.3, 0.65] });
+      sections.forEach((section) => observer.observe(section));
+
+      // Keep the exact marker reachable to accessibility/debug tooling without visual duplication.
+      document.body.dataset.userspaceMarker = USERSPACE_MARKER;
+      queueRender();
+    })();
+  </script>
+</body>
+</html>

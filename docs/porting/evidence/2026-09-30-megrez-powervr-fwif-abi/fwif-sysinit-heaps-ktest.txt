@@ -1,0 +1,30 @@
+RISC-V Sv39 QEMU selected SYSINIT heap-base test and mapping regressions.
+
+heaps-green
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_initializes_vendor_sysinit_heap_bases ... ok
+test result: ok. 1 passed; 0 failed; 335 filtered out.
+[ktest runner] All crates tested.
+
+gpu_mmu4_cpu_accesses_owned_fields_with_independent_gpu_permissions
+test aster_kernel::device::dri::powervr_probe::mmu::tests::gpu_mmu4_cpu_accesses_owned_fields_with_independent_gpu_permissions ... ok
+test result: ok. 1 passed; 0 failed; 335 filtered out.
+[ktest runner] All crates tested.
+
+gpu_dma_stage_prepares_sysinit_fault_counter_and_alignment_checks
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_prepares_sysinit_fault_counter_and_alignment_checks ... ok
+test result: ok. 1 passed; 0 failed; 335 filtered out.
+[ktest runner] All crates tested.
+
+gpu_dma_stage_links_owned_osinit_ccbs_and_power_sync
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_links_owned_osinit_ccbs_and_power_sync ... ok
+test result: ok. 1 passed; 0 failed; 335 filtered out.
+[ktest runner] All crates tested.
+
+gpu_dma_stage_links_owned_sysinit_buffers_without_installing_root
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_links_owned_sysinit_buffers_without_installing_root ... ok
+test result: ok. 1 passed; 0 failed; 335 filtered out.
+[ktest runner] All crates tested.
+
+CARGO_NET_OFFLINE=true make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode: passed
+rustfmt --edition 2024 --check on dma.rs, fwif.rs, and mmu.rs: passed
+six selected heap constants matched RISC-V/native compiled ABI layout: passed

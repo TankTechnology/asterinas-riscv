@@ -1,0 +1,52 @@
+[  OK  ] Reached target Local File Systems.
+[  OK  ] Reached target Swap.
+[  OK  ] Reached target System Initialization.
+[  OK  ] Reached target Basic System.
+[  OK  ] Reached target Multi-User System.
+         Starting Xfce desktop session (xfc…session inside dbus-run-session)...
+[0;1;38:5:185mxfce-session.service: Failed to connect stdout to the journal socket, ignoring: No such file or directory
+[  OK  ] Started Xfce desktop session (xfce4-session inside dbus-run-session).
+[0;1;38:5:185mxfce-session.service: Failed to connect stdout to the journal socket, ignoring: No such file or directory
+dbus-smoke.service: Deactivated successfully.
+xfce-session-start: launching dbus-run-session -- xfce4-session
+[0;1;38:5:185mxfce-debug.service: Failed to connect stdout to the journal socket, ignoring: No such file or directory
+dbus-daemon[14]: [session uid=0 pid=14 pidfd=5] Activating service name='org.xfce.Xfconf' requested by ':1.0' (uid=0 pid=16 comm="/usr/bin/xfce4-session")
+dbus-daemon[14]: [session uid=0 pid=14 pidfd=5] Successfully activated service 'org.xfce.Xfconf'
+libxfce4windowing-Message: 20:33:29.611: Failed to fetch _NET_NUMBER_OF_DESKTOPS; assuming 1
+libxfce4windowing-Message: 20:33:29.734: Failed to get _NET_WORKAREA; using full screen dimensions
+libxfce4windowing-Message: 20:33:29.800: Failed to fetch _NET_CURRENT_DESKTOP; assuming 0
+libxfce4windowing-Message: 20:33:29.993: Failed to fetch _NET_CURRENT_DESKTOP; assuming 0
+/home/arch-anjie/Program/asterinas-riscv/target/riscv-cross/usr/bin/iceauth:  creating new authority file /run/xfce-root/ICEauthority
+(xfce4-session:16): xfce4-session-WARNING **: 20:33:32.182: No GPG agent found
+(xfce4-session:16): xfce4-session-WARNING **: 20:33:32.494: No SSH authentication agent found
+libxfce4windowing-Message: 20:33:37.202: Failed to fetch _NET_CURRENT_DESKTOP; assuming 0
+(xfwm4:35): xfwm4-WARNING **: 20:33:42.421: The display does not support the XRes extension.
+(xfsettingsd:40): Gtk-WARNING **: 20:33:50.562: Locale not supported by C library.
+(xfdesktop:45): Gtk-WARNING **: 20:34:23.380: Locale not supported by C library.
+(xfsettingsd:53): Gtk-WARNING **: 20:34:34.239: Locale not supported by C library.
+libxfce4windowing-Message: 20:34:38.460: Failed to fetch _NET_CURRENT_DESKTOP; assuming 0
+libxfce4windowing-Message: 20:34:38.498: Failed to fetch _NET_CURRENT_DESKTOP; assuming 0
+libxfce4windowing-Message: 20:35:19.092: Failed to fetch _NET_CURRENT_DESKTOP; assuming 0
+libxfce4windowing-Message: 20:35:26.381: Failed to fetch _NET_CURRENT_DESKTOP; assuming 0
+libxfce4windowing-Message: 20:35:26.420: Failed to fetch _NET_CURRENT_DESKTOP; assuming 0
+** (xfdesktop:45): CRITICAL **: 20:35:26.822: xfdesktop_regular_file_icon_new: assertion 'G_IS_FILE_INFO(file_info)' failed
+(xfdesktop:45): GLib-GObject-CRITICAL **: 20:35:26.843: g_object_unref: assertion 'G_IS_OBJECT (object)' failed
+** (xfdesktop:45): WARNING **: 20:35:28.292: Thumbnailer failed calling GetFlavors
+    3 root     10916 S    /usr/bin/dbus-daemon --system --nofork --nopidfile -
+    9 root      9956 S    /usr/bin/dbus-run-session -- /usr/bin/xfce4-session
+   14 root     11048 R    dbus-daemon --nofork --print-address 4 --session
+   16 root      322m S    /usr/bin/xfce4-session
+   26 root      301m S    /usr/lib/xfce4/xfconf/xfconfd
+   35 root      322m R    xfwm4
+   40 root      250m S    xfsettingsd
+   43 root      323m S    xfce4-panel
+   45 root      324m S    xfdesktop
+/run/xfce-root:
+drwx------    3         3 dbus-1
+xfce-debug.service: Deactivated successfully.
+xfce-debug.service: Consumed 1.049s CPU time.
+[  OK  ] Reached target Graphical Interface.
+Startup finished in 22.147s (kernel) + 2min 52.205s (userspace) = 3min 14.353s.
+(xfce4-session:16): xfce4-session-WARNING **: 20:36:47.223: failed to run script: Failed to execute child process ?/usr/bin/pm-is-supported? (No such file or directory)
+(xfce4-session:16): xfce4-session-WARNING **: 20:36:49.474: failed to run script: Failed to execute child process ?/usr/bin/pm-is-supported? (No such file or directory)
+(xfce4-session:16): xfce4-session-WARNING **: 20:36:50.883: failed to run script: Failed to execute child process ?/usr/bin/pm-is-supported? (No such file or directory)

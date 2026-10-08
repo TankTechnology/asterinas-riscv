@@ -1,0 +1,4 @@
+A_WEB_DIAGNOSTIC_SKIP_PUBLIC_HTTPS
+A_WEB_PHASE phase=wasm-runtime-initial state=start firefox_pid=177
+A_WEB_PHASE phase=wasm-runtime-initial state=done firefox_pid=177
+A_WEB_WASM_RUNTIME value="{\"type\":\"undefined\",\"instantiate\":\"undefined\",\"url\":\"http://10.0.2.2:17894/browser-quality/index.html\"}"

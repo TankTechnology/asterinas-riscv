@@ -1,0 +1,162 @@
+{
+  "boot_id": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384",
+  "kernel_image_sha256": "3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e",
+  "runs": [
+    {
+      "name": "first",
+      "serial_sha256": "e0a3e9fa9ac8ba2b0fb9dae88c23d2763f6471df90fbad5e6f3b10d115ea5366",
+      "samples": {
+        "index720.html": {
+          "ended": true,
+          "error": "None",
+          "frames": 300,
+          "dropped": 116,
+          "firefox_ticks": 1991,
+          "xorg_ticks": 56,
+          "threads": [
+            {
+              "tid": "1560",
+              "name": "Renderer",
+              "ticks": 865
+            },
+            {
+              "tid": "1913",
+              "name": "SwComposite",
+              "ticks": 753
+            }
+          ],
+          "navigate_seconds": 1.134,
+          "playback_seconds": 10.405
+        },
+        "index720-small.html": {
+          "ended": true,
+          "error": "None",
+          "frames": 300,
+          "dropped": 5,
+          "firefox_ticks": 1442,
+          "xorg_ticks": 45,
+          "threads": [
+            {
+              "tid": "1560",
+              "name": "Renderer",
+              "ticks": 559
+            },
+            {
+              "tid": "1913",
+              "name": "SwComposite",
+              "ticks": 484
+            }
+          ],
+          "navigate_seconds": 0.764,
+          "playback_seconds": 10.614
+        }
+      }
+    },
+    {
+      "name": "repeat",
+      "serial_sha256": "5b7d5c7b499a2ed85b211090a52d571bcdbf33a1ed89532bdea50eb35181f916",
+      "samples": {
+        "index720.html": {
+          "ended": true,
+          "error": "None",
+          "frames": 300,
+          "dropped": 129,
+          "firefox_ticks": 1869,
+          "xorg_ticks": 53,
+          "threads": [
+            {
+              "tid": "1560",
+              "name": "Renderer",
+              "ticks": 814
+            },
+            {
+              "tid": "1913",
+              "name": "SwComposite",
+              "ticks": 729
+            },
+            {
+              "tid": "333",
+              "name": "firefox",
+              "ticks": 128
+            },
+            {
+              "tid": "1576",
+              "name": "Compositor",
+              "ticks": 64
+            },
+            {
+              "tid": "1323",
+              "name": "IPC I/O Parent",
+              "ticks": 39
+            },
+            {
+              "tid": "1289",
+              "name": "glean.dispatche",
+              "ticks": 29
+            }
+          ],
+          "navigate_seconds": 0.826,
+          "playback_seconds": 10.4
+        },
+        "index720-small.html": {
+          "ended": true,
+          "error": "None",
+          "frames": 300,
+          "dropped": 10,
+          "firefox_ticks": 1383,
+          "xorg_ticks": 44,
+          "threads": [
+            {
+              "tid": "1560",
+              "name": "Renderer",
+              "ticks": 546
+            },
+            {
+              "tid": "1913",
+              "name": "SwComposite",
+              "ticks": 443
+            },
+            {
+              "tid": "333",
+              "name": "firefox",
+              "ticks": 131
+            },
+            {
+              "tid": "1576",
+              "name": "Compositor",
+              "ticks": 81
+            },
+            {
+              "tid": "1916",
+              "name": "WRRenderBackend",
+              "ticks": 49
+            },
+            {
+              "tid": "1323",
+              "name": "IPC I/O Parent",
+              "ticks": 41
+            }
+          ],
+          "navigate_seconds": 0.772,
+          "playback_seconds": 10.283
+        }
+      }
+    }
+  ],
+  "post_experiment_serial_reopens": [
+    {
+      "attempt": 1,
+      "nonce": "a02fa822319f13ed",
+      "valid": true,
+      "uid": 0,
+      "boot": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384"
+    },
+    {
+      "attempt": 2,
+      "nonce": "79138843906953ef",
+      "valid": true,
+      "uid": 0,
+      "boot": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384"
+    }
+  ]
+}

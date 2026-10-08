@@ -1,0 +1,230 @@
+// SPDX-License-Identifier: MPL-2.0
+
+//! Handle link-related requests.
+
+use alloc::borrow::ToOwned;
+use core::num::NonZero;
+
+use aster_bigtcp::{
+    iface::{InterfaceFlags, InterfaceType},
+    wire::EthernetAddress,
+};
+
+use super::util::finish_response;
+use crate::{
+    net::{
+        iface::Iface,
+        net_ns::NetNamespace,
+        socket::netlink::{
+            message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
+            route::message::{LinkAttr, LinkSegment, LinkSegmentBody, RtnlSegment},
+        },
+    },
+    prelude::*,
+    util::net::CSocketAddrFamily,
+};
+
+/// The unspecified link-layer address.
+const UNSPECIFIED_LINK_ADDR: EthernetAddress = EthernetAddress([0; 6]);
+
+/// The default transmit queue length.
+///
+/// On Linux, this value limits the number of SKBs
+/// that can be queued in a network device's egress qdisc.
+/// This value does not take effect on Asterinas now.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v7.1/source/include/net/pkt_sched.h#L13>.
+const DEFAULT_TX_QUEUE_LEN: u32 = 1000;
+
+pub(super) fn do_get_link(
+    request_segment: &LinkSegment,
+    net_ns: &NetNamespace,
+) -> Result<Vec<RtnlSegment>> {
+    let filter_by = FilterBy::from_request(request_segment)?;
+
+    // Report only interfaces in the sending socket's network namespace.
+    let mut response_segments: Vec<RtnlSegment> = net_ns
+        .ifaces()
+        .iter()
+        // Filter to include only requested links.
+        .filter(|iface| match &filter_by {
+            FilterBy::Index(index) => *index == iface.index(),
+            FilterBy::Name(name) => *name == iface.name(),
+            FilterBy::Dump => true,
+        })
+        .map(|iface| iface_to_new_link(request_segment.header(), iface))
+        .map(RtnlSegment::NewLink)
+        .collect();
+
+    let dump_all = matches!(filter_by, FilterBy::Dump);
+
+    if !dump_all && response_segments.is_empty() {
+        return_errno_with_message!(Errno::ENODEV, "no link found");
+    }
+
+    finish_response(request_segment.header(), dump_all, &mut response_segments);
+
+    Ok(response_segments)
+}
+
+/// Handles an RTM_SETLINK request to change interface flags.
+///
+/// Shares the implementation with [`do_new_link`]: `RTM_NEWLINK` and
+/// `RTM_SETLINK` only differ in that the latter cannot create interfaces,
+/// which is unsupported anyway.
+pub(super) fn do_set_link(
+    request_segment: &LinkSegment,
+    net_ns: &NetNamespace,
+) -> Result<Vec<RtnlSegment>> {
+    do_new_link(request_segment, net_ns)
+}
+
+enum FilterBy<'a> {
+    Index(u32),
+    Name(&'a CStr),
+    Dump,
+}
+
+impl<'a> FilterBy<'a> {
+    fn from_request(request_segment: &'a LinkSegment) -> Result<Self> {
+        let dump_all = {
+            let flags = GetRequestFlags::from_bits_truncate(request_segment.header().flags);
+            flags.contains(GetRequestFlags::DUMP)
+        };
+        if dump_all {
+            validate_dumplink_request(request_segment.body())?;
+            return Ok(Self::Dump);
+        }
+
+        validate_getlink_request(request_segment.body())?;
+
+        // `index` takes precedence over `required_name`.
+
+        if let Some(required_index) = request_segment.body().index {
+            return Ok(Self::Index(required_index.get()));
+        }
+
+        let required_name = request_segment.attrs().iter().find_map(|attr| {
+            if let LinkAttr::Name(name) = attr {
+                Some(name.as_c_str())
+            } else {
+                None
+            }
+        });
+        if let Some(required_name) = required_name {
+            return Ok(Self::Name(required_name));
+        }
+
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "either interface name or index should be specified for non-dump mode"
+        );
+    }
+}
+
+// The below functions starting with `validate_` should only be enabled in strict mode.
+// Reference: <https://docs.kernel.org/userspace-api/netlink/intro.html#strict-checking>.
+
+fn validate_getlink_request(body: &LinkSegmentBody) -> Result<()> {
+    // FIXME: The Linux implementation also checks the `padding` field,
+    // but this field is lost during the conversion of a `CIfInfoMsg` to `LinkSegmentBody`.
+    // Reference: <https://elixir.bootlin.com/linux/v6.13/source/net/core/rtnetlink.c#L4043>.
+    if !body.flags.is_empty() || body.type_ != InterfaceType::NETROM {
+        return_errno_with_message!(Errno::EINVAL, "the flags or the type is not valid");
+    }
+
+    Ok(())
+}
+
+fn validate_dumplink_request(body: &LinkSegmentBody) -> Result<()> {
+    // FIXME: The Linux implementation also checks the `padding` and `change` fields.
+    // Reference: <https://elixir.bootlin.com/linux/v6.13/source/net/core/rtnetlink.c#L2378>.
+    if !body.flags.is_empty() || body.type_ != InterfaceType::NETROM {
+        return_errno_with_message!(Errno::EINVAL, "the flags or the type is not valid");
+    }
+
+    // The check is from <https://elixir.bootlin.com/linux/v6.13/source/net/core/rtnetlink.c#L2383>.
+    if body.index.is_some() {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "filtering by interface index is not valid for link dumps"
+        );
+    }
+
+    Ok(())
+}
+
+fn iface_to_new_link(request_header: &CMsgSegHdr, iface: &Arc<Iface>) -> LinkSegment {
+    let header = CMsgSegHdr {
+        len: 0,
+        type_: CSegmentType::NEWLINK as _,
+        flags: SegHdrCommonFlags::empty().bits(),
+        seq: request_header.seq,
+        pid: request_header.pid,
+    };
+
+    let link_message = LinkSegmentBody {
+        family: CSocketAddrFamily::AF_UNSPEC,
+        type_: iface.type_(),
+        index: NonZero::new(iface.index()),
+        flags: iface.flags(),
+        change: InterfaceFlags::empty(),
+    };
+
+    // Linux may report dozens of attributes in a fixed order.
+    // See the reference below for the complete attribute list and ordering.
+    // TODO: Asterinas currently reports only a subset of these attributes.
+    // Reference: <https://elixir.bootlin.com/linux/v7.1/source/net/core/rtnetlink.c#L2050>.
+    let mut attrs = Vec::with_capacity(5);
+    attrs.extend([
+        LinkAttr::Name(iface.name().to_owned()),
+        LinkAttr::TxqLen(DEFAULT_TX_QUEUE_LEN),
+        LinkAttr::Mtu(iface.mtu() as u32),
+    ]);
+
+    let (link_addr, link_broadcast_addr) = match iface.ethernet_addr() {
+        Some(ethernet_addr) => (ethernet_addr, EthernetAddress::BROADCAST),
+        None => (UNSPECIFIED_LINK_ADDR, UNSPECIFIED_LINK_ADDR),
+    };
+    attrs.extend([
+        LinkAttr::Address(link_addr),
+        LinkAttr::Broadcast(link_broadcast_addr),
+    ]);
+
+    LinkSegment::new(header, link_message, attrs)
+}
+
+/// Handles a `RTM_NEWLINK` request that changes interface flags.
+///
+/// Only flag changes via `ifi_flags`/`ifi_change` are supported (this is what
+/// `ip link set <dev> up|down` uses); creating or deleting interfaces is not
+/// supported.
+pub(super) fn do_new_link(
+    request_segment: &LinkSegment,
+    net_ns: &NetNamespace,
+) -> Result<Vec<RtnlSegment>> {
+    let body = request_segment.body();
+    let Some(index) = body.index else {
+        return_errno_with_message!(Errno::ENODEV, "the interface index is not specified");
+    };
+
+    let iface = net_ns
+        .ifaces()
+        .iter()
+        .find(|iface| iface.index() == index.get())
+        .ok_or_else(|| Error::with_message(Errno::ENODEV, "no link found"))?;
+
+    // Apply `new = (old & !change) | (flags & change)`, as in Linux. If the
+    // change mask is empty, treat the flags as the new state of the
+    // well-known flag bits (some tools send `ifi_change = 0`).
+    let old_flags = iface.flags();
+    let new_flags = if body.change.is_empty() {
+        (old_flags & !(InterfaceFlags::UP | InterfaceFlags::RUNNING))
+            | (body.flags & (InterfaceFlags::UP | InterfaceFlags::RUNNING))
+    } else {
+        (old_flags & !body.change) | (body.flags & body.change)
+    };
+    iface.set_flags(new_flags);
+
+    Ok(Vec::new())
+}

@@ -1,0 +1,3 @@
+s30j: sha256=8cd48b2c365bce7b18fb76a1a19e640de4189a7cd4d60d8dc369d324870508f3 dropped=141/301 dirty_count=159 dirty_total_ns=4818655000
+s30k: sha256=c8e5733e56d87cd74526204310d068aa49a25543657630d0cd403e35a7d63fbc dropped=118/301 dirty_count=0 dirty_total_ns=0
+verified: boot artifact receipt, independent browser metrics, same clip and boot, bounded windows, DRM/fbdev counters

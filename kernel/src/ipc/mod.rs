@@ -1,0 +1,175 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use aster_rights::ReadOp;
+
+use crate::{
+    prelude::*,
+    process::{Credentials, Gid, Uid},
+};
+
+mod ipc_ids;
+mod ipc_ns;
+pub mod semaphore;
+pub mod shared_memory;
+
+pub use ipc_ids::IpcId;
+pub use ipc_ns::IpcNamespace;
+
+/// An IPC key.
+///
+/// This key is specified by and can be looked up in userspace. Do not confuse it with the
+/// identifier [`IpcId`], which is specified by the kernel and returned to userspace upon lookup.
+pub type IpcKey = i32;
+
+/// A private IPC key.
+///
+/// This key cannot be looked up.
+const IPC_PRIVATE: IpcKey = 0;
+
+bitflags! {
+    pub struct IpcFlags: u32{
+        /// Create key if key does not exist
+        const IPC_CREAT  = 1 << 9;
+        /// Fail if key exists
+        const IPC_EXCL  = 1 << 10;
+        /// Return error on wait
+        const IPC_NOWAIT  = 1 << 11;
+        /// Undo the operation on exit
+        const SEM_UNDO = 1 << 12;
+    }
+}
+
+// TODO: Add support for the commented-out commands below
+#[expect(non_camel_case_types)]
+#[repr(i32)]
+#[derive(Clone, Copy, Debug, TryFromInt)]
+pub enum IpcControlCmd {
+    IPC_RMID = 0,
+    // IPC_SET = 1,
+    IPC_STAT = 2,
+
+    SEM_GETPID = 11,
+    SEM_GETVAL = 12,
+    // SEM_GETALL = 13,
+    SEM_GETNCNT = 14,
+    SEM_GETZCNT = 15,
+    SEM_SETVAL = 16,
+    // SEM_SETALL = 17,
+}
+
+/// The on-disk/userspace representation of an IPC permission, matching Linux's
+/// `struct ipc64_perm`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/asm-generic/ipcbuf.h#L22>.
+#[padding_struct]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub(crate) struct IpcPerm {
+    key: u32,
+    uid: u32,
+    gid: u32,
+    cuid: u32,
+    cgid: u32,
+    mode: u16,
+    _pad1: u16,
+    seq: u16,
+    _pad2: u16,
+    _unused1: u64,
+    _unused2: u64,
+}
+
+#[derive(Debug)]
+pub struct IpcPermission {
+    key: IpcKey,
+    /// Owner's UID
+    uid: Uid,
+    /// Owner's GID
+    gid: Gid,
+    /// Creator's UID
+    cuid: Uid,
+    /// Creator's GID
+    cguid: Gid,
+    /// Permission mode
+    mode: u16,
+}
+
+impl IpcPermission {
+    const CLASS_MASK: u16 = 0o7;
+
+    pub fn key(&self) -> IpcKey {
+        self.key
+    }
+
+    /// Returns owner's UID
+    pub fn uid(&self) -> Uid {
+        self.uid
+    }
+
+    /// Returns owner's GID
+    pub fn gid(&self) -> Gid {
+        self.gid
+    }
+
+    /// Returns creator's UID
+    pub fn cuid(&self) -> Uid {
+        self.cuid
+    }
+
+    /// Returns creator's GID
+    pub fn cguid(&self) -> Gid {
+        self.cguid
+    }
+
+    /// Returns permission mode
+    pub fn mode(&self) -> u16 {
+        self.mode
+    }
+
+    /// Returns whether the credentials have the requested IPC access.
+    ///
+    /// Creator IDs participate in owner and group selection, matching Linux's
+    /// `ipcperms`. Capability overrides are namespace-dependent and are
+    /// therefore handled by [`IpcNamespace`].
+    ///
+    /// Reference: <https://github.com/torvalds/linux/blob/master/ipc/util.c>.
+    fn allows(&self, required_mode: u16, credentials: &Credentials<ReadOp>) -> bool {
+        let granted_mode = if credentials.euid() == self.cuid || credentials.euid() == self.uid {
+            self.mode >> 6
+        } else {
+            let groups = credentials.groups();
+            if credentials.egid() == self.cguid
+                || credentials.egid() == self.gid
+                || groups.contains(&self.cguid)
+                || groups.contains(&self.gid)
+            {
+                self.mode >> 3
+            } else {
+                self.mode
+            }
+        };
+
+        required_mode & !granted_mode & Self::CLASS_MASK == 0
+    }
+
+    pub(self) fn new_sem_perm(key: IpcKey, uid: Uid, gid: Gid, mode: u16) -> Self {
+        Self {
+            key,
+            uid,
+            gid,
+            cuid: uid,
+            cguid: gid,
+            mode,
+        }
+    }
+
+    pub(self) fn new_shm_perm(key: IpcKey, uid: Uid, gid: Gid, mode: u16) -> Self {
+        Self {
+            key,
+            uid,
+            gid,
+            cuid: uid,
+            cguid: gid,
+            mode,
+        }
+    }
+}

@@ -1,0 +1,2 @@
+test aster_kernel::device::dri::powervr_probe::mmu::tests::gpu_mmu4_accesses_only_writable_mapped_firmware_fields ... ok
+test result: ok. 1 passed; 0 failed; 330 filtered out.

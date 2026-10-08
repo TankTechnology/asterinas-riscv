@@ -1,0 +1,13 @@
+
+root@asterinas-debug:/# printf 'BEGIN_626ccf926a642aee\n'; _pid=$(pgrep -xo fire fox); nsenter -t "$_pid" -n curl -fsS --max-time 5 http://10.100.19.216:17897/ru n_nice_red.sh -o /run/run_nice_red.sh && printf "f373cae83781ff99d8e75c691ec8391 9d95d332495c941735c9aa9d3c8e36ae7  /run/run_nice_red.sh\n" | sha256sum -c - && n senter -t "$_pid" -n sh /run/run_nice_red.sh; printf 'END_626ccf926a642aee=%s\n'  "$?"
+BEGIN_626ccf926a642aee
+/run/run_nice_red.sh: OK
+ld-linux-riscv64-lp64d.so.1: OK
+libc.so.6: OK
+nice_weight: OK
+test_setpriority_updates_fair_scheduler: `setpriority(PRIO_PROCESS, 0, 5)` passed [got Success]
+test_setpriority_updates_fair_scheduler: `getpriority(PRIO_PROCESS, 0)` passed [got Success]
+test_setpriority_updates_fair_scheduler: `syscall(275, 0, &attr, sizeof(attr), 0)` failed [got Success, but `_ret == 0 && attr.sched_policy == 0 && attr.sched_nice == 5` is false]
+test_setpriority_updates_fair_scheduler summary: 2 tests passed, 1 tests failed
+END_626ccf926a642aee=1
+root@asterinas-debug:/#

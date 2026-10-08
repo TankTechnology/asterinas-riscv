@@ -1,0 +1,321 @@
+# Megrez PowerVR FWIF ABI extraction (2026-09-30)
+
+The selected RockOS driver commit is
+[`bf2ec5d53002c16bc1bc593b92516eb6c2866176`](https://github.com/rockos-riscv/rockos-kernel/tree/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic).
+Its `config_kernel.h` SHA-256 is
+`b81363e8593062b1f5a4cb808a08eed204030f3cbec058a270c2c76bdcfc265d`;
+it selects `PVRSRV_HWPERF_COUNTERS_PERBLK=12` and `SUPPORT_SOC_TIMER`.
+The pinned `include/volcanic/rgx_fwif_km.h` SHA-256 is
+`e897fd683cec7feb5ca3908f1d9a9cf60a342111d3820ce304f7d490bb3f58c2`.
+
+[`rgx_fwif_abi_probe.c`](../../../../tools/riscv/drm/rgx_fwif_abi_probe.c)
+uses the vendor's actual types and `offsetof`, rather than a hand-written
+structure mirror. The
+[`measure_rgx_fwif_abi.sh`](../../../../tools/riscv/drm/measure_rgx_fwif_abi.sh)
+tool compiles it with both `riscv64-linux-gnu-gcc` and native GCC, extracts
+the named ELF section, and fails if the sections differ byte for byte. The
+cross compiler used the explicitly isolated
+[probe-only libc stubs](../../../../tools/riscv/drm/rgx_fwif_abi_stubs/README.md)
+because the development container lacks RISC-V libc headers. Both compilers
+produced section SHA-256
+`2d65ab9fed175fe799999bab7fc8ed14ddafd5beba656ffec5b17cd7b3045530`.
+The expanded probe records 106 size, offset, and configuration values, including
+the diagnostic status fields added in the [startup/status checkpoint](../2026-09-30-megrez-powervr-start-status/README.md). It also
+extracts the vendor's 32-word `RGXFW_ALIGN_CHECKS_INIT_KM` into a separate
+ELF section. Both architectures produced identical alignment-check bytes
+(SHA-256 `59ecbcd04bf00585bbb0bc17e8b8561cc21169b5c5c73fb18f4f1000a911c682`),
+which are stored in
+[`align_checks_km.bin`](../../../../kernel/src/device/dri/powervr_probe/align_checks_km.bin).
+The decoded [layout](layout.json) is the reference for FWIF allocation and
+initialization.
+
+The selected [Volcanic HWPerf header](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/include/volcanic/rgx_fwif_hwperf.h)
+and [BVNC configuration](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/hwdefs/volcanic/km/configs/rgxconfig_km_30.V.408.101.h)
+give `RGX_HWPERF_MAX_DEFINED_BLKS=16`. The measured
+`RGXFWIF_HWPERF_CTL` size is 80 B with a 64 B block and its first block at
+offset 16. The [vendor allocation path](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/volcanic/rgxfwutils.c)
+therefore requests 1040 B and rounds it to 1056 B for 32 B META DMA blocks.
+It sets `SYSINIT.sHWPerfCtl` at offset 180 and the runtime configuration's
+`sHWPerfCtlDMABuf` at offset 168 to the GPU VA and encoded META pointer.
+The current staging path now owns this buffer and links both addresses; it
+keeps the zero-allocation header uninitialized as the vendor host path does.
+The [focused QEMU test before the fix](hwperf-red-ktest.txt) failed with a null
+SYSINIT pointer, and the [same test afterward](hwperf-green-ktest.txt) passed
+with `1 passed; 0 failed`. The [existing SYSINIT mapping test](hwperf-existing-ktest.txt),
+extended to cover the new pointer and GPU mapping, also passed. This does not
+show that firmware has executed. The offline RISC-V release kernel build
+completed; the resulting Image SHA-256 is
+`23f1bdad4deaf3221ce85900bab9f00c14f086c4497a297e9997de6fbce44416`.
+
+The most relevant fields are:
+
+| Object | Size | Required observations |
+| --- | ---: | --- |
+| `RGXFWIF_CONNECTION_CTL` | 16 B | OS connection state at offset 4 |
+| `RGXFWIF_OSINIT` | 112 B | kernel/FW CCB pointers at 0–16; HWR buffer pointer 28; OS data pointer 36 |
+| `RGXFWIF_SYSINIT` | 440 B | runtime, trace, system-data pointers at 160–168; `bFirmwareStarted` at 208; coremem DMA address at 224 |
+| FW virtual pointer | 4 B | distinct from an 8 B GPU/physical address |
+
+The [vendor OS initialization path](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/volcanic/rgxfwutils.c)
+allocates HWR info (2,464 B), kernel and firmware CCB controls (16 B each),
+64 B command entries, return slots, OS data (1,096 B), and a power sync
+primitive before copying OSINIT. Its system path allocates trace control
+(864 B), system data (3,656 B), GPU utilization data (11,824 B), runtime
+configuration (184 B), and other dependent objects before copying SYSINIT.
+The 12,296 B register configuration allocation is conditional on
+`SUPPORT_USER_REGISTER_CONFIGURATION`, which this selected `config_kernel.h`
+does not enable. The pointer graph is therefore substantially
+larger than the three configuration slots; the owned dependencies added so
+far are described below.
+
+For reproduction, extract the pinned driver's `include` and
+`hwdefs/volcanic` directories, plus `config_kernel.h`, without modifying
+their contents. Inside the persistent Asterinas development container, run:
+
+```sh
+sh tools/riscv/drm/measure_rgx_fwif_abi.sh \
+  /path/to/img-volcanic /path/to/config_kernel.h /path/to/output
+cmp /path/to/output/layout.json \
+  docs/porting/evidence/2026-09-30-megrez-powervr-fwif-abi/layout.json
+```
+
+This extraction verifies structure sizes and offsets for this selected
+configuration. It does **not** initialize the FWIF, prove every conditional
+allocation has been captured, start firmware, or demonstrate GPU rendering.
+Before releasing META reset, the kernel still needs owned GPU mappings for
+every enabled dependent object, valid firmware addresses and initial values,
+MMU-root installation, and a bounded start/fault/recovery sequence. A firmware
+ready flag alone is not a safe or sufficient success check.
+
+## SLC3 fence required by the selected firmware
+
+The pinned BVNC enables `SLC_VIVT` and reports a 1024-bit SLC cache line.
+`RGXSetupFwSysData` therefore calls `_AllocateSLC3Fence` before firmware
+startup. That allocation requests one byte aligned to a cache line in the
+firmware main heap, with GPU read/write access and no `PMMETA_PROTECT` flag.
+The RISC-V and native ABI probe sections match and place
+`RGXFWIF_SYSINIT.sSLC3FenceDevVAddr` at offset 64. The selected kernel now
+owns one uncached DMA page at GPU VA `0xe1c0030000`, writes that VA to the
+SYSINIT field, and leaves the surrounding guard gap unmapped. The focused
+QEMU test first failed with a zero SYSINIT pointer, then passed with
+`1 passed; 0 failed` after the allocation and mapping were added. This is a
+host-side page-table/CPU-readback result; the GPU has not walked this page or
+executed the firmware.
+
+## Owned field access in the prepared GPU MMU
+
+The first kernel use of this layout adds bounded 32-bit CPU reads and writes
+through the `GpuMmu4` allocation owner. A field must be aligned and wholly
+inside an owned mapping. The GPU page-table read-only bit does not prohibit
+CPU writes through the owner's uncached DMA alias: the vendor's
+`RGX_FWSHAREDMEM_GPU_RO_ALLOCFLAGS` explicitly includes `CPU_WRITEABLE`. This is
+needed to initialize FWIF fields and later poll `bFirmwareStarted` without
+losing the uncached CPU alias when the allocation moves into the GPU MMU.
+The [focused RISC-V QEMU ktest](mmu-owned-field-ktest.txt) exercised the
+vendor-derived offset 208, a mapping boundary, a misaligned read, and a
+GPU-read-only mapping: `1 passed; 0 failed`. A follow-up test corrected the
+CPU/GPU permission distinction and passed with `1 passed; 0 failed`.
+The ordinary RISC-V kernel build and
+targeted rustfmt check also passed. The new accessor has **not** yet been
+tested on the board or used to start firmware.
+
+## META firmware address encoding
+
+The pinned driver's
+[`RGXSetFirmwareAddress`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/volcanic/rgxfwutils.c)
+subtracts the raw firmware-heap base from a GPU VA, then adds the META data
+base and cache bits defined by
+[`rgx_meta.h`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/include/rgx_meta.h).
+The result is a 32-bit firmware pointer, **not** the low 32 bits of the GPU VA.
+The driver's
+[`rgxfwutils.h` allocation flags](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/rgxfwutils.h)
+select GPU uncached for all three config allocations, but FIRMWARE_CACHED
+for OSINIT and SYSINIT only. Thus their selected encoded addresses are:
+
+| Config object | GPU VA | META firmware address |
+| --- | ---: | ---: |
+| Connection control | `0xe1c1fd0000` | `0xf1fd0000` |
+| OSINIT | `0xe1c1fe0000` | `0x71fe0000` |
+| SYSINIT | `0xe1c1ff0000` | `0x71ff0000` |
+
+The new kernel encoder checks alignment and the 32 MiB raw-heap bounds; the
+staging path computes and logs these addresses while still reporting
+`fw_config_initialized=0` and `gpu_root_installed=0`. The two
+[focused RISC-V QEMU tests](fwif-address-ktest.txt) each passed with zero
+failures. The ordinary RISC-V kernel build and targeted formatting check
+also passed. This version of the encoder has **not** run on the board.
+
+The GPU PTE still has `AXCACHE_WBRWALLOC`: the selected driver's
+[`RGXDerivePTEProt8`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/rgxmmuinit.c)
+sets that fabric-level field even for GPU-uncached allocations. The META
+pointer cache bits and PTE AXCACHE field describe different parts of the
+access path; their differing values are not by themselves evidence of a
+mapping error or of cache coherence.
+
+## First owned SYSINIT objects
+
+The staging path now allocates four zeroed firmware-main objects in Die 0 DMA
+memory, maps them with one unmapped guard page after each object, and writes
+their encoded META addresses into the selected SYSINIT slot:
+
+| Object | Bytes | GPU VA | SYSINIT offset | META address | GPU PTE |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Trace control | 864 | `0xe1c0040000` | 164 | `0xf0040000` | read/write |
+| System data | 3,656 | `0xe1c0042000` | 168 | `0xf0042000` | read/write |
+| GPU utility | 11,824 | `0xe1c0044000` | 172 | `0x70044000` | read/write |
+| Runtime config | 184 | `0xe1c0048000` | 160 | `0xf0048000` | read-only |
+
+SYSINIT starts with `bFirmwareStarted=0` at offset 208 and marker 1 at
+offset 212. The GPU utility object uses the vendor's firmware-cached flag;
+the other three use uncached firmware addresses. The focused
+[QEMU kernel results](fwif-sysinit-links-ktest.txt) check the four pointers,
+PTE permissions, guard pages and unchanged config/firmware segment mappings.
+The ordinary RISC-V Sv39/SMP=4 kernel build and targeted rustfmt check also
+passed. The existing `fw_config_initialized=0` log still means the complete
+FWIF graph has not been initialized. The GPU page-table root is still not
+installed. Other required SYSINIT and
+OSINIT dependencies remain uninitialized; this change does **not** start the
+firmware, submit GPU commands, or prove hardware drawing.
+
+## Owned OSINIT control queues
+
+The next staging step maps OSINIT's HWR buffer, kernel CCB control and command
+ring, kernel return slots, firmware CCB control and command ring, and OS data.
+The selected `config_kernel.h` sets `PVRSRV_APPHINT_KCCB_SIZE_LOG2=10`; the
+selected `rgxfwutils.c` sets firmware CCB log2 to 5 without
+`SUPPORT_PDVFS` or `SUPPORT_WORKLOAD_ESTIMATION`. The ring capacities are
+therefore 1,024 and 32 commands. Both control blocks have their wrap masks
+initialized at offset 8, respectively 1,023 and 31.
+
+| OSINIT field offset | Object | GPU VA | META address | GPU access |
+| ---: | --- | ---: | ---: | --- |
+| 28 | HWR info, 2,464 B | `0xe1c0050000` | `0xf0050000` | read/write |
+| 0 | Kernel CCB control, 16 B | `0xe1c0052000` | `0xf0052000` | read/write |
+| 4 | Kernel CCB, 65,536 B | `0xe1c0054000` | `0x70054000` | read-only |
+| 8 | Kernel return slots, 4,096 B | `0xe1c0065000` | `0xf0065000` | read/write |
+| 12 | Firmware CCB control, 16 B | `0xe1c0067000` | `0xf0067000` | read/write |
+| 16 | Firmware CCB, 2,048 B | `0xe1c0069000` | `0xf0069000` | read/write |
+| 36 | OS data, 1,096 B | `0xe1c006b000` | `0xf006b000` | read/write |
+
+The OS data's `sPowerSync` field at offset 572 points to a separate zeroed
+firmware-main DMA page at GPU VA `0xe1c006d000`, encoded as `0xf006d000`.
+The pinned driver obtains this address through
+[`SyncPrimGetFirmwareAddr`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/shared/common/sync.c)
+after its
+[`RGXAllocUFOBlock`](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/services/server/devices/volcanic/rgxinit.c)
+allocates from FW_MAIN and calls `RGXSetFirmwareAddress`. Each object has an
+unmapped guard page. The [focused QEMU tests](fwif-osinit-ccb-ktest.txt)
+verify OSINIT pointers, ring masks, PTE permissions, power-sync pointer and
+the earlier staging layout: four selected tests passed. The normal RISC-V
+Sv39/SMP=4 kernel build and targeted rustfmt check passed. This code has not
+been booted on Megrez; it does not install the GPU MMU root, start firmware,
+submit commands or provide a fence/pixel result. The remaining SYSINIT fields,
+device registers and fault handling must be established before a start attempt.
+
+## Additional SYSINIT dependencies
+
+The selected RockOS initialization also requires a fault-read page, a
+power-sampling counter buffer, and firmware/host structure alignment checks.
+The staging path now owns these allocations in Die 0 DMA memory, keeps an
+unmapped guard page after each, and initializes their fields using the
+cross-checked FWIF offsets:
+
+| Object | GPU VA | SYSINIT field | Initial value |
+| --- | ---: | ---: | --- |
+| Fault-read page | `0xe1c0070000` | physical address at offset 0 | every 32-bit word `0xdeadbeef` |
+| Counter buffer | `0xe1c0072000` | pointer/size at offsets 184/188 | `0x70072000`, 1,024 words |
+| Alignment checks | `0xe1c0074000` | pointer at offset 192 | `0xf0074000`; 32 KM words, then zero UM count |
+
+The alignment-check allocation reserves a full page, covering the vendor's
+128-word maximum UM array as well as the count and KM values. The fault page
+is passed as a device physical address, unlike the two META firmware
+pointers. The focused QEMU tests and RISC-V build are recorded in
+[the test evidence](fwif-sysinit-extra-ktest.txt). These checks establish
+CPU-owned mappings and values only. The GPU root is not installed, firmware
+has not been started, and no command completion or pixel readback is claimed.
+
+## Selected GPU heap bases in SYSINIT
+
+The selected [Volcanic heap configuration](https://github.com/rockos-riscv/rockos-kernel/blob/bf2ec5d53002c16bc1bc593b92516eb6c2866176/drivers/gpu/drm/img/img-volcanic/include/volcanic/rgxheapconfig.h)
+provides six 64-bit virtual bases copied by `RGXSetupFwSysData`. The ABI
+probe extracts their values as well as the SYSINIT field offsets. RISC-V and
+native probes match byte for byte. The pinned Volcanic headers do not define
+the `FIX_HW_BRN_65273_BIT_MASK` alternative-heap condition.
+
+| SYSINIT field | Offset | Selected base |
+| --- | ---: | ---: |
+| PDS executable | 8 | `0xda00000000` |
+| USC executable | 16 | `0xe000000000` |
+| FBCDC state table | 24 | `0xec00000000` |
+| FBCDC large state table | 32 | `0xec40000000` |
+| Texture state | 40 | `0xf000000000` |
+| PDS indirect state | 48 | `0xed00000000` |
+
+The stage writes each field through its owned SYSINIT DMA mapping and checks
+the CPU readback. These virtual bases describe application heaps; this step
+does not allocate those heaps or execute firmware. The focused QEMU test and
+regressions are in [the heap-base test evidence](fwif-sysinit-heaps-ktest.txt).
+
+## Coremem DMA link and fixed runtime defaults
+
+The pinned driver's `RGXSetMetaDMAAddress` stores the coremem-data GPU VA in
+`SYSINIT.sCorememDataStore.psDevVirtAddr` at offset 224 and a separate META
+firmware pointer at offset 232. The fourth staged firmware segment begins at
+`0xe1c0027000`; its selected code/data allocation flags are firmware-cached
+and GPU-cached, so its META pointer is `0x10027000`. Both fields now point to
+the already-owned segment mapping. No new GPU allocation is implied.
+
+The driver also initializes `RGXFWIF_RUNTIME_CFG` before firmware start. The
+staging path sets native-mode `bActivePMLatencyPersistant=1`, the selected
+HCS deadline `0xffffffff`, and watchdog period `2,000,000` microseconds. The
+last two values were cross-compiled from the pinned `config_kernel.h`. The
+selected RockOS sysconfig obtains the GPU core clock from the active `aclk`
+readback. Asterinas now re-reads `GPU_ACLK_CTRL` while holding its exclusive
+powered session and writes the derived frequency to
+`SYSINIT.ui32InitialCoreClockSpeed` (offset 196) and
+`RUNTIME_CFG.ui32CoreClockSpeed` (offset 12). The pinned EIC7700 clock driver
+defines the ACLK parent as fixed 1.6 GHz and divider bits `[7:4]`, where
+encoded values 0, 1, and 2 all divide by two. The currently selected CRG
+value `0x80000020` therefore derives 800 MHz, but this value is recalculated
+from a fresh register read on each staged session. A gated clock or unexpected
+powered CRG state aborts staging. The SOC clock and other FWIF fields remain
+unresolved, so no firmware start or GPU execution is claimed. The
+[focused QEMU and build evidence](fwif-coremem-runtime-ktest.txt) records the
+owned mapping and field checks.
+
+The separate [clock handoff evidence](fwif-clock-ktest.txt) records the two
+focused QEMU kernel tests and normal RISC-V build. It verifies CPU-visible
+field values and the selected clock-divider arithmetic, not a live board
+readback or firmware use of the values.
+
+## Selected runtime power-unit state and board clock readback
+
+The pinned RockOS BVNC 30.3.408.101 configuration has one cluster and power
+island version 1. Its `rgxbvnc.c` derives one available power unit, and the
+selected `config_kernel.h` enables all available units. Ray-tracing arch 0
+leaves the RAC count zero. The staging path therefore initializes
+`RGXFWIF_RUNTIME_CFG.ui32PowUnitsState` (offset 20) to `1` and
+`ui32RACUnitsState` (offset 24) to `0`; previously both were zero. This is a
+selected-device value, not a portable default. The [focused QEMU ktest](fwif-runtime-pow-ktest.txt)
+checks both owned fields; the release RISC-V build and rustfmt check passed.
+
+The [board record](fwif-runtime-pow-board.txt) is from the release Image built
+with these values (SHA-256
+`a4fc74046245b286305ac786b40e291409e75d98e682bf06ca2ff2d5fcc20c56`).
+RockOS's U-Boot verified the one-shot Image, Stage1 and DTB CRCs before boot.
+On Asterinas boot `b36ee7a2-3081-49d4-84d4-402cb48f0d0a`, the matched
+firmware's four segments had CPU readback `ok` and the live GPU ACLK readback
+derived `800000000` Hz. The control session closed and restored its original
+CRG registers. Two fresh, separately opened UART command sessions then proved
+UID 0, the same boot ID, a matching desktop-ready marker, watchdog 0, and an
+active desktop service. The selected boot was a one-shot U-Boot `booti`; the
+default RockOS entry and persistent boot files were not changed. The current
+manual safe-reboot helper was re-staged and syntax/hash-verified under `/run`
+after boot; the older installed helper lacks its manual mode. No post-boot
+RockOS return was performed in this run.
+
+These observations are CPU-side staging and clock evidence only. The log still
+reports `gpu_root_installed=0`, `fw_config_initialized=0`, and
+`gpu_visibility=unverified`. No GPU firmware execution, synchronized GPU
+command, pixel readback, or physical HDMI capture is claimed. Firmware bytes
+are not stored in Git.

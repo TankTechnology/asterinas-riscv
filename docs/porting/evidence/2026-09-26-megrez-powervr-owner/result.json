@@ -1,0 +1,60 @@
+{
+  "status": "passed",
+  "selected_boot": {
+    "boot_id": "06f54f52-6675-4648-a165-f5f69c6c0eea",
+    "source_base_commit": "2dd80f9ac",
+    "source_tree": "main plus Task 1/2 changes",
+    "serial_device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
+    "bootargs_gate": "asterinas.powervr=1",
+    "rockos_persistent_default": "6.6.87, unchanged",
+    "uart_uid0_reopened_same_boot": true,
+    "watchdog_disarmed": true
+  },
+  "artifacts": {
+    "dtb": {
+      "sha256": "465cb129333cc334a3161fabb43d37df8738ac4baa86fcdb50260691a22a84ba",
+      "size": 155097
+    },
+    "kernel": {
+      "sha256": "5b732b39a373a76587106d2399c06c930481433e1bfdb63e7705958ad26be491",
+      "size": 16602144
+    },
+    "stage1": {
+      "sha256": "ea446515661f2380568426b3c37da0b6a0698fc51f88d32c62807fce04890962",
+      "size": 1107456
+    }
+  },
+  "desktop": {
+    "service": "asterinas-browser-web.service",
+    "pid": 90,
+    "restarts": 0,
+    "substate": "running",
+    "xorg_mode_from_log": "1920x1080",
+    "monitor_pixels_verified": false
+  },
+  "owner": {
+    "node": "/dev/powervr-control",
+    "mode": "0600",
+    "root_first_open": "success",
+    "second_open": "EBUSY",
+    "duplicate_fd_retains_lease": "EBUSY",
+    "reopen_after_final_close": "success",
+    "nonroot_open_with_temporary_mode_0666": "EPERM",
+    "mode_restored": "0600",
+    "final_crg_readback": {
+      "aclk": "0x00000020",
+      "cfg": "0x00000000",
+      "gray": "0x00000000",
+      "reset": "0x00000000"
+    },
+    "firmware_started": false,
+    "powervr_render_node_available": false
+  },
+  "qemu_tests": [
+    "qemu_virt_has_no_megrez_gpu_node",
+    "prepared_megrez_gpu_resources_are_accepted",
+    "changed_gpu_resources_are_rejected_before_mmio",
+    "exclusive_power_lease_restores_on_release",
+    "failed_power_lease_releases_or_poisons_ownership"
+  ]
+}

@@ -1,0 +1,206 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use core::num::NonZeroU64;
+
+use ostd::{arch::cpu::context::UserContext, mm::VmIo};
+
+use super::SyscallReturn;
+use crate::{
+    prelude::*,
+    process::{CloneArgs, CloneFlags, clone_child, signal::sig_num::SigNum},
+    util::CopyCompat,
+    vm::vmar::is_userspace_vaddr,
+};
+
+// The order of arguments for clone differs in different architectures.
+// The order we use here is the one for x86_64 (and most architectures):
+// `clone(flags, stack, ptid, ctid, tls)`.
+// See https://man7.org/linux/man-pages/man2/clone.2.html.
+//
+// RISC-V and LoongArch select `CONFIG_CLONE_BACKWARDS` in Linux, so their raw
+// `clone` syscall swaps the last two arguments:
+// `clone(flags, stack, ptid, tls, ctid)`.
+// Reference: <https://elixir.bootlin.com/linux/v6.18/source/arch/riscv/kernel/process.c>.
+//
+// The dispatcher passes the raw registers in program order, so on those
+// architectures the fourth argument is `tls` and the fifth is `child_tidptr`.
+// Swap them back below before building the architecture-independent
+// `CloneArgs`.
+pub fn sys_clone(
+    clone_flags: u64,
+    new_sp: u64,
+    parent_tidptr: Vaddr,
+    child_tidptr: Vaddr,
+    tls: u64,
+    ctx: &Context,
+    parent_context: &UserContext,
+) -> Result<SyscallReturn> {
+    #[cfg(any(target_arch = "riscv64", target_arch = "loongarch64"))]
+    let (child_tidptr, tls) = (tls as Vaddr, child_tidptr as u64);
+
+    let args = CloneArgs::for_clone(clone_flags, parent_tidptr, child_tidptr, tls, new_sp)?;
+    debug!("clone args = {:x?}", args);
+
+    let child_pid = clone_child(ctx, parent_context, args)?;
+    Ok(SyscallReturn::Return(child_pid as _))
+}
+
+pub fn sys_clone3(
+    clong_args_addr: Vaddr,
+    size: usize,
+    ctx: &Context,
+    parent_context: &UserContext,
+) -> Result<SyscallReturn> {
+    debug!(
+        "clone args addr = 0x{:x}, size = 0x{:x}",
+        clong_args_addr, size
+    );
+    const CLONE_ARGS_SIZE_VER0: usize = 64;
+
+    if size < CLONE_ARGS_SIZE_VER0 {
+        return_errno_with_message!(Errno::EINVAL, "clone arguments are too small");
+    }
+    if size > PAGE_SIZE {
+        return_errno_with_message!(Errno::E2BIG, "clone arguments are too large");
+    }
+
+    let clone_args = {
+        let args = ctx
+            .user_space()
+            .read_val_compat::<Clone3Args>(clong_args_addr, size)?;
+        debug!("clone3 args = {:x?}", args);
+        let set_tid = read_set_tid(&args, ctx)?;
+        CloneArgs::try_from((args, set_tid))?
+    };
+    debug!("clone args = {:x?}", clone_args);
+
+    let child_pid = clone_child(ctx, parent_context, clone_args)?;
+    debug!("child pid = {}", child_pid);
+    Ok(SyscallReturn::Return(child_pid as _))
+}
+
+fn read_set_tid(args: &Clone3Args, ctx: &Context) -> Result<Box<[u32]>> {
+    // Linux bounds the array by the maximum supported PID namespace depth.
+    const MAX_PID_NS_LEVEL: usize = 32;
+
+    let set_tid_size = usize::try_from(args.set_tid_size)
+        .map_err(|_| Error::with_message(Errno::EINVAL, "invalid set_tid array size"))?;
+    if set_tid_size > MAX_PID_NS_LEVEL {
+        return_errno_with_message!(Errno::EINVAL, "set_tid array is too large");
+    }
+    if (args.set_tid == 0) != (set_tid_size == 0) {
+        return_errno_with_message!(
+            Errno::EINVAL,
+            "set_tid and set_tid_size must be specified together"
+        );
+    }
+
+    let mut set_tid = Vec::with_capacity(set_tid_size);
+    for index in 0..set_tid_size {
+        let offset = index
+            .checked_mul(size_of::<i32>())
+            .and_then(|offset| args.set_tid.checked_add(offset as u64))
+            .ok_or_else(|| Error::with_message(Errno::EFAULT, "set_tid address overflows"))?;
+        let pid = ctx.user_space().read_val::<i32>(offset as Vaddr)?;
+        let pid = u32::try_from(pid)
+            .map_err(|_| Error::with_message(Errno::EINVAL, "set_tid contains an invalid PID"))?;
+        if pid == 0 {
+            return_errno_with_message!(Errno::EINVAL, "set_tid contains PID zero");
+        }
+        set_tid.push(pid);
+    }
+
+    Ok(set_tid.into_boxed_slice())
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+struct Clone3Args {
+    /// Flags bit mask
+    flags: u64,
+    /// Where to store PID file descriptor
+    pidfd: u64,
+    /// Where to store child TID in child's memory
+    child_tid: u64,
+    ///  Where to store child TID in parent's memory
+    parent_tid: u64,
+    /// Signal to deliver to parent on child termination
+    exit_signal: u64,
+    /// Pointer to lowest byte of stack
+    stack: u64,
+    /// Size of stack
+    stack_size: u64,
+    /// Location of new TLS
+    tls: u64,
+    /// Pointer to a pid_t array
+    set_tid: u64,
+    /// Number of elements in set_tid
+    set_tid_size: u64,
+    /// File descriptor for target cgroup of child
+    cgroup: u64,
+}
+
+impl TryFrom<(Clone3Args, Box<[u32]>)> for CloneArgs {
+    type Error = Error;
+
+    fn try_from((value, set_tid): (Clone3Args, Box<[u32]>)) -> Result<Self> {
+        // This checks arguments only for the `clone3()` system call.
+        // Reference: <https://elixir.bootlin.com/linux/v6.16.9/source/kernel/fork.c#L2843-L2869>.
+
+        let flags = CloneFlags::from_bits(value.flags as u32)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid clone flags"))?;
+        let exit_signal = if value.exit_signal == 0 {
+            None
+        } else {
+            let exit_signal = u8::try_from(value.exit_signal)
+                .ok()
+                .and_then(|exit_signal| SigNum::try_from(exit_signal).ok())
+                .ok_or_else(|| Error::with_message(Errno::EINVAL, "invalid exit signal"))?;
+            Some(exit_signal)
+        };
+        if flags.intersects(CloneFlags::CLONE_PARENT | CloneFlags::CLONE_THREAD)
+            && exit_signal.is_some()
+        {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "`CLONE_PARENT` and  `CLONE_THREAD` cannot be used if the exit signal is specified"
+            )
+        }
+
+        let (stack, stack_size) = match (
+            NonZeroU64::new(value.stack),
+            NonZeroU64::new(value.stack_size),
+        ) {
+            (Some(_), None) | (None, Some(_)) => return_errno_with_message!(
+                Errno::EINVAL,
+                "the stack and the stack size must be specified together"
+            ),
+            (Some(stack), Some(stack_size))
+                if !is_userspace_vaddr(stack.get() as Vaddr)
+                    || stack
+                        .checked_add(stack_size.get() - 1)
+                        .is_none_or(|stack_end| !is_userspace_vaddr(stack_end.get() as Vaddr)) =>
+            {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "the stack address is not in the userspace"
+                )
+            }
+            vals => vals,
+        };
+
+        Ok(Self {
+            flags,
+            pidfd: Some(value.pidfd as Vaddr),
+            child_tid: value.child_tid as _,
+            parent_tid: Some(value.parent_tid as _),
+            exit_signal,
+            stack,
+            stack_size,
+            tls: value.tls,
+            set_tid,
+            // `cgroup == 0` means "no CLONE_INTO_CGROUP"; store `None` in that case.
+            cgroup: (value.cgroup != 0).then_some(value.cgroup),
+        })
+    }
+}

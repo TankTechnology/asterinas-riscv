@@ -1,0 +1,16 @@
+#!/bin/sh
+# S20crond — busybox cron daemon (run foreground, backgrounded by the shell,
+# same pattern as the other services; -b's self-daemonize is avoided).
+PIDFILE=/run/crond.pid
+case "$1" in
+    start)
+        crond -f &
+        echo $! > "$PIDFILE"
+        echo "    crond: started (pid $(cat "$PIDFILE"))"
+        ;;
+    stop)
+        [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+        rm -f "$PIDFILE"
+        ;;
+    *) echo "usage: $0 {start|stop}"; exit 1 ;;
+esac

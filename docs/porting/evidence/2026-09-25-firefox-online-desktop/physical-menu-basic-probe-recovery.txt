@@ -1,0 +1,7 @@
+0b6e671b-d889-4c3f-ac4d-6a1b8e398e62
+performance
+1800000
+02280720efe7a1ad0ac084cdc20429406631e12d2e16f05638544bab0883fb26  /boot/extlinux/asterinas.conf
+eb5f39a6e2db71ccc93ae005c488fd9f7ef353e75426e5a51e8923a9cbf2ebc5  /boot/extlinux/extlinux.conf
+5b2bd5c2378b164ff4028d3211b1c8f4f7cb74db1c7e94689bdda52d8ce37f13  /boot/extlinux/asterinas-menu-5b2bd5c2378b.conf
+ASTERINAS_P2_UNMOUNTED

@@ -1,0 +1,30 @@
+PowerVR firmware core-clock handoff, 2026-09-30
+
+Selected RockOS source: bf2ec5d53002c16bc1bc593b92516eb6c2866176
+  drivers/clk/eswin/clk-eic7700.c:
+    fixed_rate_clk_spll0_fout1 = 1,600,000,000 Hz
+    GPU_ACLK_CTRL divider field = bits [7:4]
+    special divider values 0, 1, 2 each mean divide by 2
+  services/system/eswin_cpu/sysconfig.c:
+    firmware core clock is obtained from clk_get_rate(aclk)
+
+The Asterinas selected powered state retains ACLK register 0x80000020.
+Decoded rate = 1,600,000,000 / 2 = 800,000,000 Hz.
+
+RISC-V QEMU kernel tests, each verified 1 selected test, 0 failed:
+  gpu_clock_readback_decodes_selected_special_divider
+    serial SHA-256 39f742eff9ede750da8afae505c6a7ea3d1b4effafd00c6c2b01cf4253cad59b
+  gpu_dma_stage_sets_both_firmware_clock_fields_after_readback
+    serial SHA-256 a325c1322fff97252d3eebbeb263681db135293b9583b8ee9553e26257846b99
+  gpu_clock_handoff_rejects_power_state_drift
+    serial SHA-256 b6d7124ed1fd1dc299885b4281f0859ff5d86c4c86549e44b5eb3f0de5b67702
+
+The first two selected tests passed before the power-state-drift predicate was
+strengthened; the third test covers the new predicate. After all changes,
+targeted rustfmt --check passed and `make kernel TARGET_ARCH=riscv64 SMP=4
+FEATURES=riscv_sv39_mode` finished successfully in the persistent Docker
+container (dev profile, 20.32 seconds; pre-existing warnings remain).
+
+These tests verify CPU-visible clock fields and register decoding only. They
+do not show a live board clock readback, GPU MMU root installation, firmware
+execution, command submission, or GPU-rendered pixels.

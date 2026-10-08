@@ -1,0 +1,12 @@
+{
+  "run_id": "d3472c98d057bf347a82087bf37557f7",
+  "action": "cycle",
+  "mode": "fallback",
+  "menu_sha256": "5b2bd5c2378b164ff4028d3211b1c8f4f7cb74db1c7e94689bdda52d8ce37f13",
+  "passed": true,
+  "recovered": true,
+  "boot_to_ready_seconds": 25.171544083044864,
+  "menu_to_ready_seconds": 21.805482967058197,
+  "elapsed_seconds": 50.748629176057875,
+  "serial_sha256": "c54e22b3a83f43c182675ace0a942e278325924b1e2349fc66e444baf1c7517f"
+}

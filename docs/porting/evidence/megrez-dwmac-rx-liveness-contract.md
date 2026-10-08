@@ -1,0 +1,732 @@
+# Megrez DWMAC RX Liveness Contract
+
+Date: 2026-08-28
+
+## Source identity
+
+The hardware-facing authority for this audit is ESWIN's Linux 6.6 branch at
+commit `fc6038c00e006226e3bd504d2679c534eabf5503`. The branch identity was read
+from `refs/heads/linux-6.6.18-EIC7X`; the audit used raw files addressed by the
+commit rather than the mutable ref.
+
+The inspected primary sources are:
+
+- [`stmmac_main.c`](https://github.com/eswincomputing/linux-stable/blob/fc6038c00e006226e3bd504d2679c534eabf5503/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c),
+  SHA-256 `bed987608cdb21b1c48dfdfd454b11781cf6ce2ec9a3a47e266f1a13c64b127e`;
+- [`dwmac4_lib.c`](https://github.com/eswincomputing/linux-stable/blob/fc6038c00e006226e3bd504d2679c534eabf5503/drivers/net/ethernet/stmicro/stmmac/dwmac4_lib.c),
+  SHA-256 `2543cf88e08e3798f31810b8104c71a1d6d8730776c6a07c8dc4860835f0e72b`;
+- [`dwmac4_dma.c`](https://github.com/eswincomputing/linux-stable/blob/fc6038c00e006226e3bd504d2679c534eabf5503/drivers/net/ethernet/stmicro/stmmac/dwmac4_dma.c),
+  SHA-256 `60e2b0bc9dd46e1df80fb886c47a02a0915611d4ec634435cd4cc219d76e0b0c`;
+- [`dwmac4_dma.h`](https://github.com/eswincomputing/linux-stable/blob/fc6038c00e006226e3bd504d2679c534eabf5503/drivers/net/ethernet/stmicro/stmmac/dwmac4_dma.h),
+  SHA-256 `0a9e02abe4851da783f188bf95877ed480830246f744599219e4977801586ea6`;
+- [`dwmac4_descs.c`](https://github.com/eswincomputing/linux-stable/blob/fc6038c00e006226e3bd504d2679c534eabf5503/drivers/net/ethernet/stmicro/stmmac/dwmac4_descs.c),
+  SHA-256 `557b8e9defa482166a2eeb2767a7ae5dc405d978cc2a080e036b2a3855dd0f3e`;
+- [`dwmac-win2030.c`](https://github.com/eswincomputing/linux-stable/blob/fc6038c00e006226e3bd504d2679c534eabf5503/drivers/net/ethernet/stmicro/stmmac/dwmac-win2030.c),
+  SHA-256 `6abf28f712ddcd9a4d9eb7a108033c76e8079de9dc79c3529575c2968d835f34`.
+
+`dwmac-win2030.c::dwc_eth_dwmac_probe` supplies EIC7700 resources and platform
+configuration, then delegates the operational datapath to
+`stmmac_dvr_probe`. It does not replace the generic RX polling, descriptor, or
+DMA interrupt protocol. The generic ESWIN-branch `stmmac` sources are therefore
+the applicable software reference for this board.
+
+## Verified RX budget and NAPI completion rules
+
+`stmmac_main.c::stmmac_rx` receives a `limit` from NAPI, caps it at one less
+than the RX ring size, and walks descriptors only while the completed-frame
+count remains below that limit. It returns the bounded count after refilling
+the descriptors consumed by that invocation.
+
+`stmmac_main.c::stmmac_napi_poll_rx` passes the NAPI `budget` to `stmmac_rx`.
+It calls `napi_complete_done` and reenables the channel's RX DMA interrupts
+only when `work_done < budget`. Reaching the budget returns without completing
+NAPI and without reenabling RX DMA interrupts, so the already scheduled poll
+continues while the hardware source stays masked. The combined RX/TX poll in
+`stmmac_napi_poll_rxtx` applies the same rule: either direction reaching the
+budget keeps polling and does not reenable DMA interrupts.
+
+This is the authoritative working pattern for the Asterinas model:
+
+- one RX callback must have finite work;
+- budget exhaustion is not an empty-queue observation;
+- budget exhaustion preserves scheduled RX work and keeps the interrupt
+  source masked;
+- the source is reenabled only after a poll observes less work than its
+  budget and completes the deferred operation.
+
+## Verified descriptor ownership and tail-pointer rules
+
+`dwmac4_descs.c::dwmac4_set_rx_owner` publishes an RX descriptor by setting
+the DWMAC ownership and valid-buffer bits. `stmmac_main.c::stmmac_rx_refill`
+sets buffer addresses, executes `dma_wmb`, publishes ownership, advances
+`dirty_rx`, then updates the RX tail. The ordering contract is therefore:
+descriptor contents and buffers become visible before ownership, and ownership
+becomes visible before the tail advertises newly refilled work.
+
+After refill, Linux computes the tail as the descriptor-ring base plus
+`dirty_rx * sizeof(struct dma_desc)`. `dirty_rx` is the next ring position
+after the descriptors returned to DMA. At initial channel setup, the tail is
+the base plus the number of allocated descriptors, which is the one-past-ring
+initial boundary. `dwmac4_lib.c::dwmac4_set_rx_tail_ptr` writes that byte
+address directly to `DMA_CHAN_RX_END_ADDR`.
+
+Asterinas currently initializes the tail one-past-ring and advances it to the
+next descriptor position after every refill. That shape agrees with the Linux
+reference, including wrap to the ring base. The audit does not identify the
+tail index calculation as the first root-cause candidate. The production-fix
+plan must still preserve sync-to-device before the ownership/tail writes.
+
+## Verified TX publication and completion rules
+
+`stmmac_main.c::stmmac_xmit` reserves the ring entries, maps and fills every
+buffer, prepares the descriptors, and advances `cur_tx` to the next free
+entry. It publishes the first descriptor's ownership last through
+`dwmac4_descs.c::dwmac4_set_tx_owner`, then calls
+`stmmac_flush_tx_descriptors`. The latter executes `wmb()` before computing
+the byte-address tail from `cur_tx` and calling
+`dwmac4_lib.c::dwmac4_set_tx_tail_ptr`. That function writes the tail directly
+to `DMA_CHAN_TX_END_ADDR`. Thus Linux makes the payload and complete descriptor
+chain visible before `OWN`, and makes `OWN` visible before the MMIO tail
+notification.
+
+`stmmac_main.c::stmmac_tx_clean` walks from `dirty_tx` toward `cur_tx` until it
+encounters a descriptor still owned by DMA. After observing cleared ownership
+it executes `dma_rmb()` before reading completion fields, unmaps the DMA
+buffer, clears the software entry, and advances `dirty_tx`. Both TX NAPI entry
+points pass an explicit budget to this function. This provides a bounded
+completion loop and prevents a buffer from being reused before the ownership
+transition is observed.
+
+Asterinas has the same ring-state shape. `TxBuffer::build` synchronizes the
+payload to the device before `DmaQueue::send` publishes its descriptor;
+the descriptor ring uses an uncached `DmaCoherent` mapping on noncoherent
+targets, so `DmaQueue::write_descriptor` publishes the complete descriptor
+without cache-line writeback before `DwmacDevice::send` writes the tail.
+Reclaim reads the uncached descriptor, observes cleared ownership with an
+acquire fence, then drops the buffer and advances the consumer.
+
+There is nevertheless a documented boundary difference: Linux has an
+explicit `wmb()` at the final ownership-to-tail handoff, while Asterinas relies
+on the descriptor release fence before a later volatile MMIO write. The staged
+board experiment therefore records both TX publication/reclaim progress and
+the DMA channel status. The first physical result below selected descriptor
+cache-line ownership as a candidate rather than silently adding another MMIO
+barrier. The follow-up run tests whether an uncached ring is sufficient.
+
+## Verified DMA status clear and RBU restart rules
+
+`dwmac4_dma.h` defines channel receive interrupt, receive-buffer-unavailable,
+normal-summary, and abnormal-summary status bits. In
+`dwmac4_lib.c::dwmac4_dma_interrupt`, Linux reads channel status and the enabled
+interrupt mask, classifies receive-buffer-unavailable for statistics, and
+writes the enabled observed bits back to the status register. This is the
+driver's write-one-to-clear operation.
+
+The Linux code does not use a separate RBU-only restart command in this path.
+It refills descriptors and writes the new RX tail, while the interrupt handler
+clears the observed enabled status. Asterinas likewise must not clear status
+and unmask the source while completed descriptors are left without scheduled
+poll work. The model represents the ordering as separate clear and rearm
+transitions so a DMA completion may occur between them.
+
+Linux masks the DWMAC channel's RX interrupt enable bit when scheduling NAPI.
+Asterinas currently masks the mapped PLIC source instead. Those mechanisms are
+not identical, but both require the same deferred-work invariant: a source
+masked for polling is released only after the receiver has either drained its
+work or preserved another scheduled poll.
+
+## Mapping to the Asterinas model
+
+The executable model maps Linux/Asterinas concepts as follows:
+
+| Model state or transition | Driver concept |
+|---|---|
+| `Owner::Dma` | descriptor has DWMAC `OWN` and may be filled |
+| `Owner::CpuComplete` | hardware cleared `OWN`; CPU may consume it |
+| `DmaComplete` | frame completion plus asserted RX channel status |
+| `DeliverIrq` | deferred mapped IRQ masks the PLIC source and raises softirq |
+| `PollConsume` | receive, refill, ownership publication, and tail advance |
+| finite `budget_left` | Linux NAPI budget / proposed bounded Asterinas poll |
+| `ClearStatus` | write-one-to-clear of known DWMAC channel status |
+| `Rearm` | either preserve masked scheduled work or unmask an empty receiver |
+| `RaiseTx` / `RaiseTimer` | work becoming pending during nonpreemptible RX poll |
+
+For a two-entry ring, the current unbounded protocol reaches a lasso after:
+
+1. DMA completion;
+2. IRQ delivery;
+3. TX service;
+4. RX poll start;
+5. TX and timer work becoming pending.
+
+The repeating cycle is two alternating DMA completions and poll consumes. It
+returns to the same state while TX and timer remain pending. The finite-budget
+protocol breaks that cycle, keeps the source masked when completed descriptors
+remain, and verifies all reachable states for reduced rings of size two,
+three, and four.
+
+## Unproved EIC7700 assumptions
+
+The software model and Linux comparison do not prove these hardware facts:
+
+- EIC7700 implements the referenced DWMAC4/5 register semantics without a
+  relevant erratum;
+- Asterinas cache synchronization matches the board's noncoherent DMA
+  requirements;
+- the PLIC source has the level behavior represented by the board DTB and OSTD
+  mapping;
+- OSTD MMIO operations provide the ordering required between descriptor sync,
+  status clear, tail update, and interrupt unmask;
+- the PHY and GMAC do not require an undocumented EIC7700-specific recovery
+  sequence after prolonged RX-buffer-unavailable status.
+
+These assumptions require one final physical run. They are not reasons to use
+the board for software scheduler exploration.
+
+## Consequence for the production-fix plan
+
+The evidence supports a narrowly scoped production plan around bounded ingress
+polling and explicit poll completion. The plan must distinguish:
+
+- `drained`: fewer packets than the budget; clear status and rearm;
+- `budget exhausted`: preserve/re-raise RX work and keep the source masked;
+- `fatal`: stop the queue and do not reschedule or rearm it.
+
+It must test TX/timer progress, RX arrival during clear/rearm, ring wrap, and
+the exact masked/rescheduled state before changing the real driver. It must not
+bundle MMC deployment, xHCI, desktop, browser, PHY-selection, or unrelated
+network-stack work. QEMU remains regression evidence only; one Linux-staged
+Megrez run is the final hardware check.
+
+## Implemented bounded protocol and staged physical discriminator
+
+The production implementation is recorded by these commits:
+
+- `b6c709f5d`: dependency-free 32-packet poll-budget state machine and exact
+  host tests;
+- `57504e1bb`: `DwmacDevice` integration, including the post-status descriptor
+  recheck, masked rescheduling, and drained-only PLIC rearm;
+- `c72469ad9`: cumulative RX-budget diagnostics emitted only after rescheduled
+  work subsequently drains and the PLIC rearm succeeds;
+- `d4fe72bc0`: one-boot ordered 16 KiB, 64 KiB, 1 MiB, and 16 MiB TCP stress
+  protocol with exact progress and a final marker bound to all four sizes.
+
+The current abstract protocol still produces its deterministic starvation
+lasso. The bounded protocol exhaustively verifies reduced rings of size two,
+three, and four. The exact production poll module reports six host tests, and
+the RISC-V OSDK compile of `aster-dwmac`, `aster-network`, and `aster-kernel`
+passes in the pinned container.
+
+The physical discriminator records these markers in one Asterinas boot:
+
+- `ASTERINAS_GMAC_TCP_PROBE_PROGRESS`, with the exact stage and cumulative
+  completed bytes;
+- `ASTERINAS_GMAC_RX_POLL`, with cumulative receives, budget exhaustions,
+  reschedules, and successful PLIC rearms;
+- the existing panic/oops fatal markers and the automatic U-Boot recovery
+  prompt driven by the frozen `asterinas.reboot_after=60` policy.
+
+## One-boot physical result and TX root cause
+
+The frozen `reboot_after=60`, Sv39, SMP=4 plan was executed exactly once on
+Megrez. All four harts, MMC, framebuffer, PHY selection, and GMAC1 at
+1000-Mbit/s full duplex initialized. The 16-KiB stage stopped after 14,600
+payload bytes. The decisive datapath progression was:
+
+```text
+tx_submitted=10 tx_reclaimed=0 tx_outstanding=10
+tx_submitted=60 tx_reclaimed=0 tx_outstanding=60 dma_status=0x00008444
+tx_submitted=64 tx_reclaimed=0 tx_outstanding=64 dma_status=0x00008040
+```
+
+RX continued from 4 through 128 descriptors while TX filled the exact
+64-entry ring and reclaimed none. Linux `ss` simultaneously observed the host
+connection in `FIN-WAIT-1` with 16,446 queued bytes. Channel status
+`0x00008444` contains DWMAC `TBU` (Transmit Buffer Unavailable), `ETI`, `RI`,
+and the normal summary. This closes the bounded-RX-poll hypothesis for the
+observed failure and selects TX descriptor completion visibility.
+
+The reduced cache-line model in `tools/riscv/dwmac_tx_cacheline_model.rs`
+provides the matching counterexample. Four packed 16-byte descriptors share
+one EIC7700 64-byte cache line. Preparing one descriptor through a streaming
+cached mapping can clean the whole line after DMA cleared an adjacent
+descriptor's `OWN` bit, writing the stale `OWN=1` value back to memory. Linux
+avoids this ownership conflict by keeping the descriptor ring in coherent DMA
+memory. Asterinas now uses `DmaCoherent::alloc(1, false)` for the ring, which
+maps it uncached on a noncoherent target; payload buffers remain streaming DMA.
+
+The board's 60-second kernel recovery completed without a physical reset: the
+serial transcript reached fresh board firmware, OpenSBI, and U-Boot. The first
+runner result said `recovery-not-observed` only because U-Boot waited in its
+30-second autoboot countdown. The runner now sends one empty line only after a
+post-terminal `Hit any key to stop autoboot` marker and continues to require a
+fresh prompt. It never issues a second `booti` or persistent U-Boot command.
+
+Evidence from the frozen run is retained under
+`target/megrez-debug/dwmac-high-info/board-run-20260828-1344/` with these
+SHA-256 identities:
+
+- `serial.log`: `3e93883c9e38e90d17d310ee4aaf0cd806137ebd9f3e48a41e1bdd2b396a4a08`;
+- `transport.json`: `b791b727055771e4f2abe3d7404f7f14a797349ad6f8edd49ff35b2fecd935f0`;
+- `probe-tcp-info.json`: `485eb427cd07eaf77dc1e1c35275d589939014300c79dc70cec6228f3da243dd`;
+- `result.json`: `60422313642cddec0ff5e11bc581d4235e43995a54e16453873fe843ff13e213`.
+
+The uncached-ring fix passed its deterministic interleaving model, all Megrez
+host tests, and the pinned RISC-V OSDK compile. The later frozen-plan run below
+does not show positive `tx_reclaimed` progress, so this document does not claim
+that the fix resolves the hardware failure.
+
+## Frozen uncached-ring physical validation
+
+The follow-up gate used a fresh Sv39, SMP=4 kernel containing commit
+`131381300`. The frozen plan SHA-256 is
+`c415f249e1802bf5a21522e266518ddebda314915dcdd7720010e414e4a4006d`.
+The kernel SHA-256 is
+`334b7bf431afd67e55a50dfb95c9e288f8f9c6b1ba551bd5008be05763c040ca`
+and its U-Boot CRC32 is `da9266aa`.
+
+Before the board was opened, the exact kernel and probe passed the generic
+Sv39/SMP4 QEMU TCP gate and a separate 60-second software-reboot gate.
+The physical runner then transferred only the stale kernel and DTB, reused the
+matching initramfs cache entry, and issued exactly one `booti`.
+The serial transcript contains no `saveenv` or `reset` command.
+
+The board booted all four harts and selected GMAC1 at 1000 Mbit/s full duplex.
+The guest completed the first 16-KiB receive stage:
+
+```text
+ASTERINAS_GMAC_TCP_PROBE_PROGRESS bytes=16384 completed_bytes=16384 pattern=mod251
+```
+
+During the second stage, RX continued while TX completion remained absent:
+
+```text
+rx=62  tx_submitted=52 tx_reclaimed=0 tx_outstanding=52 dma_status=0x00004484
+rx=94  tx_submitted=64 tx_reclaimed=0 tx_outstanding=64 dma_status=0x0000c4c4
+ASTERINAS_GMAC_TCP_PROBE_FAIL reason=receive-poll errno=110 attempts=2 current_bytes=0 completed_bytes=16384
+```
+
+The host probe accepted application writes for both the 16-KiB and 64-KiB
+bodies. Its retained `TCP_INFO` samples for both connections reached
+`bytes_sent=13201`, `bytes_acked=0`, and `unacked=10`.
+This is consistent with a TX path that stops making completion progress after
+initial traffic, rather than a pre-TX routing or link failure.
+
+The terminal failure was followed by fresh board firmware, OpenSBI, and U-Boot
+output. The runner stopped the recovered autoboot countdown and returned the
+board to a U-Boot prompt without a physical reset. Its final result is
+`passed: false` with reason `guest-failure-recovered:receive-poll`.
+
+The selected classification is **`tx-reclaim-still-stalled`**.
+
+## Document-driven DWMAC 5.20 preboard gate
+
+The EIC7700 TRM identifies both integrated controllers as Synopsys DWMAC 5.20.
+Commit `34341f8b8` therefore replaces the previous broad acceptance of any
+`0x40..=0x5f` revision with exact `MAC_VERSION.SNPSVER == 0x52` on both ports.
+The driver fails closed before PHY selection if either port reports another
+revision.
+
+Commit `5359f2d92` extends the dependency-free Rust reference model from five to
+nine tests. In addition to the packed-cache-line and publication-ordering
+counterexamples, it now freezes the documented 5.20 normal-descriptor contract:
+
+- full 64-bit buffer addresses occupy words zero and one;
+- RX publication sets OWN, IOC, and BUF1V;
+- one-buffer TX publication sets OWN, FD, LD, and the exact length;
+- 64 entries encode a ring length of 63;
+- the initial TX tail is the TX base and initial RX tail is one-past-ring;
+- later tails advance modulo the ring;
+- status acknowledgement writes only known W1C bits and RBU requests RX resume.
+
+The model remains an independently readable oracle rather than a second
+driver. Existing source-contract tests bind its ordering and address/tail
+expectations to the production descriptor, queue, register, and device files.
+
+The combined fresh host gate reported 34 Megrez contract tests and 14 DWMAC
+model/source tests passed. The pinned RISC-V
+`cargo osdk check --ktests -p ostd -p aster-dwmac -p aster-network -p aster-kernel`
+completed successfully in 18.72 seconds. This gate did not boot QEMU or Megrez.
+The next board transaction must first capture
+`ASTERINAS_GMAC_DMA_CONTRACT`; only then may the existing TX-reclaim/RX-progress
+evidence be interpreted against the verified physical, device, and CPU-alias
+addresses.
+Switching the descriptor ring to `DmaCoherent` did not make TX ownership
+transitions visible to the CPU on this board. The cache-line stale-writeback
+interleaving remains a valid model defect, but it is not a sufficient
+explanation for this physical failure. The next investigation must remain
+offline until it can discriminate descriptor-format/readback, DMA address and
+direction semantics, and the ownership-to-tail ordering boundary. This gate
+does not authorize a second physical run.
+
+Evidence is retained under
+`target/megrez-debug/dwmac-tx-reclaim-validation/board-run-20260828-153054/`
+with these SHA-256 identities:
+
+- `serial.log`: `48480fbe0b2a5796276dc73ab7413f973e99cef0c904fe1c95a16eaa6d3b622a`;
+- `transport.json`: `e68fe4d90ce9adbb924aa31ed743886afb4efef59ce89b526661198b7d404cf7`;
+- `probe-tcp-info.json`: `e2d3ddf20e970b1900f3837fcfdf4d780039c7c931cf9646eedb177ee8369571`;
+- `result.json`: `13c444d2257b0bf37b1ff7e33fc47b478890a2955bbe1fc5c6cc9d0552a3969d`.
+
+## Current-main DMA-domain and TX-reclaim validation
+
+The later `asterinas-riscv` main integration at commit
+`f61a8352e0c0dfbbc8a0c721d78857d4206154e1` was rebuilt as Sv39 with four
+harts and validated with one physical `booti`. The frozen plan SHA-256 is
+`4b373462a071670ec92a5520185a46e9a8ee4e997f775d2769c8ee8eaa3ee1ee`;
+the kernel SHA-256 is
+`350e6f13c6ebc18fcbe163385f3b1ae608846fbb23584b5014c3f04e4eece93b`.
+Before the board was opened, that exact kernel and probe passed both the
+generic Sv39/SMP4 TCP QEMU gate and the independent 60-second software-reboot
+gate.
+
+The new one-shot DMA contract established the physical address-domain facts
+before datapath counters were interpreted:
+
+```text
+ASTERINAS_GMAC_DMA_CONTRACT version=0x52
+ring_paddr=0x00000002a0832000
+ring_daddr=0x00000002a0832000
+ring_cpu_alias=Some(0x000000c220832000)
+tx_ring=0x00000002a0832000 rx_ring=0x00000002a0832400
+tx_tail=0x00000002a0832000 rx_tail=0x00000002a0832800
+```
+
+Thus the shipped identity-DMA device tree, hardware DMA address, and PBMT
+non-cacheable CPU alias agree. The board selected GMAC1 with DWMAC revision
+`0x52`, 1000-Mbit/s full duplex, and MAC address `00:48:54:71:00:48`.
+
+Unlike the earlier runs, TX ownership made sustained forward progress. The
+bounded diagnostics advanced from `tx_submitted=2 tx_reclaimed=1` to:
+
+```text
+rx=128 tx_submitted=473 tx_reclaimed=472 tx_outstanding=1
+rx_reschedules=2 plic_rearms=419 dma_status=0x00008444
+```
+
+This closes the previous TX-reclaim failure on the current physical build: the
+ring neither filled to 64 entries nor stopped reclaiming. The host also learned
+the guest MAC in its ARP neighbour table. Nevertheless, the ordered probe
+reported:
+
+```text
+ASTERINAS_GMAC_TCP_PROBE_FAIL reason=connect-poll errno=110 attempts=11 current_bytes=0 completed_bytes=0
+```
+
+The bound host trace contains zero accepted TCP connections. A historical
+packet capture from an earlier build shows repeated board-to-host TCP packets
+and immediate host replies, but that capture does not encode TCP flags and is
+not evidence from this exact run. Therefore this run is classified
+**`tx-reclaim-fixed/later-network-stall`**, with the first unresolved boundary
+between receipt of the host's TCP response and TCP socket state-machine
+acceptance. The current evidence does not distinguish a DWMAC RX
+descriptor/error-classification problem from a packet that reaches the network
+stack but fails socket matching; a later run must not choose between those
+without a read-only packet-class diagnostic prepared and tested offline.
+
+The terminal failure was followed by fresh board firmware, OpenSBI, U-Boot,
+and a new prompt. The 60-second recovery required no physical reset. The
+transport log contains exactly one `booti` and no `saveenv` or `reset` command.
+Evidence is retained under
+`target/megrez-debug/dwmac-board-f61a8352e/board-run-20260828-191525/` with
+these SHA-256 identities:
+
+- `serial.log`: `a7f0308b15882bc22b0933ba854ebf48671ec8ec9171a4f08209d656e21b5e68`;
+- `transport.json`: `4a886a2b702ddce87cd0a299131f08c54fa0650e5eb6ce4631d4be42c227b83d`;
+- `probe-tcp-info.json`: `fcf3ca88e92426bb5e3007dc57187c9b4224b67f1d22af05315dcf1003bd47b3`;
+- `result.json`: `acad4aa8f0cded228f774aafcf40bde4f2dff2d00f076dddaa894ba82a3b0de8`.
+
+### Next-run receive boundary discriminator
+
+Before another physical boot, the next kernel must add two bounded, read-only
+diagnostics. `ASTERINAS_GMAC_RX_CLASS` samples at most the first 512 receive
+headers and reports ARP, IPv4, TCP SYN, TCP SYN-ACK, malformed-frame, and
+descriptor-error counters. It copies no payload beyond the Ethernet, maximum
+IPv4, and minimum TCP headers, does not change descriptor ownership, and stops
+sampling after the fixed bound. `ASTERINAS_TCP_SYN_ACK` advances monotonically
+through `parsed`, `connection-found`, and `socket-accepted`, so retransmissions
+cannot flood the log or move the observation backwards.
+
+The next single run is interpreted without guesswork:
+
+- descriptor errors with no DWMAC SYN-ACK identify the hardware/descriptor
+  receive boundary;
+- a DWMAC SYN-ACK without `parsed` identifies Ethernet/IP/TCP validation or
+  checksum rejection;
+- `parsed` without `connection-found` identifies tuple lookup;
+- `connection-found` without `socket-accepted` identifies socket-state
+  rejection;
+- `socket-accepted` with a userspace timeout moves the fault to connect wakeup
+  or a later userspace boundary.
+
+### Physical SYN-ACK and HTTP-request boundary
+
+The diagnostic kernel from commit `e655d3465` was rebuilt as Sv39/SMP4 and
+bound to plan SHA-256
+`fff0dd2c0dcdf686163995cf15582d54f1598daba1b6a558e76d655c29947e5b`.
+Its kernel SHA-256 is
+`1d7ea315f4b16217680a6d9541c8bc04cffc666803a60b0c365d79bb86f978f6`.
+The exact image passed both the generic TCP QEMU gate and the independent
+software-reboot gate before one physical `booti`.
+
+The physical run closed the entire receive-side SYN-ACK boundary. The DWMAC
+sample observed four TCP SYN-ACK frames and no fragmented, receive-error,
+too-long, or other descriptor drops. Bigtcp then emitted, in order:
+
+```text
+ASTERINAS_TCP_SYN_ACK stage=parsed
+ASTERINAS_TCP_SYN_ACK stage=connection-found
+ASTERINAS_TCP_SYN_ACK stage=socket-accepted
+```
+
+The host accepted one connection from `10.100.19.200`; its Linux TCP state was
+`ESTABLISHED`. The guest no longer failed at `connect-poll`. Instead, after its
+request `send()` loop completed, it reported:
+
+```text
+ASTERINAS_GMAC_TCP_PROBE_FAIL reason=http-response errno=0 attempts=4 current_bytes=0 completed_bytes=0
+```
+
+The host trace recorded `requested_bytes=null`, zero accepted application and
+payload bytes, and zero outgoing data segments throughout its bounded two-second
+receive window. Thus the first unresolved boundary is now after the guest TCP
+send queue accepts the HTTP request and before any request byte becomes visible
+to the host. A later change must inspect TCP egress scheduling and classify
+DWMAC TX frames offline; it must not reopen the already-closed DMA, TX-reclaim,
+RX-descriptor, SYN-ACK parsing, tuple lookup, or socket-acceptance questions.
+
+After the failure, the board returned through fresh OpenSBI and U-Boot to a new
+prompt without a physical reset. The transport again contains exactly one
+`booti` and no `saveenv` or `reset` command. Evidence is retained under
+`target/megrez-debug/dwmac-ingress-e655d3465/board-run-20260828-194059/`
+with these SHA-256 identities:
+
+- `serial.log`: `6dc493d9cbf76f5376bf609a0e5ba110a024053893f36c06a451f4c06fbb7dca`;
+- `transport.json`: `df0f9fdea8e7d93b1473dc34b50359bf38e45efbf0301dc8c990a4f4a9f9935b`;
+- `probe-tcp-info.json`: `ef033475cf9374de7df7672c92ae11022d802e14e7dc486e512ed50685c4c410`;
+- `result.json`: `c9b4347be58a98d69720f1ebe54120d2cd0098d1b88ec0076b14b556bcbab772`.
+
+## Ordering-instrumented run and memory-type discriminator
+
+A later single-boot run used the frozen kernel SHA-256
+`8560f935cdaaec923c6acb0dcfd5659ca084327748feae20092c4d0f26fb1e39`.
+It completed the 16-KiB stage and made limited reclaim progress before the
+64-KiB stage filled the ring:
+
+```text
+tx_submitted=3  tx_reclaimed=2 tx_outstanding=1
+tx_submitted=11 tx_reclaimed=2 tx_outstanding=9
+tx_submitted=66 tx_reclaimed=2 tx_outstanding=64 rx=42  dma_status=0x00008444
+tx_submitted=66 tx_reclaimed=2 tx_outstanding=64 rx=153 dma_status=0x00000000
+```
+
+The host accepted the 64-KiB response and observed retransmission and a
+congestion-window collapse before the guest stalled. Hardware therefore
+transmitted descriptors beyond the first two while the CPU continued to see
+the oldest outstanding ownership word as set. The board recovered through the
+60-second software reboot and returned to U-Boot without a physical reset.
+
+The EIC7700X TRM MCPU feature table, exact board DTB, and boot log contain no
+Svpbmt extension. Therefore the ring's `WriteCombining` page property could not
+encode PBMT_NC and remained an ordinary cacheable PTE. The selected diagnostic
+hypothesis is **`tx-reclaim-partial/stale-cpu-view`**. This supersedes the
+earlier assumption that allocating `DmaCoherent(false)` alone made the ring
+uncached on Megrez, but it remains a leading diagnosis rather than a proven
+physical root cause until the separately authorized post-alias run.
+
+The production fix makes DWMAC explicitly consume
+`DmaCoherent::into_uncached`. Svpbmt systems retain the page-based PBMT_NC
+path; EIC7700 maps the checked hardware non-cacheable DRAM alias after cleaning
+the original view; unsupported RISC-V systems fail closed. Packet buffers,
+ring layout, interrupt policy, and tail-pointer protocol are unchanged.
+
+Evidence from the ordering run is retained under
+`target/megrez-debug/dwmac-ordering-20260828/board-run-ordering-single/`:
+
+- `serial.log`: `cccdc52be7b3ba392179414146532336c78af1c4f1b35e924a33995ce5d6025b`;
+- `transport.json`: `6764cf93f35c09d101529619fedf023a2a2f1291b14227866162a5574a3c2bfb`;
+- `probe-tcp-info.json`: `34350c9e6ddb944ce0d597d71be9d4c5314cdb34a405a3ddbb385a0b321aeadd`;
+- `result.json`: `532c3d25e49241636d88c69bd48b3a282af5c4c34cb760a75c9de96982aeab54`.
+
+No physical rerun is included in the alias implementation milestone. Its next
+board use must be separately frozen and recovery-armed.
+
+## Sustained-transfer boundary after TCP egress instrumentation
+
+Commit `638a65edd` added three monotonic, one-shot egress markers without
+changing the datapath: the userspace request was buffered, bigtcp dispatched a
+TCP segment, and DWMAC submitted a TCP-data descriptor. The corresponding
+Sv39/SMP4 kernel SHA-256 is
+`ae6e836dfc79cb9b2275269902360d23429165ed63799d7f9e7e6156073c54ec`;
+the frozen plan SHA-256 is
+`52d55495b81b21a618adfdf19f94f4a980499eb1f6296e856cbc3f8cd576bafa`.
+That exact image first passed the generic QEMU TCP gate and the independent
+software-reboot gate. The latter completed the full second firmware epoch with
+no physical interaction; its retained recovery record SHA-256 is
+`f1ebe8a4a0f7e9d9ca63ebad7a9dca5455a1a94e03e4487d16524c6b26876c6d`.
+
+The single physical run then observed all three egress markers in order:
+
+```text
+ASTERINAS_TCP_EGRESS stage=buffered
+ASTERINAS_TCP_EGRESS stage=segment-dispatched
+ASTERINAS_GMAC_TX stage=tcp-data-submitted
+```
+
+The ordered 16-KiB, 64-KiB, and 1-MiB transfers completed. TX publication and
+reclaim remained healthy during the 16-MiB stage, including
+`tx_submitted=958 tx_reclaimed=957 tx_outstanding=1`. The guest later timed out
+after receiving 4,125,960 bytes of that stage. The host accepted 4,587,520
+payload bytes before its socket timeout. Its final TCP sample remained
+established but recorded `total_retrans=134`, `snd_cwnd=1`, two lost segments,
+and an RTO of 1.696 seconds. This closes the request-scheduling and basic TX
+boundaries. The remaining failure is a sustained-transfer loss or receive
+throughput boundary; the evidence does not justify another TX-ring change.
+
+The run ended with `guest-failure-recovered:receive-poll`, followed by fresh
+OpenSBI and U-Boot output and a stopped U-Boot prompt. It issued exactly one
+`booti`, used no persistent U-Boot command, and required no physical reset.
+Evidence is retained under
+`target/megrez-debug/dwmac-egress-638a65edd/board-run-20260828-200416/`:
+
+- `serial.log`: `749af41d8fcca0f11712be12d1bba69817924e40c13f7dec15be0eb58c37241b`;
+- `transport.json`: `c33b5521eb75b65f2150dd02bc3b0e537f34202e85fc20d33e4257e550b013b1`;
+- `probe-tcp-info.json`: `314bd5cf6b025d8486fb678a1e31e35e64df3a60dcd8aeb7bb69b910a93a455b`;
+- `result.json`: `9fb2067a2beaa4bf067201e8013cb7643475302c2f1f30ff18b1f8573a3aaf87`.
+
+Post-run audit found that the bounded RX classifier required the copied header
+prefix to contain the full IPv4 payload and consequently mislabeled valid
+large frames as malformed. It also logged every RX reschedule transition.
+Commit `0e209915d` fixes classification using only the copied headers, reduces
+reschedule reports to power-of-two milestones, and adds a cumulative DWMAC
+receive-buffer-unavailable counter. These are diagnostic corrections, not a
+claim of a physical fix. They pass the 17-test host model and the pinned
+RISC-V OSDK and Clippy gates. A later high-information board run should use the
+new RBU count to decide whether ring pressure exists before changing ring size
+or interrupt policy.
+
+The old physical transcript contains 86 `ASTERINAS_GMAC_RX_POLL` records,
+13,247 bytes in those records alone. On RISC-V the fallback OSTD console holds
+an IRQ-disabled spin lock and writes each byte through the SBI console call.
+With only 64 receive descriptors, hot-path serial output is therefore a
+credible source of measurement perturbation, although the transcript alone
+does not prove it caused the loss. The power-of-two cadence reduces this class
+of output without removing the cumulative evidence.
+
+The exact post-fix candidate has kernel SHA-256
+`8ba500c776895599b887cdd400e0a70c99e873dd7cecd584278ae0d33f1c1b05`,
+U-Boot CRC32 `4a7ebb9c`, and frozen-plan SHA-256
+`2e22cf2b3c7e3f35c96f66c5666e31a73b662d165bf89625fe87beb537c8c888`.
+It passed the 17.9-MiB generic Sv39/SMP4 TCP QEMU gate and the independent
+60-second software-reboot gate. The fast result SHA-256 is
+`a291f119d899013ef5c21c248e5772fb7e5bb8fd627d92da3bc1628d3369eae5`;
+the recovery result SHA-256 is
+`6f23a3d53f2156cab667b99cea0b3b13797c6594b71c7c887d008cd576ef9333`.
+No post-fix physical run is claimed in this milestone.
+
+## Post-fix bounded physical run
+
+The exact post-fix candidate above was subsequently used for one recovery-armed
+physical transaction. Preflight revalidated the frozen plan and both retained
+QEMU results. The runner transferred only missing artifacts, issued exactly one
+`booti`, and used no reset or persistent U-Boot command.
+
+The 16-KiB, 64-KiB, and 1-MiB stages completed. The 16-MiB stage ended at the
+guest's shared 45-second probe deadline with:
+
+```text
+ASTERINAS_GMAC_TCP_PROBE_FAIL reason=receive-poll errno=110 attempts=4 current_bytes=524140 completed_bytes=1130496
+```
+
+The host accepted 983,040 payload bytes in that stage. Its final TCP sample
+remained established but recorded 48 retransmissions, a congestion window of
+3, and a 1.664-second RTO. The guest continued to receive and generate ACKs;
+the last sampled queue state was `tx_submitted=442 tx_reclaimed=441
+tx_outstanding=1`.
+
+Seventeen cumulative datapath observations all reported
+`rx_buffer_unavailable=0`. Every sampled descriptor error and the corrected
+bounded classifier's malformed count also remained zero. This rejects receive
+descriptor-ring exhaustion, malformed-descriptor handling, and TX reclaim as
+the immediate explanation for the sustained-transfer collapse. Reducing the
+serial diagnostic cadence from 86 RX-poll records in the earlier run to 7 did
+not make the 16-MiB transfer complete.
+
+The board runner reached its outer observation deadline immediately before it
+could classify recovery and therefore recorded `recovery-not-observed`. After
+the runner released the serial port, a bounded read at the normal U-Boot baud
+and one carriage return returned the stopped `=>` prompt. Thus the protected
+software reboot did recover the board; no physical reset was required.
+
+Evidence is retained under
+`target/megrez-debug/dwmac-rbu-0e209915d/board-run-20260828-rbu-single/`:
+
+- `serial.log`: `9f6f3801972241b0aa1dd07bea1a02871232afbf0be9edc3b6056cd4123fa55e`;
+- `transport.json`: `3e1218ff2bc1a66e48f9445251a2faae395d8461eda60416f9b024f67e22d45a`;
+- `probe-tcp-info.json`: `936502316153e1802636ea7a21e0c6842314802afc2552431bcb428c68f2df3f`;
+- `result.json`: `a83c5ae1fa043fc15c9ce5c3711bb1d18b49d26da001bd20068bec718ceb7842`.
+
+The next physical discriminator must therefore measure loss before the DMA
+descriptor ring. The EIC7700X TRM documents queue-zero missed-packet and FIFO
+overflow counters at DWMAC offset `0xd34`, with clear-on-read semantics. That
+counter can be accumulated at the existing bounded progress cadence and tested
+offline before another board transaction. No further ring-size or interrupt
+policy change is justified by this run.
+
+## Static closure of the packet-buffer cache contract
+
+The read-only MTL counter remains useful secondary evidence, but a further
+physical diagnostic run is no longer required to select the next fix. Static
+tracing from `DmaPool` through `DmaStream` found a violated memory contract:
+
+- the board has neither Zicbom nor Svpbmt;
+- the receive pool therefore uses a device-facing bounce KVA;
+- without Svpbmt, that KVA's requested `WriteCombining` policy is represented
+  by an ordinary cacheable RISC-V PTE;
+- `sync_from_device` copied from the KVA without invalidating it because it
+  assumed the view was uncached.
+
+Once the 64-entry RX pool reused a bounce page, a device write could therefore
+be followed by a CPU copy from a stale cache line. Software TCP/IP checksum
+validation can discard the resulting payload while all MAC, MTL, descriptor,
+RBU, and TX counters remain clean. This is consistent with the first small
+transfers passing, retransmissions appearing after ring wrap, and the long
+transfer collapsing.
+
+OSTD now gives such streaming bounce storage the same checked uncached view as
+the descriptor ring: PBMT_NC when Svpbmt exists, the EIC7700 System Port alias
+otherwise, and allocation failure when no valid path exists. All CPU bounce
+copies and direct accesses use that view. At that point this proved the
+software memory-type contract; the following separately authorized run tested
+whether it was the physical cause of the observed TCP loss.
+
+## Streaming-DMA physical closure
+
+That single run completed on 2026-08-29 at source commit `ed3a6508e`. The
+frozen kernel SHA-256 was
+`bab13e28443e984f893e2799be0d4b440ae846b32a8f908c481a584a5e0aee74`, and
+the physical plan SHA-256 was
+`06392e06d1a5a9e4327acab630f43e65ef39d856322fe16e4cfcccff485058a0`.
+Its QEMU preboard gates covered the exact generic Sv39/SMP4 TCP probe and a
+separate 60-second software-reboot cycle.
+
+On Megrez, all four payloads completed in order. The final marker was:
+
+```text
+ASTERINAS_GMAC_TCP_PROBE_READY peer=10.100.19.216:18080 status=200 sizes=16384,65536,1048576,16777216 completed_bytes=17907712 pattern=mod251
+```
+
+The 16-MiB transfer completed in 16,634,910 microseconds with zero
+retransmissions and zero lost packets in its host TCP trace. The guest RX count
+reached at least 8,194, proving repeated traversal of the 64-entry ring.
+Throughout the sampled run, `rx_buffer_unavailable`, MTL missed-packet, MTL
+FIFO-overflow, and descriptor-error counters remained zero. After PASS, the
+software reboot returned through a fresh firmware/OpenSBI/U-Boot epoch and
+stopped at the prompt without physical intervention.
+
+The runner published `passed=true`, `reason=board-pass` and sealed the evidence
+under
+`target/megrez-debug/dwmac-stream-ed3a6508e/board-run-20260829-stream/`.
+This closes the stale packet-buffer CPU-view diagnosis for the tested board;
+ring size, RBU recovery, PLIC ordering, and further read-only counters are no
+longer the next network change absent contradictory evidence.

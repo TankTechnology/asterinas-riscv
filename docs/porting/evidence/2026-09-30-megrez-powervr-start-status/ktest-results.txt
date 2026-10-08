@@ -1,0 +1,24 @@
+target/selected_meta_release_is_fenced_between_cycle_waits.serial.log
+test aster_kernel::device::dri::powervr_probe::start::tests::selected_meta_release_is_fenced_between_cycle_waits ... ok
+test result: ok. 1 passed; 0 failed; 352 filtered out.
+[ktest runner] All crates tested.
+
+target/selected_meta_release_rejects_unprepared_registers.serial.log
+test aster_kernel::device::dri::powervr_probe::start::tests::selected_meta_release_rejects_unprepared_registers ... ok
+test result: ok. 1 passed; 0 failed; 352 filtered out.
+[ktest runner] All crates tested.
+
+target/selected_meta_start_prefix_keeps_processor_in_reset_until_catalogue.serial.log
+test aster_kernel::device::dri::powervr_probe::start::tests::selected_meta_start_prefix_keeps_processor_in_reset_until_catalogue ... ok
+test result: ok. 1 passed; 0 failed; 352 filtered out.
+[ktest runner] All crates tested.
+
+target/powervr-meta-marker-green.serial.log
+test aster_kernel::device::dri::powervr_probe::start::tests::selected_meta_release_readback_failure_requires_running_cleanup ... ok
+test result: ok. 1 passed; 0 failed; 352 filtered out.
+[ktest runner] All crates tested.
+
+target/powervr-status-green.serial.log
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_reads_firmware_status_from_owned_mappings ... ok
+test result: ok. 1 passed; 0 failed; 351 filtered out.
+[ktest runner] All crates tested.

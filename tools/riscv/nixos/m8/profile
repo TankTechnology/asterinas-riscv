@@ -1,0 +1,7 @@
+# /etc/profile — M8 lightweight-route activation.
+# Sourced by login shells (busybox ash). This is the Alpine-style "Nix profile
+# activation": putting Nix profile bin dirs on PATH is all that's needed to
+# make the system a "Nix-managed" system without systemd.
+export PATH="/nix/var/nix/profiles/default/bin:/root/.nix-profile/bin:$PATH"
+export NIX_PROFILES="/nix/var/nix/profiles/default /root/.nix-profile"
+echo "__M8_PROFILE_SOURCED__"

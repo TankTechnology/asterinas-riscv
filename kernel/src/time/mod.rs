@@ -1,0 +1,234 @@
+// SPDX-License-Identifier: MPL-2.0
+
+#![expect(non_camel_case_types)]
+
+pub use core::{Clock, timer};
+
+use ::core::time::Duration;
+pub(crate) use system_time::wall_clock_adjust_nanos;
+pub use system_time::{START_TIME, SystemTime};
+pub use timer::{Timer, TimerManager};
+
+use crate::prelude::*;
+
+pub mod clocks;
+mod core;
+pub mod cpu_time_stats;
+pub mod namespace;
+mod softirq;
+mod system_time;
+pub mod timerfd;
+pub mod wait;
+
+pub type clockid_t = i32;
+pub type time_t = i64;
+pub type suseconds_t = i64;
+
+const NSEC_PER_USEC: i64 = 1_000;
+const USEC_PER_SEC: i64 = 1_000_000;
+pub const NSEC_PER_SEC: i64 = 1_000_000_000;
+
+/// Linux's user-visible clock ticks per second, independent of timer IRQs.
+///
+/// See <https://github.com/torvalds/linux/blob/v6.16/include/uapi/asm-generic/param.h>.
+pub(crate) const USER_HZ: u64 = 100;
+
+/// Converts a duration to user-visible clock ticks, rounding down.
+pub(crate) fn duration_to_clock_ticks(duration: Duration) -> u64 {
+    let ticks = duration.as_nanos() * u128::from(USER_HZ) / NSEC_PER_SEC as u128;
+    u64::try_from(ticks).unwrap_or(u64::MAX)
+}
+
+/// Converts internal timer ticks to user-visible clock ticks, rounding down.
+pub(crate) fn jiffies_to_clock_ticks(jiffies: ostd::timer::Jiffies) -> u64 {
+    let ticks =
+        u128::from(jiffies.as_u64()) * u128::from(USER_HZ) / u128::from(ostd::timer::TIMER_FREQ);
+    u64::try_from(ticks).unwrap_or(u64::MAX)
+}
+
+#[cfg(ktest)]
+mod clock_tick_tests {
+    use ostd::{prelude::*, timer::Jiffies};
+
+    use super::*;
+
+    #[ktest]
+    fn user_ticks_have_ten_millisecond_resolution() {
+        assert_eq!(USER_HZ, 100);
+        assert_eq!(duration_to_clock_ticks(Duration::ZERO), 0);
+        assert_eq!(duration_to_clock_ticks(Duration::from_nanos(9_999_999)), 0);
+        assert_eq!(duration_to_clock_ticks(Duration::from_millis(10)), 1);
+        assert_eq!(duration_to_clock_ticks(Duration::from_secs(1)), 100);
+        assert_eq!(duration_to_clock_ticks(Duration::MAX), u64::MAX);
+    }
+
+    #[ktest]
+    fn internal_jiffies_are_not_user_ticks() {
+        assert_eq!(jiffies_to_clock_ticks(Jiffies::new(0)), 0);
+        assert_eq!(jiffies_to_clock_ticks(Jiffies::new(9)), 0);
+        assert_eq!(jiffies_to_clock_ticks(Jiffies::new(10)), 1);
+        assert_eq!(
+            jiffies_to_clock_ticks(Jiffies::new(ostd::timer::TIMER_FREQ)),
+            USER_HZ
+        );
+        assert_eq!(
+            jiffies_to_clock_ticks(Jiffies::new(u64::MAX)),
+            u64::MAX / 10
+        );
+    }
+}
+
+pub(super) fn init() {
+    system_time::init();
+    clocks::init();
+    softirq::init();
+    cpu_time_stats::init();
+}
+
+pub(super) fn init_on_each_cpu() {
+    softirq::init_on_each_cpu();
+    cpu_time_stats::init_on_each_cpu();
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct timespec_t {
+    pub sec: time_t,
+    pub nsec: i64,
+}
+
+impl From<Duration> for timespec_t {
+    fn from(duration: Duration) -> timespec_t {
+        let sec = duration.as_secs() as time_t;
+        let nsec = duration.subsec_nanos() as i64;
+        debug_assert!(sec >= 0); // nsec >= 0 always holds
+        timespec_t { sec, nsec }
+    }
+}
+
+impl From<timeval_t> for timespec_t {
+    fn from(timeval: timeval_t) -> timespec_t {
+        let sec = timeval.sec;
+        let nsec = timeval.usec * NSEC_PER_USEC;
+        debug_assert!(sec >= 0); // nsec >= 0 always holds
+        timespec_t { sec, nsec }
+    }
+}
+
+impl TryFrom<timespec_t> for Duration {
+    type Error = Error;
+
+    fn try_from(value: timespec_t) -> Result<Self> {
+        if value.sec < 0 || value.nsec < 0 {
+            return_errno_with_message!(Errno::EINVAL, "timesepc_t cannot be negative");
+        }
+
+        if value.nsec >= NSEC_PER_SEC {
+            // The value of nanoseconds must be strictly less than 10^9,
+            // otherwise the value for seconds should be set.
+            return_errno_with_message!(Errno::EINVAL, "nsec is not normalized");
+        }
+
+        Ok(Duration::new(value.sec as u64, value.nsec as u32))
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct timeval_t {
+    pub sec: time_t,
+    pub usec: suseconds_t,
+}
+
+impl timeval_t {
+    /// Normalizes time by adding carries from microseconds to seconds.
+    ///
+    /// Some Linux system calls do this before checking the validity (e.g., the [select]
+    /// implementation).
+    ///
+    /// [select]: https://elixir.bootlin.com/linux/v6.10.5/source/fs/select.c#L716
+    pub fn normalize(&self) -> Self {
+        Self {
+            sec: self.sec.wrapping_add(self.usec / USEC_PER_SEC),
+            usec: self.usec % USEC_PER_SEC,
+        }
+    }
+}
+
+impl From<Duration> for timeval_t {
+    fn from(duration: Duration) -> timeval_t {
+        let sec = duration.as_secs() as time_t;
+        let usec = duration.subsec_micros() as suseconds_t;
+        debug_assert!(sec >= 0); // usec >= 0 always holds
+        timeval_t { sec, usec }
+    }
+}
+
+impl TryFrom<timeval_t> for Duration {
+    type Error = Error;
+
+    fn try_from(timeval: timeval_t) -> Result<Self> {
+        if timeval.sec < 0 || timeval.usec < 0 {
+            return_errno_with_message!(Errno::EINVAL, "timeval_t cannot be negative");
+        }
+        if timeval.usec >= USEC_PER_SEC {
+            // The value of microsecond cannot exceed 10^6,
+            // otherwise the value for seconds should be set.
+            return_errno_with_message!(Errno::EINVAL, "nsec is not normalized");
+        }
+
+        Ok(Duration::new(
+            timeval.sec as u64,
+            (timeval.usec * NSEC_PER_USEC) as u32,
+        ))
+    }
+}
+
+/// The various flags for setting POSIX.1b interval timers:
+pub const TIMER_ABSTIME: i32 = 0x01;
+
+/// Unix time measures time by the number of seconds that have elapsed since
+/// the Unix epoch, without adjustments made due to leap seconds.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct UnixTime {
+    sec: u32,
+}
+
+impl From<Duration> for UnixTime {
+    fn from(duration: Duration) -> Self {
+        Self {
+            sec: duration.as_secs() as u32,
+        }
+    }
+}
+
+impl From<UnixTime> for Duration {
+    fn from(time: UnixTime) -> Self {
+        Duration::from_secs(time.sec as _)
+    }
+}
+
+/// This struct is corresponding to the `itimerval` struct in Linux.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct itimerval_t {
+    pub it_interval: timeval_t,
+    pub it_value: timeval_t,
+}
+
+/// This struct is corresponding to the `itimerspec` struct in Linux.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct itimerspec_t {
+    pub it_interval: timespec_t,
+    pub it_value: timespec_t,
+}
+
+/// This struct is corresponding to the `timezone` struct in Linux.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+pub struct timezone_t {
+    pub tz_minuteswest: i32,
+    pub tz_dsttime: i32,
+}

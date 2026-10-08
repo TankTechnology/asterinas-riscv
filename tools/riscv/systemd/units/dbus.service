@@ -1,0 +1,20 @@
+[Unit]
+Description=D-Bus System Message Bus
+Documentation=man:dbus-daemon(1)
+Requires=local-fs.target
+After=local-fs.target
+
+[Service]
+KeyringMode=inherit
+Type=simple
+# /run is a fresh tmpfs each boot; give the daemon its runtime dir.
+RuntimeDirectory=dbus
+ExecStartPre=/usr/bin/dbus-uuidgen --ensure=/etc/machine-id
+# --nofork keeps systemd's Type=simple tracking correct; --nopidfile avoids
+# pidfile lifecycle on a tmpfs; --nosyslog prevents the daemon from trying
+# to write to syslog (the guest has no syslog daemon).
+ExecStart=/usr/bin/dbus-daemon --system --nofork --nopidfile --nosyslog
+Restart=on-failure
+RestartSec=2s
+StandardOutput=tty
+StandardError=tty

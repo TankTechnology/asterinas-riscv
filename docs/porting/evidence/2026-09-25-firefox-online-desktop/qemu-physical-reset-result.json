@@ -1,0 +1,174 @@
+{
+  "cycle_artifacts": [
+    {
+      "cycle": 1,
+      "guest_png_sha256": "fd26d112d3a76e755849bb9799954dafd9a2e195c8d647c5fd67c26e12888aed",
+      "nonce_sha256": "f3694bc0de590b341192701e02c7c33bc6a32c5117608d2a14ddfd82f1512e4c",
+      "rendered": {
+        "distinct_sampled_colors": 256,
+        "height": 1024,
+        "non_background_pixels": 1310714,
+        "pixel_count": 1310720,
+        "width": 1280
+      },
+      "rendered_ppm_sha256": "afd8f111d2e1083053c8a13ee631b3babb6ea87db29f89a6e8d4ccb64b10f001"
+    },
+    {
+      "cycle": 2,
+      "guest_png_sha256": "2bb954f4dd827151d2dc4eadde7766249b0b3baa09f76f8ee12cbd25e9daafee",
+      "nonce_sha256": "72330ca234abd2932595fce28cfb65636ce645b4f84e83e7a5630b4c4f0a486e",
+      "rendered": {
+        "distinct_sampled_colors": 256,
+        "height": 1024,
+        "non_background_pixels": 1310714,
+        "pixel_count": 1310720,
+        "width": 1280
+      },
+      "rendered_ppm_sha256": "a186861e40f0d6223c587b8ddfb5aa6d5fac6fd8516502a78b3d74b822c2e649"
+    },
+    {
+      "cycle": 3,
+      "guest_png_sha256": "6c41989484fef90b93e0aad6a1c592920789d4d1eda96411b5f5f0fe4eca98b5",
+      "nonce_sha256": "a08926502ba797de36ec944b2c6f2d5a685d1027fd98e517781a6b9ac5d7a930",
+      "rendered": {
+        "distinct_sampled_colors": 256,
+        "height": 1024,
+        "non_background_pixels": 1310714,
+        "pixel_count": 1310720,
+        "width": 1280
+      },
+      "rendered_ppm_sha256": "19872bad65cb2bcd2ed78613a861d31ba028691b208d0fc4e7bc30426aa200db"
+    }
+  ],
+  "debian_release": "13.7",
+  "debug_console": {
+    "desktop_state": "active",
+    "graphical_state": "active",
+    "pid1": "systemd",
+    "root_device": "/dev/vdb",
+    "root_filesystem": "ext2",
+    "uid": 0
+  },
+  "final_root_sha256": "e8972928a647492876059f55f4b79fe3b08b3642c9ee1e9babe102d588f9d454",
+  "input_sha256": {
+    "dtb": "c89975b7bd105e7b127b6828ca3443cd1cc159e0f7f77876c7797aacf3efbfb8",
+    "kernel": "a64142bd775fd46c958125d9a85256bd45e96d984d47695e09327bb496dbc01b",
+    "manifest": "3d268141d98d7914ec9300e446944259857c5611089bfc46cb7f24f928c5e2a7",
+    "package_checksums": "e827046a3f0f5ae381e39159436197e7c8e4c9ebfdc02aeee578138c74af4fad",
+    "packages_lock": "aa92c0471dbd9c08b3adfce97235f78dc625054296fe37adce5afa0a77ce9966",
+    "root_image": "1d268d30824cc51eab8af1b7b33bbea88b30b18156773ca59aec2083629655ce",
+    "stage1_initramfs": "ee523e36a3a56c46a4149753b797c2af3bba98b027fbae48ca36d9dece284e57",
+    "u_boot": "320bf87beedb218070ad44c60ca82a4d1319fd490dbe9a054386635df21f23d4"
+  },
+  "interaction_cycles": [
+    {
+      "absolute_events": 4,
+      "cycle": 1,
+      "evdev_sha256": "2dd6e6547eb214e0f3ec25be3227403e481a73356dbec5a6d5b1e67b5dc4eb7f",
+      "input_latency_count": 4,
+      "input_latency_max_ms": 360.0,
+      "input_latency_min_ms": 42.0,
+      "input_latency_p50_ms": 179.0,
+      "input_latency_p95_ms": 360.0,
+      "key_downs": 4,
+      "left_down": 1,
+      "left_up": 1,
+      "nonce_sha256": "f3694bc0de590b341192701e02c7c33bc6a32c5117608d2a14ddfd82f1512e4c",
+      "relative_events": 0,
+      "screenshot_sha256": "fd26d112d3a76e755849bb9799954dafd9a2e195c8d647c5fd67c26e12888aed"
+    },
+    {
+      "absolute_events": 4,
+      "cycle": 2,
+      "evdev_sha256": "44105767237d787327557e1440d9c851719cbd9056cd2f44258ee45879e0d0fc",
+      "input_latency_count": 4,
+      "input_latency_max_ms": 292.0,
+      "input_latency_min_ms": 15.0,
+      "input_latency_p50_ms": 145.0,
+      "input_latency_p95_ms": 292.0,
+      "key_downs": 4,
+      "left_down": 1,
+      "left_up": 1,
+      "nonce_sha256": "72330ca234abd2932595fce28cfb65636ce645b4f84e83e7a5630b4c4f0a486e",
+      "relative_events": 0,
+      "screenshot_sha256": "2bb954f4dd827151d2dc4eadde7766249b0b3baa09f76f8ee12cbd25e9daafee"
+    },
+    {
+      "absolute_events": 4,
+      "cycle": 3,
+      "evdev_sha256": "501de3948b67ea01ce898cfe838af5ea84030310da642539319d34aa3e2237d3",
+      "input_latency_count": 4,
+      "input_latency_max_ms": 193.0,
+      "input_latency_min_ms": 16.0,
+      "input_latency_p50_ms": 77.0,
+      "input_latency_p95_ms": 193.0,
+      "key_downs": 4,
+      "left_down": 1,
+      "left_up": 1,
+      "nonce_sha256": "a08926502ba797de36ec944b2c6f2d5a685d1027fd98e517781a6b9ac5d7a930",
+      "relative_events": 0,
+      "screenshot_sha256": "6c41989484fef90b93e0aad6a1c592920789d4d1eda96411b5f5f0fe4eca98b5"
+    }
+  ],
+  "network_fixture": {
+    "payload_path": "/asterinas-network-probe.bin",
+    "payload_sha256": "7daca2095d0438260fa849183dfc67faa459fdf4936e1bc91eec6b281b27e4c2",
+    "payload_size": 65536,
+    "records_truncated": false,
+    "request_count": 0,
+    "requests": [],
+    "schema_version": 1,
+    "workload_max_active": 0,
+    "workload_records_truncated": false,
+    "workload_request_count": 0,
+    "workload_requests": []
+  },
+  "passed": true,
+  "physical": false,
+  "profile": "browser-web",
+  "qemu_argv": [
+    [
+      "qemu-system-riscv64",
+      "-machine",
+      "virt",
+      "-cpu",
+      "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+      "-m",
+      "2G",
+      "-smp",
+      "4",
+      "-display",
+      "none",
+      "-netdev",
+      "user,id=net0",
+      "-device",
+      "virtio-net-device,netdev=net0",
+      "-serial",
+      "stdio",
+      "-no-reboot",
+      "-kernel",
+      "/tmp/asterinas-debian-qemu-b1-f4265j3l/u-boot",
+      "-drive",
+      "if=none,format=raw,file=/proc/self/fd/13/boot.ext4,id=bootdisk,readonly=on",
+      "-device",
+      "bochs-display",
+      "-device",
+      "virtio-keyboard-device",
+      "-device",
+      "virtio-tablet-device",
+      "-device",
+      "virtio-blk-device,drive=bootdisk",
+      "-drive",
+      "if=none,format=raw,file=/proc/self/fd/13/debian-root.run.ext2,id=rootdisk,cache=directsync",
+      "-device",
+      "virtio-blk-device,drive=rootdisk",
+      "-monitor",
+      "unix:/tmp/asterinas-debian-qemu-b1-f4265j3l/monitor.sock,server=on,wait=off",
+      "-qmp",
+      "unix:/tmp/asterinas-debian-qemu-b1-f4265j3l/physical-input.qmp,server=on,wait=off"
+    ]
+  ],
+  "reason": "pass",
+  "screenshot": {},
+  "target": "browser"
+}

@@ -1,0 +1,9 @@
+Sep 29 22:49:30 ubuntu-MS-7D76 kernel: ASTERINAS_DC_NATIVE present_count=0 dirty_count=1 clean_total_ns=6719000 addr=0xf8001000 underflow=false
+Sep 29 22:49:30 ubuntu-MS-7D76 kernel: ASTERINAS_DC_NATIVE present_count=1 dirty_count=1 clean_total_ns=13432000 addr=0xf8001000 underflow=false
+Sep 29 22:49:32 ubuntu-MS-7D76 kernel: ASTERINAS_DC_NATIVE present_count=1 dirty_count=3 clean_total_ns=20205000 addr=0xf8001000 underflow=false
+Sep 29 22:49:33 ubuntu-MS-7D76 kernel: ASTERINAS_DC_NATIVE present_count=1 dirty_count=7 clean_total_ns=27545000 addr=0xf8001000 underflow=false
+Sep 29 22:49:40 ubuntu-MS-7D76 kernel: ASTERINAS_DC_NATIVE present_count=1 dirty_count=15 clean_total_ns=55014000 addr=0xf8001000 underflow=false
+Sep 29 22:49:42 ubuntu-MS-7D76 kernel: ASTERINAS_DC_NATIVE present_count=1 dirty_count=31 clean_total_ns=73480000 addr=0xf8001000 underflow=false
+Sep 29 22:49:57 ubuntu-MS-7D76 kernel: ASTERINAS_DC_NATIVE present_count=1 dirty_count=63 clean_total_ns=162783000 addr=0xf8001000 underflow=false
+Sep 29 22:49:59 ubuntu-MS-7D76 kernel: ASTERINAS_DC_NATIVE present_count=1 dirty_count=127 clean_total_ns=238144000 addr=0xf8001000 underflow=false
+Sep 29 22:50:06 ubuntu-MS-7D76 kernel: ASTERINAS_DC_NATIVE present_count=1 dirty_count=255 clean_total_ns=494965000 addr=0xf8001000 underflow=false

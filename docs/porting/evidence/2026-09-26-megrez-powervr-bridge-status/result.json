@@ -1,0 +1,10 @@
+{
+  "status": "captured",
+  "rockos_boot_id": "14497edf-8c6d-42ca-b4f5-6f7ec4719e37",
+  "source_sha256": "3cc1c0a3c695b00c02df4820f338d835702d72e5bf001c29eabddaa18621c898",
+  "library_sha256": "a43ffe373c1b779444491883418e0aefbc3d99ed2349cc3a1b3474fa897674df",
+  "pixel_probe_exit": 0,
+  "pixel_probe_output": "PIXEL_PROBE ok=yes renderer='PowerVR A-Series AXM-8-256' left=(255, 255, 255, 255) right=(0, 0, 0, 255) device=/dev/dri/renderD128",
+  "bridge_trace_lines": 188,
+  "trace_sha256": "9282049aa984fd476b06e1415fde6e7371485a0243dc1744e81e68135a9c9360"
+}

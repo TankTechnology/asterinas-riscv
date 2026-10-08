@@ -1,0 +1,10 @@
+boot_id=b6eabb99-32e0-42d2-b078-33ae82d03c93
+/tmp/rockos-clock-registers.py: OK
+rockos_1800_a freq_khz=1800000 regs={'0x064': '0x12c01301', '0x068': '0x0000000a', '0x06c': '0x37010010', '0x0a4': '0x0000007f', '0x208': '0xff800000'}
+rockos_1400 freq_khz=1400000 regs={'0x064': '0x0e901301', '0x068': '0x0555555a', '0x06c': '0x37010010', '0x0a4': '0x0000007f', '0x208': '0xff800000'}
+rockos_1800_b freq_khz=1800000 regs={'0x064': '0x12c01301', '0x068': '0x0000000a', '0x06c': '0x37010010', '0x0a4': '0x0000007f', '0x208': '0xff800000'}
+restored_governor=performance restored_freq_khz=1800000
+opp_speed_hz=1400000000
+     800000
+opp_speed_hz=1800000000
+     900000

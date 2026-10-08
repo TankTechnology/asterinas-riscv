@@ -1,0 +1,447 @@
+[    0.079000] virtio: unsupported device features: VIRTIO_NET_F_CTRL_GUEST_OFFLOADS | VIRTIO_NET_F_MRG_RXBUF | VIRTIO_NET_F_CTRL_VQ | VIRTIO_NET_F_CTRL_RX | VIRTIO_NET_F_CTRL_VLAN | VIRTIO_NET_F_EXTRA | VIRTIO_NET_F_GUEST_ANNOUNCE | VIRTIO_NET_F_CTRL_MAC_ADDR
+[    0.080000] virtio: unsupported device features: VIRTIO_NET_F_CTRL_GUEST_OFFLOADS | VIRTIO_NET_F_MRG_RXBUF | VIRTIO_NET_F_CTRL_VQ | VIRTIO_NET_F_CTRL_RX | VIRTIO_NET_F_CTRL_VLAN | VIRTIO_NET_F_EXTRA | VIRTIO_NET_F_GUEST_ANNOUNCE | VIRTIO_NET_F_CTRL_MAC_ADDR
+[    0.082000] virtio: Network: `single_interrupt` ignored: no support for virtio-mmio devices
+[    0.082000] virtio: Network: `single_interrupt` ignored: no support for virtio-mmio devices
+
+[    0.494000] systemd
+[    0.494000] [1]: 
+[    0.494000] Failed to find module 'autofs4'
+
+
+[    0.495000] systemd
+[    0.495000] [1]: 
+[    0.495000] Failed to find module 'unix'
+
+
+[    0.539000] systemd
+[    0.539000] [1]: 
+[    0.539000] systemd 257.13-1~deb13u1 running in system mode (+PAM +AUDIT +SELINUX +APPARMOR +IMA +IPE +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF -XKBCOMMON -UTMP +SYSVINIT +LIBARCHIVE)
+
+
+[    0.540000] systemd
+[    0.540000] [1]: 
+[    0.540000] Detected architecture riscv64.
+
+
+[    0.551000] systemd
+[    0.551000] [1]: 
+[    0.551000] Hostname set to <ubuntu-MS-7D76>.
+
+
+[    0.555000] systemd
+[    0.555000] [1]: 
+[    0.555000] Initializing machine ID from random generator.
+
+[    0.578000] writing to `/proc/sys/fs/nr_open` is not supported
+
+[    0.579000] systemd
+[    0.579000] [1]: 
+[    0.579000] Failed to bump fs.nr_open, ignoring: Operation not supported
+
+
+[    0.595000] systemd
+[    0.595000] [1]: 
+[    0.595000] Failed to enable kbrequest handling, ignoring: Inappropriate ioctl for device
+
+[    0.618000] TFD_TIMER_CANCEL_ON_SET is not implemented yet and has no effect
+
+[    0.623000] systemd
+[    0.623000] [1]: 
+[    0.623000] bpf-restrict-fs: BPF LSM hook not enabled in the kernel, BPF LSM not supported.
+
+
+[    1.006000] systemd
+[    1.006000] [1]: 
+[    1.006000] Configuration file /etc/systemd/system/asterinas-desktop-m5-network.service.d/browser-web.conf is marked world-inaccessible. This has no effect as configuration data is accessible via APIs without restrictions. Proceeding anyway.
+
+
+[    1.372000] systemd
+[    1.372000] [1]: 
+[    1.372000] Queued start job for default target graphical.target.
+
+
+[    1.393000] systemd
+[    1.393000] [1]: 
+[    1.393000] Created slice system-modprobe.slice - Slice /system/modprobe.
+
+
+[    1.407000] systemd
+[    1.407000] [1]: 
+[    1.407000] Started systemd-ask-password-console.path - Dispatch Password Requests to Console Directory Watch.
+
+
+[    1.408000] systemd
+[    1.408000] [1]: 
+[    1.408000] Started systemd-ask-password-wall.path - Forward Password Requests to Wall Directory Watch.
+
+
+[    1.409000] systemd
+[    1.409000] [1]: 
+[    1.409000] proc-sys-fs-binfmt_misc.automount - Arbitrary Executable File Formats File System Automount Point skipped, unmet condition check ConditionPathExists=/proc/sys/fs/binfmt_misc
+
+
+[    1.410000] systemd
+[    1.410000] [1]: 
+[    1.410000] Reached target network-online.target - Network is Online.
+
+
+[    1.410000] systemd
+[    1.410000] [1]: 
+[    1.410000] Reached target paths.target - Path Units.
+
+
+[    1.411000] systemd
+[    1.411000] [1]: 
+[    1.411000] Reached target remote-fs.target - Remote File Systems.
+
+
+[    1.411000] systemd
+[    1.411000] [1]: 
+[    1.411000] Reached target slices.target - Slice Units.
+
+
+[    1.411000] systemd
+[    1.411000] [1]: 
+[    1.411000] Reached target swap.target - Swaps.
+
+
+[    1.420000] systemd
+[    1.420000] [1]: 
+[    1.420000] Listening on systemd-creds.socket - Credential Encryption/Decryption.
+
+
+[    1.421000] systemd
+[    1.421000] [1]: 
+[    1.421000] Listening on systemd-initctl.socket - initctl Compatibility Named Pipe.
+
+
+[    1.423000] systemd
+[    1.423000] [1]: 
+[    1.423000] Listening on systemd-journald-dev-log.socket - Journal Socket (/dev/log).
+
+
+[    1.424000] systemd
+[    1.424000] [1]: 
+[    1.424000] Listening on systemd-journald.socket - Journal Sockets.
+
+
+[    1.425000] systemd
+[    1.425000] [1]: 
+[    1.425000] systemd-pcrextend.socket - TPM PCR Measurements skipped, unmet condition check ConditionSecurity=measured-uki
+
+
+[    1.425000] systemd
+[    1.425000] [1]: 
+[    1.425000] systemd-pcrlock.socket - Make TPM PCR Policy skipped, unmet condition check ConditionSecurity=measured-uki
+
+
+[    1.425000] systemd
+[    1.425000] [1]: 
+[    1.425000] systemd-udevd-control.socket
+[    1.425000] : 
+[    1.425000] Socket service systemd-udevd.service not loaded, refusing.
+
+
+[    1.425000] systemd
+[    1.425000] [1]: 
+[    1.425000] Failed to listen on systemd-udevd-control.socket - udev Control Socket.
+
+
+[    1.426000] systemd
+[    1.426000] [1]: 
+[    1.426000] systemd-udevd-kernel.socket
+[    1.426000] : 
+[    1.426000] Socket service systemd-udevd.service not loaded, refusing.
+
+
+[    1.426000] systemd
+[    1.426000] [1]: 
+[    1.426000] Failed to listen on systemd-udevd-kernel.socket - udev Kernel Socket.
+
+
+[    1.429000] systemd
+[    1.429000] [1]: 
+[    1.429000] dev-hugepages.mount - Huge Pages File System skipped, unmet condition check ConditionPathExists=/sys/kernel/mm/hugepages
+
+
+[    1.429000] systemd
+[    1.429000] [1]: 
+[    1.429000] dev-mqueue.mount - POSIX Message Queue File System skipped, unmet condition check ConditionPathExists=/proc/sys/fs/mqueue
+
+
+[    1.446000] systemd
+[    1.446000] [1]: 
+[    1.446000] Mounting run-lock.mount - Legacy Locks Directory /run/lock...
+
+
+[    1.447000] systemd
+[    1.447000] [1]: 
+[    1.447000] sys-kernel-debug.mount - Kernel Debug File System skipped, unmet condition check ConditionPathExists=/sys/kernel/debug
+
+
+[    1.447000] systemd
+[    1.447000] [1]: 
+[    1.447000] sys-kernel-tracing.mount - Kernel Trace File System skipped, unmet condition check ConditionPathExists=/sys/kernel/tracing
+
+
+[    1.449000] systemd
+[    1.449000] [1]: 
+[    1.449000] kmod-static-nodes.service - Create List of Static Device Nodes skipped, unmet condition check ConditionPathExists=/usr/bin/kmod
+
+
+[    1.457000] systemd
+[    1.457000] [1]: 
+[    1.457000] Starting modprobe@configfs.service - Load Kernel Module configfs...
+
+
+[    1.469000] systemd
+[    1.469000] [1]: 
+[    1.469000] Starting modprobe@efi_pstore.service - Load Kernel Module efi_pstore...
+
+
+[    1.474000] systemd
+[    1.474000] [1]: 
+[    1.474000] Starting modprobe@fuse.service - Load Kernel Module fuse...
+
+
+[    1.474000] systemd
+[    1.474000] [1]: 
+[    1.474000] systemd-hibernate-clear.service - Clear Stale Hibernate Storage Info skipped, unmet condition check ConditionPathExists=/sys/firmware/efi/efivars/HibernateLocation-8cf2644b-4b0b-428f-9387-6d876050dc67
+
+
+[    1.475000] systemd
+[    1.475000] [1]: 
+[    1.475000] systemd-journald.service
+[    1.475000] : 
+[    1.475000] unit configures an IP firewall, but the local system does not support BPF/cgroup firewalling.
+
+
+[    1.475000] systemd
+[    1.475000] [1]: 
+[    1.475000] systemd-journald.service
+[    1.475000] : 
+[    1.475000] (This warning is only shown for the first unit using IP firewalling.)
+
+
+[    1.483000] systemd
+[    1.483000] [1]: 
+[    1.483000] Starting systemd-journald.service - Journal Service...
+
+
+[    1.497000] systemd
+[    1.497000] [1]: 
+[    1.497000] Starting systemd-modules-load.service - Load Kernel Modules...
+
+
+[    1.497000] systemd
+[    1.497000] [1]: 
+[    1.497000] systemd-pcrmachine.service - TPM PCR Machine ID Measurement skipped, unmet condition check ConditionSecurity=measured-uki
+
+
+[    1.500000] systemd
+[    1.500000] [1]: 
+[    1.500000] Starting systemd-remount-fs.service - Remount Root and Kernel File Systems...
+
+
+[    1.506000] (modprobe)
+[    1.506000] [17]: 
+[    1.506000] modprobe@efi_pstore.service: Unable to locate executable '/sbin/modprobe': No such file or directory
+
+
+[    1.513000] (modprobe)
+[    1.513000] [16]: 
+[    1.513000] modprobe@configfs.service: Unable to locate executable '/sbin/modprobe': No such file or directory
+
+
+[    1.517000] systemd
+[    1.517000] [1]: 
+[    1.517000] Starting systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully...
+
+
+[    1.518000] systemd
+[    1.518000] [1]: 
+[    1.518000] systemd-tpm2-setup-early.service - Early TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+
+
+[    1.526000] systemd
+[    1.526000] [1]: 
+[    1.526000] Starting systemd-udev-trigger.service - Coldplug All udev Devices...
+
+
+[    1.533000] (modprobe)
+[    1.533000] [18]: 
+[    1.533000] modprobe@fuse.service: Unable to locate executable '/sbin/modprobe': No such file or directory
+
+
+[    1.543000] systemd
+[    1.543000] [1]: 
+[    1.543000] modprobe@configfs.service: Deactivated successfully.
+
+
+[    1.547000] systemd
+[    1.547000] [1]: 
+[    1.547000] Finished modprobe@configfs.service - Load Kernel Module configfs.
+
+
+[    1.551000] systemd
+[    1.551000] [1]: 
+[    1.551000] modprobe@efi_pstore.service: Deactivated successfully.
+
+
+[    1.552000] systemd
+[    1.552000] [1]: 
+[    1.552000] Finished modprobe@efi_pstore.service - Load Kernel Module efi_pstore.
+
+
+[    1.554000] systemd
+[    1.554000] [1]: 
+[    1.554000] modprobe@fuse.service: Deactivated successfully.
+
+
+[    1.555000] systemd
+[    1.555000] [1]: 
+[    1.555000] Finished modprobe@fuse.service - Load Kernel Module fuse.
+
+
+[    1.558000] systemd
+[    1.559000] [1]: 
+[    1.559000] sys-fs-fuse-connections.mount - FUSE Control File System skipped, unmet condition check ConditionPathExists=/sys/fs/fuse/connections
+
+
+[    1.571000] systemd
+[    1.571000] [1]: 
+[    1.571000] Mounting sys-kernel-config.mount - Kernel Configuration File System...
+
+[    1.575000] contains unsupported clone flags: CLONE_NEWUSER
+[    1.579000] A_SIGKILL_PROVENANCE stage=enqueue sender=19/19 target=26/26 origin=user callpoint=kill-or-pidfd route=process
+[    1.579000] PID 26: terminating on signal SIGKILL
+
+[    1.603000] systemd
+[    1.603000] [1]: 
+[    1.603000] Finished systemd-remount-fs.service - Remount Root and Kernel File Systems.
+
+
+[    1.615000] systemd
+[    1.615000] [1]: 
+[    1.615000] Starting asterinas-browser-web-timeline-begin.service - Asterinas online browser boot timeline origin...
+
+
+[    1.627000] systemd
+[    1.627000] [1]: 
+[    1.627000] systemd-hwdb-update.service - Rebuild Hardware Database skipped, unmet condition check ConditionNeedsUpdate=/etc
+
+
+[    1.628000] systemd
+[    1.628000] [1]: 
+[    1.628000] systemd-pstore.service - Platform Persistent Storage Archival skipped, unmet condition check ConditionDirectoryNotEmpty=/sys/fs/pstore
+
+
+[    1.640000] systemd
+[    1.640000] [1]: 
+[    1.640000] Starting systemd-random-seed.service - Load/Save OS Random Seed...
+
+
+[    1.641000] systemd
+[    1.641000] [1]: 
+[    1.641000] systemd-tpm2-setup.service - TPM SRK Setup skipped, unmet condition check ConditionSecurity=measured-uki
+
+
+[    1.646000] systemd
+[    1.646000] [1]: 
+[    1.646000] Mounted run-lock.mount - Legacy Locks Directory /run/lock.
+
+
+[    1.654000] systemd
+[    1.654000] [1]: 
+[    1.654000] Mounted sys-kernel-config.mount - Kernel Configuration File System.
+
+
+[    1.672000] systemd
+[    1.672000] [1]: 
+[    1.672000] Finished systemd-modules-load.service - Load Kernel Modules.
+
+
+[    1.679000] systemd
+[    1.679000] [1]: 
+[    1.679000] Starting systemd-sysctl.service - Apply Kernel Variables...
+
+
+[    1.683000] systemd
+[    1.683000] [1]: 
+[    1.683000] Finished systemd-udev-trigger.service - Coldplug All udev Devices.
+
+
+[    1.691000] systemd-journald
+[    1.691000] [19]: 
+[    1.691000] Collecting audit messages is disabled.
+
+
+[    1.731000] systemd
+[    1.731000] [1]: 
+[    1.731000] Finished systemd-random-seed.service - Load/Save OS Random Seed.
+
+
+[    1.733000] systemd
+[    1.733000] [1]: 
+[    1.733000] Finished systemd-tmpfiles-setup-dev-early.service - Create Static Device Nodes in /dev gracefully.
+
+
+[    1.734000] systemd
+[    1.734000] [1]: 
+[    1.734000] Reached target local-fs-pre.target - Preparation for Local File Systems.
+
+
+[    1.734000] systemd
+[    1.734000] [1]: 
+[    1.734000] Reached target local-fs.target - Local File Systems.
+
+
+[    1.749000] systemd
+[    1.749000] [1]: 
+[    1.749000] Listening on systemd-sysext.socket - System Extension Image Management.
+
+
+[    1.756000] systemd
+[    1.756000] [1]: 
+[    1.756000] systemd-binfmt.service - Set Up Additional Binary Formats skipped, unmet condition check ConditionPathIsMountPoint=/proc/sys/fs/binfmt_misc
+
+[    1.759000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+
+[    1.760000] systemd
+[    1.760000] [1]: 
+[    1.760000] Started systemd-journald.service - Journal Service.
+
+[    1.761000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.764000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.765000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.766000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.767000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.768000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.769000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.770000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.775000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.776000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.777000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    1.877000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+
+[    1.909000] systemd-journald
+[    1.909000] [19]: 
+[    1.909000] Received client request to flush runtime journal.
+
+[    1.957000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.136000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.224000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.231000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.238000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.260000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.277000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.337000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    2.674000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    3.054000] stealing TTY from another session is not supported
+[    3.590000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    4.322000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    5.289000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[    7.900000] Switching to a task already running in the foreground
+[    9.182000] only socket-level options are supported
+[   10.467000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource
+[   12.787000] UNIX sockets in SCM_RIGHTS messages can leak kernel resource

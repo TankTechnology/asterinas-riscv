@@ -1,0 +1,175 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use core::{cmp, sync::atomic::Ordering};
+
+use ostd::{
+    cpu::{CpuId, CpuSet, num_cpus},
+    mm::VmIo,
+    util::id_set::Id,
+};
+
+use super::SyscallReturn;
+use crate::{
+    prelude::*,
+    process::{credentials::capabilities::CapSet, pid_table, posix_thread::AsPosixThread},
+    security::lsm::hooks as lsm_hooks,
+    thread::{Thread, Tid},
+};
+
+pub fn sys_sched_getaffinity(
+    tid: Tid,
+    cpuset_size: usize,
+    cpu_set_ptr: Vaddr,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    let cpu_set = match tid {
+        0 => ctx.thread.atomic_cpu_affinity().load(Ordering::Relaxed),
+        _ => match pid_table::pid_table_mut().get_thread(tid) {
+            Some(thread) => thread.atomic_cpu_affinity().load(Ordering::Relaxed),
+            None => return_errno_with_message!(Errno::ESRCH, "the target thread does not exist"),
+        },
+    };
+
+    let bytes_written = write_cpu_set_to(ctx.user_space(), &cpu_set, cpuset_size, cpu_set_ptr)?;
+
+    Ok(SyscallReturn::Return(bytes_written as isize))
+}
+
+pub fn sys_sched_setaffinity(
+    tid: Tid,
+    cpuset_size: usize,
+    cpu_set_ptr: Vaddr,
+    ctx: &Context,
+) -> Result<SyscallReturn> {
+    let user_cpu_set = read_cpu_set_from(ctx.user_space(), cpuset_size, cpu_set_ptr)?;
+
+    let target_thread = match tid {
+        0 => None,
+        _ => Some(pid_table::pid_table_mut().get_thread(tid).ok_or_else(|| {
+            Error::with_message(Errno::ESRCH, "the target thread does not exist")
+        })?),
+    };
+    let thread = target_thread.as_deref().unwrap_or(ctx.thread);
+    check_sched_setaffinity_permission(thread, ctx)?;
+    thread
+        .atomic_cpu_affinity()
+        .store(&user_cpu_set, Ordering::Relaxed);
+
+    // TODO: A running remote target also needs to be kicked and migrated immediately. A target
+    // that is sleeping will observe the new affinity when it is next enqueued.
+    if core::ptr::eq(thread, ctx.thread) && !user_cpu_set.contains(CpuId::current_racy()) {
+        Thread::migrate_current();
+        debug_assert!(user_cpu_set.contains(CpuId::current_racy()));
+    }
+
+    Ok(SyscallReturn::Return(0))
+}
+
+fn check_sched_setaffinity_permission(thread: &Thread, ctx: &Context) -> Result<()> {
+    if core::ptr::eq(thread, ctx.thread) {
+        return Ok(());
+    }
+
+    let target_posix_thread = thread
+        .as_posix_thread()
+        .expect("a thread in the PID table must be a POSIX thread");
+    let caller_euid = ctx.posix_thread.credentials().euid();
+    let target_credentials = target_posix_thread.credentials();
+    if caller_euid == target_credentials.ruid() || caller_euid == target_credentials.suid() {
+        return Ok(());
+    }
+
+    let target_process = target_posix_thread.process();
+    if lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+        target_process.user_ns().lock().as_ref(),
+        ctx.posix_thread,
+        CapSet::SYS_NICE,
+    ))
+    .is_ok()
+    {
+        return Ok(());
+    }
+
+    return_errno_with_message!(
+        Errno::EPERM,
+        "the caller cannot change the target thread's CPU affinity"
+    );
+}
+
+// Linux uses `DECLARE_BITMAP` for `cpu_set_t`, inside which each part is a
+// `long`. We use the same scheme to ensure byte endianness compatibility.
+type Part = u64;
+const SIZE_OF_PART: usize = size_of::<Part>();
+const CPUS_IN_PART: usize = SIZE_OF_PART * 8;
+
+fn read_cpu_set_from(
+    user_space: CurrentUserSpace,
+    cpuset_size: usize,
+    cpu_set_ptr: Vaddr,
+) -> Result<CpuSet> {
+    if cpuset_size == 0 {
+        return_errno_with_message!(Errno::EINVAL, "invalid cpuset size");
+    }
+
+    let num_cpus = num_cpus();
+
+    let mut ret_set = CpuSet::new_empty();
+
+    let nr_parts_to_read = cmp::min(cpuset_size / SIZE_OF_PART, num_cpus.div_ceil(CPUS_IN_PART));
+    for part_id in 0..nr_parts_to_read {
+        let user_part: Part = user_space.read_val(cpu_set_ptr + part_id * SIZE_OF_PART)?;
+        for bit_id in 0..CPUS_IN_PART {
+            if user_part & (1 << bit_id) != 0 {
+                // If the CPU ID is invalid, just ignore it.
+                let Ok(cpu_id) = CpuId::try_from(part_id * CPUS_IN_PART + bit_id) else {
+                    continue;
+                };
+                ret_set.add(cpu_id);
+            }
+        }
+    }
+
+    if ret_set.is_empty() {
+        return_errno_with_message!(Errno::EINVAL, "empty cpuset");
+    }
+
+    Ok(ret_set)
+}
+
+// Returns the number of bytes written.
+fn write_cpu_set_to(
+    user_space: CurrentUserSpace,
+    cpu_set: &CpuSet,
+    cpuset_size: usize,
+    cpu_set_ptr: Vaddr,
+) -> Result<usize> {
+    if cpuset_size == 0 {
+        return_errno_with_message!(Errno::EINVAL, "invalid cpuset size");
+    }
+
+    let num_cpus = num_cpus();
+
+    let nr_parts_to_write = cmp::min(cpuset_size / SIZE_OF_PART, num_cpus.div_ceil(CPUS_IN_PART));
+    let mut user_part: Part = 0;
+    let mut part_idx = 0;
+    for cpu_id in cpu_set.iter() {
+        let id = cpu_id.as_usize();
+        while part_idx < cmp::min(id / CPUS_IN_PART, nr_parts_to_write) {
+            user_space.write_val(cpu_set_ptr + part_idx * SIZE_OF_PART, &user_part)?;
+            user_part = 0;
+            part_idx += 1;
+        }
+        if part_idx >= nr_parts_to_write {
+            break;
+        }
+        user_part |= 1 << (id % CPUS_IN_PART);
+    }
+
+    while part_idx < nr_parts_to_write {
+        user_space.write_val(cpu_set_ptr + part_idx * SIZE_OF_PART, &user_part)?;
+        user_part = 0;
+        part_idx += 1;
+    }
+
+    Ok(nr_parts_to_write * SIZE_OF_PART)
+}

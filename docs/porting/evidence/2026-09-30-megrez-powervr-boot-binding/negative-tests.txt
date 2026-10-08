@@ -1,0 +1,15 @@
+target/powervr-boot-binding-red.serial.log
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_boot_config_must_match_owned_addresses ... FAILED
+test result: FAILED. 0 passed; 1 failed; 354 filtered out.
+[caught panic] Panicked at /root/asterinas/kernel/src/device/dri/powervr_probe/dma.rs:584:9
+assertion `left == right` failed
+  left: Err("gpu_meta_boot_config_mismatch")
+ right: Ok(())
+
+target/powervr-util-red.serial.log
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_initializes_native_utilization_timestamps ... FAILED
+test result: FAILED. 0 passed; 1 failed; 355 filtered out.
+[caught panic] Panicked at /root/asterinas/kernel/src/device/dri/powervr_probe/dma.rs:622:9
+assertion `left == right` failed
+  left: Ok(0)
+ right: Ok(1432778632)

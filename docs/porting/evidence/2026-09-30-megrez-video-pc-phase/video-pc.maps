@@ -1,0 +1,2 @@
+3ff6cb3000-3ffc64a000 r-xp 02920000 fc:02 1712                           /usr/lib/firefox/libxul.so
+3ffec3f000-3ffed93000 r-xp 00000000 fc:02 4073                           /usr/lib/riscv64-linux-gnu/libc.so.6

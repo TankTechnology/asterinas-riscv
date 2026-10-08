@@ -1,0 +1,320 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use core::{
+    net::Ipv4Addr,
+    sync::atomic::{AtomicBool, Ordering},
+};
+
+use aster_bigtcp::{
+    socket::RawTcpOption,
+    wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv6Address},
+};
+
+use super::{connecting::ConnectingStream, listen::ListenStream, observer::StreamObserver};
+use crate::{
+    events::IoEvents,
+    net::{
+        iface::BoundTcpPort,
+        net_ns::NetNamespace,
+        socket::{
+            ip::{
+                addr::IpAddressFamily,
+                common::{get_ephemeral_endpoint, resolve_bind_iface_and_config},
+            },
+            util::SocketAddr,
+        },
+    },
+    prelude::*,
+};
+
+pub(super) struct InitStream {
+    bound_port: Option<BoundTcpPort>,
+    /// The address family of this socket (IPv4 or IPv6).
+    //
+    // TODO: Encode the address family in the type system (e.g., `InitStream<IPv4Family>`)
+    // so that type mismatches are caught at compile time instead of runtime.
+    family: IpAddressFamily,
+    /// Indicates if the last `connect()` is considered to be done.
+    ///
+    /// If `connect()` is called but we're still in the `InitStream`, this means that the
+    /// connection is refused.
+    ///
+    ///  * If the connection is refused synchronously, the error code is returned by the
+    ///    `connect()` system call, and after that we always consider the `connect()` to be already
+    ///    done.
+    ///
+    ///  * If the connection is refused asynchronously (e.g., non-blocking sockets or interrupted
+    ///    `connect()`), the last `connect()` is not considered to have been done until another
+    ///    `connect()`, which checks and resets the boolean value and returns an appropriate error
+    ///    code.
+    is_connect_done: bool,
+    /// Indicates whether the socket error is `ECONNREFUSED`.
+    ///
+    /// This boolean value is set to true when the connection is refused and set to false when the
+    /// error code is reported via `getsockopt(SOL_SOCKET, SO_ERROR)`, `send()`, `recv()`, or
+    /// `connect()`.
+    is_conn_refused: AtomicBool,
+}
+
+impl InitStream {
+    pub(super) fn new(family: IpAddressFamily) -> Self {
+        Self {
+            bound_port: None,
+            family,
+            is_connect_done: true,
+            is_conn_refused: AtomicBool::new(false),
+        }
+    }
+
+    pub(super) fn new_bound(bound_port: BoundTcpPort, family: IpAddressFamily) -> Self {
+        Self {
+            bound_port: Some(bound_port),
+            family,
+            is_connect_done: true,
+            is_conn_refused: AtomicBool::new(false),
+        }
+    }
+
+    pub(super) fn new_refused(bound_port: BoundTcpPort, family: IpAddressFamily) -> Self {
+        Self {
+            bound_port: Some(bound_port),
+            family,
+            is_connect_done: false,
+            is_conn_refused: AtomicBool::new(true),
+        }
+    }
+
+    /// Returns the address family of this socket.
+    pub(super) fn family(&self) -> IpAddressFamily {
+        self.family
+    }
+
+    pub(super) fn bind(
+        &mut self,
+        endpoint: &IpEndpoint,
+        can_reuse: bool,
+        v6only: bool,
+        net_ns: &NetNamespace,
+    ) -> Result<()> {
+        if self.bound_port.is_some() {
+            return_errno_with_message!(Errno::EINVAL, "the socket is already bound to an address");
+        }
+
+        if IpAddressFamily::from(endpoint.addr) != self.family {
+            return_errno_with_message!(
+                Errno::EAFNOSUPPORT,
+                "the protocol family does not match the address family"
+            );
+        }
+
+        self.bound_port = Some(bind_port(endpoint, can_reuse, v6only, net_ns)?);
+
+        Ok(())
+    }
+
+    pub(super) fn bound_port(&self) -> Option<&BoundTcpPort> {
+        self.bound_port.as_ref()
+    }
+
+    pub(super) fn connect(
+        self,
+        remote_endpoint: &IpEndpoint,
+        option: &RawTcpOption,
+        can_reuse: bool,
+        observer: StreamObserver,
+        net_ns: &NetNamespace,
+    ) -> Result<ConnectingStream, (Error, Self)> {
+        debug_assert!(
+            self.is_connect_done,
+            "`finish_last_connect()` should be called before calling `connect()`"
+        );
+
+        if IpAddressFamily::from(remote_endpoint.addr) != self.family {
+            return Err((
+                Error::with_message(
+                    Errno::EAFNOSUPPORT,
+                    "the protocol family does not match the address family",
+                ),
+                self,
+            ));
+        }
+
+        // On Linux, connecting to the unspecified address (0.0.0.0 or ::)
+        // resolves to localhost. Do the same here so that LTP tests which
+        // bind to INADDR_ANY and then connect back to the same address work.
+        let resolved_remote = match remote_endpoint.addr {
+            IpAddress::Ipv4(addr) if addr.is_unspecified() => IpEndpoint::new(
+                IpAddress::Ipv4(Ipv4Address::new(127, 0, 0, 1)),
+                remote_endpoint.port,
+            ),
+            IpAddress::Ipv6(addr) if addr.is_unspecified() => IpEndpoint::new(
+                IpAddress::Ipv6(Ipv6Address::new(0, 0, 0, 0, 0, 0, 0, 1)),
+                remote_endpoint.port,
+            ),
+            _ => *remote_endpoint,
+        };
+
+        let bound_port = if let Some(bound_port) = self.bound_port {
+            bound_port
+        } else {
+            let endpoint = match get_ephemeral_endpoint(&resolved_remote, net_ns) {
+                Some(ep) => ep,
+                None => {
+                    return Err((
+                        Error::with_message(
+                            Errno::EADDRNOTAVAIL,
+                            "no interface has an address for the specified family",
+                        ),
+                        self,
+                    ));
+                }
+            };
+            match bind_port(&endpoint, can_reuse, false, net_ns) {
+                Ok(bound_port) => bound_port,
+                Err(err) => return Err((err, self)),
+            }
+        };
+
+        ConnectingStream::new(bound_port, resolved_remote, option, observer).map_err(
+            |(err, bound_port)| {
+                if err.error() == Errno::ECONNREFUSED {
+                    (err, InitStream::new_refused(bound_port, self.family))
+                } else {
+                    (err, InitStream::new_bound(bound_port, self.family))
+                }
+            },
+        )
+    }
+
+    pub(super) fn finish_last_connect(&mut self) -> Result<()> {
+        if self.is_connect_done {
+            return Ok(());
+        }
+
+        self.is_connect_done = true;
+
+        let is_conn_refused = self.is_conn_refused.get_mut();
+        if *is_conn_refused {
+            *is_conn_refused = false;
+            return_errno_with_message!(Errno::ECONNREFUSED, "the connection is refused");
+        } else {
+            return_errno_with_message!(
+                Errno::ECONNABORTED,
+                "the error code for the connection failure is not available"
+            );
+        }
+    }
+
+    pub(super) fn listen(
+        mut self,
+        backlog: usize,
+        option: &RawTcpOption,
+        observer: StreamObserver,
+        v6only: bool,
+        net_ns: &NetNamespace,
+    ) -> Result<ListenStream, (Error, Self)> {
+        if !self.is_connect_done {
+            // See the comments of `is_connect_done`.
+            // `listen()` is also not allowed until the second `connect()`.
+            return Err((
+                Error::with_message(
+                    Errno::EINVAL,
+                    "the connection is refused, but the connecting phase is not done",
+                ),
+                self,
+            ));
+        }
+
+        let bound_port = match self.bound_port.take() {
+            Some(bound_port) => bound_port,
+            None => {
+                // Auto-bind to the wildcard address for this protocol family
+                // when listen() is called without a prior bind().
+                let endpoint = match self.family {
+                    IpAddressFamily::IPv4 => {
+                        IpEndpoint::new(IpAddress::Ipv4(Ipv4Addr::UNSPECIFIED), 0)
+                    }
+                    IpAddressFamily::IPv6 => {
+                        IpEndpoint::new(IpAddress::Ipv6(Ipv6Address::UNSPECIFIED), 0)
+                    }
+                };
+                match bind_port(&endpoint, false, v6only, net_ns) {
+                    Ok(bound_port) => bound_port,
+                    Err(err) => return Err((err, self)),
+                }
+            }
+        };
+
+        match ListenStream::new(bound_port, backlog, option, observer, v6only) {
+            Ok(listen_stream) => Ok(listen_stream),
+            Err((bound_port, error)) => Err((error, Self::new_bound(bound_port, self.family))),
+        }
+    }
+
+    pub(super) fn try_recv(&self) -> Result<(usize, SocketAddr)> {
+        // FIXME: Linux does not return addresses for `recvfrom` on connection-oriented sockets.
+        // This is a placeholder that has no Linux equivalent. (Note also that in this case
+        // `getpeeraddr` will simply fail with `ENOTCONN`).
+        const UNSPECIFIED_SOCKET_ADDR: SocketAddr = SocketAddr::IPv4(Ipv4Addr::UNSPECIFIED, 0);
+
+        // Below are some magic checks to make our behavior identical to Linux.
+
+        if self.is_connect_done {
+            return_errno_with_message!(Errno::ENOTCONN, "the socket is not connected");
+        }
+
+        if let Some(err) = self.test_and_clear_error() {
+            return Err(err);
+        }
+
+        Ok((0, UNSPECIFIED_SOCKET_ADDR))
+    }
+
+    pub(super) fn try_send(&self) -> Result<usize> {
+        if let Some(err) = self.test_and_clear_error() {
+            return Err(err);
+        }
+
+        return_errno_with_message!(Errno::EPIPE, "the socket is not connected");
+    }
+
+    pub(super) fn local_endpoint(&self) -> Option<IpEndpoint> {
+        self.bound_port
+            .as_ref()
+            .map(|bound_port| bound_port.endpoint())
+    }
+
+    pub(super) fn check_io_events(&self) -> IoEvents {
+        // Linux adds OUT and HUP events for a newly created socket
+        let mut events = IoEvents::OUT | IoEvents::HUP;
+
+        if self.is_conn_refused.load(Ordering::Relaxed) {
+            events |= IoEvents::ERR;
+        }
+
+        events
+    }
+
+    pub(super) fn test_and_clear_error(&self) -> Option<Error> {
+        if self.is_conn_refused.swap(false, Ordering::Relaxed) {
+            Some(Error::with_message(
+                Errno::ECONNREFUSED,
+                "the connection is refused",
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+fn bind_port(
+    endpoint: &IpEndpoint,
+    can_reuse: bool,
+    v6only: bool,
+    net_ns: &NetNamespace,
+) -> Result<BoundTcpPort> {
+    let dual_stack =
+        matches!(endpoint.addr, IpAddress::Ipv6(addr) if addr.is_unspecified()) && !v6only;
+    let (iface, config) = resolve_bind_iface_and_config(endpoint, can_reuse, dual_stack, net_ns)?;
+    Ok(iface.bind_tcp(config)?)
+}

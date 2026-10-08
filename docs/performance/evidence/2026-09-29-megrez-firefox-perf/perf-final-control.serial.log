@@ -1,0 +1,16 @@
+
+root@asterinas-debug:/# printf 'BEGIN_20c0b768d5a4ec1e\n'; id -u; cat /proc/sys/ kernel/random/boot_id; cat /run/asterinas-desktop-ready; pgrep -a firefox | head  -n 1; pgrep -a Xorg | head -n 1; systemctl show asterinas-desktop-ready.service  -p ActiveState -p SubState -p ExecMainStatus; systemctl show asterinas-safe-reb oot.service -p ActiveState -p SubState -p ExecMainStatus; cat /sys/kernel/asteri nas/reboot_after 2>/dev/null || true; printf 'END_20c0b768d5a4ec1e=%s\n' "$?"
+BEGIN_20c0b768d5a4ec1e
+0
+d5e68c9c-bd7e-452d-b5d9-56c73a1574b4
+d5e68c9c-bd7e-452d-b5d9-56c73a1574b4
+268 /usr/bin/firefox --no-remote --new-instance --marionette --profile /home/asterinas/.mozilla/asterinas-browser-web about:blank
+183 /usr/lib/xorg/Xorg :0 -noreset -nolisten tcp -ac -novtswitch -keeptty -extension GLX -configdir /run/asterinas-physical-display-providers/fbdev/xorg.conf.d -logfile /home/asterinas/Xorg.0.log vt1
+ExecMainStatus=0
+ActiveState=active
+SubState=exited
+ExecMainStatus=0
+ActiveState=active
+SubState=exited
+END_20c0b768d5a4ec1e=0
+root@asterinas-debug:/#

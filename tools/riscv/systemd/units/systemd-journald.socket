@@ -1,0 +1,12 @@
+[Unit]
+Description=Journal Sockets
+DefaultDependencies=no
+Before=sockets.target
+IgnoreOnIsolate=yes
+
+[Socket]
+ListenDatagram=/run/systemd/journal/socket
+ListenStream=/run/systemd/journal/stdout
+PassCredentials=yes
+Service=systemd-journald.service
+SocketMode=0666

@@ -404,9 +404,12 @@ macro_rules! return_errno {
     };
 }
 
-#[macro_export]
+pub(crate) use return_errno;
+
 macro_rules! return_errno_with_message {
     ($errno: expr, $message: expr) => {
         return Err($crate::error::Error::with_message($errno, $message))
     };
 }
+
+pub(crate) use return_errno_with_message;

@@ -1,0 +1,17 @@
+[Unit]
+Description=Xpanel (pure-X11 desktop panel)
+After=xorg.service
+Requires=xorg.service
+PartOf=graphical.target
+
+[Service]
+KeyringMode=inherit
+Type=simple
+Environment=DISPLAY=:0
+Environment=HOME=/root
+Environment=FONTCONFIG_FILE=/etc/fonts/fonts.conf
+ExecStart=/usr/bin/xpanel
+Restart=on-failure
+RestartSec=2s
+StandardOutput=null
+StandardError=null

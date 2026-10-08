@@ -1,0 +1,16 @@
+
+root@asterinas-debug:/run/asterinas-powervr-boot-preflight-20260930# printf 'BEG
+IN_a8f9ee9e3cae9dec\n'; curl -fsS --noproxy "*" -o /run/asterinas-video-manual-p
+hase-20260930/video_manual_phase.py http://10.100.19.216:17898/video_manual_phas
+e.py && printf "f954b2ea5fbcff74292352f1c19265bdfb58d83c267e2578e2b6f0eb2c8f75a2
+  /run/asterinas-video-manual-phase-20260930/video_manual_phase.py\n" | sha256su
+m -c - && nsenter -t 188 -n timeout 60 python3 -u /run/asterinas-video-manual-ph
+ase-20260930/video_manual_phase.py --browser-pid 188 --xorg-pid 175 --base-url h
+ttp://10.100.19.216:17897 --run-id s30i --clip-sha256 1aa863f2a73698241c9daa016c
+7bfcfa0f94b038ca9f0b29f296c3ca0b65eb95 --output /run/asterinas-video-manual-phas
+e-20260930/s30i-record.json; printf 'END_a8f9ee9e3cae9dec=%s\n' "$?"
+BEGIN_a8f9ee9e3cae9dec
+/run/asterinas-video-manual-phase-20260930/video_manual_phase.py: OK
+VIDEO_MANUAL_PHASE {"dropped": 115, "firefox_render_cpu_ns": 15915197000, "frames": 300, "run": "s30i", "window_ms": 10191.869}
+END_a8f9ee9e3cae9dec=0
+root@asterinas-debug:/run/asterinas-powervr-boot-preflight-20260930#

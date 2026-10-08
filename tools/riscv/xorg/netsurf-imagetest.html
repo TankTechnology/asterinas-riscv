@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Asterinas RISC-V — Image render test</title>
+<style>
+  body { background: #ffffff; color: #202028; font-family: sans-serif; margin: 1.5em; }
+  h1 { color: #1a4f8b; }
+  .row { margin: 1em 0; padding: 0.5em; border: 1px solid #ccc; overflow: hidden; }
+  .row h3 { margin: 0 0 0.4em 0; }
+  .row img { float: left; margin-right: 1em; }
+  .label { color: #555; font-size: 0.9em; }
+</style>
+</head>
+<body>
+<h1>Image render test</h1>
+<p class="label">Each row is an in-page <code>&lt;img&gt;</code> of a distinct
+format/size. Large images (&gt;4&nbsp;KiB) exercise NetSurf's deferred decode
+path; small ones are decoded eagerly at fetch time.</p>
+
+<div class="row">
+  <h3>Small PNG (313 B — eager decode)</h3>
+  <img src="imgtest/img-small.png" width="16" height="16" alt="small green">
+</div>
+
+<div class="row">
+  <h3>Large PNG (10.9 KB — deferred decode)</h3>
+  <img src="imgtest/img-large.png" width="400" height="300" alt="large blue">
+</div>
+
+<div class="row">
+  <h3>Large JPEG (140 KB — deferred decode)</h3>
+  <img src="imgtest/img-large.jpg" width="640" height="480" alt="large jpeg">
+</div>
+
+<div class="row">
+  <h3>Animated GIF (1.6 KB)</h3>
+  <img src="imgtest/img-anim.gif" width="320" height="240" alt="animated gif">
+</div>
+
+</body>
+</html>

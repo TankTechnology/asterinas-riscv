@@ -1,0 +1,5 @@
+printf 'BEGIN_463e7fbaadfaa128\n'; curl -fsS --noproxy " *" --max-time 20 http://10.100.19.216:17898/restore-fbdev.sh -o /run/restore-fbd ev.sh.tmp && printf "eb81d0b90c53ec4f141db7732843b5524c69a7226a93512685b6e28b54a dc77c  /run/restore-fbdev.sh.tmp\n" | sha256sum -c - && chmod 700 /run/restore-f bdev.sh.tmp && mv /run/restore-fbdev.sh.tmp /run/restore-fbdev.sh && /run/restor e-fbdev.sh; printf 'END_463e7fbaadfaa128=%s\n' "$?"
+BEGIN_463e7fbaadfaa128
+/run/restore-fbdev.sh.tmp: OK
+END_463e7fbaadfaa128=1
+root@asterinas-debug:/# 

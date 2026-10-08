@@ -1,0 +1,15 @@
+target/powervr-start-wait-red.serial.log
+test aster_kernel::device::dri::powervr_probe::start::tests::selected_firmware_start_wait_is_bounded_and_propagates_faults ... FAILED
+test result: FAILED. 0 passed; 1 failed; 353 filtered out.
+[caught panic] Panicked at /root/asterinas/kernel/src/device/dri/powervr_probe/start.rs:185:9
+assertion `left == right` failed
+  left: Err("gpu_firmware_start_timeout")
+ right: Ok(())
+
+target/powervr-start-fault-red.serial.log
+test aster_kernel::device::dri::powervr_probe::dma::tests::gpu_dma_stage_reads_firmware_status_from_owned_mappings ... FAILED
+test result: FAILED. 0 passed; 1 failed; 353 filtered out.
+[caught panic] Panicked at /root/asterinas/kernel/src/device/dri/powervr_probe/dma.rs:751:9
+assertion `left == right` failed
+  left: Ok(true)
+ right: Err("gpu_firmware_fault_observed")

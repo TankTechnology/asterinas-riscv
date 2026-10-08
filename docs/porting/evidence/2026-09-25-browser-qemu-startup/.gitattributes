@@ -1,0 +1,3 @@
+# Preserve raw guest output, including CRLF terminal sequences and blank records.
+*.log -diff -whitespace
+*.txt -diff -whitespace

@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use align_ext::AlignExt;
+
+use super::{Interval, RssDelta, VmMapping, Vmar};
+use crate::{prelude::*, vm::perms::VmPerms};
+
+impl Vmar {
+    pub fn handle_page_fault(&self, page_fault_info: &PageFaultInfo) -> Result<()> {
+        let address = page_fault_info.address;
+        // Do not hold the VMAR lock while servicing the fault.  VMO-backed
+        // faults may submit I/O and yield; keeping the preemption-disabled
+        // read guard alive across that path trips `might_sleep` (and can
+        // deadlock a concurrent unmap).  Duplicate the mapping capability
+        // while protected, then let the guard drop before any fault work.
+        let vm_mapping = {
+            let inner = self.inner.read();
+            inner
+                .vm_mappings
+                .find_one(&address)
+                .map(VmMapping::new_fork)
+        };
+        let vm_mapping = if vm_mapping.is_some() {
+            vm_mapping
+        } else {
+            let mut inner = self.inner.write();
+            if inner.vm_mappings.find_one(&address).is_none() {
+                inner.try_expand_growsdown_mapping(address)?;
+            }
+            inner
+                .vm_mappings
+                .find_one(&address)
+                .map(VmMapping::new_fork)
+        };
+
+        if let Some(vm_mapping) = vm_mapping {
+            debug_assert!(vm_mapping.range().contains(&address));
+
+            let mut rss_delta = RssDelta::new(self);
+            return vm_mapping.handle_page_fault(&self.vm_space, page_fault_info, &mut rss_delta);
+        }
+
+        return_errno_with_message!(
+            Errno::EACCES,
+            "no VM mappings contain the page fault address"
+        );
+    }
+}
+
+impl super::VmarInner {
+    /// Expands the closest `MAP_GROWSDOWN` VMA to cover the faulting page.
+    fn try_expand_growsdown_mapping(&mut self, address: Vaddr) -> Result<()> {
+        let new_start = address.align_down(PAGE_SIZE);
+        let Some(next) = self.vm_mappings.find_next(&new_start) else {
+            return Ok(());
+        };
+        if !next.can_grow_down() {
+            return Ok(());
+        }
+
+        let old_start = next.map_to_addr();
+        let extra_size = old_start.saturating_sub(new_start);
+        if extra_size == 0 {
+            return Ok(());
+        }
+        // Match Linux's default stack guard gap: a grow-down VMA must not
+        // approach an existing lower VMA by less than 256 pages.
+        const STACK_GUARD_GAP: usize = 256 * PAGE_SIZE;
+        if self
+            .vm_mappings
+            .find_prev(&old_start)
+            .is_some_and(|prev| prev.map_end().saturating_add(STACK_GUARD_GAP) > new_start)
+        {
+            return_errno_with_message!(Errno::EACCES, "grow-down stack guard gap is occupied");
+        }
+        self.alloc_free_region_exact(new_start, extra_size)
+            .map_err(|_| {
+                Error::with_message(Errno::EACCES, "grow-down guard region is occupied")
+            })?;
+        self.check_extra_size_fits_rlimit(extra_size)?;
+
+        let mapping = self.remove(&old_start).unwrap();
+        self.insert_without_try_merge(mapping.enlarge_down(new_start));
+        Ok(())
+    }
+}
+
+/// Page fault information converted from [`CpuException`].
+///
+/// `TryFrom<CpuException>` should be implemented for this struct.
+/// If [`CpuException`] is a page fault, `try_from` should return `Ok(PageFaultInfo)`,
+/// or `Err(())` (no error information) otherwise.
+///
+/// [`CpuException`]: ostd::arch::cpu::context::CpuException
+#[derive(Debug)]
+pub struct PageFaultInfo {
+    /// The virtual address where a page fault occurred.
+    pub(in crate::vm::vmar) address: Vaddr,
+
+    /// The [`VmPerms`] required by the memory operation that causes page fault.
+    /// For example, a "store" operation may require `VmPerms::WRITE`.
+    pub(in crate::vm::vmar) required_perms: VmPerms,
+
+    /// Whether this page fault is forced (e.g., manually triggered by `ptrace`).
+    /// A forced page fault may bypass some permission checks.
+    is_forced: bool,
+}
+
+impl PageFaultInfo {
+    /// Creates a new `PageFaultInfo`.
+    pub fn new(address: Vaddr, required_perms: VmPerms) -> Self {
+        Self {
+            address,
+            required_perms,
+            is_forced: false,
+        }
+    }
+
+    /// Returns the virtual address that triggered the fault.
+    pub(crate) fn address(&self) -> Vaddr {
+        self.address
+    }
+
+    /// Returns whether this page fault is forced.
+    pub(in crate::vm::vmar) fn is_forced(&self) -> bool {
+        self.is_forced
+    }
+
+    /// Marks this page fault as forced.
+    pub(super) fn force(mut self) -> Self {
+        self.is_forced = true;
+        self
+    }
+}

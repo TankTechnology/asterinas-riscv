@@ -1,0 +1,351 @@
+// SPDX-License-Identifier: MPL-2.0
+
+use alloc::{sync::Arc, vec::Vec};
+
+use ostd::{
+    boot::{boot_info, BootloaderFramebufferArg, BootloaderFramebufferFormat},
+    io::IoMem,
+    mm::{CachePolicy, HasSize, VmIo},
+    sync::Mutex,
+    Error, Result,
+};
+use spin::Once;
+
+use crate::pixel::{Pixel, PixelFormat, RenderedPixel};
+
+/// Maximum number of colormap entries (standard 8-bit palette)
+pub const MAX_CMAP_SIZE: usize = 256;
+
+/// The framebuffer used for text or graphical output.
+///
+/// # Notes
+///
+/// It is highly recommended to use a synchronization primitive, such as a `SpinLock`, to
+/// lock the framebuffer before performing any operation on it.
+/// Failing to properly synchronize access can result in corrupted framebuffer content
+/// or unspecified behavior during rendering.
+#[derive(Debug)]
+pub struct FrameBuffer {
+    io_mem: IoMem,
+    width: usize,
+    height: usize,
+    line_size: usize,
+    pixel_format: PixelFormat,
+    cmap: Mutex<FbCmap>,
+}
+
+/// A single entry in the color map with 16-bit color values.
+///
+/// Linux framebuffer colormap uses 16-bit values (0-65535) for each color channel
+/// to support high precision color mapping.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ColorMapEntry {
+    /// Red color value (16-bit)
+    pub red: u16,
+    /// Green color value (16-bit)
+    pub green: u16,
+    /// Blue color value (16-bit)
+    pub blue: u16,
+    /// Transparency value (16-bit)
+    pub transp: u16,
+}
+
+/// Internal framebuffer colormap structure.
+#[derive(Clone, Debug)]
+struct FbCmap {
+    /// Color map entries
+    entries: Vec<ColorMapEntry>,
+}
+
+pub static FRAMEBUFFER: Once<Arc<FrameBuffer>> = Once::new();
+
+#[derive(Clone, Copy, Debug)]
+struct FrameBufferConfig {
+    address: usize,
+    size: usize,
+    width: usize,
+    height: usize,
+    line_size: usize,
+    pixel_format: PixelFormat,
+}
+
+impl FrameBufferConfig {
+    fn from_boot(boot: BootloaderFramebufferArg) -> Self {
+        let pixel_format = match boot.pixel_format {
+            BootloaderFramebufferFormat::Grayscale8 => PixelFormat::Grayscale8,
+            BootloaderFramebufferFormat::Rgb565 => PixelFormat::Rgb565,
+            BootloaderFramebufferFormat::Rgb888 => PixelFormat::Rgb888,
+            BootloaderFramebufferFormat::BgrReserved8888 => PixelFormat::BgrReserved,
+        };
+
+        Self {
+            address: boot.address,
+            size: boot.size,
+            width: boot.width,
+            height: boot.height,
+            line_size: boot.line_size,
+            pixel_format,
+        }
+    }
+}
+
+fn framebuffer_cache_policy() -> CachePolicy {
+    // A firmware framebuffer is ordinary idempotent video memory from the
+    // CPU's perspective.  On RISC-V, PBMT_NC is the cache policy that permits
+    // repeated reads and writes without treating the BAR as strongly ordered
+    // device I/O; the latter can stall QEMU's bochs framebuffer reads.
+    #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
+    return CachePolicy::WriteCombining;
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "riscv64")))]
+    CachePolicy::Uncacheable
+}
+
+pub(crate) fn init() {
+    let Some(framebuffer_arg) = boot_info().framebuffer_arg else {
+        ostd::warn!("Framebuffer not found");
+        return;
+    };
+
+    let config = FrameBufferConfig::from_boot(framebuffer_arg);
+
+    let framebuffer = {
+        let io_mem = match IoMem::acquire_with_cache_policy(
+            config.address..config.address + config.size,
+            framebuffer_cache_policy(),
+        ) {
+            Ok(io_mem) => io_mem,
+            Err(error) => {
+                ostd::error!("Failed to map firmware framebuffer: {:?}", error);
+                return;
+            }
+        };
+
+        let default_cmap = FbCmap {
+            entries: Vec::new(),
+        };
+
+        FrameBuffer {
+            io_mem,
+            width: config.width,
+            height: config.height,
+            line_size: config.line_size,
+            pixel_format: config.pixel_format,
+            cmap: Mutex::new(default_cmap),
+        }
+    };
+
+    if let Err(error) = framebuffer.clear() {
+        ostd::error!(
+            "Firmware framebuffer is not synchronizable; leaving it unregistered: {:?}",
+            error
+        );
+        return;
+    }
+    ostd::info!(
+        "Registered firmware framebuffer: base={:#x}, size={:#x}, resolution={}x{}, stride={}, format={:?}",
+        config.address,
+        config.size,
+        config.width,
+        config.height,
+        config.line_size,
+        config.pixel_format
+    );
+    FRAMEBUFFER.call_once(|| Arc::new(framebuffer));
+}
+
+impl FrameBuffer {
+    /// Returns the width of the framebuffer in pixels.
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Returns the height of the framebuffer in pixels.
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// Returns the line size of the framebuffer in bytes.
+    pub fn line_size(&self) -> usize {
+        self.line_size
+    }
+
+    /// Returns a reference to the `IoMem` instance of the framebuffer.
+    pub fn io_mem(&self) -> &IoMem {
+        &self.io_mem
+    }
+
+    /// Returns the pixel format of the framebuffer.
+    pub fn pixel_format(&self) -> PixelFormat {
+        self.pixel_format
+    }
+
+    /// Renders the pixel according to the pixel format of the framebuffer.
+    pub fn render_pixel(&self, pixel: Pixel) -> RenderedPixel {
+        pixel.render(self.pixel_format)
+    }
+
+    /// Calculates the offset of a pixel at the specified position.
+    pub fn calc_offset(&self, x: usize, y: usize) -> PixelOffset<'_> {
+        PixelOffset {
+            fb: self,
+            offset: (x * self.pixel_format.nbytes() + y * self.line_size) as isize,
+        }
+    }
+
+    /// Writes a pixel at the specified position.
+    pub fn write_pixel_at(&self, offset: PixelOffset, pixel: RenderedPixel) -> Result<()> {
+        self.write_bytes_at(offset.as_usize(), pixel.as_slice())
+    }
+
+    /// Writes raw bytes at the specified offset.
+    pub fn write_bytes_at(&self, offset: usize, bytes: &[u8]) -> Result<()> {
+        self.io_mem.write_bytes(offset, bytes)?;
+        let end = offset.checked_add(bytes.len()).ok_or(Error::InvalidArgs)?;
+        self.io_mem.sync_to_device(offset..end)
+    }
+
+    /// Clears the framebuffer with default color (black).
+    pub fn clear(&self) -> Result<()> {
+        let frame = alloc::vec![0u8; self.io_mem().size()];
+        self.write_bytes_at(0, &frame)
+    }
+
+    /// Sets color map entries starting from the given index.
+    ///
+    /// For efifb devices, hardware color map is not supported, so we maintain
+    /// an in-memory map for software emulation.
+    pub fn set_color_map(&self, start: usize, entries: &[ColorMapEntry]) -> Result<()> {
+        if start > MAX_CMAP_SIZE || entries.len() > MAX_CMAP_SIZE - start {
+            return Err(Error::InvalidArgs);
+        }
+
+        let mut cmap = self.cmap.lock();
+        let required_len = start + entries.len();
+
+        // Ensure the colormap has enough space
+        if cmap.entries.len() < required_len {
+            cmap.entries.resize(
+                required_len,
+                ColorMapEntry {
+                    red: 0,
+                    green: 0,
+                    blue: 0,
+                    transp: 0,
+                },
+            );
+        }
+
+        // Copy the entries
+        cmap.entries[start..start + entries.len()].copy_from_slice(entries);
+
+        Ok(())
+    }
+
+    /// Gets color map entries from the given range.
+    pub fn get_color_map(&self, start: usize, len: usize) -> Option<Vec<ColorMapEntry>> {
+        let cmap = self.cmap.lock();
+
+        if start >= cmap.entries.len() || len > cmap.entries.len() - start {
+            return None;
+        }
+
+        Some(cmap.entries[start..start + len].to_vec())
+    }
+}
+
+/// The offset of a pixel in the framebuffer.
+#[derive(Clone, Copy, Debug)]
+pub struct PixelOffset<'a> {
+    fb: &'a FrameBuffer,
+    offset: isize,
+}
+
+impl PixelOffset<'_> {
+    /// Adds the specified delta to the x coordinate.
+    pub fn x_add(&mut self, x_delta: isize) {
+        let delta = x_delta * self.fb.pixel_format.nbytes() as isize;
+        self.offset += delta;
+    }
+
+    /// Adds the specified delta to the y coordinate.
+    pub fn y_add(&mut self, y_delta: isize) {
+        let delta = y_delta * self.fb.line_size as isize;
+        self.offset += delta;
+    }
+
+    /// Returns the offset value as a `usize`.
+    pub fn as_usize(&self) -> usize {
+        self.offset as usize
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::{
+        boot::{BootloaderFramebufferArg, BootloaderFramebufferFormat},
+        mm::CachePolicy,
+        prelude::ktest,
+    };
+
+    use super::FrameBufferConfig;
+    use crate::pixel::PixelFormat;
+
+    #[cfg(target_arch = "riscv64")]
+    #[ktest]
+    fn uses_idempotent_cache_policy_for_riscv_framebuffer() {
+        assert_eq!(
+            super::framebuffer_cache_policy(),
+            CachePolicy::WriteCombining
+        );
+    }
+
+    #[ktest]
+    fn maps_every_boot_pixel_format() {
+        for (boot_format, pixel_format) in [
+            (
+                BootloaderFramebufferFormat::Grayscale8,
+                PixelFormat::Grayscale8,
+            ),
+            (BootloaderFramebufferFormat::Rgb565, PixelFormat::Rgb565),
+            (BootloaderFramebufferFormat::Rgb888, PixelFormat::Rgb888),
+            (
+                BootloaderFramebufferFormat::BgrReserved8888,
+                PixelFormat::BgrReserved,
+            ),
+        ] {
+            let bytes_per_pixel = boot_format.bytes_per_pixel();
+            let boot = BootloaderFramebufferArg::new(
+                0xfd80_0000,
+                bytes_per_pixel,
+                1,
+                1,
+                bytes_per_pixel,
+                boot_format,
+            )
+            .unwrap();
+
+            assert_eq!(
+                FrameBufferConfig::from_boot(boot).pixel_format,
+                pixel_format
+            );
+        }
+    }
+
+    #[ktest]
+    fn uses_advertised_size_and_padded_stride() {
+        let boot = BootloaderFramebufferArg::new(
+            0xfd80_0000,
+            192,
+            13,
+            3,
+            64,
+            BootloaderFramebufferFormat::BgrReserved8888,
+        )
+        .unwrap();
+        let config = FrameBufferConfig::from_boot(boot);
+
+        assert_eq!(config.size, 192);
+        assert_eq!(config.line_size, 64);
+    }
+}

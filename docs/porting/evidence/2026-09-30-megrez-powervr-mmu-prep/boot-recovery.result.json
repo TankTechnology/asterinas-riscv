@@ -1,0 +1,32 @@
+{
+  "artifacts": {
+    "dtb": {
+      "address": 4026531840,
+      "crc32": "40ed4c65",
+      "filename": "megrez-465cb129333c.dtb",
+      "sha256": "465cb129333cc334a3161fabb43d37df8738ac4baa86fcdb50260691a22a84ba",
+      "size": 155097
+    },
+    "initramfs": {
+      "address": 2197815296,
+      "crc32": "fba34eda",
+      "filename": "stage1-safe-handoff.cpio",
+      "sha256": "666d58af0673e2af52c9f1f36b5438095c759d95b3efcd800180054606bb3d71",
+      "size": 1122304
+    },
+    "kernel": {
+      "address": 2149580800,
+      "crc32": "6f6fbbea",
+      "filename": "asterinas-d916098c0e3f.booti",
+      "sha256": "d916098c0e3fcfcd819897b9407b018b6edc1dbcc38e681921060e2f4c38e005",
+      "size": 6464993
+    }
+  },
+  "bootargs": "console=tty0 loglevel=off asterinas.klog_capture=info init=/init asterinas.mmc_write_partition2 asterinas.reboot_after=300 asterinas.powervr=1 asterinas.powervr_dma_stage=1 asterinas.drm_phase_profile=1 systemd.setenv=ASTERINAS_SAFE_REBOOT_AFTER=180 systemd.mask=asterinas-browser-web-evidence.service systemd.mask=asterinas-desktop-m5-network.service systemd.mask=serial-getty@ttyS0.service systemd.mask=console-getty.service asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1 systemd.setenv=ASTERINAS_WEB_NETWORK_MODE=proxy systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=10.100.19.216 systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=17893 systemd.setenv=ASTERINAS_DESKTOP_DNS_HOST=10.100.19.216 systemd.setenv=ASTERINAS_DESKTOP_DNS_PORT=15354 -- --root-init=systemd --debug-console=isolated-root",
+  "kernel_entered": true,
+  "returned_to_uboot": true,
+  "rockos_boot_id": "2cd4c8b5-0cbf-407b-9a94-8d605ef9b2c4",
+  "rockos_staged_verified": true,
+  "status": "root-console-ready",
+  "uboot_artifacts_verified": true
+}

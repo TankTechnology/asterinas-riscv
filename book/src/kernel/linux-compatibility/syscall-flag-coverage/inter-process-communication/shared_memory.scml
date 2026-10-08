@@ -1,0 +1,23 @@
+// Create or open a shared memory segment
+shmget(
+    key,
+    size,
+    shmflg = IPC_CREAT | IPC_EXCL
+);
+
+// Attach read-write, read-only, executable, rounded, or fixed-replacement
+shmat(
+    shmid,
+    shmaddr,
+    shmflg = SHM_RDONLY | SHM_RND | SHM_REMAP | SHM_EXEC
+);
+
+// Detach an explicitly attached segment
+shmdt(shmaddr);
+
+// Query metadata or mark a segment for deferred removal
+shmctl(
+    shmid,
+    cmd = IPC_STAT | IPC_RMID,
+    buf
+);
