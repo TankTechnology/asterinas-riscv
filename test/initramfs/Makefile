@@ -182,7 +182,11 @@ $(EXT2_IMAGE): $(EXT2_IMAGE_STAMP)
 $(EXT2_IMAGE_STAMP):
 	@mkdir -p $(BUILD_DIR)
 	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1
-	@mkfs -t $(EXT2_FS_TYPE) -F $(EXT2_IMAGE)
+	@if [ "$(EXT2_FS_TYPE)" = ext4 ]; then \
+		mkfs.ext4 -F -I 128 -O extents,^64bit,^metadata_csum,^metadata_csum_seed,^flex_bg,^dir_nlink,^extra_isize $(EXT2_IMAGE); \
+	else \
+		mkfs -t $(EXT2_FS_TYPE) -F $(EXT2_IMAGE); \
+	fi
 	@touch $@
 
 $(EXFAT_IMAGE):
