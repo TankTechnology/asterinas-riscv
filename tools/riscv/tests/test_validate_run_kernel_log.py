@@ -42,6 +42,7 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         module = (core_root / "mod.rs").read_text()
         filesystem = (core_root / "fs.rs").read_text()
         journal = (core_root / "journal.rs").read_text()
+        block_group = (core_root / "block_group.rs").read_text()
         block_ptr_tree = (
             core_root / "inode/block_manager/block_ptr_tree.rs"
         ).read_text()
@@ -63,6 +64,8 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         self.assertIn("checkpoint_published_journal", filesystem)
         self.assertIn("write_metadata_blocks", filesystem)
         self.assertIn("publish_journal_transaction_locked", filesystem)
+        self.assertIn("Weak<Ext2>", block_group)
+        self.assertIn("block_group_load_error", filesystem)
 
     def test_general_network_runner_preserves_local_regressions(self) -> None:
         runner = (
