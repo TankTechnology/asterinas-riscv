@@ -157,6 +157,56 @@ impl JournalTransaction {
     }
 }
 
+/// Validated placement cursor for the circular journal data area.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct JournalRing {
+    first: u32,
+    max_length: u32,
+    next: u32,
+}
+
+impl JournalRing {
+    pub(super) fn new(super_block: SuperBlock) -> Result<Self> {
+        let next = if super_block.start == 0 {
+            super_block.first
+        } else {
+            super_block.start
+        };
+        if next < super_block.first || next >= super_block.max_length {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal ring cursor");
+        }
+        Ok(Self {
+            first: super_block.first,
+            max_length: super_block.max_length,
+            next,
+        })
+    }
+
+    pub(super) fn reserve(&mut self, blocks: usize) -> Result<Vec<u32>> {
+        if blocks == 0 {
+            return_errno_with_message!(Errno::EINVAL, "zero ext4 journal blocks requested");
+        }
+        let capacity = (self.max_length - self.first) as usize;
+        if blocks > capacity {
+            return_errno_with_message!(Errno::ENOSPC, "ext4 journal transaction exceeds ring");
+        }
+        let mut positions = Vec::with_capacity(blocks);
+        for _ in 0..blocks {
+            positions.push(self.next);
+            self.next = if self.next + 1 >= self.max_length {
+                self.first
+            } else {
+                self.next + 1
+            };
+        }
+        Ok(positions)
+    }
+
+    pub(super) const fn cursor(self) -> u32 {
+        self.next
+    }
+}
+
 /// A validated data block from one committed journal transaction.
 ///
 /// The decoder intentionally returns owned data.  Recovery can therefore
@@ -400,6 +450,22 @@ mod test {
         let journal = SuperBlock::parse(&superblock()).unwrap();
         assert_eq!(journal.max_length, 1024);
         assert!(!journal.needs_recovery());
+    }
+
+    #[ktest]
+    fn journal_ring_wraps_at_max_length() {
+        let journal = SuperBlock::parse(&superblock()).unwrap();
+        let mut ring = JournalRing::new(journal).unwrap();
+        ring.next = 1022;
+        assert_eq!(ring.reserve(3).unwrap(), vec![1022, 1023, 1]);
+        assert_eq!(ring.cursor(), 2);
+    }
+
+    #[ktest]
+    fn journal_ring_rejects_oversized_reservation() {
+        let journal = SuperBlock::parse(&superblock()).unwrap();
+        let mut ring = JournalRing::new(journal).unwrap();
+        assert!(ring.reserve(1024).is_err());
     }
 
     #[ktest]
