@@ -68,6 +68,7 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         self.assertIn("block_group_load_error", filesystem)
         self.assertIn("fn sync_bitmap", block_group)
         self.assertIn("fs.write_metadata_blocks", block_group)
+        self.assertIn("fs: fs.clone()", block_group)
         self.assertIn("descriptor_bytes", filesystem)
         self.assertIn("group descriptor table", filesystem)
 
