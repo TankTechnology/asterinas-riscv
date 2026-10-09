@@ -884,45 +884,51 @@ impl Ext2 {
 
     /// Flushes the superblock and all dirty group descriptors to the device.
     fn sync_metadata(&self) -> Result<()> {
-        let mut sb_guard = self.super_block.write();
-
-        let any_group_dirty = self.block_groups.iter().any(|group| group.is_desc_dirty());
-        if !sb_guard.is_dirty() && !any_group_dirty {
-            return Ok(());
-        }
-
-        let nr_block_groups = sb_guard.nr_block_groups() as usize;
-
-        let mut total_free_blocks: u32 = 0;
-        let mut total_free_inodes: u32 = 0;
-        for group in &self.block_groups {
-            total_free_blocks += group.free_blocks_count() as u32;
-            total_free_inodes += group.free_inodes_count() as u32;
-        }
-        sb_guard.set_free_blocks_count(total_free_blocks);
-        sb_guard.set_free_inodes_count(total_free_inodes);
-        sb_guard.set_wtime(utils::now());
-
-        let mut raw_sb = RawSuperBlock::from(&**sb_guard);
-        self.write_sb_and_group_descs(
-            &raw_sb,
-            SUPER_BLOCK_OFFSET,
-            sb_guard.group_descriptors_bid(0),
-        )?;
-
-        for group_idx in 1..nr_block_groups {
-            if !sb_guard.is_backup_group(group_idx) {
-                continue;
+        let (snapshots, should_clear_superblock_dirty) = {
+            let mut sb_guard = self.super_block.write();
+            let any_group_dirty = self.block_groups.iter().any(|group| group.is_desc_dirty());
+            if !sb_guard.is_dirty() && !any_group_dirty {
+                return Ok(());
             }
-            raw_sb.block_group_idx = group_idx as u16;
-            self.write_sb_and_group_descs(
-                &raw_sb,
-                Bid::new(sb_guard.bid(group_idx) as u64).to_offset(),
-                sb_guard.group_descriptors_bid(group_idx),
-            )?;
+
+            let nr_block_groups = sb_guard.nr_block_groups() as usize;
+            let mut total_free_blocks: u32 = 0;
+            let mut total_free_inodes: u32 = 0;
+            for group in &self.block_groups {
+                total_free_blocks += group.free_blocks_count() as u32;
+                total_free_inodes += group.free_inodes_count() as u32;
+            }
+            sb_guard.set_free_blocks_count(total_free_blocks);
+            sb_guard.set_free_inodes_count(total_free_inodes);
+            sb_guard.set_wtime(utils::now());
+
+            let mut raw_sb = RawSuperBlock::from(&**sb_guard);
+            let mut snapshots = vec![(
+                raw_sb,
+                SUPER_BLOCK_OFFSET,
+                sb_guard.group_descriptors_bid(0),
+            )];
+            for group_idx in 1..nr_block_groups {
+                if !sb_guard.is_backup_group(group_idx) {
+                    continue;
+                }
+                raw_sb.block_group_idx = group_idx as u16;
+                snapshots.push((
+                    raw_sb,
+                    Bid::new(sb_guard.bid(group_idx) as u64).to_offset(),
+                    sb_guard.group_descriptors_bid(group_idx),
+                ));
+            }
+            (snapshots, sb_guard.is_dirty())
+        };
+
+        for (raw_sb, sb_offset, group_desc_bid) in snapshots {
+            self.write_sb_and_group_descs(&raw_sb, sb_offset, group_desc_bid)?;
         }
 
-        sb_guard.clear_dirty();
+        if should_clear_superblock_dirty {
+            self.super_block.write().clear_dirty();
+        }
         Ok(())
     }
 
