@@ -940,11 +940,28 @@ impl Ext2 {
         group_desc_bid: Ext2Bid,
     ) -> Result<()> {
         let group_desc_segment = self.group_descriptors_segment.clone();
-        let bio_segment = BioSegment::new_from_segment(group_desc_segment, BioDirection::ToDevice);
-        self.write_blocks(group_desc_bid, bio_segment)
-            .map_err(|_| {
-                Error::with_message(Errno::EIO, "failed to write group descriptor table")
-            })?;
+        let has_journal = self
+            .super_block
+            .read()
+            .feature_compat()
+            .contains(FeatureCompatSet::HAS_JOURNAL);
+        if has_journal {
+            let mut descriptor_bytes = vec![0u8; group_desc_segment.size()];
+            group_desc_segment.read_bytes(0, &mut descriptor_bytes)?;
+            for (index, block) in descriptor_bytes.chunks_exact(BLOCK_SIZE).enumerate() {
+                let bid = group_desc_bid.checked_add(index as u32).ok_or_else(|| {
+                    Error::with_message(Errno::EOVERFLOW, "descriptor block overflow")
+                })?;
+                self.write_metadata_blocks(&[(bid, block)])?;
+            }
+        } else {
+            let bio_segment =
+                BioSegment::new_from_segment(group_desc_segment, BioDirection::ToDevice);
+            self.write_blocks(group_desc_bid, bio_segment)
+                .map_err(|_| {
+                    Error::with_message(Errno::EIO, "failed to write group descriptor table")
+                })?;
+        }
         if self
             .block_device
             .write_bytes(sb_offset, raw_sb.as_bytes())
