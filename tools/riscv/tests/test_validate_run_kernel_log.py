@@ -68,6 +68,8 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         self.assertIn("block_group_load_error", filesystem)
         self.assertIn("fn sync_bitmap", block_group)
         self.assertIn("fs.write_metadata_blocks", block_group)
+        self.assertIn("descriptor_bytes", filesystem)
+        self.assertIn("group descriptor table", filesystem)
 
     def test_general_network_runner_preserves_local_regressions(self) -> None:
         runner = (
