@@ -51,6 +51,8 @@ use crate::{
 pub(super) struct BlockGroup {
     /// Block group index (0-based).
     group_idx: usize,
+    /// Weak filesystem context for journal-aware metadata writeback.
+    fs: Weak<Ext2>,
     /// Group descriptor and bitmaps, protected by a single lock.
     metadata: RwMutex<BlockGroupMetadata>,
     /// Backing block device (shared with `Ext2` and other groups).
@@ -93,6 +95,7 @@ impl BlockGroup {
         group_idx: usize,
         sb: &SuperBlock,
         block_device: Arc<dyn BlockDevice>,
+        fs: Weak<Ext2>,
     ) -> Result<Self> {
         let offset = group_idx * size_of::<RawBlockGroup>();
         let raw_group = group_descs
@@ -144,6 +147,7 @@ impl BlockGroup {
 
         Ok(Self {
             group_idx,
+            fs,
             metadata: RwMutex::new(BlockGroupMetadata {
                 desc: Dirty::new(group_desc),
                 block_bitmap: Dirty::new(block_bitmap),

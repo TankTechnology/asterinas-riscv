@@ -168,34 +168,48 @@ impl Ext2 {
             segment
         };
 
-        let block_groups = {
-            let nr_block_groups = super_block.nr_block_groups() as usize;
-            let mut block_groups = Vec::with_capacity(nr_block_groups);
-            for group_idx in 0..nr_block_groups {
-                let group = BlockGroup::load(
-                    &group_descriptors_segment,
-                    group_idx,
-                    &super_block,
-                    device.clone(),
-                )?;
-                block_groups.push(group);
-            }
-            block_groups
-        };
+        let mut block_group_load_error = None;
+        let ext2 = Arc::new_cyclic(|weak_self| {
+            let block_groups = if block_group_load_error.is_some() {
+                Vec::new()
+            } else {
+                let nr_block_groups = super_block.nr_block_groups() as usize;
+                let mut block_groups = Vec::with_capacity(nr_block_groups);
+                for group_idx in 0..nr_block_groups {
+                    match BlockGroup::load(
+                        &group_descriptors_segment,
+                        group_idx,
+                        &super_block,
+                        device.clone(),
+                        weak_self.clone(),
+                    ) {
+                        Ok(group) => block_groups.push(group),
+                        Err(err) => {
+                            block_group_load_error = Some(err);
+                            break;
+                        }
+                    }
+                }
+                block_groups
+            };
 
-        let ext2 = Arc::new_cyclic(|weak_self| Ext2 {
-            block_device: device,
-            super_block: RwMutex::new(Dirty::new(super_block)),
-            block_groups,
-            nr_inodes_per_group,
-            group_descriptors_segment,
-            mount_options,
-            flags: AtomicFsFlags::new(flags),
-            journal_publish_lock: Mutex::new(()),
-            fs_event_subscriber_stats: FsEventSubscriberStats::new(),
-            next_generation: AtomicU32::new(utils::duration_to_ext2_secs(utils::now())),
-            self_ref: weak_self.clone(),
+            Ext2 {
+                block_device: device.clone(),
+                super_block: RwMutex::new(Dirty::new(super_block)),
+                block_groups,
+                nr_inodes_per_group,
+                group_descriptors_segment: group_descriptors_segment.clone(),
+                mount_options,
+                flags: AtomicFsFlags::new(flags),
+                journal_publish_lock: Mutex::new(()),
+                fs_event_subscriber_stats: FsEventSubscriberStats::new(),
+                next_generation: AtomicU32::new(utils::duration_to_ext2_secs(utils::now())),
+                self_ref: weak_self.clone(),
+            }
         });
+        if let Some(err) = block_group_load_error {
+            return Err(err);
+        }
 
         if allow_journal
             && !flags.contains(FsFlags::RDONLY)
