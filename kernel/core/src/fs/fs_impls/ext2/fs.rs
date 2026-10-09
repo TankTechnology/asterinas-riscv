@@ -1069,6 +1069,27 @@ mod test {
     }
 
     #[ktest]
+    fn write_metadata_blocks_direct_without_journal() {
+        clocks::init_for_ktest();
+        let fixture = Ext2FixtureBuilder::new(1, 256).build().unwrap();
+        let bid = fixture.sb.first_data_block() + 10;
+        let payload = vec![0x5a; BLOCK_SIZE];
+
+        fixture
+            .ext2
+            .write_metadata_blocks(&[(bid, payload.as_slice())])
+            .unwrap();
+
+        let mut observed = vec![0; BLOCK_SIZE];
+        fixture
+            .disk
+            .segment()
+            .read_bytes(Bid::new(bid as u64).to_offset(), &mut observed)
+            .unwrap();
+        assert_eq!(observed, payload);
+    }
+
+    #[ktest]
     fn block_alloc_and_free_single_group_ok() {
         // Happy path: allocate a contiguous run and then free it back.
         let f = Ext2FixtureBuilder::new(1, 128)
