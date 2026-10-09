@@ -141,6 +141,7 @@ impl BlockGroup {
             inode_table_bid: group_desc.inode_table_bid,
             raw_inodes_size,
             block_device: block_device.clone(),
+            fs: fs.clone(),
         });
         let inode_table_cache =
             PageCache::new_with_backend(raw_inodes_size, Arc::downgrade(&backend) as _)?;
@@ -750,6 +751,8 @@ struct InodeTableBackend {
     raw_inodes_size: usize,
     /// Block device handle for I/O.
     block_device: Arc<dyn BlockDevice>,
+    /// Filesystem context reserved for journal-aware writeback.
+    fs: Weak<Ext2>,
 }
 
 impl BlockAsPageCacheBackend for InodeTableBackend {
