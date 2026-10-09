@@ -171,7 +171,10 @@ impl BlockPtrTree {
                 .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "ext4 extent block overflow"))?;
             let physical_end = u32::try_from(physical_end)
                 .map_err(|_| Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block"))?;
-            if iblock >= logical && iblock < logical + length {
+            let logical_end = logical.checked_add(length).ok_or_else(|| {
+                Error::with_message(Errno::EUCLEAN, "ext4 extent logical overflow")
+            })?;
+            if iblock >= logical && iblock < logical_end {
                 let start = physical
                     .checked_add(u64::from(iblock - logical))
                     .and_then(|value| u32::try_from(value).ok())
@@ -223,8 +226,13 @@ impl BlockPtrTree {
             let physical = (u64::from(physical_hi) << 32) | u64::from(physical_lo);
             let physical = u32::try_from(physical)
                 .map_err(|_| Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block"))?;
-            if iblock >= logical && iblock < logical + length {
-                let start = physical + (iblock - logical);
+            let logical_end = logical.checked_add(length).ok_or_else(|| {
+                Error::with_message(Errno::EUCLEAN, "ext4 extent logical overflow")
+            })?;
+            if iblock >= logical && iblock < logical_end {
+                let start = physical.checked_add(iblock - logical).ok_or_else(|| {
+                    Error::with_message(Errno::EUCLEAN, "ext4 extent block overflow")
+                })?;
                 return Ok(ResolvedBlockRange::Existing(
                     start..start + (length - (iblock - logical)).min(max_blocks),
                 ));
@@ -284,6 +292,14 @@ impl BlockPtrTree {
     /// also follows this practice (see
     /// <https://elixir.bootlin.com/linux/v7.0/source/fs/ext2/inode.c#L1172>).
     pub(in inode) fn truncate_to_byte_len(&mut self, fs: &Ext2, new_size: usize) {
+        if self.extent_tree {
+            // Extent truncation needs record removal/rewrite. Never interpret
+            // an extent header as legacy indirect pointers, or truncation
+            // could free unrelated blocks.
+            error!("truncate: extent-tree truncation is not yet supported");
+            return;
+        }
+
         // First logical block to free = ceil(new_size / block_size).
         let iblock = match Iblock::try_from(new_size.div_ceil(BLOCK_SIZE)) {
             Ok(ib) => ib,

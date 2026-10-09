@@ -44,7 +44,7 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         block_ptr_tree = (
             core_root / "inode/block_manager/block_ptr_tree.rs"
         ).read_text()
-        self.assertIn("extern crate aster_core", assembler)
+        self.assertIn("aster_core::boot()", assembler)
         self.assertIn("mod journal;", module)
         self.assertIn("fn replay_journal", filesystem)
         self.assertIn("const EXTENT_MAGIC", block_ptr_tree)
