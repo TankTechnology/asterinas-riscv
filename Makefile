@@ -55,6 +55,7 @@ AUTO_TEST ?= none
 ENABLE_CONFORMANCE_TEST ?= false
 CONFORMANCE_TEST_SUITE ?= ltp
 CONFORMANCE_TEST_WORKDIR ?= /tmp
+CONFORMANCE_TEST_SELECTOR ?=
 # Whitespace-separated extra blocklist paths for conformance runners.
 # - `gvisor` treats each entry as a directory relative to its runner directory,
 #   and loads a per-test blocklist file from that directory.
@@ -144,6 +145,9 @@ ifeq ($(AUTO_TEST), conformance)
 ENABLE_CONFORMANCE_TEST := true
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_SUITE=$(CONFORMANCE_TEST_SUITE)"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_WORKDIR=$(CONFORMANCE_TEST_WORKDIR)"
+ifneq ($(strip $(CONFORMANCE_TEST_SELECTOR)),)
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="CONFORMANCE_TEST_SELECTOR=$(CONFORMANCE_TEST_SELECTOR)"
+endif
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="EXTRA_BLOCKLISTS=$(EXTRA_BLOCKLISTS)"
 ifeq ($(CONFORMANCE_TEST_SUITE), xfstests)
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="XFSTESTS_RUNLIST=$(XFSTESTS_RUNLIST)"
@@ -157,8 +161,8 @@ $(error AUTO_TEST=ifconf_gvisor requires TARGET_ARCH=x86_64)
 endif
 ENABLE_CONFORMANCE_TEST := true
 CONFORMANCE_TEST_SUITE := gvisor
-CONFORMANCE_GVISOR_TEST := "ioctl_test"
-export ENABLE_CONFORMANCE_TEST CONFORMANCE_TEST_SUITE CONFORMANCE_GVISOR_TEST
+CONFORMANCE_TEST_SELECTOR := ioctl_test
+export ENABLE_CONFORMANCE_TEST CONFORMANCE_TEST_SUITE CONFORMANCE_TEST_SELECTOR
 CARGO_OSDK_BUILD_ARGS += --init-args="/opt/run_ifconf_gvisor_test.sh"
 else ifeq ($(AUTO_TEST), regression)
 ENABLE_REGRESSION_TEST := true

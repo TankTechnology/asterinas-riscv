@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MPL-2.0
 
 TARGET_ARCH ?= x86_64
+BENCHMARK ?= none
 SMP ?= 1
 VERBOSE ?= 1
 ENABLE_CONFORMANCE_TEST ?= false
 CONFORMANCE_TEST_SUITE ?= ltp
-CONFORMANCE_GVISOR_TEST ?= null
+CONFORMANCE_TEST_SELECTOR ?=
 CONFORMANCE_TEST_WORKDIR ?= /tmp
 ENABLE_REGRESSION_TEST ?= false
 REGRESSION_TEST_DIRS ?= null
@@ -79,11 +80,12 @@ $(INITRAMFS_IMAGE): $(INITRAMFS)
 		--tarball-ttl $(NIXPKGS_CACHE_TTL) \
 		--argstr target $(TARGET_ARCH) \
 		--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
+		--argstr benchmarkName $(BENCHMARK) \
 		--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
 		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
 		--arg regressionTestDirs '$(REGRESSION_TEST_DIRS)' \
 		--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
-		--arg conformanceGvisorTest '$(CONFORMANCE_GVISOR_TEST)' \
+		--argstr conformanceTestSelector "$(CONFORMANCE_TEST_SELECTOR)" \
 		--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
 		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
 		--argstr dnsServer ${DNS_SERVER} \
@@ -98,11 +100,12 @@ $(INITRAMFS):
 		--tarball-ttl $(NIXPKGS_CACHE_TTL) \
 		--argstr target $(TARGET_ARCH) \
 		--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
+		--argstr benchmarkName $(BENCHMARK) \
 		--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
 		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
 		--arg regressionTestDirs '$(REGRESSION_TEST_DIRS)' \
 		--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
-		--arg conformanceGvisorTest '$(CONFORMANCE_GVISOR_TEST)' \
+		--argstr conformanceTestSelector "$(CONFORMANCE_TEST_SELECTOR)" \
 		--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
 		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
 		--argstr dnsServer ${DNS_SERVER} \

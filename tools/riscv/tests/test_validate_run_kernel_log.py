@@ -25,6 +25,17 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_initramfs_nix_arguments_follow_upstream_contract(self) -> None:
+        makefile = (REPOSITORY_ROOT / "test/initramfs/Makefile").read_text()
+        entrypoint = (
+            REPOSITORY_ROOT / "test/initramfs/nix/default.nix"
+        ).read_text()
+        self.assertNotIn("--arg conformanceGvisorTest", makefile)
+        for option in ("benchmarkName", "conformanceTestSelector"):
+            with self.subTest(option=option):
+                self.assertEqual(makefile.count(f"--argstr {option}"), 2)
+                self.assertIn(f'{option} ? "', entrypoint)
+
     def test_general_network_runner_preserves_local_regressions(self) -> None:
         runner = (
             REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
@@ -218,7 +229,7 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         )
         guest_text = guest.read_text()
         self.assertIn("else ifeq ($(AUTO_TEST), ifconf_gvisor)", makefile)
-        self.assertIn('CONFORMANCE_GVISOR_TEST := "ioctl_test"', makefile)
+        self.assertIn('CONFORMANCE_TEST_SELECTOR := ioctl_test', makefile)
         self.assertIn('/opt/run_ifconf_gvisor_test.sh', makefile)
         self.assertIn('--mode "ifconf-gvisor"', makefile)
         self.assertIn(
