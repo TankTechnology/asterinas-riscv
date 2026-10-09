@@ -36,6 +36,20 @@ class ValidateRunKernelLogTests(unittest.TestCase):
                 self.assertEqual(makefile.count(f"--argstr {option}"), 2)
                 self.assertIn(f'{option} ? "', entrypoint)
 
+    def test_ext4_replay_and_extent_parser_are_in_compiled_core_path(self) -> None:
+        core_root = REPOSITORY_ROOT / "kernel/core/src/fs/fs_impls/ext2"
+        assembler = (REPOSITORY_ROOT / "kernel/src/lib.rs").read_text()
+        module = (core_root / "mod.rs").read_text()
+        filesystem = (core_root / "fs.rs").read_text()
+        block_ptr_tree = (
+            core_root / "inode/block_manager/block_ptr_tree.rs"
+        ).read_text()
+        self.assertIn("extern crate aster_core", assembler)
+        self.assertIn("mod journal;", module)
+        self.assertIn("fn replay_journal", filesystem)
+        self.assertIn("const EXTENT_MAGIC", block_ptr_tree)
+        self.assertIn("fn lookup_extent_range", block_ptr_tree)
+
     def test_general_network_runner_preserves_local_regressions(self) -> None:
         runner = (
             REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
