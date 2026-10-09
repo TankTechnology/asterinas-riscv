@@ -791,6 +791,7 @@ impl BlockAsPageCacheBackend for InodeTableBackend {
         complete_fn: BioCompleteFn,
         io_batch: &mut IoBatch,
     ) -> Result<()> {
+        self.ensure_filesystem_alive()?;
         if self.raw_inodes_size <= idx * BLOCK_SIZE {
             return_errno_with_message!(Errno::EINVAL, "invalid write size");
         }
@@ -805,6 +806,7 @@ impl BlockAsPageCacheBackend for InodeTableBackend {
     }
 
     fn submit_write_page_run(&self, mut pages: PageRun<'_>, io_batch: &mut IoBatch) -> Result<()> {
+        self.ensure_filesystem_alive()?;
         if self.raw_inodes_size < (pages.start_idx() + pages.len()) * BLOCK_SIZE {
             return_errno_with_message!(Errno::EINVAL, "invalid write size");
         }
@@ -814,5 +816,14 @@ impl BlockAsPageCacheBackend for InodeTableBackend {
         let len = pages.len();
 
         pages.submit_contiguous_write_pages(self.block_device.as_ref(), bid, len, io_batch)
+    }
+}
+
+impl InodeTableBackend {
+    fn ensure_filesystem_alive(&self) -> Result<()> {
+        self.fs
+            .upgrade()
+            .map(|_| ())
+            .ok_or_else(|| Error::with_message(Errno::EIO, "filesystem already dropped"))
     }
 }
