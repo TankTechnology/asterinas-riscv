@@ -68,6 +68,8 @@ pub(crate) struct Ext2 {
     mount_options: Ext2MountOptions,
     /// Recorded VFS filesystem flags.
     flags: AtomicFsFlags,
+    /// Serializes journal ring reservation and superblock publication.
+    journal_publish_lock: Mutex<()>,
     /// FS event stats for VFS.
     fs_event_subscriber_stats: FsEventSubscriberStats,
     /// Per-filesystem inode generation counter.
@@ -189,6 +191,7 @@ impl Ext2 {
             group_descriptors_segment,
             mount_options,
             flags: AtomicFsFlags::new(flags),
+            journal_publish_lock: Mutex::new(()),
             fs_event_subscriber_stats: FsEventSubscriberStats::new(),
             next_generation: AtomicU32::new(utils::duration_to_ext2_secs(utils::now())),
             self_ref: weak_self.clone(),
@@ -283,6 +286,7 @@ impl Ext2 {
         &self,
         transaction: journal::JournalTransaction,
     ) -> Result<()> {
+        let _publish_guard = self.journal_publish_lock.lock();
         if self.fs_flags().contains(FsFlags::RDONLY) {
             return_errno_with_message!(Errno::EROFS, "read-only ext4 journal write");
         }
