@@ -41,6 +41,7 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         assembler = (REPOSITORY_ROOT / "kernel/src/lib.rs").read_text()
         module = (core_root / "mod.rs").read_text()
         filesystem = (core_root / "fs.rs").read_text()
+        journal = (core_root / "journal.rs").read_text()
         block_ptr_tree = (
             core_root / "inode/block_manager/block_ptr_tree.rs"
         ).read_text()
@@ -51,6 +52,8 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         self.assertIn("fn lookup_extent_range", block_ptr_tree)
         self.assertIn("depth > 1", block_ptr_tree)
         self.assertIn("read_words", block_ptr_tree)
+        self.assertIn("struct JournalTransaction", journal)
+        self.assertIn("fn encode", journal)
 
     def test_general_network_runner_preserves_local_regressions(self) -> None:
         runner = (
