@@ -77,9 +77,22 @@ impl SuperBlock {
         Ok(Self { start, ..self })
     }
 
+    pub(super) fn with_sequence(self, sequence: u32) -> Result<Self> {
+        if sequence == 0 {
+            return_errno_with_message!(Errno::EINVAL, "zero ext4 journal sequence");
+        }
+        Ok(Self { sequence, ..self })
+    }
+
     pub(super) fn write_start(block: &mut [u8], start: u32) -> Result<()> {
         let super_block = Self::parse(block)?.with_start(start)?;
         block[28..32].copy_from_slice(&super_block.start.to_be_bytes());
+        Ok(())
+    }
+
+    pub(super) fn write_sequence(block: &mut [u8], sequence: u32) -> Result<()> {
+        let super_block = Self::parse(block)?.with_sequence(sequence)?;
+        block[24..28].copy_from_slice(&super_block.sequence.to_be_bytes());
         Ok(())
     }
 }
@@ -505,6 +518,9 @@ mod test {
         SuperBlock::write_start(&mut block, 9).unwrap();
         assert_eq!(SuperBlock::parse(&block).unwrap().start, 9);
         assert!(SuperBlock::write_start(&mut block, 1024).is_err());
+        SuperBlock::write_sequence(&mut block, 73).unwrap();
+        assert_eq!(SuperBlock::parse(&block).unwrap().sequence, 73);
+        assert!(SuperBlock::write_sequence(&mut block, 0).is_err());
     }
 
     #[ktest]
