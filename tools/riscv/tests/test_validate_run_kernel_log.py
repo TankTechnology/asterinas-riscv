@@ -66,6 +66,8 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         self.assertIn("publish_journal_transaction_locked", filesystem)
         self.assertIn("Weak<Ext2>", block_group)
         self.assertIn("block_group_load_error", filesystem)
+        self.assertIn("fn sync_bitmap", block_group)
+        self.assertIn("fs.write_metadata_blocks", block_group)
 
     def test_general_network_runner_preserves_local_regressions(self) -> None:
         runner = (
