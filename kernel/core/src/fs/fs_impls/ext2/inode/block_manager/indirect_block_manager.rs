@@ -183,6 +183,18 @@ impl IndirectBlock {
             .map_err(|_| Error::with_message(Errno::EIO, "failed to read indirect pointer"))
     }
 
+    /// Reads an extent/index metadata block as little-endian words.
+    pub(super) fn read_words(&self) -> Result<[u32; BLOCK_SIZE / size_of::<u32>()]> {
+        let mut words = [0u32; BLOCK_SIZE / size_of::<u32>()];
+        for (index, word) in words.iter_mut().enumerate() {
+            *word = self
+                .block
+                .read_val(index * size_of::<u32>())
+                .map_err(|_| Error::with_message(Errno::EIO, "failed to read extent block"))?;
+        }
+        Ok(words)
+    }
+
     /// Writes a block pointer at slot `idx` and marks the block dirty.
     pub(super) fn write_bid(&mut self, idx: usize, bid: Ext2Bid) -> Result<()> {
         let slot_offset = self.slot_offset(idx);

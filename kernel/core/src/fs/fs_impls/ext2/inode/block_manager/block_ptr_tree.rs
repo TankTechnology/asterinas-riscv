@@ -150,8 +150,74 @@ impl BlockPtrTree {
         let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
         let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
         let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
-        if entries > max_entries || entries > 4 || depth != 0 {
+        if entries > max_entries || entries > 4 || max_entries == 0 || depth > 1 {
             return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported ext4 extent tree");
+        }
+        if depth == 1 {
+            let mut selected_leaf = None;
+            let mut previous_logical = 0u32;
+            for index in 0..entries {
+                let offset = 12 + index * 12;
+                let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+                if index != 0 && logical < previous_logical {
+                    return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent index");
+                }
+                if logical > iblock {
+                    break;
+                }
+                let leaf_lo = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap());
+                let leaf_hi =
+                    u16::from_le_bytes(bytes[offset + 8..offset + 10].try_into().unwrap());
+                let leaf = (u64::from(leaf_hi) << 32) | u64::from(leaf_lo);
+                let leaf = u32::try_from(leaf).map_err(|_| {
+                    Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block")
+                })?;
+                selected_leaf = Some(leaf);
+                previous_logical = logical;
+            }
+            let Some(leaf) = selected_leaf else {
+                return Ok(iblock..iblock);
+            };
+            let words = {
+                let mut manager = self.indirect_blocks_manager.lock();
+                manager.find(leaf)?.read_words()?
+            };
+            let mut child_bytes = [0u8; BLOCK_SIZE];
+            for (index, word) in words.iter().enumerate() {
+                child_bytes[index * size_of::<u32>()..(index + 1) * size_of::<u32>()]
+                    .copy_from_slice(&word.to_le_bytes());
+            }
+            let child_entries = u16::from_le_bytes([child_bytes[2], child_bytes[3]]) as usize;
+            let child_max_entries = u16::from_le_bytes([child_bytes[4], child_bytes[5]]) as usize;
+            let child_depth = u16::from_le_bytes([child_bytes[6], child_bytes[7]]);
+            if child_depth != 0 {
+                return_errno_with_message!(Errno::EOPNOTSUPP, "nested ext4 extent index");
+            }
+            return self.lookup_extent_leaf_range(
+                &child_bytes,
+                child_entries,
+                child_max_entries,
+                iblock,
+                max_blocks,
+            );
+        }
+        self.lookup_extent_leaf_range(&bytes, entries, max_entries, iblock, max_blocks)
+    }
+
+    fn lookup_extent_leaf_range(
+        &self,
+        bytes: &[u8],
+        entries: usize,
+        max_entries: usize,
+        iblock: Iblock,
+        max_blocks: u32,
+    ) -> Result<Range<Ext2Bid>> {
+        if bytes.len() < 12
+            || u16::from_le_bytes([bytes[0], bytes[1]]) != EXTENT_MAGIC
+            || entries > max_entries
+            || max_entries > (BLOCK_SIZE - 12) / 12
+        {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent leaf");
         }
         let mut previous_end = 0u32;
         for index in 0..entries {
