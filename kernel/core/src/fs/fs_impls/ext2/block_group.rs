@@ -516,9 +516,13 @@ impl BlockGroup {
         fs.write_metadata_blocks(&[(bid, payload.as_slice())])?;
         let mut metadata = self.metadata.write();
         if block_bitmap {
-            metadata.block_bitmap.clear_dirty();
+            if metadata.block_bitmap.as_bytes() == payload.as_slice() {
+                metadata.block_bitmap.clear_dirty();
+            }
         } else {
-            metadata.inode_bitmap.clear_dirty();
+            if metadata.inode_bitmap.as_bytes() == payload.as_slice() {
+                metadata.inode_bitmap.clear_dirty();
+            }
         }
         Ok(())
     }
