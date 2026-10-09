@@ -342,9 +342,12 @@ impl Ext2 {
     /// second writer from changing the journal state between those phases.
     pub(super) fn checkpoint_published_journal(&self) -> Result<()> {
         let _publish_guard = self.journal_publish_lock.lock();
-        let journal_ino = self.super_block.read().journal_ino();
-        if journal_ino == 0 {
-            return_errno_with_message!(Errno::EOPNOTSUPP, "filesystem has no internal journal");
+        let (journal_ino, journal_dev) = {
+            let super_block = self.super_block.read();
+            (super_block.journal_ino(), super_block.journal_dev())
+        };
+        if journal_ino == 0 || journal_dev != 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "external ext4 journals are unsupported");
         }
         let journal_inode = self.read_inode(journal_ino)?;
         let journal_sb_bid = journal_inode.lookup_block(0)?.ok_or_else(|| {
