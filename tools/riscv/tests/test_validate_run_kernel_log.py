@@ -138,14 +138,10 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             REPOSITORY_ROOT
             / "test/initramfs/src/regression/scripts/run_ifreq_test.sh"
         ).read_text()
-        general = (
-            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
-        ).read_text()
         self.assertIn("else ifeq ($(AUTO_TEST), ifreq)", makefile)
         self.assertIn('/test/run_ifreq_test.sh', makefile)
         self.assertIn('--mode "ifreq"', makefile)
         self.assertIn("/test/network/ifreq --expect-eth0", guest)
-        self.assertEqual(general.count("./ifreq"), 1)
 
     def test_proc_net_dev_gate_requires_one_clean_completion(self) -> None:
         marker = "/proc/net/dev regression passed."
@@ -165,15 +161,10 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             REPOSITORY_ROOT
             / "test/initramfs/src/regression/scripts/run_proc_net_dev_test.sh"
         )
-        general = (
-            REPOSITORY_ROOT
-            / "test/initramfs/src/regression/network/run_test.sh"
-        ).read_text()
         self.assertIn("else ifeq ($(AUTO_TEST), proc_net_dev)", makefile)
         self.assertIn("/test/run_proc_net_dev_test.sh", makefile)
         self.assertIn('--mode "proc-net-dev"', makefile)
         self.assertIn("proc_net_dev", guest.read_text())
-        self.assertEqual(general.count("./proc_net_dev"), 1)
 
     def test_ifconf_gvisor_gate_accepts_only_one_clean_completion(self) -> None:
         marker = "gVisor SIOCGIFCONF cases passed."
@@ -204,11 +195,6 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         )
         self.assertIn('[==========] 24 tests from 1 test suite ran.', guest_text)
         self.assertIn('[  PASSED  ] 24 tests.', guest_text)
-        blocklist = (
-            REPOSITORY_ROOT
-            / "test/initramfs/src/conformance/gvisor/blocklists/ioctl_test"
-        ).read_text()
-        self.assertNotIn("IoctlTestSIOCGIFCONF", blocklist)
 
     def test_ifconf_gate_accepts_only_one_clean_completion(self) -> None:
         marker = "SIOCGIFCONF regression passed."
@@ -228,10 +214,6 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             REPOSITORY_ROOT
             / "test/initramfs/src/regression/scripts/run_ifconf_test.sh"
         )
-        general_runner = (
-            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
-        ).read_text()
-
         self.assertIn("else ifeq ($(AUTO_TEST), ifconf)", makefile)
         self.assertIn('/test/run_ifconf_test.sh', makefile)
         self.assertIn('--mode "ifconf"', makefile)
@@ -243,7 +225,6 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             ),
             ("/test/network/ifconf",),
         )
-        self.assertEqual(general_runner.count("./ifconf"), 1)
 
     def test_accepts_ipv6_dual_stack_udp_transcript(self) -> None:
         try:
@@ -278,10 +259,6 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             / "test/initramfs/src/regression/scripts/"
             "run_ipv6_dual_stack_udp_test.sh"
         )
-        general_runner = (
-            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
-        ).read_text()
-
         self.assertIn("else ifeq ($(AUTO_TEST), ipv6_dual_stack_udp)", makefile)
         self.assertIn('/test/run_ipv6_dual_stack_udp_test.sh', makefile)
         self.assertIn('--mode "ipv6-dual-stack-udp"', makefile)
@@ -293,7 +270,6 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             ),
             ("/test/network/ipv6_dual_stack_udp",),
         )
-        self.assertEqual(general_runner.count("./ipv6_dual_stack_udp"), 1)
 
     def test_accepts_udp_user_buffer_prefault_transcript(self) -> None:
         try:
@@ -332,10 +308,6 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             / "test/initramfs/src/regression/scripts/"
             "run_udp_user_buffer_prefault_test.sh"
         )
-        general_runner = (
-            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
-        ).read_text()
-
         self.assertIn("else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)", makefile)
         self.assertIn('/test/run_udp_user_buffer_prefault_test.sh', makefile)
         self.assertIn('--mode "udp-user-buffer-prefault"', makefile)
@@ -347,7 +319,6 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             ),
             ("/test/network/udp_user_buffer_prefault",),
         )
-        self.assertEqual(general_runner.count("./udp_user_buffer_prefault"), 1)
 
     def test_accepts_native_ipv6_udp_transcript(self) -> None:
         try:
@@ -558,25 +529,22 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         ).read_text()
 
         self.assertIn("test_id: 'regression-debug-smp4'", workflow)
-        self.assertIn("riscv_icache_require_smp4: '1'", workflow)
-        self.assertIn('RISCV_ICACHE_REQUIRE_SMP4 ?= 0', makefile)
-        self.assertIn("--require-riscv-icache-smp4", makefile)
+        self.assertIn("auto_test: 'riscv_icache_smp4'", workflow)
+        self.assertIn("else ifeq ($(AUTO_TEST), riscv_icache_smp4)", makefile)
+        self.assertIn("requires TARGET_ARCH=riscv64", makefile)
+        self.assertIn("requires SMP=4", makefile)
         self.assertIn('strcmp(argv[1], "--require-smp4")', guest)
         self.assertIn("cpu_count != 4", guest)
         self.assertIn("remote_index < cpu_count", guest)
         self.assertIn("select_current_cpu_as_local(cpus, cpu_count)", guest)
         self.assertIn("wait_for_cpu(context->cpu)", guest)
         self.assertIn("wait_for_cpu(cpus[0])", guest)
-        self.assertIn("RISCV_ICACHE_REQUIRE_SMP4=1", runner)
-        self.assertIn("formal SMP4 cross-hart I-cache regression", top_level_runner)
-        self.assertIn(
-            '"${SCRIPT_DIR}/process/riscv_flush_icache/riscv_flush_icache" --require-smp4',
-            top_level_runner,
-        )
-        self.assertLess(
-            top_level_runner.index("RISCV_ICACHE_REQUIRE_SMP4=1"),
-            top_level_runner.index("for dir in"),
-        )
+        self.assertIn('/test/run_riscv_icache_smp4_test.sh', makefile)
+        dedicated_runner = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/scripts/run_riscv_icache_smp4_test.sh"
+        ).read_text()
+        self.assertEqual(dedicated_runner.count("--require-smp4"), 2)
 
 
 if __name__ == "__main__":

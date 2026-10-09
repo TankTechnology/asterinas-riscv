@@ -6,6 +6,7 @@
   conformanceTestSuite ? "ltp",
   conformanceTestWorkDir ? "/tmp",
   conformanceTestSelector ? "",
+  regressionTestDirs ? null,
   regressionTestPlatform ? "asterinas",
   dnsServer ? "none",
   smp ? 1,
@@ -40,7 +41,10 @@ rec {
     workDir = conformanceTestWorkDir;
     testSelector = conformanceTestSelector;
   };
-  regression = pkgs.callPackage ./regression { testPlatform = regressionTestPlatform; };
+  regression = pkgs.callPackage ./regression {
+    testPlatform = regressionTestPlatform;
+    testDirs = regressionTestDirs;
+  };
 
   initramfs = pkgs.callPackage ./initramfs.nix {
     inherit busybox;

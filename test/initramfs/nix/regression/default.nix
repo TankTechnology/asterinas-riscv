@@ -4,6 +4,7 @@
   stdenv,
   callPackage,
   testPlatform ? "asterinas",
+  testDirs ? null,
 }:
 let
   scripts = lib.fileset.toSource {
@@ -62,6 +63,12 @@ let
         }
       );
     };
+  selectedNames = if testDirs == null then lib.attrNames allPkgs else testDirs;
+  invalidNames = lib.filter (name: !(builtins.hasAttr name allPkgs)) selectedNames;
+  selectedPkgs =
+    assert lib.assertMsg (invalidNames == [ ])
+      "unknown regression test directories: ${lib.concatStringsSep ", " invalidNames}";
+    lib.getAttrs selectedNames allPkgs;
 in
 {
   package = stdenv.mkDerivation {
@@ -73,7 +80,7 @@ in
 
       ${lib.concatMapStringsSep "\n" (name: ''
         ln -sT "${allPkgs.${name}}/${name}" "$out/${name}"
-      '') (lib.attrNames allPkgs)}
+      '') (lib.attrNames selectedPkgs)}
     '';
   };
 }
