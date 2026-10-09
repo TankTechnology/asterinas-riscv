@@ -2270,10 +2270,9 @@ create_and_verify_image() {
     if [[ "$ROOT_FILESYSTEM_TYPE" == ext4 ]]; then
         # Exercise the ext4 extent mapping while keeping features whose
         # checksums, high block fields, or orphan-file replay are not yet
-        # implemented out of this compatibility profile. A 128-byte inode
-        # matches the ext4 compatibility layout supported by the kernel and
-        # keeps Debian root images mountable in the RISC-V guest.
-        mkfs_options+=(-I 128)
+        # implemented out of this compatibility profile. Keep the inode size
+        # selected by mke2fs so the image contract follows the on-disk ext4
+        # format instead of silently narrowing Debian images to one layout.
         mkfs_options+=(-O '^metadata_csum,^64bit,^flex_bg,^orphan_file,^huge_file,^dir_nlink,^extra_isize')
     fi
     mke2fs "${mkfs_options[@]}" \
@@ -2288,10 +2287,6 @@ create_and_verify_image() {
         die "root image UUID verification failed"
     grep -Eq "^Block size:[[:space:]]+$ROOT_BLOCK_SIZE_BYTES$" "$dumpe2fs_output" ||
         die "root image block-size verification failed"
-    if [[ "$ROOT_FILESYSTEM_TYPE" == ext4 ]]; then
-        grep -Eq '^Inode size:[[:space:]]+128$' "$dumpe2fs_output" ||
-            die "ext4 root image inode-size compatibility check failed"
-    fi
     if [[ "$ROOT_FILESYSTEM_JOURNAL" == 1 ]]; then
         grep -Eq '^Filesystem features:.*(^|[[:space:]])has_journal([[:space:]]|$)' \
             "$dumpe2fs_output" || die "ext4 root image is missing its journal"
