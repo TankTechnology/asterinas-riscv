@@ -49,6 +49,8 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         self.assertIn("fn replay_journal", filesystem)
         self.assertIn("const EXTENT_MAGIC", block_ptr_tree)
         self.assertIn("fn lookup_extent_range", block_ptr_tree)
+        self.assertIn("depth > 1", block_ptr_tree)
+        self.assertIn("read_words", block_ptr_tree)
 
     def test_general_network_runner_preserves_local_regressions(self) -> None:
         runner = (
