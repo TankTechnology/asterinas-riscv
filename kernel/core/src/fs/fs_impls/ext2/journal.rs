@@ -83,6 +83,80 @@ pub(super) struct Tag {
     pub(super) flags: u32,
 }
 
+/// In-memory encoder for the legacy, unchecksummed JBD2 transaction format.
+///
+/// The filesystem layer owns ring placement and durable write ordering. This
+/// type only validates targets and emits descriptor, payload, and commit
+/// blocks so those concerns can be migrated independently.
+#[derive(Debug)]
+pub(super) struct JournalTransaction {
+    sequence: u32,
+    blocks: Vec<(u32, Vec<u8>)>,
+}
+
+impl JournalTransaction {
+    pub(super) fn new(sequence: u32) -> Result<Self> {
+        if sequence == 0 {
+            return_errno_with_message!(Errno::EINVAL, "zero ext4 journal sequence");
+        }
+        Ok(Self {
+            sequence,
+            blocks: Vec::new(),
+        })
+    }
+
+    pub(super) fn add_block(&mut self, block_number: u32, payload: &[u8]) -> Result<()> {
+        if block_number == 0 || payload.len() != BLOCK_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "invalid ext4 journal target");
+        }
+        if self.blocks.iter().any(|(block, _)| *block == block_number) {
+            return_errno_with_message!(Errno::EEXIST, "duplicate ext4 journal target block");
+        }
+        self.blocks.push((block_number, payload.to_vec()));
+        Ok(())
+    }
+
+    pub(super) fn encode(self) -> Result<Vec<Vec<u8>>> {
+        if self.blocks.is_empty() {
+            return_errno_with_message!(Errno::EINVAL, "empty ext4 journal transaction");
+        }
+        let capacity = (BLOCK_SIZE - HEADER_SIZE) / TAG_SIZE;
+        if self.blocks.len() > capacity {
+            return_errno_with_message!(Errno::E2BIG, "ext4 journal transaction is too large");
+        }
+        let mut descriptor = vec![0; BLOCK_SIZE];
+        put_be32(&mut descriptor, 0, MAGIC);
+        put_be32(&mut descriptor, 4, DESCRIPTOR);
+        put_be32(&mut descriptor, 8, self.sequence);
+        for (index, (block, payload)) in self.blocks.iter().enumerate() {
+            let offset = HEADER_SIZE + index * TAG_SIZE;
+            let mut flags = if index + 1 == self.blocks.len() {
+                FLAG_LAST_TAG
+            } else {
+                0
+            };
+            if be32(payload, 0) == MAGIC {
+                flags |= FLAG_ESCAPE;
+            }
+            put_be32(&mut descriptor, offset, *block);
+            put_be32(&mut descriptor, offset + 4, flags);
+        }
+        let mut encoded = vec![descriptor];
+        for (_, mut payload) in self.blocks {
+            if be32(&payload, 0) == MAGIC {
+                payload[..4].fill(0);
+            }
+            encoded.push(payload);
+        }
+        let mut commit = vec![0; BLOCK_SIZE];
+        put_be32(&mut commit, 0, MAGIC);
+        put_be32(&mut commit, 4, COMMIT);
+        put_be32(&mut commit, 8, self.sequence);
+        encoded.push(commit);
+        Ok(encoded)
+    }
+}
+
 /// A validated data block from one committed journal transaction.
 ///
 /// The decoder intentionally returns owned data.  Recovery can therefore
@@ -300,6 +374,11 @@ fn be32(block: &[u8], offset: usize) -> u32 {
     u32::from_be_bytes(block[offset..offset + 4].try_into().unwrap())
 }
 
+#[inline]
+fn put_be32(block: &mut [u8], offset: usize, value: u32) {
+    block[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
+}
+
 #[cfg(ktest)]
 mod test {
     use ostd::prelude::ktest;
@@ -381,6 +460,26 @@ mod test {
         revoke[12..16].copy_from_slice(&20u32.to_be_bytes());
         revoke[16..20].copy_from_slice(&99u32.to_be_bytes());
         assert_eq!(parse_revoke(&revoke, 7).unwrap(), vec![99]);
+    }
+
+    #[ktest]
+    fn encodes_transaction_and_escapes_magic_payload() {
+        let mut transaction = JournalTransaction::new(7).unwrap();
+        let mut payload = vec![0; BLOCK_SIZE];
+        payload[..4].copy_from_slice(&MAGIC.to_be_bytes());
+        transaction.add_block(31, &payload).unwrap();
+        let blocks = transaction.encode().unwrap();
+        assert_eq!(blocks.len(), 3);
+        let tags = parse_descriptor(&blocks[0], 7).unwrap();
+        assert_eq!(
+            tags,
+            vec![Tag {
+                block_number: 31,
+                flags: FLAG_ESCAPE | FLAG_LAST_TAG,
+            }]
+        );
+        assert_eq!(be32(&blocks[1], 0), 0);
+        validate_commit(&blocks[2], 7).unwrap();
     }
 
     #[ktest]
