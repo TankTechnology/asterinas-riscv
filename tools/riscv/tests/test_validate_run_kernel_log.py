@@ -25,6 +25,38 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
+    def test_general_network_runner_preserves_local_regressions(self) -> None:
+        runner = (
+            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
+        commands = [line.strip() for line in runner.splitlines()]
+        for name in (
+            "ifconf",
+            "ifreq",
+            "proc_net_dev",
+            "tcp_ppoll_wakeup",
+            "tcp_event_handoff",
+            "tcp_user_buffer_prefault",
+            "unix_scm_rights_acyclic",
+            "ipv6_udp",
+            "ipv6_dual_stack",
+            "ipv6_dual_stack_udp",
+            "udp_user_buffer_prefault",
+            "udp_msg_dontwait",
+            "tcp_msg_dontwait_send",
+            "route_dump",
+            "route_local_dump",
+            "route_all_dump",
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(commands.count(f"./{name}"), 1)
+                self.assertTrue(
+                    (
+                        REPOSITORY_ROOT
+                        / f"test/initramfs/src/regression/network/{name}.c"
+                    ).is_file()
+                )
+
     def test_fs_syscall_compat_gate_requires_one_clean_completion(self) -> None:
         marker = "ASTERINAS_FS_SYSCALL_COMPAT_OK readahead=5 quotactl=1"
         validate_transcript(marker + "\n", mode="fs-syscall-compat")

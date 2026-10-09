@@ -18,6 +18,9 @@ sleep 0.2
 
 ./broadcast_complex
 ./listen_backlog
+./ifconf
+./ifreq
+./proc_net_dev
 ./msg_peek
 ./msg_trunc
 ./privileged_ports
@@ -31,14 +34,27 @@ sleep 0.2
 ./tcp_accept_reset
 ./tcp_err
 ./tcp_poll
+./tcp_ppoll_wakeup
+./tcp_event_handoff
 ./tcp_reuseaddr
 ./tcp_wrapped_buffer_io
+./tcp_user_buffer_prefault
 ./udp_broadcast
 ./udp_err
 ./unix_datagram_err
 ./unix_seqpacket_err
+./unix_scm_rights_acyclic
 ./unix_stream_err
+./ipv6_udp
+./ipv6_dual_stack
+./ipv6_dual_stack_udp
+./udp_user_buffer_prefault
+./udp_msg_dontwait
+./tcp_msg_dontwait_send
 
 ./netlink_route
+./route_dump
+./route_local_dump
+./route_all_dump
 ./rtnl_err
 ./uevent_err

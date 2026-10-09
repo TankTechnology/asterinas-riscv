@@ -79,7 +79,7 @@ in
       cp ${scripts}/* $out
 
       ${lib.concatMapStringsSep "\n" (name: ''
-        ln -sT "${allPkgs.${name}}/${name}" "$out/${name}"
+        ln -sT "${selectedPkgs.${name}}/${name}" "$out/${name}"
       '') (lib.attrNames selectedPkgs)}
     '';
   };
