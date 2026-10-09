@@ -1922,4 +1922,23 @@ mod test {
         assert_eq!(tree.lookup_block(7).unwrap(), Some(704));
         assert_eq!(tree.lookup_block(8).unwrap(), None);
     }
+
+    #[ktest]
+    fn rejects_overflowing_inline_extent_range() {
+        let f = Ext2FixtureBuilder::new(1, 256).build().unwrap();
+        let mut bytes = [0u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
+        bytes[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+        bytes[2..4].copy_from_slice(&1u16.to_le_bytes());
+        bytes[4..6].copy_from_slice(&4u16.to_le_bytes());
+        bytes[6..8].copy_from_slice(&0u16.to_le_bytes());
+        bytes[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+        bytes[16..18].copy_from_slice(&2u16.to_le_bytes());
+        bytes[20..24].copy_from_slice(&700u32.to_le_bytes());
+        let mut block_ptrs = [0u32; RAW_BLOCK_PTRS_LEN];
+        for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+            block_ptrs[index] = u32::from_le_bytes(chunk.try_into().unwrap());
+        }
+        let tree = make_block_ptr_tree(block_ptrs, 0, &f.ext2);
+        assert!(tree.lookup_block_range(u32::MAX, 1).is_err());
+    }
 }
