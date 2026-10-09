@@ -335,6 +335,34 @@ impl Ext2 {
         Ok(())
     }
 
+    /// Clears a published journal transaction after home blocks are durable.
+    ///
+    /// Callers must complete and flush all corresponding home-block writes
+    /// before invoking this method. The same publication lock prevents a
+    /// second writer from changing the journal state between those phases.
+    pub(super) fn checkpoint_published_journal(&self) -> Result<()> {
+        let _publish_guard = self.journal_publish_lock.lock();
+        let journal_ino = self.super_block.read().journal_ino();
+        if journal_ino == 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "filesystem has no internal journal");
+        }
+        let journal_inode = self.read_inode(journal_ino)?;
+        let journal_sb_bid = journal_inode.lookup_block(0)?.ok_or_else(|| {
+            Error::with_message(Errno::EUCLEAN, "journal inode has no superblock")
+        })?;
+        let mut journal_sb = self.read_raw_block(journal_sb_bid)?;
+        let super_block = journal::SuperBlock::parse(&journal_sb)?;
+        if !super_block.needs_recovery() {
+            return Ok(());
+        }
+        journal::SuperBlock::write_start(&mut journal_sb, 0)?;
+        self.write_raw_block(journal_sb_bid, &journal_sb)?;
+        if self.block_device.sync()? != BioStatus::Complete {
+            return_errno_with_message!(Errno::EIO, "failed to checkpoint ext4 journal");
+        }
+        Ok(())
+    }
+
     /// Returns the block device.
     pub(super) fn block_device(&self) -> &dyn BlockDevice {
         self.block_device.as_ref()

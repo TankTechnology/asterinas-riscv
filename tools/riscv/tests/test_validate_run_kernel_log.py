@@ -60,6 +60,7 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         self.assertIn("journal_inode.sync_all()", filesystem)
         self.assertIn("read-only ext4 journal write", filesystem)
         self.assertIn("journal_publish_lock", filesystem)
+        self.assertIn("checkpoint_published_journal", filesystem)
 
     def test_general_network_runner_preserves_local_regressions(self) -> None:
         runner = (
