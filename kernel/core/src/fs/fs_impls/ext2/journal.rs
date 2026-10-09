@@ -181,6 +181,10 @@ impl JournalTransaction {
         encoded.push(commit);
         Ok(encoded)
     }
+
+    pub(super) const fn sequence(&self) -> u32 {
+        self.sequence
+    }
 }
 
 /// Validated placement cursor for the circular journal data area.

@@ -626,6 +626,14 @@ impl SuperBlock {
         self.feature_incompat
     }
 
+    pub(super) const fn journal_ino(&self) -> u32 {
+        self.journal_ino
+    }
+
+    pub(super) const fn journal_dev(&self) -> u32 {
+        self.journal_dev
+    }
+
     #[expect(dead_code)]
     const fn feature_ro_compat(&self) -> FeatureRoCompatSet {
         self.feature_ro_compat

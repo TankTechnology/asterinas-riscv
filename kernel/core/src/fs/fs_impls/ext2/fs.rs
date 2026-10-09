@@ -273,6 +273,61 @@ impl Ext2 {
         self.write_blocks(bid, bio_segment)
     }
 
+    /// Publishes one committed JBD2 transaction in the internal journal file.
+    ///
+    /// This helper deliberately stops after the journal commit record and
+    /// superblock start update. Callers must write and flush home blocks before
+    /// clearing the start marker; publishing is therefore recoverable even if
+    /// the caller crashes before checkpointing.
+    pub(super) fn publish_journal_transaction(
+        &self,
+        transaction: journal::JournalTransaction,
+    ) -> Result<()> {
+        let (journal_ino, journal_dev) = {
+            let super_block = self.super_block.read();
+            (super_block.journal_ino(), super_block.journal_dev())
+        };
+        if journal_ino == 0 || journal_dev != 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "external ext4 journals are unsupported");
+        }
+
+        let journal_inode = self.read_inode(journal_ino)?;
+        let journal_sb_bid = journal_inode.lookup_block(0)?.ok_or_else(|| {
+            Error::with_message(Errno::EUCLEAN, "journal inode has no superblock")
+        })?;
+        let journal_sb = self.read_raw_block(journal_sb_bid)?;
+        let super_block = journal::SuperBlock::parse(&journal_sb)?;
+        if super_block.needs_recovery() {
+            return_errno_with_message!(Errno::EBUSY, "ext4 journal has an outstanding transaction");
+        }
+        if transaction.sequence() != super_block.sequence {
+            return_errno_with_message!(Errno::EAGAIN, "stale ext4 journal sequence");
+        }
+
+        let encoded = transaction.encode()?;
+        let mut ring = journal::JournalRing::new(super_block)?;
+        let positions = ring.reserve(encoded.len())?;
+        for (position, block) in positions.iter().zip(encoded.iter()) {
+            let mut reader = VmReader::from(block.as_slice()).to_fallible();
+            if journal_inode.write_at(*position as usize * BLOCK_SIZE, &mut reader)? != BLOCK_SIZE {
+                return_errno_with_message!(Errno::EIO, "short ext4 journal write");
+            }
+        }
+        journal_inode.sync_all()?;
+        if self.block_device.sync()? != BioStatus::Complete {
+            return_errno_with_message!(Errno::EIO, "failed to flush ext4 journal blocks");
+        }
+
+        let mut published = journal_sb;
+        journal::SuperBlock::write_sequence(&mut published, super_block.sequence)?;
+        journal::SuperBlock::write_start(&mut published, positions[0])?;
+        self.write_raw_block(journal_sb_bid, &published)?;
+        if self.block_device.sync()? != BioStatus::Complete {
+            return_errno_with_message!(Errno::EIO, "failed to publish ext4 journal state");
+        }
+        Ok(())
+    }
+
     /// Returns the block device.
     pub(super) fn block_device(&self) -> &dyn BlockDevice {
         self.block_device.as_ref()
