@@ -219,7 +219,11 @@ impl BlockGroup {
     /// Syncs per-group inode state and bitmap metadata.
     pub(super) fn sync_all(&self, group_descs: &USegment) -> Result<()> {
         self.sync_inodes()?;
-        self.sync_metadata(group_descs)
+        let fs = self
+            .fs
+            .upgrade()
+            .ok_or_else(|| Error::with_message(Errno::EIO, "filesystem already dropped"))?;
+        self.sync_metadata(group_descs, &fs)
     }
 
     /// Syncs cached inodes.
@@ -468,42 +472,11 @@ impl BlockGroup {
     /// Dirty bitmaps are written to disk here. If the group descriptor is dirty,
     /// this method updates the caller-provided descriptor table segment; the
     /// caller is responsible for writing that segment to disk.
-    fn sync_metadata(&self, group_descs: &USegment) -> Result<()> {
+    fn sync_metadata(&self, group_descs: &USegment, fs: &Ext2) -> Result<()> {
+        self.sync_bitmap(fs, true)?;
+        self.sync_bitmap(fs, false)?;
+
         let mut metadata = self.metadata.write();
-
-        // Sync block bitmap.
-        if metadata.block_bitmap.is_dirty() {
-            let block_bitmap_bid = metadata.desc.block_bitmap_bid;
-            if self
-                .block_device
-                .write_bytes(
-                    Bid::new(block_bitmap_bid as u64).to_offset(),
-                    metadata.block_bitmap.as_bytes(),
-                )
-                .is_err()
-            {
-                // Keep dirty bit set on writeback failure for retry.
-                return_errno_with_message!(Errno::EIO, "failed to write block bitmap");
-            }
-            metadata.block_bitmap.clear_dirty();
-        }
-
-        // Sync inode bitmap.
-        if metadata.inode_bitmap.is_dirty() {
-            let inode_bitmap_bid = metadata.desc.inode_bitmap_bid;
-            if self
-                .block_device
-                .write_bytes(
-                    Bid::new(inode_bitmap_bid as u64).to_offset(),
-                    metadata.inode_bitmap.as_bytes(),
-                )
-                .is_err()
-            {
-                // Keep dirty bit set on writeback failure for retry.
-                return_errno_with_message!(Errno::EIO, "failed to write inode bitmap");
-            }
-            metadata.inode_bitmap.clear_dirty();
-        }
 
         // Sync group descriptor.
         if metadata.desc.is_dirty() {
@@ -513,6 +486,39 @@ impl BlockGroup {
             metadata.desc.clear_dirty();
         }
 
+        Ok(())
+    }
+
+    /// Flushes one dirty bitmap through the filesystem's journal policy.
+    fn sync_bitmap(&self, fs: &Ext2, block_bitmap: bool) -> Result<()> {
+        let (bid, payload) = {
+            let metadata = self.metadata.read();
+            if block_bitmap {
+                if !metadata.block_bitmap.is_dirty() {
+                    return Ok(());
+                }
+                (
+                    metadata.desc.block_bitmap_bid,
+                    metadata.block_bitmap.as_bytes().to_vec(),
+                )
+            } else {
+                if !metadata.inode_bitmap.is_dirty() {
+                    return Ok(());
+                }
+                (
+                    metadata.desc.inode_bitmap_bid,
+                    metadata.inode_bitmap.as_bytes().to_vec(),
+                )
+            }
+        };
+
+        fs.write_metadata_blocks(&[(bid, payload.as_slice())])?;
+        let mut metadata = self.metadata.write();
+        if block_bitmap {
+            metadata.block_bitmap.clear_dirty();
+        } else {
+            metadata.inode_bitmap.clear_dirty();
+        }
         Ok(())
     }
 
