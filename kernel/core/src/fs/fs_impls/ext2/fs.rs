@@ -287,6 +287,13 @@ impl Ext2 {
         transaction: journal::JournalTransaction,
     ) -> Result<()> {
         let _publish_guard = self.journal_publish_lock.lock();
+        self.publish_journal_transaction_locked(transaction)
+    }
+
+    fn publish_journal_transaction_locked(
+        &self,
+        transaction: journal::JournalTransaction,
+    ) -> Result<()> {
         if self.fs_flags().contains(FsFlags::RDONLY) {
             return_errno_with_message!(Errno::EROFS, "read-only ext4 journal write");
         }
@@ -342,6 +349,10 @@ impl Ext2 {
     /// second writer from changing the journal state between those phases.
     pub(super) fn checkpoint_published_journal(&self) -> Result<()> {
         let _publish_guard = self.journal_publish_lock.lock();
+        self.checkpoint_published_journal_locked()
+    }
+
+    fn checkpoint_published_journal_locked(&self) -> Result<()> {
         let (journal_ino, journal_dev) = {
             let super_block = self.super_block.read();
             (super_block.journal_ino(), super_block.journal_dev())
@@ -364,6 +375,72 @@ impl Ext2 {
             return_errno_with_message!(Errno::EIO, "failed to checkpoint ext4 journal");
         }
         Ok(())
+    }
+
+    /// Writes a metadata set through the internal journal when enabled.
+    ///
+    /// The journal lock covers publication, home-block writes, and
+    /// checkpointing as one critical section, so another writer cannot reuse
+    /// the ring cursor between those phases.
+    pub(super) fn write_metadata_blocks(&self, blocks: &[(Ext2Bid, &[u8])]) -> Result<()> {
+        if blocks.is_empty() {
+            return_errno_with_message!(Errno::EINVAL, "empty filesystem metadata transaction");
+        }
+        let total_blocks = self.super_block.read().total_blocks();
+        for (index, &(bid, payload)) in blocks.iter().enumerate() {
+            if payload.len() != BLOCK_SIZE || bid >= total_blocks {
+                return_errno_with_message!(Errno::EINVAL, "invalid filesystem metadata block");
+            }
+            if blocks[..index].iter().any(|&(previous, _)| previous == bid) {
+                return_errno_with_message!(Errno::EEXIST, "duplicate filesystem metadata block");
+            }
+        }
+        if self.fs_flags().contains(FsFlags::RDONLY) {
+            return_errno_with_message!(Errno::EROFS, "read-only filesystem metadata write");
+        }
+
+        let has_journal = self
+            .super_block
+            .read()
+            .feature_compat()
+            .contains(FeatureCompatSet::HAS_JOURNAL);
+        if !has_journal {
+            for &(bid, payload) in blocks {
+                self.block_device
+                    .write_bytes(Bid::new(bid as u64).to_offset(), payload)
+                    .map_err(|_| {
+                        Error::with_message(Errno::EIO, "failed to write metadata block")
+                    })?;
+            }
+            return Ok(());
+        }
+
+        let _publish_guard = self.journal_publish_lock.lock();
+        let journal_ino = self.super_block.read().journal_ino();
+        if journal_ino == 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "filesystem has no internal journal");
+        }
+        let journal_inode = self.read_inode(journal_ino)?;
+        let journal_sb_bid = journal_inode.lookup_block(0)?.ok_or_else(|| {
+            Error::with_message(Errno::EUCLEAN, "journal inode has no superblock")
+        })?;
+        let journal_sb = journal::SuperBlock::parse(&self.read_raw_block(journal_sb_bid)?)?;
+        let mut transaction = journal::JournalTransaction::new(journal_sb.sequence)?;
+        for &(bid, payload) in blocks {
+            transaction.add_block(bid, payload)?;
+        }
+        self.publish_journal_transaction_locked(transaction)?;
+        for &(bid, payload) in blocks {
+            self.block_device
+                .write_bytes(Bid::new(bid as u64).to_offset(), payload)
+                .map_err(|_| {
+                    Error::with_message(Errno::EIO, "failed to write journaled metadata")
+                })?;
+        }
+        if self.block_device.sync()? != BioStatus::Complete {
+            return_errno_with_message!(Errno::EIO, "failed to flush metadata blocks");
+        }
+        self.checkpoint_published_journal_locked()
     }
 
     /// Returns the block device.
