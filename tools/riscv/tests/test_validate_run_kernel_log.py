@@ -56,6 +56,8 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         self.assertIn("fn encode", journal)
         self.assertIn("struct JournalRing", journal)
         self.assertIn("fn reserve", journal)
+        self.assertIn("publish_journal_transaction", filesystem)
+        self.assertIn("journal_inode.sync_all()", filesystem)
 
     def test_general_network_runner_preserves_local_regressions(self) -> None:
         runner = (
