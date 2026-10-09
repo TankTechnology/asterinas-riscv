@@ -283,6 +283,9 @@ impl Ext2 {
         &self,
         transaction: journal::JournalTransaction,
     ) -> Result<()> {
+        if self.fs_flags().contains(FsFlags::RDONLY) {
+            return_errno_with_message!(Errno::EROFS, "read-only ext4 journal write");
+        }
         let (journal_ino, journal_dev) = {
             let super_block = self.super_block.read();
             (super_block.journal_ino(), super_block.journal_dev())
