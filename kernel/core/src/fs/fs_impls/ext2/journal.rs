@@ -69,6 +69,19 @@ impl SuperBlock {
     pub(super) const fn needs_recovery(self) -> bool {
         self.start != 0
     }
+
+    pub(super) fn with_start(self, start: u32) -> Result<Self> {
+        if start != 0 && (start < self.first || start >= self.max_length) {
+            return_errno_with_message!(Errno::EINVAL, "invalid ext4 journal start");
+        }
+        Ok(Self { start, ..self })
+    }
+
+    pub(super) fn write_start(block: &mut [u8], start: u32) -> Result<()> {
+        let super_block = Self::parse(block)?.with_start(start)?;
+        block[28..32].copy_from_slice(&super_block.start.to_be_bytes());
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -484,6 +497,14 @@ mod test {
         assert!(SuperBlock::parse(&block).unwrap().needs_recovery());
         block[40..44].copy_from_slice(&2u32.to_be_bytes());
         assert!(SuperBlock::parse(&block).is_err());
+    }
+
+    #[ktest]
+    fn validates_journal_start_updates() {
+        let mut block = superblock();
+        SuperBlock::write_start(&mut block, 9).unwrap();
+        assert_eq!(SuperBlock::parse(&block).unwrap().start, 9);
+        assert!(SuperBlock::write_start(&mut block, 1024).is_err());
     }
 
     #[ktest]

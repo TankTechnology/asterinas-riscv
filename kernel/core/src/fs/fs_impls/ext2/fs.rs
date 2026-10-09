@@ -243,7 +243,7 @@ impl Ext2 {
         }
 
         let mut clean_sb = journal_sb;
-        clean_sb[28..32].copy_from_slice(&0u32.to_be_bytes());
+        journal::SuperBlock::write_start(&mut clean_sb, 0)?;
         self.write_raw_block(journal_sb_bid, &clean_sb)
     }
 
