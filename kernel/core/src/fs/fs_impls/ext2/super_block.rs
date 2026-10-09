@@ -911,4 +911,15 @@ mod test {
         assert!(!sb.is_backup_group(4));
         assert!(!sb.is_backup_group(6));
     }
+
+    #[ktest]
+    fn dynamic_inode_sizes_are_preserved() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.rev_level = RevLevel::Dynamic as u32;
+        raw.first_ino = 11;
+        raw.inode_size = 256;
+
+        let sb = SuperBlock::try_from(raw).unwrap();
+        assert_eq!(sb.inode_size(), 256);
+    }
 }
