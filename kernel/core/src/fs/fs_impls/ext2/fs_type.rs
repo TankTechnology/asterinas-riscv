@@ -64,8 +64,8 @@ impl FsType for Ext2Type {
     }
 }
 
-/// Ext4 volumes currently use the ext2 on-disk implementation while journal
-/// replay and extent support are being ported to the upstream filesystem API.
+/// Ext4 volumes use the ext2 on-disk implementation with the ext4 feature
+/// checks and the currently supported journal replay/extent paths enabled.
 pub(in crate::fs) struct Ext4Type {
     cache: FsCache<DeviceId>,
 }
