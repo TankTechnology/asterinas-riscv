@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+
 # Time a desktop-DRM gate run from the QEMU process's real start to the READY
 # marker, so runs can be compared across configurations.
 #
