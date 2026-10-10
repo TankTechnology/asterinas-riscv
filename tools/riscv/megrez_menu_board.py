@@ -230,7 +230,7 @@ def boot_cycle(
         or mode in ("basic", "probe", "desktop")
         or mode in PROBE_SPECS
         or mode == menu.PHY_DIAGNOSTIC_MODE,
-        "hardware watchdog is not permitted for this unbounded menu entry",
+        "hardware watchdog is not permitted for this menu mode; restricted to the Basic, desktop, or read-only probe entry",
     )
     menu.require(
         (mode not in PROBE_SPECS and mode != menu.PHY_DIAGNOSTIC_MODE)
