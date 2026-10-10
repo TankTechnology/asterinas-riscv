@@ -923,6 +923,7 @@ test_riscv_debian_rootfs_gate:
 		--output-directory "$(DEBIAN_GATE_OUTPUT)" --smp 4
 
 .PHONY: test_riscv_debian_systemd_m2_gate
+DEBIAN_ROOT_FS ?= ext2
 test_riscv_debian_systemd_m2_gate:
 	@test -n "$(DEBIAN_KERNEL)" || \
 		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
@@ -951,7 +952,8 @@ test_riscv_debian_systemd_m2_gate:
 		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
-		--output-directory "$(DEBIAN_SYSTEMD_M2_GATE_OUTPUT)" --smp 4
+		--output-directory "$(DEBIAN_SYSTEMD_M2_GATE_OUTPUT)" --smp 4 \
+		--root-fs "$(DEBIAN_ROOT_FS)"
 
 .PHONY: test_riscv_debian_desktop_m5_qemu_gate
 test_riscv_debian_desktop_m5_qemu_gate:

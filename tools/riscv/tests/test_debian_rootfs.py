@@ -86,9 +86,11 @@ from tools.riscv.debian.rootfs.rootfs_gate import (
 )
 from tools.riscv.debian.rootfs.profiles import get_profile
 from tools.riscv.debian.rootfs.systemd_m2_gate import (
+    SYSTEMD_EXT4_M3_BOOTARGS,
     SYSTEMD_M2_BOOTARGS,
     SystemdM2Operations,
     orchestrate_systemd_m2_gate,
+    systemd_m2_bootargs,
     systemd_m2_qemu_argv,
 )
 
@@ -7010,6 +7012,13 @@ class DebianSystemdM2GateTests(unittest.TestCase):
             SYSTEMD_M2_BOOTARGS,
             "console=ttyS0 loglevel=4 init=/init -- --root-init=systemd",
         )
+        self.assertEqual(systemd_m2_bootargs(), SYSTEMD_M2_BOOTARGS)
+        self.assertEqual(
+            systemd_m2_bootargs("ext4"),
+            SYSTEMD_EXT4_M3_BOOTARGS,
+        )
+        with self.assertRaises(ValueError):
+            systemd_m2_bootargs("xfs")
 
     def test_orchestrator_invalidates_stale_pass_and_always_tears_down(self) -> None:
         class FakeOperations:
@@ -7172,6 +7181,24 @@ class DebianSystemdM2GateTests(unittest.TestCase):
         self.assertIn(b"DEBIAN_SYSTEMD_M2_READY boot=1", serial.waited)
         self.assertIn(b"DEBIAN_SYSTEMD_M2_PASS boot=2", serial.waited)
         self.assertIn(b" \n", serial.sent)
+
+    def test_concrete_protocol_selects_ext4_stage1_handoff(self) -> None:
+        serial = mock.Mock()
+        serial.wait_for.return_value = b"Starting kernel ..."
+        operations = object.__new__(SystemdM2Operations)
+        config = mock.Mock(boot_timeout=1.0, root_fs="ext4")
+        with mock.patch.object(operations, "_send_uboot") as send_uboot:
+            operations._boot_once(
+                {"serial": serial},
+                config,
+                wait_prompt=False,
+            )
+
+        commands = [call.args[1] for call in send_uboot.call_args_list]
+        self.assertIn(
+            f'setenv bootargs "{SYSTEMD_EXT4_M3_BOOTARGS}"',
+            commands,
+        )
 
 
 if __name__ == "__main__":
