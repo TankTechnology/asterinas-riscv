@@ -238,10 +238,14 @@ EXT2_FS_TYPE := ext4
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_ext4_semantics_test.sh"
 else ifeq ($(AUTO_TEST), debian_apt_smoke)
+export ASTERINAS_EXT2_DRIVE_FILE := $(DEBIAN_ROOT_IMAGE)
+DEBIAN_APT_SMOKE_PRECHECK = @test -n "$(DEBIAN_ROOT_IMAGE)" && test -f "$(DEBIAN_ROOT_IMAGE)" || { echo "DEBIAN_ROOT_IMAGE must name an existing Debian root image for AUTO_TEST=debian_apt_smoke" >&2; exit 2; }
 ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
 EXT2_FS_TYPE := ext4
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
+CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=debian-apt" \
+	--qemu-args="-device virtio-net-device,netdev=debian-apt"
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_debian_apt_smoke_test.sh"
 else ifeq ($(AUTO_TEST), ext4_uncommitted_cut)
 ENABLE_REGRESSION_TEST := true
@@ -1516,6 +1520,7 @@ kernel: initramfs $(CARGO_OSDK)
 # Build the kernel with an initramfs and then run it
 .PHONY: run_kernel
 run_kernel: initramfs $(CARGO_OSDK)
+	$(DEBIAN_APT_SMOKE_PRECHECK)
 	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
 # Validate the complete QEMU transcript, including fatal output after success.
 ifneq ($(filter $(AUTO_TEST),conformance regression boot vsock),)
