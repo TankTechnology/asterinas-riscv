@@ -4,8 +4,8 @@
 //!
 //! The structs below are `#[repr(C)]` `Pod` types whose layout matches the
 //! LP64 (riscv64/x86_64) layout of the corresponding `asound.h` structures
-//! byte-for-byte. The ioctl commands are defined with [`ioc`] using the modern
-//! `_IOR`/`_IOW`/`_IOWR`/`_IO` encoding (magic `'A'`), so [`dispatch_ioctl`]
+//! byte-for-byte. The ioctl commands are defined with `ioc!` using the modern
+//! `_IOR`/`_IOW`/`_IOWR`/`_IO` encoding (magic `'A'`), so `dispatch_ioctl!`
 //! maps them directly onto the ABI userspace expects.
 //!
 //! Reference: `include/uapi/sound/asound.h` (SNDRV_PCM_VERSION 2.0.17).
