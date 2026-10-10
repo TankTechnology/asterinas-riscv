@@ -240,8 +240,11 @@ build_freetype() {
 
 build_fontconfig() {
   cd "$SRC"
-  local d; d=$(srcdir fontconfig-2.16.0.tar.xz \
-    https://www.freedesktop.org/software/fontconfig/release/fontconfig-2.16.0.tar.xz)
+  # 2.16 requires Meson 1.6, newer than the pinned rootfs build image.
+  # 2.15.0 has the same fontconfig ABI and keeps the build reproducible on
+  # the supported Meson 1.3 toolchain.
+  local d; d=$(srcdir fontconfig-2.15.0.tar.xz \
+    https://deb.debian.org/debian/pool/main/f/fontconfig/fontconfig_2.15.0.orig.tar.xz)
   # shellcheck disable=SC2046
   MESON_SETUP "$SRC/$d" \
     $(mopt "$SRC/$d/meson_options.txt" doc disabled) \
