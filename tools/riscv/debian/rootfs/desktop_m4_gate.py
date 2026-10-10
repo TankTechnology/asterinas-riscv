@@ -115,7 +115,14 @@ class DesktopM4Operations(DesktopM3Operations):
     # those pixels reached the emulated scanout rather than only a guest
     # mapping.
     CAPTURE_SCREENSHOT = True
-    BOOTARGS = DESKTOP_M3_BOOTARGS
+    # QEMU's virtio keyboard/tablet contract fixes event0/event1 ordering;
+    # select the corresponding non-ioctl handoff in the rootfs before Xorg
+    # starts.  Physical profiles retain strict identity resolution.
+    BOOTARGS = (
+        "console=ttyS0 loglevel=4 "
+        "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered "
+        "init=/init -- --root-init=systemd"
+    )
 
     @staticmethod
     def _qemu_argv(**arguments: Any) -> tuple[str, ...]:

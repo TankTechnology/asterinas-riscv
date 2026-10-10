@@ -330,7 +330,18 @@ class DesktopM3Operations(ConcreteOperations):
             "ext4load virtio 0:0 0x80200000 /asterinas.booti",
             "ext4load virtio 0:0 0x90000000 /qemu-virt.dtb",
             "fdt addr 0x90000000",
-            "fdt resize 0x1000",
+            # U-Boot relocates the tree immediately before ``booti``.  Keep
+            # the scanout range in /reserved-memory so relocation and the
+            # kernel allocator never treat the bochs BAR as ordinary RAM.
+            "fdt resize 0x2000",
+            "fdt mknode / reserved-memory",
+            'fdt set /reserved-memory "#address-cells" <0x2>',
+            'fdt set /reserved-memory "#size-cells" <0x2>',
+            "fdt set /reserved-memory ranges",
+            f"fdt mknode /reserved-memory {node}",
+            f"fdt set /reserved-memory/{node} reg <0x0 {framebuffer_address:#x} 0x0 0x1000000>",
+            f"fdt set /reserved-memory/{node} no-map",
+            "fdt print /reserved-memory",
             f"fdt mknode / {node}",
             f'fdt set /{node} compatible "simple-framebuffer"',
             f"fdt set /{node} reg <0x0 {framebuffer_address:#x} 0x0 0x1000000>",
@@ -339,6 +350,7 @@ class DesktopM3Operations(ConcreteOperations):
             f"fdt set /{node} stride <0x1400>",
             f'fdt set /{node} format "x8r8g8b8"',
             f'fdt set /{node} status "okay"',
+            f"fdt print /{node}",
             "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
             "setenv initrd_size ${filesize}",
             *_bounded_uboot_bootargs_commands(self._bootargs(self.config)),

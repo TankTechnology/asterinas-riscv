@@ -50,6 +50,9 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (
     classify_desktop_m4,
     desktop_m4_qemu_argv,
 )
+from tools.riscv.debian.rootfs.desktop_m4_fbdev_canary_gate import (
+    FbdevCanaryOperations,
+)
 from tools.riscv.debian.rootfs.gate_protocol import (
     MAX_COMMAND_PAYLOAD_BYTES,
     MAX_TRANSCRIPT_BYTES,
@@ -2856,6 +2859,10 @@ WantedBy=multi-user.target
             device_access.read_text(),
         )
         self.assertIn("desktop-input-identity", device_access.read_text())
+        self.assertIn("ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE", device_access.read_text())
+        self.assertIn('keyboard_node="$INPUT_DIRECTORY/event0"', device_access.read_text())
+        self.assertIn('pointer_node="$INPUT_DIRECTORY/event1"', device_access.read_text())
+        self.assertIn("timeout --kill-after=1s 5s", device_access.read_text())
         self.assertIn(
             "failed: desktop input devices did not appear", device_access.read_text()
         )
@@ -3144,6 +3151,10 @@ WantedBy=multi-user.target
     def test_desktop_m4_evidence_requires_application_windows(self) -> None:
         self.assertIn(
             "ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS:-30",
+            DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "probe logind pgrep -x systemd-logind",
             DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
         )
         input_directory = self.directory / "desktop-m4-input"
@@ -6640,10 +6651,56 @@ class DebianDesktopM4GateTests(unittest.TestCase):
         ext2 = mock.Mock(root_fs="ext2")
         ext4 = mock.Mock(root_fs="ext4")
 
-        self.assertEqual(operations._bootargs(ext2), DESKTOP_M3_BOOTARGS)
+        qemu_bootargs = (
+            "console=ttyS0 loglevel=4 "
+            "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered "
+            "init=/init -- --root-init=systemd"
+        )
+        self.assertEqual(operations._bootargs(ext2), qemu_bootargs)
         self.assertEqual(
             operations._bootargs(ext4),
-            "console=ttyS0 loglevel=4 init=/init -- --root-fs=ext4 --root-init=systemd",
+            "console=ttyS0 loglevel=4 "
+            "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered "
+            "init=/init -- --root-fs=ext4 --root-init=systemd",
+        )
+
+    def test_scanout_pattern_is_opt_in_canary_only(self) -> None:
+        self.assertNotIn(
+            "ASTERINAS_DESKTOP_M4_SCANOUT_PATTERN=1",
+            DesktopM4Operations.BOOTARGS,
+        )
+        self.assertIn(
+            "ASTERINAS_DESKTOP_M4_SCANOUT_PATTERN=1",
+            FbdevCanaryOperations.BOOTARGS,
+        )
+
+    def test_boot_commands_reserve_scanout_before_booti(self) -> None:
+        operations = object.__new__(DesktopM4Operations)
+        operations.config = mock.Mock(root_fs="ext2")
+        commands = operations._boot_commands(0x40000000)
+
+        self.assertIn("fdt mknode / reserved-memory", commands)
+        self.assertIn(
+            "fdt set /reserved-memory/framebuffer@40000000 "
+            "reg <0x0 0x40000000 0x0 0x1000000>",
+            commands,
+        )
+        self.assertIn(
+            "fdt set /reserved-memory/framebuffer@40000000 no-map", commands
+        )
+        self.assertIn("fdt print /framebuffer@40000000", commands)
+        bootargs_index = next(
+            index
+            for index, command in enumerate(commands)
+            if command.startswith('setenv bootargs "')
+        )
+        self.assertLess(
+            commands.index("fdt set /reserved-memory/framebuffer@40000000 no-map"),
+            bootargs_index,
+        )
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered",
+            commands[bootargs_index],
         )
 
     def test_classifier_requires_ordered_application_evidence(self) -> None:

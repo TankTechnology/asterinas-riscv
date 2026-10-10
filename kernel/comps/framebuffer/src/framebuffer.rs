@@ -103,11 +103,20 @@ fn framebuffer_cache_policy() -> CachePolicy {
 
 pub(crate) fn init() {
     let Some(framebuffer_arg) = boot_info().framebuffer_arg else {
+        ostd::early_println!("ASTERINAS_FRAMEBUFFER_INIT status=missing");
         ostd::warn!("Framebuffer not found");
         return;
     };
 
     let config = FrameBufferConfig::from_boot(framebuffer_arg);
+    ostd::early_println!(
+        "ASTERINAS_FRAMEBUFFER_INIT status=found base={:#x} size={:#x} width={} height={} stride={}",
+        config.address,
+        config.size,
+        config.width,
+        config.height,
+        config.line_size,
+    );
 
     let framebuffer = {
         let io_mem = match IoMem::acquire_with_cache_policy(
@@ -116,6 +125,11 @@ pub(crate) fn init() {
         ) {
             Ok(io_mem) => io_mem,
             Err(error) => {
+                ostd::early_println!(
+                    "ASTERINAS_FRAMEBUFFER_INIT status=map-failed base={:#x} size={:#x}",
+                    config.address,
+                    config.size,
+                );
                 ostd::error!("Failed to map firmware framebuffer: {:?}", error);
                 return;
             }
@@ -136,6 +150,7 @@ pub(crate) fn init() {
     };
 
     if let Err(error) = framebuffer.clear() {
+        ostd::early_println!("ASTERINAS_FRAMEBUFFER_INIT status=clear-failed");
         ostd::error!(
             "Firmware framebuffer is not synchronizable; leaving it unregistered: {:?}",
             error
@@ -151,6 +166,7 @@ pub(crate) fn init() {
         config.line_size,
         config.pixel_format
     );
+    ostd::early_println!("ASTERINAS_FRAMEBUFFER_INIT status=registered");
     FRAMEBUFFER.call_once(|| Arc::new(framebuffer));
 }
 

@@ -158,7 +158,11 @@ ready() {
 
     not_ready_reason="not-evaluated"
     probe udev systemctl is-active --quiet systemd-udevd.service || return 1
-    probe logind systemctl is-active --quiet systemd-logind.service || return 1
+    # `systemctl is-active` can wait indefinitely on Asterinas' incomplete
+    # D-Bus query path even after systemd has started logind.  This service is
+    # ordered After=systemd-logind.service, so a live logind process is the
+    # bounded readiness fact we need here.
+    probe logind pgrep -x systemd-logind >/dev/null || return 1
     if ! has_desktop_session; then
         not_ready_reason="asterinas-session"
         return 1
