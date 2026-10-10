@@ -202,7 +202,8 @@ impl NetworkDevice {
         }
 
         let packet_len = packet.reader().remain();
-        let packet = packet.prepend_and_pack(&self.header);
+        let mut packet = packet.prepend_and_pack(&self.header);
+        packet.pad_to(size_of::<VirtioNetHdr>() + 60);
         let tx_buffer = packet.map_dma(false).map_err(|_| NetError::NoMemory)?;
 
         let token = self.send_queue.add_input_bufs(&[&tx_buffer]).unwrap();

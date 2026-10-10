@@ -227,7 +227,10 @@ impl<D, E: Ext> EtherIface<D, E> {
                 operation: ArpOperation::Request,
                 source_hardware_addr: self.ether_addr,
                 source_protocol_addr: iface_cx.ipv4_addr().unwrap_or(Ipv4Address::UNSPECIFIED),
-                target_hardware_addr: EthernetAddress::BROADCAST,
+                // RFC 826 leaves the target hardware address unspecified in a
+                // request; encode it as zeroes rather than the Ethernet
+                // broadcast address used by the outer frame.
+                target_hardware_addr: EthernetAddress([0; 6]),
                 target_protocol_addr: next_hop_ip,
             }));
         };
@@ -240,17 +243,27 @@ impl<D, E: Ext> EtherIface<D, E> {
     }
 
     fn emit_arp(arp_repr: &ArpRepr, packet: FreshTxPacket) -> Option<TxPacket<LinkLayer>> {
-        let ether_repr = match arp_repr {
+        let (ether_src_addr, ether_dst_addr) = match arp_repr {
+            ArpRepr::EthernetIpv4 {
+                source_hardware_addr,
+                operation: ArpOperation::Request,
+                ..
+            } => (*source_hardware_addr, EthernetAddress::BROADCAST),
             ArpRepr::EthernetIpv4 {
                 source_hardware_addr,
                 target_hardware_addr,
                 ..
-            } => EthernetRepr {
-                src_addr: *source_hardware_addr,
-                dst_addr: *target_hardware_addr,
-                ethertype: EthernetProtocol::Arp,
-            },
+            } => {
+                debug_assert!(target_hardware_addr.is_unicast());
+                (*source_hardware_addr, *target_hardware_addr)
+            }
             _ => return None,
+        };
+
+        let ether_repr = EthernetRepr {
+            src_addr: ether_src_addr,
+            dst_addr: ether_dst_addr,
+            ethertype: EthernetProtocol::Arp,
         };
 
         let packet = packet.to_builder_at_layer::<TransportLayer>().build();

@@ -270,6 +270,27 @@ impl<L> TxPacket<L> {
         self.0.data_range.end - self.0.data_range.start
     }
 
+    /// Extends the packet with zero padding until it reaches `min_len` bytes.
+    ///
+    /// Ethernet requires frames shorter than 60 bytes (excluding the FCS) to be
+    /// padded before transmission. Keeping this operation on the packet lets
+    /// device drivers enforce that link-layer requirement without exposing the
+    /// packet's internal allocation ranges.
+    pub fn pad_to(&mut self, min_len: usize) {
+        let padding_len = min_len.saturating_sub(self.len());
+        if padding_len == 0 {
+            return;
+        }
+
+        let mut writer = self.0.segment.writer();
+        writer
+            .skip(self.0.data_range.end)
+            .limit(self.0.alloc_range.end - self.0.data_range.end);
+        let written = writer.fill_zeros(padding_len);
+        debug_assert_eq!(written, padding_len);
+        self.0.data_range.end += written;
+    }
+
     /// Returns a writer that can prepend a header at `header_len` bytes before the `L` layer.
     ///
     /// # Panics
