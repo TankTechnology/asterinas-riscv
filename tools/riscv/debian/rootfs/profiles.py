@@ -251,9 +251,16 @@ _PROFILES["browser-web"] = RootfsProfile(
     schema_version=7,
     root_label="ASTER_BROWSERWEB",
     root_uuid="c2ce5134-afcc-4d7c-b71e-7e6d4a8f2b10",
-    requested_packages=_PROFILES["browser-m5"].requested_packages + ("xdotool",),
+    # Firefox decodes H.264 and HEVC only through libavcodec, and Debian keeps
+    # those in firefox-esr's Recommends rather than its Depends. The build
+    # installs with --no-install-recommends, so every site that serves H.264,
+    # which is most of them including bilibili, fails to play while the page
+    # itself loads. Name the decoder explicitly instead of relying on a
+    # recommendation the build discards.
+    requested_packages=_PROFILES["browser-m5"].requested_packages
+    + ("xdotool", "libavcodec-extra61"),
     identity_packages=_PROFILES["browser-m5"].identity_packages
-    + ("ca-certificates", "xdotool"),
+    + ("ca-certificates", "xdotool", "libavcodec-extra61"),
     # Firefox's installed files consume most of a 1 GiB image.  A persistent
     # profile and even a small controlled download then hit ENOSPC during the
     # normal bookmark/places maintenance path.  Keep the smaller milestone

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sys
+import re
 from typing import Any
 
 from tools.riscv.debian.rootfs.desktop_m3_gate import (
@@ -50,6 +51,32 @@ DESKTOP_M4_CORE_MILESTONES = (
     "DEBIAN_DESKTOP_M4_CORE_READY user=asterinas display=:0",
 )
 
+DESKTOP_M4_DISPLAY_MILESTONES = (
+    "DEBIAN_DESKTOP_M4_UDEV state=active",
+    "DEBIAN_DESKTOP_M4_LOGIND state=active",
+    "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",
+    "DEBIAN_DESKTOP_M4_XORG framebuffer=fbdev display=:0",
+    "DEBIAN_DESKTOP_M4_SHELL wallpaper=asterinas desktop=pcmanfm panel=lxpanel launchers=3",
+    "DEBIAN_DESKTOP_M4_DISPLAY_CLIENTS window-manager=openbox file-manager=pcmanfm panel=lxpanel terminal=xterm input=disabled",
+    "DEBIAN_DESKTOP_M4_DISPLAY_READY user=asterinas display=:0",
+)
+
+# These records contain per-boot hashes and therefore cannot be represented as
+# literal milestones.  The physical gate validates their exact grammar and
+# places them between the shell and display-client records.
+DESKTOP_M4_DISPLAY_FRAMEBUFFER_PATTERNS = (
+    r"DEBIAN_DESKTOP_M4_FB_IOCTL width=1920 height=1080 stride=7680 bpp=32 format=BgrReserved",
+    r"DEBIAN_DESKTOP_M4_FB_SAMPLE bytes=4096 sha256=[0-9a-f]{64}",
+    r"DEBIAN_DESKTOP_M4_FB_SCREENSHOT path=/run/asterinas-desktop-m4-framebuffer\.png width=1920 height=1080 bytes=[1-9][0-9]* sha256=[0-9a-f]{64}",
+)
+DESKTOP_M4_QEMU_FRAMEBUFFER_PATTERN = re.compile(
+    rb"DEBIAN_DESKTOP_M4_FB_IOCTL width=1280 height=1024 stride=5120 "
+    rb"bpp=32 format=BgrReserved\r*\n"
+    rb"DEBIAN_DESKTOP_M4_FB_SAMPLE bytes=4096 sha256=[0-9a-f]{64}\r*\n"
+    rb"DEBIAN_DESKTOP_M4_FB_COLORS distinct=[2-9][0-9]* "
+    rb"non_background=[1-9][0-9]*\r*\n"
+)
+
 
 def desktop_m4_qemu_argv(**arguments: Any) -> tuple[str, ...]:
     """Return the same frozen graphical QEMU device contract used by M3."""
@@ -62,12 +89,17 @@ def classify_desktop_m4(
 ) -> GateResult:
     """Require ordered application evidence across the fully drained transcript."""
 
-    return classify_desktop(
+    result = classify_desktop(
         transcript,
         expected_debian_release=expected_debian_release,
         milestones=DESKTOP_M4_MILESTONES,
         failure_marker=b"DEBIAN_DESKTOP_M4_FAIL reason=",
     )
+    if not result.passed:
+        return result
+    if not DESKTOP_M4_QEMU_FRAMEBUFFER_PATTERN.search(transcript):
+        return GateResult(False, "missing guest framebuffer evidence", None)
+    return result
 
 
 class DesktopM4Operations(DesktopM3Operations):
@@ -78,6 +110,11 @@ class DesktopM4Operations(DesktopM3Operations):
     ARTIFACT_PREFIX = "desktop-m4"
     MILESTONES = DESKTOP_M4_MILESTONES
     FAILURE_MARKER = b"DEBIAN_DESKTOP_M4_FAIL reason="
+    # Keep a host-side QEMU screendump in this gate.  The guest fbdev sample
+    # proves that reads see more than one value, while the HMP image proves
+    # those pixels reached the emulated scanout rather than only a guest
+    # mapping.
+    CAPTURE_SCREENSHOT = True
     BOOTARGS = DESKTOP_M3_BOOTARGS
 
     @staticmethod
