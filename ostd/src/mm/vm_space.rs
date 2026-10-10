@@ -239,6 +239,45 @@ impl Default for VmSpace {
 }
 
 impl VmSpace {
+    /// Makes writes to user mappings backed by I/O memory visible to the device.
+    ///
+    /// `mmap(2)` users of device files have no file-backed inode for
+    /// `msync(2)` to flush. Walk the page-table mappings instead and use the
+    /// retained [`IoMem`] capability for each mapped device range. Ordinary
+    /// RAM mappings are deliberately ignored here; their writeback is owned by
+    /// the file and page-cache paths.
+    pub fn sync_iomem_to_device(&self, range: Range<Vaddr>) -> Result<()> {
+        if range.start >= range.end {
+            return Ok(());
+        }
+        if !range.start.is_multiple_of(PAGE_SIZE) {
+            return Err(Error::InvalidArgs);
+        }
+
+        let preempt_guard = disable_preempt();
+        let mut cursor = self.cursor(&preempt_guard, &range)?;
+        loop {
+            let (mapped_range, item) = cursor.query()?;
+            let item = item.ok_or(Error::AccessDenied)?;
+            let start = mapped_range.start.max(range.start);
+            let end = mapped_range.end.min(range.end);
+
+            if let VmQueriedItem::MappedIoMem { paddr, .. } = item {
+                let (io_mem, offset) =
+                    self.find_iomem_by_paddr(paddr).ok_or(Error::AccessDenied)?;
+                let relative_start = start - mapped_range.start;
+                let relative_end = end - mapped_range.start;
+                io_mem.sync_to_device((offset + relative_start)..(offset + relative_end))?;
+            }
+
+            if end >= range.end {
+                break;
+            }
+            cursor.jump(end)?;
+        }
+        Ok(())
+    }
+
     /// Finds the [`IoMem`] that contains the given physical address.
     ///
     /// It is a private method for internal use only. Please refer to
