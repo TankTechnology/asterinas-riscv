@@ -531,6 +531,16 @@ class BootMenuTests(unittest.TestCase):
         with self.assertRaisesRegex(menu.BootManifestError, "root-init"):
             menu.validate(value)
 
+    def test_accepts_ext4_root_with_the_desktop_management_console(self):
+        value = document()
+        value["desktop_args"] = (
+            menu.BASE_ARGS
+            + " -- --root-init=systemd --root-fs=ext4"
+            + " --debug-console=root --volatile-home"
+        )
+        value["extlinux"] = menu.render(value)
+        menu.validate(value)
+
     def test_rejects_desktop_entry_without_management_console(self):
         value = document()
         value["desktop_args"] = menu.BASE_ARGS + " -- --root-init=systemd"

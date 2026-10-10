@@ -298,8 +298,17 @@ def validate(document: dict) -> None:
         tokens.count("--") == 1 and tokens.count("init=/init") == 1,
         "invalid desktop init",
     )
+    root_init_tokens = tokens[tokens.index("--") + 1 :]
+    ext4_tokens = [token for token in root_init_tokens if token == "--root-fs=ext4"]
     require(
-        tokens[tokens.index("--") + 1 :]
+        len(ext4_tokens) <= 1,
+        "invalid desktop root filesystem",
+    )
+    root_init_tokens = [
+        token for token in root_init_tokens if token != "--root-fs=ext4"
+    ]
+    require(
+        root_init_tokens
         in (
             ["--root-init=systemd", "--debug-console=root"],
             ["--root-init=systemd", "--debug-console=root", "--volatile-home"],
