@@ -36,6 +36,7 @@ pub(crate) struct SocketOptionSet {
     broadcast: bool,
     send_buf: u32,
     recv_buf: u32,
+    timestamp: bool,
     keep_alive: bool,
     priority: i32,
     linger: LingerOption,
@@ -50,6 +51,7 @@ impl Default for SocketOptionSet {
             broadcast: false,
             send_buf: MIN_SENDBUF,
             recv_buf: MIN_RECVBUF,
+            timestamp: false,
             keep_alive: false,
             priority: 0,
             linger: LingerOption::default(),
@@ -133,6 +135,9 @@ impl SocketOptionSet {
             socket_recv_buf @ RecvBuf => {
                 let recv_buf = self.recv_buf();
                 socket_recv_buf.set(recv_buf);
+            }
+            socket_timestamp @ Timestamp => {
+                socket_timestamp.set(self.timestamp());
             }
             socket_keepalive @ KeepAlive => {
                 let keep_alive = self.keep_alive();
@@ -227,6 +232,12 @@ impl SocketOptionSet {
                 } else {
                     self.set_recv_buf(*recv_buf);
                 }
+            }
+            socket_timestamp @ Timestamp => {
+                // Asterinas does not currently attach SCM_TIMESTAMP control
+                // messages, but Linux accepts SO_TIMESTAMP and journald falls
+                // back to its own clock when they are absent.
+                self.set_timestamp(*socket_timestamp.get().unwrap());
             }
             socket_keepalive @ KeepAlive => {
                 let keep_alive = socket_keepalive.get().unwrap();
