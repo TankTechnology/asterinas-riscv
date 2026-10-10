@@ -158,8 +158,20 @@ build_startup_notification() {
     https://www.freedesktop.org/software/startup-notification/releases/startup-notification-0.12.tar.gz)
   cd "$SRC/$d"
   # 0.12 (2009) ships a config.sub/config.guess too old to know riscv64;
-  # refresh them from the local automake installation.
-  cp -f /usr/share/automake-*/config.sub /usr/share/automake-*/config.guess .
+  # refresh them from the local automake installation.  The rootfs build
+  # image does not promise a particular automake minor version, so resolve
+  # its data directory instead of relying on an unexpanded glob.
+  local automake_dir
+  automake_dir="$(automake --print-libdir 2>/dev/null || true)"
+  [[ -n "$automake_dir" && -f "$automake_dir/config.sub" &&
+    -f "$automake_dir/config.guess" ]] || {
+    echo "startup-notification requires automake config.sub/config.guess" >&2
+    return 1
+  }
+  cp -f "$automake_dir/config.sub" "$automake_dir/config.guess" .
+  if [[ -d build-aux ]]; then
+    cp -f "$automake_dir/config.sub" "$automake_dir/config.guess" build-aux/
+  fi
   # lf_cv_sane_realloc=yes: configure AC_TRY_RUN-probes realloc(NULL,); the
   # test cannot run when cross-compiling. glibc's realloc(NULL,n) is malloc.
   ./configure --host="$HOST" --prefix="$PREFIX" \
