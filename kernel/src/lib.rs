@@ -58,6 +58,8 @@ mod events;
 #[cfg(target_arch = "riscv64")]
 mod first_process_diag;
 mod fs;
+#[cfg(target_arch = "riscv64")]
+mod hardware_watchdog;
 mod init;
 mod ipc;
 mod net;

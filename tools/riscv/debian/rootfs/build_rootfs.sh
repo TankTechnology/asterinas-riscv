@@ -1923,6 +1923,17 @@ EOF
     install -D -m 0755 -- \
         "$script_directory/../../drm/gles-pixel-probe.py" \
         "$stage/usr/lib/asterinas/gles-pixel-probe"
+    if [[ "$generation" == m4 ]]; then
+        install -D -m 0755 -- \
+            "$script_directory/desktop_m4_framebuffer_probe.py" \
+            "$stage/usr/lib/asterinas/desktop-m4-framebuffer-probe"
+        install -D -m 0755 -- \
+            "$script_directory/desktop_m4_framebuffer_rw.py" \
+            "$stage/usr/lib/asterinas/desktop-m4-framebuffer-rw"
+        install -D -m 0755 -- \
+            "$script_directory/desktop_m4_x11_paint.py" \
+            "$stage/usr/lib/asterinas/desktop-m4-x11-paint"
+    fi
     install -d -m 0755 -- "$stage/etc/systemd/system/dbus.service.d"
     cat >"$stage/etc/systemd/system/dbus.service.d/asterinas-readiness.conf" <<'EOF'
 [Service]
@@ -2143,6 +2154,9 @@ EOF
             "$script_directory/desktop_fbdev_no_input.conf" \
             "$provider_config_directory/20-asterinas-no-input.conf"
     fi
+        install -D -m 0644 -- \
+            "$script_directory/desktop_fbdev_qemu.conf" \
+            "$provider_config_directory/20-asterinas-qemu.conf"
     install -d -m 0755 -- "$stage/etc/X11/xorg.conf.d"
     rm -f -- "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
     ln -s -- ../../asterinas/display-providers/$display_provider/xorg.conf.d/20-asterinas.conf \
