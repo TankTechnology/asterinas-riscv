@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{fmt::Debug, mem::ManuallyDrop, ops::Range, ptr::NonNull};
+#[cfg(target_arch = "riscv64")]
+use core::ptr::NonNull;
+use core::{fmt::Debug, mem::ManuallyDrop, ops::Range};
 
 use super::util::{
     alloc_kva, alloc_kva_in, cvm_need_private_protection, prepare_dma, split_daddr, unprepare_dma,
@@ -161,6 +163,7 @@ impl DmaCoherent {
         self.uncached_alias.as_ref().map(HasPaddr::paddr)
     }
 
+    #[cfg(target_arch = "riscv64")]
     pub(super) fn as_non_null_ptr(&self) -> NonNull<u8> {
         if let Some(alias) = &self.uncached_alias {
             return alias.as_non_null_ptr();
