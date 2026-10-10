@@ -154,7 +154,13 @@ pub(crate) fn read_socket_addr_from_user(addr: Vaddr, addr_len: usize) -> Result
 
     let result = match CSocketAddrFamily::try_from(storage.sa_family as i32) {
         Ok(CSocketAddrFamily::AF_INET) => {
-            if addr_len < size_of::<CSocketAddrInet>() {
+            // Some Linux-compatible RISC-V userlands pass the sockaddr payload
+            // without the trailing `sin_zero` padding.  The family, port, and
+            // address fields are still complete and `storage` is zero-filled,
+            // so accepting this canonical 12-byte form preserves the address
+            // while remaining strict about truncating the meaningful fields.
+            const IPV4_ADDR_LEN_WITHOUT_PADDING: usize = size_of::<CSocketAddrInet>() - 8;
+            if addr_len < IPV4_ADDR_LEN_WITHOUT_PADDING {
                 return_errno_with_message!(Errno::EINVAL, "the socket address length is too small");
             }
             let (addr, port) = CSocketAddrInet::from_first_bytes(storage.as_bytes()).into();
