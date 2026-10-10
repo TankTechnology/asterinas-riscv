@@ -12,6 +12,12 @@ const PRIVILEGED_PORTS: Range<u16> = 0..1024;
 
 /// Checks if the port is privileged and, if so, whether the thread is allowed to bind to it.
 pub(crate) fn check_port_privilege(port: u16) -> Result<()> {
+    // Port zero requests an ephemeral port selected by the kernel. It is not a
+    // privileged listening port and must remain usable by unprivileged callers.
+    if port == 0 {
+        return Ok(());
+    }
+
     if !PRIVILEGED_PORTS.contains(&port) {
         return Ok(());
     }
