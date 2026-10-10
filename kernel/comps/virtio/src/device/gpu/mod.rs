@@ -28,8 +28,8 @@ fn register_device(name: String, device: Arc<GpuDevice>) {
 ///
 /// `None` covers two situations: no GPU was discovered, and the registry was
 /// never initialized. On a real boot only the first can happen —
-/// `virtio_component_init` calls [`init`] unconditionally, so a machine with
-/// no virtio-gpu gets an empty table rather than no table. The second is what
+/// `virtio_component_init` calls the registry initializer unconditionally, so a
+/// machine with no virtio-gpu gets an empty table rather than no table. The second is what
 /// a kernel unit test sees, since nothing initializes the virtio transport
 /// there, and reaching for the table with `unwrap()` made this panic in a
 /// function whose whole signature is an admission that the answer may be
