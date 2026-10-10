@@ -6630,7 +6630,14 @@ class DebianDesktopM4GateTests(unittest.TestCase):
         self.assertEqual(arguments[arguments.index("-nic") + 1], "none")
 
     def test_classifier_requires_ordered_application_evidence(self) -> None:
-        transcript = ("boot noise\n" + "\n".join(DESKTOP_M4_MILESTONES) + "\n").encode()
+        framebuffer = (
+            "DEBIAN_DESKTOP_M4_FB_IOCTL width=1280 height=1024 stride=5120 bpp=32 format=BgrReserved\n"
+            "DEBIAN_DESKTOP_M4_FB_SAMPLE bytes=4096 sha256=" + "a" * 64 + "\n"
+            "DEBIAN_DESKTOP_M4_FB_COLORS distinct=86 non_background=1024\n"
+        )
+        transcript = (
+            "boot noise\n" + "\n".join(DESKTOP_M4_MILESTONES) + "\n" + framebuffer
+        ).encode()
 
         result = classify_desktop_m4(transcript, expected_debian_release="13.6")
 

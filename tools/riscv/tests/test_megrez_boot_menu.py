@@ -62,7 +62,8 @@ class BootMenuTests(unittest.TestCase):
     def test_watchdog_is_limited_to_bounded_asterinas_cycles(self):
         self.assertTrue(board.watchdog_mode_allowed("basic"))
         self.assertTrue(board.watchdog_mode_allowed("probe"))
-        for mode in ("rockos", "fallback", "desktop"):
+        self.assertTrue(board.watchdog_mode_allowed("desktop"))
+        for mode in ("rockos", "fallback"):
             with self.subTest(mode=mode):
                 self.assertFalse(board.watchdog_mode_allowed(mode))
 
@@ -72,7 +73,7 @@ class BootMenuTests(unittest.TestCase):
             board.boot_cycle(
                 operations,
                 document(),
-                "desktop",
+                "rockos",
                 "debian",
                 "fixture",
                 "0" * 32,
@@ -494,7 +495,7 @@ class BootMenuTests(unittest.TestCase):
 
     def test_rejects_desktop_bootargs_that_overflow_megrez_uboot(self):
         value = document()
-        suffix = " -- --root-init=systemd"
+        suffix = " -- --root-init=systemd --debug-console=root"
         prefix = menu.BASE_ARGS + " test.padding="
         padding = "x" * (1023 - len(prefix.encode()) - len(suffix.encode()))
         value["desktop_args"] = prefix + padding + suffix

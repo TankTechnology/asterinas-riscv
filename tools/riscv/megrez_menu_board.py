@@ -204,6 +204,16 @@ def desktop_ready(session, *, fbdev_only=False):
     return ready
 
 
+def watchdog_mode_allowed(mode: str) -> bool:
+    """Return whether a cycle has a bounded recovery guard."""
+
+    return (
+        mode in ("basic", "probe", "desktop")
+        or mode in PROBE_SPECS
+        or mode == menu.PHY_DIAGNOSTIC_MODE
+    )
+
+
 def boot_cycle(
     operations,
     document,
@@ -220,7 +230,7 @@ def boot_cycle(
         or mode in ("basic", "probe", "desktop")
         or mode in PROBE_SPECS
         or mode == menu.PHY_DIAGNOSTIC_MODE,
-        "hardware watchdog is restricted to the Basic, desktop, or read-only probe entry",
+        "hardware watchdog is not permitted for this unbounded menu entry",
     )
     menu.require(
         (mode not in PROBE_SPECS and mode != menu.PHY_DIAGNOSTIC_MODE)
