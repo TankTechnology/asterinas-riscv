@@ -23,7 +23,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use aster_block::bio::BioCompleteFn;
 use device_id::DeviceId;
-use ostd::mm::io::util::HasVmReaderWriter;
+use ostd::mm::{HasSize, io::util::HasVmReaderWriter};
 
 use super::{
     block_group::{BlockGroup, RawBlockGroup},
