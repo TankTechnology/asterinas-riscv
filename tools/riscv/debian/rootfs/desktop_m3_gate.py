@@ -283,6 +283,11 @@ class DesktopM3Operations(ConcreteOperations):
     MILESTONES = DESKTOP_M3_MILESTONES
     FAILURE_MARKER = b"DEBIAN_DESKTOP_M3_FAIL reason="
     ADDITIONAL_FAILURE_MARKERS: tuple[bytes, ...] = ()
+    # A diagnostic profile may expose a short-lived frame (for example, a
+    # colour-bar scanout) before it restores the original framebuffer. Such a
+    # profile can request capture at its marker instead of after the final
+    # desktop-ready marker.
+    EARLY_CAPTURE_MARKER: bytes | None = None
     CAPTURE_SCREENSHOT = True
     BOOTARGS = DESKTOP_M3_BOOTARGS
 
@@ -408,6 +413,22 @@ class DesktopM3Operations(ConcreteOperations):
         serial.wait_for(marker.encode(), deadline)
         serial.wait_for(b"Starting kernel ...", deadline)
         failure_markers = (self.FAILURE_MARKER, *self.ADDITIONAL_FAILURE_MARKERS)
+        screenshot_captured = False
+        if self.CAPTURE_SCREENSHOT and self.EARLY_CAPTURE_MARKER is not None:
+            early = serial.wait_for_any(
+                (self.EARLY_CAPTURE_MARKER, *failure_markers),
+                protocol_deadline or time.monotonic() + config.boot_timeout,
+            )
+            if self._completion_is_failure(early, failure_markers):
+                raise GateFailure("guest reported desktop failure")
+            screenshot = session["directory"] / f"{self.ARTIFACT_PREFIX}.ppm"
+            self._screenshot, self._screenshot_metadata = capture_rendered_ppm(
+                session["monitor"],
+                screenshot,
+                time.monotonic() + config.command_timeout,
+            )
+            screenshot_captured = True
+
         completion = serial.wait_for_any(
             (self.MILESTONES[-1].encode(), *failure_markers),
             protocol_deadline or time.monotonic() + config.boot_timeout,
@@ -415,7 +436,7 @@ class DesktopM3Operations(ConcreteOperations):
         if self._completion_is_failure(completion, failure_markers):
             raise GateFailure("guest reported desktop failure")
 
-        if not self.CAPTURE_SCREENSHOT:
+        if not self.CAPTURE_SCREENSHOT or screenshot_captured:
             return
 
         screenshot = session["directory"] / f"{self.ARTIFACT_PREFIX}.ppm"

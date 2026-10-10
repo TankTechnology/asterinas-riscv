@@ -6539,7 +6539,7 @@ class DebianDesktopM3GateTests(unittest.TestCase):
             monitor_socket=self.directory / "monitor.sock",
         )
 
-        self.assertIn("bochs-display", arguments)
+        self.assertIn("bochs-display,xres=1280,yres=1024", arguments)
         self.assertIn("virtio-keyboard-device", arguments)
         self.assertIn("virtio-tablet-device", arguments)
         self.assertEqual(arguments[arguments.index("-smp") + 1], "4")
@@ -6642,7 +6642,7 @@ class DebianDesktopM4GateTests(unittest.TestCase):
             monitor_socket=self.directory / "monitor.sock",
         )
 
-        self.assertIn("bochs-display", arguments)
+        self.assertIn("bochs-display,xres=1280,yres=1024", arguments)
         self.assertIn("virtio-keyboard-device", arguments)
         self.assertIn("virtio-tablet-device", arguments)
         self.assertEqual(arguments[arguments.index("-smp") + 1], "4")
@@ -6675,6 +6675,64 @@ class DebianDesktopM4GateTests(unittest.TestCase):
             "ASTERINAS_DESKTOP_M4_SCANOUT_PATTERN=1",
             FbdevCanaryOperations.BOOTARGS,
         )
+
+    def test_canary_captures_before_final_desktop_marker(self) -> None:
+        class FakeSerial:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, object]] = []
+                self.transcript = b"=> "
+
+            def checkpoint(self) -> int:
+                return len(self.transcript)
+
+            def send(self, payload: bytes, deadline: float) -> None:
+                del deadline
+                self.events.append(("send", payload))
+
+            def wait_for(self, marker: bytes, deadline: float, **kwargs: object) -> bytes:
+                del deadline, kwargs
+                self.events.append(("wait", marker))
+                return marker
+
+            def wait_for_any(
+                self, markers: tuple[bytes, ...], deadline: float
+            ) -> bytes:
+                del deadline
+                self.events.append(("wait_any", markers))
+                if FbdevCanaryOperations.EARLY_CAPTURE_MARKER in markers:
+                    return FbdevCanaryOperations.EARLY_CAPTURE_MARKER
+                return DESKTOP_M4_MILESTONES[-1].encode()
+
+        serial = FakeSerial()
+        operations = object.__new__(FbdevCanaryOperations)
+        config = mock.Mock(boot_timeout=5.0, command_timeout=1.0)
+        operations.config = config
+        session = {
+            "serial": serial,
+            "monitor": mock.Mock(),
+            "directory": self.directory,
+        }
+
+        def send_uboot(
+            _session: object, command: str, _index: int, _deadline: float
+        ) -> None:
+            if command == "pci bar 0.1.0":
+                serial.transcript += b"\n  0 0x40000000 0x1000000\n"
+
+        with (
+            mock.patch.object(operations, "_send_uboot", side_effect=send_uboot),
+            mock.patch(
+                "tools.riscv.debian.rootfs.desktop_m3_gate.capture_rendered_ppm",
+                return_value=(b"ppm", {"distinct_sampled_colors": 3}),
+            ) as capture,
+        ):
+            operations.run_protocol(session, config)
+
+        capture.assert_called_once()
+        wait_any = [event for event in serial.events if event[0] == "wait_any"]
+        self.assertEqual(len(wait_any), 2)
+        self.assertIn(FbdevCanaryOperations.EARLY_CAPTURE_MARKER, wait_any[0][1])
+        self.assertNotIn(FbdevCanaryOperations.EARLY_CAPTURE_MARKER, wait_any[1][1])
 
     def test_boot_commands_reserve_scanout_before_booti(self) -> None:
         operations = object.__new__(DesktopM4Operations)
