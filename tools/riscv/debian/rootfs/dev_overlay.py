@@ -310,10 +310,26 @@ def _validate_destination(image: Path, entry: OverlayFile) -> bool:
 
 def _apply_file(image: Path, entry: OverlayFile, scratch: Path, index: int) -> None:
     destination_exists = _validate_destination(image, entry)
+    destination_inode: str | None = None
+    if destination_exists:
+        stat_output = _run_debugfs(image, f"stat {entry.destination}")
+        match = re.search(r"^Inode:\s+(\d+)", stat_output, re.MULTILINE)
+        if match is None:
+            raise OverlayError("invalid debugfs destination inode stat output")
+        destination_inode = match.group(1)
     staged_source = scratch / f"source-{index:04d}"
     shutil.copyfile(entry.source, staged_source)
     if destination_exists:
         _run_debugfs(image, f"rm {entry.destination}", writable=True)
+        # E2FSPROGS_FAKE_TIME is not honored consistently by debugfs versions
+        # used in CI.  Pin the tombstone timestamp explicitly so replacing a
+        # file remains reproducible across host distributions.
+        assert destination_inode is not None
+        _run_debugfs(
+            image,
+            f"set_inode_field <{destination_inode}> dtime 1",
+            writable=True,
+        )
     commands = (
         f"write {staged_source} {entry.destination}",
         f"set_inode_field {entry.destination} mode {stat.S_IFREG | entry.mode}",
