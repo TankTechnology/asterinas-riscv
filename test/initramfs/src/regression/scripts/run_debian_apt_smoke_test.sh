@@ -14,7 +14,6 @@ fi
 # route; this gate only provides the resolver used by QEMU user-mode networking.
 rm -f /ext2/etc/resolv.conf
 printf 'nameserver 10.0.2.3\n' > /ext2/etc/resolv.conf
-
 mount --bind /dev /ext2/dev
 mount --bind /proc /ext2/proc
 mount --bind /sys /ext2/sys

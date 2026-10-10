@@ -246,7 +246,7 @@ EXT2_FS_TYPE := ext4
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="asterinas.net=Virtio-Net,10.0.2.15/24,10.0.2.2"
 CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=debian-apt" \
-	--qemu-args="-device virtio-net-device,netdev=debian-apt"
+	--qemu-args="-device virtio-net-device,netdev=debian-apt,csum=off,ctrl_guest_offloads=off,ctrl_mac_addr=off,ctrl_rx_extra=off,ctrl_rx=off,ctrl_vlan=off,ctrl_vq=off,event_idx=off,guest_announce=off,guest_csum=off,guest_ecn=off,guest_tso4=off,guest_tso6=off,guest_ufo=off,guest_uso4=off,guest_uso6=off,host_ecn=off,host_tso4=off,host_tso6=off,host_ufo=off,host_uso=off,indirect_desc=off,mrg_rxbuf=off,queue_reset=off"
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_debian_apt_smoke_test.sh"
 else ifeq ($(AUTO_TEST), ext4_uncommitted_cut)
 ENABLE_REGRESSION_TEST := true
