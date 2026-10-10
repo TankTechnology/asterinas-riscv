@@ -165,6 +165,17 @@ FN_TEST(short_struct_optlen)
 }
 END_TEST()
 
+FN_TEST(so_timestamp_is_stateful)
+{
+	int timestamp = 1;
+
+	/* Linux accepts this option even when no SCM_TIMESTAMP is attached. */
+	TEST_SUCC(setsockopt(sk_tcp, SOL_SOCKET, SO_TIMESTAMP, &timestamp,
+			     sizeof(timestamp)));
+	TEST_GETSOCKOPT(SOL_SOCKET, SO_TIMESTAMP, timestamp, sizeof(timestamp));
+}
+END_TEST()
+
 FN_SETUP(cleanup)
 {
 	CHECK(close(sk_tcp));
