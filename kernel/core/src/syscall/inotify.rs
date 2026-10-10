@@ -139,3 +139,21 @@ bitflags! {
         const CLOEXEC = 1 << 19; // Close on exec
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_isdir_in_watch_mask() {
+        let flags = InotifyEvents::CREATE.bits()
+            | InotifyEvents::ISDIR.bits()
+            | InotifyEvents::DELETE_SELF.bits();
+        let (events, controls) = parse_inotify_watch_request(flags).unwrap();
+
+        assert!(events.contains(InotifyEvents::CREATE));
+        assert!(events.contains(InotifyEvents::ISDIR));
+        assert!(events.contains(InotifyEvents::DELETE_SELF));
+        assert!(controls.is_empty());
+    }
+}

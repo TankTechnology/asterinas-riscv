@@ -651,6 +651,10 @@ bitflags! {
         const UNMOUNT       = 1 << 13; // Backing fs was unmounted
         const Q_OVERFLOW    = 1 << 14; // Event queue overflowed
         const IGNORED       = 1 << 15; // File was ignored
+        // Linux exposes this bit in inotify events and accepts it in an
+        // add-watch mask. util-linux/libmount uses CREATE | ISDIR when
+        // watching /run/mount.
+        const ISDIR         = 1 << 30;
         const CLOSE         = Self::CLOSE_WRITE.bits() | Self::CLOSE_NOWRITE.bits(); // Close events
         const MOVE          = Self::MOVED_FROM.bits() | Self::MOVED_TO.bits();       // Move events
         const ALL_EVENTS    = Self::ACCESS.bits() | Self::MODIFY.bits() | Self::ATTRIB.bits() |
