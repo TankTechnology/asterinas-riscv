@@ -36,6 +36,7 @@ from tools.riscv.debian.rootfs.contract import (
     validate_frozen_root,
 )
 from tools.riscv.debian.rootfs.desktop_m3_gate import (
+    DESKTOP_M3_BOOTARGS,
     DESKTOP_M3_MILESTONES,
     DesktopM3Operations,
     capture_rendered_ppm,
@@ -6344,6 +6345,11 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
         config = parse_gate_args(arguments)
 
         self.assertEqual(config.smp, 4)
+        self.assertEqual(config.root_fs, "ext2")
+        self.assertEqual(
+            parse_gate_args([*arguments, "--root-fs", "ext4"]).root_fs,
+            "ext4",
+        )
         with self.assertRaises(SystemExit):
             parse_gate_args(arguments[:-2])
         for forbidden in ("download", "rebuild", "mirror"):
@@ -6628,6 +6634,17 @@ class DebianDesktopM4GateTests(unittest.TestCase):
         self.assertIn("virtio-tablet-device", arguments)
         self.assertEqual(arguments[arguments.index("-smp") + 1], "4")
         self.assertEqual(arguments[arguments.index("-nic") + 1], "none")
+
+    def test_ext4_root_mode_adds_stage1_filesystem_selector(self) -> None:
+        operations = object.__new__(DesktopM4Operations)
+        ext2 = mock.Mock(root_fs="ext2")
+        ext4 = mock.Mock(root_fs="ext4")
+
+        self.assertEqual(operations._bootargs(ext2), DESKTOP_M3_BOOTARGS)
+        self.assertEqual(
+            operations._bootargs(ext4),
+            "console=ttyS0 loglevel=4 init=/init -- --root-fs=ext4 --root-init=systemd",
+        )
 
     def test_classifier_requires_ordered_application_evidence(self) -> None:
         framebuffer = (

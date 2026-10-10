@@ -341,8 +341,18 @@ class DesktopM3Operations(ConcreteOperations):
             f'fdt set /{node} status "okay"',
             "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
             "setenv initrd_size ${filesize}",
-            *_bounded_uboot_bootargs_commands(self.BOOTARGS),
+            *_bounded_uboot_bootargs_commands(self._bootargs(self.config)),
         )
+
+    def _bootargs(self, config: GateConfig) -> str:
+        """Select the Stage1 filesystem contract for this root image."""
+
+        if config.root_fs == "ext2":
+            return self.BOOTARGS
+        prefix, separator, init_args = self.BOOTARGS.partition(" -- ")
+        if not separator or "--root-fs=" in init_args:
+            raise GateFailure("desktop bootargs have no root-init separator")
+        return f"{prefix} -- --root-fs={config.root_fs} {init_args}"
 
     def _completion_is_failure(
         self, completion: bytes, failure_markers: tuple[bytes, ...]
