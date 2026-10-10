@@ -359,10 +359,9 @@ impl BlockPtrTree {
     /// <https://elixir.bootlin.com/linux/v7.0/source/fs/ext2/inode.c#L1172>).
     pub(in inode) fn truncate_to_byte_len(&mut self, fs: &Ext2, new_size: usize) {
         if self.extent_tree {
-            // Extent truncation needs record removal/rewrite. Never interpret
-            // an extent header as legacy indirect pointers, or truncation
-            // could free unrelated blocks.
-            error!("truncate: extent-tree truncation is not yet supported");
+            if let Err(err) = self.truncate_extent_tree(fs, new_size) {
+                error!("truncate: extent-tree truncation failed, err: {:?}", err);
+            }
             return;
         }
 
@@ -392,6 +391,89 @@ impl BlockPtrTree {
         }
 
         self.free_indirect_roots_after(fs, walk.root_slot() as usize);
+    }
+
+    /// Truncate an inline (depth-zero) ext4 extent tree.
+    ///
+    /// The Debian root images use inline extent trees for the small files that
+    /// package management rewrites most often.  Keep the extent records in
+    /// logical order, free only the physical suffix, and then rewrite the
+    /// inode's `i_block` extent header.  Multi-level extent mutation remains
+    /// unsupported and is rejected without interpreting its index blocks as
+    /// legacy pointers.
+    fn truncate_extent_tree(&mut self, fs: &Ext2, new_size: usize) -> Result<()> {
+        let mut bytes = self.raw_block_ptrs.extent_bytes();
+        if u16::from_le_bytes([bytes[0], bytes[1]]) != EXTENT_MAGIC {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent header");
+        }
+        let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
+        let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
+        if entries > max_entries || entries > 4 || max_entries == 0 {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent entry count");
+        }
+        if depth != 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "nested ext4 extent truncation");
+        }
+
+        let cutoff = u32::try_from(new_size.div_ceil(BLOCK_SIZE))
+            .map_err(|_| Error::with_message(Errno::EFBIG, "ext4 truncate size overflow"))?;
+        let mut kept = 0usize;
+        let mut freed_blocks = 0u32;
+
+        for index in 0..entries {
+            let offset = 12 + index * 12;
+            let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            let raw_length = u16::from_le_bytes(bytes[offset + 4..offset + 6].try_into().unwrap());
+            let length = u32::from(raw_length & 0x7fff);
+            if length == 0 {
+                return_errno_with_message!(Errno::EUCLEAN, "zero-length ext4 extent");
+            }
+            let physical_hi = u16::from_le_bytes(bytes[offset + 6..offset + 8].try_into().unwrap());
+            if physical_hi != 0 {
+                return_errno_with_message!(Errno::EOPNOTSUPP, "64-bit ext4 extent truncation");
+            }
+            let physical = u32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap());
+            let keep = if logical >= cutoff {
+                0
+            } else {
+                length.min(cutoff - logical)
+            };
+
+            if keep < length {
+                let free_start = physical
+                    .checked_add(keep)
+                    .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 extent block overflow"))?;
+                let free_len = length - keep;
+                fs.free_blocks(free_start, free_len)?;
+                freed_blocks = freed_blocks
+                    .checked_add(free_len)
+                    .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 free count overflow"))?;
+            }
+
+            if keep != 0 {
+                let keep_length = (raw_length & 0x8000) | u16::try_from(keep).unwrap();
+                let new_offset = 12 + kept * 12;
+                bytes[new_offset..new_offset + 4].copy_from_slice(&logical.to_le_bytes());
+                bytes[new_offset + 4..new_offset + 6].copy_from_slice(&keep_length.to_le_bytes());
+                bytes[new_offset + 6..new_offset + 8].copy_from_slice(&0u16.to_le_bytes());
+                bytes[new_offset + 8..new_offset + 12].copy_from_slice(&physical.to_le_bytes());
+                kept += 1;
+            }
+        }
+
+        bytes[2..4].copy_from_slice(&(kept as u16).to_le_bytes());
+        for offset in (12 + kept * 12)..(12 + 4 * 12) {
+            bytes[offset] = 0;
+        }
+        for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
+            *value = u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
+        }
+        self.raw_block_ptrs.sector_count = self
+            .raw_block_ptrs
+            .sector_count
+            .saturating_sub(freed_blocks.saturating_mul(SECTORS_PER_BLOCK));
+        Ok(())
     }
 
     /// Returns a conservative hole run starting from `iblock`, capped at
@@ -2006,5 +2088,34 @@ mod test {
         }
         let tree = make_block_ptr_tree(block_ptrs, 0, &f.ext2);
         assert!(tree.lookup_block_range(u32::MAX, 1).is_err());
+    }
+
+    #[ktest]
+    fn truncate_inline_extent_range_releases_suffix() {
+        let f = Ext2FixtureBuilder::new(1, 256)
+            .with_free_blocks(64, 64)
+            .build()
+            .unwrap();
+        let data = f.ext2.alloc_blocks(4, 64).unwrap();
+        let mut bytes = [0u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
+        bytes[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+        bytes[2..4].copy_from_slice(&1u16.to_le_bytes());
+        bytes[4..6].copy_from_slice(&4u16.to_le_bytes());
+        bytes[12..16].copy_from_slice(&0u32.to_le_bytes());
+        bytes[16..18].copy_from_slice(&4u16.to_le_bytes());
+        bytes[20..24].copy_from_slice(&data.start.to_le_bytes());
+        let mut block_ptrs = [0u32; RAW_BLOCK_PTRS_LEN];
+        for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+            block_ptrs[index] = u32::from_le_bytes(chunk.try_into().unwrap());
+        }
+        let mut tree = make_block_ptr_tree(block_ptrs, SECTORS_PER_BLOCK * 4, &f.ext2);
+        let free_before = f.ext2.super_block().free_blocks_count();
+
+        tree.truncate_to_byte_len(&f.ext2, BLOCK_SIZE);
+
+        assert_eq!(tree.lookup_block(0).unwrap(), Some(data.start));
+        assert_eq!(tree.lookup_block(1).unwrap(), None);
+        assert_eq!(tree.raw_block_ptrs.sector_count, SECTORS_PER_BLOCK);
+        assert_eq!(f.ext2.super_block().free_blocks_count() - free_before, 3);
     }
 }

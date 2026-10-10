@@ -34,9 +34,10 @@ chroot /ext2 /bin/sh -c '
 '
 
 chroot /ext2 /usr/bin/env DEBIAN_FRONTEND=noninteractive \
-    /usr/bin/apt-get update
+    /usr/bin/apt-get -o Acquire::Languages=none -o Acquire::Retries=0 update
 chroot /ext2 /usr/bin/env DEBIAN_FRONTEND=noninteractive \
-    /usr/bin/apt-get install -y --no-install-recommends hello
+    /usr/bin/apt-get -o Acquire::Languages=none -o Acquire::Retries=0 \
+    install -y --no-install-recommends hello
 
 test -x /ext2/usr/bin/hello
 test "$(chroot /ext2 /usr/bin/hello)" = 'Hello, world!'
