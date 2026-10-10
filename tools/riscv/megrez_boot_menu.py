@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 
-"""Prepare and publish one immutable, four-mode Megrez extlinux selector."""
+"""Prepare and publish one immutable Megrez extlinux selector."""
 
 from __future__ import annotations
 
@@ -18,17 +18,33 @@ import zlib
 from tools.riscv.debian.rootfs.gate_runtime import PinnedOutputDirectory
 from tools.riscv.megrez_boot_manifest import BootManifestError, MAX_EXTLINUX_BYTES
 from tools.riscv.megrez_board_session import MEGREZ_FRAMEBUFFER
+from tools.riscv.megrez_hardware_probe import PROBE_SPECS, probe_menu_args
 
 
-MODES = ("basic", "probe", "desktop")
+PROBE_MODES = tuple(PROBE_SPECS)
+PHY_DIAGNOSTIC_MODE = "gmac-phy"
+# Keep the established RockOS/fallback/Basic/desktop choices stable.  The
+# device probes are appended so an old operator script cannot accidentally
+# select a new diagnostic entry by number.
+MODES = ("basic", "probe", "desktop", *PROBE_MODES, PHY_DIAGNOSTIC_MODE)
 PATH = re.compile(r"/[A-Za-z0-9][A-Za-z0-9._+-]*(?:/[A-Za-z0-9][A-Za-z0-9._+-]*)*")
 LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 BASE_ARGS = "console=ttyS0 loglevel=info asterinas.klog_capture=info init=/init"
 MODE_ARGS = {
-    "basic": BASE_ARGS + " -- --root-init=basic",
+    # Basic is a diagnostic entry. Keep a bounded in-guest recovery deadline
+    # so a boot that reaches the kernel but never starts the shell returns to
+    # firmware without relying on the host serial session.
+    "basic": BASE_ARGS + " asterinas.reboot_after=60 -- --root-init=basic",
     "probe": BASE_ARGS + " asterinas.reboot_after=90 -- --root-init=probe-auto",
+    **{mode: probe_menu_args(mode) for mode in PROBE_MODES},
+    PHY_DIAGNOSTIC_MODE: (
+        BASE_ARGS
+        + " asterinas.gmac_diagnostic=phy asterinas.reboot_after=90"
+        + " -- --root-init=probe-auto"
+    ),
 }
 ARTIFACTS = ("kernel", "stage1", "dtb", "desktop_stage1")
+BASIC_STAGE1_ENTRIES = frozenset(("bin/busybox", "bin/sh"))
 
 
 def require(condition: bool, message: str) -> None:
@@ -198,6 +214,29 @@ def validate_prepared_dtb(path: Path) -> None:
         )
 
 
+def validate_basic_stage1(path: Path) -> None:
+    """Require the initramfs entries needed by the Basic diagnostic shell."""
+
+    require(path.is_file() and not path.is_symlink(), "Basic Stage1 is not a file")
+    try:
+        payload = path.read_bytes()
+        result = subprocess.run(
+            ["cpio", "--quiet", "--list"],
+            input=payload,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+    except OSError as error:
+        raise BootManifestError(f"cannot inspect Basic Stage1: {error}") from error
+    require(result.returncode == 0, "Basic Stage1 is not a readable cpio archive")
+    entries = set(result.stdout.decode(errors="replace").splitlines())
+    require(
+        BASIC_STAGE1_ENTRIES <= entries,
+        "Basic Stage1 must contain bin/busybox and bin/sh",
+    )
+
+
 def validate(document: dict) -> None:
     require(
         isinstance(document, dict)
@@ -260,11 +299,10 @@ def validate(document: dict) -> None:
     require(
         tokens[tokens.index("--") + 1 :]
         in (
-            ["--root-init=systemd"],
             ["--root-init=systemd", "--debug-console=root"],
             ["--root-init=systemd", "--debug-console=root", "--volatile-home"],
         ),
-        "invalid desktop root-init",
+        "invalid desktop root-init: require --debug-console=root without isolation",
     )
     require(
         not any(t.startswith("asterinas.reboot_after") for t in tokens),
@@ -294,6 +332,7 @@ def prepare(
     vendor: Path, sources: dict[str, Path], desktop_args: str, output: Path
 ) -> dict:
     validate_prepared_dtb(sources["dtb"])
+    validate_basic_stage1(sources["stage1"])
     output.mkdir(parents=True, exist_ok=False)
     document = {
         "schema_version": 3,

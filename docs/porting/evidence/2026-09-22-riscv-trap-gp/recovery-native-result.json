@@ -1,0 +1,194 @@
+{
+  "artifacts": {
+    "dtb_crc32": "06f2ecfb",
+    "dtb_sha256": "586d1136aed48f8935a35febe0cf7d68fe44892215ab81209def62ffdb000142",
+    "dtb_size": 8151,
+    "initrd_crc32": "863292a3",
+    "initrd_sha256": "4eef36c5481e004216f31236e0bc24005aca5dd3c4828f722c40a02042d5939b",
+    "initrd_size": 483840,
+    "kernel_crc32": "4fd7e519",
+    "kernel_sha256": "ae905fc0f4b78a10175729931ca0d717f2d6a31f5595898b074f74f72d25e8e2",
+    "kernel_size": 15943616
+  },
+  "audit": {
+    "application_processor_ids": [],
+    "booti_command_count": 1,
+    "classification": "BOOT_COMPLETED",
+    "diagnostic": {
+      "activation_count": 0,
+      "failures": [],
+      "first_return_reason": null,
+      "first_syscall": null,
+      "first_syscall_sepc": null,
+      "last_stage": null,
+      "ordered_stages": [],
+      "page_fault_outcome": null,
+      "passed": true,
+      "repeated_page_fault": false,
+      "stage_evidence": [
+        {
+          "count": 0,
+          "indices": [],
+          "stage": "diagnostic_active"
+        },
+        {
+          "count": 0,
+          "indices": [],
+          "stage": "process_components_ready"
+        },
+        {
+          "count": 0,
+          "indices": [],
+          "stage": "device_init_ready"
+        },
+        {
+          "count": 0,
+          "indices": [],
+          "stage": "stdio_init_ready"
+        },
+        {
+          "count": 0,
+          "indices": [],
+          "stage": "user_enter"
+        },
+        {
+          "count": 0,
+          "indices": [],
+          "stage": "user_first_return"
+        },
+        {
+          "count": 0,
+          "indices": [],
+          "stage": "user_first_page_fault"
+        },
+        {
+          "count": 0,
+          "indices": [],
+          "stage": "user_first_page_fault_handler"
+        },
+        {
+          "count": 0,
+          "indices": [],
+          "stage": "user_page_fault_repeated"
+        },
+        {
+          "count": 0,
+          "indices": [],
+          "stage": "user_first_syscall"
+        },
+        {
+          "count": 0,
+          "indices": [],
+          "stage": "user_first_write_returned"
+        }
+      ],
+      "total_count": 0,
+      "write_fd": null,
+      "write_requested": null,
+      "write_result": null
+    },
+    "effective_bootargs": "console=ttyS0 loglevel=info init=/init asterinas.net=eic7700-rj45,10.100.19.200/21 asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e asterinas.reboot_after=60",
+    "failures": [],
+    "passed": true,
+    "random_source": null,
+    "userspace_marker_count": 1
+  },
+  "boot_disk_sha256_after": "9b11b386211163c7ea3eeb1901ba9689d853214cc93e998defcc6b00da1186ea",
+  "boot_disk_sha256_before": "9b11b386211163c7ea3eeb1901ba9689d853214cc93e998defcc6b00da1186ea",
+  "boot_flow": "uboot-booti",
+  "device_set": "virtio-net-slirp",
+  "display_audit": null,
+  "dtb_sha256": "586d1136aed48f8935a35febe0cf7d68fe44892215ab81209def62ffdb000142",
+  "effective_bootargs": "console=ttyS0 loglevel=info init=/init asterinas.net=eic7700-rj45,10.100.19.200/21 asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e asterinas.reboot_after=60",
+  "expected_terminal": "UserspaceReady",
+  "fidelity": "virtual-platform",
+  "handoff_observability": "entry registers and satp rely on reviewed U-Boot booti; the early-kernel marker is indirect handoff evidence",
+  "machine": "qemu-virt-smp4-frozen-dtb",
+  "machine_provenance": "QEMU virt SMP=4 with rng-seed removed for exact DTB identity",
+  "manifest_sha256_after": "f86db44ec05e00239a58f188ca8d29ffa85a299b32b383f2f51ac09c0dc0c0a6",
+  "manifest_sha256_before": "f86db44ec05e00239a58f188ca8d29ffa85a299b32b383f2f51ac09c0dc0c0a6",
+  "opensbi_version": "OpenSBI v1.7",
+  "passed": true,
+  "payload_dtb_sha256_after": "586d1136aed48f8935a35febe0cf7d68fe44892215ab81209def62ffdb000142",
+  "payload_dtb_sha256_before": "586d1136aed48f8935a35febe0cf7d68fe44892215ab81209def62ffdb000142",
+  "profile": "generic-sv39-smp4-software-reboot",
+  "qemu_argv": [
+    "qemu-system-riscv64",
+    "-machine",
+    "virt",
+    "-cpu",
+    "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+    "-m",
+    "2G",
+    "-smp",
+    "4",
+    "-display",
+    "none",
+    "-monitor",
+    "none",
+    "-serial",
+    "stdio",
+    "-kernel",
+    "/tmp/qemu-booti-inputs-xvl6k0rv/u-boot",
+    "-drive",
+    "if=none,format=raw,file=/tmp/qemu-booti-inputs-xvl6k0rv/boot.ext4,id=bootdisk,snapshot=on",
+    "-device",
+    "virtio-blk-device,drive=bootdisk",
+    "-netdev",
+    "user,id=net0",
+    "-device",
+    "virtio-net-device,netdev=net0"
+  ],
+  "qemu_version": "QEMU emulator version 10.2.1",
+  "scenario": "positive",
+  "scope": "complete-boot",
+  "screenshot_sha256": null,
+  "session": {
+    "boot_to_recovery_elapsed_seconds": 67.15532293403521,
+    "booti_sent_count": 1,
+    "cleanup_complete": true,
+    "failure": null,
+    "killed": false,
+    "marker_seen": true,
+    "milestones": [
+      {
+        "elapsed_seconds": 0.08562893490307033,
+        "stage": "FirmwareReady"
+      },
+      {
+        "elapsed_seconds": 2.203032878926024,
+        "stage": "BootloaderReady"
+      },
+      {
+        "elapsed_seconds": 2.3447812269441783,
+        "stage": "ArtifactsLoaded"
+      },
+      {
+        "elapsed_seconds": 2.350360687938519,
+        "stage": "KernelHandoff"
+      },
+      {
+        "elapsed_seconds": 2.35246309498325,
+        "stage": "KernelEarly"
+      },
+      {
+        "elapsed_seconds": 33.693761567003094,
+        "stage": "UserspaceReady"
+      }
+    ],
+    "recovery_complete": true,
+    "recovery_elapsed_seconds": 35.80625109700486,
+    "returncode": 0,
+    "termination_action": "SIGTERM",
+    "timed_out": false
+  },
+  "source_dtb_sha256_after": null,
+  "source_dtb_sha256_before": null,
+  "status": "PASS",
+  "terminal_classification": "BOOT_COMPLETED",
+  "uboot_sha256_after": "cf69085add048ddfd83fb38540a195f4d581baf95426ee4bfde87ffb0f4fe450",
+  "uboot_sha256_before": "cf69085add048ddfd83fb38540a195f4d581baf95426ee4bfde87ffb0f4fe450",
+  "uboot_version": "U-Boot 2026.07 (Sep 22 2026 - 10:29:27 +0000)",
+  "validation_scenario": "megrez-tcp-probe-recovery",
+  "variant": null
+}

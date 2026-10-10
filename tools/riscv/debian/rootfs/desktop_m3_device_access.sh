@@ -8,6 +8,15 @@ input_devices=()
 readonly INPUT_DIRECTORY="${ASTERINAS_DESKTOP_M3_INPUT_DIRECTORY:-/dev/input}"
 readonly STABLE_INPUT_DIRECTORY="${ASTERINAS_DESKTOP_M3_STABLE_INPUT_DIRECTORY:-/run/asterinas-input}"
 readonly XKB_CACHE_DIR="/var/lib/xkb"
+readonly OFFLINE_DESKTOP="${ASTERINAS_DESKTOP_OFFLINE:-0}"
+
+case "$OFFLINE_DESKTOP" in
+    0|1) ;;
+    *)
+        printf '%s\n' 'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: invalid offline desktop mode' >&2
+        exit 1
+        ;;
+esac
 
 if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then
     # Keep diagnostics off the synchronous console path.  On Asterinas the
@@ -100,35 +109,39 @@ while [[ ! -c /dev/fb0 ]]; do
 done
 keyboard_node=""
 pointer_node=""
-while true; do
-    if input_nodes="$(
-        PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
-            /usr/bin/python3 /usr/lib/asterinas/desktop-input-identity
-    )"; then
-        read -r keyboard_node pointer_node <<<"$input_nodes"
-        break
-    else
-        input_status=$?
-    fi
-    ((input_status != 2)) || exit 1
-    if ((SECONDS >= device_deadline)); then
-        printf '%s\n' \
-            'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: desktop input devices did not appear' \
-            >&2
-        exit 1
-    fi
-    /usr/bin/sleep 1
-done
-[[ "$keyboard_node" != "$pointer_node" ]] || {
-    printf '%s\n' 'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: ambiguous desktop input device identity' >&2
-    exit 1
-}
-input_devices=("$INPUT_DIRECTORY"/event*)
-
 /usr/bin/install -d -m 0755 -- "$STABLE_INPUT_DIRECTORY"
 /usr/bin/rm -f -- "$STABLE_INPUT_DIRECTORY/keyboard" "$STABLE_INPUT_DIRECTORY/pointer"
-/usr/bin/ln -s -- "$keyboard_node" "$STABLE_INPUT_DIRECTORY/keyboard"
-/usr/bin/ln -s -- "$pointer_node" "$STABLE_INPUT_DIRECTORY/pointer"
+if [[ "$OFFLINE_DESKTOP" == 1 ]]; then
+    printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=desktop-input-disabled' \
+        >>/run/browser-web-device-stage.log 2>/dev/null || true
+else
+    while true; do
+        if input_nodes="$(
+            PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+                /usr/bin/python3 /usr/lib/asterinas/desktop-input-identity
+        )"; then
+            read -r keyboard_node pointer_node <<<"$input_nodes"
+            break
+        else
+            input_status=$?
+        fi
+        ((input_status != 2)) || exit 1
+        if ((SECONDS >= device_deadline)); then
+            printf '%s\n' \
+                'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: desktop input devices did not appear' \
+                >&2
+            exit 1
+        fi
+        /usr/bin/sleep 1
+    done
+    [[ "$keyboard_node" != "$pointer_node" ]] || {
+        printf '%s\n' 'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: ambiguous desktop input device identity' >&2
+        exit 1
+    }
+    input_devices=("$INPUT_DIRECTORY"/event*)
+    /usr/bin/ln -s -- "$keyboard_node" "$STABLE_INPUT_DIRECTORY/keyboard"
+    /usr/bin/ln -s -- "$pointer_node" "$STABLE_INPUT_DIRECTORY/pointer"
+fi
 
 if ! chown asterinas:video /dev/fb0 || ! chmod 0660 /dev/fb0; then
     if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" == 1 ]]; then

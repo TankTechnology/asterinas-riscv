@@ -250,7 +250,13 @@ impl SubmittedBio {
             ..
         } = self;
 
-        // Set the status.
+        drop(segments);
+
+        // The callback publishes read data into the page cache and records
+        // writeback errors. Publish completion only after those side effects
+        // are visible to synchronous waiters.
+        general_complete_fn(metadata.type_(), status, complete_fn);
+
         let result = metadata.status.compare_exchange(
             BioStatus::Submit as u32,
             status as u32,
@@ -258,10 +264,6 @@ impl SubmittedBio {
             Ordering::Relaxed,
         );
         assert!(result.is_ok());
-
-        drop(segments);
-
-        general_complete_fn(metadata.type_(), status, complete_fn);
 
         metadata.wait_queue.wake_all();
     }
@@ -299,7 +301,7 @@ impl BioMetadata {
     }
 
     pub fn status(&self) -> BioStatus {
-        BioStatus::try_from(self.status.load(Ordering::Relaxed)).unwrap()
+        BioStatus::try_from(self.status.load(Ordering::Acquire)).unwrap()
     }
 }
 
@@ -733,6 +735,28 @@ mod tests {
     use ostd::prelude::ktest;
 
     use super::*;
+
+    #[ktest]
+    fn bio_completion_is_published_after_callback() {
+        let bio = Bio::new(BioType::Read, Sid::new(0), Vec::new(), None);
+        let metadata = bio.metadata.clone();
+        metadata
+            .status
+            .store(BioStatus::Submit as u32, Ordering::Release);
+        let callback_metadata = metadata.clone();
+        let submitted = SubmittedBio {
+            metadata: metadata.clone(),
+            sid_offset: 0,
+            complete_fn: Some(Box::new(move |_| {
+                assert_eq!(callback_metadata.status(), BioStatus::Submit);
+            })),
+            segments: Vec::new(),
+        };
+
+        submitted.complete(BioStatus::Complete);
+        assert_eq!(metadata.status(), BioStatus::Complete);
+        assert!(metadata.wait().is_ok());
+    }
 
     #[ktest]
     fn device_fills_only_from_device_segments() {

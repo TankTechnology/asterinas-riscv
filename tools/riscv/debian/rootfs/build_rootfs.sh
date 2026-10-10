@@ -1264,6 +1264,33 @@ configure_desktop_m5_network() {
         "$script_directory/desktop_m5_network_evidence.sh" \
         "$stage/usr/lib/asterinas/desktop-m5-network-evidence"
     install -D -m 0755 -- \
+        "$script_directory/gmac_single_packet_evidence.py" \
+        "$stage/usr/lib/asterinas/gmac-single-packet-evidence"
+    install -D -m 0755 -- \
+        "$script_directory/desktop_m4_framebuffer_rw.py" \
+        "$stage/usr/lib/asterinas/desktop-m4-framebuffer-rw"
+    cat >"$stage/etc/systemd/system/asterinas-single-packet.service" <<'EOF'
+[Unit]
+Description=Asterinas single UDP datagram qualification
+After=local-fs.target
+ConditionKernelCommandLine=asterinas.single_packet_nonce
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sleep 5
+ExecStart=/usr/lib/asterinas/gmac-single-packet-evidence --console /dev/ttyS0 --timeout 15
+TimeoutStartSec=30s
+TimeoutStopSec=5s
+RemainAfterExit=yes
+
+[Install]
+WantedBy=basic.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/asterinas-single-packet.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    ln -s -- ../asterinas-single-packet.service \
+        "$stage/etc/systemd/system/basic.target.wants/asterinas-single-packet.service"
+    install -D -m 0755 -- \
         "$script_directory/megrez_safe_reboot.sh" \
         "$stage/usr/lib/asterinas/megrez-safe-reboot"
     cat >"$stage/etc/systemd/system/$safe_reboot_service_name.service" <<'EOF'
@@ -1806,6 +1833,17 @@ EOF
     install -D -m 0755 -- \
         "$evidence_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-evidence"
+    if [[ "$generation" == m4 ]]; then
+        install -D -m 0755 -- \
+            "$script_directory/desktop_m4_framebuffer_probe.py" \
+            "$stage/usr/lib/asterinas/desktop-m4-framebuffer-probe"
+        install -D -m 0755 -- \
+            "$script_directory/desktop_m4_framebuffer_rw.py" \
+            "$stage/usr/lib/asterinas/desktop-m4-framebuffer-rw"
+        install -D -m 0755 -- \
+            "$script_directory/desktop_m4_x11_paint.py" \
+            "$stage/usr/lib/asterinas/desktop-m4-x11-paint"
+    fi
     install -d -m 0755 -- "$stage/etc/systemd/system/dbus.service.d"
     cat >"$stage/etc/systemd/system/dbus.service.d/asterinas-readiness.conf" <<'EOF'
 [Service]
@@ -1882,7 +1920,11 @@ EOF
     ln -s -- \
         ../$service_name.service \
         "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
-    if [[ "$generation" == m4 ]]; then
+    # The browser-free evidence unit is a separate entry point for profiles
+    # that need a core-only gate.  The standalone desktop-m4 profile already
+    # owns the authoritative evidence unit; installing both would run the
+    # framebuffer probe concurrently and make ext2/Python reads race.
+    if [[ "$generation" == m4 && "$PROFILE" != desktop-m4 ]]; then
         install -D -m 0644 -- \
             "$script_directory/desktop_m4_core_evidence.service" \
             "$stage/etc/systemd/system/asterinas-desktop-core-evidence.service"
@@ -1979,10 +2021,18 @@ Section "ServerFlags"
 EndSection
 EOF
     chmod 0644 -- "$fbdev_config_directory/20-asterinas.conf"
+    install -D -m 0644 -- \
+        "$script_directory/desktop_fbdev_no_input.conf" \
+        "$fbdev_config_directory/20-asterinas-no-input.conf"
+    install -D -m 0644 -- \
+        "$script_directory/desktop_fbdev_qemu.conf" \
+        "$fbdev_config_directory/20-asterinas-qemu.conf"
     install -d -m 0755 -- "$stage/etc/X11/xorg.conf.d"
     rm -f -- "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
-    ln -s -- ../../asterinas/display-providers/fbdev/xorg.conf.d/20-asterinas.conf \
-        "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
+    if [[ "$generation" != m4 ]]; then
+        ln -s -- ../../asterinas/display-providers/fbdev/xorg.conf.d/20-asterinas.conf \
+            "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
+    fi
 }
 
 create_and_verify_image() {
@@ -2106,6 +2156,8 @@ browser_web_runtime_digest() {
     local input
     local -a inputs=(
         desktop_m5_network_evidence.sh
+        gmac_single_packet_evidence.py
+        desktop_m4_framebuffer_rw.py
         desktop_m5_network_gate.py
         browser_web_firefox.sh
         browser_web_marionette_gate.py
@@ -2119,11 +2171,14 @@ browser_web_runtime_digest() {
         physical_external_services_quiesce.sh
         browser_interaction_perf.py
         desktop_display_provider.sh
+        desktop_fbdev_no_input.conf
         browser_performance_provenance.py
         firefox_diagnostic_snapshot.py
         browser_web_trust_check.py
         browser_web_online_rootfs_check.py
         firefox_jit_overlay.py
+        physical_graphics_control.sh
+        desktop_m3_device_access.sh
     )
 
     for input in "${inputs[@]}"; do
