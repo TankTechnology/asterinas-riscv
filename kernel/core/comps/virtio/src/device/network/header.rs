@@ -13,11 +13,12 @@ pub(super) struct VirtioNetHdr {
     gso_size: u16,
     csum_start: u16,
     csum_offset: u16,
-    num_buffers: u16, // Only if PCI is modern or VIRTIO_NET_F_MRG_RXBUF negotiated
-                      // hash_value: u32,        // Only if VIRTIO_NET_F_HASH_REPORT negotiated
-                      // hash_report: u16,       // Only if VIRTIO_NET_F_HASH_REPORT negotiated
-                      // padding_reserved: u16,  // Only if VIRTIO_NET_F_HASH_REPORT negotiated
 }
+
+// `VIRTIO_NET_F_MRG_RXBUF` is not negotiated by this driver, so the
+// virtio-net header is the 10-byte base header.  The optional `num_buffers`
+// field must not be present unless mergeable receive buffers are enabled.
+const _: () = assert!(size_of::<VirtioNetHdr>() == 10);
 
 bitflags! {
     #[repr(C)]
