@@ -3,11 +3,11 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use ostd::{
-    boot::{boot_info, BootloaderFramebufferArg, BootloaderFramebufferFormat},
+    Error, Result,
+    boot::{BootloaderFramebufferArg, BootloaderFramebufferFormat, boot_info},
     io::IoMem,
     mm::{CachePolicy, HasSize, VmIo},
     sync::Mutex,
-    Error, Result,
 };
 use spin::Once;
 

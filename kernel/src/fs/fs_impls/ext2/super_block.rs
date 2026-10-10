@@ -1029,7 +1029,7 @@ mod test {
         assert!(sb.is_backup_group(7));
         assert!(sb.is_backup_group(9)); // 3^2
         assert!(sb.is_backup_group(25)); // 5^2
-                                         // 2, 4, 6 are not backups with sparse_super.
+        // 2, 4, 6 are not backups with sparse_super.
         assert!(!sb.is_backup_group(2));
         assert!(!sb.is_backup_group(4));
         assert!(!sb.is_backup_group(6));

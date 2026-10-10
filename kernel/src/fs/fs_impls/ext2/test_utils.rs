@@ -8,19 +8,19 @@ use core::{
 };
 
 use aster_block::{
+    BLOCK_SIZE, BlockDevice, BlockDeviceMeta, SECTOR_SIZE,
     bio::{BioEnqueueError, BioStatus, BioType, SubmittedBio},
     id::Bid,
-    BlockDevice, BlockDeviceMeta, BLOCK_SIZE, SECTOR_SIZE,
 };
 use device_id::{DeviceId, MajorId, MinorId};
-use ostd::mm::{io::util::HasVmReaderWriter, FrameAllocOptions, HasSize, Segment, VmIo};
+use ostd::mm::{FrameAllocOptions, HasSize, Segment, VmIo, io::util::HasVmReaderWriter};
 
 use super::{
     block_group::RawBlockGroup,
     fs::{Ext2, ROOT_INO},
-    inode::{FilePerm, Inode, RawInode, RAW_BLOCK_PTRS_LEN},
+    inode::{FilePerm, Inode, RAW_BLOCK_PTRS_LEN, RawInode},
     super_block::{
-        ErrorsBehavior, FsState, OsId, RawSuperBlock, RevLevel, MAGIC_NUM, SUPER_BLOCK_OFFSET,
+        ErrorsBehavior, FsState, MAGIC_NUM, OsId, RawSuperBlock, RevLevel, SUPER_BLOCK_OFFSET,
     },
 };
 use crate::{

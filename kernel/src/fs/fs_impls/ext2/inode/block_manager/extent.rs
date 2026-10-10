@@ -13,7 +13,7 @@
 use ostd::mm::io::util::HasVmReaderWriter;
 
 use super::block_ptr_tree::{RawBlockPtrs, ResolvedBlockRange};
-use crate::fs::fs_impls::ext2::{prelude::*, Ext2};
+use crate::fs::fs_impls::ext2::{Ext2, prelude::*};
 
 const EXTENT_MAGIC: u16 = 0xf30a;
 const EXTENT_HEADER_SIZE: usize = 12;

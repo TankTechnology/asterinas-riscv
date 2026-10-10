@@ -12,7 +12,7 @@ use crate::{
     fs::{
         file::InodeType,
         vfs::{
-            file_system::{register_live_file_system, FileSystem, FsFlags},
+            file_system::{FileSystem, FsFlags, register_live_file_system},
             path::{
                 Path,
                 dentry::{Dentry, DentryKey},

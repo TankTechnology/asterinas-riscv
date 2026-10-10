@@ -7,22 +7,22 @@ use aster_util::mem_obj_slice::Slice;
 use bitvec::array::BitArray;
 use int_to_c_enum::TryFromInt;
 use io_util::{
-    batch::{IoBatch, IoCompletion},
     IoError,
+    batch::{IoBatch, IoCompletion},
 };
 use ostd::{
+    Error,
     mm::{
+        HasSize, Infallible, USegment, VmIo, VmReader, VmWriter,
         dma::DmaStream,
         io::util::{HasVmReaderWriter, VmReaderWriterResult},
-        HasSize, Infallible, USegment, VmIo, VmReader, VmWriter,
     },
     sync::{LocalIrqDisabled, SpinLock, WaitQueue},
-    Error,
 };
 use spin::Once;
 
-use super::{id::Sid, BlockDevice};
-use crate::{impl_block_device::general_complete_fn, prelude::*, BLOCK_SIZE, SECTOR_SIZE};
+use super::{BlockDevice, id::Sid};
+use crate::{BLOCK_SIZE, SECTOR_SIZE, impl_block_device::general_complete_fn, prelude::*};
 
 /// The unit for block I/O.
 ///

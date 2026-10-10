@@ -15,16 +15,16 @@ use crate::{
         fs_impls::ramfs::RamFs,
         pseudofs::{NsCommonOps, NsType, StashedDentry},
         vfs::{
-            file_system::{sync_file_systems, FileSystem},
+            file_system::{FileSystem, sync_file_systems},
             path::{Dentry, Mount, Path, PathResolver},
         },
     },
     prelude::*,
     process::{
+        UserNamespace,
         credentials::capabilities::CapSet,
         posix_thread::PosixThread,
         signal::{PollHandle, Pollee},
-        UserNamespace,
     },
     security::lsm::hooks as lsm_hooks,
 };

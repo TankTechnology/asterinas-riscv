@@ -1084,14 +1084,16 @@ mod tests {
             .unwrap(),
             (1920, 1080, 1920 * 4)
         );
-        assert!(validate_firmware_layout(
-            1920,
-            1080,
-            padded_stride,
-            1920 * 1080 * 4,
-            PixelFormat::BgrReserved,
-        )
-        .is_err());
+        assert!(
+            validate_firmware_layout(
+                1920,
+                1080,
+                padded_stride,
+                1920 * 1080 * 4,
+                PixelFormat::BgrReserved,
+            )
+            .is_err()
+        );
     }
 
     #[ktest]
@@ -1119,37 +1121,37 @@ mod tests {
     #[ktest]
     fn firmware_layout_refuses_what_the_copy_could_not_honour() {
         // A stride narrower than one row would make rows overlap.
-        assert!(validate_firmware_layout(
-            1920,
-            1080,
-            1920 * 3,
-            1920 * 1080 * 4,
-            PixelFormat::BgrReserved
-        )
-        .is_err());
+        assert!(
+            validate_firmware_layout(
+                1920,
+                1080,
+                1920 * 3,
+                1920 * 1080 * 4,
+                PixelFormat::BgrReserved
+            )
+            .is_err()
+        );
         // Arithmetic that would overflow rather than a large-but-valid mode.
         assert!(
             validate_firmware_layout(1, 2, usize::MAX, usize::MAX, PixelFormat::BgrReserved)
                 .is_err()
         );
         // A mapping one byte short of the last pixel the mode addresses.
-        assert!(validate_firmware_layout(
-            1920,
-            1080,
-            1920 * 4,
-            1920 * 1080 * 4 - 1,
-            PixelFormat::BgrReserved,
-        )
-        .is_err());
+        assert!(
+            validate_firmware_layout(
+                1920,
+                1080,
+                1920 * 4,
+                1920 * 1080 * 4 - 1,
+                PixelFormat::BgrReserved,
+            )
+            .is_err()
+        );
         // A format this backend would have to convert, not copy.
-        assert!(validate_firmware_layout(
-            1920,
-            1080,
-            1920 * 4,
-            1920 * 1080 * 4,
-            PixelFormat::Rgb888
-        )
-        .is_err());
+        assert!(
+            validate_firmware_layout(1920, 1080, 1920 * 4, 1920 * 1080 * 4, PixelFormat::Rgb888)
+                .is_err()
+        );
         // A mode with no pixels.
         assert!(
             validate_firmware_layout(0, 1080, 0, 1920 * 1080 * 4, PixelFormat::BgrReserved)
@@ -1170,36 +1172,40 @@ mod tests {
             validate_firmware_layout(width, height, stride, visible, PixelFormat::BgrReserved)
                 .is_ok()
         );
-        assert!(validate_firmware_layout(
-            width,
-            height,
-            stride,
-            visible - 1,
-            PixelFormat::BgrReserved
-        )
-        .is_err());
+        assert!(
+            validate_firmware_layout(width, height, stride, visible - 1, PixelFormat::BgrReserved)
+                .is_err()
+        );
     }
 
     #[ktest]
     fn firmware_present_stats_separate_full_and_dirty_copies() {
         let mut stats = FirmwarePresentStats::default();
-        assert!(stats
-            .record_success(PresentKind::Full, 8_294_400, 20_000_000, Duration::ZERO)
-            .is_some());
-        assert!(stats
-            .record_success(PresentKind::Dirty, 1_024, 50_000, Duration::from_secs(1))
-            .is_some());
-        assert!(stats
-            .record_success(PresentKind::Dirty, 2_048, 70_000, Duration::from_secs(2))
-            .is_none());
-        assert!(stats
-            .record_success(
-                PresentKind::Full,
-                8_294_400,
-                18_000_000,
-                Duration::from_secs(3)
-            )
-            .is_some());
+        assert!(
+            stats
+                .record_success(PresentKind::Full, 8_294_400, 20_000_000, Duration::ZERO)
+                .is_some()
+        );
+        assert!(
+            stats
+                .record_success(PresentKind::Dirty, 1_024, 50_000, Duration::from_secs(1))
+                .is_some()
+        );
+        assert!(
+            stats
+                .record_success(PresentKind::Dirty, 2_048, 70_000, Duration::from_secs(2))
+                .is_none()
+        );
+        assert!(
+            stats
+                .record_success(
+                    PresentKind::Full,
+                    8_294_400,
+                    18_000_000,
+                    Duration::from_secs(3)
+                )
+                .is_some()
+        );
 
         assert_eq!(stats.full.count, 2);
         assert_eq!(stats.full.bytes, 16_588_800);
@@ -1275,15 +1281,19 @@ mod tests {
         for second in 0..4 {
             stats.record_success(PresentKind::Full, 4, 1, Duration::from_secs(second));
         }
-        assert!(stats
-            .record_success(PresentKind::Dirty, 4, 1, Duration::from_secs(7))
-            .is_none());
+        assert!(
+            stats
+                .record_success(PresentKind::Dirty, 4, 1, Duration::from_secs(7))
+                .is_none()
+        );
         let report = stats
             .record_success(PresentKind::Dirty, 4, 1, Duration::from_secs(8))
             .expect("a short observation window needs a bounded report");
         assert_eq!(report.total_successes, 6);
-        assert!(stats
-            .record_success(PresentKind::Dirty, 4, 1, Duration::from_secs(9))
-            .is_none());
+        assert!(
+            stats
+                .record_success(PresentKind::Dirty, 4, 1, Duration::from_secs(9))
+                .is_none()
+        );
     }
 }
