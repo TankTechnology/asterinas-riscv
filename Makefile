@@ -244,6 +244,7 @@ ENABLE_REGRESSION_TEST := true
 REGRESSION_TEST_DIRS := [ "fs" ]
 EXT2_FS_TYPE := ext4
 CARGO_OSDK_BUILD_ARGS += --kcmd-args="rootfs_type=ext4"
+CARGO_OSDK_BUILD_ARGS += --kcmd-args="asterinas.net=Virtio-Net,10.0.2.15/24,10.0.2.2"
 CARGO_OSDK_BUILD_ARGS += --qemu-args="-netdev user,id=debian-apt" \
 	--qemu-args="-device virtio-net-device,netdev=debian-apt"
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_debian_apt_smoke_test.sh"
