@@ -6258,7 +6258,7 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
         self.addCleanup(self.temporary_directory.cleanup)
         self.directory = Path(self.temporary_directory.name)
 
-    def test_real_boot_image_is_64_mib_and_contains_exactly_three_files(self) -> None:
+    def test_real_boot_image_is_64_mib_and_contains_boot_script(self) -> None:
         kernel = self.directory / "kernel"
         dtb = self.directory / "dtb"
         initramfs = self.directory / "initramfs"
@@ -6270,8 +6270,20 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
         build_boot_image(kernel, dtb, initramfs, image)
 
         self.assertEqual(image.stat().st_size, 64 * 1024 * 1024)
+        filesystem_image = self.directory / "boot.fs.ext4"
+        subprocess.run(
+            [
+                "dd",
+                "if=" + str(image),
+                "of=" + str(filesystem_image),
+                "bs=1M",
+                "skip=1",
+                "status=none",
+            ],
+            check=True,
+        )
         listing = subprocess.run(
-            ["debugfs", "-R", "ls -p /", str(image)],
+            ["debugfs", "-R", "ls -p /", str(filesystem_image)],
             check=True,
             text=True,
             capture_output=True,
@@ -6283,7 +6295,12 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
         }
         self.assertEqual(
             names,
-            {"asterinas.booti", "qemu-virt.dtb", "stage1-initramfs.cpio"},
+            {
+                "asterinas.booti",
+                "qemu-virt.dtb",
+                "stage1-initramfs.cpio",
+                "boot.scr.uimg",
+            },
         )
         self.assertNotIn("lost+found", listing)
 

@@ -315,26 +315,125 @@ def build_boot_image(kernel: Path, dtb: Path, initramfs: Path, output: Path) -> 
                 ("asterinas.booti", "qemu-virt.dtb", "stage1-initramfs.cpio"),
             ):
                 _copy_fd(descriptor, staging / name)
+            # The stock U-Boot environment probes boot.scr.uimg before trying
+            # network boot.  Keep the gate self-contained by embedding the
+            # exact local boot sequence in a legacy script image.
+            (staging / "boot.cmd").write_text(
+                """virtio scan
+ext4load virtio 0:1 0x80200000 /asterinas.booti
+ext4load virtio 0:1 0x88000000 /qemu-virt.dtb
+fdt addr 0x88000000
+ext4load virtio 0:1 0x83000000 /stage1-initramfs.cpio
+setenv initrd_size ${filesize}
+setenv bootargs \"console=ttyS0 loglevel=4 init=/init -- --root-fs=ext4 --root-init=systemd --debug-console=root\"
+booti 0x80200000 0x83000000:${initrd_size} 0x88000000
+""",
+                encoding="ascii",
+            )
+            mkimage = next(
+                (
+                    candidate
+                    for candidate in (
+                        Path("/usr/bin/mkimage"),
+                        Path("target/qemu-uboot/cache/u-boot-build/tools/mkimage"),
+                    )
+                    if candidate.is_file()
+                ),
+                None,
+            )
+            if mkimage is None:
+                raise GateFailure("U-Boot mkimage is required to build boot.scr.uimg")
+            subprocess.run(
+                [
+                    os.fspath(mkimage),
+                    "-A",
+                    "riscv",
+                    "-T",
+                    "script",
+                    "-C",
+                    "none",
+                    "-n",
+                    "Asterinas Debian gate boot script",
+                    "-d",
+                    os.fspath(staging / "boot.cmd"),
+                    os.fspath(staging / "boot.scr.uimg"),
+                ],
+                check=True,
+                capture_output=True,
+            )
+            (staging / "boot.cmd").unlink()
             image_fd, image_name = tempfile.mkstemp(
                 prefix=f".{output.name}.", dir=output.parent
             )
             temporary_image = Path(image_name)
             try:
                 os.ftruncate(image_fd, 64 * 1024 * 1024)
+                # Give U-Boot a conventional partition 0:1.  Its compiled-in
+                # bootcmd only probes partitioned disks, while ext4 itself is
+                # stored at a 1 MiB-aligned offset in this fixed-size image.
+                image_fd_handle = os.fdopen(image_fd, "r+b", closefd=False)
+                image_fd_handle.seek(446)
+                image_fd_handle.write(
+                    bytes((0, 0, 2, 0, 0x83, 0xFF, 0xFF, 0xFF))
+                    + (2048).to_bytes(4, "little")
+                    + (129024).to_bytes(4, "little")
+                )
+                image_fd_handle.write(b"\0" * (510 - image_fd_handle.tell()))
+                image_fd_handle.write(b"\x55\xAA")
+                image_fd_handle.flush()
+                os.fsync(image_fd)
+                image_fd_handle.close()
             finally:
                 os.close(image_fd)
             subprocess.run(
-                ["mke2fs", "-q", "-t", "ext4", "-F", "-d", staging, temporary_image],
+                [
+                    "mke2fs",
+                    "-q",
+                    "-t",
+                    "ext4",
+                    "-F",
+                    "-E",
+                    "offset=1048576",
+                    "-d",
+                    staging,
+                    temporary_image,
+                ],
+                check=True,
+                capture_output=True,
+            )
+            filesystem_image = staging / "boot.fs.ext4"
+            subprocess.run(
+                [
+                    "dd",
+                    "if=" + os.fspath(temporary_image),
+                    "of=" + os.fspath(filesystem_image),
+                    "bs=1M",
+                    "skip=1",
+                    "status=none",
+                ],
                 check=True,
                 capture_output=True,
             )
             subprocess.run(
-                ["debugfs", "-w", "-R", "rmdir /lost+found", temporary_image],
+                ["debugfs", "-w", "-R", "rmdir /lost+found", filesystem_image],
+                check=False,
+                capture_output=True,
+            )
+            subprocess.run(
+                [
+                    "dd",
+                    "if=" + os.fspath(filesystem_image),
+                    "of=" + os.fspath(temporary_image),
+                    "bs=1M",
+                    "seek=1",
+                    "conv=notrunc",
+                    "status=none",
+                ],
                 check=True,
                 capture_output=True,
             )
             listing = subprocess.run(
-                ["debugfs", "-R", "ls -p /", temporary_image],
+                ["debugfs", "-R", "ls -p /", filesystem_image],
                 check=True,
                 text=True,
                 capture_output=True,
@@ -349,6 +448,7 @@ def build_boot_image(kernel: Path, dtb: Path, initramfs: Path, output: Path) -> 
                 "asterinas.booti",
                 "qemu-virt.dtb",
                 "stage1-initramfs.cpio",
+                "boot.scr.uimg",
             }
             if names != expected:
                 raise GateFailure("boot image has unexpected root entries")

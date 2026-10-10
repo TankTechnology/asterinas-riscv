@@ -374,7 +374,10 @@ class SystemdExt4Operations(ConcreteOperations):
         deadline = time.monotonic() + config.boot_timeout
         serial = session["serial"]
         if wait_prompt:
-            serial.wait_for(b"=> ", deadline, start=start)
+            prompt = serial.wait_for_any((b"=> ", b"## Executing script at"), deadline, start=start)
+            if prompt == b"## Executing script at":
+                serial.wait_for(b"Starting kernel ...", deadline, start=start)
+                return
         bootargs = SYSTEMD_EXT4_BOOTARGS
         if NETWORK_RECOVERY_ONLY:
             bootargs = bootargs.replace(
@@ -461,14 +464,20 @@ class SystemdExt4Operations(ConcreteOperations):
         transcript = serial.wait_for(autoboot, reboot_deadline, start=restart_start)
         prompt_start = transcript.rfind(autoboot) + len(autoboot)
         serial.send(b" \n", reboot_deadline)
-        serial.wait_for(b"=> ", reboot_deadline, start=prompt_start)
-        second_boot_start = serial.checkpoint()
-        self._boot_once(
-            session,
-            config,
-            wait_prompt=False,
-            start=second_boot_start,
+        reboot_prompt = serial.wait_for_any(
+            (b"=> ", b"## Executing script at"), reboot_deadline, start=prompt_start
         )
+        if reboot_prompt == b"## Executing script at":
+            serial.wait_for(b"Starting kernel ...", reboot_deadline, start=prompt_start)
+            second_boot_start = serial.checkpoint()
+        else:
+            second_boot_start = serial.checkpoint()
+            self._boot_once(
+                session,
+                config,
+                wait_prompt=False,
+                start=second_boot_start,
+            )
         wait_for_guest_marker(serial,
             b"DEBIAN_EXT4_PASS boot=2",
             time.monotonic() + config.boot_timeout,
@@ -490,9 +499,14 @@ class SystemdExt4Operations(ConcreteOperations):
         transcript = serial.wait_for(autoboot, reboot_deadline, start=restart_start)
         prompt_start = transcript.rfind(autoboot) + len(autoboot)
         serial.send(b" \n", reboot_deadline)
-        serial.wait_for(b"=> ", reboot_deadline, start=prompt_start)
-        second_boot_start = serial.checkpoint()
-        self._boot_once(session, config, wait_prompt=False, start=second_boot_start)
+        reboot_prompt = serial.wait_for_any(
+            (b"=> ", b"## Executing script at"), reboot_deadline, start=prompt_start
+        )
+        if reboot_prompt == b"## Executing script at":
+            serial.wait_for(b"Starting kernel ...", reboot_deadline, start=prompt_start)
+        else:
+            second_boot_start = serial.checkpoint()
+            self._boot_once(session, config, wait_prompt=False, start=second_boot_start)
         wait_for_guest_marker(
             serial,
             b"DEBIAN_EXT4_NETWORK_ONLY_PASS boots=2 manager=1",

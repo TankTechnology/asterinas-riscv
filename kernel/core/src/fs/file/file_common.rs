@@ -4,14 +4,14 @@
 
 use core::sync::atomic::Ordering;
 
-use super::{AccessMode, AtomicStatusFlags, FileLike, StatusFlags, file_handle::StatusFlagsUpdate};
+use super::{file_handle::StatusFlagsUpdate, AccessMode, AtomicStatusFlags, FileLike, StatusFlags};
 use crate::{
     events::{IoEvents, Observer},
-    fs::vfs::{notify, path::Path},
+    fs::vfs::{inode_ext::InodeExt, notify, path::Path, range_lock::RangeLockOwner},
     prelude::*,
     process::{
+        signal::{constants::SIGIO, PollAdaptor},
         Pid, Process,
-        signal::{PollAdaptor, constants::SIGIO},
     },
 };
 
@@ -86,10 +86,26 @@ impl FileCommon {
     pub(crate) fn owner(&self) -> &FileOwner {
         &self.owner
     }
+
+    /// Returns the owner shared by all descriptors of this open file description.
+    pub(crate) fn ofd_lock_owner(&self) -> RangeLockOwner {
+        // FileCommon is the shared open-file-description object. Its stable
+        // address uniquely identifies the OFD while any descriptor references
+        // it, and avoids an extra boot-time atomic allocation.
+        RangeLockOwner::from_open_file_description(self as *const Self as usize)
+    }
 }
 
 impl Drop for FileCommon {
     fn drop(&mut self) {
+        if let Some(lock_list) = self
+            .path
+            .inode()
+            .fs_lock_context()
+            .map(|context| context.range_lock_list())
+        {
+            lock_list.unlock_all(self.ofd_lock_owner());
+        }
         notify::on_close(self);
     }
 }
