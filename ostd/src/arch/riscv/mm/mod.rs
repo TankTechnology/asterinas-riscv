@@ -40,8 +40,10 @@ pub(crate) fn sync_io_mem_to_device(
     // PBMT mappings when Svpbmt is available. A device fence is sufficient;
     // routing the latter through the EIC7700-specific cache controller would
     // incorrectly fail on QEMU and on other Svpbmt-capable RISC-V machines.
-    if matches!(cache_policy, CachePolicy::Uncacheable | CachePolicy::WriteCombining)
-        && has_extensions(IsaExtensions::SVPBMT)
+    if matches!(
+        cache_policy,
+        CachePolicy::Uncacheable | CachePolicy::WriteCombining
+    ) && has_extensions(IsaExtensions::SVPBMT)
     {
         crate::arch::device::io_mem::fence();
         return Ok(());
