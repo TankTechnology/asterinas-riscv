@@ -1520,7 +1520,16 @@ kernel: initramfs $(CARGO_OSDK)
 .PHONY: run_kernel
 run_kernel: initramfs $(CARGO_OSDK)
 	$(DEBIAN_APT_SMOKE_PRECHECK)
-	@cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)
+	@if [ "$(AUTO_TEST)" = debian_apt_smoke ]; then \
+		set -eu; \
+		run_image="$${TMPDIR:-/tmp}/asterinas-debian-apt-smoke.$$$$.ext2"; \
+		cp --reflink=auto --sparse=always -- "$(DEBIAN_ROOT_IMAGE)" "$$run_image"; \
+		cleanup() { rm -f -- "$$run_image"; }; \
+		trap cleanup EXIT INT TERM; \
+		(cd kernel && ASTERINAS_EXT2_DRIVE_FILE="$$run_image" cargo osdk run $(CARGO_OSDK_BUILD_ARGS)); \
+	else \
+		(cd kernel && cargo osdk run $(CARGO_OSDK_BUILD_ARGS)); \
+	fi
 # Validate the complete QEMU transcript, including fatal output after success.
 ifneq ($(filter $(AUTO_TEST),conformance regression boot vsock),)
 	@python3 tools/riscv/validate_run_kernel_log.py \
