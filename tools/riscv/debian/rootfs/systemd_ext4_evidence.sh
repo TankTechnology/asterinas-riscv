@@ -167,6 +167,10 @@ check_login_and_user() {
 
 configure_and_test_service() {
     emit 'DEBIAN_EXT4_PROGRESS step=service-start'
+    emit 'DEBIAN_EXT4_PROGRESS step=timeout-control-start'
+    /usr/bin/timeout --signal=TERM --kill-after=2s 5s /bin/true ||
+        fail timeout-control
+    emit 'DEBIAN_EXT4_PROGRESS step=timeout-control-done'
     cat >/etc/systemd/system/"$TEST_SERVICE" <<'EOF'
 [Unit]
 Description=Asterinas Debian user service
@@ -191,16 +195,12 @@ EOF
                 -u ssh.service >>"$CONSOLE" 2>&1 || true
         fail service-reload
     fi
-    # PID 1 reloads unit files asynchronously on this profile.  Let its
-    # directory scan settle before exercising concurrent ext4 symlink updates
-    # in /etc/systemd/system.
-    sleep 3
     emit 'DEBIAN_EXT4_PROGRESS step=service-reload-done'
-    # Keep the raw ext4 symlink probe outside systemd's continuously scanned
-    # unit tree; the latter is concurrently traversed by PID 1 after reload.
-    local direct_link=/var/lib/asterinas-debian-direct-link
+    local direct_link=/etc/systemd/system/asterinas-debian-direct-link
+    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-create-start'
     /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
         ln -s "$TEST_SERVICE" "$direct_link" || fail ext4-symlink-create
+    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-create-done'
     [[ "$(readlink -- "$direct_link")" == "$TEST_SERVICE" ]] ||
         fail ext4-symlink-read
     rm -f -- "$direct_link" || fail ext4-symlink-remove
@@ -210,7 +210,10 @@ EOF
     # bounded so a VFS stall produces an actionable marker.
     local local_wants_dir=/etc/systemd/system/multi-user.target.wants
     local local_wants_link="$local_wants_dir/.asterinas-debian-direct-link"
-    [[ -d "$local_wants_dir" ]] || fail ext4-wants-directory-missing
+    emit 'DEBIAN_EXT4_PROGRESS step=ext4-wants-directory-start'
+    /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
+        mkdir -p -- "$local_wants_dir" || fail ext4-wants-directory-create
+    emit 'DEBIAN_EXT4_PROGRESS step=ext4-wants-directory-done'
     /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
         ln -s "../$TEST_SERVICE" "$local_wants_link" || fail ext4-wants-symlink-create
     [[ "$(readlink -- "$local_wants_link")" == "../$TEST_SERVICE" ]] ||
