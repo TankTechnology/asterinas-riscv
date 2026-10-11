@@ -196,7 +196,9 @@ EOF
     # in /etc/systemd/system.
     sleep 3
     emit 'DEBIAN_EXT4_PROGRESS step=service-reload-done'
-    local direct_link=/etc/systemd/system/asterinas-debian-direct-link
+    # Keep the raw ext4 symlink probe outside systemd's continuously scanned
+    # unit tree; the latter is concurrently traversed by PID 1 after reload.
+    local direct_link=/var/lib/asterinas-debian-direct-link
     /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
         ln -s "$TEST_SERVICE" "$direct_link" || fail ext4-symlink-create
     [[ "$(readlink -- "$direct_link")" == "$TEST_SERVICE" ]] ||
