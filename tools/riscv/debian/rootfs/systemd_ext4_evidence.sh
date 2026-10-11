@@ -179,7 +179,7 @@ ExecStart=/bin/sleep 30
 WantedBy=multi-user.target
 EOF
     if ! /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
-        systemctl daemon-reload; then
+        systemctl --no-block daemon-reload; then
         /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
             /usr/bin/systemctl --no-pager status >>"$CONSOLE" 2>&1 || true
         /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
