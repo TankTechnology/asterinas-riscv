@@ -597,6 +597,8 @@ verify_riscv_execution_boundary() {
 install_rootfs_packages() {
     local stage="$WORK_DIR/stage"
     local bootstrap_ca="$stage/etc/ssl/certs/asterinas-bootstrap-ca.crt"
+    local policy_rc_d="$stage/usr/sbin/policy-rc.d"
+    local policy_rc_d_created=0
 
     log "phase 4/8: updating signed package indexes"
     printf 'deb %s %s main\n' "$MIRROR" "$SUITE" >"$stage/etc/apt/sources.list"
@@ -650,11 +652,29 @@ install_rootfs_packages() {
         chmod 0755 -- "$fc_cache_wrapper"
     fi
 
+    # Debian maintainer scripts must not start services while the rootfs is
+    # being assembled under chroot/proot.  In particular, dbus' postinst
+    # otherwise tries to contact a service manager that does not exist in the
+    # build namespace and aborts the package transaction.  Keep this helper
+    # private to the build and remove it before publishing the image.
+    if [[ ! -e "$policy_rc_d" ]]; then
+        install -d -- "${policy_rc_d%/*}"
+        cat >"$policy_rc_d" <<'EOF'
+#!/bin/sh
+exit 101
+EOF
+        chmod 0755 -- "$policy_rc_d"
+        policy_rc_d_created=1
+    fi
+
     log "phase 5/8: installing explicit minbase additions"
     run_chroot "$stage" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive \
         SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
         apt-get -y --no-install-recommends install "${INSTALL_PACKAGES[@]}"
+    if ((policy_rc_d_created)); then
+        rm -f -- "$policy_rc_d"
+    fi
     rm -f -- "$fc_cache_wrapper"
     rm -f -- "$bootstrap_ca"
     run_chroot "$stage" /usr/bin/env \
@@ -1031,10 +1051,34 @@ EOF
     fi
     if [[ "$PROFILE" == systemd-m2 || "$PROFILE" == systemd-ext4-m3 ]]; then
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-        install -D -m 0755 -- \
-            "$script_directory/systemd_m2_evidence.sh" \
-            "$stage/usr/lib/asterinas/systemd-m2-evidence"
-        cat >"$stage/etc/systemd/system/asterinas-debian-m2.service" <<'EOF'
+        local evidence_script evidence_path evidence_command service_name
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            evidence_script="$script_directory/systemd_ext4_evidence.sh"
+            evidence_path="$stage/usr/lib/asterinas/systemd-ext4-evidence"
+            evidence_command=/usr/lib/asterinas/systemd-ext4-evidence
+            service_name=asterinas-debian-ext4.service
+        else
+            evidence_script="$script_directory/systemd_m2_evidence.sh"
+            evidence_path="$stage/usr/lib/asterinas/systemd-m2-evidence"
+            evidence_command=/usr/lib/asterinas/systemd-m2-evidence
+            service_name=asterinas-debian-m2.service
+        fi
+        if [[ "$PROFILE" == systemd-ext4-m3 ]]; then
+            local systemd_test_source="$script_directory/../../systemd/src"
+            local systemd_test_cc="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
+            local systemd_test_program
+            command -v "$systemd_test_cc" >/dev/null 2>&1 ||
+                die "missing RISC-V C compiler for systemd socket probe: $systemd_test_cc"
+            for systemd_test_program in socktest sockclient; do
+                "$systemd_test_cc" -O2 -static -no-pie -fno-stack-protector \
+                    -o "$stage/usr/bin/$systemd_test_program" \
+                    "$systemd_test_source/$systemd_test_program.c"
+                chmod 0755 "$stage/usr/bin/$systemd_test_program"
+            done
+        fi
+        install -D -m 0755 -- "$evidence_script" "$evidence_path"
+        if [[ "$PROFILE" == systemd-m2 ]]; then
+            cat >"$stage/etc/systemd/system/$service_name" <<'EOF'
 [Unit]
 Description=Asterinas Debian M2 evidence
 After=local-fs.target
@@ -1048,10 +1092,39 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
+        else
+            cat >"$stage/etc/systemd/system/$service_name" <<EOF
+[Unit]
+Description=Asterinas Debian ${PROFILE} evidence
+After=local-fs.target network.target getty.target
+
+[Service]
+Type=oneshot
+ExecStart=$evidence_command
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+            install -d -m 0755 -- \
+                "$stage/etc/systemd/system/console-getty.service.d"
+            cat >"$stage/etc/systemd/system/console-getty.service.d/asterinas-serial.conf" <<'EOF'
+[Service]
+TTYPath=/dev/ttyS0
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=tty
+TTYReset=yes
+TTYVHangup=no
+TTYVTDisallocate=no
+ExecStart=
+ExecStart=-/sbin/agetty -o '-- \\u' --noclear --keep-baud 115200,38400,9600 - $TERM
+EOF
+        fi
         mkdir -p -- "$stage/etc/systemd/system/multi-user.target.wants"
         ln -s -- \
-            ../asterinas-debian-m2.service \
-            "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
+            "../$service_name" \
+            "$stage/etc/systemd/system/multi-user.target.wants/$service_name"
     elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
         configure_desktop "$stage" "${PROFILE#desktop-}"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
