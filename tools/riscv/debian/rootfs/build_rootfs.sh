@@ -1147,6 +1147,7 @@ EOF
             # same narrowly-scoped compatibility boundary used by desktop
             # profiles instead of silently accepting a failed logind unit.
             configure_logind_namespace_compatibility "$stage"
+            configure_debian_service_compatibility "$stage"
             # Asterinas exposes the usable interactive serial tty as ttyS0.
             # Keep Debian's console-getty ordering and lifecycle, but point
             # its terminal directly at ttyS0. The serial-getty template adds
@@ -1625,6 +1626,42 @@ ProtectSystem=no
 ReadWritePaths=
 EOF
     chmod 0644 -- "$output"
+}
+
+configure_debian_service_compatibility() {
+    local stage="$1"
+    local directory="$stage/etc/systemd/system"
+
+    # These Debian units use mount/user namespaces that are not yet provided
+    # by Asterinas. Disable only the sandbox boundary; retain the services and
+    # their normal socket, credential, and restart behavior.
+    install -d -m 0755 -- "$directory/rsyslog.service.d"
+    cat >"$directory/rsyslog.service.d/asterinas-namespace-compat.conf" <<'EOF'
+[Service]
+PrivateTmp=no
+PrivateDevices=no
+ProtectHome=no
+ProtectSystem=no
+ProtectKernelTunables=no
+ProtectKernelModules=no
+ProtectClock=no
+ProtectControlGroups=no
+ProtectHostname=no
+ReadWritePaths=
+EOF
+
+    install -d -m 0755 -- "$directory/dbus.service.d"
+    cat >"$directory/dbus.service.d/asterinas-stdio-compat.conf" <<'EOF'
+[Service]
+StandardOutput=null
+StandardError=null
+TimeoutStartSec=60s
+EOF
+
+    install -d -m 0755 -- "$stage/var/log/nginx" "$stage/var/lib/nginx"
+    touch "$stage/var/log/nginx/error.log" "$stage/var/log/nginx/access.log"
+    chmod 0640 "$stage/var/log/nginx/error.log" "$stage/var/log/nginx/access.log"
+    chown 33:33 "$stage/var/log/nginx/error.log" "$stage/var/log/nginx/access.log" 2>/dev/null || true
 }
 
 install_online_desktop_shell() {
