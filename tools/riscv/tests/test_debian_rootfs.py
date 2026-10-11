@@ -3151,14 +3151,20 @@ WantedBy=multi-user.target
         self.assertIn("/usr/sbin/runuser --user asterinas", session)
 
     def test_desktop_m4_evidence_requires_application_windows(self) -> None:
+        evidence_script = DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8")
         self.assertIn(
             "ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS:-30",
-            DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
+            evidence_script,
         )
         self.assertIn(
             "probe logind pgrep -x systemd-logind",
-            DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
+            evidence_script,
         )
+        for window_class in ("pcmanfm", "lxpanel", "xterm", "netsurf-gtk"):
+            self.assertIn(
+                f"visible_window '^{window_class}$'",
+                evidence_script,
+            )
         input_directory = self.directory / "desktop-m4-input"
         input_directory.mkdir()
         (input_directory / "event0").touch()

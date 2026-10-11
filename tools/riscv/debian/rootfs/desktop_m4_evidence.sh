@@ -230,11 +230,18 @@ ready() {
 
 ready_ordered() {
     local window_tree
+
+    visible_window() {
+        timeout --signal=KILL 3s env DISPLAY=:0 XAUTHORITY="$XAUTHORITY_PATH" \
+            xdotool search --onlyvisible --classname "$1" >/dev/null 2>&1
+    }
+
     # QEMU's explicit handoff has already proved device ownership in the
-    # ExecStartPre.  Avoid systemctl/loginctl/xdotool here: their tty and D-Bus
-    # paths can remain blocked after Xorg is running.  The runtime logs, process
-    # set, and one bounded X window-tree query prove that clients have actually
-    # connected before the framebuffer sample is taken.
+    # ExecStartPre. Avoid systemctl/loginctl here: their tty and D-Bus paths
+    # can remain blocked after Xorg is running. The runtime logs, process set,
+    # bounded visible-window probes, and one bounded X window-tree query prove
+    # that clients have actually connected and become visible before the
+    # framebuffer sample is taken.
     [[ -f "$SESSION_LOG" ]] || {
         not_ready_reason="session-log"
         return 1
@@ -263,9 +270,25 @@ ready_ordered() {
         not_ready_reason="xterm"
         return 1
     }
+    visible_window '^pcmanfm$' || {
+        not_ready_reason="pcmanfm-window"
+        return 1
+    }
+    visible_window '^lxpanel$' || {
+        not_ready_reason="lxpanel-window"
+        return 1
+    }
+    visible_window '^xterm$' || {
+        not_ready_reason="xterm-window"
+        return 1
+    }
     if [[ "$BROWSER_ENABLED" == 1 ]]; then
         pgrep -u "$USER_ID" -x netsurf-gtk >/dev/null || {
             not_ready_reason="netsurf"
+            return 1
+        }
+        visible_window '^netsurf-gtk$' || {
+            not_ready_reason="netsurf-window"
             return 1
         }
     fi
