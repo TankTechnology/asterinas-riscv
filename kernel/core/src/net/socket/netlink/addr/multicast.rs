@@ -19,6 +19,14 @@ impl GroupIdSet {
         Self(groups)
     }
 
+    /// Creates a mask from a one-based membership option group number.
+    pub(crate) fn from_membership(group: u32) -> Result<Self> {
+        if group == 0 || group > MAX_GROUPS {
+            return_errno_with_message!(Errno::EINVAL, "invalid netlink multicast group");
+        }
+        Ok(Self(1 << (group - 1)))
+    }
+
     /// Creates an iterator over all group IDs.
     pub(crate) const fn ids_iter(&self) -> GroupIdIter {
         GroupIdIter::new(self)
