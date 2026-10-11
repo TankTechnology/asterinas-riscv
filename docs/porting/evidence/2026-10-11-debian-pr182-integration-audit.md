@@ -3,10 +3,10 @@
 ## Scope and source identity
 
 The integration checkout is `asterinas-pr179-merge`, on
-`codex/debian-runtime-netlink` at `f90b868cc`. Its parent is main's PR #179
-merge, `294c225ce`. PR #181 is committed locally, not merged into remote main.
-PR #182 is a partial, uncommitted port. No board boot was performed during
-this audit.
+`codex/debian-runtime-netlink` at `3c225dd16`. Its parent is main's PR #179
+merge, `294c225ce`. The local branch contains the #181 netlink port and the
+#182 Debian runtime gate; neither has been merged into `origin/main`. No board
+boot was performed during this audit.
 
 ## Verified results
 
@@ -26,6 +26,32 @@ this audit.
   Stage1. Its receipt is `target/qemu-systemd-ext4-m3-current-gate-final`,
   with `DEBIAN_EXT4_READY` for both boots and
   `DEBIAN_EXT4_PASS boot=2 persist=1`.
+
+## POSIX PR triage
+
+The three PR heads were fetched as `origin/pr134`, `origin/pr103`, and
+`origin/pr135` before review.
+
+- **#134 (`c6d837a03`)** changes `SigAction` so `SA_RESETHAND` resets only
+  the handler while retaining flags, restorer, and mask metadata. It also
+  updates `/proc/<pid>/task/<tid>/stat` signal classification and adds a
+  focused regression. This is a bounded semantic fix and is the first POSIX
+  candidate after the Debian runtime gate; it still needs a current-main
+  QEMU regression before merge.
+- **#103 (`7f6952ebf`)** adds current-thread CPU-affinity migration and
+  scheduler `Migrate` handling, with an SMP4 regression. It affects global
+  scheduling and therefore must be tested on `SMP=4` before it can be used to
+  explain Firefox or systemd behavior. It is a second, independent candidate.
+- **#135 (`facd07ac5`)** is stacked: its history includes POSIX timers,
+  namespaced clocks, RCU idle progress, socket-buffer prefaulting, range-lock
+  handling, large-file `fcntl`, and the #103 affinity fix. It is not a safe
+  single merge unit for Debian support. We will extract only a narrowly
+  justified commit after the corresponding QEMU gate identifies a failure.
+
+The evidence rule is therefore: merge #134 or #103 only when a current-main
+QEMU test proves the named behavior and a physical counterpart is available;
+do not merge #135 wholesale. PR #184 remains measurement infrastructure and
+is deferred until these runtime gates are stable.
 
 ## Failed integration and corrected diagnosis
 
@@ -69,10 +95,12 @@ acceptance.
 3. Complete fb0/Xorg/session/application/reboot acceptance on QEMU and then
    the board. Inspect #141/#140/#139 for missing increments instead of
    merging historical DRM snapshots over current main.
-4. Use #184 for bounded performance baselines only after the runtime passes;
+4. Apply the POSIX PR triage above only when a Debian application gate
+   identifies the matching semantic gap; then repeat QEMU and board tests.
+5. Use #184 for bounded performance baselines only after the runtime passes;
    benchmark infrastructure alone does not establish a speedup.
 
-Space at the end of the audit was approximately 1.4 GiB on `/mnt/shared`.
+Space at the end of the audit was approximately 2.4 GiB on `/mnt/shared`.
 Do not start another image build while space remains insufficient. Preserve
 serial logs, JSON results, source changes, and recovery backups when pruning
 failed generated images. Full `make check` remains red on existing kernel
