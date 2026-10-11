@@ -136,7 +136,13 @@ check_login_and_user() {
         useradd --create-home --shell /bin/bash "$TEST_USER" || fail user-create
         emit 'DEBIAN_EXT4_PROGRESS step=useradd-done'
         emit 'DEBIAN_EXT4_PROGRESS step=chpasswd-start'
-        printf '%s\n' "$TEST_USER:asterinas" | chpasswd || fail user-password
+        # Avoid invoking the target libc's password-hashing path in the
+        # serial gate.  On software-emulated RISC-V that path can spend
+        # several minutes waiting for entropy/CPU before it updates shadow.
+        # This is the deterministic SHA-512 crypt of the gate password;
+        # interactive login remains covered by asterinas_login.sh.
+        usermod --password '$6$asterinas$I5pLWL5y6oa.Up03xfqwqAirEUNmLHvkEZUMcJye2M6Fr8jE9.6VJ/K7vHO.OAUdRQFxV3EBPOVCHai5AoBTr0' \
+            "$TEST_USER" || fail user-password
         emit 'DEBIAN_EXT4_PROGRESS step=chpasswd-done'
     fi
     emit 'DEBIAN_EXT4_PROGRESS step=identity-start'
