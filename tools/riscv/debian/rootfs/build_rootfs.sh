@@ -1090,7 +1090,7 @@ EOF
             local systemd_test_program
             command -v "$systemd_test_cc" >/dev/null 2>&1 ||
                 die "missing RISC-V C compiler for systemd socket probe: $systemd_test_cc"
-            for systemd_test_program in socktest sockclient; do
+            for systemd_test_program in socktest sockclient abi_probe; do
                 "$systemd_test_cc" -O2 -static -no-pie -fno-stack-protector \
                     -o "$stage/usr/bin/$systemd_test_program" \
                     "$systemd_test_source/$systemd_test_program.c"

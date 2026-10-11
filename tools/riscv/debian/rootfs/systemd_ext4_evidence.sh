@@ -178,7 +178,8 @@ EOF
             /usr/bin/systemctl --no-pager status >>"$CONSOLE" 2>&1 || true
         /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
             /usr/bin/journalctl --no-pager -n 80 -u systemd-logind.service \
-                -u dbus.service >>"$CONSOLE" 2>&1 || true
+                -u dbus.service -u rsyslog.service -u nginx.service \
+                -u ssh.service >>"$CONSOLE" 2>&1 || true
         fail service-reload
     fi
     emit 'DEBIAN_EXT4_PROGRESS step=service-reload-done'
@@ -922,6 +923,9 @@ check_userspace_m6_persistence() {
 }
 
 emit "DEBIAN_EXT4_PROGRESS step=entry"
+if [[ -x /usr/bin/abi_probe ]]; then
+    /usr/bin/abi_probe >>"$CONSOLE" 2>&1
+fi
 architecture="$(uname -m)" || fail architecture
 [[ "$architecture" == riscv64 ]] || fail architecture
 debian_release="$(/bin/cat -- "$DEBIAN_VERSION_FILE")" || fail debian-release
