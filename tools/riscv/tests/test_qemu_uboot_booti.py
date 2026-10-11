@@ -7564,18 +7564,20 @@ class RepositoryIntegrationTests(unittest.TestCase):
 
         self.assertIn("test_riscv_uboot_booti_unit:", makefile)
         self.assertIn("test_riscv_uboot_booti:", makefile)
+        self.assertIn("run_riscv_uboot_booti:", makefile)
         self.assertIn("prepare_qemu_uboot_booti.sh prepare", makefile)
         self.assertIn("qemu_uboot_booti.py run", makefile)
         self.assertIn(
             'QEMU_UBOOT_BUILD_DIR="$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)"',
             makefile,
         )
-        generic_target = makefile[
-            makefile.index("test_riscv_uboot_booti:") :
+        run_target = makefile[
+            makefile.index("run_riscv_uboot_booti:") :
             makefile.index(".PHONY: test_riscv_sifive_u")
         ]
-        self.assertIn('QEMU_UBOOT_PROFILE="generic-sv39"', generic_target)
-        self.assertIn('--profile "generic-sv39"', generic_target)
+        self.assertIn("QEMU_UBOOT_PROFILE ?= generic-sv39", makefile)
+        self.assertIn('QEMU_UBOOT_PROFILE="$(QEMU_UBOOT_PROFILE)"', run_target)
+        self.assertIn('--profile "$(QEMU_UBOOT_PROFILE)"', run_target)
         self.assertIn("flock", PREPARE_SCRIPT.read_text())
 
     def test_make_exposes_opt_in_sifive_smoke_and_linux_control(self) -> None:
@@ -7671,6 +7673,30 @@ class RepositoryIntegrationTests(unittest.TestCase):
         self.assertEqual(sifive.returncode, 0, sifive.stderr)
         self.assertIn(f'QEMU_UBOOT_OUT_DIR="{expected_sifive_out}"', sifive.stdout)
         self.assertIn(f'--uboot "{expected_sifive_build}/u-boot.bin"', sifive.stdout)
+
+    def test_make_exposes_parameterized_qemu_run_target(self) -> None:
+        makefile = MAKEFILE.read_text()
+
+        self.assertIn("QEMU_UBOOT_PROFILE ?= generic-sv39", makefile)
+        self.assertIn(".PHONY: run_riscv_uboot_booti", makefile)
+        self.assertIn(
+            "test_riscv_uboot_booti: test_riscv_uboot_booti_unit run_riscv_uboot_booti",
+            makefile,
+        )
+
+    def test_qemu_run_target_forwards_profile_and_artifacts(self) -> None:
+        makefile = MAKEFILE.read_text()
+        target = makefile[makefile.index("run_riscv_uboot_booti:") :]
+        target = target[: target.index(".PHONY: test_riscv_sifive_u")]
+
+        for fragment in (
+            'QEMU_UBOOT_PROFILE="$(QEMU_UBOOT_PROFILE)"',
+            '--profile "$(QEMU_UBOOT_PROFILE)"',
+            '$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)/u-boot',
+            '$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/artifacts.json',
+            '$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/qemu-dtb-audit.json',
+        ):
+            self.assertIn(fragment, target)
 
     def test_make_never_sources_generated_path_metadata(self) -> None:
         hostile_out_dir = REPO_ROOT / "target/qemu-uboot/x;touch injected;#"

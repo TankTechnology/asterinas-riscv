@@ -394,6 +394,7 @@ test_osdk:
 		OSDK_LOCAL_DEV=1 cargo build && \
 		OSDK_LOCAL_DEV=1 cargo test
 
+QEMU_UBOOT_PROFILE ?= generic-sv39
 QEMU_UBOOT_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/current
 QEMU_UBOOT_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/cache/u-boot-build
 RISCV_SIFIVE_U_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/sifive-u
@@ -1124,22 +1125,26 @@ test_riscv_uboot_booti_unit:
 		tools.riscv.tests.test_qemu_uboot_contracts \
 		tools.riscv.tests.test_qemu_uboot_booti -v
 
-.PHONY: test_riscv_uboot_booti
-test_riscv_uboot_booti: test_riscv_uboot_booti_unit
+.PHONY: run_riscv_uboot_booti
+run_riscv_uboot_booti:
 	@ASTERINAS_RISCV_BOOTI="$(ASTERINAS_RISCV_BOOTI)" \
 		ASTERINAS_INITRAMFS="$(ASTERINAS_INITRAMFS)" \
-		QEMU_UBOOT_PROFILE="generic-sv39" \
+		QEMU_UBOOT_PROFILE="$(QEMU_UBOOT_PROFILE)" \
 		QEMU_UBOOT_OUT_DIR="$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)" \
 		QEMU_UBOOT_BUILD_DIR="$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)" \
 		tools/riscv/prepare_qemu_uboot_booti.sh prepare
 	@python3 tools/riscv/qemu_uboot_booti.py run \
-		--profile "generic-sv39" \
+		--profile "$(QEMU_UBOOT_PROFILE)" \
 		--uboot "$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)/u-boot" \
 		--boot-disk "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/boot.ext4" \
 		--manifest "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/artifacts.json" \
+		--dtb-audit "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/qemu-dtb-audit.json" \
 		--serial-log "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/serial.log" \
 		--marker-event "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/marker-event.txt" \
 		--result "$(QEMU_UBOOT_OUT_DIR_EFFECTIVE)/result.json"
+
+.PHONY: test_riscv_uboot_booti
+test_riscv_uboot_booti: test_riscv_uboot_booti_unit run_riscv_uboot_booti
 
 .PHONY: test_riscv_sifive_u test_riscv_sifive_u_linux_reference
 test_riscv_sifive_u: SIFIVE_U_PROFILE := sifive-u-asterinas-smoke
