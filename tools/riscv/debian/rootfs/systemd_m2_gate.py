@@ -32,6 +32,19 @@ from tools.riscv.debian.rootfs.contract import load_manifest
 
 
 SYSTEMD_M2_BOOTARGS = "console=ttyS0 loglevel=4 init=/init -- --root-init=systemd"
+SYSTEMD_EXT4_M3_BOOTARGS = (
+    "console=ttyS0 loglevel=4 init=/init -- --root-fs=ext4 --root-init=systemd"
+)
+
+
+def systemd_m2_bootargs(root_fs: str = "ext2") -> str:
+    """Return the Stage 1 selector for the requested persistent root format."""
+
+    if root_fs == "ext2":
+        return SYSTEMD_M2_BOOTARGS
+    if root_fs == "ext4":
+        return SYSTEMD_EXT4_M3_BOOTARGS
+    raise ValueError(f"unsupported systemd root filesystem: {root_fs}")
 
 
 def systemd_m2_qemu_argv(**arguments: Any) -> tuple[str, ...]:
@@ -218,8 +231,20 @@ class SystemdM2Operations(ConcreteOperations):
     ) -> Mapping[str, object]:
         identity = dict(super().validate_inputs(config, snapshots))
         manifest = load_manifest(self.input_paths["manifest"])
-        if manifest.schema_version != 2 or manifest.profile != "systemd-m2":
-            raise GateFailure("rootfs manifest is not the systemd-m2 profile")
+        root_fs = getattr(config, "root_fs", "ext2")
+        if not isinstance(root_fs, str):
+            root_fs = "ext2"
+        expected_profile = {
+            "ext2": (2, "systemd-m2"),
+            "ext4": (9, "systemd-ext4-m3"),
+        }.get(root_fs)
+        if expected_profile is None:
+            raise GateFailure(f"unsupported systemd root filesystem: {root_fs}")
+        if (manifest.schema_version, manifest.profile) != expected_profile:
+            raise GateFailure(
+                "rootfs manifest is not the "
+                f"{expected_profile[1]} profile for {root_fs}"
+            )
         identity["profile"] = manifest.profile
         return identity
 
@@ -245,7 +270,7 @@ class SystemdM2Operations(ConcreteOperations):
             "fdt addr 0x88000000",
             "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
             "setenv initrd_size ${filesize}",
-            f'setenv bootargs "{SYSTEMD_M2_BOOTARGS}"',
+            f'setenv bootargs "{systemd_m2_bootargs(self._root_fs(config))}"',
         )
         for index, command in enumerate(commands, 1):
             self._send_uboot(session, command, index, deadline)
@@ -262,6 +287,11 @@ class SystemdM2Operations(ConcreteOperations):
         )
         serial.wait_for(marker.encode(), deadline)
         serial.wait_for(b"Starting kernel ...", deadline, start=start)
+
+    @staticmethod
+    def _root_fs(config: GateConfig) -> str:
+        root_fs = getattr(config, "root_fs", "ext2")
+        return root_fs if isinstance(root_fs, str) else "ext2"
 
     def run_protocol(self, session: Mapping[str, Any], config: GateConfig) -> None:
         self._boot_once(session, config, wait_prompt=True)

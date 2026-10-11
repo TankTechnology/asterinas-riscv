@@ -12,7 +12,12 @@
 # because target/ is a volatile area (see workspace AGENTS.md note of
 # 2026-08-20: target/ was wiped on 2026-08-19 and cost 6+ hours to rebuild).
 
-ROOT=/home/arch-anjie/Program/asterinas-riscv
+# Keep the cross prefix tied to this checkout.  The old absolute path made
+# the build silently reuse (or fail to find) another worktree, which is
+# especially dangerous for a desktop rootfs overlay: a successful build could
+# package libraries that were never produced from the current sources.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT="${ASTERINAS_REPOSITORY_ROOT:-$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)}"
 CROSSDIR="$ROOT/target/riscv-cross"
 PREFIX="$CROSSDIR/usr"
 SRC="$CROSSDIR/src"

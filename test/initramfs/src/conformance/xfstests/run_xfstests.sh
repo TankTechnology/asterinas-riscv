@@ -12,6 +12,7 @@ cd "$XFSTESTS_DIR"
 
 TEST_DEV=${XFSTESTS_TEST_DEV:-/dev/vdd}
 SCRATCH_DEV=${XFSTESTS_SCRATCH_DEV:-/dev/vde}
+FS_TYPE=${XFSTESTS_FS_TYPE:-ext2}
 export TEST_DEV SCRATCH_DEV
 
 # Mount xfstests images with explicit error checking so a mount failure is not
@@ -23,7 +24,7 @@ for entry in "$TEST_DEV:$XFSTESTS_DIR/test:test" "$SCRATCH_DEV:$XFSTESTS_DIR/scr
         echo "Expected $dev to be a block device for xfstests $role" >&2
         exit 1
     fi
-    if ! mount -t ext2 "$dev" "$mnt"; then
+    if ! mount -t "$FS_TYPE" "$dev" "$mnt"; then
         echo "Failed to mount $dev on $mnt ($role)" >&2
         exit 1
     fi
@@ -83,3 +84,7 @@ fi
 # and the -E flag, none of which contain whitespace or shell metacharacters.
 # shellcheck disable=SC2086
 ./check $TEST_ARGS
+
+if [ "$FS_TYPE" = ext4 ] && [ "$RUNLIST_FILE" = /opt/xfstests/ext4-pr.list ]; then
+    echo 'ASTERINAS_XFSTESTS_OK fs=ext4 runlist=ext4-pr'
+fi

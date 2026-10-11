@@ -22,6 +22,8 @@ pub(super) fn main() {
 
     #[cfg(target_arch = "riscv64")]
     crate::boot_reboot::arm_if_requested();
+    #[cfg(target_arch = "riscv64")]
+    crate::hardware_watchdog::handoff_if_requested();
 
     init();
 

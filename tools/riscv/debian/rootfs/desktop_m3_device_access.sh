@@ -19,6 +19,13 @@ case "$OFFLINE_DESKTOP" in
 esac
 readonly DISPLAY_PROVIDER="${ASTERINAS_DISPLAY_PROVIDER:-fbdev}"
 readonly DISPLAY_DEVICE="$([[ "$DISPLAY_PROVIDER" == drm ]] && printf '%s' /dev/dri/card0 || printf '%s' /dev/fb0)"
+INPUT_IDENTITY_MODE="${ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE:-strict}"
+if [[ "$INPUT_IDENTITY_MODE" == strict ]] &&
+    [[ -r /proc/cmdline ]] &&
+    [[ " $(</proc/cmdline) " == *" systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered "* ]]; then
+    INPUT_IDENTITY_MODE=ordered
+fi
+readonly INPUT_IDENTITY_MODE
 
 # The desktop and browser services both run this helper during graphical boot.
 # Serialize the tmpfs mount and input-link replacement so one service cannot
@@ -131,25 +138,41 @@ if [[ "$OFFLINE_DESKTOP" == 1 ]]; then
     printf '%s\n' 'BROWSER_WEB_DESKTOP_STAGE=desktop-input-disabled' \
         >>/run/browser-web-device-stage.log 2>/dev/null || true
 else
-    while true; do
-        if input_nodes="$(
-            PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
-                /usr/bin/python3 /usr/lib/asterinas/desktop-input-identity
-        )"; then
-            read -r keyboard_node pointer_node <<<"$input_nodes"
-            break
-        else
-            input_status=$?
-        fi
-        ((input_status != 2)) || exit 1
-        if ((SECONDS >= device_deadline)); then
+    if [[ "$INPUT_IDENTITY_MODE" == ordered ]]; then
+        # The QEMU profile deliberately freezes the two virtio input nodes in
+        # event0/event1 order.  Avoid evdev identity ioctls here: older
+        # Asterinas kernels can block while copying the variable-length name
+        # and phys strings, even though the character nodes are usable by Xorg.
+        keyboard_node="$INPUT_DIRECTORY/event0"
+        pointer_node="$INPUT_DIRECTORY/event1"
+        [[ -c "$keyboard_node" && -c "$pointer_node" ]] || {
             printf '%s\n' \
-                'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: desktop input devices did not appear' \
+                'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: ordered input devices did not appear' \
                 >&2
             exit 1
-        fi
-        /usr/bin/sleep 1
-    done
+        }
+    else
+        while true; do
+            if input_nodes="$(
+                /usr/bin/timeout --kill-after=1s 5s \
+                    env PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+                    /usr/bin/python3 /usr/lib/asterinas/desktop-input-identity
+            )"; then
+                read -r keyboard_node pointer_node <<<"$input_nodes"
+                break
+            else
+                input_status=$?
+            fi
+            ((input_status != 2)) || exit 1
+            if ((SECONDS >= device_deadline)); then
+                printf '%s\n' \
+                    'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: desktop input devices did not appear' \
+                    >&2
+                exit 1
+            fi
+            /usr/bin/sleep 1
+        done
+    fi
     [[ "$keyboard_node" != "$pointer_node" ]] || {
         printf '%s\n' 'ASTERINAS_DESKTOP_DEVICE_ACCESS failed: ambiguous desktop input device identity' >&2
         exit 1
