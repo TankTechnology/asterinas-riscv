@@ -3023,10 +3023,17 @@ WantedBy=multi-user.target
         self.assertIn("-extension MIT-SHM", session_text)
         self.assertIn('-title "Asterinas Terminal" &', session_text)
         self.assertLess(
-            session_text.index("pcmanfm --desktop"), session_text.index("xterm")
+            session_text.index("pcmanfm --desktop"),
+            session_text.index("/usr/bin/xterm -geometry"),
         )
-        self.assertLess(session_text.index("lxpanel"), session_text.index("xterm"))
-        self.assertLess(session_text.index("netsurf-gtk"), session_text.index("xterm"))
+        self.assertLess(
+            session_text.index("lxpanel"),
+            session_text.index("/usr/bin/xterm -geometry"),
+        )
+        self.assertLess(
+            session_text.index("netsurf-gtk"),
+            session_text.index("/usr/bin/xterm -geometry"),
+        )
         self.assertIn("<title>Asterinas Start</title>", welcome.read_text())
         self.assertEqual(
             stat.S_IMODE((stage / "home/asterinas/Asterinas Files").stat().st_mode),
@@ -3152,6 +3159,11 @@ WantedBy=multi-user.target
         self.assertIn("/usr/bin/pcmanfm --desktop --profile Asterinas", session)
         self.assertIn("/usr/bin/lxpanel --profile Asterinas", session)
         self.assertIn("/usr/sbin/runuser --user asterinas", session)
+
+        m4_session = DESKTOP_M4_SESSION_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("map_client_windows", m4_session)
+        self.assertIn("xdotool windowmap", m4_session)
+        self.assertIn("DESKTOP_M4_WINDOW_HANDOFF status=complete", m4_session)
 
     def test_desktop_m4_evidence_requires_application_windows(self) -> None:
         evidence_script = DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8")

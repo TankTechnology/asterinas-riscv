@@ -30,6 +30,47 @@ if [[ "$INPUT_IDENTITY_MODE" == ordered ]]; then
 fi
 readonly SESSION_LOG XORG_LOG
 
+map_client_windows() {
+    local window_class window_id window_ids visible_ids pending
+    local -a window_classes=(pcmanfm lxpanel netsurf-gtk xterm)
+
+    # The Asterinas X11/fbdev path can leave a client in the server's
+    # unmapped state after Openbox has accepted it.  Give each client a
+    # bounded, authenticated MapWindow handoff; this is a condition-based
+    # recovery step, not an unbounded sleep or a compositor substitute.
+    for _ in {1..10}; do
+        pending=0
+        for window_class in "${window_classes[@]}"; do
+            if [[ "$window_class" == netsurf-gtk && "$BROWSER_ENABLED" == 0 ]]; then
+                continue
+            fi
+            window_ids="$(timeout --signal=KILL 3s \
+                /usr/bin/xdotool search --class "$window_class" 2>/dev/null || true)"
+            if [[ -z "$window_ids" ]]; then
+                pending=1
+                continue
+            fi
+            visible_ids="$(timeout --signal=KILL 3s \
+                /usr/bin/xdotool search --onlyvisible --classname "^${window_class}$" \
+                2>/dev/null || true)"
+            while read -r window_id; do
+                [[ "$window_id" =~ ^[1-9][0-9]*$ ]] || continue
+                if ! grep -Fqx "$window_id" <<<"$visible_ids"; then
+                    timeout --signal=KILL 3s \
+                        /usr/bin/xdotool windowmap "$window_id" 2>/dev/null || true
+                fi
+            done <<<"$window_ids"
+        done
+        if ((pending == 0)); then
+            printf '%s\n' 'DESKTOP_M4_WINDOW_HANDOFF status=complete' >>"$SESSION_LOG"
+            return 0
+        fi
+        /usr/bin/sleep 1
+    done
+    printf '%s\n' 'DESKTOP_M4_WINDOW_HANDOFF status=partial' >>"$SESSION_LOG"
+    return 1
+}
+
 [[ "$BROWSER_ENABLED" == 0 || "$BROWSER_ENABLED" == 1 ]] || {
     printf '%s\n' 'invalid ASTERINAS_DESKTOP_BROWSER_ENABLED' >&2
     exit 64
@@ -81,6 +122,7 @@ if [[ "${1-}" == --xsession ]]; then
     fi
     /usr/bin/sleep 1
     /usr/bin/xterm -geometry 100x30+48+72 -title "Asterinas Terminal" &
+    map_client_windows || true
     wait "$window_manager_pid"
     exit $?
 fi
