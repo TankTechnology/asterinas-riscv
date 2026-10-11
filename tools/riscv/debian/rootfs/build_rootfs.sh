@@ -1697,6 +1697,11 @@ EOF
     # them with ssh-keygen -A before enabling ssh.service.
     rm -f -- "$stage/etc/systemd/system/multi-user.target.wants/ssh.service"
 
+    # nginx is enabled by the package as well, but the gate installs its
+    # loopback-only server after boot.  Defer activation until that config is
+    # present so the initial transaction cannot wait on an empty/default unit.
+    rm -f -- "$stage/etc/systemd/system/multi-user.target.wants/nginx.service"
+
     install -d -m 0755 -- "$stage/var/log/nginx" "$stage/var/lib/nginx"
     touch "$stage/var/log/nginx/error.log" "$stage/var/log/nginx/access.log"
     chmod 0640 "$stage/var/log/nginx/error.log" "$stage/var/log/nginx/access.log"
