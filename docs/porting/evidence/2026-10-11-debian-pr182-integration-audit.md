@@ -77,3 +77,10 @@ Do not start another image build while space remains insufficient. Preserve
 serial logs, JSON results, source changes, and recovery backups when pruning
 failed generated images. Full `make check` remains red on existing kernel
 Clippy diagnostics; targeted checks must not be presented as a full lint pass.
+
+The later read-only management attempt `target/megrez-management-audit-20261011-v3`
+also stopped at the bounded U-Boot wait with only `^C` observed
+(`timed out waiting for U-Boot prompt`). It sent no menu choice, artifact,
+probe, or reset command. A three-second serial read-only observation produced
+no bytes afterward, so the board state remains unknown; this is not evidence
+that RockOS or Asterinas is running.
