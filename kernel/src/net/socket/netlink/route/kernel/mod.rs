@@ -49,6 +49,12 @@ impl NetlinkRouteKernelSocket {
             RtnlSegment::GetLink(request_segment) => link::do_get_link(request_segment, net_ns),
             RtnlSegment::GetAddr(request_segment) => addr::do_get_addr(request_segment, net_ns),
             RtnlSegment::GetRoute(request_segment) => route::do_get_route(request_segment, net_ns),
+            RtnlSegment::GetQdisc(request_segment) => link::do_empty_dump(request_segment),
+            RtnlSegment::GetTclass(request_segment) => link::do_empty_dump(request_segment),
+            RtnlSegment::GetTfilter(request_segment) => link::do_empty_dump(request_segment),
+            RtnlSegment::GetNeigh(request_segment) => link::do_empty_dump(request_segment),
+            RtnlSegment::GetRule(request_segment) => link::do_empty_dump(request_segment),
+            RtnlSegment::GetNexthop(request_segment) => link::do_empty_dump(request_segment),
             RtnlSegment::SetLink(request_segment) => link::do_set_link(request_segment, net_ns),
             RtnlSegment::NewAddr(request_segment) => addr::do_new_addr(request_segment, net_ns),
             _ => Err(Error::with_message(

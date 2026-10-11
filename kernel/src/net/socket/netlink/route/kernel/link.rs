@@ -17,7 +17,7 @@ use crate::{
         net_ns::NetNamespace,
         socket::netlink::{
             message::{CMsgSegHdr, CSegmentType, GetRequestFlags, SegHdrCommonFlags},
-            route::message::{LinkAttr, LinkSegment, LinkSegmentBody, RtnlSegment},
+            route::message::{LinkAttr, LinkSegment, LinkSegmentBody, QdiscSegment, RtnlSegment},
         },
     },
     prelude::*,
@@ -35,6 +35,12 @@ const UNSPECIFIED_LINK_ADDR: EthernetAddress = EthernetAddress([0; 6]);
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v7.1/source/include/net/pkt_sched.h#L13>.
 const DEFAULT_TX_QUEUE_LEN: u32 = 1000;
+
+pub(super) fn do_empty_dump(request_segment: &QdiscSegment) -> Result<Vec<RtnlSegment>> {
+    let mut response_segments = Vec::new();
+    finish_response(request_segment.header(), true, &mut response_segments);
+    Ok(response_segments)
+}
 
 pub(super) fn do_get_link(
     request_segment: &LinkSegment,
