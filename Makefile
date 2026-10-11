@@ -366,6 +366,10 @@ CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_tcp_event_handoff_test.sh"
 else ifeq ($(AUTO_TEST), pthread_cond_handoff)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_pthread_cond_handoff_test.sh"
+else ifeq ($(AUTO_TEST), sigaction_reset_hand)
+ENABLE_REGRESSION_TEST := true
+REGRESSION_TEST_DIRS := [ "process" ]
+CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sigaction_reset_hand_test.sh"
 else ifeq ($(AUTO_TEST), sysv_shm)
 ENABLE_REGRESSION_TEST := true
 CARGO_OSDK_BUILD_ARGS += --init-args="/test/run_sysv_shm_test.sh"
@@ -1629,6 +1633,10 @@ else ifeq ($(AUTO_TEST), pthread_cond_handoff)
 	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "pthread condition handoff regression passed." \
 		|| (echo "pthread condition handoff regression failed" && exit 1)
+else ifeq ($(AUTO_TEST), sigaction_reset_hand)
+	@tail --lines 100 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
+		grep -Fxq "sigaction reset hand regression passed." \
+		|| (echo "sigaction reset hand regression failed" && exit 1)
 else ifeq ($(AUTO_TEST), sysv_shm)
 	@tail --lines 200 "$${ASTERINAS_QEMU_LOG_DIR:-$(CURDIR)}/qemu.log" | tr -d '\r' | \
 		grep -Fxq "System V shared memory regression passed." \
