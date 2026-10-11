@@ -1645,6 +1645,8 @@ configure_debian_service_compatibility() {
 [Service]
 PrivateTmp=no
 PrivateDevices=no
+Type=simple
+NotifyAccess=none
 ProtectHome=no
 ProtectSystem=no
 ProtectKernelTunables=no
