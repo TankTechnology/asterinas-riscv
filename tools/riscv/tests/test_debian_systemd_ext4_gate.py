@@ -308,7 +308,7 @@ class SystemdExt4BuilderTests(unittest.TestCase):
             self.assertIn("TTYPath=/dev/ttyS0", serial_override.read_text())
             self.assertIn("StandardInput=tty-force", serial_override.read_text())
             self.assertIn("TTYReset=yes", serial_override.read_text())
-            for program in ("socktest", "sockclient"):
+            for program in ("socktest", "sockclient", "abi_probe"):
                 probe = stage / "usr/bin" / program
                 self.assertTrue(probe.is_file())
                 self.assertTrue(probe.stat().st_mode & 0o111)
