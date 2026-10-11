@@ -283,6 +283,11 @@ class DesktopM3Operations(ConcreteOperations):
     MILESTONES = DESKTOP_M3_MILESTONES
     FAILURE_MARKER = b"DEBIAN_DESKTOP_M3_FAIL reason="
     ADDITIONAL_FAILURE_MARKERS: tuple[bytes, ...] = ()
+    # A diagnostic profile may expose a short-lived frame (for example, a
+    # colour-bar scanout) before it restores the original framebuffer. Such a
+    # profile can request capture at its marker instead of after the final
+    # desktop-ready marker.
+    EARLY_CAPTURE_MARKER: bytes | None = None
     CAPTURE_SCREENSHOT = True
     BOOTARGS = DESKTOP_M3_BOOTARGS
 
@@ -330,7 +335,18 @@ class DesktopM3Operations(ConcreteOperations):
             "ext4load virtio 0:0 0x80200000 /asterinas.booti",
             "ext4load virtio 0:0 0x90000000 /qemu-virt.dtb",
             "fdt addr 0x90000000",
-            "fdt resize 0x1000",
+            # U-Boot relocates the tree immediately before ``booti``.  Keep
+            # the scanout range in /reserved-memory so relocation and the
+            # kernel allocator never treat the bochs BAR as ordinary RAM.
+            "fdt resize 0x2000",
+            "fdt mknode / reserved-memory",
+            'fdt set /reserved-memory "#address-cells" <0x2>',
+            'fdt set /reserved-memory "#size-cells" <0x2>',
+            "fdt set /reserved-memory ranges",
+            f"fdt mknode /reserved-memory {node}",
+            f"fdt set /reserved-memory/{node} reg <0x0 {framebuffer_address:#x} 0x0 0x1000000>",
+            f"fdt set /reserved-memory/{node} no-map",
+            "fdt print /reserved-memory",
             f"fdt mknode / {node}",
             f'fdt set /{node} compatible "simple-framebuffer"',
             f"fdt set /{node} reg <0x0 {framebuffer_address:#x} 0x0 0x1000000>",
@@ -339,10 +355,21 @@ class DesktopM3Operations(ConcreteOperations):
             f"fdt set /{node} stride <0x1400>",
             f'fdt set /{node} format "x8r8g8b8"',
             f'fdt set /{node} status "okay"',
+            f"fdt print /{node}",
             "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
             "setenv initrd_size ${filesize}",
-            *_bounded_uboot_bootargs_commands(self.BOOTARGS),
+            *_bounded_uboot_bootargs_commands(self._bootargs(self.config)),
         )
+
+    def _bootargs(self, config: GateConfig) -> str:
+        """Select the Stage1 filesystem contract for this root image."""
+
+        if config.root_fs == "ext2":
+            return self.BOOTARGS
+        prefix, separator, init_args = self.BOOTARGS.partition(" -- ")
+        if not separator or "--root-fs=" in init_args:
+            raise GateFailure("desktop bootargs have no root-init separator")
+        return f"{prefix} -- --root-fs={config.root_fs} {init_args}"
 
     def _completion_is_failure(
         self, completion: bytes, failure_markers: tuple[bytes, ...]
@@ -386,6 +413,22 @@ class DesktopM3Operations(ConcreteOperations):
         serial.wait_for(marker.encode(), deadline)
         serial.wait_for(b"Starting kernel ...", deadline)
         failure_markers = (self.FAILURE_MARKER, *self.ADDITIONAL_FAILURE_MARKERS)
+        screenshot_captured = False
+        if self.CAPTURE_SCREENSHOT and self.EARLY_CAPTURE_MARKER is not None:
+            early = serial.wait_for_any(
+                (self.EARLY_CAPTURE_MARKER, *failure_markers),
+                protocol_deadline or time.monotonic() + config.boot_timeout,
+            )
+            if self._completion_is_failure(early, failure_markers):
+                raise GateFailure("guest reported desktop failure")
+            screenshot = session["directory"] / f"{self.ARTIFACT_PREFIX}.ppm"
+            self._screenshot, self._screenshot_metadata = capture_rendered_ppm(
+                session["monitor"],
+                screenshot,
+                time.monotonic() + config.command_timeout,
+            )
+            screenshot_captured = True
+
         completion = serial.wait_for_any(
             (self.MILESTONES[-1].encode(), *failure_markers),
             protocol_deadline or time.monotonic() + config.boot_timeout,
@@ -393,7 +436,7 @@ class DesktopM3Operations(ConcreteOperations):
         if self._completion_is_failure(completion, failure_markers):
             raise GateFailure("guest reported desktop failure")
 
-        if not self.CAPTURE_SCREENSHOT:
+        if not self.CAPTURE_SCREENSHOT or screenshot_captured:
             return
 
         screenshot = session["directory"] / f"{self.ARTIFACT_PREFIX}.ppm"

@@ -1,4 +1,6 @@
 /*
+ * SPDX-License-Identifier: MPL-2.0
+ *
  * Print the authoritative DRM uapi contract for the ioctls Asterinas implements.
  *
  * The point of this program is that it does not *state* the expected ioctl

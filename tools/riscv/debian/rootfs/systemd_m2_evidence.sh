@@ -27,7 +27,7 @@ debian_release="$(/bin/cat -- "$DEBIAN_VERSION_FILE")" || fail debian-release
 [[ "$debian_release" =~ ^13\.(0|[1-9][0-9]*)$ ]] || fail debian-release
 
 filesystem_type="$(stat -f -c '%T' /)" || fail root-filesystem
-[[ "$filesystem_type" == ext2/ext3 ]] || fail root-filesystem
+[[ "$filesystem_type" == ext2/ext3 || "$filesystem_type" == ext4 ]] || fail root-filesystem
 
 tmp_filesystem_type="$(stat -f -c '%T' /tmp)" || fail tmp-filesystem
 [[ "$tmp_filesystem_type" == tmpfs ]] || fail tmp-filesystem

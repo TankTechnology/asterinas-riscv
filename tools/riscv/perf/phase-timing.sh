@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+
 # Break a desktop boot into phases, timed from the moment QEMU starts.
 #
 # The evidence script's milestones are guest uptimes, and a guest uptime cannot

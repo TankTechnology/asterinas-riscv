@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+
 # Run the in-guest microbenchmark with the desktop session masked, so the
 # numbers describe an otherwise-idle kernel.
 #

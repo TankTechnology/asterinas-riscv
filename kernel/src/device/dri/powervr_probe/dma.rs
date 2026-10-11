@@ -5,16 +5,16 @@
 use alloc::{vec, vec::Vec};
 
 use ostd::mm::{
+    HasDaddr, HasPaddr, HasSize, PAGE_SIZE,
     dma::DmaCoherent,
     io::{VmIo, VmIoOnce},
-    HasDaddr, HasPaddr, HasSize, PAGE_SIZE,
 };
 
 use super::{
     fwif::{
-        meta_fwif_address, ALIGN_CHECKS_KM, HWPERF_RUNTIME_DMA_OFFSET, OS_OBJECTS,
-        RUNTIME_HCS_DEADLINE_MS, RUNTIME_POW_UNITS_MASK, RUNTIME_RAC_UNITS_MASK,
-        RUNTIME_WATCHDOG_PERIOD_US, SYSINIT_HEAP_BASES, SYSTEM_OBJECTS,
+        ALIGN_CHECKS_KM, HWPERF_RUNTIME_DMA_OFFSET, OS_OBJECTS, RUNTIME_HCS_DEADLINE_MS,
+        RUNTIME_POW_UNITS_MASK, RUNTIME_RAC_UNITS_MASK, RUNTIME_WATCHDOG_PERIOD_US,
+        SYSINIT_HEAP_BASES, SYSTEM_OBJECTS, meta_fwif_address,
     },
     mmu::GpuMmu4,
 };
@@ -638,8 +638,8 @@ mod tests {
     use ostd::prelude::ktest;
 
     use super::{
-        parse_stage_frame, validate_dma_range, GpuFirmwareStage, GpuMmu4, PAGE_SIZE,
-        STAGE_SEGMENT_SIZES,
+        GpuFirmwareStage, GpuMmu4, PAGE_SIZE, STAGE_SEGMENT_SIZES, parse_stage_frame,
+        validate_dma_range,
     };
 
     #[ktest]

@@ -170,7 +170,7 @@ def load_manifest(path: Path) -> RootfsManifest:
             _string(manifest["profile"], "profile"),
             _mapping(manifest["gate_packages"], "gate_packages"),
         )
-    elif schema_version == 8:
+    elif schema_version in (8, 9):
         _exact_keys(manifest, _MANIFEST_V2_KEYS, "manifest")
         profile = _profile_for_manifest(
             schema_version,
@@ -317,7 +317,11 @@ def validate_frozen_root(
     filesystem = manifest.filesystem
     _require_integer(filesystem.size_bytes, "filesystem.size_bytes")
     _require_integer(filesystem.block_size_bytes, "filesystem.block_size_bytes")
-    _require_exact(filesystem.filesystem_type, _FILESYSTEM_TYPE, "filesystem type")
+    _require_exact(
+        filesystem.filesystem_type,
+        profile.filesystem_type,
+        "filesystem type",
+    )
     _require_exact(filesystem.label, profile.root_label, "filesystem label")
     _require_exact(filesystem.uuid, profile.root_uuid, "filesystem UUID")
     _require_exact(
@@ -483,7 +487,7 @@ def write_manifest(
             "block_size_bytes": _FILESYSTEM_BLOCK_SIZE_BYTES,
             "label": profile.root_label,
             "size_bytes": profile.root_size_bytes,
-            "type": _FILESYSTEM_TYPE,
+            "type": profile.filesystem_type,
             "uuid": profile.root_uuid,
         },
         "gate_packages": gate_versions,

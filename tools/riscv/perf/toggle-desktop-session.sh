@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+
 # Mask or unmask the desktop session in the base rootfs image.
 #
 # The per-operation benchmark is emitted by asterinas-desktop-drm-evidence.service

@@ -94,6 +94,7 @@ mod test {
         BlockPtrTree::new(
             RawBlockPtrs::new(sector_count, block_ptrs),
             Arc::downgrade(fs),
+            false,
         )
     }
 

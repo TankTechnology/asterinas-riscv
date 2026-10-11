@@ -428,9 +428,10 @@ mod tests {
                 GARTEN_RESET,
             ]
         );
-        assert!(io
-            .writes
-            .iter()
-            .all(|(offset, value)| *offset != SOFT_RESET || *value != 0));
+        assert!(
+            io.writes
+                .iter()
+                .all(|(offset, value)| *offset != SOFT_RESET || *value != 0)
+        );
     }
 }

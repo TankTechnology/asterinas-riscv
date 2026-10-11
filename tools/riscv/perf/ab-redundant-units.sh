@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+
 # Build one arm of the redundant-units A/B and run the desktop gate on it,
 # timed by measure-desktop.sh.
 #

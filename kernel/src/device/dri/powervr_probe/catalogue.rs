@@ -98,7 +98,7 @@ mod tests {
 
     use ostd::prelude::ktest;
 
-    use super::{clear_selected_catalogue, install_selected_catalogue, CatalogueIo};
+    use super::{CatalogueIo, clear_selected_catalogue, install_selected_catalogue};
 
     #[ktest]
     fn selected_catalogue_validation_rejects_drift_without_writes() {

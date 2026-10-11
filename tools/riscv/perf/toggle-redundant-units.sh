@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+
 # Add or remove the two redundant-unit masks in the base rootfs image.
 #
 # The mask has to live in the base image: the gate recomputes a derived
