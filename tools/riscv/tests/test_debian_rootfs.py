@@ -6267,7 +6267,8 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
         initramfs.write_bytes(b"initramfs")
         image = self.directory / "boot.ext4"
 
-        build_boot_image(kernel, dtb, initramfs, image)
+        bootargs = "console=ttyS0 init=/init -- --root-fs=ext4 --root-init=systemd"
+        build_boot_image(kernel, dtb, initramfs, image, bootargs=bootargs)
 
         self.assertEqual(image.stat().st_size, 64 * 1024 * 1024)
         filesystem_image = self.directory / "boot.fs.ext4"
@@ -6303,6 +6304,22 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
             },
         )
         self.assertNotIn("lost+found", listing)
+        script = self.directory / "boot.scr.uimg"
+        subprocess.run(
+            ["debugfs", "-R", f"dump /boot.scr.uimg {script}", str(filesystem_image)],
+            check=True, capture_output=True,
+        )
+        payload = script.read_bytes()[64:]
+        self.assertIn(f'setenv bootargs "{bootargs}"'.encode(), payload)
+        self.assertNotIn(b"--debug-console=root", payload)
+
+    def test_boot_image_rejects_script_injection_in_bootargs(self) -> None:
+        with self.assertRaisesRegex(GateFailure, "script characters"):
+            build_boot_image(
+                self.directory / "kernel", self.directory / "dtb",
+                self.directory / "initramfs", self.directory / "boot.ext4",
+                bootargs='console=ttyS0"; reset',
+            )
 
     def test_sparse_root_copy_uses_descriptor_and_preserves_source_identity(
         self,

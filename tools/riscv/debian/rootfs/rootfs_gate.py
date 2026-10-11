@@ -285,11 +285,16 @@ def _sync_parent(path: Path) -> None:
         os.close(descriptor)
 
 
-def build_boot_image(kernel: Path, dtb: Path, initramfs: Path, output: Path) -> None:
+def build_boot_image(
+    kernel: Path, dtb: Path, initramfs: Path, output: Path, *,
+    bootargs: str = "console=ttyS0 loglevel=4 init=/init -- --root-fs=ext4 --root-init=systemd --debug-console=root",
+) -> None:
     """Atomically build the fixed 64 MiB ext4 U-Boot payload disk."""
 
     sources = (Path(kernel), Path(dtb), Path(initramfs))
     output = Path(output)
+    if any(character in bootargs for character in ('"', '\n', '\r', '$', '`')):
+        raise GateFailure("boot arguments contain unsupported script characters")
     descriptors: list[int] = []
     try:
         for path in sources:
@@ -325,9 +330,9 @@ ext4load virtio 0:1 0x88000000 /qemu-virt.dtb
 fdt addr 0x88000000
 ext4load virtio 0:1 0x83000000 /stage1-initramfs.cpio
 setenv initrd_size ${filesize}
-setenv bootargs \"console=ttyS0 loglevel=4 init=/init -- --root-fs=ext4 --root-init=systemd --debug-console=root\"
+setenv bootargs \"BOOTARGS_PLACEHOLDER\"
 booti 0x80200000 0x83000000:${initrd_size} 0x88000000
-""",
+""".replace("BOOTARGS_PLACEHOLDER", bootargs),
                 encoding="ascii",
             )
             mkimage = next(

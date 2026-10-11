@@ -326,6 +326,10 @@ def classify_network_recovery(
 class SystemdExt4Operations(ConcreteOperations):
     """Concrete QEMU operations for the systemd-ext4-m3 profile."""
 
+    # The acceptance gate needs console-getty for real PAM login. Enabling
+    # Stage1's root debug console suppresses that getty and prevents login.
+    BOOTARGS = SYSTEMD_EXT4_BOOTARGS
+
     @staticmethod
     def _qemu_argv(**arguments: Any) -> tuple[str, ...]:
         return systemd_ext4_qemu_argv(**arguments)
@@ -385,10 +389,10 @@ class SystemdExt4Operations(ConcreteOperations):
             )
         commands = (
             "virtio scan",
-            "ext4load virtio 0:0 0x80200000 /asterinas.booti",
-            "ext4load virtio 0:0 0x88000000 /qemu-virt.dtb",
+            "ext4load virtio 0:1 0x80200000 /asterinas.booti",
+            "ext4load virtio 0:1 0x88000000 /qemu-virt.dtb",
             "fdt addr 0x88000000",
-            "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio",
+            "ext4load virtio 0:1 0x83000000 /stage1-initramfs.cpio",
             "setenv initrd_size ${filesize}",
             f'setenv bootargs "{bootargs}"',
         )

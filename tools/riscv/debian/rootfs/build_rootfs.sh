@@ -1141,6 +1141,12 @@ EOF
             "../$service_name" \
             "$stage/etc/systemd/system/multi-user.target.wants/$service_name"
         if [[ "$PROFILE" == systemd-ext4-m3 || "$PROFILE" == systemd-ext4-m6-userspace ]]; then
+            # The ext4 systemd gate exercises logind as part of the Debian
+            # userspace contract.  Its Debian sandbox requests user/mount
+            # namespaces that Asterinas does not provide yet, so apply the
+            # same narrowly-scoped compatibility boundary used by desktop
+            # profiles instead of silently accepting a failed logind unit.
+            configure_logind_namespace_compatibility "$stage"
             # Asterinas exposes the usable interactive serial tty as ttyS0.
             # Keep Debian's console-getty ordering and lifecycle, but point
             # its terminal directly at ttyS0. The serial-getty template adds
@@ -1602,6 +1608,12 @@ configure_logind_namespace_compatibility() {
 [Service]
 # Asterinas does not yet provide the user/mount namespace contract used by
 # Debian's systemd-logind sandbox. Keep functional logind without that sandbox.
+# systemd-logind uses Type=notify-reload upstream, but the readiness
+# notification can remain pending while it probes VT/seat devices here.
+# Treat the daemon as ready after exec so service transactions do not block.
+Type=simple
+NotifyAccess=none
+TimeoutStartSec=60s
 PrivateTmp=no
 ProtectClock=no
 ProtectControlGroups=no
