@@ -108,6 +108,11 @@ for index in range(24):
 (deep / "leaf").write_text("deep-ext4", encoding="ascii")
 if (deep / "leaf").read_text(encoding="ascii") != "deep-ext4":
     raise SystemExit("deep file mismatch")
+link = root / "leaf-link"
+os.symlink("d23/leaf", link)
+if os.readlink(link) != "d23/leaf":
+    raise SystemExit("symlink target mismatch")
+os.unlink(link)
 PY
     then
         fail ext4-python-workload
@@ -199,19 +204,10 @@ EOF
     # exercising ext4 directory and symlink mutations below.
     /bin/sleep 3
     emit 'DEBIAN_EXT4_PROGRESS step=service-reload-done'
-    local direct_link=/etc/systemd/system/asterinas-debian-direct-link
-    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-create-start'
-    /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
-        ln -s "$TEST_SERVICE" "$direct_link" || fail ext4-symlink-create
-    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-create-done'
-    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-read-start'
-    [[ "$(readlink -- "$direct_link")" == "$TEST_SERVICE" ]] ||
-        fail ext4-symlink-read
-    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-read-done'
-    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-remove-start'
-    rm -f -- "$direct_link" || fail ext4-symlink-remove
-    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-remove-done'
-    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-done'
+    # Do not mutate /etc/systemd/system with an extra transient symlink while
+    # PID1 is scanning its unit tree. The real enablement link below exercises
+    # the service path; general symlink lifecycle is covered in the ext4
+    # consistency workload.
     # Exercise the exact unit-wants directory and relative target that
     # systemd's EnableUnitFiles transaction uses. Keep every filesystem probe
     # bounded so a VFS stall produces an actionable marker.
