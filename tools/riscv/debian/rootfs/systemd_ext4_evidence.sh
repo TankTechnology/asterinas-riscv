@@ -191,6 +191,10 @@ EOF
                 -u ssh.service >>"$CONSOLE" 2>&1 || true
         fail service-reload
     fi
+    # PID 1 reloads unit files asynchronously on this profile.  Let its
+    # directory scan settle before exercising concurrent ext4 symlink updates
+    # in /etc/systemd/system.
+    sleep 3
     emit 'DEBIAN_EXT4_PROGRESS step=service-reload-done'
     local direct_link=/etc/systemd/system/asterinas-debian-direct-link
     /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
