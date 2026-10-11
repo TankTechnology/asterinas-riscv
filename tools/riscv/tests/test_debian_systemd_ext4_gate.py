@@ -210,7 +210,8 @@ class SystemdExt4ClassifierTests(unittest.TestCase):
 class SystemdExt4BuilderTests(unittest.TestCase):
     def test_service_enable_is_bounded_and_diagnostic(self) -> None:
         evidence = (BUILD_SCRIPT.parent / "systemd_ext4_evidence.sh").read_text()
-        self.assertIn("step=ext4-symlink-done", evidence)
+        self.assertIn("os.symlink(\"d23/leaf\", link)", evidence)
+        self.assertIn("os.unlink(link)", evidence)
         self.assertIn("step=ext4-wants-symlink-done", evidence)
         self.assertIn(
             "ExecStart=/bin/sleep 30\n\n[Install]\nWantedBy=multi-user.target\nEOF",
