@@ -1686,6 +1686,17 @@ ReadWritePaths=
 EOF
     done
 
+    # Debian's packaged default server listens on every address.  The guest
+    # network address is configured later by the gate, so that early bind
+    # fails with EADDRNOTAVAIL and blocks the initial systemd transaction.
+    # The userspace workload installs its loopback-only test site explicitly.
+    rm -f -- "$stage/etc/nginx/sites-enabled/default"
+
+    # openssh-server's maintainer script cannot reliably generate host keys in
+    # the foreign-root build environment.  Let the runtime evidence generate
+    # them with ssh-keygen -A before enabling ssh.service.
+    rm -f -- "$stage/etc/systemd/system/multi-user.target.wants/ssh.service"
+
     install -d -m 0755 -- "$stage/var/log/nginx" "$stage/var/lib/nginx"
     touch "$stage/var/log/nginx/error.log" "$stage/var/log/nginx/access.log"
     chmod 0640 "$stage/var/log/nginx/error.log" "$stage/var/log/nginx/access.log"
