@@ -218,8 +218,12 @@ EOF
     local local_wants_dir=/etc/systemd/system/multi-user.target.wants
     local local_wants_link="$local_wants_dir/.asterinas-debian-direct-link"
     emit 'DEBIAN_EXT4_PROGRESS step=ext4-wants-directory-start'
-    /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
-        mkdir -p -- "$local_wants_dir" || fail ext4-wants-directory-create
+    # systemd creates this directory during package setup. Avoid re-running
+    # mkdir -p while PID1 is scanning the unit tree; fresh directory creation
+    # is covered by the ext4 consistency workload above.
+    [[ -d "$local_wants_dir" ]] ||
+        /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
+            mkdir -p -- "$local_wants_dir" || fail ext4-wants-directory-create
     emit 'DEBIAN_EXT4_PROGRESS step=ext4-wants-directory-done'
     /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
         ln -s "../$TEST_SERVICE" "$local_wants_link" || fail ext4-wants-symlink-create
