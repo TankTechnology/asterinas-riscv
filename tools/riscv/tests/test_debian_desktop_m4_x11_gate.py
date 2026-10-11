@@ -3,9 +3,16 @@
 import unittest
 
 from tools.riscv.debian.rootfs.desktop_m4_x11_gate import classify_x11_desktop
+from tools.riscv.debian.rootfs.desktop_m4_recovery_gate import RECOVERY_BOOTARGS
 
 
 class X11DesktopGateTests(unittest.TestCase):
+    def test_recovery_bootargs_select_ordered_qemu_input_handoff(self):
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered",
+            RECOVERY_BOOTARGS,
+        )
+
     def test_classifier_requires_three_nonce_bound_samples_and_ready(self):
         transcript = b"\n".join(
             (

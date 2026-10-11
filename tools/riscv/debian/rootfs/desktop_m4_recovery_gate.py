@@ -38,6 +38,7 @@ RECOVERY_SECONDS = 300
 RECOVERY_BOOTARGS = DESKTOP_M3_BOOTARGS.replace(
     " -- --root-init=systemd",
     " asterinas.reboot_after={} "
+    "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered "
     "systemd.setenv=ASTERINAS_DESKTOP_M4_FRAMEBUFFER_PROBE=/bin/true"
     " -- --root-init=systemd".format(RECOVERY_SECONDS),
 )
