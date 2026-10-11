@@ -204,8 +204,7 @@ EOF
     # bounded so a VFS stall produces an actionable marker.
     local local_wants_dir=/etc/systemd/system/multi-user.target.wants
     local local_wants_link="$local_wants_dir/.asterinas-debian-direct-link"
-    /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
-        mkdir -p -- "$local_wants_dir" || fail ext4-wants-directory-create
+    [[ -d "$local_wants_dir" ]] || fail ext4-wants-directory-missing
     /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
         ln -s "../$TEST_SERVICE" "$local_wants_link" || fail ext4-wants-symlink-create
     [[ "$(readlink -- "$local_wants_link")" == "../$TEST_SERVICE" ]] ||
