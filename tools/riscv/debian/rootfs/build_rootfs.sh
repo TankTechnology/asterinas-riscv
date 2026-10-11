@@ -1660,8 +1660,31 @@ EOF
 [Service]
 StandardOutput=null
 StandardError=null
+# The daemon opens the system bus socket itself, but Asterinas does not yet
+# provide every readiness interaction used by systemd's Type=dbus handshake.
+# Mark it ready after exec while retaining the normal daemon and socket paths.
+Type=simple
+NotifyAccess=none
 TimeoutStartSec=60s
 EOF
+
+    for service_name in nginx ssh; do
+        install -d -m 0755 -- "$directory/$service_name.service.d"
+        cat >"$directory/$service_name.service.d/asterinas-namespace-compat.conf" <<'EOF'
+[Service]
+PrivateTmp=no
+PrivateDevices=no
+ProtectHome=no
+ProtectSystem=no
+ProtectKernelTunables=no
+ProtectKernelModules=no
+ProtectKernelLogs=no
+ProtectClock=no
+ProtectControlGroups=no
+ProtectHostname=no
+ReadWritePaths=
+EOF
+    done
 
     install -d -m 0755 -- "$stage/var/log/nginx" "$stage/var/lib/nginx"
     touch "$stage/var/log/nginx/error.log" "$stage/var/log/nginx/access.log"
