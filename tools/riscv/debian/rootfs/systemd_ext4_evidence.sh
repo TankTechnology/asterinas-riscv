@@ -201,9 +201,13 @@ EOF
     /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
         ln -s "$TEST_SERVICE" "$direct_link" || fail ext4-symlink-create
     emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-create-done'
+    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-read-start'
     [[ "$(readlink -- "$direct_link")" == "$TEST_SERVICE" ]] ||
         fail ext4-symlink-read
+    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-read-done'
+    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-remove-start'
     rm -f -- "$direct_link" || fail ext4-symlink-remove
+    emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-remove-done'
     emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-done'
     # Exercise the exact unit-wants directory and relative target that
     # systemd's EnableUnitFiles transaction uses. Keep every filesystem probe
