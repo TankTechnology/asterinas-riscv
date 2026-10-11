@@ -440,6 +440,20 @@ ifeq ($(SCHEME), "")
 	endif
 endif
 
+# The RISC-V scheme boots a Linux-format Image through U-Boot in the Debian
+# and QEMU workflows.  The historical multiboot2 default selects an ELF-only
+# build and leaves a previously generated `.Image` stale, which can make a
+# runtime gate execute an older kernel than the source tree.  Keep an explicit
+# user override, but make the normal RISC-V scheme produce the artifact that
+# its consumers actually load.
+ifeq ($(TARGET_ARCH),riscv64)
+ifeq ($(SCHEME),riscv)
+ifeq ($(BOOT_PROTOCOL),multiboot2)
+BOOT_PROTOCOL := linux
+endif
+endif
+endif
+
 ifneq ($(SCHEME), "")
 CARGO_OSDK_COMMON_ARGS += --scheme $(SCHEME)
 else
