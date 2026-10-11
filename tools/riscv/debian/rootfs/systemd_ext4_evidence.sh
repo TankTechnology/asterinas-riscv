@@ -195,6 +195,9 @@ EOF
                 -u ssh.service >>"$CONSOLE" 2>&1 || true
         fail service-reload
     fi
+    # PID1 reload is asynchronous; allow its unit graph scan to settle before
+    # exercising ext4 directory and symlink mutations below.
+    /bin/sleep 3
     emit 'DEBIAN_EXT4_PROGRESS step=service-reload-done'
     local direct_link=/etc/systemd/system/asterinas-debian-direct-link
     emit 'DEBIAN_EXT4_PROGRESS step=ext4-symlink-create-start'
