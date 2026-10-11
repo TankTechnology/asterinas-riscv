@@ -44,6 +44,11 @@ def _load_x11():
         function = getattr(x, name)
         function.restype = result
         function.argtypes = arguments
+    x.XTranslateCoordinates.restype = c.c_int
+    x.XTranslateCoordinates.argtypes = [
+        pointer, ulong, ulong, c.c_int, c.c_int,
+        c.POINTER(c.c_int), c.POINTER(c.c_int), c.POINTER(ulong),
+    ]
     return x
 
 
@@ -74,6 +79,12 @@ def main() -> int:
         x.XChangeWindowAttributes(display, window, 1 << 9, c.byref(attributes))
         x.XMapRaised(display, window)
         x.XSync(display, 0)
+        screen_x, screen_y, child = c.c_int(), c.c_int(), c.c_ulong()
+        if not x.XTranslateCoordinates(
+            display, window, root, 0, 0,
+            c.byref(screen_x), c.byref(screen_y), c.byref(child),
+        ):
+            raise RuntimeError("XTranslateCoordinates failed")
         gc = x.XCreateGC(display, window, 0, None)
         for index, color in enumerate(COLORS):
             x.XSetForeground(display, gc, color)
@@ -92,7 +103,9 @@ def main() -> int:
                 ximage = x.XGetPixel(image, 0, 0) & 0xFFFFFF
             finally:
                 x.XDestroyImage(image)
-            offset = (WINDOW_Y + WINDOW_HEIGHT // 2) * stride + (WINDOW_X + center_x) * 4
+            # A managed client can be reparented or moved. Read the actual
+            # root coordinates instead of the requested window geometry.
+            offset = (screen_y.value + WINDOW_HEIGHT // 2) * stride + (screen_x.value + center_x) * 4
             raw = os.pread(descriptor, 4, offset)
             if len(raw) != 4:
                 raise RuntimeError("fb0 sample is short")

@@ -122,6 +122,9 @@ DESKTOP_M4_EVIDENCE_SCRIPT = (
 DESKTOP_M4_SESSION_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_session.sh"
 )
+DESKTOP_M4_X11_PAINT_SCRIPT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_x11_paint.py"
+)
 DESKTOP_M4_WELCOME_PAGE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_welcome.html"
 )
@@ -3165,6 +3168,22 @@ WantedBy=multi-user.target
                 f"visible_window '^{window_class}$'",
                 evidence_script,
             )
+
+    def test_desktop_m4_x11_paint_uses_translated_root_coordinates(self) -> None:
+        paint_script = DESKTOP_M4_X11_PAINT_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("XTranslateCoordinates", paint_script)
+        self.assertIn(
+            "(screen_y.value + WINDOW_HEIGHT // 2) * stride",
+            paint_script,
+        )
+        self.assertIn(
+            "(screen_x.value + center_x) * 4",
+            paint_script,
+        )
+        self.assertNotIn(
+            "(WINDOW_Y + WINDOW_HEIGHT // 2) * stride",
+            paint_script,
+        )
         input_directory = self.directory / "desktop-m4-input"
         input_directory.mkdir()
         (input_directory / "event0").touch()
