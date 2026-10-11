@@ -9,7 +9,10 @@ use crate::{
         NetlinkSocketAddr, receiver::QueueableMessage, table::MulticastMessage,
     },
     prelude::*,
-    util::MultiWrite,
+    util::{
+        MultiWrite,
+        bpf::{self, SockFilter},
+    },
 };
 
 mod syn_uevent;
@@ -23,7 +26,7 @@ mod uevent;
 /// It does not have a netlink header.
 #[derive(Clone, Debug)]
 pub(crate) struct UeventMessage {
-    uevent: String,
+    uevent: Vec<u8>,
     src_addr: NetlinkSocketAddr,
 }
 
@@ -31,7 +34,7 @@ impl UeventMessage {
     /// Creates a new uevent message.
     fn new(uevent: Uevent, src_addr: NetlinkSocketAddr) -> Self {
         Self {
-            uevent: uevent.to_string(),
+            uevent: uevent.to_string().into_bytes(),
             src_addr,
         }
     }
@@ -43,7 +46,7 @@ impl UeventMessage {
 
     /// Writes the uevent to the given `writer`.
     pub(super) fn write_to(&self, writer: &mut dyn MultiWrite) -> Result<()> {
-        let _nbytes = writer.write(&mut VmReader::from(self.uevent.as_bytes()))?;
+        let _nbytes = writer.write(&mut VmReader::from(self.uevent.as_slice()))?;
         // `_nbytes` may be smaller than the message size. We ignore it to truncate the message.
 
         Ok(())
@@ -53,6 +56,15 @@ impl UeventMessage {
 impl QueueableMessage for UeventMessage {
     fn total_len(&self) -> usize {
         self.uevent.len()
+    }
+
+    fn apply_filter(&mut self, program: &[SockFilter]) -> bool {
+        let retained = bpf::run(program, &self.uevent) as usize;
+        if retained == 0 {
+            return false;
+        }
+        self.uevent.truncate(retained);
+        true
     }
 }
 

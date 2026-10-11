@@ -38,6 +38,7 @@ impl NetlinkSocketTable {
 
 pub(crate) trait SupportedNetlinkProtocol {
     type Message: 'static + Send;
+    const SUPPORTS_FILTER: bool = false;
 
     fn socket_table() -> &'static RwMutex<ProtocolSocketTable<Self::Message>>;
 
@@ -81,6 +82,7 @@ pub(crate) enum NetlinkUeventProtocol {}
 
 impl SupportedNetlinkProtocol for NetlinkUeventProtocol {
     type Message = UeventMessage;
+    const SUPPORTS_FILTER: bool = true;
 
     fn socket_table() -> &'static RwMutex<ProtocolSocketTable<Self::Message>> {
         &NETLINK_SOCKET_TABLE.get().unwrap().uevent

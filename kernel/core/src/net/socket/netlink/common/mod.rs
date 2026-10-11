@@ -12,7 +12,7 @@ use crate::{
         netlink::{AddMembership, DropMembership, table::SupportedNetlinkProtocol},
         new_socket_common,
         options::{
-            Error as SocketError, SocketOption,
+            AttachFilter, DetachFilter, Error as SocketError, SocketOption,
             macros::{sock_option_mut, sock_option_ref},
         },
         private::SocketPrivate,
@@ -316,6 +316,28 @@ fn do_netlink_setsockopt<P: SupportedNetlinkProtocol>(
         drop_membership @ DropMembership => {
             let groups = drop_membership.get().unwrap();
             inner.drop_groups(GroupIdSet::from_membership(*groups)?);
+        }
+        attach_filter @ AttachFilter => {
+            if !P::SUPPORTS_FILTER {
+                return_errno_with_message!(
+                    Errno::EOPNOTSUPP,
+                    "socket filtering is unsupported for this netlink protocol"
+                );
+            }
+            let filter = attach_filter.get().unwrap().clone();
+            match inner {
+                Inner::Unbound(socket) => socket.set_filter(Some(filter)),
+                Inner::Bound(socket) => socket.receive_queue.lock().set_filter(Some(filter)),
+            };
+        }
+        _detach_filter @ DetachFilter => {
+            let removed = match inner {
+                Inner::Unbound(socket) => socket.set_filter(None),
+                Inner::Bound(socket) => socket.receive_queue.lock().set_filter(None),
+            };
+            if !removed {
+                return_errno_with_message!(Errno::ENOENT, "no socket filter is attached");
+            }
         }
         _ =>
             return_errno_with_message!(Errno::ENOPROTOOPT, "the socket option to be set is unknown"),

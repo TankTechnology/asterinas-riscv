@@ -13,10 +13,12 @@ use crate::{
     },
     prelude::*,
     process::signal::Pollee,
+    util::bpf::SockFilter,
 };
 
 pub(super) struct UnboundNetlink<P: SupportedNetlinkProtocol> {
     groups: GroupIdSet,
+    filter: Option<Arc<Vec<SockFilter>>>,
     phantom: PhantomData<BoundNetlink<P::Message>>,
 }
 
@@ -24,6 +26,7 @@ impl<P: SupportedNetlinkProtocol> UnboundNetlink<P> {
     pub(super) const fn new() -> Self {
         Self {
             groups: GroupIdSet::new_empty(),
+            filter: None,
             phantom: PhantomData,
         }
     }
@@ -38,6 +41,12 @@ impl<P: SupportedNetlinkProtocol> UnboundNetlink<P> {
 
     pub(super) fn drop_groups(&mut self, groups: GroupIdSet) {
         self.groups.drop_groups(groups);
+    }
+
+    pub(super) fn set_filter(&mut self, filter: Option<Arc<Vec<SockFilter>>>) -> bool {
+        let removed = self.filter.is_some();
+        self.filter = filter;
+        removed
     }
 }
 
@@ -55,6 +64,7 @@ impl<P: SupportedNetlinkProtocol> datagram_common::Unbound for UnboundNetlink<P>
     ) -> Result<Self::Bound> {
         let (message_queue, message_receiver) =
             MessageQueue::<P::Message>::new_pair(pollee.clone());
+        message_queue.lock().set_filter(self.filter.clone());
 
         let bound_handle = {
             let endpoint = {
@@ -75,6 +85,7 @@ impl<P: SupportedNetlinkProtocol> datagram_common::Unbound for UnboundNetlink<P>
     ) -> Result<Self::Bound> {
         let (message_queue, message_receiver) =
             MessageQueue::<P::Message>::new_pair(pollee.clone());
+        message_queue.lock().set_filter(self.filter.clone());
 
         let bound_handle = {
             let endpoint = {

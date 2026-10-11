@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use crate::{events::IoEvents, prelude::*, process::signal::Pollee};
+use crate::{events::IoEvents, prelude::*, process::signal::Pollee, util::bpf::SockFilter};
 
 pub(crate) struct MessageReceiver<Message> {
     message_queue: Arc<Mutex<MessageQueue<Message>>>,
@@ -11,6 +11,7 @@ pub(super) struct MessageQueue<Message> {
     messages: VecDeque<Message>,
     total_length: usize,
     error: Option<Error>,
+    filter: Option<Arc<Vec<SockFilter>>>,
 }
 
 impl<Message> MessageQueue<Message> {
@@ -20,12 +21,19 @@ impl<Message> MessageQueue<Message> {
             messages: VecDeque::new(),
             total_length: 0,
             error: None,
+            filter: None,
         }));
         let receiver = MessageReceiver {
             message_queue: queue.clone(),
             pollee,
         };
         (queue, receiver)
+    }
+
+    pub(super) fn set_filter(&mut self, filter: Option<Arc<Vec<SockFilter>>>) -> bool {
+        let removed = self.filter.is_some();
+        self.filter = filter;
+        removed
     }
 
     /// Returns whether the message queue is empty.
@@ -46,6 +54,11 @@ impl<Message> MessageQueue<Message> {
 pub(crate) trait QueueableMessage {
     /// Counts and returns the length of the message.
     fn total_len(&self) -> usize;
+
+    /// Applies a packet filter before queue accounting and readiness notification.
+    fn apply_filter(&mut self, _program: &[SockFilter]) -> bool {
+        false
+    }
 }
 
 impl<Message: QueueableMessage> MessageQueue<Message> {
@@ -78,9 +91,14 @@ impl<Message: QueueableMessage> MessageQueue<Message> {
         Ok(result)
     }
 
-    /// Tries to enqueue a new message. Returns `false` if the buffer is full.
+    /// Enqueues a message and returns an event only for accepted or overflowing packets.
     #[must_use]
-    pub(self) fn enqueue(&mut self, message: Message) -> bool {
+    pub(self) fn enqueue(&mut self, mut message: Message) -> Option<IoEvents> {
+        if let Some(filter) = &self.filter {
+            if !message.apply_filter(filter) {
+                return None;
+            }
+        }
         let length = message.total_len();
 
         // Currently, we don't support sending netlink messages between user spaces, so only the
@@ -91,23 +109,21 @@ impl<Message: QueueableMessage> MessageQueue<Message> {
                 Errno::ENOBUFS,
                 "the receive buffer is full",
             ));
-            return false;
+            return Some(IoEvents::ERR);
         }
 
         self.messages.push_back(message);
         self.total_length += length;
 
-        true
+        Some(IoEvents::IN)
     }
 }
 
 impl<Message: QueueableMessage> MessageReceiver<Message> {
     pub(super) fn enqueue_message(&self, message: Message) {
-        let is_ok = self.message_queue.lock().enqueue(message);
-        if is_ok {
-            self.pollee.notify(IoEvents::IN);
-        } else {
-            self.pollee.notify(IoEvents::ERR);
+        let event = self.message_queue.lock().enqueue(message);
+        if let Some(event) = event {
+            self.pollee.notify(event);
         }
     }
 }

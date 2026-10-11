@@ -3,7 +3,12 @@
 use macros::impl_socket_options;
 
 use super::util::{LingerOption, SocketTimeout};
-use crate::{net::socket::unix::CUserCred, prelude::*, process::Gid, util::net::SockType};
+use crate::{
+    net::socket::unix::CUserCred,
+    prelude::*,
+    process::Gid,
+    util::{bpf::SockFilter, net::SockType},
+};
 
 pub(in crate::net) mod macros;
 
@@ -28,6 +33,8 @@ impl_socket_options!(
     pub(crate) struct SendTimeout(SocketTimeout);
     pub(crate) struct ReusePort(bool);
     pub(crate) struct PassCred(bool);
+    pub(crate) struct AttachFilter(Arc<Vec<SockFilter>>);
+    pub(crate) struct DetachFilter(i32);
     pub(crate) struct PeerCred(CUserCred);
     pub(crate) struct AcceptConn(bool);
     pub(crate) struct SendBufForce(u32);

@@ -26,6 +26,74 @@ use crate::{
 };
 
 #[ktest]
+fn socket_filter_applies_before_readiness_and_truncates() {
+    use crate::{
+        events::IoEvents,
+        net::socket::options::{AttachFilter, DetachFilter},
+        process::signal::Pollable,
+        util::bpf::SockFilter,
+    };
+
+    crate::net::socket::netlink::init();
+    let socket = NetlinkUeventSocket::new(true, SockType::SOCK_DGRAM);
+    let mut option = AttachFilter::new();
+    option.set(Arc::new(vec![SockFilter {
+        code: 0x06,
+        jt: 0,
+        jf: 0,
+        k: 0,
+    }]));
+    socket.set_option(&option).unwrap();
+    socket
+        .bind(SocketAddr::Netlink(NetlinkSocketAddr::new(
+            101,
+            GroupIdSet::new(1),
+        )))
+        .unwrap();
+
+    let message = super::UeventMessage {
+        uevent: b"abcdef".to_vec(),
+        src_addr: NetlinkSocketAddr::new_unspecified(),
+    };
+    NetlinkUeventProtocol::multicast(GroupIdSet::new(1), message.clone()).unwrap();
+    assert!(!socket.poll(IoEvents::IN, None).contains(IoEvents::IN));
+    let mut buffer = [0u8; 16];
+    let mut writer = VmWriter::from(buffer.as_mut_slice()).to_fallible();
+    assert!(
+        socket
+            .try_recv(&mut writer, RecvFlags::empty())
+            .is_err_and(|err| err.error() == Errno::EAGAIN)
+    );
+
+    option.set(Arc::new(vec![SockFilter {
+        code: 0x06,
+        jt: 0,
+        jf: 0,
+        k: 3,
+    }]));
+    socket.set_option(&option).unwrap();
+    NetlinkUeventProtocol::multicast(GroupIdSet::new(1), message.clone()).unwrap();
+    assert!(socket.poll(IoEvents::IN, None).contains(IoEvents::IN));
+    let (output, _) = socket.try_recv(&mut writer, RecvFlags::empty()).unwrap();
+    assert_eq!(output.len(), 3);
+    assert_eq!(&buffer[..3], b"abc");
+
+    let mut detach = DetachFilter::new();
+    detach.set(0);
+    socket.set_option(&detach).unwrap();
+    assert!(
+        socket
+            .set_option(&detach)
+            .is_err_and(|err| err.error() == Errno::ENOENT)
+    );
+    NetlinkUeventProtocol::multicast(GroupIdSet::new(1), message).unwrap();
+    let mut writer = VmWriter::from(buffer.as_mut_slice()).to_fallible();
+    let (output, _) = socket.try_recv(&mut writer, RecvFlags::empty()).unwrap();
+    assert_eq!(output.len(), 6);
+    assert_eq!(&buffer[..6], b"abcdef");
+}
+
+#[ktest]
 fn uuid() {
     let uuid = Uuid::from_str("12345678-1234-1234-1234-123456789012");
     assert!(uuid.is_ok());
