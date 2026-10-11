@@ -33,19 +33,21 @@ The three PR heads were fetched as `origin/pr134`, `origin/pr103`, and
 `origin/pr135` before review.
 
 - **#134 (`c6d837a03`)** changes `SigAction` so `SA_RESETHAND` resets only
-  the handler while retaining flags, restorer, and mask metadata. It also
-  updates `/proc/<pid>/task/<tid>/stat` signal classification and adds a
-  focused regression. This is a bounded semantic fix and is the first POSIX
-  candidate after the Debian runtime gate. The current branch now has a
-  focused `AUTO_TEST=sigaction_reset_hand` gate; its RISC-V SMP=4 run passed
-  all six assertions and the terminal marker
+  the handler while retaining flags, restorer, and mask metadata. That
+  behavior is already present in current `origin/main` through
+  `39bf87693`; the PR head itself should not be cherry-picked again. The
+  current branch adds a focused `AUTO_TEST=sigaction_reset_hand` gate; its
+  RISC-V SMP=4 run passed all six assertions and the terminal marker
   `sigaction reset hand regression passed.` The full process suite remains
   unsuitable as focused proof because an unrelated large-alignment `execve`
   case fails before the signal directory is reached.
 - **#103 (`7f6952ebf`)** adds current-thread CPU-affinity migration and
-  scheduler `Migrate` handling, with an SMP4 regression. It affects global
-  scheduling and therefore must be tested on `SMP=4` before it can be used to
-  explain Firefox or systemd behavior. It is a second, independent candidate.
+  scheduler `Migrate` handling, with an SMP4 regression. Current main already
+  contains the later migration implementation and follow-up adjustment
+  (`2b9158aa9`, `831036356`, `521092743`), so the PR is a comparison target,
+  not a merge target. The existing SMP4 process output observed migration over
+  CPUs 0–3; a dedicated gate is still required if a Debian workload exposes a
+  remaining remote-thread migration defect.
 - **#135 (`facd07ac5`)** is stacked: its history includes POSIX timers,
   namespaced clocks, RCU idle progress, socket-buffer prefaulting, range-lock
   handling, large-file `fcntl`, and the #103 affinity fix. It is not a safe
