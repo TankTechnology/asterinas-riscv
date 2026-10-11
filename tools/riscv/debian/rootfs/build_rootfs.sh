@@ -1147,7 +1147,6 @@ EOF
             # same narrowly-scoped compatibility boundary used by desktop
             # profiles instead of silently accepting a failed logind unit.
             configure_logind_namespace_compatibility "$stage"
-            configure_debian_service_compatibility "$stage"
             # Asterinas exposes the usable interactive serial tty as ttyS0.
             # Keep Debian's console-getty ordering and lifecycle, but point
             # its terminal directly at ttyS0. The serial-getty template adds
@@ -1221,6 +1220,12 @@ EOF
         "$stage/var/log/"* \
         "$stage/tmp/"* \
         "$stage/var/tmp/"*
+    if [[ "$PROFILE" == systemd-ext4-m3 || "$PROFILE" == systemd-ext4-m6-userspace ]]; then
+        # The cleanup above intentionally removes package-maintainer logs.
+        # Recreate the Debian service compatibility files afterwards so the
+        # nginx log paths and systemd drop-ins are part of the published image.
+        configure_debian_service_compatibility "$stage"
+    fi
     if profile_uses_startup_caches "$PROFILE"; then
         # Both browser profiles must enter the guest with the target-owned
         # systemd/sysusers, dynamic-linker, journal, and font caches already
