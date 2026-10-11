@@ -178,8 +178,11 @@ ExecStart=/bin/sleep 30
 [Install]
 WantedBy=multi-user.target
 EOF
+    # The systemctl D-Bus client path can block while PID 1 is settling its
+    # first boot transaction on Asterinas.  HUP is systemd's native reload
+    # request and keeps this probe bounded without hiding a reload failure.
     if ! /usr/bin/timeout --signal=TERM --kill-after=5s 20s \
-        systemctl --no-block daemon-reload; then
+        kill -HUP 1; then
         /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
             /usr/bin/systemctl --no-pager status >>"$CONSOLE" 2>&1 || true
         /usr/bin/timeout --signal=TERM --kill-after=2s 5s \
