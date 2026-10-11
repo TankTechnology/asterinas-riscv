@@ -73,7 +73,7 @@ DESKTOP_M4_QEMU_FRAMEBUFFER_PATTERN = re.compile(
     rb"DEBIAN_DESKTOP_M4_FB_IOCTL width=1280 height=1024 stride=5120 "
     rb"bpp=32 format=BgrReserved\r*\n"
     rb"DEBIAN_DESKTOP_M4_FB_SAMPLE bytes=4096 sha256=[0-9a-f]{64}\r*\n"
-    rb"DEBIAN_DESKTOP_M4_FB_COLORS distinct=[2-9][0-9]* "
+    rb"DEBIAN_DESKTOP_M4_FB_COLORS distinct=(?:[2-9]|[1-9][0-9]+) "
     rb"non_background=[1-9][0-9]*\r*\n"
 )
 

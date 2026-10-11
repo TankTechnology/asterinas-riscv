@@ -4588,6 +4588,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                 "util-linux",
                 "x11-utils",
                 "xauth",
+                "xdotool",
                 "xfonts-base",
                 "xinit",
                 "xserver-xorg-core",
@@ -4607,6 +4608,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                 "libpam-systemd",
                 "xserver-xorg-core",
                 "xterm",
+                "xdotool",
                 "librsvg2-common",
                 "lxpanel",
                 "netsurf-gtk",
@@ -4675,6 +4677,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                     ("matchbox-window-manager", "riscv64", "1.2.2-2"),
                     ("udev", "riscv64", "257.13-1"),
                     ("xauth", "riscv64", "1:1.1.2-1"),
+                    ("xdotool", "riscv64", "1:3.20160805.1-5.1"),
                     ("x11-utils", "riscv64", "7.7+7"),
                     ("xfonts-base", "all", "1:1.0.5+nmu1"),
                     ("xinit", "riscv64", "1.4.2-1"),
@@ -4730,6 +4733,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                     ("pcmanfm", "riscv64", "1.4.0-1"),
                     ("udev", "riscv64", "257.13-1"),
                     ("xauth", "riscv64", "1:1.1.2-1"),
+                    ("xdotool", "riscv64", "1:3.20160805.1-5.1"),
                     ("x11-utils", "riscv64", "7.7+7"),
                     ("xfonts-base", "all", "1:1.0.5+nmu1"),
                     ("xinit", "riscv64", "1.4.2-1"),
@@ -6804,7 +6808,7 @@ class DebianDesktopM4GateTests(unittest.TestCase):
         framebuffer = (
             "DEBIAN_DESKTOP_M4_FB_IOCTL width=1280 height=1024 stride=5120 bpp=32 format=BgrReserved\n"
             "DEBIAN_DESKTOP_M4_FB_SAMPLE bytes=4096 sha256=" + "a" * 64 + "\n"
-            "DEBIAN_DESKTOP_M4_FB_COLORS distinct=86 non_background=1024\n"
+            "DEBIAN_DESKTOP_M4_FB_COLORS distinct=10 non_background=1024\n"
         )
         transcript = (
             "boot noise\n" + "\n".join(DESKTOP_M4_MILESTONES) + "\n" + framebuffer
