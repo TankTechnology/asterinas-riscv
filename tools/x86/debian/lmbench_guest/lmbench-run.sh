@@ -46,6 +46,8 @@ for d in /opt/lmbench/asterinas-runs/run-*; do
     echo "LMBENCH_RUN_DUMP_BEGIN $d"
     echo "----- CONFIG -----"
     cat "$d/CONFIG" 2>/dev/null
+    echo "----- report.json -----"
+    cat "$d/report.json" 2>/dev/null
     echo "----- stderr -----"
     tail -40 "$d/stderr" 2>/dev/null
     echo "----- native-results.txt (full) -----"
