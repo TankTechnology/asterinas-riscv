@@ -1,0 +1,14 @@
+[Unit]
+Description=Asterinas native LMBench ALL run
+After=multi-user.target
+KeyringMode=inherit
+
+[Service]
+Type=oneshot
+ExecStart=/opt/lmbench-run.sh
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=7200
+
+[Install]
+WantedBy=multi-user.target

@@ -641,6 +641,35 @@ test_riscv_rootfs_builder_image_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_riscv_rootfs_builder_image -v
 
+.PHONY: test_x86_debian_tooling_unit
+test_x86_debian_tooling_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.x86.tests.test_x86_debian_boot -v
+
+# Boot the Debian root image on the x86_64 kernel and wait for the marker.
+# X86_DEBIAN_KERNEL must be an OSDK x86_64 artifact built with
+# `--boot-method vmm-direct`; X86_DEBIAN_STAGE1_INITRAMFS comes from
+# `build_stage1.sh --architecture amd64 --minimal`.
+X86_DEBIAN_KERNEL ?=
+X86_DEBIAN_STAGE1_INITRAMFS ?=
+X86_DEBIAN_ROOT_IMAGE ?=
+X86_DEBIAN_BOOT_TRANSCRIPT ?= $(CURDIR)/target/x86-debian/boot.transcript
+X86_DEBIAN_BOOT_MARKER ?= Reached target multi-user.target
+X86_DEBIAN_BOOT_TIMEOUT ?= 1800
+
+.PHONY: test_x86_debian_boot
+test_x86_debian_boot:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_ROOT_IMAGE)" || { echo "X86_DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
+	@tools/x86/debian/boot_debian.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(X86_DEBIAN_ROOT_IMAGE)" \
+		--output "$(X86_DEBIAN_BOOT_TRANSCRIPT)" \
+		--wait-for "$(X86_DEBIAN_BOOT_MARKER)" \
+		--timeout "$(X86_DEBIAN_BOOT_TIMEOUT)"
+
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:
 	@python3 -W error::ResourceWarning -m unittest \
