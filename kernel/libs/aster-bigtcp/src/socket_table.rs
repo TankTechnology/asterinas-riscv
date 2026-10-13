@@ -32,14 +32,39 @@ pub(crate) struct ListenerKey {
 
 impl ListenerKey {
     pub(crate) const fn new(addr: IpAddress, port: PortNum) -> Self {
-        // FIXME: If the socket is listening on an unspecified address (0.0.0.0),
-        // Linux will get the hash value by port only.
-        let hash = hash_addr_port(addr, port);
+        // Listeners are bucketed by port alone. A listener bound to the
+        // unspecified address accepts connections for any local address, so its
+        // bucket must be reachable from a lookup key built from a concrete
+        // destination address. Hashing the address too would send the wildcard
+        // listener and the lookup key to different buckets. Linux likewise
+        // hashes a wildcard listener by port only.
+        let hash = hash_port(port);
         Self { addr, port, hash }
     }
 
     pub(crate) const fn hash(&self) -> SocketHash {
         self.hash
+    }
+
+    /// Returns whether a listener described by `self` accepts a connection
+    /// request whose destination is described by `packet`.
+    ///
+    /// A listener bound to the unspecified address is a wildcard that accepts
+    /// any local destination address, matching Linux's `INADDR_ANY` semantics.
+    pub(crate) fn accepts(&self, packet: &Self) -> bool {
+        self.port == packet.port && (self.addr.is_unspecified() || self.addr == packet.addr)
+    }
+
+    /// Returns whether two listeners cannot coexist.
+    ///
+    /// A wildcard listener overlaps every address on its port, so it conflicts
+    /// with both another wildcard listener and a listener bound to a concrete
+    /// local address.
+    pub(crate) fn conflicts_with(&self, other: &Self) -> bool {
+        self.port == other.port
+            && (self.addr.is_unspecified()
+                || other.addr.is_unspecified()
+                || self.addr == other.addr)
     }
 }
 
@@ -134,21 +159,9 @@ const fn hash_local_remote(
     }
 }
 
-const fn hash_addr_port(addr: IpAddress, port: PortNum) -> SocketHash {
-    match addr {
-        IpAddress::Ipv4(ipv4_addr) => jhash_1vals(ipv4_addr.to_bits(), NET_HASHMIX) ^ (port as u32),
-        IpAddress::Ipv6(ipv6_addr) => {
-            let bits = ipv6_addr.to_bits();
-            let hash_keys = &[
-                (bits >> 96) as u32,
-                (bits >> 64) as u32,
-                (bits >> 32) as u32,
-                bits as u32,
-                port as u32,
-            ];
-            jhash_u32_array(hash_keys, NET_HASHMIX)
-        }
-    }
+/// Hashes a port alone, for tables whose entries span every local address.
+const fn hash_port(port: PortNum) -> SocketHash {
+    jhash_1vals(port as u32, NET_HASHMIX)
 }
 
 /// The socket table manages TCP and UDP sockets.
@@ -265,17 +278,32 @@ impl<E: Ext> SocketTable<E> {
         self.udp_sockets.push(udp_socket);
     }
 
+    /// Looks up the listener that accepts a connection request described by
+    /// `key`, honoring a listener bound to the unspecified address as a wildcard.
     pub(crate) fn lookup_listener(&self, key: &ListenerKey) -> Option<&Arc<TcpListenerBg<E>>> {
-        let bucket = {
-            let hash = key.hash();
-            let bucket_index = hash & LISTENER_BUCKET_MASK;
-            &self.listener_buckets[bucket_index as usize]
-        };
+        self.find_listener(key, ListenerKey::accepts)
+    }
 
-        bucket
+    /// Looks up a listener that cannot coexist with the listener described by
+    /// `key`, for reporting `EADDRINUSE`.
+    pub(crate) fn lookup_conflicting_listener(
+        &self,
+        key: &ListenerKey,
+    ) -> Option<&Arc<TcpListenerBg<E>>> {
+        self.find_listener(key, ListenerKey::conflicts_with)
+    }
+
+    fn find_listener(
+        &self,
+        key: &ListenerKey,
+        predicate: fn(&ListenerKey, &ListenerKey) -> bool,
+    ) -> Option<&Arc<TcpListenerBg<E>>> {
+        let bucket_index = (key.hash() & LISTENER_BUCKET_MASK) as usize;
+
+        self.listener_buckets[bucket_index]
             .listeners
             .iter()
-            .find(|listener| listener.listener_key() == key)
+            .find(|listener| predicate(listener.listener_key(), key))
     }
 
     pub(crate) fn lookup_connection(

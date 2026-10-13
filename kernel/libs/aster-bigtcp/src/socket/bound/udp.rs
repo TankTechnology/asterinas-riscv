@@ -78,7 +78,13 @@ impl<E: Ext> UdpSocketBg<E> {
         //
         // `RawUdpSocket::accepts` accepts all incoming broadcast and multicast packets, which is not
         // what we want.
-        ip_repr.dst_addr() == *self.bound.addr() && udp_repr.dst_port == self.bound.port()
+        //
+        // A socket bound to the unspecified address is a wildcard that accepts traffic for every
+        // local address, matching Linux's `INADDR_ANY` semantics.
+        let bound_addr = *self.bound.addr();
+        let addr_matches = bound_addr.is_unspecified() || ip_repr.dst_addr() == bound_addr;
+
+        addr_matches && udp_repr.dst_port == self.bound.port()
     }
 
     /// Tries to generate an outgoing packet and dispatches the generated packet.
@@ -127,7 +133,9 @@ impl<E: Ext> UdpSocket<E> {
             let interface = bound.iface().common().interface();
             endpoint.addr = interface.map_broadcast_to_local(endpoint.addr);
 
-            endpoint
+            // A bind to the unspecified address is a wildcard that must accept
+            // traffic for every local address, not just `0.0.0.0` itself.
+            crate::wire::to_listen_endpoint(endpoint)
         };
 
         let socket = {

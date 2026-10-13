@@ -2,12 +2,16 @@
 
 use aster_bigtcp::{
     errors::BindError,
-    iface::BindPortConfig,
+    iface::{BindPortConfig, InterfaceType},
     wire::{IpAddress, IpEndpoint, Ipv4Address, Ipv6Address},
 };
 
 use crate::{
-    net::{iface::Iface, route, socket::util::check_port_privilege},
+    net::{
+        iface::{Iface, iter_all_ifaces},
+        route,
+        socket::util::check_port_privilege,
+    },
     prelude::*,
 };
 
@@ -17,11 +21,38 @@ pub(super) fn resolve_bind_iface_and_config(
 ) -> Result<(Arc<Iface>, BindPortConfig)> {
     check_port_privilege(endpoint.port)?;
 
-    let iface = route::lookup_local_iface(endpoint.addr)?;
+    let iface = if endpoint.addr.is_unspecified() {
+        // A wildcard bind accepts traffic addressed to any local address.
+        default_bind_iface()
+    } else {
+        route::lookup_local_iface(endpoint.addr)?
+    };
 
     let bind_port_config = BindPortConfig::new(*endpoint, can_reuse);
 
     Ok((iface, bind_port_config))
+}
+
+/// Returns the interface that a wildcard bind is placed on.
+///
+/// Linux lets a socket bound to the unspecified address (`0.0.0.0` or `::`)
+/// receive traffic for every local address, across every interface. An Asterinas
+/// socket belongs to exactly one interface, so a wildcard bind must pick one.
+/// The loopback interface is chosen because its addresses are unconditionally
+/// local, which preserves the part of `INADDR_ANY` that a server reached from
+/// its own machine depends on. A wildcard bind is therefore *not* reachable
+/// through the configured network interface; a server that must be reachable
+/// from the network has to bind that interface's address explicitly.
+///
+/// FIXME: Support the full Linux semantics by registering a wildcard-bound
+/// socket on every interface. That needs a way for `aster-bigtcp` to enumerate
+/// interfaces and to register one socket in several socket tables.
+fn default_bind_iface() -> Arc<Iface> {
+    iter_all_ifaces()
+        .find(|iface| iface.type_() == InterfaceType::LOOPBACK)
+        .or_else(|| iter_all_ifaces().next())
+        .cloned()
+        .expect("at least one network interface must be registered")
 }
 
 impl From<BindError> for Error {

@@ -81,7 +81,7 @@ impl<E: Ext> TcpListener<E> {
 
         let listener_key = ListenerKey::new(local_endpoint.addr, local_endpoint.port);
 
-        if sockets.lookup_listener(&listener_key).is_some() {
+        if sockets.lookup_conflicting_listener(&listener_key).is_some() {
             return Err((bound, ListenError::AddressInUse));
         }
 
@@ -90,7 +90,9 @@ impl<E: Ext> TcpListener<E> {
 
             option.apply(&mut socket);
 
-            if let Err(err) = socket.listen(local_endpoint) {
+            // A bind to the unspecified address is a wildcard that must accept
+            // traffic for every local address, not just `0.0.0.0` itself.
+            if let Err(err) = socket.listen(crate::wire::to_listen_endpoint(local_endpoint)) {
                 return Err((bound, err.into()));
             }
 
