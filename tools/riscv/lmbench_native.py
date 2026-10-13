@@ -29,8 +29,12 @@ import tarfile
 import tempfile
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from tools.debian.rootfs.arch import Architecture, get_architecture
+
 REVISION = 'afb47eddaf10a411c1ea3cb64965461f1308a6ea'
-PLATFORM = 'riscv64-unknown-linux-gnu'
+DEFAULT_ARCHITECTURE = 'riscv64'
 ADAPTATIONS = ['explicit IPv4 loopback server arguments',
                'skip modern netstat interface-table headers']
 
@@ -230,14 +234,14 @@ def audit(text: str, stderr: str, status: int | None, timed_out: bool) -> dict:
             'scope': 'native ALL, 8 MiB, one copy, FASTMEM; no raw disks or remote hosts'}
 
 
-def patch_scripts(root: Path) -> None:
+def patch_scripts(root: Path, platform: str) -> None:
     old = 'for server in $SERVERS; do $server -s; done'
     new = ('for server in $SERVERS; do\n'
            '    case "$server" in\n'
            '        lat_rpc) "$server" -s ;;\n'
            '        *) "$server" -s 127.0.0.1 ;;\n'
            '    esac\ndone')
-    for script in (root / 'scripts/lmbench', root / 'bin' / PLATFORM / 'lmbench'):
+    for script in (root / 'scripts/lmbench', root / 'bin' / platform / 'lmbench'):
         content = script.read_text()
         if content.count(old) != 1:
             raise ValueError('upstream server startup changed; review the adaptation')
@@ -249,7 +253,7 @@ def patch_scripts(root: Path) -> None:
         script.write_text(content.replace(old_header, '*ame|Kernel|Iface)\t;;'))
 
 
-def verify_archive(archive: Path) -> dict:
+def verify_archive(archive: Path, architecture: Architecture) -> dict:
     """Reject a stale native runtime before paying for a full guest run."""
     with tarfile.open(archive, 'r:gz') as tar:
         def read(name: str) -> bytes:
@@ -265,7 +269,8 @@ def verify_archive(archive: Path) -> dict:
             return file.read()
 
         metadata = json.loads(read('asterinas-runtime.json'))
-        if metadata.get('revision') != REVISION or metadata.get('platform') != PLATFORM:
+        if (metadata.get('revision') != REVISION or
+                metadata.get('platform') != architecture.platform):
             raise ValueError('runtime archive revision or platform differs from this runner')
         if metadata.get('adaptations') != ADAPTATIONS:
             raise ValueError('runtime archive adaptations differ from this runner')
@@ -278,7 +283,7 @@ def verify_archive(archive: Path) -> dict:
             raise ValueError('runtime archive runner differs from this runner')
         if read('src/GNUmakefile').decode() != make_entry():
             raise ValueError('runtime archive make entry differs from this runner')
-        for name in ('scripts/lmbench', 'bin/' + PLATFORM + '/lmbench'):
+        for name in ('scripts/lmbench', 'bin/' + architecture.platform + '/lmbench'):
             driver = read(name).decode()
             if ('case "$server" in' not in driver or '-s 127.0.0.1' not in driver or
                     '*ame|Kernel|Iface)\t;;' not in driver):
@@ -287,16 +292,17 @@ def verify_archive(archive: Path) -> dict:
             raise ValueError('runtime archive does not preserve the native version probe')
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     return {'archive': str(archive), 'sha256': digest, 'revision': REVISION,
-            'platform': PLATFORM, 'adaptations': ADAPTATIONS}
+            'platform': architecture.platform, 'adaptations': ADAPTATIONS}
 
 
-def package(output: Path) -> None:
+def package(output: Path, architecture: Architecture) -> None:
     repo = Path(__file__).resolve().parents[2]
     expression = repo / 'test/initramfs/nix/default.nix'
     packages = {}
     for name in ('lmbench', 'make', 'rpcbind', 'nettools', 'source'):
         packages[name] = subprocess.check_output(
-            ['nix-build', str(expression), '--argstr', 'target', 'riscv64',
+            ['nix-build', str(expression), '--argstr', 'target',
+             architecture.nix_target,
              '-A', 'lmbenchNative.' + name, '--no-out-link'], text=True).strip().splitlines()[-1]
     closure = subprocess.check_output(['nix-store', '-qR', *[v for k, v in packages.items()
                                                           if k != 'source']], text=True).splitlines()
@@ -309,14 +315,15 @@ def package(output: Path) -> None:
         hashes = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
                   for p in (root / 'scripts').iterdir() if p.is_file()}
         hashes['src/Makefile'] = hashlib.sha256((root / 'src/Makefile').read_bytes()).hexdigest()
-        bindir = root / 'bin' / PLATFORM
+        bindir = root / 'bin' / architecture.platform
         shutil.copytree(Path(packages['lmbench']) / 'bin', bindir)
         # Preserve the built driver's <version> substitution from bk.ver.
-        patch_scripts(root)
+        patch_scripts(root, architecture.platform)
         shutil.copy2(__file__, root / 'asterinas-native.py')
         (root / 'src/GNUmakefile').write_text(make_entry())
         (root / 'activate').write_text('export PATH=' + packages['make'] + '/bin:"$PATH"\n')
-        metadata = {'revision': REVISION, 'platform': PLATFORM, 'packages': packages,
+        metadata = {'revision': REVISION, 'platform': architecture.platform,
+                    'packages': packages,
                     'closure': sorted(set(closure)), 'upstream_script_sha256': hashes,
                     'adaptations': ADAPTATIONS,
                     'runner_sha256': hashlib.sha256((root / 'asterinas-native.py').read_bytes()).hexdigest(),
@@ -357,13 +364,16 @@ def run() -> int:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         old_handler = signal.signal(signal.SIGTERM, termination_requested)
         try:
-            with owned_hello(Path('/tmp/hello'), (root / 'bin' / PLATFORM / 'hello').read_bytes()):
+            platform = metadata['platform']
+            with owned_hello(Path('/tmp/hello'),
+                             (root / 'bin' / platform / 'hello').read_bytes()):
                 return run_locked(root, packages, metadata)
         finally:
             signal.signal(signal.SIGTERM, old_handler)
 
 
 def run_locked(root: Path, packages: dict, metadata: dict) -> int:
+    platform = metadata['platform']
     logs = root / 'asterinas-runs'
     logs.mkdir(exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix='run-', dir=logs))
@@ -392,7 +402,7 @@ def run_locked(root: Path, packages: dict, metadata: dict) -> int:
         answers = '\n'.join(['1', '1', '8', 'all', 'yes', 'no', '', '', '',
                              str(fs), str(out / 'status.log'), 'no']) + '\n'
         (out / 'answers.txt').write_text(answers)
-        results = root / 'results' / PLATFORM
+        results = root / 'results' / platform
         before = set(results.glob('*')) if results.exists() else set()
         with (out / 'rpcbind.log').open('w') as rpc_log, \
                 (out / 'stdout').open('w') as stdout, (out / 'stderr').open('w') as stderr:
@@ -402,7 +412,7 @@ def run_locked(root: Path, packages: dict, metadata: dict) -> int:
             time.sleep(.2)
             if rpc.poll() is not None:
                 raise RuntimeError('rpcbind exited; inspect rpcbind.log and the system journal')
-            argv = native_command(packages['make'] + '/bin/make', PLATFORM)
+            argv = native_command(packages['make'] + '/bin/make', platform)
             report['argv'] = argv
             proc = subprocess.Popen(argv, cwd=root / 'src', env=env, stdin=subprocess.PIPE,
                                     stdout=stdout, stderr=stderr, text=True, start_new_session=True)
@@ -418,7 +428,7 @@ def run_locked(root: Path, packages: dict, metadata: dict) -> int:
             (out / 'native-results.txt').write_text(text)
             report.update(audit(text, (out / 'stderr').read_text(), proc.returncode, timed_out))
             report['native_result_files'] = [str(p) for p in raw]
-            config = root / 'bin' / PLATFORM / ('CONFIG.' + os.uname().nodename)
+            config = root / 'bin' / platform / ('CONFIG.' + os.uname().nodename)
             if config.exists():
                 shutil.copy2(config, out / 'CONFIG')
     except (OSError, KeyError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
@@ -444,14 +454,22 @@ def main() -> int:
     pack.add_argument('--output', type=Path, required=True)
     verify = sub.add_parser('verify')
     verify.add_argument('--archive', type=Path, required=True)
+    for subparser in (pack, verify):
+        subparser.add_argument('--architecture', default=DEFAULT_ARCHITECTURE)
     sub.add_parser('run')
     args = parser.parse_args()
+    if args.command in ('package', 'verify'):
+        try:
+            architecture = get_architecture(args.architecture)
+        except ValueError as error:
+            print(f'{error}', file=sys.stderr)
+            return 2
     if args.command == 'package':
-        package(args.output.resolve())
+        package(args.output.resolve(), architecture)
         return 0
     if args.command == 'verify':
         try:
-            print(json.dumps(verify_archive(args.archive.resolve())))
+            print(json.dumps(verify_archive(args.archive.resolve(), architecture)))
         except (OSError, ValueError, tarfile.TarError, UnicodeDecodeError) as error:
             print(f'archive verification failed: {error}', file=sys.stderr)
             return 1

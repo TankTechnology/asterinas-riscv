@@ -14,7 +14,17 @@ import hashlib
 import io
 import tarfile
 
-from tools.riscv.lmbench_native import audit, make_entry, native_command, owned_hello, run_locked, PLATFORM, patch_scripts
+from tools.debian.rootfs.arch import get_architecture
+from tools.riscv.lmbench_native import (
+    audit,
+    make_entry,
+    native_command,
+    owned_hello,
+    patch_scripts,
+    run_locked,
+)
+
+PLATFORM = get_architecture('riscv64').platform
 
 
 class NativeLmbenchTests(unittest.TestCase):
@@ -71,6 +81,34 @@ class NativeLmbenchTests(unittest.TestCase):
             self.assertIn('archive verification failed: runtime archive adaptations',
                           result.stderr)
             self.assertNotIn('Traceback', result.stderr)
+
+    def test_verify_reads_the_architecture_it_is_given(self):
+        """A runtime built for one target must not verify as another target's."""
+        script = str(Path(__file__).resolve().parents[1] / 'lmbench_native.py')
+        with tempfile.TemporaryDirectory() as tmp:
+            archive = Path(tmp) / 'runtime.tar.gz'
+            self._runtime_archive(archive, include_header_fix=True)
+
+            for architecture in ('riscv64', 'amd64'):
+                with self.subTest(architecture=architecture):
+                    result = subprocess.run(
+                        [sys.executable, script, 'verify', '--archive', str(archive),
+                         '--architecture', architecture],
+                        capture_output=True, text=True)
+                    # The fixture is a RISC-V runtime, so only that target verifies.
+                    self.assertEqual(result.returncode, 0 if architecture == 'riscv64' else 1)
+                    if architecture == 'riscv64':
+                        self.assertEqual(json.loads(result.stdout)['platform'],
+                                         get_architecture('riscv64').platform)
+                    else:
+                        self.assertIn('platform differs', result.stderr)
+
+            unknown = subprocess.run(
+                [sys.executable, script, 'verify', '--archive', str(archive),
+                 '--architecture', 'loong64'],
+                capture_output=True, text=True)
+            self.assertEqual(unknown.returncode, 2)
+            self.assertIn('unknown rootfs architecture', unknown.stderr)
 
     def test_native_target_skips_only_compilation(self):
         self.assertEqual(native_command('/bin/make', 'riscv64-unknown-linux-gnu'),
@@ -215,7 +253,8 @@ except RuntimeError:
                     patch('tools.riscv.lmbench_native.audit', return_value={'passed': True}), \
                     patch('tools.riscv.lmbench_native.shutil.copy2', side_effect=OSError('disk full')), \
                     patch('builtins.print'):
-                status = run_locked(root, packages, {'revision': 'fixture'})
+                status = run_locked(root, packages,
+                                          {'revision': 'fixture', 'platform': PLATFORM})
             report = json.loads(next(root.rglob('report.json')).read_text())
             self.assertEqual(status, 1)
             self.assertFalse(report['passed'])
@@ -232,7 +271,7 @@ except RuntimeError:
             (root / 'scripts/lmbench').write_text('echo <version>\n' + startup)
             (binary / 'lmbench').write_text('echo built-version\n' + startup)
             (root / 'scripts/version').write_text("egrep 'MAJOR|MINOR' version.h\n")
-            patch_scripts(root)
+            patch_scripts(root, PLATFORM)
             self.assertIn('echo built-version', (binary / 'lmbench').read_text())
             self.assertNotIn('<version>', (binary / 'lmbench').read_text())
             self.assertIn('-s 127.0.0.1', (binary / 'lmbench').read_text())
@@ -261,7 +300,7 @@ except RuntimeError:
             for path in (root / 'scripts/lmbench', binary / 'lmbench'):
                 path.write_text(driver)
             (root / 'scripts/version').write_text("egrep 'MAJOR|MINOR' version.h\n")
-            patch_scripts(root)
+            patch_scripts(root, PLATFORM)
             result = subprocess.run(['sh', str(binary / 'lmbench')],
                                     capture_output=True, text=True, check=True)
             self.assertEqual(result.stdout, 'IFACE=eth0\n')
@@ -273,7 +312,9 @@ except RuntimeError:
                 with patch.dict(os.environ, {'LMBENCH_TIMEOUT': value}), \
                         patch('tools.riscv.lmbench_native.subprocess.Popen') as popen, \
                         patch('builtins.print'):
-                    self.assertEqual(run_locked(root, {}, {'revision': 'fixture'}), 1)
+                    self.assertEqual(
+                        run_locked(root, {}, {'revision': 'fixture',
+                                              'platform': PLATFORM}), 1)
                     popen.assert_not_called()
                 self.assertFalse(json.loads(next(root.rglob('report.json')).read_text())['passed'])
 

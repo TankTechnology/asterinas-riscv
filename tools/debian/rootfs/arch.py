@@ -30,6 +30,8 @@ class Architecture:
     arch_slug: str
     #: The GNU target triple the Nix cross packages and the lmbench runtime use.
     platform: str
+    #: The architecture name `test/initramfs/nix/default.nix` takes as `target`.
+    nix_target: str
     #: The dynamic loader the produced rootfs must contain.
     loader_path: str
     #: The user-mode emulator required to execute this architecture's binaries,
@@ -55,6 +57,7 @@ _ARCHITECTURES = {
         debian_arch="riscv64",
         arch_slug="riscv",
         platform="riscv64-unknown-linux-gnu",
+        nix_target="riscv64",
         loader_path="/lib/ld-linux-riscv64-lp64d.so.1",
         emulator="qemu-riscv64-static",
         native=False,
@@ -64,6 +67,7 @@ _ARCHITECTURES = {
         debian_arch="amd64",
         arch_slug="x86",
         platform="x86_64-unknown-linux-gnu",
+        nix_target="x86_64",
         loader_path="/lib64/ld-linux-x86-64.so.2",
         emulator="",
         native=True,
