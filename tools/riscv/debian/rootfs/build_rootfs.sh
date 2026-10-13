@@ -214,7 +214,7 @@ configure_profile() {
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
     mapfile -t profile_fields < <(
         PYTHONPATH="$repository_root" python3 -m \
-            tools.riscv.debian.rootfs.profiles --profile "$PROFILE"
+            tools.debian.rootfs.profiles --profile "$PROFILE"
     )
     ((${#profile_fields[@]} >= 6)) || die "invalid rootfs profile data: $PROFILE"
     ROOT_LABEL="${profile_fields[0]}"
@@ -479,10 +479,10 @@ fetch_and_verify_release() {
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
         repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
         DEBIAN_RELEASE="$(PYTHONPATH="$repository_root" python3 -m \
-            tools.riscv.debian.rootfs.signed_sources verify \
+            tools.debian.rootfs.signed_sources verify \
             --role base --inrelease "$inrelease" --keyring "$DEBIAN_KEYRING")"
         PYTHONPATH="$repository_root" python3 -m \
-            tools.riscv.debian.rootfs.signed_sources verify \
+            tools.debian.rootfs.signed_sources verify \
             --role security --inrelease "$security_inrelease" \
             --keyring "$DEBIAN_KEYRING" >/dev/null
         readonly DEBIAN_RELEASE
@@ -739,7 +739,7 @@ audit_packages() {
         package_list_name="${package_list##*/}"
         if is_firefox_profile; then
             source_role="$(PYTHONPATH="$repository_root" python3 -m \
-                tools.riscv.debian.rootfs.signed_sources owner \
+                tools.debian.rootfs.signed_sources owner \
                 --filename "$package_list_name")"
             if [[ "$package_list_name" =~ _dists_[^_]+_([^_]+)_binary-(riscv64|all)_Packages ]]; then
                 component="${BASH_REMATCH[1]}"
@@ -860,7 +860,7 @@ verify_m5_releases_are_unchanged() {
         curl --proto '=https' --tlsv1.2 --fail --location --show-error --silent \
             --output "$current" "$mirror/dists/$suite/InRelease"
         PYTHONPATH="$repository_root" python3 -m \
-            tools.riscv.debian.rootfs.signed_sources verify \
+            tools.debian.rootfs.signed_sources verify \
             --role "$role" --inrelease "$current" --keyring "$DEBIAN_KEYRING" \
             >/dev/null
         cmp --silent -- "$retained" "$current" ||
@@ -1037,7 +1037,7 @@ copy_into_content_cache() {
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
-    PYTHONPATH="$repository_root" python3 -m tools.riscv.debian.rootfs.fsops \
+    PYTHONPATH="$repository_root" python3 -m tools.debian.rootfs.fsops \
         cache-admit \
         --cache-dir "$CACHE_DIR" \
         --source "$source" \
@@ -2464,7 +2464,7 @@ write_rootfs_manifest() {
             --signed-source "security=$WORK_DIR/source-metadata/Security-InRelease"
         )
     fi
-    PYTHONPATH="$repository_root" python3 -m tools.riscv.debian.rootfs.contract \
+    PYTHONPATH="$repository_root" python3 -m tools.debian.rootfs.contract \
         write-manifest \
         --output "$WORK_DIR/rootfs-manifest.json" \
         --image "$WORK_DIR/debian-root.ext2" \
@@ -2549,7 +2549,7 @@ publish_artifacts() {
     # The helper rolls back ordinary failures and termination signals. The
     # profile-specific file set is intentionally not claimed to be power-loss
     # atomic.
-    PYTHONPATH="$repository_root" python3 -m tools.riscv.debian.rootfs.fsops \
+    PYTHONPATH="$repository_root" python3 -m tools.debian.rootfs.fsops \
         publish-set \
         --output-dir "$OUTPUT_DIR" \
         --source-root "$WORK_DIR" \

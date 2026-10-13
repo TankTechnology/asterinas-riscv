@@ -34,7 +34,7 @@ fi
 "$HERE/toggle-desktop-session.sh" on
 
 sudo rm -rf "$DERIVED"
-sudo python3 -m tools.riscv.debian.rootfs.dev_overlay materialize \
+sudo python3 -m tools.debian.rootfs.dev_overlay materialize \
     --base-dir "$ROOT/target/debian-riscv/desktop-drm/rootfs" \
     --spec "$ROOT/target/drm-mesa/spec-bench.json" \
     --output-dir "$DERIVED" >/dev/null || {

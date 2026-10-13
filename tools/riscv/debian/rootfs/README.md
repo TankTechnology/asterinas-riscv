@@ -107,7 +107,7 @@ The signed output is under `target/debian-riscv/rootfs/`. Reuse it while this
 verification succeeds; do not rebuild merely to repeat a test:
 
 ```bash
-python3 -m tools.riscv.debian.rootfs.contract verify \
+python3 -m tools.debian.rootfs.contract verify \
   --image target/debian-riscv/rootfs/debian-root.ext2 \
   --manifest target/debian-riscv/rootfs/rootfs-manifest.json \
   --packages-lock target/debian-riscv/rootfs/packages.lock
@@ -367,7 +367,7 @@ cannot alias the interactive root:
 
 ```bash
 tools/riscv/debian/rootfs/build_rootfs.sh --profile systemd-m2
-python3 -m tools.riscv.debian.rootfs.contract verify \
+python3 -m tools.debian.rootfs.contract verify \
   --image target/debian-riscv/systemd-m2/rootfs/debian-root.ext2 \
   --manifest target/debian-riscv/systemd-m2/rootfs/rootfs-manifest.json \
   --packages-lock target/debian-riscv/systemd-m2/rootfs/packages.lock
@@ -915,7 +915,7 @@ Megrez run:
 
 ```bash
 tools/riscv/debian/rootfs/build_rootfs.sh --profile desktop-m9-software
-python3 -m tools.riscv.debian.rootfs.contract verify \
+python3 -m tools.debian.rootfs.contract verify \
   --image target/debian-riscv/desktop-m9-software/rootfs/debian-root.ext2 \
   --manifest target/debian-riscv/desktop-m9-software/rootfs/rootfs-manifest.json \
   --packages-lock target/debian-riscv/desktop-m9-software/rootfs/packages.lock

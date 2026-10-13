@@ -191,7 +191,7 @@ STAGE1_PHYSICAL_SYSTEM_PROBE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_system_probe.sh"
 )
 STAGE1_DEBUG_CONSOLE_INCLUDE = STAGE1_DEBUG_CONSOLE_SOURCE.parent
-CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
+CONTRACT_MODULE = "tools.debian.rootfs.contract"
 REQUIRED_TOOLS = (
     "debootstrap",
     "qemu-riscv64-static",

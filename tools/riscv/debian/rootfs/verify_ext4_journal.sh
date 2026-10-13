@@ -45,6 +45,6 @@ for forbidden in metadata_csum 64bit flex_bg orphan_file; do
 done
 
 PYTHONPATH="$(cd -- "$(dirname -- "$0")/../../../.." && pwd -P)" \
-    python3 -m tools.riscv.debian.rootfs.contract verify \
+    python3 -m tools.debian.rootfs.contract verify \
     --image "$image" --manifest "$manifest" --packages-lock "$packages_lock"
 printf 'EXT4_JOURNAL_CONTRACT_PASS image=%s\n' "$image"

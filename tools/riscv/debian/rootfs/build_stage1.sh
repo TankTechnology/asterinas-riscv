@@ -344,7 +344,7 @@ if [[ -z "${STAGE1_BUSYBOX:-}" &&
 fi
 chmod 0644 "$ARCHIVE"
 
-PYTHONPATH="$REPOSITORY_ROOT" python3 -m tools.riscv.debian.rootfs.fsops \
+PYTHONPATH="$REPOSITORY_ROOT" python3 -m tools.debian.rootfs.fsops \
     publish-stage1 \
     --output-dir "$OUTPUT_DIRECTORY" \
     --init-source "$STAGE/init" \

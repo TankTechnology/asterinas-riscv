@@ -626,7 +626,7 @@ test_riscv_debian_debug_console:
 
 .PHONY: build_riscv_debian_browser_web_dev_overlay
 build_riscv_debian_browser_web_dev_overlay:
-	@python3 -m tools.riscv.debian.rootfs.dev_overlay materialize \
+	@python3 -m tools.debian.rootfs.dev_overlay materialize \
 		--base-dir "$(DEBIAN_BROWSER_WEB_BASE_ROOTFS)" \
 		--spec "$(DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC)" \
 		--output-dir "$(DEBIAN_BROWSER_WEB_DEV_ROOTFS)"
