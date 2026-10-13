@@ -96,6 +96,12 @@ class DebianBootScriptTests(unittest.TestCase):
         self.assertEqual(argv.count("-drive"), 1)
         drive = argv[argv.index("-drive") + 1]
         self.assertIn(f"file={self.root_image}", drive)
+        # A transitional virtio-blk-pci is not recognised by this kernel: with
+        # the default interface the guest gets no block device at all and
+        # Stage1 reports `root-discovery-timeout`.
+        block = argv[argv.index("virtio-blk-pci,drive=rootdisk,"
+                                "disable-legacy=on,disable-modern=off")]
+        self.assertTrue(block.endswith("disable-legacy=on,disable-modern=off"))
         # No `-bios`: the kernel is handed straight to the VMM.
         self.assertNotIn("-bios", argv)
         self.assertNotIn("-cdrom", argv)

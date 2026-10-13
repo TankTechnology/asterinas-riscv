@@ -122,7 +122,7 @@ qemu_argv() {
         -netdev user,id=net01 \
         -device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off \
         -drive "if=none,format=raw,id=rootdisk,file=$ROOT_IMAGE" \
-        -device virtio-blk-pci,drive=rootdisk \
+        -device virtio-blk-pci,drive=rootdisk,disable-legacy=on,disable-modern=off \
         -kernel "$KERNEL" \
         -initrd "$INITRAMFS" \
         -append "$KERNEL_APPEND"
