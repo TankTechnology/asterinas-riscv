@@ -158,12 +158,17 @@ qemu_pid=$!
 # The transcript is the only channel: the guest root filesystem does not
 # durably retain what the guest writes, so nothing is read back from the disk.
 stop_qemu() {
-    if kill -0 "$qemu_pid" 2>/dev/null; then
-        kill -TERM "$qemu_pid" 2>/dev/null || true
-        wait "$qemu_pid" 2>/dev/null || true
-    fi
+    kill -0 "$qemu_pid" 2>/dev/null || return 0
+    kill -TERM "$qemu_pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+        kill -0 "$qemu_pid" 2>/dev/null || return 0
+        sleep 0.5
+    done
+    kill -KILL "$qemu_pid" 2>/dev/null || true
 }
-trap stop_qemu EXIT INT TERM
+trap stop_qemu EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 if [[ -z "$WAIT_FOR" ]]; then
     wait "$qemu_pid"
@@ -181,8 +186,6 @@ while (( SECONDS < deadline )); do
     fi
     if grep -aFq -- "$WAIT_FOR" "$OUTPUT"; then
         printf 'boot_debian: transcript %s satisfied "%s"\n' "$OUTPUT" "$WAIT_FOR"
-        trap - EXIT
-        stop_qemu
         exit 0
     fi
     sleep 2
