@@ -4272,6 +4272,52 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
         self.assertEqual(validated.debian_release, "13.6")
         self.assertEqual(validated.downloaded_packages[0][0], "base-files")
 
+    def test_writer_and_verifier_carry_a_non_default_architecture(self) -> None:
+        """The requested architecture must reach every validation step.
+
+        The writer validates its own output through the same code the verifier
+        uses, so an architecture that is dropped between the command line and
+        that shared check fails the writer, not just the verifier.
+        """
+
+        rows = tuple(
+            (name, "amd64" if architecture == "riscv64" else architecture, version)
+            for name, architecture, version in PACKAGE_ROWS
+        )
+        self.packages_lock.write_text(_lock_text(rows), encoding="utf-8")
+        self.package_checksums.write_text(
+            _package_checksums_text(rows),
+            encoding="utf-8",
+        )
+
+        result = self.run_writer(self.writer_arguments() + ["--architecture", "amd64"])
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        manifest = json.loads(self.output.read_text(encoding="utf-8"))
+        self.assertEqual(manifest["architecture"], "amd64")
+        self.assertEqual(
+            {package["architecture"] for package in manifest["downloaded_packages"]},
+            {"amd64", "all"},
+        )
+        verified = self.run_verifier(
+            [
+                "verify",
+                "--image",
+                str(self.image),
+                "--manifest",
+                str(self.output),
+                "--packages-lock",
+                str(self.packages_lock),
+                "--expected-architecture",
+                "amd64",
+            ]
+        )
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+
+        refused = self.run_verifier()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("unexpected architecture", refused.stderr)
+
     def test_verify_cli_accepts_exact_plan_command_quietly(self) -> None:
         self.write_verifier_fixture()
 

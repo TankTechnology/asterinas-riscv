@@ -13,6 +13,10 @@ import re
 import subprocess
 from collections.abc import Sequence
 
+#: The architecture a signed source must declare unless the caller selects
+#: another one.
+DEFAULT_ARCHITECTURE = "riscv64"
+
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -58,7 +62,12 @@ SECURITY_SOURCE = SignedSource(
 M5_SOURCES = (BASE_SOURCE, SECURITY_SOURCE)
 
 
-def verify_inrelease(source: SignedSource, inrelease: Path, keyring: Path) -> str:
+def verify_inrelease(
+    source: SignedSource,
+    inrelease: Path,
+    keyring: Path,
+    architecture: str = DEFAULT_ARCHITECTURE,
+) -> str:
     """Verify one signature and its exact release identity."""
 
     subprocess.run(
@@ -78,7 +87,7 @@ def verify_inrelease(source: SignedSource, inrelease: Path, keyring: Path) -> st
     if version is None or re.fullmatch(source.version_pattern, version) is None:
         raise ValueError(f"unexpected {source.role} Version")
     architectures = fields.get("Architectures", "").split()
-    if "riscv64" not in architectures or len(architectures) != len(set(architectures)):
+    if architecture not in architectures or len(architectures) != len(set(architectures)):
         raise ValueError(f"unexpected {source.role} Architectures")
     if tuple(fields.get("Components", "").split()) != source.components:
         raise ValueError(f"unexpected {source.role} Components")
@@ -92,17 +101,21 @@ def require_unchanged(retained: Path, current: Path, role: str) -> None:
         raise ValueError(f"{role} InRelease changed during build")
 
 
-def source_for_apt_list(filename: str, sources: tuple[SignedSource, ...] = M5_SOURCES) -> SignedSource:
+def source_for_apt_list(
+    filename: str,
+    sources: tuple[SignedSource, ...] = M5_SOURCES,
+    architecture: str = DEFAULT_ARCHITECTURE,
+) -> SignedSource:
     """Map an apt Packages filename to exactly one configured signed source."""
 
     matches = []
     for source in sources:
         apt_components = tuple(component.rsplit("/", 1)[-1] for component in source.components)
         owns = any(
-            f"_dists_{source.suite}_{component}_binary-{architecture}_Packages"
+            f"_dists_{source.suite}_{component}_binary-{candidate}_Packages"
             in filename
             for component in apt_components
-            for architecture in ("riscv64", "all")
+            for candidate in (architecture, "all")
         )
         if owns:
             matches.append(source)
@@ -182,15 +195,21 @@ def main(arguments: Sequence[str] | None = None) -> int:
     verifier.add_argument("--role", choices=("base", "security"), required=True)
     verifier.add_argument("--inrelease", type=Path, required=True)
     verifier.add_argument("--keyring", type=Path, required=True)
+    verifier.add_argument("--architecture", default=DEFAULT_ARCHITECTURE)
     owner = subparsers.add_parser("owner")
     owner.add_argument("--filename", required=True)
+    owner.add_argument("--architecture", default=DEFAULT_ARCHITECTURE)
     values = parser.parse_args(arguments)
     try:
         if values.command == "verify":
             source = {source.role: source for source in M5_SOURCES}[values.role]
-            print(verify_inrelease(source, values.inrelease, values.keyring))
+            print(
+                verify_inrelease(
+                    source, values.inrelease, values.keyring, values.architecture
+                )
+            )
         else:
-            print(source_for_apt_list(values.filename).role)
+            print(source_for_apt_list(values.filename, architecture=values.architecture).role)
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
     return 0

@@ -31,14 +31,6 @@ ARCH_LOADER=""
 ARCH_EMULATOR=""
 ARCH_NATIVE=0
 ARCH_CROSS_CC=""
-ARCHITECTURE="riscv64"
-ARCH_DEBIAN=""
-ARCH_SLUG=""
-ARCH_PLATFORM=""
-ARCH_LOADER=""
-ARCH_EMULATOR=""
-ARCH_NATIVE=0
-ARCH_CROSS_CC=""
 readonly DEFAULT_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
 readonly SECURITY_MIRROR="https://security.debian.org/debian-security"
 readonly SUPPORTED_SUITE="trixie"
@@ -553,9 +545,11 @@ fetch_and_verify_release() {
         repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
         DEBIAN_RELEASE="$(PYTHONPATH="$repository_root" python3 -m \
             tools.debian.rootfs.signed_sources verify \
+            --architecture "$ARCH_DEBIAN" \
             --role base --inrelease "$inrelease" --keyring "$DEBIAN_KEYRING")"
         PYTHONPATH="$repository_root" python3 -m \
             tools.debian.rootfs.signed_sources verify \
+            --architecture "$ARCH_DEBIAN" \
             --role security --inrelease "$security_inrelease" \
             --keyring "$DEBIAN_KEYRING" >/dev/null
         readonly DEBIAN_RELEASE
@@ -626,8 +620,10 @@ bootstrap_rootfs() {
         "$stage" \
         "$MIRROR"
 
-    install -m 0755 -- "$(command -v "$ARCH_EMULATOR")" \
-        "$stage/usr/bin/$ARCH_EMULATOR"
+    if [[ "$ARCH_NATIVE" == 0 ]]; then
+        install -m 0755 -- "$(command -v "$ARCH_EMULATOR")" \
+            "$stage/usr/bin/$ARCH_EMULATOR"
+    fi
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
         # debootstrap's foreign stage may reference its helper library through
         # /usr/share/debootstrap/functions.  A normal chroot receives this
@@ -816,7 +812,8 @@ audit_packages() {
         if is_firefox_profile; then
             source_role="$(PYTHONPATH="$repository_root" python3 -m \
                 tools.debian.rootfs.signed_sources owner \
-                --filename "$package_list_name")"
+                --filename "$package_list_name" \
+                --architecture "$ARCH_DEBIAN")"
             if [[ "$package_list_name" =~ _dists_[^_]+_([^_]+)_binary-($ARCH_DEBIAN|all)_Packages ]]; then
                 component="${BASH_REMATCH[1]}"
                 release_path="$component/binary-${BASH_REMATCH[2]}/Packages"
@@ -937,6 +934,7 @@ verify_m5_releases_are_unchanged() {
             --output "$current" "$mirror/dists/$suite/InRelease"
         PYTHONPATH="$repository_root" python3 -m \
             tools.debian.rootfs.signed_sources verify \
+            --architecture "$ARCH_DEBIAN" \
             --role "$role" --inrelease "$current" --keyring "$DEBIAN_KEYRING" \
             >/dev/null
         cmp --silent -- "$retained" "$current" ||
@@ -2571,6 +2569,7 @@ write_rootfs_manifest() {
         --suite "$SUITE" \
         --debian-release "$DEBIAN_RELEASE" \
         --profile "$PROFILE" \
+        --architecture "$ARCH_DEBIAN" \
         "${signed_source_arguments[@]}" \
         --build-timestamp "$build_timestamp" \
         --tool-version "debootstrap=$debootstrap_version" \

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
 
-"""Strict identity validation for a frozen Debian RISC-V root filesystem."""
+"""Strict identity validation for a frozen Debian root filesystem."""
 
 from __future__ import annotations
 
@@ -38,8 +38,16 @@ SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 
 _SUITE = "trixie"
 _DEBIAN_RELEASE_RE = re.compile(r"\A13\.(?:0|[1-9][0-9]*)\Z")
+#: The architecture a manifest names unless the caller selects another one.
 _ARCHITECTURE = "riscv64"
-_GATE_ARCHITECTURES = frozenset({_ARCHITECTURE, "all"})
+
+
+def _gate_architectures(architecture: str) -> frozenset[str]:
+    """Returns the lock-row architectures that satisfy a gate package."""
+
+    return frozenset({architecture, "all"})
+
+
 _FILESYSTEM_TYPE = "ext2"
 _FILESYSTEM_BLOCK_SIZE_BYTES = 4096
 _HASH_CHUNK_SIZE_BYTES = 1024 * 1024
@@ -291,6 +299,7 @@ def validate_frozen_root(
     image: Path,
     manifest: RootfsManifest,
     packages_lock: Path,
+    expected_architecture: str = _ARCHITECTURE,
 ) -> RootfsManifest:
     """Validates a base image and its complete frozen-build identity."""
 
@@ -307,7 +316,7 @@ def validate_frozen_root(
             f"Debian release is not a signed Debian 13 point release: "
             f"{manifest.debian_release!r}"
         )
-    _require_exact(manifest.architecture, _ARCHITECTURE, "architecture")
+    _require_exact(manifest.architecture, expected_architecture, "architecture")
     if manifest.schema_version in (6, 7):
         _validate_m5_sources(manifest.signed_sources)
     else:
@@ -378,17 +387,18 @@ def validate_frozen_root(
     if downloaded_rows != locked_rows:
         raise ContractError("downloaded package set does not equal packages.lock set")
 
+    gate_architectures = _gate_architectures(expected_architecture)
     gate_versions = dict(manifest.gate_packages)
     for package_name in profile.identity_packages:
         locked_versions = [
             version
             for name, architecture, version in rows
-            if name == package_name and architecture in _GATE_ARCHITECTURES
+            if name == package_name and architecture in gate_architectures
         ]
         if len(locked_versions) != 1:
             raise ContractError(
                 f"gate package {package_name} must have exactly one "
-                f"{_ARCHITECTURE} or all lock row"
+                f"{expected_architecture} or all lock row"
             )
         if gate_versions.get(package_name) != locked_versions[0]:
             raise ContractError(
@@ -431,6 +441,7 @@ def write_manifest(
     build_timestamp: str,
     tool_versions: Sequence[str],
     profile_name: str = "minimal-m1",
+    architecture: str = _ARCHITECTURE,
     signed_source_files: Mapping[str, Path] | None = None,
 ) -> None:
     """Validates build inputs and atomically writes a canonical manifest."""
@@ -467,10 +478,10 @@ def write_manifest(
     )
     parsed_tool_versions = _parse_tool_versions(tool_versions)
     _validate_profile_tool_versions(profile, tuple(parsed_tool_versions.items()))
-    gate_versions = _gate_versions(lock_rows, profile)
+    gate_versions = _gate_versions(lock_rows, profile, architecture)
 
     manifest = {
-        "architecture": _ARCHITECTURE,
+        "architecture": architecture,
         "build_timestamp": build_timestamp,
         "debian_release": debian_release,
         "downloaded_packages": [
@@ -520,6 +531,7 @@ def write_manifest(
         serialized,
         image,
         packages_lock,
+        architecture,
     )
 
 
@@ -546,11 +558,17 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 build_timestamp=namespace.build_timestamp,
                 tool_versions=namespace.tool_version,
                 profile_name=namespace.profile,
+                architecture=namespace.architecture,
                 signed_source_files=signed_source_files,
             )
         else:
             manifest = load_manifest(namespace.manifest)
-            validate_frozen_root(namespace.image, manifest, namespace.packages_lock)
+            validate_frozen_root(
+                namespace.image,
+                manifest,
+                namespace.packages_lock,
+                namespace.expected_architecture,
+            )
     except (ContractError, OSError) as error:
         parser.error(str(error))
     return 0
@@ -793,11 +811,13 @@ def _argument_parser() -> argparse.ArgumentParser:
     writer.add_argument("--build-timestamp", required=True)
     writer.add_argument("--tool-version", action="append", required=True)
     writer.add_argument("--profile", default="minimal-m1")
+    writer.add_argument("--architecture", default=_ARCHITECTURE)
     writer.add_argument("--signed-source", action="append", default=[])
     verifier = subparsers.add_parser("verify")
     verifier.add_argument("--image", required=True, type=Path)
     verifier.add_argument("--manifest", required=True, type=Path)
     verifier.add_argument("--packages-lock", required=True, type=Path)
+    verifier.add_argument("--expected-architecture", default=_ARCHITECTURE)
     return parser
 
 
@@ -923,18 +943,20 @@ def _validate_profile_tool_versions(
 def _gate_versions(
     rows: Sequence[PackageLockRow],
     profile: RootfsProfile,
+    architecture: str = _ARCHITECTURE,
 ) -> dict[str, str]:
+    gate_architectures = _gate_architectures(architecture)
     versions: dict[str, str] = {}
     for package_name in profile.identity_packages:
         matches = [
             version
-            for name, architecture, version in rows
-            if name == package_name and architecture in _GATE_ARCHITECTURES
+            for name, row_architecture, version in rows
+            if name == package_name and row_architecture in gate_architectures
         ]
         if len(matches) != 1:
             raise ContractError(
                 f"gate package {package_name} must have exactly one "
-                f"{_ARCHITECTURE} or all lock row"
+                f"{architecture} or all lock row"
             )
         versions[package_name] = matches[0]
     return versions
@@ -966,6 +988,7 @@ def _write_validated_manifest_atomically(
     serialized: str,
     image: Path,
     packages_lock: Path,
+    expected_architecture: str = _ARCHITECTURE,
 ) -> None:
     descriptor, temporary_name = tempfile.mkstemp(
         dir=output.parent,
@@ -979,7 +1002,12 @@ def _write_validated_manifest_atomically(
             os.fsync(output_file.fileno())
 
         manifest = load_manifest(temporary_path)
-        validate_frozen_root(image, manifest, packages_lock)
+        validate_frozen_root(
+            image,
+            manifest,
+            packages_lock,
+            expected_architecture,
+        )
         os.replace(temporary_path, output)
         directory_descriptor = os.open(output.parent, os.O_RDONLY)
         try:
