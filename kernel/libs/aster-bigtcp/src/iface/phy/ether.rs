@@ -85,8 +85,11 @@ impl<D: WithDevice + 'static, E: Ext> Iface<E> for EtherIface<D, E> {
     }
 
     fn mtu(&self) -> usize {
+        // smoltcp sizes an Ethernet device by the whole frame, but every caller
+        // of this method (`SIOCGIFMTU`, netlink `IFLA_MTU`) expects the IP MTU.
         self.driver
             .with(|device| device.capabilities().max_transmission_unit)
+            - wire::ETHERNET_HEADER_LEN
     }
 }
 
