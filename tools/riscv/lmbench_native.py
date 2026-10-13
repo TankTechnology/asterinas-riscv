@@ -342,7 +342,7 @@ def package(output: Path, architecture: Architecture) -> None:
             for path in sorted(set(closure)):
                 tar.add(path, arcname=path.lstrip('/'))
             tar.add(root, arcname='opt/lmbench')
-    digest = verify_archive(output)['sha256']
+    digest = verify_archive(output, architecture)['sha256']
     output.with_suffix(output.suffix + '.sha256').write_text(digest + '  ' + output.name + '\n')
     print(json.dumps({'archive': str(output), 'sha256': digest}))
 

@@ -50,3 +50,6 @@ distro/etc_nixos/_config_for_test.nix
 
 # RustRover
 .idea
+# Python bytecode
+__pycache__/
+*.py[cod]
