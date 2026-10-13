@@ -102,9 +102,9 @@ for path in "$KERNEL" "$INITRAMFS" "$ROOT_IMAGE" "$OUTPUT"; do
         die_usage "path must not contain whitespace or newlines: $path"
 done
 
-#: The guest console the kernel is told to use. QEMU wires `hdvc0` to the same
-#: chardev as the transcript, so the guest's kernel log and Stage1's own
-#: `DEBIAN_STAGE1_PROGRESS` markers arrive on one stream.
+# The guest console. QEMU wires `hvc0` to the same chardev as the transcript,
+# so the kernel log and Stage1's own `DEBIAN_STAGE1_PROGRESS` markers arrive on
+# one stream.
 KERNEL_APPEND="console=hvc0 loglevel=$LOGLEVEL init=/init -- --root-init=systemd --root-fs=ext4"
 
 qemu_argv() {
