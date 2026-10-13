@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use aster_bigtcp::{
-    iface::{InterfaceName, InterfaceType},
+    iface::{InterfaceFlags, InterfaceName, InterfaceType},
     wire::{EthernetAddress, Ipv4Address},
 };
 use ostd::task::Task;
@@ -24,6 +24,9 @@ mod ioctl_defs {
     pub(super) type GetIfName       = ioc!(SIOCGIFNAME,     0x8910, InOutData<CIfReq>);
     pub(super) type GetIfConf       = ioc!(SIOCGIFCONF,     0x8912, InOutData<CIfConf>);
     pub(super) type GetIfFlags      = ioc!(SIOCGIFFLAGS,    0x8913, InOutData<CIfReq>);
+    pub(super) type GetIfAddr       = ioc!(SIOCGIFADDR,     0x8915, InOutData<CIfReq>);
+    pub(super) type GetIfBrdAddr    = ioc!(SIOCGIFBRDADDR,  0x8919, InOutData<CIfReq>);
+    pub(super) type GetIfNetmask    = ioc!(SIOCGIFNETMASK,  0x891B, InOutData<CIfReq>);
     pub(super) type GetIfMetric     = ioc!(SIOCGIFMETRIC,   0x891D, InOutData<CIfReq>);
     pub(super) type GetIfMtu        = ioc!(SIOCGIFMTU,      0x8921, InOutData<CIfReq>);
     pub(super) type GetIfHwAddr     = ioc!(SIOCGIFHWADDR,   0x8927, InOutData<CIfReq>);
@@ -77,6 +80,44 @@ fn network_device_ioctl(raw_ioctl: RawIoctl) -> Result<i32> {
             let mut ifreq = cmd.read()?;
             let iface = ifreq.get_iface_by_name()?;
             ifreq.data = CIfReqData::new_flags(iface.flags().bits() as i16);
+            cmd.write(&ifreq)?;
+            Ok(0)
+        }
+        cmd @ GetIfAddr => {
+            let mut ifreq = cmd.read()?;
+            let iface = ifreq.get_iface_by_name()?;
+            let cidr = iface.ipv4_cidr().ok_or_else(|| {
+                Error::with_message(Errno::EADDRNOTAVAIL, "the interface has no IPv4 address")
+            })?;
+            ifreq.set_sockaddr_ipv4(cidr.address());
+            cmd.write(&ifreq)?;
+            Ok(0)
+        }
+        cmd @ GetIfBrdAddr => {
+            let mut ifreq = cmd.read()?;
+            let iface = ifreq.get_iface_by_name()?;
+            // Only a broadcast-capable interface has a broadcast address.
+            // Loopback and point-to-point interfaces report the unspecified
+            // address, as Linux does for an interface without `IFF_BROADCAST`.
+            let address = if iface.flags().contains(InterfaceFlags::BROADCAST) {
+                iface.broadcast_addr().unwrap_or(Ipv4Address::UNSPECIFIED)
+            } else {
+                Ipv4Address::UNSPECIFIED
+            };
+            ifreq.set_sockaddr_ipv4(address);
+            cmd.write(&ifreq)?;
+            Ok(0)
+        }
+        cmd @ GetIfNetmask => {
+            let mut ifreq = cmd.read()?;
+            let iface = ifreq.get_iface_by_name()?;
+            let cidr = iface.ipv4_cidr().ok_or_else(|| {
+                Error::with_message(Errno::EADDRNOTAVAIL, "the interface has no IPv4 address")
+            })?;
+            let host_bits = 32u8.saturating_sub(cidr.prefix_len());
+            let mask = u32::MAX.checked_shl(u32::from(host_bits)).unwrap_or(0);
+            let [a, b, c, d] = mask.to_be_bytes();
+            ifreq.set_sockaddr_ipv4(Ipv4Address::new(a, b, c, d));
             cmd.write(&ifreq)?;
             Ok(0)
         }
