@@ -113,9 +113,9 @@ qemu_argv() {
         -smp "$SMP" \
         -m "$MEMORY" \
         --no-reboot \
-        -nographic \
         -display none \
         -monitor none \
+        -serial none \
         -chardev stdio,id=mux,mux=on,signal=off \
         -device virtio-serial-pci \
         -device virtconsole,chardev=mux \

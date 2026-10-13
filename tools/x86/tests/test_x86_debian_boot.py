@@ -64,6 +64,26 @@ class DebianBootScriptTests(unittest.TestCase):
         self.assertIn("init=/init", append[0])
         self.assertIn("-- --root-init=systemd --root-fs=ext4", append[0])
 
+    def test_argv_attaches_stdio_to_the_virtio_console_only(self) -> None:
+        """Only one character device may own stdio.
+
+        `-nographic` gives stdio to the serial port implicitly, which then
+        collides with the mux chardev: QEMU refuses to start with "cannot use
+        stdio by multiple character devices".
+        """
+        argv = self.parse("--print-argv", *self.required_arguments())
+
+        self.assertNotIn("-nographic", argv)
+        stdio_users = [
+            value
+            for value in argv
+            if value.startswith("stdio") or value.endswith("=stdio")
+        ]
+        self.assertEqual(stdio_users, ["stdio,id=mux,mux=on,signal=off"])
+        self.assertEqual(argv[argv.index("-serial") + 1], "none")
+        self.assertEqual(argv[argv.index("-device") + 1], "virtio-serial-pci")
+        self.assertIn("virtconsole,chardev=mux", argv)
+
     def test_print_argv_boots_the_kernel_without_a_grub_device(self) -> None:
         argv = self.parse("--print-argv", *self.required_arguments())
 
