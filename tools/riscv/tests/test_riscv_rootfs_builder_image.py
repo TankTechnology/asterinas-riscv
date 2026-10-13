@@ -93,9 +93,21 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
 
     def test_explicit_qemu_proot_virtualizes_guest_credentials(self) -> None:
         self.assertIn(
-            'command proot -0 -w / -q "$(command -v qemu-riscv64-static)"',
+            'command proot -0 -w / -q "$(command -v "$ARCH_EMULATOR")"',
             self.rootfs_builder,
         )
+
+    def test_default_architecture_matches_the_architecture_table(self) -> None:
+        # The builder resolves the default target's output paths without a
+        # Python interpreter, so its shell-side default has to agree with the
+        # architecture table that every other target comes from.
+        from tools.debian.rootfs.arch import get_architecture
+
+        default = get_architecture("riscv64")
+        self.assertIn(
+            f'ARCH_SLUG_DEFAULT="{default.arch_slug}"', self.rootfs_builder
+        )
+        self.assertIn(f'ARCHITECTURE="{default.debian_arch}"', self.rootfs_builder)
 
     def test_documentation_explains_runtime_contract(self) -> None:
         for required_text in (

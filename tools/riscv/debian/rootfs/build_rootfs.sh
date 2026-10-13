@@ -5,22 +5,43 @@ set -euo pipefail
 
 umask 077
 
-readonly DEFAULT_OUTPUT_DIR="target/debian-riscv/rootfs"
-readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
-readonly SYSTEMD_EXT4_M3_OUTPUT_DIR="target/debian-riscv/systemd-ext4-m3/rootfs"
-readonly SYSTEMD_EXT4_M6_USERSPACE_OUTPUT_DIR="target/debian-riscv/systemd-ext4-m6-userspace/rootfs"
-readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
-readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
-readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
-readonly DESKTOP_M9_SOFTWARE_OUTPUT_DIR="target/debian-riscv/desktop-m9-software/rootfs"
-readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
-readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
-readonly DESKTOP_DRM_OUTPUT_DIR="target/debian-riscv/desktop-drm/rootfs"
-readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
+# The default target, and the output paths that follow from it.
+# configure_architecture() recomputes both when --architecture names
+# another target, and fills in the remaining architecture fields; the
+# default lives here so the checks that run before any tool is trusted
+# need no Python interpreter.
+ARCHITECTURE="riscv64"
+ARCH_SLUG_DEFAULT="riscv"
+DEFAULT_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/rootfs"
+SYSTEMD_M2_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/systemd-m2/rootfs"
+SYSTEMD_EXT4_M3_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/systemd-ext4-m3/rootfs"
+SYSTEMD_EXT4_M6_USERSPACE_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/systemd-ext4-m6-userspace/rootfs"
+DESKTOP_M3_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-m3/rootfs"
+DESKTOP_M4_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-m4/rootfs"
+DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-m5-network/rootfs"
+DESKTOP_M9_SOFTWARE_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-m9-software/rootfs"
+BROWSER_M5_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/browser-m5/rootfs"
+BROWSER_WEB_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/browser-web/rootfs"
+DESKTOP_DRM_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-drm/rootfs"
+DEFAULT_CACHE_DIR="target/debian-$ARCH_SLUG_DEFAULT/cache"
+ARCH_DEBIAN=""
+ARCH_SLUG=""
+ARCH_PLATFORM=""
+ARCH_LOADER=""
+ARCH_EMULATOR=""
+ARCH_NATIVE=0
+ARCH_CROSS_CC=""
+ARCHITECTURE="riscv64"
+ARCH_DEBIAN=""
+ARCH_SLUG=""
+ARCH_PLATFORM=""
+ARCH_LOADER=""
+ARCH_EMULATOR=""
+ARCH_NATIVE=0
+ARCH_CROSS_CC=""
 readonly DEFAULT_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
 readonly SECURITY_MIRROR="https://security.debian.org/debian-security"
 readonly SUPPORTED_SUITE="trixie"
-readonly DEBIAN_ARCHITECTURE="riscv64"
 readonly DEBOOTSTRAP_VARIANT="minbase"
 readonly DEBIAN_KEYRING="/usr/share/keyrings/debian-archive-keyring.gpg"
 ROOT_SIZE_BYTES="1073741824"
@@ -29,17 +50,12 @@ readonly MAX_SOURCE_DATE_EPOCH="4294967295"
 # 2024-01-01T00:00:00Z is old enough for every Trixie input and deterministic.
 readonly DEFAULT_SOURCE_DATE_EPOCH="1704067200"
 
-readonly -a REQUIRED_TOOLS=(
-    debootstrap
-    qemu-riscv64-static
-    gpgv
-    dpkg-query
-    mke2fs
-    dumpe2fs
-    debugfs
-    sha256sum
-    curl
-)
+# The emulator is required only when the target is not the host architecture.
+required_tools() {
+    printf '%s\n' debootstrap
+    [[ -z "$ARCH_EMULATOR" ]] || printf '%s\n' "$ARCH_EMULATOR"
+    printf '%s\n' gpgv dpkg-query mke2fs dumpe2fs debugfs sha256sum curl
+}
 readonly -a PUBLISHED_PATHS=(
     debian-root.ext2
     rootfs-manifest.json
@@ -73,14 +89,20 @@ declare -a INSTALL_PACKAGES=(
 # proot injects qemu-riscv64-static for every target exec inside the staged
 # root.  This mode never writes to binfmt_misc and is useful on hosts where
 # registration is intentionally off.
-readonly EXPLICIT_QEMU="${ASTERINAS_EXPLICIT_QEMU:-0}"
+EXPLICIT_QEMU="${ASTERINAS_EXPLICIT_QEMU:-0}"
 
 run_chroot() {
     local stage="$1"
     shift
+    if [[ "$ARCH_NATIVE" == 1 ]]; then
+        # A rootfs for the host architecture runs directly; no emulation
+        # boundary is involved at any point.
+        chroot "$stage" "$@"
+        return
+    fi
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
-        [[ -x "$stage/usr/bin/qemu-riscv64-static" ]] ||
-            die "explicit qemu mode requires staged qemu-riscv64-static"
+        [[ -x "$stage/usr/bin/$ARCH_EMULATOR" ]] ||
+            die "explicit qemu mode requires staged $ARCH_EMULATOR"
         # proot's qemu mode rewrites every subsequent target exec, including
         # interpreter shebangs and maintainer-script children.  A single
         # qemu-prefixed shell cannot do that once it forks, which is why the
@@ -91,7 +113,7 @@ run_chroot() {
         # Keep credentials virtual too.  Without -0, APT's switch to the _apt
         # user changes the QEMU process's host credentials, after which an
         # unprivileged proot tracer can no longer translate pathname pointers.
-        command proot -0 -w / -q "$(command -v qemu-riscv64-static)" -r "$stage" "$@"
+        command proot -0 -w / -q "$(command -v "$ARCH_EMULATOR")" -r "$stage" "$@"
     else
         chroot "$stage" "$@"
     fi
@@ -123,6 +145,7 @@ parse_arguments() {
     local has_suite=0
     local has_profile=0
     local has_firefox_jit_package_dir=0
+    local has_architecture=0
 
     while (($# > 0)); do
         case "$1" in
@@ -161,6 +184,13 @@ parse_arguments() {
                 PROFILE="$2"
                 shift 2
                 ;;
+            --architecture)
+                require_option_value "$1" "$#"
+                ((has_architecture == 0)) || die "duplicate argument: $1"
+                has_architecture=1
+                ARCHITECTURE="$2"
+                shift 2
+                ;;
             --firefox-jit-package-dir)
                 require_option_value "$1" "$#"
                 ((has_firefox_jit_package_dir == 0)) || die "duplicate argument: $1"
@@ -183,10 +213,12 @@ parse_arguments() {
 
     if [[ -n "$print_mode" ]]; then
         ((has_output_dir == 0 && has_cache_dir == 0 && has_mirror == 0 &&
-            has_suite == 0 && has_firefox_jit_package_dir == 0)) ||
+            has_suite == 0 && has_firefox_jit_package_dir == 0 &&
+            has_architecture == 0)) ||
             die "$print_mode does not accept build options"
         if [[ "$print_mode" == "--print-tools" ]]; then
-            printf '%s\n' "${REQUIRED_TOOLS[@]}"
+            configure_architecture
+            required_tools
             if [[ "$PROFILE" == browser-m5 || "$PROFILE" == desktop-m9-software ]]; then
                 printf '%s\n' ffprobe ffmpeg
             fi
@@ -210,6 +242,7 @@ configure_profile() {
     if [[ "$PROFILE" == minimal-m1 ]]; then
         return
     fi
+    configure_architecture
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
     mapfile -t profile_fields < <(
@@ -251,6 +284,46 @@ configure_profile() {
     elif [[ "$PROFILE" == systemd-ext4-m6-userspace && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$SYSTEMD_EXT4_M6_USERSPACE_OUTPUT_DIR"
     fi
+}
+
+configure_architecture() {
+    [[ -n "$ARCH_SLUG" ]] && return 0
+    local script_directory
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    local repository_root
+    repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
+    local -a architecture_fields
+    mapfile -t architecture_fields < <(
+        PYTHONPATH="$repository_root" python3 -m \
+            tools.debian.rootfs.arch --architecture "$ARCHITECTURE"
+    )
+    ((${#architecture_fields[@]} == 7)) ||
+        die "invalid architecture data: $ARCHITECTURE"
+    ARCH_DEBIAN="${architecture_fields[0]}"
+    ARCH_SLUG="${architecture_fields[1]}"
+    ARCH_PLATFORM="${architecture_fields[2]}"
+    ARCH_LOADER="${architecture_fields[3]}"
+    ARCH_EMULATOR="${architecture_fields[4]}"
+    [[ "${architecture_fields[5]}" == native ||
+        "${architecture_fields[5]}" == emulated ]] ||
+        die "invalid execution mode: ${architecture_fields[5]}"
+    ARCH_NATIVE=0
+    [[ "${architecture_fields[5]}" == native ]] && ARCH_NATIVE=1
+    ARCH_CROSS_CC="${architecture_fields[6]}"
+
+    local prefix="target/debian-$ARCH_SLUG"
+    DEFAULT_OUTPUT_DIR="$prefix/rootfs"
+    SYSTEMD_M2_OUTPUT_DIR="$prefix/systemd-m2/rootfs"
+    SYSTEMD_EXT4_M3_OUTPUT_DIR="$prefix/systemd-ext4-m3/rootfs"
+    SYSTEMD_EXT4_M6_USERSPACE_OUTPUT_DIR="$prefix/systemd-ext4-m6-userspace/rootfs"
+    DESKTOP_M3_OUTPUT_DIR="$prefix/desktop-m3/rootfs"
+    DESKTOP_M4_OUTPUT_DIR="$prefix/desktop-m4/rootfs"
+    DESKTOP_M5_NETWORK_OUTPUT_DIR="$prefix/desktop-m5-network/rootfs"
+    DESKTOP_M9_SOFTWARE_OUTPUT_DIR="$prefix/desktop-m9-software/rootfs"
+    BROWSER_M5_OUTPUT_DIR="$prefix/browser-m5/rootfs"
+    BROWSER_WEB_OUTPUT_DIR="$prefix/browser-web/rootfs"
+    DESKTOP_DRM_OUTPUT_DIR="$prefix/desktop-drm/rootfs"
+    DEFAULT_CACHE_DIR="$prefix/cache"
 }
 
 require_option_value() {
@@ -400,9 +473,9 @@ validate_existing_cache_targets() {
 
 require_tools() {
     local tool
-    for tool in "${REQUIRED_TOOLS[@]}"; do
+    while read -r tool; do
         command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
-    done
+    done < <(required_tools)
     if [[ "$PROFILE" == browser-m5 || "$PROFILE" == desktop-m9-software ]]; then
         command -v ffprobe >/dev/null 2>&1 || die "missing required tool: ffprobe"
         command -v ffmpeg >/dev/null 2>&1 || die "missing required tool: ffmpeg"
@@ -540,20 +613,21 @@ require_safe_keyring_path() {
 }
 
 bootstrap_rootfs() {
+    configure_architecture
     local stage="$WORK_DIR/stage"
 
     log "phase 2/8: running foreign debootstrap"
     debootstrap \
         --foreign \
         "--variant=$DEBOOTSTRAP_VARIANT" \
-        "--arch=$DEBIAN_ARCHITECTURE" \
+        "--arch=$ARCH_DEBIAN" \
         "--keyring=$DEBIAN_KEYRING" \
         "$SUITE" \
         "$stage" \
         "$MIRROR"
 
-    install -m 0755 -- "$(command -v qemu-riscv64-static)" \
-        "$stage/usr/bin/qemu-riscv64-static"
+    install -m 0755 -- "$(command -v "$ARCH_EMULATOR")" \
+        "$stage/usr/bin/$ARCH_EMULATOR"
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
         # debootstrap's foreign stage may reference its helper library through
         # /usr/share/debootstrap/functions.  A normal chroot receives this
@@ -564,7 +638,7 @@ bootstrap_rootfs() {
         install -d -- "$stage/usr/share/debootstrap"
         cp -a -- /usr/share/debootstrap/. "$stage/usr/share/debootstrap/"
     fi
-    verify_riscv_execution_boundary
+    verify_execution_boundary
     log "phase 3/8: completing debootstrap second stage"
     # proot can make the helper's self-test of /debootstrap ambiguous; pin
     # the directory explicitly so the generated suite/variant state is used.
@@ -572,29 +646,31 @@ bootstrap_rootfs() {
         /debootstrap/debootstrap --second-stage
 }
 
-verify_riscv_execution_boundary() {
+verify_execution_boundary() {
     # Docker gives the build container its own proc sys tree, which may expose
     # an empty binfmt_misc mount even though the host has the required fixed
     # qemu-riscv64 registration.  The workflow can bind that host tree at a
     # stable path and point the check at it without weakening the actual
     # kernel execution boundary.
-    local binfmt_root="${ASTERINAS_BINFMT_ROOT:-/proc/sys/fs/binfmt_misc}"
-    local registration="$binfmt_root/qemu-riscv64"
+    if [[ "$ARCH_NATIVE" == 1 ]]; then
+        return
+    fi
 
-    [[ "$(uname -m)" != riscv64 ]] ||
-        die "refusing a native RISC-V host; this builder requires an emulated execution boundary"
+    local binfmt_root="${ASTERINAS_BINFMT_ROOT:-/proc/sys/fs/binfmt_misc}"
+    local registration="$binfmt_root/${ARCH_EMULATOR%-static}"
+
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
-        [[ -x "$WORK_DIR/stage/usr/bin/qemu-riscv64-static" ]] ||
-            die "explicit qemu mode requires qemu-riscv64-static in the staged root"
+        [[ -x "$WORK_DIR/stage/usr/bin/$ARCH_EMULATOR" ]] ||
+            die "explicit qemu mode requires $ARCH_EMULATOR in the staged root"
         return
     fi
     [[ -r "$binfmt_root/status" ]] &&
         grep -qx enabled "$binfmt_root/status" ||
-        die "RISC-V binfmt_misc is not enabled"
+        die "$ARCH_DEBIAN binfmt_misc is not enabled"
     [[ -r "$registration" ]] && grep -qx enabled "$registration" ||
-        die "qemu-riscv64 binfmt registration is not enabled"
+        die "${ARCH_EMULATOR%-static} binfmt registration is not enabled"
     grep -q '^flags:.*F' "$registration" ||
-        die "qemu-riscv64 binfmt registration lacks fix-binary semantics"
+        die "${ARCH_EMULATOR%-static} binfmt registration lacks fix-binary semantics"
 }
 
 install_rootfs_packages() {
@@ -632,7 +708,7 @@ install_rootfs_packages() {
         # profiles must not seed an unrequested Firefox archive: the later
         # package-lock audit would (correctly) reject that extra package.
         is_firefox_profile || continue
-        [[ "$architecture" == riscv64 || "$architecture" == all ]] || continue
+        [[ "$architecture" == "$ARCH_DEBIAN" || "$architecture" == all ]] || continue
         filename="${package}_${version}_${architecture}.deb"
         # The content cache uses '_' as a portable encoding for '~' in Debian
         # versions.  Restore it for apt's canonical archive filename.
@@ -741,7 +817,7 @@ audit_packages() {
             source_role="$(PYTHONPATH="$repository_root" python3 -m \
                 tools.debian.rootfs.signed_sources owner \
                 --filename "$package_list_name")"
-            if [[ "$package_list_name" =~ _dists_[^_]+_([^_]+)_binary-(riscv64|all)_Packages ]]; then
+            if [[ "$package_list_name" =~ _dists_[^_]+_([^_]+)_binary-($ARCH_DEBIAN|all)_Packages ]]; then
                 component="${BASH_REMATCH[1]}"
                 release_path="$component/binary-${BASH_REMATCH[2]}/Packages"
             else
@@ -753,8 +829,8 @@ audit_packages() {
                 source_inrelease="$WORK_DIR/source-metadata/Security-InRelease"
             fi
         else case "$package_list_name" in
-            *_dists_${SUITE}_main_binary-${DEBIAN_ARCHITECTURE}_Packages*)
-                release_path="main/binary-$DEBIAN_ARCHITECTURE/Packages"
+            *_dists_${SUITE}_main_binary-${ARCH_DEBIAN}_Packages*)
+                release_path="main/binary-$ARCH_DEBIAN/Packages"
                 ;;
             *_dists_${SUITE}_main_binary-all_Packages*)
                 release_path="main/binary-all/Packages"
@@ -1045,6 +1121,7 @@ copy_into_content_cache() {
 }
 
 configure_and_normalize_rootfs() {
+    configure_architecture
     local stage="$WORK_DIR/stage"
     local script_directory
     local startup_cache_marker
@@ -1086,7 +1163,7 @@ EOF
             # this path in the past; these static helpers inspect fd 3 and
             # accept the inherited listening socket directly.
             local systemd_test_source="$script_directory/../../systemd/src"
-            local systemd_test_cc="${RISC_V_CC:-riscv64-linux-gnu-gcc}"
+            local systemd_test_cc="${RISC_V_CC:-$ARCH_CROSS_CC}"
             local systemd_test_program
             command -v "$systemd_test_cc" >/dev/null 2>&1 ||
                 die "missing RISC-V C compiler for systemd socket probe: $systemd_test_cc"
@@ -1250,9 +1327,11 @@ EOF
             die "target systemd-sysusers is missing; cannot finalize browser startup caches"
         fi
     fi
-    rm -f -- "$stage/usr/bin/qemu-riscv64-static"
-    [[ ! -e "$stage/usr/bin/qemu-riscv64-static" ]] ||
-        die "qemu-riscv64-static remains in staged rootfs"
+    if [[ "$ARCH_NATIVE" == 0 ]]; then
+        rm -f -- "$stage/usr/bin/$ARCH_EMULATOR"
+        [[ ! -e "$stage/usr/bin/$ARCH_EMULATOR" ]] ||
+            die "$ARCH_EMULATOR remains in staged rootfs"
+    fi
     if profile_uses_startup_caches "$PROFILE"; then
         : >"$stage/etc/.updated"
         : >"$stage/var/.updated"
@@ -1323,8 +1402,12 @@ finalize_browser_startup_caches() {
     # of the chroot, so run the target binary outside the chroot and give it an
     # explicit staged root.  The database format is still owned by the target
     # systemd, while the host's /proc makes publication atomic.
-    qemu-riscv64-static -L "$stage" "$stage/usr/bin/systemd-hwdb" \
-        --root="$stage" update --usr
+    if [[ "$ARCH_NATIVE" == 1 ]]; then
+        chroot "$stage" /usr/bin/systemd-hwdb --root=/ update --usr
+    else
+        "$ARCH_EMULATOR" -L "$stage" "$stage/usr/bin/systemd-hwdb" \
+            --root="$stage" update --usr
+    fi
     run_chroot "$stage" /usr/bin/journalctl --update-catalog
     generate_fontconfig_cache "$stage"
     if is_firefox_profile; then
@@ -1363,7 +1446,7 @@ run_fontconfig_scan() {
     local stage="$1"
 
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
-        chroot "$stage" /usr/bin/qemu-riscv64-static /usr/bin/fc-cache -f -v
+        chroot "$stage" "/usr/bin/$ARCH_EMULATOR" /usr/bin/fc-cache -f -v
     else
         chroot "$stage" /usr/bin/fc-cache -f -v
     fi
@@ -2354,6 +2437,7 @@ EOF
 }
 
 create_and_verify_image() {
+    configure_architecture
     local root_image="$WORK_DIR/debian-root.ext2"
     local stage="$WORK_DIR/stage"
     local dumpe2fs_output="$WORK_DIR/dumpe2fs.txt"
@@ -2391,15 +2475,22 @@ create_and_verify_image() {
     fi
 
     debugfs_require_path "$root_image" /bin/bash
-    debugfs_require_path "$root_image" /lib/ld-linux-riscv64-lp64d.so.1
+    debugfs_require_path "$root_image" "$ARCH_LOADER"
     debugfs_require_path "$root_image" /var/lib/dpkg/status
     debugfs_require_path "$root_image" /etc/asterinas-rootfs.bashrc
-    debugfs_reject_path "$root_image" /usr/bin/qemu-riscv64-static
+    if [[ "$ARCH_NATIVE" == 0 ]]; then
+        debugfs_reject_path "$root_image" "/usr/bin/$ARCH_EMULATOR"
+    fi
     debugfs -R "dump /bin/bash $dumped_bash" "$root_image" >/dev/null 2>&1 ||
         die "failed to extract Bash from root image"
     chmod 0700 "$dumped_bash"
-    qemu-riscv64-static -L "$stage" "$dumped_bash" -c true ||
-        die "root image Bash smoke test failed"
+    if [[ "$ARCH_NATIVE" == 1 ]]; then
+        chroot "$stage" /bin/bash -c true ||
+            die "root image Bash smoke test failed"
+    else
+        "$ARCH_EMULATOR" -L "$stage" "$dumped_bash" -c true ||
+            die "root image Bash smoke test failed"
+    fi
 }
 
 debugfs_require_path() {
@@ -2438,7 +2529,12 @@ write_rootfs_manifest() {
     build_timestamp="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%dT%H:%M:%SZ')"
     debootstrap_version="$(debootstrap --version 2>&1 | head -n 1)"
     mke2fs_version="$(mke2fs -V 2>&1 | head -n 1)"
-    qemu_version="$(qemu-riscv64-static --version 2>&1 | head -n 1)"
+    local -a emulator_tool_version=()
+    if [[ "$ARCH_NATIVE" == 0 ]]; then
+        local emulator_version
+        emulator_version="$("$ARCH_EMULATOR" --version 2>&1 | head -n 1)"
+        emulator_tool_version=(--tool-version "$ARCH_EMULATOR=$emulator_version")
+    fi
 
     if [[ "$PROFILE" == browser-web ]]; then
         browser_web_runtime_version="$(browser_web_runtime_digest "$script_directory")"
@@ -2479,7 +2575,7 @@ write_rootfs_manifest() {
         --build-timestamp "$build_timestamp" \
         --tool-version "debootstrap=$debootstrap_version" \
         --tool-version "mke2fs=$mke2fs_version" \
-        --tool-version "qemu-riscv64-static=$qemu_version" \
+        "${emulator_tool_version[@]}" \
         "${browser_web_tool_versions[@]}"
 }
 
