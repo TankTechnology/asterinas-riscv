@@ -107,7 +107,8 @@ else
 fi
 
 if [ "$INITRAMFS" = "off" ]; then
-    ROOTFS_DRIVE_ARGS="-drive if=none,format=raw,id=rootfs,file=./test/initramfs/build/rootfs.img"
+    ROOTFS_IMG=${ASTERINAS_ROOTFS_DRIVE_FILE:-./test/initramfs/build/rootfs.img}
+    ROOTFS_DRIVE_ARGS="-drive if=none,format=raw,id=rootfs,file=$ROOTFS_IMG"
 fi
 
 if [ "${XFSTESTS_FS_TYPE:-}" = "virtiofs" ]; then

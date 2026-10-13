@@ -1498,6 +1498,58 @@ int main(void)
             ],
         )
 
+    def test_builder_declares_the_target_architecture_tools(self) -> None:
+        from tools.debian.rootfs.arch import get_architecture
+
+        for target in ("riscv64", "amd64"):
+            with self.subTest(architecture=target):
+                architecture = get_architecture(target)
+                result = self.run_builder(
+                    "--print-tools", "--architecture", target
+                )
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    result.stdout.splitlines(),
+                    [architecture.cross_cc, "cpio", "python3"],
+                )
+
+    def test_builder_shell_defaults_match_the_architecture_table(self) -> None:
+        # The default target is compiled without consulting the architecture
+        # table, so the shell-side copy has to agree with it.
+        from tools.debian.rootfs.arch import get_architecture
+
+        default = get_architecture("riscv64")
+        script = STAGE1_BUILD_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            f'ARCH_SLUG_DEFAULT="{default.arch_slug}"',
+            script,
+        )
+        self.assertIn(
+            f'ARCH_CROSS_CC_DEFAULT="{default.cross_cc}"',
+            script,
+        )
+
+    def test_minimal_variant_carries_only_the_init_program(self) -> None:
+        entries = self.run_builder("--print-entries", "--minimal")
+
+        self.assertEqual(entries.returncode, 0, entries.stderr)
+        self.assertEqual(entries.stdout.splitlines(), [".", "init"])
+
+        environment = os.environ.copy()
+        environment["RISC_V_CC"] = "cc"
+        output = self.directory / "minimal" / "initramfs.cpio"
+
+        result = self.run_builder(
+            "--minimal", str(output), environment=environment
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        archived = _parse_newc_entries(output.read_bytes())
+        self.assertEqual([entry[0] for entry in archived], [".", "init"])
+        self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o644)
+
     def test_stage1_carries_safe_reboot_override(self) -> None:
         environment = os.environ.copy()
         environment["RISC_V_CC"] = "cc"

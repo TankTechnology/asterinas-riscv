@@ -22,13 +22,20 @@ enum {
     PROBE_NONCE_LENGTH = 32,
     PROBE_DMESG_MAX = 32 * 1024,
     PROBE_FILE_MAX = 4096,
-    ASTERINAS_SYSLOG = 116,
-    ASTERINAS_READAHEAD = 213,
-    ASTERINAS_KCMP = 272,
+    /* The numbers come from the compiler's own syscall table, so the probe
+     * targets the syscalls the guest kernel actually numbers, not the numbers
+     * one architecture happens to use. */
+    ASTERINAS_SYSLOG = SYS_syslog,
+    ASTERINAS_READAHEAD = SYS_readahead,
+    ASTERINAS_KCMP = SYS_kcmp,
     SYSLOG_READ_ALL = 3,
     SYSLOG_SIZE_BUFFER = 10,
 };
 
+/* The names are protocol labels: the RISC-V megrez probe contract, its
+ * validators and its recorded transcripts spell `syscall213` and `syscall272`
+ * after the RISC-V generic numbers for readahead and kcmp. They stay stable on
+ * every architecture; only the numbers behind them follow the target. */
 static const char *const PROBE_NAMES[] = {
     "boot",
     "syscall213",

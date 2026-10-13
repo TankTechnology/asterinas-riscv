@@ -294,6 +294,15 @@ static int ext2_superblock_matches_mode(
            ext2_superblock_matches(superblock, BROWSER_WEB_ROOT_LABEL);
 }
 
+/* The helpers are an accessory, not a handoff requirement. An initramfs
+ * built without the desktop asset set -- every minimal one -- has nothing to
+ * bind, and a bind of an absent directory fails, which must not end the
+ * handoff. */
+static int ephemeral_tools_source_present(const char *source)
+{
+    return access(source, F_OK) == 0;
+}
+
 static int root_needs_ephemeral_tools(
     const unsigned char superblock[EXT2_SUPERBLOCK_SIZE])
 {
@@ -909,6 +918,11 @@ static int run_root_init_self_test(const char *case_name)
         if (!root_needs_ephemeral_tools(superblock)) {
             return fail_self_test(case_name, "desktop lost its tools bind mount");
         }
+        if (ephemeral_tools_source_present("/dev/null/absent") ||
+            !ephemeral_tools_source_present("/")) {
+            return fail_self_test(case_name,
+                                  "tools source presence was misjudged");
+        }
     } else if (strcmp(case_name, "systemd-desktop-root-label") == 0) {
         unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
         make_valid_superblock(superblock, DESKTOP_ROOT_LABEL);
@@ -1271,6 +1285,9 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
         }
         result = mount("tmpfs", "/newroot/run", "tmpfs", 0, NULL);
         if (result != 0 || !production_context->needs_ephemeral_tools) {
+            break;
+        }
+        if (!ephemeral_tools_source_present("/usr/lib/asterinas")) {
             break;
         }
         if (result == 0 &&
