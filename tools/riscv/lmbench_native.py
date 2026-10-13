@@ -29,10 +29,6 @@ import tarfile
 import tempfile
 import time
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-
-from tools.debian.rootfs.arch import Architecture, get_architecture
-
 REVISION = 'afb47eddaf10a411c1ea3cb64965461f1308a6ea'
 DEFAULT_ARCHITECTURE = 'riscv64'
 ADAPTATIONS = ['explicit IPv4 loopback server arguments',
@@ -253,7 +249,7 @@ def patch_scripts(root: Path, platform: str) -> None:
         script.write_text(content.replace(old_header, '*ame|Kernel|Iface)\t;;'))
 
 
-def verify_archive(archive: Path, architecture: Architecture) -> dict:
+def verify_archive(archive: Path, architecture: 'Architecture') -> dict:
     """Reject a stale native runtime before paying for a full guest run."""
     with tarfile.open(archive, 'r:gz') as tar:
         def read(name: str) -> bytes:
@@ -295,7 +291,7 @@ def verify_archive(archive: Path, architecture: Architecture) -> dict:
             'platform': architecture.platform, 'adaptations': ADAPTATIONS}
 
 
-def package(output: Path, architecture: Architecture) -> None:
+def package(output: Path, architecture: 'Architecture') -> None:
     repo = Path(__file__).resolve().parents[2]
     expression = repo / 'test/initramfs/nix/default.nix'
     packages = {}
@@ -459,6 +455,9 @@ def main() -> int:
     sub.add_parser('run')
     args = parser.parse_args()
     if args.command in ('package', 'verify'):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+        from tools.debian.rootfs.arch import get_architecture
+
         try:
             architecture = get_architecture(args.architecture)
         except ValueError as error:

@@ -110,6 +110,26 @@ class NativeLmbenchTests(unittest.TestCase):
             self.assertEqual(unknown.returncode, 2)
             self.assertIn('unknown rootfs architecture', unknown.stderr)
 
+    def test_guest_side_runner_does_not_need_the_repository(self):
+        """The runner is copied into the archive and executes inside the guest.
+
+        There is no `tools` package on the guest root, so anything the host
+        side needs has to be imported on the host side only.
+        """
+        runner = Path(__file__).resolve().parents[1] / 'lmbench_native.py'
+        with tempfile.TemporaryDirectory() as tmp:
+            copy = Path(tmp) / 'asterinas-native.py'
+            copy.write_bytes(runner.read_bytes())
+            probe = subprocess.run(
+                [sys.executable, '-c',
+                 'import importlib.util, sys;'
+                 f'spec = importlib.util.spec_from_file_location("native", {str(copy)!r});'
+                 'module = importlib.util.module_from_spec(spec);'
+                 'spec.loader.exec_module(module);'
+                 'assert "tools" not in sys.modules'],
+                cwd=tmp, capture_output=True, text=True)
+            self.assertEqual(probe.returncode, 0, probe.stderr)
+
     def test_native_target_skips_only_compilation(self):
         self.assertEqual(native_command('/bin/make', 'riscv64-unknown-linux-gnu'),
                          ['/bin/make', '--no-print-directory', '-f', 'Makefile',
