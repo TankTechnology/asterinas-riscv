@@ -50,6 +50,11 @@ for d in /opt/lmbench/asterinas-runs/run-*; do
     cat "$d/report.json" 2>/dev/null
     echo "----- stderr -----"
     tail -40 "$d/stderr" 2>/dev/null
+    # The inner `make results` reports its failure on stdout, not stderr: the
+    # runner captures both, but only stderr was being dumped, so a run that
+    # produced no measurements showed nothing but "Error 1".
+    echo "----- stdout -----"
+    tail -100 "$d/stdout" 2>/dev/null
     echo "----- native-results.txt (full) -----"
     cat "$d/native-results.txt" 2>/dev/null
     echo "LMBENCH_RUN_DUMP_END $d"
