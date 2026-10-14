@@ -246,7 +246,23 @@ def patch_scripts(root: Path, platform: str) -> None:
         if content.count(old_header) != 1:
             raise ValueError('upstream netstat header handling changed; review the adaptation')
         # Modern net-tools prints two headers, neither of which names an iface.
-        script.write_text(content.replace(old_header, '*ame|Kernel|Iface)\t;;'))
+        content = content.replace(old_header, '*ame|Kernel|Iface)\t;;')
+        # LINE_SIZE reaches the CONFIG only through config-run's `line -M ${MB}M`.
+        # That timing probe can return nothing on an emulated CPU -- the same
+        # guest reports MHZ="-1 System too busy" -- and the machine-specific
+        # default above applies only when there is no CONFIG, so the guest ends
+        # up with an empty LINE_SIZE and `tlb -L  -M 8M` fails to parse. MB
+        # already falls back below; give LINE_SIZE the same treatment, using the
+        # value upstream itself defaults to.
+        old_mb = 'if [ X$MB = X ]\nthen\tMB=8\nfi\n'
+        if content.count(old_mb) != 1:
+            raise ValueError('upstream MB default changed; review the adaptation')
+        content = content.replace(
+            old_mb,
+            old_mb + ('if [ X$LINE_SIZE = X ]\n'
+                      'then\tLINE_SIZE=512\n'
+                      'fi\n'))
+        script.write_text(content)
 
     config_run = root / 'scripts/config-run'
     content = config_run.read_text()

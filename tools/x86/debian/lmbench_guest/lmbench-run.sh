@@ -17,8 +17,14 @@ test -f /opt/lmbench/src/GNUmakefile && echo "LMBENCH_RUN_RUNTIME_OK" || {
     exit 1
 }
 
+# Debian's base image ships an `rpc` group (rpcbind/portmap) but no `rpc` user.
+# A bare `useradd rpc` then tries to create a same-named group, finds it already
+# there, and exits without creating the user -- after which the runner's
+# getpwnam('rpc') fails and the whole run aborts in half a second. Name the
+# group explicitly so useradd never has to create one.
+getent group rpc >/dev/null 2>&1 || groupadd --system rpc
 getent passwd rpc >/dev/null 2>&1 ||
-    useradd --system --no-create-home --shell /usr/sbin/nologin rpc
+    useradd --system --no-create-home --shell /usr/sbin/nologin --gid rpc rpc
 getent passwd rpc && echo "LMBENCH_RUN_RPC_USER_OK"
 
 # Quiesce what this kernel cannot run: logind and rsyslog restart in a tight
