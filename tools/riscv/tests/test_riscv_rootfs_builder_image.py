@@ -121,6 +121,28 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
                 self.assertIn(required_text, self.readme)
         self.assertIn("build_riscv_rootfs_image", self.docker_readme)
 
+    def test_image_is_fsck_repaired_and_gated(self) -> None:
+        # `mke2fs -d` populates the tree with e2fsprogs' own copier rather than a
+        # mounted filesystem, and it does not always get the block and inode
+        # bitmaps right. A block owned by a live inode can be left marked free,
+        # so a later write allocates it, two inodes own it, and one of them is
+        # destroyed -- which shows up far away as an unrelated file reading back
+        # wrong bytes. The builder must repair the image and then refuse to
+        # publish one that is still inconsistent.
+        self.assertIn("e2fsck -fy", self.rootfs_builder)
+        self.assertIn('e2fsck -fn "$root_image"', self.rootfs_builder)
+        self.assertIn(
+            "root image is not a consistent filesystem", self.rootfs_builder
+        )
+        # The repair only runs if e2fsck is present, so the tool contract has to
+        # name it.
+        tools_line = next(
+            line
+            for line in self.rootfs_builder.splitlines()
+            if "gpgv" in line and "printf" in line
+        )
+        self.assertIn("e2fsck", tools_line)
+
     def test_makefile_exposes_explicit_image_target(self) -> None:
         for required_text in (
             "RISCV_ROOTFS_BASE_IMAGE ?=",

@@ -46,7 +46,7 @@ readonly DEFAULT_SOURCE_DATE_EPOCH="1704067200"
 required_tools() {
     printf '%s\n' debootstrap
     [[ -z "$ARCH_EMULATOR" ]] || printf '%s\n' "$ARCH_EMULATOR"
-    printf '%s\n' gpgv dpkg-query mke2fs dumpe2fs debugfs sha256sum curl
+    printf '%s\n' gpgv dpkg-query mke2fs dumpe2fs debugfs e2fsck sha256sum curl
 }
 readonly -a PUBLISHED_PATHS=(
     debian-root.ext2
@@ -2456,6 +2456,21 @@ create_and_verify_image() {
         -L "$ROOT_LABEL" -U "$ROOT_UUID" -d "$stage" "$root_image"
     [[ "$(stat -c '%s' "$root_image")" == "$ROOT_SIZE_BYTES" ]] ||
         die "root image does not match the configured profile size"
+
+    # `-d` populates the tree with e2fsprogs' own copier rather than a mounted
+    # filesystem, and it does not always get the block and inode bitmaps right:
+    # blocks belonging to a live inode can be left marked free. That is not
+    # cosmetic. Any later write allocates one of those blocks, so two inodes end
+    # up owning it and the loser's data is destroyed on the next write -- which
+    # surfaces far away as an unrelated file reading back wrong contents.
+    # Repair first, then require a clean read-only pass, so an inconsistent image
+    # cannot be published even if the two steps ever disagree.
+    e2fsck -fy "$root_image" >/dev/null 2>&1 || true
+    local fsck_output
+    if ! fsck_output="$(e2fsck -fn "$root_image" 2>&1)"; then
+        printf '%s\n' "$fsck_output" >&2
+        die "root image is not a consistent filesystem"
+    fi
 
     dumpe2fs -h "$root_image" >"$dumpe2fs_output" 2>/dev/null
     grep -Eq "^Filesystem volume name:[[:space:]]+$ROOT_LABEL$" "$dumpe2fs_output" ||
