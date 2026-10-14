@@ -248,6 +248,25 @@ def patch_scripts(root: Path, platform: str) -> None:
         # Modern net-tools prints two headers, neither of which names an iface.
         script.write_text(content.replace(old_header, '*ame|Kernel|Iface)\t;;'))
 
+    config_run = root / 'scripts/config-run'
+    content = config_run.read_text()
+    memsize_probe = 'MB=`../bin/$OS/memsize $MB`\n' * 3
+    if content.count(memsize_probe) != 1:
+        raise ValueError('upstream memory probe changed; review the adaptation')
+    config_run.write_text(content.replace(
+        memsize_probe,
+        memsize_probe + (
+            '# memsize widens its range until the average per-page touch exceeds its\n'
+            '# fixed 10 usec threshold, so an emulated CPU can make it report 1 MB on a\n'
+            '# machine with gigabytes free. The size check below then aborts the whole\n'
+            '# run before any CONFIG is written, which is what left the guest with no\n'
+            '# measurements at all. MB is already clamped to a fraction of MemTotal by\n'
+            '# this point, so read a collapse below the floor as "too slow to time",\n'
+            '# not as "not enough memory".\n'
+            'if [ $MB -lt 8 ]\n'
+            'then\tMB=8\n'
+            'fi\n')))
+
 
 def verify_archive(archive: Path, architecture: 'Architecture') -> dict:
     """Reject a stale native runtime before paying for a full guest run."""

@@ -9,6 +9,10 @@ ExecStart=/opt/lmbench-run.sh
 StandardOutput=journal+console
 StandardError=journal+console
 TimeoutStartSec=7200
+# The runner's own deadline defaults to 900s, which is what the guest's slower
+# TCG execution runs into: the ALL suite reached 73 of 109 measurements and was
+# killed mid-run. The unit above allows two hours, so give the suite room.
+Environment=LMBENCH_TIMEOUT=3600
 
 [Install]
 WantedBy=multi-user.target
