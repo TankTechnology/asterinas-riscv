@@ -127,6 +127,62 @@ guest reads the file precisely as stored; the bytes on disk were already wrong.
 `build_rootfs.sh` now runs `e2fsck -fy` once the image is populated and then
 requires a clean `e2fsck -fn`, so an inconsistent image cannot be published.
 
+## A boot that never syncs leaves the image inconsistent
+
+That repair only covers the image as it is built. Booting it makes the image
+inconsistent again, and the reason is a scheduling gap inside the ext2 driver
+rather than anything the guest does wrong.
+
+The per-group inode table is an ordinary `PageCache`
+(`inode_table_cache: PageCache` in `ext2/block_group.rs`), so the kernel's
+normal dirty-page writeback flushes it. The allocation bitmaps are not: they
+are plain in-memory `Dirty<Bitmap>` values, and the superblock counters
+likewise. Those reach the disk only through `BlockGroup::sync_metadata`, which
+is reached only from `Ext2::sync_all` (`ext2/fs.rs:793`), which is reached only
+from `FileSystem::sync` (`impl_for_vfs/fs.rs:28`) — that is, from `sync(2)`,
+`syncfs(2)` or unmount, and from nowhere else. `Ext2::create_inode`
+(`ext2/fs.rs:682`) writes a placeholder descriptor — link count set, size 0, no
+blocks, `dtime` 0 — into the inode table as soon as it allocates the number,
+before `make_empty` or the parent's `add_entry` has run. A created inode's
+descriptor can therefore reach the disk while the allocation that authorises it
+cannot.
+
+Measured, by booting the published base image and killing the VM once
+`multi-user.target` appeared, then comparing it block by block against the
+pristine base:
+
+```
+29 of 1048576 4K blocks differ
+free inodes  242700 -> 242700   (unchanged)
+free blocks  721560 -> 721560   (unchanged)
+e2fsck files  19444 -> 19444    (unchanged)
+```
+
+Every changed block is an inode-table block or a data block; not one bitmap
+block, group descriptor or superblock differs. Group 2's inode-table block
+65730, all zeroes in the base, now holds descriptors for inodes 19457-19462
+with consecutive generations `1792069615`-`1792069621`, `dtime` 0, link counts
+2 (directories) and 1 (files), size 0 and no block pointers — except 19462, a
+9469-byte file whose extents point at blocks 898/899/900, which are three of
+the other changed blocks. `e2fsck` reports exactly that state: `Unattached
+inode 19459` and `Inode bitmap differences: +(19445--19462)`.
+
+A clean shutdown heals most of it, because systemd calls `sync(2)` on the way
+down: the `lmbench-poweroff.ext2` image drops to 26 complaints and its free
+inode count is correctly 1772 lower. What survives is the second half of the
+same gap. An inode that was created successfully and whose metadata was then
+never staged keeps `create_inode`'s placeholder forever, so `/root/.ssh` — a
+`d- /root/.ssh :0700` line in systemd's `/usr/lib/tmpfiles.d/provision.conf` —
+is a directory entry on disk pointing at a directory of size 0 with no data
+block, and `e2fsck` calls its link count wrong.
+
+This is not fixed. Making it right means the bitmaps, group descriptors and
+counters have to become durable on the same schedule as the inode table, either
+by participating in writeback or by going through the journal; that is not a
+small change, and no half-fix was landed. It costs this route nothing, because
+the guest root filesystem was already treated as an untrusted channel —
+`boot_debian.sh` reads the serial transcript and nothing else.
+
 ## Running the native LMbench ALL suite
 
 `python3 tools/riscv/lmbench_native.py package --architecture amd64` builds the
