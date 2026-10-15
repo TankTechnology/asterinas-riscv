@@ -108,6 +108,76 @@ stops the boot:
   its dependency and no login prompt is offered on the console
 - `Failed to find module 'autofs4'` / `'unix'`: no module loading
 
+## The image had to be repaired before it could be trusted
+
+`mke2fs -d` populates the tree with e2fsprogs' own copier rather than a mounted
+filesystem, and it does not always get the block and inode bitmaps right. The
+x86 rootfs shipped with blocks 298798-298799 marked free while inode 179
+(`/etc/machine-id`) and inode 19447 already owned them, plus an unattached
+zero-length inode. `Last mount time: n/a` and `Mount count: 0` on that image
+show it was never mounted, so the damage is produced at build time.
+
+That is not cosmetic. Every later write trusts the bitmap, so it allocates a
+block already in use; two inodes then own it and the next writer destroys the
+other one's data. Here the Nix dynamic loader landed on a clobbered block, so
+every Nix-linked binary died with SIGSEGV at startup while Debian-linked ones
+were untouched — which reads exactly like a kernel fault and is not one. The
+guest reads the file precisely as stored; the bytes on disk were already wrong.
+
+`build_rootfs.sh` now runs `e2fsck -fy` once the image is populated and then
+requires a clean `e2fsck -fn`, so an inconsistent image cannot be published.
+
+## Running the native LMbench ALL suite
+
+`python3 tools/riscv/lmbench_native.py package --architecture amd64` builds the
+runtime archive; `tools/x86/debian/prepare_lmbench_disk.sh` copies a published
+rootfs and installs it, so the guest only runs the benchmark. The Kbuild results
+come from the upstream driver's own `make results`, reached through
+`asterinas-native.py`.
+
+Observed on this kernel, 4 vCPU, `-cpu Icelake-Server`:
+
+```
+LMBENCH_RUN_NATIVE_EXIT 2 <ts>      make exit 2 (the coverage gate, not a crash)
+  "native_exit_status": 0,          the inner make itself succeeded
+  "timed_out": false,
+  "elapsed_seconds": 2235.5,
+  observed: 105 of 109
+```
+
+Four defects had to be fixed to get there; each was measured, not inferred.
+
+- **Nix-linked binaries died at startup.** That was the image above.
+- **`config-run` aborted before writing any CONFIG.** It runs `memsize` three
+  times and takes `MB < 8` as "not enough memory"; `memsize` does not measure
+  free memory but walks a growing range and stops once the average per-page
+  touch exceeds its fixed 10 usc threshold, which TCG trips. `MemTotal` reads
+  correctly on the same guest. The run died after 34 s with an empty report.
+- **`tlb` and `memory-parallelism` printed their usage line.** `scripts/lmbench`
+  invokes `tlb -L $LINE_SIZE -M ${MB}M`; with `LINE_SIZE` empty, `-L` swallows
+  `-M`. Upstream defaults `LINE_SIZE` only when there is no CONFIG, and with one
+  it comes solely from config-run's `line -M ${MB}M`, whose timing probe can
+  return nothing here — one run wrote `LINE_SIZE=` and the next wrote `128`.
+- **`useradd --system rpc` failed.** Debian's base image ships an `rpc` group
+  but no `rpc` user, so useradd tried to create a same-named group, found it,
+  and exited without creating the user; the runner's `getpwnam('rpc')` then
+  aborted the whole run after 0.5 s.
+
+Measured before and after, same disk and command: 0 of 109 at 34 s, then 105 of
+109 at 2235 s. The runner's deadline also had to be raised — its 900 s default
+cut the run off at 905 s having reached 73 of 109 — so the unit sets
+`LMBENCH_TIMEOUT=3600`.
+
+### What is still missing
+
+Four measurements, from two causes that are not fixed and not this route's:
+
+- `rpc-udp` and `rpc-tcp` time out (`localhost: RPC: Timed out`). The same
+  symptom appears on RISC-V.
+- `signal-prot` was measured in one run and missing in the next.
+
+`passed` is therefore still false, and the gate was not loosened to change it.
+
 ## Reproducing
 
 ```sh

@@ -76,6 +76,33 @@ This kernel cannot complete systemd's `Type=notify` readiness handshake, so
 without it the journal service times out and every unit ordered after the
 journal socket waits for that start job.
 
+## What the run produces
+
+The guest reaches the upstream driver's own `make results` and reports a
+coverage verdict rather than a pass/fail on make's exit status. On this kernel
+the suite runs to completion and measures 105-106 of 109 groups:
+
+```
+LMBENCH_RUN_NATIVE_EXIT 2 …      make exit 2: the coverage gate, not a crash
+  "native_exit_status": 0,       the inner make succeeded
+  "elapsed_seconds": 2364.1,
+  observed: 106,  missing: ['signal-prot','rpc-udp','rpc-tcp']
+```
+
+The unit sets `LMBENCH_TIMEOUT=3600`. The runner's default is 900 s, which the
+guest exceeds: it was cut off at 905 s having reached 73 of 109.
+
+The remaining gaps are not this route's and are not fixed: `rpc-udp`/`rpc-tcp`
+time out (`localhost: RPC: Timed out`, also seen on RISC-V), and `signal-prot`
+is intermittent — it measured in one run and not the next, so treat `observed`
+as 105-106 rather than a fixed number. `passed` stays false until those are
+resolved; see
+[the bring-up evidence](../../../docs/porting/evidence/2026-10-13-x86-debian-bringup/README.md).
+
+The base root image must be one the builder repaired: `mke2fs -d` can leave the
+block bitmap inconsistent, and a later write then lands on a block another inode
+already owns. That is what made every Nix-linked binary die at startup here.
+
 ## Running it
 
 ```sh
