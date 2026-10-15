@@ -644,7 +644,8 @@ test_riscv_rootfs_builder_image_unit:
 .PHONY: test_x86_debian_tooling_unit
 test_x86_debian_tooling_unit:
 	@python3 -W error::ResourceWarning -m unittest \
-		tools.x86.tests.test_x86_debian_boot -v
+		tools.x86.tests.test_x86_debian_boot \
+		tools.riscv.tests.test_lmbench_native -v
 
 # Boot the Debian root image on the x86_64 kernel and wait for the marker.
 # X86_DEBIAN_KERNEL must be an OSDK x86_64 artifact built with

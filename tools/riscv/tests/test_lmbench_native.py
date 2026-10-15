@@ -287,14 +287,22 @@ except RuntimeError:
             binary = root / 'bin' / PLATFORM
             binary.mkdir(parents=True)
             startup = ('for server in $SERVERS; do $server -s; done\n'
-                       'case $1 in\n\t    *ame)\t;;\nesac\n')
+                       'case $1 in\n\t    *ame)\t;;\nesac\n'
+                       'if [ X$MB = X ]\nthen\tMB=8\nfi\n')
             (root / 'scripts/lmbench').write_text('echo <version>\n' + startup)
             (binary / 'lmbench').write_text('echo built-version\n' + startup)
             (root / 'scripts/version').write_text("egrep 'MAJOR|MINOR' version.h\n")
+            (root / 'scripts/config-run').write_text(
+                'MB=`../bin/$OS/memsize $MB`\n' * 3)
             patch_scripts(root, PLATFORM)
             self.assertIn('echo built-version', (binary / 'lmbench').read_text())
             self.assertNotIn('<version>', (binary / 'lmbench').read_text())
             self.assertIn('-s 127.0.0.1', (binary / 'lmbench').read_text())
+            # LINE_SIZE is defaulted next to MB, because config-run only supplies
+            # it through a timing probe that can return nothing on an emulated CPU.
+            for path in (root / 'scripts/lmbench', binary / 'lmbench'):
+                self.assertIn('if [ X$LINE_SIZE = X ]', path.read_text())
+                self.assertIn('LINE_SIZE=512', path.read_text())
             self.assertEqual((root / 'scripts/version').read_text(),
                              "egrep 'MAJOR|MINOR' version.h\n")
 
@@ -316,10 +324,13 @@ except RuntimeError:
                       '\t    *ame)\t;;\n'
                       '\t    *)\t\tifconfig $1 ;;\n'
                       '    esac\n'
-                      'done\n')
+                      'done\n'
+                      'if [ X$MB = X ]\nthen\tMB=8\nfi\n')
             for path in (root / 'scripts/lmbench', binary / 'lmbench'):
                 path.write_text(driver)
             (root / 'scripts/version').write_text("egrep 'MAJOR|MINOR' version.h\n")
+            (root / 'scripts/config-run').write_text(
+                'MB=`../bin/$OS/memsize $MB`\n' * 3)
             patch_scripts(root, PLATFORM)
             result = subprocess.run(['sh', str(binary / 'lmbench')],
                                     capture_output=True, text=True, check=True)
