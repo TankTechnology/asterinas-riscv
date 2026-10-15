@@ -224,6 +224,42 @@ And the guest's address is hardcoded in the kernel (`net/iface/init.rs`, the
 `10.0.2.15/24` via `10.0.2.2` profile), not leased, which is why a plain boot
 shows transmitted packets and no received ones.
 
+## Route-table tools block instead of failing
+
+`/proc/net/dev` was the gap that had a unit test waiting for it. This one is
+worse and was found by looking for it. Every call below was run in the guest
+under `timeout 20`, and each reports its own exit code:
+
+```
+ip route                    rc=124   no output at all
+ip route get 10.0.2.2       rc=124
+ip -4 route show            rc=124
+ip neigh                    rc=124
+/proc/net/route             No such file or directory
+/proc/net/arp               No such file or directory
+ip link                     rc=0     works
+ip addr show                rc=0     works
+ss -tln                     rc=0, but "Cannot open netlink socket: Address family not supported"
+curl http://10.0.2.2/       rc=124
+```
+
+It is not a guest-wide freeze: `ip link` and `ip addr` answer in the same
+session. The stall is specific to requests the kernel never answers.
+`RtnlSegment` (`net/socket/netlink/route/message/segment/mod.rs:52`) has only
+`NewLink`/`GetLink`/`NewAddr`/`GetAddr`/`Done`/`Error`, so RTM_GETROUTE and
+RTM_GETNEIGH fall to its `_` arm, which yields `SkippedErr(EOPNOTSUPP)`; the
+receiver turns that into `report_error`. That reply evidently does not reach
+iproute2 in a form its dump filter accepts — the normal path is fine, since
+`ip link` and `ip addr` are answered from the same socket table.
+
+A missing feature that answers "not supported" is a gap. A missing feature
+that never answers at all hangs every tool that touches it, which is what
+`ip route` does here, and it is worth more than the feature itself.
+
+**This is probably the same defect as the `rpc-udp`/`rpc-tcp` failures
+below.** Both are a network operation that never completes, and RPC client
+setup consults the route table.
+
 ## Running the native LMbench ALL suite
 
 `python3 tools/riscv/lmbench_native.py package --architecture amd64` builds the
