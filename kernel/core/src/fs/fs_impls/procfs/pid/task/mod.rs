@@ -13,7 +13,7 @@ use crate::{
                 comm::CommFileOps, environ::EnvironFileOps, exe::ExeSymOps, fd::FdDirOps,
                 gid_map::GidMapFileOps, maps::MapsFileOps, mem::MemFileOps,
                 mountinfo::MountInfoFileOps, mounts::MountsFileOps, mountstats::MountStatsFileOps,
-                ns::NsDirOps, oom_score_adj::OomScoreAdjFileOps, stat::StatFileOps,
+                net::NetDirOps, ns::NsDirOps, oom_score_adj::OomScoreAdjFileOps, stat::StatFileOps,
                 status::StatusFileOps, uid_map::UidMapFileOps,
             },
             template::{
@@ -42,6 +42,7 @@ mod mem;
 mod mountinfo;
 mod mounts;
 mod mountstats;
+mod net;
 mod ns;
 mod oom_score_adj;
 pub(super) mod stat;
@@ -121,6 +122,7 @@ impl TidDirOps {
         ("mem", InodeType::File, MemFileOps::new_inode),
         ("mountinfo", InodeType::File, MountInfoFileOps::new_inode),
         ("mountstats", InodeType::File, MountStatsFileOps::new_inode),
+        ("net", InodeType::Dir, NetDirOps::new_inode),
         ("ns", InodeType::Dir, NsDirOps::new_inode),
         (
             "oom_score_adj",

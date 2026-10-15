@@ -24,6 +24,7 @@ use super::{
     poll::{PollContext, SocketTableAction},
     poll_iface::PollableIface,
     port::BindPortConfig,
+    stats::{IfaceStats, IfaceStatsSnapshot},
     time::get_network_timestamp,
 };
 use crate::{
@@ -46,6 +47,7 @@ pub struct IfaceCommon<E: Ext> {
     used_ports: SpinLock<PortTable, BottomHalfDisabled>,
     sockets: SpinLock<SocketTable<E>, BottomHalfDisabled>,
     sched_poll: E::ScheduleNextPoll,
+    stats: IfaceStats,
 }
 
 pub(super) struct TxPacketWithDst {
@@ -121,7 +123,13 @@ impl<E: Ext> IfaceCommon<E> {
             used_ports: SpinLock::new(PortTable::new()),
             sockets: SpinLock::new(SocketTable::new()),
             sched_poll,
+            stats: IfaceStats::default(),
         }
+    }
+
+    /// Samples the packets this interface has received and transmitted.
+    pub(super) fn stats_snapshot(&self) -> IfaceStatsSnapshot {
+        self.stats.snapshot()
     }
 
     pub(super) fn index(&self) -> u32 {
@@ -253,13 +261,23 @@ impl<E: Ext> IfaceCommon<E> {
     }
 
     fn do_poll(&self, device: &mut dyn AnyNetworkDevice, phy: &dyn PollPhy) -> Option<u64> {
-        let mut interface = self.interface();
+        // Destructure rather than going through `self.interface()`: the poll context needs the
+        // counters for the whole poll, and it holds the interface lock while it runs.
+        let Self {
+            interface,
+            sockets: socket_table,
+            stats,
+            ..
+        } = self;
+
+        let mut interface = interface.lock();
         interface.context_mut().now = get_network_timestamp();
 
-        let mut sockets = self.sockets.lock();
+        let mut sockets = socket_table.lock();
         let mut socket_actions = Vec::new();
 
-        let mut context = PollContext::new(interface.as_mut(), &sockets, &mut socket_actions);
+        let mut context =
+            PollContext::new(interface.as_mut(), &sockets, &mut socket_actions, stats);
         context.poll_ingress(device, phy);
         context.poll_egress(device, phy);
 

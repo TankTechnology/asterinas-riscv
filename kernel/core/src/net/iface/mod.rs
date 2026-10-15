@@ -8,6 +8,29 @@ mod sched;
 pub(super) use init::{init, iter_all_ifaces};
 pub(super) use poll::init_in_first_kthread;
 
+use crate::prelude::*;
+
+/// One interface's name and packet counters, as sampled for `/proc/net/dev`.
+pub(crate) struct IfaceStatus {
+    pub(crate) name: String,
+    pub(crate) stats: aster_bigtcp::iface::IfaceStatsSnapshot,
+}
+
+/// Samples every interface, in index order.
+///
+/// Returns an owned snapshot rather than the interfaces themselves, so callers outside this
+/// module do not have to name [`Iface`] or the ext type.
+pub(crate) fn iface_statuses() -> Vec<IfaceStatus> {
+    iter_all_ifaces()
+        .map(|iface| IfaceStatus {
+            // A `FixedCStr` stores whatever bytes the driver was handed. The names in use are
+            // ASCII; a non-UTF-8 one is not worth failing the whole read over.
+            name: iface.name().as_str().unwrap_or_default().into(),
+            stats: iface.stats(),
+        })
+        .collect()
+}
+
 pub(super) type Iface = dyn aster_bigtcp::iface::Iface<ext::BigtcpExt>;
 pub(super) type BoundTcpPort = aster_bigtcp::iface::BoundTcpPort<ext::BigtcpExt>;
 pub(super) type BoundUdpPort = aster_bigtcp::iface::BoundUdpPort<ext::BigtcpExt>;

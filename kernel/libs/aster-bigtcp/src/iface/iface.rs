@@ -8,7 +8,8 @@ use smoltcp::{
 };
 
 use super::{
-    BindPortConfig, BoundTcpPort, BoundUdpPort, InterfaceFlags, InterfaceName, InterfaceType,
+    BindPortConfig, BoundTcpPort, BoundUdpPort, IfaceStatsSnapshot, InterfaceFlags, InterfaceName,
+    InterfaceType,
 };
 use crate::{errors::BindError, ext::Ext};
 
@@ -78,6 +79,11 @@ impl<E: Ext> dyn Iface<E> {
     /// Returns the interface flags.
     pub fn flags(&self) -> InterfaceFlags {
         self.common().flags()
+    }
+
+    /// Samples the packets this interface has received and transmitted.
+    pub fn stats(&self) -> IfaceStatsSnapshot {
+        self.common().stats_snapshot()
     }
 
     // FIXME: Linux and smoltcp allow multiple IP CIDRs per interface, while the

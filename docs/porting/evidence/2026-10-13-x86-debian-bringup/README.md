@@ -183,6 +183,47 @@ small change, and no half-fix was landed. It costs this route nothing, because
 the guest root filesystem was already treated as an untrusted channel —
 `boot_debian.sh` reads the serial transcript and nothing else.
 
+## `/proc/net/dev` did not exist
+
+The live kernel tree had no `/proc/net` at all: `RootDirOps::STATIC_ENTRIES`
+listed cmdline, cpuinfo, filesystems, loadavg, meminfo, mounts, self, stat, sys,
+thread-self, uptime and version, and nothing else. `/proc/sys/net/ipv4` was
+there, `/proc/net` was not. The dead tree — everything under `kernel/src`,
+which has not been compiled since the `aster-core` split — had both, so this
+was a fix that was written once and then lost in the move.
+
+Two things were missing, not one. `aster-bigtcp` had an `IfaceStats` counter
+set and the public `IfaceStatsSnapshot` for it, but `iface/mod.rs` never
+declared `mod stats`, so it was dead code with no callers; and nothing outside
+`crate::net` could enumerate interfaces, because `iter_all_ifaces` is
+`pub(in crate::net)`. Porting the file alone would have produced a `/proc/net/dev`
+that printed zeroes forever.
+
+Now `/proc/net` is a symlink to `self/net` as on Linux, `/proc/<pid>/net/dev`
+prints the two header lines and one row per interface, and the counters are
+recorded where packets actually cross the interface — rx in `poll_ingress`
+right after `device.receive()` returns, tx at all three `device.send` sites,
+counted only when the device accepts the packet.
+
+Measured in the guest, with a throwaway unit in place of the benchmark:
+
+```
+              rx bytes   rx pkts   tx bytes   tx pkts
+  eth0  t0:          0         0        168         4
+  eth0  t1:        136         1       1344        32
+```
+
+`t1` is after two `curl` attempts at the slirp gateway, which refuses the
+connection and therefore answers — that answer is the received packet.
+
+Two things this does not do. `lo` stays at zero even while loopback traffic
+flows, because the kernel treats its own addresses as local and hands the data
+straight to the receiving socket without traversing the device, so no packet
+crosses the interface and there is nothing to count; Linux would count it.
+And the guest's address is hardcoded in the kernel (`net/iface/init.rs`, the
+`10.0.2.15/24` via `10.0.2.2` profile), not leased, which is why a plain boot
+shows transmitted packets and no received ones.
+
 ## Running the native LMbench ALL suite
 
 `python3 tools/riscv/lmbench_native.py package --architecture amd64` builds the
