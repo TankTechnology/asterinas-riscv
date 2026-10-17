@@ -337,13 +337,53 @@ cut the run off at 905 s having reached 73 of 109 — so the unit sets
 
 ### What is still missing
 
-Four measurements, from two causes that are not fixed and not this route's:
-
-- `rpc-udp` and `rpc-tcp` time out (`localhost: RPC: Timed out`). The same
-  symptom appears on RISC-V.
-- `signal-prot` was measured in one run and missing in the next.
+Two measurements: `rpc-udp` and `rpc-tcp`. `signal-prot` was measured on the
+latest run, so it is no longer among them.
 
 `passed` is therefore still false, and the gate was not loosened to change it.
+
+### Why the RPC measurements fail
+
+A plausible cause took three probes to pin down, and two of them were dead ends
+worth recording so they are not repeated.
+
+**Discard these two.** An early probe asked the portmapper for `XACT_PROG`
+version 2 and got port 0 for both transports, which looked like the server
+never registering; LMbench registers version 1, so that probe always returns 0
+and says nothing. A later probe appeared to show that a bare `lat_rpc -s` fails
+where `-s 127.0.0.1` succeeds; the source settles it —
+`opt/lmbench/src/lat_rpc.c` handles `-s` by forking, running `server_main()` in
+the child, and having the parent `exit(0)` from inside `getopt`, so nothing
+after `-s` is ever read. The two forms are identical and that single success
+was an outlier.
+
+**What the numbers say.** Eighteen trials of the client/server pair in one
+boot, each with the server freshly registered and the portmapper verified
+first: **18 of 18 failed**, each after 39-58 s, with an empty server log
+meaning registration had succeeded. That is not variance. Against it, the same
+full run measured:
+
+```
+UDP latency using localhost   9941.5575 microseconds
+TCP latency using localhost  11125.6734 microseconds
+```
+
+libtirpc's default `CLSET_RETRY_TIMEOUT` is 2.5 ms. A loopback round trip that
+takes 9.9 ms cannot answer inside a 2.5 ms retry window, so every call's first
+attempt expires, the client retransmits, and the call eventually fails. That
+also explains the one intervention the 2026-09-23 work found that made the
+measurement complete: a diagnostic build raising the retry timeout to 25 ms,
+which is the first value above 9.9 ms. That work declined to ship it, correctly
+— it modifies the benchmark rather than the kernel.
+
+**What is not settled.** Whether ~10 ms of loopback latency is simply this
+kernel under TCG, or whether the poll scheduler adds a fixed cost on top of it.
+1 ms is the scheduler's unit (`next_poll_at_ms`), which bounds it from below
+but does not explain 10 ms; a native machine would measure tens of
+microseconds here. Until that is answered, `rpc-udp` and `rpc-tcp` should be
+expected to stay missing, and the honest options are to find and remove the
+added latency, or to accept the gap and say so. Changing the benchmark is not
+one of them.
 
 ## Reproducing
 
