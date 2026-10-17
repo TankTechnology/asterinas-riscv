@@ -224,11 +224,10 @@ And the guest's address is hardcoded in the kernel (`net/iface/init.rs`, the
 `10.0.2.15/24` via `10.0.2.2` profile), not leased, which is why a plain boot
 shows transmitted packets and no received ones.
 
-## Route-table tools block instead of failing
+## Route-table tools blocked instead of failing
 
-`/proc/net/dev` was the gap that had a unit test waiting for it. This one is
-worse and was found by looking for it. Every call below was run in the guest
-under `timeout 20`, and each reports its own exit code:
+Every call below was run in the guest under `timeout 20`, and each reports its
+own exit code. This is what the kernel did before the fix:
 
 ```
 ip route                    rc=124   no output at all
@@ -243,22 +242,43 @@ ss -tln                     rc=0, but "Cannot open netlink socket: Address famil
 curl http://10.0.2.2/       rc=124
 ```
 
-It is not a guest-wide freeze: `ip link` and `ip addr` answer in the same
-session. The stall is specific to requests the kernel never answers.
-`RtnlSegment` (`net/socket/netlink/route/message/segment/mod.rs:52`) has only
-`NewLink`/`GetLink`/`NewAddr`/`GetAddr`/`Done`/`Error`, so RTM_GETROUTE and
-RTM_GETNEIGH fall to its `_` arm, which yields `SkippedErr(EOPNOTSUPP)`; the
-receiver turns that into `report_error`. That reply evidently does not reach
-iproute2 in a form its dump filter accepts — the normal path is fine, since
-`ip link` and `ip addr` are answered from the same socket table.
+It was not a guest-wide freeze: `ip link` and `ip addr` answered in the same
+session. The stall was specific to requests the kernel never answered.
+`RtnlSegment` had only `NewLink`/`GetLink`/`NewAddr`/`GetAddr`, so
+RTM_GETROUTE and RTM_GETNEIGH fell to its `_` arm and produced no reply that
+iproute2's dump filter would accept.
 
-A missing feature that answers "not supported" is a gap. A missing feature
-that never answers at all hangs every tool that touches it, which is what
-`ip route` does here, and it is worth more than the feature itself.
+RTM_GETROUTE is now ported into the live tree from
+`kernel/src/net/socket/netlink/route/kernel/route.rs`, which had it all along —
+the same pattern as `/proc/net/dev` and `IfaceStats`: written once, lost when
+the kernel was split into `aster-core`. The message layer came with it
+(`RouteSegment`, `RouteAttr`, the `RtnlSegment` variants); only the namespace
+argument had to change, because this kernel has a single network namespace and
+no `NetNamespace` to ask.
 
-**This is probably the same defect as the `rpc-udp`/`rpc-tcp` failures
-below.** Both are a network operation that never completes, and RPC client
-setup consults the route table.
+```
+$ ip route
+default via 10.0.2.2 dev eth0
+10.0.2.0/24 dev eth0 proto kernel scope link src 10.0.2.15
+$ ip route get 10.0.2.2
+10.0.2.2 dev eth0 src 10.0.2.15
+    cache
+$ ip route get 127.0.0.1
+local 127.0.0.1 dev lo proto unspec src 127.0.0.1
+$ ip -4 route show table all
+default via 10.0.2.2 dev eth0
+10.0.2.0/24 dev eth0 proto kernel scope link src 10.0.2.15
+local 127.0.0.0/8 dev lo table local proto kernel scope host src 127.0.0.1
+local 127.0.0.1 dev lo table local proto kernel scope host src 127.0.0.1
+broadcast 127.255.255.255 dev lo table local proto kernel scope link src 127.0.0.1
+local 10.0.2.15 dev eth0 table local proto kernel scope host src 10.0.2.15
+broadcast 10.0.2.255 dev eth0 table local proto kernel scope link src 10.0.2.15
+```
+
+`ip neigh` still blocks (`rc=124`), because RTM_GETNEIGH has no handler, and
+`/proc/net/{route,arp,tcp,udp}` are still absent. A missing feature that
+answers "not supported" is a gap; one that never answers hangs every tool that
+touches it, and that is still true here.
 
 ## Running the native LMbench ALL suite
 
