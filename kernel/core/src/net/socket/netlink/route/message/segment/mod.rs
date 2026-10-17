@@ -57,6 +57,11 @@ pub(crate) enum RtnlSegment {
     GetAddr(AddrSegment),
     NewRoute(RouteSegment),
     GetRoute(RouteSegment),
+    /// A request with a type this kernel recognises but does not implement.
+    ///
+    /// The header is kept so the reply can echo its `seq` and `pid`. Answering
+    /// with an empty `DONE` is what keeps tools like `ip neigh` from blocking.
+    Unsupported(CMsgSegHdr),
     Done(DoneSegment),
     Error(ErrorSegment),
 }
@@ -73,6 +78,7 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::NewRoute(route_segment) | RtnlSegment::GetRoute(route_segment) => {
                 route_segment.header()
             }
+            RtnlSegment::Unsupported(header) => header,
             RtnlSegment::Done(done_segment) => done_segment.header(),
             RtnlSegment::Error(error_segment) => error_segment.header(),
         }
@@ -89,6 +95,7 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::NewRoute(route_segment) | RtnlSegment::GetRoute(route_segment) => {
                 route_segment.header_mut()
             }
+            RtnlSegment::Unsupported(header) => header,
             RtnlSegment::Done(done_segment) => done_segment.header_mut(),
             RtnlSegment::Error(error_segment) => error_segment.header_mut(),
         }
@@ -98,6 +105,27 @@ impl ProtocolSegment for RtnlSegment {
         let header = reader
             .read_val_opt::<CMsgSegHdr>()?
             .ok_or_else(|| Error::with_message(Errno::EINVAL, "the reader length is too small"))?;
+
+        // Requests the kernel recognises but does not implement still need an
+        // answer. Falling through to the unsupported arm produces an error
+        // segment iproute2's dump filter does not accept, and the tool blocks
+        // forever instead of reporting anything.
+        let unsupported_dump = matches!(
+            CSegmentType::try_from(header.type_),
+            Ok(CSegmentType::GETNEIGH
+                | CSegmentType::GETRULE
+                | CSegmentType::GETQDISC
+                | CSegmentType::GETTCLASS
+                | CSegmentType::GETACTION
+                | CSegmentType::GETTFILTER
+                | CSegmentType::GETNEXTHOP
+                | CSegmentType::GETCHAIN)
+        );
+        if unsupported_dump {
+            let payload_len = header.calc_payload_len_with_padding(reader)?;
+            reader.skip_some(payload_len);
+            return Ok(ContinueRead::Parsed(RtnlSegment::Unsupported(header)));
+        }
 
         let segment = match CSegmentType::try_from(header.type_) {
             Ok(CSegmentType::GETLINK) => {
@@ -129,7 +157,10 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::NewRoute(route_segment) => route_segment.write_to(writer)?,
             RtnlSegment::Done(done_segment) => done_segment.write_to(writer)?,
             RtnlSegment::Error(error_segment) => error_segment.write_to(writer)?,
-            RtnlSegment::GetAddr(_) | RtnlSegment::GetLink(_) | RtnlSegment::GetRoute(_) => {
+            RtnlSegment::GetAddr(_)
+            | RtnlSegment::GetLink(_)
+            | RtnlSegment::GetRoute(_)
+            | RtnlSegment::Unsupported(_) => {
                 unreachable!("kernel should not write get requests to user space");
             }
         }

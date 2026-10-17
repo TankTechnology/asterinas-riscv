@@ -275,10 +275,24 @@ local 10.0.2.15 dev eth0 table local proto kernel scope host src 10.0.2.15
 broadcast 10.0.2.255 dev eth0 table local proto kernel scope link src 10.0.2.15
 ```
 
-`ip neigh` still blocks (`rc=124`), because RTM_GETNEIGH has no handler, and
-`/proc/net/{route,arp,tcp,udp}` are still absent. A missing feature that
-answers "not supported" is a gap; one that never answers hangs every tool that
-touches it, and that is still true here.
+The remaining unimplemented dumps no longer block either. The dead tree had
+already worked out the shape: recognise the request type, skip its payload, and
+answer with an empty result terminated by `NLMSG_DONE`, instead of producing an
+error segment that iproute2's dump filter will not accept. The live tree now
+does the same for RTM_GETNEIGH, RTM_GETRULE, RTM_GETQDISC, RTM_GETTCLASS,
+RTM_GETACTION, RTM_GETTFILTER, RTM_GETNEXTHOP and RTM_GETCHAIN:
+
+```
+ip neigh        (empty)  rc=0     was rc=124
+ip -6 neigh     (empty)  rc=0
+ip rule         (empty)  rc=0     was unimplemented
+ip -6 route     (empty)  rc=0
+```
+
+What is still absent is the data behind them: `/proc/net/{route,arp,tcp,udp}`
+do not exist, and the neighbour and rule tables are not exposed. What is no
+longer true is the far worse failure mode — a tool that asks a question this
+kernel cannot answer no longer hangs until it is killed.
 
 ## Running the native LMbench ALL suite
 

@@ -115,5 +115,17 @@ pub(crate) enum CSegmentType {
     NEWROUTE = 24,
     DELROUTE = 25,
     GETROUTE = 26,
+
+    // Requests this kernel does not answer. They are recognised so that the
+    // route socket can reply with an empty result instead of going silent,
+    // which is what makes `ip neigh` and friends block forever.
+    GETNEIGH = 30,
+    GETRULE = 34,
+    GETQDISC = 38,
+    GETTCLASS = 42,
+    GETACTION = 46,
+    GETTFILTER = 58,
+    GETNEXTHOP = 104,
+    GETCHAIN = 106,
     // TODO: The list is not exhaustive.
 }

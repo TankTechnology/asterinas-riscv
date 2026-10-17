@@ -9,7 +9,7 @@ use super::message::{RtnlMessage, RtnlSegment};
 use crate::{
     net::socket::netlink::{
         addr::PortNum,
-        message::{ErrorSegment, ProtocolSegment},
+        message::{DoneSegment, ErrorSegment, ProtocolSegment},
         table::{NetlinkRouteProtocol, SupportedNetlinkProtocol},
     },
     prelude::*,
@@ -40,6 +40,12 @@ impl NetlinkRouteKernelSocket {
             RtnlSegment::GetLink(request_segment) => link::do_get_link(request_segment),
             RtnlSegment::GetAddr(request_segment) => addr::do_get_addr(request_segment),
             RtnlSegment::GetRoute(request_segment) => route::do_get_route(request_segment),
+            // A request type this kernel recognises but does not implement gets an
+            // empty dump rather than no answer at all. `ip neigh` and `ip rule`
+            // read nothing and exit; before this they blocked until killed.
+            RtnlSegment::Unsupported(_) => Ok(vec![RtnlSegment::Done(
+                DoneSegment::new_from_request(request_header, None),
+            )]),
             _ => Err(Error::with_message(
                 Errno::EOPNOTSUPP,
                 "the netlink route request is not supported",
