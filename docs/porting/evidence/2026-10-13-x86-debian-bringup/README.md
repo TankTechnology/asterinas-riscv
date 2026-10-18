@@ -294,6 +294,51 @@ do not exist, and the neighbour and rule tables are not exposed. What is no
 longer true is the far worse failure mode — a tool that asks a question this
 kernel cannot answer no longer hangs until it is killed.
 
+## The storage milestone: what was tried and what it needs
+
+The goal is an image that `e2fsck -fn` accepts after a clean shutdown. It is
+not met. Two attempts are recorded here because each one taught something the
+next attempt needs.
+
+**Attempt 1: stage the descriptor as soon as the create succeeds.** The
+reasoning was that `create_inode` writes a placeholder (size 0, no blocks) and
+the real descriptor only reaches the inode table when something later syncs the
+inode, so staging it at the end of `create_initialized_child` should close that
+window. It made things worse:
+
+```
+Extended attribute in inode 19447 has a hash (0) which is invalid
+Inode 19447, i_blocks is 8, should be 16
+Directory inode 19463, block #0, offset 0: directory corrupted
+```
+
+The new directory had just been given a data block holding `.` and `..`, and
+that block reaches the disk through the page cache on its own schedule.
+Staging a descriptor that points at it first put a block pointer on disk ahead
+of the block's contents. The checker then sees a corrupted directory rather
+than an empty one. **Metadata must not outrun data.**
+
+**Attempt 2: `sync_data()` instead.** It writes the pages, then the indirect
+metadata, then the descriptor, in that order. That removed the corruption and
+the wrong xattr hash. What remains after a clean poweroff is still 33 findings:
+unattached inodes, inode bitmap differences, and inode 19447's block count
+disagreeing with its extents.
+
+It was reverted anyway. It does not meet the acceptance criterion, and it puts
+a synchronous flush on every create, which is a real cost on a hot path for no
+completion of the goal. A half-fix that slows the system and leaves the image
+dirty is worse than a documented gap.
+
+**What it actually needs.** These are symptoms of one design gap: the inode
+table is a `PageCache` and is flushed by ordinary writeback, while the
+allocation bitmaps, group descriptors and superblock counters are plain
+in-memory values written only by `Ext2::sync_all`. Anything that puts inode
+metadata on disk before the allocation metadata that authorises it -- and the
+`create_inode` placeholder does exactly that on every create -- leaves a state
+the checker cannot reconcile. Closing it means the two become durable on the
+same schedule: either the bitmaps join writeback, or the inode table stops
+being flushed independently of them.
+
 ## Running the native LMbench ALL suite
 
 `python3 tools/riscv/lmbench_native.py package --architecture amd64` builds the
