@@ -6,6 +6,7 @@ pub(crate) mod socket;
 pub(crate) mod uts_ns;
 
 pub(crate) use iface::iface_statuses;
+pub(crate) use route::ipv4_routes;
 
 pub(crate) fn init() {
     iface::init();

@@ -785,6 +785,38 @@ mod test {
         test_utils::{assert_errno, create_file, default_fixture},
     };
 
+    /// A freshly created directory must reach the disk complete.
+    ///
+    /// `create_inode` writes a placeholder descriptor (size 0, no blocks, link
+    /// count 2) as soon as it allocates the inode number, and `make_empty` is
+    /// what later fills it in. If that second half is ever lost, the on-disk
+    /// inode keeps the placeholder while its directory entry survives, which is
+    /// what `e2fsck` reports as an unattached zero-length inode or a wrong
+    /// reference count.
+    ///
+    /// `/root` already holds two regular files when systemd-tmpfiles runs
+    /// `d- /root/.ssh :0700` from `tmpfiles.d/provision.conf`, so create the
+    /// child in a directory that is already populated.
+    #[ktest]
+    fn created_directory_reaches_disk_complete() {
+        let (f, root) = default_fixture();
+        create_file(&root, "bashrc");
+        create_file(&root, "profile");
+
+        let dir = root
+            .create("ssh", InodeType::Dir, FilePerm::from_bits_truncate(0o700))
+            .unwrap();
+        let ino = dir.ino();
+
+        f.ext2.sync_all().unwrap();
+
+        let raw = read_raw_inode_from_disk(&f, ino);
+        assert_eq!(raw.link_count, 2);
+        assert_eq!(raw.size_lo as usize, BLOCK_SIZE);
+        assert_ne!(raw.sector_count, 0);
+        assert_ne!(raw.block[0], 0);
+    }
+
     #[ktest]
     fn unlink_last_link_deallocates_on_drop() {
         let (f, root) = default_fixture();

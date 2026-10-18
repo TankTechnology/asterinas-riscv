@@ -250,6 +250,54 @@ pub(super) fn lookup_local_iface(address: IpAddress) -> Result<Arc<Iface>> {
     Ok(iface)
 }
 
+/// The forwarding behaviour of a route, in a form callers outside this module can name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RouteKind {
+    Unicast,
+    Local,
+    Broadcast,
+}
+
+/// One IPv4 route, as `/proc/net/route` needs it.
+pub(crate) struct Ipv4RouteInfo {
+    pub(crate) dst: Ipv4Cidr,
+    pub(crate) gateway: Option<Ipv4Address>,
+    pub(crate) iface: String,
+    pub(crate) iface_index: u32,
+    pub(crate) table_id: u32,
+    pub(crate) metric: u32,
+    pub(crate) kind: RouteKind,
+}
+
+/// Samples the IPv4 route table.
+pub(crate) fn ipv4_routes() -> Vec<Ipv4RouteInfo> {
+    let Some(manager) = IPV4_ROUTE_MANAGER.get() else {
+        return Vec::new();
+    };
+
+    manager
+        .iter_entries()
+        .map(|entry| Ipv4RouteInfo {
+            dst: *entry.dst(),
+            gateway: entry.gateway(),
+            iface: entry
+                .output_iface()
+                .name()
+                .as_str()
+                .unwrap_or_default()
+                .into(),
+            iface_index: entry.output_iface().index(),
+            table_id: entry.table_id().value(),
+            metric: entry.metric().value(),
+            kind: match entry.type_() {
+                RouteType::Unicast => RouteKind::Unicast,
+                RouteType::Local => RouteKind::Local,
+                RouteType::Broadcast => RouteKind::Broadcast,
+            },
+        })
+        .collect()
+}
+
 /// Returns whether an endpoint is an IPv4 broadcast destination.
 ///
 /// IPv6 does not define broadcast addresses,

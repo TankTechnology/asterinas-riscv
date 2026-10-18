@@ -47,8 +47,7 @@ impl<A: RouteAddressFamily> RouteEntry<A> {
     }
 
     /// Returns the next-hop gateway.
-    #[expect(dead_code)]
-    const fn gateway(&self) -> Option<A> {
+    pub(super) const fn gateway(&self) -> Option<A> {
         self.gateway
     }
 
@@ -139,12 +138,24 @@ impl RouteTableId {
     /// The table ID of the local table,
     /// which manages routes for addresses assigned locally.
     pub(super) const LOCAL: Self = Self(255);
+
+    /// Returns the numeric table ID.
+    pub(super) const fn value(self) -> u32 {
+        self.0
+    }
 }
 
 /// A route metric used to prefer routes with equal prefix lengths;
 /// lower values have higher priority.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct RouteMetric(u32);
+
+impl RouteMetric {
+    /// Returns the numeric metric.
+    pub(super) const fn value(self) -> u32 {
+        self.0
+    }
+}
 
 /// The forwarding behavior of a route.
 ///

@@ -33,6 +33,11 @@ impl<A: RouteAddressFamily> RouteManager<A> {
         Self { rules, tables }
     }
 
+    /// Iterates every route in every table.
+    pub(super) fn iter_entries(&self) -> impl Iterator<Item = &RouteEntry<A>> {
+        self.tables.values().flat_map(|table| table.iter())
+    }
+
     pub(super) fn lookup_entry(&self, key: &RouteLookupKey<A>) -> Result<RouteEntry<A>> {
         for rules in self.rules.values() {
             for rule in rules {
