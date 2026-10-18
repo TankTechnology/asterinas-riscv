@@ -294,11 +294,33 @@ do not exist, and the neighbour and rule tables are not exposed. What is no
 longer true is the far worse failure mode — a tool that asks a question this
 kernel cannot answer no longer hangs until it is killed.
 
-## The storage milestone: what was tried and what it needs
+## The storage milestone: what was wrong and what changed
 
-The goal is an image that `e2fsck -fn` accepts after a clean shutdown. It is
-not met. Two attempts are recorded here because each one taught something the
-next attempt needs.
+The goal is an image that `e2fsck -fn` accepts after a clean shutdown. Two
+earlier attempts are recorded below because each one taught something the final
+fix needed. Both failed for a reason that turned out to be upstream of them.
+
+**P0: every sync was failing.** `Ext2::sync_all` was instrumented at warning
+level (`--loglevel 5`), and every invocation on every boot printed the same
+pair:
+
+```
+ext2: sync begin (last allocated inode 19478)
+ext2: group 0 dirty before sync: block_bitmap=true inode_bitmap=true descriptor=true cached_inodes=585
+ext2: sync failed in group 0: Error { errno: EINVAL, msg: Some("inode number out of valid range") }
+```
+
+The rejection came from `Ext2::write_back_inode_desc`, which refused every
+inode number below `s_first_ino`. Reserved inodes live there, and the journal
+inode (`ino 8`; the image has `First inode: 11`) is synced by every journal
+publication. The first metadata write therefore failed, so **no bitmap or group
+descriptor was ever written**, at any point, by any sync. The inode table and
+data blocks still reached the disk through their own writeback paths, which is
+exactly the inconsistent image the checker reported. The last successful sync
+was: none.
+
+The fix is to accept reserved inode numbers on write-back. `s_first_ino` still
+constrains new allocations, which `alloc_ino` checks separately.
 
 **Attempt 1: stage the descriptor as soon as the create succeeds.** The
 reasoning was that `create_inode` writes a placeholder (size 0, no blocks) and
@@ -315,29 +337,100 @@ Directory inode 19463, block #0, offset 0: directory corrupted
 The new directory had just been given a data block holding `.` and `..`, and
 that block reaches the disk through the page cache on its own schedule.
 Staging a descriptor that points at it first put a block pointer on disk ahead
-of the block's contents. The checker then sees a corrupted directory rather
-than an empty one. **Metadata must not outrun data.**
+of the block's contents. **Metadata must not outrun data.**
 
 **Attempt 2: `sync_data()` instead.** It writes the pages, then the indirect
 metadata, then the descriptor, in that order. That removed the corruption and
-the wrong xattr hash. What remains after a clean poweroff is still 33 findings:
-unattached inodes, inode bitmap differences, and inode 19447's block count
-disagreeing with its extents.
+the wrong xattr hash. It was reverted anyway: it put a synchronous flush on
+every create for no completion of the goal.
 
-It was reverted anyway. It does not meet the acceptance criterion, and it puts
-a synchronous flush on every create, which is a real cost on a hot path for no
-completion of the goal. A half-fix that slows the system and leaves the image
-dirty is worse than a documented gap.
+**The atomicity gap that remains after P0.** Fixing the sync failure makes the
+shutdown path able to write metadata, but the metadata was still split across
+four schedules, so a crash between them leaves states the checker cannot
+reconcile:
 
-**What it actually needs.** These are symptoms of one design gap: the inode
-table is a `PageCache` and is flushed by ordinary writeback, while the
-allocation bitmaps, group descriptors and superblock counters are plain
-in-memory values written only by `Ext2::sync_all`. Anything that puts inode
-metadata on disk before the allocation metadata that authorises it -- and the
-`create_inode` placeholder does exactly that on every create -- leaves a state
-the checker cannot reconcile. Closing it means the two become durable on the
-same schedule: either the bitmaps join writeback, or the inode table stops
-being flushed independently of them.
+| Metadata | Write path |
+|---|---|
+| block and inode bitmaps | `write_metadata_blocks`, one block per transaction |
+| group descriptors | descriptor segment, then one transaction per block |
+| primary superblock | `write_bytes`, outside the journal entirely |
+| inode table | page-cache writeback to the home block |
+
+The fix follows jbd2: **one transaction covers the allocation set.** A
+`MetadataTxn` stages blocks by block number; `Ext2::sync_all` flushes data
+first (`data=ordered`), stages the inode table, the bitmaps, the group
+descriptor table and the primary superblock, then commits all of them with one
+`write_metadata_blocks` call. Indirect blocks, xattr blocks and `fsync` use the
+same staging path. Backup superblocks are written after the commit; they are
+advisory and the checker reads the primary.
+
+Two ordering details matter more than the mechanism:
+
+- The inode table is staged **before** the bitmap snapshot. An allocation that
+  races with the pass can then only leave a bitmap bit without a descriptor
+  (a leaked inode) — never a descriptor without the bit that authorises it.
+- Remounting read-only now flushes the filesystem first, as Linux'
+  `do_remount_sb` does. Without it, the final sync of a shutdown runs with
+  `RDONLY` already set and every metadata write is refused with `EROFS`.
+
+**Every commit carries the whole allocation set.** The first version of the
+transaction still failed fault injection: an `fsync` staged one inode-table
+block and published it without the bitmaps, so replay restored a descriptor
+whose allocation bits had never been written. Every commit now runs the
+filesystem-wide staging pass (data, descriptors, inode tables, bitmaps, group
+descriptors, primary superblock) before writing the commit record, and `fsync`
+uses the same path.
+
+The journal also needed the `RECOVER` incompatible feature to be managed
+explicitly: it is set when a writable filesystem starts using its journal and
+cleared by the sync that follows a read-only remount. Without the bit, neither
+e2fsck nor this kernel's mount path looks at the journal at all, so a power
+loss during the home-block writes is accepted as a valid state.
+
+### Acceptance (2026-10-18)
+
+`tools/x86/debian/fsck_acceptance.sh` drives three matrices, each run starting
+from the same clean rootfs image:
+
+| Matrix | Runs | Result |
+|---|---|---|
+| clean shutdown, then `e2fsck -fn` | 3 | clean every time |
+| `SIGKILL` after 150 s, then replay and `e2fsck -fn` | 3 | clean, no structural repairs |
+| fault injection at commit stage 1 / 2 / 3, then replay and `e2fsck -fn` | 1 each | clean, no structural repairs |
+
+The fault stages are: after the journal commit record is durable, halfway
+through the home-block writes, and after every home block is written but
+before the checkpoint. In all seven runs the final check found no unattached
+inodes, no bitmap differences, and no xattr or `i_blocks` disagreements. The
+three clean-shutdown images report the same inode and block counts
+(`19478 files, 327041 blocks`), which is what a deterministic userspace writing
+the same files should produce.
+
+
+The journal descriptor encoder also emitted its tags eight bytes apart without
+the sixteen-byte filesystem UUID, so any transaction with more than one block
+was unreadable to both jbd2 and this module's own parser. It now writes the
+UUID once after the first tag and sets `FLAG_SAME_UUID` on the rest. The
+transaction builder also rejected block zero, which is where the primary
+superblock lives with 4 KiB blocks.
+
+**What working syncs then exposed.** Once metadata actually reached the disk,
+the checker reported two long-standing defects in the xattr writer on
+`/var/lib/systemd/random-seed`:
+
+```
+Extended attribute in inode 19448 has a hash (0) which is invalid
+Inode 19448, i_blocks is 8, should be 16
+```
+
+The entry hash was hardcoded to zero. ext4 uses the legacy
+`ext4_xattr_hash_entry` rotation over the name and value words, and folds the
+entry hashes into the block header with the same 16-bit rotation; both are now
+computed (verified against reference values produced by the kernel on a
+filesystem without metadata checksums). `i_blocks` also omitted the xattr block
+for every inode that is not a fast symlink; it is now counted for all payload
+types.
+
 
 ## Running the native LMbench ALL suite
 
