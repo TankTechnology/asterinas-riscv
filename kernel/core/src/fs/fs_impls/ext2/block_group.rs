@@ -219,12 +219,20 @@ impl BlockGroup {
 
     /// Syncs per-group inode state and bitmap metadata.
     pub(super) fn sync_all(&self, group_descs: &USegment) -> Result<()> {
-        self.sync_inodes()?;
         let fs = self
             .fs
             .upgrade()
             .ok_or_else(|| Error::with_message(Errno::EIO, "filesystem already dropped"))?;
-        self.sync_metadata(group_descs, &fs)
+
+        // The allocation metadata goes first. `sync_inodes` stages the
+        // descriptors into the inode table and then flushes it, so running it
+        // first put the inode table on disk ahead of the bitmaps that authorise
+        // its entries -- a crash in between leaves a descriptor for an inode the
+        // bitmap calls free, which is the state the checker cannot reconcile.
+        // Writing the bitmaps and the group descriptor first makes the reverse
+        // order hold: an allocation is durable before anything refers to it.
+        self.sync_metadata(group_descs, &fs)?;
+        self.sync_inodes()
     }
 
     /// Syncs cached inodes.
