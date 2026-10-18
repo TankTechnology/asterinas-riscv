@@ -919,8 +919,10 @@ impl Ext2 {
 
         let mut staged_groups = Vec::with_capacity(self.block_groups.len());
         for group in &self.block_groups {
-            staged_groups
-                .push((group.group_idx(), group.stage_metadata(&self.group_descriptors_segment)?));
+            staged_groups.push((
+                group.group_idx(),
+                group.stage_metadata(&self.group_descriptors_segment)?,
+            ));
         }
         let superblock = self.stage_superblock()?;
 

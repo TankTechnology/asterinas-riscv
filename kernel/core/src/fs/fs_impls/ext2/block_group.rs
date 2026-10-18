@@ -239,10 +239,7 @@ impl BlockGroup {
     /// one journal transaction, so the bitmaps, the group descriptor and the
     /// inode table blocks become durable together instead of on four
     /// independent schedules.
-    pub(super) fn stage_metadata(
-        &self,
-        group_descs: &USegment,
-    ) -> Result<StagedGroupMetadata> {
+    pub(super) fn stage_metadata(&self, group_descs: &USegment) -> Result<StagedGroupMetadata> {
         let fs = self
             .fs
             .upgrade()

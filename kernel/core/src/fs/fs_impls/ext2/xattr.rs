@@ -115,9 +115,8 @@ fn xattr_entry_hash(name: &[u8], value: &[u8]) -> u32 {
 fn xattr_block_hash(hashes: impl Iterator<Item = u32>) -> u32 {
     let mut hash = 0u32;
     for entry_hash in hashes {
-        hash = (hash << XATTR_VALUE_HASH_SHIFT)
-            ^ (hash >> (32 - XATTR_VALUE_HASH_SHIFT))
-            ^ entry_hash;
+        hash =
+            (hash << XATTR_VALUE_HASH_SHIFT) ^ (hash >> (32 - XATTR_VALUE_HASH_SHIFT)) ^ entry_hash;
     }
     hash
 }

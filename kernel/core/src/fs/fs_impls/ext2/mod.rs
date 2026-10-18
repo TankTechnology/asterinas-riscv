@@ -62,13 +62,13 @@ macro_rules! __log_prefix {
     };
 }
 
+use core::sync::atomic::{AtomicU8, Ordering};
+
 pub(crate) use fs::Ext2;
 pub(crate) use inode::{FilePerm, Inode};
 
 pub(in crate::fs) use self::fs_type::{EXT2_TYPE, EXT4_TYPE};
 use crate::fs::vfs::registry;
-
-use core::sync::atomic::{AtomicU8, Ordering};
 
 mod block_group;
 mod fs;
