@@ -431,6 +431,46 @@ filesystem without metadata checksums). `i_blocks` also omitted the xattr block
 for every inode that is not a fast symlink; it is now counted for all payload
 types.
 
+## Socket visibility: `/proc/net` and `NETLINK_SOCK_DIAG`
+
+`ss`, `ip`, and the Debian boot scripts expect to see the socket table. The
+kernel had neither text nor netlink views: `/proc/net` only contained `dev`,
+`route` and `arp`, and `NETLINK_SOCK_DIAG` was refused at `socket()`. Both
+views now read one registry of live IPv4/IPv6 sockets, so a row in `ss` and a
+row in `/proc/net/tcp` describe the same socket.
+
+The registry lives in `net/socket/ip/registry.rs`. Sockets register when they
+are created (accepted connections included) together with the sockfs inode
+number that `/proc/<pid>/fd` renders as `socket:[N]`, and the entries hold weak
+references so a closed socket disappears on the next enumeration.
+`/proc/<pid>/net` gains `tcp`, `tcp6`, `udp` and `udp6` with Linux's state
+codes and native-endian hex address layout.
+
+`NETLINK_SOCK_DIAG` reuses the netlink socket machinery: the protocol table
+gains a `SockDiagMessage`, the bound socket parses `SOCK_DIAG_BY_FAMILY`
+requests, and the handler filters the registry by family, protocol and the
+`idiag_states` mask before appending `NLMSG_DONE`. The state mask sets bit
+`sk_state` (not `sk_state - 1`), which is what makes `ss -l` select listening
+sockets while `ss -a` selects everything.
+
+Measured in the guest with four sockets created by Python (a TCP listener, a
+TCP connection pair, a bound UDP socket and a connected UDP socket):
+
+```
+$ ss -tan
+State  Recv-Q Send-Q Local Address:Port  Peer Address:Port
+LISTEN 0      0          127.0.0.1:45678       0.0.0.0:*
+ESTAB  0      0          127.0.0.1:32768     127.0.0.1:45678
+ESTAB  0      0          127.0.0.1:45678     127.0.0.1:32768
+$ ss -uanp
+UNCONN 0      0            0.0.0.0:45679       0.0.0.0:*    users:(("python3",pid=72,fd=4))
+ESTAB  0      0          127.0.0.1:45680     127.0.0.1:45679 users:(("python3",pid=72,fd=7))
+```
+
+`ss -tln` lists only the listener, and `/proc/net/tcp` reports the listener as
+`0A` (LISTEN) and both connection halves as `01` (ESTABLISHED). Process
+attribution (`-p`) works because the reported inode is the one the fd symlink
+carries.
 
 ## Running the native LMbench ALL suite
 
