@@ -37,6 +37,9 @@ Options:
   --append-extra TEXT Extra kernel command line, placed before the `--` that
                       separates the init arguments.
   --qemu PATH         QEMU binary (default: qemu-system-x86_64).
+  --accel MODE        tcg (default) or kvm. KVM uses `-cpu host` and requires
+                      /dev/kvm; it turns the guest's emulated execution into
+                      native speed, which matters for latency measurements.
 
 Exit status is 0 when --wait-for is satisfied, 1 when the deadline passes
 first, and QEMU's own status when the guest exits.
@@ -61,6 +64,7 @@ LOGLEVEL=4
 QEMU="qemu-system-x86_64"
 PRINT_MODE=""
 APPEND_EXTRA=""
+ACCEL="tcg"
 
 while (( $# > 0 )); do
     case "$1" in
@@ -70,7 +74,7 @@ while (( $# > 0 )); do
             shift
             ;;
         --wait-for | --timeout | --output | --kernel | --initramfs | --root-image | \
-            --memory | --smp | --loglevel | --qemu | --append-extra)
+            --memory | --smp | --loglevel | --qemu | --append-extra | --accel)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --kernel) KERNEL="$2" ;;
@@ -84,6 +88,7 @@ while (( $# > 0 )); do
                 --loglevel) LOGLEVEL="$2" ;;
                 --qemu) QEMU="$2" ;;
                 --append-extra) APPEND_EXTRA="$2" ;;
+                --accel) ACCEL="$2" ;;
             esac
             shift 2
             ;;
@@ -99,6 +104,11 @@ done
 [[ "$MEMORY" =~ ^[1-9][0-9]*[KMG]?$ ]] || die_usage "unsafe --memory value: $MEMORY"
 [[ "$APPEND_EXTRA" != *$'\n'* && "$APPEND_EXTRA" != *$'\r'* ]] ||
     die_usage "--append-extra must not contain newlines"
+[[ "$ACCEL" == "tcg" || "$ACCEL" == "kvm" ]] ||
+    die_usage "--accel must be 'tcg' or 'kvm'"
+if [[ "$ACCEL" == "kvm" && ! -r /dev/kvm ]]; then
+    die_usage "--accel kvm requires a readable /dev/kvm"
+fi
 
 [[ -n "$KERNEL" ]] || die_usage "--kernel is required"
 [[ -n "$INITRAMFS" ]] || die_usage "--initramfs is required"
@@ -114,8 +124,12 @@ done
 KERNEL_APPEND="console=hvc0 loglevel=$LOGLEVEL init=/init${APPEND_EXTRA:+ $APPEND_EXTRA} -- --root-init=systemd --root-fs=ext4"
 
 qemu_argv() {
+    if [[ "$ACCEL" == "kvm" ]]; then
+        printf '%s\n' -enable-kvm -cpu host
+    else
+        printf '%s\n' -cpu Icelake-Server
+    fi
     printf '%s\n' \
-        -cpu Icelake-Server \
         -smp "$SMP" \
         -m "$MEMORY" \
         --no-reboot \

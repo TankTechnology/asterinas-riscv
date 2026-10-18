@@ -476,6 +476,30 @@ ESTAB  0      0          127.0.0.1:45680     127.0.0.1:45679 users:(("python3",p
 attribution (`-p`) works because the reported inode is the one the fd symlink
 carries.
 
+## Loopback latency: TCG, not the kernel
+
+The RPC measurements were dominated by a ~10 ms loopback round trip. A
+three-layer probe separates the possible causes: a same-thread UDP
+send-to-self (kernel data path plus two syscalls), a UDP echo answered by a
+second thread, and a TCP echo. Both accelerators run the same kernel and the
+same Debian image:
+
+| p50 round trip | TCG | KVM |
+|---|---|---|
+| same-thread UDP | 6.86 ms | 30 µs |
+| thread UDP echo | 14.07 ms | 102 µs |
+| thread TCP echo | 20.22 ms | 182 µs |
+
+Even the same-thread case, which involves no scheduler wakeup, is measured in
+milliseconds under TCG. Loopback delivery is synchronous inside `send` (the
+loopback device never carries a packet), so the delay is emulation cost, not
+the interface poll scheduler. KVM shows a healthy path: 30 µs for a
+same-thread UDP round trip and ~100-180 µs for an echo.
+
+This also explains the RPC failures: libtirpc retries after 2.5 ms, which is
+shorter than a single TCG syscall pair. Under KVM the round trip is two orders
+of magnitude below that window, so the retry path is not exercised.
+
 ## Running the native LMbench ALL suite
 
 `python3 tools/riscv/lmbench_native.py package --architecture amd64` builds the

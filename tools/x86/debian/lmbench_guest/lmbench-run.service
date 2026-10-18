@@ -1,10 +1,10 @@
 [Unit]
 Description=Asterinas native LMBench ALL run
 After=multi-user.target
-KeyringMode=inherit
 
 [Service]
 Type=oneshot
+KeyringMode=inherit
 ExecStart=/opt/lmbench-run.sh
 StandardOutput=journal+console
 StandardError=journal+console
