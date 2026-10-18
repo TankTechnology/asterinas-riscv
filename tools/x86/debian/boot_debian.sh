@@ -34,6 +34,8 @@ Options:
   --smp N             Guest CPUs (default: 4).
   --loglevel N        Kernel log level (default: 4; the guest prints a line per
                       syscall above this and the boot slows down sharply).
+  --append-extra TEXT Extra kernel command line, placed before the `--` that
+                      separates the init arguments.
   --qemu PATH         QEMU binary (default: qemu-system-x86_64).
 
 Exit status is 0 when --wait-for is satisfied, 1 when the deadline passes
@@ -58,6 +60,7 @@ SMP=4
 LOGLEVEL=4
 QEMU="qemu-system-x86_64"
 PRINT_MODE=""
+APPEND_EXTRA=""
 
 while (( $# > 0 )); do
     case "$1" in
@@ -67,7 +70,7 @@ while (( $# > 0 )); do
             shift
             ;;
         --wait-for | --timeout | --output | --kernel | --initramfs | --root-image | \
-            --memory | --smp | --loglevel | --qemu)
+            --memory | --smp | --loglevel | --qemu | --append-extra)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --kernel) KERNEL="$2" ;;
@@ -80,6 +83,7 @@ while (( $# > 0 )); do
                 --smp) SMP="$2" ;;
                 --loglevel) LOGLEVEL="$2" ;;
                 --qemu) QEMU="$2" ;;
+                --append-extra) APPEND_EXTRA="$2" ;;
             esac
             shift 2
             ;;
@@ -93,6 +97,8 @@ done
 [[ "$SMP" =~ ^[1-9][0-9]*$ ]] || die_usage "--smp must be a positive integer"
 [[ "$LOGLEVEL" =~ ^[0-9]+$ ]] || die_usage "--loglevel must be a non-negative integer"
 [[ "$MEMORY" =~ ^[1-9][0-9]*[KMG]?$ ]] || die_usage "unsafe --memory value: $MEMORY"
+[[ "$APPEND_EXTRA" != *$'\n'* && "$APPEND_EXTRA" != *$'\r'* ]] ||
+    die_usage "--append-extra must not contain newlines"
 
 [[ -n "$KERNEL" ]] || die_usage "--kernel is required"
 [[ -n "$INITRAMFS" ]] || die_usage "--initramfs is required"
@@ -105,7 +111,7 @@ done
 # The guest console. QEMU wires `hvc0` to the same chardev as the transcript,
 # so the kernel log and Stage1's own `DEBIAN_STAGE1_PROGRESS` markers arrive on
 # one stream.
-KERNEL_APPEND="console=hvc0 loglevel=$LOGLEVEL init=/init -- --root-init=systemd --root-fs=ext4"
+KERNEL_APPEND="console=hvc0 loglevel=$LOGLEVEL init=/init${APPEND_EXTRA:+ $APPEND_EXTRA} -- --root-init=systemd --root-fs=ext4"
 
 qemu_argv() {
     printf '%s\n' \
