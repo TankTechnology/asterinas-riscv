@@ -55,10 +55,6 @@ impl MetadataTxn {
         Ok(())
     }
 
-    pub(super) fn is_empty(&self) -> bool {
-        self.blocks.is_empty()
-    }
-
     /// Removes and returns every staged block.
     ///
     /// The caller writes them outside this lock. A path reached from the
