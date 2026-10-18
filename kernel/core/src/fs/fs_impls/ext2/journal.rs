@@ -132,7 +132,9 @@ impl JournalTransaction {
     }
 
     pub(super) fn add_block(&mut self, block_number: u32, payload: &[u8]) -> Result<()> {
-        if block_number == 0 || payload.len() != BLOCK_SIZE {
+        // Block zero is the boot block, and with 4 KiB blocks it also holds the
+        // primary superblock, which ext4 journals like any other metadata.
+        if payload.len() != BLOCK_SIZE {
             return_errno_with_message!(Errno::EINVAL, "invalid ext4 journal target");
         }
         if self.blocks.iter().any(|(block, _)| *block == block_number) {
@@ -142,11 +144,15 @@ impl JournalTransaction {
         Ok(())
     }
 
-    pub(super) fn encode(self) -> Result<Vec<Vec<u8>>> {
+    pub(super) fn encode(self, uuid: &[u8; 16]) -> Result<Vec<Vec<u8>>> {
         if self.blocks.is_empty() {
             return_errno_with_message!(Errno::EINVAL, "empty ext4 journal transaction");
         }
-        let capacity = (BLOCK_SIZE - HEADER_SIZE) / TAG_SIZE;
+        // The first tag carries the 16-byte filesystem UUID and every later
+        // tag sets `FLAG_SAME_UUID` instead. Omitting the UUID makes the
+        // descriptor unreadable to both jbd2 and this module's own parser as
+        // soon as a transaction has more than one block.
+        let capacity = (BLOCK_SIZE - HEADER_SIZE - 16) / TAG_SIZE;
         if self.blocks.len() > capacity {
             return_errno_with_message!(Errno::E2BIG, "ext4 journal transaction is too large");
         }
@@ -154,18 +160,22 @@ impl JournalTransaction {
         put_be32(&mut descriptor, 0, MAGIC);
         put_be32(&mut descriptor, 4, DESCRIPTOR);
         put_be32(&mut descriptor, 8, self.sequence);
+        let mut offset = HEADER_SIZE;
         for (index, (block, payload)) in self.blocks.iter().enumerate() {
-            let offset = HEADER_SIZE + index * TAG_SIZE;
-            let mut flags = if index + 1 == self.blocks.len() {
-                FLAG_LAST_TAG
-            } else {
-                0
-            };
+            let mut flags = if index == 0 { 0 } else { FLAG_SAME_UUID };
+            if index + 1 == self.blocks.len() {
+                flags |= FLAG_LAST_TAG;
+            }
             if be32(payload, 0) == MAGIC {
                 flags |= FLAG_ESCAPE;
             }
             put_be32(&mut descriptor, offset, *block);
             put_be32(&mut descriptor, offset + 4, flags);
+            offset += TAG_SIZE;
+            if index == 0 {
+                descriptor[offset..offset + 16].copy_from_slice(uuid);
+                offset += 16;
+            }
         }
         let mut encoded = vec![descriptor];
         for (_, mut payload) in self.blocks {
@@ -401,7 +411,7 @@ pub(super) fn parse_descriptor(block: &[u8], sequence: u32) -> Result<Vec<Tag>> 
             flags: be32(block, offset + 4),
         };
         let known = FLAG_ESCAPE | FLAG_SAME_UUID | FLAG_DELETED | FLAG_LAST_TAG;
-        if tag.flags & !known != 0 || tag.block_number == 0 {
+        if tag.flags & !known != 0 {
             return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal descriptor tag");
         }
         if tag.flags & FLAG_DELETED != 0 {
@@ -575,7 +585,7 @@ mod test {
         let mut payload = vec![0; BLOCK_SIZE];
         payload[..4].copy_from_slice(&MAGIC.to_be_bytes());
         transaction.add_block(31, &payload).unwrap();
-        let blocks = transaction.encode().unwrap();
+        let blocks = transaction.encode(&[0xab; 16]).unwrap();
         assert_eq!(blocks.len(), 3);
         let tags = parse_descriptor(&blocks[0], 7).unwrap();
         assert_eq!(
@@ -587,6 +597,27 @@ mod test {
         );
         assert_eq!(be32(&blocks[1], 0), 0);
         validate_commit(&blocks[2], 7).unwrap();
+    }
+
+    #[ktest]
+    fn encodes_multiple_blocks_with_the_uuid_once() {
+        let mut transaction = JournalTransaction::new(9).unwrap();
+        transaction.add_block(31, &[0x11; BLOCK_SIZE]).unwrap();
+        transaction.add_block(32, &[0x22; BLOCK_SIZE]).unwrap();
+        let blocks = transaction.encode(&[0x5a; 16]).unwrap();
+
+        // The first tag carries the UUID; the second is only reachable if the
+        // sixteen UUID bytes are actually present in the descriptor.
+        assert_eq!(&blocks[0][20..36], &[0x5a; 16]);
+        let tags = parse_descriptor(&blocks[0], 9).unwrap();
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags[0].block_number, 31);
+        assert_eq!(tags[0].flags & FLAG_SAME_UUID, 0);
+        assert_eq!(tags[1].block_number, 32);
+        assert_ne!(tags[1].flags & FLAG_SAME_UUID, 0);
+
+        let replay = scan_log(&[&blocks[0], &blocks[1], &blocks[2], &blocks[3]], 9).unwrap();
+        assert_eq!(replay.len(), 2);
     }
 
     #[ktest]

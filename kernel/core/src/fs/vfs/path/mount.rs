@@ -710,6 +710,14 @@ impl Mount {
         _topology: &mut MountTopology,
     ) -> Result<()> {
         if let Some(flags) = fs_flags {
+            // Linux flushes the filesystem before it stops accepting writes
+            // (`do_remount_sb` calls `sync_filesystem`). Without that step the
+            // last sync a shutdown path performs runs with `RDONLY` already
+            // set, and every metadata write is refused with `EROFS`.
+            if flags.contains(FsFlags::RDONLY) && !self.fs.flags().contains(FsFlags::RDONLY) {
+                warn!("remount read-only: flushing the filesystem before marking it read-only");
+                self.fs.sync()?;
+            }
             self.fs.set_fs_flags(flags, data, ctx)?;
         }
 

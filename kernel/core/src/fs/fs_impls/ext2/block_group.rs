@@ -38,10 +38,7 @@ use super::{
     prelude::*,
     super_block::SuperBlock,
 };
-use crate::{
-    fs::{file::SyncMode, utils::IdBitmap, vfs::inode::Inode as VfsInode},
-    vm::page_cache::PageRun,
-};
+use crate::{fs::utils::IdBitmap, vm::page_cache::PageRun};
 
 /// Represents one block group in an ext2 filesystem.
 ///
@@ -217,39 +214,87 @@ impl BlockGroup {
         self.inode_cache.write().remove(&inode_idx)
     }
 
-    /// Syncs per-group inode state and bitmap metadata.
-    pub(super) fn sync_all(&self, group_descs: &USegment) -> Result<()> {
+    /// Flushes the data and indirect metadata of every cached inode.
+    ///
+    /// This must run before the transaction that stages the inode descriptors
+    /// is committed: ext4 orders data before metadata (`data=ordered`), and a
+    /// committed descriptor pointing at a data block that never reached the
+    /// device is exactly the corruption the checker reports as a bad extent.
+    pub(super) fn flush_inode_data(&self) -> Result<()> {
+        // Clone the `Arc` handles under the read lock, then drop the lock before
+        // calling `sync_all`. Otherwise `sync_all` acquires `inner.write()`
+        // while we still hold `inode_cache.read()`, creating a lock-order
+        // inversion with `create`/`unlink`/`rmdir`/`rename` which take
+        // `inner.write()` first, then `inode_cache.write()`.
+        let inodes: Vec<Arc<Inode>> = self.inode_cache.read().values().cloned().collect();
+        for inode in inodes {
+            inode.sync_all()?;
+        }
+        Ok(())
+    }
+
+    /// Stages the group's allocation metadata for the next commit.
+    ///
+    /// Nothing reaches the device here. The caller commits the staged set as
+    /// one journal transaction, so the bitmaps, the group descriptor and the
+    /// inode table blocks become durable together instead of on four
+    /// independent schedules.
+    pub(super) fn stage_metadata(
+        &self,
+        group_descs: &USegment,
+    ) -> Result<StagedGroupMetadata> {
         let fs = self
             .fs
             .upgrade()
             .ok_or_else(|| Error::with_message(Errno::EIO, "filesystem already dropped"))?;
 
-        // The allocation metadata goes first. `sync_inodes` stages the
-        // descriptors into the inode table and then flushes it, so running it
-        // first put the inode table on disk ahead of the bitmaps that authorise
-        // its entries -- a crash in between leaves a descriptor for an inode the
-        // bitmap calls free, which is the state the checker cannot reconcile.
-        // Writing the bitmaps and the group descriptor first makes the reverse
-        // order hold: an allocation is durable before anything refers to it.
-        self.sync_metadata(group_descs, &fs)?;
-        self.sync_inodes()
+        let block_bitmap = self.stage_bitmap(&fs, true)?;
+        let inode_bitmap = self.stage_bitmap(&fs, false)?;
+
+        let descriptor = {
+            let metadata = self.metadata.read();
+            if metadata.desc.is_dirty() {
+                let raw_group = RawBlockGroup::from(*metadata.desc);
+                let offset = self.group_idx * size_of::<RawBlockGroup>();
+                group_descs.write_val(offset, &raw_group)?;
+                Some(raw_group)
+            } else {
+                None
+            }
+        };
+
+        Ok(StagedGroupMetadata {
+            block_bitmap,
+            inode_bitmap,
+            descriptor,
+        })
     }
 
-    /// Syncs cached inodes.
-    fn sync_inodes(&self) -> Result<()> {
-        // Clone the `Arc` handles under the read lock, then drop the lock before
-        // calling `sync`. Otherwise `sync` acquires `inner.write()` while
-        // we still hold `inode_cache.read()`, creating a lock-order inversion with
-        // `create`/`unlink`/`rmdir`/`rename` which take `inner.write()` first, then
-        // `inode_cache.write()`.
-        let inodes: Vec<Arc<Inode>> = self.inode_cache.read().values().cloned().collect();
-        for inode in inodes {
-            inode.sync(SyncMode::Full)?;
+    /// Clears the dirty flags of exactly the state that was committed.
+    ///
+    /// A bitmap or descriptor that changed between staging and the successful
+    /// commit is left dirty so the next commit writes the newer contents.
+    pub(super) fn clear_staged(&self, staged: &StagedGroupMetadata) {
+        let mut metadata = self.metadata.write();
+
+        if let Some(payload) = &staged.block_bitmap
+            && metadata.block_bitmap.as_bytes() == payload.as_slice()
+        {
+            metadata.block_bitmap.clear_dirty();
         }
-        self.sync_inode_table()
+        if let Some(payload) = &staged.inode_bitmap
+            && metadata.inode_bitmap.as_bytes() == payload.as_slice()
+        {
+            metadata.inode_bitmap.clear_dirty();
+        }
+        if let Some(raw) = &staged.descriptor
+            && RawBlockGroup::from(*metadata.desc) == *raw
+        {
+            metadata.desc.clear_dirty();
+        }
     }
 
-    /// Syncs the inode table back to disk.
+    /// Syncs the inode table back to the device.
     pub(super) fn sync_inode_table(&self) -> Result<()> {
         // TODO: support sync specific inode with inode number.
         let size = self.nr_inodes_per_group as usize * self.inode_size;
@@ -286,6 +331,25 @@ impl BlockGroup {
     /// Returns whether the group descriptor has been modified since the last writeback.
     pub(super) fn is_desc_dirty(&self) -> bool {
         self.metadata.read().desc.is_dirty()
+    }
+
+    /// Returns the group's dirty state for sync diagnostics.
+    ///
+    /// The fields are, in order, the block bitmap, the inode bitmap, the group
+    /// descriptor, and the number of cached inodes. The two locks are taken
+    /// separately: `lookup_inode` takes the inode cache before the metadata,
+    /// so holding both in the opposite order here would invert that lock order.
+    pub(super) fn dirty_state(&self) -> (bool, bool, bool, usize) {
+        let (block_bitmap, inode_bitmap, desc) = {
+            let metadata = self.metadata.read();
+            (
+                metadata.block_bitmap.is_dirty(),
+                metadata.inode_bitmap.is_dirty(),
+                metadata.desc.is_dirty(),
+            )
+        };
+        let cached_inodes = self.inode_cache.read().len();
+        (block_bitmap, inode_bitmap, desc, cached_inodes)
     }
 
     /// Attempts to allocate up to `count` contiguous blocks within this group.
@@ -476,35 +540,16 @@ impl BlockGroup {
         Ok(())
     }
 
-    /// Writes dirty bitmaps and stages the group descriptor under a single lock.
+    /// Stages one dirty bitmap for the next commit.
     ///
-    /// Dirty bitmaps are written to disk here. If the group descriptor is dirty,
-    /// this method updates the caller-provided descriptor table segment; the
-    /// caller is responsible for writing that segment to disk.
-    fn sync_metadata(&self, group_descs: &USegment, fs: &Ext2) -> Result<()> {
-        self.sync_bitmap(fs, true)?;
-        self.sync_bitmap(fs, false)?;
-
-        let mut metadata = self.metadata.write();
-
-        // Sync group descriptor.
-        if metadata.desc.is_dirty() {
-            let raw_group = RawBlockGroup::from(*metadata.desc);
-            let offset = self.group_idx * size_of::<RawBlockGroup>();
-            group_descs.write_val(offset, &raw_group)?;
-            metadata.desc.clear_dirty();
-        }
-
-        Ok(())
-    }
-
-    /// Flushes one dirty bitmap through the filesystem's journal policy.
-    fn sync_bitmap(&self, fs: &Ext2, block_bitmap: bool) -> Result<()> {
+    /// Returns the staged bytes so the caller can clear the dirty flag only
+    /// after the transaction is durable.
+    fn stage_bitmap(&self, fs: &Ext2, block_bitmap: bool) -> Result<Option<Vec<u8>>> {
         let (bid, payload) = {
             let metadata = self.metadata.read();
             if block_bitmap {
                 if !metadata.block_bitmap.is_dirty() {
-                    return Ok(());
+                    return Ok(None);
                 }
                 (
                     metadata.desc.block_bitmap_bid,
@@ -512,7 +557,7 @@ impl BlockGroup {
                 )
             } else {
                 if !metadata.inode_bitmap.is_dirty() {
-                    return Ok(());
+                    return Ok(None);
                 }
                 (
                     metadata.desc.inode_bitmap_bid,
@@ -521,18 +566,14 @@ impl BlockGroup {
             }
         };
 
-        fs.write_metadata_blocks(&[(bid, payload.as_slice())])?;
-        let mut metadata = self.metadata.write();
-        if block_bitmap {
-            if metadata.block_bitmap.as_bytes() == payload.as_slice() {
-                metadata.block_bitmap.clear_dirty();
-            }
-        } else {
-            if metadata.inode_bitmap.as_bytes() == payload.as_slice() {
-                metadata.inode_bitmap.clear_dirty();
-            }
-        }
-        Ok(())
+        fs.stage_metadata_block(bid, &payload)?;
+        warn!(
+            "ext2: group {} staged {} bitmap of block {}",
+            self.group_idx,
+            if block_bitmap { "block" } else { "inode" },
+            bid
+        );
+        Ok(Some(payload))
     }
 
     /// Returns the 0-based group-local inode index.
@@ -741,7 +782,7 @@ impl BlockGroupDesc {
 
 /// On-disk block group descriptor (32 bytes).
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Pod)]
 pub(super) struct RawBlockGroup {
     pub block_bitmap_bid: u32,  // bg_block_bitmap
     pub inode_bitmap_bid: u32,  // bg_inode_bitmap
@@ -754,6 +795,17 @@ pub(super) struct RawBlockGroup {
 }
 
 const_assert!(size_of::<RawBlockGroup>() == 32);
+
+/// The group metadata committed by one transaction.
+///
+/// The bitmap payloads are the exact bytes that were staged; they are kept so
+/// the dirty flags can be cleared only if the in-memory state did not change
+/// while the transaction was being written.
+pub(super) struct StagedGroupMetadata {
+    block_bitmap: Option<Vec<u8>>,
+    inode_bitmap: Option<Vec<u8>>,
+    descriptor: Option<RawBlockGroup>,
+}
 
 /// Backend of the inode table page cache in one block group.
 struct InodeTableBackend {
@@ -803,35 +855,38 @@ impl BlockAsPageCacheBackend for InodeTableBackend {
         complete_fn: BioCompleteFn,
         io_batch: &mut IoBatch,
     ) -> Result<()> {
-        self.ensure_filesystem_alive()?;
         if self.raw_inodes_size <= idx * BLOCK_SIZE {
             return_errno_with_message!(Errno::EINVAL, "invalid write size");
         }
         let bid = Bid::new(self.inode_table_bid as u64) + idx as u64;
-        self.block_device.write_blocks_async(
-            bid,
-            vec![bio_segment],
-            Some(complete_fn),
-            io_batch,
-        )?;
+
+        // Inode descriptors are allocation metadata: an entry in the inode
+        // table is only meaningful together with the inode bitmap bit and the
+        // group counter that authorise it. Staging the block here (instead of
+        // writing it to its home location) lets the next commit put both in one
+        // journal transaction. The page cache is told the write completed; the
+        // staged copy owns the bytes from this point on.
+        let fs = self
+            .fs
+            .upgrade()
+            .ok_or_else(|| Error::with_message(Errno::EIO, "filesystem already dropped"))?;
+        let mut bytes = vec![0u8; bio_segment.nbytes()];
+        bio_segment.copy_out(&mut bytes)?;
+        fs.stage_metadata_block(bid.to_raw() as Ext2Bid, &bytes)?;
+        complete_fn(BioStatus::Complete);
+
+        let _ = io_batch;
         Ok(())
     }
 
-    fn submit_write_page_run(&self, mut pages: PageRun<'_>, io_batch: &mut IoBatch) -> Result<()> {
-        self.ensure_filesystem_alive()?;
-        if self.raw_inodes_size < (pages.start_idx() + pages.len()) * BLOCK_SIZE {
-            return_errno_with_message!(Errno::EINVAL, "invalid write size");
-        }
-
-        let start_idx = pages.start_idx();
-        let bid = Bid::new(self.inode_table_bid as u64) + start_idx as u64;
-        let len = pages.len();
-
-        pages.submit_contiguous_write_pages(self.block_device.as_ref(), bid, len, io_batch)
-    }
+    // `submit_write_page_run` is deliberately not overridden: the default
+    // implementation submits each page through `submit_write_bio`, which is
+    // where journal staging lives. A batched staging entry point can replace it
+    // once the transaction layer can accept page runs directly.
 }
 
 impl InodeTableBackend {
+    #[expect(dead_code)]
     fn ensure_filesystem_alive(&self) -> Result<()> {
         self.fs
             .upgrade()

@@ -680,18 +680,21 @@ impl InodePayload {
     }
 
     fn raw_block_ptrs(&self, file_acl: u32) -> RawBlockPtrs {
-        match self {
+        let mut raw_block_ptrs = match self {
             Self::DataBacked { block_manager, .. } => block_manager.raw_block_ptrs(),
-            Self::FastSymlink { target } => {
-                RawBlockPtrs::new(Self::xattr_sectors(file_acl), target.block_ptrs())
-            }
+            Self::FastSymlink { target } => RawBlockPtrs::new(0, target.block_ptrs()),
             Self::Device { device_id } => {
                 let mut raw_block_ptrs = RawBlockPtrs::new(0, [0; RAW_BLOCK_PTRS_LEN]);
                 raw_block_ptrs.write_device_id(*device_id);
                 raw_block_ptrs
             }
             Self::NoPayload => RawBlockPtrs::new(0, [0; RAW_BLOCK_PTRS_LEN]),
-        }
+        };
+        // An xattr block is inode-owned storage and counts towards `i_blocks`
+        // for every inode type. Omitting it here makes the checker report that
+        // `i_blocks` is too small once the xattr block is durable.
+        raw_block_ptrs.sector_count += Self::xattr_sectors(file_acl);
+        raw_block_ptrs
     }
 }
 

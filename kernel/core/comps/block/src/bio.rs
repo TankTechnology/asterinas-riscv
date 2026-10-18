@@ -15,7 +15,10 @@ use ostd::{
     mm::{
         HasSize, Infallible, USegment, VmReader, VmWriter,
         dma::{DmaStream, FromAndToDevice},
-        io::util::{HasVmReaderWriter, VmReaderWriterResult},
+        io::{
+            FallibleVmRead,
+            util::{HasVmReaderWriter, VmReaderWriterResult},
+        },
     },
     sync::WaitQueue,
 };
@@ -474,6 +477,22 @@ impl BioSegment {
     /// Returns the DMA slice.
     pub fn dma_slice(&self) -> &Slice<DmaBuffer<FromAndToDevice>> {
         self.inner.dma_slice()
+    }
+
+    /// Copies the segment's bytes into `dst`.
+    ///
+    /// [`HasVmReaderWriter::reader`] deliberately refuses a write-direction
+    /// segment. A filesystem journalling layer, however, must inspect exactly
+    /// those bytes before they reach their home location, so this method reads
+    /// them without consulting the direction.
+    pub fn copy_out(&self, dst: &mut [u8]) -> Result<(), Error> {
+        let nbytes = self.nbytes();
+        assert!(dst.len() >= nbytes, "destination buffer is too small");
+        let mut writer = VmWriter::from(&mut dst[..nbytes]).to_fallible();
+        if let Err((err, _)) = self.inner.dma_slice().reader()?.read_fallible(&mut writer) {
+            return Err(err);
+        }
+        Ok(())
     }
 }
 

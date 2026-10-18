@@ -68,12 +68,15 @@ pub(crate) use inode::{FilePerm, Inode};
 pub(in crate::fs) use self::fs_type::{EXT2_TYPE, EXT4_TYPE};
 use crate::fs::vfs::registry;
 
+use core::sync::atomic::{AtomicU8, Ordering};
+
 mod block_group;
 mod fs;
 mod fs_type;
 mod impl_for_vfs;
 mod inode;
 mod journal;
+mod metadata_txn;
 mod prelude;
 mod super_block;
 mod utils;
@@ -81,6 +84,26 @@ mod xattr;
 
 #[cfg(ktest)]
 mod test_utils;
+
+/// The journal commit stage at which a power loss should be simulated.
+///
+/// Zero disables the fault. The boot path sets it with
+/// `asterinas.ext4_fault_stage=N`; the acceptance harness uses it to prove that
+/// every point inside a commit recovers through journal replay.
+static EXT2_FAULT_STAGE: AtomicU8 = AtomicU8::new(0);
+aster_cmdline::define_kv_param!("asterinas.ext4_fault_stage", EXT2_FAULT_STAGE);
+
+/// Stops the machine at `stage` when fault injection requests it.
+///
+/// The panic path halts every CPU, which is the closest in-guest equivalent of
+/// pulling the power. The device state at this instant is exactly what the
+/// journal must be able to recover.
+pub(super) fn fault_point(stage: u8) {
+    if EXT2_FAULT_STAGE.load(Ordering::Relaxed) == stage {
+        ostd::warn!("ext2: fault injection at stage {}", stage);
+        panic!("ext2 fault injection at journal stage {}", stage);
+    }
+}
 
 /// Registers the ext2 filesystem type with the VFS registry.
 pub(super) fn init() {

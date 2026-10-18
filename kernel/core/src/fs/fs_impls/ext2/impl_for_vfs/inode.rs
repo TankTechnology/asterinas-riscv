@@ -272,8 +272,12 @@ impl Inode for Ext2Inode {
             SyncMode::Full => self.sync_all()?,
         }
         let fs = self.fs()?;
-        let block_group = fs.block_group(self.block_group_idx());
-        block_group.sync_inode_table()?;
+        // A metadata commit must carry the descriptors and the data of every
+        // allocation it publishes. Only the filesystem-wide sync guarantees
+        // that, so `fsync` uses it as well. Committing the staged set alone
+        // leaks blocks allocated by inodes whose descriptors were not staged
+        // in the same transaction.
+        fs.sync_all()?;
         if fs.block_device().sync()? != BioStatus::Complete {
             return_errno_with_message!(Errno::EIO, "failed to flush block device");
         }

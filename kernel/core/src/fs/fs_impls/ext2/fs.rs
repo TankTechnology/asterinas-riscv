@@ -28,7 +28,7 @@ use ostd::mm::{HasSize, io::util::HasVmReaderWriter};
 use super::{
     block_group::{BlockGroup, RawBlockGroup},
     inode::{FilePerm, Inode, InodeDesc, RawInode},
-    journal,
+    journal, metadata_txn,
     prelude::*,
     super_block::{
         FeatureCompatSet, FeatureInCompatSet, RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock,
@@ -70,10 +70,24 @@ pub(crate) struct Ext2 {
     flags: AtomicFsFlags,
     /// Serializes journal ring reservation and superblock publication.
     journal_publish_lock: Mutex<()>,
+    /// Serializes metadata staging with the commit that drains it.
+    ///
+    /// A group stages its inode table and then its bitmaps. If another thread
+    /// could commit between those two steps, the transaction would carry one
+    /// half of an allocation and the checker would report the other half.
+    /// Holding this lock across a whole staging pass prevents that window.
+    sync_lock: Mutex<()>,
+    /// Metadata blocks waiting for the next journal commit.
+    metadata_txn: Mutex<metadata_txn::MetadataTxn>,
     /// FS event stats for VFS.
     fs_event_subscriber_stats: FsEventSubscriberStats,
     /// Per-filesystem inode generation counter.
     next_generation: AtomicU32,
+    /// Highest inode number allocated since mount.
+    ///
+    /// Used by sync diagnostics to tell whether an inode the checker reports
+    /// was allocated before or after the last successful sync.
+    last_allocated_ino: AtomicU32,
     /// Weak self reference for inode back-pointers.
     self_ref: Weak<Ext2>,
 }
@@ -202,8 +216,11 @@ impl Ext2 {
                 mount_options,
                 flags: AtomicFsFlags::new(flags),
                 journal_publish_lock: Mutex::new(()),
+                sync_lock: Mutex::new(()),
+                metadata_txn: Mutex::new(metadata_txn::MetadataTxn::new()),
                 fs_event_subscriber_stats: FsEventSubscriberStats::new(),
                 next_generation: AtomicU32::new(utils::duration_to_ext2_secs(utils::now())),
+                last_allocated_ino: AtomicU32::new(0),
                 self_ref: weak_self.clone(),
             }
         });
@@ -224,6 +241,18 @@ impl Ext2 {
             ext2.replay_journal()?;
         }
 
+        // The journal is now in use. Keep the filesystem marked as needing
+        // recovery until a read-only remount checkpoints it for the last time.
+        if allow_journal
+            && !flags.contains(FsFlags::RDONLY)
+            && super_block
+                .feature_compat()
+                .contains(FeatureCompatSet::HAS_JOURNAL)
+            && !mount_options.noload_journal
+        {
+            ext2.mark_journal_needs_recovery()?;
+        }
+
         Ok(ext2)
     }
 
@@ -234,7 +263,11 @@ impl Ext2 {
     /// transaction set before writing any target blocks and clears the journal
     /// start marker only after replay succeeds.
     fn replay_journal(&self) -> Result<()> {
-        let journal_inode = self.read_inode(8)?;
+        let journal_ino = self.super_block.read().journal_ino();
+        if journal_ino == 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "filesystem has no internal journal");
+        }
+        let journal_inode = self.read_inode(journal_ino)?;
         let journal_sb_bid = journal_inode.lookup_block(0)?.ok_or_else(|| {
             Error::with_message(Errno::EUCLEAN, "journal inode has no superblock")
         })?;
@@ -309,6 +342,7 @@ impl Ext2 {
         transaction: journal::JournalTransaction,
     ) -> Result<()> {
         if self.fs_flags().contains(FsFlags::RDONLY) {
+            warn!("ext2: journal write refused because the filesystem is read-only");
             return_errno_with_message!(Errno::EROFS, "read-only ext4 journal write");
         }
         let (journal_ino, journal_dev) = {
@@ -332,7 +366,10 @@ impl Ext2 {
             return_errno_with_message!(Errno::EAGAIN, "stale ext4 journal sequence");
         }
 
-        let encoded = transaction.encode()?;
+        let encoded = {
+            let uuid = self.super_block.read().uuid();
+            transaction.encode(&uuid)?
+        };
         let mut ring = journal::JournalRing::new(super_block)?;
         let positions = ring.reserve(encoded.len())?;
         for (position, block) in positions.iter().zip(encoded.iter()) {
@@ -410,15 +447,11 @@ impl Ext2 {
             }
         }
         if self.fs_flags().contains(FsFlags::RDONLY) {
+            warn!("ext2: metadata write refused because the filesystem is read-only");
             return_errno_with_message!(Errno::EROFS, "read-only filesystem metadata write");
         }
 
-        let has_journal = self
-            .super_block
-            .read()
-            .feature_compat()
-            .contains(FeatureCompatSet::HAS_JOURNAL);
-        if !has_journal {
+        if !self.has_journal() {
             for &(bid, payload) in blocks {
                 self.block_device
                     .write_bytes(Bid::new(bid as u64).to_offset(), payload)
@@ -444,16 +477,23 @@ impl Ext2 {
             transaction.add_block(bid, payload)?;
         }
         self.publish_journal_transaction_locked(transaction)?;
-        for &(bid, payload) in blocks {
+        super::fault_point(1);
+
+        let halfway = blocks.len() / 2;
+        for (index, &(bid, payload)) in blocks.iter().enumerate() {
             self.block_device
                 .write_bytes(Bid::new(bid as u64).to_offset(), payload)
                 .map_err(|_| {
                     Error::with_message(Errno::EIO, "failed to write journaled metadata")
                 })?;
+            if halfway > 0 && index + 1 == halfway {
+                super::fault_point(2);
+            }
         }
         if self.block_device.sync()? != BioStatus::Complete {
             return_errno_with_message!(Errno::EIO, "failed to flush metadata blocks");
         }
+        super::fault_point(3);
         self.checkpoint_published_journal_locked()
     }
 
@@ -545,8 +585,13 @@ impl Ext2 {
     pub(super) fn write_back_inode_desc(&self, ino: Ext2Ino, raw_inode: &RawInode) -> Result<()> {
         {
             let sb = self.super_block.read();
-            // Apply ext2 inode-number validity rules before indexing groups.
-            if (ino != ROOT_INO && ino < sb.first_ino()) || ino > sb.total_inodes() {
+            // Reserved inodes are numbered below `s_first_ino` and are written
+            // back like any other inode. The journal inode (ino 8 on a standard
+            // ext4, with `s_first_ino` 11) is read and synced on every journal
+            // transaction, so rejecting it here makes every metadata write
+            // fail. `s_first_ino` only constrains new allocations, which
+            // `alloc_ino` enforces separately.
+            if ino == 0 || ino > sb.total_inodes() {
                 return_errno_with_message!(Errno::EINVAL, "inode number out of valid range");
             }
         }
@@ -780,6 +825,136 @@ impl Ext2 {
         }
     }
 
+    /// Returns whether the filesystem has an internal journal.
+    pub(super) fn has_journal(&self) -> bool {
+        self.super_block
+            .read()
+            .feature_compat()
+            .contains(FeatureCompatSet::HAS_JOURNAL)
+    }
+
+    /// Marks the filesystem as having a journal that must be replayed.
+    ///
+    /// e2fsck and this module's own mount path only inspect the journal when
+    /// `RECOVER` is set. Committing a transaction without setting the bit means
+    /// a power loss between the commit record and the home-block writes leaves
+    /// a partially applied transaction that nobody will replay.
+    fn mark_journal_needs_recovery(&self) -> Result<()> {
+        let raw = {
+            let mut sb = self.super_block.write();
+            let mut flags = sb.feature_incompat();
+            if flags.contains(FeatureInCompatSet::RECOVER) {
+                return Ok(());
+            }
+            flags.insert(FeatureInCompatSet::RECOVER);
+            sb.set_feature_incompat(flags);
+            RawSuperBlock::from(&**sb)
+        };
+        self.write_primary_superblock(&raw)
+    }
+
+    /// Marks the journal clean once it is fully checkpointed on a read-only
+    /// filesystem.
+    ///
+    /// The read-only remount is the point after which the shutdown path cannot
+    /// create another transaction, so a synced journal is final. Leaving
+    /// `RECOVER` set on a filesystem that stays writable is deliberate: a crash
+    /// can always leave a transaction pending.
+    fn mark_journal_clean_if_read_only(&self) -> Result<()> {
+        if !self.fs_flags().contains(FsFlags::RDONLY) || !self.has_journal() {
+            return Ok(());
+        }
+
+        let raw = {
+            let mut sb = self.super_block.write();
+            let mut flags = sb.feature_incompat();
+            if !flags.contains(FeatureInCompatSet::RECOVER) {
+                return Ok(());
+            }
+            flags.remove(FeatureInCompatSet::RECOVER);
+            sb.set_feature_incompat(flags);
+            RawSuperBlock::from(&**sb)
+        };
+        self.write_primary_superblock(&raw)
+    }
+
+    /// Writes the primary superblock and waits for the device.
+    fn write_primary_superblock(&self, raw: &RawSuperBlock) -> Result<()> {
+        if self
+            .block_device
+            .write_bytes(SUPER_BLOCK_OFFSET, raw.as_bytes())
+            .is_err()
+        {
+            return_errno_with_message!(Errno::EIO, "failed to write superblock");
+        }
+        if self.block_device.sync()? != BioStatus::Complete {
+            return_errno_with_message!(Errno::EIO, "failed to flush the superblock");
+        }
+        Ok(())
+    }
+
+    /// Stages one metadata block for the next commit.
+    ///
+    /// The block does not reach the device here. It joins the rest of the
+    /// staged set and becomes durable when `commit_staged_metadata` publishes
+    /// the transaction.
+    pub(super) fn stage_metadata_block(&self, bid: Ext2Bid, bytes: &[u8]) -> Result<()> {
+        self.metadata_txn.lock().stage(bid, bytes)
+    }
+
+    /// Commits the staged set while the caller holds [`Ext2::sync_lock`].
+    ///
+    /// Every commit stages the full allocation set first: the inode tables, the
+    /// dirty bitmaps, the group descriptors and the primary superblock. An
+    /// `fsync` that only staged one inode-table block used to publish a
+    /// descriptor whose bitmaps and group counters were still in memory, so a
+    /// crash left an allocation the checker could not reconcile.
+    fn commit_staged_metadata_locked(&self) -> Result<()> {
+        // Descriptors first, bitmaps second. The bitmap snapshot then covers
+        // every allocation whose descriptor this commit carries; an allocation
+        // that races after the snapshot is one the commit does not describe.
+        for group in &self.block_groups {
+            group.sync_inode_table()?;
+        }
+
+        let mut staged_groups = Vec::with_capacity(self.block_groups.len());
+        for group in &self.block_groups {
+            staged_groups
+                .push((group.group_idx(), group.stage_metadata(&self.group_descriptors_segment)?));
+        }
+        let superblock = self.stage_superblock()?;
+
+        let blocks = {
+            let mut metadata_txn = self.metadata_txn.lock();
+            metadata_txn.take()
+        };
+        if blocks.is_empty() {
+            return Ok(());
+        }
+        let staged = blocks.len();
+
+        // The transaction lock is intentionally not held here. Publishing a
+        // transaction syncs the journal inode, and that path may stage new
+        // metadata of its own.
+        let refs: Vec<(Ext2Bid, &[u8])> = blocks
+            .iter()
+            .map(|(bid, bytes)| (*bid, bytes.as_slice()))
+            .collect();
+        if let Err(err) = self.write_metadata_blocks(&refs) {
+            drop(refs);
+            self.metadata_txn.lock().restore(blocks);
+            return Err(err);
+        }
+
+        for (group_idx, staged_metadata) in &staged_groups {
+            self.block_groups[*group_idx].clear_staged(staged_metadata);
+        }
+        self.finish_superblock(superblock)?;
+
+        warn!("ext2: committed {} staged metadata blocks", staged);
+        Ok(())
+    }
+
     /// Syncs cached inodes and block-group-local metadata in all groups.
     pub(super) fn sync_all(&self) -> Result<()> {
         // `group_descriptors_segment` is updated without a filesystem-wide lock,
@@ -787,10 +962,54 @@ impl Ext2 {
         // `metadata.write()` guard.  Because groups are synced sequentially and
         // their descriptor offsets are disjoint, no two writers touch the same
         // bytes, so the segment is always consistent.
+        warn!(
+            "ext2: sync begin (last allocated inode {})",
+            self.last_allocated_ino.load(Ordering::Relaxed)
+        );
+
+        // The whole staging pass and its commit form one unit. See `sync_lock`.
+        let _sync_guard = self.sync_lock.lock();
+
+        // 1. Data first. A descriptor that becomes durable before the blocks it
+        //    points at turns a crash into a corrupt file rather than a missing
+        //    write (`data=ordered`).
         for group in &self.block_groups {
-            group.sync_all(&self.group_descriptors_segment)?;
+            if let Err(err) = group.flush_inode_data() {
+                warn!(
+                    "ext2: failed to flush inode data in group {}: {:?}",
+                    group.group_idx(),
+                    err
+                );
+                return Err(err);
+            }
         }
-        self.sync_metadata()
+
+        // 2. Stage and commit inode tables, bitmaps, group descriptors and the
+        //    primary superblock as one transaction.
+        for group in &self.block_groups {
+            let (block_bitmap, inode_bitmap, desc, cached_inodes) = group.dirty_state();
+            warn!(
+                "ext2: group {} dirty before sync: block_bitmap={} inode_bitmap={} \
+                 descriptor={} cached_inodes={}",
+                group.group_idx(),
+                block_bitmap,
+                inode_bitmap,
+                desc,
+                cached_inodes
+            );
+        }
+        if let Err(err) = self.commit_staged_metadata_locked() {
+            warn!("ext2: metadata transaction failed: {:?}", err);
+            return Err(err);
+        }
+
+        self.mark_journal_clean_if_read_only()?;
+
+        warn!(
+            "ext2: sync done (last allocated inode {})",
+            self.last_allocated_ino.load(Ordering::Relaxed)
+        );
+        Ok(())
     }
 
     /// Allocates a new inode number.
@@ -819,6 +1038,7 @@ impl Ext2 {
                 return_errno_with_message!(Errno::EIO, "allocated inode number out of valid range");
             }
             sb.dec_free_inodes()?;
+            self.last_allocated_ino.fetch_max(ino, Ordering::Relaxed);
 
             return Ok(ino);
         }
@@ -882,13 +1102,17 @@ impl Ext2 {
         false
     }
 
-    /// Flushes the superblock and all dirty group descriptors to the device.
-    fn sync_metadata(&self) -> Result<()> {
+    /// Stages the primary superblock and group descriptor table, and returns
+    /// the backup copies to write after the commit.
+    fn stage_superblock(&self) -> Result<StagedSuperblock> {
         let (snapshots, should_clear_superblock_dirty) = {
             let mut sb_guard = self.super_block.write();
             let any_group_dirty = self.block_groups.iter().any(|group| group.is_desc_dirty());
             if !sb_guard.is_dirty() && !any_group_dirty {
-                return Ok(());
+                return Ok(StagedSuperblock {
+                    backups: Vec::new(),
+                    should_clear_superblock_dirty: false,
+                });
             }
 
             let nr_block_groups = sb_guard.nr_block_groups() as usize;
@@ -922,17 +1146,68 @@ impl Ext2 {
             (snapshots, sb_guard.is_dirty())
         };
 
-        for (raw_sb, sb_offset, group_desc_bid) in snapshots {
+        let mut snapshots = snapshots.into_iter();
+        let (raw_sb, sb_offset, group_desc_bid) = snapshots
+            .next()
+            .expect("a dirty filesystem always has a primary superblock copy");
+        self.stage_sb_and_group_descs(&raw_sb, sb_offset, group_desc_bid)?;
+
+        Ok(StagedSuperblock {
+            backups: snapshots.collect(),
+            should_clear_superblock_dirty,
+        })
+    }
+
+    /// Writes the backup superblocks and clears the superblock dirty flag.
+    ///
+    /// The backups are not part of the transaction. The checker reads the
+    /// primary copy, and a stale backup only matters if the primary is damaged,
+    /// which is out of scope for this filesystem's recovery model.
+    fn finish_superblock(&self, staged: StagedSuperblock) -> Result<()> {
+        for (raw_sb, sb_offset, group_desc_bid) in staged.backups {
             self.write_sb_and_group_descs(&raw_sb, sb_offset, group_desc_bid)?;
         }
 
-        if should_clear_superblock_dirty {
+        if staged.should_clear_superblock_dirty {
             self.super_block.write().clear_dirty();
         }
         Ok(())
     }
 
-    /// Persists one copy of the superblock and group descriptor table into the given block group.
+    /// Stages one copy of the superblock and its descriptor table.
+    ///
+    /// The superblock shares its block with the boot area, and the journal
+    /// accepts whole blocks only, so the block is read, the superblock portion
+    /// is replaced, and the whole block is staged.
+    fn stage_sb_and_group_descs(
+        &self,
+        raw_sb: &RawSuperBlock,
+        sb_offset: usize,
+        group_desc_bid: Ext2Bid,
+    ) -> Result<()> {
+        let group_desc_segment = self.group_descriptors_segment.clone();
+        let mut descriptor_bytes = vec![0u8; group_desc_segment.size()];
+        group_desc_segment.read_bytes(0, &mut descriptor_bytes)?;
+        for (index, block) in descriptor_bytes.chunks_exact(BLOCK_SIZE).enumerate() {
+            let bid = group_desc_bid.checked_add(index as u32).ok_or_else(|| {
+                Error::with_message(Errno::EOVERFLOW, "descriptor block overflow")
+            })?;
+            self.stage_metadata_block(bid, block)?;
+        }
+
+        let block_idx = sb_offset / BLOCK_SIZE;
+        let offset_in_block = sb_offset % BLOCK_SIZE;
+        let mut block = self.read_raw_block(block_idx as Ext2Bid)?;
+        let end = offset_in_block + raw_sb.as_bytes().len();
+        block[offset_in_block..end].copy_from_slice(raw_sb.as_bytes());
+        self.stage_metadata_block(block_idx as Ext2Bid, &block)?;
+
+        Ok(())
+    }
+
+    /// Persists one backup copy of the superblock and group descriptor table.
+    ///
+    /// This bypasses the journal on purpose: see [`Self::finish_superblock`].
     fn write_sb_and_group_descs(
         &self,
         raw_sb: &RawSuperBlock,
@@ -940,28 +1215,12 @@ impl Ext2 {
         group_desc_bid: Ext2Bid,
     ) -> Result<()> {
         let group_desc_segment = self.group_descriptors_segment.clone();
-        let has_journal = self
-            .super_block
-            .read()
-            .feature_compat()
-            .contains(FeatureCompatSet::HAS_JOURNAL);
-        if has_journal {
-            let mut descriptor_bytes = vec![0u8; group_desc_segment.size()];
-            group_desc_segment.read_bytes(0, &mut descriptor_bytes)?;
-            for (index, block) in descriptor_bytes.chunks_exact(BLOCK_SIZE).enumerate() {
-                let bid = group_desc_bid.checked_add(index as u32).ok_or_else(|| {
-                    Error::with_message(Errno::EOVERFLOW, "descriptor block overflow")
-                })?;
-                self.write_metadata_blocks(&[(bid, block)])?;
-            }
-        } else {
-            let bio_segment =
-                BioSegment::new_from_segment(group_desc_segment, BioDirection::ToDevice);
-            self.write_blocks(group_desc_bid, bio_segment)
-                .map_err(|_| {
-                    Error::with_message(Errno::EIO, "failed to write group descriptor table")
-                })?;
-        }
+        let bio_segment = BioSegment::new_from_segment(group_desc_segment, BioDirection::ToDevice);
+        self.write_blocks(group_desc_bid, bio_segment)
+            .map_err(|_| {
+                Error::with_message(Errno::EIO, "failed to write group descriptor table")
+            })?;
+
         if self
             .block_device
             .write_bytes(sb_offset, raw_sb.as_bytes())
@@ -971,6 +1230,14 @@ impl Ext2 {
         }
         Ok(())
     }
+}
+
+/// The superblock copies produced by one sync.
+struct StagedSuperblock {
+    /// `(raw superblock, byte offset, descriptor table block)` for the groups
+    /// whose copies are written after the metadata transaction commits.
+    backups: Vec<(RawSuperBlock, usize, Ext2Bid)>,
+    should_clear_superblock_dirty: bool,
 }
 
 #[cfg(ktest)]
@@ -1103,6 +1370,47 @@ mod test {
                 .unwrap();
             assert_eq!(backup_desc, primary_desc);
         }
+    }
+
+    #[ktest]
+    fn sync_commits_the_inode_table_with_the_inode_bitmap() {
+        clocks::init_for_ktest();
+        let (fixture, root) = default_fixture();
+        let ext2 = &fixture.ext2;
+        let disk = &fixture.disk;
+        let sb = &fixture.sb;
+
+        let inode = create_file(&root, "atomic");
+        let ino = inode.ino();
+        let inode_idx = ((ino - 1) % sb.nr_inodes_per_group()) as usize;
+        let group_idx = ((ino - 1) / sb.nr_inodes_per_group()) as usize;
+        let desc = &fixture.descs[group_idx];
+
+        let bitmap_offset = Bid::new(desc.inode_bitmap_bid as u64).to_offset();
+        let inode_offset =
+            Bid::new(desc.inode_table_bid as u64).to_offset() + inode_idx * size_of::<RawInode>();
+        let is_allocated = |ext2: &Ext2| {
+            let mut bitmap = vec![0u8; BLOCK_SIZE];
+            disk.segment()
+                .read_bytes(bitmap_offset, &mut bitmap)
+                .unwrap();
+            bitmap[inode_idx / 8] & (1 << (inode_idx % 8)) != 0
+        };
+
+        // Allocation is staged in memory. If either half reached the disk
+        // before the commit, a power loss in between would leave the checker
+        // an allocation it cannot reconcile.
+        assert!(!is_allocated(ext2));
+        let raw_before = disk.segment().read_val::<RawInode>(inode_offset).unwrap();
+        assert_eq!(raw_before.link_count, 0);
+
+        ext2.sync_all().unwrap();
+
+        // One commit makes both halves durable.
+        assert!(is_allocated(ext2));
+        let raw_after = disk.segment().read_val::<RawInode>(inode_offset).unwrap();
+        assert_eq!(raw_after.link_count, 1);
+        assert_eq!(raw_after.mode & 0o170000, 0o100000);
     }
 
     #[ktest]

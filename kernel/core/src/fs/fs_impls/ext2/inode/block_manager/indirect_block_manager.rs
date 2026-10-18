@@ -124,13 +124,14 @@ impl IndirectBlockManager {
             return Ok(());
         }
 
-        let bio_segment = BioSegment::new_from_segment(
-            Segment::<()>::from(block.frame().clone()).into(),
-            BioDirection::ToDevice,
-        );
-        fs.write_blocks(block.bid(), bio_segment).map_err(|_| {
-            Error::with_message(Errno::EIO, "failed to submit indirect block writeback")
-        })?;
+        // An indirect block lists data blocks. Writing it to its home location
+        // ahead of the bitmaps that authorise those blocks is what leaves the
+        // checker reporting leaked blocks, so it joins the metadata
+        // transaction like any other allocation metadata.
+        let segment: USegment = Segment::<()>::from(block.frame().clone()).into();
+        let mut bytes = vec![0u8; BLOCK_SIZE];
+        segment.read_bytes(0, &mut bytes)?;
+        fs.stage_metadata_block(block.bid(), &bytes)?;
 
         block.mark_clean();
         Ok(())

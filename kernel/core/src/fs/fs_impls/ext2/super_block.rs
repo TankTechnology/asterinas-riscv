@@ -630,6 +630,16 @@ impl SuperBlock {
         self.journal_ino
     }
 
+    /// Returns the filesystem UUID carried by journal descriptor tags.
+    pub(super) const fn uuid(&self) -> [u8; 16] {
+        self.uuid
+    }
+
+    /// Replaces the incompatible feature set.
+    pub(super) fn set_feature_incompat(&mut self, flags: FeatureInCompatSet) {
+        self.feature_incompat = flags;
+    }
+
     pub(super) const fn journal_dev(&self) -> u32 {
         self.journal_dev
     }
