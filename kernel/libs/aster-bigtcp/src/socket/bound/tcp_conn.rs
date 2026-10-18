@@ -95,6 +95,26 @@ impl<E: Ext> RawTcpSocketExt<E> {
         matches!(state, State::FinWait1 | State::Closing | State::LastAck)
     }
 
+    /// Returns the connection state as a Linux TCP state code.
+    ///
+    /// `/proc/net/tcp` and `NETLINK_SOCK_DIAG` report these numbers, so the
+    /// translation belongs next to smoltcp's state instead of in each consumer.
+    pub fn linux_state_code(&self) -> u8 {
+        match self.state() {
+            State::Closed => 7,
+            State::Listen => 10,
+            State::SynSent => 2,
+            State::SynReceived => 3,
+            State::Established => 1,
+            State::FinWait1 => 4,
+            State::FinWait2 => 5,
+            State::CloseWait => 8,
+            State::Closing => 11,
+            State::LastAck => 9,
+            State::TimeWait => 6,
+        }
+    }
+
     /// Returns whether the receiving half of the socket is shut down.
     ///
     /// This method will return true if and only if [`TcpConnection::shut_recv`] or

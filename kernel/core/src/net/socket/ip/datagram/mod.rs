@@ -65,13 +65,15 @@ impl OptionSet {
 impl DatagramSocket {
     pub(crate) fn new(is_nonblocking: bool) -> Arc<Self> {
         let unbound_datagram = UnboundDatagram::new();
-        Arc::new(Self {
+        let socket = Arc::new(Self {
             inner: RwMutex::new(Inner::Unbound(unbound_datagram)),
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
             common: new_socket_common(is_nonblocking),
-        })
+        });
+        super::registry::register(&socket, super::registry::socket_inode(&socket.common));
+        socket
     }
 
     fn try_recv(

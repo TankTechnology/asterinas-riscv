@@ -9,9 +9,10 @@
 //!
 //! Reference: <https://man7.org/linux/man-pages/man5/proc_pid_net.5.html>
 
+use alloc::format;
 use core::fmt::Write as _;
 
-use aster_bigtcp::wire::{EthernetAddress, Ipv4Address};
+use aster_bigtcp::wire::{EthernetAddress, Ipv4Address, Ipv6Address};
 use aster_util::printer::VmPrinter;
 
 use super::TidDirOps;
@@ -24,7 +25,13 @@ use crate::{
         },
         vfs::inode::Inode,
     },
-    net::{arp_entries, iface_statuses, ipv4_routes},
+    net::{
+        arp_entries, iface_statuses, ipv4_routes,
+        socket::{
+            ip::{InetProtocol, inet_sockets},
+            util::SocketAddr,
+        },
+    },
     prelude::*,
     thread::Thread,
 };
@@ -52,6 +59,10 @@ impl ProcDirOps for NetDirOps {
             "dev" => Ok(DevFileOps::new_inode(parent)),
             "route" => Ok(RouteFileOps::new_inode(parent)),
             "arp" => Ok(ArpFileOps::new_inode(parent)),
+            "tcp" => Ok(InetFileOps::new_inode(parent, InetView::Tcp4)),
+            "tcp6" => Ok(InetFileOps::new_inode(parent, InetView::Tcp6)),
+            "udp" => Ok(InetFileOps::new_inode(parent, InetView::Udp4)),
+            "udp6" => Ok(InetFileOps::new_inode(parent, InetView::Udp6)),
             _ => return_errno_with_message!(Errno::ENOENT, "the file does not exist"),
         }
     }
@@ -66,6 +77,10 @@ impl ProcDirOps for NetDirOps {
                 ListedEntry::new("arp", InodeType::File),
                 ListedEntry::new("dev", InodeType::File),
                 ListedEntry::new("route", InodeType::File),
+                ListedEntry::new("tcp", InodeType::File),
+                ListedEntry::new("tcp6", InodeType::File),
+                ListedEntry::new("udp", InodeType::File),
+                ListedEntry::new("udp6", InodeType::File),
             ],
             visit_fn,
         )
@@ -226,6 +241,107 @@ impl ProcFileOps for ArpFileOps {
                 format_mac(&entry.mac),
                 entry.iface,
             )?;
+        }
+
+        Ok(printer.bytes_written())
+    }
+}
+
+/// Which of the four inet socket listings a file presents.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InetView {
+    Tcp4,
+    Tcp6,
+    Udp4,
+    Udp6,
+}
+
+impl InetView {
+    const fn protocol(self) -> InetProtocol {
+        match self {
+            Self::Tcp4 | Self::Tcp6 => InetProtocol::Tcp,
+            Self::Udp4 | Self::Udp6 => InetProtocol::Udp,
+        }
+    }
+
+    const fn is_ipv6(self) -> bool {
+        matches!(self, Self::Tcp6 | Self::Udp6)
+    }
+}
+
+/// Represents an inode at `/proc/<pid>/net/{tcp,tcp6,udp,udp6}`.
+struct InetFileOps {
+    view: InetView,
+}
+
+impl InetFileOps {
+    fn new_inode(parent: Weak<dyn Inode>, view: InetView) -> Arc<dyn Inode> {
+        ProcFile::new(Self { view }, parent, mkmod!(a+r))
+    }
+}
+
+/// Renders an IPv4 address in the native-endian hex form the proc files use.
+///
+/// On a little-endian machine 127.0.0.1 is `0100007F`, matching Linux's
+/// `%08X` over the `__be32` rendered in host order.
+fn proc_ipv4(addr: &Ipv4Address) -> u32 {
+    u32::from_ne_bytes(addr.octets())
+}
+
+/// Renders an IPv6 address as four native-endian 32-bit words.
+fn proc_ipv6(addr: &Ipv6Address) -> String {
+    let mut text = String::new();
+    for word in addr.octets().chunks_exact(4) {
+        let _ = write!(text, "{:08X}", u32::from_ne_bytes(word.try_into().unwrap()));
+    }
+    text
+}
+
+/// Formats one endpoint column, substituting an all-zero endpoint when the
+/// socket has no peer.
+fn proc_endpoint(addr: Option<&SocketAddr>, is_ipv6: bool) -> String {
+    match addr {
+        Some(SocketAddr::IPv4(ip, port)) if !is_ipv6 => {
+            format!("{:08X}:{:04X}", proc_ipv4(ip), port)
+        }
+        Some(SocketAddr::IPv6(ip, port)) if is_ipv6 => {
+            format!("{}:{:04X}", proc_ipv6(ip), port)
+        }
+        _ if is_ipv6 => "00000000000000000000000000000000:0000".into(),
+        _ => "00000000:0000".into(),
+    }
+}
+
+impl ProcFileOps for InetFileOps {
+    fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+        let mut printer = VmPrinter::new_skip(writer, offset);
+        writeln!(
+            printer,
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
+        )?;
+
+        let is_ipv6 = self.view.is_ipv6();
+        let mut index = 0usize;
+        for socket in inet_sockets() {
+            if socket.protocol != self.view.protocol() {
+                continue;
+            }
+            let socket_is_ipv6 = matches!(socket.local, SocketAddr::IPv6(..));
+            if socket_is_ipv6 != is_ipv6 {
+                continue;
+            }
+
+            writeln!(
+                printer,
+                "{:4}: {} {} {:02X} 00000000:00000000 00:00000000 00000000 {:5} 0 {} 1 0000000000000000 0 0 0 0 0",
+                index,
+                proc_endpoint(Some(&socket.local), is_ipv6),
+                proc_endpoint(socket.remote.as_ref(), is_ipv6),
+                socket.state,
+                socket.uid,
+                socket.inode,
+            )?;
+            index += 1;
         }
 
         Ok(printer.bytes_written())

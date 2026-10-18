@@ -108,14 +108,16 @@ impl OptionSet {
 impl StreamSocket {
     pub(crate) fn new(is_nonblocking: bool, family: IpAddressFamily) -> Arc<Self> {
         let init_stream = InitStream::new();
-        Arc::new(Self {
+        let socket = Arc::new(Self {
             state: RwLock::new(Takeable::new(State::Init(init_stream))),
             family,
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
             common: new_socket_common(is_nonblocking),
-        })
+        });
+        super::registry::register(&socket, super::registry::socket_inode(&socket.common));
+        socket
     }
 
     fn new_accepted(
@@ -159,14 +161,32 @@ impl StreamSocket {
         let pollee = Pollee::new();
         connected_stream.init_observer(StreamObserver::new(pollee.clone()));
 
-        Arc::new(Self {
+        let socket = Arc::new(Self {
             state: RwLock::new(Takeable::new(State::Connected(connected_stream))),
             family,
             options: RwLock::new(options),
             timeouts: listener_timeouts.clone(),
             pollee,
             common: new_socket_common(is_nonblocking),
-        })
+        });
+        super::registry::register(&socket, super::registry::socket_inode(&socket.common));
+        socket
+    }
+
+    /// Returns the Linux TCP state code reported by `/proc/net/tcp` and
+    /// `NETLINK_SOCK_DIAG`.
+    pub(crate) fn tcp_state_code(&self) -> u8 {
+        use super::registry::{TCP_CLOSE, TCP_LISTEN, TCP_SYN_SENT};
+
+        let state = self.read_updated_state();
+        match state.as_ref() {
+            State::Init(_) => TCP_CLOSE,
+            State::Connecting(_) => TCP_SYN_SENT,
+            State::Listen(_) => TCP_LISTEN,
+            State::Connected(connected_stream) => {
+                connected_stream.raw_with(|socket| socket.linux_state_code())
+            }
+        }
     }
 
     /// Ensures that the socket state is up to date and obtains a read lock on it.
