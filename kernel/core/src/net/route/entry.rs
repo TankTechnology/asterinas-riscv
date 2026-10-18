@@ -9,7 +9,6 @@ use crate::{net::iface::Iface, prelude::*};
 #[derive(Clone)]
 pub(super) struct RouteEntry<A: RouteAddressFamily> {
     dst: A::Cidr,
-    #[expect(dead_code)]
     gateway: Option<A>,
     output_iface: Arc<Iface>,
     table_id: RouteTableId,

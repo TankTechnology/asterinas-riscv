@@ -13,7 +13,11 @@
 use spin::Once;
 
 use crate::{
-    net::socket::{Socket, ip::StreamSocket, util::SocketAddr},
+    net::socket::{
+        Socket,
+        ip::{DatagramSocket, StreamSocket},
+        util::SocketAddr,
+    },
     prelude::*,
     process::posix_thread::AsPosixThread,
     thread::Thread,
@@ -122,7 +126,7 @@ fn current_uid() -> u32 {
         .unwrap_or(0)
 }
 
-pub(crate) fn socket_addr_port(addr: &SocketAddr) -> u16 {
+fn socket_addr_port(addr: &SocketAddr) -> u16 {
     match addr {
         SocketAddr::IPv4(_, port) | SocketAddr::IPv6(_, port) => *port,
         _ => 0,
@@ -155,7 +159,7 @@ impl InetSocket for StreamSocket {
     }
 }
 
-impl InetSocket for crate::net::socket::ip::DatagramSocket {
+impl InetSocket for DatagramSocket {
     fn inet_protocol(&self) -> InetProtocol {
         InetProtocol::Udp
     }

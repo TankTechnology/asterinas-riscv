@@ -52,8 +52,6 @@ pub(super) struct BlockGroup {
     fs: Weak<Ext2>,
     /// Group descriptor and bitmaps, protected by a single lock.
     metadata: RwMutex<BlockGroupMetadata>,
-    /// Backing block device (shared with `Ext2` and other groups).
-    block_device: Arc<dyn BlockDevice>,
     /// Cached geometry: first filesystem-wide block number of this group.
     first_block: u32,
     /// Cached geometry: last filesystem-wide block number of this group.
@@ -151,7 +149,6 @@ impl BlockGroup {
                 block_bitmap: Dirty::new(block_bitmap),
                 inode_bitmap: Dirty::new(inode_bitmap),
             }),
-            block_device,
             first_block: first_block_no,
             last_block: last_block_no,
             nr_inode_table_blocks_per_group,
@@ -328,25 +325,6 @@ impl BlockGroup {
     /// Returns whether the group descriptor has been modified since the last writeback.
     pub(super) fn is_desc_dirty(&self) -> bool {
         self.metadata.read().desc.is_dirty()
-    }
-
-    /// Returns the group's dirty state for sync diagnostics.
-    ///
-    /// The fields are, in order, the block bitmap, the inode bitmap, the group
-    /// descriptor, and the number of cached inodes. The two locks are taken
-    /// separately: `lookup_inode` takes the inode cache before the metadata,
-    /// so holding both in the opposite order here would invert that lock order.
-    pub(super) fn dirty_state(&self) -> (bool, bool, bool, usize) {
-        let (block_bitmap, inode_bitmap, desc) = {
-            let metadata = self.metadata.read();
-            (
-                metadata.block_bitmap.is_dirty(),
-                metadata.inode_bitmap.is_dirty(),
-                metadata.desc.is_dirty(),
-            )
-        };
-        let cached_inodes = self.inode_cache.read().len();
-        (block_bitmap, inode_bitmap, desc, cached_inodes)
     }
 
     /// Attempts to allocate up to `count` contiguous blocks within this group.
@@ -564,7 +542,7 @@ impl BlockGroup {
         };
 
         fs.stage_metadata_block(bid, &payload)?;
-        warn!(
+        debug!(
             "ext2: group {} staged {} bitmap of block {}",
             self.group_idx,
             if block_bitmap { "block" } else { "inode" },

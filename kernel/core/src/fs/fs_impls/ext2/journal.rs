@@ -241,10 +241,6 @@ impl JournalRing {
         }
         Ok(positions)
     }
-
-    pub(super) const fn cursor(self) -> u32 {
-        self.next
-    }
 }
 
 /// A validated data block from one committed journal transaction.

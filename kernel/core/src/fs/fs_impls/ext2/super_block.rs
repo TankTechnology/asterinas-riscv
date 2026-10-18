@@ -616,12 +616,10 @@ impl SuperBlock {
         self.rev_level
     }
 
-    #[expect(dead_code)]
     pub(super) const fn feature_compat(&self) -> FeatureCompatSet {
         self.feature_compat
     }
 
-    #[expect(dead_code)]
     pub(super) const fn feature_incompat(&self) -> FeatureInCompatSet {
         self.feature_incompat
     }

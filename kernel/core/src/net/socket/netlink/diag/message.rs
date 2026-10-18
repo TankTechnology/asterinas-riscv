@@ -14,7 +14,9 @@ use crate::{
         SocketAddr,
         ip::InetSocketSnapshot,
         netlink::{
-            message::{CMsgSegHdr, DoneSegment, NoAttr, SegHdrCommonFlags, SegmentCommon},
+            message::{
+                CMsgSegHdr, DoneSegment, NoAttr, SegHdrCommonFlags, SegmentBody, SegmentCommon,
+            },
             receiver::QueueableMessage,
         },
     },
@@ -79,7 +81,7 @@ pub(crate) struct InetDiagMsg {
 
 const _: () = assert!(size_of::<InetDiagMsg>() == 72);
 
-impl crate::net::socket::netlink::message::SegmentBody for InetDiagMsg {
+impl SegmentBody for InetDiagMsg {
     type CType = Self;
 }
 

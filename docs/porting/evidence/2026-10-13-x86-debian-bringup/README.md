@@ -379,7 +379,11 @@ block and published it without the bitmaps, so replay restored a descriptor
 whose allocation bits had never been written. Every commit now runs the
 filesystem-wide staging pass (data, descriptors, inode tables, bitmaps, group
 descriptors, primary superblock) before writing the commit record, and `fsync`
-uses the same path.
+uses the same path. A lighter `fsync` that only flushes the calling inode was
+tried and rejected by fault injection: a socket of concurrent work can allocate
+a block after its inode was flushed but before the bitmap snapshot, leaving an
+allocated-but-unreferenced block. Closing that needs per-operation transaction
+handles, not a cheaper barrier.
 
 The journal also needed the `RECOVER` incompatible feature to be managed
 explicitly: it is set when a writable filesystem starts using its journal and

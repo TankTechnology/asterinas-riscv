@@ -4,6 +4,7 @@
 
 use super::{kernel, message::SockDiagMessage};
 use crate::{
+    events::IoEvents,
     net::socket::{
         netlink::{
             NetlinkSocketAddr, common::BoundNetlink, diag::message::InetDiagReqV2,
@@ -119,7 +120,7 @@ impl datagram_common::Bound for BoundNetlinkDiag {
         })
     }
 
-    fn check_io_events(&self) -> crate::events::IoEvents {
+    fn check_io_events(&self) -> IoEvents {
         self.check_io_events_common()
     }
 }

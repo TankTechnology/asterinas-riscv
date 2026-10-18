@@ -329,14 +329,6 @@ impl Ext2 {
     /// superblock start update. Callers must write and flush home blocks before
     /// clearing the start marker; publishing is therefore recoverable even if
     /// the caller crashes before checkpointing.
-    pub(super) fn publish_journal_transaction(
-        &self,
-        transaction: journal::JournalTransaction,
-    ) -> Result<()> {
-        let _publish_guard = self.journal_publish_lock.lock();
-        self.publish_journal_transaction_locked(transaction)
-    }
-
     fn publish_journal_transaction_locked(
         &self,
         transaction: journal::JournalTransaction,
@@ -398,11 +390,6 @@ impl Ext2 {
     /// Callers must complete and flush all corresponding home-block writes
     /// before invoking this method. The same publication lock prevents a
     /// second writer from changing the journal state between those phases.
-    pub(super) fn checkpoint_published_journal(&self) -> Result<()> {
-        let _publish_guard = self.journal_publish_lock.lock();
-        self.checkpoint_published_journal_locked()
-    }
-
     fn checkpoint_published_journal_locked(&self) -> Result<()> {
         let (journal_ino, journal_dev) = {
             let super_block = self.super_block.read();
@@ -953,7 +940,7 @@ impl Ext2 {
         }
         self.finish_superblock(superblock)?;
 
-        warn!("ext2: committed {} staged metadata blocks", staged);
+        debug!("ext2: committed {} staged metadata blocks", staged);
         Ok(())
     }
 
@@ -964,7 +951,7 @@ impl Ext2 {
         // `metadata.write()` guard.  Because groups are synced sequentially and
         // their descriptor offsets are disjoint, no two writers touch the same
         // bytes, so the segment is always consistent.
-        warn!(
+        debug!(
             "ext2: sync begin (last allocated inode {})",
             self.last_allocated_ino.load(Ordering::Relaxed)
         );
@@ -988,18 +975,6 @@ impl Ext2 {
 
         // 2. Stage and commit inode tables, bitmaps, group descriptors and the
         //    primary superblock as one transaction.
-        for group in &self.block_groups {
-            let (block_bitmap, inode_bitmap, desc, cached_inodes) = group.dirty_state();
-            warn!(
-                "ext2: group {} dirty before sync: block_bitmap={} inode_bitmap={} \
-                 descriptor={} cached_inodes={}",
-                group.group_idx(),
-                block_bitmap,
-                inode_bitmap,
-                desc,
-                cached_inodes
-            );
-        }
         if let Err(err) = self.commit_staged_metadata_locked() {
             warn!("ext2: metadata transaction failed: {:?}", err);
             return Err(err);
@@ -1007,7 +982,7 @@ impl Ext2 {
 
         self.mark_journal_clean_if_read_only()?;
 
-        warn!(
+        debug!(
             "ext2: sync done (last allocated inode {})",
             self.last_allocated_ino.load(Ordering::Relaxed)
         );
