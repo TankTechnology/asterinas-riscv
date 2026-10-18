@@ -16,6 +16,29 @@ pub(crate) struct IfaceStatus {
     pub(crate) stats: aster_bigtcp::iface::IfaceStatsSnapshot,
 }
 
+/// One entry of an interface's neighbour cache, as `/proc/net/arp` needs it.
+pub(crate) struct ArpEntry {
+    pub(crate) ip: aster_bigtcp::wire::Ipv4Address,
+    pub(crate) mac: aster_bigtcp::wire::EthernetAddress,
+    pub(crate) iface: String,
+}
+
+/// Samples every interface's neighbour cache.
+pub(crate) fn arp_entries() -> Vec<ArpEntry> {
+    let mut entries = Vec::new();
+    for iface in iter_all_ifaces() {
+        let name = iface.name().as_str().unwrap_or_default();
+        for (ip, mac) in iface.arp_entries() {
+            entries.push(ArpEntry {
+                ip,
+                mac,
+                iface: name.into(),
+            });
+        }
+    }
+    entries
+}
+
 /// Samples every interface, in index order.
 ///
 /// Returns an owned snapshot rather than the interfaces themselves, so callers outside this

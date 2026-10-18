@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{collections::btree_map::BTreeMap, sync::Arc};
+use alloc::{collections::btree_map::BTreeMap, sync::Arc, vec::Vec};
 
 use aster_softirq::BottomHalfDisabled;
 use ostd::sync::SpinLock;
@@ -90,6 +90,14 @@ impl<D: WithDevice + 'static, E: Ext> Iface<E> for EtherIface<D, E> {
         self.driver
             .with(|device| device.capabilities().max_transmission_unit)
             - wire::ETHERNET_HEADER_LEN
+    }
+
+    fn arp_entries(&self) -> Vec<(Ipv4Address, EthernetAddress)> {
+        self.arp_table
+            .lock()
+            .iter()
+            .map(|(address, hardware)| (*address, *hardware))
+            .collect()
     }
 }
 

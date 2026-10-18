@@ -9,7 +9,9 @@
 //!
 //! Reference: <https://man7.org/linux/man-pages/man5/proc_pid_net.5.html>
 
-use aster_bigtcp::wire::Ipv4Address;
+use core::fmt::Write as _;
+
+use aster_bigtcp::wire::{EthernetAddress, Ipv4Address};
 use aster_util::printer::VmPrinter;
 
 use super::TidDirOps;
@@ -22,7 +24,7 @@ use crate::{
         },
         vfs::inode::Inode,
     },
-    net::{iface_statuses, ipv4_routes},
+    net::{arp_entries, iface_statuses, ipv4_routes},
     prelude::*,
     thread::Thread,
 };
@@ -49,6 +51,7 @@ impl ProcDirOps for NetDirOps {
         match name {
             "dev" => Ok(DevFileOps::new_inode(parent)),
             "route" => Ok(RouteFileOps::new_inode(parent)),
+            "arp" => Ok(ArpFileOps::new_inode(parent)),
             _ => return_errno_with_message!(Errno::ENOENT, "the file does not exist"),
         }
     }
@@ -60,6 +63,7 @@ impl ProcDirOps for NetDirOps {
         visit_listed_entries(
             offset,
             [
+                ListedEntry::new("arp", InodeType::File),
                 ListedEntry::new("dev", InodeType::File),
                 ListedEntry::new("route", InodeType::File),
             ],
@@ -177,6 +181,50 @@ impl ProcFileOps for RouteFileOps {
                 flags,
                 route.metric,
                 mask,
+            )?;
+        }
+
+        Ok(printer.bytes_written())
+    }
+}
+
+/// Represents the inode at `/proc/<pid>/net/arp`.
+struct ArpFileOps;
+
+impl ArpFileOps {
+    fn new_inode(parent: Weak<dyn Inode>) -> Arc<dyn Inode> {
+        ProcFile::new(Self, parent, mkmod!(a+r))
+    }
+}
+
+/// Renders an Ethernet address the way net-tools expects.
+fn format_mac(mac: &EthernetAddress) -> String {
+    let mut text = String::new();
+    for (index, byte) in mac.0.iter().enumerate() {
+        if index != 0 {
+            text.push(':');
+        }
+        let _ = write!(text, "{:02x}", byte);
+    }
+    text
+}
+
+impl ProcFileOps for ArpFileOps {
+    fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
+        let mut printer = VmPrinter::new_skip(writer, offset);
+        writeln!(
+            printer,
+            "IP address       HW type     Flags       HW address            Mask     Device"
+        )?;
+
+        for entry in arp_entries() {
+            // ATF_COM: the entry is complete, which is all this cache holds.
+            writeln!(
+                printer,
+                "{:<15}  0x1         0x2         {:<21} *        {}",
+                entry.ip,
+                format_mac(&entry.mac),
+                entry.iface,
             )?;
         }
 

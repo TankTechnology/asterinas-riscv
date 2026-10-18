@@ -28,6 +28,13 @@ pub trait Iface<E>: internal::IfaceInternal<E> + Send + Sync {
 
     /// Returns the maximum transmission unit.
     fn mtu(&self) -> usize;
+
+    /// Returns the IPv4-to-Ethernet mappings this interface has learned.
+    ///
+    /// Interfaces that do no neighbour discovery return an empty list.
+    fn arp_entries(&self) -> Vec<(Ipv4Address, EthernetAddress)> {
+        Vec::new()
+    }
 }
 
 impl<E: Ext> dyn Iface<E> {
