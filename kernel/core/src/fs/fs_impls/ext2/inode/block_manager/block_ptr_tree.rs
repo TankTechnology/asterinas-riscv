@@ -272,8 +272,20 @@ impl BlockPtrTree {
         let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
         let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
         let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
-        if entries > max_entries || entries > 4 || max_entries == 0 || depth != 0 {
+        if entries > max_entries || entries > 4 || max_entries == 0 || depth > 1 {
             return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported ext4 extent tree");
+        }
+        if depth == 1 {
+            // Page-cache writeback resolves already-mapped ranges before it
+            // writes them, and directories such as `/var/lib/dpkg/info` carry
+            // a depth-one tree. Serve that lookup through the index tree;
+            // allocating a missing block in a depth-one tree remains
+            // unsupported.
+            let range = self.lookup_extent_range(iblock, max_blocks)?;
+            if range.is_empty() {
+                return_errno_with_message!(Errno::EOPNOTSUPP, "non-append ext4 extent allocation");
+            }
+            return Ok(ResolvedBlockRange::Existing(range));
         }
 
         let mut next_logical = 0u32;

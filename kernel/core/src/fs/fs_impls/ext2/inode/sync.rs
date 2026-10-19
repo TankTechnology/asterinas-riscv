@@ -26,13 +26,31 @@ impl Inode {
         // Step 2: flush dirty data pages.
         let fs = self.fs()?;
         let mut inner = self.inner.write();
-        inner.sync_data_pages()?;
+        inner.sync_data_pages().inspect_err(|err| {
+            warn!(
+                "sync_all: ino={} type={:?}: data pages failed: {err:?}",
+                self.ino(),
+                self.type_
+            );
+        })?;
 
         // Step 3: flush inode-local indirect metadata before inode-table state.
-        inner.sync_indirect_blocks()?;
+        inner.sync_indirect_blocks().inspect_err(|err| {
+            warn!(
+                "sync_all: ino={} type={:?}: indirect blocks failed: {err:?}",
+                self.ino(),
+                self.type_
+            );
+        })?;
 
         // Step 4: persist inode metadata to the inode-table page cache.
-        inner.write_back_inode_desc(&fs, self.ino)
+        inner.write_back_inode_desc(&fs, self.ino).inspect_err(|err| {
+            warn!(
+                "sync_all: ino={} type={:?}: write-back failed: {err:?}",
+                self.ino(),
+                self.type_
+            );
+        })
     }
 
     /// Flushes dirty file data and the metadata required to retrieve it.
