@@ -380,6 +380,30 @@
       "references_checked": true,
       "state": "removed",
       "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/desktop_m9_software_gate.py",
+      "reason": "M9 软件兼容长门禁实现，已从 E1-E5 入口移除且无活动调用者",
+      "replacement": "E1-E5 claims",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_desktop_m4_framebuffer_probe.py",
+      "reason": "旧 M4 framebuffer probe 单测，已由 E2 scanout contract 取代",
+      "replacement": "test_qemu_scanout_contract.py",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_dual_host_qemu_probe.py",
+      "reason": "旧双宿主 QEMU 探针单测，非 E1-E5 入口且无活动调用者",
+      "replacement": "E4 recovery receipt",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
     }
   ],
   "retain_docs": [
