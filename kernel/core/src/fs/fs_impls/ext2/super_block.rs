@@ -243,8 +243,14 @@ impl SuperBlock {
             return_errno_with_message!(Errno::EINVAL, "ext2 journal replay is unsupported");
         }
 
-        let allowed_incompat =
-            FeatureInCompatSet::FILETYPE.bits() | FeatureInCompatSet::EXTENTS.bits();
+        // `RECOVER` is a transient flag: it marks a journal that must be
+        // replayed before the filesystem is exposed. It is set by every
+        // writable mount and cleared when a read-only remount checkpoints the
+        // journal, so it must pass validation here; the mount path below
+        // decides whether a replay is needed.
+        let allowed_incompat = FeatureInCompatSet::FILETYPE.bits()
+            | FeatureInCompatSet::EXTENTS.bits()
+            | FeatureInCompatSet::RECOVER.bits();
         if (sb.feature_incompat & !allowed_incompat) != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported incompat feature");
         }
