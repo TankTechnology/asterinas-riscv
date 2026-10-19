@@ -36,7 +36,8 @@ pub(super) fn is_early_param(key: &str) -> bool {
 /// # Recognized tokens
 ///
 /// - `earlycon` — enables the early UART console (exact token match).
-/// - `loglevel=N` — sets the OSTD log filter (`N` in `0..=8`, see [`LevelFilter`]).
+/// - `loglevel=N` — sets the OSTD log filter using Linux's numbering
+///   (`0` = emerg, `4` = warning, `7` = debug; larger values also mean debug).
 /// - `loglevel=LEVEL` — also accepts textual levels such as `error` or `debug`.
 /// - `--` — stops parsing; all following tokens are for the init process.
 ///
@@ -111,8 +112,10 @@ const fn strip_linux_double_quotes(bytes: &[u8], start: usize, end: usize) -> &[
 
 /// Parses a `loglevel` value.
 ///
-/// Accepts `0..=8` or lowercase level names. Returns `None` for malformed values
-/// so they do not override earlier valid settings.
+/// Numeric values follow Linux's console log level numbering: `0` is emerg,
+/// `4` is warning and `7` (or anything larger) is debug. Lowercase level names
+/// are also accepted. Returns `None` for malformed values so they do not
+/// override earlier valid settings.
 const fn parse_loglevel_at(bytes: &[u8]) -> Option<LevelFilter> {
     let bytes = strip_linux_double_quotes(bytes, 0, bytes.len());
 
@@ -121,10 +124,17 @@ const fn parse_loglevel_at(bytes: &[u8]) -> Option<LevelFilter> {
     }
 
     if bytes[0].is_ascii_digit() {
-        if let Ok(result) = u8::from_ascii_radix(bytes, 10)
-            && result <= 8
-        {
-            return Some(LevelFilter::from_u8(result));
+        if let Ok(result) = u8::from_ascii_radix(bytes, 10) {
+            return Some(match result {
+                0 => LevelFilter::Emerg,
+                1 => LevelFilter::Alert,
+                2 => LevelFilter::Crit,
+                3 => LevelFilter::Error,
+                4 => LevelFilter::Warning,
+                5 => LevelFilter::Notice,
+                6 => LevelFilter::Info,
+                _ => LevelFilter::Debug,
+            });
         }
         return None;
     }
@@ -167,6 +177,19 @@ mod tests {
         let result = early_cmdline_parser("");
         assert_eq!(result.log_level, LevelFilter::Debug);
         assert!(!result.has_early_console);
+    }
+
+    #[ktest]
+    fn numeric_loglevel_follows_linux_numbering() {
+        assert_eq!(parse_loglevel_at(b"0"), Some(LevelFilter::Emerg));
+        assert_eq!(parse_loglevel_at(b"3"), Some(LevelFilter::Error));
+        assert_eq!(parse_loglevel_at(b"4"), Some(LevelFilter::Warning));
+        assert_eq!(parse_loglevel_at(b"5"), Some(LevelFilter::Notice));
+        assert_eq!(parse_loglevel_at(b"6"), Some(LevelFilter::Info));
+        assert_eq!(parse_loglevel_at(b"7"), Some(LevelFilter::Debug));
+        assert_eq!(parse_loglevel_at(b"9"), Some(LevelFilter::Debug));
+        assert_eq!(parse_loglevel_at(b"warn"), Some(LevelFilter::Warning));
+        assert_eq!(parse_loglevel_at(b"off"), Some(LevelFilter::Off));
     }
 
     #[ktest]
