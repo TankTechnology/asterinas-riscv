@@ -348,6 +348,38 @@
       "references_checked": true,
       "state": "removed",
       "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_m6_browser.py",
+      "reason": "M6 浏览器长门禁测试，已从 E1-E5 入口移除",
+      "replacement": "E3 official Firefox scene",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_m7_baidu.py",
+      "reason": "M7 站点专项测试，已从 E1-E5 入口移除",
+      "replacement": "E3 official Firefox scene",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_m8_browser_quality.py",
+      "reason": "M8 浏览器质量长门禁测试，已从 E1-E5 入口移除",
+      "replacement": "E3 short Firefox boundary probe",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_m9_software.py",
+      "reason": "M9 软件兼容长门禁测试，已从 E1-E5 入口移除",
+      "replacement": "E1-E5 claims",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
     }
   ],
   "retain_docs": [
@@ -359,6 +391,20 @@
       "path": "tools/riscv/tests/test_debian_desktop_m4_x11_gate.py",
       "reason": "旧 X11 wrapper 门禁；该文件有既有未提交修改，暂缓删除以避免覆盖工作区内容",
       "replacement": "E2 GL renderer gate",
+      "references_checked": true,
+      "state": "deferred"
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/browser_web_dev_overlay.json",
+      "reason": "旧 browser-web 开发 overlay 有既有未提交修改，暂缓删除以避免覆盖工作区内容",
+      "replacement": "E3 official Firefox scene overlay",
+      "references_checked": true,
+      "state": "deferred"
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_m5_network.py",
+      "reason": "旧 M5 网络门禁测试有既有未提交修改，暂缓删除以避免覆盖工作区内容",
+      "replacement": "E5 management chain",
       "references_checked": true,
       "state": "deferred"
     }

@@ -48,7 +48,7 @@
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/browser_web_dev_overlay.json, tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/tests/test_debian_browser_web.py` |  |  |
 | `tools/riscv/debian/rootfs/browser_web_contract.py` | yes | 3 | 1 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/browser_web_qemu_gate.py, tools/riscv/firefox_fast_check.sh, tools/riscv/megrez_gmac_gate.py` |  |  |
-| `tools/riscv/debian/rootfs/browser_web_dev_overlay.json` | yes | 0 | 4 | 候选删除，需人工确认动态引用 |
+| `tools/riscv/debian/rootfs/browser_web_dev_overlay.json` | yes | 0 | 5 | 候选删除，需人工确认动态引用 |
 | `tools/riscv/debian/rootfs/browser_web_diagnostic.conf` | yes | 1 | 1 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/tests/test_debian_browser_web.py` |  |  |
 | `tools/riscv/debian/rootfs/browser_web_evidence.service` | yes | 3 | 2 | 保留 |
@@ -73,11 +73,11 @@
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/browser_web_dev_overlay.json, tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/firefox_fast_check.sh, tools/riscv/tests/test_debian_browser_web.py` |  |  |
 | `tools/riscv/debian/rootfs/browser_workload_contract.py` | yes | 10 | 2 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/browser_composite_manifest.py, tools/riscv/debian/rootfs/browser_composite_capture.py, tools/riscv/debian/rootfs/browser_web_dev_overlay.json, tools/riscv/debian/rootfs/build_stage1.sh, tools/riscv/firefox_fast_check.sh, tools/riscv/tests/test_browser_composite_capture.py, tools/riscv/tests/test_browser_composite_manifest.py, tools/riscv/tests/test_browser_workload_contract.py` |  |  |
-| `tools/riscv/debian/rootfs/build_rootfs.sh` | yes | 11 | 26 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/firefox_fast_check.sh, tools/riscv/tests/test_debian_browser_m5_runtime_gate.py, tools/riscv/tests/test_debian_browser_web.py, tools/riscv/tests/test_debian_m5_network.py, tools/riscv/tests/test_debian_m6_browser.py, tools/riscv/tests/test_debian_m7_baidu.py, tools/riscv/tests/test_debian_m8_browser_quality.py, tools/riscv/tests/test_debian_m9_software.py` |  |  |
+| `tools/riscv/debian/rootfs/build_rootfs.sh` | yes | 7 | 26 | 保留 |
+| ↳ 活动引用 |  | `tools/riscv/firefox_fast_check.sh, tools/riscv/tests/test_debian_browser_m5_runtime_gate.py, tools/riscv/tests/test_debian_browser_web.py, tools/riscv/tests/test_debian_m5_network.py, tools/riscv/tests/test_debian_rootfs.py, tools/riscv/tests/test_debian_signed_sources.py, tools/riscv/tests/test_riscv_rootfs_builder_image.py` |  |  |
 | `tools/riscv/debian/rootfs/build_stage1.sh` | yes | 1 | 20 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/tests/test_debian_rootfs.py` |  |  |
-| `tools/riscv/debian/rootfs/contract.py` | yes | 168 | 295 | 保留 |
+| `tools/riscv/debian/rootfs/contract.py` | yes | 166 | 295 | 保留 |
 | ↳ 活动引用 |  | `Makefile, book/book/print.html, book/book/to-contribute/coding-guidelines/for-hardware/index.html, book/book/to-contribute/coding-guidelines/for-maintainability/design.html, book/book/to-contribute/coding-guidelines/for-maintainability/naming.html, book/book/to-contribute/coding-guidelines/index.html, test/initramfs/src/regression/scripts/run_regression_test.sh, tools/nixos/riscv_preflight.py` |  |  |
 | `tools/riscv/debian/rootfs/debug_console_protocol.py` | yes | 5 | 2 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/debug_console_qemu_gate.py, tools/riscv/megrez_board_session.py, tools/riscv/megrez_boot_stability.py, tools/riscv/megrez_physical_graphics.py, tools/riscv/tests/test_debian_debug_console.py` |  |  |
@@ -121,14 +121,14 @@
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/debian/rootfs/desktop_m4_evidence.sh, tools/riscv/tests/test_debian_desktop_m4_framebuffer_probe.py` |  |  |
 | `tools/riscv/debian/rootfs/desktop_m4_framebuffer_rw.py` | yes | 2 | 4 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/tests/test_debian_browser_web.py` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m4_gate.py` | yes | 25 | 16 | 保留 |
+| `tools/riscv/debian/rootfs/desktop_m4_gate.py` | yes | 23 | 16 | 保留 |
 | ↳ 活动引用 |  | `.tmp_diag2.py, tools/riscv/debian/rootfs/debug_console_qemu_gate.py, tools/riscv/debian/rootfs/desktop_m4_display_safe_gate.py, tools/riscv/debian/rootfs/desktop_m4_drm_gate.py, tools/riscv/debian/rootfs/desktop_m4_drm_recovery_gate.py, tools/riscv/debian/rootfs/desktop_m4_recovery_gate.py, tools/riscv/debian/rootfs/desktop_m4_scanout_gate.py, tools/riscv/debian/rootfs/desktop_m4_x11_gate.py` |  |  |
 | `tools/riscv/debian/rootfs/desktop_m4_recovery_gate.py` | yes | 1 | 2 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/tests/test_debian_rootfs.py` |  |  |
 | `tools/riscv/debian/rootfs/desktop_m4_scanout_gate.py` | no | 1 | 2 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/tests/test_debian_rootfs.py` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m4_session.sh` | yes | 4 | 7 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/tests/test_debian_browser_web.py, tools/riscv/tests/test_debian_m5_network.py, tools/riscv/tests/test_debian_m6_browser.py, tools/riscv/tests/test_debian_rootfs.py` |  |  |
+| `tools/riscv/debian/rootfs/desktop_m4_session.sh` | yes | 3 | 7 | 保留 |
+| ↳ 活动引用 |  | `tools/riscv/tests/test_debian_browser_web.py, tools/riscv/tests/test_debian_m5_network.py, tools/riscv/tests/test_debian_rootfs.py` |  |  |
 | `tools/riscv/debian/rootfs/desktop_m4_welcome.html` | yes | 2 | 2 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/tests/test_debian_rootfs.py` |  |  |
 | `tools/riscv/debian/rootfs/desktop_m4_x11_gate.py` | yes | 1 | 4 | 保留 |
@@ -139,32 +139,31 @@
 | ↳ 活动引用 |  | `tools/riscv/tests/test_debian_browser_m5_runtime_gate.py, tools/riscv/tests/test_debian_browser_web.py, tools/riscv/tests/test_debian_signed_sources.py` |  |  |
 | `tools/riscv/debian/rootfs/desktop_m5_network_evidence.sh` | yes | 4 | 10 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/browser_web_dev_overlay.json, tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/tests/test_debian_browser_web.py, tools/riscv/tests/test_debian_m5_network.py` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m5_network_gate.py` | yes | 20 | 6 | 保留 |
+| `tools/riscv/debian/rootfs/desktop_m5_network_gate.py` | yes | 18 | 6 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/browser_m5_qemu_gate.py, tools/riscv/debian/rootfs/browser_web_contract.py, tools/riscv/debian/rootfs/browser_web_qemu_gate.py, tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/debian/rootfs/debug_console_qemu_gate.py, tools/riscv/debian/rootfs/desktop_m5_qemu_gate.py, tools/riscv/debian/rootfs/desktop_m6_browser_gate.py, tools/riscv/debian/rootfs/desktop_m9_software_gate.py` |  |  |
 | `tools/riscv/debian/rootfs/desktop_m5_overview.conf` | yes | 1 | 1 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m5_qemu_gate.py` | yes | 12 | 6 | 保留 |
+| `tools/riscv/debian/rootfs/desktop_m5_qemu_gate.py` | yes | 11 | 6 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/browser_m5_qemu_gate.py, tools/riscv/debian/rootfs/browser_web_qemu_gate.py, tools/riscv/debian/rootfs/debug_console_qemu_gate.py, tools/riscv/debian/rootfs/desktop_m6_browser_gate.py, tools/riscv/debian/rootfs/desktop_m9_software_gate.py, tools/riscv/megrez_single_packet_qemu_gate.py, tools/riscv/physical_graphics_qemu_gate.py, tools/riscv/tests/test_debian_browser_web.py` |  |  |
 | `tools/riscv/debian/rootfs/desktop_m5_session.sh` | yes | 5 | 3 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/browser_web_dev_overlay.json, tools/riscv/firefox_fast_check.sh, tools/riscv/tests/test_debian_browser_m5_runtime_gate.py, tools/riscv/tests/test_debian_browser_web.py, tools/riscv/tests/test_debian_signed_sources.py` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m6_browser_evidence.sh` | yes | 2 | 3 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/tests/test_debian_m6_browser.py` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m6_browser_gate.py` | yes | 9 | 5 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/desktop_m7_baidu_gate.py, tools/riscv/megrez_debug_contract.py, tools/riscv/megrez_debug_desktop.py, tools/riscv/megrez_gmac_gate.py, tools/riscv/tests/test_debian_m6_browser.py, tools/riscv/tests/test_debian_m7_baidu.py, tools/riscv/tests/test_megrez_debug.py, tools/riscv/tests/test_megrez_debug_desktop.py` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m6_javascript.html` | yes | 2 | 2 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/tests/test_debian_m6_browser.py` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m6_javascript_pass.html` | yes | 2 | 1 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/tests/test_debian_m6_browser.py` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m7_baidu_evidence.sh` | yes | 2 | 1 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/tests/test_debian_m7_baidu.py` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m7_baidu_gate.py` | yes | 7 | 3 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/megrez_debug_contract.py, tools/riscv/megrez_debug_desktop.py, tools/riscv/megrez_gmac_gate.py, tools/riscv/tests/test_debian_m7_baidu.py, tools/riscv/tests/test_megrez_debug.py, tools/riscv/tests/test_megrez_debug_desktop.py, tools/riscv/tests/test_megrez_gmac_gate.py` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m8_browser_quality_evidence.sh` | yes | 2 | 2 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/tests/test_debian_m8_browser_quality.py` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m9_software_evidence.sh` | yes | 2 | 2 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/tests/test_debian_m9_software.py` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m9_software_gate.py` | yes | 1 | 3 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/tests/test_debian_m9_software.py` |  |  |
+| `tools/riscv/debian/rootfs/desktop_m6_browser_evidence.sh` | yes | 1 | 3 | 保留 |
+| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh` |  |  |
+| `tools/riscv/debian/rootfs/desktop_m6_browser_gate.py` | yes | 7 | 5 | 保留 |
+| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/desktop_m7_baidu_gate.py, tools/riscv/megrez_debug_contract.py, tools/riscv/megrez_debug_desktop.py, tools/riscv/megrez_gmac_gate.py, tools/riscv/tests/test_megrez_debug.py, tools/riscv/tests/test_megrez_debug_desktop.py, tools/riscv/tests/test_megrez_gmac_gate.py` |  |  |
+| `tools/riscv/debian/rootfs/desktop_m6_javascript.html` | yes | 1 | 2 | 保留 |
+| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh` |  |  |
+| `tools/riscv/debian/rootfs/desktop_m6_javascript_pass.html` | yes | 1 | 1 | 保留 |
+| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh` |  |  |
+| `tools/riscv/debian/rootfs/desktop_m7_baidu_evidence.sh` | yes | 1 | 1 | 保留 |
+| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh` |  |  |
+| `tools/riscv/debian/rootfs/desktop_m7_baidu_gate.py` | yes | 6 | 3 | 保留 |
+| ↳ 活动引用 |  | `tools/riscv/megrez_debug_contract.py, tools/riscv/megrez_debug_desktop.py, tools/riscv/megrez_gmac_gate.py, tools/riscv/tests/test_megrez_debug.py, tools/riscv/tests/test_megrez_debug_desktop.py, tools/riscv/tests/test_megrez_gmac_gate.py` |  |  |
+| `tools/riscv/debian/rootfs/desktop_m8_browser_quality_evidence.sh` | yes | 1 | 2 | 保留 |
+| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh` |  |  |
+| `tools/riscv/debian/rootfs/desktop_m9_software_evidence.sh` | yes | 1 | 2 | 保留 |
+| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh` |  |  |
+| `tools/riscv/debian/rootfs/desktop_m9_software_gate.py` | yes | 0 | 3 | 候选删除，需人工确认动态引用 |
 | `tools/riscv/debian/rootfs/desktop_pcmanfm.conf` | yes | 2 | 1 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/tests/test_debian_rootfs.py` |  |  |
 | `tools/riscv/debian/rootfs/desktop_wallpaper.svg` | yes | 2 | 1 | 保留 |
@@ -238,7 +237,7 @@
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/browser_web_dev_overlay.json, tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/debian/rootfs/build_stage1.sh, tools/riscv/tests/test_debian_browser_web.py, tools/riscv/tests/test_debian_rootfs.py, tools/riscv/tests/test_physical_graphics_gate.py` |  |  |
 | `tools/riscv/debian/rootfs/physical_system_probe.sh` | yes | 3 | 1 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_stage1.sh, tools/riscv/tests/test_debian_rootfs.py, tools/riscv/tests/test_megrez_physical_graphics.py` |  |  |
-| `tools/riscv/debian/rootfs/profiles.py` | yes | 51 | 49 | 保留 |
+| `tools/riscv/debian/rootfs/profiles.py` | yes | 48 | 49 | 保留 |
 | ↳ 活动引用 |  | `book/book/osdk/reference/manifest.html, book/book/print.html, tools/riscv/debian/rootfs/browser_web_evidence.sh, tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/debian/rootfs/contract.py, tools/riscv/debian/rootfs/desktop_m4_evidence.sh, tools/riscv/debian/rootfs/desktop_m5_network_evidence.sh, tools/riscv/debian/rootfs/gate_protocol.py` |  |  |
 | `tools/riscv/debian/rootfs/rootfs_gate.py` | yes | 34 | 13 | 保留 |
 | ↳ 活动引用 |  | `.tmp_diag2.py, Makefile, tools/riscv/debian/rootfs/browser_m5_qemu_gate.py, tools/riscv/debian/rootfs/browser_web_contract.py, tools/riscv/debian/rootfs/browser_web_qemu_gate.py, tools/riscv/debian/rootfs/debug_console_qemu_gate.py, tools/riscv/debian/rootfs/desktop_m3_gate.py, tools/riscv/debian/rootfs/desktop_m4_display_safe_gate.py` |  |  |
@@ -287,12 +286,7 @@
 | `tools/riscv/tests/test_debian_desktop_m4_x11_gate.py` | yes | 0 | 4 | 候选删除，需人工确认动态引用 |
 | `tools/riscv/tests/test_debian_dev_overlay.py` | yes | 2 | 13 | 保留 |
 | ↳ 活动引用 |  | `Makefile, tools/riscv/firefox_fast_check.sh` |  |  |
-| `tools/riscv/tests/test_debian_m5_network.py` | yes | 0 | 10 | 候选删除，需人工确认动态引用 |
-| `tools/riscv/tests/test_debian_m6_browser.py` | yes | 1 | 3 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/tests/test_debian_m7_baidu.py` |  |  |
-| `tools/riscv/tests/test_debian_m7_baidu.py` | yes | 0 | 2 | 候选删除，需人工确认动态引用 |
-| `tools/riscv/tests/test_debian_m8_browser_quality.py` | yes | 0 | 3 | 候选删除，需人工确认动态引用 |
-| `tools/riscv/tests/test_debian_m9_software.py` | yes | 0 | 3 | 候选删除，需人工确认动态引用 |
+| `tools/riscv/tests/test_debian_m5_network.py` | yes | 0 | 11 | 候选删除，需人工确认动态引用 |
 | `tools/riscv/tests/test_debian_rootfs.py` | yes | 2 | 45 | 保留 |
 | ↳ 活动引用 |  | `Makefile, tools/riscv/tests/test_megrez_firefox_daily_use.py` |  |  |
 | `tools/riscv/tests/test_debian_signed_sources.py` | yes | 0 | 2 | 候选删除，需人工确认动态引用 |
