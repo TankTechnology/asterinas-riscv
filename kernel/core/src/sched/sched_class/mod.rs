@@ -235,16 +235,39 @@ impl Scheduler for ClassScheduler {
 
         // Note: call set_if_is_none again to prevent a race condition.
         if still_in_rq && task.cpu().set_if_is_none(cpu).is_err() {
+            if flags == EnqueueFlags::Wake {
+                // The task is already queued on this CPU. Make it the
+                // preferred candidate for the next scheduling decision and
+                // request a reschedule: this CPU may be running another task
+                // (or be idle and halted), in which case the woken task would
+                // otherwise wait for the next timer tick.
+                let is_current = rq
+                    .current
+                    .as_ref()
+                    .is_some_and(|((current, _), _)| Arc::ptr_eq(current, &task));
+                rq.fair.note_wake_candidate(&task);
+                return (!is_current).then_some(cpu);
+            }
             return None;
         }
 
-        // Preempt if the new task has a higher priority.
+        // Preempt if the new task has a higher priority, and request a
+        // reschedule for every wake-up.
+        //
+        // Without that request the awakened task cannot run until the target
+        // CPU reaches a scheduling point on its own, which may be the next
+        // timer tick. That shows up as a millisecond-scale delay on loopback
+        // RPC: the woken peer has to wait for the tick. The reschedule runs
+        // the scheduler, which prefers the task that was just woken (see
+        // `FairClassRq::note_wake_candidate`), so a task that should not
+        // preempt simply leaves the current task running.
         let should_preempt = rq
             .current
             .as_ref()
             .is_none_or(|((_, rq_current_thread), _)| {
                 thread.sched_attr().policy() < rq_current_thread.sched_attr().policy()
-            });
+            })
+            || flags == EnqueueFlags::Wake;
 
         thread.sched_attr().set_last_cpu(cpu);
         rq.enqueue_entity((task, thread), Some(flags));
@@ -284,6 +307,16 @@ impl ClassScheduler {
     // TODO: Implement a better algorithm and replace the current naive implementation.
     fn select_cpu(&self, thread: &Thread, flags: EnqueueFlags) -> CpuId {
         if let Some(last_cpu) = thread.sched_attr().last_cpu() {
+            // Wake-affine placement keeps a woken task on the CPU it last ran
+            // on, which is usually right. But if that CPU is busy, the task
+            // cannot run until the CPU reaches a scheduling point, and a CPU
+            // inside a long kernel operation (e.g., synchronous disk I/O) may
+            // not do so for milliseconds. Prefer an idle CPU in that case.
+            if flags == EnqueueFlags::Wake
+                && let Some(cpu) = self.pick_idle_cpu_for_wake(last_cpu, thread)
+            {
+                return cpu;
+            }
             return last_cpu;
         }
         debug_assert!(flags == EnqueueFlags::Spawn);
@@ -318,6 +351,30 @@ impl ClassScheduler {
 
         self.last_chosen_cpu.set_anyway(selected);
         selected
+    }
+
+    /// Picks an idle CPU for a woken task when its previous CPU is busy.
+    ///
+    /// Returns `None` when the task should stay on `last_cpu`: that CPU is
+    /// already idle, the affinity permits no other CPU, or no other CPU is
+    /// idle.
+    fn pick_idle_cpu_for_wake(&self, last_cpu: CpuId, thread: &Thread) -> Option<CpuId> {
+        let _guard = disable_local();
+        let affinity = thread.atomic_cpu_affinity().load(Ordering::Relaxed);
+
+        let is_idle = |cpu: CpuId| {
+            let PerCpuLoadStats {
+                queue_len,
+                is_idle,
+            } = self.rqs[cpu.as_usize()].lock().load_stats();
+            is_idle && queue_len == 0
+        };
+
+        if is_idle(last_cpu) {
+            return None;
+        }
+
+        Self::cycle_after(last_cpu, &affinity).find(|&cpu| cpu != last_cpu && is_idle(cpu))
     }
 
     /// Returns a cycling iterator over the CPUs in the [`CpuSet`], starting *after*

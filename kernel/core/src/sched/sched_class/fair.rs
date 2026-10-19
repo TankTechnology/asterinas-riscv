@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{collections::BinaryHeap, sync::Arc};
+use alloc::{
+    collections::BinaryHeap,
+    sync::{Arc, Weak},
+};
 use core::{
     cmp::{self, Reverse},
     sync::atomic::{AtomicU64, Ordering},
@@ -231,6 +234,15 @@ pub(super) struct FairClassRq {
     /// value of newly-enqueued threads.
     min_vruntime: u64,
     total_weight: u64,
+    /// The task most recently woken into this run queue, if it has not been
+    /// picked yet.
+    ///
+    /// This mirrors Linux's `cfs_rq->next`: a wake-up asks the scheduler to
+    /// run the woken task next, rather than the globally least-runnable one.
+    /// Without it, a task that has been asleep for a long time (and thus has
+    /// a low virtual runtime) can be chosen ahead of the task that was just
+    /// woken and then hold the CPU for a whole time slice.
+    wake_next: Option<Weak<Task>>,
 }
 
 impl FairClassRq {
@@ -240,6 +252,19 @@ impl FairClassRq {
             entities: BinaryHeap::new(),
             min_vruntime: 0,
             total_weight: 0,
+            wake_next: None,
+        }
+    }
+
+    /// Marks `task` as the preferred candidate for the next scheduling
+    /// decision if it is currently queued.
+    pub(super) fn note_wake_candidate(&mut self, task: &Arc<Task>) {
+        if self
+            .entities
+            .iter()
+            .any(|Reverse(item)| Arc::ptr_eq(&item.0, task))
+        {
+            self.wake_next = Some(Arc::downgrade(task));
         }
     }
 
@@ -284,6 +309,16 @@ impl SchedClassRq for FairClassRq {
             Some(EnqueueFlags::Spawn) => self.min_vruntime + self.vtime_slice(),
             _ => self.min_vruntime,
         };
+        if flags == Some(EnqueueFlags::Wake) {
+            // Remember the most recently woken task as the preferred candidate
+            // for the next scheduling decision. Picking the global leftmost
+            // task instead lets a task that slept for a long time (and thus has
+            // a small virtual runtime) run for a whole time slice while the
+            // just-woken task waits, which shows up as millisecond-scale
+            // request/response latency. Linux does the same with
+            // `cfs_rq->next` set by wakeup preemption.
+            self.wake_next = Some(Arc::downgrade(&entity));
+        }
         let (_old_weight, weight) = fair_attr.fetch_weight();
 
         let vruntime = fair_attr
@@ -304,6 +339,24 @@ impl SchedClassRq for FairClassRq {
     }
 
     fn pick_next(&mut self) -> Option<Arc<Task>> {
+        if let Some(preferred) = self.wake_next.take()
+            && let Some(preferred) = preferred.upgrade()
+        {
+            let mut items = core::mem::take(&mut self.entities).into_vec();
+            if let Some(position) = items
+                .iter()
+                .position(|Reverse(item)| Arc::ptr_eq(&item.0, &preferred))
+            {
+                let Reverse(FairQueueItem(entity, _)) = items.swap_remove(position);
+                self.entities = BinaryHeap::from(items);
+                let sched_attr = entity.as_thread().unwrap().sched_attr();
+                let (old_weight, _weight) = sched_attr.fair.fetch_weight();
+                self.total_weight -= old_weight;
+                return Some(entity);
+            }
+            self.entities = BinaryHeap::from(items);
+        }
+
         let Reverse(FairQueueItem(entity, _)) = self.entities.pop()?;
 
         let sched_attr = entity.as_thread().unwrap().sched_attr();
