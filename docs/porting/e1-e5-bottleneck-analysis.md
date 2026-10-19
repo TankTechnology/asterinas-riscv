@@ -28,7 +28,7 @@
 
 ## 本轮已完成的收敛
 
-- 删除 41 个零活动引用的历史门禁、诊断测试和旧 overlay；保留证据、收据
+- 删除 48 个零活动引用的历史门禁、诊断测试和旧 overlay；另有 3 个带既有 dirty 改动的候选登记为 deferred；保留证据、收据
   和 E1–E5 核心实现。删除清单与状态见
   `docs/porting/refactor-deletions.json`。
 - Makefile 只保留 E1–E5 rootfs 单元集合，移除 M5 网络/浏览器、M6、M7、
