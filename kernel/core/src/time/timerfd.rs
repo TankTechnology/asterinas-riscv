@@ -147,9 +147,12 @@ impl TimerfdFile {
 
         timer_guard.set_interval(interval);
 
-        // Cancel the timer and clear the ticks counter.
+        // Cancel the timer and clear the ticks counter. Clearing the counter
+        // drops `IN` readiness, so any cached poll state must be invalidated
+        // (see `try_read`).
         timer_guard.cancel();
         self.ticks.store(0, Ordering::Relaxed);
+        self.pollee.invalidate();
 
         if expire_time != Duration::ZERO {
             if flags.contains(TFDSetTimeFlags::TFD_TIMER_CANCEL_ON_SET) {
@@ -190,6 +193,13 @@ impl TimerfdFile {
         }
 
         writer.write_fallible(&mut ticks.as_bytes().into())?;
+
+        // Consuming the expiration counter makes the file non-readable, so the
+        // cached poll state (if any) must be invalidated. Otherwise a poller
+        // that cached `IN` keeps reporting the timer as ready even though there
+        // is nothing to read, and a level-triggered `epoll` would wake the
+        // event loop continuously.
+        self.pollee.invalidate();
 
         Ok(())
     }
