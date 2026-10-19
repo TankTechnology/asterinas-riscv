@@ -95,6 +95,7 @@ jobs:
           FULL_TEST_MATRIX: >-
             [
               { "name": "system-core", "disk_size": 10240, "timeout_minutes": 45 },
+              { "name": "drm", "disk_size": 8192, "timeout_minutes": 45 },
               { "name": "nix-and-nixos-tools", "disk_size": 8192, "timeout_minutes": 60, "test_timeout_minutes": 30 },
               { "name": "containerization-and-virtualization", "disk_size": 10240, "timeout_minutes": 45 },
               { "name": "networking", "disk_size": 10240, "timeout_minutes": 45 },
@@ -158,6 +159,16 @@ jobs:
                   '[.[] | select(.name == $suite_name)]' <<< "$FULL_TEST_MATRIX"
               )"
             fi
+
+            # Desktop changes need DRM coverage even when another suite is selected.
+            if grep -qE '^distro/etc_nixos/(modules/xfce|overlays/desktop)/' /tmp/changed; then
+              matrix="$(
+                jq -c \
+                  --argjson full_matrix "$FULL_TEST_MATRIX" \
+                  '. + [$full_matrix[] | select(.name == "drm")] | unique_by(.name)' \
+                  <<< "$matrix"
+              )"
+            fi
           fi
           matrix="$(jq -c <<< "$matrix")"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
@@ -191,7 +202,7 @@ jobs:
         timeout-minutes: ${{ matrix.test.timeout_minutes || 30 }}
         uses: maus007/docker-run-action-fork@v1
         with:
-          image: asterinas/kernel-dev:0.18.1-20260926
+          image: asterinas/kernel-dev:0.19.0-20261012
           options: --privileged -v /dev:/dev -v ${{ github.workspace }}:/root/asterinas
           # `docker-run-action-fork` joins these lines with ';' and runs them via
           # `sh -c` without fail-fast settings, unlike a normal `run:` step.

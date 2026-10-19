@@ -3,15 +3,6 @@
     Toward a production-grade Linux alternative—memory safe, high-performance, and more<br/>
 </p>
 
-<!-- Asterinas NixOS 0.18.0 demo. It is uploaded as a Github attachment
-so that GitHub will render that URL as a video player in Markdown.
-The original file name will be displayed up in the top bar of the video player.
-So make sure you give the video file a cool name before uploading it.
--->
-https://github.com/user-attachments/assets/eabf8674-8503-44f7-abcc-52395d2ca4a3
-
-
-
 <p align="center">
     <a href="https://github.com/asterinas/asterinas/actions/workflows/test_x86.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_x86.yml/badge.svg?event=push" alt="Test x86-64" style="max-width: 100%;"></a>
     <a href="https://github.com/asterinas/asterinas/actions/workflows/test_aarch64.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_aarch64.yml/badge.svg?event=push" alt="Test aarch64" style="max-width: 100%;"></a>
@@ -24,21 +15,24 @@ https://github.com/user-attachments/assets/eabf8674-8503-44f7-abcc-52395d2ca4a3
     <br/>
 </p>
 
+**News:**
+- 2026-10-13: Asterinas 0.19.0 is released, adding a DRM graphics subsystem, AArch64 as the fourth supported architecture, a Rust-native device model (`aster-device`), better guest-kernel support for secure containers, and the first self-hosted build of Asterinas on Asterinas NixOS. Read the [announcement](https://asterinas.github.io/2026/10/13/announcing-asterinas-0.19.0.html).
+
 ## Introducing Asterinas
 
 The future of operating systems (OSes) belongs to Rust—a modern systems programming language (PL)
 that delivers safety, efficiency, and productivity at once.
-The open question is not _whether_ OS kernels should transition from C to Rust,
-but _how_ we get there.
+The open question is not whether OS kernels should transition from C to Rust,
+but how we get there.
 
 Linux follows an _incremental_ path.
 While the Rust for Linux project has successfully integrated Rust as an official second PL,
-this approach faces _inherent friction_.
+this approach faces inherent friction.
 As a newcomer within a massive C codebase,
 Rust must often compromise on safety, efficiency, clarity, and ergonomics
 to maintain compatibility with legacy structures.
 And while new Rust code can improve what it touches,
-it cannot retroactively eliminate _vulnerabilities_ in decades of existing C code.
+it cannot retroactively eliminate vulnerabilities in decades of existing C code.
 
 Asterinas takes a _clean-slate_ approach.
 By building a Linux-compatible, general-purpose OS kernel from the ground up in Rust,
@@ -74,7 +68,7 @@ Through the lens of a modern PL, Asterinas rethinks and modernizes the construct
 Asterinas aims to become **a production-grade, memory-safe Linux alternative**,
 with performance that matches Linux—and in some scenarios, exceeds it.
 The project has been under active development for four years,
-supports 230+ Linux system calls,
+supports 240+ Linux system calls,
 and has launched an experimental distribution,
 [Asterinas NixOS](https://asterinas.github.io/book/distro/index.html).
 
@@ -144,7 +138,7 @@ Follow the steps below to get Asterinas up and running.
 2. Run a Docker container as the development environment:
 
     ```bash
-    docker run -it --privileged --network=host -v /dev:/dev -v $(pwd)/asterinas:/root/asterinas asterinas/dev:0.18.1-20260926
+    docker run -it --privileged --network=host -v /dev:/dev -v $(pwd)/asterinas:/root/asterinas asterinas/dev:0.19.0-20261012
     ```
 
     Alternatively, if you use VS Code with the

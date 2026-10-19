@@ -197,7 +197,7 @@ $(EXT2_IMAGE): $(EXT2_IMAGE_STAMP)
 
 $(EXFAT_IMAGE):
 	@mkdir -p $(BUILD_DIR)
-	@fallocate -l 512M $(EXFAT_IMAGE)
+	@truncate -s 512M $(EXFAT_IMAGE)
 	@mkfs.exfat $(EXFAT_IMAGE)
 
 $(LTP_DEV_IMAGE):
