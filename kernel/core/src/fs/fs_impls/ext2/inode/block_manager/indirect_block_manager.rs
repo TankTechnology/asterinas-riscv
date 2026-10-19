@@ -196,6 +196,33 @@ impl IndirectBlock {
         Ok(words)
     }
 
+    /// Reads the whole metadata block as bytes.
+    ///
+    /// Extent leaf and index blocks are not plain arrays of block numbers, so
+    /// callers that interpret their on-disk layout need the raw bytes.
+    pub(super) fn read_bytes(&self) -> Result<[u8; BLOCK_SIZE]> {
+        let words = self.read_words()?;
+        let mut bytes = [0u8; BLOCK_SIZE];
+        for (index, word) in words.iter().enumerate() {
+            bytes[index * size_of::<u32>()..(index + 1) * size_of::<u32>()]
+                .copy_from_slice(&word.to_le_bytes());
+        }
+        Ok(bytes)
+    }
+
+    /// Overwrites the whole metadata block and marks it dirty.
+    pub(super) fn write_bytes(&mut self, bytes: &[u8; BLOCK_SIZE]) -> Result<()> {
+        for index in 0..BLOCK_SIZE / size_of::<u32>() {
+            let word = u32::from_le_bytes(
+                bytes[index * size_of::<u32>()..(index + 1) * size_of::<u32>()]
+                    .try_into()
+                    .unwrap(),
+            );
+            self.write_bid(index, word)?;
+        }
+        Ok(())
+    }
+
     /// Writes a block pointer at slot `idx` and marks the block dirty.
     pub(super) fn write_bid(&mut self, idx: usize, bid: Ext2Bid) -> Result<()> {
         let slot_offset = self.slot_offset(idx);

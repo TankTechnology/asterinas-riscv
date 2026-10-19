@@ -393,14 +393,14 @@ impl BlockPtrTree {
         self.free_indirect_roots_after(fs, walk.root_slot() as usize);
     }
 
-    /// Truncate an inline (depth-zero) ext4 extent tree.
+    /// Truncate an ext4 extent tree.
     ///
-    /// The Debian root images use inline extent trees for the small files that
-    /// package management rewrites most often.  Keep the extent records in
-    /// logical order, free only the physical suffix, and then rewrite the
-    /// inode's `i_block` extent header.  Multi-level extent mutation remains
-    /// unsupported and is rejected without interpreting its index blocks as
-    /// legacy pointers.
+    /// Depth-zero trees live entirely in the inode: keep the extent records in
+    /// logical order, free only the physical suffix, and rewrite the inode's
+    /// `i_block` extent header. Depth-one trees additionally own leaf blocks;
+    /// those leaves are rewritten and freed as their last extent disappears.
+    /// Deeper trees remain unsupported and are rejected without interpreting
+    /// their index blocks as legacy pointers.
     fn truncate_extent_tree(&mut self, fs: &Ext2, new_size: usize) -> Result<()> {
         let mut bytes = self.raw_block_ptrs.extent_bytes();
         if u16::from_le_bytes([bytes[0], bytes[1]]) != EXTENT_MAGIC {
@@ -412,8 +412,11 @@ impl BlockPtrTree {
         if entries > max_entries || entries > 4 || max_entries == 0 {
             return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent entry count");
         }
-        if depth != 0 {
+        if depth > 1 {
             return_errno_with_message!(Errno::EOPNOTSUPP, "nested ext4 extent truncation");
+        }
+        if depth == 1 {
+            return self.truncate_extent_index(fs, new_size, &mut bytes, entries);
         }
 
         let cutoff = u32::try_from(new_size.div_ceil(BLOCK_SIZE))
@@ -466,6 +469,149 @@ impl BlockPtrTree {
         for offset in (12 + kept * 12)..(12 + 4 * 12) {
             bytes[offset] = 0;
         }
+        for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
+            *value = u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
+        }
+        self.raw_block_ptrs.sector_count = self
+            .raw_block_ptrs
+            .sector_count
+            .saturating_sub(freed_blocks.saturating_mul(SECTORS_PER_BLOCK));
+        Ok(())
+    }
+
+    /// Truncate a depth-one extent tree: an inline index root plus leaf blocks.
+    ///
+    /// Every leaf is visited in logical order. Extents beyond the cutoff are
+    /// freed, the leaf straddling the cutoff is shortened, and a leaf that no
+    /// longer holds any extent is freed together with its index entry. The
+    /// surviving index entries keep their original logical address, which is
+    /// exactly the first extent's logical block.
+    fn truncate_extent_index(
+        &mut self,
+        fs: &Ext2,
+        new_size: usize,
+        bytes: &mut [u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()],
+        entries: usize,
+    ) -> Result<()> {
+        let cutoff = u32::try_from(new_size.div_ceil(BLOCK_SIZE))
+            .map_err(|_| Error::with_message(Errno::EFBIG, "ext4 truncate size overflow"))?;
+        let mut kept_indices = 0usize;
+        let mut freed_blocks = 0u32;
+        let mut previous_logical = 0u32;
+
+        for index in 0..entries {
+            let offset = 12 + index * 12;
+            let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            if index != 0 && logical < previous_logical {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent index");
+            }
+            previous_logical = logical;
+            let leaf_lo =
+                u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap());
+            let leaf_hi =
+                u16::from_le_bytes(bytes[offset + 8..offset + 10].try_into().unwrap());
+            let leaf_bid = u32::try_from((u64::from(leaf_hi) << 32) | u64::from(leaf_lo))
+                .map_err(|_| Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block"))?;
+
+            let mut leaf = {
+                let mut manager = self.indirect_blocks_manager.lock();
+                manager.find(leaf_bid)?.read_bytes()?
+            };
+            if u16::from_le_bytes([leaf[0], leaf[1]]) != EXTENT_MAGIC {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent leaf");
+            }
+            let leaf_entries = u16::from_le_bytes([leaf[2], leaf[3]]) as usize;
+            let leaf_max_entries = u16::from_le_bytes([leaf[4], leaf[5]]) as usize;
+            let leaf_depth = u16::from_le_bytes([leaf[6], leaf[7]]);
+            if leaf_depth != 0
+                || leaf_entries > leaf_max_entries
+                || leaf_max_entries > (BLOCK_SIZE - 12) / 12
+            {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent leaf");
+            }
+
+            let mut kept = 0usize;
+            let mut previous_end = 0u32;
+            for extent in 0..leaf_entries {
+                let entry_offset = 12 + extent * 12;
+                let extent_logical =
+                    u32::from_le_bytes(leaf[entry_offset..entry_offset + 4].try_into().unwrap());
+                let raw_length = u16::from_le_bytes(
+                    leaf[entry_offset + 4..entry_offset + 6].try_into().unwrap(),
+                );
+                let length = u32::from(raw_length & 0x7fff);
+                if length == 0 || extent_logical < previous_end {
+                    return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent range");
+                }
+                previous_end = extent_logical.checked_add(length).ok_or_else(|| {
+                    Error::with_message(Errno::EUCLEAN, "ext4 extent logical overflow")
+                })?;
+                let physical_hi = u16::from_le_bytes(
+                    leaf[entry_offset + 6..entry_offset + 8].try_into().unwrap(),
+                );
+                if physical_hi != 0 {
+                    return_errno_with_message!(Errno::EOPNOTSUPP, "64-bit ext4 extent truncation");
+                }
+                let physical = u32::from_le_bytes(
+                    leaf[entry_offset + 8..entry_offset + 12].try_into().unwrap(),
+                );
+                let keep = if extent_logical >= cutoff {
+                    0
+                } else {
+                    length.min(cutoff - extent_logical)
+                };
+
+                if keep < length {
+                    let free_start = physical.checked_add(keep).ok_or_else(|| {
+                        Error::with_message(Errno::EIO, "ext4 extent block overflow")
+                    })?;
+                    let free_len = length - keep;
+                    fs.free_blocks(free_start, free_len)?;
+                    freed_blocks = freed_blocks
+                        .checked_add(free_len)
+                        .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 free count overflow"))?;
+                }
+
+                if keep != 0 {
+                    let new_offset = 12 + kept * 12;
+                    leaf.copy_within(entry_offset..entry_offset + 12, new_offset);
+                    let keep_length = (raw_length & 0x8000) | u16::try_from(keep).unwrap();
+                    leaf[new_offset + 4..new_offset + 6]
+                        .copy_from_slice(&keep_length.to_le_bytes());
+                    kept += 1;
+                }
+            }
+
+            if kept == 0 {
+                let _ = self.indirect_blocks_manager.lock().remove(leaf_bid);
+                fs.free_blocks(leaf_bid, 1)?;
+                freed_blocks = freed_blocks
+                    .checked_add(1)
+                    .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 free count overflow"))?;
+                continue;
+            }
+
+            if kept != leaf_entries {
+                leaf[2..4].copy_from_slice(&(kept as u16).to_le_bytes());
+                for byte in &mut leaf[12 + kept * 12..] {
+                    *byte = 0;
+                }
+                self.indirect_blocks_manager
+                    .lock()
+                    .find_mut(leaf_bid)?
+                    .write_bytes(&leaf)?;
+            }
+
+            let new_offset = 12 + kept_indices * 12;
+            bytes.copy_within(offset..offset + 12, new_offset);
+            kept_indices += 1;
+        }
+
+        bytes[2..4].copy_from_slice(&(kept_indices as u16).to_le_bytes());
+        for byte in &mut bytes[12 + kept_indices * 12..] {
+            *byte = 0;
+        }
+
         for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
             *value = u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
         }
