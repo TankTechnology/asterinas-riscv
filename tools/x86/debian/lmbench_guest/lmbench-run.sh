@@ -27,12 +27,18 @@ getent passwd rpc >/dev/null 2>&1 ||
     useradd --system --no-create-home --shell /usr/sbin/nologin --gid rpc rpc
 getent passwd rpc && echo "LMBENCH_RUN_RPC_USER_OK"
 
-# Quiesce what this kernel cannot run: logind and rsyslog restart in a tight
-# loop and add scheduling jitter to the timing-sensitive RPC and signal
-# measurements.
+# logind and rsyslog used to restart in a tight loop and add scheduling
+# jitter to the timing-sensitive measurements. That was a consequence of the
+# timerfd stale-readiness bug (sd-event spun at 100%); with that fixed they run
+# normally, so report their state instead of masking them.
 for unit in systemd-logind.service rsyslog.service; do
-    systemctl stop "$unit" 2>/dev/null
-    systemctl mask "$unit" 2>/dev/null
+    # Heal images that were masked by earlier runs of this script.
+    systemctl unmask "$unit" 2>/dev/null
+    systemctl start "$unit" 2>/dev/null
+done
+sleep 2
+for unit in systemd-logind.service rsyslog.service; do
+    echo "LMBENCH_RUN_SERVICE $unit $(systemctl is-active "$unit" 2>/dev/null) restarts=$(systemctl show -p NRestarts --value "$unit" 2>/dev/null)"
 done
 echo "LMBENCH_RUN_QUIESCED $(systemctl is-system-running 2>/dev/null)"
 
