@@ -1,6 +1,10 @@
 [Unit]
 Description=Asterinas native LMBench ALL run
-After=multi-user.target
+# `WantedBy=multi-user.target` already pulls this unit into the target's job.
+# Adding `After=multi-user.target` here creates an ordering cycle (the target
+# waits for the unit, the unit waits for the target), which systemd resolves
+# by deleting one of the jobs.
+After=network.target
 
 [Service]
 Type=oneshot

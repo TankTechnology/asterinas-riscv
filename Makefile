@@ -671,6 +671,41 @@ test_x86_debian_boot:
 		--wait-for "$(X86_DEBIAN_BOOT_MARKER)" \
 		--timeout "$(X86_DEBIAN_BOOT_TIMEOUT)"
 
+# Run the native LMbench ALL suite inside the Debian guest and wait for the
+# runner's completion marker. The transcript records the per-run report; the
+# parameters below are echoed so a result can always be attributed.
+#   X86_DEBIAN_LMBENCH_IMAGE  ext4 image prepared by prepare_lmbench_disk.sh
+#   X86_DEBIAN_SMP            vCPU count (4 matches the published numbers)
+#   X86_DEBIAN_ACCEL          kvm or tcg
+#   X86_DEBIAN_LMBENCH_QEMU   optional wrapper around qemu-system-x86_64, used
+#                             to pin the vCPUs (see the README's host section)
+X86_DEBIAN_LMBENCH_IMAGE ?= $(CURDIR)/target/x86-debian/m4/lmbench2.ext2
+X86_DEBIAN_LMBENCH_TRANSCRIPT ?= $(CURDIR)/target/x86-debian/lmbench.transcript
+X86_DEBIAN_SMP ?= 4
+X86_DEBIAN_ACCEL ?= kvm
+X86_DEBIAN_LMBENCH_QEMU ?=
+X86_DEBIAN_LMBENCH_TIMEOUT ?= 2400
+
+.PHONY: test_x86_debian_lmbench
+test_x86_debian_lmbench:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -f "$(X86_DEBIAN_LMBENCH_IMAGE)" || { echo "missing $(X86_DEBIAN_LMBENCH_IMAGE)" >&2; exit 2; }
+	@echo "lmbench: image=$(X86_DEBIAN_LMBENCH_IMAGE) smp=$(X86_DEBIAN_SMP) accel=$(X86_DEBIAN_ACCEL) loglevel=4 qemu=$(if $(X86_DEBIAN_LMBENCH_QEMU),$(X86_DEBIAN_LMBENCH_QEMU),default)"
+	@e2fsck -fy "$(X86_DEBIAN_LMBENCH_IMAGE)" >/dev/null 2>&1 || true
+	@tools/x86/debian/boot_debian.sh \
+		--accel "$(X86_DEBIAN_ACCEL)" \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--root-image "$(X86_DEBIAN_LMBENCH_IMAGE)" \
+		--output "$(X86_DEBIAN_LMBENCH_TRANSCRIPT)" \
+		--smp "$(X86_DEBIAN_SMP)" \
+		--loglevel 4 \
+		--wait-for LMBENCH_RUN_DONE \
+		$(if $(X86_DEBIAN_LMBENCH_QEMU),--qemu "$(X86_DEBIAN_LMBENCH_QEMU)",) \
+		--timeout "$(X86_DEBIAN_LMBENCH_TIMEOUT)"
+	@echo "lmbench: transcript=$(X86_DEBIAN_LMBENCH_TRANSCRIPT)"
+
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:
 	@python3 -W error::ResourceWarning -m unittest \

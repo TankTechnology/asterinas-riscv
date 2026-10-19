@@ -36,6 +36,11 @@ Options:
                       syscall above this and the boot slows down sharply).
   --append-extra TEXT Extra kernel command line, placed before the `--` that
                       separates the init arguments.
+  --debugcon PATH     Capture port 0xe9 writes into PATH (QEMU `isa-debugcon`).
+                      The kernel uses it for boot-time diagnostics.
+  --serial-log PATH   Attach the legacy 16550 UART to a file. `early_print`
+                      (used for panic stack traces) writes there, and the
+                      normal kernel log stays on the hvc0 console.
   --qemu PATH         QEMU binary (default: qemu-system-x86_64).
   --accel MODE        tcg (default) or kvm. KVM uses `-cpu host` and requires
                       /dev/kvm; it turns the guest's emulated execution into
@@ -65,6 +70,8 @@ QEMU="qemu-system-x86_64"
 PRINT_MODE=""
 APPEND_EXTRA=""
 ACCEL="tcg"
+DEBUGCON=""
+SERIAL_LOG=""
 
 while (( $# > 0 )); do
     case "$1" in
@@ -74,7 +81,8 @@ while (( $# > 0 )); do
             shift
             ;;
         --wait-for | --timeout | --output | --kernel | --initramfs | --root-image | \
-            --memory | --smp | --loglevel | --qemu | --append-extra | --accel)
+            --memory | --smp | --loglevel | --qemu | --append-extra | --accel | --debugcon | \
+            --serial-log)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --kernel) KERNEL="$2" ;;
@@ -89,6 +97,8 @@ while (( $# > 0 )); do
                 --qemu) QEMU="$2" ;;
                 --append-extra) APPEND_EXTRA="$2" ;;
                 --accel) ACCEL="$2" ;;
+                --debugcon) DEBUGCON="$2" ;;
+                --serial-log) SERIAL_LOG="$2" ;;
             esac
             shift 2
             ;;
@@ -129,13 +139,17 @@ qemu_argv() {
     else
         printf '%s\n' -cpu Icelake-Server
     fi
+    if [[ -n "$SERIAL_LOG" ]]; then
+        printf '%s\n' -serial "file:$SERIAL_LOG"
+    else
+        printf '%s\n' -serial none
+    fi
     printf '%s\n' \
         -smp "$SMP" \
         -m "$MEMORY" \
         --no-reboot \
         -display none \
         -monitor none \
-        -serial none \
         -chardev stdio,id=mux,mux=on,signal=off \
         -device virtio-serial-pci \
         -device virtconsole,chardev=mux \
@@ -146,6 +160,9 @@ qemu_argv() {
         -kernel "$KERNEL" \
         -initrd "$INITRAMFS" \
         -append "$KERNEL_APPEND"
+    if [[ -n "$DEBUGCON" ]]; then
+        printf '%s\n' -debugcon "file:$DEBUGCON"
+    fi
 }
 
 if [[ "$PRINT_MODE" == "--print-append" ]]; then
