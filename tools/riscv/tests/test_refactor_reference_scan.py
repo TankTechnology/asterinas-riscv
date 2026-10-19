@@ -57,6 +57,32 @@ class RefactorReferenceScanTests(unittest.TestCase):
             self.assertTrue(any("protected" in error for error in errors))
             self.assertTrue(any("unreviewed" in error for error in errors))
 
+    def test_manifest_accepts_removed_entry_only_when_absent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            manifest = repo / "manifest.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "keep": [],
+                        "delete": [
+                            {
+                                "path": "old.py",
+                                "references_checked": True,
+                                "state": "removed",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(validate_manifest(repo, manifest), [])
+            (repo / "old.py").write_text("", encoding="utf-8")
+            self.assertEqual(
+                validate_manifest(repo, manifest),
+                ["removed path still exists: old.py"],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

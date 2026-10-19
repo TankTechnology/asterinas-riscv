@@ -173,11 +173,15 @@ def _load_manifest(path: Path) -> dict[str, object]:
 def validate_manifest(repository: Path, manifest_path: Path) -> list[str]:
     value = _load_manifest(manifest_path)
     keep = {str(item) for item in value.get("keep", [])}
-    delete_items = value.get("delete", [])
+    raw_delete_items = value.get("delete", [])
+    delete_items = [
+        item
+        for item in raw_delete_items
+        if isinstance(item, dict) and "path" in item
+    ]
     delete = {
         str(item["path"])
         for item in delete_items
-        if isinstance(item, dict) and "path" in item
     }
     errors: list[str] = []
     overlap = keep & delete
@@ -186,9 +190,16 @@ def validate_manifest(repository: Path, manifest_path: Path) -> list[str]:
     for path in sorted(delete):
         if any(path.startswith(prefix) for prefix in PROTECTED_PREFIXES):
             errors.append(f"protected delete path: {path}")
-        if not (repository / path).exists():
+        item = next(item for item in delete_items if str(item["path"]) == path)
+        state = item.get("state", "planned")
+        if state not in {"planned", "removed"}:
+            errors.append(f"invalid delete state for {path}: {state!r}")
+        exists = (repository / path).exists()
+        if state == "planned" and not exists:
             errors.append(f"missing delete path: {path}")
-    for item in delete_items:
+        if state == "removed" and exists:
+            errors.append(f"removed path still exists: {path}")
+    for item in raw_delete_items:
         if not isinstance(item, dict) or not item.get("references_checked"):
             errors.append(f"unreviewed delete item: {item!r}")
     return errors
