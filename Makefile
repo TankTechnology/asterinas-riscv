@@ -645,6 +645,7 @@ test_riscv_rootfs_builder_image_unit:
 test_x86_debian_tooling_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.x86.tests.test_x86_debian_boot \
+		tools.x86.tests.test_lmbench_transcript \
 		tools.riscv.tests.test_lmbench_native -v
 
 # Boot the Debian root image on the x86_64 kernel and wait for the marker.
@@ -705,6 +706,53 @@ test_x86_debian_lmbench:
 		$(if $(X86_DEBIAN_LMBENCH_QEMU),--qemu "$(X86_DEBIAN_LMBENCH_QEMU)",) \
 		--timeout "$(X86_DEBIAN_LMBENCH_TIMEOUT)"
 	@echo "lmbench: transcript=$(X86_DEBIAN_LMBENCH_TRANSCRIPT)"
+
+# Rate-based LMbench verdict for one or more transcripts. The guest keeps the
+# run directories of earlier boots in the image, so a transcript contains
+# stale reports; the parser selects the run the boot itself produced. Pass
+# `PREVIOUS=<older transcript>` for the same image lineage to identify that
+# run by its new directory instead of by elapsed-time proximity.
+#   X86_DEBIAN_LMBENCH_TRANSCRIPTS        transcripts to judge (space separated)
+#   X86_DEBIAN_LMBENCH_PREVIOUS          optional preceding transcript
+#   X86_DEBIAN_LMBENCH_REQUIRE_RATE      optional minimum green fraction (0..1)
+X86_DEBIAN_LMBENCH_TRANSCRIPTS ?= $(X86_DEBIAN_LMBENCH_TRANSCRIPT)
+X86_DEBIAN_LMBENCH_PREVIOUS ?=
+X86_DEBIAN_LMBENCH_REQUIRE_RATE ?=
+
+.PHONY: test_x86_debian_lmbench_verdict
+test_x86_debian_lmbench_verdict:
+	@test -n "$(X86_DEBIAN_LMBENCH_TRANSCRIPTS)" || { echo "X86_DEBIAN_LMBENCH_TRANSCRIPTS is required" >&2; exit 2; }
+	@python3 tools/x86/debian/lmbench_transcript.py \
+		$(if $(X86_DEBIAN_LMBENCH_PREVIOUS),--previous "$(X86_DEBIAN_LMBENCH_PREVIOUS)",) \
+		$(if $(X86_DEBIAN_LMBENCH_REQUIRE_RATE),--require-rate "$(X86_DEBIAN_LMBENCH_REQUIRE_RATE)",) \
+		$(X86_DEBIAN_LMBENCH_TRANSCRIPTS)
+
+# Storage persistence gate: boot one image repeatedly and verify, from the
+# host, that every boot's writes survive, earlier writes stay intact, and the
+# image still passes `e2fsck -fn`.
+#   X86_DEBIAN_STORAGE_BASE_ROOT  ext4 image copied once into the workspace
+#   X86_DEBIAN_STORAGE_WORKSPACE  image, manifests and transcripts
+#   X86_DEBIAN_STORAGE_BOOTS      consecutive boots (default 3)
+X86_DEBIAN_STORAGE_BASE_ROOT ?=
+X86_DEBIAN_STORAGE_WORKSPACE ?= $(CURDIR)/target/x86-debian/storage
+X86_DEBIAN_STORAGE_BOOTS ?= 3
+X86_DEBIAN_STORAGE_ACCEL ?= kvm
+X86_DEBIAN_STORAGE_TIMEOUT ?= 1800
+
+.PHONY: test_x86_debian_storage
+test_x86_debian_storage:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STORAGE_BASE_ROOT)" || { echo "X86_DEBIAN_STORAGE_BASE_ROOT is required" >&2; exit 2; }
+	@echo "storage: base=$(X86_DEBIAN_STORAGE_BASE_ROOT) boots=$(X86_DEBIAN_STORAGE_BOOTS) accel=$(X86_DEBIAN_STORAGE_ACCEL) workspace=$(X86_DEBIAN_STORAGE_WORKSPACE)"
+	@tools/x86/debian/persistence_acceptance.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_STORAGE_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_STORAGE_WORKSPACE)" \
+		--boots "$(X86_DEBIAN_STORAGE_BOOTS)" \
+		--accel "$(X86_DEBIAN_STORAGE_ACCEL)" \
+		--timeout "$(X86_DEBIAN_STORAGE_TIMEOUT)"
 
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:

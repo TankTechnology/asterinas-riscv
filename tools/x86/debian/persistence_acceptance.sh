@@ -30,6 +30,7 @@ Options:
   --timeout SECONDS   Per-boot deadline (default: 1800).
   --loglevel N        Kernel log level (default: 5).
   --settle SECONDS    Guest time before writing (default: 15).
+  --accel MODE        'kvm' or 'tcg' (default: tcg).
   --qemu PATH         QEMU binary or wrapper (default: qemu-system-x86_64).
 
 Exit status is 0 only if every boot's writes are durable, all earlier writes
@@ -51,12 +52,13 @@ BOOTS=3
 TIMEOUT=1800
 LOGLEVEL=5
 SETTLE=15
+ACCEL="tcg"
 QEMU="qemu-system-x86_64"
 
 while (( $# > 0 )); do
     case "$1" in
         --kernel | --initramfs | --base-root | --workspace | --boots | \
-            --timeout | --loglevel | --settle | --qemu)
+            --timeout | --loglevel | --settle | --accel | --qemu)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --kernel) KERNEL="$2" ;;
@@ -67,6 +69,7 @@ while (( $# > 0 )); do
                 --timeout) TIMEOUT="$2" ;;
                 --loglevel) LOGLEVEL="$2" ;;
                 --settle) SETTLE="$2" ;;
+                --accel) ACCEL="$2" ;;
                 --qemu) QEMU="$2" ;;
             esac
             shift 2
@@ -80,6 +83,8 @@ done
     die_usage "--kernel, --initramfs, --base-root and --workspace are required"
 [[ "$BOOTS" =~ ^[1-9][0-9]*$ ]] || die_usage "--boots must be a positive integer"
 [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die_usage "--timeout must be a positive integer"
+[[ "$ACCEL" == "tcg" || "$ACCEL" == "kvm" ]] ||
+    die_usage "--accel must be 'tcg' or 'kvm'"
 
 for tool in debugfs e2fsck sha256sum "$QEMU"; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -291,6 +296,7 @@ for ((boot = 1; boot <= BOOTS; boot++)); do
         --root-image "$IMAGE" \
         --output "$transcript" \
         --loglevel "$LOGLEVEL" \
+        --accel "$ACCEL" \
         --qemu "$QEMU" \
         --wait-for "Powering off."; then
         printf 'boot %d: FAIL (the guest did not shut down cleanly)\n' "$boot"
