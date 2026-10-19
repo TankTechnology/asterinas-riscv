@@ -161,8 +161,7 @@
 | ↳ 活动引用 |  | `tools/riscv/megrez_debug_contract.py, tools/riscv/megrez_debug_desktop.py, tools/riscv/megrez_gmac_gate.py, tools/riscv/tests/test_megrez_debug.py, tools/riscv/tests/test_megrez_debug_desktop.py, tools/riscv/tests/test_megrez_gmac_gate.py` |  |  |
 | `tools/riscv/debian/rootfs/desktop_m8_browser_quality_evidence.sh` | yes | 1 | 2 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh` |  |  |
-| `tools/riscv/debian/rootfs/desktop_m9_software_evidence.sh` | yes | 1 | 2 | 保留 |
-| ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh` |  |  |
+| `tools/riscv/debian/rootfs/desktop_m9_software_evidence.sh` | yes | 0 | 2 | 候选删除，需人工确认动态引用 |
 | `tools/riscv/debian/rootfs/desktop_pcmanfm.conf` | yes | 2 | 1 | 保留 |
 | ↳ 活动引用 |  | `tools/riscv/debian/rootfs/build_rootfs.sh, tools/riscv/tests/test_debian_rootfs.py` |  |  |
 | `tools/riscv/debian/rootfs/desktop_wallpaper.svg` | yes | 2 | 1 | 保留 |
