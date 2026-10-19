@@ -325,7 +325,15 @@ pub(super) fn scan_log(blocks: &[&[u8]], first_sequence: u32) -> Result<Vec<Repl
         if blocks[offset].len() < HEADER_SIZE {
             break;
         }
-        let header = parse_header(blocks[offset])?;
+        // A block without the JBD2 magic ends the valid log: the ring is
+        // larger than the transactions in it, and the tail is not initialised.
+        // This is how jbd2 treats it ("no magic number at block N: end of
+        // journal"). Only at the very start is a bad header corruption.
+        let header = match parse_header(blocks[offset]) {
+            Ok(header) => header,
+            Err(err) if offset > 0 => break,
+            Err(err) => return Err(err),
+        };
         match header.block_type {
             DESCRIPTOR => {
                 if header.sequence != sequence {
