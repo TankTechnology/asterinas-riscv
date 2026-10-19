@@ -13,7 +13,10 @@ mod dir_entry;
 
 use self::dir_entry::{DOT_BYTE, DOT_DOT_BYTE, DirBlockView, DirEntryFileType, DirEntryHeader};
 use super::{super::Ext2, FileFlags, FilePerm, Inode, InodeInner, MAX_LINK_COUNT};
-use crate::fs::ext2::{prelude::*, utils};
+use crate::fs::{
+    ext2::{prelude::*, utils},
+    utils::NAME_MAX,
+};
 
 /// Information about a candidate directory entry slot.
 #[derive(Clone, Copy, Debug)]
@@ -564,11 +567,107 @@ impl InodeInner {
         Ok(advanced)
     }
 
+    /// Converts an htree-indexed directory into a linear directory.
+    ///
+    /// This kernel reads directories linearly and does not maintain the ext4
+    /// htree index. Inserting an entry into an indexed directory either lands
+    /// in the `dx_root` area at the end of block 0 or creates a leaf block the
+    /// index does not reference, and both make `e2fsck` reject the directory.
+    /// Before the first insertion, repack every live entry into the existing
+    /// blocks, replace the stale index bytes with free space, and clear
+    /// `INDEX_DIR`. The block count and file size are unchanged.
+    fn convert_index_dir_to_linear(&mut self) -> Result<()> {
+        if self.inode_type() != InodeType::Dir || !self.desc.flags.contains(FileFlags::INDEX_DIR) {
+            return Ok(());
+        }
+
+        let file_size = self.file_size();
+        let data_blocks = file_size.div_ceil(BLOCK_SIZE);
+        let page_cache = self.page_cache();
+
+        // A linear scan is valid even for an indexed directory: block 0 holds
+        // only `.` and `..`, and `..`'s `rec_len` covers the `dx_root` bytes,
+        // so the index is skipped instead of being misread as entries.
+        let mut live: Vec<(Ext2Ino, u8, Vec<u8>)> = Vec::new();
+        for block_idx in 0..data_blocks {
+            let block = DirBlockView::from_index(page_cache, block_idx, file_size);
+            let mut entry_iter = block.iter_entries();
+            while let Some((_, entry)) = entry_iter.next_entry()? {
+                if entry.header.ino == 0 {
+                    continue;
+                }
+                if entry.name.len() > NAME_MAX {
+                    return_errno_with_message!(Errno::EIO, "invalid dir entry name");
+                }
+                live.push((
+                    entry.header.ino,
+                    entry.header.file_type,
+                    entry.name.to_vec(),
+                ));
+            }
+        }
+
+        let mut next = 0usize;
+        for block_idx in 0..data_blocks {
+            let mut block = vec![0u8; BLOCK_SIZE];
+            let mut offset = 0usize;
+            let mut wrote_entry = false;
+            while next < live.len() {
+                let (ino, file_type, name) = &live[next];
+                let min_len = DirEntryHeader::min_rec_len(name.len()) as usize;
+                let next_min_len = live
+                    .get(next + 1)
+                    .map(|(_, _, name)| DirEntryHeader::min_rec_len(name.len()) as usize)
+                    .unwrap_or(0);
+                // The last entry of a block extends over the block's free tail.
+                let last_in_block =
+                    next + 1 >= live.len() || offset + min_len + next_min_len > BLOCK_SIZE;
+                let rec_len = if last_in_block {
+                    BLOCK_SIZE - offset
+                } else {
+                    min_len
+                };
+                block[offset..offset + 4].copy_from_slice(&ino.to_le_bytes());
+                block[offset + 4..offset + 6].copy_from_slice(&(rec_len as u16).to_le_bytes());
+                block[offset + 6] = name.len() as u8;
+                block[offset + 7] = *file_type;
+                block[offset + 8..offset + 8 + name.len()].copy_from_slice(name);
+                offset += rec_len;
+                next += 1;
+                wrote_entry = true;
+                if last_in_block {
+                    break;
+                }
+            }
+            if !wrote_entry {
+                // An unused directory block is one free entry spanning it.
+                block[4..6].copy_from_slice(&(BLOCK_SIZE as u16).to_le_bytes());
+            }
+            page_cache.write_bytes(block_idx * BLOCK_SIZE, &block)?;
+        }
+        debug_assert_eq!(next, live.len());
+
+        self.remove_flags(FileFlags::INDEX_DIR);
+        debug!(
+            "converted indexed directory: {} entries in {} blocks",
+            live.len(),
+            data_blocks
+        );
+        self.set_mtime_ctime(utils::now());
+        Ok(())
+    }
+
     /// Finds a reusable slot for a directory entry name of `name_len` bytes.
     ///
     /// Returns `None` if existing directory blocks have no reusable space. The
     /// returned slot may be a deleted entry or the spare tail of a live entry.
-    fn find_dir_slot(&self, name_len: usize) -> Result<Option<DirSlotInfo>> {
+    ///
+    /// This is the first step of every insertion, so an htree-indexed
+    /// directory is converted to a linear one here (see
+    /// [`Self::convert_index_dir_to_linear`]).
+    fn find_dir_slot(&mut self, name_len: usize) -> Result<Option<DirSlotInfo>> {
+        self.convert_index_dir_to_linear()?;
+
         if self.inode_type() != InodeType::Dir {
             return_errno!(Errno::ENOTDIR);
         }
