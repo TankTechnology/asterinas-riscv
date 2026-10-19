@@ -1257,6 +1257,9 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
              * silently discarding its pending metadata transactions.
              */
             result = mount(root_device, "/newroot", "ext4", 0, NULL);
+            if (result != 0) {
+                fprintf(stderr, "DEBIAN_ROOT_MOUNT ext4 errno=%d\n", errno);
+            }
         } else {
             result = mount(root_device, "/newroot", "ext2", 0, NULL);
         }
