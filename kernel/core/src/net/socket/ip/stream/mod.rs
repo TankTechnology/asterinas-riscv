@@ -169,7 +169,10 @@ impl StreamSocket {
             pollee,
             common: new_socket_common(is_nonblocking),
         });
-        super::registry::register(&socket, super::registry::socket_inode(&socket.common));
+        // The socket is deliberately not registered here: `try_accept` calls
+        // this function while holding the listener's state and options locks,
+        // which disable preemption. The registry lock can sleep, so the
+        // caller registers the socket after dropping those guards.
         socket
     }
 
@@ -350,21 +353,35 @@ impl StreamSocket {
             return_errno_with_message!(Errno::EINVAL, "the socket is not listening");
         };
 
-        let accepted = listen_stream.try_accept().map(|connected_stream| {
-            let remote_endpoint = connected_stream.remote_endpoint();
-            let listener_options = self.options.read();
-            let accepted_socket = Self::new_accepted(
-                connected_stream,
-                self.family,
-                &listener_options,
-                &self.timeouts,
-                is_nonblocking,
-            );
-            (accepted_socket as _, remote_endpoint.into())
-        });
+        let accepted: Result<(Arc<Self>, SocketAddr)> =
+            listen_stream.try_accept().map(|connected_stream| {
+                let remote_endpoint = connected_stream.remote_endpoint();
+                let listener_options = self.options.read();
+                let accepted_socket = Self::new_accepted(
+                    connected_stream,
+                    self.family,
+                    &listener_options,
+                    &self.timeouts,
+                    is_nonblocking,
+                );
+                (accepted_socket, remote_endpoint.into())
+            });
         let iface_to_poll = listen_stream.iface().clone();
 
         drop(state);
+
+        // Register the accepted socket only after the listener's state and
+        // options guards are gone. Registering takes the socket registry
+        // mutex, which may sleep; those guards disable preemption, and a
+        // contended mutex would then panic in atomic mode.
+        let accepted = accepted.map(|(accepted_socket, remote_endpoint)| {
+            super::registry::register(
+                &accepted_socket,
+                super::registry::socket_inode(&accepted_socket.common),
+            );
+            (accepted_socket as Arc<dyn FileLike>, remote_endpoint)
+        });
+
         self.pollee.invalidate();
         iface_to_poll.poll();
 
