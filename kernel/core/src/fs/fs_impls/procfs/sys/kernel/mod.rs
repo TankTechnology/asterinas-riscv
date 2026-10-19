@@ -9,6 +9,7 @@ use crate::{
             ProcDir, StaticEntry,
             sys::kernel::{
                 cap_last_cap::CapLastCapFileOps,
+                core_pattern::CorePatternFileOps,
                 pid_max::PidMaxFileOps,
                 random::RandomDirOps,
                 tainted::TaintedFileOps,
@@ -27,6 +28,7 @@ use crate::{
 };
 
 mod cap_last_cap;
+mod core_pattern;
 mod pid_max;
 mod random;
 mod tainted;
@@ -49,6 +51,11 @@ impl KernelDirOps {
             "cap_last_cap",
             InodeType::File,
             CapLastCapFileOps::new_inode,
+        ),
+        (
+            "core_pattern",
+            InodeType::File,
+            CorePatternFileOps::new_inode,
         ),
         ("domainname", InodeType::File, DomainnameFileOps::new_inode),
         ("hostname", InodeType::File, HostnameFileOps::new_inode),

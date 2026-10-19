@@ -410,10 +410,13 @@ pub(crate) const FIRST_POSIX_TID: Tid = 1;
 
 static POSIX_TID_ALLOCATOR: AtomicU32 = AtomicU32::new(FIRST_POSIX_TID);
 
+/// The current `/proc/sys/kernel/pid_max` value.
+pub(crate) static PID_MAX: AtomicU32 = AtomicU32::new(PID_MAX_LIMIT);
+
 /// Allocates a new TID for the new POSIX thread.
 pub(crate) fn allocate_posix_tid() -> Tid {
     let tid = POSIX_TID_ALLOCATOR.fetch_add(1, Ordering::Relaxed);
-    if tid >= PID_MAX {
+    if tid >= PID_MAX.load(Ordering::Relaxed) {
         // When the kernel's next PID value reaches `PID_MAX`,
         // it should wrap back to a minimum PID value.
         // PIDs with a value of `PID_MAX` or larger should not be allocated.
@@ -431,11 +434,10 @@ pub(crate) fn last_tid() -> Tid {
     POSIX_TID_ALLOCATOR.load(Ordering::Relaxed) - 1
 }
 
-/// The maximum allowed process ID.
+/// The largest value that `/proc/sys/kernel/pid_max` may be set to.
 //
 // FIXME: The current value is chosen arbitrarily.
-// This value can be modified by the user by writing to `/proc/sys/kernel/pid_max`.
-pub(crate) const PID_MAX: u32 = u32::MAX / 2;
+pub(crate) const PID_MAX_LIMIT: u32 = u32::MAX / 2;
 
 /// The sleeping state of a thread.
 #[derive(Clone, Copy, Debug)]

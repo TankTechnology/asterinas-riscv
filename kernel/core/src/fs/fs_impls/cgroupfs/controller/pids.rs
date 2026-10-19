@@ -111,7 +111,7 @@ impl super::SubControl for PidsController {
                 let value = if value == "max" {
                     u32::MAX
                 } else if let Ok(value) = value.parse::<u32>() {
-                    if value >= PID_MAX {
+                    if value >= PID_MAX.load(Ordering::Relaxed) {
                         return Err(Error::InvalidOperation);
                     }
                     value

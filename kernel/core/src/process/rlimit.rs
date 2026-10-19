@@ -28,7 +28,10 @@ const INIT_RLIMIT_MEMLOCK: u64 = 8 * 1024 * 1024;
 // https://github.com/torvalds/linux/blob/fac04efc5c793dccbd07e2d59af9f90b7fc0dca4/include/uapi/linux/mqueue.h#L26
 const INIT_RLIMIT_MSGQUEUE: u64 = 819200;
 // https://github.com/torvalds/linux/blob/fac04efc5c793dccbd07e2d59af9f90b7fc0dca4/fs/file.c#L90
-pub(crate) const SYSCTL_NR_OPEN: u64 = 1024 * 1024;
+//
+// `/proc/sys/fs/nr_open` and `prlimit64` read this value; root can raise or
+// lower it by writing the sysctl, matching Linux's `sysctl_nr_open`.
+pub(crate) static SYSCTL_NR_OPEN: AtomicU64 = AtomicU64::new(1024 * 1024);
 
 #[derive(Clone)]
 pub(crate) struct ResourceLimits {

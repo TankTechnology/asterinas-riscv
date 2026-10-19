@@ -88,7 +88,9 @@ fn do_prlimit64(
     };
 
     let old_raw = if let Some(new_raw) = new_raw {
-        if resource == ResourceType::RLIMIT_NOFILE && new_raw.max > SYSCTL_NR_OPEN {
+        if resource == ResourceType::RLIMIT_NOFILE
+            && new_raw.max > SYSCTL_NR_OPEN.load(core::sync::atomic::Ordering::Relaxed)
+        {
             return_errno_with_message!(Errno::EPERM, "the new limit exceeds the system limit");
         }
         rlimit.set_raw_rlimit(new_raw, ctx)?
