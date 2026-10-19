@@ -195,13 +195,6 @@ impl TimerfdFile {
 
         writer.write_fallible(&mut ticks.as_bytes().into())?;
 
-        // Consuming the expiration counter makes the file non-readable, so the
-        // cached poll state (if any) must be invalidated. Otherwise a poller
-        // that cached `IN` keeps reporting the timer as ready even though there
-        // is nothing to read, and a level-triggered `epoll` would wake the
-        // event loop continuously.
-        self.pollee.invalidate();
-
         Ok(())
     }
 
