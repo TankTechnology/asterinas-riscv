@@ -1326,6 +1326,14 @@ fallback alone is ambiguous in one case (`clean5b-2`, where a stale passing
 report is 0.1 s closer to the console duration than the boot's own failing
 run). Use `--previous` whenever the rate is used as a gate.
 
+The rate is not only about `signal-prot`. Two consecutive re-validation boots
+of the final kernel gave 108/109 (missing `signal-prot`) and 105/109 (missing
+`integer add`, `int64 add` and their bit-parallelism lines because the
+sub-nanosecond latencies rounded to zero); the same kernel, the same image and
+the same host produced both. Treat a single missing group as a timing draw,
+not as a kernel regression, when every other group and the surrounding boots
+agree.
+
 ### The storage persistence entry
 
 ```sh
