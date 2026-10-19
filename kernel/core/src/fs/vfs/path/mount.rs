@@ -714,11 +714,19 @@ impl Mount {
             // (`do_remount_sb` calls `sync_filesystem`). Without that step the
             // last sync a shutdown path performs runs with `RDONLY` already
             // set, and every metadata write is refused with `EROFS`.
-            if flags.contains(FsFlags::RDONLY) && !self.fs.flags().contains(FsFlags::RDONLY) {
+            let was_read_only = self.fs.flags().contains(FsFlags::RDONLY);
+            if flags.contains(FsFlags::RDONLY) && !was_read_only {
                 warn!("remount read-only: flushing the filesystem before marking it read-only");
                 self.fs.sync()?;
             }
             self.fs.set_fs_flags(flags, data, ctx)?;
+            if flags.contains(FsFlags::RDONLY) && !was_read_only {
+                // The flush above checkpointed the journal while the
+                // filesystem could still write. Finalize it now that writes
+                // are refused: this clears the journal's recovery flag, so a
+                // clean shutdown leaves an image that mounts without a replay.
+                self.fs.sync()?;
+            }
         }
 
         // The logics here are consistent with Linux.

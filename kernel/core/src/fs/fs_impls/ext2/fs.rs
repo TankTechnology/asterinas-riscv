@@ -286,6 +286,21 @@ impl Ext2 {
             return_errno_with_message!(Errno::EOPNOTSUPP, "journal extent is not contiguous");
         }
         let blocks = self.read_raw_blocks(physical.start, count)?;
+        {
+            let head = blocks
+                .first()
+                .map(|b| {
+                    let mut hex = [0u8; 16];
+                    let n = b.len().min(16);
+                    hex[..n].copy_from_slice(&b[..n]);
+                    hex
+                })
+                .unwrap_or([0u8; 16]);
+            debug!(
+                "ext2: journal replay start={} maxlen={} seq={} count={} phys_start={} first16={:02x?}",
+                sb.start, sb.max_length, sb.sequence, count, physical.start, head
+            );
+        }
         let refs: Vec<&[u8]> = blocks.iter().map(Vec::as_slice).collect();
         let replay = journal::scan_log(&refs, sb.sequence)?;
         for block in replay {
@@ -958,6 +973,16 @@ impl Ext2 {
 
         // The whole staging pass and its commit form one unit. See `sync_lock`.
         let _sync_guard = self.sync_lock.lock();
+
+        // A read-only filesystem takes no new writes. The remount path has
+        // already flushed and committed everything before switching, so the
+        // only thing left is to record that the journal is checkpointed. This
+        // is what clears `RECOVER` on a clean shutdown; without it the next
+        // boot would have to replay a journal that has nothing to replay.
+        if self.fs_flags().contains(FsFlags::RDONLY) {
+            self.mark_journal_clean_if_read_only()?;
+            return Ok(());
+        }
 
         // 1. Data first. A descriptor that becomes durable before the blocks it
         //    points at turns a crash into a corrupt file rather than a missing
