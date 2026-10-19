@@ -476,6 +476,27 @@ ESTAB  0      0          127.0.0.1:45680     127.0.0.1:45679 users:(("python3",p
 attribution (`-p`) works because the reported inode is the one the fd symlink
 carries.
 
+### Registering an accepted socket could panic in atomic mode
+
+`try_accept` holds the listener's `state` read guard (`PreemptDisabled`) and
+`self.options.read()` while it builds the accepted socket, and
+`new_accepted` registered that socket before returning. The registry mutex is
+a sleeping lock; its `lock()` only calls `might_sleep` on the contended slow
+path, so the fault appeared as a rare panic whenever another task held the
+registry at that instant (`/proc/net/*` or a `NETLINK_SOCK_DIAG` dump, or a
+concurrent accept):
+
+```
+Uncaught panic: This function might break atomic mode
+  (preempt_count = 2, is_local_irq_enabled = true)
+  at kernel/core/src/net/socket/ip/registry.rs:80
+```
+
+One full-suite run died this way 166 s in, exiting with the machine halted.
+`new_accepted` no longer registers; `try_accept` registers the accepted
+socket after `drop(state)`, outside both guards. Five full-suite runs after
+the fix saw no panic.
+
 ## Loopback latency: TCG, not the kernel
 
 The RPC measurements were dominated by a ~10 ms loopback round trip. A
@@ -500,6 +521,156 @@ This also explains the RPC failures: libtirpc retries after 2.5 ms, which is
 shorter than a single TCG syscall pair. Under KVM the round trip is two orders
 of magnitude below that window, so the retry path is not exercised.
 
+## KVM: a missing reschedule on cross-CPU wake-ups
+
+The TCG numbers hid a second, kernel-side cause. Probes under KVM still saw a
+~1 ms loopback round trip, but only in about half of the trials and then
+uniformly across the whole trial; the other trials were tens of microseconds.
+Which leg was slow moved between probes.
+
+A timestamped two-process UDP ping-pong separated the round trip into request,
+server-processing, and reply legs. `CLOCK_MONOTONIC` is shared by both
+processes, so the split is direct. In the slow trials the send itself was fast
+(53 µs in the kernel, measured by the sender) and a woken process resumed
+within microseconds of its wake-up; the wake-up was what arrived late, up to a
+timer tick after the datagram was delivered. Delivery is synchronous inside
+the sender's `send` (the loopback device never carries a packet), so the whole
+delay was in "enqueue the woken task and let it run".
+
+Root cause: `ClassScheduler::enqueue` requested a reschedule only when the
+woken task had a higher scheduling-policy priority than the target CPU's
+current task. A wake-up that landed on another CPU running an ordinary fair
+task did not kick that CPU, and the woken task waited for the next timer tick.
+Waking an idle CPU did preempt (fair outranks idle), which is why some trials
+were fast: whether a leg cost 23 µs or ~900 µs depended on what the target CPU
+happened to be running.
+
+The first fix requested a reschedule whenever a wake-up landed on a remote
+CPU. It was later widened to every wake-up, and the scheduler was changed to
+run the woken task itself rather than the run queue's leftmost entity; see
+"`rpc-udp` after the 2026-10-19 fixes" below.
+
+| two-process UDP ping-pong, 30 calls/trial, 2 vCPU KVM | before | after |
+|---|---|---|
+| request leg, p50 | 23 µs or ~900 µs, whole-trial | 23 µs |
+| reply leg, p50 | 23 µs or ~900 µs, whole-trial | 24 µs |
+
+With the fix, libtirpc's `lat_rpc -p udp` calls complete in 65-105 µs and run
+thousands of times back-to-back. Before the fix the same calls took ~4 ms and
+the client exhausted its 25 ms virtual budget after a few dozen calls, because
+every reply that missed the 2.5 ms retry window produced a duplicate reply and
+the duplicate then burned 2 ms of the budget on each later call.
+
+That mechanism is what makes `rpc-udp` fragile, but it is not the whole story:
+with the wake fix the benchmark still failed, just much later (about 20,000
+calls instead of a few hundred). The remaining trigger is tail latency:
+libtirpc retransmits when a reply does not arrive within 2 ms, and a woken
+task that lands on a CPU which is busy in a long kernel operation can wait
+longer than that. `select_cpu` always placed a woken task back on its previous
+CPU, even when another CPU was idle. The scheduler now prefers an idle CPU
+when the previous one is busy, which pushed the failure from ~400 calls to
+~20,000 and brought the slow-call tail from ~2 ms down to ~1.1 ms.
+
+## A user page fault under a socket lock panicked the kernel
+
+With the wake-up fix in place the suite got past the build phase, and a second,
+independent defect surfaced: the guest panicked about 3.5 minutes into `make
+results`.
+
+```
+Uncaught panic: This function might break atomic mode
+    (preempt_count = 3, is_local_irq_enabled = true)
+    at kernel/core/comps/block/src/bio.rs:314
+```
+
+`might_sleep` fires when a task blocks while preemption is disabled. The panic
+stack ends in a page fault that the kernel took in kernel mode:
+
+```
+trap_handler (page fault, cs = kernel code)
+→ handle_user_page_fault → handle_page_fault_from_vmar
+→ VmMapping::handle_page_fault → handle_page_faults_around
+→ MappedVmo::commit_on → BackedVmo::commit_on_internal
+→ PageCacheBackend::read_page → IoBatch::wait_all → bio wait
+```
+
+The interrupted kernel stack is not reachable from the fault handler's
+unwinder (it stops at the trap frame), so a temporary diagnostic scanned the
+kernel stack from the trap frame and wrote the return addresses to QEMU's
+debug console, port 0xe9. That showed the fault came from
+`ConnectedStream::try_send` → `aster-bigtcp`'s `Socket::send` →
+`smoltcp::Socket::send` → `MultiRead::read`: the kernel was copying a user
+buffer **while holding the interface lock and the socket lock**.
+`StreamSocket::try_send` adds a third, because its `state` field is an
+`RwLock` (a spinning reader-writer lock). Hence `preempt_count = 3`.
+
+The source buffer was a string constant: the faulting address was in a
+file-backed `.rodata` mapping whose page had not been faulted in yet. Serving
+that fault means reading the page from the ext2 image, which blocks — illegal
+in atomic mode. The UDP send path has the same shape (its copy also runs
+inside `Socket::send` under the same locks).
+
+The fix keeps user memory out of the atomic region:
+
+- `StreamSocket::try_send` faults the pages in (`MultiRead::prefault`, one
+  read per page with faults enabled) **before** taking the state lock, then
+  copies with the page fault handler disabled, so a buffer remapped
+  concurrently fails with `EFAULT` instead of panicking.
+- The UDP send path stages the datagram in a kernel buffer before taking the
+  socket lock. That also removes the old FIXME where a failed copy still sent
+  a partial datagram.
+
+With the fix the suite runs to the end: 108 of 109 measurements,
+`elapsed_seconds: 573.7`, and UDP/TCP/RPC-tcp latencies of 107.6 µs /
+104.9 µs / 155.0 µs. Only `rpc-udp` is still missing.
+
+## `systemd` and `systemd-journald` were spinning inside `epoll`
+
+Sampling `/proc/[pid]/stat` showed that the guest was never idle, even with no
+benchmark running:
+
+```
+10 s of idle after boot:  systemd-journald +8434 jiffies (84% CPU)
+                          systemd         +1679 jiffies (17%)
+10 s idle with rpcbind:   rpcbind         +5232 jiffies (52%)
+                          systemd-journal +5202 jiffies
+a running rpcbench server:+53 jiffies (0.5%)
+```
+
+A static probe (`/opt/waittest`) exercised the readiness primitives. A
+`timerfd` that had already fired and been read was reported ready forever:
+
+```
+epoll_empty_1s                1001 ms  ok
+epoll_timerfd_100ms            101 ms  ok
+poll_empty_1s                 1000 ms  ok
+poll_timerfd_100ms               0 ms  BUG: ready at once
+epoll_udp_after_drain_200ms      0 ms  BUG: ready after the data was drained
+epoll_wait(timeout=0) x 1000  1000/1000 ready   BUG
+```
+
+The timerfd's read path consumed the expiration counter but never invalidated
+its `Pollee` cache. `Pollee::poll_with` caches the computed event set and only
+`notify()` or `invalidate()` drop the cache. The cached `IN` therefore survived
+the read, and a level-triggered `epoll` reported the timerfd readable forever.
+`sd-event` (systemd, journald) uses timerfds for its timers, so both daemons
+spun in `epoll_wait`.
+
+The fix invalidates the pollee after consuming the counter in
+`TimerfdFile::try_read` and after clearing it in `set_time`. After the fix the
+probe passes every check:
+
+```
+poll_timerfd_100ms            101 ms
+epoll_udp_after_drain_200ms   201 ms, timed out
+epoll_wait(timeout=0) x 1000    0/1000 ready
+idle CPU: journald +2 jiffies / 5 s, systemd +0
+```
+
+The guest is now genuinely idle when idle. Every timing-sensitive benchmark
+in the suite benefits; the numbers in the section above were all measured with
+the daemons spinning.
+
 ## Running the native LMbench ALL suite
 
 `python3 tools/riscv/lmbench_native.py package --architecture amd64` builds the
@@ -508,14 +679,14 @@ rootfs and installs it, so the guest only runs the benchmark. The Kbuild results
 come from the upstream driver's own `make results`, reached through
 `asterinas-native.py`.
 
-Observed on this kernel, 4 vCPU, `-cpu Icelake-Server`:
+Observed on this kernel under KVM, 4 vCPU (`-cpu host`, `--accel kvm`):
 
 ```
 LMBENCH_RUN_NATIVE_EXIT 2 <ts>      make exit 2 (the coverage gate, not a crash)
   "native_exit_status": 0,          the inner make itself succeeded
   "timed_out": false,
-  "elapsed_seconds": 2235.5,
-  observed: 105 of 109
+  "elapsed_seconds": 573.7,
+  observed: 108 of 109
 ```
 
 Four defects had to be fixed to get there; each was measured, not inferred.
@@ -536,60 +707,351 @@ Four defects had to be fixed to get there; each was measured, not inferred.
   and exited without creating the user; the runner's `getpwnam('rpc')` then
   aborted the whole run after 0.5 s.
 
-Measured before and after, same disk and command: 0 of 109 at 34 s, then 105 of
-109 at 2235 s. The runner's deadline also had to be raised — its 900 s default
-cut the run off at 905 s having reached 73 of 109 — so the unit sets
+Measured before and after, same disk and command: 0 of 109 at 34 s (TCG), then
+105 of 109 at 2235 s (TCG). After the KVM wake-up, socket page-fault and
+scheduler fixes described above, the suite reaches 108 of 109 in 574 s under
+KVM (`signal-prot` was missing on the preceding run, which measured 107). The runner's deadline also had to be raised — its 900 s default cut the
+run off at 905 s having reached 73 of 109 — so the unit sets
 `LMBENCH_TIMEOUT=3600`.
 
 ### What is still missing
 
-Two measurements: `rpc-udp` and `rpc-tcp`. `signal-prot` was measured on the
-latest run, so it is no longer among them.
+After the 2026-10-19 fixes (idle daemons, wake-next scheduling, precise
+timeouts, accepted-socket registration), five consecutive full-suite runs of
+the same image on the same kernel (4 vCPU, KVM, loglevel 4, no host pinning,
+host governor `powersave`) report:
 
-`passed` is therefore still false, and the gate was not loosened to change it.
+| run | transcript | verdict | observed | missing | elapsed |
+|-----|------------|---------|----------|---------|---------|
+| 1 | `lmbench-clean3-1` | passed | 109/109 | - | 572.0 s |
+| 2 | `lmbench-clean3-2` | passed | 109/109 | - | 558.2 s |
+| 3 | `lmbench-clean3-3` | passed | 109/109 | - | 562.2 s |
+| 4 | `lmbench-clean3-4` | **failed** | 108/109 | `signal-prot` | 574.0 s |
+| 5 | `lmbench-clean3-5` | passed | 109/109 | - | 564.3 s |
 
-### Why the RPC measurements fail
+`rpc-udp` passed in all five runs — the wake-next, exact-deadline and timerfd
+fixes hold in the full suite. The only remaining gap is `signal-prot`, which
+is missing in one run in four. The failing run is not a crash: the process
+tree exits 0 and the runner's inner `make` succeeds.
 
-A plausible cause took three probes to pin down, and two of them were dead ends
-worth recording so they are not repeated.
+The same five-run check after the signal-frame fix (kernel `clean5`, 4 vCPU
+pinned to P-cores 0,2,4,6, `performance` governor) reports:
 
-**Discard these two.** An early probe asked the portmapper for `XACT_PROG`
-version 2 and got port 0 for both transports, which looked like the server
-never registering; LMbench registers version 1, so that probe always returns 0
-and says nothing. A later probe appeared to show that a bare `lat_rpc -s` fails
-where `-s 127.0.0.1` succeeds; the source settles it —
-`opt/lmbench/src/lat_rpc.c` handles `-s` by forking, running `server_main()` in
-the child, and having the parent `exit(0)` from inside `getopt`, so nothing
-after `-s` is ever read. The two forms are identical and that single success
-was an outlier.
+| run | transcript | verdict | observed | missing | elapsed |
+|-----|------------|---------|----------|---------|---------|
+| 1 | `lmbench-clean5p-1` | passed | 109/109 | - | 561.1 s |
+| 2 | `lmbench-clean5p-2` | passed | 109/109 | - | 581.3 s |
+| 3 | `lmbench-clean5p-3` | passed | 109/109 | - | 564.4 s |
+| 4 | `lmbench-clean5p-4` | **failed** | 108/109 | `signal-prot` | 556.4 s |
+| 5 | `lmbench-clean5p-5` | **failed** | 108/109 | `signal-prot` | 573.9 s |
 
-**What the numbers say.** Eighteen trials of the client/server pair in one
-boot, each with the server freshly registered and the portmapper verified
-first: **18 of 18 failed**, each after 39-58 s, with an empty server log
-meaning registration had succeeded. That is not variance. Against it, the same
-full run measured:
+The same kernel run five times in the baseline configuration (unpinned,
+`powersave`) gives:
 
+| run | transcript | verdict | observed | missing | elapsed |
+|-----|------------|---------|----------|---------|---------|
+| 1 | `lmbench-clean5-1` | passed | 109/109 | - | 565.6 s |
+| 2 | `lmbench-clean5-2` | **failed** | 108/109 | `signal-prot` | 579.4 s |
+| 3 | `lmbench-clean5-3` | passed | 109/109 | - | 564.4 s |
+| 4 | `lmbench-clean5-4` | passed | 109/109 | - | 566.1 s |
+| 5 | `lmbench-clean5-5` | **failed** | 108/109 | `signal-prot` | 578.6 s |
+
+So 4/5 in the baseline configuration and 3/5 pinned, with the missing group
+always the same. A second default-configuration set (`lmbench-clean5b-1` to
+`-5`) gave 3/5 again (pass, pass, miss, miss, pass). Across all four sets
+that is 13 green runs out of 20; nothing except `signal-prot` was ever
+missing. The outcome of this single measurement is set by the host state
+during the run (see the next subsection), not by the kernel version: the
+signal-frame fix removes 15% of the signal cost but does not change the
+rate, because the margin the benchmark measures is independent of it.
+
+The 20-invocation quick indicator on the fixed kernel in the same
+configuration passed 19 of 20 standalone `lat_sig prot` runs.
+
+A fifth set added `-overcommit cpu-pm=on` to QEMU (P-cores pinned,
+`performance`). Its 20-invocation probe passed 20/20 and `rpc-udp` 5/5, and
+the suite set came out 4/5: runs 1, 2, 4, 5 passed, run 3 missed
+`signal-prot` in the fast state (catch 8.22 us). Across five sets and 25
+full-suite runs, 17 were green and every one of the 8 missing groups was
+`signal-prot`; no set reached 5/5. `cpu-pm=on` is the best-measured
+configuration but it does not change the mechanism.
+
+#### Reading the transcripts: the run directories are stale
+
+The guest dumps every directory under `/opt/lmbench/asterinas-runs` at the end
+of a run, and the image retains directories from earlier boots (the guest's
+ext4 writes are not a reliable channel). A transcript therefore contains
+several `report.json` dumps, most of them from previous runs. Identify the
+run's own report by matching its `elapsed_seconds` against the console's
+`LMBENCH_RUN_NATIVE_START` / `LMBENCH_RUN_NATIVE_EXIT` difference; in the five
+runs above that match is within 1.0 s, while stale reports differ by 5-130 s.
+
+`passed` is still false in the aggregate because of that single missing
+measurement, and the gate was not loosened to change it.
+
+### `rpc-udp`: a 2 ms retry window against a millisecond-scale wake tail
+
+Once the wake-up fix above landed, loopback RPC calls take 65-105 µs and
+`lat_udp` measures 86.3 µs. `lat_rpc -p udp` still fails: libtirpc retransmits
+a call whose reply has not arrived within 2 ms (`CLSET_RETRY_TIMEOUT` is
+2.5 ms, truncated to 2 ms by `nextsend_time`), and each retransmission leaves
+a duplicate reply in the client's socket. `clnt_dg_call` charges every XID
+mismatch 2 ms of its virtual budget without sleeping; once one retransmission
+has happened, later calls keep finding the stale duplicate, retransmitting,
+and adding duplicates, until one call exhausts its 25 ms budget and exits with
+`RPC_TIMEDOUT`.
+
+An `LD_PRELOAD` hook wrapped `clnt_call`, `poll` and `recvfrom` to measure
+this directly. Every slow call coincides with a poll timeout, with no spurious
+readability and no `EAGAIN` from `recvfrom`, and the failure arrives a few
+calls after the first reply that misses the window. The first trigger is a
+wake-up that lands on a busy CPU: `select_cpu` always put a woken task back on
+its previous CPU, even when another CPU was idle, so a reply could wait for
+that CPU to reach a scheduling point.
+
+The scheduler now prefers an idle CPU when the previous one is busy. With the
+same hook, `lat_rpc -P 1 -p udp` then survived about 20,000 calls instead of
+400, and the slow-call tail fell from ~2 ms to ~1.1 ms. The remaining tail is
+the 1 ms timer tick (`TIMER_FREQ = 1000`) and rare millisecond-scale kernel
+operations (synchronous ext2 commits); when every CPU is busy at the wake
+instant a reply can still miss the window. Whether the remainder is guest
+scheduling or host vCPU preemption is not settled yet.
+
+Two earlier probes were dead ends worth recording. Asking the portmapper for
+`XACT_PROG` version 2 returns port 0 because LMbench registers version 1, so
+that probe always says nothing. And a bare `lat_rpc -s` is identical to
+`-s 127.0.0.1`: the source forks, runs `server_main()` in the child and has the
+parent `exit(0)` from inside `getopt`, so nothing after `-s` is ever read.
+
+### `rpc-udp` after the 2026-10-19 fixes
+
+Three further changes were made for this measurement:
+
+- **A wake-up now runs the woken task next.** The fair scheduler used to pick
+  the globally smallest virtual runtime after a reschedule, which could be an
+  unrelated task that had slept for a long time. A `Wake` enqueue now records
+  the woken task in the run queue (`FairClassRq::note_wake_candidate`, the
+  equivalent of Linux's `cfs_rq->next`) and `pick_next` returns it for the
+  next scheduling decision. A wake-up also always requests a reschedule, and
+  a wake-up that finds the task already queued requests one as well.
+  Enqueue-to-dispatch latency over 1 ms dropped from ~220 to ~10 per trial.
+- **Timeout deadlines are exact.** `ManagedTimeout` froze deadlines against
+  the jiffies clock (1 ms granularity), so a `poll(2 ms)` could expire after
+  1 ms. It now uses the CLOCK_MONOTONIC timer manager (ns resolution); a
+  timeout can no longer fire early.
+- **The timerfd fix above** removed the daemon contention.
+
+Measured with `lat_rpc -P 1 -p udp` (ENOUGH=10000, 1 vCPU): the client still
+collects exactly 13 poll timeouts per trial and the benchmark still ends with
+`RPC: Timed out` (5 of 5 plain runs, no `LD_PRELOAD`). The system is idle at
+that point, so this is not load.
+
+Tracing both peers together shows the remaining failures are lost wake-ups,
+in both directions:
+
+- the server receives a request 21 us after the send and sends the reply
+  82 us after it, yet the client's `poll(2 ms)` sleeps to its deadline;
+- a server `poll(-1)` started 230 us before a request only returns 3113 us
+  later, woken by the client's retransmission rather than by the original
+  delivery.
+
+The wake-up path is instrumented (temporarily) with counters; every wake
+carries an event (`poll_empty` is zero), so this is not a spurious-wakeup
+problem, and the wake-up-to-dispatch latency is small. The remaining loss is
+in the poll/wake-up protocol itself, not in delivery (a second interface poll
+in `try_send` changed nothing) and not in timer accuracy. The next step is to
+instrument `Pollee::poll_with` / `Waker::wake_up` with the poller's registered
+mask at the notify instant. This one is still open.
+
+### `signal-prot`: the difference of two 9 us measurements is the margin
+
+`lat_sig -P 1 prot lat_sig` prints no `Protection fault` line on roughly one
+invocation in five. It is not a lost wake-up and not an empty benchmp result
+set: the handshake always completes and the child always writes its 184-byte
+result buffer. The line is suppressed by the benchmark itself:
+
+```c
+micro(char *s, uint64 n) {
+    micro = (stop - start) / n;
+    if (micro == 0.0) return;        /* prints nothing */
+    fprintf(ftiming, "%s: %.4f microseconds\n", s, micro);
+}
 ```
-UDP latency using localhost   9941.5575 microseconds
-TCP latency using localhost  11125.6734 microseconds
+
+and `bench_prot` computes
+
+```c
+bench_catch(...);                    /* catch_usecs, catch_n, silent */
+benchmp(initialize, do_prot, ...);
+if (gettime() > catch_usecs * get_n() / catch_n)
+        settime(gettime() - catch_usecs * get_n() / catch_n);
+else
+        settime(0);                  /* -> micro() prints nothing */
 ```
 
-libtirpc's default `CLSET_RETRY_TIMEOUT` is 2.5 ms. A loopback round trip that
-takes 9.9 ms cannot answer inside a 2.5 ms retry window, so every call's first
-attempt expires, the client retransmits, and the call eventually fails. That
-also explains the one intervention the 2026-09-23 work found that made the
-measurement complete: a diagnostic build raising the retry timeout to 25 ms,
-which is the first value above 9.9 ms. That work declined to ship it, correctly
-— it modifies the benchmark rather than the kernel.
+So the measurement is missing exactly when
 
-**What is not settled.** Whether ~10 ms of loopback latency is simply this
-kernel under TCG, or whether the poll scheduler adds a fixed cost on top of it.
-1 ms is the scheduler's unit (`next_poll_at_ms`), which bounds it from below
-but does not explain 10 ms; a native machine would measure tens of
-microseconds here. Until that is answered, `rpc-udp` and `rpc-tcp` should be
-expected to stay missing, and the honest options are to find and remove the
-added latency, or to accept the gap and say so. Changing the benchmark is not
-one of them.
+    prot_median - (catch_median - send_median) <= 0     (integer microseconds)
+
+`/tmp/sigprobe` reproduces this arithmetic independently (same handler
+structure, its own clock). On the host it gives send 0.137 us, catch
+1.183 us, prot 1.513 us per call, i.e. +0.45 us, while the unmodified
+`lat_sig -P 1 prot` prints +0.46 us. In the guest (4 vCPU, KVM, pinned to
+P-cores at the performance governor):
+
+| n | send | catch | prot | margin |
+|---|------|-------|------|--------|
+| 300 | 0.565 us | 8.109 us | 7.724 us | +0.18 us |
+| 3000 | 0.564 us | 8.058 us | 7.794 us | +0.30 us |
+
+The margin is essentially `send - (catch - prot)`: the self-`kill` syscall
+cost minus a small fault penalty. That is a structural property of the signal
+and page-fault paths, not a race, and there is no kernel defect behind it.
+
+What flips the sign is measurement stability, not correctness. The three
+costs are measured by three independently calibrated child processes at
+different moments. The host is a hybrid Intel i5-1340P (P-cores 0-7 at
+4.6 GHz, E-cores 8-15 at 3.4 GHz) running the `powersave` governor; in an
+unpinned run the `send` samples jump from 1656 us to 2588 us (+56%) in the
+middle of one measurement, consistent with a P-to-E or frequency move.
+Pinning QEMU to P-cores (`taskset -c 0,2,4,6`) and switching to the
+performance governor removes the jump (send 1670-1710 us), but standalone
+`lat_sig prot` is still 10 of 12, because the children can still land on
+different physical cores.
+
+An `LD_PRELOAD` trace that dumps the exact 184-byte result buffers confirms
+the model to the last digit. Replaying bench_prot's integer arithmetic on one
+traced trial (send 10860/16713, catch 10693/1120, prot 11166/1182) gives
+650 us / 1182 = 0.5474 us, which is exactly what `lat_sig` printed.
+
+The suite stores one `Protection fault` line per run in `native-results.txt`,
+so one negative draw removes the group. The five-run baseline above is four
+green and one missing for that reason.
+
+#### CPU-count and host-placement bisect
+
+The same probe (12 standalone `lat_sig -P 1 prot` trials and 5 `lat_rpc -p udp`
+trials) was run at each CPU count and host placement. `taskset` pins the QEMU
+process; on this machine CPUs 0-7 are P-cores (4.6 GHz, two SMT threads each)
+and 8-15 are E-cores (3.4 GHz).
+
+| guest CPUs | host pinning | `signal-prot` | `rpc-udp` |
+|------------|--------------|---------------|-----------|
+| 4 | none, `powersave` | 10/12 | 5/5 |
+| 4 | P-cores 0,2,4,6, `performance` | 10/12 | 5/5 |
+| 4 | P-core threads 0-7 | 9/12 | 5/5 |
+| 2 | P-cores 0,2 | 10/12 | 5/5 (78 us) |
+| 2 | SMT siblings 0,1 | **12/12** | 5/5 (probe), but the full suite run failed `rpc-udp` |
+| 1 | P-core 0 | **12/12** | **0/5** |
+
+`signal-prot` is stable only when the benchmark's three child processes see
+identical timing conditions (one core), and `rpc-udp` needs at least two CPUs
+with enough headroom. The suite cannot satisfy both at once. Making the child
+processes inherit the forking CPU (Linux wake-affine placement) was
+implemented, measured (still 10/12) and reverted.
+
+The suite's own results show why a per-run coin flip is structural rather than
+a defect. Under `powersave` the recorded `catch` cost ranged from 10.3 us to
+25.4 us between runs, and the printed `prot` margin moved in the same
+direction: catch 11.0 -> prot 0.66, catch 11.4 -> prot 2.16, catch 23.6 ->
+prot 12.9, catch 25.4 -> prot 13.5. The missing run is the fastest of the five
+(catch 10.28 us): at that point the subtraction is smaller than the
+run-to-run variation of the two terms.
+
+A decomposition probe (`/tmp/sigprobe`, n=3000, per call) separates what the
+8 us signal cost is made of:
+
+| operation | per call |
+|-----------|----------|
+| `kill(pid, 0)` | 0.56 us |
+| `kill(pid, SIGUSR1)` with `SIG_IGN` (queued and discarded, no frame) | 1.69 us |
+| `kill(pid, SIGUSR1)` with a handler | 8.07 us |
+
+Frame construction, handler entry and `rt_sigreturn` therefore account for
+~6.4 us (79%) of every delivered signal; two user/kernel transitions are
+~2.8 us of that.
+
+#### The frame path: FPU reset removal
+
+Instrumenting `handle_user_signal` with per-stage TSC marks (temporarily
+exposed through `/proc/stat`) located the frame cost:
+
+| stage | ns/signal |
+|-------|-----------|
+| mask and stack setup | 150 |
+| `siginfo_t` write | 135 |
+| `ucontext_t` build | 95 |
+| **FPU context get** | **964** |
+| **FPU context set (reset)** | **1096** |
+| FPU context write to the user stack | 102 |
+| `ucontext_t` write | 106 |
+| restorer/register setup | 208 |
+| total | 2856 |
+
+The FPU handling was 72% of the frame cost. Part of it was unnecessary: the
+handler was given a freshly allocated, zeroed FPU context
+(`set(FpuContext::new())`). Linux does not reset the FPU state for a signal
+handler, and `rt_sigreturn` restores the saved state anyway. Removing the
+reset also lets `before_user_exec` skip an `XRSTOR`, because the CPU already
+holds the value. The handler now sees the interrupted FPU state, as on Linux.
+
+A second, larger cut was measured but not shipped. `CpuSync::get()` clones
+the whole XSAVE area (a heap allocation plus a multi-kilobyte copy) only to
+read its length and write it to the user stack. A `with_current` variant that
+runs the write closure on the canonical value without cloning brought
+`handle_user_signal` from 2856 ns to 990 ns per signal and the full
+`kill`+deliver+return loop from 8.19 us to 5.72 us, with the standalone
+`lat_sig prot` probe at 12/12. It is not shipped because the closure holds
+the FPU context borrowed across a user-stack write: a page fault there can
+block, switch the task out, and reach `before_schedule`, which saves the same
+context — a `RefCell` double-borrow panic. The shipped version keeps the
+safe snapshot and only removes the reset.
+
+The five-run verification of the shipped change is the `clean5` table in
+"What is still missing".
+
+#### The residual sign flip is host scheduling, not the guest
+
+Three configurations were measured with the fixed kernel, and every
+`signal-prot` outcome correlates with the speed of the run. The two states
+differ by 2.6x even with the `performance` governor, which rules out frequency
+scaling; they are the laptop's sustained-load power/thermal limit and host
+vCPU preemption.
+
+| run | catch (`Signal handler overhead`) | `Protection fault` | verdict |
+|-----|-----------------------------------|--------------------|---------|
+| clean5p-3 | 21.25 us | 10.89 us | pass |
+| clean5p-4 | 8.18 us | - | missing |
+| clean5p-5 | 7.87 us | - | missing |
+| clean5 unpinned-1 | 22.42 us | 12.18 us | pass |
+| clean5 unpinned-2 | 8.30 us | - | missing |
+| clean3-2 | 23.65 us | 12.94 us | pass |
+| clean3-3 | 25.44 us | 13.45 us | pass |
+| clean3-4 | 10.28 us | - | missing |
+
+In the slow state the margin is large in absolute terms, and the subtraction
+is stable. In the fast state the margin is ~0.2 us, comparable to the
+host-induced jitter of either term, and the sign is a coin flip. A
+four-vCPU run pinned to the E-cores reproduces the slow state (catch 24 us)
+with a stable 12/12, but inflates every latency by 3x, so it is not a valid
+performance configuration.
+
+The kernel work is therefore complete: there is no defect left to fix in the
+signal path. Passing `signal-prot` reliably in the fast state would require
+isolating the host (cpuset partition or offlining SMT siblings and moving
+every other host process off the measured cores), which is an environment
+change, not a kernel fix.
+
+One host-isolation attempt was made. A cgroup v2 cpuset with
+`cpuset.cpus=0,2,4,6` and `cpuset.cpus.partition=isolated` gives QEMU
+exclusive use of four P-cores. `signal-prot` then becomes deterministic
+(fast state, catch 6.98 us, 12/12 twice), but `rpc-udp` fails five of five
+calls in both attempts. The partition restricts every task in the root
+cgroup, including `ksoftirqd`, `kworker` and RCU threads, so the host's
+per-CPU work for the isolated CPUs is starved and KVM's work on those CPUs
+stalls. A usable isolated setup needs `isolcpus` plus explicit kthread
+affinity, which is a boot-level host configuration; the cgroup was removed
+and the host left as it was.
 
 ## Reproducing
 
@@ -616,3 +1078,30 @@ tools/x86/debian/boot_debian.sh \
 ```
 
 `make test_x86_debian_boot` runs the same thing from the Makefile.
+
+Add `--accel kvm` for latency measurements. `--debugcon PATH` captures writes to
+QEMU's port 0xe9, and `--serial-log PATH` captures `early_print` output — the
+panic stack trace goes there, not to the hvc0 console.
+
+### The LMbench regression entry
+
+`make test_x86_debian_lmbench` boots the prepared LMbench image and waits for
+`LMBENCH_RUN_DONE`. It echoes the image, CPU count, accelerator, loglevel and
+QEMU wrapper, so a transcript can be attributed to a configuration:
+
+```sh
+# Host: pin the vCPUs and stop frequency scaling from moving the measurements.
+sudo cpupower frequency-set -g performance        # or write scaling_governor
+LMBENCH_QEMU_CPUS=0,2,4,6 make test_x86_debian_lmbench \
+  X86_DEBIAN_KERNEL=target/osdk/asterinas-osdk-bin.elf \
+  X86_DEBIAN_STAGE1_INITRAMFS=target/debian-x86/stage1/initramfs.cpio \
+  X86_DEBIAN_LMBENCH_IMAGE=target/x86-debian/m4/lmbench2.ext2 \
+  X86_DEBIAN_LMBENCH_QEMU=tools/x86/debian/lmbench_qemu_pin.sh \
+  X86_DEBIAN_SMP=4
+```
+
+`tools/x86/debian/lmbench_qemu_pin.sh` is a plain `taskset` wrapper; the CPU
+list is site specific (on the i5-1340P used here, CPUs 0,2,4,6 are one thread
+of each P-core). The image is built once with
+`tools/x86/debian/prepare_lmbench_disk.sh` from a published rootfs and the
+runtime archive produced by `tools/riscv/lmbench_native.py package`.
