@@ -435,6 +435,80 @@ filesystem without metadata checksums). `i_blocks` also omitted the xattr block
 for every inode that is not a fast symlink; it is now counted for all payload
 types.
 
+## Storage persistence: writes survive reboots and crashes
+
+The milestone above made `e2fsck` accept the image after a clean or crashed
+shutdown, but it never checked that the system could **boot again**, and it
+never checked that the data a guest wrote came back unchanged. Two gates were
+added:
+
+- `tools/x86/debian/persistence_acceptance.sh` boots one image **repeatedly**.
+  On every boot the guest writes a small file, a file that crosses a block
+  boundary, 1 MiB of random data, a nested directory, a hard link, a symlink, a
+  0640 mode, and an append-only log; it writes a manifest with SHA-256 sums,
+  fsyncs the files and directories, `sync`s, and shuts down cleanly. After each
+  boot the host re-dumps every file written by **this and all earlier boots**
+  from the image and compares the sums, checks the cumulative counter and log,
+  and runs `e2fsck -fn`.
+- A crash test boots with `asterinas.ext4_fault_stage=1` (halt after the
+  journal commit record, before the home blocks), kills the VM, and then boots
+  the same image again. Recovery must replay the committed transaction, finish
+  a normal boot, and leave `e2fsck -fn` clean.
+
+Both failed on their first run, and the failures were independent bugs.
+
+**1. A recovery-pending filesystem could not be mounted at all.** The
+superblock validator allowed only the `FILETYPE` and `EXTENTS` incompatible
+features, but `RECOVER` is an incompatible feature too: it marks a journal that
+must be replayed. Every writable mount sets it, so the *second* boot of any
+image failed with `mount(2) = EINVAL` (Stage1: `handoff-failed action=root-mount`,
+then a hung VM) before the replay path was ever reached. `RECOVER` is now in the
+allowed set; the mount path still decides whether a replay is needed.
+
+**2. A clean shutdown never cleared `RECOVER`.** `sync_all` only clears the
+flag when the filesystem is already marked read-only, and the remount path
+flushed *before* setting `RDONLY` (necessarily, because metadata writes are
+refused after). systemd's `Syncing → Remounting '/' read-only → Syncing`
+sequence therefore tried a second sync that failed with `EROFS` before reaching
+the clear. The VFS now performs one final sync after switching to read-only, and
+`sync_all` in that state only finalizes the journal instead of staging
+metadata.
+
+**3. The xattr block was counted twice in `i_blocks`.** The block manager was
+initialised from the on-disk `i_blocks`, which already includes the separate
+xattr block, and `raw_block_ptrs()` adds that block again on write-back. Each
+boot grew `i_blocks` by eight sectors (`Inode 19448, i_blocks is 24, should be
+16`, then 32 on the next boot). The manager now starts from the data-and-tree
+only. The same double count existed in the fast-symlink-to-data conversion and
+was fixed with it.
+
+**4. The uninitialised tail of the journal ring was treated as corruption.**
+`scan_log` read the whole ring starting at `s_start` and errored on the first
+block without a JBD2 magic; jbd2 treats that block as the end of the log. A
+crash image therefore failed recovery with `EUCLEAN` even though its committed
+transaction was intact (`debugfs logdump` parsed it). A block without the magic
+now ends the scan unless it is the very first block.
+
+Measured after the fixes (same image, loglevel 4 unless noted):
+
+```
+persistence_acceptance.sh --boots 3
+  boot 1: writes durable, earlier boots intact; e2fsck -fn clean
+  boot 2: writes durable, earlier boots intact; e2fsck -fn clean
+  boot 3: writes durable, earlier boots intact; e2fsck -fn clean
+  final image: no needs_recovery, boot-count=3, log lines 1-3,
+               inode 19448 i_blocks=16 (stable), e2fsck -fn clean
+
+fault stage 1 crash, then boot the same image:
+  mount succeeds, journal replay runs, the guest reaches multi-user,
+  the probe writes boot 4 and powers off cleanly,
+  final image: no needs_recovery, boot-count=4, e2fsck -fn clean
+```
+
+The Stage1 handoff now also prints the `mount(2)` errno
+(`DEBIAN_ROOT_MOUNT ext4 errno=N`) and the ext2 mount path logs the failing
+reason, which is what made the first bug visible.
+
 ## Socket visibility: `/proc/net` and `NETLINK_SOCK_DIAG`
 
 `ss`, `ip`, and the Debian boot scripts expect to see the socket table. The
