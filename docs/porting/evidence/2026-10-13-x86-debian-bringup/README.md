@@ -666,6 +666,53 @@ completes; before the fix the same call returned `11` (`EAGAIN`) after timing
 out. The apt run also exercises the nested-extent truncation fix above: with
 the old truncate path the same sequence left 89 MiB of unreferenced blocks.
 
+### Installing a package: htree directories and depth-one writeback
+
+`apt-get install hello` failed even with the network working:
+
+```
+dpkg: error processing archive .../hello_2.10-5_amd64.deb (--unpack):
+ unable to sync file '/usr/bin/hello.dpkg-new': Operation not supported
+dpkg: unrecoverable fatal error, aborting:
+ unable to fsync updated status of 'hello': Operation not supported
+```
+
+Two independent storage gaps produced the `EOPNOTSUPP`.
+
+**Indexed directories were corrupted by insertion.** The kernel reads
+directories linearly and never maintained the ext4 htree index. Adding a
+name to an indexed directory (`/usr/bin`, `/usr/share/man/man1`,
+`/var/lib/dpkg/info`) split `..`'s record, which spans the `dx_root`, or
+appended a leaf block that the index did not reference; `e2fsck` then reported
+an invalid root node and an unreferenced block. Before the first insertion the
+directory is now converted to a linear one: every live entry is repacked into
+the existing blocks, the stale index bytes become free space, and `INDEX_DIR`
+is cleared. The block count is unchanged; the cost is a linear lookup in those
+directories, and `e2fsck -D` can rebuild the index later.
+
+**Depth-one extent trees could not be resolved by writeback.**
+`/var/lib/dpkg/info` is an 11-block directory whose extents live in a leaf
+block. Flushing its dirty pages resolves every block first, but
+`resolve_block_range` only understood depth-zero trees and returned
+`EOPNOTSUPP`; the failed `fsync` is what dpkg reported. Already-mapped ranges
+of a depth-one tree now resolve through the index. Allocating a missing block
+in such a tree remains unsupported.
+
+Acceptance (`make test_x86_debian_apt`, `tools/x86/debian/apt_acceptance.sh`)
+boots one image twice. The first boot installs; both boots run the binary and
+write a manifest, and the host checks dpkg's status, the output, the binary's
+SHA-256 and `e2fsck -fn`:
+
+```
+boot 1: apt-get update RC 0, apt-get install hello RC 0
+        dpkg: install ok installed 2.10-5
+        /usr/bin/hello: Hello, world!
+boot 2: dpkg: install ok installed 2.10-5
+        /usr/bin/hello: Hello, world!
+both boots: e2fsck -fn clean; /usr/bin, /usr/share/man/man1 and
+            /var/lib/dpkg/info have INDEX_DIR cleared
+```
+
 ## Loopback latency: TCG, not the kernel
 
 The RPC measurements were dominated by a ~10 ms loopback round trip. A
@@ -1350,3 +1397,20 @@ kvm` by default; pass `X86_DEBIAN_STORAGE_ACCEL=tcg` for hosts without KVM.
 The harness is also the gate used for the nested-extent and journal fixes:
 every boot must have durable writes, intact earlier writes, and a clean
 `e2fsck -fn`.
+
+### The package-management entry
+
+```sh
+make test_x86_debian_apt \
+  X86_DEBIAN_KERNEL=target/osdk/asterinas-osdk-bin.elf \
+  X86_DEBIAN_STAGE1_INITRAMFS=target/debian-x86/stage1/initramfs.cpio \
+  X86_DEBIAN_APT_BASE_ROOT=target/debian-x86/m6/rootfs/debian-root.ext2 \
+  X86_DEBIAN_APT_PACKAGE=hello \
+  X86_DEBIAN_APT_BOOTS=2
+```
+
+The first boot installs the package; every boot runs `/usr/bin/hello` and
+writes `/opt/apt-verify/boot-N.txt`. The host requires dpkg's
+`install ok installed` status, exit 0 with `Hello, world!`, a matching binary
+checksum, and a clean `e2fsck -fn` after each boot. Pass
+`X86_DEBIAN_APT_ACCEL=tcg` on hosts without KVM.
