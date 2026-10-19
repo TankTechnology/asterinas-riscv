@@ -610,7 +610,16 @@ impl InodeInner {
 
 impl InodePayload {
     fn new(inode_desc: &Dirty<InodeDesc>, fs: Weak<Ext2>) -> Self {
-        let raw_block_ptrs = RawBlockPtrs::new(inode_desc.sector_count, inode_desc.block_ptrs);
+        // The block manager owns the inode's data and tree blocks, but not the
+        // separate xattr block: `raw_block_ptrs()` adds that block back on
+        // every write-back. Initializing the manager with the on-disk total
+        // (which includes the xattr block) would therefore count it twice on
+        // each sync and grow `i_blocks` by one block per mount.
+        let xattr_sectors = Self::xattr_sectors(inode_desc.file_acl);
+        let raw_block_ptrs = RawBlockPtrs::new(
+            inode_desc.sector_count.saturating_sub(xattr_sectors),
+            inode_desc.block_ptrs,
+        );
         match inode_desc.type_ {
             InodeType::File | InodeType::Dir => {
                 Self::new_data_backed(inode_desc.size as usize, raw_block_ptrs, fs)

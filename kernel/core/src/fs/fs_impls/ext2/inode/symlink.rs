@@ -105,10 +105,11 @@ impl InodeInner {
         } else {
             // Slow path: write through the page cache.
             if !matches!(self.payload, InodePayload::DataBacked { .. }) {
-                let raw_block_ptrs = RawBlockPtrs::new(
-                    InodePayload::xattr_sectors(self.desc.file_acl),
-                    [0; RAW_BLOCK_PTRS_LEN],
-                );
+                // The new block manager starts with no data or tree blocks.
+                // The xattr block stays in `desc.sector_count`; `raw_block_ptrs`
+                // adds it back on write-back, so passing it here would count it
+                // twice.
+                let raw_block_ptrs = RawBlockPtrs::new(0, [0; RAW_BLOCK_PTRS_LEN]);
                 self.payload = InodePayload::new_data_backed(
                     self.file_size(),
                     raw_block_ptrs,
