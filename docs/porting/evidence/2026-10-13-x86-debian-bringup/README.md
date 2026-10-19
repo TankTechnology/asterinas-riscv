@@ -525,7 +525,8 @@ entry. `i_blocks` follows each freed data and leaf block. After the change,
 truncating `libLLVM.so.19.1` to one third of its size produced a consistent
 single-leaf tree (`10553` data blocks plus one leaf) and `e2fsck -fn` reports
 no bitmap differences; the same gate was applied to `libcore`, `libopcodes`
-and `libgp-collector`.
+and `libgp-collector`. Truncating a depth-one file all the way to zero leaves
+an empty depth-one header with `i_blocks = 0`, which `e2fsck -fn` also accepts.
 
 Measured after the fixes (same image, loglevel 4 unless noted):
 
