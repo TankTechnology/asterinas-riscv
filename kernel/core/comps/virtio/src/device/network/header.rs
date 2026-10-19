@@ -13,12 +13,19 @@ pub(super) struct VirtioNetHdr {
     gso_size: u16,
     csum_start: u16,
     csum_offset: u16,
+    // With VIRTIO 1.0+ (PCI modern), this field is always part of the header
+    // and the header is 12 bytes even when `VIRTIO_NET_F_MRG_RXBUF` is not
+    // negotiated.  In legacy mode it is present only if that feature is
+    // negotiated, which this driver never does, so a legacy device uses the
+    // first 10 bytes alone.
+    num_buffers: u16,
 }
 
-// `VIRTIO_NET_F_MRG_RXBUF` is not negotiated by this driver, so the
-// virtio-net header is the 10-byte base header.  The optional `num_buffers`
-// field must not be present unless mergeable receive buffers are enabled.
-const _: () = assert!(size_of::<VirtioNetHdr>() == 10);
+/// Length of the virtio-net header in legacy (pre-1.0) mode without
+/// `VIRTIO_NET_F_MRG_RXBUF`.
+pub(super) const VIRTIO_NET_HDR_LEGACY_LEN: usize = 10;
+
+const _: () = assert!(size_of::<VirtioNetHdr>() == 12);
 
 bitflags! {
     #[repr(C)]

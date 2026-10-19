@@ -11,8 +11,12 @@ use aster_bigtcp::{
 };
 use aster_util::slot_vec::SlotVec;
 use ostd::{arch::trap::TrapFrame, debug, sync::SpinLock, warn};
+use ostd_pod::IntoBytes;
 
-use super::{config::VirtioNetConfig, header::VirtioNetHdr};
+use super::{
+    config::VirtioNetConfig,
+    header::{VirtioNetHdr, VIRTIO_NET_HDR_LEGACY_LEN},
+};
 use crate::{
     device::{
         VirtioDeviceError,
@@ -32,6 +36,10 @@ pub struct NetworkDevice {
     mac_addr: EthernetAddress,
     send_queue: VirtQueue,
     recv_queue: VirtQueue,
+    // The virtio-net header is 12 bytes with VIRTIO 1.0+ transports, which
+    // always include `num_buffers`, and the 10-byte base header in legacy
+    // transports because this driver never negotiates `VIRTIO_NET_F_MRG_RXBUF`.
+    header_len: usize,
     // Since the virtio net header remains consistent for each sending packet,
     // we store it to avoid recreating the header repeatedly.
     header: VirtioNetHdr,
@@ -88,6 +96,12 @@ impl NetworkDevice {
 
         let caps = init_caps(&features, &config);
 
+        let header_len = if device_transport.is_legacy_version() {
+            VIRTIO_NET_HDR_LEGACY_LEN
+        } else {
+            size_of::<VirtioNetHdr>()
+        };
+
         let mut send_queue = VirtQueue::new(QUEUE_SEND, QUEUE_SIZE, device_transport.as_mut())?;
         send_queue.disable_callback();
 
@@ -110,6 +124,7 @@ impl NetworkDevice {
             mac_addr,
             send_queue,
             recv_queue,
+            header_len,
             header: VirtioNetHdr::default(),
             tx_buffers,
             rx_buffers,
@@ -184,7 +199,7 @@ impl NetworkDevice {
 
         let (token, len) = self
             .recv_queue
-            .pop_used_with_min_bytes(size_of::<VirtioNetHdr>())
+            .pop_used_with_min_bytes(self.header_len)
             .map_err(|_| NetError::NotReady)?;
         debug!("receive packet: token = {}, len = {}", token, len);
 
@@ -194,18 +209,28 @@ impl NetworkDevice {
         self.add_rx_buffer(new_rx_buffer).unwrap();
 
         let packet = rx_buffer.finish_dma(len as usize);
-        Ok(packet.peel(size_of::<VirtioNetHdr>()))
+        Ok(packet.peel(self.header_len))
     }
 
     /// Sends a packet to network.
-    fn send(&mut self, packet: TxPacket<LinkLayer>) -> Result<(), NetError> {
+    fn send(&mut self, mut packet: TxPacket<LinkLayer>) -> Result<(), NetError> {
         if !self.can_send() {
             return Err(NetError::Busy);
         }
 
         let packet_len = packet.reader().remain();
-        let mut packet = packet.prepend_and_pack(&self.header);
-        packet.pad_to(size_of::<VirtioNetHdr>() + 60);
+        let mut packet = if self.header_len == size_of::<VirtioNetHdr>() {
+            packet.prepend_and_pack(&self.header)
+        } else {
+            let mut base_header = [0u8; VIRTIO_NET_HDR_LEGACY_LEN];
+            base_header.copy_from_slice(&self.header.as_bytes()[..self.header_len]);
+            {
+                let mut writer = packet.prepend_writer(self.header_len);
+                writer.write_val(&base_header).unwrap();
+            }
+            packet.pack(self.header_len)
+        };
+        packet.pad_to(self.header_len + 60);
         let tx_buffer = packet.map_dma(false).map_err(|_| NetError::NoMemory)?;
 
         let token = self.send_queue.add_input_bufs(&[&tx_buffer]).unwrap();
