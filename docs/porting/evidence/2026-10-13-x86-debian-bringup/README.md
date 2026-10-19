@@ -954,12 +954,16 @@ configuration but it does not change the mechanism.
 #### Reading the transcripts: the run directories are stale
 
 The guest dumps every directory under `/opt/lmbench/asterinas-runs` at the end
-of a run, and the image retains directories from earlier boots (the guest's
-ext4 writes are not a reliable channel). A transcript therefore contains
+of a run, and the image retains directories from earlier boots (the dumps are
+durable — that is exactly what the storage gate verifies — so they
+accumulate). A transcript therefore contains
 several `report.json` dumps, most of them from previous runs. Identify the
 run's own report by matching its `elapsed_seconds` against the console's
 `LMBENCH_RUN_NATIVE_START` / `LMBENCH_RUN_NATIVE_EXIT` difference; in the five
 runs above that match is within 1.0 s, while stale reports differ by 5-130 s.
+`tools/x86/debian/lmbench_transcript.py` automates the selection (preferring
+the run directory that is new relative to the previous transcript of the same
+image, which is unambiguous).
 
 `passed` is still false in the aggregate because of that single missing
 measurement, and the gate was not loosened to change it.
