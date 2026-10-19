@@ -4,7 +4,7 @@ use core::time::Duration;
 
 use ostd::sync::{WaitQueue, Waiter};
 
-use super::{Timer, TimerManager, clocks::JIFFIES_TIMER_MANAGER, timer::Timeout};
+use super::{Timer, TimerManager, clocks::MonotonicClock, timer::Timeout};
 use crate::{prelude::*, time::timer::TimerGuard};
 
 /// A trait that provide the timeout related function for [`Waiter`] and [`WaitQueue`]`.
@@ -127,10 +127,16 @@ pub(crate) struct ManagedTimeout<'a> {
 }
 
 impl<'a> ManagedTimeout<'a> {
-    /// Creates a new `ManagedTimeout` with the JIFFIES timer manager.
+    /// Creates a new `ManagedTimeout` with the monotonic clock's timer manager.
+    ///
+    /// The monotonic clock has nanosecond resolution, whereas the jiffies clock
+    /// only advances once per tick. Freezing a timeout against the jiffies
+    /// clock truncates the deadline down to the previous tick, so a timeout
+    /// requested for 2 ms may expire after only 1 ms. Timeouts must never
+    /// expire early, so use the precise clock for the deadline.
     pub(crate) fn new(timeout: Duration) -> Self {
         let timeout = Timeout::After(timeout);
-        let manager = JIFFIES_TIMER_MANAGER.get().unwrap();
+        let manager = MonotonicClock::timer_manager();
         Self::new_with_manager(timeout, manager)
     }
 
