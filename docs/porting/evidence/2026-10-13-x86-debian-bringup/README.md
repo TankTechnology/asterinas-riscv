@@ -54,6 +54,17 @@ directly. It advertises `--print-argv` and `--print-append` so the command line
 is asserted in tests without running QEMU: one drive, no `-bios`, no `-cdrom`,
 and `init=/init -- --root-init=systemd --root-fs=ext4` in the append string.
 
+## Integration with upstream main (0.19.0)
+
+The work in this document was rebased onto upstream `asterinas/asterinas`
+`main` (43 commits, version 0.19.0) and re-validated on the merged tree. The
+merge was mechanically clean; the only semantic duplicate was a timerfd poll
+invalidation that upstream had added around the same place as the fix in
+"`systemd` and `systemd-journald` were spinning inside `epoll`", and the
+duplicate was dropped. After the merge the kernel builds for x86_64, the
+storage gate passes three consecutive boots on a pristine base image, and the
+full LMbench suite reports 109/109 on a green run.
+
 ## What had to change
 
 **The Stage1 systemd handoff failed on a minimal initramfs.** `/newroot/run` is
@@ -1301,7 +1312,7 @@ same image lineage to make the selection exact:
 
 ```sh
 python3 tools/x86/debian/lmbench_transcript.py \
-  --previous target/x86-debian/m4/lmbench-clean5p-5.transcript \
+  --previous target/x86-debian/m4/lmbench-clean5-5.transcript \
   target/x86-debian/m4/lmbench-clean5b-1.transcript
 
 make test_x86_debian_lmbench_verdict \
