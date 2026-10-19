@@ -645,6 +645,7 @@ test_riscv_rootfs_builder_image_unit:
 test_x86_debian_tooling_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.x86.tests.test_x86_debian_boot \
+		tools.x86.tests.test_x86_debian_apt \
 		tools.x86.tests.test_lmbench_transcript \
 		tools.riscv.tests.test_lmbench_native -v
 
@@ -753,6 +754,36 @@ test_x86_debian_storage:
 		--boots "$(X86_DEBIAN_STORAGE_BOOTS)" \
 		--accel "$(X86_DEBIAN_STORAGE_ACCEL)" \
 		--timeout "$(X86_DEBIAN_STORAGE_TIMEOUT)"
+
+# Package-management gate: boot once to install a package with apt/dpkg, run
+# its binary, shut down, and boot the same image again to prove the package
+# database and files survived. `apt_acceptance.sh` checks dpkg's status, the
+# command output, the binary checksum and `e2fsck -fn` on every boot.
+#   X86_DEBIAN_APT_BASE_ROOT  ext4 image copied once into the workspace
+#   X86_DEBIAN_APT_PACKAGE    package to install (default hello)
+#   X86_DEBIAN_APT_BOOTS      boots; the first one installs (default 2)
+X86_DEBIAN_APT_BASE_ROOT ?=
+X86_DEBIAN_APT_WORKSPACE ?= $(CURDIR)/target/x86-debian/apt
+X86_DEBIAN_APT_PACKAGE ?= hello
+X86_DEBIAN_APT_BOOTS ?= 2
+X86_DEBIAN_APT_ACCEL ?= kvm
+X86_DEBIAN_APT_TIMEOUT ?= 1800
+
+.PHONY: test_x86_debian_apt
+test_x86_debian_apt:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_APT_BASE_ROOT)" || { echo "X86_DEBIAN_APT_BASE_ROOT is required" >&2; exit 2; }
+	@echo "apt: package=$(X86_DEBIAN_APT_PACKAGE) base=$(X86_DEBIAN_APT_BASE_ROOT) boots=$(X86_DEBIAN_APT_BOOTS) accel=$(X86_DEBIAN_APT_ACCEL) workspace=$(X86_DEBIAN_APT_WORKSPACE)"
+	@tools/x86/debian/apt_acceptance.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_APT_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_APT_WORKSPACE)" \
+		--package "$(X86_DEBIAN_APT_PACKAGE)" \
+		--boots "$(X86_DEBIAN_APT_BOOTS)" \
+		--accel "$(X86_DEBIAN_APT_ACCEL)" \
+		--timeout "$(X86_DEBIAN_APT_TIMEOUT)"
 
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:
