@@ -489,6 +489,33 @@ crash image therefore failed recovery with `EUCLEAN` even though its committed
 transaction was intact (`debugfs logdump` parsed it). A block without the magic
 now ends the scan unless it is the very first block.
 
+**5. Nested ext4 extent trees could not be truncated.** `apt-get update`
+reports two failures while it replaces its package lists:
+
+```
+ERROR : ext2: truncate: extent-tree truncation failed, err:
+  Error { errno: EOPNOTSUPP, msg: Some("nested ext4 extent truncation") }
+```
+
+The truncate path only handled depth-zero extent trees, where every extent
+record lives in the inode's inline `i_block` area. Thirteen files in the
+Debian image (notably `/usr/lib/x86_64-linux-gnu/libLLVM.so.19.1`,
+`/usr/bin/python3.13`, and the Rust `.rlib`s) carry depth-one trees: the
+inode holds index entries and the extent records live in leaf blocks.
+Truncating those files failed, and because the failure was logged rather than
+propagated the inode size still shrank, leaving the blocks beyond the new
+size allocated with no owner — leaked space, and a bitmap that the host
+checker rejects.
+
+The truncate path now walks depth-one index entries, rewrites each surviving
+leaf, frees extents past the cutoff (shortening the one that straddles it),
+and frees any leaf whose last extent disappeared together with its index
+entry. `i_blocks` follows each freed data and leaf block. After the change,
+truncating `libLLVM.so.19.1` to one third of its size produced a consistent
+single-leaf tree (`10553` data blocks plus one leaf) and `e2fsck -fn` reports
+no bitmap differences; the same gate was applied to `libcore`, `libopcodes`
+and `libgp-collector`.
+
 Measured after the fixes (same image, loglevel 4 unless noted):
 
 ```
@@ -570,6 +597,62 @@ One full-suite run died this way 166 s in, exiting with the machine halted.
 `new_accepted` no longer registers; `try_accept` registers the accepted
 socket after `drop(state)`, outside both guards. Five full-suite runs after
 the fix saw no panic.
+
+## Package management: the virtio-net header is 12 bytes in VIRTIO 1.0
+
+`apt-get update` behind QEMU's user-mode network (slirp) never progressed past
+ARP: `/proc/net/dev` showed TX growing while RX stayed at zero, `ip neigh`
+stayed empty, and every name lookup timed out. Capturing the netdev with
+`-object filter-dump,id=f1,netdev=net01,file=...` showed the cause in the
+first frame. The guest's ARP request was only 58 bytes long and began
+`ffff ffff 5254 ...`: two bytes of the destination MAC (`ff ff`) were missing
+and the rest of the frame had shifted left by two. QEMU was consuming a
+**12-byte** virtio-net header while the driver wrote **10**.
+
+The 10-byte header is correct only for legacy transports. In VIRTIO 1.0+ the
+`num_buffers` field is always part of the header, whether or not
+`VIRTIO_NET_F_MRG_RXBUF` is negotiated. QEMU implements exactly that
+(`hw/net/virtio-net.c`, `virtio_net_set_mrg_rx_bufs`):
+
+```c
+if (version_1) {
+    n->guest_hdr_len = sizeof(struct virtio_net_hdr_mrg_rxbuf);   /* 12 */
+} else {
+    n->guest_hdr_len = n->mergeable_rx_bufs ?
+        sizeof(struct virtio_net_hdr_mrg_rxbuf) : sizeof(struct virtio_net_hdr);
+}
+```
+
+The x86 transport negotiates `VIRTIO_F_VERSION_1` (`disable-legacy=on`), so
+the header is 12 bytes; the RISC-V MMIO transport used for the earlier
+networking fix is legacy and keeps the 10-byte base header. The driver now
+selects the header length at run time from `is_legacy_version()` and uses it
+consistently on both the transmit and receive paths (`num_buffers` stays
+zero).
+
+Evidence after the fix, from a KVM boot with the netdev capture attached:
+
+```
+netdev pcap:
+  guest    -> ff:ff:ff:ff:ff:ff   ARP request, 60 bytes, tpa 10.0.2.2
+  slirp    -> 52:54:00:12:34:56   ARP reply, 64 bytes, sha 52:55:0a:00:02:02
+  guest    -> 10.0.2.3:53         DNS query, UDP
+  10.0.2.3 -> 10.0.2.15:53        DNS reply, 128 bytes
+  10.0.2.15 -> 10.0.2.3           ICMP echo (ping)
+  guest    -> 10.0.2.2:80         TCP SYN, answered with RST (connect_ex 111)
+
+/proc/net/dev eth0: RX 444 bytes / 6 packets, TX 600 bytes / 9 packets
+(was RX 0 / TX 12 before the fix)
+
+apt-get update:              InRelease 140 kB, Packages 9678 kB,
+                             Translation-en 6486 kB, exit 0
+apt-get download hello:      53228-byte .deb, exit 0
+```
+
+The `111` (`ECONNREFUSED`) on the gateway's port 80 shows the TCP handshake
+completes; before the fix the same call returned `11` (`EAGAIN`) after timing
+out. The apt run also exercises the nested-extent truncation fix above: with
+the old truncate path the same sequence left 89 MiB of unreferenced blocks.
 
 ## Loopback latency: TCG, not the kernel
 
@@ -744,6 +827,24 @@ idle CPU: journald +2 jiffies / 5 s, systemd +0
 The guest is now genuinely idle when idle. Every timing-sensitive benchmark
 in the suite benefits; the numbers in the section above were all measured with
 the daemons spinning.
+
+### Services stay unmasked
+
+The LMbench runner used to `systemctl mask` `systemd-logind.service` and
+`rsyslog.service` so that two services still being brought up could not
+perturb the idle measurements. With the `epoll` and scheduling fixes in place
+both services now start and stay up on their own:
+
+```
+systemctl is-active systemd-logind.service  -> active, NRestarts=0
+systemctl is-active rsyslog.service         -> active, NRestarts=0
+```
+
+`lmbench-run.sh` unmasks and starts both before the suite instead of masking
+them, and records their state in the transcript
+(`LMBENCH_RUN_SERVICE <unit> <state> restarts=<n>`). A full suite with both
+daemons running still reports 109/109 on a green run, so they no longer move
+the benchmark result.
 
 ## Running the native LMbench ALL suite
 
@@ -1179,3 +1280,49 @@ list is site specific (on the i5-1340P used here, CPUs 0,2,4,6 are one thread
 of each P-core). The image is built once with
 `tools/x86/debian/prepare_lmbench_disk.sh` from a published rootfs and the
 runtime archive produced by `tools/riscv/lmbench_native.py package`.
+
+### Reading a transcript: which run actually ran
+
+The guest dumps every directory under `/opt/lmbench/asterinas-runs` on each
+boot, so a transcript contains reports from earlier boots too. The run a boot
+produced is the directory that did not exist in the previous transcript's
+dump; without a previous transcript the parser falls back to the report whose
+`elapsed_seconds` is closest to the console-measured
+`LMBENCH_RUN_NATIVE_START`/`EXIT` difference.
+
+`tools/x86/debian/lmbench_transcript.py` implements that selection and a
+rate-based verdict: a transcript is green only when the selected report has
+`passed: true` and no missing group. Pass the preceding transcript of the
+same image lineage to make the selection exact:
+
+```sh
+python3 tools/x86/debian/lmbench_transcript.py \
+  --previous target/x86-debian/m4/lmbench-clean5p-5.transcript \
+  target/x86-debian/m4/lmbench-clean5b-1.transcript
+
+make test_x86_debian_lmbench_verdict \
+  X86_DEBIAN_LMBENCH_TRANSCRIPTS="target/x86-debian/m4/lmbench-clean5b-*.transcript" \
+  X86_DEBIAN_LMBENCH_REQUIRE_RATE=0.6
+```
+
+Chaining the 25 transcripts of the five published sets chronologically gives
+exactly the 17/25 green rate in "What is still missing"; the elapsed-time
+fallback alone is ambiguous in one case (`clean5b-2`, where a stale passing
+report is 0.1 s closer to the console duration than the boot's own failing
+run). Use `--previous` whenever the rate is used as a gate.
+
+### The storage persistence entry
+
+```sh
+make test_x86_debian_storage \
+  X86_DEBIAN_KERNEL=target/osdk/asterinas-osdk-bin.elf \
+  X86_DEBIAN_STAGE1_INITRAMFS=target/debian-x86/stage1/initramfs.cpio \
+  X86_DEBIAN_STORAGE_BASE_ROOT=target/debian-x86/m6/rootfs/debian-root.ext2 \
+  X86_DEBIAN_STORAGE_BOOTS=3
+```
+
+The target runs `tools/x86/debian/persistence_acceptance.sh` with `--accel
+kvm` by default; pass `X86_DEBIAN_STORAGE_ACCEL=tcg` for hosts without KVM.
+The harness is also the gate used for the nested-extent and journal fixes:
+every boot must have durable writes, intact earlier writes, and a clean
+`e2fsck -fn`.
