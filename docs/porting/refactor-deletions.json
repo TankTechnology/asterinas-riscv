@@ -1,0 +1,281 @@
+{
+  "schema": 1,
+  "keep": [
+    "docs/porting/evidence",
+    "docs/porting/receipts",
+    "docs/porting/manifest.lock",
+    "docs/porting/claims.md",
+    "docs/porting/STATUS.md",
+    "tools/riscv/refactor_reference_scan.py",
+    "tools/riscv/tests/test_refactor_reference_scan.py",
+    "tools/riscv/debian/rootfs/gate_protocol.py",
+    "tools/riscv/debian/rootfs/gate_runtime.py",
+    "tools/riscv/debian/rootfs/rootfs_gate.py",
+    "tools/riscv/debian/rootfs/desktop_m4_gate.py",
+    "tools/riscv/debian/rootfs/firefox_drm_scene_gate.py",
+    "tools/riscv/debian/rootfs/desktop_m4_recovery_gate.py",
+    "tools/riscv/tests/test_firefox_drm_scene_gate.py",
+    "tools/riscv/tests/test_megrez_control_chain.py",
+    "tools/riscv/tests/test_megrez_display_gate.py",
+    "tools/riscv/tests/test_megrez_recovery_epoch.py",
+    "tools/riscv/tests/test_qemu_scanout_contract.py"
+  ],
+  "delete": [
+    {
+      "path": "tools/riscv/debian/rootfs/analyze_firefox_boundary.py",
+      "reason": "历史 Firefox 边界分析脚本，官方包 E3 不再调用",
+      "replacement": "firefox short probe",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/desktop_handoff_no_firefox_overlay.json",
+      "reason": "旧桌面无 Firefox overlay，无活动调用者",
+      "replacement": "固定基础 rootfs + overlay",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/desktop_m4_fbdev_canary_gate.py",
+      "reason": "M4 canary wrapper，无活动调用者",
+      "replacement": "E2 fbdev/DRM gate",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/desktop_m4_xmessage_gate.py",
+      "reason": "旧 XMessage wrapper，无活动调用者",
+      "replacement": "E2 fixed scene",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/desktop_m5_network_browser_parallel.service",
+      "reason": "M5 网络与浏览器耦合服务，违反 E1-E5 单断言",
+      "replacement": "E3 official Firefox scene",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/display_m4_dev_overlay.json",
+      "reason": "旧 framebuffer 开发 overlay，无活动调用者",
+      "replacement": "固定基础 rootfs + overlay",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/firefox_compat/snapshot_download.py",
+      "reason": "冻结 cross-build/compat builder 的快照下载器",
+      "replacement": "Debian official Firefox package",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/firefox_compat/snapshot_resolver.py",
+      "reason": "冻结 cross-build/compat builder 的快照解析器",
+      "replacement": "Debian official Firefox package",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/firefox_drm_dev_overlay.json",
+      "reason": "旧 Firefox DRM 开发 overlay，无活动调用者",
+      "replacement": "E3 official Firefox scene",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/firefox_drm_gate.py",
+      "reason": "重复 Firefox DRM wrapper，无活动调用者",
+      "replacement": "firefox_drm_scene_gate.py",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_browser_latency_contract.py",
+      "reason": "浏览器性能长门禁，非 E1-E5",
+      "replacement": "短 Firefox boundary probe",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_browser_m5_qemu_gate.py",
+      "reason": "M5 浏览器 QEMU 门禁",
+      "replacement": "E3 official Firefox scene",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_desktop_m4_framebuffer_rw.py",
+      "reason": "旧 framebuffer 写入门禁",
+      "replacement": "E2 fixed pixel hash",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_desktop_m4_x11_gate.py",
+      "reason": "旧 X11 wrapper 门禁",
+      "replacement": "E2 GL renderer gate",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_drm_virgl_fault_gate.py",
+      "reason": "多项 virgl 故障矩阵，超出单代表性故障范围",
+      "replacement": "E4 representative recovery fault",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_actor_diagnostics.py",
+      "reason": "Firefox actor 诊断探针",
+      "replacement": "Firefox short boundary probe",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_actor_records.py",
+      "reason": "Firefox actor 诊断记录",
+      "replacement": "Firefox short boundary probe",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_build_driver.py",
+      "reason": "冻结的 Firefox cross-builder 测试",
+      "replacement": "Debian official Firefox package",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_compat_overlay.py",
+      "reason": "冻结的 Firefox compat overlay 测试",
+      "replacement": "Debian official Firefox package",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_diagnostic_snapshot.py",
+      "reason": "Firefox dmesg 诊断快照测试",
+      "replacement": "Firefox short boundary probe",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_dmesg_experiment.py",
+      "reason": "Firefox dmesg 反复实验测试",
+      "replacement": "Firefox short boundary probe",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_dmesg_records.py",
+      "reason": "Firefox dmesg 诊断记录测试",
+      "replacement": "Firefox short boundary probe",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_package_provenance_gate.py",
+      "reason": "旧 Firefox 包 provenance wrapper",
+      "replacement": "manifest.lock",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_runtime_provenance_gate.py",
+      "reason": "旧 Firefox runtime provenance wrapper",
+      "replacement": "E3 receipt",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_source_package_gate.py",
+      "reason": "已冻结的 Firefox 源码包门禁",
+      "replacement": "Debian official Firefox package",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_source_patch_gate.py",
+      "reason": "已冻结的 Firefox 源码补丁门禁",
+      "replacement": "Debian official Firefox package",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_transport_records.py",
+      "reason": "Firefox 传输诊断记录测试",
+      "replacement": "Firefox short boundary probe",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_ipc_event_probe.py",
+      "reason": "旧 IPC 微探针，未绑定 E1-E5",
+      "replacement": "systemd exec boundary probe",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_klog_micro_gate.py",
+      "reason": "旧日志微门禁，未绑定 E1-E5",
+      "replacement": "receipt writer",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_marionette_diagnostics.py",
+      "reason": "重复 Marionette 诊断测试",
+      "replacement": "Firefox short boundary probe",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_megrez_dns_shim.py",
+      "reason": "旧网络 DNS shim 测试，非 E1-E5",
+      "replacement": "E5 management chain",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_megrez_gmac_evidence.py",
+      "reason": "GMAC 网络流量证据测试，非 E1-E5",
+      "replacement": "E5 read-only management",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_megrez_qemu_matrix.py",
+      "reason": "旧多矩阵 QEMU 门禁",
+      "replacement": "E1-E4 single claims",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_megrez_sdhci_gate.py",
+      "reason": "SDHCI 专项门禁，非 E1-E5",
+      "replacement": "E5 management chain",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_megrez_sdhci_write_gate.py",
+      "reason": "SDHCI 写入专项门禁，非 E1-E5",
+      "replacement": "E5 management chain",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_megrez_single_packet_evidence.py",
+      "reason": "单包网络专项证据，非 E1-E5",
+      "replacement": "E5 management chain",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_megrez_single_packet_gate.py",
+      "reason": "单包网络专项门禁，非 E1-E5",
+      "replacement": "E5 management chain",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_megrez_single_packet_physical_gate.py",
+      "reason": "真机单包网络门禁，非 E1-E5",
+      "replacement": "E5 management chain",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_megrez_single_packet_qemu_gate.py",
+      "reason": "QEMU 单包网络门禁，非 E1-E5",
+      "replacement": "E1-E4 single claims",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_qemu_goal_audit.py",
+      "reason": "旧 goal 审计 wrapper",
+      "replacement": "docs/porting/STATUS.md",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_qemu_guest_fault_receipt.py",
+      "reason": "旧 guest fault receipt wrapper",
+      "replacement": "E4 representative recovery fault",
+      "references_checked": true
+    },
+    {
+      "path": "tools/riscv/tests/test_wayland_demo.py",
+      "reason": "未使用的 Wayland demo 测试",
+      "replacement": "E2 Xorg/DRM gate",
+      "references_checked": true
+    }
+  ],
+  "retain_docs": [
+    "docs/porting/evidence",
+    "docs/porting/receipts"
+  ]
+}
