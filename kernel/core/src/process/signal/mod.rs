@@ -17,7 +17,7 @@ use align_ext::AlignExt;
 use c_types::{siginfo_t, ucontext_t};
 use constants::SIGSEGV;
 use ostd::{
-    arch::cpu::context::{FpuContext, UserContext},
+    arch::cpu::context::UserContext,
     mm::VmIo,
     user::UserContextApi,
 };
@@ -362,11 +362,17 @@ pub(crate) fn handle_user_signal(
     // Save general-purpose registers.
     ucontext.uc_mcontext.copy_user_regs_from(user_ctx);
 
-    // Clone and reset the FPU context.
+    // Save the FPU context so that `rt_sigreturn` can restore it. The signal
+    // handler runs with the interrupted FPU state, which is also what Linux
+    // does; there is no reset, so the CPU keeps the value it already has and
+    // no reload is needed before entering the handler.
     let supp = ctx.thread_local.supp_user_context();
+    // Take a snapshot. The user-stack write below must not hold the FPU
+    // context borrowed: a page fault in that write can block and switch the
+    // task out, and `before_schedule` saves the same context.
     let fpu_context = supp.fpu().get();
     let fpu_context_bytes = fpu_context.as_bytes();
-    supp.fpu().set(FpuContext::new());
+    let fpu_context_len = fpu_context_bytes.len();
 
     cfg_select! {
         target_arch = "x86_64" => {
@@ -374,7 +380,7 @@ pub(crate) fn handle_user_signal(
             // user program can use the XSAVE/XRSTOR instructions at that address,
             // if necessary.
             let fpu_context_addr =
-                alloc_aligned_in_user_stack(stack_pointer, fpu_context_bytes.len(), 64);
+                alloc_aligned_in_user_stack(stack_pointer, fpu_context_len, 64);
             let ucontext_addr = alloc_aligned_in_user_stack(
                 fpu_context_addr,
                 size_of::<ucontext_t>(),
@@ -406,7 +412,7 @@ pub(crate) fn handle_user_signal(
             // Example: <https://elixir.bootlin.com/linux/v6.15.7/source/arch/loongarch/kernel/signal.c#L848>
             let ucontext_addr = alloc_aligned_in_user_stack(
                 stack_pointer,
-                size_of::<ucontext_t>() + fpu_context_bytes.len(),
+                size_of::<ucontext_t>() + fpu_context_len,
                 align_of::<ucontext_t>(),
             );
             // FIXME: Set the FPU flags
