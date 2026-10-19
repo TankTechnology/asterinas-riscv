@@ -411,12 +411,6 @@ test_riscv_debian_rootfs_unit:
 		tools.riscv.tests.test_megrez_recovery_epoch \
 		tools.riscv.tests.test_qemu_scanout_contract -v
 
-.PHONY: test_riscv_debian_debug_console
-test_riscv_debian_debug_console:
-	@python3 -m unittest \
-		tools.riscv.tests.test_debian_debug_console \
-		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
-
 .PHONY: test_riscv_megrez_debian_shell
 test_riscv_megrez_debian_shell:
 	@python3 -W error::ResourceWarning -m unittest \
@@ -455,14 +449,6 @@ test_riscv_megrez_debug_unit:
 		tools.riscv.tests.test_megrez_install_workflow \
 		tools.riscv.tests.test_megrez_preboard -v
 
-.PHONY: test_riscv_physical_graphics_unit
-test_riscv_physical_graphics_unit:
-	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
-		python3 -W error::ResourceWarning -m unittest \
-		tools.riscv.tests.test_physical_graphics_gate \
-		tools.riscv.tests.test_megrez_physical_graphics \
-		tools.riscv.tests.test_physical_graphics_qemu_gate -v
-
 .PHONY: test_riscv_firefox_daily_use_physical_unit
 test_riscv_firefox_daily_use_physical_unit:
 	@PYTHONPATH="$(CURDIR)" python3 -W error::ResourceWarning -m unittest \
@@ -471,7 +457,6 @@ test_riscv_firefox_daily_use_physical_unit:
 		tools.riscv.tests.test_browser_daily_use_upload \
 		tools.riscv.tests.test_megrez_network_fixture \
 		tools.riscv.tests.test_debian_rootfs \
-		tools.riscv.tests.test_megrez_physical_graphics \
 		tools.riscv.tests.test_megrez_firefox_daily_use \
 		tools.riscv.tests.test_megrez_firefox_daily_use_report -v
 
@@ -480,7 +465,6 @@ test_riscv_megrez_boot_stability_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_boot_stability \
 		tools.riscv.tests.test_megrez_rockos_attestation \
-		tools.riscv.tests.test_megrez_physical_graphics \
 		tools.riscv.tests.test_debian_rootfs.DebianRootfsGateRuntimeTests -v
 
 .PHONY: test_riscv_megrez_desktop_unit
@@ -772,58 +756,6 @@ test_riscv_debian_systemd_m2_gate:
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_SYSTEMD_M2_GATE_OUTPUT)" --smp 4
-
-.PHONY: test_riscv_debian_debug_console_qemu_gate
-test_riscv_debian_debug_console_qemu_gate:
-	@test -n "$(DEBIAN_KERNEL)" || \
-		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_UBOOT)" || \
-		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DTB)" || \
-		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
-		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
-		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
-		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
-		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
-		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT)" || \
-		{ echo "DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.debug_console_qemu_gate \
-		--kernel "$(DEBIAN_KERNEL)" \
-		--uboot "$(DEBIAN_UBOOT)" \
-		--dtb "$(DEBIAN_DTB)" \
-		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
-		--root-image "$(DEBIAN_ROOT_IMAGE)" \
-		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
-		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
-		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
-		--output-directory "$(DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT)" --smp 4 \
-		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
-
-.PHONY: test_riscv_physical_graphics_qemu_gate
-test_riscv_physical_graphics_qemu_gate:
-	@test -n "$(DEBIAN_KERNEL)" || { echo "DEBIAN_KERNEL is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_UBOOT)" || { echo "DEBIAN_UBOOT is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DTB)" || { echo "DEBIAN_DTB is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || { echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_IMAGE)" || { echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_MANIFEST)" || { echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
-	@test -n "$(RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT)" || { echo "RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
-		python3 -m tools.riscv.physical_graphics_qemu_gate \
-		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" \
-		--dtb "$(DEBIAN_DTB)" --stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
-		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
-		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
-		--output-directory "$(RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT)" \
-		--smp 4 --boot-timeout 7200 --command-timeout 300
 
 .PHONY: test_riscv_ltp
 test_riscv_ltp: test_riscv_ltp_unit

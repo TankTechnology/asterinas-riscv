@@ -28,17 +28,23 @@
 
 ## 本轮已完成的收敛
 
-- 删除 48 个零活动引用的历史门禁、诊断测试和旧 overlay；另有 3 个带既有 dirty 改动的候选登记为 deferred；保留证据、收据
+- 删除 52 个零活动引用的历史门禁、诊断测试和旧 overlay；另有 3 个带既有 dirty 改动的候选登记为 deferred；保留证据、收据
   和 E1–E5 核心实现。删除清单与状态见
   `docs/porting/refactor-deletions.json`。
 - Makefile 只保留 E1–E5 rootfs 单元集合，移除 M5 网络/浏览器、M6、M7、
   M9 运行入口及其参数；`desktop-m9-software` profile 也已从 builder 注册表移除。
+- E3 仍保留 `browser_m5_marionette_gate.py`，因为
+  `firefox_drm_scene_gate.py` 直接使用其受限 Marionette client；
+  `browser_web_*`、M5 网络和物理 HDMI 只存在于旧兼容工具链，不再由 E1–E5
+  Makefile 或快速回归入口启动。
+- 删除了旧 `debug_console`/physical-graphics QEMU 单测、physical-graphics
+  unit 入口和对应的 M5 复合参数；`firefox_fast_check.sh` 已收敛为 E1–E5
+  宿主静态/单元回归，避免再把浏览器网络和物理交互混入一次运行。
 - `make test_riscv_debian_rootfs_unit`：325 tests，全部通过；这是宿主单元
   验证，不等价于 QEMU 或真机通过。
 
 ## 下一步边界
 
-下一轮只处理剩余的 M5/browser-web profile 分支：确认它们是否仍被管理链工具依赖，
-然后把非 E1–E5 配置从默认构建路径移出，并让 `--reuse-existing` 成为官方 Firefox
-场景的默认复用入口。完成后只需运行 builder 静态/单元测试；在这些入口稳定前不再
-启动长时间 Firefox 门禁，也不进行真机实验。
+剩余的 M5/browser-web 文件有既有 dirty 修改，或被 legacy Megrez/Stage1 兼容工具
+直接导入，因此本轮不删除，已逐项列为 deferred；后续若要彻底移除，必须先单独迁移
+这些调用者。当前默认入口已经只走 E1–E5，后续不需要再为旧 profile 启动长时间门禁。

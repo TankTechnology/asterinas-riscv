@@ -3,72 +3,37 @@
 
 set -euo pipefail
 
-# Host-side checks for the Firefox/Asterinas workflow.  This intentionally does
-# not build the kernel, start QEMU, touch binfmt, or access external websites.
+# Focused E1-E5 host regression. It excludes retired M5 network/browser
+# workloads, physical HDMI interaction, and long QEMU runners.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd -P)"
 cd "${REPO_ROOT}"
 
-python3 -m unittest \
-  tools.riscv.tests.test_browser_interaction_perf \
-  tools.riscv.tests.test_browser_workload_contract \
-  tools.riscv.tests.test_browser_composite_capture \
-  tools.riscv.tests.test_browser_composite_manifest \
-  tools.riscv.tests.test_browser_system_time \
-  tools.riscv.tests.test_browser_performance_provenance \
-  tools.riscv.tests.test_browser_daily_use_contract \
-  tools.riscv.tests.test_browser_daily_use_gate \
-  tools.riscv.tests.test_browser_daily_use_upload \
-  tools.riscv.tests.test_debian_browser_web \
-  tools.riscv.tests.test_debian_browser_m5_runtime_gate \
+python3 -W error::ResourceWarning -m unittest \
   tools.riscv.tests.test_debian_dev_overlay \
-  tools.riscv.tests.test_megrez_network_fixture \
-  tools.riscv.tests.test_megrez_physical_graphics \
-  tools.riscv.tests.test_megrez_firefox_daily_use \
-  tools.riscv.tests.test_megrez_firefox_daily_use_report \
-  tools.riscv.tests.test_physical_graphics_gate \
-  tools.riscv.tests.test_firefox_debug_tool \
+  tools.riscv.tests.test_debian_rootfs \
+  tools.riscv.tests.test_debian_desktop_m4_drm_recovery_gate \
+  tools.riscv.tests.test_firefox_drm_scene_gate \
+  tools.riscv.tests.test_megrez_control_chain \
+  tools.riscv.tests.test_megrez_display_gate \
+  tools.riscv.tests.test_megrez_recovery_epoch \
+  tools.riscv.tests.test_qemu_scanout_contract \
   -q
 
 python3 -m py_compile \
-  tools/riscv/firefox_debug_tool.py \
-  tools/riscv/browser_composite_manifest.py \
-  tools/riscv/debian/rootfs/browser_interaction_perf.py \
-  tools/riscv/debian/rootfs/browser_workload_contract.py \
-  tools/riscv/debian/rootfs/browser_composite_capture.py \
-  tools/riscv/debian/rootfs/browser_system_time.py \
-  tools/riscv/debian/rootfs/browser_daily_use_contract.py \
-  tools/riscv/debian/rootfs/browser_daily_use_gate.py \
-  tools/riscv/debian/rootfs/browser_daily_use_upload.py \
-  tools/riscv/debian/rootfs/browser_perf_capture.py \
-  tools/riscv/debian/rootfs/browser_performance_provenance.py \
-  tools/riscv/debian/rootfs/browser_web_contract.py \
-  tools/riscv/debian/rootfs/browser_web_marionette_gate.py \
-  tools/riscv/debian/rootfs/browser_m5_marionette_gate.py \
-  tools/riscv/debian/rootfs/browser_web_qemu_gate.py \
-  tools/riscv/debian/rootfs/browser_web_trust_check.py \
-  tools/riscv/debian/rootfs/firefox_jit_overlay.py \
-  tools/riscv/megrez_physical_graphics.py \
-  tools/riscv/megrez_firefox_daily_use.py \
-  tools/riscv/megrez_firefox_daily_use_report.py
+  tools/riscv/refactor_reference_scan.py \
+  tools/riscv/debian/rootfs/gate_protocol.py \
+  tools/riscv/debian/rootfs/gate_runtime.py \
+  tools/riscv/debian/rootfs/rootfs_gate.py \
+  tools/riscv/debian/rootfs/desktop_m4_gate.py \
+  tools/riscv/debian/rootfs/desktop_m4_recovery_gate.py \
+  tools/riscv/debian/rootfs/firefox_drm_scene_gate.py \
+  tools/riscv/megrez_control_chain.py \
+  tools/riscv/megrez_display_gate.py
 
 bash -n \
-  tools/qemu_args.sh \
-  tools/riscv/qemu_live_pc_sampler.sh \
-  tools/riscv/qemu_system_gdb_probe.sh \
-  tools/riscv/firefox_kernel_static_check.sh \
-  tools/riscv/kernel_ktest.sh \
   tools/riscv/debian/rootfs/build_rootfs.sh \
-  tools/riscv/debian/rootfs/browser_web_evidence.sh \
-  tools/riscv/debian/rootfs/browser_web_firefox.sh \
-  tools/riscv/debian/rootfs/desktop_display_provider.sh \
-  tools/riscv/debian/rootfs/desktop_m3_device_access.sh \
-  tools/riscv/debian/rootfs/desktop_m5_session.sh \
-  tools/riscv/debian/rootfs/physical_external_services_quiesce.sh \
-  tools/riscv/debian/rootfs/physical_graphics_control.sh \
-  tools/riscv/debian/rootfs/firefox_gdb_probe.sh \
-  tools/riscv/debian/rootfs/browser_web_timeline.sh
+  tools/riscv/debian/rootfs/build_stage1.sh
 
 git diff --check
-
 echo "FIREFOX_FAST_CHECK_PASS"

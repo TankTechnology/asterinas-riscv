@@ -18,7 +18,9 @@
     "tools/riscv/tests/test_megrez_control_chain.py",
     "tools/riscv/tests/test_megrez_display_gate.py",
     "tools/riscv/tests/test_megrez_recovery_epoch.py",
-    "tools/riscv/tests/test_qemu_scanout_contract.py"
+    "tools/riscv/tests/test_qemu_scanout_contract.py",
+    "tools/riscv/debian/rootfs/browser_m5_marionette_gate.py",
+    "tools/riscv/debian/rootfs/debug_console_protocol.py"
   ],
   "delete": [
     {
@@ -401,6 +403,38 @@
       "path": "tools/riscv/tests/test_dual_host_qemu_probe.py",
       "reason": "旧双宿主 QEMU 探针单测，非 E1-E5 入口且无活动调用者",
       "replacement": "E4 recovery receipt",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_debug_console.py",
+      "reason": "旧 debug-console QEMU 复合门禁单测，未进入 E1-E5 rootfs 单测入口；其协议实现仍保留给管理链兼容层",
+      "replacement": "test_megrez_control_chain.py + E4 recovery receipt",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_physical_graphics_qemu_gate.py",
+      "reason": "旧 physical-graphics QEMU 长门禁单测，依赖 M5 网络/桌面复合路径，未进入 E1-E5 单测入口",
+      "replacement": "test_qemu_scanout_contract.py + E2 pixel receipt",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_megrez_physical_graphics.py",
+      "reason": "旧 Megrez 物理图形长门禁单测（2528 行），依赖 M5 浏览器/HDMI 复合路径，未进入 E1-E5 管理链",
+      "replacement": "E2 scanout contract + E5 management chain",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_physical_graphics_gate.py",
+      "reason": "旧物理图形交互单测，只服务已退役的 physical-graphics unit 入口",
+      "replacement": "E2 scanout contract",
       "references_checked": true,
       "state": "removed",
       "removed_at": "2026-10-19"

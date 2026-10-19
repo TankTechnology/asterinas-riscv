@@ -568,7 +568,6 @@ class DailyUseEntryPointTests(unittest.TestCase):
             "test_browser_daily_use_upload",
             "test_megrez_network_fixture",
             "test_debian_rootfs",
-            "test_megrez_physical_graphics",
             "test_megrez_firefox_daily_use",
             "test_megrez_firefox_daily_use_report",
         ):
@@ -600,12 +599,22 @@ class DailyUseEntryPointTests(unittest.TestCase):
     def test_fast_check_and_readme_cover_three_one_shot_runs(self) -> None:
         fast = FAST_CHECK.read_text(encoding="utf-8")
         for module in (
-            "test_browser_daily_use_upload",
-            "test_megrez_physical_graphics",
-            "test_megrez_firefox_daily_use",
-            "test_megrez_firefox_daily_use_report",
+            "test_debian_dev_overlay",
+            "test_debian_rootfs",
+            "test_debian_desktop_m4_drm_recovery_gate",
+            "test_firefox_drm_scene_gate",
+            "test_megrez_control_chain",
+            "test_megrez_display_gate",
+            "test_megrez_recovery_epoch",
+            "test_qemu_scanout_contract",
         ):
             self.assertIn(f"tools.riscv.tests.{module}", fast)
+        for retired in (
+            "test_megrez_physical_graphics",
+            "test_debian_browser_web",
+            "test_debian_browser_m5_runtime_gate",
+        ):
+            self.assertNotIn(f"tools.riscv.tests.{retired}", fast)
         readme = README.read_text(encoding="utf-8")
         for fragment in (
             "one profile per boot",
