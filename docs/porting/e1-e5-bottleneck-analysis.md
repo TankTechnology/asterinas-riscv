@@ -32,14 +32,13 @@
   和 E1–E5 核心实现。删除清单与状态见
   `docs/porting/refactor-deletions.json`。
 - Makefile 只保留 E1–E5 rootfs 单元集合，移除 M5 网络/浏览器、M6、M7、
-  M9 运行入口及其参数。
+  M9 运行入口及其参数；`desktop-m9-software` profile 也已从 builder 注册表移除。
 - `make test_riscv_debian_rootfs_unit`：325 tests，全部通过；这是宿主单元
   验证，不等价于 QEMU 或真机通过。
 
 ## 下一步边界
 
-下一轮只处理 rootfs builder 的 profile 分支：保留 `minimal-m1`、
-`systemd-m2`、`desktop-m3`、`desktop-m4`、`desktop-m4-firefox`，把 M5–M9
-配置从默认构建路径移出，并让 `--reuse-existing` 成为官方 Firefox 场景的
-默认复用入口。完成后只需运行 builder 静态/单元测试；在这些入口稳定前不再
+下一轮只处理剩余的 M5/browser-web profile 分支：确认它们是否仍被管理链工具依赖，
+然后把非 E1–E5 配置从默认构建路径移出，并让 `--reuse-existing` 成为官方 Firefox
+场景的默认复用入口。完成后只需运行 builder 静态/单元测试；在这些入口稳定前不再
 启动长时间 Firefox 门禁，也不进行真机实验。
