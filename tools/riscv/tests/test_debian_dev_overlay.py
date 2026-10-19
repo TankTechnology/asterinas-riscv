@@ -22,8 +22,6 @@ from tools.riscv.debian.rootfs.dev_overlay import (
 
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
-ROOTFS_DIRECTORY = REPOSITORY_ROOT / "tools/riscv/debian/rootfs"
-BROWSER_WEB_SPEC = ROOTFS_DIRECTORY / "browser_web_dev_overlay.json"
 
 
 def _sha256(path: Path) -> str:
@@ -1003,65 +1001,6 @@ class DevelopmentOverlayTests(unittest.TestCase):
             self.assertEqual(companion["derived_root_image_sha256"], "5" * 64)
             self.assertEqual(companion["files"][0]["sha256"], _sha256(source))
             self.assertIs(companion["files"][0]["create"], False)
-
-    def test_browser_web_spec_maps_only_guest_runtime_files(self) -> None:
-        spec = load_overlay_spec(BROWSER_WEB_SPEC, expected_profile="browser-web")
-        destinations = {entry.destination for entry in spec.files}
-        self.assertEqual(
-            destinations,
-            {
-                "/usr/lib/asterinas/desktop-m5-network-evidence",
-                "/usr/lib/asterinas/megrez-safe-reboot",
-                "/usr/lib/asterinas/browser-web-marionette-gate",
-                "/usr/lib/asterinas/browser_m5_marionette_gate.py",
-                "/usr/lib/asterinas/browser_interaction_perf.py",
-                "/usr/lib/asterinas/browser_workload_contract.py",
-                "/usr/lib/asterinas/browser_composite_capture.py",
-                "/usr/lib/asterinas/desktop-input-identity",
-                "/usr/lib/asterinas/browser-performance-provenance",
-                "/usr/lib/asterinas/physical-graphics-gate",
-                "/usr/lib/asterinas/physical-external-services-quiesce",
-                "/usr/share/asterinas/physical-graphics/index.html",
-                "/usr/lib/asterinas/firefox-diagnostic-snapshot",
-                "/usr/lib/asterinas/browser-web-firefox",
-                "/usr/lib/asterinas/browser-web-evidence",
-                "/usr/lib/asterinas/browser-web-timeline",
-                "/usr/share/asterinas/browser-web-trust-check.py",
-                "/usr/share/asterinas/browser-web-online-rootfs-check.py",
-                "/usr/lib/asterinas/desktop-m5-session",
-                "/usr/lib/asterinas/desktop-display-provider",
-                "/usr/lib/asterinas/desktop-m5-device-access",
-                "/usr/lib/asterinas/desktop-m5-evidence",
-                "/etc/systemd/system/asterinas-browser-web.service",
-                "/etc/systemd/system/asterinas-browser-web-evidence.service",
-                "/etc/systemd/system/asterinas-browser-web-timeline-begin.service",
-                "/etc/systemd/system/asterinas-browser-web-timeline-basic.service",
-            },
-        )
-        self.assertNotIn(
-            "desktop_m5_network_gate.py", {entry.source.name for entry in spec.files}
-        )
-        self.assertEqual(
-            {entry.destination for entry in spec.files if entry.create},
-            {
-                "/usr/lib/asterinas/browser_interaction_perf.py",
-                "/usr/lib/asterinas/browser_workload_contract.py",
-                "/usr/lib/asterinas/browser_composite_capture.py",
-                "/usr/lib/asterinas/desktop-input-identity",
-                "/usr/lib/asterinas/browser-performance-provenance",
-                "/usr/lib/asterinas/desktop-display-provider",
-                "/usr/lib/asterinas/firefox-diagnostic-snapshot",
-                "/usr/lib/asterinas/physical-external-services-quiesce",
-            },
-        )
-
-    def test_make_default_publishes_beneath_user_writable_target(self) -> None:
-        makefile = (REPOSITORY_ROOT / "Makefile").read_text(encoding="utf-8")
-        self.assertIn(
-            "DEBIAN_BROWSER_WEB_DEV_ROOTFS ?= "
-            "$(CURDIR)/target/dev-overlays/browser-web/rootfs",
-            makefile,
-        )
 
     def test_rejects_overlapping_base_and_output_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

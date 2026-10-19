@@ -19,10 +19,6 @@ SMP ?= 1
 RISCV_ICACHE_REQUIRE_SMP4 ?= 0
 RISCV_LTP_SMP ?= 4
 RISCV_LTP_SUITE ?= syscalls
-DEBIAN_BROWSER_WEB_NETWORK_MODE ?= direct
-DEBIAN_BROWSER_WEB_BASE_ROOTFS ?= $(CURDIR)/target/debian-riscv/browser-web/rootfs
-DEBIAN_BROWSER_WEB_DEV_ROOTFS ?= $(CURDIR)/target/dev-overlays/browser-web/rootfs
-DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC ?= $(CURDIR)/tools/riscv/debian/rootfs/browser_web_dev_overlay.json
 OSTD_TASK_STACK_SIZE_IN_PAGES ?= 64
 FEATURES ?=
 NO_DEFAULT_FEATURES ?= 0
@@ -332,6 +328,10 @@ QEMU_UBOOT_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/cache/u-boot-build
 RISCV_SIFIVE_U_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/sifive-u
 RISCV_SIFIVE_U_LINUX_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/sifive-u-linux
 RISCV_SIFIVE_U_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/cache/sifive-u-uboot-build
+QEMU_UBOOT_MATRIX_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/matrix-$(shell date -u +%Y%m%dT%H%M%SZ)
+QEMU_UBOOT_MATRIX_REPEAT ?= 1
+QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR ?=
+QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR ?=
 MEGREZ_DEBUG_FAST_OUT_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/fast
 MEGREZ_DEBUG_UBOOT_BUILD_DIR ?= $(CURDIR)/target/qemu-uboot/megrez-debug/uboot
 MEGREZ_DEBUG_BOARD_OUT_DIR ?= $(CURDIR)/target/megrez-debug/board
@@ -357,6 +357,7 @@ MEGREZ_FIREFOX_DAILY_USE_MMC_INITRAMFS ?=
 MEGREZ_FIREFOX_DAILY_USE_MMC_DTB ?=
 MEGREZ_DESKTOP_BOOT_PLAN ?= $(CURDIR)/target/megrez-desktop-boot/build/plan.json
 MEGREZ_DESKTOP_BOOT_DEVICE ?= /dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0
+MEGREZ_DESKTOP_BOOT_DEVICE_PROFILE ?= full
 MEGREZ_DESKTOP_BOOT_HOST_ADDRESS ?= 10.100.19.216
 MEGREZ_DESKTOP_BOOT_PORT ?= 18080
 MEGREZ_DESKTOP_BOOT_OUTPUT_ROOT ?= $(CURDIR)/target/megrez-desktop-boot
@@ -364,9 +365,6 @@ MEGREZ_DESKTOP_BOOT_RUN_ID ?= $(shell date -u +%Y%m%dT%H%M%SZ)
 MEGREZ_DESKTOP_BOOT_PREPARE_OUTPUT ?= $(MEGREZ_DESKTOP_BOOT_OUTPUT_ROOT)/prepare-$(MEGREZ_DESKTOP_BOOT_RUN_ID)
 MEGREZ_DESKTOP_BOOT_START_OUTPUT ?= $(MEGREZ_DESKTOP_BOOT_OUTPUT_ROOT)/start-$(MEGREZ_DESKTOP_BOOT_RUN_ID)
 DEBIAN_DESKTOP_BOOT_TIMEOUT ?= 420
-DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET ?= browser
-DEBIAN_WEB_NETWORK_MODE ?=
-DEBIAN_WEB_NETWORK_EXPECT_FAILURE ?= none
 RISCV_ROOTFS_BASE_IMAGE ?= asterinas/asterinas:0.18.0-20260702
 RISCV_ROOTFS_IMAGE ?= asterinas/asterinas:0.18.0-20260702-riscv-rootfs
 RISCV_ROOTFS_DOCKERFILE ?= tools/docker/riscv-rootfs/Dockerfile
@@ -377,6 +375,9 @@ QEMU_UBOOT_BUILD_DIR_EFFECTIVE := $(call effective_path,$(QEMU_UBOOT_BUILD_DIR),
 RISCV_SIFIVE_U_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_OUT_DIR),$(CURDIR)/target/qemu-uboot/sifive-u)
 RISCV_SIFIVE_U_LINUX_OUT_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_LINUX_OUT_DIR),$(CURDIR)/target/qemu-uboot/sifive-u-linux)
 RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE := $(call effective_path,$(RISCV_SIFIVE_U_BUILD_DIR),$(CURDIR)/target/qemu-uboot/cache/sifive-u-uboot-build)
+QEMU_UBOOT_MATRIX_OUT_DIR_EFFECTIVE := $(call effective_path,$(QEMU_UBOOT_MATRIX_OUT_DIR),$(CURDIR)/target/qemu-uboot/matrix)
+QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR_EFFECTIVE := $(if $(strip $(QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR)),$(abspath $(QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR)),)
+QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR_EFFECTIVE := $(if $(strip $(QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR)),$(abspath $(QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR)),)
 MEGREZ_DEBUG_FAST_OUT_DIR_EFFECTIVE := $(call effective_path,$(MEGREZ_DEBUG_FAST_OUT_DIR),$(CURDIR)/target/qemu-uboot/megrez-debug/fast)
 MEGREZ_DEBUG_UBOOT_BUILD_DIR_EFFECTIVE := $(call effective_path,$(MEGREZ_DEBUG_UBOOT_BUILD_DIR),$(CURDIR)/target/qemu-uboot/megrez-debug/uboot)
 MEGREZ_DEBUG_BOARD_OUT_DIR_EFFECTIVE := $(call effective_path,$(MEGREZ_DEBUG_BOARD_OUT_DIR),$(CURDIR)/target/megrez-debug/board)
@@ -403,24 +404,18 @@ test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_debian_dev_overlay \
 		tools.riscv.tests.test_debian_rootfs \
-		tools.riscv.tests.test_debian_m5_network \
-		tools.riscv.tests.test_debian_m6_browser \
-		tools.riscv.tests.test_debian_m7_baidu \
-		tools.riscv.tests.test_debian_m8_browser_quality \
-		tools.riscv.tests.test_debian_m9_software -v
+		tools.riscv.tests.test_debian_desktop_m4_drm_recovery_gate \
+		tools.riscv.tests.test_firefox_drm_scene_gate \
+		tools.riscv.tests.test_megrez_control_chain \
+		tools.riscv.tests.test_megrez_display_gate \
+		tools.riscv.tests.test_megrez_recovery_epoch \
+		tools.riscv.tests.test_qemu_scanout_contract -v
 
 .PHONY: test_riscv_debian_debug_console
 test_riscv_debian_debug_console:
 	@python3 -m unittest \
 		tools.riscv.tests.test_debian_debug_console \
 		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
-
-.PHONY: build_riscv_debian_browser_web_dev_overlay
-build_riscv_debian_browser_web_dev_overlay:
-	@python3 -m tools.riscv.debian.rootfs.dev_overlay materialize \
-		--base-dir "$(DEBIAN_BROWSER_WEB_BASE_ROOTFS)" \
-		--spec "$(DEBIAN_BROWSER_WEB_DEV_OVERLAY_SPEC)" \
-		--output-dir "$(DEBIAN_BROWSER_WEB_DEV_ROOTFS)"
 
 .PHONY: test_riscv_megrez_debian_shell
 test_riscv_megrez_debian_shell:
@@ -514,6 +509,10 @@ test_riscv_megrez_probe_unit: test_riscv_megrez_boot_manifest_unit
 		tools.riscv.tests.test_megrez_probe \
 		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
 
+.PHONY: test_riscv_megrez_hardware_probe_unit
+test_riscv_megrez_hardware_probe_unit:
+	@python3 -m unittest tools.riscv.tests.test_megrez_hardware_probe -v
+
 MEGREZ_PROBE_BUNDLE ?= target/megrez-probe/current.json
 MEGREZ_PROBE_KERNEL ?= target/osdk/aster-kernel-osdk-bin.Image
 MEGREZ_PROBE_INITRAMFS ?= target/megrez-probe/build/initramfs.cpio
@@ -571,6 +570,7 @@ run_riscv_megrez_desktop:
 	@python3 -m tools.riscv.megrez_desktop_boot start \
 		--plan "$(MEGREZ_DESKTOP_BOOT_PLAN)" \
 		--device "$(MEGREZ_DESKTOP_BOOT_DEVICE)" \
+		--device-profile "$(MEGREZ_DESKTOP_BOOT_DEVICE_PROFILE)" \
 		--output "$(MEGREZ_DESKTOP_BOOT_START_OUTPUT)"
 
 .PHONY: test_riscv_megrez_preboard
@@ -583,6 +583,7 @@ test_riscv_megrez_install_unit:
 	@PYTHONPATH="$(CURDIR)/tools/riscv:$(CURDIR)" \
 		python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_debian_installer \
+		tools.riscv.tests.test_megrez_safety \
 		tools.riscv.tests.test_megrez_board_session \
 		tools.riscv.tests.test_megrez_install_workflow -v
 
@@ -772,40 +773,6 @@ test_riscv_debian_systemd_m2_gate:
 		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(DEBIAN_SYSTEMD_M2_GATE_OUTPUT)" --smp 4
 
-.PHONY: test_riscv_debian_desktop_m5_qemu_gate
-test_riscv_debian_desktop_m5_qemu_gate:
-	@test -n "$(DEBIAN_KERNEL)" || \
-		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_UBOOT)" || \
-		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DTB)" || \
-		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
-		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
-		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
-		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
-		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
-		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" || \
-		{ echo "DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.desktop_m5_qemu_gate \
-		--target "$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)" \
-		$(if $(filter network,$(DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET)),--network-mode "$(DEBIAN_WEB_NETWORK_MODE)" --expect-failure "$(DEBIAN_WEB_NETWORK_EXPECT_FAILURE)") \
-		--kernel "$(DEBIAN_KERNEL)" \
-		--uboot "$(DEBIAN_UBOOT)" \
-		--dtb "$(DEBIAN_DTB)" \
-		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
-		--root-image "$(DEBIAN_ROOT_IMAGE)" \
-		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
-		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
-		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
-		--output-directory "$(DEBIAN_DESKTOP_M5_QEMU_GATE_OUTPUT)" --smp 4 \
-		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
-
 .PHONY: test_riscv_debian_debug_console_qemu_gate
 test_riscv_debian_debug_console_qemu_gate:
 	@test -n "$(DEBIAN_KERNEL)" || \
@@ -838,69 +805,6 @@ test_riscv_debian_debug_console_qemu_gate:
 		--output-directory "$(DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT)" --smp 4 \
 		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
 
-.PHONY: test_riscv_debian_web_network_proxy_qemu
-test_riscv_debian_web_network_proxy_qemu:
-	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
-		DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network \
-		DEBIAN_WEB_NETWORK_MODE=proxy
-
-.PHONY: test_riscv_debian_web_network_direct_qemu
-test_riscv_debian_web_network_direct_qemu:
-	@$(MAKE) --no-print-directory test_riscv_debian_desktop_m5_qemu_gate \
-		DEBIAN_DESKTOP_M5_QEMU_GATE_TARGET=network \
-		DEBIAN_WEB_NETWORK_MODE=direct
-
-.PHONY: test_riscv_debian_browser_m5_qemu_gate
-test_riscv_debian_browser_m5_qemu_gate:
-	@test -n "$(DEBIAN_KERNEL)" || \
-		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_UBOOT)" || \
-		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DTB)" || \
-		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
-		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
-		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
-		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
-		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
-		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_BROWSER_M5_QEMU_GATE_OUTPUT)" || \
-		{ echo "DEBIAN_BROWSER_M5_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.browser_m5_qemu_gate \
-		--kernel "$(DEBIAN_KERNEL)" \
-		--uboot "$(DEBIAN_UBOOT)" \
-		--dtb "$(DEBIAN_DTB)" \
-		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
-		--root-image "$(DEBIAN_ROOT_IMAGE)" \
-		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
-		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
-		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
-		--output-directory "$(DEBIAN_BROWSER_M5_QEMU_GATE_OUTPUT)" --smp 4 \
-		--boot-timeout 7200
-
-.PHONY: test_riscv_debian_browser_web_qemu_gate
-test_riscv_debian_browser_web_qemu_gate:
-	@test -n "$(DEBIAN_KERNEL)" || { echo "DEBIAN_KERNEL is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_UBOOT)" || { echo "DEBIAN_UBOOT is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DTB)" || { echo "DEBIAN_DTB is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || { echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_IMAGE)" || { echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_MANIFEST)" || { echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGES_LOCK)" || { echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || { echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT)" || { echo "DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.browser_web_qemu_gate \
-		--network-mode "$(DEBIAN_BROWSER_WEB_NETWORK_MODE)" \
-		--kernel "$(DEBIAN_KERNEL)" --uboot "$(DEBIAN_UBOOT)" --dtb "$(DEBIAN_DTB)" \
-		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
-		--root-image "$(DEBIAN_ROOT_IMAGE)" --root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
-		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
-		--output-directory "$(DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT)" --smp 4 --boot-timeout 900
-
 .PHONY: test_riscv_physical_graphics_qemu_gate
 test_riscv_physical_graphics_qemu_gate:
 	@test -n "$(DEBIAN_KERNEL)" || { echo "DEBIAN_KERNEL is required" >&2; exit 2; }
@@ -920,102 +824,6 @@ test_riscv_physical_graphics_qemu_gate:
 		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" --package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
 		--output-directory "$(RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT)" \
 		--smp 4 --boot-timeout 7200 --command-timeout 300
-
-.PHONY: test_riscv_debian_desktop_m6_browser_gate
-test_riscv_debian_desktop_m6_browser_gate:
-	@test -n "$(DEBIAN_KERNEL)" || \
-		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_UBOOT)" || \
-		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DTB)" || \
-		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
-		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
-		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
-		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
-		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
-		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT)" || \
-		{ echo "DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.desktop_m6_browser_gate \
-		--kernel "$(DEBIAN_KERNEL)" \
-		--uboot "$(DEBIAN_UBOOT)" \
-		--dtb "$(DEBIAN_DTB)" \
-		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
-		--root-image "$(DEBIAN_ROOT_IMAGE)" \
-		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
-		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
-		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
-		--output-directory "$(DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT)" --smp 4 \
-		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
-
-.PHONY: test_riscv_debian_desktop_m7_baidu_gate
-test_riscv_debian_desktop_m7_baidu_gate:
-	@test -n "$(DEBIAN_KERNEL)" || \
-		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_UBOOT)" || \
-		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DTB)" || \
-		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
-		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
-		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
-		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
-		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
-		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT)" || \
-		{ echo "DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.desktop_m7_baidu_gate \
-		--kernel "$(DEBIAN_KERNEL)" \
-		--uboot "$(DEBIAN_UBOOT)" \
-		--dtb "$(DEBIAN_DTB)" \
-		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
-		--root-image "$(DEBIAN_ROOT_IMAGE)" \
-		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
-		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
-		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
-		--output-directory "$(DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT)" --smp 4 \
-		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
-
-.PHONY: test_riscv_debian_desktop_m9_software_gate
-test_riscv_debian_desktop_m9_software_gate:
-	@test -n "$(DEBIAN_KERNEL)" || \
-		{ echo "DEBIAN_KERNEL is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_UBOOT)" || \
-		{ echo "DEBIAN_UBOOT is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DTB)" || \
-		{ echo "DEBIAN_DTB is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_STAGE1_INITRAMFS)" || \
-		{ echo "DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_IMAGE)" || \
-		{ echo "DEBIAN_ROOT_IMAGE is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_ROOT_MANIFEST)" || \
-		{ echo "DEBIAN_ROOT_MANIFEST is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGES_LOCK)" || \
-		{ echo "DEBIAN_PACKAGES_LOCK is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_PACKAGE_CHECKSUMS)" || \
-		{ echo "DEBIAN_PACKAGE_CHECKSUMS is required" >&2; exit 2; }
-	@test -n "$(DEBIAN_DESKTOP_M9_SOFTWARE_GATE_OUTPUT)" || \
-		{ echo "DEBIAN_DESKTOP_M9_SOFTWARE_GATE_OUTPUT is required" >&2; exit 2; }
-	@python3 -m tools.riscv.debian.rootfs.desktop_m9_software_gate \
-		--kernel "$(DEBIAN_KERNEL)" \
-		--uboot "$(DEBIAN_UBOOT)" \
-		--dtb "$(DEBIAN_DTB)" \
-		--stage1-initramfs "$(DEBIAN_STAGE1_INITRAMFS)" \
-		--root-image "$(DEBIAN_ROOT_IMAGE)" \
-		--root-manifest "$(DEBIAN_ROOT_MANIFEST)" \
-		--packages-lock "$(DEBIAN_PACKAGES_LOCK)" \
-		--package-checksums "$(DEBIAN_PACKAGE_CHECKSUMS)" \
-		--output-directory "$(DEBIAN_DESKTOP_M9_SOFTWARE_GATE_OUTPUT)" --smp 4 \
-		--boot-timeout "$(DEBIAN_DESKTOP_BOOT_TIMEOUT)"
 
 .PHONY: test_riscv_ltp
 test_riscv_ltp: test_riscv_ltp_unit
@@ -1051,11 +859,108 @@ test_riscv_drm_cursor: test_riscv_drm_cursor_unit
 		--manifest "$(DRM_CURSOR_MANIFEST)" \
 		--output-directory "$(DRM_CURSOR_GATE_OUTPUT)"
 
+.PHONY: test_riscv_drm_scanout_unit
+test_riscv_drm_scanout_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_scanout_gate -v
+
+.PHONY: test_riscv_drm_scanout
+test_riscv_drm_scanout: test_riscv_drm_scanout_unit
+	@test -n "$(DRM_SCANOUT_UBOOT)" || \
+		{ echo "DRM_SCANOUT_UBOOT is required" >&2; exit 2; }
+	@test -n "$(DRM_SCANOUT_BOOT_DISK)" || \
+		{ echo "DRM_SCANOUT_BOOT_DISK is required" >&2; exit 2; }
+	@test -n "$(DRM_SCANOUT_MANIFEST)" || \
+		{ echo "DRM_SCANOUT_MANIFEST is required" >&2; exit 2; }
+	@test -n "$(DRM_SCANOUT_GATE_OUTPUT)" || \
+		{ echo "DRM_SCANOUT_GATE_OUTPUT is required" >&2; exit 2; }
+	@PYTHONPATH=tools/riscv python3 -m drm.scanout_gate \
+		--uboot "$(DRM_SCANOUT_UBOOT)" \
+		--boot-disk "$(DRM_SCANOUT_BOOT_DISK)" \
+		--manifest "$(DRM_SCANOUT_MANIFEST)" \
+		--output-directory "$(DRM_SCANOUT_GATE_OUTPUT)"
+
+.PHONY: test_riscv_drm_xorg_modesetting_unit
+test_riscv_drm_xorg_modesetting_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_xorg_modesetting_gate -v
+
+.PHONY: test_riscv_drm_virgl_host_unit
+test_riscv_drm_virgl_host_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_virgl_host_preflight -v
+
+.PHONY: test_riscv_drm_render_node_unit
+test_riscv_drm_render_node_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_render_node_gate -v
+
+.PHONY: test_riscv_drm_gem_unit
+test_riscv_drm_gem_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_gem_gate -v
+
+.PHONY: test_riscv_drm_virgl_unit
+test_riscv_drm_virgl_unit: test_riscv_drm_virgl_host_unit
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_drm_virgl_param_gate -v
+
+.PHONY: test_riscv_firefox_webrender_unit
+test_riscv_firefox_webrender_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_firefox_webrender_gate -v
+
 .PHONY: test_riscv_uboot_booti_unit
 test_riscv_uboot_booti_unit:
 	@python3 -m unittest \
 		tools.riscv.tests.test_qemu_uboot_contracts \
 		tools.riscv.tests.test_qemu_uboot_booti -v
+
+.PHONY: test_riscv_uboot_matrix_unit
+test_riscv_uboot_matrix_unit:
+	@python3 -m unittest \
+		tools.riscv.tests.test_qemu_uboot_matrix \
+		tools.riscv.tests.test_qemu_fallback_receipt -v
+
+.PHONY: test_riscv_eic7700_qemu_unit
+test_riscv_eic7700_qemu_unit:
+	@python3 -m unittest \
+		 tools.riscv.tests.test_eic7700_platform_contract \
+		 tools.riscv.tests.test_qemu_tcg_plugin \
+		 tools.riscv.tests.test_megrez_hardware_probe \
+		 tools.riscv.tests.test_renode_scenario \
+		 tools.riscv.tests.test_qemu_dwc3_contract \
+		 tools.riscv.tests.test_qemu_gmac_contract \
+		 tools.riscv.tests.test_qemu_recovery_faults -v
+
+.PHONY: test_riscv_uboot_recovery_matrix
+test_riscv_uboot_recovery_matrix: test_riscv_uboot_booti_unit test_riscv_uboot_matrix_unit
+	@test -n "$(QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR_EFFECTIVE)" || \
+		{ echo "QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR must point to a prepared timer-recovery bundle" >&2; exit 2; }
+	@test -n "$(QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR_EFFECTIVE)" || \
+		{ echo "QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR must point to a prepared timer-recovery bundle" >&2; exit 2; }
+	@for file in \
+		"$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)/u-boot" \
+		"$(QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR_EFFECTIVE)/boot.ext4" \
+		"$(QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR_EFFECTIVE)/artifacts.json" \
+		"$(QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR_EFFECTIVE)/qemu-dtb-audit.json" \
+		"$(RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE)/u-boot.bin" \
+		"$(QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR_EFFECTIVE)/boot.ext4" \
+		"$(QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR_EFFECTIVE)/artifacts.json" \
+		"$(QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR_EFFECTIVE)/qemu-dtb-audit.json"; do \
+		test -s "$$file" || { echo "missing prepared QEMU artifact: $$file" >&2; exit 2; }; \
+	done
+	@python3 tools/riscv/qemu_uboot_matrix.py run \
+		--output "$(QEMU_UBOOT_MATRIX_OUT_DIR_EFFECTIVE)" \
+		--repeat "$(QEMU_UBOOT_MATRIX_REPEAT)" \
+		--qemu-virt-uboot "$(QEMU_UBOOT_BUILD_DIR_EFFECTIVE)/u-boot" \
+		--qemu-virt-boot-disk "$(QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR_EFFECTIVE)/boot.ext4" \
+		--qemu-virt-manifest "$(QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR_EFFECTIVE)/artifacts.json" \
+		--qemu-virt-dtb-audit "$(QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR_EFFECTIVE)/qemu-dtb-audit.json" \
+		--sifive-u-uboot "$(RISCV_SIFIVE_U_BUILD_DIR_EFFECTIVE)/u-boot.bin" \
+		--sifive-u-boot-disk "$(QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR_EFFECTIVE)/boot.ext4" \
+		--sifive-u-manifest "$(QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR_EFFECTIVE)/artifacts.json" \
+		--sifive-u-dtb-audit "$(QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR_EFFECTIVE)/qemu-dtb-audit.json"
 
 .PHONY: test_riscv_uboot_booti
 test_riscv_uboot_booti: test_riscv_uboot_booti_unit
