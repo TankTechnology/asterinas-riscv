@@ -89,21 +89,34 @@ impl datagram_common::Bound for BoundDatagram {
         remote: &Self::Endpoint,
         _flags: SendFlags,
     ) -> Result<usize> {
+        let payload_len = reader.sum_lens();
+        // The UDP length field is 16 bits, so reject absurd requests before
+        // allocating a staging buffer.
+        if payload_len > u16::MAX as usize {
+            return_errno_with_message!(Errno::EMSGSIZE, "the message is too large");
+        }
+
+        // Copy the payload before taking the socket lock. The lock is a
+        // spinlock, so a user page fault (which may require blocking I/O)
+        // cannot be served inside the copy closure. Staging also avoids
+        // sending a partially copied datagram (the old FIXME).
+        let mut payload = vec![0u8; payload_len];
+        let mut writer = VmWriter::from(payload.as_mut_slice());
+        let copied = reader
+            .read(&mut writer)
+            .map_err(|(err, _)| Error::from(err))?;
+        if copied != payload_len {
+            return_errno_with_message!(Errno::EFAULT, "failed to copy the datagram payload");
+        }
+
         let result = self
             .bound_socket
-            .send(reader.sum_lens(), *remote, |socket_buffer| {
-                // FIXME: If copy failed, we should not send any packet.
-                // But current smoltcp API seems not to support this behavior.
-                reader
-                    .read(&mut VmWriter::from(socket_buffer))
-                    .inspect_err(|e| {
-                        warn!("unexpected UDP packet {e:#?} will be sent");
-                    })
-                    .map_err(Into::into)
+            .send(payload_len, *remote, |socket_buffer| {
+                socket_buffer.copy_from_slice(&payload);
             });
 
         match result {
-            Ok(inner) => inner,
+            Ok(()) => Ok(payload_len),
             Err(SendError::TooLarge) => {
                 return_errno_with_message!(Errno::EMSGSIZE, "the message is too large");
             }

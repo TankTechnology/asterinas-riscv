@@ -113,12 +113,24 @@ impl ConnectedStream {
         reader: &mut dyn MultiRead,
         _flags: SendFlags,
     ) -> Result<(usize, NeedIfacePoll)> {
-        let result = self
-            .tcp_conn
-            .send(|socket_buffer| reader.read(&mut VmWriter::from(socket_buffer)));
+        let initial_len = reader.sum_lens();
+
+        // The caller has made the user buffer's pages resident. The fault
+        // handler is still disabled for the copy: if the buffer is remapped
+        // concurrently, report `EFAULT` instead of serving a page fault while
+        // the interface and socket spin locks are held (the fault handler may
+        // need to block on disk I/O, which is illegal in atomic mode).
+        let result = {
+            let task = ostd::task::Task::current().unwrap();
+            let thread_local = AsThreadLocal::as_thread_local(&task).unwrap();
+            thread_local.with_page_fault_handler_disabled(|| {
+                self.tcp_conn
+                    .send(|socket_buffer| reader.read(&mut VmWriter::from(socket_buffer)))
+            })
+        };
 
         match result {
-            Ok((sent_bytes, need_poll)) => Ok((sent_bytes.get(), need_poll)),
+            Ok((_sent_bytes, need_poll)) => Ok((initial_len - reader.sum_lens(), need_poll)),
             Err(IoError::NoProgress) => {
                 return_errno_with_message!(Errno::EAGAIN, "the send buffer is full")
             }

@@ -505,6 +505,28 @@ impl VmReader<'_, Fallible> {
         }
     }
 
+    /// Makes every page covered by the reader resident.
+    ///
+    /// The reader itself is not advanced. Once this method returns `Ok`, a
+    /// subsequent read from the same range will not take a page fault unless
+    /// the mapping changes concurrently.
+    ///
+    /// Copies that execute with preemption disabled (e.g., while a spinlock is
+    /// held) must fault their user pages in first: the fault handler may need
+    /// to perform blocking I/O, which is illegal in atomic mode.
+    pub fn prefault(&mut self) -> Result<()> {
+        let mut probe = self.clone();
+        let mut byte = 0u8;
+        while probe.remain() > 0 {
+            let mut writer = VmWriter::<Infallible>::from(core::slice::from_mut(&mut byte));
+            probe.read_fallible(&mut writer).map_err(|(err, _)| err)?;
+            // Touch one byte per page.
+            let skip = probe.remain().min(crate::mm::PAGE_SIZE - 1);
+            probe.skip(skip);
+        }
+        Ok(())
+    }
+
     /// Reads a value of `Pod` type.
     ///
     /// If the length of the `Pod` type exceeds `self.remain()`,

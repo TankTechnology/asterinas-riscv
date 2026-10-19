@@ -209,6 +209,13 @@ pub(crate) trait MultiRead: ReadCString {
     /// Skips the first `nbytes` bytes of data, or skips to the end if the readers have
     /// insufficient bytes.
     fn skip_some(&mut self, nbytes: usize);
+
+    /// Makes the pages backing the remaining data resident without advancing.
+    ///
+    /// This must be called before copying from user space with preemption
+    /// disabled (e.g., while a socket lock is held), because a page fault
+    /// there could require blocking I/O.
+    fn prefault(&mut self) -> Result<(), OstdError>;
 }
 
 /// Trait defining the write behavior for a collection of [`VmWriter`]s.
@@ -271,6 +278,13 @@ impl MultiRead for VmReaderArray<'_> {
             }
         }
     }
+
+    fn prefault(&mut self) -> Result<(), OstdError> {
+        for reader in &mut self.0 {
+            reader.prefault()?;
+        }
+        Ok(())
+    }
 }
 
 impl MultiRead for VmReader<'_> {
@@ -284,6 +298,10 @@ impl MultiRead for VmReader<'_> {
 
     fn skip_some(&mut self, nbytes: usize) {
         self.skip(self.remain().min(nbytes));
+    }
+
+    fn prefault(&mut self) -> Result<(), OstdError> {
+        VmReader::prefault(self)
     }
 }
 

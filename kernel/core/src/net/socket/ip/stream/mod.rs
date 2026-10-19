@@ -409,6 +409,13 @@ impl StreamSocket {
     }
 
     fn try_send(&self, reader: &mut dyn MultiRead, flags: SendFlags) -> Result<usize> {
+        // The state lock is a spin lock, so a page fault in the user buffer
+        // cannot be served while it is held (the fault handler may block on
+        // disk I/O). Make the pages resident before taking it. The send path
+        // below copies with the fault handler disabled, so a concurrent
+        // remapping fails with `EFAULT` instead of panicking.
+        reader.prefault().map_err(Error::from)?;
+
         let state = self.read_updated_state();
 
         let connected_stream = match state.as_ref() {

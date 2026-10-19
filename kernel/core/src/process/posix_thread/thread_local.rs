@@ -134,6 +134,23 @@ impl ThreadLocal {
         }
     }
 
+    /// Runs `func` with the page fault handler disabled and returns its result unchanged.
+    ///
+    /// Any user memory access made by `func` that needs a page fault will fail
+    /// instead of entering the handler. This is the primitive used to avoid
+    /// blocking in atomic mode (see [`Self::with_page_fault_disabled`] for the
+    /// EFAULT-based variant).
+    pub(crate) fn with_page_fault_handler_disabled<F, T>(&self, func: F) -> T
+    where
+        F: FnOnce() -> T,
+    {
+        let was_disabled = self.is_page_fault_disabled();
+        self.page_fault_disabled.set(true);
+        let result = func();
+        self.page_fault_disabled.set(was_disabled);
+        result
+    }
+
     pub(crate) fn is_page_fault_disabled(&self) -> bool {
         self.page_fault_disabled.get()
     }
