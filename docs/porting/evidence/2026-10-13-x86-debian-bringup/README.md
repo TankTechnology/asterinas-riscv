@@ -112,12 +112,14 @@ Each of these is reported by systemd and then worked around or ignored; none
 stops the boot:
 
 - `Failed to open netlink, ignoring: Protocol not available`
-- `Failed to bump fs.file-max` / `fs.nr_open`: the sysctls do not exist
 - `bpf-restrict-fs: BPF LSM hook not enabled in the kernel`
-- `systemd-sysctl.service` fails: no `/proc/sys` tree to apply
 - `dev-hvc0.device` times out after 90 s; `serial-getty@hvc0.service` then fails
   its dependency and no login prompt is offered on the console
 - `Failed to find module 'autofs4'` / `'unix'`: no module loading
+
+The sysctl gaps in this list (`fs.file-max`, `fs.nr_open`,
+`systemd-sysctl.service`) are fixed; see "Configuration alignment with Linux"
+above.
 
 ## The image had to be repaired before it could be trusted
 
@@ -711,6 +713,49 @@ boot 2: dpkg: install ok installed 2.10-5
         /usr/bin/hello: Hello, world!
 both boots: e2fsck -fn clean; /usr/bin, /usr/share/man/man1 and
             /var/lib/dpkg/info have INDEX_DIR cleared
+```
+
+## Configuration alignment with Linux
+
+Four interfaces that userspace and systemd inspect had Linux-incompatible
+semantics. They now match Linux.
+
+**`loglevel=N` numbering.** OSTD's `LevelFilter` numbers are one higher than
+Linux's console log level (`0` = off, `4` = error, `5` = warning, `7` = info,
+`8` = debug), so `boot_debian.sh`'s default `--loglevel 4` used to hide every
+warning. Numeric values now follow Linux: `0` = emerg, `3` = error,
+`4` = warning, `6` = info, `7` = debug, and larger values also mean debug.
+Textual names (`off`, `warn`, `debug`, ...) are unchanged. A boot at
+`--loglevel 4` now shows kernel warnings, as on Linux.
+
+**`/proc/sys/fs/nr_open`.** It is writable and backed by an atomic that
+`setrlimit` and `prlimit64` consult, so it is an enforced upper bound rather
+than a decoration: with `nr_open=1024`, raising `RLIMIT_NOFILE` to 2048 fails
+with `EPERM`; lowering to 512 succeeds; after raising `nr_open` to 2097152 a
+limit of 4096 succeeds. systemd's "Failed to bump fs.nr_open" is gone.
+
+**`/proc/sys/kernel/pid_max`.** Writable; the PID allocator wraps at the stored
+value (accepted range `1..=PID_MAX_LIMIT`). systemd-sysctl can now apply
+`50-pid-max.conf`.
+
+**`/proc/sys/fs/file-max` and `/proc/sys/kernel/core_pattern`.** Both exist with
+Linux's read/write semantics. `file-max` is stored but not yet enforced (the
+kernel does not count open file descriptions system-wide), and `core_pattern`
+is stored but core dumping is not implemented; the point is that configuration
+tools read and write them successfully and see the value they set.
+
+Evidence from a boot of the final kernel at `--loglevel 4`:
+
+```
+after systemd's own bumps and systemd-sysctl:
+  fs/nr_open       2147483640
+  kernel/pid_max    4194304
+  fs/file-max       9223372036854775807
+  kernel/core_pattern core
+/writes to each file return 0 and read back the written value
+systemd-sysctl.service: active (exited), Result=success   (was FAILED)
+"Failed to bump fs.file-max / fs.nr_open": absent
+kernel warnings visible at loglevel 4: yes
 ```
 
 ## Loopback latency: TCG, not the kernel
