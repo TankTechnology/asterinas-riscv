@@ -105,10 +105,21 @@ linear; `e2fsck -D` can rebuild an index later.
 | Replay after a crash | 🟡 | one descriptor per transaction; revoke-only transactions and deleted tags are `EOPNOTSUPP` |
 | Journal inode geometry | 🟡 | must be contiguous for replay |
 | `noload` mount option | ✅ | skips journal replay |
+| Cache coherence after replay | ✅ | replayed home blocks bypass the in-memory caches, so bitmaps, group descriptors, the superblock and inode-table pages are reloaded before the filesystem is exposed |
+| Recovery marker ordering | ✅ | `s_start` is cleared only after the replayed blocks are flushed to the device |
 
 `fsync` and every metadata commit go through the journal and end with a block
 device flush; `sync` commits the whole filesystem (full inode-table flush),
 which is heavier than Linux's per-inode writeback but keeps ordering simple.
+
+Replay correctness was hardened by the crash matrix: block groups load their
+bitmaps and descriptors during mount, *before* `replay_journal` writes the
+replayed home blocks directly to the device. Without an explicit reload the
+first commit after mount staged the stale pre-replay bitmaps and silently
+undid the recovery (freed inodes and blocks came back as leaks). The mount
+path now re-reads the superblock, the group descriptor table, every group's
+bitmaps and discards cached inode-table pages after a replay. The recovery
+marker is also cleared only after a device flush of the replayed blocks.
 
 ### Allocation and mount behavior
 
@@ -155,3 +166,58 @@ remaining blocker for arbitrary package upgrades and file rewrites.
 - Host gates: `test_x86_debian_storage` and `test_x86_debian_apt`.
 - Every gate checks `e2fsck -fn` after a clean shutdown; crash tests replay the
   journal from a fault-injected boot.
+
+### Crash and durability matrices
+
+Two host matrices exercise the persistence contract directly. Both boot a
+fresh copy of the Debian image per cell, so a failure never contaminates the
+next cell, and both end with `e2fsck -fn`.
+
+`fs_crash_matrix.sh` (`make test_x86_debian_fs_crash`) crashes *inside* a
+metadata commit. The first boot uses Stage1's `--root-init-path` to run a
+deterministic probe as `init` (no systemd, so no unrelated commit can consume
+the fault) and arms `asterinas.ext4_fault_stage=N`:
+
+| Stage | Crash point |
+|---|---|
+| 1 | after the journal commit record, before the home blocks |
+| 2 | halfway through the home blocks |
+| 3 | after the home blocks, before the checkpoint |
+
+The second boot is a normal systemd boot; a verifier checks the operation's
+invariant. An operation may be present or absent after recovery (only the
+commit record decides), but it must never be half-applied and the image must
+need no repair:
+
+| Operation | Accepted states |
+|---|---|
+| create | file absent, or complete with the exact contents |
+| unlink | file absent, or intact |
+| rename | exactly one of the two names exists, with the exact contents |
+| truncate | size 0, or the original 65536 bytes intact |
+
+Result (`create unlink rename truncate` × stages 1–3, 12 cells): **all pass**,
+`e2fsck -fn` clean in every cell. Every cell recovered to the *applied* state
+because the fault fires after the commit record, which is the correct JBD2
+outcome.
+
+`fs_durability_matrix.sh` (`make test_x86_debian_fs_durability`) crashes
+*after* fsync returned. Each cell writes, fsyncs, and — for operations that
+change a directory — fsyncs the parent directory as well, prints a READY
+marker, and the host `kill -9`s QEMU two seconds later. After a normal
+recovery boot the operation must be present in full:
+
+| Scenario | Invariant after the power cut |
+|---|---|
+| write | file exists with the exact 4096 bytes |
+| rename | old name gone, new name present with the contents |
+| unlink | file gone |
+| truncate | size 0 |
+| dir-entry | file exists with the exact 4096 bytes and its entry survived |
+
+Result: **5/5 pass**, `e2fsck -fn` clean.
+
+The crash matrix is what exposed the replay cache-coherence bug fixed in this
+change: see the journal table above. Before the fix, a replayed unlink leaked
+the inode and its block because the next commit re-staged the pre-replay
+bitmap.

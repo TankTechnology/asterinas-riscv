@@ -550,6 +550,81 @@ The Stage1 handoff now also prints the `mount(2)` errno
 (`DEBIAN_ROOT_MOUNT ext4 errno=N`) and the ext2 mount path logs the failing
 reason, which is what made the first bug visible.
 
+## Crash-consistency and fsync durability matrices
+
+The persistence gate above crashes once, at one point, in one operation. The
+goal requires the invariant to hold for *any* operation interrupted at *any*
+journal stage, and it requires the opposite direction too: once `fsync`
+returned, a power cut may not take the operation away. Two matrices cover
+those claims.
+
+**Deterministic fault injection.** A single `asterinas.ext4_fault_stage=N`
+panic is armed at boot. The problem is that systemd commits unrelated
+metadata (journald, tmpfiles, unit state) long before a test unit runs, so the
+fault would fire on the wrong transaction. Stage1 therefore grew
+`--root-init-path=ABS`: it performs the normal root mount, then `execv`s that
+path instead of systemd. The probe is the first userspace process and its
+target operation is the first metadata commit of the boot.
+
+```
+--root-init-path /opt/fs-crash/probe.sh
+    --append-extra asterinas.ext4_fault_stage=2
+    --wait-for "fault injection at stage"
+```
+
+The payloads and the phase-2 verifier are injected into the image with
+`debugfs` *before* the first boot, so nothing on the host touches the image
+between the crash and the recovery boot. The verifier runs as a systemd unit
+on the second boot and powers off — but only after `Powering off.` appears,
+otherwise the host would kill the VM with a dirty journal and the next gate
+would read a false failure.
+
+**The replay cache-coherence bug.** The first crash cells failed with leaked
+blocks and inodes: `e2fsck` reported bitmap differences after a replayed
+`unlink`. The replay itself was correct (28/28 blocks applied). The problem
+was mount ordering: block groups load their descriptors and bitmaps during
+mount, *before* `replay_journal` writes the replayed home blocks straight to
+the device. Those in-memory caches still held the pre-replay state, and the
+first commit after mount — the verifier's own `result.txt` — staged them and
+silently undid the recovery.
+
+The mount path now re-reads the superblock, reloads the group descriptor
+segment and every group's bitmaps, evicts cached inode-table pages and the
+inode cache, and only then exposes the filesystem. The replay also flushes
+the replayed blocks to the device before clearing `s_start`, so a crash
+between replay and checkpoint cannot forget a transaction whose blocks never
+landed.
+
+**Results.** Each cell copies the pristine Debian image, and the cell image is
+deleted after a PASS (the transcripts and fsck reports remain).
+
+```
+fs_crash_matrix.sh --scenarios "create unlink rename truncate" --stages "1 2 3"
+  12 cells: create/unlink/rename/truncate × stages 1,2,3
+  every cell: replay applied the transaction, the invariant held,
+              e2fsck -fn clean
+  all 12 cell(s) passed
+
+fs_durability_matrix.sh
+  write: PASS      rename: PASS    unlink: PASS
+  truncate: PASS   dir-entry: PASS
+  all 5 cell(s) passed
+```
+
+In the crash matrix every operation was *applied* after recovery, because the
+fault fires after the commit record — the JBD2-correct outcome. In the
+durability matrix the probe fsyncs the file, and for rename/unlink/truncate
+also fsyncs the parent directory, prints `FS_DURABILITY_READY`, and the host
+`kill -9`s QEMU two seconds later. All five operations survived in full.
+
+**`O_SYNC`/`O_DSYNC` alignment.** The durability work exposed that
+`InodeHandle` ignored `O_SYNC` and `O_DSYNC` on write entirely. It now flushes
+after every successful write — `SyncMode::Full` for `O_SYNC`,
+`SyncMode::Data` for `O_DSYNC` — and reports a failed flush as a failed
+write. `msync(MS_SYNC)` used to discard inode sync errors and return success;
+it now propagates the first failure (`MS_ASYNC` keeps ignoring errors because
+it cannot report them).
+
 ## Socket visibility: `/proc/net` and `NETLINK_SOCK_DIAG`
 
 `ss`, `ip`, and the Debian boot scripts expect to see the socket table. The
