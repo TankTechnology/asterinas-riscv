@@ -46,3 +46,16 @@ __pycache__/
 
 # Local isolated worktrees used for reproducible hardware experiments.
 .worktrees/
+
+# Local scratch from ad-hoc QEMU/configure runs.
+/config.log
+/config-temp/
+/.tmp_*
+
+# Raw gate artifacts stay local; only curated Markdown evidence is tracked.
+/docs/porting/evidence/**/*
+!/docs/porting/evidence/**/
+!/docs/porting/evidence/**/*.md
+
+# The DMA failure corpus is intentionally retained outside git.
+/docs/research/dma-failure-corpus/
