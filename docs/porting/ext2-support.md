@@ -258,7 +258,9 @@ Known gaps that a package workload can still hit:
    commit are rejected at mount, and a non-contiguous journal inode cannot be
    replayed.
 2. **xattr block sharing** is not implemented (`ref_count` is always one), and
-   EA inodes are not deduplicated.
+   EA inodes are not deduplicated. EA inode creation is not yet protected by
+   the orphan list, so a crash between creating the inode and committing the
+   xattr block can leave an unreferenced EA inode for `e2fsck` to clear.
 
 Default `mke2fs` images (`64bit`, `flex_bg`, `metadata_csum`, `csum_seed`) now
 mount and pass `e2fsck -fn` after real write workloads. The next storage
