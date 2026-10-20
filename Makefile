@@ -652,6 +652,7 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_fs_fallocate \
 		tools.x86.tests.test_x86_debian_fs_durability \
 		tools.x86.tests.test_x86_debian_fs_ext4_features \
+		tools.x86.tests.test_x86_debian_fs_extent_depth \
 		tools.x86.tests.test_x86_debian_fs_metadata_csum \
 		tools.x86.tests.test_x86_debian_fs_extents \
 		tools.x86.tests.test_x86_debian_fs_punch_hole \
@@ -1047,6 +1048,31 @@ test_x86_debian_fs_punch_hole:
 	@test -n "$(X86_DEBIAN_PUNCH_BASE_ROOT)" || { echo "X86_DEBIAN_PUNCH_BASE_ROOT is required" >&2; exit 2; }
 	@echo "fs-punch-hole: base=$(X86_DEBIAN_PUNCH_BASE_ROOT) accel=$(X86_DEBIAN_PUNCH_ACCEL)"
 	@tools/x86/debian/fs_punch_hole_check.sh 		--kernel "$(X86_DEBIAN_KERNEL)" 		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" 		--base-root "$(X86_DEBIAN_PUNCH_BASE_ROOT)" 		--workspace "$(X86_DEBIAN_PUNCH_WORKSPACE)" 		--accel "$(X86_DEBIAN_PUNCH_ACCEL)" 		--timeout "$(X86_DEBIAN_PUNCH_TIMEOUT)"
+
+# Depth-two extent gate: a prepared file with 2900 singleton extents that no
+# depth-one tree can hold; writes into every hole split leaves, a later punch
+# spans several leaves and truncation frees most of them.  The host requires
+# `debugfs dump_extents` to keep reporting depth two and `e2fsck -fn` to accept
+# the image after each boot.
+#   X86_DEBIAN_DEPTH_BASE_ROOT  ext4 image copied per run
+X86_DEBIAN_DEPTH_BASE_ROOT ?=
+X86_DEBIAN_DEPTH_WORKSPACE ?= $(CURDIR)/target/x86-debian/depth
+X86_DEBIAN_DEPTH_ACCEL ?= kvm
+X86_DEBIAN_DEPTH_TIMEOUT ?= 1800
+
+.PHONY: test_x86_debian_fs_extent_depth
+test_x86_debian_fs_extent_depth:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_DEPTH_BASE_ROOT)" || { echo "X86_DEBIAN_DEPTH_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-extent-depth: base=$(X86_DEBIAN_DEPTH_BASE_ROOT) accel=$(X86_DEBIAN_DEPTH_ACCEL)"
+	@tools/x86/debian/fs_extent_depth_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_DEPTH_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_DEPTH_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_DEPTH_ACCEL)" \
+		--timeout "$(X86_DEBIAN_DEPTH_TIMEOUT)"
 
 # POSIX ACL gate: store system.posix_acl_access, run reads/writes as different
 # users (owner, named user, named group, other, root override), re-check after

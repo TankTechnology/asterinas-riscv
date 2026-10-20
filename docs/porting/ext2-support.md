@@ -77,21 +77,23 @@ Legend: ✅ supported, 🟡 partial (limits noted), ❌ not implemented.
 | Buffered read/write, page cache | ✅ | data=ordered style writeback |
 | Sparse files and holes | ✅ | holes read as zeros; allocation fills them |
 | Legacy indirect mapping | ✅ | 12 direct + single/double/triple indirect |
-| Extent read | 🟡 | depth 0 and depth 1 index trees |
-| Extent allocation (write) | 🟡 | appends and hole writes in depth-0 and depth-1 trees (records are inserted in logical order and bounded by the next record or leaf key); a full inline tree is promoted to a leaf, a full leaf splits into two and adds an index entry. The inode's four index entries are the limit: a further split is `EOPNOTSUPP`. New files use legacy mapping |
-| Extent writeback of existing ranges | 🟡 | depth 0 and 1 |
-| Extent truncate | 🟡 | depth 0 and 1; deeper trees are left untouched and logged |
-| 64-bit extents | ❌ | rejected as `EOPNOTSUPP` |
-| `fallocate` | 🟡 | `Allocate`, `AllocateKeepSize`, `ZeroRange`, `ZeroRangeKeepSize` and `PunchHoleKeepSize` (indirect mapping and extent trees up to depth one); collapse, insert and unshare are `EOPNOTSUPP` |
+| Extent read | ✅ | depth 0–5 (ext4's maximum), index levels walked recursively |
+| Extent allocation (write) | ✅ | appends and hole writes at any depth; records are inserted in logical order and bounded by the next record or sibling key. Full leaves and index blocks split and propagate upwards; a full in-line root grows one level |
+| Extent writeback of existing ranges | ✅ | depth 0–5 |
+| Extent truncate | ✅ | any depth; emptied leaves and index blocks are freed, an emptied root resets to depth 0, and single-child roots collapse |
+| 64-bit extents | ❌ | block numbers above 32 bits are rejected as `EOPNOTSUPP` |
+| `fallocate` | 🟡 | `Allocate`, `AllocateKeepSize`, `ZeroRange`, `ZeroRangeKeepSize` and `PunchHoleKeepSize` (indirect mapping and extent trees at any depth); collapse, insert and unshare are `EOPNOTSUPP` |
 | `O_TMPFILE` | ✅ | anonymous inode tracked on the ext4 orphan list until linked |
 | File size | ✅ | up to 2,196,873,666,560 bytes with 4 KiB blocks (indirect-mapped limit) |
 
 Because new files are created without `EXTENTS`, ordinary workloads allocate
 through the indirect-block path even on an ext4 image. Files that arrive with
 extent trees (the Debian image has several, e.g. `libLLVM`) can be read,
-written in place, appended past the inline extents, and have holes punched and
-refilled. Extending past the inode's four inline index entries (needing a
-depth-two tree) returns `EOPNOTSUPP`.
+written in place, appended, punched and truncated at any depth. Splitting a
+full leaf or index block propagates its new key upwards, and a full in-line
+root grows one level, mirroring ext4's tree growth. Extent block allocation
+pre-reserves the metadata blocks a split may need, so an allocation failure
+cannot leave a half-updated tree.
 
 ### Directories
 
@@ -238,14 +240,10 @@ The current gates cover the paths package management exercises:
 
 Known gaps that a package workload can still hit:
 
-1. **Depth-two extent trees.** Allocation handles in-line and depth-one trees,
-   including hole writes and leaf splits; a fifth index entry (depth two) is
-   still `EOPNOTSUPP`. Most Debian files are small or indirect-mapped, which is
-   why installation works today.
-2. **Large xattr values.** ext4 stores values that do not fit the xattr block
+1. **Large xattr values.** ext4 stores values that do not fit the xattr block
    in EA inodes (`ea_inode`); that feature is not implemented, so each value
    is limited to the block's free space.
-3. **Journal layout limits:** 64-bit block numbers, checksum v2 and fast
+2. **Journal layout limits:** 64-bit block numbers, checksum v2 and fast
    commit are rejected at mount, and a non-contiguous journal inode cannot be
    replayed.
 
@@ -339,6 +337,17 @@ promote the tree to depth one and the fifth allocates inside the leaf; the
 host then requires `debugfs dump_extents` to report `0/ 1`, the contents to
 survive a remount, and `e2fsck -fn` to pass. Result: **PASS**, with the
 on-disk tree reporting `0/ 1 1/ 1 0-5 <leaf> 6`.
+
+`fs_extent_depth_check.sh` (`make test_x86_debian_fs_extent_depth`) prepares
+`/deep.bin` with 5,800 blocks and punches every odd block, leaving 2,900
+singleton extents; `debugfs dump_extents` reports `0/ 2`. The first boot reads
+the punched holes, writes a pattern into every one of them (each insertion
+lands in a nearly full leaf and splits it) and verifies the result. The second
+boot punches a range spanning several leaves, truncates the file, writes into
+the resulting holes and verifies the survivors. The tree must stay at depth
+two after the write phase, must collapse to a shallower valid shape once its
+index fits in the inode, and `e2fsck -fn` must accept the image after each
+boot. Result: **PASS**.
 
 `fs_fallocate_check.sh` (`make test_x86_debian_fs_fallocate`) covers
 `ZERO_RANGE` over an existing range, past EOF, and with `KEEP_SIZE`, plus

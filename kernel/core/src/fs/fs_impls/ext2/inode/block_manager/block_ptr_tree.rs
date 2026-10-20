@@ -21,6 +21,8 @@ const EXTENT_HEADER_SIZE: usize = 12;
 const EXTENT_RECORD_SIZE: usize = 12;
 /// Extent records that fit in one 4 KiB leaf block.
 const EXTENT_LEAF_CAPACITY: usize = (BLOCK_SIZE - EXTENT_HEADER_SIZE) / EXTENT_RECORD_SIZE;
+/// Deepest extent tree ext4 allows (`EXT_MAX_DEPTH`).
+const MAX_EXTENT_DEPTH: u16 = 5;
 
 /// One extent record while a hole is punched through a block.
 #[derive(Clone, Copy)]
@@ -29,6 +31,18 @@ struct ExtentRecord {
     len: u32,
     physical: u32,
     unwritten: bool,
+}
+
+/// One index level on the way from the inode to an extent leaf.
+struct ExtentIndexLevel {
+    /// `None` for the in-line root.
+    bid: Option<Ext2Bid>,
+    bytes: [u8; BLOCK_SIZE],
+    selected: usize,
+    depth: u16,
+    entries: usize,
+    max_entries: usize,
+    generation: u32,
 }
 
 /// An ext2 inode's block-pointer tree.
@@ -205,62 +219,45 @@ impl BlockPtrTree {
     }
 
     fn lookup_extent_range(&self, iblock: Iblock, max_blocks: u32) -> Result<Range<Ext2Bid>> {
-        let bytes = self.raw_block_ptrs.extent_bytes();
-        let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
-        let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
-        let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
-        if entries > max_entries || entries > 4 || max_entries == 0 || depth > 1 {
-            return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported ext4 extent tree");
+        let root = self.raw_block_ptrs.extent_bytes();
+        let (entries, max_entries, depth, _) = Self::parse_extent_header(&root, 4)?;
+        if depth == 0 {
+            return self.lookup_extent_leaf_range(&root, entries, max_entries, iblock, max_blocks);
         }
-        if depth == 1 {
-            let mut selected_leaf = None;
-            let mut previous_logical = 0u32;
-            for index in 0..entries {
-                let offset = 12 + index * 12;
-                let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-                if index != 0 && logical < previous_logical {
-                    return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent index");
-                }
-                if logical > iblock {
-                    break;
-                }
-                let leaf_lo = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap());
-                let leaf_hi =
-                    u16::from_le_bytes(bytes[offset + 8..offset + 10].try_into().unwrap());
-                let leaf = (u64::from(leaf_hi) << 32) | u64::from(leaf_lo);
-                let leaf = u32::try_from(leaf).map_err(|_| {
-                    Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block")
-                })?;
-                selected_leaf = Some(leaf);
-                previous_logical = logical;
-            }
-            let Some(leaf) = selected_leaf else {
+
+        // Walk the index levels until the leaf that owns `iblock`.
+        let mut node = [0u8; BLOCK_SIZE];
+        node[..RAW_BLOCK_PTRS_LEN * size_of::<u32>()].copy_from_slice(&root);
+        let mut node_entries = entries;
+        let mut node_depth = depth;
+        loop {
+            let Some((index, _)) =
+                Self::select_extent_index(&node, node_entries, iblock, false)?
+            else {
+                // The block precedes every index key, so it is a hole.
                 return Ok(iblock..iblock);
             };
-            let words = {
-                let mut manager = self.indirect_blocks_manager.lock();
-                manager.find(leaf)?.read_words()?
-            };
-            let mut child_bytes = [0u8; BLOCK_SIZE];
-            for (index, word) in words.iter().enumerate() {
-                child_bytes[index * size_of::<u32>()..(index + 1) * size_of::<u32>()]
-                    .copy_from_slice(&word.to_le_bytes());
+            let child =
+                Self::extent_index_leaf(&node, EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE)?;
+            let child_bytes = self.read_extent_leaf(child)?;
+            let (child_entries, child_max_entries, child_depth, _) =
+                Self::parse_extent_header(&child_bytes, EXTENT_LEAF_CAPACITY)?;
+            if child_depth.checked_add(1) != Some(node_depth) {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent depth");
             }
-            let child_entries = u16::from_le_bytes([child_bytes[2], child_bytes[3]]) as usize;
-            let child_max_entries = u16::from_le_bytes([child_bytes[4], child_bytes[5]]) as usize;
-            let child_depth = u16::from_le_bytes([child_bytes[6], child_bytes[7]]);
-            if child_depth != 0 {
-                return_errno_with_message!(Errno::EOPNOTSUPP, "nested ext4 extent index");
+            if child_depth == 0 {
+                return self.lookup_extent_leaf_range(
+                    &child_bytes,
+                    child_entries,
+                    child_max_entries,
+                    iblock,
+                    max_blocks,
+                );
             }
-            return self.lookup_extent_leaf_range(
-                &child_bytes,
-                child_entries,
-                child_max_entries,
-                iblock,
-                max_blocks,
-            );
+            node = child_bytes;
+            node_entries = child_entries;
+            node_depth = child_depth;
         }
-        self.lookup_extent_leaf_range(&bytes, entries, max_entries, iblock, max_blocks)
     }
 
     fn lookup_extent_leaf_range(
@@ -331,18 +328,22 @@ impl BlockPtrTree {
         let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
         let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
         let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
-        if entries > max_entries || entries > 4 || max_entries == 0 || depth > 1 {
+        if entries > max_entries
+            || entries > 4
+            || max_entries == 0
+            || depth > MAX_EXTENT_DEPTH
+        {
             return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported ext4 extent tree");
         }
-        if depth == 1 {
+        if depth > 0 {
             // Page-cache writeback resolves already-mapped ranges before it
             // writes them, and directories such as `/var/lib/dpkg/info` carry
             // a depth-one tree. An unmapped block is either an append or a
             // hole left by a punch; both insert a record into the right leaf,
-            // splitting it when it is full.
+            // splitting it (and its index parents) when they are full.
             let range = self.lookup_extent_range(iblock, max_blocks)?;
             if range.is_empty() {
-                return self.allocate_in_depth_one_tree(fs, iblock, max_blocks);
+                return self.allocate_in_extent_tree(fs, iblock, max_blocks);
             }
             return Ok(ResolvedBlockRange::Existing(range));
         }
@@ -411,7 +412,7 @@ impl BlockPtrTree {
             // append there, which is what ext4 does when a file outgrows the
             // in-inode extent array.
             self.promote_inline_extents(fs)?;
-            return self.allocate_in_depth_one_tree(fs, iblock, max_blocks);
+            return self.allocate_in_extent_tree(fs, iblock, max_blocks);
         }
 
         let count = max_blocks.min(0x7fff).min((max_entries - entries) as u32);
@@ -529,88 +530,92 @@ impl BlockPtrTree {
         Ok(())
     }
 
-    /// Allocates data for a hole or an append in a depth-one extent tree.
+    /// Allocates data for a hole or an append in an extent tree.
     ///
-    /// The leaf that owns `iblock` is selected with the same rule as
-    /// [`Self::lookup_extent_range`]: the last index whose key is not above
-    /// the block, or the first leaf when the block precedes every key. The
-    /// new record is inserted in logical order, bounded by the next record
-    /// (or, for an append inside a non-final leaf, by the next leaf's key),
-    /// so an allocation never crosses into a following leaf.
+    /// The leaf that owns `iblock` is selected by descending the index levels
+    /// (the last key not above the block, or the first child when the block
+    /// precedes every key). The new record is inserted in logical order,
+    /// bounded by the next record or the next sibling key, so an allocation
+    /// never crosses into a following leaf.
     ///
-    /// A full leaf is split into two balanced leaves and the root gains one
-    /// index entry. The inode holds four index entries, so a split beyond
-    /// that reports `EOPNOTSUPP` (depth two is not implemented) before
-    /// allocating anything.
-    fn allocate_in_depth_one_tree(
+    /// A full leaf is split in two and the new index entry is propagated
+    /// upwards; full index blocks are split the same way. When the in-line
+    /// root is full, its records move into a fresh index block and the root
+    /// grows one level, which is how ext4 builds depth-two and deeper trees.
+    fn allocate_in_extent_tree(
         &mut self,
         fs: &Ext2,
         iblock: Iblock,
         max_blocks: u32,
     ) -> Result<ResolvedBlockRange> {
-        let (root_entries, root_max_entries, index, current_key, next_key, leaf) = {
-            let root = self.raw_block_ptrs.extent_bytes();
-            let entries = u16::from_le_bytes([root[2], root[3]]) as usize;
-            let max_entries = u16::from_le_bytes([root[4], root[5]]) as usize;
-            let depth = u16::from_le_bytes([root[6], root[7]]);
-            if u16::from_le_bytes([root[0], root[1]]) != EXTENT_MAGIC
-                || entries == 0
-                || entries > max_entries
-                || max_entries > 4
-                || depth != 1
-            {
-                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent index");
-            }
-
-            let mut index = 0usize;
-            let mut previous = 0u32;
-            for candidate in 0..entries {
-                let offset = EXTENT_HEADER_SIZE + candidate * EXTENT_RECORD_SIZE;
-                let logical = u32::from_le_bytes(root[offset..offset + 4].try_into().unwrap());
-                if candidate != 0 && logical < previous {
-                    return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent index");
-                }
-                if logical <= iblock {
-                    index = candidate;
-                }
-                previous = logical;
-            }
-
-            let offset = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
-            let current_key = u32::from_le_bytes(root[offset..offset + 4].try_into().unwrap());
-            let next_key = if index + 1 < entries {
-                let next_offset = EXTENT_HEADER_SIZE + (index + 1) * EXTENT_RECORD_SIZE;
-                Some(u32::from_le_bytes(
-                    root[next_offset..next_offset + 4].try_into().unwrap(),
-                ))
-            } else {
-                None
-            };
-            let leaf = Self::extent_index_leaf(&root, offset)?;
-            (entries, max_entries, index, current_key, next_key, leaf)
-        };
-
-        let leaf_bytes = self.read_extent_leaf(leaf)?;
-        let entries = u16::from_le_bytes([leaf_bytes[2], leaf_bytes[3]]) as usize;
-        let max_entries = u16::from_le_bytes([leaf_bytes[4], leaf_bytes[5]]) as usize;
-        let leaf_depth = u16::from_le_bytes([leaf_bytes[6], leaf_bytes[7]]);
-        let leaf_generation = u32::from_le_bytes(leaf_bytes[8..12].try_into().unwrap());
-        if u16::from_le_bytes([leaf_bytes[0], leaf_bytes[1]]) != EXTENT_MAGIC
-            || entries > max_entries
-            || max_entries == 0
-            || max_entries > EXTENT_LEAF_CAPACITY
-            || leaf_depth != 0
-        {
-            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent leaf");
+        let root = self.raw_block_ptrs.extent_bytes();
+        let (root_entries, root_max_entries, root_depth, root_generation) =
+            Self::parse_extent_header(&root, 4)?;
+        if root_depth == 0 || root_entries == 0 {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent index");
         }
 
-        let mut records: Vec<ExtentRecord> = Vec::with_capacity(entries + 1);
-        let mut insert_at = entries;
-        let mut upper = next_key;
-        let mut previous_end = 0u32;
+        let mut levels: Vec<ExtentIndexLevel> = Vec::new();
+        let mut node_bytes = [0u8; BLOCK_SIZE];
+        node_bytes[..RAW_BLOCK_PTRS_LEN * size_of::<u32>()].copy_from_slice(&root);
+        let mut node_bid = None;
+        let mut node_entries = root_entries;
+        let mut node_max_entries = root_max_entries;
+        let mut node_depth = root_depth;
+        let mut node_generation = root_generation;
+        let mut upper = None;
+
+        let (leaf, leaf_bytes, leaf_entries, leaf_max_entries, leaf_generation) = loop {
+            let (selected, next_key) =
+                Self::select_extent_index(&node_bytes, node_entries, iblock, true)?
+                    .ok_or_else(|| {
+                        Error::with_message(Errno::EUCLEAN, "empty ext4 extent index")
+                    })?;
+            if let Some(key) = next_key {
+                upper = Some(upper.map_or(key, |bound: u32| bound.min(key)));
+            }
+            let child = Self::extent_index_leaf(
+                &node_bytes,
+                EXTENT_HEADER_SIZE + selected * EXTENT_RECORD_SIZE,
+            )?;
+            let child_bytes = self.read_extent_leaf(child)?;
+            let (child_entries, child_max_entries, child_depth, child_generation) =
+                Self::parse_extent_header(&child_bytes, EXTENT_LEAF_CAPACITY)?;
+            if child_depth.checked_add(1) != Some(node_depth) {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent depth");
+            }
+            levels.push(ExtentIndexLevel {
+                bid: node_bid,
+                bytes: node_bytes,
+                selected,
+                depth: node_depth,
+                entries: node_entries,
+                max_entries: node_max_entries,
+                generation: node_generation,
+            });
+            if child_depth == 0 {
+                break (
+                    child,
+                    child_bytes,
+                    child_entries,
+                    child_max_entries,
+                    child_generation,
+                );
+            }
+            node_bid = Some(child);
+            node_bytes = child_bytes;
+            node_entries = child_entries;
+            node_max_entries = child_max_entries;
+            node_depth = child_depth;
+            node_generation = child_generation;
+        };
+
+        let mut records: Vec<ExtentRecord> = Vec::with_capacity(leaf_entries + 1);
+        let mut insert_at = leaf_entries;
         let mut goal = 0u32;
         let mut insert_goal = 0u32;
-        for position in 0..entries {
+        let mut previous_end = 0u32;
+        for position in 0..leaf_entries {
             let offset = EXTENT_HEADER_SIZE + position * EXTENT_RECORD_SIZE;
             let logical = u32::from_le_bytes(leaf_bytes[offset..offset + 4].try_into().unwrap());
             let raw_len = u16::from_le_bytes([leaf_bytes[offset + 4], leaf_bytes[offset + 5]]);
@@ -630,9 +635,9 @@ impl BlockPtrTree {
                     start..start + (len - (iblock - logical)).min(max_blocks),
                 ));
             }
-            if insert_at == entries && iblock < logical {
+            if insert_at == leaf_entries && iblock < logical {
                 insert_at = position;
-                upper = Some(logical);
+                upper = Some(upper.map_or(logical, |bound: u32| bound.min(logical)));
                 insert_goal = if position == 0 { physical } else { goal };
             }
             previous_end = logical_end;
@@ -644,30 +649,19 @@ impl BlockPtrTree {
                 unwritten: raw_len & 0x8000 != 0,
             });
         }
-        if insert_at == entries {
+        if insert_at == leaf_entries {
             insert_goal = goal;
         }
 
-        let mut count = max_blocks.min(0x7fff);
-        if let Some(bound) = upper {
-            count = count.min(bound.saturating_sub(iblock));
-        }
-        // Do not create an extent longer than the free record slots would
-        // justify; the next resolve call extends the same range cheaply.
-        let room = max_entries.saturating_sub(entries) as u32;
-        count = count.min(if room == 0 { 1 } else { room });
+        let bound = upper.unwrap_or(u32::MAX);
+        let count = max_blocks.min(0x7fff).min(bound.saturating_sub(iblock));
         if count == 0 {
             return_errno_with_message!(Errno::EOPNOTSUPP, "no room for the hole");
         }
 
-        let split = entries >= max_entries;
-        if split && root_entries >= root_max_entries {
-            return_errno_with_message!(Errno::EOPNOTSUPP, "inline extent index is full");
-        }
-
         let data_blocks = fs.alloc_blocks(count, insert_goal)?;
         Self::zero_new_blocks(fs, &data_blocks)?;
-        let mut guard = BlockAllocGuard::new(fs, if split { 1 } else { 0 });
+        let mut guard = BlockAllocGuard::new(fs, 0);
         guard.track_data_blocks(data_blocks.clone());
         records.insert(
             insert_at,
@@ -679,34 +673,40 @@ impl BlockPtrTree {
             },
         );
 
-        if !split {
+        let first_key = records[0].logical;
+
+        if records.len() <= leaf_max_entries {
             let mut bytes = [0u8; BLOCK_SIZE];
-            Self::encode_extent_block(&mut bytes, &records, max_entries, leaf_generation)?;
+            Self::encode_extent_block(&mut bytes, &records, leaf_max_entries, leaf_generation)?;
             self.write_extent_leaf(leaf, &bytes)?;
-            if index == 0 && records[0].logical < current_key {
-                self.set_extent_root_key(0, records[0].logical)?;
+            if insert_at == 0 {
+                self.lower_extent_keys(&mut levels, first_key)?;
             }
-            self.raw_block_ptrs.sector_count = self
-                .raw_block_ptrs
-                .sector_count
-                .checked_add(count * SECTORS_PER_BLOCK)
-                .ok_or_else(|| Error::with_message(Errno::EIO, "inode block count overflow"))?;
+            self.add_sectors(count)?;
             guard.commit();
             return Ok(ResolvedBlockRange::NewlyAllocated(data_blocks));
         }
 
+        // Splitting may need a new leaf and one block per index level that
+        // splits, plus one when the in-line root grows. Allocate the whole
+        // pool before the first write so a later allocation failure cannot
+        // leave the tree half-updated.
+        let pool_len = levels.len() as u32 + 2;
+        let pool = fs.alloc_blocks(pool_len, insert_goal)?;
+        guard.extend_indirect_blocks(pool.clone());
+        let mut next_indirect = pool.start;
+
         // Split the overfull leaf into two balanced leaves. The second half
-        // gets a new index entry; the first half keeps the existing one.
+        // gets a new leaf block, and its first key is propagated upwards.
         let split_at = records.len() / 2;
-        let new_leaf_blocks = fs.alloc_blocks(1, insert_goal)?;
-        guard.extend_indirect_blocks(new_leaf_blocks.clone());
-        let new_leaf = new_leaf_blocks.start;
+        let new_leaf = next_indirect;
+        next_indirect += 1;
 
         let mut first_bytes = [0u8; BLOCK_SIZE];
         Self::encode_extent_block(
             &mut first_bytes,
             &records[..split_at],
-            max_entries,
+            leaf_max_entries,
             leaf_generation,
         )?;
         let mut second_bytes = [0u8; BLOCK_SIZE];
@@ -718,62 +718,286 @@ impl BlockPtrTree {
         )?;
         self.write_extent_leaf(leaf, &first_bytes)?;
         self.write_extent_leaf(new_leaf, &second_bytes)?;
-        self.insert_extent_root_index(index, records[split_at].logical, new_leaf)?;
-        if index == 0 && records[0].logical < current_key {
-            self.set_extent_root_key(0, records[0].logical)?;
+        if insert_at == 0 {
+            self.lower_extent_keys(&mut levels, first_key)?;
         }
 
+        let mut pending = (records[split_at].logical, new_leaf);
+        let mut level_index = levels.len();
+        while level_index > 0 {
+            level_index -= 1;
+            let is_root = level_index == 0;
+            let mut entries: Vec<(u32, Ext2Bid)> = Vec::new();
+            {
+                let level = &levels[level_index];
+                for index in 0..level.entries {
+                    let offset = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
+                    let key =
+                        u32::from_le_bytes(level.bytes[offset..offset + 4].try_into().unwrap());
+                    let child = Self::extent_index_leaf(&level.bytes, offset)?;
+                    entries.push((key, child));
+                }
+            }
+            let insert_pos = levels[level_index].selected + 1;
+            entries.insert(insert_pos, pending);
+            let level = &mut levels[level_index];
+
+            if is_root && level.entries >= level.max_entries {
+                // The in-line root is full: move its records into a fresh
+                // index block and make the root a one-entry index of it.
+                let new_depth = level.depth + 1;
+                if new_depth > MAX_EXTENT_DEPTH {
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "extent tree depth limit reached"
+                    );
+                }
+                let root_child = next_indirect;
+                next_indirect += 1;
+                let mut child_bytes = [0u8; BLOCK_SIZE];
+                Self::encode_extent_index_block(
+                    &mut child_bytes,
+                    &entries,
+                    EXTENT_LEAF_CAPACITY,
+                    level.depth,
+                    level.generation,
+                )?;
+                self.write_extent_leaf(root_child, &child_bytes)?;
+
+                let mut root_bytes = [0u8; BLOCK_SIZE];
+                Self::encode_extent_index_block(
+                    &mut root_bytes,
+                    &[(entries[0].0, root_child)],
+                    4,
+                    new_depth,
+                    level.generation,
+                )?;
+                self.store_extent_root_block(&root_bytes);
+                level.depth = new_depth;
+                level.entries = 1;
+                self.finish_extent_allocation(fs, &mut guard, &pool, next_indirect, count)?;
+                return Ok(ResolvedBlockRange::NewlyAllocated(data_blocks));
+            }
+
+            if !is_root && level.entries >= level.max_entries {
+                // Split this full index block and propagate its second half.
+                let split_at = entries.len() / 2;
+                let new_index = next_indirect;
+                next_indirect += 1;
+                let mut first_bytes = [0u8; BLOCK_SIZE];
+                Self::encode_extent_index_block(
+                    &mut first_bytes,
+                    &entries[..split_at],
+                    level.max_entries,
+                    level.depth,
+                    level.generation,
+                )?;
+                let mut second_bytes = [0u8; BLOCK_SIZE];
+                Self::encode_extent_index_block(
+                    &mut second_bytes,
+                    &entries[split_at..],
+                    EXTENT_LEAF_CAPACITY,
+                    level.depth,
+                    level.generation,
+                )?;
+                let bid = level.bid.expect("non-root index level has a block");
+                self.write_extent_leaf(bid, &first_bytes)?;
+                self.write_extent_leaf(new_index, &second_bytes)?;
+                level.entries = split_at;
+                pending = (entries[split_at].0, new_index);
+                continue;
+            }
+
+            let mut bytes = level.bytes;
+            Self::encode_extent_index_block(
+                &mut bytes,
+                &entries,
+                level.max_entries,
+                level.depth,
+                level.generation,
+            )?;
+            level.entries = entries.len();
+            self.write_extent_level(level.bid, &bytes)?;
+            self.finish_extent_allocation(fs, &mut guard, &pool, next_indirect, count)?;
+            return Ok(ResolvedBlockRange::NewlyAllocated(data_blocks));
+        }
+
+        unreachable!("the in-line root always terminates the split propagation")
+    }
+
+    /// Adds newly allocated data and metadata blocks to the inode's sector
+    /// count.
+    fn add_sectors(&mut self, blocks: u32) -> Result<()> {
         self.raw_block_ptrs.sector_count = self
             .raw_block_ptrs
             .sector_count
-            .checked_add(count * SECTORS_PER_BLOCK + SECTORS_PER_BLOCK)
+            .checked_add(blocks * SECTORS_PER_BLOCK)
             .ok_or_else(|| Error::with_message(Errno::EIO, "inode block count overflow"))?;
-        guard.commit();
-        Ok(ResolvedBlockRange::NewlyAllocated(data_blocks))
+        Ok(())
     }
 
-    /// Inserts an index entry after `after_index`, keeping the keys ordered.
-    fn insert_extent_root_index(
+    /// Frees the unused tail of a pre-allocated metadata pool, accounts the
+    /// blocks that were linked into the tree and commits the allocation.
+    fn finish_extent_allocation(
         &mut self,
-        after_index: usize,
-        logical: u32,
-        leaf: Ext2Bid,
+        fs: &Ext2,
+        guard: &mut BlockAllocGuard<'_>,
+        pool: &Range<Ext2Bid>,
+        next_indirect: Ext2Bid,
+        data_blocks: u32,
     ) -> Result<()> {
-        let mut out = [0u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
-        out.copy_from_slice(&self.raw_block_ptrs.extent_bytes());
-        let entries = u16::from_le_bytes([out[2], out[3]]) as usize;
-        if entries >= 4 {
-            return_errno_with_message!(Errno::EOPNOTSUPP, "inline extent index is full");
+        let used = next_indirect.saturating_sub(pool.start);
+        if next_indirect < pool.end {
+            fs.free_blocks(next_indirect, pool.end - next_indirect)?;
         }
-        for position in (after_index + 1..entries).rev() {
-            let source = EXTENT_HEADER_SIZE + position * EXTENT_RECORD_SIZE;
-            let destination = source + EXTENT_RECORD_SIZE;
-            out.copy_within(source..source + EXTENT_RECORD_SIZE, destination);
-        }
-        let offset = EXTENT_HEADER_SIZE + (after_index + 1) * EXTENT_RECORD_SIZE;
-        out[offset..offset + 4].copy_from_slice(&logical.to_le_bytes());
-        out[offset + 4..offset + 8].copy_from_slice(&leaf.to_le_bytes());
-        out[offset + 8..offset + 10].copy_from_slice(&0u16.to_le_bytes());
-        out[offset + 10..offset + 12].copy_from_slice(&0u16.to_le_bytes());
-        out[2..4].copy_from_slice(&((entries + 1) as u16).to_le_bytes());
-        self.store_extent_root(&out);
+        self.add_sectors(data_blocks + used)?;
+        guard.commit();
         Ok(())
     }
 
-    /// Rewrites one index key of the in-line extent root.
-    fn set_extent_root_key(&mut self, index: usize, logical: u32) -> Result<()> {
-        let mut out = [0u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
-        out.copy_from_slice(&self.raw_block_ptrs.extent_bytes());
-        let offset = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
-        out[offset..offset + 4].copy_from_slice(&logical.to_le_bytes());
-        self.store_extent_root(&out);
-        Ok(())
+    /// Rewrites an index level (the in-line root when `bid` is `None`).
+    fn write_extent_level(&mut self, bid: Option<Ext2Bid>, bytes: &[u8; BLOCK_SIZE]) -> Result<()> {
+        match bid {
+            Some(bid) => self.write_extent_leaf(bid, bytes),
+            None => {
+                self.store_extent_root_block(bytes);
+                Ok(())
+            }
+        }
     }
 
-    fn store_extent_root(&mut self, bytes: &[u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()]) {
+    /// Copies the first 60 bytes of an extent block into the inode's `i_block`.
+    fn store_extent_root_block(&mut self, bytes: &[u8; BLOCK_SIZE]) {
         for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
             *value = u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
         }
+    }
+
+    /// Lowers the first key of each index level that owns the modified leaf.
+    ///
+    /// Inserting a record before the current first extent moves the subtree's
+    /// lower boundary. The change only propagates while the child sits at
+    /// index zero, because any higher child is already bounded by an earlier
+    /// key.
+    fn lower_extent_keys(
+        &mut self,
+        levels: &mut [ExtentIndexLevel],
+        first_key: u32,
+    ) -> Result<()> {
+        for level in levels.iter_mut().rev() {
+            if level.selected != 0 {
+                break;
+            }
+            let offset = EXTENT_HEADER_SIZE;
+            let old_key =
+                u32::from_le_bytes(level.bytes[offset..offset + 4].try_into().unwrap());
+            if old_key <= first_key {
+                break;
+            }
+            level.bytes[offset..offset + 4].copy_from_slice(&first_key.to_le_bytes());
+            self.write_extent_level(level.bid, &level.bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Parses an extent header. `capacity` bounds `eh_max` for the node kind
+    /// (four records in the inode, [`EXTENT_LEAF_CAPACITY`] in a block).
+    fn parse_extent_header(
+        bytes: &[u8],
+        capacity: usize,
+    ) -> Result<(usize, usize, u16, u32)> {
+        if bytes.len() < EXTENT_HEADER_SIZE
+            || u16::from_le_bytes([bytes[0], bytes[1]]) != EXTENT_MAGIC
+        {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent header");
+        }
+        let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
+        let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
+        if entries > max_entries
+            || max_entries == 0
+            || max_entries > capacity
+            || depth > MAX_EXTENT_DEPTH
+        {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent header");
+        }
+        let generation = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        Ok((entries, max_entries, depth, generation))
+    }
+
+    /// Returns the key of one index record.
+    fn extent_index_key(bytes: &[u8], index: usize) -> Result<u32> {
+        let offset = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
+        if offset + EXTENT_RECORD_SIZE > bytes.len() {
+            return_errno_with_message!(Errno::EUCLEAN, "ext4 extent index out of range");
+        }
+        Ok(u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap()))
+    }
+
+    /// Selects the index entry that owns `iblock`.
+    ///
+    /// The result is the last key not above `iblock`, or the first entry when
+    /// `default_first` is set and every key is above it. The second value is
+    /// the following key, which bounds a hole that starts at `iblock`.
+    fn select_extent_index(
+        bytes: &[u8],
+        entries: usize,
+        iblock: u32,
+        default_first: bool,
+    ) -> Result<Option<(usize, Option<u32>)>> {
+        let mut selected = None;
+        let mut previous = 0u32;
+        for index in 0..entries {
+            let key = Self::extent_index_key(bytes, index)?;
+            if index != 0 && key < previous {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent index");
+            }
+            previous = key;
+            if key <= iblock {
+                selected = Some(index);
+            }
+        }
+        let index = match selected {
+            Some(index) => index,
+            None if default_first && entries > 0 => 0,
+            None => return Ok(None),
+        };
+        let next = if index + 1 < entries {
+            Some(Self::extent_index_key(bytes, index + 1)?)
+        } else {
+            None
+        };
+        Ok(Some((index, next)))
+    }
+
+    /// Serializes index records into an extent index block.
+    fn encode_extent_index_block(
+        out: &mut [u8; BLOCK_SIZE],
+        entries: &[(u32, Ext2Bid)],
+        max_entries: usize,
+        depth: u16,
+        generation: u32,
+    ) -> Result<()> {
+        if entries.len() > max_entries || max_entries > EXTENT_LEAF_CAPACITY {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "extent index overflow");
+        }
+        if depth == 0 || depth > MAX_EXTENT_DEPTH {
+            return_errno_with_message!(Errno::EINVAL, "invalid extent index depth");
+        }
+        out.fill(0);
+        out[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+        out[2..4].copy_from_slice(&(entries.len() as u16).to_le_bytes());
+        out[4..6].copy_from_slice(&(max_entries as u16).to_le_bytes());
+        out[6..8].copy_from_slice(&depth.to_le_bytes());
+        out[8..12].copy_from_slice(&generation.to_le_bytes());
+        for (index, (key, child)) in entries.iter().enumerate() {
+            let offset = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
+            out[offset..offset + 4].copy_from_slice(&key.to_le_bytes());
+            out[offset + 4..offset + 8].copy_from_slice(&child.to_le_bytes());
+            out[offset + 8..offset + 10].copy_from_slice(&0u16.to_le_bytes());
+            out[offset + 10..offset + 12].copy_from_slice(&0u16.to_le_bytes());
+        }
+        Ok(())
     }
 
     /// Promotes a full inline extent tree to a depth-one tree.
@@ -937,9 +1161,11 @@ impl BlockPtrTree {
 
     /// Frees an extent range in an extent tree.
     ///
-    /// Depth-zero (in-line) trees are rewritten in place; depth-one trees
-    /// split each affected leaf, free the emptied leaves and rebuild the
-    /// in-line index.
+    /// Depth-zero (in-line) trees are rewritten in place. Deeper trees are
+    /// walked recursively: every leaf that overlaps the range is split, the
+    /// freed physical runs are released, an emptied leaf or index block is
+    /// returned to the allocator and its index entry is dropped, and an
+    /// emptied root becomes an empty depth-zero header again.
     fn punch_inline_extent_range(
         &mut self,
         fs: &Ext2,
@@ -947,142 +1173,163 @@ impl BlockPtrTree {
         end_block: Iblock,
     ) -> Result<()> {
         let bytes = self.raw_block_ptrs.extent_bytes();
-        let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
-        if depth == 1 {
-            return self.punch_depth_one_extent_range(fs, start_block, end_block);
-        }
-        if depth != 0 {
-            return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported extent tree depth");
-        }
-
-        let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
-        let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
-        let generation = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
-        if u16::from_le_bytes([bytes[0], bytes[1]]) != EXTENT_MAGIC
-            || entries > max_entries
-            || max_entries > 4
-        {
-            return_errno_with_message!(Errno::EUCLEAN, "invalid inline extent tree");
-        }
-
-        let (kept, freed) = Self::split_extent_block(&bytes, start_block, end_block)?;
-        if kept.len() > max_entries {
-            return_errno_with_message!(
-                Errno::EOPNOTSUPP,
-                "punch-hole would overflow the inline extent array"
-            );
-        }
-
-        for (physical, len) in &freed {
-            fs.free_blocks(*physical, *len)?;
-            self.raw_block_ptrs.sector_count = self
-                .raw_block_ptrs
-                .sector_count
-                .saturating_sub(*len * SECTORS_PER_BLOCK);
-        }
-
-        let mut out = [0u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
-        Self::encode_extent_block(&mut out, &kept, max_entries, generation)?;
-        for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
-            *value = u32::from_le_bytes(out[index * 4..index * 4 + 4].try_into().unwrap());
-        }
-        Ok(())
-    }
-
-    /// Frees an extent range in a depth-one extent tree.
-    fn punch_depth_one_extent_range(
-        &mut self,
-        fs: &Ext2,
-        start_block: Iblock,
-        end_block: Iblock,
-    ) -> Result<()> {
-        let root = self.raw_block_ptrs.extent_bytes();
-        let root_entries = u16::from_le_bytes([root[2], root[3]]) as usize;
-        let root_max_entries = u16::from_le_bytes([root[4], root[5]]) as usize;
-        let generation = u32::from_le_bytes(root[8..12].try_into().unwrap());
-        if u16::from_le_bytes([root[0], root[1]]) != EXTENT_MAGIC
-            || root_entries > root_max_entries
-            || root_max_entries > 4
-        {
-            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent index");
-        }
-
-        struct LeafPlan {
-            leaf: Ext2Bid,
-            kept: Vec<ExtentRecord>,
-            freed: Vec<(Ext2Bid, u32)>,
-            max_entries: usize,
-            generation: u32,
-        }
-        let mut plans = Vec::new();
-        for index in 0..root_entries {
-            let offset = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
-            let leaf = Self::extent_index_leaf(&root, offset)?;
-            let bytes = self.read_extent_leaf(leaf)?;
-            let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
-            let leaf_generation = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let (_, max_entries, depth, generation) = Self::parse_extent_header(&bytes, 4)?;
+        if depth == 0 {
             let (kept, freed) = Self::split_extent_block(&bytes, start_block, end_block)?;
             if kept.len() > max_entries {
                 return_errno_with_message!(
                     Errno::EOPNOTSUPP,
-                    "punch-hole would overflow an extent leaf"
+                    "punch-hole would overflow the inline extent array"
                 );
             }
-            plans.push(LeafPlan {
-                leaf,
-                kept,
-                freed,
-                max_entries,
-                generation: leaf_generation,
-            });
-        }
 
-        let mut survivors: Vec<(u32, Ext2Bid)> = Vec::new();
-        for plan in plans {
-            for (physical, len) in &plan.freed {
+            for (physical, len) in &freed {
                 fs.free_blocks(*physical, *len)?;
                 self.raw_block_ptrs.sector_count = self
                     .raw_block_ptrs
                     .sector_count
                     .saturating_sub(*len * SECTORS_PER_BLOCK);
             }
-            if plan.kept.is_empty() {
-                self.indirect_blocks_manager.lock().remove(plan.leaf);
-                fs.free_blocks(plan.leaf, 1)?;
+
+            let mut out = [0u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
+            Self::encode_extent_block(&mut out, &kept, max_entries, generation)?;
+            for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
+                *value = u32::from_le_bytes(out[index * 4..index * 4 + 4].try_into().unwrap());
+            }
+            return Ok(());
+        }
+
+        let mut node = [0u8; BLOCK_SIZE];
+        node[..RAW_BLOCK_PTRS_LEN * size_of::<u32>()].copy_from_slice(&bytes);
+        match self.punch_extent_node(fs, &mut node, start_block, end_block)? {
+            Some(_) => {
+                self.collapse_extent_root(fs, &mut node)?;
+                self.store_extent_root_block(&node);
+            }
+            None => {
+                let mut empty = [0u8; BLOCK_SIZE];
+                empty[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+                empty[2..4].copy_from_slice(&0u16.to_le_bytes());
+                empty[4..6].copy_from_slice(&4u16.to_le_bytes());
+                empty[6..8].copy_from_slice(&0u16.to_le_bytes());
+                empty[8..12].copy_from_slice(&generation.to_le_bytes());
+                self.store_extent_root_block(&empty);
+            }
+        }
+        Ok(())
+    }
+
+    /// Collapses a root whose only child fits in the in-line array.
+    ///
+    /// Punching and truncation can leave a chain of single-child index nodes.
+    /// Moving the child's records into `i_block` and freeing the child keeps
+    /// the tree at the shallowest valid depth, which is what `e2fsck` asks
+    /// for when it reports that a tree "could be narrower".
+    fn collapse_extent_root(&mut self, fs: &Ext2, root: &mut [u8; BLOCK_SIZE]) -> Result<()> {
+        let (_, _, mut depth, generation) = Self::parse_extent_header(root, 4)?;
+        while depth > 0 {
+            let entries = u16::from_le_bytes([root[2], root[3]]) as usize;
+            if entries != 1 {
+                break;
+            }
+            let child = Self::extent_index_leaf(root, EXTENT_HEADER_SIZE)?;
+            let child_bytes = self.read_extent_leaf(child)?;
+            let (child_entries, _, child_depth, _) =
+                Self::parse_extent_header(&child_bytes, EXTENT_LEAF_CAPACITY)?;
+            if child_depth.checked_add(1) != Some(depth) {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent depth");
+            }
+            if child_entries == 0 || child_entries > 4 {
+                break;
+            }
+
+            let records_end = EXTENT_HEADER_SIZE + child_entries * EXTENT_RECORD_SIZE;
+            root[EXTENT_HEADER_SIZE..records_end]
+                .copy_from_slice(&child_bytes[EXTENT_HEADER_SIZE..records_end]);
+            root[2..4].copy_from_slice(&(child_entries as u16).to_le_bytes());
+            root[4..6].copy_from_slice(&4u16.to_le_bytes());
+            root[6..8].copy_from_slice(&child_depth.to_le_bytes());
+            root[8..12].copy_from_slice(&generation.to_le_bytes());
+            for byte in &mut root[records_end..RAW_BLOCK_PTRS_LEN * size_of::<u32>()] {
+                *byte = 0;
+            }
+
+            let _ = self.indirect_blocks_manager.lock().remove(child);
+            fs.free_blocks(child, 1)?;
+            self.raw_block_ptrs.sector_count = self
+                .raw_block_ptrs
+                .sector_count
+                .saturating_sub(SECTORS_PER_BLOCK);
+            depth = child_depth;
+        }
+        Ok(())
+    }
+
+    /// Punches `[start_block, end_block)` inside one extent node and returns
+    /// the node's new first key, or `None` when the node no longer holds any
+    /// extent.
+    fn punch_extent_node(
+        &mut self,
+        fs: &Ext2,
+        bytes: &mut [u8; BLOCK_SIZE],
+        start_block: Iblock,
+        end_block: Iblock,
+    ) -> Result<Option<u32>> {
+        let (entries, max_entries, depth, generation) =
+            Self::parse_extent_header(bytes, EXTENT_LEAF_CAPACITY)?;
+        if depth == 0 {
+            let (kept, freed) = Self::split_extent_block(bytes, start_block, end_block)?;
+            for (physical, len) in &freed {
+                fs.free_blocks(*physical, *len)?;
                 self.raw_block_ptrs.sector_count = self
                     .raw_block_ptrs
                     .sector_count
-                    .saturating_sub(SECTORS_PER_BLOCK);
-            } else {
-                let mut bytes = [0u8; BLOCK_SIZE];
-                Self::encode_extent_block(
-                    &mut bytes,
-                    &plan.kept,
-                    plan.max_entries,
-                    plan.generation,
-                )?;
-                self.write_extent_leaf(plan.leaf, &bytes)?;
-                survivors.push((plan.kept[0].logical, plan.leaf));
+                    .saturating_sub(*len * SECTORS_PER_BLOCK);
+            }
+            if kept.is_empty() {
+                return Ok(None);
+            }
+            Self::encode_extent_block(bytes, &kept, max_entries, generation)?;
+            return Ok(Some(kept[0].logical));
+        }
+
+        let mut survivors: Vec<(u32, Ext2Bid)> = Vec::with_capacity(entries);
+        for index in 0..entries {
+            let offset = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
+            let key = Self::extent_index_key(bytes, index)?;
+            let child = Self::extent_index_leaf(bytes, offset)?;
+            if key >= end_block {
+                // The whole subtree starts at or beyond the punched range.
+                survivors.push((key, child));
+                continue;
+            }
+            let mut child_bytes = self.read_extent_leaf(child)?;
+            let (_, _, child_depth, _) =
+                Self::parse_extent_header(&child_bytes, EXTENT_LEAF_CAPACITY)?;
+            if child_depth.checked_add(1) != Some(depth) {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent depth");
+            }
+            match self.punch_extent_node(fs, &mut child_bytes, start_block, end_block)? {
+                None => {
+                    let _ = self.indirect_blocks_manager.lock().remove(child);
+                    fs.free_blocks(child, 1)?;
+                    self.raw_block_ptrs.sector_count = self
+                        .raw_block_ptrs
+                        .sector_count
+                        .saturating_sub(SECTORS_PER_BLOCK);
+                }
+                Some(first_key) => {
+                    self.write_extent_leaf(child, &child_bytes)?;
+                    survivors.push((first_key, child));
+                }
             }
         }
 
-        let mut out = [0u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
-        out[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
-        out[2..4].copy_from_slice(&(survivors.len() as u16).to_le_bytes());
-        out[4..6].copy_from_slice(&(root_max_entries as u16).to_le_bytes());
-        out[6..8].copy_from_slice(&1u16.to_le_bytes());
-        out[8..12].copy_from_slice(&generation.to_le_bytes());
-        for (index, (key, leaf)) in survivors.iter().enumerate() {
-            let offset = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
-            out[offset..offset + 4].copy_from_slice(&key.to_le_bytes());
-            out[offset + 4..offset + 8].copy_from_slice(&leaf.to_le_bytes());
-            out[offset + 8..offset + 10].copy_from_slice(&0u16.to_le_bytes());
-            out[offset + 10..offset + 12].copy_from_slice(&0u16.to_le_bytes());
+        if survivors.is_empty() {
+            return Ok(None);
         }
-        for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
-            *value = u32::from_le_bytes(out[index * 4..index * 4 + 4].try_into().unwrap());
-        }
-        Ok(())
+        Self::encode_extent_index_block(bytes, &survivors, max_entries, depth, generation)?;
+        Ok(Some(survivors[0].0))
     }
 
     /// Splits the depth-zero extent records in `bytes` around the punched
@@ -1276,233 +1523,15 @@ impl BlockPtrTree {
         self.free_indirect_roots_after(fs, walk.root_slot() as usize);
     }
 
-    /// Truncate an ext4 extent tree.
+    /// Truncates an extent tree to the new byte length.
     ///
-    /// Depth-zero trees live entirely in the inode: keep the extent records in
-    /// logical order, free only the physical suffix, and rewrite the inode's
-    /// `i_block` extent header. Depth-one trees additionally own leaf blocks;
-    /// those leaves are rewritten and freed as their last extent disappears.
-    /// Deeper trees remain unsupported and are rejected without interpreting
-    /// their index blocks as legacy pointers.
+    /// Freeing everything from the cutoff onwards is a punch whose end is
+    /// unbounded; the same recursive walk splits the straddling extent, frees
+    /// emptied leaves and index blocks, and collapses an emptied root.
     fn truncate_extent_tree(&mut self, fs: &Ext2, new_size: usize) -> Result<()> {
-        let mut bytes = self.raw_block_ptrs.extent_bytes();
-        if u16::from_le_bytes([bytes[0], bytes[1]]) != EXTENT_MAGIC {
-            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent header");
-        }
-        let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
-        let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
-        let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
-        if entries > max_entries || entries > 4 || max_entries == 0 {
-            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent entry count");
-        }
-        if depth > 1 {
-            return_errno_with_message!(Errno::EOPNOTSUPP, "nested ext4 extent truncation");
-        }
-        if depth == 1 {
-            return self.truncate_extent_index(fs, new_size, &mut bytes, entries);
-        }
-
         let cutoff = u32::try_from(new_size.div_ceil(BLOCK_SIZE))
             .map_err(|_| Error::with_message(Errno::EFBIG, "ext4 truncate size overflow"))?;
-        let mut kept = 0usize;
-        let mut freed_blocks = 0u32;
-
-        for index in 0..entries {
-            let offset = 12 + index * 12;
-            let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-            let raw_length = u16::from_le_bytes(bytes[offset + 4..offset + 6].try_into().unwrap());
-            let length = u32::from(raw_length & 0x7fff);
-            if length == 0 {
-                return_errno_with_message!(Errno::EUCLEAN, "zero-length ext4 extent");
-            }
-            let physical_hi = u16::from_le_bytes(bytes[offset + 6..offset + 8].try_into().unwrap());
-            if physical_hi != 0 {
-                return_errno_with_message!(Errno::EOPNOTSUPP, "64-bit ext4 extent truncation");
-            }
-            let physical = u32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap());
-            let keep = if logical >= cutoff {
-                0
-            } else {
-                length.min(cutoff - logical)
-            };
-
-            if keep < length {
-                let free_start = physical
-                    .checked_add(keep)
-                    .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 extent block overflow"))?;
-                let free_len = length - keep;
-                fs.free_blocks(free_start, free_len)?;
-                freed_blocks = freed_blocks
-                    .checked_add(free_len)
-                    .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 free count overflow"))?;
-            }
-
-            if keep != 0 {
-                let keep_length = (raw_length & 0x8000) | u16::try_from(keep).unwrap();
-                let new_offset = 12 + kept * 12;
-                bytes[new_offset..new_offset + 4].copy_from_slice(&logical.to_le_bytes());
-                bytes[new_offset + 4..new_offset + 6].copy_from_slice(&keep_length.to_le_bytes());
-                bytes[new_offset + 6..new_offset + 8].copy_from_slice(&0u16.to_le_bytes());
-                bytes[new_offset + 8..new_offset + 12].copy_from_slice(&physical.to_le_bytes());
-                kept += 1;
-            }
-        }
-
-        bytes[2..4].copy_from_slice(&(kept as u16).to_le_bytes());
-        for offset in (12 + kept * 12)..(12 + 4 * 12) {
-            bytes[offset] = 0;
-        }
-        for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
-            *value = u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
-        }
-        self.raw_block_ptrs.sector_count = self
-            .raw_block_ptrs
-            .sector_count
-            .saturating_sub(freed_blocks.saturating_mul(SECTORS_PER_BLOCK));
-        Ok(())
-    }
-
-    /// Truncate a depth-one extent tree: an inline index root plus leaf blocks.
-    ///
-    /// Every leaf is visited in logical order. Extents beyond the cutoff are
-    /// freed, the leaf straddling the cutoff is shortened, and a leaf that no
-    /// longer holds any extent is freed together with its index entry. The
-    /// surviving index entries keep their original logical address, which is
-    /// exactly the first extent's logical block.
-    fn truncate_extent_index(
-        &mut self,
-        fs: &Ext2,
-        new_size: usize,
-        bytes: &mut [u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()],
-        entries: usize,
-    ) -> Result<()> {
-        let cutoff = u32::try_from(new_size.div_ceil(BLOCK_SIZE))
-            .map_err(|_| Error::with_message(Errno::EFBIG, "ext4 truncate size overflow"))?;
-        let mut kept_indices = 0usize;
-        let mut freed_blocks = 0u32;
-        let mut previous_logical = 0u32;
-
-        for index in 0..entries {
-            let offset = 12 + index * 12;
-            let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-            if index != 0 && logical < previous_logical {
-                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent index");
-            }
-            previous_logical = logical;
-            let leaf_lo =
-                u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap());
-            let leaf_hi =
-                u16::from_le_bytes(bytes[offset + 8..offset + 10].try_into().unwrap());
-            let leaf_bid = u32::try_from((u64::from(leaf_hi) << 32) | u64::from(leaf_lo))
-                .map_err(|_| Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block"))?;
-
-            let mut leaf = {
-                let mut manager = self.indirect_blocks_manager.lock();
-                manager.find(leaf_bid)?.read_bytes()?
-            };
-            if u16::from_le_bytes([leaf[0], leaf[1]]) != EXTENT_MAGIC {
-                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent leaf");
-            }
-            let leaf_entries = u16::from_le_bytes([leaf[2], leaf[3]]) as usize;
-            let leaf_max_entries = u16::from_le_bytes([leaf[4], leaf[5]]) as usize;
-            let leaf_depth = u16::from_le_bytes([leaf[6], leaf[7]]);
-            if leaf_depth != 0
-                || leaf_entries > leaf_max_entries
-                || leaf_max_entries > (BLOCK_SIZE - 12) / 12
-            {
-                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent leaf");
-            }
-
-            let mut kept = 0usize;
-            let mut previous_end = 0u32;
-            for extent in 0..leaf_entries {
-                let entry_offset = 12 + extent * 12;
-                let extent_logical =
-                    u32::from_le_bytes(leaf[entry_offset..entry_offset + 4].try_into().unwrap());
-                let raw_length = u16::from_le_bytes(
-                    leaf[entry_offset + 4..entry_offset + 6].try_into().unwrap(),
-                );
-                let length = u32::from(raw_length & 0x7fff);
-                if length == 0 || extent_logical < previous_end {
-                    return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent range");
-                }
-                previous_end = extent_logical.checked_add(length).ok_or_else(|| {
-                    Error::with_message(Errno::EUCLEAN, "ext4 extent logical overflow")
-                })?;
-                let physical_hi = u16::from_le_bytes(
-                    leaf[entry_offset + 6..entry_offset + 8].try_into().unwrap(),
-                );
-                if physical_hi != 0 {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "64-bit ext4 extent truncation");
-                }
-                let physical = u32::from_le_bytes(
-                    leaf[entry_offset + 8..entry_offset + 12].try_into().unwrap(),
-                );
-                let keep = if extent_logical >= cutoff {
-                    0
-                } else {
-                    length.min(cutoff - extent_logical)
-                };
-
-                if keep < length {
-                    let free_start = physical.checked_add(keep).ok_or_else(|| {
-                        Error::with_message(Errno::EIO, "ext4 extent block overflow")
-                    })?;
-                    let free_len = length - keep;
-                    fs.free_blocks(free_start, free_len)?;
-                    freed_blocks = freed_blocks
-                        .checked_add(free_len)
-                        .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 free count overflow"))?;
-                }
-
-                if keep != 0 {
-                    let new_offset = 12 + kept * 12;
-                    leaf.copy_within(entry_offset..entry_offset + 12, new_offset);
-                    let keep_length = (raw_length & 0x8000) | u16::try_from(keep).unwrap();
-                    leaf[new_offset + 4..new_offset + 6]
-                        .copy_from_slice(&keep_length.to_le_bytes());
-                    kept += 1;
-                }
-            }
-
-            if kept == 0 {
-                let _ = self.indirect_blocks_manager.lock().remove(leaf_bid);
-                fs.free_blocks(leaf_bid, 1)?;
-                freed_blocks = freed_blocks
-                    .checked_add(1)
-                    .ok_or_else(|| Error::with_message(Errno::EIO, "ext4 free count overflow"))?;
-                continue;
-            }
-
-            if kept != leaf_entries {
-                leaf[2..4].copy_from_slice(&(kept as u16).to_le_bytes());
-                for byte in &mut leaf[12 + kept * 12..] {
-                    *byte = 0;
-                }
-                self.indirect_blocks_manager
-                    .lock()
-                    .find_mut(leaf_bid)?
-                    .write_bytes(&leaf)?;
-            }
-
-            let new_offset = 12 + kept_indices * 12;
-            bytes.copy_within(offset..offset + 12, new_offset);
-            kept_indices += 1;
-        }
-
-        bytes[2..4].copy_from_slice(&(kept_indices as u16).to_le_bytes());
-        for byte in &mut bytes[12 + kept_indices * 12..] {
-            *byte = 0;
-        }
-
-        for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
-            *value = u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
-        }
-        self.raw_block_ptrs.sector_count = self
-            .raw_block_ptrs
-            .sector_count
-            .saturating_sub(freed_blocks.saturating_mul(SECTORS_PER_BLOCK));
-        Ok(())
+        self.punch_inline_extent_range(fs, cutoff, u32::MAX)
     }
 
     /// Returns a conservative hole run starting from `iblock`, capped at
@@ -1520,16 +1549,61 @@ impl BlockPtrTree {
             if !self.lookup_extent_range(iblock, 1)?.is_empty() {
                 return Ok(0);
             }
-            let bytes = self.raw_block_ptrs.extent_bytes();
-            let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
-            for index in 0..entries.min(4) {
-                let offset = 12 + index * 12;
-                let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-                if logical > iblock {
-                    return Ok(max_blocks.min(logical - iblock));
+            let root = self.raw_block_ptrs.extent_bytes();
+            let (entries, _, depth, _) = Self::parse_extent_header(&root, 4)?;
+            let mut node = [0u8; BLOCK_SIZE];
+            node[..RAW_BLOCK_PTRS_LEN * size_of::<u32>()].copy_from_slice(&root);
+            let mut node_entries = entries;
+            let mut node_depth = depth;
+            let mut upper = None;
+            if depth == 0 {
+                for index in 0..entries {
+                    let logical = Self::extent_index_key(&node, index)?;
+                    if logical > iblock {
+                        upper = Some(logical);
+                        break;
+                    }
+                }
+            } else {
+                loop {
+                    let (selected, next_key) =
+                        Self::select_extent_index(&node, node_entries, iblock, true)?
+                            .ok_or_else(|| {
+                                Error::with_message(Errno::EUCLEAN, "empty ext4 extent index")
+                            })?;
+                    if let Some(key) = next_key {
+                        upper = Some(upper.map_or(key, |bound: u32| bound.min(key)));
+                    }
+                    let child = Self::extent_index_leaf(
+                        &node,
+                        EXTENT_HEADER_SIZE + selected * EXTENT_RECORD_SIZE,
+                    )?;
+                    let child_bytes = self.read_extent_leaf(child)?;
+                    let (child_entries, _, child_depth, _) =
+                        Self::parse_extent_header(&child_bytes, EXTENT_LEAF_CAPACITY)?;
+                    if child_depth.checked_add(1) != Some(node_depth) {
+                        return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent depth");
+                    }
+                    if child_depth == 0 {
+                        for index in 0..child_entries {
+                            let logical = Self::extent_index_key(&child_bytes, index)?;
+                            if logical > iblock {
+                                upper =
+                                    Some(upper.map_or(logical, |bound: u32| bound.min(logical)));
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                    node = child_bytes;
+                    node_entries = child_entries;
+                    node_depth = child_depth;
                 }
             }
-            return Ok(max_blocks);
+            let hole = upper
+                .map_or(max_blocks, |bound| bound.saturating_sub(iblock).min(max_blocks))
+                .max(1);
+            return Ok(hole);
         }
         let walk = self.walk_at(iblock)?;
 
