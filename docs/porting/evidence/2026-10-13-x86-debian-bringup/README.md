@@ -608,14 +608,18 @@ fs_crash_matrix.sh --scenarios "create unlink rename truncate" --stages "1 2 3"
 fs_durability_matrix.sh
   write: PASS      rename: PASS    unlink: PASS
   truncate: PASS   dir-entry: PASS
-  all 5 cell(s) passed
+  syncfs: PASS     o-sync: PASS
+  all 7 cell(s) passed
 ```
 
 In the crash matrix every operation was *applied* after recovery, because the
 fault fires after the commit record — the JBD2-correct outcome. In the
 durability matrix the probe fsyncs the file, and for rename/unlink/truncate
 also fsyncs the parent directory, prints `FS_DURABILITY_READY`, and the host
-`kill -9`s QEMU two seconds later. All five operations survived in full.
+`kill -9`s QEMU two seconds later. Two more cells cover the other durability
+entry points: `syncfs` flushes a plain write that was never fsynced, and
+`o-sync` returns from `write(2)` only once the data is durable. All seven
+operations survived in full.
 
 **Concurrency.** Crash and durability matrices exercise one operation at a
 time. `fs_concurrency_stress.sh` runs eight workers that churn their own
@@ -969,6 +973,10 @@ boot 2: dpkg: install ok installed 2.10-5
 both boots: e2fsck -fn clean; /usr/bin, /usr/share/man/man1 and
             /var/lib/dpkg/info have INDEX_DIR cleared
 ```
+
+The same gate still passes after directory blocks moved into the journal
+("Directory blocks belong in the journal" below), which exercises many
+directory transactions per package.
 
 ## Configuration alignment with Linux
 

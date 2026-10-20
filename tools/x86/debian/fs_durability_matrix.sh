@@ -25,8 +25,8 @@ Options:
   --base-root PATH    Debian ext2/ext4 image to copy per cell (required).
   --workspace DIR     Per-cell images, manifests and transcripts.
   --scenarios LIST    Space-separated subset of:
-                      write rename unlink truncate dir-entry
-                      (default: all five).
+                      write rename unlink truncate dir-entry syncfs o-sync
+                      (default: all seven).
   --settle SECONDS    Guest time before the probe starts (default: 10).
   --ready-timeout SECONDS
                       How long to wait for the READY marker (default: 300).
@@ -50,7 +50,7 @@ KERNEL=""
 INITRAMFS=""
 BASE_ROOT=""
 WORKSPACE=""
-SCENARIOS="write rename unlink truncate dir-entry"
+SCENARIOS="write rename unlink truncate dir-entry syncfs o-sync"
 SETTLE=10
 READY_TIMEOUT=300
 TIMEOUT=900
@@ -293,6 +293,83 @@ python3 - <<'PY'
 import os
 path = '/opt/fs-durable/dir-entry.bin'
 ok = os.path.exists(path) and open(path, 'rb').read() == b'D' * 4096
+open('/opt/fs-durable/result.txt', 'w').write('ok=%s\n' % ok)
+print('FS_DURABILITY_RESULT ok=%s' % ok)
+PY
+echo "FS_DURABILITY_VERIFY_DONE"
+sync
+systemctl poweroff --no-block
+VERIFY
+            ;;
+        syncfs)
+            cat >"$dir/probe.sh" <<'PROBE'
+#!/bin/sh
+# Only the power-cut boot performs the operation.
+grep -q 'fs_durability=powercut' /proc/cmdline || exit 0
+sleep SETTLE
+python3 - <<'PY'
+import ctypes
+import os
+
+path = '/opt/fs-durable/syncfs.bin'
+with open(path, 'wb') as f:
+    f.write(b'S' * 4096)
+# Deliberately no fsync: syncfs must flush the whole filesystem.
+libc = ctypes.CDLL('libc.so.6', use_errno=True)
+libc.syncfs.argtypes = [ctypes.c_int]
+libc.syncfs.restype = ctypes.c_int
+fd = os.open('/opt/fs-durable', os.O_RDONLY | os.O_DIRECTORY)
+rc = libc.syncfs(fd)
+os.close(fd)
+if rc != 0:
+    raise OSError(ctypes.get_errno(), 'syncfs failed')
+print('FS_DURABILITY_READY')
+PY
+while true; do sleep 1; done
+PROBE
+            cat >"$dir/verify.sh" <<'VERIFY'
+#!/bin/sh
+# The power-cut boot must not verify (and power off) before the probe runs.
+grep -q 'fs_durability=powercut' /proc/cmdline && exit 0
+python3 - <<'PY'
+import os
+path = '/opt/fs-durable/syncfs.bin'
+ok = os.path.exists(path) and open(path, 'rb').read() == b'S' * 4096
+open('/opt/fs-durable/result.txt', 'w').write('ok=%s\n' % ok)
+print('FS_DURABILITY_RESULT ok=%s' % ok)
+PY
+echo "FS_DURABILITY_VERIFY_DONE"
+sync
+systemctl poweroff --no-block
+VERIFY
+            ;;
+        o-sync)
+            cat >"$dir/probe.sh" <<'PROBE'
+#!/bin/sh
+# Only the power-cut boot performs the operation.
+grep -q 'fs_durability=powercut' /proc/cmdline || exit 0
+sleep SETTLE
+python3 - <<'PY'
+import os
+
+path = '/opt/fs-durable/o-sync.bin'
+# O_SYNC makes write(2) return only after the data is durable; there is
+# deliberately no explicit fsync before the power cut.
+fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_SYNC, 0o644)
+os.write(fd, b'O' * 4096)
+os.close(fd)
+print('FS_DURABILITY_READY')
+PY
+while true; do sleep 1; done
+PROBE
+            cat >"$dir/verify.sh" <<'VERIFY'
+#!/bin/sh
+# The power-cut boot must not verify (and power off) before the probe runs.
+grep -q 'fs_durability=powercut' /proc/cmdline && exit 0
+python3 - <<'PY'
+import os
+path = '/opt/fs-durable/o-sync.bin'
+ok = os.path.exists(path) and open(path, 'rb').read() == b'O' * 4096
 open('/opt/fs-durable/result.txt', 'w').write('ok=%s\n' % ok)
 print('FS_DURABILITY_RESULT ok=%s' % ok)
 PY

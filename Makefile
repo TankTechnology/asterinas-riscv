@@ -828,9 +828,10 @@ test_x86_debian_fs_crash:
 #   X86_DEBIAN_DURABILITY_BASE_ROOT  ext4 image copied per cell
 #   X86_DEBIAN_DURABILITY_SCENARIOS  subset of:
 #                                    write rename unlink truncate dir-entry
+#                                    syncfs o-sync
 X86_DEBIAN_DURABILITY_BASE_ROOT ?=
 X86_DEBIAN_DURABILITY_WORKSPACE ?= $(CURDIR)/target/x86-debian/durability
-X86_DEBIAN_DURABILITY_SCENARIOS ?= write rename unlink truncate dir-entry
+X86_DEBIAN_DURABILITY_SCENARIOS ?= write rename unlink truncate dir-entry syncfs o-sync
 X86_DEBIAN_DURABILITY_ACCEL ?= kvm
 X86_DEBIAN_DURABILITY_TIMEOUT ?= 900
 

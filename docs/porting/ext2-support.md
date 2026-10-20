@@ -247,8 +247,10 @@ recovery boot the operation must be present in full:
 | unlink | file gone |
 | truncate | size 0 |
 | dir-entry | file exists with the exact 4096 bytes and its entry survived |
+| syncfs | a plain write followed by one `syncfs` survives |
+| o-sync | a write through an `O_SYNC` handle survives without an explicit fsync |
 
-Result: **5/5 pass**, `e2fsck -fn` clean.
+Result: **7/7 pass**, `e2fsck -fn` clean.
 
 `fs_extent_alloc_check.sh` (`make test_x86_debian_fs_extents`) appends
 five pages to `/etc/hostname`, which the image creates with one inline
