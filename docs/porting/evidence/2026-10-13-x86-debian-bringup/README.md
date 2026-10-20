@@ -961,7 +961,8 @@ group:block:super:gdt:bbitmap:ibitmap:itable
 
 Modern `mke2fs` also turns on the `HUGE_FILE`, `DIR_NLINK` and `EXTRA_ISIZE`
 RO-compat capability bits; they permit an encoding but do not require it, so
-they are accepted while `METADATA_CSUM` and `GDT_CSUM` remain rejected.
+they are accepted; `GDT_CSUM` remains rejected (it is superseded by
+`metadata_csum`, which is supported, see below).
 
 `tools/x86/debian/fs_ext4_features_check.sh` runs two boots. The write boot
 creates and fsyncs files on the root filesystem and on the mounted flex_bg
@@ -978,6 +979,57 @@ e2fsck -fn: both images clean
 
 The boot script gained `--extra-drive PATH` (repeatable) for the second disk;
 the guest sees it as `/dev/vdb` through devtmpfs.
+
+## `metadata_csum`
+
+Default `mke2fs` images carry `metadata_csum` (and `csum_seed`), so every
+metadata block has a CRC32C checksum. The exact algorithms were derived from
+images written by `mke2fs`/`tune2fs`/`debugfs` and match Linux:
+
+| Object | Seed | Covered bytes |
+|---|---|---|
+| superblock | `!0` | `[0, s_checksum)` at 0x3FC |
+| group descriptor | fs seed, group as LE32 | full descriptor, `bg_checksum` zeroed |
+| block bitmap | fs seed | `blocks_per_group / 8` bytes |
+| inode bitmap | fs seed | `inodes_per_group / 8` bytes |
+| inode | fs seed + ino + generation | full inode slot, both checksum fields zeroed |
+| extent leaf | fs seed + ino + generation | `[0, 12 + eh_max * 12)` |
+| directory block | fs seed + ino + generation | `[0, blocksize - 12)` |
+| xattr block | fs seed, block number as LE64 | header + entries, `h_checksum` zeroed |
+
+The seed is `s_checksum_seed` when `csum_seed` is set (a `tune2fs` conversion
+stores zero, which is a valid seed) and the UUID CRC otherwise. Two details
+turned out to matter for `e2fsck`:
+
+- Direct superblock writes (`mark_journal_needs_recovery` and the read-only
+  `RECOVER` clear) bypass the journal and must recompute `s_checksum`
+  themselves; they initially reused the mount-time checksum and made `e2fsck`
+  fall back to a backup superblock.
+- With `metadata_csum`, each directory block ends in a 12-byte tail, so only
+  `blocksize - 12` bytes are available for entries. The first block of an
+  htree directory is the exception: its `..` entry spans the whole block and
+  the trailing bytes are the dx index and tail. Directory scans use the full
+  block size for that block and the shrunken limit for all others.
+- `bg_itable_unused` must be lowered when an inode is allocated; otherwise
+  `e2fsck` reports the new inode as living in the group's unused area.
+
+`tools/x86/debian/fs_metadata_csum_check.sh` converts the Debian image with
+`tune2fs -O metadata_csum,metadata_csum_seed` and `e2fsck -fyD` (which adds the
+directory tails), then runs a workload that touches every checksummed
+structure: file creation/fsync/deletion, an htree directory converted back to
+linear blocks, a 100-page append that promotes `/etc/hostname` to a depth-one
+extent tree, and a 200-byte xattr that allocates an external xattr block. Both
+boots end with a checksum-verifying `e2fsck -fn`:
+
+```
+metadata-csum: write boot
+metadata-csum: verify boot (fresh mount)
+PASS (ok=True problems=0)
+e2fsck -fn: clean after both boots
+```
+
+The features gate's second disk is now also created with `metadata_csum`, so
+the 64-byte descriptor checksum fields (the high halves) are exercised there.
 
 ## Socket visibility: `/proc/net` and `NETLINK_SOCK_DIAG`
 

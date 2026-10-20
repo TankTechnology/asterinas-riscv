@@ -9,7 +9,7 @@ use ostd::mm::io::util::HasVmReaderWriter;
 use smallvec::SmallVec;
 
 use super::indirect_block_manager::{IndirectBlock, IndirectBlockManager};
-use crate::fs::ext2::{fs::Ext2, inode::RAW_BLOCK_PTRS_LEN, prelude::*};
+use crate::fs::ext2::{checksum, fs::Ext2, inode::RAW_BLOCK_PTRS_LEN, prelude::*};
 
 const PTRS_PER_BLOCK: usize = BLOCK_SIZE / size_of::<u32>();
 const SECTORS_PER_BLOCK: u32 = (BLOCK_SIZE / SECTOR_SIZE) as u32;
@@ -52,21 +52,65 @@ pub(in inode) struct BlockPtrTree {
     raw_block_ptrs: Dirty<RawBlockPtrs>,
     indirect_blocks_manager: Mutex<IndirectBlockManager>,
     extent_tree: bool,
+    /// Inode number, used as part of the extent block checksum seed.
+    ino: Ext2Ino,
+    /// Inode generation, used as part of the extent block checksum seed.
+    generation: u32,
+    /// Whether extent blocks carry CRC32C checksums.
+    metadata_csum: bool,
+    /// Filesystem checksum seed.
+    csum_seed: u32,
 }
 
 impl BlockPtrTree {
     /// Creates a new block-pointer tree from the on-disk raw pointers.
-    pub(in inode) fn new(raw_block_ptrs: RawBlockPtrs, fs: Weak<Ext2>) -> Self {
+    pub(in inode) fn new(
+        raw_block_ptrs: RawBlockPtrs,
+        fs: Weak<Ext2>,
+        ino: Ext2Ino,
+        generation: u32,
+    ) -> Self {
+        let (metadata_csum, csum_seed) = fs
+            .upgrade()
+            .map(|fs| {
+                let sb = fs.super_block();
+                (sb.has_metadata_csum(), sb.checksum_seed())
+            })
+            .unwrap_or((false, 0));
         Self {
             extent_tree: raw_block_ptrs.is_extent_tree(),
             raw_block_ptrs: Dirty::new(raw_block_ptrs),
             indirect_blocks_manager: Mutex::new(IndirectBlockManager::new(fs)),
+            ino,
+            generation,
+            metadata_csum,
+            csum_seed,
         }
     }
 
     /// Returns a reference to the raw on-disk block pointer state.
     pub(in inode) fn raw_block_ptrs(&self) -> &RawBlockPtrs {
         &self.raw_block_ptrs
+    }
+
+    /// Returns the inode number this tree belongs to.
+    pub(in inode) const fn ino(&self) -> Ext2Ino {
+        self.ino
+    }
+
+    /// Returns the inode generation.
+    pub(in inode) const fn generation(&self) -> u32 {
+        self.generation
+    }
+
+    /// Returns whether metadata checksums are enabled.
+    pub(in inode) const fn metadata_csum(&self) -> bool {
+        self.metadata_csum
+    }
+
+    /// Returns the filesystem checksum seed.
+    pub(in inode) const fn csum_seed(&self) -> u32 {
+        self.csum_seed
     }
 
     /// Returns whether the `RawBlockPtrs` is dirty.
@@ -817,11 +861,26 @@ impl BlockPtrTree {
     }
 
     /// Stores an extent leaf block and marks it for journaled write-back.
+    ///
+    /// With `metadata_csum`, the checksum is written into the extent tail at
+    /// `12 + eh_max * 12`; it covers everything before the tail and is seeded
+    /// with the inode number and generation.
     fn write_extent_leaf(&self, bid: Ext2Bid, bytes: &[u8; BLOCK_SIZE]) -> Result<()> {
+        let mut block = *bytes;
+        if self.metadata_csum {
+            let max_entries = u16::from_le_bytes([block[4], block[5]]) as usize;
+            let tail = EXTENT_HEADER_SIZE + max_entries * EXTENT_RECORD_SIZE;
+            if tail + 4 > BLOCK_SIZE {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent block capacity");
+            }
+            let seed = checksum::inode_seed(self.csum_seed, self.ino, self.generation);
+            let crc = checksum::crc32c(seed, &block[..tail]);
+            block[tail..tail + 4].copy_from_slice(&crc.to_le_bytes());
+        }
         self.indirect_blocks_manager
             .lock()
             .find_mut(bid)?
-            .write_bytes(bytes)
+            .write_bytes(&block)
     }
 
     /// Frees the data blocks covering `[start_block, end_block)`, leaving
@@ -2535,6 +2594,8 @@ mod test {
         BlockPtrTree::new(
             RawBlockPtrs::new(sector_count, block_ptrs),
             Arc::downgrade(fs),
+            0,
+            0,
         )
     }
 

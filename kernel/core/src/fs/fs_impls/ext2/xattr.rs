@@ -73,7 +73,7 @@
 
 use core::cmp::Ordering;
 
-use super::{fs::Ext2, inode::Inode, prelude::*};
+use super::{checksum, fs::Ext2, inode::Inode, prelude::*};
 use crate::fs::vfs::xattr::{XattrName, XattrNamespace, XattrSetFlags};
 
 const XATTR_NBLOCKS: usize = 1;
@@ -533,6 +533,17 @@ impl XattrCache {
         // same transaction.
         let mut bytes = vec![0u8; BLOCK_SIZE];
         block_buf.read_bytes(0, &mut bytes)?;
+        if fs.super_block().has_metadata_csum() {
+            // The xattr block checksum is seeded with the block number (not
+            // the inode number) and covers the header and entries with
+            // `h_checksum` replaced by four zero bytes.
+            let seed = fs.super_block().checksum_seed();
+            let mut crc = checksum::crc32c(seed, &(self.bid as u64).to_le_bytes());
+            crc = checksum::crc32c(crc, &bytes[..16]);
+            crc = checksum::crc32c(crc, &[0u8; 4]);
+            crc = checksum::crc32c(crc, &bytes[20..]);
+            bytes[16..20].copy_from_slice(&crc.to_le_bytes());
+        }
         fs.stage_metadata_block(self.bid, &bytes)?;
 
         self.dirty = false;

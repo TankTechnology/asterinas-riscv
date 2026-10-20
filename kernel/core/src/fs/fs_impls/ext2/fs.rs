@@ -32,6 +32,7 @@ use super::{
     prelude::*,
     super_block::{
         FeatureCompatSet, FeatureInCompatSet, RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock,
+        sign_superblock,
     },
 };
 use crate::{
@@ -928,7 +929,11 @@ impl Ext2 {
             }
             flags.insert(FeatureInCompatSet::RECOVER);
             sb.set_feature_incompat(flags);
-            RawSuperBlock::from(&**sb)
+            let mut raw = RawSuperBlock::from(&**sb);
+            if sb.has_metadata_csum() {
+                sign_superblock(&mut raw);
+            }
+            raw
         };
         self.write_primary_superblock(&raw)
     }
@@ -953,7 +958,11 @@ impl Ext2 {
             }
             flags.remove(FeatureInCompatSet::RECOVER);
             sb.set_feature_incompat(flags);
-            RawSuperBlock::from(&**sb)
+            let mut raw = RawSuperBlock::from(&**sb);
+            if sb.has_metadata_csum() {
+                sign_superblock(&mut raw);
+            }
+            raw
         };
         self.write_primary_superblock(&raw)
     }
@@ -1207,6 +1216,9 @@ impl Ext2 {
             sb_guard.set_wtime(utils::now());
 
             let mut raw_sb = RawSuperBlock::from(&**sb_guard);
+            if sb_guard.has_metadata_csum() {
+                sign_superblock(&mut raw_sb);
+            }
             let mut snapshots = vec![(
                 raw_sb,
                 SUPER_BLOCK_OFFSET,
@@ -1217,6 +1229,9 @@ impl Ext2 {
                     continue;
                 }
                 raw_sb.block_group_idx = group_idx as u16;
+                if sb_guard.has_metadata_csum() {
+                    sign_superblock(&mut raw_sb);
+                }
                 snapshots.push((
                     raw_sb,
                     Bid::new(sb_guard.bid(group_idx) as u64).to_offset(),

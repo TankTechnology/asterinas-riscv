@@ -565,7 +565,8 @@ impl InodeInner {
         self.prepare_write(fs, 0, BLOCK_SIZE)?;
 
         let page_cache = self.page_cache();
-        let block = DirBlockView::from_index(page_cache, 0, BLOCK_SIZE);
+        let limit = self.dir_entry_limit();
+        let block = DirBlockView::from_index_limited(page_cache, 0, BLOCK_SIZE, limit);
         let dot_len = DirEntryHeader::min_rec_len(DOT_BYTE.len()) as usize;
         let write_result = (|| -> Result<()> {
             page_cache.fill_zeros(0..BLOCK_SIZE)?;
@@ -580,7 +581,7 @@ impl InodeInner {
 
             let dot_dot_header = DirEntryHeader {
                 ino: parent_ino.to_le(),
-                rec_len: ((BLOCK_SIZE - dot_len) as u16).to_le(),
+                rec_len: ((limit - dot_len) as u16).to_le(),
                 name_len: DOT_DOT_BYTE.len() as u8,
                 file_type: DirEntryFileType::Dir as u8,
             };
@@ -635,7 +636,12 @@ impl InodeInner {
         let page_cache = self.page_cache();
 
         for block_idx in 0..data_blocks {
-            let block = DirBlockView::from_index(page_cache, block_idx, file_size);
+            let block = DirBlockView::from_index_limited(
+                page_cache,
+                block_idx,
+                file_size,
+                self.dir_block_limit(block_idx),
+            );
             let mut entry_iter = block.iter_entries();
 
             loop {
@@ -690,7 +696,12 @@ impl InodeInner {
                 break;
             }
 
-            let block = DirBlockView::from_index(page_cache, block_idx, size);
+            let block = DirBlockView::from_index_limited(
+                page_cache,
+                block_idx,
+                size,
+                self.dir_block_limit(block_idx),
+            );
             let mut entry_iter = block.iter_entries();
             while let Some((entry_offset_in_block, entry)) = entry_iter.next_entry()? {
                 let entry_offset = block_offset + entry_offset_in_block;
@@ -753,7 +764,12 @@ impl InodeInner {
         // so the index is skipped instead of being misread as entries.
         let mut live: Vec<(Ext2Ino, u8, Vec<u8>)> = Vec::new();
         for block_idx in 0..data_blocks {
-            let block = DirBlockView::from_index(page_cache, block_idx, file_size);
+            let block = DirBlockView::from_index_limited(
+                page_cache,
+                block_idx,
+                file_size,
+                self.dir_block_limit(block_idx),
+            );
             let mut entry_iter = block.iter_entries();
             while let Some((_, entry)) = entry_iter.next_entry()? {
                 if entry.header.ino == 0 {
@@ -770,6 +786,7 @@ impl InodeInner {
             }
         }
 
+        let limit = self.dir_entry_limit();
         let mut next = 0usize;
         for block_idx in 0..data_blocks {
             let mut block = vec![0u8; BLOCK_SIZE];
@@ -784,9 +801,9 @@ impl InodeInner {
                     .unwrap_or(0);
                 // The last entry of a block extends over the block's free tail.
                 let last_in_block =
-                    next + 1 >= live.len() || offset + min_len + next_min_len > BLOCK_SIZE;
+                    next + 1 >= live.len() || offset + min_len + next_min_len > limit;
                 let rec_len = if last_in_block {
-                    BLOCK_SIZE - offset
+                    limit - offset
                 } else {
                     min_len
                 };
@@ -804,7 +821,7 @@ impl InodeInner {
             }
             if !wrote_entry {
                 // An unused directory block is one free entry spanning it.
-                block[4..6].copy_from_slice(&(BLOCK_SIZE as u16).to_le_bytes());
+                block[4..6].copy_from_slice(&(limit as u16).to_le_bytes());
             }
             page_cache.write_bytes(block_idx * BLOCK_SIZE, &block)?;
         }
@@ -844,7 +861,12 @@ impl InodeInner {
 
         for block_idx in 0..data_blocks {
             let block_offset = block_idx * BLOCK_SIZE;
-            let block = DirBlockView::from_index(page_cache, block_idx, file_size);
+            let block = DirBlockView::from_index_limited(
+                page_cache,
+                block_idx,
+                file_size,
+                self.dir_block_limit(block_idx),
+            );
             let mut entry_iter = block.iter_entries();
 
             while let Some((entry_offset, header)) = entry_iter.next_entry_header()? {
@@ -882,7 +904,7 @@ impl InodeInner {
 
         Ok(DirSlotInfo {
             dir_offset: old_size,
-            slot_rec_len: BLOCK_SIZE,
+            slot_rec_len: self.dir_entry_limit(),
             used_rec_len: 0,
         })
     }
@@ -938,7 +960,12 @@ impl InodeInner {
 
         for block_idx in 0..file_size.div_ceil(BLOCK_SIZE) {
             let block_offset = block_idx * BLOCK_SIZE;
-            let block = DirBlockView::from_index(page_cache, block_idx, file_size);
+            let block = DirBlockView::from_index_limited(
+                page_cache,
+                block_idx,
+                file_size,
+                self.dir_block_limit(block_idx),
+            );
             let mut entry_iter = block.iter_entries();
             while let Some((entry_offset, entry)) = entry_iter.next_entry()? {
                 let ino = entry.header.ino;
@@ -962,7 +989,12 @@ impl InodeInner {
         let block_idx = block_base / BLOCK_SIZE;
         let entry_offset = target.dir_offset - block_base;
 
-        let block = DirBlockView::from_index(self.page_cache(), block_idx, self.file_size());
+        let block = DirBlockView::from_index_limited(
+            self.page_cache(),
+            block_idx,
+            self.file_size(),
+            self.dir_block_limit(block_idx),
+        );
         block.delete_entry(entry_offset, target.entry_rec_len)?;
         Ok(())
     }
@@ -978,7 +1010,12 @@ impl InodeInner {
         let block_idx = block_base / BLOCK_SIZE;
         let entry_offset = entry.dir_offset - block_base;
 
-        let block = DirBlockView::from_index(self.page_cache(), block_idx, self.file_size());
+        let block = DirBlockView::from_index_limited(
+            self.page_cache(),
+            block_idx,
+            self.file_size(),
+            self.dir_block_limit(block_idx),
+        );
         block.set_inode(entry_offset, new_ino)?;
         block.set_file_type(entry_offset, new_file_type)?;
         Ok(())

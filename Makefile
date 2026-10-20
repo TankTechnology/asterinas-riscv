@@ -652,6 +652,7 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_fs_fallocate \
 		tools.x86.tests.test_x86_debian_fs_durability \
 		tools.x86.tests.test_x86_debian_fs_ext4_features \
+		tools.x86.tests.test_x86_debian_fs_metadata_csum \
 		tools.x86.tests.test_x86_debian_fs_extents \
 		tools.x86.tests.test_x86_debian_fs_punch_hole \
 		tools.x86.tests.test_x86_debian_fs_renameat2 \
@@ -1002,6 +1003,31 @@ test_x86_debian_fs_ext4_features:
 		--workspace "$(X86_DEBIAN_FEATURES_WORKSPACE)" \
 		--accel "$(X86_DEBIAN_FEATURES_ACCEL)" \
 		--timeout "$(X86_DEBIAN_FEATURES_TIMEOUT)"
+
+# metadata_csum gate: the Debian image is converted with tune2fs and every
+# checksummed structure is exercised (superblock, descriptors, bitmaps,
+# inodes, extent leaf, directory tails including an htree->linear conversion,
+# and an external xattr block).  Both boots must survive `e2fsck -fn`, which
+# verifies every checksum.
+#   X86_DEBIAN_METADATA_CSUM_BASE_ROOT  ext4 image converted per run
+X86_DEBIAN_METADATA_CSUM_BASE_ROOT ?=
+X86_DEBIAN_METADATA_CSUM_WORKSPACE ?= $(CURDIR)/target/x86-debian/metadata-csum
+X86_DEBIAN_METADATA_CSUM_ACCEL ?= kvm
+X86_DEBIAN_METADATA_CSUM_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_metadata_csum
+test_x86_debian_fs_metadata_csum:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_METADATA_CSUM_BASE_ROOT)" || { echo "X86_DEBIAN_METADATA_CSUM_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-metadata-csum: base=$(X86_DEBIAN_METADATA_CSUM_BASE_ROOT) accel=$(X86_DEBIAN_METADATA_CSUM_ACCEL)"
+	@tools/x86/debian/fs_metadata_csum_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_METADATA_CSUM_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_METADATA_CSUM_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_METADATA_CSUM_ACCEL)" \
+		--timeout "$(X86_DEBIAN_METADATA_CSUM_TIMEOUT)"
 
 # Punch-hole gate: holes inside direct blocks, across the direct/indirect
 # boundary, up to EOF and over a whole double-indirect file (which must free

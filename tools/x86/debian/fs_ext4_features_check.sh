@@ -445,7 +445,7 @@ tune2fs -O 64bit,flex_bg "$IMAGE" >"$WORKSPACE/tune2fs.txt" 2>&1 ||
     }
 
 mke2fs -q -t ext4 -b 4096 -I 256 -N 32768 \
-    -O 64bit,flex_bg,^metadata_csum,^orphan_file \
+    -O 64bit,flex_bg,metadata_csum,^orphan_file \
     "$DATA_IMAGE" 256M >"$WORKSPACE/mke2fs.txt" 2>&1 ||
     {
         printf 'FAIL (mke2fs could not create the flex_bg image; see %s)\n' \

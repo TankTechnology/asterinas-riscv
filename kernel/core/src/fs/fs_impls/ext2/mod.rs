@@ -71,6 +71,7 @@ pub(in crate::fs) use self::fs_type::{EXT2_TYPE, EXT4_TYPE};
 use crate::fs::vfs::registry;
 
 mod block_group;
+mod checksum;
 mod fs;
 mod fs_type;
 mod impl_for_vfs;

@@ -33,6 +33,7 @@ use aster_block::bio::BioCompleteFn;
 use ostd::const_assert;
 
 use super::{
+    checksum,
     fs::Ext2,
     inode::{
         Inode, InodeDesc, InodeTimeExtras, RawInode, EXTRA_ATIME_OFFSET, EXTRA_CRTIME_END,
@@ -68,6 +69,14 @@ pub(super) struct BlockGroup {
     inode_size: usize,
     /// Cached geometry: on-disk size of one group descriptor.
     desc_size: usize,
+    /// Whether metadata blocks carry CRC32C checksums.
+    metadata_csum: bool,
+    /// Seed for the metadata checksums.
+    csum_seed: u32,
+    /// Bytes covered by the block bitmap checksum.
+    block_bitmap_csum_len: usize,
+    /// Bytes covered by the inode bitmap checksum.
+    inode_bitmap_csum_len: usize,
     /// Inode table page cache backend.
     _inode_table_backend: Arc<InodeTableBackend>,
     /// Inode table page cache.
@@ -99,8 +108,7 @@ impl BlockGroup {
         fs: Weak<Ext2>,
     ) -> Result<Self> {
         let desc_size = sb.desc_size() as usize;
-        let raw_group = read_group_descriptor(group_descs, group_idx, desc_size)?;
-        let group_desc = BlockGroupDesc::from(raw_group);
+        let group_desc = read_group_descriptor(group_descs, group_idx, desc_size)?;
 
         // Cache geometry from `SuperBlock` at load time.
         let first_block_no = sb.group_first_block_no(group_idx);
@@ -161,6 +169,10 @@ impl BlockGroup {
             nr_inodes_per_group,
             inode_size,
             desc_size,
+            metadata_csum: sb.has_metadata_csum(),
+            csum_seed: sb.checksum_seed(),
+            block_bitmap_csum_len: (sb.nr_blocks_per_group() / 8) as usize,
+            inode_bitmap_csum_len: (sb.nr_inodes_per_group() / 8) as usize,
             _inode_table_backend: backend,
             inode_table_cache,
             inode_cache: RwMutex::new(BTreeMap::new()),
@@ -179,8 +191,7 @@ impl BlockGroup {
             .upgrade()
             .ok_or_else(|| Error::with_message(Errno::EIO, "filesystem already dropped"))?;
 
-        let raw_group = read_group_descriptor(group_descs, self.group_idx, self.desc_size)?;
-        let group_desc = BlockGroupDesc::from(raw_group);
+        let group_desc = read_group_descriptor(group_descs, self.group_idx, self.desc_size)?;
         let block_bitmap = Self::load_block_bitmap(
             fs.block_device(),
             self.first_block,
@@ -288,16 +299,41 @@ impl BlockGroup {
             .upgrade()
             .ok_or_else(|| Error::with_message(Errno::EIO, "filesystem already dropped"))?;
 
+        if self.metadata_csum {
+            // The bitmap checksums stored in the descriptor must describe
+            // exactly the bytes that are about to be written.
+            let mut metadata = self.metadata.write();
+            if metadata.block_bitmap.is_dirty() {
+                let crc = checksum::crc32c(
+                    self.csum_seed,
+                    &metadata.block_bitmap.as_bytes()[..self.block_bitmap_csum_len],
+                );
+                metadata.desc.set_block_bitmap_csum(crc, self.desc_size);
+            }
+            if metadata.inode_bitmap.is_dirty() {
+                let crc = checksum::crc32c(
+                    self.csum_seed,
+                    &metadata.inode_bitmap.as_bytes()[..self.inode_bitmap_csum_len],
+                );
+                metadata.desc.set_inode_bitmap_csum(crc, self.desc_size);
+            }
+        }
+
         let block_bitmap = self.stage_bitmap(&fs, true)?;
         let inode_bitmap = self.stage_bitmap(&fs, false)?;
 
         let descriptor = {
             let metadata = self.metadata.read();
             if metadata.desc.is_dirty() {
-                let raw_group = RawBlockGroup::from(*metadata.desc);
+                let bytes = metadata.desc.encode(
+                    self.group_idx,
+                    self.desc_size,
+                    self.csum_seed,
+                    self.metadata_csum,
+                );
                 let offset = self.group_idx * self.desc_size;
-                group_descs.write_val(offset, &raw_group)?;
-                Some(raw_group)
+                group_descs.write_bytes(offset, &bytes[..self.desc_size])?;
+                Some(*metadata.desc)
             } else {
                 None
             }
@@ -327,8 +363,8 @@ impl BlockGroup {
         {
             metadata.inode_bitmap.clear_dirty();
         }
-        if let Some(raw) = &staged.descriptor
-            && RawBlockGroup::from(*metadata.desc) == *raw
+        if let Some(snapshot) = &staged.descriptor
+            && *metadata.desc == *snapshot
         {
             metadata.desc.clear_dirty();
         }
@@ -499,6 +535,15 @@ impl BlockGroup {
         if inode_type.is_directory() {
             metadata.desc.used_dirs_count += 1;
         }
+        // Keep `bg_itable_unused` consistent with the allocation. Linux uses
+        // it as a hint for the unused tail of the inode table; e2fsck rejects
+        // an allocated inode that lies inside the declared unused area.
+        let unused_tail = (self.nr_inodes_per_group as u32)
+            .saturating_sub(inode_idx as u32 + 1)
+            .min(u16::MAX as u32) as u16;
+        if metadata.desc.itable_unused > unused_tail {
+            metadata.desc.itable_unused = unused_tail;
+        }
 
         Ok(Some(inode_idx as Ext2Ino))
     }
@@ -585,6 +630,61 @@ impl BlockGroup {
                 self.inode_table_cache
                     .write_val(offset_bytes + EXTRA_CRTIME_EXTRA_OFFSET, &extra)?;
             }
+        }
+        if self.metadata_csum {
+            self.write_inode_checksum(ino, offset_bytes, raw)?;
+        }
+        Ok(())
+    }
+
+    /// Recomputes `i_checksum_lo`/`i_checksum_hi` for the inode slot.
+    ///
+    /// The checksum covers the whole inode slot with both checksum fields
+    /// zeroed, seeded by the inode number and generation. It is written only
+    /// when the slot advertises the large-inode area; an inode that does not
+    /// (old 128-byte inodes, or `i_extra_isize == 0`) keeps no checksum, which
+    /// is also how Linux treats the latter.
+    fn write_inode_checksum(
+        &self,
+        ino: Ext2Ino,
+        offset_bytes: usize,
+        raw: &RawInode,
+    ) -> Result<()> {
+        const CHECKSUM_LO: usize = 0x7C;
+        const EXTRA_ISIZE: usize = 0x80;
+        const CHECKSUM_HI: usize = 0x82;
+        const CHECKSUM_HI_FITS_EXTRA: usize = CHECKSUM_HI + 2 - 128;
+
+        let mut slot = vec![0u8; self.inode_size];
+        self.inode_table_cache
+            .read_bytes(offset_bytes, &mut slot)?;
+        let crc = checksum::inode_seed(self.csum_seed, ino, raw.generation);
+
+        if self.inode_size <= 128 {
+            slot[CHECKSUM_LO..CHECKSUM_LO + 2].copy_from_slice(&[0, 0]);
+            let crc = checksum::crc32c(crc, &slot[..128]);
+            self.inode_table_cache
+                .write_val(offset_bytes + CHECKSUM_LO, &(crc as u16))?;
+            return Ok(());
+        }
+
+        let extra_isize =
+            u16::from_le_bytes([slot[EXTRA_ISIZE], slot[EXTRA_ISIZE + 1]]) as usize;
+        if extra_isize == 0 {
+            return Ok(());
+        }
+
+        slot[CHECKSUM_LO..CHECKSUM_LO + 2].copy_from_slice(&[0, 0]);
+        let hi_fits = extra_isize >= CHECKSUM_HI_FITS_EXTRA;
+        if hi_fits {
+            slot[CHECKSUM_HI..CHECKSUM_HI + 2].copy_from_slice(&[0, 0]);
+        }
+        let crc = checksum::crc32c(crc, &slot[..self.inode_size]);
+        self.inode_table_cache
+            .write_val(offset_bytes + CHECKSUM_LO, &(crc as u16))?;
+        if hi_fits {
+            self.inode_table_cache
+                .write_val(offset_bytes + CHECKSUM_HI, &((crc >> 16) as u16))?;
         }
         Ok(())
     }
@@ -809,42 +909,123 @@ impl Debug for BlockGroupMetadata {
     }
 }
 
+/// Offsets inside a block group descriptor.
+const BG_BLOCK_BITMAP_CSUM_LO: usize = 0x18;
+const BG_INODE_BITMAP_CSUM_LO: usize = 0x1A;
+const BG_CHECKSUM: usize = 0x1E;
+const BG_BLOCK_BITMAP_CSUM_HI: usize = 0x38;
+const BG_INODE_BITMAP_CSUM_HI: usize = 0x3A;
+
 /// In-memory block group descriptor.
-#[derive(Clone, Copy, Debug)]
+///
+/// The raw bytes are kept so fields this implementation does not interpret
+/// (`bg_flags`, the exclude bitmap, `bg_itable_unused`, the reserved word)
+/// survive a read-modify-write cycle unchanged.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct BlockGroupDesc {
+    raw: [u8; 64],
     pub block_bitmap_bid: Ext2Bid,
     pub inode_bitmap_bid: Ext2Bid,
     pub inode_table_bid: Ext2Bid,
     pub free_blocks_count: u16,
     pub free_inodes_count: u16,
     pub used_dirs_count: u16,
+    /// Inodes at the end of the inode table that have never been used.
+    pub itable_unused: u16,
 }
 
-impl From<RawBlockGroup> for BlockGroupDesc {
-    fn from(raw: RawBlockGroup) -> Self {
-        Self {
-            block_bitmap_bid: raw.block_bitmap_bid,
-            inode_bitmap_bid: raw.inode_bitmap_bid,
-            inode_table_bid: raw.inode_table_bid,
-            free_blocks_count: raw.free_blocks_count,
-            free_inodes_count: raw.free_inodes_count,
-            used_dirs_count: raw.used_dirs_count,
+impl BlockGroupDesc {
+    /// Decodes a descriptor, rejecting 64-bit block numbers we cannot address.
+    fn parse(raw: [u8; 64], desc_size: usize) -> Result<Self> {
+        let read_u32 = |offset: usize| {
+            u32::from_le_bytes(raw[offset..offset + 4].try_into().unwrap())
+        };
+        let read_u16 =
+            |offset: usize| u16::from_le_bytes([raw[offset], raw[offset + 1]]);
+
+        if desc_size >= 64 {
+            for offset in [32usize, 36, 40] {
+                if read_u32(offset) != 0 {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "64-bit group descriptor block numbers are unsupported"
+                    );
+                }
+            }
+            for offset in [44usize, 46, 48] {
+                if read_u16(offset) != 0 {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "64-bit group descriptor counters are unsupported"
+                    );
+                }
+            }
+        }
+
+        Ok(Self {
+            raw,
+            block_bitmap_bid: read_u32(0),
+            inode_bitmap_bid: read_u32(4),
+            inode_table_bid: read_u32(8),
+            free_blocks_count: read_u16(12),
+            free_inodes_count: read_u16(14),
+            used_dirs_count: read_u16(16),
+            itable_unused: read_u16(0x1C),
+        })
+    }
+
+    /// Stores a block bitmap checksum (32 bits split across the lo/hi fields).
+    fn set_block_bitmap_csum(&mut self, value: u32, desc_size: usize) {
+        self.raw[BG_BLOCK_BITMAP_CSUM_LO..BG_BLOCK_BITMAP_CSUM_LO + 2]
+            .copy_from_slice(&(value as u16).to_le_bytes());
+        if desc_size >= 64 {
+            self.raw[BG_BLOCK_BITMAP_CSUM_HI..BG_BLOCK_BITMAP_CSUM_HI + 2]
+                .copy_from_slice(&((value >> 16) as u16).to_le_bytes());
         }
     }
-}
 
-impl From<BlockGroupDesc> for RawBlockGroup {
-    fn from(desc: BlockGroupDesc) -> Self {
-        Self {
-            block_bitmap_bid: desc.block_bitmap_bid,
-            inode_bitmap_bid: desc.inode_bitmap_bid,
-            inode_table_bid: desc.inode_table_bid,
-            free_blocks_count: desc.free_blocks_count,
-            free_inodes_count: desc.free_inodes_count,
-            used_dirs_count: desc.used_dirs_count,
-            pad: 0,
-            reserved: [0; 3],
+    /// Stores an inode bitmap checksum (32 bits split across the lo/hi fields).
+    fn set_inode_bitmap_csum(&mut self, value: u32, desc_size: usize) {
+        self.raw[BG_INODE_BITMAP_CSUM_LO..BG_INODE_BITMAP_CSUM_LO + 2]
+            .copy_from_slice(&(value as u16).to_le_bytes());
+        if desc_size >= 64 {
+            self.raw[BG_INODE_BITMAP_CSUM_HI..BG_INODE_BITMAP_CSUM_HI + 2]
+                .copy_from_slice(&((value >> 16) as u16).to_le_bytes());
         }
+    }
+
+    /// Serializes the descriptor into its first `desc_size` bytes.
+    ///
+    /// The mutable fields are refreshed and, with `metadata_csum`, the
+    /// descriptor checksum is recomputed over the whole descriptor with the
+    /// checksum field zeroed.
+    fn encode(
+        &self,
+        group_idx: usize,
+        desc_size: usize,
+        seed: u32,
+        metadata_csum: bool,
+    ) -> [u8; 64] {
+        let mut out = self.raw;
+        out[0..4].copy_from_slice(&self.block_bitmap_bid.to_le_bytes());
+        out[4..8].copy_from_slice(&self.inode_bitmap_bid.to_le_bytes());
+        out[8..12].copy_from_slice(&self.inode_table_bid.to_le_bytes());
+        out[12..14].copy_from_slice(&self.free_blocks_count.to_le_bytes());
+        out[14..16].copy_from_slice(&self.free_inodes_count.to_le_bytes());
+        out[16..18].copy_from_slice(&self.used_dirs_count.to_le_bytes());
+        out[0x1C..0x1E].copy_from_slice(&self.itable_unused.to_le_bytes());
+        if desc_size >= 64 {
+            out[0x32..0x34].copy_from_slice(&0u16.to_le_bytes());
+        }
+
+        if metadata_csum {
+            out[BG_CHECKSUM..BG_CHECKSUM + 2].copy_from_slice(&[0, 0]);
+            let crc = checksum::crc32c(seed, &(group_idx as u32).to_le_bytes());
+            let crc = checksum::crc32c(crc, &out[..desc_size]);
+            out[BG_CHECKSUM..BG_CHECKSUM + 2]
+                .copy_from_slice(&((crc & 0xffff) as u16).to_le_bytes());
+        }
+        out
     }
 }
 
@@ -929,18 +1110,26 @@ impl BlockGroupDesc {
     }
 }
 
-/// On-disk block group descriptor (32 bytes).
+/// On-disk block group descriptor (the classic 32-byte body).
+///
+/// Used by the test fixtures and by callers that need the byte layout; the
+/// live code reads and writes descriptors through [`BlockGroupDesc`], which
+/// preserves the optional 32-byte extension of `64BIT` images.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Pod)]
 pub(super) struct RawBlockGroup {
-    pub block_bitmap_bid: u32,  // bg_block_bitmap
-    pub inode_bitmap_bid: u32,  // bg_inode_bitmap
-    pub inode_table_bid: u32,   // bg_inode_table
-    pub free_blocks_count: u16, // bg_free_blocks_count
-    pub free_inodes_count: u16, // bg_free_inodes_count
-    pub used_dirs_count: u16,   // bg_used_dirs_count
-    pub pad: u16,               // bg_pad
-    pub reserved: [u32; 3],     // bg_reserved
+    pub block_bitmap_bid: u32,      // bg_block_bitmap_lo
+    pub inode_bitmap_bid: u32,      // bg_inode_bitmap_lo
+    pub inode_table_bid: u32,       // bg_inode_table_lo
+    pub free_blocks_count: u16,     // bg_free_blocks_count_lo
+    pub free_inodes_count: u16,     // bg_free_inodes_count_lo
+    pub used_dirs_count: u16,       // bg_used_dirs_count_lo
+    pub flags: u16,                 // bg_flags
+    pub exclude_bitmap: u32,        // bg_exclude_bitmap_lo
+    pub block_bitmap_csum: u16,     // bg_block_bitmap_csum_lo
+    pub inode_bitmap_csum: u16,     // bg_inode_bitmap_csum_lo
+    pub itable_unused: u16,         // bg_itable_unused_lo
+    pub checksum: u16,              // bg_checksum
 }
 
 const_assert!(size_of::<RawBlockGroup>() == 32);
@@ -956,28 +1145,13 @@ pub(super) fn read_group_descriptor(
     group_descs: &USegment,
     group_idx: usize,
     desc_size: usize,
-) -> Result<RawBlockGroup> {
+) -> Result<BlockGroupDesc> {
     let offset = group_idx * desc_size;
-    let raw_group = group_descs
-        .read_val::<RawBlockGroup>(offset)
+    let mut raw = [0u8; 64];
+    group_descs
+        .read_bytes(offset, &mut raw[..desc_size])
         .map_err(|_| Error::with_message(Errno::EIO, "failed to read group descriptor"))?;
-
-    if desc_size >= 64 {
-        // bg_block_bitmap_hi, bg_inode_bitmap_hi, bg_inode_table_hi.
-        for word_offset in [32usize, 36, 40] {
-            let high: u32 = group_descs.read_val(offset + word_offset).map_err(|_| {
-                Error::with_message(Errno::EIO, "failed to read group descriptor")
-            })?;
-            if high != 0 {
-                return_errno_with_message!(
-                    Errno::EINVAL,
-                    "64-bit group descriptor block numbers are unsupported"
-                );
-            }
-        }
-    }
-
-    Ok(raw_group)
+    BlockGroupDesc::parse(raw, desc_size)
 }
 
 /// The group metadata committed by one transaction.
@@ -988,7 +1162,7 @@ pub(super) fn read_group_descriptor(
 pub(super) struct StagedGroupMetadata {
     block_bitmap: Option<Vec<u8>>,
     inode_bitmap: Option<Vec<u8>>,
-    descriptor: Option<RawBlockGroup>,
+    descriptor: Option<BlockGroupDesc>,
 }
 
 /// Backend of the inode table page cache in one block group.

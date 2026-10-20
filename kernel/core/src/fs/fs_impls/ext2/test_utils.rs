@@ -201,8 +201,12 @@ pub(super) fn make_valid_group_desc(sb: &SuperBlock, group_idx: usize) -> RawBlo
         free_blocks_count: 0,
         free_inodes_count: 0,
         used_dirs_count: 0,
-        pad: 0,
-        reserved: [0; 3],
+        flags: 0,
+        exclude_bitmap: 0,
+        block_bitmap_csum: 0,
+        inode_bitmap_csum: 0,
+        itable_unused: 0,
+        checksum: 0,
     }
 }
 

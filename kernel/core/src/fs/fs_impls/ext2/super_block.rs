@@ -33,7 +33,7 @@
 
 use ostd::const_assert;
 
-use super::prelude::*;
+use super::{checksum, prelude::*};
 use crate::fs::ext2::utils;
 
 /// The ext2 magic number.
@@ -58,6 +58,15 @@ const BLOCKS_COUNT_HI_OFFSET: usize = 0x150;
 const R_BLOCKS_COUNT_HI_OFFSET: usize = 0x154;
 /// `s_free_blocks_count_hi` (valid only with `64BIT`).
 const FREE_BLOCKS_COUNT_HI_OFFSET: usize = 0x158;
+/// `s_checksum_type` (valid with `metadata_csum`).
+const CHECKSUM_TYPE_OFFSET: usize = 0x175;
+/// `s_checksum_seed` (valid with the `csum_seed` compat feature).
+const CHECKSUM_SEED_OFFSET: usize = 0x270;
+/// `s_checksum` (valid with `metadata_csum`).
+const SUPERBLOCK_CHECKSUM_OFFSET: usize = 0x3FC;
+
+/// The only checksum type ext4 defines: CRC32C.
+const CHECKSUM_TYPE_CRC32C: u8 = 1;
 
 /// Validated, Rust-typed in-memory representation of the ext2 superblock.
 #[derive(Clone, Copy, Debug)]
@@ -120,6 +129,10 @@ pub(super) struct SuperBlock {
     inode_size: usize,
     /// Size of a block group descriptor on disk.
     desc_size: u16,
+    /// Whether metadata blocks carry CRC32C checksums.
+    metadata_csum: bool,
+    /// Seed for the metadata checksums (`s_checksum_seed` or the UUID CRC).
+    csum_seed: u32,
     /// Block group that this superblock is part of (if backup copy).
     block_group_idx: usize,
     /// Compatible feature set.
@@ -274,10 +287,7 @@ impl SuperBlock {
         } else {
             DESC_SIZE_32BIT
         };
-        if !desc_size.is_power_of_two()
-            || desc_size < DESC_SIZE_32BIT
-            || desc_size as usize > block_size
-        {
+        if desc_size != DESC_SIZE_32BIT && desc_size != DESC_SIZE_64BIT {
             return_errno_with_message!(Errno::EINVAL, "invalid group descriptor size");
         }
 
@@ -285,6 +295,23 @@ impl SuperBlock {
         if feature_compat.contains(FeatureCompatSet::HAS_JOURNAL) && !allow_journal {
             return_errno_with_message!(Errno::EINVAL, "ext2 journal replay is unsupported");
         }
+
+        // `metadata_csum` requires the CRC32C checksum type; the checksum seed
+        // is either stored (`csum_seed`) or derived from the UUID.
+        let metadata_csum =
+            (sb.feature_ro_compat & FeatureRoCompatSet::METADATA_CSUM.bits()) != 0;
+        if metadata_csum && sb.checksum_type() != CHECKSUM_TYPE_CRC32C {
+            return_errno_with_message!(Errno::EINVAL, "unsupported metadata checksum type");
+        }
+        let csum_seed = if metadata_csum {
+            if (sb.feature_incompat & FeatureInCompatSet::CSUM_SEED.bits()) != 0 {
+                sb.checksum_seed()
+            } else {
+                checksum::seed_from_uuid(&sb.uuid)
+            }
+        } else {
+            0
+        };
 
         // `RECOVER` is a transient flag: it marks a journal that must be
         // replayed before the filesystem is exposed. It is set by every
@@ -295,7 +322,8 @@ impl SuperBlock {
             | FeatureInCompatSet::EXTENTS.bits()
             | FeatureInCompatSet::RECOVER.bits()
             | FeatureInCompatSet::BIT64.bits()
-            | FeatureInCompatSet::FLEX_BG.bits();
+            | FeatureInCompatSet::FLEX_BG.bits()
+            | FeatureInCompatSet::CSUM_SEED.bits();
         if (sb.feature_incompat & !allowed_incompat) != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported incompat feature");
         }
@@ -311,7 +339,8 @@ impl SuperBlock {
             | FeatureRoCompatSet::BTREE_DIR.bits()
             | FeatureRoCompatSet::HUGE_FILE.bits()
             | FeatureRoCompatSet::DIR_NLINK.bits()
-            | FeatureRoCompatSet::EXTRA_ISIZE.bits();
+            | FeatureRoCompatSet::EXTRA_ISIZE.bits()
+            | FeatureRoCompatSet::METADATA_CSUM.bits();
         if (sb.feature_ro_compat & !allowed_ro_compat) != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported ro-compatible feature");
         }
@@ -346,6 +375,8 @@ impl SuperBlock {
             first_ino,
             inode_size,
             desc_size,
+            metadata_csum,
+            csum_seed,
             block_group_idx: sb.block_group_idx as _,
             feature_compat,
             feature_incompat,
@@ -443,6 +474,16 @@ impl SuperBlock {
     /// `64BIT` images use at least 64 bytes (Linux clamps smaller values up).
     pub(super) const fn desc_size(&self) -> u16 {
         self.desc_size
+    }
+
+    /// Returns whether metadata blocks carry CRC32C checksums.
+    pub(super) const fn has_metadata_csum(&self) -> bool {
+        self.metadata_csum
+    }
+
+    /// Returns the seed used by the metadata checksums.
+    pub(super) const fn checksum_seed(&self) -> u32 {
+        self.csum_seed
     }
 
     /// Returns the fragment size.
@@ -762,6 +803,8 @@ bitflags! {
         const BIT64 = 1 << 7;
         /// Metadata blocks may be allocated outside their own group.
         const FLEX_BG = 1 << 9;
+        /// The checksum seed is stored in `s_checksum_seed`.
+        const CSUM_SEED = 1 << 13;
     }
 }
 
@@ -780,6 +823,8 @@ bitflags! {
         const DIR_NLINK = 1 << 5;
         /// Inodes may extend `i_extra_isize` beyond the 32 bytes we write.
         const EXTRA_ISIZE = 1 << 6;
+        /// Metadata blocks and group descriptors carry CRC32C checksums.
+        const METADATA_CSUM = 1 << 10;
     }
 }
 
@@ -929,6 +974,36 @@ impl RawSuperBlock {
         let word = (FREE_BLOCKS_COUNT_HI_OFFSET - RESERVED_START_OFFSET) / size_of::<u32>();
         self.reserved.0[word]
     }
+
+    /// Returns `s_checksum_type` (offset 0x175).
+    const fn checksum_type(&self) -> u8 {
+        let word = (CHECKSUM_TYPE_OFFSET - RESERVED_START_OFFSET) / size_of::<u32>();
+        let byte = (CHECKSUM_TYPE_OFFSET - RESERVED_START_OFFSET) % size_of::<u32>();
+        (self.reserved.0[word] >> (byte * 8)) as u8
+    }
+
+    /// Returns `s_checksum_seed` (offset 0x270).
+    const fn checksum_seed(&self) -> u32 {
+        let word = (CHECKSUM_SEED_OFFSET - RESERVED_START_OFFSET) / size_of::<u32>();
+        self.reserved.0[word]
+    }
+
+    /// Overwrites `s_checksum` (offset 0x3FC).
+    fn set_checksum(&mut self, value: u32) {
+        let word = (SUPERBLOCK_CHECKSUM_OFFSET - RESERVED_START_OFFSET) / size_of::<u32>();
+        self.reserved.0[word] = value;
+    }
+}
+
+/// Computes and stores the checksum of one serialized superblock copy.
+///
+/// The checksum covers everything before `s_checksum` and is seeded with all
+/// ones, independent of the filesystem checksum seed.
+pub(super) fn sign_superblock(raw: &mut RawSuperBlock) {
+    raw.set_checksum(0);
+    let bytes = raw.as_bytes();
+    let crc = checksum::crc32c(checksum::CRC32C_INIT, &bytes[..SUPERBLOCK_CHECKSUM_OFFSET]);
+    raw.set_checksum(crc);
 }
 
 impl From<&SuperBlock> for RawSuperBlock {

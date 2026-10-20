@@ -22,16 +22,18 @@ Validation lives in `super_block.rs` (`SuperBlock::try_from_with_journal`).
 | `errors=` behavior | `continue` | `remount-ro`, `panic` |
 | Revision | 0 (GoodOld), 1 (Dynamic) | other values |
 | Inode size | 128..=4096, power of two | smaller, larger, non-power-of-two |
-| Incompat features | `FILETYPE`, `EXTENTS`, `RECOVER`, `64BIT`, `FLEX_BG` | `META_BG`, `INLINE_DATA`, `MMP`, ... |
-| RO-compat features | `SPARSE_SUPER`, `LARGE_FILE`, `BTREE_DIR`, `HUGE_FILE`, `DIR_NLINK`, `EXTRA_ISIZE` | `METADATA_CSUM`, `GDT_CSUM`, `QUOTA`, ... |
+| Incompat features | `FILETYPE`, `EXTENTS`, `RECOVER`, `64BIT`, `FLEX_BG`, `CSUM_SEED` | `META_BG`, `INLINE_DATA`, `MMP`, ... |
+| RO-compat features | `SPARSE_SUPER`, `LARGE_FILE`, `BTREE_DIR`, `HUGE_FILE`, `DIR_NLINK`, `EXTRA_ISIZE`, `METADATA_CSUM` | `GDT_CSUM`, `QUOTA`, ... |
 | Compat features | not validated (unknown bits are ignored) | - |
 | Fragments | fragment size must equal block size | - |
 | Group descriptors | 32 bytes, or 64 bytes with `64BIT` | other sizes, non-zero high block words |
 
-Consequences: images with `metadata_csum`, metablock groups or `inline_data`
-cannot be mounted. The Debian builder therefore calls `mke2fs` with those
-features disabled; `build_rootfs.sh` also runs `e2fsck -fy` and requires a
-clean `e2fsck -fn` before publishing an image.
+Consequences: images with metablock groups or `inline_data` cannot be
+mounted. Default `mke2fs` images (which use `64bit`, `flex_bg` and
+`metadata_csum`) are accepted; the Debian builder still disables
+`metadata_csum` only because the older profiles predate its support. The
+builder runs `e2fsck -fy` and requires a clean `e2fsck -fn` before publishing
+an image.
 
 `64BIT` is supported for images whose block numbers still fit in 32 bits: the
 descriptor stride becomes `s_desc_size` (at least 64 bytes), the three high
@@ -45,6 +47,16 @@ allocation is recorded by the bitmap of the group that physically holds them.
 `HUGE_FILE`, `DIR_NLINK` and `EXTRA_ISIZE` are capability bits; ordinary files
 keep sector-based `i_blocks` accounting and the 32-byte inode extras that
 `i_extra_isize` already describes.
+
+`metadata_csum` is implemented for both 32-byte and 64-byte descriptors. The
+seed is `s_checksum_seed` when the `csum_seed` incompat feature is set and the
+UUID CRC otherwise. Every metadata writer maintains its checksum: superblock
+(including the direct writes that set/clear `RECOVER`), group descriptors
+(with `bg_checksum` and the bitmap checksum fields), block and inode bitmaps,
+inodes, extent leaves, directory blocks (including the 12-byte tail, which
+shrinks the usable entry area and is not used on the first block of an htree
+directory) and external xattr blocks. `bg_itable_unused` is lowered when an
+inode is allocated so an in-use inode never lies in the declared unused tail.
 
 ## Feature matrix
 
@@ -221,16 +233,15 @@ Known gaps that a package workload can still hit:
    including hole writes and leaf splits; a fifth index entry (depth two) is
    still `EOPNOTSUPP`. Most Debian files are small or indirect-mapped, which is
    why installation works today.
-2. **`metadata_csum` images.** Any image produced by default `mke2fs` on a
-   modern distribution is rejected at mount unless the builder disables the
-   feature. `64BIT` and `FLEX_BG` themselves are accepted.
-3. **Xattrs larger than one inode.** Values that need an external value block
+2. **Xattrs larger than one inode.** Values that need an external value block
    are not implemented; POSIX ACLs themselves are.
-4. **Journal edge cases:** revoke-only transactions, deleted tags, journal
+3. **Journal edge cases:** revoke-only transactions, deleted tags, journal
    checksums, and non-contiguous journal inodes.
 
-The next storage milestone is `metadata_csum`, which is the last feature that
-keeps a default-`mke2fs` image from mounting.
+Default `mke2fs` images (`64bit`, `flex_bg`, `metadata_csum`, `csum_seed`) now
+mount and pass `e2fsck -fn` after real write workloads. The next storage
+milestone is the journal feature set (checksums, revoke-only transactions,
+deleted tags).
 
 ## Validation
 
@@ -240,10 +251,18 @@ keeps a default-`mke2fs` image from mounting.
 - Host gates: `test_x86_debian_storage` and `test_x86_debian_apt`.
 - `fs_ext4_features_check.sh` (`make test_x86_debian_fs_ext4_features`)
   converts the Debian image to 64-byte descriptors and `FLEX_BG`, and mounts a
-  fresh `mke2fs -O 64bit,flex_bg` image as a second disk. It checks the feature
-  words and descriptor high words before and after every boot, requires at
-  least one cross-group metadata pointer in the fresh image, re-reads every
-  written file after a remount, and runs `e2fsck -fn` on both images.
+  fresh `mke2fs -O 64bit,flex_bg,metadata_csum` image as a second disk. It
+  checks the feature words and descriptor high words before and after every
+  boot, requires at least one cross-group metadata pointer in the fresh image,
+  re-reads every written file after a remount, and runs `e2fsck -fn` on both
+  images.
+- `fs_metadata_csum_check.sh` (`make test_x86_debian_fs_metadata_csum`)
+  converts the Debian image with `tune2fs -O metadata_csum` (32-byte
+  descriptors), lets `e2fsck -fyD` add the directory tails, and then runs a
+  workload that touches every checksummed structure: inode and bitmap
+  allocation, an htree directory converted back to linear blocks, a depth-one
+  extent leaf, and an external xattr block. `e2fsck -fn` after both boots
+  verifies every checksum, and a host check re-reads the superblock checksum.
 - Every gate checks `e2fsck -fn` after a clean shutdown; crash tests replay the
   journal from a fault-injected boot.
 
