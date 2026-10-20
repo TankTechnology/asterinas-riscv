@@ -97,8 +97,9 @@ pub(super) fn handoff_if_requested() {
 
 #[cfg(ktest)]
 mod tests {
-    use super::*;
     use ostd::prelude::ktest;
+
+    use super::*;
 
     #[ktest]
     fn fixed_register_contract_matches_uboot() {

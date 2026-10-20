@@ -87,9 +87,11 @@ impl KernelDirOps {
 mod tests {
     use ostd::prelude::*;
 
-    use super::asterinas_reboot_watchdog::{validate_disarm_value, validate_write_offset};
-    use super::core_pattern::validate_core_pattern;
-    use super::pid_max::validate_pid_max;
+    use super::{
+        asterinas_reboot_watchdog::{validate_disarm_value, validate_write_offset},
+        core_pattern::validate_core_pattern,
+        pid_max::validate_pid_max,
+    };
     use crate::prelude::Errno;
 
     #[ktest]

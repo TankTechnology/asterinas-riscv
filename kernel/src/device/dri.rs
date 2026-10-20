@@ -2071,14 +2071,11 @@ impl DriHandle {
 
         let fence_id = u64::from(NEXT_FENCE_ID.fetch_add(1, Ordering::Relaxed));
         let gpu = self.gpu()?;
-        if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0
-            && GpuDevice::fence_fault_injected()
-        {
+        if req.flags & VIRTGPU_EXECBUF_FENCE_FD_OUT != 0 && GpuDevice::fence_fault_injected() {
             ostd::warn!("virtio-gpu: injected virgl fence-request failure");
             return_errno_with_message!(Errno::EIO, "3D fence request failed");
         }
-        gpu
-            .submit_3d(context_id, &commands, fence_id)
+        gpu.submit_3d(context_id, &commands, fence_id)
             .map_err(|_| Error::with_message(Errno::EIO, "3D submission failed"))?;
 
         // The submission has completed by the time this returns — `submit_3d`

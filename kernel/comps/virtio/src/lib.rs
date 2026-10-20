@@ -136,7 +136,11 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
                 Ok(())
             }
         };
-        ostd::early_println!("VIRTIO_INIT stage=device-result type={:?} ok={}", device_type, res.is_ok());
+        ostd::early_println!(
+            "VIRTIO_INIT stage=device-result type={:?} ok={}",
+            device_type,
+            res.is_ok()
+        );
         if res.is_err() {
             error!(
                 "Device initialization error: {:?}, device type: {:?}",

@@ -1268,5 +1268,4 @@ mod tests {
         assert!(completion_should_yield(COMPLETION_YIELD_INTERVAL));
         assert!(completion_should_yield(COMPLETION_YIELD_INTERVAL * 2));
     }
-
 }
