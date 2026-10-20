@@ -651,6 +651,7 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_fs_fallocate \
 		tools.x86.tests.test_x86_debian_fs_durability \
 		tools.x86.tests.test_x86_debian_fs_extents \
+		tools.x86.tests.test_x86_debian_fs_punch_hole \
 		tools.x86.tests.test_x86_debian_fs_renameat2 \
 		tools.x86.tests.test_x86_debian_fs_timestamps \
 		tools.x86.tests.test_lmbench_transcript \
@@ -974,6 +975,24 @@ test_x86_debian_fs_extents:
 		--workspace "$(X86_DEBIAN_EXTENTS_WORKSPACE)" \
 		--accel "$(X86_DEBIAN_EXTENTS_ACCEL)" \
 		--timeout "$(X86_DEBIAN_EXTENTS_TIMEOUT)"
+
+# Punch-hole gate: holes inside direct blocks, across the direct/indirect
+# boundary, up to EOF and over a whole double-indirect file (which must free
+# every block); misaligned and extent-mapped requests must fail cleanly.  The
+# image is remounted and re-checked before `e2fsck -fn`.
+#   X86_DEBIAN_PUNCH_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_PUNCH_BASE_ROOT ?=
+X86_DEBIAN_PUNCH_WORKSPACE ?= $(CURDIR)/target/x86-debian/punch
+X86_DEBIAN_PUNCH_ACCEL ?= kvm
+X86_DEBIAN_PUNCH_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_punch_hole
+test_x86_debian_fs_punch_hole:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_PUNCH_BASE_ROOT)" || { echo "X86_DEBIAN_PUNCH_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-punch-hole: base=$(X86_DEBIAN_PUNCH_BASE_ROOT) accel=$(X86_DEBIAN_PUNCH_ACCEL)"
+	@tools/x86/debian/fs_punch_hole_check.sh 		--kernel "$(X86_DEBIAN_KERNEL)" 		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" 		--base-root "$(X86_DEBIAN_PUNCH_BASE_ROOT)" 		--workspace "$(X86_DEBIAN_PUNCH_WORKSPACE)" 		--accel "$(X86_DEBIAN_PUNCH_ACCEL)" 		--timeout "$(X86_DEBIAN_PUNCH_TIMEOUT)"
 
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:

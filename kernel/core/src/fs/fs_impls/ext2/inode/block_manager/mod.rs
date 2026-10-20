@@ -102,6 +102,14 @@ impl InodeBlockManager {
         IoRangeIter::new(block_range, tree)
     }
 
+    /// Frees the blocks covering `[start_block, end_block)`, leaving holes.
+    pub(super) fn punch_hole_blocks(&self, start_block: Iblock, end_block: Iblock) -> Result<()> {
+        let fs = self.fs()?;
+        self.block_ptr_tree
+            .write()
+            .punch_hole_range(&fs, start_block, end_block)
+    }
+
     /// Truncates blocks to the new_size (best-effort).
     pub(super) fn truncate_to_byte_len(&self, new_size: usize) {
         let fs = match self.fs() {

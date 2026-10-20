@@ -48,7 +48,7 @@ Legend: ✅ supported, 🟡 partial (limits noted), ❌ not implemented.
 | Extent writeback of existing ranges | 🟡 | depth 0 and 1 |
 | Extent truncate | 🟡 | depth 0 and 1; deeper trees are left untouched and logged |
 | 64-bit extents | ❌ | rejected as `EOPNOTSUPP` |
-| `fallocate` | 🟡 | `Allocate`, `AllocateKeepSize`, `ZeroRange` and `ZeroRangeKeepSize`; punch-hole, collapse, insert and unshare are `EOPNOTSUPP` |
+| `fallocate` | 🟡 | `Allocate`, `AllocateKeepSize`, `ZeroRange`, `ZeroRangeKeepSize` and `PunchHoleKeepSize` (indirect mapping); collapse, insert and unshare, and punch-hole on extent-mapped files, are `EOPNOTSUPP` |
 | `O_TMPFILE` | ❌ | VFS default returns `EOPNOTSUPP` |
 | File size | ✅ | up to 2,196,873,666,560 bytes with 4 KiB blocks (indirect-mapped limit) |
 
@@ -185,7 +185,7 @@ Known gaps that a package workload can still hit:
 3. **POSIX ACLs and xattrs larger than one block.**
 4. **Journal edge cases:** revoke-only transactions, deleted tags, and
    non-contiguous journal inodes.
-5. **`O_TMPFILE` and punch-hole fallocate.**
+5. **`O_TMPFILE`.**
 
 The next storage milestone is therefore not "more fsck coverage" but extending
 extent allocation to depth-1 trees (existing and new holes), which is the main
@@ -265,6 +265,15 @@ on-disk tree reporting `0/ 1 1/ 1 0-5 <leaf> 6`.
 plain allocation with and without `KEEP_SIZE`; it also pins the punch-hole
 contract (`EOPNOTSUPP` and an unchanged file).  The image is remounted before
 the contents are re-checked.  Result: **PASS**, `e2fsck -fn` clean.
+
+`fs_punch_hole_check.sh` (`make test_x86_debian_fs_punch_hole`) covers holes
+inside the direct blocks, across the direct/single-indirect boundary, up to
+EOF (size unchanged), and a punch covering a whole double-indirect file,
+which must free every data block and both indirect levels.  A misaligned
+offset returns `EINVAL` and an extent-mapped file returns `EOPNOTSUPP`.  The
+gaps read as zeros after a remount while untouched blocks keep their
+patterns.  Result: **PASS**, `e2fsck -fn` clean; the measured block count
+went from 520 to 392 sectors for a 16-block hole.
 
 The gate found that `AllocateKeepSize` had been allocating blocks beyond
 `i_size`.  An ext2 file uses the legacy indirect mapping, which has no way to

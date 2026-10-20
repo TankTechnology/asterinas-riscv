@@ -752,6 +752,25 @@ FS_RENAMEAT2_VERIFY ok=True problems=0
 e2fsck -fn clean
 ```
 
+## `fallocate` punch-hole
+
+`FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE` now works for files on the legacy
+indirect mapping. The block tree clears the data pointers in the range, frees
+those blocks, then prunes indirect blocks that became empty bottom-up (so a
+whole-file punch leaves `i_blocks == 0`). Dirty pages in the range are
+flushed before the blocks are freed and evicted afterwards, so reads see the
+hole rather than stale cache contents. A misaligned offset is `EINVAL`, and
+extent-mapped files still report `EOPNOTSUPP` for now.
+
+```
+FS_PUNCH_WRITE ok=True blocks=520->392 misaligned=22 extent=95
+FS_PUNCH_VERIFY ok=True problems=0
+e2fsck -fn clean
+```
+
+The measured 520 -> 392 sectors is exactly the 16 data blocks covered by the
+punched ranges.
+
 ## `fallocate` modes
 
 The syscall layer already parsed every `FALLOC_FL_*` combination, but the

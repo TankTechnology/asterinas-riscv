@@ -551,6 +551,107 @@ impl BlockPtrTree {
             .write_bytes(bytes)
     }
 
+    /// Frees the data blocks covering `[start_block, end_block)`, leaving
+    /// holes, and releases indirect blocks that became empty.
+    ///
+    /// Only the legacy indirect mapping is supported; extent trees report
+    /// `EOPNOTSUPP`. The caller keeps `i_size`, so a partially covered tail
+    /// block becomes a hole, matching ext4's round-up behavior.
+    pub(in inode) fn punch_hole_range(
+        &mut self,
+        fs: &Ext2,
+        start_block: Iblock,
+        end_block: Iblock,
+    ) -> Result<()> {
+        if start_block >= end_block {
+            return Ok(());
+        }
+        if self.extent_tree {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "extent punch-hole is not supported");
+        }
+
+        let mut iblock = start_block;
+        while iblock < end_block {
+            let walk = self.walk_at(iblock)?;
+            if walk.is_complete() {
+                let data_bid = if walk.is_direct_data_block() {
+                    let slot = walk.root_slot() as usize;
+                    let bid = self.raw_block_ptrs.block_ptrs[slot];
+                    self.raw_block_ptrs.block_ptrs[slot] = 0;
+                    bid
+                } else {
+                    let leaf = walk.leaf_level();
+                    let parent = walk.parent_bid_at(leaf);
+                    let slot = walk.slot_at(leaf) as usize;
+                    let mut manager = self.indirect_blocks_manager.lock();
+                    let block = manager.find_mut(parent)?;
+                    let bid = block.read_bid(slot)?;
+                    block.write_bid(slot, 0)?;
+                    bid
+                };
+                if data_bid != 0 {
+                    fs.free_blocks(data_bid, 1)?;
+                    self.raw_block_ptrs.sector_count = self
+                        .raw_block_ptrs
+                        .sector_count
+                        .saturating_sub(SECTORS_PER_BLOCK);
+                }
+            }
+            iblock += 1;
+        }
+
+        self.prune_empty_indirect_blocks(fs)
+    }
+
+    /// Detaches indirect subtrees that no longer own any data block.
+    fn prune_empty_indirect_blocks(&mut self, fs: &Ext2) -> Result<()> {
+        for (slot, depth) in [(12usize, 1u32), (13, 2), (14, 3)] {
+            let root = self.raw_block_ptrs.block_ptrs[slot];
+            if root != 0 && self.prune_empty_subtree(fs, root, depth)? {
+                self.raw_block_ptrs.block_ptrs[slot] = 0;
+                self.free_block_subtree(fs, root, depth);
+            }
+        }
+        Ok(())
+    }
+
+    /// Returns whether the indirect subtree at `bid` holds no data, freeing
+    /// the empty children on the way. `depth` counts indirect levels,
+    /// including `bid` itself.
+    fn prune_empty_subtree(&mut self, fs: &Ext2, bid: Ext2Bid, depth: u32) -> Result<bool> {
+        let children: SmallVec<[(usize, Ext2Bid); 8]> = {
+            let mut manager = self.indirect_blocks_manager.lock();
+            let block = manager.find(bid)?;
+            let mut children = SmallVec::new();
+            for index in 0..PTRS_PER_BLOCK {
+                let child = block.read_bid(index)?;
+                if child != 0 {
+                    children.push((index, child));
+                }
+            }
+            children
+        };
+        if depth == 1 {
+            // The children are data blocks; the subtree is empty when none
+            // remain (any that do are outside the punched range).
+            return Ok(children.is_empty());
+        }
+
+        let mut kept = false;
+        for (index, child) in children {
+            if self.prune_empty_subtree(fs, child, depth - 1)? {
+                {
+                    let mut manager = self.indirect_blocks_manager.lock();
+                    manager.find_mut(bid)?.write_bid(index, 0)?;
+                }
+                self.free_block_subtree(fs, child, depth - 1);
+            } else {
+                kept = true;
+            }
+        }
+        Ok(!kept)
+    }
+
     /// Truncates blocks to the new byte length (best-effort).
     ///
     /// This is a best-effort operation. Errors are logged but not propagated.
