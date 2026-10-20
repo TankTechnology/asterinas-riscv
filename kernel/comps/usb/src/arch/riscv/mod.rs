@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{ops::Range, str};
+use core::{
+    ops::Range,
+    str,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use aster_input::input_dev::RegisteredInputDevice;
 use aster_pci::PciDeviceLocation;
@@ -10,7 +14,10 @@ use ostd::{
         boot::DEVICE_TREE,
         irq::{self as arch_irq, InterruptSourceInFdt},
     },
-    bus::usb::{PollingUsbHidHost, UsbDeviceInfo, UsbHidInfo, UsbHidReport, UsbKeyboardError},
+    bus::usb::{
+        MouseReportLayout, PollingUsbHidHost, UsbDeviceInfo, UsbHidInfo, UsbHidReport,
+        UsbKeyboardError, run_bulk_loopback_self_test,
+    },
     io::IoMem,
     irq::IrqLine,
     mm::{HasSize, dma::DmaWindow, io::VmIoOnce},
@@ -29,13 +36,21 @@ mod pci;
 const EIC7700_DWC3_MMIO_SIZE: usize = 0x1_0000;
 const EIC7700_USB0_MMIO_START: usize = 0x5048_0000;
 const EIC7700_USB1_MMIO_START: usize = 0x5049_0000;
+const EIC7700_USB_WRAPPER_PATHS: [&str; 2] = ["/soc/usb0@50480000", "/soc/usb1@50490000"];
 const EIC7700_DRAM_START: usize = 0x8000_0000;
 const EIC7700_DRAM_SIZE: usize = 0x4_0000_0000;
 const PAGE_SIZE: usize = 0x1000;
 const USB_HOST_SELECTOR: &str = "asterinas,usb-host";
 const DWC3_GCTL: usize = 0xc110;
+const DWC3_GSNPSID: usize = 0xc120;
+const DWC3_PROBE_OFFSETS: [usize; 3] = [capability::HCCPARAMS1, DWC3_GCTL, DWC3_GSNPSID];
 const DWC3_GCTL_PRTCAPDIR_MASK: u32 = 0x3 << 12;
 const DWC3_GCTL_PRTCAP_HOST: u32 = 0x1 << 12;
+const BULK_TEST_PAYLOAD_SHA256: &str =
+    "c30b5b3bb192d370a1f07db31d6a39d186b0fbd24caa5e3187e60f85be8573ff";
+
+static USB_BULK_SELFTEST: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.usb_bulk_selftest", USB_BULK_SELFTEST);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Dwc3HostConfig {
@@ -73,6 +88,93 @@ fn prepare_dwc3_host(mmio: &IoMem) -> Result<(), ()> {
         return Err(());
     }
     Ok(())
+}
+
+fn parse_hardware_probe(value: &str) -> Option<(usize, &'static str)> {
+    match value {
+        "dwc3-0" => Some((0, "dwc3-0")),
+        "dwc3-1" => Some((1, "dwc3-1")),
+        _ => None,
+    }
+}
+
+fn hardware_probe_target() -> Option<(usize, &'static str)> {
+    aster_cmdline::HARDWARE_PROBE
+        .get()
+        .and_then(|value| parse_hardware_probe(value))
+}
+
+fn hardware_probe_fail(device: &str, reason: &str) {
+    ostd::early_println!("ASTERINAS_PROBE_FAIL device={} reason={}", device, reason);
+    ostd::early_println!("ASTERINAS_PROBE_DONE device={} status=fail", device);
+}
+
+fn probe_read_only(index: usize, device: &'static str) {
+    let path = match index {
+        0 => "/soc/usb0@50480000/dwc3@50480000",
+        1 => "/soc/usb1@50490000/dwc3@50490000",
+        _ => unreachable!(),
+    };
+    ostd::early_println!("ASTERINAS_PROBE_BEGIN device={}", device);
+    let Some(device_tree) = DEVICE_TREE.get() else {
+        hardware_probe_fail(device, "missing-device-tree");
+        return;
+    };
+    let Some(node) = device_tree.find_node(path) else {
+        hardware_probe_fail(device, "missing-device-tree-node");
+        return;
+    };
+    if !ancestors_status_enabled(device_tree, path) {
+        hardware_probe_fail(device, "disabled-device-tree");
+        return;
+    }
+    let config = match config_from_node(node) {
+        Ok(config) => config,
+        Err(_) => {
+            hardware_probe_fail(device, "invalid-device-tree-resource");
+            return;
+        }
+    };
+    let expected_base = if index == 0 {
+        EIC7700_USB0_MMIO_START
+    } else {
+        EIC7700_USB1_MMIO_START
+    };
+    if config.mmio_range != (expected_base..expected_base + EIC7700_DWC3_MMIO_SIZE) {
+        hardware_probe_fail(device, "unexpected-mmio-resource");
+        return;
+    }
+    ostd::early_println!(
+        "ASTERINAS_PROBE_RESOURCE device={} base={:#010x} size={:#x} irq={}",
+        device,
+        expected_base,
+        EIC7700_DWC3_MMIO_SIZE,
+        config.interrupt,
+    );
+    let mmio = match IoMem::acquire(config.mmio_range) {
+        Ok(mmio) => mmio,
+        Err(_) => {
+            hardware_probe_fail(device, "mmio-unavailable");
+            return;
+        }
+    };
+    for offset in DWC3_PROBE_OFFSETS {
+        let value = match mmio.read_once::<u32>(offset) {
+            Ok(value) => value,
+            Err(_) => {
+                hardware_probe_fail(device, "mmio-read-failed");
+                return;
+            }
+        };
+        ostd::early_println!(
+            "ASTERINAS_PROBE_READ device={} offset={:#06x} value={:#010x}",
+            device,
+            offset,
+            value,
+        );
+    }
+    ostd::early_println!("ASTERINAS_PROBE_PASS device={}", device);
+    ostd::early_println!("ASTERINAS_PROBE_DONE device={} status=pass", device);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -202,16 +304,85 @@ fn selected_host_paths(value: &[u8]) -> Option<[Option<&str>; MAX_SELECTED_DWC3_
         if bytes.is_empty() || count == MAX_SELECTED_DWC3_HOSTS {
             return None;
         }
-        paths[count] = Some(str::from_utf8(bytes).ok()?);
+        let path = str::from_utf8(bytes).ok()?;
+        // Do not let libfdt alias resolution turn a selector such as
+        // `usb1` into a node below a disabled wrapper. The handoff contract
+        // carries absolute node paths only.
+        if !path.starts_with('/')
+            || path.contains("//")
+            || path
+                .split('/')
+                .any(|component| component == "." || component == "..")
+        {
+            return None;
+        }
+        paths[count] = Some(path);
     }
     Some(paths)
 }
 
+fn status_enabled(status: Option<&[u8]>) -> bool {
+    match status {
+        None => true,
+        Some(value) => value == b"ok\0" || value == b"okay\0",
+    }
+}
+
+/// A selected DWC3 child is not usable when an EIC7700 wrapper above it is
+/// disabled.  U-Boot normally gates the wrapper node, while the child may not
+/// carry its own `status` property.  Check every named ancestor before any
+/// MMIO acquisition so a disabled wrapper cannot reach xHCI setup.
+fn ancestors_status_enabled(tree: &fdt::Fdt<'_>, path: &str) -> bool {
+    if !path.starts_with('/') {
+        return false;
+    }
+    let mut current = path;
+    while let Some((parent, _)) = current.rsplit_once('/') {
+        if parent.is_empty() {
+            return true;
+        }
+        let Some(node) = tree.find_node(parent) else {
+            // A partial DT must not make a selected child look reachable.
+            return false;
+        };
+        if !status_enabled(node.property("status").map(|property| property.value)) {
+            return false;
+        }
+        current = parent;
+    }
+    true
+}
+
+fn eic7700_usb_wrappers_disabled(tree: &fdt::Fdt<'_>) -> bool {
+    let wrappers = EIC7700_USB_WRAPPER_PATHS.map(|path| tree.find_node(path));
+    match wrappers {
+        // No EIC7700 wrapper nodes means a QEMU virt-style DT. Keep the PCI
+        // fallback in that case.
+        [None, None] => false,
+        // A partial EIC7700 DT is unsafe to probe: fail closed before PCI/XHCI
+        // registration instead of treating the missing wrapper as enabled.
+        [None, Some(_)] | [Some(_), None] => true,
+        [Some(first), Some(second)] => {
+            if EIC7700_USB_WRAPPER_PATHS
+                .iter()
+                .any(|path| !ancestors_status_enabled(tree, path))
+            {
+                return true;
+            }
+            [first, second]
+                .iter()
+                .all(|node| !status_enabled(node.property("status").map(|property| property.value)))
+        }
+    }
+}
+
 fn config_from_node(node: FdtNode<'_, '_>) -> Result<Dwc3HostConfig, ConfigError> {
-    let status = match node.property("status") {
-        Some(property) => Some(property.as_str().ok_or(ConfigError::Disabled)?),
-        None => None,
-    };
+    // Apply the raw DT status contract before parsing any textual properties.
+    // In particular, a non-NUL-terminated `okay` must not be accepted here
+    // while the ancestor gate treats it as disabled.
+    if !status_enabled(node.property("status").map(|property| property.value)) {
+        return Err(ConfigError::Disabled);
+    }
     let is_dwc3 = node
         .compatible()
         .is_some_and(|compatibles| compatibles.all().any(|value| value == "snps,dwc3"));
@@ -235,7 +406,7 @@ fn config_from_node(node: FdtNode<'_, '_>) -> Result<Dwc3HostConfig, ConfigError
     let dma_ranges = node.property("dma-ranges");
 
     validate_config(ConfigFields {
-        status,
+        status: None,
         is_dwc3,
         dr_mode,
         mmio,
@@ -247,9 +418,29 @@ fn config_from_node(node: FdtNode<'_, '_>) -> Result<Dwc3HostConfig, ConfigError
 }
 
 pub(super) fn init() {
-    pci::init();
+    if let Some((index, device)) = hardware_probe_target() {
+        // Diagnostic mode deliberately bypasses PCI/xHCI setup.  The only
+        // permitted accesses are the three fixed read-only registers above.
+        probe_read_only(index, device);
+        return;
+    }
+    if aster_cmdline::HARDWARE_PROBE.get().is_some() {
+        // A GMAC probe owns this boot.  Do not enter PCI/xHCI setup merely
+        // because this component does not own the selected device.
+        return;
+    }
 
     let device_tree = DEVICE_TREE.get().unwrap();
+    if eic7700_usb_wrappers_disabled(device_tree) {
+        // The physical EIC7700 minimal profile disables both wrapper nodes.
+        // Return before registering the PCI xHCI driver so no PCI BAR or IRQ
+        // side effect can bypass the DT gate. QEMU's virt machine has no
+        // EIC7700 wrapper nodes and therefore retains its PCI fallback.
+        ostd::info!("EIC7700 USB wrappers disabled; skipping USB host setup");
+        return;
+    }
+    pci::init();
+
     let selector = device_tree
         .find_node("/chosen")
         .and_then(|chosen| chosen.property(USB_HOST_SELECTOR));
@@ -271,6 +462,10 @@ pub(super) fn init() {
             );
             continue;
         };
+        if !ancestors_status_enabled(device_tree, selector) {
+            ostd::info!("skipping disabled USB host {} and its wrapper", selector);
+            continue;
+        }
         let config = match config_from_node(node) {
             Ok(config) => config,
             Err(error) => {
@@ -362,29 +557,42 @@ struct DeferredMouseState {
 }
 
 impl DeferredMouseState {
-    fn new(info: UsbDeviceInfo) -> Self {
+    fn new(info: UsbDeviceInfo, layout: Option<MouseReportLayout>) -> Self {
+        let layout = layout.unwrap_or(crate::mouse::BOOT_MOUSE_LAYOUT);
         ostd::info!(
             "USB boot mouse registered: {:04x}:{:04x} bus=usb name=usb_boot_mouse",
             info.vendor_id,
             info.product_id,
         );
         Self {
-            decoder: HidBootMouse::new(),
-            registered: register_mouse(info.vendor_id, info.product_id),
+            decoder: HidBootMouse::new(layout),
+            registered: register_mouse(info.vendor_id, info.product_id, layout),
         }
     }
 }
 
+/// Failed transfers in a row before the HID task gives up for good.
+///
+/// A failed transfer leaves the report queue re-armed, so a device that
+/// recovers delivers its next report on its own and the run resets to zero.
+/// This threshold is only for a controller that is really gone.
+const HID_FAILURE_RETIREMENT_THRESHOLD: u32 = 32;
+
 struct DeferredHidState {
     keyboard: Option<DeferredKeyboardState>,
     mouse: Option<DeferredMouseState>,
+    /// Failed transfers in a row since the last delivered report.
+    consecutive_failures: u32,
 }
 
 impl DeferredHidState {
     fn new(info: UsbHidInfo) -> Self {
         Self {
             keyboard: info.keyboard.map(DeferredKeyboardState::new),
-            mouse: info.mouse.map(DeferredMouseState::new),
+            mouse: info
+                .mouse
+                .map(|mouse| DeferredMouseState::new(mouse, info.mouse_layout)),
+            consecutive_failures: 0,
         }
     }
 }
@@ -432,10 +640,33 @@ fn process_deferred_hid(host: &Mutex<PollingUsbHidHost>, state: &mut DeferredHid
         let report = {
             let mut host = host.lock();
             match host.poll_report() {
-                Ok(Some(report)) => report,
+                Ok(Some(report)) => {
+                    state.consecutive_failures = 0;
+                    report
+                }
                 Ok(None) => return true,
                 Err(error) => {
-                    ostd::warn!("USB HID transfer stopped: {:?}", error);
+                    state.consecutive_failures += 1;
+                    if state.consecutive_failures < HID_FAILURE_RETIREMENT_THRESHOLD {
+                        // Only the keyboard reports its transfer errors up to
+                        // here, but the mouse lives in this same task. Ending
+                        // the task over one of them takes the other device
+                        // down too, and the report queue has already re-armed
+                        // the failed transfer, so stay up and let the next
+                        // interrupt try again.
+                        ostd::warn!(
+                            "USB HID transfer failed, retrying ({}/{}): {:?}",
+                            state.consecutive_failures,
+                            HID_FAILURE_RETIREMENT_THRESHOLD,
+                            error,
+                        );
+                        return true;
+                    }
+                    ostd::warn!(
+                        "USB HID retired after {} consecutive transfer failures: {:?}",
+                        state.consecutive_failures,
+                        error,
+                    );
                     return false;
                 }
             }
@@ -474,6 +705,9 @@ fn process_deferred_hid(host: &Mutex<PollingUsbHidHost>, state: &mut DeferredHid
 /// the event ring and emits evdev events. No polling loop runs while the
 /// keyboard is idle.
 pub fn run_polling() {
+    if aster_cmdline::HARDWARE_PROBE.get().is_some() {
+        return;
+    }
     if let Some(host) = pci::take_selected_host() {
         let location = host.location;
         ostd::info!(
@@ -502,10 +736,17 @@ pub fn run_polling() {
 
 /// Runs the second firmware-selected DWC3/xHCI HID worker, when present.
 pub fn run_polling_secondary() {
+    if aster_cmdline::HARDWARE_PROBE.get().is_some() {
+        return;
+    }
     run_dwc3_hid_worker(1);
 }
 
 fn run_dwc3_hid_worker(index: usize) {
+    let bulk_selftest = USB_BULK_SELFTEST.load(Ordering::Relaxed);
+    if bulk_selftest && index != 0 {
+        return;
+    }
     let Some(resources) = DWC3_HOST_RESOURCES.lock()[index].take() else {
         return;
     };
@@ -520,6 +761,30 @@ fn run_dwc3_hid_worker(index: usize) {
         resources.interrupt_source.interrupt_parent,
         resources.interrupt_source.interrupt,
     );
+    if bulk_selftest {
+        match run_bulk_loopback_self_test(resources.mmio, resources.dma_window) {
+            Ok(result) => ostd::info!(
+                "ASTERINAS_USB_BULK_SELFTEST result=pass controller={} payload_bytes={} \
+                 requested_in_bytes={} sha256={} resets={} out_transfers={} in_transfers={} \
+                 out_bytes={} in_bytes={}",
+                index,
+                result.payload_bytes,
+                result.requested_in_bytes,
+                BULK_TEST_PAYLOAD_SHA256,
+                result.resets,
+                result.out_transfers,
+                result.in_transfers,
+                result.out_bytes,
+                result.in_bytes,
+            ),
+            Err(error) => ostd::error!(
+                "ASTERINAS_USB_BULK_SELFTEST result=fail controller={} error={:?}",
+                index,
+                error,
+            ),
+        }
+        return;
+    }
     run_hid_interrupt_driven(resources, None, &HID_HOSTS[index]);
 }
 
@@ -718,6 +983,8 @@ mod tests {
             selected_host_paths(b"/soc/usb0/dwc3\0/soc/usb1/dwc3\0"),
             Some([Some("/soc/usb0/dwc3"), Some("/soc/usb1/dwc3")])
         );
+        assert_eq!(selected_host_paths(b"usb1\0"), None);
+        assert_eq!(selected_host_paths(b"/soc/usb1/../dwc3\0"), None);
         assert_eq!(selected_host_paths(b""), None);
         assert_eq!(selected_host_paths(b"/soc/usb0/dwc3"), None);
         assert_eq!(selected_host_paths(b"/soc/usb0/dwc3\0\0"), None);
@@ -725,6 +992,74 @@ mod tests {
             selected_host_paths(b"/soc/usb0/dwc3\0/soc/usb1/dwc3\0/third\0"),
             None
         );
+    }
+
+    #[ktest]
+    fn follows_standard_devicetree_status_defaults() {
+        assert!(status_enabled(None));
+        assert!(status_enabled(Some(b"ok\0")));
+        assert!(status_enabled(Some(b"okay\0")));
+        assert!(!status_enabled(Some(b"disabled\0")));
+        assert!(!status_enabled(Some(b"broken")));
+    }
+
+    #[ktest]
+    fn skips_disabled_wrappers_in_real_device_trees() {
+        for bytes in [
+            include_bytes!("fixtures/wrappers-disabled.dtb").as_slice(),
+            include_bytes!("fixtures/soc-disabled.dtb").as_slice(),
+        ] {
+            let tree = fdt::Fdt::new(bytes).unwrap();
+            assert!(eic7700_usb_wrappers_disabled(&tree));
+            for path in [
+                "/soc/usb0@50480000/dwc3@50480000",
+                "/soc/usb1@50490000/dwc3@50490000",
+            ] {
+                assert!(tree.find_node(path).is_some());
+                assert!(!ancestors_status_enabled(&tree, path));
+            }
+        }
+    }
+
+    #[ktest]
+    fn rejects_partial_wrappers_but_retains_virt_pci_fallback() {
+        let partial = fdt::Fdt::new(include_bytes!("fixtures/wrapper-missing.dtb")).unwrap();
+        assert!(eic7700_usb_wrappers_disabled(&partial));
+        let absent = fdt::Fdt::new(include_bytes!("fixtures/wrappers-absent.dtb")).unwrap();
+        assert!(!eic7700_usb_wrappers_disabled(&absent));
+    }
+
+    #[ktest]
+    fn resolves_enabled_children_and_rejects_disabled_children() {
+        let tree = fdt::Fdt::new(include_bytes!("fixtures/wrappers-enabled.dtb")).unwrap();
+        assert!(!eic7700_usb_wrappers_disabled(&tree));
+        let path = "/soc/usb1@50490000/dwc3@50490000";
+        assert!(ancestors_status_enabled(&tree, path));
+        let config = config_from_node(tree.find_node(path).unwrap()).unwrap();
+        assert_eq!(config.mmio_range, 0x5049_0000..0x504a_0000);
+        assert_eq!(config.interrupt, 86);
+
+        for path in ["/disabled-child", "/malformed-status-child"] {
+            assert_eq!(
+                config_from_node(tree.find_node(path).unwrap()),
+                Err(ConfigError::Disabled)
+            );
+        }
+    }
+
+    #[ktest]
+    fn rejects_alias_selector_that_resolves_below_disabled_wrapper() {
+        let tree = fdt::Fdt::new(include_bytes!("fixtures/wrappers-disabled.dtb")).unwrap();
+        let selector = tree
+            .find_node("/chosen")
+            .unwrap()
+            .property(USB_HOST_SELECTOR)
+            .unwrap();
+        // libfdt can resolve the alias, so selector validation must reject it
+        // before path-based ancestor checks can be bypassed.
+        assert!(tree.find_node("usb1").is_some());
+        assert_eq!(selected_host_paths(selector.value), None);
+        assert!(!ancestors_status_enabled(&tree, "usb1"));
     }
 
     #[ktest]
@@ -736,6 +1071,19 @@ mod tests {
             dwc3_host_gctl(firmware_device_mode) & !DWC3_GCTL_PRTCAPDIR_MASK,
             firmware_device_mode & !DWC3_GCTL_PRTCAPDIR_MASK
         );
+    }
+
+    #[ktest]
+    fn hardware_probe_selector_accepts_only_one_fixed_dwc3_target() {
+        assert_eq!(parse_hardware_probe("dwc3-0"), Some((0, "dwc3-0")));
+        assert_eq!(parse_hardware_probe("dwc3-1"), Some((1, "dwc3-1")));
+        assert_eq!(parse_hardware_probe("gmac-0"), None);
+        assert_eq!(parse_hardware_probe("dwc3-0,dwc3-1"), None);
+    }
+
+    #[ktest]
+    fn hardware_probe_reads_only_the_fixed_register_whitelist() {
+        assert_eq!(DWC3_PROBE_OFFSETS, [0x10, 0xc110, 0xc120]);
     }
 
     #[ktest]
@@ -755,6 +1103,7 @@ mod tests {
                 vendor_id: 0x0627,
                 product_id: 0x0002,
             }),
+            mouse_layout: None,
         });
 
         assert_eq!(aster_input::count_devices(), before + 2);

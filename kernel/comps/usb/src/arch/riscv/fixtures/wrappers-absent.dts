@@ -1,0 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+/include/ "wrappers-enabled.dts"
+
+&{/aliases} { /delete-property/ usb1; };
+&{/soc} { /delete-node/ usb0@50480000; /delete-node/ usb1@50490000; };

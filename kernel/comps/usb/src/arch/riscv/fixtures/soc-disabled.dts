@@ -1,0 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
+/include/ "wrappers-enabled.dts"
+
+&{/soc} { status = "disabled"; };

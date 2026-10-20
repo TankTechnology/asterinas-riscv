@@ -308,7 +308,7 @@ impl CloneArgs {
 
         while index < self.set_tid.len() {
             let requested_pid = self.set_tid[index];
-            if requested_pid >= super::posix_thread::PID_MAX {
+            if requested_pid >= super::posix_thread::current_pid_max() {
                 return_errno_with_message!(Errno::EINVAL, "requested PID is out of range");
             }
             if requested_pid != 1 && pid_ns.process_of_vpid(1).is_none() {

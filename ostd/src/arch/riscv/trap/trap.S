@@ -92,7 +92,12 @@ _end_trap_from_kernel:
     mv a0, sp                                # first arg is TrapFrame
     lla ra, _trap_return                     # set return address
 .extern trap_handler
-    j trap_handler
+    # Tail-call through a register instead of `j`: `j` emits a `jal`, whose
+    # +-1 MiB reach is too short to keep `trap_handler` in range once the
+    # unoptimized text grows past it. `lla` is PC-relative over +-2 GiB, and
+    # t0 is dead here because its sscratch value was stored above.
+    lla t0, trap_handler
+    jr t0
 
 _end_trap_from_user:
     # load callee-saved registers

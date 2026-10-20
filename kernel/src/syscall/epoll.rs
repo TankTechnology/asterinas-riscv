@@ -34,9 +34,17 @@ static EPOLL_RET_ZERO: AtomicU64 = AtomicU64::new(0);
 static EPOLL_RET_NONZERO: AtomicU64 = AtomicU64::new(0);
 static EPOLL_RET_ETIME: AtomicU64 = AtomicU64::new(0);
 static EPOLL_RET_ERROR: AtomicU64 = AtomicU64::new(0);
+static EPOLL_DETAIL_MIN_PID: spin::Once<u32> = spin::Once::new();
 const EPOLL_PROFILE_LOG_INTERVAL: u64 = 8_192;
 
 aster_cmdline::define_flag_param_early!("asterinas.epoll_profile", EPOLL_PROFILE);
+aster_cmdline::define_kv_param!("asterinas.epoll_detail_min_pid", EPOLL_DETAIL_MIN_PID);
+
+fn epoll_detail_enabled(pid: u32) -> bool {
+    EPOLL_DETAIL_MIN_PID
+        .get()
+        .is_none_or(|minimum| pid >= *minimum)
+}
 
 fn epoll_profile_snapshot(
     call: u64,
@@ -45,7 +53,7 @@ fn epoll_profile_snapshot(
     events_len: usize,
     ctx: &Context,
 ) {
-    ostd::early_println!(
+    ostd::error!(
         "ASTERINAS_EPOLL_PROFILE calls={} phase={} pid={} tid={} epfd={} events_len={} none_timeout={} zero_timeout={} positive_timeout={} ret_zero={} ret_nonzero={} ret_etime={} ret_error={}",
         call,
         phase,
@@ -155,7 +163,9 @@ fn do_epoll_pwait2(
         max_events as usize
     };
 
-    let profile_call = if EPOLL_PROFILE.load(Ordering::Relaxed) {
+    let profile_call = if EPOLL_PROFILE.load(Ordering::Relaxed)
+        && epoll_detail_enabled(ctx.process.pid())
+    {
         let call = EPOLL_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
         if timeout.is_none() {
             EPOLL_NONE_TIMEOUT.fetch_add(1, Ordering::Relaxed);
@@ -165,7 +175,7 @@ fn do_epoll_pwait2(
             EPOLL_POSITIVE_TIMEOUT.fetch_add(1, Ordering::Relaxed);
         }
         if call <= 16 {
-            ostd::early_println!(
+            ostd::error!(
                 "ASTERINAS_EPOLL_PROFILE call={} pid={} tid={} epfd={} max_events={} timeout={:?}",
                 call,
                 ctx.process.pid(),

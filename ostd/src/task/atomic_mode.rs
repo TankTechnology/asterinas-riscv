@@ -29,6 +29,8 @@
 
 use core::sync::atomic::Ordering;
 
+use crate::util::id_set::Id;
+
 /// Marks a function as one that might sleep.
 ///
 /// This function will panic if it is executed in atomic mode.
@@ -39,9 +41,47 @@ pub fn might_sleep() {
     if (preempt_count != 0 || !is_local_irq_enabled)
         && !crate::IN_BOOTSTRAP_CONTEXT.load(Ordering::Relaxed)
     {
+        let caller = core::panic::Location::caller();
+        // Written straight to the serial port rather than through the logger.
+        // The state that makes this panic happen also stops the panic path
+        // from finishing, and the logger is the first thing to be lost when it
+        // does, which is why earlier attempts got no report out of the boot at
+        // all. The raw level byte is read undecoded for the same reason: a
+        // level that is already out of range would panic the diagnostic.
+        crate::early_println!(
+            "MIGHT_SLEEP_VIOLATION cpu={} raw_level={:#010b} irq_enabled={} preempt_count={} base={:#x} caller={}:{}:{} taker_task={:#x} current_task={:#x}",
+            crate::cpu::CpuId::current_racy().as_usize(),
+            crate::irq::level_raw_for_diagnosis(),
+            is_local_irq_enabled,
+            preempt_count,
+            crate::task::cpu_local_base_for_diagnosis(),
+            caller.file(),
+            caller.line(),
+            caller.column(),
+            super::preempt::cpu_local::outstanding_taker_task(),
+            super::processor::current_task()
+                .map(|task| task.as_ptr() as usize)
+                .unwrap_or(0),
+        );
+        if let Some(location) = super::preempt::cpu_local::outstanding_taker() {
+            crate::early_println!(
+                "ATOMIC_GUARD_TAKEN file={} line={} column={}",
+                location.file(),
+                location.line(),
+                location.column(),
+            );
+        } else {
+            crate::early_println!("ATOMIC_GUARD_TAKEN file=<unknown>");
+        }
         panic!(
-            "This function might break atomic mode (preempt_count = {}, is_local_irq_enabled = {})",
-            preempt_count, is_local_irq_enabled
+            "This function might break atomic mode (preempt_count = {}, is_local_irq_enabled = {}, \
+             taken while task {:#x}, now task {:#x})",
+            preempt_count,
+            is_local_irq_enabled,
+            super::preempt::cpu_local::outstanding_taker_task(),
+            super::processor::current_task()
+                .map(|task| task.as_ptr() as usize)
+                .unwrap_or(0),
         );
     }
 }

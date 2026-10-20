@@ -13,7 +13,7 @@ use spin::Once;
 use crate::{
     context::current_userspace,
     prelude::*,
-    process::VmarSnapshot,
+    process::{VmarSnapshot, posix_thread::AsPosixThread},
     time::wait::ManagedTimeout,
     vm::{page_cache::Vmo, perms::VmPerms, vmar::PageFaultInfo},
 };
@@ -27,11 +27,27 @@ static FUTEX_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static FUTEX_WAIT_JIFFIES: AtomicU64 = AtomicU64::new(0);
 static FUTEX_WAKE_COUNT: AtomicU64 = AtomicU64::new(0);
 static FUTEX_WAIT_DETAIL_EVENTS: AtomicU64 = AtomicU64::new(0);
+static FUTEX_WAKE_DETAIL_EVENTS: AtomicU64 = AtomicU64::new(0);
+static FUTEX_WAKE_DETAIL_ZERO_LOGGED: AtomicU64 = AtomicU64::new(0);
+static FUTEX_WAKE_DETAIL_POSITIVE_LOGGED: AtomicU64 = AtomicU64::new(0);
+static FUTEX_DETAIL_MIN_PID: Once<u32> = Once::new();
 
 const FUTEX_WAIT_DETAIL_THRESHOLD_JIFFIES: u64 = 64;
-const FUTEX_WAIT_DETAIL_LOG_LIMIT: u64 = 128;
+// The detail stream is opt-in and used only by bounded diagnostics. Keep
+// enough headroom to get past early userspace daemons and observe Firefox's
+// later IPC threads in the same boot.
+const FUTEX_WAIT_DETAIL_LOG_LIMIT: u64 = 256;
+const FUTEX_WAKE_DETAIL_ZERO_LOG_LIMIT: u64 = 64;
+const FUTEX_WAKE_DETAIL_POSITIVE_LOG_LIMIT: u64 = 128;
 
 aster_cmdline::define_flag_param!("asterinas.futex_profile", FUTEX_PROFILE);
+aster_cmdline::define_kv_param!("asterinas.futex_detail_min_pid", FUTEX_DETAIL_MIN_PID);
+
+fn futex_detail_enabled(pid: u32) -> bool {
+    FUTEX_DETAIL_MIN_PID
+        .get()
+        .is_none_or(|minimum| pid >= *minimum)
+}
 
 /// Specifies whether a futex is scoped to the current process or shared through
 /// its backing mapping.
@@ -128,27 +144,30 @@ pub fn futex_wait_bitset(
     let was_woken = item.is_none();
     if let (Some(elapsed), true) = (elapsed, FUTEX_PROFILE.load(Ordering::Relaxed)) {
         if elapsed >= FUTEX_WAIT_DETAIL_THRESHOLD_JIFFIES {
-            let event = FUTEX_WAIT_DETAIL_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
-            if event <= FUTEX_WAIT_DETAIL_LOG_LIMIT {
-                let outcome = if was_woken {
-                    "woken"
-                } else if result.is_err() {
-                    "timeout_or_error"
-                } else {
-                    "spurious"
-                };
-                ostd::early_println!(
-                    "ASTERINAS_FUTEX_WAIT_DETAIL event={} pid={} tid={} addr=0x{:x} val={} bitset=0x{:x} timed={} elapsed_jiffies={} outcome={}",
-                    event,
-                    ctx.process.pid(),
-                    ctx.posix_thread.tid(),
-                    futex_addr,
-                    futex_val,
-                    bitset,
-                    has_timeout,
-                    elapsed,
-                    outcome,
-                );
+            let pid = ctx.process.pid();
+            if futex_detail_enabled(pid) {
+                let event = FUTEX_WAIT_DETAIL_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
+                if event <= FUTEX_WAIT_DETAIL_LOG_LIMIT {
+                    let outcome = if was_woken {
+                        "woken"
+                    } else if result.is_err() {
+                        "timeout_or_error"
+                    } else {
+                        "spurious"
+                    };
+                    ostd::error!(
+                        "ASTERINAS_FUTEX_WAIT_DETAIL event={} pid={} tid={} addr=0x{:x} val={} bitset=0x{:x} timed={} elapsed_jiffies={} outcome={}",
+                        event,
+                        ctx.process.pid(),
+                        ctx.posix_thread.tid(),
+                        futex_addr,
+                        futex_val,
+                        bitset,
+                        has_timeout,
+                        elapsed,
+                        outcome,
+                    );
+                }
             }
         }
     }
@@ -216,6 +235,39 @@ pub fn futex_wake_bitset(
     let res = futex_bucket.remove_and_wake_items(&futex_key, max_count);
     if FUTEX_PROFILE.load(Ordering::Relaxed) {
         FUTEX_WAKE_COUNT.fetch_add(res as u64, Ordering::Relaxed);
+        let pid = current!().pid();
+        if futex_detail_enabled(pid) {
+            let event = FUTEX_WAKE_DETAIL_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
+            // Keep zero-result wake attempts in a separate bounded stream.
+            // Without them, an empty stream cannot distinguish "no matching
+            // waiter" from "the wake path was never reached".  Separate
+            // budgets keep early zero-result calls from hiding later positive
+            // wakes during a Firefox startup diagnosis.
+            let (logged, limit) = if res == 0 {
+                (
+                    FUTEX_WAKE_DETAIL_ZERO_LOGGED.fetch_add(1, Ordering::Relaxed) + 1,
+                    FUTEX_WAKE_DETAIL_ZERO_LOG_LIMIT,
+                )
+            } else {
+                (
+                    FUTEX_WAKE_DETAIL_POSITIVE_LOGGED.fetch_add(1, Ordering::Relaxed) + 1,
+                    FUTEX_WAKE_DETAIL_POSITIVE_LOG_LIMIT,
+                )
+            };
+            if logged <= limit {
+                ostd::error!(
+                    "ASTERINAS_FUTEX_WAKE_DETAIL event={} pid={} tid={} addr=0x{:x} bitset=0x{:x} max_count={} woken={} visibility={:?}",
+                    event,
+                    current!().pid(),
+                    current_thread!().as_posix_thread().unwrap().tid(),
+                    futex_addr,
+                    bitset,
+                    max_count,
+                    res,
+                    visibility,
+                );
+            }
+        }
     }
 
     Ok(res)

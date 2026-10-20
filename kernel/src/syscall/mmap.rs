@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use align_ext::AlignExt;
+use spin::Once;
 
 use super::{SyscallReturn, mlock::locked_memory_limit};
 use crate::{
@@ -12,6 +15,14 @@ use crate::{
         vmar::{PageFaultInfo, VMAR_CAP_ADDR, VMAR_LOWEST_ADDR, VmarMapOffset},
     },
 };
+
+static MMAP_PROFILE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static MMAP_DETAIL_MIN_PID: Once<u32> = Once::new();
+static MMAP_DETAIL_EVENTS: AtomicU64 = AtomicU64::new(0);
+const MMAP_DETAIL_LIMIT: u64 = 128;
+
+aster_cmdline::define_flag_param_early!("asterinas.mmap_profile", MMAP_PROFILE);
+aster_cmdline::define_kv_param!("asterinas.mmap_detail_min_pid", MMAP_DETAIL_MIN_PID);
 
 pub fn sys_mmap(
     addr: u64,
@@ -44,6 +55,25 @@ fn do_sys_mmap(
     offset: usize,
     ctx: &Context,
 ) -> Result<Vaddr> {
+    let detail = MMAP_PROFILE.load(Ordering::Relaxed)
+        && MMAP_DETAIL_MIN_PID
+            .get()
+            .is_none_or(|minimum| ctx.process.pid() >= *minimum);
+    let detail_event = detail.then(|| MMAP_DETAIL_EVENTS.fetch_add(1, Ordering::Relaxed) + 1);
+    let detail_start = detail.then(|| ostd::timer::Jiffies::elapsed().as_u64());
+    if detail_event.is_some_and(|event| event <= MMAP_DETAIL_LIMIT) {
+        ostd::error!(
+            "ASTERINAS_MMAP_DETAIL phase=enter event={} pid={} tid={} addr=0x{:x} len=0x{:x} flags=0x{:x} fd={} offset=0x{:x}",
+            detail_event.unwrap(),
+            ctx.process.pid(),
+            ctx.posix_thread.tid(),
+            addr,
+            len,
+            raw_flags,
+            raw_fd,
+            offset,
+        );
+    }
     debug!(
         "addr = 0x{:x}, len = 0x{:x}, perms = {:?}, flags = 0x{:x}, raw_fd = {}, offset = 0x{:x}",
         addr, len, vm_perms, raw_flags, raw_fd, offset
@@ -162,6 +192,23 @@ fn do_sys_mmap(
     };
 
     let map_addr = vm_map_options.build()?;
+    if detail_event.is_some_and(|event| event <= MMAP_DETAIL_LIMIT) {
+        let elapsed = detail_start
+            .map(|start| {
+                ostd::timer::Jiffies::elapsed()
+                    .as_u64()
+                    .saturating_sub(start)
+            })
+            .unwrap_or(0);
+        ostd::error!(
+            "ASTERINAS_MMAP_DETAIL phase=build-done event={} pid={} tid={} map_addr=0x{:x} elapsed_jiffies={}",
+            detail_event.unwrap(),
+            ctx.process.pid(),
+            ctx.posix_thread.tid(),
+            map_addr,
+            elapsed,
+        );
+    }
 
     if (option.flags().contains(MMapFlags::MAP_POPULATE)
         || option.flags().contains(MMapFlags::MAP_LOCKED))

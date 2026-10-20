@@ -1,0 +1,5 @@
+// SPDX-License-Identifier: MPL-2.0
+/include/ "wrappers-enabled.dts"
+
+&{/soc/usb0@50480000} { status = "disabled"; };
+&{/soc/usb1@50490000} { status = "disabled"; };

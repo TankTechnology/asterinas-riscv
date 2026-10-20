@@ -6,4 +6,5 @@ set -e
 
 /test/process/cpu_affinity/cpu_affinity
 /test/process/cpu_affinity/inheritance || [ "$?" -eq 77 ]
+/test/process/cpu_affinity/migrate_fault || [ "$?" -eq 77 ]
 echo "CPU affinity migration test passed."

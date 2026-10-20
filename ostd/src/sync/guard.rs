@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::{
-    irq::{DisabledLocalIrqGuard, disable_local},
-    task::{DisabledPreemptGuard, atomic_mode::AsAtomicModeGuard, disable_preempt},
+    irq::{disable_local, DisabledLocalIrqGuard},
+    task::{atomic_mode::AsAtomicModeGuard, disable_preempt, DisabledPreemptGuard},
 };
 
 /// A guardian that denotes the guard behavior for holding a spin-based lock.
@@ -15,8 +15,10 @@ pub trait SpinGuardian {
     type ReadGuard: AsAtomicModeGuard + GuardTransfer;
 
     /// Creates a new guard.
+    #[track_caller]
     fn guard() -> Self::Guard;
     /// Creates a new read guard.
+    #[track_caller]
     fn read_guard() -> Self::ReadGuard;
 }
 
@@ -38,9 +40,11 @@ impl SpinGuardian for PreemptDisabled {
     type Guard = DisabledPreemptGuard;
     type ReadGuard = DisabledPreemptGuard;
 
+    #[track_caller]
     fn guard() -> Self::Guard {
         disable_preempt()
     }
+    #[track_caller]
     fn read_guard() -> Self::Guard {
         disable_preempt()
     }
@@ -59,9 +63,11 @@ impl SpinGuardian for LocalIrqDisabled {
     type Guard = DisabledLocalIrqGuard;
     type ReadGuard = DisabledLocalIrqGuard;
 
+    #[track_caller]
     fn guard() -> Self::Guard {
         disable_local()
     }
+    #[track_caller]
     fn read_guard() -> Self::Guard {
         disable_local()
     }
@@ -85,9 +91,11 @@ impl SpinGuardian for WriteIrqDisabled {
     type Guard = DisabledLocalIrqGuard;
     type ReadGuard = DisabledPreemptGuard;
 
+    #[track_caller]
     fn guard() -> Self::Guard {
         disable_local()
     }
+    #[track_caller]
     fn read_guard() -> Self::ReadGuard {
         disable_preempt()
     }

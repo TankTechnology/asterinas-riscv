@@ -7,7 +7,7 @@ use ostd::{
 
 const CAPLENGTH_HCIVERSION: usize = 0x00;
 const HCSPARAMS1: usize = 0x04;
-const HCCPARAMS1: usize = 0x10;
+pub(super) const HCCPARAMS1: usize = 0x10;
 const DBOFF: usize = 0x14;
 const RTSOFF: usize = 0x18;
 const MIN_CAPABILITY_LENGTH: usize = 0x20;
@@ -88,7 +88,7 @@ fn decode(raw: RawCapabilities, mmio_size: usize) -> Result<XhciCapabilities, Ca
             mmio_size,
         )
         || extended_capabilities_offset.is_some_and(|offset| {
-            offset < operational_offset || !region_fits(offset, size_of::<u32>(), mmio_size)
+            offset < MIN_CAPABILITY_LENGTH || !region_fits(offset, size_of::<u32>(), mmio_size)
         })
     {
         return Err(CapabilityError::InvalidRegisterOffset);
@@ -191,6 +191,18 @@ mod tests {
         assert_eq!(capabilities.runtime_offset, 0x1000);
         assert_eq!(capabilities.doorbell_offset, 0x2000);
         assert_eq!(capabilities.extended_capabilities_offset, Some(0x100));
+    }
+
+    #[ktest]
+    fn accepts_extended_capabilities_inside_capability_register_space() {
+        let mut raw = valid_raw();
+        raw.caplength_hciversion = 0x0100_0040;
+        raw.hccparams1 = 0x0008_0001;
+
+        let capabilities = decode(raw, 0x1_0000).unwrap();
+
+        assert_eq!(capabilities.operational_offset, 0x40);
+        assert_eq!(capabilities.extended_capabilities_offset, Some(0x20));
     }
 
     #[ktest]

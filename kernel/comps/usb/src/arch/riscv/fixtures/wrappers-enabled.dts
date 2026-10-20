@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: MPL-2.0
+// Regenerate: dtc -I dts -O dtb -o <name>.dtb <name>.dts
+/dts-v1/;
+
+/ {
+    #address-cells = <2>;
+    #size-cells = <2>;
+    aliases { usb1 = "/soc/usb1@50490000/dwc3@50490000"; };
+    chosen { asterinas,usb-host = "usb1"; };
+    interrupt-controller {
+        #interrupt-cells = <1>;
+        #address-cells = <0>;
+        interrupt-controller;
+        phandle = <7>;
+    };
+    soc {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+        status = "okay";
+        usb0@50480000 {
+            #address-cells = <2>;
+            #size-cells = <2>;
+            reg = <0 0x50480000 0 0x10000>;
+            ranges;
+            status = "okay";
+            dwc3@50480000 {
+                compatible = "snps,dwc3";
+                reg = <0 0x50480000 0 0x10000>;
+            };
+        };
+        usb1@50490000 {
+            #address-cells = <2>;
+            #size-cells = <2>;
+            reg = <0 0x50490000 0 0x10000>;
+            ranges;
+            status = "okay";
+            dwc3@50490000 {
+                #address-cells = <2>;
+                #size-cells = <2>;
+                compatible = "snps,dwc3";
+                dr_mode = "host";
+                reg = <0 0x50490000 0 0x10000>;
+                interrupt-parent = <7>;
+                interrupts = <86>;
+                dma-noncoherent;
+                dma-ranges = <0 0 0 0xc0000000 0x200 0>;
+            };
+        };
+    };
+    disabled-child { status = "disabled"; };
+    malformed-status-child { status = [6f 6b 61 79]; };
+};
