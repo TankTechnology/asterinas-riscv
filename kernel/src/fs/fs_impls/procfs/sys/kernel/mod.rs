@@ -9,6 +9,7 @@ use crate::{
             ProcDir, StaticEntry,
             sys::kernel::{
                 cap_last_cap::CapLastCapFileOps,
+                core_pattern::CorePatternFileOps,
                 dmesg_restrict::DmesgRestrictFileOps,
                 pid_max::PidMaxFileOps,
                 random::RandomDirOps,
@@ -30,12 +31,17 @@ use crate::{
 #[cfg(target_arch = "riscv64")]
 mod asterinas_reboot_watchdog;
 mod cap_last_cap;
+mod core_pattern;
 mod dmesg_restrict;
 mod pid_max;
 mod random;
 mod tainted;
 mod uts;
 mod yama;
+
+pub(crate) fn boot_id_text() -> &'static str {
+    random::boot_id_text()
+}
 
 /// Represents the inode at `/proc/sys/kernel`.
 pub struct KernelDirOps;
@@ -61,6 +67,11 @@ impl KernelDirOps {
             CapLastCapFileOps::new_inode,
         ),
         (
+            "core_pattern",
+            InodeType::File,
+            CorePatternFileOps::new_inode,
+        ),
+        (
             "dmesg_restrict",
             InodeType::File,
             DmesgRestrictFileOps::new_inode,
@@ -80,6 +91,8 @@ mod tests {
     use ostd::prelude::*;
 
     use super::asterinas_reboot_watchdog::{validate_disarm_value, validate_write_offset};
+    use super::core_pattern::validate_core_pattern;
+    use super::pid_max::validate_pid_max;
     use crate::prelude::Errno;
 
     #[ktest]
@@ -96,6 +109,24 @@ mod tests {
             validate_disarm_value(-1).unwrap_err().error(),
             Errno::EINVAL
         );
+    }
+
+    #[ktest]
+    fn pid_max_accepts_systemd_value_and_rejects_out_of_range_values() {
+        assert_eq!(validate_pid_max(4_194_304).unwrap(), 4_194_304);
+        assert_eq!(validate_pid_max(300).unwrap_err().error(), Errno::EINVAL);
+        assert_eq!(
+            validate_pid_max(u64::from(u32::MAX / 2) + 1)
+                .unwrap_err()
+                .error(),
+            Errno::EINVAL
+        );
+    }
+
+    #[ktest]
+    fn core_pattern_accepts_systemd_value() {
+        assert!(validate_core_pattern("core").is_ok());
+        assert!(validate_core_pattern("").is_err());
     }
 }
 
