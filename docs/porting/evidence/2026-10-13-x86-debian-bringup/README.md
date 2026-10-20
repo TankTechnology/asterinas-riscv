@@ -648,6 +648,43 @@ write. `msync(MS_SYNC)` used to discard inode sync errors and return success;
 it now propagates the first failure (`MS_ASYNC` keeps ignoring errors because
 it cannot report them).
 
+## Sub-second timestamps
+
+The in-memory inode has always carried `Duration`, and `statx` reports
+nanoseconds, but the ext2 port wrote only `i_atime`, `i_ctime` and `i_mtime`
+— whole seconds. `touch`/`utimensat` with a nanosecond value came back
+truncated after a remount, and every kernel-generated mtime lost its
+fraction.
+
+The Debian image has 256-byte inodes with `i_extra_isize = 32`, so the ext4
+words are available: `i_ctime_extra` at 0x84, `i_mtime_extra` at 0x88 and
+`i_atime_extra` at 0x8c, each encoding nanoseconds in the upper 30 bits and
+two epoch bits that extend the seconds field through 2106. The inode read
+path now decodes them when `i_extra_isize` covers the words, the write-back
+path encodes them, and the rest of the large-inode area (`i_crtime`,
+`i_version_hi`, `i_projid`, checksums) is preserved.
+
+New inodes needed one more thing: a reused slot can still hold the previous
+file's crtime and doesn't necessarily advertise the extras. Creation now
+zeroes the area beyond the 128-byte inode and writes `i_extra_isize = 32`,
+which is what Linux's `s_want_extra_isize` does.
+
+`tools/x86/debian/fs_timestamp_check.sh` sets
+`atime_ns = 1700000000123456789` / `mtime_ns = 1700000000987654321` with
+`utimensat`, powers off, remounts the image in a second boot and re-reads the
+values. It also requires a non-zero raw extra word:
+
+```
+FS_TIMESTAMP_WRITE ok=True atime_ns=1700000000123456789 mtime_ns=1700000000987654321
+FS_TIMESTAMP_VERIFY ok=True atime_ns=1700000000123456789 mtime_ns=1700000000987654321
+on-disk: atime: 0x6553f100:1d6f3454 ... mtime: 0x6553f100:eb79a2c4 ...
+e2fsck -fn clean
+```
+
+`0x1d6f3454` and `0xeb79a2c4` are `123456789 << 2` and `987654321 << 2`.
+Kernel-generated timestamps carry real fractions as well (a fresh file
+reported `1792470780.301261890` in the same clock probe).
+
 ## Socket visibility: `/proc/net` and `NETLINK_SOCK_DIAG`
 
 `ss`, `ip`, and the Debian boot scripts expect to see the socket table. The

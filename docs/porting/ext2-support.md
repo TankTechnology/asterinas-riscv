@@ -82,7 +82,7 @@ linear; `e2fsck -D` can rebuild an index later.
 | Hard links | ✅ | link count and `i_blocks` accounting |
 | `mknod` (char/block device, FIFO) | ✅ | device id encoded in `i_block` |
 | Sockets on disk | ✅ | as an inode type |
-| Ownership, mode, timestamps | 🟡 | uid/gid/mode full; timestamps have one-second resolution |
+| Ownership, mode, timestamps | ✅ | uid/gid/mode full; nanosecond timestamps for inodes larger than 128 bytes (see below) |
 | `i_blocks` accounting | ✅ | data + tree + xattr blocks; verified by the storage gate |
 
 ### Extended attributes
@@ -111,6 +111,21 @@ linear; `e2fsck -D` can rebuild an index later.
 `fsync` and every metadata commit go through the journal and end with a block
 device flush; `sync` commits the whole filesystem (full inode-table flush),
 which is heavier than Linux's per-inode writeback but keeps ordering simple.
+
+### Timestamps
+
+The in-memory inode stores `Duration`, so the nanosecond part exists from the
+moment a file is created. Large inodes (`s_inode_size > 128`) persist it in
+ext4's `i_atime_extra`, `i_ctime_extra` and `i_mtime_extra` words when the
+slot's `i_extra_isize` covers them. The encoding is Linux's: nanoseconds in
+the upper 30 bits, two epoch bits in the low two bits to extend the 32-bit
+seconds field through 2106.
+
+A new inode has the large-inode area zeroed and `i_extra_isize = 32` written,
+matching Linux's `s_want_extra_isize`. This matters for reused slots: without
+it a file would inherit the previous file's `i_crtime`, version and project
+id. Older 128-byte inodes keep one-second resolution, which is the format's
+limit.
 
 Replay correctness was hardened by the crash matrix: block groups load their
 bitmaps and descriptors during mount, *before* `replay_journal` writes the
@@ -161,8 +176,9 @@ remaining blocker for arbitrary package upgrades and file rewrites.
 
 ## Validation
 
-- 54 in-kernel ktests in `ext2/` cover superblock validation, block-pointer
-  trees, directory entries, truncation, xattr layout and sync ordering.
+- 57 in-kernel ktests in `ext2/` cover superblock validation, block-pointer
+  trees, directory entries, truncation, xattr layout, timestamp extras and
+  sync ordering.
 - Host gates: `test_x86_debian_storage` and `test_x86_debian_apt`.
 - Every gate checks `e2fsck -fn` after a clean shutdown; crash tests replay the
   journal from a fault-injected boot.

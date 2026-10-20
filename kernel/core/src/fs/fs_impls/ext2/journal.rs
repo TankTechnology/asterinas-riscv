@@ -502,7 +502,7 @@ mod test {
         let mut ring = JournalRing::new(journal).unwrap();
         ring.next = 1022;
         assert_eq!(ring.reserve(3).unwrap(), vec![1022, 1023, 1]);
-        assert_eq!(ring.cursor(), 2);
+        assert_eq!(ring.next, 2);
     }
 
     #[ktest]
