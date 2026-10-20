@@ -54,6 +54,32 @@ Key Makefile targets:
 
 Set `TARGET_ARCH` to `x86_64` (default), `riscv64`, or `loongarch64`.
 
+## Megrez Development Control Channel
+
+Preserve a usable management channel when leaving the development board running.
+A visible desktop, a UART login prompt, or an open proxy is not command access.
+Use the stable `/dev/serial/by-id/` device and a single serial owner.
+
+- Retain the opt-in Asterinas root debug console alongside the desktop.
+  Every selected development boot entry must recreate it after reboot;
+  a previous session's `/run` configuration does not persist.
+- Before declaring a boot handed over, require fresh, nonce-framed command
+  responses proving UID 0 and the boot identity, then close and reopen the
+  host serial connection and verify access again.
+  Reboot persistence needs a separate actual reboot check.
+- Do not replace a working control path without a verified recovery path.
+  Prefer authenticated RockOS/Asterinas software reboot over physical reset.
+  RockOS credentials do not apply to the locked Asterinas Debian accounts.
+- Keep root access limited to the explicit local development-console mode.
+  Do not add fixed passwords, passwordless sudo, or unauthenticated network
+  shells to obtain access.
+- Record the selected entry, artifact identity, serial device, commands and
+  observed recovery state in the handoff evidence, but never credentials.
+  If control is unavailable, state that explicitly; do not report hardware
+  debugging or playback as verified.
+
+See `tools/riscv/README.md` for the control-channel inventory and boot workflow.
+
 ## Toolchain
 
 - **Rust nightly** pinned in `rust-toolchain.toml`.
