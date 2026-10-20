@@ -644,6 +644,15 @@ The crash variant does not compare contents (an interrupted worker never
 finalises its manifest); its contract is structural: no deadlock, no
 half-applied directory operation, no leaked allocation.
 
+Use a base image that does not already enable another gate's probe unit. An
+image saved from a storage, apt or tmpfile run still has that gate's oneshot
+service enabled; it runs alongside the stress service and powers the VM off
+when it finishes, so the driver's result file never lands. The symptom is
+`FAIL (the driver wrote no result)` with the other probe's output interleaved
+into the transcript. Copy a pristine image, or remove the leftover unit and
+its `multi-user.target.wants` link with `debugfs`, and re-check the copy with
+`e2fsck -fn` before running the cell.
+
 **`O_SYNC`/`O_DSYNC` alignment.** The durability work exposed that
 `InodeHandle` ignored `O_SYNC` and `O_DSYNC` on write entirely. It now flushes
 after every successful write — `SyncMode::Full` for `O_SYNC`,
