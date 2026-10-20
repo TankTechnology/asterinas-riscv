@@ -43,6 +43,23 @@ pub(crate) struct InodeHandle {
 }
 
 impl InodeHandle {
+    /// Flushes a successful write when the file was opened with `O_SYNC` or
+    /// `O_DSYNC`.
+    ///
+    /// Linux makes `write(2)` on an `O_SYNC` file return only after the data
+    /// and all metadata needed to retrieve it are durable; `O_DSYNC` is the
+    /// weaker variant. `O_SYNC` carries the `O_DSYNC` bit in the open flags,
+    /// so the stronger mode is selected first.
+    fn sync_after_write(&self, status_flags: StatusFlags) -> Result<()> {
+        if status_flags.contains(StatusFlags::O_SYNC) {
+            self.sync(SyncMode::Full)
+        } else if status_flags.contains(StatusFlags::O_DSYNC) {
+            self.sync(SyncMode::Data)
+        } else {
+            Ok(())
+        }
+    }
+
     pub(crate) fn new(
         path: Path,
         access_mode: AccessMode,
@@ -312,7 +329,9 @@ impl FileLike for InodeHandle {
         let status_flags = self.status_flags();
 
         if !is_offset_aware {
-            return file_ops.write_at(0, reader, status_flags);
+            let len = file_ops.write_at(0, reader, status_flags)?;
+            self.sync_after_write(status_flags)?;
+            return Ok(len);
         }
 
         let mut offset = self.offset.lock();
@@ -326,6 +345,9 @@ impl FileLike for InodeHandle {
 
         let len = file_ops.write_at(*offset, reader, status_flags)?;
         *offset += len;
+
+        drop(offset);
+        self.sync_after_write(status_flags)?;
 
         Ok(len)
     }
@@ -360,7 +382,9 @@ impl FileLike for InodeHandle {
             offset = self.path().size();
         }
 
-        file_ops.write_at(offset, reader, status_flags)
+        let len = file_ops.write_at(offset, reader, status_flags)?;
+        self.sync_after_write(status_flags)?;
+        Ok(len)
     }
 
     fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {

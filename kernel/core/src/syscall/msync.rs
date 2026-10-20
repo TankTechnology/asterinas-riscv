@@ -4,7 +4,10 @@ use align_ext::AlignExt;
 
 use super::SyscallReturn;
 use crate::{
-    fs::file::SyncMode, prelude::*, thread::kernel_thread::ThreadOptions, vm::vmar::VMAR_CAP_ADDR,
+    fs::{file::SyncMode, vfs::inode::Inode},
+    prelude::*,
+    thread::kernel_thread::ThreadOptions,
+    vm::vmar::VMAR_CAP_ADDR,
 };
 
 pub(super) fn sys_msync(
@@ -54,21 +57,36 @@ pub(super) fn sys_msync(
         .iter()
         .filter_map(|m| m.inode().cloned())
         .collect::<Vec<_>>();
-    let task_fn = move || {
-        for inode in inodes {
-            // TODO: Sync a necessary range instead of syncing the whole inode.
-            let _ = inode.sync(SyncMode::Full);
-        }
-    };
 
     // If neither MS_SYNC nor MS_ASYNC is specified, Linux defaults to MS_ASYNC behavior.
     if flags.contains(MsyncFlags::MS_SYNC) {
-        task_fn();
+        sync_inodes(&inodes)?;
     } else {
-        ThreadOptions::new(task_fn).spawn();
+        ThreadOptions::new(move || {
+            // An asynchronous request cannot report a failure to its caller.
+            let _ = sync_inodes(&inodes);
+        })
+        .spawn();
     }
 
     Ok(SyscallReturn::Return(0))
+}
+
+/// Syncs every file-backed mapping in the range, reporting the first failure.
+fn sync_inodes(inodes: &[Arc<dyn Inode>]) -> Result<()> {
+    let mut first_error = None;
+    for inode in inodes {
+        // TODO: Sync a necessary range instead of the whole inode.
+        if let Err(err) = inode.sync(SyncMode::Full)
+            && first_error.is_none()
+        {
+            first_error = Some(err);
+        }
+    }
+    match first_error {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 bitflags! {
