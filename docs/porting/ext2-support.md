@@ -65,7 +65,8 @@ returns `EOPNOTSUPP`.
 | Linear directories | ✅ | `file_type` entries, lookups, create, unlink, rename |
 | Htree (`INDEX_DIR`) directories | 🟡 | converted to linear on the first insertion; the index is not maintained |
 | `rec_len` compaction on delete | ✅ | |
-| `RENAME_EXCHANGE` | ❌ | `EINVAL` |
+| `RENAME_NOREPLACE` | ✅ | `EEXIST` when the target exists |
+| `RENAME_EXCHANGE` | ✅ | files, directories and mixed types; `..` and parent link counts follow the moved entries |
 | Directory growth | ✅ | one block at a time |
 
 The htree conversion repacks live entries into the existing blocks, clears
@@ -168,7 +169,7 @@ Known gaps that a package workload can still hit:
 3. **POSIX ACLs and xattrs larger than one block.**
 4. **Journal edge cases:** revoke-only transactions, deleted tags, and
    non-contiguous journal inodes.
-5. **`O_TMPFILE`, `RENAME_EXCHANGE`, punch-hole fallocate.**
+5. **`O_TMPFILE` and punch-hole fallocate.**
 
 The next storage milestone is therefore not "more fsck coverage" but extending
 extent allocation to depth-1 trees (existing and new holes), which is the main
@@ -232,6 +233,14 @@ recovery boot the operation must be present in full:
 | dir-entry | file exists with the exact 4096 bytes and its entry survived |
 
 Result: **5/5 pass**, `e2fsck -fn` clean.
+
+`fs_renameat2_check.sh` (`make test_x86_debian_fs_renameat2`) covers the
+rename flags: `RENAME_EXCHANGE` within one directory, across directories,
+with a directory on either side (including a directory and a file), and the
+resulting `..` entries and parent link counts; `RENAME_NOREPLACE` success and
+`EEXIST`; `ENOENT` for an exchange with a missing target and `EINVAL` for
+`NOREPLACE|EXCHANGE`.  The image is remounted and the tree re-checked, so the
+gate proves the result was persisted.  Result: **PASS**, `e2fsck -fn` clean.
 
 The crash matrix is what exposed the replay cache-coherence bug fixed in this
 change: see the journal table above. Before the fix, a replayed unlink leaked

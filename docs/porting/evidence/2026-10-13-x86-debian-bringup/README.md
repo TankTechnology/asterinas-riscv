@@ -685,6 +685,34 @@ e2fsck -fn clean
 Kernel-generated timestamps carry real fractions as well (a fresh file
 reported `1792470780.301261890` in the same clock probe).
 
+## `renameat2` flags
+
+The VFS dentry layer already implemented `RENAME_NOREPLACE` and
+`RENAME_EXCHANGE`, and it even swapped the cached dentries for an exchange —
+but the ext2 inode returned `EINVAL` for `RENAME_EXCHANGE`, so the operation
+never reached the disk.
+
+The inode now swaps the two directory entries in place and keeps the metadata
+consistent with the move: a directory exchanged across parents gets its `..`
+entry rewritten to the new parent, and when exactly one side is a directory
+the source parent loses a subdirectory while the target parent gains one.
+Same-directory exchanges need none of that. Unlike the replace path, an
+exchange may involve a non-empty directory or two different types
+(directory ↔ file), which is what Linux allows.
+
+`tools/x86/debian/fs_renameat2_check.sh` exercises same-directory files,
+directory ↔ file, cross-directory directories and files, `RENAME_NOREPLACE`
+(`EEXIST` and success), `ENOENT` for a missing exchange target and `EINVAL`
+for `NOREPLACE|EXCHANGE`. It then remounts the image and re-checks the whole
+tree, including that `a/d1` now holds the old `b/d2` content and that its
+`..` points at `a`:
+
+```
+FS_RENAMEAT2_WRITE ok=True problems=0
+FS_RENAMEAT2_VERIFY ok=True problems=0
+e2fsck -fn clean
+```
+
 ## Socket visibility: `/proc/net` and `NETLINK_SOCK_DIAG`
 
 `ss`, `ip`, and the Debian boot scripts expect to see the socket table. The

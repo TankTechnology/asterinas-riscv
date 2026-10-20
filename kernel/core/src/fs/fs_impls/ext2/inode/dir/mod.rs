@@ -16,6 +16,7 @@ use super::{super::Ext2, FileFlags, FilePerm, Inode, InodeInner, MAX_LINK_COUNT}
 use crate::fs::{
     ext2::{prelude::*, utils},
     utils::NAME_MAX,
+    vfs::inode::RenameMode,
 };
 
 /// Information about a candidate directory entry slot.
@@ -241,6 +242,7 @@ impl Inode {
         new_dir_inode: &Inode,
         new_name: &str,
         replaced_inode: Option<&Inode>,
+        mode: RenameMode,
     ) -> Result<()> {
         // The `DirDentry.children` lock in the VFS layer keeps the parent
         // directory entry stable during this operation, so we only need to
@@ -255,6 +257,21 @@ impl Inode {
         ];
         let mut guards = MultiInodeInnerGuards::lock(&lock_targets);
 
+        if mode == RenameMode::Exchange {
+            // The VFS layer requires both paths to exist for an exchange.
+            let Some(replaced_inode) = replaced_inode else {
+                return_errno_with_message!(Errno::ENOENT, "the exchange target does not exist");
+            };
+            return self.apply_exchange(
+                &mut guards,
+                new_dir_inode,
+                old_name,
+                old_inode,
+                replaced_inode,
+                new_name,
+            );
+        }
+
         // Step 3: validate invariants under lock.
         self.validate_rename_invariants(&guards, old_inode, replaced_inode)?;
 
@@ -267,6 +284,97 @@ impl Inode {
             replaced_inode,
             new_name,
         )?;
+
+        Ok(())
+    }
+
+    /// Swaps two existing directory entries, atomically from the caller's
+    /// point of view (`RENAME_EXCHANGE`).
+    ///
+    /// Both names keep their slots, so the entries can be rewritten in place.
+    /// Directories may be exchanged with files and need not be empty, unlike
+    /// the replace path. When the two parents differ, the moved directories'
+    /// `..` entries and the parents' link counts follow them.
+    fn apply_exchange(
+        &self,
+        guards: &mut MultiInodeInnerGuards,
+        new_dir_inode: &Inode,
+        old_name: &str,
+        old_inode: &Inode,
+        new_inode: &Inode,
+        new_name: &str,
+    ) -> Result<()> {
+        let old_is_dir = old_inode.type_ == InodeType::Dir;
+        let new_is_dir = new_inode.type_ == InodeType::Dir;
+        let is_same_dir = self.ino == new_dir_inode.ino();
+
+        // Both directories claim their current parent through `..`. Validate
+        // that before writing, so corruption is reported instead of spread.
+        if old_is_dir {
+            let parent_ino = guards.inner(old_inode.ino()).find_entry_info("..")?.ino;
+            if parent_ino != self.ino {
+                return_errno_with_message!(Errno::EIO, "dotdot entry inconsistent with source dir");
+            }
+        }
+        if new_is_dir {
+            let parent_ino = guards
+                .inner(new_inode.ino())
+                .find_entry_info("..")?
+                .ino;
+            if parent_ino != new_dir_inode.ino() {
+                return_errno_with_message!(
+                    Errno::EIO,
+                    "dotdot entry inconsistent with exchange target dir"
+                );
+            }
+        }
+
+        // Swap the targets of the two entries in place.
+        let old_type = DirEntryFileType::from(old_inode.type_);
+        let new_type = DirEntryFileType::from(new_inode.type_);
+        {
+            let source = guards.inner_mut(self.ino);
+            source.overwrite_entry(old_name, new_inode.ino(), new_type)?;
+            source.set_mtime_ctime(utils::now());
+        }
+        if is_same_dir {
+            let dir = guards.inner_mut(self.ino);
+            dir.overwrite_entry(new_name, old_inode.ino(), old_type)?;
+            dir.set_mtime_ctime(utils::now());
+        } else {
+            let target = guards.inner_mut(new_dir_inode.ino());
+            target.overwrite_entry(new_name, old_inode.ino(), old_type)?;
+            target.set_mtime_ctime(utils::now());
+        }
+
+        // Cross-directory moves change which parent owns which subdirectory.
+        if !is_same_dir {
+            if old_is_dir != new_is_dir {
+                let source = if old_is_dir { self } else { new_dir_inode };
+                let target = if old_is_dir { new_dir_inode } else { self };
+                guards.inner_mut(source.ino).dec_link_count(1);
+                guards.inner_mut(target.ino).inc_link_count(1);
+            }
+            if old_is_dir {
+                let moved = guards.inner_mut(old_inode.ino());
+                let dotdot = moved.find_entry_info("..")?;
+                moved.set_entry_target(&dotdot, new_dir_inode.ino, DirEntryFileType::Dir)?;
+                moved.remove_flags(FileFlags::INDEX_DIR);
+                moved.set_mtime_ctime(utils::now());
+            }
+            if new_is_dir {
+                let moved = guards.inner_mut(new_inode.ino());
+                let dotdot = moved.find_entry_info("..")?;
+                moved.set_entry_target(&dotdot, self.ino, DirEntryFileType::Dir)?;
+                moved.remove_flags(FileFlags::INDEX_DIR);
+                moved.set_mtime_ctime(utils::now());
+            }
+        }
+
+        // Both inodes keep their link counts; exchanging them is not a link
+        // or unlink. Only the metadata change time follows the exchange.
+        guards.inner_mut(old_inode.ino()).set_ctime(utils::now());
+        guards.inner_mut(new_inode.ino()).set_ctime(utils::now());
 
         Ok(())
     }

@@ -242,10 +242,6 @@ impl Inode for Ext2Inode {
         replaced_inode: Option<&Arc<dyn Inode>>,
         mode: RenameMode,
     ) -> Result<()> {
-        if mode == RenameMode::Exchange {
-            return_errno_with_message!(Errno::EINVAL, "RENAME_EXCHANGE is not supported on ext2");
-        }
-
         let new_dir_inode = new_dir_dentry.inode().downcast_ref::<Ext2Inode>().unwrap();
         let old_inode = old_child_dentry
             .inode()
@@ -259,6 +255,7 @@ impl Inode for Ext2Inode {
             new_dir_inode,
             new_name,
             replaced_inode,
+            mode,
         )
     }
 

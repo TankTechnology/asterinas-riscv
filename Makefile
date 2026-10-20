@@ -649,6 +649,7 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_fs_crash \
 		tools.x86.tests.test_x86_debian_fs_concurrency \
 		tools.x86.tests.test_x86_debian_fs_durability \
+		tools.x86.tests.test_x86_debian_fs_renameat2 \
 		tools.x86.tests.test_x86_debian_fs_timestamps \
 		tools.x86.tests.test_lmbench_transcript \
 		tools.riscv.tests.test_lmbench_native -v
@@ -901,6 +902,29 @@ test_x86_debian_fs_timestamps:
 		--workspace "$(X86_DEBIAN_TIMESTAMP_WORKSPACE)" \
 		--accel "$(X86_DEBIAN_TIMESTAMP_ACCEL)" \
 		--timeout "$(X86_DEBIAN_TIMESTAMP_TIMEOUT)"
+
+# renameat2 gate: RENAME_EXCHANGE (same dir, cross dir, directory <-> file),
+# RENAME_NOREPLACE, ENOENT/EINVAL handling; the image is remounted and the
+# resulting tree re-checked before `e2fsck -fn`.
+#   X86_DEBIAN_RENAMEAT2_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_RENAMEAT2_BASE_ROOT ?=
+X86_DEBIAN_RENAMEAT2_WORKSPACE ?= $(CURDIR)/target/x86-debian/renameat2
+X86_DEBIAN_RENAMEAT2_ACCEL ?= kvm
+X86_DEBIAN_RENAMEAT2_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_renameat2
+test_x86_debian_fs_renameat2:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_RENAMEAT2_BASE_ROOT)" || { echo "X86_DEBIAN_RENAMEAT2_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-renameat2: base=$(X86_DEBIAN_RENAMEAT2_BASE_ROOT) accel=$(X86_DEBIAN_RENAMEAT2_ACCEL)"
+	@tools/x86/debian/fs_renameat2_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_RENAMEAT2_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_RENAMEAT2_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_RENAMEAT2_ACCEL)" \
+		--timeout "$(X86_DEBIAN_RENAMEAT2_TIMEOUT)"
 
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:
