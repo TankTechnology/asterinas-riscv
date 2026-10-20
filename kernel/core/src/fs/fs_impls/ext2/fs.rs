@@ -238,7 +238,9 @@ impl Ext2 {
                 .contains(FeatureInCompatSet::RECOVER)
             && !mount_options.noload_journal
         {
-            ext2.replay_journal()?;
+            if ext2.replay_journal()? {
+                ext2.reload_metadata_after_replay()?;
+            }
         }
 
         // The journal is now in use. Keep the filesystem marked as needing
@@ -262,7 +264,7 @@ impl Ext2 {
     /// inode emitted by the Debian rootfs builder. It validates the complete
     /// transaction set before writing any target blocks and clears the journal
     /// start marker only after replay succeeds.
-    fn replay_journal(&self) -> Result<()> {
+    fn replay_journal(&self) -> Result<bool> {
         let journal_ino = self.super_block.read().journal_ino();
         if journal_ino == 0 {
             return_errno_with_message!(Errno::EOPNOTSUPP, "filesystem has no internal journal");
@@ -274,7 +276,7 @@ impl Ext2 {
         let journal_sb = self.read_raw_block(journal_sb_bid)?;
         let sb = journal::SuperBlock::parse(&journal_sb)?;
         if !sb.needs_recovery() {
-            return Ok(());
+            return Ok(false);
         }
 
         let count = sb.max_length.saturating_sub(sb.start);
@@ -303,13 +305,65 @@ impl Ext2 {
         }
         let refs: Vec<&[u8]> = blocks.iter().map(Vec::as_slice).collect();
         let replay = journal::scan_log(&refs, sb.sequence)?;
+        debug!("ext2: journal replay applying {} blocks", replay.len());
         for block in replay {
             self.write_raw_block(block.block_number, &block.data)?;
+        }
+        // The home blocks must be durable before the recovery pointer is
+        // cleared; otherwise a crash right after mount would forget a
+        // transaction whose blocks never reached the device.
+        if self.block_device.sync()? != BioStatus::Complete {
+            return_errno_with_message!(Errno::EIO, "failed to flush replayed journal blocks");
         }
 
         let mut clean_sb = journal_sb;
         journal::SuperBlock::write_start(&mut clean_sb, 0)?;
-        self.write_raw_block(journal_sb_bid, &clean_sb)
+        self.write_raw_block(journal_sb_bid, &clean_sb)?;
+        if self.block_device.sync()? != BioStatus::Complete {
+            return_errno_with_message!(Errno::EIO, "failed to clear the journal recovery marker");
+        }
+        Ok(true)
+    }
+
+    /// Re-reads the metadata caches that journal replay bypassed.
+    ///
+    /// Block groups load their bitmaps and descriptors during mount, before
+    /// `replay_journal` writes the replayed home blocks directly to the
+    /// device. Without this reload the next commit would stage the stale
+    /// pre-replay bitmaps and undo the recovery, leaking deleted inodes and
+    /// blocks.
+    fn reload_metadata_after_replay(&self) -> Result<()> {
+        let raw_super_block =
+            self.block_device.read_val::<RawSuperBlock>(SUPER_BLOCK_OFFSET)?;
+        let fresh_super_block = SuperBlock::try_from_with_journal(raw_super_block, true)?;
+        *self.super_block.write() = Dirty::new(fresh_super_block);
+
+        let nr_groups = self.block_groups.len();
+        let desc_bytes = nr_groups * size_of::<RawBlockGroup>();
+        let nblocks = desc_bytes.div_ceil(BLOCK_SIZE);
+        let desc_bid = self.super_block.read().group_descriptors_bid(0);
+        let mut bytes = vec![0u8; nblocks * BLOCK_SIZE];
+        {
+            let bio_segment = BioSegment::alloc(nblocks, BioDirection::FromDevice);
+            match self
+                .block_device
+                .read_blocks(Bid::new(desc_bid as u64), vec![bio_segment.clone()])?
+            {
+                BioStatus::Complete => {}
+                status => return Err(Error::from(status)),
+            }
+            bio_segment
+                .reader()?
+                .read_fallible(&mut VmWriter::from(bytes.as_mut_slice()).to_fallible())?;
+        }
+        self.group_descriptors_segment
+            .writer()
+            .write_fallible(&mut VmReader::from(bytes.as_slice()).to_fallible())?;
+
+        for group in &self.block_groups {
+            group.reload_after_replay(&self.group_descriptors_segment)?;
+        }
+        Ok(())
     }
 
     fn read_raw_block(&self, bid: Ext2Bid) -> Result<Vec<u8>> {

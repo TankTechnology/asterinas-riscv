@@ -331,7 +331,7 @@ pub(super) fn scan_log(blocks: &[&[u8]], first_sequence: u32) -> Result<Vec<Repl
         // journal"). Only at the very start is a bad header corruption.
         let header = match parse_header(blocks[offset]) {
             Ok(header) => header,
-            Err(err) if offset > 0 => break,
+            Err(_) if offset > 0 => break,
             Err(err) => return Err(err),
         };
         match header.block_type {

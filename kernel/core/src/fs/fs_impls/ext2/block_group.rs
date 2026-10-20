@@ -160,6 +160,46 @@ impl BlockGroup {
         })
     }
 
+    /// Re-reads the metadata cached during mount after a journal replay.
+    ///
+    /// `replay_journal` writes replayed home blocks directly to the device,
+    /// bypassing this group's bitmap, descriptor and inode-table caches. The
+    /// caches must be reloaded before the next commit, otherwise a stale
+    /// bitmap would be staged and undo the recovery.
+    pub(super) fn reload_after_replay(&self, group_descs: &USegment) -> Result<()> {
+        let fs = self
+            .fs
+            .upgrade()
+            .ok_or_else(|| Error::with_message(Errno::EIO, "filesystem already dropped"))?;
+
+        let offset = self.group_idx * size_of::<RawBlockGroup>();
+        let raw_group = group_descs.read_val::<RawBlockGroup>(offset)?;
+        let group_desc = BlockGroupDesc::from(raw_group);
+        let block_bitmap = Self::load_block_bitmap(
+            fs.block_device(),
+            self.first_block,
+            self.last_block,
+            &group_desc,
+        )?;
+        let inode_bitmap =
+            Self::load_inode_bitmap(fs.block_device(), self.nr_inodes_per_group, &group_desc)?;
+
+        *self.metadata.write() = BlockGroupMetadata {
+            desc: Dirty::new(group_desc),
+            block_bitmap: Dirty::new(block_bitmap),
+            inode_bitmap: Dirty::new(inode_bitmap),
+        };
+
+        // Inode-table pages loaded before the replay are stale too. At mount
+        // time they are clean (no metadata has been written yet), so evicting
+        // them is enough; the next read pulls the replayed content.
+        let inode_table_size = self.nr_inodes_per_group as usize * self.inode_size;
+        self.inode_table_cache.evict_range(0..inode_table_size)?;
+        self.inode_cache.write().clear();
+
+        Ok(())
+    }
+
     /// Returns the block group index.
     pub(super) fn group_idx(&self) -> usize {
         self.group_idx
