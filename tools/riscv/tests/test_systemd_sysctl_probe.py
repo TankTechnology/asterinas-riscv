@@ -69,5 +69,115 @@ class ProbeArtifactTests(unittest.TestCase):
         self.assertEqual(unit.mode, 0o644)
 
 
+from tools.riscv.debian.rootfs.systemd_sysctl_probe import (
+    SYSTEMD_SYSCTL_PROBE_BOOTARGS,
+    classify_probe,
+    parse_probe_args,
+    parse_probe_markers,
+)
+
+
+def _passing_probe_transcript() -> bytes:
+    return b"\n".join(
+        (
+            b"SYSCTL_PROBE begin",
+            b"SYSCTL_PROBE step=read_pid_max rc=0 ms=1 value=2147483647",
+            b"SYSCTL_PROBE step=read_core_pattern rc=0 ms=1 value=core",
+            b"SYSCTL_PROBE step=write_pid_max rc=0 ms=1",
+            b"SYSCTL_PROBE step=readback_pid_max rc=0 ms=1 value=4194304",
+            b"SYSCTL_PROBE step=write_core_pattern rc=0 ms=1",
+            b"SYSCTL_PROBE step=readback_core_pattern rc=0 ms=1 value=core",
+            b"SYSCTL_PROBE step=binary_all rc=0 ms=2",
+            b"SYSCTL_PROBE end",
+            b"[  OK  ] Started systemd-sysctl.service - Apply Kernel Variables.",
+            b"[  OK  ] Reached target sysinit.target - System Initialization.",
+        )
+    )
+
+
+class ProbeRunnerTests(unittest.TestCase):
+    def test_bootargs_target_sysinit_directly(self):
+        self.assertIn("systemd.unit=sysinit.target", SYSTEMD_SYSCTL_PROBE_BOOTARGS)
+        self.assertIn("--root-init=systemd", SYSTEMD_SYSCTL_PROBE_BOOTARGS)
+        self.assertNotIn("basic.target", SYSTEMD_SYSCTL_PROBE_BOOTARGS)
+
+    def test_parse_probe_markers(self):
+        steps = parse_probe_markers(_passing_probe_transcript())
+        self.assertEqual(len(steps), 7)
+        self.assertEqual(steps[0]["step"], "read_pid_max")
+        self.assertEqual(steps[0]["rc"], 0)
+        self.assertIn("value=2147483647", steps[0]["detail"])
+        self.assertEqual(steps[3]["step"], "readback_pid_max")
+
+    def test_classify_probe_pass(self):
+        passed, reason = classify_probe(_passing_probe_transcript(), "probe")
+        self.assertTrue(passed, reason)
+
+    def test_classify_service_pass(self):
+        transcript = (
+            b"[  OK  ] Started systemd-sysctl.service - Apply Kernel Variables.\n"
+            b"[  OK  ] Reached target sysinit.target - System Initialization.\n"
+        )
+        passed, reason = classify_probe(transcript, "service")
+        self.assertTrue(passed, reason)
+
+    def test_classify_probe_rejects_timeout_step(self):
+        transcript = _passing_probe_transcript().replace(
+            b"step=write_pid_max rc=0", b"step=write_pid_max rc=124"
+        )
+        passed, reason = classify_probe(transcript, "probe")
+        self.assertFalse(passed)
+        self.assertEqual(reason, "step-timeout:write_pid_max")
+
+    def test_classify_probe_rejects_failed_step(self):
+        transcript = _passing_probe_transcript().replace(
+            b"step=write_core_pattern rc=0", b"step=write_core_pattern rc=1"
+        )
+        passed, reason = classify_probe(transcript, "probe")
+        self.assertFalse(passed)
+        self.assertEqual(reason, "step-failed:write_core_pattern:1")
+
+    def test_classify_probe_rejects_wrong_readback(self):
+        transcript = _passing_probe_transcript().replace(
+            b"value=4194304", b"value=2147483647"
+        )
+        passed, reason = classify_probe(transcript, "probe")
+        self.assertFalse(passed)
+        self.assertEqual(reason, "pid-max-readback")
+
+    def test_classify_rejects_failed_unit(self):
+        transcript = _passing_probe_transcript() + (
+            b"\n[FAILED] Failed to start systemd-sysctl.service\n"
+        )
+        passed, reason = classify_probe(transcript, "probe")
+        self.assertFalse(passed)
+        self.assertEqual(reason, "systemd-sysctl-failed")
+
+    def test_classify_rejects_missing_sysinit(self):
+        transcript = _passing_probe_transcript().replace(
+            b"[  OK  ] Reached target sysinit.target - System Initialization.", b""
+        )
+        passed, reason = classify_probe(transcript, "probe")
+        self.assertFalse(passed)
+        self.assertEqual(reason, "sysinit-not-reached")
+
+    def test_parse_probe_args_extracts_mode(self):
+        arguments = [
+            "--kernel", "kernel",
+            "--uboot", "uboot",
+            "--dtb", "dtb",
+            "--stage1-initramfs", "stage1",
+            "--root-image", "root",
+            "--root-manifest", "manifest",
+            "--packages-lock", "lock",
+            "--package-checksums", "checksums",
+            "--output-directory", "output",
+            "--mode", "service",
+        ]
+        config, mode = parse_probe_args(arguments)
+        self.assertEqual(mode, "service")
+        self.assertEqual(str(config.kernel), "kernel")
+
+
 if __name__ == "__main__":
     unittest.main()
