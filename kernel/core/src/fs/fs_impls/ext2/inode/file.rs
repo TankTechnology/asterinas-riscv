@@ -160,9 +160,44 @@ impl Inode {
                 }
             }
             FallocMode::AllocateKeepSize => {
-                if let Err(err) = inner.allocate_range_blocks(offset, end) {
+                // The legacy indirect mapping cannot describe blocks past
+                // EOF: `e2fsck` expects `i_size` to cover every allocated
+                // block. Preallocation beyond EOF is therefore limited to
+                // the part of the range the file already covers.
+                let alloc_end = end.min(old_size);
+                if offset < alloc_end
+                    && let Err(err) = inner.allocate_range_blocks(offset, alloc_end)
+                {
                     inner.rollback_fallocate(old_size);
                     return Err(err);
+                }
+            }
+            FallocMode::ZeroRange | FallocMode::ZeroRangeKeepSize => {
+                let keep_size = matches!(mode, FallocMode::ZeroRangeKeepSize);
+                let alloc_end = if keep_size { end.min(old_size) } else { end };
+                if offset < alloc_end
+                    && let Err(err) = inner.allocate_range_blocks(offset, alloc_end)
+                {
+                    inner.rollback_fallocate(old_size);
+                    return Err(err);
+                }
+                if !keep_size
+                    && end > old_size
+                    && let Err(err) = inner.expand(&fs, end)
+                {
+                    inner.rollback_fallocate(old_size);
+                    return Err(err);
+                }
+                // With KEEP_SIZE the range may extend past EOF; only the
+                // bytes below the file size are visible, so the tail stays
+                // uninitialised until the file grows into it.
+                let zero_end = if keep_size { end.min(old_size) } else { end };
+                if offset < zero_end {
+                    let result = inner.page_cache().fill_zeros(offset..zero_end);
+                    if let Err(err) = result {
+                        inner.rollback_fallocate(old_size);
+                        return Err(err);
+                    }
                 }
             }
             _ => {

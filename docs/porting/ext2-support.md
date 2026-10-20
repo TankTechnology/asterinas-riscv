@@ -48,7 +48,7 @@ Legend: ✅ supported, 🟡 partial (limits noted), ❌ not implemented.
 | Extent writeback of existing ranges | 🟡 | depth 0 and 1 |
 | Extent truncate | 🟡 | depth 0 and 1; deeper trees are left untouched and logged |
 | 64-bit extents | ❌ | rejected as `EOPNOTSUPP` |
-| `fallocate` | 🟡 | `Allocate` and `AllocateKeepSize`; punch-hole and range modes are `EOPNOTSUPP` |
+| `fallocate` | 🟡 | `Allocate`, `AllocateKeepSize`, `ZeroRange` and `ZeroRangeKeepSize`; punch-hole, collapse, insert and unshare are `EOPNOTSUPP` |
 | `O_TMPFILE` | ❌ | VFS default returns `EOPNOTSUPP` |
 | File size | ✅ | up to 2,196,873,666,560 bytes with 4 KiB blocks (indirect-mapped limit) |
 
@@ -233,6 +233,21 @@ recovery boot the operation must be present in full:
 | dir-entry | file exists with the exact 4096 bytes and its entry survived |
 
 Result: **5/5 pass**, `e2fsck -fn` clean.
+
+`fs_fallocate_check.sh` (`make test_x86_debian_fs_fallocate`) covers
+`ZERO_RANGE` over an existing range, past EOF, and with `KEEP_SIZE`, plus
+plain allocation with and without `KEEP_SIZE`; it also pins the punch-hole
+contract (`EOPNOTSUPP` and an unchanged file).  The image is remounted before
+the contents are re-checked.  Result: **PASS**, `e2fsck -fn` clean.
+
+The gate found that `AllocateKeepSize` had been allocating blocks beyond
+`i_size`.  An ext2 file uses the legacy indirect mapping, which has no way to
+mark such blocks as unwritten, so `e2fsck` reports `i_size is 0, should be
+8192`.  Keep-size allocation is now clamped to the part of the range the file
+already covers: the range is allocated and zeroed where it is visible, and a
+range that lies entirely past EOF is a no-op.  This is a deliberate
+difference from ext4's preallocation; the legacy layout cannot express it
+without corrupting the accounting.
 
 `fs_renameat2_check.sh` (`make test_x86_debian_fs_renameat2`) covers the
 rename flags: `RENAME_EXCHANGE` within one directory, across directories,

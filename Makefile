@@ -648,6 +648,7 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_apt \
 		tools.x86.tests.test_x86_debian_fs_crash \
 		tools.x86.tests.test_x86_debian_fs_concurrency \
+		tools.x86.tests.test_x86_debian_fs_fallocate \
 		tools.x86.tests.test_x86_debian_fs_durability \
 		tools.x86.tests.test_x86_debian_fs_renameat2 \
 		tools.x86.tests.test_x86_debian_fs_timestamps \
@@ -925,6 +926,29 @@ test_x86_debian_fs_renameat2:
 		--workspace "$(X86_DEBIAN_RENAMEAT2_WORKSPACE)" \
 		--accel "$(X86_DEBIAN_RENAMEAT2_ACCEL)" \
 		--timeout "$(X86_DEBIAN_RENAMEAT2_TIMEOUT)"
+
+# fallocate gate: ZERO_RANGE over an existing range, past EOF and with
+# KEEP_SIZE, plain allocation, and the punch-hole error contract; the image
+# is remounted and the contents re-checked before `e2fsck -fn`.
+#   X86_DEBIAN_FALLOCATE_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_FALLOCATE_BASE_ROOT ?=
+X86_DEBIAN_FALLOCATE_WORKSPACE ?= $(CURDIR)/target/x86-debian/fallocate
+X86_DEBIAN_FALLOCATE_ACCEL ?= kvm
+X86_DEBIAN_FALLOCATE_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_fallocate
+test_x86_debian_fs_fallocate:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_FALLOCATE_BASE_ROOT)" || { echo "X86_DEBIAN_FALLOCATE_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-fallocate: base=$(X86_DEBIAN_FALLOCATE_BASE_ROOT) accel=$(X86_DEBIAN_FALLOCATE_ACCEL)"
+	@tools/x86/debian/fs_fallocate_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_FALLOCATE_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_FALLOCATE_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_FALLOCATE_ACCEL)" \
+		--timeout "$(X86_DEBIAN_FALLOCATE_TIMEOUT)"
 
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:

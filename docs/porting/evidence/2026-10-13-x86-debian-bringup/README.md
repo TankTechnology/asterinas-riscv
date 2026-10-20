@@ -713,6 +713,31 @@ FS_RENAMEAT2_VERIFY ok=True problems=0
 e2fsck -fn clean
 ```
 
+## `fallocate` modes
+
+The syscall layer already parsed every `FALLOC_FL_*` combination, but the
+ext2 file only implemented plain allocation. `FALLOC_FL_ZERO_RANGE` now
+allocates the range (when needed) and zeroes it in the page cache;
+`ZERO_RANGE` without `KEEP_SIZE` grows the file past EOF first, while the
+keep-size variant leaves the size alone. Punch-hole and the range-shifting
+modes still return `EOPNOTSUPP`.
+
+The new gate found a real bug in `ALLOCATE_KEEP_SIZE`: it allocated blocks
+past `i_size`, which an ext2 legacy-mapped file cannot describe. `e2fsck`
+rejected the image with `Inode 19491, i_size is 0, should be 8192`. Keep-size
+allocation is now clamped to the visible part of the range; a range entirely
+past EOF is a no-op. That is a deliberate divergence from ext4 preallocation,
+because the legacy layout has no unwritten-block marker.
+
+```
+FS_FALLOCATE_WRITE ok=True punch_errno=95
+FS_FALLOCATE_VERIFY ok=True problems=0
+e2fsck -fn clean
+```
+
+The gate also pins the punch-hole contract: the call must fail with
+`EOPNOTSUPP` (95) and leave the file untouched.
+
 ## Socket visibility: `/proc/net` and `NETLINK_SOCK_DIAG`
 
 `ss`, `ip`, and the Debian boot scripts expect to see the socket table. The
