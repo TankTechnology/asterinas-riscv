@@ -26,6 +26,14 @@ static void report_progress(const char *step, const char *key,
                  value);
     (void)fflush(stdout);
 }
+
+static void report_root_selection(const char *device)
+{
+    (void)printf("DEBIAN_STAGE1_PROGRESS step=root-select source=explicit "
+                 "device=%s\n",
+                 device);
+    (void)fflush(stdout);
+}
 #endif
 
 #if !defined(DEBIAN_STAGE1_SELF_TEST)
@@ -100,6 +108,7 @@ struct RootInitConfig {
     int debug_root_console;
     int debug_console_isolated;
     int volatile_home;
+    char root_device[ROOT_DEVICE_PATH_SIZE];
 };
 
 struct ProductionContext {
@@ -196,9 +205,18 @@ static int parse_root_init(int argc, char **argv,
     config->debug_root_console = 0;
     config->debug_console_isolated = 0;
     config->volatile_home = 0;
+    config->root_device[0] = '\0';
     int selector_seen = 0;
     int debug_seen = 0;
+    int delimiter_seen = 0;
     for (int index = 1; index < argc; ++index) {
+        if (strcmp(argv[index], "--") == 0) {
+            if (delimiter_seen) {
+                return -1;
+            }
+            delimiter_seen = 1;
+            continue;
+        }
         enum RootInitMode selected_mode;
         if (strcmp(argv[index], "--root-init=interactive") == 0) {
             selected_mode = ROOT_INIT_INTERACTIVE;
@@ -226,6 +244,23 @@ static int parse_root_init(int argc, char **argv,
             config->debug_root_console = 1;
             config->debug_console_isolated =
                 strcmp(argv[index], "--debug-console=isolated-root") == 0;
+            continue;
+        } else if (strncmp(argv[index], "--root-device=",
+                           sizeof("--root-device=") - 1) == 0) {
+            const char *path = argv[index] + sizeof("--root-device=") - 1;
+            const size_t path_length = strlen(path);
+            const int is_virtio = path_length == 8 &&
+                                   strncmp(path, "/dev/vd", 7) == 0 &&
+                                   path[7] >= 'a' && path[7] <= 'z';
+            const int is_mmc = path_length == 14 &&
+                               strncmp(path, "/dev/mmcblk0p", 13) == 0 &&
+                               path[13] >= '1' && path[13] <= '3';
+            if (config->root_device[0] != '\0' ||
+                (!is_virtio && !is_mmc)) {
+                return -1;
+            }
+            (void)snprintf(config->root_device, ROOT_DEVICE_PATH_SIZE,
+                           "%s", path);
             continue;
         } else {
             return -1;
@@ -344,6 +379,23 @@ static const char *discover_root(struct Stage1Ops *ops,
     }
 }
 
+static const char *discover_fixed_root(
+    struct Stage1Ops *ops, const char *fixed_device,
+    char root_device[ROOT_DEVICE_PATH_SIZE])
+{
+    char matched_path[ROOT_DEVICE_PATH_SIZE] = { 0 };
+    enum ProbeResult result =
+        ops->probe_device(ops->context, fixed_device, matched_path);
+    if (result == PROBE_FATAL) {
+        return "root-device-probe";
+    }
+    if (result != PROBE_MATCH) {
+        return "root-device-no-match";
+    }
+    memcpy(root_device, matched_path, ROOT_DEVICE_PATH_SIZE);
+    return NULL;
+}
+
 static const char *handoff_root(struct Stage1Ops *ops, const char *root_device,
                                 const struct RootInitConfig *config)
 {
@@ -361,6 +413,8 @@ static const char *handoff_root(struct Stage1Ops *ops, const char *root_device,
     static const struct HandoffAction systemd_steps[] = {
         { HANDOFF_MOUNT_ROOT, "root-mount" },
         { HANDOFF_BIND_DEV, "dev-bind" },
+        { HANDOFF_MOUNT_PROC, "proc-mount" },
+        { HANDOFF_MOUNT_SYSFS, "sysfs-mount" },
         { HANDOFF_PREPARE_API_DIRS, "api-directories" },
         { HANDOFF_MOUNT_RUN, "run-mount" },
         { HANDOFF_MOUNT_TMP, "tmp-mount" },
@@ -371,6 +425,8 @@ static const char *handoff_root(struct Stage1Ops *ops, const char *root_device,
     static const struct HandoffAction systemd_debug_steps[] = {
         { HANDOFF_MOUNT_ROOT, "root-mount" },
         { HANDOFF_BIND_DEV, "dev-bind" },
+        { HANDOFF_MOUNT_PROC, "proc-mount" },
+        { HANDOFF_MOUNT_SYSFS, "sysfs-mount" },
         { HANDOFF_PREPARE_API_DIRS, "api-directories" },
         { HANDOFF_MOUNT_RUN, "run-mount" },
         { HANDOFF_PREPARE_DEBUG_CONSOLE, "debug-console" },
@@ -449,6 +505,10 @@ static enum ProbeResult mock_probe_device(
     if (strcmp(context->case_name, "one-valid-device") == 0) {
         is_match = strcmp(candidate_path, "/dev/vdb") == 0;
     } else if (strcmp(context->case_name, "one-valid-mmc-device") == 0) {
+        is_match = strcmp(candidate_path, "/dev/mmcblk0p2") == 0;
+    } else if (strcmp(context->case_name, "root-device-vdb") == 0) {
+        is_match = strcmp(candidate_path, "/dev/vdb") == 0;
+    } else if (strcmp(context->case_name, "root-device-mmcblk0p2") == 0) {
         is_match = strcmp(candidate_path, "/dev/mmcblk0p2") == 0;
     } else if (strcmp(context->case_name, "two-matching-devices") == 0) {
         is_match = strcmp(candidate_path, "/dev/vdb") == 0 ||
@@ -683,7 +743,7 @@ static int run_handoff_self_test(const char *case_name,
     const char *reason = handoff_root(&ops, "/dev/vdb", &config);
     unsigned int expected_count =
         failing_step == HANDOFF_PREPARE_DEBUG_CONSOLE
-            ? 5
+            ? 7
             : (unsigned int)failing_step + 1;
 
     if (strcmp(reason, expected_reason) != 0 ||
@@ -699,6 +759,13 @@ static int run_root_init_self_test(const char *case_name)
     char *default_argv[] = { "init", NULL };
     char *interactive_argv[] = { "init", "--root-init=interactive", NULL };
     char *systemd_argv[] = { "init", "--root-init=systemd", NULL };
+    char *systemd_delimiter_argv[] = {
+        "init", "--", "--root-init=systemd", "--root-device=/dev/vdb",
+        NULL,
+    };
+    char *duplicate_delimiter_argv[] = {
+        "init", "--", "--", "--root-init=systemd", NULL,
+    };
     char *probe_argv[] = { "init", "--root-init=probe", NULL };
     char *probe_debug_argv[] = {
         "init", "--root-init=probe", "--debug-console=root", NULL,
@@ -730,6 +797,20 @@ static int run_root_init_self_test(const char *case_name)
     };
     char *unknown_argv[] = { "init", "--root-init=other", NULL };
     char *control_argv[] = { "init", "--root-init=systemd\n", NULL };
+    char *root_device_vdb_argv[] = {
+        "init", "--root-init=systemd", "--root-device=/dev/vdb", NULL,
+    };
+    char *root_device_mmc_argv[] = {
+        "init", "--root-init=systemd", "--root-device=/dev/mmcblk0p2",
+        NULL,
+    };
+    char *root_device_invalid_argv[] = {
+        "init", "--root-init=systemd", "--root-device=/dev/vda1", NULL,
+    };
+    char *root_device_duplicate_argv[] = {
+        "init", "--root-init=systemd", "--root-device=/dev/vdb",
+        "--root-device=/dev/vdc", NULL,
+    };
 
     if (strcmp(case_name, "root-init-default-interactive") == 0) {
         if (parse_root_init(1, default_argv, &config) != 0 ||
@@ -748,6 +829,14 @@ static int run_root_init_self_test(const char *case_name)
         if (parse_root_init(2, systemd_argv, &config) != 0 ||
             config.mode != ROOT_INIT_SYSTEMD || config.debug_root_console) {
             return fail_self_test(case_name, "systemd mode was rejected");
+        }
+    } else if (strcmp(case_name, "root-init-systemd-delimiter") == 0) {
+        if (parse_root_init(4, systemd_delimiter_argv, &config) != 0 ||
+            config.mode != ROOT_INIT_SYSTEMD ||
+            strcmp(config.root_device, "/dev/vdb") != 0 ||
+            parse_root_init(4, duplicate_delimiter_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "bootargs delimiter was not handled strictly");
         }
     } else if (strcmp(case_name, "root-init-probe") == 0) {
         if (parse_root_init(2, probe_argv, &config) != 0 ||
@@ -843,6 +932,64 @@ static int run_root_init_self_test(const char *case_name)
             return fail_self_test(case_name,
                                   "control character was accepted");
         }
+    } else if (strcmp(case_name, "root-device-vdb") == 0) {
+        if (parse_root_init(3, root_device_vdb_argv, &config) != 0 ||
+            strcmp(config.root_device, "/dev/vdb") != 0) {
+            return fail_self_test(case_name,
+                                  "explicit virtio root device was rejected");
+        }
+        struct MockContext context = {
+            .case_name = case_name,
+            .failing_step = HANDOFF_EXEC,
+        };
+        struct Stage1Ops ops = {
+            .context = &context,
+            .probe_device = mock_probe_device,
+            .monotonic_now = mock_monotonic_now,
+            .wait_for_retry = mock_wait_for_retry,
+            .perform_handoff = mock_perform_handoff,
+        };
+        char selected[ROOT_DEVICE_PATH_SIZE] = { 0 };
+        if (discover_fixed_root(&ops, config.root_device, selected) != NULL ||
+            strcmp(selected, "/dev/vdb") != 0 ||
+            context.retry_count != 0) {
+            return fail_self_test(case_name,
+                                  "explicit virtio root was not probed once");
+        }
+    } else if (strcmp(case_name, "root-device-mmcblk0p2") == 0) {
+        if (parse_root_init(3, root_device_mmc_argv, &config) != 0 ||
+            strcmp(config.root_device, "/dev/mmcblk0p2") != 0) {
+            return fail_self_test(case_name,
+                                  "explicit MMC root device was rejected");
+        }
+        struct MockContext context = {
+            .case_name = case_name,
+            .failing_step = HANDOFF_EXEC,
+        };
+        struct Stage1Ops ops = {
+            .context = &context,
+            .probe_device = mock_probe_device,
+            .monotonic_now = mock_monotonic_now,
+            .wait_for_retry = mock_wait_for_retry,
+            .perform_handoff = mock_perform_handoff,
+        };
+        char selected[ROOT_DEVICE_PATH_SIZE] = { 0 };
+        if (discover_fixed_root(&ops, config.root_device, selected) != NULL ||
+            strcmp(selected, "/dev/mmcblk0p2") != 0 ||
+            context.retry_count != 0) {
+            return fail_self_test(case_name,
+                                  "explicit MMC root was not probed once");
+        }
+    } else if (strcmp(case_name, "root-device-invalid") == 0) {
+        if (parse_root_init(3, root_device_invalid_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "invalid explicit root device was accepted");
+        }
+    } else if (strcmp(case_name, "root-device-duplicate") == 0) {
+        if (parse_root_init(4, root_device_duplicate_argv, &config) == 0) {
+            return fail_self_test(case_name,
+                                  "duplicate explicit root device was accepted");
+        }
     } else if (strcmp(case_name, "systemd-root-label") == 0) {
         unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
         make_valid_superblock(superblock, SYSTEMD_ROOT_LABEL);
@@ -905,6 +1052,7 @@ static int run_root_init_self_test(const char *case_name)
         };
         static const enum HandoffStep expected[] = {
             HANDOFF_MOUNT_ROOT, HANDOFF_BIND_DEV,
+            HANDOFF_MOUNT_PROC, HANDOFF_MOUNT_SYSFS,
             HANDOFF_PREPARE_API_DIRS, HANDOFF_MOUNT_RUN,
             HANDOFF_MOUNT_TMP, HANDOFF_CHROOT, HANDOFF_CHDIR, HANDOFF_EXEC,
         };
@@ -934,15 +1082,15 @@ static int run_root_init_self_test(const char *case_name)
             .volatile_home = 1,
         };
         const char *reason = handoff_root(&ops, "/dev/vdb", &config);
-        if (strcmp(reason, "chroot") != 0 || context.handoff_count != 7 ||
-            context.handoff_steps[5] != HANDOFF_VOLATILE_HOME) {
+        if (strcmp(reason, "chroot") != 0 || context.handoff_count != 9 ||
+            context.handoff_steps[7] != HANDOFF_VOLATILE_HOME) {
             return fail_self_test(case_name,
                                   "volatile home was not prepared before chroot");
         }
         context.handoff_count = 0;
         context.failing_step = HANDOFF_VOLATILE_HOME;
         reason = handoff_root(&ops, "/dev/vdb", &config);
-        if (strcmp(reason, "volatile-home") != 0 || context.handoff_count != 6) {
+        if (strcmp(reason, "volatile-home") != 0 || context.handoff_count != 8) {
             return fail_self_test(case_name,
                                   "volatile home failure did not stop handoff");
         }
@@ -958,6 +1106,8 @@ static int run_root_init_self_test(const char *case_name)
         static const enum HandoffStep expected[] = {
             HANDOFF_MOUNT_ROOT,
             HANDOFF_BIND_DEV,
+            HANDOFF_MOUNT_PROC,
+            HANDOFF_MOUNT_SYSFS,
             HANDOFF_PREPARE_API_DIRS,
             HANDOFF_MOUNT_RUN,
             HANDOFF_PREPARE_DEBUG_CONSOLE,
@@ -1004,6 +1154,8 @@ int main(int argc, char **argv)
     if (handoff_case(case_name, &failing_step, &expected_reason)) {
         result = run_handoff_self_test(case_name, failing_step, expected_reason);
     } else if (strncmp(case_name, "root-init-", sizeof("root-init-") - 1) ==
+                   0 ||
+               strncmp(case_name, "root-device-", sizeof("root-device-") - 1) ==
                    0 ||
                strncmp(case_name, "systemd-", sizeof("systemd-") - 1) == 0) {
         result = run_root_init_self_test(case_name);
@@ -1388,7 +1540,14 @@ int main(int argc, char **argv)
         .perform_handoff = production_perform_handoff,
     };
     char root_device[ROOT_DEVICE_PATH_SIZE] = { 0 };
-    const char *reason = discover_root(&ops, root_device);
+    const char *reason;
+    if (context.root_init.root_device[0] != '\0') {
+        report_root_selection(context.root_init.root_device);
+        reason = discover_fixed_root(&ops, context.root_init.root_device,
+                                     root_device);
+    } else {
+        reason = discover_root(&ops, root_device);
+    }
     if (reason != NULL) {
         fail_and_hold(reason);
     }

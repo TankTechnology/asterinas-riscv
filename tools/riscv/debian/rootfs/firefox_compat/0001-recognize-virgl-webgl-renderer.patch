@@ -1,0 +1,37 @@
+Description: Recognize Mesa virgl in Firefox's WebGL renderer sanitizer
+Forwarded: not-needed
+Author: Asterinas development team
+
+The QEMU DRM guest exposes a truthful Mesa renderer string beginning with
+"virgl". ESR 140 currently maps that string to Generic Renderer, which makes
+the WebGL gate fail even when GBM/EGL and glxtest both identify virgl. Keep the
+strict runtime renderer check and teach the sanitizer this renderer family. The
+regression test uses the same prefix and expected public label.
+
+--- a/dom/canvas/SanitizeRenderer.cpp
++++ b/dom/canvas/SanitizeRenderer.cpp
+@@ -27,6 +27,7 @@
+ static std::optional<std::string> ChooseDeviceReplacement(
+     const std::string& str) {
+   if (str.find("llvmpipe") == 0) return "llvmpipe";
++  if (str.find("virgl") == 0) return "virgl";
+   if (str.find("Apple") == 0) return "Apple M1";
+ 
+   std::smatch m;
+--- a/dom/canvas/gtest/TestSanitizeRenderer.cpp
++++ b/dom/canvas/gtest/TestSanitizeRenderer.cpp
+@@ -9,6 +9,14 @@
+ std::string SanitizeRenderer(const std::string&);
+ }  // namespace mozilla::webgl
+ 
++TEST(SanitizeRenderer, TestLinuxVirgl)
++{
++  const std::string renderer("virgl (Mesa 25.0.7-2+deb13u1)");
++  const std::string expectation("virgl, or similar");
++  const auto sanitized = mozilla::webgl::SanitizeRenderer(renderer);
++  EXPECT_EQ(sanitized, expectation);
++}
++
+ TEST(SanitizeRenderer, TestLinuxRadeon)
+ {
+   const std::string renderer(

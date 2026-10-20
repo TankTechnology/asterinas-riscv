@@ -5,16 +5,18 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import time
 from typing import Any
 
-from tools.riscv.debian.rootfs.desktop_m3_gate import DESKTOP_M3_BOOTARGS
 from tools.riscv.debian.rootfs.desktop_m4_gate import (
+    DESKTOP_M4_BOOTARGS,
     DESKTOP_M4_MILESTONES,
     DesktopM4Operations,
     classify_desktop,
     desktop_m4_qemu_argv,
+    validate_framebuffer_handoff,
 )
 from tools.riscv.debian.rootfs.gate_protocol import GateResult
 from tools.riscv.debian.rootfs.gate_runtime import (
@@ -35,11 +37,10 @@ from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gat
 # the readiness milestone so recovery tests exercise a real desktop epoch
 # rather than racing the probe itself.
 RECOVERY_SECONDS = 300
-RECOVERY_BOOTARGS = DESKTOP_M3_BOOTARGS.replace(
-    " -- --root-init=systemd",
-    " asterinas.reboot_after={} "
-    "systemd.setenv=ASTERINAS_DESKTOP_M4_FRAMEBUFFER_PROBE=/bin/true"
-    " -- --root-init=systemd".format(RECOVERY_SECONDS),
+RECOVERY_BOOTARGS = DESKTOP_M4_BOOTARGS.replace(
+    "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered",
+    "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered "
+    "systemd.setenv=ASTERINAS_DESKTOP_M4_FRAMEBUFFER_RW=1",
 )
 
 
@@ -59,12 +60,39 @@ def classify_desktop_m4_recovery(
     )
     if not result.passed:
         return result
+    record_pattern = re.compile(
+        rb"DEBIAN_DESKTOP_M4_FB_RW width=[1-9][0-9]* height=[1-9][0-9]* "
+        rb"stride=[1-9][0-9]* bpp=32 format=BgrReserved rect=16x16 "
+        rb"status=pass saved_sha256=([0-9a-f]{64}) "
+        rb"restored_sha256=([0-9a-f]{64})",
+    )
     ready = transcript.find(b"DEBIAN_DESKTOP_M4_READY")
     if ready < 0:
         return GateResult(False, "missing desktop readiness marker", None)
     fresh = transcript.find(b"OpenSBI v", ready + 1)
     if fresh < 0:
         return GateResult(False, "missing post-desktop OpenSBI epoch", None)
+    handoff = validate_framebuffer_handoff(transcript[:fresh])
+    if not handoff.passed:
+        return handoff
+
+    # The first desktop epoch is the framebuffer qualification under test.
+    # A successful software reboot may boot the desktop again, so later
+    # markers are allowed, but every observed marker must still prove that
+    # its write was restored exactly.  This avoids counting the second boot
+    # as a duplicate of the first while still rejecting a bad recovery boot.
+    records = list(record_pattern.finditer(transcript))
+    first_epoch = [record for record in records if record.start() < fresh]
+    if not first_epoch or any(
+        record.groups()[0] != record.groups()[1] for record in first_epoch
+    ):
+        return GateResult(False, "missing exact framebuffer write/restore", None)
+    if any(
+        record.groups()[0] != record.groups()[1]
+        for record in records
+        if record.start() >= fresh
+    ):
+        return GateResult(False, "missing exact framebuffer write/restore", None)
     if transcript.find(b"U-Boot", fresh) < 0 or transcript.find(b"=> ", fresh) < 0:
         return GateResult(False, "missing post-desktop U-Boot prompt", None)
     return GateResult(True, "pass", None)

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "package": "firefox-esr",
+  "version": "140.16.0esr-1~deb13u1",
+  "format": "3.0 (quilt)",
+  "source": {
+    "suite": "trixie-security",
+    "base_url": "https://security.debian.org/debian-security/pool/updates/main/f/firefox-esr/",
+    "dsc": {
+      "filename": "firefox-esr_140.16.0esr-1~deb13u1.dsc",
+      "sha256": "721ad7dc3924a0061a0f5893340f97659e2e7c35b65a95f004eb8174cab2f249"
+    },
+    "archives": [
+      {
+        "filename": "firefox-esr_140.16.0esr.orig.tar.xz",
+        "size_bytes": 687986356,
+        "sha256": "c0c5b6ff43742f3e2ad5eec004956f33aaedabf457aeb54851dd74f45db0ce22"
+      },
+      {
+        "filename": "firefox-esr_140.16.0esr-1~deb13u1.debian.tar.xz",
+        "size_bytes": 186476,
+        "sha256": "61f7977216d310103af70d66918ddf7d47bf60ac50a19016712f0d6c168e9245"
+      }
+    ]
+  }
+}

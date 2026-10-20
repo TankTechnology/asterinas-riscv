@@ -21,7 +21,12 @@ import time
 
 from tools.riscv import megrez_boot_menu as menu
 from tools.riscv.megrez_control_chain import ControlChainError, parse_recovery_marker
-from tools.riscv.megrez_menu_board import LiveLog, attach, boot_cycle
+from tools.riscv.megrez_menu_board import (
+    LiveLog,
+    _ordered_recovery_boundary,
+    attach,
+    boot_cycle,
+)
 from tools.riscv.megrez_rockos_attestation import (
     RealRockOsAttestationOperations,
     _read_password,
@@ -261,6 +266,24 @@ def run_cycle(
         result.update(passed=True, recovered=True)
     except BaseException as error:
         result["error"] = str(error) or type(error).__name__
+        # A guest can stop before the first desktop marker. Keep the serial
+        # owner and observe the bounded recovery window before closing it;
+        # otherwise a watchdog recovery would be lost and the result could
+        # incorrectly leave the board's state unknown to the caller.
+        if getattr(operations, "_boot_attempt_started", False):
+            checkpoint = getattr(operations, "_recovery_checkpoint", 0)
+            try:
+                recovery = operations._require_session().wait_for_recovery_boundary(120)
+            except (RuntimeError, TimeoutError) as recovery_error:
+                result["recovery_error"] = str(recovery_error)
+                result["recovery_observed"] = False
+            else:
+                suffix = recovery[checkpoint:] if checkpoint < len(recovery) else recovery
+                boundary = _ordered_recovery_boundary(suffix)
+                result["recovery_observed"] = boundary is not None
+                if boundary is not None:
+                    result["recovery_boundary"] = boundary
+                    result["recovered"] = True
     finally:
         result["elapsed_seconds"] = time.monotonic() - started
         transcript = operations._log.getvalue()

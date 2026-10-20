@@ -1,0 +1,25 @@
+Description: Prefer the configured DRM render node for hardware WebRender
+Forwarded: not-needed
+Author: Asterinas development team
+
+When Firefox creates the hardware WebRender EGL display, GTK may already have
+an X11 display. ESR then skips the existing EGL device-enumeration path and
+uses EGL_DEFAULT_DISPLAY, which the QEMU guest selects as llvmpipe. Keep the
+existing fallback, but let the forceAccel WebRender request try the configured
+DRM render node first. This patch is source-audited only; it requires a
+provenance-tracked Firefox build before runtime use.
+
+--- a/gfx/gl/GLLibraryEGL.cpp
++++ b/gfx/gl/GLLibraryEGL.cpp
+@@ -948,7 +948,10 @@
+       ret = GetAndInitSoftwareDisplay(*this, aProofOfLock);
+     }
+     // Initialize the display the normal way
+-    if (!ret && !gdk_display_get_default() && !forceSoftware) {
++    // Hardware WebRender must prefer the configured DRM render node even
++    // when GTK has already initialized an X11 display.
++    if (!ret && (forceAccel || !gdk_display_get_default()) &&
++        !forceSoftware) {
+       ret = GetAndInitDeviceDisplay(*this, aProofOfLock);
+       if (!ret) {
+         ret = GetAndInitSurfacelessDisplay(*this, aProofOfLock);

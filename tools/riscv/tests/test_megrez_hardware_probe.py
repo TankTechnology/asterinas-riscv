@@ -22,6 +22,7 @@ def evidence(
     *,
     status: str = "pass",
     failure_reason: str | None = None,
+    access: str | None = None,
 ) -> str:
     spec = PROBE_SPECS[device]
     lines = [
@@ -37,6 +38,8 @@ def evidence(
         f"ASTERINAS_PROBE_READ device={device} offset=0x{offset:04x} value=0x{values[offset]:08x}"
         for offset in reads
     )
+    if access is not None:
+        lines.append(access)
     if failure_reason is not None:
         lines.append(f"ASTERINAS_PROBE_FAIL device={device} reason={failure_reason}")
     else:
@@ -64,17 +67,19 @@ def timeout_evidence(
         lines.append(
             f"ASTERINAS_PROBE_DT device={device} clocks=[3, 550] resets=[20, 7]"
         )
-    lines.extend(
-        f"ASTERINAS_PROBE_ATTEMPT device={device} offset=0x{offset:04x}"
-        for offset in attempts
-    )
     values = {0x10: 0x0220FE45, 0xC110: 0x00192004, 0xC120: 0x5533330B}
     if device.startswith("gmac-"):
         values = {0: 0, 0xB0: 8, 0x110: 0x1052, 0x120: 0x21008145, 0x1000: 0, 0x1008: 0}
-    lines.extend(
-        f"ASTERINAS_PROBE_READ device={device} offset=0x{offset:04x} value=0x{values[offset]:08x}"
-        for offset in reads
-    )
+    for index in range(max(len(attempts), len(reads))):
+        if index < len(attempts):
+            lines.append(
+                f"ASTERINAS_PROBE_ATTEMPT device={device} offset=0x{attempts[index]:04x}"
+            )
+        if index < len(reads):
+            offset = reads[index]
+            lines.append(
+                f"ASTERINAS_PROBE_READ device={device} offset=0x{offset:04x} value=0x{values[offset]:08x}"
+            )
     lines.extend(["OpenSBI v1.5", "U-Boot 2024.10"])
     return "\n".join(lines) + "\n"
 
@@ -160,6 +165,38 @@ class HardwareProbeTests(unittest.TestCase):
         result = validate_probe_evidence(text, "gmac-1", run_id="a" * 32)
         self.assertEqual(result.status, "pass")
 
+    def test_access_audit_is_required_and_matches_fixed_reads(self):
+        device = "gmac-1"
+        reads = PROBE_SPECS[device].whitelist
+        access = (
+            "ASTERINAS_PROBE_ACCESS device=gmac-1 reads=20 writes=14 "
+            "gmac_reads=6 gmac_writes=0 mdio=0 dma=0 tx=0 rx=0 irq=0"
+        )
+        result = validate_probe_evidence(
+            evidence(device, reads, access=access),
+            device,
+            run_id="a" * 32,
+            require_access_audit=True,
+        )
+        self.assertIsNotNone(result.access_audit)
+        self.assertEqual(result.access_audit.gmac_reads, len(reads))
+
+        with self.assertRaisesRegex(ProbeContractError, "access audit"):
+            validate_probe_evidence(
+                evidence(device, reads, access=access.replace("gmac_writes=0", "gmac_writes=1")),
+                device,
+                run_id="a" * 32,
+                require_access_audit=True,
+            )
+
+        with self.assertRaisesRegex(ProbeContractError, "missing"):
+            validate_probe_evidence(
+                evidence(device, reads),
+                device,
+                run_id="a" * 32,
+                require_access_audit=True,
+            )
+
     def test_probe_attempts_must_match_completed_mmio_reads(self):
         device = "gmac-1"
         text = evidence(device, PROBE_SPECS[device].whitelist)
@@ -235,6 +272,61 @@ class HardwareProbeTests(unittest.TestCase):
             classify_probe_timeout(text, "gmac-1", run_id="f" * 32),
             "mmio-read:0x0000",
         )
+
+    def test_timeout_accepts_each_prefix_with_at_most_the_next_pending_read(self):
+        whitelist = PROBE_SPECS["gmac-1"].whitelist
+        for completed in range(len(whitelist) + 1):
+            for pending in (0, 1):
+                if completed + pending > len(whitelist):
+                    continue
+                reads = whitelist[:completed]
+                attempts = whitelist[:completed + pending]
+                with self.subTest(completed=completed, pending=pending):
+                    result = validate_probe_timeout_evidence(
+                        timeout_evidence("gmac-1", reads, attempts),
+                        "gmac-1", run_id="f" * 32,
+                    )
+                    self.assertEqual(result.status, "timeout")
+                    self.assertEqual(result.read_offsets, reads)
+                    self.assertEqual(result.attempt_offsets, attempts)
+                    if pending:
+                        self.assertEqual(
+                            classify_probe_timeout(
+                                timeout_evidence("gmac-1", reads, attempts),
+                                "gmac-1", run_id="f" * 32,
+                            ),
+                            f"mmio-read:0x{whitelist[completed]:04x}",
+                        )
+
+    def test_timeout_rejects_skipped_repeated_or_multiple_pending_attempts(self):
+        whitelist = PROBE_SPECS["gmac-1"].whitelist
+        for reads, attempts in (
+            ((), (0x00B0,)),
+            ((), (0, 0)),
+            ((), (0, 0x00B0)),
+            ((0,), (0, 0)),
+            ((0,), (0, 0x0110)),
+            (whitelist, whitelist + (0,)),
+        ):
+            with self.subTest(reads=reads, attempts=attempts):
+                with self.assertRaises(ProbeContractError):
+                    validate_probe_timeout_evidence(
+                        timeout_evidence("gmac-1", reads, attempts),
+                        "gmac-1", run_id="f" * 32,
+                    )
+
+    def test_timeout_rejects_read_before_attempt_or_overlapping_attempts(self):
+        text = timeout_evidence("gmac-1", (0,), (0, 0x00B0))
+        first = "ASTERINAS_PROBE_ATTEMPT device=gmac-1 offset=0x0000\n"
+        pending = "ASTERINAS_PROBE_ATTEMPT device=gmac-1 offset=0x00b0\n"
+        read = "ASTERINAS_PROBE_READ device=gmac-1 offset=0x0000 value=0x00000000\n"
+        for bad in (
+            text.replace(first + read, read + first),
+            text.replace(first + read + pending, first + pending + read),
+        ):
+            with self.subTest(transcript=bad):
+                with self.assertRaisesRegex(ProbeContractError, "order"):
+                    validate_probe_timeout_evidence(bad, "gmac-1", run_id="f" * 32)
 
     def test_failed_probe_cannot_claim_reads_or_pass(self):
         text = evidence(
@@ -323,11 +415,22 @@ class HardwareProbeTests(unittest.TestCase):
         usb_probe = usb[probe_start : usb.index("#[derive(Clone, Copy, Debug, Eq, PartialEq)]", probe_start)]
         probe_start = dwmac.index("pub(super) fn probe_read_only")
         gmac_probe = dwmac[probe_start : dwmac.index("#[cfg(ktest)]", probe_start)]
+        audit_start = dwmac.index("struct ProbeAudit")
+        audit = dwmac[audit_start:probe_start]
         for source in (usb_probe, gmac_probe):
             self.assertNotRegex(source, r"\b(?:write_once|write_bytes|write)\s*(?:<|\()")
             self.assertNotRegex(source, r"\b(?:dma|mdio|phy)\b")
         self.assertNotIn("program_platform", gmac_probe)
+        self.assertIn("ProbeAudit", gmac_probe)
+        self.assertIn("audit.emit(device)", gmac_probe)
+        self.assertIn("ASTERINAS_PROBE_ACCESS", audit)
+        self.assertIn("return Err(PlatformError::RegisterAccess)", audit)
         self.assertLess(usb.index("if aster_cmdline::HARDWARE_PROBE.get().is_some()"), usb.index("pci::init()"))
+        self.assertIn("validate_discovered_ports", dwmac)
+        self.assertIn("if fields.iter().any(|field| !field.enabled)", dwmac)
+        self.assertIn("ancestors_status_enabled", usb)
+        self.assertIn("eic7700_usb_wrappers_disabled", usb)
+        self.assertLess(usb.index("eic7700_usb_wrappers_disabled(device_tree)"), usb.index("pci::init()"))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """Unit tests for the guarded Megrez board session contract."""
 
 import contextlib
+import fcntl
 import io
 import os
 import socket
@@ -42,11 +43,54 @@ def _make_session() -> board.BoardSession:
 
 
 class MilestoneDetectionTests(unittest.TestCase):
+    def test_open_serial_rejects_another_cooperative_owner(self):
+        master, slave = os.openpty()
+        descriptor = None
+        try:
+            name = os.ttyname(slave)
+            fcntl.flock(slave, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(BlockingIOError):
+                descriptor = board.open_serial(name)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(slave)
+            os.close(master)
+
+    def test_basic_console_profile_uses_basic_shell_marker(self):
+        self.assertEqual(
+            board.FINAL_MILESTONE_MARKERS["basic-console"],
+            "asterinas-basic# ",
+        )
+
+        session = board.BoardSession.from_fd(
+            -1,
+            None,
+            confirm=False,
+            final_marker=board.FINAL_MILESTONE_MARKERS["basic-console"],
+            log_stream=io.StringIO(),
+        )
+        session.note_milestone("Enter riscv_boot\nasterinas-basic# ")
+        self.assertEqual(tuple(session.milestones), ("kernel_enter", "userspace"))
+
     def test_debug_root_console_profile_uses_exact_readiness_marker(self):
         self.assertEqual(
             board.FINAL_MILESTONE_MARKERS["debug-root-console"],
             "ASTERINAS_DEBUG_CONSOLE_READY uid=0",
         )
+
+    def test_initial_uboot_epoch_requires_firmware_banner_and_prompt(self):
+        board.validate_initial_uboot_epoch("OpenSBI v1.7\nU-Boot 2026.07\n=> ")
+
+    def test_initial_uboot_epoch_rejects_old_prompt_without_firmware(self):
+        with self.assertRaisesRegex(RuntimeError, "fresh U-Boot epoch"):
+            board.validate_initial_uboot_epoch("=> ")
+
+    def test_default_safety_state_is_stable_across_log_paths(self):
+        first = board.default_safety_state_path("target/run-a/serial.log")
+        second = board.default_safety_state_path("target/run-b/serial.log")
+        self.assertEqual(first, second)
+        self.assertEqual(first.name, ".recovery-safety.json")
 
     def test_session_retains_only_the_current_boot_milestone_transcript(self):
         session = _make_session()
@@ -60,6 +104,7 @@ class MilestoneDetectionTests(unittest.TestCase):
         session.start_boot_attempt()
 
         self.assertEqual(session.milestone_transcript, "")
+        self.assertTrue(session.boot_attempt_started)
 
     def test_session_can_reuse_a_caller_owned_serial_descriptor(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -487,6 +532,14 @@ class ArgumentContractTests(unittest.TestCase):
             board.FINAL_MILESTONE_MARKERS[verifier.final_profile],
             "DEBIAN_VERIFY_PASS",
         )
+        basic = board.parse_args(
+            _required_args() + crc_args + ["--final-profile", "basic-console"]
+        )
+        self.assertEqual(basic.final_profile, "basic-console")
+        minimal = board.parse_args(
+            _required_args() + crc_args + ["--device-profile", "minimal"]
+        )
+        self.assertEqual(minimal.device_profile, "minimal")
         _parse_fails(
             _required_args() + crc_args + ["--final-profile", "arbitrary-marker"]
         )
@@ -1244,6 +1297,98 @@ class MegrezDebianShellPhaseTests(unittest.TestCase):
 
 
 class BootTransactionTests(unittest.TestCase):
+    def test_main_refuses_to_boot_from_a_stale_uboot_prompt(self):
+        physical_session = mock.Mock()
+        physical_session.wait_for_uboot_prompt.return_value = "=> "
+        physical_session.log = mock.Mock()
+        physical_session.fd = 17
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(board, "BoardSession", return_value=physical_session),
+            mock.patch.object(board, "boot_loaded_artifacts") as boot,
+            mock.patch.object(board.os, "close"),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            result = board.main(
+                _required_args()
+                + [
+                    "--expected-crc32",
+                    "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                    "--safety-state",
+                    str(Path(directory) / "state.json"),
+                ]
+            )
+        self.assertEqual(result, 2)
+        boot.assert_not_called()
+
+    def test_required_recovery_timeout_records_a_latch(self):
+        physical_session = mock.Mock()
+        initial = "OpenSBI v1.7\nU-Boot 2026.07\n=> "
+        physical_session.wait_for_uboot_prompt.side_effect = (
+            initial,
+            TimeoutError("no recovery"),
+        )
+        physical_session.milestones = {}
+        physical_session.debug_console_transcript = b""
+        physical_session.log = mock.Mock()
+        physical_session.fd = 17
+        boot_output = "Enter riscv_boot\nDEBIAN_INSTALL_PASS\n"
+
+        def record(text: str) -> None:
+            if "Enter riscv_boot" in text:
+                physical_session.milestones["kernel_enter"] = 1.0
+            if "DEBIAN_INSTALL_PASS" in text:
+                physical_session.milestones["userspace"] = 2.0
+
+        physical_session.note_milestone.side_effect = record
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            with (
+                mock.patch.object(board, "BoardSession", return_value=physical_session),
+                mock.patch.object(
+                    board, "boot_loaded_artifacts", return_value=boot_output
+                ),
+                mock.patch.object(board.os, "close"),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                result = board.main(
+                    _required_args()
+                    + [
+                        "--expected-crc32",
+                        "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                        "--final-profile",
+                        "installer",
+                        "--require-recovery",
+                        "--safety-state",
+                        str(state_path),
+                    ]
+                )
+
+            self.assertEqual(result, 2)
+            state = board.megrez_safety.read_state(state_path)
+            self.assertEqual(state["status"], "recovery-required")
+            self.assertEqual(state["reason"], "automatic-recovery-not-observed")
+
+    def test_recovery_latch_blocks_before_opening_serial(self):
+        physical_session = mock.Mock()
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            board.megrez_safety.mark_recovery_required(
+                state_path, "automatic-recovery-not-observed"
+            )
+            with contextlib.redirect_stderr(io.StringIO()):
+                result = board.main(
+                    _required_args()
+                    + [
+                        "--expected-crc32",
+                        "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                        "--safety-state",
+                        str(state_path),
+                    ]
+                )
+        self.assertEqual(result, 2)
+        physical_session.assert_not_called()
+
     def test_debug_console_phase_uses_owned_fd_and_retains_transcript(self):
         session = mock.Mock(fd=17)
         session.milestone_transcript = (
@@ -1361,7 +1506,9 @@ class BootTransactionTests(unittest.TestCase):
 
     def test_debug_console_failure_returns_nonzero_and_closes_serial(self):
         physical_session = mock.Mock()
-        physical_session.wait_for_uboot_prompt.return_value = "U-Boot 2026.07\n=> "
+        physical_session.wait_for_uboot_prompt.return_value = (
+            "OpenSBI v1.7\nU-Boot 2026.07\n=> "
+        )
         physical_session.milestones = {
             "kernel_enter": 1.0,
             "userspace": 2.0,
@@ -1370,6 +1517,7 @@ class BootTransactionTests(unittest.TestCase):
         physical_session.fd = 17
         boot_output = "Enter riscv_boot\nASTERINAS_DEBUG_CONSOLE_READY uid=0\n"
         with (
+            mock.patch.object(board.megrez_safety, "assert_start_allowed"),
             mock.patch.object(board, "BoardSession", return_value=physical_session),
             mock.patch.object(board, "boot_loaded_artifacts", return_value=boot_output),
             mock.patch.object(
@@ -1398,7 +1546,7 @@ class BootTransactionTests(unittest.TestCase):
         close_fd.assert_called_once_with(17)
 
     def test_debug_console_failure_still_requires_automatic_recovery(self):
-        initial = "U-Boot 2026.07\n=> "
+        initial = "OpenSBI v1.7\nU-Boot 2026.07\n=> "
         recovery = "OpenSBI v1.7\nU-Boot 2026.07\n=> "
         physical_session = mock.Mock()
         physical_session.wait_for_uboot_prompt.side_effect = (initial, recovery)
@@ -1411,6 +1559,7 @@ class BootTransactionTests(unittest.TestCase):
         physical_session.fd = 17
         boot_output = "Enter riscv_boot\nASTERINAS_DEBUG_CONSOLE_READY uid=0\n"
         with (
+            mock.patch.object(board.megrez_safety, "assert_start_allowed"),
             mock.patch.object(board, "BoardSession", return_value=physical_session),
             mock.patch.object(board, "boot_loaded_artifacts", return_value=boot_output),
             mock.patch.object(
@@ -1617,7 +1766,7 @@ class BootTransactionTests(unittest.TestCase):
         )
 
         current_boot = "Enter riscv_boot\nPresented by the Asterinas developers\nHello from RISC-V userspace\n"
-        stale_preload = f"{current_boot}{board.PROMPT}"
+        stale_preload = f"OpenSBI v1.7\nU-Boot 2026.07\n{board.PROMPT}{current_boot}"
         physical_session = mock.Mock()
         physical_session.wait_for_uboot_prompt.return_value = stale_preload
         physical_session.milestones = {}
@@ -1632,6 +1781,7 @@ class BootTransactionTests(unittest.TestCase):
 
         physical_session.note_milestone.side_effect = record_current_attempt
         with (
+            mock.patch.object(board.megrez_safety, "assert_start_allowed"),
             mock.patch.object(board, "BoardSession", return_value=physical_session),
             mock.patch.object(
                 board, "boot_loaded_artifacts", return_value=current_boot
@@ -1646,18 +1796,107 @@ class BootTransactionTests(unittest.TestCase):
                 ]
             )
         self.assertEqual(result, 0)
-        physical_session.send.assert_called_once_with("")
-        self.assertLess(
-            physical_session.mock_calls.index(mock.call.send("")),
-            physical_session.mock_calls.index(
-                mock.call.wait_for_uboot_prompt(timeout=60.0)
-            ),
-        )
+        physical_session.send.assert_not_called()
         physical_session.note_milestone.assert_called_once_with(current_boot)
+
+    def test_minimal_device_profile_disables_usb_and_gmac_without_chosen_host(self):
+        events: list[str] = []
+        session = mock.Mock()
+        session.load_artifact.return_value = 4096
+
+        def command(line: str, **_kwargs):
+            events.append(line)
+            if line == "fdt print /chosen":
+                return "chosen {\n};\n"
+            if line in board.MEGREZ_MINIMAL_DEVICE_READBACK_COMMANDS:
+                return 'status = "disabled";\n'
+            return "boot output"
+
+        session.command.side_effect = command
+        args = SimpleNamespace(
+            booti="kernel",
+            dtb="board.dtb",
+            initrd="initrd",
+            bootargs="init=/init",
+            expected_crc32={
+                "booti": "0123abcd",
+                "dtb": "89abcdef",
+                "initrd": "00000001",
+            },
+            firmware_framebuffer=False,
+            device_profile="minimal",
+        )
+
+        board.boot_loaded_artifacts(session, args)
+
+        self.assertIn("fdt set /soc/ethernet@50400000 status disabled", events)
+        self.assertIn("fdt set /soc/ethernet@50410000 status disabled", events)
+        self.assertIn(
+            "fdt set /soc/usb0@50480000 status disabled", events
+        )
+        self.assertIn(
+            "fdt set /soc/usb1@50490000 status disabled", events
+        )
+        self.assertIn(
+            "fdt set /framebuffer@fd800000 status disabled", events
+        )
+        self.assertIn("fdt rm /chosen asterinas,usb-host", events)
+        readback = board.MEGREZ_MINIMAL_DEVICE_READBACK_COMMANDS
+        readback_start = events.index(readback[0])
+        self.assertEqual(events[readback_start : readback_start + len(readback)], list(readback))
+        self.assertNotIn(
+            "fdt set /soc/usb0@50480000/dwc3@50480000 status disabled", events
+        )
+        self.assertNotIn(
+            "fdt set /soc/usb1@50490000/dwc3@50490000 status disabled", events
+        )
+        self.assertNotIn(board.MEGREZ_USB_HOST_COMMAND, events)
+
+    def test_minimal_profile_cannot_reenable_the_firmware_framebuffer(self):
+        with mock.patch.object(
+            board, "open_serial", side_effect=AssertionError("serial opened")
+        ) as open_serial:
+            _parse_fails(
+                _required_args()
+                + [
+                    "--expected-crc32",
+                    "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                    "--device-profile",
+                    "minimal",
+                    "--firmware-framebuffer",
+                    "--bootargs",
+                    "console=tty0 init=/init",
+                ]
+            )
+        open_serial.assert_not_called()
+
+    def test_full_device_profile_keeps_usb_host_handoff(self):
+        session = mock.Mock()
+        session.load_artifact.return_value = 4096
+        session.command.return_value = "boot output"
+        args = SimpleNamespace(
+            booti="kernel",
+            dtb="board.dtb",
+            initrd="initrd",
+            bootargs="init=/init",
+            expected_crc32={
+                "booti": "0123abcd",
+                "dtb": "89abcdef",
+                "initrd": "00000001",
+            },
+            firmware_framebuffer=False,
+            device_profile="full",
+        )
+
+        board.boot_loaded_artifacts(session, args)
+
+        session.command.assert_any_call(board.MEGREZ_USB_HOST_COMMAND)
 
     def test_incomplete_install_returns_distinctly_after_automatic_recovery(self):
         physical_session = mock.Mock()
-        physical_session.wait_for_uboot_prompt.return_value = "U-Boot 2026.07\n=> "
+        physical_session.wait_for_uboot_prompt.return_value = (
+            "OpenSBI v1.7\nU-Boot 2026.07\n=> "
+        )
         physical_session.milestones = {}
         physical_session.log = mock.Mock()
         physical_session.fd = -1
@@ -1669,6 +1908,7 @@ class BootTransactionTests(unittest.TestCase):
         physical_session.note_milestone.side_effect = record
         recovery = "OpenSBI v1.7\nU-Boot 2026.07\n=> "
         with (
+            mock.patch.object(board.megrez_safety, "assert_start_allowed"),
             mock.patch.object(board, "BoardSession", return_value=physical_session),
             mock.patch.object(
                 board, "boot_loaded_artifacts", return_value="Enter riscv_boot\n"
@@ -1691,6 +1931,46 @@ class BootTransactionTests(unittest.TestCase):
             )
 
         self.assertEqual(result, board.INCOMPLETE_RECOVERED_EXIT)
+
+    def test_incomplete_basic_waits_for_recovery_before_releasing_serial(self):
+        physical_session = mock.Mock()
+        physical_session.wait_for_uboot_prompt.return_value = (
+            "OpenSBI v1.7\nU-Boot 2026.07\n=> "
+        )
+        physical_session.milestones = {}
+        physical_session.boot_attempt_started = True
+        physical_session.log = mock.Mock()
+        physical_session.fd = -1
+        physical_session.wait_for_recovery_boundary.return_value = (
+            "OpenSBI v1.7\nU-Boot 2026.07\nRockOS login:"
+        )
+        with (
+            mock.patch.object(board.megrez_safety, "assert_start_allowed"),
+            mock.patch.object(board, "BoardSession", return_value=physical_session),
+            mock.patch.object(
+                board, "boot_loaded_artifacts", return_value="Enter riscv_boot\n"
+            ),
+            mock.patch.object(board, "read_available", return_value=""),
+            mock.patch.object(
+                board.time, "monotonic", side_effect=(0, 0, 61, 61, 61, 61)
+            ),
+            mock.patch.object(board.os, "close"),
+        ):
+            result = board.main(
+                _required_args()
+                + [
+                    "--expected-crc32",
+                    "booti=0123abcd,dtb=89abcdef,initrd=00000001",
+                    "--final-profile",
+                    "basic-console",
+                    "--milestone-timeout",
+                    "60",
+                    "--require-recovery",
+                ]
+            )
+
+        self.assertEqual(result, board.INCOMPLETE_RECOVERED_EXIT)
+        physical_session.wait_for_recovery_boundary.assert_called_once()
 
     def test_framebuffer_handoff_is_complete_before_booti(self):
         events: list[str] = []

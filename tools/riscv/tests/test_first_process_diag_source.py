@@ -66,6 +66,21 @@ class FirstProcessDiagnosticSourceTests(unittest.TestCase):
             )
         )
 
+    def test_first_kthread_emits_ordered_boot_phase_markers(self) -> None:
+        source = INIT_SOURCE.read_text()
+        self.assertTrue(
+            _ordered(
+                source,
+                (
+                    '"ASTERINAS_BOOT_PHASE phase=first-kthread-enter"',
+                    '"ASTERINAS_BOOT_PHASE phase=kthread-init-done"',
+                    '"ASTERINAS_BOOT_PHASE phase=banner-begin"',
+                    '"ASTERINAS_BOOT_PHASE phase=banner-done"',
+                    '"ASTERINAS_BOOT_PHASE phase=init-spawned"',
+                ),
+            )
+        )
+
     def test_pid1_hooks_straddle_only_the_observed_operations(self) -> None:
         task = TASK_SOURCE.read_text()
         self.assertTrue(

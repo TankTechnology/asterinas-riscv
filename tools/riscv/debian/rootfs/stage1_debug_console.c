@@ -141,6 +141,7 @@ static int prepare_debug_console(const char *root, int isolated)
         "/run/systemd",
         "/run/systemd/system",
         "/run/systemd/system/console-getty.service.d",
+        "/run/systemd/system/serial-getty@ttyS0.service.d",
         "/run/systemd/system/getty.target.wants",
         "/run/systemd/system/asterinas-debug-console.target.wants",
     };
@@ -156,6 +157,9 @@ static int prepare_debug_console(const char *root, int isolated)
         "/run/systemd/system/asterinas-desktop-ready.service",
         "/run/systemd/system/asterinas-debug-console.target.wants/"
         "asterinas-desktop-ready.service",
+        // Own ttyS0 even when a boot entry omits systemd.mask arguments.
+        "/run/systemd/system/serial-getty@ttyS0.service.d/"
+        "asterinas-debug-console.conf",
     };
     char paths[sizeof(destination_suffixes) / sizeof(destination_suffixes[0])]
               [STAGE1_PATH_SIZE];
@@ -207,6 +211,8 @@ static int prepare_debug_console(const char *root, int isolated)
         create_file(paths[6], DESKTOP_READY_SERVICE,
                     sizeof(DESKTOP_READY_SERVICE) - 1) != 0 ||
         symlink("../asterinas-desktop-ready.service", paths[7]) != 0 ||
+        create_file(paths[8], CONSOLE_GETTY_DROP_IN,
+                    sizeof(CONSOLE_GETTY_DROP_IN) - 1) != 0 ||
         (isolated &&
          symlink("../system/asterinas-debug-console.target",
                  default_target_path) != 0)) {

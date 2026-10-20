@@ -207,6 +207,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         )
     args = parser.parse_args(argv)
     if args.command == "run":
+        display_contract = args.device_set.capture_contract or args.device_set.framebuffer
         for name in ("startup", "command", "boot"):
             attribute = f"{name}_timeout"
             if getattr(args, attribute) is None:
@@ -226,12 +227,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
             parser.error("bootargs override requires the positive scenario")
         if (args.screenshot is None) != (args.display_audit is None):
             parser.error("screenshot and display audit must be provided together")
-        if args.device_set.framebuffer is None and args.screenshot is not None:
-            parser.error("non-framebuffer device set forbids display outputs")
-        if args.device_set.framebuffer is not None and (
+        if display_contract is None and args.screenshot is not None:
+            parser.error("device set without display capture forbids display outputs")
+        if display_contract is not None and (
             args.screenshot is None or args.scenario is not BootScenario.POSITIVE
         ):
-            parser.error("framebuffer device set requires positive display outputs")
+            parser.error("display capture requires positive display outputs")
     return args
 
 

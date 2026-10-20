@@ -612,7 +612,6 @@ class DailyUseEntryPointTests(unittest.TestCase):
         for retired in (
             "test_megrez_physical_graphics",
             "test_debian_browser_web",
-            "test_debian_browser_m5_runtime_gate",
         ):
             self.assertNotIn(f"tools.riscv.tests.{retired}", fast)
         readme = README.read_text(encoding="utf-8")

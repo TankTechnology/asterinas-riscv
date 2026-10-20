@@ -24,6 +24,8 @@ from typing import Protocol
 
 from tools.riscv.debian.rootfs.desktop_m4_gate import (
     DESKTOP_M4_CORE_MILESTONES,
+    DESKTOP_M4_DISPLAY_MILESTONES,
+    DESKTOP_M4_DISPLAY_FRAMEBUFFER_PATTERNS,
     DESKTOP_M4_MILESTONES,
 )
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
@@ -58,7 +60,9 @@ from tools.riscv.megrez_board_session import (
     safe_ipv4,
     safe_ipv4_netmask,
     validate_recovery_epoch,
+    validate_initial_uboot_epoch,
 )
+from tools.riscv.megrez_control_chain import ControlChainBudget, ControlChainError
 from tools.riscv.megrez_network_fixture import (
     FIXTURE_PATH,
     PAYLOAD_SHA256,
@@ -107,6 +111,20 @@ DESKTOP_MASK_BOOTARGS = " ".join(
         "asterinas-desktop-m8-browser-quality.service",
     )
 )
+# The desktop/display targets must keep the M4 evidence unit enabled.  The
+# network/browser targets mask it elsewhere because they own their own
+# milestones, but masking it here makes systemd boot successfully without ever
+# emitting the desktop readiness markers.  Keep only later-stage workloads
+# masked while the core desktop is being qualified.
+DESKTOP_CORE_MASK_BOOTARGS = " ".join(
+    f"systemd.mask={service}"
+    for service in (
+        "asterinas-desktop-m5-network.service",
+        "asterinas-desktop-m6-browser.service",
+        "asterinas-desktop-m7-baidu.service",
+        "asterinas-desktop-m8-browser-quality.service",
+    )
+)
 MAX_UBOOT_COMMAND_BYTES = 1024
 MAX_EXPANDED_FDT_COMMAND_BYTES = 960
 DESKTOP_PROXY_BOOTARGS = " ".join(
@@ -127,6 +145,7 @@ DESKTOP_FIXTURE_BOOTARGS = " ".join(
     )
 )
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+REBOOT_AFTER_HEADROOM_SECONDS = 30
 PHYSICAL_MILESTONES = (
     b"ASTERINAS_GMAC_READY key=eic7700-rj45 ",
     *(marker.encode() for marker in DESKTOP_M5_MEGREZ_MILESTONES),
@@ -139,6 +158,12 @@ PHYSICAL_NETWORK_MILESTONES = (
 )
 PHYSICAL_DESKTOP_MILESTONES = tuple(
     marker.encode() for marker in DESKTOP_M4_CORE_MILESTONES
+)
+PHYSICAL_DISPLAY_MILESTONES = tuple(
+    marker.encode() for marker in DESKTOP_M4_DISPLAY_MILESTONES
+)
+PHYSICAL_DISPLAY_FRAMEBUFFER_PATTERNS = tuple(
+    re.compile(pattern.encode()) for pattern in DESKTOP_M4_DISPLAY_FRAMEBUFFER_PATTERNS
 )
 PHYSICAL_M7_MILESTONES = (
     DESKTOP_M7_HOME_MARKER.encode(),
@@ -154,6 +179,7 @@ _BROWSER_READY_RE = re.compile(
 PHYSICAL_READY_MARKERS = (DESKTOP_M7_READY_MARKER.encode(),)
 PHYSICAL_NETWORK_READY_MARKERS = (PHYSICAL_NETWORK_MILESTONES[-1],)
 PHYSICAL_DESKTOP_READY_MARKERS = (PHYSICAL_DESKTOP_MILESTONES[-1],)
+PHYSICAL_DISPLAY_READY_MARKERS = (PHYSICAL_DISPLAY_MILESTONES[-1],)
 _FATAL_MARKERS = (
     (b"kernel panic", "kernel panic"),
     (b"oops:", "kernel oops"),
@@ -177,6 +203,7 @@ class GateTarget(str, Enum):
     """The last guest milestone required by one physical gate run."""
 
     NETWORK = "network"
+    DISPLAY = "display"
     DESKTOP = "desktop"
     BROWSER = "browser"
     FIREFOX = "firefox"
@@ -254,6 +281,9 @@ class GateOperations(Protocol):
     """Physical effects injected around the deterministic gate state machine."""
 
     def invalidate(self) -> None: ...
+    # ``boot`` owns the pre-load safety checks.  The physical implementation
+    # waits for a fresh U-Boot epoch before probing the board address, so a
+    # still-running RockOS instance cannot make the gate reject a safe run.
     def ensure_address_unused(self) -> None: ...
     def open_board(self) -> None: ...
     def boot(self) -> bytes: ...
@@ -297,13 +327,17 @@ def physical_bootargs(
     restart = ""
     if reboot_after is not None:
         restart = f" asterinas.reboot_after={reboot_after}"
-    if target is GateTarget.DESKTOP:
+    if target in (GateTarget.DISPLAY, GateTarget.DESKTOP):
+        input_required = "1" if target is GateTarget.DESKTOP else "0"
+        offline = "0" if target is GateTarget.DESKTOP else "1"
         bootargs = (
             "console=ttyS0 console=tty0 loglevel=info "
             f"init=/init {ROOTFS_WRITE_BOOTARG}{restart} "
             "systemd.setenv=ASTERINAS_DESKTOP_M4_CONSOLE=/dev/ttyS0 "
+            f"systemd.setenv=ASTERINAS_DESKTOP_INPUT_REQUIRED={input_required} "
+            f"systemd.setenv=ASTERINAS_DESKTOP_OFFLINE={offline} "
             "systemd.setenv=ASTERINAS_DESKTOP_BROWSER_ENABLED=0 "
-            f"{DESKTOP_MASK_BOOTARGS} "
+            f"{DESKTOP_CORE_MASK_BOOTARGS} "
             "-- --root-init=systemd"
         )
         command_bytes = len(f'setenv bootargs "{bootargs}"'.encode())
@@ -508,12 +542,49 @@ def classify_physical_desktop_transcript(transcript: bytes) -> GateResult:
     return GateResult(True, "pass", None)
 
 
+def classify_physical_display_transcript(transcript: bytes) -> GateResult:
+    """Classify the offline framebuffer-only desktop milestones."""
+
+    if not isinstance(transcript, bytes):
+        return GateResult(False, "physical transcript must be bytes", None)
+    if len(transcript) > MAX_TRANSCRIPT_BYTES:
+        return GateResult(False, "physical transcript exceeds 8 MiB", None)
+    fatal_reason = _fatal_transcript_reason(transcript, target=GateTarget.DISPLAY)
+    if fatal_reason is not None:
+        return GateResult(False, fatal_reason, None)
+    positions: list[int] = []
+    for marker in PHYSICAL_DISPLAY_MILESTONES:
+        count = transcript.count(marker)
+        if count == 0:
+            return GateResult(False, "missing physical display milestone", None)
+        if count != 1:
+            return GateResult(False, "duplicate physical display milestone", None)
+        positions.append(transcript.find(marker))
+    framebuffer_positions: list[int] = []
+    for pattern in PHYSICAL_DISPLAY_FRAMEBUFFER_PATTERNS:
+        matches = list(pattern.finditer(transcript))
+        if not matches:
+            return GateResult(False, "missing framebuffer evidence", None)
+        if len(matches) != 1:
+            return GateResult(False, "duplicate framebuffer evidence", None)
+        framebuffer_positions.append(matches[0].start())
+    if not (
+        positions[4] < framebuffer_positions[0]
+        < framebuffer_positions[-1]
+        < positions[5]
+    ):
+        return GateResult(False, "framebuffer evidence out of order", None)
+    if positions != sorted(positions):
+        return GateResult(False, "physical display milestones out of order", None)
+    return GateResult(True, "pass", None)
+
+
 def _fatal_transcript_reason(
     transcript: bytes, *, target: GateTarget = GateTarget.BROWSER
 ) -> str | None:
     lowered = transcript.lower()
     for marker, reason in _FATAL_MARKERS:
-        if target is GateTarget.DESKTOP and reason in (
+        if target in (GateTarget.DISPLAY, GateTarget.DESKTOP) and reason in (
             "guest network failure",
             "browser guest failure",
             "Baidu page guest failure",
@@ -635,6 +706,9 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
             classify_physical_firefox_transcript,
             mode=config.network_mode,
         )
+    elif config.target is GateTarget.DISPLAY:
+        ready_markers = PHYSICAL_DISPLAY_READY_MARKERS
+        classifier = classify_physical_display_transcript
     elif config.target is GateTarget.DESKTOP:
         ready_markers = PHYSICAL_DESKTOP_READY_MARKERS
         classifier = classify_physical_desktop_transcript
@@ -643,8 +717,6 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
         classifier = classify_physical_transcript
     operations.invalidate()
     try:
-        if config.target is not GateTarget.DESKTOP:
-            operations.ensure_address_unused()
         operations.open_board()
         opened = True
         _append_transcript(transcript, operations.boot())
@@ -675,13 +747,22 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
         classification = classifier(bytes(transcript))
         if not classification.passed:
             raise GateFailure(classification.reason)
-        if config.target in (GateTarget.NETWORK, GateTarget.FIREFOX):
+        if config.target in (
+            GateTarget.NETWORK,
+            GateTarget.FIREFOX,
+            GateTarget.DISPLAY,
+            GateTarget.DESKTOP,
+        ):
             try:
                 recovery = operations.wait_for_recovery(
                     time.monotonic() + config.recovery_timeout
                 )
                 _append_transcript(transcript, recovery)
-                validate_recovery_epoch(recovery.decode(errors="replace"))
+                recovery_text = recovery.decode(errors="replace")
+                if "OpenSBI" not in recovery_text or "U-Boot" not in recovery_text:
+                    raise RuntimeError("recovery boundary is missing firmware epoch")
+                if "=> " not in recovery_text and "rockos-eswin login:" not in recovery_text:
+                    raise RuntimeError("recovery boundary is missing U-Boot/RockOS marker")
             except (RuntimeError, TimeoutError) as error:
                 raise GateFailure("automatic recovery not observed") from error
             recovery_observed = True
@@ -695,9 +776,15 @@ def run_gate(config: GateConfig, operations: GateOperations) -> dict[str, object
             "board_address": BOARD_ADDRESS,
             "host_address": HOST_ADDRESS,
         }
+        if config.target in (
+            GateTarget.NETWORK,
+            GateTarget.FIREFOX,
+            GateTarget.DISPLAY,
+            GateTarget.DESKTOP,
+        ):
+            result["recovery_observed"] = recovery_observed
         if config.network_mode is not None:
             result["network_mode"] = config.network_mode.value
-            result["recovery_observed"] = recovery_observed
         if config.target is GateTarget.BROWSER:
             result["javascript_status"] = _browser_javascript_status(bytes(transcript))
     except Exception as error:
@@ -764,7 +851,7 @@ class PhysicalGateOperations:
     def _uses_network(self) -> bool:
         return (
             getattr(self.arguments, "target", GateTarget.BROWSER)
-            is not GateTarget.DESKTOP
+            not in (GateTarget.DISPLAY, GateTarget.DESKTOP)
         )
 
     def _uses_proxy(self) -> bool:
@@ -830,6 +917,12 @@ class PhysicalGateOperations:
             os.devnull,
             confirm=False,
         )
+        # U-Boot may already be sitting silently at its prompt after a
+        # software reboot.  Request a fresh prompt without executing command
+        # history so the gate does not mistake an idle, recoverable board for
+        # a boot failure.  This is the only serial byte sent before the
+        # validated artifact load.
+        os.write(self.session.fd, b"\x03")
 
     def _session(self) -> BoardSession:
         if self.session is None:
@@ -838,8 +931,14 @@ class PhysicalGateOperations:
 
     def boot(self) -> bytes:
         session = self._session()
-        session.send("")
         prompt = session.wait_for_uboot_prompt(timeout=self.arguments.uboot_timeout)
+        validate_initial_uboot_epoch(prompt)
+        target = getattr(self.arguments, "target", GateTarget.BROWSER)
+        if target is not GateTarget.DESKTOP:
+            # The board may still answer ARP while the operator is handing it
+            # over from RockOS.  Check only after the fresh U-Boot epoch is
+            # observed and immediately before loading any Asterinas artifact.
+            self.ensure_address_unused()
         boot_arguments = argparse.Namespace(
             booti=self.arguments.booti,
             dtb=self.arguments.dtb,
@@ -859,6 +958,11 @@ class PhysicalGateOperations:
             ymodem_directory=self.arguments.ymodem_directory,
             booti_compressed_crc32=self.arguments.booti_compressed_crc32,
             booti_uncompressed_size=self.arguments.booti_uncompressed_size,
+            device_profile=(
+                "minimal"
+                if target in (GateTarget.DISPLAY, GateTarget.DESKTOP)
+                else "full"
+            ),
         )
         entered = boot_loaded_artifacts(session, boot_arguments)
         return (prompt + entered).encode(errors="replace")
@@ -877,11 +981,8 @@ class PhysicalGateOperations:
         remaining = max(0.0, deadline - time.monotonic())
         if remaining <= 0:
             raise TimeoutError("automatic recovery deadline expired")
-        return (
-            self._session()
-            .wait_for_uboot_prompt(timeout=remaining)
-            .encode(errors="replace")
-        )
+        boundary = self._session().wait_for_recovery_boundary(timeout=remaining)
+        return boundary.encode(errors="replace")
 
     def close_board(self) -> None:
         if self.session is None:
@@ -1003,6 +1104,20 @@ def _parse_args(arguments: Sequence[str] | None = None) -> argparse.Namespace:
             parser.error("network or firefox target requires --reboot-after")
     elif values.network_mode is not None:
         parser.error("--network-mode requires --target network or firefox")
+    if values.target in (GateTarget.DISPLAY, GateTarget.DESKTOP) and values.reboot_after is None:
+        parser.error("display/desktop target requires --reboot-after")
+    if values.reboot_after is not None:
+        try:
+            ControlChainBudget(
+                boot_timeout=values.boot_timeout,
+                drain_timeout=values.drain_timeout,
+                headroom=REBOOT_AFTER_HEADROOM_SECONDS,
+            ).validate_reboot_after(values.reboot_after)
+        except ControlChainError:
+            parser.error(
+                "--reboot-after must leave at least 30 seconds after the "
+                "boot and drain deadlines"
+            )
     if values.network_mode is NetworkMode.DIRECT:
         if values.resolver_address is None:
             parser.error("direct network mode requires --resolver-address")

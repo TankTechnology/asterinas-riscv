@@ -39,6 +39,7 @@ from tools.riscv.debian.rootfs.rootfs_gate import (
     GateFailure,
     build_boot_image,
     copy_sparse_root,
+    create_qcow2_root,
     orchestrate_gate,
     parse_gate_args,
     verify_four_hart_dtb,
@@ -57,11 +58,17 @@ INPUT_FIELDS = (
 ARTIFACT_NAMES = (
     "boot.ext4",
     "debian-root.run.ext2",
+    "debian-root.run.qcow2",
+    "lifecycle.json",
     "boot1.serial.log",
     "boot2.serial.log",
     "result.json",
 )
 QEMU_RUNTIME_DIRECTORY = Path("/tmp")
+# QEMU's HMP socket is created during process startup, before any guest boot
+# budget is useful.  A missing prompt here is a host launch failure; do not
+# let it consume the full (potentially 10–20 minute) guest protocol budget.
+QEMU_MONITOR_CONNECT_TIMEOUT = 60.0
 
 
 def _hash_fd(descriptor: int) -> str:
@@ -202,27 +209,56 @@ class ConcreteOperations:
             )
             output.atomic_copy("boot.ext4", boot)
         pinned_parent = Path(f"/proc/self/fd/{output._operation_fd}")
-        root = pinned_parent / "debian-root.run.ext2"
-        before, after, copied = copy_sparse_root(
-            self._input_fds["root_image"],
-            root,
-            destination_directory_fd=output._operation_fd,
-        )
-        if before != snapshots["root_image"] or before != after or before != copied:
-            raise GateFailure("writable root copy does not match its snapshot")
-        manifest = load_manifest(self.input_paths["manifest"])
-        validate_frozen_root(root, manifest, self.input_paths["packages_lock"])
+        if config.root_copy_mode == "qcow2":
+            root_name = "debian-root.run.qcow2"
+            # qemu-img needs a real filesystem path for its temporary qcow2
+            # file; the launch path is still rebuilt from the pinned output
+            # descriptor below, so a swapped output directory cannot be used
+            # by QEMU.
+            root = config.output_directory / root_name
+            before, _overlay_sha256 = create_qcow2_root(
+                config.root_image,
+                root,
+                expected_source_sha256=snapshots["root_image"],
+            )
+            if before != snapshots["root_image"]:
+                raise GateFailure("qcow2 root backing does not match its snapshot")
+            root_format = "qcow2"
+        else:
+            root_name = "debian-root.run.ext2"
+            root = pinned_parent / root_name
+            before, after, copied = copy_sparse_root(
+                self._input_fds["root_image"],
+                root,
+                destination_directory_fd=output._operation_fd,
+                expected_source_sha256=snapshots["root_image"],
+            )
+            if before != snapshots["root_image"] or before != after or before != copied:
+                raise GateFailure("writable root copy does not match its snapshot")
+            manifest = load_manifest(self.input_paths["manifest"])
+            validate_frozen_root(root, manifest, self.input_paths["packages_lock"])
+            root_format = "raw"
         if dict(snapshots) != self.snapshot_inputs(config):
             raise GateFailure("an immutable gate input changed during preparation")
         return {
             "boot_disk": config.output_directory / "boot.ext4",
-            "root_disk": config.output_directory / "debian-root.run.ext2",
+            "root_disk": config.output_directory / root_name,
+            "root_disk_name": root_name,
+            "root_disk_format": root_format,
         }
 
     def hash_final_root(self, config: GateConfig, prepared: Any) -> str:
         del prepared
         self._require_config(config)
-        return self._require_output().sha256("debian-root.run.ext2")
+        root_name = str(prepared.get("root_disk_name", "debian-root.run.ext2"))
+        return self._require_output().sha256(root_name)
+
+    def publish_state(self, config: GateConfig, state: dict[str, object]) -> None:
+        """Atomically retain the latest lifecycle state before final output."""
+
+        self._require_config(config)
+        payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
+        self._require_output().atomic_write("lifecycle.json", payload.encode("utf-8"))
 
     def publish(
         self,
@@ -235,6 +271,8 @@ class ConcreteOperations:
         self._require_config(config)
         output = self._require_output()
         result["qemu_argv"] = self._attempted_argv
+        if prepared is not None:
+            result["root_disk_format"] = prepared.get("root_disk_format", "raw")
         transcripts = tuple(
             saved or supplied for saved, supplied in zip(self._transcripts, transcripts)
         )
@@ -265,7 +303,8 @@ class ConcreteOperations:
             self._materialize("u_boot", uboot)
             pinned_output = Path(f"/proc/self/fd/{output._operation_fd}")
             boot = pinned_output / "boot.ext4"
-            root = pinned_output / "debian-root.run.ext2"
+            root_name = str(prepared.get("root_disk_name", "debian-root.run.ext2"))
+            root = pinned_output / root_name
             monitor_path = directory / "monitor.sock"
             argv = self._qemu_argv(
                 uboot=uboot,
@@ -274,7 +313,13 @@ class ConcreteOperations:
                 monitor_socket=monitor_path,
                 smp=config.smp,
                 dtb_enabled_cpu_count=4,
+                root_disk_format=str(prepared.get("root_disk_format", "raw")),
             )
+            # Provider-specific launch contracts may reject the selected
+            # executable before any guest process is created.  The default
+            # hook preserves the existing gates; DRM/virgl overrides it with
+            # a strict host capability check.
+            self._validate_qemu_argv(argv)
             self._attempted_argv.append(argv)
             master, slave = os.openpty()
             process = launch_process(
@@ -292,7 +337,8 @@ class ConcreteOperations:
             )
             monitor = HmpMonitor.connect(
                 monitor_path,
-                time.monotonic() + config.boot_timeout,
+                time.monotonic()
+                + min(config.boot_timeout, QEMU_MONITOR_CONNECT_TIMEOUT),
                 max_response_bytes=64 * 1024,
             )
             return {
@@ -316,6 +362,12 @@ class ConcreteOperations:
                 os.close(master)
             shutil.rmtree(directory, ignore_errors=True)
             raise
+
+    @staticmethod
+    def _validate_qemu_argv(argv: tuple[str, ...]) -> None:
+        """Validate a fully constructed QEMU command before launch."""
+
+        del argv
 
     def serial_observer(
         self, config: GateConfig, boot_number: int

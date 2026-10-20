@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0
+# Minimal Renode adapter.  The standalone Python runner enumerates all 64
+# combinations; this script demonstrates one live MMIO replay.  Fault bits:
+# clock, reset, PHY, timeout, descriptor, IRQ.
+
+mach create
+machine LoadPlatformDescription @eic7700_fault_matrix.repl
+using sysbus
+
+# healthy platform
+sysbus WriteDoubleWord 0x501ffff0 0x00
+sysbus ReadDoubleWord 0x50410110
+sysbus ReadDoubleWord 0x50411008
+
+# clock-gated + reset-asserted + IRQ-drop
+sysbus WriteDoubleWord 0x501ffff0 0x23
+sysbus ReadDoubleWord 0x50410110
+sysbus ReadDoubleWord 0x50411008
+quit

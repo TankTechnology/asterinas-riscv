@@ -341,14 +341,15 @@ def execute_prepared(
     """Execute and serialize one profile-validated prepared run."""
 
     validate_registered_device_set(device_set)
+    display_contract = device_set.capture_contract or device_set.framebuffer
     if (screenshot is None) != (display_audit is None):
         raise ValueError("screenshot and display audit must be provided together")
-    if device_set.framebuffer is None and screenshot is not None:
-        raise ValueError("non-framebuffer device set forbids display outputs")
-    if device_set.framebuffer is not None and (
+    if display_contract is None and screenshot is not None:
+        raise ValueError("device set without display capture forbids display outputs")
+    if display_contract is not None and (
         screenshot is None or scenario is not BootScenario.POSITIVE
     ):
-        raise ValueError("framebuffer device set requires positive display outputs")
+        raise ValueError("display capture requires positive display outputs")
     if profile.validation.audit_policy is AuditPolicy.REGISTERED_MILESTONES and (
         scenario is not BootScenario.POSITIVE
         or variant is not None
@@ -438,11 +439,11 @@ def execute_prepared(
             framebuffer_evidence = (
                 _FramebufferEvidenceCapture(
                     workspace=display_capture,
-                    framebuffer=device_set.framebuffer,
+                    framebuffer=display_contract,
                     capture_screendump=dependencies.capture_screendump,
                     audit_ppm=dependencies.audit_ppm,
                 )
-                if display_capture is not None and device_set.framebuffer is not None
+                if display_capture is not None and display_contract is not None
                 else None
             )
             with workspace.capture_serial() as (
@@ -476,6 +477,7 @@ def execute_prepared(
                     ),
                     serial_interaction=serial_interaction,
                     terminal_action=(framebuffer_evidence.terminal_action if framebuffer_evidence else None),
+                    startup_input=profile.machine.autoboot_interrupt,
                     **(
                         {
                             "reboot_expectation": RebootExpectation(
@@ -546,7 +548,7 @@ def execute_prepared(
                 and session.cleanup_complete
                 and audit.passed
                 and (
-                    device_set.framebuffer is None
+                    display_contract is None
                     or (framebuffer_evidence is not None and framebuffer_evidence.passed)
                 )
             )

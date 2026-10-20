@@ -2,13 +2,16 @@
 
 import copy
 import hashlib
+import io
 import json
 import os
+import shlex
 import shutil
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -58,7 +61,255 @@ def document():
     return value
 
 
+MINIMAL_NODES = (
+    "/soc/ethernet@50400000",
+    "/soc/ethernet@50410000",
+    "/soc/usb0@50480000",
+    "/soc/usb1@50490000",
+    "/framebuffer@fd800000",
+)
+
+DISPLAY_SAFE_DISABLED_NODES = MINIMAL_NODES[:-1]
+
+
+class DtbLoaderSession:
+    """Host-only U-Boot transport: execute FDT commands on a real DTB fixture."""
+
+    def __init__(self, root, manifest, payloads, ignored_edit=None):
+        self.dtb = root / "live.dtb"
+        self.manifest = manifest
+        self.payloads = payloads
+        self.ignored_edit = ignored_edit
+        self.log = io.StringIO()
+        self.events = []
+        self.started = False
+
+    def fdt(self, *args):
+        return subprocess.check_output(
+            ["fdtget", str(self.dtb), *args],
+            text=True,
+        ).strip()
+
+    def send(self, command):
+        self.events.append(command)
+
+    def wait_for_uboot_prompt(self, timeout):
+        output = "OpenSBI\nU-Boot 2026\n=> "
+        self.log.write(output)
+        return output
+
+    def load_artifact(self, name, filename, address, expected_crc32):
+        key = {"booti": "kernel", "initrd": "stage1", "dtb": "dtb"}[name]
+        item = self.manifest["artifacts"][key]
+        assert filename == item["path"].lstrip("/")
+        assert expected_crc32 == item["crc32"]
+        payload = self.payloads[key]
+        assert hashlib.sha256(payload).hexdigest() == item["sha256"]
+        if name == "dtb":
+            self.dtb.write_bytes(payload)
+        self.events.append(f"load {name} {filename}")
+        return len(payload)
+
+    def command(self, command, **kwargs):
+        self.events.append(command)
+        tokens = shlex.split(command)
+        output = ""
+        if tokens[:2] == ["fdt", "set"]:
+            if tokens[2] != self.ignored_edit:
+                subprocess.run(
+                    ["fdtput", "-t", "s", str(self.dtb), *tokens[2:]], check=True
+                )
+        elif tokens[:2] == ["fdt", "rm"]:
+            if tokens[2] != self.ignored_edit:
+                subprocess.run(
+                    ["fdtput", "-d", str(self.dtb), *tokens[2:]], check=True
+                )
+        elif tokens[:2] == ["fdt", "print"]:
+            path = tokens[2]
+            properties = tokens[3:] or self.fdt("-p", path).splitlines()
+            output = "\n".join(
+                f'{prop} = "{self.fdt(path, prop)}";' for prop in properties
+            )
+        elif tokens[0] == "booti":
+            assert self.started
+            output = (
+                "Enter riscv_boot\n"
+                "uart: Registered DW APB UART as a console\n"
+                "mmc: [mmc] controller 0x50460000 irq=81\n"
+            )
+        elif tokens[0] == "sysboot":
+            raise AssertionError("Basic must not reload the full DTB through sysboot")
+        elif tokens[0] != "setenv" and tokens[:2] not in (
+            ["fdt", "addr"],
+            ["fdt", "resize"],
+        ):
+            raise AssertionError(f"unexpected host fixture command: {command}")
+        self.log.write(command + "\n" + output + "\n")
+        return output
+
+    def start_boot_attempt(self):
+        self.started = True
+
+    def wait_for(self, marker, timeout):
+        if marker == "asterinas-basic# ":
+            return marker
+        if marker.startswith("BASIC_OK:"):
+            return "/proc proc\n/sys sysfs\n" + marker
+        raise AssertionError(f"unexpected guest wait: {marker}")
+
+
+@unittest.skipUnless(
+    shutil.which("dtc") and shutil.which("fdtput") and shutil.which("fdtget"),
+    "device-tree tools are required",
+)
+class BasicLoaderIntegrationTests(unittest.TestCase):
+    def make_session(self, root, ignored_edit=None):
+        source = root / "source.dtb"
+        subprocess.run(
+            ["dtc", "-q", "-I", "dts", "-O", "dtb", "-o", str(source)],
+            input='''/dts-v1/; / {
+                chosen { asterinas,usb-host = "/soc/usb1@50490000/dwc3@50490000";
+                         bootargs = "fixture"; };
+                framebuffer@fd800000 { status = "okay"; };
+                soc {
+                    ethernet@50400000 { status = "okay"; };
+                    ethernet@50410000 { status = "okay"; };
+                    usb0@50480000 { status = "okay"; };
+                    usb1@50490000 { status = "okay"; };
+                };
+            };''',
+            text=True,
+            check=True,
+            capture_output=True,
+        )
+        manifest = document()
+        payloads = {name: name.encode() for name in menu.ARTIFACTS}
+        payloads["dtb"] = source.read_bytes()
+        digest = hashlib.sha256(payloads["dtb"]).hexdigest()
+        manifest["artifacts"]["dtb"] = menu.identity(
+            payloads["dtb"], f"/dtb-{digest[:12]}.bin"
+        )
+        manifest["extlinux"] = menu.render(manifest)
+        menu.validate(manifest)
+        return DtbLoaderSession(root, manifest, payloads, ignored_edit)
+
+    def run_basic(self, session):
+        operations = SimpleNamespace(_require_session=lambda: session, _log=session.log)
+        with patch.object(board.RealBoardOperations, "_arm_hardware_watchdog") as arm:
+            result = board.boot_cycle(
+                operations,
+                session.manifest,
+                "basic",
+                "fixture",
+                "fixture",
+                "0" * 32,
+                hardware_watchdog=True,
+                from_uboot=True,
+            )
+        arm.assert_called_once()
+        return result
+
+    def test_basic_uses_real_loader_and_reads_back_live_minimal_dtb_before_boot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.make_session(Path(directory))
+            result = self.run_basic(session)
+            self.assertEqual(
+                (Path(directory) / "source.dtb").read_bytes(), session.payloads["dtb"]
+            )
+            boot = next(
+                i for i, event in enumerate(session.events) if event.startswith("booti ")
+            )
+            for node in MINIMAL_NODES:
+                self.assertEqual(session.fdt(node, "status"), "disabled")
+                edit = session.events.index(f"fdt set {node} status disabled")
+                read = session.events.index(f"fdt print {node} status")
+                self.assertLess(edit, read)
+                self.assertLess(read, boot)
+            self.assertNotIn("asterinas,usb-host", session.fdt("-p", "/chosen"))
+            self.assertLess(
+                session.events.index("fdt rm /chosen asterinas,usb-host"),
+                session.events.index("fdt print /chosen"),
+            )
+            self.assertLess(session.events.index("fdt print /chosen"), boot)
+            self.assertFalse(any("sysboot" in event for event in session.events))
+            self.assertEqual(result["basic_device_gate"]["forbidden_registrations"], [])
+            self.assertEqual(session.events[-1], "sync; reboot -f")
+
+    def test_every_ineffective_minimal_dtb_edit_stops_before_booti(self):
+        for node in (*MINIMAL_NODES, "/chosen"):
+            with self.subTest(node=node), tempfile.TemporaryDirectory() as directory:
+                session = self.make_session(Path(directory), ignored_edit=node)
+                with self.assertRaisesRegex(RuntimeError, "minimal DT readback"):
+                    self.run_basic(session)
+                self.assertFalse(session.started)
+                self.assertFalse(
+                    any(event.startswith("booti ") for event in session.events)
+                )
+                self.assertFalse(any("sysboot" in event for event in session.events))
+
+    @unittest.skipUnless(
+        shutil.which("dtc") and shutil.which("fdtput") and shutil.which("fdtget"),
+        "device-tree tools are required",
+    )
+    def test_desktop_loader_keeps_framebuffer_and_disables_risky_devices(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = self.make_session(Path(directory))
+            args = board._desktop_loader_args(session.manifest)
+            self.assertEqual(args.device_profile, "display-safe")
+            self.assertEqual(args.bootargs, session.manifest["desktop_args"])
+            board.boot_loaded_artifacts(session, args)
+            boot = next(
+                i for i, event in enumerate(session.events) if event.startswith("booti ")
+            )
+            for node in DISPLAY_SAFE_DISABLED_NODES:
+                self.assertEqual(session.fdt(node, "status"), "disabled")
+                self.assertLess(
+                    session.events.index(f"fdt set {node} status disabled"), boot
+                )
+            self.assertEqual(session.fdt("/framebuffer@fd800000", "status"), "okay")
+            self.assertNotIn("asterinas,usb-host", session.fdt("-p", "/chosen"))
+            self.assertFalse(any("sysboot" in event for event in session.events))
+            self.assertFalse(
+                any(event.startswith("fdt set /chosen asterinas,usb-host") for event in session.events)
+            )
+
+
 class BootMenuTests(unittest.TestCase):
+    def test_basic_device_gate_accepts_only_uart_mmc_and_basic_epoch(self):
+        transcript = (
+            "rockos: win2030-eth-dwmac initialized\n"
+            "Enter riscv_boot\n"
+            "Component initializing: aster-uart\n"
+            "uart: Registered DW APB UART as a console\n"
+            "Component initializing: aster-mmc\n"
+            "mmc: [mmc] controller 0x50460000 irq=81\n"
+            "DEBIAN_STAGE1_PROGRESS step=start mode=basic\n"
+            "BASIC_OK:nonce\n"
+        )
+        evidence = board.validate_basic_device_gate(transcript)
+        self.assertEqual(evidence["forbidden_registrations"], [])
+        self.assertIn("mmc: [mmc] controller", evidence["required_registrations"])
+
+    def test_basic_device_gate_rejects_full_dtb_device_registration(self):
+        transcript = (
+            "Enter riscv_boot\n"
+            "uart: Registered DW APB UART as a console\n"
+            "mmc: [mmc] controller 0x50460000 irq=81\n"
+            "framebuffer: Registered firmware framebuffer: base=0xfd800000\n"
+        )
+        with self.assertRaisesRegex(RuntimeError, "framebuffer"):
+            board.validate_basic_device_gate(transcript)
+
+    def test_basic_device_gate_ignores_earlier_rockos_device_messages(self):
+        transcript = (
+            "RockOS win2030-eth-dwmac initialized\n"
+            "RockOS USB xHCI host initialized\n"
+            "Enter riscv_boot\n"
+            "uart: Registered DW APB UART as a console\n"
+            "mmc: [mmc] controller 0x50460000 irq=81\n"
+        )
+        board.validate_basic_device_gate(transcript)
+
     @unittest.skipUnless(
         shutil.which("dtc") and shutil.which("fdtput") and shutil.which("fdtget"),
         "device-tree tools are required",
@@ -211,6 +462,11 @@ class BootMenuTests(unittest.TestCase):
         value = document()
         operations = Mock()
         session = operations._require_session.return_value
+        operations._log.getvalue.return_value = (
+            "Enter riscv_boot\n"
+            "uart: Registered DW APB UART\n"
+            "mmc: [mmc] controller 0x50460000 irq=81\n"
+        )
         session.wait_for.side_effect = [
             "asterinas-basic# ",
             "/proc proc\n/sys sysfs\nBASIC_OK:" + "0" * 32,
@@ -222,6 +478,7 @@ class BootMenuTests(unittest.TestCase):
         with (
             patch.object(board.os, "write"),
             patch.object(board.RealBoardOperations, "_arm_hardware_watchdog") as arm,
+            patch.object(board, "boot_loaded_artifacts") as loader,
         ):
             board.boot_cycle(
                 operations,
@@ -233,8 +490,101 @@ class BootMenuTests(unittest.TestCase):
                 hardware_watchdog=True,
             )
         arm.assert_called_once()
-        session.command.assert_called_once()
-        self.assertEqual(session.command.call_args.args[0].split()[0], "sysboot")
+        loader.assert_called_once()
+        self.assertEqual(
+            loader.call_args.args[1].device_profile, "minimal"
+        )
+
+    def test_desktop_uses_display_safe_loader_instead_of_menu_selection(self):
+        value = document()
+        operations = Mock()
+        session = operations._require_session.return_value
+        session.fd = 3
+        session.wait_for_uboot_prompt.side_effect = [
+            "OpenSBI\nU-Boot 2026\n=> ",
+            "OpenSBI\nU-Boot 2026\n=> ",
+        ]
+        session.wait_for.return_value = (
+            "ASTERINAS_DEBUG_CONSOLE_READY uid=0\n"
+            "root@asterinas-debug:/#"
+        )
+        serial = Mock()
+        serial.transcript = b""
+        with (
+            patch.object(board.os, "write"),
+            patch.object(board.RealBoardOperations, "_arm_hardware_watchdog"),
+            patch.object(board, "boot_loaded_artifacts") as loader,
+            patch.object(board, "desktop_ready", return_value=True),
+            patch.object(
+                board,
+                "query_guest",
+                side_effect=(
+                    "DEBIAN_DESKTOP_M4_FB_RW status=pass\nFB_RW_RC=0\n",
+                    "DESKTOP_READY:" + "0" * 32,
+                ),
+            ),
+            patch.object(board, "SerialConsole", return_value=serial),
+        ):
+            board.boot_cycle(
+                operations,
+                value,
+                "desktop",
+                "debian",
+                "fixture",
+                "0" * 32,
+                hardware_watchdog=True,
+            )
+        loader.assert_called_once()
+        self.assertEqual(loader.call_args.args[1].device_profile, "display-safe")
+        self.assertEqual(loader.call_args.args[1].bootargs, value["desktop_args"])
+        self.assertNotIn("4", [call.args[0] for call in session.send.call_args_list])
+
+    def test_from_uboot_resets_before_waiting_for_a_fresh_epoch(self):
+        value = document()
+        operations = Mock()
+        session = operations._require_session.return_value
+        operations._log.getvalue.return_value = (
+            "Enter riscv_boot\n"
+            "uart: Registered DW APB UART\n"
+            "mmc: [mmc] controller 0x50460000 irq=81\n"
+        )
+        session.wait_for.side_effect = [
+            "asterinas-basic# ",
+            "/proc proc\n/sys sysfs\nBASIC_OK:" + "0" * 32,
+        ]
+        session.wait_for_uboot_prompt.side_effect = [
+            "OpenSBI\nU-Boot 2026\n=> ",
+            "OpenSBI\nU-Boot 2026\n=> ",
+        ]
+        with (
+            patch.object(board.RealBoardOperations, "_arm_hardware_watchdog"),
+            patch.object(board, "boot_loaded_artifacts") as loader,
+        ):
+            board.boot_cycle(
+                operations,
+                value,
+                "basic",
+                "debian",
+                "fixture",
+                "0" * 32,
+                hardware_watchdog=True,
+                from_uboot=True,
+            )
+        session.send.assert_any_call("reset")
+        loader.assert_called_once()
+
+    def test_from_rockos_is_restricted_to_staging_actions(self):
+        parser_args = [
+            "cycle",
+            "--manifest",
+            "manifest.json",
+            "--output",
+            "out",
+            "--from-rockos",
+        ]
+        with patch.object(sys, "argv", ["megrez_menu_board.py", *parser_args]):
+            with self.assertRaises(SystemExit):
+                board.main()
 
     def test_fbdev_readiness_does_not_require_firefox(self):
         session = Mock()

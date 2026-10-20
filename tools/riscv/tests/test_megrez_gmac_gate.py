@@ -19,6 +19,7 @@ from pathlib import Path
 
 from tools.riscv.debian.rootfs.desktop_m4_gate import (
     DESKTOP_M4_CORE_MILESTONES,
+    DESKTOP_M4_DISPLAY_MILESTONES,
     DESKTOP_M4_MILESTONES,
 )
 from tools.riscv.debian.rootfs.desktop_m5_network_gate import (
@@ -38,6 +39,7 @@ from tools.riscv.debian.rootfs.desktop_m7_baidu_gate import (
 from tools.riscv.megrez_gmac_gate import (
     BOARD_ADDRESS,
     PHYSICAL_DESKTOP_MILESTONES,
+    PHYSICAL_DISPLAY_MILESTONES,
     PHYSICAL_MILESTONES,
     PHYSICAL_M7_MILESTONES,
     _parse_args,
@@ -48,6 +50,7 @@ from tools.riscv.megrez_gmac_gate import (
     PhysicalGateOperations,
     check_address_unused,
     classify_physical_desktop_transcript,
+    classify_physical_display_transcript,
     classify_physical_network_transcript,
     classify_physical_transcript,
     physical_bootargs,
@@ -106,6 +109,17 @@ def complete_desktop_evidence() -> bytes:
     return b"\n".join(marker.encode() for marker in DESKTOP_M4_CORE_MILESTONES) + b"\n"
 
 
+def complete_display_evidence() -> bytes:
+    markers = list(marker.encode() for marker in DESKTOP_M4_DISPLAY_MILESTONES)
+    shell_index = 5
+    markers[shell_index:shell_index] = [
+        b"DEBIAN_DESKTOP_M4_FB_IOCTL width=1920 height=1080 stride=7680 bpp=32 format=BgrReserved",
+        b"DEBIAN_DESKTOP_M4_FB_SAMPLE bytes=4096 sha256=" + b"a" * 64,
+        b"DEBIAN_DESKTOP_M4_FB_SCREENSHOT path=/run/asterinas-desktop-m4-framebuffer.png width=1920 height=1080 bytes=1234 sha256=" + b"b" * 64,
+    ]
+    return b"\n".join(markers) + b"\n"
+
+
 def complete_web_network_evidence(mode: NetworkMode) -> bytes:
     records = list(
         (
@@ -124,12 +138,14 @@ class FakeOperations:
         *,
         boot: bytes = b"",
         conflict: bool = False,
+        target: GateTarget = GateTarget.BROWSER,
         recovery: bytes = b"OpenSBI v1.7\nU-Boot 2025.01\n=> ",
     ) -> None:
         self.events: list[str] = []
         self.chunks = iter(chunks)
         self.boot_output = boot
         self.conflict = conflict
+        self.target = target
         self.recovery = recovery
         self.published: tuple[bytes, dict[str, object]] | None = None
 
@@ -146,6 +162,8 @@ class FakeOperations:
 
     def boot(self) -> bytes:
         self.events.append("boot")
+        if self.target is not GateTarget.DESKTOP:
+            self.ensure_address_unused()
         return self.boot_output
 
     def read(self, deadline: float) -> bytes:
@@ -479,12 +497,15 @@ class MegrezGmacGateTests(unittest.TestCase):
         )
         for service in (
             "asterinas-desktop-m5-network.service",
-            "asterinas-desktop-m4-evidence.service",
             "asterinas-desktop-m6-browser.service",
             "asterinas-desktop-m7-baidu.service",
             "asterinas-desktop-m8-browser-quality.service",
         ):
             self.assertIn(f"systemd.mask={service}", desktop_bootargs.split())
+        self.assertNotIn(
+            "systemd.mask=asterinas-desktop-m4-evidence.service",
+            desktop_bootargs.split(),
+        )
         for excluded in (
             "asterinas.net=",
             "asterinas.neighbor=",
@@ -715,8 +736,72 @@ class MegrezGmacGateTests(unittest.TestCase):
         )
         self.assertEqual(network.target, GateTarget.NETWORK)
         self.assertEqual(network.network_mode, NetworkMode.PROXY)
-        desktop = _parse_args(required[:-2] + ["--target", "desktop"])
+        desktop = _parse_args(
+            required[:-2] + ["--target", "desktop", "--reboot-after", "180"]
+        )
         self.assertEqual(desktop.target, GateTarget.DESKTOP)
+        self.assertEqual(desktop.reboot_after, 180)
+        display = _parse_args(
+            required[:-2] + ["--target", "display", "--reboot-after", "180"]
+        )
+        self.assertEqual(display.target, GateTarget.DISPLAY)
+
+        with self.assertRaises(SystemExit):
+            _parse_args(
+                required[:-2]
+                + ["--target", "display", "--reboot-after", "151"]
+            )
+
+    def test_desktop_boot_uses_fresh_epoch_and_minimal_device_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output_directory = Path(temporary) / "evidence"
+            output_directory.mkdir()
+            arguments = argparse.Namespace(
+                output_directory=output_directory,
+                target=GateTarget.DESKTOP,
+                device="/dev/ttyUSB0",
+                booti="kernel",
+                dtb="board.dtb",
+                initrd="initramfs.cpio",
+                expected_crc32={
+                    "booti": "12345678",
+                    "dtb": "90abcdef",
+                    "initrd": "deadbeef",
+                },
+                reboot_after=180,
+                load_transport="mmc",
+                tftp_board_address=BOARD_ADDRESS,
+                tftp_server_address="10.100.19.216",
+                tftp_netmask="255.255.248.0",
+                ymodem_directory=None,
+                booti_compressed_crc32=None,
+                booti_uncompressed_size=None,
+                uboot_timeout=60.0,
+            )
+            session = mock.Mock(fd=17)
+            session.wait_for_uboot_prompt.return_value = (
+                "OpenSBI v1.7\nU-Boot 2026.07\n=> "
+            )
+            operations = PhysicalGateOperations(
+                arguments,
+                fixture=mock.Mock(),
+                proxy_bridge=mock.Mock(),
+            )
+            operations.session = session
+            entered = "Enter riscv_boot\n"
+            with mock.patch.object(
+                gmac_gate, "boot_loaded_artifacts", return_value=entered
+            ) as boot:
+                result = operations.boot()
+
+            self.assertEqual(
+                result,
+                (
+                    session.wait_for_uboot_prompt.return_value + entered
+                ).encode(),
+            )
+            session.send.assert_not_called()
+            self.assertEqual(boot.call_args.args[1].device_profile, "minimal")
 
     def test_physical_gate_fails_fast_when_board_never_boots(self) -> None:
         parsed = _parse_args(
@@ -732,7 +817,7 @@ class MegrezGmacGateTests(unittest.TestCase):
         )
         self.assertEqual(parsed.boot_timeout, 120.0)
 
-    def test_address_conflict_is_rejected_before_serial_open(self) -> None:
+    def test_address_conflict_is_rejected_after_fresh_uboot_open(self) -> None:
         operations = FakeOperations(conflict=True)
 
         result = run_gate(GateConfig(boot_timeout=1, drain_timeout=1), operations)
@@ -740,7 +825,15 @@ class MegrezGmacGateTests(unittest.TestCase):
         self.assertFalse(result["passed"])
         self.assertEqual(
             operations.events,
-            ["invalidate", "address-check", "publish"],
+            [
+                "invalidate",
+                "open",
+                "boot",
+                "address-check",
+                "drain",
+                "close",
+                "publish",
+            ],
         )
         self.assertIsNotNone(operations.published)
         self.assertEqual(result["target"], "browser")
@@ -777,12 +870,14 @@ class MegrezGmacGateTests(unittest.TestCase):
                 b"DEBIAN_BROWSER_M6_FAIL reason=browser-start-timeout\n" + evidence,
                 b"late harmless log\n",
             ),
+            target=GateTarget.DESKTOP,
         )
 
         result = run_gate(
             GateConfig(
                 boot_timeout=1,
                 drain_timeout=1,
+                recovery_timeout=1,
                 target=GateTarget.DESKTOP,
             ),
             operations,
@@ -790,6 +885,7 @@ class MegrezGmacGateTests(unittest.TestCase):
 
         self.assertTrue(result["passed"], result)
         self.assertEqual(result["target"], "desktop")
+        self.assertTrue(result["recovery_observed"])
         self.assertNotIn("javascript_status", result)
         self.assertEqual(PHYSICAL_DESKTOP_MILESTONES[-1], evidence.splitlines()[-1])
         self.assertNotIn("address-check", operations.events)
@@ -801,6 +897,23 @@ class MegrezGmacGateTests(unittest.TestCase):
                 b"DEBIAN_BROWSER_M7_FAIL reason=process-search\n" + evidence
             ).passed
         )
+
+    def test_display_target_passes_without_input_network_or_browser_evidence(self) -> None:
+        evidence = complete_display_evidence()
+        operations = FakeOperations(chunks=(evidence,))
+        result = run_gate(
+            GateConfig(
+                boot_timeout=1,
+                drain_timeout=1,
+                recovery_timeout=1,
+                target=GateTarget.DISPLAY,
+            ),
+            operations,
+        )
+        self.assertTrue(result["passed"], result)
+        self.assertEqual(result["target"], "display")
+        self.assertTrue(result["recovery_observed"])
+        self.assertTrue(classify_physical_display_transcript(evidence).passed)
 
     def test_network_classifier_rejects_bad_or_fatal_evidence(self) -> None:
         complete = complete_network_evidence()
@@ -872,9 +985,9 @@ class MegrezGmacGateTests(unittest.TestCase):
             operations.events,
             [
                 "invalidate",
-                "address-check",
                 "open",
                 "boot",
+                "address-check",
                 "read",
                 "read",
                 "read",

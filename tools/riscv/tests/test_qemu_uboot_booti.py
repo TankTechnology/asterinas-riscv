@@ -3598,6 +3598,8 @@ class PreparedRunTests(_PreparedRunFixtures, unittest.TestCase):
                 "if=none,format=raw,file=/tmp/boot.ext4,id=bootdisk",
                 "-device",
                 "virtio-blk-device,drive=bootdisk",
+                "-nic",
+                "none",
             ],
         )
         self.assertEqual(svade[svade.index("-smp") + 1], "4")
@@ -5556,6 +5558,71 @@ bootargs=console=ttyS0 loglevel=info init=/init
 
 
 class QemuControllerTests(unittest.TestCase):
+    def test_recovery_timeout_is_classified_and_cleaned_without_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            fake = directory / "no_recovery_qemu.py"
+            fake.write_text(
+                "import sys\n"
+                "import time\n"
+                "print('=> ', end='', flush=True)\n"
+                "for line in sys.stdin:\n"
+                " if line.startswith('booti '):\n"
+                "  print('READY', flush=True)\n"
+                "  time.sleep(60)\n"
+            )
+            result = qemu_uboot_booti.run_serial_session(
+                [sys.executable, "-u", str(fake)],
+                commands=(
+                    qemu_uboot_booti.BootCommand("booti", "booti image", "READY"),
+                ),
+                raw_log_path=directory / "serial",
+                startup_timeout=1.0,
+                command_timeout=1.0,
+                boot_timeout=1.0,
+                termination_grace=0.5,
+                reboot_expectation=SESSION_MODULE.RebootExpectation(
+                    trigger_marker=b"READY",
+                    recovery_timeout=0.05,
+                    milestones=(("opensbi", b"OpenSBI v"),),
+                ),
+            )
+            self.assertEqual(result.failure, "recovery-timeout:opensbi")
+            self.assertTrue(result.timed_out)
+            self.assertTrue(result.cleanup_complete)
+            self.assertFalse(result.recovery_complete)
+
+    def test_startup_input_interrupts_u_boot_autoboot_before_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            fake = directory / "autoboot_qemu.py"
+            fake.write_text(
+                "import sys\n"
+                "print('OpenSBI v1.7', flush=True)\n"
+                "print('U-Boot 2026.07', flush=True)\n"
+                "for line in sys.stdin:\n"
+                " if line == '\\n':\n"
+                "  print('=> ', end='', flush=True)\n"
+                " elif line.startswith('booti '):\n"
+                "  print('DONE', flush=True)\n"
+            )
+            result = qemu_uboot_booti.run_serial_session(
+                [sys.executable, "-u", str(fake)],
+                commands=(
+                    qemu_uboot_booti.BootCommand("booti", "booti image", "DONE"),
+                ),
+                raw_log_path=directory / "serial",
+                startup_timeout=1.0,
+                command_timeout=1.0,
+                boot_timeout=1.0,
+                termination_grace=0.5,
+                startup_input=b"\n",
+                completion_line=b"DONE",
+            )
+            self.assertTrue(result.marker_seen)
+            self.assertIsNone(result.failure)
+            self.assertTrue(result.cleanup_complete)
+
     def test_serial_interaction_executes_guarded_steps_in_order(self) -> None:
         self.assertTrue(hasattr(SESSION_MODULE, "SerialInputStep"))
 

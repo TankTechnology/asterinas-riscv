@@ -9,6 +9,7 @@ readonly DEFAULT_OUTPUT_DIR="target/debian-riscv/rootfs"
 readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
 readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
 readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
+readonly DESKTOP_M4_FIREFOX_OUTPUT_DIR="target/debian-riscv/desktop-m4-firefox/rootfs"
 readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
 readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
 readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
@@ -24,6 +25,7 @@ readonly ROOT_BLOCK_SIZE_BYTES="4096"
 readonly MAX_SOURCE_DATE_EPOCH="4294967295"
 # 2024-01-01T00:00:00Z is old enough for every Trixie input and deterministic.
 readonly DEFAULT_SOURCE_DATE_EPOCH="1704067200"
+readonly OFFICIAL_FIREFOX_VERSION="140.16.0esr-1~deb13u1"
 
 readonly -a REQUIRED_TOOLS=(
     debootstrap
@@ -52,6 +54,9 @@ SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH-$DEFAULT_SOURCE_DATE_EPOCH}"
 WORK_DIR=""
 PROFILE="minimal-m1"
 FIREFOX_JIT_PACKAGE_DIR=""
+FIREFOX_OFFICIAL_BUNDLE_DIR=""
+FIREFOX_OFFICIAL_BUNDLE_SHA256=""
+REUSE_EXISTING_DIR=""
 ROOT_LABEL="ASTER_DEBIANROOT"
 ROOT_UUID="7b7ad749-77d0-4e59-89e4-e117244a70aa"
 declare -a INSTALL_PACKAGES=(
@@ -94,6 +99,11 @@ run_chroot() {
 main() {
     parse_arguments "$@"
     validate_configuration
+    if [[ -n "$REUSE_EXISTING_DIR" ]]; then
+        reuse_published_rootfs
+        log "reused verified Debian rootfs from $REUSE_EXISTING_DIR"
+        return 0
+    fi
     require_tools
     prepare_private_workspace
 
@@ -117,6 +127,8 @@ parse_arguments() {
     local has_suite=0
     local has_profile=0
     local has_firefox_jit_package_dir=0
+    local has_firefox_official_bundle_dir=0
+    local has_reuse_existing=0
 
     while (($# > 0)); do
         case "$1" in
@@ -162,6 +174,20 @@ parse_arguments() {
                 FIREFOX_JIT_PACKAGE_DIR="$2"
                 shift 2
                 ;;
+            --firefox-official-bundle-dir)
+                require_option_value "$1" "$#"
+                ((has_firefox_official_bundle_dir == 0)) || die "duplicate argument: $1"
+                has_firefox_official_bundle_dir=1
+                FIREFOX_OFFICIAL_BUNDLE_DIR="$2"
+                shift 2
+                ;;
+            --reuse-existing)
+                require_option_value "$1" "$#"
+                ((has_reuse_existing == 0)) || die "duplicate argument: $1"
+                has_reuse_existing=1
+                REUSE_EXISTING_DIR="$2"
+                shift 2
+                ;;
             --print-tools | --print-packages)
                 [[ -z "$print_mode" ]] || die "duplicate print argument: $1"
                 print_mode="$1"
@@ -173,11 +199,18 @@ parse_arguments() {
         esac
     done
 
+    if ((has_reuse_existing == 1)); then
+        ((has_output_dir == 0 && has_cache_dir == 0 && has_mirror == 0 &&
+            has_suite == 0 && has_firefox_jit_package_dir == 0)) ||
+            die "--reuse-existing cannot be combined with build options"
+    fi
+
     configure_profile "$has_output_dir"
 
     if [[ -n "$print_mode" ]]; then
         ((has_output_dir == 0 && has_cache_dir == 0 && has_mirror == 0 &&
-            has_suite == 0 && has_firefox_jit_package_dir == 0)) ||
+            has_suite == 0 && has_firefox_jit_package_dir == 0 &&
+            has_firefox_official_bundle_dir == 0 && has_reuse_existing == 0)) ||
             die "$print_mode does not accept build options"
         if [[ "$print_mode" == "--print-tools" ]]; then
             printf '%s\n' "${REQUIRED_TOOLS[@]}"
@@ -198,7 +231,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m5-network | browser-m5 | browser-web) ;;
+        minimal-m1 | systemd-m2 | desktop-m3 | desktop-m4 | desktop-m4-firefox | desktop-m5-network | browser-m5 | browser-web) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -223,6 +256,8 @@ configure_profile() {
         OUTPUT_DIR="$DESKTOP_M3_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m4 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M4_OUTPUT_DIR"
+    elif [[ "$PROFILE" == desktop-m4-firefox && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$DESKTOP_M4_FIREFOX_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m5-network && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
     elif [[ "$PROFILE" == browser-m5 && "$has_output_dir" == 0 ]]; then
@@ -254,6 +289,37 @@ validate_configuration() {
     [[ "$EXPLICIT_QEMU" == 0 || "$EXPLICIT_QEMU" == 1 ]] ||
         die "ASTERINAS_EXPLICIT_QEMU must be 0 or 1"
 
+    if [[ -n "$FIREFOX_OFFICIAL_BUNDLE_DIR" ]]; then
+        [[ "$PROFILE" == desktop-m4-firefox ]] ||
+            die "official Firefox bundle is only valid for desktop-m4-firefox"
+        FIREFOX_OFFICIAL_BUNDLE_DIR="$(normalize_path "$FIREFOX_OFFICIAL_BUNDLE_DIR")"
+        require_safe_path "$FIREFOX_OFFICIAL_BUNDLE_DIR" "official Firefox bundle"
+        [[ -d "$FIREFOX_OFFICIAL_BUNDLE_DIR" && ! -L "$FIREFOX_OFFICIAL_BUNDLE_DIR" ]] ||
+            die "official Firefox bundle directory must be an existing non-symlink directory"
+        [[ -f "$FIREFOX_OFFICIAL_BUNDLE_DIR/manifest.json" ]] ||
+            die "official Firefox bundle is missing manifest.json"
+        [[ -f "$FIREFOX_OFFICIAL_BUNDLE_DIR/firefox-esr_${OFFICIAL_FIREFOX_VERSION}_riscv64.deb" ]] ||
+            die "official Firefox bundle is missing the pinned Firefox archive"
+        FIREFOX_OFFICIAL_BUNDLE_SHA256="$(sha256sum "$FIREFOX_OFFICIAL_BUNDLE_DIR/manifest.json")"
+        FIREFOX_OFFICIAL_BUNDLE_SHA256="${FIREFOX_OFFICIAL_BUNDLE_SHA256%% *}"
+    fi
+
+    if [[ -n "$REUSE_EXISTING_DIR" ]]; then
+        [[ "$REUSE_EXISTING_DIR" != *$'\n'* ]] ||
+            die "unsafe reuse path"
+        REUSE_EXISTING_DIR="$(normalize_path "$REUSE_EXISTING_DIR")"
+        require_safe_path "$REUSE_EXISTING_DIR" "reuse"
+        [[ -d "$REUSE_EXISTING_DIR" && ! -L "$REUSE_EXISTING_DIR" ]] ||
+            die "reuse directory must be an existing non-symlink directory"
+        if [[ -n "$FIREFOX_JIT_PACKAGE_DIR" ]]; then
+            die "--firefox-jit-package-dir cannot be combined with --reuse-existing"
+        fi
+        # Reuse is read-only.  Do not validate or create the normal output and
+        # cache paths, because doing so would turn a verification-only command
+        # back into a build and would needlessly touch the workspace.
+        return
+    fi
+
     [[ -n "$OUTPUT_DIR" && "$OUTPUT_DIR" != *$'\n'* ]] || die "unsafe output path"
     [[ -n "$CACHE_DIR" && "$CACHE_DIR" != *$'\n'* ]] || die "unsafe cache path"
     OUTPUT_DIR="$(normalize_path "$OUTPUT_DIR")"
@@ -278,8 +344,69 @@ validate_configuration() {
             die "Firefox JIT package directory must not overlap the output"
     fi
 
+    if [[ -n "$FIREFOX_OFFICIAL_BUNDLE_DIR" ]]; then
+        paths_are_disjoint "$OUTPUT_DIR" "$FIREFOX_OFFICIAL_BUNDLE_DIR" ||
+            die "official Firefox bundle directory must not overlap the output"
+    fi
+
     validate_existing_publication_targets
     validate_existing_cache_targets
+}
+
+reuse_published_rootfs() {
+    local relative_path
+    local target
+    local script_directory
+    local repository_root
+    local image="$REUSE_EXISTING_DIR/debian-root.ext2"
+    local manifest="$REUSE_EXISTING_DIR/rootfs-manifest.json"
+    local packages_lock="$REUSE_EXISTING_DIR/packages.lock"
+
+    for relative_path in "${PUBLISHED_PATHS[@]}"; do
+        target="$REUSE_EXISTING_DIR/$relative_path"
+        [[ -f "$target" && ! -L "$target" ]] ||
+            die "missing published artifact: $target"
+    done
+    target="$REUSE_EXISTING_DIR/source-metadata/Security-InRelease"
+    if is_browser_source_profile; then
+        [[ -f "$target" && ! -L "$target" ]] ||
+            die "missing published artifact: $target"
+    else
+        [[ ! -e "$target" && ! -L "$target" ]] ||
+            die "stale browser-m5 artifact in reused output: $target"
+    fi
+
+    command -v python3 >/dev/null 2>&1 || die "missing runtime tool: python3"
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
+    PYTHONPATH="$repository_root" python3 -m tools.riscv.debian.rootfs.contract \
+        verify \
+        --image "$image" \
+        --manifest "$manifest" \
+        --packages-lock "$packages_lock" ||
+        die "reused rootfs failed the frozen contract"
+
+    PYTHONPATH="$repository_root" python3 - "$manifest" "$PROFILE" \
+        "$FIREFOX_OFFICIAL_BUNDLE_SHA256" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest_path, expected_profile, expected_bundle = sys.argv[1:]
+manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+if manifest.get("profile") != expected_profile:
+    raise SystemExit(
+        f"reused rootfs profile is {manifest.get('profile')!r}; "
+        f"expected {expected_profile!r}"
+    )
+if expected_bundle:
+    actual_bundle = manifest.get("tool_versions", {}).get("firefox-official-bundle")
+    if actual_bundle != expected_bundle:
+        raise SystemExit(
+            "reused rootfs Firefox bundle identity does not match "
+            "--firefox-official-bundle-dir"
+        )
+PY
 }
 
 decimal_is_at_most() {
@@ -354,7 +481,7 @@ validate_existing_publication_targets() {
         [[ ! -e "$target" || -f "$target" ]] ||
             die "unsafe published artifact type: $target"
     done
-    if is_firefox_profile; then
+    if is_browser_source_profile; then
         target="$OUTPUT_DIR/source-metadata/Security-InRelease"
         [[ ! -L "$target" ]] || die "unsafe published artifact symlink: $target"
         [[ ! -e "$target" || -f "$target" ]] ||
@@ -450,7 +577,7 @@ fetch_and_verify_release() {
         --output "$inrelease" \
         "$release_url"
     require_safe_keyring_path "$DEBIAN_KEYRING"
-    if is_firefox_profile; then
+    if is_browser_source_profile; then
         curl \
             --proto '=https' --tlsv1.2 --fail --location --show-error --silent \
             --output "$security_inrelease" \
@@ -582,7 +709,7 @@ install_rootfs_packages() {
 
     log "phase 4/8: updating signed package indexes"
     printf 'deb %s %s main\n' "$MIRROR" "$SUITE" >"$stage/etc/apt/sources.list"
-    if is_firefox_profile; then
+    if is_browser_source_profile; then
         printf 'deb %s trixie-security main\n' "$SECURITY_MIRROR" \
             >>"$stage/etc/apt/sources.list"
     fi
@@ -619,6 +746,25 @@ install_rootfs_packages() {
         cp -f -- "$cached" "$stage/var/cache/apt/archives/$filename"
     done
 
+    if [[ -n "$FIREFOX_OFFICIAL_BUNDLE_DIR" ]]; then
+        local bundle_archive package version architecture
+        install -d -m 0755 -- "$stage/var/lib/asterinas"
+        : >"$stage/var/lib/asterinas/firefox-official-bundle.list"
+        for bundle_archive in "$FIREFOX_OFFICIAL_BUNDLE_DIR"/*.deb; do
+            [[ -f "$bundle_archive" ]] || continue
+            package="$(dpkg-deb -f "$bundle_archive" Package 2>/dev/null || true)"
+            version="$(dpkg-deb -f "$bundle_archive" Version 2>/dev/null || true)"
+            architecture="$(dpkg-deb -f "$bundle_archive" Architecture 2>/dev/null || true)"
+            [[ -n "$package" && -n "$version" && -n "$architecture" ]] ||
+                die "official Firefox bundle contains an invalid Debian archive"
+            [[ "$architecture" == riscv64 || "$architecture" == all ]] ||
+                die "official Firefox bundle contains a non-RISC-V archive: $bundle_archive"
+            cp -f -- "$bundle_archive" "$stage/var/cache/apt/archives/${bundle_archive##*/}"
+            printf '%s\n' "${bundle_archive##*/}" \
+                >>"$stage/var/lib/asterinas/firefox-official-bundle.list"
+        done
+    fi
+
     local fc_cache_wrapper="$stage/usr/sbin/fc-cache"
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
         # fontconfig's maintainer script regenerates caches while dpkg is
@@ -633,15 +779,46 @@ install_rootfs_packages() {
     fi
 
     log "phase 5/8: installing explicit minbase additions"
+    local -a install_packages=("${INSTALL_PACKAGES[@]}")
+    if [[ -n "$FIREFOX_OFFICIAL_BUNDLE_DIR" ]]; then
+        local -a filtered_packages=()
+        local package
+        for package in "${install_packages[@]}"; do
+            [[ "$package" == firefox-esr ]] || filtered_packages+=("$package")
+        done
+        install_packages=("${filtered_packages[@]}")
+    fi
     run_chroot "$stage" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive \
         SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-        apt-get -y --no-install-recommends install "${INSTALL_PACKAGES[@]}"
+        apt-get -y --no-install-recommends install "${install_packages[@]}"
+    if [[ -n "$FIREFOX_OFFICIAL_BUNDLE_DIR" ]]; then
+        local firefox_archive firefox_package firefox_version firefox_architecture
+        firefox_archive=""
+        for bundle_archive in "$stage"/var/cache/apt/archives/firefox-esr_*.deb; do
+            [[ -f "$bundle_archive" ]] || continue
+            firefox_archive="$bundle_archive"
+            break
+        done
+        [[ -n "$firefox_archive" ]] || die "official Firefox bundle is missing firefox-esr"
+        firefox_package="$(dpkg-deb -f "$firefox_archive" Package)"
+        firefox_version="$(dpkg-deb -f "$firefox_archive" Version)"
+        firefox_architecture="$(dpkg-deb -f "$firefox_archive" Architecture)"
+        [[ "$firefox_package" == firefox-esr &&
+            "$firefox_version" == "$OFFICIAL_FIREFOX_VERSION" &&
+            "$firefox_architecture" == riscv64 ]] ||
+            die "official Firefox bundle does not contain the pinned Firefox package"
+        run_chroot "$stage" /usr/bin/env \
+            DEBIAN_FRONTEND=noninteractive \
+            SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
+            /bin/sh -c \
+            'set -eu; cd /var/cache/apt/archives; xargs -r dpkg --unpack < /var/lib/asterinas/firefox-official-bundle.list; dpkg --configure -a'
+    fi
     rm -f -- "$fc_cache_wrapper"
     rm -f -- "$bootstrap_ca"
     run_chroot "$stage" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive \
-        apt-get -y --reinstall --download-only install "${INSTALL_PACKAGES[@]}"
+        apt-get -y --reinstall --download-only install "${install_packages[@]}"
 
     find "$stage/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' \
         -exec cp -- {} "$WORK_DIR/debs/" \;
@@ -665,7 +842,7 @@ audit_packages() {
     local repository_root
 
     log "phase 6/8: auditing package lock and signed-index checksums"
-    if is_firefox_profile; then
+    if is_browser_source_profile; then
         verify_m5_releases_are_unchanged
         : >"$WORK_DIR/package-index-checksums"
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -683,7 +860,7 @@ audit_packages() {
     for package_list in "$stage"/var/lib/apt/lists/*_Packages*; do
         [[ -f "$package_list" ]] || continue
         package_list_name="${package_list##*/}"
-        if is_firefox_profile; then
+        if is_browser_source_profile; then
             source_role="$(PYTHONPATH="$repository_root" python3 -m \
                 tools.riscv.debian.rootfs.signed_sources owner \
                 --filename "$package_list_name")"
@@ -723,7 +900,7 @@ audit_packages() {
             "$source_inrelease"
         cat "$package_index" >>"$WORK_DIR/package-index"
         printf '\n' >>"$WORK_DIR/package-index"
-        if is_firefox_profile; then
+        if is_browser_source_profile; then
             index_checksums="$WORK_DIR/package-index-checksums-$authenticated_index_count"
             extract_package_index_checksums "$package_index" "$index_checksums"
             awk -F '\t' -v role="$source_role" \
@@ -733,13 +910,26 @@ audit_packages() {
         ((authenticated_index_count += 1))
     done
     ((authenticated_index_count > 0)) || die "no authenticated package index is available"
-    if is_firefox_profile; then
+    if is_browser_source_profile; then
         LC_ALL=C sort -u "$WORK_DIR/package-index-checksums" \
             -o "$WORK_DIR/package-index-checksums"
     else
         extract_package_index_checksums \
             "$WORK_DIR/package-index" \
             "$WORK_DIR/package-index-checksums"
+    fi
+    if [[ -n "$FIREFOX_OFFICIAL_BUNDLE_DIR" ]]; then
+        local official_firefox_archive official_firefox_sha256
+        official_firefox_archive="$FIREFOX_OFFICIAL_BUNDLE_DIR/firefox-esr_${OFFICIAL_FIREFOX_VERSION}_riscv64.deb"
+        [[ -f "$official_firefox_archive" ]] ||
+            die "official Firefox bundle is missing the pinned archive"
+        official_firefox_sha256="$(sha256sum "$official_firefox_archive")"
+        official_firefox_sha256="${official_firefox_sha256%% *}"
+        printf 'firefox-esr\triscv64\t%s\t%s\n' \
+            "$OFFICIAL_FIREFOX_VERSION" "$official_firefox_sha256" \
+            >>"$WORK_DIR/package-index-checksums"
+        LC_ALL=C sort -u "$WORK_DIR/package-index-checksums" \
+            -o "$WORK_DIR/package-index-checksums"
     fi
     admit_downloaded_packages
 }
@@ -872,22 +1062,36 @@ admit_downloaded_packages() {
 
     : >"$WORK_DIR/source-metadata/package-checksums"
     for archive in "$WORK_DIR"/debs/*.deb; do
+        # Apt keeps superseded archives in its cache.  Inspect the package
+        # identity before hashing/admitting it so an old cached version that
+        # is no longer installed cannot abort the build merely because its
+        # digest is absent from the current authenticated Packages index.
+        # Installed archives still go through the hash/index check below;
+        # this only makes the existing package_row_is_installed filter
+        # effective for stale cache entries.
+        local archive_name package architecture version
+        archive_name="${archive##*/}"
+        package="$(dpkg-deb -f "$archive" Package 2>/dev/null || true)"
+        architecture="$(dpkg-deb -f "$archive" Architecture 2>/dev/null || true)"
+        version="$(dpkg-deb -f "$archive" Version 2>/dev/null || true)"
+        [[ -n "$package" && -n "$architecture" && -n "$version" ]] ||
+            die "downloaded package archive has invalid control metadata: $archive_name"
+        if ! package_row_is_installed \
+            "$package" "$architecture" "$version" \
+            "$WORK_DIR/packages.lock"; then
+            continue
+        fi
         archive_sha256="$(sha256sum "$archive")"
         archive_sha256="${archive_sha256%% *}"
         admitted_row="$(resolve_downloaded_package_row \
-            "$archive_sha256" "${archive##*/}" \
+            "$archive_sha256" "$archive_name" \
             "$WORK_DIR/package-index-checksums")"
         IFS=$'\t' read -r admitted_name admitted_architecture \
             admitted_version _ _ <<<"$admitted_row"
-        if ! package_row_is_installed \
-            "$admitted_name" "$admitted_architecture" "$admitted_version" \
-            "$WORK_DIR/packages.lock"; then
-            # debootstrap leaves its original archives in apt's cache.  A
-            # subsequent security update can install a newer version while
-            # retaining the superseded archive.  Only the installed package
-            # set belongs in the frozen-root provenance.
-            continue
-        fi
+        [[ "$admitted_name" == "$package" &&
+            "$admitted_architecture" == "$architecture" &&
+            "$admitted_version" == "$version" ]] ||
+            die "downloaded package metadata disagrees with authenticated index: $archive_name"
         printf '%s\n' "$admitted_row" >> \
             "$WORK_DIR/source-metadata/package-checksums"
 
@@ -1028,6 +1232,9 @@ EOF
             "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
     elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
         configure_desktop "$stage" "${PROFILE#desktop-}"
+    elif [[ "$PROFILE" == desktop-m4-firefox ]]; then
+        configure_desktop "$stage" m4
+        configure_desktop_m4_firefox "$stage"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
         configure_desktop "$stage" m4
         configure_desktop_m5_network "$stage"
@@ -1104,19 +1311,29 @@ EOF
         : >"$stage/var/.updated"
         if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
             local startup_cache_marker
+            local startup_cache_profile="$PROFILE"
+            local startup_cache_marker_profile="$PROFILE"
             if [[ "$PROFILE" == browser-m5 ]]; then
                 python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
                     --profile browser-web --service-name asterinas-browser-m5.service \
                     >"$WORK_DIR/browser-startup-cache-check.log"
                 startup_cache_marker='BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
             else
+                if [[ "$PROFILE" == desktop-m4-firefox ]]; then
+                    # This image uses the M4 desktop service and therefore
+                    # shares its cache contract; keep the public profile name
+                    # in the manifest and marker while reusing the checker
+                    # schema understood by the M4 validator.
+                    startup_cache_profile=desktop-m4
+                    startup_cache_marker_profile=desktop-m4
+                fi
                 python3 "$script_directory/browser_startup_cache_check.py" "$stage" \
-                    --profile "$PROFILE" \
+                    --profile "$startup_cache_profile" \
                     >"$WORK_DIR/browser-startup-cache-check.log"
                 if [[ "$PROFILE" == browser-web ]]; then
                     startup_cache_marker='BROWSER_STARTUP_CACHE_PASS sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current'
                 else
-                    startup_cache_marker="DESKTOP_STARTUP_CACHE_PASS profile=$PROFILE sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current"
+                    startup_cache_marker="DESKTOP_STARTUP_CACHE_PASS profile=$startup_cache_marker_profile sysusers=static ldconfig=riscv64 journal=catalog fontconfig=cached stamps=current"
                 fi
             fi
             grep -Fqx "$startup_cache_marker" \
@@ -1129,7 +1346,7 @@ EOF
 
 profile_uses_startup_caches() {
     case "$1" in
-        desktop-m5-network | browser-web | browser-m5) return 0 ;;
+        desktop-m4 | desktop-m4-firefox | desktop-m5-network | browser-web | browser-m5) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -1233,6 +1450,31 @@ generate_fontconfig_cache() {
     fi
     cat -- "$scan_log" >&2
     die "staged fontconfig cache is absent after an audited rebuild"
+}
+
+configure_desktop_m4_firefox() {
+    local stage="$1"
+    local script_directory
+
+    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+    install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
+        "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
+    install -D -m 0755 -- "$script_directory/firefox_drm_scene_gate.py" \
+        "$stage/usr/lib/asterinas/firefox-drm-scene-gate"
+    install -D -m 0644 -- "$script_directory/firefox_drm_scene.html" \
+        "$stage/usr/share/asterinas/firefox-drm-scene.html"
+    install -D -m 0644 -- "$script_directory/firefox_drm_scene.service" \
+        "$stage/etc/systemd/system/firefox-drm-scene.service"
+    # The shared service template is used by the M5 browser profile.  The
+    # official-package M4 profile has the same display contract but a
+    # different desktop owner; generate the dependency locally so this gate
+    # cannot silently wait on an absent M5 unit.
+    sed -i \
+        -e 's/asterinas-desktop-m5\.service/asterinas-desktop-m4.service/g' \
+        "$stage/etc/systemd/system/firefox-drm-scene.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    ln -sf -- ../firefox-drm-scene.service \
+        "$stage/etc/systemd/system/basic.target.wants/firefox-drm-scene.service"
 }
 
 configure_desktop_m5_network() {
@@ -1421,7 +1663,6 @@ EOF
     fi
 }
 
-
 configure_logind_namespace_compatibility() {
     local stage="$1"
     local directory="$stage/etc/systemd/system/systemd-logind.service.d"
@@ -1460,7 +1701,34 @@ configure_desktop() {
     local desktop_wants="dbus.service systemd-udevd.service systemd-logind.service"
     local desktop_user=asterinas
     local firefox_trust_mode=embedded-xul
+    # Older desktop images carried a second ordered unit.  Its evidence
+    # service dependency could keep graphical.target waiting on udev/logind
+    # even after M4 was reduced to one deterministic service.  Remove both
+    # stale entries whenever a stage is reused; the generated M4 service and
+    # its evidence unit below are the only supported entry points.
+    if [[ "$generation" == m4 ]]; then
+        rm -f -- \
+            "$stage/etc/systemd/system/asterinas-desktop-m4-ordered.service" \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m4-ordered.service"
+    fi
+    # Asterinas' systemd does not implement the kernel-command-line
+    # condition used by Debian to select between login sessions.  Installing
+    # both a PAM/TTY unit and an ordered unit therefore starts the former as
+    # well, and it can block before ExecStart (see r66/r68).  M4 is a
+    # diagnostic desktop entry, so keep one deterministic service with no
+    # PAM/TTY handoff.  The session script still emits the ordered markers
+    # and uses its bounded /run state when the boot argument is present.
     local desktop_session_options=$'PAMName=login\nTTYPath=/dev/tty1\nStandardInput=tty\nStandardOutput=journal+console\nStandardError=journal+console\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes'
+    if [[ "$generation" == m4 ]]; then
+        # M4 has no PAM handoff and must not wait for the optional logind/udev
+        # readiness handshake.  It still needs a controlling VT: Xorg's DRM
+        # backend opens /dev/tty1 and issues VT_ACTIVATE before modesetting.
+        # Keep only the TTY binding, with no PAMName or external service
+        # dependency, so the single service reaches ExecStart deterministically.
+        desktop_session_options=$'TTYPath=/dev/tty1\nStandardInput=tty\nTTYReset=yes\nTTYVHangup=yes\nTTYVTDisallocate=yes'
+        desktop_after='local-fs.target'
+        desktop_wants=''
+    fi
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
@@ -1592,6 +1860,12 @@ EOF
                 "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
             install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \
                 "$stage/usr/lib/asterinas/browser-web-firefox"
+            install -D -m 0755 -- "$script_directory/firefox_drm_scene_gate.py" \
+                "$stage/usr/lib/asterinas/firefox-drm-scene-gate"
+            install -D -m 0644 -- "$script_directory/firefox_drm_scene.html" \
+                "$stage/usr/share/asterinas/firefox-drm-scene.html"
+            install -D -m 0644 -- "$script_directory/firefox_drm_scene.service" \
+                "$stage/etc/systemd/system/firefox-drm-scene.service"
             install -D -m 0755 -- "$script_directory/browser_web_evidence.sh" \
                 "$stage/usr/lib/asterinas/browser-web-evidence"
             install -D -m 0644 -- \
@@ -1788,7 +2062,10 @@ EOF
     install -D -m 0755 -- \
         "$evidence_source" \
         "$stage/usr/lib/asterinas/desktop-$generation-evidence"
-    if [[ "$generation" == m4 ]]; then
+    if [[ "$generation" == m4 || "$PROFILE" == browser-web ]]; then
+        install -D -m 0755 -- \
+            "$script_directory/desktop_drm_libdrm_probe.py" \
+            "$stage/usr/lib/asterinas/desktop-drm-libdrm-probe"
         install -D -m 0755 -- \
             "$script_directory/desktop_m4_framebuffer_probe.py" \
             "$stage/usr/lib/asterinas/desktop-m4-framebuffer-probe"
@@ -1798,6 +2075,12 @@ EOF
         install -D -m 0755 -- \
             "$script_directory/desktop_m4_x11_paint.py" \
             "$stage/usr/lib/asterinas/desktop-m4-x11-paint"
+        install -D -m 0755 -- \
+            "$script_directory/desktop_drm_x11_screenshot.py" \
+            "$stage/usr/lib/asterinas/desktop-drm-x11-screenshot"
+        install -D -m 0755 -- \
+            "$repository_root/tools/riscv/drm/egl-pixel-probe.py" \
+            "$stage/usr/lib/asterinas/desktop-drm-egl-pixel-probe"
     fi
     install -d -m 0755 -- "$stage/etc/systemd/system/dbus.service.d"
     cat >"$stage/etc/systemd/system/dbus.service.d/asterinas-readiness.conf" <<'EOF'
@@ -1817,7 +2100,7 @@ Conflicts=getty@tty1.service
 Type=simple
 User=$desktop_user
 PrivateTmp=no
-SupplementaryGroups=video input tty
+SupplementaryGroups=video input tty render
 $desktop_session_options
 # Keep the selected stream policy active.  In the browser-web profile this is
 # journal+console so Xorg/device diagnostics remain observable on the QEMU
@@ -1828,8 +2111,9 @@ StandardError=$desktop_standard_error
 # StandardOutput=$desktop_standard_output
 # StandardError=$desktop_standard_error
 Environment=HOME=/home/asterinas
-Environment=ASTERINAS_DISPLAY_PROVIDER=fbdev
+$(if [[ "$generation" == m4 ]]; then printf '%s\n' 'Environment=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered'; fi)
 $(if [[ "$generation" == m5 && "$browser_mode" == online ]]; then printf '%s\n' 'Environment=ASTERINAS_BROWSER_WEB_SESSION=1'; fi)
+$(if [[ "$PROFILE" == desktop-m4-firefox ]]; then printf '%s\n' 'Environment=ASTERINAS_DESKTOP_M4_SKIP_DRM_X11_SCREENSHOT=1'; fi)
 ExecStartPre=+/usr/lib/asterinas/desktop-$generation-device-access
 ExecStart=/usr/lib/asterinas/desktop-$generation-session
 Restart=on-failure
@@ -1851,11 +2135,16 @@ EOF
         evidence_service_environment='Environment=ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS=4500'
         evidence_service_timeout='TimeoutStartSec=4800s'
     fi
+    if [[ "$PROFILE" == desktop-m4-firefox ]]; then
+        evidence_service_environment='Environment=ASTERINAS_DESKTOP_M4_SKIP_DRM_X11_SCREENSHOT=1'
+    fi
+    local evidence_after="basic.target"
+    local evidence_wants="$service_name.service"
     cat >"$stage/etc/systemd/system/$service_name-evidence.service" <<EOF
 [Unit]
 Description=Asterinas Debian desktop evidence
-After=basic.target
-Wants=$service_name.service
+After=$evidence_after
+Wants=$evidence_wants
 $evidence_unit_dependencies
 
 [Service]
@@ -1875,6 +2164,16 @@ EOF
     ln -s -- \
         ../$service_name.service \
         "$stage/etc/systemd/system/graphical.target.wants/$service_name.service"
+    if [[ "$generation" == m4 ]]; then
+        # The minimal Asterinas systemd can leave graphical.target waiting on
+        # PAM/logind even though basic.target is already usable.  Keep the
+        # desktop entry reachable from the earlier target as well; systemd
+        # deduplicates the unit when graphical.target is eventually pulled in.
+        mkdir -p -- "$stage/etc/systemd/system/basic.target.wants"
+        ln -s -- \
+            ../$service_name.service \
+            "$stage/etc/systemd/system/basic.target.wants/$service_name.service"
+    fi
     # The browser-free evidence unit is a separate entry point for profiles
     # that need a core-only gate.  The standalone desktop-m4 profile already
     # owns the authoritative evidence unit; installing both would run the
@@ -1982,6 +2281,11 @@ EOF
     install -D -m 0644 -- \
         "$script_directory/desktop_fbdev_qemu.conf" \
         "$fbdev_config_directory/20-asterinas-qemu.conf"
+    local drm_config_directory="$stage/etc/asterinas/display-providers/drm/xorg.conf.d"
+    install -d -m 0755 -- "$drm_config_directory"
+    install -D -m 0644 -- \
+        "$script_directory/desktop_drm.conf" \
+        "$drm_config_directory/20-asterinas.conf"
     install -d -m 0755 -- "$stage/etc/X11/xorg.conf.d"
     rm -f -- "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
     if [[ "$generation" != m4 ]]; then
@@ -2055,6 +2359,7 @@ write_rootfs_manifest() {
     local browser_web_runtime_version=""
     local firefox_jit_overlay_version=""
     local -a browser_web_tool_versions=()
+    local -a official_firefox_tool_versions=()
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
@@ -2079,9 +2384,14 @@ write_rootfs_manifest() {
             )
         fi
     fi
+    if [[ -n "$FIREFOX_OFFICIAL_BUNDLE_SHA256" ]]; then
+        official_firefox_tool_versions=(
+            --tool-version "firefox-official-bundle=$FIREFOX_OFFICIAL_BUNDLE_SHA256"
+        )
+    fi
 
     local -a signed_source_arguments=()
-    if is_firefox_profile; then
+    if is_browser_source_profile; then
         signed_source_arguments=(
             --signed-source "base=$WORK_DIR/source-metadata/InRelease"
             --signed-source "security=$WORK_DIR/source-metadata/Security-InRelease"
@@ -2103,7 +2413,8 @@ write_rootfs_manifest() {
         --tool-version "debootstrap=$debootstrap_version" \
         --tool-version "mke2fs=$mke2fs_version" \
         --tool-version "qemu-riscv64-static=$qemu_version" \
-        "${browser_web_tool_versions[@]}"
+        "${browser_web_tool_versions[@]}" \
+        "${official_firefox_tool_versions[@]}"
 }
 
 browser_web_runtime_digest() {
@@ -2115,6 +2426,9 @@ browser_web_runtime_digest() {
         desktop_m4_framebuffer_rw.py
         desktop_m5_network_gate.py
         browser_web_firefox.sh
+        firefox_drm_scene_gate.py
+        firefox_drm_scene.html
+        firefox_drm_scene.service
         browser_web_marionette_gate.py
         megrez_clock_sync.py
         browser_m5_marionette_gate.py
@@ -2127,6 +2441,7 @@ browser_web_runtime_digest() {
         browser_interaction_perf.py
         desktop_display_provider.sh
         desktop_fbdev_no_input.conf
+        desktop_drm.conf
         browser_performance_provenance.py
         firefox_diagnostic_snapshot.py
         browser_web_trust_check.py
@@ -2155,7 +2470,7 @@ publish_artifacts() {
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
-    if is_firefox_profile; then
+    if is_browser_source_profile; then
         security_publication=(--include-security-inrelease)
     fi
 
@@ -2179,6 +2494,10 @@ die() {
 }
 
 is_firefox_profile() {
+    [[ "$PROFILE" == desktop-m4-firefox || "$PROFILE" == browser-m5 || "$PROFILE" == browser-web ]]
+}
+
+is_browser_source_profile() {
     [[ "$PROFILE" == browser-m5 || "$PROFILE" == browser-web ]]
 }
 

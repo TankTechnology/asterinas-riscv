@@ -8,7 +8,9 @@ from __future__ import annotations
 import json
 import secrets
 import sys
+import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Callable, Mapping, Protocol
 
 from tools.riscv.debian.rootfs.gate_protocol import (
@@ -83,10 +85,40 @@ class Operations(Protocol):
         result: dict[str, object],
     ) -> None: ...
 
+    def publish_state(self, config: Any, state: dict[str, object]) -> None: ...
+
 
 def _reason(error: BaseException, fallback: str) -> str:
     candidate = getattr(error, "reason", None)
     return candidate if isinstance(candidate, str) and candidate else fallback
+
+
+def _publish_state(
+    operations: Operations,
+    config: Any,
+    *,
+    status: str,
+    phase: str,
+    snapshots: Mapping[str, str],
+    identity: Mapping[str, object],
+    reason: str | None = None,
+) -> None:
+    """Persist a lifecycle boundary through the pinned output backend."""
+
+    publisher = getattr(operations, "publish_state", None)
+    if publisher is None:
+        return
+    state: dict[str, object] = {
+        "schema": 1,
+        "status": status,
+        "phase": phase,
+        "updated_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "input_sha256": dict(snapshots),
+        "identity": dict(identity),
+    }
+    if reason is not None:
+        state["reason"] = reason
+    publisher(config, state)
 
 
 def orchestrate_systemd_m2_gate(
@@ -104,6 +136,14 @@ def orchestrate_systemd_m2_gate(
     session: Any = None
     transcript = b""
     reason: str | None = None
+    _publish_state(
+        operations,
+        config,
+        status="running",
+        phase="start",
+        snapshots=snapshots,
+        identity=identity,
+    )
 
     setup = (
         ("snapshot", lambda: operations.snapshot_inputs(config)),
@@ -119,6 +159,14 @@ def orchestrate_systemd_m2_gate(
                 identity = value
             else:
                 prepared = value
+            _publish_state(
+                operations,
+                config,
+                status="running",
+                phase=phase,
+                snapshots=snapshots,
+                identity=identity,
+            )
         except BaseException as error:
             reason = _reason(error, phase)
             break
@@ -128,13 +176,52 @@ def orchestrate_systemd_m2_gate(
             session = operations.launch(config, prepared)
         except BaseException as error:
             reason = _reason(error, "launch")
+        else:
+            _publish_state(
+                operations,
+                config,
+                status="running",
+                phase="launch",
+                snapshots=snapshots,
+                identity=identity,
+            )
 
     if session is not None:
         if reason is None:
+            protocol_timeout = getattr(config, "boot_timeout", None)
+            watchdog_stop: threading.Event | None = None
+            watchdog: threading.Thread | None = None
+            if isinstance(protocol_timeout, (int, float)) and protocol_timeout > 0:
+                watchdog_stop = threading.Event()
+
+                def protocol_watchdog() -> None:
+                    assert watchdog_stop is not None
+                    if watchdog_stop.wait(protocol_timeout):
+                        return
+                    try:
+                        # A protocol implementation can remain blocked in a
+                        # serial read even after its inner marker deadline is
+                        # lost. Kill only this gate's process so the read
+                        # wakes, cleanup runs, and the lifecycle receipt is
+                        # published.
+                        operations.cleanup_process(session, config)
+                    except BaseException:
+                        pass
+
+                watchdog = threading.Thread(
+                    target=protocol_watchdog,
+                    name="debian-gate-protocol-watchdog",
+                    daemon=True,
+                )
+                watchdog.start()
             try:
                 operations.run_protocol(session, config)
             except BaseException as error:
                 reason = _reason(error, "protocol")
+            finally:
+                if watchdog_stop is not None and watchdog is not None:
+                    watchdog_stop.set()
+                    watchdog.join(timeout=1.0)
         if reason is None:
             try:
                 operations.request_quit(session, config)
@@ -178,6 +265,15 @@ def orchestrate_systemd_m2_gate(
         "profile": identity.get("profile"),
         "debian_release": identity.get("debian_release"),
     }
+    _publish_state(
+        operations,
+        config,
+        status="complete" if result["passed"] else "failed",
+        phase="finished",
+        snapshots=snapshots,
+        identity=identity,
+        reason=str(result["reason"]) if not result["passed"] else None,
+    )
     operations.publish(config, prepared, transcript, result)
     return result
 

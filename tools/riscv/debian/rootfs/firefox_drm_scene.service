@@ -1,0 +1,23 @@
+[Unit]
+Description=Asterinas DRM Firefox WebRender scene gate
+Requires=asterinas-desktop-m5.service
+After=asterinas-desktop-m5.service
+
+[Service]
+Type=oneshot
+User=asterinas
+SupplementaryGroups=render
+Environment=HOME=/home/asterinas
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/asterinas/.Xauthority
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/lib/asterinas/firefox-drm-scene-gate
+# Two cold TCG launches (scene plus recovery) each have a 600 s gate budget;
+# keep systemd from killing the bounded gate before it can emit recovery.
+TimeoutStartSec=1200s
+StandardOutput=journal+console
+StandardError=journal+console
+RemainAfterExit=yes
+
+[Install]
+WantedBy=basic.target

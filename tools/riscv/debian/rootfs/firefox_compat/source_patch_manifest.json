@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "source": {
+    "package": "firefox-esr",
+    "version": "140.16.0esr-1~deb13u1",
+    "files": [
+      {
+        "path": "dom/canvas/SanitizeRenderer.cpp",
+        "sha256": "594cc7306a5617f03a73b91f42db6c8f4276c8f71123602cb27da3cb0ee8c27e"
+      },
+      {
+        "path": "dom/canvas/gtest/TestSanitizeRenderer.cpp",
+        "sha256": "1d187a13387f9e4f3d838e9480135459ceb5cd194ba53b78e88ec4b88efd6293"
+      },
+      {
+        "path": "gfx/gl/GLLibraryEGL.cpp",
+        "sha256": "39e2cbb4854daff33903126a78900aca61e8312b3c991bd6b68427f5cca721a2"
+      },
+      {
+        "path": "gfx/gl/GLContextProviderEGL.cpp",
+        "sha256": "7cab444255b31f7c4aee92f8297a19b6abe3bbf97b9f6d56d90e0ce15611e213"
+      }
+    ]
+  },
+  "patches": [
+    {
+      "path": "0001-recognize-virgl-webgl-renderer.patch",
+      "sha256": "0af3a98ec6b932366621eabbf8b1d359d3a6c8528dfae0c4635cc4f604b09325"
+    },
+    {
+      "path": "0002-prefer-drm-render-node-for-webrender.patch",
+      "sha256": "9e7b3352ae1d9a53296eddeeaf8fa66999fd0db2fca512f45a5c2d128c6f2963"
+    }
+  ],
+  "patch_options": {
+    "strip": 1,
+    "fuzz": 0
+  }
+}

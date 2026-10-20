@@ -134,6 +134,9 @@ class MachineContract:
     # machine's default (CONTRACT_APPROXIMATION: validate the kernel against
     # a third board's DTB while still running on a supported machine).
     root_compatible_override: tuple[str, ...] | None = None
+    # Some board-model U-Boot builds need an interrupt to leave autoboot. Keep
+    # this in the machine contract so the runner cannot silently invent one.
+    autoboot_interrupt: bytes | None = None
 
     def __post_init__(self) -> None:
         if not self.name or not self.memory or self.memory_bytes <= 0:
@@ -392,6 +395,37 @@ MEGREZ_TCP_PROBE_RECOVERY = replace(
     ),
 )
 
+ASTERINAS_TIMER_RECOVERY = ValidationScenario(
+    name="asterinas-reboot-timer",
+    bootargs="console=ttyS0 loglevel=info init=/init asterinas.reboot_after=10",
+    scope=ResultScope.COMPLETE_BOOT,
+    milestones=(
+        *_ASTERINAS_COMMON_MILESTONES,
+        MilestoneExpectation(
+            BootMilestone.KERNEL_READY,
+            b"OSTD initialized. Preparing components.",
+        ),
+        MilestoneExpectation(BootMilestone.ROOTFS_READY, b"[kernel] rootfs is ready"),
+        MilestoneExpectation(
+            BootMilestone.USERSPACE_READY,
+            b"ASTERINAS_REBOOT_TIMER_READY",
+        ),
+    ),
+    terminal=BootMilestone.USERSPACE_READY,
+    completion_line=b"ASTERINAS_REBOOT_TIMER_READY",
+    forbidden_markers=(b"Uncaught panic", b"unexpected exception"),
+    audit_policy=AuditPolicy.REGISTERED_MILESTONES,
+    startup_timeout=30.0,
+    command_timeout=120.0,
+    boot_timeout=60.0,
+    post_terminal_timeout=0.0,
+    recovery=RecoveryContract(
+        armed_marker=b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=10",
+        trigger_marker=b"ASTERINAS_REBOOT_TIMER_READY",
+        recovery_timeout=45.0,
+    ),
+)
+
 LTP_SYSCALL_GATE = ValidationScenario(
     name="asterinas-ltp-syscall-gate",
     bootargs="console=ttyS0 loglevel=error init=/init",
@@ -458,6 +492,114 @@ DRM_CURSOR_GATE = ValidationScenario(
     boot_timeout=90.0,
     post_terminal_timeout=0.25,
 )
+
+
+def _drm_gate(name: str, ready_line: bytes) -> ValidationScenario:
+    """Build one complete-boot contract for an isolated DRM guest probe."""
+
+    return ValidationScenario(
+        name=name,
+        bootargs="console=ttyS0 loglevel=info init=/init",
+        scope=ResultScope.COMPLETE_BOOT,
+        milestones=(
+            *_ASTERINAS_COMMON_MILESTONES,
+            MilestoneExpectation(
+                BootMilestone.KERNEL_READY,
+                b"OSTD initialized. Preparing components.",
+            ),
+            MilestoneExpectation(
+                BootMilestone.ROOTFS_READY,
+                b"[kernel] rootfs is ready",
+            ),
+            MilestoneExpectation(BootMilestone.USERSPACE_READY, ready_line),
+        ),
+        terminal=BootMilestone.USERSPACE_READY,
+        completion_line=ready_line,
+        forbidden_markers=(b"Uncaught panic", b"unexpected exception"),
+        audit_policy=AuditPolicy.REGISTERED_MILESTONES,
+        startup_timeout=30.0,
+        command_timeout=10.0,
+        boot_timeout=90.0,
+        post_terminal_timeout=0.25,
+    )
+
+
+DRM_SCANOUT_READY_LINE = b"ASTERINAS_DRM_SCANOUT_R1_READY"
+DRM_SCANOUT_GATE = _drm_gate("asterinas-drm-scanout-r1", DRM_SCANOUT_READY_LINE)
+
+DRM_GEM_READY_LINE = b"ASTERINAS_DRM_GEM_R1_READY"
+DRM_GEM_GATE = _drm_gate("asterinas-drm-gem-r1", DRM_GEM_READY_LINE)
+
+DRM_RENDER_NODE_READY_LINE = b"ASTERINAS_DRM_RENDER_R1_READY"
+DRM_RENDER_NODE_GATE = _drm_gate(
+    "asterinas-drm-render-node-r1", DRM_RENDER_NODE_READY_LINE
+)
+
+DRM_VIRGL_READY_LINE = b"ASTERINAS_DRM_VIRGL_R1_READY"
+DRM_VIRGL_GATE = _drm_gate("asterinas-drm-virgl-r1", DRM_VIRGL_READY_LINE)
+
+
+def _virgl_fault_profile(fault: str) -> QemuUbootProfile:
+    """Create a recoverable profile for one opt-in virgl failure point."""
+
+    reported_stage = "context-init" if fault == "context" else fault
+    marker = f"DRM_VIRGL_FAULT stage={reported_stage}".encode()
+    validation = replace(
+        DRM_VIRGL_GATE,
+        name=f"asterinas-drm-virgl-fault-{fault}",
+        bootargs=(
+            f"{DRM_VIRGL_GATE.bootargs} "
+            f"asterinas.reboot_after=3 -- asterinas.virtio_gpu_fault={fault}"
+        ),
+        milestones=(*DRM_VIRGL_GATE.milestones[:-1],
+                    MilestoneExpectation(BootMilestone.USERSPACE_READY, marker)),
+        terminal=BootMilestone.USERSPACE_READY,
+        completion_line=marker,
+        post_terminal_timeout=0.0,
+        recovery=RecoveryContract(
+            armed_marker=b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=3",
+            trigger_marker=marker,
+            recovery_timeout=30.0,
+        ),
+    )
+    return QemuUbootProfile(
+        name=f"generic-sv39-drm-virgl-fault-{fault}-smp4",
+        machine=QEMU_VIRT_SMP4,
+        boot_flow=UBOOT_BOOTI,
+        validation=validation,
+    )
+
+
+def _scanout_fault_profile(fault: str) -> QemuUbootProfile:
+    """Create a recoverable profile for one 2D scanout boundary."""
+
+    marker = f"DRM_SCANOUT_FAULT stage={fault}".encode()
+    validation = replace(
+        DRM_SCANOUT_GATE,
+        name=f"asterinas-drm-scanout-fault-{fault}",
+        bootargs=(
+            f"{DRM_SCANOUT_GATE.bootargs} "
+            f"asterinas.reboot_after=3 asterinas.virtio_gpu_2d_fault={fault}"
+        ),
+        milestones=(
+            *DRM_SCANOUT_GATE.milestones[:-1],
+            MilestoneExpectation(BootMilestone.USERSPACE_READY, marker),
+        ),
+        terminal=BootMilestone.USERSPACE_READY,
+        completion_line=marker,
+        post_terminal_timeout=0.0,
+        recovery=RecoveryContract(
+            armed_marker=b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=3",
+            trigger_marker=marker,
+            recovery_timeout=30.0,
+        ),
+    )
+    return QemuUbootProfile(
+        name=f"generic-sv39-drm-scanout-fault-{fault}-smp4",
+        machine=QEMU_VIRT_SMP4,
+        boot_flow=UBOOT_BOOTI,
+        validation=validation,
+    )
 
 MEGREZ_USERSPACE_SMOKE = ValidationScenario(
     name="megrez-userspace-smoke",
@@ -530,6 +672,7 @@ SIFIVE_U = MachineContract(
     required_random_source=None,
     requires_resource_gate=False,
     provenance="QEMU model of the SiFive HiFive Unleashed board",
+    autoboot_interrupt=b"\x03",
 )
 
 SIFIVE_U_ASTERINAS_USERSPACE_SMOKE = ValidationScenario(
@@ -710,6 +853,70 @@ GENERIC_SV39_DRM_CURSOR_SMP4 = QemuUbootProfile(
     validation=DRM_CURSOR_GATE,
 )
 
+GENERIC_SV39_DRM_SCANOUT_SMP4 = QemuUbootProfile(
+    name="generic-sv39-drm-scanout-smp4",
+    machine=QEMU_VIRT_SMP4,
+    boot_flow=UBOOT_BOOTI,
+    validation=DRM_SCANOUT_GATE,
+)
+
+GENERIC_SV39_DRM_GEM_SMP4 = QemuUbootProfile(
+    name="generic-sv39-drm-gem-smp4",
+    machine=QEMU_VIRT_SMP4,
+    boot_flow=UBOOT_BOOTI,
+    validation=DRM_GEM_GATE,
+)
+
+GENERIC_SV39_DRM_RENDER_NODE_SMP4 = QemuUbootProfile(
+    name="generic-sv39-drm-render-node-smp4",
+    machine=QEMU_VIRT_SMP4,
+    boot_flow=UBOOT_BOOTI,
+    validation=DRM_RENDER_NODE_GATE,
+)
+
+GENERIC_SV39_DRM_VIRGL_SMP4 = QemuUbootProfile(
+    name="generic-sv39-drm-virgl-smp4",
+    machine=QEMU_VIRT_SMP4,
+    boot_flow=UBOOT_BOOTI,
+    validation=DRM_VIRGL_GATE,
+)
+
+GENERIC_SV39_DRM_VIRGL_FAULT_CONTEXT_SMP4 = _virgl_fault_profile("context")
+GENERIC_SV39_DRM_VIRGL_FAULT_SUBMIT_SMP4 = _virgl_fault_profile("submit")
+GENERIC_SV39_DRM_VIRGL_FAULT_FENCE_SMP4 = _virgl_fault_profile("fence")
+
+GENERIC_SV39_DRM_SCANOUT_FAULT_SETCRTC_SMP4 = _scanout_fault_profile("setcrtc")
+GENERIC_SV39_DRM_SCANOUT_FAULT_TRANSFER_SMP4 = _scanout_fault_profile("transfer")
+GENERIC_SV39_DRM_SCANOUT_FAULT_FLUSH_SMP4 = _scanout_fault_profile("flush")
+
+QEMU_VIRT_ASTERINAS_TIMER_RECOVERY = QemuUbootProfile(
+    name="qemu-virt-asterinas-timer-recovery",
+    machine=QEMU_VIRT,
+    boot_flow=UBOOT_BOOTI,
+    validation=ASTERINAS_TIMER_RECOVERY,
+)
+
+MEGREZ_SV48_SVADE_TIMER_RECOVERY = QemuUbootProfile(
+    name="megrez-sv48-svade-timer-recovery",
+    machine=MEGREZ_SVADE_FAST_MACHINE,
+    boot_flow=UBOOT_BOOTI,
+    validation=replace(ASTERINAS_TIMER_RECOVERY, name="megrez-reboot-timer"),
+)
+
+SIFIVE_U_ASTERINAS_TIMER_RECOVERY = QemuUbootProfile(
+    name="sifive-u-asterinas-timer-recovery",
+    machine=SIFIVE_U,
+    boot_flow=UBOOT_BOOTI,
+    validation=replace(ASTERINAS_TIMER_RECOVERY, name="sifive-u-reboot-timer"),
+)
+
+SIFIVE_U_GEM_TIMER_RECOVERY = QemuUbootProfile(
+    name="sifive-u-gem-timer-recovery",
+    machine=replace(SIFIVE_U, autoboot_interrupt=None),
+    boot_flow=UBOOT_BOOTI,
+    validation=replace(ASTERINAS_TIMER_RECOVERY, name="sifive-u-reboot-timer"),
+)
+
 MEGREZ_SV48_SVADE_FAST = QemuUbootProfile(
     name="megrez-sv48-svade-fast",
     machine=MEGREZ_SVADE_FAST_MACHINE,
@@ -824,13 +1031,27 @@ _PROFILES: Mapping[str, QemuUbootProfile] = MappingProxyType(
             GENERIC_SV39,
             GENERIC_SV39_SMP4_TCP_PROBE,
             GENERIC_SV39_SMP4_SOFTWARE_REBOOT,
+            QEMU_VIRT_ASTERINAS_TIMER_RECOVERY,
             GENERIC_SV39_LTP_SMP1,
             GENERIC_SV39_LTP_SMP4,
             GENERIC_SV39_DRM_CURSOR_SMP4,
+            GENERIC_SV39_DRM_SCANOUT_SMP4,
+            GENERIC_SV39_DRM_GEM_SMP4,
+            GENERIC_SV39_DRM_RENDER_NODE_SMP4,
+            GENERIC_SV39_DRM_VIRGL_SMP4,
+            GENERIC_SV39_DRM_VIRGL_FAULT_CONTEXT_SMP4,
+            GENERIC_SV39_DRM_VIRGL_FAULT_SUBMIT_SMP4,
+            GENERIC_SV39_DRM_VIRGL_FAULT_FENCE_SMP4,
+            GENERIC_SV39_DRM_SCANOUT_FAULT_SETCRTC_SMP4,
+            GENERIC_SV39_DRM_SCANOUT_FAULT_TRANSFER_SMP4,
+            GENERIC_SV39_DRM_SCANOUT_FAULT_FLUSH_SMP4,
             MEGREZ_SV48_SVADE_FAST,
+            MEGREZ_SV48_SVADE_TIMER_RECOVERY,
             MEGREZ_SV48_SVADU_FAST,
             MEGREZ_SV48_SLOW,
             SIFIVE_U_ASTERINAS_SMOKE,
+            SIFIVE_U_ASTERINAS_TIMER_RECOVERY,
+            SIFIVE_U_GEM_TIMER_RECOVERY,
             SIFIVE_U_LINUX_REFERENCE,
             THIRD_BOARD_ASTERINAS_SMOKE,
         )

@@ -73,6 +73,31 @@ python3 -m tools.riscv.debian.rootfs.contract verify \
   --packages-lock target/debian-riscv/rootfs/packages.lock
 ```
 
+The builder also has an explicit read-only reuse path. It verifies the
+published image, manifest, and package lock, then exits without creating a
+workspace, running debootstrap, unpacking packages, or touching the normal
+output/cache directories. The profile is part of the verification contract;
+pass the same profile used to create the image:
+
+```bash
+tools/riscv/debian/rootfs/build_rootfs.sh \
+  --profile desktop-m4-firefox \
+  --reuse-existing /mnt/mydisk/asterinas-firefox-rootfs-20261018-r12/rootfs \
+  --firefox-official-bundle-dir /mnt/mydisk/firefox-official-debian-20261018/package-bundle-r1
+```
+
+This command is deliberately explicit rather than automatic: a missing or
+stale artifact fails closed instead of silently rebuilding a different root.
+Use it before each QEMU run when the rootfs itself has not changed; only the
+kernel, Stage1, or gate output needs to be refreshed.
+
+The desktop session also reuses an already-ready `:0` server.  It checks the
+X11 socket and `xdpyinfo` with a two-second bound; for DRM it additionally
+requires the virgl and connected-output lines in the current Xorg log.  A
+successful reuse emits `DEBIAN_DESKTOP_M4_XORG_REUSE` and exits without
+starting a second Xorg owner.  Set `ASTERINAS_DISPLAY_REUSE=0` only when a
+fresh server is explicitly required.
+
 ### Build the frozen Firefox 143 RISC-V JIT root
 
 The `browser-web` profile normally retains Debian's signed Firefox ESR base.
@@ -510,31 +535,6 @@ The unit gate is local and does not launch QEMU or use the network:
 make test_riscv_debian_rootfs_unit
 ```
 
-## Short Firefox GDB probe
-
-For startup diagnosis, use the bounded qemu-user probe before attempting the
-full Asterinas web gate.  It requires an extracted, writable riscv64 rootfs
-and invokes an explicit `qemu-riscv64-static` inside a bwrap rootfs namespace
-with `-L /`; it never registers or changes a host `binfmt_misc` handler. This
-is important because `-L` alone changes loader lookup, not guest absolute
-paths:
-
-```bash
-tools/riscv/debian/rootfs/firefox_gdb_probe.sh \
-  /path/to/extracted-rootfs \
-  "$PWD/../backups/firefox-gdb-probe-$(date +%Y%m%d)" \
-  45
-```
-
-The output directory contains the exact GDB command file, register and
-backtrace evidence, QEMU stderr, and metadata including the binfmt read-only
-check. `riscv64-linux-gnu-gdb` is required because the target is RISC-V; the
-host-native `gdb` is not a substitute. The host also needs `bwrap` and an
-explicit `qemu-riscv64-static` binary (the latter can be supplied via
-`QEMU_RISCV64_STATIC`). This probe is intentionally limited
-to loader entry and `__libc_start_main@plt`; use the Asterinas QEMU `-S -gdb`
-workflow separately for kernel breakpoints.
-
 The kernel-side reset probe is also reusable and does not boot the guest past
 the first instruction:
 
@@ -623,19 +623,18 @@ python3 -m tools.riscv.firefox_debug_tool manifest \
   --output "$BACKUP_DIR/manifest.json"
 ```
 
-For a bounded guest startup profile, append the opt-in kernel parameters
+For a bounded guest diagnostic run, append the opt-in kernel parameters
 `asterinas.vm_profile=1 asterinas.vm_pagecache_profile=1
 asterinas.futex_profile=1 asterinas.syscall_profile=1
-asterinas.epoll_profile=1` before the `--`
-separator in the gate boot arguments.  The syscall profiler records entry,
-completion, and elapsed jiffies for `close`, `ppoll`, `futex`,
-`clock_gettime`, `sched_yield`, `clone`, and `execve`.  Entry counts are logged
-before the handler runs, so a blocked syscall remains visible even when the
-guest reaches the hard timeout.  Keep the profiler disabled for normal gates;
-it is diagnostic instrumentation only.  `asterinas.epoll_profile=1` adds
-bounded counts of timeout classes and return classes for epoll waits; the
-epoll-entry evidence hook is compiled disabled and is only useful in a
-purpose-built diagnostic image.
+asterinas.epoll_profile=1` before the `--` separator in the gate boot
+arguments. The syscall profiler records entry, completion, and elapsed jiffies
+for `close`, `ppoll`, `futex`, `clock_gettime`, `sched_yield`, `clone`, and
+`execve`. Entry counts are logged before the handler runs, so a blocked syscall
+remains visible even when the guest reaches the hard timeout. Keep the profiler
+disabled for normal gates; it is diagnostic instrumentation only.
+`asterinas.epoll_profile=1` adds bounded counts of timeout classes and return
+classes for epoll waits; the epoll-entry evidence hook is compiled disabled and
+is only useful in a purpose-built diagnostic image.
 
 Run the explicit two-boot gate as root in the development container:
 
@@ -651,37 +650,6 @@ make test_riscv_debian_rootfs_gate \
   DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/rootfs/source-metadata/package-checksums" \
   DEBIAN_GATE_OUTPUT="$PWD/target/debian-riscv/gate"
 ```
-
-For Firefox-only startup profiling, use the bounded one-boot sampler. It waits
-for `BOOT_BASIC_TARGET`, X socket readiness, Firefox `exec`, and Marionette,
-then exits without running the full web protocol. The sampler adds only
-`asterinas.vm_profile=1` and keeps the final transcript in the root-owned
-output directory:
-
-```bash
-python3 tools/riscv/debian/rootfs/firefox_startup_profile.py \
-  --kernel /path/to/kernel.Image \
-  --uboot /path/to/u-boot \
-  --dtb /path/to/qemu-virt.dtb \
-  --stage1-initramfs /path/to/initramfs.cpio \
-  --root-image /path/to/debian-root.ext2 \
-  --root-manifest /path/to/rootfs-manifest.json \
-  --packages-lock /path/to/packages.lock \
-  --package-checksums /path/to/package-checksums \
-  --output-directory /path/to/root-owned-profile \
-  --boot-timeout 360
-```
-
-追加 `--firefox-process-diagnostic` 可在 Firefox exec 后启用有界的 `ps` 和
-`/proc` 快照；它会增加少量串口扰动，只用于定位主进程/子进程状态。若要把
-高频 epoll 调用归因到具体 caller/fd，可再追加
-`--epoll-entry-diagnostic`；它启用 `asterinas.epoll_profile=1` 和
-`asterinas.epoll_entry_profile=1`，同样只用于短 probe。guest procfs 的
-`wchan` 等文件可能阻塞，因此进程快照不应作为唯一阻塞点证据。
-追加 `--timerfd-diagnostic` 可统计 timerfd 的 set/expire/read/EAGAIN 聚合，
-用于验证 epoll 伪就绪；追加 `--syscall-diagnostic` 可记录常见 syscall 的
-进入/完成次数、累计 jiffies 及 clone/exec 边界。两者都只影响诊断镜像的
-bootargs，默认关闭，不改变正常启动语义。
 
 `debug-root-console` 验收是一个独立的低噪声串口 profile。QEMU 与 Megrez
 都使用恰好一个 `loglevel=off`，防止异步内核日志在字节层打断固定命令的
@@ -958,15 +926,18 @@ python3 -m json.tool target/debian-riscv/rootfs/rootfs-manifest.json
 sed -n '1,20p' target/debian-riscv/rootfs/packages.lock
 sed -n '1,200p' target/debian-riscv/gate/boot1.serial.log
 sed -n '1,200p' target/debian-riscv/gate/boot2.serial.log
+python3 -m json.tool target/debian-riscv/gate/lifecycle.json
 python3 -m json.tool target/debian-riscv/gate/result.json
 python3 -c 'import json; print(json.load(open("target/debian-riscv/gate/result.json"))["final_root_sha256"])'
 ```
 
 `debian-root.ext2` is immutable. Only the run-private
 `debian-root.run.ext2` is writable. A successful run retains both logs, the
-writable root, boot disk, and `result.json`. A failed run retains the complete
-available logs and a failing result, never a stale `passed: true`, and never
-mutates the base image.
+writable root, boot disk, and `result.json`. `lifecycle.json` is updated with
+an atomic fsync-and-rename before launch and at every terminal boundary, so an
+interrupted run remains visibly `running` or `failed` instead of disappearing.
+A failed run retains the complete available logs and a failing result, never a
+stale `passed: true`, and never mutates the base image.
 
 ## Verified M1 evidence (2026-08-24)
 

@@ -30,6 +30,11 @@ from qemu_uboot_secure_io import PinnedOutputDirectory
 _PR_SET_CHILD_SUBREAPER = 36
 _PR_GET_CHILD_SUBREAPER = 37
 SERIAL_OUTPUT_LIMIT = 4 * 1024 * 1024
+# Send the interrupt as soon as each U-Boot epoch announces itself. Waiting for
+# the countdown text can be too late when QEMU coalesces serial output.
+AUTOBOOT_INTERRUPT_MARKER = b"U-Boot 2026.07"
+FIRMWARE_EPOCH_MARKER = b"OpenSBI v"
+SERIAL_READ_CHUNK_SIZE = 256
 # A final quiet-window drain for bytes buffered while capture runs, not a QMP timeout.
 TERMINAL_ACTION_DRAIN_TIMEOUT_SECONDS = 0.01
 # QMP capture uses a five-second request bound; retain controller headroom.
@@ -344,6 +349,7 @@ class _SerialProtocol:
     termination_checkpoint: Callable[[], None]
     post_terminal_timeout: float = 0.0
     milestone_expectations: Sequence[MilestoneExpectation] = ()
+    startup_input: bytes | None = None
     stage: str = "startup"
     marker_seen: bool = False
     booti_sent_count: int = 0
@@ -361,6 +367,7 @@ class _SerialProtocol:
     _transcript: bytearray = field(default_factory=bytearray, init=False, repr=False)
     _started_at: float = field(default_factory=time.monotonic, init=False, repr=False)
     _milestone_tracker: MilestoneTracker = field(init=False, repr=False)
+    _startup_input_epochs: int = field(default=0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._milestone_tracker = MilestoneTracker(self.milestone_expectations)
@@ -385,7 +392,17 @@ class _SerialProtocol:
                 )
             return None
         assert self.process.stdout is not None
-        chunk = os.read(self.process.stdout.fileno(), 65536)
+        # Keep the first autoboot interrupt responsive. After the first
+        # firmware banner has been handled, restore the large read size so
+        # serial-output limits remain observable under noisy workloads.
+        read_size = (
+            SERIAL_READ_CHUNK_SIZE
+            if self.startup_input is not None
+            and self._startup_input_epochs
+            == self._transcript.count(FIRMWARE_EPOCH_MARKER)
+            else 65536
+        )
+        chunk = os.read(self.process.stdout.fileno(), read_size)
         if not chunk:
             raise RuntimeError(
                 f"serial process closed output while waiting for {needle!r}"
@@ -399,6 +416,18 @@ class _SerialProtocol:
             chunk,
             elapsed_seconds=time.monotonic() - self._started_at,
         )
+        if (
+            self.startup_input is not None
+            and self._startup_input_epochs
+            < self._transcript.count(FIRMWARE_EPOCH_MARKER)
+            and AUTOBOOT_INTERRUPT_MARKER
+            in self._transcript[self._transcript.rfind(FIRMWARE_EPOCH_MARKER) :]
+        ):
+            assert self.process.stdin is not None
+            self.process.stdin.write(self.startup_input)
+            self.process.stdin.flush()
+            self._startup_input_epochs += 1
+            self.termination_checkpoint()
         return chunk
 
     def _read_until(self, needle: bytes, timeout: float) -> None:
@@ -762,6 +791,7 @@ def run_serial_session(
     milestone_expectations: Sequence[MilestoneExpectation] = (),
     raw_log_file: BinaryIO | None = None,
     terminal_action: Callable[[], None] | None = None,
+    startup_input: bytes | None = None,
 ) -> SessionResult:
     """Run one guarded serial session and its optional live terminal action.
 
@@ -817,6 +847,7 @@ def run_serial_session(
                 raw_log_file=log_file,
                 terminal_action=terminal_action,
                 deferred_termination=deferred_termination,
+                startup_input=startup_input,
             )
 
     if raw_log_file is not None:
@@ -858,6 +889,7 @@ def _run_serial_session(
     raw_log_file: BinaryIO | None = None,
     deferred_termination: _DeferredTermination,
     terminal_action: Callable[[], None] | None = None,
+    startup_input: bytes | None = None,
 ) -> SessionResult:
     """Run one session while orphaned descendants are adopted by this process."""
 
@@ -907,6 +939,7 @@ def _run_serial_session(
             termination_checkpoint=deferred_termination.raise_if_pending,
             post_terminal_timeout=post_terminal_timeout,
             milestone_expectations=milestone_expectations,
+            startup_input=startup_input,
         )
         protocol.run()
         if (

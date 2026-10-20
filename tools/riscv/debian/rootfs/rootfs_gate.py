@@ -11,6 +11,8 @@ import argparse
 import hashlib
 import math
 import os
+import json
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -18,6 +20,14 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Protocol
+
+
+def _qemu_img_command() -> str:
+    return (
+        os.environ.get("QEMU_IMG")
+        or shutil.which("qemu-img")
+        or "/usr/local/qemu/bin/qemu-img"
+    )
 
 
 @dataclass(frozen=True)
@@ -35,6 +45,7 @@ class GateConfig:
     boot_timeout: float = 120.0
     command_timeout: float = 30.0
     cleanup_timeout: float = 10.0
+    root_copy_mode: str = "raw"
 
 
 class GateFailure(RuntimeError):
@@ -370,8 +381,14 @@ def copy_sparse_root(
     destination: Path,
     *,
     destination_directory_fd: int | None = None,
+    expected_source_sha256: str | None = None,
 ) -> tuple[str, str, str]:
-    """Copy a pinned root descriptor sparsely and publish it atomically."""
+    """Copy a pinned root descriptor sparsely and publish it atomically.
+
+    A caller that already snapshotted the pinned descriptor may pass that
+    digest.  The source is still hashed after the copy, so a mutation during
+    the copy remains fail-closed; this only avoids hashing it twice.
+    """
 
     destination = Path(destination)
     source_stat = os.fstat(source_fd)
@@ -379,7 +396,18 @@ def copy_sparse_root(
         raise GateFailure("root image descriptor is not a regular file")
     if destination.exists() and os.path.samestat(destination.stat(), source_stat):
         raise GateFailure("root copy output aliases its source")
-    before = _hash_fd(source_fd)
+    if expected_source_sha256 is None:
+        before = _hash_fd(source_fd)
+    else:
+        if (
+            len(expected_source_sha256) != hashlib.sha256().digest_size * 2
+            or any(
+                character not in "0123456789abcdef"
+                for character in expected_source_sha256
+            )
+        ):
+            raise GateFailure("expected source SHA-256 is malformed")
+        before = expected_source_sha256
     temporary_fd, temporary_name = tempfile.mkstemp(
         prefix=f".{destination.name}.", dir=destination.parent
     )
@@ -423,6 +451,90 @@ def copy_sparse_root(
         temporary.unlink(missing_ok=True)
 
 
+def create_qcow2_root(
+    source: Path,
+    destination: Path,
+    *,
+    expected_source_sha256: str,
+) -> tuple[str, str]:
+    """Create a tiny qcow2 COW layer bound to an immutable raw root image.
+
+    The raw image remains the authenticated backing file.  Only guest writes
+    land in the qcow2 layer, avoiding the multi-gigabyte preparation copy used
+    by the default ``raw`` mode.  Callers must re-check their pinned source
+    descriptor after this function returns before launching QEMU.
+    """
+
+    source = Path(source)
+    destination = Path(destination)
+    if (
+        len(expected_source_sha256) != hashlib.sha256().digest_size * 2
+        or any(character not in "0123456789abcdef" for character in expected_source_sha256)
+    ):
+        raise GateFailure("expected source SHA-256 is malformed")
+    try:
+        source_metadata = source.lstat()
+    except FileNotFoundError as error:
+        raise GateFailure("root image backing file is missing") from error
+    if stat.S_ISLNK(source_metadata.st_mode) or not stat.S_ISREG(source_metadata.st_mode):
+        raise GateFailure("root image backing file must be a regular non-symlink")
+    if destination.exists() or destination.is_symlink():
+        raise GateFailure("qcow2 root destination already exists")
+    temporary_fd, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.", dir=destination.parent
+    )
+    os.close(temporary_fd)
+    temporary = Path(temporary_name)
+    try:
+        temporary.unlink()
+        subprocess.run(
+            [
+                _qemu_img_command(),
+                "create",
+                "-f",
+                "qcow2",
+                "-F",
+                "raw",
+                "-b",
+                os.fspath(source),
+                os.fspath(temporary),
+            ],
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        metadata = json.loads(
+            subprocess.run(
+                [_qemu_img_command(), "info", "--output=json", os.fspath(temporary)],
+                check=True,
+                text=True,
+                capture_output=True,
+            ).stdout
+        )
+        if (
+            metadata.get("format") != "qcow2"
+            or metadata.get("backing-filename-format") != "raw"
+            or Path(str(metadata.get("backing-filename", ""))).resolve()
+            != source.resolve()
+            or not isinstance(metadata.get("virtual-size"), int)
+            or metadata["virtual-size"] < source_metadata.st_size
+        ):
+            raise GateFailure("qcow2 root backing contract mismatch")
+        copied_digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
+        os.chmod(temporary, 0o600)
+        with temporary.open("rb") as stream:
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+        _sync_parent(destination)
+        return expected_source_sha256, copied_digest
+    except GateFailure:
+        raise
+    except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError) as error:
+        raise GateFailure("failed to create qcow2 root overlay") from error
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _positive_timeout(value: str) -> float:
     parsed = float(value)
     if not math.isfinite(parsed) or parsed <= 0:
@@ -448,6 +560,7 @@ def parse_gate_args(arguments: list[str] | None = None) -> GateConfig:
     parser.add_argument("--boot-timeout", type=_positive_timeout, default=120.0)
     parser.add_argument("--command-timeout", type=_positive_timeout, default=30.0)
     parser.add_argument("--cleanup-timeout", type=_positive_timeout, default=10.0)
+    parser.add_argument("--root-copy-mode", choices=("raw", "qcow2"), default="raw")
     values = parser.parse_args(arguments)
     return GateConfig(
         values.kernel,
@@ -463,6 +576,7 @@ def parse_gate_args(arguments: list[str] | None = None) -> GateConfig:
         values.boot_timeout,
         values.command_timeout,
         values.cleanup_timeout,
+        values.root_copy_mode,
     )
 
 

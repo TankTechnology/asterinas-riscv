@@ -105,6 +105,18 @@
       "create": true
     },
     {
+      "source": "desktop_fbdev_no_input.conf",
+      "destination": "/etc/asterinas/display-providers/fbdev/xorg.conf.d/20-asterinas-no-input.conf",
+      "mode": "0644",
+      "create": true
+    },
+    {
+      "source": "desktop_drm.conf",
+      "destination": "/etc/asterinas/display-providers/drm/xorg.conf.d/20-asterinas.conf",
+      "mode": "0644",
+      "create": true
+    },
+    {
       "source": "desktop_m3_device_access.sh",
       "destination": "/usr/lib/asterinas/desktop-m5-device-access",
       "mode": "0755"

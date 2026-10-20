@@ -31,6 +31,7 @@ from qemu_uboot_profiles import (  # noqa: E402
     QEMU_VIRT_SMP4,
     SIFIVE_U,
     SIFIVE_U_ASTERINAS_SMOKE,
+    SIFIVE_U_GEM_TIMER_RECOVERY,
     SIFIVE_U_LINUX_REFERENCE,
     UBOOT_BOOTI,
     AuditPolicy,
@@ -55,6 +56,7 @@ from qemu_uboot_devices import (  # noqa: E402
     BOCHS_XRGB8888,
     HEADLESS,
     MEGREZ_BASIC,
+    SIFIVE_U_GEM_SLIRP,
     DeviceKind,
     QemuDeviceSet,
     RuntimeDevicePaths,
@@ -121,6 +123,63 @@ class ContractCompositionTests(unittest.TestCase):
                 "virtio-net-device,netdev=net0",
             ),
         )
+
+    def test_sifive_gem_network_renders_only_the_machine_default_nic(self) -> None:
+        self.assertIs(device_set_by_name("sifive-u-gem-slirp"), SIFIVE_U_GEM_SLIRP)
+        self.assertEqual(SIFIVE_U_GEM_SLIRP.devices, ())
+        self.assertEqual(
+            render_device_argv(SIFIVE_U_GEM_SLIRP, None),
+            ("-nic", "user"),
+        )
+        argv = qemu_argv(
+            uboot=Path("/tmp/u-boot.bin"),
+            boot_disk=Path("/tmp/boot.ext4"),
+            profile=SIFIVE_U_GEM_TIMER_RECOVERY,
+            device_set=SIFIVE_U_GEM_SLIRP,
+        )
+        self.assertEqual(argv[-2:], ["-nic", "user"])
+
+    def test_sifive_gem_network_is_rejected_on_qemu_virt(self) -> None:
+        with self.assertRaisesRegex(ValueError, "machine"):
+            qemu_argv(
+                uboot=Path("/tmp/u-boot"),
+                boot_disk=Path("/tmp/boot.ext4"),
+                device_set=SIFIVE_U_GEM_SLIRP,
+            )
+
+    def test_qemu_xhci_renders_controller_and_keyboard(self) -> None:
+        self.assertTrue(hasattr(qemu_devices, "QEMU_XHCI"))
+        device_set = qemu_devices.QEMU_XHCI
+
+        self.assertIs(device_set_by_name("qemu-xhci"), device_set)
+        self.assertEqual(device_set.devices, (DeviceKind.QEMU_XHCI,))
+        self.assertEqual(
+            render_device_argv(device_set, None),
+            (
+                "-device",
+                "qemu-xhci,id=xhci",
+                "-device",
+                "usb-kbd,bus=xhci.0",
+            ),
+        )
+
+    def test_device_gates_disable_implicit_network_backends(self) -> None:
+        for name in (
+            "headless",
+            "virtio-net-slirp",
+            "qemu-xhci",
+            "drm-cursor",
+            "drm-scanout",
+        ):
+            with self.subTest(device_set=name):
+                argv = qemu_argv(
+                    uboot=Path("/tmp/u-boot"),
+                    boot_disk=Path("/tmp/boot.ext4"),
+                    device_set=device_set_by_name(name),
+                )
+                self.assertEqual(argv.count("-nic"), 1)
+                self.assertEqual(argv[argv.index("-nic") + 1], "none")
+                self.assertEqual(argv.count("-netdev"), int(name == "virtio-net-slirp"))
 
     def test_replaced_device_set_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "registered device set"):
@@ -266,12 +325,14 @@ class ContractCompositionTests(unittest.TestCase):
                         capture_root=capture_root,
                         monitor_socket=monitor_socket,
                     ),
-                )[-4:],
+                )[-6:],
                 [
                     "-device",
                     "bochs-display,xres=1280,yres=1024",
                     "-qmp",
                     f"unix:{monitor_socket},server=on,wait=off",
+                    "-nic",
+                    "none",
                 ],
             )
 
@@ -385,6 +446,9 @@ class ContractCompositionTests(unittest.TestCase):
                 ("VIRTIO_RNG", "virtio-rng"),
                 ("VIRTIO_NET", "virtio-net"),
                 ("VIRTIO_GPU", "virtio-gpu"),
+                ("VIRTIO_GPU_GL", "virtio-gpu-gl"),
+                ("VIRTIO_GPU_DRM", "virtio-gpu-drm"),
+                ("QEMU_XHCI", "qemu-xhci"),
                 ("SCRATCH_VIRTIO_BLOCK", "scratch-virtio-block"),
                 ("NVME", "nvme"),
             ),
@@ -504,6 +568,78 @@ class ContractCompositionTests(unittest.TestCase):
         )
         self.assertFalse(profile.requires_resource_gate)
         validate_registered_profile(profile)
+
+    def test_megrez_timer_recovery_is_a_registered_contract(self) -> None:
+        profile = profile_by_name("megrez-sv48-svade-timer-recovery")
+
+        self.assertEqual(
+            profile.bootargs,
+            "console=ttyS0 loglevel=info init=/init asterinas.reboot_after=10",
+        )
+        self.assertEqual(
+            profile.validation.completion_line,
+            b"ASTERINAS_REBOOT_TIMER_READY",
+        )
+        self.assertEqual(
+            profile.validation.recovery,
+            RecoveryContract(
+                armed_marker=b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=10",
+                trigger_marker=b"ASTERINAS_REBOOT_TIMER_READY",
+                recovery_timeout=45.0,
+            ),
+        )
+        self.assertFalse(profile.requires_resource_gate)
+        validate_registered_profile(profile)
+
+    def test_qemu_virt_timer_recovery_is_registered_for_device_gates(self) -> None:
+        profile = profile_by_name("qemu-virt-asterinas-timer-recovery")
+
+        self.assertIs(profile.machine, QEMU_VIRT)
+        self.assertEqual(
+            profile.machine.storage_transport, StorageTransport.VIRTIO_EXT4
+        )
+        self.assertEqual(
+            profile.validation.completion_line,
+            b"ASTERINAS_REBOOT_TIMER_READY",
+        )
+        self.assertIsNotNone(profile.validation.recovery)
+        validate_registered_profile(profile)
+
+    def test_sifive_u_timer_recovery_uses_mmc(self) -> None:
+        profile = profile_by_name("sifive-u-asterinas-timer-recovery")
+
+        self.assertEqual(
+            profile.bootargs,
+            "console=ttyS0 loglevel=info init=/init asterinas.reboot_after=10",
+        )
+        self.assertEqual(profile.machine.storage_transport, StorageTransport.MMC_EXT4)
+        self.assertEqual(
+            profile.validation.completion_line,
+            b"ASTERINAS_REBOOT_TIMER_READY",
+        )
+        self.assertEqual(
+            profile.validation.recovery,
+            RecoveryContract(
+                armed_marker=b"ASTERINAS_SOFTWARE_REBOOT_ARMED seconds=10",
+                trigger_marker=b"ASTERINAS_REBOOT_TIMER_READY",
+                recovery_timeout=45.0,
+            ),
+        )
+        validate_registered_profile(profile)
+
+    def test_sifive_u_interrupts_u_boot_autoboot_for_no_network_gates(self) -> None:
+        self.assertEqual(SIFIVE_U.autoboot_interrupt, b"\x03")
+        argv = qemu_argv(
+            uboot=Path("/tmp/u-boot.bin"),
+            boot_disk=Path("/tmp/boot.ext4"),
+            profile=SIFIVE_U_ASTERINAS_SMOKE,
+            device_set=HEADLESS,
+        )
+        self.assertEqual(argv[-2:], ["-nic", "none"])
+
+    def test_sifive_gem_recovery_profile_disables_autoboot_interrupt(self) -> None:
+        self.assertIs(SIFIVE_U_GEM_TIMER_RECOVERY.machine.autoboot_interrupt, None)
+        validate_registered_profile(SIFIVE_U_GEM_TIMER_RECOVERY)
 
     def test_rng_seed_removal_canonicalizes_the_exact_dtb_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -827,7 +963,7 @@ class ContractCompositionTests(unittest.TestCase):
                     )
                     self.assertEqual(restored.machine, SIFIVE_U.name)
 
-    def test_default_qemu_arguments_remain_byte_for_byte_compatible(self) -> None:
+    def test_default_qemu_arguments_disable_implicit_network(self) -> None:
         self.assertEqual(
             qemu_argv(
                 uboot=Path("/tmp/u-boot"),
@@ -856,6 +992,8 @@ class ContractCompositionTests(unittest.TestCase):
                 "if=none,format=raw,file=/tmp/boot.ext4,id=bootdisk",
                 "-device",
                 "virtio-blk-device,drive=bootdisk",
+                "-nic",
+                "none",
             ],
         )
 

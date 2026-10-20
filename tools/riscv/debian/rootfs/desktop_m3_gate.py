@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import secrets
@@ -31,7 +32,15 @@ from tools.riscv.debian.rootfs.rootfs_gate_backend import (
 from tools.riscv.debian.rootfs.systemd_m2_gate import orchestrate_systemd_m2_gate
 
 
-DESKTOP_M3_BOOTARGS = "console=ttyS0 loglevel=4 init=/init -- --root-init=systemd"
+# Keep a virtual-console console alongside UART.  The desktop service owns
+# tty1 for xinit; without console=tty0 the current Asterinas boot has no VT
+# handoff and systemd can start the service without ever creating X display
+# evidence.
+DESKTOP_M3_BOOTARGS = (
+    "console=ttyS0 console=tty0 loglevel=4 "
+    "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered "
+    "init=/init -- --root-init=systemd"
+)
 DESKTOP_M3_MILESTONES = (
     "DEBIAN_DESKTOP_M3_UDEV state=active",
     "DEBIAN_DESKTOP_M3_LOGIND state=active",
@@ -167,7 +176,7 @@ def _ppm_token(contents: bytes, offset: int) -> tuple[bytes, int]:
 
 def inspect_ppm(
     contents: bytes, *, expected_width: int = 1280, expected_height: int = 1024
-) -> dict[str, int]:
+) -> dict[str, object]:
     """Validate a bounded QEMU P6 screendump and reject a blank framebuffer."""
 
     if len(contents) > MAX_SCREENSHOT_BYTES:
@@ -208,6 +217,11 @@ def inspect_ppm(
         "width": width,
         "height": height,
         "pixel_count": width * height,
+        # Keep both digests: the pixel hash is stable across PPM header
+        # formatting, while the full-image hash detects changes to the QEMU
+        # screendump itself.  The DRM gate publishes both as evidence.
+        "pixel_sha256": hashlib.sha256(pixels).hexdigest(),
+        "ppm_sha256": hashlib.sha256(contents).hexdigest(),
         "distinct_sampled_colors": len(distinct),
         "non_background_pixels": non_background_pixels,
     }
@@ -221,7 +235,7 @@ def capture_rendered_ppm(
     expected_width: int = 1280,
     expected_height: int = 1024,
     retry_interval: float = 1.0,
-) -> tuple[bytes, dict[str, int]]:
+) -> tuple[bytes, dict[str, object]]:
     """Capture until the first non-blank frame, within one total deadline."""
 
     quoted = str(screenshot).replace("\\", "\\\\").replace('"', '\\"')
@@ -259,6 +273,9 @@ class DesktopM3Operations(ConcreteOperations):
     FAILURE_MARKER = b"DEBIAN_DESKTOP_M3_FAIL reason="
     ADDITIONAL_FAILURE_MARKERS: tuple[bytes, ...] = ()
     CAPTURE_SCREENSHOT = True
+    EARLY_CAPTURE_MARKER: bytes | None = None
+    SCREENSHOT_WIDTH = 1280
+    SCREENSHOT_HEIGHT = 1024
     BOOTARGS = DESKTOP_M3_BOOTARGS
 
     def __init__(self, config: GateConfig) -> None:
@@ -275,6 +292,7 @@ class DesktopM3Operations(ConcreteOperations):
         self._require_output().invalidate(
             "boot.ext4",
             "debian-root.run.ext2",
+            "debian-root.run.qcow2",
             f"{self.ARTIFACT_PREFIX}.serial.log",
             f"{self.ARTIFACT_PREFIX}.ppm",
             "result.json",
@@ -306,6 +324,10 @@ class DesktopM3Operations(ConcreteOperations):
             "ext4load virtio 0:0 0x90000000 /qemu-virt.dtb",
             "fdt addr 0x90000000",
             "fdt resize 0x1000",
+            # CONFIG_VIDEO_BOCHS programs the DISPI mode.  Merely describing
+            # the BAR as simple-framebuffer leaves QEMU at its 640x480 reset
+            # mode, so host scanout remains a single-color surface.
+            "pci display 0.1.0",
             f"fdt mknode / {node}",
             f'fdt set /{node} compatible "simple-framebuffer"',
             f"fdt set /{node} reg <0x0 {framebuffer_address:#x} 0x0 0x1000000>",
@@ -333,19 +355,34 @@ class DesktopM3Operations(ConcreteOperations):
         del config
         return None
 
+    def _validate_protocol_transcript(self, session: dict[str, Any]) -> None:
+        """Allow profile-specific transcript gates before pixel capture."""
+
+        del session
+
     def run_protocol(self, session: dict[str, Any], config: GateConfig) -> None:
         serial = session["serial"]
         protocol_deadline = self._protocol_deadline(config)
         deadline = protocol_deadline or time.monotonic() + config.boot_timeout
         serial.wait_for(b"=> ", deadline)
-        self._send_uboot(session, "pci enum", 1, deadline)
-        bar_start = serial.checkpoint()
-        self._send_uboot(session, "pci bar 0.1.0", 2, deadline)
-        match = _BOCHS_BAR_RE.search(serial.transcript[bar_start:])
-        if match is None:
-            raise GateFailure("failed to discover bochs framebuffer BAR0")
-        framebuffer_address = int(match.group(1), 16)
-        for index, command in enumerate(self._boot_commands(framebuffer_address), 3):
+        provider = getattr(self, "DISPLAY_PROVIDER", "fbdev")
+        if provider == "drm":
+            # A DRM provider has no Bochs BAR and must not manufacture a
+            # simple-framebuffer node. Its subclass supplies only the common
+            # virtio storage/DTB/initramfs handoff commands.
+            boot_commands = self._boot_commands(0)
+            command_offset = 1
+        else:
+            self._send_uboot(session, "pci enum", 1, deadline)
+            bar_start = serial.checkpoint()
+            self._send_uboot(session, "pci bar 0.1.0", 2, deadline)
+            match = _BOCHS_BAR_RE.search(serial.transcript[bar_start:])
+            if match is None:
+                raise GateFailure("failed to discover bochs framebuffer BAR0")
+            framebuffer_address = int(match.group(1), 16)
+            boot_commands = self._boot_commands(framebuffer_address)
+            command_offset = 3
+        for index, command in enumerate(boot_commands, command_offset):
             self._send_uboot(session, command, index, deadline)
 
         marker = f"__ASTERINAS_DESKTOP_BOOT_{secrets.token_hex(8).upper()}__"
@@ -362,11 +399,21 @@ class DesktopM3Operations(ConcreteOperations):
         serial.wait_for(b"Starting kernel ...", deadline)
         failure_markers = (self.FAILURE_MARKER, *self.ADDITIONAL_FAILURE_MARKERS)
         completion = serial.wait_for_any(
-            (self.MILESTONES[-1].encode(), *failure_markers),
+            tuple(
+                marker
+                for marker in (
+                    self.EARLY_CAPTURE_MARKER,
+                    self.MILESTONES[-1].encode(),
+                    *failure_markers,
+                )
+                if marker is not None
+            ),
             protocol_deadline or time.monotonic() + config.boot_timeout,
         )
         if self._completion_is_failure(completion, failure_markers):
             raise GateFailure("guest reported desktop failure")
+
+        self._validate_protocol_transcript(session)
 
         if not self.CAPTURE_SCREENSHOT:
             return
@@ -376,7 +423,16 @@ class DesktopM3Operations(ConcreteOperations):
             session["monitor"],
             screenshot,
             time.monotonic() + config.command_timeout,
+            expected_width=self.SCREENSHOT_WIDTH,
+            expected_height=self.SCREENSHOT_HEIGHT,
         )
+        if self.EARLY_CAPTURE_MARKER is not None and self.EARLY_CAPTURE_MARKER in completion:
+            completion = serial.wait_for_any(
+                (self.MILESTONES[-1].encode(), *failure_markers),
+                protocol_deadline or time.monotonic() + config.boot_timeout,
+            )
+            if self._completion_is_failure(completion, failure_markers):
+                raise GateFailure("guest reported desktop failure")
 
     def publish(
         self,

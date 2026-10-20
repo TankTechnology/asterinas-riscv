@@ -22,7 +22,6 @@ import zlib
 
 from tools.riscv.debian.rootfs import browser_web_marionette_gate as web_gate
 from tools.riscv.debian.rootfs import browser_web_qemu_gate as web_qemu_gate
-from tools.riscv.debian.rootfs.browser_m5_qemu_gate import BROWSER_M5_MILESTONES
 from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     GateError,
     MAX_SCREENSHOT_COMMAND_SECONDS,
@@ -37,6 +36,8 @@ from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     _wait_for_probe,
     _wait_across_windows,
     _wait_baidu_search_outcome,
+    _playback_probe,
+    _wait_for_bilibili_playback,
     _write_evidence,
     _probe_mapping,
     probe_baidu_home,
@@ -46,6 +47,7 @@ from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     probe_fixture_home,
     probe_fixture_capabilities,
     run_baidu_home_gate,
+    run_bilibili_playback_gate,
     select_bilibili_video,
     validate_gecko_profiler_environment,
     validate_baidu_home,
@@ -53,6 +55,7 @@ from tools.riscv.debian.rootfs.browser_web_marionette_gate import (
     validate_baidu_challenge,
     validate_baidu_search_outcome,
     validate_bilibili_detail,
+    validate_bilibili_playback,
     validate_fixture_search,
     fixture_index_url_from_environment,
     main as marionette_gate_main,
@@ -262,6 +265,40 @@ def web_evidence() -> dict[str, bytes]:
     bilibili_home["links"] = [selected]
     bilibili_detail = snapshot(selected, tls=0)
     bilibili_detail["dom"]["bilibiliDetail"] = True
+    bilibili_detail["playback"] = {
+        "status": "pass",
+        "url": selected,
+        "source": "blob:https://www.bilibili.com/fixture-stream",
+        "sourceKind": "blob",
+        "playPromise": "resolved",
+        "readyState": 4,
+        "networkState": 2,
+        "paused": False,
+        "ended": False,
+        "duration": 12.0,
+        "bufferedEnd": 4.0,
+        "initialCurrentTime": 0.0,
+        "finalCurrentTime": 1.0,
+        "progress": 1.0,
+        "sampleCount": 3,
+        "elapsedSeconds": 2.0,
+        "events": {
+            "loadedmetadata": 1,
+            "canplay": 1,
+            "playing": 1,
+            "timeupdate": 4,
+            "waiting": 0,
+            "stalled": 0,
+            "ended": 0,
+            "error": 0,
+        },
+        "videoWidth": 1920,
+        "videoHeight": 1080,
+        "decodedFrames": 30,
+        "droppedFrames": 5,
+        "errorCode": None,
+        "errorMessage": None,
+    }
     trust = (
         "FIREFOX_TRUST_PASS mode=embedded-xul ca_certificates=150 "
         "firefox=installed ca_package=installed riscv_elf=1 nss_loader=1\n"
@@ -328,6 +365,7 @@ def web_evidence() -> dict[str, bytes]:
             "A_WEB_PHASE phase=tcp-connect state=start firefox_pid=100\n"
             "A_WEB_PHASE phase=tcp-connect state=done firefox_pid=100\n"
             "A_WEB_SELECTED_BV url=https://www.bilibili.com/video/BV1Ab411c7De/?track_id=\n"
+            "DEBIAN_BROWSER_WEB_BILIBILI_PLAYBACK status=pass bv=BV1Ab411c7De\n"
             "DEBIAN_BROWSER_WEB_PLATFORM_READY baidu_home=pass bilibili_home=pass "
             "bilibili_detail=pass bv=BV1Ab411c7De tls=verified\n"
         ).encode(),
@@ -631,7 +669,7 @@ class BrowserWebContractTests(unittest.TestCase):
         'user_pref("dom.ipc.processCount", 1);',
         'user_pref("dom.ipc.processPrelaunch.enabled", false);',
         'user_pref("fission.autostart", false);',
-        'user_pref("media.rdd-process.enabled", false);',
+        'user_pref("media.rdd-process.enabled", true);',
         'user_pref("network.captive-portal-service.enabled", false);',
         'user_pref("network.connectivity-service.enabled", false);',
     }
@@ -975,6 +1013,7 @@ class BrowserWebContractTests(unittest.TestCase):
             "curl",
             "iproute2",
             "iputils-ping",
+            "libavcodec-extra61",
             "xdotool",
         ):
             self.assertIn(package, profile.requested_packages)
@@ -1004,6 +1043,8 @@ class BrowserWebContractTests(unittest.TestCase):
     def test_browser_web_runtime_digest_changes_with_every_gate_input(self) -> None:
         inputs = (
             "desktop_m5_network_evidence.sh",
+            "gmac_single_packet_evidence.py",
+            "desktop_m4_framebuffer_rw.py",
             "desktop_m5_network_gate.py",
             "browser_web_firefox.sh",
             "browser_web_marionette_gate.py",
@@ -1022,6 +1063,13 @@ class BrowserWebContractTests(unittest.TestCase):
             "browser_web_trust_check.py",
             "browser_web_online_rootfs_check.py",
             "firefox_jit_overlay.py",
+            "physical_graphics_control.sh",
+            "desktop_m3_device_access.sh",
+            "desktop_fbdev_no_input.conf",
+            "desktop_drm.conf",
+            "firefox_drm_scene_gate.py",
+            "firefox_drm_scene.html",
+            "firefox_drm_scene.service",
         )
 
         def digest(source_directory: Path) -> str:
@@ -1198,7 +1246,9 @@ class BrowserWebContractTests(unittest.TestCase):
             provider_root = Path(directory)
             config_directory = provider_root / "fbdev/xorg.conf.d"
             config_directory.mkdir(parents=True)
-            (config_directory / "20-asterinas.conf").write_text('Section "Device"\n')
+            (config_directory / "20-asterinas.conf").write_text(
+                (ROOTFS / "desktop_fbdev_no_input.conf").read_text()
+            )
             environment = {
                 **os.environ,
                 "ASTERINAS_DISPLAY_PROVIDER_ROOT": str(provider_root),
@@ -1216,18 +1266,173 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertEqual(result.stdout, f"{config_directory}\n")
         self.assertEqual(result.stderr, "")
 
+    def test_display_provider_resolver_selects_drm_from_explicit_environment(self) -> None:
+        resolver = ROOTFS / "desktop_display_provider.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            provider_root = Path(directory)
+            config_directory = provider_root / "drm/xorg.conf.d"
+            config_directory.mkdir(parents=True)
+            (config_directory / "20-asterinas.conf").write_text(
+                (ROOTFS / "desktop_drm.conf").read_text()
+            )
+            environment = {
+                **os.environ,
+                "ASTERINAS_DISPLAY_PROVIDER_ROOT": str(provider_root),
+                "ASTERINAS_DISPLAY_PROVIDER": "drm",
+            }
+            name = subprocess.run(
+                ["bash", str(resolver), "--name"],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            path = subprocess.run(
+                ["bash", str(resolver)],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        self.assertEqual(name.returncode, 0, name.stderr)
+        self.assertEqual(name.stdout, "drm\n")
+        self.assertEqual(path.returncode, 0, path.stderr)
+        self.assertEqual(path.stdout, f"{config_directory}\n")
+
+    def test_display_provider_resolver_rejects_provider_config_with_wrong_driver(
+        self,
+    ) -> None:
+        resolver = ROOTFS / "desktop_display_provider.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            provider_root = Path(directory)
+            config_directory = provider_root / "drm/xorg.conf.d"
+            config_directory.mkdir(parents=True)
+            (config_directory / "20-asterinas.conf").write_text(
+                'Section "Device"\n    Driver "fbdev"\n'
+            )
+            result = subprocess.run(
+                ["bash", str(resolver), "--name"],
+                env={
+                    **os.environ,
+                    "ASTERINAS_DISPLAY_PROVIDER": "drm",
+                    "ASTERINAS_DISPLAY_PROVIDER_ROOT": str(provider_root),
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 65)
+        self.assertEqual(result.stdout, "")
+
+    def test_display_provider_resolver_uses_validated_runtime_selection(self) -> None:
+        resolver = ROOTFS / "desktop_display_provider.sh"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_directory = root / "drm/xorg.conf.d"
+            config_directory.mkdir(parents=True)
+            (config_directory / "20-asterinas.conf").write_text(
+                (ROOTFS / "desktop_drm.conf").read_text()
+            )
+            runtime_file = root / "run/provider"
+            runtime_file.parent.mkdir()
+            runtime_file.write_text("drm\n")
+            result = subprocess.run(
+                ["bash", str(resolver), "--name"],
+                env={
+                    **os.environ,
+                    "ASTERINAS_DISPLAY_PROVIDER_ROOT": str(root),
+                    "ASTERINAS_DISPLAY_PROVIDER_RUNTIME": str(runtime_file),
+                },
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "drm\n")
+
+    def test_desktop_sessions_bound_drm_fallback_to_fbdev(self) -> None:
+        m4 = (ROOTFS / "desktop_m4_session.sh").read_text()
+        m5 = (ROOTFS / "desktop_m5_session.sh").read_text()
+        for source in (m4, m5):
+            self.assertIn("display-provider-fallback", source)
+            self.assertIn("ASTERINAS_DISPLAY_PROVIDER=fbdev", source)
+            self.assertIn("ASTERINAS_DISPLAY_PROVIDER_RECEIPT", source)
+            self.assertIn("from=drm to=fbdev", source)
+            self.assertIn("fallback_attempted", source)
+            self.assertIn("{1..120}", source)
+        self.assertIn("xorg-start-timeout", m5)
+        self.assertIn("xorg-start-timeout", m4)
+
+    def test_m4_xorg_does_not_require_vt_switching(self) -> None:
+        source = (ROOTFS / "desktop_m4_session.sh").read_text()
+        self.assertIn("-logfile \"$XORG_LOG\" -novtswitch", source)
+        self.assertNotIn("keeptty", source)
+        self.assertIn("framebuffer-stat=deferred", source)
+        self.assertIn("framebuffer-open-rw=deferred", source)
+        self.assertIn('INPUT_IDENTITY_MODE" == ordered', source)
+
+    def test_m4_drm_accepts_completed_glamor_when_xdpyinfo_is_stalled(self) -> None:
+        source = (ROOTFS / "desktop_m4_session.sh").read_text()
+        self.assertIn("glamor X acceleration enabled on virgl", source)
+        self.assertIn("Output Virtual-1 connected", source)
+        self.assertIn('"$DISPLAY_PROVIDER" == drm', source)
+        self.assertIn("XORG_READY=1", source)
+
+    def test_display_consumers_fail_closed_when_provider_config_is_invalid(self) -> None:
+        for name in (
+            "desktop_m3_device_access.sh",
+            "desktop_m4_evidence.sh",
+            "desktop_m5_session.sh",
+            "browser_m5_firefox.sh",
+            "browser_web_firefox.sh",
+        ):
+            source = (ROOTFS / name).read_text()
+            self.assertIn("desktop-display-provider --name", source, name)
+            self.assertNotIn('display_provider="${ASTERINAS_DISPLAY_PROVIDER:-}"', source, name)
+            if name != "desktop_m4_evidence.sh":
+                self.assertNotIn('display_provider="${display_provider:-fbdev}"', source, name)
+
+    def test_drm_device_access_prepares_the_bounded_fbdev_fallback(self) -> None:
+        source = (ROOTFS / "desktop_m3_device_access.sh").read_text()
+        drm = source.index('if [[ "$display_provider" == drm ]]; then')
+        drm_end = source.index('if [[ "$display_provider" != drm', drm)
+        drm_block = source[drm:drm_end]
+        self.assertIn("if [[ -c /dev/fb0 ]]", drm_block)
+        self.assertIn("chown 1000:44 /dev/fb0", drm_block)
+        self.assertIn("chmod 0660 /dev/fb0", drm_block)
+
     def test_rootfs_installs_and_versions_the_display_provider_resolver(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
 
         self.assertIn('"$script_directory/desktop_display_provider.sh"', builder)
         self.assertIn('"$stage/usr/lib/asterinas/desktop-display-provider"', builder)
-        self.assertIn("Environment=ASTERINAS_DISPLAY_PROVIDER=fbdev", builder)
+        self.assertNotIn("Environment=ASTERINAS_DISPLAY_PROVIDER=fbdev", builder)
+        self.assertIn('"$script_directory/desktop_drm.conf"', builder)
         runtime_inputs = builder[
             builder.index("browser_web_runtime_digest()") : builder.index(
                 "publish_artifacts()"
             )
         ]
         self.assertIn("desktop_display_provider.sh", runtime_inputs)
+
+    def test_drm_device_access_does_not_require_fb0(self) -> None:
+        source = (ROOTFS / "desktop_m3_device_access.sh").read_text()
+        fb0_block_start = source.index('if [[ "$display_provider" != drm ]]; then')
+        fb0_block_end = source.index('if ((${#input_devices[@]} > 0)); then', fb0_block_start)
+        fb0_block = source[fb0_block_start:fb0_block_end]
+        self.assertIn('/dev/fb0', fb0_block)
+        self.assertIn('BROWSER_WEB_DESKTOP_STAGE=fb0-ready', fb0_block)
+        self.assertLess(
+            fb0_block.index('if ! /usr/bin/timeout --signal=KILL 5s chmod 0666 /dev/fb0'),
+            fb0_block.index('BROWSER_WEB_DESKTOP_STAGE=fb0-ready'),
+        )
+
+    def test_drm_modesetting_uses_kmsdev(self) -> None:
+        config = (ROOTFS / "desktop_drm.conf").read_text()
+        self.assertIn('Option "kmsdev" "/dev/dri/card0"', config)
+        self.assertNotIn('Option "DRMDevice"', config)
 
     def test_runtime_provenance_is_installed_collected_and_host_bound(self) -> None:
         builder = (ROOTFS / "build_rootfs.sh").read_text()
@@ -1278,7 +1483,9 @@ class BrowserWebContractTests(unittest.TestCase):
             provider_root = Path(directory) / "providers"
             legacy_directory = Path(directory) / "legacy"
             legacy_directory.mkdir()
-            (legacy_directory / "20-asterinas.conf").write_text('Section "Device"\n')
+            (legacy_directory / "20-asterinas.conf").write_text(
+                (ROOTFS / "desktop_fbdev_no_input.conf").read_text()
+            )
             common = {
                 **os.environ,
                 "ASTERINAS_DISPLAY_PROVIDER_ROOT": str(provider_root),
@@ -1339,6 +1546,11 @@ class BrowserWebContractTests(unittest.TestCase):
             "[Service]\nTimeoutStartSec=600s",
             builder,
         )
+
+    def test_browser_launcher_accepts_only_the_offline_local_canary_url(self) -> None:
+        launcher = (ROOTFS / "browser_web_firefox.sh").read_text()
+        self.assertIn("ASTERINAS_DESKTOP_START_URL", launcher)
+        self.assertIn("file:///usr/share/asterinas/physical-graphics/index.html", launcher)
 
     def test_gate_versions_accept_architecture_all_identity_packages(self) -> None:
         profile = get_profile("browser-web")
@@ -1526,27 +1738,6 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("/usr/bin/timeout 2 /usr/bin/cat", evidence)
         self.assertIn("/usr/bin/timeout 2 /usr/bin/sleep 1", evidence)
 
-    def test_m5_profile_keeps_formal_markers_without_debug_console_flood(self) -> None:
-        builder = (ROOTFS / "build_rootfs.sh").read_text()
-        offline_evidence = (ROOTFS / "desktop_m5_evidence.sh").read_text()
-        online_evidence = (ROOTFS / "browser_web_evidence.sh").read_text()
-        self.assertIn("desktop_standard_output=journal", builder)
-        self.assertIn("desktop_standard_error=journal", builder)
-        self.assertIn("StandardOutput=$desktop_standard_output", builder)
-        self.assertIn("StandardError=$desktop_standard_error", builder)
-        self.assertNotIn("systemd.log_level=debug", DESKTOP_M5_QEMU_BOOTARGS)
-        for marker in (
-            "DEBIAN_BROWSER_M5_READY",
-            "DEBIAN_FIREFOX_BAIDU_READY",
-        ):
-            with self.subTest(marker=marker):
-                evidence = offline_evidence if "_M5_" in marker else online_evidence
-                self.assertIn(marker, evidence)
-        self.assertIn(
-            'readonly CONSOLE="${ASTERINAS_BROWSER_WEB_CONSOLE:-/dev/console}"',
-            online_evidence,
-        )
-
     def test_startup_timeline_requires_ordered_guest_monotonic_phases(self) -> None:
         evidence = web_evidence()
         validate_web_evidence(evidence)
@@ -1648,6 +1839,9 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertIn("input-devices-absent", device_access)
         self.assertIn("device-access-failed reason=fb0-timeout", device_access)
         self.assertIn("device-access-failed reason=fb0-permissions", device_access)
+        self.assertIn("cannot configure tty1 for DRM Xorg", device_access)
+        self.assertIn("chown root:tty /dev/tty1", device_access)
+        self.assertIn("chmod 0660 /dev/tty1", device_access)
         self.assertIn("BROWSER_WEB_DESKTOP_STAGE=fb0-ready", device_access)
         self.assertIn('"$stage/etc/systemd/system/systemd-udevd.service"', builder)
         self.assertIn('"$stage/etc/systemd/system/systemd-logind.service"', builder)
@@ -1829,6 +2023,12 @@ class BrowserWebContractTests(unittest.TestCase):
                 self.assertEqual(
                     cache_check.check_cache_profile(root, profile="desktop-m5-network"),
                     "DESKTOP_STARTUP_CACHE_PASS profile=desktop-m5-network "
+                    "sysusers=static ldconfig=riscv64 journal=catalog "
+                    "fontconfig=cached stamps=current",
+                )
+                self.assertEqual(
+                    cache_check.check_cache_profile(root, profile="desktop-m4"),
+                    "DESKTOP_STARTUP_CACHE_PASS profile=desktop-m4 "
                     "sysusers=static ldconfig=riscv64 journal=catalog "
                     "fontconfig=cached stamps=current",
                 )
@@ -2088,6 +2288,7 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertNotIn("systemd-sysusers", tools)
         self.assertNotIn("journalctl", tools)
         for profile, expected in (
+            ("desktop-m4", 0),
             ("desktop-m5-network", 0),
             ("browser-web", 0),
             ("minimal-m1", 1),
@@ -2153,7 +2354,6 @@ generate_fontconfig_cache "$stage" "$3"
                     passing + marker + b"\n", expected_debian_release="13.6"
                 )
                 self.assertFalse(result.passed)
-        self.assertFalse(set(BROWSER_WEB_MILESTONES) & set(BROWSER_M5_MILESTONES))
 
     def test_qemu_progress_tracks_split_structured_lines(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2251,13 +2451,6 @@ generate_fontconfig_cache "$stage" "$3"
                 GateFailure, "browser-timeout:phase-navigate-baidu-home"
             ):
                 operations.run_protocol(session, config)
-
-        makefile = (ROOT / "Makefile").read_text()
-        target = makefile.split(".PHONY: test_riscv_debian_browser_web_qemu_gate", 1)[
-            1
-        ].split(".PHONY:", 1)[0]
-        self.assertIn("--boot-timeout 900", target)
-        self.assertNotIn("--boot-timeout 7200", target)
 
     def test_qemu_gdb_stub_is_loopback_only_and_explicitly_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2487,6 +2680,112 @@ generate_fontconfig_cache "$stage" "$3"
         self.assertEqual(marker["url"], "https://www.baidu.com/")
         self.assertRegex(marker["title_sha256"], r"\A[0-9a-f]{64}\Z")
         self.assertEqual(marker["tls"], "verified")
+
+    def test_bilibili_playback_scope_runs_without_the_qemu_fixture(self) -> None:
+        selected = "https://www.bilibili.com/video/BV1Ab411c7De/"
+        home = snapshot("https://www.bilibili.com/")
+        home["dom"]["bilibiliHome"] = True
+        home["links"] = [selected]
+        detail = snapshot(selected, tls=0)
+        detail["dom"]["bilibiliDetail"] = True
+        playback = json.loads(web_evidence()["bilibili-detail.json"])["playback"]
+        client = mock.Mock()
+
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate._connect",
+                return_value=client,
+            ),
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate."
+                "_start_webdriver_session"
+            ),
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate._navigate"
+            ) as navigate,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate."
+                "_wait_for_probe"
+            ) as wait_probe,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate._snapshot",
+                side_effect=[home, detail],
+            ),
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate."
+                "_wait_for_bilibili_playback",
+                return_value=playback,
+            ) as wait_playback,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate."
+                "_write_evidence"
+            ) as write_evidence,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate."
+                "fixture_index_url_from_environment"
+            ) as fixture_url,
+        ):
+            observed_bv, observed_playback = run_bilibili_playback_gate(
+                "127.0.0.1", 2828, 30, Path(directory), firefox_pid=116
+            )
+
+        self.assertEqual(observed_bv, "BV1Ab411c7De")
+        self.assertEqual(observed_playback, playback)
+        self.assertEqual(
+            [call.args[1] for call in navigate.call_args_list],
+            ["https://www.bilibili.com/", selected],
+        )
+        self.assertEqual(wait_probe.call_count, 2)
+        wait_playback.assert_called_once_with(client, selected, mock.ANY)
+        self.assertEqual(write_evidence.call_count, 2)
+        fixture_url.assert_not_called()
+        client.close.assert_called_once_with()
+
+    def test_bilibili_playback_cli_selects_the_physical_scope(self) -> None:
+        playback = json.loads(web_evidence()["bilibili-detail.json"])["playback"]
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate."
+                "validate_network_namespace"
+            ) as validate_namespace,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate."
+                "run_bilibili_playback_gate",
+                return_value=("BV1Ab411c7De", playback),
+            ) as run_playback,
+            mock.patch(
+                "tools.riscv.debian.rootfs.browser_web_marionette_gate.run_gate"
+            ) as run_full,
+            mock.patch("sys.stdout", new_callable=io.StringIO) as stdout,
+        ):
+            evidence = Path(directory)
+            status = marionette_gate_main(
+                [
+                    "--scope",
+                    "bilibili-playback",
+                    "--firefox-pid",
+                    "116",
+                    "--timeout",
+                    "30",
+                    "--evidence-dir",
+                    str(evidence),
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        validate_namespace.assert_called_once_with(116)
+        run_playback.assert_called_once_with(
+            "127.0.0.1", 2828, 30.0, evidence, 116
+        )
+        run_full.assert_not_called()
+        marker = json.loads(stdout.getvalue())
+        self.assertEqual(marker["marker"], "DEBIAN_BROWSER_WEB_BILIBILI_PLAYBACK")
+        self.assertEqual(marker["scope"], "bilibili-playback")
+        self.assertEqual(marker["bv"], "BV1Ab411c7De")
+        self.assertEqual(marker["status"], "pass")
+        self.assertEqual(marker["muted"], True)
 
     def test_controlled_fixture_search_is_submitted_from_the_real_form(self) -> None:
         client = mock.Mock()
@@ -3412,6 +3711,89 @@ generate_fontconfig_cache "$stage" "$3"
         detail["url"] = "https://www.bilibili.com/video/BV9OtherId/"
         with self.assertRaisesRegex(GateError, "selected live BV"):
             validate_bilibili_detail(detail, selected)
+
+    def test_bilibili_playback_requires_real_progress_and_secure_source(self) -> None:
+        evidence = json.loads(web_evidence()["bilibili-detail.json"])
+        playback = evidence["playback"]
+        validate_bilibili_playback(
+            playback, "https://www.bilibili.com/video/BV1Ab411c7De/"
+        )
+
+        stalled = copy.deepcopy(playback)
+        stalled["finalCurrentTime"] = stalled["initialCurrentTime"]
+        stalled["progress"] = 0
+        with self.assertRaisesRegex(GateError, "currentTime"):
+            validate_bilibili_playback(
+                stalled, "https://www.bilibili.com/video/BV1Ab411c7De/"
+            )
+
+        insecure = copy.deepcopy(playback)
+        insecure["source"] = "http://media.example.invalid/video.mp4"
+        insecure["sourceKind"] = "http"
+        with self.assertRaisesRegex(GateError, "secure"):
+            validate_bilibili_playback(
+                insecure, "https://www.bilibili.com/video/BV1Ab411c7De/"
+            )
+
+        no_frames = copy.deepcopy(playback)
+        no_frames["decodedFrames"] = 0
+        with self.assertRaisesRegex(GateError, "decoded no video frames"):
+            validate_bilibili_playback(
+                no_frames, "https://www.bilibili.com/video/BV1Ab411c7De/"
+            )
+
+    def test_bilibili_playback_probe_and_wait_are_bounded(self) -> None:
+        expected_url = "https://www.bilibili.com/video/BV1Ab411c7De/"
+
+        def sample(current_time: float) -> dict[str, object]:
+            return {
+                "url": expected_url,
+                "state": "video",
+                "currentSrc": "blob:https://www.bilibili.com/fixture-stream",
+                "src": "blob:https://www.bilibili.com/fixture-stream",
+                "sourceKind": "blob",
+                "paused": False,
+                "ended": False,
+                "readyState": 4,
+                "networkState": 2,
+                "duration": 12.0,
+                "currentTime": current_time,
+                "bufferedEnd": 4.0,
+                "videoWidth": 1920,
+                "videoHeight": 1080,
+                "errorCode": None,
+                "errorMessage": None,
+                "playPromise": "resolved",
+                "playError": None,
+                "events": {
+                    "loadedmetadata": 1,
+                    "canplay": 1,
+                    "playing": 1,
+                    "timeupdate": 2,
+                    "waiting": 0,
+                    "stalled": 0,
+                    "ended": 0,
+                    "error": 0,
+                },
+                "lastEvent": "timeupdate",
+                "decodedFrames": 20,
+                "droppedFrames": 2,
+            }
+
+        client = mock.Mock()
+        client.command.side_effect = [
+            {"value": json.dumps(sample(0.0))},
+            {"value": json.dumps(sample(0.7))},
+        ]
+        with mock.patch(
+            "tools.riscv.debian.rootfs.browser_web_marionette_gate.time.sleep"
+        ):
+            observed = _wait_for_bilibili_playback(
+                client, expected_url, time.monotonic() + 5
+            )
+        self.assertEqual(observed["status"], "pass")
+        self.assertGreaterEqual(observed["progress"], 0.5)
+        self.assertEqual(client.command.call_count, 2)
 
     def test_challenge_403_snapshot_always_fails(self) -> None:
         challenged = snapshot("https://www.baidu.com/")

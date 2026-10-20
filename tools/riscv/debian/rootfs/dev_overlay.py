@@ -36,6 +36,7 @@ from tools.riscv.debian.rootfs.contract import (
 
 _SPEC_KEYS = {"schema_version", "profile", "files"}
 _FILE_KEYS = {"source", "destination", "mode"}
+_SYMLINK_KEYS = {"destination", "target"}
 _MODE_RE = re.compile(r"\A0[0-7]{3}\Z")
 _SHA256_RE = re.compile(r"\A[0-9a-f]{64}\Z")
 _DESTINATION_RE = re.compile(r"\A/[A-Za-z0-9._+@%:,=/~-]+\Z")
@@ -69,6 +70,14 @@ class OverlayFile:
 
 
 @dataclass(frozen=True)
+class OverlaySymlink:
+    """One deterministic symlink update in a development overlay."""
+
+    destination: str
+    target: str
+
+
+@dataclass(frozen=True)
 class OverlaySpec:
     """An exact, content-addressed development overlay specification."""
 
@@ -77,6 +86,7 @@ class OverlaySpec:
     path: Path
     sha256: str
     files: tuple[OverlayFile, ...]
+    symlinks: tuple[OverlaySymlink, ...] = ()
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -191,7 +201,7 @@ def load_overlay_spec(
             f"invalid overlay JSON at line {error.lineno}, column {error.colno}"
         ) from error
     document = _mapping(raw, "overlay")
-    _exact_keys(document, _SPEC_KEYS, "overlay")
+    _exact_keys(document, _SPEC_KEYS, "overlay", optional=frozenset({"symlinks"}))
     if type(document["schema_version"]) is not int or document["schema_version"] != 1:
         raise OverlayError("unsupported overlay schema version")
     profile = _string(document["profile"], "profile")
@@ -204,6 +214,7 @@ def load_overlay_spec(
         raise OverlayError("overlay must contain at least one file")
 
     files: list[OverlayFile] = []
+    symlinks: list[OverlaySymlink] = []
     destinations: set[str] = set()
     for index, raw_file in enumerate(raw_files):
         item = _mapping(raw_file, f"files[{index}]")
@@ -230,8 +241,31 @@ def load_overlay_spec(
                 create=create,
             )
         )
+    raw_symlinks = document.get("symlinks", [])
+    if not isinstance(raw_symlinks, list):
+        raise OverlayError("symlinks must be a list")
+    for index, raw_symlink in enumerate(raw_symlinks):
+        item = _mapping(raw_symlink, f"symlinks[{index}]")
+        _exact_keys(item, _SYMLINK_KEYS, f"symlinks[{index}]")
+        destination = _destination(item["destination"])
+        if destination in destinations:
+            raise OverlayError(f"duplicate destination: {destination}")
+        target = _string(item["target"], f"symlinks[{index}].target")
+        if (
+            "\x00" in target
+            or any(character.isspace() for character in target)
+            or len(target) > 1023
+        ):
+            raise OverlayError("symlink target must be non-empty and whitespace-free")
+        destinations.add(destination)
+        symlinks.append(OverlaySymlink(destination=destination, target=target))
     return OverlaySpec(
-        1, profile, path, hashlib.sha256(contents).hexdigest(), tuple(files)
+        1,
+        profile,
+        path,
+        hashlib.sha256(contents).hexdigest(),
+        tuple(files),
+        tuple(symlinks),
     )
 
 
@@ -308,6 +342,25 @@ def _validate_destination(image: Path, entry: OverlayFile) -> bool:
     return True
 
 
+def _validate_symlink_destination(image: Path, entry: OverlaySymlink) -> None:
+    """Validate a new symlink path without following an existing symlink."""
+
+    for parent in reversed(PurePosixPath(entry.destination).parents):
+        inode_type = _inode_type(
+            _run_debugfs(image, f"stat {parent}", allow_missing=True)
+        )
+        if inode_type is None:
+            raise OverlayError(f"overlay parent does not exist: {parent}")
+        if inode_type != "directory":
+            raise OverlayError(f"overlay parent is not a directory: {parent}")
+    if _run_debugfs(
+        image, f"stat {entry.destination}", allow_missing=True
+    ) is not None:
+        raise OverlayError(
+            f"symlink destination already exists: {entry.destination}"
+        )
+
+
 def _apply_file(image: Path, entry: OverlayFile, scratch: Path, index: int) -> None:
     destination_exists = _validate_destination(image, entry)
     staged_source = scratch / f"source-{index:04d}"
@@ -358,6 +411,31 @@ def _apply_file(image: Path, entry: OverlayFile, scratch: Path, index: int) -> N
             raise OverlayError(
                 f"overlay timestamp verification failed ({field}): {entry.destination}"
             )
+
+
+def _apply_symlink(image: Path, entry: OverlaySymlink) -> None:
+    _validate_symlink_destination(image, entry)
+    _run_debugfs(
+        image,
+        f"symlink {entry.destination} {entry.target}",
+        writable=True,
+    )
+    stat_output = _run_debugfs(image, f"stat {entry.destination}")
+    if _inode_type(stat_output) != "symlink":
+        raise OverlayError(
+            f"overlay symlink type verification failed: {entry.destination}"
+        )
+    match = re.search(r"Fast link dest: ([^\r\n]+)", stat_output or "")
+    actual_target = match.group(1).strip('"') if match is not None else None
+    if actual_target != entry.target:
+        raise OverlayError(
+            f"overlay symlink target verification failed: {entry.destination}"
+        )
+    match = re.search(r"\bUser:\s+(\d+)\s+Group:\s+(\d+)\b", stat_output or "")
+    if match is None or (int(match.group(1)), int(match.group(2))) != (0, 0):
+        raise OverlayError(
+            f"overlay symlink ownership verification failed: {entry.destination}"
+        )
 
 
 def _require_supported_ext_image(image: Path) -> None:
@@ -439,6 +517,8 @@ def materialize_image(base_image: Path, output_image: Path, spec: OverlaySpec) -
             scratch = Path(directory)
             for index, entry in enumerate(spec.files):
                 _apply_file(temporary, entry, scratch, index)
+            for entry in spec.symlinks:
+                _apply_symlink(temporary, entry)
         _restore_ext_write_time(base_image, temporary)
         derived_sha256 = _sha256_file(temporary)
         os.replace(temporary, output_image)
@@ -482,6 +562,10 @@ def build_derived_documents(
         }
         for entry in spec.files
     ]
+    symlinks = [
+        {"destination": entry.destination, "target": entry.target}
+        for entry in spec.symlinks
+    ]
     derivation = {
         "schema_version": 1,
         "profile": spec.profile,
@@ -489,6 +573,7 @@ def build_derived_documents(
         "base_root_image_sha256": base_root_sha256,
         "overlay_spec_sha256": spec.sha256,
         "files": files,
+        "symlinks": symlinks,
     }
     derivation_sha256 = _canonical_sha256(derivation)
     companion = dict(derivation)

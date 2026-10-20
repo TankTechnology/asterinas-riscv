@@ -113,6 +113,10 @@ _PROFILES = {
             "ca-certificates",
             "coreutils",
             "dbus",
+            "libdrm2",
+            "libegl1",
+            "libgl1-mesa-dri",
+            "libgles2",
             "libpam-systemd",
             "librsvg2-common",
             "lxpanel",
@@ -123,6 +127,7 @@ _PROFILES = {
             "systemd-sysv",
             "udev",
             "util-linux",
+            "x11-apps",
             "x11-utils",
             "xauth",
             "xfonts-base",
@@ -130,6 +135,8 @@ _PROFILES = {
             "xserver-xorg-core",
             "xserver-xorg-input-evdev",
             "xserver-xorg-video-fbdev",
+            "python3-minimal",
+            "xdotool",
             "xterm",
         ),
         identity_packages=_M1_IDENTITY_PACKAGES
@@ -138,6 +145,10 @@ _PROFILES = {
             "systemd-sysv",
             "dbus",
             "udev",
+            "libdrm2",
+            "libegl1",
+            "libgl1-mesa-dri",
+            "libgles2",
             "libpam-systemd",
             "xserver-xorg-core",
             "xterm",
@@ -146,7 +157,82 @@ _PROFILES = {
             "netsurf-gtk",
             "openbox",
             "pcmanfm",
+            "python3-minimal",
+            "xdotool",
         ),
+    ),
+    # The Firefox compatibility package is substantially larger than the
+    # ordinary M4 desktop image.  Keep it as a separate immutable profile so
+    # the 1 GiB M4 contract and its existing artifacts remain unchanged.
+    "desktop-m4-firefox": RootfsProfile(
+        name="desktop-m4-firefox",
+        schema_version=4,
+        # Stage1 deliberately matches the stable M4 label before it can
+        # hand off to systemd.  The UUID and profile name keep this larger
+        # Firefox image distinct in the immutable host-side contract.
+        root_label="ASTER_DEBIANM4",
+        root_uuid="5ef5d5ca-2a96-4db5-8f91-8debb9e8e6e4",
+        requested_packages=(
+            "bash",
+            "ca-certificates",
+            "coreutils",
+            "dbus",
+            "firefox-esr",
+            "libdrm2",
+            "libegl1",
+            "libgl1-mesa-dri",
+            "libgles2",
+            "libpam-systemd",
+            "librsvg2-common",
+            "lxpanel",
+            "netsurf-gtk",
+            "openbox",
+            "pcmanfm",
+            "procps",
+            "python3-minimal",
+            "systemd-sysv",
+            "udev",
+            "util-linux",
+            "x11-apps",
+            "x11-utils",
+            "xauth",
+            "xfonts-base",
+            "xinit",
+            "xserver-xorg-core",
+            "xserver-xorg-input-evdev",
+            "xserver-xorg-video-fbdev",
+            "xdotool",
+            "xterm",
+        ),
+        identity_packages=(
+            "base-files",
+            "bash",
+            "ca-certificates",
+            "coreutils",
+            "dbus",
+            "firefox-esr",
+            "libdrm2",
+            "libegl1",
+            "libgl1-mesa-dri",
+            "libgles2",
+            "libpam-systemd",
+            "librsvg2-common",
+            "libc6",
+            "lxpanel",
+            "netsurf-gtk",
+            "openbox",
+            "pcmanfm",
+            "procps",
+            "python3-minimal",
+            "systemd",
+            "systemd-sysv",
+            "udev",
+            "util-linux",
+            "xserver-xorg-core",
+            "xterm",
+            "xdotool",
+        ),
+        root_size_bytes=2 * 1024 * 1024 * 1024,
     ),
     "desktop-m5-network": RootfsProfile(
         name="desktop-m5-network",
@@ -172,7 +258,6 @@ _PROFILES = {
             "systemd-sysv",
             "udev",
             "util-linux",
-            "x11-apps",
             "x11-utils",
             "xauth",
             "xdotool",
@@ -201,7 +286,6 @@ _PROFILES = {
             "iproute2",
             "iputils-ping",
             "xdotool",
-            "x11-apps",
         ),
     ),
 }
@@ -236,10 +320,31 @@ _PROFILES["browser-web"] = RootfsProfile(
     # which is most of them including bilibili, fails to play while the page
     # itself loads. Name the decoder explicitly instead of relying on a
     # recommendation the build discards.
+    # Keep the default provider fbdev for the existing online gate, but carry
+    # the complete Mesa/libdrm/modesetting userspace in the immutable image so
+    # an explicit DRM QEMU gate can exercise Firefox WebRender without
+    # rebuilding a second browser image.
     requested_packages=_PROFILES["browser-m5"].requested_packages
-    + ("xdotool", "libavcodec-extra61"),
+    + (
+        "xdotool",
+        "libavcodec-extra61",
+        "libdrm2",
+        "libegl1",
+        "libgl1-mesa-dri",
+        "libgles2",
+        "x11-apps",
+    ),
     identity_packages=_PROFILES["browser-m5"].identity_packages
-    + ("ca-certificates", "xdotool", "libavcodec-extra61"),
+    + (
+        "ca-certificates",
+        "xdotool",
+        "libavcodec-extra61",
+        "libdrm2",
+        "libegl1",
+        "libgl1-mesa-dri",
+        "libgles2",
+        "x11-apps",
+    ),
     # Firefox's installed files consume most of a 1 GiB image.  A persistent
     # profile and even a small controlled download then hit ENOSPC during the
     # normal bookmark/places maintenance path.  Keep the smaller milestone

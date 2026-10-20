@@ -12,10 +12,29 @@ readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M4_TIMEOUT_SECONDS:-240}"
 readonly PROBE_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS:-30}"
 readonly BROWSER_ENABLED="${ASTERINAS_DESKTOP_BROWSER_ENABLED:-1}"
 readonly INPUT_REQUIRED="${ASTERINAS_DESKTOP_INPUT_REQUIRED:-1}"
+if [[ -x /usr/lib/asterinas/desktop-display-provider ]]; then
+    if ! display_provider="$(/usr/lib/asterinas/desktop-display-provider --name 2>/dev/null)"; then
+        printf '%s\n' 'DEBIAN_DESKTOP_M4_FAIL reason=invalid-display-provider-config' >&2
+        exit 1
+    fi
+else
+    # Host-side evidence contract tests run against the source tree, where
+    # the guest-installed resolver is intentionally absent.  The real image
+    # always installs it, so this compatibility branch is never used there.
+    display_provider="${ASTERINAS_DISPLAY_PROVIDER:-fbdev}"
+fi
+readonly DISPLAY_PROVIDER="$display_provider"
+case "$DISPLAY_PROVIDER" in
+    fbdev|drm) ;;
+    *) exit 64 ;;
+esac
 readonly FRAMEBUFFER_PROBE="${ASTERINAS_DESKTOP_M4_FRAMEBUFFER_PROBE:-/usr/lib/asterinas/desktop-m4-framebuffer-probe}"
+readonly FRAMEBUFFER_PROBE_RUNTIME="/run/asterinas/desktop-m4-framebuffer-probe-runtime"
+readonly FRAMEBUFFER_RW="${ASTERINAS_DESKTOP_M4_FRAMEBUFFER_RW:-0}"
 readonly FRAMEBUFFER_SCREENSHOT="${ASTERINAS_DESKTOP_M4_FRAMEBUFFER_SCREENSHOT:-/run/asterinas-desktop-m4-framebuffer.png}"
 readonly SCANOUT_DIAGNOSTIC="${ASTERINAS_DESKTOP_M4_SCANOUT_DIAGNOSTIC:-0}"
 readonly X11_PAINT_TEST="${ASTERINAS_DESKTOP_M4_X11_PAINT_TEST:-0}"
+readonly SKIP_DRM_X11_SCREENSHOT="${ASTERINAS_DESKTOP_M4_SKIP_DRM_X11_SCREENSHOT:-0}"
 readonly USER_NAME="asterinas"
 readonly USER_ID="1000"
 
@@ -90,6 +109,58 @@ has_desktop_session() {
     [[ "$sessions" =~ (^|[[:space:]])$USER_NAME([[:space:]]|$) ]]
 }
 
+drm_sysfs_ready() {
+    local class_card_target class_render_target char_card_target char_render_target
+    [[ -L /sys/class/drm/card0 && -L /sys/class/drm/renderD128 ]] || return 1
+    [[ -L /sys/dev/char/226:0 && -L /sys/dev/char/226:128 ]] || return 1
+    class_card_target="$(readlink /sys/class/drm/card0 2>/dev/null)" || return 1
+    class_render_target="$(readlink /sys/class/drm/renderD128 2>/dev/null)" || return 1
+    char_card_target="$(readlink /sys/dev/char/226:0 2>/dev/null)" || return 1
+    char_render_target="$(readlink /sys/dev/char/226:128 2>/dev/null)" || return 1
+    [[ "$class_card_target" == ../../devices/virtual/virtio/virtio0/drm/card0 ]] || return 1
+    [[ "$class_render_target" == ../../devices/virtual/virtio/virtio0/drm/renderD128 ]] || return 1
+    [[ "$char_card_target" == ../../devices/virtual/virtio/virtio0/drm/card0 ]] || return 1
+    [[ "$char_render_target" == ../../devices/virtual/virtio/virtio0/drm/renderD128 ]] || return 1
+    [[ "$(readlink -f /sys/dev/char/226:0/device 2>/dev/null)" == /sys/devices/virtual/virtio/virtio0 ]] || return 1
+    [[ "$(readlink -f /sys/dev/char/226:0/device/drm/card0 2>/dev/null)" == /sys/devices/virtual/virtio/virtio0/drm/card0 ]] || return 1
+    [[ "$(cat /sys/class/drm/card0/dev 2>/dev/null)" == 226:0 ]] || return 1
+    [[ "$(cat /sys/class/drm/renderD128/dev 2>/dev/null)" == 226:128 ]] || return 1
+    grep -q '^DRIVER=virtio_gpu$' /sys/devices/virtual/virtio/virtio0/uevent || return 1
+    grep -q '^PCI_SLOT_NAME=0000:00:00.0$' /sys/devices/virtual/virtio/virtio0/uevent || return 1
+    [[ "$(readlink /sys/devices/virtual/virtio/virtio0/subsystem 2>/dev/null)" == ../../../../bus/virtio ]] || return 1
+    [[ "$(readlink /sys/devices/virtual/virtio/virtio0/driver 2>/dev/null)" == ../../../../bus/virtio/drivers/virtio_gpu ]] || return 1
+}
+
+drm_libdrm_ready() {
+    local probe_output
+    [[ -x /usr/lib/asterinas/desktop-drm-libdrm-probe ]] || return 1
+    # Keep the probe's stage marker visible when readiness fails.  Previously
+    # the command's stdout went only to the systemd journal, while this gate
+    # emitted just `missing=drm-libdrm`; that hid whether libdrm failed to open
+    # the node, classify its topology, or load the Python ABI.  The probe is
+    # bounded and emits a single line, so forwarding it cannot grow the
+    # serial transcript without limit.
+    if probe_output="$(bounded env PYTHONPYCACHEPREFIX=/run/asterinas-python-cache \
+        /usr/bin/python3 /usr/lib/asterinas/desktop-drm-libdrm-probe \
+        --device /dev/dri/renderD128 2>&1)"; then
+        printf '%s\n' "$probe_output" >>"$CONSOLE"
+        return 0
+    else
+        printf '%s\n' "$probe_output" >>"$CONSOLE"
+        return 1
+    fi
+}
+
+drm_config_ready() {
+    local directory config
+    directory="$(/usr/lib/asterinas/desktop-display-provider 2>/dev/null)" || return 1
+    config="$directory/20-asterinas.conf"
+    [[ -f "$config" && ! -L "$config" ]] || return 1
+    grep -Eq '^[[:space:]]*Driver[[:space:]]+"modesetting"[[:space:]]*$' "$config" || return 1
+    grep -Eq '^[[:space:]]*Option[[:space:]]+"kmsdev"[[:space:]]+"/dev/dri/card0"[[:space:]]*$' "$config" || return 1
+    ! grep -Eqi 'Driver[[:space:]]+"fbdev"|/dev/fb0' "$config"
+}
+
 fail() {
     local reason="$1"
     bounded systemctl --no-pager --full status \
@@ -149,6 +220,8 @@ move_single_window_to_overview_workspace() {
     fail invalid-scanout-diagnostic
 [[ "$X11_PAINT_TEST" == 0 || "$X11_PAINT_TEST" == 1 ]] || \
     fail invalid-x11-paint-test
+[[ "$FRAMEBUFFER_RW" == 0 || "$FRAMEBUFFER_RW" == 1 ]] || \
+    fail invalid-framebuffer-rw
 deadline=$((SECONDS + TIMEOUT_SECONDS))
 
 ready() {
@@ -177,7 +250,32 @@ ready() {
         not_ready_reason="xorg-log"
         return 1
     }
-    probe framebuffer grep -q 'FBDEV(0)' "$XORG_LOG" || return 1
+    if [[ "$DISPLAY_PROVIDER" == drm ]]; then
+        [[ -c /dev/dri/card0 && -c /dev/dri/renderD128 ]] || {
+            not_ready_reason="drm-nodes"
+            return 1
+        }
+        drm_sysfs_ready || {
+            not_ready_reason="drm-sysfs"
+            return 1
+        }
+        drm_libdrm_ready || {
+            not_ready_reason="drm-libdrm"
+            return 1
+        }
+        drm_config_ready || {
+            not_ready_reason="drm-config"
+            return 1
+        }
+        probe modesetting grep -qi 'modeset' "$XORG_LOG" || return 1
+        probe virgl-renderer grep -qi 'virgl' "$XORG_LOG" || return 1
+        ! grep -Eqi 'llvmpipe|softpipe|swrast|swgl' "$XORG_LOG" || {
+            not_ready_reason="software-renderer"
+            return 1
+        }
+    else
+        probe framebuffer grep -q 'FBDEV(0)' "$XORG_LOG" || return 1
+    fi
     if [[ "$INPUT_REQUIRED" == 1 ]]; then
         probe keyboard-xinput grep -q \
             'Adding extended input device.*Asterinas keyboard' "$XORG_LOG" || return 1
@@ -239,10 +337,41 @@ ready_ordered() {
         not_ready_reason="xorg-log"
         return 1
     }
-    grep -q 'FBDEV(0)' "$XORG_LOG" || {
-        not_ready_reason="framebuffer"
-        return 1
-    }
+    if [[ "$DISPLAY_PROVIDER" == drm ]]; then
+        [[ -c /dev/dri/card0 && -c /dev/dri/renderD128 ]] || {
+            not_ready_reason="drm-nodes"
+            return 1
+        }
+        drm_sysfs_ready || {
+            not_ready_reason="drm-sysfs"
+            return 1
+        }
+        drm_libdrm_ready || {
+            not_ready_reason="drm-libdrm"
+            return 1
+        }
+        drm_config_ready || {
+            not_ready_reason="drm-config"
+            return 1
+        }
+        grep -qi 'modeset' "$XORG_LOG" || {
+            not_ready_reason="modesetting"
+            return 1
+        }
+        grep -qi 'virgl' "$XORG_LOG" || {
+            not_ready_reason="virgl-renderer"
+            return 1
+        }
+        grep -Eqi 'llvmpipe|softpipe|swrast|swgl' "$XORG_LOG" && {
+            not_ready_reason="software-renderer"
+            return 1
+        }
+    else
+        grep -q 'FBDEV(0)' "$XORG_LOG" || {
+            not_ready_reason="framebuffer"
+            return 1
+        }
+    fi
     pgrep -u "$USER_ID" -x openbox >/dev/null || {
         not_ready_reason="openbox"
         return 1
@@ -315,23 +444,54 @@ emit "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1"
 if [[ "$INPUT_REQUIRED" == 1 ]]; then
     emit "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev"
 fi
-emit "DEBIAN_DESKTOP_M4_XORG framebuffer=fbdev display=:0"
+if [[ "$DISPLAY_PROVIDER" == drm ]]; then
+    emit "DEBIAN_DESKTOP_M4_DRM_FBDEV dependency=none action=skipped"
+    emit "DEBIAN_DESKTOP_M4_DRM_CONFIG driver=modesetting kmsdev=/dev/dri/card0 fbdev=none"
+    emit "DEBIAN_DESKTOP_M4_DRM_SYSFS card=226:0 render=226:128 driver=virtio_gpu"
+    emit "DEBIAN_DESKTOP_M4_DRM_NODES card=/dev/dri/card0 render=/dev/dri/renderD128"
+    emit "DEBIAN_DESKTOP_M4_XORG provider=drm display=:0 renderer=virgl"
+else
+    emit "DEBIAN_DESKTOP_M4_XORG framebuffer=fbdev display=:0"
+fi
 emit "DEBIAN_DESKTOP_M4_SHELL wallpaper=asterinas desktop=pcmanfm panel=lxpanel launchers=3"
 probe_framebuffer() {
     [[ -x "$FRAMEBUFFER_PROBE" ]] || fail framebuffer-probe-missing
+    # The persistent ext2 image has exhibited short/corrupted repeated reads
+    # when Python loads this script directly.  Stage one immutable copy in the
+    # tmpfs runtime before invoking it; the probe then has no further ext2
+    # dependency while Xorg is painting.
+    /usr/bin/install -d -m 0755 -- "${FRAMEBUFFER_PROBE_RUNTIME%/*}" ||
+        fail framebuffer-probe-stage
+    /usr/bin/install -m 0755 -- "$FRAMEBUFFER_PROBE" "$FRAMEBUFFER_PROBE_RUNTIME" ||
+        fail framebuffer-probe-stage
+    [[ -x "$FRAMEBUFFER_PROBE_RUNTIME" ]] || fail framebuffer-probe-stage
     if [[ "$CONSOLE" == /dev/ttyS0 ]]; then
         if ! fb_probe_output="$(PYTHONOPTIMIZE=1 ASTERINAS_DESKTOP_M4_FRAMEBUFFER_SAMPLE_ONLY=1 \
-            bounded "$FRAMEBUFFER_PROBE" --output "$FRAMEBUFFER_SCREENSHOT" 2>&1)"; then
+            bounded "$FRAMEBUFFER_PROBE_RUNTIME" --output "$FRAMEBUFFER_SCREENSHOT" 2>&1)"; then
             printf '%s\n' "$fb_probe_output" >>"$CONSOLE"
             fail framebuffer-probe
         fi
     else
-        fb_probe_output="$(bounded "$FRAMEBUFFER_PROBE" --output "$FRAMEBUFFER_SCREENSHOT")" || \
+        fb_probe_output="$(bounded "$FRAMEBUFFER_PROBE_RUNTIME" --output "$FRAMEBUFFER_SCREENSHOT")" || \
             fail framebuffer-probe
     fi
     # desktop_m4_framebuffer_probe emits DEBIAN_DESKTOP_M4_FB_COLORS after
     # validating the sample; keep that marker part of the evidence contract.
     printf '%s\n' "$fb_probe_output" >>"$CONSOLE"
+}
+run_framebuffer_rw() {
+    local fb_rw_output
+    local framebuffer_rw_runtime=/run/asterinas/desktop-m4-framebuffer-rw-runtime
+    [[ -x /usr/lib/asterinas/desktop-m4-framebuffer-rw ]] || fail framebuffer-rw-missing
+    /usr/bin/install -d -m 0755 -- "${framebuffer_rw_runtime%/*}" || fail framebuffer-rw-stage
+    /usr/bin/install -m 0755 -- /usr/lib/asterinas/desktop-m4-framebuffer-rw \
+        "$framebuffer_rw_runtime" || fail framebuffer-rw-stage
+    if ! fb_rw_output="$(bounded "$framebuffer_rw_runtime" \
+        --device /dev/fb0 2>&1)"; then
+        printf '%s\n' "$fb_rw_output" >>"$CONSOLE"
+        fail framebuffer-rw
+    fi
+    printf '%s\n' "$fb_rw_output" >>"$CONSOLE"
 }
 if [[ "$INPUT_REQUIRED" == 0 ]]; then
     emit "DEBIAN_DESKTOP_M4_DISPLAY_CLIENTS window-manager=openbox file-manager=pcmanfm panel=lxpanel terminal=xterm input=disabled"
@@ -372,6 +532,28 @@ if [[ "$X11_PAINT_TEST" == 1 ]]; then
         fail x11-paint-test
     fi
 fi
+if [[ "$DISPLAY_PROVIDER" == drm ]]; then
+    drm_egl_pixel_output=""
+    if ! drm_egl_pixel_output="$(bounded env PYTHONOPTIMIZE=1 \
+        /usr/bin/python3 /usr/lib/asterinas/desktop-drm-egl-pixel-probe \
+        /dev/dri/renderD128 2>&1)"; then
+        printf '%s\n' "$drm_egl_pixel_output" >>"$CONSOLE"
+        fail drm-egl-pixel-probe
+    fi
+    printf '%s\n' "$drm_egl_pixel_output" >>"$CONSOLE"
+    if [[ "$SKIP_DRM_X11_SCREENSHOT" == 1 ]]; then
+        emit "DEBIAN_DESKTOP_M4_DRM_X11_SCREENSHOT skipped=firefox-scene-gate"
+    else
+        drm_screenshot_output=""
+        if ! drm_screenshot_output="$(bounded \
+            /usr/lib/asterinas/desktop-drm-x11-screenshot \
+            --display :0 2>&1)"; then
+            printf '%s\n' "$drm_screenshot_output" >>"$CONSOLE"
+            fail drm-x11-screenshot
+        fi
+        printf '%s\n' "$drm_screenshot_output" >>"$CONSOLE"
+    fi
+fi
 # Run the pixel check only after the client marker.  The process checks above
 # prove that applications exist, but do not prove that their first paint has
 # reached fbdev.  Keeping the probe after that marker preserves the ordered
@@ -386,8 +568,12 @@ fi
 if ((TIMEOUT_SECONDS > 0)); then
     bounded sleep 5
 fi
-if [[ "$CONSOLE" == /dev/ttyS0 || ("$INPUT_REQUIRED" == 0 && "$BROWSER_ENABLED" == 0) ]]; then
-    probe_framebuffer
+if [[ "$DISPLAY_PROVIDER" != drm ]]; then
+    if [[ "$FRAMEBUFFER_RW" == 1 ]]; then
+        run_framebuffer_rw
+    elif [[ "$CONSOLE" == /dev/ttyS0 || ("$INPUT_REQUIRED" == 0 && "$BROWSER_ENABLED" == 0) ]]; then
+        probe_framebuffer
+    fi
 fi
 if [[ -n "$scanout_diagnostic_pid" ]]; then
     kill "$scanout_diagnostic_pid" 2>/dev/null || true

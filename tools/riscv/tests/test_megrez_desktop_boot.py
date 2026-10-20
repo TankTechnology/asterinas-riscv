@@ -298,8 +298,9 @@ class DesktopDeviceProfileTests(unittest.TestCase):
             (
                 "fdt set /soc/ethernet@50400000 status disabled",
                 "fdt set /soc/ethernet@50410000 status disabled",
-                "fdt set /soc/usb0@50480000/dwc3@50480000 status disabled",
-                "fdt set /soc/usb1@50490000/dwc3@50490000 status disabled",
+                "fdt set /soc/usb0@50480000 status disabled",
+                "fdt set /soc/usb1@50490000 status disabled",
+                "fdt rm /chosen asterinas,usb-host",
             ),
         )
 
@@ -313,6 +314,9 @@ class DesktopDeviceProfileTests(unittest.TestCase):
     def test_minimal_profile_uses_offline_local_firefox_bootargs(self) -> None:
         online_args = (
             "console=ttyS0 "
+            "asterinas.net=eic7700-rj45,10.100.19.200/21,10.100.16.1 "
+            "asterinas.neighbor=eic7700-rj45,10.100.16.1,4c:d6:29:18:93:43 "
+            "asterinas.neighbor=eic7700-rj45,10.100.19.216,04:7c:16:47:50:4e "
             "systemd.setenv=ASTERINAS_DESKTOP_PROXY_HOST=10.100.19.216 "
             "systemd.setenv=ASTERINAS_DESKTOP_PROXY_PORT=17893 "
             "systemd.setenv=ASTERINAS_DESKTOP_DNS_HOST=10.100.19.216 "
@@ -324,6 +328,8 @@ class DesktopDeviceProfileTests(unittest.TestCase):
         self.assertNotIn("ASTERINAS_DESKTOP_PROXY_PORT", minimal_args)
         self.assertNotIn("ASTERINAS_DESKTOP_DNS_HOST", minimal_args)
         self.assertNotIn("ASTERINAS_DESKTOP_DNS_PORT", minimal_args)
+        self.assertNotIn("asterinas.net=", minimal_args)
+        self.assertNotIn("asterinas.neighbor=", minimal_args)
         self.assertIn(
             "systemd.setenv=ASTERINAS_DESKTOP_OFFLINE=1",
             minimal_args,
@@ -761,7 +767,11 @@ class DesktopBootStartTests(DesktopBootFixture):
             operations.boot(manifest, 30)
 
         profile = boot.uboot_device_profile_commands("minimal")
-        self.assertEqual(tuple(session.commands[2:6]), profile)
+        profile_start = session.commands.index(profile[0])
+        self.assertEqual(
+            tuple(session.commands[profile_start : profile_start + len(profile)]),
+            profile,
+        )
         self.assertNotIn("saveenv", " ".join(session.commands))
         self.assertNotIn("mmc write", " ".join(session.commands))
 

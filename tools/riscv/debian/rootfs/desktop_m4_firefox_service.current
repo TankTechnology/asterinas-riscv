@@ -1,0 +1,28 @@
+[Unit]
+Description=Asterinas Debian desktop session
+After=local-fs.target
+Wants=
+Conflicts=getty@tty1.service
+
+[Service]
+Type=simple
+User=asterinas
+PrivateTmp=no
+SupplementaryGroups=video input tty render
+TTYPath=/dev/tty1
+StandardInput=tty
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardOutput=journal+console
+StandardError=journal+console
+Environment=HOME=/home/asterinas
+Environment=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered
+Environment=ASTERINAS_DESKTOP_M4_SKIP_DRM_X11_SCREENSHOT=1
+ExecStartPre=+/usr/lib/asterinas/desktop-m4-device-access
+ExecStart=/usr/lib/asterinas/desktop-m4-session
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=graphical.target

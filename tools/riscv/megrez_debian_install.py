@@ -285,6 +285,7 @@ def _board_command(
     installer_crc32: str,
     compressed_kernel_crc32: str,
     timeout: float,
+    uboot_timeout: float = 60.0,
 ) -> list[str]:
     return [
         sys.executable,
@@ -316,6 +317,8 @@ def _board_command(
         "installer",
         "--milestone-timeout",
         str(int(timeout)),
+        "--uboot-timeout",
+        str(int(uboot_timeout)),
         "--require-recovery",
         "--yes",
         "--log",
@@ -335,6 +338,7 @@ def _run_network_install_request(
     run_command: RunCommand,
     repository: Path,
     timeout: float | None = None,
+    uboot_timeout: float = 60.0,
 ) -> StageResult:
     """Executes one validated install request without automatic board retries."""
 
@@ -354,6 +358,8 @@ def _run_network_install_request(
     )
     if not 0 < milestone_timeout <= 3600:
         raise InstallError("install timeout must be in (0, 3600]")
+    if not 0 < uboot_timeout <= 600:
+        raise InstallError("U-Boot timeout must be in (0, 600]")
     if milestone_timeout < request.reboot_after + RECOVERY_GRACE_SECONDS:
         raise InstallError(
             "install timeout must reserve recovery grace after reboot protection"
@@ -381,6 +387,7 @@ def _run_network_install_request(
         _crc32(installer),
         _crc32(compressed_kernel),
         milestone_timeout,
+        uboot_timeout,
     )
     try:
         with server_factory(SERVER_ADDRESS, SERVER_PORT, transport_directory):

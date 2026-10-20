@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -67,6 +68,8 @@ FBIOGET_VSCREENINFO = 0x4600
 FBIOGET_FSCREENINFO = 0x4602
 FRAMEBUFFER_DEVICE = Path("/dev/fb0")
 DETAIL_DIAGNOSTIC_MARKER = Path("/run/asterinas-browser-web-detail-phase")
+BILIBILI_PLAYBACK_TIMEOUT_SECONDS = 120.0
+BILIBILI_PLAYBACK_MIN_PROGRESS_SECONDS = 0.5
 
 
 @dataclass(frozen=True)
@@ -421,6 +424,145 @@ if (link === null || link.getAttribute('href') !== '/browser-quality/download.bi
 setTimeout(() => link.click(), 0);
 return 'fixture-download-scheduled';"""
 
+_BILIBILI_PLAYBACK_SCRIPT = r"""const video = document.querySelector('video');
+const eventNames = [
+  'loadedmetadata', 'canplay', 'playing', 'timeupdate',
+  'waiting', 'stalled', 'ended', 'error'
+];
+const emptyEvents = () => Object.fromEntries(eventNames.map(name => [name, 0]));
+const sourceKind = source => {
+  if (typeof source !== 'string' || source === '') return 'none';
+  if (source.startsWith('blob:')) return 'blob';
+  if (source.startsWith('https://')) return 'https';
+  if (source.startsWith('http://')) return 'http';
+  return 'other';
+};
+const finiteOrNull = value => Number.isFinite(value) ? value : null;
+if (video === null) {
+  return JSON.stringify({
+    url: location.href,
+    state: 'no-video',
+    currentSrc: '',
+    src: '',
+    sourceKind: 'none',
+    paused: null,
+    ended: null,
+    readyState: null,
+    networkState: null,
+    duration: null,
+    currentTime: null,
+    bufferedEnd: null,
+    videoWidth: null,
+    videoHeight: null,
+    errorCode: null,
+    errorMessage: null,
+    playPromise: 'not-started',
+    playError: null,
+    events: emptyEvents(),
+    lastEvent: null,
+    decodedFrames: null,
+    droppedFrames: null
+  });
+}
+let state = video.__asterinasPlayback;
+if (state === undefined) {
+  state = {
+    playRequested: false,
+    playPromise: 'not-started',
+    playError: null,
+    events: emptyEvents(),
+    lastEvent: null
+  };
+  for (const name of eventNames) {
+    video.addEventListener(name, () => {
+      state.events[name] += 1;
+      state.lastEvent = name;
+    }, {passive: true});
+  }
+  video.__asterinasPlayback = state;
+}
+const currentSrcBeforePlay = video.currentSrc || video.src || '';
+if (!state.playRequested &&
+    (currentSrcBeforePlay !== '' || video.readyState > 0 || video.networkState !== 0)) {
+  state.playRequested = true;
+  video.muted = true;
+  video.defaultMuted = true;
+  video.volume = 0;
+  video.autoplay = true;
+  video.playsInline = true;
+  video.setAttribute('muted', '');
+  video.setAttribute('playsinline', '');
+  try {
+    const promise = video.play();
+    if (promise !== undefined && promise !== null &&
+        typeof promise.then === 'function') {
+      state.playPromise = 'pending';
+      promise.then(
+        () => { state.playPromise = 'resolved'; },
+        error => {
+          state.playPromise = 'rejected';
+          state.playError = {
+            name: error && error.name ? String(error.name) : '',
+            message: error && error.message ? String(error.message) : ''
+          };
+        }
+      );
+    } else {
+      state.playPromise = 'resolved';
+    }
+  } catch (error) {
+    state.playPromise = 'rejected';
+    state.playError = {
+      name: error && error.name ? String(error.name) : '',
+      message: error && error.message ? String(error.message) : ''
+    };
+  }
+}
+let bufferedEnd = null;
+try {
+  if (video.buffered.length > 0) {
+    bufferedEnd = finiteOrNull(video.buffered.end(video.buffered.length - 1));
+  }
+} catch (_) {}
+let decodedFrames = null;
+let droppedFrames = null;
+try {
+  if (typeof video.getVideoPlaybackQuality === 'function') {
+    const quality = video.getVideoPlaybackQuality();
+    if (quality && Number.isFinite(quality.totalVideoFrames)) {
+      decodedFrames = quality.totalVideoFrames;
+    }
+    if (quality && Number.isFinite(quality.droppedVideoFrames)) {
+      droppedFrames = quality.droppedVideoFrames;
+    }
+  }
+} catch (_) {}
+const currentSrc = video.currentSrc || video.src || '';
+return JSON.stringify({
+  url: location.href,
+  state: 'video',
+  currentSrc,
+  src: video.src || '',
+  sourceKind: sourceKind(currentSrc),
+  paused: video.paused,
+  ended: video.ended,
+  readyState: video.readyState,
+  networkState: video.networkState,
+  duration: finiteOrNull(video.duration),
+  currentTime: finiteOrNull(video.currentTime),
+  bufferedEnd,
+  videoWidth: video.videoWidth,
+  videoHeight: video.videoHeight,
+  errorCode: video.error === null ? null : video.error.code,
+  errorMessage: video.error === null ? null : (video.error.message || null),
+  playPromise: state.playPromise,
+  playError: state.playError,
+  events: state.events,
+  lastEvent: state.lastEvent,
+  decodedFrames,
+  droppedFrames
+});"""
+
 _DOM_FIELDS = {
     "baiduLogo",
     "baiduKeyword",
@@ -447,7 +589,9 @@ def _mapping(snapshot: object) -> dict[str, object]:
         "navigation",
         "resources",
     }
-    if not isinstance(snapshot, dict) or set(snapshot) != expected:
+    if not isinstance(snapshot, dict) or (
+        set(snapshot) != expected and set(snapshot) != expected | {"playback"}
+    ):
         raise GateError("web snapshot has unexpected fields")
     return snapshot
 
@@ -957,6 +1101,259 @@ def validate_bilibili_detail(snapshot: object, expected_url: str) -> None:
         raise GateError("Bilibili player/detail DOM is absent")
 
 
+_PLAYBACK_EVENT_NAMES = (
+    "loadedmetadata",
+    "canplay",
+    "playing",
+    "timeupdate",
+    "waiting",
+    "stalled",
+    "ended",
+    "error",
+)
+_PLAYBACK_SAMPLE_FIELDS = {
+    "url",
+    "state",
+    "currentSrc",
+    "src",
+    "sourceKind",
+    "paused",
+    "ended",
+    "readyState",
+    "networkState",
+    "duration",
+    "currentTime",
+    "bufferedEnd",
+    "videoWidth",
+    "videoHeight",
+    "errorCode",
+    "errorMessage",
+    "playPromise",
+    "playError",
+    "events",
+    "lastEvent",
+    "decodedFrames",
+    "droppedFrames",
+}
+_PLAYBACK_EVIDENCE_FIELDS = {
+    "status",
+    "url",
+    "source",
+    "sourceKind",
+    "playPromise",
+    "readyState",
+    "networkState",
+    "paused",
+    "ended",
+    "duration",
+    "bufferedEnd",
+    "initialCurrentTime",
+    "finalCurrentTime",
+    "progress",
+    "sampleCount",
+    "elapsedSeconds",
+    "events",
+    "videoWidth",
+    "videoHeight",
+    "decodedFrames",
+    "droppedFrames",
+    "errorCode",
+    "errorMessage",
+}
+
+
+def _finite_number(
+    value: object, name: str, *, allow_none: bool = True
+) -> float | int | None:
+    if value is None and allow_none:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise GateError(f"Bilibili playback {name} is malformed")
+    if not math.isfinite(value):
+        raise GateError(f"Bilibili playback {name} is not finite")
+    return value
+
+
+def _playback_sample_mapping(sample: object) -> dict[str, object]:
+    if not isinstance(sample, dict) or set(sample) != _PLAYBACK_SAMPLE_FIELDS:
+        raise GateError("Bilibili playback probe has unexpected fields")
+    if sample["state"] not in {"no-video", "video"}:
+        raise GateError("Bilibili playback probe state is malformed")
+    if not isinstance(sample["url"], str):
+        raise GateError("Bilibili playback page URL is malformed")
+    for name in ("currentSrc", "src", "sourceKind"):
+        if not isinstance(sample[name], str):
+            raise GateError(f"Bilibili playback {name} is malformed")
+    if sample["sourceKind"] not in {"none", "blob", "https", "http", "other"}:
+        raise GateError("Bilibili playback source kind is malformed")
+    for name in ("paused", "ended"):
+        if sample[name] is not None and not isinstance(sample[name], bool):
+            raise GateError(f"Bilibili playback {name} state is malformed")
+    for name in ("readyState", "networkState", "videoWidth", "videoHeight"):
+        value = sample[name]
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            raise GateError(f"Bilibili playback {name} is malformed")
+    for name in ("duration", "currentTime", "bufferedEnd"):
+        value = _finite_number(sample[name], name)
+        if value is not None and value < 0:
+            raise GateError(f"Bilibili playback {name} is negative")
+    if sample["errorCode"] is not None and (
+        isinstance(sample["errorCode"], bool)
+        or not isinstance(sample["errorCode"], int)
+        or sample["errorCode"] <= 0
+    ):
+        raise GateError("Bilibili playback error code is malformed")
+    if sample["errorMessage"] is not None and not isinstance(
+        sample["errorMessage"], str
+    ):
+        raise GateError("Bilibili playback error message is malformed")
+    if sample["playPromise"] not in {
+        "not-started",
+        "pending",
+        "resolved",
+        "rejected",
+    }:
+        raise GateError("Bilibili playback promise state is malformed")
+    play_error = sample["playError"]
+    if play_error is not None and (
+        not isinstance(play_error, dict)
+        or set(play_error) != {"name", "message"}
+        or not isinstance(play_error["name"], str)
+        or not isinstance(play_error["message"], str)
+    ):
+        raise GateError("Bilibili playback promise error is malformed")
+    events = sample["events"]
+    if (
+        not isinstance(events, dict)
+        or set(events) != set(_PLAYBACK_EVENT_NAMES)
+        or any(
+            isinstance(events[name], bool)
+            or not isinstance(events[name], int)
+            or events[name] < 0
+            for name in _PLAYBACK_EVENT_NAMES
+        )
+    ):
+        raise GateError("Bilibili playback event evidence is malformed")
+    if sample["lastEvent"] is not None and sample["lastEvent"] not in _PLAYBACK_EVENT_NAMES:
+        raise GateError("Bilibili playback last event is malformed")
+    for name in ("decodedFrames", "droppedFrames"):
+        frame_count = sample[name]
+        if frame_count is not None and (
+            isinstance(frame_count, bool)
+            or not isinstance(frame_count, (int, float))
+            or not math.isfinite(frame_count)
+            or frame_count < 0
+        ):
+            raise GateError(f"Bilibili {name} evidence is malformed")
+    return sample
+
+
+def _playback_evidence_mapping(evidence: object) -> dict[str, object]:
+    if not isinstance(evidence, dict) or set(evidence) != _PLAYBACK_EVIDENCE_FIELDS:
+        raise GateError("Bilibili playback evidence has unexpected fields")
+    if evidence["status"] != "pass":
+        raise GateError("Bilibili playback did not pass")
+    if not isinstance(evidence["url"], str):
+        raise GateError("Bilibili playback evidence URL is malformed")
+    if not isinstance(evidence["source"], str) or not evidence["source"]:
+        raise GateError("Bilibili playback source is missing")
+    if evidence["sourceKind"] not in {"blob", "https"}:
+        raise GateError("Bilibili playback source is not secure")
+    if evidence["playPromise"] != "resolved":
+        raise GateError("Bilibili playback promise did not resolve")
+    for name in ("paused", "ended"):
+        if not isinstance(evidence[name], bool):
+            raise GateError(f"Bilibili playback evidence {name} is malformed")
+    for name in ("readyState", "networkState", "videoWidth", "videoHeight"):
+        value = evidence[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise GateError(f"Bilibili playback evidence {name} is malformed")
+    if evidence["readyState"] < 2:
+        raise GateError("Bilibili playback never reached a decodable ready state")
+    if evidence["videoWidth"] <= 0 or evidence["videoHeight"] <= 0:
+        raise GateError("Bilibili playback video dimensions are unavailable")
+    for name in (
+        "duration",
+        "bufferedEnd",
+        "initialCurrentTime",
+        "finalCurrentTime",
+        "progress",
+        "elapsedSeconds",
+    ):
+        value = _finite_number(
+            evidence[name], name, allow_none=name in {"duration", "bufferedEnd"}
+        )
+        if value is not None and value < 0:
+            raise GateError(f"Bilibili playback evidence {name} is negative")
+    initial = evidence["initialCurrentTime"]
+    final = evidence["finalCurrentTime"]
+    progress = evidence["progress"]
+    if (
+        initial is None
+        or final is None
+        or progress is None
+        or final < initial
+        or progress < BILIBILI_PLAYBACK_MIN_PROGRESS_SECONDS
+    ):
+        raise GateError("Bilibili playback currentTime did not advance")
+    sample_count = evidence["sampleCount"]
+    if (
+        isinstance(sample_count, bool)
+        or not isinstance(sample_count, int)
+        or sample_count < 2
+    ):
+        raise GateError("Bilibili playback sample count is malformed")
+    elapsed = evidence["elapsedSeconds"]
+    if elapsed is None or elapsed <= 0:
+        raise GateError("Bilibili playback elapsed time is malformed")
+    events = evidence["events"]
+    if (
+        not isinstance(events, dict)
+        or set(events) != set(_PLAYBACK_EVENT_NAMES)
+        or any(
+            isinstance(events[name], bool)
+            or not isinstance(events[name], int)
+            or events[name] < 0
+            for name in _PLAYBACK_EVENT_NAMES
+        )
+    ):
+        raise GateError("Bilibili playback evidence events are malformed")
+    if events["playing"] < 1 and events["timeupdate"] < 1:
+        raise GateError("Bilibili playback emitted no playing or timeupdate event")
+    if evidence["errorCode"] is not None or evidence["errorMessage"] is not None:
+        raise GateError("Bilibili playback reported a media error")
+    for name in ("decodedFrames", "droppedFrames"):
+        frame_count = evidence[name]
+        if (
+            isinstance(frame_count, bool)
+            or not isinstance(frame_count, (int, float))
+            or not math.isfinite(frame_count)
+            or frame_count < 0
+        ):
+            raise GateError(f"Bilibili playback evidence {name} is malformed")
+    if evidence["decodedFrames"] < 1:
+        raise GateError("Bilibili playback decoded no video frames")
+    return evidence
+
+
+def validate_bilibili_playback(evidence: object, expected_url: str) -> None:
+    result = _playback_evidence_mapping(evidence)
+    expected = BV_RE.fullmatch(expected_url)
+    actual = BV_RE.fullmatch(result["url"])
+    if expected is None or actual is None or actual.group(1) != expected.group(1):
+        raise GateError("Bilibili playback did not retain the selected live BV identity")
+    source = result["source"]
+    source_kind = result["sourceKind"]
+    assert isinstance(source, str) and isinstance(source_kind, str)
+    if source_kind == "blob":
+        if not source.startswith("blob:"):
+            raise GateError("Bilibili blob playback source is malformed")
+    elif not source.startswith("https://"):
+        raise GateError("Bilibili HTTPS playback source is malformed")
+
+
 def validate_network_namespace(firefox_pid: int) -> None:
     if firefox_pid <= 1:
         raise GateError("Firefox PID is outside the valid contract")
@@ -1068,6 +1465,236 @@ def _probe(client: Marionette) -> dict[str, object]:
     except json.JSONDecodeError as error:
         raise GateError("web readiness script returned malformed JSON") from error
     return _probe_mapping(parsed)
+
+
+def _playback_probe(client: Marionette) -> dict[str, object]:
+    response = client.command(
+        "WebDriver:ExecuteScript",
+        {
+            "script": _BILIBILI_PLAYBACK_SCRIPT,
+            "args": [],
+            "newSandbox": True,
+            "sandbox": "default",
+            "line": 1,
+            "filename": "asterinas-bilibili-playback",
+        },
+    )
+    value = _script_value(response)
+    if not isinstance(value, str):
+        detail = repr(response)
+        if len(detail) > 256:
+            detail = detail[:253] + "..."
+        raise GateError(
+            "Bilibili playback script returned no JSON: "
+            f"response_type={type(response).__name__} response={detail}"
+        )
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as error:
+        raise GateError("Bilibili playback script returned malformed JSON") from error
+    return _playback_sample_mapping(parsed)
+
+
+def _playback_source_kind(source: str) -> str:
+    if source.startswith("blob:"):
+        return "blob"
+    if source.startswith("https://"):
+        return "https"
+    if source.startswith("http://"):
+        return "http"
+    if source:
+        return "other"
+    return "none"
+
+
+def _playback_evidence_from_sample(
+    sample: dict[str, object],
+    *,
+    initial_current_time: float,
+    final_current_time: float,
+    sample_count: int,
+    elapsed_seconds: float,
+) -> dict[str, object]:
+    current_src = sample["currentSrc"]
+    assert isinstance(current_src, str)
+    events = sample["events"]
+    assert isinstance(events, dict)
+    return {
+        "status": "pass",
+        "url": sample["url"],
+        "source": current_src,
+        "sourceKind": _playback_source_kind(current_src),
+        "playPromise": sample["playPromise"],
+        "readyState": sample["readyState"],
+        "networkState": sample["networkState"],
+        "paused": sample["paused"],
+        "ended": sample["ended"],
+        "duration": sample["duration"],
+        "bufferedEnd": sample["bufferedEnd"],
+        "initialCurrentTime": initial_current_time,
+        "finalCurrentTime": final_current_time,
+        "progress": final_current_time - initial_current_time,
+        "sampleCount": sample_count,
+        "elapsedSeconds": max(0.001, round(elapsed_seconds, 3)),
+        "events": events,
+        "videoWidth": sample["videoWidth"],
+        "videoHeight": sample["videoHeight"],
+        "decodedFrames": sample["decodedFrames"],
+        "droppedFrames": sample["droppedFrames"],
+        "errorCode": sample["errorCode"],
+        "errorMessage": sample["errorMessage"],
+    }
+
+
+def _wait_for_bilibili_playback(
+    client: Marionette, expected_url: str, deadline: float
+) -> dict[str, object]:
+    expected = BV_RE.fullmatch(expected_url)
+    if expected is None:
+        raise GateError("Bilibili playback expected URL is not a canonical BV URL")
+    playback_deadline = min(
+        deadline, time.monotonic() + BILIBILI_PLAYBACK_TIMEOUT_SECONDS
+    )
+    started = time.monotonic()
+    initial_current_time: float | None = None
+    final_current_time: float | None = None
+    sample_count = 0
+    last_source = ""
+    last_report: tuple[object, ...] | None = None
+    last_error: GateError | None = None
+    while time.monotonic() < playback_deadline:
+        try:
+            sample = _playback_probe(client)
+            actual_url = sample["url"]
+            if not isinstance(actual_url, str):
+                raise GateError("Bilibili playback page URL is malformed")
+            actual = BV_RE.fullmatch(actual_url)
+            if actual is None or actual.group(1) != expected.group(1):
+                raise GateError("Bilibili playback lost the selected live BV identity")
+            state = sample["state"]
+            if state == "video":
+                source = sample["currentSrc"]
+                assert isinstance(source, str)
+                if sample["sourceKind"] == "other":
+                    raise GateError("Bilibili playback selected an unsupported media source")
+                if sample["errorCode"] is not None:
+                    raise GateError(
+                        "Bilibili playback media error: "
+                        f"code={sample['errorCode']} message={sample['errorMessage']!r}"
+                    )
+                if sample["playPromise"] == "rejected":
+                    raise GateError(
+                        "Bilibili playback play() was rejected: "
+                        f"{sample['playError']!r}"
+                    )
+                current = sample["currentTime"]
+                if current is not None:
+                    assert isinstance(current, (int, float)) and not isinstance(
+                        current, bool
+                    )
+                    if source != last_source:
+                        initial_current_time = float(current)
+                        sample_count = 0
+                        last_source = source
+                    if initial_current_time is None:
+                        initial_current_time = float(current)
+                    final_current_time = float(current)
+                    sample_count += 1
+                else:
+                    sample_count += 1
+                progress = (
+                    None
+                    if initial_current_time is None or final_current_time is None
+                    else final_current_time - initial_current_time
+                )
+                events = sample["events"]
+                assert isinstance(events, dict)
+                report = (
+                    state,
+                    sample["readyState"],
+                    sample["playPromise"],
+                    sample["paused"],
+                    sample["ended"],
+                    round(float(current), 2) if current is not None else None,
+                    round(float(progress), 2) if progress is not None else None,
+                    events["playing"],
+                    events["timeupdate"],
+                    sample["sourceKind"],
+                )
+                if report != last_report or sample_count % 10 == 0:
+                    current_text = (
+                        "none" if current is None else f"{float(current):.3f}"
+                    )
+                    progress_text = (
+                        "none" if progress is None else f"{float(progress):.3f}"
+                    )
+                    print(
+                        "A_WEB_BILIBILI_PLAYBACK_SAMPLE "
+                        f"state={state} ready_state={sample['readyState']} "
+                        f"play_promise={sample['playPromise']} "
+                        f"paused={int(sample['paused']) if isinstance(sample['paused'], bool) else 'none'} "
+                        f"ended={int(sample['ended']) if isinstance(sample['ended'], bool) else 'none'} "
+                        f"current_time={current_text} progress={progress_text} "
+                        f"events_playing={events['playing']} "
+                        f"events_timeupdate={events['timeupdate']} "
+                        f"source_kind={sample['sourceKind']}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    last_report = report
+                ready = sample["readyState"]
+                width = sample["videoWidth"]
+                height = sample["videoHeight"]
+                if (
+                    sample["playPromise"] == "resolved"
+                    and isinstance(ready, int)
+                    and ready >= 2
+                    and isinstance(width, int)
+                    and isinstance(height, int)
+                    and width > 0
+                    and height > 0
+                    and isinstance(sample["decodedFrames"], (int, float))
+                    and not isinstance(sample["decodedFrames"], bool)
+                    and sample["decodedFrames"] >= 1
+                    and isinstance(sample["droppedFrames"], (int, float))
+                    and not isinstance(sample["droppedFrames"], bool)
+                    and isinstance(sample["paused"], bool)
+                    and isinstance(sample["ended"], bool)
+                    and (not sample["paused"] or sample["ended"])
+                    and initial_current_time is not None
+                    and final_current_time is not None
+                    and (
+                        final_current_time - initial_current_time
+                        >= BILIBILI_PLAYBACK_MIN_PROGRESS_SECONDS
+                    )
+                    and (events["playing"] >= 1 or events["timeupdate"] >= 1)
+                ):
+                    evidence = _playback_evidence_from_sample(
+                        sample,
+                        initial_current_time=initial_current_time,
+                        final_current_time=final_current_time,
+                        sample_count=sample_count,
+                        elapsed_seconds=time.monotonic() - started,
+                    )
+                    validate_bilibili_playback(evidence, expected_url)
+                    return evidence
+            elif state != "no-video":
+                raise GateError("Bilibili playback probe state is malformed")
+        except GateError as error:
+            if (
+                "selected live BV identity" in str(error)
+                or "media error" in str(error)
+                or "play() was rejected" in str(error)
+                or "unsupported media source" in str(error)
+                or "malformed" in str(error)
+            ):
+                raise
+            last_error = error
+        time.sleep(min(1.0, max(0.0, playback_deadline - time.monotonic())))
+    raise GateError(
+        "Bilibili playback did not advance within the bounded deadline: "
+        f"{last_error or 'video element remained unavailable'}"
+    )
 
 
 def _ping_document(client: Marionette) -> dict[str, str] | None:
@@ -1620,6 +2247,105 @@ def run_baidu_home_gate(
     return home
 
 
+def run_bilibili_playback_gate(
+    host: str,
+    port: int,
+    timeout: float,
+    evidence_dir: Path,
+    firefox_pid: int,
+) -> tuple[str, dict[str, object]]:
+    """Exercise one live, muted Bilibili video without the QEMU fixture."""
+
+    deadline = time.monotonic() + timeout
+
+    def phase(name: str, state: str, error: BaseException | None = None) -> None:
+        line = f"A_WEB_PHASE phase={name} state={state} firefox_pid={firefox_pid}"
+        if error is not None:
+            line += (
+                f" exception_type={type(error).__name__}"
+                f" exception={json.dumps(str(error), ensure_ascii=True)}"
+            )
+        print(line, file=sys.stderr, flush=True)
+
+    client = _connect(host, port, deadline, phase=phase)
+
+    def run_phase(name: str, operation: Callable[[], object]) -> object:
+        phase(name, "start")
+        try:
+            result = operation()
+        except BaseException as error:
+            phase(name, "exception", error)
+            raise
+        phase(name, "done")
+        return result
+
+    _timeline("BOOT_MARIONETTE_CONNECTED", firefox_pid)
+    try:
+        _start_webdriver_session(client, run_phase, firefox_pid)
+        run_phase("navigate-bilibili-home", lambda: _navigate(client, BILIBILI_HOME))
+        run_phase(
+            "probe-bilibili-home",
+            lambda: _wait_for_probe(client, probe_bilibili_home, deadline),
+        )
+        home = run_phase("snapshot-bilibili-home", lambda: _snapshot(client))
+        assert isinstance(home, dict)
+        selected = select_bilibili_video(home)
+        _timeline("BOOT_DOM_READY", firefox_pid, "bilibili-home")
+        run_phase(
+            "evidence-bilibili-home",
+            lambda: _write_evidence(
+                client, evidence_dir, "bilibili-home", home, deadline
+            ),
+        )
+
+        print(f"A_WEB_SELECTED_BV url={selected}", file=sys.stderr, flush=True)
+        if os.environ.get("ASTERINAS_BROWSER_WEB_PROC_DIAGNOSTIC") == "1":
+            DETAIL_DIAGNOSTIC_MARKER.write_text(selected + "\n", encoding="utf-8")
+        if os.environ.get("ASTERINAS_FIREFOX_GECKO_PROFILE") == "1":
+            run_phase(
+                "gecko-profiler-verify",
+                lambda: validate_gecko_profiler_environment(firefox_pid),
+            )
+        run_phase("navigate-bilibili-detail", lambda: _navigate(client, selected))
+        run_phase(
+            "probe-bilibili-detail",
+            lambda: _wait_for_probe(
+                client,
+                lambda probe: probe_bilibili_detail(probe, selected),
+                deadline,
+            ),
+        )
+        playback = run_phase(
+            "play-bilibili-detail",
+            lambda: _wait_for_bilibili_playback(client, selected, deadline),
+        )
+        assert isinstance(playback, dict)
+        detail = run_phase("snapshot-bilibili-detail", lambda: _snapshot(client))
+        assert isinstance(detail, dict)
+        detail["playback"] = playback
+        validate_bilibili_detail(detail, selected)
+        validate_bilibili_playback(playback, selected)
+        _timeline("BOOT_DOM_READY", firefox_pid, "bilibili-detail")
+        run_phase(
+            "evidence-bilibili-detail",
+            lambda: _write_evidence(
+                client, evidence_dir, "bilibili-detail", detail, deadline
+            ),
+        )
+        match = BV_RE.fullmatch(selected)
+        assert match is not None
+        selected_bv = match.group(1)
+        print(
+            f"DEBIAN_BROWSER_WEB_BILIBILI_PLAYBACK status=pass bv={selected_bv}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return selected_bv, playback
+    finally:
+        # Preserve the running desktop browser after the bounded experiment.
+        client.close()
+
+
 def run_gate(
     host: str, port: int, timeout: float, evidence_dir: Path, firefox_pid: int
 ) -> tuple[str, str]:
@@ -1730,11 +2456,18 @@ def run_gate(
                 deadline,
             ),
         )
+        playback = run_phase(
+            "play-bilibili-detail",
+            lambda: _wait_for_bilibili_playback(client, selected, deadline),
+        )
+        assert isinstance(playback, dict)
         bilibili_detail = run_phase(
             "snapshot-bilibili-detail", lambda: _snapshot(client)
         )
         assert isinstance(bilibili_detail, dict)
+        bilibili_detail["playback"] = playback
         validate_bilibili_detail(bilibili_detail, selected)
+        validate_bilibili_playback(playback, selected)
         _timeline("BOOT_DOM_READY", firefox_pid, "bilibili-detail")
         run_phase(
             "evidence-bilibili-detail",
@@ -1743,6 +2476,11 @@ def run_gate(
             ),
         )
         selected_bv = BV_RE.fullmatch(selected).group(1)  # type: ignore[union-attr]
+        print(
+            f"DEBIAN_BROWSER_WEB_BILIBILI_PLAYBACK status=pass bv={selected_bv}",
+            file=sys.stderr,
+            flush=True,
+        )
         print(
             "DEBIAN_BROWSER_WEB_PLATFORM_READY "
             f"baidu_home=pass bilibili_home=pass bilibili_detail=pass bv={selected_bv} "
@@ -1783,7 +2521,11 @@ def run_gate(
 
 def main(arguments: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="browser_web_marionette_gate")
-    parser.add_argument("--scope", choices=("full", "baidu-home"), default="full")
+    parser.add_argument(
+        "--scope",
+        choices=("full", "baidu-home", "bilibili-playback"),
+        default="full",
+    )
     parser.add_argument(
         "--screenshot-backend",
         choices=("marionette", "framebuffer"),
@@ -1852,6 +2594,34 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 )
             )
             return 0
+        if values.scope == "bilibili-playback":
+            bv, playback = run_bilibili_playback_gate(
+                values.host,
+                values.port,
+                values.timeout,
+                values.evidence_dir,
+                values.firefox_pid,
+            )
+            print(
+                json.dumps(
+                    {
+                        "bv": bv,
+                        "decoded_frames": playback["decodedFrames"],
+                        "dropped_frames": playback["droppedFrames"],
+                        "elapsed_seconds": playback["elapsedSeconds"],
+                        "marker": "DEBIAN_BROWSER_WEB_BILIBILI_PLAYBACK",
+                        "muted": True,
+                        "progress_seconds": playback["progress"],
+                        "scope": "bilibili-playback",
+                        "status": "pass",
+                        "video_height": playback["videoHeight"],
+                        "video_width": playback["videoWidth"],
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+            return 0
         bv, baidu_outcome = run_gate(
             values.host,
             values.port,
@@ -1864,6 +2634,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
     print(
         f"{PASS_PREFIX} fixture_search=pass baidu_home=pass "
         f"baidu_search=observed bilibili_home=pass bilibili_detail=pass "
+        f"bilibili_playback=pass "
         f"bv={bv} tls=verified baidu_outcome={baidu_outcome} "
         "capabilities=pass download=pass"
     )

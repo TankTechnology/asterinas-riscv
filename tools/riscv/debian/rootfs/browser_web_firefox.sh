@@ -19,7 +19,7 @@ readonly NETWORK_MODE
 # the web gate performs real HTTPS navigation.  The target is fixed in the
 # unit environment and is validated by browser_web_evidence.sh; it is not an
 # offline or sandbox-disabled launch.
-readonly START_URL="about:blank"
+readonly START_URL="${ASTERINAS_DESKTOP_START_URL:-about:blank}"
 readonly TARGET_URL="https://www.baidu.com/"
 readonly STDERR_LOG="$FIREFOX_HOME/firefox-web-stderr.log"
 readonly MOZILLA_LOG="$FIREFOX_HOME/firefox-web-mozilla.log"
@@ -28,6 +28,17 @@ readonly TIMELINE="$FIREFOX_HOME/browser-web-timeline.log"
 readonly PID_FILE="$FIREFOX_HOME/browser-web-firefox.pid"
 readonly TIMEOUT_SECONDS=30
 readonly JIT_OVERLAY=/usr/share/asterinas/firefox-riscv-jit-overlay.json
+if [[ "${1:-}" == --prepare-profile && $# == 1 ]]; then
+    # Profile preparation is a host/build-time operation and does not start a
+    # display client.  Keep it independent of the guest provider resolver.
+    display_provider=fbdev
+else
+    if ! display_provider="$(/usr/lib/asterinas/desktop-display-provider --name 2>/dev/null)"; then
+        printf 'ASTERINAS_FIREFOX_WEB_FAIL reason=invalid-display-provider-config\n' >&2
+        exit 1
+    fi
+fi
+readonly display_provider
 if [[ -f "$JIT_OVERLAY" && ! -L "$JIT_OVERLAY" ]]; then
     readonly FIREFOX_BIN=/usr/bin/firefox
     readonly FIREFOX_LIBRARY_DIR=/usr/lib/firefox
@@ -38,6 +49,14 @@ fi
 export DISPLAY XAUTHORITY
 export ASTERINAS_FIREFOX_WEB_TARGET_URL="$TARGET_URL"
 export ASTERINAS_FIREFOX_WEB_NETWORK_MODE="$NETWORK_MODE"
+
+case "$START_URL" in
+    about:blank|file:///usr/share/asterinas/physical-graphics/index.html) ;;
+    *)
+        printf 'ASTERINAS_FIREFOX_WEB_FAIL reason=invalid-start-url\n' >&2
+        exit 1
+        ;;
+esac
 
 validate_network_profile() {
     local octet
@@ -80,6 +99,11 @@ configure_network_profile() {
         # explicitly.  Sources (Debian package: Firefox ESR 140.14.0):
         # https://searchfox.org/mozilla-esr140/source/remote/shared/RecommendedPreferences.sys.mjs
         # https://searchfox.org/mozilla-esr140/source/browser/app/profile/firefox.js
+        # `media.rdd-process.enabled=false` belongs to Firefox's automation set,
+        # but it also removes the process video decoders run in. With it set,
+        # `MediaSource.isTypeSupported` answers false for H.264, VP9, HEVC and
+        # Theora while every audio codec still answers true, so no player can
+        # create a <video> element and nothing plays. Leave it enabled.
         printf '%s\n' \
             'user_pref("browser.newtabpage.enabled", false);' \
             'user_pref("browser.pagethumbnails.capturing_disabled", true);' \
@@ -88,7 +112,7 @@ configure_network_profile() {
             'user_pref("dom.ipc.processCount", 1);' \
             'user_pref("dom.ipc.processPrelaunch.enabled", false);' \
             'user_pref("fission.autostart", false);' \
-            'user_pref("media.rdd-process.enabled", false);' \
+            'user_pref("media.rdd-process.enabled", true);' \
             'user_pref("network.captive-portal-service.enabled", false);' \
             'user_pref("network.connectivity-service.enabled", false);' \
             'user_pref("browser.download.folderList", 2);' \
@@ -195,7 +219,14 @@ marker BOOT_FIREFOX_WRAPPER_START
 export MOZ_LOG="${ASTERINAS_FIREFOX_VERBOSE_LOG:-timestamp,Widget:2,Marionette:2}"
 export MOZ_LOG_FILE="$MOZILLA_LOG"
 export MOZ_SANDBOX_LOGGING=1
-export MOZ_AVOID_OPENGL_ALTOGETHER=1
+if [[ "$display_provider" == drm ]]; then
+    # The DRM profile must prove virgl/WebRender at the gate; disabling GL here
+    # would make that proof impossible. The fbdev profile keeps the old
+    # software-safe setting explicitly.
+    unset MOZ_AVOID_OPENGL_ALTOGETHER
+else
+    export MOZ_AVOID_OPENGL_ALTOGETHER=1
+fi
 # Optional sequential page-cache warm-up for bring-up on very slow virtual
 # block devices.  It is disabled in the normal image and never changes the
 # Firefox command line or sandbox policy.

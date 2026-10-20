@@ -582,8 +582,8 @@ if ! content="$($GATE --firefox-pid "$browser_pid" --timeout "$remaining" \
 fi
 stop_gate_sampler
 cat "$GATE_STDERR" >>"$TIMELINE_LOG"
-[[ "$content" == "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass baidu_home=pass baidu_search=observed bilibili_home=pass bilibili_detail=pass bv=BV"*" tls=verified baidu_outcome=pass capabilities=pass download=pass" ||
-    "$content" == "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass baidu_home=pass baidu_search=observed bilibili_home=pass bilibili_detail=pass bv=BV"*" tls=verified baidu_outcome=external-captcha capabilities=pass download=pass" ]] ||
+[[ "$content" == "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass baidu_home=pass baidu_search=observed bilibili_home=pass bilibili_detail=pass bilibili_playback=pass bv=BV"*" tls=verified baidu_outcome=pass capabilities=pass download=pass" ||
+    "$content" == "DEBIAN_BROWSER_WEB_CONTENT fixture_search=pass baidu_home=pass baidu_search=observed bilibili_home=pass bilibili_detail=pass bilibili_playback=pass bv=BV"*" tls=verified baidu_outcome=external-captcha capabilities=pass download=pass" ]] ||
     fail browser-content-output
 if [[ "$content" == *" baidu_outcome=external-captcha" ]]; then
     emit "DEBIAN_BROWSER_WEB_EXTERNAL_BLOCK site=baidu reason=captcha"

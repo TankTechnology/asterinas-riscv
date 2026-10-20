@@ -76,6 +76,83 @@ class DevelopmentOverlayTests(unittest.TestCase):
             self.assertEqual(loaded.files[0].sha256, _sha256(source))
             self.assertFalse(loaded.files[0].create)
 
+    def test_loads_and_materializes_a_symlink_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "runtime.sh"
+            source.write_text("new\n", encoding="utf-8")
+            staged = root / "staged"
+            (staged / "etc/systemd/system/basic.target.wants").mkdir(parents=True)
+            (staged / "etc/systemd/system/target.service").write_text(
+                "[Service]\n", encoding="utf-8"
+            )
+            base = root / "base.ext2"
+            subprocess.run(
+                ["mke2fs", "-q", "-t", "ext2", "-d", str(staged), "-F", str(base), "16M"],
+                check=True,
+            )
+            spec = root / "overlay.json"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "profile": "browser-web",
+                        "files": [
+                            {
+                                "source": "runtime.sh",
+                                "destination": "/runtime",
+                                "mode": "0755",
+                                "create": True,
+                            }
+                        ],
+                        "symlinks": [
+                            {
+                                "destination": "/etc/systemd/system/basic.target.wants/target.service",
+                                "target": "../target.service",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            loaded = load_overlay_spec(spec)
+            self.assertEqual(loaded.symlinks[0].target, "../target.service")
+            output = root / "derived.ext2"
+            materialize_image(base, output, loaded)
+            stat_output = _debugfs(
+                output,
+                "stat /etc/systemd/system/basic.target.wants/target.service",
+            )
+            self.assertIn("Type: symlink", stat_output)
+            self.assertIn('Fast link dest: "../target.service"', stat_output)
+
+    def test_rejects_symlink_target_with_whitespace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "runtime.sh").write_text("new", encoding="utf-8")
+            spec = root / "overlay.json"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "profile": "browser-web",
+                        "files": [
+                            {
+                                "source": "runtime.sh",
+                                "destination": "/runtime",
+                                "mode": "0755",
+                            }
+                        ],
+                        "symlinks": [
+                            {"destination": "/link", "target": "bad target"}
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(OverlayError, "whitespace-free"):
+                load_overlay_spec(spec)
+
     def test_create_flag_must_be_boolean(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

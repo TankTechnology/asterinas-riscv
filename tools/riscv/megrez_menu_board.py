@@ -15,6 +15,7 @@ import re
 import secrets
 import threading
 import time
+from types import SimpleNamespace
 
 from tools.riscv import megrez_boot_menu as menu
 from tools.riscv.megrez_hardware_probe import (
@@ -26,7 +27,12 @@ from tools.riscv.megrez_hardware_probe import (
     validate_probe_timeout_evidence,
 )
 from tools.riscv.debian.rootfs.gate_runtime import SerialConsole
-from tools.riscv.megrez_board_session import BoardSession, open_serial
+from tools.riscv.megrez_board_session import (
+    BoardSession,
+    boot_loaded_artifacts,
+    open_serial,
+    validate_recovery_epoch,
+)
 from tools.riscv.megrez_debug_board import RealBoardOperations, _lock_serial
 from tools.riscv.megrez_rockos_attestation import (
     RealRockOsAttestationOperations,
@@ -76,6 +82,158 @@ def _record_probe_recovery(operations, device: str, status: str) -> None:
 
     operations._log.write(
         f"ASTERINAS_PROBE_RECOVERY device={device} status={status}\n"
+    )
+
+
+# These are registration/activation markers from the Asterinas guest, rather
+# than firmware or RockOS messages.  A Basic qualification is allowed to
+# initialize the component framework, but it must not acquire any of the
+# optional EIC7700 datapaths that the minimal DT profile gates off.
+BASIC_FORBIDDEN_DEVICE_MARKERS = (
+    "framebuffer: Registered firmware framebuffer",
+    "dwmac: prepared GMAC",
+    "dwmac: ASTERINAS_GMAC_",
+    "usb: Selected DWC3 USB host",
+    "usb: Starting DWC3 xHCI host",
+)
+BASIC_REQUIRED_DEVICE_MARKERS = (
+    "uart: Registered DW APB UART",
+    "mmc: [mmc] controller",
+)
+
+
+def validate_basic_device_gate(transcript: str) -> dict[str, object]:
+    """Validate the runtime device set of one Basic boot.
+
+    U-Boot and RockOS precede the guest in one serial transcript and both may
+    legitimately mention Ethernet/USB.  Scope the check to the last Asterinas
+    kernel epoch, then fail closed if a forbidden device registered or a
+    required management/storage device did not appear.  This prevents an
+    intended DT edit from being reported as successful when the selected
+    menu entry silently loaded an unmodified DTB.
+    """
+
+    if not isinstance(transcript, str):
+        raise TypeError("Basic device-gate transcript must be text")
+    kernel_start = transcript.rfind("Enter riscv_boot")
+    if kernel_start < 0:
+        raise RuntimeError("Basic device-gate is missing the Asterinas kernel epoch")
+    guest = transcript[kernel_start:]
+    forbidden = tuple(
+        marker for marker in BASIC_FORBIDDEN_DEVICE_MARKERS if marker in guest
+    )
+    if forbidden:
+        raise RuntimeError(
+            "Basic device-gate observed forbidden registrations: "
+            + ", ".join(forbidden)
+        )
+    missing = tuple(
+        marker for marker in BASIC_REQUIRED_DEVICE_MARKERS if marker not in guest
+    )
+    if missing:
+        raise RuntimeError(
+            "Basic device-gate missing required registrations: "
+            + ", ".join(missing)
+        )
+    return {
+        "kernel_epoch": "Enter riscv_boot",
+        "forbidden_registrations": [],
+        "required_registrations": list(BASIC_REQUIRED_DEVICE_MARKERS),
+    }
+
+
+def _ordered_recovery_epoch(transcript: str) -> bool:
+    """Return whether *transcript* contains one complete fresh firmware epoch.
+
+    A serial log normally starts with the firmware epoch that was already
+    running when the host attached.  That prefix must never be reused as
+    evidence that a later watchdog or software reboot recovered the board.
+    Keep this predicate small and ordered so a stale U-Boot prompt, or a
+    partial banner followed by a prompt, cannot clear the recovery latch.
+    """
+
+    if not isinstance(transcript, str):
+        return False
+    try:
+        validate_recovery_epoch(transcript)
+    except RuntimeError:
+        return False
+    return True
+
+
+def _ordered_recovery_boundary(transcript: str) -> str | None:
+    """Classify a fresh firmware epoch that reached U-Boot or RockOS login."""
+
+    if not isinstance(transcript, str):
+        return None
+    opensbi = transcript.find("OpenSBI")
+    if opensbi < 0:
+        return None
+    uboot = re.search(r"U-Boot[ \t]+[^\r\n]*", transcript[opensbi + 1 :])
+    if uboot is None:
+        return None
+    boundary_start = opensbi + 1 + uboot.end()
+    if transcript.find("=> ", boundary_start) >= 0:
+        return "uboot-prompt"
+    if re.search(r"(?m)\blogin:\s*", transcript[boundary_start:]):
+        return "rockos-login"
+    return None
+
+
+def _log_length(operations) -> int:
+    """Read the current in-memory log length without consuming the serial fd."""
+
+    try:
+        return len(operations._log.getvalue())
+    except (AttributeError, TypeError):
+        return 0
+
+
+def _basic_loader_args(document: dict) -> SimpleNamespace:
+    """Build the guarded direct-loader arguments for the Basic menu leg."""
+
+    artifacts = document["artifacts"]
+    return SimpleNamespace(
+        booti=artifacts["kernel"]["path"].removeprefix("/"),
+        initrd=artifacts["stage1"]["path"].removeprefix("/"),
+        dtb=artifacts["dtb"]["path"].removeprefix("/"),
+        expected_crc32={
+            "booti": artifacts["kernel"]["crc32"],
+            "initrd": artifacts["stage1"]["crc32"],
+            "dtb": artifacts["dtb"]["crc32"],
+        },
+        bootargs=menu.MODE_ARGS["basic"],
+        load_transport="mmc",
+        mmc_device_partition="1:1",
+        firmware_framebuffer=False,
+        device_profile="minimal",
+    )
+
+
+def _desktop_loader_args(document: dict) -> SimpleNamespace:
+    """Build the guarded direct-loader arguments for the fbdev desktop leg.
+
+    The desktop keeps the firmware simple-framebuffer handoff but disables
+    the EIC7700 Ethernet and USB wrapper nodes.  Loading through ``sysboot``
+    would silently reuse the full DTB and reintroduce the physical-board
+    failure mode that this gate is meant to exclude.
+    """
+
+    artifacts = document["artifacts"]
+    return SimpleNamespace(
+        booti=artifacts["kernel"]["path"].removeprefix("/"),
+        initrd=artifacts["stage1"]["path"].removeprefix("/"),
+        dtb=artifacts["dtb"]["path"].removeprefix("/"),
+        expected_crc32={
+            "booti": artifacts["kernel"]["crc32"],
+            "initrd": artifacts["stage1"]["crc32"],
+            "dtb": artifacts["dtb"]["crc32"],
+        },
+        bootargs=document["desktop_args"],
+        load_transport="mmc",
+        mmc_device_partition="1:1",
+        firmware_framebuffer=False,
+        device_profile="display-safe",
     )
 
 
@@ -214,6 +372,7 @@ def boot_cycle(
     check_root=False,
     hardware_watchdog=False,
     firmware_timeout: float | None = None,
+    from_uboot=False,
 ):
     menu.require(
         not hardware_watchdog
@@ -228,18 +387,39 @@ def boot_cycle(
         "hardware watchdog is required for every device probe",
     )
     session = operations._require_session()
-    os.write(session.fd, b"\x03")
     initial_firmware_timeout = (
         firmware_timeout if firmware_timeout is not None else (45 if hardware_watchdog else 10)
     )
+    if from_uboot:
+        # `stage` intentionally leaves the same board at a U-Boot prompt. A
+        # fresh reset gives this cycle its own OpenSBI/U-Boot epoch before any
+        # watchdog or sysboot command, without handing the descriptor to an
+        # unverified listener.
+        session.send("reset")
+    else:
+        os.write(session.fd, b"\x03")
     session.wait_for_uboot_prompt(initial_firmware_timeout)
+    # Everything before this point belongs to the firmware epoch that was
+    # already present when the host attached.  Failure handling in ``main``
+    # uses this checkpoint so that banner text from that prefix cannot be
+    # mistaken for recovery after the current boot attempt.
+    operations._recovery_checkpoint = _log_length(operations)
+    operations._boot_attempt_started = False
     if hardware_watchdog:
         # Arm only after a fresh U-Boot prompt and before sysboot. The helper
         # performs clock/reset/type/readback checks and fails closed before
         # loading the guest when the board does not expose the expected WDT.
         RealBoardOperations._arm_hardware_watchdog(session, time.monotonic() + 10)
-    path = menu_path(document)
+    # From here onward a watchdog is armed (when requested) and the selected
+    # guest path may have started.  Exception handling must wait for recovery
+    # even if the loader or guest marker fails before ``booti`` returns.
+    operations._boot_attempt_started = True
     started = time.monotonic()
+    # Basic deliberately bypasses the menu's immutable DTB stanza.  The
+    # direct loader applies the volatile minimal profile and verifies each
+    # readback before `booti`; selecting the menu entry would silently reload
+    # the unmodified full DTB.
+    direct_basic = mode == "basic"
     if mode == "fallback":
         # Test the same || recovery mechanism with an absent candidate path;
         # never delete or rename a working selector to inject a failure.
@@ -249,7 +429,8 @@ def boot_cycle(
         )
         session.send(command)
         session.wait_for("Enter choice:", 30)
-    else:
+    elif not direct_basic:
+        path = menu_path(document)
         session.command(
             f"sysboot mmc 1:1 any 0x88200000 {path}", expect="Enter choice:", timeout=30
         )
@@ -339,7 +520,10 @@ def boot_cycle(
         )
         try:
             probe_result = validate_probe_evidence(
-                operations._log.getvalue(), mode, nonce
+                operations._log.getvalue(),
+                mode,
+                nonce,
+                require_access_audit=mode.startswith("gmac-"),
             )
         except ProbeContractError:
             _record_probe_recovery(operations, mode, "invalid")
@@ -354,6 +538,11 @@ def boot_cycle(
                 "probe_status": "fail",
                 "probe_read_offsets": list(probe_result.read_offsets),
                 "probe_attempt_offsets": list(probe_result.attempt_offsets),
+                "probe_access_audit": (
+                    None
+                    if probe_result.access_audit is None
+                    else probe_result.access_audit.__dict__
+                ),
                 "recovery_observed": True,
             }
         return {
@@ -362,6 +551,11 @@ def boot_cycle(
             "probe_status": "pass",
             "probe_read_offsets": list(probe_result.read_offsets),
             "probe_attempt_offsets": list(probe_result.attempt_offsets),
+            "probe_access_audit": (
+                None
+                if probe_result.access_audit is None
+                else probe_result.access_audit.__dict__
+            ),
         }
     elif mode == menu.PHY_DIAGNOSTIC_MODE:
         # PHY-only is a separate gate after a corrected GMAC-1 read-only
@@ -399,7 +593,7 @@ def boot_cycle(
             "phy_status": status,
         }
     elif mode == "basic":
-        session.send("2")
+        boot_loaded_artifacts(session, _basic_loader_args(document))
         session.wait_for("asterinas-basic# ", 60)
         reached = time.monotonic()
         session.send(
@@ -410,14 +604,25 @@ def boot_cycle(
             "/proc proc" in response and "/sys sysfs" in response,
             "Basic API mounts are missing",
         )
+        basic_device_gate = validate_basic_device_gate(operations._log.getvalue())
         session.send("sync; reboot -f")
-        recovery = session.wait_for_uboot_prompt(90)
+        reboot_checkpoint = _log_length(operations)
+        try:
+            recovery = session.wait_for_uboot_prompt(90)
+        except TimeoutError:
+            recovery = operations._log.getvalue()[reboot_checkpoint:]
+            if _ordered_recovery_boundary(recovery) is None:
+                recovery += session.wait_for_recovery_boundary(90)
+        boundary = _ordered_recovery_boundary(recovery)
         menu.require(
-            "OpenSBI" in recovery and "U-Boot " in recovery,
-            "Basic reboot did not produce a fresh firmware epoch",
+            boundary is not None,
+            "Basic reboot did not produce a fresh firmware or RockOS boundary",
         )
+        recovery_boundary = boundary
     elif mode == "desktop":
-        session.send("4")
+        # Keep the framebuffer handoff, but never let the desktop menu path
+        # reload the unmodified DTB and probe the risky EIC7700 wrappers.
+        boot_loaded_artifacts(session, _desktop_loader_args(document))
         response = session.wait_for("ASTERINAS_DEBUG_CONSOLE_READY uid=0", 180)
         if "root@asterinas-debug:/#" not in response:
             session.wait_for("root@asterinas-debug:/#", 20)
@@ -469,6 +674,16 @@ def boot_cycle(
     return {
         "boot_to_ready_seconds": reached - started,
         "menu_to_ready_seconds": reached - menu_seen,
+        **(
+            {"basic_device_gate": basic_device_gate}
+            if mode == "basic"
+            else {}
+        ),
+        **(
+            {"recovery_boundary": recovery_boundary}
+            if mode == "basic"
+            else {}
+        ),
     }
 
 
@@ -517,8 +732,20 @@ def main():
         action="store_true",
         help="arm the verified EIC7700 WDT for a bounded Basic, desktop, or probe cycle",
     )
-    parser.add_argument("--from-uboot", action="store_true")
+    origin = parser.add_mutually_exclusive_group()
+    origin.add_argument(
+        "--from-uboot",
+        action="store_true",
+        help="the attached serial session is already at a fresh U-Boot prompt",
+    )
+    origin.add_argument(
+        "--from-rockos",
+        action="store_true",
+        help="authenticate the current RockOS login on this same serial owner before staging",
+    )
     args = parser.parse_args()
+    if args.from_rockos and args.action not in ("stage", "promote"):
+        parser.error("--from-rockos is only valid for stage or promote")
     document = json.loads(args.manifest.read_text())
     menu.validate(document)
     if args.hardware_watchdog and (
@@ -589,6 +816,14 @@ def main():
                     operations._require_session().wait_for_uboot_prompt(10)
                     operations.boot_rockos(180)
                     operations.login(args.username, password, 30)
+                elif args.from_rockos:
+                    # The previous serial owner may already have consumed the
+                    # login banner.  A bare carriage return is harmless at a
+                    # login prompt and makes the handoff boundary observable
+                    # without rebooting or selecting a different entry.
+                    operations._require_session().send("")
+                    operations._require_session().wait_for("login:", 30)
+                    operations.login(args.username, password, 30)
                 stage(
                     operations,
                     document,
@@ -609,6 +844,7 @@ def main():
                     nonce,
                     args.check_root,
                     args.hardware_watchdog,
+                    from_uboot=args.from_uboot,
                 )
                 result.update(cycle_result)
         if result.get("probe_status") in {"fail", "timeout"}:
@@ -623,15 +859,36 @@ def main():
             result.update(passed=True, recovered=True)
     except (Exception, KeyboardInterrupt) as error:
         result["error"] = str(error) or type(error).__name__
-        if args.action == "cycle" and (
-            args.mode in PROBE_SPECS or args.mode == menu.PHY_DIAGNOSTIC_MODE
-        ):
-            # A failed read is never promoted to passed/recovered, but retain
-            # the independent recovery observation for watchdog diagnostics.
+        if args.action == "cycle" and args.hardware_watchdog:
+            # A watchdog cycle may fail before its guest marker.  Keep the
+            # same serial owner until a fresh firmware epoch is observed so a
+            # recoverable timeout is never reported as an abandoned board.
             transcript = operations._log.getvalue()
-            result["recovery_observed"] = (
-                "OpenSBI" in transcript and "U-Boot " in transcript
+            checkpoint = getattr(operations, "_recovery_checkpoint", len(transcript))
+            recovery_suffix = transcript[checkpoint:]
+            recovery_observed = _ordered_recovery_epoch(recovery_suffix)
+            recovery_boundary = (
+                "uboot-prompt" if recovery_observed else _ordered_recovery_boundary(recovery_suffix)
             )
+            recovery_observed = recovery_boundary is not None
+            if getattr(operations, "_boot_attempt_started", False) and not recovery_observed:
+                try:
+                    recovery = operations._require_session().wait_for_recovery_boundary(120)
+                except (RuntimeError, TimeoutError) as recovery_error:
+                    result["recovery_error"] = str(recovery_error)
+                else:
+                    recovery_suffix += recovery
+                    recovery_observed = _ordered_recovery_epoch(recovery_suffix)
+                    recovery_boundary = (
+                        "uboot-prompt"
+                        if recovery_observed
+                        else _ordered_recovery_boundary(recovery_suffix)
+                    )
+                    recovery_observed = recovery_boundary is not None
+            result["recovery_observed"] = recovery_observed
+            result["recovered"] = recovery_observed
+            if recovery_boundary is not None:
+                result["recovery_boundary"] = recovery_boundary
     finally:
         result["elapsed_seconds"] = time.monotonic() - started
         transcript = operations._log.getvalue().encode()

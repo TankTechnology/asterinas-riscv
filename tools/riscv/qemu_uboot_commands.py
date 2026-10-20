@@ -104,6 +104,13 @@ def qemu_argv(
     """Construct the selected guarded QEMU U-Boot command line."""
 
     validate_registered_device_set(device_set)
+    if (
+        device_set.machine is not None
+        and device_set.machine != profile.machine.qemu_machine.value
+    ):
+        raise ValueError(
+            f"device set {device_set.name} requires machine {device_set.machine}"
+        )
     argv = _base_qemu_argv(
         uboot=uboot,
         boot_disk=boot_disk,
@@ -113,6 +120,16 @@ def qemu_argv(
         snapshot_disk=snapshot_disk,
     )
     argv.extend(render_device_argv(device_set, device_paths))
+    if device_set.display != "none":
+        # `_base_qemu_argv` supplies the safe headless default. Replace that
+        # single slot only for the explicit GL device contract; ordinary gates
+        # remain byte-for-byte unchanged.
+        display_index = argv.index("-display")
+        argv[display_index + 1] = device_set.display
+    # QEMU otherwise creates a default user network even for the headless
+    # baseline. Explicit -netdev/device pairs still work with -nic none.
+    if "-nic" not in argv:
+        argv.extend(("-nic", "none"))
     return argv
 
 

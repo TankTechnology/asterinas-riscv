@@ -12,6 +12,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import re
 
+from tools.riscv.eic7700_platform_contract import EIC7700
+
 
 class ProbeContractError(ValueError):
     """The serial transcript does not prove a safe, recovered probe."""
@@ -27,27 +29,38 @@ class ProbeSpec:
     prerequisites: tuple[str, ...] = ()
 
 
-# These are deliberately fixed values from the EIC7700 device tree.  A probe
-# is not allowed to discover a different address and then access it.
+@dataclass(frozen=True)
+class ProbeAccessAudit:
+    reads: int
+    writes: int
+    gmac_reads: int
+    gmac_writes: int
+    mdio: int
+    dma: int
+    tx: int
+    rx: int
+    irq: int
+
+
+# These are deliberately fixed values from the EIC7700 device tree and the
+# companion QTest model.  Keep prerequisites here because they describe the
+# probe sequence; all MMIO identity facts come from the shared registry.
+_PROBE_PREREQUISITES = {
+    "dwc3-0": (),
+    "dwc3-1": (),
+    "gmac-0": ("dwc3-0", "dwc3-1"),
+    "gmac-1": ("dwc3-0", "dwc3-1"),
+}
 PROBE_SPECS = {
-    "dwc3-0": ProbeSpec("dwc3-0", 0x50480000, 0x10000, 85, (0x10, 0xC110, 0xC120)),
-    "dwc3-1": ProbeSpec("dwc3-1", 0x50490000, 0x10000, 86, (0x10, 0xC110, 0xC120)),
-    "gmac-0": ProbeSpec(
-        "gmac-0",
-        0x50400000,
-        0x10000,
-        61,
-        (0x0000, 0x00B0, 0x0110, 0x0120, 0x1000, 0x1008),
-        ("dwc3-0", "dwc3-1"),
-    ),
-    "gmac-1": ProbeSpec(
-        "gmac-1",
-        0x50410000,
-        0x10000,
-        70,
-        (0x0000, 0x00B0, 0x0110, 0x0120, 0x1000, 0x1008),
-        ("dwc3-0", "dwc3-1"),
-    ),
+    name: ProbeSpec(
+        name,
+        EIC7700.peripheral(name).base,
+        EIC7700.peripheral(name).size,
+        EIC7700.peripheral(name).irq,
+        EIC7700.peripheral(name).probe_offsets,
+        _PROBE_PREREQUISITES[name],
+    )
+    for name in ("dwc3-0", "dwc3-1", "gmac-0", "gmac-1")
 }
 
 
@@ -77,8 +90,14 @@ _FAIL = re.compile(
     re.MULTILINE,
 )
 _PASS = re.compile(r"^ASTERINAS_PROBE_PASS device=(\S+)$", re.MULTILINE)
+_ACCESS = re.compile(
+    r"^ASTERINAS_PROBE_ACCESS device=(\S+) reads=(\d+) writes=(\d+) "
+    r"gmac_reads=(\d+) gmac_writes=(\d+) mdio=(\d+) dma=(\d+) "
+    r"tx=(\d+) rx=(\d+) irq=(\d+)$",
+    re.MULTILINE,
+)
 _DEVICE_MARKER = re.compile(
-    r"^ASTERINAS_PROBE_(?:RESOURCE|DT|PHASE|ATTEMPT|READ|FAIL|PASS|DONE) device=(\S+)",
+    r"^ASTERINAS_PROBE_(?:RESOURCE|DT|PHASE|ATTEMPT|READ|ACCESS|FAIL|PASS|DONE) device=(\S+)",
     re.MULTILINE,
 )
 
@@ -100,6 +119,7 @@ class ProbeResult:
     recovered: bool
     read_offsets: tuple[int, ...]
     attempt_offsets: tuple[int, ...] = ()
+    access_audit: ProbeAccessAudit | None = None
 
 
 def probe_menu_args(device: str) -> str:
@@ -116,7 +136,9 @@ def probe_menu_args(device: str) -> str:
     )
 
 
-def validate_probe_evidence(text: str, device: str, run_id: str) -> ProbeResult:
+def validate_probe_evidence(
+    text: str, device: str, run_id: str, *, require_access_audit: bool = False
+) -> ProbeResult:
     """Validate one transcript before accepting it as a physical result."""
 
     text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -151,7 +173,10 @@ def validate_probe_evidence(text: str, device: str, run_id: str) -> ProbeResult:
     # U-Boot itself may print controller-start and USB enumeration messages
     # before the candidate entry.  Only the bounded Asterinas interval is
     # evidence for side effects in the diagnostic implementation.
-    if _FORBIDDEN.search(probe_text):
+    # The audit marker contains words such as ``writes`` and ``dma`` by
+    # design.  Remove that structured line before applying the free-form
+    # side-effect filter; its numeric fields are checked below instead.
+    if _FORBIDDEN.search(_ACCESS.sub("", probe_text)):
         raise ProbeContractError("forbidden side effect in probe transcript")
     spec = PROBE_SPECS[device]
     resource_matches = list(re.finditer(
@@ -214,6 +239,35 @@ def validate_probe_evidence(text: str, device: str, run_id: str) -> ProbeResult:
     if any(match.group(1) != device for match in pass_matches):
         raise ProbeContractError("unexpected device marker")
 
+    access_matches = list(_ACCESS.finditer(text))
+    if any(match.start() < begin_at or match.start() >= done_end for match in access_matches):
+        raise ProbeContractError("access audit is outside probe interval")
+    if len(access_matches) > 1:
+        raise ProbeContractError("probe must have at most one access audit")
+    access_audit = None
+    if access_matches:
+        access_match = access_matches[0]
+        if access_match.group(1) != device:
+            raise ProbeContractError("unexpected device marker")
+        values = tuple(int(value) for value in access_match.groups()[1:])
+        access_audit = ProbeAccessAudit(*values)
+        if access_audit.gmac_reads != len(reads):
+            raise ProbeContractError("access audit does not match register reads")
+        if any(
+            value
+            for value in (
+                access_audit.gmac_writes,
+                access_audit.mdio,
+                access_audit.dma,
+                access_audit.tx,
+                access_audit.rx,
+                access_audit.irq,
+            )
+        ):
+            raise ProbeContractError("probe access audit reports a datapath side effect")
+    elif require_access_audit:
+        raise ProbeContractError("probe access audit is missing")
+
     for index, (read_device, offset, raw_value) in enumerate(reads):
         value = int(raw_value, 16)
         # The kernel logs the read before validating it. Preserve the final
@@ -261,7 +315,7 @@ def validate_probe_evidence(text: str, device: str, run_id: str) -> ProbeResult:
     uboot_at = text.find("U-Boot ", opensbi_at + 1) if opensbi_at >= 0 else -1
     if opensbi_at < 0 or uboot_at < 0:
         raise ProbeContractError("recovery epoch is missing")
-    return ProbeResult(device, result_status, True, offsets, attempts)
+    return ProbeResult(device, result_status, True, offsets, attempts, access_audit)
 
 
 def validate_probe_timeout_evidence(
@@ -341,11 +395,8 @@ def validate_probe_timeout_evidence(
     offsets = tuple(int(offset, 16) for _, offset, _ in reads)
     if offsets != spec.whitelist[: len(offsets)]:
         raise ProbeContractError("timeout reads are not a whitelist prefix")
-    attempts = tuple(
-        int(match.group(2), 16)
-        for match in _ATTEMPT.finditer(text)
-        if begin_at <= match.start() < opensbi_at
-    )
+    attempt_matches = list(_ATTEMPT.finditer(text))
+    attempts = tuple(int(match.group(2), 16) for match in attempt_matches)
     if any(
         match.start() < begin_at or match.start() >= opensbi_at
         for match in _ATTEMPT.finditer(text)
@@ -355,8 +406,18 @@ def validate_probe_timeout_evidence(
         raise ProbeContractError("unexpected device marker")
     if attempts[: len(offsets)] != offsets:
         raise ProbeContractError("timeout attempts do not match register reads")
-    if len(attempts) > len(offsets) and attempts[len(offsets)] not in spec.whitelist:
-        raise ProbeContractError("timeout attempt is outside the register whitelist")
+    if len(attempts) > len(offsets) + 1:
+        raise ProbeContractError("timeout has multiple pending register attempts")
+    if attempts != spec.whitelist[: len(attempts)]:
+        raise ProbeContractError("timeout attempts are not a whitelist prefix")
+    # A blocked load cannot emit another attempt. Require each completed read
+    # to follow its attempt before the next register can be touched.
+    for index, read in enumerate(all_reads):
+        if attempt_matches[index].start() >= read.start():
+            raise ProbeContractError("timeout attempt/read order is invalid")
+        if index + 1 < len(attempt_matches):
+            if read.start() >= attempt_matches[index + 1].start():
+                raise ProbeContractError("timeout attempt/read order is invalid")
     return ProbeResult(device, "timeout", True, offsets, attempts)
 
 

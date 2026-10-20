@@ -19,7 +19,7 @@ CapabilityBoundingSet=
 NoNewPrivileges=yes
 Environment=HOME=/home/asterinas
 Environment=ASTERINAS_FIREFOX_WEB_TARGET_URL=https://www.baidu.com/
-SupplementaryGroups=video input
+SupplementaryGroups=video input render
 StandardOutput=journal+console
 StandardError=journal+console
 ExecStartPre=+/usr/lib/asterinas/desktop-m5-device-access

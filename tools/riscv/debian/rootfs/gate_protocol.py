@@ -15,7 +15,13 @@ from typing import Iterable
 
 MAX_COMMAND_PAYLOAD_BYTES = 64 * 1024
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
-GENERIC_SV39_CPU = "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true"
+# Keep the Debian two-disk gate on QEMU's default A/D-update mode.  The
+# generic gate is a startup/recovery contract, not the Svade conformance
+# profile: forcing ``svade`` or explicitly disabling Sv48 here makes the
+# current RISC-V early page-table handoff stop before serial initialization
+# with the 2-GiB guest used by this gate. Dedicated Svade/Svadu profiles remain
+# available in qemu_uboot_profiles.
+GENERIC_SV39_CPU = "rv64,svpbmt=true,zkr=true"
 GATE_PACKAGE_NAMES = ("base-files", "libc6", "bash", "coreutils", "util-linux")
 
 _NONCE_RE = re.compile(r"\A[0-9a-f]{64}\Z")
@@ -108,10 +114,18 @@ def qemu_argv(
     monitor_socket: Path,
     smp: int = 4,
     dtb_enabled_cpu_count: int = 4,
+    root_disk_format: str = "raw",
     allow_reboot: bool = False,
     graphical: bool = False,
+    vnc_socket: Path | None = None,
 ) -> tuple[str, ...]:
-    """Construct the frozen no-network SMP=4 two-disk QEMU contract."""
+    """Construct the frozen no-network SMP=4 two-disk QEMU contract.
+
+    ``vnc_socket`` opts a graphical run into a private Unix-socket VNC
+    surface.  It is deliberately separate from the default ``-display none``
+    contract so existing headless gates remain unchanged while scanout gates
+    can inspect the same QEMU display surface through HMP.
+    """
 
     if (
         isinstance(smp, bool)
@@ -120,8 +134,16 @@ def qemu_argv(
         or dtb_enabled_cpu_count != 4
     ):
         raise ValueError("QEMU and the DTB must expose exactly 4 enabled CPUs")
+    if root_disk_format not in {"raw", "qcow2"}:
+        raise ValueError("QEMU root disk format must be raw or qcow2")
     if not isinstance(graphical, bool):
         raise ValueError("QEMU graphical mode must be a boolean")
+    if vnc_socket is not None:
+        if not graphical:
+            raise ValueError("QEMU VNC scanout requires graphical devices")
+        _validate_path_text(vnc_socket, role="VNC socket")
+        if vnc_socket.exists() or vnc_socket.is_symlink():
+            raise ValueError("QEMU VNC socket destination must not already exist")
     _validate_regular_input(uboot, role="U-Boot")
     _validate_regular_input(boot_disk, role="boot disk")
     _validate_regular_input(root_disk, role="root disk")
@@ -142,7 +164,7 @@ def qemu_argv(
     graphics_devices = (
         (
             "-device",
-            "bochs-display",
+            "bochs-display,xres=1280,yres=1024",
             "-device",
             "virtio-keyboard-device",
             "-device",
@@ -151,6 +173,11 @@ def qemu_argv(
         if graphical
         else ()
     )
+    # VNC is a QEMU monitor/display service rather than a ``-display``
+    # backend.  Keeping ``-display none`` makes the headless surface explicit
+    # while ``-vnc unix:...`` exposes the separate host-readable scanout.
+    display_backend = "none"
+    vnc_arguments = ("-vnc", f"unix:{vnc_socket}") if vnc_socket is not None else ()
     arguments = (
         "qemu-system-riscv64",
         "-machine",
@@ -162,7 +189,8 @@ def qemu_argv(
         "-smp",
         "4",
         "-display",
-        "none",
+        display_backend,
+        *vnc_arguments,
         "-nic",
         "none",
         "-serial",
@@ -175,7 +203,7 @@ def qemu_argv(
         "-device",
         "virtio-blk-device,drive=bootdisk",
         "-drive",
-        f"if=none,format=raw,file={root_disk},id=rootdisk,cache=directsync",
+        f"if=none,format={root_disk_format},file={root_disk},id=rootdisk,cache=directsync",
         "-device",
         "virtio-blk-device,drive=rootdisk",
         "-monitor",

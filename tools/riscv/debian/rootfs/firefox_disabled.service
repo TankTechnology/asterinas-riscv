@@ -1,0 +1,10 @@
+[Unit]
+Description=Asterinas Firefox disabled for desktop handoff isolation
+
+[Service]
+Type=oneshot
+ExecStart=/bin/true
+RemainAfterExit=yes
+
+[Install]
+WantedBy=basic.target

@@ -9,6 +9,8 @@ class X11DesktopGateTests(unittest.TestCase):
     def test_classifier_requires_three_nonce_bound_samples_and_ready(self):
         transcript = b"\n".join(
             (
+                b"Registered firmware framebuffer: base=0x40000000, size=0x1000000, "
+                b"resolution=1280x1024, stride=5120, format=BgrReserved",
                 b"DEBIAN_DESKTOP_M4_UDEV state=active",
                 b"DEBIAN_DESKTOP_M4_LOGIND state=active",
                 b"DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",

@@ -8,6 +8,111 @@ The checks are evidence, not hardware emulation.
 A passing profile proves the declared CPU, MMU, DTB, U-Boot `booti`, and userspace contracts.
 It does not claim that QEMU reproduces unmodeled clocks, resets, cache controllers, or board peripherals.
 
+### One-click QEMU recovery matrix
+
+When the development board is unavailable, run the recovery matrix against
+already prepared QEMU payload bundles. It executes each registered device leg
+once, keeps going after a failure, and never retries a failed leg:
+
+```bash
+make test_riscv_uboot_recovery_matrix \
+  QEMU_UBOOT_MATRIX_QEMU_VIRT_OUT_DIR="$PWD/target/qemu-uboot/<qemu-virt-recovery>" \
+  QEMU_UBOOT_MATRIX_SIFIVE_U_OUT_DIR="$PWD/target/qemu-uboot/<sifive-u-recovery>" \
+  QEMU_UBOOT_MATRIX_OUT_DIR="$PWD/target/qemu-uboot/matrix-$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
+The two bundle variables are required so an ordinary userspace smoke image
+cannot be mistaken for the timer-recovery payload. Point them at the outputs
+whose boot arguments contain `asterinas.reboot_after=10` and whose marker is
+`ASTERINAS_REBOOT_TIMER_READY`. Each leg is written below
+`QEMU_UBOOT_MATRIX_OUT_DIR/<leg>/attempt-N/`; `matrix.json` records the exit
+code, result status, failure classification, relative evidence path, and the
+QEMU device capability inventory used for the run. The raw inventory is kept
+as `qemu-device-help.txt`; each leg also keeps the matrix runner's stdout and
+stderr as `runner.stdout.log` and `runner.stderr.log`. The
+summary also records bounded serial observations for xHCI selection/start,
+SiFive-U GEM U-Boot networking, and network silence on the minimal SiFive-U
+leg, plus USB silence on headless legs. These observations describe the
+selected QEMU path only.
+`sifive-u-gem` leg is a QEMU SiFive GEM/U-Boot firmware cross-check, not a
+simulation of the EIC7700 GMAC datapath.
+
+For a two-boot transcript that uses the recovery timer and then starts a
+second payload from U-Boot, create an explicit fallback receipt without
+rerunning QEMU:
+
+```bash
+python3 tools/riscv/qemu_fallback_receipt.py \
+  --serial-log target/qemu-uboot/<run>/serial.log \
+  --fallback-kind linux-reference \
+  --output target/qemu-uboot/<run>/fallback-receipt.json
+```
+
+The accepted fallback kinds are `linux-reference` and `rockos-login`. The
+parser requires `ASTERINAS_REBOOT_TIMER_READY` before it accepts either
+terminal, so an initial U-Boot prompt or login text is recorded as unknown.
+The receipt labels the timer as a software recovery timer and records
+`hardware_state=not-accessed`; a Linux reference receipt must not be reported
+as RockOS evidence.
+
+The bounded negative fault matrix can be materialized as a separate receipt:
+
+```bash
+python3 tools/riscv/qemu_recovery_faults.py \
+  --output target/qemu-recovery-faults/<run>/receipt.json
+```
+
+It injects timer-disabled, SBI-reset-failure, permanent-MMIO-block, and
+U-Boot-wait behavior into a short-lived serial peer. The receipt records one
+command at most, complete process cleanup, and the resulting classification.
+Its `execution_scope=host-serial-peer`, `watchdog_state=not-modeled`, and
+`passed=false` fields are intentional: this matrix validates the classifier
+and containment boundary, not a guest watchdog or physical recovery.
+
+For an actual Asterinas guest boundary, parse a guarded QEMU run that uses
+`-no-reboot`:
+
+```bash
+python3 tools/riscv/qemu_guest_fault_receipt.py \
+  --result target/qemu-guest-faults/<run>/result.json \
+  --serial-log target/qemu-guest-faults/<run>/serial.log \
+  --output target/qemu-guest-faults/<run>/receipt.json
+```
+
+The current guest parser covers `sbi-reset-failure`: it requires the real
+software-recovery markers, one OpenSBI epoch, clean QEMU exit, and no recovery
+epoch. It reports `execution_scope=qemu-guest` and still sets
+`qualified=false`, because `-no-reboot` intentionally prevents proving a
+watchdog or RockOS fallback.
+
+It also accepts `--fault timer-disabled` for a QEMU run whose machine argument
+contains `timer-fault-after-boot=on`. That contract requires the guest marker
+before the bounded host timeout and reports
+`watchdog_state=guest-software-timer-stalled`. An early machine-realization
+timer fault is rejected because it can stop U-Boot before `booti`.
+The QEMU-only evidence for this path is under
+`target/qemu-guest-faults/timer-disabled-20261011/`; it does not qualify a
+physical-board watchdog or recovery path.
+
+### Read-only goal audit
+
+Join the current receipts into one machine-readable status report without
+starting QEMU or opening a serial device:
+
+```bash
+python3 tools/riscv/qemu_goal_audit.py \
+  --output target/qemu-goal-audit-$(date -u +%Y%m%d)/audit.json
+```
+
+The command returns zero only when every check is qualified. A nonzero result
+is deliberate: it distinguishes a missing RockOS fallback from the already
+qualified U-Boot recovery, and it keeps host-only serial-peer evidence from
+being promoted to a guest MMIO result. If the historical framebuffer result
+is root-owned, place a read-only normalized copy at
+`target/qemu-goal-audit-<date>/fb-result.json`; the audit records that path as
+the evidence source instead of silently treating the passed fb0 transaction
+as absent. The report always declares `hardware_state=not-accessed`.
+
 ## Megrez selectable boot menu
 
 The schema-v3 selector provides RockOS, Asterinas Basic, Probe, and Desktop.
@@ -20,15 +125,18 @@ After promotion, routine startup needs only a reboot/reset and menu selection:
 | Entry | Purpose | Recovery policy |
 | --- | --- | --- |
 | RockOS (default) | Maintenance and network file transfer | Normal RockOS shutdown |
-| Basic | BusyBox shell in the small initramfs; no Debian disk required | `sync; reboot -f` |
+| Basic | BusyBox shell in the small initramfs; no Debian disk required | 60-second `asterinas.reboot_after`; then `sync; reboot -f` |
 | Probe | Automatic, non-writing boot check | Requests reboot; 90-second software deadline |
 | Desktop | Existing Debian, X and Firefox | Explicit shutdown; no automatic deadline |
 
 The menu defaults to RockOS after ten seconds. The board's preceding 30-second
 firmware delay is unchanged. No routine build, upload, CRC command, manual DTB
 patch, or `booti` sequence is required. A hard-locked kernel still requires a
-physical reset; the software timer is not a hardware watchdog. Basic's shell
-does not currently provide job control.
+physical reset unless the diagnostic cycle explicitly arms the verified
+EIC7700 watchdog. The watchdog option is restricted to Basic, is armed only
+after a fresh U-Boot prompt, and must pass clock/reset/component/readback
+checks before `sysboot`; it is never used for RockOS, fallback, Probe, or
+Desktop. Basic's shell does not currently provide job control.
 
 Desktop shares the kernel, prepared DTB and Stage1 with Basic/Probe. It mounts
 the existing Debian partition and uses a temporary, UID-1000 desktop HOME;
@@ -84,9 +192,18 @@ geometry and USB-host properties are present, so a Desktop selector cannot be
 published with the raw board DTB. It records frozen local artifacts and the exact
 vendor configuration. `megrez_menu_board stage --from-uboot` boots RockOS and transfers
 only missing artifacts, verifies sizes/SHA-256, then publishes a canary. A
-`cycle --mode basic|probe|desktop|rockos|fallback` records one physical test and
-returns to U-Boot. `--check-root` optionally runs read-only `e2fsck -fn` from
-RockOS, refusing a mounted Debian filesystem.
+`cycle --mode basic|probe|desktop|rockos|fallback|probe-dwc3-0|probe-dwc3-1|probe-gmac-0|probe-gmac-1`
+records one physical test and returns to U-Boot. The four `probe-*` entries are
+strictly read-only register snapshots; they suppress normal USB/GMAC setup and
+require both DWC3 results before either GMAC entry can run. `--check-root`
+optionally runs read-only `e2fsck -fn` from RockOS, refusing a mounted Debian
+filesystem.
+For an unattended Basic or read-only probe diagnostic, add `--hardware-watchdog`;
+the helper checks the watchdog readback before loading the guest and leaves the
+persistent selector unchanged. A completed `status=fail` is retained as a
+failed probe, while a watchdog recovery without a completion marker is retained
+as `probe_status=timeout`; neither outcome counts as `passed` or as a GMAC
+prerequisite.
 
 `promote --from-uboot --evidence DIRECTORY` requires three successful cycles
 each for Basic, Probe, RockOS and fallback, and two for Desktop, all for the
@@ -114,6 +231,22 @@ make prepare_riscv_megrez_desktop_boot
 make run_riscv_megrez_desktop
 ```
 
+For the first recovery-oriented desktop canary, select the volatile minimal
+device profile:
+
+```bash
+make run_riscv_megrez_desktop \
+  MEGREZ_DESKTOP_BOOT_DEVICE_PROFILE=minimal
+```
+
+This edits only the in-memory U-Boot DTB for that boot, disabling both GMAC
+and both DWC3 nodes while leaving the framebuffer, storage and software
+rendering path available. It does not save the U-Boot environment or modify
+the boot partition. The minimal profile intentionally skips the host proxy
+preflight because it is an offline display/desktop stability check; it does
+not qualify networking, USB input or hardware GPU acceleration. The default
+`full` profile remains unchanged.
+
 The defaults select
 `target/megrez-desktop-boot/build/plan.json`, the stable FTDI
 `/dev/serial/by-id/` path, and a timestamped evidence directory below
@@ -121,6 +254,21 @@ The defaults select
 `MEGREZ_DESKTOP_BOOT_*` override for another plan, serial device, host address,
 port, or output directory. An existing output directory is rejected rather
 than overwritten.
+
+The guest reaches the host and nothing beyond it, and glibc's resolver only
+ever asks port 53, so the guest cannot be given a nameserver directly. A host
+bridge carries its queries instead; start it beside the proxy and leave it
+running:
+
+```bash
+python3 -m tools.riscv.megrez_proxy_bridge --dns
+```
+
+It listens on `10.100.19.216:15354` and forwards each query to a resolver that
+speaks DNS over TCP. `start` warns, but does not refuse to boot, when nothing
+answers there: the guest-side shim leaves `/etc/resolv.conf` alone unless its
+tunnel has already answered a query, so a missing bridge costs the guest name
+resolution without pointing it at a port nothing answers.
 
 `run_riscv_megrez_desktop` performs only the bounded `start` action. It never
 boots RockOS, transfers or installs artifacts, rewrites the root partition, or
@@ -136,6 +284,55 @@ epoch within the bounded recovery allowance. Diagnose from the last printed
 phase and the retained `serial.log`/`result.json`; do not physically reset an
 ordinary failed boot. End a successful session from the debug console with
 `sync; reboot -f`, which returns the board to U-Boot for the next start.
+
+### Retaining development access
+
+Keep the serial management plane independent of the desktop and its networking.
+The historically used control paths have different prerequisites:
+
+| Path | Prerequisite | What it controls |
+| --- | --- | --- |
+| RockOS serial login | RockOS is running and the maintenance credential is valid | Maintenance shell and software reboot |
+| RockOS SSH | RockOS is running, SSH is enabled, and the host key and client credential are verified | Authenticated network maintenance shell |
+| Asterinas normal debug console | Stage1 enables `--debug-console=root` | Root shell alongside the normal graphical startup |
+| Asterinas isolated debug console | Stage1 enables `--debug-console=isolated-root` | Root shell; the fast-boot readiness helper explicitly starts the desktop |
+| U-Boot serial prompt | Firmware has actually been reached and autoboot interrupted | Selection and loading of a verified boot generation |
+| Firefox Marionette | Firefox is ready and a guest command channel or authenticated tunnel exists | Browser automation; not a replacement for OS management |
+
+SSH is not an established control path for the Asterinas browser image.
+Isolated mode replaces the normal default target; it does not inherit the
+normal graphical startup dependencies and must not replace `root` in the menu.
+Host DNS/proxy bridges carry network traffic, not guest commands.
+Do not infer an available remote browser endpoint from a guest-local port 2828.
+
+Debug-console configuration lives under `/run` and disappears at reboot.
+The selected boot entry must recreate it on every development boot.
+Schema-v3 Desktop menu validation rejects entries without `--debug-console=root`;
+older manifests omitting that flag must be regenerated and requalified.
+Publishing a fast-boot generation does not promote the persistent menu selector;
+verify the selector and referenced Stage1 separately before claiming that a
+later unattended boot retains access.
+Keep the RockOS recovery entry intact and use the existing canary/promotion
+workflow rather than overwriting a frozen artifact.
+
+In debug mode, Stage1 writes runtime conditions for both `console-getty` and
+`serial-getty@ttyS0`, so neither competes with the root shell for its TTY.
+The shell service uses `Restart=always`.
+These protections do not enable a console on a boot that omits the opt-in flag,
+and a source change does not update an already-running or frozen Stage1.
+
+Before handing over a development desktop, use fresh nonce-framed read-only
+commands to verify UID 0 and boot identity, release the host's serial handle,
+reopen the same stable device, and repeat the handshake.
+Require the same boot identity for this reconnect check.
+After an actual reboot, require a new boot identity and a new successful
+handshake; a prior readiness marker is insufficient.
+Record unperformed reconnect/reboot checks as pending, not passed.
+
+The [2026-09-22 RockOS recovery record](../../docs/porting/evidence/2026-09-22-rockos-control-recovery.md)
+retains the actual serial device, existing-key SSH command, restored default-menu
+identity and successful software-reboot/reconnect checks.
+Use it as a last-observed baseline, not proof of the current board state.
 
 ## SMP4 cross-hart instruction-cache regression
 
@@ -335,6 +532,72 @@ make test_riscv_drm_cursor \
 This gate proves the current-main VirtIO transport and DRM cursor ioctl path;
 it is not evidence for the Megrez display controller or physical scanout.
 
+## VirtIO-GPU DRM scanout gate
+
+The DRM scanout gate is independent of the fbdev desktop fallback and of the
+hardware-cursor gate. It boots one `virtio-gpu-device` with no network or input
+devices, opens `/dev/dri/card0`, and checks the KMS contract in a fixed order:
+driver version, dumb-buffer capability, one connected connector/mode, a
+mode-sized dumb buffer with guest readback, framebuffer registration,
+`SETCRTC`/`GETCRTC`, and cleanup. The classifier also requires the matching
+QEMU control trace sequence (`RESOURCE_CREATE_2D`, attach, `SET_SCANOUT`,
+transfer, flush) after the guest gate starts. Boot-time test-pattern traces are
+excluded from the user-space window.
+
+Run the host and guest-probe unit tests with:
+
+```bash
+make test_riscv_drm_scanout_unit
+```
+
+Build the dedicated initramfs and a matching kernel, then prepare a private
+U-Boot disk:
+
+```bash
+tools/riscv/drm/build_scanout_gate.sh \
+  target/qemu-uboot/drm-scanout/initramfs.cpio.gz
+make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+
+ASTERINAS_RISCV_BOOTI="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
+ASTERINAS_INITRAMFS="$PWD/target/qemu-uboot/drm-scanout/initramfs.cpio.gz" \
+QEMU_UBOOT_PROFILE=generic-sv39-drm-scanout-smp4 \
+QEMU_UBOOT_OUT_DIR="$PWD/target/qemu-uboot/drm-scanout/prepared" \
+QEMU_UBOOT_BUILD_DIR="$PWD/target/qemu-uboot/cache/u-boot-build" \
+tools/riscv/prepare_qemu_uboot_booti.sh prepare
+```
+
+Run the bounded evidence gate:
+
+```bash
+make test_riscv_drm_scanout \
+  DRM_SCANOUT_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
+  DRM_SCANOUT_BOOT_DISK="$PWD/target/qemu-uboot/drm-scanout/prepared/boot.ext4" \
+  DRM_SCANOUT_MANIFEST="$PWD/target/qemu-uboot/drm-scanout/prepared/artifacts.json" \
+  DRM_SCANOUT_GATE_OUTPUT="$PWD/target/qemu-uboot/drm-scanout/evidence"
+```
+
+This gate proves the Asterinas DRM/KMS ioctl-to-virtio-gpu control path in
+QEMU. It does not claim hardware acceleration or a physical display; the
+fbdev/Xorg gate remains a separate fallback path.
+
+For an Xorg modesetting run that already produced a QMP screenshot, validate
+the desktop markers and the exact RGB pixel hash with:
+
+```bash
+make test_riscv_drm_xorg_modesetting_unit
+PYTHONPATH=tools/riscv python3 -m drm.xorg_modesetting_gate \
+  --serial-log target/qemu-uboot/drm-desktop/desktop-drm.serial.log \
+  --screenshot target/qemu-uboot/drm-desktop/desktop-drm.ppm \
+  --output target/qemu-uboot/drm-desktop/xorg-modesetting-result.json
+```
+
+The validator requires the ordered `modesetting`/`virtio_gpu` Xorg marker,
+desktop client markers, a 1280×800 P6 image, at least eight colors, and at
+least five percent painted pixels. It records both the complete PPM hash and
+the RGB payload hash. A missing `SETCRTC`, transfer, or flush trace is a
+fail-closed scanout result; the unit tests mutate each of those records and
+then run a clean retry to prove recovery does not inherit stale success.
+
 ## Simulation-first Megrez debug attempt
 
 The Megrez debug workflow binds one immutable Asterinas artifact plan to a
@@ -427,32 +690,18 @@ mv -- "$SOURCE_TMP" "$SOURCE_RECORD"
 trap - EXIT
 ```
 
-The QEMU run binds the source-built current-main `--kernel` to seven immutable
-supporting inputs: `--uboot`, `--dtb`, `--stage1-initramfs`, `--root-image`,
-`--root-manifest`, `--packages-lock`, and `--package-checksums`. Use one set of
-these exact paths for the debug-console, browser-web, and interaction gates;
-do not rebuild or replace an input between runs.
+The historical debug-console, browser-web, and physical-graphics QEMU
+recipes were composite M5-era gates and are retired; the physical-graphics QEMU
+gate was retired. They are intentionally not
+part of the E1-E5 entrypoint set; use the focused E1-E5 rootfs unit target and
+its independently pinned receipts instead:
 
 ```bash
-make test_riscv_physical_graphics_unit
-
-QEMU_INPUTS=(
-  "DEBIAN_KERNEL=$PWD/target/osdk/aster-kernel-osdk-bin.Image"
-  "DEBIAN_UBOOT=$PWD/target/qemu-uboot/cache/u-boot-build/u-boot"
-  "DEBIAN_DTB=$PWD/target/qemu-uboot/current/qemu-virt.dtb"
-  "DEBIAN_STAGE1_INITRAMFS=$PWD/target/debian-riscv/stage1/initramfs.cpio"
-  "DEBIAN_ROOT_IMAGE=$PWD/target/debian-riscv/browser-web/rootfs/debian-root.ext2"
-  "DEBIAN_ROOT_MANIFEST=$PWD/target/debian-riscv/browser-web/rootfs/rootfs-manifest.json"
-  "DEBIAN_PACKAGES_LOCK=$PWD/target/debian-riscv/browser-web/rootfs/packages.lock"
-  "DEBIAN_PACKAGE_CHECKSUMS=$PWD/target/debian-riscv/browser-web/rootfs/source-metadata/package-checksums"
-)
-make test_riscv_debian_debug_console_qemu_gate "${QEMU_INPUTS[@]}" \
-  DEBIAN_DEBUG_CONSOLE_QEMU_GATE_OUTPUT="$PWD/target/current-main-physical-graphics/qemu-debug-console"
-make test_riscv_debian_browser_web_qemu_gate "${QEMU_INPUTS[@]}" \
-  DEBIAN_BROWSER_WEB_QEMU_GATE_OUTPUT="$PWD/target/current-main-physical-graphics/qemu-browser-web"
-make test_riscv_physical_graphics_qemu_gate "${QEMU_INPUTS[@]}" \
-  RISCV_PHYSICAL_GRAPHICS_QEMU_GATE_OUTPUT="$PWD/target/current-main-physical-graphics/qemu-interaction"
+make test_riscv_debian_rootfs_unit
 ```
+
+The implementation modules remain only where legacy Megrez tooling imports them;
+no Makefile target may start those composite runs.
 
 The QEMU adapter injects keys through HMP and absolute pointer events through
 a private QMP socket into the VirtIO keyboard and tablet.
@@ -700,6 +949,13 @@ Independent serial logs and JSON results are written under
 `target-ubuntu/dual-host-qemu-probe/runs/` with `physical:false`.
 QEMU `virt` does not exercise the real Megrez DTB, MMC, HDMI, USB, or Firefox.
 It is a lightweight kernel regression gate, not a replacement for the physical test.
+
+The [2026-09-22 frozen-kernel run](../../docs/porting/evidence/2026-09-22-rockos-hosted-asterinas-probe.md)
+passed on both hosts in 5.530 s and 102.774 s respectively.
+These single-run durations depend on the artifact, host and QEMU version;
+they are not native Asterinas performance measurements.
+That record also diagnoses the current RockOS kernel/KVM-module release mismatch.
+An H extension and a QEMU binary listing `kvm` do not establish working KVM.
 
 If the pair has not been built yet, prepare it once in the cached project
 containers (the RISC-V rootfs-builder image supplies the cross libc headers):
@@ -1221,6 +1477,45 @@ kernel logging is limited to this fixed-command acceptance and operator
 handoff profile. Use a separate diagnostic boot when kernel logs are the
 evidence under investigation.
 
+For the smaller read-only bring-up, use `--final-profile basic-console` with
+the basic root init. This profile closes at the `asterinas-basic#` prompt, so
+it records a successful transition into the basic user shell instead of
+requiring the generic userspace banner. Keep `--require-recovery` and a short
+`asterinas.reboot_after` value for this first physical boot; it remains a
+one-shot test and does not alter the persistent boot menu.
+
+The runner now requires a fresh `OpenSBI -> U-Boot -> =>` firmware epoch before
+it sends any load or `booti` command. It never sends an empty line to acquire a
+prompt, because U-Boot would repeat its previous command. A required-recovery
+run writes the stable workspace file
+`target/megrez-board-runs/.recovery-safety.json` with
+`status=recovery-required` if no new firmware epoch appears. Choosing a new
+per-run log cannot bypass this latch. Later runs stop before opening the serial session until
+`--recovery-receipt` points to a newer schema-v2 RockOS attestation containing
+the new `rockos_boot_id`, `measurement_nonce`, and `rockos_recovered=true`.
+
+For the first diagnostic boot after a physical reset, select the RAM-only
+minimal device profile. It disables both Ethernet and both DWC3 controllers in
+the live DTB and does not set the `/chosen` USB-host handoff; it leaves MMC,
+UART, timer, and the basic shell available:
+
+```bash
+PYTHONPATH=. python3 tools/riscv/megrez_board_session.py "$SERIAL" \
+  --booti ASTERINAS_IMAGE_ON_BOOT_FS \
+  --initrd STAGE1_INITRAMFS_ON_BOOT_FS \
+  --dtb DTB_ON_BOOT_FS \
+  --expected-crc32 booti=8hex,dtb=8hex,initrd=8hex \
+  --bootargs "console=ttyS0 loglevel=info init=/init asterinas.reboot_after=60 -- --root-init=basic" \
+  --device-profile minimal \
+  --final-profile basic-console \
+  --require-recovery \
+  --yes \
+  --log /absolute/path/to/megrez-basic-minimal.serial.log
+```
+
+This profile is a diagnostic boundary only. It does not qualify networking,
+USB input, the desktop, Firefox, DRM, or GPU acceleration.
+
 ## Generic U-Boot `booti`
 
 Build the deterministic marker initramfs, then provide it with a RISC-V Linux Image.
@@ -1234,6 +1529,57 @@ make test_riscv_uboot_booti \
 ```
 
 Generated U-Boot, DTB, disk, logs, and JSON evidence stay below `target/`.
+
+### Bounded software-recovery run
+
+For a timer/SBI recovery check, use the registered
+`megrez-sv48-svade-timer-recovery` profile. It requires the exact timer-ready
+marker followed by a fresh `OpenSBI -> U-Boot -> =>` epoch and writes a bounded
+`result.json`, `serial.log`, and `marker-event.txt` even when the run fails:
+
+```bash
+PYTHONPATH=. PATH="/usr/local/qemu/bin:$PATH" \
+python3 tools/riscv/qemu_uboot_booti.py run \
+  --profile megrez-sv48-svade-timer-recovery \
+  --uboot target/qemu-uboot/cache/u-boot-build/u-boot \
+  --boot-disk /absolute/path/to/boot.ext4 \
+  --manifest /absolute/path/to/artifacts.json \
+  --dtb-audit /absolute/path/to/qemu-dtb-audit.json \
+  --serial-log target/qemu-recovery/serial.log \
+  --marker-event target/qemu-recovery/marker-event.txt \
+  --result target/qemu-recovery/result.json
+```
+
+The default `headless` device set keeps only the UART, timer, and registered
+virtio-block storage path. `--device-set virtio-net-slirp` adds one virtual
+network device; `--device-set qemu-xhci` adds one QEMU xHCI controller and a
+USB keyboard. These are QEMU isolation steps, not EIC7700 GMAC/DWC3 evidence.
+The runner never retries a failed run automatically; its exit status and
+retained evidence are the input to the next deliberate run.
+
+For the SiFive-U board model, `--device-set headless` now passes `-nic none`
+and interrupts U-Boot's network fallback once per firmware epoch, so the MMC
+baseline is genuinely network-free. The separate
+`sifive-u-gem-timer-recovery` profile with
+`--device-set sifive-u-gem-slirp` attaches QEMU's user backend to the model's
+built-in FU540 GEM without adding a virtio NIC. That leg is firmware/GEM
+cross-check evidence; it does not qualify the EIC7700 kernel GMAC path.
+
+The companion EIC7700 QTest model also has an explicit
+`eic7700-gmac1-mmio-timeout=on` fault. It returns the bounded unavailable
+value for GMAC-1 reads and discards writes, so a probe cannot enter MDIO,
+descriptor, DMA, TX/RX, or IRQ paths while the simulated bus is unavailable.
+The QTest case must pass together with the clock-gated and six-register
+read-only cases; this is a deterministic QEMU fault model, not a claim about
+an actual interconnect hang on Megrez.
+
+The registered `sifive-u-asterinas-timer-recovery` profile is an MMC/ext4
+cross-check. A passing userspace marker alone is insufficient: the run fails
+closed unless the armed marker and a new OpenSBI/U-Boot epoch are observed.
+Use an Sv39 kernel that contains the recovery implementation; an older payload
+can reach userspace and still fail this contract. QEMU `sifive_u` is useful for
+validating the SD/MMC loading commands and UART path; it is not a model of the
+Megrez EIC7700 reset, GMAC, or DWC3 hardware.
 
 ## SiFive U
 

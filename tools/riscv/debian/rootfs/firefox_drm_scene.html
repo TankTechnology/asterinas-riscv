@@ -1,0 +1,64 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Asterinas DRM Firefox scene</title>
+<style>
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #101828; }
+  main { box-sizing: border-box; width: 100%; height: 100%; padding: 64px; color: #e5e7eb; font: 32px sans-serif; }
+  #canvas { display: block; width: 100%; height: 70%; border-radius: 16px; }
+</style>
+<main>
+  <div>Asterinas DRM / WebRender scene</div>
+  <div id="canvas" role="img" aria-label="Asterinas fixed render scene"></div>
+</main>
+<script>
+(() => {
+  const root = document.documentElement;
+  const canvas = document.querySelector('#canvas');
+  let renderer = '';
+  const samples = [];
+  let previous = performance.now();
+  let frame = 0;
+  const probeCanvas = document.createElement('canvas');
+  probeCanvas.width = 1;
+  probeCanvas.height = 1;
+  const probeGl = probeCanvas.getContext('webgl') || probeCanvas.getContext('experimental-webgl');
+  let webglDebugInfo = false;
+  if (probeGl) {
+    const debugInfo = probeGl.getExtension('WEBGL_debug_renderer_info');
+    webglDebugInfo = Boolean(debugInfo);
+    if (debugInfo) {
+      renderer = String(probeGl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) || '');
+    }
+  }
+  function syncDomState(done) {
+    root.dataset.asterinasScene = 'started';
+    root.dataset.asterinasDone = done ? 'true' : 'false';
+    root.dataset.asterinasSamples = samples.join(',');
+    root.dataset.asterinasRenderer = renderer;
+    root.dataset.asterinasWebglContext = probeGl ? 'true' : 'false';
+    root.dataset.asterinasWebglDebug = webglDebugInfo ? 'true' : 'false';
+  }
+  window.__asterinasDrmScene = { done: false, samples, renderer };
+  syncDomState(false);
+  function paint(now) {
+    samples.push(now - previous);
+    previous = now;
+    frame += 1;
+    const phase = (frame % 64) / 64;
+    canvas.style.background = `linear-gradient(120deg, #ef4444 0%, #22c55e ${phase * 100}%, #2563eb 100%)`;
+    canvas.style.transform = `translateX(${(phase - 0.5) * 12}px)`;
+    if (frame < 32) {
+      // egl-headless has no host vsync source, so requestAnimationFrame can
+      // remain pending forever even while the browser event loop is healthy.
+      // A bounded timer keeps the scene deterministic in both headless QEMU
+      // and a real Xorg display.
+      setTimeout(() => paint(performance.now()), 16);
+    } else {
+      window.__asterinasDrmScene.done = true;
+      syncDomState(true);
+    }
+    syncDomState(frame >= 32);
+  }
+  setTimeout(() => paint(performance.now()), 16);
+})();
+</script>

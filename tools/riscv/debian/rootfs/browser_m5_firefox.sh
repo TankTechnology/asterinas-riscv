@@ -13,6 +13,11 @@ readonly MOZILLA_LOG="$FIREFOX_HOME/firefox-m5-plain-mozilla.log"
 readonly WINDOW_OBSERVER=/usr/lib/asterinas/browser-m5-window-observer
 readonly TIMEOUT_SECONDS=30
 export DISPLAY XAUTHORITY
+if ! display_provider="$(/usr/lib/asterinas/desktop-display-provider --name 2>/dev/null)"; then
+    printf '%s\n' 'ASTERINAS_BROWSER_M5_FAIL reason=invalid-display-provider-config' >&2
+    exit 1
+fi
+readonly display_provider
 
 exec 3>&2
 exec >>"$STDERR_LOG" 2>&1
@@ -29,7 +34,11 @@ export MOZ_LOG_FILE="$MOZILLA_LOG"
 export MOZ_SANDBOX_LOGGING=1
 # Xorg fbdev exposes neither GLX nor a usable GPU. Skip Firefox's otherwise
 # very slow glxtest helper while retaining the normal software renderer.
-export MOZ_AVOID_OPENGL_ALTOGETHER=1
+if [[ "$display_provider" == drm ]]; then
+    unset MOZ_AVOID_OPENGL_ALTOGETHER
+else
+    export MOZ_AVOID_OPENGL_ALTOGETHER=1
+fi
 ASTERINAS_BROWSER_M5_PARENT_PID="$$" \
 ASTERINAS_BROWSER_M5_WINDOW_CONSOLE=/proc/self/fd/3 \
     "$WINDOW_OBSERVER" &

@@ -817,6 +817,12 @@ megrez_network_evidence() {
 
 [[ "$TIMEOUT_SECONDS" =~ ^(0|[1-9][0-9]*)$ ]] || fail invalid-timeout
 [[ "$COMMAND_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail invalid-command-timeout
+if grep -Eq '(^|[[:space:]])asterinas\.single_packet_nonce=([^[:space:]]*)([[:space:]]|$)' \
+    "$CMDLINE_PATH"; then
+    # The dedicated basic.target unit owns the exchange.  Never start HTTP
+    # stress or send a second UDP packet if graphical.target is selected.
+    exit 0
+fi
 if [[ -n "$WEB_NETWORK_MODE" ]]; then
     web_network_evidence
     exit 0

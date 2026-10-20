@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "profile": "desktop-m4-firefox",
+  "files": [
+    {
+      "source": "desktop_m4_firefox_service.current",
+      "destination": "/etc/systemd/system/asterinas-desktop-m4.service",
+      "mode": "0644"
+    },
+    {
+      "source": "desktop_m3_device_access.sh",
+      "destination": "/usr/lib/asterinas/desktop-m4-device-access",
+      "mode": "0755"
+    }
+  ],
+  "symlinks": [
+    {
+      "destination": "/etc/systemd/system/basic.target.wants/asterinas-desktop-m4.service",
+      "target": "../asterinas-desktop-m4.service"
+    }
+  ]
+}

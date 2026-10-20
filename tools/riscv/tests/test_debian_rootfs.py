@@ -44,10 +44,30 @@ from tools.riscv.debian.rootfs.desktop_m3_gate import (
     inspect_ppm,
 )
 from tools.riscv.debian.rootfs.desktop_m4_gate import (
+    DESKTOP_M4_BOOTARGS,
+    DESKTOP_M4_DRM_BOOTARGS,
+    DESKTOP_M4_DRM_MILESTONES,
+    DESKTOP_M4_DRM_X11_SCREENSHOT_PATTERN,
+    DESKTOP_M4_DRM_EGL_PIXEL_PATTERN,
     DESKTOP_M4_MILESTONES,
+    DesktopM4DrmOperations,
     DesktopM4Operations,
     classify_desktop_m4,
+    classify_desktop_m4_drm,
+    desktop_m4_drm_qemu_argv,
     desktop_m4_qemu_argv,
+    validate_boot_phase_contract,
+    validate_framebuffer_handoff,
+)
+from tools.riscv.debian.rootfs.desktop_m4_display_safe_gate import (
+    DesktopM4DisplaySafeOperations,
+)
+from tools.riscv.debian.rootfs.desktop_m4_scanout_gate import (
+    DesktopM4ScanoutOperations,
+)
+from tools.riscv.debian.rootfs.desktop_m4_recovery_gate import (
+    RECOVERY_BOOTARGS,
+    classify_desktop_m4_recovery,
 )
 from tools.riscv.debian.rootfs.gate_protocol import (
     MAX_COMMAND_PAYLOAD_BYTES,
@@ -76,6 +96,7 @@ from tools.riscv.debian.rootfs.rootfs_gate import (
     GateFailure,
     build_boot_image,
     copy_sparse_root,
+    create_qcow2_root,
     orchestrate_gate,
     parse_gate_args,
     verify_four_hart_dtb,
@@ -417,12 +438,22 @@ stat -c 'PRIVATE_MODE=%a' "$WORK_DIR"
 def _run_admit_downloaded_packages(
     work_directory: Path,
     cache_directory: Path,
+    *,
+    environment: dict[str, str] | None = None,
+    stub_cache_copy: bool = False,
 ) -> subprocess.CompletedProcess[str]:
+    child_environment = os.environ.copy()
+    if environment is not None:
+        child_environment.update(environment)
+    command = 'source "$1"; '
+    if stub_cache_copy:
+        command += 'copy_into_content_cache(){ :; }; '
+    command += 'WORK_DIR="$2"; CACHE_DIR="$3"; admit_downloaded_packages'
     return subprocess.run(
         [
             "/bin/bash",
             "-c",
-            'source "$1"; WORK_DIR="$2"; CACHE_DIR="$3"; admit_downloaded_packages',
+            command,
             "builder-cache-test",
             str(BUILD_SCRIPT),
             str(work_directory),
@@ -432,6 +463,7 @@ def _run_admit_downloaded_packages(
         check=False,
         capture_output=True,
         text=True,
+        env=child_environment,
     )
 
 
@@ -948,6 +980,7 @@ class DebianStage1Tests(unittest.TestCase):
             "root-init-default-interactive",
             "root-init-explicit-interactive",
             "root-init-systemd",
+            "root-init-systemd-delimiter",
             "root-init-systemd-debug-root",
             "root-init-systemd-debug-isolated-root",
             "root-init-probe",
@@ -963,6 +996,10 @@ class DebianStage1Tests(unittest.TestCase):
             "root-init-duplicate",
             "root-init-unknown",
             "root-init-control-character",
+            "root-device-vdb",
+            "root-device-mmcblk0p2",
+            "root-device-invalid",
+            "root-device-duplicate",
             "systemd-root-label",
             "systemd-desktop-root-label",
             "systemd-application-desktop-root-label",
@@ -2491,6 +2528,76 @@ class DebianRootfsBuilderTests(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), list(expected))
         self.assertEqual(result.stderr, "")
 
+    def test_prints_exact_desktop_m4_firefox_package_contract(self) -> None:
+        result = _run_builder(
+            "--profile",
+            "desktop-m4-firefox",
+            "--print-packages",
+            cwd=self.directory,
+        )
+
+        expected = get_profile("desktop-m4-firefox").requested_packages
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), list(expected))
+        self.assertIn("firefox-esr", result.stdout.splitlines())
+        self.assertEqual(result.stderr, "")
+
+    def test_desktop_m4_firefox_reuses_m4_startup_cache_contract(self) -> None:
+        builder = BUILD_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('if [[ "$PROFILE" == desktop-m4-firefox ]]; then', builder)
+        self.assertIn("startup_cache_profile=desktop-m4", builder)
+        self.assertIn("startup_cache_marker_profile=desktop-m4", builder)
+        self.assertIn(
+            '"$script_directory/browser_startup_cache_check.py" "$stage" \\\n'
+            '                    --profile "$startup_cache_profile"',
+            builder,
+        )
+
+    def test_desktop_m4_firefox_installs_scene_gate(self) -> None:
+        builder = BUILD_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'elif [[ "$PROFILE" == desktop-m4-firefox ]]; then\n'
+            '        configure_desktop "$stage" m4\n'
+            '        configure_desktop_m4_firefox "$stage"',
+            builder,
+        )
+        self.assertIn(
+            'configure_desktop_m4_firefox "$stage"',
+            builder,
+        )
+
+    def test_desktop_m4_firefox_disables_duplicate_x11_capture(self) -> None:
+        builder = BUILD_SCRIPT.read_text(encoding="utf-8")
+        evidence = DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'ASTERINAS_DESKTOP_M4_SKIP_DRM_X11_SCREENSHOT=1',
+            builder,
+        )
+        self.assertIn(
+            'evidence_service_environment=\'Environment=ASTERINAS_DESKTOP_M4_SKIP_DRM_X11_SCREENSHOT=1\'',
+            builder,
+        )
+        self.assertIn(
+            'ASTERINAS_DESKTOP_M4_SKIP_DRM_X11_SCREENSHOT:-0',
+            evidence,
+        )
+
+    def test_official_firefox_bundle_is_an_explicit_build_input(self) -> None:
+        result = _run_builder(
+            "--profile",
+            "desktop-m4-firefox",
+            "--firefox-official-bundle-dir",
+            "/tmp/firefox-bundle",
+            "--print-packages",
+            cwd=self.directory,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--print-packages does not accept build options", result.stderr)
+
     def test_rejects_unknown_and_duplicate_profiles_before_tools(self) -> None:
         environment = os.environ.copy()
         environment["PATH"] = "/missing-tools"
@@ -2721,9 +2828,15 @@ WantedBy=multi-user.target
             identity_helper.read_bytes(), DESKTOP_INPUT_IDENTITY_SOURCE.read_bytes()
         )
         self.assertEqual(stat.S_IMODE(identity_helper.stat().st_mode), 0o755)
-        self.assertIn("chown asterinas:video /dev/fb0", device_access.read_text())
-        self.assertIn("chmod 0660 /dev/fb0", device_access.read_text())
-        self.assertIn("chown asterinas:input", device_access.read_text())
+        self.assertIn("chown 1000:44 /dev/fb0", device_access.read_text())
+        self.assertIn("chmod 0666 /dev/fb0", device_access.read_text())
+        self.assertIn("phase input-permissions-before", device_access.read_text())
+        self.assertIn("phase input-permissions-done", device_access.read_text())
+        self.assertIn("timeout --signal=KILL 5s", device_access.read_text())
+        self.assertIn("/usr/bin/chown 1000:996", device_access.read_text())
+        self.assertIn("timeout --signal=KILL 1s", device_access.read_text())
+        self.assertIn("asterinas-desktop-device-phase.log", device_access.read_text())
+        self.assertIn("chown 1000:996", device_access.read_text())
         self.assertNotIn(
             'if [[ "${ASTERINAS_BROWSER_WEB_SESSION:-0}" != 1 ]]; then',
             device_access.read_text(),
@@ -2808,6 +2921,7 @@ WantedBy=multi-user.target
         self.assertEqual(result.returncode, 0, result.stderr)
         session = stage / "usr/lib/asterinas/desktop-m4-session"
         evidence = stage / "usr/lib/asterinas/desktop-m4-evidence"
+        libdrm_probe = stage / "usr/lib/asterinas/desktop-drm-libdrm-probe"
         welcome = stage / "usr/share/asterinas/desktop-m4-welcome.html"
         wallpaper = stage / "usr/share/asterinas/desktop-wallpaper.svg"
         pcmanfm_config = (
@@ -2816,6 +2930,13 @@ WantedBy=multi-user.target
         lxpanel_config = stage / "home/asterinas/.config/lxpanel/Asterinas/panels/panel"
         self.assertEqual(session.read_bytes(), DESKTOP_M4_SESSION_SCRIPT.read_bytes())
         self.assertEqual(evidence.read_bytes(), DESKTOP_M4_EVIDENCE_SCRIPT.read_bytes())
+        self.assertEqual(
+            libdrm_probe.read_bytes(),
+            (
+                REPOSITORY_ROOT
+                / "tools/riscv/debian/rootfs/desktop_drm_libdrm_probe.py"
+            ).read_bytes(),
+        )
         self.assertEqual(welcome.read_bytes(), DESKTOP_M4_WELCOME_PAGE.read_bytes())
         self.assertEqual(wallpaper.read_bytes(), DESKTOP_WALLPAPER.read_bytes())
         self.assertEqual(
@@ -2826,6 +2947,7 @@ WantedBy=multi-user.target
         )
         self.assertEqual(stat.S_IMODE(session.stat().st_mode), 0o755)
         self.assertEqual(stat.S_IMODE(evidence.stat().st_mode), 0o755)
+        self.assertEqual(stat.S_IMODE(libdrm_probe.stat().st_mode), 0o755)
         self.assertEqual(stat.S_IMODE(welcome.stat().st_mode), 0o644)
         self.assertEqual(stat.S_IMODE(wallpaper.stat().st_mode), 0o644)
         self.assertEqual(stat.S_IMODE(pcmanfm_config.stat().st_mode), 0o644)
@@ -2885,7 +3007,27 @@ WantedBy=multi-user.target
         unit = stage / "etc/systemd/system/asterinas-desktop-m4.service"
         unit_text = unit.read_text()
         self.assertIn("User=asterinas", unit_text)
-        self.assertIn("PAMName=login", unit_text)
+        self.assertIn("After=local-fs.target", unit_text)
+        self.assertNotIn("systemd-udevd.service", unit_text)
+        self.assertNotIn("systemd-logind.service", unit_text)
+        # M4 keeps a direct controlling VT for Xorg but has no PAM handoff or
+        # logind/udev dependency. This preserves the single-service boundary.
+        self.assertNotIn("PAMName=login", unit_text)
+        self.assertIn("TTYPath=/dev/tty1", unit_text)
+        self.assertIn("StandardInput=tty", unit_text)
+        self.assertIn("TTYReset=yes", unit_text)
+        self.assertIn("TTYVHangup=yes", unit_text)
+        self.assertIn("TTYVTDisallocate=yes", unit_text)
+        self.assertIn(
+            "Environment=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered",
+            unit_text,
+        )
+        self.assertFalse(
+            (stage / "etc/systemd/system/asterinas-desktop-m4-ordered.service").exists()
+        )
+        builder_source = BUILD_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("asterinas-desktop-m4-ordered.service", builder_source)
+        self.assertIn("graphical.target.wants/asterinas-desktop-m4-ordered.service", builder_source)
         self.assertIn("ExecStart=/usr/lib/asterinas/desktop-m4-session", unit_text)
         self.assertFalse(
             (stage / "etc/systemd/system/asterinas-desktop-m3.service").exists()
@@ -2897,11 +3039,28 @@ WantedBy=multi-user.target
                 / "asterinas-desktop-m4.service"
             ).is_symlink()
         )
+        # Asterinas' minimal systemd may not complete graphical.target while
+        # logind/PAM is unavailable.  The ordered M4 entry must therefore also
+        # be reachable from basic.target; systemd deduplicates the unit if
+        # graphical.target is later activated.
+        self.assertTrue(
+            (
+                stage
+                / "etc/systemd/system/basic.target.wants"
+                / "asterinas-desktop-m4.service"
+            ).is_symlink()
+        )
 
     def test_desktop_m4_evidence_requires_application_windows(self) -> None:
+        evidence_source = DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("ASTERINAS_DESKTOP_M4_FRAMEBUFFER_RW", evidence_source)
+        self.assertIn("desktop-m4-framebuffer-rw", evidence_source)
+        self.assertIn("desktop-m4-framebuffer-probe-runtime", evidence_source)
+        self.assertIn("desktop-m4-framebuffer-rw-runtime", evidence_source)
+        self.assertIn("install -m 0755", evidence_source)
         self.assertIn(
             "ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS:-30",
-            DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
+            evidence_source,
         )
         input_directory = self.directory / "desktop-m4-input"
         input_directory.mkdir()
@@ -3259,6 +3418,39 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("missing required tool: mke2fs", result.stderr)
 
+    def test_reuse_existing_validates_publication_before_tool_probe(self) -> None:
+        reuse_directory = self.directory / "reusable-rootfs"
+        reuse_directory.mkdir()
+        environment = os.environ.copy()
+        environment["PATH"] = "/usr/bin:/bin:/mnt/mydisk/conda/envs/mcp_robot/bin"
+
+        result = _run_builder(
+            "--profile",
+            "desktop-m4-firefox",
+            "--reuse-existing",
+            str(reuse_directory),
+            cwd=self.directory,
+            environment=environment,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("missing published artifact", result.stderr)
+        self.assertNotIn("missing required tool", result.stderr)
+
+    def test_reuse_existing_rejects_build_options(self) -> None:
+        reuse_directory = self.directory / "reusable-rootfs"
+        reuse_directory.mkdir()
+        result = _run_builder(
+            "--reuse-existing",
+            str(reuse_directory),
+            "--cache-dir",
+            str(self.directory / "cache"),
+            cwd=self.directory,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot be combined with build options", result.stderr)
+
     def test_rejects_unsafe_output_and_cache_paths(self) -> None:
         real_directory = self.directory / "real"
         real_directory.mkdir()
@@ -3363,6 +3555,96 @@ esac
 
         self.assertFalse((outside_directory / f"{digest}.deb").exists())
         self.assertNotEqual(result.returncode, 0)
+
+    def test_cache_admission_skips_superseded_archive_before_hash_lookup(self) -> None:
+        """A stale apt archive must not fail a newer authenticated build."""
+
+        work_directory = self.directory / "stale-cache-work"
+        debs_directory = work_directory / "debs"
+        debs_directory.mkdir(parents=True)
+        (work_directory / "source-metadata").mkdir()
+        old_archive = debs_directory / "at-spi2-common_2.56.2-1+deb13u1_all.deb"
+        current_archive = debs_directory / "at-spi2-common_2.56.2-1+deb13u2_all.deb"
+        old_archive.write_bytes(b"old cached archive")
+        current_archive.write_bytes(b"current signed archive")
+        current_digest = hashlib.sha256(current_archive.read_bytes()).hexdigest()
+        (work_directory / "package-index-checksums").write_text(
+            f"at-spi2-common\tall\t2.56.2-1+deb13u2\t{current_digest}\tbase\n",
+            encoding="utf-8",
+        )
+        (work_directory / "packages.lock").write_text(
+            "at-spi2-common\tall\t2.56.2-1+deb13u2\n",
+            encoding="utf-8",
+        )
+        fake_bin = self.directory / "fake-dpkg-bin"
+        fake_bin.mkdir()
+        (fake_bin / "dpkg-deb").write_text(
+            """#!/bin/sh
+archive=${2##*/}
+case "$archive" in
+  *deb13u1*) version=2.56.2-1+deb13u1 ;;
+  *deb13u2*) version=2.56.2-1+deb13u2 ;;
+  *) exit 1 ;;
+esac
+case "$3" in
+  Package) printf '%s\\n' at-spi2-common ;;
+  Architecture) printf '%s\\n' all ;;
+  Version) printf '%s\\n' "$version" ;;
+  *) exit 1 ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        (fake_bin / "dpkg-deb").chmod(0o755)
+        result = _run_admit_downloaded_packages(
+            work_directory,
+            self.directory / "stale-cache",
+            environment={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            stub_cache_copy=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            (work_directory / "source-metadata/package-checksums").read_text(),
+            f"at-spi2-common\tall\t2.56.2-1+deb13u2\t{current_digest}\tbase\n",
+        )
+
+    def test_cache_admission_still_rejects_installed_hash_missing_from_index(self) -> None:
+        work_directory = self.directory / "missing-hash-work"
+        debs_directory = work_directory / "debs"
+        debs_directory.mkdir(parents=True)
+        (work_directory / "source-metadata").mkdir()
+        archive = debs_directory / "at-spi2-common_2.56.2-1+deb13u2_all.deb"
+        archive.write_bytes(b"installed archive with an untrusted hash")
+        (work_directory / "package-index-checksums").write_text(
+            "at-spi2-common\tall\t2.56.2-1+deb13u2\t" + "0" * 64 + "\tbase\n",
+            encoding="utf-8",
+        )
+        (work_directory / "packages.lock").write_text(
+            "at-spi2-common\tall\t2.56.2-1+deb13u2\n",
+            encoding="utf-8",
+        )
+        fake_bin = self.directory / "fake-dpkg-bin-missing"
+        fake_bin.mkdir()
+        (fake_bin / "dpkg-deb").write_text(
+            """#!/bin/sh
+case "$3" in
+  Package) printf '%s\\n' at-spi2-common ;;
+  Architecture) printf '%s\\n' all ;;
+  Version) printf '%s\\n' 2.56.2-1+deb13u2 ;;
+  *) exit 1 ;;
+esac
+""",
+            encoding="utf-8",
+        )
+        (fake_bin / "dpkg-deb").chmod(0o755)
+        result = _run_admit_downloaded_packages(
+            work_directory,
+            self.directory / "missing-hash-cache",
+            environment={"PATH": f"{fake_bin}:{os.environ['PATH']}"},
+            stub_cache_copy=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("hash is absent", result.stderr)
 
     def test_rejects_invalid_source_date_epoch(self) -> None:
         for value in ("", "00", "01", "+1", "-1", "1.0", "4294967296"):
@@ -4257,6 +4539,10 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                 "ca-certificates",
                 "coreutils",
                 "dbus",
+                "libdrm2",
+                "libegl1",
+                "libgl1-mesa-dri",
+                "libgles2",
                 "libpam-systemd",
                 "librsvg2-common",
                 "lxpanel",
@@ -4267,6 +4553,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                 "systemd-sysv",
                 "udev",
                 "util-linux",
+                "x11-apps",
                 "x11-utils",
                 "xauth",
                 "xfonts-base",
@@ -4274,6 +4561,8 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                 "xserver-xorg-core",
                 "xserver-xorg-input-evdev",
                 "xserver-xorg-video-fbdev",
+                "python3-minimal",
+                "xdotool",
                 "xterm",
             ),
         )
@@ -4285,6 +4574,10 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                 "systemd-sysv",
                 "dbus",
                 "udev",
+                "libdrm2",
+                "libegl1",
+                "libgl1-mesa-dri",
+                "libgles2",
                 "libpam-systemd",
                 "xserver-xorg-core",
                 "xterm",
@@ -4293,6 +4586,8 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                 "netsurf-gtk",
                 "openbox",
                 "pcmanfm",
+                "python3-minimal",
+                "xdotool",
             ),
         )
         with self.assertRaises(FrozenInstanceError):
@@ -4404,6 +4699,10 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                 SYSTEMD_M2_PACKAGE_ROWS
                 + (
                     ("libpam-systemd", "riscv64", "257.13-1"),
+                    ("libdrm2", "riscv64", "2.4.124-2"),
+                    ("libegl1", "riscv64", "1.7.0-1+b2"),
+                    ("libgl1-mesa-dri", "riscv64", "25.0.7-2+deb13u1"),
+                    ("libgles2", "riscv64", "1.7.0-1+b2"),
                     ("librsvg2-common", "riscv64", "2.60.0+dfsg-1"),
                     ("lxpanel", "riscv64", "0.10.1-4"),
                     ("netsurf-gtk", "riscv64", "3.11-2"),
@@ -4417,6 +4716,9 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                     ("xserver-xorg-core", "riscv64", "2:21.1.16-1"),
                     ("xserver-xorg-input-evdev", "riscv64", "1:2.11.0-1"),
                     ("xserver-xorg-video-fbdev", "riscv64", "1:0.5.0-2"),
+                    ("x11-apps", "riscv64", "7.7+11+b2"),
+                    ("python3-minimal", "riscv64", "3.13.5-1"),
+                    ("xdotool", "riscv64", "1:3.20160805.1-5.1"),
                     ("xterm", "riscv64", "398-1"),
                 )
             )
@@ -5018,7 +5320,7 @@ class DebianRootfsGateProtocolTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("-machine") + 1], "virt")
         self.assertEqual(
             argv[argv.index("-cpu") + 1],
-            "rv64,sv48=false,svpbmt=true,zkr=true,svadu=false,svade=true",
+            "rv64,svpbmt=true,zkr=true",
         )
         self.assertEqual(argv[argv.index("-m") + 1], "2G")
         self.assertEqual(argv[argv.index("-smp") + 1], "4")
@@ -5055,6 +5357,16 @@ class DebianRootfsGateProtocolTests(unittest.TestCase):
             any(token in argument.lower() for argument in argv for token in forbidden)
         )
 
+    def test_qemu_argv_can_select_qcow2_root_format(self) -> None:
+        argv = self._qemu_argv(root_disk_format="qcow2")
+        drives = [
+            argv[index + 1] for index, value in enumerate(argv) if value == "-drive"
+        ]
+        self.assertIn(
+            f"if=none,format=qcow2,file={self.root_disk},id=rootdisk,cache=directsync",
+            drives,
+        )
+
     def test_qemu_argv_rejects_non_four_hart_contracts(self) -> None:
         for override in ({"smp": 1}, {"smp": True}, {"dtb_enabled_cpu_count": 3}):
             with (
@@ -5062,6 +5374,23 @@ class DebianRootfsGateProtocolTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "exactly 4"),
             ):
                 self._qemu_argv(**override)
+
+    def test_qemu_graphics_can_use_a_private_vnc_scanout(self) -> None:
+        vnc_socket = self.directory / "display.vnc"
+        argv = self._qemu_argv(graphical=True, vnc_socket=vnc_socket)
+
+        self.assertEqual(
+            argv[argv.index("-display") + 1], "none"
+        )
+        vnc_index = argv.index("-vnc")
+        self.assertEqual(argv[vnc_index + 1], f"unix:{vnc_socket}")
+        self.assertIn("bochs-display,xres=1280,yres=1024", argv)
+        self.assertIn("virtio-keyboard-device", argv)
+        self.assertIn("virtio-tablet-device", argv)
+
+    def test_qemu_vnc_scanout_requires_graphical_device_contract(self) -> None:
+        with self.assertRaisesRegex(ValueError, "graphical"):
+            self._qemu_argv(vnc_socket=self.directory / "display.vnc")
 
     def test_qemu_argv_rejects_unsafe_or_non_regular_inputs(self) -> None:
         comma_path = self._regular_file("boot,unsafe.ext4", b"ext4")
@@ -6033,6 +6362,68 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
         )
         self.assertTrue((self.directory / "pinned-run.ext2").is_file())
 
+    def test_sparse_root_copy_reuses_expected_source_hash_but_rechecks_after_copy(
+        self,
+    ):
+        source = self.directory / "base.ext2"
+        source.write_bytes(b"root-image")
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+        self.addCleanup(os.close, descriptor)
+        expected = hashlib.sha256(b"root-image").hexdigest()
+
+        with mock.patch(
+            "tools.riscv.debian.rootfs.rootfs_gate._hash_fd",
+            side_effect=[expected, expected],
+        ) as hash_fd:
+            before, after, copied = copy_sparse_root(
+                descriptor,
+                self.directory / "run.ext2",
+                expected_source_sha256=expected,
+            )
+
+        self.assertEqual((before, after, copied), (expected, expected, expected))
+        self.assertEqual(hash_fd.call_count, 2)
+
+    def test_sparse_root_copy_rejects_malformed_expected_source_hash(self):
+        source = self.directory / "base.ext2"
+        source.write_bytes(b"root-image")
+        descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+        self.addCleanup(os.close, descriptor)
+
+        with self.assertRaisesRegex(GateFailure, "expected source SHA-256"):
+            copy_sparse_root(
+                descriptor,
+                self.directory / "run.ext2",
+                expected_source_sha256="not-a-sha256",
+            )
+
+    def test_qcow2_root_overlay_is_small_and_binds_raw_backing(self) -> None:
+        source = self.directory / "base.ext2"
+        source.write_bytes(b"root-image")
+        destination = self.directory / "run.qcow2"
+        expected = hashlib.sha256(source.read_bytes()).hexdigest()
+
+        before, overlay = create_qcow2_root(
+            source,
+            destination,
+            expected_source_sha256=expected,
+        )
+
+        self.assertEqual(before, expected)
+        self.assertLess(destination.stat().st_size, 1024 * 1024)
+        info = json.loads(
+            subprocess.run(
+                ["qemu-img", "info", "--output=json", destination],
+                check=True,
+                text=True,
+                capture_output=True,
+            ).stdout
+        )
+        self.assertEqual(info["format"], "qcow2")
+        self.assertEqual(info["backing-filename"], str(source))
+        self.assertEqual(info["backing-filename-format"], "raw")
+        self.assertEqual(hashlib.sha256(destination.read_bytes()).hexdigest(), overlay)
+
     def test_fdtget_accepts_exactly_four_enabled_cpu_nodes(self) -> None:
         source = self.directory / "four.dts"
         dtb = self.directory / "four.dtb"
@@ -6076,6 +6467,9 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
         config = parse_gate_args(arguments)
 
         self.assertEqual(config.smp, 4)
+        self.assertEqual(config.root_copy_mode, "raw")
+        qcow_config = parse_gate_args([*arguments, "--root-copy-mode", "qcow2"])
+        self.assertEqual(qcow_config.root_copy_mode, "qcow2")
         with self.assertRaises(SystemExit):
             parse_gate_args(arguments[:-2])
         for forbidden in ("download", "rebuild", "mirror"):
@@ -6252,7 +6646,7 @@ class DebianDesktopM3GateTests(unittest.TestCase):
             monitor_socket=self.directory / "monitor.sock",
         )
 
-        self.assertIn("bochs-display", arguments)
+        self.assertIn("bochs-display,xres=1280,yres=1024", arguments)
         self.assertIn("virtio-keyboard-device", arguments)
         self.assertIn("virtio-tablet-device", arguments)
         self.assertEqual(arguments[arguments.index("-smp") + 1], "4")
@@ -6299,6 +6693,10 @@ class DebianDesktopM3GateTests(unittest.TestCase):
         self.assertEqual(metadata["width"], 4)
         self.assertEqual(metadata["height"], 2)
         self.assertEqual(metadata["pixel_count"], 8)
+        self.assertEqual(
+            metadata["pixel_sha256"], hashlib.sha256(rendered.split(b"\n255\n", 1)[1]).hexdigest()
+        )
+        self.assertRegex(metadata["ppm_sha256"], r"^[0-9a-f]{64}$")
         self.assertGreaterEqual(metadata["distinct_sampled_colors"], 2)
         self.assertEqual(metadata["non_background_pixels"], 4)
 
@@ -6355,14 +6753,238 @@ class DebianDesktopM4GateTests(unittest.TestCase):
             monitor_socket=self.directory / "monitor.sock",
         )
 
-        self.assertIn("bochs-display", arguments)
+        self.assertIn("bochs-display,xres=1280,yres=1024", arguments)
         self.assertIn("virtio-keyboard-device", arguments)
         self.assertIn("virtio-tablet-device", arguments)
         self.assertEqual(arguments[arguments.index("-smp") + 1], "4")
         self.assertEqual(arguments[arguments.index("-nic") + 1], "none")
 
+    def test_m4_boot_contract_is_display_safe_and_pins_qemu_root(self) -> None:
+        operations = object.__new__(DesktopM4Operations)
+        commands = operations._boot_commands(0x40000000)
+        command_text = "\n".join(commands)
+
+        self.assertIn("pci display 0.1.0", commands)
+        self.assertLess(
+            commands.index("pci display 0.1.0"),
+            commands.index("fdt mknode / framebuffer@40000000"),
+        )
+        self.assertIn("console=ttyS0 console=tty0 loglevel=4", DESKTOP_M4_BOOTARGS)
+        self.assertIn("asterinas.first_process_diag=1", DESKTOP_M4_BOOTARGS)
+        self.assertIn("asterinas.reboot_after=300", DESKTOP_M4_BOOTARGS)
+        self.assertIn("--root-device=/dev/vdb", DESKTOP_M4_BOOTARGS)
+        self.assertEqual(DESKTOP_M4_BOOTARGS.count("asterinas.reboot_after="), 1)
+        self.assertIn(f'setenv bootargs "{DESKTOP_M4_BOOTARGS}"', command_text)
+        self.assertNotIn("/dev/vda", command_text)
+
+    def test_boot_phase_contract_requires_ordered_kernel_and_stage1_records(self) -> None:
+        complete = b"\n".join(
+            marker.encode()
+            for marker in (
+                "ASTERINAS_BOOT_PHASE phase=first-kthread-enter",
+                "ASTERINAS_BOOT_PHASE phase=kthread-init-done",
+                "ASTERINAS_BOOT_PHASE phase=banner-begin",
+                "ASTERINAS_BOOT_PHASE phase=banner-done",
+                "ASTERINAS_BOOT_PHASE phase=init-spawned",
+                "ASTERINAS_FIRST_PROCESS_DIAG stage=process_components_ready",
+                "ASTERINAS_FIRST_PROCESS_DIAG stage=device_init_ready",
+                "ASTERINAS_FIRST_PROCESS_DIAG stage=stdio_init_ready",
+                "DEBIAN_STAGE1_PROGRESS step=start mode=systemd",
+                "DEBIAN_STAGE1_PROGRESS step=root-select source=explicit device=/dev/vdb",
+                "DEBIAN_STAGE1_PROGRESS step=probe-block device=/dev/vdb",
+                "DEBIAN_STAGE1_PROGRESS step=probe-complete result=match",
+                "DEBIAN_STAGE1_PROGRESS step=root-found device=/dev/vdb",
+                "DEBIAN_STAGE1_PROGRESS step=handoff-enter action=root-mount",
+                "DEBIAN_STAGE1_PROGRESS step=handoff-done action=root-mount",
+            )
+        )
+        accepted = validate_boot_phase_contract(complete)
+        self.assertTrue(accepted.passed, accepted.reason)
+
+        missing = validate_boot_phase_contract(complete.replace(
+            b"ASTERINAS_BOOT_PHASE phase=banner-done\n", b""
+        ))
+        self.assertFalse(missing.passed)
+        self.assertIn("banner-done", missing.reason)
+
+        reversed_phases = complete.replace(
+            b"ASTERINAS_BOOT_PHASE phase=banner-begin\n"
+            b"ASTERINAS_BOOT_PHASE phase=banner-done",
+            b"ASTERINAS_BOOT_PHASE phase=banner-done\n"
+            b"ASTERINAS_BOOT_PHASE phase=banner-begin",
+        )
+        out_of_order = validate_boot_phase_contract(reversed_phases)
+        self.assertFalse(out_of_order.passed)
+        self.assertIn("out of order", out_of_order.reason)
+
+    def test_recovery_reuses_single_independent_deadline_and_fixed_root(self) -> None:
+        self.assertEqual(RECOVERY_BOOTARGS.count("asterinas.reboot_after="), 1)
+        self.assertIn("asterinas.reboot_after=300", RECOVERY_BOOTARGS)
+        self.assertIn("--root-device=/dev/vdb", RECOVERY_BOOTARGS)
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_M4_FRAMEBUFFER_RW=1",
+            RECOVERY_BOOTARGS,
+        )
+
+    def test_display_safe_gate_requires_guest_evidence_without_fake_host_ppm(self) -> None:
+        self.assertFalse(DesktopM4DisplaySafeOperations.CAPTURE_SCREENSHOT)
+        self.assertEqual(
+            DesktopM4DisplaySafeOperations.ARTIFACT_PREFIX,
+            "desktop-m4-display-safe",
+        )
+
+    def test_scanout_gate_uses_private_vnc_and_real_screenshot(self) -> None:
+        operations = object.__new__(DesktopM4ScanoutOperations)
+        arguments = operations._qemu_argv(
+            uboot=self.uboot,
+            boot_disk=self.boot,
+            root_disk=self.root,
+            monitor_socket=self.directory / "monitor.sock",
+        )
+
+        self.assertTrue(DesktopM4ScanoutOperations.CAPTURE_SCREENSHOT)
+        self.assertEqual(
+            DesktopM4ScanoutOperations.EARLY_CAPTURE_MARKER,
+            b"DEBIAN_DESKTOP_M4_FB_SCANOUT_READY",
+        )
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_M4_SCANOUT_PATTERN=1",
+            DesktopM4ScanoutOperations.BOOTARGS,
+        )
+        self.assertEqual(arguments[arguments.index("-display") + 1], "none")
+        vnc_index = arguments.index("-vnc")
+        self.assertEqual(
+            arguments[vnc_index + 1], f"unix:{self.directory / 'display.vnc'}"
+        )
+        self.assertIn("bochs-display,xres=1280,yres=1024", arguments)
+
+    def test_drm_graphical_contract_uses_virgl_without_firmware_fb(self) -> None:
+        arguments = desktop_m4_drm_qemu_argv(
+            uboot=self.uboot,
+            boot_disk=self.boot,
+            root_disk=self.root,
+            monitor_socket=self.directory / "drm-monitor.sock",
+        )
+        self.assertIn("virtio-gpu-gl-device", arguments)
+        self.assertIn("virtio-keyboard-device", arguments)
+        self.assertIn("virtio-tablet-device", arguments)
+        self.assertEqual(
+            arguments[arguments.index("-display") + 1],
+            "egl-headless,rendernode=/dev/dri/renderD129",
+        )
+        self.assertNotIn("bochs-display", arguments)
+        self.assertNotIn("simple-framebuffer", " ".join(arguments))
+
+    def test_drm_graphical_contract_has_no_duplicate_device_flag(self) -> None:
+        arguments = desktop_m4_drm_qemu_argv(
+            uboot=self.uboot,
+            boot_disk=self.boot,
+            root_disk=self.root,
+            monitor_socket=self.directory / "drm-device-monitor.sock",
+        )
+        self.assertFalse(
+            any(
+                value == "-device" and index and arguments[index - 1] == "-device"
+                for index, value in enumerate(arguments)
+            ),
+            "the contract must not emit adjacent -device flags",
+        )
+
+    def test_drm_qemu_host_preflight_fails_closed(self) -> None:
+        operations = object.__new__(DesktopM4DrmOperations)
+        failed = mock.Mock(passed=False, reason="QEMU lacks egl-headless")
+        with mock.patch(
+            "tools.riscv.debian.rootfs.desktop_m4_gate.inspect_qemu",
+            return_value=failed,
+        ) as inspect:
+            with self.assertRaisesRegex(
+                GateFailure, "virgl host preflight failed: QEMU lacks egl-headless"
+            ):
+                operations._validate_qemu_argv(("qemu-system-riscv64", "-machine", "virt"))
+        inspect.assert_called_once_with("qemu-system-riscv64")
+
+    def test_drm_entrypoint_bootstraps_host_import_path(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "debian/rootfs/desktop_m4_drm_gate.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("repository_root = Path(__file__).resolve().parents[4]", source)
+
+    def test_firefox_drm_profile_waits_for_firefox_terminal_marker(self) -> None:
+        source = (
+            Path(__file__).resolve().parents[1]
+            / "debian/rootfs/desktop_m4_gate.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('identity.get("profile") == "desktop-m4-firefox"', source)
+        self.assertIn('b"FIREFOX_DRM_RECOVERY restart=pass"', source)
+        self.assertIn('b"FIREFOX_DRM_FAIL_REASON"', source)
+        self.assertIn('asterinas.reboot_after=1200', source)
+
+    def test_drm_qemu_runtime_smoke_fails_closed(self) -> None:
+        operations = object.__new__(DesktopM4DrmOperations)
+        passed = mock.Mock(passed=True, reason="passed")
+        failed = mock.Mock(
+            passed=False,
+            reason="QEMU GL runtime exited before the smoke deadline: OpenGL is not supported",
+        )
+        with mock.patch(
+            "tools.riscv.debian.rootfs.desktop_m4_gate.inspect_qemu",
+            return_value=passed,
+        ) as inspect, mock.patch(
+            "tools.riscv.debian.rootfs.desktop_m4_gate.run_runtime_smoke",
+            return_value=failed,
+        ) as smoke:
+            with self.assertRaisesRegex(
+                GateFailure, "virgl host runtime smoke failed: .*OpenGL is not supported"
+            ):
+                operations._validate_qemu_argv(("qemu-system-riscv64", "-machine", "virt"))
+        inspect.assert_called_once_with("qemu-system-riscv64")
+        smoke.assert_called_once_with("qemu-system-riscv64")
+
+    def test_drm_operations_skip_bochs_probe_and_use_provider_bootargs(self) -> None:
+        operations = object.__new__(DesktopM4DrmOperations)
+        commands = operations._boot_commands(0)
+        self.assertNotIn("pci enum", commands)
+        self.assertNotIn("pci bar 0.1.0", commands)
+        self.assertNotIn("framebuffer@", " ".join(commands))
+        self.assertIn("ext4load virtio 0:0 0x80200000 /asterinas.booti", commands)
+        self.assertIn("ext4load virtio 0:0 0x90000000 /qemu-virt.dtb", commands)
+        self.assertIn(
+            "ext4load virtio 0:0 0x83000000 /stage1-initramfs.cpio", commands
+        )
+        self.assertIn("asterinas.display_provider=drm", DESKTOP_M4_DRM_BOOTARGS)
+        self.assertEqual(operations.MILESTONES, DESKTOP_M4_DRM_MILESTONES)
+
+    def test_drm_operations_require_hashed_1280x800_screenshot(self) -> None:
+        self.assertFalse(DesktopM4DrmOperations.CAPTURE_SCREENSHOT)
+        marker = (
+            b"DEBIAN_DESKTOP_M4_DRM_X11_SCREENSHOT width=1280 height=800 "
+            b"bpp=32 stride=5120 bytes=4096000 sha256=" + b"a" * 64
+        )
+        self.assertIsNotNone(DESKTOP_M4_DRM_X11_SCREENSHOT_PATTERN.search(marker))
+        self.assertIsNotNone(
+            DESKTOP_M4_DRM_EGL_PIXEL_PATTERN.search(
+                b"PIXEL_PROBE ok=yes renderer='virgl' left=(255, 255, 255) right=(0, 0, 0)"
+            )
+        )
+
     def test_classifier_requires_ordered_application_evidence(self) -> None:
-        transcript = ("boot noise\n" + "\n".join(DESKTOP_M4_MILESTONES) + "\n").encode()
+        framebuffer = (
+            "Registered firmware framebuffer: base=0x40000000, size=0x1000000, "
+            "resolution=1280x1024, stride=5120, format=BgrReserved\n"
+            "DEBIAN_DESKTOP_M4_FB_IOCTL width=1280 height=1024 stride=5120 "
+            "bpp=32 format=BgrReserved\n"
+            "DEBIAN_DESKTOP_M4_FB_SAMPLE bytes=4096 sha256="
+            + "a" * 64
+            + "\n"
+            "DEBIAN_DESKTOP_M4_FB_COLORS distinct=3 non_background=2\n"
+        )
+        transcript = (
+            "boot noise\n"
+            + "\n".join(DESKTOP_M4_MILESTONES)
+            + "\n"
+            + framebuffer
+        ).encode()
 
         result = classify_desktop_m4(transcript, expected_debian_release="13.6")
 
@@ -6379,6 +7001,198 @@ class DebianDesktopM4GateTests(unittest.TestCase):
         )
         self.assertFalse(failed.passed)
         self.assertEqual(failed.reason, "desktop guest failure")
+
+    def test_classifier_accepts_a_drm_provider_receipt(self) -> None:
+        transcript = (
+            "\n".join(
+                (
+                    "DEBIAN_DESKTOP_M4_UDEV state=active",
+                    "DEBIAN_DESKTOP_M4_LOGIND state=active",
+                    "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",
+                    "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev",
+                    "DEBIAN_DESKTOP_M4_DRM_FBDEV dependency=none action=skipped",
+                    "DEBIAN_DESKTOP_M4_DRM_CONFIG driver=modesetting kmsdev=/dev/dri/card0 fbdev=none",
+                    "DEBIAN_DESKTOP_M4_DRM_SYSFS card=226:0 render=226:128 driver=virtio_gpu",
+                    "DEBIAN_DESKTOP_M4_DRM_NODES card=/dev/dri/card0 render=/dev/dri/renderD128",
+                    "DEBIAN_DESKTOP_M4_XORG provider=drm display=:0 renderer=virgl",
+                    "DEBIAN_DESKTOP_M4_SHELL wallpaper=asterinas desktop=pcmanfm panel=lxpanel launchers=3",
+                    "DEBIAN_DESKTOP_M4_CLIENTS window-manager=openbox file-manager=pcmanfm browser=netsurf terminal=xterm",
+                    "DEBIAN_DESKTOP_M4_READY user=asterinas display=:0",
+                )
+            )
+            + "\n"
+        ).encode()
+        result = classify_desktop_m4(
+            transcript, expected_debian_release="13.6", display_provider="drm"
+        )
+        self.assertTrue(result.passed, result.reason)
+
+    def test_drm_classifier_requires_x11_pixel_hash(self) -> None:
+        lines = [
+            "DEBIAN_DESKTOP_M4_UDEV state=active",
+            "DEBIAN_DESKTOP_M4_LOGIND state=active",
+            "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",
+            "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev",
+            "DEBIAN_DESKTOP_M4_DRM_FBDEV dependency=none action=skipped",
+            "DEBIAN_DESKTOP_M4_DRM_CONFIG driver=modesetting kmsdev=/dev/dri/card0 fbdev=none",
+            "DEBIAN_DESKTOP_M4_DRM_SYSFS card=226:0 render=226:128 driver=virtio_gpu",
+            "DEBIAN_DESKTOP_M4_DRM_NODES card=/dev/dri/card0 render=/dev/dri/renderD128",
+            "DEBIAN_DESKTOP_M4_XORG provider=drm display=:0 renderer=virgl",
+            "DEBIAN_DESKTOP_M4_SHELL wallpaper=asterinas desktop=pcmanfm panel=lxpanel launchers=3",
+            "DEBIAN_DESKTOP_M4_CLIENTS window-manager=openbox file-manager=pcmanfm browser=netsurf terminal=xterm",
+            "DEBIAN_DESKTOP_M4_READY user=asterinas display=:0",
+        ]
+        without = classify_desktop_m4_drm(
+            ("\n".join(lines) + "\n").encode(), expected_debian_release="13.6"
+        )
+        self.assertFalse(without.passed)
+        self.assertEqual(without.reason, "missing DRM X11 pixel hash")
+        lines.insert(
+            -1,
+            "DEBIAN_DESKTOP_M4_DRM_X11_SCREENSHOT width=1280 height=800 "
+            "bpp=32 stride=5120 bytes=4096000 sha256=" + "a" * 64,
+        )
+        lines.insert(
+            -1,
+            "PIXEL_PROBE ok=yes renderer='virgl' left=(255, 255, 255) "
+            "right=(0, 0, 0)",
+        )
+        with_hash = classify_desktop_m4_drm(
+            ("\n".join(lines) + "\n").encode(), expected_debian_release="13.6"
+        )
+        self.assertTrue(with_hash.passed, with_hash.reason)
+
+    def test_drm_classifier_accepts_browser_free_core_session(self) -> None:
+        lines = [
+            "DEBIAN_DESKTOP_M4_UDEV state=active",
+            "DEBIAN_DESKTOP_M4_LOGIND state=active",
+            "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",
+            "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev",
+            "DEBIAN_DESKTOP_M4_DRM_FBDEV dependency=none action=skipped",
+            "DEBIAN_DESKTOP_M4_DRM_CONFIG driver=modesetting kmsdev=/dev/dri/card0 fbdev=none",
+            "DEBIAN_DESKTOP_M4_DRM_SYSFS card=226:0 render=226:128 driver=virtio_gpu",
+            "DEBIAN_DESKTOP_M4_DRM_NODES card=/dev/dri/card0 render=/dev/dri/renderD128",
+            "DEBIAN_DESKTOP_M4_XORG provider=drm display=:0 renderer=virgl",
+            "DEBIAN_DESKTOP_M4_SHELL wallpaper=asterinas desktop=pcmanfm panel=lxpanel launchers=3",
+            "DEBIAN_DESKTOP_M4_CORE_CLIENTS window-manager=openbox file-manager=pcmanfm panel=lxpanel terminal=xterm",
+            "DEBIAN_DESKTOP_M4_CORE_READY user=asterinas display=:0",
+            "PIXEL_PROBE ok=yes left=ffffff right=000000 renderer='virgl'",
+            "DEBIAN_DESKTOP_M4_DRM_X11_SCREENSHOT width=1280 height=800 bpp=32 stride=5120 bytes=4096000 sha256="
+            + "a" * 64,
+        ]
+        result = classify_desktop_m4_drm(
+            ("\n".join(lines) + "\n").encode(), expected_debian_release="13.6"
+        )
+        self.assertTrue(result.passed, result.reason)
+
+    def test_drm_classifier_rejects_software_renderer_in_egl_receipt(self) -> None:
+        lines = [
+            "DEBIAN_DESKTOP_M4_UDEV state=active",
+            "DEBIAN_DESKTOP_M4_LOGIND state=active",
+            "DEBIAN_DESKTOP_M4_SESSION user=asterinas tty=tty1",
+            "DEBIAN_DESKTOP_M4_INPUT keyboard=evdev pointer=evdev",
+            "DEBIAN_DESKTOP_M4_DRM_FBDEV dependency=none action=skipped",
+            "DEBIAN_DESKTOP_M4_DRM_CONFIG driver=modesetting kmsdev=/dev/dri/card0 fbdev=none",
+            "DEBIAN_DESKTOP_M4_DRM_SYSFS card=226:0 render=226:128 driver=virtio_gpu",
+            "DEBIAN_DESKTOP_M4_DRM_NODES card=/dev/dri/card0 render=/dev/dri/renderD128",
+            "DEBIAN_DESKTOP_M4_XORG provider=drm display=:0 renderer=virgl",
+            "DEBIAN_DESKTOP_M4_SHELL wallpaper=asterinas desktop=pcmanfm panel=lxpanel launchers=3",
+            "DEBIAN_DESKTOP_M4_CORE_CLIENTS window-manager=openbox file-manager=pcmanfm panel=lxpanel terminal=xterm",
+            "DEBIAN_DESKTOP_M4_CORE_READY user=asterinas display=:0",
+            "DEBIAN_DESKTOP_M4_DRM_X11_SCREENSHOT width=1280 height=800 bpp=32 stride=5120 bytes=4096000 sha256="
+            + "a" * 64,
+            "PIXEL_PROBE ok=yes left=ffffff right=000000 renderer='llvmpipe (LLVM 19.0.0)' virgl",
+        ]
+        result = classify_desktop_m4_drm(
+            ("\n".join(lines) + "\n").encode(), expected_debian_release="13.6"
+        )
+        self.assertFalse(result.passed)
+        self.assertEqual(
+            result.reason, "DRM EGL pixel probe selected a software renderer"
+        )
+
+    def test_desktop_m4_evidence_has_a_separate_drm_readiness_branch(self) -> None:
+        source = DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("DISPLAY_PROVIDER", source)
+        self.assertIn("DEBIAN_DESKTOP_M4_DRM_NODES", source)
+        self.assertIn("drm_sysfs_ready", source)
+        self.assertIn("drm_libdrm_ready", source)
+        self.assertIn("drm_config_ready", source)
+        self.assertIn("DEBIAN_DESKTOP_M4_DRM_SYSFS", source)
+        self.assertIn("DEBIAN_DESKTOP_M4_DRM_FBDEV dependency=none action=skipped", source)
+        self.assertIn("kmsdev=/dev/dri/card0", source)
+        self.assertIn("renderer=virgl", source)
+        self.assertIn('if [[ "$DISPLAY_PROVIDER" != drm ]]', source)
+
+    def test_framebuffer_handoff_rejects_missing_and_duplicate_owner(self) -> None:
+        registration = (
+            b"Registered firmware framebuffer: base=0x40000000, size=0x1000000, "
+            b"resolution=1280x1024, stride=5120, format=BgrReserved\n"
+        )
+        self.assertIn("missing", validate_framebuffer_handoff(b"").reason)
+        duplicate = validate_framebuffer_handoff(registration + registration)
+        self.assertFalse(duplicate.passed)
+        self.assertIn("duplicate", duplicate.reason)
+
+    def test_framebuffer_handoff_accepts_ordered_uboot_metadata(self) -> None:
+        from tools.riscv.debian.rootfs.desktop_m4_gate import (
+            DESKTOP_M4_UBOOT_FRAMEBUFFER_COMMANDS,
+        )
+
+        transcript = b"\n".join(DESKTOP_M4_UBOOT_FRAMEBUFFER_COMMANDS)
+        result = validate_framebuffer_handoff(transcript)
+        self.assertTrue(result.passed, result.reason)
+
+    def test_recovery_classifier_accepts_repeated_same_epoch_framebuffer_receipts(self) -> None:
+        digest = "a" * 64
+        marker = (
+            "DEBIAN_DESKTOP_M4_FB_RW width=1280 height=1024 stride=5120 "
+            "bpp=32 format=BgrReserved rect=16x16 status=pass "
+            f"saved_sha256={digest} restored_sha256={digest}\n"
+        ).encode()
+        transcript = (
+            b"Registered firmware framebuffer: base=0x40000000, size=0x1000000, "
+            b"resolution=1280x1024, stride=5120, format=BgrReserved\n"
+            + "\n".join(DESKTOP_M4_MILESTONES).encode()
+            + b"\n"
+            + marker
+            + marker
+            + b"OpenSBI v1.7\nU-Boot 2026.07\n=> "
+        )
+        result = classify_desktop_m4_recovery(
+            transcript, expected_debian_release="13.6"
+        )
+        self.assertTrue(result.passed, result.reason)
+
+    def test_recovery_classifier_rejects_mismatched_framebuffer_receipt(self) -> None:
+        digest = "a" * 64
+        marker = (
+            "DEBIAN_DESKTOP_M4_FB_RW width=1280 height=1024 stride=5120 "
+            "bpp=32 format=BgrReserved rect=16x16 status=pass "
+            f"saved_sha256={digest} restored_sha256={digest}\n"
+        ).encode()
+        bad_marker = marker.replace(
+            f"restored_sha256={digest}".encode(),
+            f"restored_sha256={'b' * 64}".encode(),
+        )
+        transcript = (
+            "\n".join(DESKTOP_M4_MILESTONES).encode()
+            + b"\n"
+            + marker
+            + bad_marker
+            + b"OpenSBI v1.7\nU-Boot 2026.07\n=> "
+        )
+        result = classify_desktop_m4_recovery(
+            transcript, expected_debian_release="13.6"
+        )
+        self.assertFalse(result.passed)
+        self.assertIn("framebuffer", result.reason)
+
+    def test_recovery_bootargs_enable_framebuffer_write_restore(self) -> None:
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_M4_FRAMEBUFFER_RW=1",
+            RECOVERY_BOOTARGS,
+        )
 
     def test_adapter_binds_only_schema_four_profile_and_m4_outputs(self) -> None:
         operations = object.__new__(DesktopM4Operations)
@@ -6405,6 +7219,27 @@ class DebianDesktopM4GateTests(unittest.TestCase):
 
         self.assertEqual(identity["profile"], "desktop-m4")
         self.assertEqual(operations.ARTIFACT_PREFIX, "desktop-m4")
+
+        with (
+            mock.patch.object(
+                DesktopM4Operations,
+                "input_paths",
+                new_callable=mock.PropertyMock,
+                return_value={"manifest": self.directory / "manifest.json"},
+            ),
+            mock.patch.object(
+                gate_backend_module.ConcreteOperations,
+                "validate_inputs",
+                return_value={"debian_release": "13.7"},
+            ),
+            mock.patch(
+                "tools.riscv.debian.rootfs.desktop_m3_gate.load_manifest",
+                return_value=mock.Mock(schema_version=4, profile="desktop-m4-firefox"),
+            ),
+        ):
+            firefox_identity = operations.validate_inputs(config, {})
+
+        self.assertEqual(firefox_identity["profile"], "desktop-m4-firefox")
 
         for schema, profile in ((3, "desktop-m3"), (4, "desktop-m3")):
             with (
@@ -6484,6 +7319,7 @@ class DebianRootfsDocumentationTests(unittest.TestCase):
             "packages.lock",
             "boot1.serial.log",
             "boot2.serial.log",
+            "lifecycle.json",
             "result.json",
             "final_root_sha256",
             "U-Boot exposes only `ethernet@50400000`",
@@ -6667,6 +7503,7 @@ class DebianSystemdM2GateTests(unittest.TestCase):
             def __init__(self, failure: str | None = None) -> None:
                 self.failure = failure
                 self.calls: list[str] = []
+                self.states: list[dict[str, object]] = []
                 self.published: dict[str, object] | None = {"passed": True}
 
             def call(self, name: str, value: object = None) -> object:
@@ -6737,6 +7574,11 @@ class DebianSystemdM2GateTests(unittest.TestCase):
                 self.call("publish")
                 self.published = dict(result)
 
+            def publish_state(self, config: object, state: dict[str, object]) -> None:
+                del config
+                self.states.append(dict(state))
+                self.call(f"state:{state['phase']}")
+
         for failure in ("protocol", "quit", "close", "cleanup", "drain"):
             with self.subTest(failure=failure):
                 operations = FakeOperations(failure)
@@ -6750,6 +7592,14 @@ class DebianSystemdM2GateTests(unittest.TestCase):
                         if name in ("close", "cleanup", "drain")
                     ],
                     ["close", "cleanup", "drain"],
+                )
+                self.assertGreaterEqual(len(operations.states), 2)
+                self.assertEqual(operations.states[0]["status"], "running")
+                self.assertEqual(operations.states[0]["phase"], "start")
+                self.assertEqual(operations.states[-1]["status"], "failed")
+                self.assertLess(
+                    operations.calls.index("state:start"),
+                    operations.calls.index("launch"),
                 )
 
     def test_make_target_is_explicit_and_networkless(self) -> None:

@@ -10,6 +10,7 @@ import errno
 import json
 import math
 import os
+import select
 import socket
 import sys
 import time
@@ -161,7 +162,35 @@ class Marionette:
     def _read_exact(self, length: int, *, header: bool = False) -> bytes:
         data = bytearray() if header else self._frame_body
         while len(data) < length:
-            self._socket.settimeout(self._remaining())
+            # Do not rely on the guest's SO_RCVTIMEO implementation for the
+            # command deadline.  On the RISC-V guest it can expire far earlier
+            # than the Python deadline (the NewSession probe observed 7--12 s
+            # instead of the configured 150 s).  Readiness plus a monotonic
+            # deadline keeps the transport bounded without changing Firefox.
+            remaining = self._remaining()
+            fileno = getattr(self._socket, "fileno", None)
+            if callable(fileno):
+                try:
+                    descriptor = fileno()
+                except (OSError, ValueError):
+                    descriptor = -1
+            else:
+                descriptor = -1
+            if descriptor >= 0:
+                try:
+                    readable, _, _ = select.select(
+                        [self._socket], [], [], remaining
+                    )
+                except (TypeError, ValueError):
+                    # Small protocol fakes used by host tests expose recv and
+                    # settimeout but no selectable descriptor. Keep their
+                    # deadline semantics without weakening real sockets.
+                    self._socket.settimeout(remaining)
+                else:
+                    if not readable:
+                        raise socket.timeout("Marionette read deadline expired")
+            else:
+                self._socket.settimeout(remaining)
             chunk = self._socket.recv(length - len(data))
             if not chunk:
                 raise GateError("truncated Marionette message")

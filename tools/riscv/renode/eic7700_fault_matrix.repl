@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: MPL-2.0
+
+eic7700: Python.PythonPeripheral @ sysbus 0x50000000
+    size: 0x02000000
+    initable: true
+    script: '''
+CONTROL = 0x1FFFF0
+GMAC1 = 0x410000
+MAC_VERSION = 0x0110
+DMA_STATUS = 0x1008
+
+if request.IsInit:
+    faults = 0
+elif request.IsWrite:
+    if request.Offset == CONTROL:
+        faults = request.Value
+elif request.IsRead:
+    if request.Offset == GMAC1 + MAC_VERSION:
+        request.Value = 0xFFFFFFFF if faults & 0xB else 0x1052
+    elif request.Offset == GMAC1 + DMA_STATUS:
+        request.Value = 0 if not faults & 0xB else 0xFFFFFFFF
+    else:
+        request.Value = 0
+'''

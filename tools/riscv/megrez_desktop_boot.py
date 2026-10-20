@@ -153,8 +153,12 @@ def uboot_device_profile_commands(profile: str) -> tuple[str, ...]:
         return (
             "fdt set /soc/ethernet@50400000 status disabled",
             "fdt set /soc/ethernet@50410000 status disabled",
-            "fdt set /soc/usb0@50480000/dwc3@50480000 status disabled",
-            "fdt set /soc/usb1@50490000/dwc3@50490000 status disabled",
+            # Disable the wrapper nodes, not only their DWC3 children.  The
+            # EIC7700 platform driver is bound to the wrapper and can create
+            # the xHCI path before the child status is consulted.
+            "fdt set /soc/usb0@50480000 status disabled",
+            "fdt set /soc/usb1@50490000 status disabled",
+            "fdt rm /chosen asterinas,usb-host",
         )
     raise ValueError(f"unknown desktop device profile: {profile}")
 
@@ -170,6 +174,8 @@ def profile_bootargs(profile: str, bootargs: str) -> str:
     # offline policy instead of relying on duplicate systemd.setenv entries
     # having a defined precedence across boot versions.
     offline_keys = {
+        "asterinas.net",
+        "asterinas.neighbor",
         "ASTERINAS_DESKTOP_PROXY_HOST",
         "ASTERINAS_DESKTOP_PROXY_PORT",
         "ASTERINAS_DESKTOP_DNS_HOST",

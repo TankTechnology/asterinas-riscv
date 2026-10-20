@@ -44,6 +44,7 @@ from tools.riscv.megrez_debian_shell_physical import (
     shell_commands as shell_commands,
 )
 from tools.riscv.megrez_debian_shell_contract import P2_NR_SECTORS, P2_START_LBA
+from tools.riscv import megrez_safety
 from tools.riscv.debian.rootfs.debug_console_protocol import (
     DEBUG_CONSOLE_READY,
     MAX_DEBUG_CONSOLE_TRANSCRIPT_BYTES,
@@ -73,6 +74,7 @@ MILESTONES = {
 }
 FINAL_MILESTONE_MARKERS = {
     "generic": MILESTONES["userspace"],
+    "basic-console": "asterinas-basic# ",
     "firmware-framebuffer": "Registered firmware framebuffer",
     "installer": "DEBIAN_INSTALL_PASS",
     "verifier": "DEBIAN_VERIFY_PASS",
@@ -106,6 +108,12 @@ ARTIFACT_NAME_PATTERN = re.compile(
 )
 AUTOBOOT_MARKERS = ("Hit any key to stop autoboot", "Autoboot in")
 AUTOBOOT_COUNTDOWN_PATTERN = re.compile(r"(?:\x08){3}[0-9]{1,2}[ \r\n]")
+DEFAULT_SAFETY_STATE_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "target"
+    / "megrez-board-runs"
+    / ".recovery-safety.json"
+)
 MAX_UBOOT_WAIT_BYTES = 256 * 1024
 MAX_UBOOT_COMMAND_BYTES = 512
 _UBOOT_BOOTARGS_CHUNK_BYTES = 384
@@ -116,6 +124,44 @@ MEGREZ_USB_HOST_COMMAND = (
     "fdt set /chosen asterinas,usb-host "
     "/soc/usb0@50480000/dwc3@50480000 "
     "/soc/usb1@50490000/dwc3@50490000"
+)
+MEGREZ_MINIMAL_DEVICE_COMMANDS = (
+    "fdt set /soc/ethernet@50400000 status disabled",
+    "fdt set /soc/ethernet@50410000 status disabled",
+    # Disable the EIC7700 wrapper nodes. Disabling only the nested DWC3
+    # children still lets the wrapper bind and create xHCI/input devices.
+    "fdt set /soc/usb0@50480000 status disabled",
+    "fdt set /soc/usb1@50490000 status disabled",
+    # Basic has no display consumer. Disable the firmware scanout as well so
+    # this profile really exercises only UART, timer, MMC and Basic; desktop
+    # profiles keep the immutable framebuffer handoff enabled.
+    "fdt set /framebuffer@fd800000 status disabled",
+    "fdt rm /chosen asterinas,usb-host",
+)
+MEGREZ_MINIMAL_DEVICE_READBACK_COMMANDS = (
+    "fdt print /soc/ethernet@50400000 status",
+    "fdt print /soc/ethernet@50410000 status",
+    "fdt print /soc/usb0@50480000 status",
+    "fdt print /soc/usb1@50490000 status",
+    "fdt print /framebuffer@fd800000 status",
+    "fdt print /chosen",
+)
+MEGREZ_DISPLAY_SAFE_DEVICE_COMMANDS = (
+    "fdt set /soc/ethernet@50400000 status disabled",
+    "fdt set /soc/ethernet@50410000 status disabled",
+    # Keep the firmware simple-framebuffer node intact for the fbdev desktop,
+    # while disabling the wrapper nodes whose probe can enter USB/xHCI setup.
+    "fdt set /soc/usb0@50480000 status disabled",
+    "fdt set /soc/usb1@50490000 status disabled",
+    "fdt rm /chosen asterinas,usb-host",
+)
+MEGREZ_DISPLAY_SAFE_DEVICE_READBACK_COMMANDS = (
+    "fdt print /soc/ethernet@50400000 status",
+    "fdt print /soc/ethernet@50410000 status",
+    "fdt print /soc/usb0@50480000 status",
+    "fdt print /soc/usb1@50490000 status",
+    "fdt print /framebuffer@fd800000 status",
+    "fdt print /chosen",
 )
 PARTITION_MARKER = re.compile(
     r"(?m)^__ASTERINAS_PARTITION_(?P<number>[123])__"
@@ -201,18 +247,25 @@ MEGREZ_FRAMEBUFFER = FramebufferHandoff(
 
 
 def open_serial(device: str):
+    """Open and exclusively own the UART before consuming any received bytes."""
     fd = os.open(device, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
-    fcntl.fcntl(fd, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
-    attrs = termios.tcgetattr(fd)
-    attrs[0] = termios.IGNPAR
-    attrs[1] = 0
-    attrs[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
-    attrs[3] = 0
-    attrs[4] = termios.B115200
-    attrs[5] = termios.B115200
-    attrs[6][termios.VMIN] = 1
-    attrs[6][termios.VTIME] = 0
-    termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.ioctl(fd, termios.TIOCEXCL)
+        fcntl.fcntl(fd, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
+        attrs = termios.tcgetattr(fd)
+        attrs[0] = termios.IGNPAR
+        attrs[1] = 0
+        attrs[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
+        attrs[3] = 0
+        attrs[4] = termios.B115200
+        attrs[5] = termios.B115200
+        attrs[6][termios.VMIN] = 1
+        attrs[6][termios.VTIME] = 0
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    except BaseException:
+        os.close(fd)
+        raise
     return fd
 
 
@@ -281,6 +334,13 @@ def read_available(fd: int, timeout: float) -> str:
     return data.decode(errors="replace")
 
 
+def default_safety_state_path(log_path: str | Path) -> Path:
+    """Return one workspace-wide latch regardless of per-run log location."""
+
+    del log_path
+    return DEFAULT_SAFETY_STATE_PATH
+
+
 def observe_milestones(
     next_index: int,
     tail: str,
@@ -321,6 +381,21 @@ def validate_recovery_epoch(text: str) -> None:
     prompt = text.find(PROMPT, uboot.end()) if uboot is not None else -1
     if opensbi < 0 or uboot is None or prompt < 0:
         raise RuntimeError("automatic recovery did not reach a fresh U-Boot prompt")
+
+
+def validate_initial_uboot_epoch(text: str) -> None:
+    """Require a fresh firmware banner before issuing any U-Boot command."""
+
+    if not isinstance(text, str):
+        raise RuntimeError("fresh U-Boot epoch is not text")
+    opensbi = text.find("OpenSBI v")
+    if opensbi < 0:
+        raise RuntimeError("fresh U-Boot epoch is missing OpenSBI")
+    uboot = GATE_PATTERN.search(text, opensbi + 1)
+    if uboot is None:
+        raise RuntimeError("fresh U-Boot epoch is missing U-Boot")
+    if text.find(PROMPT, uboot.end()) < 0:
+        raise RuntimeError("fresh U-Boot epoch is missing the prompt")
 
 
 def _has_recovery_epoch(text: str) -> bool:
@@ -392,6 +467,7 @@ class BoardSession:
         self.milestones: dict[str, float] = {}
         self.milestone_transcript = ""
         self.debug_console_transcript = b""
+        self.boot_attempt_started = False
         self._milestone_tail = ""
         self._next_milestone = 0
         if final_marker == MILESTONES["userspace"]:
@@ -453,6 +529,32 @@ class BoardSession:
                 os.write(self.fd, b" ")
                 interrupt_attempts += 1
         raise TimeoutError(f"timed out waiting for U-Boot prompt; last: {buf[-200:]!r}")
+
+    def wait_for_recovery_boundary(self, timeout: float) -> str:
+        """Wait for a fresh U-Boot prompt or the RockOS login boundary.
+
+        A software reboot commonly lets U-Boot's default extlinux entry run to
+        RockOS.  Recovery observation must accept that path without sending a
+        newline or any other command to an unattended prompt.
+        """
+
+        buf = ""
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            chunk = read_available(self.fd, min(1.0, remaining))
+            if not chunk:
+                continue
+            self._log(chunk)
+            buf = (buf + chunk)[-MAX_UBOOT_WAIT_BYTES:]
+            firmware_seen = "OpenSBI" in buf and "U-Boot" in buf
+            if firmware_seen and (PROMPT in buf or " login:" in buf):
+                return buf
+        raise TimeoutError(
+            f"timed out waiting for recovery boundary; last: {buf[-200:]!r}"
+        )
 
     def send(self, command: str) -> None:
         for i, byte in enumerate(command.encode()):
@@ -673,6 +775,7 @@ class BoardSession:
 
     def start_boot_attempt(self) -> None:
         """Discard pre-boot observations and start one ordered boot attempt."""
+        self.boot_attempt_started = True
         self.milestones.clear()
         self.milestone_transcript = ""
         self._milestone_tail = ""
@@ -855,7 +958,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="booti=8hex,dtb=8hex,initrd=8hex (required outside mock mode)",
     )
     p.add_argument("--yes", action="store_true", help="skip interactive confirmations")
+    p.add_argument(
+        "--device-profile",
+        choices=("full", "minimal"),
+        default="full",
+        help="volatile DTB device set (default: full)",
+    )
     p.add_argument("--log", default="megrez-session.log")
+    p.add_argument(
+        "--safety-state",
+        type=Path,
+        help="recovery latch path (default: target/megrez-board-runs/.recovery-safety.json)",
+    )
+    p.add_argument(
+        "--recovery-receipt",
+        type=Path,
+        help="newer RockOS attestation receipt required to clear a recovery latch",
+    )
     p.add_argument("--mock-qemu", action="store_true", help="harness mode: no commands")
     p.add_argument(
         "--mock-timeout",
@@ -910,6 +1029,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     ]
     if args.firmware_framebuffer and (not consoles or consoles[0] != "tty0"):
         p.error("--firmware-framebuffer requires console=tty0 as the first console")
+    if args.device_profile == "minimal" and args.firmware_framebuffer:
+        p.error("minimal device profile cannot retain the firmware framebuffer")
     try:
         validate_writable_recovery(args.bootargs)
     except ValueError as error:
@@ -1136,7 +1257,20 @@ def boot_loaded_artifacts(session: BoardSession, args: argparse.Namespace) -> st
     )
     for command in uboot_bootargs_commands(args.bootargs):
         session.command(command)
-    session.command(MEGREZ_USB_HOST_COMMAND)
+    if getattr(args, "device_profile", "full") == "minimal":
+        for command in MEGREZ_MINIMAL_DEVICE_COMMANDS:
+            session.command(command)
+        for command in MEGREZ_MINIMAL_DEVICE_READBACK_COMMANDS:
+            output = session.command(command)
+            validate_minimal_device_readback(command, output)
+    elif getattr(args, "device_profile", "full") == "display-safe":
+        for command in MEGREZ_DISPLAY_SAFE_DEVICE_COMMANDS:
+            session.command(command)
+        for command in MEGREZ_DISPLAY_SAFE_DEVICE_READBACK_COMMANDS:
+            output = session.command(command)
+            validate_display_safe_device_readback(command, output)
+    else:
+        session.command(MEGREZ_USB_HOST_COMMAND)
     session.start_boot_attempt()
     return session.command(
         "booti 0x80200000 0x83000000:${initrd_size} 0xf0000000",
@@ -1158,6 +1292,36 @@ def validate_debug_console_readiness(transcript: str) -> None:
         raise DebugConsoleProtocolError(
             "root-console readiness marker is missing or duplicated"
         )
+
+
+def validate_minimal_device_readback(command: str, output: str) -> None:
+    """Require U-Boot to confirm every volatile Basic DT edit."""
+
+    if command == "fdt print /chosen":
+        if "asterinas,usb-host" in output:
+            raise RuntimeError("minimal DT readback retained /chosen/asterinas,usb-host")
+        return
+    if command not in MEGREZ_MINIMAL_DEVICE_READBACK_COMMANDS:
+        raise ValueError(f"unexpected minimal DT readback command: {command}")
+    if re.search(r'(?m)^\s*status\s*=\s*"disabled"\s*;?\s*$', output) is None:
+        raise RuntimeError(f"minimal DT readback did not disable {command}")
+
+
+def validate_display_safe_device_readback(command: str, output: str) -> None:
+    """Require the display-safe DT edits without losing the framebuffer."""
+
+    if command == "fdt print /chosen":
+        if "asterinas,usb-host" in output:
+            raise RuntimeError("display-safe DT readback retained /chosen/asterinas,usb-host")
+        return
+    if command == "fdt print /framebuffer@fd800000 status":
+        if re.search(r'(?m)^\s*status\s*=\s*"okay"\s*;?\s*$', output) is None:
+            raise RuntimeError("display-safe DT readback disabled the framebuffer")
+        return
+    if command not in MEGREZ_DISPLAY_SAFE_DEVICE_READBACK_COMMANDS:
+        raise ValueError(f"unexpected display-safe DT readback command: {command}")
+    if re.search(r'(?m)^\s*status\s*=\s*"disabled"\s*;?\s*$', output) is None:
+        raise RuntimeError(f"display-safe DT readback did not disable {command}")
 
 
 def run_debug_root_console(session: BoardSession, deadline: float):
@@ -1191,17 +1355,30 @@ def main(argv: list[str]) -> int:
     if args.mock_qemu:
         return run_mock_qemu(args.device, args.mock_timeout)
 
+    safety_state = args.safety_state or default_safety_state_path(args.log)
+    try:
+        megrez_safety.assert_start_allowed(safety_state, args.recovery_receipt)
+    except megrez_safety.SafetyLatchError as error:
+        print(f"physical session blocked: {error}", file=sys.stderr)
+        return 2
+
     session = BoardSession(
         args.device,
         args.log,
         confirm=not args.yes,
         final_marker=FINAL_MILESTONE_MARKERS[args.final_profile],
     )
+    recovery_observed = False
     try:
-        # A board already stopped at U-Boot is silent after the serial port is
-        # reopened. Wake the prompt before waiting for evidence from this session.
-        session.send("")
-        boot = session.wait_for_uboot_prompt(timeout=args.uboot_timeout)
+        # Acquire the prompt from observed U-Boot output only. Sending an empty
+        # line here would make U-Boot repeat its previous command, which could
+        # be a stale `booti`, load, or memory operation.
+        try:
+            boot = session.wait_for_uboot_prompt(timeout=args.uboot_timeout)
+            validate_initial_uboot_epoch(boot)
+        except (RuntimeError, TimeoutError) as error:
+            print(f"physical preflight failed: {error}", file=sys.stderr)
+            return 2
         gate = GATE_PATTERN.search(boot)
         print(f"U-Boot: {gate.group(1) if gate else 'unknown'}")
 
@@ -1222,10 +1399,34 @@ def main(argv: list[str]) -> int:
                     if len(
                         session.milestones
                     ) != expected_milestones and _has_recovery_epoch(recovery_window):
+                        recovery_observed = True
                         print(json.dumps(session.milestones))
                         return INCOMPLETE_RECOVERED_EXIT
         print(json.dumps(session.milestones))
         if len(session.milestones) != expected_milestones:
+            # A boot attempt has already transferred control away from
+            # U-Boot.  Keep the same serial owner until the bounded recovery
+            # window closes, even when Basic (or another final marker) never
+            # appears.  Closing here used to abandon the UART while the
+            # watchdog was still resetting the board, which made a recoverable
+            # timeout look like a dead board and left the safety latch without
+            # a recovery observation.
+            if args.require_recovery and session.boot_attempt_started:
+                if _has_recovery_epoch(recovery_window):
+                    recovery_observed = True
+                    return INCOMPLETE_RECOVERED_EXIT
+                remaining = end + RECOVERY_GRACE_SECONDS - time.monotonic()
+                if remaining > 0:
+                    try:
+                        session.wait_for_recovery_boundary(timeout=remaining)
+                    except (RuntimeError, TimeoutError) as error:
+                        print(
+                            f"automatic recovery after incomplete boot failed: {error}",
+                            file=sys.stderr,
+                        )
+                    else:
+                        recovery_observed = True
+                        return INCOMPLETE_RECOVERED_EXIT
             return 2
         debug_error: BaseException | None = None
         if args.final_profile == "debug-root-console":
@@ -1257,12 +1458,28 @@ def main(argv: list[str]) -> int:
                 remaining = end + RECOVERY_GRACE_SECONDS - time.monotonic()
                 if remaining <= 0:
                     return 2
-                recovery = session.wait_for_uboot_prompt(timeout=remaining)
-                validate_recovery_epoch(recovery)
+                try:
+                    recovery = session.wait_for_uboot_prompt(timeout=remaining)
+                    validate_recovery_epoch(recovery)
+                except (RuntimeError, TimeoutError) as error:
+                    print(f"automatic recovery failed: {error}", file=sys.stderr)
+                    return 2
+                recovery_observed = True
         if debug_error is not None:
             return 2
         return 0
     finally:
+        if (
+            args.require_recovery
+            and getattr(session, "boot_attempt_started", False)
+            and not recovery_observed
+        ):
+            try:
+                megrez_safety.mark_recovery_required(
+                    safety_state, "automatic-recovery-not-observed"
+                )
+            except (OSError, ValueError, megrez_safety.SafetyLatchError) as error:
+                print(f"could not retain recovery latch: {error}", file=sys.stderr)
         session.log.close()
         os.close(session.fd)
 

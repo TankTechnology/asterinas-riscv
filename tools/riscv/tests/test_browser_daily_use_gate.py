@@ -48,6 +48,35 @@ from tools.riscv.tests.test_browser_perf_capture import (
 from tools.riscv.debian.rootfs import browser_web_marionette_gate as web
 
 
+def _frame(value: object) -> bytes:
+    payload = json.dumps(value, separators=(",", ":")).encode()
+    return str(len(payload)).encode() + b":" + payload
+
+
+class _Socket:
+    def __init__(self, incoming: bytes) -> None:
+        self.incoming = bytearray(incoming)
+        self.sent = bytearray()
+        self.closed = False
+
+    def settimeout(self, timeout: float) -> None:
+        if timeout <= 0:
+            raise AssertionError("non-positive timeout")
+
+    def recv(self, length: int) -> bytes:
+        if not self.incoming:
+            raise socket.timeout("mock deadline")
+        result = bytes(self.incoming[:length])
+        del self.incoming[:length]
+        return result
+
+    def sendall(self, value: bytes) -> None:
+        self.sent.extend(value)
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class FakeMarionette:
     def __init__(self, events):
         self.events = events
@@ -1484,10 +1513,6 @@ class DailyUseAdapterTests(unittest.TestCase):
 
     def test_existing_session_skips_drain_for_a_command_that_never_sent(self):
         from tools.riscv.debian.rootfs import browser_m5_marionette_gate as wire
-        from tools.riscv.tests.test_debian_browser_m5_runtime_gate import (
-            _Socket,
-            _frame,
-        )
 
         transport = _Socket(
             _frame({"applicationType": "gecko", "marionetteProtocol": 3})
