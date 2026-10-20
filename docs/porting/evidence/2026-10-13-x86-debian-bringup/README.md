@@ -617,6 +617,29 @@ durability matrix the probe fsyncs the file, and for rename/unlink/truncate
 also fsyncs the parent directory, prints `FS_DURABILITY_READY`, and the host
 `kill -9`s QEMU two seconds later. All five operations survived in full.
 
+**Concurrency.** Crash and durability matrices exercise one operation at a
+time. `fs_concurrency_stress.sh` runs eight workers that churn their own
+directories and one shared directory with create, rewrite, unlink, rename,
+truncate and xattr, while periodically reading owned files back to catch
+inode-reuse cross-talk. Each worker keeps an on-disk manifest (name, size,
+SHA-256) and the driver compares the final directory trees against it:
+
+```
+fs_concurrency_stress.sh --workers 8 --seconds 45
+  8 workers, 4,242 operations, 624 surviving files, 0 problems
+  FS_CONCURRENCY_RESULT ok=True workers=8 files=624 problems=0
+  clean shutdown, e2fsck -fn clean
+
+fs_concurrency_stress.sh --workers 8 --seconds 45 --crash-after 20
+  power cut 20s into the churn
+  recovery boot replays the journal, reaches multi-user, powers off
+  e2fsck -fn clean
+```
+
+The crash variant does not compare contents (an interrupted worker never
+finalises its manifest); its contract is structural: no deadlock, no
+half-applied directory operation, no leaked allocation.
+
 **`O_SYNC`/`O_DSYNC` alignment.** The durability work exposed that
 `InodeHandle` ignored `O_SYNC` and `O_DSYNC` on write entirely. It now flushes
 after every successful write — `SyncMode::Full` for `O_SYNC`,

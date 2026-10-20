@@ -647,6 +647,8 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_boot \
 		tools.x86.tests.test_x86_debian_apt \
 		tools.x86.tests.test_x86_debian_fs_crash \
+		tools.x86.tests.test_x86_debian_fs_concurrency \
+		tools.x86.tests.test_x86_debian_fs_durability \
 		tools.x86.tests.test_lmbench_transcript \
 		tools.riscv.tests.test_lmbench_native -v
 
@@ -842,6 +844,39 @@ test_x86_debian_fs_durability:
 		--scenarios "$(X86_DEBIAN_DURABILITY_SCENARIOS)" \
 		--accel "$(X86_DEBIAN_DURABILITY_ACCEL)" \
 		--timeout "$(X86_DEBIAN_DURABILITY_TIMEOUT)"
+
+# Concurrency stress: N guest workers churn separate directories plus one
+# shared directory with create/rewrite/unlink/rename/truncate/xattr, keep an
+# on-disk manifest of expected contents, and read files back to catch inode
+# reuse.  The in-guest verifier must report ok=True and `e2fsck -fn` must
+# accept the image.
+#   X86_DEBIAN_CONCURRENCY_BASE_ROOT  ext4 image copied per run
+X86_DEBIAN_CONCURRENCY_BASE_ROOT ?=
+X86_DEBIAN_CONCURRENCY_WORKSPACE ?= $(CURDIR)/target/x86-debian/concurrency
+X86_DEBIAN_CONCURRENCY_WORKERS ?= 8
+X86_DEBIAN_CONCURRENCY_SECONDS ?= 45
+# Set to a number of seconds to cut power mid-run and require a clean
+# recovery instead of the clean-run content verification.
+X86_DEBIAN_CONCURRENCY_CRASH_AFTER ?=
+X86_DEBIAN_CONCURRENCY_ACCEL ?= kvm
+X86_DEBIAN_CONCURRENCY_TIMEOUT ?= 1800
+
+.PHONY: test_x86_debian_fs_concurrency
+test_x86_debian_fs_concurrency:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_CONCURRENCY_BASE_ROOT)" || { echo "X86_DEBIAN_CONCURRENCY_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-concurrency: base=$(X86_DEBIAN_CONCURRENCY_BASE_ROOT) workers=$(X86_DEBIAN_CONCURRENCY_WORKERS) seconds=$(X86_DEBIAN_CONCURRENCY_SECONDS) accel=$(X86_DEBIAN_CONCURRENCY_ACCEL)"
+	@tools/x86/debian/fs_concurrency_stress.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_CONCURRENCY_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_CONCURRENCY_WORKSPACE)" \
+		--workers "$(X86_DEBIAN_CONCURRENCY_WORKERS)" \
+		--seconds "$(X86_DEBIAN_CONCURRENCY_SECONDS)" \
+		--accel "$(X86_DEBIAN_CONCURRENCY_ACCEL)" \
+		--timeout "$(X86_DEBIAN_CONCURRENCY_TIMEOUT)" \
+		$(if $(X86_DEBIAN_CONCURRENCY_CRASH_AFTER),--crash-after "$(X86_DEBIAN_CONCURRENCY_CRASH_AFTER)")
 
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:

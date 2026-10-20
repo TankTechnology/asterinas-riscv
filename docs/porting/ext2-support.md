@@ -221,3 +221,24 @@ The crash matrix is what exposed the replay cache-coherence bug fixed in this
 change: see the journal table above. Before the fix, a replayed unlink leaked
 the inode and its block because the next commit re-staged the pre-replay
 bitmap.
+
+`fs_concurrency_stress.sh` (`make test_x86_debian_fs_concurrency`) checks the
+interleaving contract. Eight guest workers churn separate directories and one
+shared directory with create, rewrite, unlink, rename, truncate and xattr
+operations, each keeping an on-disk manifest of the files it expects and their
+SHA-256 sums; every 17 operations a worker reads a random owned file back to
+catch inode-reuse cross-talk. When the workers finish, the driver compares
+every directory against its manifest, re-hashes every file, and checks that
+the shared directory contains exactly the files the workers left behind.
+
+- Clean run: 8 workers, 4,242 operations, 624 surviving files, **ok=True**,
+  `e2fsck -fn` clean.
+- Crash run (`--crash-after 20`): the host kills QEMU 20 seconds into the
+  churn. The same image must replay its journal, reach multi-user and power
+  off, with `e2fsck -fn` clean. **PASS**.
+
+The crash run deliberately does not check contents: the manifests are only
+finalised when a worker finishes, so an interrupted worker's files have no
+recorded expectation. It checks the structural contract instead — no
+deadlock, no half-applied directory operation after replay, no leaked blocks
+or inodes.
