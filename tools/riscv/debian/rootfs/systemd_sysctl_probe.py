@@ -44,8 +44,8 @@ SYSCTL_FINISHED = b"Finished systemd-sysctl.service"
 SYSCTL_FAILED = b"Failed to start systemd-sysctl.service"
 
 _PROBE_LINE = re.compile(
-    rb"^SYSCTL_PROBE step=([^ ]+) rc=(-?[0-9]+) ms=([0-9]+)(?: (.*))?$",
-    re.MULTILINE,
+    rb"SYSCTL_PROBE step=([^ ]+) rc=(-?[0-9]+) ms=([0-9]+)"
+    rb"(?: ([^\r\n]*))?(?:\r|\n|$)"
 )
 _VALUE = re.compile(r"(?:^| )value=([^ ]+)")
 
@@ -62,7 +62,7 @@ def parse_probe_markers(transcript: bytes) -> list[dict[str, object]]:
         }
         detail = match.group(4)
         if detail:
-            item["detail"] = detail.decode("utf-8", "replace")
+            item["detail"] = detail.rstrip(b"\r").decode("utf-8", "replace")
         steps.append(item)
     return steps
 
@@ -98,10 +98,20 @@ def classify_probe(transcript: bytes, mode: str) -> tuple[bool, str]:
             return False, "probe-no-steps"
         for step in steps:
             name = str(step["step"])
+            if name == "missing_control":
+                if step["rc"] == 0:
+                    return False, "missing-control-unexpected-success"
+                if "No such file or directory" not in str(
+                    step.get("detail", "")
+                ):
+                    return False, "missing-control-wrong-error"
+                continue
             if step["rc"] == 124:
                 return False, f"step-timeout:{name}"
             if step["rc"] != 0:
                 return False, f"step-failed:{name}:{step['rc']}"
+        if not any(step.get("step") == "missing_control" for step in steps):
+            return False, "missing-control-absent"
         if _step_value(steps, "readback_pid_max") != "4194304":
             return False, "pid-max-readback"
         if _step_value(steps, "readback_core_pattern") != "core":

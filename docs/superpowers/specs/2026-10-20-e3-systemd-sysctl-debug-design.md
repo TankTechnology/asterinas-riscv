@@ -42,24 +42,32 @@ attempt is made to rebuild the old kernel for this gate.
 ## rootfs probe overlay
 
 Use the existing content-addressed `dev_overlay.py` mechanism on the frozen root
-image. The overlay adds two files:
+image. The overlay adds one file and replaces one existing file:
 
-1. `/usr/lib/asterinas/sysctl-probe.sh`
-2. `/etc/systemd/system/systemd-sysctl.service.d/90-asterinas-probe.conf`
+1. add `/usr/lib/asterinas/sysctl-probe.sh`;
+2. replace `/usr/lib/systemd/system/systemd-sysctl.service` with an
+   instrumented copy of the original unit.
 
-The drop-in overrides only the command and console routing:
+The replacement unit preserves the original `[Unit]` section,
+`ConditionPathIsReadWrite=/proc/sys/net/`, `Before=sysinit.target`,
+`TimeoutSec=90s`, and `ImportCredential=sysctl.*`. Only the `[Service]` command
+and console routing change:
 
 ```ini
 [Service]
-ExecStart=
+Type=oneshot
+RemainAfterExit=yes
 ExecStart=/usr/lib/asterinas/sysctl-probe.sh
-StandardOutput=console
-StandardError=console
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutSec=90s
+ImportCredential=sysctl.*
 ```
 
-The original unit's `ConditionPathIsReadWrite=/proc/sys/net/`,
-`Before=sysinit.target`, and `TimeoutSec=90s` remain in effect. If the
-condition fails, the probe is skipped and that is recorded as the finding.
+Replacing the unit file avoids needing a new
+`systemd-sysctl.service.d/` directory, which `dev_overlay.py` cannot create.
+If the condition fails, the probe is skipped and that is recorded as the
+finding.
 
 The probe script runs each step under `timeout 15` and prints a
 `SYSCTL_PROBE` marker with the step name, return code, and elapsed
@@ -120,7 +128,7 @@ Classification:
 | pid_max write returns EOPNOTSUPP/EINVAL | write path is incompatible; fix by exact errno |
 | any step rc=124 | that step is the hang point; locate the kernel path before adding keys |
 | direct writes rc=0 but the real binary rc!=0 | the failure is in systemd-sysctl or its configuration, not the kernel |
-| no `SYSCTL_PROBE begin` marker | the unit's `ConditionPathIsReadWrite=/proc/sys/net/` failed or the drop-in was not loaded; classify before changing the kernel |
+| no `SYSCTL_PROBE begin` marker | the unit's `ConditionPathIsReadWrite=/proc/sys/net/` failed or the replacement unit was not loaded; classify before changing the kernel |
 
 ## Verification ladder
 
