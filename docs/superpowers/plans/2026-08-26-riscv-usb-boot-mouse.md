@@ -38,7 +38,7 @@ wireless/Bluetooth transports, or arbitrary composite HID devices.
 
 ```bash
 git merge-base --is-ancestor b9e3003c941c642dc60def59751511591a1d2440 HEAD
-! rg -n 'T[B]D|T[O]DO|F[I]XME|[p]laceholder' \
+! rg -n 'T[B]D|T[O]DO|F[I]XME|place[h]older' \
   docs/superpowers/specs/2026-08-26-riscv-usb-boot-mouse-design.md \
   docs/superpowers/plans/2026-08-26-riscv-usb-boot-mouse.md
 git diff --check

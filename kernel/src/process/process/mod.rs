@@ -241,6 +241,7 @@ impl Process {
         Some(Task::current()?.as_posix_thread()?.process())
     }
 
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn new(
         pid: Pid,
         vmar: Arc<Vmar>,

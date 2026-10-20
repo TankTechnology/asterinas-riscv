@@ -33,8 +33,8 @@ actually run.  DRM, GPU, Firefox, and network stress are outside this goal.
 
 ## QEMU single-packet gate: passed
 
-Receipt: `target/qemu-single-packet-20261010/result.json`  
-Fixture: `target/qemu-single-packet-20261010/single-packet-fixture.json`  
+Receipt: `target/qemu-single-packet-20261010/result.json`
+Fixture: `target/qemu-single-packet-20261010/single-packet-fixture.json`
 Serial: `target/qemu-single-packet-20261010/single-packet.serial.log`
 
 The receipt records:
@@ -68,8 +68,8 @@ Ran 32 tests ... OK
 
 ### Deterministic fbdev scanout canary: passed
 
-Receipt: `target/qemu-desktop-m4-fbdev-canary-20261010/result.json`  
-Serial: `target/qemu-desktop-m4-fbdev-canary-20261010/desktop-m4-fbdev-canary.serial.log`  
+Receipt: `target/qemu-desktop-m4-fbdev-canary-20261010/result.json`
+Serial: `target/qemu-desktop-m4-fbdev-canary-20261010/desktop-m4-fbdev-canary.serial.log`
 Scanout: `target/qemu-desktop-m4-fbdev-canary-20261010/desktop-m4-fbdev-canary.ppm`
 
 The canary uses the same Xorg/session and `/dev/fb0` handoff as M4, then writes
@@ -96,8 +96,8 @@ it is not counted as a fix.
 
 ### X11-to-fb0 boundary diagnostic: passed once
 
-Receipt: `target/qemu-desktop-m4-x11-boundary-20261010/result.json`  
-Serial: `target/qemu-desktop-m4-x11-boundary-20261010/desktop-m4-x11-boundary.serial.log`  
+Receipt: `target/qemu-desktop-m4-x11-boundary-20261010/result.json`
+Serial: `target/qemu-desktop-m4-x11-boundary-20261010/desktop-m4-x11-boundary.serial.log`
 Scanout: `target/qemu-desktop-m4-x11-boundary-20261010/desktop-m4-x11-boundary.ppm`
 
 This was a throwaway, bounded diagnostic rootfs; it is not a replacement for

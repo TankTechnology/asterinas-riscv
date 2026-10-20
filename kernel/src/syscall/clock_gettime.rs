@@ -255,7 +255,7 @@ mod tests {
     use crate::prelude::*;
 
     fn cpu_clock_id(id: u32, kind: u32, per_thread: bool) -> i32 {
-        ((!id << 3) | kind | u32::from(per_thread) * 4) as i32
+        (((!id) << 3) | kind | (u32::from(per_thread) * 4)) as i32
     }
 
     #[ktest]

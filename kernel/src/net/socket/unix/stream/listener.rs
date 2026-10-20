@@ -451,7 +451,7 @@ mod test {
 
         // The pending server connection is owned by the listener backlog. Queuing the listener FD
         // in that connection would close owner -> backlog -> storage -> owner and must be rejected.
-        let error = ReservedEdges::try_new(&pending_storage, &[owner.clone()])
+        let error = ReservedEdges::try_new(&pending_storage, core::slice::from_ref(&owner))
             .err()
             .unwrap();
         assert_eq!(error, ReservationError::Cycle);

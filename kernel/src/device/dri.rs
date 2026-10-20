@@ -41,9 +41,6 @@ use ostd::{
     mm::{Paddr, VmIo},
     task::Task,
 };
-/// The dma-buf descriptor, reachable so that the SCM_RIGHTS classifier can
-/// recognize one. See [`prime::DmaBufFile`].
-pub(crate) use prime::DmaBufFile;
 
 use self::{
     backend::{
@@ -406,22 +403,19 @@ pub(crate) fn driver_name() -> &'static str {
     display_source().map_or(DRIVER_NAME, |source| source.driver_name())
 }
 
-pub(super) fn firmware_snapshot_line() -> Option<String> {
-    backend::firmware_snapshot_line()
-}
-
 /// Builds the presentation devices for a source.
 fn display_device(source: DisplaySource) -> Result<DisplayDevice> {
     let name = source.driver_name();
     Ok(match source {
         DisplaySource::Virtio(gpu) => DisplayDevice {
+            gpu: Some(Arc::clone(&gpu)),
             scanout: Arc::clone(&gpu) as Arc<dyn ScanoutBackend>,
             cursor: Some(Arc::clone(&gpu) as Arc<dyn CursorBackend>),
-            gpu: Some(gpu),
             name,
             connector_type: DRM_MODE_CONNECTOR_VIRTUAL,
         },
         DisplaySource::Firmware(framebuffer) => DisplayDevice {
+            gpu: None,
             scanout: {
                 #[cfg(all(target_arch = "riscv64", feature = "eic7700_native_scanout"))]
                 if eic7700::native_scanout_requested() {
@@ -447,7 +441,6 @@ fn display_device(source: DisplaySource) -> Result<DisplayDevice> {
             // requests outright, which is the answer that lets a client draw
             // the pointer itself instead of waiting for one that never comes.
             cursor: None,
-            gpu: None,
             name,
             // Not `DRM_MODE_CONNECTOR_VIRTUAL`: there is a real connector here,
             // firmware is driving it, and this driver has no way to ask what
@@ -1109,9 +1102,7 @@ fn read_dirty_clips(req: &DrmModeFbDirtyCmd) -> Result<Vec<DrmClipRect>> {
 /// Device-wide and monotonic, so two files never share one. `DRM_IOCTL_AUTH_MAGIC`
 /// only has to recognise a token this device issued, and a counter is enough to
 /// answer that -- which is honest only because nothing here checks the result.
-static NEXT_MAGIC: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(1);
-
-const VIRTGPU_EXECBUFFER_V2_CMD: u32 = 0xc0406442;
+static NEXT_MAGIC: AtomicU32 = AtomicU32::new(1);
 
 mod ioctl_defs {
     use super::{
@@ -1125,6 +1116,10 @@ mod ioctl_defs {
         DrmVirtgpuTransfer3d, DrmVirtgpuWait,
     };
     use crate::util::ioctl::{InData, InOutData, NoData, OutData, ioc};
+
+    // The V2 execbuffer shares command 0x42 but has a larger argument struct.
+    #[expect(dead_code)]
+    const VIRTGPU_EXECBUFFER_V2_CMD: u32 = 0xc0406442;
 
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h>.
     pub(super) type GetVersion = ioc!(DRM_IOCTL_VERSION, b'd', 0x00, InOutData<DrmVersion>);
@@ -1269,7 +1264,6 @@ impl Device for Dri {
             display: Arc::clone(&self.display),
             context_operation: Mutex::new(()),
             cursor_operation: Mutex::new(()),
-            events: Pollee::new(),
             inner: SpinLock::new(DriInner {
                 handles: BTreeMap::new(),
                 next_handle: 1,
@@ -1282,6 +1276,7 @@ impl Device for Dri {
                 magic: None,
                 context_id: None,
             }),
+            events: Pollee::new(),
         }))
     }
 }
@@ -1417,6 +1412,7 @@ fn release_object_locked(objects: &mut GemObjects, object_id: u32) {
 /// Takes the handle table rather than the file that owns it, because that is
 /// all the rule needs: what makes it testable is that a handle table is a
 /// `BTreeMap<u32, u32>` and a test can write one by hand.
+#[cfg(ktest)]
 fn release_handles_locked(objects: &mut GemObjects, handles: &BTreeMap<u32, u32>) {
     for object_id in handles.values() {
         release_object_locked(objects, *object_id);
@@ -1429,6 +1425,7 @@ fn release_handles_locked(objects: &mut GemObjects, handles: &BTreeMap<u32, u32>
 /// accounting. They take their reference in `add_fb` and give it back in
 /// `rm_fb`; a file that closes without calling `rm_fb` is not withdrawing
 /// anything, so neither does this.
+#[cfg(ktest)]
 fn release_framebuffers_locked(
     objects: &mut GemObjects,
     framebuffers: &BTreeMap<u32, Framebuffer>,
@@ -2037,8 +2034,7 @@ impl DriHandle {
         }
         let context_id = self.ensure_context()?;
 
-        let mut commands = Vec::new();
-        commands.resize(req.size as usize, 0u8);
+        let mut commands = alloc::vec![0u8; req.size as usize];
         current_userspace!()
             .read_bytes(req.command as usize, &mut commands)
             .map_err(|_| Error::with_message(Errno::EFAULT, "bad command buffer pointer"))?;
@@ -2583,7 +2579,7 @@ impl Pollable for DriHandle {
     /// its clients again — a `glxinfo` left blocked on the X socket with the
     /// server apparently alive.
     fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
-        self.events.poll_with(mask, poller, || IoEvents::empty())
+        self.events.poll_with(mask, poller, IoEvents::empty)
     }
 }
 
@@ -2710,9 +2706,9 @@ impl PerOpenFileOps for DriHandle {
                 // `_IOR`: nothing comes in, the token goes out.
                 let magic = {
                     let mut inner = self.inner.lock();
-                    *inner.magic.get_or_insert_with(|| {
-                        NEXT_MAGIC.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
-                    })
+                    *inner
+                        .magic
+                        .get_or_insert_with(|| NEXT_MAGIC.fetch_add(1, Ordering::Relaxed))
                 };
                 cmd.write(&DrmAuth { magic })?;
                 Ok(0)
@@ -2725,9 +2721,7 @@ impl PerOpenFileOps for DriHandle {
                 // recognition -- a token this device issued is accepted and
                 // anything else is refused, rather than the request quietly
                 // succeeding on a value nothing produced.
-                if auth.magic == 0
-                    || auth.magic >= NEXT_MAGIC.load(core::sync::atomic::Ordering::Relaxed)
-                {
+                if auth.magic == 0 || auth.magic >= NEXT_MAGIC.load(Ordering::Relaxed) {
                     return_errno_with_message!(Errno::EINVAL, "unknown magic");
                 }
                 Ok(0)

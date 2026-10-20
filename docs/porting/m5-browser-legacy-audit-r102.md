@@ -1,6 +1,6 @@
 # M5/browser-web legacy audit r102
 
-Date: 2026-10-20  
+Date: 2026-10-20
 Gate: `m5-browser-legacy-cleanup`
 
 ## Deletion candidates

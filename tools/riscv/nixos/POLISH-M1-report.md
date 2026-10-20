@@ -14,7 +14,7 @@
 | LTP 43 failures | **Triaged** into env gaps vs. kernel bugs (see §2); fixes are follow-up work |
 
 The two code changes are kernel fixes; the LTP item produced a precise
-failure taxonomy (the FOUNDATION-M2 report had mis-attributed the 11 `rename`
+failure taxonomy (the FOUNDATION-M2 report had misattributed the 11 `rename`
 failures to a VFS bug — they are actually a missing loop device).
 
 ---

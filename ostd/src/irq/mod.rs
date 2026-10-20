@@ -161,7 +161,7 @@ pub(crate) fn call_irq_callback_functions(
         },
         cpu_priv_at_irq,
     );
-    // The level is per-CPU and is only ever undoed by the same stack that set
+    // The level is per-CPU and is only ever undone by the same stack that set
     // it, so a handler that ends somewhere other than where it started leaves
     // the value one increment high for good. That is the state every later
     // report of this defect has shown, and this is the moment it is created.

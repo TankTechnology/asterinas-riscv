@@ -1,7 +1,7 @@
 # Firefox ppoll return-counter runtime probe r97
 
-Date: 2026-10-19T22:01:57Z  
-Gate: `firefox-ppoll-return-counters-runtime`  
+Date: 2026-10-19T22:01:57Z
+Gate: `firefox-ppoll-return-counters-runtime`
 Claim: E3 (failed diagnostic boundary; does not satisfy `official_firefox_scene`)
 
 ## Scope

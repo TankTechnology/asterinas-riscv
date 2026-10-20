@@ -130,6 +130,7 @@ impl Interval<Vaddr> for VmMapping {
 /***************************** Basic methods *********************************/
 
 impl VmMapping {
+    #[expect(clippy::too_many_arguments)]
     pub(super) fn new(
         map_size: NonZeroUsize,
         map_to_addr: Vaddr,

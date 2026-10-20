@@ -540,7 +540,7 @@ vmlinux-6.6.87-win2030
 -rw-r--r-- 1 root root 30426216 Sep  8  2025 /boot/Imagezrp_riscv64_eswin
 677f00a05f00de20c9bcbf7630b0d5b1d2629a1403ffcf4f7b74706d220859fa  /boot/Imagezrp_riscv64_eswin
 /boot/Imagezrp_riscv64_eswin: u-boot legacy uImage, rust_shyper, Linux/RISC-V, OS Kernel Image (Not compressed), 30426152 bytes, Fri Sep 12 06:45:13 2025, Load Address: 0X80200000, Entry Point: 0X80200000, Header CRC: 0X2E68E858, Data CRC: 0X3818660
-Linux version 6.6.87 (zrp@DESKTOP-ZRP) (riscv64-linux-gnu-gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, GNU ld (GNU Binutils for Ubuntu) 2.38) # SMP 
+Linux version 6.6.87 (zrp@DESKTOP-ZRP) (riscv64-linux-gnu-gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, GNU ld (GNU Binutils for Ubuntu) 2.38) # SMP
 Linux version 6.6.87 (zrp@DESKTOP-ZRP) (riscv64-linux-gnu-gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, GNU ld (GNU Binutils for Ubuntu) 2.38) #13 SMP Mon Sep  8 22:27:31 CST 2025
 6.6.87 SMP mod_unload riscv
 eswin,win2030-pcie
@@ -644,9 +644,9 @@ Swap:             0B          0B          0B
  19:27:22 up 2 days, 7 min,  4 users,  load average: 0.15, 0.11, 0.09
 --- lsblk ---
 NAME        MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS
-mmcblk1     179:0    0 119.1G  0 disk 
+mmcblk1     179:0    0 119.1G  0 disk
 ├─mmcblk1p1 179:1    0   500M  0 part /boot
-├─mmcblk1p2 179:2    0     4G  0 part 
+├─mmcblk1p2 179:2    0     4G  0 part
 └─mmcblk1p3 179:3    0 114.6G  0 part /
 --- mmc partitions ---
 brw-rw---- 1 root disk 179, 0 Dec  2  2024 /dev/mmcblk1
@@ -690,7 +690,7 @@ ssh -o BatchMode=yes pku4090-direct 'ssh -o BatchMode=yes -o StrictHostKeyChecki
 ```
 ===== 1 KERNEL BANNERS (decompressed vmlinuz) =====
 ### /boot/vmlinuz-6.6.87-win2030
-Linux version 6.6.87 (zrp@DESKTOP-ZRP) (riscv64-linux-gnu-gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, GNU ld (GNU Binutils for Ubuntu) 2.38) # SMP 
+Linux version 6.6.87 (zrp@DESKTOP-ZRP) (riscv64-linux-gnu-gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, GNU ld (GNU Binutils for Ubuntu) 2.38) # SMP
 Linux version 6.6.87 (zrp@DESKTOP-ZRP) (riscv64-linux-gnu-gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, GNU ld (GNU Binutils for Ubuntu) 2.38) #1 SMP Mon Sep  1 21:20:09 CST 2025
 exit=0
 --- utsrelease-ish strings ---
@@ -698,7 +698,7 @@ exit=0
 6.6.87
 6.6.87
 ### /boot/vmlinuz-6.6.87-win2030-origin
-Linux version 6.6.87-win2030 (builder@rockos-riscv-builder) (riscv64-linux-gnu-gcc-13 (Ubuntu 13.2.0-23ubuntu4) 13.2.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #2025.04.20.18.43+bb0c69aea SMP 
+Linux version 6.6.87-win2030 (builder@rockos-riscv-builder) (riscv64-linux-gnu-gcc-13 (Ubuntu 13.2.0-23ubuntu4) 13.2.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #2025.04.20.18.43+bb0c69aea SMP
 Linux version 6.6.87-win2030 (builder@rockos-riscv-builder) (riscv64-linux-gnu-gcc-13 (Ubuntu 13.2.0-23ubuntu4) 13.2.0, GNU ld (GNU Binutils for Ubuntu) 2.42) #2025.04.20.18.43+bb0c69aea SMP Sun Apr 20 18:58:14 UTC 2025
 exit=0
 --- utsrelease-ish strings ---
@@ -711,13 +711,13 @@ exit=0
 modprobe: FATAL: Module kvm not found in directory /lib/modules/6.6.87
 exit=1
 --- modprobe -n -v -S 6.6.87-win2030 kvm ---
-insmod /lib/modules/6.6.87-win2030/kernel/arch/riscv/kvm/kvm.ko 
+insmod /lib/modules/6.6.87-win2030/kernel/arch/riscv/kvm/kvm.ko
 exit=0
 --- modinfo -k 6.6.87-win2030 kvm ---
 filename:       /lib/modules/6.6.87-win2030/kernel/arch/riscv/kvm/kvm.ko
 license:        GPL
 author:         Qumranet
-depends:        
+depends:
 intree:         Y
 name:           kvm
 vermagic:       6.6.87-win2030 SMP mod_unload riscv
@@ -863,7 +863,7 @@ debian            -                19:30    2:50   0.00s  0.39s /usr/lib/systemd
 lightdm           -                Tue19    2:50   0.00s  0.14s lightdm --session-child 19 22
 lightdm           -                Tue19    2:50   0.00s  0.66s /usr/lib/systemd/systemd --user
 --- sshd listen ---
-LISTEN 0      128          0.0.0.0:22        0.0.0.0:*   
+LISTEN 0      128          0.0.0.0:22        0.0.0.0:*
 
 ===== 3 PACKAGE INTEGRITY =====
 --- dpkg -V linux-image-6.6.87-win2030 ---

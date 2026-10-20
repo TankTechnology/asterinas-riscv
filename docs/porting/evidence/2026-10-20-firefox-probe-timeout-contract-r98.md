@@ -1,7 +1,7 @@
 # Firefox probe timeout contract r98
 
-Date: 2026-10-19T22:20:00Z  
-Gate: `firefox-probe-timeout-contract`  
+Date: 2026-10-19T22:20:00Z
+Gate: `firefox-probe-timeout-contract`
 Claim: E3 (supplemental host-side contract; it does not claim Firefox scene success)
 
 ## Root cause isolated

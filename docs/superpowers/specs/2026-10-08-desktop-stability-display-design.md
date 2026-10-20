@@ -1,7 +1,7 @@
 # Stable Desktop Display and Recoverable Hardware Validation
 
-**Status:** Proposed design for review  
-**Scope:** Asterinas desktop bring-up on QEMU and the EIC7700 development board  
+**Status:** Proposed design for review
+**Scope:** Asterinas desktop bring-up on QEMU and the EIC7700 development board
 **PowerVR:** Explicitly out of scope for this phase
 
 ## Goal

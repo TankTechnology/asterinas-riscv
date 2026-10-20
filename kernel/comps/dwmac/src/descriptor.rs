@@ -263,11 +263,11 @@ mod tests {
         assert_eq!(rx.take_completed_rx(2048).unwrap(), None);
 
         let mut tx = Descriptor::zeroed();
-        assert_eq!(tx.reclaim_completed_tx().unwrap(), false);
+        assert!(!tx.reclaim_completed_tx().unwrap());
         tx.publish_tx(DmaAddress::new(0x9000), 128).unwrap();
-        assert_eq!(tx.reclaim_completed_tx().unwrap(), false);
+        assert!(!tx.reclaim_completed_tx().unwrap());
         tx.words[3] &= !DESCRIPTOR_OWN;
-        assert_eq!(tx.reclaim_completed_tx().unwrap(), true);
+        assert!(tx.reclaim_completed_tx().unwrap());
         assert_eq!(tx.words, [0; 4]);
 
         tx.words[3] = TX_ERROR_SUMMARY;

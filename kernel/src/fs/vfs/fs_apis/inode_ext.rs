@@ -167,6 +167,7 @@ pub trait InodeExt {
     /// Returns a reference to the write-access tracker.
     ///
     /// If the tracker does not exist for this inode, a [`None`] will be returned.
+    #[expect(dead_code)]
     fn write_access_tracker(&self) -> Option<&WriteAccessTracker>;
 }
 

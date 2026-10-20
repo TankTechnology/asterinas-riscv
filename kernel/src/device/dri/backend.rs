@@ -105,10 +105,18 @@ impl ScanoutBuffer {
             .ok_or_else(|| Error::with_message(Errno::ENOMEM, "scanout backing is not contiguous"))
     }
 
+    #[cfg_attr(
+        not(all(target_arch = "riscv64", feature = "eic7700_native_scanout")),
+        expect(dead_code)
+    )]
     pub(super) fn pitch_bytes(&self) -> usize {
         self.pitch_bytes
     }
 
+    #[cfg_attr(
+        not(all(target_arch = "riscv64", feature = "eic7700_native_scanout")),
+        expect(dead_code)
+    )]
     pub(super) fn size_bytes(&self) -> usize {
         self.size_bytes as usize
     }
@@ -182,6 +190,10 @@ impl DamageRect {
             .saturating_mul(BGRX8888_BYTES_PER_PIXEL as u64)
     }
 
+    #[cfg_attr(
+        not(all(target_arch = "riscv64", feature = "eic7700_native_scanout")),
+        expect(dead_code)
+    )]
     pub(super) fn bounds(&self) -> (u32, u32, u32, u32) {
         (self.x1, self.y1, self.x2, self.y2)
     }
@@ -224,6 +236,7 @@ struct FirmwareBackendStats {
     phase: PhaseStats,
 }
 
+#[expect(dead_code)]
 #[derive(Clone, Copy)]
 struct FirmwareScanoutSnapshot {
     at_ns: u64,
@@ -259,6 +272,7 @@ impl FirmwareBackendStats {
         report.map(|present| (present, self.phase))
     }
 
+    #[cfg_attr(not(ktest), expect(dead_code))]
     fn snapshot(&self, at: Duration) -> FirmwareScanoutSnapshot {
         FirmwareScanoutSnapshot {
             at_ns: u64::try_from(at.as_nanos()).unwrap_or(u64::MAX),
@@ -279,6 +293,7 @@ impl FirmwareBackendStats {
 }
 
 impl FirmwareScanoutSnapshot {
+    #[expect(dead_code)]
     fn to_proc_line(self, phase_profile: bool) -> String {
         alloc::format!(
             "at_ns={} phase_profile={} successes={} full_count={} full_bytes={} full_total_ns={} dirty_count={} dirty_bytes={} dirty_total_ns={} sampled_rows={} sampled_bytes={} read_ns={} write_and_sync_ns={} direct_copy_and_sync_ns={}\n",
@@ -387,6 +402,7 @@ pub(super) trait ScanoutBackend: Send + Sync {
 /// cannot cursor must not be forced to pretend it can.
 pub(super) trait CursorBackend: Send + Sync {
     /// Returns the maximum hardware-cursor dimensions.
+    #[cfg_attr(not(ktest), expect(dead_code))]
     fn dimensions(&self) -> (u32, u32);
 
     /// Replaces the hardware cursor image and position, returning the resource
@@ -511,11 +527,11 @@ pub(super) fn firmware_backend(framebuffer: Arc<FrameBuffer>) -> Result<Arc<dyn 
 }
 
 /// Returns a read-on-demand snapshot without adding per-frame log traffic.
+#[expect(dead_code)]
 pub(super) fn firmware_snapshot_line() -> Option<String> {
     let backend = FIRMWARE_BACKEND.get()?;
     let stats = backend.stats.lock();
     let snapshot = stats.snapshot(aster_time::read_monotonic_time());
-    drop(stats);
     Some(snapshot.to_proc_line(PHASE_PROFILE.load(Ordering::Relaxed)))
 }
 
@@ -608,7 +624,6 @@ impl FirmwareFramebufferBackend {
         let before = sample.then(aster_time::read_monotonic_time);
         let mut writer = VmWriter::from(&mut *scratch).to_fallible();
         source.read(source_offset, &mut writer)?;
-        drop(writer);
         let after_read = sample.then(aster_time::read_monotonic_time);
         self.framebuffer
             .write_bytes_at(destination_offset, scratch)?;
@@ -905,7 +920,7 @@ impl ScanoutBackend for FirmwareFramebufferBackend {
 
 #[cfg(ktest)]
 mod tests {
-    use core::sync::atomic::{AtomicU32, Ordering};
+    use core::sync::atomic::AtomicU32;
 
     use ostd::prelude::ktest;
 

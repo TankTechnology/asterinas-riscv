@@ -12,12 +12,12 @@ fn accepts_unrelated_acyclic_edges() {
     let queue = DatagramQueueNode::new();
     let socket = SocketNode::new();
 
-    let reservation = ReservedEdges::try_new(&queue, &[socket.clone()]).unwrap();
+    let reservation = ReservedEdges::try_new(&queue, core::slice::from_ref(&socket)).unwrap();
     assert_eq!(edge_count(&queue, &socket, EdgeClass::Reserved), 1);
     reservation.rollback();
     assert_eq!(edge_count(&queue, &socket, EdgeClass::Reserved), 0);
 
-    let committed = ReservedEdges::try_new(&queue, &[socket.clone()])
+    let committed = ReservedEdges::try_new(&queue, core::slice::from_ref(&socket))
         .unwrap()
         .commit();
     assert_eq!(edge_count(&queue, &socket, EdgeClass::Committed), 1);
@@ -38,7 +38,7 @@ fn rejects_direct_and_long_mixed_cycles() {
 
     let queued_socket = SocketNode::new();
     let queued_storage = StreamStorageNode::new();
-    let queued = ReservedEdges::try_new(&queued_storage, &[queued_socket.clone()])
+    let queued = ReservedEdges::try_new(&queued_storage, core::slice::from_ref(&queued_socket))
         .unwrap()
         .commit();
     assert_eq!(
@@ -54,7 +54,7 @@ fn rejects_direct_and_long_mixed_cycles() {
     let second_socket = SocketNode::new();
     let datagram_queue = DatagramQueueNode::new();
     let _first_owner = PermanentEdge::new(&first_socket, &stream_storage).unwrap();
-    let queued = ReservedEdges::try_new(&stream_storage, &[second_socket.clone()])
+    let queued = ReservedEdges::try_new(&stream_storage, core::slice::from_ref(&second_socket))
         .unwrap()
         .commit();
     let _second_owner = PermanentEdge::new(&second_socket, &datagram_queue).unwrap();
@@ -177,7 +177,8 @@ fn drops_all_edge_guards_with_preemption_already_disabled() {
     let reserved_socket_id = reserved_socket.node_handle().id();
     let reserved_storage_weak = reserved_storage.downgrade();
     let reserved_socket_weak = reserved_socket.downgrade();
-    let reserved = ReservedEdges::try_new(&reserved_storage, &[reserved_socket.clone()]).unwrap();
+    let reserved =
+        ReservedEdges::try_new(&reserved_storage, core::slice::from_ref(&reserved_socket)).unwrap();
     assert_eq!(
         edge_count(&reserved_storage, &reserved_socket, EdgeClass::Reserved),
         1
@@ -201,9 +202,10 @@ fn drops_all_edge_guards_with_preemption_already_disabled() {
     let committed_socket_id = committed_socket.node_handle().id();
     let committed_storage_weak = committed_storage.downgrade();
     let committed_socket_weak = committed_socket.downgrade();
-    let committed = ReservedEdges::try_new(&committed_storage, &[committed_socket.clone()])
-        .unwrap()
-        .commit();
+    let committed =
+        ReservedEdges::try_new(&committed_storage, core::slice::from_ref(&committed_socket))
+            .unwrap()
+            .commit();
     assert_eq!(
         edge_count(&committed_storage, &committed_socket, EdgeClass::Committed),
         1

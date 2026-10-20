@@ -15,6 +15,8 @@ macro_rules! impl_socket_options {
                     Self (None)
                 }
 
+                #[expect(clippy::allow_attributes)]
+                #[allow(dead_code)]
                 pub fn get(&self) -> Option<&$value_ty> {
                     self.0.as_ref()
                 }

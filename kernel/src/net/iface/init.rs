@@ -25,6 +25,7 @@ static NEIGHBOR_PROFILES: Once<Vec<BootNeighborProfile>> = Once::new();
 aster_cmdline::define_repeatable_kv_param!("asterinas.net", NETWORK_PROFILES);
 aster_cmdline::define_repeatable_kv_param!("asterinas.neighbor", NEIGHBOR_PROFILES);
 
+#[expect(dead_code)]
 fn loopback_iface() -> &'static Arc<Iface> {
     &IFACES.get().unwrap()[0]
 }
@@ -492,7 +493,11 @@ mod tests {
             ))
             .unwrap();
             assert_eq!(
-                validate_neighbors(&[invalid], &[profile.clone()], &["eic7700-rj45"]),
+                validate_neighbors(
+                    &[invalid],
+                    core::slice::from_ref(&profile),
+                    &["eic7700-rj45"]
+                ),
                 Err(BootProfileError::InvalidValue),
                 "{invalid_address}"
             );

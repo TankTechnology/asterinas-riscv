@@ -1,6 +1,6 @@
 # ppoll return-counter instrumentation r2
 
-Date: 2026-10-20  
+Date: 2026-10-20
 Gate: `firefox-ppoll-return-counters`
 
 This is supplemental E3 diagnostic evidence.  It does not claim that the

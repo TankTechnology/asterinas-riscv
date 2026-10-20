@@ -157,7 +157,7 @@ Notes:
 | `fcntl14_64` | same as `fcntl14` | fork ~196 ms under TCG | **env** (TCG fork perf) |
 
 All three are the slow-fork class, measured at **195.5 ms/fork** by the probe
-(§1). None blocks, deadlocks, or mis-waits; they simply fork more times than a
+(§1). None blocks, deadlocks, or waits incorrectly; they simply fork more times than a
 240 s/300 s budget allows at TCG speed. On a lazy-COW kernel (or bare metal)
 they would complete. This is an *environment/perf* issue, not a kernel
 correctness bug, and it shares its root with the SMP=4 `/init` hang.

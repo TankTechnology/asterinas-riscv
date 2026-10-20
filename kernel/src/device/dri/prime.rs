@@ -63,10 +63,12 @@ pub(crate) struct DmaBufFile {
 }
 
 impl DmaBufFile {
+    #[expect(dead_code)]
     pub(super) fn object_id(&self) -> u32 {
         self.object_id
     }
 
+    #[expect(dead_code)]
     pub(super) fn size(&self) -> u64 {
         self.size
     }

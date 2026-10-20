@@ -77,6 +77,7 @@ mod tests {
     use crate::device::tty::{hvc::HvcDriver, serial::SerialDriver, vt::VtDriver};
 
     #[ktest]
+    #[expect(clippy::assertions_on_constants)]
     fn scm_rights_leaf_requires_concrete_driver_opt_in() {
         assert!(!VtDriver::SCM_RIGHTS_PROVEN_LEAF);
         assert!(HvcDriver::SCM_RIGHTS_PROVEN_LEAF);

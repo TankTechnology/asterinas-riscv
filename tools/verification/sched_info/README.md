@@ -23,7 +23,7 @@ new directory under `target/sched-info-model/`.
   preserve the first queued timestamp.
 - `Dispatch` represents `PerCpuClassRqSet::try_pick_next` selecting the entity and
   completing one runnable-wait interval.
-- `Preempt` represents replacing a still-runnable current task and requeueing it.
+- `Preempt` represents replacing a still-runnable current task and requeuing it.
 - `Block` represents `dequeue_current` after `Wait` or `Exit`; blocked time is excluded.
 - `Migrate` represents removal from a running CPU followed by successful destination
   enqueue; its queued interval starts at destination admission.

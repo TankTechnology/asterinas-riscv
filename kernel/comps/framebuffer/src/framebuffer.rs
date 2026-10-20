@@ -282,9 +282,10 @@ impl PixelOffset<'_> {
 
 #[cfg(ktest)]
 mod tests {
+    #[cfg(target_arch = "riscv64")]
+    use ostd::mm::CachePolicy;
     use ostd::{
         boot::{BootloaderFramebufferArg, BootloaderFramebufferFormat},
-        mm::CachePolicy,
         prelude::ktest,
     };
 

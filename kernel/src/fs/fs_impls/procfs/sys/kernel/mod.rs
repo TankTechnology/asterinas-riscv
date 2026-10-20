@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: MPL-2.0
 
+#[cfg(target_arch = "riscv64")]
+use self::asterinas_reboot_watchdog::AsterinasRebootWatchdogFileOps;
 use crate::{
     fs::{
         file::{InodeType, mkmod},
         procfs::{
             ProcDir, StaticEntry,
             sys::kernel::{
-                asterinas_reboot_watchdog::AsterinasRebootWatchdogFileOps,
                 cap_last_cap::CapLastCapFileOps,
                 core_pattern::CorePatternFileOps,
                 dmesg_restrict::DmesgRestrictFileOps,
@@ -27,6 +28,7 @@ use crate::{
     security::lsm::is_yama_enabled,
 };
 
+#[cfg(target_arch = "riscv64")]
 mod asterinas_reboot_watchdog;
 mod cap_last_cap;
 mod core_pattern;
@@ -54,6 +56,7 @@ impl KernelDirOps {
     }
 
     const STATIC_ENTRIES: &'static [StaticEntry] = &[
+        #[cfg(target_arch = "riscv64")]
         (
             "asterinas_reboot_watchdog",
             InodeType::File,
@@ -84,7 +87,7 @@ impl KernelDirOps {
     ];
 }
 
-#[cfg(ktest)]
+#[cfg(all(ktest, target_arch = "riscv64"))]
 mod tests {
     use ostd::prelude::*;
 

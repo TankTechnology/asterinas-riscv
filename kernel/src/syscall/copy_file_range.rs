@@ -105,18 +105,18 @@ pub fn sys_copy_file_range(
     };
 
     // Overlapping ranges within the same file are rejected.
-    if let (Some(in_inode), Some(out_inode)) = (in_inode, out_inode) {
-        if Arc::ptr_eq(in_inode, out_inode) && len > 0 {
-            if let (Some(start_in), Some(start_out)) = (effective_off_in, effective_off_out) {
-                let end_in = start_in.saturating_add(len);
-                let end_out = start_out.saturating_add(len);
-                if start_in < end_out && start_out < end_in {
-                    return_errno_with_message!(
-                        Errno::EINVAL,
-                        "input and output ranges overlap within the same file"
-                    );
-                }
-            }
+    if let (Some(in_inode), Some(out_inode)) = (in_inode, out_inode)
+        && Arc::ptr_eq(in_inode, out_inode)
+        && len > 0
+        && let (Some(start_in), Some(start_out)) = (effective_off_in, effective_off_out)
+    {
+        let end_in = start_in.saturating_add(len);
+        let end_out = start_out.saturating_add(len);
+        if start_in < end_out && start_out < end_in {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "input and output ranges overlap within the same file"
+            );
         }
     }
 

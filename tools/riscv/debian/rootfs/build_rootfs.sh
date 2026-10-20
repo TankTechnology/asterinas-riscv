@@ -1294,7 +1294,7 @@ EOF
         if [[ -x "$stage/usr/bin/systemd-sysusers" ]]; then
             finalize_browser_startup_caches "$stage"
         elif [[ "$PROFILE" == desktop-m5-network ]]; then
-            # Keep the helper overrideable for the skeletal desktop-M5 unit
+            # Keep the helper overridable for the skeletal desktop-M5 unit
             # tests; real builds have target systemd-sysusers and take the
             # branch above.
             finalize_browser_startup_caches "$stage"

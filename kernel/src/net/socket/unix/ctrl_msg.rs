@@ -341,13 +341,14 @@ impl AuxiliaryData {
         passed_sockets: Vec<SocketNode>,
         has_unsupported_file: bool,
     ) -> Self {
+        let has_stream_socket = !passed_sockets.is_empty();
         Self {
             files: Vec::new(),
             cred: None,
             scm_files: ScmFiles {
-                has_stream_socket: !passed_sockets.is_empty(),
-                has_datagram_socket: false,
                 passed_sockets,
+                has_stream_socket,
+                has_datagram_socket: false,
                 has_unsupported_file,
             },
         }

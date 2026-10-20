@@ -147,7 +147,7 @@ index 04465cf..0830a24 100644
 -            // kernel as well, so they are not checked here.
 -            continue;
 -        }
- 
+
          let Some(hart_id) = cpu.property("reg").and_then(|reg| reg.as_usize()) else {
              panic!(
 @@ -193,7 +188,6 @@ fn validate_cpu_nodes(fdt: &Fdt, bootstrap_hart_id: usize) {
@@ -165,7 +165,7 @@ index 04465cf..0830a24 100644
 -        if cpu.property("mmu-type").is_none() {
 -            continue;
 -        }
- 
+
          let mut controllers = cpu.children().filter(|child| {
              child
 @@ -385,7 +376,6 @@ fn validate_interrupt_controllers(fdt: &Fdt) {
@@ -199,15 +199,15 @@ index c6f9387..e7b7730 100644
 -        if cpu.property("mmu-type").is_none() {
 -            continue;
 -        }
- 
+
          cpu_count += 1;
- 
+
 diff --git a/ostd/src/arch/riscv/mm/mod.rs b/ostd/src/arch/riscv/mm/mod.rs
 index 0b1a7c5..a805c49 100644
 --- a/ostd/src/arch/riscv/mm/mod.rs
 +++ b/ostd/src/arch/riscv/mm/mod.rs
 @@ -190,16 +190,17 @@ pub(crate) unsafe fn sync_dma_range<D: DmaDirection>(range: Range<Vaddr>) {
- 
+
      static CMO_MANAGEMENT_BLOCK_SIZE: Once<usize> = Once::new();
      let cmo_management_block_size = *CMO_MANAGEMENT_BLOCK_SIZE.call_once(|| {
 +        // KVM guests may omit `mmu-type`/`riscv,cbom-block-size` from CPU
@@ -226,9 +226,9 @@ index 0b1a7c5..a805c49 100644
 +            .and_then(|p| p.as_usize())
 +            .unwrap_or(64)
      });
- 
+
      for addr in range.step_by(cmo_management_block_size) {
--- 
+--
 2.34.1
 
 ```

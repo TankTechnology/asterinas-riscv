@@ -2,7 +2,10 @@
 
 # The regexes below are considered valid and should not be flagged as typos.
 [default]
-extend-ignore-re = [ "sha256 = \"([a-zA-Z0-9]+)\";" ]
+extend-ignore-re = [
+    "sha256 = \"([a-zA-Z0-9]+)\";",
+    "\\b[0-9a-f]{7,40}\\b",
+]
 
 # Words listed below are marked as valid, not mistakes.
 [default.extend-words]
@@ -31,6 +34,14 @@ THR = "THR"
 TestNG = "TestNG"
 hda = "hda"
 testca = "testca"
+Synopsys = "Synopsys"
+synopsys = "synopsys"
+gir = "gir"
+GIR = "GIR"
+parm = "parm"
+OIF = "OIF"
+WRITEN = "WRITEN"
+writen = "writen"
 
 # Files with svg suffix are ignored to check.
 [type.svg]

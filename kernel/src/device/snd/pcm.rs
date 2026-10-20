@@ -17,6 +17,7 @@ pub const SNDRV_PCM_VERSION: i32 = 0x20011;
 
 // Stream directions (`SNDRV_PCM_STREAM_*`).
 pub const SNDRV_PCM_STREAM_PLAYBACK: i32 = 0;
+#[expect(dead_code)]
 pub const SNDRV_PCM_STREAM_CAPTURE: i32 = 1;
 
 // Device classes (`SNDRV_PCM_CLASS_*` / `SNDRV_PCM_SUBCLASS_*`).
@@ -41,7 +42,9 @@ pub const SNDRV_PCM_STATE_OPEN: i32 = 0;
 pub const SNDRV_PCM_STATE_SETUP: i32 = 1;
 pub const SNDRV_PCM_STATE_PREPARED: i32 = 2;
 pub const SNDRV_PCM_STATE_RUNNING: i32 = 3;
+#[expect(dead_code)]
 pub const SNDRV_PCM_STATE_XRUN: i32 = 4;
+#[expect(dead_code)]
 pub const SNDRV_PCM_STATE_DRAINING: i32 = 5;
 
 // `snd_pcm_hw_param_t` indices for masks (also the `masks` array index).
@@ -283,6 +286,7 @@ pub(crate) mod ioctl_defs {
 }
 
 /// Negotiated hardware parameters for the playback stream.
+#[expect(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct PcmParams {
     pub channels: u32,
@@ -311,6 +315,7 @@ impl PcmStream {
         }
     }
 
+    #[expect(dead_code)]
     pub fn state(&self) -> i32 {
         self.state
     }

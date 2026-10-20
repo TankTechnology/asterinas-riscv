@@ -685,7 +685,7 @@ mod test {
         let storage = first.storage_node();
         let passed = SocketNode::new();
 
-        let reservation = ReservedEdges::try_new(&storage, &[passed.clone()]).unwrap();
+        let reservation = ReservedEdges::try_new(&storage, core::slice::from_ref(&passed)).unwrap();
         assert_eq!(reserved_edge_count(&storage, &passed), 1);
         let error = finalize_scm_write(
             Some(reservation),
@@ -739,7 +739,7 @@ mod test {
         let datagram_queue = DatagramQueueNode::new();
         let _datagram_owner = PermanentEdge::new(&datagram, &datagram_queue).unwrap();
         let incomplete_graph_reservation =
-            ReservedEdges::try_new(&storage, &[datagram.clone()]).unwrap();
+            ReservedEdges::try_new(&storage, core::slice::from_ref(&datagram)).unwrap();
         incomplete_graph_reservation.rollback();
 
         let mut datagram_aux = AuxiliaryData::new_test_datagram_scm(datagram.clone());
