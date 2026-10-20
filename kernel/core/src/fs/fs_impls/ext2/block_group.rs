@@ -552,6 +552,16 @@ impl BlockGroup {
         InodeDesc::try_from_raw_with_extras(&raw_inode, extras)
     }
 
+    /// Reads the raw 128-byte inode without rejecting `link_count == 0`.
+    ///
+    /// The orphan chain contains inodes whose link count reached zero before
+    /// a crash, so the regular descriptor parser would call them stale.
+    pub(super) fn read_raw_inode(&self, ino: Ext2Ino) -> Result<RawInode> {
+        let inode_idx = self.inode_idx_in_group(ino);
+        let offset_bytes = (inode_idx as usize) * self.inode_size;
+        Ok(self.inode_table_cache.read_val(offset_bytes)?)
+    }
+
     /// Writes an inode descriptor to the group's inode table `PageCache`.
     ///
     /// The sub-second timestamp words are written too when the slot
