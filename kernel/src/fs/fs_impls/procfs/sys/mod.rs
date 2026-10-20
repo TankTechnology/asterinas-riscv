@@ -22,6 +22,7 @@ mod kernel;
 mod net;
 mod vm;
 
+#[cfg(target_arch = "riscv64")]
 pub(crate) fn boot_id_text() -> &'static str {
     kernel::boot_id_text()
 }

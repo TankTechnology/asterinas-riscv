@@ -142,32 +142,32 @@ pub fn futex_wait_bitset(
     // without tracing every syscall or perturbing normal boots.
     let item = futex_bucket_ref.lock().remove_by_waker(&waiter.waker());
     let was_woken = item.is_none();
-    if let (Some(elapsed), true) = (elapsed, FUTEX_PROFILE.load(Ordering::Relaxed)) {
-        if elapsed >= FUTEX_WAIT_DETAIL_THRESHOLD_JIFFIES {
-            let pid = ctx.process.pid();
-            if futex_detail_enabled(pid) {
-                let event = FUTEX_WAIT_DETAIL_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
-                if event <= FUTEX_WAIT_DETAIL_LOG_LIMIT {
-                    let outcome = if was_woken {
-                        "woken"
-                    } else if result.is_err() {
-                        "timeout_or_error"
-                    } else {
-                        "spurious"
-                    };
-                    ostd::error!(
-                        "ASTERINAS_FUTEX_WAIT_DETAIL event={} pid={} tid={} addr=0x{:x} val={} bitset=0x{:x} timed={} elapsed_jiffies={} outcome={}",
-                        event,
-                        ctx.process.pid(),
-                        ctx.posix_thread.tid(),
-                        futex_addr,
-                        futex_val,
-                        bitset,
-                        has_timeout,
-                        elapsed,
-                        outcome,
-                    );
-                }
+    if let (Some(elapsed), true) = (elapsed, FUTEX_PROFILE.load(Ordering::Relaxed))
+        && elapsed >= FUTEX_WAIT_DETAIL_THRESHOLD_JIFFIES
+    {
+        let pid = ctx.process.pid();
+        if futex_detail_enabled(pid) {
+            let event = FUTEX_WAIT_DETAIL_EVENTS.fetch_add(1, Ordering::Relaxed) + 1;
+            if event <= FUTEX_WAIT_DETAIL_LOG_LIMIT {
+                let outcome = if was_woken {
+                    "woken"
+                } else if result.is_err() {
+                    "timeout_or_error"
+                } else {
+                    "spurious"
+                };
+                ostd::error!(
+                    "ASTERINAS_FUTEX_WAIT_DETAIL event={} pid={} tid={} addr=0x{:x} val={} bitset=0x{:x} timed={} elapsed_jiffies={} outcome={}",
+                    event,
+                    ctx.process.pid(),
+                    ctx.posix_thread.tid(),
+                    futex_addr,
+                    futex_val,
+                    bitset,
+                    has_timeout,
+                    elapsed,
+                    outcome,
+                );
             }
         }
     }

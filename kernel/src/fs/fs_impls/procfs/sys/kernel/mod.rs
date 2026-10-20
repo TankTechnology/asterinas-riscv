@@ -37,6 +37,7 @@ mod tainted;
 mod uts;
 mod yama;
 
+#[cfg(target_arch = "riscv64")]
 pub(crate) fn boot_id_text() -> &'static str {
     random::boot_id_text()
 }

@@ -65,6 +65,7 @@ pub(super) fn init_on_each_cpu() {
 }
 
 /// Return the process-visible boot identity for early handoff evidence.
+#[cfg(target_arch = "riscv64")]
 pub(crate) fn boot_id_text() -> &'static str {
     sys::boot_id_text()
 }
