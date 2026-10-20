@@ -1007,8 +1007,9 @@ test_x86_debian_fs_ext4_features:
 # metadata_csum gate: the Debian image is converted with tune2fs and every
 # checksummed structure is exercised (superblock, descriptors, bitmaps,
 # inodes, extent leaf, directory tails including an htree->linear conversion,
-# and an external xattr block).  Both boots must survive `e2fsck -fn`, which
-# verifies every checksum.
+# and an external xattr block).  Journal checksum v3 is enabled, the kernel
+# is crashed right after a journal commit, and e2fsprogs must replay that
+# journal without a checksum error.  Every phase ends with `e2fsck -fn`.
 #   X86_DEBIAN_METADATA_CSUM_BASE_ROOT  ext4 image converted per run
 X86_DEBIAN_METADATA_CSUM_BASE_ROOT ?=
 X86_DEBIAN_METADATA_CSUM_WORKSPACE ?= $(CURDIR)/target/x86-debian/metadata-csum

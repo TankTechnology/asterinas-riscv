@@ -305,7 +305,7 @@ impl Ext2 {
             );
         }
         let refs: Vec<&[u8]> = blocks.iter().map(Vec::as_slice).collect();
-        let replay = journal::scan_log(&refs, sb.sequence)?;
+        let replay = journal::scan_log(&refs, sb.sequence, &sb)?;
         debug!("ext2: journal replay applying {} blocks", replay.len());
         for block in replay {
             self.write_raw_block(block.block_number, &block.data)?;
@@ -430,10 +430,7 @@ impl Ext2 {
             return_errno_with_message!(Errno::EAGAIN, "stale ext4 journal sequence");
         }
 
-        let encoded = {
-            let uuid = self.super_block.read().uuid();
-            transaction.encode(&uuid)?
-        };
+        let encoded = transaction.encode(&super_block)?;
         let mut ring = journal::JournalRing::new(super_block)?;
         let positions = ring.reserve(encoded.len())?;
         for (position, block) in positions.iter().zip(encoded.iter()) {

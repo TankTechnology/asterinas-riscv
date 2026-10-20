@@ -48,6 +48,14 @@ allocation is recorded by the bitmap of the group that physically holds them.
 keep sector-based `i_blocks` accounting and the 32-byte inode extras that
 `i_extra_isize` already describes.
 
+Uninitialized groups (`bg_flags` `BLOCK_UNINIT`/`INODE_UNINIT`, used by
+default `mke2fs` images with `metadata_csum`) are synthesized at mount: the
+block bitmap is rebuilt from the group's metadata layout (its own bitmaps,
+inode table, and superblock/descriptor copies when the group carries them)
+and the inode bitmap starts all-free. The corresponding flag is cleared when
+the group is first used, and a non-zeroed inode table is zeroed before its
+first inode is created.
+
 `metadata_csum` is implemented for both 32-byte and 64-byte descriptors. The
 seed is `s_checksum_seed` when the `csum_seed` incompat feature is set and the
 UUID CRC otherwise. Every metadata writer maintains its checksum: superblock
@@ -118,10 +126,10 @@ linear; `e2fsck -D` can rebuild an index later.
 | Feature | Status | Notes |
 |---|---|---|
 | `user.*`, `trusted.*`, `security.*` | ✅ | one xattr block per inode |
-| External value blocks (`i_file_acl` pointing to EA blocks) | ❌ | `EIO` on read |
+| External value blocks (`e_value_block`) | ❌ | ext4 repurposed the field for EA inodes; a non-zero value is rejected |
 | POSIX ACLs (`system.posix_acl_*`) | ✅ | access ACLs stored and enforced (owner, named user, group class with mask, other); `chmod` keeps the mask/group/other entries in sync; default ACLs are stored and inherited on create |
 | xattr block sharing | ❌ | reference count is always 1 |
-| xattr capacity | 🟡 | value must fit the single xattr block |
+| xattr capacity | 🟡 | all values must fit the single xattr block (4096 bytes) |
 
 ### POSIX ACLs
 
@@ -156,9 +164,10 @@ carry no ACL. An invalid ACL value fails the access check with
 | Feature | Status | Notes |
 |---|---|---|
 | Internal journal | ✅ | external journals rejected |
-| Journal superblock | 🟡 | v2 only; 32-bit tags; no checksum or 64-bit tag layout |
+| Journal superblock | 🟡 | v2 only; 32-bit block numbers and tags; checksum v3 supported |
 | Writing metadata transactions | ✅ | descriptor + data + optional revoke + commit, then home blocks and checkpoint; directory data blocks join the transaction that describes them |
-| Replay after a crash | 🟡 | one descriptor per transaction; revoke-only transactions and deleted tags are `EOPNOTSUPP` |
+| Replay after a crash | ✅ | one descriptor per transaction; revoke-only transactions and legacy deleted tags are replayed, as jbd2 does |
+| Journal checksums | ✅ | incompat `csum_v3` (descriptor, revoke, commit and data-tag CRC32C), with the journal superblock resealed on every `s_start`/`s_sequence` update |
 | Journal inode geometry | 🟡 | must be contiguous for replay |
 | `noload` mount option | ✅ | skips journal replay |
 | Cache coherence after replay | ✅ | replayed home blocks bypass the in-memory caches, so bitmaps, group descriptors, the superblock and inode-table pages are reloaded before the filesystem is exposed |
@@ -233,10 +242,12 @@ Known gaps that a package workload can still hit:
    including hole writes and leaf splits; a fifth index entry (depth two) is
    still `EOPNOTSUPP`. Most Debian files are small or indirect-mapped, which is
    why installation works today.
-2. **Xattrs larger than one inode.** Values that need an external value block
-   are not implemented; POSIX ACLs themselves are.
-3. **Journal edge cases:** revoke-only transactions, deleted tags, journal
-   checksums, and non-contiguous journal inodes.
+2. **Large xattr values.** ext4 stores values that do not fit the xattr block
+   in EA inodes (`ea_inode`); that feature is not implemented, so each value
+   is limited to the block's free space.
+3. **Journal layout limits:** 64-bit block numbers, checksum v2 and fast
+   commit are rejected at mount, and a non-contiguous journal inode cannot be
+   replayed.
 
 Default `mke2fs` images (`64bit`, `flex_bg`, `metadata_csum`, `csum_seed`) now
 mount and pass `e2fsck -fn` after real write workloads. The next storage
@@ -261,7 +272,10 @@ deleted tags).
   descriptors), lets `e2fsck -fyD` add the directory tails, and then runs a
   workload that touches every checksummed structure: inode and bitmap
   allocation, an htree directory converted back to linear blocks, a depth-one
-  extent leaf, and an external xattr block. `e2fsck -fn` after both boots
+  extent leaf, and an external xattr block. It also enables JBD2 checksum v3,
+  crashes the kernel right after a journal commit, requires e2fsprogs to
+  replay that journal without a checksum error, and then boots the same image
+  so the kernel's own verified replay runs. `e2fsck -fn` after every phase
   verifies every checksum, and a host check re-reads the superblock checksum.
 - Every gate checks `e2fsck -fn` after a clean shutdown; crash tests replay the
   journal from a fault-injected boot.

@@ -126,14 +126,37 @@ impl BlockGroup {
         group_desc.validate_free_counts(last_block_no - first_block_no + 1, nr_inodes_in_group)?;
 
         // Load and validate bitmaps once during mount, keep them cached in memory.
-        let block_bitmap = Self::load_block_bitmap(
-            block_device.as_ref(),
-            first_block_no,
-            last_block_no,
-            &group_desc,
-        )?;
-        let inode_bitmap =
-            Self::load_inode_bitmap(block_device.as_ref(), nr_inodes_per_group, &group_desc)?;
+        // Groups marked BLOCK_UNINIT/INODE_UNINIT have no valid on-disk
+        // bitmap; synthesize it the way Linux does and clear the flag on the
+        // first allocation.
+        let block_bitmap = if group_desc.has_flag(BG_BLOCK_UNINIT) {
+            Self::synthesize_block_bitmap(
+                first_block_no,
+                last_block_no,
+                &group_desc,
+                sb,
+                group_idx,
+                nr_inode_table_blocks_per_group,
+            )?
+        } else {
+            Self::load_block_bitmap(
+                block_device.as_ref(),
+                first_block_no,
+                last_block_no,
+                &group_desc,
+            )?
+        };
+        let inode_bitmap = if group_desc.has_flag(BG_INODE_UNINIT) {
+            if u32::from(group_desc.free_inodes_count) != nr_inodes_in_group {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "uninitialized inode group claims used inodes"
+                );
+            }
+            Self::synthesize_inode_bitmap(nr_inodes_per_group)
+        } else {
+            Self::load_inode_bitmap(block_device.as_ref(), nr_inodes_per_group, &group_desc)?
+        };
 
         group_desc.validate_metadata_blocks(
             &block_bitmap,
@@ -192,14 +215,30 @@ impl BlockGroup {
             .ok_or_else(|| Error::with_message(Errno::EIO, "filesystem already dropped"))?;
 
         let group_desc = read_group_descriptor(group_descs, self.group_idx, self.desc_size)?;
-        let block_bitmap = Self::load_block_bitmap(
-            fs.block_device(),
-            self.first_block,
-            self.last_block,
-            &group_desc,
-        )?;
-        let inode_bitmap =
-            Self::load_inode_bitmap(fs.block_device(), self.nr_inodes_per_group, &group_desc)?;
+        let sb = fs.super_block();
+        let block_bitmap = if group_desc.has_flag(BG_BLOCK_UNINIT) {
+            Self::synthesize_block_bitmap(
+                self.first_block,
+                self.last_block,
+                &group_desc,
+                &sb,
+                self.group_idx,
+                self.nr_inode_table_blocks_per_group,
+            )?
+        } else {
+            Self::load_block_bitmap(
+                fs.block_device(),
+                self.first_block,
+                self.last_block,
+                &group_desc,
+            )?
+        };
+        drop(sb);
+        let inode_bitmap = if group_desc.has_flag(BG_INODE_UNINIT) {
+            Self::synthesize_inode_bitmap(self.nr_inodes_per_group)
+        } else {
+            Self::load_inode_bitmap(fs.block_device(), self.nr_inodes_per_group, &group_desc)?
+        };
 
         *self.metadata.write() = BlockGroupMetadata {
             desc: Dirty::new(group_desc),
@@ -459,6 +498,12 @@ impl BlockGroup {
         let alloc_count = alloc_count as u16;
         debug_assert!(metadata.desc.free_blocks_count >= alloc_count);
         metadata.desc.free_blocks_count -= alloc_count;
+        // First use of a BLOCK_UNINIT group: the synthesized bitmap now
+        // describes real allocations, so the flag must be cleared for
+        // e2fsck and Linux to trust it.
+        if metadata.desc.has_flag(BG_BLOCK_UNINIT) {
+            metadata.desc.clear_flag(BG_BLOCK_UNINIT);
+        }
 
         let range_start_block = self.first_block + range.start as u32;
         let range_end_block = self.first_block + range.end as u32;
@@ -526,6 +571,15 @@ impl BlockGroup {
         let Some(inode_idx) = metadata.inode_bitmap.alloc() else {
             return Ok(None);
         };
+
+        if metadata.desc.has_flag(BG_INODE_UNINIT) {
+            if !metadata.desc.has_flag(BG_INODE_ZEROED) {
+                let table_size = self.nr_inodes_per_group as usize * self.inode_size;
+                self.inode_table_cache.fill_zeros(0..table_size)?;
+            }
+            metadata.desc.set_flag(BG_INODE_ZEROED);
+            metadata.desc.clear_flag(BG_INODE_UNINIT);
+        }
 
         metadata.desc.free_inodes_count = metadata
             .desc
@@ -819,6 +873,80 @@ impl BlockGroup {
         ((ino - 1) % self.nr_inodes_per_group) as u16
     }
 
+    /// Marks the bits past the valid area of a bitmap block as allocated.
+    ///
+    /// ext4 keeps the unused tail of block and inode bitmap blocks set, and
+    /// e2fsck reports "Padding at end of ... bitmap is not set" otherwise.
+    fn fill_bitmap_padding(buf: &mut [u8], valid_bits: usize) {
+        for bit in valid_bits..BLOCK_SIZE * 8 {
+            buf[bit / 8] |= 1 << (bit % 8);
+        }
+    }
+
+    /// Synthesizes the inode bitmap of an `INODE_UNINIT` group.
+    fn synthesize_inode_bitmap(nr_inodes_per_group: u32) -> IdBitmap {
+        let mut buf = vec![0u8; BLOCK_SIZE];
+        Self::fill_bitmap_padding(&mut buf, nr_inodes_per_group as usize);
+        IdBitmap::from_buf(buf.into_boxed_slice(), nr_inodes_per_group as u16)
+    }
+
+    /// Builds the block bitmap of a `BLOCK_UNINIT` group.
+    ///
+    /// Such a group has no valid on-disk bitmap. Linux regenerates it from
+    /// the metadata layout: the group's own bitmaps and inode table, plus the
+    /// superblock and descriptor table when this group carries a copy. Under
+    /// `flex_bg` those blocks usually live in another group, in which case
+    /// this group really is all free.
+    fn synthesize_block_bitmap(
+        first_block: u32,
+        last_block: u32,
+        desc: &BlockGroupDesc,
+        sb: &SuperBlock,
+        group_idx: usize,
+        nr_inode_table_blocks_per_group: u32,
+    ) -> Result<IdBitmap> {
+        let capacity = (last_block - first_block + 1) as usize;
+        let mut buf = vec![0u8; BLOCK_SIZE];
+        let mark = |buf: &mut [u8], bid: u32| -> Result<()> {
+            if bid < first_block || bid > last_block {
+                // With FLEX_BG the metadata of this group may live elsewhere.
+                return Ok(());
+            }
+            let bit = (bid - first_block) as usize;
+            if bit >= capacity {
+                return_errno_with_message!(Errno::EINVAL, "group metadata outside group");
+            }
+            buf[bit / 8] |= 1 << (bit % 8);
+            Ok(())
+        };
+
+        mark(&mut buf, desc.block_bitmap_bid)?;
+        mark(&mut buf, desc.inode_bitmap_bid)?;
+        for index in 0..nr_inode_table_blocks_per_group {
+            mark(&mut buf, desc.inode_table_bid + index)?;
+        }
+        if sb.has_super_block(group_idx) {
+            mark(&mut buf, sb.bid(group_idx))?;
+            let descriptors = sb.group_descriptors_bid(group_idx);
+            for index in 0..sb.group_descriptor_blocks_count() {
+                mark(&mut buf, descriptors + index)?;
+            }
+        }
+
+        let marked: u32 = (0..capacity)
+            .filter(|bit| buf[bit / 8] & (1 << (bit % 8)) != 0)
+            .count() as u32;
+        let expected_free = capacity as u32 - marked;
+        if u32::from(desc.free_blocks_count) != expected_free {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "uninitialized block group free count mismatch"
+            );
+        }
+        Self::fill_bitmap_padding(&mut buf, capacity);
+        Ok(IdBitmap::from_buf(buf.into_boxed_slice(), capacity as u16))
+    }
+
     /// Loads and validates the block bitmap for this group.
     fn load_block_bitmap(
         block_device: &dyn BlockDevice,
@@ -909,6 +1037,13 @@ impl Debug for BlockGroupMetadata {
     }
 }
 
+/// `bg_flags` bits.
+const BG_INODE_UNINIT: u16 = 0x1;
+const BG_BLOCK_UNINIT: u16 = 0x2;
+const BG_INODE_ZEROED: u16 = 0x4;
+/// Offset of `bg_flags`.
+const BG_FLAGS: usize = 0x12;
+
 /// Offsets inside a block group descriptor.
 const BG_BLOCK_BITMAP_CSUM_LO: usize = 0x18;
 const BG_INODE_BITMAP_CSUM_LO: usize = 0x1A;
@@ -972,6 +1107,25 @@ impl BlockGroupDesc {
             used_dirs_count: read_u16(16),
             itable_unused: read_u16(0x1C),
         })
+    }
+
+    /// Returns the `bg_flags` bits.
+    fn flags(&self) -> u16 {
+        u16::from_le_bytes([self.raw[BG_FLAGS], self.raw[BG_FLAGS + 1]])
+    }
+
+    fn has_flag(&self, flag: u16) -> bool {
+        self.flags() & flag != 0
+    }
+
+    fn set_flag(&mut self, flag: u16) {
+        let flags = self.flags() | flag;
+        self.raw[BG_FLAGS..BG_FLAGS + 2].copy_from_slice(&flags.to_le_bytes());
+    }
+
+    fn clear_flag(&mut self, flag: u16) {
+        let flags = self.flags() & !flag;
+        self.raw[BG_FLAGS..BG_FLAGS + 2].copy_from_slice(&flags.to_le_bytes());
     }
 
     /// Stores a block bitmap checksum (32 bits split across the lo/hi fields).

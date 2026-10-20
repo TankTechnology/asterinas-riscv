@@ -129,6 +129,7 @@ MNT = '/mnt/feat'
 DATA = '/dev/vdb'
 BLOCK = 4096
 FILES = 120
+MANY_FILES = 600
 BIG_BLOCKS = 64
 DISK_BLOCKS = 32
 BIG_BYTE = 0xA5
@@ -218,6 +219,14 @@ def write_phase():
         umount_rc = None
     else:
         write_blocks(os.path.join(MNT, 'disk.bin'), DISK_BLOCKS, DISK_BYTE)
+        # Small groups plus many files force allocation into groups whose
+        # bitmaps start out BLOCK_UNINIT/INODE_UNINIT.
+        many = os.path.join(MNT, 'many')
+        os.makedirs(many, exist_ok=True)
+        for index in range(MANY_FILES):
+            with open(os.path.join(many, 'g%04d' % index), 'wb') as f:
+                f.write(bytes([index & 0xFF]))
+        fsync_dir(many)
         fsync_dir(MNT)
         umount_rc = umount_data()
         if umount_rc != 0:
@@ -244,6 +253,15 @@ def verify_phase():
             with open(path, 'rb') as f:
                 if f.read() != file_pattern(DISK_BLOCKS, DISK_BYTE):
                     problems.append('disk.bin lost its contents')
+        many = os.path.join(MNT, 'many')
+        for index in range(MANY_FILES):
+            path = os.path.join(many, 'g%04d' % index)
+            if not os.path.exists(path):
+                problems.append('g%04d is missing' % index)
+                continue
+            with open(path, 'rb') as f:
+                if f.read() != bytes([index & 0xFF]):
+                    problems.append('g%04d lost its contents' % index)
         if umount_data() != 0:
             problems.append('second umount failed')
     return problems
@@ -444,9 +462,9 @@ tune2fs -O 64bit,flex_bg "$IMAGE" >"$WORKSPACE/tune2fs.txt" 2>&1 ||
         exit 1
     }
 
-mke2fs -q -t ext4 -b 4096 -I 256 -N 32768 \
+mke2fs -q -t ext4 -b 4096 -I 256 -N 8192 -g 1024 \
     -O 64bit,flex_bg,metadata_csum,^orphan_file \
-    "$DATA_IMAGE" 256M >"$WORKSPACE/mke2fs.txt" 2>&1 ||
+    "$DATA_IMAGE" 64M >"$WORKSPACE/mke2fs.txt" 2>&1 ||
     {
         printf 'FAIL (mke2fs could not create the flex_bg image; see %s)\n' \
             "$WORKSPACE/mke2fs.txt"

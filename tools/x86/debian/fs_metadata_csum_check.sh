@@ -10,8 +10,7 @@
 #
 #   * files created, fsynced and deleted (inodes, bitmaps, group descriptors,
 #     directory tails and their checksums);
-#   * a 200-byte `user.*` attribute, which does not fit inline and lands in an
-#     external xattr block;
+#   * a 200-byte `user.*` attribute, which allocates an external xattr block;
 #   * a 100-page append to the extent-mapped `/etc/hostname`, promoting it to a
 #     depth-one tree with a checksummed leaf block.
 #
@@ -115,6 +114,10 @@ PROBE_UNIT="$WORKSPACE/probe.service"
 VERIFY_UNIT="$WORKSPACE/verify.service"
 CHECK_PY="$WORKSPACE/check.py"
 FEATURES_PY="$WORKSPACE/check_features.py"
+JOURNAL_PY="$WORKSPACE/check_journal.py"
+CRASH_SH="$WORKSPACE/crash-probe.sh"
+REPLAY_IMAGE="$WORKSPACE/metadata-csum-replay.ext2"
+E2FSCK_IMAGE="$WORKSPACE/metadata-csum-e2fsck.ext2"
 
 cat >"$CHECK_PY" <<CHECKS
 import os
@@ -133,8 +136,7 @@ def write_phase():
             f.write(bytes([index & 0xFF]) * BLOCK)
         f.flush()
         os.fsync(f.fileno())
-    # 200 bytes do not fit in the in-inode area, so this allocates an
-    # external xattr block with its own checksum.
+    # 200 bytes force an external xattr block (i_file_acl).
     os.setxattr(os.path.join(ROOT, 'write.bin'), 'user.big', b'a' * 200)
     sub = os.path.join(ROOT, 'sub')
     os.makedirs(sub, exist_ok=True)
@@ -271,6 +273,66 @@ if __name__ == '__main__':
     sys.exit(main())
 FEATURES
 
+cat >"$JOURNAL_PY" <<'JOURNAL'
+"""Enables JBD2 checksum v3 on an image's journal superblock.
+
+Usage: check_journal.py IMAGE JOURNAL_SB_BLOCK
+"""
+
+import struct
+import sys
+
+POLY = 0x82F63B78
+
+
+def crc32c(crc, data):
+    value = crc & 0xFFFFFFFF
+    for byte in data:
+        value ^= byte
+        for _ in range(8):
+            value = (value >> 1) ^ POLY if value & 1 else value >> 1
+    return value
+
+
+def main():
+    image, block = sys.argv[1], int(sys.argv[2])
+    with open(image, 'r+b') as f:
+        f.seek(block * 4096)
+        raw = bytearray(f.read(4096))
+        sb = bytearray(raw[:1024])
+        incompat = struct.unpack_from('>I', sb, 40)[0] | 0x10
+        sb[40:44] = struct.pack('>I', incompat)
+        sb[80] = 4  # JBD2_CRC32C_CHKSUM
+        sb[81:84] = bytes(3)
+        sb[0xFC:0x100] = bytes(4)
+        checksum = crc32c(0xFFFFFFFF, bytes(sb))
+        sb[0xFC:0x100] = struct.pack('>I', checksum)
+        raw[:1024] = sb
+        f.seek(block * 4096)
+        f.write(raw)
+    print('journal checksum v3 enabled, superblock checksum %#x' % checksum)
+
+
+if __name__ == '__main__':
+    main()
+JOURNAL
+
+cat >"$CRASH_SH" <<'CRASHPROBE'
+#!/bin/sh
+echo "JC_CRASH_PROBE_BEGIN"
+python3 - <<'PY'
+import os
+p = '/opt/crash'
+os.makedirs(p, exist_ok=True)
+with open(p + '/create.bin', 'wb') as f:
+    f.write(b'C' * 4096)
+    f.flush()
+    os.fsync(f.fileno())
+print('JC_CRASH_PROBE_DONE')
+PY
+while true; do sleep 1; done
+CRASHPROBE
+
 cat >"$PROBE_SH" <<PROBE
 #!/bin/sh
 grep -q 'asterinas.mc=run' /proc/cmdline || exit 0
@@ -346,8 +408,28 @@ if ! python3 "$FEATURES_PY" "$IMAGE" >"$WORKSPACE/features.txt" 2>&1; then
     exit 1
 fi
 
+# Enable JBD2 checksum v3 so every transaction this gate writes is
+# checksummed (descriptor, data tags, commit, journal superblock).
+JOURNAL_SB_BLOCK=$(debugfs -R "blocks <8>" "$IMAGE" 2>/dev/null | awk 'NR==1 {print $1}')
+[[ -n "$JOURNAL_SB_BLOCK" ]] || {
+    printf 'FAIL (could not locate the journal superblock)\n'
+    exit 1
+}
+python3 "$JOURNAL_PY" "$IMAGE" "$JOURNAL_SB_BLOCK" >"$WORKSPACE/journal.txt" 2>&1 || {
+    printf 'FAIL (could not enable journal checksum v3); see %s\n' "$WORKSPACE/journal.txt"
+    cat "$WORKSPACE/journal.txt"
+    exit 1
+}
+if ! dumpe2fs -h "$IMAGE" 2>/dev/null | grep -q 'journal_checksum_v3'; then
+    printf 'FAIL (the journal does not advertise checksum v3)\n'
+    exit 1
+fi
+
 {
     printf 'mkdir /opt/mc\n'
+    printf 'mkdir /opt/crash\n'
+    printf 'write %s /opt/crash/probe.sh\n' "$CRASH_SH"
+    printf 'sif /opt/crash/probe.sh mode 0100755\n'
     printf 'write %s /opt/mc/check.py\n' "$CHECK_PY"
     printf 'write %s /opt/mc/probe.sh\n' "$PROBE_SH"
     printf 'sif /opt/mc/probe.sh mode 0100755\n'
@@ -446,6 +528,65 @@ if ! python3 "$FEATURES_PY" "$IMAGE" >"$WORKSPACE/features-verify.txt" 2>&1; the
     printf 'FAIL (superblock checksum after the verify boot); see %s\n' \
         "$WORKSPACE/features-verify.txt"
     cat "$WORKSPACE/features-verify.txt"
+    exit 1
+fi
+
+printf 'metadata-csum: crash inside a checksummed journal commit\n'
+if ! timeout "$TIMEOUT" "$BOOT_SCRIPT" \
+    --kernel "$KERNEL" \
+    --initramfs "$INITRAMFS" \
+    --root-image "$IMAGE" \
+    --root-init-path /opt/crash/probe.sh \
+    --output "$WORKSPACE/crash.txt" \
+    --loglevel "$LOGLEVEL" \
+    --accel "$ACCEL" \
+    --qemu "$QEMU" \
+    --append-extra "asterinas.ext4_fault_stage=1" \
+    --wait-for "fault injection at journal stage 1"; then
+    printf 'FAIL (the commit fault did not fire; see %s)\n' "$WORKSPACE/crash.txt"
+    exit 1
+fi
+
+# e2fsprogs replays the journal we wrote with its own implementation and
+# verifies every checksum. A "Journal checksum error" means our descriptor,
+# data-tag or commit checksum is wrong.
+cp --sparse=always -- "$IMAGE" "$E2FSCK_IMAGE"
+set +e
+e2fsck -fy "$E2FSCK_IMAGE" >"$WORKSPACE/e2fsck-replay.txt" 2>&1
+replay_status=$?
+set -e
+if (( replay_status > 1 )) || grep -q 'Journal checksum error' "$WORKSPACE/e2fsck-replay.txt"; then
+    printf 'FAIL (e2fsck could not replay the checksummed journal); see %s\n' \
+        "$WORKSPACE/e2fsck-replay.txt"
+    head -20 "$WORKSPACE/e2fsck-replay.txt" || true
+    exit 1
+fi
+if ! e2fsck -fn "$E2FSCK_IMAGE" >"$WORKSPACE/fsck-e2fsck-replay.txt" 2>&1; then
+    printf 'FAIL (e2fsck -fn after its own replay; see %s)\n' \
+        "$WORKSPACE/fsck-e2fsck-replay.txt"
+    exit 1
+fi
+rm -f -- "$E2FSCK_IMAGE"
+
+# Our own replay verifies the checksums before applying the transaction.
+printf 'metadata-csum: replay the checksummed journal in the kernel\n'
+if ! timeout "$TIMEOUT" "$BOOT_SCRIPT" \
+    --kernel "$KERNEL" \
+    --initramfs "$INITRAMFS" \
+    --root-image "$IMAGE" \
+    --root-init-path /bin/sh \
+    --output "$WORKSPACE/kernel-replay.txt" \
+    --loglevel "$LOGLEVEL" \
+    --accel "$ACCEL" \
+    --qemu "$QEMU" \
+    --wait-for "handoff-enter action=exec"; then
+    printf 'FAIL (the kernel did not replay the journal; see %s)\n' \
+        "$WORKSPACE/kernel-replay.txt"
+    exit 1
+fi
+if ! e2fsck -fn "$IMAGE" >"$WORKSPACE/fsck-kernel-replay.txt" 2>&1; then
+    printf 'FAIL (e2fsck -fn after the kernel replay; see %s)\n' \
+        "$WORKSPACE/fsck-kernel-replay.txt"
     exit 1
 fi
 

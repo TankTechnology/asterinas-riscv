@@ -1031,6 +1031,49 @@ e2fsck -fn: clean after both boots
 The features gate's second disk is now also created with `metadata_csum`, so
 the 64-byte descriptor checksum fields (the high halves) are exercised there.
 
+## Journal checksums
+
+The journal decoder already replayed revoke-only transactions and treated
+`JBD2_FLAG_DELETED` tags as unsupported. jbd2 recovery consumes a deleted
+tag's data block like any other tag, so the flag is now accepted and simply
+replayed; the flag is a legacy marker that modern jbd2 no longer writes.
+
+Checksum v3 (`JBD2_FEATURE_INCOMPAT_CSUM_V3`) is implemented for both writing
+and replay:
+
+- descriptor and revoke blocks carry a 4-byte CRC32C tail; the checksum covers
+  the whole block with the tail zeroed;
+- data tags are 16 bytes (`journal_block_tag3_t`), and their checksum covers
+  the sequence number and the *logged* block, i.e. after the escape word has
+  been zeroed;
+- the commit block checksum is stored in `h_chksum[0]` and covers the whole
+  block with `h_chksum_type`, `h_chksum_size` and `h_chksum[0]` zeroed;
+- the journal superblock is checksummed with seed `!0` and resealed whenever
+  `s_start` or `s_sequence` changes;
+- all transaction checksums use `j_csum_seed = crc32c(~0, s_uuid)`.
+
+Two details cost a debugging round. First, hashing only the first
+`blocksize - 4` bytes of a descriptor is not the same as hashing the full
+block with the tail zeroed, and jbd2 does the latter. Second, the tag checksum
+is computed over the escaped copy (magic word zeroed), not the original data.
+
+Validation is external: the gate enables checksum v3 on the converted Debian
+image, crashes the kernel inside a journal commit (`asterinas.ext4_fault_stage
+=1`, which panics right after the commit record), and then lets e2fsprogs
+replay the journal we wrote. e2fsck's own JBD2 implementation verifies every
+descriptor, data-tag and commit checksum:
+
+```
+ASTER_DEBIANE4: recovering journal
+Pass 1: Checking inodes, blocks, and sizes
+... (no "Journal checksum error")
+e2fsck -fn clean
+```
+
+A copy of the same crashed image is then booted by the kernel, which replays
+the journal through its own verification path and reaches `exec`; `e2fsck -fn`
+is clean afterwards.
+
 ## Socket visibility: `/proc/net` and `NETLINK_SOCK_DIAG`
 
 `ss`, `ip`, and the Debian boot scripts expect to see the socket table. The
