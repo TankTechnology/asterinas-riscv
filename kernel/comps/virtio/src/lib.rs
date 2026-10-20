@@ -43,19 +43,24 @@ static VIRTIO_BLOCK_MAJOR_ID: Once<MajorIdOwner> = Once::new();
 
 #[init_component]
 fn virtio_component_init() -> Result<(), ComponentInitError> {
+    // Keep the early boot boundary observable when a device-specific driver
+    // prevents the kernel from reaching userspace. These markers are
+    // diagnostic only and do not alter transport or device ordering.
+    ostd::early_println!("VIRTIO_INIT stage=enter");
     VIRTIO_BLOCK_MAJOR_ID.call_once(|| aster_block::allocate_major().unwrap());
 
     // Find all devices and register them to the corresponding crate
     transport::init();
+    ostd::early_println!("VIRTIO_INIT stage=transport-ready");
 
     device::entropy::init();
     device::gpu::init();
-    device::network::init();
     device::socket::init();
     device::sound::init();
 
     while let Some(mut transport) = pop_device_transport() {
         let device_type = transport.device_type();
+        ostd::early_println!("VIRTIO_INIT stage=device type={:?}", device_type);
 
         // Follow VirtIO 1.3, 3.1.1 "Driver Requirements: Device Initialization".
         // Reference: <https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html#x1-1230001>
@@ -64,9 +69,11 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
         transport
             .write_device_status(DeviceStatus::empty())
             .unwrap();
+        ostd::early_println!("VIRTIO_INIT stage=reset-written type={:?}", device_type);
         while transport.read_device_status() != DeviceStatus::empty() {
             spin_loop();
         }
+        ostd::early_println!("VIRTIO_INIT stage=reset-ack type={:?}", device_type);
 
         // Set `ACKNOWLEDGE` to report that the guest OS has noticed the device.
         transport
@@ -80,6 +87,7 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
 
         // Negotiate the feature subset supported by the driver.
         negotiate_features(&mut transport);
+        ostd::early_println!("VIRTIO_INIT stage=features type={:?}", device_type);
 
         if !transport.is_legacy_version() {
             // Set `FEATURES_OK` to report that feature negotiation is complete.
@@ -98,6 +106,7 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
                     .unwrap();
                 continue;
             }
+            ostd::early_println!("VIRTIO_INIT stage=features-ok type={:?}", device_type);
         }
 
         let device_transport = DeviceTransport::new(transport);
@@ -107,8 +116,18 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
             VirtioDeviceType::Console => ConsoleDevice::init(device_transport),
             VirtioDeviceType::Entropy => EntropyDevice::init(device_transport),
             VirtioDeviceType::Input => InputDevice::init(device_transport),
-            VirtioDeviceType::Network => NetworkDevice::init(device_transport),
-            VirtioDeviceType::Socket => SocketDevice::init(device_transport),
+            VirtioDeviceType::Network => {
+                // Network DMA pools require a device that can service them. Do not
+                // allocate them on platforms that only expose block/MMIO devices.
+                device::network::init();
+                NetworkDevice::init(device_transport)
+            }
+            VirtioDeviceType::Socket => {
+                // Vsock DMA pools are also device-backed and must not be allocated
+                // on platforms that do not expose a socket transport.
+                device::socket::init_buffers();
+                SocketDevice::init(device_transport)
+            }
             VirtioDeviceType::Sound => SoundDevice::init(device_transport),
             VirtioDeviceType::FileSystem => FileSystemDevice::init(device_transport),
             VirtioDeviceType::Gpu => GpuDevice::init(device_transport),
@@ -117,6 +136,7 @@ fn virtio_component_init() -> Result<(), ComponentInitError> {
                 Ok(())
             }
         };
+        ostd::early_println!("VIRTIO_INIT stage=device-result type={:?} ok={}", device_type, res.is_ok());
         if res.is_err() {
             error!(
                 "Device initialization error: {:?}, device type: {:?}",

@@ -50,7 +50,6 @@ static COMPONENT: Once<Component> = Once::new();
 
 /// Initializes the global virtio-vsock component state.
 pub(crate) fn init() {
-    buffer::init();
     COMPONENT.call_once(|| Component {
         devices: SpinLock::new(BTreeMap::new()),
         rx_pending: SpinLock::new(Vec::new()),
@@ -60,6 +59,11 @@ pub(crate) fn init() {
         tx_taskless: Taskless::new(process_pending_tx),
         event_taskless: Taskless::new(process_pending_event),
     });
+}
+
+/// Initializes the DMA pools after a virtio-vsock transport is found.
+pub(crate) fn init_buffers() {
+    buffer::init();
 }
 
 /// Registers a virtio-vsock device under `name`.

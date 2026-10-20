@@ -90,6 +90,10 @@ coverage = ["ostd/coverage"]
 cvm_guest = ["dep:tdx-guest", "ostd/cvm_guest", "aster-virtio/cvm_guest"]
 # By default we use the Sv48 address translation mode.
 riscv_sv39_mode = ["ostd/riscv_sv39_mode"]
+# Keep the board-specific native display handoff opt-in.  The generic DRM
+# provider and virtio-gpu path must remain buildable and recoverable on QEMU
+# without compiling or touching EIC7700 display-controller registers.
+eic7700_native_scanout = []
 
 [lints]
 workspace = true

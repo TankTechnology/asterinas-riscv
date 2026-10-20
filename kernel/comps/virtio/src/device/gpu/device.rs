@@ -2,13 +2,14 @@
 
 //! Implements virtio-gpu device instances (device ID 16).
 //!
-//! The driver covers the 2D control-queue and hardware-cursor paths. EDID and
-//! the virgl 3D path remain outside this milestone.
+//! The driver covers the 2D control-queue and hardware-cursor paths, and
+//! negotiates virgl so the host can be asked for its 3D capability set. EDID
+//! remains outside this milestone.
 
-use alloc::{format, sync::Arc, vec::Vec};
+use alloc::{format, string::String, sync::Arc, vec::Vec};
 use core::{
     hint::spin_loop,
-    sync::atomic::{AtomicU32, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
 };
 
 use aster_util::mem_obj_slice::Slice;
@@ -16,18 +17,26 @@ use ostd::{
     mm::{HasDaddr, PAGE_SIZE, VmIo, dma::DmaStream},
     sync::{Mutex, SpinLock},
 };
+use spin::Once;
 
 use super::{
-    MAX_SCANOUTS, VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_MOVE_CURSOR,
+    MAX_SCANOUTS, VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, VIRTIO_GPU_CMD_CTX_CREATE,
+    VIRTIO_GPU_CMD_CTX_DESTROY, VIRTIO_GPU_CMD_GET_CAPSET, VIRTIO_GPU_CMD_GET_CAPSET_INFO,
+    VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_MOVE_CURSOR,
     VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
-    VIRTIO_GPU_CMD_RESOURCE_FLUSH, VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
-    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, VIRTIO_GPU_CMD_UPDATE_CURSOR,
-    VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
+    VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+    VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT, VIRTIO_GPU_CMD_SUBMIT_3D,
+    VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
+    VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_F_CONTEXT_INIT,
+    VIRTIO_GPU_F_VIRGL, VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM,
+    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM, VIRTIO_GPU_RESP_OK_CAPSET, VIRTIO_GPU_RESP_OK_CAPSET_INFO,
     VIRTIO_GPU_RESP_OK_DISPLAY_INFO, VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR,
-    VirtioGpuCtrlHdr, VirtioGpuCursorPos, VirtioGpuDisplayOne, VirtioGpuMemEntry, VirtioGpuRect,
-    VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceFlush,
-    VirtioGpuResourceUnref, VirtioGpuSetScanout, VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor,
-    config::VirtioGpuConfig,
+    VirtioGpuBox, VirtioGpuCmdSubmit, VirtioGpuCtrlHdr, VirtioGpuCtxCreate, VirtioGpuCtxResource,
+    VirtioGpuCursorPos, VirtioGpuDisplayOne, VirtioGpuGetCapset, VirtioGpuGetCapsetInfo,
+    VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d,
+    VirtioGpuResourceCreate3d, VirtioGpuResourceFlush, VirtioGpuResourceUnref,
+    VirtioGpuRespCapsetInfo, VirtioGpuSetScanout, VirtioGpuTransferHost3d,
+    VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor, config::VirtioGpuConfig,
 };
 use crate::{
     device::{VirtioDeviceError, gpu::register_device},
@@ -41,11 +50,17 @@ const QUEUE_SIZE: u16 = 64;
 /// Cursor requests have no device-written response body.
 const CURSOR_COMPLETION_BYTES: usize = 0;
 
-/// Control-buffer layout (single page): the request is written at the start of
-/// the page and the response is read from a fixed offset, keeping the two areas
-/// disjoint. The largest response (`GET_DISPLAY_INFO`, 408 bytes) still fits.
+/// Control-buffer layout for ordinary requests. 3D submissions use a dynamic
+/// response offset because their command stream is appended to the request and
+/// may be larger than this page-sized gap.
 const CTRL_REQ_OFFSET: usize = 0;
 const CTRL_RESP_OFFSET: usize = 1024;
+
+/// A missing virtio completion must fail closed instead of wedging the boot
+/// thread forever. The bound remains a spin budget for bootstrap callers;
+/// registered GPU devices use a sleepable queue lock and periodically yield.
+const COMPLETION_SPIN_LIMIT: usize = 1_000_000;
+const COMPLETION_YIELD_INTERVAL: usize = 4096;
 
 /// Resource and scanout ids used by the MVP (there is only one of each).
 const RESOURCE_ID: u32 = 1;
@@ -54,6 +69,49 @@ const SCANOUT_ID: u32 = 0;
 /// Bytes per pixel of the B8G8R8X8 backing store.
 const BPP: usize = 4;
 
+/// One-shot QEMU/guest fault selector used by the bounded virgl failure gate.
+///
+/// The parameter is deliberately opt-in and has no effect for normal boots.
+/// It is consumed only by the 3D paths below, so a fault run cannot alter the
+/// 2D scanout initialization used by the ordinary display gate.
+static VIRGL_FAULT: Once<String> = Once::new();
+aster_cmdline::define_kv_param!("asterinas.virtio_gpu_fault", VIRGL_FAULT);
+
+/// Independent one-shot selector for the 2D scanout fault gate. Keeping this
+/// separate from the virgl selector prevents a 3D negative test from
+/// accidentally changing the framebuffer provider's control queue.
+static GPU_2D_FAULT: Once<String> = Once::new();
+aster_cmdline::define_kv_param!("asterinas.virtio_gpu_2d_fault", GPU_2D_FAULT);
+
+/// The device renders one boot-time pattern before userspace can open DRM.
+/// Keep the negative-test selector dormant until that initialization has
+/// completed; otherwise a fault intended for the userspace SETCRTC path would
+/// abort component initialization before rootfs and recovery markers exist.
+static GPU_2D_FAULT_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+fn virgl_fault_is(name: &str) -> bool {
+    VIRGL_FAULT.get().is_some_and(|fault| fault == name)
+}
+
+fn gpu_2d_fault_is(name: &str) -> bool {
+    GPU_2D_FAULT_ACTIVE.load(Ordering::Relaxed)
+        && GPU_2D_FAULT.get().is_some_and(|fault| fault == name)
+}
+
+#[inline]
+const fn completion_should_yield(iteration: usize) -> bool {
+    iteration != 0 && iteration % COMPLETION_YIELD_INTERVAL == 0
+}
+
+#[inline]
+fn wait_for_completion_iteration(iteration: usize) {
+    if completion_should_yield(iteration) && ostd::task::Task::current().is_some() {
+        ostd::task::Task::yield_now();
+    } else {
+        spin_loop();
+    }
+}
+
 /// A virtio-gpu device.
 pub struct GpuDevice {
     /// Keeps the virtio transport alive for the device's lifetime. The control
@@ -61,8 +119,10 @@ pub struct GpuDevice {
     /// this field is never read directly.
     #[expect(dead_code)]
     transport: SpinLock<DeviceTransport>,
-    control_queue: SpinLock<VirtQueue>,
-    cursor_queue: SpinLock<VirtQueue>,
+    // These queues use sleepable mutexes because completion waits may yield
+    // while retaining the shared control buffer's ownership.
+    control_queue: Mutex<VirtQueue>,
+    cursor_queue: Mutex<VirtQueue>,
     control_buf: Arc<DmaStream>,
     cursor_buf: Arc<DmaStream>,
     /// Backing memory of the scanout resource, in B8G8R8X8.
@@ -78,24 +138,51 @@ pub struct GpuDevice {
     cursor_operation: Mutex<()>,
     /// Host-visible cursor resource, or zero when the cursor is hidden.
     cursor_resource: AtomicU32,
+    /// Whether the device offered virgl and the driver negotiated it. A host
+    /// without it will not answer 3D capability queries.
+    virgl_supported: bool,
 }
 
 impl GpuDevice {
-    pub(crate) fn negotiate_features(_features: u64) -> u64 {
-        // The MVP drives only the plain 2D path, so clear every device-specific
-        // feature (virgl, EDID, resource UUID, blob, context init).
-        0
+    pub(crate) fn negotiate_features(features: u64) -> u64 {
+        // Take virgl when the device offers it, so the host will answer 3D
+        // capability queries. Everything else (EDID, resource UUID, blob,
+        // context init) stays cleared: the 3D path below does not need them,
+        // and advertising a feature the driver does not implement would invite
+        // the host to use it.
+        features & (VIRTIO_GPU_F_VIRGL | VIRTIO_GPU_F_CONTEXT_INIT)
     }
 
     pub(crate) fn init(mut device_transport: DeviceTransport) -> Result<(), VirtioDeviceError> {
+        ostd::early_println!("VIRTIO_GPU_INIT stage=enter");
         let config_manager = VirtioGpuConfig::new_manager(device_transport.as_ref());
         let config = config_manager.read_config();
+        // Recompute the same answer `negotiate_features` gave the transport:
+        // the device's advertised bits do not change, and the transport offers
+        // no way to read back what was acknowledged.
+        let negotiated = Self::negotiate_features(device_transport.read_device_features());
+        let virgl_supported = negotiated & (VIRTIO_GPU_F_VIRGL | VIRTIO_GPU_F_CONTEXT_INIT)
+            == (VIRTIO_GPU_F_VIRGL | VIRTIO_GPU_F_CONTEXT_INIT);
+        ostd::info!(
+            "virtio-gpu: virgl 3D {}",
+            if virgl_supported {
+                "negotiated"
+            } else {
+                "unavailable"
+            }
+        );
+        ostd::early_println!(
+            "VIRTIO_GPU_INIT stage=features virgl={} scanouts={}",
+            virgl_supported,
+            config.num_scanouts,
+        );
         ostd::debug!("virtio_gpu_config = {:?}", config);
 
         let mut control_queue = VirtQueue::new(VQ_CONTROL, QUEUE_SIZE, device_transport.as_mut())?;
         let cursor_size = cursor_queue_size(device_transport.max_queue_size(VQ_CURSOR)?)
             .ok_or(VirtioDeviceError::InvalidQueueArgs)?;
         let cursor_queue = VirtQueue::new(VQ_CURSOR, cursor_size, device_transport.as_mut())?;
+        ostd::early_println!("VIRTIO_GPU_INIT stage=queues-ready");
         let control_buf =
             Arc::new(DmaStream::alloc(1, false).map_err(VirtioDeviceError::ResourceAlloc)?);
         let cursor_buf =
@@ -103,9 +190,16 @@ impl GpuDevice {
 
         // Mark the device ready before issuing the first control request.
         device_transport.finish_init();
+        ostd::early_println!("VIRTIO_GPU_INIT stage=device-ready");
 
+        ostd::early_println!("VIRTIO_GPU_INIT stage=display-query-start");
         let (scanout_width, scanout_height) =
             query_display_info(&mut control_queue, &control_buf, config.num_scanouts)?;
+        ostd::early_println!(
+            "VIRTIO_GPU_INIT stage=display-query-done width={} height={}",
+            scanout_width,
+            scanout_height,
+        );
         ostd::info!(
             "virtio-gpu: {} scanout(s), primary {}x{}",
             config.num_scanouts,
@@ -119,11 +213,12 @@ impl GpuDevice {
 
         let framebuffer = alloc_framebuffer(scanout_width, scanout_height)
             .map_err(VirtioDeviceError::ResourceAlloc)?;
+        ostd::early_println!("VIRTIO_GPU_INIT stage=framebuffer-ready");
 
         let device = Arc::new(Self {
             transport: SpinLock::new(device_transport),
-            control_queue: SpinLock::new(control_queue),
-            cursor_queue: SpinLock::new(cursor_queue),
+            control_queue: Mutex::new(control_queue),
+            cursor_queue: Mutex::new(cursor_queue),
             control_buf,
             cursor_buf,
             framebuffer,
@@ -134,6 +229,7 @@ impl GpuDevice {
             next_resource_id: AtomicU32::new(2),
             cursor_operation: Mutex::new(()),
             cursor_resource: AtomicU32::new(0),
+            virgl_supported,
         });
 
         register_device(
@@ -143,9 +239,291 @@ impl GpuDevice {
             ),
             device.clone(),
         );
+        ostd::early_println!("VIRTIO_GPU_INIT stage=registered");
 
+        ostd::early_println!("VIRTIO_GPU_INIT stage=pattern-start");
         device.render_test_pattern();
+        ostd::early_println!("VIRTIO_GPU_INIT stage=pattern-done");
         Ok(())
+    }
+
+    /// Returns whether the host offered 3D support and the driver took it.
+    pub fn supports_virgl(&self) -> bool {
+        self.virgl_supported
+    }
+
+    /// Returns whether the bounded fence-request fault gate is armed.
+    ///
+    /// The DRM layer uses this only before an out-fence submission. Keeping
+    /// the selector in the virtio-gpu component makes the opt-in parameter
+    /// available to both the context queue and the ioctl layer without
+    /// exposing any mutable device state.
+    pub fn fence_fault_injected() -> bool {
+        virgl_fault_is("fence")
+    }
+
+    /// Reserves a resource id from the device's single id space.
+    ///
+    /// The host keys resources by id for the device's lifetime, so every
+    /// resource the driver creates has to come from one counter. A second
+    /// counter starting at 1 would collide with the scanout resource, which
+    /// holds that id, and the host rejects the duplicate rather than replacing
+    /// what is already there.
+    pub fn reserve_resource_id(&self) -> u32 {
+        self.next_resource_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Returns the capability set the host advertises at `index`.
+    ///
+    /// The host enumerates its capsets; index 0 is the renderer's primary one,
+    /// which for a virgl host is `VIRTIO_GPU_CAPSET_VIRGL`. The answer carries
+    /// the id, the highest version the host implements, and how many bytes its
+    /// capability blob occupies.
+    pub fn capset_info(&self, index: u32) -> Result<CapsetInfo, VirtioDeviceError> {
+        let req = VirtioGpuGetCapsetInfo {
+            hdr: ctrl_hdr(VIRTIO_GPU_CMD_GET_CAPSET_INFO),
+            capset_index: index,
+            padding: 0,
+        };
+        let mut queue = self.control_queue.lock();
+        let response =
+            control_cmd_read::<_, VirtioGpuRespCapsetInfo>(&mut queue, &self.control_buf, &req)?;
+        Ok(CapsetInfo {
+            id: response.capset_id,
+            max_version: response.capset_max_version,
+            max_size: response.capset_max_size,
+        })
+    }
+
+    /// Fetches the host's capability blob for one capability set.
+    ///
+    /// The blob dwarfs a control request, so it gets a buffer sized to hold it
+    /// rather than sharing the page-resident one the 2D path uses.
+    pub fn capset(&self, id: u32, version: u32, size: u32) -> Result<Vec<u8>, VirtioDeviceError> {
+        let request = VirtioGpuGetCapset {
+            hdr: ctrl_hdr(VIRTIO_GPU_CMD_GET_CAPSET),
+            capset_id: id,
+            capset_version: version,
+        };
+        let response_len = size_of::<VirtioGpuCtrlHdr>() + size as usize;
+        let pages = (CTRL_RESP_OFFSET + response_len).div_ceil(PAGE_SIZE);
+        let buf =
+            Arc::new(DmaStream::alloc(pages, false).map_err(VirtioDeviceError::ResourceAlloc)?);
+
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(&mut queue, &buf, &request, response_len)?;
+        check_ok(code)?;
+
+        let blob_start = CTRL_RESP_OFFSET + size_of::<VirtioGpuCtrlHdr>();
+        let mut blob = Vec::new();
+        blob.resize(size as usize, 0u8);
+        Slice::new(buf.clone(), blob_start..blob_start + size as usize)
+            .read_bytes(0, &mut blob)
+            .map_err(VirtioDeviceError::ResourceAlloc)?;
+        Ok(blob)
+    }
+
+    /// Creates a 3D context on the host, identified by `context_id`.
+    ///
+    /// The capability set decides which renderer the host instantiates; a
+    /// context created against a set the host does not offer is refused there
+    /// rather than here.
+    pub fn context_create(
+        &self,
+        context_id: u32,
+        capset_id: u32,
+        debug_name: &str,
+    ) -> Result<(), VirtioDeviceError> {
+        if virgl_fault_is("context") {
+            ostd::warn!("virtio-gpu: injected virgl context failure");
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
+        let mut request = VirtioGpuCtxCreate {
+            hdr: ctrl_hdr_for_context(VIRTIO_GPU_CMD_CTX_CREATE, context_id),
+            nlen: 0,
+            context_init: capset_id,
+            debug_name: [0u8; DEBUG_NAME_LEN],
+        };
+        // The host is told the length, so a name longer than its field is
+        // truncated rather than reported as the length it was given.
+        let name = debug_name.as_bytes();
+        let copied = name.len().min(DEBUG_NAME_LEN);
+        request.debug_name[..copied].copy_from_slice(&name[..copied]);
+        request.nlen = copied as u32;
+
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &request,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// Creates a 3D resource on the host for `resource_id`.
+    ///
+    /// The renderer is told the resource's shape; its storage is attached
+    /// separately by [`GpuDevice::attach_backing`], which is also what the 2D
+    /// path uses.
+    #[expect(clippy::too_many_arguments)]
+    pub fn resource_create_3d(
+        &self,
+        resource_id: u32,
+        target: u32,
+        format: u32,
+        bind: u32,
+        width: u32,
+        height: u32,
+        depth: u32,
+        array_size: u32,
+        last_level: u32,
+        nr_samples: u32,
+        flags: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let request = VirtioGpuResourceCreate3d {
+            hdr: ctrl_hdr(VIRTIO_GPU_CMD_RESOURCE_CREATE_3D),
+            resource_id,
+            target,
+            format,
+            bind,
+            width,
+            height,
+            depth,
+            array_size,
+            last_level,
+            nr_samples,
+            flags,
+            padding: 0,
+        };
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &request,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// Tells the host that `resource_id` belongs to `context_id`.
+    ///
+    /// A resource the context does not know about cannot be named by a command
+    /// buffer submitted to it, so this is what makes a resource usable.
+    pub fn attach_resource_to_context(
+        &self,
+        context_id: u32,
+        resource_id: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let request = VirtioGpuCtxResource {
+            hdr: ctrl_hdr_for_context(VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, context_id),
+            resource_id,
+            padding: 0,
+        };
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &request,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// Submits a virgl command buffer to `context_id` and waits for the host
+    /// to finish with it.
+    ///
+    /// The wait is the point rather than an implementation detail: this call
+    /// returns only once the host has processed the buffer, so a client that
+    /// asks for a completion fence can be handed one that is already signalled
+    /// instead of one it would have to be woken for.
+    pub fn submit_3d(
+        &self,
+        context_id: u32,
+        commands: &[u8],
+        fence_id: u64,
+    ) -> Result<(), VirtioDeviceError> {
+        let command_len =
+            u32::try_from(commands.len()).map_err(|_| VirtioDeviceError::UnsupportedConfig)?;
+        // The ordinary virgl probe submits a one-word NOP after the transfer
+        // and boundary checks. Restricting this injection to that shape keeps
+        // the earlier 992/993 layout contract observable in the same run.
+        if virgl_fault_is("submit") && commands.len() == 1 {
+            ostd::warn!("virtio-gpu: injected virgl submit failure");
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
+        let request = VirtioGpuCmdSubmit {
+            hdr: VirtioGpuCtrlHdr {
+                flags: VIRTIO_GPU_FLAG_FENCE,
+                fence_id,
+                ..ctrl_hdr_for_context(VIRTIO_GPU_CMD_SUBMIT_3D, context_id)
+            },
+            size: command_len,
+            padding: 0,
+        };
+
+        // The command buffer is written straight after the header, so the
+        // request is one contiguous span rather than a struct.
+        let request_len = size_of::<VirtioGpuCmdSubmit>()
+            .checked_add(commands.len())
+            .ok_or(VirtioDeviceError::UnsupportedConfig)?;
+        // Keep the response after the complete request, aligned to a page.
+        // The old fixed offset (1024) overlapped requests larger than 992
+        // bytes, allowing the device response to overwrite command data.
+        let response_offset = request_len.div_ceil(PAGE_SIZE) * PAGE_SIZE;
+        let pages = response_offset
+            .checked_add(size_of::<VirtioGpuCtrlHdr>())
+            .ok_or(VirtioDeviceError::UnsupportedConfig)?
+            .div_ceil(PAGE_SIZE);
+        let buf =
+            Arc::new(DmaStream::alloc(pages, false).map_err(VirtioDeviceError::ResourceAlloc)?);
+
+        let request_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + request_len);
+        request_slice.write_val(0, &request).unwrap();
+        request_slice
+            .write_bytes(size_of::<VirtioGpuCmdSubmit>(), commands)
+            .unwrap();
+
+        let mut queue = self.control_queue.lock();
+        let code = submit_control_at(
+            &mut queue,
+            &buf,
+            request_len,
+            response_offset,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)?;
+
+        let response = Slice::new(
+            buf.clone(),
+            response_offset..response_offset + size_of::<VirtioGpuCtrlHdr>(),
+        )
+        .read_val::<VirtioGpuCtrlHdr>(0)
+        .map_err(VirtioDeviceError::ResourceAlloc)?;
+        if response.flags & VIRTIO_GPU_FLAG_FENCE == 0 || response.fence_id != fence_id {
+            ostd::warn!(
+                "virtio-gpu submit fence mismatch: expected id={} flags={:#x}, got id={} flags={:#x}",
+                fence_id,
+                VIRTIO_GPU_FLAG_FENCE,
+                response.fence_id,
+                response.flags,
+            );
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
+        Ok(())
+    }
+
+    /// Destroys a 3D context, so the host can release what it holds for it.
+    pub fn context_destroy(&self, context_id: u32) -> Result<(), VirtioDeviceError> {
+        let request = ctrl_hdr_for_context(VIRTIO_GPU_CMD_CTX_DESTROY, context_id);
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &request,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
     }
 
     /// Returns the scanout width in pixels.
@@ -339,6 +717,7 @@ impl GpuDevice {
             self.scanout_height,
             SCANOUT_ID
         );
+        GPU_2D_FAULT_ACTIVE.store(true, Ordering::Release);
         Ok(())
     }
 
@@ -406,7 +785,11 @@ impl GpuDevice {
         cursor_cmd(&mut queue, &self.cursor_buf, &request)
     }
 
-    fn attach_backing(
+    /// Attaches a span of guest memory as a resource's backing store.
+    ///
+    /// The host reads and writes the resource through this memory, so a
+    /// resource without a backing has no storage at all.
+    pub fn attach_backing(
         &self,
         resource_id: u32,
         addr: u64,
@@ -450,6 +833,10 @@ impl GpuDevice {
         resource_id: u32,
         r: VirtioGpuRect,
     ) -> Result<(), VirtioDeviceError> {
+        if gpu_2d_fault_is("setcrtc") {
+            ostd::early_println!("DRM_SCANOUT_FAULT stage=setcrtc");
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
         let req = VirtioGpuSetScanout {
             hdr: ctrl_hdr(VIRTIO_GPU_CMD_SET_SCANOUT),
             r,
@@ -472,6 +859,10 @@ impl GpuDevice {
         r: VirtioGpuRect,
         offset: u64,
     ) -> Result<(), VirtioDeviceError> {
+        if gpu_2d_fault_is("transfer") {
+            ostd::early_println!("DRM_SCANOUT_FAULT stage=transfer");
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
         let req = VirtioGpuTransferToHost2d {
             hdr: ctrl_hdr(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D),
             r,
@@ -489,7 +880,97 @@ impl GpuDevice {
         check_ok(code)
     }
 
+    /// Moves a region of a 3D resource between guest memory and the host.
+    ///
+    /// `command` picks the direction, and is one of the two
+    /// `TRANSFER_*_HOST_3D` codes rather than a flag so the call site reads as
+    /// which way the pixels are going.
+    ///
+    /// The context travels in the control header, not the body, so the plain
+    /// `ctrl_hdr` would address context 0 — which no client has.
+    fn transfer_3d(
+        &self,
+        command: u32,
+        context_id: u32,
+        resource_id: u32,
+        box_: VirtioGpuBox,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        let request = VirtioGpuTransferHost3d {
+            hdr: ctrl_hdr_for_context(command, context_id),
+            box_,
+            offset,
+            resource_id,
+            level,
+            stride,
+            layer_stride,
+        };
+        let mut queue = self.control_queue.lock();
+        let code = control_cmd(
+            &mut queue,
+            &self.control_buf,
+            &request,
+            size_of::<VirtioGpuCtrlHdr>(),
+        )?;
+        check_ok(code)
+    }
+
+    /// Uploads a region of a 3D resource, for the renderer to read.
+    #[expect(clippy::too_many_arguments)]
+    pub fn transfer_to_host_3d(
+        &self,
+        context_id: u32,
+        resource_id: u32,
+        box_: VirtioGpuBox,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        self.transfer_3d(
+            VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D,
+            context_id,
+            resource_id,
+            box_,
+            offset,
+            level,
+            stride,
+            layer_stride,
+        )
+    }
+
+    /// Brings back a region of a 3D resource the renderer wrote.
+    #[expect(clippy::too_many_arguments)]
+    pub fn transfer_from_host_3d(
+        &self,
+        context_id: u32,
+        resource_id: u32,
+        box_: VirtioGpuBox,
+        offset: u64,
+        level: u32,
+        stride: u32,
+        layer_stride: u32,
+    ) -> Result<(), VirtioDeviceError> {
+        self.transfer_3d(
+            VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
+            context_id,
+            resource_id,
+            box_,
+            offset,
+            level,
+            stride,
+            layer_stride,
+        )
+    }
+
     fn flush(&self, resource_id: u32, r: VirtioGpuRect) -> Result<(), VirtioDeviceError> {
+        if gpu_2d_fault_is("flush") {
+            ostd::early_println!("DRM_SCANOUT_FAULT stage=flush");
+            return Err(VirtioDeviceError::UnsupportedConfig);
+        }
         let req = VirtioGpuResourceFlush {
             hdr: ctrl_hdr(VIRTIO_GPU_CMD_RESOURCE_FLUSH),
             r,
@@ -506,7 +987,7 @@ impl GpuDevice {
         check_ok(code)
     }
 
-    fn resource_unref(&self, resource_id: u32) -> Result<(), VirtioDeviceError> {
+    pub fn resource_unref(&self, resource_id: u32) -> Result<(), VirtioDeviceError> {
         let req = VirtioGpuResourceUnref {
             hdr: ctrl_hdr(VIRTIO_GPU_CMD_RESOURCE_UNREF),
             resource_id,
@@ -543,6 +1024,9 @@ impl GpuDevice {
 }
 
 /// Builds a control header with the given type and a zeroed fence.
+/// The `debug_name` field of a `CTX_CREATE` request, in bytes.
+const DEBUG_NAME_LEN: usize = 64;
+
 fn ctrl_hdr(type_: u32) -> VirtioGpuCtrlHdr {
     VirtioGpuCtrlHdr {
         type_,
@@ -553,9 +1037,23 @@ fn ctrl_hdr(type_: u32) -> VirtioGpuCtrlHdr {
     }
 }
 
+/// A control header naming the 3D context the request belongs to.
+///
+/// The 3D commands carry their context in the header rather than in the body,
+/// so a request built with [`ctrl_hdr`] would name context 0.
+fn ctrl_hdr_for_context(type_: u32, context_id: u32) -> VirtioGpuCtrlHdr {
+    VirtioGpuCtrlHdr {
+        ctx_id: context_id,
+        ..ctrl_hdr(type_)
+    }
+}
+
 fn check_ok(code: u32) -> Result<(), VirtioDeviceError> {
     match code {
-        VIRTIO_GPU_RESP_OK_NODATA | VIRTIO_GPU_RESP_OK_DISPLAY_INFO => Ok(()),
+        VIRTIO_GPU_RESP_OK_NODATA
+        | VIRTIO_GPU_RESP_OK_DISPLAY_INFO
+        | VIRTIO_GPU_RESP_OK_CAPSET_INFO
+        | VIRTIO_GPU_RESP_OK_CAPSET => Ok(()),
         _ => {
             ostd::warn!("virtio-gpu control request failed: response = {:#x}", code);
             Err(VirtioDeviceError::UnsupportedConfig)
@@ -572,10 +1070,25 @@ fn submit_control(
     req_len: usize,
     resp_len: usize,
 ) -> Result<u32, VirtioDeviceError> {
+    submit_control_at(queue, buf, req_len, CTRL_RESP_OFFSET, resp_len)
+}
+
+/// Submits a control request with an explicit response offset.
+///
+/// The offset is part of the request layout contract: callers that append
+/// variable-sized payloads must place the response after that payload, while
+/// fixed-size control requests use [`CTRL_RESP_OFFSET`].
+fn submit_control_at(
+    queue: &mut VirtQueue,
+    buf: &Arc<DmaStream>,
+    req_len: usize,
+    response_offset: usize,
+    resp_len: usize,
+) -> Result<u32, VirtioDeviceError> {
     let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
     req_slice.sync_to_device().unwrap();
 
-    let resp_slice = Slice::new(buf.clone(), CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len);
+    let resp_slice = Slice::new(buf.clone(), response_offset..response_offset + resp_len);
     queue
         .add_dma_bufs(&[&req_slice], &[&resp_slice])
         .expect("add control queue buffers");
@@ -583,15 +1096,54 @@ fn submit_control(
         queue.notify();
     }
 
-    loop {
+    for iteration in 0..COMPLETION_SPIN_LIMIT {
         if queue.pop_used_with_min_bytes(resp_len).is_ok() {
-            break;
+            resp_slice.sync_from_device().unwrap();
+            return Ok(resp_slice.read_val::<u32>(0).unwrap());
         }
-        spin_loop();
+        wait_for_completion_iteration(iteration);
     }
 
-    resp_slice.sync_from_device().unwrap();
-    Ok(resp_slice.read_val::<u32>(0).unwrap())
+    ostd::warn!(
+        "virtio-gpu control completion timed out after {} spins",
+        COMPLETION_SPIN_LIMIT,
+    );
+    ostd::early_println!(
+        "VIRTIO_GPU_INIT stage=control-timeout req_len={} resp_len={} response_offset={}",
+        req_len,
+        resp_len,
+        response_offset,
+    );
+    Err(VirtioDeviceError::UnsupportedConfig)
+}
+
+/// What the host reports for one of its capability sets.
+#[derive(Clone, Copy, Debug)]
+pub struct CapsetInfo {
+    /// The capset id, which names the renderer whose capabilities follow.
+    pub id: u32,
+    /// Highest version of this capset the host implements.
+    pub max_version: u32,
+    /// Size in bytes of this capset's capability blob.
+    pub max_size: u32,
+}
+
+/// Sends a control request and decodes a typed response body.
+fn control_cmd_read<T: ostd_pod::Pod, R: ostd_pod::Pod>(
+    queue: &mut VirtQueue,
+    buf: &Arc<DmaStream>,
+    req: &T,
+) -> Result<R, VirtioDeviceError> {
+    let req_len = size_of::<T>();
+    let resp_len = size_of::<R>();
+    let req_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + req_len);
+    req_slice.write_val(0, req).unwrap();
+    let code = submit_control(queue, buf, req_len, resp_len)?;
+    check_ok(code)?;
+    let resp_slice = Slice::new(buf.clone(), CTRL_RESP_OFFSET..CTRL_RESP_OFFSET + resp_len);
+    resp_slice
+        .read_val::<R>(0)
+        .map_err(VirtioDeviceError::ResourceAlloc)
 }
 
 /// Sends a fixed-size control request and waits for its response.
@@ -624,15 +1176,21 @@ fn cursor_cmd<T: ostd_pod::Pod>(
     if queue.should_notify() {
         queue.notify();
     }
-    loop {
+    for iteration in 0..COMPLETION_SPIN_LIMIT {
         if queue
             .pop_used_with_min_bytes(CURSOR_COMPLETION_BYTES)
             .is_ok()
         {
             return Ok(());
         }
-        spin_loop();
+        wait_for_completion_iteration(iteration);
     }
+
+    ostd::warn!(
+        "virtio-gpu cursor completion timed out after {} spins",
+        COMPLETION_SPIN_LIMIT,
+    );
+    Err(VirtioDeviceError::UnsupportedConfig)
 }
 
 /// Chooses the largest power-of-two queue size up to the driver's cap.
@@ -702,4 +1260,13 @@ mod tests {
     fn cursor_completion_has_no_response_body() {
         assert_eq!(CURSOR_COMPLETION_BYTES, 0);
     }
+
+    #[ktest]
+    fn control_completion_yield_interval_is_bounded() {
+        assert!(!completion_should_yield(0));
+        assert!(!completion_should_yield(COMPLETION_YIELD_INTERVAL - 1));
+        assert!(completion_should_yield(COMPLETION_YIELD_INTERVAL));
+        assert!(completion_should_yield(COMPLETION_YIELD_INTERVAL * 2));
+    }
+
 }

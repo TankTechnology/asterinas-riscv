@@ -163,6 +163,7 @@ name = "aster-dwmac"
 version = "0.1.0"
 dependencies = [
  "aster-bigtcp",
+ "aster-cmdline",
  "aster-logger",
  "aster-network",
  "aster-softirq",
@@ -461,6 +462,7 @@ dependencies = [
 name = "aster-usb"
 version = "0.1.0"
 dependencies = [
+ "aster-cmdline",
  "aster-input",
  "aster-logger",
  "aster-pci",
