@@ -284,9 +284,10 @@ on-disk tree reporting `0/ 1 1/ 1 0-5 <leaf> 6`.
 
 `fs_fallocate_check.sh` (`make test_x86_debian_fs_fallocate`) covers
 `ZERO_RANGE` over an existing range, past EOF, and with `KEEP_SIZE`, plus
-plain allocation with and without `KEEP_SIZE`; it also pins the punch-hole
-contract (`EOPNOTSUPP` and an unchanged file).  The image is remounted before
-the contents are re-checked.  Result: **PASS**, `e2fsck -fn` clean.
+plain allocation with and without `KEEP_SIZE`; it also checks that
+`PUNCH_HOLE` zeroes the requested range and keeps the file size.  The image is
+remounted before the contents are re-checked.  Result: **PASS**, `e2fsck -fn`
+clean.
 
 `fs_acl_check.sh` (`make test_x86_debian_fs_acl`) stores an access ACL on two
 files whose mode bits alone deny every non-root access, then runs reads and

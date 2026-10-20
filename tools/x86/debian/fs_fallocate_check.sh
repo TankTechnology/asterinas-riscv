@@ -10,8 +10,8 @@
 #   * FALLOC_FL_ZERO_RANGE past EOF (file grows and the new range is zeros),
 #   * FALLOC_FL_ZERO_RANGE|FALLOC_FL_KEEP_SIZE past EOF (size unchanged),
 #   * plain allocation with and without KEEP_SIZE,
-#   * FALLOC_FL_PUNCH_HOLE, which this port must report as EOPNOTSUPP
-#     rather than silently corrupting the file.
+#   * FALLOC_FL_PUNCH_HOLE, which zeroes the requested range and keeps the
+#     file size.
 #
 # The second boot remounts the image and re-checks the contents, so the zeros
 # must have reached the disk rather than only the page cache.  The host then
@@ -197,7 +197,7 @@ os.close(fd)
 keep_size = os.stat(p).st_size
 keep_blocks = os.stat(p).st_blocks
 
-# Punch-hole is not implemented yet and must fail cleanly.
+# Punch-hole zeroes the range and keeps the size.
 p = os.path.join(ROOT, 'punch.bin')
 write_pages(p, b'H' * 8192)
 fd = os.open(p, os.O_RDWR)
@@ -270,8 +270,11 @@ def check(problems):
 
     if os.path.getsize(os.path.join(ROOT, 'alloc-keep.bin')) != 0:
         problems.append('alloc-keep changed the file size')
-    if read('punch.bin') != b'H' * 8192:
-        problems.append('punch-hole must not modify the file when it fails')
+    data = read('punch.bin')
+    if len(data) != 8192:
+        problems.append('punch-hole changed the size to %d' % len(data))
+    elif data[:4096] != b'\0' * 4096 or data[4096:] != b'H' * 4096:
+        problems.append('punch-hole did not zero the requested range')
 
 
 def main():
@@ -282,7 +285,7 @@ def main():
     check(problems)
     if recorded.get('zero_keep_size') != '4096':
         problems.append('write phase: ZERO_RANGE|KEEP_SIZE changed the size')
-    if recorded.get('punch_errno') != str(95):  # EOPNOTSUPP
+    if recorded.get('punch_errno') != str(0):
         problems.append('write phase: punch-hole errno %s' % recorded.get('punch_errno'))
     result = {'ok': not problems, 'phase': phase, 'problems': problems[:20],
               'recorded': recorded}
@@ -374,7 +377,7 @@ if ! timeout "$TIMEOUT" "$BOOT_SCRIPT" \
     exit 1
 fi
 
-if ! grep -aq 'FS_FALLOCATE_WRITE punch_errno=95' "$WORKSPACE/write.txt"; then
+if ! grep -aq 'FS_FALLOCATE_WRITE punch_errno=0' "$WORKSPACE/write.txt"; then
     printf 'FAIL (the write phase did not complete); see %s\n' "$WORKSPACE/write.txt"
     exit 1
 fi
@@ -405,5 +408,5 @@ if ! e2fsck -fn "$IMAGE" >"$WORKSPACE/fsck-after.txt" 2>&1; then
     exit 1
 fi
 
-printf 'PASS (ZERO_RANGE, allocation and punch-hole error semantics survived a remount)\n'
+printf 'PASS (ZERO_RANGE, allocation and punch-hole semantics survived a remount)\n'
 rm -f -- "$IMAGE"
