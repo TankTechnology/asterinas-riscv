@@ -154,8 +154,26 @@ def main():
         recorded = json.load(f)
     if recorded.get('misaligned_errno') != 22:  # EINVAL
         problems.append('misaligned punch errno %s' % recorded.get('misaligned_errno'))
-    if recorded.get('extent_errno') != 95:  # EOPNOTSUPP
-        problems.append('extent punch errno %s' % recorded.get('extent_errno'))
+    if recorded.get('extent_rc') != 0 or recorded.get('extent_errno') != 0:
+        problems.append('extent punch failed: rc=%s errno=%s'
+                        % (recorded.get('extent_rc'), recorded.get('extent_errno')))
+    if recorded.get('depth1_errno') != 95:  # EOPNOTSUPP
+        problems.append('depth-one punch errno %s' % recorded.get('depth1_errno'))
+
+    hostname = '/etc/hostname'
+    original_len = recorded.get('hostname_len', 0)
+    if os.path.getsize(hostname) != 12288:
+        problems.append('hostname size %d' % os.path.getsize(hostname))
+    else:
+        with open(hostname, 'rb') as f:
+            data = f.read()
+        import hashlib
+        if hashlib.sha256(data[:original_len]).hexdigest() != recorded.get('hostname_sha'):
+            problems.append('hostname prefix was punched away')
+        if data[4096:8192] != b'\0' * 4096:
+            problems.append('extent hole is not zeroed')
+        if data[8192:12288] != b'\0' * 4096:
+            problems.append('punched extent tail is not zeroed')
     if recorded.get('blocks_after', 0) >= recorded.get('blocks_before', 0):
         problems.append('punch did not free blocks (%s -> %s)'
                         % (recorded.get('blocks_before'), recorded.get('blocks_after')))
@@ -185,6 +203,7 @@ echo "FS_PUNCH_PROBE_BEGIN"
 sleep $SETTLE
 python3 - <<'PY'
 import ctypes
+import hashlib
 import json
 import os
 
@@ -239,10 +258,27 @@ fd = os.open(data_path, os.O_RDWR)
 misaligned_rc, misaligned_errno = punch(fd, 100, BLOCK)
 os.close(fd)
 
-# An extent-mapped file is still unsupported; it must fail cleanly.
-extent_fd = os.open('/etc/hostname', os.O_RDWR)
-extent_rc, extent_errno = punch(extent_fd, 0, BLOCK)
-os.close(extent_fd)
+# An extent-mapped file: append two pages (a multi-block extent), then punch
+# the first page to split it and the second to remove the remainder.  The
+# original first block (the hostname itself) stays untouched.
+hostname = '/etc/hostname'
+with open(hostname, 'rb') as f:
+    hostname_original = f.read()
+fd = os.open(hostname, os.O_RDWR)
+os.lseek(fd, 4096, os.SEEK_SET)
+os.write(fd, b'H' * 4096)
+os.write(fd, b'I' * 4096)
+os.fsync(fd)
+extent_rc, extent_errno = punch(fd, 4096, BLOCK)
+if extent_rc == 0:
+    extent_rc, extent_errno = punch(fd, 8192, BLOCK)
+os.fsync(fd)
+os.close(fd)
+
+# A depth-one extent tree is still unsupported and must fail cleanly.
+depth1_fd = os.open('/usr/lib/x86_64-linux-gnu/libLLVM.so.19.1', os.O_RDWR)
+depth1_rc, depth1_errno = punch(depth1_fd, 0, BLOCK)
+os.close(depth1_fd)
 
 # Punching the whole file must free every data block and both indirect
 # levels: the inode ends with no blocks at all.
@@ -262,13 +298,18 @@ result = {
     'misaligned_rc': misaligned_rc,
     'extent_errno': extent_errno,
     'extent_rc': extent_rc,
+    'depth1_errno': depth1_errno,
+    'depth1_rc': depth1_rc,
+    'hostname_len': len(hostname_original),
+    'hostname_sha': hashlib.sha256(hostname_original).hexdigest(),
 }
 with open(os.path.join(ROOT, 'write-result.txt'), 'w') as f:
     json.dump(result, f, sort_keys=True)
     f.flush()
     os.fsync(f.fileno())
-print('FS_PUNCH_WRITE ok=True blocks=%d->%d misaligned=%d extent=%d'
-      % (blocks_before, blocks_after, misaligned_errno, extent_errno), flush=True)
+print('FS_PUNCH_WRITE ok=True blocks=%d->%d misaligned=%d extent=%d depth1=%d'
+      % (blocks_before, blocks_after, misaligned_errno, extent_errno, depth1_errno),
+      flush=True)
 PY
 python3 /opt/fs-punch/check.py write
 sync

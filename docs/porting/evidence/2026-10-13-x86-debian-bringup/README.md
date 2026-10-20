@@ -797,6 +797,13 @@ FS_PUNCH_VERIFY ok=True problems=0
 e2fsck -fn clean
 ```
 
+Depth-zero extent trees are handled too: each affected extent is split into
+the parts before and after the hole and the covered physical run is freed,
+rejecting the operation when the result would not fit the four in-line
+records.  The gate appends two pages to the image's inline-extent
+`/etc/hostname`, punches the first (split) and then the second (removal); a
+depth-one tree such as `libLLVM` still reports `EOPNOTSUPP`.
+
 The measured 520 -> 392 sectors is exactly the 16 data blocks covered by the
 punched ranges.
 
