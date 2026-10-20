@@ -472,7 +472,7 @@ impl<'a> PageRun<'a> {
     }
 
     /// Returns the ordered pages paired with their logical indices.
-    fn into_indexed(self) -> impl ExactSizeIterator<Item = (usize, LockedCachePage)> {
+    pub(crate) fn into_indexed(self) -> impl ExactSizeIterator<Item = (usize, LockedCachePage)> {
         let start_idx = self.start_idx;
         self.pages
             .enumerate()
@@ -732,7 +732,7 @@ fn prepare_read_page(locked_page: LockedCachePage) -> (BioSegment, BioCompleteFn
     (bio_segment, complete_fn)
 }
 
-fn prepare_write_page(locked_page: LockedCachePage) -> (BioSegment, BioCompleteFn) {
+pub(crate) fn prepare_write_page(locked_page: LockedCachePage) -> (BioSegment, BioCompleteFn) {
     let (bio_segment, page) = prepare_write_page_segment(locked_page);
     let complete_fn = Box::new(move |status| complete_write_page(&page, status));
     (bio_segment, complete_fn)

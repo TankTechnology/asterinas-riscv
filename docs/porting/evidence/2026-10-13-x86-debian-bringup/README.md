@@ -648,6 +648,35 @@ write. `msync(MS_SYNC)` used to discard inode sync errors and return success;
 it now propagates the first failure (`MS_ASYNC` keeps ignoring errors because
 it cannot report them).
 
+## Directory blocks belong in the journal
+
+The concurrency power-cut gate caught a crash window that the deterministic
+fault stages could not: QEMU was killed at an arbitrary moment during mixed
+create/unlink churn, and `e2fsck` then reported
+
+```
+Entry 'f-2-204' in /opt/fs-stress/work/worker-2 (19486) has deleted/unused inode 19771.
+```
+
+The directory entry had reached its home block, but the inode allocation that
+the entry references had not been committed.  Directory blocks were treated
+as ordinary file data: `sync_all` flushed them with data=ordered, *then*
+committed the metadata that describes them, and a crash in between left the
+two halves on opposite sides of the atomicity boundary.  ext4 journals
+directory data for exactly this reason.
+
+The page-cache writeback backend for directory inodes now stages each block
+into the metadata transaction instead of writing it home.  The same commit
+that records the inode bitmap, the inode table and the directory block is the
+commit that publishes the create or unlink, and replay applies them together.
+The page is completed immediately (the journal owns the bytes from then on).
+Staged blocks are dropped when their block is freed, so a snapshot cannot
+overwrite a block that has been handed to a new owner.
+
+After the change the same gate passes, and three more power cuts at different
+moments (15–19 seconds into the churn) passed as well, each with a clean
+`e2fsck -fn`.
+
 ## Sub-second timestamps
 
 The in-memory inode has always carried `Duration`, and `statx` reports

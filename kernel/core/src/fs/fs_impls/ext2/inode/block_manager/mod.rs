@@ -14,7 +14,7 @@ pub(super) use self::block_ptr_tree::{BlockPtrTree, RawBlockPtrs};
 use super::io_range::{IoRange, IoRangeIter};
 use crate::{
     fs::ext2::{fs::Ext2, prelude::*},
-    vm::page_cache::PageRun,
+    vm::page_cache::{CachePageExt, PageRun, prepare_write_page},
 };
 
 /// Bridges the inode's logical file view and the physical block device.
@@ -33,15 +33,24 @@ pub(super) struct InodeBlockManager {
     npages: AtomicUsize,
     /// File system handle for indirect I/O and BIO submission.
     fs: Weak<Ext2>,
+    /// Whether dirty pages are metadata: directories are journaled instead of
+    /// being written home outside the transaction.
+    stage_writes: bool,
 }
 
 impl InodeBlockManager {
     /// Creates a new block manager wrapping the given block-pointer tree.
-    pub(super) fn new(block_ptr_tree: BlockPtrTree, fs: Weak<Ext2>, npages: usize) -> Self {
+    pub(super) fn new(
+        block_ptr_tree: BlockPtrTree,
+        fs: Weak<Ext2>,
+        npages: usize,
+        stage_writes: bool,
+    ) -> Self {
         Self {
             block_ptr_tree: RwMutex::new(block_ptr_tree),
             npages: AtomicUsize::new(npages),
             fs,
+            stage_writes,
         }
     }
 
@@ -216,6 +225,30 @@ impl BlockAsPageCacheBackend for InodeBlockManager {
         let iblock = idx as Iblock;
         let fs = self.fs()?;
 
+        // Directory blocks are metadata: they must become durable in the same
+        // journal transaction as the inode and bitmap changes that describe
+        // them. Writing them home directly would let a crash publish a
+        // directory entry whose inode allocation never committed.
+        if self.stage_writes {
+            let bid = match self.lookup_block(iblock)? {
+                Some(bid) => bid,
+                None => {
+                    let mut tree = self.block_ptr_tree.write();
+                    let step =
+                        tree.resolve_block_range(&fs, iblock, bio_segment.nblocks() as u32)?;
+                    match step {
+                        ResolvedBlockRange::NewlyAllocated(range) => range.start,
+                        ResolvedBlockRange::Existing(range) => range.start,
+                    }
+                }
+            };
+            let mut bytes = vec![0u8; BLOCK_SIZE];
+            bio_segment.copy_out(&mut bytes)?;
+            fs.stage_metadata_block(bid, &bytes)?;
+            complete_fn(BioStatus::Complete);
+            return Ok(());
+        }
+
         // TODO: Refactor `lookup_block` and `resolve_block_range`. Currently
         // `bio_segment.nblocks()` is always 1, so the point lookup works correctly, but the
         // semantics are misleading because `bio_segment` can represent a contiguous block range.
@@ -238,6 +271,20 @@ impl BlockAsPageCacheBackend for InodeBlockManager {
     }
 
     fn submit_write_page_run(&self, mut pages: PageRun<'_>, io_batch: &mut IoBatch) -> Result<()> {
+        if self.stage_writes {
+            // Submit page by page so `submit_write_bio` can stage each block.
+            for (idx, locked_page) in pages.into_indexed() {
+                let rollback_page = locked_page.clone();
+                let (bio_segment, complete_fn) = prepare_write_page(locked_page);
+                if let Err(err) = self.submit_write_bio(idx, bio_segment, complete_fn, io_batch) {
+                    let locked_page = rollback_page.lock();
+                    locked_page.set_dirty();
+                    locked_page.clear_writing_back();
+                    return Err(err);
+                }
+            }
+            return Ok(());
+        }
         let start_idx = pages.start_idx();
         let end_idx = start_idx + pages.len();
         if end_idx > self.npages.load(Ordering::Acquire) {

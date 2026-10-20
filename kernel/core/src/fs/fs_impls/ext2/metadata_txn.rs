@@ -55,6 +55,16 @@ impl MetadataTxn {
         Ok(())
     }
 
+    /// Forgets a staged block.
+    ///
+    /// A freed block can still have a staged snapshot from an earlier
+    /// writeback (directory pages are staged as metadata). Publishing that
+    /// snapshot would overwrite whatever the block is reused for, so the
+    /// free path drops it.
+    pub(super) fn discard(&mut self, bid: Ext2Bid) {
+        self.blocks.remove(&bid);
+    }
+
     /// Removes and returns every staged block.
     ///
     /// The caller writes them outside this lock. A path reached from the

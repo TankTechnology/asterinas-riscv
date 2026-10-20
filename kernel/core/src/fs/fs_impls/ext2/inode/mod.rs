@@ -719,14 +719,17 @@ impl InodePayload {
             inode_desc.block_ptrs,
         );
         match inode_desc.type_ {
-            InodeType::File | InodeType::Dir => {
-                Self::new_data_backed(inode_desc.size as usize, raw_block_ptrs, fs)
-            }
+            InodeType::File | InodeType::Dir => Self::new_data_backed(
+                inode_desc.size as usize,
+                raw_block_ptrs,
+                fs,
+                inode_desc.type_ == InodeType::Dir,
+            ),
             InodeType::SymLink if Self::is_fast_symlink(inode_desc) => Self::FastSymlink {
                 target: FastSymlinkTarget::new(inode_desc.block_ptrs),
             },
             InodeType::SymLink => {
-                Self::new_data_backed(inode_desc.size as usize, raw_block_ptrs, fs)
+                Self::new_data_backed(inode_desc.size as usize, raw_block_ptrs, fs, false)
             }
             InodeType::CharDevice | InodeType::BlockDevice => Self::Device {
                 device_id: raw_block_ptrs.read_device_id(),
@@ -735,7 +738,12 @@ impl InodePayload {
         }
     }
 
-    fn new_data_backed(size: usize, raw_block_ptrs: RawBlockPtrs, fs: Weak<Ext2>) -> Self {
+    fn new_data_backed(
+        size: usize,
+        raw_block_ptrs: RawBlockPtrs,
+        fs: Weak<Ext2>,
+        stage_writes: bool,
+    ) -> Self {
         let page_cache_size = size.align_up(PAGE_SIZE);
         let page_count = page_cache_size / PAGE_SIZE;
         let block_ptr_tree = BlockPtrTree::new(raw_block_ptrs, fs.clone());
@@ -743,6 +751,7 @@ impl InodePayload {
             block_ptr_tree,
             fs.clone(),
             page_count,
+            stage_writes,
         ));
         let page_cache_backend: Weak<dyn PageCacheBackend> = Arc::downgrade(&block_manager) as _;
         // Keep page-cache capacity aligned with inode size so `npages`/VMO window

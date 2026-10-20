@@ -747,6 +747,15 @@ impl Ext2 {
             remaining_blocks -= blocks_in_group;
         }
 
+        // A directory page may have been staged before its block was freed;
+        // publishing that snapshot would clobber the block's next owner.
+        {
+            let mut txn = self.metadata_txn.lock();
+            for bid in start..start + count {
+                txn.discard(bid);
+            }
+        }
+
         Ok(())
     }
 

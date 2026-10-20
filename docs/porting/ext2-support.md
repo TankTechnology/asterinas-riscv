@@ -102,7 +102,7 @@ linear; `e2fsck -D` can rebuild an index later.
 |---|---|---|
 | Internal journal | ✅ | external journals rejected |
 | Journal superblock | 🟡 | v2 only; 32-bit tags; no checksum or 64-bit tag layout |
-| Writing metadata transactions | ✅ | descriptor + data + optional revoke + commit, then home blocks and checkpoint |
+| Writing metadata transactions | ✅ | descriptor + data + optional revoke + commit, then home blocks and checkpoint; directory data blocks join the transaction that describes them |
 | Replay after a crash | 🟡 | one descriptor per transaction; revoke-only transactions and deleted tags are `EOPNOTSUPP` |
 | Journal inode geometry | 🟡 | must be contiguous for replay |
 | `noload` mount option | ✅ | skips journal replay |
@@ -112,6 +112,18 @@ linear; `e2fsck -D` can rebuild an index later.
 `fsync` and every metadata commit go through the journal and end with a block
 device flush; `sync` commits the whole filesystem (full inode-table flush),
 which is heavier than Linux's per-inode writeback but keeps ordering simple.
+
+Directory data blocks are metadata: the writeback backend stages them into
+the next transaction instead of writing them home. Without that, a crash
+between the data=ordered flush of a directory block and the metadata commit
+left an entry on disk pointing at an inode whose allocation never committed
+(`Entry 'f-2-204' ... has deleted/unused inode 19771`). A staged directory
+block is discarded when its block is freed, so the snapshot cannot overwrite
+the block's next owner.
+
+The fault-injection stages only fire inside a commit and did not see this
+window; the concurrency power-cut gate, which kills QEMU at an arbitrary
+moment during mixed churn, did.
 
 ### Timestamps
 
