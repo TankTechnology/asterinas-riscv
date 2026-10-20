@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-ppoll-runtime",
+  "claim": "E3",
+  "status": "fail",
+  "passed": false,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "firefox_new_session_boundary",
+      "expected": "Official Firefox completes Marionette WebDriver:NewSession and emits a final E3 receipt within the bounded host budget",
+      "actual": "virgl GLX test and greeting passed; NewSession send completed but response boundary was absent at the 360-second limit",
+      "ok": false
+    }
+  ],
+  "artifacts": {
+    "lifecycle": "/mnt/mydisk/qemu-firefox-probe-r99/lifecycle.json",
+    "lifecycle_sha256": "26f192093badd6b05889b53db2fd7991c28b04ba19577bb1b7e40b3a4fa77a02",
+    "result": "/mnt/mydisk/qemu-firefox-probe-r99/result.json",
+    "result_sha256": "d365c1ba7e77b5408f5d3f5b081f074f302dde0da9e880ad84d6190ab35aa7ef",
+    "serial": "/mnt/mydisk/qemu-firefox-probe-r99/desktop-m4-drm.serial.log",
+    "serial_sha256": "3bbc42f13afde050435439758eba7e4d2b9813d584e54c11582cb4104faa9780",
+    "evidence": "docs/porting/evidence/2026-10-20-firefox-ppoll-runtime-r99.md",
+    "evidence_sha256": "3d6841b622a0cf5f98a0146c62d2a1fcb9e81b22449b0dfa50fe80d01fc425fc"
+  }
+}

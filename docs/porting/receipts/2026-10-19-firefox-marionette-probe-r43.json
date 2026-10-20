@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-probe",
+  "claim": "E3",
+  "status": "blocked",
+  "classification": "guest_firefox_parent_initialization",
+  "started_utc": "2026-10-19T01:11:17Z",
+  "finished_utc": "2026-10-19T01:15:09Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "newsession_response",
+      "expected": "The NewSession response header arrives before the bounded deadline",
+      "actual": "Greeting and request delivery pass; parent remains alive with 50 threads, while the only child is Socket Process ppoll(73); no Content/RDD/GPU/Renderer descendant appears",
+      "ok": false
+    }
+  ],
+  "reason": "The process-tree boundary is before Firefox creates renderer-related descendants; this is the final short-probe runtime receipt for this diagnostic dimension.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "kernel": "829f9fa348d15bc3826c5543aea0ade0408c241d816e4d48db53de4007249297",
+    "root_image": "dc6b592576283deec5e99b5f9f89cf6fd943ab9b6b566a1a61f161d15221e639",
+    "root_manifest": "bc0b956c08655aa659a5d353a211c0203f0d3db7739fca1acc73d04e7873e1f9"
+  },
+  "markers": [
+    "FIREFOX_DRM_PROBE_SAMPLE_CHILD pid=447 name=Socket Process relation=direct depth=1 syscall=number=73",
+    "FIREFOX_DRM_PROBE_BOUNDARY name=greeting status=pass",
+    "A_WEB_MARIONETTE_TRANSPORT event=send_complete command=WebDriver:NewSession",
+    "A_WEB_MARIONETTE_TRANSPORT event=failure command=WebDriver:NewSession stage=response_header"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r43.md",
+    "evidence_sha256": "3cb45ca0a287c9a2cf57086f09a73c125ef2013a59d4d2b152e8943e2c3a8f1a"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r6.md",
+    "evidence_sha256": "7f727f311fbf893a8331a875560dc7913afef7d7f5597115ddbbca51a9918369",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r6/lifecycle.json",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r6/result.json",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r6/desktop-m4-drm.serial.log"
+  },
+  "assertions": [
+    {
+      "actual": "Greeting passed; NewSession timed out while Firefox process slept with stable schedstat/RSS and NewRenderer::Run slow warning",
+      "expected": "NewSession returns a sessionId after greeting",
+      "name": "marionette_newsession_boundary",
+      "ok": false
+    }
+  ],
+  "claim": "E3",
+  "classification": "renderer-startup-sleep",
+  "finished_utc": "2026-10-18T19:09:00Z",
+  "gate": "firefox-marionette-probe",
+  "input_hashes": {
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "kernel": "1660a4606f88d3131ad030a489b978a0f3a24fed4d17beb6db31c2829029a02d",
+    "qemu": "d4a95ece1ea69687257cb584182bce231d8f379fda0231ec62d4da07611e1952",
+    "rootfs": "df7e8dcaee262cf1966eb4f0fbf6ad745d8ef20ea4f5a53e1faaaa77a69326ca",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84"
+  },
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "markers": [
+    "FIREFOX_DRM_PROBE_BOUNDARY name=greeting status=pass",
+    "FIREFOX_DRM_PROBE_SAMPLE state=S threads=58 rss=264500_kB",
+    "FIREFOX_DRM_PROBE_SYSCALL pid=127 none",
+    "FIREFOX_DRM_PROBE_BOUNDARY name=new-session status=fail type=TimeoutError"
+  ],
+  "reason": "Firefox's renderer startup remains asleep after NewSession is sent; no application scene evidence exists.",
+  "recovery": "not-run",
+  "schema": 1,
+  "started_utc": "2026-10-18T18:58:00Z",
+  "status": "blocked"
+}

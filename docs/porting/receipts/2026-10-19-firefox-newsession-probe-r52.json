@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "gate": "firefox-newsession-probe",
+  "claim": "E3",
+  "status": "fail",
+  "classification": "bounded-firefox-probe-kernel-handoff",
+  "started_utc": "2026-10-19T03:27:00Z",
+  "finished_utc": "2026-10-19T03:31:06Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "kernel": "245d54df230f0d8878411d1efd982d5e4189d469f6172379c6c246f56c9fba1e",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "root_image": "62510146ff58cafd421d9660a01b2a6e3dde29bfdc458cee85a2ce0729df7932",
+    "root_manifest": "1759e93550a96f7de4230b5586facb97145954c78172473a0ef8c9954784e1db",
+    "packages_lock": "9d5fd036dfae9b113a218d4d522e8e22158074ef18efb599c2be69b0ef1970c6",
+    "package_checksums": "4bd122bfc6c1335f7133457743e04c9bd7c2c346feabcfb71a3a7f749d4b80a8",
+    "serial_log": "1edeba0ff56258b977190c56c7cccb755e7f5b44d1eaca009a334ec2aade9af1",
+    "result_json": "298bfa57dbf92b8e3ad2451bd1e276f8f11be664d08d97b68a0546e48988ccdb"
+  },
+  "assertions": [
+    {
+      "name": "kernel_stage1_handoff",
+      "expected": "After the U-Boot desktop handoff, Asterinas/Stage1 emits a progress marker within the 180-second bounded probe",
+      "actual": "U-Boot markers and Starting kernel were observed, but no Asterinas/Stage1 marker appeared before the protocol timeout; Firefox NewSession was not reached",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "uboot_setup_complete",
+    "desktop_boot_marker",
+    "kernel_entry_seen",
+    "asterinas_marker_absent",
+    "newsession_not_reached"
+  ],
+  "reason": "Bounded probe stopped at kernel/Stage1 handoff after Starting kernel; this does not test futex or Firefox.",
+  "recovery": "qemu_terminated_on_bounded_timeout; no guest recovery marker",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-newsession-probe-r52.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-scheduler-r52b/desktop-m4-drm.serial.log",
+    "lifecycle": "/mnt/mydisk/qemu-firefox-scheduler-r52b/lifecycle.json",
+    "result_json": "/mnt/mydisk/qemu-firefox-scheduler-r52b/result.json"
+  }
+}

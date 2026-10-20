@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-tcp-futex-boundary",
+  "claim": "E3",
+  "status": "fail",
+  "started_utc": "2026-10-19T21:15:00Z",
+  "finished_utc": "2026-10-19T21:29:08Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "marionette_newsession_tcp_futex_boundary",
+      "expected": "Official Firefox receives a bounded WebDriver:NewSession request and returns a response header",
+      "actual": "TCP receive and socket notification occurred, but no response_header/response_body marker appeared before the bounded probe ended; slow futex/read samples were recorded",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "DEBIAN_DESKTOP_M4_XORG_START provider=drm status=ready",
+    "FIREFOX_DRM_GLXTEST RENDERER virgl DRM_RENDERDEVICE /dev/dri/renderD128",
+    "A_WEB_MARIONETTE_TRANSPORT command=WebDriver:NewSession stage=send_complete",
+    "ASTERINAS_TCP_TRACE seq=18 peer-process server-received",
+    "ASTERINAS_TCP_TRACE seq=20 pollee-notify",
+    "ASTERINAS_SYSCALL_PROFILE slow pid=118 tid=312 syscall=98 futex",
+    "ASTERINAS_SYSCALL_PROFILE slow pid=118 tid=615 syscall=63 read"
+  ],
+  "reason": "The request reached the guest socket and the DRM/virgl precondition passed, but Firefox produced no NewSession response. The guest probe receipt was not published before lifecycle termination; no futex semantic change is inferred.",
+  "recovery": "host bounded termination; no hardware operation",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-firefox-marionette-probe-r95.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-probe-r95/desktop-m4-drm.serial.log",
+    "serial_sha256": "2dee9823e53d454f7c01f5fae0c6454bff82befa0cbdac3734b3a8d19603827d",
+    "lifecycle": "/mnt/mydisk/qemu-firefox-probe-r95/lifecycle.json",
+    "lifecycle_sha256": "dad23d6412799af8a747b20dd63fa90415542a4e323aa6f74ff105d99efe45cf",
+    "result": "/mnt/mydisk/qemu-firefox-probe-r95/result.json",
+    "result_sha256": "968db258977924474709abcc1cb50caed1d64e860606ad36aed16c451113ea93",
+    "root_image_sha256": "1018d02c1db8b48ecdab5368a0ed8a80e95a476c602f3409279a4fa8a671a2d4"
+  }
+}

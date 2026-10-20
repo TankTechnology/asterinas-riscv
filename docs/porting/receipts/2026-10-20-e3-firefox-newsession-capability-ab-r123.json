@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-newsession-capability-ab",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "classification": "bounded-pre-capability-timeout",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "capability_ab_boundary_recorded",
+      "expected": "Both capability arms must be recorded and must not be interpreted as a capability result when the guest never emits a request marker.",
+      "actual": "A=minimal and B=legacy both reached init-spawned, emitted no NewSession request or greeting, and terminated at the 180-second host boundary.",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-newsession-capability-ab-r123.md",
+    "evidence_sha256": "084cec053e7671e3b69338c812428024897aac6aa89a8c709c51335d7a0c4b34"
+  },
+  "next_boundary": "Cold desktop launch boundary before capability negotiation; no identical A/B rerun"
+}

@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-ppoll-futex-correlation",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "firefox_newsession_wait_topology_correlated",
+      "expected": "Existing capability A/B runs must be compared at the same post-send syscall boundary before another runtime attempt",
+      "actual": "A minimal and B legacy both show Firefox ppoll(73)+worker futex(98) after send_complete; r99 shows the same topology; generic futex/ppoll r105 passes",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-ppoll-futex-correlation-r106.md",
+    "evidence_sha256": "7964385a44316b5e0d64d06f2f06ee4f884e0819ecd2957a56918f240746d065",
+    "inputs": [
+      "/mnt/mydisk/qemu-firefox-probe-ab-r101-A-minimal/desktop-m4-drm.serial.log",
+      "/mnt/mydisk/qemu-firefox-probe-ab-r101-B-legacy/desktop-m4-drm.serial.log",
+      "/mnt/mydisk/qemu-firefox-probe-r99/desktop-m4-drm.serial.log"
+    ]
+  },
+  "next_boundary": "Firefox-specific IPC/socket wake path; no new capability or full-scene run"
+}

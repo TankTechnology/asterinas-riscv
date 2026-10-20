@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "gate": "firefox-tcp-diagnostic-log-channel",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "kernel-diagnostic-contract",
+  "started_utc": "2026-10-19T00:19:00Z",
+  "finished_utc": "2026-10-19T00:20:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "tcp_trace_visible_at_probe_loglevel",
+      "expected": "Opt-in TCP trace records are visible at loglevel=4",
+      "actual": "tcp_diagnostics.rs uses error-level output for configured/recorded/suppressed trace lines and the kernel build passes",
+      "ok": true
+    }
+  ],
+  "reason": "Code/build verification only; r34 host lifetime failure is recorded separately.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "kernel": "587456beec0cf945048426c6eb21b442dcbfa1b853d5777d0a4edfe9315ece1a",
+    "tcp_diagnostics": "428c17a1c5b766a90d70090c55318aa9595bfd38cbafc06a4e36226d8fee0cff"
+  },
+  "markers": [
+    "configured trace uses error-level output",
+    "recorded trace uses error-level output",
+    "suppression summary uses error-level output",
+    "kernel build passed"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-tcp-diagnostic-log-channel-r35.md"
+  }
+}

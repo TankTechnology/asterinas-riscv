@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "gate": "firefox-ppoll-boundary-instrumentation",
+  "claim": "E3",
+  "status": "pass",
+  "started_utc": "2026-10-20T00:00:00Z",
+  "finished_utc": "2026-10-20T00:12:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "ppoll_boundary_instrumentation_compiles",
+      "expected": "Opt-in ppoll entry/return tracing compiles for the RISC-V kernel without changing default syscall semantics",
+      "actual": "rustfmt check and make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode passed",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "ASTERINAS_PPOLL_PROFILE phase=enter",
+    "ASTERINAS_PPOLL_PROFILE phase=return"
+  ],
+  "reason": "Supplemental source/build evidence only; no runtime guest result and no E3 completion claim.",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-ppoll-boundary-instrumentation-r1.md",
+    "evidence_sha256": "3f84cf203f03602e1d681fee460443184471edc5188fca967cfbb63bb35b7a5b"
+  }
+}

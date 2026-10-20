@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-probe",
+  "claim": "E3",
+  "status": "inconclusive",
+  "classification": "guest_launch_protocol",
+  "started_utc": "2026-10-18T20:48:00Z",
+  "finished_utc": "2026-10-18T20:55:12Z",
+  "assertions": [
+    {
+      "name": "guest_userspace_boundary",
+      "expected": "Asterinas userspace emits a boot marker before Firefox probe",
+      "actual": "U-Boot reached Starting kernel; no Asterinas or Firefox marker",
+      "ok": false
+    }
+  ],
+  "reason": "Bounded probe ended at the launch/protocol boundary before guest userspace",
+  "recovery": "not-run",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "qemu": "d4a95ece1ea69687257cb584182bce231d8f379fda0231ec62d4da07611e1952",
+    "kernel": "457ff00a120cf1481295ec54b3966606d9e73fc168c7dfd72d5a4e7d282ead68",
+    "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "stage1_initramfs": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "root_image": "df7e8dcaee262cf1966eb4f0fbf6ad745d8ef20ea4f5a53e1faaaa77a69326ca"
+  },
+  "markers": [
+    "Starting kernel ...",
+    "FIREFOX_DRM_PROBE_RECEIPT absent",
+    "FIREFOX_DRM_PROBE_BOUNDARY absent"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r14-launch-failure.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r14-container/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r14-container/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r14-container/lifecycle.json",
+    "serial_log_sha256": "bff6be2e9d87f44ede6495f52d4ff90705f4a4c4c750edbe29ef79a06eb50782",
+    "result_json_sha256": "22dc12ee883181c4fa88e9f4af34a242f1eb787421e9a24d0cad2a757f38087d",
+    "lifecycle_json_sha256": "dac70ead23ec30bbd38c3bcc756969f9a538f163a6fb79d005e6afcb9691c115"
+  }
+}

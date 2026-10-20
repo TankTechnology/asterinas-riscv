@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "gate": "tcg-dtb-mode-stage1-boundary",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "bounded-direct-kernel-dtb-comparison",
+  "started_utc": "2026-10-19T08:20:00Z",
+  "finished_utc": "2026-10-19T08:40:15Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "kernel": "245d54df230f0d8878411d1efd982d5e4189d469f6172379c6c246f56c9fba1e",
+    "tcg_serial": "fbf906e9a0a978d390493136fb810dbc022cb992df823f0a71cbda73ca9fa6fe",
+    "explicit_sv39_dtb": "1bcec907d28a9ede2c0020d9024de93640d2d0ba9bdfc5f09f20e81f4777a9eb",
+    "explicit_sv39_serial": "6aa976c126e06f5361c58026da7f54d22422db87452ec98b79b4b7d679a5cf0a"
+  },
+  "assertions": [
+    {
+      "name": "tcg_dtb_mode_early_boundary",
+      "expected": "Changing only generated sv57 DTB to explicit sv39 DTB does not prevent early Asterinas entry through first-kthread-enter within 60 seconds",
+      "actual": "Both bounded runs emitted Enter riscv_boot, OSTD initialized, and first-kthread-enter; both ended only at explicit timeout 124",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "tcg_sv57_first_kthread",
+    "explicit_sv39_first_kthread",
+    "both_exit_124",
+    "no_firefox",
+    "no_stage1"
+  ],
+  "reason": "The DTB mode difference is not the pre-first-kthread TCG failure mechanism; later Stage1 equivalence remains unverified.",
+  "recovery": "qemu_terminated_by_explicit_60_second_timeout",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-tcg-dtb-mode-boundary-r61.md",
+    "evidence_sha256": "55733e885c07044d39ef1aa93aeb8f80d2f96f3b8731c80d1d9b891ab07ef92b",
+    "tcg_run": "/mnt/mydisk/qemu-dtb-mode-compare-r61/tcg_sv57",
+    "explicit_sv39_run": "/mnt/mydisk/qemu-dtb-mode-compare-r61/explicit_sv39"
+  }
+}

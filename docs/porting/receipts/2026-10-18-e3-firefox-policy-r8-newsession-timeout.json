@@ -1,0 +1,44 @@
+{
+  "artifacts": {
+    "evidence": "/mnt/shared/xaj/Program/asterinas/docs/porting/evidence/2026-10-18-qemu-firefox-policy-r8-newsession-timeout.md",
+    "evidence_sha256": "4cab856e6386db1a2a17f255543323b650be3353ba3adf5ab2eba506964af7f1",
+    "lifecycle_json": "/mnt/shared/xaj/Program/asterinas/target/e3-render-policy-r1/qemu-r2-export/lifecycle.json",
+    "lifecycle_json_sha256": "087dd61c5b88fdd532f8e6f8588025651d8da2eccf74b9e8d104a607d5a5bc70",
+    "result_json": "/mnt/shared/xaj/Program/asterinas/target/e3-render-policy-r1/qemu-r2-export/result.json",
+    "result_json_sha256": "2c0e9c693a043f362354bb601b06861a8acf834f201e86f504c2817bc596f16a",
+    "serial_log": "/mnt/shared/xaj/Program/asterinas/target/e3-render-policy-r1/qemu-r2-export/firefox-drm-recovery.serial.log",
+    "serial_log_sha256": "d20e7620e755f0f78ef3221c4e6368f3966a5af282daa800e7c6ec08d80a3e4e"
+  },
+  "assertions": [
+    {
+      "actual": "renderD128/virgl probes passed; Marionette NewSession timed out before application evidence",
+      "expected": "Firefox NewSession, two GPU proofs, fixed screenshot/frame evidence and recovery",
+      "name": "official_firefox_scene",
+      "ok": false
+    }
+  ],
+  "claim": "E3",
+  "finished_utc": "2026-10-18T13:44:45Z",
+  "gate": "official-firefox-scene",
+  "input_hashes": {
+    "dtb": "1bcec907d28a9ede2c0020d9024de93640d2d0ba9bdfc5f09f20e81f4777a9eb",
+    "kernel": "cabc01961888055d64b5f0d59a1a15a1d797e95e969fca7de7d61dfe2429328d",
+    "qemu": null,
+    "rootfs": "aa26ef744b3c0e8568bbbaafbbfe300199ef14e354a698410b8b73bab4b80ad7",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fd8c93481dd159ad04c",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84"
+  },
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "markers": [
+    "FIREFOX_DRM_ACCESS",
+    "FIREFOX_DRM_EGL_PROBE",
+    "FIREFOX_DRM_GLXTEST",
+    "DEBIAN_DESKTOP_M4_READY",
+    "FIREFOX_DRM_PHASE name=new-session",
+    "FIREFOX_DRM_FAIL_REASON reason=timed_out"
+  ],
+  "reason": "official Firefox Marionette NewSession timed out after the bounded session deadline; virgl/renderD128 probes passed but scene/recovery evidence was absent",
+  "schema": 1,
+  "started_utc": "2026-10-18T13:25:00Z",
+  "status": "blocked"
+}

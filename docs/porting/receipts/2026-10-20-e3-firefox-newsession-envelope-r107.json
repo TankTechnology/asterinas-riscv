@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-newsession-envelope",
+  "claim": "E3",
+  "status": "fail",
+  "passed": false,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "newsession_w3c_envelope_boundary",
+      "expected": "The W3C alwaysMatch/firstMatch capability envelope receives a WebDriver:NewSession response within the bounded probe and changes the prior boundary",
+      "actual": "GLX virgl and Marionette greeting passed and the request was fully sent, but no response header arrived before 240 seconds; the envelope reproduces r101 minimal and legacy no-response boundary",
+      "ok": false
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-newsession-envelope-r107.md",
+    "evidence_sha256": "370627cfb5b9fe34641be2ba512884596fa136f0bd47d64419c611960b713ca2",
+    "runtime_output": "/mnt/mydisk/qemu-firefox-probe-envelope-r107",
+    "lifecycle_sha256": "8ac46df86b1bb7d40981e270e8c47e2b90bc488a547568a9e34753c5f679bb82",
+    "result_sha256": "62c6d859e8907a29dc025c57de853d633ee3b5e376da4444fc2569d3864917d8",
+    "serial_sha256": "4c108e7a288a1e02f910afc81fadab4fb896e4efc19048c204a1676132078955",
+    "root_image_sha256": "e1feafbced3fe603ff72e17c9ed3e40ac396d1979a6b17427b92acf903c71611",
+    "root_manifest_sha256": "6075bf5f8bd64e095570357dae76fabefa81ad9cfc797e8cb6f26d3b0dc70d64",
+    "overlay_manifest_sha256": "a06d80579f47edb3964de6dad974dcbf24d314bc2ef2af921c5827eec5934459"
+  },
+  "next_boundary": "Firefox parent/worker IPC wait; do not repeat capability-shape probes or the full scene"
+}

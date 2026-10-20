@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-user-recv-trace",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "firefox_user_recv_trace_contract",
+      "expected": "The opt-in TCP diagnostic must expose a stable user-recv boundary without changing network behavior",
+      "actual": "TcpDiagnosticStage::UserRecv is emitted after TcpConnection::recv consumes bytes; standalone policy tests (3/3), rustfmt, and diff checks pass",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "policy_source": "kernel/libs/aster-bigtcp/src/iface/tcp_diagnostics/policy.rs",
+    "recv_source": "kernel/libs/aster-bigtcp/src/socket/bound/tcp_conn.rs",
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-user-recv-trace-r118.md",
+    "evidence_sha256": "4f3ba08c9ad172db38db67815dd7868d2e3239a9c40aea68791b6298cabd35a6",
+    "policy_source_sha256": "06e62cea77521dd0a8fd6c6f4e30e9345409b3cf528ce7af21342ea869344f63",
+    "recv_source_sha256": "8967126461836cf42b01f4246a25161ce90cf33fdd023d4496723aeaffa9304c"
+  },
+  "next_boundary": "Build the RISC-V image with this diagnostic and run one bounded Marionette probe; inspect user-recv before considering any futex patch"
+}

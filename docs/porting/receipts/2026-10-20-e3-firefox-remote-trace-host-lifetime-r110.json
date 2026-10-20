@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-remote-trace-probe",
+  "claim": "E3",
+  "status": "fail",
+  "passed": false,
+  "classification": "host-container-lifetime",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "remote_trace_probe_reaches_guest_terminal",
+      "expected": "The trace-enabled short probe publishes a serial terminal marker and result.json before the host bound",
+      "actual": "The QEMU launch remained running when the fixed-lifetime Docker container exited with code 0; serial and result artifacts were never published",
+      "ok": false
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-remote-trace-host-lifetime-r110.md",
+    "evidence_sha256": "6406d1656fcb99a23fcb4b4df5e1f231891d4c21b63c925dab7344e572d3602c",
+    "lifecycle": "/mnt/mydisk/qemu-firefox-probe-trace-r110/lifecycle.json",
+    "root_image_sha256": "77b0f3dff3095573bb4d44214e23825d1163d9dd3ea802167502c8d319c68b19"
+  },
+  "next_boundary": "Fresh long-lived host container is required before one trace-enabled short probe; do not interpret stale lifecycle as guest evidence"
+}

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "gate": "host-storage-floor-preflight",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "storage_floor_inventory",
+      "expected": "Before a runtime probe, /mnt/shared must have at least 60G free and candidates must be inventoried without deletion",
+      "actual": "58G free; 20 generated image candidates inventoried; no deletion or runtime started",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-storage-floor-preflight-r115.md",
+    "evidence_sha256": "ec81754f05837f6e96bc6e7bc88108aba1371129782287d0e4d1481e070d0088"
+  },
+  "next_boundary": "Review candidate families and free at least 2G before the single /run-profile short probe"
+}

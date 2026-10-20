@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "gate": "firefox-ppoll-runtime-boundary",
+  "claim": "E3",
+  "status": "fail",
+  "started_utc": "2026-10-20T05:40:00Z",
+  "finished_utc": "2026-10-20T05:47:56Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "marionette_newsession_ppoll_boundary",
+      "expected": "After TCP notification, Firefox returns a bounded NewSession response; ppoll boundary identifies the waiting path",
+      "actual": "TCP peer-process, socket-events and pollee-notify occurred; Firefox parent ppoll(nfds=3, timeout=0) returned 0 at call 8192, but no NewSession response arrived before desktop-timeout",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "DEBIAN_DESKTOP_M4_XORG_START provider=drm status=ready",
+    "glamor X acceleration enabled on virgl",
+    "A_WEB_MARIONETTE_TRANSPORT request_id=1 stage=send_complete",
+    "ASTERINAS_TCP_TRACE seq=18 stage=peer-process value0=121 value2=121",
+    "ASTERINAS_TCP_TRACE seq=19 stage=socket-events value0=3",
+    "ASTERINAS_TCP_TRACE seq=20 stage=pollee-notify value0=3 value1=121",
+    "ASTERINAS_PPOLL_PROFILE call=8192 phase=return pid=306 nfds=3 timeout=Some(0ns) return=0",
+    "DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout"
+  ],
+  "reason": "Runtime evidence narrows the issue to Firefox's event-loop/socket consumption after notification; it does not justify a kernel semantic patch yet.",
+  "recovery": "QEMU terminated at bounded timeout; no hardware operation",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-firefox-ppoll-runtime-boundary-r96.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-probe-r96/desktop-m4-drm.serial.log",
+    "serial_log_sha256": "e9852277ff790245172ecce61487ca8fd121b67964a5a16e7e506da2529e8a1d",
+    "lifecycle": "/mnt/mydisk/qemu-firefox-probe-r96/lifecycle.json",
+    "lifecycle_sha256": "8fd57b7c43aee5fd9a41b8c6bec2ee4950e72948ce20acae63dc624423dca772",
+    "result": "/mnt/mydisk/qemu-firefox-probe-r96/result.json",
+    "result_sha256": "6475e95266bfb1bda565363a1f811b840af057ac31b5f0fa51383e38151d1ddc",
+    "root_image_sha256": "1018d02c1db8b48ecdab5368a0ed8a80e95a476c602f3409279a4fa8a671a2d4",
+    "evidence_sha256": "abacf9362abb03da17c27cc248f240326c3445fee3777584baa67c58a92696a0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "gate": "e3-qemu-launch-boundary-fix",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "classification": "host-static-boundary",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "qemu_monitor_connect_is_bounded",
+      "expected": "QEMU HMP monitor connection is bounded independently of the long guest protocol timeout and cleanup tests remain green",
+      "actual": "Monitor connect uses min(boot_timeout, 60s); launch/session cleanup tests and Python syntax checks pass",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-qemu-launch-boundary-fix-r111.md",
+    "evidence_sha256": "b0408fd223a89d2addcc532a759e014e619904d6661fd9a7afa6adabd6b965a0"
+  },
+  "next_boundary": "One fresh trace-enabled probe with a terminal lifecycle/result; no capability changes"
+}

@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "claim": "E2",
+  "gate": "e2-gl-renderer",
+  "status": "pass",
+  "started_utc": null,
+  "finished_utc": null,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_set": "desktop-r5",
+  "input_hashes": {
+    "qemu": null,
+    "kernel": "cabc01961888055d64b5f0d59a1a15a1d797e95e969fca7de7d61dfe2429328d",
+    "rootfs": "3e0f6c4ebc373ef3d67ec4e27f4b99a1ce93e246ca0efa6e859dbe0f1bcdb901",
+    "dtb": "1bcec907d28a9ede2c0020d9024de93640d2d0ba9bdfc5f09f20e81f4777a9eb",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c"
+  },
+  "assertions": [
+    {
+      "name": "fixed_pixel_hash",
+      "expected": "nonzero fixed 1280x800 pixel hash",
+      "actual": "80445017db6f047d2b400000305e639b4583a6124bf7d7a7ec3af199ca881df2",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "DEBIAN_DESKTOP_M4_DRM_X11_SCREENSHOT width=1280 height=800 bpp=32 stride=5120 bytes=4096000 sha256=80445017db6f047d2b400000305e639b4583a6124bf7d7a7ec3af199ca881df2"
+  ],
+  "artifacts": {
+    "evidence": "/mnt/mydisk/firefox-official-debian-20261018/qemu-drm-desktop-m4-r5-evidence.md",
+    "evidence_sha256": "88cb87dce6fd4281861595e759b92119350164cd8db34d5f979c1dbbac7bff1d",
+    "screenshot_sha256": "80445017db6f047d2b400000305e639b4583a6124bf7d7a7ec3af199ca881df2"
+  },
+  "reason": "Imported the fixed pixel hash recorded by the passing DRM desktop receipt.",
+  "recovery": "not-run"
+}

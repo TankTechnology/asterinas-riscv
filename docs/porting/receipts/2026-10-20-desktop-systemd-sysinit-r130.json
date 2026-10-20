@@ -1,0 +1,26 @@
+{
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-desktop-systemd-sysinit-r130.md",
+    "evidence_sha256": "d3191eb7d4b58a981c2193c20fe45a8a9a7a10d3a2994ece014f13a2fd98a0ad",
+    "lifecycle_sha256": "59432d9109ab666d4ba495591c930769f5cc711d8566711c87a6c8ca3e20fcc6",
+    "output_directory": "/mnt/mydisk/qemu-desktop-systemd-sysinit-r130",
+    "result_sha256": "999d15aafdab3c3412a6ffbc5d65fefe40c47bbfe4555a66f0295144426ef889",
+    "serial_sha256": "1134ba0c5780527455a316bd5e71cba1ec0cd06bf8618f9c0153710ec33cf137"
+  },
+  "assertions": [
+    {
+      "actual": "sysinit.target was absent; systemd-sysctl failed, while systemd-tmpfiles-setup-dev started without a Finished marker.",
+      "expected": "Record sysinit target completion or identify the first unit still pending at the bounded boundary.",
+      "name": "sysinit_next_unit_recorded",
+      "ok": true
+    }
+  ],
+  "claim": "E3",
+  "classification": "bounded-sysinit-next-unit-recorded",
+  "gate": "desktop-systemd-sysinit",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "next_boundary": "desktop-systemd-tmpfiles-dev: inspect /dev tmpfiles activation before any desktop or Firefox run.",
+  "passed": true,
+  "schema": 1,
+  "status": "pass"
+}

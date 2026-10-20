@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-client-contract",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "host_transport_contract",
+  "started_utc": "2026-10-19T00:43:00Z",
+  "finished_utc": "2026-10-19T00:43:06Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "marionette_deadline_uses_select",
+      "expected": "The Marionette response deadline is enforced by readiness polling and a monotonic deadline, independent of SO_RCVTIMEO",
+      "actual": "Host unit test, py_compile, and diff check passed; no runtime claim",
+      "ok": true
+    }
+  ],
+  "reason": "Host-side transport contract is verified; runtime validation is deferred until the storage precondition is restored.",
+  "recovery": "not-run",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-marionette-select-deadline-r39.md",
+    "evidence_sha256": "5e367a792ab78eab3af6a37ae7e0d5321ce566ec5c1052559d53f1b4b9111003"
+  }
+}

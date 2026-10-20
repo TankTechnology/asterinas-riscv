@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-capability-hypothesis-audit",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "assertions": [
+    {
+      "name": "capability_not_causal",
+      "expected": "Minimal and legacy capability arms differ only in capability shape and produce different NewSession outcomes if capability is causal",
+      "actual": "Both arms reached greeting plus virgl/renderD128 and both lacked a NewSession response at 360s",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-capability-hypothesis-audit-r103.md",
+    "evidence_sha256": "c5755b6f6f7b5cb9f90ee69b1cc3dc37c5355a8ce68a4c9b8e711390e0e1b05f",
+    "ab_receipt": "docs/porting/receipts/2026-10-20-e3-firefox-newsession-capability-ab-r101.json",
+    "wait_boundary_receipt": "docs/porting/receipts/2026-10-20-e3-firefox-ppoll-runtime-r99.json",
+    "next_boundary": "guest ppoll/futex IPC wait; no full-scene rerun"
+  },
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8"
+}

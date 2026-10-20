@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "gate": "riscv-sv39-cpu-handoff-revalidation",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "bounded-direct-qemu-startup-revalidation",
+  "started_utc": "2026-10-19T07:31:00Z",
+  "finished_utc": "2026-10-19T07:53:18Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "kernel": "245d54df230f0d8878411d1efd982d5e4189d469f6172379c6c246f56c9fba1e",
+    "serial_log": "bdca5ce641f8458fd4754b98106f38864940286aee80c143ac044b7a267974a9"
+  },
+  "assertions": [
+    {
+      "name": "sv39_kernel_entry_after_host_reboot",
+      "expected": "Current Sv39 Image reaches riscv_boot, OSTD initialization, and first-kthread entry under the generic CPU contract within the bounded run",
+      "actual": "All three ordered markers were observed before the explicit 60-second bound; the process exited 124 after the observation boundary",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "enter_riscv_boot",
+    "ostd_initialized",
+    "first_kthread_enter",
+    "no_firefox_started",
+    "bounded_timeout_60s"
+  ],
+  "reason": "Revalidated the current kernel startup contract after host reboot; no GL, DRM, Firefox, or hardware operation was performed.",
+  "recovery": "qemu_terminated_by_explicit_60_second_timeout",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-riscv-sv39-cpu-handoff-r58.md",
+    "evidence_sha256": "fa85ce9545e9fe34379497c85a09600cd360d0ddf236efbe7e969f7ba4ed4f44",
+    "serial_log": "/mnt/mydisk/qemu-sv39-cpu-contract-r58/serial.log",
+    "checksums": "/mnt/mydisk/qemu-sv39-cpu-contract-r58/SHA256SUMS",
+    "exit_code": "124"
+  }
+}

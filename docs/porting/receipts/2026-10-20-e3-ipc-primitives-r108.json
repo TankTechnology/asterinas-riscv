@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "gate": "e3-ipc-primitives",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "generic_unix_ipc_epoll_rights_wait",
+      "expected": "Asterinas completes all eight ordered Unix socket, epoll, SCM_RIGHTS and wait phases with ok=true",
+      "actual": "The current RISC-V kernel emitted all eight phases with ok=true; the init-exit panic occurred only after the complete marker",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-ipc-primitives-r108.md",
+    "evidence_sha256": "959a434a9ffc44ed027a44247f9cb3d5828547aa812ab20aae542589639d8dea",
+    "runtime_output": "/mnt/mydisk/ipc-event-r107",
+    "serial_sha256": "aad87d6ecc8ebffcdca89a6ef6855fd7db7b9326f9eac2635a4e1eaf7966e39e",
+    "parsed_result_sha256": "64c68cb448c01695ba928dd454cd0f5724ea8ce87213ea31dd55931e1cb5b0ae",
+    "boot_disk_sha256": "4ad298dbee8550b8a3f18aa6f0493a54021f572f3425c125ff9589590f0acd9a",
+    "probe_sha256": "08cf0e7fee29b88442147a87100ec3a3ca51f965ed651e81cce77e3c9a224338",
+    "initramfs_sha256": "0a645aa4161a97ebc2c2d9cc42d8f4424afe4ecc7a7a9f4e059ac30f12059a47"
+  },
+  "next_boundary": "Firefox-specific Content/Marionette state transition; do not patch generic socket, epoll, or futex semantics from this pass"
+}

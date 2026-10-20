@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-probe",
+  "claim": "E3",
+  "status": "blocked",
+  "classification": "guest_firefox_wait_arguments",
+  "started_utc": "2026-10-19T01:50:35Z",
+  "finished_utc": "2026-10-19T01:56:02Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "newsession_response",
+      "expected": "NewSession completes after virgl/display readiness",
+      "actual": "Display wait and glxtest virgl pass; captured process boundaries remain ppoll/futex and no response header arrives",
+      "ok": false
+    }
+  ],
+  "reason": "Expanded syscall arguments are present for future correlation, but this boundary contains no active mmap/open/read call to attribute to ext2.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "kernel": "829f9fa348d15bc3826c5543aea0ade0408c241d816e4d48db53de4007249297",
+    "root_image": "ad7e95a22020d0e2e01b402172185f7b41b6134fa2f0b8fbd05839959dd596ee",
+    "root_manifest": "cb38a652c24ea4907f5bd44403a3a27b8ad2c6f63be781a4f92dec73782d5057"
+  },
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r48.md",
+    "evidence_sha256": "734ab15b8605b1cb1789c09db13ad19beaee5b5f4133678dad90551c3df7f8b4"
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "claim": "E3",
+  "gate": "firefox-marionette-probe",
+  "status": "blocked",
+  "classification": "newsession-send-no-response",
+  "started_utc": "2026-10-18T18:28:46Z",
+  "finished_utc": "2026-10-18T18:39:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "qemu": "d4a95ece1ea69687257cb584182bce231d8f379fda0231ec62d4da07611e1952",
+    "kernel": "1660a4606f88d3131ad030a489b978a0f3a24fed4d17beb6db31c2829029a02d",
+    "rootfs": "3a1c99e80a13790117720fbe2f43721e2427af653f2d608b90377d89c1b005b7",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c"
+  },
+  "assertions": [
+    {
+      "name": "marionette_newsession_boundary",
+      "expected": "NewSession returns a sessionId after greeting",
+      "actual": "Greeting returned, NewSession frame sent, no response before the bounded service/lifecycle timeout",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "FIREFOX_DRM_PROBE_BOUNDARY name=greeting status=pass",
+    "FIREFOX_DRM_PHASE name=probe-new-session",
+    "A_WEB_MARIONETTE_TRANSPORT command=WebDriver:NewSession send_complete=true"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r3-r4.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r3/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r3/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r3/lifecycle.json",
+    "evidence_sha256": "d0c321bfca6b00e302c6b97be39889b4257cb0810970e87680997e336ed3b12f"
+  },
+  "reason": "Firefox responds to Marionette greeting but stalls after the NewSession request is fully sent.",
+  "recovery": "not-run"
+}

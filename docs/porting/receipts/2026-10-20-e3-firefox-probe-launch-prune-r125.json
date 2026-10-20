@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-probe-launch-prune",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "classification": "static-contract",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "probe_disables_unrelated_browser",
+      "expected": "The Firefox capability probe must not start the ordinary NetSurf workload before Xorg/Marionette.",
+      "actual": "Probe bootargs set ASTERINAS_DESKTOP_BROWSER_ENABLED=0 and the focused 38-test, compileall, and diff checks passed.",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-probe-launch-prune-r125.md",
+    "evidence_sha256": "5830c4d335c578166ed71ed2acfa735822d6ab8601b39eb846d6b93e980793e3"
+  },
+  "next_boundary": "A single fresh 180-second minimal arm on the pruned launch path"
+}

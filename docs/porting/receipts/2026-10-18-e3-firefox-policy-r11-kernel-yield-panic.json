@@ -1,0 +1,43 @@
+{
+  "artifacts": {
+    "evidence": "/mnt/shared/xaj/Program/asterinas/docs/porting/evidence/2026-10-18-qemu-firefox-policy-r11-kernel-yield-panic.md",
+    "evidence_sha256": "e5017acc074d93a25620f7b02523bd97c2ae16d131d8546b0d7b780ee02e0da2",
+    "lifecycle_json": "/mnt/shared/xaj/Program/asterinas/target/e3-render-policy-r1/qemu-r5-export/lifecycle.json",
+    "lifecycle_json_sha256": "e7471472413c230ac0f6674acf7d9e3106a59d7ea16bd1c9d1c51caea65d981d",
+    "result_json": "/mnt/shared/xaj/Program/asterinas/target/e3-render-policy-r1/qemu-r5-export/result.json",
+    "result_json_sha256": "a5b1f84c08a5f403cf0a645b112387e57cecf9b86dd1e78eabd775800f94c625",
+    "serial_log": "/mnt/shared/xaj/Program/asterinas/target/e3-render-policy-r1/qemu-r5-export/firefox-drm-recovery.serial.log",
+    "serial_log_sha256": "0a3e8b410053db062191dc10f6ed7050c879f338a2b6d50e4234cf8e15b5e7db"
+  },
+  "assertions": [
+    {
+      "actual": "kernel completion-yield experiment panicked in spin-lock atomic section and recovered; no Firefox scene",
+      "expected": "Firefox scene, GPU evidence, screenshot/frame and recovery",
+      "name": "official_firefox_scene",
+      "ok": false
+    }
+  ],
+  "claim": "E3",
+  "finished_utc": "2026-10-18T14:57:01Z",
+  "gate": "official-firefox-scene",
+  "input_hashes": {
+    "dtb": "1bcec907d28a9ede2c0020d9024de93640d2d0ba9bdfc5f09f20e81f4777a9eb",
+    "kernel": "7e4e944c7634d0d22310b82cd125bbf747ef2c69798da01e0a1228ef8f4ff15d",
+    "qemu": null,
+    "rootfs": "aa26ef744b3c0e8568bbbaafbbfe300199ef14e354a698410b8b73bab4b80ad7",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fd8fdc93481dd159ad04c",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84"
+  },
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "markers": [
+    "MIGHT_SLEEP_VIOLATION",
+    "ATOMIC_GUARD_TAKEN",
+    "PANIC_ENTRY",
+    "OpenSBI v1.7",
+    "U-Boot 2026.07"
+  ],
+  "reason": "completion-yield change attempted to sleep while control_queue spin lock was held; kernel panicked and watchdog/recovery returned to U-Boot; source change reverted",
+  "schema": 1,
+  "started_utc": "2026-10-18T14:39:00Z",
+  "status": "blocked"
+}

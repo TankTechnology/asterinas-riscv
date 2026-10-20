@@ -1,0 +1,26 @@
+{
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-desktop-systemd-debug-r132.md",
+    "evidence_sha256": "4fd6dd0ecb17a7aa396ecdc9e7beb57370bd2c97d3d0ad0f9f9458877a1cde55",
+    "lifecycle_sha256": "b95d6b97c9e38e9a36c7ae02d850de1af67fd4f48789135afadee22b7a3ddb5b",
+    "output_directory": "/mnt/mydisk/qemu-desktop-systemd-debug-r132",
+    "result_sha256": "3ea49cd9411de7e88eeac880914f78a2cc7d0d0d8787b00fbd883a96130bf3b7",
+    "serial_sha256": "a345547f53ac33cba7b06cbdd3728d9876965744b1583845a26624b78bc3473b"
+  },
+  "assertions": [
+    {
+      "actual": "debug run reached sysctl failure but emitted no further transaction detail; next unit remained unresolved",
+      "expected": "Record the systemd startup boundary and its controlled-variable result.",
+      "name": "systemd_control_boundary_recorded",
+      "ok": true
+    }
+  ],
+  "claim": "E3",
+  "classification": "bounded-systemd-isolation",
+  "gate": "desktop-systemd-debug",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "next_boundary": "desktop-systemd-sysctl-unit",
+  "passed": true,
+  "schema": 1,
+  "status": "pass"
+}

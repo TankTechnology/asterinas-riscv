@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "gate": "uboot-dtb-cpu-contract",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "static-read-only-device-tree-contract",
+  "started_utc": "2026-10-19T07:45:00Z",
+  "finished_utc": "2026-10-19T08:31:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "contract_report": "c50b0ef49ddb1bf88f809cace18f07024421d865b3e9d2c219b637edf1cb84bb"
+  },
+  "assertions": [
+    {
+      "name": "uboot_dtb_cpu_contract",
+      "expected": "Every application CPU node in the U-Boot DTB has mmu-type, riscv,isa (or riscv,isa-extensions), and riscv,cbom-block-size",
+      "actual": "Four CPU nodes were parsed; all have mmu-type=riscv,sv39, riscv,isa, and riscv,cbom-block-size=64",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "four_cpu_nodes",
+    "mmu_type_present_all",
+    "riscv_isa_present_all",
+    "cbom_block_size_present_all",
+    "read_only_no_guest",
+    "packed_dtb_hash_matches_source"
+  ],
+  "reason": "The U-Boot DTB contract is complete. U-Boot, direct TCG, and KVM use distinct DTB provenance; KVM missing-mmu-type is not evidence of a TCG DTB defect.",
+  "recovery": "not-applicable-read-only",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-uboot-dtb-cpu-contract-r59.md",
+    "evidence_sha256": "bff9cf60e41f6803d4f19226265f943c067e97f87ac13d415fd1776490cac14c",
+    "dtb": "/mnt/shared/xaj/Program/asterinas/target/qemu-uboot/debian-root/qemu-virt.dtb",
+    "contract_report": "/mnt/mydisk/qemu-uboot-dtb-cpu-contract-r59.json",
+    "contract_report_sha256": "c50b0ef49ddb1bf88f809cace18f07024421d865b3e9d2c219b637edf1cb84bb",
+    "packed_boot_disk": "/mnt/mydisk/qemu-startup-fbdev-r57/boot.ext4",
+    "packed_dtb_sha256": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2"
+  }
+}

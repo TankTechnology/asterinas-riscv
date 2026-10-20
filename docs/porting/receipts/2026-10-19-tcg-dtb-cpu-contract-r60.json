@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "gate": "tcg-dtb-cpu-contract",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "static-qemu-generated-device-tree-contract",
+  "started_utc": "2026-10-19T08:05:00Z",
+  "finished_utc": "2026-10-19T08:35:43Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "tcg_dtb": "a08a89643272372ccd0da98ffd920a163f28b1c36067679d0153b36d3da8a1bc"
+  },
+  "assertions": [
+    {
+      "name": "tcg_dtb_cpu_properties",
+      "expected": "QEMU TCG-generated virt DTB contains mmu-type, riscv,isa, and riscv,cbom-block-size for every application CPU",
+      "actual": "Four CPU nodes passed the common checker; mmu-type=riscv,sv57 and cbom-block-size=64",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "qemu_dumpdtb_exit_0",
+    "four_cpu_nodes",
+    "mmu_type_present_all",
+    "riscv_isa_present_all",
+    "cbom_block_size_present_all",
+    "no_guest_started"
+  ],
+  "reason": "TCG DTB has the required CPU properties but declares sv57, unlike the U-Boot Sv39 artifact; this is a separate handoff difference from the KVM missing-mmu-type panic.",
+  "recovery": "not-applicable-read-only",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-tcg-dtb-cpu-contract-r60.md",
+    "evidence_sha256": "072adcada9786883e4900b9debc249f655993941e1d58344ea9fa01fb6bda0b0",
+    "dtb": "/mnt/mydisk/qemu-tcg-dtb-cpu-contract-r60.dtb",
+    "report": "/mnt/mydisk/qemu-tcg-dtb-cpu-contract-r60.json",
+    "report_sha256": "3d50641795f58badeb6066bb9f6916fa2ec9e08b1385397c02f00bf5fb5fc7b8"
+  }
+}

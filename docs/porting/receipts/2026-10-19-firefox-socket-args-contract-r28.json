@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "gate": "firefox-socket-args-contract",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "host-code-contract",
+  "started_utc": "2026-10-19T00:10:00Z",
+  "finished_utc": "2026-10-19T00:10:30Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "socket_args_visible_in_probe_summary",
+      "expected": "The probe summary exposes scalar arguments for recvmsg/sendmsg and connection syscalls",
+      "actual": "Syscall 212 argument contract and 51 focused tests pass",
+      "ok": true
+    }
+  ],
+  "reason": "Code-only parser contract; no guest runtime was started in this step.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "probe_script": "1b7eb810f120e05c687204191d3df43eb7a7d3d8f02bc181b7286545f6dcd791",
+    "probe_tests": "de62b6f75d236c048dbfae90d1527ae0efd7f25a3143974672056fcf24936629"
+  },
+  "markers": [
+    "_probe_syscall_summary number=212 emits arg0..arg3",
+    "51 focused tests passed",
+    "py_compile passed"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-socket-args-contract-r28.md"
+  }
+}

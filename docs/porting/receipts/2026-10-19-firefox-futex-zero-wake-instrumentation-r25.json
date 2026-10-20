@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "gate": "firefox-futex-zero-wake-instrumentation",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "kernel-diagnostic-contract",
+  "started_utc": "2026-10-19T00:00:00Z",
+  "finished_utc": "2026-10-19T00:00:20Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "zero_result_wake_is_visible",
+      "expected": "The opt-in futex diagnostic stream records bounded wake attempts with woken=0",
+      "actual": "FUTEX_WAKE_DETAIL_LOGGED separates the logging budget from event numbering; kernel build and 50 focused tests pass",
+      "ok": true
+    }
+  ],
+  "reason": "Code and build verification only; no guest runtime was started.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "kernel": "d29a0f0c74f2d3350ecb07b4ad3c9112c9eda158d7bce885fce0f185e41cce6c"
+  },
+  "markers": [
+    "FUTEX_WAKE_DETAIL_LOGGED present",
+    "woken=0 is emitted within the bounded log budget",
+    "kernel build passed",
+    "50 focused tests passed"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-futex-zero-wake-instrumentation-r25.md"
+  }
+}

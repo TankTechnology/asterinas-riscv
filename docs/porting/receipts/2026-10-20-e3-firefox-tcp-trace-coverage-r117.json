@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-tcp-trace-coverage",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "firefox_newsession_tcp_trace_coverage_classified",
+      "expected": "Existing r116 evidence must show whether TCP diagnostic records cover the interval after the NewSession send marker",
+      "actual": "NewSession send_complete is present; zero TCP trace records follow it, so delivery cannot be inferred and a socket-level sequence marker is required",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-tcp-trace-coverage-r117.md",
+    "serial": "/mnt/mydisk/qemu-firefox-e3-r116/desktop-m4-drm.serial.log",
+    "evidence_sha256": "7fe6d01b1c9f8a30a3e6c78c650ca5d5d765961976330f6beac0963893ad17fc",
+    "serial_sha256": "db9e3bd28fc6bdb455e3126e11caaa0378b3d42ff35054e6c708bc7ffa9e672b"
+  },
+  "next_boundary": "Add a request/response sequence marker at the Marionette socket read/write boundary before another runtime attempt"
+}

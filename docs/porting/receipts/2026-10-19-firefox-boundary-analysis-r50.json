@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "gate": "firefox-boundary-analysis",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "read-only-r49-log-analysis",
+  "started_utc": "2026-10-19T03:05:00Z",
+  "finished_utc": "2026-10-19T03:06:25Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "serial_log": "bc53ae2b0f0464372d896136d56e5fd3abf0174f7769413ce3220b9e77af653f",
+    "result_json": "76cbe1f52548fe78673313b3981b19e6e8eb344ebdf9158b835842ac182fead4",
+    "analyzer": "2366eb56c86f5cfcfc29776c67dfe6e502474d1063746a3f9ea3a8aae0f03c02"
+  },
+  "assertions": [
+    {
+      "name": "newsession_boundary_classified_from_existing_log",
+      "expected": "The existing r49 log identifies the parent/child wait boundary without claiming a lost wakeup",
+      "actual": "NewSession sent with no response; parent futex boundary, Socket Process ppoll, child IPC activity; futex outcomes woken=16/spurious=237/timeout_or_error=3",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "newsession_send_complete=true",
+    "newsession_response_header=absent",
+    "parent_futex_boundary=true",
+    "child_ipc_activity=true",
+    "lost_wakeup_proven=false"
+  ],
+  "reason": "Read-only host analysis of an existing bounded receipt; no guest or Firefox rerun.",
+  "recovery": "not-run",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-boundary-analysis-r50.md",
+    "evidence_sha256": "c8d83251d6b77537ae5ba7eae06b1cdacd915ef1603e4fcd350b38ce3b68ca53",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r49-container/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r49-container/result.json",
+    "analyzer": "tools/riscv/debian/rootfs/analyze_firefox_boundary.py"
+  }
+}

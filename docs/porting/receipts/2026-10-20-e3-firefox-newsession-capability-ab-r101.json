@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-newsession-capability-ab",
+  "claim": "E3",
+  "status": "fail",
+  "passed": false,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "newsession_capability_ab_boundary",
+      "expected": "Both minimal and legacy NewSession capability arms return a WebDriver:NewSession response within the bounded probe; inputs differ only in capability mode",
+      "actual": "A minimal and B legacy both reached greeting and virgl GLX pass, but neither returned a NewSession response before 360s; serial bootargs prove the two arm values",
+      "ok": false
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-newsession-capability-ab-r101.md",
+    "evidence_sha256": "66713c86e6d122746ee76fcc11e2b0c2d8a1d269bd34a8282708cbfb678d6e3c",
+    "common_inputs": {
+      "root_image": "f876af04b4d649b1bbf8eaf98fddd5946ea411bc10821e56eca5a3c26b4e3b79",
+      "root_manifest": "193a1beb99873782d59157b2d78f58eeb88df42176f9f8cbbd3d6ce54a01ca50",
+      "kernel": "fe4c6f70e9941f19ffc68358342de7f3b4a1d13aaafb80cf70aac7cfb21a6b6f",
+      "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+      "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210",
+      "stage1_initramfs": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+      "packages_lock": "9d5fd036dfae9b113a218d4d522e8e22158074ef18efb599c2be69b0ef1970c6",
+      "package_checksums": "4bd122bfc6c1335f7133457743e04c9bd7c2c346feabcfb71a3a7f749d4b80a8"
+    },
+    "arms": {
+      "A-minimal": {
+        "mode": "minimal",
+        "output": "/mnt/mydisk/qemu-firefox-probe-ab-r101-A-minimal",
+        "lifecycle_sha256": "99336f0551c48eefba4351995263817954990fbdd33368400d1a80d16d757b59",
+        "result_sha256": "1a07c8bdb93c83a8d525b86d23d74870434bfaa91fce6460915aaeffea97da9b",
+        "serial_sha256": "a30c5e7d8c244fee5875907f65227953b9c5e525e2ef70f16f8f1cc2e5d85caf",
+        "markers": {
+          "glxtest": "pass (RENDERER virgl, DRM_RENDERDEVICE /dev/dri/renderD128)",
+          "greeting": "pass",
+          "new_session": "no response at 360s",
+          "done": "absent"
+        }
+      },
+      "B-legacy": {
+        "mode": "legacy",
+        "output": "/mnt/mydisk/qemu-firefox-probe-ab-r101-B-legacy",
+        "lifecycle_sha256": "8b584f400c663d436dd8909b6bf83cc6983cad32cf1cfd216136c93863a402d5",
+        "result_sha256": "3f14b265173319ceac423e70b29c79eb9698dc951cede0a1e60ea7f3b50c1737",
+        "serial_sha256": "5e2ce4d7aabca82d922fbfe11fa136805835b58a5a9ceee98390af07d4fa80e9",
+        "markers": {
+          "glxtest": "pass (RENDERER virgl, DRM_RENDERDEVICE /dev/dri/renderD128)",
+          "greeting": "pass",
+          "new_session": "no response at 360s",
+          "done": "absent"
+        }
+      }
+    },
+    "next_boundary": "ppoll/futex guest IPC wait; do not rerun capability arms or full scene until boundary changes"
+  }
+}

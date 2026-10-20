@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-probe",
+  "claim": "E3",
+  "status": "blocked",
+  "classification": "guest_marionette_socket_recvmsg",
+  "started_utc": "2026-10-19T00:13:05Z",
+  "finished_utc": "2026-10-19T00:17:09Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "newsession_response",
+      "expected": "The short probe receives a NewSession response within its bounded deadline",
+      "actual": "The parent remains in recvmsg(212) on fd 9 after the greeting; response header times out",
+      "ok": false
+    }
+  ],
+  "reason": "Firefox parent-side Marionette socket receive is the precise terminal boundary; Socket Process remains in ppoll(73).",
+  "recovery": "not-run",
+  "input_hashes": {
+    "kernel": "c7d6c654f2437b6e8c7da67815ca9f4002012333ef42dfb93812b7ffd368fd17",
+    "root_image": "c7625d0c104205f37898773372465ac7a5e754a26930c3f490e11e8d2306fd28",
+    "root_manifest": "6836fb657b49833394efc6b714bea5111046ae3f118b2ebaa45acb58ec5952b3"
+  },
+  "markers": [
+    "FIREFOX_DRM_PROBE_BOUNDARY name=greeting status=pass",
+    "FIREFOX_DRM_PROBE_SYSCALL number=212,arg0=9",
+    "Socket Process syscall=73",
+    "NewSession response_header timeout"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r30-socket-boundary.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r30-container/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r30-container/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r30-container/lifecycle.json"
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "gate": "futex-lost-wakeup",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "classification": "asterinas-riscv-bounded-minimal-probe-current-kernel",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "futex_lost_wakeup_riscv_current_bounded_probe",
+      "expected": "Current Asterinas RISC-V completes H1 ping-pong, H2 requeue, and H3 ppoll without timeout or error within 60 seconds",
+      "actual": "H1 5000/5000, timeouts=0, errors=0; H2 ready=4 moved=1 woken=3 failures=0; H3 timeouts=0 errors=0; complete in 42.635s; x86 control also passed",
+      "ok": true
+    }
+  ],
+  "input_hashes": {
+    "kernel": "829f9fa348d15bc3826c5543aea0ade0408c241d816e4d48db53de4007249297",
+    "initramfs": "18dcf269869b647571c33194a0d0f7eb1d38df8733a60dca825f2edc7f233268",
+    "boot_disk": "738b6b733aa188482bf0a3e57f539947b7357e43c0e8bdcddaabfa1f6b8571a5",
+    "riscv64_binary": "ea7ee52cdf662fa57852b790cdfe5bf39a87bf8f6501e70e2458670fb50f2e35",
+    "x86_64_binary": "71439f43f5ae04e275b0d6b67e668b0e597a145bb32085ed607bcd126e3578f2"
+  },
+  "markers": [
+    "FUTEX_H1 status=pass",
+    "FUTEX_H2 status=pass",
+    "FUTEX_H3 status=pass",
+    "FUTEX_LOST_WAKEUP_PROBE status=pass",
+    "ASTERINAS_FUTEX_WAIT_DETAIL outcome=woken"
+  ],
+  "reason": "The generic bounded futex/ppoll reproducer still does not reproduce the Firefox NewSession hang; do not apply a speculative pause_timeout patch. Next investigation stays at Firefox-specific IPC/scheduling boundary.",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-futex-lost-wakeup-r105.md",
+    "evidence_sha256": "4fd0a541add232681d8abec0cd0769404c4b0d0836c9e026a14a4591f926e528",
+    "serial_log": "/mnt/mydisk/futex-lost-wakeup-r105/serial.log",
+    "result_json": "/mnt/mydisk/futex-lost-wakeup-r105/result.json",
+    "x86_log": "/mnt/mydisk/futex-lost-wakeup-r105/x86.log"
+  }
+}

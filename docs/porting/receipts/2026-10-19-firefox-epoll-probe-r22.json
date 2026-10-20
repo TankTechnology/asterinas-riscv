@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "gate": "firefox-epoll-headless-probe",
+  "claim": "E3",
+  "status": "blocked",
+  "classification": "newsession-ipc-after-epoll-progress",
+  "started_utc": "2026-10-18T22:02:00Z",
+  "finished_utc": "2026-10-18T22:09:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "headless_newsession_boundary",
+      "expected": "NewSession returns a sessionId and parent epoll waits make progress",
+      "actual": "Parent epoll_pwait returned events repeatedly, but NewSession still timed out",
+      "ok": false
+    }
+  ],
+  "reason": "Firefox parent epoll is making progress; investigate Socket/Content IPC startup and later session state",
+  "recovery": "not-run",
+  "input_hashes": {
+    "qemu": "d4a95ece1ea69687257cb584182bce231d8f379fda0231ec62d4da07611e1952",
+    "kernel": "67643184cee924744fe6b890a42d7ac349d47c0aa5788cfac275da2a6d8ab378",
+    "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "stage1_initramfs": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "root_image": "9d9188e7976efb4e57a70ab5e89aefdacece2cc5631649806e129ebecd8e86f3"
+  },
+  "markers": [
+    "ASTERINAS_EPOLL_PROFILE pid=131 phase=return events_len=1",
+    "ASTERINAS_EPOLL_PROFILE pid=131 phase=return events_len=2",
+    "FIREFOX_DRM_PROBE_BOUNDARY name=greeting status=pass",
+    "FIREFOX_DRM_PROBE_BOUNDARY name=new-session status=fail type=TimeoutError"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-epoll-probe-r22.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r22-headless-container/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r22-headless-container/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r22-headless-container/lifecycle.json",
+    "serial_log_sha256": "d46a6d826cef462c3d6c8726f9034b05d59d4f305e304c8d4478fabac7037fff",
+    "result_json_sha256": "650380c67b0173eb7a433719985472766fae41d5d5ca9d30d4dfe66c08ac8699",
+    "lifecycle_json_sha256": "fe1f8b7522e650d6547759401711487e7fa32546dbf9b66ab687506eddd13d03"
+  }
+}

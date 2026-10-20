@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-newsession-capability",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "minimal_newsession_capabilities",
+      "expected": "The full DRM scene sends the same minimal NewSession capability object as the short probe",
+      "actual": "firefox_drm_scene_gate.py sends only strictFileInteractability; 164 focused tests and static checks pass",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-firefox-newsession-capability-r100.md",
+    "runtime_reference": "docs/porting/evidence/2026-10-20-firefox-ppoll-runtime-r99.md",
+    "runtime_reference_status": "failed NewSession response boundary; unchanged by this static receipt"
+  }
+}

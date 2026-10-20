@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "claim": "E1",
+  "gate": "task2-gem",
+  "status": "pass",
+  "started_utc": null,
+  "finished_utc": null,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_set": "gem-20261015",
+  "input_hashes": {
+    "qemu": null,
+    "kernel": "35edfd0fa024396eef9d038c029bce6b33612dea64f6216e34ed6abffbcd1db5",
+    "rootfs": null,
+    "dtb": "f2bf8e524fe1e4ecb1f2f56665c9827bfe5dd990ffbacbb735ab466e025037d5",
+    "stage1": "986a9d3773ea88807e076afabacbfc688c530127f59b2ab4de4161fee9850a63",
+    "scene_html": null
+  },
+  "assertions": [
+    {
+      "name": "gem_contract",
+      "expected": "create/name/open/close/reject markers pass",
+      "actual": "DRM_GEM_CREATE PASS; DRM_GEM_FLINK PASS; DRM_GEM_OPEN PASS; DRM_GEM_CLOSE PASS; DRM_GEM_REJECT PASS",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "DRM_GEM_CREATE PASS",
+    "DRM_GEM_FLINK PASS",
+    "DRM_GEM_OPEN PASS",
+    "DRM_GEM_CLOSE PASS",
+    "DRM_GEM_REJECT PASS"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-15-qemu-drm-gem-current.md",
+    "evidence_sha256": "193680c9b2cdf5c71a37b8dcaa63d278ecc71c264cf7398f2c2923794aafd968"
+  },
+  "reason": "Imported Task 2 GEM receipt; retained separately from the E1 minimum device assertion.",
+  "recovery": "not-run"
+}

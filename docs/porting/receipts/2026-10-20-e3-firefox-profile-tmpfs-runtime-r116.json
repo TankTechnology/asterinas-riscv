@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-profile-tmpfs-runtime",
+  "claim": "E3",
+  "status": "fail",
+  "passed": false,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "firefox_profile_tmpfs_runtime_boundary",
+      "expected": "With an official Firefox package and a validated /run profile path, the bounded probe reaches a WebDriver:NewSession response marker",
+      "actual": "GLX test (virgl) and Marionette greeting passed; NewSession send completed, but no response arrived before the 360-second bound; lifecycle ended phase=finished status=failed reason=protocol",
+      "ok": false
+    }
+  ],
+  "artifacts": {
+    "lifecycle": "/mnt/mydisk/qemu-firefox-e3-r116/lifecycle.json",
+    "lifecycle_sha256": "ba7c2751601451a2ffe1f6870d859f97f0dc8f57b18869f80a1369213e4c579f",
+    "result": "/mnt/mydisk/qemu-firefox-e3-r116/result.json",
+    "result_sha256": "63c4577b669ad2341d018d4a94ac56a2d31810941d9e7ee25c4e762522a4f0c8",
+    "serial": "/mnt/mydisk/qemu-firefox-e3-r116/desktop-m4-drm.serial.log",
+    "serial_sha256": "db9e3bd28fc6bdb455e3126e11caaa0378b3d42ff35054e6c708bc7ffa9e672b",
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-profile-tmpfs-runtime-r116.md",
+    "evidence_sha256": "a2b8d6d33556f94a6d64cc7c61618fb4714b36ba610497a7346d48f8493879a0"
+  }
+}

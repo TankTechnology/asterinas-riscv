@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "gate": "m5-browser-legacy-cleanup",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "m5_browser_legacy_audit_r105",
+      "expected": "Only files proven free of builder, profile, overlay, test, and E1-E5 management dependencies may be deleted",
+      "actual": "No such file remains; browser_web_dev_overlay.json is a dynamically selected unknown and all other M5/browser-web candidates have active references",
+      "ok": true
+    }
+  ],
+  "deleted": [],
+  "retained_due_to_active_references": [
+    "tools/riscv/debian/rootfs/browser_m5.py",
+    "tools/riscv/debian/rootfs/browser_m5_probe.html",
+    "tools/riscv/debian/rootfs/browser_m5.webm.base64",
+    "tools/riscv/debian/rootfs/browser_m5_marionette_gate.py",
+    "tools/riscv/debian/rootfs/browser_web_qemu_gate.py",
+    "tools/riscv/debian/rootfs/desktop_m5_network_gate.py"
+  ],
+  "unknown_retained": [
+    "tools/riscv/debian/rootfs/browser_web_dev_overlay.json"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-m5-browser-cleanup-r105.md",
+    "evidence_sha256": "5193f959ba9f575109e97abee3f7cd9cb2c0b31e3224ce2b546fb374f7cccb4c",
+    "audit": "docs/porting/m5-browser-legacy-audit-r105.md",
+    "audit_sha256": "73c95a8b1c37825440269caaa4fa44f8f12165a4c807a5e8d04f63cf3935163c",
+    "reference_report": "docs/porting/refactor-reference-report.md"
+  }
+}

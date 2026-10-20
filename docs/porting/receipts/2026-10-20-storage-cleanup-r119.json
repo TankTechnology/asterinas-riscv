@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "gate": "storage-floor-preflight",
+  "status": "passed",
+  "passed": true,
+  "timestamp_utc": "2026-10-20T00:47:34.681148+00:00",
+  "before_free_bytes": 62194864128,
+  "after_free_bytes": 64342904832,
+  "required_free_bytes": 60000000000,
+  "deleted_paths": [
+    {
+      "path": "target/e3-render-policy-r1/rootfs-r8",
+      "reason": "superseded failed E3 input; no active receipt reference"
+    },
+    {
+      "path": "target/debian-riscv/desktop-m4-x11",
+      "reason": "superseded generated M4 rootfs; no receipt JSON reference"
+    },
+    {
+      "path": "target/debian-riscv/desktop-m4-cached-20261017-r2",
+      "reason": "superseded generated M4 rootfs; no receipt JSON reference"
+    }
+  ],
+  "protected_paths": [
+    "docs/porting/evidence",
+    "docs/porting/receipts",
+    "docs/porting/manifest.lock",
+    "/mnt/mydisk/asterinas-firefox-rootfs-20261019-preseed"
+  ],
+  "evidence": "docs/porting/evidence/2026-10-20-storage-cleanup-r119.md",
+  "evidence_sha256": "687a6833739519ff8de872f97cd5c61a0c4c39d79376017648c97e248685b0b3",
+  "tests": {
+    "reference_scan_candidates": 206,
+    "compileall": "passed",
+    "git_diff_check": "passed"
+  }
+}

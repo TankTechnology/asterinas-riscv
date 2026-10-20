@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "gate": "m5-browser-legacy-cleanup",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "m5_browser_qemu_wrapper_orphan_cleanup",
+      "expected": "Only a file with no builder/profile/overlay/E1-E5/management dependency is deleted",
+      "actual": "browser_m5_qemu_gate.py had only a retired-marker unit-test reference; the test import/comparison was removed and all active profile inputs were retained",
+      "ok": true
+    }
+  ],
+  "deleted": [
+    "tools/riscv/debian/rootfs/browser_m5_qemu_gate.py"
+  ],
+  "retained_due_to_active_references": [
+    "tools/riscv/debian/rootfs/browser_m5.py",
+    "tools/riscv/debian/rootfs/browser_m5_probe.html",
+    "tools/riscv/debian/rootfs/browser_m5.webm.base64",
+    "tools/riscv/debian/rootfs/browser_m5_marionette_gate.py",
+    "tools/riscv/debian/rootfs/browser_web_dev_overlay.json",
+    "tools/riscv/debian/rootfs/browser_web_qemu_gate.py",
+    "tools/riscv/debian/rootfs/desktop_m5_network_gate.py"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-m5-browser-cleanup-r98.md",
+    "evidence_sha256": "8a75fd63abaef930626744656a052067b8d33fbee1a0289edaa565916a88a0ac",
+    "audit": "docs/porting/m5-browser-legacy-audit-r98.md",
+    "reference_report": "docs/porting/refactor-reference-report.md"
+  }
+}

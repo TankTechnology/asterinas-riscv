@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "started_utc": "2026-10-19T20:54:00Z",
+  "finished_utc": "2026-10-19T20:58:21Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "kernel": "245d54df230f0d8878411d1efd982d5e4189d469f6172379c6c246f56c9fba1e",
+    "manifest": "a73696e71b4f2b571c8083dacd511b61198a48508668cbb3779813b421a4330d",
+    "package_checksums": "4bd122bfc6c1335f7133457743e04c9bd7c2c346feabcfb71a3a7f749d4b80a8",
+    "packages_lock": "9d5fd036dfae9b113a218d4d522e8e22158074ef18efb599c2be69b0ef1970c6",
+    "root_image": "d86e115401d7bf0bc4f298f12917b83f8755d0ff8f942c1854cb6c25af990339",
+    "stage1_initramfs": "e03ab1b48f1715d727517ff7c63c203211d05de09dc063793335523e38efd019",
+    "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210"
+  },
+  "claim": "E2",
+  "gate": "desktop-drm-input-control",
+  "status": "pass",
+  "assertions": [
+    {
+      "name": "drm_input_access",
+      "expected": "Xorg reaches virgl and both ordered evdev nodes are configured without permission errors",
+      "actual": "glamor virgl; Xorg provider drm ready; AIGLX virtio_gpu; keyboard and pointer configured",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "glamor X acceleration enabled on virgl",
+    "DEBIAN_DESKTOP_M4_XORG_START provider=drm status=ready source=drm-log",
+    "AIGLX: Loaded and initialized virtio_gpu",
+    "evdev: Asterinas keyboard: Configuring as keyboard",
+    "evdev: Asterinas pointer: Configuring as touchscreen"
+  ],
+  "artifacts": {
+    "evidence": "/mnt/shared/xaj/Program/asterinas/docs/porting/evidence/2026-10-20-desktop-drm-input-r93.md",
+    "evidence_sha256": "99b849ebb1d9eb18753a9a20c25cf7f3c45561e51353e9a0782bf09e20773824",
+    "serial_log": "/mnt/mydisk/qemu-desktop-m4-r93-input/desktop-m4-drm.serial.log",
+    "serial_log_sha256": "18e889e6c54693cab8aab3560846349e012370c2bd53ad24ad0de550e2199d91",
+    "lifecycle_json": "/mnt/mydisk/qemu-desktop-m4-r93-input/lifecycle.json",
+    "lifecycle_json_sha256": "3cf7a93cf3849ae54e44256357893fbcafeb5320340871ff2b25109871cce354",
+    "result_json": "/mnt/mydisk/qemu-desktop-m4-r93-input/result.json",
+    "result_json_sha256": "98a7c761faae9bba5a84f8a4a18838893333b4445c95c8ae0faa089320844b1f"
+  },
+  "reason": "The bounded input-permission phase fixed the r92 evdev Permission denied boundary; DRM/Xorg and virgl remained ready.",
+  "recovery": "not-run"
+}

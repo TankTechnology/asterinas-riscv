@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "claim": "E5",
+  "gate": "e5-board-manage",
+  "status": "blocked",
+  "classification": "same-auth-boundary-twice",
+  "started_utc": null,
+  "finished_utc": "2026-10-18T09:50:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_set": "physical-readonly-20261018",
+  "input_hashes": {
+    "qemu": null,
+    "kernel": null,
+    "rootfs": null,
+    "dtb": null,
+    "stage1": null,
+    "scene_html": null
+  },
+  "assertions": [
+    {
+      "name": "uid0_nonce",
+      "expected": "read-only management command returns a fresh nonce-framed UID 0 response",
+      "actual": "observation 1: SSH identity uid=1000; observation 2: sudo -n id -u -> sudo: a password is required; bounded credential probe: AUTH_PROBE_TIMEOUT",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "uid=1000",
+    "sudo: a password is required",
+    "AUTH_PROBE_TIMEOUT"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-18-megrez-e5-readonly.md",
+    "evidence_sha256": "c105795732ba0a250cf740633992c5de5f61aa4eada63896998c3553e5ae2e0c"
+  },
+  "reason": "The same authentication boundary failed twice. Per GATES-REFACTOR, stop retrying until an authenticated RockOS root path is supplied; no credential is recorded here.",
+  "recovery": "not-run"
+}

@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "gate": "firefox-content-mmap-latency",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "mmap-parseable-build-latency",
+  "started_utc": "2026-10-18T22:00:00Z",
+  "finished_utc": "2026-10-18T22:14:29Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "content_mmap_parseable_latency",
+      "expected": "Every parseable Content-process mmap VMA build completes within 4 jiffies",
+      "actual": "125 build-done markers were parseable and all reported 0-4 jiffies (mean 1.616); three completion markers were serial-interleaved; NewSession still timed out",
+      "ok": true
+    }
+  ],
+  "reason": "The diagnostic latency assertion passes for parseable records. The serial transport still prevents pairing three completions, and the independent NewSession assertion remains blocked.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "qemu": "d4a95ece1ea69687257cb584182bce231d8f379fda0231ec62d4da07611e1952",
+    "kernel": "ae7e762b75dcce9123f0b0eae8f94eacb69fadc1a2d81ccd729c6330fc6eb0ba",
+    "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "stage1_initramfs": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "root_image": "9d9188e7976efb4e57a70ab5e89aefdacece2cc5631649806e129ebecd8e86f3",
+    "root_manifest": "0f3934cb5fe2f51667dd3b71cf9c116d880f07d2c091885db9bfddfd470f293e",
+    "packages_lock": "9d5fd036dfae9b113a218d4d522e8e22158074ef18efb599c2be69b0ef1970c6"
+  },
+  "markers": [
+    "ASTERINAS_MMAP_DETAIL phase=enter event=1..128",
+    "ASTERINAS_MMAP_DETAIL phase=build-done elapsed_jiffies=0..4 (125 parseable)",
+    "FIREFOX_DRM_PROBE_BOUNDARY name=new-session status=fail type=TimeoutError",
+    "FIREFOX_DRM_PROBE_SAMPLE pid=128 state=D threads=50",
+    "FIREFOX_DRM_PROBE_CHILD pid=400 name=Socket_Process state=S",
+    "FIREFOX_DRM_PROBE_CHILD pid=418 name=firefox-esr state=R",
+    "FIREFOX_DRM_PROBE_DONE status=fail phase=new-session"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-content-mmap-boundary-r24.md",
+    "evidence_sha256": "a97e8e3911c3c6daf4e453125f821581a9aa8639e9c822fa87244650eefdf8fe",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r24-headless-container/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r24-headless-container/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r24-headless-container/lifecycle.json",
+    "serial_log_sha256": "9bbc4f9e9d0add69066afde36c30234210144a7c80678f2778f6ad60dbe813bd",
+    "result_json_sha256": "e18a8815f9895136444d013a699b102415dc611215584125d18887f0bfa8ecf6",
+    "lifecycle_json_sha256": "432ae0e9aab7bfe12a97c1ba277aa7476ba43c4d930b88918b2e683984dbb9f8"
+  }
+}

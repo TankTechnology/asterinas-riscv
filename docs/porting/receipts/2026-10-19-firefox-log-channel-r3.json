@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "gate": "firefox-diagnostic-log-channel-runtime",
+  "claim": "E3",
+  "status": "blocked",
+  "classification": "host-container-exit-before-serial",
+  "started_utc": "2026-10-19T06:26:21Z",
+  "finished_utc": "2026-10-19T06:30:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "diagnostic_log_channel_runtime",
+      "expected": "The corrected DRM short probe reaches a guest terminal marker and produces serialized mmap/epoll/futex records",
+      "actual": "The host container exited during QEMU launch before serial output; no guest terminal marker or serial artifact exists",
+      "ok": false
+    }
+  ],
+  "reason": "Host container lifecycle terminated before the runtime probe began; this does not classify Firefox or the guest kernel.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "kernel": "7188a7d83a648738e2fe8304c32a882dc4cc2e9a75ba9c80bf94ee8b91a1b454",
+    "qemu": "d4a95ece1ea69687257cb584182bce231d8f379fda0231ec62d4da07611e1952",
+    "root_image": "9d9188e7976efb4e57a70ab5e89aefdacece2cc5631649806e129ebecd8e86f3",
+    "root_manifest": "0f3934cb5fe2f51667dd3b71cf9c116d880f07d2c091885db9bfddfd470f293e"
+  },
+  "markers": [
+    "QEMU argv: -display egl-headless,rendernode=/dev/dri/renderD129",
+    "QEMU argv: -device virtio-gpu-gl-device",
+    "lifecycle phase=finished status=failed",
+    "termination.kind=host-container-exit",
+    "qemu serial artifact absent"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-log-channel-r3.md",
+    "evidence_sha256": "83d285c60ea1e44423b9d49304f425a97b451bfe03f73a8286708218930ffb90",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-log-channel-r3/lifecycle.json",
+    "lifecycle_json_sha256": "7fadac70975e7e725fe1032b67de29abc54398b8ab0623519ccebd0eb80c0caa"
+  }
+}

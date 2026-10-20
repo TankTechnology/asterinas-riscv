@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "gate": "riscv-sv39-cpu-handoff",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "bounded-direct-qemu-startup-contract",
+  "started_utc": "2026-10-19T06:40:00Z",
+  "finished_utc": "2026-10-19T06:41:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "kernel": "245d54df230f0d8878411d1efd982d5e4189d469f6172379c6c246f56c9fba1e",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "dtb": "qemu-generated-by-qemu",
+    "serial_log": "01649b2be6e13c9ae2dd5f1702c7e3eb52af34ab39847939e71a8a5982e42d54"
+  },
+  "assertions": [
+    {
+      "name": "sv39_default_cpu_handoff",
+      "expected": "Current Sv39 Image enters Asterinas and first-kthread markers under the 2-GiB default QEMU CPU contract",
+      "actual": "Enter riscv_boot, OSTD initialized, and first-kthread phases were observed; explicit sv48=false is excluded from the generic gate",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "enter_riscv_boot",
+    "ostd_initialized",
+    "first_kthread_phases",
+    "no_firefox_started",
+    "uboot_gl_gate_oom_unverified"
+  ],
+  "reason": "Removed incompatible explicit sv48=false/svade CPU flags from the generic Debian gate; direct startup passes. U-Boot GL gate remains unverified because the runtime container exited 137.",
+  "recovery": "direct_qemu_terminated_by_bounded_timeout_after_markers",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-riscv-sv39-cpu-handoff-r55.md",
+    "serial_log": "/mnt/mydisk/qemu-sv39-cpu-contract-r55/serial.log",
+    "source": "tools/riscv/debian/rootfs/gate_protocol.py"
+  }
+}

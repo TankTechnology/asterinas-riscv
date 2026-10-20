@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "gate": "firefox-scheduler-irq-level-fix",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "scheduler-source-contract-and-futex-handoff",
+  "started_utc": "2026-10-19T03:20:00Z",
+  "finished_utc": "2026-10-19T03:22:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "kernel": "503b516329598dfcb72934ccd4d7cefc12bca54390b56e27727c6fe7e0a4f22e",
+    "qemu_log": "757d41a6fc49086126973a841c47b8e9dbe0edbaacf8ad3ec946f2bd1d2c7fe9",
+    "serial_log": "0edce6cad8d43725e0d786205f22ee162a192e9d672de5bab8b125082a6f31b3",
+    "source_test": "fc8e93fbc6d170bc75b4c59a8b9c7927ffb95e7bcf61863dbfa385b8f8c05275"
+  },
+  "assertions": [
+    {
+      "name": "scheduler_irq_level_reset_removed",
+      "expected": "Task switching does not reset per-CPU IRQ level, and the existing futex handoff regression passes",
+      "actual": "RED source contract became GREEN; RISC-V kernel build passed; pthread_cond_handoff passed 4096/4096",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "source_contract_red_before_fix",
+    "source_contract_green_after_fix",
+    "pthread_cond_handoff passed 4096 handoffs",
+    "no_firefox_runtime_started"
+  ],
+  "reason": "Removed a historically reverted speculative IRQ-level reset that could perturb scheduler state during Firefox IPC startup.",
+  "recovery": "not-run",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-scheduler-irq-level-fix-r51.md",
+    "evidence_sha256": "b237508c1256cf105c0ee5d56f9a84fae2022d98829aa2dc08a1e315dddfb816",
+    "source_test": "tools/riscv/tests/test_scheduler_irq_level_contract.py",
+    "kernel": "target/osdk/aster-kernel-osdk-bin.Image",
+    "qemu_log": "/root/asterinas/qemu.log",
+    "serial_log": "/root/asterinas/qemu-serial.log"
+  }
+}

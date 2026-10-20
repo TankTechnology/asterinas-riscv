@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "claim": "E5",
+  "gate": "e5-board-manage",
+  "status": "pass",
+  "started_utc": "2026-10-18T09:42:14Z",
+  "finished_utc": "2026-10-18T09:42:14Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_set": "physical-readonly-20261018",
+  "input_hashes": {
+    "qemu": null,
+    "kernel": null,
+    "rootfs": null,
+    "dtb": null,
+    "stage1": null,
+    "scene_html": null
+  },
+  "assertions": [
+    {
+      "name": "rockos_ssh_identity",
+      "expected": "fresh host nonce, RockOS SSH response, boot_id and UID recorded without writes",
+      "actual": "nonce=c4774f93566d3264f8238f12; uid=1000; boot_id=9c777a00-cc49-47c7-829a-c6abac19dbc9; Linux 6.6.87",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "MEGREZ_READONLY_NONCE=c4774f93566d3264f8238f12",
+    "MEGREZ_SSH_NONCE=526e4b50fbc15d5bf80386d7",
+    "uid=1000",
+    "sudo: a password is required",
+    "boot_id=9c777a00-cc49-47c7-829a-c6abac19dbc9"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-18-megrez-e5-readonly.md",
+    "evidence_sha256": "c105795732ba0a250cf740633992c5de5f61aa4eada63896998c3553e5ae2e0c"
+  },
+  "reason": "Read-only SSH identity is live; UID 0 and serial command response were intentionally not attempted.",
+  "recovery": "not-run"
+}

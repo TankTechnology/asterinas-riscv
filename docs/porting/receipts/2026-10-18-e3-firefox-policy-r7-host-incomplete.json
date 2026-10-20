@@ -1,0 +1,33 @@
+{
+  "artifacts": {
+    "evidence": "/mnt/shared/xaj/Program/asterinas/docs/porting/evidence/2026-10-18-qemu-firefox-policy-r7-host-incomplete.md",
+    "evidence_sha256": "57ea2908761de561212df11807c82cdeefd4715958fe50cbf65bf1bad83de3bf",
+    "output_directory": "target/e3-render-policy-r1/qemu-r1",
+    "serial_log": null
+  },
+  "assertions": [
+    {
+      "actual": "host harness exited with empty output directory; guest gate result is unauthenticated",
+      "expected": "durable Firefox serial/result evidence for NewSession, two GPU proofs, fixed screenshot and recovery",
+      "name": "official_firefox_scene",
+      "ok": false
+    }
+  ],
+  "claim": "E3",
+  "finished_utc": "2026-10-18T13:16:40Z",
+  "gate": "official-firefox-scene",
+  "input_hashes": {
+    "dtb": "1bcec907d28a9ede2c0020d9024de93640d2d0ba9bdfc5f09f20e81f4777a9eb",
+    "kernel": "cabc01961888055d64b5f0d59a1a15a1d797e95e969fca7de7d61dfe2429328d",
+    "qemu": null,
+    "rootfs": "aa26ef744b3c0e8568bbbaafbbfe300199ef14e354a698410b8b73bab4b80ad7",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fd8c93481dd159ad04c",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84"
+  },
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "markers": [],
+  "reason": "host_harness_incomplete: qemu-r1 exited without durable result.json or serial transcript; no automatic rerun",
+  "schema": 1,
+  "started_utc": "2026-10-18T13:06:00Z",
+  "status": "blocked"
+}

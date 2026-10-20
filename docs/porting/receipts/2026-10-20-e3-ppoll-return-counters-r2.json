@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "gate": "firefox-ppoll-return-counters",
+  "claim": "E3",
+  "status": "pass",
+  "started_utc": "2026-10-20T06:00:00Z",
+  "finished_utc": "2026-10-20T06:01:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "ppoll_return_counters_compile",
+      "expected": "Opt-in ppoll result counters compile for the RISC-V kernel without changing default syscall behavior",
+      "actual": "rustfmt check and persistent-container RISC-V kernel build passed",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "ASTERINAS_PPOLL_PROFILE ret_zero",
+    "ASTERINAS_PPOLL_PROFILE ret_ready",
+    "ASTERINAS_PPOLL_PROFILE ret_error"
+  ],
+  "reason": "Supplemental source/build evidence only; runtime Firefox evidence remains pending.",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-ppoll-return-counters-r2.md",
+    "evidence_sha256": "56208d9706cf9f39b4a060ba993865cadc6c7068a21329810deb18c883715656",
+    "source_sha256": "27b3c57a6e456c0555bfbe734846c40c66c60b3c7a6569a8b0d8e0c3ddd0e81d",
+    "kernel_image_sha256": "ee5959bddb72609881a97edb3768f1743d35e7735f5dc527f4cacd366ddb54db"
+  }
+}

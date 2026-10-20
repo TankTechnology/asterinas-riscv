@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-probe-sample-timeline",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "host-code-contract",
+  "started_utc": "2026-10-18T23:20:00Z",
+  "finished_utc": "2026-10-18T23:22:30Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "probe_timeline_is_bounded_and_persisted",
+      "expected": "The independent NewSession probe records baseline and terminal process/thread/log samples and persists at most four compact samples in its atomic receipt",
+      "actual": "The implementation captures baseline and terminal samples, bounds each sample, persists sample_count/samples, and 49 focused tests pass",
+      "ok": true
+    }
+  ],
+  "reason": "Code-only contract; no new QEMU or full Firefox scene run was started.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "firefox_probe_script": "eae8a02f53bb28a7f9ed1072acd683fea99e1b547386f276458f1c641d8c67f2",
+    "probe_tests": "12c5ceb98a5f4a32a4388160f5e13e765b018221b34fa0d68dd886398c88a5ad"
+  },
+  "markers": [
+    "baseline FIREFOX_DRM_PROBE_SAMPLE is captured before NewSession",
+    "terminal FIREFOX_DRM_PROBE_SAMPLE is captured before cleanup",
+    "FIREFOX_DRM_PROBE_RECEIPT reports sample_count",
+    "49 focused tests passed",
+    "py_compile passed",
+    "git diff --check passed"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-marionette-probe-sample-timeline-r20.md"
+  }
+}

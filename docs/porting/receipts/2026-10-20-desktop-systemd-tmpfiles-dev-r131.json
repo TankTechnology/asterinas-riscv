@@ -1,0 +1,28 @@
+{
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-desktop-systemd-tmpfiles-dev-r131.md",
+    "evidence_sha256": "b3c218872b0e7466f3a34cd7121014970f01759b6c6e9130b0a2a18d48db57b6",
+    "lifecycle_sha256": "8875f1ce9ca6efe40edf7ede5f04afa150d9b7462a22a42ef40d24004f3ad7fd",
+    "masked_rootfs": "/mnt/mydisk/asterinas-systemd-tmpfiles-mask-r131",
+    "result_sha256": "2b92e98ccbc73981e985490c90b4a9c4d72cf28d24f8f5c65fd622789646a63f",
+    "root_image_sha256": "2571a9d04930607826998865bbdcbef24a57b04763e4bf220affeb4b91595b32",
+    "runtime_output": "/mnt/mydisk/qemu-desktop-systemd-tmpfiles-mask-r131",
+    "serial_sha256": "4f20eec1a5f9f1b8860fd317c313ad7a216d03add9915511ffc62f9ed0a3dd2c"
+  },
+  "assertions": [
+    {
+      "actual": "The mask took effect and the early tmpfiles unit finished, but sysinit.target still did not appear; sysctl failure remained.",
+      "expected": "Mask systemd-tmpfiles-setup-dev.service and compare sysinit progress.",
+      "name": "tmpfiles_dev_not_hard_blocker",
+      "ok": true
+    }
+  ],
+  "claim": "E3",
+  "classification": "bounded-tmpfiles-mask-isolation",
+  "gate": "desktop-systemd-tmpfiles-dev",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "next_boundary": "systemd-sysctl child completion and the next pending sysinit unit.",
+  "passed": true,
+  "schema": 1,
+  "status": "pass"
+}

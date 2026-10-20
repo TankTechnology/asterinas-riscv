@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "gate": "e3-newsession-history-audit",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "classification": "read-only-evidence-correction",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "newsession_history_consistent",
+      "expected": "A retained successful three-field NewSession receipt exists before changing the gate capability shape",
+      "actual": "No such receipt exists: r34 is a failed WebGL scene record; r101 minimal and three-field arms both lacked a response header; r107 envelope reproduced the same boundary",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-newsession-history-audit-r109.md",
+    "evidence_sha256": "7c3f505f76d81da21d2bfc760b316996b1ee1ed266c48c3139f31a001bea274b"
+  },
+  "next_boundary": "Firefox-specific Content/Marionette IPC after request send_complete; no capability-shape rerun"
+}

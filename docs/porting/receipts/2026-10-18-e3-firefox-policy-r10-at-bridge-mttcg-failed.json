@@ -1,0 +1,44 @@
+{
+  "artifacts": {
+    "evidence": "/mnt/shared/xaj/Program/asterinas/docs/porting/evidence/2026-10-18-qemu-firefox-policy-r10-at-bridge-mttcg-failed.md",
+    "evidence_sha256": "be8f4e73d32ed10b07b7b0fc9ba880e738083abe2778b1bf0d0087e02bc87bb0",
+    "lifecycle_json": "/mnt/shared/xaj/Program/asterinas/target/e3-render-policy-r1/qemu-r4-export/lifecycle.json",
+    "lifecycle_json_sha256": "6e901e74ddd26f142870eac9e107574b333fcb1af3108b22a68f73faff0ae08e",
+    "result_json": "/mnt/shared/xaj/Program/asterinas/target/e3-render-policy-r1/qemu-r4-export/result.json",
+    "result_json_sha256": "b4707194caae746cb43fdf03d38fa73c97965391e13643da14811e52912e33a4",
+    "serial_log": "/mnt/shared/xaj/Program/asterinas/target/e3-render-policy-r1/qemu-r4-export/firefox-drm-recovery.serial.log",
+    "serial_log_sha256": "536678f17ea4cf0e37eb7e36f47e4bc965596fd1665cd5956d63bdc3ede32fd2"
+  },
+  "assertions": [
+    {
+      "actual": "EGL/GLX preflight timed out; Firefox NewSession timed out with render-thread stalls",
+      "expected": "two GPU proofs, Firefox scene screenshot/frame evidence and recovery",
+      "name": "official_firefox_scene",
+      "ok": false
+    }
+  ],
+  "claim": "E3",
+  "finished_utc": "2026-10-18T14:30:53Z",
+  "gate": "official-firefox-scene",
+  "input_hashes": {
+    "dtb": "1bcec907d28a9ede2c0020d9024de93640d2d0ba9bdfc5f09f20e81f4777a9eb",
+    "kernel": "cabc01961888055d64b5f0d59a1a15a1d797e95e969fca7de7d61dfe2429328d",
+    "qemu": null,
+    "rootfs": "943b332e7a71b1df84aba6f9d1855985ef45aa142026a2997be5656be6c36ca3",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fd8fdc93481dd159ad04c",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84"
+  },
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "markers": [
+    "FIREFOX_DRM_EGL_PROBE rc=timeout",
+    "FIREFOX_DRM_GLXTEST rc=timeout",
+    "FIREFOX_DRM_PHASE name=new-session",
+    "RenderThread::InitDeviceTask is slow",
+    "NewRenderer::Run is slow",
+    "FIREFOX_DRM_FAIL_REASON reason=timed_out"
+  ],
+  "reason": "NO_AT_BRIDGE plus MTTCG did not remove the render-thread/NewSession stall; EGL/GLX preflight also timed out; investigate Asterinas/virtio-gpu scheduling or ioctl path",
+  "schema": 1,
+  "started_utc": "2026-10-18T14:11:00Z",
+  "status": "blocked"
+}

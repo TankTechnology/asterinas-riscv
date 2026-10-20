@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "claim": "E5",
+  "gate": "e5-board-manage",
+  "status": "pass",
+  "started_utc": "2026-10-18T09:42:14Z",
+  "finished_utc": "2026-10-18T09:42:14Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_set": "physical-readonly-20261018",
+  "input_hashes": {
+    "qemu": null,
+    "kernel": null,
+    "rootfs": null,
+    "dtb": null,
+    "stage1": null,
+    "scene_html": null
+  },
+  "assertions": [
+    {
+      "name": "serial_owner_free",
+      "expected": "stable serial path exists and no competing process owns it",
+      "actual": "stable FTDI path present; fuser and passive owner scan reported no owner",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "serial path present",
+    "serial owner absent"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-18-megrez-e5-readonly.md",
+    "evidence_sha256": "c105795732ba0a250cf740633992c5de5f61aa4eada63896998c3553e5ae2e0c"
+  },
+  "reason": "This only proves the host serial path is free; it is not a serial command or UID-0 receipt.",
+  "recovery": "not-run"
+}

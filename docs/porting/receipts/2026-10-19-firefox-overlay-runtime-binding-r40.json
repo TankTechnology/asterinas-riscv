@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-overlay",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "host_overlay_binding",
+  "started_utc": "2026-10-19T00:49:50Z",
+  "finished_utc": "2026-10-19T00:50:20Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "overlay_binds_select_client",
+      "expected": "The next guest rootfs imports the select-based Marionette client at the path used by the scene script",
+      "actual": "r41 overlay manifest contains /usr/lib/asterinas/browser_m5_marionette_gate.py with the expected source hash",
+      "ok": true
+    }
+  ],
+  "reason": "The runtime import path is now explicitly bound to the corrected client; no QEMU runtime claim is made.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "root_image": "c8bd5b2508f453bb4ac630d215738832a062f9158e55d9b9f6f2e801a44e8550",
+    "root_manifest": "d2b6c2061f224f7b1b832a86c83eecbc6e3f954f98e12b27d9364abb54eac0c9",
+    "overlay_manifest": "a156c6476a6c9230031b9dece1d110635361a1ed29176050f16bcd1b872296fd"
+  },
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-overlay-runtime-binding-r40.md",
+    "evidence_sha256": "1ae9ebbf5bde1c9aba2b3f714b00066b82f6fe79948f7cfc0b218f638116bf87"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "gate": "desktop-readiness-boundary",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "bounded-browser-free-desktop-boundary",
+  "started_utc": "2026-10-19T09:05:00Z",
+  "finished_utc": "2026-10-19T08:57:48Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "kernel": "245d54df230f0d8878411d1efd982d5e4189d469f6172379c6c246f56c9fba1e",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "root_image": "62510146ff58cafd421d9660a01b2a6e3dde29bfdc458cee85a2ce0729df7932"
+  },
+  "assertions": [
+    {
+      "name": "desktop_readiness_boundary_classified",
+      "expected": "A browser-free desktop boot identifies whether readiness fails before or after systemd starts the desktop unit",
+      "actual": "Stage1 and systemd reached desktop evidence/session service start; no ready/fail marker arrived within 60 seconds, narrowing the boundary to ExecStartPre/session/Xorg",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "stage1_exec",
+    "systemd_basic",
+    "desktop_evidence_start",
+    "desktop_session_start",
+    "browser_disabled",
+    "no_firefox_started",
+    "bounded_timeout_60s"
+  ],
+  "reason": "Netsurf/Firefox is excluded; the remaining stall is in the desktop service or Xorg/session startup and needs phase logging before another long gate.",
+  "recovery": "qemu_terminated_by_explicit_60_second_timeout",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-desktop-readiness-boundary-r64.md",
+    "evidence_sha256": "da62d7b345706bf950b20d55faa51a5632eb59790062225a36d1762a685da132",
+    "serial_log": "/mnt/mydisk/qemu-desktop-core-diagnostic-r64/desktop-m4.serial.log",
+    "result_json": "/mnt/mydisk/qemu-desktop-core-diagnostic-r64/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-desktop-core-diagnostic-r64/lifecycle.json"
+  }
+}

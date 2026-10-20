@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "gate": "firefox-render-thread-analysis",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "host_log_boundary_analysis",
+  "started_utc": "2026-10-19T01:41:40Z",
+  "finished_utc": "2026-10-19T01:42:27Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "render_thread_wait_boundary_classified",
+      "expected": "Existing bounded logs identify the dominant Firefox startup wait classes without another guest run",
+      "actual": "r44/r45 logs show parent futex/ppoll, Socket Process ppoll/futex, Web Content futex, virgl glxtest pass, and RenderThread::InitDeviceTask slow marker",
+      "ok": true
+    }
+  ],
+  "reason": "The next investigation is narrowed to Firefox/guest futex and scheduler wake correlation; E3 official scene remains incomplete.",
+  "recovery": "not-run",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-render-thread-syscall-boundary-r46.md",
+    "evidence_sha256": "b5b40cd2d0c6b11bd2a81383a3f55654272a25add2999fafef5b897b99630161"
+  }
+}

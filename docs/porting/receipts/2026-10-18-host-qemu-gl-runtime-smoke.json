@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "claim": "HOST",
+  "gate": "qemu-gl-runtime-smoke",
+  "status": "fail",
+  "started_utc": "2026-10-18T15:00:00Z",
+  "finished_utc": "2026-10-18T15:00:01Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "qemu_launcher": "e837ae5ca6b30fa5fcf45b23e24d9cf4bdb9ce215584334b63d69a74d0c02977",
+    "guest": null
+  },
+  "assertions": [
+    {
+      "name": "qemu_gl_runtime_starts",
+      "expected": "QEMU stays alive for the bounded 5 second no-guest GL smoke",
+      "actual": "QEMU exits with OpenGL is not supported by the display",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "capability egl-headless=true",
+    "capability virtio-gpu-gl-device=true",
+    "runtime stderr=OpenGL is not supported by the display"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-18-qemu-gl-runtime-smoke.md",
+    "evidence_sha256": "c5e1a7b7c63f3ee6df3749cec846e9e43e2c17069b37d72e9f8966e5de8c66b4"
+  },
+  "reason": "The retained QEMU 6.2 package advertises GL but cannot initialise the host EGL display; no guest was started.",
+  "recovery": "not-run"
+}

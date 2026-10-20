@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "gate": "m5-browser-legacy-cleanup",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "m5_browser_legacy_cleanup",
+      "expected": "Only files without builder, profile, overlay, test, or E1--E5 management-chain dependencies are deleted",
+      "actual": "firefox_gdb_probe.sh was deleted; browser-m5 and browser-web active dependencies were retained",
+      "ok": true
+    }
+  ],
+  "deleted": [
+    "tools/riscv/debian/rootfs/firefox_gdb_probe.sh"
+  ],
+  "retained_due_to_active_references": [
+    "tools/riscv/debian/rootfs/browser_m5.py",
+    "tools/riscv/debian/rootfs/browser_m5_probe.html",
+    "tools/riscv/debian/rootfs/browser_m5.webm.base64",
+    "tools/riscv/debian/rootfs/browser_m5_marionette_gate.py",
+    "tools/riscv/debian/rootfs/browser_web_dev_overlay.json",
+    "tools/riscv/debian/rootfs/browser_web_qemu_gate.py",
+    "tools/riscv/debian/rootfs/desktop_m5_network_gate.py"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-m5-browser-cleanup-r97.md",
+    "evidence_sha256": "4fd7c44fdb2737a2f62d690809fca24ec12a47d90651f8d858dc287c4ba15863"
+  }
+}

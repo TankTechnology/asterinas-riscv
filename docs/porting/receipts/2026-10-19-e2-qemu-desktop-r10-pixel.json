@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "claim": "E2",
+  "gate": "qemu-desktop-m4-r10",
+  "status": "pass",
+  "started_utc": "2026-10-18T16:12:50Z",
+  "finished_utc": "2026-10-18T16:15:44Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "kernel": "1660a4606f88d3131ad030a489b978a0f3a24fed4d17beb6db31c2829029a02d",
+    "rootfs": "3e0f6c4ebc373ef3d67ec4e27f4b99a1ce93e246ca0efa6e859dbe0f1bcdb901",
+    "dtb": "1bcec907d28a9ede2c0020d9024de93640d2d0ba9bdfc5f09f20e81f4777a9eb",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "u_boot": "18c34ed87dd053ad012a0d3f8acef7445d40b0199c4da54ec04ba8cbba841710"
+  },
+  "assertions": [
+    {
+      "name": "fixed_pixel_hash",
+      "expected": "triangle readback left=ffffff right=000000 and fixed X11 screenshot hash",
+      "actual": "pixel probe passed; screenshot sha256=a17336696bd7287d60a8087ea0be918418555bedfbcc5dc01fafd44370e9304f4",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "PIXEL_PROBE ok=yes left=ffffff right=000000 renderer=virgl",
+    "DEBIAN_DESKTOP_M4_DRM_X11_SCREENSHOT width=1280 height=800 stride=5120",
+    "DEBIAN_DESKTOP_M4_READY"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-desktop-m4-r10.md",
+    "serial_log": "/mnt/mydisk/qemu-desktop-m4-r10-container/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-desktop-m4-r10-container/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-desktop-m4-r10-container/lifecycle.json"
+  },
+  "reason": "Virgl EGL triangle readback and the fixed 1280x800 X11 screenshot hash passed in one guest run.",
+  "recovery": "not-run"
+}

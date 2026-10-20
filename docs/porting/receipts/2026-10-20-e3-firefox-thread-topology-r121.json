@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-thread-topology",
+  "status": "passed",
+  "passed": true,
+  "timestamp_utc": "2026-10-20T01:00:11.641818+00:00",
+  "assertions": [
+    {
+      "name": "post_newsession_thread_topology_classified",
+      "status": "passed",
+      "evidence": "pid=467 tid=480 futex and pid=467 tid=467 ppoll waits recorded"
+    },
+    {
+      "name": "parent_remains_alive",
+      "status": "passed",
+      "evidence": "FIREFOX_DRM_WATCH pid=237 state=running"
+    },
+    {
+      "name": "response_boundary_remains_failed",
+      "status": "failed",
+      "evidence": "no NewSession response before 360s"
+    }
+  ],
+  "source": "/mnt/mydisk/qemu-firefox-e3-r119-user-recv/desktop-m4-drm.serial.log",
+  "source_sha256": "53162ad67203ee75e8389ec768bf98a2c1a1d487bd0d5ea1f475043bb0265a9a",
+  "evidence": "/mnt/shared/xaj/Program/asterinas/docs/porting/evidence/2026-10-20-e3-firefox-thread-topology-r121.md",
+  "evidence_sha256": "cc7bad897d4d444913931af3000d66a538daf76e79bc86b1a225abc030ba00a9",
+  "conclusion": "Firefox post-receive thread wait is classified; no kernel futex fix inferred"
+}

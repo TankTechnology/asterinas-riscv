@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "gate": "firefox-futex-args-contract",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "host-code-contract",
+  "started_utc": "2026-10-19T07:20:00Z",
+  "finished_utc": "2026-10-19T07:20:30Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "futex_args_visible_in_probe_summary",
+      "expected": "The Firefox probe summary exposes the first four scalar arguments for futex and ppoll snapshots",
+      "actual": "The summary emits arg0..arg3 for syscall numbers 98 and 73; 49 focused tests, syntax checks, and diff check pass",
+      "ok": true
+    }
+  ],
+  "reason": "This is a code-only contract; no guest was started in this step.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "kernel": "1914d747a6e4e8457c0fe31725533f57a7be68532c165e338b3466c6b90b09d7"
+  },
+  "markers": [
+    "_probe_syscall_summary number=98 emits arg0..arg3",
+    "_probe_syscall_summary number=73 emits arg0..arg3",
+    "49 focused tests passed",
+    "py_compile passed",
+    "git diff --check passed"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-futex-args-contract-r11.md",
+    "evidence_sha256": "26c47b78faeece792ff829dda7b295c2df34428695089b16bd88ae3868605deb"
+  }
+}

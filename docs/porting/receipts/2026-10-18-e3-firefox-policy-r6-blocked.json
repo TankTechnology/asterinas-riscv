@@ -1,0 +1,39 @@
+{
+  "artifacts": {
+    "evidence": "/mnt/shared/xaj/Program/asterinas/docs/porting/evidence/2026-10-18-qemu-firefox-policy-r6-final.md",
+    "evidence_sha256": "0ecab573b48b914e5ce1e795e1174f8482ed7ed3827346d9559a1d7bb46ea8ac",
+    "serial_log": "target/e3-render-policy-r1/qemu-r1/firefox-drm-recovery.serial.log"
+  },
+  "assertions": [
+    {
+      "actual": "NewSession timeout after renderD128/virgl EGL and GLX probes",
+      "expected": "NewSession + two GPU proofs + fixed screenshot + recovery",
+      "name": "official_firefox_scene",
+      "ok": false
+    }
+  ],
+  "claim": "E3",
+  "finished_utc": "2026-10-18T12:46:00Z",
+  "gate": "official-firefox-scene",
+  "input_hashes": {
+    "dtb": "1bcec907d28a9ede2c0020d9024de93640d2d0ba9bdfc5f09f20e81f4777a9eb",
+    "kernel": "cabc01961888055d64b5f0d59a1a15a1d797e95e969fca7de7d61dfe2429328d",
+    "qemu": null,
+    "rootfs": "e869b18076c73a26e801b5286e49d79e337a6d98f7d56f251483b042a2218f9c",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84"
+  },
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "markers": [
+    "FIREFOX_DRM_ACCESS",
+    "FIREFOX_DRM_EGL_PROBE",
+    "FIREFOX_DRM_GLXTEST",
+    "FIREFOX_DRM_PHASE name=new-session",
+    "FIREFOX_DRM_FAIL_REASON reason=timed_out"
+  ],
+  "reason": "official Firefox Marionette NewSession timed out after 840 seconds",
+  "recovery": "not-run",
+  "schema": 1,
+  "started_utc": "2026-10-18T12:28:00Z",
+  "status": "blocked"
+}

@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-probe",
+  "claim": "E3",
+  "status": "blocked",
+  "classification": "firefox_display_order_then_render_thread",
+  "started_utc": "2026-10-19T01:20:31Z",
+  "finished_utc": "2026-10-19T01:25:23Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "newsession_response",
+      "expected": "NewSession completes after Xorg and virgl are ready",
+      "actual": "Display wait and glxtest virgl pass; RenderThread::InitDeviceTask is slow; NewSession response header still times out",
+      "ok": false
+    }
+  ],
+  "reason": "The Xorg startup race is closed; the remaining boundary is Firefox render-thread/content synchronization.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "kernel": "829f9fa348d15bc3826c5543aea0ade0408c241d816e4d48db53de4007249297",
+    "root_image": "2f90012e721ab3b47cfc148a7298ebf9f793cbe1f03eb406a05af744231570db",
+    "root_manifest": "f8f9db970ed8ff2983dbb6482ef32673de23e08d43f9bd51783cb68e6949e761"
+  },
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r44.md",
+    "evidence_sha256": "bd797c365d6e4588522c21b6c269416576788c37684f706140a62a9531d552e4"
+  }
+}

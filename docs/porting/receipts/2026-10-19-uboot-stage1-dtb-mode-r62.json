@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "gate": "uboot-stage1-dtb-mode",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "bounded-uboot-stage1-handoff-comparison",
+  "started_utc": "2026-10-19T08:40:00Z",
+  "finished_utc": "2026-10-19T08:47:59Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "kernel": "245d54df230f0d8878411d1efd982d5e4189d469f6172379c6c246f56c9fba1e",
+    "tcg_sv57_dtb": "a08a89643272372ccd0da98ffd920a163f28b1c36067679d0153b36d3da8a1bc",
+    "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210",
+    "stage1_initramfs": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "run_root_image": "62510146ff58cafd421d9660a01b2a6e3dde29bfdc458cee85a2ce0729df7932"
+  },
+  "assertions": [
+    {
+      "name": "dtb_mode_stage1_handoff",
+      "expected": "U-Boot with the TCG sv57 DTB reaches the same Stage1 exec handoff as the retained U-Boot sv39 control",
+      "actual": "r62 emitted all kernel/first-process/root mount/chdir/exec markers; desktop readiness was absent and is intentionally not claimed",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "sv57_starting_kernel",
+    "sv57_ostd_initialized",
+    "sv57_stage1_exec",
+    "sv39_control_stage1_exec",
+    "desktop_marker_absent_not_claimed"
+  ],
+  "reason": "Both DTB modes reach Stage1 exec; DTB mode is not the cause of the pre-Stage1 failure. Desktop readiness remains a separate userspace boundary.",
+  "recovery": "qemu_terminated_by_bounded_90_second_timeout",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-uboot-stage1-dtb-mode-r62.md",
+    "evidence_sha256": "e051737f30a0bd99d3b2316c94473ae9ba3ae219234898be7443f9e3f9e226b2",
+    "serial_log": "/mnt/mydisk/qemu-dtb-stage1-compare-r61-sv57-r2/desktop-m4.serial.log",
+    "result_json": "/mnt/mydisk/qemu-dtb-stage1-compare-r61-sv57-r2/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-dtb-stage1-compare-r61-sv57-r2/lifecycle.json"
+  }
+}

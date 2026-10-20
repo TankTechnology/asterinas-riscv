@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "claim": "E3",
+  "gate": "official-firefox-scene",
+  "status": "blocked",
+  "started_utc": "2026-10-18T16:20:05Z",
+  "finished_utc": "2026-10-18T16:22:45Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "qemu": null,
+    "kernel": "1660a4606f88d3131ad030a489b978a0f3a24fed4d17beb6db31c2829029a02d",
+    "rootfs": "aa26ef744b3c0e8568bbbaafbbfe300199ef14e354a698410b8b73bab4b80ad7",
+    "dtb": "1bcec907d28a9ede2c0020d9024de93640d2d0ba9bdfc5f09f20e81f4777a9eb",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fd8fdc93481dd159ad04c"
+  },
+  "assertions": [
+    {
+      "name": "official_firefox_scene",
+      "expected": "Firefox Marionette, WebRender renderer, renderD128 use, fixed scene hash, and recovery",
+      "actual": "EGL/GLX virgl and renderD128 passed; Firefox stopped at connect-state with no Marionette response",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "FIREFOX_DRM_EGL_PROBE rc=0 renderer=virgl",
+    "FIREFOX_DRM_GLXTEST rc=0 RENDERER virgl DRM_RENDERDEVICE /dev/dri/renderD128",
+    "FIREFOX_DRM_PHASE name=connect-state",
+    "FIREFOX_DRM_PROCESS state=running",
+    "FIREFOX_DRM_WATCH browser_log_bytes=0 mozlog_bytes=0"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-e3-r11.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-e3-r11-container/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-e3-r11-container/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-e3-r11-container/lifecycle.json"
+  },
+  "reason": "Official Firefox reaches connect-state but does not answer Marionette; no application-level WebRender evidence is produced.",
+  "recovery": "not-run"
+}

@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "gate": "firefox-probe-timeout-contract",
+  "claim": "E3",
+  "status": "pass",
+  "started_utc": "2026-10-19T22:12:00Z",
+  "finished_utc": "2026-10-19T22:20:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "firefox_probe_timeout_contract",
+      "expected": "A Firefox probe host deadline below 360 seconds is rejected before guest launch; 360 seconds is accepted",
+      "actual": "Unit test rejected 359 seconds with firefox-probe-timeout-budget-too-small and accepted 360 seconds; 229 related tests passed",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "firefox-probe-timeout-budget-too-small",
+    "FIREFOX_PROBE_GUEST_TIMEOUT_SECONDS=300",
+    "FIREFOX_PROBE_HOST_MARGIN_SECONDS=60"
+  ],
+  "reason": "Host-side deadline contract prevents r97-style preemption; runtime scene evidence remains pending.",
+  "recovery": "No guest or hardware run; no recovery action required.",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-firefox-probe-timeout-contract-r98.md",
+    "evidence_sha256": "e273f3d0b69cf8cd4e4f96414b390b6f97902677edfbb3191246e60b694c8da0",
+    "source_sha256": "bdae2397ffd75d8357b6cb0b6725a60aa480a1c760b36f2e117b742576e8fafe"
+  }
+}

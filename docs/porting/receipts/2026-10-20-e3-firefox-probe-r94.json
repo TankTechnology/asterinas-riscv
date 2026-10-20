@@ -1,0 +1,37 @@
+{
+  "artifacts": {
+    "evidence": "/mnt/shared/xaj/Program/asterinas/docs/porting/evidence/2026-10-20-firefox-marionette-probe-r94.md",
+    "evidence_sha256": "1c1aa2ff357ab75f7c81f2e49675ce410b04003edbe4c03d274021593d022031",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-probe-r94/lifecycle.json",
+    "lifecycle_json_sha256": "5e05ccbc7aea0d5bb413982949f4f656b1c00f9df10dd96aebe1d623cc5d2839",
+    "result_json": "/mnt/mydisk/qemu-firefox-probe-r94/result.json",
+    "result_json_sha256": "10180beefd2be4bda8cecaaec4b04bf9dccc6af22a8294b91a3d5817e9c80cef",
+    "root_image": "/mnt/mydisk/asterinas-firefox-rootfs-20261020-probe-r94/debian-root.ext2",
+    "root_image_sha256": "f4542e50732d6d1d8d37a13e230b2ffb9fd7f7ad221201be28db6a96eda89fe7",
+    "serial_log": "/mnt/mydisk/qemu-firefox-probe-r94/desktop-m4-drm.serial.log",
+    "serial_log_sha256": "6168150bd5a14510cd3371522c084ddffabf2b3fc6364054961e2b3a42e8a744"
+  },
+  "assertions": [
+    {
+      "actual": "Firefox log reported Marionette listening; /proc/net/tcp* remained empty; NewSession response header timed out; atomic probe receipt was emitted",
+      "expected": "A bounded probe records socket visibility, process/thread state, and NewSession response outcome before cleanup",
+      "name": "marionette_socket_runtime_boundary",
+      "ok": false
+    }
+  ],
+  "claim": "E3",
+  "finished_utc": "2026-10-19T21:18:28Z",
+  "gate": "firefox-marionette-probe-socket-boundary",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "markers": [
+    "FIREFOX_DRM_GLXTEST rc=0 RENDERER virgl DRM_RENDERDEVICE /dev/dri/renderD128",
+    "FIREFOX_DRM_PROBE_SOCKET port=2828 states=none",
+    "Marionette INFO Listening on port 2828",
+    "A_WEB_MARIONETTE_TRANSPORT stage=response_header error_type=TimeoutError",
+    "FIREFOX_DRM_PROBE_RECEIPT phase=new-session status=fail sample_count=4"
+  ],
+  "reason": "Diagnostic short probe only. Renderer path passed, but the Firefox Marionette NewSession response did not arrive. The host later reported hash-final-root during final lifecycle handoff.",
+  "schema": 1,
+  "started_utc": "2026-10-19T21:11:00Z",
+  "status": "fail"
+}

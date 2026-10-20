@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "gate": "firefox-futex-pairing-probe",
+  "claim": "E3",
+  "status": "blocked",
+  "classification": "newsession-ipc-after-futex-pairing",
+  "started_utc": "2026-10-18T21:40:00Z",
+  "finished_utc": "2026-10-18T21:47:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "marionette_newsession_boundary",
+      "expected": "NewSession returns a sessionId after greeting; futex waits have matching wake records",
+      "actual": "Greeting passed but NewSession timed out; 0x2aaaf2ce40 and 0x2aaaf2ce44 each have matching same-pid wake records with woken=1",
+      "ok": false
+    }
+  ],
+  "reason": "Futex wake pairing is observed; Firefox session initialization remains blocked after greeting",
+  "recovery": "not-run",
+  "input_hashes": {
+    "qemu": "d4a95ece1ea69687257cb584182bce231d8f379fda0231ec62d4da07611e1952",
+    "kernel": "67643184cee924744fe6b890a42d7ac349d47c0aa5788cfac275da2a6d8ab378",
+    "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "stage1_initramfs": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "root_image": "1b397b2f194e8c73d7d070408b11f701aa8a0f96abfbe0b698abf64eca03bb06"
+  },
+  "markers": [
+    "FIREFOX_DRM_PROBE_BOUNDARY name=greeting status=pass",
+    "FIREFOX_DRM_PROBE_BOUNDARY name=new-session status=fail type=TimeoutError",
+    "FUTEX_PAIR addr=0x2aaaf2ce40 wake_woken=1",
+    "FUTEX_PAIR addr=0x2aaaf2ce44 wake_woken=1"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-futex-pairing-r19.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r19-container/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r19-container/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r19-container/lifecycle.json",
+    "serial_log_sha256": "60115a1bc1ed4cac6e8adabab378e62e8842492894c515f62883736d6640ab30",
+    "result_json_sha256": "22a58327bae40752a594b791194e42e570f2faec9e7783546f2ea8932de3c706",
+    "lifecycle_json_sha256": "d5faaca2909fd5ed1ebd21a76324de9c6e708f17f33f4dce00dcc3b1afcc630b"
+  }
+}

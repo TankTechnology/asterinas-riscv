@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "claim": "E3",
+  "gate": "official-firefox-scene",
+  "status": "blocked",
+  "classification": "same-newsession-boundary-after-minimal-capabilities",
+  "started_utc": "2026-10-18T17:50:30Z",
+  "finished_utc": "2026-10-18T18:05:30Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "qemu": "d4a95ece1ea69687257cb584182bce231d8f379fda0231ec62d4da07611e1952",
+    "kernel": "1660a4606f88d3131ad030a489b978a0f3a24fed4d17beb6db31c2829029a02d",
+    "rootfs": "db27606f172ad3b1f894c45f11e03193dcb16be378b67a8a240447c1b18144fe",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c"
+  },
+  "assertions": [
+    {
+      "name": "official_firefox_scene",
+      "expected": "Firefox Marionette, WebRender renderer, renderD128 use, fixed scene hash, and recovery",
+      "actual": "Minimal NewSession capability payload was sent after a valid Marionette greeting; Firefox never returned the NewSession response before the bound",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "DEBIAN_DESKTOP_M4_XORG provider=drm display=:0 renderer=virgl",
+    "FIREFOX_DRM_GLXTEST rc=0 RENDERER virgl DRM_RENDERDEVICE /dev/dri/renderD128",
+    "A_WEB_MARIONETTE_TRANSPORT frame_header body_expected=50",
+    "A_WEB_MARIONETTE_TRANSPORT command=WebDriver:NewSession send_complete=true"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-e3-r18.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-e3-r18-container/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-e3-r18-container/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-e3-r18-container/lifecycle.json",
+    "evidence_sha256": "142bf644f3a7ab70ebef86b3904db0a903dc2af7f795a59e83a2f34c2c94d234"
+  },
+  "reason": "The same NewSession boundary persists after changing capability shape; no application WebRender scene evidence exists.",
+  "recovery": "not-run"
+}

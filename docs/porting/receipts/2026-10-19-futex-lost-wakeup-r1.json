@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "gate": "futex-lost-wakeup",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "minimal-probe-build-and-x86-control",
+  "started_utc": "2026-10-19T02:15:00Z",
+  "finished_utc": "2026-10-19T02:21:19Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "source": "b208e6ac0d403e73093eb837f46b32edae65e760c247e30b883536a64fbc8f65",
+    "riscv64_binary": "4605481353533c868374ad0cd44afa3d201d6a41407f4d5047a8c1964607a936",
+    "x86_64_binary": "a673acfe7c5862629d2fca88aeb29ccd303514bbf74a05aa4fbff7bb969b6b5d"
+  },
+  "assertions": [
+    {
+      "name": "futex_probe_build_and_x86_baseline",
+      "expected": "The bounded H1/H2/H3 probe builds for riscv64 and its x86_64 control has zero timeouts or errors",
+      "actual": "riscv64 static build succeeded; x86 H1 completed=100000 timeouts=0 errors=0, H2 failures=0, H3 timeouts=0 errors=0 in 4.49s",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "FUTEX_H1 status=pass",
+    "FUTEX_H2 status=pass",
+    "FUTEX_H3 status=pass",
+    "FUTEX_LOST_WAKEUP_PROBE status=pass",
+    "riscv64 runtime pending"
+  ],
+  "reason": "This closes only the build and x86 control step. It does not establish or rule out a RISC-V kernel lost wakeup.",
+  "recovery": "not-run",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-futex-lost-wakeup-r1.md",
+    "evidence_sha256": "afe8ddcad4825574a6a99d2b61dc1c75833284b3ebb3bfc05ce5494fd7dbe3f5",
+    "x86_run_log": "/mnt/mydisk/futex-lost-wakeup-r1/x86-run.log",
+    "riscv64_binary": "/mnt/mydisk/futex-lost-wakeup-r1/futex-lost-wakeup-riscv64",
+    "x86_64_binary": "/mnt/mydisk/futex-lost-wakeup-r1/futex-lost-wakeup-x86_64",
+    "source": "tools/riscv/futex_lost_wakeup/futex_lost_wakeup_probe.c"
+  }
+}

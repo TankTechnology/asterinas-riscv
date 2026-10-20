@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "gate": "firefox-ppoll-return-counters-runtime",
+  "claim": "E3",
+  "status": "fail",
+  "started_utc": "2026-10-19T21:48:00Z",
+  "finished_utc": "2026-10-19T22:00:59Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "marionette_listener_and_ppoll_boundary",
+      "expected": "After the virgl precondition, Marionette accepts a greeting and the ppoll counters identify the Firefox wait path",
+      "actual": "GLXTest reported virgl/renderD128, but every Marionette attempt failed at tcp_connect with ECONNREFUSED (errno 111); helper ppoll counters showed ready/zero returns and one EINTR, with no Firefox-parent lost-wakeup evidence",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "FIREFOX_DRM_GLXTEST rc=0 ... RENDERER virgl ... DRM_RENDERDEVICE /dev/dri/renderD128",
+    "ASTERINAS_PPOLL_PROFILE ret_zero",
+    "ASTERINAS_PPOLL_PROFILE ret_ready",
+    "ASTERINAS_PPOLL_PROFILE errno=EINTR",
+    "A_WEB_MARIONETTE_TRANSPORT stage=tcp_connect error_type=ConnectionRefusedError errno=111",
+    "lifecycle status=failed phase=finished reason=protocol"
+  ],
+  "reason": "Bounded diagnostic probe; no Firefox scene pass and no kernel semantic patch inferred.",
+  "recovery": "QEMU terminated at the bounded protocol timeout; no hardware operation.",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-firefox-ppoll-return-counters-runtime-r97.md",
+    "evidence_sha256": "e505e7725633a80639a942cc5c16efcd1c9bcd8ce4976c2c522e5d847d2c9cc6",
+    "serial_log": "/mnt/mydisk/qemu-firefox-probe-r97/desktop-m4-drm.serial.log",
+    "serial_log_sha256": "299641b88def6a68b9473fc64e634e343e68d51bfb60c9713429e20050c27643",
+    "lifecycle": "/mnt/mydisk/qemu-firefox-probe-r97/lifecycle.json",
+    "lifecycle_sha256": "fa2c09acda4be059593b7bc90e0963e313b4ce906415be0894edf67f55dfb887",
+    "result": "/mnt/mydisk/qemu-firefox-probe-r97/result.json",
+    "result_sha256": "b27d7059120b1cb0e57baeaaf5111b7ee1edac2473480d1d11be60b48c3a73ca",
+    "kernel_image_sha256": "ee5959bddb72609881a97edb3768f1743d35e7735f5dc527f4cacd366ddb54db",
+    "root_image_sha256": "1018d02c1db8b48ecdab5368a0ed8a80e95a476c602f3409279a4fa8a671a2d4"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-desktop-systemd-sysusers-mask-r133.md",
+    "evidence_sha256": "1c93c1e4f2093a4a5384e2775da679cffc6825bc59bada711114407781680a59",
+    "lifecycle_sha256": "aef19a0f7be0fc80390cd885fcf8ff02345c602b843dd1b7a5509dec30f6817c",
+    "output_directory": "/mnt/mydisk/qemu-desktop-systemd-sysusers-mask-r133",
+    "result_sha256": "c6a4f7b4dd429d34998388078b5a5345b3fbb676d2d7ce5a02b122725ce82315",
+    "serial_sha256": "76bbdebfd0da038f7f946346a277ea3bb06b9afc72384919865211123031ce29"
+  },
+  "assertions": [
+    {
+      "actual": "sysusers and tmpfiles-dev were masked, but sysctl still failed and sysinit did not complete",
+      "expected": "Record the systemd startup boundary and its controlled-variable result.",
+      "name": "systemd_control_boundary_recorded",
+      "ok": true
+    }
+  ],
+  "claim": "E3",
+  "classification": "bounded-systemd-isolation",
+  "gate": "desktop-systemd-sysusers-mask",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "next_boundary": "desktop-systemd-sysctl-unit",
+  "passed": true,
+  "schema": 1,
+  "status": "pass"
+}

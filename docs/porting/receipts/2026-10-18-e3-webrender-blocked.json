@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "claim": "E3",
+  "gate": "e3-firefox-scene",
+  "status": "blocked",
+  "classification": "same-log-boundary-twice",
+  "started_utc": null,
+  "finished_utc": "2026-10-18T09:45:00Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_set": "firefox-diagnostic-r44-r47",
+  "input_hashes": {
+    "qemu": null,
+    "kernel": null,
+    "rootfs": null,
+    "dtb": null,
+    "stage1": null,
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c"
+  },
+  "assertions": [
+    {
+      "name": "official_firefox_scene",
+      "expected": "official Firefox WebRender context starts after virgl/renderD128 probes",
+      "actual": "r44: Couldn't sanitize GL_RENDERER \\\"virgl\\\"; Failed GL context creation for WebRender; r47: same boundary after diagnostic preference",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "Failed GL context creation for WebRender",
+    "Failed to connect WebRenderBridgeChild"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-17-qemu-firefox-drm-scene-r44.md",
+    "evidence_sha256": "774aeed2461b96497fe894374dad91c016fe38e591fdec9836d5b5688734fc59",
+    "comparison_evidence": "docs/porting/evidence/2026-10-17-qemu-firefox-drm-scene-r47.md",
+    "comparison_evidence_sha256": "95adc8aa983fd788a21adc010e365f2a97596bdf891304ce4c084833d25bb4e3"
+  },
+  "reason": "The same WebRender GL-context failure occurs at the same log boundary in two independent diagnostic runs. Per GATES-REFACTOR, do not perform a third run until an external condition changes; Firefox remains unpatched.",
+  "recovery": "not-run"
+}

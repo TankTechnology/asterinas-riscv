@@ -1,0 +1,129 @@
+From fd5e5321ca5cf97fc724962c4c72ee27a9e05995 Mon Sep 17 00:00:00 2001
+From: KVM debug <dev@asterinas>
+Date: Mon, 19 Oct 2026 15:30:53 +0800
+Subject: [PATCH] riscv: accept CPU nodes without mmu-type (QEMU KVM guest DT)
+
+QEMU's KVM accelerator generates a guest device tree that omits the
+"mmu-type" property on each CPU node, while the TCG accelerator sets
+'mmu-type = "riscv,sv39"'. The RISC-V boot code treated a missing
+'mmu-type' as "not an MMU-capable (application) CPU" and skipped such
+nodes, so on a KVM guest the DT validation panicked with
+"[DTB] '/cpus' describes no MMU-capable CPU" before the serial console
+was initialized (silent failure), and the kernel never booted.
+
+RV64 S-mode CPUs always have an MMU, so treat CPU nodes without
+'mmu-type' as application CPUs. Also fall back to a 64-byte cache-block
+size when 'riscv,cbom-block-size' is missing, which is the case for the
+QEMU KVM guest DT.
+
+Validated on a Milk-V Megrez (EIC7700) board with QEMU 9.2.0
+`-accel kvm -cpu host`: Asterinas boots to the Stage1 probe userland and
+passes the boot probe 3/3 runs
+(ASTERINAS_PROBE_PASS ... detail=boot-ok, DONE status=pass,
+REBOOT_READY). Evidence:
+docs/porting/evidence/2026-10-19-board-kvm-advance-s10-asterinas-kvm-boot-fixed.md
+(sha256 2a3980ec3dab73a1a7a936d71f5bdfa95c0b925d0e661898d3d9f9c13cf0cf59).
+---
+ ostd/src/arch/riscv/boot/mod.rs      | 10 ----------
+ ostd/src/arch/riscv/boot/smp.rs      |  1 -
+ ostd/src/arch/riscv/cpu/extension.rs |  3 ---
+ ostd/src/arch/riscv/mm/mod.rs        |  9 +++++----
+ 4 files changed, 5 insertions(+), 18 deletions(-)
+
+diff --git a/ostd/src/arch/riscv/boot/mod.rs b/ostd/src/arch/riscv/boot/mod.rs
+index 04465cf..0830a24 100644
+--- a/ostd/src/arch/riscv/boot/mod.rs
++++ b/ostd/src/arch/riscv/boot/mod.rs
+@@ -175,11 +175,6 @@ fn validate_cpu_nodes(fdt: &Fdt, bootstrap_hart_id: usize) {
+         if cpu.property("device_type").and_then(|prop| prop.as_str()) != Some("cpu") {
+             continue;
+         }
+-        if cpu.property("mmu-type").is_none() {
+-            // Management or monitor harts without an MMU are skipped by the
+-            // kernel as well, so they are not checked here.
+-            continue;
+-        }
+ 
+         let Some(hart_id) = cpu.property("reg").and_then(|reg| reg.as_usize()) else {
+             panic!(
+@@ -193,7 +188,6 @@ fn validate_cpu_nodes(fdt: &Fdt, bootstrap_hart_id: usize) {
+             .filter(|node| node.name.split('@').next() == Some("cpu"))
+             .filter(|node| {
+                 node.property("device_type").and_then(|prop| prop.as_str()) == Some("cpu")
+-                    && node.property("mmu-type").is_some()
+             })
+             .filter_map(|node| node.property("reg").and_then(|reg| reg.as_usize()))
+             .filter(|candidate| *candidate == hart_id)
+@@ -348,9 +342,6 @@ fn validate_interrupt_controllers(fdt: &Fdt) {
+         if cpu.property("device_type").and_then(|prop| prop.as_str()) != Some("cpu") {
+             continue;
+         }
+-        if cpu.property("mmu-type").is_none() {
+-            continue;
+-        }
+ 
+         let mut controllers = cpu.children().filter(|child| {
+             child
+@@ -385,7 +376,6 @@ fn validate_interrupt_controllers(fdt: &Fdt) {
+             .filter(|node| node.name.split('@').next() == Some("cpu"))
+             .filter(|node| {
+                 node.property("device_type").and_then(|prop| prop.as_str()) == Some("cpu")
+-                    && node.property("mmu-type").is_some()
+             })
+             .flat_map(|node| node.children())
+             .filter(|child| {
+diff --git a/ostd/src/arch/riscv/boot/smp.rs b/ostd/src/arch/riscv/boot/smp.rs
+index 93b0008..ba461f7 100644
+--- a/ostd/src/arch/riscv/boot/smp.rs
++++ b/ostd/src/arch/riscv/boot/smp.rs
+@@ -77,7 +77,6 @@ fn for_each_hart_id(mut f: impl FnMut(u32)) {
+             // harts. Here we simply skip those harts without MMU, which is
+             // supposed to work in most cases.
+             if device_type.as_str() == Some("cpu")
+-                && cpu_node.property("mmu-type").is_some()
+                 && let Some(reg) = cpu_node.property("reg")
+             {
+                 f(reg.as_usize().unwrap() as u32);
+diff --git a/ostd/src/arch/riscv/cpu/extension.rs b/ostd/src/arch/riscv/cpu/extension.rs
+index c6f9387..e7b7730 100644
+--- a/ostd/src/arch/riscv/cpu/extension.rs
++++ b/ostd/src/arch/riscv/cpu/extension.rs
+@@ -18,9 +18,6 @@ pub(in crate::arch) fn init() {
+         // FIXME: We should find a robust method to identify the management
+         // harts. Here we simply skip those harts without MMU, which is supposed
+         // to work in most cases.
+-        if cpu.property("mmu-type").is_none() {
+-            continue;
+-        }
+ 
+         cpu_count += 1;
+ 
+diff --git a/ostd/src/arch/riscv/mm/mod.rs b/ostd/src/arch/riscv/mm/mod.rs
+index 0b1a7c5..a805c49 100644
+--- a/ostd/src/arch/riscv/mm/mod.rs
++++ b/ostd/src/arch/riscv/mm/mod.rs
+@@ -190,16 +190,17 @@ pub(crate) unsafe fn sync_dma_range<D: DmaDirection>(range: Range<Vaddr>) {
+ 
+     static CMO_MANAGEMENT_BLOCK_SIZE: Once<usize> = Once::new();
+     let cmo_management_block_size = *CMO_MANAGEMENT_BLOCK_SIZE.call_once(|| {
++        // KVM guests may omit `mmu-type`/`riscv,cbom-block-size` from CPU
++        // nodes; fall back to the default cache-block size (64 B) in that case.
+         DEVICE_TREE
+             .get()
+             .unwrap()
+             .cpus()
+-            .find(|cpu| cpu.property("mmu-type").is_some())
++            .find(|_| true)
+             .expect("Failed to find an application CPU node in device tree")
+             .property("riscv,cbom-block-size")
+-            .expect("Failed to find `riscv,cbom-block-size` property of the CPU node")
+-            .as_usize()
+-            .expect("Failed to parse `riscv,cbom-block-size` property of the CPU node")
++            .and_then(|p| p.as_usize())
++            .unwrap_or(64)
+     });
+ 
+     for addr in range.step_by(cmo_management_block_size) {
+-- 
+2.34.1
+

@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-content-boundary",
+  "claim": "E3",
+  "status": "blocked",
+  "classification": "newsession-after-greeting-content-ipc",
+  "started_utc": "2026-10-19T06:34:55Z",
+  "finished_utc": "2026-10-19T06:38:48Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "marionette_newsession_content_boundary",
+      "expected": "NewSession returns a sessionId after greeting while Firefox child processes reach the recorded IPC state",
+      "actual": "Greeting passed; NewSession timed out after 141.8 seconds with parent pid=130, Socket Process pid=399, WebExtensions pid=418 and RDD pid=425 alive",
+      "ok": false
+    }
+  ],
+  "reason": "The E3 boundary remains blocked after a real Marionette greeting. Aggregate syscall records show futex/ppoll/epoll activity; opt-in detail markers were absent and need a separate parameter-path check.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "qemu": "d4a95ece1ea69687257cb584182bce231d8f379fda0231ec62d4da07611e1952",
+    "kernel": "7188a7d83a648738e2fe8304c32a882dc4cc2e9a75ba9c80bf94ee8b91a1b454",
+    "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "stage1_initramfs": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "root_image": "9d9188e7976efb4e57a70ab5e89aefdacece2cc5631649806e129ebecd8e86f3"
+  },
+  "markers": [
+    "DEBIAN_DESKTOP_M4_XORG provider=drm display=:0 renderer=virgl",
+    "FIREFOX_DRM_PROBE_BOUNDARY name=greeting status=pass",
+    "FIREFOX_DRM_PROBE_BOUNDARY name=new-session status=fail type=TimeoutError",
+    "FIREFOX_DRM_PROBE_PROC pid=130 state=R threads=53 rss=213952 kB",
+    "FIREFOX_DRM_PROBE_CHILD pid=399 name=Socket_Process state=S syscall=ppoll(73)",
+    "FIREFOX_DRM_PROBE_CHILD pid=418 name=WebExtensions state=R threads=14",
+    "FIREFOX_DRM_PROBE_CHILD pid=425 name=RDD_Process state=S syscall=ppoll(73)",
+    "ASTERINAS_SYSCALL_PROFILE slow pid=130 syscall=futex",
+    "ASTERINAS_SYSCALL_PROFILE slow pid=269 syscall=ppoll",
+    "FIREFOX_DRM_PROBE_DONE status=fail phase=new-session"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-log-channel-r5.md",
+    "evidence_sha256": "a4a4642b0231eb17da4f86ffcce437f3aaaf70a14359d86791ad9e44661d3934",
+    "serial_log": "/mnt/mydisk/qemu-firefox-log-channel-r5/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-log-channel-r5/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-log-channel-r5/lifecycle.json",
+    "serial_log_sha256": "13d8137391515cbb3b0fb8c00910a3f48d398f104b55d538af4879fd9937fa03",
+    "result_json_sha256": "ad3d06bd1401674b5b651a8ec98008e771a811e8d8e6b73c2d535282af854041f",
+    "lifecycle_json_sha256": "6c07edea2535ceee1004f08f3b1d0401574576ad1c560e173c5c4c4614d02f5"
+  }
+}

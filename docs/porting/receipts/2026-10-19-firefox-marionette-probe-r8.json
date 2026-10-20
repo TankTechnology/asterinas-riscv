@@ -1,0 +1,42 @@
+{
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r8.md",
+    "evidence_sha256": "24b46e8e6aa14683ed2c4f61b5650f290d47d056bafb6bbbf5a4f4dfbd3a39f3",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r8-container/lifecycle.json",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r8-container/result.json",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r8-container/desktop-m4-drm.serial.log"
+  },
+  "assertions": [
+    {
+      "actual": "Greeting passed; NewSession timed out; parent and direct Firefox child processes were sleeping with stable scheduler counters",
+      "expected": "NewSession returns a sessionId after greeting",
+      "name": "marionette_newsession_boundary",
+      "ok": false
+    }
+  ],
+  "claim": "E3",
+  "classification": "renderer-startup-sleep",
+  "finished_utc": "2026-10-18T19:19:50Z",
+  "gate": "firefox-marionette-probe",
+  "input_hashes": {
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "kernel": "1660a4606f88d3131ad030a489b978a0f3a24fed4d17beb6db31c2829029a02d",
+    "qemu": "d4a95ece1ea69687257cb584182bce231d8f379fda0231ec62d4da07611e1952",
+    "rootfs": "4b88a7a0518dda63d6927cd6dce245c7044cad1c7e8e1a6929be100388579dab",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84"
+  },
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "markers": [
+    "FIREFOX_DRM_PROBE_BOUNDARY name=greeting status=pass",
+    "FIREFOX_DRM_PROBE_CHILD pid=398 name=Socket_Process state=S",
+    "FIREFOX_DRM_PROBE_CHILD pid=419 name=WebExtensions state=S",
+    "FIREFOX_DRM_PROBE_CHILD pid=454 name=file://_Content state=S",
+    "FIREFOX_DRM_PROBE_BOUNDARY name=new-session status=fail type=TimeoutError"
+  ],
+  "reason": "Firefox renderer/session startup remains asleep after NewSession; direct child process state is now recorded.",
+  "recovery": "not-run",
+  "schema": 1,
+  "started_utc": "2026-10-18T19:13:31Z",
+  "status": "blocked"
+}

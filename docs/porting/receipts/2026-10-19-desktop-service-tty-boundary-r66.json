@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "gate": "desktop-service-tty-boundary",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "bounded-desktop-service-phase-instrumentation",
+  "started_utc": "2026-10-19T09:20:00Z",
+  "finished_utc": "2026-10-19T09:10:07Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "kernel": "245d54df230f0d8878411d1efd982d5e4189d469f6172379c6c246f56c9fba1e",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "instrumented_root_image": "50fe229ee0a4a0956f0b19fe10fdc2377156636ccf1c260605f8c36888906ab4"
+  },
+  "assertions": [
+    {
+      "name": "desktop_service_setup_boundary",
+      "expected": "After device-access ExecStartPre completes, desktop-m4-session starts and emits its first phase marker",
+      "actual": "Device access reached fbdev-permissions-done, but no desktop-m4-session phase=start appeared before the 60-second bound",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "device_access_complete",
+    "session_start_absent",
+    "browser_disabled",
+    "firefox_not_started",
+    "bounded_timeout_60s"
+  ],
+  "reason": "The remaining desktop stall is in systemd service setup, specifically the PAM/TTY handoff before ExecStart; next fix should use a QEMU ordered-mode service drop-in that removes the tty1/PAM dependency.",
+  "recovery": "qemu_terminated_by_explicit_60_second_timeout",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-desktop-service-tty-boundary-r66.md",
+    "evidence_sha256": "2d8e2aa85273655097701747f7c4f2215bf83de63dc27cbd885bc3b5013da2fd",
+    "serial_log": "/mnt/mydisk/qemu-desktop-phase-r66/run/desktop-m4.serial.log",
+    "result_json": "/mnt/mydisk/qemu-desktop-phase-r66/run/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-desktop-phase-r66/run/lifecycle.json"
+  }
+}

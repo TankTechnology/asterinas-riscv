@@ -1,0 +1,26 @@
+{
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-desktop-systemd-boundary-r126.md",
+    "evidence_sha256": "6a1c8d338141f8e3de2a5ba6b247280dea869ed23370dd95b3878ed9e15b4477",
+    "lifecycle_sha256": "d1cf76b7f9b213520524a35fd2d02d5a217130480bd7ebb8e1300e7296eb9f6e",
+    "output_directory": "/mnt/mydisk/qemu-desktop-systemd-boundary-r126",
+    "result_sha256": "d59b463488e6182a4bd9661a2581d2085b42aa41039a311e391ed9d7808ce2c2",
+    "serial_sha256": "2f5fa2e1a4c5be360da79109cd459ca46ac4d6713dafe227b8bfc83c78d218d4"
+  },
+  "assertions": [
+    {
+      "actual": "At 120 seconds the guest reached init-spawned but emitted no Stage1 systemd-start marker; systemd, Xorg, and Firefox were not started.",
+      "expected": "The bounded probe must distinguish systemd unit activation from an earlier Asterinas-to-Stage1 handoff stall.",
+      "name": "systemd_boundary_recorded",
+      "ok": true
+    }
+  ],
+  "claim": "E3",
+  "classification": "bounded-pre-systemd-boundary-recorded",
+  "gate": "desktop-systemd-boundary",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "next_boundary": "Instrument and bound init-to-Stage1 rootfs handoff before selecting any systemd unit; do not rerun Firefox.",
+  "passed": true,
+  "schema": 1,
+  "status": "pass"
+}

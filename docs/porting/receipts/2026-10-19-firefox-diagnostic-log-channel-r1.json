@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "gate": "firefox-diagnostic-log-channel",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "host-compile-only",
+  "started_utc": "2026-10-19T02:30:00Z",
+  "finished_utc": "2026-10-19T02:31:30Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "diagnostic_log_channel_compiles",
+      "expected": "The opt-in mmap, epoll and futex diagnostic channel builds with unchanged marker fields and focused gate tests pass",
+      "actual": "RISC-V kernel build completed; Firefox diagnostic tests 22/22 passed; Python syntax check and git diff check passed",
+      "ok": true
+    }
+  ],
+  "reason": "Diagnostic markers now use the serialized kernel logger; this is a compile and unit-test receipt only.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "kernel": "7188a7d83a648738e2fe8304c32a882dc4cc2e9a75ba9c80bf94ee8b91a1b454",
+    "qemu": "d4a95ece1ea69687257cb584182bce231d8f379fda0231ec62d4da07611e1952",
+    "root_image": "9d9188e7976efb4e57a70ab5e89aefdacece2cc5631649806e129ebecd8e86f3"
+  },
+  "markers": [
+    "make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode: Finished",
+    "Firefox diagnostic unit tests: 22 passed",
+    "python3 -m py_compile: pass",
+    "git diff --check: pass"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-diagnostic-log-channel-r1.md",
+    "evidence_sha256": "881f695fae2d8364d5fb5c55b735a10024de9fffbeb84f5a2bbb03b3d6dd6de3"
+  }
+}

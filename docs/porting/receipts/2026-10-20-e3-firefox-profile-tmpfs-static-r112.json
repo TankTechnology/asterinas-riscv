@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-profile-tmpfs-static",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "classification": "static-hypothesis-contract",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "probe_profile_runtime_path_contract",
+      "expected": "Probe can opt into a safe absolute /run profile path without changing the default scene path, and no runtime gate starts below the 60 GiB shared-storage precondition",
+      "actual": "Environment path validation/bootarg propagation and profile selection are covered by 38 unit tests; /mnt/shared has 58 GiB free, so runtime was deferred",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-profile-tmpfs-static-r112.md",
+    "source_files": [
+      "tools/riscv/debian/rootfs/firefox_drm_scene_gate.py",
+      "tools/riscv/debian/rootfs/desktop_m4_gate.py",
+      "tools/riscv/tests/test_firefox_drm_scene_gate.py"
+    ],
+    "tests": "38 Firefox gate unit tests; py_compile; git diff --check",
+    "evidence_sha256": "d1ad829dbbe02021d61913499523f57d2c5776377b8d8cb7d571785e3567a279"
+  },
+  "next_boundary": "After storage is >=60 GiB, materialize one overlay and run one probe with ASTERINAS_FIREFOX_PROFILE_DIR=/run/asterinas-firefox-probe; do not run full scene"
+}

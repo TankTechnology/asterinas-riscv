@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "claim": "HOST",
+  "gate": "qemu-gl-runtime-smoke",
+  "status": "pass",
+  "started_utc": "2026-10-18T15:48:00Z",
+  "finished_utc": "2026-10-18T15:48:05Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "qemu_launcher": "e837ae5ca6b30fa5fcf45b23e24d9cf4bdb9ce215584334b63d69a74d0c02977",
+    "guest": null,
+    "render_node": "/dev/dri/renderD129"
+  },
+  "assertions": [
+    {
+      "name": "qemu_gl_runtime_starts",
+      "expected": "QEMU stays alive for the bounded 5 second no-guest GL smoke",
+      "actual": "QEMU stayed alive until the timeout",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "capability egl-headless=true",
+    "capability virtio-gpu-gl-device=true",
+    "runtime timeout=5.0s",
+    "rendernode=/dev/dri/renderD129"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-18-qemu-gl-runtime-smoke-r2.md",
+    "evidence_sha256": "641f20cf7b169e6b42908cd2d4c7a73780b3a467739dc3c162e1b6033689b54a"
+  },
+  "reason": "Matched QEMU 6.2 plus Mesa EGL in the fixed qemu-gl-env container stayed alive with virtio-gpu-gl-device.",
+  "recovery": "not-run"
+}

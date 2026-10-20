@@ -1,0 +1,26 @@
+{
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-desktop-systemd-sysctl-unit-r129.md",
+    "evidence_sha256": "80ff6fb67495e6e751d5a2d31ebbbc553975023cfebd33f199e323eb263f48ce",
+    "lifecycle_sha256": "5ee9efbe5afd0b1870c8b14017dd270e729975298fbcf1824491ad9860446ebb",
+    "result_sha256": "ad6e5b1e666f6ad05c144ca247d0526c1209362e3fe45ec4ad38b4bce3ff7d4b",
+    "runtime_output": "/mnt/mydisk/qemu-desktop-systemd-sysctl-mask-r129",
+    "serial_sha256": "f55246bbe6a1accb333c1d94a879e5b43bece6bc5e7da013495d25182458e79f"
+  },
+  "assertions": [
+    {
+      "actual": "The unit is present in sysinit.target.wants but declares no Requires/RequiredBy dependency; runtime mask did not apply, and its failure alone is not proven to block basic.target.",
+      "expected": "Determine whether systemd-sysctl is a hard dependency of sysinit/basic target.",
+      "name": "sysctl_failure_is_nonrequired_want",
+      "ok": true
+    }
+  ],
+  "claim": "E3",
+  "classification": "unit-dependency-static-boundary",
+  "gate": "desktop-systemd-sysctl-unit",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "next_boundary": "desktop-systemd-sysinit: capture sysinit.target or the next failed/timed-out unit.",
+  "passed": true,
+  "schema": 1,
+  "status": "pass"
+}

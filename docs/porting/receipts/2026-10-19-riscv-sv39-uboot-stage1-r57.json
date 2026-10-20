@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "gate": "riscv-sv39-uboot-stage1-handoff",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "bounded-uboot-stage1-handoff-no-firefox",
+  "started_utc": "2026-10-19T06:51:00Z",
+  "finished_utc": "2026-10-19T06:55:29Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "kernel": "245d54df230f0d8878411d1efd982d5e4189d469f6172379c6c246f56c9fba1e",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210",
+    "serial_log": "d6ba0808babcc82b14c567a81e06b72aa0a6093b581f1381f1e1c88db614e0a8",
+    "result_json": "c1dbb2fc1ff38e750f83a3abbebec45f02a594602b1d45ee75cc9fe3b1cbd733"
+  },
+  "assertions": [
+    {
+      "name": "uboot_stage1_handoff",
+      "expected": "Current Sv39 Image reaches Stage1 root selection and completes all root mount/chroot/exec handoff phases through U-Boot",
+      "actual": "U-Boot, Starting kernel, Asterinas first-kthread, root selection, probe, root-mount, dev/proc/sys/run/tmp, chroot and exec markers all present in order",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "uboot_load_complete",
+    "kernel_started",
+    "asterinas_first_kthread",
+    "stage1_root_probe",
+    "stage1_mounts_complete",
+    "stage1_exec",
+    "no_firefox_started",
+    "desktop_readiness_boundary_not_claimed"
+  ],
+  "reason": "Kernel and Stage1 handoff passed; fbdev desktop readiness stopped later at its protocol boundary. This receipt intentionally does not claim DRM, virgl, or Firefox.",
+  "recovery": "bounded_gate_cleanup_completed",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-riscv-sv39-uboot-stage1-r57.md",
+    "serial_log": "/mnt/mydisk/qemu-startup-fbdev-r57/desktop-m4.serial.log",
+    "result_json": "/mnt/mydisk/qemu-startup-fbdev-r57/result.json",
+    "lifecycle": "/mnt/mydisk/qemu-startup-fbdev-r57/lifecycle.json"
+  }
+}

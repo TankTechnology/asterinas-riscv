@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "gate": "m5-browser-legacy-audit",
+  "status": "passed",
+  "passed": true,
+  "timestamp_utc": "2026-10-20T00:58:25.495193+00:00",
+  "assertions": [
+    {
+      "name": "legacy_reference_scan",
+      "status": "passed",
+      "evidence": "206 candidates; manifest validation passed"
+    },
+    {
+      "name": "no_additional_safe_code_deletion",
+      "status": "passed",
+      "evidence": "r113 orphan deletion complete; remaining candidates retained or deferred"
+    },
+    {
+      "name": "dependent_static_and_unit_tests",
+      "status": "passed",
+      "evidence": "browser-web/dev-overlay/reference/daily-use/debug suites and compileall passed"
+    }
+  ],
+  "evidence": "/mnt/shared/xaj/Program/asterinas/docs/porting/evidence/2026-10-20-m5-browser-audit-r120.md",
+  "evidence_sha256": "088368a3ede8840cb6195270da0968a086bb3221df6424fbf38d8b6b6720e485",
+  "deferred": [
+    "tools/riscv/debian/rootfs/browser_web_dev_overlay.json",
+    "tools/riscv/tests/test_debian_desktop_m4_x11_gate.py"
+  ]
+}

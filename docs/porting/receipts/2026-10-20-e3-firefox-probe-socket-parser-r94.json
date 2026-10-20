@@ -1,0 +1,27 @@
+{
+  "artifacts": {
+    "evidence": "/mnt/shared/xaj/Program/asterinas/docs/porting/evidence/2026-10-20-firefox-probe-socket-parser-r94.md",
+    "evidence_sha256": "84ea468ab365768dc9d92e786986e7832330a2db375758f7bd65201be000d440"
+  },
+  "assertions": [
+    {
+      "actual": "34 focused tests and 333-container fast-check tests passed; no guest runtime was started",
+      "expected": "Bounded tcp/tcp6 parser retains only port 2828 state, uid, inode, and ignores malformed/other-port rows",
+      "name": "marionette_socket_parser_unit",
+      "ok": true
+    }
+  ],
+  "claim": "E3",
+  "finished_utc": "2026-10-19T21:10:25+00:00",
+  "gate": "firefox-marionette-probe-socket-parser",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "markers": [
+    "test_probe_tcp_table_keeps_only_requested_port_and_state",
+    "test_probe_tcp_table_ignores_malformed_and_other_ports",
+    "FIREFOX_FAST_CHECK_PASS"
+  ],
+  "reason": "Diagnostic-only parser instrumentation; E3 runtime remains unresolved and r93 remains the latest runtime receipt.",
+  "schema": 1,
+  "started_utc": "2026-10-19T21:10:25+00:00",
+  "status": "pass"
+}

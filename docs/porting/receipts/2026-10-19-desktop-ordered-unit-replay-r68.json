@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "gate": "desktop-ordered-unit-replay",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "bounded-ordered-service-selection-diagnostic",
+  "started_utc": "2026-10-19T09:30:00Z",
+  "finished_utc": "2026-10-19T09:22:06Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "kernel": "245d54df230f0d8878411d1efd982d5e4189d469f6172379c6c246f56c9fba1e",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2"
+  },
+  "assertions": [
+    {
+      "name": "ordered_service_selection_boundary",
+      "expected": "The ordered QEMU service variant is selected and reaches desktop_m4_session after device access",
+      "actual": "Device access completed but no session marker or ordered-service start marker appeared; the condition-based sibling selection is not effective on this systemd path",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "desktop_ordered_cmdline",
+    "device_access_complete",
+    "ordered_service_not_observed",
+    "browser_disabled",
+    "bounded_timeout_60s"
+  ],
+  "reason": "The phase trace remains valuable; the next fix must avoid relying on unsupported/ineffective unit conditions and instead use a service configuration that is selected before TTY/PAM setup.",
+  "recovery": "qemu_terminated_by_explicit_60_second_timeout",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-desktop-ordered-unit-replay-r68.md",
+    "evidence_sha256": "5ba99e1baa07057aa271903d734df91d1842092e002267b3465a128904e11e39",
+    "serial_log": "/mnt/mydisk/qemu-desktop-phase-r68/run/desktop-m4.serial.log",
+    "result_json": "/mnt/mydisk/qemu-desktop-phase-r68/run/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-desktop-phase-r68/run/lifecycle.json"
+  }
+}

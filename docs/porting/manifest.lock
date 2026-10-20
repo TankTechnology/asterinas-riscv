@@ -1,0 +1,332 @@
+{
+  "schema": 1,
+  "generated_utc": "2026-10-18T09:36:01Z",
+  "spec": "docs/porting/GATES-REFACTOR.md",
+  "canonical_inputs": {
+    "qemu": {
+      "path": null,
+      "sha256": null,
+      "reason": "The historical Task 1-5 receipts record QEMU 10.2.1 or a transient container path, but no matching executable is retained at that path. Do not substitute the current unverified build."
+    },
+    "kernel": {
+      "path": "target/osdk/aster-kernel-osdk-bin.Image",
+      "sha256": "cabc01961888055d64b5f0d59a1a15a1d797e95e969fca7de7d61dfe2429328d",
+      "reason": "Current retained kernel input for the passing DRM desktop/recovery receipt."
+    },
+    "rootfs": {
+      "path": "/mnt/mydisk/asterinas-desktop-m4-glamor-rootfs-20261018/rootfs/debian-root.ext2",
+      "sha256": "3e0f6c4ebc373ef3d67ec4e27f4b99a1ce93e246ca0efa6e859dbe0f1bcdb901",
+      "reason": "Retained root image bound by the passing DRM desktop receipt r5."
+    },
+    "dtb": {
+      "path": "/mnt/mydisk/firefox-official-debian-20261018/qemu-virt-r5.dtb",
+      "sha256": "1bcec907d28a9ede2c0020d9024de93640d2d0ba9bdfc5f09f20e81f4777a9eb",
+      "reason": "Retained DTB extracted from the passing DRM desktop receipt r5."
+    },
+    "stage1": {
+      "path": "target/debian-riscv/stage1-procfix-20261017/initramfs.cpio",
+      "sha256": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+      "reason": "Retained Stage1 input bound by the passing DRM desktop receipt r5."
+    },
+    "scene_html": {
+      "path": "tools/riscv/debian/rootfs/firefox_drm_scene.html",
+      "sha256": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c",
+      "reason": "Current fixed Firefox scene source; no successful scene receipt binds it yet."
+    }
+  },
+  "input_sets": {
+    "render-node-20261015": {
+      "qemu": {
+        "path": null,
+        "sha256": null,
+        "reason": "Historical QEMU 10.2.1 binary not retained."
+      },
+      "kernel": {
+        "path": null,
+        "sha256": "35edfd0fa024396eef9d038c029bce6b33612dea64f6216e34ed6abffbcd1db5",
+        "reason": "Historical artifact path no longer exists."
+      },
+      "rootfs": {
+        "path": null,
+        "sha256": null,
+        "reason": "Static probe did not use a Debian rootfs."
+      },
+      "dtb": {
+        "path": null,
+        "sha256": "f2bf8e524fe1e4ecb1f2f56665c9827bfe5dd990ffbacbb735ab466e025037d5",
+        "reason": "Historical artifact path no longer exists."
+      },
+      "stage1": {
+        "path": "target/drm-render-node/current-20261015-initramfs.cpio.gz",
+        "sha256": "19e07e4108e46f64fb9771b82bba71bc6cbcecec7452c4cae600ae600143b5a1"
+      },
+      "scene_html": {
+        "path": null,
+        "sha256": null,
+        "reason": "Not applicable to the device probe."
+      }
+    },
+    "gem-20261015": {
+      "qemu": {
+        "path": null,
+        "sha256": null,
+        "reason": "Historical QEMU 10.2.1 binary not retained."
+      },
+      "kernel": {
+        "path": null,
+        "sha256": "35edfd0fa024396eef9d038c029bce6b33612dea64f6216e34ed6abffbcd1db5",
+        "reason": "Historical artifact path no longer exists."
+      },
+      "rootfs": {
+        "path": null,
+        "sha256": null,
+        "reason": "Static probe did not use a Debian rootfs."
+      },
+      "dtb": {
+        "path": null,
+        "sha256": "f2bf8e524fe1e4ecb1f2f56665c9827bfe5dd990ffbacbb735ab466e025037d5",
+        "reason": "Historical artifact path no longer exists."
+      },
+      "stage1": {
+        "path": "target/drm-gem/current-20261015-initramfs.cpio.gz",
+        "sha256": "986a9d3773ea88807e076afabacbfc688c530127f59b2ab4de4161fee9850a63"
+      },
+      "scene_html": {
+        "path": null,
+        "sha256": null,
+        "reason": "Not applicable to the GEM probe."
+      }
+    },
+    "virgl-20261015": {
+      "qemu": {
+        "path": null,
+        "sha256": null,
+        "reason": "Historical container QEMU path not retained."
+      },
+      "kernel": {
+        "path": null,
+        "sha256": "35edfd0fa024396eef9d038c029bce6b33612dea64f6216e34ed6abffbcd1db5",
+        "reason": "Historical artifact path no longer exists."
+      },
+      "rootfs": {
+        "path": null,
+        "sha256": null,
+        "reason": "Static virgl protocol initramfs."
+      },
+      "dtb": {
+        "path": null,
+        "sha256": "f2bf8e524fe1e4ecb1f2f56665c9827bfe5dd990ffbacbb735ab466e025037d5",
+        "reason": "Historical artifact path no longer exists."
+      },
+      "stage1": {
+        "path": "target/drm-virgl/current-20261015-initramfs.cpio.gz",
+        "sha256": "159ccd2f0f43b429f453597a7d1cd0e2559e93965109b59d82835ce6410e5838"
+      },
+      "scene_html": {
+        "path": null,
+        "sha256": null,
+        "reason": "Not applicable to the protocol probe."
+      }
+    },
+    "desktop-r5": {
+      "qemu": {
+        "path": null,
+        "sha256": null,
+        "reason": "Receipt records QEMU 10.2.1 from a transient container; executable is not retained at that path."
+      },
+      "kernel": {
+        "path": "target/osdk/aster-kernel-osdk-bin.Image",
+        "sha256": "cabc01961888055d64b5f0d59a1a15a1d797e95e969fca7de7d61dfe2429328d"
+      },
+      "rootfs": {
+        "path": "/mnt/mydisk/asterinas-desktop-m4-glamor-rootfs-20261018/rootfs/debian-root.ext2",
+        "sha256": "3e0f6c4ebc373ef3d67ec4e27f4b99a1ce93e246ca0efa6e859dbe0f1bcdb901"
+      },
+      "dtb": {
+        "path": "/mnt/mydisk/firefox-official-debian-20261018/qemu-virt-r5.dtb",
+        "sha256": "1bcec907d28a9ede2c0020d9024de93640d2d0ba9bdfc5f09f20e81f4777a9eb"
+      },
+      "stage1": {
+        "path": "target/debian-riscv/stage1-procfix-20261017/initramfs.cpio",
+        "sha256": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84"
+      },
+      "scene_html": {
+        "path": "tools/riscv/debian/rootfs/firefox_drm_scene.html",
+        "sha256": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c"
+      }
+    },
+    "firefox-r16": {
+      "qemu": {
+        "path": null,
+        "sha256": null,
+        "reason": "Transient GL-QEMU executable path not retained."
+      },
+      "kernel": {
+        "path": null,
+        "sha256": "35edfd0fa024396eef9d038c029bce6b33612dea64f6216e34ed6abffbcd1db5",
+        "reason": "Historical artifact path no longer exists."
+      },
+      "rootfs": {
+        "path": null,
+        "sha256": "63b27472fd1c3be747d6aa616dad82902b90766c8a773b3112fc52b9c8fa917d",
+        "reason": "Disposable Firefox root image is not retained as a named file."
+      },
+      "dtb": {
+        "path": null,
+        "sha256": "f2bf8e524fe1e4ecb1f2f56665c9827bfe5dd990ffbacbb735ab466e025037d5",
+        "reason": "Historical artifact path no longer exists."
+      },
+      "stage1": {
+        "path": null,
+        "sha256": "16c6558760b92e16e605edfd1b52eef5eee9d9a188dc7502a0343f7815771cc4",
+        "reason": "Historical artifact path no longer exists."
+      },
+      "scene_html": {
+        "path": "tools/riscv/debian/rootfs/firefox_drm_scene.html",
+        "sha256": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c"
+      }
+    },
+    "physical-readonly-20261018": {
+      "qemu": {
+        "path": null,
+        "sha256": null,
+        "reason": "Physical-board read-only observation."
+      },
+      "kernel": {
+        "path": null,
+        "sha256": null,
+        "reason": "No Asterinas boot was started."
+      },
+      "rootfs": {
+        "path": null,
+        "sha256": null,
+        "reason": "No filesystem was mounted or modified."
+      },
+      "dtb": {
+        "path": null,
+        "sha256": null,
+        "reason": "No DTB was loaded."
+      },
+      "stage1": {
+        "path": null,
+        "sha256": null,
+        "reason": "No Stage1 was loaded."
+      },
+      "scene_html": {
+        "path": null,
+        "sha256": null,
+        "reason": "Not applicable."
+      }
+    },
+    "firefox-diagnostic-r44-r47": {
+      "qemu": {
+        "path": null,
+        "sha256": null,
+        "reason": "Historical QEMU/container executable path is not retained."
+      },
+      "kernel": {
+        "path": null,
+        "sha256": null,
+        "reason": "The diagnostic records do not retain a verifiable kernel path/hash."
+      },
+      "rootfs": {
+        "path": null,
+        "sha256": null,
+        "reason": "Disposable diagnostic root image is not retained as a named artifact."
+      },
+      "dtb": {
+        "path": null,
+        "sha256": null,
+        "reason": "The diagnostic records do not retain a verifiable DTB path/hash."
+      },
+      "stage1": {
+        "path": null,
+        "sha256": null,
+        "reason": "The diagnostic records do not retain a verifiable Stage1 path/hash."
+      },
+      "scene_html": {
+        "path": "tools/riscv/debian/rootfs/firefox_drm_scene.html",
+        "sha256": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c"
+      }
+    }
+  },
+  "task_receipts": [
+    {
+      "task": "Task 1",
+      "status": "pass",
+      "source": "docs/porting/evidence/2026-10-15-qemu-drm-render-node-current.md",
+      "additional_sources": [
+        "docs/porting/evidence/2026-10-17-qemu-fbdev-vnc-scanout-r2.md",
+        "docs/porting/evidence/2026-10-17-qemu-fbdev-recovery-r1.md"
+      ],
+      "note": "Render-node device and ioctl permission split; historical input paths are recorded above."
+    },
+    {
+      "task": "Task 2",
+      "status": "pass",
+      "source": "docs/porting/evidence/2026-10-15-qemu-drm-gem-current.md",
+      "note": "GEM create/name/open/close/reject contract."
+    },
+    {
+      "task": "Task 3",
+      "status": "pass",
+      "source": "docs/porting/evidence/2026-10-15-qemu-virgl-current.md",
+      "note": "Virgl context/resource/submit/fence protocol."
+    },
+    {
+      "task": "Task 4",
+      "status": "pass",
+      "source": "docs/porting/evidence/2026-10-15-qemu-drm-scanout-current.md",
+      "note": "KMS scanout, transfer/flush and pixel readback."
+    },
+    {
+      "task": "Task 5",
+      "status": "pass",
+      "source": "/mnt/mydisk/firefox-official-debian-20261018/qemu-drm-desktop-m4-r5-evidence.md",
+      "note": "Xorg modesetting/kmsdev, virgl renderer, fixed pixel hash and recovery; Firefox is intentionally not included."
+    },
+    {
+      "task": "Task 6",
+      "status": "fail",
+      "source": "docs/porting/evidence/2026-10-16-qemu-firefox-drm-scene-r16.md",
+      "note": "Official Firefox reached NewSession but the bounded scene/Marionette step expired."
+    }
+  ],
+  "immediate_blockers": [
+    {
+      "id": "B1",
+      "description": "Use a GL-capable QEMU runtime",
+      "status": "closed",
+      "evidence": "docs/porting/evidence/2026-10-17-qemu-virgl-host-preflight-current.md"
+    },
+    {
+      "id": "B2",
+      "description": "DRM-only rootfs handoff does not depend on /dev/fb0",
+      "status": "closed",
+      "evidence": "docs/porting/evidence/2026-10-16-qemu-drm-task2-task5-status.md"
+    },
+    {
+      "id": "B3",
+      "description": "Expose the sysfs DRM topology required by Mesa/libdrm",
+      "status": "closed",
+      "evidence": "docs/porting/evidence/2026-10-14-qemu-drm-sysfs-topology.md"
+    },
+    {
+      "id": "B4",
+      "description": "Pin Xorg modesetting to kmsdev=/dev/dri/card0",
+      "status": "closed",
+      "evidence": "/mnt/mydisk/firefox-official-debian-20261018/qemu-drm-desktop-m4-r5-evidence.md"
+    },
+    {
+      "id": "B5",
+      "description": "Bind the real Firefox about:support/WebRender decision to guest evidence",
+      "status": "blocked",
+      "evidence": "docs/porting/receipts/2026-10-18-e3-webrender-blocked.json"
+    }
+  ],
+  "notes": [
+    "A null input is deliberate: the historical receipt names the hash but the source artifact is no longer retained at a verifiable path.",
+    "This lock records provenance; it does not promote a host fixture or a historical QEMU receipt into a current runtime result.",
+    "No physical-board write, reboot, serial command, QEMU run or Firefox run is part of this Step 1 update."
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-probe",
+  "claim": "E3",
+  "status": "inconclusive",
+  "classification": "guest_service_selection",
+  "started_utc": "2026-10-18T23:41:36Z",
+  "finished_utc": "2026-10-18T23:48:36Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "probe_service_overlay_present",
+      "expected": "The rootfs runs firefox_marionette_probe.service",
+      "actual": "The rootfs ran the ordinary firefox_drm_scene.service; FIREFOX_DRM_PROBE_* markers were absent",
+      "ok": false
+    }
+  ],
+  "reason": "Host mode was selected, but the service file was not replaced in the materialized rootfs.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "kernel": "1914d747a6e4e8457c0fe31725533f57a7be68532c165e338b3466c6b90b09d7",
+    "root_image": "f3a8796c3f3c842ca3614e13fe6e35a02afca1d5a9bf8868f81e18b929ef2d2a",
+    "root_manifest": "f41aebc4443540774f98b3a1cc0c78ee9844ca44c4409a919cf9eea33b83f33b"
+  },
+  "markers": [
+    "FIREFOX_DRM_PHASE name=new-session",
+    "FIREFOX_DRM_PROBE_* absent",
+    "QEMU exited through the bounded protocol cleanup"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r23-overlay-boundary.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r23-container/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r23-container/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r23-container/lifecycle.json"
+  }
+}

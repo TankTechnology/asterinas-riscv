@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "gate": "firefox-diagnostic-surface",
+  "claim": "E3",
+  "status": "pass",
+  "classification": "host_syscall_argument_contract",
+  "started_utc": "2026-10-19T01:47:50Z",
+  "finished_utc": "2026-10-19T01:48:21Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "syscall_io_args_visible_in_probe_summary",
+      "expected": "The bounded serial summary exposes mmap/read/openat/ioctl/clone arguments",
+      "actual": "Host unit tests, py_compile, and diff check passed; no runtime claim",
+      "ok": true
+    }
+  ],
+  "reason": "The next Firefox probe can correlate file and memory operations without changing guest behavior.",
+  "recovery": "not-run",
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-firefox-syscall-argument-coverage-r47.md",
+    "evidence_sha256": "35e4e51f61b5160aca172ec5a8ca4a24951965bf7b959e92502cd8213e4df5fb"
+  }
+}

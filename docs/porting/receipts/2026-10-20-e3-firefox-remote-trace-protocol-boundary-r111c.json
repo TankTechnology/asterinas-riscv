@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-remote-trace-protocol-boundary",
+  "claim": "E3",
+  "status": "fail",
+  "passed": false,
+  "classification": "guest-protocol-terminal-missing",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "trace_probe_reached_guest_terminal",
+      "expected": "Trace-enabled probe publishes lifecycle/result or a guest terminal marker",
+      "actual": "Lifecycle reached launch after operations.launch; guest protocol produced no terminal receipt before host cleanup",
+      "ok": false
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-remote-trace-launch-stall-r111c.md",
+    "output": "/mnt/mydisk/qemu-firefox-probe-trace-r111c",
+    "hmp": "operations.launch completed; independent monitor reconnect not used as evidence",
+    "guest_evidence": null,
+    "evidence_sha256": "e6485abdd584d8ed2827bee8fbf712b23ef4d94b468366b13d35b6e9687168e3"
+  },
+  "next_boundary": "Do not rerun capability A/B; correlate guest protocol marker loss with existing r101 ppoll/futex evidence"
+}

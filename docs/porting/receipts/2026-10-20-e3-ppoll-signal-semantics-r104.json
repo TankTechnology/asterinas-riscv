@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "gate": "e3-ppoll-signal-semantics",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "group_stop_ppoll_cases",
+      "expected": "The six focused group-stop ppoll cases pass on RISC-V QEMU",
+      "actual": "GROUP_STOP_PPOLL passed=6/6 and focused wrapper marker present",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-qemu-group-stop-ppoll-r104.md",
+    "evidence_sha256": "333437a6feda494d0c0d40364865283e40314177aa58fea8e35cc80eb4d04fb6",
+    "serial": "/mnt/shared/xaj/Program/asterinas/qemu-serial.log",
+    "serial_sha256": "c1ca0d7549a6953d70053a38fce01e3637e5c9e0e691348a1d977256a5cbdcb5",
+    "qemu_log": "/mnt/shared/xaj/Program/asterinas/qemu.log",
+    "qemu_log_sha256": "847230853c5db93a82e843c500dc616e73656c2002e1066eefe5c0fd22e060ec",
+    "kernel": "/mnt/shared/xaj/Program/asterinas/target/osdk/aster-kernel-osdk-bin.Image",
+    "kernel_sha256": "38982e2e1b81b4bdd7649d9e9270022a705afd964ac77b66d5cacc26b1ae81be",
+    "initramfs": "/mnt/shared/xaj/Program/asterinas/test/initramfs/build/initramfs.cpio.gz",
+    "initramfs_sha256": "f39d36c8b2bc63ca3668dcc58eb43a154aa00c252dfbbeaa1d503c9fe6207b1c"
+  },
+  "independent_signal_race": "sigtimedwait_race request=7938 done=7938 completed=7937; retained as separate diagnostic",
+  "next_boundary": "Firefox-specific cross-process ppoll/futex IPC wait"
+}

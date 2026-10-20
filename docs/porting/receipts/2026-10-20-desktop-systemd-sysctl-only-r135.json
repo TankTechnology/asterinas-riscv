@@ -1,0 +1,26 @@
+{
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-desktop-systemd-sysctl-only-r135.md",
+    "evidence_sha256": "3932254bc1e48c2fc4b22c15c0c162949b8ef4ae55e6c0a842f600c6220353b5",
+    "lifecycle_sha256": "d5dbec3b04652b8bce4e477dc30db7db0b2079b5b224f6c2c31d4be999bdbe1a",
+    "output_directory": "/mnt/mydisk/qemu-desktop-systemd-sysctl-only-r135",
+    "result_sha256": "d455f3f50fde6178c316e12854710c61d88dee2f481f6a486e4fb43079c38031",
+    "serial_sha256": "99784ef5a861cfc7fadbad888811702a3a5a583b4faf3e5e8f8f078ce8fcc002"
+  },
+  "assertions": [
+    {
+      "actual": "only sysctl was masked; sysusers and both tmpfiles services ran, and sysinit.target was reached",
+      "expected": "Record the systemd startup boundary and its controlled-variable result.",
+      "name": "sysctl_root_cause_isolated",
+      "ok": true
+    }
+  ],
+  "claim": "E3",
+  "classification": "bounded-systemd-isolation",
+  "gate": "desktop-systemd-sysctl-only",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "next_boundary": "desktop-systemd-sysctl-root-cause",
+  "passed": true,
+  "schema": 1,
+  "status": "pass"
+}

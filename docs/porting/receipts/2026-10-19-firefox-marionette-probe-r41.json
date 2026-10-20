@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-probe",
+  "claim": "E3",
+  "status": "blocked",
+  "classification": "guest_firefox_newsession_completion",
+  "started_utc": "2026-10-19T00:55:55Z",
+  "finished_utc": "2026-10-19T00:59:44Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "newsession_response",
+      "expected": "The NewSession response header arrives before the bounded deadline",
+      "actual": "Overlay-bound select client sent the complete request; TCP peer-process recorded 66 bytes, but no response header arrived and the parent remained alive with 50 threads",
+      "ok": false
+    }
+  ],
+  "reason": "The select-based transport change is active but does not remove the Firefox userspace NewSession completion stall; do not repeat this same probe.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "kernel": "829f9fa348d15bc3826c5543aea0ade0408c241d816e4d48db53de4007249297",
+    "root_image": "c8bd5b2508f453bb4ac630d215738832a062f9158e55d9b9f6f2e801a44e8550",
+    "root_manifest": "d2b6c2061f224f7b1b832a86c83eecbc6e3f954f98e12b27d9364abb54eac0c9"
+  },
+  "markers": [
+    "FIREFOX_DRM_PROBE_BOUNDARY name=greeting status=pass",
+    "ASTERINAS_TCP_TRACE stage=segment-generated local_port=33690 remote_port=2828 value0=66",
+    "ASTERINAS_TCP_TRACE stage=peer-process local_port=2828 remote_port=33690 value0=66 value2=66",
+    "A_WEB_MARIONETTE_TRANSPORT event=send_complete command=WebDriver:NewSession",
+    "A_WEB_MARIONETTE_TRANSPORT event=failure command=WebDriver:NewSession stage=response_header"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r41.md",
+    "evidence_sha256": "7741dfddaf6ffade629dc3ea6b01d59e4b7e2ba1b6514f242c0df9f1e1da28d2"
+  }
+}

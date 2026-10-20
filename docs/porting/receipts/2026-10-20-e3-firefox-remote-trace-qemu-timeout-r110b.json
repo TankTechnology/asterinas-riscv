@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-remote-trace-probe",
+  "claim": "E3",
+  "status": "fail",
+  "passed": false,
+  "classification": "host-qemu-runner-timeout",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "remote_trace_probe_reaches_guest_terminal",
+      "expected": "The trace-enabled probe publishes a guest serial terminal marker within 420 seconds",
+      "actual": "The runner remained in launch with no serial log or result.json beyond six minutes; the QEMU child was terminated at the host timeout boundary",
+      "ok": false
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-remote-trace-qemu-timeout-r110b.md",
+    "evidence_sha256": "64dc8d341209c0415cb4198b544b281665d6ceb012f9884398613cc99ff8051a",
+    "lifecycle": "/mnt/mydisk/qemu-firefox-probe-trace-r110b/lifecycle.json",
+    "root_image_sha256": "77b0f3dff3095573bb4d44214e23825d1163d9dd3ea802167502c8d319c68b19"
+  },
+  "next_boundary": "Fix host QEMU child timeout/finalizer before another Firefox trace launch"
+}

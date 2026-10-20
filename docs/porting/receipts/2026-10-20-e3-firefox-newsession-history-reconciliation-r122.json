@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-newsession-history-reconciliation",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "classification": "read-only-history-reconciliation",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "newsession_history_reconciled",
+      "expected": "Retained history must distinguish a NewSession response boundary from a full E3 acceleration pass and must not infer capability causality when the request body is absent.",
+      "actual": "r34 serial lines 1064-1067 contain a complete 745-byte NewSession response; r34 result is WebGL-failed, and r101/r107/r119 retain later no-response boundaries.",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-newsession-history-reconciliation-r122.md",
+    "evidence_sha256": "165f184af5df5553b688a9309371cbb7cf2c63469189298bdd0c88b5a8d6dec8"
+  },
+  "next_boundary": "One bounded capability A/B probe with exact request-body logging; no full scene rerun"
+}

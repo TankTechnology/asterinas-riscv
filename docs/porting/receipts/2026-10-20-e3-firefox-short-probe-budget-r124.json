@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-short-probe-budget",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "classification": "static-contract",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "short_probe_budget_propagates",
+      "expected": "A bounded host-selected probe timeout must reach the guest service, and the exact NewSession request must be logged before send.",
+      "actual": "Host timeout propagation, service hard-code removal, request marker, 38 unit tests, compileall, and diff check passed.",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-short-probe-budget-r124.md",
+    "evidence_sha256": "40bc4d9c6a6aeae2b6900fdf81a768ef1a5c1af2728ee8bc68cfc053b15af922"
+  },
+  "next_boundary": "One short probe with the r122c overlay; first establish desktop launch marker before comparing capability arms"
+}

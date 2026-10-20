@@ -112,6 +112,14 @@
       "removed_at": "2026-10-19"
     },
     {
+      "path": "tools/riscv/debian/rootfs/browser_m5_qemu_gate.py",
+      "reason": "旧 M5 浏览器 QEMU wrapper；仅被浏览器 Web 单测用于 marker 分离比较，未被 builder、profile、overlay、E1–E5 门禁或管理适配器调用",
+      "replacement": "E3 official Firefox scene",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-20"
+    },
+    {
       "path": "tools/riscv/tests/test_debian_browser_m5_qemu_gate.py",
       "reason": "M5 浏览器 QEMU 门禁",
       "replacement": "E3 official Firefox scene",
@@ -438,6 +446,142 @@
       "references_checked": true,
       "state": "removed",
       "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_signed_sources.py",
+      "reason": "旧 Debian 来源签名单元测试，扫描器显示无活动引用，非 E1–E5 管理链",
+      "replacement": "E1–E5 rootfs/manifest 收据",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_browser_composite_manifest.py",
+      "reason": "旧浏览器复合工作负载 manifest 测试，扫描器显示无活动引用",
+      "replacement": "E3 official Firefox 场景收据",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_browser_interaction_perf.py",
+      "reason": "旧浏览器交互延迟长测试，扫描器显示无活动引用",
+      "replacement": "短边界探针与 E3 收据",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_browser_performance_provenance.py",
+      "reason": "旧浏览器性能 provenance 测试，扫描器显示无活动引用",
+      "replacement": "E3 runtime 收据",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_browser_system_time.py",
+      "reason": "旧浏览器系统时间测试，扫描器显示无活动引用",
+      "replacement": "E1–E5 有界收据",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_browser_workload_contract.py",
+      "reason": "旧复合浏览器 workload 合约测试，扫描器显示无活动引用",
+      "replacement": "E3 official Firefox 场景收据",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/desktop_m9_software_evidence.sh",
+      "reason": "M9 软件兼容证据脚本；对应 M9 gate/test 已退役，扫描器显示无代码、Makefile、overlay、测试或管理链活动引用",
+      "replacement": "E1–E5 claims",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-19"
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_browser_m5.py",
+      "reason": "孤立的 M5 浏览器测试模块；无导入者、Makefile 入口或 E1–E5 管理链引用",
+      "replacement": "E3 official Firefox scene",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-20"
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/firefox_startup_profile.py",
+      "reason": "旧 browser-web 启动采样器；仅被已删除的诊断单测和 README 说明引用，不属于 E1–E5 管理链",
+      "replacement": "E3 short Firefox boundary probe",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-20"
+    },
+    {
+      "path": "tools/riscv/tests/test_firefox_debug_tool.py",
+      "reason": "旧 Firefox 启动诊断单测；不在 Makefile 或 E1–E5 快速检查入口，依赖的启动采样器已删除",
+      "replacement": "E3 runtime receipt",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-20"
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_m5_network.py",
+      "reason": "旧 M5 网络/浏览器复合测试；不在 E1–E5 快速检查入口，且其 six stale assertions fail against the current desktop-m4 contract",
+      "replacement": "E2 DRM/X11 tests + E5 management-chain tests",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-20"
+    },
+    {
+      "path": "tools/riscv/xorg/render_matrix.sh",
+      "reason": "旧 BROWSER-M5/M6 NetSurf 多站点矩阵；仅被历史报告引用，无 Makefile、profile、overlay、E1–E5 或管理链活动引用",
+      "replacement": "E2 DRM/X11 pixel gate",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-20"
+    },
+    {
+      "path": "tools/riscv/xorg/render_matrix_net.sh",
+      "reason": "旧 BROWSER-M10 NetSurf 多站点矩阵；仅被历史报告引用，无 Makefile、profile、E1–E5 或管理链活动引用",
+      "replacement": "E2 DRM/X11 pixel gate",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-20"
+    },
+    {
+      "path": "tools/riscv/xorg/tls_cert_matrix.sh",
+      "reason": "旧 BROWSER-M12 NetSurf/curl 证书矩阵；仅被历史报告引用，无 Makefile、profile、E1–E5 或管理链活动引用",
+      "replacement": "E3 official Firefox boundary probe",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-20"
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/firefox_gdb_probe.sh",
+      "reason": "旧 qemu-user Firefox GDB 诊断入口；仅被 README 说明引用，无代码、Makefile、profile、overlay、E1–E5 或管理链调用",
+      "replacement": "E3 bounded Firefox boundary probe",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-20"
+    },
+    {
+      "path": "tools/riscv/tests/test_debian_browser_m5_runtime_gate.py",
+      "reason": "旧 M5 浏览器运行时单元测试；仅提供已由现行 daily-use 单测内联的私有 socket/frame fixture，不属于运行时管理链",
+      "replacement": "现行 browser_daily_use_gate 单测与 E3 boundary probe",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-20"
+    },
+    {
+      "path": "tools/riscv/debian/rootfs/desktop_m5_evidence.sh",
+      "reason": "离线 M5 证据脚本仅被已删除的旧单元测试读取；未被 profile、构建、overlay、Stage1、E1–E5 或 Megrez 管理链调用",
+      "replacement": "browser_web_evidence.sh 与 E3 official Firefox scene",
+      "references_checked": true,
+      "state": "removed",
+      "removed_at": "2026-10-20"
     }
   ],
   "retain_docs": [
@@ -456,13 +600,6 @@
       "path": "tools/riscv/debian/rootfs/browser_web_dev_overlay.json",
       "reason": "旧 browser-web 开发 overlay 有既有未提交修改，暂缓删除以避免覆盖工作区内容",
       "replacement": "E3 official Firefox scene overlay",
-      "references_checked": true,
-      "state": "deferred"
-    },
-    {
-      "path": "tools/riscv/tests/test_debian_m5_network.py",
-      "reason": "旧 M5 网络门禁测试有既有未提交修改，暂缓删除以避免覆盖工作区内容",
-      "replacement": "E5 management chain",
       "references_checked": true,
       "state": "deferred"
     }

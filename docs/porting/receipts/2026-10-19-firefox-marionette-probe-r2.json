@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "claim": "E3",
+  "gate": "firefox-marionette-probe",
+  "status": "timeout",
+  "started_utc": "2026-10-18T18:08:00Z",
+  "finished_utc": "2026-10-18T18:22:01Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "qemu": "d4a95ece1ea69687257cb584182bce231d8f379fda0231ec62d4da07611e1952",
+    "kernel": "1660a4606f88d3131ad030a489b978a0f3a24fed4d17beb6db31c2829029a02d",
+    "rootfs": "3cc0ba5080fa05bb998b110cefa31406c1e5b9931be0298545a996dc1e952776",
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "stage1": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c"
+  },
+  "assertions": [
+    {
+      "name": "marionette_probe_boundary",
+      "expected": "greeting and one NewSession boundary within the probe budget",
+      "actual": "probe reached desktop but Marionette greeting did not arrive within 90 seconds",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "FIREFOX_DRM_PROBE_PROC pid=132 threads=29",
+    "FIREFOX_DRM_PROBE_RECEIPT phase=connect status=fail",
+    "FIREFOX_DRM_PROBE_DONE status=fail phase=connect"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r2.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r2/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r2/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r2/lifecycle.json",
+    "evidence_sha256": "cdeb433012715e3320a46162f79fffe8ebdd70819c948bc28bbc214807710bff"
+  },
+  "reason": "Cold Firefox greeting exceeded the 90-second short-probe budget; process/thread evidence was captured.",
+  "recovery": "not-run"
+}

@@ -83,6 +83,22 @@ effective.
 No physical board boot was attempted. The board recovery boundary therefore
 remains unchanged.
 
+## Safety correction, 2026-10-06
+
+The first guarded attempt exposed a flaw in the original `minimal` DT edit:
+it disabled only `/soc/usb0@50480000/dwc3@50480000` and its sibling child.
+The EIC7700 wrapper nodes remained enabled, so the serial log still contained
+both DWC3 probes and USB keyboard/mouse enumeration. That run therefore does
+not qualify as a USB-free display canary, even though no transfer was issued.
+
+The profile now disables the wrapper nodes
+`/soc/usb0@50480000` and `/soc/usb1@50490000` and removes the inherited
+`/chosen/asterinas,usb-host` property. The same command sequence is used by
+the generic board-session runner and the desktop runner. Host-side tests cover
+both paths, and applying the commands to a copy of the prepared DTB produced
+`status = "disabled"` for both Ethernet and both USB wrappers with no USB-host
+property. This correction has not yet been booted on the physical board.
+
 The follow-up regression set is green:
 
 ```text

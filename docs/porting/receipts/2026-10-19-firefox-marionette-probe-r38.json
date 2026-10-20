@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-probe",
+  "claim": "E3",
+  "status": "blocked",
+  "classification": "guest_firefox_newsession_completion",
+  "started_utc": "2026-10-19T00:37:07Z",
+  "finished_utc": "2026-10-19T00:41:03Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "newsession_response",
+      "expected": "The NewSession response header arrives before the bounded deadline",
+      "actual": "TCP segment-generated/peer-process markers prove greeting and request delivery; greeting and send_complete pass, but Firefox parent remains alive and times out at response_header with parent futex(98) and Socket Process ppoll(73)",
+      "ok": false
+    }
+  ],
+  "reason": "TCP delivery and Marionette greeting are proven; the remaining boundary is Firefox userspace NewSession completion.",
+  "recovery": "not-run",
+  "input_hashes": {
+    "kernel": "829f9fa348d15bc3826c5543aea0ade0408c241d816e4d48db53de4007249297",
+    "root_image": "c7625d0c104205f37898773372465ac7a5e754a26930c3f490e11e8d2306fd28",
+    "root_manifest": "6836fb657b49833394efc6b714bea5111046ae3f118b2ebaa45acb58ec5952b3"
+  },
+  "markers": [
+    "ASTERINAS_TCP_TRACE stage=segment-generated local_port=2828 remote_port=33690",
+    "ASTERINAS_TCP_TRACE stage=peer-process local_port=33690 remote_port=2828",
+    "FIREFOX_DRM_PROBE_BOUNDARY name=greeting status=pass",
+    "A_WEB_MARIONETTE_TRANSPORT event=send_complete command=WebDriver:NewSession",
+    "A_WEB_MARIONETTE_TRANSPORT event=failure command=WebDriver:NewSession stage=response_header",
+    "FIREFOX_DRM_PROBE_SYSCALL number=98"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r38.md",
+    "evidence_sha256": "fb5e641614fbaad2d03d85899f786d88d88a60a6d8feaa9686bb2e9b8fc86e8c",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r38-container/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r38-container/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r38-container/lifecycle.json"
+  }
+}

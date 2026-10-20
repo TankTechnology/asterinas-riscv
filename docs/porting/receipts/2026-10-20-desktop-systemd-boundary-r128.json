@@ -1,0 +1,26 @@
+{
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-desktop-systemd-boundary-r128.md",
+    "evidence_sha256": "9e4e15ce6a03bade65c79c635c351222ee0bfc681cb4c7c703dae87fac99863a",
+    "lifecycle_sha256": "2fcb95d95d867e1f12752537739f19d4916975a7b5b602b3efba94764e991d8f",
+    "output_directory": "/mnt/mydisk/qemu-desktop-systemd-boundary-r128",
+    "result_sha256": "9aa42901754e4e38b53cb2a69811be64ecb492ef05132fac1367554dd5893688",
+    "serial_sha256": "f129051a4addb60be1ec12057e21631fe77a069b78dde401bd0210a5d5e40dce"
+  },
+  "assertions": [
+    {
+      "actual": "Stage1 completed chroot/exec, systemd 257.13 started, systemd-sysctl.service failed, and basic.target was not reached within 120 seconds.",
+      "expected": "The bounded probe must show Stage1 root handoff and systemd PID 1 activation without starting Xorg or Firefox.",
+      "name": "stage1_to_pid1_boundary_recorded",
+      "ok": true
+    }
+  ],
+  "claim": "E3",
+  "classification": "bounded-stage1-to-systemd-boundary-recorded",
+  "gate": "desktop-systemd-boundary",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "next_boundary": "desktop-systemd-sysctl-unit, then basic.target; do not start Xorg or Firefox yet.",
+  "passed": true,
+  "schema": 1,
+  "status": "pass"
+}

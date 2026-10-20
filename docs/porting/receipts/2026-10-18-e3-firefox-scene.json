@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "claim": "E3",
+  "gate": "e3-firefox-scene",
+  "status": "fail",
+  "started_utc": null,
+  "finished_utc": null,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_set": "firefox-r16",
+  "input_hashes": {
+    "qemu": null,
+    "kernel": "35edfd0fa024396eef9d038c029bce6b33612dea64f6216e34ed6abffbcd1db5",
+    "rootfs": "63b27472fd1c3be747d6aa616dad82902b90766c8a773b3112fc52b9c8fa917d",
+    "dtb": "f2bf8e524fe1e4ecb1f2f56665c9827bfe5dd990ffbacbb735ab466e025037d5",
+    "stage1": "16c6558760b92e16e605edfd1b52eef5eee9d9a188dc7502a0343f7815771cc4",
+    "scene_html": "fde6bed9e11dcaa4e988dee369cc75490293d1236f6df8fdc93481dd159ad04c"
+  },
+  "assertions": [
+    {
+      "name": "official_firefox_scene",
+      "expected": "official Firefox completes bounded Marionette scene and emits renderer/renderD128/pixel hash",
+      "actual": "FIREFOX_DRM_FAIL_REASON reason=Marionette_gate_deadline_expired; no scene marker, screenshot or frame receipt",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "FIREFOX_DRM_PHASE name=scene",
+    "FIREFOX_DRM_FAIL_REASON reason=Marionette_gate_deadline_expired"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-16-qemu-firefox-drm-scene-r16.md",
+    "evidence_sha256": "6072d41f6160ba99eba53ab0ef022115e8ea16fcf45de547eeab86117af8d02e"
+  },
+  "reason": "The last retained official-package run reached NewSession but expired at the bounded scene/Marionette deadline; this is a fail-closed result, not a missing receipt.",
+  "recovery": "not-run"
+}

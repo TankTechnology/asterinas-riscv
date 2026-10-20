@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "claim": "E1",
+  "gate": "e1-device",
+  "status": "pass",
+  "started_utc": null,
+  "finished_utc": null,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_set": "render-node-20261015",
+  "input_hashes": {
+    "qemu": null,
+    "kernel": "35edfd0fa024396eef9d038c029bce6b33612dea64f6216e34ed6abffbcd1db5",
+    "rootfs": null,
+    "dtb": "f2bf8e524fe1e4ecb1f2f56665c9827bfe5dd990ffbacbb735ab466e025037d5",
+    "stage1": "19e07e4108e46f64fb9771b82bba71bc6cbcecec7452c4cae600ae600143b5a1",
+    "scene_html": null
+  },
+  "assertions": [
+    {
+      "name": "render_ioctl_contract",
+      "expected": "allowed and refused ioctl paths both pass",
+      "actual": "DRM_RENDER_ALLOWED PASS; DRM_RENDER_REFUSED PASS",
+      "ok": true
+    }
+  ],
+  "markers": [
+    "DRM_RENDER_ALLOWED PASS",
+    "DRM_RENDER_REFUSED PASS"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-15-qemu-drm-render-node-current.md",
+    "evidence_sha256": "24fac49636bdbc2d8fcc73e8d6e06755f8aa06c3cd7e97366586693aee397ff3"
+  },
+  "reason": "Imported from the retained independent QEMU render-node receipt.",
+  "recovery": "not-run"
+}

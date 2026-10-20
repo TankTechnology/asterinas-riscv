@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "gate": "firefox-marionette-probe",
+  "claim": "E3",
+  "status": "blocked",
+  "classification": "guest_newsession_ipc_boundary",
+  "started_utc": "2026-10-18T23:50:41Z",
+  "finished_utc": "2026-10-18T23:54:40Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "newsession_response",
+      "expected": "The independent probe receives a WebDriver:NewSession response within its bounded deadline",
+      "actual": "Greeting passed and request send completed, but the response header timed out; the atomic receipt contains sample_count=2",
+      "ok": false
+    }
+  ],
+  "reason": "Firefox parent remains alive while NewSession waits; Socket Process is in ppoll(73), parent threads include futex(98), and Marionette is listening.",
+  "recovery": "not-run",
+  "manifest_inputs": {
+    "kernel": "1914d747a6e4e8457c0fe31725533f57a7be68532c165e338b3466c6b90b09d7",
+    "root_image": "1b9cc72eba3c15559af630b43720c470326220a6da90bc6e5d75aed5811fa9a0",
+    "root_manifest": "092bf54b121d8decef90c2e1798b652ba20bf59e174ce97f7271cfdf8859aef2"
+  },
+  "markers": [
+    "FIREFOX_DRM_PROBE_BOUNDARY name=greeting status=pass",
+    "FIREFOX_DRM_PROBE_RECEIPT phase=new-session status=fail sample_count=2",
+    "Socket Process syscall=number=73",
+    "parent futex syscall=number=98",
+    "Marionette INFO Listening on port 2828"
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-19-qemu-firefox-marionette-probe-r24.md",
+    "serial_log": "/mnt/mydisk/qemu-firefox-marionette-probe-r24-container/desktop-m4-drm.serial.log",
+    "result_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r24-container/result.json",
+    "lifecycle_json": "/mnt/mydisk/qemu-firefox-marionette-probe-r24-container/lifecycle.json",
+    "serial_log_sha256": "0e4d5e62de409259d7cf37cda88af84acdc97429d1c5a7a6dc541a36dbce7cee",
+    "result_json_sha256": "aa064a96645e1cbe4b25dc130a769550fd5af93a217b41b7f9d02483764c4bef",
+    "lifecycle_json_sha256": "34d9ed117d85e07fec3d8044f31af62f2531450e307cf9708df002805934dd1a"
+  }
+}

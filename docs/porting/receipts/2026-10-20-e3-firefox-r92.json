@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "claim": "E3",
+  "gate": "official-firefox-scene",
+  "status": "fail",
+  "started_utc": "2026-10-19T20:51:00Z",
+  "finished_utc": "2026-10-19T20:53:44Z",
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "input_hashes": {
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "kernel": "245d54df230f0d8878411d1efd982d5e4189d469f6172379c6c246f56c9fba1e",
+    "manifest": "3e079503e191ac548e2a2e060e45aea21002bc20a86471e315fb5ed29175f18b",
+    "package_checksums": "4bd122bfc6c1335f7133457743e04c9bd7c2c346feabcfb71a3a7f749d4b80a8",
+    "packages_lock": "9d5fd036dfae9b113a218d4d522e8e22158074ef18efb599c2be69b0ef1970c6",
+    "root_image": "d3e9d76bb76cff3b99f849cc5be1c480aaa7e6eb7e830e6bd117abd5ac9be1a3",
+    "stage1_initramfs": "e03ab1b48f1715d727517ff7c63c203211d05de09dc063793335523e38efd019",
+    "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210"
+  },
+  "assertions": [
+    {
+      "name": "official_firefox_scene",
+      "expected": "Official Firefox completes Marionette and fixed scene pixel hash with virgl/renderD128 evidence",
+      "actual": "EGL glxtest reported virgl/renderD128, but Marionette greeting repeatedly returned ConnectionRefusedError; no scene hash",
+      "ok": false
+    }
+  ],
+  "markers": [
+    "FIREFOX_DRM_GLXTEST rc=0",
+    "A_WEB_MARIONETTE_TRANSPORT stage=tcp_connect error_type=ConnectionRefusedError",
+    "lifecycle reason=protocol"
+  ],
+  "artifacts": {
+    "evidence": "/mnt/shared/xaj/Program/asterinas/docs/porting/evidence/2026-10-20-desktop-drm-tty-r92.md",
+    "evidence_sha256": "5bf6a923d91d26a7681633d82554e1b48bb40b05df0a12ce1834c39d780a554e",
+    "serial_log": "/mnt/mydisk/qemu-desktop-m4-r92-tty/desktop-m4-drm.serial.log",
+    "serial_log_sha256": "5b6956a2fe74683f42f9a05ddfe61e0bfb45171f35b08bb3dc66a36d3d3e1860",
+    "result_json": "/mnt/mydisk/qemu-desktop-m4-r92-tty/result.json",
+    "result_json_sha256": "49c75f63f5e726e90af70ef4956029e1afdd2d26df07cf3df059974c666e738d"
+  },
+  "reason": "Firefox userspace did not expose its Marionette listener after the DRM/Xorg path became ready; this is a new E3 boundary, not a renderer failure.",
+  "recovery": "not-run"
+}

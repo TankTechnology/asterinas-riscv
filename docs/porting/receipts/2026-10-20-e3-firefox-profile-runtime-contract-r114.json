@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "gate": "e3-firefox-profile-runtime-contract",
+  "claim": "E3",
+  "status": "pass",
+  "passed": true,
+  "manifest_sha256": "68645b154bb876db055a7e49b32a55b0f26e3a4bab44e89be4b2223f7abd39f8",
+  "assertions": [
+    {
+      "name": "probe_profile_runtime_path_contract",
+      "expected": "Probe-only mode accepts a safe absolute /run profile path while preserving the normal profile; runtime is not allowed below 60G free space",
+      "actual": "Static path/bootarg tests pass; /mnt/shared reports 58G free, so runtime was correctly deferred",
+      "ok": true
+    }
+  ],
+  "artifacts": {
+    "evidence": "docs/porting/evidence/2026-10-20-e3-firefox-profile-runtime-contract-r114.md",
+    "evidence_sha256": "e1e524619c8ef39bc18883e877c106833a6db00a8ea6c226c50a1ed75924b442",
+    "r111c_serial": "/mnt/mydisk/qemu-firefox-probe-trace-r111c/desktop-m4-drm.serial.log"
+  },
+  "next_boundary": "Run exactly one short probe after /mnt/shared reaches 60G free; do not run the 900s scene gate first"
+}
