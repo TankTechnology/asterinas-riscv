@@ -44,7 +44,7 @@ Legend: ✅ supported, 🟡 partial (limits noted), ❌ not implemented.
 | Sparse files and holes | ✅ | holes read as zeros; allocation fills them |
 | Legacy indirect mapping | ✅ | 12 direct + single/double/triple indirect |
 | Extent read | 🟡 | depth 0 and depth 1 index trees |
-| Extent allocation (write) | 🟡 | append at the logical end of depth-0 and depth-1 trees; a full inline tree is promoted to a leaf, and appends go into the last leaf. Holes and mid-file allocation are `EOPNOTSUPP`; new files use legacy mapping |
+| Extent allocation (write) | 🟡 | append at the logical end of depth-0 and depth-1 trees, plus hole allocation for depth-0 (records are inserted in order); a full inline tree is promoted to a leaf, and appends go into the last leaf. Depth-1 hole writes and leaf splits are `EOPNOTSUPP`; new files use legacy mapping |
 | Extent writeback of existing ranges | 🟡 | depth 0 and 1 |
 | Extent truncate | 🟡 | depth 0 and 1; deeper trees are left untouched and logged |
 | 64-bit extents | ❌ | rejected as `EOPNOTSUPP` |
@@ -311,7 +311,13 @@ the measured block count went from 520 to 392 sectors for a 16-block hole.
 The first depth-one attempt failed with `EUCLEAN`: the extent allocator
 required logical records to be contiguous, but a punched hole legitimately
 leaves a gap.  The validator now requires strictly increasing records and
-rejects only overlaps; writes into a gap remain `EOPNOTSUPP`.
+rejects only overlaps.
+
+Writing into a hole now allocates there for depth-zero trees: a new record
+is inserted in logical order, bounded by the next extent and by the free
+in-line slots.  The gate writes into the freshly punched block and checks
+the result after the remount.  Depth-one hole writes still need leaf splits
+and report `EOPNOTSUPP`.
 
 The gate found that `AllocateKeepSize` had been allocating blocks beyond
 `i_size`.  An ext2 file uses the legacy indirect mapping, which has no way to

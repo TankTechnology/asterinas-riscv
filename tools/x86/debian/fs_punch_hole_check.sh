@@ -168,7 +168,7 @@ def main():
         if hashlib.sha256(data[:original_len]).hexdigest() != recorded.get('hostname_sha'):
             problems.append('hostname prefix was punched away')
         expected = {
-            4096: b'\0' * 4096,
+            4096: b'Z' * 4096,
             8192: b'I' * 4096,
             12288: b'C' * 4096,
             16384: b'\0' * 4096,
@@ -275,6 +275,10 @@ os.write(fd, b'H' * 4096)
 os.write(fd, b'I' * 4096)
 os.fsync(fd)
 extent_rc, extent_errno = punch(fd, 4096, BLOCK)
+if extent_rc == 0:
+    # Writing into the fresh hole must allocate a new extent there.
+    os.pwrite(fd, b'Z' * 4096, 4096)
+    os.fsync(fd)
 for offset, marker in ((12288, b'C'), (16384, b'D'), (20480, b'E')):
     os.pwrite(fd, marker * 4096, offset)
 os.fsync(fd)

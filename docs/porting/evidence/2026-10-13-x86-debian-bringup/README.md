@@ -817,6 +817,12 @@ allocator insisted that logical records be contiguous, but punching a hole
 legitimately creates a gap.  Records are now required to be strictly
 increasing instead of contiguous.
 
+Writing back into a punched hole now works for depth-zero trees: the new
+extent is allocated and inserted in logical order, bounded by the next
+record and the free in-line slots.  The gate writes into the hole it just
+made and confirms the contents after the remount.  Depth-one hole writes
+still need leaf splitting and remain `EOPNOTSUPP`.
+
 The measured 520 -> 392 sectors is exactly the 16 data blocks covered by the
 punched ranges.
 

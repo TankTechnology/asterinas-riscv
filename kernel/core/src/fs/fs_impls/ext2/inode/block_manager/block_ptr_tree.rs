@@ -335,7 +335,17 @@ impl BlockPtrTree {
                 ));
             }
             if iblock < logical {
-                return_errno_with_message!(Errno::EOPNOTSUPP, "non-append ext4 extent allocation");
+                // A hole before this extent: allocate it in place, bounded by
+                // the next extent's first logical block.
+                let gap_goal = if index == 0 { physical } else { goal };
+                return self.allocate_inline_hole(
+                    fs,
+                    iblock,
+                    max_blocks,
+                    Some(logical),
+                    index,
+                    gap_goal,
+                );
             }
             next_logical = logical.checked_add(length).ok_or_else(|| {
                 Error::with_message(Errno::EUCLEAN, "ext4 extent logical overflow")
@@ -343,6 +353,11 @@ impl BlockPtrTree {
             goal = physical.saturating_add(length);
         }
 
+        if iblock > next_logical {
+            // A hole after the last extent (for example a punched tail that
+            // the file size still covers).
+            return self.allocate_inline_hole(fs, iblock, max_blocks, None, entries, goal);
+        }
         if iblock != next_logical {
             return_errno_with_message!(Errno::EOPNOTSUPP, "non-append ext4 extent allocation");
         }
@@ -386,6 +401,86 @@ impl BlockPtrTree {
         for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
             *value = u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
         }
+        Ok(())
+    }
+
+    /// Allocates data for a hole inside an in-line extent array.
+    ///
+    /// The new record is inserted at `insert_at`, so the records above it
+    /// shift right. `upper_logical` bounds the allocation to the next
+    /// extent (when there is one); the caller re-resolves the rest of the
+    /// range afterwards.
+    fn allocate_inline_hole(
+        &mut self,
+        fs: &Ext2,
+        iblock: Iblock,
+        max_blocks: u32,
+        upper_logical: Option<u32>,
+        insert_at: usize,
+        goal: u32,
+    ) -> Result<ResolvedBlockRange> {
+        let bytes = self.raw_block_ptrs.extent_bytes();
+        let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
+        let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        if entries >= max_entries {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "inline extent array is full");
+        }
+
+        let mut count = max_blocks.min(0x7fff).min((max_entries - entries) as u32);
+        if let Some(upper) = upper_logical {
+            count = count.min(upper.saturating_sub(iblock));
+        }
+        if count == 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "no room for the hole");
+        }
+
+        let data_blocks = fs.alloc_blocks(count, goal)?;
+        Self::zero_new_blocks(fs, &data_blocks)?;
+        let mut guard = BlockAllocGuard::new(fs, 0);
+        guard.track_data_blocks(data_blocks.clone());
+
+        let mut out = [0u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
+        out.copy_from_slice(&bytes);
+        Self::insert_extent_record(&mut out, entries, insert_at, iblock, data_blocks.start, count)?;
+        for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
+            *value = u32::from_le_bytes(out[index * 4..index * 4 + 4].try_into().unwrap());
+        }
+        self.raw_block_ptrs.sector_count = self
+            .raw_block_ptrs
+            .sector_count
+            .checked_add(count * SECTORS_PER_BLOCK)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "inode block count overflow"))?;
+        guard.commit();
+        Ok(ResolvedBlockRange::NewlyAllocated(data_blocks))
+    }
+
+    /// Inserts one extent record at `insert_at`, shifting later records.
+    fn insert_extent_record(
+        bytes: &mut [u8],
+        entries: usize,
+        insert_at: usize,
+        logical: u32,
+        physical: Ext2Bid,
+        len: u32,
+    ) -> Result<()> {
+        if insert_at > entries {
+            return_errno_with_message!(Errno::EINVAL, "extent insert position out of range");
+        }
+        for index in (insert_at..entries).rev() {
+            let src = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
+            let dst = src + EXTENT_RECORD_SIZE;
+            bytes.copy_within(src..src + EXTENT_RECORD_SIZE, dst);
+        }
+        let offset = EXTENT_HEADER_SIZE + insert_at * EXTENT_RECORD_SIZE;
+        bytes[offset..offset + 4].copy_from_slice(&logical.to_le_bytes());
+        let raw_len = u16::try_from(len & 0x7fff)
+            .map_err(|_| Error::with_message(Errno::EOVERFLOW, "extent length overflow"))?;
+        bytes[offset + 4..offset + 6].copy_from_slice(&raw_len.to_le_bytes());
+        bytes[offset + 6..offset + 8].copy_from_slice(&0u16.to_le_bytes());
+        bytes[offset + 8..offset + 12].copy_from_slice(&physical.to_le_bytes());
+        let new_entries = u16::try_from(entries + 1)
+            .map_err(|_| Error::with_message(Errno::EOVERFLOW, "extent entry overflow"))?;
+        bytes[2..4].copy_from_slice(&new_entries.to_le_bytes());
         Ok(())
     }
 
