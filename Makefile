@@ -651,6 +651,7 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_fs_concurrency \
 		tools.x86.tests.test_x86_debian_fs_fallocate \
 		tools.x86.tests.test_x86_debian_fs_durability \
+		tools.x86.tests.test_x86_debian_fs_ea_inode \
 		tools.x86.tests.test_x86_debian_fs_ext4_features \
 		tools.x86.tests.test_x86_debian_fs_extent_depth \
 		tools.x86.tests.test_x86_debian_fs_metadata_csum \
@@ -1073,6 +1074,30 @@ test_x86_debian_fs_extent_depth:
 		--workspace "$(X86_DEBIAN_DEPTH_WORKSPACE)" \
 		--accel "$(X86_DEBIAN_DEPTH_ACCEL)" \
 		--timeout "$(X86_DEBIAN_DEPTH_TIMEOUT)"
+
+# EA inode gate: convert the image with `tune2fs -O ea_inode`, store 32 KiB
+# and 20 KiB xattr values (which must leave the xattr block) plus a small
+# inline value, read everything back across a remount, remove one value and
+# require `e2fsck -fn` after each boot.
+#   X86_DEBIAN_EA_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_EA_BASE_ROOT ?=
+X86_DEBIAN_EA_WORKSPACE ?= $(CURDIR)/target/x86-debian/ea
+X86_DEBIAN_EA_ACCEL ?= kvm
+X86_DEBIAN_EA_TIMEOUT ?= 1800
+
+.PHONY: test_x86_debian_fs_ea_inode
+test_x86_debian_fs_ea_inode:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_EA_BASE_ROOT)" || { echo "X86_DEBIAN_EA_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-ea-inode: base=$(X86_DEBIAN_EA_BASE_ROOT) accel=$(X86_DEBIAN_EA_ACCEL)"
+	@tools/x86/debian/fs_ea_inode_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_EA_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_EA_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_EA_ACCEL)" \
+		--timeout "$(X86_DEBIAN_EA_TIMEOUT)"
 
 # POSIX ACL gate: store system.posix_acl_access, run reads/writes as different
 # users (owner, named user, named group, other, root override), re-check after

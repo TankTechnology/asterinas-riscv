@@ -35,6 +35,26 @@ impl Inode {
         Ok(read_len)
     }
 
+    /// Reads data without updating `atime`.
+    ///
+    /// EA inodes store the value hash in `i_atime`, so reading an extended
+    /// attribute must not touch the timestamp.
+    pub(in ext2) fn read_at_without_atime(
+        &self,
+        offset: usize,
+        writer: &mut VmWriter,
+    ) -> Result<usize> {
+        if self.type_ == InodeType::Dir {
+            return_errno!(Errno::EISDIR);
+        }
+
+        if writer.avail() == 0 {
+            return Ok(0);
+        }
+
+        self.inner.read().read_at(offset, writer)
+    }
+
     /// Writes file data at `offset` through the page cache.
     pub(in ext2) fn write_at(&self, offset: usize, reader: &mut VmReader) -> Result<usize> {
         if self.type_ == InodeType::Dir {

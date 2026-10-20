@@ -22,7 +22,7 @@ Validation lives in `super_block.rs` (`SuperBlock::try_from_with_journal`).
 | `errors=` behavior | `continue` | `remount-ro`, `panic` |
 | Revision | 0 (GoodOld), 1 (Dynamic) | other values |
 | Inode size | 128..=4096, power of two | smaller, larger, non-power-of-two |
-| Incompat features | `FILETYPE`, `EXTENTS`, `RECOVER`, `64BIT`, `FLEX_BG`, `CSUM_SEED` | `META_BG`, `INLINE_DATA`, `MMP`, ... |
+| Incompat features | `FILETYPE`, `EXTENTS`, `RECOVER`, `64BIT`, `FLEX_BG`, `EA_INODE`, `CSUM_SEED` | `META_BG`, `INLINE_DATA`, `MMP`, ... |
 | RO-compat features | `SPARSE_SUPER`, `LARGE_FILE`, `BTREE_DIR`, `HUGE_FILE`, `DIR_NLINK`, `EXTRA_ISIZE`, `METADATA_CSUM` | `GDT_CSUM`, `QUOTA`, ... |
 | Compat features | not validated (unknown bits are ignored) | - |
 | Fragments | fragment size must equal block size | - |
@@ -125,17 +125,27 @@ linear; `e2fsck -D` can rebuild an index later.
 | `mknod` (char/block device, FIFO) | ✅ | device id encoded in `i_block` |
 | Sockets on disk | ✅ | as an inode type |
 | Ownership, mode, timestamps | ✅ | uid/gid/mode full; nanosecond timestamps for inodes larger than 128 bytes (see below) |
-| `i_blocks` accounting | ✅ | data + tree + xattr blocks; verified by the storage gate |
+| `i_blocks` accounting | ✅ | data + tree + xattr block + EA inode blocks; verified by the storage gate |
 
 ### Extended attributes
 
 | Feature | Status | Notes |
 |---|---|---|
 | `user.*`, `trusted.*`, `security.*` | ✅ | one xattr block per inode |
-| External value blocks (`e_value_block`) | ❌ | ext4 repurposed the field for EA inodes; a non-zero value is rejected |
 | POSIX ACLs (`system.posix_acl_*`) | ✅ | access ACLs stored and enforced (owner, named user, group class with mask, other); `chmod` keeps the mask/group/other entries in sync; default ACLs are stored and inherited on create |
 | xattr block sharing | ❌ | reference count is always 1 |
-| xattr capacity | 🟡 | all values must fit the single xattr block (4096 bytes) |
+| External value (`e_value_inum`) | ✅ | ext4 reuses `e_value_block` as the EA inode number when `ea_inode` is enabled |
+| Large xattr values | ✅ | values that do not fit the xattr block move to an EA inode (`ea_inode`); up to `XATTR_SIZE_MAX` (64 KiB) |
+
+When a value does not fit the xattr block and the image has the `ea_inode`
+feature, the value moves to a separate regular inode: the entry sets
+`e_value_inum` and `e_value_size`, the EA inode holds the bytes and carries
+`EXT4_EA_INODE_FL`, its `i_atime` stores the name+value hash that the entry
+folds into `e_hash`, and its `i_ctime` plus the low word of `i_version` encode
+the reference count. The EA inode's blocks are charged to the owner's
+`i_blocks` as well as to its own, which is what `e2fsck` verifies. Images
+without `ea_inode` keep the block-only limit and reject larger values with
+`ERANGE`.
 
 ### POSIX ACLs
 
@@ -244,12 +254,11 @@ The current gates cover the paths package management exercises:
 
 Known gaps that a package workload can still hit:
 
-1. **Large xattr values.** ext4 stores values that do not fit the xattr block
-   in EA inodes (`ea_inode`); that feature is not implemented, so each value
-   is limited to the block's free space.
-2. **Journal layout limits:** 64-bit block numbers, checksum v2 and fast
+1. **Journal layout limits:** 64-bit block numbers, checksum v2 and fast
    commit are rejected at mount, and a non-contiguous journal inode cannot be
    replayed.
+2. **xattr block sharing** is not implemented (`ref_count` is always one), and
+   EA inodes are not deduplicated.
 
 Default `mke2fs` images (`64bit`, `flex_bg`, `metadata_csum`, `csum_seed`) now
 mount and pass `e2fsck -fn` after real write workloads. The next storage
@@ -352,6 +361,15 @@ the resulting holes and verifies the survivors. The tree must stay at depth
 two after the write phase, must collapse to a shallower valid shape once its
 index fits in the inode, and `e2fsck -fn` must accept the image after each
 boot. Result: **PASS**.
+
+`fs_ea_inode_check.sh` (`make test_x86_debian_fs_ea_inode`) converts the
+image with `tune2fs -O ea_inode`. Boot 1 stores a 32 KiB value, a 20 KiB value
+and a 100-byte value on one file and reads them back; the host parses the
+xattr block and requires the two large entries to carry a non-zero
+`e_value_inum` while the small one stays inline. Boot 2 verifies all three
+from their EA inodes, removes the 32 KiB attribute and confirms `ENODATA`.
+`e2fsck -fn` after each boot validates the EA inode's flag, hash, reference
+count, size, blocks and the owner's `i_blocks`. Result: **PASS**.
 
 `fs_fallocate_check.sh` (`make test_x86_debian_fs_fallocate`) covers
 `ZERO_RANGE` over an existing range, past EOF, and with `KEEP_SIZE`, plus

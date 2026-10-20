@@ -77,6 +77,8 @@ use super::{checksum, fs::Ext2, inode::Inode, prelude::*};
 use crate::fs::vfs::xattr::{XattrName, XattrNamespace, XattrSetFlags};
 
 const XATTR_NBLOCKS: usize = 1;
+/// Linux's `XATTR_SIZE_MAX`: the largest value an EA inode may hold.
+const XATTR_SIZE_MAX: usize = 64 * 1024;
 const XATTR_MAGIC: u32 = 0xEA02_0000;
 const XATTR_ALIGN: usize = 4;
 const XATTR_ROUND: usize = XATTR_ALIGN - 1;
@@ -165,7 +167,13 @@ impl Xattr {
         flags: XattrSetFlags,
     ) -> Result<()> {
         let value_len = value_reader.remain();
-        if value_len > BLOCK_SIZE {
+        let fs = self.cache.read().fs()?;
+        let limit = if fs.super_block().has_ea_inode() {
+            XATTR_SIZE_MAX
+        } else {
+            BLOCK_SIZE
+        };
+        if value_len > limit {
             return_errno_with_message!(Errno::ERANGE, "xattr value is too large");
         }
 
@@ -187,7 +195,13 @@ impl Xattr {
         flags: XattrSetFlags,
     ) -> Result<()> {
         let (target_index, target_name) = Self::parse_target_name(name)?;
-        if value.len() > BLOCK_SIZE {
+        let fs = self.cache.read().fs()?;
+        let limit = if fs.super_block().has_ea_inode() {
+            XATTR_SIZE_MAX
+        } else {
+            BLOCK_SIZE
+        };
+        if value.len() > limit {
             return_errno_with_message!(Errno::ERANGE, "xattr value is too large");
         }
 
@@ -236,7 +250,7 @@ impl Xattr {
 
     /// Frees the xattr block entirely (called during inode eviction).
     pub(super) fn delete_xattr_block(&self) -> Result<()> {
-        self.cache.write().free_and_invalidate()
+        self.cache.write().delete_block()
     }
 
     /// Writes the dirty xattr block back to disk.
@@ -310,8 +324,12 @@ impl XattrCache {
             return_errno_with_message!(Errno::ENODATA, "the target xattr does not exist");
         }
 
+        let old_inum = found_idx
+            .map(|idx| self.entries[idx].value_inum)
+            .unwrap_or(0);
         if let Some(idx) = found_idx {
             self.entries[idx].value = value;
+            self.entries[idx].value_inum = 0;
         } else {
             self.entries.insert(
                 insert_at,
@@ -319,8 +337,19 @@ impl XattrCache {
                     name_index: target_index,
                     name: target_name,
                     value,
+                    value_inum: 0,
                 },
             );
+        }
+
+        self.place_values()?;
+        if old_inum != 0 {
+            let still_used = found_idx
+                .map(|idx| self.entries[idx].value_inum == old_inum)
+                .unwrap_or(false);
+            if !still_used {
+                self.release_ea_inode(old_inum)?;
+            }
         }
 
         if self.bid == 0 {
@@ -372,7 +401,10 @@ impl XattrCache {
         let Some(found_idx) = found_idx else {
             return_errno_with_message!(Errno::ENODATA, "the target xattr does not exist");
         };
-        self.entries.remove(found_idx);
+        let removed = self.entries.remove(found_idx);
+        if removed.value_inum != 0 {
+            self.release_ea_inode(removed.value_inum)?;
+        }
 
         if self.entries.is_empty() {
             self.free_and_invalidate()?;
@@ -477,7 +509,13 @@ impl XattrCache {
         fs.read_blocks(self.bid, bio_segment)?;
 
         Self::validate_block(&block_buf)?;
-        let entries = Self::parse_entries_from_block(&block_buf)?;
+        let mut entries = Self::parse_entries_from_block(&block_buf)?;
+        for entry in &mut entries {
+            if entry.value_inum != 0 {
+                let size = entry.value.len();
+                entry.value = self.read_ea_value(entry.value_inum, size)?;
+            }
+        }
         self.entries = entries;
         self.block_buf = Some(block_buf);
         Ok(())
@@ -510,6 +548,155 @@ impl XattrCache {
         self.block_buf = None;
         self.entries = Vec::new();
         self.dirty = false;
+        Ok(())
+    }
+
+    /// Releases every EA inode referenced by this block, then frees the block.
+    fn delete_block(&mut self) -> Result<()> {
+        self.load()?;
+        let inums: Vec<u32> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.value_inum != 0)
+            .map(|entry| entry.value_inum)
+            .collect();
+        for inum in inums {
+            self.release_ea_inode(inum)?;
+        }
+        self.free_and_invalidate()
+    }
+
+    /// Returns whether every entry fits in one xattr block.
+    fn layout_fits(entries: &[XattrEntryData]) -> bool {
+        let mut entry_cursor = XATTR_HEADER_SIZE;
+        let mut value_cursor = BLOCK_SIZE;
+        for entry in entries {
+            let entry_padded_size = xattr_entry_len(entry.name.len());
+            if entry.value_inum == 0 {
+                let Some(next) = value_cursor.checked_sub(xattr_value_size(entry.value.len())) else {
+                    return false;
+                };
+                value_cursor = next;
+            }
+            if entry_cursor + entry_padded_size + XATTR_ENTRY_VALUE_GAP > value_cursor {
+                return false;
+            }
+            entry_cursor += entry_padded_size;
+        }
+        true
+    }
+
+    /// Moves the largest inline values into EA inodes until the block fits.
+    fn place_values(&mut self) -> Result<()> {
+        if Self::layout_fits(&self.entries) {
+            return Ok(());
+        }
+        let fs = self.fs()?;
+        if !fs.super_block().has_ea_inode() {
+            return_errno_with_message!(
+                Errno::ENOSPC,
+                "xattr value does not fit and ea_inode is not enabled"
+            );
+        }
+        loop {
+            if Self::layout_fits(&self.entries) {
+                return Ok(());
+            }
+            let Some(index) = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.value_inum == 0 && !entry.value.is_empty())
+                .max_by_key(|(_, entry)| entry.value.len())
+                .map(|(index, _)| index)
+            else {
+                break;
+            };
+            let inum = self.create_ea_inode(index)?;
+            self.entries[index].value_inum = inum;
+        }
+        if Self::layout_fits(&self.entries) {
+            Ok(())
+        } else {
+            return_errno_with_message!(Errno::ENOSPC, "xattr entries do not fit in one block");
+        }
+    }
+
+    /// Creates an EA inode holding one entry's value and returns its number.
+    fn create_ea_inode(&mut self, index: usize) -> Result<u32> {
+        let fs = self.fs()?;
+        let owner = self.inode()?;
+        let entry = &self.entries[index];
+        let hash = xattr_entry_hash(&entry.name, &entry.value);
+        let value_len = entry.value.len();
+
+        let ea = fs.create_inode(
+            owner.ino(),
+            InodeType::File,
+            super::FilePerm::from_bits_truncate(0o600),
+        )?;
+        let result = (|| -> Result<()> {
+            let mut reader = VmReader::from(entry.value.as_slice()).to_fallible();
+            let written = ea.write_at(0, &mut reader)?;
+            if written != value_len {
+                return_errno_with_message!(Errno::EIO, "short write into an EA inode");
+            }
+            ea.mark_ea_inode();
+            ea.set_link_count(1);
+            // `i_version` holds the low 32 bits of the reference count...
+            ea.set_version(1);
+            // ...its high half lives in `i_ctime`, and the value hash in
+            // `i_atime`, exactly as Linux encodes an EA inode.
+            ea.set_ctime(Duration::ZERO);
+            ea.set_atime(Duration::from_secs(u64::from(hash)));
+            ea.sync_all()?;
+            // e2fsck charges the EA inode's blocks to the parent inode's
+            // `i_blocks` as well as to the EA inode itself.
+            let sectors = u32::try_from(ea.metadata().nr_sectors_allocated).unwrap_or(u32::MAX);
+            owner.add_xattr_sectors(sectors)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => Ok(ea.ino() as u32),
+            Err(err) => {
+                let _ = ea.set_link_count(0);
+                let _ = ea.try_reclaim_deleted_inode();
+                Err(err)
+            }
+        }
+    }
+
+    /// Reads one external value from its EA inode.
+    fn read_ea_value(&self, inum: u32, size: usize) -> Result<Vec<u8>> {
+        let fs = self.fs()?;
+        let ea = fs.read_inode(inum)?;
+        if ea.metadata().size != size {
+            return_errno_with_message!(Errno::EIO, "EA inode size does not match its entry");
+        }
+        let mut value = vec![0u8; size];
+        if size != 0 {
+            let mut writer = VmWriter::from(value.as_mut_slice()).to_fallible();
+            let read = ea.read_at_without_atime(0, &mut writer)?;
+            if read != size {
+                return_errno_with_message!(Errno::EIO, "short read from an EA inode");
+            }
+        }
+        Ok(value)
+    }
+
+    /// Drops one reference to an EA inode and frees it when it reaches zero.
+    fn release_ea_inode(&self, inum: u32) -> Result<()> {
+        let fs = self.fs()?;
+        let owner = self.inode()?;
+        let ea = match fs.remove_inode(inum) {
+            Some(inode) => inode,
+            None => fs.read_inode(inum)?,
+        };
+        let sectors = u32::try_from(ea.metadata().nr_sectors_allocated).unwrap_or(u32::MAX);
+        owner.sub_xattr_sectors(sectors);
+        ea.set_link_count(0);
+        ea.try_reclaim_deleted_inode()?;
+        fs.remove_inode(inum);
         Ok(())
     }
 
@@ -564,7 +751,17 @@ impl XattrCache {
 
         let entry_hashes: Vec<u32> = entries
             .iter()
-            .map(|entry| xattr_entry_hash(&entry.name, &entry.value))
+            .map(|entry| {
+                if entry.value_inum != 0 {
+                    // For an external value the EA inode stores the full
+                    // name+value hash in `i_atime`; the entry hash folds that
+                    // one word instead of the value bytes.
+                    let stored = xattr_entry_hash(&entry.name, &entry.value);
+                    xattr_entry_hash(&entry.name, &stored.to_le_bytes())
+                } else {
+                    xattr_entry_hash(&entry.name, &entry.value)
+                }
+            })
             .collect();
 
         let header = XattrHeader {
@@ -581,29 +778,31 @@ impl XattrCache {
 
         for (entry, &entry_hash) in entries.iter().zip(entry_hashes.iter()) {
             let entry_padded_size = xattr_entry_len(entry.name.len());
-            let value_padded_size = xattr_value_size(entry.value.len());
 
-            value_cursor = value_cursor.checked_sub(value_padded_size).ok_or_else(|| {
-                Error::with_message(Errno::ENOSPC, "insufficient xattr value space")
-            })?;
+            if entry.value_inum == 0 {
+                let value_padded_size = xattr_value_size(entry.value.len());
+                value_cursor = value_cursor.checked_sub(value_padded_size).ok_or_else(|| {
+                    Error::with_message(Errno::ENOSPC, "insufficient xattr value space")
+                })?;
+            }
 
             if entry_cursor + entry_padded_size + XATTR_ENTRY_VALUE_GAP > value_cursor {
                 return_errno_with_message!(Errno::ENOSPC, "xattr entry/value regions overlap");
             }
 
-            if !entry.value.is_empty() {
+            if entry.value_inum == 0 && !entry.value.is_empty() {
                 block.write_bytes(value_cursor, &entry.value)?;
             }
 
             let raw_entry = XattrEntry {
                 name_len: entry.name.len() as u8,
                 name_index: entry.name_index as u8,
-                value_offset: if entry.value.is_empty() {
+                value_offset: if entry.value_inum != 0 || entry.value.is_empty() {
                     0
                 } else {
                     value_cursor as u16
                 },
-                value_block: 0,
+                value_block: entry.value_inum,
                 value_len: entry.value.len() as u32,
                 hash: entry_hash,
             };
@@ -647,11 +846,15 @@ impl XattrCache {
         if next_entry_offset >= BLOCK_SIZE {
             return_errno_with_message!(Errno::EIO, "xattr entry overflows block");
         }
-        if entry.value_block != 0 {
-            return_errno_with_message!(Errno::EIO, "xattr external value blocks are not supported");
-        }
 
         let value_size = entry.value_len as usize;
+        if value_size > XATTR_SIZE_MAX {
+            return_errno_with_message!(Errno::EIO, "xattr value is too large");
+        }
+        if entry.value_block != 0 {
+            // The value lives in an EA inode; `e_value_offs` is unused.
+            return Ok(());
+        }
         let value_offset = entry.value_offset as usize;
         if value_size > BLOCK_SIZE {
             return_errno_with_message!(Errno::EIO, "xattr value range is out of block bounds");
@@ -717,8 +920,9 @@ impl XattrCache {
             }
 
             let value_len = entry.value_len as usize;
+            let external = entry.value_block != 0;
             let mut value = vec![0u8; value_len];
-            if value_len > 0 {
+            if value_len > 0 && !external {
                 block_buf.read_bytes(entry.value_offset as usize, &mut value)?;
             }
 
@@ -726,6 +930,7 @@ impl XattrCache {
                 name_index,
                 name,
                 value,
+                value_inum: entry.value_block,
             });
 
             offset += xattr_entry_len(name_len);
@@ -829,6 +1034,9 @@ struct XattrEntryData {
     name_index: XattrNameIndex,
     name: Vec<u8>,
     value: Vec<u8>,
+    /// EA inode number when the value lives outside the xattr block
+    /// (`e_value_inum`), otherwise zero.
+    value_inum: u32,
 }
 
 /// On-disk header of an ext2 extended-attribute block (32 bytes).

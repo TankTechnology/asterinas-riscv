@@ -104,6 +104,16 @@ impl InodeBlockManager {
         self.block_ptr_tree.read().is_dirty()
     }
 
+    /// Adds sectors to `i_blocks` for external xattr storage.
+    pub(super) fn add_sector_count(&self, sectors: u32) -> Result<()> {
+        self.block_ptr_tree.write().add_sector_count(sectors)
+    }
+
+    /// Removes sectors from `i_blocks` when external xattr storage is freed.
+    pub(super) fn sub_sector_count(&self, sectors: u32) {
+        self.block_ptr_tree.write().sub_sector_count(sectors);
+    }
+
     /// Clears the block-pointer dirty flag after writeback.
     pub(super) fn clear_dirty(&self) {
         self.block_ptr_tree.write().clear_dirty();

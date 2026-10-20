@@ -132,6 +132,22 @@ impl BlockPtrTree {
         self.raw_block_ptrs.is_dirty()
     }
 
+    /// Adds sectors to `i_blocks` for blocks owned by external xattr values.
+    pub(in inode) fn add_sector_count(&mut self, sectors: u32) -> Result<()> {
+        self.raw_block_ptrs.sector_count = self
+            .raw_block_ptrs
+            .sector_count
+            .checked_add(sectors)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "inode block count overflow"))?;
+        Ok(())
+    }
+
+    /// Removes sectors from `i_blocks` when external xattr storage is freed.
+    pub(in inode) fn sub_sector_count(&mut self, sectors: u32) {
+        self.raw_block_ptrs.sector_count =
+            self.raw_block_ptrs.sector_count.saturating_sub(sectors);
+    }
+
     /// Clears the dirty flag for the raw on-disk block pointer state.
     pub(super) fn clear_dirty(&mut self) {
         self.raw_block_ptrs.clear_dirty();
