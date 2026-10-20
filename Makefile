@@ -646,6 +646,7 @@ test_x86_debian_tooling_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.x86.tests.test_x86_debian_boot \
 		tools.x86.tests.test_x86_debian_apt \
+		tools.x86.tests.test_x86_debian_fs_crash \
 		tools.x86.tests.test_lmbench_transcript \
 		tools.riscv.tests.test_lmbench_native -v
 
@@ -784,6 +785,63 @@ test_x86_debian_apt:
 		--boots "$(X86_DEBIAN_APT_BOOTS)" \
 		--accel "$(X86_DEBIAN_APT_ACCEL)" \
 		--timeout "$(X86_DEBIAN_APT_TIMEOUT)"
+
+# Crash-consistency matrix: for each scenario and journal commit stage, crash
+# the first metadata commit of a probe boot, replay on the next boot, and
+# require the operation's invariant plus `e2fsck -fn` to hold.
+#   X86_DEBIAN_CRASH_BASE_ROOT  ext4 image copied per cell
+#   X86_DEBIAN_CRASH_SCENARIOS   subset of: create unlink rename truncate
+#   X86_DEBIAN_CRASH_STAGES      journal stages (default 1 2 3)
+X86_DEBIAN_CRASH_BASE_ROOT ?=
+X86_DEBIAN_CRASH_WORKSPACE ?= $(CURDIR)/target/x86-debian/crash
+X86_DEBIAN_CRASH_SCENARIOS ?= create unlink rename truncate
+X86_DEBIAN_CRASH_STAGES ?= 1 2 3
+X86_DEBIAN_CRASH_ACCEL ?= kvm
+X86_DEBIAN_CRASH_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_crash
+test_x86_debian_fs_crash:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_CRASH_BASE_ROOT)" || { echo "X86_DEBIAN_CRASH_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-crash: base=$(X86_DEBIAN_CRASH_BASE_ROOT) scenarios=$(X86_DEBIAN_CRASH_SCENARIOS) stages=$(X86_DEBIAN_CRASH_STAGES) accel=$(X86_DEBIAN_CRASH_ACCEL)"
+	@tools/x86/debian/fs_crash_matrix.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_CRASH_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_CRASH_WORKSPACE)" \
+		--scenarios "$(X86_DEBIAN_CRASH_SCENARIOS)" \
+		--stages "$(X86_DEBIAN_CRASH_STAGES)" \
+		--accel "$(X86_DEBIAN_CRASH_ACCEL)" \
+		--timeout "$(X86_DEBIAN_CRASH_TIMEOUT)"
+
+# fsync durability matrix: each scenario performs an operation, makes it
+# durable with fsync (and a directory fsync where the operation changes a
+# directory), then the host kills QEMU.  After a normal recovery boot the
+# operation must be present in full and `e2fsck -fn` must accept the image.
+#   X86_DEBIAN_DURABILITY_BASE_ROOT  ext4 image copied per cell
+#   X86_DEBIAN_DURABILITY_SCENARIOS  subset of:
+#                                    write rename unlink truncate dir-entry
+X86_DEBIAN_DURABILITY_BASE_ROOT ?=
+X86_DEBIAN_DURABILITY_WORKSPACE ?= $(CURDIR)/target/x86-debian/durability
+X86_DEBIAN_DURABILITY_SCENARIOS ?= write rename unlink truncate dir-entry
+X86_DEBIAN_DURABILITY_ACCEL ?= kvm
+X86_DEBIAN_DURABILITY_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_durability
+test_x86_debian_fs_durability:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_DURABILITY_BASE_ROOT)" || { echo "X86_DEBIAN_DURABILITY_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-durability: base=$(X86_DEBIAN_DURABILITY_BASE_ROOT) scenarios=$(X86_DEBIAN_DURABILITY_SCENARIOS) accel=$(X86_DEBIAN_DURABILITY_ACCEL)"
+	@tools/x86/debian/fs_durability_matrix.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_DURABILITY_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_DURABILITY_WORKSPACE)" \
+		--scenarios "$(X86_DEBIAN_DURABILITY_SCENARIOS)" \
+		--accel "$(X86_DEBIAN_DURABILITY_ACCEL)" \
+		--timeout "$(X86_DEBIAN_DURABILITY_TIMEOUT)"
 
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:
