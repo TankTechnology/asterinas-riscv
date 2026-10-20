@@ -46,8 +46,8 @@ class ProbeArtifactTests(unittest.TestCase):
             "ConditionPathIsReadWrite=/proc/sys/net/",
             "Before=sysinit.target shutdown.target",
             "ExecStart=/usr/lib/asterinas/sysctl-probe.sh",
-            "StandardOutput=console",
-            "StandardError=console",
+            "StandardOutput=journal+console",
+            "StandardError=journal+console",
             "TimeoutSec=90s",
             "ImportCredential=sysctl.*",
         ):
@@ -84,11 +84,12 @@ def _passing_probe_transcript() -> bytes:
             b"SYSCTL_PROBE begin",
             b"SYSCTL_PROBE step=read_pid_max rc=0 ms=1 value=2147483647",
             b"SYSCTL_PROBE step=read_core_pattern rc=0 ms=1 value=core",
-            b"SYSCTL_PROBE step=write_pid_max rc=0 ms=1",
+            b"SYSCTL_PROBE step=write_pid_max rc=0 ms=1\r",
             b"SYSCTL_PROBE step=readback_pid_max rc=0 ms=1 value=4194304",
             b"SYSCTL_PROBE step=write_core_pattern rc=0 ms=1",
             b"SYSCTL_PROBE step=readback_core_pattern rc=0 ms=1 value=core",
             b"SYSCTL_PROBE step=binary_all rc=0 ms=2",
+            b"sysctl-probe.sh[31]: SYSCTL_PROBE step=missing_control rc=1 ms=1 value=cat: /proc/sys/kernel/asterinas_probe_missing: No such file or directory",
             b"SYSCTL_PROBE end",
             b"[  OK  ] Started systemd-sysctl.service - Apply Kernel Variables.",
             b"[  OK  ] Reached target sysinit.target - System Initialization.",
@@ -104,11 +105,13 @@ class ProbeRunnerTests(unittest.TestCase):
 
     def test_parse_probe_markers(self):
         steps = parse_probe_markers(_passing_probe_transcript())
-        self.assertEqual(len(steps), 7)
+        self.assertEqual(len(steps), 8)
         self.assertEqual(steps[0]["step"], "read_pid_max")
         self.assertEqual(steps[0]["rc"], 0)
         self.assertIn("value=2147483647", steps[0]["detail"])
         self.assertEqual(steps[3]["step"], "readback_pid_max")
+        self.assertEqual(steps[7]["step"], "missing_control")
+        self.assertIn("No such file or directory", steps[7]["detail"])
 
     def test_classify_probe_pass(self):
         passed, reason = classify_probe(_passing_probe_transcript(), "probe")
@@ -236,7 +239,7 @@ class ProbeOrchestrationTests(unittest.TestCase):
         result = orchestrate_probe(object(), operations)
         self.assertTrue(result["passed"])
         self.assertEqual(result["reason"], "pass")
-        self.assertEqual(len(result["steps"]), 7)
+        self.assertEqual(len(result["steps"]), 8)
         self.assertEqual(result["mode"], "probe")
         self.assertEqual(operations.result, result)
 
@@ -247,7 +250,7 @@ class ProbeOrchestrationTests(unittest.TestCase):
         result = orchestrate_probe(object(), operations)
         self.assertFalse(result["passed"])
         self.assertEqual(result["reason"], "protocol-timeout")
-        self.assertEqual(len(result["steps"]), 7)
+        self.assertEqual(len(result["steps"]), 8)
 
 
 if __name__ == "__main__":

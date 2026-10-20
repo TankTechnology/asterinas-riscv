@@ -70,8 +70,8 @@ class ProbeArtifactTests(unittest.TestCase):
             "ConditionPathIsReadWrite=/proc/sys/net/",
             "Before=sysinit.target shutdown.target",
             "ExecStart=/usr/lib/asterinas/sysctl-probe.sh",
-            "StandardOutput=console",
-            "StandardError=console",
+            "StandardOutput=journal+console",
+            "StandardError=journal+console",
             "TimeoutSec=90s",
             "ImportCredential=sysctl.*",
         ):
@@ -202,8 +202,8 @@ ConditionPathIsReadWrite=/proc/sys/net/
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/lib/asterinas/sysctl-probe.sh
-StandardOutput=console
-StandardError=console
+StandardOutput=journal+console
+StandardError=journal+console
 TimeoutSec=90s
 ImportCredential=sysctl.*
 ```
@@ -997,7 +997,7 @@ docker run --rm \
 ```
 
 Expected: the unit contains `ExecStart=/usr/lib/asterinas/sysctl-probe.sh`
-and `StandardOutput=console`; the probe script exists with mode 0755.
+and `StandardOutput=journal+console`; the probe script exists with mode 0755.
 
 - [ ] **Step 3: Run the S1 probe**
 
