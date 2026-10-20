@@ -22,15 +22,29 @@ Validation lives in `super_block.rs` (`SuperBlock::try_from_with_journal`).
 | `errors=` behavior | `continue` | `remount-ro`, `panic` |
 | Revision | 0 (GoodOld), 1 (Dynamic) | other values |
 | Inode size | 128..=4096, power of two | smaller, larger, non-power-of-two |
-| Incompat features | `FILETYPE`, `EXTENTS`, `RECOVER` | `64BIT`, `META_BG`, `FLEX_BG`, `INLINE_DATA`, `MMP`, ... |
-| RO-compat features | `SPARSE_SUPER`, `LARGE_FILE`, `BTREE_DIR` | `METADATA_CSUM`, `QUOTA`, `HUGE_FILE`, `GDT_CSUM`, ... |
+| Incompat features | `FILETYPE`, `EXTENTS`, `RECOVER`, `64BIT`, `FLEX_BG` | `META_BG`, `INLINE_DATA`, `MMP`, ... |
+| RO-compat features | `SPARSE_SUPER`, `LARGE_FILE`, `BTREE_DIR`, `HUGE_FILE`, `DIR_NLINK`, `EXTRA_ISIZE` | `METADATA_CSUM`, `GDT_CSUM`, `QUOTA`, ... |
 | Compat features | not validated (unknown bits are ignored) | - |
 | Fragments | fragment size must equal block size | - |
+| Group descriptors | 32 bytes, or 64 bytes with `64BIT` | other sizes, non-zero high block words |
 
-Consequences: images with `metadata_csum`, 64-bit block numbers, `flex_bg`, or
-`inline_data` cannot be mounted. The Debian builder therefore calls `mke2fs`
-with those features disabled; `build_rootfs.sh` also runs `e2fsck -fy` and
-requires a clean `e2fsck -fn` before publishing an image.
+Consequences: images with `metadata_csum`, metablock groups or `inline_data`
+cannot be mounted. The Debian builder therefore calls `mke2fs` with those
+features disabled; `build_rootfs.sh` also runs `e2fsck -fy` and requires a
+clean `e2fsck -fn` before publishing an image.
+
+`64BIT` is supported for images whose block numbers still fit in 32 bits: the
+descriptor stride becomes `s_desc_size` (at least 64 bytes), the three high
+block-number words of every descriptor must be zero, and the high block-count
+words of the superblock must be zero as well. Only the classic 32-byte
+descriptor body is rewritten; the high words and the unused tail stay as they
+are on disk. `FLEX_BG` lifts the mount-time requirement that a group's block
+bitmap, inode bitmap and inode table lie inside that group's own block range:
+`mke2fs` packs them into the first group of each flex group, and their
+allocation is recorded by the bitmap of the group that physically holds them.
+`HUGE_FILE`, `DIR_NLINK` and `EXTRA_ISIZE` are capability bits; ordinary files
+keep sector-based `i_blocks` accounting and the 32-byte inode extras that
+`i_extra_isize` already describes.
 
 ## Feature matrix
 
@@ -179,7 +193,7 @@ marker is also cleared only after a device flush of the replayed blocks.
 
 | Feature | Status | Notes |
 |---|---|---|
-| Block/inode bitmap allocation | ✅ | per block group; no `flex_bg` |
+| Block/inode bitmap allocation | ✅ | per block group; `flex_bg` bitmaps and inode tables may live in another group |
 | Fragmentation-aware placement | ❌ | simple goal-based allocation; TODO in `block_group.rs` |
 | Read-only remount and journal finalization | ✅ | clears `RECOVER` on a clean shutdown |
 | Crash recovery | ✅ | validated with `asterinas.ext4_fault_stage` fault injection |
@@ -196,18 +210,21 @@ The current gates cover the paths package management exercises:
 
 Known gaps that a package workload can still hit:
 
-1. **Extent files that need a hole or a mid-file write.** Allocation is
-   append-only, now at depth 0 and depth 1 (a full inline tree is promoted to
-   a leaf). Writing into a hole or into the middle of an extent file still
-   fails with `EOPNOTSUPP`; most Debian files are small or indirect-mapped,
-   which is why installation works today.
+1. **Writing into a depth-one extent hole.** Allocation is append-only, now at
+   depth 0 and depth 1 (a full inline tree is promoted to a leaf), and a write
+   into a depth-0 hole inserts a new in-line record in logical order. A hole in
+   a depth-1 tree still needs a leaf split and reports `EOPNOTSUPP`; most
+   Debian files are small or indirect-mapped, which is why installation works
+   today.
 2. **`metadata_csum` images.** Any image produced by default `mke2fs` on a
    modern distribution is rejected at mount unless the builder disables the
-   feature.
-3. **POSIX ACLs and xattrs larger than one block.**
-4. **Journal edge cases:** revoke-only transactions, deleted tags, and
-   non-contiguous journal inodes.
-5. **`O_TMPFILE` and default ACL inheritance.**
+   feature. `64BIT` and `FLEX_BG` themselves are accepted.
+3. **Xattrs larger than one inode.** Values that need an external value block
+   are not implemented; POSIX ACLs themselves are.
+4. **Journal edge cases:** revoke-only transactions, deleted tags, journal
+   checksums, and non-contiguous journal inodes.
+5. **Default ACL inheritance from directories.**
+6. **Depth-two extent trees.**
 
 The next storage milestone is therefore not "more fsck coverage" but extending
 extent allocation to depth-1 trees (existing and new holes), which is the main
@@ -219,6 +236,12 @@ remaining blocker for arbitrary package upgrades and file rewrites.
   trees, directory entries, truncation, xattr layout, timestamp extras and
   sync ordering.
 - Host gates: `test_x86_debian_storage` and `test_x86_debian_apt`.
+- `fs_ext4_features_check.sh` (`make test_x86_debian_fs_ext4_features`)
+  converts the Debian image to 64-byte descriptors and `FLEX_BG`, and mounts a
+  fresh `mke2fs -O 64bit,flex_bg` image as a second disk. It checks the feature
+  words and descriptor high words before and after every boot, requires at
+  least one cross-group metadata pointer in the fresh image, re-reads every
+  written file after a remount, and runs `e2fsck -fn` on both images.
 - Every gate checks `e2fsck -fn` after a clean shutdown; crash tests replay the
   journal from a fault-injected boot.
 

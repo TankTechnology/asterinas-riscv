@@ -883,6 +883,59 @@ e2fsck -fn clean
 The leaf block is written through the inode's indirect-block cache, so it is
 staged into the journal transaction like any other metadata block.
 
+## 64-bit descriptors and `flex_bg`
+
+Mount validation rejected `64BIT` and `FLEX_BG` outright, so the only images
+that mounted were those whose builder had disabled the features. Supporting
+them needed two changes:
+
+- `s_desc_size` (offset 0xFE) is now honoured. Without `64BIT` the descriptor
+  stride is fixed at 32 bytes; with it the stride is at least 64 bytes, read
+  from the superblock. The three high block-number words in the descriptor
+  extension and the superblock's high block-count words must all be zero —
+  the implementation addresses blocks with `u32` and refuses to truncate.
+  Only the classic 32-byte body is rewritten, so the high words and the
+  `bg_flags`/checksum tail stay untouched.
+- With `FLEX_BG`, `mke2fs` packs the block bitmap, inode bitmap and inode table
+  of several groups into the first group of a flex group. The mount-time check
+  that required every metadata pointer to fall inside its own group's range is
+  skipped for such images; allocation remains safe because the bitmap of the
+  group that physically holds the block marks it allocated. The no-`flex_bg`
+  path keeps the strict per-group validation.
+
+The Debian image (converted with `resize2fs -b` + `tune2fs -O 64bit,flex_bg`)
+exercises the 64-byte descriptor stride. A fresh 256 MiB
+`mke2fs -O 64bit,flex_bg,^metadata_csum` image is attached as a second
+virtio-blk disk and exercises the cross-group layout; `dumpe2fs -g` shows
+group 1's bitmap at block 34 and inode table at block 1061, all inside group 0's
+range:
+
+```
+group:block:super:gdt:bbitmap:ibitmap:itable
+0:0:0:1-1:33:35:37
+1:32768:32768:32769-32769:34:36:1061
+```
+
+Modern `mke2fs` also turns on the `HUGE_FILE`, `DIR_NLINK` and `EXTRA_ISIZE`
+RO-compat capability bits; they permit an encoding but do not require it, so
+they are accepted while `METADATA_CSUM` and `GDT_CSUM` remain rejected.
+
+`tools/x86/debian/fs_ext4_features_check.sh` runs two boots. The write boot
+creates and fsyncs files on the root filesystem and on the mounted flex_bg
+image; the verify boot remounts both and re-reads every file. The host checks
+the feature words and descriptor high words before and after each boot, and
+runs `e2fsck -fn` on both images:
+
+```
+fs-ext4-features: write boot
+ext4-features: verify boot (fresh mount)
+PASS (ok=True problems=0)
+e2fsck -fn: both images clean
+```
+
+The boot script gained `--extra-drive PATH` (repeatable) for the second disk;
+the guest sees it as `/dev/vdb` through devtmpfs.
+
 ## Socket visibility: `/proc/net` and `NETLINK_SOCK_DIAG`
 
 `ss`, `ip`, and the Debian boot scripts expect to see the socket table. The

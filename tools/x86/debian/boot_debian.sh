@@ -27,6 +27,9 @@ Options:
   --kernel PATH       Asterinas x86_64 multiboot2 ELF (required).
   --initramfs PATH    Stage1 cpio initramfs (required).
   --root-image PATH   Debian ext2/ext4 root image (required).
+  --extra-drive PATH  Attach PATH as an additional virtio-blk disk. May be
+                      given more than once; the disks appear as /dev/vdb,
+                      /dev/vdc, ... after the root image.
   --output PATH       Transcript file (default: target/x86-debian/boot.transcript).
   --wait-for TEXT     Exit successfully once TEXT appears in the transcript.
   --timeout SECONDS   Deadline for --wait-for (default: 1800).
@@ -76,6 +79,7 @@ ROOT_INIT_PATH=""
 ACCEL="tcg"
 DEBUGCON=""
 SERIAL_LOG=""
+EXTRA_DRIVES=()
 
 while (( $# > 0 )); do
     case "$1" in
@@ -86,7 +90,7 @@ while (( $# > 0 )); do
             ;;
         --wait-for | --timeout | --output | --kernel | --initramfs | --root-image | \
             --memory | --smp | --loglevel | --qemu | --append-extra | --root-init-path | \
-            --accel | --debugcon | --serial-log)
+            --accel | --debugcon | --serial-log | --extra-drive)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --kernel) KERNEL="$2" ;;
@@ -104,6 +108,7 @@ while (( $# > 0 )); do
                 --accel) ACCEL="$2" ;;
                 --debugcon) DEBUGCON="$2" ;;
                 --serial-log) SERIAL_LOG="$2" ;;
+                --extra-drive) EXTRA_DRIVES+=("$2") ;;
             esac
             shift 2
             ;;
@@ -132,9 +137,12 @@ fi
 [[ -n "$KERNEL" ]] || die_usage "--kernel is required"
 [[ -n "$INITRAMFS" ]] || die_usage "--initramfs is required"
 [[ -n "$ROOT_IMAGE" ]] || die_usage "--root-image is required"
-for path in "$KERNEL" "$INITRAMFS" "$ROOT_IMAGE" "$OUTPUT"; do
+for path in "$KERNEL" "$INITRAMFS" "$ROOT_IMAGE" "$OUTPUT" "${EXTRA_DRIVES[@]}"; do
     [[ "$path" != *$'\n'* && "$path" != *$'\r'* && "$path" != *' '* ]] ||
         die_usage "path must not contain whitespace or newlines: $path"
+done
+for path in "${EXTRA_DRIVES[@]}"; do
+    [[ -f "$path" ]] || die_usage "extra drive image is missing: $path"
 done
 
 # The guest console. QEMU wires `hvc0` to the same chardev as the transcript,
@@ -169,6 +177,13 @@ qemu_argv() {
         -kernel "$KERNEL" \
         -initrd "$INITRAMFS" \
         -append "$KERNEL_APPEND"
+    local index=0
+    for drive in "${EXTRA_DRIVES[@]}"; do
+        index=$((index + 1))
+        printf '%s\n' \
+            -drive "if=none,format=raw,id=extra$index,file=$drive" \
+            -device "virtio-blk-pci,drive=extra$index,disable-legacy=on,disable-modern=off"
+    done
     if [[ -n "$DEBUGCON" ]]; then
         printf '%s\n' -debugcon "file:$DEBUGCON"
     fi

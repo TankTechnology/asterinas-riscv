@@ -40,7 +40,7 @@ use super::{
         EXTRA_MTIME_OFFSET, EXTRA_TIMES_END,
     },
     prelude::*,
-    super_block::SuperBlock,
+    super_block::{FeatureInCompatSet, SuperBlock},
 };
 use crate::{fs::utils::IdBitmap, vm::page_cache::PageRun};
 
@@ -66,6 +66,8 @@ pub(super) struct BlockGroup {
     nr_inodes_per_group: u32,
     /// Cached geometry: inode size in bytes.
     inode_size: usize,
+    /// Cached geometry: on-disk size of one group descriptor.
+    desc_size: usize,
     /// Inode table page cache backend.
     _inode_table_backend: Arc<InodeTableBackend>,
     /// Inode table page cache.
@@ -96,10 +98,8 @@ impl BlockGroup {
         block_device: Arc<dyn BlockDevice>,
         fs: Weak<Ext2>,
     ) -> Result<Self> {
-        let offset = group_idx * size_of::<RawBlockGroup>();
-        let raw_group = group_descs
-            .read_val::<RawBlockGroup>(offset)
-            .map_err(|_| Error::with_message(Errno::EIO, "failed to read group descriptor"))?;
+        let desc_size = sb.desc_size() as usize;
+        let raw_group = read_group_descriptor(group_descs, group_idx, desc_size)?;
         let group_desc = BlockGroupDesc::from(raw_group);
 
         // Cache geometry from `SuperBlock` at load time.
@@ -132,6 +132,8 @@ impl BlockGroup {
             first_block_no,
             last_block_no,
             nr_inode_table_blocks_per_group,
+            sb.feature_incompat()
+                .contains(FeatureInCompatSet::FLEX_BG),
         )?;
 
         // Create `PageCache` for inode table backed by `InodeTableBackend`.
@@ -158,6 +160,7 @@ impl BlockGroup {
             nr_inode_table_blocks_per_group,
             nr_inodes_per_group,
             inode_size,
+            desc_size,
             _inode_table_backend: backend,
             inode_table_cache,
             inode_cache: RwMutex::new(BTreeMap::new()),
@@ -176,8 +179,7 @@ impl BlockGroup {
             .upgrade()
             .ok_or_else(|| Error::with_message(Errno::EIO, "filesystem already dropped"))?;
 
-        let offset = self.group_idx * size_of::<RawBlockGroup>();
-        let raw_group = group_descs.read_val::<RawBlockGroup>(offset)?;
+        let raw_group = read_group_descriptor(group_descs, self.group_idx, self.desc_size)?;
         let group_desc = BlockGroupDesc::from(raw_group);
         let block_bitmap = Self::load_block_bitmap(
             fs.block_device(),
@@ -293,7 +295,7 @@ impl BlockGroup {
             let metadata = self.metadata.read();
             if metadata.desc.is_dirty() {
                 let raw_group = RawBlockGroup::from(*metadata.desc);
-                let offset = self.group_idx * size_of::<RawBlockGroup>();
+                let offset = self.group_idx * self.desc_size;
                 group_descs.write_val(offset, &raw_group)?;
                 Some(raw_group)
             } else {
@@ -873,7 +875,23 @@ impl BlockGroupDesc {
         first_block: u32,
         last_block: u32,
         nr_inode_table_blocks_per_group: u32,
+        flex_bg: bool,
     ) -> Result<()> {
+        if flex_bg {
+            // With `FLEX_BG` the bitmaps and inode table of this group may be
+            // stored anywhere inside the same flex group, so this group's
+            // block bitmap does not describe them; the bitmap of the group
+            // that physically contains them does. Only the presence of the
+            // pointers can be checked here, and `e2fsck` verifies the layout.
+            if self.block_bitmap_bid == 0
+                || self.inode_bitmap_bid == 0
+                || self.inode_table_bid == 0
+            {
+                return_errno_with_message!(Errno::EINVAL, "missing group metadata block");
+            }
+            return Ok(());
+        }
+
         let max_bit = last_block - first_block;
 
         let is_valid_fn = |bid: u32| -> bool {
@@ -926,6 +944,41 @@ pub(super) struct RawBlockGroup {
 }
 
 const_assert!(size_of::<RawBlockGroup>() == 32);
+
+/// Reads the descriptor of `group_idx` from the in-memory descriptor table.
+///
+/// The first 32 bytes have the same layout in both the classic and the
+/// `64BIT` descriptor formats. A 64-byte descriptor extends it with high
+/// block-number words; Asterinas cannot address those blocks, so a non-zero
+/// value means the image exceeds the supported 32-bit block space and is
+/// rejected instead of silently pointing at the wrong block.
+pub(super) fn read_group_descriptor(
+    group_descs: &USegment,
+    group_idx: usize,
+    desc_size: usize,
+) -> Result<RawBlockGroup> {
+    let offset = group_idx * desc_size;
+    let raw_group = group_descs
+        .read_val::<RawBlockGroup>(offset)
+        .map_err(|_| Error::with_message(Errno::EIO, "failed to read group descriptor"))?;
+
+    if desc_size >= 64 {
+        // bg_block_bitmap_hi, bg_inode_bitmap_hi, bg_inode_table_hi.
+        for word_offset in [32usize, 36, 40] {
+            let high: u32 = group_descs.read_val(offset + word_offset).map_err(|_| {
+                Error::with_message(Errno::EIO, "failed to read group descriptor")
+            })?;
+            if high != 0 {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "64-bit group descriptor block numbers are unsupported"
+                );
+            }
+        }
+    }
+
+    Ok(raw_group)
+}
 
 /// The group metadata committed by one transaction.
 ///

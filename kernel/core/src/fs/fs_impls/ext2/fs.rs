@@ -26,7 +26,7 @@ use device_id::DeviceId;
 use ostd::mm::{HasSize, io::util::HasVmReaderWriter};
 
 use super::{
-    block_group::{BlockGroup, RawBlockGroup},
+    block_group::BlockGroup,
     inode::{FilePerm, Inode, InodeDesc, InodeTimeExtras, RawInode},
     journal, metadata_txn,
     prelude::*,
@@ -157,7 +157,7 @@ impl Ext2 {
 
         let group_descriptors_segment = {
             let nr_block_groups = super_block.nr_block_groups() as usize;
-            let group_desc_bytes = nr_block_groups * size_of::<RawBlockGroup>();
+            let group_desc_bytes = nr_block_groups * super_block.desc_size() as usize;
             let nblocks = group_desc_bytes.div_ceil(BLOCK_SIZE);
 
             let segment = FrameAllocOptions::new()
@@ -339,8 +339,10 @@ impl Ext2 {
         *self.super_block.write() = Dirty::new(fresh_super_block);
 
         let nr_groups = self.block_groups.len();
-        let desc_bytes = nr_groups * size_of::<RawBlockGroup>();
+        let desc_size = self.super_block.read().desc_size() as usize;
+        let desc_bytes = nr_groups * desc_size;
         let nblocks = desc_bytes.div_ceil(BLOCK_SIZE);
+        debug_assert!(desc_bytes <= self.group_descriptors_segment.size());
         let desc_bid = self.super_block.read().group_descriptors_bid(0);
         let mut bytes = vec![0u8; nblocks * BLOCK_SIZE];
         {
@@ -1326,10 +1328,13 @@ mod test {
     use super::*;
     use crate::{
         fs::{
-            fs_impls::ext2::test_utils::{
-                BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
-                RawInodeBuilder, assert_errno, create_file, default_fixture, make_valid_group_desc,
-                make_valid_super_block,
+            fs_impls::ext2::{
+                block_group::RawBlockGroup,
+                test_utils::{
+                    BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
+                    RawInodeBuilder, assert_errno, create_file, default_fixture,
+                    make_valid_group_desc, make_valid_super_block,
+                },
             },
             vfs::file_system::FileSystem as FileSystemTrait,
         },
@@ -1338,8 +1343,7 @@ mod test {
 
     fn expected_overhead_blocks(sb: &SuperBlock) -> u32 {
         let nr_block_groups = sb.nr_block_groups() as usize;
-        let gdb_count =
-            ((nr_block_groups * size_of::<RawBlockGroup>()).div_ceil(BLOCK_SIZE)) as u32;
+        let gdb_count = ((nr_block_groups * sb.desc_size() as usize).div_ceil(BLOCK_SIZE)) as u32;
         let mut overhead = sb.first_data_block();
 
         for group_idx in 0..nr_block_groups {
@@ -1409,7 +1413,7 @@ mod test {
         assert!(!ext2.block_group(0).is_desc_dirty());
 
         let nr_block_groups = sb.nr_block_groups() as usize;
-        let desc_bytes = nr_block_groups * size_of::<RawBlockGroup>();
+        let desc_bytes = nr_block_groups * sb.desc_size() as usize;
         let primary_desc_offset = Bid::new(sb.group_descriptors_bid(0) as u64).to_offset();
 
         let mut primary_desc = vec![0u8; desc_bytes];
