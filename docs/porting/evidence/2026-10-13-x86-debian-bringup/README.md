@@ -778,8 +778,14 @@ e2fsck -fn clean
 
 The checks cover the named-user mask, a named-group entry, the owning group,
 the other entry, the root override, and the raw bytes round-tripping through
-`getxattr`. Default ACL inheritance and `chmod`-driven mask updates are not
-implemented yet.
+`getxattr`.
+
+`chmod` now keeps the ACL consistent (`posix_acl_chmod` semantics). The gate
+runs `chmod 0604` on an ACL with a mask and checks that the mask drops to
+zero while the other entry gains read, which flips the enforcement result
+for a named user from allowed to denied; a minimal three-entry ACL gets its
+group entry rewritten by `chmod 0600` instead. Both ACLs and their decisions
+survive the remount. Default ACL inheritance is not implemented yet.
 
 ## `fallocate` punch-hole
 

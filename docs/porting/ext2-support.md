@@ -92,7 +92,7 @@ linear; `e2fsck -D` can rebuild an index later.
 |---|---|---|
 | `user.*`, `trusted.*`, `security.*` | ✅ | one xattr block per inode |
 | External value blocks (`i_file_acl` pointing to EA blocks) | ❌ | `EIO` on read |
-| POSIX ACLs (`system.posix_acl_*`) | 🟡 | access ACLs stored and enforced (owner, named user, group class with mask, other); default ACLs are stored but not inherited |
+| POSIX ACLs (`system.posix_acl_*`) | 🟡 | access ACLs stored and enforced (owner, named user, group class with mask, other); `chmod` keeps the mask/group/other entries in sync; default ACLs are stored but not inherited |
 | xattr block sharing | ❌ | reference count is always 1 |
 | xattr capacity | 🟡 | value must fit the single xattr block |
 
@@ -107,10 +107,16 @@ owning-group entry and every matching named group entry, masked when the ACL
 has a mask; everything else uses the other entry. `DAC_OVERRIDE` still
 bypasses the check before the ACL is consulted.
 
+`chmod` follows Linux's `posix_acl_chmod`: an ACL with a mask has its owner
+entry, mask and other entry rewritten from the new mode bits (the group
+entry is left alone); a minimal three-entry ACL has its group entry
+rewritten instead. An ACL that has named entries but no mask is malformed
+and is left untouched.
+
 Not yet implemented: default ACL inheritance on create (the attribute is
-stored and readable but new children do not derive an ACL from it), and
-`chmod` syncing the ACL mask. An invalid ACL value fails the access check
-with `EIO`/`EINVAL` rather than being ignored.
+stored and readable but new children do not derive an ACL from it). An
+invalid ACL value fails the access check with `EIO`/`EINVAL` rather than
+being ignored.
 
 ### Journal (JBD2)
 
@@ -201,7 +207,7 @@ Known gaps that a package workload can still hit:
 3. **POSIX ACLs and xattrs larger than one block.**
 4. **Journal edge cases:** revoke-only transactions, deleted tags, and
    non-contiguous journal inodes.
-5. **`O_TMPFILE`, default ACL inheritance and `chmod` mask sync, and punch-hole on depth-one extent trees.**
+5. **`O_TMPFILE`, default ACL inheritance, and punch-hole on depth-one extent trees.**
 
 The next storage milestone is therefore not "more fsck coverage" but extending
 extent allocation to depth-1 trees (existing and new holes), which is the main
@@ -286,8 +292,9 @@ the contents are re-checked.  Result: **PASS**, `e2fsck -fn` clean.
 files whose mode bits alone deny every non-root access, then runs reads and
 writes as the owner, a named user, a named group and unrelated users. It
 checks that named users are masked, the group class applies, other matches
-nothing and root bypasses, re-runs every decision after a remount and
-requires `e2fsck -fn`.  Result: **PASS**.
+nothing and root bypasses, and that `chmod` rewrites the mask (or the group
+entry of a minimal ACL) consistently with the new mode; it re-runs every
+decision after a remount and requires `e2fsck -fn`.  Result: **PASS**.
 
 `fs_punch_hole_check.sh` (`make test_x86_debian_fs_punch_hole`) covers holes
 inside the direct blocks, across the direct/single-indirect boundary, up to

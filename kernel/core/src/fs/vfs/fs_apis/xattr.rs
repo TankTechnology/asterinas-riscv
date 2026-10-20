@@ -286,4 +286,65 @@ impl PosixAcl {
     fn perm_of(&self, tag: PosixAclTag) -> Option<u8> {
         self.entries.iter().find(|e| e.tag == tag).map(|e| e.perm)
     }
+
+    /// Returns the ACL value with its owner, group-class and other entries
+    /// rewritten from `mode`, following Linux `posix_acl_chmod`.
+    ///
+    /// An ACL with a mask has the mask set from the group bits and keeps the
+    /// group entry; a minimal ACL (only owner, group and other) has its group
+    /// entry rewritten.  Anything else is malformed and left untouched.
+    pub(crate) fn with_mode(&self, mode: u16) -> Option<Vec<u8>> {
+        let owner = ((mode >> 6) & 0o7) as u8;
+        let group = ((mode >> 3) & 0o7) as u8;
+        let other = (mode & 0o7) as u8;
+        let has_named = self
+            .entries
+            .iter()
+            .any(|e| matches!(e.tag, PosixAclTag::User(_) | PosixAclTag::Group(_)));
+
+        let mut entries = self.entries.clone();
+        if self.has_mask {
+            for entry in &mut entries {
+                match entry.tag {
+                    PosixAclTag::UserObj => entry.perm = owner,
+                    PosixAclTag::Mask => entry.perm = group,
+                    PosixAclTag::Other => entry.perm = other,
+                    _ => {}
+                }
+            }
+        } else if !has_named {
+            for entry in &mut entries {
+                match entry.tag {
+                    PosixAclTag::UserObj => entry.perm = owner,
+                    PosixAclTag::GroupObj => entry.perm = group,
+                    PosixAclTag::Other => entry.perm = other,
+                    _ => {}
+                }
+            }
+        } else {
+            return None;
+        }
+
+        Some(Self::encode(&entries))
+    }
+
+    /// Serializes entries back into the ext4 ACL value.
+    fn encode(entries: &[PosixAclEntry]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + entries.len() * 8);
+        out.extend_from_slice(&Self::VERSION.to_le_bytes());
+        for entry in entries {
+            let (tag, id) = match entry.tag {
+                PosixAclTag::UserObj => (Self::TAG_USER_OBJ, u32::MAX),
+                PosixAclTag::User(id) => (Self::TAG_USER, id),
+                PosixAclTag::GroupObj => (Self::TAG_GROUP_OBJ, u32::MAX),
+                PosixAclTag::Group(id) => (Self::TAG_GROUP, id),
+                PosixAclTag::Mask => (Self::TAG_MASK, u32::MAX),
+                PosixAclTag::Other => (Self::TAG_OTHER, u32::MAX),
+            };
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&u16::from(entry.perm).to_le_bytes());
+            out.extend_from_slice(&id.to_le_bytes());
+        }
+        out
+    }
 }

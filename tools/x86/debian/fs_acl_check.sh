@@ -144,6 +144,26 @@ ACL_B = [
     (TAG_MASK, 0o6, UNDEFINED_ID),
     (TAG_OTHER, 0o0, UNDEFINED_ID),
 ]
+# ACL_A after `chmod 0604`: owner stays rw, the mask follows the group bits
+# (none) and other becomes r.
+ACL_C_AFTER_CHMOD = [
+    (TAG_USER_OBJ, 0o6, UNDEFINED_ID),
+    (TAG_USER, 0o4, 1001),
+    (TAG_GROUP_OBJ, 0o6, UNDEFINED_ID),
+    (TAG_MASK, 0o0, UNDEFINED_ID),
+    (TAG_OTHER, 0o4, UNDEFINED_ID),
+]
+# A minimal ACL has no mask; chmod rewrites its group entry.
+ACL_D = [
+    (TAG_USER_OBJ, 0o6, UNDEFINED_ID),
+    (TAG_GROUP_OBJ, 0o4, UNDEFINED_ID),
+    (TAG_OTHER, 0o4, UNDEFINED_ID),
+]
+ACL_D_AFTER_CHMOD = [
+    (TAG_USER_OBJ, 0o6, UNDEFINED_ID),
+    (TAG_GROUP_OBJ, 0o0, UNDEFINED_ID),
+    (TAG_OTHER, 0o0, UNDEFINED_ID),
+]
 
 READ = "open(__import__('sys').argv[1], 'rb').read()"
 WRITE = "open(__import__('sys').argv[1], 'r+b')"
@@ -159,6 +179,11 @@ EXPECTED = {
     'b_other_read': False,
     'b_user1001_write': False,
     'acl_bytes_match': True,
+    'c_acl_mode_match': True,
+    'c_user1001_read': False,
+    'c_other_read': True,
+    'd_acl_mode_match': True,
+    'd_other_read': False,
 }
 
 
@@ -185,7 +210,12 @@ def run_as(uid, gid, code, path):
 def setup():
     os.makedirs(ROOT, exist_ok=True)
     os.chmod(ROOT, 0o777)
-    for name, marker, acl in (('a.bin', b'A', ACL_A), ('b.bin', b'B', ACL_B)):
+    for name, marker, acl in (
+        ('a.bin', b'A', ACL_A),
+        ('b.bin', b'B', ACL_B),
+        ('c.bin', b'C', ACL_A),
+        ('d.bin', b'D', ACL_D),
+    ):
         path = os.path.join(ROOT, name)
         with open(path, 'wb') as f:
             f.write(marker * 4096)
@@ -198,6 +228,10 @@ def setup():
         fd = os.open(path, os.O_RDONLY)
         os.fsync(fd)
         os.close(fd)
+
+    # chmod must rewrite the ACL's mask/group/other entries.
+    os.chmod(os.path.join(ROOT, 'c.bin'), 0o604)
+    os.chmod(os.path.join(ROOT, 'd.bin'), 0o600)
 
 
 def observe():
@@ -214,6 +248,13 @@ def observe():
         'b_other_read': run_as(1003, 1003, READ, b),
         'b_user1001_write': run_as(1001, 1001, WRITE, b),
         'acl_bytes_match': os.getxattr(a, ACL_ATTR) == acl_bytes(ACL_A),
+        'c_acl_mode_match': os.getxattr(os.path.join(ROOT, 'c.bin'), ACL_ATTR)
+            == acl_bytes(ACL_C_AFTER_CHMOD),
+        'c_user1001_read': run_as(1001, 1001, READ, os.path.join(ROOT, 'c.bin')),
+        'c_other_read': run_as(1002, 1002, READ, os.path.join(ROOT, 'c.bin')),
+        'd_acl_mode_match': os.getxattr(os.path.join(ROOT, 'd.bin'), ACL_ATTR)
+            == acl_bytes(ACL_D_AFTER_CHMOD),
+        'd_other_read': run_as(1002, 1002, READ, os.path.join(ROOT, 'd.bin')),
     }
 
 
