@@ -1084,6 +1084,8 @@ X86_DEBIAN_EA_BASE_ROOT ?=
 X86_DEBIAN_EA_WORKSPACE ?= $(CURDIR)/target/x86-debian/ea
 X86_DEBIAN_EA_ACCEL ?= kvm
 X86_DEBIAN_EA_TIMEOUT ?= 1800
+# Set to "1 2 3" to interrupt the creation commit at each journal stage.
+X86_DEBIAN_EA_CRASH_STAGES ?=
 
 .PHONY: test_x86_debian_fs_ea_inode
 test_x86_debian_fs_ea_inode:
@@ -1097,7 +1099,8 @@ test_x86_debian_fs_ea_inode:
 		--base-root "$(X86_DEBIAN_EA_BASE_ROOT)" \
 		--workspace "$(X86_DEBIAN_EA_WORKSPACE)" \
 		--accel "$(X86_DEBIAN_EA_ACCEL)" \
-		--timeout "$(X86_DEBIAN_EA_TIMEOUT)"
+		--timeout "$(X86_DEBIAN_EA_TIMEOUT)" \
+		$(if $(X86_DEBIAN_EA_CRASH_STAGES),--crash-stages "$(X86_DEBIAN_EA_CRASH_STAGES)")
 
 # POSIX ACL gate: store system.posix_acl_access, run reads/writes as different
 # users (owner, named user, named group, other, root override), re-check after

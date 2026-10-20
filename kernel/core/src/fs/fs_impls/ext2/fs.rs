@@ -979,6 +979,15 @@ impl Ext2 {
         Ok(())
     }
 
+    /// Acquires the metadata commit serialization lock.
+    ///
+    /// A caller that stages several related metadata updates which must
+    /// become durable together takes this guard before touching the staged
+    /// state. Commits also take it, so no commit can publish half of the set.
+    pub(super) fn lock_sync(&self) -> MutexGuard<'_, ()> {
+        self.sync_lock.lock()
+    }
+
     /// Stages one metadata block for the next commit.
     ///
     /// The block does not reach the device here. It joins the rest of the

@@ -147,6 +147,12 @@ the reference count. The EA inode's blocks are charged to the owner's
 without `ea_inode` keep the block-only limit and reject larger values with
 `ERANGE`.
 
+The EA inode, its bitmaps, the xattr block and the owner's `i_file_acl` are
+staged while holding the filesystem commit lock, so a commit cannot publish
+the inode without the entry that references it. Crash cells that interrupt
+the commit at journal stages 1, 2 and 3 recover with the value either fully
+present or absent, and `e2fsck -fn` clean.
+
 ### POSIX ACLs
 
 Both `system.posix_acl_access` and `system.posix_acl_default` are stored as
@@ -258,9 +264,7 @@ Known gaps that a package workload can still hit:
    commit are rejected at mount, and a non-contiguous journal inode cannot be
    replayed.
 2. **xattr block sharing** is not implemented (`ref_count` is always one), and
-   EA inodes are not deduplicated. EA inode creation is not yet protected by
-   the orphan list, so a crash between creating the inode and committing the
-   xattr block can leave an unreferenced EA inode for `e2fsck` to clear.
+   EA inodes are not deduplicated (each large value owns its own EA inode).
 
 Default `mke2fs` images (`64bit`, `flex_bg`, `metadata_csum`, `csum_seed`) now
 mount and pass `e2fsck -fn` after real write workloads. The next storage
@@ -371,7 +375,10 @@ xattr block and requires the two large entries to carry a non-zero
 `e_value_inum` while the small one stays inline. Boot 2 verifies all three
 from their EA inodes, removes the 32 KiB attribute and confirms `ENODATA`.
 `e2fsck -fn` after each boot validates the EA inode's flag, hash, reference
-count, size, blocks and the owner's `i_blocks`. Result: **PASS**.
+count, size, blocks and the owner's `i_blocks`. With `--crash-stages "1 2 3"`
+the gate also interrupts the creation commit at each journal stage, recovers,
+and requires the value to be either fully present or absent with a clean
+image. Result: **PASS**.
 
 `fs_fallocate_check.sh` (`make test_x86_debian_fs_fallocate`) covers
 `ZERO_RANGE` over an existing range, past EOF, and with `KEEP_SIZE`, plus

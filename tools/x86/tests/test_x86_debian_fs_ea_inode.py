@@ -74,6 +74,12 @@ class FsEaInodeArgumentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("--settle must be a non-negative integer", result.stderr)
 
+    def test_crash_stage_is_validated(self) -> None:
+        result = run_script(*self.required_arguments(), "--crash-stages", "4")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--crash-stages entries must be 1, 2 or 3", result.stderr)
+
     def test_missing_input_file_is_rejected(self) -> None:
         self.kernel.unlink()
         result = run_script(*self.required_arguments())

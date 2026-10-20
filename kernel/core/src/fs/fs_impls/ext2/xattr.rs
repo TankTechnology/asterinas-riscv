@@ -205,6 +205,10 @@ impl Xattr {
             return_errno_with_message!(Errno::ERANGE, "xattr value is too large");
         }
 
+        // Keep the EA inode, its bitmaps, the xattr block and the owner's
+        // `i_file_acl` in one commit: a commit that interleaves would publish
+        // an EA inode whose xattr entry is not durable yet.
+        let _sync_guard = fs.lock_sync();
         self.cache
             .write()
             .set_entry(target_index, target_name, value, flags)
@@ -245,6 +249,8 @@ impl Xattr {
     /// Frees the xattr block if this was the last entry in it.
     pub(super) fn remove_xattr(&self, name: XattrName) -> Result<()> {
         let (target_index, target_name) = Self::parse_target_name(name)?;
+        let fs = self.cache.read().fs()?;
+        let _sync_guard = fs.lock_sync();
         self.cache.write().remove_entry(target_index, &target_name)
     }
 
@@ -356,6 +362,8 @@ impl XattrCache {
             self.alloc_block()?;
         }
         self.dirty = true;
+        self.flush_locked()?;
+        self.inode()?.set_file_acl_staged(self.bid)?;
         Ok(())
     }
 
@@ -408,10 +416,13 @@ impl XattrCache {
 
         if self.entries.is_empty() {
             self.free_and_invalidate()?;
+            self.inode()?.set_file_acl_staged(0)?;
             return Ok(());
         }
 
         self.dirty = true;
+        self.flush_locked()?;
+        self.inode()?.set_file_acl_staged(self.bid)?;
         Ok(())
     }
 
@@ -702,6 +713,11 @@ impl XattrCache {
 
     /// Writes the dirty xattr block back to disk.
     fn flush(&mut self) -> Result<()> {
+        self.flush_locked()
+    }
+
+    /// Encodes and stages the xattr block; the caller holds the cache lock.
+    fn flush_locked(&mut self) -> Result<()> {
         if !self.dirty {
             return Ok(());
         }

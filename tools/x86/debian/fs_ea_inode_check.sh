@@ -34,6 +34,8 @@ Options:
   --loglevel N        Kernel log level (default: 4, Linux numbering).
   --accel MODE        'kvm' or 'tcg' (default: kvm).
   --qemu PATH         QEMU binary or wrapper (default: qemu-system-x86_64).
+  --crash-stages LIST Space-separated journal stages (1 2 3) to interrupt a
+                      commit that creates the EA inode and its entry.
 
 The base image must not enable another gate's probe unit.
 
@@ -58,11 +60,12 @@ TIMEOUT=1800
 LOGLEVEL=4
 ACCEL="kvm"
 QEMU="qemu-system-x86_64"
+CRASH_STAGES=""
 
 while (( $# > 0 )); do
     case "$1" in
         --kernel | --initramfs | --base-root | --workspace | --settle | \
-            --timeout | --loglevel | --accel | --qemu)
+            --timeout | --loglevel | --accel | --qemu | --crash-stages)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --kernel) KERNEL="$2" ;;
@@ -74,6 +77,7 @@ while (( $# > 0 )); do
                 --loglevel) LOGLEVEL="$2" ;;
                 --accel) ACCEL="$2" ;;
                 --qemu) QEMU="$2" ;;
+                --crash-stages) CRASH_STAGES="$2" ;;
             esac
             shift 2
             ;;
@@ -87,6 +91,10 @@ done
 [[ "$SETTLE" =~ ^[0-9]+$ ]] || die_usage "--settle must be a non-negative integer"
 [[ "$ACCEL" == "tcg" || "$ACCEL" == "kvm" ]] ||
     die_usage "--accel must be 'tcg' or 'kvm'"
+for stage in $CRASH_STAGES; do
+    [[ "$stage" =~ ^[1-3]$ ]] ||
+        die_usage "--crash-stages entries must be 1, 2 or 3"
+done
 for tool in debugfs e2fsck python3 tune2fs "$QEMU"; do
     command -v "$tool" >/dev/null 2>&1 || {
         printf 'error: required tool not found: %s\n' "$tool" >&2
@@ -114,6 +122,10 @@ PROBE_PY="$WORKSPACE/probe.py"
 PROBE_SH="$WORKSPACE/probe.sh"
 PROBE_UNIT="$WORKSPACE/fs-ea.service"
 PARSE_PY="$WORKSPACE/parse_xattr.py"
+CRASH_PY="$WORKSPACE/crash_probe.py"
+CRASH_VERIFY_PY="$WORKSPACE/crash_verify.py"
+CRASH_VERIFY_SH="$WORKSPACE/crash_verify.sh"
+CRASH_UNIT="$WORKSPACE/fs-ea-crash.service"
 
 cat >"$PROBE_PY" <<'PY'
 import errno
@@ -255,6 +267,66 @@ while offset + 16 <= 4096:
     offset += (16 + name_len + 3) & ~3
 PY
 
+cat >"$CRASH_PY" <<'PY'
+#!/usr/bin/python3
+import os
+BIG = bytes((i * 7) & 0xFF for i in range(32768))
+path = '/opt/fs-ea/crash.bin'
+with open(path, 'wb') as file:
+    file.write(b'\0' * 4096)
+os.setxattr(path, 'user.big', BIG)
+print('FS_EA_CRASH_SET', flush=True)
+os.sync()
+print('FS_EA_CRASH_SYNCED', flush=True)
+PY
+
+cat >"$CRASH_VERIFY_PY" <<'PY'
+#!/usr/bin/python3
+import errno
+import os
+BIG = bytes((i * 7) & 0xFF for i in range(32768))
+path = '/opt/fs-ea/crash.bin'
+problems = []
+exists = os.path.exists(path)
+if exists:
+    try:
+        value = os.getxattr(path, 'user.big')
+        if value != BIG:
+            problems.append('partial value')
+    except OSError as exc:
+        if exc.errno != errno.ENODATA:
+            problems.append('getxattr errno %d' % exc.errno)
+print('FS_EA_CRASH_VERIFY exists=%s problems=%d' % (exists, len(problems)), flush=True)
+with open('/opt/fs-ea/crash-result.txt', 'w') as file:
+    file.write('ok=%s exists=%s problems=%d\n' % (not problems, exists, len(problems)))
+    file.flush()
+    os.fsync(file.fileno())
+os.sync()
+PY
+
+cat >"$CRASH_VERIFY_SH" <<'SH'
+#!/bin/sh
+python3 /opt/fs-ea/crash_verify.py
+sync
+systemctl poweroff --no-block
+SH
+
+cat >"$CRASH_UNIT" <<'UNIT'
+[Unit]
+Description=EA inode crash verification
+After=multi-user.target
+
+[Service]
+Type=oneshot
+KeyringMode=inherit
+ExecStart=/opt/fs-ea/crash_verify.sh
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 rm -f -- "$IMAGE"
 cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
 tune2fs -O ea_inode "$IMAGE" >"$WORKSPACE/tune2fs.txt" 2>&1 || true
@@ -336,5 +408,78 @@ if ! grep -q '^keep inum=[1-9]' "$WORKSPACE/xattr-verify.txt" ||
         "$(cat "$WORKSPACE/xattr-verify.txt")"
     exit 1
 fi
+
+run_crash_cell() {
+    local stage="$1"
+    local crash_image="$WORKSPACE/ea-crash-$stage.ext2"
+    rm -f -- "$crash_image"
+    cp --sparse=always -- "$BASE_ROOT" "$crash_image"
+    tune2fs -O ea_inode "$crash_image" >/dev/null 2>&1 || true
+    {
+        printf 'mkdir /opt/fs-ea\n'
+        printf 'write %s /opt/fs-ea/crash_probe.py\n' "$CRASH_PY"
+        printf 'sif /opt/fs-ea/crash_probe.py mode 0100755\n'
+        printf 'write %s /opt/fs-ea/crash_verify.py\n' "$CRASH_VERIFY_PY"
+        printf 'sif /opt/fs-ea/crash_verify.py mode 0100755\n'
+        printf 'write %s /opt/fs-ea/crash_verify.sh\n' "$CRASH_VERIFY_SH"
+        printf 'sif /opt/fs-ea/crash_verify.sh mode 0100755\n'
+        printf 'write %s /etc/systemd/system/fs-ea-crash.service\n' "$CRASH_UNIT"
+        printf 'symlink /etc/systemd/system/multi-user.target.wants/fs-ea-crash.service /etc/systemd/system/fs-ea-crash.service\n'
+        printf 'rm /etc/systemd/system/multi-user.target.wants/asterinas-debian-ext4.service\n'
+        printf 'rm /etc/systemd/system/asterinas-debian-ext4.service\n'
+    } | debugfs -w -f - "$crash_image" >/dev/null 2>&1
+    if ! e2fsck -fn "$crash_image" >"$WORKSPACE/fsck-crash-prepared-$stage.txt" 2>&1; then
+        printf 'FAIL (crash image for stage %s is not clean)\n' "$stage"
+        exit 1
+    fi
+
+    printf 'ea-inode: crash stage %s boot\n' "$stage"
+    if ! timeout "$TIMEOUT" "$BOOT_SCRIPT" \
+        --kernel "$KERNEL" \
+        --initramfs "$INITRAMFS" \
+        --root-image "$crash_image" \
+        --output "$WORKSPACE/crash-$stage.txt" \
+        --loglevel "$LOGLEVEL" \
+        --accel "$ACCEL" \
+        --qemu "$QEMU" \
+        --root-init-path /opt/fs-ea/crash_probe.py \
+        --append-extra "asterinas.ext4_fault_stage=$stage" \
+        --wait-for "fault injection at stage"; then
+        printf 'FAIL (stage %s did not reach the fault)\n' "$stage"
+        exit 1
+    fi
+    printf 'ea-inode: crash stage %s recovery\n' "$stage"
+    if ! timeout "$TIMEOUT" "$BOOT_SCRIPT" \
+        --kernel "$KERNEL" \
+        --initramfs "$INITRAMFS" \
+        --root-image "$crash_image" \
+        --output "$WORKSPACE/recover-$stage.txt" \
+        --loglevel "$LOGLEVEL" \
+        --accel "$ACCEL" \
+        --qemu "$QEMU" \
+        --wait-for "Powering off."; then
+        printf 'FAIL (stage %s recovery boot did not shut down)\n' "$stage"
+        exit 1
+    fi
+    if ! e2fsck -fn "$crash_image" >"$WORKSPACE/fsck-crash-$stage.txt" 2>&1; then
+        printf 'FAIL (stage %s left the image unclean; see %s/fsck-crash-%s.txt)\n' \
+            "$stage" "$WORKSPACE" "$stage"
+        exit 1
+    fi
+    rm -f -- "$WORKSPACE/crash-result-$stage.txt"
+    debugfs -R "dump /opt/fs-ea/crash-result.txt $WORKSPACE/crash-result-$stage.txt" \
+        "$crash_image" >/dev/null 2>&1
+    if ! grep -q '^ok=True' "$WORKSPACE/crash-result-$stage.txt"; then
+        printf 'FAIL (stage %s half-applied the xattr): %s\n' "$stage" \
+            "$(cat "$WORKSPACE/crash-result-$stage.txt" 2>/dev/null)"
+        exit 1
+    fi
+    printf 'ea-inode: crash stage %s PASS (%s)\n' "$stage" \
+        "$(cat "$WORKSPACE/crash-result-$stage.txt")"
+}
+
+for stage in $CRASH_STAGES; do
+    run_crash_cell "$stage"
+done
 
 printf 'PASS (EA inode create, read across a remount, remove, fsck clean)\n'
