@@ -476,10 +476,12 @@ run_crash_cell() {
     fi
     printf 'ea-inode: crash stage %s PASS (%s)\n' "$stage" \
         "$(cat "$WORKSPACE/crash-result-$stage.txt")"
+    rm -f -- "$crash_image"
 }
 
 for stage in $CRASH_STAGES; do
     run_crash_cell "$stage"
 done
 
+rm -f -- "$IMAGE"
 printf 'PASS (EA inode create, read across a remount, remove, fsck clean)\n'
