@@ -738,6 +738,38 @@ e2fsck -fn clean
 The gate also pins the punch-hole contract: the call must fail with
 `EOPNOTSUPP` (95) and leave the file untouched.
 
+## Growing files with ext4 extent trees
+
+Files were created without `EXTENTS`, so ordinary workloads allocate through
+the legacy indirect mapping. The image's own files (for example `libLLVM`)
+carry extent trees, and writes to them previously worked only while the
+target range already existed; appending past the inline array — four extent
+records in the inode — returned `EOPNOTSUPP`.
+
+Appending at the logical end now works for depth-zero and depth-one trees:
+
+- a full inline array is promoted to depth one by moving its records into a
+  freshly allocated leaf and turning `i_block` into a one-entry index;
+- an append to a depth-one tree goes into the last leaf when it has room;
+- a full leaf or a full inline index still reports `EOPNOTSUPP` rather than
+  dropping the write.
+
+`tools/x86/debian/fs_extent_alloc_check.sh` appends five pages to
+`/etc/hostname` (nine bytes, one inline extent), which forces three inline
+appends, the promotion and a leaf append. The host requires a depth-one tree,
+a remount check of the original prefix, the hole and every appended page, and
+`e2fsck -fn`:
+
+```
+FS_EXTENT_WRITE ok=True problems=0
+debugfs dump_extents:  0/ 1   1/  1     0 -     5  298709      6
+FS_EXTENT_VERIFY ok=True problems=0
+e2fsck -fn clean
+```
+
+The leaf block is written through the inode's indirect-block cache, so it is
+staged into the journal transaction like any other metadata block.
+
 ## Socket visibility: `/proc/net` and `NETLINK_SOCK_DIAG`
 
 `ss`, `ip`, and the Debian boot scripts expect to see the socket table. The

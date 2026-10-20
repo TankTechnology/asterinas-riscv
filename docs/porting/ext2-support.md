@@ -44,7 +44,7 @@ Legend: ✅ supported, 🟡 partial (limits noted), ❌ not implemented.
 | Sparse files and holes | ✅ | holes read as zeros; allocation fills them |
 | Legacy indirect mapping | ✅ | 12 direct + single/double/triple indirect |
 | Extent read | 🟡 | depth 0 and depth 1 index trees |
-| Extent allocation (write) | 🟡 | depth-0 inline trees only, append-only, at most 4 extents; new files use legacy mapping |
+| Extent allocation (write) | 🟡 | append at the logical end of depth-0 and depth-1 trees; a full inline tree is promoted to a leaf, and appends go into the last leaf. Holes and mid-file allocation are `EOPNOTSUPP`; new files use legacy mapping |
 | Extent writeback of existing ranges | 🟡 | depth 0 and 1 |
 | Extent truncate | 🟡 | depth 0 and 1; deeper trees are left untouched and logged |
 | 64-bit extents | ❌ | rejected as `EOPNOTSUPP` |
@@ -158,11 +158,11 @@ The current gates cover the paths package management exercises:
 
 Known gaps that a package workload can still hit:
 
-1. **Extent files that need to grow or take a hole.** Allocation is
-   append-only at depth 0 for inline trees. A large pre-existing extent file
-   that is extended past its inline capacity, or written into a hole, fails
-   with `EOPNOTSUPP`. Most Debian files are small or indirect-mapped, which is
-   why installation works today.
+1. **Extent files that need a hole or a mid-file write.** Allocation is
+   append-only, now at depth 0 and depth 1 (a full inline tree is promoted to
+   a leaf). Writing into a hole or into the middle of an extent file still
+   fails with `EOPNOTSUPP`; most Debian files are small or indirect-mapped,
+   which is why installation works today.
 2. **`metadata_csum` images.** Any image produced by default `mke2fs` on a
    modern distribution is rejected at mount unless the builder disables the
    feature.
@@ -233,6 +233,14 @@ recovery boot the operation must be present in full:
 | dir-entry | file exists with the exact 4096 bytes and its entry survived |
 
 Result: **5/5 pass**, `e2fsck -fn` clean.
+
+`fs_extent_alloc_check.sh` (`make test_x86_debian_fs_extents`) appends
+five pages to `/etc/hostname`, which the image creates with one inline
+extent. The first three appends fill the inline array, the fourth must
+promote the tree to depth one and the fifth allocates inside the leaf; the
+host then requires `debugfs dump_extents` to report `0/ 1`, the contents to
+survive a remount, and `e2fsck -fn` to pass. Result: **PASS**, with the
+on-disk tree reporting `0/ 1 1/ 1 0-5 <leaf> 6`.
 
 `fs_fallocate_check.sh` (`make test_x86_debian_fs_fallocate`) covers
 `ZERO_RANGE` over an existing range, past EOF, and with `KEEP_SIZE`, plus

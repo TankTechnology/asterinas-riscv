@@ -650,6 +650,7 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_fs_concurrency \
 		tools.x86.tests.test_x86_debian_fs_fallocate \
 		tools.x86.tests.test_x86_debian_fs_durability \
+		tools.x86.tests.test_x86_debian_fs_extents \
 		tools.x86.tests.test_x86_debian_fs_renameat2 \
 		tools.x86.tests.test_x86_debian_fs_timestamps \
 		tools.x86.tests.test_lmbench_transcript \
@@ -949,6 +950,29 @@ test_x86_debian_fs_fallocate:
 		--workspace "$(X86_DEBIAN_FALLOCATE_WORKSPACE)" \
 		--accel "$(X86_DEBIAN_FALLOCATE_ACCEL)" \
 		--timeout "$(X86_DEBIAN_FALLOCATE_TIMEOUT)"
+
+# Extent allocation gate: append to an inline-extent file until the tree is
+# promoted to depth one, append again inside the leaf, then require a
+# depth-one tree on disk, unchanged contents after a remount and `e2fsck -fn`.
+#   X86_DEBIAN_EXTENTS_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_EXTENTS_BASE_ROOT ?=
+X86_DEBIAN_EXTENTS_WORKSPACE ?= $(CURDIR)/target/x86-debian/extents
+X86_DEBIAN_EXTENTS_ACCEL ?= kvm
+X86_DEBIAN_EXTENTS_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_extents
+test_x86_debian_fs_extents:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_EXTENTS_BASE_ROOT)" || { echo "X86_DEBIAN_EXTENTS_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-extents: base=$(X86_DEBIAN_EXTENTS_BASE_ROOT) accel=$(X86_DEBIAN_EXTENTS_ACCEL)"
+	@tools/x86/debian/fs_extent_alloc_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_EXTENTS_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_EXTENTS_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_EXTENTS_ACCEL)" \
+		--timeout "$(X86_DEBIAN_EXTENTS_TIMEOUT)"
 
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:

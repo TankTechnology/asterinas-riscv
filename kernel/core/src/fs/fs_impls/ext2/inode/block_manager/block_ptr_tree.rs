@@ -15,6 +15,12 @@ const PTRS_PER_BLOCK: usize = BLOCK_SIZE / size_of::<u32>();
 const SECTORS_PER_BLOCK: u32 = (BLOCK_SIZE / SECTOR_SIZE) as u32;
 const MAX_BLOCK_POINTER_LEVELS: usize = 4;
 const EXTENT_MAGIC: u16 = 0xf30a;
+/// Size of an extent tree header (magic, entries, max_entries, depth, generation).
+const EXTENT_HEADER_SIZE: usize = 12;
+/// Size of one extent or index record.
+const EXTENT_RECORD_SIZE: usize = 12;
+/// Extent records that fit in one 4 KiB leaf block.
+const EXTENT_LEAF_CAPACITY: usize = (BLOCK_SIZE - EXTENT_HEADER_SIZE) / EXTENT_RECORD_SIZE;
 
 /// An ext2 inode's block-pointer tree.
 ///
@@ -278,12 +284,11 @@ impl BlockPtrTree {
         if depth == 1 {
             // Page-cache writeback resolves already-mapped ranges before it
             // writes them, and directories such as `/var/lib/dpkg/info` carry
-            // a depth-one tree. Serve that lookup through the index tree;
-            // allocating a missing block in a depth-one tree remains
-            // unsupported.
+            // a depth-one tree. Serve that lookup through the index tree and
+            // extend the tree only at its logical end.
             let range = self.lookup_extent_range(iblock, max_blocks)?;
             if range.is_empty() {
-                return_errno_with_message!(Errno::EOPNOTSUPP, "non-append ext4 extent allocation");
+                return self.append_to_extent_leaf(fs, iblock, max_blocks);
             }
             return Ok(ResolvedBlockRange::Existing(range));
         }
@@ -324,8 +329,15 @@ impl BlockPtrTree {
             goal = physical.saturating_add(length);
         }
 
-        if iblock != next_logical || entries == max_entries {
+        if iblock != next_logical {
             return_errno_with_message!(Errno::EOPNOTSUPP, "non-append ext4 extent allocation");
+        }
+        if entries == max_entries {
+            // The inline root is full. Promote it to a depth-one tree and
+            // append there, which is what ext4 does when a file outgrows the
+            // in-inode extent array.
+            self.promote_inline_extents(fs)?;
+            return self.append_to_extent_leaf(fs, iblock, max_blocks);
         }
 
         let count = max_blocks.min(0x7fff).min((max_entries - entries) as u32);
@@ -361,6 +373,182 @@ impl BlockPtrTree {
             *value = u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap());
         }
         Ok(())
+    }
+
+    /// Appends an extent to the last leaf of a depth-one tree.
+    ///
+    /// Writeback resolves already-mapped ranges through
+    /// `lookup_extent_range`, so this path only ever sees an append at the
+    /// logical end. A full leaf or a full inline index is reported as
+    /// unsupported instead of being silently dropped.
+    fn append_to_extent_leaf(
+        &mut self,
+        fs: &Ext2,
+        iblock: Iblock,
+        max_blocks: u32,
+    ) -> Result<ResolvedBlockRange> {
+        let root = self.raw_block_ptrs.extent_bytes();
+        let root_entries = u16::from_le_bytes([root[2], root[3]]) as usize;
+        let root_max_entries = u16::from_le_bytes([root[4], root[5]]) as usize;
+        if root_entries == 0 || root_entries > root_max_entries || root_max_entries > 4 {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent index");
+        }
+        let index_offset = EXTENT_HEADER_SIZE + (root_entries - 1) * EXTENT_RECORD_SIZE;
+        let leaf = Self::extent_index_leaf(&root, index_offset)?;
+        let mut leaf_bytes = self.read_extent_leaf(leaf)?;
+        let entries = u16::from_le_bytes([leaf_bytes[2], leaf_bytes[3]]) as usize;
+        let max_entries = u16::from_le_bytes([leaf_bytes[4], leaf_bytes[5]]) as usize;
+        let leaf_depth = u16::from_le_bytes([leaf_bytes[6], leaf_bytes[7]]);
+        if leaf_depth != 0 || entries > max_entries || max_entries > EXTENT_LEAF_CAPACITY {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent leaf");
+        }
+
+        let (next_logical, goal) = if entries == 0 {
+            // An empty leaf starts at the logical block the index names.
+            (
+                u32::from_le_bytes(root[index_offset..index_offset + 4].try_into().unwrap()),
+                0,
+            )
+        } else {
+            let offset = EXTENT_HEADER_SIZE + (entries - 1) * EXTENT_RECORD_SIZE;
+            let logical = u32::from_le_bytes(leaf_bytes[offset..offset + 4].try_into().unwrap());
+            let length = u32::from(
+                u16::from_le_bytes([leaf_bytes[offset + 4], leaf_bytes[offset + 5]]) & 0x7fff,
+            );
+            let physical = Self::extent_record_physical(&leaf_bytes, offset)?;
+            let next = logical
+                .checked_add(length)
+                .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "ext4 extent logical overflow"))?;
+            let goal = u32::try_from(u64::from(physical) + u64::from(length))
+                .map_err(|_| Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block"))?;
+            (next, goal)
+        };
+
+        if iblock != next_logical {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "non-append ext4 extent allocation");
+        }
+        if entries >= max_entries {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "full ext4 extent leaf");
+        }
+
+        let count = max_blocks
+            .min(0x7fff)
+            .min((max_entries - entries) as u32);
+        let data_blocks = fs.alloc_blocks(count, goal)?;
+        Self::zero_new_blocks(fs, &data_blocks)?;
+        let mut guard = BlockAllocGuard::new(fs, 0);
+        guard.track_data_blocks(data_blocks.clone());
+
+        let offset = EXTENT_HEADER_SIZE + entries * EXTENT_RECORD_SIZE;
+        let length = u16::try_from(data_blocks.len())
+            .map_err(|_| Error::with_message(Errno::EOVERFLOW, "extent length overflow"))?;
+        leaf_bytes[offset..offset + 4].copy_from_slice(&next_logical.to_le_bytes());
+        leaf_bytes[offset + 4..offset + 6].copy_from_slice(&length.to_le_bytes());
+        leaf_bytes[offset + 6..offset + 8].copy_from_slice(&0u16.to_le_bytes());
+        leaf_bytes[offset + 8..offset + 12].copy_from_slice(&data_blocks.start.to_le_bytes());
+        let new_entries = (entries + 1) as u16;
+        leaf_bytes[2..4].copy_from_slice(&new_entries.to_le_bytes());
+        self.write_extent_leaf(leaf, &leaf_bytes)?;
+
+        self.raw_block_ptrs.sector_count = self
+            .raw_block_ptrs
+            .sector_count
+            .checked_add(data_blocks.len() as u32 * SECTORS_PER_BLOCK)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "inode block count overflow"))?;
+        guard.commit();
+        Ok(ResolvedBlockRange::NewlyAllocated(data_blocks))
+    }
+
+    /// Promotes a full inline extent tree to a depth-one tree.
+    ///
+    /// The inline records move into a freshly allocated leaf and the inode's
+    /// `i_block` becomes a one-entry index pointing at it, with the same
+    /// generation number. This is how ext4 represents files with more than
+    /// four extents, and it lets later appends use the leaf's capacity.
+    fn promote_inline_extents(&mut self, fs: &Ext2) -> Result<()> {
+        let root = self.raw_block_ptrs.extent_bytes();
+        let entries = u16::from_le_bytes([root[2], root[3]]) as usize;
+        if entries == 0 || entries > 4 {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid inline extent tree");
+        }
+        let generation = u32::from_le_bytes(root[8..12].try_into().unwrap());
+        let first_logical = u32::from_le_bytes(root[12..16].try_into().unwrap());
+        let last_offset = EXTENT_HEADER_SIZE + (entries - 1) * EXTENT_RECORD_SIZE;
+        let last_length = u32::from(
+            u16::from_le_bytes([root[last_offset + 4], root[last_offset + 5]]) & 0x7fff,
+        );
+        let last_physical = Self::extent_record_physical(&root, last_offset)?;
+        let goal = u32::try_from(u64::from(last_physical) + u64::from(last_length))
+            .map_err(|_| Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block"))?;
+        let leaf_blocks = fs.alloc_blocks(1, goal)?;
+        let leaf = leaf_blocks.start;
+        let mut guard = BlockAllocGuard::new(fs, 1);
+        guard.extend_indirect_blocks(leaf_blocks.clone());
+
+        Self::zero_new_blocks(fs, &leaf_blocks)?;
+        let mut leaf_bytes = [0u8; BLOCK_SIZE];
+        leaf_bytes[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+        leaf_bytes[2..4].copy_from_slice(&(entries as u16).to_le_bytes());
+        leaf_bytes[4..6].copy_from_slice(&(EXTENT_LEAF_CAPACITY as u16).to_le_bytes());
+        leaf_bytes[6..8].copy_from_slice(&0u16.to_le_bytes());
+        leaf_bytes[8..12].copy_from_slice(&generation.to_le_bytes());
+        let records_end = EXTENT_HEADER_SIZE + entries * EXTENT_RECORD_SIZE;
+        leaf_bytes[EXTENT_HEADER_SIZE..records_end]
+            .copy_from_slice(&root[EXTENT_HEADER_SIZE..records_end]);
+        self.write_extent_leaf(leaf, &leaf_bytes)?;
+
+        let mut new_root = [0u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
+        new_root[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+        new_root[2..4].copy_from_slice(&1u16.to_le_bytes());
+        // The inode stores four index entries at most.
+        new_root[4..6].copy_from_slice(&4u16.to_le_bytes());
+        new_root[6..8].copy_from_slice(&1u16.to_le_bytes());
+        new_root[8..12].copy_from_slice(&generation.to_le_bytes());
+        new_root[12..16].copy_from_slice(&first_logical.to_le_bytes());
+        new_root[16..20].copy_from_slice(&leaf.to_le_bytes());
+        new_root[20..22].copy_from_slice(&0u16.to_le_bytes());
+        new_root[22..24].copy_from_slice(&0u16.to_le_bytes());
+        for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
+            *value = u32::from_le_bytes(new_root[index * 4..index * 4 + 4].try_into().unwrap());
+        }
+        self.raw_block_ptrs.sector_count = self
+            .raw_block_ptrs
+            .sector_count
+            .checked_add(SECTORS_PER_BLOCK)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "inode block count overflow"))?;
+        guard.commit();
+        Ok(())
+    }
+
+    /// Returns the physical block of an index record at `offset`.
+    fn extent_index_leaf(bytes: &[u8], offset: usize) -> Result<Ext2Bid> {
+        let leaf_lo = u32::from_le_bytes(bytes[offset + 4..offset + 8].try_into().unwrap());
+        let leaf_hi = u16::from_le_bytes([bytes[offset + 8], bytes[offset + 9]]);
+        let leaf = (u64::from(leaf_hi) << 32) | u64::from(leaf_lo);
+        u32::try_from(leaf)
+            .map_err(|_| Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block"))
+    }
+
+    /// Returns the physical start block of an extent record at `offset`.
+    fn extent_record_physical(bytes: &[u8], offset: usize) -> Result<Ext2Bid> {
+        let physical_hi = u16::from_le_bytes([bytes[offset + 6], bytes[offset + 7]]);
+        let physical_lo = u32::from_le_bytes(bytes[offset + 8..offset + 12].try_into().unwrap());
+        let physical = (u64::from(physical_hi) << 32) | u64::from(physical_lo);
+        u32::try_from(physical)
+            .map_err(|_| Error::with_message(Errno::EOPNOTSUPP, "64-bit ext4 extent block"))
+    }
+
+    /// Loads an extent leaf block through the inode's indirect-block cache.
+    fn read_extent_leaf(&self, bid: Ext2Bid) -> Result<[u8; BLOCK_SIZE]> {
+        self.indirect_blocks_manager.lock().find(bid)?.read_bytes()
+    }
+
+    /// Stores an extent leaf block and marks it for journaled write-back.
+    fn write_extent_leaf(&self, bid: Ext2Bid, bytes: &[u8; BLOCK_SIZE]) -> Result<()> {
+        self.indirect_blocks_manager
+            .lock()
+            .find_mut(bid)?
+            .write_bytes(bytes)
     }
 
     /// Truncates blocks to the new byte length (best-effort).
