@@ -28,6 +28,7 @@ mod block;
 pub mod card;
 pub mod sdhci;
 
+#[cfg_attr(not(target_arch = "riscv64"), expect(dead_code))]
 static MMC_BLOCK_MAJOR_ID: Once<MajorIdOwner> = Once::new();
 static MMC_WRITE_PARTITION2: AtomicBool = AtomicBool::new(false);
 pub(crate) static MMC_BOUNDED_PIO: AtomicBool = AtomicBool::new(false);

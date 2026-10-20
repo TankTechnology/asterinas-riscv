@@ -30,7 +30,7 @@ pub fn cpu_local_base_for_diagnosis() -> usize {
 /// a stack that was abandoned mid-way can be told apart from one that ran to
 /// completion on the same task.
 pub(crate) fn current_task_ptr_for_diagnosis() -> usize {
-    processor::current_task()
+    current_task()
         .map(|task| task.as_ptr() as usize)
         .unwrap_or(0)
 }

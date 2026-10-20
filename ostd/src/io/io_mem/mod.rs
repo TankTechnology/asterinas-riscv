@@ -157,6 +157,7 @@ impl<SecuritySensitivity> IoMem<SecuritySensitivity> {
     }
 
     /// Returns whether this is the sole handle to the underlying MMIO mapping.
+    #[cfg_attr(not(target_arch = "riscv64"), expect(dead_code))]
     pub(crate) fn is_unique(&self) -> bool {
         Arc::strong_count(&self.kvirt_area) == 1
     }

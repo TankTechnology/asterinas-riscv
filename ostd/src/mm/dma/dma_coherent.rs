@@ -161,6 +161,7 @@ impl DmaCoherent {
         self.uncached_alias.as_ref().map(HasPaddr::paddr)
     }
 
+    #[cfg_attr(not(target_arch = "riscv64"), expect(dead_code))]
     pub(super) fn as_non_null_ptr(&self) -> NonNull<u8> {
         if let Some(alias) = &self.uncached_alias {
             return alias.as_non_null_ptr();

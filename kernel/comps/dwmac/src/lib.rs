@@ -4,6 +4,7 @@
 
 #![no_std]
 #![deny(unsafe_code)]
+#![cfg_attr(not(target_arch = "riscv64"), expect(dead_code))]
 
 extern crate alloc;
 
