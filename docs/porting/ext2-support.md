@@ -65,6 +65,10 @@ inodes, extent leaves, directory blocks (including the 12-byte tail, which
 shrinks the usable entry area and is not used on the first block of an htree
 directory) and external xattr blocks. `bg_itable_unused` is lowered when an
 inode is allocated so an in-use inode never lies in the declared unused tail.
+An inode whose `i_extra_isize` is zero still gets `i_checksum_lo` (and no
+`i_checksum_hi`), matching Linux; images whose pre-existing inodes were
+created without the large-inode area keep valid checksums after the first
+write.
 
 ## Feature matrix
 

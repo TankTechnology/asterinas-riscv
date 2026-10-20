@@ -693,11 +693,12 @@ impl BlockGroup {
 
     /// Recomputes `i_checksum_lo`/`i_checksum_hi` for the inode slot.
     ///
-    /// The checksum covers the whole inode slot with both checksum fields
-    /// zeroed, seeded by the inode number and generation. It is written only
-    /// when the slot advertises the large-inode area; an inode that does not
-    /// (old 128-byte inodes, or `i_extra_isize == 0`) keeps no checksum, which
-    /// is also how Linux treats the latter.
+    /// The checksum covers the whole inode slot with the checksum fields
+    /// zeroed, seeded by the inode number and generation. `i_checksum_lo` is
+    /// always written; `i_checksum_hi` only when the inode's `i_extra_isize`
+    /// makes room for it. Linux checksums the legacy 128-byte inode even when
+    /// `i_extra_isize` is zero, so an inode created by another tool (or by an
+    /// older kernel) keeps a valid checksum after the first write.
     fn write_inode_checksum(
         &self,
         ino: Ext2Ino,
@@ -724,10 +725,6 @@ impl BlockGroup {
 
         let extra_isize =
             u16::from_le_bytes([slot[EXTRA_ISIZE], slot[EXTRA_ISIZE + 1]]) as usize;
-        if extra_isize == 0 {
-            return Ok(());
-        }
-
         slot[CHECKSUM_LO..CHECKSUM_LO + 2].copy_from_slice(&[0, 0]);
         let hi_fits = extra_isize >= CHECKSUM_HI_FITS_EXTRA;
         if hi_fits {
