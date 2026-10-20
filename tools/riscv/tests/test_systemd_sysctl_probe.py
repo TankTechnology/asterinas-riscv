@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from tools.riscv.debian.rootfs.dev_overlay import load_overlay_spec
+from tools.riscv.debian.rootfs.rootfs_gate import GateFailure
 
 
 ROOTFS = Path(__file__).resolve().parents[1] / "debian" / "rootfs"
@@ -177,6 +178,76 @@ class ProbeRunnerTests(unittest.TestCase):
         config, mode = parse_probe_args(arguments)
         self.assertEqual(mode, "service")
         self.assertEqual(str(config.kernel), "kernel")
+
+
+from tools.riscv.debian.rootfs.systemd_sysctl_probe import orchestrate_probe
+
+
+class _FakeOperations:
+    mode = "probe"
+
+    def __init__(self, transcript: bytes, protocol_error: Exception | None = None):
+        self.transcript = transcript
+        self.protocol_error = protocol_error
+        self.states = []
+        self.result = None
+
+    def invalidate(self, config):
+        self.invalidated = True
+
+    def snapshot_inputs(self, config):
+        return {"kernel": "k", "root_image": "r"}
+
+    def validate_inputs(self, config, snapshots):
+        return {"debian_release": "13.7", "profile": "desktop-m4-firefox"}
+
+    def prepare(self, config, snapshots, identity):
+        return {"root_disk_format": "qcow2"}
+
+    def publish_state(self, config, state):
+        self.states.append(state)
+
+    def launch(self, config, prepared):
+        return {"session": True}
+
+    def run_protocol(self, session, config):
+        if self.protocol_error is not None:
+            raise self.protocol_error
+
+    def request_quit(self, session, config):
+        pass
+
+    def close_monitor(self, session):
+        pass
+
+    def cleanup_process(self, session, config):
+        pass
+
+    def drain_serial(self, session, config):
+        return self.transcript
+
+    def publish(self, config, prepared, transcript, result):
+        self.result = result
+
+
+class ProbeOrchestrationTests(unittest.TestCase):
+    def test_orchestrate_probe_passes_and_publishes_steps(self):
+        operations = _FakeOperations(_passing_probe_transcript())
+        result = orchestrate_probe(object(), operations)
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["reason"], "pass")
+        self.assertEqual(len(result["steps"]), 7)
+        self.assertEqual(result["mode"], "probe")
+        self.assertEqual(operations.result, result)
+
+    def test_orchestrate_probe_records_protocol_failure(self):
+        operations = _FakeOperations(
+            _passing_probe_transcript(), GateFailure("protocol-timeout")
+        )
+        result = orchestrate_probe(object(), operations)
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reason"], "protocol-timeout")
+        self.assertEqual(len(result["steps"]), 7)
 
 
 if __name__ == "__main__":
