@@ -34,6 +34,9 @@ Options:
   --smp N             Guest CPUs (default: 4).
   --loglevel N        Kernel log level (default: 4; the guest prints a line per
                       syscall above this and the boot slows down sharply).
+  --root-init-path PATH
+                      Run PATH as init instead of systemd (absolute guest path;
+                      used by the crash matrix).
   --append-extra TEXT Extra kernel command line, placed before the `--` that
                       separates the init arguments.
   --debugcon PATH     Capture port 0xe9 writes into PATH (QEMU `isa-debugcon`).
@@ -69,6 +72,7 @@ LOGLEVEL=4
 QEMU="qemu-system-x86_64"
 PRINT_MODE=""
 APPEND_EXTRA=""
+ROOT_INIT_PATH=""
 ACCEL="tcg"
 DEBUGCON=""
 SERIAL_LOG=""
@@ -81,8 +85,8 @@ while (( $# > 0 )); do
             shift
             ;;
         --wait-for | --timeout | --output | --kernel | --initramfs | --root-image | \
-            --memory | --smp | --loglevel | --qemu | --append-extra | --accel | --debugcon | \
-            --serial-log)
+            --memory | --smp | --loglevel | --qemu | --append-extra | --root-init-path | \
+            --accel | --debugcon | --serial-log)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --kernel) KERNEL="$2" ;;
@@ -96,6 +100,7 @@ while (( $# > 0 )); do
                 --loglevel) LOGLEVEL="$2" ;;
                 --qemu) QEMU="$2" ;;
                 --append-extra) APPEND_EXTRA="$2" ;;
+                --root-init-path) ROOT_INIT_PATH="$2" ;;
                 --accel) ACCEL="$2" ;;
                 --debugcon) DEBUGCON="$2" ;;
                 --serial-log) SERIAL_LOG="$2" ;;
@@ -114,6 +119,10 @@ done
 [[ "$MEMORY" =~ ^[1-9][0-9]*[KMG]?$ ]] || die_usage "unsafe --memory value: $MEMORY"
 [[ "$APPEND_EXTRA" != *$'\n'* && "$APPEND_EXTRA" != *$'\r'* ]] ||
     die_usage "--append-extra must not contain newlines"
+[[ -z "$ROOT_INIT_PATH" || "$ROOT_INIT_PATH" == /* ]] ||
+    die_usage "--root-init-path must be an absolute guest path"
+[[ "$ROOT_INIT_PATH" != *$'\n'* && "$ROOT_INIT_PATH" != *$'\r'* && "$ROOT_INIT_PATH" != *' ' ]] ||
+    die_usage "--root-init-path must not contain whitespace"
 [[ "$ACCEL" == "tcg" || "$ACCEL" == "kvm" ]] ||
     die_usage "--accel must be 'tcg' or 'kvm'"
 if [[ "$ACCEL" == "kvm" && ! -r /dev/kvm ]]; then
@@ -131,7 +140,7 @@ done
 # The guest console. QEMU wires `hvc0` to the same chardev as the transcript,
 # so the kernel log and Stage1's own `DEBIAN_STAGE1_PROGRESS` markers arrive on
 # one stream.
-KERNEL_APPEND="console=hvc0 loglevel=$LOGLEVEL init=/init${APPEND_EXTRA:+ $APPEND_EXTRA} -- --root-init=systemd --root-fs=ext4"
+KERNEL_APPEND="console=hvc0 loglevel=$LOGLEVEL init=/init${APPEND_EXTRA:+ $APPEND_EXTRA} -- --root-init=systemd --root-fs=ext4${ROOT_INIT_PATH:+ --root-init-path=$ROOT_INIT_PATH}"
 
 qemu_argv() {
     if [[ "$ACCEL" == "kvm" ]]; then

@@ -112,6 +112,10 @@ struct RootInitConfig {
     int debug_root_console;
     int debug_console_isolated;
     int volatile_home;
+    /* An absolute path to an init program.  When set, it replaces the
+     * systemd/interactive program; acceptance harnesses use it to run a
+     * deterministic probe as the first userspace process. */
+    const char *custom_init_path;
 };
 
 struct ProductionContext {
@@ -210,6 +214,7 @@ static int parse_root_init(int argc, char **argv,
     config->debug_root_console = 0;
     config->debug_console_isolated = 0;
     config->volatile_home = 0;
+    config->custom_init_path = NULL;
     int selector_seen = 0;
     int debug_seen = 0;
     for (int index = 1; index < argc; ++index) {
@@ -229,6 +234,13 @@ static int parse_root_init(int argc, char **argv,
                 return -1;
             }
             config->root_filesystem_ext4 = 1;
+            continue;
+        } else if (strncmp(argv[index], "--root-init-path=", 17) == 0) {
+            const char *path = argv[index] + 17;
+            if (config->custom_init_path != NULL || path[0] != '/') {
+                return -1;
+            }
+            config->custom_init_path = path;
             continue;
         } else if (strcmp(argv[index], "--volatile-home") == 0) {
             if (config->volatile_home) {
@@ -1354,6 +1366,13 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
         result = chdir("/");
         break;
     case HANDOFF_EXEC: {
+        if (production_context->root_init.custom_init_path != NULL) {
+            char *custom_argv[] = {
+                (char *)production_context->root_init.custom_init_path,
+                NULL,
+            };
+            return execv(custom_argv[0], custom_argv);
+        }
         char *const *arguments =
             root_init_arguments(production_context->root_init.mode);
         return execv(arguments[0], arguments);
