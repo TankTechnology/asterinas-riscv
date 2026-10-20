@@ -817,11 +817,32 @@ allocator insisted that logical records be contiguous, but punching a hole
 legitimately creates a gap.  Records are now required to be strictly
 increasing instead of contiguous.
 
-Writing back into a punched hole now works for depth-zero trees: the new
-extent is allocated and inserted in logical order, bounded by the next
-record and the free in-line slots.  The gate writes into the hole it just
-made and confirms the contents after the remount.  Depth-one hole writes
-still need leaf splitting and remain `EOPNOTSUPP`.
+Writing back into a punched hole works for depth-zero trees: the new extent is
+allocated and inserted in logical order, bounded by the next record and the
+free in-line slots.
+
+Depth-one hole writes go through the same allocator. It picks the leaf that
+owns the block (the last index key not above it, or the first leaf when the
+block precedes every key), inserts the record in logical order, and bounds the
+allocation by the next record in the leaf or, at a leaf's end, by the next
+leaf's key so an allocation never runs into the following leaf. A full leaf is
+split into two balanced halves and gains an index entry; the inode holds four
+index entries, so a fifth is still `EOPNOTSUPP`.
+
+The gate now builds an 8 MiB extent file on the host with `debugfs` (new files
+inside the guest use the legacy mapping), appends 400 pages one at a time so
+the promoted leaf fills up and splits, then punches and rewrites blocks in the
+first, interior and last positions. `dump_extents` shows the split:
+
+```
+ 0/ 1   1/  2     0 -  2208  299832             2209
+ 1/ 1   1/173     0 -     0  301337 -  301337      1
+ ...
+ 0/ 1   2/  2  2209 -  2447  301268              239
+ 1/ 1   1/239  2209 -  2209  301097 -  301097      1
+```
+
+and both boots plus `e2fsck -fn` agree on every byte.
 
 The measured 520 -> 392 sectors is exactly the 16 data blocks covered by the
 punched ranges.
@@ -864,8 +885,9 @@ Appending at the logical end now works for depth-zero and depth-one trees:
 - a full inline array is promoted to depth one by moving its records into a
   freshly allocated leaf and turning `i_block` into a one-entry index;
 - an append to a depth-one tree goes into the last leaf when it has room;
-- a full leaf or a full inline index still reports `EOPNOTSUPP` rather than
-  dropping the write.
+- a full leaf splits into two balanced leaves with an extra index entry (see
+  the punch-hole section), and the inode's four-entry index is the limit: a
+  fifth entry reports `EOPNOTSUPP` rather than dropping the write.
 
 `tools/x86/debian/fs_extent_alloc_check.sh` appends five pages to
 `/etc/hostname` (nine bytes, one inline extent), which forces three inline

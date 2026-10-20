@@ -58,19 +58,20 @@ Legend: ✅ supported, 🟡 partial (limits noted), ❌ not implemented.
 | Sparse files and holes | ✅ | holes read as zeros; allocation fills them |
 | Legacy indirect mapping | ✅ | 12 direct + single/double/triple indirect |
 | Extent read | 🟡 | depth 0 and depth 1 index trees |
-| Extent allocation (write) | 🟡 | append at the logical end of depth-0 and depth-1 trees, plus hole allocation for depth-0 (records are inserted in order); a full inline tree is promoted to a leaf, and appends go into the last leaf. Depth-1 hole writes and leaf splits are `EOPNOTSUPP`; new files use legacy mapping |
+| Extent allocation (write) | 🟡 | appends and hole writes in depth-0 and depth-1 trees (records are inserted in logical order and bounded by the next record or leaf key); a full inline tree is promoted to a leaf, a full leaf splits into two and adds an index entry. The inode's four index entries are the limit: a further split is `EOPNOTSUPP`. New files use legacy mapping |
 | Extent writeback of existing ranges | 🟡 | depth 0 and 1 |
 | Extent truncate | 🟡 | depth 0 and 1; deeper trees are left untouched and logged |
 | 64-bit extents | ❌ | rejected as `EOPNOTSUPP` |
 | `fallocate` | 🟡 | `Allocate`, `AllocateKeepSize`, `ZeroRange`, `ZeroRangeKeepSize` and `PunchHoleKeepSize` (indirect mapping and extent trees up to depth one); collapse, insert and unshare are `EOPNOTSUPP` |
-| `O_TMPFILE` | ❌ | VFS default returns `EOPNOTSUPP` |
+| `O_TMPFILE` | ✅ | anonymous inode tracked on the ext4 orphan list until linked |
 | File size | ✅ | up to 2,196,873,666,560 bytes with 4 KiB blocks (indirect-mapped limit) |
 
 Because new files are created without `EXTENTS`, ordinary workloads allocate
 through the indirect-block path even on an ext4 image. Files that arrive with
 extent trees (the Debian image has several, e.g. `libLLVM`) can be read,
-written in place, and truncated; appending to them beyond the inline extents
-returns `EOPNOTSUPP`.
+written in place, appended past the inline extents, and have holes punched and
+refilled. Extending past the inode's four inline index entries (needing a
+depth-two tree) returns `EOPNOTSUPP`.
 
 ### Directories
 
@@ -210,12 +211,10 @@ The current gates cover the paths package management exercises:
 
 Known gaps that a package workload can still hit:
 
-1. **Writing into a depth-one extent hole.** Allocation is append-only, now at
-   depth 0 and depth 1 (a full inline tree is promoted to a leaf), and a write
-   into a depth-0 hole inserts a new in-line record in logical order. A hole in
-   a depth-1 tree still needs a leaf split and reports `EOPNOTSUPP`; most
-   Debian files are small or indirect-mapped, which is why installation works
-   today.
+1. **Depth-two extent trees.** Allocation handles in-line and depth-one trees,
+   including hole writes and leaf splits; a fifth index entry (depth two) is
+   still `EOPNOTSUPP`. Most Debian files are small or indirect-mapped, which is
+   why installation works today.
 2. **`metadata_csum` images.** Any image produced by default `mke2fs` on a
    modern distribution is rejected at mount unless the builder disables the
    feature. `64BIT` and `FLEX_BG` themselves are accepted.
@@ -224,11 +223,9 @@ Known gaps that a package workload can still hit:
 4. **Journal edge cases:** revoke-only transactions, deleted tags, journal
    checksums, and non-contiguous journal inodes.
 5. **Default ACL inheritance from directories.**
-6. **Depth-two extent trees.**
 
-The next storage milestone is therefore not "more fsck coverage" but extending
-extent allocation to depth-1 trees (existing and new holes), which is the main
-remaining blocker for arbitrary package upgrades and file rewrites.
+The next storage milestone is `metadata_csum`, which is the last feature that
+keeps a default-`mke2fs` image from mounting.
 
 ## Validation
 

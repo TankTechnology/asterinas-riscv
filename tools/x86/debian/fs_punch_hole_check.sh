@@ -12,7 +12,8 @@
 #   * a punch covering a whole double-indirect file, which must free every
 #     data block and both indirect levels (`i_blocks` drops to zero),
 #   * a misaligned offset (EINVAL),
-#   * a punch on an extent-mapped image file (EOPNOTSUPP for now).
+#   * punching and writing back a hole in a depth-one extent tree, including
+#     a file whose appended records force a leaf split (two index entries).
 #
 # The second boot re-reads every file and requires the holes to read as
 # zeros and the untouched blocks to keep their patterns; the host then runs
@@ -112,6 +113,7 @@ VERIFY_SH="$WORKSPACE/verify.sh"
 PROBE_UNIT="$WORKSPACE/probe.service"
 VERIFY_UNIT="$WORKSPACE/verify.service"
 CHECK_PY="$WORKSPACE/check.py"
+BIG_PAYLOAD="$WORKSPACE/big.payload"
 
 cat >"$CHECK_PY" <<'CHECKS'
 import json
@@ -124,6 +126,30 @@ DATA_BLOCKS = 64
 PRUNE_BLOCKS = 3000
 DATA_HOLES = [(8, 20), (60, 64)]
 PRUNE_HOLES = [(0, 3000)]
+BIG_BLOCKS = 2048
+BIG_APPENDS = 400
+BIG_TOTAL = BIG_BLOCKS + BIG_APPENDS
+# Blocks punched in the depth-one/extent-split file and the marker written
+# back into each one.
+BIG_PUNCHED = {0: b'P', 1000: b'Q', 2050: b'R', BIG_TOTAL - 1: b'S'}
+
+
+def check_big(path):
+    problems = []
+    if os.path.getsize(path) != BIG_TOTAL * BLOCK:
+        problems.append('%s: size %d' % (path, os.path.getsize(path)))
+        return problems
+    with open(path, 'rb') as f:
+        data = f.read()
+    for index in range(BIG_TOTAL):
+        chunk = data[index * BLOCK:(index + 1) * BLOCK]
+        if index in BIG_PUNCHED:
+            want = BIG_PUNCHED[index] * BLOCK
+        else:
+            want = bytes([index & 0xFF]) * BLOCK
+        if chunk != want:
+            problems.append('%s: block %d is wrong' % (path, index))
+    return problems
 
 
 def check_file(path, blocks, holes):
@@ -150,6 +176,7 @@ def main():
     problems = []
     problems += check_file(os.path.join(ROOT, 'data.bin'), DATA_BLOCKS, DATA_HOLES)
     problems += check_file(os.path.join(ROOT, 'prune.bin'), PRUNE_BLOCKS, PRUNE_HOLES)
+    problems += check_big(os.path.join(ROOT, 'big.bin'))
     with open(os.path.join(ROOT, 'write-result.txt')) as f:
         recorded = json.load(f)
     if recorded.get('misaligned_errno') != 22:  # EINVAL
@@ -214,6 +241,10 @@ ROOT = '/opt/fs-punch'
 BLOCK = 4096
 KEEP_SIZE = 0x01
 PUNCH_HOLE = 0x02
+BIG_BLOCKS = 2048
+BIG_APPENDS = 400
+BIG_TOTAL = BIG_BLOCKS + BIG_APPENDS
+BIG_PUNCHED = [(0, b'P'), (1000, b'Q'), (2050, b'R'), (BIG_TOTAL - 1, b'S')]
 
 libc = ctypes.CDLL('libc.so.6', use_errno=True)
 _fallocate = libc.fallocate
@@ -284,6 +315,24 @@ for offset, marker in ((12288, b'C'), (16384, b'D'), (20480, b'E')):
 os.fsync(fd)
 if extent_rc == 0:
     extent_rc, extent_errno = punch(fd, 16384, BLOCK)
+os.fsync(fd)
+os.close(fd)
+
+# A pre-built extent file: appending one page at a time forces a full leaf
+# and then a split, and punching blocks inside the resulting leaves must be
+# refillable by ordinary writes.  The payload starts as one 2048-block
+# extent written by debugfs on the host.
+big_path = os.path.join(ROOT, 'big.bin')
+fd = os.open(big_path, os.O_RDWR)
+for index in range(BIG_APPENDS):
+    block = BIG_BLOCKS + index
+    os.pwrite(fd, bytes([block & 0xff]) * BLOCK, block * BLOCK)
+os.fsync(fd)
+for block, marker in BIG_PUNCHED:
+    rc, err = punch(fd, block * BLOCK, BLOCK)
+    if rc != 0:
+        raise OSError(err, 'punch big block %d failed' % block)
+    os.pwrite(fd, marker * BLOCK, block * BLOCK)
 os.fsync(fd)
 os.close(fd)
 
@@ -363,8 +412,22 @@ UNIT
 
 rm -f -- "$IMAGE"
 cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
+
+# The guest can only exercise extent holes on files that are already
+# extent-mapped (new files use the legacy indirect mapping), so build one
+# with debugfs: a single 2048-block extent whose appends will fill and split
+# a leaf.
+python3 - "$BIG_PAYLOAD" <<'PAYLOAD'
+import sys
+
+with open(sys.argv[1], 'wb') as f:
+    for index in range(2048):
+        f.write(bytes([index & 0xFF]) * 4096)
+PAYLOAD
+
 {
     printf 'mkdir /opt/fs-punch\n'
+    printf 'write %s /opt/fs-punch/big.bin\n' "$BIG_PAYLOAD"
     printf 'write %s /opt/fs-punch/check.py\n' "$CHECK_PY"
     printf 'write %s /opt/fs-punch/probe.sh\n' "$PROBE_SH"
     printf 'sif /opt/fs-punch/probe.sh mode 0100755\n'
@@ -411,6 +474,16 @@ debugfs -R "dump_extents /etc/hostname" "$IMAGE" \
 if ! grep -q '^ 0/ 1' "$WORKSPACE/dump-extents.txt"; then
     printf 'FAIL (the extent tree is not depth one; see %s)\n' \
         "$WORKSPACE/dump-extents.txt"
+    exit 1
+fi
+
+# The appended pages must have overflowed one leaf into a two-entry index.
+debugfs -R "dump_extents /opt/fs-punch/big.bin" "$IMAGE" \
+    >"$WORKSPACE/dump-big-extents.txt" 2>&1 || true
+if ! grep -q '^ 0/ 1   2/' "$WORKSPACE/dump-big-extents.txt"; then
+    printf 'FAIL (the extent leaf did not split; see %s)\n' \
+        "$WORKSPACE/dump-big-extents.txt"
+    cat "$WORKSPACE/dump-big-extents.txt"
     exit 1
 fi
 
