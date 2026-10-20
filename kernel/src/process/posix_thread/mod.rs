@@ -730,9 +730,10 @@ impl Drop for PosixTidReservation {
 /// Reserves an automatically selected or explicitly requested TID.
 pub(in crate::process) fn reserve_posix_tid(requested: Option<Tid>) -> Result<PosixTidReservation> {
     let mut allocator = POSIX_TID_ALLOCATOR.lock();
+    let pid_max = current_pid_max();
 
     let tid = if let Some(requested) = requested {
-        if requested < FIRST_POSIX_TID || requested >= PID_MAX {
+        if requested < FIRST_POSIX_TID || requested >= pid_max {
             return_errno_with_message!(Errno::EINVAL, "the requested PID is out of range");
         }
         if !allocator.allocated.insert(requested) {
@@ -744,7 +745,7 @@ pub(in crate::process) fn reserve_posix_tid(requested: Option<Tid>) -> Result<Po
         let mut candidate = start;
         loop {
             if allocator.allocated.insert(candidate) {
-                allocator.next = if candidate + 1 < PID_MAX {
+                allocator.next = if candidate + 1 < pid_max {
                     candidate + 1
                 } else {
                     FIRST_POSIX_TID
@@ -752,7 +753,7 @@ pub(in crate::process) fn reserve_posix_tid(requested: Option<Tid>) -> Result<Po
                 break candidate;
             }
 
-            candidate = if candidate + 1 < PID_MAX {
+            candidate = if candidate + 1 < pid_max {
                 candidate + 1
             } else {
                 FIRST_POSIX_TID
@@ -789,6 +790,23 @@ pub fn last_tid() -> Tid {
 // FIXME: The current value is chosen arbitrarily.
 // This value can be modified by the user by writing to `/proc/sys/kernel/pid_max`.
 pub const PID_MAX: u32 = u32::MAX / 2;
+
+static PID_MAX_VALUE: AtomicU32 = AtomicU32::new(PID_MAX);
+
+/// Returns the current maximum process ID accepted by the allocator.
+pub fn current_pid_max() -> u32 {
+    PID_MAX_VALUE.load(Ordering::Relaxed)
+}
+
+/// Updates the maximum process ID exposed through `/proc/sys/kernel/pid_max`.
+pub fn set_pid_max(value: u32) -> Result<()> {
+    const MIN_PID_MAX: u32 = 301;
+    if !(MIN_PID_MAX..=PID_MAX).contains(&value) {
+        return_errno_with_message!(Errno::EINVAL, "pid_max is out of range");
+    }
+    PID_MAX_VALUE.store(value, Ordering::Relaxed);
+    Ok(())
+}
 
 /// The sleeping state of a thread.
 #[derive(Clone, Copy, Debug)]

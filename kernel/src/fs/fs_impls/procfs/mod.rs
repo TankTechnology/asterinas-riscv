@@ -64,6 +64,11 @@ pub(super) fn init_on_each_cpu() {
     cpuinfo::init_on_each_cpu();
 }
 
+/// Return the process-visible boot identity for early handoff evidence.
+pub(crate) fn boot_id_text() -> &'static str {
+    sys::boot_id_text()
+}
+
 /// Magic number.
 const PROC_MAGIC: u64 = 0x9fa0;
 /// Root Inode ID.

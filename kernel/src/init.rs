@@ -145,13 +145,21 @@ fn ap_idle_loop() {
 
 // The main function of the first (non-idle) kernel thread
 fn first_kthread() {
+    #[cfg(target_arch = "riscv64")]
+    ostd::early_println!("ASTERINAS_BOOT_PHASE phase=first-kthread-enter");
     println!("Spawn the first kernel thread");
 
     let init_mnt_ns = MountNamespace::get_init_singleton();
     let fs_resolver = init_mnt_ns.new_path_resolver();
     init_in_first_kthread(&fs_resolver);
+    #[cfg(target_arch = "riscv64")]
+    ostd::early_println!("ASTERINAS_BOOT_PHASE phase=kthread-init-done");
 
+    #[cfg(target_arch = "riscv64")]
+    ostd::early_println!("ASTERINAS_BOOT_PHASE phase=banner-begin");
     print_banner();
+    #[cfg(target_arch = "riscv64")]
+    ostd::early_println!("ASTERINAS_BOOT_PHASE phase=banner-done");
 
     INIT_PROCESS.call_once(|| {
         let karg = INIT_PROC_ARGS.get().unwrap();
@@ -159,6 +167,8 @@ fn first_kthread() {
         spawn_init_process(init_path, karg.argv().to_vec(), karg.envp().to_vec())
             .expect("Failed to run the init process")
     });
+    #[cfg(target_arch = "riscv64")]
+    ostd::early_println!("ASTERINAS_BOOT_PHASE phase=init-spawned");
 }
 
 static INIT_PROCESS: Once<Arc<Process>> = Once::new();
@@ -200,6 +210,11 @@ pub(super) fn on_first_process_startup(ctx: &Context) {
     #[cfg(target_arch = "riscv64")]
     crate::first_process_diag::on_stdio_init_ready();
     info!("ASTERINAS_USERMODE_STARTUP step=stdio-ready");
+    #[cfg(target_arch = "riscv64")]
+    ostd::early_println!(
+        "ASTERINAS_BOOT_ID boot_id={}",
+        crate::fs::procfs::boot_id_text()
+    );
 }
 
 static INIT_PATH: Once<String> = Once::new();
