@@ -92,9 +92,25 @@ linear; `e2fsck -D` can rebuild an index later.
 |---|---|---|
 | `user.*`, `trusted.*`, `security.*` | ✅ | one xattr block per inode |
 | External value blocks (`i_file_acl` pointing to EA blocks) | ❌ | `EIO` on read |
-| POSIX ACLs (`system.posix_acl_*`) | ❌ | namespace maps, semantics not implemented |
+| POSIX ACLs (`system.posix_acl_*`) | 🟡 | access ACLs stored and enforced (owner, named user, group class with mask, other); default ACLs are stored but not inherited |
 | xattr block sharing | ❌ | reference count is always 1 |
 | xattr capacity | 🟡 | value must fit the single xattr block |
+
+### POSIX ACLs
+
+Both `system.posix_acl_access` and `system.posix_acl_default` are stored as
+ordinary xattr entries with an empty name suffix, which is how ext4
+represents them. Access decisions in `check_permission` follow Linux
+`posix_acl_permission`: the owner entry is unmasked; a matching named user is
+part of the group class and is masked; the group class is the union of the
+owning-group entry and every matching named group entry, masked when the ACL
+has a mask; everything else uses the other entry. `DAC_OVERRIDE` still
+bypasses the check before the ACL is consulted.
+
+Not yet implemented: default ACL inheritance on create (the attribute is
+stored and readable but new children do not derive an ACL from it), and
+`chmod` syncing the ACL mask. An invalid ACL value fails the access check
+with `EIO`/`EINVAL` rather than being ignored.
 
 ### Journal (JBD2)
 
@@ -185,7 +201,7 @@ Known gaps that a package workload can still hit:
 3. **POSIX ACLs and xattrs larger than one block.**
 4. **Journal edge cases:** revoke-only transactions, deleted tags, and
    non-contiguous journal inodes.
-5. **`O_TMPFILE`.**
+5. **`O_TMPFILE`, default ACL inheritance and `chmod` mask sync.**
 
 The next storage milestone is therefore not "more fsck coverage" but extending
 extent allocation to depth-1 trees (existing and new holes), which is the main
@@ -265,6 +281,13 @@ on-disk tree reporting `0/ 1 1/ 1 0-5 <leaf> 6`.
 plain allocation with and without `KEEP_SIZE`; it also pins the punch-hole
 contract (`EOPNOTSUPP` and an unchanged file).  The image is remounted before
 the contents are re-checked.  Result: **PASS**, `e2fsck -fn` clean.
+
+`fs_acl_check.sh` (`make test_x86_debian_fs_acl`) stores an access ACL on two
+files whose mode bits alone deny every non-root access, then runs reads and
+writes as the owner, a named user, a named group and unrelated users. It
+checks that named users are masked, the group class applies, other matches
+nothing and root bypasses, re-runs every decision after a remount and
+requires `e2fsck -fn`.  Result: **PASS**.
 
 `fs_punch_hole_check.sh` (`make test_x86_debian_fs_punch_hole`) covers holes
 inside the direct blocks, across the direct/single-indirect boundary, up to

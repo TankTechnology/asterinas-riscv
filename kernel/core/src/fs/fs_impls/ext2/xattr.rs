@@ -180,6 +180,13 @@ impl Xattr {
             .set_entry(target_index, target_name, value, flags)
     }
 
+    /// Returns the raw value of one extended attribute, or `None` when it is
+    /// absent.  Used by the permission check to read a POSIX ACL.
+    pub(super) fn get_xattr_bytes(&self, name: XattrName) -> Result<Option<Vec<u8>>> {
+        let (target_index, target_name) = Self::parse_target_name(name)?;
+        self.cache.write().get_entry_bytes(target_index, &target_name)
+    }
+
     /// Reads one extended attribute value.
     ///
     /// When `vm_writer.avail() == 0`, returns the value length without copying
@@ -223,7 +230,7 @@ impl Xattr {
 
     /// Parses a VFS [`XattrName`] into the ext2 `(name_index, name_suffix)` pair.
     fn parse_target_name(name: XattrName) -> Result<(XattrNameIndex, Vec<u8>)> {
-        let name_index = XattrNameIndex::from(name.namespace());
+        let name_index = XattrNameIndex::for_name(name)?;
         let stripped_name = name_index.strip_prefix(name.full_name())?;
         if stripped_name.len() > u8::MAX as usize {
             return_errno_with_message!(Errno::ERANGE, "xattr name is too long");
@@ -330,6 +337,16 @@ impl XattrCache {
 
         vm_writer.write_fallible(&mut VmReader::from(value))?;
         Ok(value.len())
+    }
+
+    fn get_entry_bytes(
+        &mut self,
+        target_index: XattrNameIndex,
+        target_name: &[u8],
+    ) -> Result<Option<Vec<u8>>> {
+        self.load()?;
+        let (found_idx, _) = Self::find_entry_position(&self.entries, target_index, target_name);
+        Ok(found_idx.map(|idx| self.entries[idx].value.clone()))
     }
 
     fn remove_entry(&mut self, target_index: XattrNameIndex, target_name: &[u8]) -> Result<()> {
@@ -705,27 +722,31 @@ enum XattrNameIndex {
     Security = 6,
 }
 
-impl From<XattrNamespace> for XattrNameIndex {
-    fn from(namespace: XattrNamespace) -> Self {
-        match namespace {
-            XattrNamespace::User => Self::User,
-            XattrNamespace::Trusted => Self::Trusted,
-            XattrNamespace::Security => Self::Security,
-            XattrNamespace::System => {
-                // TODO: POSIX ACL xattrs are not implemented yet.
-                Self::PosixAclAccess
-            }
+impl XattrNameIndex {
+    /// Selects the on-disk index for a VFS name.
+    ///
+    /// The `system` namespace only holds the two POSIX ACL attributes; other
+    /// `system.*` names are not part of ext2/ext4.
+    fn for_name(name: XattrName) -> Result<Self> {
+        match name.namespace() {
+            XattrNamespace::User => Ok(Self::User),
+            XattrNamespace::Trusted => Ok(Self::Trusted),
+            XattrNamespace::Security => Ok(Self::Security),
+            XattrNamespace::System => match name.full_name() {
+                "system.posix_acl_access" => Ok(Self::PosixAclAccess),
+                "system.posix_acl_default" => Ok(Self::PosixAclDefault),
+                _ => return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported system xattr"),
+            },
         }
     }
-}
 
-impl XattrNameIndex {
     /// Returns the namespace prefix string (e.g. `"user."`).
     pub(super) fn prefix(self) -> &'static str {
         match self {
             Self::User => "user.",
-            Self::PosixAclAccess => "system.posix_acl_access.",
-            Self::PosixAclDefault => "system.posix_acl_default.",
+            // ACL names have no suffix: the whole name is the xattr name.
+            Self::PosixAclAccess => "system.posix_acl_access",
+            Self::PosixAclDefault => "system.posix_acl_default",
             Self::Trusted => "trusted.",
             Self::Lustre => "lustre.",
             Self::Security => "security.",
@@ -734,6 +755,16 @@ impl XattrNameIndex {
 
     /// Strips the namespace prefix from `full_name` and returns the remainder.
     pub(super) fn strip_prefix(self, full_name: &str) -> Result<&str> {
+        if matches!(self, Self::PosixAclAccess | Self::PosixAclDefault) {
+            return if full_name == self.prefix() {
+                Ok("")
+            } else {
+                Err(Error::with_message(
+                    Errno::EINVAL,
+                    "xattr name does not match namespace-specific prefix",
+                ))
+            };
+        }
         full_name.strip_prefix(self.prefix()).ok_or_else(|| {
             Error::with_message(
                 Errno::EINVAL,

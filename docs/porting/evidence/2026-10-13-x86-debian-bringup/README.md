@@ -752,6 +752,35 @@ FS_RENAMEAT2_VERIFY ok=True problems=0
 e2fsck -fn clean
 ```
 
+## POSIX ACLs
+
+ACL xattrs were nominally mapped but unusable: every `system.*` name was
+forced to the `system.posix_acl_access.` prefix (with a trailing dot), so
+`setxattr("system.posix_acl_access", ...)` failed the prefix check. The name
+index is now chosen from the full name, ACL names carry no suffix, and an
+unknown `system.*` name returns `EOPNOTSUPP`.
+
+Access decisions follow Linux `posix_acl_permission`. The existing
+`check_permission` body moved into a reusable helper that takes an optional
+parsed ACL; the ext2 inode passes its `system.posix_acl_access` value. The
+mask applies to named users as well as the group class, which the first
+version got wrong until the gate exercised it.
+
+The gate sets `mode 0600` on two files so that mode bits alone would deny
+everyone but root, stores ACLs, and runs short reads and writes as uid/gid
+1001, 1002 and 1003:
+
+```
+FS_ACL_WRITE ok=True problems=0
+FS_ACL_VERIFY ok=True problems=0
+e2fsck -fn clean
+```
+
+The checks cover the named-user mask, a named-group entry, the owning group,
+the other entry, the root override, and the raw bytes round-tripping through
+`getxattr`. Default ACL inheritance and `chmod`-driven mask updates are not
+implemented yet.
+
 ## `fallocate` punch-hole
 
 `FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE` now works for files on the legacy
