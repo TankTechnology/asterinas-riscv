@@ -222,6 +222,23 @@ impl Inode {
         Ok(())
     }
 
+    /// Creates or replaces one extended attribute from an in-memory value.
+    ///
+    /// This is the kernel-internal counterpart of [`Self::set_xattr`], used
+    /// when inheriting a directory's default ACL at creation time.
+    pub(in ext2) fn set_xattr_value(&self, name: XattrName, value: &[u8]) -> Result<()> {
+        let xattr = self.xattr.as_ref().ok_or_else(|| {
+            Error::with_message(Errno::EPERM, "xattr not supported on this inode type")
+        })?;
+        xattr.set_xattr_bytes(name, value.to_vec(), XattrSetFlags::empty())?;
+        let new_bid = xattr.bid();
+
+        let mut inner = self.inner.write();
+        inner.set_file_acl(new_bid);
+        inner.set_ctime(utils::now());
+        Ok(())
+    }
+
     /// Removes one extended attribute.
     pub(in ext2) fn remove_xattr(&self, name: XattrName) -> Result<()> {
         let xattr = self.xattr.as_ref().ok_or_else(|| {

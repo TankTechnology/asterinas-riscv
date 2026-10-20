@@ -107,7 +107,7 @@ linear; `e2fsck -D` can rebuild an index later.
 |---|---|---|
 | `user.*`, `trusted.*`, `security.*` | ✅ | one xattr block per inode |
 | External value blocks (`i_file_acl` pointing to EA blocks) | ❌ | `EIO` on read |
-| POSIX ACLs (`system.posix_acl_*`) | 🟡 | access ACLs stored and enforced (owner, named user, group class with mask, other); `chmod` keeps the mask/group/other entries in sync; default ACLs are stored but not inherited |
+| POSIX ACLs (`system.posix_acl_*`) | ✅ | access ACLs stored and enforced (owner, named user, group class with mask, other); `chmod` keeps the mask/group/other entries in sync; default ACLs are stored and inherited on create |
 | xattr block sharing | ❌ | reference count is always 1 |
 | xattr capacity | 🟡 | value must fit the single xattr block |
 
@@ -128,10 +128,16 @@ entry is left alone); a minimal three-entry ACL has its group entry
 rewritten instead. An ACL that has named entries but no mask is malformed
 and is left untouched.
 
-Not yet implemented: default ACL inheritance on create (the attribute is
-stored and readable but new children do not derive an ACL from it). An
-invalid ACL value fails the access check with `EIO`/`EINVAL` rather than
-being ignored.
+Creation inherits a directory's default ACL the way Linux
+`posix_acl_create` does. A new directory receives the default ACL as both
+its access and its default ACL with the requested mode unchanged; any other
+non-symlink child gets a copy clamped by the creation mode (owner entry by
+the owner bits, named entries and mask by the group bits, other entry by the
+other bits, and the group entry by the other bits when the ACL has no mask),
+and its mode is recomputed from the clamped ACL. When clamping changes no
+permission the ACL is equivalent to the mode and is not stored. Symlinks
+carry no ACL. An invalid ACL value fails the access check with
+`EIO`/`EINVAL` rather than being ignored.
 
 ### Journal (JBD2)
 
@@ -222,7 +228,6 @@ Known gaps that a package workload can still hit:
    are not implemented; POSIX ACLs themselves are.
 4. **Journal edge cases:** revoke-only transactions, deleted tags, journal
    checksums, and non-contiguous journal inodes.
-5. **Default ACL inheritance from directories.**
 
 The next storage milestone is `metadata_csum`, which is the last feature that
 keeps a default-`mke2fs` image from mounting.

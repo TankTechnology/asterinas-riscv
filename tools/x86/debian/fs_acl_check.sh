@@ -14,6 +14,16 @@
 #       - uid 1002 (gid 1002) may read but not write; uid 1003 may not read;
 #         uid 1001 still may not write because its own entry lacks w.
 #
+# A directory with a default ACL checks inheritance:
+#
+#   * a file created with mode 0666 gets the default ACL clamped to 0660
+#     (owner rw, named user r, group r, named group rw, mask rw, other none),
+#     and its mode is recomputed from the clamped ACL;
+#   * a subdirectory receives the same ACL as both its access and default
+#     ACL, with its mode unchanged;
+#   * a file created inside that subdirectory inherits the same ACL again;
+#   * a symlink carries no ACL.
+#
 # The second boot re-reads the ACL xattr and repeats every check after a
 # remount; the host then requires `e2fsck -fn`.
 
@@ -119,6 +129,7 @@ import sys
 
 ROOT = '/opt/fs-acl'
 ACL_ATTR = 'system.posix_acl_access'
+ACL_DEFAULT_ATTR = 'system.posix_acl_default'
 TAG_USER_OBJ = 0x01
 TAG_USER = 0x02
 TAG_GROUP_OBJ = 0x04
@@ -164,6 +175,26 @@ ACL_D_AFTER_CHMOD = [
     (TAG_GROUP_OBJ, 0o0, UNDEFINED_ID),
     (TAG_OTHER, 0o0, UNDEFINED_ID),
 ]
+# Default ACL of the inheritance directory: owner rwx, named user 1001 r,
+# group r-x, named group 1002 rw, mask rwx, other none.
+ACL_DEFAULT = [
+    (TAG_USER_OBJ, 0o7, UNDEFINED_ID),
+    (TAG_USER, 0o4, 1001),
+    (TAG_GROUP_OBJ, 0o5, UNDEFINED_ID),
+    (TAG_GROUP, 0o6, 1002),
+    (TAG_MASK, 0o7, UNDEFINED_ID),
+    (TAG_OTHER, 0o0, UNDEFINED_ID),
+]
+# A file created with mode 0666 inherits ACL_DEFAULT clamped by the mode:
+# owner 7&6, named user 4&6, group 5&6, named group 6&6, mask 7&6, other 0&6.
+ACL_INHERITED = [
+    (TAG_USER_OBJ, 0o6, UNDEFINED_ID),
+    (TAG_USER, 0o4, 1001),
+    (TAG_GROUP_OBJ, 0o4, UNDEFINED_ID),
+    (TAG_GROUP, 0o6, 1002),
+    (TAG_MASK, 0o6, UNDEFINED_ID),
+    (TAG_OTHER, 0o0, UNDEFINED_ID),
+]
 
 READ = "open(__import__('sys').argv[1], 'rb').read()"
 WRITE = "open(__import__('sys').argv[1], 'r+b')"
@@ -184,6 +215,17 @@ EXPECTED = {
     'c_other_read': True,
     'd_acl_mode_match': True,
     'd_other_read': False,
+    'inherit_acl_match': True,
+    'inherit_mode_match': True,
+    'inherit_subdir_access_match': True,
+    'inherit_subdir_default_match': True,
+    'inherit_subdir_mode_match': True,
+    'inherit_nested_acl_match': True,
+    'inherit_symlink_has_no_acl': True,
+    'inherit_user1001_read': True,
+    'inherit_user1001_write': False,
+    'inherit_group1002_write': True,
+    'inherit_other_read': False,
 }
 
 
@@ -233,11 +275,34 @@ def setup():
     os.chmod(os.path.join(ROOT, 'c.bin'), 0o604)
     os.chmod(os.path.join(ROOT, 'd.bin'), 0o600)
 
+    # Default-ACL inheritance: the mode passed to create must reach the
+    # filesystem unmasked so the ACL clamping is what decides the result.
+    inherit = os.path.join(ROOT, 'inherit')
+    os.mkdir(inherit, 0o777)
+    os.setxattr(inherit, ACL_DEFAULT_ATTR, acl_bytes(ACL_DEFAULT))
+    os.umask(0)
+    fd = os.open(os.path.join(inherit, 'f.bin'), os.O_CREAT | os.O_WRONLY, 0o666)
+    os.close(fd)
+    subdir = os.path.join(inherit, 'sub')
+    os.mkdir(subdir, 0o777)
+    fd = os.open(os.path.join(subdir, 'child.bin'), os.O_CREAT | os.O_WRONLY, 0o666)
+    os.close(fd)
+    os.symlink('f.bin', os.path.join(inherit, 'link'))
+    os.umask(0o022)
+
 
 def observe():
     a = os.path.join(ROOT, 'a.bin')
     b = os.path.join(ROOT, 'b.bin')
-    return {
+    inherit = os.path.join(ROOT, 'inherit')
+    inherited = os.path.join(inherit, 'f.bin')
+    subdir = os.path.join(inherit, 'sub')
+    try:
+        os.getxattr(os.path.join(inherit, 'link'), ACL_ATTR, follow_symlinks=False)
+        symlink_has_no_acl = False
+    except OSError:
+        symlink_has_no_acl = True
+    observed = {
         'a_root_read': run_as(0, 0, READ, a),
         'a_root_write': run_as(0, 0, WRITE, a),
         'a_user1001_read': run_as(1001, 1001, READ, a),
@@ -255,7 +320,23 @@ def observe():
         'd_acl_mode_match': os.getxattr(os.path.join(ROOT, 'd.bin'), ACL_ATTR)
             == acl_bytes(ACL_D_AFTER_CHMOD),
         'd_other_read': run_as(1002, 1002, READ, os.path.join(ROOT, 'd.bin')),
+        'inherit_acl_match': os.getxattr(inherited, ACL_ATTR)
+            == acl_bytes(ACL_INHERITED),
+        'inherit_mode_match': (os.stat(inherited).st_mode & 0o777) == 0o660,
+        'inherit_subdir_access_match': os.getxattr(subdir, ACL_ATTR)
+            == acl_bytes(ACL_DEFAULT),
+        'inherit_subdir_default_match': os.getxattr(subdir, ACL_DEFAULT_ATTR)
+            == acl_bytes(ACL_DEFAULT),
+        'inherit_subdir_mode_match': (os.stat(subdir).st_mode & 0o777) == 0o777,
+        'inherit_nested_acl_match': os.getxattr(os.path.join(subdir, 'child.bin'), ACL_ATTR)
+            == acl_bytes(ACL_INHERITED),
+        'inherit_symlink_has_no_acl': symlink_has_no_acl,
+        'inherit_user1001_read': run_as(1001, 1001, READ, inherited),
+        'inherit_user1001_write': run_as(1001, 1001, WRITE, inherited),
+        'inherit_group1002_write': run_as(1002, 1002, WRITE, inherited),
+        'inherit_other_read': run_as(1003, 1003, READ, inherited),
     }
+    return observed
 
 
 def main():

@@ -328,6 +328,63 @@ impl PosixAcl {
         Some(Self::encode(&entries))
     }
 
+    /// Applies a directory's default ACL to a new file, following Linux
+    /// `posix_acl_create_masq`.
+    ///
+    /// Every entry is clamped by the creation mode (`mode` carries the
+    /// requested permission bits): the owner entry by the owner bits, the
+    /// named user/group and mask entries by the group bits, and the other
+    /// entry by the other bits. In a minimal (three-entry) ACL the group
+    /// entry follows the other bits, as Linux does.
+    ///
+    /// When clamping changed no permission, the ACL is equivalent to the
+    /// mode and Linux stores no access ACL, so `None` is returned. Otherwise
+    /// the mode is recomputed from the clamped ACL and returned with its
+    /// encoded value; the file-type and set-id bits of `mode` are preserved.
+    pub(crate) fn for_new_inode(&self, mode: u16) -> (u16, Option<Vec<u8>>) {
+        let owner_bits = ((mode >> 6) & 0o7) as u8;
+        let group_bits = ((mode >> 3) & 0o7) as u8;
+        let other_bits = (mode & 0o7) as u8;
+
+        let mut entries = self.entries.clone();
+        let mut not_equiv = false;
+        for entry in &mut entries {
+            let clamp = match entry.tag {
+                PosixAclTag::UserObj => owner_bits,
+                PosixAclTag::User(_) | PosixAclTag::Group(_) | PosixAclTag::Mask => group_bits,
+                PosixAclTag::GroupObj => {
+                    if self.has_mask {
+                        group_bits
+                    } else {
+                        other_bits
+                    }
+                }
+                PosixAclTag::Other => other_bits,
+            };
+            if entry.perm != clamp {
+                not_equiv = true;
+            }
+            entry.perm &= clamp;
+        }
+
+        if !not_equiv {
+            return (mode, None);
+        }
+
+        let mut perm = 0u16;
+        for entry in &entries {
+            match entry.tag {
+                PosixAclTag::UserObj => perm |= u16::from(entry.perm) << 6,
+                PosixAclTag::Mask => perm |= u16::from(entry.perm) << 3,
+                PosixAclTag::GroupObj if !self.has_mask => perm |= u16::from(entry.perm) << 3,
+                PosixAclTag::Other => perm |= u16::from(entry.perm),
+                _ => {}
+            }
+        }
+
+        ((mode & !0o777) | perm, Some(Self::encode(&entries)))
+    }
+
     /// Serializes entries back into the ext4 ACL value.
     fn encode(entries: &[PosixAclEntry]) -> Vec<u8> {
         let mut out = Vec::with_capacity(4 + entries.len() * 8);

@@ -15,9 +15,23 @@ use self::dir_entry::{DOT_BYTE, DOT_DOT_BYTE, DirBlockView, DirEntryFileType, Di
 use super::{super::Ext2, FileFlags, FilePerm, Inode, InodeInner, MAX_LINK_COUNT};
 use crate::fs::{
     ext2::{prelude::*, utils},
+    file::InodeMode,
     utils::NAME_MAX,
-    vfs::inode::RenameMode,
+    vfs::{
+        inode::RenameMode,
+        xattr::{PosixAcl, XattrName},
+    },
 };
+
+/// Returns the VFS name of one of the two POSIX ACL attributes.
+fn posix_acl_name(default: bool) -> XattrName<'static> {
+    let full_name: &'static str = if default {
+        "system.posix_acl_default"
+    } else {
+        "system.posix_acl_access"
+    };
+    XattrName::try_from_full_name(full_name).expect("POSIX ACL names use the system namespace")
+}
 
 /// Information about a candidate directory entry slot.
 #[derive(Clone, Copy, Debug)]
@@ -156,6 +170,7 @@ impl Inode {
         let child = fs.create_inode(self.ino, type_, perm)?;
         let child_ino = child.ino();
         let result = init_child_fn(&fs, &child)
+            .and_then(|_| self.inherit_default_acl(&child, type_, perm))
             .and_then(|_| parent_inner.add_entry(&slot, name, child_ino, dir_entry_file_type));
 
         if let Err(err) = result {
@@ -172,6 +187,46 @@ impl Inode {
         parent_inner.set_mtime_ctime(utils::now());
         fs.insert_inode(child.clone());
         Ok(child)
+    }
+
+    /// Applies this directory's default ACL to a newly created child.
+    ///
+    /// This follows Linux `posix_acl_create`: a new directory receives the
+    /// default ACL as both its access and its default ACL, with the requested
+    /// mode unchanged, while any other non-symlink child receives the default
+    /// ACL clamped by the creation mode and its mode is recomputed from the
+    /// result. When clamping changes no permission the ACL is equivalent to
+    /// the mode and no access ACL is stored. Symlinks never carry ACLs.
+    fn inherit_default_acl(
+        &self,
+        child: &Inode,
+        type_: InodeType,
+        perm: FilePerm,
+    ) -> Result<()> {
+        if type_ == InodeType::SymLink {
+            return Ok(());
+        }
+        let Some(default) = self.posix_default_acl_bytes()? else {
+            return Ok(());
+        };
+
+        let is_dir = type_ == InodeType::Dir;
+        let (mode, access) = if is_dir {
+            (perm.bits(), Some(default.clone()))
+        } else {
+            PosixAcl::parse(&default)?.for_new_inode(perm.bits())
+        };
+
+        if mode != perm.bits() {
+            child.set_mode(InodeMode::from_bits_truncate(mode))?;
+        }
+        if let Some(access) = access {
+            child.set_xattr_value(posix_acl_name(false), &access)?;
+        }
+        if is_dir {
+            child.set_xattr_value(posix_acl_name(true), &default)?;
+        }
+        Ok(())
     }
 
     /// Adds a hard link in this directory to an existing non-directory inode.

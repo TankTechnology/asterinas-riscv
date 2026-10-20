@@ -263,6 +263,20 @@ impl Inode {
         }
     }
 
+    /// Returns the raw `system.posix_acl_default` value of this inode.
+    ///
+    /// Only directories normally carry one; it is read when a child is
+    /// created so its access ACL can be inherited.
+    pub(super) fn posix_default_acl_bytes(&self) -> Result<Option<Vec<u8>>> {
+        let Some(xattr) = self.xattr.as_ref() else {
+            return Ok(None);
+        };
+        let Some(name) = XattrName::try_from_full_name("system.posix_acl_default") else {
+            return Ok(None);
+        };
+        xattr.get_xattr_bytes(name)
+    }
+
     /// Returns a reference to the owning `Ext2` filesystem.
     pub(super) fn fs(&self) -> Result<Arc<Ext2>> {
         self.fs

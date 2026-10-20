@@ -785,7 +785,28 @@ runs `chmod 0604` on an ACL with a mask and checks that the mask drops to
 zero while the other entry gains read, which flips the enforcement result
 for a named user from allowed to denied; a minimal three-entry ACL gets its
 group entry rewritten by `chmod 0600` instead. Both ACLs and their decisions
-survive the remount. Default ACL inheritance is not implemented yet.
+survive the remount.
+
+Default ACL inheritance follows Linux `posix_acl_create`. With the process
+umask at zero, the gate creates in a directory carrying a default ACL:
+
+- a file with mode 0666, which receives the default ACL clamped to the mode
+  (`rw-r--r--`+mask → owner rw, named user r, group r, named group rw,
+  mask rw, other none) and a mode recomputed from the clamped ACL, 0660;
+- a subdirectory with mode 0777, which receives the default ACL unchanged as
+  both its access and default ACL and keeps mode 0777;
+- a file inside that subdirectory, which inherits the same clamped ACL;
+- a symlink, which gets no ACL at all.
+
+The inherited ACL is enforced: uid 1001 may read but not write, uid 1002 in
+the named group may write, and uid 1003 is denied. All of it is re-read after
+the remount and checked by `e2fsck -fn`:
+
+```
+FS_ACL_WRITE ok=True problems=0
+FS_ACL_VERIFY ok=True problems=0
+e2fsck -fn clean
+```
 
 ## `fallocate` punch-hole
 

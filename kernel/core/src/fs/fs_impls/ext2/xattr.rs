@@ -164,7 +164,6 @@ impl Xattr {
         value_reader: &mut VmReader,
         flags: XattrSetFlags,
     ) -> Result<()> {
-        let (target_index, target_name) = Self::parse_target_name(name)?;
         let value_len = value_reader.remain();
         if value_len > BLOCK_SIZE {
             return_errno_with_message!(Errno::ERANGE, "xattr value is too large");
@@ -173,6 +172,23 @@ impl Xattr {
         let mut value = vec![0u8; value_len];
         if value_len > 0 {
             value_reader.read_fallible(&mut VmWriter::from(value.as_mut_slice()))?;
+        }
+
+        self.set_xattr_bytes(name, value, flags)
+    }
+
+    /// Creates or replaces one extended attribute from an in-memory value.
+    ///
+    /// Used by kernel-internal writers such as default-ACL inheritance.
+    pub(super) fn set_xattr_bytes(
+        &self,
+        name: XattrName,
+        value: Vec<u8>,
+        flags: XattrSetFlags,
+    ) -> Result<()> {
+        let (target_index, target_name) = Self::parse_target_name(name)?;
+        if value.len() > BLOCK_SIZE {
+            return_errno_with_message!(Errno::ERANGE, "xattr value is too large");
         }
 
         self.cache
