@@ -128,6 +128,10 @@ it a file would inherit the previous file's `i_crtime`, version and project
 id. Older 128-byte inodes keep one-second resolution, which is the format's
 limit.
 
+The same area carries the birth time: `i_crtime`/`i_crtime_extra` are decoded
+into `birth_at`, so `statx` reports `STATX_BTIME` for inodes that store it,
+and a newly created inode records the creation time there.
+
 Replay correctness was hardened by the crash matrix: block groups load their
 bitmaps and descriptors during mount, *before* `replay_journal` writes the
 replayed home blocks directly to the device. Without an explicit reload the

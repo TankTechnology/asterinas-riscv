@@ -685,6 +685,12 @@ e2fsck -fn clean
 Kernel-generated timestamps carry real fractions as well (a fresh file
 reported `1792470780.301261890` in the same clock probe).
 
+The same gate now checks the birth time. `statx` reports `STATX_BTIME` from
+`i_crtime`/`i_crtime_extra`, and a new inode records its creation time
+there; the gate asserts that the first and second boots return the same
+`birth_sec`/`birth_nsec` (measured `1792486836.900812383` in both), and that
+the raw `crtime` word is non-zero on disk.
+
 ## `renameat2` flags
 
 The VFS dentry layer already implemented `RENAME_NOREPLACE` and

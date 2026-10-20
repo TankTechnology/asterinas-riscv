@@ -76,7 +76,7 @@ impl Inode {
             gid: Gid::new(inner.gid()),
             container_dev_id,
             self_dev_id,
-            birth_at: None,
+            birth_at: inner.birth(),
         }
     }
 

@@ -107,8 +107,74 @@ mkdir -p -- "$WORKSPACE"
 IMAGE="$WORKSPACE/timestamps.ext2"
 PROBE_SH="$WORKSPACE/probe.sh"
 VERIFY_SH="$WORKSPACE/verify.sh"
+STATX_PY="$WORKSPACE/statx.py"
 PROBE_UNIT="$WORKSPACE/probe.service"
 VERIFY_UNIT="$WORKSPACE/verify.service"
+
+cat >"$STATX_PY" <<'STATX'
+"""Minimal statx wrapper: the kernel reports birth time only via statx."""
+import ctypes
+
+
+class StatxTimestamp(ctypes.Structure):
+    _fields_ = [
+        ("tv_sec", ctypes.c_int64),
+        ("tv_nsec", ctypes.c_uint32),
+        ("reserved", ctypes.c_int32),
+    ]
+
+
+class Statx(ctypes.Structure):
+    _fields_ = [
+        ("mask", ctypes.c_uint32),
+        ("blksize", ctypes.c_uint32),
+        ("attributes", ctypes.c_uint64),
+        ("nlink", ctypes.c_uint32),
+        ("uid", ctypes.c_uint32),
+        ("gid", ctypes.c_uint32),
+        ("mode", ctypes.c_uint16),
+        ("spare0", ctypes.c_uint16),
+        ("ino", ctypes.c_uint64),
+        ("size", ctypes.c_uint64),
+        ("blocks", ctypes.c_uint64),
+        ("attributes_mask", ctypes.c_uint64),
+        ("atime", StatxTimestamp),
+        ("btime", StatxTimestamp),
+        ("ctime", StatxTimestamp),
+        ("mtime", StatxTimestamp),
+        ("rdev_major", ctypes.c_uint32),
+        ("rdev_minor", ctypes.c_uint32),
+        ("dev_major", ctypes.c_uint32),
+        ("dev_minor", ctypes.c_uint32),
+        ("mnt_id", ctypes.c_uint64),
+        ("dio_mem_align", ctypes.c_uint32),
+        ("dio_offset_align", ctypes.c_uint32),
+        ("spare3", ctypes.c_uint64 * 12),
+    ]
+
+
+AT_FDCWD = -100
+STATX_BTIME = 0x800
+STATX_BASIC_STATS = 0x7ff
+
+_libc = ctypes.CDLL("libc.so.6", use_errno=True)
+_statx = _libc.statx
+_statx.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int,
+                   ctypes.c_uint, ctypes.POINTER(Statx)]
+_statx.restype = ctypes.c_int
+
+
+def birth_time(path):
+    """Returns (seconds, nanoseconds, has_btime) for `path`."""
+    buf = Statx()
+    rc = _statx(AT_FDCWD, path.encode(), 0,
+                STATX_BASIC_STATS | STATX_BTIME, ctypes.byref(buf))
+    if rc != 0:
+        err = ctypes.get_errno()
+        raise OSError(err, "statx failed")
+    has_btime = bool(buf.mask & STATX_BTIME)
+    return buf.btime.tv_sec, buf.btime.tv_nsec, has_btime
+STATX
 
 cat >"$PROBE_SH" <<PROBE
 #!/bin/sh
@@ -119,6 +185,11 @@ sleep $SETTLE
 python3 - <<'PY'
 import json
 import os
+import sys
+import time
+
+sys.path.insert(0, '/opt/fs-timestamp')
+from statx import birth_time
 
 root = '/opt/fs-timestamp'
 os.makedirs(root, exist_ok=True)
@@ -143,6 +214,10 @@ with open(kpath, 'wb') as f:
     f.flush()
     os.fsync(f.fileno())
 kst = os.stat(kpath)
+birth_sec, birth_nsec, has_btime = birth_time(path)
+# The file was just created, so its birth time must be close to now.
+birth_ok = has_btime and abs(birth_sec - int(time.time())) < 300
+ok = ok and birth_ok
 
 result = {
     'ok': ok,
@@ -151,13 +226,18 @@ result = {
     'observed_atime_ns': st.st_atime_ns,
     'observed_mtime_ns': st.st_mtime_ns,
     'kernel_mtime_ns': kst.st_mtime_ns,
+    'has_btime': has_btime,
+    'birth_sec': birth_sec,
+    'birth_nsec': birth_nsec,
 }
 with open(os.path.join(root, 'expected.json'), 'w') as f:
     json.dump(result, f, sort_keys=True)
     f.flush()
     os.fsync(f.fileno())
-print('FS_TIMESTAMP_WRITE ok=%s atime_ns=%d mtime_ns=%d kernel_mtime_ns=%d'
-      % (ok, st.st_atime_ns, st.st_mtime_ns, kst.st_mtime_ns))
+print('FS_TIMESTAMP_WRITE ok=%s atime_ns=%d mtime_ns=%d kernel_mtime_ns=%d '
+      'birth_sec=%d birth_nsec=%d'
+      % (ok, st.st_atime_ns, st.st_mtime_ns, kst.st_mtime_ns,
+         birth_sec, birth_nsec))
 PY
 sync
 systemctl poweroff --no-block
@@ -171,21 +251,30 @@ echo "FS_TIMESTAMP_VERIFY_BEGIN"
 python3 - <<'PY'
 import json
 import os
+import sys
+import time
+
+sys.path.insert(0, '/opt/fs-timestamp')
+from statx import birth_time
 
 root = '/opt/fs-timestamp'
 with open(os.path.join(root, 'expected.json')) as f:
     expected = json.load(f)
 path = os.path.join(root, 'stamped.bin')
 st = os.stat(path)
+birth_sec, birth_nsec, has_btime = birth_time(path)
 ok = (st.st_atime_ns == expected['expected_atime_ns']
-      and st.st_mtime_ns == expected['expected_mtime_ns'])
+      and st.st_mtime_ns == expected['expected_mtime_ns']
+      and has_btime
+      and birth_sec == expected['birth_sec']
+      and birth_nsec == expected['birth_nsec'])
 with open(os.path.join(root, 'result.txt'), 'w') as f:
-    f.write('ok=%s atime_ns=%d mtime_ns=%d\n'
-            % (ok, st.st_atime_ns, st.st_mtime_ns))
+    f.write('ok=%s atime_ns=%d mtime_ns=%d birth_sec=%d birth_nsec=%d\n'
+            % (ok, st.st_atime_ns, st.st_mtime_ns, birth_sec, birth_nsec))
     f.flush()
     os.fsync(f.fileno())
-print('FS_TIMESTAMP_VERIFY ok=%s atime_ns=%d mtime_ns=%d'
-      % (ok, st.st_atime_ns, st.st_mtime_ns))
+print('FS_TIMESTAMP_VERIFY ok=%s atime_ns=%d mtime_ns=%d birth_sec=%d birth_nsec=%d'
+      % (ok, st.st_atime_ns, st.st_mtime_ns, birth_sec, birth_nsec))
 PY
 sync
 systemctl poweroff --no-block
@@ -227,6 +316,7 @@ rm -f -- "$IMAGE"
 cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
 {
     printf 'mkdir /opt/fs-timestamp\n'
+    printf 'write %s /opt/fs-timestamp/statx.py\n' "$STATX_PY"
     printf 'write %s /opt/fs-timestamp/probe.sh\n' "$PROBE_SH"
     printf 'sif /opt/fs-timestamp/probe.sh mode 0100755\n'
     printf 'write %s /opt/fs-timestamp/verify.sh\n' "$VERIFY_SH"
@@ -291,7 +381,7 @@ fi
 # The nanoseconds live in the raw inode, so check the image itself as well.
 debugfs -R "stat /opt/fs-timestamp/stamped.bin" "$IMAGE" \
     >"$WORKSPACE/debugfs-stat.txt" 2>&1 || true
-for field in atime mtime; do
+for field in atime mtime crtime; do
     fraction="$(awk -v field="$field" '$1 == field ":" { split($2, parts, ":"); print parts[2] }' \
         "$WORKSPACE/debugfs-stat.txt")"
     if [[ -z "$fraction" || "$fraction" == "00000000" ]]; then
@@ -309,5 +399,5 @@ printf 'PASS (%s)\n' \
     "$(grep -a 'FS_TIMESTAMP_VERIFY ok=True' "$WORKSPACE/verify.txt" |
         tail -1 | sed 's/.*FS_TIMESTAMP_VERIFY //')"
 printf 'on-disk: %s\n' \
-    "$(grep -aE '^ (atime|mtime):' "$WORKSPACE/debugfs-stat.txt" | tr '\n' ' ')"
+    "$(grep -aE '^ (atime|mtime|crtime):' "$WORKSPACE/debugfs-stat.txt" | tr '\n' ' ')"
 rm -f -- "$IMAGE"

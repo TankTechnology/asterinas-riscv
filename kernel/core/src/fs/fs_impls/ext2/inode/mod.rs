@@ -108,6 +108,12 @@ pub(super) const EXTRA_ATIME_OFFSET: usize = 0x8c;
 /// End of the last timestamp extra word; an `i_extra_isize` smaller than
 /// `EXTRA_TIMES_END - 128` makes the extras unavailable.
 pub(super) const EXTRA_TIMES_END: usize = 0x90;
+/// Offset of `i_crtime` (birth time seconds) inside a large inode.
+pub(super) const EXTRA_CRTIME_OFFSET: usize = 0x90;
+/// Offset of `i_crtime_extra` (birth time nanoseconds) inside a large inode.
+pub(super) const EXTRA_CRTIME_EXTRA_OFFSET: usize = 0x94;
+/// End of the birth-time words; requires `i_extra_isize >= 24`.
+pub(super) const EXTRA_CRTIME_END: usize = 0x98;
 
 /// The ext4 sub-second timestamp words of an inode.
 ///
@@ -119,6 +125,8 @@ pub(super) struct InodeTimeExtras {
     pub ctime: u32,
     pub mtime: u32,
     pub atime: u32,
+    /// Raw `(i_crtime, i_crtime_extra)` when the slot stores birth time.
+    pub crtime: Option<(u32, u32)>,
 }
 
 /// Decodes one `i_*time_extra` word together with its 32-bit seconds field.
@@ -306,6 +314,8 @@ pub(super) struct InodeDesc {
     atime: Duration,
     ctime: Duration,
     mtime: Duration,
+    /// Birth time (`i_crtime`), when the inode slot stores it.
+    birth: Option<Duration>,
     dtime: Duration,
     link_count: u16,
     sector_count: u32,
@@ -334,6 +344,7 @@ impl InodeDesc {
             atime: now,
             ctime: now,
             mtime: now,
+            birth: Some(now),
             dtime: Duration::ZERO,
             link_count,
             sector_count: 0,
@@ -355,6 +366,9 @@ impl InodeDesc {
             ctime: encode_extra_time(self.ctime),
             mtime: encode_extra_time(self.mtime),
             atime: encode_extra_time(self.atime),
+            crtime: self
+                .birth
+                .map(|birth| (birth.as_secs() as u32, encode_extra_time(birth))),
         }
     }
 }
@@ -394,6 +408,11 @@ impl InodeDesc {
                 Duration::from_secs(raw.mtime as u64),
             ),
         };
+        // An all-zero `i_crtime` means the birth time is unknown, which is
+        // also what a slot without room for it reports.
+        let birth = extras.and_then(|extras| extras.crtime).and_then(|(secs, extra)| {
+            (secs != 0 || extra != 0).then(|| decode_extra_time(secs, extra))
+        });
 
         let mut size = raw.size_lo as u64;
         if type_ == InodeType::File {
@@ -421,6 +440,7 @@ impl InodeDesc {
             atime,
             ctime,
             mtime,
+            birth,
             dtime: Duration::from_secs(raw.dtime as u64),
             link_count: raw.link_count,
             sector_count: raw_block_ptrs.sector_count,
@@ -632,6 +652,10 @@ impl InodeInner {
 
     fn mtime(&self) -> Duration {
         self.desc.mtime
+    }
+
+    fn birth(&self) -> Option<Duration> {
+        self.desc.birth
     }
 
     fn set_mtime(&mut self, time: Duration) {
@@ -903,6 +927,7 @@ mod test {
             atime: 111 << 2,
             ctime: 222 << 2,
             mtime: 333 << 2,
+            crtime: Some((secs, 444 << 2)),
         };
 
         let desc = InodeDesc::try_from_raw_with_extras(&raw, Some(extras)).unwrap();
@@ -911,6 +936,7 @@ mod test {
         assert_eq!(desc.ctime.subsec_nanos(), 222);
         assert_eq!(desc.mtime.subsec_nanos(), 333);
         assert_eq!(desc.mtime.as_secs(), secs as u64);
+        assert_eq!(desc.birth.unwrap().subsec_nanos(), 444);
         assert_eq!(desc.time_extras(), extras);
     }
 }

@@ -35,8 +35,9 @@ use ostd::const_assert;
 use super::{
     fs::Ext2,
     inode::{
-        Inode, InodeDesc, InodeTimeExtras, RawInode, EXTRA_ATIME_OFFSET, EXTRA_CTIME_OFFSET,
-        EXTRA_ISIZE_OFFSET, EXTRA_MTIME_OFFSET, EXTRA_TIMES_END,
+        Inode, InodeDesc, InodeTimeExtras, RawInode, EXTRA_ATIME_OFFSET, EXTRA_CRTIME_END,
+        EXTRA_CRTIME_EXTRA_OFFSET, EXTRA_CRTIME_OFFSET, EXTRA_CTIME_OFFSET, EXTRA_ISIZE_OFFSET,
+        EXTRA_MTIME_OFFSET, EXTRA_TIMES_END,
     },
     prelude::*,
     super_block::SuperBlock,
@@ -574,6 +575,14 @@ impl BlockGroup {
                 .write_val(offset_bytes + EXTRA_MTIME_OFFSET, &extras.mtime)?;
             self.inode_table_cache
                 .write_val(offset_bytes + EXTRA_ATIME_OFFSET, &extras.atime)?;
+            if let Some((secs, extra)) = extras.crtime
+                && self.crtime_available(offset_bytes)?
+            {
+                self.inode_table_cache
+                    .write_val(offset_bytes + EXTRA_CRTIME_OFFSET, &secs)?;
+                self.inode_table_cache
+                    .write_val(offset_bytes + EXTRA_CRTIME_EXTRA_OFFSET, &extra)?;
+            }
         }
         Ok(())
     }
@@ -607,6 +616,16 @@ impl BlockGroup {
         if !self.time_extras_available(offset_bytes)? {
             return Ok(None);
         }
+        let crtime = if self.crtime_available(offset_bytes)? {
+            Some((
+                self.inode_table_cache
+                    .read_val(offset_bytes + EXTRA_CRTIME_OFFSET)?,
+                self.inode_table_cache
+                    .read_val(offset_bytes + EXTRA_CRTIME_EXTRA_OFFSET)?,
+            ))
+        } else {
+            None
+        };
         Ok(Some(InodeTimeExtras {
             ctime: self
                 .inode_table_cache
@@ -617,22 +636,39 @@ impl BlockGroup {
             atime: self
                 .inode_table_cache
                 .read_val(offset_bytes + EXTRA_ATIME_OFFSET)?,
+            crtime,
         }))
     }
 
     /// Returns whether the slot is large enough and its `i_extra_isize`
     /// advertises room through `i_atime_extra`.
     fn time_extras_available(&self, offset_bytes: usize) -> Result<bool> {
-        if self.inode_size < EXTRA_TIMES_END {
+        let Some(extra_isize) = self.valid_extra_isize(offset_bytes)? else {
             return Ok(false);
+        };
+        Ok(EXTRA_ISIZE_OFFSET + extra_isize >= EXTRA_TIMES_END)
+    }
+
+    /// Returns whether the slot advertises room through `i_crtime_extra`.
+    fn crtime_available(&self, offset_bytes: usize) -> Result<bool> {
+        let Some(extra_isize) = self.valid_extra_isize(offset_bytes)? else {
+            return Ok(false);
+        };
+        Ok(EXTRA_ISIZE_OFFSET + extra_isize >= EXTRA_CRTIME_END)
+    }
+
+    /// Returns the slot's `i_extra_isize` when it is well formed.
+    fn valid_extra_isize(&self, offset_bytes: usize) -> Result<Option<usize>> {
+        if self.inode_size < EXTRA_TIMES_END {
+            return Ok(None);
         }
         let extra_isize: u16 = self
             .inode_table_cache
             .read_val(offset_bytes + EXTRA_ISIZE_OFFSET)?;
         let extra_isize = extra_isize as usize;
-        Ok(extra_isize % size_of::<u32>() == 0
-            && EXTRA_ISIZE_OFFSET + extra_isize <= self.inode_size
-            && EXTRA_ISIZE_OFFSET + extra_isize >= EXTRA_TIMES_END)
+        Ok((extra_isize % size_of::<u32>() == 0
+            && EXTRA_ISIZE_OFFSET + extra_isize <= self.inode_size)
+            .then_some(extra_isize))
     }
 
     /// Stages one dirty bitmap for the next commit.
