@@ -121,7 +121,7 @@ impl InodeInner {
         self.desc.sector_count = raw_block_ptrs.sector_count;
 
         let raw_inode = RawInode::from(&*self.desc);
-        fs.write_back_inode_desc(ino, &raw_inode)?;
+        fs.write_back_inode_desc(ino, &raw_inode, Some(self.desc.time_extras()))?;
         self.clear_dirty();
         Ok(())
     }

@@ -34,7 +34,10 @@ use ostd::const_assert;
 
 use super::{
     fs::Ext2,
-    inode::{Inode, InodeDesc, RawInode},
+    inode::{
+        Inode, InodeDesc, InodeTimeExtras, RawInode, EXTRA_ATIME_OFFSET, EXTRA_CTIME_OFFSET,
+        EXTRA_ISIZE_OFFSET, EXTRA_MTIME_OFFSET, EXTRA_TIMES_END,
+    },
     prelude::*,
     super_block::SuperBlock,
 };
@@ -544,15 +547,92 @@ impl BlockGroup {
     pub(super) fn read_inode_desc(&self, inode_idx: u16) -> Result<InodeDesc> {
         let offset_bytes = (inode_idx as usize) * self.inode_size;
         let raw_inode: RawInode = self.inode_table_cache.read_val(offset_bytes)?;
-        InodeDesc::try_from(&raw_inode)
+        let extras = self.read_time_extras(offset_bytes)?;
+        InodeDesc::try_from_raw_with_extras(&raw_inode, extras)
     }
 
     /// Writes an inode descriptor to the group's inode table `PageCache`.
-    pub(super) fn write_back_inode_desc(&self, ino: Ext2Ino, raw: &RawInode) -> Result<()> {
+    ///
+    /// The sub-second timestamp words are written too when the slot
+    /// advertises room for them; the rest of the large-inode area
+    /// (`i_crtime`, `i_version_hi`, `i_projid`, checksums) is left untouched.
+    pub(super) fn write_back_inode_desc(
+        &self,
+        ino: Ext2Ino,
+        raw: &RawInode,
+        extras: Option<InodeTimeExtras>,
+    ) -> Result<()> {
         let inode_idx = self.inode_idx_in_group(ino);
         let offset_bytes = (inode_idx as usize) * self.inode_size;
         self.inode_table_cache.write_val(offset_bytes, raw)?;
+        if let Some(extras) = extras
+            && self.time_extras_available(offset_bytes)?
+        {
+            self.inode_table_cache
+                .write_val(offset_bytes + EXTRA_CTIME_OFFSET, &extras.ctime)?;
+            self.inode_table_cache
+                .write_val(offset_bytes + EXTRA_MTIME_OFFSET, &extras.mtime)?;
+            self.inode_table_cache
+                .write_val(offset_bytes + EXTRA_ATIME_OFFSET, &extras.atime)?;
+        }
         Ok(())
+    }
+
+    /// Prepares a freshly allocated inode slot for use.
+    ///
+    /// The bytes beyond the 128-byte GOOD_OLD inode are zeroed and
+    /// `i_extra_isize` is set, as Linux does when it creates an inode.
+    /// Without this a reused slot would inherit the previous file's
+    /// `i_crtime`, project id and version, and would not advertise the
+    /// timestamp extras at all.
+    pub(super) fn initialize_inode_slot(&self, ino: Ext2Ino) -> Result<()> {
+        if self.inode_size <= EXTRA_ISIZE_OFFSET + size_of::<u16>() {
+            return Ok(());
+        }
+        let inode_idx = self.inode_idx_in_group(ino);
+        let offset_bytes = (inode_idx as usize) * self.inode_size;
+        self.inode_table_cache.fill_zeros(
+            offset_bytes + EXTRA_ISIZE_OFFSET..offset_bytes + self.inode_size,
+        )?;
+        // Linux's `s_want_extra_isize`: 32 bytes beyond the old inode.
+        let extra_isize = (self.inode_size - EXTRA_ISIZE_OFFSET).min(32) as u16;
+        self.inode_table_cache
+            .write_val(offset_bytes + EXTRA_ISIZE_OFFSET, &extra_isize)?;
+        Ok(())
+    }
+
+    /// Reads the timestamp extras of the inode slot at `offset_bytes`, if the
+    /// slot's `i_extra_isize` covers all three words.
+    fn read_time_extras(&self, offset_bytes: usize) -> Result<Option<InodeTimeExtras>> {
+        if !self.time_extras_available(offset_bytes)? {
+            return Ok(None);
+        }
+        Ok(Some(InodeTimeExtras {
+            ctime: self
+                .inode_table_cache
+                .read_val(offset_bytes + EXTRA_CTIME_OFFSET)?,
+            mtime: self
+                .inode_table_cache
+                .read_val(offset_bytes + EXTRA_MTIME_OFFSET)?,
+            atime: self
+                .inode_table_cache
+                .read_val(offset_bytes + EXTRA_ATIME_OFFSET)?,
+        }))
+    }
+
+    /// Returns whether the slot is large enough and its `i_extra_isize`
+    /// advertises room through `i_atime_extra`.
+    fn time_extras_available(&self, offset_bytes: usize) -> Result<bool> {
+        if self.inode_size < EXTRA_TIMES_END {
+            return Ok(false);
+        }
+        let extra_isize: u16 = self
+            .inode_table_cache
+            .read_val(offset_bytes + EXTRA_ISIZE_OFFSET)?;
+        let extra_isize = extra_isize as usize;
+        Ok(extra_isize % size_of::<u32>() == 0
+            && EXTRA_ISIZE_OFFSET + extra_isize <= self.inode_size
+            && EXTRA_ISIZE_OFFSET + extra_isize >= EXTRA_TIMES_END)
     }
 
     /// Stages one dirty bitmap for the next commit.

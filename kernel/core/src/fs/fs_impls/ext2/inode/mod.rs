@@ -95,6 +95,51 @@ const MAX_LINK_COUNT: u16 = 32000;
 const MAX_FAST_SYMLINK_LEN: usize = size_of::<u32>() * RAW_BLOCK_PTRS_LEN;
 /// Number of 32-bit entries in the ext2 inode `i_block` array.
 pub(super) const RAW_BLOCK_PTRS_LEN: usize = 15;
+
+/// Offset of `i_extra_isize`, the first field after the 128-byte GOOD_OLD
+/// inode. Only inodes larger than 128 bytes have it.
+pub(super) const EXTRA_ISIZE_OFFSET: usize = 128;
+/// Offset of `i_ctime_extra` inside a large inode.
+pub(super) const EXTRA_CTIME_OFFSET: usize = 0x84;
+/// Offset of `i_mtime_extra` inside a large inode.
+pub(super) const EXTRA_MTIME_OFFSET: usize = 0x88;
+/// Offset of `i_atime_extra` inside a large inode.
+pub(super) const EXTRA_ATIME_OFFSET: usize = 0x8c;
+/// End of the last timestamp extra word; an `i_extra_isize` smaller than
+/// `EXTRA_TIMES_END - 128` makes the extras unavailable.
+pub(super) const EXTRA_TIMES_END: usize = 0x90;
+
+/// The ext4 sub-second timestamp words of an inode.
+///
+/// Each word carries nanoseconds in its upper 30 bits and two epoch bits that
+/// extend the 32-bit seconds field past 2038, matching Linux's
+/// `ext4_encode_extra_time`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct InodeTimeExtras {
+    pub ctime: u32,
+    pub mtime: u32,
+    pub atime: u32,
+}
+
+/// Decodes one `i_*time_extra` word together with its 32-bit seconds field.
+fn decode_extra_time(raw_secs: u32, extra: u32) -> Duration {
+    // Linux sign-extends the low seconds and adds the two epoch bits, which
+    // moves 2038..2106 into the positive range. Dates before the epoch are
+    // clamped: `Duration` cannot represent them.
+    let secs = (raw_secs as i32 as i64) + (((extra & 0x3) as i64) << 32);
+    if secs < 0 {
+        return Duration::ZERO;
+    }
+    Duration::from_secs(secs as u64) + Duration::from_nanos((extra >> 2) as u64)
+}
+
+/// Encodes a duration into one `i_*time_extra` word.
+fn encode_extra_time(time: Duration) -> u32 {
+    let secs = time.as_secs() as i64;
+    let low = secs as u32;
+    let epoch = (((secs - (low as i32 as i64)) >> 32) as u32) & 0x3;
+    ((time.subsec_nanos() << 2) & 0xffff_fffc) | epoch
+}
 /// Logical block index within a file (0-based).
 pub(super) type Iblock = u32;
 /// Physical block address on the device.
@@ -303,11 +348,31 @@ impl InodeDesc {
     pub(super) fn type_(&self) -> InodeType {
         self.type_
     }
+
+    /// Returns the sub-second timestamp words for this descriptor.
+    pub(super) fn time_extras(&self) -> InodeTimeExtras {
+        InodeTimeExtras {
+            ctime: encode_extra_time(self.ctime),
+            mtime: encode_extra_time(self.mtime),
+            atime: encode_extra_time(self.atime),
+        }
+    }
 }
 
 impl TryFrom<&RawInode> for InodeDesc {
     type Error = Error;
     fn try_from(raw: &RawInode) -> Result<Self> {
+        Self::try_from_raw_with_extras(raw, None)
+    }
+}
+
+impl InodeDesc {
+    /// Parses a raw inode, using the sub-second timestamp words when the
+    /// inode slot stores them.
+    pub(super) fn try_from_raw_with_extras(
+        raw: &RawInode,
+        extras: Option<InodeTimeExtras>,
+    ) -> Result<Self> {
         if raw.link_count == 0 {
             return_errno_with_message!(Errno::ESTALE, "inode has been deleted");
         }
@@ -317,9 +382,18 @@ impl TryFrom<&RawInode> for InodeDesc {
         let perm = FilePerm::from_bits_truncate(mode & 0o7777);
         let uid = (raw.uid as u32) | ((raw.uid_high as u32) << 16);
         let gid = (raw.gid as u32) | ((raw.gid_high as u32) << 16);
-        let atime = Duration::from_secs(raw.atime as u64);
-        let ctime = Duration::from_secs(raw.ctime as u64);
-        let mtime = Duration::from_secs(raw.mtime as u64);
+        let (atime, ctime, mtime) = match extras {
+            Some(extras) => (
+                decode_extra_time(raw.atime, extras.atime),
+                decode_extra_time(raw.ctime, extras.ctime),
+                decode_extra_time(raw.mtime, extras.mtime),
+            ),
+            None => (
+                Duration::from_secs(raw.atime as u64),
+                Duration::from_secs(raw.ctime as u64),
+                Duration::from_secs(raw.mtime as u64),
+            ),
+        };
 
         let mut size = raw.size_lo as u64;
         if type_ == InodeType::File {
@@ -795,5 +869,48 @@ mod test {
             0,
             Arc::downgrade(ext2),
         )
+    }
+
+    #[test]
+    fn extra_time_round_trips_nanoseconds() {
+        let time = Duration::from_secs(1_700_000_000) + Duration::from_nanos(123_456_789);
+        let extra = encode_extra_time(time);
+
+        assert_eq!(extra & 0x3, 0, "times before 2038 have no epoch bits");
+        assert_eq!(decode_extra_time(1_700_000_000, extra), time);
+    }
+
+    #[test]
+    fn extra_time_epoch_bits_extend_past_2038() {
+        // 0x9000_0000 is past 2^31; Linux sign-extends the low word and adds
+        // the epoch bits back.
+        let noon_2048 = 0x9000_0000_u64;
+        let time = Duration::from_secs(noon_2048) + Duration::from_nanos(999);
+        let extra = encode_extra_time(time);
+
+        assert_eq!(extra & 0x3, 1);
+        assert_eq!(decode_extra_time(noon_2048 as u32, extra), time);
+    }
+
+    #[test]
+    fn inode_desc_decodes_timestamp_extras() {
+        let mut raw = RawInodeBuilder::new(0o100644).build();
+        let secs = 1_700_000_000;
+        raw.atime = secs;
+        raw.ctime = secs;
+        raw.mtime = secs;
+        let extras = InodeTimeExtras {
+            atime: 111 << 2,
+            ctime: 222 << 2,
+            mtime: 333 << 2,
+        };
+
+        let desc = InodeDesc::try_from_raw_with_extras(&raw, Some(extras)).unwrap();
+
+        assert_eq!(desc.atime.subsec_nanos(), 111);
+        assert_eq!(desc.ctime.subsec_nanos(), 222);
+        assert_eq!(desc.mtime.subsec_nanos(), 333);
+        assert_eq!(desc.mtime.as_secs(), secs as u64);
+        assert_eq!(desc.time_extras(), extras);
     }
 }

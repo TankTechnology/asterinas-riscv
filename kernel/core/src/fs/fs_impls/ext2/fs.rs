@@ -27,7 +27,7 @@ use ostd::mm::{HasSize, io::util::HasVmReaderWriter};
 
 use super::{
     block_group::{BlockGroup, RawBlockGroup},
-    inode::{FilePerm, Inode, InodeDesc, RawInode},
+    inode::{FilePerm, Inode, InodeDesc, InodeTimeExtras, RawInode},
     journal, metadata_txn,
     prelude::*,
     super_block::{
@@ -638,7 +638,12 @@ impl Ext2 {
     }
 
     /// Writes an inode descriptor to the group's `PageCache`.
-    pub(super) fn write_back_inode_desc(&self, ino: Ext2Ino, raw_inode: &RawInode) -> Result<()> {
+    pub(super) fn write_back_inode_desc(
+        &self,
+        ino: Ext2Ino,
+        raw_inode: &RawInode,
+        extras: Option<InodeTimeExtras>,
+    ) -> Result<()> {
         {
             let sb = self.super_block.read();
             // Reserved inodes are numbered below `s_first_ino` and are written
@@ -656,7 +661,7 @@ impl Ext2 {
             .find_group(ino)
             .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
 
-        group.write_back_inode_desc(ino, raw_inode)
+        group.write_back_inode_desc(ino, raw_inode, extras)
     }
 
     /// Allocates up to `count` contiguous blocks.
@@ -780,7 +785,15 @@ impl Ext2 {
             .find_group(ino)
             .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
 
-        if let Err(err) = self.write_back_inode_desc(ino, &raw_inode) {
+        // A reused slot may still hold the previous file's large-inode area.
+        // Zero it and advertise `i_extra_isize` before the descriptor is
+        // written, so the timestamp extras are valid from the first sync.
+        let initialized = block_group
+            .initialize_inode_slot(ino)
+            .and_then(|()| {
+                self.write_back_inode_desc(ino, &raw_inode, Some(inode_desc.time_extras()))
+            });
+        if let Err(err) = initialized {
             if let Ok(was_allocated) = block_group.free_inode(ino, inode_type)
                 && was_allocated
             {
@@ -1608,7 +1621,7 @@ mod test {
 
         // Free path now takes caller-provided inode type; no inode-table read is needed.
         let raw_dir = make_raw_inode(0o040755, 1, 0);
-        f.ext2.write_back_inode_desc(ino, &raw_dir).unwrap();
+        f.ext2.write_back_inode_desc(ino, &raw_dir, None).unwrap();
         f.ext2.free_inode(ino, InodeType::Dir).unwrap();
         assert_eq!(f.ext2.super_block().free_inodes_count(), before_sb_free);
         assert_eq!(f.ext2.block_group(0).free_inodes_count(), before_group_free);
@@ -1665,7 +1678,7 @@ mod test {
         let raw_file = make_raw_inode(0o100644, 1, 0);
         f_free
             .ext2
-            .write_back_inode_desc(target_ino, &raw_file)
+            .write_back_inode_desc(target_ino, &raw_file, None)
             .unwrap();
 
         let before_sb = f_free.ext2.super_block().free_inodes_count();

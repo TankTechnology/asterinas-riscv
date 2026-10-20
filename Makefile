@@ -649,6 +649,7 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_fs_crash \
 		tools.x86.tests.test_x86_debian_fs_concurrency \
 		tools.x86.tests.test_x86_debian_fs_durability \
+		tools.x86.tests.test_x86_debian_fs_timestamps \
 		tools.x86.tests.test_lmbench_transcript \
 		tools.riscv.tests.test_lmbench_native -v
 
@@ -877,6 +878,29 @@ test_x86_debian_fs_concurrency:
 		--accel "$(X86_DEBIAN_CONCURRENCY_ACCEL)" \
 		--timeout "$(X86_DEBIAN_CONCURRENCY_TIMEOUT)" \
 		$(if $(X86_DEBIAN_CONCURRENCY_CRASH_AFTER),--crash-after "$(X86_DEBIAN_CONCURRENCY_CRASH_AFTER)")
+
+# Nanosecond timestamp gate: set explicit utimensat values in one boot,
+# remount in a second boot, require the same st_atime_ns/st_mtime_ns, a
+# non-zero `i_*time_extra` fraction in the raw inode and `e2fsck -fn`.
+#   X86_DEBIAN_TIMESTAMP_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_TIMESTAMP_BASE_ROOT ?=
+X86_DEBIAN_TIMESTAMP_WORKSPACE ?= $(CURDIR)/target/x86-debian/timestamps
+X86_DEBIAN_TIMESTAMP_ACCEL ?= kvm
+X86_DEBIAN_TIMESTAMP_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_timestamps
+test_x86_debian_fs_timestamps:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_TIMESTAMP_BASE_ROOT)" || { echo "X86_DEBIAN_TIMESTAMP_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-timestamps: base=$(X86_DEBIAN_TIMESTAMP_BASE_ROOT) accel=$(X86_DEBIAN_TIMESTAMP_ACCEL)"
+	@tools/x86/debian/fs_timestamp_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_TIMESTAMP_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_TIMESTAMP_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_TIMESTAMP_ACCEL)" \
+		--timeout "$(X86_DEBIAN_TIMESTAMP_TIMEOUT)"
 
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:
