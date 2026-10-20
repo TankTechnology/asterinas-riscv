@@ -22,6 +22,15 @@ const EXTENT_RECORD_SIZE: usize = 12;
 /// Extent records that fit in one 4 KiB leaf block.
 const EXTENT_LEAF_CAPACITY: usize = (BLOCK_SIZE - EXTENT_HEADER_SIZE) / EXTENT_RECORD_SIZE;
 
+/// One extent record while a hole is punched through a block.
+#[derive(Clone, Copy)]
+struct ExtentRecord {
+    logical: u32,
+    len: u32,
+    physical: u32,
+    unwritten: bool,
+}
+
 /// An ext2 inode's block-pointer tree.
 ///
 /// Each tree is rooted in the 15 raw block pointer slots stored in the inode.
@@ -300,8 +309,13 @@ impl BlockPtrTree {
             let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
             let raw_length = u16::from_le_bytes(bytes[offset + 4..offset + 6].try_into().unwrap());
             let length = u32::from(raw_length & 0x7fff);
-            if length == 0 || logical != next_logical {
+            if length == 0 {
                 return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent range");
+            }
+            // Records must be ordered but need not be contiguous: a punched
+            // hole leaves a logical gap.
+            if index != 0 && logical < next_logical {
+                return_errno_with_message!(Errno::EUCLEAN, "out-of-order ext4 extent range");
             }
             let physical_hi = u16::from_le_bytes(bytes[offset + 6..offset + 8].try_into().unwrap());
             let physical_lo =
@@ -603,12 +617,11 @@ impl BlockPtrTree {
         self.prune_empty_indirect_blocks(fs)
     }
 
-    /// Frees an extent range for a depth-zero (in-line) extent tree.
+    /// Frees an extent range in an extent tree.
     ///
-    /// Each affected extent is split into the parts before and after the
-    /// block range; the covered physical run is freed. Depth-one trees are
-    /// rejected because their leaves would need the same treatment per leaf
-    /// and the index rewritten.
+    /// Depth-zero (in-line) trees are rewritten in place; depth-one trees
+    /// split each affected leaf, free the emptied leaves and rebuild the
+    /// in-line index.
     fn punch_inline_extent_range(
         &mut self,
         fs: &Ext2,
@@ -616,9 +629,16 @@ impl BlockPtrTree {
         end_block: Iblock,
     ) -> Result<()> {
         let bytes = self.raw_block_ptrs.extent_bytes();
+        let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
+        if depth == 1 {
+            return self.punch_depth_one_extent_range(fs, start_block, end_block);
+        }
+        if depth != 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported extent tree depth");
+        }
+
         let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
         let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
-        let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
         let generation = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
         if u16::from_le_bytes([bytes[0], bytes[1]]) != EXTENT_MAGIC
             || entries > max_entries
@@ -626,71 +646,8 @@ impl BlockPtrTree {
         {
             return_errno_with_message!(Errno::EUCLEAN, "invalid inline extent tree");
         }
-        if depth != 0 {
-            return_errno_with_message!(
-                Errno::EOPNOTSUPP,
-                "punch-hole on a depth-one extent tree is not supported"
-            );
-        }
 
-        struct Kept {
-            logical: u32,
-            len: u32,
-            physical: u32,
-            unwritten: bool,
-        }
-        let mut kept: Vec<Kept> = Vec::new();
-        let mut freed: Vec<(Ext2Bid, u32)> = Vec::new();
-
-        for index in 0..entries {
-            let offset = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
-            let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
-            let raw_len =
-                u16::from_le_bytes([bytes[offset + 4], bytes[offset + 5]]);
-            let len = u32::from(raw_len & 0x7fff);
-            let unwritten = raw_len & 0x8000 != 0;
-            let physical = Self::extent_record_physical(&bytes, offset)?;
-            let extent_end = logical
-                .checked_add(len)
-                .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "extent logical overflow"))?;
-
-            if extent_end <= start_block || logical >= end_block {
-                kept.push(Kept { logical, len, physical, unwritten });
-                continue;
-            }
-
-            let hole_start = logical.max(start_block);
-            let hole_end = extent_end.min(end_block);
-            if hole_start > logical {
-                kept.push(Kept {
-                    logical,
-                    len: hole_start - logical,
-                    physical,
-                    unwritten,
-                });
-            }
-            if hole_end < extent_end {
-                kept.push(Kept {
-                    logical: hole_end,
-                    len: extent_end - hole_end,
-                    physical: physical
-                        .checked_add(hole_end - logical)
-                        .ok_or_else(|| {
-                            Error::with_message(Errno::EUCLEAN, "extent physical overflow")
-                        })?,
-                    unwritten,
-                });
-            }
-            freed.push((
-                physical
-                    .checked_add(hole_start - logical)
-                    .ok_or_else(|| {
-                        Error::with_message(Errno::EUCLEAN, "extent physical overflow")
-                    })?,
-                hole_end - hole_start,
-            ));
-        }
-
+        let (kept, freed) = Self::split_extent_block(&bytes, start_block, end_block)?;
         if kept.len() > max_entries {
             return_errno_with_message!(
                 Errno::EOPNOTSUPP,
@@ -707,6 +664,192 @@ impl BlockPtrTree {
         }
 
         let mut out = [0u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
+        Self::encode_extent_block(&mut out, &kept, max_entries, generation)?;
+        for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
+            *value = u32::from_le_bytes(out[index * 4..index * 4 + 4].try_into().unwrap());
+        }
+        Ok(())
+    }
+
+    /// Frees an extent range in a depth-one extent tree.
+    fn punch_depth_one_extent_range(
+        &mut self,
+        fs: &Ext2,
+        start_block: Iblock,
+        end_block: Iblock,
+    ) -> Result<()> {
+        let root = self.raw_block_ptrs.extent_bytes();
+        let root_entries = u16::from_le_bytes([root[2], root[3]]) as usize;
+        let root_max_entries = u16::from_le_bytes([root[4], root[5]]) as usize;
+        let generation = u32::from_le_bytes(root[8..12].try_into().unwrap());
+        if u16::from_le_bytes([root[0], root[1]]) != EXTENT_MAGIC
+            || root_entries > root_max_entries
+            || root_max_entries > 4
+        {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent index");
+        }
+
+        struct LeafPlan {
+            leaf: Ext2Bid,
+            kept: Vec<ExtentRecord>,
+            freed: Vec<(Ext2Bid, u32)>,
+            max_entries: usize,
+            generation: u32,
+        }
+        let mut plans = Vec::new();
+        for index in 0..root_entries {
+            let offset = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
+            let leaf = Self::extent_index_leaf(&root, offset)?;
+            let bytes = self.read_extent_leaf(leaf)?;
+            let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+            let leaf_generation = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+            let (kept, freed) = Self::split_extent_block(&bytes, start_block, end_block)?;
+            if kept.len() > max_entries {
+                return_errno_with_message!(
+                    Errno::EOPNOTSUPP,
+                    "punch-hole would overflow an extent leaf"
+                );
+            }
+            plans.push(LeafPlan {
+                leaf,
+                kept,
+                freed,
+                max_entries,
+                generation: leaf_generation,
+            });
+        }
+
+        let mut survivors: Vec<(u32, Ext2Bid)> = Vec::new();
+        for plan in plans {
+            for (physical, len) in &plan.freed {
+                fs.free_blocks(*physical, *len)?;
+                self.raw_block_ptrs.sector_count = self
+                    .raw_block_ptrs
+                    .sector_count
+                    .saturating_sub(*len * SECTORS_PER_BLOCK);
+            }
+            if plan.kept.is_empty() {
+                self.indirect_blocks_manager.lock().remove(plan.leaf);
+                fs.free_blocks(plan.leaf, 1)?;
+                self.raw_block_ptrs.sector_count = self
+                    .raw_block_ptrs
+                    .sector_count
+                    .saturating_sub(SECTORS_PER_BLOCK);
+            } else {
+                let mut bytes = [0u8; BLOCK_SIZE];
+                Self::encode_extent_block(
+                    &mut bytes,
+                    &plan.kept,
+                    plan.max_entries,
+                    plan.generation,
+                )?;
+                self.write_extent_leaf(plan.leaf, &bytes)?;
+                survivors.push((plan.kept[0].logical, plan.leaf));
+            }
+        }
+
+        let mut out = [0u8; RAW_BLOCK_PTRS_LEN * size_of::<u32>()];
+        out[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+        out[2..4].copy_from_slice(&(survivors.len() as u16).to_le_bytes());
+        out[4..6].copy_from_slice(&(root_max_entries as u16).to_le_bytes());
+        out[6..8].copy_from_slice(&1u16.to_le_bytes());
+        out[8..12].copy_from_slice(&generation.to_le_bytes());
+        for (index, (key, leaf)) in survivors.iter().enumerate() {
+            let offset = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
+            out[offset..offset + 4].copy_from_slice(&key.to_le_bytes());
+            out[offset + 4..offset + 8].copy_from_slice(&leaf.to_le_bytes());
+            out[offset + 8..offset + 10].copy_from_slice(&0u16.to_le_bytes());
+            out[offset + 10..offset + 12].copy_from_slice(&0u16.to_le_bytes());
+        }
+        for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
+            *value = u32::from_le_bytes(out[index * 4..index * 4 + 4].try_into().unwrap());
+        }
+        Ok(())
+    }
+
+    /// Splits the depth-zero extent records in `bytes` around the punched
+    /// block range, returning the records to keep and the physical runs to
+    /// free.
+    fn split_extent_block(
+        bytes: &[u8],
+        start_block: Iblock,
+        end_block: Iblock,
+    ) -> Result<(Vec<ExtentRecord>, Vec<(Ext2Bid, u32)>)> {
+        let entries = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
+        let max_entries = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        let depth = u16::from_le_bytes([bytes[6], bytes[7]]);
+        if u16::from_le_bytes([bytes[0], bytes[1]]) != EXTENT_MAGIC
+            || entries > max_entries
+            || max_entries > EXTENT_LEAF_CAPACITY
+            || depth != 0
+        {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 extent block");
+        }
+
+        let mut kept = Vec::new();
+        let mut freed = Vec::new();
+        for index in 0..entries {
+            let offset = EXTENT_HEADER_SIZE + index * EXTENT_RECORD_SIZE;
+            let logical = u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+            let raw_len = u16::from_le_bytes([bytes[offset + 4], bytes[offset + 5]]);
+            let len = u32::from(raw_len & 0x7fff);
+            let unwritten = raw_len & 0x8000 != 0;
+            let physical = Self::extent_record_physical(bytes, offset)?;
+            let extent_end = logical
+                .checked_add(len)
+                .ok_or_else(|| Error::with_message(Errno::EUCLEAN, "extent logical overflow"))?;
+
+            if extent_end <= start_block || logical >= end_block {
+                kept.push(ExtentRecord {
+                    logical,
+                    len,
+                    physical,
+                    unwritten,
+                });
+                continue;
+            }
+
+            let hole_start = logical.max(start_block);
+            let hole_end = extent_end.min(end_block);
+            if hole_start > logical {
+                kept.push(ExtentRecord {
+                    logical,
+                    len: hole_start - logical,
+                    physical,
+                    unwritten,
+                });
+            }
+            if hole_end < extent_end {
+                kept.push(ExtentRecord {
+                    logical: hole_end,
+                    len: extent_end - hole_end,
+                    physical: physical.checked_add(hole_end - logical).ok_or_else(|| {
+                        Error::with_message(Errno::EUCLEAN, "extent physical overflow")
+                    })?,
+                    unwritten,
+                });
+            }
+            freed.push((
+                physical.checked_add(hole_start - logical).ok_or_else(|| {
+                    Error::with_message(Errno::EUCLEAN, "extent physical overflow")
+                })?,
+                hole_end - hole_start,
+            ));
+        }
+        Ok((kept, freed))
+    }
+
+    /// Serializes `kept` records as a depth-zero extent block.
+    fn encode_extent_block(
+        out: &mut [u8],
+        kept: &[ExtentRecord],
+        max_entries: usize,
+        generation: u32,
+    ) -> Result<()> {
+        if kept.len() > max_entries {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "extent block overflow");
+        }
+        out.fill(0);
         out[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
         out[2..4].copy_from_slice(&(kept.len() as u16).to_le_bytes());
         out[4..6].copy_from_slice(&(max_entries as u16).to_le_bytes());
@@ -720,9 +863,6 @@ impl BlockPtrTree {
             out[offset + 4..offset + 6].copy_from_slice(&raw_len.to_le_bytes());
             out[offset + 6..offset + 8].copy_from_slice(&0u16.to_le_bytes());
             out[offset + 8..offset + 12].copy_from_slice(&extent.physical.to_le_bytes());
-        }
-        for (index, value) in self.raw_block_ptrs.block_ptrs.iter_mut().enumerate() {
-            *value = u32::from_le_bytes(out[index * 4..index * 4 + 4].try_into().unwrap());
         }
         Ok(())
     }

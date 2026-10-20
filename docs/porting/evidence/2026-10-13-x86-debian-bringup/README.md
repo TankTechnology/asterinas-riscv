@@ -803,12 +803,19 @@ FS_PUNCH_VERIFY ok=True problems=0
 e2fsck -fn clean
 ```
 
-Depth-zero extent trees are handled too: each affected extent is split into
-the parts before and after the hole and the covered physical run is freed,
-rejecting the operation when the result would not fit the four in-line
-records.  The gate appends two pages to the image's inline-extent
-`/etc/hostname`, punches the first (split) and then the second (removal); a
-depth-one tree such as `libLLVM` still reports `EOPNOTSUPP`.
+Extent trees are handled as well: each affected extent is split into the
+parts before and after the hole and the covered physical run is freed.  For
+depth zero the result must still fit the four in-line records; for depth one
+each leaf is rewritten, a leaf that loses all of its extents is freed, the
+in-line index is rebuilt and emptied leaves are dropped.  The gate appends
+to the image's inline-extent `/etc/hostname` in a way that first splits a
+two-block extent and then promotes the tree to depth one, punches an extent
+out of the leaf, and requires `dump_extents` to still report `0/ 1`.
+
+The first depth-one attempt returned `EUCLEAN` on the next write: the extent
+allocator insisted that logical records be contiguous, but punching a hole
+legitimately creates a gap.  Records are now required to be strictly
+increasing instead of contiguous.
 
 The measured 520 -> 392 sectors is exactly the 16 data blocks covered by the
 punched ranges.

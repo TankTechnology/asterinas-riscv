@@ -48,7 +48,7 @@ Legend: ✅ supported, 🟡 partial (limits noted), ❌ not implemented.
 | Extent writeback of existing ranges | 🟡 | depth 0 and 1 |
 | Extent truncate | 🟡 | depth 0 and 1; deeper trees are left untouched and logged |
 | 64-bit extents | ❌ | rejected as `EOPNOTSUPP` |
-| `fallocate` | 🟡 | `Allocate`, `AllocateKeepSize`, `ZeroRange`, `ZeroRangeKeepSize` and `PunchHoleKeepSize` (indirect mapping and depth-zero extent trees); collapse, insert and unshare, and punch-hole on depth-one extent trees, are `EOPNOTSUPP` |
+| `fallocate` | 🟡 | `Allocate`, `AllocateKeepSize`, `ZeroRange`, `ZeroRangeKeepSize` and `PunchHoleKeepSize` (indirect mapping and extent trees up to depth one); collapse, insert and unshare are `EOPNOTSUPP` |
 | `O_TMPFILE` | ❌ | VFS default returns `EOPNOTSUPP` |
 | File size | ✅ | up to 2,196,873,666,560 bytes with 4 KiB blocks (indirect-mapped limit) |
 
@@ -207,7 +207,7 @@ Known gaps that a package workload can still hit:
 3. **POSIX ACLs and xattrs larger than one block.**
 4. **Journal edge cases:** revoke-only transactions, deleted tags, and
    non-contiguous journal inodes.
-5. **`O_TMPFILE`, default ACL inheritance, and punch-hole on depth-one extent trees.**
+5. **`O_TMPFILE` and default ACL inheritance.**
 
 The next storage milestone is therefore not "more fsck coverage" but extending
 extent allocation to depth-1 trees (existing and new holes), which is the main
@@ -300,13 +300,18 @@ decision after a remount and requires `e2fsck -fn`.  Result: **PASS**.
 inside the direct blocks, across the direct/single-indirect boundary, up to
 EOF (size unchanged), and a punch covering a whole double-indirect file,
 which must free every data block and both indirect levels.  It also appends
-two pages to the image's inline-extent `/etc/hostname` and punches them: the
-first punch splits the new two-block extent, the second removes the
-remainder.  A misaligned offset returns `EINVAL`, and a depth-one extent
-tree (`libLLVM`) returns `EOPNOTSUPP`.  The gaps read as zeros after a
-remount while untouched blocks keep their patterns.  Result: **PASS**,
-`e2fsck -fn` clean; the measured block count went from 520 to 392 sectors
-for a 16-block hole.
+several pages to the image's inline-extent `/etc/hostname`: the first punch
+splits a two-block extent, three further appends overflow the in-line array
+and promote the tree to depth one, and a final punch removes an extent from
+the leaf.  `debugfs dump_extents` must still report `0/ 1`, the gaps read as
+zeros after a remount while untouched blocks keep their patterns, and a
+misaligned offset returns `EINVAL`.  Result: **PASS**, `e2fsck -fn` clean;
+the measured block count went from 520 to 392 sectors for a 16-block hole.
+
+The first depth-one attempt failed with `EUCLEAN`: the extent allocator
+required logical records to be contiguous, but a punched hole legitimately
+leaves a gap.  The validator now requires strictly increasing records and
+rejects only overlaps; writes into a gap remain `EOPNOTSUPP`.
 
 The gate found that `AllocateKeepSize` had been allocating blocks beyond
 `i_size`.  An ext2 file uses the legacy indirect mapping, which has no way to
