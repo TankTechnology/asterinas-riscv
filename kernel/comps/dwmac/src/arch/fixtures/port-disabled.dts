@@ -1,0 +1,4 @@
+// SPDX-License-Identifier: MPL-2.0
+/include/ "ports-enabled.dts"
+
+&{/soc/ethernet@50410000} { status = "disabled"; };

@@ -11,6 +11,8 @@ pub enum TcpDiagnosticStage {
     PeerProcess,
     SocketEvents,
     PolleeNotify,
+    /// A userspace `recv` consumed bytes from the connection.
+    UserRecv,
 }
 
 impl TcpDiagnosticStage {
@@ -23,6 +25,7 @@ impl TcpDiagnosticStage {
             Self::PeerProcess => "peer-process",
             Self::SocketEvents => "socket-events",
             Self::PolleeNotify => "pollee-notify",
+            Self::UserRecv => "user-recv",
         }
     }
 }
@@ -38,6 +41,7 @@ pub struct TcpTraceState {
     port: AtomicU32,
     records: AtomicU64,
     suppressed: AtomicU64,
+    pending_pop_records: AtomicU64,
     limit: u64,
 }
 
@@ -47,6 +51,7 @@ impl TcpTraceState {
             port: AtomicU32::new(0),
             records: AtomicU64::new(0),
             suppressed: AtomicU64::new(0),
+            pending_pop_records: AtomicU64::new(0),
             limit,
         }
     }
@@ -57,7 +62,7 @@ impl TcpTraceState {
 
     pub fn record(
         &self,
-        _stage: TcpDiagnosticStage,
+        stage: TcpDiagnosticStage,
         _connection: u32,
         local_port: u16,
         remote_port: u16,
@@ -66,6 +71,16 @@ impl TcpTraceState {
         let selected_port = self.port.load(Ordering::Relaxed);
         if selected_port == 0
             || (u32::from(local_port) != selected_port && u32::from(remote_port) != selected_port)
+        {
+            return TraceDecision::Ignore;
+        }
+
+        // A cold Marionette probe creates many short-lived connection attempts
+        // before Firefox starts listening.  Do not let repetitive scheduler
+        // boundaries consume the entire diagnostic budget before the one
+        // successful connection reaches segment generation and socket events.
+        if stage == TcpDiagnosticStage::PendingPop
+            && self.pending_pop_records.fetch_add(1, Ordering::Relaxed) >= 8
         {
             return TraceDecision::Ignore;
         }
@@ -94,6 +109,11 @@ impl TcpTraceState {
 #[cfg(test)]
 mod tests {
     use super::{TcpDiagnosticStage, TcpTraceState, TraceDecision};
+
+    #[test]
+    fn user_recv_stage_is_stable_for_socket_boundary_logs() {
+        assert_eq!(TcpDiagnosticStage::UserRecv.as_str(), "user-recv");
+    }
 
     #[test]
     fn disabled_and_unrelated_ports_do_not_consume_the_budget() {

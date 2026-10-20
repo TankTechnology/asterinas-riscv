@@ -5,6 +5,8 @@
 #![no_std]
 #![deny(unsafe_code)]
 
+extern crate alloc;
+
 #[macro_use]
 extern crate ostd_pod;
 
@@ -36,6 +38,32 @@ pub mod select;
 fn init() -> Result<(), ComponentInitError> {
     #[cfg(target_arch = "riscv64")]
     {
+        if arch::hardware_probe_requested() {
+            let Some(alias) = arch::hardware_probe_target() else {
+                // A DWC3 probe owns this boot.  Do not run the normal GMAC
+                // path, which programs clocks, reset and PHY through MDIO.
+                return Ok(());
+            };
+            if let Err(error) = arch::probe_read_only(alias) {
+                ostd::early_println!(
+                    "ASTERINAS_PROBE_FAIL device=gmac-{} reason={}",
+                    alias,
+                    arch::probe_error_reason(error)
+                );
+                ostd::early_println!("ASTERINAS_PROBE_DONE device=gmac-{} status=fail", alias);
+            }
+            return Ok(());
+        }
+        if arch::gmac_phy_diagnostic_requested() {
+            if let Err(error) = arch::phy_diagnostic() {
+                ostd::early_println!(
+                    "ASTERINAS_GMAC_PHY_FAIL reason={}",
+                    arch::probe_error_reason(error)
+                );
+                ostd::early_println!("ASTERINAS_GMAC_PHY_DONE status=fail");
+            }
+            return Ok(());
+        }
         let Some(platform) = arch::prepare().map_err(|error| {
             ostd::error!("EIC7700 platform initialization failed: {:?}", error);
             ComponentInitError::Unknown

@@ -109,6 +109,8 @@ pub(super) fn register(mut platform: MegrezPlatform) -> Result<(), DeviceError> 
         rx_diagnostics: RxDiagnostics::default(),
         mtl_rx_loss: MtlRxLossDiagnostics::default(),
         tx_diagnostics: TxDiagnostics::default(),
+        tx_errors: 0,
+        rx_errors: 0,
         fatal: false,
         capabilities: ethernet_capabilities(),
     };
@@ -384,6 +386,8 @@ struct DwmacDevice {
     rx_diagnostics: RxDiagnostics,
     mtl_rx_loss: MtlRxLossDiagnostics,
     tx_diagnostics: TxDiagnostics,
+    tx_errors: u64,
+    rx_errors: u64,
     fatal: bool,
     capabilities: DeviceCapabilities,
 }
@@ -521,6 +525,7 @@ impl AnyNetworkDevice for DwmacDevice {
                 .write(DMA_CHANNEL0_RX_TAIL_POINTER.offset(), tail as u32)
                 .is_err()
             {
+                self.rx_errors = self.rx_errors.saturating_add(1);
                 self.fatal = true;
                 return Err(NetError::NotReady);
             }
@@ -531,9 +536,16 @@ impl AnyNetworkDevice for DwmacDevice {
                 self.record_received_frame(&buffer);
                 Ok(buffer)
             }
-            Err(QueueError::Allocation) => Err(NetError::NoMemory),
-            Err(QueueError::NotReady) => Err(NetError::NotReady),
+            Err(QueueError::Allocation) => {
+                self.rx_errors = self.rx_errors.saturating_add(1);
+                Err(NetError::NoMemory)
+            }
+            Err(QueueError::NotReady) => {
+                self.rx_errors = self.rx_errors.saturating_add(1);
+                Err(NetError::NotReady)
+            }
             Err(error) => {
+                self.rx_errors = self.rx_errors.saturating_add(1);
                 self.record_receive_error(error);
                 self.service_status();
                 Err(NetError::NotReady)
@@ -544,16 +556,31 @@ impl AnyNetworkDevice for DwmacDevice {
     fn send(&mut self, packet: &[u8]) -> Result<(), NetError> {
         let tail = match self.queue.send(packet) {
             Ok(tail) => tail,
-            Err(QueueError::Allocation) => return Err(NetError::NoMemory),
-            Err(QueueError::Full) => return Err(NetError::Busy),
-            Err(_) => return Err(NetError::NotReady),
+            Err(QueueError::Allocation) => {
+                self.tx_errors = self.tx_errors.saturating_add(1);
+                return Err(NetError::NoMemory);
+            }
+            Err(QueueError::Full) => {
+                self.tx_errors = self.tx_errors.saturating_add(1);
+                return Err(NetError::Busy);
+            }
+            Err(_) => {
+                self.tx_errors = self.tx_errors.saturating_add(1);
+                return Err(NetError::NotReady);
+            }
         };
         if self.tx_diagnostics.record_frame(packet) {
             ostd::info!("ASTERINAS_GMAC_TX stage=tcp-data-submitted");
         }
         dma_write_barrier();
-        self.write(DMA_CHANNEL0_TX_TAIL_POINTER.offset(), tail as u32)
-            .map_err(|_| NetError::NotReady)
+        if self
+            .write(DMA_CHANNEL0_TX_TAIL_POINTER.offset(), tail as u32)
+            .is_err()
+        {
+            self.tx_errors = self.tx_errors.saturating_add(1);
+            return Err(NetError::NotReady);
+        }
+        Ok(())
     }
 
     fn free_processed_tx_buffers(&mut self) {
@@ -597,7 +624,7 @@ impl AnyNetworkDevice for DwmacDevice {
             let mtl_rx_loss = self.mtl_rx_loss.report();
             let tx_diagnostics = self.tx_diagnostics.report();
             ostd::info!(
-                "ASTERINAS_GMAC_DATAPATH rx={} rx_budget={} rx_reschedules={} plic_rearms={} rx_buffer_unavailable={} tx_submitted={} tx_reclaimed={} tx_outstanding={} rx_head={} rx_tail={:#018x} dma_status={:#010x}",
+                "ASTERINAS_GMAC_DATAPATH rx={} rx_budget={} rx_reschedules={} plic_rearms={} rx_buffer_unavailable={} tx_submitted={} tx_reclaimed={} tx_outstanding={} tx_errors={} rx_errors={} rx_head={} rx_tail={:#018x} dma_status={:#010x}",
                 rx.received,
                 rx.budget_exhaustions,
                 rx.reschedules,
@@ -606,6 +633,8 @@ impl AnyNetworkDevice for DwmacDevice {
                 tx.tx_submitted,
                 tx.tx_reclaimed,
                 tx.tx_outstanding,
+                self.tx_errors,
+                self.rx_errors,
                 tx.rx_head,
                 tx.rx_tail,
                 dma_status,

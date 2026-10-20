@@ -25,7 +25,7 @@ static TCP_TRACE: TcpTraceState = TcpTraceState::new(TCP_DIAGNOSTIC_LIMIT);
 pub fn configure_tcp_diagnostics(port: u16) {
     TCP_TRACE.configure(port);
     if port != 0 {
-        ostd::info!(
+        ostd::error!(
             "ASTERINAS_TCP_TRACE stage=configured port={} limit={}",
             port,
             TCP_DIAGNOSTIC_LIMIT
@@ -48,7 +48,7 @@ pub fn record_tcp_diagnostic(
 ) {
     match TCP_TRACE.record(stage, connection, local_port, remote_port, values) {
         TraceDecision::Ignore => {}
-        TraceDecision::Record { sequence } => ostd::info!(
+        TraceDecision::Record { sequence } => ostd::error!(
             "ASTERINAS_TCP_TRACE seq={} stage={} connection={} local_port={} remote_port={} value0={} value1={} value2={}",
             sequence,
             stage.as_str(),
@@ -59,7 +59,7 @@ pub fn record_tcp_diagnostic(
             values[1],
             values[2]
         ),
-        TraceDecision::SuppressionSummary { suppressed } => ostd::info!(
+        TraceDecision::SuppressionSummary { suppressed } => ostd::error!(
             "ASTERINAS_TCP_TRACE stage=suppressed suppressed={} limit={}",
             suppressed,
             TCP_DIAGNOSTIC_LIMIT

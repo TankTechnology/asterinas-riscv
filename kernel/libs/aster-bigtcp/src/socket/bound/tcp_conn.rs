@@ -561,6 +561,14 @@ impl<E: Ext> TcpConnection<E> {
         };
 
         let result = NonZeroUsize::new(result).ok_or(IoError::NoProgress)?;
+        let key = self.0.connection_key();
+        record_tcp_diagnostic(
+            TcpDiagnosticStage::UserRecv,
+            key.hash(),
+            key.local_port(),
+            key.remote_port(),
+            [result.get() as u64, socket.recv_queue() as u64, 0],
+        );
         let poll_at = socket.poll_at(iface.context_mut());
         let need_poll = iface.update_next_poll_at_ms(&self.0, poll_at);
 

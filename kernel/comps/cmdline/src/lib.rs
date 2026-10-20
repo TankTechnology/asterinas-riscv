@@ -53,6 +53,10 @@
 
 extern crate alloc;
 
+use alloc::string::String;
+
+use spin::Once;
+
 // Set this crate's log prefix for `ostd::log`.
 macro_rules! __log_prefix {
     () => {
@@ -103,6 +107,21 @@ macro_rules! define_kv_param {
         $crate::__define_param!(@late, $name, $storage, $crate::parse::setup_kv_param);
     };
 }
+
+/// One explicit, read-only EIC7700 hardware probe selector.
+///
+/// The selector lives in the command-line component so USB and GMAC can both
+/// observe it and suppress their normal side-effecting initialization.  A
+/// device component must still validate the value against its own registry.
+pub static HARDWARE_PROBE: Once<String> = Once::new();
+define_kv_param!("asterinas.hardware_probe", HARDWARE_PROBE);
+
+/// Optional bounded GMAC diagnostic mode.  `phy` runs platform setup and
+/// Clause 22 link detection, then stops before DMA queues, interrupts, or the
+/// network device are registered.  It is intentionally separate from the
+/// read-only hardware probe selector above.
+pub static GMAC_DIAGNOSTIC: Once<String> = Once::new();
+define_kv_param!("asterinas.gmac_diagnostic", GMAC_DIAGNOSTIC);
 
 /// Defines an **early** `key=value` kernel command-line parameter.
 ///

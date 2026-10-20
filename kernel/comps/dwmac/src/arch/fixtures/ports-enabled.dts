@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: MPL-2.0
+// Regenerate: dtc -I dts -O dtb -o <name>.dtb <name>.dts
+/dts-v1/;
+
+/ {
+    soc {
+        status = "okay";
+        ethernet@50400000 {
+            compatible = "eswin,win2030-qos-eth";
+            status = "okay";
+        };
+        ethernet@50410000 {
+            compatible = "eswin,win2030-qos-eth";
+            status = "okay";
+        };
+    };
+};

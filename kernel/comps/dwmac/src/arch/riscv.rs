@@ -19,7 +19,10 @@ pub(super) fn dma_read_barrier() {
 
 use crate::{
     phy::{Deadline, LinkState, MdioBus, MdioError},
-    regs::{MAC_MDIO_ADDRESS, MAC_MDIO_DATA, MAC_VERSION},
+    regs::{
+        DMA_MODE, DMA_STATUS, MAC_CONFIGURATION, MAC_HW_FEATURE1, MAC_INTERRUPT_STATUS,
+        MAC_MDIO_ADDRESS, MAC_MDIO_DATA, MAC_VERSION, RegisterOffset,
+    },
     select::{MonotonicClock, PortCandidate, SelectError, select_linked_port},
 };
 
@@ -64,6 +67,14 @@ const MDIO_REGISTER_SHIFT: u32 = 16;
 const MDIO_PHY_SHIFT: u32 = 21;
 const PHY_ID1: u8 = 2;
 const PHY_ID2: u8 = 3;
+const GMAC_PROBE_OFFSETS: [RegisterOffset; 6] = [
+    MAC_CONFIGURATION,
+    MAC_INTERRUPT_STATUS,
+    MAC_VERSION,
+    MAC_HW_FEATURE1,
+    DMA_MODE,
+    DMA_STATUS,
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct PortFields {
@@ -105,6 +116,8 @@ struct PlatformConfig {
     controller_id: u8,
     mmio_range: Range<usize>,
     interrupt: (u32, u32),
+    clock_cells: [u32; 6],
+    reset_cells: [u32; 3],
     phy_address: u8,
     mac_address: [u8; 6],
     hsp_phy_offset: usize,
@@ -264,6 +277,8 @@ fn validate_port(fields: PortFields) -> Result<PlatformConfig, PlatformError> {
         controller_id: fields.controller_id.unwrap() as u8,
         mmio_range: mmio_start..mmio_start + mmio_size,
         interrupt: (fields.interrupt_parent.unwrap(), fields.interrupt.unwrap()),
+        clock_cells: fields.clock_cells.unwrap(),
+        reset_cells: fields.reset_cells.unwrap(),
         phy_address: fields.phy_address.unwrap(),
         mac_address: fields.mac_address.unwrap(),
         hsp_phy_offset: fields.hsp_cells.unwrap()[2] as usize,
@@ -281,6 +296,53 @@ fn validate_port(fields: PortFields) -> Result<PlatformConfig, PlatformError> {
         gpio_direction_offset: gpio_data_offset + 4,
         gpio_pin_mask: 1 << reset_gpio[1],
     })
+}
+
+pub(super) fn hardware_probe_requested() -> bool {
+    aster_cmdline::HARDWARE_PROBE.get().is_some()
+}
+
+fn parse_gmac_probe(value: &str) -> Option<u8> {
+    match value {
+        "gmac-0" => Some(0),
+        "gmac-1" => Some(1),
+        _ => None,
+    }
+}
+
+pub(super) fn hardware_probe_target() -> Option<u8> {
+    aster_cmdline::HARDWARE_PROBE
+        .get()
+        .and_then(|value| parse_gmac_probe(value))
+}
+
+pub(super) fn gmac_phy_diagnostic_requested() -> bool {
+    aster_cmdline::GMAC_DIAGNOSTIC
+        .get()
+        .is_some_and(|value| value == "phy")
+}
+
+pub(super) const fn probe_error_reason(error: PlatformError) -> &'static str {
+    match error {
+        PlatformError::InvalidDeviceTree => "invalid-device-tree",
+        PlatformError::MmioUnavailable => "mmio-unavailable",
+        PlatformError::RegisterAccess => "register-access",
+        PlatformError::ReadbackMismatch => "readback-mismatch",
+        PlatformError::UnsupportedController => "unsupported-controller",
+        PlatformError::InvalidPhy => "invalid-phy",
+        PlatformError::Mdio(_) => "mdio-error",
+        PlatformError::Select(_) => "select-error",
+    }
+}
+
+fn validate_probe_value(offset: RegisterOffset, value: u32) -> Result<(), PlatformError> {
+    if value == u32::MAX {
+        return Err(PlatformError::ReadbackMismatch);
+    }
+    if offset == MAC_VERSION && value & 0xff != u32::from(EIC7700_DWMAC_VERSION) {
+        return Err(PlatformError::ReadbackMismatch);
+    }
+    Ok(())
 }
 
 fn validate_ports(fields: [PortFields; 2]) -> Result<[PlatformConfig; 2], PlatformError> {
@@ -370,7 +432,7 @@ fn fields_from_node(tree: &Fdt<'_>, alias_index: u8, node: FdtNode<'_, '_>) -> P
     });
     PortFields {
         alias_index,
-        enabled: exact_text(node, "status", b"okay\0"),
+        enabled: status_enabled(node.property("status").map(|property| property.value)),
         compatible: exact_text(node, "compatible", COMPATIBLE),
         controller_id: cells::<1>(node, "id").map(|cells| cells[0]),
         mmio,
@@ -417,8 +479,58 @@ fn fields_from_node(tree: &Fdt<'_>, alias_index: u8, node: FdtNode<'_, '_>) -> P
     }
 }
 
+/// Interpret the Devicetree status property according to the DT binding:
+/// absent, `"ok"`, and `"okay"` mean enabled; every other value disables the
+/// node.  Keeping this as a small pure function makes the discovery gate
+/// testable without touching MMIO.
+fn status_enabled(status: Option<&[u8]>) -> bool {
+    match status {
+        None => true,
+        Some(value) => value == b"ok\0" || value == b"okay\0",
+    }
+}
+
+fn validate_discovered_ports(
+    fields: [PortFields; 2],
+) -> Result<Option<[PlatformConfig; 2]>, PlatformError> {
+    // The normal datapath requires a coherent pair of EIC7700 ports.  If the
+    // firmware gates either node, skip the whole component before acquiring
+    // clocks, reset GPIOs, or GMAC MMIO.  A disabled node is a policy choice,
+    // not a malformed device tree.
+    if fields.iter().any(|field| !field.enabled) {
+        return Ok(None);
+    }
+    validate_ports(fields).map(Some)
+}
+
+fn ancestors_status_enabled(tree: &Fdt<'_>, path: &str) -> bool {
+    if !path.starts_with('/') {
+        return false;
+    }
+    let mut current = path;
+    while let Some((parent, _)) = current.rsplit_once('/') {
+        if parent.is_empty() {
+            return true;
+        }
+        let Some(node) = tree.find_node(parent) else {
+            return false;
+        };
+        if !status_enabled(node.property("status").map(|property| property.value)) {
+            return false;
+        }
+        current = parent;
+    }
+    true
+}
+
 fn discover_configs() -> Result<Option<[PlatformConfig; 2]>, PlatformError> {
     let tree = DEVICE_TREE.get().ok_or(PlatformError::InvalidDeviceTree)?;
+    discover_configs_from_tree(tree)
+}
+
+fn discover_configs_from_tree(
+    tree: &Fdt<'_>,
+) -> Result<Option<[PlatformConfig; 2]>, PlatformError> {
     let compatible_count = tree
         .all_nodes()
         .filter(|node| exact_text(*node, "compatible", COMPATIBLE))
@@ -435,11 +547,17 @@ fn discover_configs() -> Result<Option<[PlatformConfig; 2]>, PlatformError> {
     let node1 = tree
         .find_node(PORT_PATHS[1])
         .ok_or(PlatformError::InvalidDeviceTree)?;
+    if PORT_PATHS
+        .iter()
+        .any(|path| !ancestors_status_enabled(tree, path))
+    {
+        return Ok(None);
+    }
     let fields = [
         fields_from_node(tree, 0, node0),
         fields_from_node(tree, 1, node1),
     ];
-    validate_ports(fields).map(Some)
+    validate_discovered_ports(fields)
 }
 
 fn update_bits(
@@ -841,6 +959,227 @@ pub(super) fn prepare() -> Result<Option<MegrezPlatform>, PlatformError> {
     Ok(Some(platform))
 }
 
+/// Reuse the existing platform sequence without entering the PHY/MDIO/DMA
+/// path used by normal network registration.
+fn probe_platform(
+    registers: &mut dyn PlatformRegisters,
+    config: &PlatformConfig,
+) -> Result<(), PlatformError> {
+    program_platform(registers, config, LinkSpeed::Mbps1000)
+}
+
+fn probe_registers(
+    registers: &mut dyn PlatformRegisters,
+    config: &PlatformConfig,
+) -> Result<(), PlatformError> {
+    let device = config.alias_index;
+    for offset in GMAC_PROBE_OFFSETS {
+        ostd::early_println!(
+            "ASTERINAS_PROBE_ATTEMPT device=gmac-{} offset={:#06x}",
+            device,
+            offset.offset(),
+        );
+        let value = registers.read(RegisterBank::Gmac(device), offset.offset() as usize)?;
+        ostd::early_println!(
+            "ASTERINAS_PROBE_READ device=gmac-{} offset={:#06x} value={:#010x}",
+            device,
+            offset.offset(),
+            value,
+        );
+        validate_probe_value(offset, value)?;
+    }
+    Ok(())
+}
+
+/// Counts every operation performed by the bounded hardware probe.
+///
+/// The probe is allowed to write platform glue registers, but it must not
+/// write a GMAC register or enter the PHY/MDIO/DMA datapath.  Keeping the
+/// audit at the trait boundary makes hidden accesses visible in the same
+/// transcript as the fixed register reads.
+struct ProbeAudit<'a> {
+    inner: &'a mut dyn PlatformRegisters,
+    reads: usize,
+    writes: usize,
+    gmac_reads: usize,
+    gmac_writes: usize,
+    md_io: usize,
+    dma: usize,
+    tx: usize,
+    rx: usize,
+    irq: usize,
+}
+
+impl<'a> ProbeAudit<'a> {
+    fn new(inner: &'a mut dyn PlatformRegisters) -> Self {
+        Self {
+            inner,
+            reads: 0,
+            writes: 0,
+            gmac_reads: 0,
+            gmac_writes: 0,
+            md_io: 0,
+            dma: 0,
+            tx: 0,
+            rx: 0,
+            irq: 0,
+        }
+    }
+
+    fn record_read(&mut self, bank: RegisterBank, _offset: usize) {
+        self.reads += 1;
+        if matches!(bank, RegisterBank::Gmac(_)) {
+            self.gmac_reads += 1;
+        }
+    }
+
+    fn record_write(&mut self, bank: RegisterBank, offset: usize) {
+        self.writes += 1;
+        let RegisterBank::Gmac(_) = bank else {
+            return;
+        };
+        self.gmac_writes += 1;
+        if matches!(offset, 0x0200 | 0x0204) {
+            self.md_io += 1;
+        } else if (0x1000..0x1200).contains(&offset) {
+            self.dma += 1;
+            if matches!(offset, 0x1104 | 0x1110 | 0x1114 | 0x1120 | 0x112c) {
+                self.tx += 1;
+            }
+            if matches!(offset, 0x1108 | 0x1118 | 0x111c | 0x1128 | 0x1130) {
+                self.rx += 1;
+            }
+        }
+    }
+
+    fn emit(&self, device: u8) {
+        ostd::early_println!(
+            "ASTERINAS_PROBE_ACCESS device=gmac-{} reads={} writes={} \
+             gmac_reads={} gmac_writes={} mdio={} dma={} tx={} rx={} irq={}",
+            device,
+            self.reads,
+            self.writes,
+            self.gmac_reads,
+            self.gmac_writes,
+            self.md_io,
+            self.dma,
+            self.tx,
+            self.rx,
+            self.irq,
+        );
+    }
+}
+
+impl PlatformRegisters for ProbeAudit<'_> {
+    fn read(&mut self, bank: RegisterBank, offset: usize) -> Result<u32, PlatformError> {
+        self.record_read(bank, offset);
+        self.inner.read(bank, offset)
+    }
+
+    fn write(
+        &mut self,
+        bank: RegisterBank,
+        offset: usize,
+        value: u32,
+    ) -> Result<(), PlatformError> {
+        self.record_write(bank, offset);
+        if matches!(bank, RegisterBank::Gmac(_)) {
+            return Err(PlatformError::RegisterAccess);
+        }
+        self.inner.write(bank, offset, value)
+    }
+
+    fn write_readback(
+        &mut self,
+        bank: RegisterBank,
+        offset: usize,
+        value: u32,
+    ) -> Result<(), PlatformError> {
+        self.record_write(bank, offset);
+        if matches!(bank, RegisterBank::Gmac(_)) {
+            return Err(PlatformError::RegisterAccess);
+        }
+        self.record_read(bank, offset);
+        self.inner.write_readback(bank, offset, value)
+    }
+
+    fn wait_reset_pulse(&mut self) -> Result<(), PlatformError> {
+        self.inner.wait_reset_pulse()
+    }
+}
+
+/// Probe one GMAC after enabling only its platform clock/reset/glue.
+pub(super) fn probe_read_only(alias: u8) -> Result<(), PlatformError> {
+    let device = match alias {
+        0 | 1 => alias,
+        _ => return Err(PlatformError::InvalidDeviceTree),
+    };
+    ostd::early_println!("ASTERINAS_PROBE_BEGIN device=gmac-{}", device);
+    let Some(configs) = discover_configs()? else {
+        return Err(PlatformError::InvalidDeviceTree);
+    };
+    let config = &configs[usize::from(device)];
+    ostd::early_println!(
+        "ASTERINAS_PROBE_RESOURCE device=gmac-{} base={:#010x} size={:#x} irq={}",
+        device,
+        config.mmio_range.start,
+        config.mmio_range.end - config.mmio_range.start,
+        config.interrupt.1,
+    );
+    ostd::early_println!(
+        "ASTERINAS_PROBE_DT device=gmac-{} clocks={:?} resets={:?}",
+        device,
+        config.clock_cells,
+        config.reset_cells,
+    );
+    ostd::early_println!(
+        "ASTERINAS_PROBE_PHASE device=gmac-{} phase=mmio-map",
+        device,
+    );
+    let mut registers = MmioRegisters::acquire(&configs)?;
+    let mut audit = ProbeAudit::new(&mut registers);
+    ostd::early_println!(
+        "ASTERINAS_PROBE_PHASE device=gmac-{} phase=platform-init",
+        device,
+    );
+    let result = (|| {
+        probe_platform(&mut audit, config)?;
+        ostd::early_println!(
+            "ASTERINAS_PROBE_PHASE device=gmac-{} phase=mmio-read",
+            device,
+        );
+        probe_registers(&mut audit, config)
+    })();
+    audit.emit(device);
+    result?;
+    ostd::early_println!("ASTERINAS_PROBE_PASS device=gmac-{}", device);
+    ostd::early_println!("ASTERINAS_PROBE_DONE device=gmac-{} status=pass", device);
+    Ok(())
+}
+
+/// Initialize the EIC7700 GMAC platform and report PHY state without starting
+/// the network data path.  `prepare` only acquires MMIO, programs the required
+/// clock/reset/glue registers, validates the MAC blocks, and performs bounded
+/// Clause 22 reads.  We deliberately do not call `device::register`, so this
+/// diagnostic cannot allocate DMA rings, enable interrupts, transmit packets,
+/// or register a socket-facing network device.
+pub(super) fn phy_diagnostic() -> Result<(), PlatformError> {
+    let Some(mut platform) = prepare()? else {
+        return Err(PlatformError::InvalidDeviceTree);
+    };
+    let selected = platform.select_linked()?;
+    ostd::early_println!(
+        "ASTERINAS_GMAC_PHY_READY alias={} version={:#04x} link=up speed={} duplex={} mac={:02x?}",
+        selected.alias_index,
+        selected.version,
+        selected.link_state.speed_mbps(),
+        selected.link_state.is_full_duplex(),
+        selected.mac_address,
+    );
+    ostd::early_println!("ASTERINAS_GMAC_PHY_DONE status=pass");
+    Ok(())
+}
+
 #[cfg(ktest)]
 mod tests {
     extern crate alloc;
@@ -933,6 +1272,96 @@ mod tests {
     }
 
     #[ktest]
+    fn follows_standard_devicetree_status_defaults() {
+        assert!(status_enabled(None));
+        assert!(status_enabled(Some(b"ok\0")));
+        assert!(status_enabled(Some(b"okay\0")));
+        assert!(!status_enabled(Some(b"disabled\0")));
+        assert!(!status_enabled(Some(b"broken")));
+    }
+
+    #[ktest]
+    fn skips_disabled_ports_before_mmio_validation() {
+        let mut disabled = frozen_port(0);
+        disabled.enabled = false;
+
+        assert_eq!(
+            validate_discovered_ports([disabled, frozen_port(1)]),
+            Ok(None)
+        );
+    }
+
+    #[ktest]
+    fn discovery_skips_disabled_nodes_in_real_device_trees() {
+        // These fixtures intentionally omit clocks, resets, PHYs, and IRQs.
+        // Disabled nodes must be skipped before that resource validation.
+        for bytes in [
+            include_bytes!("fixtures/ports-disabled.dtb").as_slice(),
+            include_bytes!("fixtures/port-disabled.dtb").as_slice(),
+            include_bytes!("fixtures/soc-disabled.dtb").as_slice(),
+        ] {
+            let tree = Fdt::new(bytes).unwrap();
+            assert_eq!(discover_configs_from_tree(&tree), Ok(None));
+        }
+    }
+
+    #[ktest]
+    fn discovery_validates_resources_when_nodes_are_enabled() {
+        // Positive control for the status gate: the same incomplete resources
+        // must be rejected when firmware permits both controllers.
+        let tree = Fdt::new(include_bytes!("fixtures/ports-enabled.dtb")).unwrap();
+        assert_eq!(
+            discover_configs_from_tree(&tree),
+            Err(PlatformError::InvalidDeviceTree)
+        );
+    }
+
+    #[ktest]
+    fn hardware_probe_selector_accepts_only_one_fixed_gmac_target() {
+        assert_eq!(parse_gmac_probe("gmac-0"), Some(0));
+        assert_eq!(parse_gmac_probe("gmac-1"), Some(1));
+        assert_eq!(parse_gmac_probe("dwc3-0"), None);
+        assert_eq!(parse_gmac_probe("gmac-0,gmac-1"), None);
+    }
+
+    #[ktest]
+    fn hardware_probe_reads_only_the_fixed_register_whitelist() {
+        assert_eq!(
+            GMAC_PROBE_OFFSETS.map(RegisterOffset::offset),
+            [0x0000, 0x00b0, 0x0110, 0x0120, 0x1000, 0x1008]
+        );
+    }
+
+    #[ktest]
+    fn hardware_probe_errors_have_stable_machine_reasons() {
+        assert_eq!(
+            probe_error_reason(PlatformError::RegisterAccess),
+            "register-access"
+        );
+        assert_eq!(
+            probe_error_reason(PlatformError::MmioUnavailable),
+            "mmio-unavailable"
+        );
+        assert_eq!(
+            probe_error_reason(PlatformError::InvalidDeviceTree),
+            "invalid-device-tree"
+        );
+    }
+
+    #[ktest]
+    fn hardware_probe_rejects_gated_and_wrong_version_values() {
+        assert_eq!(
+            validate_probe_value(MAC_CONFIGURATION, u32::MAX),
+            Err(PlatformError::ReadbackMismatch)
+        );
+        assert_eq!(validate_probe_value(MAC_VERSION, 0x1052), Ok(()));
+        assert_eq!(
+            validate_probe_value(MAC_VERSION, 0x1051),
+            Err(PlatformError::ReadbackMismatch)
+        );
+    }
+
+    #[ktest]
     fn rejects_missing_or_drifted_resources_without_fallbacks() {
         let mut cases = Vec::new();
         let mut missing_mac = frozen_port(0);
@@ -1002,6 +1431,56 @@ mod tests {
         assert_eq!(registers.readbacks, registers.writes);
     }
 
+    #[ktest]
+    fn hardware_probe_programs_selected_platform_before_gmac_reads() {
+        let port = validate_port(frozen_port(1)).unwrap();
+        let mut registers = ProbeRegisters::default();
+
+        probe_platform(&mut registers, &port).unwrap();
+        probe_registers(&mut registers, &port).unwrap();
+
+        assert!(registers.platform_ready);
+        assert_eq!(registers.gmac_reads, GMAC_PROBE_OFFSETS.len());
+        assert!(
+            registers
+                .events
+                .iter()
+                .position(|event| *event == ProbeEvent::PlatformReady)
+                .unwrap()
+                < registers
+                    .events
+                    .iter()
+                    .position(|event| *event == ProbeEvent::FirstGmacRead)
+                    .unwrap()
+        );
+    }
+
+    #[ktest]
+    fn hardware_probe_audit_counts_accesses_and_forbids_datapath_writes() {
+        let port = validate_port(frozen_port(1)).unwrap();
+        let mut registers = ProbeRegisters::default();
+        let mut audit = ProbeAudit::new(&mut registers);
+
+        probe_platform(&mut audit, &port).unwrap();
+        probe_registers(&mut audit, &port).unwrap();
+
+        assert_eq!(audit.gmac_reads, GMAC_PROBE_OFFSETS.len());
+        assert_eq!(audit.gmac_writes, 0);
+        assert_eq!(audit.md_io, 0);
+        assert_eq!(audit.dma, 0);
+        assert_eq!(audit.tx, 0);
+        assert_eq!(audit.rx, 0);
+        assert_eq!(audit.irq, 0);
+        assert!(audit.writes > 0);
+
+        assert_eq!(
+            audit.write(RegisterBank::Gmac(1), DMA_MODE.offset() as usize, 1),
+            Err(PlatformError::RegisterAccess)
+        );
+        assert_eq!(audit.gmac_writes, 1);
+        assert_eq!(audit.dma, 1);
+    }
+
     #[derive(Default)]
     struct FakeRegisters {
         writes: Vec<(RegisterBank, usize, u32)>,
@@ -1009,6 +1488,74 @@ mod tests {
     }
 
     struct VersionRegisters([u8; 2]);
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ProbeEvent {
+        PlatformReady,
+        FirstGmacRead,
+    }
+
+    #[derive(Default)]
+    struct ProbeRegisters {
+        platform_ready: bool,
+        gmac_reads: usize,
+        events: Vec<ProbeEvent>,
+        reset_asserted: bool,
+    }
+
+    impl PlatformRegisters for ProbeRegisters {
+        fn read(&mut self, bank: RegisterBank, offset: usize) -> Result<u32, PlatformError> {
+            match bank {
+                RegisterBank::Gmac(1) => {
+                    if !self.platform_ready {
+                        return Err(PlatformError::RegisterAccess);
+                    }
+                    if self.gmac_reads == 0 {
+                        self.events.push(ProbeEvent::FirstGmacRead);
+                    }
+                    self.gmac_reads += 1;
+                    Ok(if offset == MAC_VERSION.offset() as usize {
+                        u32::from(EIC7700_DWMAC_VERSION)
+                    } else {
+                        0
+                    })
+                }
+                RegisterBank::SysCrg if offset == SYS_RESET_OFFSET => {
+                    Ok(if self.reset_asserted { 0 } else { 0x0200_0000 })
+                }
+                _ => Ok(0),
+            }
+        }
+
+        fn write(
+            &mut self,
+            bank: RegisterBank,
+            offset: usize,
+            value: u32,
+        ) -> Result<(), PlatformError> {
+            if bank == RegisterBank::SysCrg && offset == SYS_RESET_OFFSET {
+                self.reset_asserted = value & 0x0200_0000 == 0;
+                if !self.reset_asserted {
+                    self.platform_ready = true;
+                    self.events.push(ProbeEvent::PlatformReady);
+                }
+            }
+            Ok(())
+        }
+
+        fn write_readback(
+            &mut self,
+            bank: RegisterBank,
+            offset: usize,
+            value: u32,
+        ) -> Result<(), PlatformError> {
+            self.write(bank, offset, value)
+        }
+
+        fn wait_reset_pulse(&mut self) -> Result<(), PlatformError> {
+            Ok(())
+        }
+    }
 
     impl PlatformRegisters for VersionRegisters {
         fn read(&mut self, bank: RegisterBank, offset: usize) -> Result<u32, PlatformError> {
