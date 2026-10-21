@@ -80,7 +80,14 @@ ASTERINAS_POWERVR_BRIDGE status=ok init=N cmds=N unsupported=N
 |---|---|---|
 | `gpu_pvr_bridge_rejects_bad_size` | `CONNECT` 的输入/输出尺寸不匹配均返回 `EINVAL`，且在触碰用户指针之前拒绝 | 已通过（`1 passed; 0 failed`） |
 | `gpu_pvr_srvkm_init_ioctl` | 模块 1/2/3 接受、0/4 拒绝、init 计数 | 已通过（`1 passed; 0 failed`；此前失败是 ktest 环境无 console，marker 打印已改为 `cfg(not(ktest))`） |
-| `gpu_pvr_bridge_unknown_cmd` | 未知 bridge 组返回 `EOPNOTSUPP`、unsupported 计数、sync 桩同样拒绝 | **已知问题/待复核**：曾在 QEMU 中挂起超过 2 分钟并被手动终止；console 打印已同样禁用，本地保存日志显示 `ok`，但按保守口径本轮不记为全绿，P5b 前做一次干净的单独复跑 |
+| `gpu_pvr_bridge_unknown_cmd` | 未知 bridge 组返回 `EOPNOTSUPP`、unsupported 计数、sync 桩同样拒绝 | 已通过（`1 passed; 0 failed; 355 filtered out`，`timeout 180` 下 12 s 完成） |
+
+**挂起根因（已修）**：ktest 环境没有注册 console，未知 bridge 路径里的
+marker `println!` 在 `console` 组件 `Option::unwrap()` 处 panic；ktest 的
+panic 不会让 QEMU 退出，表现为“无输出挂起”，与 SRVKM_INIT 的失败同源。
+未知命令本身只做表查找、计数并返回 `EOPNOTSUPP`，不进入 KCCB/IRQ 或任何
+阻塞路径。`emit_marker()` 现在在 `cfg(ktest)` 下是空函数，修复后单条复跑
+`1 passed`；复跑日志：`target/kt-p5a-unknown-retry.serial.log`。
 
 此外还有 `pvr_connect_reports_the_megrez_bvnc` 检查 CONNECT 的 17 字节
 packed 响应，未单独跑。
