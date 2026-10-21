@@ -95,7 +95,7 @@ pub(super) const SYSTEM_OBJECTS: [SystemObject; 5] = [
 
 /// OSINIT-owned firmware objects. The selected RockOS config uses 2^10 kernel
 /// commands; the firmware CCB has 2^5 commands without PDVFS/workload support.
-const KCCB_COMMANDS_LOG2: usize = 10;
+pub(super) const KCCB_COMMANDS_LOG2: usize = 10;
 const FWCCB_COMMANDS_LOG2: usize = 5;
 pub(super) struct OsObject {
     pub(super) bytes: usize,

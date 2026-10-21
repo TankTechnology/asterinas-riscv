@@ -2,13 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在 P1 已启动的 META 固件上完成 native 连接握手（OS/FW READY→ACTIVE、boot stage 到 `INIT_DONE`），并让固件执行一个 `RGXFWIF_KCCB_CMD_HEALTH_CHECK` 命令、写回 return slot，最后读取兼容性字段。
+**Goal:** 在 P1 已启动的 META 固件上确认 native 启动成立（`SYSINIT.bFirmwareStarted=1`、无 fault/HWR），写入 vendor 默认的 `ui32FwOsConfigFlags`，并让固件执行一个 `RGXFWIF_KCCB_CMD_HEALTH_CHECK` 命令、写回 return slot。
 
-**Architecture:** 全部在现有 Rust probe 内扩展，不引入 C DDK：`power.rs` 在 `release_firmware()` 成功后通过 `StartIo` 访问 GPU 寄存器完成连接握手；`fwif.rs`/`dma.rs` 暴露 KCCB control/命令/return-slot 的 vaddr 与写入方法；用户态 staging 工具沿用 P1 的 PVR1/PVRR 协议。IRQ 留到 P2.4（本计划先轮询 return slot）。
+**Architecture:** 全部在现有 Rust probe 内扩展，不引入 C DDK：`power.rs` 在 `release_firmware()` 成功后提交 KCCB 命令并通过 `StartIo` 访问 `RGX_CR_MTS_SCHEDULE` kick；`fwif.rs`/`dma.rs` 暴露 KCCB control/命令/return-slot 的 vaddr 与写入方法；用户态 staging 工具沿用 P1 的 PVR1/PVRR 协议。IRQ 留到 P2.4（本计划先轮询 return slot）。
 
 **Tech Stack:** Rust（`kernel/src/device/dri/powervr_probe/`）、`ostd` IoMem/DMA、`aster_time`、cargo-osdk ktest、板级串口 marker、RockOS 参考寄存器定义（`hwdefs/volcanic/km/rgx_cr_defs_km.h` 与 Volcanic `rgx_fwif_km.h`）。
 
-**Scope gate:** P2.1 若在 100 ms 内看不到 `FW_READY/ACTIVE` 或 boot stage 不前进，先停 P2.2 分析，不做 KCCB。P2.3 的验收是**一个命令完成**，不是渲染。
+**Scope gate:** P2.1 的 VZ scratch 握手在本 vendor 构建上不存在（见 2026-10-21 板级修正）；native 门为 `SYSINIT.bFirmwareStarted` + 无 fault/HWR，已由 P1 达到。P2.3 的验收是**一个命令完成**，不是渲染。
 
 ---
 
@@ -16,15 +16,16 @@
 
 | 项 | 值 |
 |---|---|
-| OS connection | `RGX_CR_OS0_SCRATCH2` offset `0x0890`；`OS_OFFLINE=0, READY=1, ACTIVE=2` |
-| FW connection | `RGX_CR_OS0_SCRATCH3` offset `0x0898`；`FW_OFFLINE=0, READY=1, ACTIVE=2` |
-| FW boot stage | `RGX_CR_SCRATCH14` offset `0x0870`；`FW_BOOT_INIT_DONE=7` |
+| OS connection | `RGX_CR_OS0_SCRATCH2` offset `0x0890`；**仅 AutoVz 构建使用**（本 vendor 构建为 native，宏为 no-op） |
+| FW connection | `RGX_CR_OS0_SCRATCH3` offset `0x0898`；**仅 AutoVz 构建使用**（native 下为普通 scratch） |
+| FW boot stage | `RGX_CR_SCRATCH14` offset `0x0870`；`FW_BOOT_INIT_DONE=7`；vendor 仅在 `TRACK_FW_BOOT` 下采样，**不是 native 启动门** |
+| Native 启动门 | `RGXFWIF_SYSINIT.bFirmwareStarted`（offset 208）=1，且 `ui32HWRStateFlags`/fault 无恢复标志 |
 | KCCB control | `RGXFWIF_CCB_CTL { write_off, read_off, wrap_mask }`，offset 单位=命令槽；probe 用 `wrap_mask=(1<<10)-1` |
 | KCCB 槽 | 64 B；命令类型 `eCmdType` 带 `RGX_CMD_MAGIC_DWORD(0x2ABC)<<16` |
 | HEALTH_CHECK | `RGXFWIF_KCCB_CMD_HEALTH_CHECK = 111 | (0x2ABC<<16)` = `0x2ABC006F` |
 | Return slot | `u32`/槽；host 先写 `NO_RESPONSE=0`，FW 完成写 `CMD_EXECUTED=1`（实现里定义 `RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED: u32 = 1`） |
 | Kick | `RGX_CR_MTS_SCHEDULE` offset `0x0B00`，`RGXFWIF_DM_GP=0`，写 `0` 后读回 |
-| OSDATA 配置 | probe 已写 `osdata+572 = sPowerSync` FW addr；`ui32FwOsConfigFlags` 在 `osdata+0`（P2.2 按需写 `RGXFWIF_INICFG_OS_ALL=0x3FFFF`） |
+| OSDATA 配置 | probe 已写 `osdata+572 = sPowerSync` FW addr；`ui32FwOsConfigFlags` 在 `osdata+0`。vendor 默认值为 `RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL=0x1F`（`PVRSRV_APPHINT_ENABLEFWCONTEXTSWITCH`），不是 `RGXFWIF_INICFG_OS_ALL=0x3FFFF` |
 | 既有 ktest 范式 | `powervr_probe/start.rs` 的 `FakeStartIo` / `FakeFirmwareWait` |
 
 参考源码（稀疏克隆，未入库）：
@@ -389,9 +390,9 @@ git commit -m "feat(gpu): submit and complete one KCCB health-check command"
 
 | 门 | 板级 marker | 失败动作 |
 |---|---|---|
-| P2.1 | `FW_CONN status=active fw_state=2 boot_stage=7` | 记录最后的 fw_state/boot_stage，转 P2.2 或停止 |
-| P2.2 | `FW_CONN` 在写入 `INICFG_OS_ALL` 后出现 | 记录 OSDATA 字段读回，停止 |
-| P2.3 | `KCCB status=completed slot=0 rtn=1` | 记录 ctl 偏移/return slot，停止 |
+| P2.1 | `FW_CONN status=native started=1 faults=0 hwr_state=0x1 hwr_count=0`（`vz_fw_state`/`vz_boot_stage` 仅记录） | 记录最后的 fw_state/boot_stage，转 P2.2 或停止 |
+| P2.2 | `FW_OSCONFIG fw_config_initialized=1 flags=0x1f` | 记录 OSDATA 字段读回，停止 |
+| P2.3 | `KCCB status=completed slot=0 write_off=1 read_off=1`（HEALTH_CHECK 无 return-slot 契约，vendor 用 fire-and-forget；`read_off` 前进即证明 FW 已消费） | 记录 ctl 偏移/return slot，停止 |
 | P2.4 | IRQ marker（后续） | 不阻塞 P2.1–P2.3 |
 
 所有板级运行沿用 P1 的载具：
@@ -400,3 +401,105 @@ git commit -m "feat(gpu): submit and complete one KCCB health-check command"
 `asterinas.powervr=1 asterinas.powervr_dma_stage=1 asterinas.powervr_release=1`。
 每次提交前跑 `FEATURES=powervr_probe` 构建与 ktest，证据写入
 `docs/porting/evidence/`。
+
+---
+
+## 2026-10-21 板级修正：native 构建没有 VZ 连接握手
+
+**板级观察（P2.1 诊断内核，kernel SHA-256 `5dc3d23e…`）：**
+
+```
+STAGED 0..3
+ASTERINAS_POWERVR_FW_CONN status=timeout reason=gpu_fw_connection_timeout fw_state=0 boot_stage=0
+RELEASE_ERR [Errno 110] Connection timed out
+STATUS_DECODED meta_release=1 started=1 faults=0 hwr_state=0x1 hwr_count=0 ddk=0.0
+```
+
+`SYSINIT.bFirmwareStarted=1` 且无 fault/HWR，说明 META 固件已运行；但 100 ms 内
+`RGX_CR_OS0_SCRATCH3`/`RGX_CR_SCRATCH14` 始终为 0。
+
+**根因（vendor 源码，稀疏克隆 `eswincomputing/linux-stable:linux-6.6.18-EIC7X`）：**
+
+- `config_kernel.mk`：`RGX_NUM_DRIVERS_SUPPORTED := 1`，且未定义 `SUPPORT_AUTOVZ`
+  或 `SUPPORT_AUTOVZ_HW_REGS`（`config_kernel.h`/`config_kernel.mk` 均无）。
+- `services/server/devices/rgxfwutils.h:1239-1284`：
+  - `SUPPORT_AUTOVZ_HW_REGS` 下 `KM_SET_OS_CONNECTION` 才写 `RGX_CR_OS0_SCRATCH2`，
+    `KM_GET_FW_CONNECTION` 才读 `RGX_CR_OS0_SCRATCH3`；
+  - 多驱动共享内存构建读 `psRGXFWIfConnectionCtl`；
+  - **native 单驱动构建（本例）展开为常量**：`KM_GET_FW_CONNECTION` 恒为
+    `RGXFW_CONNECTION_FW_ACTIVE`，`KM_SET_OS_CONNECTION` 为空操作。
+- `hwdefs/volcanic/km/rgxdefs_km.h:385`：`RGX_FW_BOOT_STAGE_REGISTER = RGX_CR_SCRATCH14`，
+  只在 `rgxpower.c` 的 `#if defined(TRACK_FW_BOOT)` 诊断路径里读取。
+- `services/server/common/pvrsrv.c:3078-3096`：运行期兼容性等待 `sRGXCompChecks.bUpdated`
+  只在 `PVRSRV_VZ_MODE_IS(GUEST)` 分支；native host 不做该等待，`ddk=0.0` 属正常。
+- `services/server/devices/volcanic/rgxsrvinit.c:509-514` 与 `config_kernel.h:66`：
+  native 的 `ui32FwOsConfigFlags` 默认是 `RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL = 0x1F`，
+  不是 `RGXFWIF_INICFG_OS_ALL = 0x3FFFF`。
+
+**结论：** P2.1 原定的 OS READY→FW READY/ACTIVE + INIT_DONE 握手在本 vendor 构建上
+不可能出现，`fw_state=0 boot_stage=0` 是预期值，不是固件挂起。native 启动已由
+P1 的 `bFirmwareStarted=1`/无 fault 证明。
+
+**修正后的门：**
+
+1. P2.1（已改代码）：读取 `startup_observed()`，打印
+   `FW_CONN status=native started=1 faults=… hwr_state=… hwr_count=… vz_fw_state=… vz_boot_stage=…`；
+   VZ 寄存器只作诊断记录，不再等待。
+2. P2.2：在 `release_selected_meta` **之前**写 `OSDATA+0 = 0x1F`（vendor 默认），
+   读回后打印 `FW_OSCONFIG fw_config_initialized=1 flags=0x1f`。
+3. P2.3（真正的 native 连接测试）：`enqueue_health_check()` 写 64 B 命令槽、
+   清 return slot、推进 `ui32WriteOffset`，然后写 `RGX_CR_MTS_SCHEDULE=0`（DM GP）
+   并读回，轮询 return slot 直到 `CMD_EXECUTED=1`；marker 为
+   `FW_KCCB status=executed slot=0 rtn=1 write_off=1 read_off=…`。
+
+**ABI 交叉验证：** 用 vendor 头文件在本机编译 `offsetof` 探针，得到
+`RGXFWIF_OSINIT.sRGXCompChecks=40`，`ui32DDKVersion/Build/BuildOptions/bUpdated=32/36/40/56`，
+`RGXFWIF_OSDATA.ui32FwOsConfigFlags=0`，`sPowerSync=572`，`RGXFWIF_CCB_CTL`
+write/read/wrap=`0/4/8`，`sizeof(RGXFWIF_KCCB_CMD)=64`，均与 probe 一致。
+
+**ktest harness 备注：** `cargo osdk test TESTNAME` 的 TESTNAME 按测试路径
+**元素后缀精确匹配**（不是帮助文本所说的子串匹配）；必须在 `kernel/` 目录下运行，
+并显式给 `--target-arch riscv64 --scheme riscv`，否则会在仓库根的默认 workspace
+成员上应用 `powervr_probe` 特性而失败。P2.1 的两个连接 ktest 在改成精确测试名后
+均为 `1 passed; 0 failed; 339 filtered out`；修正后这两个测试随 VZ 握手一起移除，
+由 `dma.rs` 的 `initialize_fw_os_config_flags` / `enqueue_health_check` ktest 取代。
+
+**P2.3 首次板级结果（P2c，kernel SHA-256 `4d8e39e8…`）：**
+
+```
+ASTERINAS_POWERVR_FW_OSCONFIG fw_config_initialized=1 flags=0x1f
+ASTERINAS_POWERVR_FW_CONN status=native started=1 faults=0 hwr_state=0x1 hwr_count=0 vz_fw_state=0 vz_boot_stage=0
+ASTERINAS_POWERVR_FW_KCCB status=timeout slot=0 rtn=0 write_off=1 read_off=1
+STATUS_DECODED meta_release=1 started=1 faults=0 hwr_state=0x1 hwr_count=0 ddk=0.0
+```
+
+`write_off=1` 是 host 推进的写指针；**`read_off=1` 是固件写回的读指针**，
+证明固件已经消费了 slot 0 的命令——KCCB 提交、命令体和 MTS GP kick 全部生效。
+`rtn=0` 是因为 `RGXFWHealthCheckCmdInt` 走的是不带 return-slot 等待的
+`RGXScheduleCommand`（vendor 只对 KICK/CLEANUP/MMUCACHE 等调用
+`RGXWaitForKCCBSlotUpdate`），HEALTH_CHECK 没有 return-slot 契约。
+因此 P2.3 的完成判据改为 `read_off != slot`，marker 改为
+`FW_KCCB status=completed slot=0 rtn=0 write_off=1 read_off=1`。
+
+---
+
+## 2026-10-22 P2.3 通过，下一步 P2.4
+
+**P2e 板级 marker（kernel SHA-256 `537e9630…`）：**
+
+```
+ASTERINAS_POWERVR_FW_OSCONFIG fw_config_initialized=1 flags=0x1f
+ASTERINAS_POWERVR_FW_CONN status=native started=1 faults=0 hwr_state=0x1 hwr_count=0 vz_fw_state=0 vz_boot_stage=0
+ASTERINAS_POWERVR_FW_KCCB status=completed slot=0 rtn=0 write_off=1 read_off=1
+STATUS_DECODED meta_release=1 started=1 faults=0 hwr_state=0x1 hwr_count=0 ddk=0.0
+```
+
+`read_off=1` 证明固件消费了 HEALTH_CHECK；`rtn=0` 符合 vendor
+`RGXFWHealthCheckCmdInt` 的 fire-and-forget 语义。P2.1–P2.3 的板级 marker
+已稳定，P2.4 的启动条件解除。
+
+**P2.4（下一步）**：把 return-slot/`read_off` 轮询替换为 `RGXIRQ` 中断 +
+fence；先完成 IRQ 注册与 `ASTERINAS_POWERVR_IRQ count=N` 收据，再考虑
+`dma-fence` 和用户态接口。注意：native 下 `compatibility=0/ddk=0.0` 是
+预期值，不阻塞 P2.4；若需要 return-slot 证据，应改用
+KICK/CLEANUP/MMUCACHE 等会走 `RGXWaitForKCCBSlotUpdate` 的命令。

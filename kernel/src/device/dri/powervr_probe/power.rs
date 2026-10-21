@@ -9,7 +9,7 @@ use core::{
 };
 
 use device_id::{DeviceId, MinorId};
-use ostd::{io::IoMem, mm::VmIoOnce, sync::Mutex};
+use ostd::{io::IoMem, mm::VmIoOnce};
 use spin::Once;
 
 use super::{
@@ -19,11 +19,15 @@ use super::{
         CatalogueIo, clear_selected_catalogue, install_selected_catalogue,
         selected_catalogue_state, validate_selected_catalogue,
     },
-    dma::{FIRMWARE_STATUS_SIZE, GpuDmaAllocation, GpuFirmwareStage},
+    dma::{
+        FIRMWARE_STATUS_SIZE, GpuDmaAllocation, GpuFirmwareStage,
+        RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL, RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED,
+        RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE,
+    },
     inspect_gpu_crg_dt, print_gpu_crg_snapshot,
     start::{
-        FirmwareStartIo, StartIo, prepare_selected_meta, release_selected_meta,
-        wait_selected_firmware,
+        FirmwareStartIo, RGX_CR_MTS_SCHEDULE, RGX_CR_OS0_SCRATCH3, RGX_CR_SCRATCH14, StartIo,
+        prepare_selected_meta, release_selected_meta, wait_selected_firmware,
     },
 };
 use crate::{
@@ -520,6 +524,20 @@ impl PowerControlFile {
         staging
             .validate_meta_boot_config()
             .map_err(|reason| Error::with_message(Errno::EINVAL, reason))?;
+        // The vendor native driver fills RGXFWIF_OSDATA.ui32FwOsConfigFlags
+        // during OS-data setup, before releasing META. Its pinned default is
+        // RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL; the firmware reads this word
+        // while it boots, so it cannot be deferred past the release.
+        staging
+            .initialize_fw_os_config_flags(RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL)
+            .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        let os_flags = staging
+            .fw_os_config_flags()
+            .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        aster_logger::println!(
+            "ASTERINAS_POWERVR_FW_OSCONFIG fw_config_initialized=1 flags=0x{:x}",
+            os_flags,
+        );
 
         let owner =
             hardware_power_io().map_err(|reason| Error::with_message(Errno::EIO, reason))?;
@@ -561,7 +579,33 @@ impl PowerControlFile {
         let status = staging
             .firmware_status()
             .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        match status.startup_observed() {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(Error::with_message(Errno::EIO, "gpu_firmware_not_started"));
+            }
+            Err(reason) => return Err(Error::with_message(Errno::EIO, reason)),
+        }
         let (started, compatibility, ddk_version, ddk_build) = status.startup_summary();
+        let (_, faults, hwr_state, hwr_count) = status.startup_diagnostics();
+
+        let owner =
+            hardware_power_io().map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        let mut io = owner.lock();
+        // The pinned Megrez DDK is a native single-OS build: its OS/FW
+        // connection macros compile to constants and RGX_CR_SCRATCH14 is only
+        // read under TRACK_FW_BOOT. Record both without waiting on them.
+        let vz_fw_state = StartIo::read32(&mut *io, RGX_CR_OS0_SCRATCH3).unwrap_or(u32::MAX);
+        let vz_boot_stage = StartIo::read32(&mut *io, RGX_CR_SCRATCH14).unwrap_or(u32::MAX);
+        aster_logger::println!(
+            "ASTERINAS_POWERVR_FW_CONN status=native started={} faults={} hwr_state=0x{:x} hwr_count={} vz_fw_state={} vz_boot_stage={}",
+            started,
+            faults,
+            hwr_state,
+            hwr_count,
+            vz_fw_state,
+            vz_boot_stage,
+        );
         aster_logger::println!(
             "ASTERINAS_POWERVR_META status=started started={} compatibility={} ddk={}.{} gpu_visibility=observed",
             started,
@@ -569,6 +613,66 @@ impl PowerControlFile {
             ddk_version,
             ddk_build,
         );
+        aster_logger::println!(
+            "ASTERINAS_POWERVR_FW_COMPAT started={} compatibility={} ddk={}.{}",
+            started,
+            compatibility,
+            ddk_version,
+            ddk_build,
+        );
+
+        // Native-mode connection probe: enqueue one HEALTH_CHECK, kick the
+        // GP data master and wait for the firmware to mark the return slot.
+        let slot = staging
+            .enqueue_health_check()
+            .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        StartIo::write32(&mut *io, RGX_CR_MTS_SCHEDULE, 0)
+            .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        // The uncached read-back fences the kick through the interconnect.
+        let _ = StartIo::read32(&mut *io, RGX_CR_MTS_SCHEDULE);
+        let started_at = aster_time::read_monotonic_time();
+        let mut rtn = RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE;
+        let mut consumed = false;
+        while aster_time::read_monotonic_time().saturating_sub(started_at)
+            < Duration::from_millis(100)
+        {
+            rtn = staging
+                .health_check_return(slot)
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+            let (_, read_off) = staging
+                .kccb_offsets()
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+            // The vendor driver does not wait on a HEALTH_CHECK return
+            // slot (RGXFWHealthCheckCmd uses a fire-and-forget enqueue);
+            // the firmware acknowledges consumption by advancing read_off.
+            if read_off != slot || rtn == RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED {
+                consumed = true;
+                break;
+            }
+            spin_loop();
+        }
+        let (write_off, read_off) = staging.kccb_offsets().unwrap_or((u32::MAX, u32::MAX));
+        if !consumed {
+            aster_logger::println!(
+                "ASTERINAS_POWERVR_FW_KCCB status=timeout slot={} rtn={} write_off={} read_off={}",
+                slot,
+                rtn,
+                write_off,
+                read_off,
+            );
+            return Err(Error::with_message(
+                Errno::ETIMEDOUT,
+                "gpu_kccb_health_check_timeout",
+            ));
+        }
+        aster_logger::println!(
+            "ASTERINAS_POWERVR_FW_KCCB status=completed slot={} rtn={} write_off={} read_off={}",
+            slot,
+            rtn,
+            write_off,
+            read_off,
+        );
+        drop(io);
         Ok(4)
     }
 }

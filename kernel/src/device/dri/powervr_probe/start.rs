@@ -159,10 +159,23 @@ pub(super) fn release_selected_meta(
     Ok(())
 }
 
+/// VZ connection and firmware-boot-stage scratch registers.
+///
+/// The Megrez vendor DDK is a native single-OS build
+/// (`RGX_NUM_DRIVERS_SUPPORTED = 1`, no `SUPPORT_AUTOVZ_HW_REGS`): the
+/// vendor's `KM_SET_OS_CONNECTION`/`KM_FW_CONNECTION_IS` macros compile to
+/// constants, and `RGX_CR_SCRATCH14` is only sampled under `TRACK_FW_BOOT`.
+/// Neither register participates in native startup, so they are read only
+/// as bounded diagnostics. Native startup is established by
+/// `RGXFWIF_SYSINIT.bFirmwareStarted` (see the DMA stage status).
+pub(super) const RGX_CR_SCRATCH14: usize = 0x0870;
+pub(super) const RGX_CR_OS0_SCRATCH3: usize = 0x0898;
+/// MTS scheduler kick; data master 0 is `RGXFWIF_DM_GP`.
+pub(super) const RGX_CR_MTS_SCHEDULE: usize = 0x0b00;
+
 #[cfg(ktest)]
 mod tests {
     use alloc::{vec, vec::Vec};
-    use core::time::Duration;
 
     use ostd::prelude::ktest;
 

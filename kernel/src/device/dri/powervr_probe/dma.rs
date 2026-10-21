@@ -3,6 +3,7 @@
 //! Bounded DMA ownership for the selected Megrez PowerVR session.
 
 use alloc::{vec, vec::Vec};
+use core::sync::atomic::{Ordering, fence};
 
 use ostd::mm::{
     HasDaddr, HasPaddr, HasSize, PAGE_SIZE,
@@ -28,6 +29,16 @@ const GPU_DMA_LIMIT: usize = 1 << 40;
 const MAX_PROBE_PAGES: usize = 256;
 const STAGE_HEADER_SIZE: usize = 12;
 const STAGE_SEGMENT_SIZES: [usize; 4] = [52_064, 18_432, 73_312, 9_984];
+/// Vendor default for `RGXFWIF_OSDATA.ui32FwOsConfigFlags`: the pinned
+/// DDK 24.2 `config_kernel.h` sets `PVRSRV_APPHINT_ENABLEFWCONTEXTSWITCH`
+/// to `RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL` and the Linux
+/// `FWContextSwitchCrossDM` apphint defaults to zero.
+pub(super) const RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL: u32 = 0x1f;
+/// `RGXFWIF_KCCB_CMD_HEALTH_CHECK`.
+pub(super) const RGXFWIF_KCCB_CMD_HEALTH_CHECK: u32 = 111 | (0x2abc << 16);
+pub(super) const RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE: u32 = 0;
+pub(super) const RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED: u32 = 1;
+const KCCB_SLOT_BYTES: usize = 64;
 pub(super) const FW_HEAP_BASE: usize = 0xe1c0_000000;
 // The pinned DDK accepts firmware heaps no smaller than 4 MiB. Keep this
 // selected layout within that minimum, even if RockOS configures a larger one.
@@ -152,6 +163,16 @@ impl FirmwareStatus {
             self.ddk_build,
         )
     }
+
+    /// Started flag, fault count, HWR state flags and HWR count.
+    pub(super) fn startup_diagnostics(&self) -> (u32, u32, u32, u32) {
+        (
+            self.started,
+            self.firmware_faults,
+            self.hwr_state,
+            self.hwr_count,
+        )
+    }
 }
 
 #[derive(Default)]
@@ -164,6 +185,10 @@ pub(super) struct GpuFirmwareStage {
     sysdata_vaddr: Option<usize>,
     hwr_info_vaddr: Option<usize>,
     gpu_util_vaddr: Option<usize>,
+    kccb_ctl_vaddr: Option<usize>,
+    kccb_cmd_vaddr: Option<usize>,
+    kccb_rtn_vaddr: Option<usize>,
+    osdata_vaddr: Option<usize>,
 }
 
 impl GpuFirmwareStage {
@@ -301,6 +326,14 @@ impl GpuFirmwareStage {
                 if object.osinit_offset == 28 {
                     self.hwr_info_vaddr = Some(next_object_vaddr);
                 }
+                match object.osinit_offset {
+                    // RGXFWIF_OSINIT.psKernelCCBCtl / psKernelCCB /
+                    // psKernelCCBRtnSlots.
+                    0 => self.kccb_ctl_vaddr = Some(next_object_vaddr),
+                    4 => self.kccb_cmd_vaddr = Some(next_object_vaddr),
+                    8 => self.kccb_rtn_vaddr = Some(next_object_vaddr),
+                    _ => {}
+                }
                 if let Some(mask) = object.ccb_wrap_mask {
                     mmu.write_mapped_u32(next_object_vaddr + 8, mask)?;
                 }
@@ -320,10 +353,9 @@ impl GpuFirmwareStage {
                 return Err("gpu_dma_stage_firmware_heap_overflow");
             }
             mmu.map_owned(sync_vaddr, allocation, false, true)?;
-            mmu.write_mapped_u32(
-                osdata_vaddr.ok_or("gpu_dma_stage_osdata_missing")? + 572,
-                meta_fwif_address(sync_vaddr, false, false)?,
-            )?;
+            let osdata = osdata_vaddr.ok_or("gpu_dma_stage_osdata_missing")?;
+            mmu.write_mapped_u32(osdata + 572, meta_fwif_address(sync_vaddr, false, false)?)?;
+            self.osdata_vaddr = Some(osdata);
             if sync_vaddr + 2 * PAGE_SIZE > FW_FAULT_VADDR {
                 return Err("gpu_dma_stage_system_extra_overlap");
             }
@@ -511,6 +543,77 @@ impl GpuFirmwareStage {
         Ok(())
     }
 
+    /// Write `RGXFWIF_OSDATA.ui32FwOsConfigFlags` (offset 0), the per-OS
+    /// configuration word the vendor native driver fills before releasing
+    /// META.
+    pub(super) fn initialize_fw_os_config_flags(&self, flags: u32) -> Result<(), &'static str> {
+        let mmu = self.mmu.as_ref().ok_or("gpu_dma_stage_mmu_missing")?;
+        let osdata = self.osdata_vaddr.ok_or("gpu_dma_stage_osdata_missing")?;
+        mmu.write_mapped_u32(osdata, flags)
+    }
+
+    pub(super) fn fw_os_config_flags(&self) -> Result<u32, &'static str> {
+        let mmu = self.mmu.as_ref().ok_or("gpu_dma_stage_mmu_missing")?;
+        let osdata = self.osdata_vaddr.ok_or("gpu_dma_stage_osdata_missing")?;
+        mmu.read_mapped_u32(osdata)
+    }
+
+    /// Read the kernel CCB write/read offsets.
+    pub(super) fn kccb_offsets(&self) -> Result<(u32, u32), &'static str> {
+        let mmu = self.mmu.as_ref().ok_or("gpu_dma_stage_mmu_missing")?;
+        let ctl = self
+            .kccb_ctl_vaddr
+            .ok_or("gpu_dma_stage_kccb_ctl_missing")?;
+        Ok((mmu.read_mapped_u32(ctl)?, mmu.read_mapped_u32(ctl + 4)?))
+    }
+
+    /// Enqueue one `RGXFWIF_KCCB_CMD_HEALTH_CHECK` into the kernel CCB and
+    /// advance its write offset. The command body and its cleared return slot
+    /// are committed before the offset becomes visible; the caller still has
+    /// to fence and kick `RGX_CR_MTS_SCHEDULE` for the GP data master.
+    pub(super) fn enqueue_health_check(&self) -> Result<u32, &'static str> {
+        let mmu = self.mmu.as_ref().ok_or("gpu_dma_stage_mmu_missing")?;
+        let ctl = self
+            .kccb_ctl_vaddr
+            .ok_or("gpu_dma_stage_kccb_ctl_missing")?;
+        let cmd = self
+            .kccb_cmd_vaddr
+            .ok_or("gpu_dma_stage_kccb_cmd_missing")?;
+        let rtn = self
+            .kccb_rtn_vaddr
+            .ok_or("gpu_dma_stage_kccb_rtn_missing")?;
+        let wrap = mmu.read_mapped_u32(ctl + 8)?;
+        let write = mmu.read_mapped_u32(ctl)?;
+        if write & !wrap != 0 {
+            return Err("gpu_kccb_write_offset_out_of_range");
+        }
+        let slot = write as usize;
+        let base = cmd + slot * KCCB_SLOT_BYTES;
+        // HEALTH_CHECK carries no payload beyond its magic command type; a
+        // zeroed slot keeps stale bytes out of the firmware's copy.
+        for offset in (0..KCCB_SLOT_BYTES).step_by(size_of::<u32>()) {
+            mmu.write_mapped_u32(base + offset, 0)?;
+        }
+        mmu.write_mapped_u32(base, RGXFWIF_KCCB_CMD_HEALTH_CHECK)?;
+        mmu.write_mapped_u32(
+            rtn + slot * size_of::<u32>(),
+            RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE,
+        )?;
+        // Order the command body and return-slot reset before the write
+        // offset the firmware polls.
+        fence(Ordering::SeqCst);
+        mmu.write_mapped_u32(ctl, write.wrapping_add(1) & wrap)?;
+        Ok(write)
+    }
+
+    pub(super) fn health_check_return(&self, slot: u32) -> Result<u32, &'static str> {
+        let mmu = self.mmu.as_ref().ok_or("gpu_dma_stage_mmu_missing")?;
+        let rtn = self
+            .kccb_rtn_vaddr
+            .ok_or("gpu_dma_stage_kccb_rtn_missing")?;
+        mmu.read_mapped_u32(rtn + slot as usize * size_of::<u32>())
+    }
+
     pub(super) fn mapped_fw_config_vaddrs(&self) -> Option<[usize; 3]> {
         self.mmu.as_ref().map(|_| {
             [
@@ -638,7 +741,9 @@ mod tests {
     use ostd::prelude::ktest;
 
     use super::{
-        GpuFirmwareStage, GpuMmu4, PAGE_SIZE, STAGE_SEGMENT_SIZES, parse_stage_frame,
+        GpuFirmwareStage, GpuMmu4, PAGE_SIZE, RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL,
+        RGXFWIF_KCCB_CMD_HEALTH_CHECK, RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED,
+        RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE, STAGE_SEGMENT_SIZES, parse_stage_frame,
         validate_dma_range,
     };
 
@@ -976,6 +1081,102 @@ mod tests {
         assert_eq!(&bytes[..4], b"PVS1");
         assert_eq!(&bytes[4..8], &1u32.to_le_bytes());
         assert_eq!(&bytes[16..20], &2u32.to_le_bytes());
+    }
+
+    fn stage_all_segments(stage: &mut GpuFirmwareStage) {
+        for (segment, size) in STAGE_SEGMENT_SIZES.into_iter().enumerate() {
+            let mut frame = b"PVR1".to_vec();
+            frame.extend_from_slice(&(segment as u32).to_le_bytes());
+            frame.extend_from_slice(&(size as u32).to_le_bytes());
+            frame.extend(core::iter::repeat_n(0x5a, size));
+            stage.stage_frame(&frame).unwrap();
+        }
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_initializes_fw_os_config_flags() {
+        let mut stage = GpuFirmwareStage::default();
+        assert_eq!(
+            stage.initialize_fw_os_config_flags(RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL),
+            Err("gpu_dma_stage_mmu_missing")
+        );
+        assert_eq!(stage.fw_os_config_flags(), Err("gpu_dma_stage_mmu_missing"));
+
+        stage_all_segments(&mut stage);
+        // The vendor native driver fills this word before releasing META;
+        // this probe leaves it zero until the explicit initialization.
+        assert_eq!(stage.fw_os_config_flags(), Ok(0));
+        assert_eq!(
+            stage.initialize_fw_os_config_flags(RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL),
+            Ok(())
+        );
+        assert_eq!(
+            stage.fw_os_config_flags(),
+            Ok(RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL)
+        );
+        assert_eq!(stage.fw_os_config_flags(), Ok(0x1f));
+    }
+
+    #[ktest]
+    fn gpu_dma_stage_enqueues_health_check_and_observes_return_slot() {
+        let mut stage = GpuFirmwareStage::default();
+        assert_eq!(
+            stage.enqueue_health_check(),
+            Err("gpu_dma_stage_mmu_missing")
+        );
+        assert_eq!(
+            stage.health_check_return(0),
+            Err("gpu_dma_stage_mmu_missing")
+        );
+
+        stage_all_segments(&mut stage);
+        let ctl = stage.kccb_ctl_vaddr.unwrap();
+        let cmd = stage.kccb_cmd_vaddr.unwrap();
+        let rtn = stage.kccb_rtn_vaddr.unwrap();
+        assert_eq!(stage.kccb_offsets(), Ok((0, 0)));
+        assert_eq!(
+            stage.health_check_return(0),
+            Ok(RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE)
+        );
+
+        assert_eq!(stage.enqueue_health_check(), Ok(0));
+        {
+            let mmu = stage.mmu.as_ref().unwrap();
+            assert_eq!(mmu.read_mapped_u32(ctl), Ok(1));
+            assert_eq!(
+                mmu.read_mapped_u32(ctl + 8),
+                Ok((1 << super::super::fwif::KCCB_COMMANDS_LOG2) - 1)
+            );
+            assert_eq!(mmu.read_mapped_u32(cmd), Ok(RGXFWIF_KCCB_CMD_HEALTH_CHECK));
+            assert_eq!(mmu.read_mapped_u32(cmd + 4), Ok(0));
+            assert_eq!(mmu.read_mapped_u32(cmd + 60), Ok(0));
+            assert_eq!(
+                mmu.read_mapped_u32(rtn),
+                Ok(RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE)
+            );
+        }
+
+        // The firmware acknowledges asynchronously by writing the return slot.
+        stage
+            .mmu
+            .as_ref()
+            .unwrap()
+            .write_mapped_u32(rtn, RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED)
+            .unwrap();
+        assert_eq!(
+            stage.health_check_return(0),
+            Ok(RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED)
+        );
+
+        // The next command takes slot 1 and advances the write offset.
+        assert_eq!(stage.enqueue_health_check(), Ok(1));
+        let mmu = stage.mmu.as_ref().unwrap();
+        assert_eq!(
+            mmu.read_mapped_u32(cmd + 64),
+            Ok(RGXFWIF_KCCB_CMD_HEALTH_CHECK)
+        );
+        assert_eq!(mmu.read_mapped_u32(ctl), Ok(2));
+        assert_eq!(stage.kccb_offsets(), Ok((2, 0)));
     }
 
     #[ktest]
