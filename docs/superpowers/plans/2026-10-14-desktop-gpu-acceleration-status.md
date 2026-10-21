@@ -901,3 +901,20 @@ open: the next gate must launch the actual Firefox binary in the guest and
 prove WebRender's renderer is virgl (never llvmpipe), capture a fixed browser
 scene/frame hash, and verify bounded recovery. The physical board remains
 untouched.
+
+## 2026-10-21 update: RockOS vendor reference stack
+
+A one-shot U-Boot boot of the packaged
+`/boot/vmlinuz-6.6.87-win2030-origin` kernel (the image whose vermagic
+matches the vendor `pvrsrvkm.ko`) brought up the PowerVR AXM-8-256 on the
+physical board: `card1`/`renderD128`, `rgx.fw/sh.30.3.408.101` loaded, and
+Xorg glamor enabled on `PowerVR A-Series AXM-8-256`. The default extlinux
+entry was not changed. This is a RockOS reference receipt, not an Asterinas
+result; the native port decomposition is in
+[2026-10-21-megrez-powervr-native-acceleration.md](2026-10-21-megrez-powervr-native-acceleration.md)
+and the raw evidence in
+[2026-10-21-rockos-powervr-reference.md](../../porting/evidence/2026-10-21-rockos-powervr-reference.md).
+
+The board-hosted QEMU/virgl route remains no-go for a different reason than
+the S13 run: a render node now exists, but QEMU `egl-headless` still fails
+`eglChooseConfig (core mode)` against the vendor GLES-only Mesa.
