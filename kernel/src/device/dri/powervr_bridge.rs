@@ -29,10 +29,21 @@ pub(super) const BRIDGE_SRVCORE: u32 = 1;
 pub(super) const SRVCORE_CONNECT: u32 = 0;
 /// `PVRSRV_BRIDGE_SRVCORE_DISCONNECT`.
 pub(super) const SRVCORE_DISCONNECT: u32 = 1;
+/// `PVRSRV_BRIDGE_SRVCORE_ACQUIREGLOBALEVENTOBJECT`.
+pub(super) const SRVCORE_ACQUIREGLOBALEVENTOBJECT: u32 = 2;
+/// `PVRSRV_BRIDGE_SRVCORE_RELEASEGLOBALEVENTOBJECT`.
+pub(super) const SRVCORE_RELEASEGLOBALEVENTOBJECT: u32 = 3;
 /// `PVRSRV_BRIDGE_SRVCORE_GETDEVCLOCKSPEED`.
 pub(super) const SRVCORE_GETDEVCLOCKSPEED: u32 = 8;
 /// `PVRSRV_BRIDGE_SRVCORE_GETDEVICESTATUS`.
 pub(super) const SRVCORE_GETDEVICESTATUS: u32 = 11;
+/// `PVRSRV_BRIDGE_SRVCORE_GETMULTICOREINFO`.
+pub(super) const SRVCORE_GETMULTICOREINFO: u32 = 12;
+/// `PVRSRV_BRIDGE_SRVCORE_CMD_LAST` (the vendor group boundary).
+const SRVCORE_CMD_LAST: u32 = 16;
+/// `BRIDGE_DISPATCH_TABLE_START_ENTRY_COUNT`; the vendor's last group is
+/// `PVRSRV_BRIDGE_RGXRAY` (139).
+const BRIDGE_DISPATCH_TABLE_START_ENTRY_COUNT: u32 = 140;
 
 /// `struct drm_pvr_srvkm_cmd` (32 bytes).
 #[repr(C)]
@@ -81,8 +92,15 @@ pub(super) struct PvrSrvkmInitData {
 pub(super) const PACKED_BVNC: u64 = 0x001e_0003_0198_0065;
 /// `PVRSRV_ERROR` value for success.
 const PVRSRV_OK: u32 = 0;
+/// `PVRSRV_ERROR_NOT_SUPPORTED` (`include/pvrsrv_errors.h`, entry 20).
+/// The vendor KM returns it for `GETMULTICOREINFO` when the device has no
+/// multicore information (`RGXGetMultiCoreInfo`).
+const PVRSRV_ERROR_NOT_SUPPORTED: u32 = 20;
 /// `PVRSRV_DEVICE_STATUS_OK`.
 const PVRSRV_DEVICE_STATUS_OK: u32 = 1;
+/// A fake global-event-object handle. The UM only passes it back to the
+/// release command and this kernel never dereferences it.
+const GLOBAL_EVENT_OBJECT_HANDLE: u64 = 0x1000;
 /// P2's measured GPU core clock, reported by the clock query while there is
 /// no live firmware service to ask.
 const GPU_CORE_HZ: u32 = 800_000_000;
@@ -129,10 +147,28 @@ fn expected_sizes(bridge_id: u32, func_id: u32) -> Option<(usize, usize)> {
     match (bridge_id, func_id) {
         (BRIDGE_SRVCORE, SRVCORE_CONNECT) => Some((16, 17)),
         (BRIDGE_SRVCORE, SRVCORE_DISCONNECT) => Some((4, 4)),
+        (BRIDGE_SRVCORE, SRVCORE_ACQUIREGLOBALEVENTOBJECT) => Some((4, 12)),
+        (BRIDGE_SRVCORE, SRVCORE_RELEASEGLOBALEVENTOBJECT) => Some((8, 4)),
         (BRIDGE_SRVCORE, SRVCORE_GETDEVCLOCKSPEED) => Some((4, 8)),
         (BRIDGE_SRVCORE, SRVCORE_GETDEVICESTATUS) => Some((4, 8)),
+        (BRIDGE_SRVCORE, SRVCORE_GETMULTICOREINFO) => Some((12, 16)),
         _ => None,
     }
+}
+
+/// Mirrors `BridgedDispatchKM` (`services/server/common/srvcore.c`): an
+/// out-of-range group or a function past the group boundary is
+/// `PVRSRV_ERROR_BRIDGE_EINVAL`; a group with no dispatch entry in this
+/// build is DummyBW's `PVRSRV_ERROR_BRIDGE_ENOTTY`. The vendor maps both
+/// with `PVRSRVToNativeError` to `-EINVAL` and `-ENOTTY`.
+fn unsupported_bridge_errno(bridge_id: u32, func_id: u32) -> Errno {
+    if bridge_id >= BRIDGE_DISPATCH_TABLE_START_ENTRY_COUNT {
+        return Errno::EINVAL;
+    }
+    if bridge_id == BRIDGE_SRVCORE && func_id > SRVCORE_CMD_LAST {
+        return Errno::EINVAL;
+    }
+    Errno::ENOTTY
 }
 
 /// Dispatches one `SRVKM_CMD` request.
@@ -140,7 +176,8 @@ pub(super) fn srvkm(req: &DrmPvrSrvkmCmd) -> Result<()> {
     let Some((in_size, out_size)) = expected_sizes(req.bridge_id, req.bridge_func_id) else {
         UNSUPPORTED_CALLS.fetch_add(1, Ordering::Relaxed);
         emit_marker();
-        return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported PVR bridge command");
+        let errno = unsupported_bridge_errno(req.bridge_id, req.bridge_func_id);
+        return_errno_with_message!(errno, "unsupported PVR bridge command");
     };
 
     if req.in_data_size as usize != in_size || req.out_data_size as usize != out_size {
@@ -162,10 +199,21 @@ pub(super) fn srvkm(req: &DrmPvrSrvkmCmd) -> Result<()> {
 }
 
 /// Executes a supported bridge command, returning its packed output.
-fn run_command(bridge_id: u32, func_id: u32, _input: &[u8]) -> Result<Vec<u8>> {
+fn run_command(bridge_id: u32, func_id: u32, input: &[u8]) -> Result<Vec<u8>> {
     match (bridge_id, func_id) {
         (BRIDGE_SRVCORE, SRVCORE_CONNECT) => Ok(connect_response()),
         (BRIDGE_SRVCORE, SRVCORE_DISCONNECT) => {
+            let mut out = vec![0u8; 4];
+            out[0..4].copy_from_slice(&PVRSRV_OK.to_le_bytes());
+            Ok(out)
+        }
+        (BRIDGE_SRVCORE, SRVCORE_ACQUIREGLOBALEVENTOBJECT) => {
+            let mut out = vec![0u8; 12];
+            out[0..8].copy_from_slice(&GLOBAL_EVENT_OBJECT_HANDLE.to_le_bytes());
+            out[8..12].copy_from_slice(&PVRSRV_OK.to_le_bytes());
+            Ok(out)
+        }
+        (BRIDGE_SRVCORE, SRVCORE_RELEASEGLOBALEVENTOBJECT) => {
             let mut out = vec![0u8; 4];
             out[0..4].copy_from_slice(&PVRSRV_OK.to_le_bytes());
             Ok(out)
@@ -182,6 +230,16 @@ fn run_command(bridge_id: u32, func_id: u32, _input: &[u8]) -> Result<Vec<u8>> {
             out[4..8].copy_from_slice(&GPU_CORE_HZ.to_le_bytes());
             Ok(out)
         }
+        (BRIDGE_SRVCORE, SRVCORE_GETMULTICOREINFO) => {
+            let mut out = vec![0u8; 16];
+            // The vendor wrapper echoes the caller's caps pointer into the
+            // out structure. The single-core AXM-8-256 has no multicore
+            // data, so `RGXGetMultiCoreInfo` returns
+            // `PVRSRV_ERROR_NOT_SUPPORTED`.
+            out[0..8].copy_from_slice(&input[0..8]);
+            out[8..12].copy_from_slice(&PVRSRV_ERROR_NOT_SUPPORTED.to_le_bytes());
+            Ok(out)
+        }
         _ => return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported PVR bridge command"),
     }
 }
@@ -193,9 +251,10 @@ fn connect_response() -> Vec<u8> {
     out[0..8].copy_from_slice(&PACKED_BVNC.to_le_bytes());
     out[8..12].copy_from_slice(&PVRSRV_OK.to_le_bytes());
     out[12..16].copy_from_slice(&0u32.to_le_bytes());
-    // Bit 0 marks a 64-bit kernel; the vendor UM uses it to pick pointer
-    // widths for the bridge payloads.
-    out[16] = 1;
+    // The vendor `PVRSRV_ConnectKM` writes 64 (or 32) here, not a bit
+    // flag (`services/server/common/srvcore.c`); the UM reads it to pick
+    // the pointer width for the bridge payloads.
+    out[16] = 64;
     out
 }
 
@@ -254,9 +313,80 @@ mod tests {
             in_data_size: 0,
             out_data_size: 0,
         };
-        assert_eq!(srvkm(&req).unwrap_err().error(), Errno::EOPNOTSUPP);
+        // Out-of-range group: the vendor dispatch returns
+        // PVRSRV_ERROR_BRIDGE_EINVAL.
+        assert_eq!(srvkm(&req).unwrap_err().error(), Errno::EINVAL);
         assert_eq!(stats().2, before + 1);
+
+        // A valid group that this build does not implement follows the
+        // vendor DummyBW path, PVRSRV_ERROR_BRIDGE_ENOTTY.
+        let req = DrmPvrSrvkmCmd {
+            bridge_id: 6,
+            ..req
+        };
+        assert_eq!(srvkm(&req).unwrap_err().error(), Errno::ENOTTY);
+
+        // A function past the SRVCORE boundary is EINVAL again.
+        let req = DrmPvrSrvkmCmd {
+            bridge_id: BRIDGE_SRVCORE,
+            bridge_func_id: 200,
+            ..req
+        };
+        assert_eq!(srvkm(&req).unwrap_err().error(), Errno::EINVAL);
+
         assert_eq!(unsupported_sync().unwrap_err().error(), Errno::EOPNOTSUPP);
+    }
+
+    #[ktest]
+    fn gpu_pvr_bridge_min_surface() {
+        // The vendor CONNECT out structure carries the kernel pointer
+        // width (64), not a bit flag.
+        let response = connect_response();
+        assert_eq!(response[16], 64);
+
+        assert_eq!(
+            expected_sizes(BRIDGE_SRVCORE, SRVCORE_ACQUIREGLOBALEVENTOBJECT),
+            Some((4, 12))
+        );
+        let input = 0u32.to_le_bytes();
+        let out = run_command(BRIDGE_SRVCORE, SRVCORE_ACQUIREGLOBALEVENTOBJECT, &input).unwrap();
+        assert_eq!(out.len(), 12);
+        assert_eq!(
+            u64::from_le_bytes(out[0..8].try_into().unwrap()),
+            GLOBAL_EVENT_OBJECT_HANDLE
+        );
+        assert_eq!(
+            u32::from_le_bytes(out[8..12].try_into().unwrap()),
+            PVRSRV_OK
+        );
+
+        assert_eq!(
+            expected_sizes(BRIDGE_SRVCORE, SRVCORE_RELEASEGLOBALEVENTOBJECT),
+            Some((8, 4))
+        );
+        let input = 0u64.to_le_bytes();
+        let out = run_command(BRIDGE_SRVCORE, SRVCORE_RELEASEGLOBALEVENTOBJECT, &input).unwrap();
+        assert_eq!(out.len(), 4);
+        assert_eq!(u32::from_le_bytes(out[0..4].try_into().unwrap()), PVRSRV_OK);
+
+        assert_eq!(
+            expected_sizes(BRIDGE_SRVCORE, SRVCORE_GETMULTICOREINFO),
+            Some((12, 16))
+        );
+        let mut input = [0u8; 12];
+        input[0..8].copy_from_slice(&0x1234_5678u64.to_le_bytes());
+        input[8..12].copy_from_slice(&4u32.to_le_bytes());
+        let out = run_command(BRIDGE_SRVCORE, SRVCORE_GETMULTICOREINFO, &input).unwrap();
+        assert_eq!(out.len(), 16);
+        assert_eq!(
+            u64::from_le_bytes(out[0..8].try_into().unwrap()),
+            0x1234_5678
+        );
+        assert_eq!(
+            u32::from_le_bytes(out[8..12].try_into().unwrap()),
+            PVRSRV_ERROR_NOT_SUPPORTED
+        );
+        assert_eq!(u32::from_le_bytes(out[12..16].try_into().unwrap()), 0);
     }
 
     #[ktest]
@@ -269,6 +399,6 @@ mod tests {
         );
         assert_eq!(u32::from_le_bytes(response[8..12].try_into().unwrap()), 0);
         assert_eq!(u32::from_le_bytes(response[12..16].try_into().unwrap()), 0);
-        assert_eq!(response[16], 1);
+        assert_eq!(response[16], 64);
     }
 }
