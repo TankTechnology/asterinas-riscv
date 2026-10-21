@@ -43,9 +43,36 @@ pub(super) const RGXFWIF_KCCB_CMD_HEALTH_CHECK: u32 = 111 | (0x2abc << 16);
 /// (`RGXWaitForKCCBSlotUpdate`). With both the staged flags and the command
 /// payload at zero it is a harmless diagnostic that exercises that path.
 pub(super) const RGXFWIF_KCCB_CMD_STATEFLAGS_CTRL: u32 = 206 | (0x2abc << 16);
+/// `RGXFWIF_KCCB_CMD_SLCFLUSHINVAL`.
+///
+/// The vendor path uses this as a flush "job" with `bDMContext = TRUE` and a
+/// compute context; the firmware interface also allows a context-free range
+/// flush (`bDMContext = FALSE`, address/size), which is the B2 no-op flush.
+pub(super) const RGXFWIF_KCCB_CMD_SLCFLUSHINVAL: u32 = 102 | (0x2abc << 16);
 pub(super) const RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE: u32 = 0;
 pub(super) const RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED: u32 = 1;
 const KCCB_SLOT_BYTES: usize = 64;
+const JOB_BUFFER_MAX_BYTES: usize = 64 * 1024;
+const JOB_BUFFER_VADDR: usize = FW_ALIGN_VADDR + 2 * PAGE_SIZE;
+
+/// A host-owned buffer mapped into the firmware MMU context for one job.
+///
+/// The VA is placed right after the staged fault/counter/align pages, inside
+/// the range reserved for host-owned system data rather than the firmware's
+/// runtime heap.  This is the minimal GPU VA context available to a job
+/// before a real render context exists (B2a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct GpuJobBuffer {
+    pub(super) vaddr: usize,
+    pub(super) size: usize,
+}
+
+struct KccbSlot {
+    slot: u32,
+    base: usize,
+    write: u32,
+    wrap: u32,
+}
 
 /// Kernel CCB control snapshot from the staged shared memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -586,13 +613,8 @@ impl GpuFirmwareStage {
         })
     }
 
-    /// Enqueue one command type into the next kernel CCB slot and advance the
-    /// write offset. Returns the slot index.
-    ///
-    /// The command body and its cleared return slot are committed before the
-    /// write offset becomes visible; the caller still has to fence and kick
-    /// `RGX_CR_MTS_SCHEDULE` for the GP data master.
-    pub(super) fn kccb_enqueue(&self, cmd_type: u32) -> Result<u32, &'static str> {
+    /// Reserve the next kernel CCB slot, zero it and reset its return slot.
+    fn kccb_alloc_slot(&self) -> Result<KccbSlot, &'static str> {
         let mmu = self.mmu.as_ref().ok_or("gpu_dma_stage_mmu_missing")?;
         let ctl = self
             .kccb_ctl_vaddr
@@ -616,21 +638,90 @@ impl GpuFirmwareStage {
         }
         let slot = write & wrap;
         let base = cmd + slot as usize * KCCB_SLOT_BYTES;
-        // No command we enqueue carries a payload; a zeroed slot keeps stale
-        // bytes out of the firmware's copy.
         for offset in (0..KCCB_SLOT_BYTES).step_by(size_of::<u32>()) {
             mmu.write_mapped_u32(base + offset, 0)?;
         }
-        mmu.write_mapped_u32(base, cmd_type)?;
         mmu.write_mapped_u32(
             rtn + slot as usize * size_of::<u32>(),
             RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE,
         )?;
-        // Order the command body and return-slot reset before the write
-        // offset the firmware polls.
+        Ok(KccbSlot {
+            slot,
+            base,
+            write,
+            wrap,
+        })
+    }
+
+    /// Commit a prepared slot by advancing the write offset the firmware
+    /// polls.  The device fence keeps the body and return-slot reset ordered
+    /// before the offset; the caller still has to kick `RGX_CR_MTS_SCHEDULE`.
+    fn kccb_commit_slot(&self, slot: &KccbSlot) -> Result<(), &'static str> {
+        let mmu = self.mmu.as_ref().ok_or("gpu_dma_stage_mmu_missing")?;
+        let ctl = self
+            .kccb_ctl_vaddr
+            .ok_or("gpu_dma_stage_kccb_ctl_missing")?;
         fence(Ordering::SeqCst);
-        mmu.write_mapped_u32(ctl, write.wrapping_add(1) & wrap)?;
-        Ok(slot)
+        mmu.write_mapped_u32(ctl, slot.write.wrapping_add(1) & slot.wrap)
+    }
+
+    /// Enqueue one header-only command type into the next kernel CCB slot and
+    /// advance the write offset. Returns the slot index.
+    pub(super) fn kccb_enqueue(&self, cmd_type: u32) -> Result<u32, &'static str> {
+        let slot = self.kccb_alloc_slot()?;
+        let mmu = self.mmu.as_ref().ok_or("gpu_dma_stage_mmu_missing")?;
+        mmu.write_mapped_u32(slot.base, cmd_type)?;
+        self.kccb_commit_slot(&slot)?;
+        Ok(slot.slot)
+    }
+
+    /// Enqueue a context-free SLC flush/invalidate for a GPU VA range.
+    ///
+    /// `RGXFWIF_SLCFLUSHINVALDATA` is packed: `psContext` at `uCmdData + 0`,
+    /// `bInval` at `+4`, `bDMContext` at `+5`, `ui64Address` at `+8` and
+    /// `ui64Size` at `+16`; `uCmdData` starts at KCCB slot offset 8.
+    pub(super) fn kccb_enqueue_slc_flush(
+        &self,
+        gpu_va: u64,
+        size: u64,
+        invalidate: bool,
+    ) -> Result<u32, &'static str> {
+        let slot = self.kccb_alloc_slot()?;
+        let mmu = self.mmu.as_ref().ok_or("gpu_dma_stage_mmu_missing")?;
+        mmu.write_mapped_u32(slot.base, RGXFWIF_KCCB_CMD_SLCFLUSHINVAL)?;
+        // psContext = NULL and bDMContext = 0 select the address-range path.
+        mmu.write_mapped_u32(slot.base + 8, 0)?;
+        mmu.write_mapped_u32(slot.base + 12, u32::from(invalidate))?;
+        mmu.write_mapped_u64(slot.base + 16, gpu_va)?;
+        mmu.write_mapped_u64(slot.base + 24, size)?;
+        self.kccb_commit_slot(&slot)?;
+        Ok(slot.slot)
+    }
+
+    /// Allocate a host-owned buffer and map it into the firmware MMU context.
+    ///
+    /// The VA sits immediately after the staged fault/counter/align pages, in
+    /// the host-owned part of the firmware heap.  A real per-job MMU context
+    /// (context IDs and a separately rooted page table) is B2a; this is the
+    /// minimal context needed to give the no-op flush a valid range.
+    pub(super) fn create_job_buffer(&mut self, bytes: usize) -> Result<GpuJobBuffer, &'static str> {
+        if bytes == 0 || bytes > JOB_BUFFER_MAX_BYTES {
+            return Err("gpu_job_invalid_size");
+        }
+        let mmu = self.mmu.as_mut().ok_or("gpu_dma_stage_mmu_missing")?;
+        let pages = bytes.div_ceil(PAGE_SIZE);
+        let allocation = GpuDmaAllocation::new(pages)?;
+        let end = JOB_BUFFER_VADDR
+            .checked_add(allocation.size())
+            .ok_or("gpu_job_context_overflow")?;
+        if end > FW_CONFIG_START {
+            return Err("gpu_job_context_overflow");
+        }
+        mmu.map_owned(JOB_BUFFER_VADDR, allocation, false, true)?;
+        Ok(GpuJobBuffer {
+            vaddr: JOB_BUFFER_VADDR,
+            size: pages * PAGE_SIZE,
+        })
     }
 
     pub(super) fn kccb_return(&self, slot: u32) -> Result<u32, &'static str> {
@@ -769,9 +860,10 @@ mod tests {
 
     use super::{
         GpuFirmwareStage, GpuMmu4, KccbOffsets, PAGE_SIZE, RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL,
-        RGXFWIF_KCCB_CMD_HEALTH_CHECK, RGXFWIF_KCCB_CMD_STATEFLAGS_CTRL,
-        RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED, RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE, STAGE_SEGMENT_SIZES,
-        parse_stage_frame, validate_dma_range,
+        RGXFWIF_KCCB_CMD_HEALTH_CHECK, RGXFWIF_KCCB_CMD_SLCFLUSHINVAL,
+        RGXFWIF_KCCB_CMD_STATEFLAGS_CTRL, RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED,
+        RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE, STAGE_SEGMENT_SIZES, parse_stage_frame,
+        validate_dma_range,
     };
 
     #[ktest]
@@ -1248,6 +1340,75 @@ mod tests {
         assert_eq!(
             mmu.read_mapped_u32(cmd + super::KCCB_SLOT_BYTES),
             Ok(RGXFWIF_KCCB_CMD_HEALTH_CHECK)
+        );
+    }
+
+    #[ktest]
+    fn gpu_job_noop_context_maps_buffer() {
+        let mut stage = GpuFirmwareStage::default();
+        assert_eq!(
+            stage.create_job_buffer(PAGE_SIZE),
+            Err("gpu_dma_stage_mmu_missing")
+        );
+
+        stage_all_segments(&mut stage);
+        let job = stage.create_job_buffer(PAGE_SIZE).unwrap();
+        assert_eq!(job.vaddr, super::JOB_BUFFER_VADDR);
+        assert_eq!(job.size, PAGE_SIZE);
+        {
+            let mmu = stage.mmu.as_ref().unwrap();
+            let pte = mmu.test_pte(job.vaddr).unwrap();
+            assert_eq!(pte & 1, 1);
+            assert_eq!(mmu.test_pte(job.vaddr + PAGE_SIZE), Ok(0));
+            mmu.write_mapped_u32(job.vaddr, 0x5a5a_1234).unwrap();
+            assert_eq!(mmu.read_mapped_u32(job.vaddr), Ok(0x5a5a_1234));
+        }
+        assert_eq!(stage.create_job_buffer(0), Err("gpu_job_invalid_size"));
+        assert_eq!(
+            stage.create_job_buffer(super::JOB_BUFFER_MAX_BYTES + 1),
+            Err("gpu_job_invalid_size")
+        );
+    }
+
+    #[ktest]
+    fn gpu_job_noop_submits_flush_command() {
+        let mut stage = GpuFirmwareStage::default();
+        stage_all_segments(&mut stage);
+        let job = stage.create_job_buffer(PAGE_SIZE).unwrap();
+        let ctl = stage.kccb_ctl_vaddr.unwrap();
+        let cmd = stage.kccb_cmd_vaddr.unwrap();
+        let rtn = stage.kccb_rtn_vaddr.unwrap();
+
+        let slot = stage
+            .kccb_enqueue_slc_flush(job.vaddr as u64, job.size as u64, true)
+            .unwrap();
+        assert_eq!(slot, 0);
+        {
+            let mmu = stage.mmu.as_ref().unwrap();
+            assert_eq!(mmu.read_mapped_u32(cmd), Ok(RGXFWIF_KCCB_CMD_SLCFLUSHINVAL));
+            // psContext = NULL, bDMContext = 0 selects the range path.
+            assert_eq!(mmu.read_mapped_u32(cmd + 8), Ok(0));
+            assert_eq!(mmu.read_mapped_u32(cmd + 12), Ok(1));
+            assert_eq!(mmu.read_mapped_u32(cmd + 16), Ok(job.vaddr as u32));
+            assert_eq!(mmu.read_mapped_u32(cmd + 20), Ok((job.vaddr >> 32) as u32));
+            assert_eq!(mmu.read_mapped_u32(cmd + 24), Ok(job.size as u32));
+            assert_eq!(mmu.read_mapped_u32(cmd + 28), Ok(0));
+            assert_eq!(mmu.read_mapped_u32(ctl), Ok(1));
+            assert_eq!(
+                mmu.read_mapped_u32(rtn),
+                Ok(RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE)
+            );
+        }
+
+        // The firmware drains the ring and acknowledges the flush command.
+        let mmu = stage.mmu.as_ref().unwrap();
+        mmu.write_mapped_u32(ctl + 4, 1).unwrap();
+        mmu.write_mapped_u32(rtn, RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED)
+            .unwrap();
+        assert_eq!(stage.kccb_offsets().unwrap().read, 1);
+        assert_eq!(
+            stage.kccb_return(slot),
+            Ok(RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED)
         );
     }
 

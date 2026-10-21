@@ -774,6 +774,84 @@ impl PowerControlFile {
             if irq_seen { "irq" } else { "poll" },
             events,
         );
+
+        // B2: optional no-op flush job.  It is opt-in so the P2/P3 release
+        // path and its markers stay unchanged unless the board run asks for
+        // it with `asterinas.powervr_job_noop=1`.
+        if ostd::boot::boot_info()
+            .kernel_cmdline
+            .split_whitespace()
+            .any(|word| word == "asterinas.powervr_job_noop=1")
+        {
+            let job = staging
+                .create_job_buffer(PAGE_SIZE)
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+            let job_slot = staging
+                .kccb_enqueue_slc_flush(job.vaddr as u64, job.size as u64, true)
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+            let job_enqueued = staging
+                .kccb_offsets()
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+            let job_final_write = job_enqueued.write;
+            StartIo::write32(&mut *io, RGX_CR_MTS_SCHEDULE, 0)
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+            let _ = StartIo::read32(&mut *io, RGX_CR_MTS_SCHEDULE);
+            let job_irq_before = irq::event_count();
+            let job_started = aster_time::read_monotonic_time();
+            let mut job_done = false;
+            let mut job_read = job_enqueued.read;
+            let mut job_rtn = RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE;
+            while aster_time::read_monotonic_time().saturating_sub(job_started)
+                < Duration::from_millis(100)
+            {
+                job_rtn = staging
+                    .kccb_return(job_slot)
+                    .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+                job_read = staging
+                    .kccb_offsets()
+                    .map_err(|reason| Error::with_message(Errno::EIO, reason))?
+                    .read;
+                // SLCFLUSHINVAL has a return-slot contract: the firmware
+                // writes CMD_EXECUTED or POLL_FAILURE after the flush.
+                if job_read == job_final_write && job_rtn & RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED != 0
+                {
+                    job_done = true;
+                    break;
+                }
+                spin_loop();
+            }
+            let job_irq_seen = irq::event_count() != job_irq_before;
+            let (job_events, _, _, _) = irq::diagnostics();
+            let job_wake = if job_irq_seen { "irq" } else { "poll" };
+            if !job_done {
+                aster_logger::println!(
+                    "ASTERINAS_POWERVR_JOB status=timeout kind=noop ctx=0 vaddr=0x{:x} size={} slot={} rtn=0x{:x} write_off={} read_off={} wake={} irq_count={}",
+                    job.vaddr,
+                    job.size,
+                    job_slot,
+                    job_rtn,
+                    job_final_write,
+                    job_read,
+                    job_wake,
+                    job_events,
+                );
+                return Err(Error::with_message(
+                    Errno::ETIMEDOUT,
+                    "gpu_job_noop_timeout",
+                ));
+            }
+            aster_logger::println!(
+                "ASTERINAS_POWERVR_JOB status=completed kind=noop ctx=0 vaddr=0x{:x} size={} slot={} rtn=0x{:x} write_off={} read_off={} wake={} irq_count={}",
+                job.vaddr,
+                job.size,
+                job_slot,
+                job_rtn,
+                job_final_write,
+                job_read,
+                job_wake,
+                job_events,
+            );
+        }
         drop(irq_guard);
         drop(io);
         Ok(4)

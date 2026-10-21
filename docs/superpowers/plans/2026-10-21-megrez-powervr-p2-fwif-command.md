@@ -604,3 +604,21 @@ B1–B5，每项独立 bounded、单独证据与 commit：
 （`src/imagination`，支持 Rogue 起的 GPU；`pvrsrvkm` winsys 是 Rogue 时代的
 bridge ABI，与 DDK 24.2 Volcanic 的函数编号/结构不兼容）。B5 需在
 “复活/移植 Mesa Vulkan + Zink”与“自写最小 GLES”之间再拍板，不阻塞 B1–B4。
+
+---
+
+## 2026-10-22 B2 进展（主机侧）
+
+- `gpu_job_noop_context_maps_buffer` 与
+  `gpu_job_noop_submits_flush_command` 两个 ktest 在最终树通过
+  （各 `1 passed; 0 failed; 343 filtered out`）；
+- 作业缓冲映射在现有固件 MMU 上下文（`FW_ALIGN_VADDR + 2*PAGE_SIZE`），
+  用 vendor 同款 `RGXFWIF_KCCB_CMD_SLCFLUSHINVAL` 做 context-free 范围
+  flush，复用 P2.4 IRQ 唤醒等待 return slot；
+- 作业路径 opt-in：cmdline `asterinas.powervr_job_noop=1` 才启用，P2/P3
+  marker 语义不变；
+- 板级 marker `ASTERINAS_POWERVR_JOB status=completed kind=noop ctx=0 …`
+  延后：板子在上传启动的网络大传输中挂死，需物理复位后先补 B1、再补 B2；
+- **B2a（下一步）**：真正的 per-job MMU 上下文（context ID/独立页表根/
+  上下文切换）+ `RGXFWIF_KCCB_CMD_MMUCACHE` 失效 + OS-online（B1b）；
+  板级补 B1/B2 收据后再进入 B3（DRM render node + GEM/PRIME）。
