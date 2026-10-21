@@ -23,14 +23,19 @@ if [[ ! -x "$PVR_ROOTFS/opt/pvr/bin/eglconfigs" ]]; then
     echo "missing P5c bundle at $PVR_ROOTFS" >&2
     exit 2
 fi
+if [[ ! -f "$PVR_ROOTFS/etc/X11/xorg.conf.d/11-pvr-glamor.conf" ]] ||
+   [[ ! -f "$PVR_ROOTFS/etc/powervr.ini" ]]; then
+    echo "missing P5c config under $PVR_ROOTFS" >&2
+    exit 2
+fi
 (
     cd "$PVR_ROOTFS"
-    sha256sum -c SHA256SUMS
+    timeout 60 sha256sum -c SHA256SUMS
 )
 
 if [[ "${1:-}" == "--http" ]]; then
     mkdir -p "$HTTP_DIR"
-    tar -C "$PVR_ROOTFS" -czf "$HTTP_DIR/pvr-p5c-rootfs.tar.gz" opt etc
+    timeout 120 tar -C "$PVR_ROOTFS" -czf "$HTTP_DIR/pvr-p5c-rootfs.tar.gz" opt etc
     echo "serving $HTTP_DIR/pvr-p5c-rootfs.tar.gz on http://$HOST_IP:$HTTP_PORT/"
     echo "guest commands:"
     echo "  mkdir -p /tmp/pvr-p5c && cd /tmp/pvr-p5c"
@@ -40,9 +45,11 @@ if [[ "${1:-}" == "--http" ]]; then
     exit 0
 fi
 
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10)
 echo "staging $PVR_ROOTFS -> $BOARD:$DEST"
-ssh -o BatchMode=yes "$BOARD" "rm -rf '$DEST' && mkdir -p '$DEST'"
-scp -r -o BatchMode=yes "$PVR_ROOTFS/opt" "$PVR_ROOTFS/etc" "$PVR_ROOTFS/SHA256SUMS" "$BOARD:$DEST/"
+timeout 30 ssh "${SSH_OPTS[@]}" "$BOARD" "mkdir -p '$DEST'"
+timeout 300 scp -r "${SSH_OPTS[@]}" "$PVR_ROOTFS/opt" "$PVR_ROOTFS/etc" "$PVR_ROOTFS/SHA256SUMS" "$BOARD:$DEST/"
+timeout 30 ssh "${SSH_OPTS[@]}" "$BOARD" "sha256sum '$DEST'/opt/pvr/bin/eglconfigs '$DEST'/opt/pvr/lib/*.so '$DEST'/opt/pvr/dri/pvr_dri.so"
 
 cat <<EOF
 

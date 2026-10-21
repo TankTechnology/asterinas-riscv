@@ -29,12 +29,12 @@ if [[ ! -x "$BUNDLE/bin/eglconfigs" ]]; then
 fi
 (
     cd "$PVR_ROOTFS"
-    sha256sum -c SHA256SUMS
+    timeout 60 sha256sum -c SHA256SUMS
 )
 
 if [[ "${1:-}" == "--http" ]]; then
     mkdir -p "$HTTP_DIR"
-    tar -C "$PVR_ROOTFS/opt" -czf "$HTTP_DIR/pvr-rootfs.tar.gz" pvr
+    timeout 120 tar -C "$PVR_ROOTFS/opt" -czf "$HTTP_DIR/pvr-rootfs.tar.gz" pvr
     echo "serving $HTTP_DIR/pvr-rootfs.tar.gz on http://$HOST_IP:$HTTP_PORT/"
     echo "guest commands:"
     echo "  mkdir -p /tmp/pvr && cd /tmp/pvr"
@@ -45,10 +45,11 @@ if [[ "${1:-}" == "--http" ]]; then
     exit 0
 fi
 
+SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10)
 echo "staging $BUNDLE -> $BOARD:$DEST"
-ssh -o BatchMode=yes "$BOARD" "rm -rf '$DEST' && mkdir -p '$DEST'"
-scp -r -o BatchMode=yes "$BUNDLE/." "$BOARD:$DEST/"
-ssh -o BatchMode=yes "$BOARD" "sha256sum '$DEST'/bin/eglconfigs '$DEST'/lib/*.so '$DEST'/dri/pvr_dri.so"
+timeout 30 ssh "${SSH_OPTS[@]}" "$BOARD" "mkdir -p '$DEST'"
+timeout 300 scp -r "${SSH_OPTS[@]}" "$BUNDLE/." "$BOARD:$DEST/"
+timeout 30 ssh "${SSH_OPTS[@]}" "$BOARD" "sha256sum '$DEST'/bin/eglconfigs '$DEST'/lib/*.so '$DEST'/dri/pvr_dri.so"
 
 cat <<EOF
 

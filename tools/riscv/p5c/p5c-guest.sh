@@ -6,12 +6,37 @@
 #
 # Usage: sh p5c-guest.sh [/home/debian/pvr-p5c | /tmp/pvr-p5c]
 
+set -eu
 SRC=${1:-/home/debian/pvr-p5c}
+DRI_FALLBACK=/usr/lib/riscv64-linux-gnu/dri
 
+if ! command -v timeout >/dev/null 2>&1 || ! command -v Xorg >/dev/null 2>&1; then
+    echo "ASTERINAS_POWERVR_XORG status=failed reason=no-tool"
+    exit 2
+fi
 if [ ! -x "$SRC/opt/pvr/bin/eglconfigs" ]; then
     echo "ASTERINAS_POWERVR_XORG status=failed reason=missing-bundle"
     exit 2
 fi
+
+if [ -f "$SRC/SHA256SUMS" ]; then
+    if ! (cd "$SRC" && timeout 60 sha256sum -c SHA256SUMS >/tmp/p5c-sha.log 2>&1); then
+        echo "ASTERINAS_POWERVR_XORG status=failed reason=sha256"
+        head -20 /tmp/p5c-sha.log || true
+        exit 2
+    fi
+fi
+
+if [ -d /opt/pvr ] && [ ! -e /opt/pvr.p5c.bak ]; then
+    cp -r /opt/pvr /opt/pvr.p5c.bak
+fi
+for f in /etc/X11/xorg.conf.d/10-pvr.conf \
+         /etc/X11/xorg.conf.d/11-pvr-glamor.conf \
+         /etc/powervr.ini; do
+    if [ -f "$f" ] && [ ! -e "$f.p5c.bak" ]; then
+        cp "$f" "$f.p5c.bak"
+    fi
+done
 
 mkdir -p /opt/pvr /etc/X11/xorg.conf.d
 cp -r "$SRC/opt/pvr/." /opt/pvr/
@@ -25,19 +50,20 @@ fi
 
 echo "PVR_BUNDLE_PRESENT"
 ls -l /opt/pvr/bin/eglconfigs /opt/pvr/dri/pvr_dri.so /opt/pvr/lib/libsrv_um.so
-ls -l /dev/dri/card0 /dev/dri/renderD128 2>/dev/null || {
+if ! ls -l /dev/dri/card0 /dev/dri/renderD128 2>/dev/null; then
     echo "ASTERINAS_POWERVR_XORG status=failed reason=no-drm-node"
     exit 4
-}
+fi
 
 export LD_LIBRARY_PATH=/opt/pvr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-export LIBGL_DRIVERS_PATH=/opt/pvr/dri
+export LIBGL_DRIVERS_PATH=/opt/pvr/dri:$DRI_FALLBACK
 export MESA_LOADER_DRIVER_OVERRIDE=pvr
 
 # EGL sanity first (non-fatal; Xorg is the real gate).
-EGL_PLATFORM=gbm timeout 20 /opt/pvr/bin/eglconfigs >/tmp/p5c-egl.out 2>&1
-echo "P5C_EGL_RC=$?"
-head -40 /tmp/p5c-egl.out
+EGL_PLATFORM=gbm timeout 20 /opt/pvr/bin/eglconfigs >/tmp/p5c-egl.out 2>&1 || egl_rc=$?
+echo "P5C_EGL_RC=${egl_rc:-0}"
+head -40 /tmp/p5c-egl.out || true
+unset egl_rc
 
 cat >/tmp/p5c-xorg.conf <<'EOF'
 Section "ServerLayout"
@@ -59,9 +85,14 @@ Section "Device"
 EndSection
 EOF
 
-rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null
+rm -f /tmp/.X99-lock /tmp/.X11-unix/X99 2>/dev/null || true
 Xorg :99 -config /tmp/p5c-xorg.conf -logfile /tmp/xorg-pvr.log -noreset >/tmp/xorg-stdout.log 2>&1 &
 xpid=$!
+stop_xorg() {
+    kill "$xpid" 2>/dev/null || true
+    sleep 0.5
+    kill -9 "$xpid" 2>/dev/null || true
+}
 
 ready=0
 i=0
@@ -73,22 +104,22 @@ while [ "$i" -lt 20 ]; do
 done
 
 echo "P5C_XORG_READY=$ready"
-grep -Ei "glamor|egl|pvr|modeset|fatal|error" /tmp/xorg-pvr.log 2>/dev/null | head -80
+grep -Ei "glamor|egl|pvr|modeset|fatal|error" /tmp/xorg-pvr.log 2>/dev/null | head -80 || true
 
 if [ "$ready" -ne 1 ]; then
     echo "ASTERINAS_POWERVR_XORG status=failed reason=xorg-start"
-    kill "$xpid" 2>/dev/null
+    stop_xorg
     exit 5
 fi
 
 if grep -Eiq "glamor.*(enabled|EGL)|EGL.*glamor" /tmp/xorg-pvr.log 2>/dev/null; then
     echo "ASTERINAS_POWERVR_XORG status=ok backend=glamor display=:99"
     echo "P5C_XORG_LOG=/tmp/xorg-pvr.log"
-    kill "$xpid" 2>/dev/null
+    stop_xorg
     exit 0
 fi
 
 echo "ASTERINAS_POWERVR_XORG status=failed reason=glamor-not-egl"
 echo "P5C_XORG_LOG=/tmp/xorg-pvr.log"
-kill "$xpid" 2>/dev/null
+stop_xorg
 exit 6
