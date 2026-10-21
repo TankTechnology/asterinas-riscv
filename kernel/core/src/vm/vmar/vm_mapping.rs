@@ -1148,9 +1148,32 @@ impl MapHandle<'_, '_, '_> {
             .vm_space
             .cursor_mut(&preempt_guard, &map_range)
             .unwrap();
-        if cursor.query().unwrap().1.is_some() {
-            // We assume this is a race condition because the page fault has already been handled.
-            // Therefore, no action is required.
+        let existing = cursor.query().unwrap().1;
+        let existing_flags = match &existing {
+            Some(VmQueriedItem::MappedRam { prop, .. }) => Some(prop.flags),
+            _ => None,
+        };
+        if let Some(existing_flags) = existing_flags {
+            // A device page can be present with fewer permissions than the
+            // mapping requires. This happens when the mapping was created
+            // read-only or when the page table entry was downgraded by another
+            // operation. Returning here would make the write fault repeat
+            // forever, because this handler is the only place that can resolve
+            // a device page fault. Upgrade the entry to the mapping's
+            // permissions instead.
+            let required = PageFlags::from(self.vm_mapping.perms)
+                & (PageFlags::R | PageFlags::W | PageFlags::X);
+            if !existing_flags.contains(required) {
+                cursor.protect_next(PAGE_SIZE, |flags, _cache| *flags |= required);
+                cursor
+                    .flusher()
+                    .issue_tlb_flush(TlbFlushOp::for_range(map_range.clone()));
+                cursor.flusher().dispatch_tlb_flush();
+                cursor.flusher().sync_tlb_flush();
+            }
+            return;
+        }
+        if existing.is_some() {
             return;
         }
         cursor.map(frame, page_prop);

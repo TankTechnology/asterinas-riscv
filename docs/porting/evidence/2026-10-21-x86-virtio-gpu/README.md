@@ -85,22 +85,75 @@ and a raw X11 client that performs only the connection handshake gets a
 valid setup reply (status 1, 1024x768 screen). With `AutoAddDevices off` the
 input-driver loading warnings are the only errors in the log.
 
-`xsetroot -solid red` still does not complete. The server accepts the client
-connection, processes the request burst, and writes 32-byte replies
-(`RECVMSG fd=9 -> len=36`, `WRITEV fd=9 -> len=32`, ...), then blocks in the
-next `recvmsg`; the client keeps alternating `poll`/`recvmsg` on its socket
-and is killed by its timeout. At that point the server's state is `S` with
-`utime`/`stime` frozen and `minflt`/`majflt` unchanged, so it is not
-spinning and not taking faults.
+The first attempt to paint the root window did not complete: Xlib's
+`ChangeWindowAttributes` + `ClearArea` burst never got a reply. That was
+first misread as a socket-level request/reply stall (the trace showed the
+server writing 32-byte reply packets and then sleeping in `recvmsg`), which
+sent the investigation after the unix-socket path. It was not that.
+
+The actual cause was a kernel page fault that could never be resolved. The
+modesetting driver `mmap`s the dumb buffer and writes it. `MapHandle::map_frame`
+treats a present page as "the page fault was already handled" and returns.
+That is true for RAM, but on the device path the handler is the only thing
+that can resolve a fault: the server had a PTE with `R | ACCESSED | DIRTY`
+(no `W`), while the mapping's permissions were `READ | WRITE | MAY_*`. The
+first write fault mapped the page `R|W`; a later fault (the same range
+touched through a second VMA or after a `mprotect`-style downgrade) found the
+page present, returned without fixing the permissions, and the write fault
+repeated. Kernel tracing gated on the pid that opens the DRM node showed the
+fault storm at ~200k faults/s on the framebuffer page, so the server never
+got back to its event loop to write the reply.
+
+The fix is in `kernel/core/src/vm/vmar/vm_mapping.rs`: when `map_frame` finds
+a present RAM page whose flags do not contain the mapping's required
+`R/W/X`, it upgrades the PTE with `protect_next` and flushes the TLB, instead
+of returning. RAM mappings are unaffected (their frames are already present
+with the right permissions), and `map_iomem` keeps its original early
+return.
+
+After the fix, the same probe returns:
+
+```
+XREQ2_REPLY type=1 seq=3 ms=12      # ChangeWindowAttributes + ClearArea + GetInputFocus
+XS_SETROOT=0                        # the real xsetroot -solid red
+```
+
+and the monitor `screendump` is 1024x768 with every sampled pixel red.
 
 The investigation used a temporary syscall trace (gated to the pid that opens
-the DRM node), signal-context sampling, and an `LD_PRELOAD` wrapper around
+the DRM node), fault tracing in the page-fault handler, signal-context
+sampling, and an `LD_PRELOAD` wrapper around
 `recvmsg`/`writev`/`poll`/`epoll_wait`; all of that instrumentation was
-removed before this commit. The remaining wedge is a client/server
-request-reply stall, not a KMS problem, and is left as the next step. A
-promising signal is the client-side trace: Xlib polls a unix socket whose
-`poll` result includes `POLLOUT`, and the server ends up asleep on a socket
-that the client believes still has a pending reply.
+removed before this commit. Two observations from that pass remain useful:
+`MSG_WAITALL` and `MSG_DONTWAIT` are accepted but ignored by the unix stream
+socket (`RecvFlags::SUPPORTED` is only `MSG_PEEK | MSG_TRUNC`), and only
+`O_NONBLOCK` makes a blocking unix-socket `recv` return early.
+
+## Regression gate
+
+`tools/x86/debian/xorg_check.sh` turns the acceptance above into a gate that
+runs unattended, in the same shape as the other `*_check.sh` scripts:
+
+```sh
+make test_x86_debian_xorg \
+  X86_DEBIAN_KERNEL=target/osdk/asterinas/asterinas-osdk-bin.elf \
+  X86_DEBIAN_STAGE1_INITRAMFS=target/x86-debian/m4/stage1/initramfs-initpath.cpio \
+  X86_DEBIAN_XORG_BASE_ROOT=target/final-matrix/xwrap/image18.ext2
+```
+
+It logs in on `ttyS0` as the image's account, installs `xserver-xorg-core`
+and `x11-xserver-utils` over slirp, starts the modesetting driver on
+`/dev/dri/card0`, runs `DISPLAY=:0 xsetroot -solid red`, and requires four
+things before it prints `PASS`: `XORG_SETROOT=0` on the console, a monitor
+`screendump` whose sampled pixels are at least 90% red, a power-button
+power-off through the monitor, and a clean `e2fsck -fn`. QEMU is started with
+`-vga none -device virtio-gpu-pci`; without `-vga none` the default VGA
+device owns the display and the captured surface is not the virtio-gpu
+scanout.
+
+The script is picked up automatically by
+`tools/x86/tests/test_x86_debian_gate_scripts.py`, so `--help` and syntax are
+checked by `make test_x86_debian_tooling_unit`.
 
 ## Reusing this on RISC-V
 
