@@ -239,6 +239,23 @@ path now re-reads the superblock, the group descriptor table, every group's
 bitmaps and discards cached inode-table pages after a replay. The recovery
 marker is also cleared only after a device flush of the replayed blocks.
 
+### Orphan list and `O_TMPFILE`
+
+An unnamed temporary file is allocated with link count zero and no directory
+entry. A crash while it is open would leave an unattached inode for the
+checker to repair, so the inode joins ext4's orphan chain: `s_last_orphan`
+heads the list and each inode's `i_dtime` field holds the next inode number
+(0 ends the chain). Creation, linking and final reclaim update the chain
+while holding `sync_lock`, so the inode state and the chain always land in
+the same transaction.
+
+On a writable mount, after journal replay, the chain is drained before the
+filesystem is exposed: each inode's data, tree and xattr blocks and the inode
+itself are freed, and the frees are committed and flushed. `linkat` of a
+temporary file removes it from the chain atomically with the new directory
+entry and link count. `O_TMPFILE|O_EXCL` makes the inode unlinkable, so
+`linkat` fails with `ENOENT` as on Linux.
+
 ### Allocation and mount behavior
 
 | Feature | Status | Notes |
@@ -348,6 +365,13 @@ recovery boot the operation must be present in full:
 | o-sync | a write through an `O_SYNC` handle survives without an explicit fsync |
 
 Result: **7/7 pass**, `e2fsck -fn` clean.
+
+`fs_tmpfile_check.sh` (`make test_x86_debian_fs_tmpfile`) links a temporary
+file with `linkat(AT_EMPTY_PATH)`, checks that an `O_TMPFILE|O_EXCL` cannot
+be linked and is reclaimed on close, and re-checks the linked file after a
+remount. With `--crash` it leaves an unnamed tmpfile open, cuts power, and
+requires the recovery mount to drain the orphan chain before `e2fsck -fn`.
+Both modes pass.
 
 `fs_extent_alloc_check.sh` (`make test_x86_debian_fs_extents`) appends
 five pages to `/etc/hostname`, which the image creates with one inline

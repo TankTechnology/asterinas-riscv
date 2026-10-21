@@ -660,6 +660,7 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_fs_renameat2 \
 		tools.x86.tests.test_x86_debian_fs_timestamps \
 		tools.x86.tests.test_x86_debian_gate_scripts \
+		tools.x86.tests.test_x86_debian_fs_tmpfile \
 		tools.x86.tests.test_lmbench_transcript \
 		tools.riscv.tests.test_lmbench_native -v
 
@@ -1032,6 +1033,25 @@ test_x86_debian_fs_metadata_csum:
 		--workspace "$(X86_DEBIAN_METADATA_CSUM_WORKSPACE)" \
 		--accel "$(X86_DEBIAN_METADATA_CSUM_ACCEL)" \
 		--timeout "$(X86_DEBIAN_METADATA_CSUM_TIMEOUT)"
+
+# O_TMPFILE / orphan-list gate: linkable tmpfile named via linkat, O_EXCL
+# tmpfile refused, and (with CRASH=1) an unnamed tmpfile open when power is
+# cut; the recovery mount must reclaim it before `e2fsck -fn`.
+#   X86_DEBIAN_TMPFILE_BASE_ROOT  ext4 image copied for the run
+#   X86_DEBIAN_TMPFILE_CRASH      1 to cut power with an orphaned tmpfile
+X86_DEBIAN_TMPFILE_BASE_ROOT ?=
+X86_DEBIAN_TMPFILE_WORKSPACE ?= $(CURDIR)/target/x86-debian/tmpfile
+X86_DEBIAN_TMPFILE_CRASH ?= 0
+X86_DEBIAN_TMPFILE_ACCEL ?= kvm
+X86_DEBIAN_TMPFILE_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_tmpfile
+test_x86_debian_fs_tmpfile:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_TMPFILE_BASE_ROOT)" || { echo "X86_DEBIAN_TMPFILE_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-tmpfile: base=$(X86_DEBIAN_TMPFILE_BASE_ROOT) crash=$(X86_DEBIAN_TMPFILE_CRASH) accel=$(X86_DEBIAN_TMPFILE_ACCEL)"
+	@tools/x86/debian/fs_tmpfile_check.sh 		--kernel "$(X86_DEBIAN_KERNEL)" 		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" 		--base-root "$(X86_DEBIAN_TMPFILE_BASE_ROOT)" 		--workspace "$(X86_DEBIAN_TMPFILE_WORKSPACE)" 		--accel "$(X86_DEBIAN_TMPFILE_ACCEL)" 		--timeout "$(X86_DEBIAN_TMPFILE_TIMEOUT)" 		$(if $(filter 1,$(X86_DEBIAN_TMPFILE_CRASH)),--crash)
 
 # Punch-hole gate: holes inside direct blocks, across the direct/indirect
 # boundary, up to EOF and over a whole double-indirect file (which must free

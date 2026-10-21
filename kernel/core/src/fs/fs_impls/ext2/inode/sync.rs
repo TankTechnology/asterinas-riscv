@@ -79,6 +79,17 @@ impl Inode {
         }
 
         let fs = self.fs()?;
+        // Removing the orphan link and freeing the inode must land in one
+        // commit; a crash between them would leave an inode that is neither
+        // linked nor reachable through the orphan chain. Only orphaned
+        // inodes need the commit lock: they are never in the inode cache, so
+        // this drop cannot be running inside a commit on the same thread.
+        let orphaned = self.is_orphaned();
+        let _sync_guard = if orphaned { Some(fs.lock_sync()) } else { None };
+        if orphaned {
+            fs.remove_orphan_locked(self.ino())?;
+            self.clear_orphaned();
+        }
         let group = fs.block_group(self.block_group_idx);
         if !group.is_inode_allocated(self.ino) {
             return Ok(false);

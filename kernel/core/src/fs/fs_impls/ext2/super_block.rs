@@ -744,6 +744,16 @@ impl SuperBlock {
         self.journal_ino
     }
 
+    /// Returns the head of the orphan inode chain.
+    pub(super) const fn last_orphan(&self) -> u32 {
+        self.last_orphan
+    }
+
+    /// Replaces the head of the orphan inode chain.
+    pub(super) fn set_last_orphan(&mut self, ino: u32) {
+        self.last_orphan = ino;
+    }
+
     /// Returns the filesystem UUID carried by journal descriptor tags.
     pub(super) const fn uuid(&self) -> [u8; 16] {
         self.uuid
