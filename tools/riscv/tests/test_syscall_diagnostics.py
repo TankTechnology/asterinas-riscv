@@ -35,7 +35,7 @@ fn exit_observations_report_final_normal_and_signal_status() {
 #[test]
 fn pending_call_is_visible_before_completion() {
     let mut state = State::default();
-    state.enter(98, [1, 2, 3, 4, 5, 6], 42);
+    state.enter(98, [1, 2, 3, 4, 5, 6], 42, 0, 0);
     let call = state.current.unwrap();
     assert_eq!((call.sequence, call.number, call.entered_jiffies), (1, 98, 42));
     assert_eq!(call.args, [1, 2, 3, 4, 5, 6]);
@@ -47,7 +47,7 @@ fn completions_clear_current_and_keep_only_the_latest() {
     let mut state = State::default();
     for (index, outcome) in [Outcome::Return(7), Outcome::Error(-10), Outcome::NoReturn]
         .into_iter().enumerate() {
-        state.enter(260, [0; 6], 50);
+        state.enter(260, [0; 6], 50, 0, 0);
         let done = state.complete(outcome, 52).unwrap();
         assert_eq!(done.call.sequence, index as u64 + 1);
         assert_eq!(done.outcome, outcome);
@@ -62,7 +62,7 @@ fn completions_clear_current_and_keep_only_the_latest() {
 fn completion_history_is_bounded_and_ordered_oldest_first() {
     let mut state = State::default();
     for sequence in 1..=(COMPLETION_HISTORY_LEN as u64 + 2) {
-        state.enter(200 + sequence, [sequence; 6], sequence * 2);
+        state.enter(200 + sequence, [sequence; 6], sequence * 2, 0, 0);
         state.complete(Outcome::Return(sequence as isize), sequence * 2 + 1);
     }
     let sequences: Vec<_> = state.completed_history()
@@ -76,12 +76,12 @@ fn completion_history_is_bounded_and_ordered_oldest_first() {
 #[test]
 fn clearing_an_exec_generation_preserves_sequence() {
     let mut state = State::default();
-    state.enter(221, [9; 6], 0);
+    state.enter(221, [9; 6], 0, 0, 0);
     state.complete(Outcome::NoReturn, 1);
     state.clear_calls();
     assert!(state.current.is_none());
     assert!(state.completed.is_none());
-    state.enter(64, [0; 6], 2);
+    state.enter(64, [0; 6], 2, 0, 0);
     assert_eq!(state.current.unwrap().sequence, 2);
 }
 
@@ -91,7 +91,7 @@ fn idle_and_disabled_snapshots_are_explicit() {
     assert_eq!(Snapshot::new(false, 11, 12, 99, idle).to_string(),
         "{\"version\":2,\"enabled\":false,\"pid\":11,\"tid\":12,\"snapshot_jiffies\":99,\"current\":null,\"completed\":null,\"history\":[]}\n");
     let mut pending = idle;
-    pending.enter(98, [1; 6], 90);
+    pending.enter(98, [1; 6], 90, 0, 0);
     let disabled = Snapshot::new(false, 11, 12, 99, pending).to_string();
     assert!(disabled.ends_with("\"current\":null,\"completed\":null,\"history\":[]}\n"));
     assert!(Snapshot::new(true, 11, 12, 99, idle).to_string().contains("\"enabled\":true"));
@@ -100,14 +100,14 @@ fn idle_and_disabled_snapshots_are_explicit() {
 #[test]
 fn json_preserves_scalar_registers_and_distinguishes_outcomes() {
     let mut state = State::default();
-    state.enter(98, [u64::MAX, 2, 3, 4, 5, 6], 42);
+    state.enter(98, [u64::MAX, 2, 3, 4, 5, 6], 42, 0, 40);
     state.complete(Outcome::Error(-10), 43);
-    state.enter(64, [0; 6], 44);
+    state.enter(64, [0; 6], 44, 0, 0);
     let json = Snapshot::new(true, 11, 12, 45, state).to_string();
-    assert_eq!(json, "{\"version\":2,\"enabled\":true,\"pid\":11,\"tid\":12,\"snapshot_jiffies\":45,\"current\":{\"sequence\":2,\"number\":64,\"args\":[0,0,0,0,0,0],\"entered_jiffies\":44},\"completed\":{\"sequence\":1,\"number\":98,\"args\":[18446744073709551615,2,3,4,5,6],\"entered_jiffies\":42,\"finished_jiffies\":43,\"result\":-10,\"outcome\":\"error\"},\"history\":[{\"sequence\":1,\"number\":98,\"args\":[18446744073709551615,2,3,4,5,6],\"entered_jiffies\":42,\"finished_jiffies\":43,\"result\":-10,\"outcome\":\"error\"}]}\n");
+    assert_eq!(json, "{\"version\":2,\"enabled\":true,\"pid\":11,\"tid\":12,\"snapshot_jiffies\":45,\"current\":{\"sequence\":2,\"number\":64,\"args\":[0,0,0,0,0,0],\"entered_jiffies\":44,\"sp\":0,\"fp\":0},\"completed\":{\"sequence\":1,\"number\":98,\"args\":[18446744073709551615,2,3,4,5,6],\"entered_jiffies\":42,\"sp\":0,\"fp\":40,\"finished_jiffies\":43,\"result\":-10,\"outcome\":\"error\"},\"history\":[{\"sequence\":1,\"number\":98,\"args\":[18446744073709551615,2,3,4,5,6],\"entered_jiffies\":42,\"sp\":0,\"fp\":40,\"finished_jiffies\":43,\"result\":-10,\"outcome\":\"error\"}]}\n");
     state.complete(Outcome::NoReturn, 46);
     assert!(Snapshot::new(true, 11, 12, 47, state).to_string().contains("\"result\":null,\"outcome\":\"no_return\""));
-    state.enter(64, [0; 6], 48);
+    state.enter(64, [0; 6], 48, 0, 0);
     state.complete(Outcome::Return(7), 49);
     assert!(Snapshot::new(true, 11, 12, 50, state).to_string().contains("\"result\":7,\"outcome\":\"return\""));
 }

@@ -42,7 +42,7 @@ SUPPORT_URL = "about:support"
 # NewSession on this DRM guest. A bounded A/B probe showed that replacing it
 # with about:blank stalls before NewSession, so keep the known-good start URL
 # and explicitly bind a browsing context before issuing scene commands.
-START_URL = SCENE_URL
+START_URL = os.environ.get("ASTERINAS_FIREFOX_START_URL", SCENE_URL).strip() or SCENE_URL
 MARIONETTE_PORT = 2828
 # Cold ESR startup under RISC-V TCG has measured 249--458 seconds before the
 # first NewSession response. Keep that phase bounded, but do not classify a
@@ -98,6 +98,11 @@ def _new_session_capabilities() -> dict[str, object]:
     mode = os.environ.get("ASTERINAS_FIREFOX_NEWSESSION_CAPS", "minimal").strip().lower()
     if mode == "minimal":
         return {"strictFileInteractability": True}
+    if mode == "windowless":
+        return {
+            "strictFileInteractability": True,
+            "moz:windowless": True,
+        }
     if mode == "legacy":
         return {
             "acceptInsecureCerts": False,
@@ -440,10 +445,41 @@ def _write_profile() -> None:
                 'user_pref("extensions.systemAddon.update.enabled", false);',
                 'user_pref("extensions.update.enabled", false);',
     ]
+    if os.environ.get("ASTERINAS_FIREFOX_WEBRENDER_SOFTWARE") == "1":
+        preferences.append('user_pref("gfx.webrender.software", true);')
+        print(
+            "FIREFOX_DRM_PROFILE webrender_software=1 source=probe",
+            flush=True,
+        )
+    if os.environ.get("ASTERINAS_FIREFOX_WEBRENDER_DISABLED") == "1":
+        preferences.append('user_pref("gfx.webrender.all", false);')
+        preferences.append('user_pref("gfx.webrender.enabled", false);')
+        print(
+            "FIREFOX_DRM_PROFILE webrender_disabled=1 source=probe",
+            flush=True,
+        )
+    # Test whether the first per-window idle task (Sync UI init) is the startup
+    # hop that synchronously waits on localization/IO.
+    if os.environ.get("ASTERINAS_FIREFOX_FXA_DISABLED") == "1":
+        preferences.append('user_pref("identity.fxaccounts.enabled", false);')
+        print("FIREFOX_DRM_PROFILE fxa_disabled=1 source=probe", flush=True)
+    # Isolate a synchronous WebGL context request in the initial page load.
+    # The scene acceptance path must never run with WebGL disabled.
+    if os.environ.get("ASTERINAS_FIREFOX_WEBGL_DISABLED") == "1":
+        preferences.append('user_pref("webgl.disabled", true);')
+        print("FIREFOX_DRM_PROFILE webgl_disabled=1 source=probe", flush=True)
     # This is opt-in diagnostic tracing only.  It is enabled by a dedicated
     # short probe and never enters the normal Firefox scene acceptance path.
     if os.environ.get("ASTERINAS_FIREFOX_REMOTE_TRACE") == "1":
         preferences.append('user_pref("remote.log.level", "Trace");')
+        # DumpAppender output is compiled in, but the JS dump() helper is
+        # disabled in release builds unless this preference is set.
+        preferences.append('user_pref("browser.dom.window.dump.enabled", true);')
+        preferences.append('user_pref("browser.sessionstore.debug", true);')
+        print(
+            "FIREFOX_DRM_PROFILE remote_log_level=Trace source=user.js",
+            flush=True,
+        )
     (profile / "user.js").write_text(
         "\n".join(preferences) + "\n",
         encoding="utf-8",
@@ -606,30 +642,49 @@ def _spawn(start_url: str = START_URL) -> subprocess.Popen[bytes]:
     ]
     if PROBE_HEADLESS:
         command.insert(1, "--headless")
-    moz_log = "timestamp,Widget:4,Layers:4,WebRender:4"
+    # `sync` flushes each record to MOZ_LOG_FILE.  Without it the NSPR buffer
+    # is lost when a wedged browser is killed at the probe deadline, which made
+    # every NewSession timeout look like an empty log.
+    moz_log = "timestamp,sync,Widget:4,Layers:4,WebRender:4"
     if os.environ.get("ASTERINAS_FIREFOX_REMOTE_TRACE") == "1":
-        moz_log += ",RemoteAgent:5,Marionette:5"
+        # Keep the protocol trace readable: the default graphics modules emit
+        # far more records than Marionette and would bury the await boundary.
+        moz_log = "timestamp,sync,RemoteAgent:5,Marionette:5,IPC:5"
+    environment = {
+        **os.environ,
+        "DISPLAY": DISPLAY,
+        "XAUTHORITY": runtime_xauthority,
+        "MOZ_SANDBOX_LOGGING": "1",
+        # Firefox's native Linux WebGL provider otherwise stops at the
+        # GLX path even though the guest EGL/virgl contract is green.
+        "MOZ_WEBGL_FORCE_EGL": "1",
+        # about:support is privileged and is not scriptable through
+        # Marionette on current ESR. Keep an independent compositor log
+        # so the gate can still prove WebRender without weakening the
+        # acceptance rule.
+        "MOZ_LOG": moz_log,
+        # Transport diagnostics contain only command names, byte counts,
+        # and timing state; they never include URLs, scripts, or response
+        # payloads. They make a cold-session timeout auditable.
+        "ASTERINAS_MARIONETTE_DIAGNOSTICS": "1",
+    }
+    if os.environ.get("ASTERINAS_FIREFOX_WEBRENDER_DISABLED") == "1":
+        environment["MOZ_WEBRENDER"] = "0"
+    if os.environ.get("ASTERINAS_FIREFOX_WEBRENDER_SOFTWARE") == "1":
+        environment["LIBGL_ALWAYS_SOFTWARE"] = "1"
+        environment["MOZ_X11_EGL"] = "0"
+    if os.environ.get("ASTERINAS_FIREFOX_MOZ_LOG_STDERR") == "1":
+        # C++ NSPR records otherwise go to MOZ_LOG_FILE, which is lost when a
+        # wedged browser is killed.  Unsetting the file routes them to stdout,
+        # captured by the browser log, and `sync` flushes each record.
+        environment.pop("MOZ_LOG_FILE", None)
+        print("FIREFOX_DRM_MOZ_SINK sink=stdout", flush=True)
+    else:
+        environment["MOZ_LOG_FILE"] = str(FIREFOX_MOZ_LOG)
+        print("FIREFOX_DRM_MOZ_SINK sink=file", flush=True)
     return subprocess.Popen(
         command,
-        env={
-            **os.environ,
-            "DISPLAY": DISPLAY,
-            "XAUTHORITY": runtime_xauthority,
-            "MOZ_SANDBOX_LOGGING": "1",
-            # Firefox's native Linux WebGL provider otherwise stops at the
-            # GLX path even though the guest EGL/virgl contract is green.
-            "MOZ_WEBGL_FORCE_EGL": "1",
-            # about:support is privileged and is not scriptable through
-            # Marionette on current ESR. Keep an independent compositor log
-            # so the gate can still prove WebRender without weakening the
-            # acceptance rule.
-            "MOZ_LOG": moz_log,
-            "MOZ_LOG_FILE": str(FIREFOX_MOZ_LOG),
-            # Transport diagnostics contain only command names, byte counts,
-            # and timing state; they never include URLs, scripts, or response
-            # payloads. They make a cold-session timeout auditable.
-            "ASTERINAS_MARIONETTE_DIAGNOSTICS": "1",
-        },
+        env=environment,
         stdout=log,
         stderr=subprocess.STDOUT,
         start_new_session=True,
@@ -842,7 +897,7 @@ def _probe_children(pid: int) -> list[dict[str, object]]:
     return children
 
 
-def _probe_proc_snapshot(pid: int) -> dict[str, object]:
+def _probe_proc_snapshot(pid: int, *, full_syscall: bool = False) -> dict[str, object]:
     """Collect bounded process/thread state before Firefox is terminated."""
 
     root = Path("/proc") / str(pid)
@@ -885,9 +940,10 @@ def _probe_proc_snapshot(pid: int) -> dict[str, object]:
         thread_fields["schedstat"] = " ".join(
             _probe_read(thread_root / "schedstat", 512).split()
         )[:256]
+        syscall_cap = 65536 if full_syscall else 4096
         thread_fields["asterinas_syscall"] = _probe_read(
-            thread_root / "asterinas_syscall", 4096
-        )[:2048]
+            thread_root / "asterinas_syscall", syscall_cap
+        )[:syscall_cap]
         threads.append(thread_fields)
     return {
         "pid": pid,
@@ -908,17 +964,964 @@ def _probe_log_snapshot() -> dict[str, object]:
     logs: dict[str, object] = {}
     for name, path in (("browser", FIREFOX_LOG), ("moz", FIREFOX_MOZ_LOG)):
         try:
-            payload = path.read_bytes()
+            total = path.stat().st_size
+            with path.open("rb") as stream:
+                if total > 262144:
+                    stream.seek(total - 262144)
+                payload = stream.read()
         except OSError:
+            total = 0
             payload = b""
-        tail = payload[-8192:].decode("utf-8", "replace")
+        text = payload.decode("utf-8", "replace")
+        lines = [" ".join(line.split()) for line in text.splitlines() if line.strip()]
         logs[name] = {
             "path": str(path),
-            "bytes": len(payload),
+            "bytes": total,
             "sha256": hashlib.sha256(payload).hexdigest(),
-            "tail": " ".join(tail.split())[:4096],
+            "tail": " ".join(text[-8192:].split())[:4096],
+            "tail_end": " ".join(text[-4096:].split())[-2048:],
+            "last_lines": [line[:400] for line in lines[-12:]],
+            "marionette_lines": [
+                line[:400] for line in lines if "Marionette" in line
+            ][-40:],
+            "ipc_lines": [line[:400] for line in lines if "IPC" in line][-60:],
+            "session_lines": [
+                line[:400]
+                for line in lines
+                if "sessionstore" in line.lower()
+            ][-60:],
         }
     return logs
+
+
+def _probe_log_after_stop() -> None:
+    """Publish the post-exit log tail, after NSPR has had a chance to flush."""
+
+    for name, log in _probe_log_snapshot().items():
+        print(
+            "FIREFOX_DRM_PROBE_LOG_AFTER_STOP "
+            f"name={name} bytes={log['bytes']} sha256={log['sha256']} "
+            f"tail={log['tail'] or 'none'}",
+            flush=True,
+        )
+
+
+def _probe_window_snapshot() -> dict[str, object]:
+    """Capture the X window tree when Marionette is waiting on browser startup."""
+
+    runtime_xauthority = (
+        "/run/asterinas.Xauthority"
+        if Path("/run/asterinas.Xauthority").is_file()
+        else XAUTHORITY
+    )
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/xwininfo", "-root", "-tree"],
+            env={**os.environ, "DISPLAY": DISPLAY, "XAUTHORITY": runtime_xauthority},
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"error": type(error).__name__}
+    payload = completed.stdout[:8192]
+    lines = [
+        " ".join(line.split())
+        for line in payload.decode("utf-8", "replace").splitlines()
+        if line.strip()
+    ]
+    firefox_lines = [
+        line
+        for line in lines
+        if "firefox" in line.lower() or "asterinas" in line.lower()
+    ]
+    return {
+        "returncode": completed.returncode,
+        "bytes": len(completed.stdout),
+        "firefox_lines": firefox_lines[:8],
+        "lines": lines[-8:],
+    }
+
+
+def _probe_maps_region(pid: int, address: int) -> dict[str, object]:
+    """Resolve a diagnostic futex address to one bounded /proc maps region."""
+
+    try:
+        payload = (Path("/proc") / str(pid) / "maps").read_bytes()[:262144]
+    except OSError as error:
+        return {"error": type(error).__name__}
+    for line in payload.decode("utf-8", "replace").splitlines():
+        fields = line.split(None, 5)
+        if len(fields) < 5:
+            continue
+        try:
+            start_text, end_text = fields[0].split("-", 1)
+            start, end = int(start_text, 16), int(end_text, 16)
+        except (ValueError, IndexError):
+            continue
+        if start <= address < end:
+            return {
+                "start": f"0x{start:x}",
+                "end": f"0x{end:x}",
+                "perms": fields[1],
+                "offset": fields[2],
+                "path": fields[5][:160] if len(fields) > 5 else "anonymous",
+            }
+    return {"address": f"0x{address:x}", "region": "not-found"}
+
+
+def _probe_syscall_sp(value: object) -> int | None:
+    """Return the syscall-entry user stack pointer from a scalar snapshot."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        document = json.loads(value)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    current = document.get("current")
+    if not isinstance(current, dict):
+        return None
+    sp = current.get("sp")
+    if isinstance(sp, int) and sp > 0:
+        return sp
+    return None
+
+
+def _probe_startstack(stat_text: object) -> int | None:
+    """Extract startstack (field 28) from one compacted /proc task stat line."""
+
+    if not isinstance(stat_text, str):
+        return None
+    end = stat_text.rfind(")")
+    if end < 0:
+        return None
+    fields = stat_text[end + 1 :].split()
+    index = 28 - 3
+    if len(fields) <= index:
+        return None
+    try:
+        return int(fields[index])
+    except ValueError:
+        return None
+
+
+def _probe_thread_futexes(
+    pid: int, threads: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Report every thread currently sleeping on a futex and its word value."""
+
+    results: list[dict[str, object]] = []
+    for thread in threads:
+        address = _probe_futex_address(thread.get("asterinas_syscall"))
+        if address is None:
+            continue
+        results.append(
+            {
+                "tid": thread.get("tid"),
+                "name": thread.get("Name", "unknown"),
+                "schedstat": " ".join(str(thread.get("schedstat", "")).split()),
+                "addr": f"0x{address:x}",
+                "word": _probe_futex_value(pid, address),
+            }
+        )
+        if len(results) >= 32:
+            break
+    return results
+
+
+def _probe_pipe_fd(pid: int, fd: int) -> dict[str, object]:
+    """Report a pending IPC fd target and its readable byte count."""
+
+    path = f"/proc/{pid}/fd/{fd}"
+    try:
+        target = os.readlink(path)
+    except OSError as error:
+        return {"fd": fd, "error": type(error).__name__}
+    available: object = "unknown"
+    try:
+        import fcntl
+        import struct
+        import termios
+
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            buffer = fcntl.ioctl(
+                descriptor, getattr(termios, "FIONREAD", 0x541B), struct.pack("i", 0)
+            )
+            available = struct.unpack("i", buffer[:4])[0]
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        available = {"error": type(error).__name__}
+    return {"fd": fd, "target": target, "available": available}
+
+
+def _probe_ipc_fds(
+    pid: int, threads: list[dict[str, object]]
+) -> list[dict[str, object]]:
+    """Inspect the fds of threads blocked in the IPC read path."""
+
+    results: list[dict[str, object]] = []
+    for thread in threads:
+        name = str(thread.get("Name", ""))
+        if "IPC I/O" not in name:
+            continue
+        value = thread.get("asterinas_syscall")
+        if not isinstance(value, str):
+            continue
+        try:
+            document = json.loads(value)
+        except (ValueError, TypeError):
+            continue
+        current = document.get("current") if isinstance(document, dict) else None
+        if not isinstance(current, dict) or current.get("number") not in (22, 63):
+            continue
+        args = current.get("args")
+        if not isinstance(args, list) or not args:
+            continue
+        fd = args[0]
+        if not isinstance(fd, int) or not 0 <= fd < 4096:
+            continue
+        fdinfo_path = f"/proc/{pid}/fdinfo/{fd}"
+        try:
+            fdinfo = Path(fdinfo_path).read_text(
+                encoding="utf-8", errors="replace"
+            )[:4096]
+        except OSError:
+            fdinfo = ""
+        watched: list[dict[str, object]] = []
+        for line in fdinfo.splitlines():
+            match = re.search(r"tfd:\s*(\d+)", line)
+            if match is None:
+                continue
+            target_fd = int(match.group(1))
+            try:
+                target = os.readlink(f"/proc/{pid}/fd/{target_fd}")
+            except OSError:
+                target = "unavailable"
+            try:
+                target_info = Path(
+                    f"/proc/{pid}/fdinfo/{target_fd}"
+                ).read_text(encoding="utf-8", errors="replace")[:256]
+            except OSError:
+                target_info = ""
+            watched.append(
+                {
+                    "tfd": target_fd,
+                    "target": target,
+                    "fdinfo": target_info,
+                    "io": _probe_pipe_fd(pid, target_fd),
+                }
+            )
+            if len(watched) >= 8:
+                break
+        results.append(
+            {
+                "tid": thread.get("tid"),
+                "name": name,
+                "syscall": current.get("number"),
+                **_probe_pipe_fd(pid, fd),
+                "fdinfo": fdinfo,
+                "watched": watched,
+            }
+        )
+    return results
+
+
+# The wake experiment only ever delivers SIGCONT: its default disposition
+# continues the process, so an unexpected delivery cannot terminate Firefox.
+# A poke forces the target out of a sleeping wait (futex or epoll) and makes it
+# re-check its queued work, which distinguishes a lost kernel wake from work
+# that was never queued in the first place.
+PROBE_POKE_TARGETS = ("io", "compositor", "renderer", "all", "xstim")
+PROBE_POKE_SIGNAL = signal.SIGCONT
+PROBE_POKE_THREAD_PREFIXES = {
+    "io": ("IPC I/O",),
+    "compositor": ("Compositor",),
+    "renderer": ("Renderer",),
+}
+
+
+def _probe_poke_plan() -> list[tuple[str, float]]:
+    """Parse ``ASTERINAS_FIREFOX_PROBE_POKE`` into ordered signal steps.
+
+    The format is ``target:seconds`` comma-separated, with seconds measured
+    from the NewSession send.  An empty or absent value disables poking so the
+    baseline probe path stays byte-for-byte unchanged.
+    """
+
+    raw = os.environ.get("ASTERINAS_FIREFOX_PROBE_POKE", "").strip()
+    if not raw:
+        return []
+    plan: list[tuple[str, float]] = []
+    for item in raw.split(","):
+        target, _, offset_text = item.strip().partition(":")
+        if target not in PROBE_POKE_TARGETS:
+            raise ValueError(f"unknown poke target: {item.strip()}")
+        try:
+            offset = float(offset_text)
+        except ValueError:
+            raise ValueError(f"invalid poke offset: {item.strip()}") from None
+        if offset < 0:
+            raise ValueError(f"negative poke offset: {item.strip()}")
+        plan.append((target, offset))
+    return plan
+
+
+def _probe_thread_tids(pid: int, target: str) -> list[int]:
+    """Return the tids whose ``comm`` matches one poke target."""
+
+    prefixes = PROBE_POKE_THREAD_PREFIXES[target]
+    tids: list[int] = []
+    try:
+        entries = sorted((Path("/proc") / str(pid) / "task").iterdir())
+    except OSError:
+        return tids
+    for entry in entries:
+        try:
+            comm = (entry / "comm").read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if any(comm.startswith(prefix) for prefix in prefixes):
+            try:
+                tids.append(int(entry.name))
+            except ValueError:
+                continue
+    return tids
+
+
+def _probe_tgkill(tgid: int, tid: int, signum: int) -> dict[str, object]:
+    """Deliver a signal to one thread through the riscv64 ``tgkill`` syscall."""
+
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        result = libc.syscall(
+            131,
+            ctypes.c_int(tgid),
+            ctypes.c_int(tid),
+            ctypes.c_int(signum),
+        )
+    except OSError as error:
+        return {"tid": tid, "result": "error", "detail": type(error).__name__}
+    if result != 0:
+        return {"tid": tid, "result": "error", "errno": ctypes.get_errno()}
+    return {"tid": tid, "result": "ok"}
+
+
+def _probe_thread_state(pid: int, tid: int) -> dict[str, object]:
+    """Capture one target thread's scheduler and syscall state."""
+
+    root = Path("/proc") / str(pid) / "task" / str(tid)
+    try:
+        schedstat = (root / "schedstat").read_text(encoding="utf-8").strip()
+    except OSError:
+        schedstat = ""
+    try:
+        syscall = (root / "asterinas_syscall").read_text(
+            encoding="utf-8", errors="replace"
+        )[:PROBE_SYSCALL_MAX_BYTES]
+    except OSError:
+        syscall = ""
+    return {
+        "tid": tid,
+        "schedstat": schedstat,
+        "syscall": _probe_syscall_summary(syscall) if syscall else "none",
+    }
+
+
+def _probe_x_stimulus() -> dict[str, object]:
+    """Send one harmless X request to wake the server's event loop.
+
+    If a client request is queued on the server's accepted connection while
+    the server sleeps in epoll, an unrelated request makes the loop re-scan
+    every watched descriptor.  Running this mid-block separates a request the
+    server has not read from one it has not answered.
+    """
+
+    runtime_xauthority = (
+        "/run/asterinas.Xauthority"
+        if Path("/run/asterinas.Xauthority").is_file()
+        else XAUTHORITY
+    )
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/xwininfo", "-root", "-tree"],
+            env={**os.environ, "DISPLAY": DISPLAY, "XAUTHORITY": runtime_xauthority},
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=5.0,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return {"result": type(error).__name__}
+    return {
+        "result": "ok" if completed.returncode == 0 else "error",
+        "rc": completed.returncode,
+    }
+
+
+def _probe_poke(pid: int, target: str) -> dict[str, object]:
+    """Wake the threads of one target and report each delivery."""
+
+    if target == "all":
+        try:
+            os.kill(pid, PROBE_POKE_SIGNAL)
+            delivery: object = "ok"
+        except OSError as error:
+            delivery = {"error": type(error).__name__, "errno": error.errno}
+        return {
+            "target": target,
+            "signal": PROBE_POKE_SIGNAL,
+            "scope": "process",
+            "delivery": delivery,
+            "threads": [],
+        }
+    tids = _probe_thread_tids(pid, target)
+    results = [_probe_tgkill(pid, tid, PROBE_POKE_SIGNAL) for tid in tids]
+    return {
+        "target": target,
+        "signal": PROBE_POKE_SIGNAL,
+        "scope": "thread",
+        "delivery": "ok" if results else "no-match",
+        "threads": results,
+    }
+
+
+def _probe_futex_value(pid: int, address: int) -> dict[str, object]:
+    """Read the futex word the leader is sleeping on to detect a lost wakeup."""
+
+    region = _probe_maps_region(pid, address)
+    if not isinstance(region, dict) or "start" not in region:
+        return {"address": f"0x{address:x}", "region": "not-found"}
+    try:
+        descriptor = os.open(f"/proc/{pid}/mem", os.O_RDONLY)
+        try:
+            raw = os.pread(descriptor, 4, address)
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        return {"error": type(error).__name__}
+    if len(raw) != 4:
+        return {"bytes": len(raw)}
+    return {
+        "u32_le": int.from_bytes(raw, "little"),
+        "u32_be": int.from_bytes(raw, "big"),
+    }
+
+
+def _probe_stack_strings(pid: int, address: int) -> dict[str, object]:
+    """Extract bounded printable strings around a blocked futex stack slot."""
+
+    before = 4096
+    size = 20480
+    region = _probe_maps_region(pid, address)
+    if not isinstance(region, dict) or "start" not in region:
+        return {"address": f"0x{address:x}", "bytes": 0, "strings": []}
+    try:
+        region_start = int(str(region["start"]), 16)
+        region_end = int(str(region["end"]), 16)
+    except (KeyError, ValueError):
+        return {"address": f"0x{address:x}", "bytes": 0, "strings": []}
+    start = max(region_start, address - before)
+    end = min(region_end, address + size)
+    try:
+        descriptor = os.open(f"/proc/{pid}/mem", os.O_RDONLY)
+        try:
+            raw = os.pread(descriptor, end - start, start)
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        return {"error": type(error).__name__}
+    strings: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(rb"[\x20-\x7e]{6,}", raw):
+        text = match.group().decode("ascii", "replace")[:200]
+        if text in seen:
+            continue
+        seen.add(text)
+        strings.append(text)
+        if len(strings) >= 40:
+            break
+    return {"address": f"0x{address:x}", "bytes": len(raw), "strings": strings}
+
+
+def _probe_stack_words(
+    pid: int,
+    address: int,
+    *,
+    before: int = 2048,
+    after: int = 8192,
+    max_words: int = 40,
+) -> dict[str, object]:
+    """Report stack words that point into executable file mappings."""
+
+    try:
+        maps_text = (Path("/proc") / str(pid) / "maps").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError as error:
+        return {"error": type(error).__name__}
+    regions: list[tuple[int, int, int, str]] = []
+    containing: tuple[int, int, int, str] | None = None
+    for line in maps_text.splitlines():
+        fields = line.split(None, 5)
+        if len(fields) < 5:
+            continue
+        try:
+            start_text, end_text = fields[0].split("-", 1)
+            start, end = int(start_text, 16), int(end_text, 16)
+            offset = int(fields[2], 16) if len(fields) > 2 else 0
+        except (ValueError, IndexError):
+            continue
+        path = fields[5][:160] if len(fields) > 5 else "anonymous"
+        if start <= address < end and "r" in fields[1]:
+            containing = (start, end, offset, path)
+        if "x" in fields[1]:
+            regions.append((start, end, offset, path))
+    if containing is None:
+        return {"address": f"0x{address:x}", "bytes": 0, "words": [], "unmapped": True}
+    # Clamp the window to the readable mapping.  An unclamped read at a stack
+    # edge panicked the guest kernel in the r154 probe.
+    start_address = max(containing[0], address - before)
+    end_address = min(containing[1], address + after)
+    try:
+        descriptor = os.open(f"/proc/{pid}/mem", os.O_RDONLY)
+        try:
+            raw = os.pread(descriptor, end_address - start_address, start_address)
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        return {"error": type(error).__name__}
+    words: list[dict[str, str]] = []
+    seen: set[int] = set()
+    for index in range(0, len(raw) - 7, 8):
+        value = int.from_bytes(raw[index : index + 8], "little")
+        if value in seen:
+            continue
+        for region_start, region_end, region_offset, path in regions:
+            if region_start <= value < region_end:
+                seen.add(value)
+                words.append(
+                    {
+                        "value": f"0x{value:x}",
+                        "map_start": f"0x{region_start:x}",
+                        "map_offset": f"0x{region_offset:x}",
+                        "path": path,
+                    }
+                )
+                break
+        if len(words) >= max_words:
+            break
+    return {"window": f"0x{start_address:x}", "bytes": len(raw), "words": words}
+
+
+def _probe_external_processes(names: tuple[str, ...] = ("Xorg", "Xorg.bin")) -> None:
+    """Publish the live syscall state of the display server.
+
+    A syscall that is still blocked never appears in the completed-syscall
+    profile, so the only way to tell an idle X server from one wedged in a
+    driver wait is to read its current record while the browser is stuck.
+    """
+
+    for entry in sorted(Path("/proc").iterdir()):
+        if not entry.name.isdigit():
+            continue
+        try:
+            comm = (entry / "comm").read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            continue
+        if comm not in names:
+            continue
+        pid = int(entry.name)
+        try:
+            raw = (entry / "asterinas_syscall").read_text(
+                encoding="utf-8", errors="replace"
+            )[:PROBE_SYSCALL_MAX_BYTES]
+        except OSError:
+            raw = ""
+        print(
+            "FIREFOX_DRM_PROBE_EXTERNAL "
+            f"pid={pid} name={comm} "
+            f"syscall={_probe_syscall_summary(raw) if raw else 'none'}",
+            flush=True,
+        )
+        try:
+            tasks = sorted((entry / "task").iterdir())
+        except OSError:
+            continue
+        for task in tasks[:16]:
+            try:
+                tid = int(task.name)
+            except ValueError:
+                continue
+            try:
+                task_comm = (task / "comm").read_text(
+                    encoding="utf-8", errors="replace"
+                ).strip()
+            except OSError:
+                task_comm = "unknown"
+            try:
+                task_raw = (task / "asterinas_syscall").read_text(
+                    encoding="utf-8", errors="replace"
+                )[:PROBE_SYSCALL_MAX_BYTES]
+            except OSError:
+                task_raw = ""
+            print(
+                "FIREFOX_DRM_PROBE_EXTERNAL_THREAD "
+                f"pid={pid} tid={tid} name={task_comm} "
+                f"syscall={_probe_syscall_summary(task_raw) if task_raw else 'none'}",
+                flush=True,
+            )
+
+
+def _probe_pollfds(pid: int, thread: dict[str, object], limit: int = 16) -> None:
+    """Publish the files a thread is waiting on in poll/ppoll.
+
+    A one-entry ppoll is how Mesa waits for a GPU fence and how an event loop
+    waits for its wakeup descriptor; resolving the fd number separates those
+    two cases without reading any user payload.
+    """
+
+    value = thread.get("asterinas_syscall")
+    if not isinstance(value, str):
+        return
+    try:
+        document = json.loads(value)
+    except (ValueError, TypeError):
+        return
+    current = document.get("current") if isinstance(document, dict) else None
+    if not isinstance(current, dict) or current.get("number") not in (7, 73):
+        return
+    args = current.get("args")
+    if not isinstance(args, list) or len(args) < 2:
+        return
+    address, count = args[0], args[1]
+    if not isinstance(address, int) or not isinstance(count, int):
+        return
+    count = min(count, limit)
+    if count <= 0:
+        return
+    region = _probe_maps_region(pid, address)
+    if not isinstance(region, dict) or "start" not in region:
+        return
+    try:
+        region_start = int(str(region["start"]), 16)
+        region_end = int(str(region["end"]), 16)
+    except (KeyError, ValueError):
+        return
+    start = max(region_start, address)
+    end = min(region_end, address + count * 8)
+    try:
+        descriptor = os.open(f"/proc/{pid}/mem", os.O_RDONLY)
+        try:
+            raw = os.pread(descriptor, end - start, start)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        return
+    for index in range(0, len(raw) - 7, 8):
+        fd = int.from_bytes(raw[index : index + 4], "little", signed=True)
+        events = int.from_bytes(raw[index + 4 : index + 6], "little")
+        revents = int.from_bytes(raw[index + 6 : index + 8], "little")
+        try:
+            target = os.readlink(f"/proc/{pid}/fd/{fd}")
+        except OSError as error:
+            target = f"error:{type(error).__name__}"
+        print(
+            "FIREFOX_DRM_PROBE_POLLFD "
+            f"tid={thread.get('tid', 'unknown')} "
+            f"name={thread.get('Name', 'unknown')} "
+            f"index={index // 8} fd={fd} "
+            f"events=0x{events:x} revents=0x{revents:x} target={target}",
+            flush=True,
+        )
+
+
+def _probe_syscall_fp(value: object) -> int | None:
+    """Return the syscall-entry frame pointer from a scalar snapshot."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        document = json.loads(value)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    current = document.get("current")
+    if not isinstance(current, dict):
+        return None
+    fp = current.get("fp")
+    if isinstance(fp, int) and fp > 0:
+        return fp
+    return None
+
+
+def _probe_read_u64(pid: int, address: int) -> int | None:
+    try:
+        descriptor = os.open(f"/proc/{pid}/mem", os.O_RDONLY)
+        try:
+            raw = os.pread(descriptor, 8, address)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        return None
+    if len(raw) != 8:
+        return None
+    return int.from_bytes(raw, "little")
+
+
+def _probe_frame_chain(pid: int, fp: int, limit: int = 24) -> list[dict[str, object]]:
+    """Walk the user frame record chain from a blocked thread's FP.
+
+    The riscv64 psABI saves the return address at ``fp - 8`` and the previous
+    frame pointer at ``fp - 16``.  Invalid or absent frame records stop the
+    walk; the caller keeps the raw stack-word scan as the fallback.
+    """
+
+    frames: list[dict[str, object]] = []
+    current = fp
+    for index in range(limit):
+        region = _probe_maps_region(pid, current)
+        if not isinstance(region, dict) or "start" not in region:
+            break
+        if "rw" not in str(region.get("perms", "")):
+            break
+        try:
+            region_start = int(str(region["start"]), 16)
+            region_end = int(str(region["end"]), 16)
+        except (KeyError, ValueError):
+            break
+        # The frame record is 16 bytes below the frame pointer.  Keep the whole
+        # record inside the readable mapping so the kernel never sees an
+        # unmapped /proc/pid/mem read.
+        if current - 16 < region_start or current >= region_end:
+            break
+        ra = _probe_read_u64(pid, current - 8)
+        previous = _probe_read_u64(pid, current - 16)
+        if ra is None:
+            break
+        ra_region = _probe_maps_region(pid, ra)
+        frames.append(
+            {
+                "index": index,
+                "fp": f"0x{current:x}",
+                "ra": f"0x{ra:x}",
+                "ra_map": ra_region,
+            }
+        )
+        if not previous or previous <= current:
+            break
+        current = previous
+    return frames
+
+
+def _probe_thread_stack_marker(
+    pid: int, thread: dict[str, object], limit: int = 96
+) -> None:
+    """Publish one bounded stack scan for a named Firefox thread.
+
+    The kernel reports the syscall-entry user SP for each thread, so a blocked
+    partner (compositor, IPC I/O, renderer) can be symbolized from its own
+    stack.  One word per line keeps each record below the serial line limit
+    that truncated the combined main-stack record.
+    """
+
+    name = str(thread.get("Name", "unknown"))
+    value = thread.get("asterinas_syscall")
+    sp = _probe_syscall_sp(value)
+    if sp is None:
+        print(
+            "FIREFOX_DRM_PROBE_THREAD_STACK "
+            f"tid={thread.get('tid', 'unknown')} name={name} sp=absent",
+            flush=True,
+        )
+        return
+    result = _probe_stack_words(pid, sp, after=32768, max_words=limit)
+    words = result.get("words", []) if isinstance(result, dict) else []
+    print(
+        "FIREFOX_DRM_PROBE_THREAD_STACK "
+        f"tid={thread.get('tid', 'unknown')} name={name} sp=0x{sp:x} "
+        f"bytes={result.get('bytes', 'unknown') if isinstance(result, dict) else 'unknown'} "
+        f"words={len(words)}",
+        flush=True,
+    )
+    for word in words[:limit]:
+        if not isinstance(word, dict):
+            continue
+        print(
+            "FIREFOX_DRM_PROBE_THREAD_STACK_WORD "
+            f"tid={thread.get('tid', 'unknown')} name={name} "
+            f"value={word.get('value', '?')} "
+            f"map_start={word.get('map_start', '?')} "
+            f"map_offset={word.get('map_offset', '?')} "
+            f"path={word.get('path', '?')}",
+            flush=True,
+        )
+    fp = _probe_syscall_fp(value)
+    if fp is None:
+        print(
+            "FIREFOX_DRM_PROBE_FRAME_CHAIN "
+            f"tid={thread.get('tid', 'unknown')} name={name} fp=absent",
+            flush=True,
+        )
+        return
+    frames = _probe_frame_chain(pid, fp)
+    print(
+        "FIREFOX_DRM_PROBE_FRAME_CHAIN "
+        f"tid={thread.get('tid', 'unknown')} name={name} "
+        f"fp=0x{fp:x} frames={len(frames)}",
+        flush=True,
+    )
+    for frame in frames:
+        region = frame.get("ra_map")
+        mapping = ""
+        if isinstance(region, dict):
+            mapping = (
+                f"map_start={region.get('start', '?')} "
+                f"map_offset={region.get('offset', '?')} "
+                f"path={region.get('path', '?')}"
+            )
+        print(
+            "FIREFOX_DRM_PROBE_FRAME "
+            f"tid={thread.get('tid', 'unknown')} name={name} "
+            f"index={frame['index']} ra={frame['ra']} fp={frame['fp']} "
+            f"{mapping}",
+            flush=True,
+        )
+
+
+def _probe_main_stack_words(
+    pid: int, stat_text: object, user_sp: int | None = None
+) -> dict[str, object]:
+    """Scan the live user stack for executable pointers.
+
+    When the kernel exposes the syscall-entry user SP, the window starts at
+    that SP and is clamped to its readable mapping.  Otherwise fall back to
+    the initial stack top captured by ``startstack``.
+    """
+
+    try:
+        maps_text = (Path("/proc") / str(pid) / "maps").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError as error:
+        return {"error": type(error).__name__}
+    all_regions: list[tuple[int, int, str]] = []
+    exec_regions: list[tuple[int, int, int, str]] = []
+    for line in maps_text.splitlines():
+        fields = line.split(None, 5)
+        if len(fields) < 5:
+            continue
+        try:
+            start_text, end_text = fields[0].split("-", 1)
+            start, end = int(start_text, 16), int(end_text, 16)
+            offset = int(fields[2], 16)
+        except (ValueError, IndexError):
+            continue
+        perms = fields[1]
+        path = fields[5][:160] if len(fields) > 5 else "anonymous"
+        all_regions.append((start, end, perms))
+        if "x" in perms:
+            exec_regions.append((start, end, offset, path))
+    mode = "sp"
+    window = 65536
+    if user_sp is not None:
+        region = next(
+            (
+                item
+                for item in all_regions
+                if item[0] <= user_sp < item[1]
+                and "r" in item[2]
+                and "w" in item[2]
+            ),
+            None,
+        )
+        if region is None:
+            user_sp = None
+        else:
+            window = min(window, region[1] - user_sp)
+            start_address = user_sp
+            startstack = user_sp
+    if user_sp is None:
+        startstack = _probe_startstack(stat_text)
+        if startstack is None:
+            return {"error": "no-startstack"}
+        mode = "startstack"
+        window = 262144
+        start_address = max(0, startstack - window)
+    try:
+        descriptor = os.open(f"/proc/{pid}/mem", os.O_RDONLY)
+        try:
+            raw = os.pread(descriptor, window, start_address)
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        return {"error": type(error).__name__}
+    words: list[dict[str, object]] = []
+    seen: set[int] = set()
+    # The window starts at the live SP, so walking upward visits the newest
+    # frame's return addresses before the older callers.
+    for index in range(0, len(raw) - 7, 8):
+        value = int.from_bytes(raw[index : index + 8], "little")
+        if value in seen:
+            continue
+        for region_start, region_end, region_offset, path in exec_regions:
+            if region_start <= value < region_end:
+                seen.add(value)
+                words.append(
+                    {
+                        "stack_offset": index,
+                        "value": f"0x{value:x}",
+                        "map_start": f"0x{region_start:x}",
+                        "map_offset": f"0x{region_offset:x}",
+                        "path": path,
+                    }
+                )
+                break
+        if len(words) >= 48:
+            break
+    return {
+        "mode": mode,
+        "startstack": f"0x{startstack:x}",
+        "window": f"0x{start_address:x}",
+        "bytes": len(raw),
+        "words": words,
+    }
+
+
+def _probe_process_environ(pid: int) -> dict[str, str]:
+    """Report the Firefox logging switches that actually reached the process."""
+
+    try:
+        payload = (Path("/proc") / str(pid) / "environ").read_bytes()[:65536]
+    except OSError as error:
+        return {"error": type(error).__name__}
+    selected: dict[str, str] = {}
+    wanted = {
+        "MOZ_LOG",
+        "MOZ_LOG_FILE",
+        "MOZ_WEBGL_FORCE_EGL",
+        "ASTERINAS_FIREFOX_PROBE_TIMEOUT",
+        "ASTERINAS_FIREFOX_REMOTE_TRACE",
+        "ASTERINAS_DESKTOP_BROWSER_ENABLED",
+    }
+    for entry in payload.split(b"\0"):
+        if b"=" not in entry:
+            continue
+        raw_key, raw_value = entry.split(b"=", 1)
+        try:
+            key = raw_key.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if key in wanted:
+            selected[key] = raw_value.decode("utf-8", "replace")[:256]
+    return selected
 
 
 def _probe_compact_snapshot(snapshot: dict[str, object]) -> dict[str, object]:
@@ -968,6 +1971,26 @@ def _probe_syscall_summary(value: object) -> str:
     return ",".join(fields) or "none"
 
 
+def _probe_futex_address(value: object) -> int | None:
+    """Return the current futex uaddr from one process-level snapshot."""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        document = json.loads(value)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    current = document.get("current")
+    if not isinstance(current, dict) or current.get("number") != 98:
+        return None
+    args = current.get("args")
+    if isinstance(args, list) and args and isinstance(args[0], int):
+        return args[0]
+    return None
+
+
 def _probe_sample(
     process: subprocess.Popen[bytes],
     samples: list[dict[str, object]],
@@ -996,7 +2019,7 @@ def _probe_sample(
         f"pid={process.pid} state={status.get('State', 'unknown')} "
         f"threads={status.get('Threads', 'unknown')} rss={status.get('VmRSS', 'unknown')} "
         f"schedstat={'_'.join(str(snapshot.get('schedstat', '')).split()) or 'unknown'} "
-        f"syscall={'present' if snapshot.get('asterinas_syscall', '').strip() else 'absent'}",
+        f"syscall={_probe_syscall_summary(snapshot.get('asterinas_syscall'))}",
         flush=True,
     )
     print(
@@ -1004,6 +2027,18 @@ def _probe_sample(
         f"port={MARIONETTE_PORT} {_probe_socket_marker(socket_snapshot)}",
         flush=True,
     )
+    futex_address = _probe_futex_address(snapshot.get("asterinas_syscall"))
+    if futex_address is not None:
+        print(
+            "FIREFOX_DRM_PROBE_SAMPLE_FUTEX "
+            f"addr=0x{futex_address:x} "
+            + json.dumps(
+                _probe_futex_value(process.pid, futex_address),
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
     # Publish a compact child/log snapshot on every interval so a host-side
     # timeout still leaves useful evidence even when the final atomic receipt
     # cannot run its cleanup block.
@@ -1071,6 +2106,8 @@ def _publish_probe_receipt(
     """Atomically publish a short-probe receipt before process cleanup."""
 
     finished = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    display = _probe_window_snapshot()
+    environ = _probe_process_environ(process.pid)
     receipt = {
         "schema": 1,
         "gate": "firefox-marionette-probe",
@@ -1080,11 +2117,67 @@ def _publish_probe_receipt(
         "phase": phase,
         "reason": reason,
         "pid": process.pid,
-        "process": _probe_proc_snapshot(process.pid),
+        "process": _probe_proc_snapshot(process.pid, full_syscall=True),
         "logs": _probe_log_snapshot(),
+        "display": display,
+        "environ": environ,
         "sample_count": len(samples),
         "samples": samples[:PROBE_SAMPLE_LIMIT],
     }
+    futex_address = _probe_futex_address(receipt["process"].get("asterinas_syscall"))
+    futex_map = (
+        _probe_maps_region(process.pid, futex_address)
+        if futex_address is not None
+        else None
+    )
+    receipt["futex_map"] = futex_map
+    futex_value = (
+        _probe_futex_value(process.pid, futex_address)
+        if futex_address is not None
+        else None
+    )
+    receipt["futex_value"] = futex_value
+    futex_strings = (
+        _probe_stack_strings(process.pid, futex_address)
+        if futex_address is not None
+        else None
+    )
+    receipt["futex_strings"] = futex_strings
+    stack_words = (
+        _probe_stack_words(process.pid, futex_address)
+        if futex_address is not None
+        else None
+    )
+    receipt["stack_words"] = stack_words
+    leader_stat = next(
+        (
+            thread.get("stat")
+            for thread in receipt["process"]["threads"]
+            if str(thread.get("tid")) == str(process.pid)
+        ),
+        None,
+    )
+    user_sp = _probe_syscall_sp(receipt["process"].get("asterinas_syscall"))
+    main_stack_words = (
+        _probe_main_stack_words(process.pid, leader_stat, user_sp)
+        if futex_address is not None
+        else None
+    )
+    receipt["main_stack_words"] = main_stack_words
+    futex_owner = None
+    if futex_map is not None and "start" in futex_map and "end" in futex_map:
+        region_start = int(str(futex_map["start"]), 16)
+        region_end = int(str(futex_map["end"]), 16)
+        for thread in receipt["process"]["threads"]:
+            startstack = _probe_startstack(thread.get("stat"))
+            if startstack is not None and region_start < startstack <= region_end:
+                futex_owner = {
+                    "tid": thread.get("tid"),
+                    "name": thread.get("Name", "unknown"),
+                    "startstack": f"0x{startstack:x}",
+                }
+                break
+    receipt["futex_owner"] = futex_owner
     payload = json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n"
     PROBE_RECEIPT.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     temporary = PROBE_RECEIPT.with_name(f".{PROBE_RECEIPT.name}.tmp")
@@ -1114,16 +2207,112 @@ def _publish_probe_receipt(
         flush=True,
     )
     print(
+        "FIREFOX_DRM_PROBE_WINDOWS "
+        + json.dumps(display, sort_keys=True, separators=(",", ":")),
+        flush=True,
+    )
+    print(
+        "FIREFOX_DRM_PROBE_ENVIRON "
+        + json.dumps(environ, sort_keys=True, separators=(",", ":")),
+        flush=True,
+    )
+    if futex_map is not None:
+        print(
+            "FIREFOX_DRM_PROBE_FUTEX_MAP "
+            f"addr=0x{futex_address:x} "
+            + json.dumps(futex_map, sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
+    if futex_value is not None:
+        print(
+            "FIREFOX_DRM_PROBE_FUTEX_VALUE "
+            f"addr=0x{futex_address:x} "
+            + json.dumps(futex_value, sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
+    if futex_owner is not None:
+        print(
+            "FIREFOX_DRM_PROBE_FUTEX_STACK "
+            + json.dumps(futex_owner, sort_keys=True, separators=(",", ":")),
+            flush=True,
+        )
+    if futex_strings is not None:
+        print(
+            "FIREFOX_DRM_PROBE_STACK_STRINGS "
+            + json.dumps(futex_strings, sort_keys=True, separators=(",", ":"))[:8000],
+            flush=True,
+        )
+    if stack_words is not None:
+        print(
+            "FIREFOX_DRM_PROBE_STACK_WORDS "
+            + json.dumps(stack_words, sort_keys=True, separators=(",", ":"))[:8000],
+            flush=True,
+        )
+    if main_stack_words is not None:
+        print(
+            "FIREFOX_DRM_PROBE_MAIN_STACK_WORDS "
+            + json.dumps(main_stack_words, sort_keys=True, separators=(",", ":"))[:12000],
+            flush=True,
+        )
+    print(
         "FIREFOX_DRM_PROBE_SYSCALL "
         f"pid={process.pid} {_probe_syscall_summary(process_snapshot_value := receipt['process'].get('asterinas_syscall'))}",
         flush=True,
     )
-    for thread in receipt["process"]["threads"][:32]:
+    for thread in receipt["process"]["threads"][:64]:
         print(
             "FIREFOX_DRM_PROBE_THREAD "
-            f"tid={thread['tid']} state={thread.get('State', 'unknown')} "
+            f"tid={thread['tid']} name={thread.get('Name', 'unknown')} "
+            f"state={thread.get('State', 'unknown')} "
             f"wchan={thread.get('wchan', 'unknown') or 'unknown'} "
             f"syscall={_probe_syscall_summary(thread.get('asterinas_syscall'))}",
+            flush=True,
+        )
+    for thread in receipt["process"]["threads"]:
+        name = str(thread.get("Name", ""))
+        if any(
+            marker in name
+            for marker in ("Compositor", "Renderer", "Software", "WRWorker", "IPC I/O")
+        ):
+            print(
+                "FIREFOX_DRM_PROBE_COMPOSITOR "
+                f"tid={thread['tid']} name={name} "
+                f"state={thread.get('State', 'unknown')} "
+                f"schedstat={'_'.join(str(thread.get('schedstat', '')).split()) or 'unknown'} "
+                f"raw={' '.join(str(thread.get('asterinas_syscall', '')).split())[:160] or 'none'} "
+                f"syscall={_probe_syscall_summary(thread.get('asterinas_syscall'))}",
+                flush=True,
+            )
+    for thread in receipt["process"]["threads"]:
+        name = str(thread.get("Name", ""))
+        if any(
+            marker in name
+            for marker in (
+                "Compositor",
+                "IPC I/O",
+                "Renderer",
+                "Softwar",
+                "Timer",
+                "WRWorkerLP#0",
+            )
+        ):
+            _probe_thread_stack_marker(process.pid, thread)
+    for thread in receipt["process"]["threads"]:
+        _probe_pollfds(process.pid, thread)
+    _probe_external_processes()
+    for item in _probe_thread_futexes(process.pid, receipt["process"]["threads"]):
+        print(
+            "FIREFOX_DRM_PROBE_THREAD_FUTEX "
+            f"tid={item['tid']} name={item['name']} "
+            f"schedstat={item['schedstat'] or 'unknown'} "
+            f"addr={item['addr']} "
+            f"word={json.dumps(item['word'], sort_keys=True, separators=(',', ':'))}",
+            flush=True,
+        )
+    for item in _probe_ipc_fds(process.pid, receipt["process"]["threads"]):
+        print(
+            "FIREFOX_DRM_PROBE_IPC_FD "
+            + json.dumps(item, sort_keys=True, separators=(",", ":"))[:8000],
             flush=True,
         )
     for child in receipt["process"].get("children", [])[:PROBE_CHILD_LIMIT]:
@@ -1146,6 +2335,182 @@ def _publish_probe_receipt(
             f"tail={log['tail'] or 'none'}",
             flush=True,
         )
+        print(
+            "FIREFOX_DRM_PROBE_LOG_LINES "
+            f"name={name} "
+            f"tail_end={(log['tail_end'] or 'none')[:2048]} "
+            "last_lines="
+            + json.dumps(log["last_lines"], separators=(",", ":"))[:6000]
+            + " marionette_lines="
+            + json.dumps(log["marionette_lines"], separators=(",", ":"))[:6000]
+            + " ipc_lines="
+            + json.dumps(log["ipc_lines"], separators=(",", ":"))[:6000]
+            + " session_lines="
+            + json.dumps(log["session_lines"], separators=(",", ":"))[:6000],
+            flush=True,
+        )
+
+
+def _probe_main_block_age(pid: int) -> int | None:
+    """Return how long the main thread has been in its current futex wait.
+
+    ``asterinas_syscall`` reports both the syscall entry time and the snapshot
+    time in milliseconds, so the age is available without sampling twice.  A
+    multi-second wait on the leader is the compositor Resume block; the probe
+    anchors its poke schedule on that observation instead of guessing a
+    startup-wide offset.
+    """
+
+    try:
+        raw = (Path("/proc") / str(pid) / "asterinas_syscall").read_text(
+            encoding="utf-8", errors="replace"
+        )
+    except OSError:
+        return None
+    try:
+        document = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    current = document.get("current") if isinstance(document, dict) else None
+    if not isinstance(current, dict) or current.get("number") != 98:
+        return None
+    entered = current.get("entered_jiffies")
+    snapshot = document.get("snapshot_jiffies")
+    if not isinstance(entered, int) or not isinstance(snapshot, int):
+        return None
+    return max(0, snapshot - entered)
+
+
+def _probe_new_session_with_pokes(
+    client: object,
+    capabilities: dict[str, object],
+    deadline: float,
+    plan: list[tuple[str, float]],
+    pid: int,
+) -> object:
+    """Send NewSession, then wake sleeping partner threads on a schedule.
+
+    NewSession is issued on a worker thread so the probe thread can deliver a
+    bounded SIGCONT while the main thread is blocked in the compositor Resume
+    sync IPC.  The schedule is anchored on the first observation of a
+    multi-second leader futex wait, because the window map lands anywhere from
+    ~40 s to ~80 s after the request and fixed offsets missed the block.  Each
+    step reports the target's scheduler/syscall state before and after
+    delivery, so a poke that releases queued work is distinguishable from one
+    that changes nothing.
+    """
+
+    holder: dict[str, object] = {}
+    started = time.monotonic()
+
+    def run() -> None:
+        try:
+            holder["value"] = _command(
+                client,
+                "WebDriver:NewSession",
+                capabilities,
+                deadline,
+                limit=PROBE_TIMEOUT,
+            )
+        except BaseException as error:
+            holder["error"] = error
+        holder["elapsed_ms"] = round((time.monotonic() - started) * 1000, 1)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    # Reserve enough time for the plan itself, then wait for the block.
+    longest_offset = max((offset for _, offset in plan), default=0.0)
+    detect_deadline = max(
+        started,
+        deadline - longest_offset - 20.0,
+    )
+    anchor: float | None = None
+    detected_age: int | None = None
+    while worker.is_alive() and time.monotonic() < detect_deadline:
+        age = _probe_main_block_age(pid)
+        if age is not None and age >= 10000:
+            anchor = time.monotonic()
+            detected_age = age
+            break
+        worker.join(timeout=0.5)
+    print(
+        "FIREFOX_DRM_PROBE_BLOCK "
+        f"detected={int(anchor is not None)} "
+        f"age_jiffies={detected_age if detected_age is not None else 'none'} "
+        f"elapsed_ms={round((time.monotonic() - started) * 1000, 1)}",
+        flush=True,
+    )
+    # Fall back to the send time when no multi-second leader wait was seen.
+    anchor = anchor if anchor is not None else started
+    poked = 0
+    for index, (target, offset) in enumerate(plan):
+        while worker.is_alive():
+            remaining = offset - (time.monotonic() - anchor)
+            if remaining <= 0:
+                break
+            worker.join(timeout=min(0.5, remaining))
+        if not worker.is_alive():
+            print(
+                "FIREFOX_DRM_PROBE_POKE_SKIPPED "
+                f"index={index} target={target} offset_s={offset} "
+                "reason=session-finished",
+                flush=True,
+            )
+            break
+        if target == "xstim":
+            stimulus = _probe_x_stimulus()
+            poked += 1
+            print(
+                "FIREFOX_DRM_PROBE_XSTIM "
+                f"index={index} "
+                f"elapsed_ms={round((time.monotonic() - anchor) * 1000, 1)} "
+                + json.dumps(stimulus, sort_keys=True, separators=(",", ":")),
+                flush=True,
+            )
+            continue
+        tids = [pid] if target == "all" else _probe_thread_tids(pid, target)
+        before = {str(tid): _probe_thread_state(pid, tid) for tid in tids}
+        poke = _probe_poke(pid, target)
+        poked += 1
+        print(
+            "FIREFOX_DRM_PROBE_POKE "
+            f"index={index} "
+            f"elapsed_ms={round((time.monotonic() - started) * 1000, 1)} "
+            f"target={target} signal={PROBE_POKE_SIGNAL} "
+            + json.dumps(poke, sort_keys=True, separators=(",", ":"))[:2000],
+            flush=True,
+        )
+        worker.join(timeout=2.0)
+        after = {
+            str(tid): _probe_thread_state(pid, tid)
+            for tid in (
+                [pid] if target == "all" else _probe_thread_tids(pid, target)
+            )
+        }
+        print(
+            "FIREFOX_DRM_PROBE_POKE_EFFECT "
+            f"index={index} target={target} "
+            f"session_ready={int(not worker.is_alive())} "
+            + json.dumps(
+                {"before": before, "after": after},
+                sort_keys=True,
+                separators=(",", ":"),
+            )[:4000],
+            flush=True,
+        )
+    while worker.is_alive() and time.monotonic() < deadline + 2.0:
+        worker.join(timeout=0.5)
+    print(
+        "FIREFOX_DRM_PROBE_NEWSESSION_RESULT "
+        f"elapsed_ms={holder.get('elapsed_ms', 'unknown')} pokes={poked} "
+        f"finished={int(not worker.is_alive())}",
+        flush=True,
+    )
+    if "error" in holder:
+        raise holder["error"]  # type: ignore[misc]
+    if "value" not in holder:
+        raise TimeoutError("Marionette read deadline expired")
+    return holder["value"]
 
 
 def _run_probe(process: subprocess.Popen[bytes]) -> bool:
@@ -1190,13 +2555,28 @@ def _run_probe(process: subprocess.Popen[bytes]) -> bool:
                 f"json={capabilities_json}",
                 flush=True,
             )
-            session = _command(
-                client,
-                "WebDriver:NewSession",
-                capabilities,
-                deadline,
-                limit=PROBE_TIMEOUT,
-            )
+            poke_plan = _probe_poke_plan()
+            if poke_plan:
+                print(
+                    "FIREFOX_DRM_PROBE_POKE_PLAN "
+                    + json.dumps(poke_plan, separators=(",", ":")),
+                    flush=True,
+                )
+                session = _probe_new_session_with_pokes(
+                    client,
+                    capabilities,
+                    deadline,
+                    poke_plan,
+                    process.pid,
+                )
+            else:
+                session = _command(
+                    client,
+                    "WebDriver:NewSession",
+                    capabilities,
+                    deadline,
+                    limit=PROBE_TIMEOUT,
+                )
         finally:
             try:
                 # Take a terminal sample while Firefox is still alive, before
@@ -1383,7 +2763,17 @@ def _one_run(process: subprocess.Popen[bytes]) -> dict[str, object]:
         values = None
         _phase("scene")
         _script(client, _INSTALL_SCENE_ERROR_HOOK, deadline=deadline)
-        _command(client, "WebDriver:Navigate", {"url": SCENE_URL}, deadline)
+        # The default 15 s command limit is below a cold scene load on TCG:
+        # the page's script and first paint exceed it, so the response arrived
+        # after the read deadline and the session was abandoned.  Bound the
+        # navigation by the scene phase, which the poll loop below shares.
+        _command(
+            client,
+            "WebDriver:Navigate",
+            {"url": SCENE_URL},
+            deadline,
+            limit=SCENE_TIMEOUT,
+        )
         samples, scene_renderer, webgl_context, webgl_debug = _wait_scene(client, deadline)
         if len(samples) < 16:
             raise GateError("Firefox scene produced too few frame samples")
@@ -1426,6 +2816,7 @@ def main() -> int:
         _glxtest_marker()
         _phase("probe-profile")
         _write_profile()
+        print(f"FIREFOX_DRM_START url={START_URL[:200]}", flush=True)
         _phase("probe-spawn")
         process = _spawn()
         watch_stop = threading.Event()
@@ -1441,6 +2832,7 @@ def main() -> int:
             watch_stop.set()
             watch.join(timeout=2.0)
             _stop(process)
+            _probe_log_after_stop()
     _render_access_marker()
     _egl_probe_marker()
     _glxtest_marker()

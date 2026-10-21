@@ -26,6 +26,7 @@ from tools.riscv.debian.rootfs.firefox_drm_scene_gate import (  # noqa: E402
     _write_profile,
     _probe_compact_snapshot,
     _parse_probe_tcp_table,
+    _probe_poke_plan,
     _probe_sample,
     _probe_socket_marker,
     _probe_syscall_summary,
@@ -211,6 +212,27 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
             with self.assertRaisesRegex(GateFailure, "firefox-newsession-capability-arm"):
                 config._select_firefox_probe_capability_arm()
 
+    def test_probe_poke_plan_is_explicit_and_bounded(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"ASTERINAS_FIREFOX_PROBE_POKE": "io:30,compositor:60,all:90"},
+        ):
+            self.assertEqual(
+                _probe_poke_plan(),
+                [("io", 30.0), ("compositor", 60.0), ("all", 90.0)],
+            )
+        with patch.dict("os.environ", {"ASTERINAS_FIREFOX_PROBE_POKE": ""}):
+            self.assertEqual(_probe_poke_plan(), [])
+        with patch.dict("os.environ", {"ASTERINAS_FIREFOX_PROBE_POKE": "io:30,bogus:10"}):
+            with self.assertRaisesRegex(ValueError, "unknown poke target"):
+                _probe_poke_plan()
+        with patch.dict("os.environ", {"ASTERINAS_FIREFOX_PROBE_POKE": "io:soon"}):
+            with self.assertRaisesRegex(ValueError, "invalid poke offset"):
+                _probe_poke_plan()
+        with patch.dict("os.environ", {"ASTERINAS_FIREFOX_PROBE_POKE": "io:-1"}):
+            with self.assertRaisesRegex(ValueError, "negative poke offset"):
+                _probe_poke_plan()
+
     def test_probe_can_bind_profile_to_runtime_tmpfs(self) -> None:
         config = object.__new__(DesktopM4DrmOperations)
         config._bootargs = DesktopM4DrmOperations.FIREFOX_PROBE_BOOTARGS
@@ -223,6 +245,36 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
             "ASTERINAS_FIREFOX_PROFILE_DIR=/run/asterinas-firefox-probe",
             config._bootargs,
         )
+
+    def test_probe_can_enable_dri_trace(self) -> None:
+        config = object.__new__(DesktopM4DrmOperations)
+        config._bootargs = DesktopM4DrmOperations.FIREFOX_PROBE_BOOTARGS
+        with patch.dict("os.environ", {"ASTERINAS_DRI_TRACE": "1"}):
+            config._select_dri_trace()
+        self.assertIn("asterinas.dri_trace=1", config._bootargs)
+        self.assertLess(
+            config._bootargs.index("asterinas.dri_trace=1"),
+            config._bootargs.index(" -- "),
+            "a kernel parameter after the -- separator goes to init, not the kernel",
+        )
+        config._bootargs = DesktopM4DrmOperations.FIREFOX_PROBE_BOOTARGS
+        with patch.dict("os.environ", {"ASTERINAS_DRI_TRACE": "0"}):
+            config._select_dri_trace()
+        self.assertNotIn("asterinas.dri_trace=1", config._bootargs)
+
+    def test_probe_can_raise_the_dri_pool(self) -> None:
+        config = object.__new__(DesktopM4DrmOperations)
+        config._bootargs = DesktopM4DrmOperations.FIREFOX_PROBE_BOOTARGS
+        with patch.dict("os.environ", {"ASTERINAS_DRI_POOL_MB": "256"}):
+            config._select_dri_pool_mb()
+        self.assertIn("asterinas.dri_pool_mb=256", config._bootargs)
+        self.assertLess(
+            config._bootargs.index("asterinas.dri_pool_mb=256"),
+            config._bootargs.index(" -- "),
+        )
+        with patch.dict("os.environ", {"ASTERINAS_DRI_POOL_MB": "8"}):
+            with self.assertRaisesRegex(GateFailure, "dri-pool-mb"):
+                config._select_dri_pool_mb()
 
     def test_remote_trace_is_opt_in_and_profile_is_explicit(self) -> None:
         config = object.__new__(DesktopM4DrmOperations)
@@ -290,9 +342,13 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("repository_root = Path(__file__).resolve().parents[4]", guest)
-        self.assertIn("START_URL = SCENE_URL", guest)
+        self.assertIn('os.environ.get("ASTERINAS_FIREFOX_START_URL", SCENE_URL)', guest)
+        self.assertIn('"FIREFOX_DRM_START url=', guest)
         self.assertIn("def _spawn(start_url: str = START_URL)", guest)
         self.assertLess(guest.index('"WebDriver:GetWindowHandles"'), guest.index('"WebDriver:Navigate"'))
+        # The scene navigation must be bounded by the scene phase, not by the
+        # default 15-second command limit that a cold TCG first paint exceeds.
+        self.assertIn('"WebDriver:Navigate",\n            {"url": SCENE_URL},\n            deadline,\n            limit=SCENE_TIMEOUT,', guest)
         self.assertIn('"support_source": "browser-log-deferred"', guest)
         self.assertIn("NEW_SESSION_TIMEOUT = 840.0", guest)
         self.assertIn('user_pref("javascript.enabled", true);', guest)
@@ -319,8 +375,87 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
         self.assertIn("Firefox WebGL renderer was not reported", guest)
         self.assertIn('SCREENSHOT = Path("/tmp/asterinas-firefox-drm-scene.png")', guest)
         self.assertIn('FIREFOX_MOZ_LOG = Path("/tmp/asterinas-firefox-drm-scene-firefox.mozlog")', guest)
+        self.assertIn('"timestamp,sync,Widget:4,Layers:4,WebRender:4"', guest)
+        self.assertIn('"timestamp,sync,RemoteAgent:5,Marionette:5,IPC:5"', guest)
+        self.assertIn("ASTERINAS_FIREFOX_MOZ_LOG_STDERR", guest)
+        self.assertIn('"FIREFOX_DRM_MOZ_SINK sink=', guest)
+        self.assertIn('"ipc_lines"', guest)
+        self.assertIn('"session_lines"', guest)
+        self.assertIn('"FIREFOX_DRM_PROFILE remote_log_level=Trace source=user.js"', guest)
+        self.assertIn('user_pref("browser.dom.window.dump.enabled", true);', guest)
+        self.assertIn('user_pref("browser.sessionstore.debug", true);', guest)
         self.assertIn('FIREFOX_DRM_MOZLOG ', guest)
         self.assertIn('FIREFOX_DRM_BROWSER_DIAG ', guest)
+        self.assertIn("def _probe_window_snapshot", guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_WINDOWS "', guest)
+        self.assertIn('"display": display', guest)
+        self.assertIn("def _probe_process_environ", guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_ENVIRON "', guest)
+        self.assertIn('"environ": environ', guest)
+        self.assertIn("def _probe_log_after_stop", guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_LOG_AFTER_STOP "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_LOG_LINES "', guest)
+        self.assertIn("def _probe_maps_region", guest)
+        self.assertIn("def _probe_futex_address", guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_FUTEX_MAP "', guest)
+        self.assertIn("def _probe_futex_value", guest)
+        self.assertIn("def _probe_startstack", guest)
+        self.assertIn("def _probe_stack_strings", guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_STACK_STRINGS "', guest)
+        self.assertIn("def _probe_stack_words", guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_STACK_WORDS "', guest)
+        self.assertIn("def _probe_main_stack_words", guest)
+        self.assertIn("def _probe_syscall_sp", guest)
+        self.assertIn('"mode": mode', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_MAIN_STACK_WORDS "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_COMPOSITOR "', guest)
+        self.assertIn("def _probe_thread_futexes", guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_THREAD_FUTEX "', guest)
+        self.assertIn("def _probe_pipe_fd", guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_IPC_FD "', guest)
+        self.assertIn("PROBE_POKE_SIGNAL = signal.SIGCONT", guest)
+        self.assertIn("def _probe_poke_plan", guest)
+        self.assertIn("ASTERINAS_FIREFOX_PROBE_POKE", guest)
+        self.assertIn("def _probe_thread_tids", guest)
+        self.assertIn("def _probe_tgkill", guest)
+        self.assertIn("def _probe_poke", guest)
+        self.assertIn("def _probe_main_block_age", guest)
+        self.assertIn("def _probe_thread_stack_marker", guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_THREAD_STACK "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_THREAD_STACK_WORD "', guest)
+        self.assertIn("def _probe_syscall_fp", guest)
+        self.assertIn("def _probe_frame_chain", guest)
+        self.assertIn("def _probe_pollfds", guest)
+        self.assertIn("def _probe_external_processes", guest)
+        self.assertIn("def _probe_x_stimulus", guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_XSTIM "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_EXTERNAL "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_POLLFD "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_FRAME_CHAIN "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_FRAME "', guest)
+        self.assertIn("def _probe_new_session_with_pokes", guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_BLOCK "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_POKE "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_POKE_EFFECT "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_POKE_SKIPPED "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_NEWSESSION_RESULT "', guest)
+        self.assertIn("libc.syscall(", guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_FUTEX_VALUE "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_FUTEX_STACK "', guest)
+        self.assertIn('"FIREFOX_DRM_PROBE_SAMPLE_FUTEX "', guest)
+        self.assertIn('"futex_owner"', guest)
+        self.assertIn("name={thread.get('Name', 'unknown')}", guest)
+        self.assertIn('user_pref("webgl.disabled", true);', guest)
+        self.assertIn("ASTERINAS_FIREFOX_WEBGL_DISABLED", guest)
+        self.assertIn('user_pref("identity.fxaccounts.enabled", false);', guest)
+        self.assertIn("ASTERINAS_FIREFOX_FXA_DISABLED", guest)
+        self.assertIn("ASTERINAS_FIREFOX_WEBRENDER_DISABLED", guest)
+        self.assertIn('"MOZ_WEBRENDER"] = "0"', guest)
+        self.assertIn("ASTERINAS_FIREFOX_WEBRENDER_SOFTWARE", guest)
+        self.assertIn('"LIBGL_ALWAYS_SOFTWARE"] = "1"', guest)
+        self.assertIn('"FIREFOX_DRM_PROFILE webrender_software=1 source=probe"', guest)
+        self.assertIn('"FIREFOX_DRM_PROFILE webrender_disabled=1 source=probe"', guest)
+        self.assertIn('"FIREFOX_DRM_PROFILE webgl_disabled=1 source=probe"', guest)
         self.assertIn('FIREFOX_DRM_ACCESS ', guest)
         self.assertIn('FIREFOX_DRM_EGL_PROBE ', guest)
         self.assertIn('FIREFOX_DRM_GLXTEST ', guest)
@@ -333,6 +468,7 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
         self.assertIn('os.environ["ASTERINAS_MARIONETTE_DIAGNOSTICS"] = "1"', guest)
         self.assertIn('"ASTERINAS_MARIONETTE_DIAGNOSTICS": "1"', guest)
         self.assertIn('"strictFileInteractability": True', guest)
+        self.assertIn('"moz:windowless": True', guest)
         self.assertIn("def _new_session_capabilities", guest)
         self.assertIn("ASTERINAS_FIREFOX_NEWSESSION_CAPS", guest)
         self.assertIn("FIREFOX_DRM_PHASE_METRIC", guest)

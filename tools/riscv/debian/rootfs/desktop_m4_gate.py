@@ -458,6 +458,52 @@ class DesktopM4DrmOperations(DesktopM4Operations):
         replacement = f"{marker} systemd.setenv=ASTERINAS_FIREFOX_PROFILE_DIR={raw}"
         self._bootargs = self._bootargs.replace(marker, replacement)
 
+    def _select_dri_trace(self) -> None:
+        """Append the opt-in DRM ioctl trace for a diagnostic probe.
+
+        The probe command line carries a ``--`` separator before the init
+        arguments, and a kernel parameter appended after it would be handed to
+        init instead of the kernel.
+        """
+
+        if os.environ.get("ASTERINAS_DRI_TRACE") != "1":
+            return
+        separator = " -- "
+        index = self._bootargs.find(separator)
+        if index >= 0:
+            self._bootargs = (
+                f"{self._bootargs[:index]} asterinas.dri_trace=1"
+                f"{self._bootargs[index:]}"
+            )
+        else:
+            self._bootargs = f"{self._bootargs} asterinas.dri_trace=1"
+
+    def _select_dri_pool_mb(self) -> None:
+        """Pass a diagnostic GEM pool size to the kernel.
+
+        Like the trace switch, the parameter belongs before the ``--``
+        separator; after it the kernel never sees it.
+        """
+
+        raw = os.environ.get("ASTERINAS_DRI_POOL_MB", "").strip()
+        if not raw:
+            return
+        try:
+            value = int(raw)
+        except ValueError as error:
+            raise GateFailure("dri-pool-mb: expected an integer") from error
+        if not 16 <= value <= 1024:
+            raise GateFailure("dri-pool-mb: expected 16..1024")
+        parameter = f" asterinas.dri_pool_mb={value}"
+        separator = " -- "
+        index = self._bootargs.find(separator)
+        if index >= 0:
+            self._bootargs = (
+                f"{self._bootargs[:index]}{parameter}{self._bootargs[index:]}"
+            )
+        else:
+            self._bootargs = f"{self._bootargs}{parameter}"
+
     def _select_firefox_probe_timeout(self) -> None:
         """Pass the bounded host-selected probe budget into the guest."""
 
@@ -465,6 +511,15 @@ class DesktopM4DrmOperations(DesktopM4Operations):
         marker = "systemd.setenv=ASTERINAS_FIREFOX_PROBE_ONLY=1"
         replacement = f"{marker} systemd.setenv=ASTERINAS_FIREFOX_PROBE_TIMEOUT={value:g}"
         self._bootargs = self._bootargs.replace(marker, replacement, 1)
+        # The boot watchdog must outlive the guest probe receipt.  The base
+        # probe bootargs hard-code 600 seconds for the default 300-second
+        # budget; a longer diagnostic budget needs the same margin.
+        reboot_after = max(600, int(value) + 300)
+        self._bootargs = self._bootargs.replace(
+            "asterinas.reboot_after=600",
+            f"asterinas.reboot_after={reboot_after}",
+            1,
+        )
 
     def validate_inputs(
         self, config: GateConfig, snapshots: Mapping[str, str]
@@ -496,6 +551,8 @@ class DesktopM4DrmOperations(DesktopM4Operations):
                         "systemd.setenv=ASTERINAS_FIREFOX_REMOTE_TRACE=1",
                     )
                 self._select_firefox_profile_dir()
+                self._select_dri_trace()
+            self._select_dri_pool_mb()
         return identity
 
     def run_protocol(self, session: dict[str, Any], config: GateConfig) -> None:

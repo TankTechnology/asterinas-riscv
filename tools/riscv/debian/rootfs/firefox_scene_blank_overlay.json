@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "profile": "desktop-m4-firefox",
+  "files": [
+    {
+      "source": "firefox_drm_scene_gate.py",
+      "destination": "/usr/lib/asterinas/firefox-drm-scene-gate",
+      "mode": "0755"
+    },
+    {
+      "source": "firefox_scene_blank.service",
+      "destination": "/etc/systemd/system/firefox-drm-scene.service",
+      "mode": "0644"
+    }
+  ]
+}
