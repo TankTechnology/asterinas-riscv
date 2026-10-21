@@ -1203,14 +1203,25 @@ EOF
                 ln -sfn /dev/null "$stage/etc/systemd/system/serial-getty@hvc0.service"
                 ln -sfn /dev/null "$stage/etc/systemd/system/serial-getty@ttyS0.service"
                 # The kernel forwards the ACPI power button as SIGPWR and
-                # systemd starts sigpwr.target for it.  Turn that request into
-                # a real poweroff so QEMU's `system_powerdown` (and a cloud
-                # stop request) leaves the guest off through S5.
-                install -d -m 0755 -- "$stage/etc/systemd/system/sigpwr.target.d"
-                cat >"$stage/etc/systemd/system/sigpwr.target.d/asterinas-power.conf" <<'EOF'
+                # systemd starts sigpwr.target for it.  A drop-in that merely
+                # adds `Wants=poweroff.target` does not start the shutdown:
+                # special targets are started by the manager objective, not as
+                # a dependency.  A unit wanted by sigpwr.target that calls
+                # `systemctl poweroff` does reach the ordinary shutdown path,
+                # so QEMU's `system_powerdown` (and a cloud stop request)
+                # leaves the guest off through S5.
+                cat >"$stage/etc/systemd/system/asterinas-sigpwr-poweroff.service" <<'EOF'
 [Unit]
-Wants=poweroff.target
+Description=Power off on ACPI power button (SIGPWR)
+
+[Service]
+Type=oneshot
+KeyringMode=inherit
+ExecStart=/bin/systemctl --no-block poweroff
 EOF
+                install -d -m 0755 -- "$stage/etc/systemd/system/sigpwr.target.wants"
+                ln -sfn ../asterinas-sigpwr-poweroff.service \
+                    "$stage/etc/systemd/system/sigpwr.target.wants/asterinas-sigpwr-poweroff.service"
             fi
             if [[ "$PROFILE" == systemd-ext4-m6-userspace ]]; then
                 install -D -m 0644 /dev/null "$stage/etc/asterinas-userspace-m6"
