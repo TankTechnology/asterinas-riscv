@@ -583,3 +583,24 @@ dma-fence 在本树不可行（无子系统），替代为 IRQ 计数 + `read_of
 
 **下一步：P3 路线拍板**。上面的「P3 决策简报」给出 A/B 两案；P3 实现不在
 本计划内，等人工选定后再开新计划。
+
+---
+
+## 2026-10-22 P3 路线拍板：方案 B（纯 Rust）
+
+用户已确认 P3 走**纯 Rust 重写**，不再按 A/B 待定处理。内核侧按能力递进拆成
+B1–B5，每项独立 bounded、单独证据与 commit：
+
+| 项 | 内容 | 验收物 |
+|---|---|---|
+| **B1（本轮）** | KCCB/FWCCB 完整命令队列：多 slot、写指针推进、return slot 回读、IRQ 唤醒完成等待 | ktest + `ASTERINAS_POWERVR_KCCB_PIPELINE count=N` + `docs/porting/evidence/2026-10-22-asterinas-powervr-kccb-pipeline.md` |
+| B1b（后续） | OS-online 握手（`RGXFWIF_OS_STATE_CHANGE_DATA` 最小字段 + ONLINE 状态位） | 板级 marker；若固件拒绝则记录原因并保持诊断命令流水 |
+| B2 | 固件 MMU 上下文 + GPU VA/页表 + PMR 等价缓冲映射 | 作业可读写缓冲的板级 marker/ktest |
+| B3 | DRM render node + GEM/PRIME（PMR handle 或池偏移二选一） | libdrm 风格 create/map/export/import 收据 |
+| B4 | fence/sync：时间线、可等待 fd、dma-fence 等价物（syncobj 或 PVR sw_sync 语义） | kick 完成可 poll 的收据 |
+| B5 | GLES 后端路线 | 路线拍板 + 首个 GLES clear 收据 |
+
+**B5 预研备注**：上游 Mesa 的 PowerVR 驱动是 **Vulkan-only**
+（`src/imagination`，支持 Rogue 起的 GPU；`pvrsrvkm` winsys 是 Rogue 时代的
+bridge ABI，与 DDK 24.2 Volcanic 的函数编号/结构不兼容）。B5 需在
+“复活/移植 Mesa Vulkan + Zink”与“自写最小 GLES”之间再拍板，不阻塞 B1–B4。

@@ -21,7 +21,8 @@ use super::{
     },
     dma::{
         FIRMWARE_STATUS_SIZE, GpuDmaAllocation, GpuFirmwareStage,
-        RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL, RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED,
+        RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL, RGXFWIF_KCCB_CMD_HEALTH_CHECK,
+        RGXFWIF_KCCB_CMD_STATEFLAGS_CTRL, RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED,
         RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE,
     },
     inspect_gpu_crg_dt,
@@ -642,46 +643,67 @@ impl PowerControlFile {
             }
         };
 
-        // Native-mode connection probe: enqueue one HEALTH_CHECK, kick the
-        // GP data master and wait for the firmware to consume it. The wait is
-        // interrupt-driven when the handler is installed; the KCCB read
-        // offset remains the completion truth.
-        let slot = staging
-            .enqueue_health_check()
+        // Native-mode KCCB pipeline: enqueue several commands into successive
+        // slots before one MTS kick. HEALTH_CHECK is fire-and-forget;
+        // STATEFLAGS_CTRL with a zero payload is the vendor's scoped
+        // slot-wait command, so its return slot exercises the rtn path
+        // without changing any firmware state.
+        const PIPELINE: [u32; 4] = [
+            RGXFWIF_KCCB_CMD_HEALTH_CHECK,
+            RGXFWIF_KCCB_CMD_STATEFLAGS_CTRL,
+            RGXFWIF_KCCB_CMD_HEALTH_CHECK,
+            RGXFWIF_KCCB_CMD_STATEFLAGS_CTRL,
+        ];
+        let mut slots = [0u32; PIPELINE.len()];
+        for (index, cmd_type) in PIPELINE.iter().enumerate() {
+            slots[index] = staging
+                .kccb_enqueue(*cmd_type)
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        }
+        let enqueued = staging
+            .kccb_offsets()
             .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        let final_write = enqueued.write;
+
         StartIo::write32(&mut *io, RGX_CR_MTS_SCHEDULE, 0)
             .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
         // The uncached read-back fences the kick through the interconnect.
         let _ = StartIo::read32(&mut *io, RGX_CR_MTS_SCHEDULE);
         let irq_before = irq::event_count();
         let started_at = aster_time::read_monotonic_time();
-        let mut rtn = RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE;
         let mut consumed = false;
         let mut irq_seen = false;
+        let mut last = enqueued;
         while aster_time::read_monotonic_time().saturating_sub(started_at)
             < Duration::from_millis(100)
         {
             if irq::event_count() != irq_before {
                 irq_seen = true;
             }
-            rtn = staging
-                .health_check_return(slot)
-                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
-            let (_, read_off_now) = staging
+            last = staging
                 .kccb_offsets()
                 .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
-            // The vendor driver does not wait on a HEALTH_CHECK return
-            // slot (RGXFWHealthCheckCmd uses a fire-and-forget enqueue);
-            // the firmware acknowledges consumption by advancing read_off.
-            if read_off_now != slot || rtn == RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED {
+            // The firmware advances read_off after draining each slot; the
+            // ring is empty again when read reaches our final write offset.
+            if last.read == final_write {
                 consumed = true;
-                // Give a completion IRQ a short, bounded chance to arrive.
+                // Give the completion IRQ a short, bounded chance to arrive.
                 if irq_seen {
                     break;
                 }
             }
             spin_loop();
         }
+        let mut rtns = [RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE; PIPELINE.len()];
+        for (index, slot) in slots.iter().enumerate() {
+            rtns[index] = staging
+                .kccb_return(*slot)
+                .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        }
+        let executed = rtns
+            .iter()
+            .filter(|rtn| **rtn & RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED != 0)
+            .count();
         let (events, spurious, last_status, last_mts) = irq::diagnostics();
         aster_logger::println!(
             "ASTERINAS_POWERVR_IRQ count={} spurious={} last_status=0x{:x} mts_status=0x{:x}",
@@ -690,27 +712,65 @@ impl PowerControlFile {
             last_status,
             last_mts,
         );
-        let (write_off, read_off) = staging.kccb_offsets().unwrap_or((u32::MAX, u32::MAX));
+        let status = staging
+            .firmware_status()
+            .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
+        let (_, faults, hwr_state, hwr_count) = status.startup_diagnostics();
         if !consumed {
             aster_logger::println!(
-                "ASTERINAS_POWERVR_FW_KCCB status=timeout slot={} rtn={} write_off={} read_off={} wake=poll irq_count={}",
-                slot,
-                rtn,
-                write_off,
-                read_off,
+                "ASTERINAS_POWERVR_KCCB_PIPELINE status=timeout count={} slots={:?} rtn={:?} write_off={} read_off={} faults={} hwr_state=0x{:x} hwr_count={} wake=poll irq_count={}",
+                PIPELINE.len(),
+                slots,
+                rtns,
+                final_write,
+                last.read,
+                faults,
+                hwr_state,
+                hwr_count,
                 events,
             );
             return Err(Error::with_message(
                 Errno::ETIMEDOUT,
-                "gpu_kccb_health_check_timeout",
+                "gpu_kccb_pipeline_timeout",
             ));
         }
+        if faults != 0 {
+            aster_logger::println!(
+                "ASTERINAS_POWERVR_KCCB_PIPELINE status=faulted count={} slots={:?} rtn={:?} executed={} write_off={} read_off={} faults={} hwr_state=0x{:x} hwr_count={} wake={} irq_count={}",
+                PIPELINE.len(),
+                slots,
+                rtns,
+                executed,
+                final_write,
+                last.read,
+                faults,
+                hwr_state,
+                hwr_count,
+                if irq_seen { "irq" } else { "poll" },
+                events,
+            );
+            return Err(Error::with_message(Errno::EIO, "gpu_kccb_pipeline_faulted"));
+        }
+        // Keep the P2 marker shape for the first slot; the pipeline marker
+        // carries the whole batch.
         aster_logger::println!(
             "ASTERINAS_POWERVR_FW_KCCB status=completed slot={} rtn={} write_off={} read_off={} wake={} irq_count={}",
-            slot,
-            rtn,
-            write_off,
-            read_off,
+            slots[0],
+            rtns[0],
+            final_write,
+            last.read,
+            if irq_seen { "irq" } else { "poll" },
+            events,
+        );
+        aster_logger::println!(
+            "ASTERINAS_POWERVR_KCCB_PIPELINE status=completed count={} slots={:?} rtn={:?} executed={} write_off={} read_off={} faults={} wake={} irq_count={}",
+            PIPELINE.len(),
+            slots,
+            rtns,
+            executed,
+            final_write,
+            last.read,
+            faults,
             if irq_seen { "irq" } else { "poll" },
             events,
         );
