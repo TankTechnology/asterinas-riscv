@@ -130,6 +130,7 @@ _PROFILES = {
             "rustc",
             "cargo",
             "sqlite3",
+            "sudo",
             "systemd-sysv",
             "tar",
             "util-linux",

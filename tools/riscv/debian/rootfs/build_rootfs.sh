@@ -1197,6 +1197,37 @@ EOF
                 grep -q '^asterinas:' "$stage/etc/gshadow" ||
                     printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
                 install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
+                # The serial console account is the image's daily-use user;
+                # give it passwordless sudo so package management and service
+                # control work from the console like on a normal Debian box.
+                install -d -m 0750 -- "$stage/etc/sudoers.d"
+                cat >"$stage/etc/sudoers.d/asterinas" <<'EOF'
+Defaults !use_pty
+asterinas ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+                chmod 0440 -- "$stage/etc/sudoers.d/asterinas"
+                # sudo (and interactive tools) allocate a pty; debootstrap
+                # leaves fstab unconfigured, so /dev/pts is never mounted and
+                # sudo fails with "unable to allocate pty". Mount devpts like
+                # a normal Debian installation does.
+                cat >"$stage/etc/fstab" <<'EOF'
+# <file system> <mount point> <type> <options> <dump> <pass>
+devpts /dev/pts devpts gid=5,mode=620,ptmxmode=000 0 0
+EOF
+                # sudo resolves its own host name; without an /etc/hosts
+                # entry the lookup falls through to DNS, which is not
+                # reachable before the network is configured and makes sudo
+                # fail. Bind the image host name to the loopback alias the
+                # way Debian's installer does.
+                if [[ -s "$stage/etc/hostname" ]]; then
+                    local image_host
+                    image_host="$(tr -d '[:space:]' <"$stage/etc/hostname")"
+                    if [[ -n "$image_host" ]] &&
+                        ! grep -qE "^127\.0\.1\.1[[:space:]]+$image_host([[:space:]]|$)" \
+                            "$stage/etc/hosts"; then
+                        printf '127.0.1.1 %s\n' "$image_host" >>"$stage/etc/hosts"
+                    fi
+                fi
                 install -d -m 0755 -- "$stage/etc/systemd/system/getty.target.wants"
                 ln -sfn /usr/lib/systemd/system/console-getty.service \
                     "$stage/etc/systemd/system/getty.target.wants/console-getty.service"

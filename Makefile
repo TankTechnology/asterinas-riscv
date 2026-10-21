@@ -662,6 +662,7 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_fs_timestamps \
 		tools.x86.tests.test_x86_debian_fs_tmpfile \
 		tools.x86.tests.test_x86_debian_gate_scripts \
+		tools.x86.tests.test_x86_debian_daily_use \
 		tools.x86.tests.test_x86_debian_interactive_login \
 		tools.x86.tests.test_lmbench_transcript \
 		tools.riscv.tests.test_lmbench_native -v
@@ -688,6 +689,29 @@ test_x86_debian_interactive_login:
 		--workspace "$(X86_DEBIAN_LOGIN_WORKSPACE)" \
 		--accel "$(X86_DEBIAN_LOGIN_ACCEL)" \
 		--timeout "$(X86_DEBIAN_LOGIN_TIMEOUT)"
+
+# Daily-use gate: serial login as the image's own account, identity and wall
+# clock, editing a file in $HOME, passwordless sudo + `apt-get update` over
+# the QEMU slirp network, and a power-button power-off through the monitor.
+#   X86_DEBIAN_DAILY_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_DAILY_BASE_ROOT ?=
+X86_DEBIAN_DAILY_WORKSPACE ?= $(CURDIR)/target/x86-debian/daily
+X86_DEBIAN_DAILY_ACCEL ?= kvm
+X86_DEBIAN_DAILY_TIMEOUT ?= 600
+
+.PHONY: test_x86_debian_daily_use
+test_x86_debian_daily_use:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_DAILY_BASE_ROOT)" || { echo "X86_DEBIAN_DAILY_BASE_ROOT is required" >&2; exit 2; }
+	@echo "daily-use: base=$(X86_DEBIAN_DAILY_BASE_ROOT) accel=$(X86_DEBIAN_DAILY_ACCEL)"
+	@tools/x86/debian/daily_use_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_DAILY_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_DAILY_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_DAILY_ACCEL)" \
+		--timeout "$(X86_DEBIAN_DAILY_TIMEOUT)"
 
 # Boot the Debian root image on the x86_64 kernel and wait for the marker.
 # X86_DEBIAN_KERNEL must be an OSDK x86_64 artifact built with
