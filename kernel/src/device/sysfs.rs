@@ -54,6 +54,12 @@ pub(super) fn init_in_first_process() -> Result<()> {
         let root = crate::fs::sysfs::systree_singleton().root();
         root.add_child(devices)?;
         root.add_child(dev)?;
+    } else if !crate::device::dri::exposed_nodes().is_empty() {
+        // The firmware framebuffer backend has DRM character devices but no
+        // virtio bus.  Publish the minimal Linux-shaped class and
+        // /sys/dev/char entries libdrm needs to identify card0/renderD128.
+        let root = crate::fs::sysfs::systree_singleton().root();
+        root.add_child(build_firmware_drm_dev_node()?)?;
     }
     root.add_child(bus_node as Arc<dyn SysObj>)?;
     Ok(())
@@ -76,10 +82,12 @@ fn build_class_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
     graphics_class_node.add_child(framebuffer_node as Arc<dyn SysObj>)?;
     class_node.add_child(graphics_class_node as Arc<dyn SysObj>)?;
 
-    if crate::device::dri::driver_name() == crate::device::dri::DRIVER_NAME
-        && !crate::device::dri::exposed_nodes().is_empty()
-    {
-        class_node.add_child(build_drm_class_node()? as Arc<dyn SysObj>)?;
+    if !crate::device::dri::exposed_nodes().is_empty() {
+        if crate::device::dri::driver_name() == crate::device::dri::DRIVER_NAME {
+            class_node.add_child(build_drm_class_node()? as Arc<dyn SysObj>)?;
+        } else {
+            class_node.add_child(build_firmware_drm_class_node()? as Arc<dyn SysObj>)?;
+        }
     }
 
     // The DRM class is attached after the root is built, because its device
@@ -132,6 +140,99 @@ fn build_drm_class_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
     }
     Ok(drm_class)
 }
+
+/// Minimal `/sys/class/drm` for the firmware framebuffer backend.
+fn build_firmware_drm_class_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
+    build_firmware_drm_class_node_for(crate::device::dri::exposed_nodes())
+}
+
+fn build_firmware_drm_class_node_for(
+    nodes: &[(&'static str, u32)],
+) -> SysTreeResult<Arc<AttrLessSysNode>> {
+    let drm_class = AttrLessSysNode::new("drm");
+    for &(name, minor) in nodes {
+        drm_class.add_child(FirmwareDrmMinorSysNode::new(name, minor) as Arc<dyn SysObj>)?;
+    }
+    Ok(drm_class)
+}
+
+/// `/sys/dev/char` symlinks for the firmware backend.
+fn build_firmware_drm_dev_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
+    build_firmware_drm_dev_node_for(crate::device::dri::exposed_nodes())
+}
+
+fn build_firmware_drm_dev_node_for(
+    nodes: &[(&'static str, u32)],
+) -> SysTreeResult<Arc<AttrLessSysNode>> {
+    let dev = AttrLessSysNode::new("dev");
+    let char_node = AttrLessSysNode::new("char");
+    for &(name, minor) in nodes {
+        char_node.add_child(SysfsSymlink::new(
+            &alloc::format!("{}:{}", crate::device::dri::DRM_MAJOR, minor),
+            &alloc::format!("../../class/drm/{name}"),
+        ) as Arc<dyn SysObj>)?;
+    }
+    dev.add_child(char_node as Arc<dyn SysObj>)?;
+    Ok(dev)
+}
+
+fn drm_dev_attr(minor: u32) -> String {
+    alloc::format!("{}:{}\n", crate::device::dri::DRM_MAJOR, minor)
+}
+
+fn drm_uevent_attr(node_name: &str, minor: u32) -> String {
+    alloc::format!(
+        "MAJOR={}\nMINOR={}\nDEVNAME=dri/{node_name}\nDEVTYPE=drm_minor\n",
+        crate::device::dri::DRM_MAJOR,
+        minor
+    )
+}
+
+/// A `/sys/class/drm/card0` or `renderD128` node with only the attributes
+/// libdrm's node-type/device discovery needs.
+#[derive(Debug)]
+struct FirmwareDrmMinorSysNode {
+    fields: BranchNodeFields<dyn SysObj, Self>,
+    minor: u32,
+    node_name: &'static str,
+}
+
+impl FirmwareDrmMinorSysNode {
+    fn new(node_name: &'static str, minor: u32) -> Arc<Self> {
+        let mut builder = SysAttrSetBuilder::new();
+        builder.add(SysStr::from("dev"), SysPerms::DEFAULT_RO_ATTR_PERMS);
+        builder.add(SysStr::from("uevent"), SysPerms::DEFAULT_RO_ATTR_PERMS);
+        let attrs = builder
+            .build()
+            .expect("failed to build the firmware DRM attribute set");
+        Arc::new_cyclic(|weak_self| Self {
+            fields: BranchNodeFields::new(SysStr::from(node_name), attrs, weak_self.clone()),
+            minor,
+            node_name,
+        })
+    }
+}
+
+inherit_sys_branch_node!(FirmwareDrmMinorSysNode, fields, {
+    fn read_attr_at(
+        &self,
+        name: &str,
+        offset: usize,
+        writer: &mut VmWriter,
+    ) -> SysTreeResult<usize> {
+        let mut printer = VmPrinter::new_skip(writer, offset);
+        match name {
+            "dev" => write!(printer, "{}", drm_dev_attr(self.minor))?,
+            "uevent" => write!(printer, "{}", drm_uevent_attr(self.node_name, self.minor))?,
+            _ => return Err(SysTreeError::AttributeError),
+        }
+        Ok(printer.bytes_written())
+    }
+
+    fn perms(&self) -> SysPerms {
+        SysPerms::DEFAULT_RO_PERMS
+    }
+});
 
 pub(super) fn active_vt_attr_value(index: u32) -> String {
     alloc::format!("tty{}\n", index)
@@ -451,6 +552,34 @@ mod test {
             .unwrap();
 
         assert_eq!(subsystem.target_path(), FRAMEBUFFER_SUBSYSTEM_TARGET);
+    }
+
+    #[ktest]
+    fn gpu_drm_sysfs_nodes() {
+        let nodes = [("card0", 0u32), ("renderD128", 128u32)];
+        let class = build_firmware_drm_class_node_for(&nodes).unwrap();
+        for &(name, minor) in nodes.iter() {
+            let branch = class.child(name).unwrap().cast_to_branch().unwrap();
+            let mut buf = [0u8; 64];
+            let mut writer = ostd::mm::VmWriter::from(&mut buf[..]).to_fallible();
+            let read = branch.read_attr_at("dev", 0, &mut writer).unwrap();
+            assert_eq!(&buf[..read], drm_dev_attr(minor).as_bytes());
+
+            let mut buf = [0u8; 96];
+            let mut writer = ostd::mm::VmWriter::from(&mut buf[..]).to_fallible();
+            let read = branch.read_attr_at("uevent", 0, &mut writer).unwrap();
+            let uevent = core::str::from_utf8(&buf[..read]).unwrap();
+            assert!(uevent.contains(&alloc::format!("DEVNAME=dri/{name}")));
+        }
+
+        let dev = build_firmware_drm_dev_node_for(&nodes).unwrap();
+        let char_node = dev.child("char").unwrap().cast_to_branch().unwrap();
+        let render = char_node
+            .child("226:128")
+            .unwrap()
+            .cast_to_symlink()
+            .unwrap();
+        assert_eq!(render.target_path(), "../../class/drm/renderD128");
     }
 
     #[ktest]
