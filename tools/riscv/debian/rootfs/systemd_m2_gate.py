@@ -255,7 +255,9 @@ def orchestrate_systemd_m2_gate(
         try:
             final_root_sha256 = operations.hash_final_root(config, prepared)
         except BaseException as error:
-            reason = _reason(error, "hash-final-root")
+            reason = _reason(
+                error, f"hash-final-root: {type(error).__name__}: {error}"
+            )
 
     result: dict[str, object] = {
         "passed": reason is None,

@@ -32,6 +32,7 @@ from tools.riscv.debian.rootfs.firefox_drm_scene_gate import (  # noqa: E402
     _new_session_capabilities,
     _spawn,
     _start_browser_watchers,
+    _stop,
     _stop_browser_watchers,
     _write_profile,
     _probe_compact_snapshot,
@@ -113,6 +114,21 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
         self.assertIn("FIREFOX_DRM_BROWSER_EXIT", text)
         self.assertIn(f"pid={process.pid}", text)
         self.assertIn("returncode=-11", text)
+
+    def test_stop_tolerates_an_unreaped_zombie(self) -> None:
+        class StubbornProcess:
+            pid = 2**31 - 4
+
+            def poll(self) -> None:
+                return None
+
+            def wait(self, timeout: float | None = None) -> int:
+                raise subprocess.TimeoutExpired(self.pid, timeout or 0)
+
+        output = StringIO()
+        with patch("os.killpg", return_value=None), redirect_stdout(output):
+            _stop(StubbornProcess())
+        self.assertIn("FIREFOX_DRM_STOP un-reaped", output.getvalue())
 
     def test_browser_exit_watch_reports_a_death_that_races_stop(self) -> None:
         class RacyProcess:

@@ -812,7 +812,20 @@ def _stop(process: subprocess.Popen[bytes]) -> None:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            process.wait(timeout=5)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                # The child can already be a zombie whose status this kernel
+                # has not reported to wait4 yet (r177 showed /proc State=Z
+                # while poll() still returned None). The process is gone and
+                # its Marionette port is closed; failing the whole run here
+                # would discard an otherwise complete scene receipt.
+                print(
+                    "FIREFOX_DRM_STOP un-reaped "
+                    f"pid={process.pid} poll={process.poll()} "
+                    "reason=wait_timeout_after_sigkill",
+                    flush=True,
+                )
 
 
 def _browser_watch(process: subprocess.Popen[bytes], stop: threading.Event) -> None:
@@ -1033,6 +1046,54 @@ def _browser_postmortem_children(parent_pid: int) -> None:
         )
         printed += 1
         if printed >= 12:
+            return
+
+
+_RESIDUE_COMM_PREFIXES = (
+    "firefox-esr",
+    "Socket Process",
+    "Web Content",
+    "Isolated Web",
+    "RDD Process",
+    "Utility Process",
+    "forkserver",
+)
+
+
+def _recovery_residue_marker() -> None:
+    """List Firefox processes that outlived the first browser.
+
+    A surviving Socket Process keeps port 2828 bound; the recovery
+    connection is then accepted by a browser whose parent is gone and is
+    reset, which is one of the ways r188 failed recovery.
+    """
+
+    printed = 0
+    for entry in sorted(Path("/proc").iterdir()):
+        if not entry.name.isdigit():
+            continue
+        try:
+            comm = (entry / "comm").read_text(
+                encoding="utf-8", errors="replace"
+            ).strip()
+        except OSError:
+            continue
+        if not any(comm.startswith(prefix) for prefix in _RESIDUE_COMM_PREFIXES):
+            continue
+        pid = int(entry.name)
+        state = "unknown"
+        status = _probe_read(entry / "status")
+        if not status.startswith("<unavailable:"):
+            match = re.search(r"^State:\s+(.*)$", status, re.MULTILINE)
+            if match:
+                state = "_".join(match.group(1).split())
+        print(
+            "FIREFOX_DRM_RECOVERY_RESIDUE "
+            f"pid={pid} comm={'_'.join(comm.split())[:40]} state={state}",
+            flush=True,
+        )
+        printed += 1
+        if printed >= 16:
             return
 
 
@@ -3278,7 +3339,11 @@ def main() -> int:
         f"source={support_source}",
         flush=True,
     )
-    print(f"FIREFOX_DRM_GL renderer={scene_renderer or 'unreported'}", flush=True)
+    print(
+        "FIREFOX_DRM_GL "
+        f"renderer={'_'.join(scene_renderer.split()) or 'unreported'}",
+        flush=True,
+    )
     width, height, digest = first_evidence["screenshot"]
     print(f"FIREFOX_DRM_SCREENSHOT width={width} height={height} sha256={digest}", flush=True)
     samples = first_evidence["samples"]
@@ -3292,23 +3357,41 @@ def main() -> int:
         flush=True,
     )
     _phase("spawn-second")
+    _recovery_residue_marker()
     _clear_profile_lock()
     second = _spawn()
     second_watch_stop, second_watch_threads = _start_browser_watchers(second)
+    recovered = False
     try:
         _phase("recovery")
         deadline = time.monotonic() + SCENE_TIMEOUT
         client = _connect("127.0.0.1", MARIONETTE_PORT, deadline)
         try:
-            status = _command(client, "WebDriver:Status", None, deadline)
-            if not isinstance(status, dict) or status.get("ready") is not True:
+            # Marionette does not implement WebDriver:Status (it answers
+            # "unknown command"); only a real NewSession proves the restarted
+            # browser can serve a session again.
+            session = _command(
+                client,
+                "WebDriver:NewSession",
+                _new_session_capabilities(),
+                deadline,
+                limit=NEW_SESSION_TIMEOUT,
+            )
+            if not isinstance(session, dict) or not isinstance(
+                session.get("sessionId"), str
+            ):
                 raise GateError("Firefox did not recover after restart")
         finally:
             client.close()
         print("FIREFOX_DRM_RECOVERY restart=pass", flush=True)
+        recovered = True
     finally:
         _stop_browser_watchers(second, second_watch_stop, second_watch_threads)
         _stop(second)
+        if not recovered:
+            # The second browser writes to the same captured log; without
+            # this a reset during recovery has no explainable cause.
+            _browser_log_marker()
     return 0
 
 
