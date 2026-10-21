@@ -27,6 +27,7 @@ mod eic7700;
 #[cfg(all(target_arch = "riscv64", feature = "eic7700_native_scanout"))]
 mod eic7700_contract;
 mod fence;
+mod powervr_bridge;
 #[cfg(all(target_arch = "riscv64", feature = "powervr_probe"))]
 mod powervr_probe;
 mod prime;
@@ -1275,6 +1276,10 @@ mod ioctl_defs {
         DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuExecbufferV2, DrmVirtgpuGetCaps,
         DrmVirtgpuGetparam, DrmVirtgpuMap, DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo,
         DrmVirtgpuTransfer3d, DrmVirtgpuWait,
+        powervr_bridge::{
+            DrmPvrSrvkmCmd, PvrSrvkmInitData, PvrSwSyncCreateFenceData, PvrSwTimelineAdvanceData,
+            PvrSyncRenameData,
+        },
     };
     use crate::util::ioctl::{InData, InOutData, NoData, OutData, ioc};
 
@@ -1340,6 +1345,41 @@ mod ioctl_defs {
         b'd',
         0xCB,
         InOutData<DrmSyncobjTimelineArray>
+    );
+    // The vendor PVR DRM ioctls (`include/drm/pvr_drm.h`). Directions and
+    // argument sizes are part of the command number: the sync commands mix
+    // `_IOW`, `_IOR` and `_IOWR`, and the two create-fence variants are 48-byte
+    // packed structures.
+    pub(super) type PvrSrvkmCmd =
+        ioc!(DRM_IOCTL_PVR_SRVKM_CMD, b'd', 0x40, InOutData<DrmPvrSrvkmCmd>);
+    pub(super) type PvrSyncRename =
+        ioc!(DRM_IOCTL_PVR_SYNC_RENAME_CMD, b'd', 0x41, InData<PvrSyncRenameData>);
+    pub(super) type PvrSyncForceSwOnly = ioc!(DRM_IOCTL_PVR_SYNC_FORCE_SW_ONLY_CMD, b'd', 0x42, NoData);
+    pub(super) type PvrSwSyncCreateFence = ioc!(
+        DRM_IOCTL_PVR_SW_SYNC_CREATE_FENCE_CMD,
+        b'd',
+        0x43,
+        InOutData<PvrSwSyncCreateFenceData>
+    );
+    pub(super) type PvrSwSyncInc = ioc!(
+        DRM_IOCTL_PVR_SW_SYNC_INC_CMD,
+        b'd',
+        0x44,
+        OutData<PvrSwTimelineAdvanceData>
+    );
+    pub(super) type PvrSrvkmInit =
+        ioc!(DRM_IOCTL_PVR_SRVKM_INIT, b'd', 0x45, InData<PvrSrvkmInitData>);
+    pub(super) type PvrExpFenceSyncForce = ioc!(
+        DRM_IOCTL_PVR_EXP_FENCE_SYNC_FORCE_CMD,
+        b'd',
+        0x46,
+        InOutData<PvrSwSyncCreateFenceData>
+    );
+    pub(super) type PvrSyncCreateExportFence = ioc!(
+        DRM_IOCTL_PVR_SYNC_CREATE_EXPORT_FENCE_CMD,
+        b'd',
+        0x47,
+        InOutData<PvrSwSyncCreateFenceData>
     );
     // The virtgpu ioctls live at `DRM_COMMAND_BASE` (0x40) plus their number.
     pub(super) type VirtgpuMap = ioc!(DRM_IOCTL_VIRTGPU_MAP, b'd', 0x41, InOutData<DrmVirtgpuMap>);
@@ -1428,6 +1468,15 @@ fn is_render_allowed(raw_ioctl: RawIoctl) -> bool {
         || SyncobjDestroy::try_from_raw(raw_ioctl).is_some()
         || SyncobjWait::try_from_raw(raw_ioctl).is_some()
         || SyncobjQuery::try_from_raw(raw_ioctl).is_some()
+        // The vendor PVR ioctls are all `DRM_RENDER_ALLOW` on the render node.
+        || PvrSrvkmCmd::try_from_raw(raw_ioctl).is_some()
+        || PvrSyncRename::try_from_raw(raw_ioctl).is_some()
+        || PvrSyncForceSwOnly::try_from_raw(raw_ioctl).is_some()
+        || PvrSwSyncCreateFence::try_from_raw(raw_ioctl).is_some()
+        || PvrSwSyncInc::try_from_raw(raw_ioctl).is_some()
+        || PvrSrvkmInit::try_from_raw(raw_ioctl).is_some()
+        || PvrExpFenceSyncForce::try_from_raw(raw_ioctl).is_some()
+        || PvrSyncCreateExportFence::try_from_raw(raw_ioctl).is_some()
 }
 
 impl Device for Dri {
@@ -3383,6 +3432,38 @@ impl PerOpenFileOps for DriHandle {
                     self.syncobj_query(&req)?;
                     Ok(0)
                 }
+                cmd @ PvrSrvkmInit => {
+                    let req = cmd.read()?;
+                    powervr_bridge::init(req.init_module)?;
+                    Ok(0)
+                }
+                cmd @ PvrSrvkmCmd => {
+                    let req = cmd.read()?;
+                    powervr_bridge::srvkm(&req)?;
+                    Ok(0)
+                }
+                cmd @ PvrSyncRename => {
+                    let _req = cmd.read()?;
+                    powervr_bridge::unsupported_sync().map(|()| 0)
+                }
+                _cmd @ PvrSyncForceSwOnly => {
+                    powervr_bridge::unsupported_sync().map(|()| 0)
+                }
+                cmd @ PvrSwSyncCreateFence => {
+                    let _req = cmd.read()?;
+                    powervr_bridge::unsupported_sync().map(|()| 0)
+                }
+                _cmd @ PvrSwSyncInc => {
+                    powervr_bridge::unsupported_sync().map(|()| 0)
+                }
+                cmd @ PvrExpFenceSyncForce => {
+                    let _req = cmd.read()?;
+                    powervr_bridge::unsupported_sync().map(|()| 0)
+                }
+                cmd @ PvrSyncCreateExportFence => {
+                    let _req = cmd.read()?;
+                    powervr_bridge::unsupported_sync().map(|()| 0)
+                }
                 cmd @ PvrGemCreate => {
                     #[cfg(all(target_arch = "riscv64", feature = "powervr_probe"))]
                     {
@@ -3525,7 +3606,14 @@ pub(super) fn init_in_first_kthread() {
 mod tests {
     use ostd::prelude::ktest;
 
-    use super::{ioctl_defs::*, *};
+    use super::{
+        ioctl_defs::*,
+        powervr_bridge::{
+            DrmPvrSrvkmCmd, PvrSrvkmInitData, PvrSwSyncCreateFenceData, PvrSwTimelineAdvanceData,
+            PvrSyncRenameData,
+        },
+        *,
+    };
     use crate::util::ioctl::NoData;
 
     /// Linux requires an unsupported atomic KMS client cap to fail so clients
@@ -3678,6 +3766,14 @@ mod tests {
         SyncobjDestroy: 0xc00864c0, DrmSyncobjDestroy, 8;
         SyncobjWait: 0xc02064c3, DrmSyncobjWait, 32;
         SyncobjQuery: 0xc01864cb, DrmSyncobjTimelineArray, 24;
+        PvrSrvkmCmd: 0xc0206440, DrmPvrSrvkmCmd, 32;
+        PvrSyncRename: 0x40206441, PvrSyncRenameData, 32;
+        PvrSyncForceSwOnly: 0x00006442, NoData, 0;
+        PvrSwSyncCreateFence: 0xc0306443, PvrSwSyncCreateFenceData, 48;
+        PvrSwSyncInc: 0x80086444, PvrSwTimelineAdvanceData, 8;
+        PvrSrvkmInit: 0x40046445, PvrSrvkmInitData, 4;
+        PvrExpFenceSyncForce: 0xc0306446, PvrSwSyncCreateFenceData, 48;
+        PvrSyncCreateExportFence: 0xc0306447, PvrSwSyncCreateFenceData, 48;
     }
 
     #[ktest]
