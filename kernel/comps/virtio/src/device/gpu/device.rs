@@ -549,7 +549,11 @@ impl GpuDevice {
         width: u32,
         height: u32,
     ) -> Result<(), VirtioDeviceError> {
-        if let Some(prev) = *self.present_resource.lock() {
+        // Copy the previous id out before dropping the spinlock: the control
+        // command below waits for the device and must not run with an atomic
+        // guard held (r167 panicked with MIGHT_SLEEP_VIOLATION here).
+        let previous_resource = *self.present_resource.lock();
+        if let Some(prev) = previous_resource {
             // Best-effort cleanup: a stale resource id must not wedge a later present.
             let _ = self.resource_unref(prev);
         }

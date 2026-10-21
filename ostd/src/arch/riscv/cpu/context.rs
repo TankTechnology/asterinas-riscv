@@ -253,6 +253,10 @@ impl UserContextApi for UserContext {
     fn set_stack_pointer(&mut self, sp: usize) {
         self.set_sp(sp);
     }
+
+    fn frame_pointer(&self) -> usize {
+        self.s0()
+    }
 }
 
 macro_rules! cpu_context_impl_getter_setter {

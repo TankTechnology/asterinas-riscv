@@ -63,6 +63,11 @@ impl Pollable for FenceFile {
 }
 
 impl FileLike for FenceFile {
+    /// A fence describes one completed submission and retains no other file.
+    fn is_scm_rights_leaf(&self) -> bool {
+        true
+    }
+
     /// Reading a completed fence succeeds without producing bytes: the
     /// completion is the whole of what it has to report.
     fn read(&self, _writer: &mut VmWriter) -> Result<usize> {

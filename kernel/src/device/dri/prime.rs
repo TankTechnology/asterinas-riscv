@@ -96,6 +96,10 @@ impl Pollable for DmaBufFile {
 }
 
 impl FileLike for DmaBufFile {
+    fn is_scm_rights_leaf(&self) -> bool {
+        true
+    }
+
     fn access_mode(&self) -> AccessMode {
         self.access_mode
     }

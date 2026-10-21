@@ -271,6 +271,10 @@ impl UserContextApi for UserContext {
         self.user_context.era = ip;
     }
 
+    fn frame_pointer(&self) -> usize {
+        self.fp()
+    }
+
     fn stack_pointer(&self) -> usize {
         self.sp()
     }

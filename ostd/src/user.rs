@@ -36,6 +36,12 @@ pub trait UserContextApi {
 
     /// Gets the stack pointer
     fn stack_pointer(&self) -> usize;
+
+    /// Gets the frame pointer.
+    ///
+    /// Diagnostics use it to walk the user-space frame record chain while a
+    /// thread is blocked inside a syscall.
+    fn frame_pointer(&self) -> usize;
 }
 
 /// Code execution in the user mode.

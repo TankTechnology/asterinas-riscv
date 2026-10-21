@@ -93,6 +93,16 @@ pub trait FileLike: Pollable + Send + Sync + Any {
         return_errno_with_message!(Errno::ESPIPE, "write_at is not supported");
     }
 
+    /// Whether this file is a leaf for `SCM_RIGHTS` ownership analysis.
+    ///
+    /// A leaf may own memory or device state, but it cannot strongly retain
+    /// another file description.  Device files that only describe a buffer
+    /// or a completed submission belong here: passing them to another
+    /// process cannot create a cross-protocol ownership cycle.
+    fn is_scm_rights_leaf(&self) -> bool {
+        false
+    }
+
     fn ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
         // `ENOTTY` means that "The specified operation does not apply to the kind of object that
         // the file descriptor references".

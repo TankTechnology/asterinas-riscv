@@ -490,7 +490,8 @@ fn classify_scm_file(file: &Arc<dyn FileLike>) -> ScmFileClass {
         file.downcast_ref::<EpollFile>().is_some(),
         file.as_socket().is_some(),
         file.downcast_ref::<PidFile>().is_some(),
-    ) {
+    ) || file.is_scm_rights_leaf()
+    {
         return ScmFileClass::ProvenLeaf;
     }
 

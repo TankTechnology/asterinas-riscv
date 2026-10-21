@@ -59,7 +59,13 @@ impl ThreadDiagnostics {
 }
 
 /// Records entry before seccomp or dispatch, without touching user memory.
-pub(super) fn enter(ctx: &Context, number: u64, args: [u64; 6]) {
+pub(super) fn enter(
+    ctx: &Context,
+    number: u64,
+    args: [u64; 6],
+    user_sp: u64,
+    user_fp: u64,
+) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
@@ -86,7 +92,9 @@ pub(super) fn enter(ctx: &Context, number: u64, args: [u64; 6]) {
             None
         };
         state.entered_tid = ctx.posix_thread.tid();
-        state.calls.enter(number, args, entered_jiffies);
+        state
+            .calls
+            .enter(number, args, entered_jiffies, user_sp, user_fp);
         old_vm
     };
     // Dropping the final weak reference can free memory.

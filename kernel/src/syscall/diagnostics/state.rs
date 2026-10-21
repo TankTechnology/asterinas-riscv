@@ -13,6 +13,8 @@ pub(crate) struct Call {
     pub number: u64,
     pub args: [u64; 6],
     pub entered_jiffies: u64,
+    pub user_sp: u64,
+    pub user_fp: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,7 +77,14 @@ pub(crate) struct State {
 }
 
 impl State {
-    pub fn enter(&mut self, number: u64, args: [u64; 6], entered_jiffies: u64) {
+    pub fn enter(
+        &mut self,
+        number: u64,
+        args: [u64; 6],
+        entered_jiffies: u64,
+        user_sp: u64,
+        user_fp: u64,
+    ) {
         // Stop assigning records if the sequence space is ever exhausted,
         // rather than aliasing a previous call's sequence number.
         let Some(sequence) = self.sequence.checked_add(1) else {
@@ -88,6 +97,8 @@ impl State {
             number,
             args,
             entered_jiffies,
+            user_sp,
+            user_fp,
         });
     }
 
@@ -183,7 +194,7 @@ impl Call {
     fn fmt_fields(self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "\"sequence\":{},\"number\":{},\"args\":[{},{},{},{},{},{}],\"entered_jiffies\":{}",
+            "\"sequence\":{},\"number\":{},\"args\":[{},{},{},{},{},{}],\"entered_jiffies\":{},\"sp\":{},\"fp\":{}",
             self.sequence,
             self.number,
             self.args[0],
@@ -193,6 +204,8 @@ impl Call {
             self.args[4],
             self.args[5],
             self.entered_jiffies,
+            self.user_sp,
+            self.user_fp,
         )
     }
 }

@@ -169,6 +169,21 @@ const DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT: u64 = 6;
 /// buffers exhaust it whether or not their handles were closed.
 const DUMB_POOL_SIZE: usize = 64 * 1024 * 1024;
 
+/// Pool size in MiB, overrideable with `asterinas.dri_pool_mb` for diagnostics.
+///
+/// The bump allocator makes the ceiling cumulative, and a WebRender client can
+/// exhaust the default before its first frame on a slow TCG guest. The board
+/// keeps the default; a QEMU probe can raise it without rebuilding.
+static DUMB_POOL_MB: AtomicU32 = AtomicU32::new((DUMB_POOL_SIZE / (1024 * 1024)) as u32);
+aster_cmdline::define_kv_param!("asterinas.dri_pool_mb", DUMB_POOL_MB);
+
+fn dumb_pool_size() -> usize {
+    // Keep the request inside what a 2 GiB guest can plausibly back; an
+    // impossible value still fails cleanly at VMO allocation.
+    let mb = DUMB_POOL_MB.load(Ordering::Relaxed).clamp(16, 1024);
+    mb as usize * 1024 * 1024
+}
+
 /// Maximum scanout width/height reported by `MODE_GETRESOURCES`.
 const MAX_RESOLUTION: u32 = 8192;
 
@@ -459,7 +474,8 @@ fn prepare_native_pool() -> Result<()> {
 
     // Display selection precedes DRM-node registration, so no client can have
     // created a pool yet. Keep the expensive zeroing outside the spin lock.
-    let pool = VmoOptions::new(DUMB_POOL_SIZE)
+    let pool_size = dumb_pool_size();
+    let pool = VmoOptions::new(pool_size)
         .flags(VmoFlags::CONTIGUOUS)
         .alloc()?;
     let address = pool
@@ -472,7 +488,7 @@ fn prepare_native_pool() -> Result<()> {
     ostd::info!(
         "ASTERINAS_DC_NATIVE pool_addr={:#x} pool_size={:#x}",
         address,
-        DUMB_POOL_SIZE,
+        pool_size,
     );
     Ok(())
 }
@@ -1330,7 +1346,7 @@ fn ensure_pool(objects: &mut GemObjects) -> Result<Arc<Vmo>> {
     if let Some(pool) = objects.pool.as_ref() {
         return Ok(pool.clone());
     }
-    let pool = VmoOptions::new(DUMB_POOL_SIZE)
+    let pool = VmoOptions::new(dumb_pool_size())
         .flags(VmoFlags::CONTIGUOUS)
         .alloc()?;
     #[cfg(all(target_arch = "riscv64", feature = "eic7700_native_scanout"))]
@@ -1491,7 +1507,7 @@ fn reserve_span(objects: &mut GemObjects, size: usize) -> Result<usize> {
     let end = offset
         .checked_add(size)
         .ok_or_else(|| Error::with_message(Errno::ENOMEM, "buffer size overflows"))?;
-    if end > DUMB_POOL_SIZE {
+    if end > dumb_pool_size() {
         return_errno_with_message!(Errno::ENOMEM, "buffer pool is exhausted");
     }
     objects.next_offset = end.align_up(PAGE_SIZE);

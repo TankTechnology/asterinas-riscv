@@ -652,7 +652,13 @@ impl SyscallArgument {
 
 pub fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     let syscall_frame = SyscallArgument::new_from_context(user_ctx);
-    diagnostics::enter(ctx, syscall_frame.syscall_number, syscall_frame.args);
+    diagnostics::enter(
+        ctx,
+        syscall_frame.syscall_number,
+        syscall_frame.args,
+        user_ctx.stack_pointer() as u64,
+        user_ctx.frame_pointer() as u64,
+    );
     let profile_start = syscall_profile_begin(syscall_frame.syscall_number, ctx);
     syscall_profile_log_process_boundary(syscall_frame.syscall_number, &syscall_frame.args, ctx);
 

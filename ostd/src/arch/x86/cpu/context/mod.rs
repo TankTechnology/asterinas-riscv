@@ -484,6 +484,10 @@ impl UserContextApi for UserContext {
         self.set_rsp(sp)
     }
 
+    fn frame_pointer(&self) -> usize {
+        self.rbp()
+    }
+
     fn stack_pointer(&self) -> usize {
         self.rsp()
     }
