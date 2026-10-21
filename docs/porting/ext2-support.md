@@ -22,15 +22,53 @@ Validation lives in `super_block.rs` (`SuperBlock::try_from_with_journal`).
 | `errors=` behavior | `continue` | `remount-ro`, `panic` |
 | Revision | 0 (GoodOld), 1 (Dynamic) | other values |
 | Inode size | 128..=4096, power of two | smaller, larger, non-power-of-two |
-| Incompat features | `FILETYPE`, `EXTENTS`, `RECOVER` | `64BIT`, `META_BG`, `FLEX_BG`, `INLINE_DATA`, `MMP`, ... |
-| RO-compat features | `SPARSE_SUPER`, `LARGE_FILE`, `BTREE_DIR` | `METADATA_CSUM`, `QUOTA`, `HUGE_FILE`, `GDT_CSUM`, ... |
+| Incompat features | `FILETYPE`, `EXTENTS`, `RECOVER`, `64BIT`, `FLEX_BG`, `CSUM_SEED` | `META_BG`, `INLINE_DATA`, `MMP`, ... |
+| RO-compat features | `SPARSE_SUPER`, `LARGE_FILE`, `BTREE_DIR`, `HUGE_FILE`, `DIR_NLINK`, `EXTRA_ISIZE`, `METADATA_CSUM` | `GDT_CSUM`, `QUOTA`, ... |
 | Compat features | not validated (unknown bits are ignored) | - |
 | Fragments | fragment size must equal block size | - |
+| Group descriptors | 32 bytes, or 64 bytes with `64BIT` | other sizes, non-zero high block words |
 
-Consequences: images with `metadata_csum`, 64-bit block numbers, `flex_bg`, or
-`inline_data` cannot be mounted. The Debian builder therefore calls `mke2fs`
-with those features disabled; `build_rootfs.sh` also runs `e2fsck -fy` and
-requires a clean `e2fsck -fn` before publishing an image.
+Consequences: images with metablock groups or `inline_data` cannot be
+mounted. Default `mke2fs` images (which use `64bit`, `flex_bg` and
+`metadata_csum`) are accepted; the Debian builder still disables
+`metadata_csum` only because the older profiles predate its support. The
+builder runs `e2fsck -fy` and requires a clean `e2fsck -fn` before publishing
+an image.
+
+`64BIT` is supported for images whose block numbers still fit in 32 bits: the
+descriptor stride becomes `s_desc_size` (at least 64 bytes), the three high
+block-number words of every descriptor must be zero, and the high block-count
+words of the superblock must be zero as well. Only the classic 32-byte
+descriptor body is rewritten; the high words and the unused tail stay as they
+are on disk. `FLEX_BG` lifts the mount-time requirement that a group's block
+bitmap, inode bitmap and inode table lie inside that group's own block range:
+`mke2fs` packs them into the first group of each flex group, and their
+allocation is recorded by the bitmap of the group that physically holds them.
+`HUGE_FILE`, `DIR_NLINK` and `EXTRA_ISIZE` are capability bits; ordinary files
+keep sector-based `i_blocks` accounting and the 32-byte inode extras that
+`i_extra_isize` already describes.
+
+Uninitialized groups (`bg_flags` `BLOCK_UNINIT`/`INODE_UNINIT`, used by
+default `mke2fs` images with `metadata_csum`) are synthesized at mount: the
+block bitmap is rebuilt from the group's metadata layout (its own bitmaps,
+inode table, and superblock/descriptor copies when the group carries them)
+and the inode bitmap starts all-free. The corresponding flag is cleared when
+the group is first used, and a non-zeroed inode table is zeroed before its
+first inode is created.
+
+`metadata_csum` is implemented for both 32-byte and 64-byte descriptors. The
+seed is `s_checksum_seed` when the `csum_seed` incompat feature is set and the
+UUID CRC otherwise. Every metadata writer maintains its checksum: superblock
+(including the direct writes that set/clear `RECOVER`), group descriptors
+(with `bg_checksum` and the bitmap checksum fields), block and inode bitmaps,
+inodes, extent leaves, directory blocks (including the 12-byte tail, which
+shrinks the usable entry area and is not used on the first block of an htree
+directory) and external xattr blocks. `bg_itable_unused` is lowered when an
+inode is allocated so an in-use inode never lies in the declared unused tail.
+An inode whose `i_extra_isize` is zero still gets `i_checksum_lo` (and no
+`i_checksum_hi`), matching Linux; images whose pre-existing inodes were
+created without the large-inode area keep valid checksums after the first
+write.
 
 ## Feature matrix
 
@@ -43,20 +81,23 @@ Legend: ✅ supported, 🟡 partial (limits noted), ❌ not implemented.
 | Buffered read/write, page cache | ✅ | data=ordered style writeback |
 | Sparse files and holes | ✅ | holes read as zeros; allocation fills them |
 | Legacy indirect mapping | ✅ | 12 direct + single/double/triple indirect |
-| Extent read | 🟡 | depth 0 and depth 1 index trees |
-| Extent allocation (write) | 🟡 | append at the logical end of depth-0 and depth-1 trees, plus hole allocation for depth-0 (records are inserted in order); a full inline tree is promoted to a leaf, and appends go into the last leaf. Depth-1 hole writes and leaf splits are `EOPNOTSUPP`; new files use legacy mapping |
-| Extent writeback of existing ranges | 🟡 | depth 0 and 1 |
-| Extent truncate | 🟡 | depth 0 and 1; deeper trees are left untouched and logged |
-| 64-bit extents | ❌ | rejected as `EOPNOTSUPP` |
-| `fallocate` | 🟡 | `Allocate`, `AllocateKeepSize`, `ZeroRange`, `ZeroRangeKeepSize` and `PunchHoleKeepSize` (indirect mapping and extent trees up to depth one); collapse, insert and unshare are `EOPNOTSUPP` |
-| `O_TMPFILE` | ✅ | linked with `linkat(AT_EMPTY_PATH)`; `O_EXCL` tmpfiles are unlinkable; orphans are reclaimed on mount |
+| Extent read | ✅ | depth 0–5 (ext4's maximum), index levels walked recursively |
+| Extent allocation (write) | ✅ | appends and hole writes at any depth; records are inserted in logical order and bounded by the next record or sibling key. Full leaves and index blocks split and propagate upwards; a full in-line root grows one level |
+| Extent writeback of existing ranges | ✅ | depth 0–5 |
+| Extent truncate | ✅ | any depth; emptied leaves and index blocks are freed, an emptied root resets to depth 0, and single-child roots collapse |
+| 64-bit extents | ❌ | block numbers above 32 bits are rejected as `EOPNOTSUPP` |
+| `fallocate` | 🟡 | `Allocate`, `AllocateKeepSize`, `ZeroRange`, `ZeroRangeKeepSize` and `PunchHoleKeepSize` (indirect mapping and extent trees at any depth); collapse, insert and unshare are `EOPNOTSUPP` |
+| `O_TMPFILE` | ✅ | anonymous inode tracked on the ext4 orphan list until linked |
 | File size | ✅ | up to 2,196,873,666,560 bytes with 4 KiB blocks (indirect-mapped limit) |
 
 Because new files are created without `EXTENTS`, ordinary workloads allocate
 through the indirect-block path even on an ext4 image. Files that arrive with
 extent trees (the Debian image has several, e.g. `libLLVM`) can be read,
-written in place, and truncated; appending to them beyond the inline extents
-returns `EOPNOTSUPP`.
+written in place, appended, punched and truncated at any depth. Splitting a
+full leaf or index block propagates its new key upwards, and a full in-line
+root grows one level, mirroring ext4's tree growth. Extent block allocation
+pre-reserves the metadata blocks a split may need, so an allocation failure
+cannot leave a half-updated tree.
 
 ### Directories
 
@@ -91,10 +132,10 @@ linear; `e2fsck -D` can rebuild an index later.
 | Feature | Status | Notes |
 |---|---|---|
 | `user.*`, `trusted.*`, `security.*` | ✅ | one xattr block per inode |
-| External value blocks (`i_file_acl` pointing to EA blocks) | ❌ | `EIO` on read |
-| POSIX ACLs (`system.posix_acl_*`) | 🟡 | access ACLs stored and enforced (owner, named user, group class with mask, other); `chmod` keeps the mask/group/other entries in sync; default ACLs are stored but not inherited |
+| External value blocks (`e_value_block`) | ❌ | ext4 repurposed the field for EA inodes; a non-zero value is rejected |
+| POSIX ACLs (`system.posix_acl_*`) | ✅ | access ACLs stored and enforced (owner, named user, group class with mask, other); `chmod` keeps the mask/group/other entries in sync; default ACLs are stored and inherited on create |
 | xattr block sharing | ❌ | reference count is always 1 |
-| xattr capacity | 🟡 | value must fit the single xattr block |
+| xattr capacity | 🟡 | all values must fit the single xattr block (4096 bytes) |
 
 ### POSIX ACLs
 
@@ -113,19 +154,26 @@ entry is left alone); a minimal three-entry ACL has its group entry
 rewritten instead. An ACL that has named entries but no mask is malformed
 and is left untouched.
 
-Not yet implemented: default ACL inheritance on create (the attribute is
-stored and readable but new children do not derive an ACL from it). An
-invalid ACL value fails the access check with `EIO`/`EINVAL` rather than
-being ignored.
+Creation inherits a directory's default ACL the way Linux
+`posix_acl_create` does. A new directory receives the default ACL as both
+its access and its default ACL with the requested mode unchanged; any other
+non-symlink child gets a copy clamped by the creation mode (owner entry by
+the owner bits, named entries and mask by the group bits, other entry by the
+other bits, and the group entry by the other bits when the ACL has no mask),
+and its mode is recomputed from the clamped ACL. When clamping changes no
+permission the ACL is equivalent to the mode and is not stored. Symlinks
+carry no ACL. An invalid ACL value fails the access check with
+`EIO`/`EINVAL` rather than being ignored.
 
 ### Journal (JBD2)
 
 | Feature | Status | Notes |
 |---|---|---|
 | Internal journal | ✅ | external journals rejected |
-| Journal superblock | 🟡 | v2 only; 32-bit tags; no checksum or 64-bit tag layout |
+| Journal superblock | 🟡 | v2 only; 32-bit block numbers and tags; checksum v3 supported |
 | Writing metadata transactions | ✅ | descriptor + data + optional revoke + commit, then home blocks and checkpoint; directory data blocks join the transaction that describes them |
-| Replay after a crash | 🟡 | one descriptor per transaction; revoke-only transactions and deleted tags are `EOPNOTSUPP` |
+| Replay after a crash | ✅ | one descriptor per transaction; revoke-only transactions and legacy deleted tags are replayed, as jbd2 does |
+| Journal checksums | ✅ | incompat `csum_v3` (descriptor, revoke, commit and data-tag CRC32C), with the journal superblock resealed on every `s_start`/`s_sequence` update |
 | Journal inode geometry | 🟡 | must be contiguous for replay |
 | `noload` mount option | ✅ | skips journal replay |
 | Cache coherence after replay | ✅ | replayed home blocks bypass the in-memory caches, so bitmaps, group descriptors, the superblock and inode-table pages are reloaded before the filesystem is exposed |
@@ -196,7 +244,7 @@ entry and link count. `O_TMPFILE|O_EXCL` makes the inode unlinkable, so
 
 | Feature | Status | Notes |
 |---|---|---|
-| Block/inode bitmap allocation | ✅ | per block group; no `flex_bg` |
+| Block/inode bitmap allocation | ✅ | per block group; `flex_bg` bitmaps and inode tables may live in another group |
 | Fragmentation-aware placement | ❌ | simple goal-based allocation; TODO in `block_group.rs` |
 | Read-only remount and journal finalization | ✅ | clears `RECOVER` on a clean shutdown |
 | Crash recovery | ✅ | validated with `asterinas.ext4_fault_stage` fault injection |
@@ -213,22 +261,17 @@ The current gates cover the paths package management exercises:
 
 Known gaps that a package workload can still hit:
 
-1. **Extent files that need a hole or a mid-file write.** Allocation is
-   append-only, now at depth 0 and depth 1 (a full inline tree is promoted to
-   a leaf). Writing into a hole or into the middle of an extent file still
-   fails with `EOPNOTSUPP`; most Debian files are small or indirect-mapped,
-   which is why installation works today.
-2. **`metadata_csum` images.** Any image produced by default `mke2fs` on a
-   modern distribution is rejected at mount unless the builder disables the
-   feature.
-3. **POSIX ACLs and xattrs larger than one block.**
-4. **Journal edge cases:** revoke-only transactions, deleted tags, and
-   non-contiguous journal inodes.
-5. **Default ACL inheritance from directories.**
+1. **Large xattr values.** ext4 stores values that do not fit the xattr block
+   in EA inodes (`ea_inode`); that feature is not implemented, so each value
+   is limited to the block's free space.
+2. **Journal layout limits:** 64-bit block numbers, checksum v2 and fast
+   commit are rejected at mount, and a non-contiguous journal inode cannot be
+   replayed.
 
-The next storage milestone is therefore not "more fsck coverage" but extending
-extent allocation to depth-1 trees (existing and new holes), which is the main
-remaining blocker for arbitrary package upgrades and file rewrites.
+Default `mke2fs` images (`64bit`, `flex_bg`, `metadata_csum`, `csum_seed`) now
+mount and pass `e2fsck -fn` after real write workloads. The next storage
+milestone is the journal feature set (checksums, revoke-only transactions,
+deleted tags).
 
 ## Validation
 
@@ -236,6 +279,23 @@ remaining blocker for arbitrary package upgrades and file rewrites.
   trees, directory entries, truncation, xattr layout, timestamp extras and
   sync ordering.
 - Host gates: `test_x86_debian_storage` and `test_x86_debian_apt`.
+- `fs_ext4_features_check.sh` (`make test_x86_debian_fs_ext4_features`)
+  converts the Debian image to 64-byte descriptors and `FLEX_BG`, and mounts a
+  fresh `mke2fs -O 64bit,flex_bg,metadata_csum` image as a second disk. It
+  checks the feature words and descriptor high words before and after every
+  boot, requires at least one cross-group metadata pointer in the fresh image,
+  re-reads every written file after a remount, and runs `e2fsck -fn` on both
+  images.
+- `fs_metadata_csum_check.sh` (`make test_x86_debian_fs_metadata_csum`)
+  converts the Debian image with `tune2fs -O metadata_csum` (32-byte
+  descriptors), lets `e2fsck -fyD` add the directory tails, and then runs a
+  workload that touches every checksummed structure: inode and bitmap
+  allocation, an htree directory converted back to linear blocks, a depth-one
+  extent leaf, and an external xattr block. It also enables JBD2 checksum v3,
+  crashes the kernel right after a journal commit, requires e2fsprogs to
+  replay that journal without a checksum error, and then boots the same image
+  so the kernel's own verified replay runs. `e2fsck -fn` after every phase
+  verifies every checksum, and a host check re-reads the superblock checksum.
 - Every gate checks `e2fsck -fn` after a clean shutdown; crash tests replay the
   journal from a fault-injected boot.
 
@@ -305,6 +365,17 @@ promote the tree to depth one and the fifth allocates inside the leaf; the
 host then requires `debugfs dump_extents` to report `0/ 1`, the contents to
 survive a remount, and `e2fsck -fn` to pass. Result: **PASS**, with the
 on-disk tree reporting `0/ 1 1/ 1 0-5 <leaf> 6`.
+
+`fs_extent_depth_check.sh` (`make test_x86_debian_fs_extent_depth`) prepares
+`/deep.bin` with 5,800 blocks and punches every odd block, leaving 2,900
+singleton extents; `debugfs dump_extents` reports `0/ 2`. The first boot reads
+the punched holes, writes a pattern into every one of them (each insertion
+lands in a nearly full leaf and splits it) and verifies the result. The second
+boot punches a range spanning several leaves, truncates the file, writes into
+the resulting holes and verifies the survivors. The tree must stay at depth
+two after the write phase, must collapse to a shallower valid shape once its
+index fits in the inode, and `e2fsck -fn` must accept the image after each
+boot. Result: **PASS**.
 
 `fs_fallocate_check.sh` (`make test_x86_debian_fs_fallocate`) covers
 `ZERO_RANGE` over an existing range, past EOF, and with `KEEP_SIZE`, plus

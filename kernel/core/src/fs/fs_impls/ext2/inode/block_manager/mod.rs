@@ -12,8 +12,9 @@ use aster_block::bio::BioCompleteFn;
 use self::block_ptr_tree::ResolvedBlockRange;
 pub(super) use self::block_ptr_tree::{BlockPtrTree, RawBlockPtrs};
 use super::io_range::{IoRange, IoRangeIter};
+use super::DIR_ENTRY_TAIL_SIZE;
 use crate::{
-    fs::ext2::{fs::Ext2, prelude::*},
+    fs::ext2::{checksum, fs::Ext2, prelude::*},
     vm::page_cache::{CachePageExt, PageRun, prepare_write_page},
 };
 
@@ -36,6 +37,14 @@ pub(super) struct InodeBlockManager {
     /// Whether dirty pages are metadata: directories are journaled instead of
     /// being written home outside the transaction.
     stage_writes: bool,
+    /// Inode number, part of the directory block checksum seed.
+    ino: Ext2Ino,
+    /// Inode generation, part of the directory block checksum seed.
+    generation: u32,
+    /// Whether metadata blocks carry CRC32C checksums.
+    metadata_csum: bool,
+    /// Filesystem checksum seed.
+    csum_seed: u32,
 }
 
 impl InodeBlockManager {
@@ -46,11 +55,19 @@ impl InodeBlockManager {
         npages: usize,
         stage_writes: bool,
     ) -> Self {
+        let ino = block_ptr_tree.ino();
+        let generation = block_ptr_tree.generation();
+        let metadata_csum = block_ptr_tree.metadata_csum();
+        let csum_seed = block_ptr_tree.csum_seed();
         Self {
             block_ptr_tree: RwMutex::new(block_ptr_tree),
             npages: AtomicUsize::new(npages),
             fs,
             stage_writes,
+            ino,
+            generation,
+            metadata_csum,
+            csum_seed,
         }
     }
 
@@ -252,6 +269,19 @@ impl BlockAsPageCacheBackend for InodeBlockManager {
             };
             let mut bytes = vec![0u8; BLOCK_SIZE];
             bio_segment.copy_out(&mut bytes)?;
+            if self.metadata_csum {
+                // Directory blocks end with a 12-byte tail whose checksum
+                // covers everything before it and is seeded with the inode
+                // number and generation.
+                let tail = BLOCK_SIZE - DIR_ENTRY_TAIL_SIZE;
+                let seed = checksum::inode_seed(self.csum_seed, self.ino, self.generation);
+                let crc = checksum::crc32c(seed, &bytes[..tail]);
+                bytes[tail..tail + 4].copy_from_slice(&0u32.to_le_bytes());
+                bytes[tail + 4..tail + 6].copy_from_slice(&(12u16).to_le_bytes());
+                bytes[tail + 6] = 0;
+                bytes[tail + 7] = 0xDE;
+                bytes[tail + 8..tail + 12].copy_from_slice(&crc.to_le_bytes());
+            }
             fs.stage_metadata_block(bid, &bytes)?;
             complete_fn(BioStatus::Complete);
             return Ok(());

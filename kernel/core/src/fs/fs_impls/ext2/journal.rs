@@ -6,7 +6,7 @@
 //! on-disk validation separate lets the mount and replay code share the same
 //! strict checks when it is migrated from the Debian branch.
 
-use super::prelude::*;
+use super::{checksum, prelude::*};
 
 const MAGIC: u32 = 0xc03b3998;
 const SUPER_V2: u32 = 4;
@@ -20,6 +20,21 @@ const FLAG_ESCAPE: u32 = 1;
 const FLAG_SAME_UUID: u32 = 2;
 const FLAG_DELETED: u32 = 4;
 const FLAG_LAST_TAG: u32 = 8;
+/// `JBD2_FEATURE_INCOMPAT_REVOKE`: the journal may carry revoke records.
+const INCOMPAT_REVOKE: u32 = 0x1;
+/// `JBD2_FEATURE_INCOMPAT_CSUM_V3`: checksummed descriptor/commit/data blocks.
+const INCOMPAT_CSUM_V3: u32 = 0x10;
+/// `JBD2_CRC32C_CHKSUM`, the only journal checksum type.
+const CRC32C_CHKSUM: u8 = 4;
+/// `struct jbd2_journal_block_tail`: a trailing checksum on descriptor and
+/// revoke blocks.
+const BLOCK_TAIL_SIZE: usize = 4;
+/// Size of a checksum v3 tag (`journal_block_tag3_t`).
+const TAG3_SIZE: usize = 16;
+/// Offset of the journal superblock checksum.
+const SUPERBLOCK_CHECKSUM_OFFSET: usize = 0xFC;
+/// Offset of the journal superblock checksum type.
+const SUPERBLOCK_CHECKSUM_TYPE_OFFSET: usize = 80;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct SuperBlock {
@@ -28,6 +43,12 @@ pub(super) struct SuperBlock {
     pub(super) first: u32,
     pub(super) sequence: u32,
     pub(super) start: u32,
+    /// Whether descriptor/commit/data blocks carry checksum v3.
+    pub(super) csum_v3: bool,
+    /// The journal UUID, used by the v3 checksum seed.
+    pub(super) uuid: [u8; 16],
+    /// Checksum seed derived from the UUID.
+    pub(super) csum_seed: u32,
 }
 
 impl SuperBlock {
@@ -52,10 +73,25 @@ impl SuperBlock {
         if start != 0 && (start < first || start >= max_length) {
             return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal start");
         }
-        // Only the legacy 32-bit tag layout is decoded below. In particular,
-        // never interpret checksummed or 64-bit tags as legacy tags.
-        if be32(block, 36) != 0 || be32(block, 40) & !1 != 0 || be32(block, 44) != 0 {
+        // Only the 32-bit block numbers of the legacy and csum-v3 tag layouts
+        // are decoded; 64-bit journals and the older csum-v2 format are
+        // rejected instead of being misread.
+        let feature_compat = be32(block, 36);
+        let feature_incompat = be32(block, 40);
+        let feature_ro_compat = be32(block, 44);
+        let allowed_incompat = INCOMPAT_REVOKE | INCOMPAT_CSUM_V3;
+        if feature_compat != 0
+            || feature_incompat & !allowed_incompat != 0
+            || feature_ro_compat != 0
+        {
             return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported ext4 journal features");
+        }
+        let csum_v3 = feature_incompat & INCOMPAT_CSUM_V3 != 0;
+        let mut uuid = [0u8; 16];
+        uuid.copy_from_slice(&block[48..64]);
+        let csum_seed = checksum::seed_from_uuid(&uuid);
+        if csum_v3 && !verify_superblock_checksum(block) {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid journal superblock checksum");
         }
         Ok(Self {
             block_size,
@@ -63,6 +99,9 @@ impl SuperBlock {
             first,
             sequence,
             start,
+            csum_v3,
+            uuid,
+            csum_seed,
         })
     }
 
@@ -87,14 +126,52 @@ impl SuperBlock {
     pub(super) fn write_start(block: &mut [u8], start: u32) -> Result<()> {
         let super_block = Self::parse(block)?.with_start(start)?;
         block[28..32].copy_from_slice(&super_block.start.to_be_bytes());
+        if super_block.csum_v3 {
+            seal_superblock(block);
+        }
         Ok(())
     }
 
     pub(super) fn write_sequence(block: &mut [u8], sequence: u32) -> Result<()> {
         let super_block = Self::parse(block)?.with_sequence(sequence)?;
         block[24..28].copy_from_slice(&super_block.sequence.to_be_bytes());
+        if super_block.csum_v3 {
+            seal_superblock(block);
+        }
         Ok(())
     }
+
+    /// Returns the size of one descriptor tag on disk.
+    pub(super) const fn tag_size(&self) -> usize {
+        if self.csum_v3 { TAG3_SIZE } else { TAG_SIZE }
+    }
+
+    /// Returns the space reserved at the end of descriptor and revoke blocks.
+    pub(super) const fn block_tail_size(&self) -> usize {
+        if self.csum_v3 { BLOCK_TAIL_SIZE } else { 0 }
+    }
+}
+
+/// Verifies the CRC32C covering a checksummed journal superblock.
+fn verify_superblock_checksum(block: &[u8]) -> bool {
+    if block.len() < SUPERBLOCK_SIZE || block[SUPERBLOCK_CHECKSUM_TYPE_OFFSET] != CRC32C_CHKSUM {
+        return false;
+    }
+    let stored = be32(block, SUPERBLOCK_CHECKSUM_OFFSET);
+    let mut copy = [0u8; SUPERBLOCK_SIZE];
+    copy.copy_from_slice(&block[..SUPERBLOCK_SIZE]);
+    copy[SUPERBLOCK_CHECKSUM_OFFSET..SUPERBLOCK_CHECKSUM_OFFSET + 4].fill(0);
+    checksum::crc32c(checksum::CRC32C_INIT, &copy) == stored
+}
+
+/// Recomputes and stores the journal superblock checksum.
+fn seal_superblock(block: &mut [u8]) {
+    block[SUPERBLOCK_CHECKSUM_TYPE_OFFSET] = CRC32C_CHKSUM;
+    block[SUPERBLOCK_CHECKSUM_TYPE_OFFSET + 1..SUPERBLOCK_CHECKSUM_TYPE_OFFSET + 4].fill(0);
+    block[SUPERBLOCK_CHECKSUM_OFFSET..SUPERBLOCK_CHECKSUM_OFFSET + 4].fill(0);
+    let crc = checksum::crc32c(checksum::CRC32C_INIT, &block[..SUPERBLOCK_SIZE]);
+    block[SUPERBLOCK_CHECKSUM_OFFSET..SUPERBLOCK_CHECKSUM_OFFSET + 4]
+        .copy_from_slice(&crc.to_be_bytes());
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -107,6 +184,8 @@ pub(super) struct Header {
 pub(super) struct Tag {
     pub(super) block_number: u32,
     pub(super) flags: u32,
+    /// Checksum stored in the tag (v3 journals only; zero otherwise).
+    pub(super) checksum: u32,
 }
 
 /// In-memory encoder for the legacy, unchecksummed JBD2 transaction format.
@@ -144,18 +223,21 @@ impl JournalTransaction {
         Ok(())
     }
 
-    pub(super) fn encode(self, uuid: &[u8; 16]) -> Result<Vec<Vec<u8>>> {
+    pub(super) fn encode(self, journal: &SuperBlock) -> Result<Vec<Vec<u8>>> {
         if self.blocks.is_empty() {
             return_errno_with_message!(Errno::EINVAL, "empty ext4 journal transaction");
         }
-        // The first tag carries the 16-byte filesystem UUID and every later
-        // tag sets `FLAG_SAME_UUID` instead. Omitting the UUID makes the
-        // descriptor unreadable to both jbd2 and this module's own parser as
-        // soon as a transaction has more than one block.
-        let capacity = (BLOCK_SIZE - HEADER_SIZE - 16) / TAG_SIZE;
+        // The first tag carries the 16-byte UUID and every later tag sets
+        // `FLAG_SAME_UUID` instead. Omitting the UUID makes the descriptor
+        // unreadable to both jbd2 and this module's own parser as soon as a
+        // transaction has more than one block.
+        let tag_size = journal.tag_size();
+        let tail_size = journal.block_tail_size();
+        let capacity = (BLOCK_SIZE - HEADER_SIZE - 16 - tail_size) / tag_size;
         if self.blocks.len() > capacity {
             return_errno_with_message!(Errno::E2BIG, "ext4 journal transaction is too large");
         }
+        let sequence_bytes = self.sequence.to_be_bytes();
         let mut descriptor = vec![0; BLOCK_SIZE];
         put_be32(&mut descriptor, 0, MAGIC);
         put_be32(&mut descriptor, 4, DESCRIPTOR);
@@ -170,12 +252,33 @@ impl JournalTransaction {
                 flags |= FLAG_ESCAPE;
             }
             put_be32(&mut descriptor, offset, *block);
-            put_be32(&mut descriptor, offset + 4, flags);
-            offset += TAG_SIZE;
+            if journal.csum_v3 {
+                put_be32(&mut descriptor, offset + 4, flags);
+                put_be32(&mut descriptor, offset + 8, 0);
+                // jbd2 computes the tag checksum after the escape word (if
+                // any) has been zeroed in the logged copy.
+                let mut logged = payload.clone();
+                if flags & FLAG_ESCAPE != 0 {
+                    logged[..4].fill(0);
+                }
+                let crc = checksum::crc32c(journal.csum_seed, &sequence_bytes);
+                let crc = checksum::crc32c(crc, &logged);
+                put_be32(&mut descriptor, offset + 12, crc);
+            } else {
+                put_be32(&mut descriptor, offset + 4, flags);
+            }
+            offset += tag_size;
             if index == 0 {
-                descriptor[offset..offset + 16].copy_from_slice(uuid);
+                descriptor[offset..offset + 16].copy_from_slice(&journal.uuid);
                 offset += 16;
             }
+        }
+        if journal.csum_v3 {
+            // The tail is still zero here, and jbd2 hashes the whole block
+            // with the checksum field zeroed.
+            let tail = BLOCK_SIZE - BLOCK_TAIL_SIZE;
+            let crc = checksum::crc32c(journal.csum_seed, &descriptor);
+            put_be32(&mut descriptor, tail, crc);
         }
         let mut encoded = vec![descriptor];
         for (_, mut payload) in self.blocks {
@@ -188,6 +291,10 @@ impl JournalTransaction {
         put_be32(&mut commit, 0, MAGIC);
         put_be32(&mut commit, 4, COMMIT);
         put_be32(&mut commit, 8, self.sequence);
+        if journal.csum_v3 {
+            let crc = checksum::crc32c(journal.csum_seed, &commit);
+            put_be32(&mut commit, 16, crc);
+        }
         encoded.push(commit);
         Ok(encoded)
     }
@@ -262,13 +369,18 @@ pub(super) struct ReplayBlock {
 /// block has been validated; callers may then write the returned blocks to the
 /// filesystem, after a recovery-wide revoke pass. This helper only applies
 /// revocations in the supplied transaction; it is not a full journal replay
-/// engine. Multiple descriptors and revoke-only transactions are not supported
-/// here. No device I/O happens here.
-pub(super) fn decode_transaction(blocks: &[&[u8]], sequence: u32) -> Result<Vec<ReplayBlock>> {
+/// engine. Multiple descriptors are not supported here, and a transaction that
+/// carries only revokes has no descriptor to decode (see [`scan_log`], which
+/// handles that form). No device I/O happens here.
+pub(super) fn decode_transaction(
+    blocks: &[&[u8]],
+    sequence: u32,
+    journal: &SuperBlock,
+) -> Result<Vec<ReplayBlock>> {
     if blocks.len() < 3 {
         return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal transaction");
     }
-    let tags = parse_descriptor(blocks[0], sequence)?;
+    let tags = parse_descriptor(blocks[0], sequence, journal)?;
     let data_end = 1 + tags.len();
     if blocks.len() <= data_end {
         return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal transaction data");
@@ -277,13 +389,13 @@ pub(super) fn decode_transaction(blocks: &[&[u8]], sequence: u32) -> Result<Vec<
     let mut revoked = Vec::new();
     let mut commit_index = data_end;
     if blocks[commit_index].len() >= HEADER_SIZE && be32(blocks[commit_index], 4) == REVOKE {
-        revoked = parse_revoke(blocks[commit_index], sequence)?;
+        revoked = parse_revoke(blocks[commit_index], sequence, journal)?;
         commit_index += 1;
     }
     if blocks.len() != commit_index + 1 {
         return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal transaction length");
     }
-    validate_commit(blocks[commit_index], sequence)?;
+    validate_commit(blocks[commit_index], sequence, journal)?;
 
     let mut replay = Vec::with_capacity(tags.len());
     for (index, tag) in tags.iter().enumerate() {
@@ -299,6 +411,15 @@ pub(super) fn decode_transaction(blocks: &[&[u8]], sequence: u32) -> Result<Vec<
                 return_errno_with_message!(Errno::EUCLEAN, "invalid escaped journal block");
             }
             data[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        }
+        if journal.csum_v3 {
+            // The checksum covers the logged copy, i.e. before the escape
+            // word is restored.
+            let crc = checksum::crc32c(journal.csum_seed, &sequence.to_be_bytes());
+            let crc = checksum::crc32c(crc, blocks[index + 1]);
+            if crc != tag.checksum {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid journal data checksum");
+            }
         }
         replay.push(ReplayBlock {
             block_number: tag.block_number,
@@ -317,7 +438,11 @@ pub(super) fn decode_transaction(blocks: &[&[u8]], sequence: u32) -> Result<Vec<
 /// remove older replay entries, while a later write to the same target block
 /// replaces the older entry.  This gives the recovery writer a deterministic,
 /// last-writer-wins set without performing device I/O.
-pub(super) fn scan_log(blocks: &[&[u8]], first_sequence: u32) -> Result<Vec<ReplayBlock>> {
+pub(super) fn scan_log(
+    blocks: &[&[u8]],
+    first_sequence: u32,
+    journal: &SuperBlock,
+) -> Result<Vec<ReplayBlock>> {
     let mut replay: Vec<ReplayBlock> = Vec::new();
     let mut offset = 0;
     let mut sequence = first_sequence;
@@ -342,7 +467,7 @@ pub(super) fn scan_log(blocks: &[&[u8]], first_sequence: u32) -> Result<Vec<Repl
                         "non-contiguous ext4 journal sequence"
                     );
                 }
-                let tags = parse_descriptor(blocks[offset], sequence)?;
+                let tags = parse_descriptor(blocks[offset], sequence, journal)?;
                 let data_start = offset + 1;
                 let data_end = data_start + tags.len();
                 if data_end > blocks.len() {
@@ -364,7 +489,7 @@ pub(super) fn scan_log(blocks: &[&[u8]], first_sequence: u32) -> Result<Vec<Repl
                         "journal transaction missing commit"
                     );
                 }
-                let transaction = decode_transaction(&blocks[offset..=end], sequence)?;
+                let transaction = decode_transaction(&blocks[offset..=end], sequence, journal)?;
                 for block in transaction {
                     replay.retain(|old| old.block_number != block.block_number);
                     replay.push(block);
@@ -373,12 +498,12 @@ pub(super) fn scan_log(blocks: &[&[u8]], first_sequence: u32) -> Result<Vec<Repl
                 sequence = sequence.wrapping_add(1);
             }
             REVOKE => {
-                let revoke = parse_revoke(blocks[offset], sequence)?;
+                let revoke = parse_revoke(blocks[offset], sequence, journal)?;
                 let commit = offset + 1;
                 if commit >= blocks.len() {
                     break;
                 }
-                validate_commit(blocks[commit], sequence)?;
+                validate_commit(blocks[commit], sequence, journal)?;
                 replay.retain(|block| !revoke.contains(&block.block_number));
                 offset = commit + 1;
                 sequence = sequence.wrapping_add(1);
@@ -399,30 +524,53 @@ pub(super) fn parse_header(block: &[u8]) -> Result<Header> {
     })
 }
 
-pub(super) fn parse_descriptor(block: &[u8], sequence: u32) -> Result<Vec<Tag>> {
+pub(super) fn parse_descriptor(
+    block: &[u8],
+    sequence: u32,
+    journal: &SuperBlock,
+) -> Result<Vec<Tag>> {
     let header = parse_header(block)?;
     if header.block_type != DESCRIPTOR || header.sequence != sequence {
         return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal descriptor");
     }
+    if !verify_block_tail(block, journal) {
+        return_errno_with_message!(Errno::EUCLEAN, "invalid journal descriptor checksum");
+    }
+    let tag_size = journal.tag_size();
     let mut tags = Vec::new();
     let mut offset = HEADER_SIZE;
     loop {
-        if offset.checked_add(TAG_SIZE).is_none() || offset + TAG_SIZE > block.len() {
+        if offset.checked_add(tag_size).is_none() || offset + tag_size > block.len() {
             return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal descriptor tag");
         }
-        let tag = Tag {
-            block_number: be32(block, offset),
-            flags: be32(block, offset + 4),
+        let tag = if journal.csum_v3 {
+            let high = be32(block, offset + 8);
+            if high != 0 {
+                return_errno_with_message!(
+                    Errno::EOPNOTSUPP,
+                    "64-bit journal block numbers are unsupported"
+                );
+            }
+            Tag {
+                block_number: be32(block, offset),
+                flags: be32(block, offset + 4),
+                checksum: be32(block, offset + 12),
+            }
+        } else {
+            Tag {
+                block_number: be32(block, offset),
+                flags: u16::from_be_bytes([block[offset + 6], block[offset + 7]]) as u32,
+                checksum: 0,
+            }
         };
         let known = FLAG_ESCAPE | FLAG_SAME_UUID | FLAG_DELETED | FLAG_LAST_TAG;
         if tag.flags & !known != 0 {
             return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal descriptor tag");
         }
-        if tag.flags & FLAG_DELETED != 0 {
-            return_errno_with_message!(Errno::EOPNOTSUPP, "deleted journal tags are unsupported");
-        }
+        // `FLAG_DELETED` is a legacy marker; jbd2 recovery consumes the tag's
+        // data block like any other tag, so it needs no special handling.
         tags.push(tag);
-        offset += TAG_SIZE;
+        offset += tag_size;
         if tag.flags & FLAG_SAME_UUID == 0 {
             if block.len() - offset < 16 {
                 return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal tag UUID");
@@ -435,21 +583,62 @@ pub(super) fn parse_descriptor(block: &[u8], sequence: u32) -> Result<Vec<Tag>> 
     }
 }
 
-pub(super) fn validate_commit(block: &[u8], sequence: u32) -> Result<()> {
+/// Verifies the trailing CRC32C of a descriptor or revoke block.
+fn verify_block_tail(block: &[u8], journal: &SuperBlock) -> bool {
+    if !journal.csum_v3 {
+        return true;
+    }
+    if block.len() != BLOCK_SIZE {
+        return false;
+    }
+    let tail = BLOCK_SIZE - BLOCK_TAIL_SIZE;
+    let stored = be32(block, tail);
+    let mut copy = [0u8; BLOCK_SIZE];
+    copy.copy_from_slice(block);
+    copy[tail..].fill(0);
+    checksum::crc32c(journal.csum_seed, &copy) == stored
+}
+
+pub(super) fn validate_commit(
+    block: &[u8],
+    sequence: u32,
+    journal: &SuperBlock,
+) -> Result<()> {
     let header = parse_header(block)?;
     if header.block_type != COMMIT || header.sequence != sequence {
         return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal commit");
     }
+    if journal.csum_v3 {
+        if block.len() != BLOCK_SIZE {
+            return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal commit");
+        }
+        let stored = be32(block, 16);
+        let mut copy = [0u8; BLOCK_SIZE];
+        copy.copy_from_slice(block);
+        copy[12..16].fill(0);
+        copy[16..20].fill(0);
+        if checksum::crc32c(journal.csum_seed, &copy) != stored {
+            return_errno_with_message!(Errno::EUCLEAN, "invalid journal commit checksum");
+        }
+    }
     Ok(())
 }
 
-pub(super) fn parse_revoke(block: &[u8], sequence: u32) -> Result<Vec<u32>> {
+pub(super) fn parse_revoke(
+    block: &[u8],
+    sequence: u32,
+    journal: &SuperBlock,
+) -> Result<Vec<u32>> {
     let header = parse_header(block)?;
     if header.block_type != REVOKE || header.sequence != sequence || block.len() < 16 {
         return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal revoke");
     }
+    if !verify_block_tail(block, journal) {
+        return_errno_with_message!(Errno::EUCLEAN, "invalid journal revoke checksum");
+    }
+    let limit = block.len() - journal.block_tail_size();
     let bytes = be32(block, 12) as usize;
-    if bytes < 16 || bytes > block.len() || (bytes - 16) % 4 != 0 {
+    if bytes < 16 || bytes > limit || (bytes - 16) % 4 != 0 {
         return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal revoke length");
     }
     let mut revoked = Vec::with_capacity((bytes - 16) / 4);
@@ -478,6 +667,10 @@ mod test {
     use ostd::prelude::ktest;
 
     use super::*;
+
+    fn journal() -> SuperBlock {
+        SuperBlock::parse(&superblock()).unwrap()
+    }
 
     fn superblock() -> [u8; BLOCK_SIZE] {
         let mut block = [0; BLOCK_SIZE];
@@ -551,10 +744,10 @@ mod test {
         descriptor[20..36].fill(0xaa);
         descriptor[36..40].copy_from_slice(&32u32.to_be_bytes());
         descriptor[40..44].copy_from_slice(&(FLAG_SAME_UUID | FLAG_LAST_TAG).to_be_bytes());
-        let tags = parse_descriptor(&descriptor, 7).unwrap();
+        let tags = parse_descriptor(&descriptor, 7, &journal()).unwrap();
         assert_eq!(tags.len(), 2);
         assert_eq!(tags[1].block_number, 32);
-        assert!(parse_descriptor(&descriptor[..35], 7).is_err());
+        assert!(parse_descriptor(&descriptor[..35], 7, &journal()).is_err());
     }
 
     #[ktest]
@@ -566,7 +759,7 @@ mod test {
         descriptor[12..16].copy_from_slice(&31u32.to_be_bytes());
         descriptor[16..20].copy_from_slice(&FLAG_LAST_TAG.to_be_bytes());
         assert_eq!(
-            parse_descriptor(&descriptor, 7).unwrap()[0].block_number,
+            parse_descriptor(&descriptor, 7, &journal()).unwrap()[0].block_number,
             31
         );
 
@@ -574,13 +767,13 @@ mod test {
         commit[0..4].copy_from_slice(&MAGIC.to_be_bytes());
         commit[4..8].copy_from_slice(&COMMIT.to_be_bytes());
         commit[8..12].copy_from_slice(&7u32.to_be_bytes());
-        validate_commit(&commit, 7).unwrap();
+        validate_commit(&commit, 7, &journal()).unwrap();
 
         let mut revoke = commit;
         revoke[4..8].copy_from_slice(&REVOKE.to_be_bytes());
         revoke[12..16].copy_from_slice(&20u32.to_be_bytes());
         revoke[16..20].copy_from_slice(&99u32.to_be_bytes());
-        assert_eq!(parse_revoke(&revoke, 7).unwrap(), vec![99]);
+        assert_eq!(parse_revoke(&revoke, 7, &journal()).unwrap(), vec![99]);
     }
 
     #[ktest]
@@ -589,18 +782,20 @@ mod test {
         let mut payload = vec![0; BLOCK_SIZE];
         payload[..4].copy_from_slice(&MAGIC.to_be_bytes());
         transaction.add_block(31, &payload).unwrap();
-        let blocks = transaction.encode(&[0xab; 16]).unwrap();
+        let journal = SuperBlock::parse(&superblock()).unwrap();
+        let blocks = transaction.encode(&journal).unwrap();
         assert_eq!(blocks.len(), 3);
-        let tags = parse_descriptor(&blocks[0], 7).unwrap();
+        let tags = parse_descriptor(&blocks[0], 7, &journal).unwrap();
         assert_eq!(
             tags,
             vec![Tag {
                 block_number: 31,
                 flags: FLAG_ESCAPE | FLAG_LAST_TAG,
+                checksum: 0,
             }]
         );
         assert_eq!(be32(&blocks[1], 0), 0);
-        validate_commit(&blocks[2], 7).unwrap();
+        validate_commit(&blocks[2], 7, &journal).unwrap();
     }
 
     #[ktest]
@@ -608,19 +803,27 @@ mod test {
         let mut transaction = JournalTransaction::new(9).unwrap();
         transaction.add_block(31, &[0x11; BLOCK_SIZE]).unwrap();
         transaction.add_block(32, &[0x22; BLOCK_SIZE]).unwrap();
-        let blocks = transaction.encode(&[0x5a; 16]).unwrap();
+        let mut sb_block = superblock();
+        sb_block[48..64].fill(0x5a);
+        let journal = SuperBlock::parse(&sb_block).unwrap();
+        let blocks = transaction.encode(&journal).unwrap();
 
         // The first tag carries the UUID; the second is only reachable if the
         // sixteen UUID bytes are actually present in the descriptor.
         assert_eq!(&blocks[0][20..36], &[0x5a; 16]);
-        let tags = parse_descriptor(&blocks[0], 9).unwrap();
+        let tags = parse_descriptor(&blocks[0], 9, &journal).unwrap();
         assert_eq!(tags.len(), 2);
         assert_eq!(tags[0].block_number, 31);
         assert_eq!(tags[0].flags & FLAG_SAME_UUID, 0);
         assert_eq!(tags[1].block_number, 32);
         assert_ne!(tags[1].flags & FLAG_SAME_UUID, 0);
 
-        let replay = scan_log(&[&blocks[0], &blocks[1], &blocks[2], &blocks[3]], 9).unwrap();
+        let replay = scan_log(
+            &[&blocks[0], &blocks[1], &blocks[2], &blocks[3]],
+            9,
+            &journal,
+        )
+        .unwrap();
         assert_eq!(replay.len(), 2);
     }
 
@@ -652,14 +855,85 @@ mod test {
         commit[8..12].copy_from_slice(&7u32.to_be_bytes());
 
         let replay =
-            decode_transaction(&[&descriptor, &data_a, &data_b, &revoke, &commit], 7).unwrap();
+            decode_transaction(&[&descriptor, &data_a, &data_b, &revoke, &commit], 7, &journal())
+                .unwrap();
         assert_eq!(replay.len(), 1);
         assert_eq!(replay[0].block_number, 31);
         assert!(replay[0].escaped);
         assert_eq!(&replay[0].data[..4], &MAGIC.to_be_bytes());
-        assert!(decode_transaction(&[&descriptor, &data_a, &data_b, &revoke], 7).is_err());
+        assert!(
+            decode_transaction(&[&descriptor, &data_a, &data_b, &revoke], 7, &journal())
+                .is_err()
+        );
         commit[8..12].copy_from_slice(&8u32.to_be_bytes());
-        assert!(decode_transaction(&[&descriptor, &data_a, &data_b, &revoke, &commit], 7).is_err());
+        assert!(
+            decode_transaction(&[&descriptor, &data_a, &data_b, &revoke, &commit], 7, &journal())
+                .is_err()
+        );
+    }
+
+    #[ktest]
+    fn checksum_v3_transactions_round_trip_and_detect_corruption() {
+        let mut block = superblock();
+        block[48..64].fill(0x6d);
+        block[40..44].copy_from_slice(&INCOMPAT_CSUM_V3.to_be_bytes());
+        seal_superblock(&mut block);
+        let journal = SuperBlock::parse(&block).unwrap();
+        assert!(journal.csum_v3);
+
+        let mut transaction = JournalTransaction::new(21).unwrap();
+        let mut escaped = vec![0x77; BLOCK_SIZE];
+        escaped[..4].copy_from_slice(&MAGIC.to_be_bytes());
+        transaction.add_block(31, &escaped).unwrap();
+        transaction.add_block(32, &[0x22; BLOCK_SIZE]).unwrap();
+        let blocks = transaction.encode(&journal).unwrap();
+        assert_eq!(blocks.len(), 4);
+        assert_eq!(journal.tag_size(), TAG3_SIZE);
+
+        let refs: Vec<&[u8]> = blocks.iter().map(Vec::as_slice).collect();
+        let replay = decode_transaction(&refs, 21, &journal).unwrap();
+        assert_eq!(replay.len(), 2);
+        assert_eq!(&replay[0].data[..4], &MAGIC.to_be_bytes());
+
+        // A flipped data byte, a flipped tag checksum and a flipped descriptor
+        // tail must all be rejected.
+        let mut bad_data = blocks[1].clone();
+        bad_data[100] ^= 0xff;
+        assert!(
+            decode_transaction(&[&blocks[0], &bad_data, &blocks[2], &blocks[3]], 21, &journal)
+                .is_err()
+        );
+        let mut bad_tag = blocks[0].clone();
+        bad_tag[12 + 12] ^= 0xff;
+        assert!(
+            decode_transaction(&[&bad_tag, &blocks[1], &blocks[2], &blocks[3]], 21, &journal)
+                .is_err()
+        );
+        let mut bad_tail = blocks[0].clone();
+        *bad_tail.last_mut().unwrap() ^= 0xff;
+        assert!(parse_descriptor(&bad_tail, 21, &journal).is_err());
+    }
+
+    #[ktest]
+    fn deleted_tags_are_replayed_like_ordinary_tags() {
+        let mut descriptor = [0; BLOCK_SIZE];
+        descriptor[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        descriptor[4..8].copy_from_slice(&DESCRIPTOR.to_be_bytes());
+        descriptor[8..12].copy_from_slice(&7u32.to_be_bytes());
+        descriptor[12..16].copy_from_slice(&31u32.to_be_bytes());
+        descriptor[16..20]
+            .copy_from_slice(&(FLAG_DELETED | FLAG_SAME_UUID | FLAG_LAST_TAG).to_be_bytes());
+
+        let data = [0x44; BLOCK_SIZE];
+        let mut commit = [0; BLOCK_SIZE];
+        commit[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+        commit[4..8].copy_from_slice(&COMMIT.to_be_bytes());
+        commit[8..12].copy_from_slice(&7u32.to_be_bytes());
+
+        let replay = decode_transaction(&[&descriptor, &data, &commit], 7, &journal()).unwrap();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].block_number, 31);
+        assert_eq!(replay[0].data, data);
     }
 
     #[ktest]
@@ -689,6 +963,7 @@ mod test {
         let replay = scan_log(
             &[&descriptor, &data, &commit, &revoke, &commit_revoke, &tail],
             7,
+            &journal(),
         )
         .unwrap();
         assert!(replay.is_empty());
@@ -725,6 +1000,7 @@ mod test {
                 &commit_b,
             ],
             11,
+            &journal(),
         )
         .unwrap();
         assert_eq!(replay.len(), 1);

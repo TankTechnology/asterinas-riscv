@@ -73,7 +73,7 @@
 
 use core::cmp::Ordering;
 
-use super::{fs::Ext2, inode::Inode, prelude::*};
+use super::{checksum, fs::Ext2, inode::Inode, prelude::*};
 use crate::fs::vfs::xattr::{XattrName, XattrNamespace, XattrSetFlags};
 
 const XATTR_NBLOCKS: usize = 1;
@@ -164,7 +164,6 @@ impl Xattr {
         value_reader: &mut VmReader,
         flags: XattrSetFlags,
     ) -> Result<()> {
-        let (target_index, target_name) = Self::parse_target_name(name)?;
         let value_len = value_reader.remain();
         if value_len > BLOCK_SIZE {
             return_errno_with_message!(Errno::ERANGE, "xattr value is too large");
@@ -173,6 +172,23 @@ impl Xattr {
         let mut value = vec![0u8; value_len];
         if value_len > 0 {
             value_reader.read_fallible(&mut VmWriter::from(value.as_mut_slice()))?;
+        }
+
+        self.set_xattr_bytes(name, value, flags)
+    }
+
+    /// Creates or replaces one extended attribute from an in-memory value.
+    ///
+    /// Used by kernel-internal writers such as default-ACL inheritance.
+    pub(super) fn set_xattr_bytes(
+        &self,
+        name: XattrName,
+        value: Vec<u8>,
+        flags: XattrSetFlags,
+    ) -> Result<()> {
+        let (target_index, target_name) = Self::parse_target_name(name)?;
+        if value.len() > BLOCK_SIZE {
+            return_errno_with_message!(Errno::ERANGE, "xattr value is too large");
         }
 
         self.cache
@@ -517,6 +533,17 @@ impl XattrCache {
         // same transaction.
         let mut bytes = vec![0u8; BLOCK_SIZE];
         block_buf.read_bytes(0, &mut bytes)?;
+        if fs.super_block().has_metadata_csum() {
+            // The xattr block checksum is seeded with the block number (not
+            // the inode number) and covers the header and entries with
+            // `h_checksum` replaced by four zero bytes.
+            let seed = fs.super_block().checksum_seed();
+            let mut crc = checksum::crc32c(seed, &(self.bid as u64).to_le_bytes());
+            crc = checksum::crc32c(crc, &bytes[..16]);
+            crc = checksum::crc32c(crc, &[0u8; 4]);
+            crc = checksum::crc32c(crc, &bytes[20..]);
+            bytes[16..20].copy_from_slice(&crc.to_le_bytes());
+        }
         fs.stage_metadata_block(self.bid, &bytes)?;
 
         self.dirty = false;

@@ -15,9 +15,23 @@ use self::dir_entry::{DOT_BYTE, DOT_DOT_BYTE, DirBlockView, DirEntryFileType, Di
 use super::{super::Ext2, FileFlags, FilePerm, Inode, InodeInner, MAX_LINK_COUNT};
 use crate::fs::{
     ext2::{prelude::*, utils},
+    file::InodeMode,
     utils::NAME_MAX,
-    vfs::inode::RenameMode,
+    vfs::{
+        inode::RenameMode,
+        xattr::{PosixAcl, XattrName},
+    },
 };
+
+/// Returns the VFS name of one of the two POSIX ACL attributes.
+fn posix_acl_name(default: bool) -> XattrName<'static> {
+    let full_name: &'static str = if default {
+        "system.posix_acl_default"
+    } else {
+        "system.posix_acl_access"
+    };
+    XattrName::try_from_full_name(full_name).expect("POSIX ACL names use the system namespace")
+}
 
 /// Information about a candidate directory entry slot.
 #[derive(Clone, Copy, Debug)]
@@ -156,6 +170,7 @@ impl Inode {
         let child = fs.create_inode(self.ino, type_, perm)?;
         let child_ino = child.ino();
         let result = init_child_fn(&fs, &child)
+            .and_then(|_| self.inherit_default_acl(&child, type_, perm))
             .and_then(|_| parent_inner.add_entry(&slot, name, child_ino, dir_entry_file_type));
 
         if let Err(err) = result {
@@ -172,6 +187,46 @@ impl Inode {
         parent_inner.set_mtime_ctime(utils::now());
         fs.insert_inode(child.clone());
         Ok(child)
+    }
+
+    /// Applies this directory's default ACL to a newly created child.
+    ///
+    /// This follows Linux `posix_acl_create`: a new directory receives the
+    /// default ACL as both its access and its default ACL, with the requested
+    /// mode unchanged, while any other non-symlink child receives the default
+    /// ACL clamped by the creation mode and its mode is recomputed from the
+    /// result. When clamping changes no permission the ACL is equivalent to
+    /// the mode and no access ACL is stored. Symlinks never carry ACLs.
+    fn inherit_default_acl(
+        &self,
+        child: &Inode,
+        type_: InodeType,
+        perm: FilePerm,
+    ) -> Result<()> {
+        if type_ == InodeType::SymLink {
+            return Ok(());
+        }
+        let Some(default) = self.posix_default_acl_bytes()? else {
+            return Ok(());
+        };
+
+        let is_dir = type_ == InodeType::Dir;
+        let (mode, access) = if is_dir {
+            (perm.bits(), Some(default.clone()))
+        } else {
+            PosixAcl::parse(&default)?.for_new_inode(perm.bits())
+        };
+
+        if mode != perm.bits() {
+            child.set_mode(InodeMode::from_bits_truncate(mode))?;
+        }
+        if let Some(access) = access {
+            child.set_xattr_value(posix_acl_name(false), &access)?;
+        }
+        if is_dir {
+            child.set_xattr_value(posix_acl_name(true), &default)?;
+        }
+        Ok(())
     }
 
     /// Adds a hard link in this directory to an existing non-directory inode.
@@ -530,7 +585,8 @@ impl InodeInner {
         self.prepare_write(fs, 0, BLOCK_SIZE)?;
 
         let page_cache = self.page_cache();
-        let block = DirBlockView::from_index(page_cache, 0, BLOCK_SIZE);
+        let limit = self.dir_entry_limit();
+        let block = DirBlockView::from_index_limited(page_cache, 0, BLOCK_SIZE, limit);
         let dot_len = DirEntryHeader::min_rec_len(DOT_BYTE.len()) as usize;
         let write_result = (|| -> Result<()> {
             page_cache.fill_zeros(0..BLOCK_SIZE)?;
@@ -545,7 +601,7 @@ impl InodeInner {
 
             let dot_dot_header = DirEntryHeader {
                 ino: parent_ino.to_le(),
-                rec_len: ((BLOCK_SIZE - dot_len) as u16).to_le(),
+                rec_len: ((limit - dot_len) as u16).to_le(),
                 name_len: DOT_DOT_BYTE.len() as u8,
                 file_type: DirEntryFileType::Dir as u8,
             };
@@ -600,7 +656,12 @@ impl InodeInner {
         let page_cache = self.page_cache();
 
         for block_idx in 0..data_blocks {
-            let block = DirBlockView::from_index(page_cache, block_idx, file_size);
+            let block = DirBlockView::from_index_limited(
+                page_cache,
+                block_idx,
+                file_size,
+                self.dir_block_limit(block_idx),
+            );
             let mut entry_iter = block.iter_entries();
 
             loop {
@@ -655,7 +716,12 @@ impl InodeInner {
                 break;
             }
 
-            let block = DirBlockView::from_index(page_cache, block_idx, size);
+            let block = DirBlockView::from_index_limited(
+                page_cache,
+                block_idx,
+                size,
+                self.dir_block_limit(block_idx),
+            );
             let mut entry_iter = block.iter_entries();
             while let Some((entry_offset_in_block, entry)) = entry_iter.next_entry()? {
                 let entry_offset = block_offset + entry_offset_in_block;
@@ -718,7 +784,12 @@ impl InodeInner {
         // so the index is skipped instead of being misread as entries.
         let mut live: Vec<(Ext2Ino, u8, Vec<u8>)> = Vec::new();
         for block_idx in 0..data_blocks {
-            let block = DirBlockView::from_index(page_cache, block_idx, file_size);
+            let block = DirBlockView::from_index_limited(
+                page_cache,
+                block_idx,
+                file_size,
+                self.dir_block_limit(block_idx),
+            );
             let mut entry_iter = block.iter_entries();
             while let Some((_, entry)) = entry_iter.next_entry()? {
                 if entry.header.ino == 0 {
@@ -735,6 +806,7 @@ impl InodeInner {
             }
         }
 
+        let limit = self.dir_entry_limit();
         let mut next = 0usize;
         for block_idx in 0..data_blocks {
             let mut block = vec![0u8; BLOCK_SIZE];
@@ -749,9 +821,9 @@ impl InodeInner {
                     .unwrap_or(0);
                 // The last entry of a block extends over the block's free tail.
                 let last_in_block =
-                    next + 1 >= live.len() || offset + min_len + next_min_len > BLOCK_SIZE;
+                    next + 1 >= live.len() || offset + min_len + next_min_len > limit;
                 let rec_len = if last_in_block {
-                    BLOCK_SIZE - offset
+                    limit - offset
                 } else {
                     min_len
                 };
@@ -769,7 +841,7 @@ impl InodeInner {
             }
             if !wrote_entry {
                 // An unused directory block is one free entry spanning it.
-                block[4..6].copy_from_slice(&(BLOCK_SIZE as u16).to_le_bytes());
+                block[4..6].copy_from_slice(&(limit as u16).to_le_bytes());
             }
             page_cache.write_bytes(block_idx * BLOCK_SIZE, &block)?;
         }
@@ -809,7 +881,12 @@ impl InodeInner {
 
         for block_idx in 0..data_blocks {
             let block_offset = block_idx * BLOCK_SIZE;
-            let block = DirBlockView::from_index(page_cache, block_idx, file_size);
+            let block = DirBlockView::from_index_limited(
+                page_cache,
+                block_idx,
+                file_size,
+                self.dir_block_limit(block_idx),
+            );
             let mut entry_iter = block.iter_entries();
 
             while let Some((entry_offset, header)) = entry_iter.next_entry_header()? {
@@ -847,7 +924,7 @@ impl InodeInner {
 
         Ok(DirSlotInfo {
             dir_offset: old_size,
-            slot_rec_len: BLOCK_SIZE,
+            slot_rec_len: self.dir_entry_limit(),
             used_rec_len: 0,
         })
     }
@@ -903,7 +980,12 @@ impl InodeInner {
 
         for block_idx in 0..file_size.div_ceil(BLOCK_SIZE) {
             let block_offset = block_idx * BLOCK_SIZE;
-            let block = DirBlockView::from_index(page_cache, block_idx, file_size);
+            let block = DirBlockView::from_index_limited(
+                page_cache,
+                block_idx,
+                file_size,
+                self.dir_block_limit(block_idx),
+            );
             let mut entry_iter = block.iter_entries();
             while let Some((entry_offset, entry)) = entry_iter.next_entry()? {
                 let ino = entry.header.ino;
@@ -927,7 +1009,12 @@ impl InodeInner {
         let block_idx = block_base / BLOCK_SIZE;
         let entry_offset = target.dir_offset - block_base;
 
-        let block = DirBlockView::from_index(self.page_cache(), block_idx, self.file_size());
+        let block = DirBlockView::from_index_limited(
+            self.page_cache(),
+            block_idx,
+            self.file_size(),
+            self.dir_block_limit(block_idx),
+        );
         block.delete_entry(entry_offset, target.entry_rec_len)?;
         Ok(())
     }
@@ -943,7 +1030,12 @@ impl InodeInner {
         let block_idx = block_base / BLOCK_SIZE;
         let entry_offset = entry.dir_offset - block_base;
 
-        let block = DirBlockView::from_index(self.page_cache(), block_idx, self.file_size());
+        let block = DirBlockView::from_index_limited(
+            self.page_cache(),
+            block_idx,
+            self.file_size(),
+            self.dir_block_limit(block_idx),
+        );
         block.set_inode(entry_offset, new_ino)?;
         block.set_file_type(entry_offset, new_file_type)?;
         Ok(())

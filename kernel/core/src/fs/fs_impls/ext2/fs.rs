@@ -26,12 +26,13 @@ use device_id::DeviceId;
 use ostd::mm::{HasSize, io::util::HasVmReaderWriter};
 
 use super::{
-    block_group::{BlockGroup, RawBlockGroup},
+    block_group::BlockGroup,
     inode::{FilePerm, Inode, InodeDesc, InodeTimeExtras, RawInode},
     journal, metadata_txn,
     prelude::*,
     super_block::{
         FeatureCompatSet, FeatureInCompatSet, RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock,
+        sign_superblock,
     },
 };
 use crate::{
@@ -157,7 +158,7 @@ impl Ext2 {
 
         let group_descriptors_segment = {
             let nr_block_groups = super_block.nr_block_groups() as usize;
-            let group_desc_bytes = nr_block_groups * size_of::<RawBlockGroup>();
+            let group_desc_bytes = nr_block_groups * super_block.desc_size() as usize;
             let nblocks = group_desc_bytes.div_ceil(BLOCK_SIZE);
 
             let segment = FrameAllocOptions::new()
@@ -311,7 +312,7 @@ impl Ext2 {
             );
         }
         let refs: Vec<&[u8]> = blocks.iter().map(Vec::as_slice).collect();
-        let replay = journal::scan_log(&refs, sb.sequence)?;
+        let replay = journal::scan_log(&refs, sb.sequence, &sb)?;
         debug!("ext2: journal replay applying {} blocks", replay.len());
         for block in replay {
             self.write_raw_block(block.block_number, &block.data)?;
@@ -346,8 +347,10 @@ impl Ext2 {
         *self.super_block.write() = Dirty::new(fresh_super_block);
 
         let nr_groups = self.block_groups.len();
-        let desc_bytes = nr_groups * size_of::<RawBlockGroup>();
+        let desc_size = self.super_block.read().desc_size() as usize;
+        let desc_bytes = nr_groups * desc_size;
         let nblocks = desc_bytes.div_ceil(BLOCK_SIZE);
+        debug_assert!(desc_bytes <= self.group_descriptors_segment.size());
         let desc_bid = self.super_block.read().group_descriptors_bid(0);
         let mut bytes = vec![0u8; nblocks * BLOCK_SIZE];
         {
@@ -434,10 +437,7 @@ impl Ext2 {
             return_errno_with_message!(Errno::EAGAIN, "stale ext4 journal sequence");
         }
 
-        let encoded = {
-            let uuid = self.super_block.read().uuid();
-            transaction.encode(&uuid)?
-        };
+        let encoded = transaction.encode(&super_block)?;
         let mut ring = journal::JournalRing::new(super_block)?;
         let positions = ring.reserve(encoded.len())?;
         for (position, block) in positions.iter().zip(encoded.iter()) {
@@ -1055,7 +1055,11 @@ impl Ext2 {
             }
             flags.insert(FeatureInCompatSet::RECOVER);
             sb.set_feature_incompat(flags);
-            RawSuperBlock::from(&**sb)
+            let mut raw = RawSuperBlock::from(&**sb);
+            if sb.has_metadata_csum() {
+                sign_superblock(&mut raw);
+            }
+            raw
         };
         self.write_primary_superblock(&raw)
     }
@@ -1080,7 +1084,11 @@ impl Ext2 {
             }
             flags.remove(FeatureInCompatSet::RECOVER);
             sb.set_feature_incompat(flags);
-            RawSuperBlock::from(&**sb)
+            let mut raw = RawSuperBlock::from(&**sb);
+            if sb.has_metadata_csum() {
+                sign_superblock(&mut raw);
+            }
+            raw
         };
         self.write_primary_superblock(&raw)
     }
@@ -1334,6 +1342,9 @@ impl Ext2 {
             sb_guard.set_wtime(utils::now());
 
             let mut raw_sb = RawSuperBlock::from(&**sb_guard);
+            if sb_guard.has_metadata_csum() {
+                sign_superblock(&mut raw_sb);
+            }
             let mut snapshots = vec![(
                 raw_sb,
                 SUPER_BLOCK_OFFSET,
@@ -1344,6 +1355,9 @@ impl Ext2 {
                     continue;
                 }
                 raw_sb.block_group_idx = group_idx as u16;
+                if sb_guard.has_metadata_csum() {
+                    sign_superblock(&mut raw_sb);
+                }
                 snapshots.push((
                     raw_sb,
                     Bid::new(sb_guard.bid(group_idx) as u64).to_offset(),
@@ -1455,10 +1469,13 @@ mod test {
     use super::*;
     use crate::{
         fs::{
-            fs_impls::ext2::test_utils::{
-                BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
-                RawInodeBuilder, assert_errno, create_file, default_fixture, make_valid_group_desc,
-                make_valid_super_block,
+            fs_impls::ext2::{
+                block_group::RawBlockGroup,
+                test_utils::{
+                    BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
+                    RawInodeBuilder, assert_errno, create_file, default_fixture,
+                    make_valid_group_desc, make_valid_super_block,
+                },
             },
             vfs::file_system::FileSystem as FileSystemTrait,
         },
@@ -1467,8 +1484,7 @@ mod test {
 
     fn expected_overhead_blocks(sb: &SuperBlock) -> u32 {
         let nr_block_groups = sb.nr_block_groups() as usize;
-        let gdb_count =
-            ((nr_block_groups * size_of::<RawBlockGroup>()).div_ceil(BLOCK_SIZE)) as u32;
+        let gdb_count = ((nr_block_groups * sb.desc_size() as usize).div_ceil(BLOCK_SIZE)) as u32;
         let mut overhead = sb.first_data_block();
 
         for group_idx in 0..nr_block_groups {
@@ -1538,7 +1554,7 @@ mod test {
         assert!(!ext2.block_group(0).is_desc_dirty());
 
         let nr_block_groups = sb.nr_block_groups() as usize;
-        let desc_bytes = nr_block_groups * size_of::<RawBlockGroup>();
+        let desc_bytes = nr_block_groups * sb.desc_size() as usize;
         let primary_desc_offset = Bid::new(sb.group_descriptors_bid(0) as u64).to_offset();
 
         let mut primary_desc = vec![0u8; desc_bytes];

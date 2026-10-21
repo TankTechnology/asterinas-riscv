@@ -159,6 +159,9 @@ fn encode_extra_time(time: Duration) -> u32 {
 pub(super) type Iblock = u32;
 /// Physical block address on the device.
 pub(super) type Ext2Bid = u32;
+/// Size of the per-block directory checksum tail (`struct ext4_dir_entry_tail`).
+pub(super) const DIR_ENTRY_TAIL_SIZE: usize = 12;
+
 /// On-disk inode number (ext2 format is 32-bit; the VFS widens to u64).
 pub(super) type Ext2Ino = u32;
 
@@ -217,6 +220,10 @@ impl Inode {
         block_group_idx: usize,
         fs: Weak<Ext2>,
     ) -> Arc<Self> {
+        let metadata_csum = fs
+            .upgrade()
+            .map(|fs| fs.super_block().has_metadata_csum())
+            .unwrap_or(false);
         Arc::new_cyclic(|weak_self: &Weak<Self>| {
             let xattr = match type_ {
                 InodeType::Dir | InodeType::File => Some(Xattr::new(
@@ -233,7 +240,7 @@ impl Inode {
             Self {
                 ino,
                 type_,
-                inner: RwMutex::new(InodeInner::new(inode_desc, fs.clone())),
+                inner: RwMutex::new(InodeInner::new(inode_desc, fs.clone(), ino, metadata_csum)),
                 block_group_idx,
                 fs,
                 xattr,
@@ -317,6 +324,20 @@ impl Inode {
             Some(bytes) => Ok(Some(PosixAcl::parse(&bytes)?)),
             None => Ok(None),
         }
+    }
+
+    /// Returns the raw `system.posix_acl_default` value of this inode.
+    ///
+    /// Only directories normally carry one; it is read when a child is
+    /// created so its access ACL can be inherited.
+    pub(super) fn posix_default_acl_bytes(&self) -> Result<Option<Vec<u8>>> {
+        let Some(xattr) = self.xattr.as_ref() else {
+            return Ok(None);
+        };
+        let Some(name) = XattrName::try_from_full_name("system.posix_acl_default") else {
+            return Ok(None);
+        };
+        xattr.get_xattr_bytes(name)
     }
 
     /// Returns a reference to the owning `Ext2` filesystem.
@@ -607,6 +628,8 @@ struct InodeInner {
     desc: Dirty<InodeDesc>,
     /// Type-specific payload stored in ext2's overloaded `i_block` area.
     payload: InodePayload,
+    /// Whether metadata blocks carry CRC32C checksums.
+    metadata_csum: bool,
 }
 
 /// Type-specific in-memory state backed by ext2 inode payload storage.
@@ -626,12 +649,43 @@ enum InodePayload {
 }
 
 impl InodeInner {
-    fn new(inode_desc: Dirty<InodeDesc>, fs: Weak<Ext2>) -> Self {
-        let payload = InodePayload::new(&inode_desc, fs);
+    fn new(
+        inode_desc: Dirty<InodeDesc>,
+        fs: Weak<Ext2>,
+        ino: Ext2Ino,
+        metadata_csum: bool,
+    ) -> Self {
+        let payload = InodePayload::new(&inode_desc, fs, ino);
 
         Self {
             desc: inode_desc,
             payload,
+            metadata_csum,
+        }
+    }
+
+    /// Returns how many bytes of a directory block hold entries.
+    ///
+    /// With `metadata_csum`, the final 12 bytes of each directory block are a
+    /// checksum tail and must not be reused for entries.
+    fn dir_entry_limit(&self) -> usize {
+        if self.metadata_csum {
+            BLOCK_SIZE - DIR_ENTRY_TAIL_SIZE
+        } else {
+            BLOCK_SIZE
+        }
+    }
+
+    /// Returns the usable length of one specific directory block.
+    ///
+    /// The first block of an htree-indexed directory is an exception: its
+    /// `..` entry spans the whole block and the trailing bytes are the dx
+    /// index and its tail, not a directory entry tail.
+    fn dir_block_limit(&self, block_idx: usize) -> usize {
+        if block_idx == 0 && self.desc.flags.contains(FileFlags::INDEX_DIR) {
+            BLOCK_SIZE
+        } else {
+            self.dir_entry_limit()
         }
     }
 
@@ -782,7 +836,7 @@ impl InodeInner {
 }
 
 impl InodePayload {
-    fn new(inode_desc: &Dirty<InodeDesc>, fs: Weak<Ext2>) -> Self {
+    fn new(inode_desc: &Dirty<InodeDesc>, fs: Weak<Ext2>, ino: Ext2Ino) -> Self {
         // The block manager owns the inode's data and tree blocks, but not the
         // separate xattr block: `raw_block_ptrs()` adds that block back on
         // every write-back. Initializing the manager with the on-disk total
@@ -799,13 +853,20 @@ impl InodePayload {
                 raw_block_ptrs,
                 fs,
                 inode_desc.type_ == InodeType::Dir,
+                ino,
+                inode_desc.generation,
             ),
             InodeType::SymLink if Self::is_fast_symlink(inode_desc) => Self::FastSymlink {
                 target: FastSymlinkTarget::new(inode_desc.block_ptrs),
             },
-            InodeType::SymLink => {
-                Self::new_data_backed(inode_desc.size as usize, raw_block_ptrs, fs, false)
-            }
+            InodeType::SymLink => Self::new_data_backed(
+                inode_desc.size as usize,
+                raw_block_ptrs,
+                fs,
+                false,
+                ino,
+                inode_desc.generation,
+            ),
             InodeType::CharDevice | InodeType::BlockDevice => Self::Device {
                 device_id: raw_block_ptrs.read_device_id(),
             },
@@ -818,10 +879,12 @@ impl InodePayload {
         raw_block_ptrs: RawBlockPtrs,
         fs: Weak<Ext2>,
         stage_writes: bool,
+        ino: Ext2Ino,
+        generation: u32,
     ) -> Self {
         let page_cache_size = size.align_up(PAGE_SIZE);
         let page_count = page_cache_size / PAGE_SIZE;
-        let block_ptr_tree = BlockPtrTree::new(raw_block_ptrs, fs.clone());
+        let block_ptr_tree = BlockPtrTree::new(raw_block_ptrs, fs.clone(), ino, generation);
         let block_manager = Arc::new(InodeBlockManager::new(
             block_ptr_tree,
             fs.clone(),
@@ -951,7 +1014,7 @@ pub(in ext2) fn reclaim_orphan_inode(
         raw.sector_count.saturating_sub(xattr_sectors),
         raw.block,
     );
-    let mut tree = BlockPtrTree::new(block_ptrs, Arc::downgrade(fs));
+    let mut tree = BlockPtrTree::new(block_ptrs, Arc::downgrade(fs), ino, raw.generation);
     tree.truncate_to_byte_len(fs.as_ref(), 0);
     if raw.file_acl != 0 {
         fs.free_blocks(raw.file_acl, 1)?;

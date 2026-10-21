@@ -106,6 +106,43 @@ class DebianBootScriptTests(unittest.TestCase):
         self.assertNotIn("-bios", argv)
         self.assertNotIn("-cdrom", argv)
 
+    def test_extra_drives_are_attached_after_the_root_disk(self) -> None:
+        first = self.directory / "flex.ext2"
+        second = self.directory / "scratch.ext2"
+        for path in (first, second):
+            path.write_bytes(b"fixture")
+
+        argv = self.parse(
+            "--print-argv",
+            *self.required_arguments(),
+            "--extra-drive",
+            str(first),
+            "--extra-drive",
+            str(second),
+        )
+
+        self.assertEqual(argv.count("-drive"), 3)
+        self.assertIn(f"if=none,format=raw,id=rootdisk,file={self.root_image}", argv)
+        for index, path in ((1, first), (2, second)):
+            drive = f"if=none,format=raw,id=extra{index},file={path}"
+            self.assertIn(drive, argv)
+            device = argv[argv.index(drive) + 2]
+            self.assertEqual(
+                device,
+                f"virtio-blk-pci,drive=extra{index},"
+                "disable-legacy=on,disable-modern=off",
+            )
+
+    def test_rejects_a_missing_extra_drive(self) -> None:
+        missing = self.directory / "missing.ext2"
+        result = run_script(
+            BOOT_SCRIPT, "--print-argv", *self.required_arguments(),
+            "--extra-drive", str(missing),
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("extra drive image is missing", result.stderr)
+
     def test_loglevel_defaults_quiet_enough_to_boot(self) -> None:
         # Above this the kernel prints a line per syscall and the guest slows
         # down by an order of magnitude.
