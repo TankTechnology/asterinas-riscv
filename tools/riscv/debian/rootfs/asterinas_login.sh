@@ -16,5 +16,5 @@ fi
 
 printf 'Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent\npermitted by applicable law.\n'
 exec /usr/bin/setpriv --reuid=1000 --regid=1000 --init-groups \
-    env HOME=/home/debian USER=debian LOGNAME=debian SHELL=/bin/bash \
+    env HOME=/home/asterinas USER=asterinas LOGNAME=asterinas SHELL=/bin/bash \
     /bin/bash -i
