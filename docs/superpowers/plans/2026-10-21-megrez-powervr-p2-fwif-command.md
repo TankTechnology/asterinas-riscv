@@ -503,3 +503,83 @@ fence；先完成 IRQ 注册与 `ASTERINAS_POWERVR_IRQ count=N` 收据，再考�
 `dma-fence` 和用户态接口。注意：native 下 `compatibility=0/ddk=0.0` 是
 预期值，不阻塞 P2.4；若需要 return-slot 证据，应改用
 KICK/CLEANUP/MMUCACHE 等会走 `RGXWaitForKCCBSlotUpdate` 的命令。
+
+---
+
+## P3 决策简报（1 页）：用户态 GPU 栈路线（供人工拍板，不实现）
+
+**背景**：P2.3 已证明 Asterinas 能启动 AXM-8-256 固件并让固件消费 KCCB
+命令。P3 的目标是把 GPU 变成可用的 DRM/GLES 设备（Firefox 硬件加速），
+核心决策是复用厂商 C 核心还是纯 Rust 重写。
+
+### 方案 A：厂商 C 核心 + Rust OS/DRM 层
+
+保留 pvrsrvkm 的 services 内核 C 代码作为 GPU 服务（建议跑在用户态服务
+进程，而不是 framekernel 内核里），Rust 侧只保留 P2 已有的固件启动、
+MMU、IRQ、命令传输；用户态 UM DDK（`libsrv_um`/`libusc`）经 Asterinas
+syscall/共享内存访问该服务。
+
+| 改动 | 估计 |
+|---|---|
+| C services 适配 Asterinas 的 physmem/MMU/PMR/DMA/IRQ | 1.5–3 人月 |
+| kernel↔service IPC（共享内存环、IRQ 转发、fence） | 1–2 人月 |
+| UM DDK 需要的 Linux ABI（ioctl/mmap/dma-buf/sync） | 1–2 人月 |
+| DRM 节点、权限、调试接口 | 0.5 人月 |
+| **合计** | **4–7 人月** |
+
+**风险**：framekernel 政策要求 unsafe C 不进 safe kernel，必须服务化并
+承担 IPC 延迟/复杂度；ABI 锁定 DDK 24.2；闭源固件与二进制分发；后续
+跟随厂商维护。**优点**：最快接近 RockOS 已验证的功能，行为可对照。
+
+### 方案 B：纯 Rust 重写
+
+以 P2 probe 为基础，纯 Rust 实现 KCCB/FWCCB、MMU 上下文、作业提交、
+DRM UAPI；用户态用 Mesa，但上游 `powervr` 的 UAPI 与本 vendor 固件
+不一致，需要自写或修改 Mesa 后端。
+
+| 改动 | 估计 |
+|---|---|
+| P3 内核驱动（KCCB/FWCCB/MMU/作业/DRM） | 4–8 人月 |
+| Mesa/GLES 后端（vendor 固件 UAPI） | 3–5 人月 |
+| DRM UAPI、fence/sync、权限 | 1–2 人月 |
+| 性能与稳定性 | 1–2 人月 |
+| **合计** | **9–16 人月** |
+
+**风险**：vendor 固件 ABI 文档缺失（需逆向/实测）、上游 Mesa 不兼容、
+首个像素时间长、功能覆盖不确定。**优点**：符合 framekernel 政策、无 C/
+ABI 锁定、长期可维护。
+
+### 对比与建议
+
+| 维度 | A（C 核心 + Rust 层） | B（纯 Rust） |
+|---|---|---|
+| 首个像素时间 | 短（复用已验证栈） | 长 |
+| 成本 | 4–7 人月 | 9–16 人月 |
+| framekernel 政策 | 需服务化规避 | 天然符合 |
+| ABI 锁定 | DDK 24.2 | 自定 UAPI |
+| 维护成本 | 跟随厂商 | 自有 |
+
+**建议**：若目标是“尽快让 Firefox 用上 GPU”，选 A，并先做 1–2 周
+spike（用户态服务 + 一个 KCCB 命令 + UM DDK ioctl 面）验证成本；若目标
+是“Asterinas 自有长期 GPU 栈”，选 B。本节只供拍板，不在本轮实现。
+
+---
+
+## 2026-10-22 P2.4 通过
+
+**P2f 板级 marker（kernel SHA-256 `493d297a…`）：**
+
+```
+ASTERINAS_POWERVR_IRQ status=installed source=15 parent=0x10 count=0
+ASTERINAS_POWERVR_IRQ count=1 spurious=0 last_status=0x1 mts_status=0x0
+ASTERINAS_POWERVR_FW_KCCB status=completed slot=0 rtn=0 write_off=1 read_off=1 wake=irq irq_count=1
+```
+
+P2.1–P2.3 marker 全部保持原样。IRQ 路径为 DT `interrupts=<15>` 的专用 PLIC
+事件线；handler 按 vendor `RGXAckIrqDedicated` 读写
+`RGX_CR_IRQ_OS0_EVENT_STATUS`/`CLEAR`（`0x0BD0`/`0x0BE0`，mask `0x3`）。
+dma-fence 在本树不可行（无子系统），替代为 IRQ 计数 + `read_off` 完成判据，
+详见 `docs/porting/evidence/2026-10-22-asterinas-powervr-irq.md`。
+
+**下一步：P3 路线拍板**。上面的「P3 决策简报」给出 A/B 两案；P3 实现不在
+本计划内，等人工选定后再开新计划。

@@ -24,7 +24,9 @@ use super::{
         RGXFWIF_INICFG_OS_CTXSWITCH_DM_ALL, RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED,
         RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE,
     },
-    inspect_gpu_crg_dt, print_gpu_crg_snapshot,
+    inspect_gpu_crg_dt,
+    irq::{self, GpuIrq},
+    print_gpu_crg_snapshot,
     start::{
         FirmwareStartIo, RGX_CR_MTS_SCHEDULE, RGX_CR_OS0_SCRATCH3, RGX_CR_SCRATCH14, StartIo,
         prepare_selected_meta, release_selected_meta, wait_selected_firmware,
@@ -621,8 +623,29 @@ impl PowerControlFile {
             ddk_build,
         );
 
+        // Install the GPU's dedicated PLIC pin before submitting the command.
+        // A mapping failure is recorded and the probe falls back to polling,
+        // so the P2.1-P2.3 markers stay intact.
+        let irq_guard = match GpuIrq::install(&io.gpu) {
+            Ok(guard) => {
+                let (parent, source) = irq::interrupt_source().unwrap_or((u32::MAX, u32::MAX));
+                aster_logger::println!(
+                    "ASTERINAS_POWERVR_IRQ status=installed source={} parent=0x{:x} count=0",
+                    source,
+                    parent,
+                );
+                Some(guard)
+            }
+            Err(reason) => {
+                aster_logger::println!("ASTERINAS_POWERVR_IRQ status=skipped reason={}", reason);
+                None
+            }
+        };
+
         // Native-mode connection probe: enqueue one HEALTH_CHECK, kick the
-        // GP data master and wait for the firmware to mark the return slot.
+        // GP data master and wait for the firmware to consume it. The wait is
+        // interrupt-driven when the handler is installed; the KCCB read
+        // offset remains the completion truth.
         let slot = staging
             .enqueue_health_check()
             .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
@@ -630,35 +653,52 @@ impl PowerControlFile {
             .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
         // The uncached read-back fences the kick through the interconnect.
         let _ = StartIo::read32(&mut *io, RGX_CR_MTS_SCHEDULE);
+        let irq_before = irq::event_count();
         let started_at = aster_time::read_monotonic_time();
         let mut rtn = RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE;
         let mut consumed = false;
+        let mut irq_seen = false;
         while aster_time::read_monotonic_time().saturating_sub(started_at)
             < Duration::from_millis(100)
         {
+            if irq::event_count() != irq_before {
+                irq_seen = true;
+            }
             rtn = staging
                 .health_check_return(slot)
                 .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
-            let (_, read_off) = staging
+            let (_, read_off_now) = staging
                 .kccb_offsets()
                 .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
             // The vendor driver does not wait on a HEALTH_CHECK return
             // slot (RGXFWHealthCheckCmd uses a fire-and-forget enqueue);
             // the firmware acknowledges consumption by advancing read_off.
-            if read_off != slot || rtn == RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED {
+            if read_off_now != slot || rtn == RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED {
                 consumed = true;
-                break;
+                // Give a completion IRQ a short, bounded chance to arrive.
+                if irq_seen {
+                    break;
+                }
             }
             spin_loop();
         }
+        let (events, spurious, last_status, last_mts) = irq::diagnostics();
+        aster_logger::println!(
+            "ASTERINAS_POWERVR_IRQ count={} spurious={} last_status=0x{:x} mts_status=0x{:x}",
+            events,
+            spurious,
+            last_status,
+            last_mts,
+        );
         let (write_off, read_off) = staging.kccb_offsets().unwrap_or((u32::MAX, u32::MAX));
         if !consumed {
             aster_logger::println!(
-                "ASTERINAS_POWERVR_FW_KCCB status=timeout slot={} rtn={} write_off={} read_off={}",
+                "ASTERINAS_POWERVR_FW_KCCB status=timeout slot={} rtn={} write_off={} read_off={} wake=poll irq_count={}",
                 slot,
                 rtn,
                 write_off,
                 read_off,
+                events,
             );
             return Err(Error::with_message(
                 Errno::ETIMEDOUT,
@@ -666,12 +706,15 @@ impl PowerControlFile {
             ));
         }
         aster_logger::println!(
-            "ASTERINAS_POWERVR_FW_KCCB status=completed slot={} rtn={} write_off={} read_off={}",
+            "ASTERINAS_POWERVR_FW_KCCB status=completed slot={} rtn={} write_off={} read_off={} wake={} irq_count={}",
             slot,
             rtn,
             write_off,
             read_off,
+            if irq_seen { "irq" } else { "poll" },
+            events,
         );
+        drop(irq_guard);
         drop(io);
         Ok(4)
     }

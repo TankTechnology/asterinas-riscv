@@ -9,6 +9,7 @@ use ostd::{arch::boot::DEVICE_TREE, boot::boot_info, io::IoMem, mm::VmIoOnce};
 mod catalogue;
 mod dma;
 mod fwif;
+mod irq;
 mod mmu;
 mod power;
 mod start;
