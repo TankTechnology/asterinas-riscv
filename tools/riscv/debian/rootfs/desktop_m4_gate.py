@@ -458,6 +458,22 @@ class DesktopM4DrmOperations(DesktopM4Operations):
         replacement = f"{marker} systemd.setenv=ASTERINAS_FIREFOX_PROFILE_DIR={raw}"
         self._bootargs = self._bootargs.replace(marker, replacement)
 
+    def _select_milestones(self) -> None:
+        """Wait for the milestone pair this profile actually emits.
+
+        The Firefox profile replaces NetSurf and therefore emits the
+        core-client pair (``DEBIAN_DESKTOP_M4_CORE_CLIENTS`` /
+        ``CORE_READY``) instead of the browser pair the class default waits
+        for. Without this the protocol waits out the boot timeout on every
+        run, even after the scene gate has already reported its result.
+        """
+
+        self.MILESTONES = (
+            DESKTOP_M4_DRM_CORE_MILESTONES
+            if self._firefox_profile
+            else DesktopM4DrmOperations.MILESTONES
+        )
+
     def _select_dri_trace(self) -> None:
         """Append the opt-in DRM ioctl trace for a diagnostic probe.
 
@@ -548,6 +564,7 @@ class DesktopM4DrmOperations(DesktopM4Operations):
             identity.get("profile") == "desktop-m4-firefox"
             and os.environ.get("ASTERINAS_DESKTOP_SKIP_FIREFOX") != "1"
         )
+        self._select_milestones()
         if self._firefox_profile:
             self._firefox_probe_only = os.environ.get("ASTERINAS_FIREFOX_PROBE_ONLY") == "1"
             headless_probe = os.environ.get("ASTERINAS_FIREFOX_HEADLESS_PROBE") == "1"

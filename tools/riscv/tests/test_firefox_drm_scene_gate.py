@@ -27,6 +27,8 @@ from tools.riscv.debian.rootfs.firefox_drm_scene_gate import (  # noqa: E402
     _browser_exit_watch,
     _browser_log_marker,
     _browser_postmortem,
+    _browser_renderer_from_log,
+    _clear_profile_lock,
     _new_session_capabilities,
     _spawn,
     _start_browser_watchers,
@@ -39,7 +41,10 @@ from tools.riscv.debian.rootfs.firefox_drm_scene_gate import (  # noqa: E402
     _probe_socket_marker,
     _probe_syscall_summary,
 )
-from tools.riscv.debian.rootfs.browser_m5_marionette_gate import Marionette  # noqa: E402
+from tools.riscv.debian.rootfs.browser_m5_marionette_gate import (  # noqa: E402
+    GateError,
+    Marionette,
+)
 from tools.riscv.debian.rootfs.desktop_m4_gate import (  # noqa: E402
     DesktopM4DrmOperations,
     GateFailure,
@@ -142,6 +147,64 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("state=exited", text)
         self.assertIn("returncode=-11", text)
+
+    def test_browser_renderer_evidence_uses_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "browser.log"
+            log.write_text(
+                "Crash Annotation GraphicsCriticalError: |[0][GFX1-]: "
+                "RenderThread::InitDeviceTask is slow: 3644\n"
+                "[GFX1-]: NewRenderer::Run is slow: 4863\n",
+                encoding="utf-8",
+            )
+            output = StringIO()
+            with patch(
+                "tools.riscv.debian.rootfs.firefox_drm_scene_gate.FIREFOX_LOG",
+                log,
+            ), redirect_stdout(output):
+                values = _browser_renderer_from_log("Generic Renderer")
+        self.assertEqual(values, ("WebRender", "available", "Generic Renderer"))
+        self.assertIn("FIREFOX_DRM_BROWSER_EVIDENCE", output.getvalue())
+
+    def test_browser_renderer_evidence_prefers_virgl(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "browser.log"
+            log.write_text(
+                "RenderThread initialised\nrenderer=virgl (Mesa 25.0)\n",
+                encoding="utf-8",
+            )
+            with patch(
+                "tools.riscv.debian.rootfs.firefox_drm_scene_gate.FIREFOX_LOG",
+                log,
+            ):
+                values = _browser_renderer_from_log("Generic Renderer")
+        self.assertEqual(values, ("WebRender", "available", "virgl"))
+
+    def test_browser_renderer_evidence_rejects_software(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "browser.log"
+            log.write_text(
+                "RenderThread initialised\nRenderer: llvmpipe (LLVM 19)\n",
+                encoding="utf-8",
+            )
+            with patch(
+                "tools.riscv.debian.rootfs.firefox_drm_scene_gate.FIREFOX_LOG",
+                log,
+            ):
+                with self.assertRaisesRegex(GateError, "software"):
+                    _browser_renderer_from_log("Generic Renderer")
+
+    def test_recovery_clears_a_stale_profile_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            profile = Path(directory)
+            lock = profile / "lock"
+            lock.write_text("stale", encoding="utf-8")
+            with patch(
+                "tools.riscv.debian.rootfs.firefox_drm_scene_gate._profile_path",
+                return_value=profile,
+            ):
+                _clear_profile_lock()
+            self.assertFalse(lock.exists())
 
     def test_browser_postmortem_reports_exited_browser(self) -> None:
         process = _FakeProcess(2**31 - 1, returncode=-6)
@@ -510,6 +573,19 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
         self.assertIn("FIREFOX_DRM_CRASH_TRACE_FRAME", text)
         self.assertIn("FIREFOX_DRM_BROWSER_TAIL", text)
 
+    def test_firefox_profile_waits_for_core_milestones(self) -> None:
+        from tools.riscv.debian.rootfs.desktop_m4_gate import (
+            DESKTOP_M4_DRM_CORE_MILESTONES,
+        )
+
+        operations = object.__new__(DesktopM4DrmOperations)
+        operations._firefox_profile = True
+        operations._select_milestones()
+        self.assertEqual(operations.MILESTONES, DESKTOP_M4_DRM_CORE_MILESTONES)
+        operations._firefox_profile = False
+        operations._select_milestones()
+        self.assertEqual(operations.MILESTONES, DesktopM4DrmOperations.MILESTONES)
+
     def test_socket_process_arm_is_opt_in(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with patch(
@@ -613,7 +689,7 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
         self.assertIn('"FIREFOX_DRM_PROFILE remote_log_level=Trace source=user.js"', guest)
         self.assertIn('user_pref("browser.dom.window.dump.enabled", true);', guest)
         self.assertIn('user_pref("browser.sessionstore.debug", true);', guest)
-        self.assertIn('FIREFOX_DRM_MOZLOG ', guest)
+        self.assertIn('FIREFOX_DRM_BROWSER_EVIDENCE ', guest)
         self.assertIn('FIREFOX_DRM_BROWSER_DIAG ', guest)
         self.assertIn("def _probe_window_snapshot", guest)
         self.assertIn('"FIREFOX_DRM_PROBE_WINDOWS "', guest)

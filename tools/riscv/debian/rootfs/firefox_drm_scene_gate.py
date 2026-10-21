@@ -478,6 +478,20 @@ def _screenshot(
     return width, height, hashlib.sha256(payload).hexdigest()
 
 
+def _clear_profile_lock() -> None:
+    """Remove a stale profile lock before the recovery launch.
+
+    The first browser is stopped with SIGTERM and falls back to SIGKILL, so
+    its lock symlink can survive even though the process is gone. The second
+    launch would then refuse to start with "already running".
+    """
+
+    try:
+        (_profile_path() / "lock").unlink()
+    except OSError:
+        pass
+
+
 def _write_profile() -> None:
     profile = _profile_path()
     profile.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -3006,29 +3020,52 @@ def _browser_log_marker() -> None:
         print(f"FIREFOX_DRM_BROWSER_LOG text={token}", flush=True)
 
 
-def _browser_renderer_from_log() -> tuple[str, str, str]:
-    payload = FIREFOX_MOZ_LOG.read_bytes()
+def _browser_renderer_from_log(scene_renderer: str) -> tuple[str, str, str]:
+    """Extract WebRender/renderer evidence from the browser's stderr log.
+
+    Debian's ESR build compiles NSPR logging out, so ``MOZ_LOG`` never
+    produces a file in this guest (every run measured ``mozlog_bytes=0``).
+    WebRender still identifies itself on stderr: its render thread and
+    renderer log through the crash-annotation channel even in release
+    builds. The page's WebGL renderer is the fallback label when the
+    browser does not name the driver (Firefox sanitizes it to
+    "Generic Renderer" on real GPUs).
+    """
+
+    payload = FIREFOX_LOG.read_bytes()
     text = payload.decode("utf-8", "replace")
     lowered = text.lower()
+    webrender_evidence = any(
+        marker in text
+        for marker in ("RenderThread", "NewRenderer", "wr_renderer", "WebRender", "webrender")
+    )
     print(
-        "FIREFOX_DRM_MOZLOG "
+        "FIREFOX_DRM_BROWSER_EVIDENCE "
         f"bytes={len(payload)} sha256={hashlib.sha256(payload).hexdigest()} "
-        f"webrender={int('webrender' in lowered)} "
-        f"rendercompositorogl={int('rendercompositorogl' in lowered)} "
+        f"webrender={int(webrender_evidence)} "
         f"virgl={int('virgl' in lowered)} "
-        f"swgl={int('swgl' in lowered)} "
+        f"swgl={int('rendercompositorswgl' in lowered)} "
         f"llvmpipe={int('llvmpipe' in lowered)} "
-        f"softpipe={int('softpipe' in lowered)}",
+        f"softpipe={int('softpipe' in lowered)} "
+        f"scene_renderer={'_'.join(scene_renderer.split())[:80] or 'none'}",
         flush=True,
     )
-    if any(marker in lowered for marker in ("rendercompositorswgl", "llvmpipe", "softpipe")):
+    if any(
+        marker in lowered
+        for marker in (
+            "rendercompositorswgl",
+            "llvmpipe",
+            "softpipe",
+            "software webrender",
+        )
+    ):
         raise GateError("Firefox browser log contains software renderer evidence")
-    if "webrender" not in lowered and "rendercompositorogl" not in lowered:
+    if not webrender_evidence:
         raise GateError("Firefox browser log has no WebRender compositor evidence")
     if "virgl" in lowered:
         renderer = "virgl"
-    elif "generic renderer" in lowered:
-        renderer = "Generic Renderer"
+    elif scene_renderer:
+        renderer = scene_renderer
     else:
         raise GateError("Firefox browser log has no renderer label")
     return "WebRender", "available", renderer
@@ -3220,9 +3257,10 @@ def main() -> int:
         _browser_log_marker()
     if first_evidence is None:
         raise GateError("Firefox fixed scene did not produce evidence")
+    scene_renderer = str(first_evidence["scene_renderer"])
     values = first_evidence["support"]
     if not isinstance(values, dict):
-        compositing, webrender, renderer = _browser_renderer_from_log()
+        compositing, webrender, renderer = _browser_renderer_from_log(scene_renderer)
         values = {
             "compositing": compositing,
             "webrender": webrender,
@@ -3240,7 +3278,6 @@ def main() -> int:
         f"source={support_source}",
         flush=True,
     )
-    scene_renderer = str(first_evidence["scene_renderer"])
     print(f"FIREFOX_DRM_GL renderer={scene_renderer or 'unreported'}", flush=True)
     width, height, digest = first_evidence["screenshot"]
     print(f"FIREFOX_DRM_SCREENSHOT width={width} height={height} sha256={digest}", flush=True)
@@ -3255,6 +3292,7 @@ def main() -> int:
         flush=True,
     )
     _phase("spawn-second")
+    _clear_profile_lock()
     second = _spawn()
     second_watch_stop, second_watch_threads = _start_browser_watchers(second)
     try:
