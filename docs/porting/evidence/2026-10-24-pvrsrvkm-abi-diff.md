@@ -244,3 +244,128 @@ RGXFWIF_KCCB_CMD_STATEFLAGS_CTRL= 206 | magic
 - 只读复制 RockOS 的 `.ko`，未 insmod、未改 RockOS；
 - 未改 Asterinas 内核/initramfs；本轮只产出清单与差异；
 - 所有板级命令带 `timeout`。
+
+## P5b-14：最小三件实施与板级复跑
+
+代码提交：`64f5413dc`（`feat(gpu): align the minimal PVR bridge with
+the vendor ABI`）。
+
+### 实现
+
+1. **CONNECT `ui8KernelArch` = 64**（vendor `srvcore.c:784-792` 语义）；
+2. **新增 SRVCORE 命令**（结构体按 vendor `common_srvcore_bridge.h`）：
+   - `ACQUIREGLOBALEVENTOBJECT`（2）：in 4 / out 12（`u64` handle +
+     `u32` eError），返回固定非零 handle `0x1000`；
+   - `RELEASEGLOBALEVENTOBJECT`（3）：in 8 / out 4；
+   - `GETMULTICOREINFO`（12）：in 12（caps 指针 + size）/ out 16
+     （回显 caps 指针 + eError + numCores）；AXM-8-256 是单核，
+     vendor `RGXGetMultiCoreInfo` 在 `ui32MultiCoreNumCores == 0` 时
+     返回 `PVRSRV_ERROR_NOT_SUPPORTED`（=20），因此 eError 写 20、
+     numCores 写 0；
+3. **未实现命令的 errno** 按 `BridgedDispatchKM`（`srvcore.c`）与
+   `PVRSRVToNativeError`（`osfunc.c:972-990`）：
+   - `bridge_id >= 140` → `-EINVAL`
+     （`PVRSRV_ERROR_BRIDGE_EINVAL`）；
+   - `SRVCORE` 且 `func_id > 16` → `-EINVAL`；
+   - 其它有效 group/func（本构建没有 dispatch 条目，等价 DummyBW）→
+     `-ENOTTY`（`PVRSRV_ERROR_BRIDGE_ENOTTY`）。
+
+`PVRSRV_ERROR_NOT_SUPPORTED` 不在 native 映射表里（会落到默认
+`-EFAULT`），它是命令级 eError，不是 dispatch 级 errno；本轮按此区分。
+
+### ktest
+
+全部 `timeout 180`，ktest 内不打印：
+
+| 测试 | 结果 |
+|---|---|
+| `gpu_pvr_bridge_min_surface`（新增） | `1 passed; 0 failed; 359 filtered out` |
+| `gpu_pvr_bridge_unknown_cmd`（更新 errno 断言） | `1 passed; 0 failed; 359 filtered out` |
+| `gpu_pvr_bridge_rejects_bad_size` | `1 passed; 0 failed; 359 filtered out` |
+| `gpu_pvr_srvkm_init_ioctl` | `1 passed; 0 failed; 359 filtered out` |
+| `pvr_connect_reports_the_megrez_bvnc`（KernelArch=64） | `1 passed; 0 failed; 359 filtered out` |
+
+原始串口：`target/kt-p5b14-*.serial.log`（未跟踪）。
+
+### 镜像与板级
+
+| 项 | 值 |
+|---|---|
+| 内核 | `/home/debian/kernel-pvr-min.Image`，16,743,856 B，CRC32 `5b764d27`，SHA-256 `8d7e182037be37f820594f27b94e5a5dfc7398f5c7413a8c97d207ab77f9f274` |
+| initramfs | 原 `stage1-pvr-batch.cpio`（CRC32 `c8f825a7`），未修改 |
+| DTB | `megrez_dtb-465cb129333cc334.dtb`（CRC32 `40ed4c65`），未修改 |
+| 串口 | `target/board-p5b14-20261024/board_p5b14.serial.log` |
+
+guest 复跑（baseline 环境：`LD_LIBRARY_PATH=/opt/pvr/mesa22/lib:/opt/pvr/lib`、
+`LIBGL_DRIVERS_PATH=/opt/pvr/mesa22/lib/dri`、
+`MESA_LOADER_DRIVER_OVERRIDE=pvr`、`EGL_PLATFORM=gbm`、
+`LIBGL_DEBUG=verbose`，`timeout 30`）：
+
+```text
+E14=124
+```
+
+随后按任务给的 literal 命令（先 unset 上述变量）再跑一次：
+
+```text
+E14B=124
+ASTERINAS_POWERVR_EGL status=failed platform=gbm driver=pvr
+```
+
+两次都是 30 s 超时，stdout 无配置输出。**整份启动/测试串口里
+`ASTERINAS_POWERVR_BRIDGE` marker 为 0 条**（P5b-10 的同一路径能打印
+该 marker），说明 guest 根本没有向内核发出任何 PVR bridge ioctl。
+
+直接 gbm 探针（ctypes，`/dev/dri/renderD128`）：
+
+```text
+FD 3
+NAME b'pvr'
+BEFORE_GBM
+AFTER_GBM True
+BEFORE_DISP
+AFTER_DISP False
+```
+
+`LD_DEBUG=libs` 链：
+
+```text
+calling init: /opt/pvr/mesa22/lib/dri/pvr_dri.so
+calling init: /opt/pvr/lib/libpvr_dri_support.so
+calling init: /opt/pvr/lib/libsrv_um.so
+calling fini: /opt/pvr/lib/libpvr_dri_support.so
+calling fini: /opt/pvr/lib/libsrv_um.so
+calling fini: /opt/pvr/mesa22/lib/dri/pvr_dri.so
+calling fini: /opt/pvr/mesa22/lib/dri/kms_swrast_dri.so
+```
+
+即 `pvr_dri`/`libsrv_um` 仍被 init 后立即卸载并回退 `kms_swrast`，
+与 P5b-11 相同；新桥面没有被执行到。附带发现：首轮 25 s 探针停在
+`calling init: libLLVM-16.so.1`，120 s 版本能正常完成——LLVM 初始化在
+当前负载下很慢，25 s 不足以判定“挂起”。
+
+### 判定
+
+- 三件 ABI 改动已实现并由 ktest 验证；
+- **板级 EGL 仍失败，且失败点在 bridge 之前**：`pvr_dri` 的扩展/建屏
+  阶段就被 Mesa 拒绝，CONNECT 都没有发出，因此本轮改动在硬件上未被
+  触发；不能把 EGL 失败归因于桥面缺命令。
+
+### 新线索（下一轮，候选而非结论）
+
+- vendor DRM 版本：`PVRVERSION_MAJ=24`、`MIN=2`、
+  `BUILD=6643903`（`include/pvrversion.h`），`pvr_drm.c:557-562`
+  把三者写入 `drm_driver`；Asterinas 的 `DRM_IOCTL_VERSION` 目前返回
+  `0.1.0`、name=`pvr`；
+- `pvr_dri.so` 导入 `drmGetVersion`；`libpvr_dri_support.so` 含有
+  字符串 `"%s: Wrong version. Got: %d, Expected %d"`；
+- 假设：UMD 在建屏前按 DRM version 拒绝设备。下一步最小验证是把
+  `DRM_IOCTL_VERSION` 的 major/minor/patchlevel（以及 desc/date）对齐
+  vendor 的 24.2.6643903，再跑直接 gbm 探针，观察是否出现第一条
+  `ASTERINAS_POWERVR_BRIDGE` marker。
+
+### 边界（P5b-14）
+
+- 未改 initramfs；ktest 均带 `timeout 180`；板级命令均带 `timeout`；
+- 未执行 apt，未修改 RockOS 系统文件；
+- EGL 未通过，不写成通过。
