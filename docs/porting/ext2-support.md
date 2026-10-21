@@ -44,11 +44,11 @@ Legend: ✅ supported, 🟡 partial (limits noted), ❌ not implemented.
 | Sparse files and holes | ✅ | holes read as zeros; allocation fills them |
 | Legacy indirect mapping | ✅ | 12 direct + single/double/triple indirect |
 | Extent read | 🟡 | depth 0 and depth 1 index trees |
-| Extent allocation (write) | 🟡 | append at the logical end of depth-0 and depth-1 trees; a full inline tree is promoted to a leaf, and appends go into the last leaf. Holes and mid-file allocation are `EOPNOTSUPP`; new files use legacy mapping |
+| Extent allocation (write) | 🟡 | append at the logical end of depth-0 and depth-1 trees, plus hole allocation for depth-0 (records are inserted in order); a full inline tree is promoted to a leaf, and appends go into the last leaf. Depth-1 hole writes and leaf splits are `EOPNOTSUPP`; new files use legacy mapping |
 | Extent writeback of existing ranges | 🟡 | depth 0 and 1 |
 | Extent truncate | 🟡 | depth 0 and 1; deeper trees are left untouched and logged |
 | 64-bit extents | ❌ | rejected as `EOPNOTSUPP` |
-| `fallocate` | 🟡 | `Allocate`, `AllocateKeepSize`, `ZeroRange` and `ZeroRangeKeepSize`; punch-hole, collapse, insert and unshare are `EOPNOTSUPP` |
+| `fallocate` | 🟡 | `Allocate`, `AllocateKeepSize`, `ZeroRange`, `ZeroRangeKeepSize` and `PunchHoleKeepSize` (indirect mapping and extent trees up to depth one); collapse, insert and unshare are `EOPNOTSUPP` |
 | `O_TMPFILE` | ✅ | linked with `linkat(AT_EMPTY_PATH)`; `O_EXCL` tmpfiles are unlinkable; orphans are reclaimed on mount |
 | File size | ✅ | up to 2,196,873,666,560 bytes with 4 KiB blocks (indirect-mapped limit) |
 
@@ -92,9 +92,31 @@ linear; `e2fsck -D` can rebuild an index later.
 |---|---|---|
 | `user.*`, `trusted.*`, `security.*` | ✅ | one xattr block per inode |
 | External value blocks (`i_file_acl` pointing to EA blocks) | ❌ | `EIO` on read |
-| POSIX ACLs (`system.posix_acl_*`) | ❌ | namespace maps, semantics not implemented |
+| POSIX ACLs (`system.posix_acl_*`) | 🟡 | access ACLs stored and enforced (owner, named user, group class with mask, other); `chmod` keeps the mask/group/other entries in sync; default ACLs are stored but not inherited |
 | xattr block sharing | ❌ | reference count is always 1 |
 | xattr capacity | 🟡 | value must fit the single xattr block |
+
+### POSIX ACLs
+
+Both `system.posix_acl_access` and `system.posix_acl_default` are stored as
+ordinary xattr entries with an empty name suffix, which is how ext4
+represents them. Access decisions in `check_permission` follow Linux
+`posix_acl_permission`: the owner entry is unmasked; a matching named user is
+part of the group class and is masked; the group class is the union of the
+owning-group entry and every matching named group entry, masked when the ACL
+has a mask; everything else uses the other entry. `DAC_OVERRIDE` still
+bypasses the check before the ACL is consulted.
+
+`chmod` follows Linux's `posix_acl_chmod`: an ACL with a mask has its owner
+entry, mask and other entry rewritten from the new mode bits (the group
+entry is left alone); a minimal three-entry ACL has its group entry
+rewritten instead. An ACL that has named entries but no mask is malformed
+and is left untouched.
+
+Not yet implemented: default ACL inheritance on create (the attribute is
+stored and readable but new children do not derive an ACL from it). An
+invalid ACL value fails the access check with `EIO`/`EINVAL` rather than
+being ignored.
 
 ### Journal (JBD2)
 
@@ -202,7 +224,7 @@ Known gaps that a package workload can still hit:
 3. **POSIX ACLs and xattrs larger than one block.**
 4. **Journal edge cases:** revoke-only transactions, deleted tags, and
    non-contiguous journal inodes.
-5. **Punch-hole fallocate.**
+5. **Default ACL inheritance from directories.**
 
 The next storage milestone is therefore not "more fsck coverage" but extending
 extent allocation to depth-1 trees (existing and new holes), which is the main
@@ -286,9 +308,41 @@ on-disk tree reporting `0/ 1 1/ 1 0-5 <leaf> 6`.
 
 `fs_fallocate_check.sh` (`make test_x86_debian_fs_fallocate`) covers
 `ZERO_RANGE` over an existing range, past EOF, and with `KEEP_SIZE`, plus
-plain allocation with and without `KEEP_SIZE`; it also pins the punch-hole
-contract (`EOPNOTSUPP` and an unchanged file).  The image is remounted before
-the contents are re-checked.  Result: **PASS**, `e2fsck -fn` clean.
+plain allocation with and without `KEEP_SIZE`; it also checks that
+`PUNCH_HOLE` zeroes the requested range and keeps the file size.  The image is
+remounted before the contents are re-checked.  Result: **PASS**, `e2fsck -fn`
+clean.
+
+`fs_acl_check.sh` (`make test_x86_debian_fs_acl`) stores an access ACL on two
+files whose mode bits alone deny every non-root access, then runs reads and
+writes as the owner, a named user, a named group and unrelated users. It
+checks that named users are masked, the group class applies, other matches
+nothing and root bypasses, and that `chmod` rewrites the mask (or the group
+entry of a minimal ACL) consistently with the new mode; it re-runs every
+decision after a remount and requires `e2fsck -fn`.  Result: **PASS**.
+
+`fs_punch_hole_check.sh` (`make test_x86_debian_fs_punch_hole`) covers holes
+inside the direct blocks, across the direct/single-indirect boundary, up to
+EOF (size unchanged), and a punch covering a whole double-indirect file,
+which must free every data block and both indirect levels.  It also appends
+several pages to the image's inline-extent `/etc/hostname`: the first punch
+splits a two-block extent, three further appends overflow the in-line array
+and promote the tree to depth one, and a final punch removes an extent from
+the leaf.  `debugfs dump_extents` must still report `0/ 1`, the gaps read as
+zeros after a remount while untouched blocks keep their patterns, and a
+misaligned offset returns `EINVAL`.  Result: **PASS**, `e2fsck -fn` clean;
+the measured block count went from 520 to 392 sectors for a 16-block hole.
+
+The first depth-one attempt failed with `EUCLEAN`: the extent allocator
+required logical records to be contiguous, but a punched hole legitimately
+leaves a gap.  The validator now requires strictly increasing records and
+rejects only overlaps.
+
+Writing into a hole now allocates there for depth-zero trees: a new record
+is inserted in logical order, bounded by the next extent and by the free
+in-line slots.  The gate writes into the freshly punched block and checks
+the result after the remount.  Depth-one hole writes still need leaf splits
+and report `EOPNOTSUPP`.
 
 The gate found that `AllocateKeepSize` had been allocating blocks beyond
 `i_size`.  An ext2 file uses the legacy indirect mapping, which has no way to

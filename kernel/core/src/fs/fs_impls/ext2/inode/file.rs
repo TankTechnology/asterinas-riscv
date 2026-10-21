@@ -172,6 +172,39 @@ impl Inode {
                     return Err(err);
                 }
             }
+            FallocMode::PunchHoleKeepSize => {
+                if offset % BLOCK_SIZE != 0 {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "punch-hole offset must be block aligned"
+                    );
+                }
+                if offset < old_size {
+                    // Never punch past EOF: the operation keeps the size.
+                    let end = end.min(old_size);
+                    let start_block = Iblock::try_from(offset / BLOCK_SIZE)
+                        .map_err(|_| Error::with_message(Errno::EINVAL, "offset overflow"))?;
+                    let end_block = Iblock::try_from(end.div_ceil(BLOCK_SIZE))
+                        .map_err(|_| Error::with_message(Errno::EINVAL, "length overflow"))?;
+                    // Dirty pages in the range describe blocks that are about
+                    // to be freed; flush them first, then evict them so reads
+                    // see the hole instead of stale cache contents.
+                    if let Err(err) = inner.page_cache().flush_range(offset..end) {
+                        return Err(err);
+                    }
+                    if let Err(err) = inner
+                        .block_manager()?
+                        .punch_hole_blocks(start_block, end_block)
+                    {
+                        return Err(err);
+                    }
+                    let evict_end = (end_block as usize)
+                        .checked_mul(BLOCK_SIZE)
+                        .unwrap_or(old_size)
+                        .min(old_size);
+                    inner.page_cache().evict_range(offset..evict_end)?;
+                }
+            }
             FallocMode::ZeroRange | FallocMode::ZeroRangeKeepSize => {
                 let keep_size = matches!(mode, FallocMode::ZeroRangeKeepSize);
                 let alloc_end = if keep_size { end.min(old_size) } else { end };

@@ -88,7 +88,12 @@ use self::{
 };
 use super::{fs::Ext2, prelude::*, xattr::Xattr};
 use crate::{
-    fs::{ext2::utils, file::InodeMode, pipe::Pipe, vfs::inode::Extension},
+    fs::{
+        ext2::utils,
+        file::InodeMode,
+        pipe::Pipe,
+        vfs::{inode::Extension, xattr::{PosixAcl, XattrName}},
+    },
     vm::page_cache::Vmo,
 };
 
@@ -298,6 +303,20 @@ impl Inode {
 
     pub(super) fn link_count(&self) -> u16 {
         self.inner.read().link_count()
+    }
+
+    /// Reads the POSIX access ACL of this inode, if one is set.
+    pub(super) fn posix_access_acl(&self) -> Result<Option<PosixAcl>> {
+        let Some(xattr) = self.xattr.as_ref() else {
+            return Ok(None);
+        };
+        let Some(name) = XattrName::try_from_full_name("system.posix_acl_access") else {
+            return Ok(None);
+        };
+        match xattr.get_xattr_bytes(name)? {
+            Some(bytes) => Ok(Some(PosixAcl::parse(&bytes)?)),
+            None => Ok(None),
+        }
     }
 
     /// Returns a reference to the owning `Ext2` filesystem.

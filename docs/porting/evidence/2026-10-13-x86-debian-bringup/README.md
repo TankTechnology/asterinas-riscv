@@ -789,6 +789,80 @@ FS_RENAMEAT2_VERIFY ok=True problems=0
 e2fsck -fn clean
 ```
 
+## POSIX ACLs
+
+ACL xattrs were nominally mapped but unusable: every `system.*` name was
+forced to the `system.posix_acl_access.` prefix (with a trailing dot), so
+`setxattr("system.posix_acl_access", ...)` failed the prefix check. The name
+index is now chosen from the full name, ACL names carry no suffix, and an
+unknown `system.*` name returns `EOPNOTSUPP`.
+
+Access decisions follow Linux `posix_acl_permission`. The existing
+`check_permission` body moved into a reusable helper that takes an optional
+parsed ACL; the ext2 inode passes its `system.posix_acl_access` value. The
+mask applies to named users as well as the group class, which the first
+version got wrong until the gate exercised it.
+
+The gate sets `mode 0600` on two files so that mode bits alone would deny
+everyone but root, stores ACLs, and runs short reads and writes as uid/gid
+1001, 1002 and 1003:
+
+```
+FS_ACL_WRITE ok=True problems=0
+FS_ACL_VERIFY ok=True problems=0
+e2fsck -fn clean
+```
+
+The checks cover the named-user mask, a named-group entry, the owning group,
+the other entry, the root override, and the raw bytes round-tripping through
+`getxattr`.
+
+`chmod` now keeps the ACL consistent (`posix_acl_chmod` semantics). The gate
+runs `chmod 0604` on an ACL with a mask and checks that the mask drops to
+zero while the other entry gains read, which flips the enforcement result
+for a named user from allowed to denied; a minimal three-entry ACL gets its
+group entry rewritten by `chmod 0600` instead. Both ACLs and their decisions
+survive the remount. Default ACL inheritance is not implemented yet.
+
+## `fallocate` punch-hole
+
+`FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE` now works for files on the legacy
+indirect mapping. The block tree clears the data pointers in the range, frees
+those blocks, then prunes indirect blocks that became empty bottom-up (so a
+whole-file punch leaves `i_blocks == 0`). Dirty pages in the range are
+flushed before the blocks are freed and evicted afterwards, so reads see the
+hole rather than stale cache contents. A misaligned offset is `EINVAL`, and
+extent-mapped files still report `EOPNOTSUPP` for now.
+
+```
+FS_PUNCH_WRITE ok=True blocks=520->392 misaligned=22 extent=95
+FS_PUNCH_VERIFY ok=True problems=0
+e2fsck -fn clean
+```
+
+Extent trees are handled as well: each affected extent is split into the
+parts before and after the hole and the covered physical run is freed.  For
+depth zero the result must still fit the four in-line records; for depth one
+each leaf is rewritten, a leaf that loses all of its extents is freed, the
+in-line index is rebuilt and emptied leaves are dropped.  The gate appends
+to the image's inline-extent `/etc/hostname` in a way that first splits a
+two-block extent and then promotes the tree to depth one, punches an extent
+out of the leaf, and requires `dump_extents` to still report `0/ 1`.
+
+The first depth-one attempt returned `EUCLEAN` on the next write: the extent
+allocator insisted that logical records be contiguous, but punching a hole
+legitimately creates a gap.  Records are now required to be strictly
+increasing instead of contiguous.
+
+Writing back into a punched hole now works for depth-zero trees: the new
+extent is allocated and inserted in logical order, bounded by the next
+record and the free in-line slots.  The gate writes into the hole it just
+made and confirms the contents after the remount.  Depth-one hole writes
+still need leaf splitting and remain `EOPNOTSUPP`.
+
+The measured 520 -> 392 sectors is exactly the 16 data blocks covered by the
+punched ranges.
+
 ## `fallocate` modes
 
 The syscall layer already parsed every `FALLOC_FL_*` combination, but the

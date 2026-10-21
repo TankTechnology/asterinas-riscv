@@ -15,14 +15,14 @@ use device_id::DeviceId;
 use crate::{
     device,
     fs::{
-        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, SyncMode},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, Permission, StatusFlags, SyncMode},
         fs_impls::ext2::{FilePerm, Inode as Ext2Inode},
         utils::DirentVisitor,
         vfs::{
             file_system::FileSystem,
             inode::{
                 Extension, FallocMode, FileOps, HardLinkability, Inode, Metadata, MknodType,
-                RenameMode, SymbolicLink,
+                RenameMode, SymbolicLink, check_permission_generic,
             },
             path::Dentry,
             xattr::{XattrName, XattrNamespace, XattrSetFlags},
@@ -271,6 +271,11 @@ impl Inode for Ext2Inode {
             replaced_inode,
             mode,
         )
+    }
+
+    fn check_permission(&self, perm: Permission) -> Result<()> {
+        let acl = self.posix_access_acl()?;
+        check_permission_generic(self.metadata(), perm, acl.as_ref())
     }
 
     fn read_link(&self) -> Result<SymbolicLink> {
