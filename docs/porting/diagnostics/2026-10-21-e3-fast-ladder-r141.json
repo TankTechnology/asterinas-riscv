@@ -1,0 +1,131 @@
+{
+  "schema": 1,
+  "gate": "e3-fast-ladder-r141",
+  "status": "failed",
+  "passed": false,
+  "timestamp_utc": "2026-10-20T17:51:26+00:00",
+  "purpose": "L0-L2 fast ladder: establish whether headless WebRender initializes in the current guest without running the full Firefox scene chain.",
+  "assertions": [
+    {
+      "name": "l0_firefox_version",
+      "status": "passed",
+      "evidence": "rc=0 elapsed_ms=6481.3 output=Mozilla Firefox 140.16.0esr; ladder profile user.js bytes=501 sha256=1cb064a485df6edb0b881557a07128ab4dc58787c8d2cc9ee5173734fb029162"
+    },
+    {
+      "name": "l1_glxtest_virgl",
+      "status": "passed",
+      "evidence": "rc=0 elapsed_ms=3178.7 RENDERER virgl DRM_RENDERDEVICE /dev/dri/renderD128 TEST_TYPE EGL; display ready after 1 attempt/2166.7ms"
+    },
+    {
+      "name": "l2_headless_webrender_smoke",
+      "status": "failed",
+      "evidence": "timed_out rc=-9 elapsed_ms=30141.4; screenshot absent; MOZ_LOG file absent; browser tail='*** You are running in headless mode.'"
+    }
+  ],
+  "steps": {
+    "L0": {
+      "firefox_version": {
+        "elapsed_ms": 6481.3,
+        "output": "Mozilla Firefox 140.16.0esr",
+        "rc": 0,
+        "timed_out": false
+      },
+      "profile": {
+        "exists": true,
+        "path": "/tmp/e3-ladder-profile",
+        "user_js_bytes": 501,
+        "user_js_sha256": "1cb064a485df6edb0b881557a07128ab4dc58787c8d2cc9ee5173734fb029162"
+      },
+      "step": "L0"
+    },
+    "L1": {
+      "display": {
+        "attempts": 1,
+        "elapsed_ms": 2166.7,
+        "ready": true
+      },
+      "glxtest": {
+        "elapsed_ms": 3178.7,
+        "output": "DRI_DRIVER virtio_gpu VENDOR Mesa RENDERER virgl VERSION 3.1 Mesa 25.0.7-2+deb13u1 TFP TRUE DRM_RENDERDEVICE /dev/dri/renderD128 MESA_VENDOR_ID 0x1af4 MESA_DEVICE_ID 0x1050 DDX_DRIVER modesetting; TEST_TYPE EGL",
+        "rc": 0,
+        "timed_out": false
+      },
+      "step": "L1"
+    },
+    "L2": {
+      "browser_log": {
+        "bytes": 38,
+        "exists": true,
+        "tail": "*** You are running in headless mode."
+      },
+      "command": "firefox-esr --headless --screenshot",
+      "moz_log": {
+        "bytes": 0,
+        "exists": false,
+        "lines": [],
+        "sha256": ""
+      },
+      "result": {
+        "elapsed_ms": 30141.4,
+        "output": "",
+        "rc": -9,
+        "timed_out": true
+      },
+      "screenshot": {
+        "bytes": 0,
+        "exists": false,
+        "sha256": ""
+      },
+      "step": "L2"
+    }
+  },
+  "input_sha256": {
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "kernel": "19e639268db191fd87bacde2e8c269b7c9aa0ef2982be1114ee938d070e055a1",
+    "manifest": "725c567e50e2d5ec3c94fb2c92c14b66b7e489402d5bedd99c94636fe330aafa",
+    "package_checksums": "4bd122bfc6c1335f7133457743e04c9bd7c2c346feabcfb71a3a7f749d4b80a8",
+    "packages_lock": "9d5fd036dfae9b113a218d4d522e8e22158074ef18efb599c2be69b0ef1970c6",
+    "root_image": "f5cdb6f2fad298e3d10edb09cdfa93271f40f77d7a1193c51bbcb98a528c4642",
+    "stage1_initramfs": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210"
+  },
+  "artifacts": {
+    "serial": "/mnt/mydisk/qemu-firefox-e3-ladder-r141d/desktop-m4-drm.serial.log",
+    "result": "/mnt/mydisk/qemu-firefox-e3-ladder-r141d/result.json",
+    "lifecycle": "/mnt/mydisk/qemu-firefox-e3-ladder-r141d/lifecycle.json",
+    "rootfs": "/mnt/mydisk/asterinas-firefox-rootfs-20261021-ladder-r141d/debian-root.ext2"
+  },
+  "artifact_sha256": {
+    "serial": "c0677d367b1328a293431d99f91d804ce66bc9661a7bd7328d559eff2bde135d",
+    "result": "65b6bbfb2f7b015db6a21654888498ab406b58af16b7a4e8a69df9627d5f17bb",
+    "lifecycle": "bf3a739a9b5952058a4cf23bae4d7b05114f3588bc317e97cada451340ef84a5",
+    "rootfs": "f5cdb6f2fad298e3d10edb09cdfa93271f40f77d7a1193c51bbcb98a528c4642"
+  },
+  "interpretation": [
+    "L0/L1 pass after the desktop readiness barrier; the earlier ladder attempt started before Xorg and timed out on every step.",
+    "L2 proves headless WebRender does not initialize within 30s in this guest: the process starts (headless banner) but produces no MOZ_LOG/WebRender lines and no screenshot before the bounded kill.",
+    "L2 does not distinguish a permanent hang from TCG slowness beyond 30s; per ladder discipline it stops here instead of running the full scene chain.",
+    "r24 is retained separately: the WebRender-disabled full-chain probe still times out at the same compositor Resume sync IPC, so the startup block is independent of the WebRender setting."
+  ],
+  "supplementary": {
+    "r24": {
+      "result": "/mnt/mydisk/qemu-firefox-e3-probe-r24/result.json",
+      "kernel": "19e639268db191fd87bacde2e8c269b7c9aa0ef2982be1114ee938d070e055a1",
+      "root_image": "7b156df4051fd5d41b9434c56abe394c27afb538a1211ab891141a27ab8531e5",
+      "boundary": "NewSession timeout; leader futex; WebRender disabled"
+    },
+    "r22_live_stack": {
+      "kernel": "19e639268db191fd87bacde2e8c269b7c9aa0ef2982be1114ee938d070e055a1",
+      "chain": [
+        "nsWindow::OnMap",
+        "nsWindow::ConfigureCompositor",
+        "nsWindow::ResumeCompositorImpl",
+        "PCompositorBridgeChild::SendResume",
+        "MessageChannel::Send",
+        "MessageChannel::WaitForSyncNotify",
+        "pthread_cond_wait",
+        "futex"
+      ]
+    }
+  }
+}

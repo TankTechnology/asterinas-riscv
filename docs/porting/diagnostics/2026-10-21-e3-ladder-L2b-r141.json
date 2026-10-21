@@ -1,0 +1,120 @@
+{
+  "schema": 1,
+  "gate": "e3-fast-ladder-L2b-r141",
+  "status": "failed",
+  "passed": false,
+  "timestamp_utc": "2026-10-20T18:05:35+00:00",
+  "purpose": "L2b: same headless WebRender smoke as L2 with a 120s bound, to distinguish a 30s cold-start miss from a permanent WebRender initialization failure.",
+  "assertions": [
+    {
+      "name": "l2b_headless_firefox_exit",
+      "status": "passed",
+      "evidence": "rc=0 elapsed_ms=93458.4 timed_out=false"
+    },
+    {
+      "name": "l2b_screenshot",
+      "status": "passed",
+      "evidence": "screenshot exists bytes=20146 sha256=7a6fa6d369ab4fb4872652b4ebcb287889eaff6c9e4d1bca608699786e8c1136"
+    },
+    {
+      "name": "l2b_webrender_initialized",
+      "status": "passed",
+      "evidence": "browser log tail contains 'WebRender - OpenGL version new 3.2', 'Renderer: Software WebRender', 'is_software: true'"
+    },
+    {
+      "name": "l2b_renderer_virgl",
+      "status": "failed",
+      "evidence": "headless WebRender selected Software WebRender, not virgl; no virgl renderer line"
+    }
+  ],
+  "steps": {
+    "L0": {
+      "firefox_version": {
+        "elapsed_ms": 5893.4,
+        "output": "Mozilla Firefox 140.16.0esr",
+        "rc": 0,
+        "timed_out": false
+      },
+      "step": "L0"
+    },
+    "L1": {
+      "display": {
+        "attempts": 1,
+        "elapsed_ms": 365.7,
+        "ready": true
+      },
+      "glxtest": {
+        "elapsed_ms": 3096.0,
+        "output": "DRI_DRIVER virtio_gpu VENDOR Mesa RENDERER virgl VERSION 3.1 Mesa 25.0.7-2+deb13u1 TFP TRUE DRM_RENDERDEVICE /dev/dri/renderD128 MESA_VENDOR_ID 0x1af4 MESA_DEVICE_ID 0x1050 DDX_DRIVER modesetting; TEST_TYPE EGL",
+        "rc": 0,
+        "timed_out": false
+      },
+      "step": "L1"
+    },
+    "L2b": {
+      "result": {
+        "elapsed_ms": 93458.4,
+        "output": "",
+        "rc": 0,
+        "timed_out": false
+      },
+      "screenshot": {
+        "exists": true,
+        "bytes": 20146,
+        "sha256": "7a6fa6d369ab4fb4872652b4ebcb287889eaff6c9e4d1bca608699786e8c1136"
+      },
+      "browser_log": {
+        "bytes": 3384,
+        "contains": [
+          "WebRender - OpenGL version new 3.2",
+          "Renderer: Software WebRender",
+          "is_software: true",
+          "WR FrameBuilderConfig"
+        ]
+      },
+      "step": "L2b"
+    }
+  },
+  "input_sha256": {
+    "dtb": "d6e8cf8a76188f7f247568c1df255ff699fefd40d74f2fe063b62ffa3381e3c2",
+    "kernel": "19e639268db191fd87bacde2e8c269b7c9aa0ef2982be1114ee938d070e055a1",
+    "manifest": "79f9ac3ad926b2b104c548168969d4c9f0822390af3bf2c405a2ec75e8d88ce7",
+    "package_checksums": "4bd122bfc6c1335f7133457743e04c9bd7c2c346feabcfb71a3a7f749d4b80a8",
+    "packages_lock": "9d5fd036dfae9b113a218d4d522e8e22158074ef18efb599c2be69b0ef1970c6",
+    "root_image": "dc8ad012980f0827f7bd6825a89dbe8579fcfbbb23c1641e5611956a179554c7",
+    "stage1_initramfs": "ce7fb996e9a6ac48160d81c29347a68d88e99204adcc147051df76f645031c84",
+    "u_boot": "47516422aea981a45eb3da6de786d356dbd9059c96bd9fc11d8e3ba28aec7210"
+  },
+  "artifacts": {
+    "serial": "/mnt/mydisk/qemu-firefox-e3-ladder-r141f/desktop-m4-drm.serial.log",
+    "result": "/mnt/mydisk/qemu-firefox-e3-ladder-r141f/result.json",
+    "lifecycle": "/mnt/mydisk/qemu-firefox-e3-ladder-r141f/lifecycle.json",
+    "rootfs": "/mnt/mydisk/asterinas-firefox-rootfs-20261021-ladder-r141f/debian-root.ext2"
+  },
+  "artifact_sha256": {
+    "serial": "970012b1d28ae664c72cc689cb8f761dffa10c2620a4043cd47e0a145d9f9dbc",
+    "result": "f7adc966d7a5e480c117a4e94a47b5a32bde5e3a6a897c37b059f05e2293c1bb",
+    "lifecycle": "752fbd0595ebb687baec1d46047ab8ac8f184ea48973c0755404dc986f915a38",
+    "rootfs": "dc8ad012980f0827f7bd6825a89dbe8579fcfbbb23c1641e5611956a179554c7"
+  },
+  "interpretation": [
+    "WebRender does initialize in this guest, but headless cold start needs about 93.5s; the 30s L2 bound was below the cold-start envelope.",
+    "The selected WebRender renderer is Software WebRender (is_software=true), not virgl, even though glxtest reports virgl/EGL.",
+    "This receipt answers the r141 WebRender-initialization question but does not satisfy E3's virgl renderer requirement.",
+    "The full-chain NewSession stall remains the compositor Resume sync IPC identified in r22: nsWindow::OnMap -> ConfigureCompositor -> SendResume -> MessageChannel::WaitForSyncNotify; r24 (WebRender disabled) still times out at the same boundary."
+  ],
+  "supplementary": {
+    "r141_receipt": "docs/porting/diagnostics/2026-10-21-e3-fast-ladder-r141.json",
+    "r24_result": "/mnt/mydisk/qemu-firefox-e3-probe-r24/result.json",
+    "r22_live_stack_chain": [
+      "nsWindow::OnMap",
+      "nsWindow::ConfigureCompositor",
+      "nsWindow::ResumeCompositorImpl",
+      "PCompositorBridgeChild::SendResume",
+      "MessageChannel::Send",
+      "MessageChannel::WaitForSyncNotify",
+      "pthread_cond_wait",
+      "futex"
+    ]
+  }
+}
