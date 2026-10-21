@@ -122,6 +122,28 @@ pub(crate) fn is_powervr_platform() -> bool {
 const DRIVER_DATE: &str = "20260815";
 const DRIVER_DESC: &str = "Asterinas virtio-gpu driver";
 
+/// `DRM_IOCTL_VERSION` fields for a driver name.
+///
+/// The PowerVR backend mirrors the vendor `pvrsrvkm` driver: version
+/// 24.2@6643903 (`include/pvrversion.h`) and the desc/date from
+/// `services/server/env/linux/pvr_drm.c`. The vendor user-mode stack checks
+/// them before it connects, so reporting Asterinas's own 0.1.0 there makes the
+/// driver look like a different KMD. Every other backend keeps the Asterinas
+/// values.
+fn drm_version_fields(driver_name: &str) -> (i32, i32, i32, &'static str, &'static str) {
+    if driver_name == POWERVR_DRIVER_NAME {
+        (
+            24,
+            2,
+            6_643_903,
+            "20170530",
+            "Imagination Technologies PVR DRM",
+        )
+    } else {
+        (0, 1, 0, DRIVER_DATE, DRIVER_DESC)
+    }
+}
+
 /// KMS object ids. The virtio-gpu device exposes a single CRTC/encoder/connector.
 const CRTC_ID: u32 = 1;
 const ENCODER_ID: u32 = 1;
@@ -3097,12 +3119,14 @@ impl PerOpenFileOps for DriHandle {
             dispatch_ioctl!(match raw_ioctl {
                 cmd @ GetVersion => {
                     let mut version = cmd.read()?;
-                    version.version_major = 0;
-                    version.version_minor = 1;
-                    version.version_patchlevel = 0;
+                    let (major, minor, patchlevel, date, desc) =
+                        drm_version_fields(self.display.name);
+                    version.version_major = major;
+                    version.version_minor = minor;
+                    version.version_patchlevel = patchlevel;
                     copy_field(version.name, &mut version.name_len, self.display.name)?;
-                    copy_field(version.date, &mut version.date_len, DRIVER_DATE)?;
-                    copy_field(version.desc, &mut version.desc_len, DRIVER_DESC)?;
+                    copy_field(version.date, &mut version.date_len, date)?;
+                    copy_field(version.desc, &mut version.desc_len, desc)?;
                     cmd.write(&version)?;
                     Ok(0)
                 }
@@ -3636,6 +3660,20 @@ mod tests {
         *,
     };
     use crate::util::ioctl::NoData;
+
+    /// The PowerVR backend reports the vendor driver's DRM identity and
+    /// version (`pvrversion.h` 24.2@6643903, `pvr_drm.c` desc/date);
+    /// libpvr_dri_support checks them before the vendor UM connects.
+    #[ktest]
+    fn gpu_drm_version_matches_vendor() {
+        let (major, minor, patchlevel, date, desc) = drm_version_fields(POWERVR_DRIVER_NAME);
+        assert_eq!((major, minor, patchlevel), (24, 2, 6_643_903));
+        assert_eq!(date, "20170530");
+        assert_eq!(desc, "Imagination Technologies PVR DRM");
+
+        let (major, minor, patchlevel, _, _) = drm_version_fields(DRIVER_NAME);
+        assert_eq!((major, minor, patchlevel), (0, 1, 0));
+    }
 
     /// Linux requires an unsupported atomic KMS client cap to fail so clients
     /// keep using the legacy ioctls this driver actually implements.
