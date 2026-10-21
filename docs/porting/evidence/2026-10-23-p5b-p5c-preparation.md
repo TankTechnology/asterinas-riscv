@@ -386,6 +386,80 @@ ASTERINAS_POWERVR_UMD status=failed stage=egl reason=egl-init libsrv=24.2.664390
   是否依赖 Asterinas 未提供的 sysfs 节点；这与 Mesa 版本无关，但会
   让 gbm 在任何 Mesa 下都失败。
 
+## P5b-6：EGL 初始化失败的归因（sysfs / 源码可行性）
+
+### sysfs / dev 节点
+
+guest 实测：
+
+```text
+ls /sys/class          -> graphics  tty
+ls /sys/class/drm      -> No such file or directory
+ls /sys/class/graphics -> 只有 fb0
+```
+
+- **没有 `/sys/class/drm`**（没有 `card0`/`renderD128` 的 class 项）；
+- `/sys/dev/char` 也不可用（`ls /sys/dev` 只看到 fb 相关项）；
+- `/dev/dri/card0` 与 `renderD128` 在 devtmpfs 中存在，但 sysfs 元数据缺失。
+
+这与 libdrm/Mesa 的实际用法直接冲突：
+
+- `drmGetNodeTypeFromFd(fd)` 依赖
+  `/sys/dev/char/<major>:<minor>` 的 readlink 判断 render/card；
+- `drmGetDevices2()` 扫描 `/sys/class/drm` 发现设备；
+- Mesa gbm/dri loader 用这些结果选择驱动和节点。
+
+因此 `DRI2: failed to create gbm device` **很可能首先是 sysfs 缺失**，
+而不是（或不仅是）Mesa 22/25 的 ABI。pvr_dri 内部
+`libpvr_dri_support`/`libsrv_um` 也导入 `drmGetNodeTypeFromFd`
+与 `drmGetDevices2`，同样会被这个缺口挡住。
+
+### 第一条 EGL 错误
+
+带 `LIBGL_DEBUG=verbose EGL_LOG_LEVEL=debug EGL_PLATFORM=gbm` 的运行
+（Mesa 22 栈）第一条错误仍是：
+
+```text
+libEGL debug: EGL user error 0x3001 (EGL_NOT_INITIALIZED) in eglInitialize: DRI2: failed to create gbm device
+```
+
+之后才是 `eglInitialize failed`。这与“gbm 在打开/识别 DRM 节点阶段
+失败”一致。
+
+### 重编 pvr_dri 的可行性（只调研）
+
+- RockOS Mesa fork：`https://github.com/rockos-riscv/mesa`，分支
+  `rockos-mesa22.0.3`；树里有
+  `src/gallium/drivers/pvr`、`src/gallium/frontends/pvr`、
+  `dri_support.h`、`pvrcompat.c` 等，说明驱动源码可得；
+- 本地（当前宿主）没有该 fork 的完整树，需要 clone/sparse checkout；
+- 重编到 Mesa 25 的主要成本是 gallium 接口差异（`pipe_screen`/
+  `pipe_context`、资源创建、fence/query 等）以及 Mesa 25 的构建系统
+  （meson 选项、`libgallium`/`libglapi` 变化）。工作步骤建议：
+
+1. 取 RockOS Mesa 22 的 `src/gallium/drivers/pvr` + `frontends/pvr`
+   和对应 meson 片段；
+2. 用 Debian 13 / guest Mesa 25.0.7 源码树做 riscv64 构建环境，
+   先让 `pvr_dri.so` 编译通过（不追求功能）；
+3. 对齐 Mesa 25 的 gallium/`pipe_loader` 接口与 `libglapi` 导出；
+4. 用 `dlopen`/`LD_PRELOAD` 验证加载，再跑 `eglconfigs`；
+5. 若接口差异过大，退化为“在 guest 内整套 Mesa 22 rootfs”方案，
+   而不是逐库拼装。
+
+粗估：不是一天内能完成的工作；应在 sysfs 修复后重新评估是否仍有
+必要。
+
+### 结论与优先级
+
+1. **先补 sysfs/DRM class + `/sys/dev/char` 元数据**（内核/sysfs，
+   本轮不做）：这是当前最直接、最可能一次解锁 gbm + libdrm 设备
+   发现的缺口；
+2. 修好后用现有 Mesa 22/25 栈复跑 `eglconfigs`，再判断 Mesa ABI
+   是否仍是第二层阻塞；
+3. 只有在 sysfs 修复后仍失败时，才进入 **Mesa 25 重编 pvr_dri**；
+4. srvkm 时序/OS-online 不是当前第一优先级：目前 EGL 还没走到
+   pvr_dri 的 bridge 初始化。
+
 ## 下一步
 
 1. 板子物理复位后先跑 `p5b-stage.sh` + rootfs 注入 + guest 命令，记录
