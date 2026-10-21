@@ -114,12 +114,42 @@ stops the boot:
 - `Failed to open netlink, ignoring: Protocol not available`
 - `bpf-restrict-fs: BPF LSM hook not enabled in the kernel`
 - `dev-hvc0.device` times out after 90 s; `serial-getty@hvc0.service` then fails
-  its dependency and no login prompt is offered on the console
+  its dependency and no login prompt is offered on the console. Fixed in the
+  image: the `systemd-ext4-*` profiles mask the hvc0 getty (whose RX path never
+  delivers input) and enable `console-getty` pinned to `/dev/ttyS0`; see
+  "Serial login" below.
 - `Failed to find module 'autofs4'` / `'unix'`: no module loading
 
 The sysctl gaps in this list (`fs.file-max`, `fs.nr_open`,
 `systemd-sysctl.service`) are fixed; see "Configuration alignment with Linux"
 above.
+
+## Serial login
+
+The `systemd-ext4-m3` and `systemd-ext4-m6-userspace` profiles ship an
+interactive serial console without any gate-time patching:
+
+- `/usr/local/sbin/asterinas-login` replaces `login(1)`. The serial tty cannot
+  complete `login(1)`'s controlling-terminal handoff, so the helper behaves
+  like a minimal login: agetty has already consumed the user name, so the
+  helper only reads and checks the password (`asterinas`), then execs an
+  interactive shell through `setpriv --reuid=1000 --regid=1000 --init-groups`.
+- The unprivileged account is provisioned at build time:
+  `asterinas:x:1000:1000:Asterinas:/home/asterinas:/bin/bash` with an empty
+  (locked) shadow entry; only the helper's password check gates the shell.
+- `console-getty.service` is enabled and pinned to `/dev/ttyS0` through
+  `/etc/systemd/system/console-getty.service.d/asterinas-serial.conf`. Its
+  `ExecStart` clears the distro default and passes `-l /usr/local/sbin/asterinas-login`.
+- `serial-getty@hvc0.service` and `serial-getty@ttyS0.service` are masked to
+  `/dev/null`. The template instances wait for `dev-hvc0.device` /
+  `dev-ttyS0.device`, which the current device manager never materializes, and
+  the hvc0 RX path delivers no input at all.
+
+`tools/x86/debian/interactive_login_check.sh`
+(`make test_x86_debian_interactive_login`) boots the image with
+`console=ttyS0 earlycon` over a QEMU serial socket, types `asterinas` /
+`asterinas`, runs `id`, requires `uid=1000(asterinas)` and a clean
+`e2fsck -fn`, and fails if the image is missing any of the files above.
 
 ## The image had to be repaired before it could be trusted
 
