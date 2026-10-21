@@ -856,6 +856,7 @@ impl PowerControlFile {
                 job_events,
             );
             fence::context().signal(&job_fence);
+            fence::record_completed(&job_fence);
             let fence_status = match fence::context().wait_any(
                 core::slice::from_ref(&job_fence),
                 false,

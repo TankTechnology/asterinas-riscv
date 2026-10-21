@@ -149,6 +149,28 @@ impl FenceContext {
 }
 
 static FENCE_CONTEXT: Once<FenceContext> = Once::new();
+static LAST_COMPLETED: Once<Arc<FenceState>> = Once::new();
+
+/// Records the fence of the most recently completed device job.
+///
+/// Exporters use this as the minimal implicit-sync attachment: a dma-buf
+/// handed to another device is ordered after the last job this kernel
+/// completed, rather than pretending no work was ever submitted.
+#[cfg(all(target_arch = "riscv64", feature = "powervr_probe"))]
+pub(crate) fn record_completed(fence: &Arc<FenceState>) {
+    LAST_COMPLETED.call_once(|| fence.clone());
+}
+
+/// Returns the last completed job's fence, or a freshly signalled fence when
+/// no job has completed yet.
+pub(crate) fn completed_or_signaled() -> Arc<FenceState> {
+    if let Some(fence) = LAST_COMPLETED.get() {
+        return fence.clone();
+    }
+    let fence = context().new_fence();
+    context().signal(&fence);
+    fence
+}
 
 /// The device-wide fence context.
 ///

@@ -202,6 +202,20 @@ pub enum GetFrameError {
     NotAligned,
 }
 
+/// Returns whether `paddr` names a page that currently belongs to an
+/// allocated frame.
+///
+/// This is a validation helper for APIs that must only touch memory that is
+/// known to be backed by real frames (for example, DMA cache maintenance on a
+/// caller-supplied physical range).
+pub(crate) fn is_in_use(paddr: Paddr) -> bool {
+    let Ok(slot) = get_slot(paddr) else {
+        return false;
+    };
+    let ref_count = slot.ref_count.load(Ordering::Relaxed);
+    ref_count != REF_COUNT_UNUSED && ref_count != 0
+}
+
 /// Gets the reference to a metadata slot.
 pub(super) fn get_slot(paddr: Paddr) -> Result<&'static MetaSlot, GetFrameError> {
     if !paddr.is_multiple_of(PAGE_SIZE) {
