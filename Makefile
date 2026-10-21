@@ -692,11 +692,15 @@ test_x86_debian_interactive_login:
 # X86_DEBIAN_KERNEL must be an OSDK x86_64 artifact built with
 # `--boot-method vmm-direct`; X86_DEBIAN_STAGE1_INITRAMFS comes from
 # `build_stage1.sh --architecture amd64 --minimal`.
+# The marker is the banner systemd prints after it has taken over from the
+# kernel. `Reached target multi-user.target` is not usable here: systemd
+# interleaves that line with kernel warnings on the serial console and never
+# prints it intact, and Debian's own boot can finish without the line.
 X86_DEBIAN_KERNEL ?=
 X86_DEBIAN_STAGE1_INITRAMFS ?=
 X86_DEBIAN_ROOT_IMAGE ?=
 X86_DEBIAN_BOOT_TRANSCRIPT ?= $(CURDIR)/target/x86-debian/boot.transcript
-X86_DEBIAN_BOOT_MARKER ?= Reached target multi-user.target
+X86_DEBIAN_BOOT_MARKER ?= Welcome to Debian GNU/Linux
 X86_DEBIAN_BOOT_TIMEOUT ?= 1800
 
 .PHONY: test_x86_debian_boot

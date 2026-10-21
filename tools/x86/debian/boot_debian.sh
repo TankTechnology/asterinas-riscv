@@ -245,7 +245,11 @@ while (( SECONDS < deadline )); do
         printf 'error: the guest exited before "%s" appeared\n' "$WAIT_FOR" >&2
         exit 1
     fi
-    if grep -aFq -- "$WAIT_FOR" "$OUTPUT"; then
+    # systemd colours unit names on the console, so the literal marker often
+    # spans escape sequences (`Reached target \e[0;1;39mmulti-user.target`).
+    # Strip ANSI colours before matching.
+    if sed -e $'s/\x1b\\[[0-9;?]*[A-Za-z]//g' -- "$OUTPUT" 2>/dev/null |
+        grep -aFq -- "$WAIT_FOR"; then
         printf 'boot_debian: transcript %s satisfied "%s"\n' "$OUTPUT" "$WAIT_FOR"
         exit 0
     fi
