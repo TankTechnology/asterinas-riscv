@@ -2150,3 +2150,30 @@ The builder now installs
 `/etc/systemd/system/sigpwr.target.d/asterinas-power.conf` (`Wants=poweroff.target`)
 for amd64 systemd-ext4 profiles, so once the signal reaches systemd the
 existing `poweroff` path turns the guest off.
+## Reusing the RISC-V patches on the x86 Debian tree (2026-10-21)
+
+The patches in `patches-from-riscv/` were authored on the RISC-V line's
+tree, where the kernel still lives in `kernel/src` (upstream layout). This
+fork's live kernel is `kernel/core` (`aster-core`), and `kernel/src` is a
+dead snapshot that no longer compiles into the kernel. Every patch was
+checked against the live tree; none applies with `git apply --check`, and
+the classification below says what was done instead.
+
+| Patch | Contents | Verdict on the x86 tree |
+|---|---|---|
+| `1e53ca63b` procfs sysctl + boot identity | writable `core_pattern`/`pid_max`, shared boot-id text, RISC-V boot-phase markers | **Already present.** The live tree has writable `core_pattern` and runtime `pid_max`, and `systemd-sysctl.service` finishes successfully on every boot. The boot-id markers are `cfg(target_arch = "riscv64")` diagnostics; no x86 effect. No change. |
+| `28a15360d` dma-buf over SCM_RIGHTS | `DmaBufFile`, SCM_RIGHTS audit (`is_scm_rights_proven_leaf`), DRM prime | **Blocked by the dead-tree split.** Live `kernel/core` has no DRI layer and its Unix-socket SCM_RIGHTS path has no proven-leaf audit; the patch targets `kernel/src/device/dri` and `kernel/src/net/socket/unix/ctrl_msg.rs`. Porting means first moving the DRI stack into `aster-core` — a project, not a cherry-pick. |
+| `01b38abc2` DRM fd over a socket | one `is_scm_rights_proven_leaf` override on `DriHandle` | **Blocked**, same reason; live `aster-drm`'s `DrmFile` could receive the override only after the audit layer and DRI port exist. |
+| `81b09ec40` virtio-gpu render/scanout | 10k lines: virtio-gpu device for the dead `kernel/comps/virtio`, DRM backend/prime/sysfs, RISC-V EIC7700 PowerVR probe | **Not portable as a patch.** Only the ~800-line virtio-gpu device is x86-relevant; it targets the dead virtio crate and the dead DRI ioctl stack. A port has to be written against live `aster-drm` (GEM/KMS) and `kernel/core/comps/virtio`, and the PowerVR/EIC7700 bulk is RISC-V hardware support. |
+| `9bace6817` USB input + scheduler/IPC | ostd USB bus, RISC-V DTS fixtures, futex/epoll/ppoll/mmap fixes in `kernel/src` | **Partially reusable.** USB/DTS parts are RISC-V-only and the live x86 line already has virtio-input. The scheduler/IPC fixes live in dead files; each would need a manual port and its own tests. Deferred until a concrete failure is reproduced. |
+| `5b9d96cb6` RISC-V tooling/docs | 26k lines of RISC-V tools, browser/desktop docs | Reference only, per the task. Not applied. |
+
+### Live-tree capabilities that the patches were meant to add
+
+- **RTC:** already implemented (`kernel/core/comps/time/src/rtc/cmos.rs`).
+  The guest reports the host's wall clock (`date -u` matched the host UTC),
+  so NTP/time synchronization has a correct starting point.
+- **virtio-input:** already implemented in `kernel/core/comps/virtio` and
+  wired to `aster-input`; x86 does not need the USB patch for QEMU input.
+- **systemd sysctl writes:** `systemd-sysctl.service` completes; no
+  `Failed to write` lines in the boot transcripts.
