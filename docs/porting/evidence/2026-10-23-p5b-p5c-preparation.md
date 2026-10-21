@@ -314,6 +314,78 @@ RockOS 上对应文件存在：`libglapi.so.0.0.0`（313,528 B）、
    100 MB（LLVM 16），且要防止与 guest Mesa 25 混用；
 3. 不推荐继续补 DRM ioctl：当前没有证据表明缺少 DRM 命令。
 
+## P5b-5：整套 RockOS Mesa 22 栈验证
+
+### 新增到 bundle 的文件
+
+按“快、可逆、不重编”的方案，从在线 RockOS 取整套 Mesa 22 依赖，放进
+`/mnt/shared/xaj/vendor/p5b-rootfs-20261023/opt/pvr/mesa22/`：
+
+```text
+mesa22/lib/libEGL_mesa.so.0 -> .0.0.0 (255,224 B)
+mesa22/lib/libglapi.so.0    -> .0.0.0 (313,528 B)
+mesa22/lib/libgbm.so.1      -> .1.0.0 (60,320 B)
+mesa22/lib/libLLVM-16.so.1  (103,743,080 B)
+mesa22/lib/libdrm_radeon.so.1 (43,160 B)
+mesa22/lib/libdrm_nouveau.so.2 (26,912 B)
+mesa22/lib/dri/{pvr,swrast,kms_swrast}_dri.so
+```
+
+guest 端环境改为：
+
+```sh
+LD_LIBRARY_PATH=/opt/pvr/mesa22/lib:/opt/pvr/lib
+LIBGL_DRIVERS_PATH=/opt/pvr/mesa22/lib/dri
+MESA_LOADER_DRIVER_OVERRIDE=pvr
+```
+
+`p5b-guest.sh` 已更新；bundle 的 `SHA256SUMS` 已重新生成（14 项）。
+
+### 实测结果（guest Mesa 22 栈）
+
+- 首次发现 `pvr_dri` 还缺 `libdrm_radeon.so.1` 和
+  `libdrm_nouveau.so.2`（`LD_PRELOAD` 直接报
+  `libdrm_radeon.so.1: cannot open shared object file`）；补入后该错误消失。
+- `LD_PRELOAD=libLLVM-16.so.1 timeout 10 /bin/true` 超时（RC=124），
+  改 `timeout 60` 后 RC=0：**LLVM 16 加载很慢，但能加载**。
+- EGL 仍然失败：
+
+```text
+EGL_PLATFORM=surfaceless EGL_RC=124   # p5b 脚本 30 s 内未返回
+EGL_PLATFORM=device     EGL_RC=1      # eglGetDisplay failed
+EGL_PLATFORM=gbm        EGL_RC=1      # eglInitialize failed
+```
+
+单独把 surfaceless 的 timeout 提到 120 s 后，输出变为快速失败：
+
+```text
+eglGetDisplay failed
+```
+
+说明 Mesa 22 栈下 surfaceless 不再是“纯等待”，而是 EGL 显示/驱动
+初始化失败；gbm 仍在 `eglInitialize` 失败（前一轮 verbose 为
+`DRI2: failed to create gbm device`）。
+
+最终 marker：
+
+```text
+ASTERINAS_POWERVR_UMD status=failed stage=egl reason=egl-init libsrv=24.2.6643903
+```
+
+### 结论
+
+- 补齐 Mesa 22 依赖**排除了“缺 libglapi/libLLVM16”这一层**，但没有让
+  EGL 通过；`pvr_dri` 依赖链现在可以被 loader 解析（LLVM16 加载慢），
+  EGL 仍卡在平台/GBM 初始化。
+- 这支持 P5b-4 的判断：问题不只是缺库，而是 **Mesa 22 pvr_dri 与
+  guest Mesa 25/平台栈不配套**；继续拼库的收益递减。
+- 下一步首选仍是 **用 Mesa 25 源码重编 pvr_dri**；次选是补一个
+  PVR 专用 EGL ICD 或在 guest 里整套替换 Mesa（风险高，易与系统
+  Xorg/Firefox 冲突）。
+- 另一个需并行确认的点：`gbm_create_device`/`drmGetNodeTypeFromFd`
+  是否依赖 Asterinas 未提供的 sysfs 节点；这与 Mesa 版本无关，但会
+  让 gbm 在任何 Mesa 下都失败。
+
 ## 下一步
 
 1. 板子物理复位后先跑 `p5b-stage.sh` + rootfs 注入 + guest 命令，记录

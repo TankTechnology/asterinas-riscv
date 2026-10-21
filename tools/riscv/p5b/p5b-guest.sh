@@ -30,8 +30,8 @@ fi
 echo "PVR_BUNDLE_PRESENT"
 ls -l /opt/pvr/bin/eglconfigs /opt/pvr/dri/pvr_dri.so /opt/pvr/lib/libsrv_um.so
 
-export LD_LIBRARY_PATH=/opt/pvr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
-export LIBGL_DRIVERS_PATH=/opt/pvr/dri:$DRI_FALLBACK
+export LD_LIBRARY_PATH=/opt/pvr/mesa22/lib:/opt/pvr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export LIBGL_DRIVERS_PATH=/opt/pvr/mesa22/lib/dri
 export MESA_LOADER_DRIVER_OVERRIDE=pvr
 
 for platform in surfaceless device gbm; do
@@ -46,5 +46,5 @@ for platform in surfaceless device gbm; do
     unset rc
 done
 
-echo "ASTERINAS_POWERVR_UMD status=failed stage=egl libsrv=24.2.6643903"
+echo "ASTERINAS_POWERVR_UMD status=failed stage=egl reason=egl-init libsrv=24.2.6643903"
 exit 1
