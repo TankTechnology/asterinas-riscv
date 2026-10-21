@@ -323,6 +323,7 @@ impl SuperBlock {
             | FeatureInCompatSet::RECOVER.bits()
             | FeatureInCompatSet::BIT64.bits()
             | FeatureInCompatSet::FLEX_BG.bits()
+            | FeatureInCompatSet::EA_INODE.bits()
             | FeatureInCompatSet::CSUM_SEED.bits();
         if (sb.feature_incompat & !allowed_incompat) != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported incompat feature");
@@ -479,6 +480,11 @@ impl SuperBlock {
     /// Returns whether metadata blocks carry CRC32C checksums.
     pub(super) const fn has_metadata_csum(&self) -> bool {
         self.metadata_csum
+    }
+
+    /// Returns whether large xattr values may live in EA inodes.
+    pub(super) fn has_ea_inode(&self) -> bool {
+        self.feature_incompat.contains(FeatureInCompatSet::EA_INODE)
     }
 
     /// Returns the seed used by the metadata checksums.
@@ -813,6 +819,8 @@ bitflags! {
         const BIT64 = 1 << 7;
         /// Metadata blocks may be allocated outside their own group.
         const FLEX_BG = 1 << 9;
+        /// Large extended-attribute values are stored in EA inodes.
+        const EA_INODE = 1 << 10;
         /// The checksum seed is stored in `s_checksum_seed`.
         const CSUM_SEED = 1 << 13;
     }

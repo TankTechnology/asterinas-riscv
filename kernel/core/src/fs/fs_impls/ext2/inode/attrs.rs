@@ -141,6 +141,19 @@ impl Inode {
         self.inner.read().gid()
     }
 
+    /// Sets `i_file_acl` and stages the inode descriptor.
+    ///
+    /// Callers that stage an xattr block while holding the filesystem's
+    /// commit-serialization lock use this so the block and the inode that
+    /// references it become durable in the same commit.
+    pub(in ext2) fn set_file_acl_staged(&self, bid: u32) -> Result<()> {
+        let fs = self.fs()?;
+        let mut inner = self.inner.write();
+        inner.set_file_acl(bid);
+        inner.set_ctime(utils::now());
+        inner.write_back_inode_desc(&fs, self.ino)
+    }
+
     /// Sets the owner group ID.
     pub(in ext2) fn set_gid(&self, gid: u32) -> Result<()> {
         let mut inner = self.inner.write();

@@ -879,7 +879,10 @@ impl Ext2 {
     ///
     /// A caller that must add or remove an orphan link atomically with
     /// respect to a commit takes this guard before inode locks; that is the
-    /// same `sync_lock` → inode order `sync_all` uses.
+    /// same `sync_lock` → inode order `sync_all` uses. A caller that stages
+    /// several related metadata updates which must become durable together
+    /// takes it too: commits also take the lock, so no commit can publish
+    /// half of the set.
     pub(super) fn lock_sync(&self) -> MutexGuard<'_, ()> {
         self.sync_lock.lock()
     }

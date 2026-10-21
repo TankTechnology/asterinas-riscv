@@ -258,6 +258,48 @@ impl Inode {
         self.ino
     }
 
+    /// Returns the low word of `i_version` (`osd1.l_i_version`).
+    pub(in ext2) fn version(&self) -> u32 {
+        self.inner.read().desc.version
+    }
+
+    /// Sets the low word of `i_version`.
+    pub(in ext2) fn set_version(&self, version: u32) {
+        self.inner.write().desc.version = version;
+    }
+
+    /// Adds one or more inode flags.
+    pub(in ext2) fn add_flags(&self, flags: FileFlags) {
+        self.inner.write().desc.flags.insert(flags);
+    }
+
+    /// Marks this inode as an extended-attribute value inode.
+    pub(in ext2) fn mark_ea_inode(&self) {
+        self.add_flags(FileFlags::EA_INODE);
+    }
+
+    /// Returns the hard-link count.
+    pub(in ext2) fn link_count_value(&self) -> u16 {
+        self.inner.read().link_count()
+    }
+
+    /// Sets the hard-link count.
+    pub(in ext2) fn set_link_count(&self, count: u16) {
+        self.inner.write().set_link_count(count);
+    }
+
+    /// Adds external xattr storage to the inode's `i_blocks`.
+    pub(in ext2) fn add_xattr_sectors(&self, sectors: u32) -> Result<()> {
+        self.inner.read().block_manager()?.add_sector_count(sectors)
+    }
+
+    /// Removes external xattr storage from the inode's `i_blocks`.
+    pub(in ext2) fn sub_xattr_sectors(&self, sectors: u32) {
+        if let Ok(manager) = self.inner.read().block_manager() {
+            manager.sub_sector_count(sectors);
+        }
+    }
+
     /// Returns the block group index this inode belongs to.
     pub(super) fn block_group_idx(&self) -> usize {
         self.block_group_idx
@@ -418,6 +460,9 @@ pub(super) struct InodeDesc {
     flags: FileFlags,
     file_acl: u32,
     generation: u32,
+    /// Low 32 bits of `i_version` (`osd1.l_i_version`).  EA inodes store
+    /// their reference count here.
+    version: u32,
     block_ptrs: [u32; RAW_BLOCK_PTRS_LEN],
 }
 
@@ -447,6 +492,7 @@ impl InodeDesc {
             flags: FileFlags::empty(),
             file_acl: 0,
             generation,
+            version: 0,
             block_ptrs: [0; RAW_BLOCK_PTRS_LEN],
         }
     }
@@ -543,6 +589,7 @@ impl InodeDesc {
             flags,
             file_acl: raw.file_acl,
             generation: raw.generation,
+            version: raw.osd1,
             block_ptrs: raw_block_ptrs.block_ptrs,
         })
     }
@@ -574,7 +621,7 @@ impl From<&InodeDesc> for RawInode {
             link_count: desc.link_count,
             sector_count: desc.sector_count,
             flags: desc.flags.bits(),
-            osd1: 0,
+            osd1: desc.version,
             block: desc.block_ptrs,
             generation: desc.generation,
             file_acl: desc.file_acl,
@@ -992,6 +1039,8 @@ bitflags! {
         const TOP_DIR = 1 << 17;
         /// Inode data is addressed through an ext4 extent tree.
         const EXTENTS = 1 << 19;
+        /// The inode stores the value of an extended attribute (`ea_inode`).
+        const EA_INODE = 1 << 21;
         /// Reserved for the ext2 library.
         const RESERVED = 1 << 31;
     }

@@ -73,7 +73,7 @@ impl Inode {
     }
 
     /// Attempts final reclaim for a deleted inode.
-    pub(super) fn try_reclaim_deleted_inode(&self) -> Result<bool> {
+    pub(in ext2) fn try_reclaim_deleted_inode(&self) -> Result<bool> {
         if self.link_count() != 0 {
             return Ok(false);
         }
