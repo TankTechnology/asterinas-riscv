@@ -1593,6 +1593,74 @@ int main(void)
         self.assertIn("ASTERINAS_DESKTOP_OFFLINE", source)
         self.assertIn("input-disabled", source)
 
+    def test_physical_graphics_control_reads_policy_from_the_command_line(
+        self,
+    ) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+
+        self.assertIn("cmdline_value() {", source)
+        # This systemd build does not import systemd.setenv= into unit
+        # environments, so both the prefixed and the bare forms must be read.
+        self.assertIn('"systemd.setenv=$cmdline_key"=*', source)
+        self.assertIn('"$cmdline_key"=*)', source)
+
+    def test_physical_graphics_control_publishes_command_line_policy(self) -> None:
+        source_root = self.directory / "policy-source"
+        config_directory = source_root / "fbdev/xorg.conf.d"
+        config_directory.mkdir(parents=True)
+        (config_directory / "20-asterinas-no-input.conf").write_text("section\n")
+        runtime_root = self.directory / "policy-runtime"
+        record = self.directory / "set-environment.txt"
+        fake_cat = self.directory / "cat"
+        fake_cat.write_text("#!/bin/sh\nprintf '%s\\n' \"$FAKE_CMDLINE\"\n")
+        fake_cat.chmod(0o755)
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text()
+        header = source[: source.index("systemctl_bounded() {")]
+        start = source[
+            source.index("start_browser() {") : source.index("\nboot_phase() {")
+        ]
+        start = start.replace("/etc/asterinas/display-providers", str(source_root))
+        start = start.replace(
+            "/run/asterinas-physical-display-providers", str(runtime_root)
+        )
+        script = (
+            header
+            + "systemctl_bounded() { printf '%s\\n' \"$*\" >> \"$RECORD\"; }\n"
+            + "browser_stage() { :; }\n"
+            + start
+            + "\nstart_browser 0\n"
+        )
+        environment = os.environ.copy()
+        environment["PATH"] = f"{self.directory}:{environment['PATH']}"
+        environment["FAKE_CMDLINE"] = (
+            "console=ttyS0 systemd.setenv=ASTERINAS_DESKTOP_OFFLINE=1 "
+            "ASTERINAS_WEB_NETWORK_MODE=direct "
+            "ASTERINAS_DESKTOP_START_URL="
+            "file:///usr/share/asterinas/physical-graphics/index.html "
+            "ASTERINAS_BROWSER_WEB_SESSION=1 "
+            "ASTERINAS_BROWSER_WEB_BASIC_ONLY=1"
+        )
+        environment["RECORD"] = str(record)
+
+        result = subprocess.run(
+            ["/bin/sh", "-c", script],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        recorded = record.read_text()
+        self.assertIn("set-environment", recorded)
+        self.assertIn("ASTERINAS_DESKTOP_OFFLINE=1", recorded)
+        self.assertIn("ASTERINAS_WEB_NETWORK_MODE=direct", recorded)
+        self.assertIn(
+            "ASTERINAS_DESKTOP_START_URL="
+            "file:///usr/share/asterinas/physical-graphics/index.html",
+            recorded,
+        )
+
     def test_offline_start_publishes_the_no_input_display_config(self) -> None:
         source_root = self.directory / "display-source"
         config_directory = source_root / "fbdev/xorg.conf.d"

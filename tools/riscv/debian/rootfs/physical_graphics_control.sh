@@ -3,11 +3,47 @@
 
 set -u
 
-offline_desktop=${ASTERINAS_DESKTOP_OFFLINE:-0}
+# The Asterinas systemd handoff does not publish kernel-command-line
+# systemd.setenv= assignments to the service manager environment, and this
+# systemd build does not import PID 1's inherited environment either.  Read the
+# volatile desktop policy directly from /proc/cmdline so the readiness logic
+# and the services it starts still receive it.
+cmdline_value() {
+    cmdline_key=$1
+    cmdline_result=
+    [ -r /proc/cmdline ] || return 0
+    for cmdline_token in $(cat /proc/cmdline); do
+        case "$cmdline_token" in
+            "$cmdline_key"=*) cmdline_result=${cmdline_token#"$cmdline_key"=} ;;
+            "systemd.setenv=$cmdline_key"=*)
+                cmdline_result=${cmdline_token#"systemd.setenv=$cmdline_key"=}
+                ;;
+        esac
+    done
+    [ -n "$cmdline_result" ] && printf '%s\n' "$cmdline_result"
+}
+
+offline_desktop=${ASTERINAS_DESKTOP_OFFLINE:-}
+if [ -z "$offline_desktop" ]; then
+    offline_desktop=$(cmdline_value ASTERINAS_DESKTOP_OFFLINE)
+fi
+offline_desktop=${offline_desktop:-0}
 case "$offline_desktop" in
     0|1) ;;
     *) exit 2 ;;
 esac
+
+network_mode=${ASTERINAS_WEB_NETWORK_MODE:-}
+[ -n "$network_mode" ] || network_mode=$(cmdline_value ASTERINAS_WEB_NETWORK_MODE)
+desktop_start_url=${ASTERINAS_DESKTOP_START_URL:-}
+[ -n "$desktop_start_url" ] ||
+    desktop_start_url=$(cmdline_value ASTERINAS_DESKTOP_START_URL)
+browser_session=${ASTERINAS_BROWSER_WEB_SESSION:-}
+[ -n "$browser_session" ] ||
+    browser_session=$(cmdline_value ASTERINAS_BROWSER_WEB_SESSION)
+browser_basic_only=${ASTERINAS_BROWSER_WEB_BASIC_ONLY:-}
+[ -n "$browser_basic_only" ] ||
+    browser_basic_only=$(cmdline_value ASTERINAS_BROWSER_WEB_BASIC_ONLY)
 
 systemctl_bounded() {
     /usr/bin/timeout --kill-after=1s 10s /usr/bin/systemctl "$@"
@@ -223,9 +259,20 @@ start_browser() {
             grep -Fq "Option \"Device\" \"/dev/input/$mouse_node\"" "$runtime_config" || status=126
     fi
     if [ "$status" -eq 0 ]; then
-        systemctl_bounded set-environment \
-            ASTERINAS_DISPLAY_PROVIDER_ROOT="$runtime_provider_root" \
-            >/dev/null 2>&1 || status=126
+        # Publish the desktop policy to the service manager so the units
+        # started below receive it even when the kernel command line's
+        # systemd.setenv= assignments were not imported.
+        set -- ASTERINAS_DISPLAY_PROVIDER_ROOT="$runtime_provider_root" \
+            ASTERINAS_DESKTOP_OFFLINE="$offline_desktop"
+        [ -n "$network_mode" ] &&
+            set -- "$@" ASTERINAS_WEB_NETWORK_MODE="$network_mode"
+        [ -n "$desktop_start_url" ] &&
+            set -- "$@" ASTERINAS_DESKTOP_START_URL="$desktop_start_url"
+        [ -n "$browser_session" ] &&
+            set -- "$@" ASTERINAS_BROWSER_WEB_SESSION="$browser_session"
+        [ -n "$browser_basic_only" ] &&
+            set -- "$@" ASTERINAS_BROWSER_WEB_BASIC_ONLY="$browser_basic_only"
+        systemctl_bounded set-environment "$@" >/dev/null 2>&1 || status=126
     fi
     if [ "$status" -eq 0 ]; then
         systemctl_bounded reset-failed asterinas-desktop-m5.service \
