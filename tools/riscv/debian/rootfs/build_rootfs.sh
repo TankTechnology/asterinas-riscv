@@ -1202,6 +1202,15 @@ EOF
                     "$stage/etc/systemd/system/getty.target.wants/console-getty.service"
                 ln -sfn /dev/null "$stage/etc/systemd/system/serial-getty@hvc0.service"
                 ln -sfn /dev/null "$stage/etc/systemd/system/serial-getty@ttyS0.service"
+                # The kernel forwards the ACPI power button as SIGPWR and
+                # systemd starts sigpwr.target for it.  Turn that request into
+                # a real poweroff so QEMU's `system_powerdown` (and a cloud
+                # stop request) leaves the guest off through S5.
+                install -d -m 0755 -- "$stage/etc/systemd/system/sigpwr.target.d"
+                cat >"$stage/etc/systemd/system/sigpwr.target.d/asterinas-power.conf" <<'EOF'
+[Unit]
+Wants=poweroff.target
+EOF
             fi
             if [[ "$PROFILE" == systemd-ext4-m6-userspace ]]; then
                 install -D -m 0644 /dev/null "$stage/etc/asterinas-userspace-m6"
