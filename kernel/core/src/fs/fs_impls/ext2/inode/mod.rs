@@ -78,6 +78,8 @@ mod io_range;
 mod symlink;
 mod sync;
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use ostd::const_assert;
 
 use self::{
@@ -200,6 +202,13 @@ pub(crate) struct Inode {
     xattr: Option<Xattr>,
     pipe: Option<Pipe>,
     extension: Extension,
+    /// Whether `link(2)` may name this inode. `O_TMPFILE | O_EXCL` clears it.
+    linkable: AtomicBool,
+    /// Weak self-reference, used to enter the block group's inode cache when
+    /// an unnamed temporary file is given a name.
+    self_ref: Weak<Self>,
+    /// Whether the inode is currently on the superblock orphan chain.
+    orphaned: AtomicBool,
 }
 
 impl Inode {
@@ -237,6 +246,9 @@ impl Inode {
                 xattr,
                 pipe,
                 extension: Extension::new(),
+                linkable: AtomicBool::new(true),
+                self_ref: weak_self.clone(),
+                orphaned: AtomicBool::new(false),
             }
         })
     }
@@ -252,6 +264,50 @@ impl Inode {
     }
 
     /// Returns the hard-link count.
+    /// Prevents this inode from ever being linked (`O_TMPFILE | O_EXCL`).
+    pub(super) fn set_unlinkable(&self) {
+        self.linkable.store(false, Ordering::Relaxed);
+    }
+
+    /// Returns whether `link(2)` may give this inode a name.
+    pub(super) fn is_linkable(&self) -> bool {
+        self.linkable.load(Ordering::Relaxed)
+    }
+
+    /// Enters the block group's inode cache.
+    ///
+    /// Named inodes live in the cache so that commit-time writeback picks up
+    /// their dirty descriptors. Unnamed temporary files stay out of it: the
+    /// cache's strong reference would otherwise keep a closed tmpfile alive
+    /// and prevent the drop-time reclaim.
+    pub(super) fn insert_into_cache(&self) {
+        if let Some(this) = self.self_ref.upgrade()
+            && let Some(fs) = self.fs.upgrade()
+        {
+            fs.insert_inode(this);
+        }
+    }
+
+    /// Sets the on-disk `i_dtime` field, which doubles as the orphan link.
+    pub(super) fn set_dtime(&self, time: Duration) {
+        self.inner.write().set_dtime(time);
+    }
+
+    /// Records that the inode is on the superblock orphan chain.
+    pub(super) fn mark_orphaned(&self) {
+        self.orphaned.store(true, Ordering::Relaxed);
+    }
+
+    /// Records that the inode is no longer on the orphan chain.
+    pub(super) fn clear_orphaned(&self) {
+        self.orphaned.store(false, Ordering::Relaxed);
+    }
+
+    /// Returns whether the inode is on the superblock orphan chain.
+    pub(super) fn is_orphaned(&self) -> bool {
+        self.orphaned.load(Ordering::Relaxed)
+    }
+
     pub(super) fn link_count(&self) -> u16 {
         self.inner.read().link_count()
     }
@@ -939,6 +995,32 @@ bitflags! {
         /// Reserved for the ext2 library.
         const RESERVED = 1 << 31;
     }
+}
+
+/// Reclaims an inode found on the superblock orphan chain after a crash.
+///
+/// The chain only holds unnamed temporary files, which have no directory
+/// entry and a link count of zero. Their data, tree and xattr blocks are
+/// freed before the inode itself, exactly like a final unlink.
+pub(in ext2) fn reclaim_orphan_inode(
+    fs: &Arc<Ext2>,
+    ino: Ext2Ino,
+    raw: &RawInode,
+) -> Result<()> {
+    let inode_type = InodeType::from_raw_mode(raw.mode)?;
+    let sectors_per_block = (BLOCK_SIZE / SECTOR_SIZE) as u32;
+    let xattr_sectors = if raw.file_acl == 0 { 0 } else { sectors_per_block };
+    let block_ptrs = RawBlockPtrs::new(
+        raw.sector_count.saturating_sub(xattr_sectors),
+        raw.block,
+    );
+    let mut tree = BlockPtrTree::new(block_ptrs, Arc::downgrade(fs), ino, raw.generation);
+    tree.truncate_to_byte_len(fs.as_ref(), 0);
+    if raw.file_acl != 0 {
+        fs.free_blocks(raw.file_acl, 1)?;
+    }
+    fs.free_inode(ino, inode_type)?;
+    Ok(())
 }
 
 #[cfg(ktest)]

@@ -232,7 +232,14 @@ impl Inode {
     /// Adds a hard link in this directory to an existing non-directory inode.
     pub(in ext2) fn link(&self, old: &Inode, name: &str) -> Result<()> {
         let fs = self.fs()?;
+        if !old.is_linkable() {
+            return_errno_with_message!(Errno::ENOENT, "tmpfile is not linkable");
+        }
         let dir_entry_file_type = DirEntryFileType::from(old.type_);
+        // A temporary file sits on the orphan chain with link count zero.
+        // Naming it and removing the chain link must not be split by a
+        // commit, so hold the commit lock across both, before the inode locks.
+        let orphan_guard = (old.link_count() == 0).then(|| fs.lock_sync());
         let lock_targets = [self, old];
         let mut guards = MultiInodeInnerGuards::lock(&lock_targets);
 
@@ -250,7 +257,20 @@ impl Inode {
 
         let old_inner = guards.inner_mut(old.ino());
         old_inner.set_ctime(utils::now());
+        if orphan_guard.is_some() {
+            old_inner.set_dtime(Duration::ZERO);
+        }
         old_inner.inc_link_count(1);
+        // Persist the new link count before the orphan link disappears, so
+        // the raw slot never carries `link_count == 0` without the chain.
+        old_inner.write_back_inode_desc(&fs, old.ino())?;
+        if orphan_guard.is_some() {
+            fs.remove_orphan_locked(old.ino())?;
+            old.clear_orphaned();
+            // From now on the inode is named and must receive commit-time
+            // writeback like any other inode.
+            old.insert_into_cache();
+        }
         Ok(())
     }
 

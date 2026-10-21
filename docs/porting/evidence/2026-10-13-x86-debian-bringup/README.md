@@ -690,6 +690,43 @@ After the change the same gate passes, and three more power cuts at different
 moments (15–19 seconds into the churn) passed as well, each with a clean
 `e2fsck -fn`.
 
+## O_TMPFILE and the orphan list
+
+`O_TMPFILE` existed in the VFS (anonymous dentries, `linkat(AT_EMPTY_PATH)`)
+but ext2 refused to create the inode. Enabling it is not just a `create`
+call: an unnamed file has link count zero and no directory entry, so a power
+cut while it is open leaves an inode that `e2fsck -fn` reports as
+`Unattached inode` and asks to reconnect.
+
+The port now uses ext4's orphan chain. `s_last_orphan` in the superblock
+heads the list and each inode's `i_dtime` holds the next inode number.
+Creation, linking and final reclaim update the chain under the filesystem's
+commit lock, so the inode and the chain land in one transaction. After a
+replay, a writable mount drains the chain before exposing the filesystem,
+freeing each orphan's blocks and inode and committing the result.
+`O_TMPFILE|O_EXCL` marks the inode unlinkable, so `linkat` fails with
+`ENOENT` as on Linux.
+
+Two bugs surfaced while building the gate:
+
+- inserting the tmpfile into the block group's inode cache at creation kept
+  a strong reference after the fd closed, so `Drop` never ran and the inode
+  was never reclaimed (`Deleted inode N has zero dtime`). Unnamed inodes now
+  stay out of the cache and enter it only when `linkat` gives them a name.
+- linking did not write the inode descriptor back, so the persisted link
+  count stayed zero and the remounted file could not be looked up. The link
+  path now writes the descriptor under the commit lock, between incrementing
+  the count and removing the orphan link.
+
+Measured:
+
+```
+clean gate:  linked tmpfile survives remount, O_TMPFILE|O_EXCL linkat = ENOENT,
+             closing it leaves no orphan; e2fsck -fn clean
+crash gate:  power cut with an unnamed tmpfile open (ino printed by the probe);
+             recovery mount drains the orphan chain; e2fsck -fn clean
+```
+
 ## Sub-second timestamps
 
 The in-memory inode has always carried `Duration`, and `statx` reports
