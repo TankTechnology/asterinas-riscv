@@ -54,6 +54,12 @@ pub(crate) trait TtyDriver: Send + Sync + 'static {
     /// [`Tty::can_push`]: super::Tty::can_push
     fn notify_input(&self);
 
+    /// Polls the device for pending input.
+    ///
+    /// Drivers whose interrupt path is unavailable (for example the legacy
+    /// ISA UART on some platforms) use this from the TTY read path.
+    fn poll_input(&self) {}
+
     /// Notifies that the TTY termios is changed.
     ///
     /// This method will be called with a spin lock held, so it cannot break atomic mode.

@@ -196,7 +196,21 @@ impl<D: TtyDriver> Tty<D> {
         let read_len = if is_nonblocking {
             self.ldisc.lock().try_read(&mut buf)?
         } else {
-            self.wait_events(IoEvents::IN, None, || self.ldisc.lock().try_read(&mut buf))?
+            // Poll the driver while waiting: the legacy ISA UART's interrupt
+            // line is not routed on every platform, so its bytes would never
+            // wake this wait otherwise.
+            loop {
+                let result = self.wait_events(
+                    IoEvents::IN,
+                    Some(&core::time::Duration::from_millis(10)),
+                    || self.ldisc.lock().try_read(&mut buf),
+                );
+                match result {
+                    Ok(len) => break len,
+                    Err(err) if err.error() == Errno::ETIME => self.driver.poll_input(),
+                    Err(err) => return Err(err),
+                }
+            }
         };
         self.pollee.invalidate();
         self.driver.notify_input();
