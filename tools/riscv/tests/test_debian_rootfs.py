@@ -1712,6 +1712,10 @@ int main(void)
         self.assertNotIn('if [ "$attempt" -ge 240 ]', startup)
         self.assertIn("readiness_deadline", startup)
         self.assertIn("readiness_deadline=$((readiness_started + 220))", startup)
+        # A board boot publishes a longer kernel watchdog window; the
+        # readiness deadline scales with it instead of assuming 300 seconds.
+        self.assertIn("cmdline_value asterinas.reboot_after", startup)
+        self.assertIn("readiness_deadline=$((watchdog_seconds - 120))", startup)
         self.assertIn("printf '<6>%s\\n' \"$1\" >/dev/kmsg", source)
         self.assertNotIn("printf '%s\\n' \"$1\"\n", source)
         self.assertNotIn("printf '%s\\n' \"$1\" >/dev/console", source)

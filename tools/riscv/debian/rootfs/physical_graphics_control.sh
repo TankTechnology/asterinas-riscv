@@ -374,9 +374,23 @@ startup_ready() {
         boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=monotonic-clock'
         return 1
     }
-    # Leave enough of the kernel's 300-second watchdog window to record the
-    # terminal blocker before the watchdog performs the recovery reboot.
-    readiness_deadline=$((readiness_started + 220))
+    # Leave enough of the kernel watchdog window to record the terminal
+    # blocker before the watchdog performs the recovery reboot.  The board
+    # publishes a longer window than the 300-second minimum, so scale with the
+    # kernel command line instead of assuming the minimum.
+    watchdog_seconds=$(cmdline_value asterinas.reboot_after)
+    case "$watchdog_seconds" in
+        '' | *[!0-9]*) watchdog_seconds=300 ;;
+    esac
+    if [ "$watchdog_seconds" -gt 240 ] &&
+        [ $((watchdog_seconds - 120)) -gt "$readiness_started" ]; then
+        readiness_deadline=$((watchdog_seconds - 120))
+    else
+        # Leave enough of the kernel's 300-second watchdog window to record
+        # the terminal blocker before the watchdog performs the recovery
+        # reboot.
+        readiness_deadline=$((readiness_started + 220))
+    fi
     attempt=0
     last_reported_reason=
     readiness_reason=unknown

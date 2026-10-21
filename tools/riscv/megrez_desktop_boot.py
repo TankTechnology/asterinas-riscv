@@ -119,7 +119,7 @@ BOOTARGS = " ".join(
         "asterinas.klog_capture=info",
         "init=/init",
         "asterinas.mmc_write_partition2",
-        "asterinas.reboot_after=300",
+        "asterinas.reboot_after=600",
         "systemd.mask=asterinas-browser-web-evidence.service",
         "systemd.mask=asterinas-desktop-m5-network.service",
         "systemd.mask=serial-getty@ttyS0.service",
@@ -627,7 +627,7 @@ def start_generation(
         # several long bootargs chunks; 30 s covers only a fast link and
         # aborted before the boot command on the Megrez UART.
         operations.boot(manifest, 120)
-        transcript = operations.wait_ready(300)
+        transcript = operations.wait_ready(540)
         observe_ready_phases(transcript)
         phases = operations.phase_times
         expected_phase_names = tuple(name for name, _ in PHASE_MARKERS)
@@ -918,7 +918,7 @@ class RealStartOperations:
             raise DesktopBootError("guest serial protocol is not active")
         deadline = min(
             time.monotonic() + timeout,
-            self._boot_started + 300,
+            self._boot_started + 540,
         )
         for name, marker in PHASE_MARKERS[1:]:
             self._serial.wait_for(marker.encode(), deadline)
