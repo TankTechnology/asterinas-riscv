@@ -248,7 +248,6 @@ class ConcreteOperations:
         }
 
     def hash_final_root(self, config: GateConfig, prepared: Any) -> str:
-        del prepared
         self._require_config(config)
         root_name = str(prepared.get("root_disk_name", "debian-root.run.ext2"))
         return self._require_output().sha256(root_name)

@@ -104,7 +104,14 @@ def _new_session_capabilities() -> dict[str, object]:
 
     mode = os.environ.get("ASTERINAS_FIREFOX_NEWSESSION_CAPS", "minimal").strip().lower()
     if mode == "minimal":
-        return {"strictFileInteractability": True}
+        # The gate polls the scene itself; waiting for the load event inside
+        # Navigate caps a cold TCG load at Marionette's 300 s page-load
+        # timeout. Returning when the load starts leaves readiness to
+        # _wait_scene's own (larger) budget.
+        return {
+            "pageLoadStrategy": "none",
+            "strictFileInteractability": True,
+        }
     if mode == "windowless":
         return {
             "strictFileInteractability": True,

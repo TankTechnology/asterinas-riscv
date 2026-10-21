@@ -260,7 +260,10 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=False):
             self.assertEqual(
                 _new_session_capabilities(),
-                {"strictFileInteractability": True},
+                {
+                    "pageLoadStrategy": "none",
+                    "strictFileInteractability": True,
+                },
             )
         with patch.dict("os.environ", {"ASTERINAS_FIREFOX_NEWSESSION_CAPS": "legacy"}):
             self.assertEqual(
