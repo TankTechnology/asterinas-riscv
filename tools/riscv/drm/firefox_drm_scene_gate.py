@@ -35,10 +35,15 @@ except ModuleNotFoundError:  # Direct invocation with tools/riscv on PYTHONPATH.
 MAX_TRANSCRIPT_BYTES = 256 * 1024
 MAX_SERIAL_BYTES = 8 * 1024 * 1024
 # The guest fixes the outer browser window at 1280x800. Marionette's
-# non-full screenshot is the resulting 1152x584 content viewport; keep this
-# explicit so arbitrary or stale screenshots cannot satisfy the gate.
-EXPECTED_WIDTH = 1152
-EXPECTED_HEIGHT = 584
+# non-full screenshot is the content viewport, whose measured size varies a
+# few pixels with the toolkit's resize timing (1280x696 and 1278x690 were
+# both observed). The guest reports the page's innerWidth/innerHeight and the
+# PNG must equal it exactly; these bounds keep that viewport tied to the fixed
+# outer window instead of accepting an arbitrary page.
+VIEWPORT_MIN_WIDTH = 1200
+VIEWPORT_MAX_WIDTH = 1280
+VIEWPORT_MIN_HEIGHT = 600
+VIEWPORT_MAX_HEIGHT = 760
 MIN_FRAME_SAMPLES = 16
 MAX_FRAME_TIME_MS = 5000.0
 
@@ -51,6 +56,10 @@ _SUPPORT = re.compile(
     r"(?: source=(?P<source>\S+))?$"
 )
 _GL = re.compile(r"^FIREFOX_DRM_GL renderer=(?P<renderer>\S+)$")
+_VIEWPORT = re.compile(
+    r"^FIREFOX_DRM_VIEWPORT width=(?P<width>[0-9]+) "
+    r"height=(?P<height>[0-9]+) dpr=1$"
+)
 _SCREENSHOT = re.compile(
     r"^FIREFOX_DRM_SCREENSHOT width=(?P<width>[0-9]+) "
     r"height=(?P<height>[0-9]+) sha256=(?P<sha256>[0-9a-f]{64})$"
@@ -152,6 +161,7 @@ def classify_scene(transcript: bytes | str) -> FirefoxDrmSceneResult:
     access = _single_match(lines, _ACCESS, "render node access")
     support = _single_match(lines, _SUPPORT, "support")
     gl = _single_match(lines, _GL, "GL renderer")
+    viewport = _single_match(lines, _VIEWPORT, "viewport")
     screenshot = _single_match(lines, _SCREENSHOT, "screenshot")
     frames = _single_match(lines, _FRAMES, "frames")
     recovery = _single_match(lines, _RECOVERY, "recovery")
@@ -161,6 +171,8 @@ def classify_scene(transcript: bytes | str) -> FirefoxDrmSceneResult:
         return FirefoxDrmSceneResult(False, "missing or duplicate renderer receipt")
     if gl is None:
         return FirefoxDrmSceneResult(False, "missing or duplicate WebGL renderer receipt")
+    if viewport is None:
+        return FirefoxDrmSceneResult(False, "missing or duplicate viewport receipt")
     if screenshot is None:
         return FirefoxDrmSceneResult(False, "missing or duplicate screenshot receipt")
     if frames is None:
@@ -185,8 +197,20 @@ def classify_scene(transcript: bytes | str) -> FirefoxDrmSceneResult:
     if any(marker in gl_renderer for marker in ("llvmpipe", "softpipe", "software rasterizer")):
         return FirefoxDrmSceneResult(False, "Firefox WebGL renderer is software")
 
-    if int(screenshot.group("width")) != EXPECTED_WIDTH or int(screenshot.group("height")) != EXPECTED_HEIGHT:
-        return FirefoxDrmSceneResult(False, "screenshot geometry is outside the fixed scene")
+    viewport_width = int(viewport.group("width"))
+    viewport_height = int(viewport.group("height"))
+    if not (
+        VIEWPORT_MIN_WIDTH <= viewport_width <= VIEWPORT_MAX_WIDTH
+        and VIEWPORT_MIN_HEIGHT <= viewport_height <= VIEWPORT_MAX_HEIGHT
+    ):
+        return FirefoxDrmSceneResult(False, "content viewport is outside the fixed window")
+    if (
+        int(screenshot.group("width")) != viewport_width
+        or int(screenshot.group("height")) != viewport_height
+    ):
+        return FirefoxDrmSceneResult(
+            False, "screenshot geometry does not match the content viewport"
+        )
 
     samples = int(frames.group("samples"))
     if samples < MIN_FRAME_SAMPLES:
@@ -206,7 +230,15 @@ def classify_scene(transcript: bytes | str) -> FirefoxDrmSceneResult:
     # fresh renderer receipt.
     positions = [
         next(index for index, line in enumerate(lines) if pattern.fullmatch(line))
-        for pattern in (_ACCESS, _SUPPORT, _GL, _SCREENSHOT, _FRAMES, _RECOVERY)
+        for pattern in (
+            _ACCESS,
+            _VIEWPORT,
+            _SUPPORT,
+            _GL,
+            _SCREENSHOT,
+            _FRAMES,
+            _RECOVERY,
+        )
     ]
     if positions != sorted(positions):
         return FirefoxDrmSceneResult(False, "scene receipts are out of order")

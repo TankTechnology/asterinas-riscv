@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from contextlib import redirect_stdout
 from io import StringIO
+import os
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -22,7 +24,13 @@ from drm.firefox_drm_scene_gate import (  # noqa: E402
     classify_scene_with_runtime,
 )
 from tools.riscv.debian.rootfs.firefox_drm_scene_gate import (  # noqa: E402
+    _browser_exit_watch,
+    _browser_log_marker,
+    _browser_postmortem,
     _new_session_capabilities,
+    _spawn,
+    _start_browser_watchers,
+    _stop_browser_watchers,
     _write_profile,
     _probe_compact_snapshot,
     _parse_probe_tcp_table,
@@ -40,7 +48,135 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (  # noqa: E402
 )
 
 
+class _FakeProcess:
+    """Minimal Popen surface for the browser watcher tests."""
+
+    def __init__(self, pid: int, returncode: int | None = None) -> None:
+        self.pid = pid
+        self.returncode = returncode
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired(self.pid, timeout or 0)
+        return self.returncode
+
+
 class FirefoxDrmSceneGateTests(unittest.TestCase):
+    def test_qemu_memory_override_is_bounded(self) -> None:
+        from tools.riscv.debian.rootfs.gate_protocol import qemu_argv
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("u-boot", "boot.ext4", "root.ext2"):
+                (root / name).write_bytes(b"x")
+            arguments = {
+                "uboot": root / "u-boot",
+                "boot_disk": root / "boot.ext4",
+                "root_disk": root / "root.ext2",
+                "monitor_socket": root / "monitor.sock",
+            }
+            environment = dict(os.environ)
+            environment.pop("ASTERINAS_QEMU_MEMORY", None)
+            with patch.dict("os.environ", environment, clear=True):
+                default = qemu_argv(**arguments)
+            self.assertEqual(default[default.index("-m") + 1], "2G")
+            with patch.dict("os.environ", {"ASTERINAS_QEMU_MEMORY": "4G"}):
+                raised = qemu_argv(**arguments)
+            self.assertEqual(raised[raised.index("-m") + 1], "4G")
+            with patch.dict("os.environ", {"ASTERINAS_QEMU_MEMORY": "512M"}):
+                with self.assertRaisesRegex(ValueError, "at least 1024M"):
+                    qemu_argv(**arguments)
+            with patch.dict("os.environ", {"ASTERINAS_QEMU_MEMORY": "4T"}):
+                with self.assertRaisesRegex(ValueError, "must be"):
+                    qemu_argv(**arguments)
+
+    def test_browser_exit_watch_reports_returncode(self) -> None:
+        process = _FakeProcess(2**31 - 1, returncode=-11)
+        stop = threading.Event()
+        output = StringIO()
+        with redirect_stdout(output):
+            thread = threading.Thread(
+                target=_browser_exit_watch, args=(process, stop), daemon=True
+            )
+            thread.start()
+            thread.join(timeout=5.0)
+        self.assertFalse(thread.is_alive())
+        text = output.getvalue()
+        self.assertIn("FIREFOX_DRM_BROWSER_EXIT", text)
+        self.assertIn(f"pid={process.pid}", text)
+        self.assertIn("returncode=-11", text)
+
+    def test_browser_exit_watch_reports_a_death_that_races_stop(self) -> None:
+        class RacyProcess:
+            pid = 2**31 - 2
+
+            def poll(self) -> int:
+                return -7
+
+            def wait(self, timeout: float | None = None) -> int:
+                raise subprocess.TimeoutExpired(self.pid, timeout or 0)
+
+        stop = threading.Event()
+        stop.set()
+        output = StringIO()
+        with redirect_stdout(output):
+            _browser_exit_watch(RacyProcess(), stop)
+        self.assertIn("returncode=-7", output.getvalue())
+
+    def test_browser_postmortem_reaps_a_zombie_that_poll_missed(self) -> None:
+        class ZombieProcess:
+            pid = 2**31 - 3
+
+            def poll(self) -> None:
+                return None
+
+            def wait(self, timeout: float | None = None) -> int:
+                return -11
+
+        output = StringIO()
+        with redirect_stdout(output):
+            _browser_postmortem(ZombieProcess())
+        text = output.getvalue()
+        self.assertIn("state=exited", text)
+        self.assertIn("returncode=-11", text)
+
+    def test_browser_postmortem_reports_exited_browser(self) -> None:
+        process = _FakeProcess(2**31 - 1, returncode=-6)
+        output = StringIO()
+        with redirect_stdout(output):
+            _browser_postmortem(process)
+        text = output.getvalue()
+        self.assertIn("state=exited", text)
+        self.assertIn("returncode=-6", text)
+        self.assertNotIn("POSTMORTEM_THREAD", text)
+
+    def test_browser_postmortem_reports_live_browser(self) -> None:
+        process = _FakeProcess(2**31 - 1)
+        output = StringIO()
+        with patch(
+            "tools.riscv.debian.rootfs.firefox_drm_scene_gate.socket.create_connection",
+            side_effect=ConnectionRefusedError,
+        ), redirect_stdout(output):
+            _browser_postmortem(process)
+        text = output.getvalue()
+        self.assertIn("state=running", text)
+        self.assertIn("FIREFOX_DRM_POSTMORTEM_STATUS", text)
+        self.assertIn("FIREFOX_DRM_POSTMORTEM_RECONNECT ok=0", text)
+
+    def test_browser_watchers_start_and_stop(self) -> None:
+        process = _FakeProcess(2**31 - 1, returncode=0)
+        output = StringIO()
+        with redirect_stdout(output):
+            stop, threads = _start_browser_watchers(process)
+            _stop_browser_watchers(process, stop, threads)
+        self.assertEqual(len(threads), 2)
+        text = output.getvalue()
+        self.assertIn("FIREFOX_DRM_BROWSER_EXIT", text)
+        self.assertIn("FIREFOX_DRM_POSTMORTEM", text)
+
     def test_new_session_capability_arms_are_explicit(self) -> None:
         with patch.dict("os.environ", {}, clear=False):
             self.assertEqual(
@@ -262,6 +398,22 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
             config._select_dri_trace()
         self.assertNotIn("asterinas.dri_trace=1", config._bootargs)
 
+    def test_probe_can_enable_the_refusal_only_dri_trace(self) -> None:
+        config = object.__new__(DesktopM4DrmOperations)
+        config._bootargs = DesktopM4DrmOperations.FIREFOX_PROBE_BOOTARGS
+        with patch.dict("os.environ", {"ASTERINAS_DRI_TRACE_FAIL": "1"}):
+            config._select_dri_trace_fail()
+        self.assertIn("asterinas.dri_trace_fail=1", config._bootargs)
+        self.assertLess(
+            config._bootargs.index("asterinas.dri_trace_fail=1"),
+            config._bootargs.index(" -- "),
+            "a kernel parameter after the -- separator goes to init, not the kernel",
+        )
+        config._bootargs = DesktopM4DrmOperations.FIREFOX_PROBE_BOOTARGS
+        with patch.dict("os.environ", {"ASTERINAS_DRI_TRACE_FAIL": "0"}):
+            config._select_dri_trace_fail()
+        self.assertNotIn("asterinas.dri_trace_fail=1", config._bootargs)
+
     def test_probe_can_raise_the_dri_pool(self) -> None:
         config = object.__new__(DesktopM4DrmOperations)
         config._bootargs = DesktopM4DrmOperations.FIREFOX_PROBE_BOOTARGS
@@ -299,6 +451,83 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
                     'user_pref("remote.log.level", "Trace");',
                     (Path(directory) / "user.js").read_text(encoding="utf-8"),
                 )
+
+    def test_crash_probe_arm_preloads_the_guest_library(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "browser.log"
+            mozlog = Path(directory) / "moz.log"
+            probe = Path(directory) / "probe.so"
+            probe.write_bytes(b"")
+            captured: dict[str, object] = {}
+
+            def fake_popen(command, **kwargs):
+                captured["command"] = command
+                captured.update(kwargs)
+                return object()
+
+            with patch.dict(
+                "os.environ", {"ASTERINAS_FIREFOX_CRASH_PROBE": "1"}
+            ), patch(
+                "tools.riscv.debian.rootfs.firefox_drm_scene_gate.FIREFOX_LOG", log
+            ), patch(
+                "tools.riscv.debian.rootfs.firefox_drm_scene_gate.FIREFOX_MOZ_LOG",
+                mozlog,
+            ), patch(
+                "tools.riscv.debian.rootfs.firefox_drm_scene_gate.CRASH_PROBE_PATH",
+                str(probe),
+            ), patch(
+                "tools.riscv.debian.rootfs.firefox_drm_scene_gate._profile_path",
+                lambda: Path(directory) / "profile",
+            ), patch(
+                "tools.riscv.debian.rootfs.firefox_drm_scene_gate.subprocess.Popen",
+                fake_popen,
+            ):
+                _spawn("about:blank")
+            environment = captured["env"]
+            self.assertEqual(environment["LD_PRELOAD"], str(probe))
+
+    def test_crash_probe_frames_are_reported_verbatim(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "browser.log"
+            log.write_text(
+                "ASTERINAS_CRASH_PROBE signal=11 code=1 addr=0x1234 frames=2\n"
+                "ASTERINAS_CRASH_REG pc=0x1234 ra=0x5678 sp=0x9abc\n"
+                "ASTERINAS_CRASH_MODULE pc=0x1234 /usr/lib/firefox-esr/libxul.so+0x123 caller=-\n"
+                "ASTERINAS_CRASH_FRAME #0 /usr/lib/firefox-esr/libxul.so+0x123456 caller=-\n"
+                "ASTERINAS_CRASH_FRAME #1 /lib/riscv64-linux-gnu/libc.so.6+0x2789a caller=-\n",
+                encoding="utf-8",
+            )
+            output = StringIO()
+            with patch(
+                "tools.riscv.debian.rootfs.firefox_drm_scene_gate.FIREFOX_LOG",
+                log,
+            ), redirect_stdout(output):
+                _browser_log_marker()
+        text = output.getvalue()
+        self.assertIn("FIREFOX_DRM_CRASH_TRACE lines=5", text)
+        self.assertIn("ASTERINAS_CRASH_FRAME #0 /usr/lib/firefox-esr/libxul.so+0x123456", text)
+        self.assertIn("ASTERINAS_CRASH_MODULE pc=0x1234", text)
+        self.assertIn("FIREFOX_DRM_CRASH_TRACE_FRAME", text)
+        self.assertIn("FIREFOX_DRM_BROWSER_TAIL", text)
+
+    def test_socket_process_arm_is_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with patch(
+                "tools.riscv.debian.rootfs.firefox_drm_scene_gate.PROFILE",
+                Path(directory),
+            ), patch.dict(
+                "os.environ",
+                {"ASTERINAS_FIREFOX_SOCKET_PROCESS_DISABLED": "1"},
+            ):
+                output = StringIO()
+                with redirect_stdout(output):
+                    _write_profile()
+            prefs = (Path(directory) / "user.js").read_text(encoding="utf-8")
+        self.assertIn('user_pref("network.process.enabled", false);', prefs)
+        self.assertIn(
+            "FIREFOX_DRM_PROFILE socket_process_disabled=1 source=probe",
+            output.getvalue(),
+        )
 
     def test_probe_can_place_firefox_profile_on_runtime_tmpfs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -411,6 +640,9 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
         self.assertIn('"FIREFOX_DRM_PROBE_COMPOSITOR "', guest)
         self.assertIn("def _probe_thread_futexes", guest)
         self.assertIn('"FIREFOX_DRM_PROBE_THREAD_FUTEX "', guest)
+        self.assertIn("_WEBGL_CREATION_SCRIPT", guest)
+        self.assertIn("webglcontextcreationerror", guest)
+        self.assertIn('"FIREFOX_DRM_WEBGL_CREATION "', guest)
         self.assertIn("def _probe_pipe_fd", guest)
         self.assertIn('"FIREFOX_DRM_PROBE_IPC_FD "', guest)
         self.assertIn("PROBE_POKE_SIGNAL = signal.SIGCONT", guest)
@@ -461,7 +693,7 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
         self.assertIn('FIREFOX_DRM_GLXTEST ', guest)
         self.assertIn("software renderer", guest)
         self.assertNotIn('if "virgl" not in scene_renderer.lower()', guest)
-        self.assertIn("BROWSER_DIAGNOSTIC_MAX_LINES = 12", guest)
+        self.assertIn("BROWSER_DIAGNOSTIC_MAX_LINES = 24", guest)
         self.assertIn("_INSTALL_SCENE_ERROR_HOOK", guest)
         self.assertIn('"FIREFOX_DRM_SCENE_STATE "', guest)
         self.assertIn('"FIREFOX_DRM_TRANSPORT probe=pass"', guest)
@@ -557,9 +789,10 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
         return "\n".join(
             (
                 "FIREFOX_DRM_ACCESS device=renderD128 read=1 write=1",
+                "FIREFOX_DRM_VIEWPORT width=1280 height=696 dpr=1",
                 "FIREFOX_DRM_SUPPORT compositing=WebRender webrender=available renderer=virgl",
                 "FIREFOX_DRM_GL renderer=virgl",
-                "FIREFOX_DRM_SCREENSHOT width=1152 height=584 sha256=" + "a" * 64,
+                "FIREFOX_DRM_SCREENSHOT width=1280 height=696 sha256=" + "a" * 64,
                 "FIREFOX_DRM_FRAMES samples=32 min_ms=8.1 p50_ms=16.2 p95_ms=24.5 max_ms=31.0",
                 "FIREFOX_DRM_RECOVERY restart=pass",
             )
@@ -686,13 +919,23 @@ class FirefoxDrmSceneGateTests(unittest.TestCase):
         self.assertFalse(result.passed)
 
     def test_rejects_stale_or_duplicate_receipts(self) -> None:
-        result = classify_scene(self.receipt() + "\n" + self.receipt().splitlines()[3])
+        result = classify_scene(self.receipt() + "\n" + self.receipt().splitlines()[4])
         self.assertFalse(result.passed)
         self.assertIn("screenshot", result.reason)
 
     def test_rejects_bad_geometry_and_quantiles(self) -> None:
-        geometry = self.receipt().replace("width=1152", "width=1151")
-        self.assertFalse(classify_scene(geometry).passed)
+        mismatch = self.receipt().replace(
+            "FIREFOX_DRM_SCREENSHOT width=1280 height=696",
+            "FIREFOX_DRM_SCREENSHOT width=1278 height=690",
+        )
+        self.assertFalse(classify_scene(mismatch).passed)
+        outside = self.receipt().replace(
+            "FIREFOX_DRM_VIEWPORT width=1280 height=696",
+            "FIREFOX_DRM_VIEWPORT width=1024 height=600",
+        )
+        result = classify_scene(outside)
+        self.assertFalse(result.passed)
+        self.assertIn("outside the fixed window", result.reason)
         unordered = self.receipt().replace("min_ms=8.1 p50_ms=16.2", "min_ms=20.0 p50_ms=16.2")
         self.assertFalse(classify_scene(unordered).passed)
 

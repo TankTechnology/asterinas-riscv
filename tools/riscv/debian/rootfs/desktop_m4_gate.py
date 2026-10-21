@@ -478,6 +478,25 @@ class DesktopM4DrmOperations(DesktopM4Operations):
         else:
             self._bootargs = f"{self._bootargs} asterinas.dri_trace=1"
 
+    def _select_dri_trace_fail(self) -> None:
+        """Append the opt-in refusal-only DRM trace for a diagnostic probe.
+
+        The full trace is far too large for a WebRender scene, but the single
+        refused ioctl is what explains an ``OutOfMemory`` renderer.
+        """
+
+        if os.environ.get("ASTERINAS_DRI_TRACE_FAIL") != "1":
+            return
+        separator = " -- "
+        index = self._bootargs.find(separator)
+        if index >= 0:
+            self._bootargs = (
+                f"{self._bootargs[:index]} asterinas.dri_trace_fail=1"
+                f"{self._bootargs[index:]}"
+            )
+        else:
+            self._bootargs = f"{self._bootargs} asterinas.dri_trace_fail=1"
+
     def _select_dri_pool_mb(self) -> None:
         """Pass a diagnostic GEM pool size to the kernel.
 
@@ -552,6 +571,7 @@ class DesktopM4DrmOperations(DesktopM4Operations):
                     )
                 self._select_firefox_profile_dir()
                 self._select_dri_trace()
+            self._select_dri_trace_fail()
             self._select_dri_pool_mb()
         return identity
 

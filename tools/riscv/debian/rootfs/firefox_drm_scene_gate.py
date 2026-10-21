@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -44,6 +45,8 @@ SUPPORT_URL = "about:support"
 # and explicitly bind a browsing context before issuing scene commands.
 START_URL = os.environ.get("ASTERINAS_FIREFOX_START_URL", SCENE_URL).strip() or SCENE_URL
 MARIONETTE_PORT = 2828
+# Diagnostic-only crash reporter installed by firefox_scene_crash_overlay.json.
+CRASH_PROBE_PATH = "/usr/lib/asterinas/firefox_crash_probe.so"
 # Cold ESR startup under RISC-V TCG has measured 249--458 seconds before the
 # first NewSession response. Keep that phase bounded, but do not classify a
 # known cold-start interval as a renderer failure. The service budget covers
@@ -53,13 +56,17 @@ NEW_SESSION_TIMEOUT = 840.0
 SCENE_SETTLE_SECONDS = 30.0
 SCENE_POLL_INTERVAL = 2.0
 # The browser window is fixed at 1280x800 below. Marionette's non-full
-# screenshot is the content viewport after Firefox chrome, which this guest
-# reports as 1152x584. Keep the two contracts explicit instead of accepting
-# arbitrary geometry.
+# screenshot is the content viewport after Firefox chrome, which the guest
+# measured as 1280x696 and 1278x690 across runs (the content area follows the
+# toolkit's resize timing). The screenshot must equal the page's own
+# innerWidth/innerHeight exactly; these bounds keep that viewport tied to the
+# fixed outer window instead of accepting an arbitrary page.
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 800
-SCREENSHOT_WIDTH = 1152
-SCREENSHOT_HEIGHT = 584
+SCREENSHOT_MIN_WIDTH = 1200
+SCREENSHOT_MAX_WIDTH = 1280
+SCREENSHOT_MIN_HEIGHT = 600
+SCREENSHOT_MAX_HEIGHT = 760
 # The gate runs as the unprivileged browser user and the DRM rootfs is
 # intentionally read-mostly. Keep this disposable PNG on the guest's writable
 # tmpfs instead of depending on ext2 writeback; the machine-readable receipt
@@ -137,8 +144,8 @@ def _probe_timeout_seconds() -> float:
 PROBE_TIMEOUT = _probe_timeout_seconds()
 DISPLAY_WAIT_TIMEOUT = 240.0
 BROWSER_LOG_MAX_BYTES = 4 * 1024 * 1024
-BROWSER_DIAGNOSTIC_MAX_LINES = 12
-BROWSER_DIAGNOSTIC_LINE_BYTES = 200
+BROWSER_DIAGNOSTIC_MAX_LINES = 24
+BROWSER_DIAGNOSTIC_LINE_BYTES = 400
 PROBE_CHILD_SCAN_LIMIT = 512
 PROBE_CHILD_LIMIT = 64
 PROBE_DESCENDANT_DEPTH = 3
@@ -195,6 +202,31 @@ return JSON.stringify({
   last_error: Array.isArray(window.__asterinasDrmSceneErrors) && window.__asterinasDrmSceneErrors.length
     ? String(window.__asterinasDrmSceneErrors[window.__asterinasDrmSceneErrors.length - 1]).slice(0, 120)
     : '',
+});
+"""
+_WEBGL_CREATION_SCRIPT = """
+const canvas = document.createElement('canvas');
+let message = '';
+canvas.addEventListener('webglcontextcreationerror', event => {
+  message = String(event && event.statusMessage || 'unknown');
+}, {once: true});
+const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+let renderer = '';
+let vendor = '';
+if (gl) {
+  const ext = gl.getExtension('WEBGL_debug_renderer_info');
+  if (ext) {
+    renderer = String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '');
+    vendor = String(gl.getParameter(ext.UNMASKED_VENDOR_WEBGL) || '');
+  }
+  const lose = gl.getExtension('WEBGL_lose_context');
+  if (lose) { lose.loseContext(); }
+}
+return JSON.stringify({
+  context: Boolean(gl),
+  message: message,
+  renderer: renderer,
+  vendor: vendor,
 });
 """
 _INSTALL_SCENE_ERROR_HOOK = """
@@ -382,7 +414,42 @@ def _percentile(values: list[float], fraction: float) -> float:
     return ordered[index]
 
 
-def _screenshot(client: object, deadline: float) -> tuple[int, int, str]:
+_VIEWPORT_SCRIPT = "return [window.innerWidth, window.innerHeight, window.devicePixelRatio];"
+
+
+def _viewport(client: object, deadline: float) -> tuple[int, int]:
+    """Read the content viewport the screenshot must match.
+
+    SetWindowRect fixes the outer window, but the content area follows the
+    chrome and the toolkit's resize timing: two runs of the same gate measured
+    1280x696 and 1278x690. The page's own innerWidth/innerHeight is the ground
+    truth the PNG has to equal, and the bounds keep it tied to the fixed
+    1280x800 window instead of accepting an arbitrary page.
+    """
+
+    value = _script(client, _VIEWPORT_SCRIPT, deadline=deadline)
+    if (
+        not isinstance(value, list)
+        or len(value) != 3
+        or not all(isinstance(item, (int, float)) for item in value)
+    ):
+        raise GateError("Firefox viewport probe returned a malformed value")
+    width, height, ratio = int(value[0]), int(value[1]), float(value[2])
+    if ratio != 1.0:
+        raise GateError(f"Firefox viewport devicePixelRatio is {ratio}, expected 1")
+    if not (
+        SCREENSHOT_MIN_WIDTH <= width <= SCREENSHOT_MAX_WIDTH
+        and SCREENSHOT_MIN_HEIGHT <= height <= SCREENSHOT_MAX_HEIGHT
+    ):
+        raise GateError(
+            f"Firefox content viewport {width}x{height} is outside the fixed window"
+        )
+    return width, height
+
+
+def _screenshot(
+    client: object, deadline: float, viewport: tuple[int, int]
+) -> tuple[int, int, str]:
     response = _command(
         client,
         "WebDriver:TakeScreenshot",
@@ -401,10 +468,10 @@ def _screenshot(client: object, deadline: float) -> tuple[int, int, str]:
         raise GateError("Firefox screenshot is truncated")
     width = int.from_bytes(payload[16:20], "big")
     height = int.from_bytes(payload[20:24], "big")
-    if (width, height) != (SCREENSHOT_WIDTH, SCREENSHOT_HEIGHT):
+    if (width, height) != viewport:
         raise GateError(
             f"Firefox screenshot geometry is {(width, height)}, "
-            f"expected {SCREENSHOT_WIDTH}x{SCREENSHOT_HEIGHT} content viewport"
+            f"expected {viewport[0]}x{viewport[1]} content viewport"
         )
     SCREENSHOT.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     SCREENSHOT.write_bytes(payload)
@@ -468,6 +535,15 @@ def _write_profile() -> None:
     if os.environ.get("ASTERINAS_FIREFOX_WEBGL_DISABLED") == "1":
         preferences.append('user_pref("webgl.disabled", true);')
         print("FIREFOX_DRM_PROFILE webgl_disabled=1 source=probe", flush=True)
+    # Diagnostic arm: keep the Marionette TCP connection in the parent process
+    # instead of the socket process.  If a dying socket process is what closes
+    # the connection, this arm keeps the session alive.
+    if os.environ.get("ASTERINAS_FIREFOX_SOCKET_PROCESS_DISABLED") == "1":
+        preferences.append('user_pref("network.process.enabled", false);')
+        print(
+            "FIREFOX_DRM_PROFILE socket_process_disabled=1 source=probe",
+            flush=True,
+        )
     # This is opt-in diagnostic tracing only.  It is enabled by a dedicated
     # short probe and never enters the normal Firefox scene acceptance path.
     if os.environ.get("ASTERINAS_FIREFOX_REMOTE_TRACE") == "1":
@@ -668,6 +744,21 @@ def _spawn(start_url: str = START_URL) -> subprocess.Popen[bytes]:
         # payloads. They make a cold-session timeout auditable.
         "ASTERINAS_MARIONETTE_DIAGNOSTICS": "1",
     }
+    if os.environ.get("ASTERINAS_FIREFOX_CRASH_PROBE") == "1":
+        # Diagnostic arm: a silent signal death leaves no browser log line.
+        # The preloaded reporter prints the faulting address and the
+        # module-relative frames to the same captured stderr.
+        if Path(CRASH_PROBE_PATH).is_file():
+            environment["LD_PRELOAD"] = CRASH_PROBE_PATH
+            print(
+                f"FIREFOX_DRM_CRASH_PROBE enabled=1 path={CRASH_PROBE_PATH}",
+                flush=True,
+            )
+        else:
+            print(
+                f"FIREFOX_DRM_CRASH_PROBE enabled=0 path={CRASH_PROBE_PATH}",
+                flush=True,
+            )
     if os.environ.get("ASTERINAS_FIREFOX_WEBRENDER_DISABLED") == "1":
         environment["MOZ_WEBRENDER"] = "0"
     if os.environ.get("ASTERINAS_FIREFOX_WEBRENDER_SOFTWARE") == "1":
@@ -731,12 +822,234 @@ def _browser_watch(process: subprocess.Popen[bytes], stop: threading.Event) -> N
             mozlog_bytes = FIREFOX_MOZ_LOG.stat().st_size
         except OSError:
             mozlog_bytes = 0
+        mem_free_kib = "unknown"
+        try:
+            meminfo = Path("/proc/meminfo").read_text(encoding="utf-8")
+            match = re.search(r"^MemFree:\s+([0-9]+) kB$", meminfo, re.MULTILINE)
+            if match:
+                mem_free_kib = match.group(1)
+        except OSError:
+            pass
         print(
             "FIREFOX_DRM_WATCH "
             f"pid={process.pid} state={state} rss_kib={rss_kib} "
-            f"browser_log_bytes={log_bytes} mozlog_bytes={mozlog_bytes}",
+            f"browser_log_bytes={log_bytes} mozlog_bytes={mozlog_bytes} "
+            f"mem_free_kib={mem_free_kib}",
             flush=True,
         )
+
+
+def _browser_exit_watch(process: subprocess.Popen[bytes], stop: threading.Event) -> None:
+    """Report the browser exit status as soon as the child is reaped.
+
+    The 30 s state sampler can miss a crash that lands just before the
+    Marionette socket closes; a blocking ``wait`` records the status at the
+    exact moment it becomes observable.
+    """
+
+    while not stop.is_set():
+        try:
+            returncode = process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            continue
+        print(
+            "FIREFOX_DRM_BROWSER_EXIT "
+            f"pid={process.pid} returncode={returncode} "
+            f"monotonic_ns={time.monotonic_ns()}",
+            flush=True,
+        )
+        return
+    # A death can also land between the final wait timeout and the stop
+    # request; report it here rather than losing the status to the race.
+    returncode = process.poll()
+    if returncode is not None:
+        print(
+            "FIREFOX_DRM_BROWSER_EXIT "
+            f"pid={process.pid} returncode={returncode} "
+            f"monotonic_ns={time.monotonic_ns()}",
+            flush=True,
+        )
+
+
+def _browser_postmortem(process: subprocess.Popen[bytes]) -> None:
+    """Record whether the browser survived the failed Marionette exchange.
+
+    A clean ``recv`` EOF can come from the peer closing the socket or from
+    the peer process dying.  The exit status and the thread/socket snapshot
+    taken before the gate stops the process distinguish the two.
+    """
+
+    try:
+        returncode = process.poll()
+    except OSError:
+        returncode = None
+    if returncode is None:
+        # A death can land between the last watcher sample and this failure
+        # path. The zombie's status is still pending, and it says which
+        # signal (or exit code) ended the session instead of leaving a
+        # "running" record that only the /proc state contradicts.
+        try:
+            observed = process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            observed = None
+        if observed is not None:
+            returncode = observed
+    print(
+        "FIREFOX_DRM_POSTMORTEM "
+        f"pid={process.pid} state={'exited' if returncode is not None else 'running'} "
+        f"returncode={returncode} monotonic_ns={time.monotonic_ns()}",
+        flush=True,
+    )
+    if returncode is not None:
+        return
+    fields: dict[str, str] = {}
+    status = _probe_read(Path(f"/proc/{process.pid}/status"))
+    if not status.startswith("<unavailable:"):
+        for key in ("State", "Threads", "VmRSS"):
+            match = re.search(rf"^{key}:\s+(.*)$", status, re.MULTILINE)
+            if match:
+                fields[key.lower()] = "_".join(match.group(1).split())
+    print(
+        "FIREFOX_DRM_POSTMORTEM_STATUS "
+        f"pid={process.pid} state={fields.get('state', 'unknown')} "
+        f"threads={fields.get('threads', 'unknown')} "
+        f"rss={fields.get('vmrss', 'unknown')}",
+        flush=True,
+    )
+    sockets = _probe_socket_snapshot()
+    print(
+        "FIREFOX_DRM_POSTMORTEM_SOCKETS "
+        + json.dumps(sockets, sort_keys=True, separators=(",", ":"))[:400],
+        flush=True,
+    )
+    # A fresh connection proves the Marionette server still accepts clients:
+    # the old connection's EOF then came from the session, not from a dead
+    # browser.
+    try:
+        with socket.create_connection(
+            ("127.0.0.1", MARIONETTE_PORT), timeout=5.0
+        ) as probe:
+            probe.settimeout(5.0)
+            greeting = probe.recv(64)
+        print(
+            "FIREFOX_DRM_POSTMORTEM_RECONNECT "
+            f"ok=1 greeting_bytes={len(greeting)}",
+            flush=True,
+        )
+    except OSError as error:
+        print(
+            "FIREFOX_DRM_POSTMORTEM_RECONNECT "
+            f"ok=0 error={type(error).__name__}",
+            flush=True,
+        )
+    try:
+        tids = sorted(
+            int(entry.name)
+            for entry in (Path("/proc") / str(process.pid) / "task").iterdir()
+        )
+    except (OSError, ValueError):
+        tids = []
+    for tid in tids[:24]:
+        try:
+            comm = (
+                Path("/proc") / str(process.pid) / "task" / str(tid) / "comm"
+            ).read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            comm = "unknown"
+        state = _probe_thread_state(process.pid, tid)
+        print(
+            "FIREFOX_DRM_POSTMORTEM_THREAD "
+            f"tid={tid} comm={'_'.join(comm.split())[:40] or 'unknown'} "
+            f"schedstat={str(state['schedstat'])[:80] or 'none'} "
+            f"syscall={str(state['syscall'])[:160]}",
+            flush=True,
+        )
+    _browser_postmortem_children(process.pid)
+
+
+_BROWSER_CHILD_PREFIXES = (
+    "firefox",
+    "Web Content",
+    "Isolated Web",
+    "Socket",
+    "RDD",
+    "Utility",
+    "forkserver",
+)
+
+
+def _browser_postmortem_children(parent_pid: int) -> None:
+    """List surviving Firefox child processes after the session failed.
+
+    When the Marionette socket lives in Firefox's socket process, a child
+    crash closes the connection while the parent keeps running.  The parent
+    snapshot alone cannot tell that apart from a healthy shutdown.
+    """
+
+    printed = 0
+    for entry in sorted(Path("/proc").iterdir()):
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == parent_pid:
+            continue
+        try:
+            comm = (entry / "comm").read_text(
+                encoding="utf-8", errors="replace"
+            ).strip()
+        except OSError:
+            continue
+        if not any(comm.startswith(prefix) for prefix in _BROWSER_CHILD_PREFIXES):
+            continue
+        state = "unknown"
+        threads = "unknown"
+        status = _probe_read(entry / "status")
+        if not status.startswith("<unavailable:"):
+            state_match = re.search(r"^State:\s+(.*)$", status, re.MULTILINE)
+            thread_match = re.search(r"^Threads:\s+(.*)$", status, re.MULTILINE)
+            if state_match:
+                state = "_".join(state_match.group(1).split())
+            if thread_match:
+                threads = thread_match.group(1).strip()
+        print(
+            "FIREFOX_DRM_POSTMORTEM_CHILD "
+            f"pid={pid} comm={'_'.join(comm.split())[:40] or 'unknown'} "
+            f"state={state} threads={threads}",
+            flush=True,
+        )
+        printed += 1
+        if printed >= 12:
+            return
+
+
+def _start_browser_watchers(
+    process: subprocess.Popen[bytes],
+) -> tuple[threading.Event, list[threading.Thread]]:
+    """Start the periodic state sampler and the immediate exit reporter."""
+
+    stop = threading.Event()
+    threads = [
+        threading.Thread(target=_browser_watch, args=(process, stop), daemon=True),
+        threading.Thread(
+            target=_browser_exit_watch, args=(process, stop), daemon=True
+        ),
+    ]
+    for thread in threads:
+        thread.start()
+    return stop, threads
+
+
+def _stop_browser_watchers(
+    process: subprocess.Popen[bytes],
+    stop: threading.Event,
+    threads: list[threading.Thread],
+) -> None:
+    """Join the watchers and record the browser state before stopping it."""
+
+    stop.set()
+    for thread in threads:
+        thread.join(timeout=2.0)
+    _browser_postmortem(process)
 
 
 def _probe_read(path: Path, limit: int = 8192) -> str:
@@ -2632,23 +2945,60 @@ def _browser_log_marker() -> None:
     except OSError:
         return
     payload = full_payload[:BROWSER_LOG_MAX_BYTES]
+    text = payload.decode("utf-8", "replace")
     diagnostic_lines: list[str] = []
-    for line in payload.decode("utf-8", "replace").splitlines():
+    seen: set[str] = set()
+    for line in text.splitlines():
         compact = " ".join(line.split())
         if compact and re.search(
-            r"egl|glx|webgl|gpu|compositor|renderer|blacklist|sanity|accelerat",
+            r"egl|glx|webgl|gpu|compositor|renderer|blacklist|sanity|accelerat"
+            r"|mesa|gl_out_of_memory|out.of.memory",
             compact,
             re.IGNORECASE,
         ):
+            # Repeated crash annotations used to fill the whole budget before
+            # the first WebGL failure line was reached; keep distinct lines and
+            # report the most recent ones.
+            if compact in seen:
+                continue
+            seen.add(compact)
             diagnostic_lines.append(compact[:BROWSER_DIAGNOSTIC_LINE_BYTES])
-            if len(diagnostic_lines) == BROWSER_DIAGNOSTIC_MAX_LINES:
-                break
+    diagnostic_lines = diagnostic_lines[-BROWSER_DIAGNOSTIC_MAX_LINES:]
     print(
         "FIREFOX_DRM_BROWSER_DIAG "
         f"lines={len(diagnostic_lines)} truncated={int(len(full_payload) > len(payload))} "
         f"text={' | '.join(diagnostic_lines) or 'none'}",
         flush=True,
     )
+    # A crash-probe backtrace is the only evidence left by a silent signal
+    # death, and neither the diagnostic filter nor the bounded head/tail
+    # token would keep it.  Preserve the frames verbatim.
+    crash_lines = [
+        " ".join(line.split())[:BROWSER_DIAGNOSTIC_LINE_BYTES]
+        for line in text.splitlines()
+        if line.startswith(
+            (
+                "ASTERINAS_CRASH_PROBE",
+                "ASTERINAS_CRASH_FRAME",
+                "ASTERINAS_CRASH_REG",
+                "ASTERINAS_CRASH_MODULE",
+            )
+        )
+    ]
+    if crash_lines:
+        print(
+            f"FIREFOX_DRM_CRASH_TRACE lines={len(crash_lines)}",
+            flush=True,
+        )
+        for line in crash_lines[:64]:
+            print(f"FIREFOX_DRM_CRASH_TRACE_FRAME {line}", flush=True)
+    # The tail is where an OOM/crash narrative ends; the bounded head/tail
+    # token below would cut it off. Four KiB is affordable on failure and is
+    # often the only record of Mesa's own error line.
+    tail = text[-4096:]
+    tail = " ".join(tail.split())[:4096]
+    if tail:
+        print(f"FIREFOX_DRM_BROWSER_TAIL text={tail}", flush=True)
     payload = payload[:256] + b" ... " + payload[-768:]
     printable = "".join(chr(byte) if 32 <= byte < 127 else " " for byte in payload)
     token = " ".join(printable.split())[:240]
@@ -2775,6 +3125,25 @@ def _one_run(process: subprocess.Popen[bytes]) -> dict[str, object]:
             limit=SCENE_TIMEOUT,
         )
         samples, scene_renderer, webgl_context, webgl_debug = _wait_scene(client, deadline)
+        # Record what the browser itself says when a WebGL context cannot be
+        # created: the scene only sees a null result, and the browser log may
+        # not reach the diagnostic window.
+        try:
+            webgl_creation = _script(
+                client, _WEBGL_CREATION_SCRIPT, deadline=deadline
+            )
+        except BaseException as error:
+            webgl_creation = {"error": type(error).__name__}
+        if isinstance(webgl_creation, str):
+            print(f"FIREFOX_DRM_WEBGL_CREATION {webgl_creation}", flush=True)
+        else:
+            print(
+                "FIREFOX_DRM_WEBGL_CREATION "
+                + json.dumps(
+                    webgl_creation, sort_keys=True, separators=(",", ":")
+                ),
+                flush=True,
+            )
         if len(samples) < 16:
             raise GateError("Firefox scene produced too few frame samples")
         if not scene_renderer:
@@ -2788,7 +3157,15 @@ def _one_run(process: subprocess.Popen[bytes]) -> dict[str, object]:
         ):
             raise GateError(f"Firefox WebGL renderer is software: {scene_renderer}")
         _phase("screenshot")
-        width, height, digest = _screenshot(client, deadline)
+        viewport_width, viewport_height = _viewport(client, deadline)
+        print(
+            "FIREFOX_DRM_VIEWPORT "
+            f"width={viewport_width} height={viewport_height} dpr=1",
+            flush=True,
+        )
+        width, height, digest = _screenshot(
+            client, deadline, (viewport_width, viewport_height)
+        )
         return {
             "support": values,
             # about:support is intentionally deferred until the browser
@@ -2819,18 +3196,11 @@ def main() -> int:
         print(f"FIREFOX_DRM_START url={START_URL[:200]}", flush=True)
         _phase("probe-spawn")
         process = _spawn()
-        watch_stop = threading.Event()
-        watch = threading.Thread(
-            target=_browser_watch,
-            args=(process, watch_stop),
-            daemon=True,
-        )
-        watch.start()
+        watch_stop, watch_threads = _start_browser_watchers(process)
         try:
             return 0 if _run_probe(process) else 1
         finally:
-            watch_stop.set()
-            watch.join(timeout=2.0)
+            _stop_browser_watchers(process, watch_stop, watch_threads)
             _stop(process)
             _probe_log_after_stop()
     _render_access_marker()
@@ -2840,19 +3210,12 @@ def main() -> int:
     _write_profile()
     _phase("spawn-first")
     first = _spawn()
-    first_watch_stop = threading.Event()
-    first_watch = threading.Thread(
-        target=_browser_watch,
-        args=(first, first_watch_stop),
-        daemon=True,
-    )
-    first_watch.start()
+    first_watch_stop, first_watch_threads = _start_browser_watchers(first)
     first_evidence: dict[str, object] | None = None
     try:
         first_evidence = _one_run(first)
     finally:
-        first_watch_stop.set()
-        first_watch.join(timeout=2.0)
+        _stop_browser_watchers(first, first_watch_stop, first_watch_threads)
         _stop(first)
         _browser_log_marker()
     if first_evidence is None:
@@ -2893,13 +3256,7 @@ def main() -> int:
     )
     _phase("spawn-second")
     second = _spawn()
-    second_watch_stop = threading.Event()
-    second_watch = threading.Thread(
-        target=_browser_watch,
-        args=(second, second_watch_stop),
-        daemon=True,
-    )
-    second_watch.start()
+    second_watch_stop, second_watch_threads = _start_browser_watchers(second)
     try:
         _phase("recovery")
         deadline = time.monotonic() + SCENE_TIMEOUT
@@ -2912,8 +3269,7 @@ def main() -> int:
             client.close()
         print("FIREFOX_DRM_RECOVERY restart=pass", flush=True)
     finally:
-        second_watch_stop.set()
-        second_watch.join(timeout=2.0)
+        _stop_browser_watchers(second, second_watch_stop, second_watch_threads)
         _stop(second)
     return 0
 

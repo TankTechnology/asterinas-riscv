@@ -178,6 +178,14 @@ def qemu_argv(
     # while ``-vnc unix:...`` exposes the separate host-readable scanout.
     display_backend = "none"
     vnc_arguments = ("-vnc", f"unix:{vnc_socket}") if vnc_socket is not None else ()
+    # Diagnostic knob: the frozen headless contract stays at 2G, but the
+    # graphical Firefox scene shares one guest between Xorg, Firefox and a
+    # contiguous GEM pool, which can exhaust 2G before the first frame.
+    memory = os.environ.get("ASTERINAS_QEMU_MEMORY", "").strip() or "2G"
+    if not re.fullmatch(r"[1-9][0-9]*[MG]", memory):
+        raise ValueError("ASTERINAS_QEMU_MEMORY must be <n>M or <n>G")
+    if memory.endswith("M") and int(memory[:-1]) < 1024:
+        raise ValueError("ASTERINAS_QEMU_MEMORY must be at least 1024M")
     arguments = (
         "qemu-system-riscv64",
         "-machine",
@@ -185,7 +193,7 @@ def qemu_argv(
         "-cpu",
         GENERIC_SV39_CPU,
         "-m",
-        "2G",
+        memory,
         "-smp",
         "4",
         "-display",
