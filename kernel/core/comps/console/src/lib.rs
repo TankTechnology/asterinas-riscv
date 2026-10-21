@@ -27,6 +27,12 @@ pub trait AnyConsoleDevice: Send + Sync + Any + Debug {
     ///
     /// The callback may be called in the interrupt context. Therefore, it should _never_ sleep.
     fn register_callback(&self, callback: &'static ConsoleCallback);
+
+    /// Polls the device for pending input.
+    ///
+    /// The default implementation does nothing. Devices whose input
+    /// interrupt is unavailable override this and drain their FIFO.
+    fn poll_input(&self) {}
 }
 
 pub const UART_CONSOLE_NAME: &str = "Uart-Console";

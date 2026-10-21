@@ -53,6 +53,10 @@ impl TtyDriver for SerialDriver {
 
     fn notify_input(&self) {}
 
+    fn poll_input(&self) {
+        self.console.poll_input();
+    }
+
     fn on_termios_change(&self, _old_termios: &CTermios, _new_termios: &CTermios) {}
 }
 

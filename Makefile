@@ -653,8 +653,32 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_fs_extents \
 		tools.x86.tests.test_x86_debian_fs_renameat2 \
 		tools.x86.tests.test_x86_debian_fs_timestamps \
+		tools.x86.tests.test_x86_debian_interactive_login \
 		tools.x86.tests.test_lmbench_transcript \
 		tools.riscv.tests.test_lmbench_native -v
+
+# Interactive login gate: console-getty on ttyS0 (the UART interrupt line is
+# not routed, so the TTY read path polls), a password helper instead of
+# login(1), and a typed username/password over a QEMU serial socket.
+#   X86_DEBIAN_LOGIN_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_LOGIN_BASE_ROOT ?=
+X86_DEBIAN_LOGIN_WORKSPACE ?= $(CURDIR)/target/x86-debian/login
+X86_DEBIAN_LOGIN_ACCEL ?= kvm
+X86_DEBIAN_LOGIN_TIMEOUT ?= 600
+
+.PHONY: test_x86_debian_interactive_login
+test_x86_debian_interactive_login:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_LOGIN_BASE_ROOT)" || { echo "X86_DEBIAN_LOGIN_BASE_ROOT is required" >&2; exit 2; }
+	@echo "interactive-login: base=$(X86_DEBIAN_LOGIN_BASE_ROOT) accel=$(X86_DEBIAN_LOGIN_ACCEL)"
+	@tools/x86/debian/interactive_login_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_LOGIN_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_LOGIN_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_LOGIN_ACCEL)" \
+		--timeout "$(X86_DEBIAN_LOGIN_TIMEOUT)"
 
 # Boot the Debian root image on the x86_64 kernel and wait for the marker.
 # X86_DEBIAN_KERNEL must be an OSDK x86_64 artifact built with

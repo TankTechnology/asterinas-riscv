@@ -68,6 +68,10 @@ impl<U: Uart + Send + Sync + 'static> AnyConsoleDevice for UartConsole<U> {
     fn register_callback(&self, callback: &'static ConsoleCallback) {
         self.callbacks.lock().push(callback);
     }
+
+    fn poll_input(&self) {
+        self.trigger_input_callbacks();
+    }
 }
 
 /// A trait that abstracts UART devices.
