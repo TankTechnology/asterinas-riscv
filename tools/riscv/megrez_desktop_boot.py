@@ -623,7 +623,10 @@ def start_generation(
         }
         if sizes != expected_sizes:
             raise DesktopBootError("partition-3 artifact byte count mismatch")
-        operations.boot(manifest, 30)
+        # The preparation sequence is ~20 paced serial commands, including
+        # several long bootargs chunks; 30 s covers only a fast link and
+        # aborted before the boot command on the Megrez UART.
+        operations.boot(manifest, 120)
         transcript = operations.wait_ready(300)
         observe_ready_phases(transcript)
         phases = operations.phase_times
