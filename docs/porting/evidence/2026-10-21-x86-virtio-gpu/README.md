@@ -155,6 +155,17 @@ The script is picked up automatically by
 `tools/x86/tests/test_x86_debian_gate_scripts.py`, so `--help` and syntax are
 checked by `make test_x86_debian_tooling_unit`.
 
+The first unattended run passed:
+
+```
+XORG_CLIENT user=True pass=True command=True done=True
+screendump 1024x768 red=1.000
+PASS (serial login, Xorg modeset on virtio-gpu, red root window, power-button power-off)
+```
+
+with `XORG_SETROOT=0` and `XORG_ok_END` on the console, and a clean
+`e2fsck -fn` after the power-off.
+
 ## Reusing this on RISC-V
 
 Both new crates are architecture-neutral. The RISC-V QEMU machine already
