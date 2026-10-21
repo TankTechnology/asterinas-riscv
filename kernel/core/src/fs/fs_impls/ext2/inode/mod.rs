@@ -78,6 +78,8 @@ mod io_range;
 mod symlink;
 mod sync;
 
+use core::sync::atomic::{AtomicBool, Ordering};
+
 use ostd::const_assert;
 
 use self::{
@@ -86,7 +88,12 @@ use self::{
 };
 use super::{fs::Ext2, prelude::*, xattr::Xattr};
 use crate::{
-    fs::{ext2::utils, file::InodeMode, pipe::Pipe, vfs::inode::Extension},
+    fs::{
+        ext2::utils,
+        file::InodeMode,
+        pipe::Pipe,
+        vfs::{inode::Extension, xattr::{PosixAcl, XattrName}},
+    },
     vm::page_cache::Vmo,
 };
 
@@ -152,6 +159,9 @@ fn encode_extra_time(time: Duration) -> u32 {
 pub(super) type Iblock = u32;
 /// Physical block address on the device.
 pub(super) type Ext2Bid = u32;
+/// Size of the per-block directory checksum tail (`struct ext4_dir_entry_tail`).
+pub(super) const DIR_ENTRY_TAIL_SIZE: usize = 12;
+
 /// On-disk inode number (ext2 format is 32-bit; the VFS widens to u64).
 pub(super) type Ext2Ino = u32;
 
@@ -192,6 +202,13 @@ pub(crate) struct Inode {
     xattr: Option<Xattr>,
     pipe: Option<Pipe>,
     extension: Extension,
+    /// Whether `link(2)` may name this inode. `O_TMPFILE | O_EXCL` clears it.
+    linkable: AtomicBool,
+    /// Weak self-reference, used to enter the block group's inode cache when
+    /// an unnamed temporary file is given a name.
+    self_ref: Weak<Self>,
+    /// Whether the inode is currently on the superblock orphan chain.
+    orphaned: AtomicBool,
 }
 
 impl Inode {
@@ -203,6 +220,10 @@ impl Inode {
         block_group_idx: usize,
         fs: Weak<Ext2>,
     ) -> Arc<Self> {
+        let metadata_csum = fs
+            .upgrade()
+            .map(|fs| fs.super_block().has_metadata_csum())
+            .unwrap_or(false);
         Arc::new_cyclic(|weak_self: &Weak<Self>| {
             let xattr = match type_ {
                 InodeType::Dir | InodeType::File => Some(Xattr::new(
@@ -219,12 +240,15 @@ impl Inode {
             Self {
                 ino,
                 type_,
-                inner: RwMutex::new(InodeInner::new(inode_desc, fs.clone())),
+                inner: RwMutex::new(InodeInner::new(inode_desc, fs.clone(), ino, metadata_csum)),
                 block_group_idx,
                 fs,
                 xattr,
                 pipe,
                 extension: Extension::new(),
+                linkable: AtomicBool::new(true),
+                self_ref: weak_self.clone(),
+                orphaned: AtomicBool::new(false),
             }
         })
     }
@@ -234,14 +258,128 @@ impl Inode {
         self.ino
     }
 
+    /// Returns the low word of `i_version` (`osd1.l_i_version`).
+    pub(in ext2) fn version(&self) -> u32 {
+        self.inner.read().desc.version
+    }
+
+    /// Sets the low word of `i_version`.
+    pub(in ext2) fn set_version(&self, version: u32) {
+        self.inner.write().desc.version = version;
+    }
+
+    /// Adds one or more inode flags.
+    pub(in ext2) fn add_flags(&self, flags: FileFlags) {
+        self.inner.write().desc.flags.insert(flags);
+    }
+
+    /// Marks this inode as an extended-attribute value inode.
+    pub(in ext2) fn mark_ea_inode(&self) {
+        self.add_flags(FileFlags::EA_INODE);
+    }
+
+    /// Returns the hard-link count.
+    pub(in ext2) fn link_count_value(&self) -> u16 {
+        self.inner.read().link_count()
+    }
+
+    /// Sets the hard-link count.
+    pub(in ext2) fn set_link_count(&self, count: u16) {
+        self.inner.write().set_link_count(count);
+    }
+
+    /// Adds external xattr storage to the inode's `i_blocks`.
+    pub(in ext2) fn add_xattr_sectors(&self, sectors: u32) -> Result<()> {
+        self.inner.read().block_manager()?.add_sector_count(sectors)
+    }
+
+    /// Removes external xattr storage from the inode's `i_blocks`.
+    pub(in ext2) fn sub_xattr_sectors(&self, sectors: u32) {
+        if let Ok(manager) = self.inner.read().block_manager() {
+            manager.sub_sector_count(sectors);
+        }
+    }
+
     /// Returns the block group index this inode belongs to.
     pub(super) fn block_group_idx(&self) -> usize {
         self.block_group_idx
     }
 
     /// Returns the hard-link count.
+    /// Prevents this inode from ever being linked (`O_TMPFILE | O_EXCL`).
+    pub(super) fn set_unlinkable(&self) {
+        self.linkable.store(false, Ordering::Relaxed);
+    }
+
+    /// Returns whether `link(2)` may give this inode a name.
+    pub(super) fn is_linkable(&self) -> bool {
+        self.linkable.load(Ordering::Relaxed)
+    }
+
+    /// Enters the block group's inode cache.
+    ///
+    /// Named inodes live in the cache so that commit-time writeback picks up
+    /// their dirty descriptors. Unnamed temporary files stay out of it: the
+    /// cache's strong reference would otherwise keep a closed tmpfile alive
+    /// and prevent the drop-time reclaim.
+    pub(super) fn insert_into_cache(&self) {
+        if let Some(this) = self.self_ref.upgrade()
+            && let Some(fs) = self.fs.upgrade()
+        {
+            fs.insert_inode(this);
+        }
+    }
+
+    /// Sets the on-disk `i_dtime` field, which doubles as the orphan link.
+    pub(super) fn set_dtime(&self, time: Duration) {
+        self.inner.write().set_dtime(time);
+    }
+
+    /// Records that the inode is on the superblock orphan chain.
+    pub(super) fn mark_orphaned(&self) {
+        self.orphaned.store(true, Ordering::Relaxed);
+    }
+
+    /// Records that the inode is no longer on the orphan chain.
+    pub(super) fn clear_orphaned(&self) {
+        self.orphaned.store(false, Ordering::Relaxed);
+    }
+
+    /// Returns whether the inode is on the superblock orphan chain.
+    pub(super) fn is_orphaned(&self) -> bool {
+        self.orphaned.load(Ordering::Relaxed)
+    }
+
     pub(super) fn link_count(&self) -> u16 {
         self.inner.read().link_count()
+    }
+
+    /// Reads the POSIX access ACL of this inode, if one is set.
+    pub(super) fn posix_access_acl(&self) -> Result<Option<PosixAcl>> {
+        let Some(xattr) = self.xattr.as_ref() else {
+            return Ok(None);
+        };
+        let Some(name) = XattrName::try_from_full_name("system.posix_acl_access") else {
+            return Ok(None);
+        };
+        match xattr.get_xattr_bytes(name)? {
+            Some(bytes) => Ok(Some(PosixAcl::parse(&bytes)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Returns the raw `system.posix_acl_default` value of this inode.
+    ///
+    /// Only directories normally carry one; it is read when a child is
+    /// created so its access ACL can be inherited.
+    pub(super) fn posix_default_acl_bytes(&self) -> Result<Option<Vec<u8>>> {
+        let Some(xattr) = self.xattr.as_ref() else {
+            return Ok(None);
+        };
+        let Some(name) = XattrName::try_from_full_name("system.posix_acl_default") else {
+            return Ok(None);
+        };
+        xattr.get_xattr_bytes(name)
     }
 
     /// Returns a reference to the owning `Ext2` filesystem.
@@ -322,6 +460,9 @@ pub(super) struct InodeDesc {
     flags: FileFlags,
     file_acl: u32,
     generation: u32,
+    /// Low 32 bits of `i_version` (`osd1.l_i_version`).  EA inodes store
+    /// their reference count here.
+    version: u32,
     block_ptrs: [u32; RAW_BLOCK_PTRS_LEN],
 }
 
@@ -351,6 +492,7 @@ impl InodeDesc {
             flags: FileFlags::empty(),
             file_acl: 0,
             generation,
+            version: 0,
             block_ptrs: [0; RAW_BLOCK_PTRS_LEN],
         }
     }
@@ -447,6 +589,7 @@ impl InodeDesc {
             flags,
             file_acl: raw.file_acl,
             generation: raw.generation,
+            version: raw.osd1,
             block_ptrs: raw_block_ptrs.block_ptrs,
         })
     }
@@ -478,7 +621,7 @@ impl From<&InodeDesc> for RawInode {
             link_count: desc.link_count,
             sector_count: desc.sector_count,
             flags: desc.flags.bits(),
-            osd1: 0,
+            osd1: desc.version,
             block: desc.block_ptrs,
             generation: desc.generation,
             file_acl: desc.file_acl,
@@ -532,6 +675,8 @@ struct InodeInner {
     desc: Dirty<InodeDesc>,
     /// Type-specific payload stored in ext2's overloaded `i_block` area.
     payload: InodePayload,
+    /// Whether metadata blocks carry CRC32C checksums.
+    metadata_csum: bool,
 }
 
 /// Type-specific in-memory state backed by ext2 inode payload storage.
@@ -551,12 +696,43 @@ enum InodePayload {
 }
 
 impl InodeInner {
-    fn new(inode_desc: Dirty<InodeDesc>, fs: Weak<Ext2>) -> Self {
-        let payload = InodePayload::new(&inode_desc, fs);
+    fn new(
+        inode_desc: Dirty<InodeDesc>,
+        fs: Weak<Ext2>,
+        ino: Ext2Ino,
+        metadata_csum: bool,
+    ) -> Self {
+        let payload = InodePayload::new(&inode_desc, fs, ino);
 
         Self {
             desc: inode_desc,
             payload,
+            metadata_csum,
+        }
+    }
+
+    /// Returns how many bytes of a directory block hold entries.
+    ///
+    /// With `metadata_csum`, the final 12 bytes of each directory block are a
+    /// checksum tail and must not be reused for entries.
+    fn dir_entry_limit(&self) -> usize {
+        if self.metadata_csum {
+            BLOCK_SIZE - DIR_ENTRY_TAIL_SIZE
+        } else {
+            BLOCK_SIZE
+        }
+    }
+
+    /// Returns the usable length of one specific directory block.
+    ///
+    /// The first block of an htree-indexed directory is an exception: its
+    /// `..` entry spans the whole block and the trailing bytes are the dx
+    /// index and its tail, not a directory entry tail.
+    fn dir_block_limit(&self, block_idx: usize) -> usize {
+        if block_idx == 0 && self.desc.flags.contains(FileFlags::INDEX_DIR) {
+            BLOCK_SIZE
+        } else {
+            self.dir_entry_limit()
         }
     }
 
@@ -707,7 +883,7 @@ impl InodeInner {
 }
 
 impl InodePayload {
-    fn new(inode_desc: &Dirty<InodeDesc>, fs: Weak<Ext2>) -> Self {
+    fn new(inode_desc: &Dirty<InodeDesc>, fs: Weak<Ext2>, ino: Ext2Ino) -> Self {
         // The block manager owns the inode's data and tree blocks, but not the
         // separate xattr block: `raw_block_ptrs()` adds that block back on
         // every write-back. Initializing the manager with the on-disk total
@@ -724,13 +900,20 @@ impl InodePayload {
                 raw_block_ptrs,
                 fs,
                 inode_desc.type_ == InodeType::Dir,
+                ino,
+                inode_desc.generation,
             ),
             InodeType::SymLink if Self::is_fast_symlink(inode_desc) => Self::FastSymlink {
                 target: FastSymlinkTarget::new(inode_desc.block_ptrs),
             },
-            InodeType::SymLink => {
-                Self::new_data_backed(inode_desc.size as usize, raw_block_ptrs, fs, false)
-            }
+            InodeType::SymLink => Self::new_data_backed(
+                inode_desc.size as usize,
+                raw_block_ptrs,
+                fs,
+                false,
+                ino,
+                inode_desc.generation,
+            ),
             InodeType::CharDevice | InodeType::BlockDevice => Self::Device {
                 device_id: raw_block_ptrs.read_device_id(),
             },
@@ -743,10 +926,12 @@ impl InodePayload {
         raw_block_ptrs: RawBlockPtrs,
         fs: Weak<Ext2>,
         stage_writes: bool,
+        ino: Ext2Ino,
+        generation: u32,
     ) -> Self {
         let page_cache_size = size.align_up(PAGE_SIZE);
         let page_count = page_cache_size / PAGE_SIZE;
-        let block_ptr_tree = BlockPtrTree::new(raw_block_ptrs, fs.clone());
+        let block_ptr_tree = BlockPtrTree::new(raw_block_ptrs, fs.clone(), ino, generation);
         let block_manager = Arc::new(InodeBlockManager::new(
             block_ptr_tree,
             fs.clone(),
@@ -854,9 +1039,37 @@ bitflags! {
         const TOP_DIR = 1 << 17;
         /// Inode data is addressed through an ext4 extent tree.
         const EXTENTS = 1 << 19;
+        /// The inode stores the value of an extended attribute (`ea_inode`).
+        const EA_INODE = 1 << 21;
         /// Reserved for the ext2 library.
         const RESERVED = 1 << 31;
     }
+}
+
+/// Reclaims an inode found on the superblock orphan chain after a crash.
+///
+/// The chain only holds unnamed temporary files, which have no directory
+/// entry and a link count of zero. Their data, tree and xattr blocks are
+/// freed before the inode itself, exactly like a final unlink.
+pub(in ext2) fn reclaim_orphan_inode(
+    fs: &Arc<Ext2>,
+    ino: Ext2Ino,
+    raw: &RawInode,
+) -> Result<()> {
+    let inode_type = InodeType::from_raw_mode(raw.mode)?;
+    let sectors_per_block = (BLOCK_SIZE / SECTOR_SIZE) as u32;
+    let xattr_sectors = if raw.file_acl == 0 { 0 } else { sectors_per_block };
+    let block_ptrs = RawBlockPtrs::new(
+        raw.sector_count.saturating_sub(xattr_sectors),
+        raw.block,
+    );
+    let mut tree = BlockPtrTree::new(block_ptrs, Arc::downgrade(fs), ino, raw.generation);
+    tree.truncate_to_byte_len(fs.as_ref(), 0);
+    if raw.file_acl != 0 {
+        fs.free_blocks(raw.file_acl, 1)?;
+    }
+    fs.free_inode(ino, inode_type)?;
+    Ok(())
 }
 
 #[cfg(ktest)]

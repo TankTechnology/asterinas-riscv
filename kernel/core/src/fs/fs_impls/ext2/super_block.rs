@@ -33,7 +33,7 @@
 
 use ostd::const_assert;
 
-use super::{block_group::RawBlockGroup, prelude::*};
+use super::{checksum, prelude::*};
 use crate::fs::ext2::utils;
 
 /// The ext2 magic number.
@@ -43,6 +43,30 @@ pub(super) const MAGIC_NUM: u16 = 0xef53;
 pub(super) const SUPER_BLOCK_OFFSET: usize = 1024;
 
 const SUPER_BLOCK_SIZE: usize = 1024;
+
+/// The block group descriptor size used by images without the `64BIT` feature.
+const DESC_SIZE_32BIT: u16 = 32;
+
+/// The smallest descriptor size an image with the `64BIT` feature may declare.
+const DESC_SIZE_64BIT: u16 = 64;
+
+/// Byte offset of the first word of `RawSuperBlock::reserved` (`s_mkfs_time`).
+const RESERVED_START_OFFSET: usize = 0x108;
+/// `s_blocks_count_hi` (valid only with `64BIT`).
+const BLOCKS_COUNT_HI_OFFSET: usize = 0x150;
+/// `s_r_blocks_count_hi` (valid only with `64BIT`).
+const R_BLOCKS_COUNT_HI_OFFSET: usize = 0x154;
+/// `s_free_blocks_count_hi` (valid only with `64BIT`).
+const FREE_BLOCKS_COUNT_HI_OFFSET: usize = 0x158;
+/// `s_checksum_type` (valid with `metadata_csum`).
+const CHECKSUM_TYPE_OFFSET: usize = 0x175;
+/// `s_checksum_seed` (valid with the `csum_seed` compat feature).
+const CHECKSUM_SEED_OFFSET: usize = 0x270;
+/// `s_checksum` (valid with `metadata_csum`).
+const SUPERBLOCK_CHECKSUM_OFFSET: usize = 0x3FC;
+
+/// The only checksum type ext4 defines: CRC32C.
+const CHECKSUM_TYPE_CRC32C: u8 = 1;
 
 /// Validated, Rust-typed in-memory representation of the ext2 superblock.
 #[derive(Clone, Copy, Debug)]
@@ -103,6 +127,12 @@ pub(super) struct SuperBlock {
     first_ino: u32,
     /// Size of inode structure.
     inode_size: usize,
+    /// Size of a block group descriptor on disk.
+    desc_size: u16,
+    /// Whether metadata blocks carry CRC32C checksums.
+    metadata_csum: bool,
+    /// Seed for the metadata checksums (`s_checksum_seed` or the UUID CRC).
+    csum_seed: u32,
     /// Block group that this superblock is part of (if backup copy).
     block_group_idx: usize,
     /// Compatible feature set.
@@ -238,10 +268,50 @@ impl SuperBlock {
             return_errno_with_message!(Errno::EINVAL, "free inodes count exceeds inodes count");
         }
 
+        // `64BIT` moves the descriptor table to 64-byte entries whose high
+        // block-number words extend the low u32 fields. Asterinas addresses
+        // blocks with `u32`, so an image whose counts do not fit in 32 bits is
+        // refused rather than silently truncated. The high words themselves
+        // only exist when the feature is set; without it they belong to
+        // `s_jnl_blocks` and carry unrelated values.
+        let has_64bit = (sb.feature_incompat & FeatureInCompatSet::BIT64.bits()) != 0;
+        if has_64bit
+            && (sb.blocks_count_hi() != 0
+                || sb.reserved_blocks_count_hi() != 0
+                || sb.free_blocks_count_hi() != 0)
+        {
+            return_errno_with_message!(Errno::EINVAL, "64-bit block counts are unsupported");
+        }
+        let desc_size = if has_64bit {
+            sb.desc_size().max(DESC_SIZE_64BIT)
+        } else {
+            DESC_SIZE_32BIT
+        };
+        if desc_size != DESC_SIZE_32BIT && desc_size != DESC_SIZE_64BIT {
+            return_errno_with_message!(Errno::EINVAL, "invalid group descriptor size");
+        }
+
         let feature_compat = FeatureCompatSet::from_bits_truncate(sb.feature_compat);
         if feature_compat.contains(FeatureCompatSet::HAS_JOURNAL) && !allow_journal {
             return_errno_with_message!(Errno::EINVAL, "ext2 journal replay is unsupported");
         }
+
+        // `metadata_csum` requires the CRC32C checksum type; the checksum seed
+        // is either stored (`csum_seed`) or derived from the UUID.
+        let metadata_csum =
+            (sb.feature_ro_compat & FeatureRoCompatSet::METADATA_CSUM.bits()) != 0;
+        if metadata_csum && sb.checksum_type() != CHECKSUM_TYPE_CRC32C {
+            return_errno_with_message!(Errno::EINVAL, "unsupported metadata checksum type");
+        }
+        let csum_seed = if metadata_csum {
+            if (sb.feature_incompat & FeatureInCompatSet::CSUM_SEED.bits()) != 0 {
+                sb.checksum_seed()
+            } else {
+                checksum::seed_from_uuid(&sb.uuid)
+            }
+        } else {
+            0
+        };
 
         // `RECOVER` is a transient flag: it marks a journal that must be
         // replayed before the filesystem is exposed. It is set by every
@@ -250,15 +320,28 @@ impl SuperBlock {
         // decides whether a replay is needed.
         let allowed_incompat = FeatureInCompatSet::FILETYPE.bits()
             | FeatureInCompatSet::EXTENTS.bits()
-            | FeatureInCompatSet::RECOVER.bits();
+            | FeatureInCompatSet::RECOVER.bits()
+            | FeatureInCompatSet::BIT64.bits()
+            | FeatureInCompatSet::FLEX_BG.bits()
+            | FeatureInCompatSet::EA_INODE.bits()
+            | FeatureInCompatSet::CSUM_SEED.bits();
         if (sb.feature_incompat & !allowed_incompat) != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported incompat feature");
         }
         let feature_incompat = FeatureInCompatSet::from_bits_truncate(sb.feature_incompat);
 
+        // `HUGE_FILE`, `DIR_NLINK` and `EXTRA_ISIZE` are capability bits that
+        // only permit (never require) the corresponding on-disk encodings.
+        // Ordinary files keep the classic `i_blocks` sector accounting and
+        // 32-byte inode extras, which this implementation already reads
+        // dynamically via `i_extra_isize`.
         let allowed_ro_compat = FeatureRoCompatSet::SPARSE_SUPER.bits()
             | FeatureRoCompatSet::LARGE_FILE.bits()
-            | FeatureRoCompatSet::BTREE_DIR.bits();
+            | FeatureRoCompatSet::BTREE_DIR.bits()
+            | FeatureRoCompatSet::HUGE_FILE.bits()
+            | FeatureRoCompatSet::DIR_NLINK.bits()
+            | FeatureRoCompatSet::EXTRA_ISIZE.bits()
+            | FeatureRoCompatSet::METADATA_CSUM.bits();
         if (sb.feature_ro_compat & !allowed_ro_compat) != 0 {
             return_errno_with_message!(Errno::EINVAL, "unsupported ro-compatible feature");
         }
@@ -292,6 +375,9 @@ impl SuperBlock {
             default_reserved_gid: sb.default_reserved_gid as _,
             first_ino,
             inode_size,
+            desc_size,
+            metadata_csum,
+            csum_seed,
             block_group_idx: sb.block_group_idx as _,
             feature_compat,
             feature_incompat,
@@ -380,6 +466,30 @@ impl SuperBlock {
     /// Returns the size of inode structure.
     pub(super) const fn inode_size(&self) -> usize {
         self.inode_size
+    }
+
+    /// Returns the on-disk size of a block group descriptor.
+    ///
+    /// Images without the `64BIT` feature always use the original 32-byte
+    /// descriptor regardless of what `s_desc_size` happens to contain;
+    /// `64BIT` images use at least 64 bytes (Linux clamps smaller values up).
+    pub(super) const fn desc_size(&self) -> u16 {
+        self.desc_size
+    }
+
+    /// Returns whether metadata blocks carry CRC32C checksums.
+    pub(super) const fn has_metadata_csum(&self) -> bool {
+        self.metadata_csum
+    }
+
+    /// Returns whether large xattr values may live in EA inodes.
+    pub(super) fn has_ea_inode(&self) -> bool {
+        self.feature_incompat.contains(FeatureInCompatSet::EA_INODE)
+    }
+
+    /// Returns the seed used by the metadata checksums.
+    pub(super) const fn checksum_seed(&self) -> u32 {
+        self.csum_seed
     }
 
     /// Returns the fragment size.
@@ -473,7 +583,7 @@ impl SuperBlock {
 
     /// Returns the number of group descriptor blocks in each superblock copy.
     pub(super) const fn group_descriptor_blocks_count(&self) -> u32 {
-        let group_desc_bytes = (self.nr_block_groups() as usize) * size_of::<RawBlockGroup>();
+        let group_desc_bytes = (self.nr_block_groups() as usize) * (self.desc_size as usize);
         group_desc_bytes.div_ceil(self.block_size) as u32
     }
 
@@ -634,6 +744,16 @@ impl SuperBlock {
         self.journal_ino
     }
 
+    /// Returns the head of the orphan inode chain.
+    pub(super) const fn last_orphan(&self) -> u32 {
+        self.last_orphan
+    }
+
+    /// Replaces the head of the orphan inode chain.
+    pub(super) fn set_last_orphan(&mut self, ino: u32) {
+        self.last_orphan = ino;
+    }
+
     /// Returns the filesystem UUID carried by journal descriptor tags.
     pub(super) const fn uuid(&self) -> [u8; 16] {
         self.uuid
@@ -695,6 +815,14 @@ bitflags! {
         const META_BG = 1 << 4;
         /// Inodes use ext4 extent trees for file block mapping.
         const EXTENTS = 1 << 6;
+        /// Block group descriptors carry 64-bit block numbers.
+        const BIT64 = 1 << 7;
+        /// Metadata blocks may be allocated outside their own group.
+        const FLEX_BG = 1 << 9;
+        /// Large extended-attribute values are stored in EA inodes.
+        const EA_INODE = 1 << 10;
+        /// The checksum seed is stored in `s_checksum_seed`.
+        const CSUM_SEED = 1 << 13;
     }
 }
 
@@ -707,6 +835,14 @@ bitflags! {
         const LARGE_FILE = 1 << 1;
         /// Directory contents are stored in a binary tree.
         const BTREE_DIR = 1 << 2;
+        /// Inodes may record `i_blocks` in filesystem blocks for huge files.
+        const HUGE_FILE = 1 << 3;
+        /// Directories may exceed the classic 65000-link limit.
+        const DIR_NLINK = 1 << 5;
+        /// Inodes may extend `i_extra_isize` beyond the 32 bytes we write.
+        const EXTRA_ISIZE = 1 << 6;
+        /// Metadata blocks and group descriptors carry CRC32C checksums.
+        const METADATA_CSUM = 1 << 10;
     }
 }
 
@@ -830,6 +966,64 @@ pub(super) struct RawSuperBlock {
     reserved: Reserved,
 }
 
+impl RawSuperBlock {
+    /// Returns `s_desc_size` (offset 0xFE).
+    ///
+    /// The field only exists in the dynamic-revision layout used by ext4;
+    /// callers must ignore it unless the `64BIT` feature is set.
+    const fn desc_size(&self) -> u16 {
+        self.reserved_word_pad
+    }
+
+    /// Returns `s_blocks_count_hi` (offset 0x150).
+    const fn blocks_count_hi(&self) -> u32 {
+        let word = (BLOCKS_COUNT_HI_OFFSET - RESERVED_START_OFFSET) / size_of::<u32>();
+        self.reserved.0[word]
+    }
+
+    /// Returns `s_r_blocks_count_hi` (offset 0x154).
+    const fn reserved_blocks_count_hi(&self) -> u32 {
+        let word = (R_BLOCKS_COUNT_HI_OFFSET - RESERVED_START_OFFSET) / size_of::<u32>();
+        self.reserved.0[word]
+    }
+
+    /// Returns `s_free_blocks_count_hi` (offset 0x158).
+    const fn free_blocks_count_hi(&self) -> u32 {
+        let word = (FREE_BLOCKS_COUNT_HI_OFFSET - RESERVED_START_OFFSET) / size_of::<u32>();
+        self.reserved.0[word]
+    }
+
+    /// Returns `s_checksum_type` (offset 0x175).
+    const fn checksum_type(&self) -> u8 {
+        let word = (CHECKSUM_TYPE_OFFSET - RESERVED_START_OFFSET) / size_of::<u32>();
+        let byte = (CHECKSUM_TYPE_OFFSET - RESERVED_START_OFFSET) % size_of::<u32>();
+        (self.reserved.0[word] >> (byte * 8)) as u8
+    }
+
+    /// Returns `s_checksum_seed` (offset 0x270).
+    const fn checksum_seed(&self) -> u32 {
+        let word = (CHECKSUM_SEED_OFFSET - RESERVED_START_OFFSET) / size_of::<u32>();
+        self.reserved.0[word]
+    }
+
+    /// Overwrites `s_checksum` (offset 0x3FC).
+    fn set_checksum(&mut self, value: u32) {
+        let word = (SUPERBLOCK_CHECKSUM_OFFSET - RESERVED_START_OFFSET) / size_of::<u32>();
+        self.reserved.0[word] = value;
+    }
+}
+
+/// Computes and stores the checksum of one serialized superblock copy.
+///
+/// The checksum covers everything before `s_checksum` and is seeded with all
+/// ones, independent of the filesystem checksum seed.
+pub(super) fn sign_superblock(raw: &mut RawSuperBlock) {
+    raw.set_checksum(0);
+    let bytes = raw.as_bytes();
+    let crc = checksum::crc32c(checksum::CRC32C_INIT, &bytes[..SUPERBLOCK_CHECKSUM_OFFSET]);
+    raw.set_checksum(crc);
+}
+
 impl From<&SuperBlock> for RawSuperBlock {
     fn from(sb: &SuperBlock) -> Self {
         Self {
@@ -902,7 +1096,7 @@ mod test {
     use ostd::prelude::*;
 
     use super::*;
-    use crate::fs::fs_impls::ext2::test_utils::make_valid_raw_super_block;
+    use crate::fs::fs_impls::ext2::test_utils::{assert_errno, make_valid_raw_super_block};
 
     #[ktest]
     fn max_file_size_matches_ext2_4k_limit() {
@@ -910,6 +1104,39 @@ mod test {
         let sb = SuperBlock::try_from(raw).unwrap();
 
         assert_eq!(sb.max_file_size(), 2_196_873_666_560);
+    }
+
+    #[ktest]
+    fn sixty_four_bit_images_use_64_byte_descriptors() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
+        raw.reserved_word_pad = 64;
+
+        let sb = SuperBlock::try_from(raw).unwrap();
+        assert_eq!(sb.desc_size(), 64);
+        assert!(sb.feature_incompat().contains(FeatureInCompatSet::BIT64));
+    }
+
+    #[ktest]
+    fn descriptors_are_32_bytes_without_64bit() {
+        let mut raw = make_valid_raw_super_block(1);
+        // `s_desc_size` lives in the same bytes as `s_jnl_blocks` when the
+        // feature is off, so an arbitrary value must be ignored.
+        raw.reserved_word_pad = 64;
+
+        let sb = SuperBlock::try_from(raw).unwrap();
+        assert_eq!(sb.desc_size(), 32);
+    }
+
+    #[ktest]
+    fn high_block_counts_are_rejected_with_64bit() {
+        let mut raw = make_valid_raw_super_block(1);
+        raw.feature_incompat |= FeatureInCompatSet::BIT64.bits();
+        raw.reserved_word_pad = 64;
+        let word = (BLOCKS_COUNT_HI_OFFSET - RESERVED_START_OFFSET) / size_of::<u32>();
+        raw.reserved.0[word] = 1;
+
+        assert_errno!(SuperBlock::try_from(raw), Errno::EINVAL);
     }
 
     #[ktest]

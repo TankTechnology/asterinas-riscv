@@ -35,6 +35,26 @@ impl Inode {
         Ok(read_len)
     }
 
+    /// Reads data without updating `atime`.
+    ///
+    /// EA inodes store the value hash in `i_atime`, so reading an extended
+    /// attribute must not touch the timestamp.
+    pub(in ext2) fn read_at_without_atime(
+        &self,
+        offset: usize,
+        writer: &mut VmWriter,
+    ) -> Result<usize> {
+        if self.type_ == InodeType::Dir {
+            return_errno!(Errno::EISDIR);
+        }
+
+        if writer.avail() == 0 {
+            return Ok(0);
+        }
+
+        self.inner.read().read_at(offset, writer)
+    }
+
     /// Writes file data at `offset` through the page cache.
     pub(in ext2) fn write_at(&self, offset: usize, reader: &mut VmReader) -> Result<usize> {
         if self.type_ == InodeType::Dir {
@@ -170,6 +190,39 @@ impl Inode {
                 {
                     inner.rollback_fallocate(old_size);
                     return Err(err);
+                }
+            }
+            FallocMode::PunchHoleKeepSize => {
+                if offset % BLOCK_SIZE != 0 {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "punch-hole offset must be block aligned"
+                    );
+                }
+                if offset < old_size {
+                    // Never punch past EOF: the operation keeps the size.
+                    let end = end.min(old_size);
+                    let start_block = Iblock::try_from(offset / BLOCK_SIZE)
+                        .map_err(|_| Error::with_message(Errno::EINVAL, "offset overflow"))?;
+                    let end_block = Iblock::try_from(end.div_ceil(BLOCK_SIZE))
+                        .map_err(|_| Error::with_message(Errno::EINVAL, "length overflow"))?;
+                    // Dirty pages in the range describe blocks that are about
+                    // to be freed; flush them first, then evict them so reads
+                    // see the hole instead of stale cache contents.
+                    if let Err(err) = inner.page_cache().flush_range(offset..end) {
+                        return Err(err);
+                    }
+                    if let Err(err) = inner
+                        .block_manager()?
+                        .punch_hole_blocks(start_block, end_block)
+                    {
+                        return Err(err);
+                    }
+                    let evict_end = (end_block as usize)
+                        .checked_mul(BLOCK_SIZE)
+                        .unwrap_or(old_size)
+                        .min(old_size);
+                    inner.page_cache().evict_range(offset..evict_end)?;
                 }
             }
             FallocMode::ZeroRange | FallocMode::ZeroRangeKeepSize => {

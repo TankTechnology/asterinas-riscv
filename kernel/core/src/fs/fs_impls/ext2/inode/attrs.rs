@@ -17,7 +17,7 @@ use crate::{
         file::InodeMode,
         vfs::{
             inode::Metadata,
-            xattr::{XattrName, XattrNamespace, XattrSetFlags},
+            xattr::{PosixAcl, XattrName, XattrNamespace, XattrSetFlags},
         },
     },
     process::{Gid, Uid},
@@ -92,11 +92,35 @@ impl Inode {
     }
 
     /// Sets the file permission mode.
+    ///
+    /// An access ACL is kept in sync as Linux's `posix_acl_chmod` does: the
+    /// owner entry, the group class (mask when present, group entry
+    /// otherwise) and the other entry follow the new mode bits.
     pub(in ext2) fn set_mode(&self, mode: InodeMode) -> Result<()> {
-        let mut inner = self.inner.write();
-        inner.set_mode(mode);
-        inner.set_ctime(utils::now());
-        Ok(())
+        {
+            let mut inner = self.inner.write();
+            inner.set_mode(mode);
+            inner.set_ctime(utils::now());
+        }
+        self.sync_acl_with_mode(mode)
+    }
+
+    fn sync_acl_with_mode(&self, mode: InodeMode) -> Result<()> {
+        let Some(xattr) = self.xattr.as_ref() else {
+            return Ok(());
+        };
+        let Some(name) = XattrName::try_from_full_name("system.posix_acl_access") else {
+            return Ok(());
+        };
+        let Some(bytes) = xattr.get_xattr_bytes(name)? else {
+            return Ok(());
+        };
+        let acl = PosixAcl::parse(&bytes)?;
+        let Some(updated) = acl.with_mode(mode.bits()) else {
+            return Ok(());
+        };
+        let mut reader = VmReader::from(updated.as_slice()).to_fallible();
+        xattr.set_xattr(name, &mut reader, XattrSetFlags::CREATE_OR_REPLACE)
     }
 
     /// Returns the owner user ID.
@@ -115,6 +139,19 @@ impl Inode {
     /// Returns the owner group ID.
     pub(in ext2) fn gid(&self) -> u32 {
         self.inner.read().gid()
+    }
+
+    /// Sets `i_file_acl` and stages the inode descriptor.
+    ///
+    /// Callers that stage an xattr block while holding the filesystem's
+    /// commit-serialization lock use this so the block and the inode that
+    /// references it become durable in the same commit.
+    pub(in ext2) fn set_file_acl_staged(&self, bid: u32) -> Result<()> {
+        let fs = self.fs()?;
+        let mut inner = self.inner.write();
+        inner.set_file_acl(bid);
+        inner.set_ctime(utils::now());
+        inner.write_back_inode_desc(&fs, self.ino)
     }
 
     /// Sets the owner group ID.
@@ -190,6 +227,23 @@ impl Inode {
             Error::with_message(Errno::EPERM, "xattr not supported on this inode type")
         })?;
         xattr.set_xattr(name, value_reader, flags)?;
+        let new_bid = xattr.bid();
+
+        let mut inner = self.inner.write();
+        inner.set_file_acl(new_bid);
+        inner.set_ctime(utils::now());
+        Ok(())
+    }
+
+    /// Creates or replaces one extended attribute from an in-memory value.
+    ///
+    /// This is the kernel-internal counterpart of [`Self::set_xattr`], used
+    /// when inheriting a directory's default ACL at creation time.
+    pub(in ext2) fn set_xattr_value(&self, name: XattrName, value: &[u8]) -> Result<()> {
+        let xattr = self.xattr.as_ref().ok_or_else(|| {
+            Error::with_message(Errno::EPERM, "xattr not supported on this inode type")
+        })?;
+        xattr.set_xattr_bytes(name, value.to_vec(), XattrSetFlags::empty())?;
         let new_bid = xattr.bid();
 
         let mut inner = self.inner.write();

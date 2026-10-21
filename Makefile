@@ -646,13 +646,21 @@ test_x86_debian_tooling_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.x86.tests.test_x86_debian_boot \
 		tools.x86.tests.test_x86_debian_apt \
+		tools.x86.tests.test_x86_debian_fs_acl \
 		tools.x86.tests.test_x86_debian_fs_crash \
 		tools.x86.tests.test_x86_debian_fs_concurrency \
 		tools.x86.tests.test_x86_debian_fs_fallocate \
 		tools.x86.tests.test_x86_debian_fs_durability \
+		tools.x86.tests.test_x86_debian_fs_ea_inode \
+		tools.x86.tests.test_x86_debian_fs_ext4_features \
+		tools.x86.tests.test_x86_debian_fs_extent_depth \
+		tools.x86.tests.test_x86_debian_fs_metadata_csum \
 		tools.x86.tests.test_x86_debian_fs_extents \
+		tools.x86.tests.test_x86_debian_fs_punch_hole \
 		tools.x86.tests.test_x86_debian_fs_renameat2 \
 		tools.x86.tests.test_x86_debian_fs_timestamps \
+		tools.x86.tests.test_x86_debian_fs_tmpfile \
+		tools.x86.tests.test_x86_debian_gate_scripts \
 		tools.x86.tests.test_x86_debian_interactive_login \
 		tools.x86.tests.test_lmbench_transcript \
 		tools.riscv.tests.test_lmbench_native -v
@@ -998,6 +1006,163 @@ test_x86_debian_fs_extents:
 		--workspace "$(X86_DEBIAN_EXTENTS_WORKSPACE)" \
 		--accel "$(X86_DEBIAN_EXTENTS_ACCEL)" \
 		--timeout "$(X86_DEBIAN_EXTENTS_TIMEOUT)"
+
+# 64BIT/FLEX_BG gate: the Debian root image is converted to 64-byte group
+# descriptors and FLEX_BG, and a fresh `mke2fs -O 64bit,flex_bg` image (whose
+# group metadata `mke2fs` packs into another group) is mounted as a second
+# disk, written, fsynced and unmounted.  Both images are re-checked after a
+# remount and must survive `e2fsck -fn`.
+#   X86_DEBIAN_FEATURES_BASE_ROOT  ext4 image converted and copied per run
+X86_DEBIAN_FEATURES_BASE_ROOT ?=
+X86_DEBIAN_FEATURES_WORKSPACE ?= $(CURDIR)/target/x86-debian/features
+X86_DEBIAN_FEATURES_ACCEL ?= kvm
+X86_DEBIAN_FEATURES_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_ext4_features
+test_x86_debian_fs_ext4_features:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_FEATURES_BASE_ROOT)" || { echo "X86_DEBIAN_FEATURES_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-ext4-features: base=$(X86_DEBIAN_FEATURES_BASE_ROOT) accel=$(X86_DEBIAN_FEATURES_ACCEL)"
+	@tools/x86/debian/fs_ext4_features_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_FEATURES_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_FEATURES_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_FEATURES_ACCEL)" \
+		--timeout "$(X86_DEBIAN_FEATURES_TIMEOUT)"
+
+# metadata_csum gate: the Debian image is converted with tune2fs and every
+# checksummed structure is exercised (superblock, descriptors, bitmaps,
+# inodes, extent leaf, directory tails including an htree->linear conversion,
+# and an external xattr block).  Journal checksum v3 is enabled, the kernel
+# is crashed right after a journal commit, and e2fsprogs must replay that
+# journal without a checksum error.  Every phase ends with `e2fsck -fn`.
+#   X86_DEBIAN_METADATA_CSUM_BASE_ROOT  ext4 image converted per run
+X86_DEBIAN_METADATA_CSUM_BASE_ROOT ?=
+X86_DEBIAN_METADATA_CSUM_WORKSPACE ?= $(CURDIR)/target/x86-debian/metadata-csum
+X86_DEBIAN_METADATA_CSUM_ACCEL ?= kvm
+X86_DEBIAN_METADATA_CSUM_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_metadata_csum
+test_x86_debian_fs_metadata_csum:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_METADATA_CSUM_BASE_ROOT)" || { echo "X86_DEBIAN_METADATA_CSUM_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-metadata-csum: base=$(X86_DEBIAN_METADATA_CSUM_BASE_ROOT) accel=$(X86_DEBIAN_METADATA_CSUM_ACCEL)"
+	@tools/x86/debian/fs_metadata_csum_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_METADATA_CSUM_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_METADATA_CSUM_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_METADATA_CSUM_ACCEL)" \
+		--timeout "$(X86_DEBIAN_METADATA_CSUM_TIMEOUT)"
+
+# O_TMPFILE / orphan-list gate: linkable tmpfile named via linkat, O_EXCL
+# tmpfile refused, and (with CRASH=1) an unnamed tmpfile open when power is
+# cut; the recovery mount must reclaim it before `e2fsck -fn`.
+#   X86_DEBIAN_TMPFILE_BASE_ROOT  ext4 image copied for the run
+#   X86_DEBIAN_TMPFILE_CRASH      1 to cut power with an orphaned tmpfile
+X86_DEBIAN_TMPFILE_BASE_ROOT ?=
+X86_DEBIAN_TMPFILE_WORKSPACE ?= $(CURDIR)/target/x86-debian/tmpfile
+X86_DEBIAN_TMPFILE_CRASH ?= 0
+X86_DEBIAN_TMPFILE_ACCEL ?= kvm
+X86_DEBIAN_TMPFILE_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_tmpfile
+test_x86_debian_fs_tmpfile:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_TMPFILE_BASE_ROOT)" || { echo "X86_DEBIAN_TMPFILE_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-tmpfile: base=$(X86_DEBIAN_TMPFILE_BASE_ROOT) crash=$(X86_DEBIAN_TMPFILE_CRASH) accel=$(X86_DEBIAN_TMPFILE_ACCEL)"
+	@tools/x86/debian/fs_tmpfile_check.sh 		--kernel "$(X86_DEBIAN_KERNEL)" 		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" 		--base-root "$(X86_DEBIAN_TMPFILE_BASE_ROOT)" 		--workspace "$(X86_DEBIAN_TMPFILE_WORKSPACE)" 		--accel "$(X86_DEBIAN_TMPFILE_ACCEL)" 		--timeout "$(X86_DEBIAN_TMPFILE_TIMEOUT)" 		$(if $(filter 1,$(X86_DEBIAN_TMPFILE_CRASH)),--crash)
+
+# Punch-hole gate: holes inside direct blocks, across the direct/indirect
+# boundary, up to EOF and over a whole double-indirect file (which must free
+# every block); misaligned and extent-mapped requests must fail cleanly.  The
+# image is remounted and re-checked before `e2fsck -fn`.
+#   X86_DEBIAN_PUNCH_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_PUNCH_BASE_ROOT ?=
+X86_DEBIAN_PUNCH_WORKSPACE ?= $(CURDIR)/target/x86-debian/punch
+X86_DEBIAN_PUNCH_ACCEL ?= kvm
+X86_DEBIAN_PUNCH_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_punch_hole
+test_x86_debian_fs_punch_hole:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_PUNCH_BASE_ROOT)" || { echo "X86_DEBIAN_PUNCH_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-punch-hole: base=$(X86_DEBIAN_PUNCH_BASE_ROOT) accel=$(X86_DEBIAN_PUNCH_ACCEL)"
+	@tools/x86/debian/fs_punch_hole_check.sh 		--kernel "$(X86_DEBIAN_KERNEL)" 		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" 		--base-root "$(X86_DEBIAN_PUNCH_BASE_ROOT)" 		--workspace "$(X86_DEBIAN_PUNCH_WORKSPACE)" 		--accel "$(X86_DEBIAN_PUNCH_ACCEL)" 		--timeout "$(X86_DEBIAN_PUNCH_TIMEOUT)"
+
+# Depth-two extent gate: a prepared file with 2900 singleton extents that no
+# depth-one tree can hold; writes into every hole split leaves, a later punch
+# spans several leaves and truncation frees most of them.  The host requires
+# `debugfs dump_extents` to keep reporting depth two and `e2fsck -fn` to accept
+# the image after each boot.
+#   X86_DEBIAN_DEPTH_BASE_ROOT  ext4 image copied per run
+X86_DEBIAN_DEPTH_BASE_ROOT ?=
+X86_DEBIAN_DEPTH_WORKSPACE ?= $(CURDIR)/target/x86-debian/depth
+X86_DEBIAN_DEPTH_ACCEL ?= kvm
+X86_DEBIAN_DEPTH_TIMEOUT ?= 1800
+
+.PHONY: test_x86_debian_fs_extent_depth
+test_x86_debian_fs_extent_depth:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_DEPTH_BASE_ROOT)" || { echo "X86_DEBIAN_DEPTH_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-extent-depth: base=$(X86_DEBIAN_DEPTH_BASE_ROOT) accel=$(X86_DEBIAN_DEPTH_ACCEL)"
+	@tools/x86/debian/fs_extent_depth_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_DEPTH_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_DEPTH_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_DEPTH_ACCEL)" \
+		--timeout "$(X86_DEBIAN_DEPTH_TIMEOUT)"
+
+# EA inode gate: convert the image with `tune2fs -O ea_inode`, store 32 KiB
+# and 20 KiB xattr values (which must leave the xattr block) plus a small
+# inline value, read everything back across a remount, remove one value and
+# require `e2fsck -fn` after each boot.
+#   X86_DEBIAN_EA_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_EA_BASE_ROOT ?=
+X86_DEBIAN_EA_WORKSPACE ?= $(CURDIR)/target/x86-debian/ea
+X86_DEBIAN_EA_ACCEL ?= kvm
+X86_DEBIAN_EA_TIMEOUT ?= 1800
+# Set to "1 2 3" to interrupt the creation commit at each journal stage.
+X86_DEBIAN_EA_CRASH_STAGES ?=
+
+.PHONY: test_x86_debian_fs_ea_inode
+test_x86_debian_fs_ea_inode:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_EA_BASE_ROOT)" || { echo "X86_DEBIAN_EA_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-ea-inode: base=$(X86_DEBIAN_EA_BASE_ROOT) accel=$(X86_DEBIAN_EA_ACCEL)"
+	@tools/x86/debian/fs_ea_inode_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_EA_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_EA_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_EA_ACCEL)" \
+		--timeout "$(X86_DEBIAN_EA_TIMEOUT)" \
+		$(if $(X86_DEBIAN_EA_CRASH_STAGES),--crash-stages "$(X86_DEBIAN_EA_CRASH_STAGES)")
+
+# POSIX ACL gate: store system.posix_acl_access, run reads/writes as different
+# users (owner, named user, named group, other, root override), re-check after
+# a remount and require `e2fsck -fn`.
+#   X86_DEBIAN_ACL_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_ACL_BASE_ROOT ?=
+X86_DEBIAN_ACL_WORKSPACE ?= $(CURDIR)/target/x86-debian/acl
+X86_DEBIAN_ACL_ACCEL ?= kvm
+X86_DEBIAN_ACL_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_acl
+test_x86_debian_fs_acl:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_ACL_BASE_ROOT)" || { echo "X86_DEBIAN_ACL_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-acl: base=$(X86_DEBIAN_ACL_BASE_ROOT) accel=$(X86_DEBIAN_ACL_ACCEL)"
+	@tools/x86/debian/fs_acl_check.sh 		--kernel "$(X86_DEBIAN_KERNEL)" 		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" 		--base-root "$(X86_DEBIAN_ACL_BASE_ROOT)" 		--workspace "$(X86_DEBIAN_ACL_WORKSPACE)" 		--accel "$(X86_DEBIAN_ACL_ACCEL)" 		--timeout "$(X86_DEBIAN_ACL_TIMEOUT)"
 
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:

@@ -644,6 +644,15 @@ The crash variant does not compare contents (an interrupted worker never
 finalises its manifest); its contract is structural: no deadlock, no
 half-applied directory operation, no leaked allocation.
 
+Use a base image that does not already enable another gate's probe unit. An
+image saved from a storage, apt or tmpfile run still has that gate's oneshot
+service enabled; it runs alongside the stress service and powers the VM off
+when it finishes, so the driver's result file never lands. The symptom is
+`FAIL (the driver wrote no result)` with the other probe's output interleaved
+into the transcript. Copy a pristine image, or remove the leftover unit and
+its `multi-user.target.wants` link with `debugfs`, and re-check the copy with
+`e2fsck -fn` before running the cell.
+
 **`O_SYNC`/`O_DSYNC` alignment.** The durability work exposed that
 `InodeHandle` ignored `O_SYNC` and `O_DSYNC` on write entirely. It now flushes
 after every successful write — `SyncMode::Full` for `O_SYNC`,
@@ -680,6 +689,43 @@ overwrite a block that has been handed to a new owner.
 After the change the same gate passes, and three more power cuts at different
 moments (15–19 seconds into the churn) passed as well, each with a clean
 `e2fsck -fn`.
+
+## O_TMPFILE and the orphan list
+
+`O_TMPFILE` existed in the VFS (anonymous dentries, `linkat(AT_EMPTY_PATH)`)
+but ext2 refused to create the inode. Enabling it is not just a `create`
+call: an unnamed file has link count zero and no directory entry, so a power
+cut while it is open leaves an inode that `e2fsck -fn` reports as
+`Unattached inode` and asks to reconnect.
+
+The port now uses ext4's orphan chain. `s_last_orphan` in the superblock
+heads the list and each inode's `i_dtime` holds the next inode number.
+Creation, linking and final reclaim update the chain under the filesystem's
+commit lock, so the inode and the chain land in one transaction. After a
+replay, a writable mount drains the chain before exposing the filesystem,
+freeing each orphan's blocks and inode and committing the result.
+`O_TMPFILE|O_EXCL` marks the inode unlinkable, so `linkat` fails with
+`ENOENT` as on Linux.
+
+Two bugs surfaced while building the gate:
+
+- inserting the tmpfile into the block group's inode cache at creation kept
+  a strong reference after the fd closed, so `Drop` never ran and the inode
+  was never reclaimed (`Deleted inode N has zero dtime`). Unnamed inodes now
+  stay out of the cache and enter it only when `linkat` gives them a name.
+- linking did not write the inode descriptor back, so the persisted link
+  count stayed zero and the remounted file could not be looked up. The link
+  path now writes the descriptor under the commit lock, between incrementing
+  the count and removing the orphan link.
+
+Measured:
+
+```
+clean gate:  linked tmpfile survives remount, O_TMPFILE|O_EXCL linkat = ENOENT,
+             closing it leaves no orphan; e2fsck -fn clean
+crash gate:  power cut with an unnamed tmpfile open (ino printed by the probe);
+             recovery mount drains the orphan chain; e2fsck -fn clean
+```
 
 ## Sub-second timestamps
 
@@ -752,6 +798,122 @@ FS_RENAMEAT2_VERIFY ok=True problems=0
 e2fsck -fn clean
 ```
 
+## POSIX ACLs
+
+ACL xattrs were nominally mapped but unusable: every `system.*` name was
+forced to the `system.posix_acl_access.` prefix (with a trailing dot), so
+`setxattr("system.posix_acl_access", ...)` failed the prefix check. The name
+index is now chosen from the full name, ACL names carry no suffix, and an
+unknown `system.*` name returns `EOPNOTSUPP`.
+
+Access decisions follow Linux `posix_acl_permission`. The existing
+`check_permission` body moved into a reusable helper that takes an optional
+parsed ACL; the ext2 inode passes its `system.posix_acl_access` value. The
+mask applies to named users as well as the group class, which the first
+version got wrong until the gate exercised it.
+
+The gate sets `mode 0600` on two files so that mode bits alone would deny
+everyone but root, stores ACLs, and runs short reads and writes as uid/gid
+1001, 1002 and 1003:
+
+```
+FS_ACL_WRITE ok=True problems=0
+FS_ACL_VERIFY ok=True problems=0
+e2fsck -fn clean
+```
+
+The checks cover the named-user mask, a named-group entry, the owning group,
+the other entry, the root override, and the raw bytes round-tripping through
+`getxattr`.
+
+`chmod` now keeps the ACL consistent (`posix_acl_chmod` semantics). The gate
+runs `chmod 0604` on an ACL with a mask and checks that the mask drops to
+zero while the other entry gains read, which flips the enforcement result
+for a named user from allowed to denied; a minimal three-entry ACL gets its
+group entry rewritten by `chmod 0600` instead. Both ACLs and their decisions
+survive the remount.
+
+Default ACL inheritance follows Linux `posix_acl_create`. With the process
+umask at zero, the gate creates in a directory carrying a default ACL:
+
+- a file with mode 0666, which receives the default ACL clamped to the mode
+  (`rw-r--r--`+mask → owner rw, named user r, group r, named group rw,
+  mask rw, other none) and a mode recomputed from the clamped ACL, 0660;
+- a subdirectory with mode 0777, which receives the default ACL unchanged as
+  both its access and default ACL and keeps mode 0777;
+- a file inside that subdirectory, which inherits the same clamped ACL;
+- a symlink, which gets no ACL at all.
+
+The inherited ACL is enforced: uid 1001 may read but not write, uid 1002 in
+the named group may write, and uid 1003 is denied. All of it is re-read after
+the remount and checked by `e2fsck -fn`:
+
+```
+FS_ACL_WRITE ok=True problems=0
+FS_ACL_VERIFY ok=True problems=0
+e2fsck -fn clean
+```
+
+## `fallocate` punch-hole
+
+`FALLOC_FL_PUNCH_HOLE|FALLOC_FL_KEEP_SIZE` now works for files on the legacy
+indirect mapping. The block tree clears the data pointers in the range, frees
+those blocks, then prunes indirect blocks that became empty bottom-up (so a
+whole-file punch leaves `i_blocks == 0`). Dirty pages in the range are
+flushed before the blocks are freed and evicted afterwards, so reads see the
+hole rather than stale cache contents. A misaligned offset is `EINVAL`, and
+extent-mapped files still report `EOPNOTSUPP` for now.
+
+```
+FS_PUNCH_WRITE ok=True blocks=520->392 misaligned=22 extent=95
+FS_PUNCH_VERIFY ok=True problems=0
+e2fsck -fn clean
+```
+
+Extent trees are handled as well: each affected extent is split into the
+parts before and after the hole and the covered physical run is freed.  For
+depth zero the result must still fit the four in-line records; for depth one
+each leaf is rewritten, a leaf that loses all of its extents is freed, the
+in-line index is rebuilt and emptied leaves are dropped.  The gate appends
+to the image's inline-extent `/etc/hostname` in a way that first splits a
+two-block extent and then promotes the tree to depth one, punches an extent
+out of the leaf, and requires `dump_extents` to still report `0/ 1`.
+
+The first depth-one attempt returned `EUCLEAN` on the next write: the extent
+allocator insisted that logical records be contiguous, but punching a hole
+legitimately creates a gap.  Records are now required to be strictly
+increasing instead of contiguous.
+
+Writing back into a punched hole works for depth-zero trees: the new extent is
+allocated and inserted in logical order, bounded by the next record and the
+free in-line slots.
+
+Depth-one hole writes go through the same allocator. It picks the leaf that
+owns the block (the last index key not above it, or the first leaf when the
+block precedes every key), inserts the record in logical order, and bounds the
+allocation by the next record in the leaf or, at a leaf's end, by the next
+leaf's key so an allocation never runs into the following leaf. A full leaf is
+split into two balanced halves and gains an index entry; the inode holds four
+index entries, so a fifth is still `EOPNOTSUPP`.
+
+The gate now builds an 8 MiB extent file on the host with `debugfs` (new files
+inside the guest use the legacy mapping), appends 400 pages one at a time so
+the promoted leaf fills up and splits, then punches and rewrites blocks in the
+first, interior and last positions. `dump_extents` shows the split:
+
+```
+ 0/ 1   1/  2     0 -  2208  299832             2209
+ 1/ 1   1/173     0 -     0  301337 -  301337      1
+ ...
+ 0/ 1   2/  2  2209 -  2447  301268              239
+ 1/ 1   1/239  2209 -  2209  301097 -  301097      1
+```
+
+and both boots plus `e2fsck -fn` agree on every byte.
+
+The measured 520 -> 392 sectors is exactly the 16 data blocks covered by the
+punched ranges.
+
 ## `fallocate` modes
 
 The syscall layer already parsed every `FALLOC_FL_*` combination, but the
@@ -790,8 +952,9 @@ Appending at the logical end now works for depth-zero and depth-one trees:
 - a full inline array is promoted to depth one by moving its records into a
   freshly allocated leaf and turning `i_block` into a one-entry index;
 - an append to a depth-one tree goes into the last leaf when it has room;
-- a full leaf or a full inline index still reports `EOPNOTSUPP` rather than
-  dropping the write.
+- a full leaf splits into two balanced leaves with an extra index entry (see
+  the punch-hole section), and the inode's four-entry index is the limit: a
+  fifth entry reports `EOPNOTSUPP` rather than dropping the write.
 
 `tools/x86/debian/fs_extent_alloc_check.sh` appends five pages to
 `/etc/hostname` (nine bytes, one inline extent), which forces three inline
@@ -808,6 +971,154 @@ e2fsck -fn clean
 
 The leaf block is written through the inode's indirect-block cache, so it is
 staged into the journal transaction like any other metadata block.
+
+## 64-bit descriptors and `flex_bg`
+
+Mount validation rejected `64BIT` and `FLEX_BG` outright, so the only images
+that mounted were those whose builder had disabled the features. Supporting
+them needed two changes:
+
+- `s_desc_size` (offset 0xFE) is now honoured. Without `64BIT` the descriptor
+  stride is fixed at 32 bytes; with it the stride is at least 64 bytes, read
+  from the superblock. The three high block-number words in the descriptor
+  extension and the superblock's high block-count words must all be zero —
+  the implementation addresses blocks with `u32` and refuses to truncate.
+  Only the classic 32-byte body is rewritten, so the high words and the
+  `bg_flags`/checksum tail stay untouched.
+- With `FLEX_BG`, `mke2fs` packs the block bitmap, inode bitmap and inode table
+  of several groups into the first group of a flex group. The mount-time check
+  that required every metadata pointer to fall inside its own group's range is
+  skipped for such images; allocation remains safe because the bitmap of the
+  group that physically holds the block marks it allocated. The no-`flex_bg`
+  path keeps the strict per-group validation.
+
+The Debian image (converted with `resize2fs -b` + `tune2fs -O 64bit,flex_bg`)
+exercises the 64-byte descriptor stride. A fresh 256 MiB
+`mke2fs -O 64bit,flex_bg,^metadata_csum` image is attached as a second
+virtio-blk disk and exercises the cross-group layout; `dumpe2fs -g` shows
+group 1's bitmap at block 34 and inode table at block 1061, all inside group 0's
+range:
+
+```
+group:block:super:gdt:bbitmap:ibitmap:itable
+0:0:0:1-1:33:35:37
+1:32768:32768:32769-32769:34:36:1061
+```
+
+Modern `mke2fs` also turns on the `HUGE_FILE`, `DIR_NLINK` and `EXTRA_ISIZE`
+RO-compat capability bits; they permit an encoding but do not require it, so
+they are accepted; `GDT_CSUM` remains rejected (it is superseded by
+`metadata_csum`, which is supported, see below).
+
+`tools/x86/debian/fs_ext4_features_check.sh` runs two boots. The write boot
+creates and fsyncs files on the root filesystem and on the mounted flex_bg
+image; the verify boot remounts both and re-reads every file. The host checks
+the feature words and descriptor high words before and after each boot, and
+runs `e2fsck -fn` on both images:
+
+```
+fs-ext4-features: write boot
+ext4-features: verify boot (fresh mount)
+PASS (ok=True problems=0)
+e2fsck -fn: both images clean
+```
+
+The boot script gained `--extra-drive PATH` (repeatable) for the second disk;
+the guest sees it as `/dev/vdb` through devtmpfs.
+
+## `metadata_csum`
+
+Default `mke2fs` images carry `metadata_csum` (and `csum_seed`), so every
+metadata block has a CRC32C checksum. The exact algorithms were derived from
+images written by `mke2fs`/`tune2fs`/`debugfs` and match Linux:
+
+| Object | Seed | Covered bytes |
+|---|---|---|
+| superblock | `!0` | `[0, s_checksum)` at 0x3FC |
+| group descriptor | fs seed, group as LE32 | full descriptor, `bg_checksum` zeroed |
+| block bitmap | fs seed | `blocks_per_group / 8` bytes |
+| inode bitmap | fs seed | `inodes_per_group / 8` bytes |
+| inode | fs seed + ino + generation | full inode slot, both checksum fields zeroed |
+| extent leaf | fs seed + ino + generation | `[0, 12 + eh_max * 12)` |
+| directory block | fs seed + ino + generation | `[0, blocksize - 12)` |
+| xattr block | fs seed, block number as LE64 | header + entries, `h_checksum` zeroed |
+
+The seed is `s_checksum_seed` when `csum_seed` is set (a `tune2fs` conversion
+stores zero, which is a valid seed) and the UUID CRC otherwise. Two details
+turned out to matter for `e2fsck`:
+
+- Direct superblock writes (`mark_journal_needs_recovery` and the read-only
+  `RECOVER` clear) bypass the journal and must recompute `s_checksum`
+  themselves; they initially reused the mount-time checksum and made `e2fsck`
+  fall back to a backup superblock.
+- With `metadata_csum`, each directory block ends in a 12-byte tail, so only
+  `blocksize - 12` bytes are available for entries. The first block of an
+  htree directory is the exception: its `..` entry spans the whole block and
+  the trailing bytes are the dx index and tail. Directory scans use the full
+  block size for that block and the shrunken limit for all others.
+- `bg_itable_unused` must be lowered when an inode is allocated; otherwise
+  `e2fsck` reports the new inode as living in the group's unused area.
+
+`tools/x86/debian/fs_metadata_csum_check.sh` converts the Debian image with
+`tune2fs -O metadata_csum,metadata_csum_seed` and `e2fsck -fyD` (which adds the
+directory tails), then runs a workload that touches every checksummed
+structure: file creation/fsync/deletion, an htree directory converted back to
+linear blocks, a 100-page append that promotes `/etc/hostname` to a depth-one
+extent tree, and a 200-byte xattr that allocates an external xattr block. Both
+boots end with a checksum-verifying `e2fsck -fn`:
+
+```
+metadata-csum: write boot
+metadata-csum: verify boot (fresh mount)
+PASS (ok=True problems=0)
+e2fsck -fn: clean after both boots
+```
+
+The features gate's second disk is now also created with `metadata_csum`, so
+the 64-byte descriptor checksum fields (the high halves) are exercised there.
+
+## Journal checksums
+
+The journal decoder already replayed revoke-only transactions and treated
+`JBD2_FLAG_DELETED` tags as unsupported. jbd2 recovery consumes a deleted
+tag's data block like any other tag, so the flag is now accepted and simply
+replayed; the flag is a legacy marker that modern jbd2 no longer writes.
+
+Checksum v3 (`JBD2_FEATURE_INCOMPAT_CSUM_V3`) is implemented for both writing
+and replay:
+
+- descriptor and revoke blocks carry a 4-byte CRC32C tail; the checksum covers
+  the whole block with the tail zeroed;
+- data tags are 16 bytes (`journal_block_tag3_t`), and their checksum covers
+  the sequence number and the *logged* block, i.e. after the escape word has
+  been zeroed;
+- the commit block checksum is stored in `h_chksum[0]` and covers the whole
+  block with `h_chksum_type`, `h_chksum_size` and `h_chksum[0]` zeroed;
+- the journal superblock is checksummed with seed `!0` and resealed whenever
+  `s_start` or `s_sequence` changes;
+- all transaction checksums use `j_csum_seed = crc32c(~0, s_uuid)`.
+
+Two details cost a debugging round. First, hashing only the first
+`blocksize - 4` bytes of a descriptor is not the same as hashing the full
+block with the tail zeroed, and jbd2 does the latter. Second, the tag checksum
+is computed over the escaped copy (magic word zeroed), not the original data.
+
+Validation is external: the gate enables checksum v3 on the converted Debian
+image, crashes the kernel inside a journal commit (`asterinas.ext4_fault_stage
+=1`, which panics right after the commit record), and then lets e2fsprogs
+replay the journal we wrote. e2fsck's own JBD2 implementation verifies every
+descriptor, data-tag and commit checksum:
+
+```
+ASTER_DEBIANE4: recovering journal
+Pass 1: Checking inodes, blocks, and sizes
+... (no "Journal checksum error")
+e2fsck -fn clean
+```
+
+A copy of the same crashed image is then booted by the kernel, which replays
+the journal through its own verification path and reaches `exec`; `e2fsck -fn`
+is clean afterwards.
 
 ## Socket visibility: `/proc/net` and `NETLINK_SOCK_DIAG`
 

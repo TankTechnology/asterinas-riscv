@@ -146,8 +146,19 @@ impl<'a> DirBlockView<'a> {
         block_idx: usize,
         file_size: usize,
     ) -> Self {
+        Self::from_index_limited(page_cache, block_idx, file_size, BLOCK_SIZE)
+    }
+
+    /// Creates a block-aligned view whose usable length is capped at
+    /// `block_limit` (the directory checksum tail shrinks it by 12 bytes).
+    pub(super) fn from_index_limited(
+        page_cache: &'a PageCache,
+        block_idx: usize,
+        file_size: usize,
+        block_limit: usize,
+    ) -> Self {
         let offset = block_idx * BLOCK_SIZE;
-        let limit = (file_size - offset).min(BLOCK_SIZE);
+        let limit = (file_size - offset).min(block_limit);
         Self {
             page_cache,
             offset,

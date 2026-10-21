@@ -26,12 +26,13 @@ use device_id::DeviceId;
 use ostd::mm::{HasSize, io::util::HasVmReaderWriter};
 
 use super::{
-    block_group::{BlockGroup, RawBlockGroup},
+    block_group::BlockGroup,
     inode::{FilePerm, Inode, InodeDesc, InodeTimeExtras, RawInode},
     journal, metadata_txn,
     prelude::*,
     super_block::{
         FeatureCompatSet, FeatureInCompatSet, RawSuperBlock, SUPER_BLOCK_OFFSET, SuperBlock,
+        sign_superblock,
     },
 };
 use crate::{
@@ -157,7 +158,7 @@ impl Ext2 {
 
         let group_descriptors_segment = {
             let nr_block_groups = super_block.nr_block_groups() as usize;
-            let group_desc_bytes = nr_block_groups * size_of::<RawBlockGroup>();
+            let group_desc_bytes = nr_block_groups * super_block.desc_size() as usize;
             let nblocks = group_desc_bytes.div_ceil(BLOCK_SIZE);
 
             let segment = FrameAllocOptions::new()
@@ -243,6 +244,13 @@ impl Ext2 {
             }
         }
 
+        // A crash can leave unnamed temporary files on the orphan chain. They
+        // have no directory entry, so the checker would have to repair them;
+        // reclaim them before the filesystem is exposed.
+        if !flags.contains(FsFlags::RDONLY) {
+            ext2.cleanup_orphans()?;
+        }
+
         // The journal is now in use. Keep the filesystem marked as needing
         // recovery until a read-only remount checkpoints it for the last time.
         if allow_journal
@@ -304,7 +312,7 @@ impl Ext2 {
             );
         }
         let refs: Vec<&[u8]> = blocks.iter().map(Vec::as_slice).collect();
-        let replay = journal::scan_log(&refs, sb.sequence)?;
+        let replay = journal::scan_log(&refs, sb.sequence, &sb)?;
         debug!("ext2: journal replay applying {} blocks", replay.len());
         for block in replay {
             self.write_raw_block(block.block_number, &block.data)?;
@@ -339,8 +347,10 @@ impl Ext2 {
         *self.super_block.write() = Dirty::new(fresh_super_block);
 
         let nr_groups = self.block_groups.len();
-        let desc_bytes = nr_groups * size_of::<RawBlockGroup>();
+        let desc_size = self.super_block.read().desc_size() as usize;
+        let desc_bytes = nr_groups * desc_size;
         let nblocks = desc_bytes.div_ceil(BLOCK_SIZE);
+        debug_assert!(desc_bytes <= self.group_descriptors_segment.size());
         let desc_bid = self.super_block.read().group_descriptors_bid(0);
         let mut bytes = vec![0u8; nblocks * BLOCK_SIZE];
         {
@@ -427,10 +437,7 @@ impl Ext2 {
             return_errno_with_message!(Errno::EAGAIN, "stale ext4 journal sequence");
         }
 
-        let encoded = {
-            let uuid = self.super_block.read().uuid();
-            transaction.encode(&uuid)?
-        };
+        let encoded = transaction.encode(&super_block)?;
         let mut ring = journal::JournalRing::new(super_block)?;
         let positions = ring.reserve(encoded.len())?;
         for (position, block) in positions.iter().zip(encoded.iter()) {
@@ -766,12 +773,22 @@ impl Ext2 {
         inode_type: InodeType,
         perm: FilePerm,
     ) -> Result<Arc<Inode>> {
+        let link_count = if inode_type.is_directory() { 2 } else { 1 };
+        self.create_inode_with_link_count(parent_ino, inode_type, perm, link_count)
+    }
+
+    fn create_inode_with_link_count(
+        &self,
+        parent_ino: Ext2Ino,
+        inode_type: InodeType,
+        perm: FilePerm,
+        link_count: u16,
+    ) -> Result<Arc<Inode>> {
         if inode_type == InodeType::Unknown {
             return_errno_with_message!(Errno::EINVAL, "cannot create inode with unknown type");
         }
 
         let ino = self.alloc_ino(parent_ino, inode_type)?;
-        let link_count = if inode_type.is_directory() { 2 } else { 1 };
         let (uid, gid) = Thread::current()
             .and_then(|thread| {
                 thread
@@ -820,6 +837,121 @@ impl Ext2 {
             block_group_idx,
             self.self_ref.clone(),
         ))
+    }
+
+    /// Reads the raw 128-byte inode, accepting `link_count == 0`.
+    pub(super) fn read_raw_inode(&self, ino: Ext2Ino) -> Result<RawInode> {
+        let group = self
+            .find_group(ino)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "block group index out of range"))?;
+        group.read_raw_inode(ino)
+    }
+
+    /// Creates an unnamed temporary file (`O_TMPFILE`) and orphans it.
+    ///
+    /// The inode has no directory entry and a zero link count. Until it is
+    /// linked or reclaimed, `s_last_orphan` keeps it reachable so that a crash
+    /// does not leave an unattached inode for the checker to repair. The sync
+    /// lock keeps a commit from publishing the inode before the chain link.
+    pub(super) fn create_orphan_inode(
+        &self,
+        parent_ino: Ext2Ino,
+        inode_type: InodeType,
+        perm: FilePerm,
+    ) -> Result<Arc<Inode>> {
+        let _sync_guard = self.sync_lock.lock();
+        let inode = self.create_inode_with_link_count(parent_ino, inode_type, perm, 0)?;
+        let next = self.super_block.read().last_orphan();
+
+        inode.set_dtime(Duration::from_secs(u64::from(next)));
+        let mut raw = self.read_raw_inode(inode.ino())?;
+        raw.dtime = next;
+        if let Err(err) = self.write_back_inode_desc(inode.ino(), &raw, None) {
+            let _ = self.free_inode(inode.ino(), inode_type);
+            return Err(err);
+        }
+        self.super_block.write().set_last_orphan(inode.ino());
+        inode.mark_orphaned();
+        Ok(inode)
+    }
+
+    /// Acquires the commit serialization lock.
+    ///
+    /// A caller that must add or remove an orphan link atomically with
+    /// respect to a commit takes this guard before inode locks; that is the
+    /// same `sync_lock` → inode order `sync_all` uses. A caller that stages
+    /// several related metadata updates which must become durable together
+    /// takes it too: commits also take the lock, so no commit can publish
+    /// half of the set.
+    pub(super) fn lock_sync(&self) -> MutexGuard<'_, ()> {
+        self.sync_lock.lock()
+    }
+
+    /// Removes an inode from the orphan chain while the caller holds
+    /// [`Ext2::sync_lock`].
+    ///
+    /// `i_dtime` is the chain link: it holds the next orphaned inode number,
+    /// with zero ending the chain.
+    pub(super) fn remove_orphan_locked(&self, ino: Ext2Ino) -> Result<()> {
+        let mut current = self.super_block.read().last_orphan();
+        if current == 0 {
+            return Ok(());
+        }
+        let total_inodes = u64::from(self.super_block.read().total_inodes());
+        let mut predecessor = None;
+        let mut steps = 0u64;
+        while current != 0 && current != ino && steps <= total_inodes {
+            predecessor = Some(current);
+            current = self.read_raw_inode(current)?.dtime;
+            steps += 1;
+        }
+        if current != ino {
+            return Ok(());
+        }
+
+        let mut raw = self.read_raw_inode(ino)?;
+        let next = raw.dtime;
+        match predecessor {
+            Some(pred) => {
+                let mut pred_raw = self.read_raw_inode(pred)?;
+                pred_raw.dtime = next;
+                self.write_back_inode_desc(pred, &pred_raw, None)?;
+            }
+            None => self.super_block.write().set_last_orphan(next),
+        }
+        raw.dtime = 0;
+        self.write_back_inode_desc(ino, &raw, None)?;
+        Ok(())
+    }
+
+    /// Frees every inode left on the orphan chain by a crash.
+    ///
+    /// This runs before the filesystem is exposed, after any journal replay
+    /// has restored the superblock and the inode table.
+    pub(super) fn cleanup_orphans(self: &Arc<Self>) -> Result<()> {
+        let mut current = self.super_block.read().last_orphan();
+        if current == 0 {
+            return Ok(());
+        }
+
+        let _sync_guard = self.sync_lock.lock();
+        let total_inodes = u64::from(self.super_block.read().total_inodes());
+        let mut steps = 0u64;
+        while current != 0 && steps <= total_inodes {
+            let raw = self.read_raw_inode(current)?;
+            let next = raw.dtime;
+            super::inode::reclaim_orphan_inode(self, current, &raw)?;
+            current = next;
+            steps += 1;
+        }
+        self.super_block.write().set_last_orphan(0);
+
+        // Publish the frees before the filesystem becomes usable.
+        self.commit_staged_metadata_locked()?;
+        if self.block_device.sync()? != BioStatus::Complete {
+            return_errno_with_message!(Errno::EIO, "failed to flush orphan cleanup");
+        }
+        Ok(())
     }
 
     /// Frees an inode by number.
@@ -926,7 +1058,11 @@ impl Ext2 {
             }
             flags.insert(FeatureInCompatSet::RECOVER);
             sb.set_feature_incompat(flags);
-            RawSuperBlock::from(&**sb)
+            let mut raw = RawSuperBlock::from(&**sb);
+            if sb.has_metadata_csum() {
+                sign_superblock(&mut raw);
+            }
+            raw
         };
         self.write_primary_superblock(&raw)
     }
@@ -951,7 +1087,11 @@ impl Ext2 {
             }
             flags.remove(FeatureInCompatSet::RECOVER);
             sb.set_feature_incompat(flags);
-            RawSuperBlock::from(&**sb)
+            let mut raw = RawSuperBlock::from(&**sb);
+            if sb.has_metadata_csum() {
+                sign_superblock(&mut raw);
+            }
+            raw
         };
         self.write_primary_superblock(&raw)
     }
@@ -1205,6 +1345,9 @@ impl Ext2 {
             sb_guard.set_wtime(utils::now());
 
             let mut raw_sb = RawSuperBlock::from(&**sb_guard);
+            if sb_guard.has_metadata_csum() {
+                sign_superblock(&mut raw_sb);
+            }
             let mut snapshots = vec![(
                 raw_sb,
                 SUPER_BLOCK_OFFSET,
@@ -1215,6 +1358,9 @@ impl Ext2 {
                     continue;
                 }
                 raw_sb.block_group_idx = group_idx as u16;
+                if sb_guard.has_metadata_csum() {
+                    sign_superblock(&mut raw_sb);
+                }
                 snapshots.push((
                     raw_sb,
                     Bid::new(sb_guard.bid(group_idx) as u64).to_offset(),
@@ -1326,10 +1472,13 @@ mod test {
     use super::*;
     use crate::{
         fs::{
-            fs_impls::ext2::test_utils::{
-                BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
-                RawInodeBuilder, assert_errno, create_file, default_fixture, make_valid_group_desc,
-                make_valid_super_block,
+            fs_impls::ext2::{
+                block_group::RawBlockGroup,
+                test_utils::{
+                    BlockBitmapInit, Ext2FixtureBuilder, Ext2MemoryDisk, InodeBitmapInit,
+                    RawInodeBuilder, assert_errno, create_file, default_fixture,
+                    make_valid_group_desc, make_valid_super_block,
+                },
             },
             vfs::file_system::FileSystem as FileSystemTrait,
         },
@@ -1338,8 +1487,7 @@ mod test {
 
     fn expected_overhead_blocks(sb: &SuperBlock) -> u32 {
         let nr_block_groups = sb.nr_block_groups() as usize;
-        let gdb_count =
-            ((nr_block_groups * size_of::<RawBlockGroup>()).div_ceil(BLOCK_SIZE)) as u32;
+        let gdb_count = ((nr_block_groups * sb.desc_size() as usize).div_ceil(BLOCK_SIZE)) as u32;
         let mut overhead = sb.first_data_block();
 
         for group_idx in 0..nr_block_groups {
@@ -1409,7 +1557,7 @@ mod test {
         assert!(!ext2.block_group(0).is_desc_dirty());
 
         let nr_block_groups = sb.nr_block_groups() as usize;
-        let desc_bytes = nr_block_groups * size_of::<RawBlockGroup>();
+        let desc_bytes = nr_block_groups * sb.desc_size() as usize;
         let primary_desc_offset = Bid::new(sb.group_descriptors_bid(0) as u64).to_offset();
 
         let mut primary_desc = vec![0u8; desc_bytes];

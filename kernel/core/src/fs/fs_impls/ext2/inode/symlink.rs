@@ -75,7 +75,7 @@ impl Inode {
 
         self.create_initialized_child(name, InodeType::SymLink, perm, |fs, child| {
             let mut child_inner = child.inner.write();
-            child_inner.write_symlink_target(fs, target)?;
+            child_inner.write_symlink_target(fs, target, child.ino)?;
             child_inner.set_mtime_ctime(utils::now());
             Ok(())
         })
@@ -88,7 +88,7 @@ impl InodeInner {
         matches!(self.payload, InodePayload::FastSymlink { .. })
     }
 
-    fn write_symlink_target(&mut self, fs: &Arc<Ext2>, target: &str) -> Result<()> {
+    fn write_symlink_target(&mut self, fs: &Arc<Ext2>, target: &str, ino: Ext2Ino) -> Result<()> {
         let target_len = target.len();
 
         // Linux reserves one byte in `i_block` for a trailing NUL.
@@ -115,6 +115,8 @@ impl InodeInner {
                     raw_block_ptrs,
                     Arc::downgrade(fs),
                     false,
+                    ino,
+                    self.desc.generation,
                 );
             }
             self.prepare_write(fs.as_ref(), 0, target_len)?;

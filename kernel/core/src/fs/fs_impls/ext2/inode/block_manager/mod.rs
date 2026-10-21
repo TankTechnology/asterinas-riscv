@@ -12,8 +12,9 @@ use aster_block::bio::BioCompleteFn;
 use self::block_ptr_tree::ResolvedBlockRange;
 pub(super) use self::block_ptr_tree::{BlockPtrTree, RawBlockPtrs};
 use super::io_range::{IoRange, IoRangeIter};
+use super::DIR_ENTRY_TAIL_SIZE;
 use crate::{
-    fs::ext2::{fs::Ext2, prelude::*},
+    fs::ext2::{checksum, fs::Ext2, prelude::*},
     vm::page_cache::{CachePageExt, PageRun, prepare_write_page},
 };
 
@@ -36,6 +37,14 @@ pub(super) struct InodeBlockManager {
     /// Whether dirty pages are metadata: directories are journaled instead of
     /// being written home outside the transaction.
     stage_writes: bool,
+    /// Inode number, part of the directory block checksum seed.
+    ino: Ext2Ino,
+    /// Inode generation, part of the directory block checksum seed.
+    generation: u32,
+    /// Whether metadata blocks carry CRC32C checksums.
+    metadata_csum: bool,
+    /// Filesystem checksum seed.
+    csum_seed: u32,
 }
 
 impl InodeBlockManager {
@@ -46,11 +55,19 @@ impl InodeBlockManager {
         npages: usize,
         stage_writes: bool,
     ) -> Self {
+        let ino = block_ptr_tree.ino();
+        let generation = block_ptr_tree.generation();
+        let metadata_csum = block_ptr_tree.metadata_csum();
+        let csum_seed = block_ptr_tree.csum_seed();
         Self {
             block_ptr_tree: RwMutex::new(block_ptr_tree),
             npages: AtomicUsize::new(npages),
             fs,
             stage_writes,
+            ino,
+            generation,
+            metadata_csum,
+            csum_seed,
         }
     }
 
@@ -87,6 +104,16 @@ impl InodeBlockManager {
         self.block_ptr_tree.read().is_dirty()
     }
 
+    /// Adds sectors to `i_blocks` for external xattr storage.
+    pub(super) fn add_sector_count(&self, sectors: u32) -> Result<()> {
+        self.block_ptr_tree.write().add_sector_count(sectors)
+    }
+
+    /// Removes sectors from `i_blocks` when external xattr storage is freed.
+    pub(super) fn sub_sector_count(&self, sectors: u32) {
+        self.block_ptr_tree.write().sub_sector_count(sectors);
+    }
+
     /// Clears the block-pointer dirty flag after writeback.
     pub(super) fn clear_dirty(&self) {
         self.block_ptr_tree.write().clear_dirty();
@@ -100,6 +127,14 @@ impl InodeBlockManager {
     pub(super) fn iter_io_ranges(&self, block_range: Range<Iblock>) -> IoRangeIter<'_> {
         let tree = self.block_ptr_tree.read();
         IoRangeIter::new(block_range, tree)
+    }
+
+    /// Frees the blocks covering `[start_block, end_block)`, leaving holes.
+    pub(super) fn punch_hole_blocks(&self, start_block: Iblock, end_block: Iblock) -> Result<()> {
+        let fs = self.fs()?;
+        self.block_ptr_tree
+            .write()
+            .punch_hole_range(&fs, start_block, end_block)
     }
 
     /// Truncates blocks to the new_size (best-effort).
@@ -244,6 +279,19 @@ impl BlockAsPageCacheBackend for InodeBlockManager {
             };
             let mut bytes = vec![0u8; BLOCK_SIZE];
             bio_segment.copy_out(&mut bytes)?;
+            if self.metadata_csum {
+                // Directory blocks end with a 12-byte tail whose checksum
+                // covers everything before it and is seeded with the inode
+                // number and generation.
+                let tail = BLOCK_SIZE - DIR_ENTRY_TAIL_SIZE;
+                let seed = checksum::inode_seed(self.csum_seed, self.ino, self.generation);
+                let crc = checksum::crc32c(seed, &bytes[..tail]);
+                bytes[tail..tail + 4].copy_from_slice(&0u32.to_le_bytes());
+                bytes[tail + 4..tail + 6].copy_from_slice(&(12u16).to_le_bytes());
+                bytes[tail + 6] = 0;
+                bytes[tail + 7] = 0xDE;
+                bytes[tail + 8..tail + 12].copy_from_slice(&crc.to_le_bytes());
+            }
             fs.stage_metadata_block(bid, &bytes)?;
             complete_fn(BioStatus::Complete);
             return Ok(());

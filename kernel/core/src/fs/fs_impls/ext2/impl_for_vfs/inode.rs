@@ -15,14 +15,14 @@ use device_id::DeviceId;
 use crate::{
     device,
     fs::{
-        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, StatusFlags, SyncMode},
+        file::{AccessMode, InodeMode, InodeType, PerOpenFileOps, Permission, StatusFlags, SyncMode},
         fs_impls::ext2::{FilePerm, Inode as Ext2Inode},
         utils::DirentVisitor,
         vfs::{
             file_system::FileSystem,
             inode::{
-                Extension, FallocMode, FileOps, Inode, Metadata, MknodType, RenameMode,
-                SymbolicLink,
+                Extension, FallocMode, FileOps, HardLinkability, Inode, Metadata, MknodType,
+                RenameMode, SymbolicLink, check_permission_generic,
             },
             path::Dentry,
             xattr::{XattrName, XattrNamespace, XattrSetFlags},
@@ -219,6 +219,20 @@ impl Inode for Ext2Inode {
         Ok(self.lookup(name)?)
     }
 
+    fn create_tmpfile(
+        &self,
+        _self_dentry: &Dentry,
+        mode: InodeMode,
+        hard_linkability: HardLinkability,
+    ) -> Result<Arc<dyn Inode>> {
+        let fs = self.fs()?;
+        let inode = fs.create_orphan_inode(self.ino(), InodeType::File, mode.into())?;
+        if hard_linkability == HardLinkability::Unlinkable {
+            inode.set_unlinkable();
+        }
+        Ok(inode)
+    }
+
     fn link(&self, _self_dentry: &Dentry, old_dentry: &Dentry, name: &str) -> Result<()> {
         let old = old_dentry.inode().downcast_ref::<Ext2Inode>().unwrap();
         self.link(old, name)
@@ -257,6 +271,11 @@ impl Inode for Ext2Inode {
             replaced_inode,
             mode,
         )
+    }
+
+    fn check_permission(&self, perm: Permission) -> Result<()> {
+        let acl = self.posix_access_acl()?;
+        check_permission_generic(self.metadata(), perm, acl.as_ref())
     }
 
     fn read_link(&self) -> Result<SymbolicLink> {

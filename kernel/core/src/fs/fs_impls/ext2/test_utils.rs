@@ -92,7 +92,7 @@ impl Ext2MemoryDisk {
     pub(super) fn write_group_desc_table(&self, sb: &SuperBlock, descs: &[RawBlockGroup]) {
         let table_offset = Bid::new(sb.group_descriptors_bid(0) as u64).to_offset();
         for (idx, desc) in descs.iter().enumerate() {
-            let offset = table_offset + idx * size_of::<RawBlockGroup>();
+            let offset = table_offset + idx * sb.desc_size() as usize;
             self.segment.write_val(offset, desc).unwrap();
         }
     }
@@ -201,8 +201,12 @@ pub(super) fn make_valid_group_desc(sb: &SuperBlock, group_idx: usize) -> RawBlo
         free_blocks_count: 0,
         free_inodes_count: 0,
         used_dirs_count: 0,
-        pad: 0,
-        reserved: [0; 3],
+        flags: 0,
+        exclude_bitmap: 0,
+        block_bitmap_csum: 0,
+        inode_bitmap_csum: 0,
+        itable_unused: 0,
+        checksum: 0,
     }
 }
 
