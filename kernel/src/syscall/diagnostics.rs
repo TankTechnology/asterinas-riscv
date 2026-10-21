@@ -59,13 +59,7 @@ impl ThreadDiagnostics {
 }
 
 /// Records entry before seccomp or dispatch, without touching user memory.
-pub(super) fn enter(
-    ctx: &Context,
-    number: u64,
-    args: [u64; 6],
-    user_sp: u64,
-    user_fp: u64,
-) {
+pub(super) fn enter(ctx: &Context, number: u64, args: [u64; 6], user_sp: u64, user_fp: u64) {
     if !ENABLED.load(Ordering::Relaxed) {
         return;
     }
