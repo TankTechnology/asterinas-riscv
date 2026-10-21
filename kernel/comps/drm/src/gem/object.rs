@@ -41,6 +41,11 @@ impl DrmGemObject {
         self.size
     }
 
+    /// Returns the driver-provided memory backend of this object.
+    pub fn backend(&self) -> &Arc<dyn DrmGemObjectBackend> {
+        &self.backend
+    }
+
     /// Reads bytes from the object's backing storage.
     pub fn read_bytes(&self, offset: usize, buf: &mut [u8]) -> Result<()> {
         let end = offset.checked_add(buf.len()).ok_or(Errno::EOVERFLOW)?;
@@ -99,6 +104,10 @@ impl DrmGemObject {
 
 /// The device-provided memory backend of a GEM object.
 pub trait DrmGemObjectBackend: Debug + Send + Sync {
+    /// Returns this backend as [`core::any::Any`] so drivers can recover
+    /// their own backend type from a shared GEM object.
+    fn as_any(&self) -> &dyn core::any::Any;
+
     /// Reads object data into a kernel buffer using CPU access.
     ///
     /// Backends only need to implement this method when their object contents must

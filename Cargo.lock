@@ -231,6 +231,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-drm-virtio-gpu"
+version = "0.1.0"
+dependencies = [
+ "aster-core",
+ "aster-drm",
+ "aster-virtio",
+ "component",
+ "ostd",
+]
+
+[[package]]
 name = "aster-framebuffer"
 version = "0.1.0"
 dependencies = [
@@ -486,6 +497,7 @@ version = "0.1.0"
 dependencies = [
  "aster-core",
  "aster-drm",
+ "aster-drm-virtio-gpu",
  "aster-i8042",
  "aster-simpledrm",
  "aster-uart",

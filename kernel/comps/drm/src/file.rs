@@ -333,9 +333,13 @@ impl FileOps for DrmFile {
 }
 
 impl Pollable for DrmFile {
-    fn poll(&self, mask: IoEvents, _poller: Option<&mut PollHandle>) -> IoEvents {
-        let events = IoEvents::IN | IoEvents::OUT;
-        events & mask
+    fn poll(&self, _mask: IoEvents, _poller: Option<&mut PollHandle>) -> IoEvents {
+        // The DRM file only becomes readable when it has queued events
+        // (vblank or page-flip completions). No such event sources are
+        // implemented yet, so the file is never poll-ready. Reporting
+        // readiness unconditionally makes clients that poll the DRM file
+        // (such as Xorg's modesetting driver) spin on `drmHandleEvent`.
+        IoEvents::empty()
     }
 }
 

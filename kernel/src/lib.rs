@@ -13,6 +13,7 @@
 // to ensure that its component registration and initialization code are linked into
 // the kernel, because the assembler does not otherwise reference symbols from that crate.
 extern crate aster_drm as _;
+extern crate aster_drm_virtio_gpu as _;
 #[cfg(target_arch = "x86_64")]
 extern crate aster_i8042 as _;
 extern crate aster_simpledrm as _;
