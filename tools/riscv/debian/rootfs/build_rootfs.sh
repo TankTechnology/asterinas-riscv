@@ -1118,6 +1118,82 @@ copy_into_content_cache() {
         --sha256 "$expected_sha256"
 }
 
+# Configures the amd64 serial console login plane: the account the login
+# helper drops to, passwordless sudo for daily use, the image plumbing
+# sudo needs, the console-getty wiring and the SIGPWR power-off hook.
+configure_x86_serial_login() {
+    local stage="$1"
+    [[ "$ARCHITECTURE" == amd64 ]] || return 0
+
+    grep -q '^asterinas:' "$stage/etc/passwd" ||
+        printf '%s\n' \
+            'asterinas:x:1000:1000:Asterinas:/home/asterinas:/bin/bash' \
+            >>"$stage/etc/passwd"
+    grep -q '^asterinas:' "$stage/etc/group" ||
+        printf '%s\n' 'asterinas:x:1000:' >>"$stage/etc/group"
+    grep -q '^asterinas:' "$stage/etc/shadow" ||
+        printf '%s\n' 'asterinas:!:19793:0:99999:7:::' >>"$stage/etc/shadow"
+    grep -q '^asterinas:' "$stage/etc/gshadow" ||
+        printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
+    install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
+    # The serial console account is the image's daily-use user;
+    # give it passwordless sudo so package management and service
+    # control work from the console like on a normal Debian box.
+    install -d -m 0750 -- "$stage/etc/sudoers.d"
+    cat >"$stage/etc/sudoers.d/asterinas" <<'EOF'
+Defaults !use_pty
+asterinas ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+    chmod 0440 -- "$stage/etc/sudoers.d/asterinas"
+    # sudo (and interactive tools) allocate a pty; debootstrap
+    # leaves fstab unconfigured, so /dev/pts is never mounted and
+    # sudo fails with "unable to allocate pty". Mount devpts like
+    # a normal Debian installation does.
+    cat >"$stage/etc/fstab" <<'EOF'
+# <file system> <mount point> <type> <options> <dump> <pass>
+devpts /dev/pts devpts gid=5,mode=620,ptmxmode=000 0 0
+EOF
+    # sudo resolves its own host name; without an /etc/hosts
+    # entry the lookup falls through to DNS, which is not
+    # reachable before the network is configured and makes sudo
+    # fail. Bind the image host name to the loopback alias the
+    # way Debian's installer does.
+    if [[ -s "$stage/etc/hostname" ]]; then
+        local image_host
+        image_host="$(tr -d '[:space:]' <"$stage/etc/hostname")"
+        if [[ -n "$image_host" ]] &&
+            ! grep -qE "^127\.0\.1\.1[[:space:]]+$image_host([[:space:]]|$)" \
+                "$stage/etc/hosts"; then
+            printf '127.0.1.1 %s\n' "$image_host" >>"$stage/etc/hosts"
+        fi
+    fi
+    install -d -m 0755 -- "$stage/etc/systemd/system/getty.target.wants"
+    ln -sfn /usr/lib/systemd/system/console-getty.service \
+        "$stage/etc/systemd/system/getty.target.wants/console-getty.service"
+    ln -sfn /dev/null "$stage/etc/systemd/system/serial-getty@hvc0.service"
+    ln -sfn /dev/null "$stage/etc/systemd/system/serial-getty@ttyS0.service"
+    # The kernel forwards the ACPI power button as SIGPWR and
+    # systemd starts sigpwr.target for it.  A drop-in that merely
+    # adds `Wants=poweroff.target` does not start the shutdown:
+    # special targets are started by the manager objective, not as
+    # a dependency.  A unit wanted by sigpwr.target that calls
+    # `systemctl poweroff` does reach the ordinary shutdown path,
+    # so QEMU's `system_powerdown` (and a cloud stop request)
+    # leaves the guest off through S5.
+    cat >"$stage/etc/systemd/system/asterinas-sigpwr-poweroff.service" <<'EOF'
+[Unit]
+Description=Power off on ACPI power button (SIGPWR)
+
+[Service]
+Type=oneshot
+KeyringMode=inherit
+ExecStart=/bin/systemctl --no-block poweroff
+EOF
+    install -d -m 0755 -- "$stage/etc/systemd/system/sigpwr.target.wants"
+    ln -sfn ../asterinas-sigpwr-poweroff.service \
+        "$stage/etc/systemd/system/sigpwr.target.wants/asterinas-sigpwr-poweroff.service"
+}
+
 configure_and_normalize_rootfs() {
     configure_architecture
     local stage="$WORK_DIR/stage"
@@ -1177,83 +1253,12 @@ EOF
             install -D -m 0755 -- \
                 "$script_directory/asterinas_login.sh" \
                 "$stage/usr/local/sbin/asterinas-login"
-            # Interactive serial login.  The helper starts the unprivileged
-            # account below, and console-getty is enabled explicitly: the
-            # serial-getty template instances wait for dev-ttyS0.device or
-            # dev-hvc0.device, which the Asterinas device manager does not
-            # materialize.  x86_64 is the platform where the hvc0 RX path
-            # delivers no input at all, so only amd64 switches the console to
-            # ttyS0 and masks both template instances; the RISC-V images keep
-            # their existing getty wiring.
-            if [[ "$ARCHITECTURE" == amd64 ]]; then
-                grep -q '^asterinas:' "$stage/etc/passwd" ||
-                    printf '%s\n' \
-                        'asterinas:x:1000:1000:Asterinas:/home/asterinas:/bin/bash' \
-                        >>"$stage/etc/passwd"
-                grep -q '^asterinas:' "$stage/etc/group" ||
-                    printf '%s\n' 'asterinas:x:1000:' >>"$stage/etc/group"
-                grep -q '^asterinas:' "$stage/etc/shadow" ||
-                    printf '%s\n' 'asterinas:!:19793:0:99999:7:::' >>"$stage/etc/shadow"
-                grep -q '^asterinas:' "$stage/etc/gshadow" ||
-                    printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
-                install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
-                # The serial console account is the image's daily-use user;
-                # give it passwordless sudo so package management and service
-                # control work from the console like on a normal Debian box.
-                install -d -m 0750 -- "$stage/etc/sudoers.d"
-                cat >"$stage/etc/sudoers.d/asterinas" <<'EOF'
-Defaults !use_pty
-asterinas ALL=(ALL:ALL) NOPASSWD: ALL
-EOF
-                chmod 0440 -- "$stage/etc/sudoers.d/asterinas"
-                # sudo (and interactive tools) allocate a pty; debootstrap
-                # leaves fstab unconfigured, so /dev/pts is never mounted and
-                # sudo fails with "unable to allocate pty". Mount devpts like
-                # a normal Debian installation does.
-                cat >"$stage/etc/fstab" <<'EOF'
-# <file system> <mount point> <type> <options> <dump> <pass>
-devpts /dev/pts devpts gid=5,mode=620,ptmxmode=000 0 0
-EOF
-                # sudo resolves its own host name; without an /etc/hosts
-                # entry the lookup falls through to DNS, which is not
-                # reachable before the network is configured and makes sudo
-                # fail. Bind the image host name to the loopback alias the
-                # way Debian's installer does.
-                if [[ -s "$stage/etc/hostname" ]]; then
-                    local image_host
-                    image_host="$(tr -d '[:space:]' <"$stage/etc/hostname")"
-                    if [[ -n "$image_host" ]] &&
-                        ! grep -qE "^127\.0\.1\.1[[:space:]]+$image_host([[:space:]]|$)" \
-                            "$stage/etc/hosts"; then
-                        printf '127.0.1.1 %s\n' "$image_host" >>"$stage/etc/hosts"
-                    fi
-                fi
-                install -d -m 0755 -- "$stage/etc/systemd/system/getty.target.wants"
-                ln -sfn /usr/lib/systemd/system/console-getty.service \
-                    "$stage/etc/systemd/system/getty.target.wants/console-getty.service"
-                ln -sfn /dev/null "$stage/etc/systemd/system/serial-getty@hvc0.service"
-                ln -sfn /dev/null "$stage/etc/systemd/system/serial-getty@ttyS0.service"
-                # The kernel forwards the ACPI power button as SIGPWR and
-                # systemd starts sigpwr.target for it.  A drop-in that merely
-                # adds `Wants=poweroff.target` does not start the shutdown:
-                # special targets are started by the manager objective, not as
-                # a dependency.  A unit wanted by sigpwr.target that calls
-                # `systemctl poweroff` does reach the ordinary shutdown path,
-                # so QEMU's `system_powerdown` (and a cloud stop request)
-                # leaves the guest off through S5.
-                cat >"$stage/etc/systemd/system/asterinas-sigpwr-poweroff.service" <<'EOF'
-[Unit]
-Description=Power off on ACPI power button (SIGPWR)
-
-[Service]
-Type=oneshot
-KeyringMode=inherit
-ExecStart=/bin/systemctl --no-block poweroff
-EOF
-                install -d -m 0755 -- "$stage/etc/systemd/system/sigpwr.target.wants"
-                ln -sfn ../asterinas-sigpwr-poweroff.service \
-                    "$stage/etc/systemd/system/sigpwr.target.wants/asterinas-sigpwr-poweroff.service"
-            fi
+            # Interactive serial login. The helper starts the provisioned
+            # unprivileged account; configure_x86_serial_login adds that
+            # account, the console-getty wiring and the amd64-only pieces
+            # (the hvc0 RX path delivers no input there, so only amd64
+            # switches the console to ttyS0 and masks both template gettys).
+            configure_x86_serial_login "$stage"
             if [[ "$PROFILE" == systemd-ext4-m6-userspace ]]; then
                 install -D -m 0644 /dev/null "$stage/etc/asterinas-userspace-m6"
             fi
