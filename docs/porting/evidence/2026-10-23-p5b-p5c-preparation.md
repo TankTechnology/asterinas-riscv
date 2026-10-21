@@ -246,6 +246,74 @@ eglInitialize failed
   `MESA_LOADER_DRIVER_OVERRIDE` 与 Mesa `libEGL_mesa` 的 DRI loader
   路径/ABI，而不是继续补 DRM ioctl。
 
+## P5b-4：Mesa 版本 / 驱动 ABI 匹配
+
+### guest 侧事实
+
+从 guest 镜像 `/usr/lib/riscv64-linux-gnu/` 直接读取（不需要再启动板子）：
+
+| 项 | guest 实际值 |
+|---|---|
+| Mesa 版本 | **25.0.7**（`libgallium-25.0.7-2+deb13u1.so`） |
+| DRI 目录 | `/usr/lib/riscv64-linux-gnu/dri/`，含 `swrast_dri.so`、`kms_swrast_dri.so` 等；**没有 `pvr_dri.so`** |
+| EGL | `libEGL.so.1.1.0` + `libEGL_mesa.so.0.0.0`（Mesa 25） |
+| libgbm / libdrm | `libgbm.so.1.0.0` / `libdrm.so.2.124.0` |
+| libglapi | **不存在**（guest Mesa 25 不再提供独立的 `libglapi.so.0`） |
+| LLVM | 只有 `libLLVM.so.19.1` / `libLLVM-19.so`，**没有 16** |
+
+### pvr_dri 的 ABI/依赖事实
+
+RockOS 的 `pvr_dri.so` 来自 **Mesa 22.0.3**（RockOS `rockos-mesa22.0.3`），
+`readelf -d` 的 NEEDED 包括：
+
+```text
+libglapi.so.0
+libdrm.so.2
+libLLVM-16.so.1
+libexpat.so.1
+libz.so.1
+libzstd.so.1
+libsensors.so.5
+libdrm_radeon.so.1
+libelf.so.1
+libdrm_amdgpu.so.1
+libdrm_nouveau.so.2
+libxcb-dri3.so.0
+libstdc++.so.6
+...
+```
+
+它导出 `__driDriverGetExtensions_pvr`（Mesa DRI 入口），但：
+
+- guest **没有 `libglapi.so.0`**（NEEDED 直接缺失）；
+- guest 只有 LLVM 19，**没有 `libLLVM-16.so.1`**（NEEDED 直接缺失）。
+
+RockOS 上对应文件存在：`libglapi.so.0.0.0`（313,528 B）、
+`libLLVM-16.so.1`（103,743,080 B）、`libEGL_mesa.so.0.0.0`（Mesa 22）。
+
+### 结论
+
+- **不是 a) 驱动目录/文件名**：`/opt/pvr/dri/pvr_dri.so` 存在，
+  `MESA_LOADER_DRIVER_OVERRIDE=pvr` 指向的名字也匹配；
+- **主要是 b) Mesa 版本/依赖 ABI 不匹配**：guest Mesa 25.0.7 与
+  RockOS Mesa 22.0.3 的 `pvr_dri` 不配套；即使 loader 打开了
+  `pvr_dri.so`，`libglapi.so.0` 与 `libLLVM-16.so.1` 缺失也会让
+  `dlopen` 失败。这是目前已确认的硬阻塞；
+- **c) loader/ICD 不是首要问题**：`LD_DEBUG` 中 `pvr_dri` 0 次出现，
+  但 gbm 在更早的 `gbm_create_device` 就失败，尚不能把“未打开”
+  单独归因于 ICD；在补齐 ABI 依赖之前讨论 `libEGL_pvr` 意义有限。
+
+### 推荐下一步（P5b-5，按优先级）
+
+1. **首选：用 guest Mesa 25 源码重编 pvr_dri**（RockOS Mesa 22 的
+   `src/gallium/drivers/pvr` 移植到 Mesa 25），得到与 guest
+   glapi/gallium/LLVM 匹配的 `.so`；这是根治 ABI 的方案；
+2. 次选：把 RockOS Mesa 22 的 `libglapi.so.0`、`libLLVM-16.so.1`、
+   `libEGL_mesa.so.0`、`libgbm.so.1` 一并放入 `/opt/pvr/lib` 并用
+   `LD_LIBRARY_PATH` 优先加载，做一次“整套 Mesa 22”验证；体积约
+   100 MB（LLVM 16），且要防止与 guest Mesa 25 混用；
+3. 不推荐继续补 DRM ioctl：当前没有证据表明缺少 DRM 命令。
+
 ## 下一步
 
 1. 板子物理复位后先跑 `p5b-stage.sh` + rootfs 注入 + guest 命令，记录
