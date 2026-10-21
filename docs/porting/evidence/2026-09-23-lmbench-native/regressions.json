@@ -1,0 +1,14 @@
+[
+  {
+    "test": "/opt/reserved-ports-test",
+    "status": 0,
+    "stdout": "",
+    "stderr": "test_empty_reserved_ports_is_readable: `read(fd, buffer, sizeof(buffer))` passed [got Success]\ntest_empty_reserved_ports_is_readable: `strcmp(buffer, \"\\n\")` passed [got Success]\ntest_empty_reserved_ports_is_readable: `read(fd, buffer, sizeof(buffer))` passed [got Success]\ntest_empty_reserved_ports_is_readable: `pread(fd, buffer, sizeof(buffer), 1)` passed [got Success]\ntest_empty_reserved_ports_is_readable: `pread(fd, buffer, 1, 0)` passed [got Success]\ntest_empty_reserved_ports_is_readable summary: 5 tests passed, 0 tests failed\n"
+  },
+  {
+    "test": "/opt/udp-loopback-test",
+    "status": 0,
+    "stdout": "",
+    "stderr": "test_wildcard_udp_loopback_reply: `check_reply_source(((in_addr_t) 0x00000000))` passed [got Success]\ntest_wildcard_udp_loopback_reply: `check_reply_source(((in_addr_t) 0x7f000001))` passed [got Success]\ntest_wildcard_udp_loopback_reply summary: 2 tests passed, 0 tests failed\n"
+  }
+]

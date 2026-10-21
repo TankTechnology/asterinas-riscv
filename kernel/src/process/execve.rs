@@ -35,6 +35,7 @@ use crate::{
 pub fn do_execve(
     elf_file: Path,
     thread_name: ThreadName,
+    script_path: CString,
     argv_ptr_ptr: Vaddr,
     envp_ptr_ptr: Vaddr,
     ctx: &Context,
@@ -64,7 +65,7 @@ pub fn do_execve(
     let _write_deny_guard = WriteAccessDenyGuard::new(elf_file.inode().clone())?;
 
     let program_to_load =
-        ProgramToLoad::build_from_file(elf_file.clone(), &path_resolver, argv, envp)?;
+        ProgramToLoad::build_from_file(elf_file.clone(), script_path, &path_resolver, argv, envp)?;
 
     let new_vmar = VmarHandle::new(ProcessVm::new(elf_file.clone()));
     let elf_load_info = program_to_load.load_to_vmar(&new_vmar, &path_resolver)?;

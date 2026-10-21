@@ -7,14 +7,12 @@ use aster_bigtcp::{
 };
 
 use crate::{
-    net::{iface::Iface, net_ns::current_net_ns, socket::util::check_port_privilege},
+    net::{iface::Iface, net_ns::NetNamespace, socket::util::check_port_privilege},
     prelude::*,
 };
 
-fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
-    // The address is resolved against the interface view of the current
-    // network namespace.
-    let net_ns = current_net_ns();
+fn get_iface_to_bind(ip_addr: &IpAddress, net_ns: &NetNamespace) -> Option<Arc<Iface>> {
+    // The address is resolved against the socket's network namespace.
     match *ip_addr {
         IpAddress::Ipv4(ipv4_addr) => {
             if ipv4_addr.is_unspecified() {
@@ -52,10 +50,8 @@ fn get_iface_to_bind(ip_addr: &IpAddress) -> Option<Arc<Iface>> {
 /// Get a suitable iface to deal with sendto/connect request if the socket is not bound to an iface.
 /// If the remote address is the same as that of some iface, we will use the iface.
 /// Otherwise, we will use a default interface.
-fn get_ephemeral_iface(remote_ip_addr: &IpAddress) -> Arc<Iface> {
-    // The interface is chosen from the interface view of the current network
-    // namespace.
-    let net_ns = current_net_ns();
+fn get_ephemeral_iface(remote_ip_addr: &IpAddress, net_ns: &NetNamespace) -> Arc<Iface> {
+    // The interface is chosen from the socket's network namespace.
     match remote_ip_addr {
         IpAddress::Ipv4(remote_ipv4_addr) => {
             if let Some(iface) = net_ns.ifaces().iter().find(|iface| {
@@ -95,10 +91,11 @@ pub(super) fn resolve_bind_iface_and_config(
     endpoint: &IpEndpoint,
     can_reuse: bool,
     dual_stack: bool,
+    net_ns: &NetNamespace,
 ) -> Result<(Arc<Iface>, BindPortConfig)> {
-    check_port_privilege(endpoint.port)?;
+    check_port_privilege(endpoint.port, net_ns)?;
 
-    let iface = match get_iface_to_bind(&endpoint.addr) {
+    let iface = match get_iface_to_bind(&endpoint.addr, net_ns) {
         Some(iface) => iface,
         None => {
             return_errno_with_message!(
@@ -130,8 +127,11 @@ impl From<BindError> for Error {
     }
 }
 
-pub(super) fn get_ephemeral_endpoint(remote_endpoint: &IpEndpoint) -> Option<IpEndpoint> {
-    let iface = get_ephemeral_iface(&remote_endpoint.addr);
+pub(super) fn get_ephemeral_endpoint(
+    remote_endpoint: &IpEndpoint,
+    net_ns: &NetNamespace,
+) -> Option<IpEndpoint> {
+    let iface = get_ephemeral_iface(&remote_endpoint.addr, net_ns);
     match remote_endpoint.addr {
         IpAddress::Ipv4(_) => {
             let ipv4_cidr = iface.ipv4_cidr()?;

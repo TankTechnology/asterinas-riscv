@@ -1,0 +1,65 @@
+{
+  "source_revision": "afb47eddaf10a411c1ea3cb64965461f1308a6ea",
+  "original_lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
+  "production_kernel_sha256": "1d59c9ebb44389f3b7d3473bb6db6c8eae5c39f8d28f76336fd4639610284cb0",
+  "preload_sha256": "680618d0365ba89dc4d3aa47402d5666f1600193ed858c513ac7139d4107a9d5",
+  "diagnostic_source_branch": "codex/udp-rpc-instrument",
+  "diagnostic_source_commit": "38279a98d",
+  "boot_id": "f4e62537-62ce-45c5-8024-d0d295e89caf",
+  "command": "ENOUGH=10000 lat_rpc -P 1 -p udp localhost",
+  "trials": [
+    {
+      "trial": 1,
+      "status": 0,
+      "elapsed": 26.024,
+      "stdout": "",
+      "stderr": "RPC/udp latency using localhost: 438.1845 microseconds\n"
+    },
+    {
+      "trial": 2,
+      "status": 0,
+      "elapsed": 7.454,
+      "stdout": "",
+      "stderr": "localhost: RPC: Timed out\n"
+    }
+  ],
+  "first_retry": {
+    "trace": "rpc-udp-first-retry-trace.log",
+    "pid": 239,
+    "xid": 1790023225,
+    "initial_send_seq": 38193,
+    "first_poll_seq": 38194,
+    "first_poll_requested_ms": 2,
+    "first_poll_return": 0,
+    "first_poll_wall_ms": 2.078,
+    "retry_send_seq": 38195,
+    "retry_after_initial_send_ms": 2.2151,
+    "matching_reply_read_seq": 38197,
+    "matching_reply_read_after_initial_send_ms": 4.0673,
+    "next_xid": 1790023226,
+    "next_poll_return": 0,
+    "next_poll_requested_ms": 2,
+    "next_poll_wall_ms": 2.0801,
+    "stale_reply_read_seq": 38202,
+    "stale_reply_xid": 1790023225
+  },
+  "final_failed_call": {
+    "trace": "rpc-udp-first-retry-final-call.log",
+    "xid": 1790025331,
+    "prior_send_xid": 1790025330,
+    "first_send_seq": 72874,
+    "last_event_seq": 72909,
+    "wall_ms": 9.0028,
+    "request_sends": 13,
+    "poll_timeouts": 3,
+    "poll_ready": 10,
+    "stale_replies": 10,
+    "stale_reply_xids": [
+      1790025330
+    ],
+    "timeout_deduction_ms": 6,
+    "stale_reply_deduction_ms": 19,
+    "total_deduction_ms": 25
+  },
+  "interpretation": "The first retry in the traced failing run followed a real 2.078 ms poll timeout, with no reply ready. The first matching reply was read 4.0673 ms after the initial send. The next request also crossed a 2 ms poll timeout and then read the previous XID, starting the stale-reply feedback seen at the final timeout. User-space interposition adds overhead; the trace does not identify which kernel or server stage delayed the first response, nor establish the same trigger in uninstrumented runs."
+}

@@ -1,0 +1,132 @@
+{
+  "scope": "Diagnostic-only, bounded RPC/UDP QEMU experiments; not native ALL qualification",
+  "machine": "RISC-V virt, TCG, 4 CPUs, 2 GiB, disposable Debian guest",
+  "original_lmbench_revision": "afb47eddaf10a411c1ea3cb64965461f1308a6ea",
+  "libtirpc": {
+    "version": "1.3.6",
+    "source_archive_sha256": "a5351faa77c7390282574b2f285fe5a3886ad46943ffe6058d73f608dca0c7d2",
+    "source_file": "src/clnt_dg.c",
+    "observed_logic": "clnt_dg_call uses poll then recvfrom; a reply XID mismatch deducts the current poll interval from the 25 ms total and retransmits"
+  },
+  "xid_at_timeout": {
+    "run": "rpc-xid-34",
+    "boot_id": "55a0efa4-bc01-48a6-8149-076b61f16554",
+    "diagnostic_kernel_sha256": "7ee2accd0e3a07202d6feed1f5f51611d19db51321e24fbe7c93d97ba48c5986",
+    "diagnostic_branch_commit": "dbb18d8d3",
+    "client": {
+      "port": 844,
+      "completed_calls": 1280,
+      "exit_status": 1,
+      "rpc_status": "RPC_TIMEDOUT",
+      "sent_packets": 1429,
+      "received_packets": 1416,
+      "rx_queue_rejections": 0,
+      "queued_bytes_at_close": 0,
+      "last_sent_xid": 1790037332,
+      "last_received_xid": 1790037331,
+      "last_read_xid": 1790037331
+    },
+    "server": {
+      "port": 59131,
+      "received_packets": 1430,
+      "sent_packets": 1417,
+      "rx_queue_rejections": 0,
+      "queued_bytes_at_close": 572,
+      "first_queued_xid_at_close": 1790037332,
+      "last_read_xid": 1790037331
+    },
+    "interpretation": "The final client request had reached the server socket queue but had not been read before the client deadline. These counters do not establish why the server lagged."
+  },
+  "retry_interval_controls": [
+    {
+      "run": "rpc-retry-xid-35",
+      "boot_id": "0721e74f-23a7-471d-95a2-bc840dc4f0d0",
+      "client": "simple libtirpc client against unchanged LMBench server",
+      "total_timeout_ms": 25,
+      "calls_requested": 20000,
+      "retry_us": 2500,
+      "calls_completed": 10521,
+      "exit_status": 1,
+      "elapsed_seconds": 7.481793
+    },
+    {
+      "run": "rpc-retry-xid-35",
+      "boot_id": "0721e74f-23a7-471d-95a2-bc840dc4f0d0",
+      "client": "simple libtirpc client against unchanged LMBench server",
+      "total_timeout_ms": 25,
+      "calls_requested": 20000,
+      "retry_us": 25000,
+      "calls_completed": 20000,
+      "exit_status": 0,
+      "elapsed_seconds": 8.006113,
+      "client_sent_packets": 20000,
+      "client_received_packets": 20000,
+      "client_xid_mismatches": 0
+    },
+    {
+      "run": "rpc-retry-sweep-36",
+      "boot_id": "f5828272-59e2-49ae-b5b0-abe0ab755917",
+      "client": "simple libtirpc client against unchanged LMBench server",
+      "total_timeout_ms": 25,
+      "calls_requested": 20000,
+      "retry_us": 5000,
+      "calls_completed": 20000,
+      "exit_status": 0,
+      "elapsed_seconds": 8.270663,
+      "client_sent_packets": 20000,
+      "client_received_packets": 20000,
+      "client_xid_mismatches": 0
+    },
+    {
+      "run": "rpc-retry-sweep-36",
+      "boot_id": "f5828272-59e2-49ae-b5b0-abe0ab755917",
+      "client": "simple libtirpc client against unchanged LMBench server",
+      "total_timeout_ms": 25,
+      "calls_requested": 20000,
+      "retry_us": 10000,
+      "calls_completed": 20000,
+      "exit_status": 0,
+      "elapsed_seconds": 8.456302,
+      "client_sent_packets": 20000,
+      "client_received_packets": 20000,
+      "client_xid_mismatches": 0
+    },
+    {
+      "run": "rpc-retry-sweep-36",
+      "boot_id": "f5828272-59e2-49ae-b5b0-abe0ab755917",
+      "client": "simple libtirpc client against unchanged LMBench server",
+      "total_timeout_ms": 25,
+      "calls_requested": 20000,
+      "retry_us": 25000,
+      "calls_completed": 20000,
+      "exit_status": 0,
+      "elapsed_seconds": 8.065838,
+      "client_sent_packets": 20000,
+      "client_received_packets": 20000,
+      "client_xid_mismatches": 0
+    },
+    {
+      "run": "rpc-retry5-native-37",
+      "boot_id": "34400f46-3d5a-4d86-9953-eda4a6a3da00",
+      "client": "diagnostic lat_rpc with native -P 1 -p udp localhost arguments and 5 ms retry",
+      "retry_us": 5000,
+      "exit_status": 0,
+      "stderr": "localhost: RPC: Timed out",
+      "elapsed_seconds": 24.042,
+      "passed": false
+    }
+  ],
+  "poll_control": {
+    "run": "rpc-retry-sweep-36",
+    "operation": "40 empty-pipe poll calls with 2 ms timeout",
+    "min_ms": 2.0515,
+    "mean_ms": 2.0608625,
+    "max_ms": 2.1055,
+    "under_1_ms": 0
+  },
+  "limits": [
+    "The diagnostic kernel counts RPC payload XIDs but is not a production change.",
+    "A short retry interval may expose kernel performance or scheduling behavior; this experiment does not rule out a kernel defect.",
+    "The 25 ms benchmark binary is a diagnostic variant, not an unmodified official benchmark."
+  ]
+}

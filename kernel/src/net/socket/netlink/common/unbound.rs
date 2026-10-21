@@ -4,12 +4,15 @@ use core::marker::PhantomData;
 
 use crate::{
     events::IoEvents,
-    net::socket::{
-        netlink::{
-            GroupIdSet, NetlinkSocketAddr, common::bound::BoundNetlink, receiver::MessageQueue,
-            table::SupportedNetlinkProtocol,
+    net::{
+        net_ns::NetNamespace,
+        socket::{
+            netlink::{
+                GroupIdSet, NetlinkSocketAddr, common::bound::BoundNetlink, receiver::MessageQueue,
+                table::SupportedNetlinkProtocol,
+            },
+            util::datagram_common,
         },
-        util::datagram_common,
     },
     prelude::*,
     process::signal::Pollee,
@@ -17,14 +20,16 @@ use crate::{
 };
 
 pub(super) struct UnboundNetlink<P: SupportedNetlinkProtocol> {
+    net_ns: Arc<NetNamespace>,
     groups: GroupIdSet,
     filter: Option<Arc<Vec<SockFilter>>>,
     phantom: PhantomData<BoundNetlink<P::Message>>,
 }
 
 impl<P: SupportedNetlinkProtocol> UnboundNetlink<P> {
-    pub(super) const fn new() -> Self {
+    pub(super) fn new(net_ns: Arc<NetNamespace>) -> Self {
         Self {
+            net_ns,
             groups: GroupIdSet::new_empty(),
             filter: None,
             phantom: PhantomData,
@@ -58,13 +63,18 @@ impl<P: SupportedNetlinkProtocol> UnboundNetlink<P> {
         let bound_handle = {
             let mut endpoint = endpoint;
             endpoint.add_groups(self.groups);
-            <P as SupportedNetlinkProtocol>::bind(&endpoint, message_receiver)?
+            <P as SupportedNetlinkProtocol>::bind(
+                self.net_ns.netlink_sockets(),
+                &endpoint,
+                message_receiver,
+            )?
         };
 
         Ok(BoundNetlink::new(
             bound_handle,
             message_queue,
             self.filter.take(),
+            self.net_ns.clone(),
         ))
     }
 }

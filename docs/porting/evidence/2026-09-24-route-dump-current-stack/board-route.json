@@ -1,0 +1,18 @@
+{
+  "status": "pass",
+  "command": "timeout 4 ip -4 route show; timeout 4 ip -4 route show default; timeout 4 ip -4 route show table local; timeout 4 ip -6 route show; timeout 4 ip -brief addr",
+  "before": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "991075a6-1edf-4b2a-be49-e7dcb996552a",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "output": "default via 10.100.16.1 dev eth0 \n10.100.16.0/21 dev eth0 proto kernel scope link src 10.100.19.200 \nmain_rc=0\ndefault via 10.100.16.1 dev eth0 \ndefault_rc=0\nRTNETLINK answers: Operation not supported\nDump terminated\nlocal_rc=2\nipv6_rc=0\nlo               127.0.0.1/8 ::1/128 \neth0             10.100.19.200/21 \naddr_rc=0",
+  "after_reopen": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "991075a6-1edf-4b2a-be49-e7dcb996552a",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "state": "printf \"READY=\"; systemctl is-active asterinas-desktop-r \ready.service; printf \"FIREFOX=\"; systemctl is-active asterinas-browser-web.servi \rce; printf \"WATCHDOG=\"; cat /proc/sys/kernel/asterinas_reboot_watchdog\nREADY=active\nFIREFOX=active\nWATCHDOG=0\nroot@asterinas-debug:/# "
+}

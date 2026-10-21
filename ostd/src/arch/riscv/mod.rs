@@ -61,12 +61,12 @@ pub(crate) unsafe fn late_init_on_bsp() {
     // SAFETY: We're on the BSP and we're ready to boot all APs.
     unsafe { crate::boot::smp::boot_all_aps() };
 
+    power::init(&io_mem_builder);
+
     // SAFETY:
     // 1. All the system device memory have been removed from the builder.
     // 2. RISC-V platforms do not have port I/O.
     unsafe { crate::io::init(io_mem_builder) };
-
-    power::init();
 }
 
 /// Initializes application-processor-specific state.

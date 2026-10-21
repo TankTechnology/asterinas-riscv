@@ -26,7 +26,7 @@ use smoltcp::{
 };
 
 use super::{
-    Iface,
+    Iface, IfaceStats, IfaceStatsSnapshot,
     poll::{FnHelper, PollContext, SocketTableAction},
     poll_iface::PollableIface,
     port::BindPortConfig,
@@ -72,6 +72,7 @@ pub struct IfaceCommon<E: Ext> {
     name: CString,
     type_: InterfaceType,
     flags: AtomicU32,
+    stats: IfaceStats,
 
     interface: SpinLock<PollableIface<E>, BottomHalfDisabled>,
     used_ports: SpinLock<PortTable, BottomHalfDisabled>,
@@ -140,6 +141,7 @@ impl<E: Ext> IfaceCommon<E> {
             name,
             type_,
             flags: AtomicU32::new(flags.bits()),
+            stats: IfaceStats::default(),
             interface: SpinLock::new(PollableIface::new(interface)),
             used_ports: SpinLock::new(PortTable::new()),
             sockets: SpinLock::new(SocketTable::new()),
@@ -154,6 +156,18 @@ impl<E: Ext> IfaceCommon<E> {
 
     pub(super) fn name(&self) -> &CStr {
         &self.name
+    }
+
+    pub(super) fn stats(&self) -> IfaceStatsSnapshot {
+        self.stats.snapshot()
+    }
+
+    pub(super) fn record_rx(&self, bytes: usize) {
+        self.stats.record_rx(bytes);
+    }
+
+    pub(super) fn record_tx(&self, bytes: usize) {
+        self.stats.record_tx(bytes);
     }
 
     pub(super) fn type_(&self) -> InterfaceType {
@@ -335,6 +349,7 @@ impl<E: Ext> IfaceCommon<E> {
             self.socket_registries.udp(),
             self.socket_registries.tcp(),
             self.index,
+            (self.type_ == InterfaceType::LOOPBACK).then_some(&self.stats),
             &mut socket_actions,
         );
         context.poll_ingress(device, &mut process_phy, &mut dispatch_phy);

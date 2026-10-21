@@ -1,0 +1,256 @@
+{
+  "four_byte_buffer": {
+    "recv_buffer_capacity_bytes": 4,
+    "median_warm_roundtrip_us": 298.1,
+    "median_warm_send_to_server_recv_us": 43.1,
+    "rows": [
+      {
+        "roundtrip_us": 2530.3,
+        "to_server_us": 678.8,
+        "server_work_us": 548.7,
+        "to_client_us": 12.3
+      },
+      {
+        "roundtrip_us": 325.4,
+        "to_server_us": 30.2,
+        "server_work_us": 169.9,
+        "to_client_us": 4.0
+      },
+      {
+        "roundtrip_us": 306.7,
+        "to_server_us": 31.7,
+        "server_work_us": 165.8,
+        "to_client_us": 3.0
+      },
+      {
+        "roundtrip_us": 351.8,
+        "to_server_us": 60.0,
+        "server_work_us": 144.5,
+        "to_client_us": 19.7
+      },
+      {
+        "roundtrip_us": 320.6,
+        "to_server_us": 55.0,
+        "server_work_us": 149.5,
+        "to_client_us": 4.0
+      },
+      {
+        "roundtrip_us": 266.7,
+        "to_server_us": 19.7,
+        "server_work_us": 148.5,
+        "to_client_us": 1.1
+      },
+      {
+        "roundtrip_us": 324.5,
+        "to_server_us": 50.7,
+        "server_work_us": 145.2,
+        "to_client_us": 3.2
+      },
+      {
+        "roundtrip_us": 289.4,
+        "to_server_us": 43.1,
+        "server_work_us": 136.9,
+        "to_client_us": 7.7
+      },
+      {
+        "roundtrip_us": 309.0,
+        "to_server_us": 52.3,
+        "server_work_us": 142.2,
+        "to_client_us": 14.2
+      },
+      {
+        "roundtrip_us": 320.6,
+        "to_server_us": 51.6,
+        "server_work_us": 134.4,
+        "to_client_us": 15.5
+      },
+      {
+        "roundtrip_us": 311.4,
+        "to_server_us": 58.0,
+        "server_work_us": 131.4,
+        "to_client_us": 20.9
+      },
+      {
+        "roundtrip_us": 295.5,
+        "to_server_us": 39.4,
+        "server_work_us": 131.8,
+        "to_client_us": 21.2
+      },
+      {
+        "roundtrip_us": 317.9,
+        "to_server_us": 43.8,
+        "server_work_us": 130.3,
+        "to_client_us": 19.8
+      },
+      {
+        "roundtrip_us": 291.0,
+        "to_server_us": 44.6,
+        "server_work_us": 126.6,
+        "to_client_us": 16.0
+      },
+      {
+        "roundtrip_us": 281.0,
+        "to_server_us": 37.9,
+        "server_work_us": 125.2,
+        "to_client_us": 16.5
+      },
+      {
+        "roundtrip_us": 247.0,
+        "to_server_us": -6.9,
+        "server_work_us": 131.2,
+        "to_client_us": 9.7
+      },
+      {
+        "roundtrip_us": 290.3,
+        "to_server_us": 36.0,
+        "server_work_us": 135.6,
+        "to_client_us": 14.5
+      },
+      {
+        "roundtrip_us": 289.8,
+        "to_server_us": 39.6,
+        "server_work_us": 133.4,
+        "to_client_us": 14.7
+      },
+      {
+        "roundtrip_us": 298.1,
+        "to_server_us": 56.2,
+        "server_work_us": 133.4,
+        "to_client_us": 7.5
+      },
+      {
+        "roundtrip_us": 289.6,
+        "to_server_us": 39.4,
+        "server_work_us": 133.2,
+        "to_client_us": 14.3
+      }
+    ]
+  },
+  "ten_megabyte_buffer": {
+    "recv_buffer_capacity_bytes": 10485760,
+    "median_warm_roundtrip_us": 32513.3,
+    "median_warm_send_to_server_recv_us": 32232.2,
+    "rows": [
+      {
+        "roundtrip_us": 2230.8,
+        "to_server_us": 397.7,
+        "server_work_us": 459.0,
+        "to_client_us": 42.2
+      },
+      {
+        "roundtrip_us": 32513.3,
+        "to_server_us": 32232.2,
+        "server_work_us": 162.7,
+        "to_client_us": 27.7
+      },
+      {
+        "roundtrip_us": 32785.3,
+        "to_server_us": 32515.4,
+        "server_work_us": 147.1,
+        "to_client_us": 14.6
+      },
+      {
+        "roundtrip_us": 32600.5,
+        "to_server_us": 32320.1,
+        "server_work_us": 140.8,
+        "to_client_us": 30.8
+      },
+      {
+        "roundtrip_us": 32607.9,
+        "to_server_us": 32342.6,
+        "server_work_us": 141.2,
+        "to_client_us": 20.3
+      },
+      {
+        "roundtrip_us": 32533.4,
+        "to_server_us": 32268.1,
+        "server_work_us": 146.4,
+        "to_client_us": 14.3
+      },
+      {
+        "roundtrip_us": 32574.9,
+        "to_server_us": 32303.7,
+        "server_work_us": 144.6,
+        "to_client_us": 20.5
+      },
+      {
+        "roundtrip_us": 32399.9,
+        "to_server_us": 32123.6,
+        "server_work_us": 149.8,
+        "to_client_us": 21.3
+      },
+      {
+        "roundtrip_us": 32449.1,
+        "to_server_us": 32170.4,
+        "server_work_us": 147.8,
+        "to_client_us": 16.0
+      },
+      {
+        "roundtrip_us": 32290.8,
+        "to_server_us": 32007.1,
+        "server_work_us": 143.3,
+        "to_client_us": 33.7
+      },
+      {
+        "roundtrip_us": 32372.8,
+        "to_server_us": 32106.3,
+        "server_work_us": 145.1,
+        "to_client_us": 17.0
+      },
+      {
+        "roundtrip_us": 32674.6,
+        "to_server_us": 32372.8,
+        "server_work_us": 177.2,
+        "to_client_us": 15.1
+      },
+      {
+        "roundtrip_us": 32398.7,
+        "to_server_us": 32123.6,
+        "server_work_us": 147.4,
+        "to_client_us": 17.1
+      },
+      {
+        "roundtrip_us": 32459.2,
+        "to_server_us": 32189.0,
+        "server_work_us": 176.8,
+        "to_client_us": -14.1
+      },
+      {
+        "roundtrip_us": 32721.5,
+        "to_server_us": 32406.8,
+        "server_work_us": 154.3,
+        "to_client_us": 53.4
+      },
+      {
+        "roundtrip_us": 32449.5,
+        "to_server_us": 32118.1,
+        "server_work_us": 145.1,
+        "to_client_us": 19.2
+      },
+      {
+        "roundtrip_us": 32425.2,
+        "to_server_us": 32160.7,
+        "server_work_us": 145.5,
+        "to_client_us": 13.8
+      },
+      {
+        "roundtrip_us": 32632.5,
+        "to_server_us": 32370.3,
+        "server_work_us": 148.8,
+        "to_client_us": 11.4
+      },
+      {
+        "roundtrip_us": 32547.2,
+        "to_server_us": 32282.1,
+        "server_work_us": 143.4,
+        "to_client_us": 15.6
+      },
+      {
+        "roundtrip_us": 32430.2,
+        "to_server_us": 32166.5,
+        "server_work_us": 141.3,
+        "to_client_us": 18.9
+      }
+    ]
+  }
+}

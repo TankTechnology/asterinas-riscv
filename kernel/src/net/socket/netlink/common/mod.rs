@@ -10,23 +10,26 @@ use crate::{
         file::{FileCommon, StatusFlags},
         pseudofs::SockFs,
     },
-    net::socket::{
-        Socket,
-        netlink::{
-            AddMembership, DropMembership, ExtAck, GetStrictChk, ListMemberships,
-            NetlinkControlMessage, PktInfo, table::SupportedNetlinkProtocol,
-        },
-        options::{
-            AttachFilter, DetachFilter, Error as SocketError, SockDomain, SockProtocol,
-            SocketOption,
-            macros::{sock_option_mut, sock_option_ref},
-        },
-        private::SocketPrivate,
-        util::{
-            ControlMessage, MessageHeader, RecvFlags, RecvOutput, SendFlags, SocketAddr,
-            datagram_common::{Bound, Inner, select_remote_and_bind},
+    net::{
+        net_ns::{NetNamespace, current_net_ns},
+        socket::{
+            Socket,
+            netlink::{
+                AddMembership, DropMembership, ExtAck, GetStrictChk, ListMemberships,
+                NetlinkControlMessage, PktInfo, table::SupportedNetlinkProtocol,
+            },
             options::{
-                GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
+                AttachFilter, DetachFilter, Error as SocketError, SockDomain, SockProtocol,
+                SocketOption,
+                macros::{sock_option_mut, sock_option_ref},
+            },
+            private::SocketPrivate,
+            util::{
+                ControlMessage, MessageHeader, RecvFlags, RecvOutput, SendFlags, SocketAddr,
+                datagram_common::{Bound, Inner, select_remote_and_bind},
+                options::{
+                    GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
+                },
             },
         },
     },
@@ -49,6 +52,7 @@ pub struct NetlinkSocket<P: SupportedNetlinkProtocol> {
     timeouts: SocketTimeouts,
 
     pollee: Pollee,
+    net_ns: Arc<NetNamespace>,
     common: FileCommon,
 }
 
@@ -74,7 +78,8 @@ where
     pub fn new(is_nonblocking: bool, socket_type: SockType) -> Arc<Self> {
         debug_assert!(socket_type == SockType::SOCK_RAW || socket_type == SockType::SOCK_DGRAM);
 
-        let unbound = UnboundNetlink::new();
+        let net_ns = current_net_ns();
+        let unbound = UnboundNetlink::new(net_ns.clone());
         let status_flags = if is_nonblocking {
             StatusFlags::O_NONBLOCK
         } else {
@@ -86,6 +91,7 @@ where
             socket_type,
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
+            net_ns,
             common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }
@@ -134,6 +140,10 @@ impl<P: SupportedNetlinkProtocol> Socket for NetlinkSocket<P>
 where
     BoundNetlink<P::Message>: Bound<Endpoint = NetlinkSocketAddr>,
 {
+    fn net_ns(&self) -> &NetNamespace {
+        &self.net_ns
+    }
+
     fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
         let endpoint = socket_addr.try_into()?;
 

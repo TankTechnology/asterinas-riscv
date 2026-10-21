@@ -17,6 +17,9 @@ sleep 0.2
 ./unix_client
 
 ./listen_backlog
+./ifconf
+./ifreq
+./proc_net_dev
 ./msg_peek
 ./msg_trunc
 ./privileged_ports
@@ -42,7 +45,12 @@ sleep 0.2
 ./ipv6_dual_stack
 ./ipv6_dual_stack_udp
 ./udp_user_buffer_prefault
+./udp_msg_dontwait
+./tcp_msg_dontwait_send
 
 ./netlink_route
+./route_dump
+./route_local_dump
+./route_all_dump
 ./rtnl_err
 ./uevent_err

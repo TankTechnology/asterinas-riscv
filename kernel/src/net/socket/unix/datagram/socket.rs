@@ -14,20 +14,23 @@ use crate::{
         file::{FileCommon, StatusFlags},
         pseudofs::SockFs,
     },
-    net::socket::{
-        Socket,
-        options::{Error as SocketError, PeerCred, SocketOption, macros::sock_option_mut},
-        private::SocketPrivate,
-        unix::{
-            CUserCred, UnixSocketAddr,
-            cred::SocketCred,
-            ctrl_msg::AuxiliaryData,
-            scm_graph::{PermanentEdge, SocketNode},
-        },
-        util::{
-            MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr,
-            options::{
-                GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
+    net::{
+        net_ns::{NetNamespace, current_net_ns},
+        socket::{
+            Socket,
+            options::{Error as SocketError, PeerCred, SocketOption, macros::sock_option_mut},
+            private::SocketPrivate,
+            unix::{
+                CUserCred, UnixSocketAddr,
+                cred::SocketCred,
+                ctrl_msg::AuxiliaryData,
+                scm_graph::{PermanentEdge, SocketNode},
+            },
+            util::{
+                MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd, SocketAddr,
+                options::{
+                    GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
+                },
             },
         },
     },
@@ -48,6 +51,7 @@ pub struct UnixDatagramSocket {
     peer_cred: Option<SocketCred>,
 
     is_write_shutdown: AtomicBool,
+    net_ns: Arc<NetNamespace>,
     common: FileCommon,
 }
 
@@ -131,6 +135,7 @@ impl UnixDatagramSocket {
             timeouts: SocketTimeouts::new(),
             peer_cred: None,
             is_write_shutdown: AtomicBool::new(false),
+            net_ns: current_net_ns(),
             common: FileCommon::new(SockFs::new_path(), status_flags),
         }
     }
@@ -244,6 +249,10 @@ impl SocketPrivate for UnixDatagramSocket {
 }
 
 impl Socket for UnixDatagramSocket {
+    fn net_ns(&self) -> &NetNamespace {
+        &self.net_ns
+    }
+
     fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
         let addr = UnixSocketAddr::try_from(socket_addr)?;
         self.local_receiver.bind(addr)

@@ -1,0 +1,13 @@
+test_context_header_and_result (tools.riscv.tests.test_lmbench_smoke.LmbenchSmokeTests.test_context_header_and_result) ... ok
+test_decimal_megabytes_for_one_mib (tools.riscv.tests.test_lmbench_smoke.LmbenchSmokeTests.test_decimal_megabytes_for_one_mib) ... ok
+test_exact_latency_label (tools.riscv.tests.test_lmbench_smoke.LmbenchSmokeTests.test_exact_latency_label) ... ok
+test_exit_zero_without_measurement_fails (tools.riscv.tests.test_lmbench_smoke.LmbenchSmokeTests.test_exit_zero_without_measurement_fails) ... ok
+test_measurement_on_stderr_passes (tools.riscv.tests.test_lmbench_smoke.LmbenchSmokeTests.test_measurement_on_stderr_passes) ... ok
+test_nonzero_exit_with_measurement_fails (tools.riscv.tests.test_lmbench_smoke.LmbenchSmokeTests.test_nonzero_exit_with_measurement_fails) ... ok
+test_reject_invalid_or_unrelated_output (tools.riscv.tests.test_lmbench_smoke.LmbenchSmokeTests.test_reject_invalid_or_unrelated_output) ... ok
+test_timeout_kills_child_holding_output_pipe (tools.riscv.tests.test_lmbench_smoke.LmbenchSmokeTests.test_timeout_kills_child_holding_output_pipe) ... ok
+
+----------------------------------------------------------------------
+Ran 8 tests in 0.122s
+
+OK

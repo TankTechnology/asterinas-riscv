@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use aster_bigtcp::{socket::NeedIfacePoll, wire::IpEndpoint};
+use aster_bigtcp::{
+    socket::{NeedIfacePoll, UDP_RECV_PAYLOAD_LEN},
+    wire::IpEndpoint,
+};
 use bound::BoundDatagram;
 use unbound::{BindOptions, UnboundDatagram};
 
@@ -13,6 +16,7 @@ use crate::{
     },
     net::{
         iface::is_broadcast_endpoint,
+        net_ns::{NetNamespace, current_net_ns},
         socket::{
             Socket,
             ip::{
@@ -47,6 +51,7 @@ pub struct DatagramSocket {
     timeouts: SocketTimeouts,
 
     pollee: Pollee,
+    net_ns: Arc<NetNamespace>,
     common: FileCommon,
 }
 
@@ -81,6 +86,7 @@ impl DatagramSocket {
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
+            net_ns: current_net_ns(),
             common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }
@@ -122,6 +128,7 @@ impl DatagramSocket {
                     BindOptions {
                         can_reuse: false,
                         v6only: self.options.read().ipv6.v6only(),
+                        net_ns: self.net_ns.clone(),
                     },
                 )
             },
@@ -153,6 +160,14 @@ impl SocketPrivate for DatagramSocket {
 }
 
 impl Socket for DatagramSocket {
+    fn net_ns(&self) -> &NetNamespace {
+        &self.net_ns
+    }
+
+    fn max_recv_len(&self) -> Option<usize> {
+        Some(UDP_RECV_PAYLOAD_LEN)
+    }
+
     fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
         let endpoint = socket_addr.try_into()?;
         self.check_endpoint_family(&endpoint)?;
@@ -164,6 +179,7 @@ impl Socket for DatagramSocket {
             BindOptions {
                 can_reuse,
                 v6only: self.options.read().ipv6.v6only(),
+                net_ns: self.net_ns.clone(),
             },
         )
     }
@@ -185,6 +201,7 @@ impl Socket for DatagramSocket {
             BindOptions {
                 can_reuse: false,
                 v6only: self.options.read().ipv6.v6only(),
+                net_ns: self.net_ns.clone(),
             },
         )
     }
@@ -259,10 +276,13 @@ impl Socket for DatagramSocket {
             warn!("unsupported flags: {:?}", flags);
         }
 
-        let (output, peer_addr) =
+        let (output, peer_addr) = if flags.contains(RecvFlags::MSG_DONTWAIT) {
+            self.try_recv(writer, flags)?
+        } else {
             self.block_on(IoEvents::IN, self.timeouts.recv_timeout(), || {
                 self.try_recv(writer, flags)
-            })?;
+            })?
+        };
 
         // TODO: Receive control message
 

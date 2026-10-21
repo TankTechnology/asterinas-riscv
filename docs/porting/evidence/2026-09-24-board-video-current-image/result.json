@@ -1,0 +1,66 @@
+{
+  "date": "2026-09-24",
+  "board_boot_id": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384",
+  "kernel_image_sha256": "3e3707b7e59f46303a914395a8dd4a85de55d0feb063fa26bb510130ce02b40e",
+  "serial_device": "/dev/serial/by-id/usb-FTDI_FT232R_USB_UART_AL02XYO2-if00-port0",
+  "site": "http://10.100.19.216:17894/",
+  "method": "Firefox Marionette in Firefox network namespace; same 10-second VP8 1280x720 30fps WebM, muted autoplay, two display sizes",
+  "runs": {
+    "index720.html": {
+      "ended": true,
+      "error": null,
+      "frames": 300,
+      "dropped": 121,
+      "firefox_ticks": 1854,
+      "xorg_ticks": 51,
+      "navigate_seconds": 0.667,
+      "elapsed_seconds": 10.305
+    },
+    "index720-small.html": {
+      "ended": true,
+      "error": null,
+      "frames": 300,
+      "dropped": 10,
+      "firefox_ticks": 1394,
+      "xorg_ticks": 43,
+      "navigate_seconds": 0.767,
+      "elapsed_seconds": 10.245
+    }
+  },
+  "fixture_files": {
+    "clip720.webm": {
+      "bytes": 1253581,
+      "sha256": "1aa863f2a73698241c9daa016c7bfcfa0f94b038ca9f0b29f296c3ca0b65eb95"
+    },
+    "index720.html": {
+      "bytes": 148,
+      "sha256": "a96c8a6ffdf83963c2a5712e67d8eb0b23ac5ef7d31b91fc59e57f8c76ff8163"
+    },
+    "index720-small.html": {
+      "bytes": 175,
+      "sha256": "32dffe155d45d8bc03b14ee21b922edf6666d7c91da37dcda3b370333af8c4e9"
+    }
+  },
+  "handoff": [
+    {
+      "attempt": 1,
+      "nonce": "38255bd34f1a53c1",
+      "valid": true,
+      "uid": 0,
+      "boot": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384"
+    },
+    {
+      "attempt": 2,
+      "nonce": "bb65ce7314c88343",
+      "valid": true,
+      "uid": 0,
+      "boot": "80a2b08d-e2aa-4f6b-b3ae-9394770f8384"
+    }
+  ],
+  "limitations": [
+    "The generated sample has no audio, seeks, or streaming player code.",
+    "Dropped-frame counters are Firefox observations, not a kernel profiler.",
+    "The display-size correlation does not isolate the bottleneck or prove a kernel defect.",
+    "Both runs use one board boot and are not throughput scores."
+  ]
+}

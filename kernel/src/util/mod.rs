@@ -10,5 +10,6 @@ mod read_cstring;
 pub mod ring_buffer;
 
 pub use copy_compact::CopyCompat;
+pub(crate) use iovec::PrefaultedVmWriter;
 pub use iovec::{MultiRead, MultiWrite, VmReaderArray, VmWriterArray};
 pub use read_cstring::ReadCString;

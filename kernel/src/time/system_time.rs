@@ -82,6 +82,7 @@ impl SystemTime {
 
         // Refresh the vDSO data page immediately so that vDSO-accelerated
         // `clock_gettime(CLOCK_REALTIME)` sees the new wall clock at once.
+        #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
         crate::vdso::on_wall_clock_change();
     }
 

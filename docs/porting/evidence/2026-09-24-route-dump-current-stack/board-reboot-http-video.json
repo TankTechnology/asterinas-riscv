@@ -1,0 +1,26 @@
+{
+  "status": "pass",
+  "site": "http://10.100.19.216:17894",
+  "page": "http://10.100.19.216:17894/index8-fresh.html",
+  "video_loops": 8,
+  "identity_before": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "3b62c322-6ed9-4094-95ad-7d7a1ec93c2c",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "firefox_pid": 351,
+  "before_proc_tail": "grep -E \"^(State|VmRSS|Threads):\" /proc/351/status\nState:\tS (sleeping)\nVmRSS:\t294400 kB\nThreads:\t67\nroot@asterinas-debug:/# ",
+  "start_tail": "_PASS\")' > /tmp/asterinas-http-video-fresh-gate.log 2>&1; printf \"%s\\n\" \"$?\" > \r /tmp/asterinas-http-video-fresh-gate.rc ) </dev/null >/dev/null 2>&1 & echo VID \rEO_PID=$!\n[1] 2120\nVIDEO_PID=2120\nroot@asterinas-debug:/# ",
+  "gate_rc": 0,
+  "elapsed_seconds": 11.599,
+  "gate_tail": "tail -30 /tmp/asterinas-http-video-fresh-gate.log\nASTERINAS_HTTP_VIDEO_PASS\nroot@asterinas-debug:/# ",
+  "after_proc_tail": "grep -E \"^(State|VmRSS|Threads):\" /proc/351/status\nState:\tS (sleeping)\nVmRSS:\t301824 kB\nThreads:\t67\nroot@asterinas-debug:/# ",
+  "identity_after": {
+    "uid": 0,
+    "pid1": "systemd",
+    "boot_id": "3b62c322-6ed9-4094-95ad-7d7a1ec93c2c",
+    "root": "/dev/mmcblk0p2:ext2"
+  },
+  "post_state_tail": "cat /proc/sys/kernel/asterinas_reboot_watchdog; systemct \rl is-active asterinas-browser-web.service\n0\nactive\nroot@asterinas-debug:/# "
+}

@@ -15,21 +15,24 @@ use crate::{
         pseudofs::SockFs,
         utils::EndpointState,
     },
-    net::socket::{
-        Socket,
-        options::{
-            Error as SocketError, PeerCred, PeerGroups, SocketOption, macros::sock_option_mut,
-        },
-        private::SocketPrivate,
-        unix::{
-            CUserCred, UnixSocketAddr, cred::SocketCred, ctrl_msg::AuxiliaryData,
-            scm_graph::SocketNode,
-        },
-        util::{
-            ControlMessage, MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd,
-            SocketAddr,
+    net::{
+        net_ns::{NetNamespace, current_net_ns},
+        socket::{
+            Socket,
             options::{
-                GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
+                Error as SocketError, PeerCred, PeerGroups, SocketOption, macros::sock_option_mut,
+            },
+            private::SocketPrivate,
+            unix::{
+                CUserCred, UnixSocketAddr, cred::SocketCred, ctrl_msg::AuxiliaryData,
+                scm_graph::SocketNode,
+            },
+            util::{
+                ControlMessage, MessageHeader, RecvFlags, RecvOutput, SendFlags, SockShutdownCmd,
+                SocketAddr,
+                options::{
+                    GetSocketLevelOption, SetSocketLevelOption, SocketOptionSet, SocketTimeouts,
+                },
             },
         },
     },
@@ -50,6 +53,7 @@ pub struct UnixStreamSocket {
     socket_type: SockType,
     scm_node: SocketNode,
     pollee: Pollee,
+    net_ns: Arc<NetNamespace>,
     common: FileCommon,
 }
 
@@ -192,6 +196,7 @@ impl UnixStreamSocket {
             socket_type,
             scm_node: SocketNode::new(),
             pollee: Pollee::new(),
+            net_ns: current_net_ns(),
             common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }
@@ -215,9 +220,22 @@ impl UnixStreamSocket {
             cred.dup().restrict(),
             cred.restrict(),
         );
+        let net_ns = current_net_ns();
         (
-            Self::new_connected(conn_a, OptionSet::new(), is_nonblocking, socket_type),
-            Self::new_connected(conn_b, OptionSet::new(), is_nonblocking, socket_type),
+            Self::new_connected(
+                conn_a,
+                OptionSet::new(),
+                is_nonblocking,
+                socket_type,
+                net_ns.clone(),
+            ),
+            Self::new_connected(
+                conn_b,
+                OptionSet::new(),
+                is_nonblocking,
+                socket_type,
+                net_ns,
+            ),
         )
     }
 
@@ -226,6 +244,7 @@ impl UnixStreamSocket {
         options: OptionSet,
         is_nonblocking: bool,
         socket_type: SockType,
+        net_ns: Arc<NetNamespace>,
     ) -> Arc<Self> {
         let scm_node = SocketNode::new();
         if connected.has_owner() {
@@ -246,6 +265,7 @@ impl UnixStreamSocket {
             socket_type,
             scm_node,
             pollee: cloned_pollee,
+            net_ns,
             common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }
@@ -320,7 +340,9 @@ impl UnixStreamSocket {
 
     fn try_accept(&self, is_nonblocking: bool) -> Result<(Arc<dyn FileLike>, SocketAddr)> {
         match self.state.read().as_ref() {
-            State::Listen(listen) => listen.try_accept(self.socket_type, is_nonblocking) as _,
+            State::Listen(listen) => {
+                listen.try_accept(self.socket_type, is_nonblocking, self.net_ns.clone()) as _
+            }
             State::Init(_) | State::Connected(_) => {
                 return_errno_with_message!(Errno::EINVAL, "the socket is not listening")
             }
@@ -350,6 +372,10 @@ impl SocketPrivate for UnixStreamSocket {
 }
 
 impl Socket for UnixStreamSocket {
+    fn net_ns(&self) -> &NetNamespace {
+        &self.net_ns
+    }
+
     fn supports_partial_send(&self) -> bool {
         !self.is_seqpacket()
     }

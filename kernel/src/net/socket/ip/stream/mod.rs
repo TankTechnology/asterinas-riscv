@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use aster_bigtcp::{
-    socket::{NeedIfacePoll, RawTcpOption, RawTcpSetOption},
+    socket::{NeedIfacePoll, RawTcpOption, RawTcpSetOption, TCP_RECV_BUF_LEN},
     time::Duration,
     wire::IpEndpoint,
 };
@@ -30,6 +30,7 @@ use crate::{
     },
     net::{
         iface::Iface,
+        net_ns::{NetNamespace, current_net_ns},
         socket::{
             Socket,
             options::{
@@ -68,6 +69,7 @@ pub struct StreamSocket {
     timeouts: SocketTimeouts,
 
     pollee: Pollee,
+    net_ns: Arc<NetNamespace>,
     common: FileCommon,
 }
 
@@ -128,6 +130,7 @@ impl StreamSocket {
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
             pollee: Pollee::new(),
+            net_ns: current_net_ns(),
             common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }
@@ -138,6 +141,7 @@ impl StreamSocket {
         listener_timeouts: &SocketTimeouts,
         is_nonblocking: bool,
         family: IpAddressFamily,
+        net_ns: Arc<NetNamespace>,
     ) -> Arc<Self> {
         let options = connected_stream.raw_with(|raw_tcp_socket| {
             let mut options = OptionSet::new();
@@ -186,6 +190,7 @@ impl StreamSocket {
             options: RwLock::new(options),
             timeouts: listener_timeouts.clone(),
             pollee,
+            net_ns,
             common: FileCommon::new(SockFs::new_path(), status_flags),
         })
     }
@@ -291,6 +296,7 @@ impl StreamSocket {
                 &raw_option,
                 options.socket.reuse_addr(),
                 StreamObserver::new(self.pollee.clone()),
+                &self.net_ns,
             ) {
                 Ok(connecting_stream) => {
                     let iface_to_poll = connecting_stream.iface().clone();
@@ -359,6 +365,7 @@ impl StreamSocket {
                 &self.timeouts,
                 is_nonblocking,
                 self.family,
+                self.net_ns.clone(),
             );
             (accepted_socket as _, remote_endpoint.into())
         });
@@ -480,6 +487,14 @@ impl SocketPrivate for StreamSocket {
 }
 
 impl Socket for StreamSocket {
+    fn net_ns(&self) -> &NetNamespace {
+        &self.net_ns
+    }
+
+    fn max_recv_len(&self) -> Option<usize> {
+        Some(TCP_RECV_BUF_LEN)
+    }
+
     fn supports_partial_send(&self) -> bool {
         true
     }
@@ -495,7 +510,7 @@ impl Socket for StreamSocket {
 
         let can_reuse = self.options.read().socket.reuse_addr();
         let v6only = self.options.read().ipv6.v6only();
-        init_stream.bind(&endpoint, can_reuse, v6only)
+        init_stream.bind(&endpoint, can_reuse, v6only, &self.net_ns)
     }
 
     fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
@@ -544,6 +559,7 @@ impl Socket for StreamSocket {
                 &raw_option,
                 StreamObserver::new(self.pollee.clone()),
                 options.ipv6.v6only(),
+                &self.net_ns,
             ) {
                 Ok(listen_stream) => listen_stream,
                 Err((err, init_stream)) => {
@@ -631,9 +647,13 @@ impl Socket for StreamSocket {
             warn!("sending control message is not supported");
         }
 
-        self.block_on(IoEvents::OUT, self.timeouts.send_timeout(), || {
+        if flags.contains(SendFlags::MSG_DONTWAIT) {
             self.try_send(reader, flags)
-        })
+        } else {
+            self.block_on(IoEvents::OUT, self.timeouts.send_timeout(), || {
+                self.try_send(reader, flags)
+            })
+        }
 
         // TODO: Trigger `SIGPIPE` if the error code is `EPIPE` and `MSG_NOSIGNAL` is not specified
     }

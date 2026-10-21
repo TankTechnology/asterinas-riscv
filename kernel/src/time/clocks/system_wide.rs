@@ -323,6 +323,7 @@ pub(crate) fn update_coarse_clock() {
 
     // Serialize publishing both representations. Otherwise an older callback
     // could update vDSO after a newer callback has updated the syscall cache.
+    #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
     crate::vdso::on_coarse_clock_update(coarse_time.real_time, coarse_time.monotonic_time);
 }
 

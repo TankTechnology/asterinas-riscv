@@ -2,8 +2,11 @@
 
 use crate::{
     events::IoEvents,
-    net::socket::netlink::{
-        GroupIdSet, NetlinkSocketAddr, receiver::MessageQueue, table::BoundHandle,
+    net::{
+        net_ns::NetNamespace,
+        socket::netlink::{
+            GroupIdSet, NetlinkSocketAddr, receiver::MessageQueue, table::BoundHandle,
+        },
     },
     prelude::*,
     util::bpf::{self, SockFilter},
@@ -14,6 +17,7 @@ pub struct BoundNetlink<Message: 'static> {
     pub(in crate::net::socket::netlink) remote_addr: NetlinkSocketAddr,
     pub(in crate::net::socket::netlink) receive_queue: Arc<Mutex<MessageQueue<Message>>>,
     pub(in crate::net::socket::netlink) filter: Option<Arc<Vec<SockFilter>>>,
+    pub(in crate::net::socket::netlink) net_ns: Arc<NetNamespace>,
 }
 
 impl<Message: 'static> BoundNetlink<Message> {
@@ -21,12 +25,14 @@ impl<Message: 'static> BoundNetlink<Message> {
         handle: BoundHandle<Message>,
         message_queue: Arc<Mutex<MessageQueue<Message>>>,
         filter: Option<Arc<Vec<SockFilter>>>,
+        net_ns: Arc<NetNamespace>,
     ) -> Self {
         Self {
             handle,
             remote_addr: NetlinkSocketAddr::new_unspecified(),
             receive_queue: message_queue,
             filter,
+            net_ns,
         }
     }
 

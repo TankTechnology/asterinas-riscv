@@ -1,0 +1,8 @@
+before
+TCP large-buffer operation 0: received=-1 errno=14
+TCP large-buffer operation 2: received=-1 errno=14
+TCP user buffer prefault regression failed
+
+after
+TCP user buffer prefault regression passed.
+TCP user buffer prefault regression passed.

@@ -8,7 +8,9 @@ use super::SyscallReturn;
 use crate::{
     fs,
     fs::file::file_table::{RawFileDesc, get_file_fast},
+    net::socket::read_socket,
     prelude::*,
+    util::PrefaultedVmWriter,
 };
 
 static READ_DETAIL_PROFILE: AtomicBool = AtomicBool::new(false);
@@ -45,11 +47,17 @@ pub fn sys_read(
     let read_len = {
         if buf_len != 0 {
             let user_space = ctx.user_space();
-            if file.as_socket().is_some() {
-                user_space.prefault(user_buf_addr, buf_len, crate::vm::perms::VmPerms::WRITE)?;
+            if let Some(socket) = file.as_socket() {
+                let mut writer = PrefaultedVmWriter::new(
+                    user_space.writer(user_buf_addr, buf_len)?,
+                    &user_space,
+                    socket.max_recv_len().unwrap_or(usize::MAX),
+                )?;
+                read_socket(socket, &mut writer)
+            } else {
+                let mut writer = user_space.writer(user_buf_addr, buf_len)?;
+                file.read(&mut writer)
             }
-            let mut writer = user_space.writer(user_buf_addr, buf_len)?;
-            file.read(&mut writer)
         } else {
             file.read_bytes(&mut [])
         }

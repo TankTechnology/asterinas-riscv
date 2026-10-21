@@ -19,7 +19,6 @@ pub fn init() {
         aster_bigtcp::iface::configure_tcp_diagnostics(diagnostic_port);
     }
     iface::init();
-    socket::netlink::init();
     socket::vsock::init();
 }
 

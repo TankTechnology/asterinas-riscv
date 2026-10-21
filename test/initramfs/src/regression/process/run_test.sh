@@ -32,6 +32,7 @@ fi
 ./execve/execve_comm
 ./execve/execve_err
 ./execve/execve_memfd
+./execve/execve_shebang_argv
 ./execve/execve_mt_parent
 
 ./exit/exit_code
@@ -109,6 +110,7 @@ if [ "$(uname -m)" = "x86_64" ]; then
 fi
 
 ./cgroup.sh
+./cgroup_events
 ./syslog/syslog
 ./syslog/provenance
 ./group_session

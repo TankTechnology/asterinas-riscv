@@ -140,6 +140,7 @@ impl NsProxy {
                 posix_thread,
                 CapSet::SYS_ADMIN,
             ))?;
+            #[cfg(any(target_arch = "x86_64", target_arch = "riscv64"))]
             crate::vdso::disable_clock_fast_path_for_time_namespaces();
             let new_time_ns = TimeNamespace::new_child(user_ns.clone());
             if !is_unshare {

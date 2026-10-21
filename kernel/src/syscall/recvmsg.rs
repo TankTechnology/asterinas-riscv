@@ -31,7 +31,7 @@ pub fn sys_recvmsg(
 
     let (output, message_header) = {
         let mut io_vec_writer = c_user_msghdr.copy_writer_array_from_user(&user_space)?;
-        let _ = io_vec_writer.prefault(&user_space)?;
+        let _ = io_vec_writer.prefault(&user_space, socket.max_recv_len().unwrap_or(usize::MAX))?;
         socket
             .recvmsg(&mut io_vec_writer, flags)
             .map_err(|err| match err.error() {

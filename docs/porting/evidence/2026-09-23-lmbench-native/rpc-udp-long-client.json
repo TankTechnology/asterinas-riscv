@@ -1,0 +1,19 @@
+{
+  "scope": "QEMU RISC-V Asterinas diagnostic using a simple libtirpc client",
+  "instrumentation_branch": "codex/udp-rpc-instrument",
+  "instrumentation_commit": "14ec53a87",
+  "kernel_sha256": "35ac4ac6a2c9bc44fbaa10939809c4b18d4feda7e442ef614def585343502536",
+  "boot_id": "979d72f8-8853-4ed3-9be7-c4dbbec61098",
+  "server": "original pinned LMBench lat_rpc -s, UDP port 53239",
+  "client": "diagnostic libtirpc client with fork and zero-timeout select between calls",
+  "retry_interval_us": 2500,
+  "total_call_timeout_us": 25000,
+  "requested_calls": 50000,
+  "completed_calls": 8210,
+  "rpc_status": 5,
+  "client_exit_status": 1,
+  "elapsed_seconds": 5.414239,
+  "client_socket": {"port": 844, "rx_packets": 19941, "tx_packets": 19953, "rx_queue_rejections": 0, "max_rx_queued_bytes": 196, "rx_queued_bytes_at_close": 28},
+  "server_socket": {"port": 53239, "rx_packets": 19954, "tx_packets": 19954, "rx_queue_rejections": 0, "max_rx_queued_bytes": 572, "rx_queued_bytes_at_close": 0},
+  "interpretation": "The long simple client fails too; benchmp is not required. The exact cause of timeout despite accepted UDP replies remains unproven."
+}

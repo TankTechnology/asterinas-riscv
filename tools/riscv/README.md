@@ -355,6 +355,37 @@ This QEMU test validates the syscall and cross-hart software protocol. Physical
 instruction-cache behavior still requires a result from the exact board binary
 and configuration being claimed.
 
+## IP socket network namespace regression
+
+Run the short RISC-V QEMU gate when changing IP interface selection or socket
+network namespace behavior:
+
+```sh
+make run_kernel AUTO_TEST=ip_socket_netns TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+```
+
+It checks inherited and newly created UDP/TCP sockets after `unshare(CLONE_NEWNET)`,
+UDP automatic local-address selection, and TCP/UDP privileged-port binding.
+[The red/green QEMU evidence](../../docs/porting/evidence/2026-09-24-ip-socket-netns.md)
+records the observed behavior and separate dual-stack checks.
+
+## Netlink socket namespace regression
+
+Run this short RISC-V QEMU gate when changing netlink handling or network
+namespace behavior:
+
+```sh
+make run_kernel AUTO_TEST=netlink_route_netns TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode RELEASE=1
+```
+
+It checks route link and address dumps from sockets created before and after
+`unshare(CLONE_NEWNET)`, reuse of the same route and UEVENT port IDs across
+namespaces, and rejection of duplicates within one namespace. It then runs
+the existing `netlink_route`, `rtnl_err`, and `uevent_err` regressions.
+[The request-namespace evidence](../../docs/porting/evidence/2026-09-24-netlink-route-netns.md)
+and [the port-table evidence](../../docs/porting/evidence/2026-09-24-netlink-table-netns.md)
+record the red/green runs and current multicast-test limit.
+
 ## Unit tests
 
 Run the repository-contract tests before launching QEMU:
@@ -364,6 +395,136 @@ make test_riscv_uboot_booti_unit
 ```
 
 These tests validate immutable profile definitions, address ranges, generated commands, DTB policy, milestone accounting, result classification, cleanup, and artifact identity checks.
+
+## Basic LMBench compatibility smoke
+
+Build the repository-pinned LMBench package alone in the persistent dev container:
+
+```sh
+tools/docker/run_dev_container.sh -- nix-build test/initramfs/nix/default.nix \
+  --argstr target riscv64 -A benchmark.lmbench \
+  --out-link /root/asterinas/target/lmbench-riscv64
+```
+
+Install that package and its runtime closure in the guest.
+Nix-built executables use an absolute `/nix/store/...` ELF interpreter;
+copying only their `bin/` directory into a Debian guest is insufficient.
+Use `nix-store -qR` on the package output to list the required store paths.
+The existing benchmark initramfs already includes its Nix dependencies.
+
+Copy `tools/riscv/lmbench_smoke.py` to a guest with Python 3.10 or newer,
+then run it inside the guest:
+
+```sh
+python3 /path/to/lmbench_smoke.py \
+  --bin-dir /nix/store/<lmbench-package>/bin \
+  --output /tmp/lmbench-smoke.json
+```
+
+This executes 18 short checks: six syscalls, fork/exec/shell, pipe latency,
+two-process context switching, signal install/catch, 1 MiB memory read/write/copy,
+mmap, and page faults.
+It uses `-P 1 -W 0 -N 1`, `ENOUGH=10000`, and a ten-second per-case timeout.
+A missing measurement, nonzero exit, or timeout fails the run immediately.
+The report retains commands, outputs, binary hashes, durations, and units.
+`lat_proc` requires `/tmp/hello`; the runner verifies it with an empty environment
+and refuses to replace an existing different file.
+
+The Debian/QEMU smoke result establishes compatibility, not performance parity
+with Linux or physical-board performance.
+It is separate from the x86-oriented comparative benchmark runner and its
+longer sampling settings.
+[The first RISC-V run and replay instructions](../../docs/porting/evidence/2026-09-23-lmbench-basic.md)
+record all 18 checks passing in 8.417 seconds, excluding VM startup and staging.
+
+## Native LMBench `make results`
+
+The native workflow uses [asterinas/lmbench](https://github.com/asterinas/lmbench)
+at the same revision as the existing benchmark package. It runs upstream
+`config-run`, `results`, and `lmbench`, retaining their benchmark selection,
+sampling loops and raw result format. The native target is **`results`**;
+our guest entry also accepts `result` as an alias.
+
+Build a self-contained runtime archive inside the persistent container:
+
+```sh
+tools/docker/run_dev_container.sh -- python3 tools/riscv/lmbench_native.py \
+  package --output target/lmbench-native/runtime.tar.gz
+```
+
+Before booting a guest with an existing archive, check that it matches the
+current packager and carries both declared script adaptations:
+
+```sh
+python3 tools/riscv/lmbench_native.py verify \
+  --archive target/lmbench-native/runtime.tar.gz
+```
+
+This read-only preflight checks the pinned revision, RISC-V platform, packaged
+runner hash, GNUmakefile entry, and adapted scripts. It rejects older archives
+before a roughly ten-minute native ALL run. Packaging performs the same check
+before writing the checksum file; a changed runner requires rebuilding the
+archive. The guest's `make results` command remains the single test trigger.
+
+The archive contains the source, precompiled RISC-V executables, GNU make,
+rpcbind, net-tools and their complete Nix runtime closure. Install it once in
+a **disposable Debian guest**, with Python 3.10+, grep, awk, sed, tar and useradd.
+The guest kernel must expose `/proc/sys/net/ipv4/ip_local_reserved_ports`
+and preserve the script pathname in the interpreter's `argv` when running
+the Debian `/usr/bin/egrep` wrapper. The latter is fixed by the
+[shebang argument change](../../docs/porting/evidence/2026-09-24-shebang-script-argv/README.md).
+Keep the archive's `.sha256` file when transferring it and verify before extraction:
+
+```sh
+sha256sum -c runtime.tar.gz.sha256
+tar xzf runtime.tar.gz -C /
+getent passwd rpc >/dev/null || useradd --system --no-create-home \
+  --shell /usr/sbin/nologin rpc
+. /opt/lmbench/activate
+cd /opt/lmbench/src
+make results
+```
+
+The GNUmakefile invokes the native Makefile with `-o lmbench`, which skips only
+its compilation prerequisite. Native scripts still perform configuration and
+execute the suite. Two declared script adaptations supply the server addresses
+required by this fork and skip the two modern `netstat -i` table headings
+before invoking `ifconfig`. The upstream `scripts/version` uses its original
+`egrep` command. The native
+RISC-V package uses the pinned fork's original `lat_rpc` binary, including its
+25 ms total RPC deadline and 2.5 ms UDP retry interval. The original Makefile
+and native configuration/results scripts remain intact. Package identities,
+original script hashes, the `lat_rpc` hash and every adaptation are recorded
+in `asterinas-runtime.json`. Because the RPC retry interval is short, avoid
+sending repeated management-console commands while collecting native results;
+such commands caused intermittent RPC/UDP timeouts in QEMU diagnostics.
+The [current qualification](../../docs/porting/evidence/2026-09-24-native-lmbench-no-egrep/README.md)
+records the clean 109/109 QEMU run with these two adaptations and the original
+version probe.
+
+The automated configuration selects native **ALL**, one copy, 8 MiB, FASTMEM,
+file-system tests enabled, and loopback networking including RPC/HTTP.
+ALL means the native driver's selection, not every executable in the repository:
+for example `lat_fcntl`, `lat_fifo`, `lat_sem`, `lat_unix_connect`, and `lat_usleep`
+are additional standalone benchmarks. It does
+not select raw disks or remote machines, and always disables mailing results.
+Native repetitions are retained. This is an on-demand suite qualification;
+use the separate 18-case smoke for cheap daily checks. The default deadline is
+900 seconds; an explicit `LMBENCH_TIMEOUT=600 make results` tightens the bound.
+TCG output is not a physical hardware performance score.
+
+Raw native results remain in `results/riscv64-unknown-linux-gnu/`. Each attempt
+also creates `asterinas-runs/run-*/` with its configuration, input answers,
+stdout/stderr, rpcbind log, raw-result copy and `report.json`. Upstream scripts
+can exit zero despite individual failures: our entry additionally audits expected
+measurements, table sizes, curves and diagnostic output, returning nonzero for
+missing measurements, errors or timeout. A TLB estimate absent under TCG is
+reported as missing rather than invented. Failed attempts retain their evidence.
+The runner reserves `/tmp/hello` and refuses an existing file or symbolic link;
+it reaps its process groups and cleans its own helper on normal exit or interruption.
+
+[Native workflow evidence and remaining gaps](../../docs/porting/evidence/2026-09-23-lmbench-native.md)
+record the tested kernel and suite identities.
 
 ## Linux Test Project syscall gate
 

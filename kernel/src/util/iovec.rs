@@ -138,6 +138,42 @@ pub struct VmWriterArray<'a> {
     has_deferred_fault: bool,
 }
 
+/// A single user-space writer whose prefault error can be deferred until copied data reaches it.
+pub(crate) struct PrefaultedVmWriter<'a> {
+    writer: VmWriter<'a>,
+    has_deferred_fault: bool,
+}
+
+impl<'a> PrefaultedVmWriter<'a> {
+    pub(crate) fn new(
+        mut writer: VmWriter<'a>,
+        user_space: &CurrentUserSpace<'_>,
+        max_bytes: usize,
+    ) -> Result<Self> {
+        let prefault_len = writer.avail().min(max_bytes);
+        let has_deferred_fault = match prefault_range(
+            user_space,
+            writer.cursor().addr(),
+            prefault_len,
+            VmPerms::WRITE,
+        ) {
+            Ok(()) => false,
+            Err((error, valid_prefix)) => {
+                if valid_prefix == 0 {
+                    return Err(error);
+                }
+                writer.limit(valid_prefix);
+                true
+            }
+        };
+
+        Ok(Self {
+            writer,
+            has_deferred_fault,
+        })
+    }
+}
+
 impl<'a> VmReaderArray<'a> {
     /// Creates a new `VmReaderArray` from user-provided I/O vector buffers.
     ///
@@ -197,16 +233,6 @@ impl<'a> VmReaderArray<'a> {
         }
     }
 
-    /// Makes a previously prefaulted valid prefix a complete short input.
-    ///
-    /// Stream sends report progress instead of a later user-buffer fault, so
-    /// their transport must not observe the deferred fault after the array has
-    /// already been limited to the accessible prefix.
-    pub(crate) fn accept_prefaulted_prefix(&mut self) {
-        debug_assert!(self.has_deferred_fault);
-        self.has_deferred_fault = false;
-    }
-
     /// Creates a new `VmReaderArray`.
     #[cfg(ktest)]
     pub const fn new(readers: Box<[VmReader<'a>]>) -> Self {
@@ -241,18 +267,27 @@ impl<'a> VmWriterArray<'a> {
 
     /// Resolves user-backed pages before a network stack may enter atomic mode.
     ///
+    /// Only the first `max_bytes` are prefaulted; the rest remains available to the writer.
     /// If a fault follows a valid prefix, the prefix is retained and the fault is deferred until
     /// an I/O operation actually reaches it.
-    pub(crate) fn prefault(&mut self, user_space: &CurrentUserSpace<'_>) -> Result<Option<Error>> {
+    pub(crate) fn prefault(
+        &mut self,
+        user_space: &CurrentUserSpace<'_>,
+        max_bytes: usize,
+    ) -> Result<Option<Error>> {
         let mut prefaulted = 0;
         for writer in &self.writers {
+            let current_len = writer.avail().min(max_bytes - prefaulted);
+            if current_len == 0 {
+                break;
+            }
             match prefault_range(
                 user_space,
                 writer.cursor().addr(),
-                writer.avail(),
+                current_len,
                 VmPerms::WRITE,
             ) {
-                Ok(()) => prefaulted += writer.avail(),
+                Ok(()) => prefaulted += current_len,
                 Err((error, current_prefaulted)) => {
                     prefaulted += current_prefaulted;
                     if prefaulted == 0 {
@@ -353,6 +388,11 @@ pub trait MultiWrite {
         self.sum_lens() == 0
     }
 
+    /// Whether running out of writable space would reach a prefaulted user-page error.
+    fn has_deferred_fault(&self) -> bool {
+        false
+    }
+
     /// Skips the first `nbytes` bytes of data, or skips to the end if the writers have
     /// insufficient bytes.
     fn skip_some(&mut self, nbytes: usize);
@@ -425,6 +465,31 @@ impl dyn MultiRead + '_ {
     }
 }
 
+impl MultiWrite for PrefaultedVmWriter<'_> {
+    fn write(
+        &mut self,
+        reader: &mut VmReader<'_, Infallible>,
+    ) -> Result<usize, (OstdError, usize)> {
+        let copied = self.writer.write_fallible(reader)?;
+        if self.has_deferred_fault && reader.has_remain() {
+            return Err((OstdError::PageFault, copied));
+        }
+        Ok(copied)
+    }
+
+    fn sum_lens(&self) -> usize {
+        self.writer.avail()
+    }
+
+    fn has_deferred_fault(&self) -> bool {
+        self.has_deferred_fault
+    }
+
+    fn skip_some(&mut self, nbytes: usize) {
+        self.writer.skip(self.writer.avail().min(nbytes));
+    }
+}
+
 impl MultiWrite for VmWriterArray<'_> {
     fn write(
         &mut self,
@@ -449,6 +514,10 @@ impl MultiWrite for VmWriterArray<'_> {
 
     fn sum_lens(&self) -> usize {
         self.writers.iter().map(|vm_writer| vm_writer.avail()).sum()
+    }
+
+    fn has_deferred_fault(&self) -> bool {
+        self.has_deferred_fault
     }
 
     fn skip_some(&mut self, mut nbytes: usize) {

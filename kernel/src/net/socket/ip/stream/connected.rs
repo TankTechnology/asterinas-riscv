@@ -5,6 +5,7 @@ use aster_bigtcp::{
     socket::{NeedIfacePoll, RawTcpSetOption},
     wire::IpEndpoint,
 };
+use ostd::Error as OstdError;
 
 use super::observer::StreamObserver;
 use crate::{
@@ -79,9 +80,16 @@ impl ConnectedStream {
         } else {
             None
         };
-        let result = self
-            .tcp_conn
-            .recv(flags.receive_behavior(), |socket_buffer| {
+
+        let deferred_fault_at =
+            (trunc_len.is_none() && writer.has_deferred_fault()).then(|| writer.sum_lens());
+        let result = self.tcp_conn.recv(
+            flags.receive_behavior(),
+            |queued_len| match deferred_fault_at {
+                Some(writable_len) if queued_len > writable_len => Err(OstdError::PageFault),
+                _ => Ok(()),
+            },
+            |socket_buffer| {
                 if let Some(remaining) = trunc_len.as_mut() {
                     let recv_len = socket_buffer.len().min(*remaining);
                     *remaining -= recv_len;
@@ -89,7 +97,8 @@ impl ConnectedStream {
                 } else {
                     writer.write(&mut VmReader::from(socket_buffer))
                 }
-            });
+            },
+        );
 
         match result {
             Ok((recv_bytes, need_poll)) => Ok((recv_bytes.get(), need_poll)),

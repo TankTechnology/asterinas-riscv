@@ -129,7 +129,8 @@ pub(crate) fn classify_qemu_exit_status(exit_status: ExitStatus) -> QemuExit {
     };
 
     // For x86 QEMU with `isa-debug-exit`, the guest exit code is encoded as
-    // `(code << 1) | 1`. Do not decode QEMU's own failure exit code `1`.
+    // `(code << 1) | 1`. The RISC-V test finisher uses the same failure status.
+    // Do not decode QEMU's own failure exit code `1`.
     if qemu_exit_code == 1 {
         return QemuExit::Unknown;
     }

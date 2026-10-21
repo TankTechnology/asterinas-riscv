@@ -1,0 +1,443 @@
+[
+  {
+    "kind": "identity",
+    "elapsed": 2.969,
+    "value": {
+      "kernel": "5.13.0",
+      "arch": "riscv64",
+      "boot_id": "d252f587-daa1-4daf-b372-065264654e49",
+      "bundle": "16bf397f903a62b1fb91520f3614887021833af235c5368977b8ef50444e4e0c"
+    }
+  },
+  {
+    "kind": "smoke-report",
+    "elapsed": 12.45,
+    "value": {
+      "schema_version": 1,
+      "purpose": "compatibility-smoke",
+      "uname": [
+        "Linux",
+        "ubuntu-MS-7D76",
+        "5.13.0",
+        "#1 SMP Thu Jan  1 00:00:00 UTC 1970",
+        "riscv64"
+      ],
+      "bin_dir": "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin",
+      "parameters": {
+        "ENOUGH": "10000",
+        "parallelism": 1,
+        "warmup": 0,
+        "repetitions": 1,
+        "case_timeout_seconds": 10
+      },
+      "cases": [
+        {
+          "name": "syscall-getppid",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_syscall",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "null"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Simple syscall: 4.3957 microseconds\n",
+          "value": 4.3957,
+          "elapsed": 0.406
+        },
+        {
+          "name": "syscall-read",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_syscall",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "read"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Simple read: 5.4112 microseconds\n",
+          "value": 5.4112,
+          "elapsed": 0.424
+        },
+        {
+          "name": "syscall-write",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_syscall",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "write"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Simple write: 5.4574 microseconds\n",
+          "value": 5.4574,
+          "elapsed": 0.395
+        },
+        {
+          "name": "syscall-stat",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_syscall",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "stat",
+            "/tmp/lmbench-smoke-_cg1cxfh/file"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Simple stat: 16.2493 microseconds\n",
+          "value": 16.2493,
+          "elapsed": 0.389
+        },
+        {
+          "name": "syscall-fstat",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_syscall",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "fstat",
+            "/tmp/lmbench-smoke-_cg1cxfh/file"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Simple fstat: 4.9677 microseconds\n",
+          "value": 4.9677,
+          "elapsed": 0.385
+        },
+        {
+          "name": "syscall-open",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_syscall",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "open",
+            "/tmp/lmbench-smoke-_cg1cxfh/file"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Simple open/close: 24.0752 microseconds\n",
+          "value": 24.0752,
+          "elapsed": 0.434
+        },
+        {
+          "name": "process-fork",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_proc",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "fork"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Process fork+exit: 1863.5000 microseconds\n",
+          "value": 1863.5,
+          "elapsed": 0.404
+        },
+        {
+          "name": "process-exec",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_proc",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "exec"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Process fork+execve: 8749.0000 microseconds\n",
+          "value": 8749.0,
+          "elapsed": 0.435
+        },
+        {
+          "name": "process-shell",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_proc",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "shell"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Process fork+/bin/sh -c: 12393.0000 microseconds\n",
+          "value": 12393.0,
+          "elapsed": 0.42
+        },
+        {
+          "name": "pipe",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_pipe",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Pipe latency: 63.5906 microseconds\n",
+          "value": 63.5906,
+          "elapsed": 1.341
+        },
+        {
+          "name": "context-switch-2",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_ctx",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "-s",
+            "0",
+            "2"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "\n\"size=0k ovr=10.46\n2 26.91\n",
+          "value": 26.91,
+          "elapsed": 0.429
+        },
+        {
+          "name": "signal-install",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_sig",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "install"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Signal handler installation: 5.3572 microseconds\n",
+          "value": 5.3572,
+          "elapsed": 0.398
+        },
+        {
+          "name": "signal-catch",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_sig",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "catch"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Signal handler overhead: 13.7610 microseconds\n",
+          "value": 13.761,
+          "elapsed": 0.436
+        },
+        {
+          "name": "memory-rd",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/bw_mem",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "1m",
+            "rd"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "MB/s",
+          "status": 0,
+          "stdout": "",
+          "stderr": "1.05 21484.24\n",
+          "value": 21484.24,
+          "elapsed": 0.402
+        },
+        {
+          "name": "memory-wr",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/bw_mem",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "1m",
+            "wr"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "MB/s",
+          "status": 0,
+          "stdout": "",
+          "stderr": "1.05 15285.36\n",
+          "value": 15285.36,
+          "elapsed": 0.386
+        },
+        {
+          "name": "memory-cp",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/bw_mem",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "1m",
+            "cp"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "MB/s",
+          "status": 0,
+          "stdout": "",
+          "stderr": "1.05 9610.36\n",
+          "value": 9610.36,
+          "elapsed": 0.403
+        },
+        {
+          "name": "mmap",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_mmap",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "1m",
+            "/tmp/lmbench-smoke-_cg1cxfh/file"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "1.048576 121\n",
+          "value": 121.0,
+          "elapsed": 0.421
+        },
+        {
+          "name": "pagefault",
+          "argv": [
+            "/nix/store/nx5i8n4dvz49qbh2gglzlnbvqsd9qfxp-lmbench-riscv64-unknown-linux-gnu-0.1.0/bin/lat_pagefault",
+            "-P",
+            "1",
+            "-W",
+            "0",
+            "-N",
+            "1",
+            "/tmp/lmbench-smoke-_cg1cxfh/file"
+          ],
+          "timeout": false,
+          "passed": true,
+          "unit": "us",
+          "status": 0,
+          "stdout": "",
+          "stderr": "Pagefaults on /tmp/lmbench-smoke-_cg1cxfh/file: 2.1774 microseconds\n",
+          "value": 2.1774,
+          "elapsed": 0.436
+        }
+      ],
+      "passed": true,
+      "exec_preflight": "passed",
+      "planned_cases": 18,
+      "binary_sha256": {
+        "bw_mem": "65da5ccb1bf084843bd15c9585175f90acd75e7111358e0cd8bb24892c3506eb",
+        "hello": "8a8f6e16edaa74f6b70d06555f8dd13d7ba4629100e834dcdb7494e7590b430c",
+        "lat_ctx": "d3b2a6ff6bab80a5163b0cd669fe114c7d3a545bbfca68fdc56e5b9cfa0a4b88",
+        "lat_mmap": "655299edfe4a4be05e8b129c0324eb673c61bfd876e292bfdb685c61838bde78",
+        "lat_pagefault": "ab14d4bfa26e5a0384ed0678ffa35d9f73c065d1ff295ab62c772a228db3fdaa",
+        "lat_pipe": "c7beb523f0bf9d98dd78862fa453d2363f6c903f89d79b4f231725a840a98a88",
+        "lat_proc": "08d49de0c8c56100894ac99b692b26cf8933b784938ab5b31656267dbf5260c8",
+        "lat_sig": "72c2701a3f8cf655f2453950c931da8e4c3637765aceb276d6ec4bbef7541a7f",
+        "lat_syscall": "78c53462312dd1ca2a271cb06a9902564150219040b4c592e44fc263304d3673"
+      },
+      "elapsed": 8.417
+    }
+  },
+  {
+    "kind": "complete",
+    "elapsed": 12.451,
+    "value": "pass"
+  }
+]

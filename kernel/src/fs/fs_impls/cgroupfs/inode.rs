@@ -9,11 +9,90 @@ use crate::{
         vfs::{
             file_system::FileSystem,
             inode::{Extension, Inode, Metadata, RevalidationPolicy},
+            inode_ext::InodeExt,
+            notify::FsEvents,
             path::{is_dot, is_dotdot},
         },
     },
     prelude::*,
 };
+
+/// The canonical events attribute, including its removal state.
+///
+/// The weak reference avoids a cycle through the inode's owning cgroup node.
+/// Its mutex must be released before publishing filesystem events.
+pub(super) struct EventsInodeCache(Mutex<EventsInodeState>);
+
+struct EventsInodeState {
+    inode: Weak<CgroupInode>,
+    removed: bool,
+}
+
+impl EventsInodeCache {
+    pub(super) fn new() -> Self {
+        Self(Mutex::new(EventsInodeState {
+            inode: Weak::new(),
+            removed: false,
+        }))
+    }
+
+    fn get_or_init(&self, create: impl FnOnce() -> Arc<CgroupInode>) -> Arc<CgroupInode> {
+        let (inode, removed) = {
+            let mut state = self.0.lock();
+            if let Some(inode) = state.inode.upgrade() {
+                // `remove` owns retirement of an existing inode, including
+                // when a concurrent lookup observes the removal in progress.
+                return inode;
+            }
+            let inode = create();
+            // A deleted node's new inode stays private until retired, so a
+            // second lookup cannot subscribe while retirement is pending.
+            if !state.removed {
+                state.inode = Arc::downgrade(&inode);
+            }
+            (inode, state.removed)
+        };
+        if removed {
+            Self::retire(&inode);
+        }
+        inode
+    }
+
+    pub(super) fn notify_modified(&self) {
+        let inode = self.0.lock().inode.upgrade();
+        if let Some(inode) = inode {
+            let inode: &dyn Inode = inode.as_ref();
+            if let Some(publisher) = inode.fs_event_publisher() {
+                publisher.publish_event(FsEvents::MODIFY, None);
+            }
+        }
+    }
+
+    pub(super) fn remove(&self) {
+        let inode = {
+            let mut state = self.0.lock();
+            if state.removed {
+                return;
+            }
+            state.removed = true;
+            state.inode.upgrade()
+        };
+        if let Some(inode) = inode {
+            Self::retire(&inode);
+        }
+    }
+
+    fn retire(inode: &CgroupInode) {
+        let inode: &dyn Inode = inode;
+        let publisher = inode.fs_event_publisher_or_init();
+        publisher.publish_event(FsEvents::DELETE_SELF, None);
+        let removed = publisher.disable_new_and_remove_subscribers();
+        inode
+            .fs()
+            .fs_event_subscriber_stats()
+            .remove_subscribers(removed);
+    }
+}
 
 /// An inode abstraction used in the cgroup file system.
 pub(super) struct CgroupInode {
@@ -41,14 +120,15 @@ impl SysTreeInodeTy for CgroupInode {
     where
         Self: Sized,
     {
-        Arc::new_cyclic(|this| Self {
-            node_kind,
-            metadata,
-            extension: Extension::new(),
-            mode: RwLock::new(mode),
-            parent,
-            this: this.clone(),
-        })
+        if let SysTreeNodeKind::Attr(attr, node) = &node_kind
+            && attr.name().as_ref() == "cgroup.events"
+        {
+            let cgroup = Arc::downcast::<CgroupNode>(node.clone()).unwrap();
+            return cgroup
+                .events_inode
+                .get_or_init(|| Self::new_uncached(node_kind, metadata, mode, parent));
+        }
+        Self::new_uncached(node_kind, metadata, mode, parent)
     }
 
     fn node_kind(&self) -> &SysTreeNodeKind {
@@ -80,6 +160,24 @@ impl SysTreeInodeTy for CgroupInode {
         self.this
             .upgrade()
             .expect("invalid weak reference to `self`")
+    }
+}
+
+impl CgroupInode {
+    fn new_uncached(
+        node_kind: SysTreeNodeKind,
+        metadata: Metadata,
+        mode: InodeMode,
+        parent: Weak<Self>,
+    ) -> Arc<Self> {
+        Arc::new_cyclic(|this| Self {
+            node_kind,
+            metadata,
+            extension: Extension::new(),
+            mode: RwLock::new(mode),
+            parent,
+            this: this.clone(),
+        })
     }
 }
 
@@ -132,7 +230,11 @@ impl Inode for CgroupInode {
         // cgroup controller.
         child
             .downcast_ref::<Self>()
-            .is_some_and(|child| !matches!(child.node_kind(), SysTreeNodeKind::Attr(..)))
+            .is_some_and(|child| match child.node_kind() {
+                // This fixed attribute must retain its inode and inotify watches.
+                SysTreeNodeKind::Attr(attr, _) => attr.name().as_ref() == "cgroup.events",
+                _ => true,
+            })
     }
 
     fn revalidate_absent(&self, _name: &str) -> bool {

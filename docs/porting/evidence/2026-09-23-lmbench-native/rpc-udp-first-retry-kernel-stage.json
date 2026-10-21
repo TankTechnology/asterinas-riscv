@@ -1,0 +1,183 @@
+{
+  "source_revision": "afb47eddaf10a411c1ea3cb64965461f1308a6ea",
+  "diagnostic_source_branch": "codex/udp-rpc-instrument",
+  "diagnostic_source_commit": "a177804cf",
+  "original_lat_rpc_sha256": "baad9f0281f2e948eda0f950acc2fd8506530ccbbf676167cc4a7c19c0dd3908",
+  "run": "rpc-diagnostic-original-all-1",
+  "command": "cd /opt/lmbench/src && make results",
+  "qemu": "RISC-V virt TCG, SMP=4, 2 GiB",
+  "boot_id": "b27712c0-ab4f-4f98-ad1a-d6cf46fc5caf",
+  "kernel_sha256": "9fa3a6e0baf0f279a528e85181a362e494224f1dc7b3b21010c74c2277ccfb96",
+  "first_retry_xid": 1790899949,
+  "events": [
+    {
+      "seq": 16957,
+      "stage": "request_enqueue",
+      "port": 755,
+      "ns": 118118723900,
+      "global_delivered_wakes": 763399
+    },
+    {
+      "seq": 16958,
+      "stage": "request_dispatch",
+      "port": 755,
+      "ns": 118118732900,
+      "global_delivered_wakes": 763399
+    },
+    {
+      "seq": 16959,
+      "stage": "server_receive",
+      "port": 56083,
+      "ns": 118118736800,
+      "global_delivered_wakes": 763399
+    },
+    {
+      "seq": 16960,
+      "stage": "server_notify_begin",
+      "port": 56083,
+      "ns": 118118738000,
+      "global_delivered_wakes": 763399
+    },
+    {
+      "seq": 16961,
+      "stage": "server_notify_end",
+      "port": 56083,
+      "ns": 118118746700,
+      "global_delivered_wakes": 763400
+    },
+    {
+      "seq": 16962,
+      "stage": "request_enqueue",
+      "port": 755,
+      "ns": 118120881100,
+      "global_delivered_wakes": 763402
+    },
+    {
+      "seq": 16963,
+      "stage": "request_dispatch",
+      "port": 755,
+      "ns": 118120890000,
+      "global_delivered_wakes": 763402
+    },
+    {
+      "seq": 16964,
+      "stage": "server_receive",
+      "port": 56083,
+      "ns": 118120923600,
+      "global_delivered_wakes": 763402
+    },
+    {
+      "seq": 16965,
+      "stage": "server_notify_begin",
+      "port": 56083,
+      "ns": 118120925000,
+      "global_delivered_wakes": 763402
+    },
+    {
+      "seq": 16966,
+      "stage": "server_notify_end",
+      "port": 56083,
+      "ns": 118120927500,
+      "global_delivered_wakes": 763402
+    },
+    {
+      "seq": 16967,
+      "stage": "server_read",
+      "port": 56083,
+      "ns": 118121434300,
+      "global_delivered_wakes": 763402
+    },
+    {
+      "seq": 16968,
+      "stage": "reply_enqueue",
+      "port": 56083,
+      "ns": 118121500300,
+      "global_delivered_wakes": 763402
+    },
+    {
+      "seq": 16969,
+      "stage": "reply_dispatch",
+      "port": 56083,
+      "ns": 118121510100,
+      "global_delivered_wakes": 763402
+    },
+    {
+      "seq": 16970,
+      "stage": "client_receive",
+      "port": 755,
+      "ns": 118121514800,
+      "global_delivered_wakes": 763402
+    },
+    {
+      "seq": 16971,
+      "stage": "client_notify_begin",
+      "port": 755,
+      "ns": 118121516300,
+      "global_delivered_wakes": 763402
+    },
+    {
+      "seq": 16972,
+      "stage": "client_notify_end",
+      "port": 755,
+      "ns": 118121544100,
+      "global_delivered_wakes": 763403
+    },
+    {
+      "seq": 16973,
+      "stage": "server_read",
+      "port": 56083,
+      "ns": 118121662300,
+      "global_delivered_wakes": 763404
+    },
+    {
+      "seq": 16974,
+      "stage": "reply_enqueue",
+      "port": 56083,
+      "ns": 118121720700,
+      "global_delivered_wakes": 763404
+    },
+    {
+      "seq": 16975,
+      "stage": "reply_dispatch",
+      "port": 56083,
+      "ns": 118121729200,
+      "global_delivered_wakes": 763404
+    },
+    {
+      "seq": 16976,
+      "stage": "client_receive",
+      "port": 755,
+      "ns": 118121733800,
+      "global_delivered_wakes": 763404
+    },
+    {
+      "seq": 16977,
+      "stage": "client_notify_begin",
+      "port": 755,
+      "ns": 118121735100,
+      "global_delivered_wakes": 763404
+    },
+    {
+      "seq": 16978,
+      "stage": "client_notify_end",
+      "port": 755,
+      "ns": 118121736200,
+      "global_delivered_wakes": 763404
+    },
+    {
+      "seq": 16979,
+      "stage": "client_read",
+      "port": 755,
+      "ns": 118121783700,
+      "global_delivered_wakes": 763405
+    }
+  ],
+  "durations_us": {
+    "initial_send_to_retry": 2157.2,
+    "first_server_notify_end_to_read": 2687.6,
+    "initial_send_to_first_server_read": 2710.4,
+    "initial_send_to_matching_client_read": 3059.8
+  },
+  "global_delivered_wakes_during_first_server_notification": 1,
+  "interpretation": "The first non-rpcbind RPC/UDP retry in this native ALL run occurred 2157.2 us after the initial enqueue. The server had received and notified before that retry but did not read until 2687.6 us after its first notification ended. Packet dispatch and arrival preceded notification by microseconds. A global delivered-wake count rose by one during notification, but concurrent unrelated wakeups cannot be excluded and the counter cannot show whether the task was parked. This identifies the first retry in this run, not necessarily the cause of every later timeout."
+}

@@ -9,14 +9,18 @@
 //! loopback interface, initially down (as in Linux), which can be brought up
 //! from inside the namespace.
 //!
-//! Socket bind/connect and netlink route dumps operate on the interface view
-//! of the *current* namespace; packet polling of real devices stays global.
+//! IP socket bind/connect, interface ioctls, and netlink route requests use the
+//! socket's namespace, captured at creation. Netlink port tables and multicast
+//! groups are also per namespace. Packet polling of real devices stays global.
 
 use core::sync::atomic::{AtomicI32, Ordering};
 
 use spin::Once;
 
-use super::iface::{self, Iface};
+use super::{
+    iface::{self, Iface},
+    socket::netlink::NetlinkSocketTable,
+};
 use crate::{
     fs::pseudofs::{NsCommonOps, NsType, StashedDentry},
     prelude::*,
@@ -31,6 +35,7 @@ pub struct NetNamespace {
     owner: Arc<UserNamespace>,
     default_ipv4_tag: AtomicI32,
     loopback_ipv4_tag: AtomicI32,
+    netlink_sockets: Arc<NetlinkSocketTable>,
     stashed_dentry: StashedDentry,
 }
 
@@ -45,6 +50,7 @@ impl NetNamespace {
                 owner: UserNamespace::get_init_singleton().clone(),
                 default_ipv4_tag: AtomicI32::new(0),
                 loopback_ipv4_tag: AtomicI32::new(0),
+                netlink_sockets: Arc::new(NetlinkSocketTable::new()),
                 stashed_dentry: StashedDentry::new(),
             })
         })
@@ -61,6 +67,7 @@ impl NetNamespace {
             owner,
             default_ipv4_tag: AtomicI32::new(0),
             loopback_ipv4_tag: AtomicI32::new(0),
+            netlink_sockets: Arc::new(NetlinkSocketTable::new()),
             stashed_dentry: StashedDentry::new(),
         })
     }
@@ -68,6 +75,10 @@ impl NetNamespace {
     /// Returns the interfaces visible in this namespace.
     pub fn ifaces(&self) -> &[Arc<Iface>] {
         &self.ifaces
+    }
+
+    pub(in crate::net) fn netlink_sockets(&self) -> &Arc<NetlinkSocketTable> {
+        &self.netlink_sockets
     }
 
     /// Returns the owner user namespace of this namespace.
@@ -127,6 +138,13 @@ pub fn current_net_ns() -> Arc<NetNamespace> {
         .unwrap_or_else(|| NetNamespace::get_init_singleton().clone())
 }
 
+impl Drop for NetNamespace {
+    fn drop(&mut self) {
+        // The initial namespace is static; each child owns its loopback poll thread.
+        self.loopback().sched_poll().stop();
+    }
+}
+
 impl NsCommonOps for NetNamespace {
     const TYPE: NsType = NsType::Net;
 
@@ -143,5 +161,30 @@ impl NsCommonOps for NetNamespace {
 
     fn stashed_dentry(&self) -> &StashedDentry {
         &self.stashed_dentry
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::*;
+    use crate::thread::Thread;
+
+    #[ktest]
+    fn child_netns_poll_thread_releases_loopback() {
+        crate::time::clocks::init_for_ktest();
+        let net_ns = NetNamespace::new_child(UserNamespace::get_init_singleton().clone());
+        let loopback = Arc::downgrade(net_ns.loopback());
+        drop(net_ns);
+
+        for _ in 0..1000 {
+            if loopback.strong_count() == 0 {
+                break;
+            }
+            Thread::yield_now();
+        }
+
+        assert!(loopback.upgrade().is_none(), "loopback interface leaked");
     }
 }

@@ -8,6 +8,10 @@ mod poll;
 mod poll_iface;
 mod port;
 mod sched;
+mod stats;
+
+pub(crate) use stats::IfaceStats;
+pub use stats::IfaceStatsSnapshot;
 pub(crate) mod tcp_diagnostics;
 mod time;
 
