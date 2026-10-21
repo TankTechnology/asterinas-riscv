@@ -46,6 +46,7 @@ pub mod device;
 mod file;
 pub mod gem;
 mod prime;
+mod syncobj;
 mod ioctl;
 pub mod kms;
 mod minor;

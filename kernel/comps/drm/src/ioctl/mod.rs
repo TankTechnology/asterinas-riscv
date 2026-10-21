@@ -1,12 +1,55 @@
 // SPDX-License-Identifier: MPL-2.0
 
+mod atomic;
 mod gem;
 mod general;
 mod kms;
+mod syncobj;
+
+use alloc::{vec, vec::Vec};
 
 use aster_core::{dispatch_ioctl, prelude::*, util::ioctl::RawIoctl};
+use ostd::mm::VmIo;
+use ostd_pod::Pod;
 
 use crate::{file::DrmFile, has_current_sys_admin, minor::DrmMinorType};
+
+pub(super) fn copy_array_to_user<T: Pod>(
+    userspace: &impl VmIo,
+    user_ptr: u64,
+    user_capacity: u32,
+    values: &[T],
+) -> Result<()> {
+    let copy_count = core::cmp::min(user_capacity as usize, values.len());
+    if copy_count == 0 {
+        return Ok(());
+    }
+    if user_ptr == 0 {
+        return_errno_with_message!(Errno::EFAULT, "the DRM userspace array pointer is null");
+    }
+
+    userspace.write_slice(user_ptr as usize, &values[..copy_count])?;
+    Ok(())
+}
+
+pub(super) fn copy_array_from_user<T: Pod>(
+    userspace: &impl VmIo,
+    user_ptr: u64,
+    count: u32,
+) -> Result<Vec<T>> {
+    let count = count as usize;
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if user_ptr == 0 {
+        return_errno_with_message!(Errno::EFAULT, "the DRM userspace array pointer is null");
+    }
+
+    let mut values = vec![T::new_zeroed(); count];
+    userspace.read_slice(user_ptr as usize, values.as_mut_slice())?;
+
+    Ok(values)
+}
 
 impl DrmFile {
     pub(super) fn dispatch_ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
@@ -66,6 +109,55 @@ impl DrmFile {
             cmd @ PrimeFdToHandle => {
                 self.check_gem_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
                 self.drm_prime_fd_to_handle(cmd)
+            }
+            cmd @ WaitVblank => {
+                self.check_ioctl_access(DrmIoctlAccess::empty())?;
+                self.drm_wait_vblank(cmd)
+            }
+            cmd @ ModeAtomic => {
+                self.check_kms_ioctl_access(DrmIoctlAccess::MASTER)?;
+                self.drm_mode_atomic(cmd)
+            }
+            cmd @ ModeCreatePropBlob => {
+                self.check_kms_ioctl_access(DrmIoctlAccess::empty())?;
+                self.drm_mode_create_blob(cmd)
+            }
+            cmd @ ModeDestroyPropBlob => {
+                self.check_kms_ioctl_access(DrmIoctlAccess::empty())?;
+                self.drm_mode_destroy_blob(cmd)
+            }
+            // Sync-object ioctl cmds.
+            cmd @ SyncObjCreate => {
+                self.check_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
+                self.drm_syncobj_create(cmd)
+            }
+            cmd @ SyncObjDestroy => {
+                self.check_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
+                self.drm_syncobj_destroy(cmd)
+            }
+            cmd @ SyncObjWait => {
+                self.check_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
+                self.drm_syncobj_wait(cmd)
+            }
+            cmd @ SyncObjReset => {
+                self.check_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
+                self.drm_syncobj_reset(cmd)
+            }
+            cmd @ SyncObjSignal => {
+                self.check_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
+                self.drm_syncobj_signal(cmd)
+            }
+            cmd @ SyncObjTimelineWait => {
+                self.check_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
+                self.drm_syncobj_timeline_wait(cmd)
+            }
+            cmd @ SyncObjQuery => {
+                self.check_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
+                self.drm_syncobj_query(cmd)
+            }
+            cmd @ SyncObjTimelineSignal => {
+                self.check_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
+                self.drm_syncobj_timeline_signal(cmd)
             }
             // KMS ioctl cmds.
             cmd @ SetClientCap => {
@@ -209,8 +301,13 @@ mod ioctl_defs {
         kms::{
             DrmModeCrtc, DrmModeFbCmd, DrmModeFbDirtyCmd, DrmModeGetBlob, DrmModeGetConnector,
             DrmModeGetEncoder, DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeGetProperty,
-            DrmModeGetResources, DrmModeObjectGetProps, DrmSetClientCap,
+            DrmModeGetResources, DrmModeObjectGetProps, DrmSetClientCap, DrmWaitVblank,
         },
+        syncobj::{
+            DrmSyncObjArray, DrmSyncObjCreate, DrmSyncObjDestroy, DrmSyncObjTimelineArray,
+            DrmSyncObjTimelineWait, DrmSyncObjWait,
+        },
+        atomic::{DrmModeAtomic, DrmModeCreateBlob, DrmModeDestroyBlob},
     };
 
     // Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/drm/drm.h>
@@ -228,6 +325,18 @@ mod ioctl_defs {
     pub(super) type ModeDestroyDumb         = ioc!(DRM_IOCTL_MODE_DESTROY_DUMB,         b'd', 0xb4, InOutData<DrmModeDestroyDumb>);
     pub(super) type PrimeHandleToFd         = ioc!(DRM_IOCTL_PRIME_HANDLE_TO_FD,         b'd', 0x2d, InOutData<DrmPrimeHandle>);
     pub(super) type PrimeFdToHandle         = ioc!(DRM_IOCTL_PRIME_FD_TO_HANDLE,         b'd', 0x2e, InOutData<DrmPrimeHandle>);
+    pub(super) type WaitVblank             = ioc!(DRM_IOCTL_WAIT_VBLANK,               b'd', 0x3a, InOutData<DrmWaitVblank>);
+    pub(super) type ModeAtomic             = ioc!(DRM_IOCTL_MODE_ATOMIC,                b'd', 0xbc, InOutData<DrmModeAtomic>);
+    pub(super) type ModeCreatePropBlob      = ioc!(DRM_IOCTL_MODE_CREATEPROPBLOB,       b'd', 0xbd, InOutData<DrmModeCreateBlob>);
+    pub(super) type ModeDestroyPropBlob     = ioc!(DRM_IOCTL_MODE_DESTROYPROPBLOB,      b'd', 0xbe, InOutData<DrmModeDestroyBlob>);
+    pub(super) type SyncObjCreate           = ioc!(DRM_IOCTL_SYNCOBJ_CREATE,              b'd', 0xbf, InOutData<DrmSyncObjCreate>);
+    pub(super) type SyncObjDestroy          = ioc!(DRM_IOCTL_SYNCOBJ_DESTROY,             b'd', 0xc0, InOutData<DrmSyncObjDestroy>);
+    pub(super) type SyncObjWait             = ioc!(DRM_IOCTL_SYNCOBJ_WAIT,                b'd', 0xc3, InOutData<DrmSyncObjWait>);
+    pub(super) type SyncObjReset            = ioc!(DRM_IOCTL_SYNCOBJ_RESET,               b'd', 0xc4, InOutData<DrmSyncObjArray>);
+    pub(super) type SyncObjSignal           = ioc!(DRM_IOCTL_SYNCOBJ_SIGNAL,              b'd', 0xc5, InOutData<DrmSyncObjArray>);
+    pub(super) type SyncObjTimelineWait     = ioc!(DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT,       b'd', 0xca, InOutData<DrmSyncObjTimelineWait>);
+    pub(super) type SyncObjQuery            = ioc!(DRM_IOCTL_SYNCOBJ_QUERY,               b'd', 0xcb, InOutData<DrmSyncObjTimelineArray>);
+    pub(super) type SyncObjTimelineSignal   = ioc!(DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL,     b'd', 0xcd, InOutData<DrmSyncObjTimelineArray>);
     pub(super) type ModeGetResources        = ioc!(DRM_IOCTL_MODE_GETRESOURCES,         b'd', 0xa0, InOutData<DrmModeGetResources>);
     pub(super) type ModeGetCrtc             = ioc!(DRM_IOCTL_MODE_GETCRTC,              b'd', 0xa1, InOutData<DrmModeCrtc>);
     pub(super) type ModeSetCrtc             = ioc!(DRM_IOCTL_MODE_SETCRTC,              b'd', 0xa2, InOutData<DrmModeCrtc>);

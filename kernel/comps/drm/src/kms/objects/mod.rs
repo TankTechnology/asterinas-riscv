@@ -247,13 +247,29 @@ impl DrmKmsObjectStore {
         Ok(property)
     }
 
-    fn create_property_blob(&mut self, data: Box<[u8]>) -> Result<Arc<DrmPropertyBlob>> {
+    pub(crate) fn create_property_blob(
+        &mut self,
+        data: Box<[u8]>,
+    ) -> Result<Arc<DrmPropertyBlob>> {
         let id = self.alloc_object_id()?;
         let blob = Arc::new(DrmPropertyBlob::new(id, data));
 
         let previous = self.property_blobs.insert(id, blob.clone());
         debug_assert!(previous.is_none());
         Ok(blob)
+    }
+
+    /// Removes a property blob and frees its object ID.
+    ///
+    /// Only blobs created through `DRM_IOCTL_MODE_CREATEPROPBLOB` are
+    /// destroyable; the driver-owned blobs (such as `IN_FORMATS`) have no
+    /// userspace reference to them and stay for the device's lifetime.
+    pub(crate) fn destroy_property_blob(&mut self, id: KmsObjectId) -> Result<()> {
+        if self.property_blobs.remove(&id).is_none() {
+            return_errno_with_message!(Errno::ENOENT, "the DRM property blob does not exist");
+        }
+        self.free_object_id(id);
+        Ok(())
     }
 }
 

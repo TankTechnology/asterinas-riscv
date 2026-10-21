@@ -30,6 +30,7 @@ class VirtioGpuGateTests(unittest.TestCase):
             "tools/riscv/drm/xorg_check.sh",
             "tools/drm/build_probe.sh",
             "tools/drm/prime_check.sh",
+            "tools/drm/initramfs_probe_check.sh",
         ):
             with self.subTest(script=relative):
                 script = REPOSITORY_ROOT / relative
@@ -45,6 +46,7 @@ class VirtioGpuGateTests(unittest.TestCase):
             "tools/riscv/drm/xorg_check.sh",
             "tools/drm/build_probe.sh",
             "tools/drm/prime_check.sh",
+            "tools/drm/initramfs_probe_check.sh",
         ):
             with self.subTest(script=relative):
                 result = run("-n", str(REPOSITORY_ROOT / relative))
@@ -78,6 +80,32 @@ class VirtioGpuGateTests(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, source)
+
+    def test_p3_probes_cover_the_acceptance(self) -> None:
+        atomic = (REPOSITORY_ROOT / "tools/drm/atomic_probe.c").read_text()
+        for marker in (
+            "DRM_IOCTL_MODE_ATOMIC",
+            "DRM_CLIENT_CAP_ATOMIC",
+            "DRM_MODE_ATOMIC_TEST_ONLY",
+            "DRM_IOCTL_MODE_CREATEPROPBLOB",
+            "ATOMICPROBE_COMMIT",
+            "ATOMICPROBE_LEGACY",
+            "ATOMICPROBE_PASS",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, atomic)
+
+        sync = (REPOSITORY_ROOT / "tools/drm/sync_probe.c").read_text()
+        for marker in (
+            "DRM_IOCTL_SYNCOBJ_CREATE",
+            "DRM_IOCTL_SYNCOBJ_WAIT",
+            "DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL",
+            "DRM_IOCTL_SYNCOBJ_QUERY",
+            "SYNCPROBE_CROSS_PROCESS",
+            "SYNCPROBE_PASS",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, sync)
 
     def test_paint_client_is_self_contained(self) -> None:
         source = (REPOSITORY_ROOT / "tools/drm/x11_paint.c").read_text()

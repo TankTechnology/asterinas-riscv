@@ -12,6 +12,7 @@ use int_to_c_enum::TryFromInt;
 use ostd::mm::VmIo;
 use ostd_pod::Pod;
 
+use super::{copy_array_from_user, copy_array_to_user};
 use crate::{
     device::DrmFeatures,
     file::{DrmClientCaps, DrmFile},
@@ -33,6 +34,16 @@ use crate::{
     },
     utils::{DrmRect, DrmSize},
 };
+
+/// The framebuffer source of one modeset.
+pub(super) enum ScanoutSource {
+    /// Disable the CRTC.
+    None,
+    /// Reuse the framebuffer currently bound to the primary plane.
+    Current,
+    /// Use this framebuffer.
+    Framebuffer(Arc<DrmFramebuffer>),
+}
 
 impl DrmFile {
     pub(super) fn drm_set_client_cap(&self, cmd: ioctl_defs::SetClientCap) -> Result<i32> {
@@ -66,11 +77,16 @@ impl DrmFile {
                 parse_boolean_capability(args.value)?,
             ),
             DrmSetCapability::Atomic => {
-                // TODO: Support atomic modesetting.
-                return_errno_with_message!(
-                    Errno::EOPNOTSUPP,
-                    "the DRM device lacks atomic modesetting"
-                );
+                if self.device().as_kms_ops().is_none() {
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "the DRM device lacks atomic modesetting"
+                    );
+                }
+                self.set_client_caps(
+                    DrmClientCaps::ATOMIC,
+                    parse_boolean_capability(args.value)?,
+                )
             }
             DrmSetCapability::AspectRatio => self.set_client_caps(
                 DrmClientCaps::ASPECT_RATIO,
@@ -215,7 +231,6 @@ impl DrmFile {
 
     pub(super) fn drm_mode_set_crtc(&self, cmd: ioctl_defs::ModeSetCrtc) -> Result<i32> {
         let args: DrmModeCrtc = cmd.read()?;
-        let kms_ops = self.device().as_kms_ops().unwrap();
 
         // SETCRTC either configures a display mode or disables the CRTC and clears its state.
         // Enabling requires a framebuffer and connectors; disabling requires no connectors.
@@ -236,7 +251,10 @@ impl DrmFile {
 
         // This check only prevents an excessively large allocation for the connector ID array below.
         // The object-store lock need not be held beyond reading the count.
-        let connector_count = kms_ops
+        let connector_count = self
+            .device()
+            .as_kms_ops()
+            .unwrap()
             .mode_config()
             .object_store()
             .lock()
@@ -254,30 +272,65 @@ impl DrmFile {
             )
         })?;
 
-        // Serialize validation, driver application, and state publication with framebuffer removal.
-        let object_store = kms_ops.mode_config().object_store().lock();
-        let crtc = object_store
-            .lookup_crtc_by_id(args.crtc_id)
-            .ok_or(Errno::ENOENT)?;
-        let primary_plane = crtc.primary_plane().upgrade().ok_or(Errno::ENOENT)?;
-        let framebuffer = if display_mode.is_none() {
-            None
+        let scanout_source = if display_mode.is_none() {
+            ScanoutSource::None
         } else if args.fb_id == u32::MAX {
             // SETCRTC uses -1 to request the primary plane's currently bound framebuffer.
-            let Some(framebuffer) = primary_plane.state().lock().framebuffer().upgrade() else {
-                return_errno_with_message!(
-                    Errno::EINVAL,
-                    "the CRTC has no current framebuffer to reuse"
-                );
-            };
-            Some(framebuffer)
+            ScanoutSource::Current
         } else {
-            Some(self.lookup_framebuffer(args.fb_id).ok_or(Errno::ENOENT)?)
+            ScanoutSource::Framebuffer(self.lookup_framebuffer(args.fb_id).ok_or(Errno::ENOENT)?)
         };
         let source_rect = display_mode.map_or_else(DrmRect::default, |mode| {
             DrmRect::new(args.x, args.y, mode.hdisplay(), mode.vdisplay())
         });
-        let mut matched_connector_encoders: Vec<(&Arc<DrmConnector>, &Arc<DrmEncoder>)> =
+
+        self.commit_modeset(
+            args.crtc_id,
+            &connector_ids,
+            display_mode,
+            scanout_source,
+            source_rect,
+            false,
+        )
+    }
+
+    /// Applies one modeset to a CRTC.
+    ///
+    /// This is the single application path shared by legacy `SETCRTC` and the
+    /// atomic commit ioctl: it resolves the primary plane and framebuffer,
+    /// validates the connector routing, calls the driver, and only then
+    /// publishes the core state. With `test_only`, it stops after validation.
+    pub(super) fn commit_modeset(
+        &self,
+        crtc_id: u32,
+        connector_ids: &[u32],
+        display_mode: Option<DrmDisplayMode>,
+        scanout_source: ScanoutSource,
+        source_rect: DrmRect,
+        test_only: bool,
+    ) -> Result<i32> {
+        let kms_ops = self.device().as_kms_ops().unwrap();
+
+        // Serialize validation, driver application, and state publication with framebuffer removal.
+        let object_store = kms_ops.mode_config().object_store().lock();
+        let crtc = object_store
+            .lookup_crtc_by_id(crtc_id)
+            .ok_or(Errno::ENOENT)?;
+        let primary_plane = crtc.primary_plane().upgrade().ok_or(Errno::ENOENT)?;
+        let framebuffer = match scanout_source {
+            ScanoutSource::None => None,
+            ScanoutSource::Current => {
+                let Some(framebuffer) = primary_plane.state().lock().framebuffer().upgrade() else {
+                    return_errno_with_message!(
+                        Errno::EINVAL,
+                        "the CRTC has no current framebuffer to reuse"
+                    );
+                };
+                Some(framebuffer)
+            }
+            ScanoutSource::Framebuffer(framebuffer) => Some(framebuffer),
+        };
+        let mut matched_connector_encoders: Vec<(Arc<DrmConnector>, Arc<DrmEncoder>)> =
             Vec::with_capacity(connector_ids.len());
 
         if display_mode.is_some() {
@@ -307,7 +360,7 @@ impl DrmFile {
 
             // Build the replacement routing without changing the current associations.
             let crtc_index = crtc.index().get();
-            for connector_id in &connector_ids {
+            for connector_id in connector_ids {
                 let connector = object_store
                     .lookup_connector_by_id(*connector_id)
                     .ok_or(Errno::ENOENT)?;
@@ -351,8 +404,12 @@ impl DrmFile {
                     );
                 };
 
-                matched_connector_encoders.push((connector, matched_encoder));
+                matched_connector_encoders.push((connector.clone(), matched_encoder.clone()));
             }
+        }
+
+        if test_only {
+            return Ok(0);
         }
 
         // Apply the driver configuration before publishing the matching core state.
@@ -386,7 +443,7 @@ impl DrmFile {
             ));
             for (connector, encoder) in matched_connector_encoders {
                 encoder.set_current_crtc(Arc::downgrade(crtc));
-                connector.update_state(DrmConnectorState::new(Arc::downgrade(encoder)));
+                connector.update_state(DrmConnectorState::new(Arc::downgrade(&encoder)));
             }
         } else {
             crtc.update_state(DrmCrtcState::default());
@@ -394,6 +451,17 @@ impl DrmFile {
         }
 
         Ok(0)
+    }
+
+    /// Placeholder for `DRM_IOCTL_WAIT_VBLANK`.
+    ///
+    /// The driver has no vblank source yet (the scanout is presented by
+    /// transfer/flush, not by a refresh interrupt), so the ioctl reports
+    /// `EOPNOTSUPP` rather than a fake sequence. Clients treat this like an
+    /// unsupported vblank backend and fall back to their own timer.
+    pub(super) fn drm_wait_vblank(&self, cmd: ioctl_defs::WaitVblank) -> Result<i32> {
+        let _args: DrmWaitVblank = cmd.read()?;
+        return_errno_with_message!(Errno::EOPNOTSUPP, "vblank waits are not implemented")
     }
 
     pub(super) fn drm_mode_get_encoder(&self, cmd: ioctl_defs::ModeGetEncoder) -> Result<i32> {
@@ -920,42 +988,6 @@ fn parse_boolean_capability(value: u64) -> Result<bool> {
     }
 }
 
-fn copy_array_to_user<T: Pod>(
-    userspace: &impl VmIo,
-    user_ptr: u64,
-    user_capacity: u32,
-    values: &[T],
-) -> Result<()> {
-    let copy_count = core::cmp::min(user_capacity as usize, values.len());
-    if copy_count == 0 {
-        return Ok(());
-    }
-    if user_ptr == 0 {
-        return_errno_with_message!(Errno::EFAULT, "the DRM userspace array pointer is null");
-    }
-
-    userspace.write_slice(user_ptr as usize, &values[..copy_count])?;
-    Ok(())
-}
-
-fn copy_array_from_user<T: Pod>(
-    userspace: &impl VmIo,
-    user_ptr: u64,
-    count: u32,
-) -> Result<Vec<T>> {
-    let count = count as usize;
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-    if user_ptr == 0 {
-        return_errno_with_message!(Errno::EFAULT, "the DRM userspace array pointer is null");
-    }
-
-    let mut values = vec![T::new_zeroed(); count];
-    userspace.read_slice(user_ptr as usize, values.as_mut_slice())?;
-
-    Ok(values)
-}
 
 /// `struct drm_set_client_cap` in Linux.
 ///
@@ -1169,4 +1201,20 @@ pub(super) struct DrmModeObjectGetProps {
     count_props: u32,
     obj_id: u32,
     obj_type: u32,
+}
+
+/// `union drm_wait_vblank` in Linux, as a 24-byte opaque payload.
+///
+/// The request form is `{ type, sequence, signal }` and the reply form is
+/// `{ type, sequence, tval_sec, tval_usec }`; the union is 24 bytes on 64-bit.
+/// This implementation reads nothing from it.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/drm/drm.h#L1268-L1287>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub(super) struct DrmWaitVblank {
+    type_: u32,
+    sequence: u32,
+    value1: u64,
+    value2: u64,
 }

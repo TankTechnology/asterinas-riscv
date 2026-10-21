@@ -59,6 +59,8 @@ pub mod security;
 mod syscall;
 mod thread;
 mod time;
+
+pub use time::{monotonic_now, wait_until_or_timeout};
 pub mod util;
 // TODO: Add vDSO support for LoongArch.
 #[cfg(not(target_arch = "loongarch64"))]

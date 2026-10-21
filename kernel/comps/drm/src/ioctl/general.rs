@@ -86,10 +86,11 @@ impl DrmFile {
                     0
                 }
             }
-            DrmGetCapability::SyncObj => device.has_features(DrmFeatures::SYNCOBJ) as u64,
-            DrmGetCapability::SyncObjTimeline => {
-                device.has_features(DrmFeatures::SYNCOBJ_TIMELINE) as u64
-            }
+            // The sync-object implementation lives in the DRM core, so every
+            // device that reaches these ioctls has it. (Fence import/export is
+            // a separate capability and is not advertised.)
+            DrmGetCapability::SyncObj => 1,
+            DrmGetCapability::SyncObjTimeline => 1,
             _ => self.kms_get_cap(cap)?,
         };
 

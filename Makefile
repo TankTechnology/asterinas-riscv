@@ -674,6 +674,49 @@ test_riscv_prime:
 	@tools/drm/prime_check.sh --arch riscv64 --kernel "$(RISCV_PRIME_KERNEL)" \
 		--workspace "$(PRIME_WORKSPACE)-riscv" --timeout "$(PRIME_TIMEOUT)"
 
+# P3 probes: atomic KMS commits and the sync-object surface. Both are
+# architecture-neutral initramfs `/init` probes, so they need no Debian image.
+P3_PROBE_KERNEL_X86 ?= $(CURDIR)/target/prime/kernels/x86.elf
+P3_PROBE_KERNEL_RISCV ?= $(CURDIR)/target/prime/kernels/riscv.Image
+P3_PROBE_WORKSPACE ?= $(CURDIR)/target/p3
+P3_PROBE_TIMEOUT ?= 120
+
+.PHONY: test_x86_atomic
+test_x86_atomic:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch amd64 \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--probe tools/drm/atomic_probe.c \
+		--workspace "$(P3_PROBE_WORKSPACE)/atomic-x86" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+.PHONY: test_x86_syncobj
+test_x86_syncobj:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch amd64 \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--probe tools/drm/sync_probe.c \
+		--workspace "$(P3_PROBE_WORKSPACE)/sync-x86" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+.PHONY: test_riscv_atomic
+test_riscv_atomic:
+	@test -f "$(P3_PROBE_KERNEL_RISCV)" || { echo "P3_PROBE_KERNEL_RISCV is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch riscv64 \
+		--kernel "$(P3_PROBE_KERNEL_RISCV)" \
+		--probe tools/drm/atomic_probe.c \
+		--workspace "$(P3_PROBE_WORKSPACE)/atomic-riscv" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+.PHONY: test_riscv_syncobj
+test_riscv_syncobj:
+	@test -f "$(P3_PROBE_KERNEL_RISCV)" || { echo "P3_PROBE_KERNEL_RISCV is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch riscv64 \
+		--kernel "$(P3_PROBE_KERNEL_RISCV)" \
+		--probe tools/drm/sync_probe.c \
+		--workspace "$(P3_PROBE_WORKSPACE)/sync-riscv" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
 .PHONY: test_riscv_virtio_gpu_unit
 test_riscv_virtio_gpu_unit:
 	@python3 -W error::ResourceWarning -m unittest \

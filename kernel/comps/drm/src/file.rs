@@ -33,6 +33,7 @@ use sparse_id_alloc::SparseIdAlloc;
 use crate::{
     device::{DrmDevice, DrmMaster},
     gem::object::DrmGemObject,
+    syncobj::{DrmSyncObj, DrmSyncObjTable},
     has_current_sys_admin,
     kms::objects::{KmsObjectId, framebuffer::DrmFramebuffer},
     minor::{DrmMinor, DrmMinorType},
@@ -53,8 +54,11 @@ pub(super) struct DrmFile {
     minor: Arc<DrmMinor>,
 
     gem_handles: Mutex<DrmGemHandleTable>,
+    syncobjs: Mutex<DrmSyncObjTable>,
     /// Framebuffers created through this open file.
     framebuffers: Mutex<Vec<Arc<DrmFramebuffer>>>,
+    /// Property blobs created through `DRM_IOCTL_MODE_CREATEPROPBLOB`.
+    user_blobs: Mutex<Vec<KmsObjectId>>,
 }
 
 impl DrmFile {
@@ -97,7 +101,9 @@ impl DrmFile {
             minor,
 
             gem_handles: Mutex::new(DrmGemHandleTable::new()),
+            syncobjs: Mutex::new(DrmSyncObjTable::new()),
             framebuffers: Mutex::new(Vec::new()),
+            user_blobs: Mutex::new(Vec::new()),
         }
     }
 
@@ -191,6 +197,31 @@ impl DrmFile {
 
         gem_object.revoke_mmap(self.client_id);
         Ok(())
+    }
+
+    pub(super) fn add_user_blob(&self, blob_id: KmsObjectId) {
+        self.user_blobs.lock().push(blob_id);
+    }
+
+    pub(super) fn remove_user_blob(&self, blob_id: KmsObjectId) -> Result<()> {
+        let mut blobs = self.user_blobs.lock();
+        let Some(index) = blobs.iter().position(|blob| *blob == blob_id) else {
+            return_errno_with_message!(Errno::ENOENT, "the property blob was not created here");
+        };
+        blobs.swap_remove(index);
+        Ok(())
+    }
+
+    pub(super) fn add_syncobj(&self, object: Arc<DrmSyncObj>) -> Result<u32> {
+        self.syncobjs.lock().insert(object)
+    }
+
+    pub(super) fn lookup_syncobj(&self, handle: u32) -> Result<Arc<DrmSyncObj>> {
+        self.syncobjs.lock().lookup(handle)
+    }
+
+    pub(super) fn remove_syncobj(&self, handle: u32) -> Result<()> {
+        self.syncobjs.lock().remove(handle)
     }
 
     pub(super) fn add_framebuffer(&self, framebuffer: Arc<DrmFramebuffer>) {
@@ -355,11 +386,16 @@ impl Drop for DrmFile {
             for framebuffer in self.framebuffers.get_mut().drain(..) {
                 object_store.free_object_id(framebuffer.id());
             }
+            for blob_id in self.user_blobs.get_mut().drain(..) {
+                let _ = object_store.destroy_property_blob(blob_id);
+            }
         }
 
         for gem_object in self.gem_handles.get_mut().drain() {
             gem_object.revoke_mmap(self.client_id);
         }
+
+        self.syncobjs.get_mut().clear();
 
         let Some(auth) = self.auth.as_ref() else {
             return;
