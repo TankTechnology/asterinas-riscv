@@ -141,15 +141,79 @@ ASTERINAS_POWERVR_UMD status=ok stage=egl platform=<...> libsrv=24.2.6643903
    `/opt/pvr/lib`，并用 `__EGL_VENDOR_LIBRARY_FILENAMES` 指向
    `/opt/pvr/lib/50_pvr.json`。
 
+## P5b-2：上板复核 `DRI2: failed to create gbm device`
+
+板子恢复后按“先确认文件、再查节点、再逐层 EGL”的顺序复核。
+
+### 文件与节点
+
+guest 采用 rootfs 注入（RockOS 在 `/dev/mmcblk1p3`、guest 在
+`/dev/mmcblk1p2`，见 `2026-10-23-p5b-umd-first-contact.md`）：把 bundle
+复制到 guest `/opt/pvr`，未改 initramfs。sha256 与宿主 manifest 对比：
+
+| 文件 | sha256 |
+|---|---|
+| `bin/eglconfigs` | `bf2b7983ddc73a2bc97a60fc22297a8f3f4b9e56dfdbbf29ef18b037a25f7fb5` |
+| `lib/libsrv_um.so` | `fb2f574ea712955a0d97083da498368f839ae15fdc2c3ef8e869252f444c22ab` |
+| `lib/libpvr_dri_support.so` | `c6ea11587b9a0b945179b803224d727730914ba6debfc3c35904b7475f456c86` |
+| `lib/libusc.so` | `f212ddca793473f6eec0ec1d03a080fb230e276a18eb8eaaab0db47ce372f7dd` |
+| `dri/pvr_dri.so` | `c49db9691b40f05a44d05e79b8a574c07a523be06516af8e291afe4aa2990dbb` |
+
+全部匹配，排除“注入路径/文件缺失”。`/dev/dri` 同时存在：
+
+```text
+crw------- 1 root root 226,   0 /dev/dri/card0
+crw------- 1 root root 226, 128 /dev/dri/renderD128
+```
+
+因此不是“只有 renderD128、没有 card0”的情况。
+
+### EGL 结果（重复确认）
+
+```text
+EGL_PLATFORM=surfaceless EGL_RC=124   # 30 s 超时，未返回
+EGL_PLATFORM=device     EGL_RC=1      # eglGetDisplay failed
+EGL_PLATFORM=gbm        EGL_RC=1      # eglInitialize failed
+```
+
+`EGL_LOG_LEVEL=debug LIBGL_DEBUG=verbose` 的 gbm 输出仍为：
+
+```text
+libEGL debug: EGL user error 0x3001 (EGL_NOT_INITIALIZED) in eglInitialize: DRI2: failed to create gbm device
+libEGL debug: EGL user error 0x3001 (EGL_NOT_INITIALIZED) in eglInitialize
+eglInitialize failed
+```
+
+### 本轮新增观察
+
+- `ldd /opt/pvr/bin/eglconfigs` 在 guest 里会阻塞（未能在限定时间内返回），
+  因此本轮不能把 `ldd` 作为依赖完整性证据；文件哈希已足以排除缺文件。
+- 直接 `gbm_create_device` 的串口探针不稳定（长命令行/前台任务竞争），
+  结果不足以判定根因；不把它写成结论。
+- 失败点可以确定在 `gbm_create_device`/pvr DRI screen 初始化，而不是
+  `eglGetDisplay` 或文件缺失；surfaceless 的 30 s 阻塞说明 pvr 初始化
+  路径里有等待（可能是 PVR bridge/event，尚未确认）。
+
+### P5b-3 建议顺序
+
+1. 用 `strace -f -tt`（若 guest 有）或 `LD_DEBUG=libs` 抓
+   `gbm_create_device` 的系统调用/库加载，确认阻塞在哪个 ioctl；
+2. 同时观察内核串口 `ASTERINAS_POWERVR_BRIDGE ... unsupported=` 是否增长，
+   判断是否走进了未实现的 bridge 命令；
+3. 用 guest 自带 Mesa 的 `LIBGL_ALWAYS_SOFTWARE=1` + surfaceless 做基线，
+   区分“EGL 栈本身”与“pvr 驱动初始化”；
+4. 若确认是 Mesa 22/guest Mesa 24 ABI 问题，再把 RockOS 的
+   `libEGL_mesa`/`libglapi`/`libgbm` 放入 `/opt/pvr/lib` 重试。
+
 ## 下一步
 
-1. 板子物理复位后先跑 `p5b-stage.sh` + guest 命令，记录
+1. 板子物理复位后先跑 `p5b-stage.sh` + rootfs 注入 + guest 命令，记录
    `ASTERINAS_POWERVR_UMD`；
 2. 若 `eglconfigs` 通过，P5c 尝试
    `Xorg -config /etc/X11/xorg.conf.d/10-pvr.conf`（或既有 modesetting
    配置）+ `MESA_LOADER_DRIVER_OVERRIDE=pvr`，观察 glamor 是否选择 EGL；
 3. 若失败，按“缺库 → glibc → loader/驱动名 → EGL 平台 → DRM 节点”
-   顺序记录，不修改内核。
+   顺序记录，并优先做 P5b-3 的 strace/LD_DEBUG 定位，不修改内核。
 
 ## 边界
 
