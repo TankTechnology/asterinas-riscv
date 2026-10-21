@@ -641,6 +641,31 @@ test_riscv_rootfs_builder_image_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_riscv_rootfs_builder_image -v
 
+# RISC-V virtio-gpu gate: build the shared legacy-KMS probe as an initramfs
+# `/init`, boot the Sv39 Image with a virtio-gpu MMIO device, require
+# DRMPROBE_PASS and a four-bar screendump. The kernel is the same tree that
+# provides the x86 gate; only the transport differs.
+#   RISCV_GPU_KERNEL  target/osdk/asterinas-osdk-bin.Image (Sv39)
+#                     (build with `make kernel TARGET_ARCH=riscv64
+#                     FEATURES=riscv_sv39_mode`)
+RISCV_GPU_KERNEL ?= $(CURDIR)/target/osdk/asterinas-osdk-bin.Image
+RISCV_GPU_WORKSPACE ?= $(CURDIR)/target/riscv-gpu/gate
+RISCV_GPU_TIMEOUT ?= 180
+
+.PHONY: test_riscv_virtio_gpu_unit
+test_riscv_virtio_gpu_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_riscv_virtio_gpu_gate -v
+
+.PHONY: test_riscv_virtio_gpu
+test_riscv_virtio_gpu:
+	@test -f "$(RISCV_GPU_KERNEL)" || { echo "RISCV_GPU_KERNEL is required" >&2; exit 2; }
+	@echo "riscv-virtio-gpu: kernel=$(RISCV_GPU_KERNEL)"
+	@tools/riscv/drm/virtio_gpu_check.sh \
+		--kernel "$(RISCV_GPU_KERNEL)" \
+		--workspace "$(RISCV_GPU_WORKSPACE)" \
+		--timeout "$(RISCV_GPU_TIMEOUT)"
+
 .PHONY: test_x86_debian_tooling_unit
 test_x86_debian_tooling_unit:
 	@python3 -W error::ResourceWarning -m unittest \
