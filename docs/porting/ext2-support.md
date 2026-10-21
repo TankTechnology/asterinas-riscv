@@ -122,6 +122,7 @@ linear; `e2fsck -D` can rebuild an index later.
 | Fast symlinks | ✅ | target up to 60 bytes, stored in `i_block` |
 | Block-backed symlinks | ✅ | conversion in both directions |
 | Hard links | ✅ | link count and `i_blocks` accounting |
+| Sticky-bit removal | ✅ | a non-owner cannot unlink or rmdir another user's entries in a `1777` directory; enforced in the VFS before the filesystem call |
 | `mknod` (char/block device, FIFO) | ✅ | device id encoded in `i_block` |
 | Sockets on disk | ✅ | as an inode type |
 | Ownership, mode, timestamps | ✅ | uid/gid/mode full; nanosecond timestamps for inodes larger than 128 bytes (see below) |
@@ -418,6 +419,14 @@ checks that named users are masked, the group class applies, other matches
 nothing and root bypasses, and that `chmod` rewrites the mask (or the group
 entry of a minimal ACL) consistently with the new mode; it re-runs every
 decision after a remount and requires `e2fsck -fn`.  Result: **PASS**.
+
+`fs_sticky_bit_check.sh` (`make test_x86_debian_fs_sticky_bit`) creates a
+`1777` directory and runs a child as uid 1000: `unlink` of a root-owned file
+and `rmdir` of an empty or non-empty root-owned directory must fail with
+`EPERM` (not `ENOTEMPTY`), the child can still remove the file it created
+itself, and a plain `0777` directory stays unaffected.  The tree is
+re-checked after a remount and the image must pass `e2fsck -fn`.  Result:
+**PASS**.
 
 `fs_punch_hole_check.sh` (`make test_x86_debian_fs_punch_hole`) covers holes
 inside the direct blocks, across the direct/single-indirect boundary, up to
