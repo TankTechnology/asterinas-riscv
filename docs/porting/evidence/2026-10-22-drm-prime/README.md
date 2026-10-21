@@ -103,6 +103,9 @@ make kernel TARGET_ARCH=riscv64 FEATURES=riscv_sv39_mode
   that import the descriptor rather than `fstat` it are unaffected.
 - The next consumer is X DRI3: the server receives the DRM fd and a dma-buf fd
   from its client and imports both. The parent-process and `SCM_RIGHTS` paths
-  the probe exercises are exactly what that handshake needs; wiring a DRI3
-  client into the desktop is the remaining work for this milestone, alongside
-  P3's atomic/syncobj surface.
+  the probe exercises are exactly what that handshake needs. On the RISC-V
+  desktop image the server currently advertises `DRI2` and `GLX` but not
+  `DRI3`/`PRESENT` (`xdpyinfo -queryExtensions`), and `glxinfo -B` reports
+  llvmpipe with direct rendering. Enabling DRI3 is the remaining work for this
+  milestone, alongside P3's atomic/syncobj surface — the fd-passing primitives
+  it needs are in place.

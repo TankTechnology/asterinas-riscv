@@ -35,6 +35,18 @@ if [ ! -S /tmp/.X11-unix/X0 ]; then
     exit 1
 fi
 
+# Report which presentation extensions the server exposes on this device, and
+# what Mesa reports for GLX, so the DRI3 half of PRIME is observable from the
+# serial console.
+if command -v xdpyinfo >/dev/null 2>&1; then
+    echo XORG_GATE_EXTENSIONS
+    xdpyinfo -queryExtensions 2>/dev/null | grep -E "DRI3|DRI2|PRESENT|GLX" || true
+fi
+if command -v glxinfo >/dev/null 2>&1; then
+    echo XORG_GATE_GLXINFO
+    glxinfo -B 2>/dev/null | grep -E "renderer|OpenGL version|direct rendering" || true
+fi
+
 if /usr/local/bin/x11-paint 0; then
     echo XORG_GATE_PAINT=0
 else
