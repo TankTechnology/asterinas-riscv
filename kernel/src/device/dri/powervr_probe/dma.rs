@@ -48,7 +48,7 @@ pub(super) const RGXFWIF_KCCB_CMD_STATEFLAGS_CTRL: u32 = 206 | (0x2abc << 16);
 /// The vendor path uses this as a flush "job" with `bDMContext = TRUE` and a
 /// compute context; the firmware interface also allows a context-free range
 /// flush (`bDMContext = FALSE`, address/size), which is the B2 no-op flush.
-pub(super) const RGXFWIF_KCCB_CMD_SLCFLUSHINVAL: u32 = 102 | (0x2abc << 16);
+pub(super) const RGXFWIF_KCCB_CMD_SLCFLUSHINVAL: u32 = 104 | (0x2abc << 16);
 pub(super) const RGXFWIF_KCCB_RTN_SLOT_NO_RESPONSE: u32 = 0;
 pub(super) const RGXFWIF_KCCB_RTN_SLOT_CMD_EXECUTED: u32 = 1;
 const KCCB_SLOT_BYTES: usize = 64;
@@ -1200,6 +1200,20 @@ mod tests {
         assert_eq!(&bytes[..4], b"PVS1");
         assert_eq!(&bytes[4..8], &1u32.to_le_bytes());
         assert_eq!(&bytes[16..20], &2u32.to_le_bytes());
+    }
+
+    #[ktest]
+    fn gpu_kccb_command_types_match_the_vendor_enum() {
+        // vendor `rgx_fwif_km.h`: HEALTH_CHECK=111, MMUCACHE=102,
+        // SLCFLUSHINVAL=104, STATEFLAGS_CTRL=206, all with magic 0x2ABC.
+        assert_eq!(RGXFWIF_KCCB_CMD_HEALTH_CHECK, 111 | (0x2abc << 16));
+        assert_eq!(RGXFWIF_KCCB_CMD_STATEFLAGS_CTRL, 206 | (0x2abc << 16));
+        assert_eq!(RGXFWIF_KCCB_CMD_SLCFLUSHINVAL, 104 | (0x2abc << 16));
+        assert_ne!(
+            RGXFWIF_KCCB_CMD_SLCFLUSHINVAL,
+            102 | (0x2abc << 16),
+            "102 is MMUCACHE, not SLCFLUSHINVAL"
+        );
     }
 
     fn stage_all_segments(stage: &mut GpuFirmwareStage) {
