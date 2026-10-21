@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use aster_core::prelude::*;
+use alloc::{boxed::Box, sync::Arc};
+
+use aster_core::{fs::file::create_anon_file, prelude::*};
 use ostd::mm::PAGE_SIZE;
 
-use crate::{file::DrmFile, ioctl::ioctl_defs};
+use crate::{
+    file::DrmFile,
+    ioctl::ioctl_defs,
+    prime::{DmaBufFile, DRM_BUF_FILE_NAME},
+};
 
 impl DrmFile {
     pub(super) fn drm_gem_close(&self, cmd: ioctl_defs::GemClose) -> Result<i32> {
@@ -69,7 +75,58 @@ impl DrmFile {
 
         Ok(0)
     }
+
+    pub(super) fn drm_prime_handle_to_fd(&self, cmd: ioctl_defs::PrimeHandleToFd) -> Result<i32> {
+        let mut args: DrmPrimeHandle = cmd.read()?;
+
+        // The only flags the UAPI defines are `DRM_CLOEXEC` and `DRM_RDWR`.
+        if args.flags & !(DRM_CLOEXEC | DRM_RDWR) != 0 {
+            return_errno_with_message!(Errno::EINVAL, "the PRIME flags are invalid");
+        }
+
+        let object = self.lookup_gem_object(args.handle)?;
+        let buffer = DmaBufFile::new(object, self.minor().clone());
+        args.fd = create_anon_file(
+            Box::new(buffer),
+            args.flags & DRM_CLOEXEC != 0,
+            DRM_BUF_FILE_NAME,
+        )?;
+
+        if let Err(err) = cmd.write(&args) {
+            // The descriptor is only reachable through the argument struct
+            // that just failed to reach userspace; there is no remaining
+            // owner that could close it here, so it is left to process exit.
+            return Err(err);
+        }
+
+        Ok(0)
+    }
+
+    pub(super) fn drm_prime_fd_to_handle(&self, cmd: ioctl_defs::PrimeFdToHandle) -> Result<i32> {
+        let mut args: DrmPrimeHandle = cmd.read()?;
+
+        let (object, exporter) = aster_core::fs::file::with_anon_file_as::<DmaBufFile, _>(
+            args.fd,
+            |buffer| (buffer.object(), buffer.minor()),
+        )?;
+        if !Arc::ptr_eq(&exporter, self.minor()) {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "the dma-buf was exported by a different DRM device"
+            );
+        }
+
+        args.handle = self.add_gem_object(object)?;
+        cmd.write(&args)?;
+
+        Ok(0)
+    }
 }
+
+/// `DRM_CLOEXEC`: close the exported descriptor on `exec`.
+const DRM_CLOEXEC: u32 = 1 << 0;
+/// `DRM_RDWR`: export the descriptor readable and writable.
+const DRM_RDWR: u32 = 1 << 1;
 
 /// `struct drm_gem_close` in Linux.
 ///
@@ -114,4 +171,15 @@ pub(super) struct DrmModeMapDumb {
 #[derive(Clone, Copy, Debug, Pod)]
 pub(super) struct DrmModeDestroyDumb {
     handle: u32,
+}
+
+/// `struct drm_prime_handle`, shared by both PRIME ioctls.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/drm/drm.h#L679-L701>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub(super) struct DrmPrimeHandle {
+    handle: u32,
+    flags: u32,
+    fd: i32,
 }

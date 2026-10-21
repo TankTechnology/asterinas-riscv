@@ -41,6 +41,18 @@ impl AnonInodeFs {
         )
     }
 
+    /// Creates a pseudo `Path` for the shared inode with a fixed display name.
+    ///
+    /// This is the form kernel subsystems use for objects such as dma-buf
+    /// descriptors, whose name does not depend on the inode.
+    pub(crate) fn new_static_path(name: &'static str) -> Path {
+        Path::new_static_pseudo(
+            Self::mount_node().clone(),
+            Self::shared_inode().clone(),
+            name,
+        )
+    }
+
     /// Returns the pseudo mount node of the anonymous inode file system.
     pub(crate) fn mount_node() -> &'static Arc<Mount> {
         static ANON_INODEFS_MOUNT: Once<Arc<Mount>> = Once::new();

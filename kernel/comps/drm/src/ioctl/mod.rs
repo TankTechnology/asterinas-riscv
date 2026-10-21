@@ -59,6 +59,14 @@ impl DrmFile {
                 self.check_gem_ioctl_access(DrmIoctlAccess::empty())?;
                 self.drm_mode_destroy_dumb(cmd)
             }
+            cmd @ PrimeHandleToFd => {
+                self.check_gem_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
+                self.drm_prime_handle_to_fd(cmd)
+            }
+            cmd @ PrimeFdToHandle => {
+                self.check_gem_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
+                self.drm_prime_fd_to_handle(cmd)
+            }
             // KMS ioctl cmds.
             cmd @ SetClientCap => {
                 self.check_kms_ioctl_access(DrmIoctlAccess::empty())?;
@@ -194,7 +202,9 @@ mod ioctl_defs {
     };
 
     use crate::ioctl::{
-        gem::{DrmGemClose, DrmModeCreateDumb, DrmModeDestroyDumb, DrmModeMapDumb},
+        gem::{
+            DrmGemClose, DrmModeCreateDumb, DrmModeDestroyDumb, DrmModeMapDumb, DrmPrimeHandle,
+        },
         general::{DrmAuth, DrmGetCap, DrmUnique, DrmVersion},
         kms::{
             DrmModeCrtc, DrmModeFbCmd, DrmModeFbDirtyCmd, DrmModeGetBlob, DrmModeGetConnector,
@@ -216,6 +226,8 @@ mod ioctl_defs {
     pub(super) type ModeCreateDumb          = ioc!(DRM_IOCTL_MODE_CREATE_DUMB,          b'd', 0xb2, InOutData<DrmModeCreateDumb>);
     pub(super) type ModeMapDumb             = ioc!(DRM_IOCTL_MODE_MAP_DUMB,             b'd', 0xb3, InOutData<DrmModeMapDumb>);
     pub(super) type ModeDestroyDumb         = ioc!(DRM_IOCTL_MODE_DESTROY_DUMB,         b'd', 0xb4, InOutData<DrmModeDestroyDumb>);
+    pub(super) type PrimeHandleToFd         = ioc!(DRM_IOCTL_PRIME_HANDLE_TO_FD,         b'd', 0x2d, InOutData<DrmPrimeHandle>);
+    pub(super) type PrimeFdToHandle         = ioc!(DRM_IOCTL_PRIME_FD_TO_HANDLE,         b'd', 0x2e, InOutData<DrmPrimeHandle>);
     pub(super) type ModeGetResources        = ioc!(DRM_IOCTL_MODE_GETRESOURCES,         b'd', 0xa0, InOutData<DrmModeGetResources>);
     pub(super) type ModeGetCrtc             = ioc!(DRM_IOCTL_MODE_GETCRTC,              b'd', 0xa1, InOutData<DrmModeCrtc>);
     pub(super) type ModeSetCrtc             = ioc!(DRM_IOCTL_MODE_SETCRTC,              b'd', 0xa2, InOutData<DrmModeCrtc>);

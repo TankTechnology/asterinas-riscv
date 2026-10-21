@@ -2,6 +2,7 @@
 
 //! File-level abstractions and management.
 
+mod anon;
 mod file_attr;
 mod file_common;
 mod file_handle;
@@ -11,6 +12,7 @@ mod fs_config_file;
 mod inode_attr;
 mod inode_handle;
 
+pub use anon::{create_anon_file, with_anon_file_as};
 pub use file_attr::status_flags::{SettableStatusFlags, StatusFlags};
 pub(crate) use file_attr::{
     access_mode::AccessMode, creation_flags::CreationFlags, open_args::OpenArgs,

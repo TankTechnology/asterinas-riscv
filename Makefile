@@ -652,6 +652,28 @@ RISCV_GPU_KERNEL ?= $(CURDIR)/target/osdk/asterinas-osdk-bin.Image
 RISCV_GPU_WORKSPACE ?= $(CURDIR)/target/riscv-gpu/gate
 RISCV_GPU_TIMEOUT ?= 180
 
+# PRIME / dma-buf gate: export a dumb buffer as a dma-buf, map and import it,
+# pass it to a child over SCM_RIGHTS, and check the negative cases. The probe
+# is an initramfs `/init`, so no Debian image is involved. The kernel artifacts
+# are arch-specific and clobber each other in target/osdk, so both paths are
+# explicit.
+X86_PRIME_KERNEL ?= $(CURDIR)/target/prime/kernels/x86.elf
+RISCV_PRIME_KERNEL ?= $(CURDIR)/target/prime/kernels/riscv.Image
+PRIME_WORKSPACE ?= $(CURDIR)/target/prime/gate
+PRIME_TIMEOUT ?= 120
+
+.PHONY: test_x86_prime
+test_x86_prime:
+	@test -f "$(X86_PRIME_KERNEL)" || { echo "X86_PRIME_KERNEL is required" >&2; exit 2; }
+	@tools/drm/prime_check.sh --arch amd64 --kernel "$(X86_PRIME_KERNEL)" \
+		--workspace "$(PRIME_WORKSPACE)-x86" --timeout "$(PRIME_TIMEOUT)"
+
+.PHONY: test_riscv_prime
+test_riscv_prime:
+	@test -f "$(RISCV_PRIME_KERNEL)" || { echo "RISCV_PRIME_KERNEL is required" >&2; exit 2; }
+	@tools/drm/prime_check.sh --arch riscv64 --kernel "$(RISCV_PRIME_KERNEL)" \
+		--workspace "$(PRIME_WORKSPACE)-riscv" --timeout "$(PRIME_TIMEOUT)"
+
 .PHONY: test_riscv_virtio_gpu_unit
 test_riscv_virtio_gpu_unit:
 	@python3 -W error::ResourceWarning -m unittest \

@@ -102,6 +102,28 @@ impl InodeHandle {
         })
     }
 
+    /// Creates a handle around an already-created per-open file object.
+    ///
+    /// Used for anonymous descriptors whose file object cannot be produced by
+    /// an inode's `open` (dma-buf descriptors are the first such case).
+    pub(crate) fn new_with_open_file(
+        path: Path,
+        access_mode: AccessMode,
+        status_flags: StatusFlags,
+        open_file: Box<dyn PerOpenFileOps>,
+    ) -> Self {
+        Self {
+            open_file: Some(open_file),
+            offset: Mutex::new(0),
+            common: FileCommon::new(path, access_mode, status_flags),
+        }
+    }
+
+    /// Returns the per-open file object, if this handle has one.
+    pub(crate) fn open_file_ops(&self) -> Option<&dyn PerOpenFileOps> {
+        self.open_file.as_deref()
+    }
+
     pub(crate) fn path(&self) -> &Path {
         self.common.path()
     }

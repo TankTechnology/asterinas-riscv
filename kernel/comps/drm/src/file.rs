@@ -66,6 +66,10 @@ impl DrmFile {
         self.minor.type_()
     }
 
+    pub(super) fn minor(&self) -> &Arc<DrmMinor> {
+        &self.minor
+    }
+
     pub(super) fn has_client_caps(&self, cap: DrmClientCaps) -> bool {
         self.client_caps.load(Ordering::Relaxed).contains(cap)
     }

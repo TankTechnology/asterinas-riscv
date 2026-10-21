@@ -6,6 +6,11 @@ use ostd::mm::VmIo;
 
 use crate::{device::DrmFeatures, file::DrmFile, ioctl::ioctl_defs};
 
+/// `DRM_PRIME_CAP_IMPORT`: the device can import dma-buf descriptors.
+const DRM_PRIME_CAP_IMPORT: u64 = 0x1;
+/// `DRM_PRIME_CAP_EXPORT`: the device can export GEM handles as dma-bufs.
+const DRM_PRIME_CAP_EXPORT: u64 = 0x2;
+
 impl DrmFile {
     pub(super) fn drm_get_version(&self, cmd: ioctl_defs::Version) -> Result<i32> {
         let device = self.device();
@@ -73,10 +78,13 @@ impl DrmFile {
         let value = match cap {
             DrmGetCapability::TimestampMonotonic => 1,
             DrmGetCapability::Prime => {
-                // TODO: Report PRIME import and export support after
-                // `DRM_IOCTL_PRIME_FD_TO_HANDLE` and `DRM_IOCTL_PRIME_HANDLE_TO_FD`
-                // are implemented.
-                0
+                // `DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT`. Both PRIME
+                // ioctls are implemented for every device that has GEM.
+                if device.as_gem_ops().is_some() {
+                    DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT
+                } else {
+                    0
+                }
             }
             DrmGetCapability::SyncObj => device.has_features(DrmFeatures::SYNCOBJ) as u64,
             DrmGetCapability::SyncObjTimeline => {

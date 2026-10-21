@@ -29,6 +29,7 @@ class VirtioGpuGateTests(unittest.TestCase):
             "tools/riscv/drm/virtio_gpu_check.sh",
             "tools/riscv/drm/xorg_check.sh",
             "tools/drm/build_probe.sh",
+            "tools/drm/prime_check.sh",
         ):
             with self.subTest(script=relative):
                 script = REPOSITORY_ROOT / relative
@@ -43,6 +44,7 @@ class VirtioGpuGateTests(unittest.TestCase):
             "tools/riscv/drm/virtio_gpu_check.sh",
             "tools/riscv/drm/xorg_check.sh",
             "tools/drm/build_probe.sh",
+            "tools/drm/prime_check.sh",
         ):
             with self.subTest(script=relative):
                 result = run("-n", str(REPOSITORY_ROOT / relative))
@@ -63,6 +65,19 @@ class VirtioGpuGateTests(unittest.TestCase):
             with self.subTest(ioctl=ioctl):
                 self.assertIn(ioctl, source)
         self.assertIn("DRMPROBE_PASS", source)
+
+    def test_prime_probe_covers_the_acceptance(self) -> None:
+        source = (REPOSITORY_ROOT / "tools/drm/prime_probe.c").read_text()
+        for marker in (
+            "DRM_IOCTL_PRIME_HANDLE_TO_FD",
+            "DRM_IOCTL_PRIME_FD_TO_HANDLE",
+            "SCM_RIGHTS",
+            "PRIMEPROBE_PASS",
+            "PRIMEPROBE_REJECT_NON_DMABUF",
+            "PRIMEPROBE_REJECT_CLOSED_FD",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, source)
 
     def test_paint_client_is_self_contained(self) -> None:
         source = (REPOSITORY_ROOT / "tools/drm/x11_paint.c").read_text()

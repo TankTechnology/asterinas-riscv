@@ -16,6 +16,8 @@ Usage: build_probe.sh --arch ARCH --output DIR [OPTIONS]
 Options:
   --arch ARCH     amd64 or riscv64 (required).
   --output DIR    Directory receiving `init` and `probe-initramfs.cpio`.
+  --source PATH   Probe source file (default: virtio_gpu_probe.c next to
+                  this script; use prime_probe.c for PRIME).
   --cc PATH       C compiler (default: gcc for amd64,
                   riscv64-linux-gnu-gcc for riscv64).
   --keep-binary   Also copy the probe to DIR/virtio-gpu-probe.
@@ -33,16 +35,18 @@ die_usage() {
 ARCH=""
 OUTPUT=""
 CC=""
+SOURCE=""
 KEEP_BINARY=0
 
 while (( $# > 0 )); do
     case "$1" in
-        --arch | --output | --cc)
+        --arch | --output | --cc | --source)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --arch) ARCH="$2" ;;
                 --output) OUTPUT="$2" ;;
                 --cc) CC="$2" ;;
+                --source) SOURCE="$2" ;;
             esac
             shift 2
             ;;
@@ -57,7 +61,7 @@ done
 [[ -n "$OUTPUT" ]] || die_usage "--output is required"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE="$SCRIPT_DIR/virtio_gpu_probe.c"
+[[ -n "$SOURCE" ]] || SOURCE="$SCRIPT_DIR/virtio_gpu_probe.c"
 [[ -f "$SOURCE" ]] || {
     printf 'error: probe source is missing: %s\n' "$SOURCE" >&2
     exit 1
