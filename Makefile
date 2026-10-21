@@ -659,6 +659,7 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_fs_punch_hole \
 		tools.x86.tests.test_x86_debian_fs_renameat2 \
 		tools.x86.tests.test_x86_debian_fs_timestamps \
+		tools.x86.tests.test_x86_debian_gate_scripts \
 		tools.x86.tests.test_lmbench_transcript \
 		tools.riscv.tests.test_lmbench_native -v
 
