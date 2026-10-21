@@ -1,7 +1,10 @@
 #!/bin/bash
 # SPDX-License-Identifier: MPL-2.0
 #
-# Stage the P5c PVR/glamor increment bundle onto the Megrez Debian rootfs.
+# Stage the P5c PVR/glamor increment bundle onto the Megrez RockOS rootfs.
+# RockOS (/dev/mmcblk1p3) and the Asterinas guest (/dev/mmcblk1p2) do not
+# share a rootfs; after staging, mount the guest partition and copy the
+# bundle's opt/ and etc/ into it before running p5c-guest.sh.
 # Does not touch the Asterinas initramfs or the kernel.
 #
 # Bundle (vendor binaries, kept outside the repository):
@@ -53,8 +56,9 @@ timeout 30 ssh "${SSH_OPTS[@]}" "$BOARD" "sha256sum '$DEST'/opt/pvr/bin/eglconfi
 
 cat <<EOF
 
-Staged.  In the Asterinas guest run (serial console) the commands from
-tools/riscv/p5c/p5c-guest.sh, with SRC=/home/debian/pvr-p5c.
+Staged to RockOS.  Inject /home/debian/pvr-p5c into the guest root partition
+(/dev/mmcblk1p2) at /opt/pvr-p5c before running p5c-guest.sh with
+SRC=/opt/pvr-p5c (see the P5b run notes for the mount commands).
 
 No initramfs file and no kernel file was modified.
 EOF

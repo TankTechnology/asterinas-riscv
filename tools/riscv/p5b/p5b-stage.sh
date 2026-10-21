@@ -7,11 +7,16 @@
 # The bundle is intentionally kept outside the repository (vendor binaries):
 #   /mnt/shared/xaj/vendor/p5b-rootfs-20261023/opt/pvr/{bin,lib,dri}
 #
-# The guest and RockOS share the Debian root partition, so files placed under
-# /home/debian/pvr are visible in the guest.  If they are not, run the guest
-# side with the HTTP fallback:
+# RockOS and the Asterinas guest do NOT share a root filesystem on Megrez:
+# RockOS is /dev/mmcblk1p3 and the guest is /dev/mmcblk1p2 (ASTER_BROWSERWEB).
+# After this script stages /home/debian/pvr, inject it from RockOS:
+#   mount /dev/mmcblk1p2 /mnt/aster_guest
+#   mkdir -p /mnt/aster_guest/opt/pvr
+#   cp -r /home/debian/pvr/. /mnt/aster_guest/opt/pvr/
+#   umount /mnt/aster_guest
+# Then run the guest script with SRC=/opt/pvr.
+# If guest networking is configured, the HTTP fallback is also available:
 #   tools/riscv/p5b/p5b-stage.sh --http
-# and fetch the generated tarball from the guest with curl.
 
 set -euo pipefail
 
@@ -48,14 +53,14 @@ fi
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10)
 echo "staging $BUNDLE -> $BOARD:$DEST"
 timeout 30 ssh "${SSH_OPTS[@]}" "$BOARD" "mkdir -p '$DEST'"
-timeout 300 scp -r "${SSH_OPTS[@]}" "$BUNDLE/." "$BOARD:$DEST/"
+timeout 300 scp -r "${SSH_OPTS[@]}" "$BUNDLE"/* "$BOARD:$DEST/"
 timeout 30 ssh "${SSH_OPTS[@]}" "$BOARD" "sha256sum '$DEST'/bin/eglconfigs '$DEST'/lib/*.so '$DEST'/dri/pvr_dri.so"
 
 cat <<EOF
 
-Staged.  In the Asterinas guest run (serial console), paste the commands from
-tools/riscv/p5b/p5b-guest.sh after setting SRC=/home/debian/pvr; the guest
-image carries no copy of that helper and the initramfs is left untouched.
+Staged to RockOS.  RockOS and the Asterinas guest do not share /home:
+inject the files into the guest root partition (/dev/mmcblk1p2) at /opt/pvr
+before running tools/riscv/p5b/p5b-guest.sh with SRC=/opt/pvr.
 
 No initramfs file was modified.
 EOF

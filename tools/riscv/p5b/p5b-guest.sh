@@ -19,11 +19,13 @@ if [ ! -x "$SRC/bin/eglconfigs" ]; then
     exit 2
 fi
 
-if [ -d /opt/pvr ] && [ ! -e /opt/pvr.p5b.bak ]; then
-    cp -r /opt/pvr /opt/pvr.p5b.bak
+if [ "$SRC" != "/opt/pvr" ]; then
+    if [ -d /opt/pvr ] && [ ! -e /opt/pvr.p5b.bak ]; then
+        cp -r /opt/pvr /opt/pvr.p5b.bak
+    fi
+    mkdir -p /opt/pvr
+    cp -r "$SRC/." /opt/pvr/
 fi
-mkdir -p /opt/pvr
-cp -r "$SRC/." /opt/pvr/
 
 echo "PVR_BUNDLE_PRESENT"
 ls -l /opt/pvr/bin/eglconfigs /opt/pvr/dri/pvr_dri.so /opt/pvr/lib/libsrv_um.so
