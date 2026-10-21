@@ -9,6 +9,7 @@ use ostd::{arch::boot::DEVICE_TREE, boot::boot_info, io::IoMem, mm::VmIoOnce};
 mod catalogue;
 mod dma;
 mod fwif;
+pub(crate) mod gem;
 mod irq;
 mod mmu;
 mod power;
@@ -253,9 +254,15 @@ pub(super) fn probe_on_request() {
     }
     if owner_requested {
         match power::register_control_on_request(crg_requested && !power_requested) {
-            Ok(()) => aster_logger::println!(
-                "ASTERINAS_POWERVR_OWNER status=ready bvnc=30.3.408.101 crg_restored=1 firmware=untouched render=unavailable"
-            ),
+            Ok(()) => {
+                aster_logger::println!(
+                    "ASTERINAS_POWERVR_OWNER status=ready bvnc=30.3.408.101 crg_restored=1 firmware=untouched render=unavailable"
+                );
+                aster_logger::println!(
+                    "ASTERINAS_POWERVR_DRI_NODE status=ready node=renderD128 gems={}",
+                    gem::gems(),
+                );
+            }
             Err(reason) => {
                 aster_logger::println!("ASTERINAS_POWERVR_OWNER status=skipped reason={}", reason)
             }

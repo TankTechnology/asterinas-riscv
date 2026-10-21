@@ -258,6 +258,9 @@ struct GemObject {
     /// created as a 3D resource. `None` for 2D-only buffers, which the host
     /// never receives as resources.
     resource_id: Option<u32>,
+    /// The job-context GPU VA, when this object was created through the
+    /// PowerVR render-node ioctl. Closing the last reference unmaps it.
+    pvr_vaddr: Option<usize>,
     /// Open handles naming this object, counted across every file. The object
     /// is dropped when the last one goes away.
     refs: u32,
@@ -747,6 +750,25 @@ struct DrmGemClose {
     pad: u32,
 }
 
+/// B3 render-node GEM allocation (temporary; B4 replaces it with the vendor
+/// `DRM_IOCTL_PVR_SRVKM_CMD` bridge). Defined on every build because the
+/// ioctl dispatch macro cannot carry a `cfg` attribute on a match arm; the
+/// handler itself is PowerVR-only.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmPvrGemCreate {
+    /// Requested size in bytes (in).
+    size: u64,
+    /// Must be zero (in).
+    flags: u32,
+    /// Per-file GEM handle (out).
+    handle: u32,
+    /// Pool offset for `mmap` (out).
+    offset: u64,
+    /// Job-context GPU virtual address (out).
+    gpu_va: u64,
+}
+
 /// `struct drm_gem_flink`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Pod)]
@@ -1138,7 +1160,7 @@ mod ioctl_defs {
         DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeCursor, DrmModeCursor2,
         DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd, DrmModeGetConnector,
         DrmModeGetEncoder, DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeMapDumb,
-        DrmModeObjGetProperties, DrmPrimeHandle, DrmSetClientCap, DrmVersion,
+        DrmModeObjGetProperties, DrmPrimeHandle, DrmPvrGemCreate, DrmSetClientCap, DrmVersion,
         DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuExecbufferV2, DrmVirtgpuGetCaps,
         DrmVirtgpuGetparam, DrmVirtgpuMap, DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo,
         DrmVirtgpuTransfer3d, DrmVirtgpuWait,
@@ -1185,6 +1207,10 @@ mod ioctl_defs {
     // Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h>.
     pub(super) type PrimeHandleToFd = ioc!(DRM_IOCTL_PRIME_HANDLE_TO_FD, b'd', 0x2d, InOutData<DrmPrimeHandle>);
     pub(super) type PrimeFdToHandle = ioc!(DRM_IOCTL_PRIME_FD_TO_HANDLE, b'd', 0x2e, InOutData<DrmPrimeHandle>);
+    // Temporary B3 render-node GEM create; command 0x50 is outside both the
+    // virtgpu (0x41-0x4b) and the future vendor PVR (0x40-0x47) ranges.
+    pub(super) type PvrGemCreate =
+        ioc!(DRM_IOCTL_PVR_GEM_CREATE, b'd', 0x50, InOutData<DrmPvrGemCreate>);
     // The virtgpu ioctls live at `DRM_COMMAND_BASE` (0x40) plus their number.
     pub(super) type VirtgpuMap = ioc!(DRM_IOCTL_VIRTGPU_MAP, b'd', 0x41, InOutData<DrmVirtgpuMap>);
     pub(super) type VirtgpuExecbuffer = ioc!(DRM_IOCTL_VIRTGPU_EXECBUFFER, b'd', 0x42, InOutData<DrmVirtgpuExecbuffer>);
@@ -1265,6 +1291,7 @@ fn is_render_allowed(raw_ioctl: RawIoctl) -> bool {
         || VirtgpuWait::try_from_raw(raw_ioctl).is_some()
         || VirtgpuResourceCreate::try_from_raw(raw_ioctl).is_some()
         || VirtgpuResourceInfo::try_from_raw(raw_ioctl).is_some()
+        || PvrGemCreate::try_from_raw(raw_ioctl).is_some()
 }
 
 impl Device for Dri {
@@ -1421,6 +1448,10 @@ fn release_object_locked(objects: &mut GemObjects, object_id: u32) {
     };
     object.refs = object.refs.saturating_sub(1);
     if object.refs == 0 {
+        #[cfg(all(target_arch = "riscv64", feature = "powervr_probe"))]
+        if let Some(vaddr) = object.pvr_vaddr {
+            let _ = powervr_probe::gem::destroy(vaddr);
+        }
         objects.objects.remove(&object_id);
         // A name is only a handle on an object that still exists.
         objects.names.retain(|_, named| *named != object_id);
@@ -1500,6 +1531,7 @@ fn alloc_object(
             height,
             bpp,
             resource_id: None,
+            pvr_vaddr: None,
             refs: 1,
         },
     );
@@ -1591,6 +1623,60 @@ impl DriHandle {
             let _ = gpu.resource_unref(resource_id);
         }
         Ok(())
+    }
+
+    /// Minimal B3 render-node GEM allocation: carve a pool object, map it into
+    /// the job MMU context, and return a per-file handle plus mmap offset.
+    #[cfg(all(target_arch = "riscv64", feature = "powervr_probe"))]
+    fn create_pvr_gem(&self, req: &DrmPvrGemCreate) -> Result<DrmPvrGemCreate> {
+        if req.flags != 0 {
+            return_errno_with_message!(Errno::EINVAL, "unsupported PVR GEM flags");
+        }
+        let size = usize::try_from(req.size)
+            .map_err(|_| Error::with_message(Errno::EINVAL, "PVR GEM size overflows"))?;
+        if size == 0 {
+            return_errno_with_message!(Errno::EINVAL, "PVR GEM has zero size");
+        }
+        // Same lock order as `create_dumb`: file first, then the device-wide
+        // object space.
+        let mut inner = self.inner.lock();
+        let mut objects = GEM_OBJECTS.lock();
+        let object_id = alloc_object(&mut objects, size, 0, 0, 0, 0)?;
+        let offset = objects
+            .objects
+            .get(&object_id)
+            .ok_or_else(|| Error::with_message(Errno::EIO, "PVR GEM allocation lost"))?
+            .offset;
+        let paddr = pool_paddr(&objects)? + offset;
+        let gpu_va = match powervr_probe::gem::create(paddr, size) {
+            Ok(gpu_va) => gpu_va,
+            Err(reason) => {
+                objects.objects.remove(&object_id);
+                return Err(Error::with_message(Errno::EIO, reason));
+            }
+        };
+        if let Some(object) = objects.objects.get_mut(&object_id) {
+            object.pvr_vaddr = Some(gpu_va);
+        }
+        let handle = name_object(&mut inner, object_id);
+        drop(objects);
+        drop(inner);
+        let gems = powervr_probe::gem::gems();
+        aster_logger::println!(
+            "ASTERINAS_POWERVR_GEM status=ok handle={} size={} offset=0x{:x} gpu_va=0x{:x} gems={}",
+            handle,
+            size,
+            offset,
+            gpu_va,
+            gems,
+        );
+        Ok(DrmPvrGemCreate {
+            size: req.size,
+            flags: 0,
+            handle,
+            offset: offset as u64,
+            gpu_va: gpu_va as u64,
+        })
     }
 
     /// Answers a `VIRTGPU_GETPARAM` query into the caller's `value` pointer.
@@ -3052,6 +3138,22 @@ impl PerOpenFileOps for DriHandle {
                     let clips = read_dirty_clips(&req)?;
                     self.dirty_fb(req.fb_id, &clips)?;
                     Ok(0)
+                }
+                cmd @ PvrGemCreate => {
+                    #[cfg(all(target_arch = "riscv64", feature = "powervr_probe"))]
+                    {
+                        let req = cmd.read()?;
+                        cmd.write(&self.create_pvr_gem(&req)?)?;
+                        Ok(0)
+                    }
+                    #[cfg(not(all(target_arch = "riscv64", feature = "powervr_probe")))]
+                    {
+                        let _ = &cmd;
+                        return_errno_with_message!(
+                            Errno::EOPNOTSUPP,
+                            "PVR ioctls are not enabled on this build"
+                        );
+                    }
                 }
                 _ => {
                     ostd::debug!(

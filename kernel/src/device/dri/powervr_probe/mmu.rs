@@ -91,6 +91,14 @@ struct OwnedMap {
     allocation: GpuDmaAllocation,
 }
 
+/// A mapping over physical pages the MMU does not own (a GEM pool range).
+#[derive(Clone, Copy)]
+struct ExternalMap {
+    start: usize,
+    end: usize,
+    pages: usize,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct GpuMmuMapReceipt {
     pub(super) root_daddr: usize,
@@ -106,6 +114,7 @@ pub(super) struct GpuMmu4 {
     root: GpuDmaAllocation,
     directories: Vec<PageDirectory>,
     mapped: Vec<OwnedMap>,
+    external: Vec<ExternalMap>,
     poisoned: bool,
 }
 
@@ -115,6 +124,7 @@ impl GpuMmu4 {
             root: GpuDmaAllocation::new(1)?,
             directories: Vec::new(),
             mapped: Vec::new(),
+            external: Vec::new(),
             poisoned: false,
         })
     }
@@ -202,6 +212,106 @@ impl GpuMmu4 {
         table.page.read_u64(pt_index * 8)
     }
 
+    fn check_overlap(&self, start: usize, end: usize) -> Result<(), &'static str> {
+        if self
+            .mapped
+            .iter()
+            .any(|mapped| start < mapped.end && mapped.start < end)
+            || self
+                .external
+                .iter()
+                .any(|mapped| start < mapped.end && mapped.start < end)
+        {
+            return Err("gpu_mmu_mapping_overlap");
+        }
+        Ok(())
+    }
+
+    fn install_ptes(
+        &mut self,
+        virt: usize,
+        pages: usize,
+        mut page_phys: impl FnMut(usize) -> usize,
+        read_only: bool,
+        pm_meta_protect: bool,
+    ) -> Result<GpuMmuMapReceipt, &'static str> {
+        let mut first_pte = 0;
+        let mut last_pte = 0;
+        for page_number in 0..pages {
+            let page_virt = virt + page_number * PAGE_SIZE;
+            let page_phys = page_phys(page_number);
+            let (pc_index, pd_index, pt_index) = page_indices(page_virt)?;
+
+            let directory_index = match self
+                .directories
+                .iter()
+                .position(|directory| directory.pc_index == pc_index)
+            {
+                Some(index) => index,
+                None => {
+                    let page = GpuDmaAllocation::new(1)?;
+                    let entry = encode_pc_entry(page.daddr())?;
+                    self.root.write_u32(pc_index * 4, entry)?;
+                    if self.root.read_u32(pc_index * 4)? != entry {
+                        return Err("gpu_mmu_pc_readback_mismatch");
+                    }
+                    self.directories.push(PageDirectory {
+                        pc_index,
+                        page,
+                        tables: Vec::new(),
+                    });
+                    self.directories.len() - 1
+                }
+            };
+            let directory = &mut self.directories[directory_index];
+            let table_index = match directory
+                .tables
+                .iter()
+                .position(|table| table.pd_index == pd_index)
+            {
+                Some(index) => index,
+                None => {
+                    let page = GpuDmaAllocation::new(1)?;
+                    let entry = encode_pd_entry(page.daddr())?;
+                    directory.page.write_u64(pd_index * 8, entry)?;
+                    if directory.page.read_u64(pd_index * 8)? != entry {
+                        return Err("gpu_mmu_pd_readback_mismatch");
+                    }
+                    directory.tables.push(PageTable { pd_index, page });
+                    directory.tables.len() - 1
+                }
+            };
+            let table = &directory.tables[table_index];
+            if table.page.read_u64(pt_index * 8)? != 0 {
+                return Err("gpu_mmu_mapping_overlap");
+            }
+            let entry = encode_pt_entry(page_phys, read_only, pm_meta_protect)?;
+            table.page.write_u64(pt_index * 8, entry)?;
+            let observed = table.page.read_u64(pt_index * 8)?;
+            if observed != entry {
+                return Err("gpu_mmu_pt_readback_mismatch");
+            }
+            if page_number == 0 {
+                first_pte = observed;
+            }
+            last_pte = observed;
+        }
+        let table_pages = 1
+            + self.directories.len()
+            + self
+                .directories
+                .iter()
+                .map(|directory| directory.tables.len())
+                .sum::<usize>();
+        Ok(GpuMmuMapReceipt {
+            root_daddr: self.root_daddr(),
+            pages,
+            table_pages,
+            first_pte,
+            last_pte,
+        })
+    }
+
     pub(super) fn map_owned(
         &mut self,
         virt: usize,
@@ -215,91 +325,16 @@ impl GpuMmu4 {
         let pages = allocation.size() / PAGE_SIZE;
         validate_map(virt, allocation.daddr(), pages)?;
         let end = virt + allocation.size();
-        if self
-            .mapped
-            .iter()
-            .any(|mapped| virt < mapped.end && mapped.start < end)
-        {
-            return Err("gpu_mmu_mapping_overlap");
-        }
+        self.check_overlap(virt, end)?;
 
-        let result = (|| {
-            let mut first_pte = 0;
-            let mut last_pte = 0;
-            for page_number in 0..pages {
-                let page_virt = virt + page_number * PAGE_SIZE;
-                let page_phys = allocation.daddr() + page_number * PAGE_SIZE;
-                let (pc_index, pd_index, pt_index) = page_indices(page_virt)?;
-
-                let directory_index = match self
-                    .directories
-                    .iter()
-                    .position(|directory| directory.pc_index == pc_index)
-                {
-                    Some(index) => index,
-                    None => {
-                        let page = GpuDmaAllocation::new(1)?;
-                        let entry = encode_pc_entry(page.daddr())?;
-                        self.root.write_u32(pc_index * 4, entry)?;
-                        if self.root.read_u32(pc_index * 4)? != entry {
-                            return Err("gpu_mmu_pc_readback_mismatch");
-                        }
-                        self.directories.push(PageDirectory {
-                            pc_index,
-                            page,
-                            tables: Vec::new(),
-                        });
-                        self.directories.len() - 1
-                    }
-                };
-                let directory = &mut self.directories[directory_index];
-                let table_index = match directory
-                    .tables
-                    .iter()
-                    .position(|table| table.pd_index == pd_index)
-                {
-                    Some(index) => index,
-                    None => {
-                        let page = GpuDmaAllocation::new(1)?;
-                        let entry = encode_pd_entry(page.daddr())?;
-                        directory.page.write_u64(pd_index * 8, entry)?;
-                        if directory.page.read_u64(pd_index * 8)? != entry {
-                            return Err("gpu_mmu_pd_readback_mismatch");
-                        }
-                        directory.tables.push(PageTable { pd_index, page });
-                        directory.tables.len() - 1
-                    }
-                };
-                let table = &directory.tables[table_index];
-                if table.page.read_u64(pt_index * 8)? != 0 {
-                    return Err("gpu_mmu_mapping_overlap");
-                }
-                let entry = encode_pt_entry(page_phys, read_only, pm_meta_protect)?;
-                table.page.write_u64(pt_index * 8, entry)?;
-                let observed = table.page.read_u64(pt_index * 8)?;
-                if observed != entry {
-                    return Err("gpu_mmu_pt_readback_mismatch");
-                }
-                if page_number == 0 {
-                    first_pte = observed;
-                }
-                last_pte = observed;
-            }
-            let table_pages = 1
-                + self.directories.len()
-                + self
-                    .directories
-                    .iter()
-                    .map(|directory| directory.tables.len())
-                    .sum::<usize>();
-            Ok(GpuMmuMapReceipt {
-                root_daddr: self.root_daddr(),
-                pages,
-                table_pages,
-                first_pte,
-                last_pte,
-            })
-        })();
+        let daddr = allocation.daddr();
+        let result = self.install_ptes(
+            virt,
+            pages,
+            |page| daddr + page * PAGE_SIZE,
+            read_only,
+            pm_meta_protect,
+        );
         match result {
             Ok(receipt) => {
                 self.mapped.push(OwnedMap {
@@ -316,6 +351,81 @@ impl GpuMmu4 {
                 Err(error)
             }
         }
+    }
+
+    /// Map a contiguous physical range the MMU does not own (a GEM pool range).
+    pub(super) fn map_external(
+        &mut self,
+        virt: usize,
+        paddr: usize,
+        pages: usize,
+        read_only: bool,
+        pm_meta_protect: bool,
+    ) -> Result<GpuMmuMapReceipt, &'static str> {
+        if self.poisoned {
+            return Err("gpu_mmu_table_poisoned");
+        }
+        validate_map(virt, paddr, pages)?;
+        let end = virt + pages * PAGE_SIZE;
+        self.check_overlap(virt, end)?;
+
+        let result = self.install_ptes(
+            virt,
+            pages,
+            |page| paddr + page * PAGE_SIZE,
+            read_only,
+            pm_meta_protect,
+        );
+        match result {
+            Ok(receipt) => {
+                self.external.push(ExternalMap {
+                    start: virt,
+                    end,
+                    pages,
+                });
+                Ok(receipt)
+            }
+            Err(error) => {
+                self.poisoned = true;
+                Err(error)
+            }
+        }
+    }
+
+    /// Remove a mapping installed by [`Self::map_external`] and clear its PTEs.
+    pub(super) fn unmap_external(&mut self, virt: usize) -> Result<(), &'static str> {
+        if self.poisoned {
+            return Err("gpu_mmu_table_poisoned");
+        }
+        let index = self
+            .external
+            .iter()
+            .position(|mapped| mapped.start == virt)
+            .ok_or("gpu_mmu_mapping_not_found")?;
+        let mapped = self.external[index];
+        for page_number in 0..mapped.pages {
+            let page_virt = virt + page_number * PAGE_SIZE;
+            let (pc_index, pd_index, pt_index) = page_indices(page_virt)?;
+            let directory = self
+                .directories
+                .iter()
+                .find(|directory| directory.pc_index == pc_index)
+                .ok_or("gpu_mmu_mapping_not_found")?;
+            let table = directory
+                .tables
+                .iter()
+                .find(|table| table.pd_index == pd_index)
+                .ok_or("gpu_mmu_mapping_not_found")?;
+            if table.page.read_u64(pt_index * 8)? == 0 {
+                return Err("gpu_mmu_mapping_absent");
+            }
+            table.page.write_u64(pt_index * 8, 0)?;
+            if table.page.read_u64(pt_index * 8)? != 0 {
+                return Err("gpu_mmu_pt_clear_readback_mismatch");
+            }
+        }
+        self.external.remove(index);
+        Ok(())
     }
 }
 
