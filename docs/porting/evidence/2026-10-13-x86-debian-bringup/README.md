@@ -2063,3 +2063,90 @@ writes `/opt/apt-verify/boot-N.txt`. The host requires dpkg's
 `install ok installed` status, exit 0 with `Hello, world!`, a matching binary
 checksum, and a clean `e2fsck -fn` after each boot. Pass
 `X86_DEBIAN_APT_ACCEL=tcg` on hosts without KVM.
+## Merged-integration acceptance matrix (2026-10-21)
+
+After merging #185–#191 into `integration-upstream-debian-full-20261009`, the
+whole x86 Debian gate set was rerun against one kernel and one freshly built
+image:
+
+- kernel: `target/osdk/asterinas/asterinas-osdk-bin.elf` (integration tip
+  `25da4764`), boot method `vmm-direct`;
+- initramfs: `build_stage1.sh --architecture amd64 --minimal`;
+- base image: a fresh `systemd-ext4-m6-userspace` build
+  (`target/debian-x86/serial-login/rootfs/debian-root.ext2`), so no `/opt`
+  state from an earlier gate could leak in (`debugfs -R "ls /opt"` empty,
+  `e2fsck -fn` clean);
+- everything under KVM.
+
+| Gate | Result | Time |
+|---|---|---|
+| `test_x86_debian_storage` | 3/3 boots | 71s |
+| `test_x86_debian_apt` | 2/2 boots | 77s |
+| `test_x86_debian_interactive_login` | login prompt, password, `uid=1000(asterinas)`, fsck clean | 11s |
+| `test_x86_debian_fs_timestamps` | PASS | 25s |
+| `test_x86_debian_fs_renameat2` | PASS | 24s |
+| `test_x86_debian_fs_fallocate` | PASS | 25s |
+| `test_x86_debian_fs_extents` | PASS (`0/ 1 1/ 1 0-5`) | 24s |
+| `test_x86_debian_fs_punch_hole` | PASS (`problems=0`) | 27s |
+| `test_x86_debian_fs_extent_depth` | PASS | 29s |
+| `test_x86_debian_fs_acl` | PASS (`problems=0`) | 24s |
+| `test_x86_debian_fs_metadata_csum` | PASS (`problems=0`) | 31s |
+| `test_x86_debian_fs_ext4_features` | PASS (`problems=0`) | 27s |
+| `test_x86_debian_fs_tmpfile` | PASS | 22s |
+| `test_x86_debian_fs_tmpfile` (`CRASH=1`) | PASS (orphan reclaimed) | 23s |
+| `test_x86_debian_fs_ea_inode` (crash stages 1 2 3) | PASS | 144s |
+| `test_x86_debian_fs_crash` | 12/12 cells | 125s |
+| `test_x86_debian_fs_durability` | 7/7 cells | 163s |
+| `test_x86_debian_fs_concurrency` | PASS, 8 workers, ok=True | 54s |
+| `test_x86_debian_fs_concurrency` (`CRASH_AFTER=20`) | PASS (recovered) | 30s |
+
+19 gates, 19 passes, no failures. The image shipped by #191 masks the
+`serial-getty@hvc0` unit that never gets its device, which removes the 90 s
+boot delay and keeps each cell around 20–30 s.
+
+The machine-readable log is `target/final-matrix/summary.txt`; every gate
+keeps its transcripts in `target/final-matrix/<gate>/`.
+## Upstream ACPI S5 / power button (PR #3987)
+
+Upstream PR [#3987](https://github.com/asterinas/asterinas/pull/3987)
+(`d391145f7b`, "acpi: power button as SIGPWR to init, S5 power-off without
+AML") was evaluated on the Debian integration tree.
+
+What it does:
+
+- ostd collects the PM1 event/control ports from the FADT and finds the `_S5`
+  sleep type by scanning the DSDT/SSDTs, without an AML interpreter;
+- the kernel enables `PWRBTN_EN`, polls `PWRBTN_STS` from the timer tick every
+  50 ms (SCI routing is not needed because the status bit latches) and sends
+  `SIGPWR` to init, debounced to one signal per 5 s;
+- a `Priority::FIRMWARE` poweroff handler writes `SLP_TYP | SLP_EN` to PM1_CNT
+  (S5), which is what hypervisors wait for when they press the power button;
+- QEMU detection additionally requires the BOCHS firmware OEM ID so the
+  isa-debug-exit handler no longer shadows the ACPI path on KVM-based clouds.
+
+Evaluation: **adopted**. The patch applies cleanly to the integration tree
+(5 files, +324/-4) and the merged kernel builds.
+
+Measured on the Debian image under QEMU (`system_powerdown` from the monitor):
+
+| Probe | Result |
+|---|---|
+| PM1 discovery | `[kernel] acpi: PM1a event 0x600 control 0x604, S5 sleep type Some((0, 0))` |
+| Power button → `SIGPWR` to init | `[kernel] acpi: power button pressed, sending SIGPWR to init` |
+| Python init with a `SIGPWR` handler | signal received; `reboot(RB_POWER_OFF)` powered the guest off, QEMU exited |
+| Static init blocking `SIGPWR` and reading `signalfd` | `SIGFD_GOT signo=30`; power-off through S5 |
+| `systemctl poweroff` (ordinary gates) | still power off cleanly; `boot_debian.sh` now re-checks the marker after QEMU exits because S5 can finish between polls |
+
+Gap found, not caused by the patch: **systemd does not act on the signal on
+this kernel**. The kernel delivers `SIGPWR` (a plain handler and `signalfd`
+both see it), and the image maps `sigpwr.target` to `poweroff.target`, yet the
+guest stays up when the QEMU monitor presses the button. systemd blocks
+signals per thread and consumes them through `signalfd`; the likely cause is
+signal-mask inheritance to its worker threads in Asterinas, so a thread with
+`SIGPWR` unblocked takes the (default-ignored) signal. That is a separate
+kernel signal issue to investigate; the ACPI primitive itself is correct.
+
+The builder now installs
+`/etc/systemd/system/sigpwr.target.d/asterinas-power.conf` (`Wants=poweroff.target`)
+for amd64 systemd-ext4 profiles, so once the signal reaches systemd the
+existing `poweroff` path turns the guest off.
