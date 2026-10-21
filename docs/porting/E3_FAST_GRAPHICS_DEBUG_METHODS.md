@@ -123,8 +123,9 @@ Marionette 会话建立后，`ExecuteScript` 通常只需 0.1–0.5s；把多组
 |---|---|---|
 | `MESA_DEBUG=1` | Mesa 错误/警告输出到 stderr | 低开销，可常开 |
 | `LIBGL_DEBUG=verbose` | EGL/驱动加载与回退路径 | 定位“实际用了哪个驱动” |
+| `EGL_LOG_LEVEL=debug` | EGL 配置/回退的详细输出 | 输出量大，按需开 |
 | `GALLIUM_TRACE=/tmp/gl.trace` | 抓取真实 GL 调用序列 | 会引入 trace 驱动，改变调用栈；只在定位具体调用时开 |
-| `MOZ_LOG=...WebRender:5` | WebRender 内部渲染日志 | 记录量大，配合 `MOZ_LOG_FILE` 与时间窗使用 |
+| `MOZ_LOG=...WebRender:5` | WebRender 内部渲染日志 | **Debian ESR release 构建把 NSPR logging 编译掉了**，本 guest 实测 `MOZ_LOG_FILE` 恒为空；不要依赖它取证，改用浏览器 stderr 的 crash annotation（`RenderThread`/`NewRenderer`/`wr_renderer`） |
 
 host 侧同时观察 QEMU `-display egl-headless` 的 stderr 与 virglrenderer
 日志；若怀疑 host 资源限制，可对比不同 render node（当前
@@ -146,9 +147,11 @@ host 侧同时观察 QEMU `-display egl-headless` 的 stderr 与 virglrenderer
 
 ## 7. 当前状态（2026-10-21）
 
-- r176/r177 的失败是 WebRender `GL_OUT_OF_MEMORY`（Mozilla bug 1731748 添加的
-  `glGetError` 检查），且 `asterinas.dri_trace_fail=1` 下没有任何
-  `DRI_IOCTL REFUSED` —— 失败点在 Mesa 内部而非 guest DRM 拒绝 ioctl。
-- 首要假设仍是 guest 整体内存压力（2 GiB + 512 MiB 连续池 + 不可回收
-  page cache）；r178 正用 4 GiB guest 验证。方法 B 的探针应优先复现这一
-  场景，以便后续分钟级迭代。
+- 已定位并修复：`GL_OUT_OF_MEMORY` 的根因是内核
+  `VIRTGPU_RESOURCE_INFO` 的 UAPI 方向写反（输入 `bo_handle`、输出
+  `res_handle`），导致 Mesa 跨进程导入 dma-buf 时收到 `EINVAL`。
+  修复后场景/WebGL 直接跑通（r183）。
+- 经验：`dri_trace_fail` 的拒绝日志最初被 `?`/`return_errno!` 的早退绕过，
+  必须在闭包里分发 ioctl 才能记录；否则“没有拒绝”会误导诊断。
+- 方法 B（EGL/GLES 压力探针）仍值得补：下一次图形回归可以在分钟级
+  复现，而不必等 Firefox 冷启动。
