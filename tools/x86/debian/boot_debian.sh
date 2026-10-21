@@ -239,17 +239,26 @@ if [[ -z "$WAIT_FOR" ]]; then
 fi
 
 deadline=$((SECONDS + TIMEOUT))
+# systemd colours unit names on the console, so the literal marker often
+# spans escape sequences (`Reached target \e[0;1;39mmulti-user.target`).
+# Strip ANSI colours before matching.
+transcript_has_marker() {
+    sed -e $'s/\x1b\\[[0-9;?]*[A-Za-z]//g' -- "$OUTPUT" 2>/dev/null |
+        grep -aFq -- "$WAIT_FOR"
+}
 while (( SECONDS < deadline )); do
     if ! kill -0 "$qemu_pid" 2>/dev/null; then
         wait "$qemu_pid" 2>/dev/null || true
+        # A guest that powers off through ACPI S5 can exit between two polls,
+        # after writing the marker; check the transcript one last time.
+        if transcript_has_marker; then
+            printf 'boot_debian: transcript %s satisfied "%s"\n' "$OUTPUT" "$WAIT_FOR"
+            exit 0
+        fi
         printf 'error: the guest exited before "%s" appeared\n' "$WAIT_FOR" >&2
         exit 1
     fi
-    # systemd colours unit names on the console, so the literal marker often
-    # spans escape sequences (`Reached target \e[0;1;39mmulti-user.target`).
-    # Strip ANSI colours before matching.
-    if sed -e $'s/\x1b\\[[0-9;?]*[A-Za-z]//g' -- "$OUTPUT" 2>/dev/null |
-        grep -aFq -- "$WAIT_FOR"; then
+    if transcript_has_marker; then
         printf 'boot_debian: transcript %s satisfied "%s"\n' "$OUTPUT" "$WAIT_FOR"
         exit 0
     fi
