@@ -28,7 +28,13 @@ const DRM_CHAR_NODE_TARGET: &str = "../../devices/virtual/virtio/virtio0/drm";
 pub(super) fn init_in_first_process() -> Result<()> {
     let class_node = build_class_node()?;
     let bus_node = AttrLessSysNode::new("bus");
-    bus_node.add_child(AttrLessSysNode::new("platform") as Arc<dyn SysObj>)?;
+    let platform_bus = AttrLessSysNode::new("platform");
+    if crate::device::dri::is_powervr_platform() {
+        let drivers = AttrLessSysNode::new("drivers");
+        drivers.add_child(AttrLessSysNode::new("pvr") as Arc<dyn SysObj>)?;
+        platform_bus.add_child(drivers as Arc<dyn SysObj>)?;
+    }
+    bus_node.add_child(platform_bus as Arc<dyn SysObj>)?;
 
     let root = crate::fs::sysfs::systree_singleton().root();
     root.add_child(class_node as Arc<dyn SysObj>)?;
@@ -60,6 +66,9 @@ pub(super) fn init_in_first_process() -> Result<()> {
         // /sys/dev/char entries libdrm needs to identify card0/renderD128.
         let root = crate::fs::sysfs::systree_singleton().root();
         root.add_child(build_firmware_drm_dev_node()?)?;
+        if crate::device::dri::is_powervr_platform() {
+            root.add_child(build_firmware_platform_node()?)?;
+        }
     }
     root.add_child(bus_node as Arc<dyn SysObj>)?;
     Ok(())
@@ -197,6 +206,7 @@ struct FirmwareDrmMinorSysNode {
     node_name: &'static str,
 }
 
+#[inherit_methods(from = "self.fields")]
 impl FirmwareDrmMinorSysNode {
     fn new(node_name: &'static str, minor: u32) -> Arc<Self> {
         let mut builder = SysAttrSetBuilder::new();
@@ -205,13 +215,78 @@ impl FirmwareDrmMinorSysNode {
         let attrs = builder
             .build()
             .expect("failed to build the firmware DRM attribute set");
-        Arc::new_cyclic(|weak_self| Self {
+        let node = Arc::new_cyclic(|weak_self| Self {
             fields: BranchNodeFields::new(SysStr::from(node_name), attrs, weak_self.clone()),
             minor,
             node_name,
-        })
+        });
+        node.add_child(
+            SysfsSymlink::new("device", "../../../devices/platform/pvr") as Arc<dyn SysObj>
+        )
+        .expect("failed to register the firmware DRM device symlink");
+        node
     }
+
+    fn add_child(&self, new_child: Arc<dyn SysObj>) -> SysTreeResult<()>;
 }
+
+/// `/sys/devices/platform/pvr`, with the driver links Mesa/libdrm follow.
+#[derive(Debug)]
+struct FirmwarePvrPlatformNode {
+    fields: BranchNodeFields<dyn SysObj, Self>,
+}
+
+#[inherit_methods(from = "self.fields")]
+impl FirmwarePvrPlatformNode {
+    fn new() -> Arc<Self> {
+        let mut builder = SysAttrSetBuilder::new();
+        builder.add(SysStr::from("uevent"), SysPerms::DEFAULT_RO_ATTR_PERMS);
+        let attrs = builder
+            .build()
+            .expect("failed to build the PVR platform attribute set");
+        let node = Arc::new_cyclic(|weak_self| Self {
+            fields: BranchNodeFields::new(SysStr::from("pvr"), attrs, weak_self.clone()),
+        });
+        node.add_child(
+            SysfsSymlink::new("driver", "../../../bus/platform/drivers/pvr") as Arc<dyn SysObj>,
+        )
+        .expect("failed to register the PVR driver symlink");
+        node.add_child(SysfsSymlink::new("subsystem", "../../../bus/platform") as Arc<dyn SysObj>)
+            .expect("failed to register the PVR platform subsystem symlink");
+        node
+    }
+
+    fn add_child(&self, new_child: Arc<dyn SysObj>) -> SysTreeResult<()>;
+}
+
+fn build_firmware_platform_node() -> SysTreeResult<Arc<AttrLessSysNode>> {
+    let devices = AttrLessSysNode::new("devices");
+    let platform = AttrLessSysNode::new("platform");
+    platform.add_child(FirmwarePvrPlatformNode::new() as Arc<dyn SysObj>)?;
+    devices.add_child(platform as Arc<dyn SysObj>)?;
+    Ok(devices)
+}
+
+inherit_sys_branch_node!(FirmwarePvrPlatformNode, fields, {
+    fn read_attr_at(
+        &self,
+        name: &str,
+        offset: usize,
+        writer: &mut VmWriter,
+    ) -> SysTreeResult<usize> {
+        if name != "uevent" {
+            return Err(SysTreeError::AttributeError);
+        }
+        let mut printer = VmPrinter::new_skip(writer, offset);
+        writeln!(printer, "DRIVER=pvr")?;
+        writeln!(printer, "DEVTYPE=platform")?;
+        Ok(printer.bytes_written())
+    }
+
+    fn perms(&self) -> SysPerms {
+        SysPerms::DEFAULT_RO_PERMS
+    }
+});
 
 inherit_sys_branch_node!(FirmwareDrmMinorSysNode, fields, {
     fn read_attr_at(
@@ -572,6 +647,36 @@ mod test {
             assert!(uevent.contains(&alloc::format!("DEVNAME=dri/{name}")));
         }
 
+        let card = class.child("card0").unwrap().cast_to_branch().unwrap();
+        assert_eq!(
+            card.child("device")
+                .unwrap()
+                .cast_to_symlink()
+                .unwrap()
+                .target_path(),
+            "../../../devices/platform/pvr"
+        );
+
+        let devices = build_firmware_platform_node().unwrap();
+        let platform = devices.child("platform").unwrap().cast_to_branch().unwrap();
+        let pvr = platform.child("pvr").unwrap().cast_to_branch().unwrap();
+        assert_eq!(
+            pvr.child("driver")
+                .unwrap()
+                .cast_to_symlink()
+                .unwrap()
+                .target_path(),
+            "../../../bus/platform/drivers/pvr"
+        );
+        let mut buf = [0u8; 64];
+        let mut writer = ostd::mm::VmWriter::from(&mut buf[..]).to_fallible();
+        let read = pvr.read_attr_at("uevent", 0, &mut writer).unwrap();
+        assert!(
+            core::str::from_utf8(&buf[..read])
+                .unwrap()
+                .contains("DRIVER=pvr")
+        );
+
         let dev = build_firmware_drm_dev_node_for(&nodes).unwrap();
         let char_node = dev.child("char").unwrap().cast_to_branch().unwrap();
         let render = char_node
@@ -580,6 +685,17 @@ mod test {
             .cast_to_symlink()
             .unwrap();
         assert_eq!(render.target_path(), "../../class/drm/renderD128");
+    }
+
+    #[ktest]
+    fn gpu_drm_driver_name() {
+        let devices = build_firmware_platform_node().unwrap();
+        let platform = devices.child("platform").unwrap().cast_to_branch().unwrap();
+        let pvr = platform.child("pvr").unwrap().cast_to_branch().unwrap();
+        let driver_node = pvr.child("driver").unwrap().cast_to_symlink().unwrap();
+        let driver = driver_node.target_path();
+        assert_eq!(driver.rsplit('/').next(), Some("pvr"));
+        assert!(driver.ends_with("/drivers/pvr"));
     }
 
     #[ktest]

@@ -99,6 +99,26 @@ pub(crate) const DRIVER_NAME: &str = "virtio_gpu";
 /// client decides which driver to use, and claiming a device that is not there
 /// would send it to a 3D path that cannot exist on this machine.
 const FIRMWARE_DRIVER_NAME: &str = "simpledrm";
+/// The DRM driver name the vendor PowerVR user-mode stack expects.
+///
+/// RockOS reports `pvr` for the KMD, and Mesa/libdrm pick `pvr_dri.so` from
+/// that name; there is no pvr EGL ICD or override in the RockOS image.
+const POWERVR_DRIVER_NAME: &str = "pvr";
+
+/// Whether the platform device tree describes the PowerVR GPU.
+pub(crate) fn is_powervr_platform() -> bool {
+    #[cfg(all(target_arch = "riscv64", feature = "powervr_probe"))]
+    {
+        ostd::arch::boot::DEVICE_TREE
+            .get()
+            .and_then(|tree| tree.find_compatible(&["img,gpu"]))
+            .is_some()
+    }
+    #[cfg(not(all(target_arch = "riscv64", feature = "powervr_probe")))]
+    {
+        false
+    }
+}
 const DRIVER_DATE: &str = "20260815";
 const DRIVER_DESC: &str = "Asterinas virtio-gpu driver";
 
@@ -406,6 +426,7 @@ impl DisplaySource {
     fn driver_name(&self) -> &'static str {
         match self {
             DisplaySource::Virtio(_) => DRIVER_NAME,
+            DisplaySource::Firmware(_) if is_powervr_platform() => POWERVR_DRIVER_NAME,
             DisplaySource::Firmware(_) => FIRMWARE_DRIVER_NAME,
         }
     }
