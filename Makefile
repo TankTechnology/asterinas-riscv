@@ -713,6 +713,29 @@ test_x86_debian_daily_use:
 		--accel "$(X86_DEBIAN_DAILY_ACCEL)" \
 		--timeout "$(X86_DEBIAN_DAILY_TIMEOUT)"
 
+# Xorg graphics gate: serial login, install the X server over slirp, modeset
+# the virtio-gpu through /dev/dri/card0, paint the root window red with
+# `xsetroot`, capture the scanout through the QEMU monitor, and power off.
+#   X86_DEBIAN_XORG_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_XORG_BASE_ROOT ?=
+X86_DEBIAN_XORG_WORKSPACE ?= $(CURDIR)/target/x86-debian/xorg
+X86_DEBIAN_XORG_ACCEL ?= kvm
+X86_DEBIAN_XORG_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_xorg
+test_x86_debian_xorg:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@echo "xorg: base=$(X86_DEBIAN_XORG_BASE_ROOT) accel=$(X86_DEBIAN_XORG_ACCEL)"
+	@tools/x86/debian/xorg_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_XORG_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--timeout "$(X86_DEBIAN_XORG_TIMEOUT)"
+
 # Boot the Debian root image on the x86_64 kernel and wait for the marker.
 # X86_DEBIAN_KERNEL must be an OSDK x86_64 artifact built with
 # `--boot-method vmm-direct`; X86_DEBIAN_STAGE1_INITRAMFS comes from
