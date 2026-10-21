@@ -31,7 +31,7 @@ mod fence;
 mod powervr_probe;
 mod prime;
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use align_ext::AlignExt;
 use aster_framebuffer::framebuffer::{FRAMEBUFFER, FrameBuffer};
@@ -305,6 +305,18 @@ impl GemObjects {
 /// loading, not the ioctls it chose not to send.
 static DRI_TRACE: AtomicBool = AtomicBool::new(false);
 aster_cmdline::define_flag_param!("asterinas.dri_trace", DRI_TRACE);
+
+/// Diagnostic switch, on with `asterinas.dri_trace_fail=1`: print only the
+/// ioctls the driver refuses.
+///
+/// A full trace of a WebRender scene is far too large to keep, but the one
+/// refusal that makes WebRender report `OutOfMemory` is exactly the fact a
+/// full trace would be searched for. The count is bounded so that a client
+/// retry loop cannot flood the console.
+static DRI_TRACE_FAIL: AtomicBool = AtomicBool::new(false);
+aster_cmdline::define_flag_param!("asterinas.dri_trace_fail", DRI_TRACE_FAIL);
+
+static DRI_REFUSAL_LOGS: AtomicUsize = AtomicUsize::new(0);
 
 /// The one object space. Lock ordering: take a file's `DriInner` first, then
 /// this, never the other way round.
@@ -1906,32 +1918,34 @@ impl DriHandle {
         })
     }
 
-    /// Reports which of this file's handles names a given resource.
+    /// Reports the host resource that one of this file's GEM handles names.
     ///
-    /// The query is by resource id, which is the name the host knows, so the
-    /// answer is whichever of this file's handles stands for it.
+    /// The UAPI direction matters: `bo_handle` is the input (the caller's
+    /// handle) and `res_handle` is the output (the host resource id), as in
+    /// Linux's `virtio_gpu_resource_info_ioctl`. An importer that has just
+    /// received a buffer through GEM/PRIME knows only its handle and asks this
+    /// ioctl for the resource name to submit commands against. Looking the
+    /// resource up by id instead makes every such import fail with `EINVAL`,
+    /// which Mesa reports as `GL_OUT_OF_MEMORY` after a DRI3 buffer handoff.
     fn virtgpu_resource_info(
         &self,
         req: &DrmVirtgpuResourceInfo,
     ) -> Result<DrmVirtgpuResourceInfo> {
         let inner = self.inner.lock();
+        let object_id = object_for_handle(&inner, req.bo_handle)?;
         let objects = GEM_OBJECTS.lock();
-        for (handle, object_id) in inner.handles.iter() {
-            let Ok(object) = object_by_id(&objects, *object_id) else {
-                continue;
-            };
-            if object.resource_id == Some(req.res_handle) {
-                return Ok(DrmVirtgpuResourceInfo {
-                    bo_handle: *handle,
-                    res_handle: req.res_handle,
-                    size: object.size as u32,
-                    // Resources this driver creates are guest-backed, so there
-                    // is no blob to name.
-                    blob_mem: 0,
-                });
-            }
-        }
-        return_errno_with_message!(Errno::EINVAL, "unknown 3D resource");
+        let object = object_by_id(&objects, object_id)?;
+        let resource_id = object
+            .resource_id
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "GEM object has no host resource"))?;
+        Ok(DrmVirtgpuResourceInfo {
+            bo_handle: req.bo_handle,
+            res_handle: resource_id,
+            size: object.size as u32,
+            // Resources this driver creates are guest-backed, so there is no
+            // blob to name.
+            blob_mem: 0,
+        })
     }
 
     /// Submits a virgl command buffer to this file's context.
@@ -2669,20 +2683,6 @@ impl PerOpenFileOps for DriHandle {
     fn ioctl(&self, _path: &Path, raw_ioctl: RawIoctl) -> Result<i32> {
         use ioctl_defs::*;
 
-        // A render node withholds everything that acts on the display, so the
-        // check comes before the request is decoded: a refused ioctl must not
-        // be able to reach the handlers at all.
-        if self.node == DriNode::Render && !is_render_allowed(raw_ioctl) {
-            return_errno_with_message!(Errno::EACCES, "ioctl is not permitted on the render node");
-        }
-
-        // `RMFB` passes its argument by value, so it cannot go through the typed
-        // dispatch below.
-        if raw_ioctl.cmd() == MODE_RMFB_CMD {
-            self.rm_fb(raw_ioctl.arg() as u32)?;
-            return Ok(0);
-        }
-
         let traced_command = raw_ioctl.cmd();
         if DRI_TRACE.load(Ordering::Relaxed) {
             ostd::error!(
@@ -2692,365 +2692,394 @@ impl PerOpenFileOps for DriHandle {
             );
         }
 
-        let result: Result<i32> = dispatch_ioctl!(match raw_ioctl {
-            cmd @ GetVersion => {
-                let mut version = cmd.read()?;
-                version.version_major = 0;
-                version.version_minor = 1;
-                version.version_patchlevel = 0;
-                copy_field(version.name, &mut version.name_len, self.display.name)?;
-                copy_field(version.date, &mut version.date_len, DRIVER_DATE)?;
-                copy_field(version.desc, &mut version.desc_len, DRIVER_DESC)?;
-                cmd.write(&version)?;
-                Ok(0)
-            }
-            cmd @ GetCap => {
-                let mut cap = cmd.read()?;
-                cap.value = match cap.capability {
-                    DRM_CAP_DUMB_BUFFER => 1,
-                    DRM_CAP_DUMB_PREFERRED_DEPTH => 24,
-                    DRM_CAP_DUMB_PREFER_SHADOW => 0,
-                    DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
-                    _ => {
-                        return_errno_with_message!(Errno::EINVAL, "unsupported DRM capability")
-                    }
-                };
-                cmd.write(&cap)?;
-                Ok(0)
-            }
-            cmd @ GetMagic => {
-                // `_IOR`: nothing comes in, the token goes out.
-                let magic = {
-                    let mut inner = self.inner.lock();
-                    *inner
-                        .magic
-                        .get_or_insert_with(|| NEXT_MAGIC.fetch_add(1, Ordering::Relaxed))
-                };
-                cmd.write(&DrmAuth { magic })?;
-                Ok(0)
-            }
-            cmd @ AuthMagic => {
-                let auth = cmd.read()?;
-                // Linux looks the token up in the master's map and marks that
-                // file authenticated. No ioctl on this device reads an
-                // authenticated flag, so the half that does work is the
-                // recognition -- a token this device issued is accepted and
-                // anything else is refused, rather than the request quietly
-                // succeeding on a value nothing produced.
-                if auth.magic == 0 || auth.magic >= NEXT_MAGIC.load(Ordering::Relaxed) {
-                    return_errno_with_message!(Errno::EINVAL, "unknown magic");
-                }
-                Ok(0)
-            }
-            cmd @ SetClientCap => {
-                let cap = cmd.read()?;
-                validate_client_cap(cap)?;
-                Ok(0)
-            }
-            cmd @ ModeGetResources => {
-                let mut res = cmd.read()?;
-                res.count_fbs = 0;
-                res.count_crtcs = 1;
-                res.count_connectors = 1;
-                res.count_encoders = 1;
-                let (max_width, max_height) = self.display.max_mode();
-                res.min_width = 0;
-                res.max_width = max_width;
-                res.min_height = 0;
-                res.max_height = max_height;
-                if res.crtc_id_ptr != 0 {
-                    current_userspace!().write_val(res.crtc_id_ptr as usize, &CRTC_ID)?;
-                }
-                if res.connector_id_ptr != 0 {
-                    current_userspace!().write_val(res.connector_id_ptr as usize, &CONNECTOR_ID)?;
-                }
-                if res.encoder_id_ptr != 0 {
-                    current_userspace!().write_val(res.encoder_id_ptr as usize, &ENCODER_ID)?;
-                }
-                cmd.write(&res)?;
-                Ok(0)
-            }
-            cmd @ ModeGetPlaneResources => {
-                // A single scanout is presented through a single plane, so a
-                // client that enumerates planes finds exactly one. Reporting
-                // none would be equally true of the hardware and useless to a
-                // client trying to find out how it may drive it.
-                let mut res = cmd.read()?;
-                res.count_planes = 1;
-                if res.plane_id_ptr != 0 {
-                    current_userspace!().write_val(res.plane_id_ptr as usize, &PLANE_ID)?;
-                }
-                cmd.write(&res)?;
-                Ok(0)
-            }
-            cmd @ ModeGetPlane => {
-                let mut plane = cmd.read()?;
-                if plane.plane_id != PLANE_ID {
-                    return_errno_with_message!(Errno::EINVAL, "unknown plane id");
-                }
-                let inner = self.inner.lock();
-                plane.crtc_id = CRTC_ID;
-                plane.fb_id = inner.current_fb_id.unwrap_or(0);
-                plane.possible_crtcs = 1;
-                plane.gamma_size = 0;
-                plane.count_format_types = 0;
-                cmd.write(&plane)?;
-                Ok(0)
-            }
-            cmd @ ModeGetConnector => {
-                let mut conn = cmd.read()?;
-                if conn.connector_id != CONNECTOR_ID {
-                    return_errno_with_message!(Errno::EINVAL, "unknown connector id");
-                }
-                let capacity = conn.count_modes;
-                conn.count_modes = 1;
-                conn.count_props = 0;
-                conn.count_encoders = 1;
-                conn.encoder_id = ENCODER_ID;
-                conn.connector_type = self.display.connector_type;
-                conn.connector_type_id = 1;
-                conn.connection = DRM_MODE_CONNECTED;
-                conn.mm_width = 0;
-                conn.mm_height = 0;
-                conn.subpixel = 0;
-                conn.pad = 0;
-                if conn.modes_ptr != 0 && capacity >= 1 {
-                    // The mode comes from the scanout, not from the GPU: a
-                    // firmware framebuffer has a mode the GPU knows nothing
-                    // about, and on a virtio-gpu machine the two agree.
-                    let (width, height) = self.display.scanout.dimensions();
-                    let mode = build_mode(width, height);
-                    current_userspace!().write_val(conn.modes_ptr as usize, &mode)?;
-                }
-                if conn.encoders_ptr != 0 {
-                    current_userspace!().write_val(conn.encoders_ptr as usize, &ENCODER_ID)?;
-                }
-                cmd.write(&conn)?;
-                Ok(0)
-            }
-            cmd @ ModeGetEncoder => {
-                let mut enc = cmd.read()?;
-                if enc.encoder_id != ENCODER_ID {
-                    return_errno_with_message!(Errno::EINVAL, "unknown encoder id");
-                }
-                enc.encoder_type = DRM_MODE_ENCODER_VIRTUAL;
-                enc.crtc_id = CRTC_ID;
-                enc.possible_crtcs = 1;
-                enc.possible_clones = 0;
-                cmd.write(&enc)?;
-                Ok(0)
-            }
-            cmd @ ModeGetCrtc => {
-                let req = cmd.read()?;
-                cmd.write(&self.get_crtc(&req)?)?;
-                Ok(0)
-            }
-            cmd @ ModeSetCrtc => {
-                let req = cmd.read()?;
-                self.set_crtc(&req)?;
-                Ok(0)
-            }
-            cmd @ ModeCursor => {
-                let req = cmd.read()?;
-                self.update_cursor(req.into())?;
-                Ok(0)
-            }
-            cmd @ ModeCursor2 => {
-                let req = cmd.read()?;
-                self.update_cursor(req)?;
-                Ok(0)
-            }
-            cmd @ GemClose => {
-                let req = cmd.read()?;
-                self.gem_close(&req)?;
-                Ok(0)
-            }
-            cmd @ GemFlink => {
-                let req = cmd.read()?;
-                cmd.write(&self.gem_flink(&req)?)?;
-                Ok(0)
-            }
-            cmd @ GemOpen => {
-                let req = cmd.read()?;
-                cmd.write(&self.gem_open(&req)?)?;
-                Ok(0)
-            }
-            cmd @ PrimeHandleToFd => {
-                let mut req = cmd.read()?;
-                let (file, fd_flags) = prime::handle_to_fd(self, req.handle, req.flags)?;
-                req.fd = install_file(file, fd_flags)?;
-                cmd.write(&req)?;
-                Ok(0)
-            }
-            cmd @ PrimeFdToHandle => {
-                let mut req = cmd.read()?;
-                // The command carries no size field: Linux reports the handle
-                // and leaves the rest as the caller sent it.
-                req.handle = self.prime_fd_to_handle(req.fd)?;
-                cmd.write(&req)?;
-                Ok(0)
-            }
-            cmd @ VirtgpuGetparam => {
-                let req = cmd.read()?;
-                self.virtgpu_getparam(&req)?;
-                Ok(0)
-            }
-            cmd @ VirtgpuGetCaps => {
-                let req = cmd.read()?;
-                self.virtgpu_get_caps(&req)?;
-                Ok(0)
-            }
-            cmd @ VirtgpuContextInit => {
-                let req = cmd.read()?;
-                self.virtgpu_context_init(&req)?;
-                Ok(0)
-            }
-            cmd @ VirtgpuExecbuffer => {
-                let req = cmd.read()?;
-                cmd.write(&self.virtgpu_execbuffer(&req)?)?;
-                Ok(0)
-            }
-            cmd @ VirtgpuExecbufferV2 => {
-                let req = cmd.read()?;
-                cmd.write(&self.virtgpu_execbuffer_v2(&req)?)?;
-                Ok(0)
-            }
-            cmd @ VirtgpuTransferToHost => {
-                let req = cmd.read()?;
-                self.virtgpu_transfer_3d(true, &req)?;
-                Ok(0)
-            }
-            cmd @ VirtgpuTransferFromHost => {
-                let req = cmd.read()?;
-                self.virtgpu_transfer_3d(false, &req)?;
-                Ok(0)
-            }
-            cmd @ VirtgpuWait => {
-                let req = cmd.read()?;
-                if !virtgpu_wait_flags_supported(req.flags) {
-                    return_errno_with_message!(Errno::EINVAL, "unsupported wait flags");
-                }
-                // `submit_3d` is synchronous, so a valid handle is already
-                // idle by the time userspace asks to wait. Still validate the
-                // handle: accepting arbitrary numbers would hide stale GEM
-                // references and turn a recovery path into a false success.
-                object_for_handle(&self.inner.lock(), req.handle)?;
-                Ok(0)
-            }
-            cmd @ VirtgpuMap => {
-                let req = cmd.read()?;
-                cmd.write(&self.virtgpu_map(&req)?)?;
-                Ok(0)
-            }
-            cmd @ VirtgpuResourceCreate => {
-                let req = cmd.read()?;
-                cmd.write(&self.virtgpu_resource_create(&req)?)?;
-                Ok(0)
-            }
-            cmd @ VirtgpuResourceInfo => {
-                let req = cmd.read()?;
-                cmd.write(&self.virtgpu_resource_info(&req)?)?;
-                Ok(0)
-            }
-            cmd @ ModeCreateDumb => {
-                let req = cmd.read()?;
-                cmd.write(&self.create_dumb(&req)?)?;
-                Ok(0)
-            }
-            cmd @ ModeMapDumb => {
-                let req = cmd.read()?;
-                cmd.write(&self.map_dumb(&req)?)?;
-                Ok(0)
-            }
-            cmd @ ModeDestroyDumb => {
-                let req = cmd.read()?;
-                self.destroy_dumb(&req)?;
-                Ok(0)
-            }
-            cmd @ ModeAddFb => {
-                let mut req = cmd.read()?;
-                req.fb_id = self.add_fb(&req)?;
-                cmd.write(&req)?;
-                Ok(0)
-            }
-            _cmd @ SetMaster => {
-                // We always grant DRM master to the first opener. There is no
-                // legacy DRI authentication to gate, so the only observable
-                // effect of master is that `SET_MASTER` succeeds, which the
-                // modesetting driver requires at startup.
-                Ok(0)
-            }
-            _cmd @ DropMaster => {
-                Ok(0)
-            }
-            cmd @ ModeObjGetProperties => {
-                let mut props = cmd.read()?;
-                // We advertise no KMS properties. The modesetting driver probes
-                // them to decide whether to use atomic/gamma/CTM paths; an empty
-                // set is valid and keeps it on the plain `SETCRTC`/`DIRTYFB`
-                // path. Return the count, leaving the (zero-length) arrays alone.
-                props.count_props = 0;
-                cmd.write(&props)?;
-                Ok(0)
-            }
-            cmd @ ModePageFlip => {
-                let req = cmd.read()?;
-                if req.crtc_id != CRTC_ID {
-                    return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
-                }
-                if req.fb_id == 0 {
-                    return_errno_with_message!(Errno::EINVAL, "page flip to no framebuffer");
-                }
-                // No backend currently queues flip-complete events or supports
-                // asynchronous flips. Accepting either flag would leave an
-                // event-driven client waiting forever after a successful ioctl.
-                if req.flags != 0 {
-                    return_errno_with_message!(
-                        Errno::EOPNOTSUPP,
-                        "page flip flags are unsupported"
-                    );
-                }
-                self.present_fb(req.fb_id)?;
-                Ok(0)
-            }
-            cmd @ ModeDirtyFb => {
-                let req = cmd.read()?;
-                // `fb_id == 0` is the modesetting driver's *capability probe*
-                // (it calls `drmModeDirtyFB(fd, fb_id, NULL, 0)` before the first
-                // framebuffer exists). Returning success there keeps it on the
-                // dirty-update path; the real presents carry a valid id.
-                if req.fb_id == 0 {
-                    return Ok(0);
-                }
-                // The clip rectangles decide how much is re-presented, and they
-                // are read before the framebuffer is looked up so that a client
-                // naming one that does not exist still gets EFAULT for its bad
-                // pointer rather than EINVAL for the id it cannot fix first.
-                let clips = read_dirty_clips(&req)?;
-                self.dirty_fb(req.fb_id, &clips)?;
-                Ok(0)
-            }
-            _ => {
-                ostd::debug!(
-                    "the ioctl command {:#x} is unknown for DRM devices",
-                    raw_ioctl.cmd()
+        // Keep every early refusal inside one closure. Both `?` and
+        // `return_errno_with_message!` would otherwise return from this method
+        // and bypass the refusal record below, which is exactly the record a
+        // failed WebRender allocation is diagnosed with.
+        let result: Result<i32> = (move || {
+            // A render node withholds everything that acts on the display, so the
+            // check comes before the request is decoded: a refused ioctl must not
+            // be able to reach the handlers at all.
+            if self.node == DriNode::Render && !is_render_allowed(raw_ioctl) {
+                return_errno_with_message!(
+                    Errno::EACCES,
+                    "ioctl is not permitted on the render node"
                 );
-                return_errno_with_message!(Errno::ENOTTY, "the ioctl command is unknown");
             }
-        });
+
+            // `RMFB` passes its argument by value, so it cannot go through the typed
+            // dispatch below.
+            if raw_ioctl.cmd() == MODE_RMFB_CMD {
+                self.rm_fb(raw_ioctl.arg() as u32)?;
+                return Ok(0);
+            }
+
+            dispatch_ioctl!(match raw_ioctl {
+                cmd @ GetVersion => {
+                    let mut version = cmd.read()?;
+                    version.version_major = 0;
+                    version.version_minor = 1;
+                    version.version_patchlevel = 0;
+                    copy_field(version.name, &mut version.name_len, self.display.name)?;
+                    copy_field(version.date, &mut version.date_len, DRIVER_DATE)?;
+                    copy_field(version.desc, &mut version.desc_len, DRIVER_DESC)?;
+                    cmd.write(&version)?;
+                    Ok(0)
+                }
+                cmd @ GetCap => {
+                    let mut cap = cmd.read()?;
+                    cap.value = match cap.capability {
+                        DRM_CAP_DUMB_BUFFER => 1,
+                        DRM_CAP_DUMB_PREFERRED_DEPTH => 24,
+                        DRM_CAP_DUMB_PREFER_SHADOW => 0,
+                        DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
+                        _ => {
+                            return_errno_with_message!(Errno::EINVAL, "unsupported DRM capability")
+                        }
+                    };
+                    cmd.write(&cap)?;
+                    Ok(0)
+                }
+                cmd @ GetMagic => {
+                    // `_IOR`: nothing comes in, the token goes out.
+                    let magic = {
+                        let mut inner = self.inner.lock();
+                        *inner
+                            .magic
+                            .get_or_insert_with(|| NEXT_MAGIC.fetch_add(1, Ordering::Relaxed))
+                    };
+                    cmd.write(&DrmAuth { magic })?;
+                    Ok(0)
+                }
+                cmd @ AuthMagic => {
+                    let auth = cmd.read()?;
+                    // Linux looks the token up in the master's map and marks that
+                    // file authenticated. No ioctl on this device reads an
+                    // authenticated flag, so the half that does work is the
+                    // recognition -- a token this device issued is accepted and
+                    // anything else is refused, rather than the request quietly
+                    // succeeding on a value nothing produced.
+                    if auth.magic == 0 || auth.magic >= NEXT_MAGIC.load(Ordering::Relaxed) {
+                        return_errno_with_message!(Errno::EINVAL, "unknown magic");
+                    }
+                    Ok(0)
+                }
+                cmd @ SetClientCap => {
+                    let cap = cmd.read()?;
+                    validate_client_cap(cap)?;
+                    Ok(0)
+                }
+                cmd @ ModeGetResources => {
+                    let mut res = cmd.read()?;
+                    res.count_fbs = 0;
+                    res.count_crtcs = 1;
+                    res.count_connectors = 1;
+                    res.count_encoders = 1;
+                    let (max_width, max_height) = self.display.max_mode();
+                    res.min_width = 0;
+                    res.max_width = max_width;
+                    res.min_height = 0;
+                    res.max_height = max_height;
+                    if res.crtc_id_ptr != 0 {
+                        current_userspace!().write_val(res.crtc_id_ptr as usize, &CRTC_ID)?;
+                    }
+                    if res.connector_id_ptr != 0 {
+                        current_userspace!()
+                            .write_val(res.connector_id_ptr as usize, &CONNECTOR_ID)?;
+                    }
+                    if res.encoder_id_ptr != 0 {
+                        current_userspace!().write_val(res.encoder_id_ptr as usize, &ENCODER_ID)?;
+                    }
+                    cmd.write(&res)?;
+                    Ok(0)
+                }
+                cmd @ ModeGetPlaneResources => {
+                    // A single scanout is presented through a single plane, so a
+                    // client that enumerates planes finds exactly one. Reporting
+                    // none would be equally true of the hardware and useless to a
+                    // client trying to find out how it may drive it.
+                    let mut res = cmd.read()?;
+                    res.count_planes = 1;
+                    if res.plane_id_ptr != 0 {
+                        current_userspace!().write_val(res.plane_id_ptr as usize, &PLANE_ID)?;
+                    }
+                    cmd.write(&res)?;
+                    Ok(0)
+                }
+                cmd @ ModeGetPlane => {
+                    let mut plane = cmd.read()?;
+                    if plane.plane_id != PLANE_ID {
+                        return_errno_with_message!(Errno::EINVAL, "unknown plane id");
+                    }
+                    let inner = self.inner.lock();
+                    plane.crtc_id = CRTC_ID;
+                    plane.fb_id = inner.current_fb_id.unwrap_or(0);
+                    plane.possible_crtcs = 1;
+                    plane.gamma_size = 0;
+                    plane.count_format_types = 0;
+                    cmd.write(&plane)?;
+                    Ok(0)
+                }
+                cmd @ ModeGetConnector => {
+                    let mut conn = cmd.read()?;
+                    if conn.connector_id != CONNECTOR_ID {
+                        return_errno_with_message!(Errno::EINVAL, "unknown connector id");
+                    }
+                    let capacity = conn.count_modes;
+                    conn.count_modes = 1;
+                    conn.count_props = 0;
+                    conn.count_encoders = 1;
+                    conn.encoder_id = ENCODER_ID;
+                    conn.connector_type = self.display.connector_type;
+                    conn.connector_type_id = 1;
+                    conn.connection = DRM_MODE_CONNECTED;
+                    conn.mm_width = 0;
+                    conn.mm_height = 0;
+                    conn.subpixel = 0;
+                    conn.pad = 0;
+                    if conn.modes_ptr != 0 && capacity >= 1 {
+                        // The mode comes from the scanout, not from the GPU: a
+                        // firmware framebuffer has a mode the GPU knows nothing
+                        // about, and on a virtio-gpu machine the two agree.
+                        let (width, height) = self.display.scanout.dimensions();
+                        let mode = build_mode(width, height);
+                        current_userspace!().write_val(conn.modes_ptr as usize, &mode)?;
+                    }
+                    if conn.encoders_ptr != 0 {
+                        current_userspace!().write_val(conn.encoders_ptr as usize, &ENCODER_ID)?;
+                    }
+                    cmd.write(&conn)?;
+                    Ok(0)
+                }
+                cmd @ ModeGetEncoder => {
+                    let mut enc = cmd.read()?;
+                    if enc.encoder_id != ENCODER_ID {
+                        return_errno_with_message!(Errno::EINVAL, "unknown encoder id");
+                    }
+                    enc.encoder_type = DRM_MODE_ENCODER_VIRTUAL;
+                    enc.crtc_id = CRTC_ID;
+                    enc.possible_crtcs = 1;
+                    enc.possible_clones = 0;
+                    cmd.write(&enc)?;
+                    Ok(0)
+                }
+                cmd @ ModeGetCrtc => {
+                    let req = cmd.read()?;
+                    cmd.write(&self.get_crtc(&req)?)?;
+                    Ok(0)
+                }
+                cmd @ ModeSetCrtc => {
+                    let req = cmd.read()?;
+                    self.set_crtc(&req)?;
+                    Ok(0)
+                }
+                cmd @ ModeCursor => {
+                    let req = cmd.read()?;
+                    self.update_cursor(req.into())?;
+                    Ok(0)
+                }
+                cmd @ ModeCursor2 => {
+                    let req = cmd.read()?;
+                    self.update_cursor(req)?;
+                    Ok(0)
+                }
+                cmd @ GemClose => {
+                    let req = cmd.read()?;
+                    self.gem_close(&req)?;
+                    Ok(0)
+                }
+                cmd @ GemFlink => {
+                    let req = cmd.read()?;
+                    cmd.write(&self.gem_flink(&req)?)?;
+                    Ok(0)
+                }
+                cmd @ GemOpen => {
+                    let req = cmd.read()?;
+                    cmd.write(&self.gem_open(&req)?)?;
+                    Ok(0)
+                }
+                cmd @ PrimeHandleToFd => {
+                    let mut req = cmd.read()?;
+                    let (file, fd_flags) = prime::handle_to_fd(self, req.handle, req.flags)?;
+                    req.fd = install_file(file, fd_flags)?;
+                    cmd.write(&req)?;
+                    Ok(0)
+                }
+                cmd @ PrimeFdToHandle => {
+                    let mut req = cmd.read()?;
+                    // The command carries no size field: Linux reports the handle
+                    // and leaves the rest as the caller sent it.
+                    req.handle = self.prime_fd_to_handle(req.fd)?;
+                    cmd.write(&req)?;
+                    Ok(0)
+                }
+                cmd @ VirtgpuGetparam => {
+                    let req = cmd.read()?;
+                    self.virtgpu_getparam(&req)?;
+                    Ok(0)
+                }
+                cmd @ VirtgpuGetCaps => {
+                    let req = cmd.read()?;
+                    self.virtgpu_get_caps(&req)?;
+                    Ok(0)
+                }
+                cmd @ VirtgpuContextInit => {
+                    let req = cmd.read()?;
+                    self.virtgpu_context_init(&req)?;
+                    Ok(0)
+                }
+                cmd @ VirtgpuExecbuffer => {
+                    let req = cmd.read()?;
+                    cmd.write(&self.virtgpu_execbuffer(&req)?)?;
+                    Ok(0)
+                }
+                cmd @ VirtgpuExecbufferV2 => {
+                    let req = cmd.read()?;
+                    cmd.write(&self.virtgpu_execbuffer_v2(&req)?)?;
+                    Ok(0)
+                }
+                cmd @ VirtgpuTransferToHost => {
+                    let req = cmd.read()?;
+                    self.virtgpu_transfer_3d(true, &req)?;
+                    Ok(0)
+                }
+                cmd @ VirtgpuTransferFromHost => {
+                    let req = cmd.read()?;
+                    self.virtgpu_transfer_3d(false, &req)?;
+                    Ok(0)
+                }
+                cmd @ VirtgpuWait => {
+                    let req = cmd.read()?;
+                    if !virtgpu_wait_flags_supported(req.flags) {
+                        return_errno_with_message!(Errno::EINVAL, "unsupported wait flags");
+                    }
+                    // `submit_3d` is synchronous, so a valid handle is already
+                    // idle by the time userspace asks to wait. Still validate the
+                    // handle: accepting arbitrary numbers would hide stale GEM
+                    // references and turn a recovery path into a false success.
+                    object_for_handle(&self.inner.lock(), req.handle)?;
+                    Ok(0)
+                }
+                cmd @ VirtgpuMap => {
+                    let req = cmd.read()?;
+                    cmd.write(&self.virtgpu_map(&req)?)?;
+                    Ok(0)
+                }
+                cmd @ VirtgpuResourceCreate => {
+                    let req = cmd.read()?;
+                    cmd.write(&self.virtgpu_resource_create(&req)?)?;
+                    Ok(0)
+                }
+                cmd @ VirtgpuResourceInfo => {
+                    let req = cmd.read()?;
+                    cmd.write(&self.virtgpu_resource_info(&req)?)?;
+                    Ok(0)
+                }
+                cmd @ ModeCreateDumb => {
+                    let req = cmd.read()?;
+                    cmd.write(&self.create_dumb(&req)?)?;
+                    Ok(0)
+                }
+                cmd @ ModeMapDumb => {
+                    let req = cmd.read()?;
+                    cmd.write(&self.map_dumb(&req)?)?;
+                    Ok(0)
+                }
+                cmd @ ModeDestroyDumb => {
+                    let req = cmd.read()?;
+                    self.destroy_dumb(&req)?;
+                    Ok(0)
+                }
+                cmd @ ModeAddFb => {
+                    let mut req = cmd.read()?;
+                    req.fb_id = self.add_fb(&req)?;
+                    cmd.write(&req)?;
+                    Ok(0)
+                }
+                _cmd @ SetMaster => {
+                    // We always grant DRM master to the first opener. There is no
+                    // legacy DRI authentication to gate, so the only observable
+                    // effect of master is that `SET_MASTER` succeeds, which the
+                    // modesetting driver requires at startup.
+                    Ok(0)
+                }
+                _cmd @ DropMaster => {
+                    Ok(0)
+                }
+                cmd @ ModeObjGetProperties => {
+                    let mut props = cmd.read()?;
+                    // We advertise no KMS properties. The modesetting driver probes
+                    // them to decide whether to use atomic/gamma/CTM paths; an empty
+                    // set is valid and keeps it on the plain `SETCRTC`/`DIRTYFB`
+                    // path. Return the count, leaving the (zero-length) arrays alone.
+                    props.count_props = 0;
+                    cmd.write(&props)?;
+                    Ok(0)
+                }
+                cmd @ ModePageFlip => {
+                    let req = cmd.read()?;
+                    if req.crtc_id != CRTC_ID {
+                        return_errno_with_message!(Errno::EINVAL, "unknown crtc id");
+                    }
+                    if req.fb_id == 0 {
+                        return_errno_with_message!(Errno::EINVAL, "page flip to no framebuffer");
+                    }
+                    // No backend currently queues flip-complete events or supports
+                    // asynchronous flips. Accepting either flag would leave an
+                    // event-driven client waiting forever after a successful ioctl.
+                    if req.flags != 0 {
+                        return_errno_with_message!(
+                            Errno::EOPNOTSUPP,
+                            "page flip flags are unsupported"
+                        );
+                    }
+                    self.present_fb(req.fb_id)?;
+                    Ok(0)
+                }
+                cmd @ ModeDirtyFb => {
+                    let req = cmd.read()?;
+                    // `fb_id == 0` is the modesetting driver's *capability probe*
+                    // (it calls `drmModeDirtyFB(fd, fb_id, NULL, 0)` before the first
+                    // framebuffer exists). Returning success there keeps it on the
+                    // dirty-update path; the real presents carry a valid id.
+                    if req.fb_id == 0 {
+                        return Ok(0);
+                    }
+                    // The clip rectangles decide how much is re-presented, and they
+                    // are read before the framebuffer is looked up so that a client
+                    // naming one that does not exist still gets EFAULT for its bad
+                    // pointer rather than EINVAL for the id it cannot fix first.
+                    let clips = read_dirty_clips(&req)?;
+                    self.dirty_fb(req.fb_id, &clips)?;
+                    Ok(0)
+                }
+                _ => {
+                    ostd::debug!(
+                        "the ioctl command {:#x} is unknown for DRM devices",
+                        raw_ioctl.cmd()
+                    );
+                    return_errno_with_message!(Errno::ENOTTY, "the ioctl command is unknown");
+                }
+            })
+        })();
 
         // Only the refusals, and only after the fact: the line above already
         // records the sequence, and a client that stops early stops because of
         // one call the driver would not serve. `Errno` alone does not say
         // which.
-        if DRI_TRACE.load(Ordering::Relaxed)
+        if (DRI_TRACE.load(Ordering::Relaxed) || DRI_TRACE_FAIL.load(Ordering::Relaxed))
             && let Err(error) = &result
         {
-            ostd::error!(
-                "DRI_IOCTL REFUSED cmd={:#010x} errno={:?}",
-                traced_command,
-                error.error()
-            );
+            let logged = DRI_REFUSAL_LOGS.fetch_add(1, Ordering::Relaxed);
+            if logged < 64 {
+                ostd::error!(
+                    "DRI_IOCTL REFUSED cmd={:#010x} errno={:?}",
+                    traced_command,
+                    error.error()
+                );
+            } else if logged == 64 {
+                ostd::error!("DRI_IOCTL REFUSED further refusals suppressed");
+            }
         }
         result
     }
