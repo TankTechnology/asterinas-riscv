@@ -31,7 +31,10 @@ mod fence;
 mod powervr_probe;
 mod prime;
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
+    time::Duration,
+};
 
 use align_ext::AlignExt;
 use aster_framebuffer::framebuffer::{FRAMEBUFFER, FrameBuffer};
@@ -555,6 +558,8 @@ struct DriInner {
     /// Linux allows one context per file and refuses a second, so the field
     /// doubles as the "already created" flag.
     context_id: Option<u32>,
+    /// This file's DRM syncobj handles.
+    syncobjs: SyncObjSpace,
 }
 
 /// A registered framebuffer referencing a GEM object.
@@ -767,6 +772,111 @@ struct DrmPvrGemCreate {
     offset: u64,
     /// Job-context GPU virtual address (out).
     gpu_va: u64,
+}
+
+/// `struct drm_syncobj_create`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmSyncobjCreate {
+    handle: u32,
+    flags: u32,
+}
+
+/// `struct drm_syncobj_destroy`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmSyncobjDestroy {
+    handle: u32,
+    pad: u32,
+}
+
+/// `struct drm_syncobj_wait`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmSyncobjWait {
+    handles: u64,
+    timeout_nsec: i64,
+    count_handles: u32,
+    flags: u32,
+    first_signaled: u32,
+    pad: u32,
+}
+
+/// `struct drm_syncobj_timeline_array`, used by `SYNCOBJ_QUERY`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmSyncobjTimelineArray {
+    handles: u64,
+    points: u64,
+    count_handles: u32,
+    flags: u32,
+}
+
+const DRM_SYNCOBJ_CREATE_SIGNALED: u32 = 1;
+const DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL: u32 = 1;
+const DRM_SYNCOBJ_QUERY_FLAGS_LAST_SUBMITTED: u32 = 1;
+const MAX_SYNCOBJ_HANDLES: u32 = 1024;
+
+/// Per-file syncobj names and the fence each one stands for.
+///
+/// Handles are namespaced per open file, like GEM handles. The fence states
+/// themselves are shared through the device-wide fence context, so a wait can
+/// sleep on one queue regardless of which file created the syncobj.
+#[derive(Debug)]
+struct SyncObjSpace {
+    objects: BTreeMap<u32, Arc<fence::FenceState>>,
+    next_handle: u32,
+}
+
+impl SyncObjSpace {
+    fn new() -> Self {
+        Self {
+            objects: BTreeMap::new(),
+            next_handle: 1,
+        }
+    }
+
+    fn create(&mut self, signaled: bool) -> u32 {
+        let handle = self.next_handle;
+        self.next_handle += 1;
+        let state = fence::context().new_fence();
+        if signaled {
+            fence::context().signal(&state);
+        }
+        self.objects.insert(handle, state);
+        handle
+    }
+
+    fn destroy(&mut self, handle: u32) -> Result<()> {
+        self.objects
+            .remove(&handle)
+            .map(|_| ())
+            .ok_or_else(|| Error::with_message(Errno::ENOENT, "unknown syncobj handle"))
+    }
+
+    fn get(&self, handle: u32) -> Result<Arc<fence::FenceState>> {
+        self.objects
+            .get(&handle)
+            .cloned()
+            .ok_or_else(|| Error::with_message(Errno::ENOENT, "unknown syncobj handle"))
+    }
+}
+
+/// Converts the uapi's absolute monotonic nanosecond deadline to a relative
+/// duration. Negative values and `i64::MAX` mean "wait forever".
+fn syncobj_timeout(timeout_nsec: i64) -> Option<Duration> {
+    const SYNCOBJ_TIMEOUT_INFINITE: i64 = 0x7fff_ffff_ffff_ffff;
+    if timeout_nsec < 0 || timeout_nsec == SYNCOBJ_TIMEOUT_INFINITE {
+        return None;
+    }
+    let now = aster_time::read_monotonic_time().as_nanos();
+    let deadline = timeout_nsec as u128;
+    if deadline <= now {
+        Some(Duration::ZERO)
+    } else {
+        let remaining = deadline - now;
+        Some(Duration::from_nanos(remaining.min(u64::MAX as u128) as u64))
+    }
 }
 
 /// `struct drm_gem_flink`.
@@ -1160,7 +1270,8 @@ mod ioctl_defs {
         DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeCursor, DrmModeCursor2,
         DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd, DrmModeGetConnector,
         DrmModeGetEncoder, DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeMapDumb,
-        DrmModeObjGetProperties, DrmPrimeHandle, DrmPvrGemCreate, DrmSetClientCap, DrmVersion,
+        DrmModeObjGetProperties, DrmPrimeHandle, DrmPvrGemCreate, DrmSetClientCap,
+        DrmSyncobjCreate, DrmSyncobjDestroy, DrmSyncobjTimelineArray, DrmSyncobjWait, DrmVersion,
         DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuExecbufferV2, DrmVirtgpuGetCaps,
         DrmVirtgpuGetparam, DrmVirtgpuMap, DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo,
         DrmVirtgpuTransfer3d, DrmVirtgpuWait,
@@ -1211,6 +1322,25 @@ mod ioctl_defs {
     // virtgpu (0x41-0x4b) and the future vendor PVR (0x40-0x47) ranges.
     pub(super) type PvrGemCreate =
         ioc!(DRM_IOCTL_PVR_GEM_CREATE, b'd', 0x50, InOutData<DrmPvrGemCreate>);
+    // DRM syncobj. The argument sizes and directions follow Linux's
+    // `DRM_IOWR` definitions; `DrmSyncobjWait.handles` points at an array of
+    // `u32` handles while `DrmSyncobjTimelineArray.points` points at `u64`.
+    pub(super) type SyncobjCreate =
+        ioc!(DRM_IOCTL_SYNCOBJ_CREATE, b'd', 0xBF, InOutData<DrmSyncobjCreate>);
+    pub(super) type SyncobjDestroy = ioc!(
+        DRM_IOCTL_SYNCOBJ_DESTROY,
+        b'd',
+        0xC0,
+        InOutData<DrmSyncobjDestroy>
+    );
+    pub(super) type SyncobjWait =
+        ioc!(DRM_IOCTL_SYNCOBJ_WAIT, b'd', 0xC3, InOutData<DrmSyncobjWait>);
+    pub(super) type SyncobjQuery = ioc!(
+        DRM_IOCTL_SYNCOBJ_QUERY,
+        b'd',
+        0xCB,
+        InOutData<DrmSyncobjTimelineArray>
+    );
     // The virtgpu ioctls live at `DRM_COMMAND_BASE` (0x40) plus their number.
     pub(super) type VirtgpuMap = ioc!(DRM_IOCTL_VIRTGPU_MAP, b'd', 0x41, InOutData<DrmVirtgpuMap>);
     pub(super) type VirtgpuExecbuffer = ioc!(DRM_IOCTL_VIRTGPU_EXECBUFFER, b'd', 0x42, InOutData<DrmVirtgpuExecbuffer>);
@@ -1292,6 +1422,12 @@ fn is_render_allowed(raw_ioctl: RawIoctl) -> bool {
         || VirtgpuResourceCreate::try_from_raw(raw_ioctl).is_some()
         || VirtgpuResourceInfo::try_from_raw(raw_ioctl).is_some()
         || PvrGemCreate::try_from_raw(raw_ioctl).is_some()
+        // Syncobj is how a render client waits for work; Linux marks the
+        // whole set `DRM_RENDER_ALLOW`.
+        || SyncobjCreate::try_from_raw(raw_ioctl).is_some()
+        || SyncobjDestroy::try_from_raw(raw_ioctl).is_some()
+        || SyncobjWait::try_from_raw(raw_ioctl).is_some()
+        || SyncobjQuery::try_from_raw(raw_ioctl).is_some()
 }
 
 impl Device for Dri {
@@ -1330,6 +1466,7 @@ impl Device for Dri {
                 cursor: CursorState::default(),
                 magic: None,
                 context_id: None,
+                syncobjs: SyncObjSpace::new(),
             }),
             events: Pollee::new(),
         }))
@@ -1677,6 +1814,93 @@ impl DriHandle {
             offset: offset as u64,
             gpu_va: gpu_va as u64,
         })
+    }
+
+    /// Creates a binary syncobj. Only `CREATE_SIGNALED` is meaningful while
+    /// the vendor timeline bridge is unimplemented.
+    fn syncobj_create(&self, req: &DrmSyncobjCreate) -> Result<DrmSyncobjCreate> {
+        if req.flags & !DRM_SYNCOBJ_CREATE_SIGNALED != 0 {
+            return_errno_with_message!(Errno::EINVAL, "unsupported syncobj create flags");
+        }
+        let handle = self
+            .inner
+            .lock()
+            .syncobjs
+            .create(req.flags & DRM_SYNCOBJ_CREATE_SIGNALED != 0);
+        Ok(DrmSyncobjCreate { handle, flags: 0 })
+    }
+
+    fn syncobj_destroy(&self, req: &DrmSyncobjDestroy) -> Result<()> {
+        self.inner.lock().syncobjs.destroy(req.handle)
+    }
+
+    /// Waits for one or all of the named syncobjs to be signalled.
+    ///
+    /// `timeout_nsec` is an absolute `CLOCK_MONOTONIC` deadline, as the uapi
+    /// defines it. `WAIT_ALL` is supported; the timeline-only flags are
+    /// refused rather than silently treated as a binary wait.
+    fn syncobj_wait(&self, req: &DrmSyncobjWait) -> Result<DrmSyncobjWait> {
+        if req.count_handles == 0 || req.count_handles > MAX_SYNCOBJ_HANDLES {
+            return_errno_with_message!(Errno::EINVAL, "invalid syncobj handle count");
+        }
+        if req.flags & !DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL != 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported syncobj wait flags");
+        }
+
+        let mut handles = Vec::with_capacity(req.count_handles as usize);
+        for index in 0..req.count_handles as usize {
+            let handle: u32 =
+                current_userspace!().read_val(req.handles as usize + index * size_of::<u32>())?;
+            handles.push(handle);
+        }
+        let states = {
+            let inner = self.inner.lock();
+            handles
+                .iter()
+                .map(|handle| inner.syncobjs.get(*handle))
+                .collect::<Result<Vec<_>>>()?
+        };
+
+        let first_signaled = fence::context().wait_any(
+            &states,
+            req.flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL != 0,
+            syncobj_timeout(req.timeout_nsec),
+        )?;
+        Ok(DrmSyncobjWait {
+            first_signaled: first_signaled as u32,
+            ..*req
+        })
+    }
+
+    /// Reports each syncobj's current timeline point. The binary fence only
+    /// has points 0 (pending) and 1 (signalled).
+    fn syncobj_query(&self, req: &DrmSyncobjTimelineArray) -> Result<()> {
+        if req.count_handles == 0 || req.count_handles > MAX_SYNCOBJ_HANDLES {
+            return_errno_with_message!(Errno::EINVAL, "invalid syncobj handle count");
+        }
+        if req.flags & !DRM_SYNCOBJ_QUERY_FLAGS_LAST_SUBMITTED != 0 {
+            return_errno_with_message!(Errno::EOPNOTSUPP, "unsupported syncobj query flags");
+        }
+
+        let mut handles = Vec::with_capacity(req.count_handles as usize);
+        for index in 0..req.count_handles as usize {
+            let handle: u32 =
+                current_userspace!().read_val(req.handles as usize + index * size_of::<u32>())?;
+            handles.push(handle);
+        }
+        let states = {
+            let inner = self.inner.lock();
+            handles
+                .iter()
+                .map(|handle| inner.syncobjs.get(*handle))
+                .collect::<Result<Vec<_>>>()?
+        };
+        for (index, state) in states.iter().enumerate() {
+            let point = u64::from(state.is_signaled());
+            current_userspace!()
+                .write_val(req.points as usize + index * size_of::<u64>(), &point)?;
+        }
+        Ok(())
     }
 
     /// Answers a `VIRTGPU_GETPARAM` query into the caller's `value` pointer.
@@ -3139,6 +3363,26 @@ impl PerOpenFileOps for DriHandle {
                     self.dirty_fb(req.fb_id, &clips)?;
                     Ok(0)
                 }
+                cmd @ SyncobjCreate => {
+                    let req = cmd.read()?;
+                    cmd.write(&self.syncobj_create(&req)?)?;
+                    Ok(0)
+                }
+                cmd @ SyncobjDestroy => {
+                    let req = cmd.read()?;
+                    self.syncobj_destroy(&req)?;
+                    Ok(0)
+                }
+                cmd @ SyncobjWait => {
+                    let req = cmd.read()?;
+                    cmd.write(&self.syncobj_wait(&req)?)?;
+                    Ok(0)
+                }
+                cmd @ SyncobjQuery => {
+                    let req = cmd.read()?;
+                    self.syncobj_query(&req)?;
+                    Ok(0)
+                }
                 cmd @ PvrGemCreate => {
                     #[cfg(all(target_arch = "riscv64", feature = "powervr_probe"))]
                     {
@@ -3430,6 +3674,10 @@ mod tests {
         ModeGetPlaneResources: 0xc01064b5, DrmModeGetPlaneRes, 16;
         ModeGetPlane: 0xc02064b6, DrmModeGetPlane, 32;
         ModeCursor2: 0xc02464bb, DrmModeCursor2, 36;
+        SyncobjCreate: 0xc00864bf, DrmSyncobjCreate, 8;
+        SyncobjDestroy: 0xc00864c0, DrmSyncobjDestroy, 8;
+        SyncobjWait: 0xc02064c3, DrmSyncobjWait, 32;
+        SyncobjQuery: 0xc01864cb, DrmSyncobjTimelineArray, 24;
     }
 
     #[ktest]
@@ -3448,6 +3696,34 @@ mod tests {
         assert!(virtgpu_wait_flags_supported(VIRTGPU_WAIT_NOWAIT));
         assert!(!virtgpu_wait_flags_supported(2));
         assert!(!virtgpu_wait_flags_supported(VIRTGPU_WAIT_NOWAIT | 2));
+    }
+
+    #[ktest]
+    fn gpu_syncobj_create_wait() {
+        let mut syncobjs = SyncObjSpace::new();
+        let signaled = syncobjs.create(true);
+        let pending = syncobjs.create(false);
+        assert_ne!(signaled, pending);
+
+        let state = syncobjs.get(signaled).unwrap();
+        assert!(state.is_signaled());
+        assert_eq!(
+            fence::context()
+                .wait_any(&[state], false, Some(Duration::ZERO))
+                .unwrap(),
+            0
+        );
+
+        let pending_state = syncobjs.get(pending).unwrap();
+        assert!(!pending_state.is_signaled());
+        let error = fence::context()
+            .wait_any(&[pending_state], false, Some(Duration::ZERO))
+            .unwrap_err();
+        assert_eq!(error.error(), Errno::ETIME);
+
+        syncobjs.destroy(pending).unwrap();
+        assert!(syncobjs.get(pending).is_err());
+        assert!(syncobjs.get(signaled).unwrap().is_signaled());
     }
 
     /// Two ioctls sharing a number would mean one of them is unreachable, and

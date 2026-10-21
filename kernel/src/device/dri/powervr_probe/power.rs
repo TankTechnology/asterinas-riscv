@@ -34,7 +34,7 @@ use super::{
     },
 };
 use crate::{
-    device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
+    device::{Device, DeviceType, DevtmpfsInodeMeta, dri::fence, registry::char},
     events::IoEvents,
     fs::{
         file::{PerOpenFileOps, StatusFlags},
@@ -783,6 +783,10 @@ impl PowerControlFile {
             .split_whitespace()
             .any(|word| word == "asterinas.powervr_job_noop=1")
         {
+            // The fence is allocated before submission so completion only has
+            // to signal it; the wait below is the user-visible half of the
+            // job -> fence -> wait chain this stage exercises.
+            let job_fence = fence::context().new_fence();
             let job = staging
                 .create_job_buffer(PAGE_SIZE)
                 .map_err(|reason| Error::with_message(Errno::EIO, reason))?;
@@ -850,6 +854,22 @@ impl PowerControlFile {
                 job_read,
                 job_wake,
                 job_events,
+            );
+            fence::context().signal(&job_fence);
+            let fence_status = match fence::context().wait_any(
+                core::slice::from_ref(&job_fence),
+                false,
+                Some(Duration::from_millis(1)),
+            ) {
+                Ok(_) => "ok",
+                Err(_) => "timeout",
+            };
+            aster_logger::println!(
+                "ASTERINAS_POWERVR_FENCE status={} signaled={} waited={} ctx={}",
+                fence_status,
+                fence::context().signaled(),
+                fence::context().waited(),
+                fence::context().created(),
             );
         }
         drop(irq_guard);

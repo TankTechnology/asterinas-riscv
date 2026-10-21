@@ -13,7 +13,14 @@
 //! fence is created in the state a client is waiting to reach, and polling it
 //! succeeds immediately.
 
-use core::fmt::Display;
+use core::{
+    fmt::Display,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    time::Duration,
+};
+
+use ostd::sync::WaitQueue;
+use spin::Once;
 
 use crate::{
     events::IoEvents,
@@ -24,6 +31,133 @@ use crate::{
     prelude::*,
     process::signal::{PollHandle, Pollable},
 };
+
+/// One point on a monotonic fence context.
+///
+/// This is the minimal dma-fence equivalent: a fence is created unsignalled,
+/// and the code that completes the work runs [`FenceContext::signal`] on it.
+/// Signalling wakes every waiter on the context, so a waiter that watches
+/// several fences only has to sleep on one queue.
+#[derive(Debug)]
+pub(crate) struct FenceState {
+    seqno: u64,
+    signaled: AtomicBool,
+}
+
+impl FenceState {
+    pub(crate) fn is_signaled(&self) -> bool {
+        self.signaled.load(Ordering::Acquire)
+    }
+
+    /// Returns whether this call was the one that signalled the fence.
+    fn signal(&self) -> bool {
+        !self.signaled.swap(true, Ordering::AcqRel)
+    }
+}
+
+/// Allocates monotonically increasing fence sequence numbers and owns the
+/// wait queue every fence in the context signals.
+pub(crate) struct FenceContext {
+    next_seqno: AtomicU64,
+    signaled: AtomicU64,
+    waited: AtomicU64,
+    waiters: WaitQueue,
+}
+
+impl FenceContext {
+    pub(crate) const fn new() -> Self {
+        Self {
+            next_seqno: AtomicU64::new(0),
+            signaled: AtomicU64::new(0),
+            waited: AtomicU64::new(0),
+            waiters: WaitQueue::new(),
+        }
+    }
+
+    /// Allocates an unsignalled fence at the next sequence number.
+    pub(crate) fn new_fence(&self) -> Arc<FenceState> {
+        let seqno = self.next_seqno.fetch_add(1, Ordering::AcqRel) + 1;
+        Arc::new(FenceState {
+            seqno,
+            signaled: AtomicBool::new(false),
+        })
+    }
+
+    pub(crate) fn signal(&self, fence: &FenceState) {
+        debug_assert!(fence.seqno <= self.next_seqno.load(Ordering::Relaxed));
+        if fence.signal() {
+            self.signaled.fetch_add(1, Ordering::Relaxed);
+            self.waiters.wake_all();
+        }
+    }
+
+    #[cfg(any(ktest, all(target_arch = "riscv64", feature = "powervr_probe")))]
+    pub(crate) fn created(&self) -> u64 {
+        self.next_seqno.load(Ordering::Relaxed)
+    }
+
+    #[cfg(all(target_arch = "riscv64", feature = "powervr_probe"))]
+    pub(crate) fn signaled(&self) -> u64 {
+        self.signaled.load(Ordering::Relaxed)
+    }
+
+    #[cfg(all(target_arch = "riscv64", feature = "powervr_probe"))]
+    pub(crate) fn waited(&self) -> u64 {
+        self.waited.load(Ordering::Relaxed)
+    }
+
+    /// Waits until one (or, with `all`, every) fence is signalled.
+    ///
+    /// Returns the index of the fence that satisfied the wait. A zero timeout
+    /// is answered without creating a timer, which keeps the rule usable from
+    /// a unit test; an infinite wait uses the wait queue directly.
+    pub(crate) fn wait_any(
+        &self,
+        fences: &[Arc<FenceState>],
+        all: bool,
+        timeout: Option<Duration>,
+    ) -> Result<usize> {
+        let done = || -> Option<usize> {
+            let mut first = None;
+            for (index, fence) in fences.iter().enumerate() {
+                if fence.is_signaled() {
+                    first.get_or_insert(index);
+                    if !all {
+                        return first;
+                    }
+                } else if all {
+                    return None;
+                }
+            }
+            if all { first } else { None }
+        };
+
+        let index = if let Some(index) = done() {
+            index
+        } else {
+            match timeout {
+                Some(duration) if duration.is_zero() => {
+                    return_errno_with_message!(Errno::ETIME, "fence wait timed out")
+                }
+                Some(duration) => self.waiters.wait_until_or_timeout(done, &duration)?,
+                None => self.waiters.wait_until(done),
+            }
+        };
+        self.waited.fetch_add(1, Ordering::Relaxed);
+        Ok(index)
+    }
+}
+
+static FENCE_CONTEXT: Once<FenceContext> = Once::new();
+
+/// The device-wide fence context.
+///
+/// A single context is enough while completions are signalled from kernel
+/// code: sequence numbers only have to be monotonic and all waiters can share
+/// one queue. Per-job contexts arrive with the vendor sync bridge.
+pub(crate) fn context() -> &'static FenceContext {
+    FENCE_CONTEXT.call_once(FenceContext::new)
+}
 
 /// A descriptor that reports its work as already finished.
 pub(super) struct FenceFile {
@@ -139,6 +273,61 @@ mod tests {
             signalled_readiness(IoEvents::IN | IoEvents::OUT),
             IoEvents::IN,
             "the fence must not claim writability nobody asked about",
+        );
+    }
+
+    #[ktest]
+    fn gpu_fence_signal_and_wait() {
+        let context = FenceContext::new();
+        let first = context.new_fence();
+        let second = context.new_fence();
+        assert_eq!(context.created(), 2);
+        assert!(!first.is_signaled());
+        assert!(!second.is_signaled());
+
+        // An unsignalled fence is a non-blocking miss, not a timeout timer.
+        let result = context.wait_any(core::slice::from_ref(&first), false, Some(Duration::ZERO));
+        assert!(result.is_err_and(|error| error.error() == Errno::ETIME));
+
+        context.signal(&first);
+        assert!(first.is_signaled());
+        assert!(!second.is_signaled());
+        assert_eq!(
+            context
+                .wait_any(core::slice::from_ref(&first), false, None)
+                .unwrap(),
+            0
+        );
+        // Signalling twice is idempotent and must not wake anyone twice.
+        context.signal(&first);
+        assert_eq!(
+            context
+                .wait_any(&[first, second], true, Some(Duration::ZERO))
+                .unwrap_err()
+                .error(),
+            Errno::ETIME
+        );
+    }
+
+    #[ktest]
+    fn gpu_fence_wait_all_requires_every_fence() {
+        let context = FenceContext::new();
+        let first = context.new_fence();
+        let second = context.new_fence();
+        context.signal(&first);
+        assert_eq!(
+            context
+                .wait_any(&[first.clone(), second.clone()], true, Some(Duration::ZERO))
+                .unwrap_err()
+                .error(),
+            Errno::ETIME
+        );
+        context.signal(&second);
+        assert_eq!(
+            context
+                .wait_any(&[first, second], true, Some(Duration::ZERO))
+                .unwrap(),
+            0
         );
     }
 }
