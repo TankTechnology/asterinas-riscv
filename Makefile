@@ -658,6 +658,7 @@ test_x86_debian_tooling_unit:
 		tools.x86.tests.test_x86_debian_fs_extents \
 		tools.x86.tests.test_x86_debian_fs_punch_hole \
 		tools.x86.tests.test_x86_debian_fs_renameat2 \
+		tools.x86.tests.test_x86_debian_fs_sticky_bit \
 		tools.x86.tests.test_x86_debian_fs_timestamps \
 		tools.x86.tests.test_x86_debian_fs_tmpfile \
 		tools.x86.tests.test_x86_debian_gate_scripts \
@@ -1167,6 +1168,30 @@ test_x86_debian_fs_acl:
 	@test -n "$(X86_DEBIAN_ACL_BASE_ROOT)" || { echo "X86_DEBIAN_ACL_BASE_ROOT is required" >&2; exit 2; }
 	@echo "fs-acl: base=$(X86_DEBIAN_ACL_BASE_ROOT) accel=$(X86_DEBIAN_ACL_ACCEL)"
 	@tools/x86/debian/fs_acl_check.sh 		--kernel "$(X86_DEBIAN_KERNEL)" 		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" 		--base-root "$(X86_DEBIAN_ACL_BASE_ROOT)" 		--workspace "$(X86_DEBIAN_ACL_WORKSPACE)" 		--accel "$(X86_DEBIAN_ACL_ACCEL)" 		--timeout "$(X86_DEBIAN_ACL_TIMEOUT)"
+
+# Sticky-bit gate: a non-owner that can write a 1777 directory still cannot
+# remove entries it does not own (`EPERM`, also for non-empty directories),
+# while the owner and plain 0777 directories are unaffected; the tree is
+# re-checked after a remount and `e2fsck -fn`.
+#   X86_DEBIAN_STICKY_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_STICKY_BASE_ROOT ?=
+X86_DEBIAN_STICKY_WORKSPACE ?= $(CURDIR)/target/x86-debian/sticky
+X86_DEBIAN_STICKY_ACCEL ?= kvm
+X86_DEBIAN_STICKY_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_fs_sticky_bit
+test_x86_debian_fs_sticky_bit:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STICKY_BASE_ROOT)" || { echo "X86_DEBIAN_STICKY_BASE_ROOT is required" >&2; exit 2; }
+	@echo "fs-sticky-bit: base=$(X86_DEBIAN_STICKY_BASE_ROOT) accel=$(X86_DEBIAN_STICKY_ACCEL)"
+	@tools/x86/debian/fs_sticky_bit_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_STICKY_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_STICKY_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_STICKY_ACCEL)" \
+		--timeout "$(X86_DEBIAN_STICKY_TIMEOUT)"
 
 .PHONY: test_riscv_run_kernel_log_unit
 test_riscv_run_kernel_log_unit:
