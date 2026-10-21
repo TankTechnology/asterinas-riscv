@@ -64,6 +64,14 @@ impl AnyConsoleDevice for ConsoleDevice {
             spin_loop();
         }
     }
+
+    fn poll_input(&self) {
+        // The receive interrupt is not delivered on every platform (the
+        // virtio-pci MSI-X line is shared and can stay silent for the console
+        // queue on x86). The TTY read path polls the console device while it
+        // waits, so drain the receive queue here as an interrupt would.
+        self.handle_recv_irq();
+    }
 }
 
 impl Debug for ConsoleDevice {
