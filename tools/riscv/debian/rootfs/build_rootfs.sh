@@ -1177,6 +1177,32 @@ EOF
             install -D -m 0755 -- \
                 "$script_directory/asterinas_login.sh" \
                 "$stage/usr/local/sbin/asterinas-login"
+            # Interactive serial login.  The helper starts the unprivileged
+            # account below, and console-getty is enabled explicitly: the
+            # serial-getty template instances wait for dev-ttyS0.device or
+            # dev-hvc0.device, which the Asterinas device manager does not
+            # materialize.  x86_64 is the platform where the hvc0 RX path
+            # delivers no input at all, so only amd64 switches the console to
+            # ttyS0 and masks both template instances; the RISC-V images keep
+            # their existing getty wiring.
+            if [[ "$ARCHITECTURE" == amd64 ]]; then
+                grep -q '^asterinas:' "$stage/etc/passwd" ||
+                    printf '%s\n' \
+                        'asterinas:x:1000:1000:Asterinas:/home/asterinas:/bin/bash' \
+                        >>"$stage/etc/passwd"
+                grep -q '^asterinas:' "$stage/etc/group" ||
+                    printf '%s\n' 'asterinas:x:1000:' >>"$stage/etc/group"
+                grep -q '^asterinas:' "$stage/etc/shadow" ||
+                    printf '%s\n' 'asterinas:!:19793:0:99999:7:::' >>"$stage/etc/shadow"
+                grep -q '^asterinas:' "$stage/etc/gshadow" ||
+                    printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
+                install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
+                install -d -m 0755 -- "$stage/etc/systemd/system/getty.target.wants"
+                ln -sfn /usr/lib/systemd/system/console-getty.service \
+                    "$stage/etc/systemd/system/getty.target.wants/console-getty.service"
+                ln -sfn /dev/null "$stage/etc/systemd/system/serial-getty@hvc0.service"
+                ln -sfn /dev/null "$stage/etc/systemd/system/serial-getty@ttyS0.service"
+            fi
             if [[ "$PROFILE" == systemd-ext4-m6-userspace ]]; then
                 install -D -m 0644 /dev/null "$stage/etc/asterinas-userspace-m6"
             fi
@@ -1230,6 +1256,9 @@ EOF
             install -d -m 0755 -- \
                 "$stage/etc/systemd/system/console-getty.service.d"
             cat >"$stage/etc/systemd/system/console-getty.service.d/asterinas-serial.conf" <<'EOF'
+[Unit]
+# Debootstrap images have no OCI console marker; the getty owns ttyS0.
+ConditionPathExists=
 [Service]
 TTYPath=/dev/ttyS0
 StandardInput=tty-force

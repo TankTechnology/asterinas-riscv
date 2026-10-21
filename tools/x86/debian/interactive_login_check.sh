@@ -6,13 +6,15 @@
 # The kernel exposes the 16550 UART as `ttyS0`, but its ISA interrupt line is
 # not routed on this platform; the TTY read path therefore polls the UART
 # (`TtyDriver::poll_input`) while it waits.  The gate boots with
-# `console=ttyS0 earlycon`, points Debian's `console-getty.service` at
-# `/dev/ttyS0` (avoiding the `dev-hvc0.device` dependency that never becomes
-# ready), and replaces `login(1)`, whose controlling-terminal handoff the
-# serial tty cannot complete, with a small password helper.
+# `console=ttyS0 earlycon` and relies on the image the builder produces:
+# `console-getty.service` is pinned to `/dev/ttyS0` (avoiding the
+# `dev-hvc0.device` dependency that never becomes ready), `login(1)` — whose
+# controlling-terminal handoff the serial tty cannot complete — is replaced
+# by a small password helper, and the helper drops to the provisioned
+# `asterinas` account.
 #
 # The harness types the user name and password over a QEMU serial socket,
-# runs `id`, and requires the root shell output and a clean image.
+# runs `id`, and requires the unprivileged shell output and a clean image.
 
 set -euo pipefail
 
@@ -31,10 +33,10 @@ Options:
   --accel MODE        'kvm' or 'tcg' (default: kvm).
   --qemu PATH         QEMU binary or wrapper (default: qemu-system-x86_64).
 
-The guest account is `root` with password `asterinas`.
+The guest account is `asterinas` (uid 1000) with password `asterinas`.
 
 Exit status is 0 only if the login prompt and password prompt appear, the
-shell runs `id` as root, the guest powers off and `e2fsck -fn` accepts the
+shell runs `id` as uid 1000, the guest powers off and `e2fsck -fn` accepts the
 image.
 EOF
 }
@@ -104,40 +106,10 @@ BOOT_SCRIPT="$REPO_ROOT/tools/x86/debian/boot_debian.sh"
 
 mkdir -p -- "$WORKSPACE"
 IMAGE="$WORKSPACE/login.ext2"
-HELPER="$WORKSPACE/asterinas-login"
-DROPIN="$WORKSPACE/console-getty.conf"
 WRAPPER="$WORKSPACE/qemu-serial-sock.sh"
 CLIENT="$WORKSPACE/login_client.py"
 CONSOLE_LOG="$WORKSPACE/console.txt"
 SOCKET="$WORKSPACE/serial.sock"
-
-cat >"$HELPER" <<'HELPER'
-#!/bin/sh
-printf 'Password: '
-IFS= read -r password || exit 1
-printf '\n'
-if [ "$password" != asterinas ]; then
-    printf 'Login incorrect\n'
-    exit 1
-fi
-printf 'Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent\npermitted by applicable law.\n'
-exec /bin/bash -i
-HELPER
-
-cat >"$DROPIN" <<'CONF'
-[Unit]
-ConditionPathExists=
-[Service]
-TTYPath=/dev/ttyS0
-StandardInput=tty-force
-StandardOutput=tty
-StandardError=tty
-TTYReset=yes
-TTYVHangup=no
-TTYVTDisallocate=no
-ExecStart=
-ExecStart=-/sbin/agetty -o '-- \u' --noclear --keep-baud -l /usr/local/sbin/asterinas-login 115200,38400,9600 - $TERM
-CONF
 
 cat >"$WRAPPER" <<WRAPPER
 #!/usr/bin/env bash
@@ -198,7 +170,7 @@ with open(out_path, 'wb') as out:
             out.write(chunk)
             out.flush()
         if not sent_user and b'login:' in buffer:
-            sock.sendall(b'root\n')
+            sock.sendall(b'asterinas\n')
             sent_user = True
         if sent_user and not sent_pass and b'Password:' in buffer:
             sock.sendall(b'asterinas\n')
@@ -207,23 +179,31 @@ with open(out_path, 'wb') as out:
         if sent_pass and not sent_command and time.time() - pass_at > 1.0:
             sock.sendall(b'echo LOGIN_OK; id; poweroff -f\n')
             sent_command = True
-        if b'LOGIN_OK' in buffer and b'uid=0(root)' in buffer:
+        if b'LOGIN_OK' in buffer and b'uid=1000(asterinas)' in buffer:
             break
 print('LOGIN_CLIENT ok=%s user=%s pass=%s command=%s'
-      % (b'LOGIN_OK' in buffer and b'uid=0(root)' in buffer,
+      % (b'LOGIN_OK' in buffer and b'uid=1000(asterinas)' in buffer,
          sent_user, sent_pass, sent_command), flush=True)
-sys.exit(0 if (b'LOGIN_OK' in buffer and b'uid=0(root)' in buffer) else 1)
+sys.exit(0 if (b'LOGIN_OK' in buffer and b'uid=1000(asterinas)' in buffer) else 1)
 PY
 
 rm -f -- "$IMAGE"
 cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
+
+# The login experience ships in the image: the builder installs the helper
+# and its console-getty drop-in, enables console-getty and provisions the
+# account the helper drops to.  The gate only removes the build's own
+# evidence unit so it cannot power the guest off mid-login.
+for path in /usr/local/sbin/asterinas-login \
+    /etc/systemd/system/console-getty.service.d/asterinas-serial.conf \
+    /etc/systemd/system/getty.target.wants/console-getty.service; do
+    if ! debugfs -R "stat $path" "$IMAGE" 2>/dev/null | grep -q '^Inode:'; then
+        printf 'FAIL (the image does not provide %s; rebuild the rootfs with the serial login profile)\n' \
+            "$path"
+        exit 1
+    fi
+done
 {
-    printf 'rm /usr/local/sbin/asterinas-login\n'
-    printf 'write %s /usr/local/sbin/asterinas-login\n' "$HELPER"
-    printf 'sif /usr/local/sbin/asterinas-login mode 0100755\n'
-    printf 'mkdir /etc/systemd/system/console-getty.service.d\n'
-    printf 'write %s /etc/systemd/system/console-getty.service.d/asterinas.conf\n' "$DROPIN"
-    printf 'symlink /etc/systemd/system/getty.target.wants/console-getty.service /usr/lib/systemd/system/console-getty.service\n'
     printf 'rm /etc/systemd/system/multi-user.target.wants/asterinas-debian-ext4.service\n'
     printf 'rm /etc/systemd/system/asterinas-debian-ext4.service\n'
 } | debugfs -w -f - "$IMAGE" >/dev/null 2>&1
@@ -258,7 +238,7 @@ if [[ $CLIENT_STATUS -ne 0 ]]; then
     exit 1
 fi
 
-for marker in 'login:' 'Password:' 'LOGIN_OK' 'uid=0(root)'; do
+for marker in 'login:' 'Password:' 'LOGIN_OK' 'uid=1000(asterinas)'; do
     if ! grep -aqF -- "$marker" "$CONSOLE_LOG"; then
         printf 'FAIL (console is missing "%s"); see %s\n' "$marker" "$CONSOLE_LOG"
         exit 1
@@ -271,4 +251,4 @@ if ! e2fsck -fn "$IMAGE" >"$WORKSPACE/fsck-after.txt" 2>&1; then
 fi
 rm -f -- "$IMAGE"
 
-printf 'PASS (login prompt, password, root shell and clean image)\n'
+printf 'PASS (login prompt, password, unprivileged shell and clean image)\n'
