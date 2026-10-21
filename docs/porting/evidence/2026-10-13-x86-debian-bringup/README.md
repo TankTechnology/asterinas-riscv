@@ -2177,3 +2177,65 @@ the classification below says what was done instead.
   wired to `aster-input`; x86 does not need the USB patch for QEMU input.
 - **systemd sysctl writes:** `systemd-sysctl.service` completes; no
   `Failed to write` lines in the boot transcripts.
+## x86 Debian experience follow-up (2026-10-21)
+
+### Fixed
+
+- **SIGPWR reaches a real power-off.** The kernel's ACPI button support was
+  already in place (#193), and tracing showed the signal reaching systemd's
+  shared `signalfd` (`signalfd dequeued SIGPWR`, `Reached target sigpwr.target
+  - Power Failure`). The image's drop-in was wrong: `poweroff.target` is a
+  special target and a plain `Wants=` dependency does not start the shutdown.
+  The builder now installs `asterinas-sigpwr-poweroff.service`
+  (`/bin/systemctl --no-block poweroff`) wanted by `sigpwr.target` (#195).
+  Rebuilt image: QEMU `system_powerdown` powers the guest off through S5 and
+  QEMU exits.
+- **virtio-console input works.** The RX interrupt is never delivered on x86,
+  so the console device now implements `AnyConsoleDevice::poll_input` and
+  drains the receive queue from the TTY read poll (#196). A probe reading
+  `/dev/hvc0` received `hello\n` written to the QEMU console socket. The image
+  still uses `console-getty` on `ttyS0` because `dev-hvc0.device` never
+  appears, but hvc0 is no longer input-dead.
+- **RTC already worked.** `kernel/core/comps/time/src/rtc/cmos.rs` reads the
+  CMOS clock; the guest reports the host's wall clock (`date -u` matched the
+  host UTC), so NTP has a correct starting point.
+
+### Daily-use gate (#198)
+
+`make test_x86_debian_daily_use` boots the shipped image and, over one serial
+session, logs in as `asterinas`, checks `id`/`uname -m`/`date -u`, writes and
+reads a file in `$HOME`, runs `sudo apt-get update` over QEMU slirp, then
+presses the ACPI power button and requires a clean shutdown and `e2fsck -fn`.
+It exposed and drove three image fixes: the `sudo` package plus a
+passwordless sudoers entry, an `/etc/hosts` entry for the host name (sudo
+otherwise resolves through unreachable DNS and fails), and
+`Defaults !use_pty` (debootstrap leaves fstab empty, so `/dev/pts` is not
+mounted and sudo's default pty allocation fails).
+
+Result: **PASS** — `uid=1000(asterinas)`, `x86_64`, `daily-ok`, `SUDO_OK`,
+`APT_RC=0`, `DAILY_ok_END`, `Powering off.`, fsck clean.
+
+### virtiofs shared directory
+
+The live kernel already implements the virtio-fs device and registers the
+`virtiofs` filesystem type. Validated end to end with `virtiofsd` from the
+build container (`/usr/libexec/virtiofsd --shared-dir ... --sandbox=none`)
+and QEMU `vhost-user-fs-pci` plus a shared memory backend:
+
+- guest: `mount -t virtiofs hostshare /mnt/share` → `VIRTIOFS_MOUNT_OK`;
+- guest read `from-host.txt` (`hello-from-host`) and wrote
+  `from-guest.txt`; the host saw the file with the guest's content.
+
+The host does not ship `virtiofsd`, so this is not a default gate; the
+commands above are the reproduction. It needs a container to supply the
+daemon.
+
+### Graphics (deferred)
+
+x86 graphical output is blocked by the tree split: the live kernel's DRM
+component (`aster-drm`) has no virtio-gpu driver, and the RISC-V graphics
+patches (`81b09ec40`, `28a15360d`, `01b38abc2`) target the dead
+`kernel/src/device/dri` stack. The smallest next step is not a cherry-pick:
+it is a virtio-gpu driver written against `aster-drm` (GEM/KMS) and
+`kernel/core/comps/virtio`, then an amd64 desktop profile with Xorg fbdev or
+DRM and virtio-input, which is a separate project.
