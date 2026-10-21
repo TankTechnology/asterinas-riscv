@@ -94,6 +94,10 @@ riscv_sv39_mode = ["ostd/riscv_sv39_mode"]
 # provider and virtio-gpu path must remain buildable and recoverable on QEMU
 # without compiling or touching EIC7700 display-controller registers.
 eic7700_native_scanout = []
+# The PowerVR discovery/start probe is independent of the display-controller
+# handoff in `eic7700.rs`. Keep its own opt-in feature so the probe can be
+# built and exercised without compiling the native-scanout path.
+powervr_probe = []
 
 [lints]
 workspace = true

@@ -27,7 +27,7 @@ mod eic7700;
 #[cfg(all(target_arch = "riscv64", feature = "eic7700_native_scanout"))]
 mod eic7700_contract;
 mod fence;
-#[cfg(all(target_arch = "riscv64", feature = "eic7700_native_scanout"))]
+#[cfg(all(target_arch = "riscv64", feature = "powervr_probe"))]
 mod powervr_probe;
 mod prime;
 
@@ -3146,7 +3146,7 @@ fn copy_field(dst: usize, len: &mut usize, src: &str) -> Result<()> {
 }
 
 pub(super) fn init_in_first_kthread() {
-    #[cfg(all(target_arch = "riscv64", feature = "eic7700_native_scanout"))]
+    #[cfg(all(target_arch = "riscv64", feature = "powervr_probe"))]
     powervr_probe::probe_on_request();
 
     let Some(source) = display_source() else {

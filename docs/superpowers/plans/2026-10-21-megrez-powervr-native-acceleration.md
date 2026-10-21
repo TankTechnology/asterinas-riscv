@@ -165,6 +165,11 @@ MMUv4 表准备、firmware catalogue。它已经覆盖了方案 A 中"OS 底层"
 - 停止条件：若 META 释放后无法在有限时间内观察到 started/固件响应，
   停止后续阶段，回到方案 C/D。
 - 风险：固件 ABI/签名、META 复位时序、固件镜像许可与分发。
+- **状态（2026-10-21）：D2 已通过**。板级收据见
+  [2026-10-21-asterinas-powervr-firmware-start.md](../../porting/evidence/2026-10-21-asterinas-powervr-firmware-start.md)：
+  固件 `started=1`、`faults=0`，会话关闭后 CRG 恢复；`powervr_probe`
+  feature 已从 `eic7700_native_scanout` 拆出。下一阶段进入 P2
+  （MMU/FWIF/命令队列与一个作业）。
 
 ### P2 — MMU/堆/FWIF、命令队列与一个 no-op 作业
 
