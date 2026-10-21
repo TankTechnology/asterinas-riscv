@@ -205,6 +205,47 @@ eglInitialize failed
 4. 若确认是 Mesa 22/guest Mesa 24 ABI 问题，再把 RockOS 的
    `libEGL_mesa`/`libglapi`/`libgbm` 放入 `/opt/pvr/lib` 重试。
 
+## P5b-3：strace / loader 定位
+
+### 工具与启动
+
+- guest **没有 `strace`**：`/usr/bin/strace` 不存在，无法直接抓 ioctl；
+- 改为 `LD_DEBUG=libs,files` + `LIBGL_DEBUG=verbose`，并重新启动一次带
+  `asterinas.dri_trace=1 asterinas.dri_trace_fail=1` 的 guest；
+- 已确认 U-Boot 的 `setenv bootargs` 中确实包含这两个 trace 标志。
+
+### 观察
+
+1. `LD_DEBUG=libs,files` 日志（522 行）中：
+   - `eglconfigs` 先加载 `libEGL.so.1`、`libGLdispatch.so.0`，
+     `LD_LIBRARY_PATH=/opt/pvr/lib` 的搜索路径生效；
+   - 搜 `pvr_dri` 结果为 **0 行**：`pvr_dri.so` 没有被 loader 打开；
+   - 搜 `libsrv`/`libusc` 也没有出现（未进入 PVR 驱动/服务加载）。
+2. 开 `asterinas.dri_trace=1` 后跑 gbm EGL，串口
+   `DRI_IOCTL` 计数为 **0**；即在整个 20 s 内没有任何 DRM ioctl
+   到达驱动。
+3. 这次 gbm 运行本身以 `timeout` 结束（`EGL_TRACE_RC=124`，
+   `/tmp/egl_trace.out` 为 0 字节）；前一轮同一路径曾快速返回
+   `DRI2: failed to create gbm device`。两次行为不完全一致，说明
+   gbm/pvr 初始化路径存在“有时快速失败、有时阻塞”的状态差异，
+   不能只用单一返回值下结论。
+
+### 分类结论
+
+- **不是 ②（缺 DRM ioctl）** 的有力证据：trace 开着却没有任何
+  `DRI_IOCTL`；目前不能指认缺哪条 DRM 命令。
+- 证据更偏向 **①/③**：`pvr_dri.so` 没有被 loader 打开，或它在任何
+  DRM ioctl 之前就阻塞在 `libsrv_um`/`libpvr_dri_support` 的初始化里；
+  但 exact 阻塞调用点仍 **TODO**（缺 strace）。
+- 需要先验证 trace 本身有效（用一个已知 DRM ioctl，如
+  `DRM_IOCTL_VERSION`，确认串口出现 `DRI_IOCTL`），再重跑 EGL，
+  否则“0 条 DRI_IOCTL”可能只是 trace 未触发。
+- 下一轮 P5b-4 建议：给 guest 塞入 `strace`（或 `ltrace`）二进制，
+  抓 `openat("pvr_dri.so")`、`openat("libsrv_um.so")` 与首个阻塞
+  syscall；若 pvr_dri 确实未被打开，优先检查
+  `MESA_LOADER_DRIVER_OVERRIDE` 与 Mesa `libEGL_mesa` 的 DRI loader
+  路径/ABI，而不是继续补 DRM ioctl。
+
 ## 下一步
 
 1. 板子物理复位后先跑 `p5b-stage.sh` + rootfs 注入 + guest 命令，记录
