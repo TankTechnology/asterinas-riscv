@@ -20,6 +20,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -159,6 +160,20 @@ struct drm_mode_atomic {
     uint64_t user_data;
 };
 
+struct drm_event {
+    uint32_t type;
+    uint32_t length;
+};
+
+struct drm_event_vblank {
+    struct drm_event base;
+    uint64_t user_data;
+    uint32_t tv_sec;
+    uint32_t tv_usec;
+    uint32_t sequence;
+    uint32_t crtc_id;
+};
+
 struct drm_wait_vblank {
     uint32_t type;
     uint32_t sequence;
@@ -200,6 +215,8 @@ struct drm_set_client_cap {
 #define DRM_CLIENT_CAP_UNIVERSAL_PLANES 2
 #define DRM_CLIENT_CAP_ATOMIC 3
 #define DRM_MODE_ATOMIC_PAGE_FLIP_EVENT 0x0001
+#define DRM_MODE_ATOMIC_PAGE_FLIP_ASAP 0x0002
+#define DRM_EVENT_FLIP_COMPLETE 0x02
 #define DRM_MODE_ATOMIC_TEST_ONLY 0x0100
 #define DRM_MODE_ATOMIC_ALLOW_MODESET 0x0400
 #define DRM_MODE_OBJECT_CRTC 0xcccccccc
@@ -270,10 +287,11 @@ static int atomic_without_props(uint32_t crtc_id) {
     return ioctl(card, DRM_IOCTL_MODE_ATOMIC, &atomic);
 }
 
-static int atomic_commit(uint32_t flags, uint32_t crtc_id,
-                         uint32_t connector_id, uint32_t plane_id,
-                         uint32_t fb_id, uint32_t blob_id,
-                         const struct drm_mode_modeinfo *mode) {
+static int atomic_commit_ex(uint32_t flags, uint32_t crtc_id,
+                            uint32_t connector_id, uint32_t plane_id,
+                            uint32_t fb_id, uint32_t blob_id,
+                            const struct drm_mode_modeinfo *mode,
+                            uint64_t user_data) {
     uint32_t crtc_active = find_property(crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE");
     uint32_t crtc_mode = find_property(crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID");
     uint32_t connector_crtc =
@@ -307,8 +325,17 @@ static int atomic_commit(uint32_t flags, uint32_t crtc_id,
         .count_props_ptr = (uint64_t)(uintptr_t)counts,
         .props_ptr = (uint64_t)(uintptr_t)props,
         .prop_values_ptr = (uint64_t)(uintptr_t)values,
+        .user_data = user_data,
     };
     return ioctl(card, DRM_IOCTL_MODE_ATOMIC, &atomic);
+}
+
+static int atomic_commit(uint32_t flags, uint32_t crtc_id,
+                         uint32_t connector_id, uint32_t plane_id,
+                         uint32_t fb_id, uint32_t blob_id,
+                         const struct drm_mode_modeinfo *mode) {
+    return atomic_commit_ex(flags, crtc_id, connector_id, plane_id, fb_id,
+                            blob_id, mode, 0);
 }
 
 int main(void) {
@@ -490,15 +517,40 @@ int main(void) {
     }
     printf("ATOMICPROBE_LEGACY ok\n");
 
-    // A page-flip-event commit is not supported and must be refused.
+    // An asynchronous (ASAP) commit is not supported and must be refused.
     errno = 0;
-    if (atomic_commit(DRM_MODE_ATOMIC_ALLOW_MODESET | DRM_MODE_ATOMIC_PAGE_FLIP_EVENT,
+    if (atomic_commit(DRM_MODE_ATOMIC_ALLOW_MODESET | DRM_MODE_ATOMIC_PAGE_FLIP_ASAP,
                       crtc_id, connector_id, plane_id, addfb.fb_id, blob.blob_id,
                       &mode) == 0 ||
         errno != EINVAL) {
+        fail("atomic-page-flip-asap");
+    }
+    printf("ATOMICPROBE_REJECT_PAGE_FLIP_ASAP ok\n");
+
+    // A commit with PAGE_FLIP_EVENT completes asynchronously: the event is
+    // delivered through poll/read with the request's user_data.
+    if (atomic_commit_ex(DRM_MODE_ATOMIC_ALLOW_MODESET | DRM_MODE_ATOMIC_PAGE_FLIP_EVENT,
+                         crtc_id, connector_id, plane_id, addfb.fb_id,
+                         blob.blob_id, &mode, 0x55aau) != 0) {
         fail("atomic-page-flip-event");
     }
-    printf("ATOMICPROBE_REJECT_PAGE_FLIP_EVENT ok\n");
+    struct pollfd pfd = {.fd = card, .events = POLLIN};
+    if (poll(&pfd, 1, 1000) <= 0) {
+        fail("poll-atomic-event");
+    }
+    struct drm_event_vblank event;
+    if (read(card, &event, sizeof(event)) != (ssize_t)sizeof(event)) {
+        fail("read-atomic-event");
+    }
+    if (event.base.type != DRM_EVENT_FLIP_COMPLETE ||
+        event.base.length != sizeof(event) || event.user_data != 0x55aau ||
+        event.crtc_id != crtc_id) {
+        printf("ATOMICPROBE_FAIL atomic-event type=%u user=0x%llx crtc=%u\n",
+               event.base.type, (unsigned long long)event.user_data,
+               event.crtc_id);
+        return 1;
+    }
+    printf("ATOMICPROBE_FLIP_EVENT sequence=%u\n", event.sequence);
 
     // A destroyed MODE_ID blob must not be usable.
     struct drm_mode_destroy_blob destroy = {.blob_id = blob.blob_id};
@@ -513,13 +565,16 @@ int main(void) {
     }
     printf("ATOMICPROBE_REJECT_DESTROYED_BLOB ok\n");
 
-    // Vblank is a defined placeholder on this driver.
-    struct drm_wait_vblank vblank = {.type = 0};
-    errno = 0;
-    if (ioctl(card, DRM_IOCTL_WAIT_VBLANK, &vblank) == 0 || errno != EOPNOTSUPP) {
-        fail("wait-vblank-placeholder");
+    // Vblank counts completed scanouts; an absolute wait for the current
+    // sequence returns immediately with the sequence and timestamp.
+    struct drm_wait_vblank vblank = {
+        .type = 1 /* DRM_VBLANK_ABSOLUTE */,
+        .sequence = 0,
+    };
+    if (ioctl(card, DRM_IOCTL_WAIT_VBLANK, &vblank) != 0 || vblank.sequence == 0) {
+        fail("wait-vblank");
     }
-    printf("ATOMICPROBE_VBLANK_PLACEHOLDER ok\n");
+    printf("ATOMICPROBE_VBLANK sequence=%u\n", vblank.sequence);
 
     printf("ATOMICPROBE_PASS\n");
 

@@ -2,6 +2,7 @@
 
 use alloc::{
     boxed::Box,
+    collections::VecDeque,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -9,7 +10,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use aster_core::{
     current,
-    events::IoEvents,
+    events::{EventSource, IoEvents},
     fs::{
         file::{Mappable, MappableObject, MappedObject, PerOpenFileOps, StatusFlags},
         vfs::{inode::FileOps, path::Path},
@@ -32,6 +33,7 @@ use sparse_id_alloc::SparseIdAlloc;
 
 use crate::{
     device::{DrmDevice, DrmMaster},
+    event::DrmEventVblank,
     gem::object::DrmGemObject,
     syncobj::{DrmSyncObj, DrmSyncObjTable},
     has_current_sys_admin,
@@ -59,6 +61,10 @@ pub(super) struct DrmFile {
     framebuffers: Mutex<Vec<Arc<DrmFramebuffer>>>,
     /// Property blobs created through `DRM_IOCTL_MODE_CREATEPROPBLOB`.
     user_blobs: Mutex<Vec<KmsObjectId>>,
+    /// Page-flip and vblank events waiting to be read.
+    events: Mutex<VecDeque<DrmEventVblank>>,
+    /// Wakes `poll` and blocking `read` when `events` becomes non-empty.
+    event_source: EventSource,
 }
 
 impl DrmFile {
@@ -104,6 +110,8 @@ impl DrmFile {
             syncobjs: Mutex::new(DrmSyncObjTable::new()),
             framebuffers: Mutex::new(Vec::new()),
             user_blobs: Mutex::new(Vec::new()),
+            events: Mutex::new(VecDeque::new()),
+            event_source: EventSource::new(),
         }
     }
 
@@ -197,6 +205,24 @@ impl DrmFile {
 
         gem_object.revoke_mmap(self.client_id);
         Ok(())
+    }
+
+    /// Queues an event for this file and wakes pollers.
+    pub(super) fn enqueue_event(&self, event: DrmEventVblank) {
+        self.events.lock().push_back(event);
+        self.event_source.notify(IoEvents::IN);
+    }
+
+    pub(super) fn has_events(&self) -> bool {
+        !self.events.lock().is_empty()
+    }
+
+    fn pop_event(&self) -> Option<DrmEventVblank> {
+        let event = self.events.lock().pop_front();
+        if self.events.lock().is_empty() {
+            self.event_source.invalidate();
+        }
+        event
     }
 
     pub(super) fn add_user_blob(&self, blob_id: KmsObjectId) {
@@ -351,10 +377,34 @@ impl FileOps for DrmFile {
     fn read_at(
         &self,
         _offset: usize,
-        _writer: &mut VmWriter,
-        _status_flags: StatusFlags,
+        writer: &mut VmWriter,
+        status_flags: StatusFlags,
     ) -> Result<usize> {
-        return_errno_with_message!(Errno::EINVAL, "reading from a DRM file is not supported")
+        let event_size = core::mem::size_of::<DrmEventVblank>();
+        if writer.avail() < event_size {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "the DRM event buffer is smaller than one event"
+            );
+        }
+
+        if !self.has_events() {
+            if status_flags.contains(StatusFlags::O_NONBLOCK) {
+                return_errno_with_message!(Errno::EAGAIN, "there are no DRM events to read");
+            }
+            aster_core::wait_until_or_timeout(
+                || self.has_events(),
+                |waker| self.event_source.register_waker(waker),
+                None,
+            )?;
+        }
+
+        let event = self.pop_event().ok_or_else(|| {
+            Error::with_message(Errno::EAGAIN, "there are no DRM events to read")
+        })?;
+        writer.write_val(&event)?;
+
+        Ok(event_size)
     }
 
     fn write_at(
@@ -368,13 +418,18 @@ impl FileOps for DrmFile {
 }
 
 impl Pollable for DrmFile {
-    fn poll(&self, _mask: IoEvents, _poller: Option<&mut PollHandle>) -> IoEvents {
-        // The DRM file only becomes readable when it has queued events
-        // (vblank or page-flip completions). No such event sources are
-        // implemented yet, so the file is never poll-ready. Reporting
-        // readiness unconditionally makes clients that poll the DRM file
-        // (such as Xorg's modesetting driver) spin on `drmHandleEvent`.
-        IoEvents::empty()
+    fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
+        // The DRM file becomes readable when it has queued events (vblank or
+        // page-flip completions). Reporting readiness unconditionally made
+        // clients that poll the DRM file spin on `drmHandleEvent`.
+        self.event_source
+            .poll(mask, poller, || {
+                if self.has_events() {
+                    IoEvents::IN
+                } else {
+                    IoEvents::empty()
+                }
+            })
     }
 }
 

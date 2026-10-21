@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 mod atomic;
+mod flip;
 mod gem;
 mod general;
 mod kms;
@@ -109,6 +110,10 @@ impl DrmFile {
             cmd @ PrimeFdToHandle => {
                 self.check_gem_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
                 self.drm_prime_fd_to_handle(cmd)
+            }
+            cmd @ ModePageFlip => {
+                self.check_kms_ioctl_access(DrmIoctlAccess::MASTER)?;
+                self.drm_mode_page_flip(cmd)
             }
             cmd @ WaitVblank => {
                 self.check_ioctl_access(DrmIoctlAccess::empty())?;
@@ -308,6 +313,7 @@ mod ioctl_defs {
             DrmSyncObjTimelineWait, DrmSyncObjWait,
         },
         atomic::{DrmModeAtomic, DrmModeCreateBlob, DrmModeDestroyBlob},
+        flip::DrmModeCrtcPageFlip,
     };
 
     // Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/drm/drm.h>
@@ -325,6 +331,7 @@ mod ioctl_defs {
     pub(super) type ModeDestroyDumb         = ioc!(DRM_IOCTL_MODE_DESTROY_DUMB,         b'd', 0xb4, InOutData<DrmModeDestroyDumb>);
     pub(super) type PrimeHandleToFd         = ioc!(DRM_IOCTL_PRIME_HANDLE_TO_FD,         b'd', 0x2d, InOutData<DrmPrimeHandle>);
     pub(super) type PrimeFdToHandle         = ioc!(DRM_IOCTL_PRIME_FD_TO_HANDLE,         b'd', 0x2e, InOutData<DrmPrimeHandle>);
+    pub(super) type ModePageFlip           = ioc!(DRM_IOCTL_MODE_PAGE_FLIP,          b'd', 0xb0, InOutData<DrmModeCrtcPageFlip>);
     pub(super) type WaitVblank             = ioc!(DRM_IOCTL_WAIT_VBLANK,               b'd', 0x3a, InOutData<DrmWaitVblank>);
     pub(super) type ModeAtomic             = ioc!(DRM_IOCTL_MODE_ATOMIC,                b'd', 0xbc, InOutData<DrmModeAtomic>);
     pub(super) type ModeCreatePropBlob      = ioc!(DRM_IOCTL_MODE_CREATEPROPBLOB,       b'd', 0xbd, InOutData<DrmModeCreateBlob>);

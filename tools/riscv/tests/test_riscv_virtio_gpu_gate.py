@@ -90,10 +90,24 @@ class VirtioGpuGateTests(unittest.TestCase):
             "DRM_IOCTL_MODE_CREATEPROPBLOB",
             "ATOMICPROBE_COMMIT",
             "ATOMICPROBE_LEGACY",
+            "ATOMICPROBE_FLIP_EVENT",
             "ATOMICPROBE_PASS",
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, atomic)
+
+        flip = (REPOSITORY_ROOT / "tools/drm/flip_probe.c").read_text()
+        for marker in (
+            "DRM_IOCTL_MODE_PAGE_FLIP",
+            "DRM_MODE_PAGE_FLIP_EVENT",
+            "DRM_MODE_PAGE_FLIP_ASYNC",
+            "DRM_IOCTL_WAIT_VBLANK",
+            "DRM_VBLANK_EVENT",
+            "DRM_EVENT_FLIP_COMPLETE",
+            "FLIPPROBE_PASS",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, flip)
 
         sync = (REPOSITORY_ROOT / "tools/drm/sync_probe.c").read_text()
         for marker in (

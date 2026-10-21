@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::sync::Weak;
+use alloc::{sync::{Arc, Weak}, vec::Vec};
+use core::{
+    sync::atomic::{AtomicU32, Ordering},
+    time::Duration,
+};
 
-use ostd::sync::Mutex;
+use ostd::sync::{Mutex, Waker};
 
 use crate::kms::{
     display_mode::DrmDisplayMode,
@@ -22,6 +26,7 @@ pub(crate) struct DrmCrtc {
     config: DrmCrtcConfig,
     state: Mutex<DrmCrtcState>,
     properties: DrmPropertyAttachments,
+    vblank: DrmVblankState,
 }
 
 impl DrmCrtc {
@@ -37,6 +42,7 @@ impl DrmCrtc {
             config,
             state: Mutex::new(DrmCrtcState::default()),
             properties,
+            vblank: DrmVblankState::default(),
         }
     }
 
@@ -66,6 +72,63 @@ impl DrmCrtc {
 
     pub(crate) fn properties(&self) -> &DrmPropertyAttachments {
         &self.properties
+    }
+
+    /// Returns the number of completed scanouts (vblanks) on this CRTC.
+    pub(crate) fn vblank_sequence(&self) -> u32 {
+        self.vblank.sequence.load(Ordering::Relaxed)
+    }
+
+    /// Returns the timestamp of the most recent completed scanout.
+    pub(crate) fn vblank_time(&self) -> Option<Duration> {
+        *self.vblank.last_time.lock()
+    }
+
+    /// Records one completed scanout and wakes vblank waiters.
+    ///
+    /// The driver has no refresh interrupt: a scanout completes when a
+    /// modeset or page flip transfers and flushes the framebuffer, so that is
+    /// the event this counter advances on.
+    pub(crate) fn tick_vblank(&self, now: Duration) -> u32 {
+        let sequence = self.vblank.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+        *self.vblank.last_time.lock() = Some(now);
+
+        let wakers = core::mem::take(&mut *self.vblank.wakers.lock());
+        for waker in wakers {
+            waker.wake_up();
+        }
+
+        sequence
+    }
+
+    /// Registers a waker for the next completed scanout.
+    pub(crate) fn register_vblank_waker(&self, waker: Arc<Waker>) {
+        self.vblank.wakers.lock().push(waker);
+    }
+}
+
+/// Software vblank state of one CRTC.
+struct DrmVblankState {
+    sequence: AtomicU32,
+    last_time: Mutex<Option<Duration>>,
+    wakers: Mutex<Vec<Arc<Waker>>>,
+}
+
+impl core::fmt::Debug for DrmVblankState {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DrmVblankState")
+            .field("sequence", &self.sequence.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for DrmVblankState {
+    fn default() -> Self {
+        Self {
+            sequence: AtomicU32::new(0),
+            last_time: Mutex::new(None),
+            wakers: Mutex::new(Vec::new()),
+        }
     }
 }
 

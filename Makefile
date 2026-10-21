@@ -699,6 +699,15 @@ test_x86_syncobj:
 		--workspace "$(P3_PROBE_WORKSPACE)/sync-x86" \
 		--timeout "$(P3_PROBE_TIMEOUT)"
 
+.PHONY: test_x86_flip
+test_x86_flip:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch amd64 \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--probe tools/drm/flip_probe.c \
+		--workspace "$(P3_PROBE_WORKSPACE)/flip-x86" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
 .PHONY: test_riscv_atomic
 test_riscv_atomic:
 	@test -f "$(P3_PROBE_KERNEL_RISCV)" || { echo "P3_PROBE_KERNEL_RISCV is required" >&2; exit 2; }
@@ -706,6 +715,15 @@ test_riscv_atomic:
 		--kernel "$(P3_PROBE_KERNEL_RISCV)" \
 		--probe tools/drm/atomic_probe.c \
 		--workspace "$(P3_PROBE_WORKSPACE)/atomic-riscv" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+.PHONY: test_riscv_flip
+test_riscv_flip:
+	@test -f "$(P3_PROBE_KERNEL_RISCV)" || { echo "P3_PROBE_KERNEL_RISCV is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch riscv64 \
+		--kernel "$(P3_PROBE_KERNEL_RISCV)" \
+		--probe tools/drm/flip_probe.c \
+		--workspace "$(P3_PROBE_WORKSPACE)/flip-riscv" \
 		--timeout "$(P3_PROBE_TIMEOUT)"
 
 .PHONY: test_riscv_syncobj

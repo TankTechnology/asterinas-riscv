@@ -20,11 +20,12 @@ use ostd_pod::Pod;
 
 use super::{copy_array_from_user, kms::ScanoutSource};
 use crate::{
+    event::{DRM_EVENT_FLIP_COMPLETE, DrmEventVblank},
     file::{DrmClientCaps, DrmFile},
     ioctl::ioctl_defs,
     kms::{
         display_mode::{DrmDisplayMode, DrmModeInfo},
-        objects::property::{DrmPropertyAttachments, DrmPropertyFlags},
+        objects::{crtc::DrmCrtc, property::{DrmPropertyAttachments, DrmPropertyFlags}},
     },
     utils::DrmRect,
 };
@@ -56,10 +57,10 @@ impl DrmFile {
         if args.flags & !ATOMIC_FLAGS_MASK != 0 || args.reserved != 0 {
             return_errno_with_message!(Errno::EINVAL, "the atomic flags or reserved field are invalid");
         }
-        if args.flags & (ATOMIC_PAGE_FLIP_EVENT | ATOMIC_PAGE_FLIP_ASAP | ATOMIC_NONBLOCK) != 0 {
+        if args.flags & ATOMIC_PAGE_FLIP_ASAP != 0 {
             return_errno_with_message!(
                 Errno::EINVAL,
-                "page-flip events and non-blocking atomic commits are not supported yet"
+                "asynchronous (ASAP) atomic commits are not supported"
             );
         }
         if !self.has_client_caps(DrmClientCaps::ATOMIC) {
@@ -219,15 +220,21 @@ impl DrmFile {
                     "an inactive CRTC cannot have a mode"
                 );
             }
+            let crtc = object_store
+                .lookup_crtc_by_id(crtc_id)
+                .cloned()
+                .ok_or(Errno::ENOENT)?;
             drop(object_store);
-            return self.commit_modeset(
+            self.commit_modeset(
                 crtc_id,
                 &[],
                 None,
                 ScanoutSource::None,
                 DrmRect::default(),
                 test_only,
-            );
+            )?;
+            self.emit_flip_complete(&crtc, crtc_id, &args, test_only);
+            return Ok(0);
         }
 
         // Enable: a mode blob and a framebuffer are mandatory.
@@ -274,9 +281,10 @@ impl DrmFile {
         };
         // The commit path drives the CRTC's primary plane; another plane would
         // need a compositing path this driver does not have.
-        let Some(primary_plane) = object_store.lookup_crtc_by_id(crtc_id)
-            .and_then(|crtc| crtc.primary_plane().upgrade())
-        else {
+        let Some(crtc) = object_store.lookup_crtc_by_id(crtc_id).cloned() else {
+            return_errno_with_message!(Errno::ENOENT, "the CRTC does not exist");
+        };
+        let Some(primary_plane) = crtc.primary_plane().upgrade() else {
             return_errno_with_message!(Errno::ENOENT, "the CRTC has no primary plane");
         };
         if !Arc::ptr_eq(plane, &primary_plane) {
@@ -295,7 +303,30 @@ impl DrmFile {
             ScanoutSource::Framebuffer(framebuffer),
             source_rect,
             test_only,
-        )
+        )?;
+        self.emit_flip_complete(&crtc, crtc_id, &args, test_only);
+
+        Ok(0)
+    }
+
+    /// Queues `DRM_EVENT_FLIP_COMPLETE` for a committed atomic request.
+    fn emit_flip_complete(
+        &self,
+        crtc: &DrmCrtc,
+        crtc_id: u32,
+        args: &DrmModeAtomic,
+        test_only: bool,
+    ) {
+        if test_only || args.flags & ATOMIC_PAGE_FLIP_EVENT == 0 {
+            return;
+        }
+        self.enqueue_event(DrmEventVblank::new(
+            DRM_EVENT_FLIP_COMPLETE,
+            args.user_data,
+            aster_core::monotonic_now(),
+            crtc.vblank_sequence(),
+            crtc_id,
+        ));
     }
 
     pub(super) fn drm_mode_create_blob(

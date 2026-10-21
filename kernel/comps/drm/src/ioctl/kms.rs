@@ -5,6 +5,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
+use core::time::Duration;
 
 use aster_core::prelude::*;
 use aster_util::fixed_str::FixedCStr;
@@ -15,6 +16,7 @@ use ostd_pod::Pod;
 use super::{copy_array_from_user, copy_array_to_user};
 use crate::{
     device::DrmFeatures,
+    event::{DRM_EVENT_VBLANK, DrmEventVblank},
     file::{DrmClientCaps, DrmFile},
     ioctl::ioctl_defs,
     kms::{
@@ -450,18 +452,79 @@ impl DrmFile {
             primary_plane.update_state(DrmPlaneState::default());
         }
 
+        // The scanout was transferred and flushed above; on this driver that
+        // completion is the vblank source.
+        crtc.tick_vblank(aster_core::monotonic_now());
+
         Ok(0)
     }
 
-    /// Placeholder for `DRM_IOCTL_WAIT_VBLANK`.
+    /// `DRM_IOCTL_WAIT_VBLANK`: wait for a scanout sequence, or ask for an
+    /// event.
     ///
-    /// The driver has no vblank source yet (the scanout is presented by
-    /// transfer/flush, not by a refresh interrupt), so the ioctl reports
-    /// `EOPNOTSUPP` rather than a fake sequence. Clients treat this like an
-    /// unsupported vblank backend and fall back to their own timer.
+    /// The driver has no refresh interrupt; a completed scanout (a modeset or
+    /// page flip that transferred and flushed the framebuffer) advances the
+    /// CRTC's sequence and wakes waiters. Relative requests count from the
+    /// current sequence, absolute requests name a sequence directly.
     pub(super) fn drm_wait_vblank(&self, cmd: ioctl_defs::WaitVblank) -> Result<i32> {
-        let _args: DrmWaitVblank = cmd.read()?;
-        return_errno_with_message!(Errno::EOPNOTSUPP, "vblank waits are not implemented")
+        const VBLANK_ABSOLUTE: u32 = 1 << 0;
+        const VBLANK_EVENT: u32 = 1 << 26;
+
+        let mut args: DrmWaitVblank = cmd.read()?;
+        if args.type_ & !(VBLANK_ABSOLUTE | VBLANK_EVENT) != 0 {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "only CRTC 0 relative/absolute waits and event requests are supported"
+            );
+        }
+
+        let kms_ops = self.device().as_kms_ops().unwrap();
+        let crtc = kms_ops
+            .mode_config()
+            .object_store()
+            .lock()
+            .crtcs()
+            .next()
+            .cloned()
+            .ok_or(Errno::ENOENT)?;
+
+        let current = crtc.vblank_sequence();
+        let time = crtc.vblank_time().unwrap_or_else(aster_core::monotonic_now);
+
+        if args.type_ & VBLANK_EVENT != 0 {
+            // The event's user data is the request's `signal` field.
+            self.enqueue_event(DrmEventVblank::new(
+                DRM_EVENT_VBLANK,
+                args.value1,
+                time,
+                current,
+                crtc.id(),
+            ));
+            write_vblank_reply(&mut args, current, time);
+            cmd.write(&args)?;
+            return Ok(0);
+        }
+
+        let target = if args.type_ & VBLANK_ABSOLUTE != 0 {
+            args.sequence
+        } else {
+            current.wrapping_add(args.sequence)
+        };
+        if !vblank_reached(current, target) {
+            let wait_crtc = crtc.clone();
+            aster_core::wait_until_or_timeout(
+                || vblank_reached(wait_crtc.vblank_sequence(), target),
+                |waker| wait_crtc.register_vblank_waker(waker),
+                None,
+            )?;
+        }
+
+        let sequence = crtc.vblank_sequence();
+        let time = crtc.vblank_time().unwrap_or_else(aster_core::monotonic_now);
+        write_vblank_reply(&mut args, sequence, time);
+        cmd.write(&args)?;
+
+        Ok(0)
     }
 
     pub(super) fn drm_mode_get_encoder(&self, cmd: ioctl_defs::ModeGetEncoder) -> Result<i32> {
@@ -975,6 +1038,17 @@ impl DrmFile {
 
         (prop_ids, prop_values)
     }
+}
+
+/// Returns whether the sequence has reached `target` (wrap-safe).
+fn vblank_reached(current: u32, target: u32) -> bool {
+    target == 0 || current.wrapping_sub(target) < 0x8000_0000
+}
+
+fn write_vblank_reply(args: &mut DrmWaitVblank, sequence: u32, time: Duration) {
+    args.sequence = sequence;
+    args.value1 = time.as_secs();
+    args.value2 = time.subsec_micros() as u64;
 }
 
 fn parse_boolean_capability(value: u64) -> Result<bool> {
