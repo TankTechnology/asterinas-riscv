@@ -53,3 +53,9 @@ distro/etc_nixos/_config_for_test.nix
 # Python bytecode
 __pycache__/
 *.py[cod]
+
+# Local git worktrees
+.worktrees/
+
+# RISC-V patch set staged for evaluation (not part of the tree)
+patches-from-riscv/
