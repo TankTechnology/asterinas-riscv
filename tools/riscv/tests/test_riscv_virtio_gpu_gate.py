@@ -27,6 +27,7 @@ class VirtioGpuGateTests(unittest.TestCase):
     def test_gate_scripts_exist_and_print_usage(self) -> None:
         for relative in (
             "tools/riscv/drm/virtio_gpu_check.sh",
+            "tools/riscv/drm/xorg_check.sh",
             "tools/drm/build_probe.sh",
         ):
             with self.subTest(script=relative):
@@ -40,6 +41,7 @@ class VirtioGpuGateTests(unittest.TestCase):
     def test_gate_scripts_parse(self) -> None:
         for relative in (
             "tools/riscv/drm/virtio_gpu_check.sh",
+            "tools/riscv/drm/xorg_check.sh",
             "tools/drm/build_probe.sh",
         ):
             with self.subTest(script=relative):
@@ -61,6 +63,13 @@ class VirtioGpuGateTests(unittest.TestCase):
             with self.subTest(ioctl=ioctl):
                 self.assertIn(ioctl, source)
         self.assertIn("DRMPROBE_PASS", source)
+
+    def test_paint_client_is_self_contained(self) -> None:
+        source = (REPOSITORY_ROOT / "tools/drm/x11_paint.c").read_text()
+        self.assertIn("XPAINT_DONE", source)
+        self.assertIn("/tmp/.X11-unix/X%u", source)
+        # No libX11: the request encoding is spelled out in the source.
+        self.assertNotIn("#include <X11/", source)
 
 
 if __name__ == "__main__":

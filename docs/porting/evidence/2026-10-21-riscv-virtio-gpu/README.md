@@ -67,6 +67,58 @@ make test_riscv_virtio_gpu
 tools/riscv/drm/virtio_gpu_check.sh --kernel target/osdk/asterinas-osdk-bin.Image
 ```
 
+## Xorg modesetting on the same device
+
+The probe is the raw path. The desktop path uses the same kernel pieces with a
+Debian userland:
+
+1. Build the image profile that has an X server and no fbdev driver fallback:
+
+   ```sh
+   ASTERINAS_EXPLICIT_QEMU=1 \
+   tools/riscv/debian/rootfs/build_rootfs.sh --architecture riscv64 \
+     --profile desktop-drm \
+     --output-dir target/debian-riscv/desktop-drm/rootfs
+   # target/debian-riscv/desktop-drm/rootfs/debian-root.ext2 (label ASTER_DEBIANDRM)
+   ```
+
+   (`ASTERINAS_EXPLICIT_QEMU=1` is for build hosts without a riscv64
+   binfmt_misc registration; proot drives the staged `qemu-riscv64-static`.)
+
+2. Build the Stage1 handoff initramfs and run the gate:
+
+   ```sh
+   tools/riscv/debian/rootfs/build_stage1.sh --architecture riscv64 --minimal
+   make test_riscv_xorg
+   ```
+
+The gate copies the pristine image, injects a oneshot unit
+(`xorg-gate.service`) that starts `/usr/lib/xorg/Xorg :0` on `/dev/dri/card0`
+with `AutoAddDevices off`, and paints the root window through
+`tools/drm/x11_paint.c` — a raw X11 client, because the profile does not
+install `x11-xserver-utils` and therefore has no `xsetroot`. The request
+sequence is the one `xsetroot -solid red` produces: `ChangeWindowAttributes`
+(CWBackPixel) followed by `ClearArea` over the root, then a `GetInputFocus`
+round trip. The image's own graphical session is deliberately not used: it
+waits on udev/logind and a virtual terminal, while this gate needs only the X
+server and the DRM node.
+
+Transcript from QEMU (TCG; boot to the gate unit takes about four minutes):
+
+```
+xorg-gate.sh[67]: XORG_GATE_BEGIN
+xorg-gate.sh[67]: XORG_GATE_SOCKET_WAIT=3
+xorg-gate.sh[74]: XPAINT_SETUP root=0x224 depth=24
+xorg-gate.sh[74]: XPAINT_DONE pixel=0xff0000
+xorg-gate.sh[67]: XORG_GATE_PAINT=0
+screendump 1024x768 red=1.000
+PASS (RISC-V Xorg modesetting on virtio-gpu: red root window, screendump)
+```
+
+The scanout is 1024x768 (the mode from the connector probe) and every sampled
+pixel is red, so `SETCRTC` and `DIRTYFB` reached the virtio-gpu resource and
+the host side displays it.
+
 ## Findings worth keeping
 
 - The KMS object store builds only static topology
@@ -83,15 +135,17 @@ tools/riscv/drm/virtio_gpu_check.sh --kernel target/osdk/asterinas-osdk-bin.Imag
   makes the ioctl return `ENOENT`; `virtio_gpu_probe.c` declares the struct in
   the current order, matching the kernel's `#[padding_struct]` definition.
 - The RISC-V initramfs needs no busybox or systemd: a static `/init` that
-  mounts devtmpfs is enough, which keeps this gate independent of the Debian
-  image work.
+  mounts devtmpfs is enough, which keeps the KMS gate independent of the
+  Debian image work.
+- Xorg takes about three minutes to become idle on this QEMU/host pair
+  (software emulation), and a client that connects as soon as
+  `/tmp/.X11-unix/X0` exists can wait through the tail of server
+  initialization. The paint client's alarm is 180 s for that reason; an
+  earlier 30 s alarm expired while the server was still initializing.
 
 ## Not yet done
 
-Xorg on RISC-V. The probe proves the KMS path, but Xorg needs a RISC-V
-userspace with libdrm and the modesetting driver. The existing RISC-V
-userspace artifacts in this workspace predate the shared DRM core (and the
-Nix-based desktop initramfs is no longer on disk), so the Xorg half needs a
-fresh Debian riscv64 rootfs with `xserver-xorg-core` plus the Stage1
-handoff, mirroring `tools/x86/debian/xorg_check.sh`. That is the next step,
-not a gap in the driver.
+The full desktop session (`asterinas-desktop-drm.service`) still fails in this
+image: it wants udev/logind and a virtual terminal, and its failure predates
+Xorg. The gate bypasses it deliberately. Bringing the session up unchanged is
+a udev/VT question, not a DRM one.

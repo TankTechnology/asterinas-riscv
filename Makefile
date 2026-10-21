@@ -666,6 +666,30 @@ test_riscv_virtio_gpu:
 		--workspace "$(RISCV_GPU_WORKSPACE)" \
 		--timeout "$(RISCV_GPU_TIMEOUT)"
 
+# RISC-V Xorg gate: boot the Debian `desktop-drm` image through Stage1 with a
+# virtio-gpu device, start Xorg on /dev/dri/card0 and paint the root window
+# red. The base image comes from
+# `build_rootfs.sh --profile desktop-drm`; the gate copies and injects into a
+# work image, so the published artifact stays pristine.
+RISCV_XORG_KERNEL ?= $(CURDIR)/target/osdk/asterinas-osdk-bin.Image
+RISCV_XORG_STAGE1 ?= $(CURDIR)/target/debian-riscv/stage1/initramfs.cpio
+RISCV_XORG_BASE_IMAGE ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/debian-root.ext2
+RISCV_XORG_WORKSPACE ?= $(CURDIR)/target/riscv-gpu/xorg-gate
+RISCV_XORG_TIMEOUT ?= 660
+
+.PHONY: test_riscv_xorg
+test_riscv_xorg:
+	@test -f "$(RISCV_XORG_KERNEL)" || { echo "RISCV_XORG_KERNEL is required" >&2; exit 2; }
+	@test -f "$(RISCV_XORG_STAGE1)" || { echo "RISCV_XORG_STAGE1 is required" >&2; exit 2; }
+	@test -f "$(RISCV_XORG_BASE_IMAGE)" || { echo "RISCV_XORG_BASE_IMAGE is required" >&2; exit 2; }
+	@echo "riscv-xorg: kernel=$(RISCV_XORG_KERNEL)"
+	@tools/riscv/drm/xorg_check.sh \
+		--kernel "$(RISCV_XORG_KERNEL)" \
+		--stage1 "$(RISCV_XORG_STAGE1)" \
+		--base-image "$(RISCV_XORG_BASE_IMAGE)" \
+		--workspace "$(RISCV_XORG_WORKSPACE)" \
+		--timeout "$(RISCV_XORG_TIMEOUT)"
+
 .PHONY: test_x86_debian_tooling_unit
 test_x86_debian_tooling_unit:
 	@python3 -W error::ResourceWarning -m unittest \
