@@ -761,7 +761,7 @@ test_x86_usb_hotplug:
 	@tools/x86/usb_hotplug_check.sh \
 		--kernel "$(P3_PROBE_KERNEL_X86)" \
 		--workspace "$(CURDIR)/target/usb-hotplug/x86" \
-		--timeout 120
+		--timeout 200
 
 # Debian `aplay` gate: the image's own alsa-utils plays through
 # /dev/snd/pcmC0D0p and the host verifies the captured samples.

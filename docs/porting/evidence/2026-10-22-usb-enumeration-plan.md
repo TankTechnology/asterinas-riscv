@@ -3,6 +3,9 @@
 用户决定：**先交付"设备出现在 `/sys/bus/usb/devices`（含 vendor/product id）"**，
 `usb-storage` 与存储类留作增量 2。本文先写方案与当前进度，实现与证据随后补。
 
+> **已实现（2026-10-22）**：门禁 `make test_x86_usb_hotplug` 通过，
+> 结果与踩坑记录见 `2026-10-22-usb-enumeration.md`。
+
 ## 当前进度（增量 0 已完成，commit `6d9a52b59`）
 
 `kernel/comps/usb-xhci`：

@@ -5,8 +5,12 @@ edition.workspace = true
 
 [dependencies]
 aster-core.workspace = true
+aster-device.workspace = true
 aster-pci.workspace = true
+aster-systree.workspace = true
+aster-util.workspace = true
 component.workspace = true
+inherit-methods-macro.workspace = true
 ostd.workspace = true
 spin.workspace = true
 

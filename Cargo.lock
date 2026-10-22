@@ -463,8 +463,12 @@ name = "aster-usb-xhci"
 version = "0.1.0"
 dependencies = [
  "aster-core",
+ "aster-device",
  "aster-pci",
+ "aster-systree",
+ "aster-util",
  "component",
+ "inherit-methods-macro",
  "ostd",
  "spin",
 ]

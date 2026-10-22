@@ -3,9 +3,10 @@
 
 # USB hotplug gate.
 #
-# Boots the kernel with QEMU's xHCI controller and a passive init, then asks
-# the monitor to add and remove a USB mass-storage device. The gate passes
-# when the driver reports controller bring-up and both port transitions.
+# Boots the kernel with QEMU's xHCI controller and the enumeration probe, then
+# asks the monitor to add and remove a USB mass-storage device. The gate passes
+# when the driver reports the controller, the port transition, an enumerated
+# device under /sys/bus/usb/devices with a vendor/product id, and the removal.
 
 set -euo pipefail
 
@@ -16,7 +17,7 @@ Usage: usb_hotplug_check.sh --kernel ELF --workspace DIR [OPTIONS]
 Options:
   --kernel PATH     Asterinas x86_64 multiboot2 ELF (required).
   --workspace DIR   Initramfs, console transcript and the stick image.
-  --timeout SECS    Deadline for bring-up and both transitions (default: 120).
+  --timeout SECS    Deadline for bring-up, enumeration and removal (default: 180).
   --accel MODE      'kvm' or 'tcg' (default: kvm).
   --qemu PATH       QEMU binary (default: qemu-system-x86_64).
 USAGE
@@ -30,7 +31,7 @@ die_usage() {
 
 KERNEL=""
 WORKSPACE=""
-TIMEOUT=120
+TIMEOUT=180
 ACCEL="kvm"
 QEMU="qemu-system-x86_64"
 
@@ -132,14 +133,20 @@ def console_text():
         return b''
 
 
-added = removed = disconnected = False
+added = removed = disconnected = enumerated = False
+device_line = ''
 while time.time() < deadline:
     text = console_text()
     if not added and b'controller 1b36:000d' in text and b'ports=' in text:
         time.sleep(1)
         monitor.sendall(b'device_add usb-storage,drive=usbstick,id=stick\n')
         added = True
-    if added and not removed and b'port 1 connected' in text:
+    if added and not enumerated:
+        for line in text.splitlines():
+            if line.startswith(b'USBPROBE_DEVICE '):
+                device_line = line.decode(errors='replace')
+                enumerated = True
+    if enumerated and not removed:
         time.sleep(1)
         monitor.sendall(b'device_del stick\n')
         removed = True
@@ -148,14 +155,16 @@ while time.time() < deadline:
         break
     time.sleep(0.2)
 
-print('USB_CLIENT added=%s removed=%s disconnected=%s'
-      % (added, removed, disconnected), flush=True)
-sys.exit(0 if disconnected else 1)
+print('USB_CLIENT added=%s enumerated=%s removed=%s disconnected=%s'
+      % (added, enumerated, removed, disconnected), flush=True)
+if device_line:
+    print(device_line, flush=True)
+sys.exit(0 if disconnected and enumerated else 1)
 PY
 CLIENT_STATUS=$?
 if [[ $CLIENT_STATUS -ne 0 ]]; then
-    printf 'FAIL (the port transitions did not complete; see %s)\n' "$CONSOLE"
+    printf 'FAIL (enumeration or the port transitions did not complete; see %s)\n' "$CONSOLE"
     exit 1
 fi
 
-printf 'PASS (xHCI controller up; device add/remove reported on its port)\n'
+printf 'PASS (xHCI controller up; hot-added device enumerated under /sys/bus/usb/devices)\n'

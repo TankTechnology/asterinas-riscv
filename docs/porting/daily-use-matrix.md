@@ -25,7 +25,7 @@ make test_x86_daily_use \
 | 剪贴板 | ok | `xclip` 写读往返一致 |
 | 输入法 | missing | 镜像里没有 fcitx5/ibus（也未安装） |
 | 音频 | ok | `/dev/snd/pcmC0D0p` + `aplay -D hw:0,0` 播放成功（见 `2026-10-22-alsa-aplay.md`） |
-| U 盘热插拔 | missing | 内核没有 `/sys/bus/usb`（无 USB 子系统，qemu-xhci 不被枚举） |
+| U 盘热插拔 | **部分通过** | 热插后设备出现在 `/sys/bus/usb/devices/1-1`（`idVendor`/`idProduct` 可读）；usb-storage/块设备待增量 2 重跑本表（见 `2026-10-22-usb-enumeration.md`） |
 | 睡眠唤醒 | fail | `systemctl suspend` 返回 1：`Call to Suspend failed: No such file or directory`（缺 `/sys/power/state`） |
 
 原始产物：`target/daily-use/matrix.tsv`、`console.txt`（串口全量）、
@@ -41,8 +41,10 @@ make test_x86_daily_use \
 - **音频**：已由 `2026-10-22-alsa-aplay.md` 补齐——`/dev/snd/controlC0`、
   `/dev/snd/pcmC0D0p` 与 ALSA PCM ioctl 子集，镜像里的 `aplay` 可以直接播放；
   剩余边界是同步播放（块间有短静音）、无 mmap、无录音/混音器控件。
-- **USB 热插拔**：内核完全没有 USB 子系统（xHCI + USB core + 存储类），
-  这是排序里第二优先的能力（音频 > USB > Wi-Fi）。
+- **USB 热插拔**：xHCI 枚举已经落地（端口复位 → `Enable Slot` → `Address Device`
+  → `GET_DESCRIPTOR` → `/sys/bus/usb/devices/<bus>-<port>`），本表的 `missing`
+  已转为“可见但还不能用”；缺的是配置描述符/接口模型与 usb-storage（增量 2），
+  之后 U 盘才有块设备可挂载。
 - **睡眠唤醒**：缺 `/sys/power/state` 与 ACPI S3 支持；QEMU 侧 `system_wakeup`
   已经接好，等内核提供挂起入口即可复用。
 

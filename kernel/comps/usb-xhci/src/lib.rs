@@ -2,11 +2,14 @@
 
 //! A minimal xHCI host-controller driver.
 //!
-//! This first increment brings the controller up, starts it with empty
-//! command/event rings, and watches the root-hub port registers so a device
-//! plugged into QEMU (`device_add usb-storage`) is reported on the console.
-//! Device enumeration, the USB core and the mass-storage class are the next
-//! increment; the rings and registers they need are already programmed here.
+//! The driver brings the controller up, watches the root-hub ports and
+//! enumerates what is plugged in: a port reset, `Enable Slot`, `Address
+//! Device`, and a `GET_DESCRIPTOR` control transfer over EP0. The result is
+//! visible twice — `device 1-1: idVendor=… idProduct=…` in the log and a
+//! `/sys/bus/usb/devices/1-1/` directory with `idVendor`/`idProduct`.
+//!
+//! Configuration parsing, interfaces and the mass-storage class are the next
+//! increment; nothing here drives a device past the addressed state.
 
 #![no_std]
 #![deny(unsafe_code)]
@@ -19,6 +22,9 @@ macro_rules! __log_prefix {
         "xhci: "
     };
 }
+
+mod sysfs;
+mod usb;
 
 use alloc::{sync::Arc, vec, vec::Vec};
 use core::time::Duration;
@@ -38,6 +44,7 @@ use ostd::{
     sync::SpinLock,
     warn,
 };
+use usb::{Rings, SlotState, new_slot_table};
 
 /// Red Hat's `qemu-xhci`.
 const QEMU_XHCI: (u16, u16) = (0x1b36, 0x000d);
@@ -48,7 +55,9 @@ const NEC_XHCI_DEVICE_ID: u16 = 0x0194;
 // Controller capability registers (BAR0 + 0).
 const REG_CAPLENGTH: usize = 0x00;
 const REG_HCSPARAMS1: usize = 0x04;
+const REG_HCSPARAMS2: usize = 0x08;
 const REG_HCCPARAMS1: usize = 0x10;
+const REG_DBOFF: usize = 0x14;
 const REG_RTSOFF: usize = 0x18;
 
 // Operational registers (BAR0 + CAPLENGTH).
@@ -63,7 +72,7 @@ const REG_PORTSC_STRIDE: usize = 0x10;
 // Interrupter 0 registers (BAR0 + RTSOFF + 0x20).
 const REG_ERSTSZ: usize = 0x28;
 const REG_ERSTBA: usize = 0x30;
-const REG_ERDP: usize = 0x38;
+pub(crate) const REG_ERDP: usize = 0x38;
 
 const USBCMD_RUN: u32 = 1 << 0;
 const USBCMD_HCRST: u32 = 1 << 1;
@@ -72,11 +81,19 @@ const USBSTS_CNR: u32 = 1 << 11;
 /// Maximum slots enabled by `CONFIG`.
 const CONFIG_MAX_SLOTS: u32 = 0xFF;
 /// `PORTSC`: current connect status.
-const PORTSC_CCS: u32 = 1 << 0;
-/// `PORTSC` write-1-to-clear change bits.
-const PORTSC_CHANGE_BITS: u32 = 0xFE_00_00;
+pub(crate) const PORTSC_CCS: u32 = 1 << 0;
+/// `PORTSC`: port enabled/disabled. Write-one-to-disable.
+pub(crate) const PORTSC_PED: u32 = 1 << 1;
+/// `PORTSC`: port reset.
+pub(crate) const PORTSC_PR: u32 = 1 << 4;
+/// `PORTSC`: port reset change.
+pub(crate) const PORTSC_PRC: u32 = 1 << 21;
+/// `PORTSC` write-one-to-clear change bits.
+pub(crate) const PORTSC_CHANGE_BITS: u32 = 0xFE_00_00;
 /// Event ring segment size (TRBs).
 const EVENT_RING_TRBS: u32 = 256;
+/// Device-context slots in the DCBAA page.
+pub(crate) const SLOT_COUNT: usize = 64;
 
 #[derive(Debug)]
 struct XhciDriver;
@@ -124,16 +141,17 @@ struct XhciController {
     device_id: aster_pci::PciDeviceId,
     cap_length: u8,
     runtime_offset: u32,
+    /// Doorbell array offset from BAR0.
+    doorbell_offset: u32,
     port_count: u8,
-    /// The command ring must stay allocated while the controller runs.
-    #[expect(dead_code)]
-    command_ring: DmaCoherent,
-    #[expect(dead_code)]
-    device_contexts: DmaCoherent,
-    #[expect(dead_code)]
+    /// Device Context Base Address Array; must stay allocated.
+    dcbaa: DmaCoherent,
+    /// The event ring segment table; must stay allocated.
     erst: DmaCoherent,
-    #[expect(dead_code)]
-    event_ring: DmaCoherent,
+    /// Command and event rings, consumed by the poll worker.
+    rings: SpinLock<Rings>,
+    /// Per-slot input/device contexts and EP0 rings.
+    slots: SpinLock<Vec<Option<SlotState>>>,
     /// Connection state from the previous poll, per port.
     ports_connected: SpinLock<Vec<bool>>,
 }
@@ -152,21 +170,21 @@ impl XhciController {
             DmaCoherent::alloc(1, true)
                 .map_err(|_| Error::with_message(Errno::ENOMEM, "no DMA memory for xHCI rings"))
         };
-        let command_ring = allocate()?;
-        let device_contexts = allocate()?;
+        let dcbaa = allocate()?;
         let erst = allocate()?;
-        let event_ring = allocate()?;
+        let rings = Rings::new()?;
 
         let mut controller = Self {
             registers,
             device_id,
             cap_length: 0,
             runtime_offset: 0,
+            doorbell_offset: 0,
             port_count: 0,
-            command_ring,
-            device_contexts,
+            dcbaa,
             erst,
-            event_ring,
+            rings: SpinLock::new(rings),
+            slots: new_slot_table(),
             ports_connected: SpinLock::new(Vec::new()),
         };
         controller.initialize()?;
@@ -193,18 +211,39 @@ impl XhciController {
         self.op(REG_PORTSC_BASE + (port as usize - 1) * REG_PORTSC_STRIDE)
     }
 
-    /// Resets the controller, programs empty rings and starts it.
+    fn read_portsc(&self, port: u8) -> u32 {
+        self.read32(self.portsc(port))
+    }
+
+    /// Rings a host-controller doorbell (`target` 0 is the command ring).
+    fn ring_doorbell(&self, target: u32, value: u32) {
+        self.write32(self.doorbell_offset as usize + 4 * target as usize, value);
+    }
+
+    /// Points the Device Context Base Address Array at `slot`'s context page.
+    fn write_dcbaa(&self, slot: u8, address: u64) -> Result<()> {
+        let offset = slot as usize * 8;
+        self.dcbaa
+            .write_val(offset, &address)
+            .map_err(|_| Error::with_message(Errno::EIO, "the DCBAA page is unusable"))
+    }
+
+    /// Resets the controller, programs the rings and starts it.
     fn initialize(&mut self) -> Result<()> {
         self.cap_length = self.registers.read_once::<u8>(REG_CAPLENGTH).unwrap_or(0);
         let hciversion = self.registers.read_once::<u16>(0x02).unwrap_or(0);
         let hcsparams1 = self.read32(REG_HCSPARAMS1);
+        let hcsparams2 = self.read32(REG_HCSPARAMS2);
         let hccparams1 = self.read32(REG_HCCPARAMS1);
+        self.doorbell_offset = self.read32(REG_DBOFF) & !0x3;
         self.runtime_offset = self.read32(REG_RTSOFF) & !0x1F;
         let slots = (hcsparams1 & 0xFF) as u8;
         self.port_count = ((hcsparams1 >> 24) & 0xFF) as u8;
+        let scratchpads =
+            ((hcsparams2 >> 21) & 0x1F) as u32 | (((hcsparams2 >> 27) & 0x1F) as u32) << 5;
 
         info!(
-            "controller {:04x}:{:04x} version={}.{} caplength={:#x} slots={} ports={} hccparams1={:#x}",
+            "controller {:04x}:{:04x} version={}.{} caplength={:#x} slots={} ports={} scratchpads={} hccparams1={:#x}",
             self.device_id.vendor_id,
             self.device_id.device_id,
             hciversion >> 8,
@@ -212,8 +251,16 @@ impl XhciController {
             self.cap_length,
             slots,
             self.port_count,
+            scratchpads,
             hccparams1
         );
+        if scratchpads != 0 {
+            // No device on QEMU needs them; say so rather than fault later.
+            warn!(
+                "the controller wants {} scratchpad buffers, which this driver does not allocate",
+                scratchpads
+            );
+        }
 
         // Reset: HCRST stays set until the controller finishes resetting.
         self.write32(self.op(REG_USBCMD), USBCMD_HCRST);
@@ -228,25 +275,27 @@ impl XhciController {
             }
         }
 
-        // Enable every slot and point the controller at empty rings.
+        // Enable every slot and point the controller at the rings.
         self.write32(self.op(REG_CONFIG), CONFIG_MAX_SLOTS);
-        self.write32(self.op(REG_DCBAAP), self.device_contexts.daddr() as u32);
+        self.write32(self.op(REG_DCBAAP), self.dcbaa.daddr() as u32);
         self.write32(
             self.op(REG_DCBAAP) + 4,
-            (self.device_contexts.daddr() >> 32) as u32,
+            (self.dcbaa.daddr() >> 32) as u32,
         );
-        // RCS (ring cycle state) starts set.
-        self.write32(self.op(REG_CRCR), self.command_ring.daddr() as u32 | 1);
-        self.write32(
-            self.op(REG_CRCR) + 4,
-            (self.command_ring.daddr() >> 32) as u32,
-        );
+
+        {
+            let rings = self.rings.lock();
+            // RCS (ring cycle state) starts set.
+            let command = rings.command.daddr();
+            drop(rings);
+            self.write32(self.op(REG_CRCR), command as u32 | 1);
+            self.write32(self.op(REG_CRCR) + 4, (command >> 32) as u32);
+        }
 
         // One event-ring segment; the erst entry is {ring address, size}.
         let to_error = |_| Error::with_message(Errno::EIO, "the event ring table is unusable");
-        self.erst
-            .write_val(0, &(self.event_ring.daddr() as u64))
-            .map_err(to_error)?;
+        let event = self.rings.lock().event.daddr();
+        self.erst.write_val(0, &event).map_err(to_error)?;
         self.erst.write_val(8, &EVENT_RING_TRBS).map_err(to_error)?;
         self.erst.write_val(12, &0u32).map_err(to_error)?;
         self.write32(self.rt(REG_ERSTSZ), 1);
@@ -255,11 +304,8 @@ impl XhciController {
             self.rt(REG_ERSTBA) + 4,
             (self.erst.daddr() >> 32) as u32,
         );
-        self.write32(self.rt(REG_ERDP), self.event_ring.daddr() as u32);
-        self.write32(
-            self.rt(REG_ERDP) + 4,
-            (self.event_ring.daddr() >> 32) as u32,
-        );
+        self.write32(self.rt(REG_ERDP), event as u32);
+        self.write32(self.rt(REG_ERDP) + 4, (event >> 32) as u32);
 
         self.write32(self.op(REG_USBCMD), USBCMD_RUN);
         let mut waited = 0u32;
@@ -271,33 +317,52 @@ impl XhciController {
             }
         }
 
-        let mut connected = vec![false; self.port_count as usize];
         for port in 1..=self.port_count {
-            let portsc = self.read32(self.portsc(port));
-            connected[port as usize - 1] = portsc & PORTSC_CCS != 0;
-            info!("port {}: {}", port, if portsc & PORTSC_CCS != 0 { "connected" } else { "empty" });
+            let portsc = self.read_portsc(port);
+            info!(
+                "port {}: {}",
+                port,
+                if portsc & PORTSC_CCS != 0 {
+                    "connected"
+                } else {
+                    "empty"
+                }
+            );
         }
-        *self.ports_connected.lock() = connected;
+        // Everything starts "disconnected" so the first poll resets and
+        // enumerates whatever was attached while the kernel booted.
+        *self.ports_connected.lock() = vec![false; self.port_count as usize];
 
         Ok(())
     }
 
-    /// Polls every port and logs connection changes.
+    /// Polls every port, resets and enumerates new devices.
     fn poll_ports(&self) {
         let mut connected = self.ports_connected.lock();
         for port in 1..=self.port_count {
-            let portsc = self.read32(self.portsc(port));
+            let portsc = self.read_portsc(port);
             let plugged = portsc & PORTSC_CCS != 0;
             let index = port as usize - 1;
-            if plugged != connected[index] {
+            let changed = plugged != connected[index];
+            if changed {
                 connected[index] = plugged;
-                if plugged {
-                    info!("port {} connected", port);
-                } else {
-                    info!("port {} disconnected", port);
-                }
             }
+
+            if changed && plugged {
+                info!("port {} connected", port);
+                match self
+                    .reset_port(port)
+                    .and_then(|()| self.enumerate_port(port))
+                {
+                    Ok(()) => info!("port {} enumerated", port),
+                    Err(error) => warn!("port {} enumeration failed: {:?}", port, error),
+                }
+            } else if changed {
+                info!("port {} disconnected", port);
+            }
+
             // Clear the change bits so the next transition is reported.
+            let portsc = self.read_portsc(port);
             if portsc & PORTSC_CHANGE_BITS != 0 {
                 self.write32(self.portsc(port), portsc & PORTSC_CHANGE_BITS);
             }
@@ -305,15 +370,16 @@ impl XhciController {
     }
 }
 
-/// Watches the root-hub ports from a kernel thread.
+/// Watches the root-hub ports and the event ring from a kernel thread.
 fn start_port_watch(controller: Arc<XhciController>) {
     spawn_kernel_thread("xhci-ports", move || {
         loop {
             let _ = wait_until_or_timeout(
                 || false,
                 |_| {},
-                Some(Duration::from_millis(500)),
+                Some(Duration::from_millis(300)),
             );
+            controller.poll_events();
             controller.poll_ports();
         }
     });
