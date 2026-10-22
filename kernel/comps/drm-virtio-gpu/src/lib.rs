@@ -51,7 +51,11 @@ use ostd::{
     sync::Mutex,
 };
 
-const DRIVER_NAME: &str = "virtio-gpu";
+// Mesa selects its DRI driver for a non-PCI device by `strcmp` against the
+// name `DRM_IOCTL_VERSION` reports; the spelling must match its `virtio_gpu`
+// descriptor (underscore), or the loader falls through to kmsro and GBM
+// fails to create a device.
+const DRIVER_NAME: &str = "virtio_gpu";
 const DRIVER_DESC: &str = "DRM driver for the 2D command set of virtio-gpu";
 const MODE_VREFRESH_HZ: u32 = 60;
 const ASSUMED_DPI: u32 = 96;

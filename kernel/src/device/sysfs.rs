@@ -37,9 +37,11 @@ pub(super) fn init_in_first_process() -> Result<()> {
     let root = crate::fs::sysfs::systree_singleton().root();
     root.add_child(class_node as Arc<dyn SysObj>)?;
     root.add_child(bus_node as Arc<dyn SysObj>)?;
+    // The in-tree DRM driver was retired; the live driver registers its own
+    // devtmpfs nodes, so this dead-tree sysfs view is empty.
     let drm_device = DrmSysDevice {
-        nodes: super::dri::exposed_nodes(),
-        driver: super::dri::driver_name(),
+        nodes: &[],
+        driver: "virtio_gpu",
         modalias: VIRTIO_GPU_MODALIAS,
     };
     if let Some(dev_node) = build_dev_node(&[drm_device])? {
@@ -76,7 +78,7 @@ fn build_dev_node(devices: &[DrmSysDevice<'_>]) -> SysTreeResult<Option<Arc<Attr
             // inside `device/` below and has a different consumer. See
             // `char_node_uevent`.
             let node = DevSysNode::new(
-                &alloc::format!("{}:{}", super::dri::DRM_MAJOR, minor),
+                &alloc::format!("{}:{}", DRM_MAJOR, minor),
                 &char_node_uevent(node_name, *minor),
             );
 
@@ -158,7 +160,7 @@ fn drm_uevent(driver: &str, modalias: &str) -> String {
 fn char_node_uevent(node_name: &str, minor: u32) -> String {
     alloc::format!(
         "MAJOR={}\nMINOR={}\nDEVNAME=dri/{}\nDEVTYPE=drm_minor\n",
-        super::dri::DRM_MAJOR,
+        DRM_MAJOR,
         minor,
         node_name
     )
