@@ -48,8 +48,8 @@ rootfs 装 `fcitx5` + `fcitx5-chinese-addons`，XIM/`GTK_IM_MODULE` 配置，
   - 增量 1（枚举到 `/sys/bus/usb`）：`2026-10-22-usb-enumeration.md`，PASS。
   - ①.a 配置描述符/接口/`SET_CONFIGURATION`：`2026-10-22-usb-configuration.md`。
   - ①.b BOT + SCSI INQUIRY/READ CAPACITY：`2026-10-22-usb-bot-scsi.md`。
-  - ①.c 块设备 `/dev/sda` + 挂载：**卡在 bulk 传输停摆**，
-    见 `2026-10-22-usb-storage-blocker.md`；矩阵 USB 行仍是“部分通过”。
+  - ①.c 块设备 `/dev/sda` + 挂载：**完成**（CBW→数据阶段 settle、ERDP/EHB 修正），
+    门禁 8/8 通过，矩阵 USB 行 = ok；见 `2026-10-22-usb-storage-blocker.md`。
 - **② pty**：完成，矩阵「应用」= ok（`2026-10-22-pty-ptmx.md`）。
 - **③ 睡眠唤醒**：未实现，评估与两条路径见 `2026-10-22-suspend-assessment.md`。
 - **④ 输入法**：fcitx5 安装/XIM 端到端测试已写进 daily 清单，门禁在跑；

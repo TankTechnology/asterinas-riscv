@@ -237,7 +237,7 @@ pub(super) fn command(
         write_u8(&cbw, 15 + index, *byte)?;
     }
 
-    // A Bulk-Only Transport command is a single phase: CBW, data, CSW. Both
+    // A Bulk-Only Transport command is one phase: CBW, data, CSW. Both
     // endpoints stay locked for the whole sequence so two bios can never
     // interleave their phases (the mount path submits reads concurrently).
     let mut out = bulk_out.lock();
@@ -248,26 +248,46 @@ pub(super) fn command(
         return_errno_with_message!(Errno::EIO, "a short CBW write");
     }
 
-    let mut transferred = 0usize;
-    if data_length > 0 {
-        let endpoint = if data_in { &mut input } else { &mut out };
-        transferred = controller.bulk_transfer(slot_id, endpoint, data_daddr, data_length)?;
+    // Give the device a moment to move from CBW to its data phase. Without
+    // this settle, the data packet occasionally never completes and the
+    // endpoint ends up with a stranded transfer (a bulk timeout later).
+    for _ in 0..20_000 {
+        core::hint::spin_loop();
     }
 
     let csw = DmaCoherent::alloc(1, true)
         .map_err(|_| Error::with_message(Errno::ENOMEM, "no CSW buffer"))?;
-    let got = controller.bulk_transfer(slot_id, &mut input, csw.daddr() as u64, CSW_LENGTH)?;
+
+    // Data and CSW are separate transfers on purpose: a chained TRB becomes
+    // one USB packet, and Bulk-Only Transport needs the device to see the
+    // data packet finish before the CSW packet starts.
+    if data_length > 0 {
+        let data_endpoint = if data_in { &mut input } else { &mut out };
+        controller.bulk_transfer(slot_id, data_endpoint, data_daddr, data_length)?;
+    }
+
+    let csw_address = controller.push_transfer(
+        slot_id,
+        &mut input,
+        csw.daddr() as u64,
+        CSW_LENGTH,
+        false,
+        true,
+    )?;
+    let got = controller.wait_transfer(slot_id, csw_address, CSW_LENGTH)?;
     if got != CSW_LENGTH {
         return_errno_with_message!(Errno::EIO, "a short CSW read");
     }
+
     let signature = read_le_u32(&csw, 0)?;
     let csw_tag = read_le_u32(&csw, 4)?;
     let status = read_u8(&csw, 12)?;
     if signature != BOT_CSW_SIGNATURE || csw_tag != tag {
         return_errno_with_message!(Errno::EIO, "the CSW does not match the CBW");
     }
+    let residue = read_le_u32(&csw, 8)?;
+    let transferred = data_length.saturating_sub(residue as usize);
     if status != 0 {
-        let residue = read_le_u32(&csw, 8)?;
         ostd::warn!(
             "BOT command {:#04x} failed: status={} residue={} transferred={}",
             cb[0],

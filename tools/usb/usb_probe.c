@@ -15,7 +15,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mount.h>
-#include <sys/mount.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -62,6 +61,26 @@ static int check_block(void) {
     printf("USBPROBE_BLOCK dev=/dev/sda read=%zd magic=%02x%02x%02x%02x%02x%02x%02x%02x\n",
            got, sector[0], sector[1], sector[2], sector[3],
            sector[4], sector[5], sector[6], sector[7]);
+
+    // The real bar: mount the stick read-only, read a file, unmount.
+    mkdir("/mnt", 0755);
+    int rc = mount("/dev/sda", "/mnt", "ext2", MS_RDONLY, NULL);
+    if (rc != 0) {
+        printf("USBPROBE_MOUNT rc=-1 errno=%d\n", errno);
+        return 0;
+    }
+    int hello = open("/mnt/hello.txt", O_RDONLY);
+    if (hello < 0) {
+        printf("USBPROBE_MOUNT_READ open-errno=%d\n", errno);
+        umount2("/mnt", 0);
+        return 0;
+    }
+    char line[64] = {0};
+    ssize_t n = read(hello, line, sizeof(line) - 1);
+    close(hello);
+    printf("USBPROBE_MOUNT_READ n=%zd text=%s", n, line);
+    umount2("/mnt", 0);
+    printf("USBPROBE_MOUNT rc=0\n");
     return 1;
 }
 

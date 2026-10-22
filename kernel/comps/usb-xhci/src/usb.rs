@@ -296,7 +296,11 @@ impl XhciController {
             let address = rings.event.current_address();
             drop(rings);
             // Writing the new dequeue pointer without EHB acknowledges the TRB.
-            self.write32(self.rt(super::REG_ERDP), address as u32 & !0xF);
+            // EHB is write-one-to-clear: software must write a 1 to it when
+            // it publishes a new dequeue pointer, or the controller keeps
+            // believing the event handler is still busy.
+            const ERDP_EHB: u32 = 1 << 3;
+            self.write32(self.rt(super::REG_ERDP), (address as u32 & !0xF) | ERDP_EHB);
             self.write32(
                 self.rt(super::REG_ERDP) + 4,
                 (address >> 32) as u32,
@@ -667,11 +671,6 @@ impl XhciController {
             }
             core::hint::spin_loop();
             spin += 1;
-            // The controller occasionally misses a kick when the endpoint was
-            // just re-armed; ringing the doorbell again is harmless.
-            if spin % 1_000_000 == 0 {
-                self.ring_doorbell(slot_id as u32, dci as u32);
-            }
             if spin > 20_000_000 {
                 warn!(
                     "bulk timeout: slot {} dci {} trb {:#x} length {} usbsts {:#x} erdp {:#x}",
@@ -681,6 +680,67 @@ impl XhciController {
                     length,
                     self.read32(self.op(super::REG_USBSTS)),
                     self.read32(self.rt(super::REG_ERDP))
+                );
+                return_errno_with_message!(Errno::ETIMEDOUT, "a bulk transfer timed out");
+            }
+        }
+    }
+
+    /// Queues one transfer TRB and returns the address the event will carry.
+    pub(super) fn push_transfer(
+        &self,
+        slot_id: u8,
+        endpoint: &mut EndpointState,
+        daddr: u64,
+        length: usize,
+        chain: bool,
+        ioc: bool,
+    ) -> Result<u64> {
+        let mut control = TRB_NORMAL << 10;
+        if chain {
+            control |= 1 << 4;
+        }
+        if ioc {
+            control |= 1 << 5;
+        }
+        let address = endpoint.ring.push(Trb {
+            param: daddr,
+            status: length as u32,
+            control,
+        })?;
+        self.ring_doorbell(slot_id as u32, endpoint.dci as u32);
+        Ok(address)
+    }
+
+    /// Waits for the completion of the TRB at `trb_address`.
+    pub(super) fn wait_transfer(
+        &self,
+        slot_id: u8,
+        trb_address: u64,
+        length: usize,
+    ) -> Result<usize> {
+        let mut spin = 0u64;
+        loop {
+            if let Some(event) = self.event_ring_pop()?
+                && event.type_() == TRB_TRANSFER_EVENT
+                && event.param == trb_address
+            {
+                let code = event.completion_code();
+                if code != COMPLETION_SUCCESS && code != COMPLETION_SHORT_PACKET {
+                    warn!(
+                        "transfer {:#x} failed with completion code {}",
+                        trb_address, code
+                    );
+                    return_errno_with_message!(Errno::EIO, "a bulk transfer failed");
+                }
+                return Ok(length.saturating_sub(event.residual()));
+            }
+            core::hint::spin_loop();
+            spin += 1;
+            if spin > 20_000_000 {
+                warn!(
+                    "transfer timeout: slot {} trb {:#x} length {}",
+                    slot_id, trb_address, length
                 );
                 return_errno_with_message!(Errno::ETIMEDOUT, "a bulk transfer timed out");
             }

@@ -159,6 +159,8 @@ CONFIG_MARKERS = [
     b'blocks=32768 block_size=512',
     b'registered /dev/sda: 32768 sectors',
     b'USBPROBE_BLOCK dev=/dev/sda read=512 magic=4153544552',
+    b'USBPROBE_MOUNT rc=0',
+    b'USBPROBE_MOUNT_READ n=17 text=ASTERINAS-USB-OK',
 ]
 
 added = removed = disconnected = enumerated = configured = False
@@ -198,4 +200,4 @@ if [[ $CLIENT_STATUS -ne 0 ]]; then
     exit 1
 fi
 
-printf 'PASS (hot-added device enumerated, configured, and its capacity read over bulk transfers)\n'
+printf 'PASS (hot-added stick enumerated, mounted read-only, file read, unmounted)\n'
