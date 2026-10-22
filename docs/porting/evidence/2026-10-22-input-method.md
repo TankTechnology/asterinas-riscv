@@ -38,6 +38,22 @@ MSGTEST_PASS
 汉字”的门槛。注意上一轮记录的 libpinyin 回溯发生在守护进程退出路径上
 （`Unloading addon ...`），补 syscall 后进程不再退出，但引擎查询仍未打通。
 
+## 本轮定位（sync_file_range 补齐后）
+
+`sync_file_range`（x86_64 #277）原本返回 ENOSYS，dpkg/apt 安装 fcitx5 时反复重试；
+补齐后安装稳定，fcitx5 守护进程存活并**在会话总线上**，但
+`org.fcitx.Fcitx5 /controller CurrentInputMethod` 返回空字符串。启动日志给出确切原因：
+
+```
+E ... pinyin.cpp:737] Failed to load pinyin history: io fail: iostream error
+I ... addonmanager.cpp:205] Loaded addon pinyin
+/usr/lib/x86_64-linux-gnu/fcitx5/libpinyin.so(+0x84b9d) [0x7ffffc74fb9d]
+I ... addonmanager.cpp:308] Unloading addon pinyin
+```
+
+即：pinyin 附加加载后**读用户词典/历史失败**（`io fail: iostream error`），随即在
+libpinyin 内崩溃，输入法组因此为空。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：
@@ -59,11 +75,10 @@ core/信号日志的复现才能定位到具体帧。
 
 ## 两条替代路径（已按实测更新）
 
-1. **把引擎查询本身打通**（已完成 syscall 部分）：用准确的返回码与调试输出复跑
-   （当前诊断里的 `remote_rc` 取的是 `echo` 的返回值，需改成先存
-   `engine=$(fcitx5-remote -n); rc=$?`），并尝试 `fcitx5-remote -o/-t/-r`；
-   如果 `-n` 仍为空，用 `dbus-send --session --dest=org.fcitx.Fcitx5` 直接查询
-   InputMethod 属性，区分“总线没连上”与“守护进程没有输入法组”。
+1. **先解决 pinyin 历史文件的 I/O**：预建 `~/.local/share/fcitx5/pinyin/`
+   与历史文件（或在 fcitx5 配置里关闭历史），复跑看是否还触发 libpinyin 崩溃；
+   若仍崩，在信号投递处打印 faulting signal + 用户态 PC，定位到具体帧
+   （当前只知道落在 `libpinyin.so+0x84b9d`）。
 2. **绕开 libpinyin**：
    - 试 `fcitx5-table` 路线（`table.conf` 已加载）：装 `fcitx5-table-extra`，
      用拼音/五笔码表引擎，不碰 libpinyin；
