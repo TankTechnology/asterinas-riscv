@@ -151,21 +151,41 @@ PROFILE
             mark INPUT_METHOD fail "engine-$engine-no-text:$(cat /tmp/xim-out 2>/dev/null | tr -d '\n' | head -c 40)"
         fi
     else
-        # Isolate the failure: with only the keyboard engine, does the daemon
-        # stay up? If it does, the crash is in the pinyin engine itself.
+        # Fallback: the pinyin addon trips over its own history parsing, so
+        # switch to the table engine, which shares no code with libpinyin.
         pkill -x fcitx5 2>/dev/null
-        sleep 1
-        printf '[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=keyboard-us\n\n[Groups/0/Items/0]\nName=keyboard-us\nLayout=\n\n[GroupOrder]\n0=Default\n' \
+        timeout 300 apt-get install -y --no-install-recommends fcitx5-table-extra \
+            >>/tmp/fcitx-apt.log 2>&1
+        printf '[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=wubi\n\n[Groups/0/Items/0]\nName=wubi\nLayout=\n\n[GroupOrder]\n0=Default\n' \
             >/root/.config/fcitx5/profile
         fcitx5 -d --replace >/dev/console 2>&1 &
-        sleep 4
-        keyboard_engine=$(fcitx5-remote -n 2>/dev/null)
-        echo "DAILY_FCITX2 keyboard_only_engine='$keyboard_engine' alive=$(pgrep -c fcitx5 2>/dev/null)" >/dev/console
-        mark INPUT_METHOD fail "pinyin-engine-crash:keyboard-only='$keyboard_engine'"
+        sleep 5
+        table_engine=$(fcitx5-remote -n 2>/dev/null)
+        echo "DAILY_FCITX3 table_engine='$table_engine' alive=$(pgrep -c fcitx5 2>/dev/null)" >/dev/console
+        if [ -n "$table_engine" ]; then
+            xterm -title ximtest -e sh -c 'cat > /tmp/xim-out' >/dev/null 2>&1 &
+            sleep 2
+            window=$(timeout 5 xdotool search --name ximtest 2>/dev/null | head -1)
+            if [ -n "$window" ]; then
+                timeout 5 xdotool windowfocus "$window" 2>/dev/null || true
+                sleep 1
+                # wubi codes: 你 = wqiy, 好 = vbg
+                timeout 5 xdotool type --delay 150 "wqiy" 2>/dev/null || true
+                timeout 5 xdotool key space 2>/dev/null || true
+                timeout 5 xdotool type --delay 150 "vbg" 2>/dev/null || true
+                timeout 5 xdotool key space 2>/dev/null || true
+                timeout 5 xdotool key Return 2>/dev/null || true
+                sleep 1
+            fi
+            if grep -q 你好 /tmp/xim-out 2>/dev/null; then
+                mark INPUT_METHOD ok "table-$table_engine-typed-你好"
+            else
+                mark INPUT_METHOD fail "table-$table_engine-no-text:$(cat /tmp/xim-out 2>/dev/null | tr -d '\n' | head -c 40)"
+            fi
+        else
+            mark INPUT_METHOD fail "pinyin-iofail-and-table-unavailable"
+        fi
     fi
-else
-    mark INPUT_METHOD fail "fcitx5-unavailable:$(tail -1 /tmp/fcitx-apt.log 2>/dev/null | tr ' ' '_' | head -c 60)"
-fi
 
 # --- Domain 5: audio ------------------------------------------------------
 if [ -d /dev/snd ] && command -v aplay >/dev/null 2>&1; then

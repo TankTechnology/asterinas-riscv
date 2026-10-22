@@ -23,7 +23,7 @@ make test_x86_daily_use \
 | 应用 | ok | xterm 起得来、伪终端可用（见 `2026-10-22-pty-ptmx.md`） |
 | apt 装小包 | ok | `apt-get install -y xclip xterm alsa-utils` 成功 |
 | 剪贴板 | ok | `xclip` 写读往返一致 |
-| 输入法 | fail | 内核已补 `MSG_NOSIGNAL`/`WEXITED`/`sync_file_range`（`MSGTEST_PASS`）；`iotest` 证明基础文件 syscall（含 mmap/msync/fdatasync）全部正常，`io fail: iostream error` 来自 fcitx5-pinyin 自身的 C++ 流/解析路径（空 history 文件）；见 `2026-10-22-input-method.md` |
+| 输入法 | fail | 内核已补 `MSG_NOSIGNAL`/`WEXITED`/`sync_file_range`（`MSGTEST_PASS`）；基础文件 syscall 全正常（`iotest`），pinyin 卡在自身 iostream 解析；已加 `wubi` 码表引擎回退但本轮门禁预算（900s）不够，待加时复跑；见 `2026-10-22-input-method.md` |
 | 音频 | ok | `/dev/snd/pcmC0D0p` + `aplay -D hw:0,0` 播放成功（见 `2026-10-22-alsa-aplay.md`） |
 | U 盘热插拔 | **ok（偶发）** | 枚举 → `/sys/bus/usb/devices/1-1` → `/dev/sda` → `mount -t ext2 -o ro` → 读 `hello.txt` → `umount`；Debian 镜像是实测一次 ok、一次 `can't read superblock`（BOT 时序余量仍偏紧），见 `2026-10-22-usb-storage-blocker.md` |
 | 睡眠唤醒 | **ok** | `/sys/power/state` + suspend-to-idle（2 s 窗口），`systemctl suspend` 返回 0，唤醒后磁盘/IO 可用（见 `2026-10-22-suspend-assessment.md`） |

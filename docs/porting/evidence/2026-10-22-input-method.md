@@ -86,6 +86,17 @@ iostream error` 来自 fcitx5-pinyin 自己的 C++ 流/解析逻辑（空 histor
 格式/异常路径），不是缺 syscall。下一步应针对该进程抓 iostream 之前的最后一次
 文件操作与 errno，或直接给它一个带合法头部的 history 文件。
 
+### 码表引擎回退（本轮）
+
+清单里加了回退分支：pinyin 引擎为空时安装 `fcitx5-table-extra`，切 `wubi` 码表
+（`wqiy`+空格、`vbg`+空格 → “你好”），与 libpinyin 完全无关。本轮门禁**没跑完**：
+`DAILY_CLIENT ... done=False`——镜像里两次 apt 安装（fcitx5 依赖 + table-extra）
+把 900 s 的门禁预算用完，清单在输入法域被截断，因此还没有码表引擎的结论。
+
+下一步只有一件小事：把 `X86_DEBIAN_XORG_TIMEOUT`（或 Makefile 的
+`--timeout`）提到 1500 s，或把这两个包装进 rootfs profile，然后复跑即可拿到
+`DAILY_FCITX3 table_engine=...` 的判定。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：
