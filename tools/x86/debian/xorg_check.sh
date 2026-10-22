@@ -195,7 +195,7 @@ COMMAND = (
     'sed "s/^/XTERM /" /tmp/xterm.err; '
     'pkill -f xterm; sleep 1; '
     'sudo env DISPLAY=:0 xdpyinfo -queryExtensions 2>/dev/null '
-    '| grep -E "DRI[0-9]|PRESENT" | sed "s/^/XDINFO /"; '
+    '| grep -E "DRI[0-9]|Present" | sed "s/^/XDINFO /"; '
     'sudo env DISPLAY=:0 xdpyinfo -queryExtensions 2>/dev/null '
     '| grep -q DRI3; echo XORG_XDPYINFO_DRI3=$?; '
     'sudo env DISPLAY=:0 xdpyinfo -queryExtensions 2>/dev/null '
