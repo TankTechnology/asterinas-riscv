@@ -19,8 +19,8 @@ make test_x86_daily_use \
 
 | 域 | 结果 | 详情 |
 |---|---|---|
-| 桌面（Xorg + DRI3 + 应用） | **部分通过** | Xorg 起来且 `xdpyinfo` 有 DRI3；应用启动失败 |
-| 应用 | fail | `xterm: Error 32, errno 2 ... Reason: get_pty: not enough ptys` |
+| 桌面（Xorg + DRI3 + 应用） | **ok** | Xorg + DRI3，xterm 正常启动（`/dev/ptmx` 已由 devtmpfs 提供） |
+| 应用 | ok | xterm 起得来、伪终端可用（见 `2026-10-22-pty-ptmx.md`） |
 | apt 装小包 | ok | `apt-get install -y xclip xterm alsa-utils` 成功 |
 | 剪贴板 | ok | `xclip` 写读往返一致 |
 | 输入法 | missing | 镜像里没有 fcitx5/ibus（也未安装） |
@@ -33,9 +33,9 @@ make test_x86_daily_use \
 
 ## 每个缺口意味着什么
 
-- **应用（pty）**：xterm 打开伪终端失败——内核的 pty 数量上限或 devpts 分配在
-  这个会话里不够用（演示环境里 systemd、Xorg、apt 已经占用了若干）。这是
-  内核侧可修的缺口（增大 pty 池 / 检查 devpts 挂载），不是应用问题。
+- **应用（pty）**：已修复。根因不是 pty 池大小，而是 devtmpfs 没有提供
+  `/dev/ptmx`（镜像里的链接被 devtmpfs 挂载盖住）。修复见
+  `2026-10-22-pty-ptmx.md`。
 - **输入法**：镜像没有输入法框架；属于 rootfs profile 的内容，加上
   `fcitx5`（含 `fcitx5-chinese-addons`）与 XIM 才能测。
 - **音频**：已由 `2026-10-22-alsa-aplay.md` 补齐——`/dev/snd/controlC0`、

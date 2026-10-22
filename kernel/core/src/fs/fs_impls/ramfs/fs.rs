@@ -758,6 +758,22 @@ impl RamInode {
         self.create_impl(name, InodeType::Dir, mode, None, ToBeRevalidated::Yes)
     }
 
+    /// Creates a symlink whose dentry must be revalidated.
+    pub(in crate::fs::fs_impls) fn symlink_with_revalidation(
+        &self,
+        name: &str,
+        target: &str,
+        mode: InodeMode,
+    ) -> Result<Arc<dyn Inode>> {
+        self.create_impl(
+            name,
+            InodeType::SymLink,
+            mode,
+            Some(target),
+            ToBeRevalidated::Yes,
+        )
+    }
+
     /// Creates a device inode whose dentry must be revalidated.
     pub(in crate::fs::fs_impls) fn mknod_with_revalidation(
         &self,

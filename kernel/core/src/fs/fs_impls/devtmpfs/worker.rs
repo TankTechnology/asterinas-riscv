@@ -52,6 +52,11 @@ fn devtmpfsd() {
 
     REQUEST_QUEUE.waker.call_once(|| waker);
 
+    // `/dev/ptmx` is part of the devtmpfs contract, not a device node.
+    if let Err(error) = tree::create_ptmx_symlink() {
+        warn!("failed to create /dev/ptmx: {:?}", error);
+    }
+
     loop {
         let request = REQUEST_QUEUE.requests.lock().pop_front();
         let Some(request) = request else {

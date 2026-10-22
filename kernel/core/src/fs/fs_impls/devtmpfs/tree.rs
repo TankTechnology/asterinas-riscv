@@ -156,6 +156,21 @@ fn lookup_or_create_dir(parent_inode: &dyn Inode, name: &str) -> Result<Arc<dyn 
     }
 }
 
+/// Creates the standard `/dev/ptmx -> pts/ptmx` link.
+///
+/// The devpts filesystem exposes the multiplexer at `pts/ptmx`. Linux's
+/// devtmpfs also publishes `/dev/ptmx`, and programs such as xterm open that
+/// path directly, so the link has to exist even before any pty is allocated.
+pub(super) fn create_ptmx_symlink() -> Result<()> {
+    let root = super::fs::singleton().root_inode();
+    let root_ram_inode = root.downcast_ref::<RamInode>().unwrap();
+    match root_ram_inode.symlink_with_revalidation("ptmx", "pts/ptmx", mkmod!(a+rwx)) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error() == Errno::EEXIST => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 fn create_device_node(parent_inode: &dyn Inode, name: &str, node: &DevtmpfsNode) -> Result<()> {
     let rdev = node.device_id.as_encoded_u64();
     let mknod_type = match node.device_type {

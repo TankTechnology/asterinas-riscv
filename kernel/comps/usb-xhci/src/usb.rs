@@ -674,8 +674,13 @@ impl XhciController {
             }
             if spin > 20_000_000 {
                 warn!(
-                    "bulk timeout: slot {} dci {} trb {:#x} length {}",
-                    slot_id, dci, trb_address, length
+                    "bulk timeout: slot {} dci {} trb {:#x} length {} usbsts {:#x} erdp {:#x}",
+                    slot_id,
+                    dci,
+                    trb_address,
+                    length,
+                    self.read32(self.op(super::REG_USBSTS)),
+                    self.read32(self.rt(super::REG_ERDP))
                 );
                 return_errno_with_message!(Errno::ETIMEDOUT, "a bulk transfer timed out");
             }
