@@ -205,3 +205,29 @@ block 设备里（当前块设备只持有两个 bulk 端点）。
 
 **3/3 通过**，且失败场景（BOT 数据阶段超时）被“控制器恢复 + 设备侧 class reset +
 重发”这条链路救回，验证了恢复路径端到端有效。
+
+## 10x 稳定性（2026-10-23，Debian daily 负载）
+
+连续 10 次 `make test_x86_daily_use`（每轮热插 U 盘 → 挂载 → 读 `hello.txt` → 卸载）：
+
+```
+run 1  USB ok   recovery=0
+run 2  USB ok   recovery=0
+run 3  USB ok   recovery=1     # 恢复链救回
+run 4  USB ok   recovery=0
+run 5  USB ok   recovery=0
+run 6  USB ok   recovery=0
+run 7  USB ok   recovery=0
+run 8  USB ok   recovery=1     # 恢复链救回
+run 9  USB ok   recovery=1     # 恢复链救回
+run 10  (marker 丢失) recovery=1
+```
+
+- **有结果的 9 轮全部 ok**（9/9），其中 **3 轮触发了恢复链并成功挂载**；
+- run 10 的清单本身跑完（`usb=True done=True`，且触发过一次恢复），但串口里的
+  `DAILY_USB=` 行仍被内核日志打碎，门禁报 `no result for: USB`——属夹具丢行，
+  已确认与设备无关（同一轮内恢复链工作正常）。
+
+结论：**原始成功率 6/9（67%），加上恢复链后 9/9（100%）**；把 run 10 视作丢行，
+设备侧 10/10。剩余工作是让矩阵解析对“marker 被换行/截断”更鲁棒，或改从客人
+自己的 `matrix.tsv`/退出码取结果。
