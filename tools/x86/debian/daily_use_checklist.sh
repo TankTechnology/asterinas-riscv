@@ -74,9 +74,13 @@ fi
 # table engine (no libpinyin) is installed directly: one small apt run.
 if ! command -v fcitx5 >/dev/null 2>&1; then
     timeout 120 apt-get update >/tmp/fcitx-apt.log 2>&1
+    echo "DAILY_APT_SEARCH $(apt-cache search fcitx5 2>/dev/null | tr '\n' '|' | head -c 500)" >/dev/console
     timeout 420 apt-get install -y --no-install-recommends \
-        fcitx5 fcitx5-modules fcitx5-table-extra dbus-daemon >>/tmp/fcitx-apt.log 2>&1
+        fcitx5 fcitx5-modules fcitx5-data fcitx5-table-extra fcitx5-table-other \
+        fcitx5-chinese-addons dbus-daemon >>/tmp/fcitx-apt.log 2>&1
 fi
+echo "DAILY_PKG_LIST $(dpkg -L fcitx5 2>/dev/null | grep -E 'inputmethod|/table/' | tr '\n' '|' | head -c 400)" >/dev/console
+echo "DAILY_IM_DIRS inputmethod=$(ls /usr/share/fcitx5/inputmethod 2>/dev/null | wc -l) table=$(ls /usr/share/fcitx5/table 2>/dev/null | wc -l)" >/dev/console
 if command -v fcitx5 >/dev/null 2>&1; then
     export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
     mkdir -p /root/.config/fcitx5
@@ -86,7 +90,9 @@ if command -v fcitx5 >/dev/null 2>&1; then
     table_list=$(ls /usr/share/fcitx5/table/ 2>/dev/null | sed 's/\.conf$//' | tr '\n' ' ')
     im_list=$(ls /usr/share/fcitx5/inputmethod/ 2>/dev/null | sed 's/\.conf$//' | grep -v '^keyboard-' | tr '\n' ' ')
     echo "DAILY_IM_ADDONS tables=[$table_list] ims=[$im_list]" >/dev/console
-    im=$(printf '%s\n' $im_list | grep -i '^wubi' | head -1)
+    # Prefer the wubi-family engines: they do not touch libpinyin, whose
+    # history parsing fails on this kernel.
+    im=$(printf '%s\n' $im_list | grep -iE '^(wbx|wbpy|wubi)$' | head -1)
     [ -n "$im" ] || im=$(printf '%s\n' $im_list | grep -i 'pinyin' | head -1)
     [ -n "$im" ] || im=$(printf '%s\n' $table_list | grep -i 'wubi' | head -1)
     [ -n "$im" ] || im=$(printf '%s\n' $table_list | head -1)
@@ -101,8 +107,17 @@ if command -v fcitx5 >/dev/null 2>&1; then
     pkill -x fcitx5 2>/dev/null; sleep 1
     fcitx5 -d --replace -v >/dev/console 2>&1 &
     sleep 5
+    # CurrentInputMethod is per input context: start a client and focus it
+    # before asking fcitx5 which engine it picked.
+    xterm -title ximtest -e sh -c 'cat > /tmp/xim-out' >/dev/null 2>&1 &
+    sleep 2
+    window=$(timeout 5 xdotool search --name ximtest 2>/dev/null | head -1)
+    if [ -n "$window" ]; then
+        timeout 5 xdotool windowfocus "$window" 2>/dev/null || true
+        sleep 1
+    fi
     engine=$(fcitx5-remote -n 2>/dev/null)
-    echo "DAILY_FCITX alive=$(pgrep -c fcitx5 2>/dev/null) engine='$engine'" >/dev/console
+    echo "DAILY_FCITX alive=$(pgrep -c fcitx5 2>/dev/null) engine='$engine' window='$window'" >/dev/console
     if [ -z "$engine" ]; then
         # Diagnose instead of switching engines: is the daemon on a bus that
         # lists it, and does activating the input method produce an engine?
@@ -116,12 +131,7 @@ if command -v fcitx5 >/dev/null 2>&1; then
         echo "DAILY_FCITX after_activate='$engine'" >/dev/console
     fi
     if [ -n "$engine" ]; then
-        xterm -title ximtest -e sh -c 'cat > /tmp/xim-out' >/dev/null 2>&1 &
-        sleep 2
-        window=$(timeout 5 xdotool search --name ximtest 2>/dev/null | head -1)
         if [ -n "$window" ]; then
-            timeout 5 xdotool windowfocus "$window" 2>/dev/null || true
-            sleep 1
             # wubi codes: 你 = wqiy, 好 = vbg
             timeout 5 xdotool type --delay 150 "wqiy" 2>/dev/null || true
             timeout 5 xdotool key space 2>/dev/null || true

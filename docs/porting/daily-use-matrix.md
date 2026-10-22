@@ -23,7 +23,7 @@ make test_x86_daily_use \
 | 应用 | ok | xterm 起得来、伪终端可用（见 `2026-10-22-pty-ptmx.md`） |
 | apt 装小包 | ok | `apt-get install -y xclip xterm alsa-utils` 成功 |
 | 剪贴板 | ok | `xclip` 写读往返一致 |
-| 输入法 | fail | 内核缺口已补（`MSGTEST_PASS`、`iotest` 全绿）；表引擎（wubi，不碰 libpinyin）已装且门禁完整跑完，且客体里 `/usr/share/fcitx5/{table,inputmethod}` 为空——镜像源的最小安装没有带来任何 IM 定义（连 keyboard-us 都注册不出引擎）；见 `2026-10-22-input-method.md` |
+| 输入法 | fail | 内核缺口已补（`MSGTEST_PASS`、`iotest` 全绿）；表引擎（wubi，不碰 libpinyin）已装且门禁完整跑完，装 `fcitx5-chinese-addons` 后 IM 定义已有 10 个（选中 `wbpy`，不碰 libpinyin），并先起 xterm 聚焦再查，引擎仍为空——嫌疑转到 fcitx5 的输入上下文/前端未建立；见 `2026-10-22-input-method.md` |
 | 音频 | ok | `/dev/snd/pcmC0D0p` + `aplay -D hw:0,0` 播放成功（见 `2026-10-22-alsa-aplay.md`） |
 | U 盘热插拔 | **ok（偶发）** | 枚举 → `/sys/bus/usb/devices/1-1` → `/dev/sda` → `mount -t ext2 -o ro` → 读 `hello.txt` → `umount`；Debian 镜像是实测一次 ok、一次 `can't read superblock`（BOT 时序余量仍偏紧），见 `2026-10-22-usb-storage-blocker.md` |
 | 睡眠唤醒 | **ok** | `/sys/power/state` + suspend-to-idle（2 s 窗口），`systemctl suspend` 返回 0，唤醒后磁盘/IO 可用（见 `2026-10-22-suspend-assessment.md`） |

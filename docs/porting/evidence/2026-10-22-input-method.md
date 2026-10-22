@@ -191,6 +191,24 @@ fcitx5-table fcitx5-table-extra fcitx5-chinese-addons fcitx5-modules` 只完成�
 fcitx5 deb，再 `dpkg-deb -x` 检查它到底有没有 `/usr/share/fcitx5/inputmethod/*.conf`。
 这比跨发行版下载更可靠，也能回答“是包本身没有数据，还是 dpkg 没装全”。
 
+### 装了数据 + 有焦点客户端后仍为空（本轮，结论）
+
+装 `fcitx5-chinese-addons` 后 `/usr/share/fcitx5/inputmethod/` 有 10 个 IM
+（`cangjie db erbi pinyin qxm shuangpin wanfeng wbpy wbx zrm`），门禁里选中
+`wbpy`（不碰 libpinyin）；同时改成**先起 xterm 并聚焦，再查引擎**。结果：
+
+```
+DAILY_FCITX alive=1 engine='' window='4194316'
+DAILY_FCITX activate_rc=0
+DAILY_FCITX after_activate=''
+```
+
+也就是说：IM 定义存在、客户端有焦点、激活调用成功，但控制器依然报“没有当前 IM”，
+且日志里没有 `InputMethodGroup`/input-context 相关输出。剩余嫌疑集中在 fcitx5 的
+输入上下文/前端（`xcb`/`xim`）没有真正建立——下一步应在 `fcitx5 -d -v` 日志里
+grep `InputContext`/`InputMethodGroup`/`xim`，并用 `fcitx5-diagnose` 的
+“Input Methods / Frontends”两节确认。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：
