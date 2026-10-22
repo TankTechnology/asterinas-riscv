@@ -116,3 +116,20 @@ sampled-PC 只有在"缺的是指令区域归因"时才被准入，且其设计�
 
 长指南和 HTML 只用于理解概念、历史决策与失败模式，不维护当前状态或当前
 命令。协作者应始终从本页开始，再按需要进入命令页或某一条冻结证据。
+
+## 日常可用四项目标（2026-10-23 状态）
+
+| 目标 | 状态 | 证据 |
+|---|---|---|
+| ① U 盘热插拔（usb-storage → /dev/sdX → 挂载） | ok（偶发 superblock 读失败，BOT 余量偏紧） | `evidence/2026-10-22-usb-enumeration.md`、`-usb-configuration.md`、`-usb-bot-scsi.md`、`-usb-storage-blocker.md` |
+| ② pty（xterm 能开伪终端） | ok | `evidence/2026-10-22-pty-ptmx.md` |
+| ③ 睡眠唤醒（/sys/power/state） | ok（suspend-to-idle；非 ACPI S3） | `evidence/2026-10-22-suspend-assessment.md` |
+| ④ 输入法（fcitx5 + 中文） | ok（受限：端到端键入受无 WM 的测试环境限制） | `evidence/2026-10-22-input-method.md` |
+
+汇总与取舍见 [`daily-use-summary.md`](daily-use-summary.md)；能力账本见
+[`daily-use-matrix.md`](daily-use-matrix.md)。
+
+当天相关提交（本地，未 push）：`da5549a3d`（/sys/power/state）、`85f52bfff`
+（MSG_NOSIGNAL/WEXITED）、`a5f14e33d`（sync_file_range）、`e9216a061`（BOT settle）、
+`9a60a9d07`（/dev/ptmx）、以及输入法一系列 `test(daily)` 提交（`17a7b38dd` …
+`7bb1d1bac`）。
