@@ -28,6 +28,7 @@ members = [
     "ostd/libs/padding-struct",
     "kernel",
     "kernel/comps/audio-hda",
+    "kernel/comps/usb-xhci",
     "kernel/comps/drm",
     "kernel/comps/drm-virtio-gpu",
     "kernel/comps/i8042",
@@ -85,6 +86,7 @@ default-members = [
     "ostd",
     "kernel",
     "kernel/comps/audio-hda",
+    "kernel/comps/usb-xhci",
     "kernel/comps/drm",
     "kernel/comps/drm-virtio-gpu",
     "kernel/comps/i8042",
@@ -173,6 +175,7 @@ aster-core = { path = "kernel/core", default-features = false }
 
 # Crates under kernel/comps
 aster-audio-hda = { path = "kernel/comps/audio-hda" }
+aster-usb-xhci = { path = "kernel/comps/usb-xhci" }
 aster-drm = { path = "kernel/comps/drm" }
 aster-drm-virtio-gpu = { path = "kernel/comps/drm-virtio-gpu" }
 aster-i8042 = { path = "kernel/comps/i8042" }

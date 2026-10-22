@@ -753,6 +753,16 @@ test_x86_daily_use:
 		--workspace "$(DAILY_USE_WORKSPACE)" \
 		--timeout "$(X86_DEBIAN_XORG_TIMEOUT)"
 
+# USB hotplug gate: QEMU's xHCI controller, then a USB stick added and removed
+# through the monitor; the driver must report both port transitions.
+.PHONY: test_x86_usb_hotplug
+test_x86_usb_hotplug:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/x86/usb_hotplug_check.sh \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--workspace "$(CURDIR)/target/usb-hotplug/x86" \
+		--timeout 120
+
 # Debian `aplay` gate: the image's own alsa-utils plays through
 # /dev/snd/pcmC0D0p and the host verifies the captured samples.
 .PHONY: test_x86_audio_aplay

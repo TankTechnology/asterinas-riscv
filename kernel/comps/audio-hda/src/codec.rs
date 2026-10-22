@@ -6,7 +6,7 @@
 use alloc::{format, string::String, vec::Vec};
 
 use aster_core::prelude::*;
-use ostd::{info, warn};
+use ostd::info;
 
 use super::{HdaController, bus::CorbRirb, regs::*};
 
