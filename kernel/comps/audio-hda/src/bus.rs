@@ -11,7 +11,7 @@
 use alloc::sync::Arc;
 
 use aster_core::prelude::*;
-use ostd::info;
+use ostd::{info, warn};
 use ostd::mm::{HasDaddr, PAGE_SIZE, VmIo, dma::DmaCoherent};
 
 use super::{HdaController, regs::*};
@@ -95,6 +95,13 @@ impl CorbRirb {
             core::hint::spin_loop();
             waited += 1;
             if waited > 5_000_000 {
+                warn!(
+                    "no response: verb={:#010x} corbwp={:#x} corbrp={:#x} rirbwp={:#x}",
+                    verb,
+                    controller.read16(REG_CORBWP),
+                    controller.read16(REG_CORBRP),
+                    controller.read16(REG_RIRBWP)
+                );
                 return_errno_with_message!(Errno::ETIMEDOUT, "the codec did not answer");
             }
         }

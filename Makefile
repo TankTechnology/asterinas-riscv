@@ -753,6 +753,34 @@ test_x86_daily_use:
 		--workspace "$(DAILY_USE_WORKSPACE)" \
 		--timeout "$(X86_DEBIAN_XORG_TIMEOUT)"
 
+# Debian `aplay` gate: the image's own alsa-utils plays through
+# /dev/snd/pcmC0D0p and the host verifies the captured samples.
+.PHONY: test_x86_audio_aplay
+test_x86_audio_aplay:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@tools/x86/debian/audio_gate.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--workspace "$(AUDIO_WORKSPACE)/aplay-x86" \
+		--timeout "$(X86_DEBIAN_XORG_TIMEOUT)"
+
+# ALSA uapi gate: the guest probe speaks the libasound ioctls (INFO, HW_REFINE,
+# HW_PARAMS, PREPARE, WRITEI, DRAIN) and the host checks the captured samples.
+.PHONY: test_x86_audio_alsa
+test_x86_audio_alsa:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/audio/hda_check.sh \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--workspace "$(AUDIO_WORKSPACE)/alsa-x86" \
+		--probe "$(CURDIR)/tools/audio/alsa_probe.c" \
+		--expect ALSAPROBE_PASS \
+		--append "" \
+		--timeout 120
+
 # HDA audio gate: QEMU's intel-hda codec plays the driver's self-test tone
 # into a WAV backend, and the gate checks the captured samples.
 AUDIO_WORKSPACE ?= $(CURDIR)/target/audio

@@ -21,10 +21,10 @@ make test_x86_daily_use \
 |---|---|---|
 | 桌面（Xorg + DRI3 + 应用） | **部分通过** | Xorg 起来且 `xdpyinfo` 有 DRI3；应用启动失败 |
 | 应用 | fail | `xterm: Error 32, errno 2 ... Reason: get_pty: not enough ptys` |
-| apt 装小包 | ok | `apt-get install -y xclip xterm` 成功 |
+| apt 装小包 | ok | `apt-get install -y xclip xterm alsa-utils` 成功 |
 | 剪贴板 | ok | `xclip` 写读往返一致 |
 | 输入法 | missing | 镜像里没有 fcitx5/ibus（也未安装） |
-| 音频 | missing | 没有 `/dev/snd`（内核 HDA 驱动尚无 ALSA 节点，见 `2026-10-22-audio-hda.md`） |
+| 音频 | ok | `/dev/snd/pcmC0D0p` + `aplay -D hw:0,0` 播放成功（见 `2026-10-22-alsa-aplay.md`） |
 | U 盘热插拔 | missing | 内核没有 `/sys/bus/usb`（无 USB 子系统，qemu-xhci 不被枚举） |
 | 睡眠唤醒 | fail | `systemctl suspend` 返回 1：`Call to Suspend failed: No such file or directory`（缺 `/sys/power/state`） |
 
@@ -38,8 +38,9 @@ make test_x86_daily_use \
   内核侧可修的缺口（增大 pty 池 / 检查 devpts 挂载），不是应用问题。
 - **输入法**：镜像没有输入法框架；属于 rootfs profile 的内容，加上
   `fcitx5`（含 `fcitx5-chinese-addons`）与 XIM 才能测。
-- **音频**：HDA 驱动已有最小通路（自检可出声），但还没有 `/dev/snd`；
-  下一步是 ALSA PCM 最小 UAPI（见音频证据文档的两条替代路径）。
+- **音频**：已由 `2026-10-22-alsa-aplay.md` 补齐——`/dev/snd/controlC0`、
+  `/dev/snd/pcmC0D0p` 与 ALSA PCM ioctl 子集，镜像里的 `aplay` 可以直接播放；
+  剩余边界是同步播放（块间有短静音）、无 mmap、无录音/混音器控件。
 - **USB 热插拔**：内核完全没有 USB 子系统（xHCI + USB core + 存储类），
   这是排序里第二优先的能力（音频 > USB > Wi-Fi）。
 - **睡眠唤醒**：缺 `/sys/power/state` 与 ACPI S3 支持；QEMU 侧 `system_wakeup`

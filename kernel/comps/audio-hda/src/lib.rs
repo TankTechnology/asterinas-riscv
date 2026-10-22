@@ -26,6 +26,7 @@ macro_rules! __log_prefix {
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use aster_core::prelude::*;
 use aster_pci::{
     PCI_BUS,
     bus::{PciDevice, PciDriver},
@@ -37,8 +38,10 @@ use ostd::{bus::BusProbeError, info, warn};
 
 mod bus;
 mod codec;
+mod pcm;
 mod regs;
 mod stream;
+mod uapi;
 
 use self::{bus::CorbRirb, codec::HdaCodec, regs::*};
 use ostd::sync::Mutex;
@@ -92,6 +95,14 @@ impl PciDevice for HdaController {
     }
 }
 
+/// The converter and pin a playback stream drives.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PlaybackCodec {
+    pub address: u8,
+    pub dac: u8,
+    pub pin: u8,
+}
+
 /// Register access and codec state of one HDA controller.
 #[derive(Debug)]
 struct HdaController {
@@ -99,6 +110,8 @@ struct HdaController {
     device_id: aster_pci::PciDeviceId,
     /// The command rings, created once the controller is reset.
     bus: Mutex<Option<CorbRirb>>,
+    /// The converter and pin the PCM node plays through.
+    playback: Mutex<Option<PlaybackCodec>>,
 }
 
 impl HdaController {
@@ -107,6 +120,7 @@ impl HdaController {
             registers,
             device_id,
             bus: Mutex::new(None),
+            playback: Mutex::new(None),
         })
     }
 
@@ -135,7 +149,7 @@ impl HdaController {
     }
 
     /// Resets the controller and enumerates the codecs behind it.
-    fn bring_up(&self) {
+    fn bring_up(self: &Arc<Self>) {
         let gcap = self.read16(REG_GCAP);
         let vmin = self.read8(REG_VMIN);
         let vmaj = self.read8(REG_VMAJ);
@@ -201,8 +215,19 @@ impl HdaController {
                         Ok(paths) => info!("output paths (pin -> dac): {:?}", paths),
                         Err(error) => warn!("output path query failed: {:?}", error),
                     }
-                    if SELFTEST.load(Ordering::Relaxed) {
-                        match stream::play_test_tone(self, &codec, bus) {
+                    if let (Some(dac), Some(pin)) = (codec.dac(), codec.output_pin()) {
+                        *self.playback.lock() = Some(PlaybackCodec {
+                            address: codec.address(),
+                            dac,
+                            pin,
+                        });
+                        // The PCM node exists as soon as a codec can play.
+                        PCM_REGISTERED.call_once(|| pcm::register(self));
+                    }
+                    if SELFTEST.load(Ordering::Relaxed)
+                        && let Some(playback) = *self.playback.lock()
+                    {
+                        match stream::play_test_tone(self, playback, bus) {
                             Ok(bytes) => info!("self-test tone finished: {} bytes", bytes),
                             Err(error) => warn!("self-test tone failed: {:?}", error),
                         }
@@ -211,6 +236,24 @@ impl HdaController {
                 Err(error) => warn!("codec {} enumeration failed: {:?}", slot, error),
             }
         }
+    }
+}
+
+/// Keeps the PCM nodes from being registered twice.
+static PCM_REGISTERED: spin::Once<()> = spin::Once::new();
+
+impl HdaController {
+    /// Plays one buffer through the PCM node's codec and stream.
+    pub(crate) fn play(&self, data: &[u8]) -> Result<()> {
+        let playback = self
+            .playback
+            .lock()
+            .ok_or_else(|| Error::with_message(Errno::ENODEV, "no playback codec"))?;
+        let mut bus = self.bus.lock();
+        let Some(bus) = bus.as_mut() else {
+            return_errno_with_message!(Errno::ENODEV, "the command rings are not running");
+        };
+        stream::play_bytes(self, playback, bus, data)
     }
 }
 

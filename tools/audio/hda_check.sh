@@ -19,6 +19,9 @@ Options:
   --workspace DIR   Initramfs, console transcript and captured WAV (required).
   --probe PATH      Probe source for the guest init (default:
                     tools/audio/audio_probe.c).
+  --expect TEXT     Console text that marks the driver/guest success
+                    (default: "self-test tone finished").
+  --append TEXT     Extra kernel arguments (default: aster_audio.selftest).
   --timeout SECS    Deadline for boot and playback (default: 120).
   --loglevel N      Kernel log level (default: 7, so the self-test log is kept).
   --accel MODE      'kvm' or 'tcg' (default: kvm).
@@ -38,6 +41,8 @@ die_usage() {
 KERNEL=""
 WORKSPACE=""
 PROBE=""
+EXPECT="self-test tone finished"
+APPEND="aster_audio.selftest"
 TIMEOUT=120
 LOGLEVEL=7
 ACCEL="kvm"
@@ -45,17 +50,25 @@ QEMU="qemu-system-x86_64"
 
 while (( $# > 0 )); do
     case "$1" in
-        --kernel | --workspace | --probe | --timeout | --loglevel | --accel | --qemu)
+        --kernel | --workspace | --probe | --expect | --timeout | \
+            --loglevel | --accel | --qemu)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --kernel) KERNEL="$2" ;;
                 --workspace) WORKSPACE="$2" ;;
                 --probe) PROBE="$2" ;;
+                --expect) EXPECT="$2" ;;
                 --timeout) TIMEOUT="$2" ;;
                 --loglevel) LOGLEVEL="$2" ;;
                 --accel) ACCEL="$2" ;;
                 --qemu) QEMU="$2" ;;
             esac
+            shift 2
+            ;;
+        --append)
+            # An empty value means "no extra kernel arguments".
+            [[ $# -ge 2 ]] || die_usage "missing value for $1"
+            APPEND="$2"
             shift 2
             ;;
         -h | --help) usage; exit 0 ;;
@@ -98,7 +111,7 @@ fi
     -audiodev "wav,id=audio0,path=$WAV" \
     -kernel "$KERNEL" \
     -initrd "$INITRAMFS" \
-    -append "console=hvc0 loglevel=$LOGLEVEL init=/init aster_audio.selftest" \
+    -append "console=hvc0 loglevel=$LOGLEVEL init=/init $APPEND" \
     >"$QEMU_LOG" 2>&1 &
 QEMU_PID=$!
 
@@ -110,7 +123,7 @@ trap cleanup EXIT
 
 STATUS=timeout
 for _ in $(seq 1 "$TIMEOUT"); do
-    if grep -aq "self-test tone finished" "$CONSOLE" 2>/dev/null; then
+    if grep -aq "$EXPECT" "$CONSOLE" 2>/dev/null; then
         STATUS=pass
         break
     fi
@@ -140,7 +153,8 @@ if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
     print("FAIL (the audio backend produced no WAV)")
     raise SystemExit(1)
 
-pcm = data[44:44 + 48000 * 4]  # one second of 48 kHz stereo 16-bit
+# The tone is half a second at 48 kHz stereo 16-bit.
+pcm = data[44:44 + 24000 * 4]
 samples = struct.unpack("<%dh" % (len(pcm) // 2), pcm[: len(pcm) // 2 * 2])
 if not samples:
     print("FAIL (the captured stream is empty)")
@@ -157,7 +171,7 @@ print("capture peak=%d sign_changes=%d" % (peak, changes))
 if peak != 8000:
     print("FAIL (unexpected peak amplitude)")
     raise SystemExit(1)
-if not (700 <= changes <= 1060):
+if not (350 <= changes <= 530):
     print("FAIL (the captured wave is not ~440 Hz)")
     raise SystemExit(1)
 PY

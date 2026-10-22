@@ -21,8 +21,8 @@ mark() {
 }
 
 # --- Domain 2: package installation (first, so the desktop app exists) ----
-if apt-get install -y xclip xterm >/tmp/apt-install.log 2>&1; then
-    mark APT ok "xclip+xterm-installed"
+if apt-get install -y xclip xterm alsa-utils >/tmp/apt-install.log 2>&1; then
+    mark APT ok "xclip+xterm+alsa-utils-installed"
 else
     mark APT fail "apt-get install"
 fi
@@ -78,7 +78,21 @@ fi
 
 # --- Domain 5: audio ------------------------------------------------------
 if [ -d /dev/snd ] && command -v aplay >/dev/null 2>&1; then
-    mark AUDIO ok "/dev/snd+aplay"
+    python3 - /tmp/daily-tone.wav <<'PY'
+import struct, sys, wave
+samples = []
+for frame in range(24000):
+    value = 8000 if (frame // 54) % 2 == 0 else -8000
+    samples += [value, value]
+with wave.open(sys.argv[1], "wb") as wav:
+    wav.setnchannels(2); wav.setsampwidth(2); wav.setframerate(48000)
+    wav.writeframes(struct.pack("<%dh" % len(samples), *samples))
+PY
+    if aplay -D hw:0,0 /tmp/daily-tone.wav >/tmp/aplay.log 2>&1; then
+        mark AUDIO ok "aplay-hw:0,0"
+    else
+        mark AUDIO fail "$(head -1 /tmp/aplay.log | tr ' ' '_')"
+    fi
 else
     mark AUDIO missing "no-/dev/snd-node"
 fi

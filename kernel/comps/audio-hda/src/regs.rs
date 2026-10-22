@@ -38,7 +38,10 @@ pub(super) const GCTL_CRST: u32 = 1 << 0;
 
 /// `CORBCTL`/`RIRBCTL` bits.
 pub(super) const CORBCTL_RUN: u8 = 1 << 1;
-pub(super) const RIRBCTL_RUN: u8 = 1 << 1;
+/// `RIRBCTL`: run, plus interrupt-on-response. The interrupt status bit is
+/// what the response counter checks, so it must be enabled for acknowledgements
+/// to reset the counter (see `bus.rs`).
+pub(super) const RIRBCTL_RUN: u8 = (1 << 1) | (1 << 0);
 
 /// `ICIS` bits.
 pub(super) const ICIS_ICB: u32 = 1 << 0;

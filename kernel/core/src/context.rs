@@ -59,6 +59,26 @@ macro_rules! current_userspace {
 
 pub(crate) use current_userspace;
 
+/// Reads one value from the current task's user address space.
+///
+/// Components that implement `ioctl` receive a raw user pointer and have no
+/// [`Context`] of their own; this is the bridge they use.
+pub fn read_user_val<T: crate::prelude::Pod>(user_ptr: usize) -> Result<T> {
+    Ok(current_userspace!().read_val(user_ptr)?)
+}
+
+/// Writes one value into the current task's user address space.
+pub fn write_user_val<T: crate::prelude::Pod>(user_ptr: usize, value: &T) -> Result<()> {
+    current_userspace!().write_val(user_ptr, value)?;
+    Ok(())
+}
+
+/// Reads a slice from the current task's user address space.
+pub fn read_user_slice<T: crate::prelude::Pod>(user_ptr: usize, values: &mut [T]) -> Result<()> {
+    current_userspace!().read_slice(user_ptr, values)?;
+    Ok(())
+}
+
 impl<'a> CurrentUserSpace<'a> {
     /// Creates a new `CurrentUserSpace` from the current task.
     ///

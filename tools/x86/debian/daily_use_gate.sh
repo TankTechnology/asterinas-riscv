@@ -137,6 +137,8 @@ while [[ \$# -gt 0 ]]; do
 done
 printf '%s\n' "\$\$" >"$PIDFILE"
 exec "$QEMU" "\${args[@]}" -vga none -device virtio-gpu-pci \\
+    -device intel-hda -device hda-output,audiodev=audio0 \\
+    -audiodev none,id=audio0 \\
     -device qemu-xhci -drive "if=none,id=usbstick,format=raw,file=$USB_IMAGE" \\
     -serial "unix:$SERIAL_SOCK,server=on,wait=off" \\
     -monitor "unix:$MONITOR_SOCK,server=on,wait=off"

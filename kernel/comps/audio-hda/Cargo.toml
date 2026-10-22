@@ -8,7 +8,11 @@ aster-cmdline.workspace = true
 aster-core.workspace = true
 aster-pci.workspace = true
 component.workspace = true
+device-id.workspace = true
 ostd.workspace = true
+ostd-pod = { workspace = true, features = ["macros"] }
+spin.workspace = true
+zerocopy.workspace = true
 
 [lints]
 workspace = true
