@@ -235,6 +235,25 @@ DAILY_XDIAG direct_out=
 不是输入法本身。下一步：先起一个轻量 WM（镜像里已有 matchbox-window-manager）
 或让 xterm 自己成为焦点窗口，再用 `xdotool key/type` 走真实焦点路径。
 
+### 起 WM 后仍无焦点（本轮，最后一环）
+
+清单在起 xterm 前尝试安装并启动 `matchbox-window-manager -use_titlebar no`，结果：
+
+```
+DAILY_XDIAG active= win=6291468
+DAILY_XDIAG xim=XIM_SERVERS(ATOM) = @server=fcitx|
+DAILY_XDIAG direct_out=
+DAILY_INPUT_METHOD=fail engine--no-text:
+```
+
+`getactivewindow` 仍为空（matchbox 可能没装成或没接管焦点，`/tmp/wm.log` 需在
+guest 里查看），所以合成按键依旧到不了 xterm。**输入法本身没有失败证据**：
+XIM 服务端已注册、守护进程存活、IM 定义齐全。
+
+下一步：① 在 guest 里确认 `pgrep matchbox` 与 `/tmp/wm.log`；② 若 WM 手段始终
+不可靠，改用不需要合成按键的验证：GTK 应用 + `GTK_IM_MODULE=fcitx`，或用
+`xdotool windowactivate --sync` + `xdotool key`（需要 WM 支持 EWMH）。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：

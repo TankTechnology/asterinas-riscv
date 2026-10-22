@@ -107,8 +107,16 @@ if command -v fcitx5 >/dev/null 2>&1; then
     pkill -x fcitx5 2>/dev/null; sleep 1
     fcitx5 -d --replace -v >/dev/console 2>&1 &
     sleep 5
-    # CurrentInputMethod is per input context: start a client and focus it
-    # before asking fcitx5 which engine it picked.
+    # Without a window manager nothing holds keyboard focus and synthetic key
+    # events never reach a client, so start a tiny WM first.
+    if ! command -v matchbox-window-manager >/dev/null 2>&1; then
+        timeout 180 apt-get install -y --no-install-recommends matchbox-window-manager \
+            >>/tmp/fcitx-apt.log 2>&1
+    fi
+    if command -v matchbox-window-manager >/dev/null 2>&1; then
+        matchbox-window-manager -use_titlebar no >/tmp/wm.log 2>&1 &
+        sleep 2
+    fi
     xterm -title ximtest -e sh -c 'cat > /tmp/xim-out' >/dev/null 2>&1 &
     sleep 2
     window=$(timeout 5 xdotool search --name ximtest 2>/dev/null | head -1)
@@ -117,7 +125,8 @@ if command -v fcitx5 >/dev/null 2>&1; then
         sleep 1
     fi
     engine=$(fcitx5-remote -n 2>/dev/null)
-    echo "DAILY_FCITX alive=$(pgrep -c fcitx5 2>/dev/null) engine='$engine' window='$window'" >/dev/console
+    active=$(timeout 5 xdotool getactivewindow getwindowname 2>/dev/null | head -1)
+    echo "DAILY_FCITX alive=$(pgrep -c fcitx5 2>/dev/null) engine='$engine' window='$window' active='$active'" >/dev/console
     if [ -z "$engine" ]; then
         # Diagnose instead of switching engines: is the daemon on a bus that
         # lists it, and does activating the input method produce an engine?
