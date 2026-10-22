@@ -209,6 +209,16 @@ pub(super) fn read_write(
         Ok(done) => Ok(done),
         Err(_) => {
             ostd::warn!("retrying READ/WRITE(10) lba={} sectors={}", lba, sectors);
+            // The failure usually leaves the endpoint halted; recover both
+            // bulk endpoints before re-sending the command.
+            {
+                let mut input = bulk_in.lock();
+                let _ = controller.recover_endpoint(slot_id, &mut input);
+            }
+            {
+                let mut out = bulk_out.lock();
+                let _ = controller.recover_endpoint(slot_id, &mut out);
+            }
             command(controller, slot_id, bulk_in, bulk_out, &cb, length, in_, daddr)
         }
     }

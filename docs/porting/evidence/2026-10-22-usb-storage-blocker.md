@@ -89,3 +89,22 @@ Debian 负载下的 BOT 时序余量，而不是 initramfs 路径本身。若要
 4. 然后再重发一次命令；仍失败则走“失败即重枚举”。
 
 上面的 4 步是下一轮的唯一改动点；当前状态下矩阵记为 ok（Debian 负载下 2/3）。
+
+## 端点 reset recovery（2026-10-23）
+
+失败路径现在会先做控制器侧恢复再重发命令：
+
+1. `Stop Endpoint`(type 15, dci)；
+2. `Set TR Dequeue Pointer`(type 16, dci, `next_trb | DCS`)；
+3. 再发一次 `READ/WRITE(10)`。
+
+3 次 daily 复测：
+
+| 轮 | 结果 |
+|---|---|
+| run 1 | 清单跑完（`usb=True done=True`）但串口丢了 `DAILY_USB=` 行，门禁判 `no result for: USB` —— 夹具丢行，非设备失败 |
+| run 2 | `USB ok mounted-/dev/sda-read-ASTERINAS-USB-OK` |
+| run 3 | `USB ok mounted-/dev/sda-read-ASTERINAS-USB-OK` |
+
+即：有效轮次 2/2 通过，本轮没有触发 halt（串口没有 `recovered endpoint` 行）。
+initramfs 门禁此前 10/10。剩余不确定项是 run 1 的串口丢行，不是 BOT 逻辑。

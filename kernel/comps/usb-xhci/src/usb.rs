@@ -29,6 +29,8 @@ const TRB_COMMAND_COMPLETION: u32 = 33;
 const TRB_ENABLE_SLOT: u32 = 9;
 const TRB_ADDRESS_DEVICE: u32 = 11;
 const TRB_CONFIGURE_ENDPOINT: u32 = 12;
+const TRB_STOP_ENDPOINT: u32 = 15;
+const TRB_SET_TR_DEQUEUE: u32 = 16;
 /// `Normal` transfer TRB.
 const TRB_NORMAL: u32 = 1;
 const TRB_LINK: u32 = 6;
@@ -745,6 +747,43 @@ impl XhciController {
                 return_errno_with_message!(Errno::ETIMEDOUT, "a bulk transfer timed out");
             }
         }
+    }
+
+    /// Stops, resets and re-arms one bulk endpoint after a halted transfer.
+    ///
+    /// The sequence is the controller side of the BOT reset recovery:
+    /// `Stop Endpoint` -> `Set TR Dequeue Pointer` pointing at the next free
+    /// TRB (DCS set), which leaves the endpoint running again.
+    pub(super) fn recover_endpoint(
+        &self,
+        slot_id: u8,
+        endpoint: &mut EndpointState,
+    ) -> Result<()> {
+        let dci = endpoint.dci;
+        let stop = self.command_push(Trb {
+            param: 0,
+            status: 0,
+            control: (TRB_STOP_ENDPOINT << 10) | ((dci as u32) << 16) | ((slot_id as u32) << 24),
+        })?;
+        let _ = self.wait_command(stop);
+
+        let dequeue = endpoint.ring.current_address() | 1;
+        let set = self.command_push(Trb {
+            param: dequeue,
+            status: 0,
+            control: (TRB_SET_TR_DEQUEUE << 10) | ((dci as u32) << 16) | ((slot_id as u32) << 24),
+        })?;
+        let event = self.wait_command(set)?;
+        if event.completion_code() != COMPLETION_SUCCESS {
+            warn!(
+                "Set TR Dequeue for dci {} failed with {}",
+                dci,
+                event.completion_code()
+            );
+            return_errno_with_message!(Errno::EIO, "endpoint recovery failed");
+        }
+        info!("recovered endpoint dci {} (dequeue {:#x})", dci, dequeue);
+        Ok(())
     }
 
     /// Handles a newly connected port: slot, address and device descriptor.
