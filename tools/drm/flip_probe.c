@@ -3,8 +3,10 @@
 // Acceptance probe for page-flip completion events and the vblank surface.
 //
 //   1. establishes a mode with legacy SETCRTC,
-//   2. flips to a second framebuffer with DRM_MODE_PAGE_FLIP_EVENT, polls the
-//      DRM file, and reads a DRM_EVENT_FLIP_COMPLETE record,
+//   2. flips to a second framebuffer with DRM_MODE_PAGE_FLIP_EVENT, checks the
+//      ioctl returned before the event was queued (the flip is deferred to
+//      the next scanout), polls the DRM file, and reads a
+//      DRM_EVENT_FLIP_COMPLETE record,
 //   3. verifies GETCRTC reports the flipped framebuffer,
 //   4. performs an ASYNC flip back without an event,
 //   5. reads the vblank sequence with WAIT_VBLANK (absolute) and requests a
@@ -332,10 +334,43 @@ int main(void) {
            relative.sequence);
     sequence_before = relative.sequence;
 
-    // Flip with an event and read the completion.
-    if (page_flip(crtc_id, fb_b, DRM_MODE_PAGE_FLIP_EVENT, 0xabcdu) != 0) {
-        fail("page-flip-event");
+    // Flip with an event and read the completion. A page flip is asynchronous:
+    // the ioctl queues the request and returns before the scanout, and the
+    // completion event only appears after the next vblank. The relative wait
+    // above returned at a tick, so the next one is a full period away.
+    // A slow scheduler can lose the race against the next tick, so the
+    // "not yet delivered" check is retried: a synchronous implementation
+    // fails every attempt, a deferred one only loses an attempt when the
+    // tick lands between the ioctl and the poll.
+    int deferred = 0;
+    double flip_ms = 0.0;
+    for (int attempt = 0; attempt < 5 && !deferred; attempt++) {
+        struct drm_wait_vblank sync_wait = {.type = 0, .sequence = 1};
+        if (ioctl(card, DRM_IOCTL_WAIT_VBLANK, &sync_wait) != 0) {
+            fail("wait-before-flip");
+        }
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        if (page_flip(crtc_id, fb_b, DRM_MODE_PAGE_FLIP_EVENT, 0xabcdu) != 0) {
+            fail("page-flip-event");
+        }
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        flip_ms = (double)(end.tv_sec - start.tv_sec) * 1000.0 +
+                  (double)(end.tv_nsec - start.tv_nsec) / 1e6;
+        struct pollfd immediate = {.fd = card, .events = POLLIN};
+        if (poll(&immediate, 1, 0) == 0) {
+            deferred = 1;
+            break;
+        }
+        struct drm_event_vblank raced;
+        if (read_event(&raced) != 0) {
+            fail("read-raced-event");
+        }
     }
+    if (!deferred) {
+        printf("FLIPPROBE_FAIL event-delivered-synchronously\n");
+        return 1;
+    }
+    printf("FLIPPROBE_FLIP_DEFERRED ioctl_ms=%.2f\n", flip_ms);
     if (poll_readable() <= 0) {
         fail("poll-flip-event");
     }
@@ -358,11 +393,20 @@ int main(void) {
     }
     printf("FLIPPROBE_FLIP_STATE ok\n");
 
-    // An ASYNC flip without an event comes back to fb_a.
+    // An ASYNC flip without an event comes back to fb_a. It is applied on a
+    // later scanout, so poll GETCRTC until the worker publishes it.
     if (page_flip(crtc_id, fb_a, DRM_MODE_PAGE_FLIP_ASYNC, 0) != 0) {
         fail("page-flip-async");
     }
-    if (get_crtc(crtc_id).fb_id != fb_a) {
+    int applied = 0;
+    for (int attempt = 0; attempt < 200; attempt++) {
+        if (get_crtc(crtc_id).fb_id == fb_a) {
+            applied = 1;
+            break;
+        }
+        usleep(1000);
+    }
+    if (!applied) {
         fail("flip-async-state");
     }
     printf("FLIPPROBE_FLIP_ASYNC ok\n");

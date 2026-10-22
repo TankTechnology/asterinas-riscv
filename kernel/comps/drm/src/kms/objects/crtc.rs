@@ -5,11 +5,11 @@ use alloc::{
     vec::Vec,
 };
 use core::{
-    sync::atomic::{AtomicU32, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     time::Duration,
 };
 
-use aster_core::IntervalTimer;
+use aster_core::{IntervalTimer, prelude::*};
 use ostd::sync::{Mutex, SpinLock, Waker};
 
 /// The software vblank period: 60 Hz.
@@ -35,6 +35,14 @@ pub(crate) struct DrmCrtc {
     properties: DrmPropertyAttachments,
     vblank: DrmVblankState,
     vblank_timer: Mutex<Option<IntervalTimer>>,
+    /// A page flip waiting for the next completed scanout.
+    pending_flip: SpinLock<Option<crate::flip::PendingFlip>>,
+    /// Set when the vblank tick made the pending flip due.
+    flip_due: AtomicBool,
+    /// The device's flip worker, woken when a flip becomes due.
+    ///
+    /// IRQ-safe: the periodic tick runs from the timer softirq.
+    flip_worker: SpinLock<Weak<crate::flip::FlipWorker>>,
 }
 
 impl DrmCrtc {
@@ -52,6 +60,9 @@ impl DrmCrtc {
             properties,
             vblank: DrmVblankState::default(),
             vblank_timer: Mutex::new(None),
+            pending_flip: SpinLock::new(None),
+            flip_due: AtomicBool::new(false),
+            flip_worker: SpinLock::new(Weak::new()),
         }
     }
 
@@ -133,7 +144,45 @@ impl DrmCrtc {
             waker.wake_up();
         }
 
+        // A pending page flip completes on the next scanout. Mark it due and
+        // wake the worker, which does the (sleeping) transfer outside the
+        // softirq.
+        let flip_pending = self.pending_flip.disable_irq().lock().is_some();
+        if flip_pending && !self.flip_due.swap(true, Ordering::AcqRel) {
+            let worker = self.flip_worker.disable_irq().lock().upgrade();
+            if let Some(worker) = worker {
+                worker.notify();
+            }
+        }
+
         sequence
+    }
+
+    /// Queues a page flip to complete on the next scanout.
+    ///
+    /// Linux rejects a second flip while one is pending; so does this.
+    pub(crate) fn queue_flip(&self, flip: crate::flip::PendingFlip) -> Result<()> {
+        let mut pending = self.pending_flip.disable_irq().lock();
+        if pending.is_some() {
+            return_errno_with_message!(Errno::EBUSY, "a page flip is already pending on the CRTC");
+        }
+        *pending = Some(flip);
+
+        Ok(())
+    }
+
+    /// Takes the pending flip if the vblank tick made it due.
+    pub(crate) fn take_due_flip(&self) -> Option<crate::flip::PendingFlip> {
+        if !self.flip_due.swap(false, Ordering::AcqRel) {
+            return None;
+        }
+
+        self.pending_flip.disable_irq().lock().take()
+    }
+
+    /// Registers the device's flip worker to be woken by the vblank tick.
+    pub(crate) fn set_flip_worker(&self, worker: Weak<crate::flip::FlipWorker>) {
+        *self.flip_worker.disable_irq().lock() = worker;
     }
 
     /// Registers a waker for the next completed scanout.

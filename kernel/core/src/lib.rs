@@ -60,6 +60,7 @@ mod syscall;
 mod thread;
 mod time;
 
+pub use thread::spawn_kernel_thread;
 pub use time::{IntervalTimer, monotonic_now, wait_until_or_timeout};
 pub mod util;
 // TODO: Add vDSO support for LoongArch.

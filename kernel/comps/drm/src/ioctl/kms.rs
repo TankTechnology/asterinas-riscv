@@ -15,7 +15,7 @@ use ostd_pod::Pod;
 
 use super::{copy_array_from_user, copy_array_to_user};
 use crate::{
-    device::DrmFeatures,
+    device::{DrmDevice, DrmFeatures},
     event::{DRM_EVENT_VBLANK, DrmEventVblank},
     file::{DrmClientCaps, DrmFile},
     ioctl::ioctl_defs,
@@ -38,7 +38,7 @@ use crate::{
 };
 
 /// The framebuffer source of one modeset.
-pub(super) enum ScanoutSource {
+pub(crate) enum ScanoutSource {
     /// Disable the CRTC.
     None,
     /// Reuse the framebuffer currently bound to the primary plane.
@@ -302,6 +302,7 @@ impl DrmFile {
     /// atomic commit ioctl: it resolves the primary plane and framebuffer,
     /// validates the connector routing, calls the driver, and only then
     /// publishes the core state. With `test_only`, it stops after validation.
+    /// The deferred page-flip worker calls [`commit_modeset`] directly.
     pub(super) fn commit_modeset(
         &self,
         crtc_id: u32,
@@ -311,7 +312,32 @@ impl DrmFile {
         source_rect: DrmRect,
         test_only: bool,
     ) -> Result<i32> {
-        let kms_ops = self.device().as_kms_ops().unwrap();
+        commit_modeset(
+            &**self.device(),
+            crtc_id,
+            connector_ids,
+            display_mode,
+            scanout_source,
+            source_rect,
+            test_only,
+        )
+    }
+}
+
+/// Validates and applies one modeset or scanout switch on `device`.
+///
+/// Both the legacy/atomic ioctl path and the deferred page-flip worker use
+/// this; the worker has no [`DrmFile`] to call a method on.
+pub(crate) fn commit_modeset(
+    device: &dyn DrmDevice,
+    crtc_id: u32,
+    connector_ids: &[u32],
+    display_mode: Option<DrmDisplayMode>,
+    scanout_source: ScanoutSource,
+    source_rect: DrmRect,
+    test_only: bool,
+) -> Result<i32> {
+        let kms_ops = device.as_kms_ops().unwrap();
 
         // Serialize validation, driver application, and state publication with framebuffer removal.
         let object_store = kms_ops.mode_config().object_store().lock();
@@ -464,8 +490,9 @@ impl DrmFile {
         }
 
         Ok(0)
-    }
+}
 
+impl DrmFile {
     /// `DRM_IOCTL_WAIT_VBLANK`: wait for a scanout sequence, or ask for an
     /// event.
     ///

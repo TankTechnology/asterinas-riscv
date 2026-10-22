@@ -45,6 +45,7 @@ macro_rules! __log_prefix {
 pub mod device;
 mod event;
 mod fence;
+mod flip;
 mod file;
 pub mod gem;
 mod prime;
@@ -93,6 +94,9 @@ pub fn register_device(device: Arc<dyn DrmDevice>) -> Result<()> {
     {
         ostd::warn!("failed to publish the DRM sysfs nodes: {:?}", error);
     }
+
+    // Page flips complete on the next scanout, outside the timer softirq.
+    flip::start_worker(registered_device.device());
 
     Ok(())
 }

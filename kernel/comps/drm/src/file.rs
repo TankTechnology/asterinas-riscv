@@ -62,9 +62,48 @@ pub(super) struct DrmFile {
     /// Property blobs created through `DRM_IOCTL_MODE_CREATEPROPBLOB`.
     user_blobs: Mutex<Vec<KmsObjectId>>,
     /// Page-flip and vblank events waiting to be read.
+    ///
+    /// Shared with pending page flips: a flip completes on a deferred work
+    /// thread, which queues the completion event here without holding the file.
+    event_queue: Arc<DrmEventQueue>,
+}
+
+/// The event queue of one DRM file and the `poll` source that reports it.
+#[derive(Debug)]
+pub(crate) struct DrmEventQueue {
     events: Mutex<VecDeque<DrmEventVblank>>,
-    /// Wakes `poll` and blocking `read` when `events` becomes non-empty.
-    event_source: EventSource,
+    source: EventSource,
+}
+
+impl DrmEventQueue {
+    fn new() -> Self {
+        Self {
+            events: Mutex::new(VecDeque::new()),
+            source: EventSource::new(),
+        }
+    }
+
+    /// Queues an event and wakes readers and pollers.
+    pub(crate) fn push(&self, event: DrmEventVblank) {
+        self.events.lock().push_back(event);
+        self.source.notify(IoEvents::IN);
+    }
+
+    pub(crate) fn has_events(&self) -> bool {
+        !self.events.lock().is_empty()
+    }
+
+    fn pop(&self) -> Option<DrmEventVblank> {
+        let event = self.events.lock().pop_front();
+        if self.events.lock().is_empty() {
+            self.source.invalidate();
+        }
+        event
+    }
+
+    pub(crate) fn source(&self) -> &EventSource {
+        &self.source
+    }
 }
 
 impl DrmFile {
@@ -110,8 +149,7 @@ impl DrmFile {
             syncobjs: Mutex::new(DrmSyncObjTable::new()),
             framebuffers: Mutex::new(Vec::new()),
             user_blobs: Mutex::new(Vec::new()),
-            events: Mutex::new(VecDeque::new()),
-            event_source: EventSource::new(),
+            event_queue: Arc::new(DrmEventQueue::new()),
         }
     }
 
@@ -209,20 +247,20 @@ impl DrmFile {
 
     /// Queues an event for this file and wakes pollers.
     pub(super) fn enqueue_event(&self, event: DrmEventVblank) {
-        self.events.lock().push_back(event);
-        self.event_source.notify(IoEvents::IN);
+        self.event_queue.push(event);
+    }
+
+    /// Returns the queue a deferred page flip completes into.
+    pub(super) fn event_queue(&self) -> Arc<DrmEventQueue> {
+        self.event_queue.clone()
     }
 
     pub(super) fn has_events(&self) -> bool {
-        !self.events.lock().is_empty()
+        self.event_queue.has_events()
     }
 
     fn pop_event(&self) -> Option<DrmEventVblank> {
-        let event = self.events.lock().pop_front();
-        if self.events.lock().is_empty() {
-            self.event_source.invalidate();
-        }
-        event
+        self.event_queue.pop()
     }
 
     pub(super) fn add_user_blob(&self, blob_id: KmsObjectId) {
@@ -394,7 +432,7 @@ impl FileOps for DrmFile {
             }
             aster_core::wait_until_or_timeout(
                 || self.has_events(),
-                |waker| self.event_source.register_waker(waker),
+                |waker| self.event_queue.source().register_waker(waker),
                 None,
             )?;
         }
@@ -422,7 +460,8 @@ impl Pollable for DrmFile {
         // The DRM file becomes readable when it has queued events (vblank or
         // page-flip completions). Reporting readiness unconditionally made
         // clients that poll the DRM file spin on `drmHandleEvent`.
-        self.event_source
+        self.event_queue
+            .source()
             .poll(mask, poller, || {
                 if self.has_events() {
                     IoEvents::IN

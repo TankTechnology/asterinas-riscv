@@ -103,20 +103,33 @@ impl core::fmt::Debug for VirtioGpuDrm {
 
 impl VirtioGpuDrm {
     fn new(gpu: Arc<GpuDevice>, width: u32, height: u32) -> Result<Self> {
-        let mut builder = DrmKmsObjectStoreBuilder::default();
         let pixel_format = DrmPixelFormat::XRGB8888;
-        let primary = builder.add_plane(DrmPlaneType::Primary, alloc::vec![pixel_format])?;
-        let crtc = builder.add_crtc(0, primary, None)?;
-        let encoder = builder.add_encoder(DrmEncoderType::Virtual)?;
-        let connector = builder.add_connector(DrmConnectorType::Virtual)?;
-        builder.attach_plane_to_crtc(primary, crtc)?;
-        builder.attach_encoder_to_crtc(encoder, crtc)?;
-        builder.attach_connector_to_encoder(connector, encoder)?;
+        // One CRTC per scanout the host exposes; the CRTC index is the scanout
+        // id the driver hands to `SET_SCANOUT`.
+        let scanout_count = gpu.scanout_count().max(1);
+        let mut max_width = width;
+        let mut max_height = height;
+        for scanout in 0..scanout_count {
+            let (scanout_width, scanout_height) = gpu.scanout_dimensions(scanout);
+            max_width = max_width.max(scanout_width);
+            max_height = max_height.max(scanout_height);
+        }
+
+        let mut builder = DrmKmsObjectStoreBuilder::default();
+        for _ in 0..scanout_count {
+            let primary = builder.add_plane(DrmPlaneType::Primary, alloc::vec![pixel_format])?;
+            let crtc = builder.add_crtc(0, primary, None)?;
+            let encoder = builder.add_encoder(DrmEncoderType::Virtual)?;
+            let connector = builder.add_connector(DrmConnectorType::Virtual)?;
+            builder.attach_plane_to_crtc(primary, crtc)?;
+            builder.attach_encoder_to_crtc(encoder, crtc)?;
+            builder.attach_connector_to_encoder(connector, encoder)?;
+        }
         let object_store = builder.build()?;
 
         let mode_config = DrmModeConfig::new(
             DrmSize::new(1, 1),
-            DrmSize::new(width.max(1), height.max(1)),
+            DrmSize::new(max_width.max(1), max_height.max(1)),
             object_store,
         )?
         .set_preferred_dumb_buffer_depth(24);
@@ -279,15 +292,15 @@ impl DrmKmsOps for VirtioGpuDrm {
 
     fn set_crtc(
         &self,
-        _crtc_index: KmsObjectIndex,
+        crtc_index: KmsObjectIndex,
         framebuffer: Option<&DrmFramebuffer>,
         source_rect: DrmRect,
     ) -> Result<()> {
+        let scanout = crtc_index.get() as u32;
         let Some(framebuffer) = framebuffer else {
-            return self
-                .gpu
-                .disable_scanout()
-                .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu disable scanout failed"));
+            return self.gpu.disable_scanout(scanout).map_err(|_| {
+                Error::with_message(Errno::EIO, "virtio-gpu disable scanout failed")
+            });
         };
 
         let size = framebuffer.size();
@@ -299,7 +312,7 @@ impl DrmKmsOps for VirtioGpuDrm {
             height: size.height(),
         };
         self.gpu
-            .set_scanout(resource_id, scanout_rect)
+            .set_scanout(scanout, resource_id, scanout_rect)
             .map_err(|_| Error::with_message(Errno::EIO, "virtio-gpu set scanout failed"))?;
         self.present_rect(framebuffer, resource_id, source_rect)
     }

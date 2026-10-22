@@ -27,6 +27,11 @@ Options:
   --accel MODE      x86_64 only: kvm or tcg (default: kvm).
   --cc PATH         Cross compiler (default: gcc / riscv64-linux-gnu-gcc).
   --qemu PATH       QEMU binary (default: qemu-system-<arch>).
+  --gpu-option OPT  Extra option for the virtio-gpu device, for example
+                    max_outputs=2 (default: none).
+  --vnc DISPLAY     Give the guest a VNC display instead of `-display none`;
+                    `auto` picks a free one. QEMU reports one scanout per
+                    display backend, so a second CRTC needs one.
 EOF
 }
 
@@ -47,11 +52,13 @@ ACCEL="kvm"
 CC=""
 QEMU=""
 QEMU_EXPLICIT=0
+GPU_OPTION=""
+VNC=""
 
 while (( $# > 0 )); do
     case "$1" in
         --arch | --kernel | --probe | --workspace | --pass | --timeout | \
-            --loglevel | --accel | --cc | --qemu)
+            --loglevel | --accel | --cc | --qemu | --gpu-option | --vnc)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --arch) ARCH="$2" ;;
@@ -64,6 +71,8 @@ while (( $# > 0 )); do
                 --accel) ACCEL="$2" ;;
                 --cc) CC="$2" ;;
                 --qemu) QEMU="$2"; QEMU_EXPLICIT=1 ;;
+                --gpu-option) GPU_OPTION="$2" ;;
+                --vnc) VNC="$2" ;;
             esac
             shift 2
             ;;
@@ -113,6 +122,29 @@ INITRAMFS="$("$BUILD_PROBE" "${BUILD_ARGS[@]}")"
 
 rm -f -- "$CONSOLE"
 
+GPU_SPEC=""
+[[ -n "$GPU_OPTION" ]] && GPU_SPEC=",$GPU_OPTION"
+
+DISPLAY_ARGS=(-display none)
+if [[ -n "$VNC" ]]; then
+    if [[ "$VNC" == "auto" ]]; then
+        VNC="$(python3 -c '
+import socket
+for display in range(41, 200):
+    sock = socket.socket()
+    try:
+        sock.bind(("127.0.0.1", 5900 + display))
+    except OSError:
+        continue
+    finally:
+        sock.close()
+    print(display)
+    break
+')"
+    fi
+    DISPLAY_ARGS=(-vnc "127.0.0.1:$VNC")
+fi
+
 if [[ "$ARCH" == "riscv64" ]]; then
     "$QEMU" \
         -M virt \
@@ -123,9 +155,9 @@ if [[ "$ARCH" == "riscv64" ]]; then
         -kernel "$KERNEL" \
         -initrd "$INITRAMFS" \
         -append "console=ttyS0 loglevel=$LOGLEVEL" \
-        -device virtio-gpu-device \
+        -device "virtio-gpu-device$GPU_SPEC" \
         -serial "file:$CONSOLE" \
-        -display none \
+        "${DISPLAY_ARGS[@]}" \
         >"$QEMU_LOG" 2>&1 &
 else
     [[ "$ACCEL" == "kvm" ]] && ACCEL_ARGS=(-enable-kvm -cpu host) ||
@@ -135,11 +167,11 @@ else
         -smp 1 \
         -m 2G \
         --no-reboot \
-        -display none \
+        "${DISPLAY_ARGS[@]}" \
         -chardev "file,id=console,path=$CONSOLE" \
         -device virtio-serial-pci \
         -device virtconsole,chardev=console \
-        -device virtio-gpu-pci \
+        -device "virtio-gpu-pci$GPU_SPEC" \
         -vga none \
         -kernel "$KERNEL" \
         -initrd "$INITRAMFS" \

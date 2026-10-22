@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{string::String, sync::Arc};
+use alloc::{string::String, sync::Arc, vec, vec::Vec};
 use core::{
     hint::spin_loop,
     sync::atomic::{AtomicU32, Ordering},
@@ -50,9 +50,10 @@ pub struct GpuDevice {
     transport: SpinLock<DeviceTransport>,
     control_queue: SpinLock<VirtQueue>,
     control_buf: Arc<DmaStream>,
-    scanout_width: u32,
-    scanout_height: u32,
-    scanout_resource: SpinLock<Option<u32>>,
+    /// The rect of each scanout the host reported, index = scanout id.
+    scanouts: Vec<VirtioGpuRect>,
+    /// The resource currently shown on each scanout, index = scanout id.
+    scanout_resources: SpinLock<Vec<Option<u32>>>,
     next_resource_id: AtomicU32,
 }
 
@@ -78,19 +79,21 @@ impl GpuDevice {
         device_transport.finish_init();
 
         let display_info = query_display_info(&mut control_queue, &control_buf)?;
-        let (scanout_width, scanout_height) = pick_mode(&display_info);
+        let scanouts = pick_scanouts(&display_info, config.num_scanouts);
+        let first = scanouts[0];
         info!(
             "virtio-gpu: {} scanout(s), using {}x{}",
-            config.num_scanouts, scanout_width, scanout_height
+            scanouts.len(),
+            first.width,
+            first.height
         );
 
         let device = Arc::new(Self {
             transport: SpinLock::new(device_transport),
             control_queue: SpinLock::new(control_queue),
             control_buf,
-            scanout_width,
-            scanout_height,
-            scanout_resource: SpinLock::new(None),
+            scanout_resources: SpinLock::new(vec![None; scanouts.len()]),
+            scanouts,
             next_resource_id: AtomicU32::new(1),
         });
 
@@ -98,9 +101,25 @@ impl GpuDevice {
         Ok(())
     }
 
-    /// Returns the scanout dimensions this device drives.
+    /// Returns the dimensions of the primary scanout.
     pub fn dimensions(&self) -> (u32, u32) {
-        (self.scanout_width, self.scanout_height)
+        let rect = self.scanouts[0];
+        (rect.width, rect.height)
+    }
+
+    /// Returns how many scanouts (display pipelines) the host exposes.
+    pub fn scanout_count(&self) -> usize {
+        self.scanouts.len()
+    }
+
+    /// Returns the dimensions of one scanout.
+    pub fn scanout_dimensions(&self, scanout_id: usize) -> (u32, u32) {
+        let rect = self
+            .scanouts
+            .get(scanout_id)
+            .copied()
+            .unwrap_or(self.scanouts[0]);
+        (rect.width, rect.height)
     }
 
     /// Reserves a resource id from the device's single id space.
@@ -168,16 +187,17 @@ impl GpuDevice {
         check_ok(code)
     }
 
-    /// Points scanout 0 at a resource, or disables it with `resource_id == 0`.
+    /// Points one scanout at a resource, or disables it with `resource_id == 0`.
     pub fn set_scanout(
         &self,
+        scanout_id: u32,
         resource_id: u32,
         rect: VirtioGpuRect,
     ) -> Result<(), VirtioDeviceError> {
         let request = VirtioGpuSetScanout {
             hdr: ctrl_hdr(VIRTIO_GPU_CMD_SET_SCANOUT),
             r: rect,
-            scanout_id: 0,
+            scanout_id,
             resource_id,
         };
         let mut queue = self.control_queue.lock();
@@ -229,40 +249,73 @@ impl GpuDevice {
         check_ok(code)
     }
 
-    /// Presents a resource as scanout 0 and tracks it for the next present.
-    pub fn present(&self, resource_id: u32, rect: VirtioGpuRect) -> Result<(), VirtioDeviceError> {
-        if let Some(previous) = self.scanout_resource.lock().replace(resource_id) {
-            if previous != resource_id {
-                let _ = self.resource_unref(previous);
+    /// Presents a resource on one scanout and tracks it for the next present.
+    pub fn present(
+        &self,
+        scanout_id: u32,
+        resource_id: u32,
+        rect: VirtioGpuRect,
+    ) -> Result<(), VirtioDeviceError> {
+        let to_unref = {
+            let mut resources = self.scanout_resources.lock();
+            let index = scanout_id as usize;
+            let previous = resources[index].replace(resource_id);
+            // A resource still shown on another scanout must not be unrefed.
+            match previous {
+                Some(previous)
+                    if previous != resource_id
+                        && !resources
+                            .iter()
+                            .enumerate()
+                            .any(|(other_index, other)| {
+                                other_index != index && *other == Some(previous)
+                            }) =>
+                {
+                    Some(previous)
+                }
+                _ => None,
             }
+        };
+        if let Some(previous) = to_unref {
+            let _ = self.resource_unref(previous);
         }
-        self.set_scanout(resource_id, rect)?;
+        self.set_scanout(scanout_id, resource_id, rect)?;
         self.transfer_to_host_2d(resource_id, rect, 0)?;
         self.flush(resource_id, rect)
     }
 
-    /// Stops scanout on scanout 0.
-    pub fn disable_scanout(&self) -> Result<(), VirtioDeviceError> {
-        self.scanout_resource.lock().take();
-        self.set_scanout(
-            0,
-            VirtioGpuRect {
-                x: 0,
-                y: 0,
-                width: self.scanout_width,
-                height: self.scanout_height,
-            },
-        )
+    /// Stops scanout on one scanout.
+    pub fn disable_scanout(&self, scanout_id: u32) -> Result<(), VirtioDeviceError> {
+        self.scanout_resources.lock()[scanout_id as usize] = None;
+        let rect = self.scanouts[scanout_id as usize];
+        self.set_scanout(scanout_id, 0, rect)
     }
 }
 
-fn pick_mode(display_info: &VirtioGpuRespDisplayInfo) -> (u32, u32) {
-    for mode in display_info.pmodes.iter().take(MAX_SCANOUTS) {
+/// Builds the per-scanout rect list from the host's display info.
+///
+/// `config.num_scanouts` is what the host advertises; a scanout without an
+/// enabled rect keeps the fallback mode so a guest can still modeset it.
+fn pick_scanouts(
+    display_info: &VirtioGpuRespDisplayInfo,
+    num_scanouts: u32,
+) -> Vec<VirtioGpuRect> {
+    let count = (num_scanouts as usize).clamp(1, MAX_SCANOUTS);
+    let mut rects = vec![
+        VirtioGpuRect {
+            x: 0,
+            y: 0,
+            width: FALLBACK_WIDTH,
+            height: FALLBACK_HEIGHT,
+        };
+        count
+    ];
+    for (index, mode) in display_info.pmodes.iter().take(count).enumerate() {
         if mode.enabled != 0 && mode.r.width > 0 && mode.r.height > 0 {
-            return (mode.r.width, mode.r.height);
+            rects[index] = mode.r;
         }
     }
-    (FALLBACK_WIDTH, FALLBACK_HEIGHT)
+    rects
 }
 
 fn query_display_info(

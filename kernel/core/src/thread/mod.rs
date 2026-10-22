@@ -27,6 +27,17 @@ pub(crate) mod work_queue;
 
 pub(crate) use self::stats::collect_context_switch_count;
 
+/// Spawns a kernel thread that runs `func` on the kernel scheduler.
+///
+/// The thread has no user address space and never returns to user mode: the
+/// wrapper exits it when `func` returns. Components use this for deferred work
+/// that may sleep (for example, completing a DRM page flip outside the timer
+/// softirq). `name` is for diagnostics only.
+pub fn spawn_kernel_thread(name: &'static str, func: impl FnOnce() + Send + 'static) {
+    let _ = name;
+    kernel_thread::ThreadOptions::new(func).spawn();
+}
+
 pub(crate) type Tid = u32;
 
 fn pre_schedule_handler(irq_guard: &DisabledLocalIrqGuard) {

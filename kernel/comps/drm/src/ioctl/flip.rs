@@ -3,23 +3,18 @@
 //! Legacy page flips with completion events.
 //!
 //! `DRM_IOCTL_MODE_PAGE_FLIP` swaps the framebuffer of an active CRTC. The
-//! driver has no hardware flip queue, so the transfer/flush runs inside the
-//! ioctl; what the `EVENT` flag adds is the asynchronous half clients actually
-//! depend on — a `DRM_EVENT_FLIP_COMPLETE` record on the DRM file, delivered
-//! through `poll` and `read`.
+//! request is validated here and queued on the CRTC; the ioctl returns without
+//! waiting for the scanout. The next completed vblank applies the flip on the
+//! device's flip worker and, when `EVENT` was requested, queues a
+//! `DRM_EVENT_FLIP_COMPLETE` record on the DRM file, which `poll` and `read`
+//! deliver. A second flip while one is pending is `EBUSY`, as on Linux.
 
 use alloc::{sync::Arc, vec::Vec};
 
 use aster_core::prelude::*;
 use ostd_pod::Pod;
 
-use super::kms::ScanoutSource;
-use crate::{
-    event::{DRM_EVENT_FLIP_COMPLETE, DrmEventVblank},
-    file::DrmFile,
-    ioctl::ioctl_defs,
-    utils::DrmRect,
-};
+use crate::{file::DrmFile, flip::PendingFlip, ioctl::ioctl_defs, utils::DrmRect};
 
 /// `DRM_MODE_PAGE_FLIP_EVENT`.
 const PAGE_FLIP_EVENT: u32 = 0x01;
@@ -72,24 +67,19 @@ impl DrmFile {
         drop(object_store);
 
         let source_rect = DrmRect::new(0, 0, display_mode.hdisplay(), display_mode.vdisplay());
-        self.commit_modeset(
-            args.crtc_id,
-            &connector_ids,
-            Some(display_mode),
-            ScanoutSource::Framebuffer(framebuffer),
-            source_rect,
-            false,
-        )?;
 
-        if args.flags & PAGE_FLIP_EVENT != 0 {
-            self.enqueue_event(DrmEventVblank::new(
-                DRM_EVENT_FLIP_COMPLETE,
-                args.user_data,
-                aster_core::monotonic_now(),
-                crtc.vblank_sequence(),
-                args.crtc_id,
-            ));
-        }
+        // Queue the flip; the vblank tick wakes the worker that applies it.
+        crtc.queue_flip(PendingFlip::new(
+            self.device().clone(),
+            self.event_queue(),
+            args.crtc_id,
+            connector_ids,
+            display_mode,
+            framebuffer,
+            source_rect,
+            args.user_data,
+            args.flags & PAGE_FLIP_EVENT != 0,
+        ))?;
 
         Ok(0)
     }

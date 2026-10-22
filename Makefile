@@ -735,6 +735,29 @@ test_riscv_syncobj:
 		--workspace "$(P3_PROBE_WORKSPACE)/sync-riscv" \
 		--timeout "$(P3_PROBE_TIMEOUT)"
 
+# Second-CRTC acceptance: QEMU exposes two scanouts (`max_outputs=2`), the
+# driver creates one CRTC/encoder/connector per scanout, and the probe modesets
+# and flips both.
+.PHONY: test_x86_multi_crtc
+test_x86_multi_crtc:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch amd64 \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--probe "$(CURDIR)/tools/drm/multi_crtc_probe.c" \
+		--pass MULTICRTC_PASS --gpu-option max_outputs=2 --vnc auto \
+		--workspace "$(P3_PROBE_WORKSPACE)/multi-crtc-x86" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+.PHONY: test_riscv_multi_crtc
+test_riscv_multi_crtc:
+	@test -f "$(P3_PROBE_KERNEL_RISCV)" || { echo "P3_PROBE_KERNEL_RISCV is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch riscv64 \
+		--kernel "$(P3_PROBE_KERNEL_RISCV)" \
+		--probe "$(CURDIR)/tools/drm/multi_crtc_probe.c" \
+		--pass MULTICRTC_PASS --gpu-option max_outputs=2 --vnc auto \
+		--workspace "$(P3_PROBE_WORKSPACE)/multi-crtc-riscv" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
 # DRM conformance matrix: every shared-DRM probe for one or both
 # architectures. The graphical gates are separate targets.
 P3_PROBE_KERNEL_X86 ?= $(CURDIR)/target/prime/kernels/x86.elf

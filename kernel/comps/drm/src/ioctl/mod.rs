@@ -4,7 +4,7 @@ mod atomic;
 mod flip;
 mod gem;
 mod general;
-mod kms;
+pub(crate) mod kms;
 mod syncobj;
 
 use alloc::{vec, vec::Vec};
