@@ -143,6 +143,24 @@ DAILY_FCITX after_activate=''
 当前 IM；如果仍然为空，检查 classicui/tray 与 xcb frontend 的初始化日志
 （无 WM/托盘环境可能让它停在未激活状态）。
 
+### 真实 IM 定义清单（本轮，结论性）
+
+按门禁要求从客体里读真实 addon 名，而不是猜：
+
+```
+DAILY_IM_ADDONS tables=[] ims=[]
+DAILY_IM_CHOSEN 'keyboard-us'
+DAILY_FCITX alive=1 engine=''
+DAILY_FCITX activate_rc=0
+DAILY_FCITX after_activate=''
+DAILY_INPUT_METHOD=fail fcitx5-no-engine:...
+```
+
+`/usr/share/fcitx5/table/` 与 `/usr/share/fcitx5/inputmethod/` **都是空的**：镜像源里
+`fcitx5-table-extra` 并没有落任何码表，`fcitx5` 本体也没带来可用的 IM 定义；
+连 `keyboard-us` 都注册不出引擎，说明这套最小安装缺少 IM 数据，而不是 fcitx5 本身
+不能跑（守护进程存活、D-Bus 调用返回 0）。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：

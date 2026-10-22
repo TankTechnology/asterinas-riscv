@@ -80,13 +80,26 @@ fi
 if command -v fcitx5 >/dev/null 2>&1; then
     export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
     mkdir -p /root/.config/fcitx5
-    printf '[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=wubi\n\n[Groups/0/Items/0]\nName=wubi\nLayout=\n\n[GroupOrder]\n0=Default\n' \
-        >/root/.config/fcitx5/profile
+    # Input methods come from two places: dedicated addons describe IMs in
+    # inputmethod/, the table engine keeps its tables in table/. Use a real
+    # name from either instead of guessing.
+    table_list=$(ls /usr/share/fcitx5/table/ 2>/dev/null | sed 's/\.conf$//' | tr '\n' ' ')
+    im_list=$(ls /usr/share/fcitx5/inputmethod/ 2>/dev/null | sed 's/\.conf$//' | grep -v '^keyboard-' | tr '\n' ' ')
+    echo "DAILY_IM_ADDONS tables=[$table_list] ims=[$im_list]" >/dev/console
+    im=$(printf '%s\n' $im_list | grep -i '^wubi' | head -1)
+    [ -n "$im" ] || im=$(printf '%s\n' $im_list | grep -i 'pinyin' | head -1)
+    [ -n "$im" ] || im=$(printf '%s\n' $table_list | grep -i 'wubi' | head -1)
+    [ -n "$im" ] || im=$(printf '%s\n' $table_list | head -1)
+    [ -n "$im" ] || im=keyboard-us
+    echo "DAILY_IM_CHOSEN '$im'" >/dev/console
+    printf '[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=%s\n\n[Groups/0/Items/0]\nName=%s\nLayout=\n\n[GroupOrder]\n0=Default\n' \
+        "$im" "$im" >/root/.config/fcitx5/profile
     if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && command -v dbus-daemon >/dev/null 2>&1; then
         DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --fork --print-address)
         export DBUS_SESSION_BUS_ADDRESS
     fi
-    fcitx5 -d --replace >/dev/console 2>&1 &
+    pkill -x fcitx5 2>/dev/null; sleep 1
+    fcitx5 -d --replace -v >/dev/console 2>&1 &
     sleep 5
     engine=$(fcitx5-remote -n 2>/dev/null)
     echo "DAILY_FCITX alive=$(pgrep -c fcitx5 2>/dev/null) engine='$engine'" >/dev/console
@@ -96,6 +109,8 @@ if command -v fcitx5 >/dev/null 2>&1; then
         echo "DAILY_DBUS $(dbus-send --session --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames 2>&1 | tr '\n' ' ' | head -c 240)" >/dev/console
         fcitx5-remote -o 2>/dev/null
         echo "DAILY_FCITX activate_rc=$?" >/dev/console
+        dbus-send --session --print-reply --dest=org.fcitx.Fcitx5 /controller \
+            org.fcitx.Fcitx.Controller1.SetCurrentIM "string:$im" >/dev/console 2>&1
         sleep 1
         engine=$(fcitx5-remote -n 2>/dev/null)
         echo "DAILY_FCITX after_activate='$engine'" >/dev/console
