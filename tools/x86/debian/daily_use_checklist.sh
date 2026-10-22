@@ -81,6 +81,9 @@ fi
 if [ -x /usr/local/bin/msgtest ]; then
     /usr/local/bin/msgtest >/dev/console 2>&1
 fi
+if [ -x /usr/local/bin/iotest ]; then
+    /usr/local/bin/iotest >/dev/console 2>&1
+fi
 
 if command -v fcitx5 >/dev/null 2>&1; then
     export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx

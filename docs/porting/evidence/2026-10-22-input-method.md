@@ -69,6 +69,23 @@ DAILY_FCITX alive=1 engine='' rc=0 dbus_im='string ""'
 **文件 I/O 语义**在内核上出了问题（C++ iostream 报 io fail）。下一步应抓该进程
 失败前后的 openat/read/fstat/close 返回值，而不是继续调 fcitx 配置。
 
+### 最小文件 I/O 复现（`iotest`）的结果
+
+按 libpinyin 的典型路径逐步调用，**全部成功**：
+
+```
+IOTEST open_rw_create   ret=3
+IOTEST fstat/read/ftruncate/mmap/msync/munmap/fdatasync/fsync/close  ret=0
+IOTEST open_rd ret=3  read_back ret=8
+IOTEST fopen_r+ ret=0  fseek ret=0  fwrite ret=1  fflush ret=0
+IOTEST_DONE
+```
+
+所以基础文件 syscall（含 mmap/msync/fdatasync）都没有语义缺口；`io fail:
+iostream error` 来自 fcitx5-pinyin 自己的 C++ 流/解析逻辑（空 history 文件的
+格式/异常路径），不是缺 syscall。下一步应针对该进程抓 iostream 之前的最后一次
+文件操作与 errno，或直接给它一个带合法头部的 history 文件。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：

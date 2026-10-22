@@ -82,6 +82,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 BOOT_SCRIPT="$REPO_ROOT/tools/x86/debian/boot_debian.sh"
 CHECKLIST="$REPO_ROOT/tools/x86/debian/daily_use_checklist.sh"
 MSGTEST_SRC="$REPO_ROOT/tools/x86/debian/msgtest.c"
+IOTEST_SRC="$REPO_ROOT/tools/x86/debian/iotest.c"
 for tool in debugfs e2fsck mke2fs python3 timeout "$QEMU"; do
     command -v "$tool" >/dev/null 2>&1 || {
         printf 'error: required tool not found: %s\n' "$tool" >&2
@@ -105,6 +106,7 @@ MATRIX="$WORKSPACE/matrix.tsv"
 # Xorg gate: no udev, no automatic input devices).
 XORG_CONF="$WORKSPACE/xorg-noudev.conf"
 MSGTEST_BIN="$WORKSPACE/msgtest"
+IOTEST_BIN="$WORKSPACE/iotest"
 cat >"$XORG_CONF" <<'CONF'
 Section "ServerFlags"
     Option "AutoAddDevices" "false"
@@ -116,6 +118,7 @@ CONF
 # static binary, since the image has no compiler.
 if command -v cc >/dev/null 2>&1; then
     cc -static -O2 -o "$MSGTEST_BIN" "$MSGTEST_SRC" 2>>"$WORKSPACE/build.log" || rm -f "$MSGTEST_BIN"
+    cc -static -O2 -o "$IOTEST_BIN" "$IOTEST_SRC" 2>>"$WORKSPACE/build.log" || rm -f "$IOTEST_BIN"
 fi
 
 # An ext2 stick image with one file: the guest must mount and read it.
@@ -275,6 +278,10 @@ cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
     if [[ -f "$MSGTEST_BIN" ]]; then
         printf 'write %s /usr/local/bin/msgtest\n' "$MSGTEST_BIN"
         printf 'sif /usr/local/bin/msgtest mode 0100755\n'
+    fi
+    if [[ -f "$IOTEST_BIN" ]]; then
+        printf 'write %s /usr/local/bin/iotest\n' "$IOTEST_BIN"
+        printf 'sif /usr/local/bin/iotest mode 0100755\n'
     fi
 } | debugfs -w -f - "$IMAGE" >"$WORKSPACE/inject.log" 2>&1
 if ! e2fsck -fn "$IMAGE" >"$WORKSPACE/fsck-prepared.txt" 2>&1; then
