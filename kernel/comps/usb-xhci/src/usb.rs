@@ -28,6 +28,9 @@ const TRB_COMMAND_COMPLETION: u32 = 33;
 /// Command TRB types.
 const TRB_ENABLE_SLOT: u32 = 9;
 const TRB_ADDRESS_DEVICE: u32 = 11;
+const TRB_CONFIGURE_ENDPOINT: u32 = 12;
+/// `Normal` transfer TRB.
+const TRB_NORMAL: u32 = 1;
 const TRB_LINK: u32 = 6;
 /// Transfer TRB types.
 const TRB_SETUP_STAGE: u32 = 2;
@@ -192,12 +195,28 @@ impl Rings {
 
 /// Per-slot state kept while a device is addressed.
 pub(super) struct SlotState {
-    input_context: DmaCoherent,
-    device_context: DmaCoherent,
-    ep0: Ring,
+    pub(super) input_context: DmaCoherent,
+    pub(super) device_context: DmaCoherent,
+    pub(super) ep0: Ring,
     /// Filled once the device is configured; the bulk endpoints it lists are
-    /// what the mass-storage transport will use.
-    configuration: Option<Configuration>,
+    /// what the mass-storage transport uses.
+    pub(super) configuration: Option<Configuration>,
+    /// Transfer rings, one per configured endpoint.
+    pub(super) endpoints: Vec<EndpointState>,
+    /// Indices into `endpoints`.
+    pub(super) bulk_in: Option<usize>,
+    pub(super) bulk_out: Option<usize>,
+    /// Set when the device turned out to speak Bulk-Only Transport.
+    pub(super) storage: Option<super::storage::StorageInfo>,
+}
+
+/// One configured endpoint and its transfer ring.
+pub(super) struct EndpointState {
+    /// Device Context Index: 2N for OUT, 2N+1 for IN.
+    pub(super) dci: u8,
+    #[expect(dead_code)]
+    pub(super) is_in: bool,
+    pub(super) ring: Ring,
 }
 
 /// One endpoint of an interface.
@@ -209,7 +228,6 @@ pub(super) struct EndpointDescriptor {
 }
 
 impl EndpointDescriptor {
-    #[expect(dead_code)]
     pub(super) fn number(&self) -> u8 {
         self.address & 0x0F
     }
@@ -525,6 +543,141 @@ impl XhciController {
         }
     }
 
+    /// Builds EP contexts for every endpoint and sends `Configure Endpoint`.
+    fn configure_endpoints(&self, slot: &mut SlotState, slot_id: u8) -> Result<()> {
+        let configuration = slot
+            .configuration
+            .as_ref()
+            .ok_or_else(|| Error::with_message(Errno::EIO, "no configuration to apply"))?;
+
+        let mut endpoints = Vec::new();
+        let mut bulk_in = None;
+        let mut bulk_out = None;
+        for interface in &configuration.interfaces {
+            for endpoint in &interface.endpoints {
+                let dci = endpoint.number() * 2 + endpoint.is_in() as u8;
+                let ring = Ring::new(true)?;
+                let ep_type = if endpoint.is_bulk() {
+                    if endpoint.is_in() { 6 } else { 2 }
+                } else if endpoint.is_in() {
+                    7
+                } else {
+                    3
+                };
+
+                // EP context of a DCI `k` lives at dwords `8 * (k + 1)`.
+                let base = 8 * (dci as usize + 1) * 4;
+                let info2 = ((endpoint.max_packet as u32) << 16)
+                    | ((ep_type as u32) << 3)
+                    | (3 << 1);
+                slot.input_context.write_val(base + 4, &info2)?;
+                let dequeue = ring.daddr();
+                slot.input_context
+                    .write_val(base + 8, &((dequeue as u32) | 1))?;
+                slot.input_context
+                    .write_val(base + 12, &((dequeue >> 32) as u32))?;
+                // Average TRB length.
+                slot.input_context.write_val(base + 16, &8u32)?;
+
+                if endpoint.is_bulk() {
+                    if endpoint.is_in() {
+                        bulk_in = Some(endpoints.len());
+                    } else {
+                        bulk_out = Some(endpoints.len());
+                    }
+                }
+                endpoints.push(EndpointState {
+                    dci,
+                    is_in: endpoint.is_in(),
+                    ring,
+                });
+            }
+        }
+
+        if endpoints.is_empty() {
+            return Ok(());
+        }
+
+        let max_dci = endpoints.iter().map(|endpoint| endpoint.dci).max().unwrap();
+        // Slot context: keep speed and port, raise the context-entry count.
+        let slot_dword0: u32 = ((max_dci as u32) << 27)
+            | (slot.input_context.read_val::<u32>(8 * 4)? & (0xF << 20));
+        slot.input_context.write_val(8 * 4, &slot_dword0)?;
+
+        let mut add_flags: u32 = 1;
+        for endpoint in &endpoints {
+            add_flags |= 1 << endpoint.dci;
+        }
+        slot.input_context.write_val(4, &add_flags)?;
+
+        let address = self.command_push(Trb {
+            param: slot.input_context.daddr() as u64,
+            status: 0,
+            control: (TRB_CONFIGURE_ENDPOINT << 10) | ((slot_id as u32) << 24),
+        })?;
+        let event = self.wait_command(address)?;
+        if event.completion_code() != COMPLETION_SUCCESS {
+            warn!(
+                "Configure Endpoint failed with completion code {}",
+                event.completion_code()
+            );
+            return_errno_with_message!(Errno::EIO, "Configure Endpoint failed");
+        }
+
+        slot.bulk_in = bulk_in;
+        slot.bulk_out = bulk_out;
+        slot.endpoints = endpoints;
+        info!(
+            "configured {} endpoints (bulk in: {}, bulk out: {})",
+            slot.endpoints.len(),
+            bulk_in.is_some(),
+            bulk_out.is_some()
+        );
+        Ok(())
+    }
+
+    /// Moves at most one page over a bulk endpoint and returns the byte count.
+    pub(super) fn bulk_transfer(
+        &self,
+        slot: &mut SlotState,
+        slot_id: u8,
+        index: usize,
+        buffer: &DmaCoherent,
+        length: usize,
+    ) -> Result<usize> {
+        let endpoint = slot
+            .endpoints
+            .get_mut(index)
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "no such endpoint"))?;
+        let dci = endpoint.dci;
+        let trb_address = endpoint.ring.push(Trb {
+            param: buffer.daddr() as u64,
+            status: length as u32,
+            control: (TRB_NORMAL << 10) | (1 << 5),
+        })?;
+        // The doorbell array is indexed by slot; the value names the endpoint.
+        self.ring_doorbell(slot_id as u32, dci as u32);
+
+        let mut spin = 0u64;
+        loop {
+            if let Some(event) = self.event_ring_pop()?
+                && event.type_() == TRB_TRANSFER_EVENT
+                && event.param == trb_address
+            {
+                let code = event.completion_code();
+                if code != COMPLETION_SUCCESS && code != COMPLETION_SHORT_PACKET {
+                    return_errno_with_message!(Errno::EIO, "a bulk transfer failed");
+                }
+                return Ok(length.saturating_sub(event.residual()));
+            }
+            core::hint::spin_loop();
+            spin += 1;
+            if spin > 20_000_000 {
+                return_errno_with_message!(Errno::ETIMEDOUT, "a bulk transfer timed out");
+            }
+        }
+    }
+
     /// Handles a newly connected port: slot, address and device descriptor.
     pub(super) fn enumerate_port(&self, port: u8) -> Result<()> {
         let portsc = self.read_portsc(port);
@@ -540,6 +693,10 @@ impl XhciController {
             device_context,
             ep0: Ring::new(true)?,
             configuration: None,
+            endpoints: Vec::new(),
+            bulk_in: None,
+            bulk_out: None,
+            storage: None,
         };
 
         self.write_dcbaa(slot_id, slot.device_context.daddr() as u64)?;
@@ -576,6 +733,12 @@ impl XhciController {
             configuration.interfaces.len()
         );
         slot.configuration = Some(configuration);
+
+        self.configure_endpoints(&mut slot, slot_id)?;
+        match super::storage::probe(self, &mut slot, slot_id) {
+            Ok(info) => slot.storage = info,
+            Err(error) => warn!("mass-storage probe failed: {:?}", error),
+        }
 
         let bus_number = 1u8;
         let device_number = slot_id;

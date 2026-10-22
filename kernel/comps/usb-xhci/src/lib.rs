@@ -23,6 +23,7 @@ macro_rules! __log_prefix {
     };
 }
 
+mod storage;
 mod sysfs;
 mod usb;
 

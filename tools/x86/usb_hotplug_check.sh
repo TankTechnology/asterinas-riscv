@@ -138,6 +138,8 @@ CONFIG_MARKERS = [
     b'interface 0: class=0x08',
     b'endpoint 81:bulk in',
     b'endpoint 02:bulk out',
+    b'storage on slot 1: vendor="QEMU"',
+    b'blocks=32768 block_size=512',
 ]
 
 added = removed = disconnected = enumerated = configured = False
@@ -177,4 +179,4 @@ if [[ $CLIENT_STATUS -ne 0 ]]; then
     exit 1
 fi
 
-printf 'PASS (hot-added device enumerated and configured; bulk endpoints published)\n'
+printf 'PASS (hot-added device enumerated, configured, and its capacity read over bulk transfers)\n'
