@@ -18,8 +18,16 @@ if [ ! -e /dev/dri/card0 ]; then
 fi
 
 mkdir -p /tmp/.X11-unix
-/usr/lib/xorg/Xorg :0 -noreset -nolisten tcp \
-    -config /etc/X11/xorg-noudev.conf >/var/log/xorg-gate.log 2>&1 &
+# The virtio-gpu Mesa driver needs virtgpu uAPIs this kernel does not
+# implement, so GBM (and therefore DRI3) fails to load it. kms_swrast is a
+# software KMS driver that only needs dumb buffers, which the shared DRM core
+# provides; forcing it makes the server initialize GBM and DRI3. The Xorg log
+# goes to the console so a diagnosis is visible even when the log file is lost.
+env MESA_LOADER_DRIVER_OVERRIDE=kms_swrast EGL_LOG_LEVEL=debug \
+    LIBGL_DEBUG=verbose MESA_DEBUG=1 \
+    /usr/lib/xorg/Xorg :0 -noreset -nolisten tcp -verbose 4 -logverbose 4 \
+    -config /etc/X11/xorg-noudev.conf -logfile /dev/console \
+    >>/dev/console 2>&1 &
 xorg_pid=$!
 
 waited=0
@@ -45,6 +53,15 @@ fi
 if command -v glxinfo >/dev/null 2>&1; then
     echo XORG_GATE_GLXINFO
     glxinfo -B 2>/dev/null | grep -E "renderer|OpenGL version|direct rendering" || true
+fi
+
+if [ -x /usr/local/bin/dri3-probe ]; then
+    echo XORG_GATE_DRI3_BEGIN
+    if /usr/local/bin/dri3-probe 0; then
+        echo XORG_GATE_DRI3=0
+    else
+        echo XORG_GATE_DRI3=$?
+    fi
 fi
 
 if /usr/local/bin/x11-paint 0; then

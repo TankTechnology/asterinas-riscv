@@ -31,6 +31,7 @@ Options:
   --timeout SECS      Deadline for boot, Xorg and paint (default: 480).
   --loglevel N        Kernel log level (default: 4, Linux numbering).
   --cc PATH           RISC-V cross compiler (default: riscv64-linux-gnu-gcc).
+  --require-dri3      Require the DRI3 buffer-exchange probe to pass as well.
   --qemu PATH         qemu-system-riscv64 (default: from PATH).
   --vnc-display N     VNC display number; a free one is picked by default.
 
@@ -53,6 +54,7 @@ TIMEOUT=480
 LOGLEVEL=4
 CC="riscv64-linux-gnu-gcc"
 QEMU="qemu-system-riscv64"
+REQUIRE_DRI3=0
 VNC_DISPLAY=""
 
 while (( $# > 0 )); do
@@ -73,6 +75,7 @@ while (( $# > 0 )); do
             esac
             shift 2
             ;;
+        --require-dri3) REQUIRE_DRI3=1; shift ;;
         -h | --help) usage; exit 0 ;;
         *) die_usage "unknown argument: $1" ;;
     esac
@@ -123,6 +126,8 @@ PY
 fi
 
 "$CC" -static -O2 -Wall -Wextra -o "$PAINT" "$REPO_ROOT/tools/drm/x11_paint.c"
+DRI3_PROBE="$WORKSPACE/dri3-probe"
+"$CC" -static -O2 -Wall -Wextra -o "$DRI3_PROBE" "$REPO_ROOT/tools/drm/dri3_probe.c"
 
 rm -f -- "$IMAGE" "$SERIAL" "$MONITOR" "$SCREENSHOT"
 cp --sparse=always -- "$BASE_IMAGE" "$IMAGE"
@@ -134,6 +139,8 @@ write $PAINT /usr/local/bin/x11-paint
 sif /usr/local/bin/x11-paint mode 0100755
 write $SCRIPT_DIR/xorg_gate.sh /usr/local/bin/xorg-gate.sh
 sif /usr/local/bin/xorg-gate.sh mode 0100755
+write $DRI3_PROBE /usr/local/bin/dri3-probe
+sif /usr/local/bin/dri3-probe mode 0100755
 write $SCRIPT_DIR/xorg-gate.service /etc/systemd/system/xorg-gate.service
 write $SCRIPT_DIR/xorg-noudev.conf /etc/X11/xorg-noudev.conf
 symlink /etc/systemd/system/multi-user.target.wants/xorg-gate.service /etc/systemd/system/xorg-gate.service
@@ -224,6 +231,11 @@ if [[ ! -s "$SCREENSHOT" ]]; then
     exit 1
 fi
 
+if [[ $REQUIRE_DRI3 -eq 1 ]] && ! grep -aq 'XORG_GATE_DRI3=0' "$SERIAL"; then
+    printf 'FAIL (the DRI3 buffer-exchange probe did not pass; see %s)\n' "$SERIAL"
+    exit 1
+fi
+
 if ! python3 - "$SCREENSHOT" <<'PY'
 import sys
 
@@ -254,4 +266,8 @@ then
     exit 1
 fi
 
-printf 'PASS (RISC-V Xorg modesetting on virtio-gpu: red root window, screendump)\n'
+if [[ $REQUIRE_DRI3 -eq 1 ]]; then
+    printf 'PASS (RISC-V Xorg modesetting, red root window, DRI3 buffer exchange, screendump)\n'
+else
+    printf 'PASS (RISC-V Xorg modesetting on virtio-gpu: red root window, screendump)\n'
+fi

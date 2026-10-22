@@ -18,8 +18,8 @@ Options:
   --kernel PATH     Kernel for that architecture (required).
   --workspace DIR   Per-probe working directories (required).
   --probes LIST     Space-separated subset of:
-                    legacy prime atomic sync flip
-                    (default: all five).
+                    legacy prime atomic sync flip sysfs
+                    (default: all six).
   --timeout SECS    Per-probe deadline (default: 180).
   --accel MODE      x86_64 only: kvm or tcg (default: kvm).
   --cc PATH         Cross compiler.
@@ -38,7 +38,7 @@ die_usage() {
 ARCH=""
 KERNEL=""
 WORKSPACE=""
-PROBES="legacy prime atomic sync flip"
+PROBES="legacy prime atomic sync flip sysfs"
 TIMEOUT=180
 ACCEL="kvm"
 CC=""
@@ -82,6 +82,7 @@ probe_source() {
         atomic) echo "$SCRIPT_DIR/atomic_probe.c" ;;
         sync) echo "$SCRIPT_DIR/sync_probe.c" ;;
         flip) echo "$SCRIPT_DIR/flip_probe.c" ;;
+        sysfs) echo "$SCRIPT_DIR/sysfs_probe.c" ;;
         *) return 1 ;;
     esac
 }

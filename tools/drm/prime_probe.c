@@ -216,6 +216,16 @@ int main(void) {
     }
     printf("PRIMEPROBE_EXPORT fd=%d\n", prime.fd);
 
+    // Linux's dma-buf file implements lseek(SEEK_END) as size + offset; Mesa's
+    // kms_swrast import path refuses a descriptor that cannot report its size.
+    off_t end = lseek(prime.fd, 0, SEEK_END);
+    if (end < 0 || (uint64_t)end != dumb.size) {
+        printf("PRIMEPROBE_FAIL dmabuf-lseek end=%lld size=%llu errno=%d\n",
+               (long long)end, (unsigned long long)dumb.size, errno);
+        return 1;
+    }
+    printf("PRIMEPROBE_LSEEK size=%lld\n", (long long)end);
+
     // The descriptor maps the same bytes the GEM mapping wrote.
     uint8_t *shared = mmap(NULL, dumb.size, PROT_READ | PROT_WRITE, MAP_SHARED,
                            prime.fd, 0);

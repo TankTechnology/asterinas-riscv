@@ -735,6 +735,58 @@ test_riscv_syncobj:
 		--workspace "$(P3_PROBE_WORKSPACE)/sync-riscv" \
 		--timeout "$(P3_PROBE_TIMEOUT)"
 
+# DRM conformance matrix: every shared-DRM probe for one or both
+# architectures. The graphical gates are separate targets.
+P3_PROBE_KERNEL_X86 ?= $(CURDIR)/target/prime/kernels/x86.elf
+CONFORMANCE_WORKSPACE ?= $(CURDIR)/target/conformance
+
+.PHONY: test_drm_conformance_x86
+test_drm_conformance_x86:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/drm/conformance_matrix.sh --arch amd64 \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--workspace "$(CONFORMANCE_WORKSPACE)/x86"
+
+.PHONY: test_drm_conformance_riscv
+test_drm_conformance_riscv:
+	@test -f "$(P3_PROBE_KERNEL_RISCV)" || { echo "P3_PROBE_KERNEL_RISCV is required" >&2; exit 2; }
+	@tools/drm/conformance_matrix.sh --arch riscv64 \
+		--kernel "$(P3_PROBE_KERNEL_RISCV)" \
+		--workspace "$(CONFORMANCE_WORKSPACE)/riscv"
+
+.PHONY: test_drm_conformance
+test_drm_conformance: test_drm_conformance_x86 test_drm_conformance_riscv
+
+.PHONY: test_drm_conformance_full
+test_drm_conformance_full: test_drm_conformance test_x86_graphical test_riscv_graphical
+
+# RISC-V graphical daily-use gate: serial login as the image account, Xorg on
+# /dev/dri/card0, an xterm launch check, the DRI3 buffer-exchange probe, a red
+# root window, in-guest power-off and e2fsck.
+RISCV_GRAPHICAL_KERNEL ?= $(CURDIR)/target/prime/kernels/riscv.Image
+RISCV_GRAPHICAL_STAGE1 ?= $(CURDIR)/target/debian-riscv/stage1/initramfs.cpio
+RISCV_GRAPHICAL_BASE_IMAGE ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/debian-root.ext2
+RISCV_GRAPHICAL_WORKSPACE ?= $(CURDIR)/target/riscv-gpu/graphical
+RISCV_GRAPHICAL_TIMEOUT ?= 900
+
+.PHONY: test_riscv_graphical
+test_riscv_graphical:
+	@test -f "$(RISCV_GRAPHICAL_KERNEL)" || { echo "RISCV_GRAPHICAL_KERNEL is required" >&2; exit 2; }
+	@test -f "$(RISCV_GRAPHICAL_STAGE1)" || { echo "RISCV_GRAPHICAL_STAGE1 is required" >&2; exit 2; }
+	@test -f "$(RISCV_GRAPHICAL_BASE_IMAGE)" || { echo "RISCV_GRAPHICAL_BASE_IMAGE is required" >&2; exit 2; }
+	@tools/riscv/drm/graphical_check.sh \
+		--kernel "$(RISCV_GRAPHICAL_KERNEL)" \
+		--stage1 "$(RISCV_GRAPHICAL_STAGE1)" \
+		--base-image "$(RISCV_GRAPHICAL_BASE_IMAGE)" \
+		--workspace "$(RISCV_GRAPHICAL_WORKSPACE)" \
+		--timeout "$(RISCV_GRAPHICAL_TIMEOUT)" \
+		--require-dri3
+
+# The x86 graphical daily-use gate is the Xorg gate: serial login, X
+# installation, xterm launch, red root window, power-button power-off, e2fsck.
+.PHONY: test_x86_graphical
+test_x86_graphical: test_x86_debian_xorg
+
 .PHONY: test_riscv_virtio_gpu_unit
 test_riscv_virtio_gpu_unit:
 	@python3 -W error::ResourceWarning -m unittest \
@@ -866,7 +918,8 @@ test_x86_debian_xorg:
 		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
 		--workspace "$(X86_DEBIAN_XORG_WORKSPACE)" \
 		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
-		--timeout "$(X86_DEBIAN_XORG_TIMEOUT)"
+		--timeout "$(X86_DEBIAN_XORG_TIMEOUT)" \
+		--require-dri3
 
 # Boot the Debian root image on the x86_64 kernel and wait for the marker.
 # X86_DEBIAN_KERNEL must be an OSDK x86_64 artifact built with

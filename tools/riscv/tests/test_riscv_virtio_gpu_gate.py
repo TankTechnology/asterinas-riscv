@@ -31,6 +31,8 @@ class VirtioGpuGateTests(unittest.TestCase):
             "tools/drm/build_probe.sh",
             "tools/drm/prime_check.sh",
             "tools/drm/initramfs_probe_check.sh",
+            "tools/riscv/drm/graphical_check.sh",
+            "tools/drm/conformance_matrix.sh",
         ):
             with self.subTest(script=relative):
                 script = REPOSITORY_ROOT / relative
@@ -47,6 +49,8 @@ class VirtioGpuGateTests(unittest.TestCase):
             "tools/drm/build_probe.sh",
             "tools/drm/prime_check.sh",
             "tools/drm/initramfs_probe_check.sh",
+            "tools/riscv/drm/graphical_check.sh",
+            "tools/drm/conformance_matrix.sh",
         ):
             with self.subTest(script=relative):
                 result = run("-n", str(REPOSITORY_ROOT / relative))
@@ -120,6 +124,29 @@ class VirtioGpuGateTests(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, sync)
+
+    def test_dri3_probe_requires_a_buffer_exchange(self) -> None:
+        source = (REPOSITORY_ROOT / "tools/drm/dri3_probe.c").read_text()
+        for marker in (
+            "X11_QUERY_EXTENSION",
+            "DRI3_PIXMAP_FROM_BUFFER",
+            "SCM_RIGHTS",
+            "DRI3PROBE_PASS",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, source)
+
+    def test_sysfs_probe_covers_the_libdrm_contract(self) -> None:
+        source = (REPOSITORY_ROOT / "tools/drm/sysfs_probe.c").read_text()
+        for marker in (
+            "/sys/dev/char/%u:%u/device/drm",
+            "/sys/dev/char/%u:%u/device/subsystem",
+            "MODALIAS",
+            "DEVNAME",
+            "SYSFSPROBE_PASS",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, source)
 
     def test_paint_client_is_self_contained(self) -> None:
         source = (REPOSITORY_ROOT / "tools/drm/x11_paint.c").read_text()
