@@ -92,8 +92,9 @@ iostream error` 来自 fcitx5-pinyin 自己的 C++ 流/解析逻辑（空 histor
 `DAILY_CLIPBOARD=ok`，紧接着就是外层 shell 的 `DAILY_SHELL_END`；`msgt/iotest`
 都跑完了（`IOTEST_DONE`），但没有任何 fcitx5 输出、也没有
 `DAILY_INPUT_METHOD`。也就是 `sudo sh -c` 里的清单在
-`apt-get update/install fcitx5...` 期间被终止（最可能是 2 GB 客体内存不足被
-OOM killer 杀掉，apt 输出重定向到 /tmp 所以串口看不到）。
+`apt-get update/install fcitx5...` 期间被终止（客体是 4 GB 内存，暂不能归因于
+OOM；apt 输出重定向到 /tmp，串口看不到原因）。下一次复跑应把 apt 的输出直接
+打到 /dev/console，或干脆把 fcitx5 相关包预装进 rootfs profile，绕过运行时安装。
 
 ### 码表引擎回退（上一轮）
 
