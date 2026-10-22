@@ -86,7 +86,16 @@ iostream error` 来自 fcitx5-pinyin 自己的 C++ 流/解析逻辑（空 histor
 格式/异常路径），不是缺 syscall。下一步应针对该进程抓 iostream 之前的最后一次
 文件操作与 errno，或直接给它一个带合法头部的 history 文件。
 
-### 码表引擎回退（本轮）
+### 2400 s 预算复跑的结果（本轮）
+
+把门禁超时提到 2400 s 后，清单在输入法域**中途结束**：串口最后的 marker 是
+`DAILY_CLIPBOARD=ok`，紧接着就是外层 shell 的 `DAILY_SHELL_END`；`msgt/iotest`
+都跑完了（`IOTEST_DONE`），但没有任何 fcitx5 输出、也没有
+`DAILY_INPUT_METHOD`。也就是 `sudo sh -c` 里的清单在
+`apt-get update/install fcitx5...` 期间被终止（最可能是 2 GB 客体内存不足被
+OOM killer 杀掉，apt 输出重定向到 /tmp 所以串口看不到）。
+
+### 码表引擎回退（上一轮）
 
 清单里加了回退分支：pinyin 引擎为空时安装 `fcitx5-table-extra`，切 `wubi` 码表
 （`wqiy`+空格、`vbg`+空格 → “你好”），与 libpinyin 完全无关。本轮门禁**没跑完**：
