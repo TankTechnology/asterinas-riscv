@@ -73,7 +73,11 @@ fi
 # fcitx5 pulls in a large dependency set; keep it out of the APT domain so a
 # slow download cannot starve the rest of the checklist.
 if ! command -v fcitx5 >/dev/null 2>&1; then
-    timeout 420 apt-get install -y fcitx5 fcitx5-chinese-addons >/tmp/fcitx-apt.log 2>&1
+    # Keep the download small: the recommends of fcitx5 drag in Qt/GTK
+    # frontends and themes that the XIM test below does not need.
+    timeout 120 apt-get update >/tmp/fcitx-apt.log 2>&1
+    timeout 420 apt-get install -y --no-install-recommends \
+        fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 >>/tmp/fcitx-apt.log 2>&1
 fi
 if command -v fcitx5 >/dev/null 2>&1; then
     export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
