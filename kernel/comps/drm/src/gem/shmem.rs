@@ -64,7 +64,18 @@ impl DrmGemShmemBackend {
     }
 }
 
+impl DrmGemShmemBackend {
+    /// Returns the physical frames backing this object.
+    pub fn frames(&self) -> &[UFrame] {
+        &self.pages
+    }
+}
+
 impl DrmGemObjectBackend for DrmGemShmemBackend {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
     fn read_bytes(&self, offset: usize, buf: &mut [u8]) -> Result<()> {
         let mut object_offset = offset;
         let mut copied = 0;

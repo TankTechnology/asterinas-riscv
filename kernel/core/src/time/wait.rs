@@ -2,12 +2,48 @@
 
 use core::time::Duration;
 
-use ostd::sync::{WaitQueue, Waiter};
+use alloc::sync::Arc;
+
+use ostd::sync::{WaitQueue, Waiter, Waker};
 
 use super::{Timer, TimerManager, clocks::MonotonicClock, timer::Timeout};
 use crate::{prelude::*, time::timer::TimerGuard};
 
 /// A trait that provide the timeout related function for [`Waiter`] and [`WaitQueue`]`.
+/// Waits until `cond` returns `true`, the timeout expires, or `waker` is woken.
+///
+/// This is the blocking primitive for kernel subsystems that own their own
+/// wait state (for example DRM sync objects): the caller registers `waker` in
+/// the object that guards `cond`, and that object calls `wake_up()` whenever
+/// the condition may have changed. The condition is re-evaluated after every
+/// wake-up; register under the same lock that guards the state to avoid a lost
+/// wake-up.
+///
+/// `None` means no timeout. The wait is not interruptible by signals; callers
+/// that need `EINTR` semantics must add it themselves.
+pub fn wait_until_or_timeout<F>(
+    mut cond: F,
+    register: impl FnOnce(Arc<Waker>),
+    timeout: Option<Duration>,
+) -> Result<()>
+where
+    F: FnMut() -> bool,
+{
+    let (waiter, waker) = Waiter::new_pair();
+    register(waker);
+
+    match timeout {
+        Some(duration) => {
+            let managed = ManagedTimeout::new_with_manager(
+                Timeout::After(duration),
+                MonotonicClock::timer_manager(),
+            );
+            waiter.wait_until_or_timeout(|| cond().then_some(()), managed)
+        }
+        None => waiter.wait_until_or_timeout(|| cond().then_some(()), TimeoutExt::Never),
+    }
+}
+
 pub(crate) trait WaitTimeout {
     /// Waits until some condition returns `Some(_)` or a given timeout is reached.
     ///

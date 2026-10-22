@@ -10,8 +10,11 @@ ostd.workspace = true
 # High-level component crates.
 #
 # Keep this list in sync with the `extern crate` declarations in `src/lib.rs`.
+aster-audio-hda.workspace = true
 aster-drm.workspace = true
+aster-drm-virtio-gpu.workspace = true
 aster-simpledrm.workspace = true
+aster-usb-xhci.workspace = true
 aster-uart.workspace = true
 
 [target.x86_64-unknown-none.dependencies]

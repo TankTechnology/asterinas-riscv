@@ -207,6 +207,8 @@ pub(super) enum DrmStandardProperty {
     CrtcId,
     Active,
     ModeId,
+    InFenceFd,
+    OutFencePtr,
 }
 
 impl DrmStandardProperty {
@@ -269,6 +271,20 @@ impl DrmStandardProperty {
             ),
             Self::Active => DrmProperty::new_bool(id, "ACTIVE", DrmPropertyFlags::ATOMIC),
             Self::ModeId => DrmProperty::new_blob(id, "MODE_ID", DrmPropertyFlags::ATOMIC),
+            Self::InFenceFd => DrmProperty::new_signed_range(
+                id,
+                "IN_FENCE_FD",
+                DrmPropertyFlags::ATOMIC,
+                i32::MIN as i64,
+                i32::MAX as i64,
+            ),
+            Self::OutFencePtr => DrmProperty::new_range(
+                id,
+                "OUT_FENCE_PTR",
+                DrmPropertyFlags::ATOMIC,
+                0,
+                u64::MAX,
+            ),
         }
     }
 }

@@ -61,6 +61,19 @@ pub(super) fn init_in_first_kthread() {
     aster_block::scan_partitions();
 }
 
+/// Publishes a block device that appeared after boot to devtmpfs.
+///
+/// Boot-time devices are handled by [`init_in_first_process`]; a hotplugged
+/// disk (USB mass storage) has no other way to get its `/dev` node.
+pub fn register_hotplug_device(device: Arc<dyn aster_block::BlockDevice>) -> Result<()> {
+    let device: Arc<dyn Device> = Arc::new(BlockFile::new(device));
+    if let Some(meta) = device.devtmpfs_meta() {
+        devtmpfs::create_node(DevtmpfsNode::new(device.type_(), device.id(), meta))?;
+    }
+
+    Ok(())
+}
+
 pub(super) fn init_in_first_process() -> Result<()> {
     for device in aster_block::collect_all() {
         let device: Arc<dyn Device> = Arc::new(BlockFile::new(device));

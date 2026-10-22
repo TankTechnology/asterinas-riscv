@@ -2,6 +2,7 @@
 
 use alloc::{
     boxed::Box,
+    collections::VecDeque,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -9,7 +10,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use aster_core::{
     current,
-    events::IoEvents,
+    events::{EventSource, IoEvents},
     fs::{
         file::{Mappable, MappableObject, MappedObject, PerOpenFileOps, StatusFlags},
         vfs::{inode::FileOps, path::Path},
@@ -32,7 +33,9 @@ use sparse_id_alloc::SparseIdAlloc;
 
 use crate::{
     device::{DrmDevice, DrmMaster},
+    event::DrmEventVblank,
     gem::object::DrmGemObject,
+    syncobj::{DrmSyncObj, DrmSyncObjTable},
     has_current_sys_admin,
     kms::objects::{KmsObjectId, framebuffer::DrmFramebuffer},
     minor::{DrmMinor, DrmMinorType},
@@ -53,8 +56,54 @@ pub(super) struct DrmFile {
     minor: Arc<DrmMinor>,
 
     gem_handles: Mutex<DrmGemHandleTable>,
+    syncobjs: Mutex<DrmSyncObjTable>,
     /// Framebuffers created through this open file.
     framebuffers: Mutex<Vec<Arc<DrmFramebuffer>>>,
+    /// Property blobs created through `DRM_IOCTL_MODE_CREATEPROPBLOB`.
+    user_blobs: Mutex<Vec<KmsObjectId>>,
+    /// Page-flip and vblank events waiting to be read.
+    ///
+    /// Shared with pending page flips: a flip completes on a deferred work
+    /// thread, which queues the completion event here without holding the file.
+    event_queue: Arc<DrmEventQueue>,
+}
+
+/// The event queue of one DRM file and the `poll` source that reports it.
+#[derive(Debug)]
+pub(crate) struct DrmEventQueue {
+    events: Mutex<VecDeque<DrmEventVblank>>,
+    source: EventSource,
+}
+
+impl DrmEventQueue {
+    fn new() -> Self {
+        Self {
+            events: Mutex::new(VecDeque::new()),
+            source: EventSource::new(),
+        }
+    }
+
+    /// Queues an event and wakes readers and pollers.
+    pub(crate) fn push(&self, event: DrmEventVblank) {
+        self.events.lock().push_back(event);
+        self.source.notify(IoEvents::IN);
+    }
+
+    pub(crate) fn has_events(&self) -> bool {
+        !self.events.lock().is_empty()
+    }
+
+    fn pop(&self) -> Option<DrmEventVblank> {
+        let event = self.events.lock().pop_front();
+        if self.events.lock().is_empty() {
+            self.source.invalidate();
+        }
+        event
+    }
+
+    pub(crate) fn source(&self) -> &EventSource {
+        &self.source
+    }
 }
 
 impl DrmFile {
@@ -64,6 +113,10 @@ impl DrmFile {
 
     pub(super) fn minor_type(&self) -> DrmMinorType {
         self.minor.type_()
+    }
+
+    pub(super) fn minor(&self) -> &Arc<DrmMinor> {
+        &self.minor
     }
 
     pub(super) fn has_client_caps(&self, cap: DrmClientCaps) -> bool {
@@ -93,7 +146,10 @@ impl DrmFile {
             minor,
 
             gem_handles: Mutex::new(DrmGemHandleTable::new()),
+            syncobjs: Mutex::new(DrmSyncObjTable::new()),
             framebuffers: Mutex::new(Vec::new()),
+            user_blobs: Mutex::new(Vec::new()),
+            event_queue: Arc::new(DrmEventQueue::new()),
         }
     }
 
@@ -187,6 +243,49 @@ impl DrmFile {
 
         gem_object.revoke_mmap(self.client_id);
         Ok(())
+    }
+
+    /// Queues an event for this file and wakes pollers.
+    pub(super) fn enqueue_event(&self, event: DrmEventVblank) {
+        self.event_queue.push(event);
+    }
+
+    /// Returns the queue a deferred page flip completes into.
+    pub(super) fn event_queue(&self) -> Arc<DrmEventQueue> {
+        self.event_queue.clone()
+    }
+
+    pub(super) fn has_events(&self) -> bool {
+        self.event_queue.has_events()
+    }
+
+    fn pop_event(&self) -> Option<DrmEventVblank> {
+        self.event_queue.pop()
+    }
+
+    pub(super) fn add_user_blob(&self, blob_id: KmsObjectId) {
+        self.user_blobs.lock().push(blob_id);
+    }
+
+    pub(super) fn remove_user_blob(&self, blob_id: KmsObjectId) -> Result<()> {
+        let mut blobs = self.user_blobs.lock();
+        let Some(index) = blobs.iter().position(|blob| *blob == blob_id) else {
+            return_errno_with_message!(Errno::ENOENT, "the property blob was not created here");
+        };
+        blobs.swap_remove(index);
+        Ok(())
+    }
+
+    pub(super) fn add_syncobj(&self, object: Arc<DrmSyncObj>) -> Result<u32> {
+        self.syncobjs.lock().insert(object)
+    }
+
+    pub(super) fn lookup_syncobj(&self, handle: u32) -> Result<Arc<DrmSyncObj>> {
+        self.syncobjs.lock().lookup(handle)
+    }
+
+    pub(super) fn remove_syncobj(&self, handle: u32) -> Result<()> {
+        self.syncobjs.lock().remove(handle)
     }
 
     pub(super) fn add_framebuffer(&self, framebuffer: Arc<DrmFramebuffer>) {
@@ -316,10 +415,34 @@ impl FileOps for DrmFile {
     fn read_at(
         &self,
         _offset: usize,
-        _writer: &mut VmWriter,
-        _status_flags: StatusFlags,
+        writer: &mut VmWriter,
+        status_flags: StatusFlags,
     ) -> Result<usize> {
-        return_errno_with_message!(Errno::EINVAL, "reading from a DRM file is not supported")
+        let event_size = core::mem::size_of::<DrmEventVblank>();
+        if writer.avail() < event_size {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "the DRM event buffer is smaller than one event"
+            );
+        }
+
+        if !self.has_events() {
+            if status_flags.contains(StatusFlags::O_NONBLOCK) {
+                return_errno_with_message!(Errno::EAGAIN, "there are no DRM events to read");
+            }
+            aster_core::wait_until_or_timeout(
+                || self.has_events(),
+                |waker| self.event_queue.source().register_waker(waker),
+                None,
+            )?;
+        }
+
+        let event = self.pop_event().ok_or_else(|| {
+            Error::with_message(Errno::EAGAIN, "there are no DRM events to read")
+        })?;
+        writer.write_val(&event)?;
+
+        Ok(event_size)
     }
 
     fn write_at(
@@ -333,9 +456,19 @@ impl FileOps for DrmFile {
 }
 
 impl Pollable for DrmFile {
-    fn poll(&self, mask: IoEvents, _poller: Option<&mut PollHandle>) -> IoEvents {
-        let events = IoEvents::IN | IoEvents::OUT;
-        events & mask
+    fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
+        // The DRM file becomes readable when it has queued events (vblank or
+        // page-flip completions). Reporting readiness unconditionally made
+        // clients that poll the DRM file spin on `drmHandleEvent`.
+        self.event_queue
+            .source()
+            .poll(mask, poller, || {
+                if self.has_events() {
+                    IoEvents::IN
+                } else {
+                    IoEvents::empty()
+                }
+            })
     }
 }
 
@@ -347,11 +480,16 @@ impl Drop for DrmFile {
             for framebuffer in self.framebuffers.get_mut().drain(..) {
                 object_store.free_object_id(framebuffer.id());
             }
+            for blob_id in self.user_blobs.get_mut().drain(..) {
+                let _ = object_store.destroy_property_blob(blob_id);
+            }
         }
 
         for gem_object in self.gem_handles.get_mut().drain() {
             gem_object.revoke_mmap(self.client_id);
         }
+
+        self.syncobjs.get_mut().clear();
 
         let Some(auth) = self.auth.as_ref() else {
             return;

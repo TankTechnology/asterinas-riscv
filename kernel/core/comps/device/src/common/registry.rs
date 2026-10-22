@@ -60,6 +60,28 @@ impl Registry {
         }
     }
 
+    /// Attaches a subtree under `/sys/dev/<kind>`.
+    ///
+    /// Only [`register_legacy_dev_entry`] uses this; devices registered through
+    /// [`add_device`](crate::add_device) get their entry from their device number.
+    pub(crate) fn attach_into_dev_index(
+        &self,
+        kind: DevKind,
+        child: Arc<dyn SysObj>,
+    ) -> Result<()> {
+        self.dev_index(kind).attach_child(child)
+    }
+
+    /// Attaches a directory under `/sys/class`.
+    pub(crate) fn attach_into_class_root(&self, child: Arc<dyn SysObj>) -> Result<()> {
+        self.class.attach_child(child)
+    }
+
+    /// Attaches a directory under `/sys/bus`.
+    pub(crate) fn attach_into_bus_root(&self, child: Arc<dyn SysObj>) -> Result<()> {
+        self.bus.attach_child(child)
+    }
+
     /// Keeps a registered bus or class alive for the life of the kernel.
     pub(crate) fn keep_subsystem(&self, subsystem: Arc<dyn SubsystemOps>) {
         self.subsystems.lock().push(subsystem);

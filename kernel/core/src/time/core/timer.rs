@@ -231,6 +231,53 @@ impl TimerManager {
     }
 }
 
+/// A periodic timer owned by a kernel subsystem.
+///
+/// The callback runs in the timer softirq with interrupts disabled, so it must
+/// not sleep. It is re-armed automatically every `interval`.
+pub struct IntervalTimer {
+    timer: Arc<Timer>,
+}
+
+impl IntervalTimer {
+    /// Starts a timer that calls `callback` every `interval`.
+    pub fn new(
+        interval: Duration,
+        callback: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        use crate::time::clocks::MonotonicClock;
+
+        let manager = MonotonicClock::timer_manager();
+        let timer = manager.create_timer(move |_guard| callback());
+        {
+            let mut guard = timer.lock();
+            guard.set_interval(interval);
+            guard.set_timeout(Timeout::After(interval));
+        }
+
+        Self { timer }
+    }
+
+    /// Stops the timer.
+    ///
+    /// Dropping the value also stops it.
+    pub fn cancel(&self) {
+        self.timer.lock().cancel();
+    }
+}
+
+impl core::fmt::Debug for IntervalTimer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("IntervalTimer").finish_non_exhaustive()
+    }
+}
+
+impl Drop for IntervalTimer {
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 /// A `TimerCallback` can be used to execute a timer callback function.
 struct TimerCallback {
     expired_time: Duration,

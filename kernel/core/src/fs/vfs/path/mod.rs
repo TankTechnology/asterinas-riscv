@@ -145,6 +145,16 @@ impl Path {
         Self::new(mount, dentry)
     }
 
+    /// Creates a pseudo `Path` whose display name is a fixed string.
+    pub(in crate::fs) fn new_static_pseudo(
+        mount: Arc<Mount>,
+        inode: Arc<dyn Inode>,
+        name: &'static str,
+    ) -> Self {
+        let dentry = Dentry::new_static_pseudo(inode, name);
+        Self::new(mount, dentry)
+    }
+
     pub(in crate::fs) fn new(mount: Arc<Mount>, dentry: Arc<Dentry>) -> Self {
         Self { mount, dentry }
     }

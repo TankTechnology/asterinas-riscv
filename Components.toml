@@ -1,11 +1,13 @@
 # template
 [components]
+audio_hda = { name = "aster-audio-hda" }
 block = { name = "aster-block" }
 cmdline = { name = "aster-cmdline" }
 console = { name = "aster-console" }
 core = { name = "aster-core" }
 device = { name = "aster-device" }
 drm = { name = "aster-drm" }
+drm_virtio_gpu = { name = "aster-drm-virtio-gpu" }
 framebuffer = { name = "aster-framebuffer" }
 i8042 = { name = "aster-i8042" }
 input = { name = "aster-input" }
@@ -19,6 +21,7 @@ softirq = { name = "aster-softirq" }
 systree = { name = "aster-systree" }
 time = { name = "aster-time" }
 uart = { name = "aster-uart" }
+usb_xhci = { name = "aster-usb-xhci" }
 virtio = { name = "aster-virtio" }
 
 [whitelist]

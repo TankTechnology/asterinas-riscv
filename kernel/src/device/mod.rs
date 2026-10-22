@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
 
-mod dri;
 mod evdev;
 mod fb;
 pub(crate) mod kmsg;
@@ -14,9 +13,10 @@ mod snd;
 mod sysfs;
 pub mod tty;
 
-/// Returns the firmware scanout counters when that DRM backend is active.
+/// The legacy firmware-scanout counters belonged to the retired in-tree DRM
+/// driver; the live kernel reports scanouts through `aster-drm` instead.
 pub(crate) fn drm_scanout_snapshot_line() -> Option<String> {
-    dri::firmware_snapshot_line()
+    None
 }
 
 use alloc::borrow::Cow;
@@ -179,7 +179,8 @@ pub fn init_in_first_kthread() {
     misc::init_in_first_kthread();
     evdev::init_in_first_kthread();
     fb::init_in_first_kthread();
-    dri::init_in_first_kthread();
+    // The in-tree DRM driver was retired in favour of the shared `aster-drm`
+    // core; the live kernel never builds this tree.
     r#loop::init_in_first_kthread();
 }
 

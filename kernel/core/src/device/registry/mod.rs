@@ -10,6 +10,8 @@ use crate::{
 mod block;
 pub mod char;
 
+pub use block::register_hotplug_device;
+
 pub(super) fn init_in_first_kthread() {
     block::init_in_first_kthread();
 }

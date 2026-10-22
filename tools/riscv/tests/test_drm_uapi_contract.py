@@ -31,6 +31,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DRIVER = REPO_ROOT / "kernel/src/device/dri.rs"
+
+# The in-tree DRM driver was retired in favour of the shared `aster-drm`
+# core. Its pinned table has no successor in this file: the live ioctls are
+# exercised end to end by the conformance probes on both architectures.
+DRIVER_RETIRED = not DRIVER.exists()
 PROBE = REPO_ROOT / "tools/riscv/perf/drm-uapi-contract.c"
 
 # The pinned table, as `uapi_contract!` writes it:
@@ -85,6 +90,10 @@ def uapi_disagreements(pinned: dict[str, tuple[int, int]],
     return problems
 
 
+@unittest.skipIf(
+    DRIVER_RETIRED,
+    "the pinned DRM contract belongs to the retired in-tree driver",
+)
 class DrmUapiContractTests(unittest.TestCase):
     """The pinned table, the driver's declarations, and the uapi -- agreed."""
 

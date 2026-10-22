@@ -641,6 +641,281 @@ test_riscv_rootfs_builder_image_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_riscv_rootfs_builder_image -v
 
+# RISC-V virtio-gpu gate: build the shared legacy-KMS probe as an initramfs
+# `/init`, boot the Sv39 Image with a virtio-gpu MMIO device, require
+# DRMPROBE_PASS and a four-bar screendump. The kernel is the same tree that
+# provides the x86 gate; only the transport differs.
+#   RISCV_GPU_KERNEL  target/osdk/asterinas-osdk-bin.Image (Sv39)
+#                     (build with `make kernel TARGET_ARCH=riscv64
+#                     FEATURES=riscv_sv39_mode`)
+RISCV_GPU_KERNEL ?= $(CURDIR)/target/osdk/asterinas-osdk-bin.Image
+RISCV_GPU_WORKSPACE ?= $(CURDIR)/target/riscv-gpu/gate
+RISCV_GPU_TIMEOUT ?= 180
+
+# PRIME / dma-buf gate: export a dumb buffer as a dma-buf, map and import it,
+# pass it to a child over SCM_RIGHTS, and check the negative cases. The probe
+# is an initramfs `/init`, so no Debian image is involved. The kernel artifacts
+# are arch-specific and clobber each other in target/osdk, so both paths are
+# explicit.
+X86_PRIME_KERNEL ?= $(CURDIR)/target/prime/kernels/x86.elf
+RISCV_PRIME_KERNEL ?= $(CURDIR)/target/prime/kernels/riscv.Image
+PRIME_WORKSPACE ?= $(CURDIR)/target/prime/gate
+PRIME_TIMEOUT ?= 120
+
+.PHONY: test_x86_prime
+test_x86_prime:
+	@test -f "$(X86_PRIME_KERNEL)" || { echo "X86_PRIME_KERNEL is required" >&2; exit 2; }
+	@tools/drm/prime_check.sh --arch amd64 --kernel "$(X86_PRIME_KERNEL)" \
+		--workspace "$(PRIME_WORKSPACE)-x86" --timeout "$(PRIME_TIMEOUT)"
+
+.PHONY: test_riscv_prime
+test_riscv_prime:
+	@test -f "$(RISCV_PRIME_KERNEL)" || { echo "RISCV_PRIME_KERNEL is required" >&2; exit 2; }
+	@tools/drm/prime_check.sh --arch riscv64 --kernel "$(RISCV_PRIME_KERNEL)" \
+		--workspace "$(PRIME_WORKSPACE)-riscv" --timeout "$(PRIME_TIMEOUT)"
+
+# P3 probes: atomic KMS commits and the sync-object surface. Both are
+# architecture-neutral initramfs `/init` probes, so they need no Debian image.
+P3_PROBE_KERNEL_X86 ?= $(CURDIR)/target/prime/kernels/x86.elf
+P3_PROBE_KERNEL_RISCV ?= $(CURDIR)/target/prime/kernels/riscv.Image
+P3_PROBE_WORKSPACE ?= $(CURDIR)/target/p3
+P3_PROBE_TIMEOUT ?= 120
+
+.PHONY: test_x86_atomic
+test_x86_atomic:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch amd64 \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--probe tools/drm/atomic_probe.c \
+		--workspace "$(P3_PROBE_WORKSPACE)/atomic-x86" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+.PHONY: test_x86_syncobj
+test_x86_syncobj:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch amd64 \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--probe tools/drm/sync_probe.c \
+		--workspace "$(P3_PROBE_WORKSPACE)/sync-x86" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+.PHONY: test_x86_flip
+test_x86_flip:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch amd64 \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--probe tools/drm/flip_probe.c \
+		--workspace "$(P3_PROBE_WORKSPACE)/flip-x86" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+.PHONY: test_riscv_atomic
+test_riscv_atomic:
+	@test -f "$(P3_PROBE_KERNEL_RISCV)" || { echo "P3_PROBE_KERNEL_RISCV is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch riscv64 \
+		--kernel "$(P3_PROBE_KERNEL_RISCV)" \
+		--probe tools/drm/atomic_probe.c \
+		--workspace "$(P3_PROBE_WORKSPACE)/atomic-riscv" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+.PHONY: test_riscv_flip
+test_riscv_flip:
+	@test -f "$(P3_PROBE_KERNEL_RISCV)" || { echo "P3_PROBE_KERNEL_RISCV is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch riscv64 \
+		--kernel "$(P3_PROBE_KERNEL_RISCV)" \
+		--probe tools/drm/flip_probe.c \
+		--workspace "$(P3_PROBE_WORKSPACE)/flip-riscv" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+.PHONY: test_riscv_syncobj
+test_riscv_syncobj:
+	@test -f "$(P3_PROBE_KERNEL_RISCV)" || { echo "P3_PROBE_KERNEL_RISCV is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch riscv64 \
+		--kernel "$(P3_PROBE_KERNEL_RISCV)" \
+		--probe tools/drm/sync_probe.c \
+		--workspace "$(P3_PROBE_WORKSPACE)/sync-riscv" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+# Daily-use measurement gate: boots the Debian image, runs the six-domain
+# checklist and prints a PASS/FAIL/missing matrix (it measures, it does not
+# fix). `docs/porting/daily-use-matrix.md` holds the latest result.
+DAILY_USE_WORKSPACE ?= $(CURDIR)/target/daily-use
+
+.PHONY: test_x86_daily_use
+test_x86_daily_use:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@tools/x86/debian/daily_use_gate.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--workspace "$(DAILY_USE_WORKSPACE)" \
+		--timeout "$(X86_DEBIAN_XORG_TIMEOUT)"
+
+# USB hotplug gate: QEMU's xHCI controller, then a USB stick added and removed
+# through the monitor; the driver must report both port transitions.
+.PHONY: test_x86_usb_hotplug
+test_x86_usb_hotplug:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/x86/usb_hotplug_check.sh \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--workspace "$(CURDIR)/target/usb-hotplug/x86" \
+		--timeout 200
+
+# Debian `aplay` gate: the image's own alsa-utils plays through
+# /dev/snd/pcmC0D0p and the host verifies the captured samples.
+.PHONY: test_x86_audio_aplay
+test_x86_audio_aplay:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@tools/x86/debian/audio_gate.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--workspace "$(AUDIO_WORKSPACE)/aplay-x86" \
+		--timeout "$(X86_DEBIAN_XORG_TIMEOUT)"
+
+# ALSA uapi gate: the guest probe speaks the libasound ioctls (INFO, HW_REFINE,
+# HW_PARAMS, PREPARE, WRITEI, DRAIN) and the host checks the captured samples.
+.PHONY: test_x86_audio_alsa
+test_x86_audio_alsa:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/audio/hda_check.sh \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--workspace "$(AUDIO_WORKSPACE)/alsa-x86" \
+		--probe "$(CURDIR)/tools/audio/alsa_probe.c" \
+		--expect ALSAPROBE_PASS \
+		--append "" \
+		--timeout 120
+
+# HDA audio gate: QEMU's intel-hda codec plays the driver's self-test tone
+# into a WAV backend, and the gate checks the captured samples.
+AUDIO_WORKSPACE ?= $(CURDIR)/target/audio
+
+.PHONY: test_x86_audio
+test_x86_audio:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/audio/hda_check.sh \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--workspace "$(AUDIO_WORKSPACE)/x86" \
+		--timeout 120
+
+# Second-CRTC acceptance: QEMU exposes two scanouts (`max_outputs=2`), the
+# driver creates one CRTC/encoder/connector per scanout, and the probe modesets
+# and flips both.
+.PHONY: test_x86_multi_crtc
+test_x86_multi_crtc:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch amd64 \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--probe "$(CURDIR)/tools/drm/multi_crtc_probe.c" \
+		--pass MULTICRTC_PASS --gpu-option max_outputs=2 --vnc auto \
+		--workspace "$(P3_PROBE_WORKSPACE)/multi-crtc-x86" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+.PHONY: test_riscv_multi_crtc
+test_riscv_multi_crtc:
+	@test -f "$(P3_PROBE_KERNEL_RISCV)" || { echo "P3_PROBE_KERNEL_RISCV is required" >&2; exit 2; }
+	@tools/drm/initramfs_probe_check.sh --arch riscv64 \
+		--kernel "$(P3_PROBE_KERNEL_RISCV)" \
+		--probe "$(CURDIR)/tools/drm/multi_crtc_probe.c" \
+		--pass MULTICRTC_PASS --gpu-option max_outputs=2 --vnc auto \
+		--workspace "$(P3_PROBE_WORKSPACE)/multi-crtc-riscv" \
+		--timeout "$(P3_PROBE_TIMEOUT)"
+
+# DRM conformance matrix: every shared-DRM probe for one or both
+# architectures. The graphical gates are separate targets.
+P3_PROBE_KERNEL_X86 ?= $(CURDIR)/target/prime/kernels/x86.elf
+CONFORMANCE_WORKSPACE ?= $(CURDIR)/target/conformance
+
+.PHONY: test_drm_conformance_x86
+test_drm_conformance_x86:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/drm/conformance_matrix.sh --arch amd64 \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--workspace "$(CONFORMANCE_WORKSPACE)/x86"
+
+.PHONY: test_drm_conformance_riscv
+test_drm_conformance_riscv:
+	@test -f "$(P3_PROBE_KERNEL_RISCV)" || { echo "P3_PROBE_KERNEL_RISCV is required" >&2; exit 2; }
+	@tools/drm/conformance_matrix.sh --arch riscv64 \
+		--kernel "$(P3_PROBE_KERNEL_RISCV)" \
+		--workspace "$(CONFORMANCE_WORKSPACE)/riscv"
+
+.PHONY: test_drm_conformance
+test_drm_conformance: test_drm_conformance_x86 test_drm_conformance_riscv
+
+.PHONY: test_drm_conformance_full
+test_drm_conformance_full: test_drm_conformance test_x86_graphical test_riscv_graphical
+
+# RISC-V graphical daily-use gate: serial login as the image account, Xorg on
+# /dev/dri/card0, an xterm launch check, the DRI3 buffer-exchange probe, a red
+# root window, in-guest power-off and e2fsck.
+RISCV_GRAPHICAL_KERNEL ?= $(CURDIR)/target/prime/kernels/riscv.Image
+RISCV_GRAPHICAL_STAGE1 ?= $(CURDIR)/target/debian-riscv/stage1/initramfs.cpio
+RISCV_GRAPHICAL_BASE_IMAGE ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/debian-root.ext2
+RISCV_GRAPHICAL_WORKSPACE ?= $(CURDIR)/target/riscv-gpu/graphical
+RISCV_GRAPHICAL_TIMEOUT ?= 900
+
+.PHONY: test_riscv_graphical
+test_riscv_graphical:
+	@test -f "$(RISCV_GRAPHICAL_KERNEL)" || { echo "RISCV_GRAPHICAL_KERNEL is required" >&2; exit 2; }
+	@test -f "$(RISCV_GRAPHICAL_STAGE1)" || { echo "RISCV_GRAPHICAL_STAGE1 is required" >&2; exit 2; }
+	@test -f "$(RISCV_GRAPHICAL_BASE_IMAGE)" || { echo "RISCV_GRAPHICAL_BASE_IMAGE is required" >&2; exit 2; }
+	@tools/riscv/drm/graphical_check.sh \
+		--kernel "$(RISCV_GRAPHICAL_KERNEL)" \
+		--stage1 "$(RISCV_GRAPHICAL_STAGE1)" \
+		--base-image "$(RISCV_GRAPHICAL_BASE_IMAGE)" \
+		--workspace "$(RISCV_GRAPHICAL_WORKSPACE)" \
+		--timeout "$(RISCV_GRAPHICAL_TIMEOUT)" \
+		--require-dri3
+
+# The x86 graphical daily-use gate is the Xorg gate: serial login, X
+# installation, xterm launch, red root window, power-button power-off, e2fsck.
+.PHONY: test_x86_graphical
+test_x86_graphical: test_x86_debian_xorg
+
+.PHONY: test_riscv_virtio_gpu_unit
+test_riscv_virtio_gpu_unit:
+	@python3 -W error::ResourceWarning -m unittest \
+		tools.riscv.tests.test_riscv_virtio_gpu_gate -v
+
+.PHONY: test_riscv_virtio_gpu
+test_riscv_virtio_gpu:
+	@test -f "$(RISCV_GPU_KERNEL)" || { echo "RISCV_GPU_KERNEL is required" >&2; exit 2; }
+	@echo "riscv-virtio-gpu: kernel=$(RISCV_GPU_KERNEL)"
+	@tools/riscv/drm/virtio_gpu_check.sh \
+		--kernel "$(RISCV_GPU_KERNEL)" \
+		--workspace "$(RISCV_GPU_WORKSPACE)" \
+		--timeout "$(RISCV_GPU_TIMEOUT)"
+
+# RISC-V Xorg gate: boot the Debian `desktop-drm` image through Stage1 with a
+# virtio-gpu device, start Xorg on /dev/dri/card0 and paint the root window
+# red. The base image comes from
+# `build_rootfs.sh --profile desktop-drm`; the gate copies and injects into a
+# work image, so the published artifact stays pristine.
+RISCV_XORG_KERNEL ?= $(CURDIR)/target/osdk/asterinas-osdk-bin.Image
+RISCV_XORG_STAGE1 ?= $(CURDIR)/target/debian-riscv/stage1/initramfs.cpio
+RISCV_XORG_BASE_IMAGE ?= $(CURDIR)/target/debian-riscv/desktop-drm/rootfs/debian-root.ext2
+RISCV_XORG_WORKSPACE ?= $(CURDIR)/target/riscv-gpu/xorg-gate
+RISCV_XORG_TIMEOUT ?= 660
+
+.PHONY: test_riscv_xorg
+test_riscv_xorg:
+	@test -f "$(RISCV_XORG_KERNEL)" || { echo "RISCV_XORG_KERNEL is required" >&2; exit 2; }
+	@test -f "$(RISCV_XORG_STAGE1)" || { echo "RISCV_XORG_STAGE1 is required" >&2; exit 2; }
+	@test -f "$(RISCV_XORG_BASE_IMAGE)" || { echo "RISCV_XORG_BASE_IMAGE is required" >&2; exit 2; }
+	@echo "riscv-xorg: kernel=$(RISCV_XORG_KERNEL)"
+	@tools/riscv/drm/xorg_check.sh \
+		--kernel "$(RISCV_XORG_KERNEL)" \
+		--stage1 "$(RISCV_XORG_STAGE1)" \
+		--base-image "$(RISCV_XORG_BASE_IMAGE)" \
+		--workspace "$(RISCV_XORG_WORKSPACE)" \
+		--timeout "$(RISCV_XORG_TIMEOUT)"
+
 .PHONY: test_x86_debian_tooling_unit
 test_x86_debian_tooling_unit:
 	@python3 -W error::ResourceWarning -m unittest \
@@ -712,6 +987,30 @@ test_x86_debian_daily_use:
 		--workspace "$(X86_DEBIAN_DAILY_WORKSPACE)" \
 		--accel "$(X86_DEBIAN_DAILY_ACCEL)" \
 		--timeout "$(X86_DEBIAN_DAILY_TIMEOUT)"
+
+# Xorg graphics gate: serial login, install the X server over slirp, modeset
+# the virtio-gpu through /dev/dri/card0, paint the root window red with
+# `xsetroot`, capture the scanout through the QEMU monitor, and power off.
+#   X86_DEBIAN_XORG_BASE_ROOT  ext4 image copied for the run
+X86_DEBIAN_XORG_BASE_ROOT ?=
+X86_DEBIAN_XORG_WORKSPACE ?= $(CURDIR)/target/x86-debian/xorg
+X86_DEBIAN_XORG_ACCEL ?= kvm
+X86_DEBIAN_XORG_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_xorg
+test_x86_debian_xorg:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@echo "xorg: base=$(X86_DEBIAN_XORG_BASE_ROOT) accel=$(X86_DEBIAN_XORG_ACCEL)"
+	@tools/x86/debian/xorg_check.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--workspace "$(X86_DEBIAN_XORG_WORKSPACE)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--timeout "$(X86_DEBIAN_XORG_TIMEOUT)" \
+		--require-dri3
 
 # Boot the Debian root image on the x86_64 kernel and wait for the marker.
 # X86_DEBIAN_KERNEL must be an OSDK x86_64 artifact built with

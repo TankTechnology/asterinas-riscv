@@ -77,6 +77,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "aster-audio-hda"
+version = "0.1.0"
+dependencies = [
+ "aster-cmdline",
+ "aster-core",
+ "aster-pci",
+ "component",
+ "device-id",
+ "ostd",
+ "ostd-pod",
+ "spin",
+ "zerocopy",
+]
+
+[[package]]
 name = "aster-bigtcp"
 version = "0.1.0"
 dependencies = [
@@ -228,6 +243,17 @@ dependencies = [
  "sparse-id-alloc",
  "spin",
  "zerocopy",
+]
+
+[[package]]
+name = "aster-drm-virtio-gpu"
+version = "0.1.0"
+dependencies = [
+ "aster-core",
+ "aster-drm",
+ "aster-virtio",
+ "component",
+ "ostd",
 ]
 
 [[package]]
@@ -433,6 +459,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "aster-usb-xhci"
+version = "0.1.0"
+dependencies = [
+ "aster-block",
+ "aster-core",
+ "aster-device",
+ "aster-pci",
+ "aster-systree",
+ "aster-util",
+ "component",
+ "device-id",
+ "inherit-methods-macro",
+ "ostd",
+ "spin",
+]
+
+[[package]]
 name = "aster-util"
 version = "0.1.0"
 dependencies = [
@@ -484,11 +527,14 @@ dependencies = [
 name = "asterinas"
 version = "0.1.0"
 dependencies = [
+ "aster-audio-hda",
  "aster-core",
  "aster-drm",
+ "aster-drm-virtio-gpu",
  "aster-i8042",
  "aster-simpledrm",
  "aster-uart",
+ "aster-usb-xhci",
  "ostd",
 ]
 

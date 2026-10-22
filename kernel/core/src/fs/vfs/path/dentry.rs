@@ -158,8 +158,26 @@ enum NameAndParent {
     /// but a fixed `"/"` name and never present in the parent's children cache.
     Anonymous(Arc<Dentry>),
     /// A pseudo `Dentry`;
-    /// the `fn` synthesizes its display name.
-    Pseudo(fn(&dyn Inode) -> String),
+    /// the payload synthesizes its display name.
+    Pseudo(PseudoName),
+}
+
+/// How a pseudo `Dentry` produces the name shown in `/proc/<pid>/fd/<n>`.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum PseudoName {
+    /// A function of the inode, e.g. `anon_inode:[eventpoll]`.
+    Computed(fn(&dyn Inode) -> String),
+    /// A fixed name for every instance of the pseudo dentry.
+    Static(&'static str),
+}
+
+impl PseudoName {
+    fn name(&self, inode: &dyn Inode) -> String {
+        match self {
+            Self::Computed(name_fn) => (name_fn)(inode),
+            Self::Static(name) => String::from(*name),
+        }
+    }
 }
 
 /// An error returned by [`NameAndParent::set`].
@@ -174,7 +192,7 @@ impl NameAndParent {
                 None => String::from("/"),
             },
             NameAndParent::Anonymous(_) => String::from("/"),
-            NameAndParent::Pseudo(name_fn) => (name_fn)(inode),
+            NameAndParent::Pseudo(pseudo_name) => pseudo_name.name(inode),
         }
     }
 
@@ -230,7 +248,12 @@ impl Dentry {
         inode: Arc<dyn Inode>,
         name_fn: fn(&dyn Inode) -> String,
     ) -> Arc<Self> {
-        Self::new(inode, DentryOptions::Pseudo(name_fn))
+        Self::new(inode, DentryOptions::Pseudo(PseudoName::Computed(name_fn)))
+    }
+
+    /// Creates a new pseudo `Dentry` whose name is a fixed string.
+    pub(super) fn new_static_pseudo(inode: Arc<dyn Inode>, name: &'static str) -> Arc<Self> {
+        Self::new(inode, DentryOptions::Pseudo(PseudoName::Static(name)))
     }
 
     fn new(inode: Arc<dyn Inode>, options: DentryOptions) -> Arc<Self> {
@@ -1049,8 +1072,8 @@ enum DentryOptions {
     /// Reserved for `O_TMPFILE`.
     Anonymous { parent: Arc<Dentry> },
     /// An object with no place in any real filesystem tree;
-    /// the `fn` synthesizes its display name for `/proc/<pid>/fd/<n>`.
-    Pseudo(fn(&dyn Inode) -> String),
+    /// the payload synthesizes its display name for `/proc/<pid>/fd/<n>`.
+    Pseudo(PseudoName),
 }
 
 /// Manages child dentries in the per-directory cache.

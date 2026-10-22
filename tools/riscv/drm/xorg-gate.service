@@ -1,0 +1,14 @@
+[Unit]
+Description=Xorg virtio-gpu acceptance
+After=basic.target
+Wants=dbus.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/xorg-gate.sh
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

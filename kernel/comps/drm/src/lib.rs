@@ -16,7 +16,7 @@
 #![no_std]
 #![deny(unsafe_code)]
 
-use alloc::sync::Arc;
+use alloc::{format, sync::Arc, vec::Vec};
 
 use aster_core::{
     device::{Device, registry::char},
@@ -43,15 +43,25 @@ macro_rules! __log_prefix {
 }
 
 pub mod device;
+mod event;
+mod fence;
+mod flip;
 mod file;
 pub mod gem;
+mod prime;
+mod sync_file;
+mod syncobj;
 mod ioctl;
 pub mod kms;
 mod minor;
 pub mod utils;
 
+/// The DRM character-device major (`DRM_MAJOR` in Linux).
+const DRM_MAJOR: u16 = 226;
+
 pub fn register_device(device: Arc<dyn DrmDevice>) -> Result<()> {
     let registered_device = Arc::new(RegisteredDrmDevice::new(device)?);
+    let index = registered_device.index();
     let render_minor = if registered_device.device().has_features(DrmFeatures::RENDER) {
         let minor = DrmMinor::new(registered_device.clone(), DrmMinorType::Render);
         char::register(minor.clone())?;
@@ -60,7 +70,7 @@ pub fn register_device(device: Arc<dyn DrmDevice>) -> Result<()> {
         None
     };
 
-    let primary_minor = DrmMinor::new(registered_device, DrmMinorType::Primary);
+    let primary_minor = DrmMinor::new(registered_device.clone(), DrmMinorType::Primary);
 
     if let Err(error) = char::register(primary_minor) {
         if let Some(render_minor) = render_minor {
@@ -68,6 +78,25 @@ pub fn register_device(device: Arc<dyn DrmDevice>) -> Result<()> {
         }
         return Err(error);
     }
+
+    // libdrm needs the /sys/dev/char view of the nodes before it hands the
+    // device to Mesa; without it GBM (and therefore DRI3) cannot open it.
+    let card_name = format!("card{index}");
+    let render_name = format!("renderD{}", index + 128);
+    let mut nodes: Vec<(&str, u32)> = alloc::vec![(card_name.as_str(), index)];
+    if render_minor.is_some() {
+        nodes.push((render_name.as_str(), index + 128));
+    }
+    let driver = registered_device.device().name();
+    let modalias = registered_device.device().sysfs_modalias().unwrap_or("");
+    if let Err(error) =
+        aster_core::device::drm_sysfs::register_drm_device(DRM_MAJOR, &nodes, driver, modalias)
+    {
+        ostd::warn!("failed to publish the DRM sysfs nodes: {:?}", error);
+    }
+
+    // Page flips complete on the next scanout, outside the timer softirq.
+    flip::start_worker(registered_device.device());
 
     Ok(())
 }

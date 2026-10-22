@@ -17,6 +17,20 @@ mod softirq;
 mod system_time;
 pub(crate) mod timerfd;
 pub(crate) mod wait;
+pub use self::core::timer::IntervalTimer;
+pub use wait::wait_until_or_timeout;
+
+/// Returns the current monotonic time.
+///
+/// Subsystems that implement their own timeout handling (for example DRM sync
+/// objects, whose waits take an absolute `CLOCK_MONOTONIC` deadline) need a
+/// clock reading they can compare against.
+pub fn monotonic_now() -> Duration {
+    use clocks::MonotonicClock;
+    use core::Clock;
+
+    MonotonicClock::get().read_time()
+}
 
 pub(crate) type clockid_t = i32;
 pub(crate) type time_t = i64;
