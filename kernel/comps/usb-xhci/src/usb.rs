@@ -441,7 +441,7 @@ impl XhciController {
     }
 
     /// Runs one control transfer without a data stage (`TRT = 0`).
-    fn control_no_data(&self, slot: &mut SlotState, slot_id: u8, setup: u64) -> Result<()> {
+    pub(super) fn control_no_data(&self, slot: &mut SlotState, slot_id: u8, setup: u64) -> Result<()> {
         slot.ep0.push(Trb {
             param: setup,
             status: 8,
@@ -749,6 +749,20 @@ impl XhciController {
         }
     }
 
+    /// Runs `f` with the retained slot state of `slot_id`.
+    pub(super) fn with_slot<R>(
+        &self,
+        slot_id: u8,
+        f: impl FnOnce(&mut SlotState) -> R,
+    ) -> Result<R> {
+        let mut slots = self.slots.lock();
+        let slot = slots
+            .get_mut(slot_id as usize)
+            .and_then(|slot| slot.as_mut())
+            .ok_or_else(|| Error::with_message(Errno::EINVAL, "no such slot"))?;
+        Ok(f(slot))
+    }
+
     /// Stops, resets and re-arms one bulk endpoint after a halted transfer.
     ///
     /// The sequence is the controller side of the BOT reset recovery:
@@ -920,7 +934,7 @@ impl XhciController {
 }
 
 /// Builds an 8-byte setup packet as the low half of a Setup Stage TRB.
-fn control_setup(request_type: u8, request: u8, value: u16, index: u16, length: u16) -> u64 {
+pub(super) fn control_setup(request_type: u8, request: u8, value: u16, index: u16, length: u16) -> u64 {
     (request_type as u64)
         | ((request as u64) << 8)
         | ((value as u64) << 16)

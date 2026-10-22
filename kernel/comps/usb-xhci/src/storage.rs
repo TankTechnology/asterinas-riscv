@@ -17,7 +17,7 @@ use ostd::{
 };
 
 use super::XhciController;
-use super::usb::{EndpointState, SlotState};
+use super::usb::{EndpointState, SlotState, control_setup};
 
 /// `"USBC"` in little-endian order.
 const BOT_CBW_SIGNATURE: u32 = 0x4342_5355;
@@ -184,6 +184,45 @@ fn request_sense(
     Ok(())
 }
 
+/// Device-side Bulk-Only recovery: ClearFeature(HALT) on both bulk
+/// endpoints, then the class-specific BOT reset.
+pub(super) fn bot_reset(
+    controller: &XhciController,
+    slot_id: u8,
+    interface: u16,
+    in_dci: u8,
+    out_dci: u8,
+) -> Result<()> {
+    let address = |dci: u8| {
+        if dci % 2 == 1 {
+            0x80 | ((dci - 1) / 2)
+        } else {
+            dci / 2
+        }
+    };
+
+    for dci in [in_dci, out_dci] {
+        let setup = control_setup(0x02, 0x01, 0, address(dci) as u16, 0);
+        let result = controller.with_slot(slot_id, |slot| {
+            controller.control_no_data(slot, slot_id, setup)
+        })?;
+        match result {
+            Ok(()) => ostd::info!("clear halt ep {:#04x} ok", address(dci)),
+            Err(error) => ostd::warn!("clear halt ep {:#04x} failed: {:?}", address(dci), error),
+        }
+    }
+
+    let setup = control_setup(0x21, 0xFF, 0, interface, 0);
+    let result = controller.with_slot(slot_id, |slot| {
+        controller.control_no_data(slot, slot_id, setup)
+    })?;
+    match result {
+        Ok(()) => ostd::info!("bot class reset ok"),
+        Err(error) => ostd::warn!("bot class reset failed: {:?}", error),
+    }
+    Ok(())
+}
+
 /// Runs one SCSI READ(10) or WRITE(10) into the DMA range at `daddr`.
 pub(super) fn read_write(
     controller: &XhciController,
@@ -218,6 +257,15 @@ pub(super) fn read_write(
             {
                 let mut out = bulk_out.lock();
                 let _ = controller.recover_endpoint(slot_id, &mut out);
+            }
+            // Controller side is re-armed; now reset the device's BOT state.
+            let (in_dci, out_dci) = {
+                let input = bulk_in.lock();
+                let out = bulk_out.lock();
+                (input.dci, out.dci)
+            };
+            if let Err(error) = bot_reset(controller, slot_id, 0, in_dci, out_dci) {
+                ostd::warn!("bot reset failed: {:?}", error);
             }
             command(controller, slot_id, bulk_in, bulk_out, &cb, length, in_, daddr)
         }

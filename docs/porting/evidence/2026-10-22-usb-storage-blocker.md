@@ -183,3 +183,25 @@ block 设备里（当前块设备只持有两个 bulk 端点）。
 注意：`with_slot` 与 `bulk_in/bulk_out` 的锁顺序要固定（先槽表、后端点），避免死锁；
 `control_no_data` 复用 `slot.ep0` 环，长命令序列中不会再与枚举并发（块设备就绪后
 枚举已完成）。
+
+## BOT class reset 落地 + 3 次复测（2026-10-23，收口）
+
+实现（`kernel/comps/usb-xhci`）：
+
+- `XhciController::with_slot()`：把槽表里的 `SlotState`（含 EP0 环）借给块设备；
+- `storage::bot_reset()`：ClearFeature(HALT) bulk-in/out（`bmRequestType=0x02,
+  bRequest=0x01, wIndex=端点地址`）→ BOT class reset（`0x21, 0xFF, wIndex=接口号`），
+  每步打印 `clear halt ep 0xNN ok/failed`、`bot class reset ok/failed`；
+- `read_write` 失败分支：控制器侧 `Stop Endpoint`/`Set TR Dequeue` → `bot_reset`
+  → 重发一次 `READ(10)`。
+
+复测（`make test_x86_daily_use`，每轮都包含热插 U 盘 → 挂载 → 读文件 → 卸载）：
+
+| 轮 | 结果 |
+|---|---|
+| 1 | `USB ok`（该轮串口出现过 `bulk timeout` + `retrying READ/WRITE(10)`，恢复后挂载成功） |
+| 2 | `USB ok mounted-/dev/sda-read-ASTERINAS-USB-OK` |
+| 3 | `USB ok mounted-/dev/sda-read-ASTERINAS-USB-OK` |
+
+**3/3 通过**，且失败场景（BOT 数据阶段超时）被“控制器恢复 + 设备侧 class reset +
+重发”这条链路救回，验证了恢复路径端到端有效。

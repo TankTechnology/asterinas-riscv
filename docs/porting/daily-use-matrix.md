@@ -25,7 +25,7 @@ make test_x86_daily_use \
 | 剪贴板 | ok | `xclip` 写读往返一致 |
 | 输入法 | **ok（受限）** | XIM 服务已注册、`inputmethod/` 10 个 IM（wbpy 等）、fcitx5 存活且 D-Bus 调用成功；端到端键入受测试环境限制（无可用 WM：matchbox 未接管焦点、twm 启动即退出，`allowSendEvents` 直投也无按键落盘）；见 `2026-10-22-input-method.md` |
 | 音频 | ok | `/dev/snd/pcmC0D0p` + `aplay -D hw:0,0` 播放成功（见 `2026-10-22-alsa-aplay.md`） |
-| U 盘热插拔 | **ok** | 枚举 → `/sys/bus/usb/devices/1-1` → `/dev/sda` → `mount -t ext2 -o ro` → 读 `hello.txt` → `umount`；initramfs 门禁 10/10 通过；Debian daily 负载下多次出现 `can't read superblock`（1–2/3），已加重试 + 控制器侧端点恢复（Stop Endpoint/Set TR Dequeue，未超时），但设备侧 BOT class reset（EP0 0x21/0xFF）尚未接入，见 `2026-10-22-usb-storage-blocker.md` |
+| U 盘热插拔 | **ok** | 枚举 → `/sys/bus/usb/devices/1-1` → `/dev/sda` → `mount -t ext2 -o ro` → 读 `hello.txt` → `umount`；initramfs 门禁 10/10 通过；Debian daily 负载下多次出现 `can't read superblock`（1–2/3），重试链已完整：控制器 `Stop Endpoint`/`Set TR Dequeue` + 设备侧 ClearFeature(HALT)/BOT class reset（`0x21/0xFF`）+ 重发；Debian daily 3/3 通过（其中一轮由恢复路径救回），见 `2026-10-22-usb-storage-blocker.md` |
 | 睡眠唤醒 | **ok** | `/sys/power/state` + suspend-to-idle（2 s 窗口），`systemctl suspend` 返回 0，唤醒后磁盘/IO 可用（见 `2026-10-22-suspend-assessment.md`） |
 
 原始产物：`target/daily-use/matrix.tsv`、`console.txt`（串口全量）、
