@@ -144,6 +144,28 @@ fn drm_version_fields(driver_name: &str) -> (i32, i32, i32, &'static str, &'stat
     }
 }
 
+/// `DRM_IOCTL_GET_CAP` value for a driver.
+///
+/// The PowerVR backend mirrors the caps the vendor `pvr_dri.so` probes:
+/// `DRM_CAP_TIMESTAMP_MONOTONIC`, `DRM_CAP_SYNCOBJ`,
+/// `DRM_CAP_SYNCOBJ_TIMELINE` and `DRM_CAP_ADDFB2_MODIFIERS`. RockOS's
+/// `es_drm` reports 1/1/0 for the first three; `ADDFB2_MODIFIERS` was not
+/// measured there and stays 0. Unknown caps keep failing with `EINVAL`, as
+/// the DRM uapi allows.
+pub(crate) fn drm_cap_value(driver_name: &str, capability: u64) -> Result<u64> {
+    match capability {
+        DRM_CAP_DUMB_BUFFER => Ok(1),
+        DRM_CAP_DUMB_PREFERRED_DEPTH => Ok(24),
+        DRM_CAP_DUMB_PREFER_SHADOW => Ok(0),
+        DRM_CAP_PRIME => Ok(DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT),
+        DRM_CAP_TIMESTAMP_MONOTONIC if driver_name == POWERVR_DRIVER_NAME => Ok(1),
+        DRM_CAP_SYNCOBJ if driver_name == POWERVR_DRIVER_NAME => Ok(1),
+        DRM_CAP_SYNCOBJ_TIMELINE if driver_name == POWERVR_DRIVER_NAME => Ok(0),
+        DRM_CAP_ADDFB2_MODIFIERS if driver_name == POWERVR_DRIVER_NAME => Ok(0),
+        _ => return_errno_with_message!(Errno::EINVAL, "unsupported DRM capability"),
+    }
+}
+
 /// KMS object ids. The virtio-gpu device exposes a single CRTC/encoder/connector.
 const CRTC_ID: u32 = 1;
 const ENCODER_ID: u32 = 1;
@@ -167,6 +189,10 @@ const DRM_CAP_DUMB_BUFFER: u64 = 1;
 const DRM_CAP_DUMB_PREFERRED_DEPTH: u64 = 3;
 const DRM_CAP_DUMB_PREFER_SHADOW: u64 = 4;
 const DRM_CAP_PRIME: u64 = 5;
+const DRM_CAP_TIMESTAMP_MONOTONIC: u64 = 0x06;
+const DRM_CAP_ADDFB2_MODIFIERS: u64 = 0x10;
+const DRM_CAP_SYNCOBJ: u64 = 0x13;
+const DRM_CAP_SYNCOBJ_TIMELINE: u64 = 0x14;
 
 /// `DRM_PRIME_CAP_*`: which directions of buffer sharing this device offers.
 ///
@@ -3132,15 +3158,7 @@ impl PerOpenFileOps for DriHandle {
                 }
                 cmd @ GetCap => {
                     let mut cap = cmd.read()?;
-                    cap.value = match cap.capability {
-                        DRM_CAP_DUMB_BUFFER => 1,
-                        DRM_CAP_DUMB_PREFERRED_DEPTH => 24,
-                        DRM_CAP_DUMB_PREFER_SHADOW => 0,
-                        DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
-                        _ => {
-                            return_errno_with_message!(Errno::EINVAL, "unsupported DRM capability")
-                        }
-                    };
+                    cap.value = drm_cap_value(self.display.name, cap.capability)?;
                     cmd.write(&cap)?;
                     Ok(0)
                 }

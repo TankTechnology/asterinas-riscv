@@ -280,6 +280,14 @@ inherit_sys_branch_node!(FirmwarePvrPlatformNode, fields, {
         let mut printer = VmPrinter::new_skip(writer, offset);
         writeln!(printer, "DRIVER=pvr")?;
         writeln!(printer, "DEVTYPE=platform")?;
+        // The vendor platform device carries the GPU's device-tree identity;
+        // libdrm's `drmGetDevice2` fills `deviceinfo.platform.compatible`
+        // from these keys.
+        writeln!(printer, "OF_NAME=gpu")?;
+        writeln!(printer, "OF_FULLNAME=/soc/gpu@51400000")?;
+        writeln!(printer, "OF_COMPATIBLE_0=img,gpu")?;
+        writeln!(printer, "OF_COMPATIBLE_N=1")?;
+        writeln!(printer, "MODALIAS=of:NgpuT(null)Cimg,gpu")?;
         Ok(printer.bytes_written())
     }
 
@@ -668,7 +676,7 @@ mod test {
                 .target_path(),
             "../../../bus/platform/drivers/pvr"
         );
-        let mut buf = [0u8; 64];
+        let mut buf = [0u8; 256];
         let mut writer = ostd::mm::VmWriter::from(&mut buf[..]).to_fallible();
         let read = pvr.read_attr_at("uevent", 0, &mut writer).unwrap();
         assert!(
@@ -696,6 +704,40 @@ mod test {
         let driver = driver_node.target_path();
         assert_eq!(driver.rsplit('/').next(), Some("pvr"));
         assert!(driver.ends_with("/drivers/pvr"));
+    }
+
+    /// The PowerVR backend answers the caps `pvr_dri` probes and reports the
+    /// GPU's device-tree identity in the platform uevent.
+    #[ktest]
+    fn gpu_drm_caps_and_uevent() {
+        use crate::device::dri::drm_cap_value;
+
+        assert_eq!(drm_cap_value("pvr", 0x06).unwrap(), 1); // TIMESTAMP_MONOTONIC
+        assert_eq!(drm_cap_value("pvr", 0x10).unwrap(), 0); // ADDFB2_MODIFIERS
+        assert_eq!(drm_cap_value("pvr", 0x13).unwrap(), 1); // SYNCOBJ
+        assert_eq!(drm_cap_value("pvr", 0x14).unwrap(), 0); // SYNCOBJ_TIMELINE
+        assert_eq!(drm_cap_value("pvr", 5).unwrap(), 3); // PRIME
+        // Non-PowerVR backends keep the previous subset.
+        assert!(drm_cap_value("virtio_gpu", 0x13).is_err());
+
+        let devices = build_firmware_platform_node().unwrap();
+        let platform = devices.child("platform").unwrap().cast_to_branch().unwrap();
+        let pvr = platform.child("pvr").unwrap().cast_to_branch().unwrap();
+        let mut buf = [0u8; 256];
+        let mut writer = ostd::mm::VmWriter::from(&mut buf[..]).to_fallible();
+        let read = pvr.read_attr_at("uevent", 0, &mut writer).unwrap();
+        let uevent = core::str::from_utf8(&buf[..read]).unwrap();
+        for key in [
+            "DRIVER=pvr",
+            "DEVTYPE=platform",
+            "OF_NAME=gpu",
+            "OF_FULLNAME=/soc/gpu@51400000",
+            "OF_COMPATIBLE_0=img,gpu",
+            "OF_COMPATIBLE_N=1",
+            "MODALIAS=of:NgpuT(null)Cimg,gpu",
+        ] {
+            assert!(uevent.contains(key), "missing {key} in {uevent}");
+        }
     }
 
     #[ktest]
