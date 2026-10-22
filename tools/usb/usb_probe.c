@@ -64,6 +64,15 @@ static int scan_devices(void) {
         }
 
         printf("USBPROBE_DEVICE name=%s vendor=%s product=%s\n", name, vendor, product);
+
+        char config[32];
+        if (read_attr(name, "bConfigurationValue", config, sizeof(config)) == 0) {
+            char interfaces[32];
+            if (read_attr(name, "bNumInterfaces", interfaces, sizeof(interfaces)) == 0) {
+                printf("USBPROBE_CONFIG name=%s config=%s interfaces=%s\n",
+                       name, config, interfaces);
+            }
+        }
         found++;
     }
     closedir(dir);

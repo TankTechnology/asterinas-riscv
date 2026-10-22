@@ -7,7 +7,7 @@
 //! `/sys/bus/usb/devices/<name>` entry carrying `idVendor`/`idProduct`.
 //! Configuration parsing, interfaces and usb-storage come next.
 
-use alloc::{format, sync::Arc, vec, vec::Vec};
+use alloc::{format, string::String, sync::Arc, vec, vec::Vec};
 
 use aster_core::prelude::*;
 use ostd::{
@@ -195,6 +195,73 @@ pub(super) struct SlotState {
     input_context: DmaCoherent,
     device_context: DmaCoherent,
     ep0: Ring,
+    /// Filled once the device is configured; the bulk endpoints it lists are
+    /// what the mass-storage transport will use.
+    configuration: Option<Configuration>,
+}
+
+/// One endpoint of an interface.
+#[derive(Debug)]
+pub(super) struct EndpointDescriptor {
+    pub address: u8,
+    pub attributes: u8,
+    pub max_packet: u16,
+}
+
+impl EndpointDescriptor {
+    #[expect(dead_code)]
+    pub(super) fn number(&self) -> u8 {
+        self.address & 0x0F
+    }
+
+    pub(super) fn is_in(&self) -> bool {
+        self.address & 0x80 != 0
+    }
+
+    pub(super) fn is_bulk(&self) -> bool {
+        self.attributes & 0x03 == 0x02
+    }
+
+    pub(super) fn describe(&self) -> String {
+        format!(
+            "{:02x}:{} {} maxpacket={}",
+            self.address,
+            if self.is_bulk() { "bulk" } else { "other" },
+            if self.is_in() { "in" } else { "out" },
+            self.max_packet
+        )
+    }
+}
+
+/// One interface of the active configuration.
+#[derive(Debug)]
+pub(super) struct InterfaceDescriptor {
+    pub number: u8,
+    pub class: u8,
+    pub subclass: u8,
+    pub protocol: u8,
+    pub endpoints: Vec<EndpointDescriptor>,
+}
+
+/// The device's active configuration, as parsed from its descriptors.
+#[derive(Debug)]
+pub(super) struct Configuration {
+    pub value: u8,
+    pub interfaces: Vec<InterfaceDescriptor>,
+}
+
+impl Configuration {
+    /// `"81:bulk in maxpacket=1024\n02:bulk out ..."`, for the sysfs view.
+    pub(super) fn endpoint_summary(&self) -> String {
+        let mut summary = String::new();
+        for interface in &self.interfaces {
+            for endpoint in &interface.endpoints {
+                summary.push_str(&endpoint.describe());
+                summary.push('\n');
+            }
+        }
+        summary
+    }
 }
 
 impl XhciController {
@@ -290,20 +357,19 @@ impl XhciController {
         Ok(())
     }
 
-    /// Runs one `GET_DESCRIPTOR` control transfer on EP0.
-    fn get_descriptor(
+    /// Runs one control transfer with a data-IN stage on EP0.
+    fn control_in(
         &self,
         slot: &mut SlotState,
         slot_id: u8,
-        value: u16,
+        setup: u64,
         length: u16,
     ) -> Result<Vec<u8>> {
         let buffer = DmaCoherent::alloc(1, true)
             .map_err(|_| Error::with_message(Errno::ENOMEM, "no descriptor buffer"))?;
+        let length = length.min(4096);
 
-        // Device-to-host, standard, device: GET_DESCRIPTOR.
-        let setup: u64 =
-            0x80 | (6 << 8) | ((value as u64) << 16) | ((length as u64) << 48);
+        // `TRT = 3` selects the data-IN stage.
         slot.ep0.push(Trb {
             param: setup,
             status: 8,
@@ -332,7 +398,7 @@ impl XhciController {
                         if code != COMPLETION_SUCCESS && code != COMPLETION_SHORT_PACKET {
                             return_errno_with_message!(
                                 Errno::EIO,
-                                "the data stage of GET_DESCRIPTOR failed"
+                                "the data stage of a control transfer failed"
                             );
                         }
                         transferred = (length as usize).saturating_sub(event.residual());
@@ -341,7 +407,7 @@ impl XhciController {
                         if code != COMPLETION_SUCCESS {
                             return_errno_with_message!(
                                 Errno::EIO,
-                                "the status stage of GET_DESCRIPTOR failed"
+                                "the status stage of a control transfer failed"
                             );
                         }
                         status_done = true;
@@ -351,7 +417,7 @@ impl XhciController {
             core::hint::spin_loop();
             spin += 1;
             if spin > 20_000_000 {
-                return_errno_with_message!(Errno::ETIMEDOUT, "GET_DESCRIPTOR timed out");
+                return_errno_with_message!(Errno::ETIMEDOUT, "a control transfer timed out");
             }
         }
 
@@ -360,6 +426,65 @@ impl XhciController {
             *byte = buffer.read_val::<u8>(index)?;
         }
         Ok(descriptor)
+    }
+
+    /// Runs one control transfer without a data stage (`TRT = 0`).
+    fn control_no_data(&self, slot: &mut SlotState, slot_id: u8, setup: u64) -> Result<()> {
+        slot.ep0.push(Trb {
+            param: setup,
+            status: 8,
+            control: (TRB_SETUP_STAGE << 10) | (1 << 6),
+        })?;
+        // The status stage of a no-data transfer goes IN.
+        let status_address = slot.ep0.push(Trb {
+            param: 0,
+            status: 0,
+            control: (TRB_STATUS_STAGE << 10) | (1 << 16) | (1 << 5),
+        })?;
+        self.ring_doorbell(slot_id as u32, 1);
+
+        let mut spin = 0u64;
+        loop {
+            if let Some(event) = self.event_ring_pop()?
+                && event.type_() == TRB_TRANSFER_EVENT
+                && event.slot_id() == slot_id
+                && event.param == status_address
+            {
+                if event.completion_code() != COMPLETION_SUCCESS {
+                    return_errno_with_message!(
+                        Errno::EIO,
+                        "the status stage of a no-data control transfer failed"
+                    );
+                }
+                return Ok(());
+            }
+            core::hint::spin_loop();
+            spin += 1;
+            if spin > 20_000_000 {
+                return_errno_with_message!(Errno::ETIMEDOUT, "a control transfer timed out");
+            }
+        }
+    }
+
+    /// Reads and parses the active configuration descriptor.
+    fn read_configuration(&self, slot: &mut SlotState, slot_id: u8) -> Result<Configuration> {
+        let header = self.control_in(slot, slot_id, get_descriptor_setup(0x02, 0, 9), 9)?;
+        if header.len() < 9 {
+            return_errno_with_message!(Errno::EIO, "a truncated configuration descriptor");
+        }
+        let total = u16::from_le_bytes([header[2], header[3]]);
+        let bytes = self.control_in(slot, slot_id, get_descriptor_setup(0x02, 0, total), total)?;
+        parse_configuration(&bytes)
+    }
+
+    /// Selects the parsed configuration on the device.
+    fn set_configuration(
+        &self,
+        slot: &mut SlotState,
+        slot_id: u8,
+        value: u8,
+    ) -> Result<()> {
+        self.control_no_data(slot, slot_id, control_setup(0x00, 9, value as u16, 0, 0))
     }
 
     /// Resets the port so the device leaves the Default state.
@@ -414,19 +539,43 @@ impl XhciController {
             input_context,
             device_context,
             ep0: Ring::new(true)?,
+            configuration: None,
         };
 
         self.write_dcbaa(slot_id, slot.device_context.daddr() as u64)?;
         fill_input_context(&slot, port, speed)?;
         self.address_device(slot_id, slot.input_context.daddr() as u64)?;
 
-        let descriptor = self.get_descriptor(&mut slot, slot_id, 0x0100, 18)?;
+        let descriptor =
+            self.control_in(&mut slot, slot_id, get_descriptor_setup(0x01, 0, 18), 18)?;
         if descriptor.len() < 18 {
             return_errno_with_message!(Errno::EIO, "a truncated device descriptor");
         }
         let vendor_id = u16::from_le_bytes([descriptor[8], descriptor[9]]);
         let product_id = u16::from_le_bytes([descriptor[10], descriptor[11]]);
         let class = descriptor[4];
+
+        let configuration = self.read_configuration(&mut slot, slot_id)?;
+        for interface in &configuration.interfaces {
+            info!(
+                "interface {}: class={:#04x} subclass={:#04x} protocol={:#04x} endpoints={}",
+                interface.number,
+                interface.class,
+                interface.subclass,
+                interface.protocol,
+                interface.endpoints.len()
+            );
+            for endpoint in &interface.endpoints {
+                info!("endpoint {}", endpoint.describe());
+            }
+        }
+        self.set_configuration(&mut slot, slot_id, configuration.value)?;
+        info!(
+            "config {}: interfaces={} selected",
+            configuration.value,
+            configuration.interfaces.len()
+        );
+        slot.configuration = Some(configuration);
 
         let bus_number = 1u8;
         let device_number = slot_id;
@@ -436,6 +585,21 @@ impl XhciController {
             name, vendor_id, product_id, class, speed, slot_id
         );
 
+        let configuration_value = slot
+            .configuration
+            .as_ref()
+            .map(|configuration| configuration.value)
+            .unwrap_or(0);
+        let interface_count = slot
+            .configuration
+            .as_ref()
+            .map(|configuration| configuration.interfaces.len())
+            .unwrap_or(0);
+        let endpoints = slot
+            .configuration
+            .as_ref()
+            .map(|configuration| configuration.endpoint_summary())
+            .unwrap_or_default();
         super::sysfs::publish_device(
             &name,
             vendor_id,
@@ -444,6 +608,9 @@ impl XhciController {
             device_number,
             port,
             speed,
+            configuration_value,
+            interface_count,
+            &endpoints,
         );
 
         // The contexts and the EP0 ring must outlive this stack frame.
@@ -458,6 +625,61 @@ impl XhciController {
             slots[index] = Some(slot);
         }
     }
+}
+
+/// Builds an 8-byte setup packet as the low half of a Setup Stage TRB.
+fn control_setup(request_type: u8, request: u8, value: u16, index: u16, length: u16) -> u64 {
+    (request_type as u64)
+        | ((request as u64) << 8)
+        | ((value as u64) << 16)
+        | ((index as u64) << 32)
+        | ((length as u64) << 48)
+}
+
+/// `GET_DESCRIPTOR` for a descriptor kind and index.
+fn get_descriptor_setup(kind: u8, index: u8, length: u16) -> u64 {
+    control_setup(0x80, 6, ((kind as u16) << 8) | index as u16, 0, length)
+}
+
+/// Walks the configuration descriptor's interfaces and endpoints.
+fn parse_configuration(bytes: &[u8]) -> Result<Configuration> {
+    let mut value = None;
+    let mut interfaces: Vec<InterfaceDescriptor> = Vec::new();
+    let mut offset = 0usize;
+    while offset + 2 <= bytes.len() {
+        let length = bytes[offset] as usize;
+        let kind = bytes[offset + 1];
+        if length < 2 || offset + length > bytes.len() {
+            break;
+        }
+        match kind {
+            0x02 if length >= 6 => value = Some(bytes[offset + 5]),
+            0x04 if length >= 9 => interfaces.push(InterfaceDescriptor {
+                number: bytes[offset + 2],
+                class: bytes[offset + 5],
+                subclass: bytes[offset + 6],
+                protocol: bytes[offset + 7],
+                endpoints: Vec::new(),
+            }),
+            0x05 if length >= 7 => {
+                if let Some(interface) = interfaces.last_mut() {
+                    interface.endpoints.push(EndpointDescriptor {
+                        address: bytes[offset + 2],
+                        attributes: bytes[offset + 3],
+                        max_packet: u16::from_le_bytes([bytes[offset + 4], bytes[offset + 5]])
+                            & 0x7FF,
+                    });
+                }
+            }
+            _ => {}
+        }
+        offset += length;
+    }
+
+    let value = value.ok_or_else(|| {
+        Error::with_message(Errno::EIO, "the configuration descriptor is missing")
+    })?;
+    Ok(Configuration { value, interfaces })
 }
 
 /// Fills the Input Context for `Address Device`.

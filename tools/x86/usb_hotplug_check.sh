@@ -133,7 +133,14 @@ def console_text():
         return b''
 
 
-added = removed = disconnected = enumerated = False
+CONFIG_MARKERS = [
+    b'config 1: interfaces=1 selected',
+    b'interface 0: class=0x08',
+    b'endpoint 81:bulk in',
+    b'endpoint 02:bulk out',
+]
+
+added = removed = disconnected = enumerated = configured = False
 device_line = ''
 while time.time() < deadline:
     text = console_text()
@@ -146,7 +153,10 @@ while time.time() < deadline:
             if line.startswith(b'USBPROBE_DEVICE '):
                 device_line = line.decode(errors='replace')
                 enumerated = True
-    if enumerated and not removed:
+            elif line.startswith(b'USBPROBE_CONFIG '):
+                print(line.decode(errors='replace'), flush=True)
+    configured = all(marker in text for marker in CONFIG_MARKERS)
+    if enumerated and configured and not removed:
         time.sleep(1)
         monitor.sendall(b'device_del stick\n')
         removed = True
@@ -155,16 +165,16 @@ while time.time() < deadline:
         break
     time.sleep(0.2)
 
-print('USB_CLIENT added=%s enumerated=%s removed=%s disconnected=%s'
-      % (added, enumerated, removed, disconnected), flush=True)
+print('USB_CLIENT added=%s enumerated=%s configured=%s removed=%s disconnected=%s'
+      % (added, enumerated, configured, removed, disconnected), flush=True)
 if device_line:
     print(device_line, flush=True)
-sys.exit(0 if disconnected and enumerated else 1)
+sys.exit(0 if disconnected and enumerated and configured else 1)
 PY
 CLIENT_STATUS=$?
 if [[ $CLIENT_STATUS -ne 0 ]]; then
-    printf 'FAIL (enumeration or the port transitions did not complete; see %s)\n' "$CONSOLE"
+    printf 'FAIL (enumeration, configuration or the port transitions did not complete; see %s)\n' "$CONSOLE"
     exit 1
 fi
 
-printf 'PASS (xHCI controller up; hot-added device enumerated under /sys/bus/usb/devices)\n'
+printf 'PASS (hot-added device enumerated and configured; bulk endpoints published)\n'

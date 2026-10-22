@@ -37,6 +37,9 @@ pub(super) fn publish_device(
     device_number: u8,
     port: u8,
     speed: u32,
+    configuration: u8,
+    interfaces: usize,
+    endpoints: &str,
 ) {
     let mut state = DEVICES.lock();
     if !state.0 {
@@ -62,6 +65,9 @@ pub(super) fn publish_device(
         ("devnum", format!("{:03}\n", device_number)),
         ("speed", format!("{}\n", speed_mbps(speed))),
         ("port", format!("{}\n", port)),
+        ("bConfigurationValue", format!("{}\n", configuration)),
+        ("bNumInterfaces", format!("{}\n", interfaces)),
+        ("endpoints", endpoints.to_string()),
     ];
     let node = UsbDeviceNode::new(name, attrs);
     if let Err(error) = devices.add_child(node as Arc<dyn SysObj>) {
