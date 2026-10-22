@@ -253,6 +253,20 @@ impl FirmwarePvrPlatformNode {
         .expect("failed to register the PVR driver symlink");
         node.add_child(SysfsSymlink::new("subsystem", "../../../bus/platform") as Arc<dyn SysObj>)
             .expect("failed to register the PVR platform subsystem symlink");
+        // libdrm's `drmGetNodeTypeFromFd` scans
+        // `/sys/dev/char/<maj>:<min>/device/drm`; the entries it finds there
+        // decide whether the fd is a card or a render node. Without this
+        // subtree the vendor `PVRDRICreateScreen` rejects every node with
+        // "Unsupported device node type".
+        let drm = AttrLessSysNode::new("drm");
+        drm.add_child(SysfsSymlink::new("card0", "../../../../class/drm/card0") as Arc<dyn SysObj>)
+            .expect("failed to register the PVR card0 node");
+        drm.add_child(
+            SysfsSymlink::new("renderD128", "../../../../class/drm/renderD128") as Arc<dyn SysObj>,
+        )
+        .expect("failed to register the PVR renderD128 node");
+        node.add_child(drm as Arc<dyn SysObj>)
+            .expect("failed to register the PVR drm subtree");
         node
     }
 
@@ -738,6 +752,32 @@ mod test {
         ] {
             assert!(uevent.contains(key), "missing {key} in {uevent}");
         }
+    }
+
+    /// libdrm's `drmGetNodeTypeFromFd` scans `<device>/drm`; the vendor
+    /// `PVRDRICreateScreen` rejects the fd when those entries are missing.
+    #[ktest]
+    fn gpu_pvr_device_drm_subtree() {
+        let devices = build_firmware_platform_node().unwrap();
+        let platform = devices.child("platform").unwrap().cast_to_branch().unwrap();
+        let pvr = platform.child("pvr").unwrap().cast_to_branch().unwrap();
+        let drm = pvr.child("drm").unwrap().cast_to_branch().unwrap();
+        assert_eq!(
+            drm.child("card0")
+                .unwrap()
+                .cast_to_symlink()
+                .unwrap()
+                .target_path(),
+            "../../../../class/drm/card0"
+        );
+        assert_eq!(
+            drm.child("renderD128")
+                .unwrap()
+                .cast_to_symlink()
+                .unwrap()
+                .target_path(),
+            "../../../../class/drm/renderD128"
+        );
     }
 
     #[ktest]
