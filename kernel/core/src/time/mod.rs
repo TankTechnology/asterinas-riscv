@@ -17,6 +17,7 @@ mod softirq;
 mod system_time;
 pub(crate) mod timerfd;
 pub(crate) mod wait;
+pub use self::core::timer::IntervalTimer;
 pub use wait::wait_until_or_timeout;
 
 /// Returns the current monotonic time.

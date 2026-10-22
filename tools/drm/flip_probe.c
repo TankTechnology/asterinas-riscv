@@ -28,6 +28,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #define DRM_IOCTL_BASE 'd'
@@ -307,6 +308,29 @@ int main(void) {
     }
     sequence_before = vblank.sequence;
     printf("FLIPPROBE_VBLANK sequence=%u\n", sequence_before);
+
+    // A relative wait for one scanout completes from the 60 Hz software tick:
+    // no flip is issued between the two calls.
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    struct drm_wait_vblank relative = {
+        .type = 0,
+        .sequence = 1,
+    };
+    if (ioctl(card, DRM_IOCTL_WAIT_VBLANK, &relative) != 0) {
+        fail("wait-vblank-relative");
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double elapsed_ms = (double)(end.tv_sec - start.tv_sec) * 1000.0 +
+                        (double)(end.tv_nsec - start.tv_nsec) / 1e6;
+    if (elapsed_ms < 5.0 || relative.sequence <= sequence_before) {
+        printf("FLIPPROBE_FAIL vblank-relative ms=%.2f sequence=%u\n",
+               elapsed_ms, relative.sequence);
+        return 1;
+    }
+    printf("FLIPPROBE_VBLANK_RELATIVE ms=%.2f sequence=%u\n", elapsed_ms,
+           relative.sequence);
+    sequence_before = relative.sequence;
 
     // Flip with an event and read the completion.
     if (page_flip(crtc_id, fb_b, DRM_MODE_PAGE_FLIP_EVENT, 0xabcdu) != 0) {

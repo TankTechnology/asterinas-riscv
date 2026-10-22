@@ -37,10 +37,15 @@ previous block rejected page-flip events and returned `EOPNOTSUPP` for
 
 - Each CRTC carries a software vblank state
   (`kernel/comps/drm/src/kms/objects/crtc.rs`): a sequence counter, the
-  timestamp of the last completed scanout, and a waiter list. The counter
-  advances whenever a modeset or flip has transferred and flushed the
-  framebuffer — that completion is this driver's vblank source, since there is
-  no refresh interrupt.
+  timestamp of the last scanout, and an IRQ-safe waiter list. The counter
+  advances on every completed scanout (a modeset or flip that transferred and
+  flushed the framebuffer) **and** from a 60 Hz software tick that is started
+  when the CRTC becomes active and stopped when it is disabled.
+  `aster_core::IntervalTimer` is the public periodic-timer wrapper; its
+  callback runs in the timer softirq with interrupts disabled, so the vblank
+  state uses atomics plus an IRQ-safe waiter list only.
+  This makes a relative wait for the next vblank complete (~17 ms) without any
+  flip.
 - `DRM_IOCTL_WAIT_VBLANK` (0x3a) supports relative and absolute requests and
   `DRM_VBLANK_EVENT` (queues a `DRM_EVENT_VBLANK` record and returns
   immediately). The reply carries the current sequence and timestamp.
@@ -53,16 +58,19 @@ previous block rejected page-flip events and returned `EOPNOTSUPP` for
 
 ```
 FLIPPROBE_VBLANK sequence=1
-FLIPPROBE_FLIP_EVENT sequence=2
+FLIPPROBE_VBLANK_RELATIVE ms=17.49 sequence=2
+FLIPPROBE_FLIP_EVENT sequence=3
 FLIPPROBE_FLIP_STATE ok
 FLIPPROBE_FLIP_ASYNC ok
-FLIPPROBE_VBLANK_WAIT sequence=3
+FLIPPROBE_VBLANK_WAIT sequence=4
 FLIPPROBE_VBLANK_EVENT ok
 FLIPPROBE_ERRORS ok
 FLIPPROBE_PASS
 ```
 
-The probe establishes a mode with legacy `SETCRTC`, flips to a second
+After establishing the mode, the probe waits for one vblank *without*
+flipping (relative wait) and requires that the software tick advanced the
+sequence and took at least 5 ms. It then flips to a second
 framebuffer with `EVENT`, polls and reads the completion (checking the event
 type, length, `user_data` and sequence), verifies `GETCRTC` reports the flipped
 framebuffer, flips back with `ASYNC`, waits for the current sequence with an
@@ -112,9 +120,9 @@ make test_x86_syncobj
 
 ## Boundaries of this block
 
-- Vblank is software: the sequence advances on scanout completion, not on a
-  timer or interrupt, so a wait for a future vblank blocks until the next
-  modeset or flip.
+- Vblank is software: a 60 Hz tick per active CRTC advances the sequence, and
+  completed scanouts advance it as well. There is no hardware refresh
+  interrupt, so timestamps are softirq-time, not scanout-time.
 - `ASYNC` flips are applied synchronously; the flag is accepted because the
   result is indistinguishable for this driver.
 - `WAIT_VBLANK` addresses CRTC 0 only, and its wait is not interruptible by

@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{sync::{Arc, Weak}, vec::Vec};
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::{
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicU32, AtomicU64, Ordering},
     time::Duration,
 };
 
-use ostd::sync::{Mutex, Waker};
+use aster_core::IntervalTimer;
+use ostd::sync::{Mutex, SpinLock, Waker};
+
+/// The software vblank period: 60 Hz.
+const VBLANK_INTERVAL: Duration = Duration::from_micros(16_667);
 
 use crate::kms::{
     display_mode::DrmDisplayMode,
@@ -27,6 +34,7 @@ pub(crate) struct DrmCrtc {
     state: Mutex<DrmCrtcState>,
     properties: DrmPropertyAttachments,
     vblank: DrmVblankState,
+    vblank_timer: Mutex<Option<IntervalTimer>>,
 }
 
 impl DrmCrtc {
@@ -43,6 +51,7 @@ impl DrmCrtc {
             state: Mutex::new(DrmCrtcState::default()),
             properties,
             vblank: DrmVblankState::default(),
+            vblank_timer: Mutex::new(None),
         }
     }
 
@@ -81,7 +90,31 @@ impl DrmCrtc {
 
     /// Returns the timestamp of the most recent completed scanout.
     pub(crate) fn vblank_time(&self) -> Option<Duration> {
-        *self.vblank.last_time.lock()
+        let micros = self.vblank.last_time_micros.load(Ordering::Relaxed);
+        (micros != 0).then(|| Duration::from_micros(micros))
+    }
+
+    /// Starts the periodic software vblank tick, if it is not running.
+    ///
+    /// The timer callback runs with interrupts disabled and only touches
+    /// atomics and the IRQ-safe waiter list.
+    pub(crate) fn start_vblank_timer(self: &Arc<Self>) {
+        let mut timer = self.vblank_timer.lock();
+        if timer.is_some() {
+            return;
+        }
+
+        let crtc = Arc::downgrade(self);
+        *timer = Some(IntervalTimer::new(VBLANK_INTERVAL, move || {
+            if let Some(crtc) = crtc.upgrade() {
+                crtc.tick_vblank(aster_core::monotonic_now());
+            }
+        }));
+    }
+
+    /// Stops the periodic software vblank tick.
+    pub(crate) fn stop_vblank_timer(&self) {
+        *self.vblank_timer.lock() = None;
     }
 
     /// Records one completed scanout and wakes vblank waiters.
@@ -91,9 +124,11 @@ impl DrmCrtc {
     /// the event this counter advances on.
     pub(crate) fn tick_vblank(&self, now: Duration) -> u32 {
         let sequence = self.vblank.sequence.fetch_add(1, Ordering::Relaxed) + 1;
-        *self.vblank.last_time.lock() = Some(now);
+        self.vblank
+            .last_time_micros
+            .store(now.as_micros().try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
 
-        let wakers = core::mem::take(&mut *self.vblank.wakers.lock());
+        let wakers = core::mem::take(&mut *self.vblank.wakers.disable_irq().lock());
         for waker in wakers {
             waker.wake_up();
         }
@@ -103,15 +138,17 @@ impl DrmCrtc {
 
     /// Registers a waker for the next completed scanout.
     pub(crate) fn register_vblank_waker(&self, waker: Arc<Waker>) {
-        self.vblank.wakers.lock().push(waker);
+        self.vblank.wakers.disable_irq().lock().push(waker);
     }
 }
 
 /// Software vblank state of one CRTC.
 struct DrmVblankState {
     sequence: AtomicU32,
-    last_time: Mutex<Option<Duration>>,
-    wakers: Mutex<Vec<Arc<Waker>>>,
+    /// Microseconds since boot; zero means "no scanout yet".
+    last_time_micros: AtomicU64,
+    /// IRQ-safe because the periodic tick runs from the timer softirq.
+    wakers: SpinLock<Vec<Arc<Waker>>>,
 }
 
 impl core::fmt::Debug for DrmVblankState {
@@ -126,8 +163,8 @@ impl Default for DrmVblankState {
     fn default() -> Self {
         Self {
             sequence: AtomicU32::new(0),
-            last_time: Mutex::new(None),
-            wakers: Mutex::new(Vec::new()),
+            last_time_micros: AtomicU64::new(0),
+            wakers: SpinLock::new(Vec::new()),
         }
     }
 }

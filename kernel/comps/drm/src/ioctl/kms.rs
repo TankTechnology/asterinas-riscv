@@ -453,8 +453,15 @@ impl DrmFile {
         }
 
         // The scanout was transferred and flushed above; on this driver that
-        // completion is the vblank source.
+        // completion is the vblank source. An active CRTC also keeps a 60 Hz
+        // software vblank tick running so relative waits complete without a
+        // flip.
         crtc.tick_vblank(aster_core::monotonic_now());
+        if display_mode.is_some() {
+            crtc.start_vblank_timer();
+        } else {
+            crtc.stop_vblank_timer();
+        }
 
         Ok(0)
     }
