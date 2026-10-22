@@ -26,7 +26,7 @@ make test_x86_daily_use \
 | 输入法 | missing | 镜像里没有 fcitx5/ibus（也未安装） |
 | 音频 | ok | `/dev/snd/pcmC0D0p` + `aplay -D hw:0,0` 播放成功（见 `2026-10-22-alsa-aplay.md`） |
 | U 盘热插拔 | **ok** | 枚举 → `/sys/bus/usb/devices/1-1` → `/dev/sda` → `mount -t ext2 -o ro` → 读 `hello.txt` → `umount`（见 `2026-10-22-usb-storage-blocker.md`） |
-| 睡眠唤醒 | fail | `systemctl suspend` 返回 1：`Call to Suspend failed: No such file or directory`（缺 `/sys/power/state`） |
+| 睡眠唤醒 | **ok** | `/sys/power/state` + suspend-to-idle（2 s 窗口），`systemctl suspend` 返回 0，唤醒后磁盘/IO 可用（见 `2026-10-22-suspend-assessment.md`） |
 
 原始产物：`target/daily-use/matrix.tsv`、`console.txt`（串口全量）、
 `screen.ppm`（X 起来后的截屏）、`usbstick.img`（热插的 U 盘）。
@@ -43,8 +43,8 @@ make test_x86_daily_use \
   剩余边界是同步播放（块间有短静音）、无 mmap、无录音/混音器控件。
 - **USB 热插拔**：已打通到可挂载——xHCI 枚举、配置、BOT/SCSI、`/dev/sda` 块设备、
   ext2 只读挂载读文件全部通过门禁（`2026-10-22-usb-storage-blocker.md`）。
-- **睡眠唤醒**：缺 `/sys/power/state` 与 ACPI S3 支持；QEMU 侧 `system_wakeup`
-  已经接好，等内核提供挂起入口即可复用。
+- **睡眠唤醒**：已提供 `/sys/power/state` 与 suspend-to-idle；ACPI S3 的
+  trampoline/设备恢复仍未实现（`2026-10-22-suspend-assessment.md` 有边界说明）。
 
 ## 与门禁的关系
 

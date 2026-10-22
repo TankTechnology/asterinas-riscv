@@ -6,6 +6,7 @@ mod fb;
 mod mem;
 pub(crate) mod misc;
 mod model;
+mod power;
 mod pty;
 pub mod registry;
 pub(crate) mod tty;
@@ -69,6 +70,7 @@ pub(crate) fn init_in_first_kthread() {
 pub(crate) fn init_in_first_process() -> Result<()> {
     tty::init_in_first_process()?;
     registry::init_in_first_process()?;
+    power::init()?;
 
     Ok(())
 }

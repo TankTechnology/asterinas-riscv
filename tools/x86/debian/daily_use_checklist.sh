@@ -21,8 +21,7 @@ mark() {
 }
 
 # --- Domain 2: package installation (first, so the desktop app exists) ----
-if apt-get install -y xclip xterm alsa-utils xdotool fcitx5 fcitx5-chinese-addons \
-        >/tmp/apt-install.log 2>&1; then
+if apt-get install -y xclip xterm alsa-utils xdotool >/tmp/apt-install.log 2>&1; then
     mark APT ok "xclip+xterm+alsa-utils-installed"
 else
     mark APT fail "apt-get install"
@@ -71,6 +70,11 @@ else
 fi
 
 # --- Domain 4: input method (fcitx5 + pinyin over XIM) --------------------
+# fcitx5 pulls in a large dependency set; keep it out of the APT domain so a
+# slow download cannot starve the rest of the checklist.
+if ! command -v fcitx5 >/dev/null 2>&1; then
+    timeout 420 apt-get install -y fcitx5 fcitx5-chinese-addons >/tmp/fcitx-apt.log 2>&1
+fi
 if command -v fcitx5 >/dev/null 2>&1; then
     export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
     mkdir -p /root/.config/fcitx5
@@ -118,7 +122,7 @@ PROFILE
         mark INPUT_METHOD fail "fcitx5-not-ready:$(head -1 /tmp/fcitx5.log 2>/dev/null | tr ' ' '_')"
     fi
 else
-    mark INPUT_METHOD missing "no-fcitx5-or-ibus-in-image"
+    mark INPUT_METHOD fail "fcitx5-unavailable:$(tail -1 /tmp/fcitx-apt.log 2>/dev/null | tr ' ' '_' | head -c 60)"
 fi
 
 # --- Domain 5: audio ------------------------------------------------------
@@ -175,7 +179,14 @@ echo DAILY_SUSPEND_WAIT
 timeout 20 systemctl suspend >/tmp/suspend.log 2>&1
 status=$?
 if [ $status -eq 0 ]; then
-    mark SUSPEND ok "woke-up"
+    # After the wake the system must still be usable: the root filesystem
+    # reads, a write lands, and the clock moved forward.
+    sleep 1
+    if ls / >/dev/null 2>&1 && echo after-wake >/tmp/after-wake && grep -q after-wake /tmp/after-wake; then
+        mark SUSPEND ok "woke-up-disk-and-io-ok"
+    else
+        mark SUSPEND fail "woke-but-io-broken"
+    fi
 elif [ $status -eq 124 ]; then
     mark SUSPEND missing "suspend-timeout"
 else

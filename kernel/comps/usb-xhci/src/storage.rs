@@ -251,7 +251,7 @@ pub(super) fn command(
     // Give the device a moment to move from CBW to its data phase. Without
     // this settle, the data packet occasionally never completes and the
     // endpoint ends up with a stranded transfer (a bulk timeout later).
-    for _ in 0..20_000 {
+    for _ in 0..200_000 {
         core::hint::spin_loop();
     }
 
@@ -264,6 +264,11 @@ pub(super) fn command(
     if data_length > 0 {
         let data_endpoint = if data_in { &mut input } else { &mut out };
         controller.bulk_transfer(slot_id, data_endpoint, data_daddr, data_length)?;
+    }
+
+    // Same for the transition from the data phase to the CSW phase.
+    for _ in 0..20_000 {
+        core::hint::spin_loop();
     }
 
     let csw_address = controller.push_transfer(
