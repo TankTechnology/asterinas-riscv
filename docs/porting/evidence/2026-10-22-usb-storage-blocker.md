@@ -52,3 +52,18 @@ U 盘镜像由门禁生成：`mke2fs -t ext2 -b 4096`（内核只支持 4 KiB �
 - 写路径（SCSI WRITE(10)）已实现但没有门禁用例；拔盘仍未 `Disable Slot`。
 - settle 是对设备状态机时序的显式让步（几十 µs/命令），不是协议必需项；
   若以后换真实硬件，应改为等设备 NAK 重试而不是固定延迟。
+
+## 稳定性统计（2026-10-23）
+
+连续 10 次跑完整门禁（attach → 枚举 → `mount -t ext2 -o ro` → 读 `hello.txt` →
+`umount` → detach）：
+
+```
+PASS=10 FAIL=0
+```
+
+即 initramfs 门禁路径 10/10 稳定。此前记录的“偶发”出现在**Debian daily 环境**
+（一次 `can't read superblock`，其余多轮均 `DAILY_USB=ok`），说明剩余风险是
+Debian 负载下的 BOT 时序余量，而不是 initramfs 路径本身。若要继续加固，方向是
+把 CBW→数据阶段的 settle 从固定自旋改为“等设备就绪/NACK 重试”，并给
+`READ(10)` 加一次命令级重试。
