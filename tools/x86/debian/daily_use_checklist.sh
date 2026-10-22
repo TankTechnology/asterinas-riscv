@@ -130,7 +130,10 @@ if command -v fcitx5 >/dev/null 2>&1; then
         engine=$(fcitx5-remote -n 2>/dev/null)
         echo "DAILY_FCITX after_activate='$engine'" >/dev/console
     fi
-    if [ -n "$engine" ]; then
+    # `fcitx5-remote -n` reports the engine of a *current input context*; an
+    # empty answer does not mean the engine is unusable. The verdict comes from
+    # typing through XIM into a real client.
+    if true; then
         if [ -n "$window" ]; then
             # wubi codes: 你 = wqiy, 好 = vbg
             timeout 5 xdotool type --delay 150 "wqiy" 2>/dev/null || true

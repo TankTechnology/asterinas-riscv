@@ -209,6 +209,16 @@ DAILY_FCITX after_activate=''
 grep `InputContext`/`InputMethodGroup`/`xim`，并用 `fcitx5-diagnose` 的
 “Input Methods / Frontends”两节确认。
 
+### 端到端直接验证（本轮，跳过 -n）
+
+按“`-n` 是按 IC 返回、空不代表不可用”的口径，改成无条件打字：xterm 聚焦后
+`xdotool type wqiy` + space、`vbg` + space + Return，判据是 `/tmp/xim-out`。
+
+结果：`DAILY_INPUT_METHOD=fail engine--no-text:` —— **`/tmp/xim-out` 是空的**。
+连未经过输入法的原始 ASCII 都没有落进去，说明按键没有送达该 xterm（焦点/XIM 抓键
+环节），而不是输入法引擎本身的问题。下一步：用 `xdotool getactivewindow` /
+`xev` 确认按键去向，并明确 xterm 启动时是否带 `+xim`（`xterm -im fcitx`）。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：
