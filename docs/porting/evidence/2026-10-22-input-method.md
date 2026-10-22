@@ -23,6 +23,21 @@ DAILY_FCITX engine='' remote_rc=0
 - XIM 相关 addon（`xim.conf`、`xcb.conf`）与中文（`pinyin.conf`、`pinyinhelper.conf`、
   `table.conf`）都在。
 
+## 本轮进展（syscall 补齐后）
+
+内核已支持 `MSG_NOSIGNAL` 与 `waitid(WEXITED)`，并在客体里用静态小工具验证：
+
+```
+MSGTEST_SEND ret=-1 errno=32        # EPIPE，进程没被 SIGPIPE 杀死
+MSGTEST_WAIT rc=0 errno=0 code=1 status=7
+MSGTEST_PASS
+```
+
+两处“unsupported”告警随之消失。fcitx5 现在**能一直活着**（`alive=1`），但
+`fcitx5-remote -n` 仍返回空（键盘引擎 profile 下同样为空），所以还没到“能输入
+汉字”的门槛。注意上一轮记录的 libpinyin 回溯发生在守护进程退出路径上
+（`Unloading addon ...`），补 syscall 后进程不再退出，但引擎查询仍未打通。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：
@@ -42,11 +57,13 @@ fcitx5 的启动/崩溃处理路径本身在这套内核上活不下来。
 很可能是崩溃处理器/子进程等待路径的触发点；真正的崩溃信号还需要一次带
 core/信号日志的复现才能定位到具体帧。
 
-## 两条替代路径
+## 两条替代路径（已按实测更新）
 
-1. **内核补齐两个 syscall 选项**：`send/recv` 支持 `MSG_NOSIGNAL`（或至少不告警
-   并按无该标志处理）、`waitid` 支持 `WEXITED`。然后复跑，若仍崩，在
-   `do_exit`/信号投递处打印 faulting signal + 用户态 PC，定位 libpinyin 的崩溃点。
+1. **把引擎查询本身打通**（已完成 syscall 部分）：用准确的返回码与调试输出复跑
+   （当前诊断里的 `remote_rc` 取的是 `echo` 的返回值，需改成先存
+   `engine=$(fcitx5-remote -n); rc=$?`），并尝试 `fcitx5-remote -o/-t/-r`；
+   如果 `-n` 仍为空，用 `dbus-send --session --dest=org.fcitx.Fcitx5` 直接查询
+   InputMethod 属性，区分“总线没连上”与“守护进程没有输入法组”。
 2. **绕开 libpinyin**：
    - 试 `fcitx5-table` 路线（`table.conf` 已加载）：装 `fcitx5-table-extra`，
      用拼音/五笔码表引擎，不碰 libpinyin；
