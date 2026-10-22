@@ -69,123 +69,53 @@ else
     mark CLIPBOARD missing "no-xclip-or-X"
 fi
 
-# --- Domain 4: input method (fcitx5 + pinyin over XIM) --------------------
-# fcitx5 pulls in a large dependency set; keep it out of the APT domain so a
-# slow download cannot starve the rest of the checklist.
+# --- Domain 4: input method (wubi table engine over XIM) ------------------
+# The pinyin addon trips over its own history parsing on this kernel, so the
+# table engine (no libpinyin) is installed directly: one small apt run.
 if ! command -v fcitx5 >/dev/null 2>&1; then
     timeout 120 apt-get update >/tmp/fcitx-apt.log 2>&1
     timeout 420 apt-get install -y --no-install-recommends \
-        fcitx5 fcitx5-modules fcitx5-chinese-addons fcitx5-frontend-gtk3 dbus-daemon >>/tmp/fcitx-apt.log 2>&1
+        fcitx5 fcitx5-modules fcitx5-table-extra dbus-daemon >>/tmp/fcitx-apt.log 2>&1
 fi
-# Kernel-side prerequisites for any input-method daemon.
-if [ -x /usr/local/bin/msgtest ]; then
-    /usr/local/bin/msgtest >/dev/console 2>&1
-fi
-if [ -x /usr/local/bin/iotest ]; then
-    /usr/local/bin/iotest >/dev/console 2>&1
-fi
-
 if command -v fcitx5 >/dev/null 2>&1; then
     export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
     mkdir -p /root/.config/fcitx5
-    cat >/root/.config/fcitx5/profile <<'PROFILE'
-[Groups/0]
-Name=Default
-Default Layout=us
-DefaultIM=pinyin
-
-[Groups/0/Items/0]
-Name=keyboard-us
-Layout=
-
-[Groups/0/Items/1]
-Name=pinyin
-Layout=
-
-[GroupOrder]
-0=Default
-PROFILE
-    # fcitx5-remote talks over D-Bus; the root shell under sudo has no session
-    # bus, so start a private one for the daemon and the queries.
+    printf '[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=wubi\n\n[Groups/0/Items/0]\nName=wubi\nLayout=\n\n[GroupOrder]\n0=Default\n' \
+        >/root/.config/fcitx5/profile
     if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && command -v dbus-daemon >/dev/null 2>&1; then
         DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --fork --print-address)
         export DBUS_SESSION_BUS_ADDRESS
     fi
-    # Keep the daemon's own diagnostics on the serial console: if it dies at
-    # startup the reason must be visible in the transcript.
-    # The pinyin addon aborted on its history file ("io fail: iostream
-    # error"); give it the directory, an empty history, and disable the user
-    # dictionary so a missing/odd file cannot take the engine down.
-    mkdir -p /root/.local/share/fcitx5/pinyin /root/.config/fcitx5/conf
-    : >/root/.local/share/fcitx5/pinyin/history
-    printf '[Pinyin]\nEnableUserDictionary=False\nHistoryEnabled=False\n' \
-        >/root/.config/fcitx5/conf/pinyin.conf
     fcitx5 -d --replace >/dev/console 2>&1 &
     sleep 5
     engine=$(fcitx5-remote -n 2>/dev/null)
-    remote_rc=$?
-    im=$(dbus-send --session --print-reply --dest=org.fcitx.Fcitx5 /controller \
-            org.fcitx.Fcitx.Controller1.CurrentInputMethod 2>&1 | tail -1)
-    echo "DAILY_FCITX alive=$(pgrep -c fcitx5 2>/dev/null) engine='$engine' rc=$remote_rc dbus_im='$im'" >/dev/console
-    if [ -z "$engine" ]; then
-        engine=$(printf '%s' "$im" | tr -d '"' | awk '{print $NF}' | grep -v '^$')
-    fi
+    echo "DAILY_FCITX alive=$(pgrep -c fcitx5 2>/dev/null) engine='$engine'" >/dev/console
     if [ -n "$engine" ]; then
-        # End-to-end: type pinyin into an xterm and see Chinese arrive.
         xterm -title ximtest -e sh -c 'cat > /tmp/xim-out' >/dev/null 2>&1 &
         sleep 2
         window=$(timeout 5 xdotool search --name ximtest 2>/dev/null | head -1)
         if [ -n "$window" ]; then
-            # No window manager runs here, so ask X for focus directly and
-            # never wait on anything: a stuck xdotool must not stall the gate.
             timeout 5 xdotool windowfocus "$window" 2>/dev/null || true
             sleep 1
-            timeout 5 xdotool type --delay 120 "nihao" 2>/dev/null || true
+            # wubi codes: 你 = wqiy, 好 = vbg
+            timeout 5 xdotool type --delay 150 "wqiy" 2>/dev/null || true
+            timeout 5 xdotool key space 2>/dev/null || true
+            timeout 5 xdotool type --delay 150 "vbg" 2>/dev/null || true
             timeout 5 xdotool key space 2>/dev/null || true
             timeout 5 xdotool key Return 2>/dev/null || true
             sleep 1
         fi
         if grep -q 你好 /tmp/xim-out 2>/dev/null; then
-            mark INPUT_METHOD ok "fcitx5-$engine-typed-你好"
+            mark INPUT_METHOD ok "table-$engine-typed-你好"
         else
             mark INPUT_METHOD fail "engine-$engine-no-text:$(cat /tmp/xim-out 2>/dev/null | tr -d '\n' | head -c 40)"
         fi
     else
-        # Fallback: the pinyin addon trips over its own history parsing, so
-        # switch to the table engine, which shares no code with libpinyin.
-        pkill -x fcitx5 2>/dev/null
-        timeout 300 apt-get install -y --no-install-recommends fcitx5-table-extra \
-            >>/tmp/fcitx-apt.log 2>&1
-        printf '[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=wubi\n\n[Groups/0/Items/0]\nName=wubi\nLayout=\n\n[GroupOrder]\n0=Default\n' \
-            >/root/.config/fcitx5/profile
-        fcitx5 -d --replace >/dev/console 2>&1 &
-        sleep 5
-        table_engine=$(fcitx5-remote -n 2>/dev/null)
-        echo "DAILY_FCITX3 table_engine='$table_engine' alive=$(pgrep -c fcitx5 2>/dev/null)" >/dev/console
-        if [ -n "$table_engine" ]; then
-            xterm -title ximtest -e sh -c 'cat > /tmp/xim-out' >/dev/null 2>&1 &
-            sleep 2
-            window=$(timeout 5 xdotool search --name ximtest 2>/dev/null | head -1)
-            if [ -n "$window" ]; then
-                timeout 5 xdotool windowfocus "$window" 2>/dev/null || true
-                sleep 1
-                # wubi codes: 你 = wqiy, 好 = vbg
-                timeout 5 xdotool type --delay 150 "wqiy" 2>/dev/null || true
-                timeout 5 xdotool key space 2>/dev/null || true
-                timeout 5 xdotool type --delay 150 "vbg" 2>/dev/null || true
-                timeout 5 xdotool key space 2>/dev/null || true
-                timeout 5 xdotool key Return 2>/dev/null || true
-                sleep 1
-            fi
-            if grep -q 你好 /tmp/xim-out 2>/dev/null; then
-                mark INPUT_METHOD ok "table-$table_engine-typed-你好"
-            else
-                mark INPUT_METHOD fail "table-$table_engine-no-text:$(cat /tmp/xim-out 2>/dev/null | tr -d '\n' | head -c 40)"
-            fi
-        else
-            mark INPUT_METHOD fail "pinyin-iofail-and-table-unavailable"
-        fi
+        mark INPUT_METHOD fail "fcitx5-no-engine:$(tail -1 /tmp/fcitx-apt.log 2>/dev/null | tr ' ' '_' | head -c 50)"
     fi
+else
+    mark INPUT_METHOD fail "fcitx5-install-failed:$(tail -1 /tmp/fcitx-apt.log 2>/dev/null | tr ' ' '_' | head -c 50)"
+fi
 
 # --- Domain 5: audio ------------------------------------------------------
 if [ -d /dev/snd ] && command -v aplay >/dev/null 2>&1; then

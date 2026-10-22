@@ -107,6 +107,21 @@ OOM；apt 输出重定向到 /tmp，串口看不到原因）。下一次复跑�
 `--timeout`）提到 1500 s，或把这两个包装进 rootfs profile，然后复跑即可拿到
 `DAILY_FCITX3 table_engine=...` 的判定。
 
+### 码表引擎实测（本轮，门禁跑完）
+
+改成只装 `fcitx5 fcitx5-modules fcitx5-table-extra dbus-daemon`（不装
+chinese-addons/libpinyin），profile 用 `DefaultIM=wubi`，门禁 1800 s 内完整跑完：
+
+```
+DAILY_FCITX alive=1 engine=''
+DAILY_INPUT_METHOD=fail fcitx5-no-engine:debconf:_falling_back_to_frontend:_Readline
+```
+
+守护进程活着，但引擎名依旧为空——**与 pinyin 无关**，是 fcitx5 在到达
+“加载输入法组”之前就没能激活任何 IM。下一步应看 `fcitx5 -d` 完整日志里
+`Loaded addon keyboard/wubi` 与 `addonmanager` 的失败行，并试
+`fcitx5-remote -o`（激活）后再查 `-n`。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：
