@@ -3,9 +3,15 @@
 //! DRM sync-object ioctls.
 //!
 //! The handled surface is the one a compositor uses directly: create,
-//! destroy, binary signal/reset/wait, timeline signal/wait, and query. Fence
-//! import/export (`SYNCOBJ_HANDLE_TO_FD`/`FD_TO_HANDLE`) is not implemented;
-//! this kernel has no dma-fence layer to back it yet.
+//! destroy, binary signal/reset/wait, timeline signal/wait, query, and
+//! sync-file import/export (`SYNCOBJ_HANDLE_TO_FD`/`FD_TO_HANDLE` with the
+//! `SYNC_FILE` and `TIMELINE` flags).
+//!
+//! A sync object is backed by a `DrmFence`. Exporting
+//! shares that fence with a `anon_inode:[drm-sync-file]` descriptor; importing
+//! wraps the descriptor's fence in a new object, so a wait through either side
+//! observes the same signal. The other export forms (transfer, eventfd,
+//! fd-based handles) return `EOPNOTSUPP`.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::time::Duration;

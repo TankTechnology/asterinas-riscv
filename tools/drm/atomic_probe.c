@@ -615,6 +615,7 @@ int main(void) {
     if (ioctl(card, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &in_export) != 0) {
         fail("atomic-export-in-fence");
     }
+    printf("ATOMICPROBE_IN_FENCE fd=%d\n", in_export.fd);
 
     uint32_t crtc_out_fence_ptr = find_property(crtc_id, DRM_MODE_OBJECT_CRTC,
                                                 "OUT_FENCE_PTR");
@@ -672,6 +673,19 @@ int main(void) {
     if (out_fence_fd < 0) {
         fail("atomic-out-fence-missing");
     }
+
+    // The commit consumes the in-fence descriptor, as Linux's atomic commit
+    // does when it takes ownership of the fence. The kernel's out-fence is
+    // created afterwards, so it may take the slot the in-fence just freed;
+    // that reuse is itself proof the descriptor was closed.
+    errno = 0;
+    int in_still_open = fcntl(in_export.fd, F_GETFD);
+    int slot_reused = (in_export.fd == out_fence_fd);
+    if (in_still_open != -1 && !slot_reused) {
+        printf("ATOMICPROBE_FAIL in-fence-not-consumed errno=%d\n", errno);
+        return 1;
+    }
+    printf("ATOMICPROBE_IN_FENCE_CONSUMED ok slot_reused=%d\n", slot_reused);
     struct pollfd out_poll = {.fd = out_fence_fd, .events = POLLIN};
     if (poll(&out_poll, 1, 0) != 1) {
         fail("atomic-out-fence-not-signaled");

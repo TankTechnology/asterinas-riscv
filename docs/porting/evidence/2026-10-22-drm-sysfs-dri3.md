@@ -107,6 +107,12 @@ DRI3PROBE_PASS
 `xdpyinfo -queryExtensions` on the same server lists `DRI2`, `DRI3` and
 `Present` (opcode 149 for DRI3).
 
+The fence half of the same DoD — sync-object export/import as a sync-file,
+cross-process waits, and atomic commits taking an `IN_FENCE_FD` and publishing
+an `OUT_FENCE_PTR` — is covered by
+[`2026-10-22-x86-fence.md`](2026-10-22-x86-fence.md) and re-verified on both
+architectures with this kernel.
+
 Two further kernel-side details were needed, and both were found from this
 probe rather than guessed:
 
