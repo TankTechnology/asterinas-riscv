@@ -110,6 +110,13 @@ PROFILE
     fi
     # Keep the daemon's own diagnostics on the serial console: if it dies at
     # startup the reason must be visible in the transcript.
+    # The pinyin addon aborted on its history file ("io fail: iostream
+    # error"); give it the directory, an empty history, and disable the user
+    # dictionary so a missing/odd file cannot take the engine down.
+    mkdir -p /root/.local/share/fcitx5/pinyin /root/.config/fcitx5/conf
+    : >/root/.local/share/fcitx5/pinyin/history
+    printf '[Pinyin]\nEnableUserDictionary=False\nHistoryEnabled=False\n' \
+        >/root/.config/fcitx5/conf/pinyin.conf
     fcitx5 -d --replace >/dev/console 2>&1 &
     sleep 5
     engine=$(fcitx5-remote -n 2>/dev/null)

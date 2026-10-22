@@ -54,6 +54,21 @@ I ... addonmanager.cpp:308] Unloading addon pinyin
 即：pinyin 附加加载后**读用户词典/历史失败**（`io fail: iostream error`），随即在
 libpinyin 内崩溃，输入法组因此为空。
 
+### 路径 1 的结果（预建 history + 关用户词典）
+
+预建 `~/.local/share/fcitx5/pinyin/`、空 `history`，并在
+`~/.config/fcitx5/conf/pinyin.conf` 里写 `EnableUserDictionary=False`、
+`HistoryEnabled=False` 后，**错误不变**：
+
+```
+E pinyin.cpp:737] Failed to load pinyin history: io fail: iostream error
+DAILY_FCITX alive=1 engine='' rc=0 dbus_im='string ""'
+```
+
+说明不是“文件不存在/词典损坏”，而是 fcitx5-pinyin 读取 history 时的
+**文件 I/O 语义**在内核上出了问题（C++ iostream 报 io fail）。下一步应抓该进程
+失败前后的 openat/read/fstat/close 返回值，而不是继续调 fcitx 配置。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：
