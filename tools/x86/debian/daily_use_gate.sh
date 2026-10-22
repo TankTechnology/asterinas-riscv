@@ -81,6 +81,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 BOOT_SCRIPT="$REPO_ROOT/tools/x86/debian/boot_debian.sh"
 CHECKLIST="$REPO_ROOT/tools/x86/debian/daily_use_checklist.sh"
+MSGTEST_SRC="$REPO_ROOT/tools/x86/debian/msgtest.c"
 for tool in debugfs e2fsck mke2fs python3 timeout "$QEMU"; do
     command -v "$tool" >/dev/null 2>&1 || {
         printf 'error: required tool not found: %s\n' "$tool" >&2
@@ -103,12 +104,19 @@ MATRIX="$WORKSPACE/matrix.tsv"
 # The X server configuration the checklist starts with (same options as the
 # Xorg gate: no udev, no automatic input devices).
 XORG_CONF="$WORKSPACE/xorg-noudev.conf"
+MSGTEST_BIN="$WORKSPACE/msgtest"
 cat >"$XORG_CONF" <<'CONF'
 Section "ServerFlags"
     Option "AutoAddDevices" "false"
     Option "AutoEnableDevices" "false"
 EndSection
 CONF
+
+# The socket/wait unit checks are compiled on the host and injected as a
+# static binary, since the image has no compiler.
+if command -v cc >/dev/null 2>&1; then
+    cc -static -O2 -o "$MSGTEST_BIN" "$MSGTEST_SRC" 2>>"$WORKSPACE/build.log" || rm -f "$MSGTEST_BIN"
+fi
 
 # An ext2 stick image with one file: the guest must mount and read it.
 USB_ROOT="$WORKSPACE/usbstick-root"
@@ -264,6 +272,10 @@ cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
     printf 'write %s /usr/local/bin/daily-use-checklist\n' "$CHECKLIST"
     printf 'sif /usr/local/bin/daily-use-checklist mode 0100755\n'
     printf 'write %s /etc/X11/xorg-noudev.conf\n' "$XORG_CONF"
+    if [[ -f "$MSGTEST_BIN" ]]; then
+        printf 'write %s /usr/local/bin/msgtest\n' "$MSGTEST_BIN"
+        printf 'sif /usr/local/bin/msgtest mode 0100755\n'
+    fi
 } | debugfs -w -f - "$IMAGE" >"$WORKSPACE/inject.log" 2>&1
 if ! e2fsck -fn "$IMAGE" >"$WORKSPACE/fsck-prepared.txt" 2>&1; then
     printf 'FAIL (prepared image is not clean; see %s/fsck-prepared.txt)\n' "$WORKSPACE"

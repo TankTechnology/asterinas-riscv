@@ -77,6 +77,11 @@ if ! command -v fcitx5 >/dev/null 2>&1; then
     timeout 420 apt-get install -y --no-install-recommends \
         fcitx5 fcitx5-modules fcitx5-chinese-addons fcitx5-frontend-gtk3 dbus-daemon >>/tmp/fcitx-apt.log 2>&1
 fi
+# Kernel-side prerequisites for any input-method daemon.
+if [ -x /usr/local/bin/msgtest ]; then
+    /usr/local/bin/msgtest >/dev/console 2>&1
+fi
+
 if command -v fcitx5 >/dev/null 2>&1; then
     export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
     mkdir -p /root/.config/fcitx5

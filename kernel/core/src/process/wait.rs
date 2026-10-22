@@ -33,7 +33,10 @@ bitflags! {
 
 impl WaitOptions {
     pub(crate) fn check(&self) -> Result<()> {
-        let supported_args = WaitOptions::WNOHANG
+        // `WEXITED` is the default behaviour of `waitid` and needs no special
+        // handling; listing it keeps the kernel from logging it as unknown.
+        let supported_args = WaitOptions::WEXITED
+            | WaitOptions::WNOHANG
             | WaitOptions::WSTOPPED
             | WaitOptions::WCONTINUED
             | WaitOptions::WNOWAIT;
