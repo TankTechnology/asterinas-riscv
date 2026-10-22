@@ -143,14 +143,19 @@ pub(super) fn unsupported_sync() -> Result<()> {
 
 /// The exact `(in_size, out_size)` pair for every command this skeleton
 /// serves.
+///
+/// Commands whose input structure is only a placeholder are registered with
+/// an in-size of 0 in the vendor dispatch table
+/// (`server_srvcore_bridge.c`: `NULL, 0`), and the vendor UM sends no input
+/// buffer for them. The bridge must accept that, not the C `sizeof`.
 fn expected_sizes(bridge_id: u32, func_id: u32) -> Option<(usize, usize)> {
     match (bridge_id, func_id) {
         (BRIDGE_SRVCORE, SRVCORE_CONNECT) => Some((16, 17)),
-        (BRIDGE_SRVCORE, SRVCORE_DISCONNECT) => Some((4, 4)),
-        (BRIDGE_SRVCORE, SRVCORE_ACQUIREGLOBALEVENTOBJECT) => Some((4, 12)),
+        (BRIDGE_SRVCORE, SRVCORE_DISCONNECT) => Some((0, 4)),
+        (BRIDGE_SRVCORE, SRVCORE_ACQUIREGLOBALEVENTOBJECT) => Some((0, 12)),
         (BRIDGE_SRVCORE, SRVCORE_RELEASEGLOBALEVENTOBJECT) => Some((8, 4)),
-        (BRIDGE_SRVCORE, SRVCORE_GETDEVCLOCKSPEED) => Some((4, 8)),
-        (BRIDGE_SRVCORE, SRVCORE_GETDEVICESTATUS) => Some((4, 8)),
+        (BRIDGE_SRVCORE, SRVCORE_GETDEVCLOCKSPEED) => Some((0, 8)),
+        (BRIDGE_SRVCORE, SRVCORE_GETDEVICESTATUS) => Some((0, 8)),
         (BRIDGE_SRVCORE, SRVCORE_GETMULTICOREINFO) => Some((12, 16)),
         _ => None,
     }
@@ -344,12 +349,26 @@ mod tests {
         let response = connect_response();
         assert_eq!(response[16], 64);
 
+        // Empty-placeholder inputs are registered with size 0 by the vendor
+        // dispatch table and are sent with no input buffer by the UM.
+        assert_eq!(
+            expected_sizes(BRIDGE_SRVCORE, SRVCORE_DISCONNECT),
+            Some((0, 4))
+        );
         assert_eq!(
             expected_sizes(BRIDGE_SRVCORE, SRVCORE_ACQUIREGLOBALEVENTOBJECT),
-            Some((4, 12))
+            Some((0, 12))
         );
-        let input = 0u32.to_le_bytes();
-        let out = run_command(BRIDGE_SRVCORE, SRVCORE_ACQUIREGLOBALEVENTOBJECT, &input).unwrap();
+        assert_eq!(
+            expected_sizes(BRIDGE_SRVCORE, SRVCORE_GETDEVCLOCKSPEED),
+            Some((0, 8))
+        );
+        assert_eq!(
+            expected_sizes(BRIDGE_SRVCORE, SRVCORE_GETDEVICESTATUS),
+            Some((0, 8))
+        );
+
+        let out = run_command(BRIDGE_SRVCORE, SRVCORE_ACQUIREGLOBALEVENTOBJECT, &[]).unwrap();
         assert_eq!(out.len(), 12);
         assert_eq!(
             u64::from_le_bytes(out[0..8].try_into().unwrap()),
