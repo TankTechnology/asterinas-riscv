@@ -37,6 +37,7 @@ use super::{
     fsmount::sys_fsmount,
     fsopen::sys_fsopen,
     fsync::{sys_fdatasync, sys_fsync},
+    sync_file_range::sys_sync_file_range,
     futex::sys_futex,
     get_ioprio::sys_ioprio_get,
     get_priority::sys_get_priority,
@@ -253,6 +254,7 @@ impl_syscall_nums_and_dispatch_fn! {
     SYS_FLOCK = 73             => sys_flock(args[..2]);
     SYS_FSYNC = 74             => sys_fsync(args[..1]);
     SYS_FDATASYNC = 75         => sys_fdatasync(args[..1]);
+    SYS_SYNC_FILE_RANGE = 277 => sys_sync_file_range(args[..4]);
     SYS_TRUNCATE = 76          => sys_truncate(args[..2]);
     SYS_FTRUNCATE = 77         => sys_ftruncate(args[..2]);
     SYS_GETDENTS = 78          => sys_getdents(args[..3]);

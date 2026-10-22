@@ -39,6 +39,7 @@ macro_rules! import_generic_syscall_entries {
             fsmount::sys_fsmount,
             fsopen::sys_fsopen,
             fsync::{sys_fdatasync, sys_fsync},
+    sync_file_range::sys_sync_file_range,
             futex::sys_futex,
             get_ioprio::sys_ioprio_get,
             get_priority::sys_get_priority,
@@ -280,6 +281,7 @@ macro_rules! define_syscalls_with_generic_syscall_table {
             SYS_SYNC = 81                    => sys_sync(args[..0]);
             SYS_FSYNC = 82                   => sys_fsync(args[..1]);
             SYS_FDATASYNC = 83               => sys_fdatasync(args[..1]);
+            SYS_SYNC_FILE_RANGE = 84 => sys_sync_file_range(args[..4]);
             SYS_TIMERFD_CREATE = 85          => sys_timerfd_create(args[..2]);
             SYS_TIMERFD_SETTIME = 86         => sys_timerfd_settime(args[..4]);
             SYS_TIMERFD_GETTIME = 87         => sys_timerfd_gettime(args[..2]);

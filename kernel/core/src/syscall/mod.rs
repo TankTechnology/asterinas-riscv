@@ -56,6 +56,7 @@ mod fsconfig;
 mod fsmount;
 mod fsopen;
 mod fsync;
+mod sync_file_range;
 mod futex;
 mod get_ioprio;
 mod get_priority;

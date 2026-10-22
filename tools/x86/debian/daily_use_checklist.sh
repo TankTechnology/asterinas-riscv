@@ -112,9 +112,14 @@ PROFILE
     # startup the reason must be visible in the transcript.
     fcitx5 -d --replace >/dev/console 2>&1 &
     sleep 5
-    echo "DAILY_FCITX alive=$(pgrep -c fcitx5 2>/dev/null) addons=$(ls /usr/share/fcitx5/addon 2>/dev/null | tr '\n' ',')" >/dev/console
     engine=$(fcitx5-remote -n 2>/dev/null)
-    echo "DAILY_FCITX engine='$engine' remote_rc=$?" >/dev/console
+    remote_rc=$?
+    im=$(dbus-send --session --print-reply --dest=org.fcitx.Fcitx5 /controller \
+            org.fcitx.Fcitx.Controller1.CurrentInputMethod 2>&1 | tail -1)
+    echo "DAILY_FCITX alive=$(pgrep -c fcitx5 2>/dev/null) engine='$engine' rc=$remote_rc dbus_im='$im'" >/dev/console
+    if [ -z "$engine" ]; then
+        engine=$(printf '%s' "$im" | tr -d '"' | awk '{print $NF}' | grep -v '^$')
+    fi
     if [ -n "$engine" ]; then
         # End-to-end: type pinyin into an xterm and see Chinese arrive.
         xterm -title ximtest -e sh -c 'cat > /tmp/xim-out' >/dev/null 2>&1 &
