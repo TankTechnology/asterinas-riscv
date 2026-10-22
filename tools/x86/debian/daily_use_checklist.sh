@@ -21,7 +21,8 @@ mark() {
 }
 
 # --- Domain 2: package installation (first, so the desktop app exists) ----
-if apt-get install -y xclip xterm alsa-utils >/tmp/apt-install.log 2>&1; then
+if apt-get install -y xclip xterm alsa-utils xdotool fcitx5 fcitx5-chinese-addons \
+        >/tmp/apt-install.log 2>&1; then
     mark APT ok "xclip+xterm+alsa-utils-installed"
 else
     mark APT fail "apt-get install"
@@ -69,9 +70,50 @@ else
     mark CLIPBOARD missing "no-xclip-or-X"
 fi
 
-# --- Domain 4: input method ----------------------------------------------
-if command -v fcitx5 >/dev/null 2>&1 || command -v ibus-daemon >/dev/null 2>&1; then
-    mark INPUT_METHOD ok present
+# --- Domain 4: input method (fcitx5 + pinyin over XIM) --------------------
+if command -v fcitx5 >/dev/null 2>&1; then
+    export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
+    mkdir -p /root/.config/fcitx5
+    cat >/root/.config/fcitx5/profile <<'PROFILE'
+[Groups/0]
+Name=Default
+Default Layout=us
+DefaultIM=pinyin
+
+[Groups/0/Items/0]
+Name=keyboard-us
+Layout=
+
+[Groups/0/Items/1]
+Name=pinyin
+Layout=
+
+[GroupOrder]
+0=Default
+PROFILE
+    fcitx5 -d --replace >/tmp/fcitx5.log 2>&1 &
+    sleep 4
+    engine=$(fcitx5-remote -n 2>/dev/null)
+    if [ -n "$engine" ]; then
+        # End-to-end: type pinyin into an xterm and see Chinese arrive.
+        xterm -title ximtest -e sh -c 'cat > /tmp/xim-out' >/dev/null 2>&1 &
+        sleep 2
+        window=$(xdotool search --name ximtest 2>/dev/null | head -1)
+        if [ -n "$window" ]; then
+            xdotool windowactivate --sync "$window" 2>/dev/null
+            xdotool type --delay 120 "nihao"
+            xdotool key space
+            xdotool key Return
+            sleep 1
+        fi
+        if grep -q 你好 /tmp/xim-out 2>/dev/null; then
+            mark INPUT_METHOD ok "fcitx5-$engine-typed-你好"
+        else
+            mark INPUT_METHOD fail "engine-$engine-no-text:$(cat /tmp/xim-out 2>/dev/null | tr -d '\n' | head -c 40)"
+        fi
+    else
+        mark INPUT_METHOD fail "fcitx5-not-ready:$(head -1 /tmp/fcitx5.log 2>/dev/null | tr ' ' '_')"
+    fi
 else
     mark INPUT_METHOD missing "no-fcitx5-or-ibus-in-image"
 fi

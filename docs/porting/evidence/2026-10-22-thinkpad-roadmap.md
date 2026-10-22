@@ -42,8 +42,16 @@ rootfs 装 `fcitx5` + `fcitx5-chinese-addons`，XIM/`GTK_IM_MODULE` 配置，
 用 `xterm` + `xdotool`/`xte` 输入拼音并截图验证候选词。
 - 门禁：矩阵「输入法」从 missing 变 ok（中文上屏）。
 
-## 当前状态（开始 ① 之前）
+## 当前状态（2026-10-22 晚）
 
-- ①增量 1 已交付：热插设备出现在 `/sys/bus/usb/devices/1-1`（`46f4:0001`），
-  证据 `2026-10-22-usb-enumeration.md`，门禁 `make test_x86_usb_hotplug` PASS。
-- ②③④ 未开始；矩阵行见 `docs/porting/daily-use-matrix.md`。
+- **① USB**：
+  - 增量 1（枚举到 `/sys/bus/usb`）：`2026-10-22-usb-enumeration.md`，PASS。
+  - ①.a 配置描述符/接口/`SET_CONFIGURATION`：`2026-10-22-usb-configuration.md`。
+  - ①.b BOT + SCSI INQUIRY/READ CAPACITY：`2026-10-22-usb-bot-scsi.md`。
+  - ①.c 块设备 `/dev/sda` + 挂载：**卡在 bulk 传输停摆**，
+    见 `2026-10-22-usb-storage-blocker.md`；矩阵 USB 行仍是“部分通过”。
+- **② pty**：完成，矩阵「应用」= ok（`2026-10-22-pty-ptmx.md`）。
+- **③ 睡眠唤醒**：未实现，评估与两条路径见 `2026-10-22-suspend-assessment.md`。
+- **④ 输入法**：fcitx5 安装/XIM 端到端测试已写进 daily 清单，门禁在跑；
+  结果与证据见 `2026-10-22-input-method.md`。
+- 矩阵：`docs/porting/daily-use-matrix.md`。
