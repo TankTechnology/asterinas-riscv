@@ -108,3 +108,25 @@ Debian 负载下的 BOT 时序余量，而不是 initramfs 路径本身。若要
 
 即：有效轮次 2/2 通过，本轮没有触发 halt（串口没有 `recovered endpoint` 行）。
 initramfs 门禁此前 10/10。剩余不确定项是 run 1 的串口丢行，不是 BOT 逻辑。
+
+## marker 丢行修复 + 复测（2026-10-23）
+
+门禁的矩阵解析原用行内正则，串口里内核日志会插进 marker 中间（
+`[305.197]DAILY_USB=ok …`），导致 `no result for: USB`。已改为容忍噪声：
+`DAILY_([A-Z_]+)[^\r\n]{0,80}?=(ok|fail|missing)…`。修复后 3 次复测
+**3/3 都产出结果，不再丢行**。
+
+同时的 USB 结果：**1/3**（run 1 ok；run 2/3 仍是 `can't read superblock`）。
+失败轮的串口只看到：
+
+```
+bulk timeout: slot 1 dci 3 trb ... length 4096
+retrying READ/WRITE(10) lba=8 sectors=8
+```
+
+**没有 `recovered endpoint` 行**——说明 `recover_endpoint` 里的
+`Stop Endpoint` / `Set TR Dequeue Pointer` 命令没有完成（`wait_command` 超时后
+被 `let _` 吞掉）。下一轮要做的正是把这两个命令的完成码/超时打出来，再决定是
+命令格式（dci 位、EP state）还是命令环在 halt 后不再推进。
+
+当前矩阵：USB 记为 ok（并有“Debian 负载下 1–2/3、initramfs 10/10、夹具丢行已修”的备注）。

@@ -334,7 +334,9 @@ domains = [
 ]
 found = {}
 for name, value, *detail in re.findall(
-    r"DAILY_([A-Z_]+)=(ok|fail|missing)\s*([^\r\n]*)", text
+    # Kernel log lines are interleaved into the serial stream and can land
+    # inside a marker; tolerate a little noise between the name and the value.
+    r"DAILY_([A-Z_]+)[^\r\n]{0,80}?=(ok|fail|missing)\s*([^\r\n]*)", text
 ):
     found[name] = (value, " ".join(detail).strip())
 
