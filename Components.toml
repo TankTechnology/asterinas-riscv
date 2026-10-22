@@ -1,5 +1,6 @@
 # template
 [components]
+audio_hda = { name = "aster-audio-hda" }
 block = { name = "aster-block" }
 cmdline = { name = "aster-cmdline" }
 console = { name = "aster-console" }

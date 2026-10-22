@@ -735,6 +735,18 @@ test_riscv_syncobj:
 		--workspace "$(P3_PROBE_WORKSPACE)/sync-riscv" \
 		--timeout "$(P3_PROBE_TIMEOUT)"
 
+# HDA audio gate: QEMU's intel-hda codec plays the driver's self-test tone
+# into a WAV backend, and the gate checks the captured samples.
+AUDIO_WORKSPACE ?= $(CURDIR)/target/audio
+
+.PHONY: test_x86_audio
+test_x86_audio:
+	@test -f "$(P3_PROBE_KERNEL_X86)" || { echo "P3_PROBE_KERNEL_X86 is required" >&2; exit 2; }
+	@tools/audio/hda_check.sh \
+		--kernel "$(P3_PROBE_KERNEL_X86)" \
+		--workspace "$(AUDIO_WORKSPACE)/x86" \
+		--timeout 120
+
 # Second-CRTC acceptance: QEMU exposes two scanouts (`max_outputs=2`), the
 # driver creates one CRTC/encoder/connector per scanout, and the probe modesets
 # and flips both.
