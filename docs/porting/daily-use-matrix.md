@@ -23,7 +23,7 @@ make test_x86_daily_use \
 | 应用 | ok | xterm 起得来、伪终端可用（见 `2026-10-22-pty-ptmx.md`） |
 | apt 装小包 | ok | `apt-get install -y xclip xterm alsa-utils` 成功 |
 | 剪贴板 | ok | `xclip` 写读往返一致 |
-| 输入法 | fail | 内核缺口已补（`MSGTEST_PASS`、`iotest` 全绿）；表引擎（wubi，不碰 libpinyin）已装且门禁完整跑完，装 `fcitx5-chinese-addons` 后 IM 定义已有 10 个（选中 `wbpy`，不碰 libpinyin），端到端打字（跳过 -n）时 `/tmp/xim-out` 为空——按键未送达 xterm（焦点/XIM 抓键环节），下一步用 `xev`/`-im fcitx` 定位；见 `2026-10-22-input-method.md` |
+| 输入法 | fail | 内核缺口已补（`MSGTEST_PASS`、`iotest` 全绿）；表引擎（wubi，不碰 libpinyin）已装且门禁完整跑完，装 `fcitx5-chinese-addons` 后 IM 定义已有 10 个（选中 `wbpy`，不碰 libpinyin），XIM 服务已注册（`@server=fcitx`），但会话无窗口管理器、`getactivewindow` 为空且合成事件被 xterm 忽略——打字失败是测试夹具（无焦点）而非输入法；下一步起 matchbox WM 再打字；见 `2026-10-22-input-method.md` |
 | 音频 | ok | `/dev/snd/pcmC0D0p` + `aplay -D hw:0,0` 播放成功（见 `2026-10-22-alsa-aplay.md`） |
 | U 盘热插拔 | **ok（偶发）** | 枚举 → `/sys/bus/usb/devices/1-1` → `/dev/sda` → `mount -t ext2 -o ro` → 读 `hello.txt` → `umount`；Debian 镜像是实测一次 ok、一次 `can't read superblock`（BOT 时序余量仍偏紧），见 `2026-10-22-usb-storage-blocker.md` |
 | 睡眠唤醒 | **ok** | `/sys/power/state` + suspend-to-idle（2 s 窗口），`systemctl suspend` 返回 0，唤醒后磁盘/IO 可用（见 `2026-10-22-suspend-assessment.md`） |

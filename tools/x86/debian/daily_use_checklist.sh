@@ -136,6 +136,15 @@ if command -v fcitx5 >/dev/null 2>&1; then
     if true; then
         if [ -n "$window" ]; then
             # wubi codes: 你 = wqiy, 好 = vbg
+            echo "DAILY_XDIAG active=$(timeout 5 xdotool getactivewindow 2>/dev/null) win=$window" >/dev/console
+            if command -v xprop >/dev/null 2>&1; then
+                echo "DAILY_XDIAG xim=$(timeout 5 xprop -root 2>/dev/null | grep -i xim | head -2 | tr '\n' '|')" >/dev/console
+            fi
+            # Deliver straight to the window as well: if this lands while the
+            # focused type does not, the focus is the problem, not XIM.
+            timeout 5 xdotool type --window "$window" --delay 150 "ab" 2>/dev/null || true
+            sleep 1
+            echo "DAILY_XDIAG direct_out=$(cat /tmp/xim-out 2>/dev/null | tr -d '\n' | head -c 20)" >/dev/console
             timeout 5 xdotool type --delay 150 "wqiy" 2>/dev/null || true
             timeout 5 xdotool key space 2>/dev/null || true
             timeout 5 xdotool type --delay 150 "vbg" 2>/dev/null || true

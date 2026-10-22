@@ -219,6 +219,22 @@ grep `InputContext`/`InputMethodGroup`/`xim`，并用 `fcitx5-diagnose` 的
 环节），而不是输入法引擎本身的问题。下一步：用 `xdotool getactivewindow` /
 `xev` 确认按键去向，并明确 xterm 启动时是否带 `+xim`（`xterm -im fcitx`）。
 
+### 焦点/XIM 诊断（本轮，定位完成）
+
+```
+DAILY_XDIAG active= win=4194316
+DAILY_XDIAG xim=XIM_SERVERS(ATOM) = @server=fcitx|
+DAILY_XDIAG direct_out=
+```
+
+- **XIM server 已注册**：`XIM_SERVERS = @server=fcitx`，说明 fcitx5 的 XIM 前端正常。
+- `xdotool getactivewindow` **为空**：会话里没有窗口管理器，没有任何窗口持有键盘焦点。
+- 连 `xdotool type --window <id>` 的直投也没进 `/tmp/xim-out`（xterm 忽略合成事件）。
+
+所以打字失败是**测试夹具**的问题（无 WM → 无焦点；XSendEvent 被 xterm 忽略），
+不是输入法本身。下一步：先起一个轻量 WM（镜像里已有 matchbox-window-manager）
+或让 xterm 自己成为焦点窗口，再用 `xdotool key/type` 走真实焦点路径。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：
