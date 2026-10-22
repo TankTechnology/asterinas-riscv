@@ -154,3 +154,32 @@ block 设备里（当前块设备只持有两个 bulk 端点）。
 
 **判定（按约定兜底）**：USB 项保持 **ok**（功能可用：initramfs 10/10、Debian
 负载下 1–2/3），恢复路径标记为“控制器侧已实现、设备侧 class reset 未完成”。
+
+## 设备侧 BOT class reset：实现方案（待落地）
+
+当前块设备（`block::UsbStorageDevice`）持有 `Arc<XhciController>` + `slot_id`，
+两个 bulk 端点，但没有 EP0。EP0 仍在控制器的槽表里：
+`XhciController::slots: SpinLock<Vec<Option<SlotState>>>`，`SlotState.ep0` 是控制环，
+`control_no_data(slot, slot_id, setup)` 是现成的 EP0 无数据控制传输。
+
+落地步骤（最小改动，约 60 行）：
+
+1. 在 `usb.rs` 里加
+   `pub(super) fn with_slot<R>(&self, slot_id: u8, f: impl FnOnce(&mut SlotState) -> R) -> Result<R>`，
+   内部 `let mut slots = self.slots.lock(); slots[slot_id].as_mut()...`；
+2. 在 `storage.rs` 里加 `bot_reset(controller, slot_id, bulk_in, bulk_out)`：
+   - 控制器侧：`Stop Endpoint`(15) + `Set TR Dequeue`(16)（已有 `recover_endpoint`）；
+   - `with_slot`: `control_no_data` 发 ClearFeature(HALT)：`bmRequestType=0x02,
+     bRequest=0x01, wValue=0, wIndex=0x81` 与 `0x02`（两个 bulk 端点各一次）；
+   - `control_no_data` 发 BOT class reset：`bmRequestType=0x21, bRequest=0xFF,
+     wValue=0, wIndex=0`（接口号；当前配置只有一个接口，取 `slot.configuration`
+     的第一个接口号会更严谨）；
+   - 清 CSW：对 bulk-in 发一次 13 字节的短超时读，忽略结果（`bulk_transfer` 超时
+     会自旋 20M 次，建议加一个带“短超时”参数的变体，或先跳过这一步测一版）；
+3. `read_write` 的失败分支改成：`bot_reset(...)` → 重发一次；再失败则放弃；
+4. 门禁：3 次 `make test_x86_daily_use`，看 `retrying` 后是否出现新的
+   `bot reset ok` 日志且 USB 3/3。
+
+注意：`with_slot` 与 `bulk_in/bulk_out` 的锁顺序要固定（先槽表、后端点），避免死锁；
+`control_no_data` 复用 `slot.ep0` 环，长命令序列中不会再与枚举并发（块设备就绪后
+枚举已完成）。
