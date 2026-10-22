@@ -178,6 +178,19 @@ IM 定义，这是 `engine=''` 的直接原因；守护进程、D-Bus、激活�
 注意：容器里的包版本（Ubuntu 5.1.3）与 guest（Debian trixie）可能不同，优先用
 与镜像同源的数据文件；纯 .conf/码表数据通常可跨小版本使用。
 
+### 数据下载尝试（本轮）
+
+`docker run --rm -v /tmp/fcitx5-debs:/out debian:12 …apt-get download fcitx5-data
+fcitx5-table fcitx5-table-extra fcitx5-chinese-addons fcitx5-modules` 只完成了
+镜像拉取，`/out` 为空——容器内的 `apt-get update/download` 没有产出 deb
+（网络或包名问题）。下一轮改用更可靠的取数方式：
+
+**从门禁跑完后的镜像里取包**：`target/daily-use/daily.ext2` 是客人跑过清单的镜像，
+`dpkg` 安装时 deb 会进入 `/var/cache/apt/archives/`，用
+`debugfs -R "ls -l /var/cache/apt/archives"` 就能 dump 出 Debian trixie 版本的
+fcitx5 deb，再 `dpkg-deb -x` 检查它到底有没有 `/usr/share/fcitx5/inputmethod/*.conf`。
+这比跨发行版下载更可靠，也能回答“是包本身没有数据，还是 dpkg 没装全”。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：
