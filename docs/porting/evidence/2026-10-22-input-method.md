@@ -161,6 +161,23 @@ DAILY_INPUT_METHOD=fail fcitx5-no-engine:...
 连 `keyboard-us` 都注册不出引擎，说明这套最小安装缺少 IM 数据，而不是 fcitx5 本身
 不能跑（守护进程存活、D-Bus 调用返回 0）。
 
+### 结论与可执行的下一步
+
+`/usr/share/fcitx5/{table,inputmethod}` 为空 = 客体里的 fcitx5 没有任何可注册的
+IM 定义，这是 `engine=''` 的直接原因；守护进程、D-Bus、激活调用都正常。
+
+修复路径（不需要再调 profile）：
+
+1. 宿主侧（Debian 容器）`apt-get download` 或 `dpkg-deb -x` 解出
+   `fcitx5-table-extra` / `fcitx5-chinese-addons-data` 的 `/usr/share/fcitx5/**`；
+2. 用 `debugfs write` 在镜像构建阶段把这些文件写进 `/usr/share/fcitx5/`
+   （inputmethod/*.conf、table/*.conf），保证两个目录非空；
+3. 起 fcitx5 后先确认 `ls /usr/share/fcitx5/inputmethod` 非空，再查
+   `fcitx5-remote -n`；拿到引擎名后跑 xterm + XIM 打字用例。
+
+注意：容器里的包版本（Ubuntu 5.1.3）与 guest（Debian trixie）可能不同，优先用
+与镜像同源的数据文件；纯 .conf/码表数据通常可跨小版本使用。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：
