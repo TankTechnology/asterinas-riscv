@@ -735,6 +735,24 @@ test_riscv_syncobj:
 		--workspace "$(P3_PROBE_WORKSPACE)/sync-riscv" \
 		--timeout "$(P3_PROBE_TIMEOUT)"
 
+# Daily-use measurement gate: boots the Debian image, runs the six-domain
+# checklist and prints a PASS/FAIL/missing matrix (it measures, it does not
+# fix). `docs/porting/daily-use-matrix.md` holds the latest result.
+DAILY_USE_WORKSPACE ?= $(CURDIR)/target/daily-use
+
+.PHONY: test_x86_daily_use
+test_x86_daily_use:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@tools/x86/debian/daily_use_gate.sh \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--workspace "$(DAILY_USE_WORKSPACE)" \
+		--timeout "$(X86_DEBIAN_XORG_TIMEOUT)"
+
 # HDA audio gate: QEMU's intel-hda codec plays the driver's self-test tone
 # into a WAV backend, and the gate checks the captured samples.
 AUDIO_WORKSPACE ?= $(CURDIR)/target/audio
