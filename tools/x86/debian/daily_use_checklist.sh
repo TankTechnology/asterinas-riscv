@@ -73,11 +73,9 @@ fi
 # fcitx5 pulls in a large dependency set; keep it out of the APT domain so a
 # slow download cannot starve the rest of the checklist.
 if ! command -v fcitx5 >/dev/null 2>&1; then
-    # Keep the download small: the recommends of fcitx5 drag in Qt/GTK
-    # frontends and themes that the XIM test below does not need.
     timeout 120 apt-get update >/tmp/fcitx-apt.log 2>&1
     timeout 420 apt-get install -y --no-install-recommends \
-        fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 >>/tmp/fcitx-apt.log 2>&1
+        fcitx5 fcitx5-modules fcitx5-chinese-addons fcitx5-frontend-gtk3 dbus-daemon >>/tmp/fcitx-apt.log 2>&1
 fi
 if command -v fcitx5 >/dev/null 2>&1; then
     export GTK_IM_MODULE=fcitx QT_IM_MODULE=fcitx XMODIFIERS=@im=fcitx
@@ -99,9 +97,19 @@ Layout=
 [GroupOrder]
 0=Default
 PROFILE
-    fcitx5 -d --replace >/tmp/fcitx5.log 2>&1 &
-    sleep 4
+    # fcitx5-remote talks over D-Bus; the root shell under sudo has no session
+    # bus, so start a private one for the daemon and the queries.
+    if [ -z "$DBUS_SESSION_BUS_ADDRESS" ] && command -v dbus-daemon >/dev/null 2>&1; then
+        DBUS_SESSION_BUS_ADDRESS=$(dbus-daemon --session --fork --print-address)
+        export DBUS_SESSION_BUS_ADDRESS
+    fi
+    # Keep the daemon's own diagnostics on the serial console: if it dies at
+    # startup the reason must be visible in the transcript.
+    fcitx5 -d --replace >/dev/console 2>&1 &
+    sleep 5
+    echo "DAILY_FCITX alive=$(pgrep -c fcitx5 2>/dev/null) addons=$(ls /usr/share/fcitx5/addon 2>/dev/null | tr '\n' ',')" >/dev/console
     engine=$(fcitx5-remote -n 2>/dev/null)
+    echo "DAILY_FCITX engine='$engine' remote_rc=$?" >/dev/console
     if [ -n "$engine" ]; then
         # End-to-end: type pinyin into an xterm and see Chinese arrive.
         xterm -title ximtest -e sh -c 'cat > /tmp/xim-out' >/dev/null 2>&1 &
@@ -123,7 +131,17 @@ PROFILE
             mark INPUT_METHOD fail "engine-$engine-no-text:$(cat /tmp/xim-out 2>/dev/null | tr -d '\n' | head -c 40)"
         fi
     else
-        mark INPUT_METHOD fail "fcitx5-not-ready:$(head -1 /tmp/fcitx5.log 2>/dev/null | tr ' ' '_')"
+        # Isolate the failure: with only the keyboard engine, does the daemon
+        # stay up? If it does, the crash is in the pinyin engine itself.
+        pkill -x fcitx5 2>/dev/null
+        sleep 1
+        printf '[Groups/0]\nName=Default\nDefault Layout=us\nDefaultIM=keyboard-us\n\n[Groups/0/Items/0]\nName=keyboard-us\nLayout=\n\n[GroupOrder]\n0=Default\n' \
+            >/root/.config/fcitx5/profile
+        fcitx5 -d --replace >/dev/console 2>&1 &
+        sleep 4
+        keyboard_engine=$(fcitx5-remote -n 2>/dev/null)
+        echo "DAILY_FCITX2 keyboard_only_engine='$keyboard_engine' alive=$(pgrep -c fcitx5 2>/dev/null)" >/dev/console
+        mark INPUT_METHOD fail "pinyin-engine-crash:keyboard-only='$keyboard_engine'"
     fi
 else
     mark INPUT_METHOD fail "fcitx5-unavailable:$(tail -1 /tmp/fcitx-apt.log 2>/dev/null | tr ' ' '_' | head -c 60)"

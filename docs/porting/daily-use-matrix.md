@@ -23,9 +23,9 @@ make test_x86_daily_use \
 | 应用 | ok | xterm 起得来、伪终端可用（见 `2026-10-22-pty-ptmx.md`） |
 | apt 装小包 | ok | `apt-get install -y xclip xterm alsa-utils` 成功 |
 | 剪贴板 | ok | `xclip` 写读往返一致 |
-| 输入法 | missing | 镜像里没有 fcitx5/ibus（也未安装） |
+| 输入法 | fail | fcitx5/中文附加已装、守护进程与总线能起，但加载引擎后崩溃（`libpinyin.so` 回溯；内核未支持 `MSG_NOSIGNAL`/`waitid(WEXITED)`），见 `2026-10-22-input-method.md` |
 | 音频 | ok | `/dev/snd/pcmC0D0p` + `aplay -D hw:0,0` 播放成功（见 `2026-10-22-alsa-aplay.md`） |
-| U 盘热插拔 | **ok** | 枚举 → `/sys/bus/usb/devices/1-1` → `/dev/sda` → `mount -t ext2 -o ro` → 读 `hello.txt` → `umount`（见 `2026-10-22-usb-storage-blocker.md`） |
+| U 盘热插拔 | **ok（偶发）** | 枚举 → `/sys/bus/usb/devices/1-1` → `/dev/sda` → `mount -t ext2 -o ro` → 读 `hello.txt` → `umount`；Debian 镜像是实测一次 ok、一次 `can't read superblock`（BOT 时序余量仍偏紧），见 `2026-10-22-usb-storage-blocker.md` |
 | 睡眠唤醒 | **ok** | `/sys/power/state` + suspend-to-idle（2 s 窗口），`systemctl suspend` 返回 0，唤醒后磁盘/IO 可用（见 `2026-10-22-suspend-assessment.md`） |
 
 原始产物：`target/daily-use/matrix.tsv`、`console.txt`（串口全量）、
@@ -36,8 +36,9 @@ make test_x86_daily_use \
 - **应用（pty）**：已修复。根因不是 pty 池大小，而是 devtmpfs 没有提供
   `/dev/ptmx`（镜像里的链接被 devtmpfs 挂载盖住）。修复见
   `2026-10-22-pty-ptmx.md`。
-- **输入法**：镜像没有输入法框架；属于 rootfs profile 的内容，加上
-  `fcitx5`（含 `fcitx5-chinese-addons`）与 XIM 才能测。
+- **输入法**：fcitx5 已能在镜像里安装并启动，但引擎加载后进程崩溃
+  （`libpinyin.so` 回溯，内核缺 `MSG_NOSIGNAL`/`WEXITED`），详见
+  `2026-10-22-input-method.md` 的卡点与两条替代路径。
 - **音频**：已由 `2026-10-22-alsa-aplay.md` 补齐——`/dev/snd/controlC0`、
   `/dev/snd/pcmC0D0p` 与 ALSA PCM ioctl 子集，镜像里的 `aplay` 可以直接播放；
   剩余边界是同步播放（块间有短静音）、无 mmap、无录音/混音器控件。

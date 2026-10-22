@@ -53,6 +53,7 @@ rootfs 装 `fcitx5` + `fcitx5-chinese-addons`，XIM/`GTK_IM_MODULE` 配置，
 - **② pty**：完成，矩阵「应用」= ok（`2026-10-22-pty-ptmx.md`）。
 - **③ 睡眠唤醒**：已交付 suspend-to-idle（`/sys/power/state`），矩阵行 ok；
   真 ACPI S3 的边界见 `2026-10-22-suspend-assessment.md`。
-- **④ 输入法**：fcitx5 安装/XIM 端到端测试已写进 daily 清单，门禁在跑；
-  结果与证据见 `2026-10-22-input-method.md`。
+- **④ 输入法**：**未通过**。fcitx5 能装能起，但加载引擎后崩溃
+  （`libpinyin.so`；内核缺 `MSG_NOSIGNAL`/`WEXITED`）；卡点与两条替代路径见
+  `2026-10-22-input-method.md`。
 - 矩阵：`docs/porting/daily-use-matrix.md`。
