@@ -126,3 +126,152 @@ ASTERINAS_POWERVR_BRIDGE 出现次数：0
 - 未改 initramfs；ktest 均带 `timeout 180`；板级命令均带 `timeout`；
 - 未执行 apt，未修改 RockOS 系统文件；
 - EGL 未通过，不写成通过。
+
+## P5b-16：四个假设的验证
+
+本轮不改内核/initramfs，只做验证。板级复用
+`kernel-pvr-drmver.Image`（CRC32 `22b65ef6`）与原 initramfs。
+
+### H1：改用 `/dev/dri/card0` —— 排除
+
+同一 gbm 探针把节点从 `renderD128` 换成 `card0`：
+
+```text
+FD 3
+VER 24 2 6643903
+BEFORE_GBM
+AFTER_GBM True
+BEFORE_DISP
+AFTER_DISP False
+```
+
+`eglGetPlatformDisplay` 返回 NULL，`eglInitialize` 未执行（没有 display）；
+整份串口 `ASTERINAS_POWERVR_BRIDGE` 仍为 **0** 条。card0 与
+renderD128 无差别，H1 排除。
+
+### H2：`drmGetCap` 对照 —— 差异成立，但不是直接门槛
+
+RockOS（card0，`es_drm`）：
+
+| cap | 值 |
+|---|---|
+| `DUMB_BUFFER`(1) | 1 |
+| `DUMB_PREFERRED_DEPTH`(3) | 0 |
+| `PRIME`(5) | 3 |
+| `TIMESTAMP_MONOTONIC`(6) | 1 |
+| `SYNCOBJ`(0x13) | 1 |
+| `SYNCOBJ_TIMELINE`(0x14) | 0 |
+
+Asterinas guest（card0 与 renderD128 相同）：
+
+```text
+DUMB 0 1 0
+DEPTH 0 24 0
+PRIME 0 3 0
+TSMONO -1 0 22      # EINVAL
+SYNCOBJ -1 0 22     # EINVAL
+TIMELINE -1 0 22    # EINVAL
+```
+
+`pvr_dri.so` 的 `drmGetCap` 调用点（反汇编立即数）查询的是
+**5 / 16 / 19 / 20**（PRIME、ADDFB2_MODIFIERS、SYNCOBJ、
+SYNCOBJ_TIMELINE）；5 有值，16/19/20 在 Asterinas 上返回 EINVAL。
+
+但 `pvr_dri.so` 对 cap 探测是**容错**的：
+
+```text
+6cd00a:  jalr  ... drmGetCap (cap=19)
+6cd00e:  li    a5,0
+6cd010:  bnez  a0, 6cd018     # 出错则保留 0
+6cd012:  ld    a5,152(sp)
+6cd014:  snez  a5,a5
+6cd018:  sb    a5,770(s0)     # 存为 feature flag
+（cap=20 同样）
+```
+
+即 EINVAL 被当作“能力不存在”，初始化继续。H2 的**差异成立**
+（应补 16/19/20），但它不是 CONNECT 之前的直接失败点。
+
+### H3：`uevent`/`busid`/`subsystem` —— 差异成立，机制未证实
+
+Asterinas guest：
+
+```text
+DRIVER=pvr
+DEVTYPE=platform
+/sys/class/drm/card0/device/subsystem -> /sys/bus/platform
+/sys/class/drm/card0/device/busid: 不存在
+```
+
+RockOS（对照）：
+
+```text
+DRIVER=es_drm
+OF_NAME=display-subsystem
+OF_FULLNAME=/soc/display-subsystem@0
+OF_COMPATIBLE_0=eswin,display-subsystem
+OF_COMPATIBLE_N=1
+MODALIAS=of:Ndisplay-subsystemT(null)Ceswin,display-subsystem
+```
+
+差异确认：我们的 uevent 没有 `OF_COMPATIBLE_*`/`MODALIAS`。
+但 UMD 侧没有找到按 compatible 过滤的证据：
+
+- `libsrv_um.so` 的动态导入只有 `drmGetDevices2`，**没有**
+  `drmGetVersion`；
+- 整个 `/opt/pvr` 包里没有 `img,gpu` / `eswin,display` 字面字符串；
+- 枚举调用是 `drmGetDevices2(flags=0, ...)`（反汇编
+  `li a1,0; li a2,0; jal drmGetDevices2`）。
+
+因此 `OF_*` 缺失是真实的平台设备字段差异，但“它导致 UMD 找不到设备”
+尚无证据，暂列**未证实**。
+
+### H4：回调版本 —— 基本排除
+
+- `PVRDRIRegisterVersionedCallbacksV2` 由 `libpvr_dri_support.so`
+  导出；`pvr_dri.so` 里只有字符串
+  `libpvr_dri_support.so` 和 `PVRDRIRegisterVersionedCallbacksV2`
+  （dlsym 路径），没有静态导入；
+- 反汇编该函数：
+
+```text
+li   a4,3
+bltu a4,a1, <wrong version 分支>   # 版本必须 <= 3
+```
+
+它是**回调表选择器**（索引 0..3），不是 DRM version 的比较；
+调用方与被调方来自同一 vendor 包，版本应当一致；
+`Wrong version. Got/Expected` 字符串的引用点本轮未解析，不能把它与
+这条检查绑定。
+
+### 判定汇总
+
+| 假设 | 判定 |
+|---|---|
+| H1 card0 vs renderD128 | **排除**（结果完全一致） |
+| H2 `drmGetCap` 缺失 | **差异成立**（16/19/20 返回 EINVAL），但反汇编显示被容错，不是直接门槛 |
+| H3 uevent 缺 OF 字段 | **差异成立**，但 UMD 无 compatible 过滤证据，机制未证实 |
+| H4 回调版本 | **基本排除**（<=3 的 table 选择器，同包构建） |
+
+四条都不能单独解释“CONNECT 未发出”。下一轮需要找到 UMD 在
+CONNECT 之前的真实退出点。
+
+### 能推进 CONNECT 的最小改动（下轮实施）
+
+1. **补 caps**：`ADDFB2_MODIFIERS`(0x10)、`SYNCOBJ`(0x13)、
+   `SYNCOBJ_TIMELINE`(0x14)，以及 `TIMESTAMP_MONOTONIC`(6)
+   （RockOS 上为 1；0x10 的 RockOS 值本轮未测到，先按 0 处理）；
+   只对 pvr 后端生效；
+2. **补平台 uevent 字段**：`OF_NAME`、`OF_FULLNAME`、
+   `OF_COMPATIBLE_0=img,gpu`、`OF_COMPATIBLE_N=1`、`MODALIAS`
+   （与 vendor `img,gpu` 平台设备一致）；
+3. 若 1+2 后仍无 CONNECT：用 LD_PRELOAD 拦截
+   `drmGetDevices2`/`open`/`ioctl`，或打开 DDK 调试输出，定位
+   libsrv 在 CONNECT 前的最后一步；这是诊断，不改内核语义。
+
+### 边界（P5b-16）
+
+- 未改内核/initramfs；未执行 apt；未修改 RockOS 系统文件；
+- 板级命令带 `timeout`；串口输出按轮次限量；
+- 串口全量：`target/board-p5b16-20261024/board_p5b16.serial.log`
+  （未跟踪）。
