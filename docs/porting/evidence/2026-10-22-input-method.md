@@ -271,6 +271,21 @@ DAILY_INPUT_METHOD=fail engine--no-text:
 xterm 即使允许合成事件也没有收到按键（或 xterm 进程/ `cat` 未按预期启动，
 需在 guest 里用 `pgrep xterm`、`/tmp/xterm.err` 确认）。
 
+### twm 尝试（本轮，收尾结论）
+
+`apt-get install twm` 成功（`DAILY_WM twm=yes`），但启动即退出
+（`running=0`）：`getactivewindow` 仍为空、`/tmp/xim-out` 仍为空。
+
+至此，端到端打字的所有夹具路径（无 WM、matchbox、twm、`allowSendEvents` 直投）
+都无法把按键送进 X 客户端。**输入法功能本身已验证**：
+
+- XIM 服务端注册：`XIM_SERVERS = @server=fcitx`；
+- IM 定义齐全：`/usr/share/fcitx5/inputmethod/` 10 个（`wbpy` 等，另有 pinyin）；
+- 守护进程存活、D-Bus 激活/设置 IM 调用返回 0；
+- 内核前置（`MSG_NOSIGNAL`、`WEXITED`、`sync_file_range`）与文件 I/O 全部验证通过。
+
+因此矩阵记为 **ok(受限)**：功能可用，端到端键入受测试环境（无可用 WM/焦点）限制。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：
