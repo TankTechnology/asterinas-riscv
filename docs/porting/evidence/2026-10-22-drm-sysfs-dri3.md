@@ -147,6 +147,7 @@ gate demonstrates is that the DRI3/dma-buf protocol works end to end.
 |---|---|---|
 | x86 graphical | `make test_x86_graphical` | serial password login, apt install, Xorg, xterm, DRI3+Present, DRI3 buffer exchange, red screendump, power-button power-off, clean `e2fsck -fn` |
 | RISC-V graphical | `make test_riscv_graphical` | root serial autologin, Xorg, xterm, DRI3+Present, DRI3 buffer exchange, red screendump, in-guest power-off, clean `e2fsck -fn` |
+| RISC-V legacy Xorg | `make test_riscv_xorg` | unchanged gate on the same kernel: `screendump 1024x768 red=1.000`, power-off, clean `e2fsck -fn` |
 
 The RISC-V `desktop-drm` image ships no `sudo` and its `login` did not finish
 within agetty's 60 s window, so its session runs as `root` through
