@@ -200,16 +200,18 @@ pub(super) fn read_write(
     cb[0] = if in_ { 0x28 } else { 0x2A };
     cb[2..6].copy_from_slice(&((lba as u32).to_be_bytes()));
     cb[7..9].copy_from_slice(&sectors.to_be_bytes());
-    command(
-        controller,
-        slot_id,
-        bulk_in,
-        bulk_out,
-        &cb,
-        length,
-        in_,
-        daddr,
-    )
+
+    // One command-level retry: a transient BOT timing miss under load shows
+    // up as a failed transfer, and a fresh CBW usually goes through.
+    match command(
+        controller, slot_id, bulk_in, bulk_out, &cb, length, in_, daddr,
+    ) {
+        Ok(done) => Ok(done),
+        Err(_) => {
+            ostd::warn!("retrying READ/WRITE(10) lba={} sectors={}", lba, sectors);
+            command(controller, slot_id, bulk_in, bulk_out, &cb, length, in_, daddr)
+        }
+    }
 }
 
 /// Sends one command through the Bulk-Only Transport.

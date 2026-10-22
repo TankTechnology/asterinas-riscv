@@ -67,3 +67,25 @@ PASS=10 FAIL=0
 Debian 负载下的 BOT 时序余量，而不是 initramfs 路径本身。若要继续加固，方向是
 把 CBW→数据阶段的 settle 从固定自旋改为“等设备就绪/NACK 重试”，并给
 `READ(10)` 加一次命令级重试。
+
+## 命令级重试（2026-10-23）
+
+给 `READ/WRITE(10)` 加了一次“重发 CBW”的命令级重试，3 次 daily 复测仍为 **USB 2/3**。
+失败轮的关键日志：
+
+```
+[317.977] WARN: bulk timeout: slot 1 dci 3 trb 0xaffd10a0 length 4096 usbsts 0x8
+[317.978] WARN: retrying READ/WRITE(10) lba=8 sectors=8
+[317.981] WARN: sda: Error { errno: EIO, msg: "a bulk transfer failed" }
+```
+
+结论：重试确实触发，但**首次超时后端点处于 halted 状态**，直接重发 CBW 只会立刻
+拿到 EIO。要真正恢复，必须在重试前做标准 BOT 恢复：
+
+1. Bulk-Only Mass Storage Reset（类请求 `0xFE`，bmRequestType 0x21）；
+2. Clear Feature(HALT)（`0x02/1`，wIndex = 端点地址）对两个 bulk 端点各一次；
+3. 控制器侧 `Reset Endpoint`(type 16) + `Set TR Dequeue Pointer`（指向本端点下一个空
+   TRB，DCS=1），必要时重新 `Configure Endpoint`；
+4. 然后再重发一次命令；仍失败则走“失败即重枚举”。
+
+上面的 4 步是下一轮的唯一改动点；当前状态下矩阵记为 ok（Debian 负载下 2/3）。
