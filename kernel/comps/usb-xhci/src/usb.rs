@@ -765,7 +765,14 @@ impl XhciController {
             status: 0,
             control: (TRB_STOP_ENDPOINT << 10) | ((dci as u32) << 16) | ((slot_id as u32) << 24),
         })?;
-        let _ = self.wait_command(stop);
+        match self.wait_command(stop) {
+            Ok(event) => info!(
+                "stop endpoint dci {} completed with code {}",
+                dci,
+                event.completion_code()
+            ),
+            Err(error) => warn!("stop endpoint dci {} did not complete: {:?}", dci, error),
+        }
 
         let dequeue = endpoint.ring.current_address() | 1;
         let set = self.command_push(Trb {
@@ -773,7 +780,18 @@ impl XhciController {
             status: 0,
             control: (TRB_SET_TR_DEQUEUE << 10) | ((dci as u32) << 16) | ((slot_id as u32) << 24),
         })?;
-        let event = self.wait_command(set)?;
+        let event = match self.wait_command(set) {
+            Ok(event) => event,
+            Err(error) => {
+                warn!("set tr dequeue dci {} did not complete: {:?}", dci, error);
+                return Err(error);
+            }
+        };
+        info!(
+            "set tr dequeue dci {} completed with code {}",
+            dci,
+            event.completion_code()
+        );
         if event.completion_code() != COMPLETION_SUCCESS {
             warn!(
                 "Set TR Dequeue for dci {} failed with {}",

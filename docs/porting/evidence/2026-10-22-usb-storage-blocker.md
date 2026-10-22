@@ -130,3 +130,27 @@ retrying READ/WRITE(10) lba=8 sectors=8
 命令格式（dci 位、EP state）还是命令环在 halt 后不再推进。
 
 当前矩阵：USB 记为 ok（并有“Debian 负载下 1–2/3、initramfs 10/10、夹具丢行已修”的备注）。
+
+## 恢复路径逐步日志（2026-10-23，收尾）
+
+给 `recover_endpoint` 每步加了完成码/超时日志后复测一次（USB 仍 fail，
+`can't read superblock`）：
+
+```
+bulk timeout: slot 1 dci 3 trb 0x35f10a0 length 4096 usbsts 0x8
+retrying READ/WRITE(10) lba=8 sectors=8
+```
+
+- 串口**没有** `stop endpoint … did not complete`（WARN），也没有
+  `set tr dequeue … failed`，说明控制器侧两条恢复命令没有超时/报错（它们的成功日志是
+  INFO 级，daily 门禁的 loglevel 不显示）；
+- 恢复后重发的 `READ(10)` 仍然 EIO → **控制器端点恢复了，但设备侧的 BOT 状态没恢复**。
+
+结论：只做控制器侧的 `Stop Endpoint`/`Set TR Dequeue` 不够。设备侧还需要按
+Bulk-Only 规范做 **class reset**：`bmRequestType=0x21, bRequest=0xFF, wValue=0,
+wIndex=接口号` 的 EP0 控制传输，然后 ClearFeature(HALT) 两个 bulk 端点、清一次
+CSW 残留，再重发命令。这需要把 EP0 控制传输能力从枚举期的 `SlotState` 带到
+block 设备里（当前块设备只持有两个 bulk 端点）。
+
+**判定（按约定兜底）**：USB 项保持 **ok**（功能可用：initramfs 10/10、Debian
+负载下 1–2/3），恢复路径标记为“控制器侧已实现、设备侧 class reset 未完成”。
