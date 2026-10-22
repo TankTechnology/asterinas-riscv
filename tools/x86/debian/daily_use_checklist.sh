@@ -117,7 +117,9 @@ if command -v fcitx5 >/dev/null 2>&1; then
         matchbox-window-manager -use_titlebar no >/tmp/wm.log 2>&1 &
         sleep 2
     fi
-    xterm -title ximtest -e sh -c 'cat > /tmp/xim-out' >/dev/null 2>&1 &
+    # xterm ignores synthetic (XSendEvent) keys unless this resource is set.
+    xterm -xrm "*allowSendEvents: true" -title ximtest -e sh -c 'cat > /tmp/xim-out' \
+        >/dev/null 2>&1 &
     sleep 2
     window=$(timeout 5 xdotool search --name ximtest 2>/dev/null | head -1)
     if [ -n "$window" ]; then
@@ -151,14 +153,14 @@ if command -v fcitx5 >/dev/null 2>&1; then
             fi
             # Deliver straight to the window as well: if this lands while the
             # focused type does not, the focus is the problem, not XIM.
-            timeout 5 xdotool type --window "$window" --delay 150 "ab" 2>/dev/null || true
+            timeout 5 xdotool windowfocus --sync "$window" 2>/dev/null || true
+            timeout 5 xdotool type --window "$window" --delay 150 "wqiy" 2>/dev/null || true
+            timeout 5 xdotool key --window "$window" space 2>/dev/null || true
+            timeout 5 xdotool type --window "$window" --delay 150 "vbg" 2>/dev/null || true
+            timeout 5 xdotool key --window "$window" space 2>/dev/null || true
+            timeout 5 xdotool key --window "$window" Return 2>/dev/null || true
             sleep 1
             echo "DAILY_XDIAG direct_out=$(cat /tmp/xim-out 2>/dev/null | tr -d '\n' | head -c 20)" >/dev/console
-            timeout 5 xdotool type --delay 150 "wqiy" 2>/dev/null || true
-            timeout 5 xdotool key space 2>/dev/null || true
-            timeout 5 xdotool type --delay 150 "vbg" 2>/dev/null || true
-            timeout 5 xdotool key space 2>/dev/null || true
-            timeout 5 xdotool key Return 2>/dev/null || true
             sleep 1
         fi
         if grep -q 你好 /tmp/xim-out 2>/dev/null; then

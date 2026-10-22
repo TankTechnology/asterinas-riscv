@@ -254,6 +254,23 @@ XIM 服务端已注册、守护进程存活、IM 定义齐全。
 不可靠，改用不需要合成按键的验证：GTK 应用 + `GTK_IM_MODULE=fcitx`，或用
 `xdotool windowactivate --sync` + `xdotool key`（需要 WM 支持 EWMH）。
 
+### allowSendEvents 后仍无按键落盘（本轮，收尾）
+
+按 xterm 的标准做法加了 `-xrm "*allowSendEvents: true"`，并用
+`xdotool windowfocus --sync <id>` + `xdotool type/key --window <id>` 直投：
+
+```
+DAILY_XDIAG active= win=6291468
+DAILY_XDIAG direct_out=
+DAILY_INPUT_METHOD=fail engine--no-text:
+```
+
+`/tmp/xim-out` 依旧为空。至此可以确定：**输入法链路本身没有失败证据**
+（XIM 服务端已注册、fcitx5 存活、IM 定义齐全、内核与文件 I/O 均已验证），
+阻塞点完全在“把按键送进 X 客户端”的测试夹具上——没有窗口管理器、没有焦点，
+xterm 即使允许合成事件也没有收到按键（或 xterm 进程/ `cat` 未按预期启动，
+需在 guest 里用 `pgrep xterm`、`/tmp/xterm.err` 确认）。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：
