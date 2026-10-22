@@ -122,6 +122,27 @@ DAILY_INPUT_METHOD=fail fcitx5-no-engine:debconf:_falling_back_to_frontend:_Read
 `Loaded addon keyboard/wubi` 与 `addonmanager` 的失败行，并试
 `fcitx5-remote -o`（激活）后再查 `-n`。
 
+### 总线/激活诊断（本轮，门禁完整跑完）
+
+```
+DAILY_FCITX alive=1 engine=''
+DAILY_DBUS  ... array [ string "org.freedesktop.DBus" string ":1.3"
+             string "org.freedesktop.portal.IBus" ... ]      # 截断 240 字节
+DAILY_FCITX activate_rc=0
+DAILY_FCITX after_activate=''
+```
+
+- 守护进程存活；`fcitx5-remote -o`（激活）返回 0；激活后 `-n` 仍为空。
+- 会话总线能查询（`ListNames` 有返回），但截断输出里没能确认
+  `org.fcitx.Fcitx5` 是否在列；此前 fcitx5 自己的日志有
+  `Service name change: org.fcitx.Fcitx5 :1.0`，说明它确实注册过。
+
+结论：不是“总线完全没连上”，也不是引擎崩溃，而是 **IM 组没有被激活/初始化**。
+下一步最短路径：装 `fcitx5-diagnose`（随 fcitx5 提供）看 “Input Methods” 一节，
+或直接 `dbus-send ... org.fcitx.Fcitx.Controller1.SetCurrentIM string:<wubi>` 设定
+当前 IM；如果仍然为空，检查 classicui/tray 与 xcb frontend 的初始化日志
+（无 WM/托盘环境可能让它停在未激活状态）。
+
 ## 卡点（确切错误）
 
 启动数秒后 fcitx5 崩溃，串口里是回溯 + 两条内核“未支持”告警：

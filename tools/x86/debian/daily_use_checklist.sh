@@ -90,6 +90,16 @@ if command -v fcitx5 >/dev/null 2>&1; then
     sleep 5
     engine=$(fcitx5-remote -n 2>/dev/null)
     echo "DAILY_FCITX alive=$(pgrep -c fcitx5 2>/dev/null) engine='$engine'" >/dev/console
+    if [ -z "$engine" ]; then
+        # Diagnose instead of switching engines: is the daemon on a bus that
+        # lists it, and does activating the input method produce an engine?
+        echo "DAILY_DBUS $(dbus-send --session --print-reply --dest=org.freedesktop.DBus / org.freedesktop.DBus.ListNames 2>&1 | tr '\n' ' ' | head -c 240)" >/dev/console
+        fcitx5-remote -o 2>/dev/null
+        echo "DAILY_FCITX activate_rc=$?" >/dev/console
+        sleep 1
+        engine=$(fcitx5-remote -n 2>/dev/null)
+        echo "DAILY_FCITX after_activate='$engine'" >/dev/console
+    fi
     if [ -n "$engine" ]; then
         xterm -title ximtest -e sh -c 'cat > /tmp/xim-out' >/dev/null 2>&1 &
         sleep 2
