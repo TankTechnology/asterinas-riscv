@@ -98,12 +98,15 @@ PROFILE
         # End-to-end: type pinyin into an xterm and see Chinese arrive.
         xterm -title ximtest -e sh -c 'cat > /tmp/xim-out' >/dev/null 2>&1 &
         sleep 2
-        window=$(xdotool search --name ximtest 2>/dev/null | head -1)
+        window=$(timeout 5 xdotool search --name ximtest 2>/dev/null | head -1)
         if [ -n "$window" ]; then
-            xdotool windowactivate --sync "$window" 2>/dev/null
-            xdotool type --delay 120 "nihao"
-            xdotool key space
-            xdotool key Return
+            # No window manager runs here, so ask X for focus directly and
+            # never wait on anything: a stuck xdotool must not stall the gate.
+            timeout 5 xdotool windowfocus "$window" 2>/dev/null || true
+            sleep 1
+            timeout 5 xdotool type --delay 120 "nihao" 2>/dev/null || true
+            timeout 5 xdotool key space 2>/dev/null || true
+            timeout 5 xdotool key Return 2>/dev/null || true
             sleep 1
         fi
         if grep -q 你好 /tmp/xim-out 2>/dev/null; then
