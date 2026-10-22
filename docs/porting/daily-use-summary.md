@@ -77,3 +77,24 @@ INPUT_METHOD ok(受限)  AUDIO ok  USB ok  SUSPEND ok
 ```
 
 `matrix.tsv`、串口全量与截图在 `target/daily-use/`。
+
+## 稳定性复测（2026-10-23，`make test_x86_daily_use` × 3）
+
+| 域 | 3 次结果 | 备注 |
+|---|---|---|
+| DESKTOP / APP / APT / CLIPBOARD / AUDIO | 3/3 ok | 稳定 |
+| USB 热插拔 | **2/3 ok** | run 1 复现 `can't read superblock on /dev/sda`，run 2/3 `mounted-/dev/sda-read-ASTERINAS-USB-OK` |
+| SUSPEND | 3/3 ok | `woke-up-disk-and-io-ok` |
+| INPUT_METHOD | 3/3 `fail engine--no-text:` | 与仲裁的 ok(受限) 一致：XIM/引擎就绪，端到端键入受无 WM 夹具限制 |
+
+原始结果：`target/daily-3x.log`，单轮完整日志 `target/daily-run-{1,2,3}.log`，
+矩阵 `target/daily-use/matrix.tsv`。
+
+**U 盘的偶发**：initramfs 门禁 10/10，而 Debian daily 环境出现 1/3 的 superblock
+读失败，落点仍是 BOT 在高负载下的时序余量（CBW→数据阶段的固定 settle）。加固方向
+见 `evidence/2026-10-22-usb-storage-blocker.md`：把 settle 换成设备就绪/NACK 重试，
+并给 READ(10) 加一次命令级重试。
+
+**输入法**：三次都是 `engine--no-text:`，与之前定位一致——XIM 已注册、10 个 IM
+定义就绪、fcitx5/D-Bus 正常，端到端按键投递受测试环境（无可用 WM/焦点）限制。
+该项按仲裁记为 ok(受限)，等拍板后改用 GTK/`GTK_IM_MODULE=fcitx` 路径复验。
