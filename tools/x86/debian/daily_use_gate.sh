@@ -81,7 +81,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 BOOT_SCRIPT="$REPO_ROOT/tools/x86/debian/boot_debian.sh"
 CHECKLIST="$REPO_ROOT/tools/x86/debian/daily_use_checklist.sh"
-for tool in debugfs e2fsck python3 timeout "$QEMU"; do
+for tool in debugfs e2fsck mke2fs python3 timeout "$QEMU"; do
     command -v "$tool" >/dev/null 2>&1 || {
         printf 'error: required tool not found: %s\n' "$tool" >&2
         exit 1
@@ -110,8 +110,15 @@ Section "ServerFlags"
 EndSection
 CONF
 
-# A raw stick image; the gate only checks that the guest sees a new USB device.
+# An ext2 stick image with one file: the guest must mount and read it.
+USB_ROOT="$WORKSPACE/usbstick-root"
+rm -rf -- "$USB_ROOT"
+mkdir -p -- "$USB_ROOT"
+printf 'ASTERINAS-USB-OK\n' >"$USB_ROOT/hello.txt"
 truncate -s 16M "$USB_IMAGE"
+# The kernel ext2 driver needs 4 KiB blocks and has no ext_attr, dir_index,
+# or resize inode.
+mke2fs -q -F -t ext2 -b 4096 -O ^ext_attr,^resize_inode,^dir_index -d "$USB_ROOT" "$USB_IMAGE"
 
 cat >"$WRAPPER" <<WRAPPER
 #!/usr/bin/env bash

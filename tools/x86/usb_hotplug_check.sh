@@ -67,7 +67,14 @@ MONITOR_SOCK="$WORKSPACE/monitor.sock"
 STICK="$WORKSPACE/usbstick.img"
 QEMU_LOG="$WORKSPACE/qemu.log"
 rm -f -- "$CONSOLE" "$SERIAL_SOCK" "$MONITOR_SOCK" "$STICK"
+USB_ROOT="$WORKSPACE/usbstick-root"
+rm -rf -- "$USB_ROOT"
+mkdir -p -- "$USB_ROOT"
+printf 'ASTERINAS-USB-OK\n' >"$USB_ROOT/hello.txt"
 truncate -s 16M "$STICK"
+# The kernel ext2 driver only mounts 4 KiB blocks.
+mke2fs -q -F -t ext2 -b 4096 -O ^ext_attr,^resize_inode,^dir_index -d "$USB_ROOT" "$STICK"
+printf 'ASTERUSB' | dd of="$STICK" bs=1 conv=notrunc status=none
 
 INITRAMFS="$(tools/drm/build_probe.sh --arch amd64 \
     --source "$REPO_ROOT/tools/usb/usb_probe.c" --output "$WORKSPACE/probe")"
@@ -78,15 +85,25 @@ else
     ACCEL_ARGS=(-cpu Icelake-Server)
 fi
 
+TRACE_ARGS=()
+if [[ -n "${QEMU_TRACE:-}" ]]; then
+    IFS=',' read -r -a trace_patterns <<<"$QEMU_TRACE"
+    for pattern in "${trace_patterns[@]}"; do
+        TRACE_ARGS+=(-trace "$pattern")
+    done
+    TRACE_ARGS+=(-D "$WORKSPACE/qemu-trace.log")
+fi
+
 "$QEMU" \
     "${ACCEL_ARGS[@]}" \
+    "${TRACE_ARGS[@]}" \
     -smp 1 -m 2G --no-reboot \
     -display none \
     -chardev "file,id=console,path=$CONSOLE" \
     -device virtio-serial-pci \
     -device virtconsole,chardev=console \
     -device virtio-gpu-pci -vga none \
-    -device qemu-xhci \
+    -device "${QEMU_XHCI_DEV:-qemu-xhci}" \
     -drive "if=none,id=usbstick,format=raw,file=$STICK" \
     -serial "unix:$SERIAL_SOCK,server=on,wait=off" \
     -monitor "unix:$MONITOR_SOCK,server=on,wait=off" \
@@ -140,6 +157,8 @@ CONFIG_MARKERS = [
     b'endpoint 02:bulk out',
     b'storage on slot 1: vendor="QEMU"',
     b'blocks=32768 block_size=512',
+    b'registered /dev/sda: 32768 sectors',
+    b'USBPROBE_BLOCK dev=/dev/sda read=512 magic=4153544552',
 ]
 
 added = removed = disconnected = enumerated = configured = False

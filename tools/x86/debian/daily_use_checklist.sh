@@ -97,18 +97,30 @@ else
     mark AUDIO missing "no-/dev/snd-node"
 fi
 
-# --- Domain 6: USB hotplug ------------------------------------------------
+# --- Domain 6: USB hotplug (enumerate, mount, read, umount) --------------
 echo DAILY_USB_WAIT
 tick=0
 while [ $tick -lt 25 ]; do
-    if [ -d /sys/bus/usb/devices ] && [ -n "$(ls /sys/bus/usb/devices 2>/dev/null)" ]; then
+    if [ -b /dev/sda ]; then
         break
     fi
     sleep 1
     tick=$((tick + 1))
 done
-if [ -d /sys/bus/usb/devices ]; then
-    mark USB ok "devices:$(ls /sys/bus/usb/devices 2>/dev/null | tr '\n' ',')"
+if [ -b /dev/sda ]; then
+    mkdir -p /mnt/usbstick
+    if mount -t ext2 -o ro /dev/sda /mnt/usbstick 2>/tmp/usb-mount.err; then
+        if grep -q ASTERINAS-USB-OK /mnt/usbstick/hello.txt 2>/dev/null; then
+            mark USB ok "mounted-/dev/sda-read-$(cat /mnt/usbstick/hello.txt | tr -d '\n')"
+        else
+            mark USB fail "mounted-but-no-hello.txt"
+        fi
+        umount /mnt/usbstick
+    else
+        mark USB fail "mount-failed:$(head -1 /tmp/usb-mount.err | tr ' ' '_')"
+    fi
+elif [ -d /sys/bus/usb/devices ]; then
+    mark USB fail "enumerated-but-no-block-device:$(ls /sys/bus/usb/devices | tr '\n' ',')"
 else
     mark USB missing "no-/sys/bus/usb"
 fi

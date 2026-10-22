@@ -23,6 +23,7 @@ macro_rules! __log_prefix {
     };
 }
 
+mod block;
 mod storage;
 mod sysfs;
 mod usb;
@@ -338,34 +339,53 @@ impl XhciController {
     }
 
     /// Polls every port, resets and enumerates new devices.
-    fn poll_ports(&self) {
-        let mut connected = self.ports_connected.lock();
-        for port in 1..=self.port_count {
-            let portsc = self.read_portsc(port);
-            let plugged = portsc & PORTSC_CCS != 0;
-            let index = port as usize - 1;
-            let changed = plugged != connected[index];
-            if changed {
-                connected[index] = plugged;
-            }
+    fn poll_ports(self: &Arc<Self>) {
+        let mut connected_ports = Vec::new();
+        let mut disconnected_ports = Vec::new();
 
-            if changed && plugged {
-                info!("port {} connected", port);
-                match self
-                    .reset_port(port)
-                    .and_then(|()| self.enumerate_port(port))
-                {
-                    Ok(()) => info!("port {} enumerated", port),
-                    Err(error) => warn!("port {} enumeration failed: {:?}", port, error),
+        // Enumerating sleeps (devtmpfs, DMA allocation), so the connection
+        // state is updated under the lock but acted on outside it.
+        {
+            let mut connected = self.ports_connected.lock();
+            for port in 1..=self.port_count {
+                let portsc = self.read_portsc(port);
+                let plugged = portsc & PORTSC_CCS != 0;
+                let index = port as usize - 1;
+                if plugged != connected[index] {
+                    connected[index] = plugged;
+                    if plugged {
+                        connected_ports.push(port);
+                    } else {
+                        disconnected_ports.push(port);
+                    }
                 }
-            } else if changed {
-                info!("port {} disconnected", port);
+                // Clear the change bits so the next transition is reported.
+                // PORTSC also has read/write bits (port power, wake enables,
+                // link state); writing them back as zero would power the port
+                // off, so everything except the change bits is preserved, and
+                // PED (write-one-to-disable) and PR are never written.
+                let portsc = self.read_portsc(port);
+                let change = portsc & PORTSC_CHANGE_BITS;
+                if change != 0 {
+                    let value = portsc & !PORTSC_CHANGE_BITS & !PORTSC_PED & !PORTSC_PR;
+                    self.write32(self.portsc(port), value | change);
+                }
             }
+        }
 
-            // Clear the change bits so the next transition is reported.
-            let portsc = self.read_portsc(port);
-            if portsc & PORTSC_CHANGE_BITS != 0 {
-                self.write32(self.portsc(port), portsc & PORTSC_CHANGE_BITS);
+        for port in disconnected_ports {
+            info!("port {} disconnected", port);
+        }
+
+        for port in connected_ports {
+            info!("port {} connected", port);
+            let result = match self.reset_port(port) {
+                Ok(()) => Self::enumerate_port(self, port),
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(()) => info!("port {} enumerated", port),
+                Err(error) => warn!("port {} enumeration failed: {:?}", port, error),
             }
         }
     }
@@ -380,7 +400,8 @@ fn start_port_watch(controller: Arc<XhciController>) {
                 |_| {},
                 Some(Duration::from_millis(300)),
             );
-            controller.poll_events();
+            // The event ring belongs to whoever is waiting for a completion;
+            // this worker must not consume and drop events out from under it.
             controller.poll_ports();
         }
     });

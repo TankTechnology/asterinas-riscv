@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/mount.h>
+#include <sys/mount.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -37,6 +38,31 @@ static int read_attr(const char *dir, const char *attr, char *buffer, size_t siz
         buffer[--length] = '\0';
     }
     return 0;
+}
+
+// Reads the first sector of the block device the stick publishes.
+static int check_block(void) {
+    struct stat info;
+    if (stat("/dev/sda", &info) != 0) {
+        return 0;
+    }
+
+    int fd = open("/dev/sda", O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+    unsigned char sector[512];
+    ssize_t got = read(fd, sector, sizeof(sector));
+    close(fd);
+    if (got != (ssize_t)sizeof(sector)) {
+        printf("USBPROBE_BLOCK dev=/dev/sda read=%zd\n", got);
+        return 0;
+    }
+
+    printf("USBPROBE_BLOCK dev=/dev/sda read=%zd magic=%02x%02x%02x%02x%02x%02x%02x%02x\n",
+           got, sector[0], sector[1], sector[2], sector[3],
+           sector[4], sector[5], sector[6], sector[7]);
+    return 1;
 }
 
 // Returns the number of device entries printed.
@@ -100,7 +126,7 @@ int main(void) {
 
     // The gate hot-adds the stick after the controller is up; give it 90s.
     for (int attempt = 0; attempt < 450; attempt++) {
-        if (scan_devices() > 0) {
+        if (scan_devices() > 0 && check_block()) {
             printf("USBPROBE_PASS\n");
             break;
         }

@@ -14,6 +14,7 @@ use device_id::DeviceId;
 pub(crate) use mem::{getrandom, geturandom};
 pub(crate) use pty::{PtyMaster, PtySlave, new_pty_pair};
 pub(crate) use registry::lookup;
+pub use registry::register_hotplug_device;
 
 use crate::{
     fs::{devtmpfs::DevtmpfsNodeMeta, file::PerOpenFileOps},

@@ -25,7 +25,7 @@ make test_x86_daily_use \
 | 剪贴板 | ok | `xclip` 写读往返一致 |
 | 输入法 | missing | 镜像里没有 fcitx5/ibus（也未安装） |
 | 音频 | ok | `/dev/snd/pcmC0D0p` + `aplay -D hw:0,0` 播放成功（见 `2026-10-22-alsa-aplay.md`） |
-| U 盘热插拔 | **部分通过** | 热插后设备出现在 `/sys/bus/usb/devices/1-1`（`idVendor`/`idProduct` 可读）；usb-storage/块设备待增量 2 重跑本表（见 `2026-10-22-usb-enumeration.md`） |
+| U 盘热插拔 | **部分通过** | 枚举/配置/容量读取 ok，`/dev/sda` 已注册且首扇区可读；挂载受 bulk 传输停摆阻塞（见 `2026-10-22-usb-storage-blocker.md`） |
 | 睡眠唤醒 | fail | `systemctl suspend` 返回 1：`Call to Suspend failed: No such file or directory`（缺 `/sys/power/state`） |
 
 原始产物：`target/daily-use/matrix.tsv`、`console.txt`（串口全量）、

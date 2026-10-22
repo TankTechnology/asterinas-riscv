@@ -13,7 +13,7 @@ use aster_core::prelude::*;
 use ostd::{
     info,
     mm::{HasDaddr, VmIo, dma::DmaCoherent},
-    sync::SpinLock,
+    sync::{Mutex, SpinLock},
     warn,
 };
 
@@ -71,6 +71,7 @@ impl Trb {
 }
 
 /// A ring of 256 TRBs in one DMA page.
+#[derive(Debug)]
 ///
 /// Producer rings (command, transfer) keep a Link TRB in the last slot; the
 /// event ring wraps by size instead, and is consumed rather than produced.
@@ -202,7 +203,7 @@ pub(super) struct SlotState {
     /// what the mass-storage transport uses.
     pub(super) configuration: Option<Configuration>,
     /// Transfer rings, one per configured endpoint.
-    pub(super) endpoints: Vec<EndpointState>,
+    pub(super) endpoints: Vec<Mutex<EndpointState>>,
     /// Indices into `endpoints`.
     pub(super) bulk_in: Option<usize>,
     pub(super) bulk_out: Option<usize>,
@@ -211,6 +212,7 @@ pub(super) struct SlotState {
 }
 
 /// One configured endpoint and its transfer ring.
+#[derive(Debug)]
 pub(super) struct EndpointState {
     /// Device Context Index: 2N for OUT, 2N+1 for IN.
     pub(super) dci: u8,
@@ -225,6 +227,8 @@ pub(super) struct EndpointDescriptor {
     pub address: u8,
     pub attributes: u8,
     pub max_packet: u16,
+    /// SuperSpeed companion `bMaxBurst`; zero for USB 2 endpoints.
+    pub max_burst: u8,
 }
 
 impl EndpointDescriptor {
@@ -242,11 +246,12 @@ impl EndpointDescriptor {
 
     pub(super) fn describe(&self) -> String {
         format!(
-            "{:02x}:{} {} maxpacket={}",
+            "{:02x}:{} {} maxpacket={} burst={}",
             self.address,
             if self.is_bulk() { "bulk" } else { "other" },
             if self.is_in() { "in" } else { "out" },
-            self.max_packet
+            self.max_packet,
+            self.max_burst
         )
     }
 }
@@ -283,23 +288,6 @@ impl Configuration {
 }
 
 impl XhciController {
-    /// Drains events no command or transfer is waiting for.
-    ///
-    /// Connection changes are driven from `PORTSC` polling rather than from
-    /// these events, so anything left here is stale by definition.
-    pub(super) fn poll_events(&self) {
-        loop {
-            match self.event_ring_pop() {
-                Ok(Some(_)) => {}
-                Ok(None) => break,
-                Err(error) => {
-                    warn!("event ring: {:?}", error);
-                    break;
-                }
-            }
-        }
-    }
-
     /// Reads the next event and tells the controller that it was consumed.
     pub(super) fn event_ring_pop(&self) -> Result<Option<Trb>> {
         let mut rings = self.rings.lock();
@@ -523,7 +511,10 @@ impl XhciController {
             let done = portsc & super::PORTSC_PR == 0
                 && (portsc & (super::PORTSC_PED | super::PORTSC_PRC) != 0);
             if done {
-                self.write32(register, portsc & super::PORTSC_CHANGE_BITS);
+                let change = portsc & super::PORTSC_CHANGE_BITS;
+                let value = portsc & !super::PORTSC_CHANGE_BITS & !super::PORTSC_PED
+                    & !super::PORTSC_PR;
+                self.write32(register, value | change);
                 if portsc & super::PORTSC_CCS == 0 {
                     return_errno_with_message!(Errno::ENODEV, "the device left during reset");
                 }
@@ -568,6 +559,7 @@ impl XhciController {
                 // EP context of a DCI `k` lives at dwords `8 * (k + 1)`.
                 let base = 8 * (dci as usize + 1) * 4;
                 let info2 = ((endpoint.max_packet as u32) << 16)
+                    | ((endpoint.max_burst as u32) << 8)
                     | ((ep_type as u32) << 3)
                     | (3 << 1);
                 slot.input_context.write_val(base + 4, &info2)?;
@@ -586,11 +578,11 @@ impl XhciController {
                         bulk_out = Some(endpoints.len());
                     }
                 }
-                endpoints.push(EndpointState {
+                endpoints.push(Mutex::new(EndpointState {
                     dci,
                     is_in: endpoint.is_in(),
                     ring,
-                });
+                }));
             }
         }
 
@@ -598,7 +590,11 @@ impl XhciController {
             return Ok(());
         }
 
-        let max_dci = endpoints.iter().map(|endpoint| endpoint.dci).max().unwrap();
+        let max_dci = endpoints
+            .iter()
+            .map(|endpoint| endpoint.lock().dci)
+            .max()
+            .unwrap();
         // Slot context: keep speed and port, raise the context-entry count.
         let slot_dword0: u32 = ((max_dci as u32) << 27)
             | (slot.input_context.read_val::<u32>(8 * 4)? & (0xF << 20));
@@ -606,7 +602,7 @@ impl XhciController {
 
         let mut add_flags: u32 = 1;
         for endpoint in &endpoints {
-            add_flags |= 1 << endpoint.dci;
+            add_flags |= 1 << endpoint.lock().dci;
         }
         slot.input_context.write_val(4, &add_flags)?;
 
@@ -636,22 +632,17 @@ impl XhciController {
         Ok(())
     }
 
-    /// Moves at most one page over a bulk endpoint and returns the byte count.
+    /// Moves up to `length` bytes over a bulk endpoint and returns the count.
     pub(super) fn bulk_transfer(
         &self,
-        slot: &mut SlotState,
         slot_id: u8,
-        index: usize,
-        buffer: &DmaCoherent,
+        endpoint: &mut EndpointState,
+        daddr: u64,
         length: usize,
     ) -> Result<usize> {
-        let endpoint = slot
-            .endpoints
-            .get_mut(index)
-            .ok_or_else(|| Error::with_message(Errno::EINVAL, "no such endpoint"))?;
         let dci = endpoint.dci;
         let trb_address = endpoint.ring.push(Trb {
-            param: buffer.daddr() as u64,
+            param: daddr,
             status: length as u32,
             control: (TRB_NORMAL << 10) | (1 << 5),
         })?;
@@ -666,20 +657,33 @@ impl XhciController {
             {
                 let code = event.completion_code();
                 if code != COMPLETION_SUCCESS && code != COMPLETION_SHORT_PACKET {
+                    warn!(
+                        "bulk dci {} failed with completion code {}",
+                        dci, code
+                    );
                     return_errno_with_message!(Errno::EIO, "a bulk transfer failed");
                 }
                 return Ok(length.saturating_sub(event.residual()));
             }
             core::hint::spin_loop();
             spin += 1;
+            // The controller occasionally misses a kick when the endpoint was
+            // just re-armed; ringing the doorbell again is harmless.
+            if spin % 1_000_000 == 0 {
+                self.ring_doorbell(slot_id as u32, dci as u32);
+            }
             if spin > 20_000_000 {
+                warn!(
+                    "bulk timeout: slot {} dci {} trb {:#x} length {}",
+                    slot_id, dci, trb_address, length
+                );
                 return_errno_with_message!(Errno::ETIMEDOUT, "a bulk transfer timed out");
             }
         }
     }
 
     /// Handles a newly connected port: slot, address and device descriptor.
-    pub(super) fn enumerate_port(&self, port: u8) -> Result<()> {
+    pub(super) fn enumerate_port(self: &Arc<Self>, port: u8) -> Result<()> {
         let portsc = self.read_portsc(port);
         let speed = (portsc >> 10) & 0xF;
 
@@ -738,6 +742,9 @@ impl XhciController {
         match super::storage::probe(self, &mut slot, slot_id) {
             Ok(info) => slot.storage = info,
             Err(error) => warn!("mass-storage probe failed: {:?}", error),
+        }
+        if let Err(error) = super::block::register(self.clone(), slot_id, &mut slot) {
+            warn!("failed to register the block device: {:?}", error);
         }
 
         let bus_number = 1u8;
@@ -831,7 +838,17 @@ fn parse_configuration(bytes: &[u8]) -> Result<Configuration> {
                         attributes: bytes[offset + 3],
                         max_packet: u16::from_le_bytes([bytes[offset + 4], bytes[offset + 5]])
                             & 0x7FF,
+                        max_burst: 0,
                     });
+                }
+            }
+            // SuperSpeed endpoint companion: bMaxBurst belongs to the endpoint
+            // just described, and the EP context must advertise the same.
+            0x30 if length >= 6 => {
+                if let Some(interface) = interfaces.last_mut()
+                    && let Some(endpoint) = interface.endpoints.last_mut()
+                {
+                    endpoint.max_burst = bytes[offset + 2];
                 }
             }
             _ => {}
