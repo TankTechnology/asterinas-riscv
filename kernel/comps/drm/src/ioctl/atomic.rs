@@ -12,21 +12,27 @@
 //! destination rects other than the full mode, page-flip events, non-blocking
 //! commits, cursor/overlay planes, and multi-CRTC commits.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::mem::size_of;
 
-use aster_core::prelude::*;
+use aster_core::{
+    fs::file::{close_file_fd, create_anon_file, with_anon_file_as},
+    prelude::*,
+};
+use ostd::mm::VmIo;
 use ostd_pod::Pod;
 
 use super::{copy_array_from_user, kms::ScanoutSource};
 use crate::{
     event::{DRM_EVENT_FLIP_COMPLETE, DrmEventVblank},
+    fence::DrmFence,
     file::{DrmClientCaps, DrmFile},
     ioctl::ioctl_defs,
     kms::{
         display_mode::{DrmDisplayMode, DrmModeInfo},
         objects::{crtc::DrmCrtc, property::{DrmPropertyAttachments, DrmPropertyFlags}},
     },
+    sync_file::{DrmSyncFile, SYNC_FILE_NAME},
     utils::DrmRect,
 };
 
@@ -104,6 +110,8 @@ impl DrmFile {
         let mut plane_crtc_id: Option<u32> = None;
         let mut source: [Option<u32>; 4] = [None; 4];
         let mut connector_crtcs: Vec<(u32, u32)> = Vec::new();
+        let mut plane_in_fence_fd: Option<i64> = None;
+        let mut crtc_out_fence_ptr: Option<u64> = None;
 
         let mut offset = 0usize;
         for (index, object_id) in object_ids.iter().enumerate() {
@@ -171,6 +179,7 @@ impl DrmFile {
                 match (kind, name) {
                     (ObjectKind::Crtc, "ACTIVE") => crtc_active = Some(value != 0),
                     (ObjectKind::Crtc, "MODE_ID") => crtc_mode_blob = Some(value as u32),
+                    (ObjectKind::Crtc, "OUT_FENCE_PTR") => crtc_out_fence_ptr = Some(value),
                     (ObjectKind::Connector, "CRTC_ID") => {
                         connector_crtcs.push((*object_id, value as u32))
                     }
@@ -180,6 +189,7 @@ impl DrmFile {
                     (ObjectKind::Plane, "SRC_Y") => source[1] = Some(value as u32),
                     (ObjectKind::Plane, "SRC_W") => source[2] = Some(value as u32),
                     (ObjectKind::Plane, "SRC_H") => source[3] = Some(value as u32),
+                    (ObjectKind::Plane, "IN_FENCE_FD") => plane_in_fence_fd = Some(value as i64),
                     _ => {
                         return_errno_with_message!(
                             Errno::EINVAL,
@@ -213,6 +223,23 @@ impl DrmFile {
             .map(|(connector_id, _)| *connector_id)
             .collect();
 
+        // An in-fence holds the commit until its producer is done. The
+        // descriptor is consumed, as in Linux.
+        if !test_only
+            && let Some(fd) = plane_in_fence_fd
+            && fd >= 0
+        {
+            let (fence, point, timeline) = with_anon_file_as::<DrmSyncFile, _>(fd as i32, |file| {
+                (file.fence(), file.point(), file.timeline())
+            })?;
+            if timeline {
+                fence.wait(point, None)?;
+            } else {
+                fence.wait_signaled(None)?;
+            }
+            let _ = close_file_fd(fd as i32);
+        }
+
         if !active {
             if crtc_mode_blob.unwrap_or(0) != 0 {
                 return_errno_with_message!(
@@ -234,6 +261,7 @@ impl DrmFile {
                 test_only,
             )?;
             self.emit_flip_complete(&crtc, crtc_id, &args, test_only);
+            self.emit_out_fence(&cmd, crtc_out_fence_ptr, test_only)?;
             return Ok(0);
         }
 
@@ -305,8 +333,43 @@ impl DrmFile {
             test_only,
         )?;
         self.emit_flip_complete(&crtc, crtc_id, &args, test_only);
+        self.emit_out_fence(&cmd, crtc_out_fence_ptr, test_only)?;
 
         Ok(0)
+    }
+
+    /// Writes an out-fence descriptor to the user pointer named by
+    /// `OUT_FENCE_PTR`.
+    ///
+    /// The commit has completed synchronously, so the fence is already
+    /// signaled when userspace receives it.
+    fn emit_out_fence(
+        &self,
+        cmd: &ioctl_defs::ModeAtomic,
+        out_fence_ptr: Option<u64>,
+        test_only: bool,
+    ) -> Result<()> {
+        let Some(ptr) = out_fence_ptr else {
+            return Ok(());
+        };
+        if test_only || ptr == 0 {
+            return Ok(());
+        }
+
+        let fence = DrmFence::new_signaled();
+        let fd = create_anon_file(
+            Box::new(DrmSyncFile::new(fence, 0, false)),
+            true,
+            SYNC_FILE_NAME,
+        )?;
+        cmd.with_data_ptr(|args_ptr| {
+            args_ptr
+                .vm()
+                .write_val::<u64>(ptr as usize, &(fd as u64))
+                .map_err(|_| Error::with_message(Errno::EFAULT, "the out-fence pointer is invalid"))
+        })?;
+
+        Ok(())
     }
 
     /// Queues `DRM_EVENT_FLIP_COMPLETE` for a committed atomic request.

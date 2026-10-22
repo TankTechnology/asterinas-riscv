@@ -140,6 +140,14 @@ impl DrmFile {
                 self.check_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
                 self.drm_syncobj_destroy(cmd)
             }
+            cmd @ SyncObjHandleToFd => {
+                self.check_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
+                self.drm_syncobj_handle_to_fd(cmd)
+            }
+            cmd @ SyncObjFdToHandle => {
+                self.check_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
+                self.drm_syncobj_fd_to_handle(cmd)
+            }
             cmd @ SyncObjWait => {
                 self.check_ioctl_access(DrmIoctlAccess::RENDER_ALLOW)?;
                 self.drm_syncobj_wait(cmd)
@@ -309,8 +317,8 @@ mod ioctl_defs {
             DrmModeGetResources, DrmModeObjectGetProps, DrmSetClientCap, DrmWaitVblank,
         },
         syncobj::{
-            DrmSyncObjArray, DrmSyncObjCreate, DrmSyncObjDestroy, DrmSyncObjTimelineArray,
-            DrmSyncObjTimelineWait, DrmSyncObjWait,
+            DrmSyncObjArray, DrmSyncObjCreate, DrmSyncObjDestroy, DrmSyncObjHandle,
+            DrmSyncObjTimelineArray, DrmSyncObjTimelineWait, DrmSyncObjWait,
         },
         atomic::{DrmModeAtomic, DrmModeCreateBlob, DrmModeDestroyBlob},
         flip::DrmModeCrtcPageFlip,
@@ -338,6 +346,8 @@ mod ioctl_defs {
     pub(super) type ModeDestroyPropBlob     = ioc!(DRM_IOCTL_MODE_DESTROYPROPBLOB,      b'd', 0xbe, InOutData<DrmModeDestroyBlob>);
     pub(super) type SyncObjCreate           = ioc!(DRM_IOCTL_SYNCOBJ_CREATE,              b'd', 0xbf, InOutData<DrmSyncObjCreate>);
     pub(super) type SyncObjDestroy          = ioc!(DRM_IOCTL_SYNCOBJ_DESTROY,             b'd', 0xc0, InOutData<DrmSyncObjDestroy>);
+    pub(super) type SyncObjHandleToFd       = ioc!(DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD,      b'd', 0xc1, InOutData<DrmSyncObjHandle>);
+    pub(super) type SyncObjFdToHandle       = ioc!(DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE,      b'd', 0xc2, InOutData<DrmSyncObjHandle>);
     pub(super) type SyncObjWait             = ioc!(DRM_IOCTL_SYNCOBJ_WAIT,                b'd', 0xc3, InOutData<DrmSyncObjWait>);
     pub(super) type SyncObjReset            = ioc!(DRM_IOCTL_SYNCOBJ_RESET,               b'd', 0xc4, InOutData<DrmSyncObjArray>);
     pub(super) type SyncObjSignal           = ioc!(DRM_IOCTL_SYNCOBJ_SIGNAL,              b'd', 0xc5, InOutData<DrmSyncObjArray>);

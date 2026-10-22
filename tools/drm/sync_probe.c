@@ -22,6 +22,7 @@
 #include <sys/mount.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <poll.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -66,6 +67,14 @@ struct drm_syncobj_wait {
     uint64_t deadline_nsec;
 };
 
+struct drm_syncobj_handle {
+    uint32_t handle;
+    uint32_t flags;
+    int32_t fd;
+    uint32_t pad;
+    uint64_t point;
+};
+
 struct drm_syncobj_timeline_wait {
     uint64_t handles;
     uint64_t points;
@@ -92,11 +101,16 @@ struct drm_syncobj_timeline_wait {
     _IOWR(DRM_IOCTL_BASE, 0xcb, struct drm_syncobj_timeline_array)
 #define DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL \
     _IOWR(DRM_IOCTL_BASE, 0xcd, struct drm_syncobj_timeline_array)
+#define DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD \
+    _IOWR(DRM_IOCTL_BASE, 0xc1, struct drm_syncobj_handle)
+#define DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE \
+    _IOWR(DRM_IOCTL_BASE, 0xc2, struct drm_syncobj_handle)
 
 #define DRM_CAP_SYNCOBJ 0x13
 #define DRM_CAP_SYNCOBJ_TIMELINE 0x14
 #define SYNC_CREATE_SIGNALED (1u << 0)
 #define WAIT_ALL (1u << 0)
+#define SYNC_FILE_FLAG (1u << 0)
 
 static int card = -1;
 
@@ -302,6 +316,106 @@ int main(void) {
         return 1;
     }
     printf("SYNCPROBE_CROSS_PROCESS ok\n");
+
+    // Sync-file export/import: the descriptor carries the fence, and an
+    // imported handle becomes waitable when the exporter signals.
+    uint32_t exported;
+    create_syncobj(0, &exported);
+    struct drm_syncobj_handle export = {
+        .handle = exported,
+        .flags = SYNC_FILE_FLAG,
+    };
+    if (ioctl(card, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &export) != 0 ||
+        export.fd < 0) {
+        fail("syncobj-export");
+    }
+    int fence_fd = export.fd;
+    struct pollfd fence_poll = {.fd = fence_fd, .events = POLLIN};
+    if (poll(&fence_poll, 1, 0) != 0) {
+        fail("syncobj-export-not-signaled");
+    }
+    struct drm_syncobj_handle import = {.fd = fence_fd, .flags = SYNC_FILE_FLAG};
+    if (ioctl(card, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &import) != 0 ||
+        import.handle == 0) {
+        fail("syncobj-import");
+    }
+    uint32_t imported = import.handle;
+    errno = 0;
+    if (wait_handles(&imported, 1, 0, 0, NULL) == 0 || errno != ETIME) {
+        fail("syncobj-imported-early");
+    }
+    signal_handles(&exported, 1);
+    if (wait_handles(&imported, 1, 0, 0, NULL) != 0) {
+        fail("syncobj-imported-signaled");
+    }
+    if (poll(&fence_poll, 1, 0) != 1) {
+        fail("syncobj-export-signaled");
+    }
+    printf("SYNCPROBE_FENCE_EXPORT ok\n");
+
+    // A descriptor imported by another process is waitable there.
+    uint32_t cross;
+    create_syncobj(0, &cross);
+    struct drm_syncobj_handle cross_export = {
+        .handle = cross,
+        .flags = SYNC_FILE_FLAG,
+    };
+    if (ioctl(card, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &cross_export) != 0) {
+        fail("syncobj-cross-export");
+    }
+    child = fork();
+    if (child < 0) {
+        fail("fork-fence");
+    }
+    if (child == 0) {
+        struct drm_syncobj_handle child_import = {
+            .fd = cross_export.fd,
+            .flags = SYNC_FILE_FLAG,
+        };
+        if (ioctl(card, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &child_import) != 0 ||
+            wait_handles(&child_import.handle, 1, 0, -500000000LL, NULL) != 0) {
+            printf("SYNCPROBE_CHILD_FAIL fence wait errno=%d\n", errno);
+            _exit(2);
+        }
+        printf("SYNCPROBE_FENCE_CHILD_PASS\n");
+        _exit(0);
+    }
+    nanosleep(&pause, NULL);
+    signal_handles(&cross, 1);
+    status = 0;
+    waitpid(child, &status, 0);
+    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+        printf("SYNCPROBE_FAIL fence child status=%d\n", status);
+        return 1;
+    }
+    printf("SYNCPROBE_FENCE_CROSS_PROCESS ok\n");
+
+    // Negative cases: a non-sync descriptor and a non-sync-file export.
+    int pipe_fds[2];
+    if (pipe(pipe_fds) != 0) {
+        fail("pipe-fence");
+    }
+    struct drm_syncobj_handle wrong = {.fd = pipe_fds[0], .flags = SYNC_FILE_FLAG};
+    errno = 0;
+    if (ioctl(card, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, &wrong) == 0 ||
+        errno != EINVAL) {
+        fail("syncobj-import-non-file");
+    }
+    close(pipe_fds[0]);
+    close(pipe_fds[1]);
+    struct drm_syncobj_handle unsupported = {.handle = exported, .flags = 0};
+    errno = 0;
+    if (ioctl(card, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &unsupported) == 0 ||
+        errno != EOPNOTSUPP) {
+        fail("syncobj-export-unsupported");
+    }
+    printf("SYNCPROBE_FENCE_ERRORS ok\n");
+
+    close(fence_fd);
+    close(cross_export.fd);
+    destroy_syncobj(exported);
+    destroy_syncobj(imported);
+    destroy_syncobj(cross);
 
     destroy_syncobj(plain);
     destroy_syncobj(signaled);

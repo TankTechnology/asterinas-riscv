@@ -7,16 +7,22 @@
 //! import/export (`SYNCOBJ_HANDLE_TO_FD`/`FD_TO_HANDLE`) is not implemented;
 //! this kernel has no dma-fence layer to back it yet.
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::time::Duration;
 
 use aster_core::{
+    fs::file::{create_anon_file, with_anon_file_as},
     monotonic_now, prelude::*, wait_until_or_timeout,
 };
 use ostd::sync::Waker;
 
 use super::{copy_array_from_user, copy_array_to_user};
-use crate::{file::DrmFile, ioctl::ioctl_defs, syncobj::DrmSyncObj};
+use crate::{
+    file::DrmFile,
+    ioctl::ioctl_defs,
+    sync_file::{DrmSyncFile, SYNC_FILE_NAME},
+    syncobj::DrmSyncObj,
+};
 
 /// `DRM_SYNCOBJ_CREATE_SIGNALED`.
 const SYNC_CREATE_SIGNALED: u32 = 1 << 0;
@@ -32,6 +38,12 @@ const WAIT_DEADLINE: u32 = 1 << 3;
 
 /// `DRM_SYNCOBJ_QUERY_FLAGS_LAST_SUBMITTED`.
 const QUERY_LAST_SUBMITTED: u32 = 1 << 0;
+
+/// `DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE` /
+/// `DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE`.
+const SYNC_FILE_FLAG: u32 = 1 << 0;
+/// `DRM_SYNCOBJ_*_FLAGS_TIMELINE`.
+const TIMELINE_FLAG: u32 = 1 << 1;
 
 impl DrmFile {
     pub(super) fn drm_syncobj_create(&self, cmd: ioctl_defs::SyncObjCreate) -> Result<i32> {
@@ -50,6 +62,64 @@ impl DrmFile {
     pub(super) fn drm_syncobj_destroy(&self, cmd: ioctl_defs::SyncObjDestroy) -> Result<i32> {
         let args: DrmSyncObjDestroy = cmd.read()?;
         self.remove_syncobj(args.handle)?;
+
+        Ok(0)
+    }
+
+    pub(super) fn drm_syncobj_handle_to_fd(
+        &self,
+        cmd: ioctl_defs::SyncObjHandleToFd,
+    ) -> Result<i32> {
+        let mut args: DrmSyncObjHandle = cmd.read()?;
+        if args.flags & !(SYNC_FILE_FLAG | TIMELINE_FLAG) != 0 {
+            return_errno_with_message!(Errno::EINVAL, "the sync-file export flags are invalid");
+        }
+        if args.flags & SYNC_FILE_FLAG == 0 {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "only sync-file export is supported"
+            );
+        }
+
+        let point = if args.flags & TIMELINE_FLAG != 0 {
+            args.point
+        } else {
+            0
+        };
+        let object = self.lookup_syncobj(args.handle)?;
+        let timeline = args.flags & TIMELINE_FLAG != 0;
+        let file = DrmSyncFile::new(object.fence(), point, timeline);
+        args.fd = create_anon_file(Box::new(file), false, SYNC_FILE_NAME)?;
+        cmd.write(&args)?;
+
+        Ok(0)
+    }
+
+    pub(super) fn drm_syncobj_fd_to_handle(
+        &self,
+        cmd: ioctl_defs::SyncObjFdToHandle,
+    ) -> Result<i32> {
+        let mut args: DrmSyncObjHandle = cmd.read()?;
+        if args.flags & !(SYNC_FILE_FLAG | TIMELINE_FLAG) != 0 {
+            return_errno_with_message!(Errno::EINVAL, "the sync-file import flags are invalid");
+        }
+        if args.flags & SYNC_FILE_FLAG == 0 {
+            return_errno_with_message!(
+                Errno::EOPNOTSUPP,
+                "only sync-file import is supported"
+            );
+        }
+
+        let (fence, timeline) = with_anon_file_as::<DrmSyncFile, _>(args.fd, |file| {
+            (file.fence(), file.timeline())
+        })?;
+
+        // The imported object shares the exported fence. A signal through the
+        // imported handle therefore also signals the exporter, which differs
+        // from Linux's copied-fence semantics; waits are unaffected.
+        let object = Arc::new(DrmSyncObj::from_fence(fence, timeline));
+        args.handle = self.add_syncobj(object)?;
+        cmd.write(&args)?;
 
         Ok(0)
     }
@@ -315,4 +385,18 @@ pub(super) struct DrmSyncObjTimelineWait {
     first_signaled: u32,
     pad: u32,
     deadline_nsec: u64,
+}
+
+/// `struct drm_syncobj_handle` in Linux, shared by handle-to-fd and
+/// fd-to-handle.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/drm/drm.h#L933-L941>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod)]
+pub(super) struct DrmSyncObjHandle {
+    handle: u32,
+    flags: u32,
+    fd: i32,
+    pad: u32,
+    point: u64,
 }

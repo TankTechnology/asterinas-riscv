@@ -2,55 +2,72 @@
 
 //! DRM sync objects.
 //!
-//! A sync object is a handle to a point that userspace can wait on and signal.
-//! This implementation is the minimal surface a compositor needs: binary
-//! signal/wait/reset and a timeline value that `SYNCOBJ_TIMELINE_SIGNAL`
-//! advances and `SYNCOBJ_TIMELINE_WAIT` waits for. There are no fence imports
-//! and no explicit-fencing integration yet, so a sync object only changes state
-//! through these ioctls.
+//! A sync object is a handle to a fence that userspace can wait on and
+//! signal. The fence itself is [`crate::fence::DrmFence`], which is also what
+//! sync-file descriptors carry, so an object can be exported as a file
+//! descriptor and imported back without copying state.
 
-use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
+use alloc::{collections::BTreeMap, sync::Arc};
 
 use aster_core::prelude::*;
-use ostd::sync::{Mutex, Waker};
 use sparse_id_alloc::SparseIdAlloc;
 
-/// The state of one sync object.
-#[derive(Debug, Default)]
-struct DrmSyncObjState {
-    /// Whether a binary signal has been observed since the last reset.
-    signaled: bool,
-    /// The timeline point that has been signaled.
-    timeline_value: u64,
-}
+use crate::fence::DrmFence;
 
 /// A sync object, shared by every handle that refers to it.
+///
+/// `binary_point` turns the fence into the binary view an imported sync file
+/// had: the object counts as signaled once the fence reaches that point. A
+/// plain object uses point zero.
 pub(crate) struct DrmSyncObj {
-    state: Mutex<DrmSyncObjState>,
-    /// Tasks blocked in a wait ioctl on this object.
-    waiters: Mutex<Vec<Arc<Waker>>>,
+    fence: Arc<DrmFence>,
+    /// Imported with the TIMELINE flag: waits are point-based.
+    timeline: bool,
+}
+
+impl core::fmt::Debug for DrmSyncObj {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("DrmSyncObj")
+            .field("fence", &self.fence)
+            .field("timeline", &self.timeline)
+            .finish_non_exhaustive()
+    }
 }
 
 impl DrmSyncObj {
     /// Creates a sync object, optionally already signaled.
     pub(crate) fn new(signaled: bool) -> Self {
         Self {
-            state: Mutex::new(DrmSyncObjState {
-                signaled,
-                timeline_value: u64::from(signaled),
-            }),
-            waiters: Mutex::new(Vec::new()),
+            fence: if signaled {
+                DrmFence::new_signaled()
+            } else {
+                DrmFence::new()
+            },
+            timeline: false,
         }
+    }
+
+    /// Creates a sync object backed by an existing fence (an imported one).
+    pub(crate) fn from_fence(fence: Arc<DrmFence>, timeline: bool) -> Self {
+        Self { fence, timeline }
+    }
+
+    pub(crate) fn fence(&self) -> Arc<DrmFence> {
+        self.fence.clone()
     }
 
     /// Returns whether the object has been signaled.
     pub(crate) fn is_signaled(&self) -> bool {
-        self.state.lock().signaled
+        if self.timeline {
+            self.fence.timeline_value() > 0
+        } else {
+            self.fence.is_signaled()
+        }
     }
 
     /// Returns the current timeline point.
     pub(crate) fn timeline_value(&self) -> u64 {
-        self.state.lock().timeline_value
+        self.fence.timeline_value()
     }
 
     /// Returns whether a wait on `point` is satisfied.
@@ -58,54 +75,30 @@ impl DrmSyncObj {
     /// `None` is a binary wait; `Some(point)` is a timeline wait. Point zero is
     /// always considered signaled, matching Linux's timeline semantics.
     pub(crate) fn is_satisfied(&self, point: Option<u64>) -> bool {
-        let state = self.state.lock();
         match point {
-            None => state.signaled,
-            Some(point) => point == 0 || point <= state.timeline_value,
+            None => self.is_signaled(),
+            Some(point) => self.fence.is_signaled_at(point),
         }
     }
 
     /// Signals the object once (binary signal).
     pub(crate) fn signal(&self) {
-        {
-            let mut state = self.state.lock();
-            state.signaled = true;
-            state.timeline_value = state.timeline_value.max(1);
-        }
-        self.wake_waiters();
+        self.fence.signal();
     }
 
     /// Advances the timeline to `point`.
     pub(crate) fn signal_timeline(&self, point: u64) {
-        {
-            let mut state = self.state.lock();
-            if point > state.timeline_value {
-                state.timeline_value = point;
-            }
-            if point > 0 {
-                state.signaled = true;
-            }
-        }
-        self.wake_waiters();
+        self.fence.signal_timeline(point);
     }
 
     /// Clears both the binary signal and the timeline point.
     pub(crate) fn reset(&self) {
-        let mut state = self.state.lock();
-        state.signaled = false;
-        state.timeline_value = 0;
+        self.fence.reset();
     }
 
     /// Registers a waker that is woken on the next state change.
-    pub(crate) fn register_waker(&self, waker: Arc<Waker>) {
-        self.waiters.lock().push(waker);
-    }
-
-    fn wake_waiters(&self) {
-        let waiters = core::mem::take(&mut *self.waiters.lock());
-        for waker in waiters {
-            waker.wake_up();
-        }
+    pub(crate) fn register_waker(&self, waker: Arc<ostd::sync::Waker>) {
+        self.fence.register_waker(waker);
     }
 }
 

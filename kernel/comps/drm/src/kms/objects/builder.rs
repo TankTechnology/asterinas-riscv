@@ -380,6 +380,8 @@ fn build_plane_properties(
             (DrmStandardProperty::CrtcH, 0),
             (DrmStandardProperty::FbId, 0),
             (DrmStandardProperty::CrtcId, 0),
+            // -1 means "no in-fence", matching Linux's initial value.
+            (DrmStandardProperty::InFenceFd, u64::MAX),
         ],
     )
 }
@@ -391,6 +393,7 @@ fn build_crtc_properties(store: &mut DrmKmsObjectStore) -> Result<DrmPropertyAtt
             (DrmStandardProperty::Active, 0),
             // A zero `MODE_ID` means that the CRTC has no active mode.
             (DrmStandardProperty::ModeId, 0),
+            (DrmStandardProperty::OutFencePtr, 0),
         ],
     )
 }

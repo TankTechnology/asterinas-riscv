@@ -44,9 +44,11 @@ macro_rules! __log_prefix {
 
 pub mod device;
 mod event;
+mod fence;
 mod file;
 pub mod gem;
 mod prime;
+mod sync_file;
 mod syncobj;
 mod ioctl;
 pub mod kms;

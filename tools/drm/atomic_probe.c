@@ -181,6 +181,24 @@ struct drm_wait_vblank {
     uint64_t value2;
 };
 
+struct drm_syncobj_create {
+    uint32_t handle;
+    uint32_t flags;
+};
+
+struct drm_syncobj_destroy {
+    uint32_t handle;
+    uint32_t pad;
+};
+
+struct drm_syncobj_handle {
+    uint32_t handle;
+    uint32_t flags;
+    int32_t fd;
+    uint32_t pad;
+    uint64_t point;
+};
+
 struct drm_set_client_cap {
     uint64_t capability;
     uint64_t value;
@@ -211,6 +229,12 @@ struct drm_set_client_cap {
     _IOWR(DRM_IOCTL_BASE, 0xbd, struct drm_mode_create_blob)
 #define DRM_IOCTL_MODE_DESTROYPROPBLOB \
     _IOWR(DRM_IOCTL_BASE, 0xbe, struct drm_mode_destroy_blob)
+#define DRM_IOCTL_SYNCOBJ_CREATE \
+    _IOWR(DRM_IOCTL_BASE, 0xbf, struct drm_syncobj_create)
+#define DRM_IOCTL_SYNCOBJ_DESTROY \
+    _IOWR(DRM_IOCTL_BASE, 0xc0, struct drm_syncobj_destroy)
+#define DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD \
+    _IOWR(DRM_IOCTL_BASE, 0xc1, struct drm_syncobj_handle)
 
 #define DRM_CLIENT_CAP_UNIVERSAL_PLANES 2
 #define DRM_CLIENT_CAP_ATOMIC 3
@@ -222,6 +246,8 @@ struct drm_set_client_cap {
 #define DRM_MODE_OBJECT_CRTC 0xcccccccc
 #define DRM_MODE_OBJECT_CONNECTOR 0xc0c0c0c0
 #define DRM_MODE_OBJECT_PLANE 0xeeeeeeee
+#define SYNC_FILE_FLAG (1u << 0)
+#define SYNC_CREATE_SIGNALED (1u << 0)
 #define DRM_IOCTL_WAIT_VBLANK _IOWR(DRM_IOCTL_BASE, 0x3a, struct drm_wait_vblank)
 #define DRM_PLANE_TYPE_PRIMARY 1
 
@@ -575,6 +601,87 @@ int main(void) {
         fail("wait-vblank");
     }
     printf("ATOMICPROBE_VBLANK sequence=%u\n", vblank.sequence);
+
+    // Explicit fencing: a signaled in-fence is consumed by the commit, and
+    // the commit publishes an already-signaled out-fence to userspace.
+    struct drm_syncobj_create in_syncobj = {.flags = SYNC_CREATE_SIGNALED};
+    if (ioctl(card, DRM_IOCTL_SYNCOBJ_CREATE, &in_syncobj) != 0) {
+        fail("atomic-create-syncobj");
+    }
+    struct drm_syncobj_handle in_export = {
+        .handle = in_syncobj.handle,
+        .flags = SYNC_FILE_FLAG,
+    };
+    if (ioctl(card, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, &in_export) != 0) {
+        fail("atomic-export-in-fence");
+    }
+
+    uint32_t crtc_out_fence_ptr = find_property(crtc_id, DRM_MODE_OBJECT_CRTC,
+                                                "OUT_FENCE_PTR");
+    uint32_t plane_in_fence_fd = find_property(plane_id, DRM_MODE_OBJECT_PLANE,
+                                               "IN_FENCE_FD");
+    uint32_t fenced_objects[3] = {crtc_id, connector_id, plane_id};
+    uint32_t fenced_counts[3] = {3, 1, 7};
+    uint32_t fenced_crtc_active = find_property(crtc_id, DRM_MODE_OBJECT_CRTC, "ACTIVE");
+    uint32_t fenced_crtc_mode = find_property(crtc_id, DRM_MODE_OBJECT_CRTC, "MODE_ID");
+    uint32_t fenced_connector_crtc =
+        find_property(connector_id, DRM_MODE_OBJECT_CONNECTOR, "CRTC_ID");
+    uint32_t fenced_plane_fb = find_property(plane_id, DRM_MODE_OBJECT_PLANE, "FB_ID");
+    uint32_t fenced_plane_crtc = find_property(plane_id, DRM_MODE_OBJECT_PLANE, "CRTC_ID");
+    uint32_t fenced_plane_x = find_property(plane_id, DRM_MODE_OBJECT_PLANE, "SRC_X");
+    uint32_t fenced_plane_y = find_property(plane_id, DRM_MODE_OBJECT_PLANE, "SRC_Y");
+    uint32_t fenced_plane_w = find_property(plane_id, DRM_MODE_OBJECT_PLANE, "SRC_W");
+    uint32_t fenced_plane_h = find_property(plane_id, DRM_MODE_OBJECT_PLANE, "SRC_H");
+
+    // The mode blob was destroyed above; create a fresh one for this commit.
+    struct drm_mode_create_blob fence_blob = {
+        .data = (uint64_t)(uintptr_t)&mode,
+        .length = sizeof(mode),
+    };
+    if (ioctl(card, DRM_IOCTL_MODE_CREATEPROPBLOB, &fence_blob) != 0) {
+        fail("atomic-fence-blob");
+    }
+
+    uint32_t fenced_props[11] = {
+        fenced_crtc_active, fenced_crtc_mode, crtc_out_fence_ptr,
+        fenced_connector_crtc,
+        fenced_plane_fb, fenced_plane_crtc, fenced_plane_x, fenced_plane_y,
+        fenced_plane_w, fenced_plane_h, plane_in_fence_fd,
+    };
+    uint64_t fenced_values[11] = {
+        1, fence_blob.blob_id, 0,
+        crtc_id,
+        addfb.fb_id, crtc_id, 0, 0,
+        (uint64_t)mode.hdisplay << 16, (uint64_t)mode.vdisplay << 16,
+        (uint64_t)(int64_t)in_export.fd,
+    };
+    uint64_t out_fence_ptr = 0;
+    fenced_values[2] = (uint64_t)(uintptr_t)&out_fence_ptr;
+    struct drm_mode_atomic fenced_atomic = {
+        .flags = DRM_MODE_ATOMIC_ALLOW_MODESET,
+        .count_objs = 3,
+        .objs_ptr = (uint64_t)(uintptr_t)fenced_objects,
+        .count_props_ptr = (uint64_t)(uintptr_t)fenced_counts,
+        .props_ptr = (uint64_t)(uintptr_t)fenced_props,
+        .prop_values_ptr = (uint64_t)(uintptr_t)fenced_values,
+    };
+    if (ioctl(card, DRM_IOCTL_MODE_ATOMIC, &fenced_atomic) != 0) {
+        fail("atomic-fenced-commit");
+    }
+    int out_fence_fd = (int)out_fence_ptr;
+    if (out_fence_fd < 0) {
+        fail("atomic-out-fence-missing");
+    }
+    struct pollfd out_poll = {.fd = out_fence_fd, .events = POLLIN};
+    if (poll(&out_poll, 1, 0) != 1) {
+        fail("atomic-out-fence-not-signaled");
+    }
+    printf("ATOMICPROBE_OUT_FENCE fd=%d\n", out_fence_fd);
+    close(out_fence_fd);
+    struct drm_syncobj_destroy destroy_sync = {.handle = in_syncobj.handle};
+    ioctl(card, DRM_IOCTL_SYNCOBJ_DESTROY, &destroy_sync);
+    struct drm_mode_destroy_blob destroy_fence_blob = {.blob_id = fence_blob.blob_id};
+    ioctl(card, DRM_IOCTL_MODE_DESTROYPROPBLOB, &destroy_fence_blob);
 
     printf("ATOMICPROBE_PASS\n");
 
