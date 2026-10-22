@@ -123,7 +123,12 @@ impl VirtioGpuDrm {
 
         Ok(Self {
             gpu,
-            features: DrmFeatures::empty(),
+            // Linux's virtio-gpu declares DRIVER_RENDER, so the DRM core
+            // always creates a render node, with or without virgl. Mesa needs
+            // it: with no render node the DRI2/EGL device setup looks for a
+            // "compatible render-only device", does not find one, and
+            // `eglInitialize` fails before glamor (and DRI3) can come up.
+            features: DrmFeatures::RENDER,
             mode_config,
             resources: Mutex::new(BTreeMap::new()),
             format: DrmPixelFormat::XRGB8888,
@@ -240,6 +245,11 @@ impl DrmDevice for VirtioGpuDrm {
 
     fn as_kms_ops(&self) -> Option<&dyn DrmKmsOps> {
         Some(self)
+    }
+
+    fn sysfs_modalias(&self) -> Option<&'static str> {
+        // virtio spec 5.7: the GPU device id.
+        Some("virtio:d00000010")
     }
 }
 

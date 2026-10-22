@@ -40,6 +40,14 @@ pub trait DrmDevice: Debug + Send + Sync {
 
     /// Returns the KMS operations implemented by this device, if any.
     fn as_kms_ops(&self) -> Option<&dyn DrmKmsOps>;
+
+    /// Returns the modalias libdrm should see in the device uevent.
+    ///
+    /// Linux's driver core supplies this; the driver knows its own bus
+    /// identity, so it passes it through here.
+    fn sysfs_modalias(&self) -> Option<&'static str> {
+        None
+    }
 }
 
 bitflags::bitflags! {

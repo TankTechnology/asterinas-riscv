@@ -104,9 +104,15 @@ impl PerOpenFileOps for DmaBufFile {
     }
 
     fn is_offset_aware(&self) -> bool {
-        // Seeking is accepted and does not change any read/write behavior;
-        // mmap offsets are absolute within the buffer.
-        false
+        // A dma-buf reports its size through `lseek(fd, 0, SEEK_END)`, like
+        // Linux's `dma_buf_llseek`. Mesa's kms_swrast import path sizes an
+        // imported buffer that way and refuses the descriptor when the size
+        // comes back wrong, so the offset must be visible to `seek`.
+        true
+    }
+
+    fn seek_end(&self) -> Result<Option<usize>> {
+        Ok(Some(self.size()))
     }
 
     fn mappable(&self, request: FileMmapRequest) -> Result<MappableObject<'_>> {

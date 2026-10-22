@@ -10,6 +10,7 @@ pub mod utils;
 pub mod vfs;
 
 pub use fs_impls::devtmpfs;
+pub(crate) use fs_impls::sysfs::systree_singleton;
 pub(crate) use fs_impls::{
     cgroupfs, configfs, devpts, exfat, ext2, procfs, pseudofs, ramfs, sysfs, tmpfs,
 };

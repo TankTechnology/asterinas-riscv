@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 
+pub mod drm_sysfs;
 mod evdev;
 mod fb;
 mod mem;

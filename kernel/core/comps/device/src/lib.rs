@@ -36,6 +36,42 @@ pub mod bus;
 pub mod class;
 pub mod common;
 pub mod hooks;
+
+/// Attaches a subtree under the device model's `/sys/dev/char`.
+///
+/// This is the escape hatch for a subsystem that publishes its own
+/// character-device view instead of registering devices through the model.
+/// The device model owns `/sys/dev`; the caller owns the subtree, including its
+/// name, and must attach it at most once.
+///
+/// # Panics
+///
+/// Panics if the device model is not initialized.
+pub fn register_legacy_dev_entry(node: alloc::sync::Arc<dyn aster_systree::SysObj>) -> common::Result<()> {
+    registry::get().attach_into_dev_index(common::DevKind::Char, node)
+}
+
+/// Attaches a directory under the device model's `/sys/class`.
+///
+/// The companion of [`register_legacy_dev_entry`] for the class view.
+///
+/// # Panics
+///
+/// Panics if the device model is not initialized.
+pub fn register_legacy_class_dir(dir: alloc::sync::Arc<dyn aster_systree::SysObj>) -> common::Result<()> {
+    registry::get().attach_into_class_root(dir)
+}
+
+/// Attaches a directory under the device model's `/sys/bus`.
+///
+/// The companion of [`register_legacy_dev_entry`] for the bus view.
+///
+/// # Panics
+///
+/// Panics if the device model is not initialized.
+pub fn register_legacy_bus_dir(dir: alloc::sync::Arc<dyn aster_systree::SysObj>) -> common::Result<()> {
+    registry::get().attach_into_bus_root(dir)
+}
 #[cfg(ktest)]
 mod test;
 
