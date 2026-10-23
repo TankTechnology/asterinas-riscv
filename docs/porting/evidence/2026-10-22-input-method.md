@@ -458,3 +458,18 @@ DAILY_INPUT_METHOD=fail engine--no-text:
 诊断行亦丢失）**。要把 ④ 变成无条件 ok，需在镜像构建阶段（rootfs profile）直接
 预置 `x11-apps`/`x11-utils`，而不是运行时 apt；随后用 `xev` 复测一次即可给出
 “注入通/被拒”的最终读数。
+
+### 镜像构建入口（供下次直接执行）
+
+- **rootfs 清单**：`tools/debian/rootfs/profiles.py`（架构中立），其中
+  `x11-apps` 已在 **第 270、299 行**、`x11-utils` 在第 182/221/271 行——
+  即**清单本身已经包含 `x11-apps`**；daily 门禁用的基座镜像
+  `target/final-matrix/xwrap/image18.ext2` 是更早构建的，里面没有它。
+- **构建入口**：`tools/debian/rootfs/build_rootfs.sh --architecture amd64
+  --profile <profile> --output-dir target/debian-x86_64/...`（RISC-V 侧留有同名
+  薄封装）；随后 stage1 用 `tools/.../build_stage1.sh`（x86 用宿主 `cc`）。
+- **结论**：不需要改包列表；只需用当前 `profiles.py` **重建基座镜像**，`xev`/
+  `xdpyinfo` 就会在镜像里。重建完成后跑一次门禁的 `DAILY_XEV` 即可给出
+  “注入通 / 被拒”的最终读数。
+
+本轮因上下文预算未执行重建（预计 >15 分钟），故 ④ 维持 ok（受限）。
