@@ -1,0 +1,193 @@
+[  3417.597] WARN  : number of negative dentries has reached 43431
+[  3417.598] WARN  : number of negative dentries has reached 43432
+[  3417.602] WARN  : number of negative dentries has reached 43433
+[  3417.603] WARN  : number of negative dentries has reached 43434
+[  3417.611] WARN  : number of negative dentries has reached 43435
+[  3417.612] WARN  : number of negative dentries has reached 43436
+[  3417.613] WARN  : number of negative dentries has reached 43437
+[  3417.621] WARN  : number of negative dentries has reached 43438
+[  3417.623] WARN  : number of negative dentries has reached 43439
+[  3417.624] WARN  : number of negative dentries has reached 43440
+[  3417.629] WARN  : number of negative dentries has reached 43441
+[  3417.630] WARN  : number of negative dentries has reached 43442
+[  3417.631] WARN  : number of negative dentries has reached 43443
+[  3417.638] WARN  : number of negative dentries has reached 43444
+[  3417.639] WARN  : number of negative dentries has reached 43445
+[  3417.647] WARN  : number of negative dentries has reached 43446
+[  3417.648] WARN  : number of negative dentries has reached 43447
+[  3417.650] WARN  : number of negative dentries has reached 43448
+[  3417.654] WARN  : number of negative dentries has reached 43449
+[  3417.656] WARN  : number of negative dentries has reached 43450
+[  3417.657] WARN  : number of negative dentries has reached 43451
+[  3417.665] WARN  : number of negative dentries has reached 43452
+[  3417.666] WARN  : number of negative dentries has reached 43453
+[  3417.670] WARN  : number of negative dentries has reached 43454
+[  3417.672] WARN  : number of negative dentries has reached 43455
+[  3417.673] WARN  : number of negative dentries has reached 43456
+[  3417.681] WARN  : number of negative dentries has reached 43457
+[  3417.682] WARN  : number of negative dentries has reached 43458
+[  3417.683] WARN  : number of negative dentries has reached 43459
+[  3417.687] WARN  : number of negative dentries has reached 43460
+[  3417.689] WARN  : number of negative dentries has reached 43461
+[  3417.696] WARN  : number of negative dentries has reached 43462
+[  3417.698] WARN  : number of negative dentries has reached 43463
+[  3417.699] WARN  : number of negative dentries has reached 43464
+[  3417.707] WARN  : number of negative dentries has reached 43465
+[  3417.708] WARN  : number of negative dentries has reached 43466
+[  3417.709] WARN  : number of negative dentries has reached 43467
+[  3417.714] WARN  : number of negative dentries has reached 43468
+[  3417.715] WARN  : number of negative dentries has reached 43469
+[  3417.723] WARN  : number of negative dentries has reached 43470
+[  3417.725] WARN  : number of negative dentries has reached 43471
+[  3417.726] WARN  : number of negative dentries has reached 43472
+[  3417.734] WARN  : number of negative dentries has reached 43473
+[  3417.735] WARN  : number of negative dentries has reached 43474
+[  3417.737] WARN  : number of negative dentries has reached 43475
+[  3417.999] WARN  : number of negative dentries has reached 43475
+[  3418.013] WARN  : Unimplemented syscall number: 334
+[  3418.024] WARN  : CLONE_SYSVSEM is not supported now
+[  3418.033] WARN  : number of negative dentries has reached 43476
+[  3418.089] WARN  : number of negative dentries has reached 43476
+[  3418.093] WARN  : number of negative dentries has reached 43476
+[  3418.095] WARN  : number of negative dentries has reached 43477
+[  3418.098] WARN  : number of negative dentries has reached 43478
+[  3418.101] WARN  : number of negative dentries has reached 43478
+[  3418.102] WARN  : number of negative dentries has reached 43478
+[  3418.110] WARN  : number of negative dentries has reached 43478
+[  3418.112] WARN  : number of negative dentries has reached 43478
+[  3418.113] WARN  : number of negative dentries has reached 43478
+[  3418.122] WARN  : number of negative dentries has reached 43478
+[  3418.128] WARN  : number of negative dentries has reached 43478
+[  3418.132] WARN  : number of negative dentries has reached 43478
+[  3418.375] WARN  : number of negative dentries has reached 43478
+[  3418.612] WARN  : number of negative dentries has reached 43479
+[  3418.833] WARN  : number of negative dentries has reached 43479
+[  3419.058] WARN  : number of negative dentries has reached 43480
+[  3419.288] WARN  : number of negative dentries has reached 43481
+[  3419.292] WARN  : number of negative dentries has reached 43482
+[  3419.520] WARN  : number of negative dentries has reached 43483
+[  3419.760] WARN  : number of negative dentries has reached 43482
+[  3419.767] WARN  : number of negative dentries has reached 43483
+[  3420.011] WARN  : number of negative dentries has reached 43483
+[  3420.259] WARN  : number of negative dentries has reached 43484
+[  3420.270] WARN  : number of negative dentries has reached 43485
+[  3420.280] WARN  : number of negative dentries has reached 43486
+[  3420.726] WARN  : number of negative dentries has reached 43487
+[  3420.966] WARN  : number of negative dentries has reached 43486
+[  3420.969] WARN  : number of negative dentries has reached 43487
+[  3420.970] WARN  : number of negative dentries has reached 43488
+[  3420.976] WARN  : number of negative dentries has reached 43489
+[  3420.979] WARN  : number of negative dentries has reached 43490
+[  3421.206] WARN  : number of negative dentries has reached 43491
+[  3421.448] WARN  : Unimplemented syscall number: 334
+[  3421.451] WARN  : number of negative dentries has reached 43490
+[  3421.452] WARN  : number of negative dentries has reached 43491
+[  3421.470] WARN  : Unimplemented syscall number: 334
+[  3421.486] WARN  : Unimplemented syscall number: 334
+[  3421.498] WARN  : CLONE_SYSVSEM is not supported now
+[  3421.501] WARN  : Unimplemented syscall number: 334
+[  3421.503] WARN  : number of negative dentries has reached 43484
+[  3421.506] WARN  : number of negative dentries has reached 43485
+[  3421.509] WARN  : number of negative dentries has reached 43485
+[  3421.513] WARN  : number of negative dentries has reached 43485
+[  3421.515] WARN  : number of negative dentries has reached 43485
+[  3422.705] WARN  : number of negative dentries has reached 43485
+[  3422.932] WARN  : number of negative dentries has reached 43486
+[  3423.167] WARN  : number of negative dentries has reached 43485
+[  3423.392] WARN  : number of negative dentries has reached 43486
+[  3423.842] WARN  : number of negative dentries has reached 43485
+[  3424.072] WARN  : number of negative dentries has reached 43484
+[  3424.084] WARN  : Unimplemented syscall number: 334
+[  3424.093] WARN  : CLONE_SYSVSEM is not supported now
+[  3424.101] WARN  : number of negative dentries has reached 43485
+[  3424.111] WARN  : number of negative dentries has reached 43485
+[  3424.114] WARN  : number of negative dentries has reached 43485
+[  3424.115] WARN  : number of negative dentries has reached 43486
+[  3424.116] WARN  : number of negative dentries has reached 43487
+[  3424.118] WARN  : number of negative dentries has reached 43487
+[  3424.119] WARN  : number of negative dentries has reached 43487
+[  3424.120] WARN  : number of negative dentries has reached 43487
+[  3424.124] WARN  : number of negative dentries has reached 43487
+[  3424.125] WARN  : number of negative dentries has reached 43487
+[  3424.126] WARN  : number of negative dentries has reached 43487
+[  3424.132] WARN  : number of negative dentries has reached 43487
+[  3424.135] WARN  : number of negative dentries has reached 43487
+[  3424.385] WARN  : number of negative dentries has reached 43487
+[  3424.620] WARN  : number of negative dentries has reached 43488
+[  3424.844] WARN  : number of negative dentries has reached 43488
+[  3425.080] WARN  : number of negative dentries has reached 43489
+[  3425.310] WARN  : number of negative dentries has reached 43490
+[  3425.314] WARN  : number of negative dentries has reached 43491
+[  3425.552] WARN  : number of negative dentries has reached 43492
+[  3425.787] WARN  : number of negative dentries has reached 43491
+[  3425.793] WARN  : number of negative dentries has reached 43492
+[  3426.037] WARN  : number of negative dentries has reached 43492
+[  3426.292] WARN  : number of negative dentries has reached 43493
+[  3426.302] WARN  : number of negative dentries has reached 43494
+[  3426.312] WARN  : number of negative dentries has reached 43495
+[  3426.778] WARN  : number of negative dentries has reached 43496
+[  3427.004] WARN  : number of negative dentries has reached 43495
+[  3427.006] WARN  : number of negative dentries has reached 43496
+[  3427.007] WARN  : number of negative dentries has reached 43497
+[  3427.008] WARN  : number of negative dentries has reached 43498
+[  3427.010] WARN  : number of negative dentries has reached 43499
+[  3427.231] WARN  : number of negative dentries has reached 43500
+[  3427.467] WARN  : Unimplemented syscall number: 334
+[  3427.470] WARN  : number of negative dentries has reached 43499
+[  3427.471] WARN  : number of negative dentries has reached 43500
+[  3427.484] WARN  : Unimplemented syscall number: 334
+[  3427.502] WARN  : Unimplemented syscall number: 334
+[  3427.511] WARN  : CLONE_SYSVSEM is not supported now
+[  3427.512] ERROR : Uncaught panic:
+	spawn task failed: NoMemory
+	at /home/arch-anjie/Program/asterinas-riscv/kernel/core/src/thread/task.rs:135
+	on CPU 0 by thread Some(Thread { task: (Weak), data: Any { .. }, is_exited: false, cpu_affinity: AtomicIdSet { bits: [15], phantom: PhantomData<ostd::cpu::id::CpuId> }, sched_attr: SchedAttr { policy: SchedPolicyState { kind: AtomicSchedPolicyKind(2), policy: UnsafeCell { .. } }, last_cpu: AtomicCpuId(0), real_time: RealTimeAttr { prio: 99, time_slice: 32832000 }, fair: FairAttr { weight: 1024, pending_weight: UnsafeCell { .. }, vruntime: 6901233551786 } } })
+Printing stack trace:
+[  3427.512   1: fn 0xffffffff88ee95e0 - pc 0xffffffff88ee962b / registers:
+] [31
+    m rax 0xffffffff896065a0;ERROR rdx   0xffffff896065a0;  rcx                0x1; rbx                0x0;: 
+    [ rsi  0x100dffffdf50fa8;39 rdi 0xffffffff88f61a93;m rbp                0x0; rsp 0xffffdffffdf51080;
+
+Uncaught panic:
+	   2: fn 0xffffffff884d5210 - pc 0xffffffff884d59ce / registers:
+spawn task failed
+    :  rax 0xffffffff896065a0;NoMemory rdx   0xffffff896065a0;
+	at  rcx                0x1;/home/arch-anjie/Program/asterinas-riscv/kernel/core/src/thread/task.rs rbx                0x0;:
+    135 rsi  0x100dffffdf50fa8;
+	on CPU  rdi 0xffffffff88f61a93;2 rbp                0x0; by thread  rsp 0xffffdffffdf510a0;Some
+
+(Thread   3: fn 0xffffffff884d6f70 - pc 0xffffffff884d6f7a / registers:
+ { task
+    :  rax 0xffffffff896065a0;(Weak) rdx   0xffffff896065a0;,  rcx                0x1;data rbx                0x0;: 
+    Any rsi  0x100dffffdf50fa8; { .. } rdi 0xffffffff88f61a93;,  rbp                0x0;is_exited rsp 0xffffdffffdf514c0;: 
+
+false   4: fn 0xffffffff8804b000 - pc 0xffffffff8804b00a / registers:
+, 
+    cpu_affinity rax 0xffffffff896065a0;:  rdx   0xffffff896065a0;AtomicIdSet rcx                0x1; {  rbx                0x0;bits
+    :  rsi  0x100dffffdf50fa8;[ rdi 0xffffffff88f61a93;15 rbp                0x0;] rsp 0xffffdffffdf514d0;, 
+
+phantom   5: fn 0xffffffff8907b750 - pc 0xffffffff8907b796 / registers:
+: 
+    PhantomData< rax 0xffffffff896065a0;ostd::cpu::id::CpuId rdx   0xffffff896065a0;> rcx                0x1; } rbx                0x0;, 
+    sched_attr rsi  0x100dffffdf50fa8;:  rdi 0xffffffff88f61a93;SchedAttr rbp                0x0; {  rsp 0xffffdffffdf514e0;policy
+
+: SchedPolicyState   6: fn 0xffffffff8907b270 - pc 0xffffffff8907b306 / registers:
+ { 
+    kind rax 0xffffffff896065a0;:  rdx   0xffffff896065a0;AtomicSchedPolicyKind rcx                0x1;( rbx                0x0;2
+    ) rsi  0x100dffffdf50fa8;,  rdi 0xffffffff88f61a93;policy:  rbp                0x0;UnsafeCell rsp 0xffffdffffdf51520; { .. }
+
+ },    7: fn 0xffffffff883df8b0 - pc 0xffffffff883df91d / registers:
+last_cpu
+    :  rax 0xffffffff896065a0;AtomicCpuId rdx   0xffffff896065a0;( rcx                0x1;2 rbx                0x0;), 
+    real_time rsi  0x100dffffdf50fa8;:  rdi 0xffffffff88f61a93;RealTimeAttr rbp                0x0; {  rsp 0xffffdffffdf515a0;prio
+
+: 99   8: fn 0xffffffff889985b0 - pc 0xffffffff88998672 / registers:
+, 
+    time_slice rax 0xffffffff896065a0;:  rdx   0xffffff896065a0;32832000 rcx                0x1; } rbx                0x0;, 
+    fair rsi  0x100dffffdf50fa8;:  rdi 0xffffffff88f61a93;FairAttr rbp                0x0; {  rsp 0xffffdffffdf515f0;weight
+
+: 1024   9: fn 0xffffffff881bc240 - pc 0xffffffff881bc913 / registers:
+, 
+    pending_weight rax 0xffffffff896065a0;:  rdx   0xffffff896065a0;UnsafeCell rcx                0x1; { .. } rbx                0x0;, 
+    vruntime rsi  0x100dffffdf50fa8;:  rdi 0xffffffff88f61a93;6901245258081 rbp                0x0; } rsp 0xffffdffffdf518a0; }
+

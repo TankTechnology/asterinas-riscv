@@ -148,7 +148,8 @@ E: Unable to synchronize mmap - msync (7: Argument list too long)
 归因：**内存**（negative dentry/page cache 增长耗尽内核内存），不是
 E2BIG、不是 dpkg 冲突/依赖、也不是 90 分钟超时——panic 发生在 57 分钟，
 离 90 分钟上限还早。时间预算已经足够，限制变成了 guest 内存与 dentry
-缓存策略。
+缓存策略。panic 的类型、栈顶子系统与三条可验证假设见
+[`2026-10-24-l6-panic-attribution.md`](2026-10-24-l6-panic-attribution.md)。
 
 ## 失败归因
 
