@@ -188,3 +188,22 @@ FAIL (the checklist did not complete)
 （pcmanfm/mesa/x11-apps）+ `image18` 的 x86 登录面定制。最小做法是找到
 image18 的生成流水线（当前不在仓库内），把 desktop 包列表并入它；退一步也可以
 在 `image18` 上只注入 `pcmanfm` 及其 118 个依赖中的必要子集（已判定不划算）。
+
+## "给镜像加 serial 登录"的现成做法（2026-10-23，定位）
+
+`tools/riscv/drm/graphical_check.sh:131-162` 就是可抄的配方（debugfs 注入）：
+
+1. 写入 `asterinas-serial-login.service`：
+   `ExecStart=-/sbin/agetty --noclear --autologin root ttyS0 115200`，
+   并把 `multi-user.target.wants/` 软链到它；
+2. 屏蔽默认的 `serial-getty@ttyS0.service`（symlink 到 /dev/null）；
+3. 删除镜像自带、会抢占 ttyS0 的 `asterinas-desktop-drm*.service`；
+4. `e2fsck -fn` 校验注入后的镜像干净。
+
+**与 daily 门禁的差异**：daily 门禁走的是**密码登录**（`asterinas` / `asterinas`，
+客户端等待 `login:` 提示），而上面的配方是 `--autologin root`（没有 `login:` 提示，
+客户端会一直等）。所以要把 `desktop-drm` 镜像用于 daily 门禁，还需要把
+image18 里的 `asterinas` 用户与密码配置一并复制过去（或让客户端支持 autologin）。
+
+`image18.ext2` 的完整生成流水线仍不在仓库里；本轮按时间盒不再尝试替换，
+矩阵「桌面应用」保持 `missing`。Q3 未执行（上下文预算耗尽）。
