@@ -473,3 +473,21 @@ DAILY_INPUT_METHOD=fail engine--no-text:
   “注入通 / 被拒”的最终读数。
 
 本轮因上下文预算未执行重建（预计 >15 分钟），故 ④ 维持 ok（受限）。
+
+### Q1：基础镜像重建尝试（2026-10-23，结论）
+
+| 尝试 | 结果 |
+|---|---|
+| `--profile systemd-ext4-m6-userspace` | 启动后可登录，但 **无桌面栈**：`DESKTOP no-X-socket`、`APP no-X`、`fcitx5-chinese-addons` 包也不可见 |
+| `--profile desktop-drm` | 镜像构建成功（1 GiB，签名校验通过），但**到不了登录提示**（`DAILY_CLIENT user=False`）——该 profile 面向 RISC-V 桌面路径，缺少 x86 daily 门禁依赖的 `asterinas` 用户 / console-getty 定制 |
+
+**结论**：`image18.ext2` 不是任何单一 profile 的原始产物，而是叠加了 x86 登录面定制的镜像；
+因此“重建基座”不能直接用它。正确做法是**把 `x11-apps` 的 deb 注入 `image18.ext2`**：
+
+1. 在 Debian 容器里 `apt-get download x11-apps x11-utils`（同 trixie 源）；
+2. `debugfs -w -R "write x11-apps_*.deb /opt/x11-apps.deb" image18.ext2`；
+3. 在 daily 清单开头加一步 `dpkg -i /opt/x11-apps.deb /opt/x11-utils.deb`（无网依赖，
+   该包只依赖已有的 libx11/libxext）；
+4. 复跑门禁看 `DAILY_XEV keypress`。
+
+这一步未在本轮执行（上下文预算耗尽）；命令与顺序如上，可直接照做。
