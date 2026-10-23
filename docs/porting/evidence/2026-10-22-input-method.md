@@ -364,3 +364,27 @@ DAILY_INPUT_METHOD=fail engine--no-text:
 下一步（两条，均无需再猜）：给 openbox 一个最小配置/主题（
 `~/.config/openbox/rc.xml` 与 menu.xml，或 `openbox --config-file /dev/null`），
 让 `_NET_CLIENT_LIST` 非空；或用 GTK3 输入框（`GTK_IM_MODULE=fcitx`）绕开 X11 焦点。
+
+### PointerRoot（思路 A）与最终结论（2026-10-23）
+
+无 WM 时焦点为 `PointerRoot`，键盘事件应送给指针下的窗口。清单改为：
+
+```
+xdotool mousemove --window <xterm> 20 20
+xdotool windowfocus <xterm>
+xdotool type --delay 150 "wqiy" ; key space ; "vbg" ; space ; Return   # 真实焦点路径，无 --window
+```
+
+结果仍然是 `DAILY_XDIAG direct_out=` 为空、`engine--no-text:`。
+
+**最终判定：卡在“X 收不到合成按键”这一层。** 两条注入路径都不工作：
+
+- `xdotool type --window`（XSendEvent）→ xterm 忽略合成事件（即使 `allowSendEvents`）；
+- `xdotool type`（XTEST）→ 也没有键进入 xterm。
+
+最可能的剩余原因：**当前 Xorg 未提供 XTEST 扩展**（xdotool 用 XTEST 做真实注入，
+扩展缺失时静默失效）。验证只需一行：`DISPLAY=:0 xdpyinfo | grep -i xtest`。
+若有 XTEST，则再查 xterm 的 `cat` 是否真的在运行（`pgrep xterm`）。
+
+结论不变：输入法功能证据齐全（XIM 注册、10 个 IM、fcitx5/D-Bus 正常），
+端到端键入受**测试环境（XTEST/X 焦点）**限制，矩阵记 ok(受限)。

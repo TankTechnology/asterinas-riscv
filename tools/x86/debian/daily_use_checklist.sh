@@ -173,12 +173,16 @@ if command -v fcitx5 >/dev/null 2>&1; then
             fi
             # Deliver straight to the window as well: if this lands while the
             # focused type does not, the focus is the problem, not XIM.
-            timeout 5 xdotool windowfocus --sync "$window" 2>/dev/null || true
-            timeout 5 xdotool type --window "$window" --delay 150 "wqiy" 2>/dev/null || true
-            timeout 5 xdotool key --window "$window" space 2>/dev/null || true
-            timeout 5 xdotool type --window "$window" --delay 150 "vbg" 2>/dev/null || true
-            timeout 5 xdotool key --window "$window" space 2>/dev/null || true
-            timeout 5 xdotool key --window "$window" Return 2>/dev/null || true
+            # Without a WM the focus is PointerRoot: move the pointer into the
+            # window and type through the real focus path.
+            timeout 5 xdotool mousemove --window "$window" 20 20 2>/dev/null || true
+            sleep 1
+            timeout 5 xdotool windowfocus "$window" 2>/dev/null || true
+            timeout 5 xdotool type --delay 150 "wqiy" 2>/dev/null || true
+            timeout 5 xdotool key space 2>/dev/null || true
+            timeout 5 xdotool type --delay 150 "vbg" 2>/dev/null || true
+            timeout 5 xdotool key space 2>/dev/null || true
+            timeout 5 xdotool key Return 2>/dev/null || true
             sleep 1
             echo "DAILY_XDIAG direct_out=$(cat /tmp/xim-out 2>/dev/null | tr -d '\n' | head -c 20)" >/dev/console
             sleep 1
