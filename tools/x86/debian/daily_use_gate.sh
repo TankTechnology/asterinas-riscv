@@ -43,6 +43,12 @@
 # (`ext4_e2big_probe.sh`): ldconfig, a large data write, and metadata
 # backlogs on the root ext2, looking for the E2BIG that aborted debootstrap.
 # The host writes `<workspace>/ext4-e2big/`.
+#
+# `--full-upgrade` swaps it for the L6 probe (`full_upgrade.sh`): the image is
+# copied first (both sha256 sums are recorded), the guest rewrites its apt
+# sources from trixie to forky, runs update and full-upgrade, and the gate then
+# boots that same image a second time to check systemd, serial login and
+# /etc/debian_version. The host writes `<workspace>/upgrade/`.
 
 set -euo pipefail
 
@@ -84,13 +90,16 @@ Options:
                       /target, on the root ext2). /tmp/target puts it on tmpfs.
   --ext4-e2big        Run the L5 E2BIG reproducer on the root ext2 instead of
                       the daily checklist.
+  --full-upgrade      Run the L6 trixie -> forky full-upgrade on an image copy,
+                      then reboot that copy to check systemd and login.
 
 The guest account is `asterinas` (uid 1000, password `asterinas`, passwordless
 sudo). Results land in `<workspace>/matrix.tsv` (checklist),
 `<workspace>/popcon.tsv` (--popcon), `<workspace>/systemd-health/`
 (--systemd-health), `<workspace>/ltp/` (--ltp) or
 `<workspace>/source-build/` (--source-build), `<workspace>/debootstrap/`
-(--debootstrap), `<workspace>/ext4-e2big/` (--ext4-e2big) and on stdout.
+(--debootstrap), `<workspace>/ext4-e2big/` (--ext4-e2big),
+`<workspace>/upgrade/` (--full-upgrade) and on stdout.
 EOF
 }
 
@@ -118,6 +127,7 @@ SOURCE_BUILD_SELFTEST=0
 DEBOOTSTRAP=0
 DEBOOTSTRAP_TARGET=""
 EXT4_E2BIG=0
+FULL_UPGRADE=0
 
 while (( $# > 0 )); do
     case "$1" in
@@ -146,13 +156,14 @@ while (( $# > 0 )); do
         --source-build-selftest) SOURCE_BUILD_SELFTEST=1; shift ;;
         --debootstrap) DEBOOTSTRAP=1; shift ;;
         --ext4-e2big) EXT4_E2BIG=1; shift ;;
+        --full-upgrade) FULL_UPGRADE=1; shift ;;
         -h | --help) usage; exit 0 ;;
         *) die_usage "unknown argument: $1" ;;
     esac
 done
 
-(( POPCON + SYSTEMD_HEALTH + LTP + SOURCE_BUILD + DEBOOTSTRAP + EXT4_E2BIG > 1 )) &&
-    die_usage "--popcon, --systemd-health, --ltp, --source-build, --debootstrap and --ext4-e2big are mutually exclusive"
+(( POPCON + SYSTEMD_HEALTH + LTP + SOURCE_BUILD + DEBOOTSTRAP + EXT4_E2BIG + FULL_UPGRADE > 1 )) &&
+    die_usage "--popcon, --systemd-health, --ltp, --source-build, --debootstrap, --ext4-e2big and --full-upgrade are mutually exclusive"
 if (( LTP )); then
     [[ "$LTP_PHASE" == "check" || "$LTP_PHASE" == "run" ]] ||
         die_usage "LTP_PHASE must be 'check' or 'run'"
@@ -165,6 +176,8 @@ if [[ -z "$TIMEOUT" ]]; then
         TIMEOUT=3600
     elif (( EXT4_E2BIG )); then
         TIMEOUT=1200
+    elif (( FULL_UPGRADE )); then
+        TIMEOUT=4200
     elif (( SOURCE_BUILD )) || (( DEBOOTSTRAP )); then
         TIMEOUT=4200
     elif (( LTP )) && [[ "$LTP_PHASE" == "run" ]]; then
@@ -201,6 +214,7 @@ LTP_SCRIPT="$REPO_ROOT/tools/x86/debian/ltp_subset.sh"
 SOURCE_BUILD_SCRIPT="$REPO_ROOT/tools/x86/debian/dpkg_build.sh"
 DEBOOTSTRAP_SCRIPT="$REPO_ROOT/tools/x86/debian/debootstrap_rootfs.sh"
 EXT4_E2BIG_SCRIPT="$REPO_ROOT/tools/x86/debian/ext4_e2big_probe.sh"
+FULL_UPGRADE_SCRIPT="$REPO_ROOT/tools/x86/debian/full_upgrade.sh"
 [[ -n "$POPCON_LIST" ]] || POPCON_LIST="$REPO_ROOT/tools/x86/debian/popcon_top50.txt"
 MSGTEST_SRC="$REPO_ROOT/tools/x86/debian/msgtest.c"
 IOTEST_SRC="$REPO_ROOT/tools/x86/debian/iotest.c"
@@ -230,6 +244,10 @@ fi
 if (( EXT4_E2BIG )); then
     [[ -f "$EXT4_E2BIG_SCRIPT" ]] ||
         die_usage "E2BIG probe does not exist: $EXT4_E2BIG_SCRIPT"
+fi
+if (( FULL_UPGRADE )); then
+    [[ -f "$FULL_UPGRADE_SCRIPT" ]] ||
+        die_usage "full-upgrade probe does not exist: $FULL_UPGRADE_SCRIPT"
 fi
 for tool in debugfs e2fsck mke2fs python3 timeout "$QEMU"; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -265,6 +283,10 @@ DEBOOTSTRAP_JSON="$DEBOOTSTRAP_DIR/debootstrap.json"
 EXT4_E2BIG_DIR="$WORKSPACE/ext4-e2big"
 EXT4_E2BIG_TSV="$EXT4_E2BIG_DIR/steps.tsv"
 EXT4_E2BIG_JSON="$EXT4_E2BIG_DIR/ext4-e2big.json"
+FULL_UPGRADE_DIR="$WORKSPACE/upgrade"
+FULL_UPGRADE_TSV="$FULL_UPGRADE_DIR/stages.tsv"
+FULL_UPGRADE_JSON="$FULL_UPGRADE_DIR/upgrade.json"
+REBOOT_CONSOLE="$WORKSPACE/reboot-console.txt"
 
 # The X server configuration the checklist starts with (same options as the
 # Xorg gate: no udev, no automatic input devices).
@@ -447,6 +469,10 @@ elif (( EXT4_E2BIG )); then
     GUEST_COMMAND="sudo sh -c '/usr/local/bin/ext4-e2big-probe > /dev/console 2>&1'; echo E2BIG_SHELL_END"
     DONE_MARKER="E2BIG_DONE"
     MODE="ext4-e2big"
+elif (( FULL_UPGRADE )); then
+    GUEST_COMMAND="sudo sh -c '/usr/local/bin/full-upgrade > /dev/console 2>&1'; echo UPG_SHELL_END"
+    DONE_MARKER="UPG_DONE"
+    MODE="full-upgrade"
 else
     GUEST_COMMAND="sudo sh -c '/usr/local/bin/daily-use-checklist > /dev/console 2>&1'; echo DAILY_SHELL_END"
     DONE_MARKER="DAILY_DONE=ok"
@@ -457,8 +483,24 @@ rm -f -- "$IMAGE" "$SERIAL_SOCK" "$MONITOR_SOCK" "$PIDFILE" "$CONSOLE_LOG" \
     "$SCREENSHOT" "$MATRIX" "$POPCON_TSV" "$POPCON_JSON" "$LTP_TSV" "$LTP_JSON" \
     "$SOURCE_BUILD_TSV" "$SOURCE_BUILD_JSON" \
     "$DEBOOTSTRAP_TSV" "$DEBOOTSTRAP_JSON" \
-    "$EXT4_E2BIG_TSV" "$EXT4_E2BIG_JSON"
+    "$EXT4_E2BIG_TSV" "$EXT4_E2BIG_JSON" \
+    "$FULL_UPGRADE_TSV" "$FULL_UPGRADE_JSON" "$REBOOT_CONSOLE"
+copy_t0=$(cut -d' ' -f1 /proc/uptime)
 cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
+if (( FULL_UPGRADE )); then
+    # The base image is never touched. Record both sums before anything can
+    # write to the copy, and keep them in the workspace.
+    copy_dur=$(awk -v a="$copy_t0" -v b="$(cut -d' ' -f1 /proc/uptime)" \
+        'BEGIN { printf "%.2f", b - a }')
+    base_sha=$(sha256sum -- "$BASE_ROOT" | awk '{ print $1 }')
+    copy_sha=$(sha256sum -- "$IMAGE" | awk '{ print $1 }')
+    mkdir -p "$FULL_UPGRADE_DIR"
+    printf 'base_path=%s\nbase_sha256=%s\ncopy_path=%s\ncopy_sha256=%s\ncopy_dur=%s\n' \
+        "$BASE_ROOT" "$base_sha" "$IMAGE" "$copy_sha" "$copy_dur" \
+        >"$FULL_UPGRADE_DIR/copy.txt"
+    printf 'UPG stage=copy rc=0 dur=%s sha_base=%s sha_copy=%s\n' \
+        "$copy_dur" "$base_sha" "$copy_sha"
+fi
 {
     # Retire units an earlier gate left enabled in the base image.
     printf 'rm /etc/systemd/system/multi-user.target.wants/asterinas-debian-ext4.service\n'
@@ -506,6 +548,11 @@ cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
         printf 'write %s /usr/local/bin/ext4-e2big-probe\n' "$EXT4_E2BIG_SCRIPT"
         printf 'sif /usr/local/bin/ext4-e2big-probe mode 0100755\n'
     fi
+    if (( FULL_UPGRADE )); then
+        printf 'rm /usr/local/bin/full-upgrade\n'
+        printf 'write %s /usr/local/bin/full-upgrade\n' "$FULL_UPGRADE_SCRIPT"
+        printf 'sif /usr/local/bin/full-upgrade mode 0100755\n'
+    fi
     if [[ -f "$MSGTEST_BIN" ]]; then
         printf 'rm /usr/local/bin/msgtest\n'
         printf 'write %s /usr/local/bin/msgtest\n' "$MSGTEST_BIN"
@@ -550,6 +597,224 @@ CLIENT_STATUS=$?
 kill "$BOOT_PID" 2>/dev/null
 wait "$BOOT_PID" 2>/dev/null
 set -e
+
+if (( FULL_UPGRADE )); then
+    # Stage 5: boot the *upgraded copy* a second time and check systemd, serial
+    # login and /etc/debian_version. This runs even when the first boot did not
+    # reach UPG_DONE, because "the upgraded image no longer boots" is itself a
+    # result worth recording.
+    DONE_SEEN=0
+    if grep -aq -- "$DONE_MARKER" "$CONSOLE_LOG"; then
+        DONE_SEEN=1
+    fi
+
+    # Split the marker with quotes so the shell echoes the command as
+    # "UPG""_REBOOT_DONE" while the output contains the contiguous marker. A
+    # literal marker in the echoed command would let the client stop before
+    # the check actually runs.
+    # sudo: the client logs in as `asterinas`; a plain `systemctl` cannot reach
+    # the system bus from that account here.
+    REBOOT_COMMAND='v=$(cat /etc/debian_version 2>/dev/null); s=$(sudo systemctl is-system-running 2>&1); echo "UPG""_REBOOT debian_version=$v state=$s"; echo "UPG""_REBOOT_DONE"'
+    rm -f -- "$REBOOT_CONSOLE" "$SERIAL_SOCK" "$MONITOR_SOCK" "$PIDFILE"
+    reboot_t0=$(cut -d' ' -f1 /proc/uptime)
+    set +e
+    timeout 660 python3 "$CLIENT" "$REBOOT_CONSOLE" "$SERIAL_SOCK" \
+        "$MONITOR_SOCK" "$PIDFILE" "$SCREENSHOT" 600 \
+        "$REBOOT_COMMAND" "UPG_REBOOT_DONE" "reboot" &
+    REBOOT_CLIENT_PID=$!
+    timeout 720 "$BOOT_SCRIPT" \
+        --kernel "$KERNEL" \
+        --initramfs "$INITRAMFS" \
+        --root-image "$IMAGE" \
+        --output "$WORKSPACE/boot-reboot.txt" \
+        --loglevel 4 \
+        --accel "$ACCEL" \
+        --qemu "$WRAPPER" < /dev/null >"$WORKSPACE/boot-reboot.log" 2>&1 &
+    REBOOT_BOOT_PID=$!
+    wait "$REBOOT_CLIENT_PID"
+    REBOOT_STATUS=$?
+    kill "$REBOOT_BOOT_PID" 2>/dev/null
+    wait "$REBOOT_BOOT_PID" 2>/dev/null
+    set -e
+    reboot_dur=$(awk -v a="$reboot_t0" -v b="$(cut -d' ' -f1 /proc/uptime)" \
+        'BEGIN { printf "%.2f", b - a }')
+
+    mkdir -p -- "$FULL_UPGRADE_DIR"
+    python3 - "$CONSOLE_LOG" "$REBOOT_CONSOLE" "$FULL_UPGRADE_DIR" \
+        "$FULL_UPGRADE_DIR/copy.txt" "$CLIENT_STATUS" "$REBOOT_STATUS" \
+        "$DONE_SEEN" "$reboot_dur" <<'PY'
+import json
+import os
+import re
+import sys
+
+(console, reboot_console, outdir, copy_path, client_status, reboot_status,
+ done_seen, reboot_dur) = sys.argv[1:9]
+
+
+def read(path):
+    if not os.path.exists(path):
+        return ""
+    text = open(path, "rb").read().decode("utf-8", "replace")
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+
+
+text = read(console)
+rtext = read(reboot_console)
+
+env = {}
+for m in re.finditer(r"UPG env ([A-Za-z0-9_]+)=([^\r\n]*)", text):
+    env[m.group(1)] = m.group(2).strip()
+env["debian_after"] = env.get("debian_after", "")
+
+disk = {}
+for m in re.finditer(r"UPG disk_free_kb=(\d+) stage=(\S+) phase=(\S+)", text):
+    disk[(m.group(2), m.group(3))] = int(m.group(1))
+
+stages = {}
+for m in re.finditer(
+        r"UPG stage=(source|update|upgrade) rc=(-?\d+) dur=([0-9.]+)", text):
+    stages[m.group(1)] = {"stage": m.group(1), "rc": int(m.group(2)),
+                          "dur": float(m.group(3))}
+
+sources = [m.group(1).strip() for m in
+           re.finditer(r"UPG source line=([^\r\n]*)", text)]
+errors = [m.group(1).strip() for m in
+          re.finditer(r"UPG err=([^\r\n]*)", text)]
+logs = [m.group(1).strip() for m in
+        re.finditer(r"UPG log upgrade=([^\r\n]*)", text)]
+m = re.search(r"UPG update upgradable=(\d+)", text)
+upgradable = int(m.group(1)) if m else ""
+m = re.search(r"UPG upgrade summary=([^\r\n]*)", text)
+upgrade_summary = m.group(1).strip() if m else ""
+
+copy = {}
+if os.path.exists(copy_path):
+    for line in open(copy_path):
+        if "=" in line:
+            key, value = line.rstrip("\n").split("=", 1)
+            copy[key] = value
+
+m = re.search(r"UPG_REBOOT debian_version=([^\r\n]*)", rtext)
+reboot_version = m.group(1).strip() if m else ""
+m = re.search(r"UPG_REBOOT state=([^\r\n]*)", rtext)
+reboot_state = m.group(1).strip() if m else ""
+# The client's DAILY_CLIENT line goes to the gate's stdout, not the serial;
+# the client's exit status already encodes login + command + marker.
+reboot_done = "UPG_REBOOT_DONE" in rtext
+login_ok = str(reboot_status) == "0"
+reboot_rc = 0 if (reboot_done and login_ok) else 1
+login = {"client_status": int(reboot_status), "marker": reboot_done}
+
+err_text = " ".join(errors).lower().replace("_", " ")
+
+
+def category(row):
+    if row["rc"] == 0:
+        return "ok"
+    if row["rc"] == 124:
+        return "timeout"
+    if row["stage"] == "reboot":
+        return "boot-failure"
+    e = err_text
+    if any(t in e for t in ("disk low", "no space", "enospc",
+                            "argument list too long")):
+        return "disk"
+    if any(t in e for t in ("unmet dependencies", "not installable",
+                            "broken packages", "depends")):
+        return "dependency"
+    if any(t in e for t in ("dpkg: error", "conflict",
+                            "trying to overwrite", "conffile")):
+        return "dpkg-conflict"
+    if any(t in e for t in ("function not implemented", "enotsup",
+                            "operation not supported", "unimplemented")):
+        return "syscall-missing"
+    return "other"
+
+
+rows = []
+copy_ok = bool(copy.get("copy_sha256"))
+rows.append({
+    "stage": "copy", "rc": 0 if copy_ok else -1,
+    "dur": float(copy.get("copy_dur", 0)),
+    "free_before": "", "free_after": "",
+    "detail": "base_sha256=%s copy_sha256=%s" % (
+        copy.get("base_sha256", ""), copy.get("copy_sha256", "")),
+})
+for name in ("source", "update", "upgrade"):
+    rec = stages.get(name)
+    if rec is None:
+        rows.append({"stage": name, "rc": -1, "dur": 0.0,
+                     "free_before": "", "free_after": "",
+                     "detail": "missing"})
+        continue
+    rec = dict(rec)
+    rec["free_before"] = disk.get((name, "before"), "")
+    rec["free_after"] = disk.get((name, "after"), "")
+    if name == "update":
+        rec["detail"] = "upgradable=%s" % upgradable
+    elif name == "upgrade":
+        rec["detail"] = upgrade_summary
+    else:
+        rec["detail"] = sources[0] if sources else ""
+    rows.append(rec)
+rows.append({
+    "stage": "reboot", "rc": reboot_rc, "dur": float(reboot_dur),
+    "free_before": "", "free_after": "",
+    "detail": "debian_version=%s state=%s login=%s" % (
+        reboot_version, reboot_state, login_ok),
+})
+for row in rows:
+    row["category"] = category(row)
+
+with open(os.path.join(outdir, "stages.tsv"), "w") as out:
+    out.write("stage\trc\tcategory\tdur\tfree_before_kb\tfree_after_kb\t"
+              "detail\n")
+    for row in rows:
+        out.write("%s\t%d\t%s\t%.2f\t%s\t%s\t%s\n" % (
+            row["stage"], row["rc"], row["category"], row["dur"],
+            row["free_before"], row["free_after"], row["detail"]))
+with open(os.path.join(outdir, "upgrade.json"), "w") as out:
+    json.dump({
+        "env": env, "copy": copy, "stages": rows,
+        "source_lines": sources, "upgradable": upgradable,
+        "upgrade_summary": upgrade_summary, "errors": errors,
+        "upgrade_log_tail": logs,
+        "probe_done": str(done_seen) == "1",
+        "first_client_status": int(client_status),
+        "reboot": {"debian_version": reboot_version,
+                   "state": reboot_state, "login": login,
+                   "marker": reboot_done,
+                   "client_status": int(reboot_status),
+                   "dur": float(reboot_dur)},
+    }, out, indent=2)
+    out.write("\n")
+
+ok = sum(1 for row in rows if row["rc"] == 0)
+print("UPGRADE stages=%d ok=%d fail=%d"
+      % (len(rows), ok, len(rows) - ok))
+for row in rows:
+    print("  stage=%-7s rc=%-3d %-13s dur=%6.2fs %s"
+          % (row["stage"], row["rc"], row["category"], row["dur"],
+             row["detail"][:90]))
+if upgrade_summary:
+    print("  upgrade summary: %s" % upgrade_summary)
+if errors:
+    for msg in errors:
+        print("  err=%s" % msg)
+for msg in logs:
+    print("  log %s" % msg)
+print("  sha base=%s" % copy.get("base_sha256", ""))
+print("  sha copy=%s" % copy.get("copy_sha256", ""))
+print("  reboot debian_version=%s state=%s login=%s"
+      % (reboot_version, reboot_state, login_ok))
+if not stages:
+    print("FAIL (no guest UPG stage line; see %s)" % console)
+    raise SystemExit(1)
+PY
+    printf 'UPGRADE (tables written to %s)\n' "$FULL_UPGRADE_DIR"
+    exit 0
+fi
 
 if ! grep -aq -- "$DONE_MARKER" "$CONSOLE_LOG"; then
     printf 'FAIL (the guest workload did not complete; see %s)\n' "$CONSOLE_LOG"

@@ -903,6 +903,26 @@ test_x86_debian_ext4_e2big:
 		--workspace "$(EXT4_E2BIG_WORKSPACE)" \
 		--timeout "$(EXT4_E2BIG_TIMEOUT)"
 
+# L6 cross-release upgrade: copy the base image into target/debian-upgrade/
+# (both sha256 sums are recorded), upgrade trixie -> forky in the copy, then
+# reboot that copy and check systemd, serial login and /etc/debian_version.
+FULL_UPGRADE_WORKSPACE ?= $(CURDIR)/target/debian-upgrade
+FULL_UPGRADE_TIMEOUT ?= 4200
+
+.PHONY: test_x86_debian_full_upgrade
+test_x86_debian_full_upgrade:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@tools/x86/debian/daily_use_gate.sh \
+		--full-upgrade \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--workspace "$(FULL_UPGRADE_WORKSPACE)" \
+		--timeout "$(FULL_UPGRADE_TIMEOUT)"
+
 .PHONY: test_x86_daily_use
 test_x86_daily_use:
 	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
