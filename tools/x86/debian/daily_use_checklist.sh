@@ -139,7 +139,9 @@ if command -v fcitx5 >/dev/null 2>&1; then
     engine=$(fcitx5-remote -n 2>/dev/null)
     # Minimal client: if xev cannot see a key, the injection path itself is broken.
     if ! command -v xev >/dev/null 2>&1; then
-        timeout 120 apt-get install -y --no-install-recommends x11-apps >>/tmp/fcitx-apt.log 2>&1
+        echo "DAILY_XAPPS policy=$(apt-cache policy x11-apps 2>/dev/null | head -3 | tr '\n' '|' | head -c 160)" >/dev/console
+        timeout 300 apt-get install -y --no-install-recommends x11-apps x11-utils >>/tmp/fcitx-apt.log 2>&1
+        echo "DAILY_XAPPS installed=$(command -v xev >/dev/null 2>&1 && echo yes || echo no) err=$(tail -1 /tmp/fcitx-apt.log 2>/dev/null | tr ' ' '_' | head -c 50)" >/dev/console
     fi
     if command -v xev >/dev/null 2>&1; then
         xev -geometry 300x200 >/tmp/xev.log 2>&1 &

@@ -440,3 +440,21 @@ DAILY_INPUT_METHOD=fail engine--no-text:
 | IM 定义 | ✅ `inputmethod/` 10 个（wbpy 等） |
 | XTEST 扩展 | ✅ 存在 |
 | 按键送达客户端 | ❌ 未打通（xev 未能启动，无法再细分） |
+
+### x11-apps 补装尝试（2026-10-23，最后一次）
+
+清单在输入法域里加了 `apt-cache policy x11-apps` 与 300 s 安装的诊断行
+（`DAILY_XAPPS …`），复跑结果：
+
+```
+DAILY_XEV id= keypress=0 any=0
+DAILY_INPUT_METHOD=fail engine--no-text:
+```
+
+`xev` 仍然没有起来（`id=` 为空），且 `DAILY_XAPPS` 诊断行本身也没出现在串口
+（又一次 marker 被内核日志打散/截断），因此无法判断是“包不存在”还是“安装未完成”。
+
+**④ 最终维持 ok（受限）**，卡点层级定格为：**X 注入未送达客户端（xev 未能启动，
+诊断行亦丢失）**。要把 ④ 变成无条件 ok，需在镜像构建阶段（rootfs profile）直接
+预置 `x11-apps`/`x11-utils`，而不是运行时 apt；随后用 `xev` 复测一次即可给出
+“注入通/被拒”的最终读数。
