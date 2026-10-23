@@ -491,3 +491,24 @@ DAILY_INPUT_METHOD=fail engine--no-text:
 4. 复跑门禁看 `DAILY_XEV keypress`。
 
 这一步未在本轮执行（上下文预算耗尽）；命令与顺序如上，可直接照做。
+
+### Q1：deb 注入尝试（2026-10-23，镜像已备份）
+
+- 门禁基座：`target/final-matrix/xwrap/image18.ext2`（已备份 `image18.ext2.bak-*`）；
+- 包归属更正：**`xev`/`xdpyinfo` 属于 `x11-utils`**，不在 `x11-apps`；
+- 从构建容器 `dpkg-deb -x` 取出两个二进制，`debugfs -w` 写入镜像 `/usr/bin/` 并
+  设 `0100755`（rc=0）；
+- 注入后门禁：`DESKTOP ok`、`APP ok`、`USB ok`，但
+
+```
+DAILY_XEV id= keypress=0 any=0
+```
+
+`id=` 仍为空 → **`xev` 进程没有起来**（很可能是 Ubuntu 24.04 构建的二进制在
+trixie 上缺库或 ABI 不符；`/tmp/xev.log` 里有具体错误，但当前 marker 没把它带出来）。
+
+下一步（一条命令即可）：把 `head -3 /tmp/xev.log` 打进 marker，确认是
+`error while loading shared libraries: libXaw.so.7` 之类的缺库；若是，按同样方式
+注入对应库，或改用 trixie 源里的 `x11-utils` deb 重新取二进制。
+
+**④ 仍为 ok（受限）**；Q1 未闭环，卡点：注入的 `xev` 无法启动（缺库/ABI）。
