@@ -38,6 +38,11 @@
 # then `chroot /target /debootstrap/debootstrap --second-stage`, reporting one
 # `DBST stage=` line per stage plus disk figures. The host writes
 # `<workspace>/debootstrap/` and prints a summary.
+#
+# `--ext4-e2big` swaps it for the L5 minimal reproducer
+# (`ext4_e2big_probe.sh`): ldconfig, a large data write, and metadata
+# backlogs on the root ext2, looking for the E2BIG that aborted debootstrap.
+# The host writes `<workspace>/ext4-e2big/`.
 
 set -euo pipefail
 
@@ -77,13 +82,15 @@ Options:
   --debootstrap-target PATH
                       L5 only: absolute directory to build into (default
                       /target, on the root ext2). /tmp/target puts it on tmpfs.
+  --ext4-e2big        Run the L5 E2BIG reproducer on the root ext2 instead of
+                      the daily checklist.
 
 The guest account is `asterinas` (uid 1000, password `asterinas`, passwordless
 sudo). Results land in `<workspace>/matrix.tsv` (checklist),
 `<workspace>/popcon.tsv` (--popcon), `<workspace>/systemd-health/`
 (--systemd-health), `<workspace>/ltp/` (--ltp) or
 `<workspace>/source-build/` (--source-build), `<workspace>/debootstrap/`
-(--debootstrap) and on stdout.
+(--debootstrap), `<workspace>/ext4-e2big/` (--ext4-e2big) and on stdout.
 EOF
 }
 
@@ -110,6 +117,7 @@ SOURCE_BUILD_PKGS=""
 SOURCE_BUILD_SELFTEST=0
 DEBOOTSTRAP=0
 DEBOOTSTRAP_TARGET=""
+EXT4_E2BIG=0
 
 while (( $# > 0 )); do
     case "$1" in
@@ -137,13 +145,14 @@ while (( $# > 0 )); do
         --source-build) SOURCE_BUILD=1; shift ;;
         --source-build-selftest) SOURCE_BUILD_SELFTEST=1; shift ;;
         --debootstrap) DEBOOTSTRAP=1; shift ;;
+        --ext4-e2big) EXT4_E2BIG=1; shift ;;
         -h | --help) usage; exit 0 ;;
         *) die_usage "unknown argument: $1" ;;
     esac
 done
 
-(( POPCON + SYSTEMD_HEALTH + LTP + SOURCE_BUILD + DEBOOTSTRAP > 1 )) &&
-    die_usage "--popcon, --systemd-health, --ltp, --source-build and --debootstrap are mutually exclusive"
+(( POPCON + SYSTEMD_HEALTH + LTP + SOURCE_BUILD + DEBOOTSTRAP + EXT4_E2BIG > 1 )) &&
+    die_usage "--popcon, --systemd-health, --ltp, --source-build, --debootstrap and --ext4-e2big are mutually exclusive"
 if (( LTP )); then
     [[ "$LTP_PHASE" == "check" || "$LTP_PHASE" == "run" ]] ||
         die_usage "LTP_PHASE must be 'check' or 'run'"
@@ -154,6 +163,8 @@ fi
 if [[ -z "$TIMEOUT" ]]; then
     if (( POPCON )); then
         TIMEOUT=3600
+    elif (( EXT4_E2BIG )); then
+        TIMEOUT=1200
     elif (( SOURCE_BUILD )) || (( DEBOOTSTRAP )); then
         TIMEOUT=4200
     elif (( LTP )) && [[ "$LTP_PHASE" == "run" ]]; then
@@ -189,6 +200,7 @@ SYSTEMD_HEALTH_SCRIPT="$REPO_ROOT/tools/x86/debian/systemd_health.sh"
 LTP_SCRIPT="$REPO_ROOT/tools/x86/debian/ltp_subset.sh"
 SOURCE_BUILD_SCRIPT="$REPO_ROOT/tools/x86/debian/dpkg_build.sh"
 DEBOOTSTRAP_SCRIPT="$REPO_ROOT/tools/x86/debian/debootstrap_rootfs.sh"
+EXT4_E2BIG_SCRIPT="$REPO_ROOT/tools/x86/debian/ext4_e2big_probe.sh"
 [[ -n "$POPCON_LIST" ]] || POPCON_LIST="$REPO_ROOT/tools/x86/debian/popcon_top50.txt"
 MSGTEST_SRC="$REPO_ROOT/tools/x86/debian/msgtest.c"
 IOTEST_SRC="$REPO_ROOT/tools/x86/debian/iotest.c"
@@ -214,6 +226,10 @@ fi
 if (( DEBOOTSTRAP )); then
     [[ -f "$DEBOOTSTRAP_SCRIPT" ]] ||
         die_usage "debootstrap probe does not exist: $DEBOOTSTRAP_SCRIPT"
+fi
+if (( EXT4_E2BIG )); then
+    [[ -f "$EXT4_E2BIG_SCRIPT" ]] ||
+        die_usage "E2BIG probe does not exist: $EXT4_E2BIG_SCRIPT"
 fi
 for tool in debugfs e2fsck mke2fs python3 timeout "$QEMU"; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -246,6 +262,9 @@ SOURCE_BUILD_JSON="$SOURCE_BUILD_DIR/source-build.json"
 DEBOOTSTRAP_DIR="$WORKSPACE/debootstrap"
 DEBOOTSTRAP_TSV="$DEBOOTSTRAP_DIR/stages.tsv"
 DEBOOTSTRAP_JSON="$DEBOOTSTRAP_DIR/debootstrap.json"
+EXT4_E2BIG_DIR="$WORKSPACE/ext4-e2big"
+EXT4_E2BIG_TSV="$EXT4_E2BIG_DIR/steps.tsv"
+EXT4_E2BIG_JSON="$EXT4_E2BIG_DIR/ext4-e2big.json"
 
 # The X server configuration the checklist starts with (same options as the
 # Xorg gate: no udev, no automatic input devices).
@@ -424,6 +443,10 @@ elif (( DEBOOTSTRAP )); then
     GUEST_COMMAND="sudo sh -c 'DBST_TARGET=\"$DEBOOTSTRAP_TARGET\" /usr/local/bin/debootstrap-rootfs > /dev/console 2>&1'; echo DBST_SHELL_END"
     DONE_MARKER="DBST_DONE"
     MODE="debootstrap"
+elif (( EXT4_E2BIG )); then
+    GUEST_COMMAND="sudo sh -c '/usr/local/bin/ext4-e2big-probe > /dev/console 2>&1'; echo E2BIG_SHELL_END"
+    DONE_MARKER="E2BIG_DONE"
+    MODE="ext4-e2big"
 else
     GUEST_COMMAND="sudo sh -c '/usr/local/bin/daily-use-checklist > /dev/console 2>&1'; echo DAILY_SHELL_END"
     DONE_MARKER="DAILY_DONE=ok"
@@ -433,7 +456,8 @@ fi
 rm -f -- "$IMAGE" "$SERIAL_SOCK" "$MONITOR_SOCK" "$PIDFILE" "$CONSOLE_LOG" \
     "$SCREENSHOT" "$MATRIX" "$POPCON_TSV" "$POPCON_JSON" "$LTP_TSV" "$LTP_JSON" \
     "$SOURCE_BUILD_TSV" "$SOURCE_BUILD_JSON" \
-    "$DEBOOTSTRAP_TSV" "$DEBOOTSTRAP_JSON"
+    "$DEBOOTSTRAP_TSV" "$DEBOOTSTRAP_JSON" \
+    "$EXT4_E2BIG_TSV" "$EXT4_E2BIG_JSON"
 cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
 {
     # Retire units an earlier gate left enabled in the base image.
@@ -476,6 +500,11 @@ cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
         printf 'rm /usr/local/bin/debootstrap-rootfs\n'
         printf 'write %s /usr/local/bin/debootstrap-rootfs\n' "$DEBOOTSTRAP_SCRIPT"
         printf 'sif /usr/local/bin/debootstrap-rootfs mode 0100755\n'
+    fi
+    if (( EXT4_E2BIG )); then
+        printf 'rm /usr/local/bin/ext4-e2big-probe\n'
+        printf 'write %s /usr/local/bin/ext4-e2big-probe\n' "$EXT4_E2BIG_SCRIPT"
+        printf 'sif /usr/local/bin/ext4-e2big-probe mode 0100755\n'
     fi
     if [[ -f "$MSGTEST_BIN" ]]; then
         printf 'rm /usr/local/bin/msgtest\n'
@@ -996,6 +1025,84 @@ if not stage_list:
     raise SystemExit(1)
 PY
     printf 'DEBOOTSTRAP (tables written to %s)\n' "$DEBOOTSTRAP_DIR"
+    exit 0
+fi
+
+if (( EXT4_E2BIG )); then
+    mkdir -p -- "$EXT4_E2BIG_DIR"
+    python3 - "$CONSOLE_LOG" "$EXT4_E2BIG_DIR" <<'PY'
+import json
+import os
+import re
+import sys
+
+console, outdir = sys.argv[1:3]
+text = open(console, "rb").read().decode("utf-8", "replace")
+text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+
+env = {}
+for m in re.finditer(r"E2BIG env ([A-Za-z0-9_]+)=([^\r\n]*)", text):
+    env[m.group(1)] = m.group(2).strip()
+
+errors = {}
+for m in re.finditer(r"E2BIG err step=(\S+) ([^\r\n]*)", text):
+    errors.setdefault(m.group(1), []).append(m.group(2).strip())
+
+steps = []
+for m in re.finditer(
+        r"E2BIG step=(\S+) rc=(-?\d+) dur=([0-9.]+)(?: files=(\d+))?",
+        text):
+    steps.append({
+        "step": m.group(1), "rc": int(m.group(2)),
+        "dur": float(m.group(3)),
+        "files": int(m.group(4)) if m.group(4) else "",
+        "errors": errors.get(m.group(1), []),
+    })
+
+disk = [{"phase": m.group(2), "free_kb": int(m.group(1))} for m in
+        re.finditer(r"E2BIG disk_free_kb=(\d+) phase=(\S+)", text)]
+cache = {}
+m = re.search(r"E2BIG cache_path=(\S+) cache_kb=(\d+)", text)
+if m:
+    cache = {"path": m.group(1), "bytes": int(m.group(2))}
+journal = len(re.findall(r"ext4 journal transaction is too large", text))
+
+with open(os.path.join(outdir, "steps.tsv"), "w") as out:
+    out.write("step\trc\tdur\tfiles\terrors\n")
+    for rec in steps:
+        out.write("%s\t%d\t%.2f\t%s\t%s\n" % (
+            rec["step"], rec["rc"], rec["dur"], rec["files"],
+            " | ".join(rec["errors"])))
+with open(os.path.join(outdir, "disk.tsv"), "w") as out:
+    out.write("phase\tfree_kb\n")
+    for item in disk:
+        out.write("%s\t%d\n" % (item["phase"], item["free_kb"]))
+with open(os.path.join(outdir, "env.tsv"), "w") as out:
+    out.write("key\tvalue\n")
+    for key in sorted(env):
+        out.write("%s\t%s\n" % (key, env[key]))
+with open(os.path.join(outdir, "ext4-e2big.json"), "w") as out:
+    json.dump({"env": env, "steps": steps, "disk": disk,
+               "cache": cache, "journal_e2big_warnings": journal},
+              out, indent=2)
+    out.write("\n")
+
+print("E2BIG steps=%d failed=%d journal_warnings=%d"
+      % (len(steps), sum(1 for r in steps if r["rc"] != 0), journal))
+for rec in steps:
+    print("  step=%-2s rc=%-3d dur=%.2fs files=%s %s"
+          % (rec["step"], rec["rc"], rec["dur"], rec["files"],
+             " | ".join(rec["errors"])[:100]))
+if cache:
+    print("  cache %s = %d bytes" % (cache.get("path", ""),
+                                     cache.get("bytes", 0)))
+for item in disk:
+    print("  disk %-6s %d KB free" % (item["phase"], item["free_kb"]))
+if not steps:
+    print("FAIL (no E2BIG step line; see %s)" % console)
+    raise SystemExit(1)
+PY
+    printf 'EXT4_E2BIG (tables written to %s)\n' "$EXT4_E2BIG_DIR"
     exit 0
 fi
 

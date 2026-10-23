@@ -164,6 +164,88 @@ WARN: ext2: metadata transaction failed: Error { errno: E2BIG,
 | `mknodat`（259） | 有（`kernel/core/src/syscall/mknod.rs`） | debootstrap `setup_devices` 建 `/dev` 节点无报错 |
 | `fsync`（74） | 有，但 ext4 元数据事务编码失败 | `/sbin/ldconfig` 写缓存时报 E2BIG |
 
+## 最小复现
+
+### 直接证据的可得性
+
+L5 的 `/target` 从未提交到磁盘（原因见上），因此
+`/target/debootstrap/debootstrap.log` **无法在运行目录里恢复**。串口在
+second-stage 失败时抓到了该日志的最后几行（`DBST log target=`），其中
+决定性的三行是：
+
+```
+DBST log target=…/var/cache/apt/archives/partial/tar_1.35+dfsg-3.1_amd64.deb
+DBST log target=…/var/cache/apt/archives/partial/zlib1g_1.3…_amd64.deb
+DBST log target=/sbin/ldconfig: Writing of cache data failed: Argument list too long
+```
+
+这是日志的尾部，不是完整 30 行：ext2 的日志文件与 `/target` 一起丢失。
+
+### 一条命令级别的最小复现
+
+不跑 debootstrap、不 chroot，只在根 ext2 上制造一个“脏元数据积压”，再
+执行 L5 里同一个 `ldconfig`：
+
+```sh
+# 12000 个空文件 ≈ 375 个 inode-table 块，超过 JBD2 单 descriptor 的 253 块
+mkdir -p /var/tmp/e2big
+i=0; while [ $i -lt 12000 ]; do
+  d=/var/tmp/e2big/d$((i/1000)); mkdir -p "$d"; : > "$d/f$i"; i=$((i+1))
+done
+ldconfig
+```
+
+实测结果（`tools/x86/debian/ext4_e2big_probe.sh`，step g）：
+
+```
+E2BIG step=g rc=1 dur=0.12 files=12000
+E2BIG err step=g /sbin/ldconfig: Writing of cache data failed: Argument list too long
+```
+
+同一时刻内核记录（本轮共 **15** 条）：
+
+```
+WARN: ext2: metadata transaction failed: Error { errno: E2BIG,
+      msg: Some("ext4 journal transaction is too large") }
+```
+
+### 逐步收缩
+
+| step | 操作 | rc | 结论 |
+|---|---|---|---|
+| a | `ldconfig`（干净 fs） | **0** | 不是 ldconfig 本身 |
+| b | `ldconfig -n /lib /usr/lib` | **0** | 与 `/etc/ld.so.conf` 无关 |
+| c | `ldconfig -X` | **0** | 与符号链接更新无关 |
+| d | `dd 8 MiB` + `sync` | **0** | 不是“大文件写” |
+| e | `touch 2000` + `sync` | **0** | 2000 inode ≈ 63 个 inode-table 块，容量内 |
+| e2 | `touch 2000` + `dd conv=fsync` | **0** | fsync 路径本身正常 |
+| f | `touch 2000` + `ldconfig` | **0** | 2000 的积压仍低于 253 块 |
+| **g** | **`touch 12000` + `ldconfig`** | **1** | **跨过 253 块，E2BIG** |
+
+容量换算：每 4 KiB inode-table 块容纳 32 个 inode，12000 个 inode 至少
+375 块，加上目录与位图块，远超单 descriptor 的 253 块；2000 个 inode
+约 63 块，因此 a–f 全过。按这个口径，边界大约在 **8000 个 inode**
+（253 × 32），本轮没有继续做二分。
+
+### 归属
+
+**`ext4 事务`**（不是 `rename`，不是 `mmap`）：
+
+- `ldconfig` 在干净文件系统上成功（step a），失败只出现在“大量脏元数据 +
+  任意一次提交”之后；
+- 8 MiB 数据写 + `sync` 成功（step d），排除数据量；
+- 错误来自 ext2/ext4 驱动的 JBD2 事务编码器
+  （`kernel/core/src/fs/fs_impls/ext2/journal.rs:233-238`：
+  `(4096-12-16-8)/16 = 253` 个块/descriptor），`ldconfig` 写
+  `/etc/ld.so.cache` 只是触发提交的那一次 `fsync`；
+- 因此 L5 的失败是**组合条件**：foreign 阶段解包留下大量脏元数据，
+  second-stage 的 `ldconfig` 第一次强制提交时超过 descriptor 容量。
+  单独跑 `ldconfig`（干净 fs）不会失败——这也是为什么必须把“积压”写进
+  复现步骤。
+
+复现器同时记录 `/etc/ld.so.cache` 的大小（本轮 **14,667 B**）与前后空闲
+空间（2,308,968 → 2,308,944 KB），用来区分“元数据事务”与“磁盘满”。
+
 ## 结论
 
 1. **debootstrap 能在 guest 内从零生成 Debian rootfs**：三阶段都有 rc，
@@ -174,7 +256,9 @@ WARN: ext2: metadata transaction failed: Error { errno: E2BIG,
 3. **唯一阻塞是根 ext4 的日志事务上限**：`/target` 放在根 ext4 时，解包
    产生的元数据超过单个 JBD2 descriptor 的 253 块容量，`ldconfig` 写
    `/etc/ld.so.cache` 时得到 E2BIG，second-stage 中止；关机后整棵树也没有
-   落盘。把目标放到 tmpfs（`/tmp/target`）后同一流程三阶段全过；
+   落盘。最小复现不需要 debootstrap：**12000 个空文件 + `ldconfig`**
+   即可（见「最小复现」），归属 `ext4 事务`，不是 `rename`/`mmap`。
+   把目标放到 tmpfs（`/tmp/target`）后同一流程三阶段全过；
 4. 因此“从零 rootfs”在本快照上的可用形态是：**tmpfs 内构建 + chroot
    可用；要持久化到磁盘，需要修 ext4 事务编码（内核改动，不在本轮范围）**。
 

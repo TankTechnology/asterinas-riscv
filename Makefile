@@ -883,6 +883,26 @@ test_x86_debian_debootstrap:
 		--timeout "$(DEBOOTSTRAP_TIMEOUT)" \
 		$$extra
 
+# L5 follow-up: minimise the ldconfig E2BIG seen during debootstrap. Runs on
+# the root ext2 and walks ldconfig, a large data write, and metadata backlogs;
+# the host writes target/debian-ext4-e2big/.
+EXT4_E2BIG_WORKSPACE ?= $(CURDIR)/target/debian-ext4-e2big
+EXT4_E2BIG_TIMEOUT ?= 1200
+
+.PHONY: test_x86_debian_ext4_e2big
+test_x86_debian_ext4_e2big:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@tools/x86/debian/daily_use_gate.sh \
+		--ext4-e2big \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--workspace "$(EXT4_E2BIG_WORKSPACE)" \
+		--timeout "$(EXT4_E2BIG_TIMEOUT)"
+
 .PHONY: test_x86_daily_use
 test_x86_daily_use:
 	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
