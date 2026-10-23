@@ -26,6 +26,12 @@
 # `--ltp` swaps it for the L3 probe (`ltp_subset.sh`). LTP_PHASE=check reports
 # feasibility as `LTPCHK ` lines; LTP_PHASE=run builds a bounded syscall subset
 # in the guest and reports one `LTP case=` line per test.
+#
+# `--source-build` swaps it for the L4 probe (`dpkg_build.sh`): the guest
+# installs each test package's Build-Depends, fetches its source with
+# `apt-get source` and runs `dpkg-buildpackage -b -us -uc`, reporting one
+# `DPKGB pkg=` line per stage and artifact. The host writes
+# `<workspace>/source-build/` and prints a summary.
 
 set -euo pipefail
 
@@ -50,11 +56,21 @@ Options:
   --ltp               Run the L3 LTP probe instead of the daily checklist.
                       LTP_PHASE=check (default) reports feasibility;
                       LTP_PHASE=run builds and runs the bounded subset.
+  --source-build      Run the L4 source-package probe instead of the daily
+                      checklist: build hello, coreutils and python3-minimal
+                      with dpkg-buildpackage inside the guest.
+  --source-build-packages LIST
+                      Override the L4 package list (space separated); default
+                      is the probe's own "hello coreutils python3-minimal".
+  --source-build-selftest
+                      L4 only: report m4/grep/autom4te sanity checks instead of
+                      building, to attribute a toolchain-level failure.
 
 The guest account is `asterinas` (uid 1000, password `asterinas`, passwordless
 sudo). Results land in `<workspace>/matrix.tsv` (checklist),
-`<workspace>/popcon.tsv` (--popcon) or `<workspace>/systemd-health/`
-(--systemd-health) and on stdout.
+`<workspace>/popcon.tsv` (--popcon), `<workspace>/systemd-health/`
+(--systemd-health), `<workspace>/ltp/` (--ltp) or
+`<workspace>/source-build/` (--source-build) and on stdout.
 EOF
 }
 
@@ -76,11 +92,14 @@ POPCON_LIST=""
 SYSTEMD_HEALTH=0
 LTP=0
 LTP_PHASE="${LTP_PHASE:-check}"
+SOURCE_BUILD=0
+SOURCE_BUILD_PKGS=""
+SOURCE_BUILD_SELFTEST=0
 
 while (( $# > 0 )); do
     case "$1" in
         --kernel | --initramfs | --base-root | --workspace | --timeout | \
-            --accel | --qemu | --popcon-list)
+            --accel | --qemu | --popcon-list | --source-build-packages)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --kernel) KERNEL="$2" ;;
@@ -91,19 +110,22 @@ while (( $# > 0 )); do
                 --accel) ACCEL="$2" ;;
                 --qemu) QEMU="$2" ;;
                 --popcon-list) POPCON_LIST="$2" ;;
+                --source-build-packages) SOURCE_BUILD_PKGS="$2" ;;
             esac
             shift 2
             ;;
         --popcon) POPCON=1; shift ;;
         --systemd-health) SYSTEMD_HEALTH=1; shift ;;
         --ltp) LTP=1; shift ;;
+        --source-build) SOURCE_BUILD=1; shift ;;
+        --source-build-selftest) SOURCE_BUILD_SELFTEST=1; shift ;;
         -h | --help) usage; exit 0 ;;
         *) die_usage "unknown argument: $1" ;;
     esac
 done
 
-(( POPCON + SYSTEMD_HEALTH + LTP > 1 )) &&
-    die_usage "--popcon, --systemd-health and --ltp are mutually exclusive"
+(( POPCON + SYSTEMD_HEALTH + LTP + SOURCE_BUILD > 1 )) &&
+    die_usage "--popcon, --systemd-health, --ltp and --source-build are mutually exclusive"
 if (( LTP )); then
     [[ "$LTP_PHASE" == "check" || "$LTP_PHASE" == "run" ]] ||
         die_usage "LTP_PHASE must be 'check' or 'run'"
@@ -114,6 +136,8 @@ fi
 if [[ -z "$TIMEOUT" ]]; then
     if (( POPCON )); then
         TIMEOUT=3600
+    elif (( SOURCE_BUILD )); then
+        TIMEOUT=4200
     elif (( LTP )) && [[ "$LTP_PHASE" == "run" ]]; then
         TIMEOUT=1800
     else
@@ -121,6 +145,10 @@ if [[ -z "$TIMEOUT" ]]; then
     fi
 fi
 [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die_usage "--timeout must be a positive integer"
+# The package list is interpolated into the guest's shell command; keep it to
+# what a Debian package name (and the separating spaces) can contain.
+[[ -z "$SOURCE_BUILD_PKGS" || "$SOURCE_BUILD_PKGS" =~ ^[A-Za-z0-9.+:-]+(\ [A-Za-z0-9.+:-]+)*$ ]] ||
+    die_usage "--source-build-packages must be space-separated package names"
 
 [[ -n "$KERNEL" && -n "$INITRAMFS" && -n "$BASE_ROOT" && -n "$WORKSPACE" ]] ||
     die_usage "--kernel, --initramfs, --base-root and --workspace are required"
@@ -137,6 +165,7 @@ CHECKLIST="$REPO_ROOT/tools/x86/debian/daily_use_checklist.sh"
 POPCON_SCRIPT="$REPO_ROOT/tools/x86/debian/popcon_packages.sh"
 SYSTEMD_HEALTH_SCRIPT="$REPO_ROOT/tools/x86/debian/systemd_health.sh"
 LTP_SCRIPT="$REPO_ROOT/tools/x86/debian/ltp_subset.sh"
+SOURCE_BUILD_SCRIPT="$REPO_ROOT/tools/x86/debian/dpkg_build.sh"
 [[ -n "$POPCON_LIST" ]] || POPCON_LIST="$REPO_ROOT/tools/x86/debian/popcon_top50.txt"
 MSGTEST_SRC="$REPO_ROOT/tools/x86/debian/msgtest.c"
 IOTEST_SRC="$REPO_ROOT/tools/x86/debian/iotest.c"
@@ -151,6 +180,13 @@ if (( SYSTEMD_HEALTH )); then
 fi
 if (( LTP )); then
     [[ -f "$LTP_SCRIPT" ]] || die_usage "LTP probe does not exist: $LTP_SCRIPT"
+fi
+if (( SOURCE_BUILD )); then
+    [[ -f "$SOURCE_BUILD_SCRIPT" ]] ||
+        die_usage "source-build probe does not exist: $SOURCE_BUILD_SCRIPT"
+fi
+if (( SOURCE_BUILD_SELFTEST )) && (( ! SOURCE_BUILD )); then
+    die_usage "--source-build-selftest requires --source-build"
 fi
 for tool in debugfs e2fsck mke2fs python3 timeout "$QEMU"; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -177,6 +213,9 @@ SYSTEMD_HEALTH_DIR="$WORKSPACE/systemd-health"
 LTP_DIR="$WORKSPACE/ltp"
 LTP_TSV="$LTP_DIR/ltp.tsv"
 LTP_JSON="$LTP_DIR/ltp.json"
+SOURCE_BUILD_DIR="$WORKSPACE/source-build"
+SOURCE_BUILD_TSV="$SOURCE_BUILD_DIR/packages.tsv"
+SOURCE_BUILD_JSON="$SOURCE_BUILD_DIR/source-build.json"
 
 # The X server configuration the checklist starts with (same options as the
 # Xorg gate: no udev, no automatic input devices).
@@ -347,6 +386,10 @@ elif (( LTP )); then
     GUEST_COMMAND="sudo sh -c 'LTP_PHASE=$LTP_PHASE /usr/local/bin/ltp-subset > /dev/console 2>&1'; echo LTP_SHELL_END"
     DONE_MARKER="LTP_DONE"
     MODE="ltp"
+elif (( SOURCE_BUILD )); then
+    GUEST_COMMAND="sudo sh -c 'DPKGB_PKGS=\"$SOURCE_BUILD_PKGS\" DPKGB_SELFTEST=$SOURCE_BUILD_SELFTEST /usr/local/bin/dpkg-build > /dev/console 2>&1'; echo DPKGB_SHELL_END"
+    DONE_MARKER="DPKGB_DONE"
+    MODE="source-build"
 else
     GUEST_COMMAND="sudo sh -c '/usr/local/bin/daily-use-checklist > /dev/console 2>&1'; echo DAILY_SHELL_END"
     DONE_MARKER="DAILY_DONE=ok"
@@ -354,7 +397,8 @@ else
 fi
 
 rm -f -- "$IMAGE" "$SERIAL_SOCK" "$MONITOR_SOCK" "$PIDFILE" "$CONSOLE_LOG" \
-    "$SCREENSHOT" "$MATRIX" "$POPCON_TSV" "$POPCON_JSON" "$LTP_TSV" "$LTP_JSON"
+    "$SCREENSHOT" "$MATRIX" "$POPCON_TSV" "$POPCON_JSON" "$LTP_TSV" "$LTP_JSON" \
+    "$SOURCE_BUILD_TSV" "$SOURCE_BUILD_JSON"
 cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
 {
     # Retire units an earlier gate left enabled in the base image.
@@ -362,32 +406,55 @@ cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
     printf 'rm /etc/systemd/system/asterinas-debian-ext4.service\n'
     printf 'rm /etc/systemd/system/multi-user.target.wants/xorgprobe.service\n'
     printf 'rm /etc/systemd/system/xorgprobe.service\n'
+    # debugfs `write` refuses to replace an existing file, so a base image that
+    # already carries a probe would silently keep the stale copy. Remove each
+    # target first; `rm` on an absent path is harmless.
+    printf 'rm /usr/local/bin/daily-use-checklist\n'
+    printf 'rm /etc/X11/xorg-noudev.conf\n'
     printf 'write %s /usr/local/bin/daily-use-checklist\n' "$CHECKLIST"
     printf 'sif /usr/local/bin/daily-use-checklist mode 0100755\n'
     printf 'write %s /etc/X11/xorg-noudev.conf\n' "$XORG_CONF"
     if (( POPCON )); then
+        printf 'rm /usr/local/bin/popcon-packages\n'
+        printf 'rm %s\n' "$POPCON_GUEST_LIST"
         printf 'write %s /usr/local/bin/popcon-packages\n' "$POPCON_SCRIPT"
         printf 'sif /usr/local/bin/popcon-packages mode 0100755\n'
         printf 'write %s %s\n' "$POPCON_LIST" "$POPCON_GUEST_LIST"
         printf 'sif %s mode 0100644\n' "$POPCON_GUEST_LIST"
     fi
     if (( SYSTEMD_HEALTH )); then
+        printf 'rm /usr/local/bin/systemd-health\n'
         printf 'write %s /usr/local/bin/systemd-health\n' "$SYSTEMD_HEALTH_SCRIPT"
         printf 'sif /usr/local/bin/systemd-health mode 0100755\n'
     fi
     if (( LTP )); then
+        printf 'rm /usr/local/bin/ltp-subset\n'
         printf 'write %s /usr/local/bin/ltp-subset\n' "$LTP_SCRIPT"
         printf 'sif /usr/local/bin/ltp-subset mode 0100755\n'
     fi
+    if (( SOURCE_BUILD )); then
+        printf 'rm /usr/local/bin/dpkg-build\n'
+        printf 'write %s /usr/local/bin/dpkg-build\n' "$SOURCE_BUILD_SCRIPT"
+        printf 'sif /usr/local/bin/dpkg-build mode 0100755\n'
+    fi
     if [[ -f "$MSGTEST_BIN" ]]; then
+        printf 'rm /usr/local/bin/msgtest\n'
         printf 'write %s /usr/local/bin/msgtest\n' "$MSGTEST_BIN"
         printf 'sif /usr/local/bin/msgtest mode 0100755\n'
     fi
     if [[ -f "$IOTEST_BIN" ]]; then
+        printf 'rm /usr/local/bin/iotest\n'
         printf 'write %s /usr/local/bin/iotest\n' "$IOTEST_BIN"
         printf 'sif /usr/local/bin/iotest mode 0100755\n'
     fi
 } | debugfs -w -f - "$IMAGE" >"$WORKSPACE/inject.log" 2>&1
+# A refused write would leave the image with an older probe than the one this
+# checkout carries, so treat it as a gate failure rather than debugging a
+# phantom.
+if grep -q 'Ext2 file already exists' "$WORKSPACE/inject.log"; then
+    printf 'FAIL (an injection target already existed; see %s/inject.log)\n' "$WORKSPACE"
+    exit 1
+fi
 if ! e2fsck -fn "$IMAGE" >"$WORKSPACE/fsck-prepared.txt" 2>&1; then
     printf 'FAIL (prepared image is not clean; see %s/fsck-prepared.txt)\n' "$WORKSPACE"
     exit 1
@@ -527,6 +594,196 @@ if not cases:
     raise SystemExit(1)
 PY
     printf 'LTP (tables written to %s)\n' "$LTP_DIR"
+    exit 0
+fi
+
+if (( SOURCE_BUILD )); then
+    mkdir -p -- "$SOURCE_BUILD_DIR"
+    python3 - "$CONSOLE_LOG" "$SOURCE_BUILD_DIR" <<'PY'
+import json
+import os
+import re
+import sys
+
+console, outdir = sys.argv[1:3]
+text = open(console, "rb").read().decode("utf-8", "replace")
+text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+
+env = {}
+for m in re.finditer(r"DPKGB env ([A-Za-z0-9_]+)=([^\r\n]*)", text):
+    env[m.group(1)] = m.group(2).strip()
+setup = [(m.group(1), int(m.group(2))) for m in
+         re.finditer(r"DPKGB setup step=(\S+) rc=(-?\d+)", text)]
+fatal = [m.group(1).strip() for m in
+         re.finditer(r"DPKGB fatal ([^\r\n]*)", text)]
+selftest = [m.group(1).strip() for m in
+            re.finditer(r"DPKGB selftest ([^\r\n]*)", text)]
+
+names = {}
+for m in re.finditer(r"DPKGB pkg=(\d+) start name=(\S+)", text):
+    names[int(m.group(1))] = m.group(2)
+
+
+def record(n):
+    return packages.setdefault(n, {
+        "pkg": n, "name": names.get(n, ""), "stages": [],
+        "artifacts": [], "errors": [], "evidence": [],
+        "result": "incomplete", "attempts": 0, "dur": 0.0,
+    })
+
+
+packages = {}
+for m in re.finditer(
+        r"DPKGB pkg=(\d+) stage=(builddeps|source|build) rc=(-?\d+) "
+        r"dur=([0-9.]+)(?: attempt=(\d+))?", text):
+    n, stage, rc, dur, attempt = m.groups()
+    rec = record(int(n))
+    rec["stages"].append({
+        "stage": stage, "rc": int(rc), "dur": float(dur),
+        "attempt": int(attempt) if attempt else 1,
+    })
+    if attempt:
+        rec["attempts"] = max(rec["attempts"], int(attempt))
+for m in re.finditer(r"DPKGB pkg=(\d+) artifact=(\S+)", text):
+    record(int(m.group(1)))["artifacts"].append(m.group(2))
+for m in re.finditer(r"DPKGB pkg=(\d+) err=([^\r\n]*)", text):
+    record(int(m.group(1)))["errors"].append(m.group(2).strip())
+for m in re.finditer(r"DPKGB pkg=(\d+) evidence=([^\r\n]*)", text):
+    record(int(m.group(1)))["evidence"].append(m.group(2).strip())
+for m in re.finditer(
+        r"DPKGB pkg=(\d+) done name=(\S+) result=(ok|fail|timeout|disk) "
+        r"attempts=(\d+) dur=([0-9.]+)", text):
+    n, name, result, attempts, dur = m.groups()
+    rec = record(int(n))
+    rec["name"] = name
+    rec["result"] = result
+    rec["attempts"] = max(rec["attempts"], int(attempts))
+    rec["dur"] = float(dur)
+
+
+def stage_rec(rec, name):
+    # Prefer the attempt that succeeded; with no success the last one is the
+    # one that decided the package's result.
+    matches = [item for item in rec["stages"] if item["stage"] == name]
+    for item in matches:
+        if item["rc"] == 0:
+            return item
+    if matches:
+        return matches[-1]
+    return {"rc": "", "dur": "", "attempt": ""}
+
+
+def attribute(rec):
+    """Coarse cause; the doc keeps the reviewed wording."""
+    if rec["result"] == "ok":
+        return "ok"
+    err = " ".join(rec["errors"]).lower().replace("_", " ")
+    if rec["result"] == "timeout" or "timeout" in err:
+        return "timeout"
+    # A signal death is neither a compile error nor a missing tool.
+    if any(t in err for t in ("killed by signal", "segmentation fault",
+                              "sigsegv", "sigabrt")):
+        return "other"
+    if any(t in err for t in ("disk low", "no space", "enospc", "disk full",
+                              "disk_low")):
+        return "disk"
+    if any(t in err for t in ("not found", "unable to locate", "no such file",
+                              "source tree", "toolchain", "command not found")):
+        return "missing-tool"
+    if any(t in err for t in ("function not implemented", "enotsup",
+                              "unimplemented", "operation not supported",
+                              "eafnosupport", "protocol not supported")):
+        return "syscall-missing"
+    if any(t in err for t in ("error:", "fatal error", "make[",
+                              "compilation terminated", "undefined reference",
+                              "segmentation fault", "recipe for target")):
+        return "compile"
+    return "other"
+
+
+order = sorted(packages)
+for n in order:
+    packages[n]["category"] = attribute(packages[n])
+
+with open(os.path.join(outdir, "packages.tsv"), "w") as out:
+    out.write("pkg\tname\tresult\tcategory\tattempts\tdur\t"
+              "builddeps_rc\tbuilddeps_dur\tsource_rc\tsource_dur\t"
+              "build_rc\tbuild_dur\tartifacts\terrors\tevidence\n")
+    for n in order:
+        rec = packages[n]
+        bd = stage_rec(rec, "builddeps")
+        src = stage_rec(rec, "source")
+        build = stage_rec(rec, "build")
+        out.write("%d\t%s\t%s\t%s\t%d\t%.2f\t%s\t%s\t%s\t%s\t%s\t%s\t"
+                  "%s\t%s\t%s\n" % (
+                      n, rec["name"], rec["result"], rec["category"],
+                      rec["attempts"], rec["dur"],
+                      bd["rc"], bd["dur"], src["rc"], src["dur"],
+                      build["rc"], build["dur"],
+                      ",".join(rec["artifacts"]),
+                      " | ".join(rec["errors"]),
+                      " | ".join(rec["evidence"])))
+with open(os.path.join(outdir, "stages.tsv"), "w") as out:
+    out.write("pkg\tname\tattempt\tstage\trc\tdur\n")
+    for n in order:
+        for item in packages[n]["stages"]:
+            out.write("%d\t%s\t%d\t%s\t%d\t%.2f\n" % (
+                n, packages[n]["name"], item["attempt"], item["stage"],
+                item["rc"], item["dur"]))
+with open(os.path.join(outdir, "env.tsv"), "w") as out:
+    out.write("key\tvalue\n")
+    for key in sorted(env):
+        out.write("%s\t%s\n" % (key, env[key]))
+
+ok = sum(1 for n in order if packages[n]["result"] == "ok")
+failed = len(order) - ok
+with open(os.path.join(outdir, "source-build.json"), "w") as out:
+    json.dump({
+        "env": env,
+        "setup": [{"step": s, "rc": r} for s, r in setup],
+        "fatal": fatal,
+        "selftest": selftest,
+        "packages": [packages[n] for n in order],
+        "summary": {"total": len(order), "ok": ok, "fail": failed},
+    }, out, indent=2)
+    out.write("\n")
+
+print("SOURCE_BUILD packages=%d ok=%d fail=%d" % (len(order), ok, failed))
+print("  env gcc=%s dpkg=%s" % (env.get("gcc", "?"),
+                                env.get("dpkg_buildpackage", "?")))
+for key in ("gcc", "dpkg", "dpkg_buildpackage", "debian", "disk_free_kb"):
+    if key in env:
+        print("  env %-18s %s" % (key, env[key]))
+for n in order:
+    rec = packages[n]
+    print("  pkg=%d %-16s %-10s %-14s attempts=%d dur=%.2fs artifacts=%d"
+          % (n, rec["name"], rec["result"], rec["category"], rec["attempts"],
+             rec["dur"], len(rec["artifacts"])))
+    for item in rec["stages"]:
+        print("      stage=%-9s attempt=%d rc=%-3d dur=%.2fs"
+              % (item["stage"], item["attempt"], item["rc"], item["dur"]))
+    for artifact in rec["artifacts"]:
+        print("      artifact=%s" % artifact)
+    for err in rec["errors"]:
+        print("      err=%s" % err)
+    for ev in rec["evidence"]:
+        print("      evidence=%s" % ev)
+if selftest:
+    with open(os.path.join(outdir, "selftest.txt"), "w") as out:
+        out.write("\n".join(selftest) + "\n")
+    print("SOURCE_BUILD selftest checks=%d" % len(selftest))
+    for line in selftest:
+        print("  %s" % line)
+    raise SystemExit(0)
+if fatal:
+    print("FAIL (source-build setup failed: %s; see %s)"
+          % (" ".join(fatal), console))
+    raise SystemExit(1)
+if not order:
+    print("FAIL (no DPKGB package line; see %s)" % console)
+    raise SystemExit(1)
+PY
+    printf 'SOURCE_BUILD (tables written to %s)\n' "$SOURCE_BUILD_DIR"
     exit 0
 fi
 

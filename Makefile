@@ -821,6 +821,39 @@ test_x86_debian_ltp:
 		--workspace "$(LTP_WORKSPACE)" \
 		--timeout "$(LTP_TIMEOUT)"
 
+# L4 source-package build: hello, coreutils and python3-minimal are fetched
+# with `apt-get source`, their Build-Depends installed, and each is built with
+# `dpkg-buildpackage -b -us -uc` inside the guest. One package gets at most two
+# attempts and 15 minutes; the host writes target/debian-source-build/.
+SOURCE_BUILD_WORKSPACE ?= $(CURDIR)/target/debian-source-build
+SOURCE_BUILD_TIMEOUT ?= 4200
+# Empty keeps the probe's own "hello coreutils python3-minimal".
+SOURCE_BUILD_PACKAGES ?=
+SOURCE_BUILD_SELFTEST ?= 0
+
+.PHONY: test_x86_debian_source_build
+test_x86_debian_source_build:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@set -e; \
+	extra=""; \
+	if [ -n "$(SOURCE_BUILD_PACKAGES)" ]; then \
+		extra="--source-build-packages $(SOURCE_BUILD_PACKAGES)"; \
+	fi; \
+	if [ "$(SOURCE_BUILD_SELFTEST)" = 1 ]; then \
+		extra="$$extra --source-build-selftest"; \
+	fi; \
+	tools/x86/debian/daily_use_gate.sh \
+		--source-build \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--workspace "$(SOURCE_BUILD_WORKSPACE)" \
+		--timeout "$(SOURCE_BUILD_TIMEOUT)" \
+		$$extra
+
 .PHONY: test_x86_daily_use
 test_x86_daily_use:
 	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
