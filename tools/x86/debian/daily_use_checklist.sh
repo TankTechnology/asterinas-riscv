@@ -20,6 +20,16 @@ mark() {
     echo "DAILY_$1=$2 $3"
 }
 
+# Earliest possible point: no other apt/dpkg is running yet.
+t0=$(cut -d' ' -f1 /proc/uptime)
+if timeout 180 apt-get install -y --reinstall -o Debug::NoLocking=1 hello >/tmp/perf-apt-early.log 2>&1; then
+    t1=$(cut -d' ' -f1 /proc/uptime)
+    echo "DAILY_PERF apt_early seconds=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')" >/dev/console
+else
+    echo "DAILY_PERF apt_early failed raw=$(tail -1 /tmp/perf-apt-early.log 2>/dev/null | tr ' ' '_' | head -c 60)" >/dev/console
+fi
+echo "DAILY_IME_ENV gtk3=$(ldconfig -p 2>/dev/null | grep -c libgtk-3) wm=$(command -v openbox matchbox-window-manager fluxbox 2>/dev/null | tr '\n' ',')" >/dev/console
+
 # --- Domain 2: package installation (first, so the desktop app exists) ----
 if apt-get install -y xclip xterm alsa-utils xdotool >/tmp/apt-install.log 2>&1; then
     mark APT ok "xclip+xterm+alsa-utils-installed"
