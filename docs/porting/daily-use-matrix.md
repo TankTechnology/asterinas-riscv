@@ -15,7 +15,7 @@ make test_x86_daily_use \
 `DAILY_SUSPEND_WAIT` 时发 `system_wakeup` → 汇总成 `matrix.tsv` 并打印。
 `fail`/`missing` 不会让门禁失败；只有"清单没跑完"才算失败，因此表格是现状快照。
 
-## 结果（2026-10-22，x86_64 + KVM，kernel `73b3a662e` + 音频提交；2026-10-23 追加 L1 包生态；2026-10-24 追加 L4 源码包构建）
+## 结果（2026-10-22，x86_64 + KVM，kernel `73b3a662e` + 音频提交；2026-10-23 追加 L1 包生态；2026-10-24 追加 L4 源码包构建与 L5 从零 rootfs）
 
 | 域 | 结果 | 详情 |
 |---|---|---|
@@ -26,6 +26,7 @@ make test_x86_daily_use \
 | systemd 健康（L2） | **ok** | systemd 257.13，`is-system-running=running`，失败 unit **0/156**；运行中 service 9；启动 **3.416 s**（kernel 0.303 + userspace 3.112）；3 个关键 unit verify rc=0；boot error 3 条（DRM uevent EIO、`/proc/kmsg` 缺失）；见 `docs/porting/debian-systemd-health.md` |
 | syscall 一致性（L3） | **ok（基线 34/40）** | LTP 20260930 子集 40 case：**34 pass / 6 fail / 0 skip**（85%）；6 个失败已逐条归因（fd 上限未强制 ×3、O_NOATIME 权限检查 ×1、`/proc/maps` 展示 ×1、测试 fd 复用 ×1）；整轮 179 s；见 `docs/porting/debian-ltp-baseline.md` |
 | 源码包构建（L4） | **ok（2/3）** | guest 内 `apt-get build-dep` → `apt-get source` → `dpkg-buildpackage -b -us -uc`：`hello` 2.10-5 产出 2 个 `.deb`（360 s）、`python3-minimal`（源码包 `python3-defaults` 3.13.5-1）产出 19 个 `.deb`（383 s）；`coreutils` 9.7-3 在 `debian/rules clean` 被 SIGSEGV（255，2 次一致），根因是 `DPKG_EXPORT_BUILDFLAGS=1` 导出的递归 `$(shell dpkg-buildflags)` 变量让 make 失控；基线另暴露并规避了 `splice` ENOSYS、SysV IPC 缺失、ext4 日志单事务 253 块上限；见 `docs/porting/debian-source-build.md` |
+| 从零 rootfs（L5） | **ok（tmpfs target 三阶段全过；ext2 target 受日志上限）** | `debootstrap` 1.0.141 / trixie minbase：ext2 `/target` install/foreign/second = **0/0/1**（19.09 / 46.46 / 2.68 s），second 在 `/sbin/ldconfig` 写缓存时报 E2BIG（ext4 日志单事务 253 块），关机后 `/target` 未落盘；tmpfs `/tmp/target` = **0/0/0**（18.29 / 38.05 / 24.28 s），得到完整 trixie rootfs（`debian_version=13.7`、`/bin/sh→dash`、214 MiB）；`chroot`/`mount -t proc`/`umount`/`unshare -m` 探针全 rc=0；见 `docs/porting/debian-debootstrap.md` |
 | 剪贴板 | ok | `xclip` 写读往返一致 |
 | 桌面应用（x11-apps 类：xclock/xcalc/xeyes） | **ok** | 7 包闭包注入镜像后三个 GUI 程序均起窗（`window=8388618/8388628`）；pcmanfm/eog 等 GTK 应用需 118 包闭包，不在本镜像范围 |
 | 输入法 | **ok（受限）** | XIM 服务已注册、`inputmethod/` 10 个 IM（wbpy 等）、fcitx5 存活且 D-Bus 调用成功；端到端键入受测试环境限制（无可用 WM：matchbox 未接管焦点、twm 启动即退出，`allowSendEvents` 直投也无按键落盘）；见 `2026-10-22-input-method.md` |

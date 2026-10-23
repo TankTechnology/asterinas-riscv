@@ -854,6 +854,35 @@ test_x86_debian_source_build:
 		--timeout "$(SOURCE_BUILD_TIMEOUT)" \
 		$$extra
 
+# L5 from-scratch rootfs: debootstrap --foreign --variant=minbase into /target,
+# then `chroot /target /debootstrap/debootstrap --second-stage`. The guest has
+# ~2 GiB free, so the probe reports disk before/after every stage and stops
+# below 300 MB. One target per run; the host writes target/debian-debootstrap/.
+DEBOOTSTRAP_WORKSPACE ?= $(CURDIR)/target/debian-debootstrap
+DEBOOTSTRAP_TIMEOUT ?= 4200
+# Empty keeps /target on the root ext2; /tmp/target puts the tree on tmpfs.
+DEBOOTSTRAP_TARGET ?=
+
+.PHONY: test_x86_debian_debootstrap
+test_x86_debian_debootstrap:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@set -e; \
+	extra=""; \
+	if [ -n "$(DEBOOTSTRAP_TARGET)" ]; then \
+		extra="--debootstrap-target $(DEBOOTSTRAP_TARGET)"; \
+	fi; \
+	tools/x86/debian/daily_use_gate.sh \
+		--debootstrap \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--workspace "$(DEBOOTSTRAP_WORKSPACE)" \
+		--timeout "$(DEBOOTSTRAP_TIMEOUT)" \
+		$$extra
+
 .PHONY: test_x86_daily_use
 test_x86_daily_use:
 	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }

@@ -32,6 +32,12 @@
 # `apt-get source` and runs `dpkg-buildpackage -b -us -uc`, reporting one
 # `DPKGB pkg=` line per stage and artifact. The host writes
 # `<workspace>/source-build/` and prints a summary.
+#
+# `--debootstrap` swaps it for the L5 probe (`debootstrap_rootfs.sh`): the
+# guest installs debootstrap, runs the `--foreign` first stage into /target and
+# then `chroot /target /debootstrap/debootstrap --second-stage`, reporting one
+# `DBST stage=` line per stage plus disk figures. The host writes
+# `<workspace>/debootstrap/` and prints a summary.
 
 set -euo pipefail
 
@@ -65,12 +71,19 @@ Options:
   --source-build-selftest
                       L4 only: report m4/grep/autom4te sanity checks instead of
                       building, to attribute a toolchain-level failure.
+  --debootstrap       Run the L5 probe instead of the daily checklist: build a
+                      minbase trixie rootfs in /target and run the second stage
+                      through chroot.
+  --debootstrap-target PATH
+                      L5 only: absolute directory to build into (default
+                      /target, on the root ext2). /tmp/target puts it on tmpfs.
 
 The guest account is `asterinas` (uid 1000, password `asterinas`, passwordless
 sudo). Results land in `<workspace>/matrix.tsv` (checklist),
 `<workspace>/popcon.tsv` (--popcon), `<workspace>/systemd-health/`
 (--systemd-health), `<workspace>/ltp/` (--ltp) or
-`<workspace>/source-build/` (--source-build) and on stdout.
+`<workspace>/source-build/` (--source-build), `<workspace>/debootstrap/`
+(--debootstrap) and on stdout.
 EOF
 }
 
@@ -95,11 +108,14 @@ LTP_PHASE="${LTP_PHASE:-check}"
 SOURCE_BUILD=0
 SOURCE_BUILD_PKGS=""
 SOURCE_BUILD_SELFTEST=0
+DEBOOTSTRAP=0
+DEBOOTSTRAP_TARGET=""
 
 while (( $# > 0 )); do
     case "$1" in
         --kernel | --initramfs | --base-root | --workspace | --timeout | \
-            --accel | --qemu | --popcon-list | --source-build-packages)
+            --accel | --qemu | --popcon-list | --source-build-packages | \
+            --debootstrap-target)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --kernel) KERNEL="$2" ;;
@@ -111,6 +127,7 @@ while (( $# > 0 )); do
                 --qemu) QEMU="$2" ;;
                 --popcon-list) POPCON_LIST="$2" ;;
                 --source-build-packages) SOURCE_BUILD_PKGS="$2" ;;
+                --debootstrap-target) DEBOOTSTRAP_TARGET="$2" ;;
             esac
             shift 2
             ;;
@@ -119,13 +136,14 @@ while (( $# > 0 )); do
         --ltp) LTP=1; shift ;;
         --source-build) SOURCE_BUILD=1; shift ;;
         --source-build-selftest) SOURCE_BUILD_SELFTEST=1; shift ;;
+        --debootstrap) DEBOOTSTRAP=1; shift ;;
         -h | --help) usage; exit 0 ;;
         *) die_usage "unknown argument: $1" ;;
     esac
 done
 
-(( POPCON + SYSTEMD_HEALTH + LTP + SOURCE_BUILD > 1 )) &&
-    die_usage "--popcon, --systemd-health, --ltp and --source-build are mutually exclusive"
+(( POPCON + SYSTEMD_HEALTH + LTP + SOURCE_BUILD + DEBOOTSTRAP > 1 )) &&
+    die_usage "--popcon, --systemd-health, --ltp, --source-build and --debootstrap are mutually exclusive"
 if (( LTP )); then
     [[ "$LTP_PHASE" == "check" || "$LTP_PHASE" == "run" ]] ||
         die_usage "LTP_PHASE must be 'check' or 'run'"
@@ -136,7 +154,7 @@ fi
 if [[ -z "$TIMEOUT" ]]; then
     if (( POPCON )); then
         TIMEOUT=3600
-    elif (( SOURCE_BUILD )); then
+    elif (( SOURCE_BUILD )) || (( DEBOOTSTRAP )); then
         TIMEOUT=4200
     elif (( LTP )) && [[ "$LTP_PHASE" == "run" ]]; then
         TIMEOUT=1800
@@ -149,6 +167,10 @@ fi
 # what a Debian package name (and the separating spaces) can contain.
 [[ -z "$SOURCE_BUILD_PKGS" || "$SOURCE_BUILD_PKGS" =~ ^[A-Za-z0-9.+:-]+(\ [A-Za-z0-9.+:-]+)*$ ]] ||
     die_usage "--source-build-packages must be space-separated package names"
+# The target is interpolated into the guest command; require an absolute path
+# made of path characters. The probe itself additionally rejects "/".
+[[ -z "$DEBOOTSTRAP_TARGET" || "$DEBOOTSTRAP_TARGET" =~ ^/[A-Za-z0-9._/-]+$ ]] ||
+    die_usage "--debootstrap-target must be an absolute path"
 
 [[ -n "$KERNEL" && -n "$INITRAMFS" && -n "$BASE_ROOT" && -n "$WORKSPACE" ]] ||
     die_usage "--kernel, --initramfs, --base-root and --workspace are required"
@@ -166,6 +188,7 @@ POPCON_SCRIPT="$REPO_ROOT/tools/x86/debian/popcon_packages.sh"
 SYSTEMD_HEALTH_SCRIPT="$REPO_ROOT/tools/x86/debian/systemd_health.sh"
 LTP_SCRIPT="$REPO_ROOT/tools/x86/debian/ltp_subset.sh"
 SOURCE_BUILD_SCRIPT="$REPO_ROOT/tools/x86/debian/dpkg_build.sh"
+DEBOOTSTRAP_SCRIPT="$REPO_ROOT/tools/x86/debian/debootstrap_rootfs.sh"
 [[ -n "$POPCON_LIST" ]] || POPCON_LIST="$REPO_ROOT/tools/x86/debian/popcon_top50.txt"
 MSGTEST_SRC="$REPO_ROOT/tools/x86/debian/msgtest.c"
 IOTEST_SRC="$REPO_ROOT/tools/x86/debian/iotest.c"
@@ -187,6 +210,10 @@ if (( SOURCE_BUILD )); then
 fi
 if (( SOURCE_BUILD_SELFTEST )) && (( ! SOURCE_BUILD )); then
     die_usage "--source-build-selftest requires --source-build"
+fi
+if (( DEBOOTSTRAP )); then
+    [[ -f "$DEBOOTSTRAP_SCRIPT" ]] ||
+        die_usage "debootstrap probe does not exist: $DEBOOTSTRAP_SCRIPT"
 fi
 for tool in debugfs e2fsck mke2fs python3 timeout "$QEMU"; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -216,6 +243,9 @@ LTP_JSON="$LTP_DIR/ltp.json"
 SOURCE_BUILD_DIR="$WORKSPACE/source-build"
 SOURCE_BUILD_TSV="$SOURCE_BUILD_DIR/packages.tsv"
 SOURCE_BUILD_JSON="$SOURCE_BUILD_DIR/source-build.json"
+DEBOOTSTRAP_DIR="$WORKSPACE/debootstrap"
+DEBOOTSTRAP_TSV="$DEBOOTSTRAP_DIR/stages.tsv"
+DEBOOTSTRAP_JSON="$DEBOOTSTRAP_DIR/debootstrap.json"
 
 # The X server configuration the checklist starts with (same options as the
 # Xorg gate: no udev, no automatic input devices).
@@ -390,6 +420,10 @@ elif (( SOURCE_BUILD )); then
     GUEST_COMMAND="sudo sh -c 'DPKGB_PKGS=\"$SOURCE_BUILD_PKGS\" DPKGB_SELFTEST=$SOURCE_BUILD_SELFTEST /usr/local/bin/dpkg-build > /dev/console 2>&1'; echo DPKGB_SHELL_END"
     DONE_MARKER="DPKGB_DONE"
     MODE="source-build"
+elif (( DEBOOTSTRAP )); then
+    GUEST_COMMAND="sudo sh -c 'DBST_TARGET=\"$DEBOOTSTRAP_TARGET\" /usr/local/bin/debootstrap-rootfs > /dev/console 2>&1'; echo DBST_SHELL_END"
+    DONE_MARKER="DBST_DONE"
+    MODE="debootstrap"
 else
     GUEST_COMMAND="sudo sh -c '/usr/local/bin/daily-use-checklist > /dev/console 2>&1'; echo DAILY_SHELL_END"
     DONE_MARKER="DAILY_DONE=ok"
@@ -398,7 +432,8 @@ fi
 
 rm -f -- "$IMAGE" "$SERIAL_SOCK" "$MONITOR_SOCK" "$PIDFILE" "$CONSOLE_LOG" \
     "$SCREENSHOT" "$MATRIX" "$POPCON_TSV" "$POPCON_JSON" "$LTP_TSV" "$LTP_JSON" \
-    "$SOURCE_BUILD_TSV" "$SOURCE_BUILD_JSON"
+    "$SOURCE_BUILD_TSV" "$SOURCE_BUILD_JSON" \
+    "$DEBOOTSTRAP_TSV" "$DEBOOTSTRAP_JSON"
 cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
 {
     # Retire units an earlier gate left enabled in the base image.
@@ -436,6 +471,11 @@ cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
         printf 'rm /usr/local/bin/dpkg-build\n'
         printf 'write %s /usr/local/bin/dpkg-build\n' "$SOURCE_BUILD_SCRIPT"
         printf 'sif /usr/local/bin/dpkg-build mode 0100755\n'
+    fi
+    if (( DEBOOTSTRAP )); then
+        printf 'rm /usr/local/bin/debootstrap-rootfs\n'
+        printf 'write %s /usr/local/bin/debootstrap-rootfs\n' "$DEBOOTSTRAP_SCRIPT"
+        printf 'sif /usr/local/bin/debootstrap-rootfs mode 0100755\n'
     fi
     if [[ -f "$MSGTEST_BIN" ]]; then
         printf 'rm /usr/local/bin/msgtest\n'
@@ -784,6 +824,178 @@ if not order:
     raise SystemExit(1)
 PY
     printf 'SOURCE_BUILD (tables written to %s)\n' "$SOURCE_BUILD_DIR"
+    exit 0
+fi
+
+if (( DEBOOTSTRAP )); then
+    mkdir -p -- "$DEBOOTSTRAP_DIR"
+    python3 - "$CONSOLE_LOG" "$DEBOOTSTRAP_DIR" <<'PY'
+import json
+import os
+import re
+import sys
+
+console, outdir = sys.argv[1:3]
+text = open(console, "rb").read().decode("utf-8", "replace")
+text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+
+env = {}
+for m in re.finditer(r"DBST env ([A-Za-z0-9_]+)=([^\r\n]*)", text):
+    env[m.group(1)] = m.group(2).strip()
+
+disk = []
+for m in re.finditer(
+        r"DBST disk_free_kb=(\d+) stage=(\S+) phase=(\S+)", text):
+    disk.append({"stage": m.group(2), "phase": m.group(3),
+                 "free_kb": int(m.group(1))})
+
+stage_list = []
+for m in re.finditer(
+        r"DBST stage=(install|foreign|second) rc=(-?\d+) dur=([0-9.]+)"
+        r"(?: preinstalled=(yes|no))?", text):
+    stage_list.append({
+        "stage": m.group(1), "rc": int(m.group(2)),
+        "dur": float(m.group(3)),
+        "preinstalled": m.group(4) or "",
+    })
+errors = [m.group(1).strip() for m in
+          re.finditer(r"DBST err=([^\r\n]*)", text)]
+log_lines = [(m.group(1), m.group(2).strip()) for m in
+             re.finditer(r"DBST log (second|target)=([^\r\n]*)", text)]
+chroot_probe = {}
+m = re.search(
+    r"DBST chroot_probe rc=(-?\d+) dur=([0-9.]+) out=([^\r\n]*)", text)
+if m:
+    chroot_probe = {"rc": int(m.group(1)), "dur": float(m.group(2)),
+                    "out": m.group(3).strip()}
+mount_probe = {}
+for name in ("mount_probe", "umount_probe", "unshare_probe"):
+    m = re.search(r"DBST %s rc=(-?\d+) out=([^\r\n]*)" % name, text)
+    if m:
+        mount_probe[name] = {"rc": int(m.group(1)),
+                             "out": m.group(2).strip()}
+# The kernel warning is the reason a stage can fail while its own tools are
+# fine, so surface it next to the stage results.
+journal_e2big = "ext4 journal transaction is too large" in text
+verify = {}
+m = re.search(
+    r"DBST verify debian_version=(\S*) sh=([^\r\n]*?) ok=([01])", text)
+if m:
+    verify = {"debian_version": m.group(1), "sh": m.group(2).strip(),
+              "ok": int(m.group(3))}
+target_kb = {}
+for m in re.finditer(r"DBST target_kb=(\d+)", text):
+    target_kb["before_cleanup"] = int(m.group(1))
+for m in re.finditer(r"DBST target_kb_after_cleanup=(\d+)", text):
+    target_kb["after_cleanup"] = int(m.group(1))
+summary = {}
+m = re.search(
+    r"DBST summary install_rc=(\S+) foreign_rc=(\S+) second_rc=(\S+)", text)
+if m:
+    summary = {"install": m.group(1), "foreign": m.group(2),
+               "second": m.group(3)}
+
+
+def free_of(stage, phase):
+    for item in disk:
+        if item["stage"] == stage and item["phase"] == phase:
+            return item["free_kb"]
+    return ""
+
+
+def attribute(rec):
+    """L5 categories: chroot, syscall, network/source, disk, timeout, other."""
+    if rec["rc"] == 0:
+        return "ok"
+    if rec["rc"] == 124:
+        return "timeout"
+    if rec["stage"] == "second" and chroot_probe.get("rc", 0) != 0:
+        return "chroot-missing"
+    err = " ".join(errors).lower().replace("_", " ")
+    if "disk low" in err or "no space" in err or "enospc" in err:
+        return "disk"
+    if "timeout" in err:
+        return "timeout"
+    if any(t in err for t in ("function not implemented", "enotsup",
+                              "unimplemented", "operation not supported")):
+        if "chroot" in err or rec["stage"] == "second":
+            return "chroot-missing"
+        return "syscall-missing"
+    if any(t in err for t in ("could not resolve", "failed to fetch",
+                              "temporary failure", "network is unreachable",
+                              "connection refused", "404", "release file",
+                              "no installation candidate")):
+        return "network-source"
+    return "other"
+
+
+for rec in stage_list:
+    rec["category"] = attribute(rec)
+
+with open(os.path.join(outdir, "stages.tsv"), "w") as out:
+    out.write("stage\trc\tcategory\tdur\tfree_before_kb\tfree_after_kb\t"
+              "preinstalled\n")
+    for rec in stage_list:
+        out.write("%s\t%d\t%s\t%.2f\t%s\t%s\t%s\n" % (
+            rec["stage"], rec["rc"], rec["category"], rec["dur"],
+            free_of(rec["stage"], "before"),
+            free_of(rec["stage"], "after"), rec["preinstalled"]))
+with open(os.path.join(outdir, "disk.tsv"), "w") as out:
+    out.write("stage\tphase\tfree_kb\n")
+    for item in disk:
+        out.write("%s\t%s\t%d\n" % (
+            item["stage"], item["phase"], item["free_kb"]))
+with open(os.path.join(outdir, "env.tsv"), "w") as out:
+    out.write("key\tvalue\n")
+    for key in sorted(env):
+        out.write("%s\t%s\n" % (key, env[key]))
+with open(os.path.join(outdir, "debootstrap.json"), "w") as out:
+    json.dump({"env": env, "stages": stage_list, "disk": disk,
+               "errors": errors, "logs": log_lines,
+               "chroot_probe": chroot_probe,
+               "mount_probe": mount_probe,
+               "journal_e2big": journal_e2big, "verify": verify,
+               "target_kb": target_kb, "summary": summary},
+              out, indent=2)
+    out.write("\n")
+
+ok = sum(1 for rec in stage_list if rec["rc"] == 0)
+print("DEBOOTSTRAP stages=%d ok=%d fail=%d"
+      % (len(stage_list), ok, len(stage_list) - ok))
+for key in ("debian", "suite", "variant", "target", "debootstrap",
+            "root_free_kb"):
+    if key in env:
+        print("  env %-14s %s" % (key, env[key]))
+for rec in stage_list:
+    print("  stage=%-8s rc=%-3d %-14s dur=%.2fs free_before=%s after=%s"
+          % (rec["stage"], rec["rc"], rec["category"], rec["dur"],
+             free_of(rec["stage"], "before"),
+             free_of(rec["stage"], "after")))
+if chroot_probe:
+    print("  chroot_probe rc=%d dur=%.2fs out=%s"
+          % (chroot_probe.get("rc", -1), chroot_probe.get("dur", 0),
+             chroot_probe.get("out", "")))
+for name in ("mount_probe", "umount_probe", "unshare_probe"):
+    if name in mount_probe:
+        print("  %-13s rc=%d out=%s"
+              % (name, mount_probe[name]["rc"], mount_probe[name]["out"]))
+for kind, line in log_lines:
+    print("  log %-7s %s" % (kind, line))
+for msg in errors:
+    print("  err=%s" % msg)
+if journal_e2big:
+    print("  kernel: ext4 journal transaction too large (E2BIG) warnings")
+if verify:
+    print("  verify debian_version=%s sh=%s ok=%d"
+          % (verify.get("debian_version", ""), verify.get("sh", ""),
+             verify.get("ok", 0)))
+if target_kb:
+    print("  target_kb %s" % json.dumps(target_kb, sort_keys=True))
+if not stage_list:
+    print("FAIL (no DBST stage line; see %s)" % console)
+    raise SystemExit(1)
+PY
+    printf 'DEBOOTSTRAP (tables written to %s)\n' "$DEBOOTSTRAP_DIR"
     exit 0
 fi
 
