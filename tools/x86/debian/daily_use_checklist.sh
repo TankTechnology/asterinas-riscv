@@ -137,6 +137,9 @@ if command -v fcitx5 >/dev/null 2>&1; then
         sleep 1
     fi
     engine=$(fcitx5-remote -n 2>/dev/null)
+    # Is the X server able to inject input at all? xdotool's real paths need XTEST.
+    echo "DAILY_XEXT $(xdpyinfo 2>/dev/null | grep -i -c xtest) modules=$(ls /usr/lib/xorg/modules/extensions/ 2>/dev/null | tr '\n' ',')" >/dev/console
+    echo "DAILY_XSERVER $(ps -eo comm= 2>/dev/null | grep -E '^(Xorg|Xvfb|X)$' | head -2 | tr '\n' ',')" >/dev/console
     if command -v xwininfo >/dev/null 2>&1; then
         echo "DAILY_XWIN tree=$(timeout 5 xwininfo -root -tree 2>/dev/null | head -6 | tr '\n' '|' | head -c 200)" >/dev/console
     fi

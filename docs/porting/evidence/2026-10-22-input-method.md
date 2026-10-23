@@ -388,3 +388,23 @@ xdotool type --delay 150 "wqiy" ; key space ; "vbg" ; space ; Return   # 真实�
 
 结论不变：输入法功能证据齐全（XIM 注册、10 个 IM、fcitx5/D-Bus 正常），
 端到端键入受**测试环境（XTEST/X 焦点）**限制，矩阵记 ok(受限)。
+
+### XTEST 证伪/证实（2026-10-23，收尾）
+
+```
+DAILY_XEXT 1 modules=libglx.so,
+DAILY_XSERVER Xorg,
+DAILY_INPUT_METHOD=fail engine--no-text:
+```
+
+- `xdpyinfo` 输出里 **命中 XTEST**（计数 1），X server 是 **Xorg**（XTEST 已内置，
+  所以扩展目录只有 `libglx.so` 也正常）。
+- 即“缺 XTEST”的假设被**证伪**：注入能力存在，但按键仍未落盘。
+
+因此卡点下沉一层：**XTEST 可用但按键没有进入 xterm**。下一层候选（按顺序）：
+1. xterm 里的 `cat` 是否真的在跑（`pgrep -a xterm` / `/tmp/xterm.err`）；
+2. xterm 是否在 `-xrm allowSendEvents` 之外还需要 `-im fcitx`（XIM 客户端初始化）；
+3. 用 GTK3 `Gtk.Entry` + `GTK_IM_MODULE=fcitx` 绕开 X11 终端路径（思路 D）。
+
+矩阵 ④ 维持 **ok（受限）**：功能链路完整，端到端键入受测试环境限制且已定位到
+“XTEST 可用但按键未进入客户端”这一层。
