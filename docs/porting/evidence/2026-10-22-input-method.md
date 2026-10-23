@@ -322,3 +322,21 @@ core/信号日志的复现才能定位到具体帧。
 `fcitx5-remote -n` 返回 `pinyin` 后，清单里的 XIM 端到端用例（xterm + xdotool
 打 `nihao` + 空格选词，检查 `/tmp/xim-out` 里出现“你好”）就会给出 ok/fail 的
 确定结论。
+
+### openbox 接管（2026-10-23，最后一轮）
+
+清单改为优先安装并启动 **openbox**。结果：openbox **确实在运行**——`xprop -root`
+出现完整的 EWMH 能力表与 `_OPENBOX_PID`、`_OB_*` 属性：
+
+```
+DAILY_XDIAG xim=XIM_SERVERS(ATOM) = @server=fcitx|_NET_SUPPORTED(ATOM) = ... _OPENBOX_PID ...
+DAILY_XDIAG active=
+DAILY_XDIAG direct_out=
+DAILY_INPUT_METHOD=fail engine--no-text:
+```
+
+但 `xdotool getactivewindow` 仍为空、`/tmp/xim-out` 仍为空——openbox 已接管根窗口，
+却没有任何窗口被激活/聚焦（疑似 xterm 尚未映射或未进入 openbox 的 client list）。
+下一步：在 WM 起来后 `xdotool search --name ximtest` 并主动
+`xdotool windowactivate --sync <id>`（openbox 支持 EWMH，这一步现在应该有效），
+再打字；若 `_NET_CLIENT_LIST` 为空，则要查 xterm 是否在 openbox 之后启动并成功映射。

@@ -109,17 +109,24 @@ if command -v fcitx5 >/dev/null 2>&1; then
     sleep 5
     # Without a window manager nothing holds keyboard focus and synthetic key
     # events never reach a client, so start a tiny WM first.
-    if ! command -v twm >/dev/null 2>&1 && ! command -v matchbox-window-manager >/dev/null 2>&1; then
-        timeout 180 apt-get install -y --no-install-recommends twm >>/tmp/fcitx-apt.log 2>&1
+    if ! command -v openbox >/dev/null 2>&1; then
+        timeout 180 apt-get install -y --no-install-recommends openbox >>/tmp/fcitx-apt.log 2>&1
     fi
-    if command -v twm >/dev/null 2>&1; then
+    wm_started=no
+    if command -v openbox >/dev/null 2>&1; then
+        openbox >/tmp/wm.log 2>&1 &
+        sleep 3
+        wm_started=openbox
+    elif command -v twm >/dev/null 2>&1; then
         twm >/tmp/wm.log 2>&1 &
         sleep 2
+        wm_started=twm
     elif command -v matchbox-window-manager >/dev/null 2>&1; then
         matchbox-window-manager -use_titlebar no >/tmp/wm.log 2>&1 &
         sleep 2
+        wm_started=matchbox
     fi
-    echo "DAILY_WM twm=$(command -v twm >/dev/null 2>&1 && echo yes || echo no) matchbox=$(command -v matchbox-window-manager >/dev/null 2>&1 && echo yes || echo no) running=$(pgrep -c -f 'twm|matchbox' 2>/dev/null)" >/dev/console
+    echo "DAILY_WM wm=$wm_started running=$(pgrep -c -f 'openbox|twm|matchbox' 2>/dev/null) log=$(head -1 /tmp/wm.log 2>/dev/null | tr ' ' '_' | head -c 40)" >/dev/console
     # xterm ignores synthetic (XSendEvent) keys unless this resource is set.
     xterm -xrm "*allowSendEvents: true" -title ximtest -e sh -c 'cat > /tmp/xim-out' \
         >/dev/null 2>&1 &
