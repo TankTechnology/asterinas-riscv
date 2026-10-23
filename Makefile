@@ -781,6 +781,25 @@ test_x86_debian_popcon_new40:
 		--workspace "$(POPCON_NEW40_WORKSPACE)" \
 		--timeout "$(POPCON_TIMEOUT)"
 
+# L2 systemd health: failed units, startup phases, blame, critical chain, unit
+# verification and this boot's error journal; the host writes target/systemd-health.
+SYSTEMD_HEALTH_WORKSPACE ?= $(CURDIR)/target/systemd-health
+SYSTEMD_HEALTH_TIMEOUT ?= 900
+
+.PHONY: test_x86_debian_systemd_health
+test_x86_debian_systemd_health:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@tools/x86/debian/daily_use_gate.sh \
+		--systemd-health \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--workspace "$(SYSTEMD_HEALTH_WORKSPACE)" \
+		--timeout "$(SYSTEMD_HEALTH_TIMEOUT)"
+
 .PHONY: test_x86_daily_use
 test_x86_daily_use:
 	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }

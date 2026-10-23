@@ -17,6 +17,11 @@
 # (`popcon_packages.sh`): the same QEMU boot, login and serial plumbing, but the
 # guest installs the popcon top-50 with apt and prints one `POPCON pkg=` line
 # per package. The host writes `<workspace>/popcon.tsv` and prints a summary.
+#
+# `--systemd-health` swaps it for the L2 probe (`systemd_health.sh`): the guest
+# reports failed units, startup phases, blame, critical chain, unit verification
+# and this boot's error journal as `SYSD ` lines; the host writes the tables in
+# the workspace and prints a summary.
 
 set -euo pipefail
 
@@ -36,10 +41,13 @@ Options:
   --popcon            Run the L1 package probe instead of the daily checklist.
   --popcon-list PATH  Package list for --popcon
                       (default: tools/x86/debian/popcon_top50.txt).
+  --systemd-health    Run the L2 systemd health probe instead of the
+                      daily checklist.
 
 The guest account is `asterinas` (uid 1000, password `asterinas`, passwordless
-sudo). Results land in `<workspace>/matrix.tsv` (checklist) or
-`<workspace>/popcon.tsv` (--popcon) and on stdout.
+sudo). Results land in `<workspace>/matrix.tsv` (checklist),
+`<workspace>/popcon.tsv` (--popcon) or `<workspace>/systemd-health/`
+(--systemd-health) and on stdout.
 EOF
 }
 
@@ -58,6 +66,7 @@ ACCEL="kvm"
 QEMU="qemu-system-x86_64"
 POPCON=0
 POPCON_LIST=""
+SYSTEMD_HEALTH=0
 
 while (( $# > 0 )); do
     case "$1" in
@@ -77,10 +86,14 @@ while (( $# > 0 )); do
             shift 2
             ;;
         --popcon) POPCON=1; shift ;;
+        --systemd-health) SYSTEMD_HEALTH=1; shift ;;
         -h | --help) usage; exit 0 ;;
         *) die_usage "unknown argument: $1" ;;
     esac
 done
+
+(( POPCON && SYSTEMD_HEALTH )) &&
+    die_usage "--popcon and --systemd-health are mutually exclusive"
 
 # The package probe runs 50 apt transactions; give it a longer default deadline
 # than the checklist, which is bounded by its own sleeps.
@@ -102,6 +115,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 BOOT_SCRIPT="$REPO_ROOT/tools/x86/debian/boot_debian.sh"
 CHECKLIST="$REPO_ROOT/tools/x86/debian/daily_use_checklist.sh"
 POPCON_SCRIPT="$REPO_ROOT/tools/x86/debian/popcon_packages.sh"
+SYSTEMD_HEALTH_SCRIPT="$REPO_ROOT/tools/x86/debian/systemd_health.sh"
 [[ -n "$POPCON_LIST" ]] || POPCON_LIST="$REPO_ROOT/tools/x86/debian/popcon_top50.txt"
 MSGTEST_SRC="$REPO_ROOT/tools/x86/debian/msgtest.c"
 IOTEST_SRC="$REPO_ROOT/tools/x86/debian/iotest.c"
@@ -109,6 +123,10 @@ if (( POPCON )); then
     for path in "$POPCON_SCRIPT" "$POPCON_LIST"; do
         [[ -f "$path" ]] || die_usage "popcon input does not exist: $path"
     done
+fi
+if (( SYSTEMD_HEALTH )); then
+    [[ -f "$SYSTEMD_HEALTH_SCRIPT" ]] ||
+        die_usage "systemd probe does not exist: $SYSTEMD_HEALTH_SCRIPT"
 fi
 for tool in debugfs e2fsck mke2fs python3 timeout "$QEMU"; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -131,6 +149,7 @@ MATRIX="$WORKSPACE/matrix.tsv"
 POPCON_TSV="$WORKSPACE/popcon.tsv"
 POPCON_JSON="$WORKSPACE/popcon-result.json"
 POPCON_GUEST_LIST="/usr/local/share/$(basename -- "$POPCON_LIST")"
+SYSTEMD_HEALTH_DIR="$WORKSPACE/systemd-health"
 
 # The X server configuration the checklist starts with (same options as the
 # Xorg gate: no udev, no automatic input devices).
@@ -293,6 +312,10 @@ if (( POPCON )); then
     GUEST_COMMAND="sudo sh -c '/usr/local/bin/popcon-packages --list $POPCON_GUEST_LIST > /dev/console 2>&1'; echo POPCON_SHELL_END"
     DONE_MARKER="POPCON_DONE count="
     MODE="popcon"
+elif (( SYSTEMD_HEALTH )); then
+    GUEST_COMMAND="sudo sh -c '/usr/local/bin/systemd-health > /dev/console 2>&1'; echo SYSD_SHELL_END"
+    DONE_MARKER="SYSD_DONE"
+    MODE="systemd-health"
 else
     GUEST_COMMAND="sudo sh -c '/usr/local/bin/daily-use-checklist > /dev/console 2>&1'; echo DAILY_SHELL_END"
     DONE_MARKER="DAILY_DONE=ok"
@@ -316,6 +339,10 @@ cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
         printf 'sif /usr/local/bin/popcon-packages mode 0100755\n'
         printf 'write %s %s\n' "$POPCON_LIST" "$POPCON_GUEST_LIST"
         printf 'sif %s mode 0100644\n' "$POPCON_GUEST_LIST"
+    fi
+    if (( SYSTEMD_HEALTH )); then
+        printf 'write %s /usr/local/bin/systemd-health\n' "$SYSTEMD_HEALTH_SCRIPT"
+        printf 'sif /usr/local/bin/systemd-health mode 0100755\n'
     fi
     if [[ -f "$MSGTEST_BIN" ]]; then
         printf 'write %s /usr/local/bin/msgtest\n' "$MSGTEST_BIN"
@@ -360,6 +387,171 @@ fi
 if [[ $CLIENT_STATUS -ne 0 ]]; then
     printf 'FAIL (the client did not finish; see %s)\n' "$CONSOLE_LOG"
     exit 1
+fi
+
+if (( SYSTEMD_HEALTH )); then
+    mkdir -p -- "$SYSTEMD_HEALTH_DIR"
+    python3 - "$CONSOLE_LOG" "$SYSTEMD_HEALTH_DIR" <<'PY'
+import json
+import os
+import re
+import sys
+from collections import Counter
+
+console, outdir = sys.argv[1:3]
+text = open(console, "rb").read().decode("utf-8", "replace")
+# Strip colour (SGR) sequences only. The serial stream also contains
+# truncated ESC[ sequences followed by our own output ("ESC[SYSD ...");
+# a generic CSI regex would eat the leading S of SYSD and drop the line.
+text = re.sub(r"\x1b\[[0-9;?]*m", "", text)
+
+
+def num(name, default=-1):
+    m = re.search(r"SYSD %s=(\d+)" % name, text)
+    return int(m.group(1)) if m else default
+
+
+def one(name):
+    m = re.search(r"SYSD %s=([^\r\n]*)" % name, text)
+    return m.group(1).strip() if m else ""
+
+
+systemd = re.search(r"SYSD systemd=(yes|no)", text)
+systemd = systemd.group(1) if systemd else "unknown"
+
+phases = {}
+m = re.search(r"SYSD analyze\b([^\r\n]*)", text)
+if m:
+    for name, value in re.findall(r"(\w+)=([0-9.]+)", m.group(1)):
+        phases[name] = float(value)
+for key in ("firmware", "loader", "kernel", "initrd", "userspace", "total"):
+    phases.setdefault(key, 0.0)
+
+failed = {}
+for m in re.finditer(
+        r"SYSD failed unit=(\S+) load=(\S+) active=(\S+) sub=(\S+) desc=(.*)",
+        text):
+    unit, load, active, sub, desc = m.groups()
+    failed[unit] = {"unit": unit, "load": load, "active": active,
+                    "sub": sub, "desc": desc.strip(), "result": "",
+                    "evidence": "", "category": ""}
+for m in re.finditer(r"SYSD failed_result unit=(\S+) res=(.*)", text):
+    if m.group(1) in failed:
+        failed[m.group(1)]["result"] = m.group(2).strip()
+for m in re.finditer(r"SYSD failed_evid unit=(\S+) ev=(.*)", text):
+    if m.group(1) in failed:
+        failed[m.group(1)]["evidence"] = m.group(2).strip()
+
+
+def attribute(rec):
+    """Coarse cause; the doc keeps the reviewed wording."""
+    # The guest sanitizes spaces to underscores in the console token.
+    s = (rec["result"] + " " + rec["evidence"]).lower().replace("_", " ")
+    if "timeout" in s or "timed out" in s:
+        return "unit-timeout"
+    if any(t in s for t in ("enotsup", "function not implemented", "unimplemented",
+                            "operation not supported", "eafnosupport",
+                            "protocol not supported", "einval")):
+        return "syscall-missing"
+    if any(t in s for t in ("permission denied", "eacces", "read-only",
+                            "operation not permitted")):
+        return "config-permission"
+    if any(t in s for t in ("dependency", "not found", "no such file",
+                            "failed to load", "not loaded")):
+        return "dependency"
+    return "other"
+
+
+for rec in failed.values():
+    rec["category"] = attribute(rec)
+
+blame = []
+for idx, m in enumerate(
+        re.finditer(r"SYSD blame unit=(\S+) sec=([0-9.]+)", text), 1):
+    blame.append((idx, m.group(1), float(m.group(2))))
+
+critical = [(int(r), line.strip()) for r, line in
+            re.findall(r"SYSD critical rank=(\d+) line=(.*)", text)]
+
+verify_msgs = {}
+for m in re.finditer(r"SYSD verify_msg unit=(\S+) msg=(.*)", text):
+    verify_msgs[m.group(1)] = m.group(2).strip()
+verify = []
+for unit, rc in re.findall(r"SYSD verify unit=(\S+) rc=(\S+)", text):
+    verify.append({"unit": unit, "rc": rc,
+                   "message": verify_msgs.get(unit, "")})
+
+jerr = [msg.strip() for msg in re.findall(r"SYSD jerr msg=(.*)", text)]
+aggregated = Counter(re.sub(r"\d+", "#", msg) for msg in jerr if msg)
+
+startup_total = phases["total"]
+running = num("running_services")
+units_total = num("units_total")
+unit_files = num("unit_files")
+jerr_count = num("jerr_count")
+state = one("is_system_running")
+uptime = one("uptime")
+analyze_raw = one("analyze_raw")
+
+with open(os.path.join(outdir, "startup.tsv"), "w") as out:
+    out.write("phase\tseconds\n")
+    for key in ("firmware", "loader", "kernel", "initrd", "userspace", "total"):
+        out.write("%s\t%.3f\n" % (key, phases[key]))
+with open(os.path.join(outdir, "failed.tsv"), "w") as out:
+    out.write("unit\tload\tactive\tsub\tresult\tevidence\tcategory\tdesc\n")
+    for rec in failed.values():
+        out.write("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" % (
+            rec["unit"], rec["load"], rec["active"], rec["sub"],
+            rec["result"], rec["evidence"], rec["category"], rec["desc"]))
+with open(os.path.join(outdir, "blame.tsv"), "w") as out:
+    out.write("rank\tunit\tseconds\n")
+    for rank, unit, sec in blame:
+        out.write("%d\t%s\t%.3f\n" % (rank, unit, sec))
+with open(os.path.join(outdir, "critical.tsv"), "w") as out:
+    out.write("rank\tline\n")
+    for rank, line in critical:
+        out.write("%d\t%s\n" % (rank, line))
+with open(os.path.join(outdir, "verify.tsv"), "w") as out:
+    out.write("unit\trc\tmessage\n")
+    for rec in verify:
+        out.write("%s\t%s\t%s\n" % (rec["unit"], rec["rc"], rec["message"]))
+with open(os.path.join(outdir, "journal-errors.tsv"), "w") as out:
+    out.write("occurrences\tmessage\n")
+    for msg, count in aggregated.most_common(10):
+        out.write("%d\t%s\n" % (count, msg))
+with open(os.path.join(outdir, "health.json"), "w") as out:
+    json.dump({
+        "systemd": systemd, "state": state, "uptime": uptime,
+        "analyze_raw": analyze_raw,
+        "startup": phases,
+        "running_services": running,
+        "units_total": units_total,
+        "unit_files": unit_files,
+        "failed_count": len(failed),
+        "journal_errors": jerr_count,
+        "failed": list(failed.values()),
+        "blame": [{"rank": r, "unit": u, "seconds": s} for r, u, s in blame],
+        "critical_chain": [{"rank": r, "line": l} for r, l in critical],
+        "verify": verify,
+        "journal_top": [{"occurrences": c, "message": m}
+                        for m, c in aggregated.most_common(10)],
+    }, out, indent=2)
+    out.write("\n")
+
+if systemd != "yes":
+    print("SYSTEMD systemd=%s (not systemd; nothing measured)" % systemd)
+    raise SystemExit(1)
+print("SYSTEMD systemd=yes state=%s failed=%d running=%d units=%d files=%d "
+      "jerr=%d startup_total=%.3fs"
+      % (state, len(failed), running, units_total, unit_files, jerr_count,
+         startup_total))
+for rec in failed.values():
+    print("  %-40s %-16s %s | %s"
+          % (rec["unit"], rec["category"], rec["result"][:40],
+             rec["evidence"][:60]))
+PY
+    printf 'SYSTEMD (tables written to %s)\n' "$SYSTEMD_HEALTH_DIR"
+    exit 0
 fi
 
 if (( POPCON )); then
