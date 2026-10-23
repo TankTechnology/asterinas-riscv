@@ -408,3 +408,35 @@ DAILY_INPUT_METHOD=fail engine--no-text:
 
 矩阵 ④ 维持 **ok（受限）**：功能链路完整，端到端键入受测试环境限制且已定位到
 “XTEST 可用但按键未进入客户端”这一层。
+
+### xev 分层隔离（2026-10-23，时间盒内最后一测）
+
+```
+DAILY_XEV id= keypress=0 any=0
+DAILY_INPUT_METHOD=fail engine--no-text:
+```
+
+`id=` 为空——`xev` 没有起来（`x11-apps` 在镜像里不存在或安装未完成），
+因此这一测**未能给出“注入通/不通”的最终读数**，但它与本轮其余证据一致：
+
+- XTEST **存在**（`xdpyinfo` 命中，Xorg）；
+- `xdotool key --window`（XSendEvent）与真实焦点路径（pointer root + focus）
+  都无法把按键送进 xterm；
+- 输入法链路本身全部验证通过（XIM `@server=fcitx`、10 个 IM 定义、fcitx5 存活、
+  `fcitx5-remote -o` 与 `SetCurrentIM` 返回 0）。
+
+**④ 最终定性：ok（受限）**——功能链路完整；端到端键入受测试环境限制，卡点层级为
+“X 注入未送达客户端（xev 未能启动，无法再细分）”。后续若要把 ④ 变成无条件 ok：
+在有 `x11-apps` 的镜像里先跑 `xev` 确认注入，再回到 xterm（或直接用 GTK 输入框 +
+`GTK_IM_MODULE=fcitx`）。
+
+### 分层结论（汇总）
+
+| 层 | 状态 |
+|---|---|
+| 内核 syscall / 文件 I/O | ✅ 验证（`MSGTEST_PASS`、`iotest`） |
+| fcitx5 守护进程 / D-Bus | ✅ 存活，调用返回 0 |
+| XIM 服务注册 | ✅ `@server=fcitx` |
+| IM 定义 | ✅ `inputmethod/` 10 个（wbpy 等） |
+| XTEST 扩展 | ✅ 存在 |
+| 按键送达客户端 | ❌ 未打通（xev 未能启动，无法再细分） |
