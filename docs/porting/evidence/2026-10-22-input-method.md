@@ -340,3 +340,27 @@ DAILY_INPUT_METHOD=fail engine--no-text:
 下一步：在 WM 起来后 `xdotool search --name ximtest` 并主动
 `xdotool windowactivate --sync <id>`（openbox 支持 EWMH，这一步现在应该有效），
 再打字；若 `_NET_CLIENT_LIST` 为空，则要查 xterm 是否在 openbox 之后启动并成功映射。
+
+### 激活链诊断（2026-10-23，四种办法的返回码）
+
+```
+DAILY_WM   wm=openbox running=1 log=Openbox-Message:_Unable_to_find_a_valid_
+DAILY_XWIN tree=... (root window, 18 children)
+DAILY_XWIN search=6291468,          # xterm 窗口存在
+DAILY_XWIN activate_rc=0            # windowactivate --sync 返回成功
+DAILY_XWIN netactive=_NET_ACTIVE_WINDOW:  not found.
+DAILY_INPUT_METHOD=fail engine--no-text:
+```
+
+结论：
+
+1. **窗口存在**（`xdotool search --class xterm` 返回 `6291468`），不是“xterm 没起来”；
+2. openbox 在运行（`running=1`），但日志提示
+   `Openbox-Message: Unable to find a valid …`（配置/主题/菜单缺失），且
+   `_NET_ACTIVE_WINDOW` 未设置——**它没有把任何窗口纳入管理**；
+3. `windowactivate --sync` 返回 0 但根属性未变，说明请求被忽略（窗口不在 client list）；
+4. 因此合成按键仍无法投递（`/tmp/xim-out` 为空）。
+
+下一步（两条，均无需再猜）：给 openbox 一个最小配置/主题（
+`~/.config/openbox/rc.xml` 与 menu.xml，或 `openbox --config-file /dev/null`），
+让 `_NET_CLIENT_LIST` 非空；或用 GTK3 输入框（`GTK_IM_MODULE=fcitx`）绕开 X11 焦点。

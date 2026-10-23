@@ -137,6 +137,16 @@ if command -v fcitx5 >/dev/null 2>&1; then
         sleep 1
     fi
     engine=$(fcitx5-remote -n 2>/dev/null)
+    if command -v xwininfo >/dev/null 2>&1; then
+        echo "DAILY_XWIN tree=$(timeout 5 xwininfo -root -tree 2>/dev/null | head -6 | tr '\n' '|' | head -c 200)" >/dev/console
+    fi
+    echo "DAILY_XWIN search=$(timeout 5 xdotool search --class xterm 2>/dev/null | tr '\n' ',')" >/dev/console
+    if [ -n "$window" ]; then
+        timeout 5 xdotool windowactivate --sync "$window" 2>/dev/null
+        echo "DAILY_XWIN activate_rc=$?" >/dev/console
+        sleep 1
+    fi
+    echo "DAILY_XWIN netactive=$(timeout 5 xprop -root _NET_ACTIVE_WINDOW 2>/dev/null)" >/dev/console
     active=$(timeout 5 xdotool getactivewindow getwindowname 2>/dev/null | head -1)
     echo "DAILY_FCITX alive=$(pgrep -c fcitx5 2>/dev/null) engine='$engine' window='$window' active='$active'" >/dev/console
     if [ -z "$engine" ]; then
