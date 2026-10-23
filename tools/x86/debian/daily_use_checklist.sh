@@ -312,6 +312,37 @@ else
     mark USB missing "no-/sys/bus/usb"
 fi
 
+# --- Domain 6c: performance baseline (Q4) ---------------------------------
+for run in 1 2 3; do
+    t0=$(cut -d' ' -f1 /proc/uptime)
+    xclock >/dev/null 2>&1 &
+    win=""
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        win=$(timeout 1 xdotool search --class xclock 2>/dev/null | head -1)
+        [ -n "$win" ] && break
+        sleep 1
+    done
+    t1=$(cut -d' ' -f1 /proc/uptime)
+    pkill -x xclock 2>/dev/null
+    secs=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')
+    echo "DAILY_PERF xclock_start run=$run seconds=$secs window=$win" >/dev/console
+done
+if dd if=/dev/zero of=/tmp/perf.bin bs=1M count=64 2>/tmp/dd-w.log; then
+    echo "DAILY_PERF dd_write $(grep -oE '[0-9.]+ [kM]?B/s' /tmp/dd-w.log | tail -1)" >/dev/console
+fi
+if dd if=/tmp/perf.bin of=/dev/null bs=1M 2>/tmp/dd-r.log; then
+    echo "DAILY_PERF dd_read $(grep -oE '[0-9.]+ [kM]?B/s' /tmp/dd-r.log | tail -1)" >/dev/console
+fi
+rm -f /tmp/perf.bin
+t0=$(cut -d' ' -f1 /proc/uptime)
+if timeout 120 apt-get install -y --reinstall hello >/tmp/perf-apt.log 2>&1; then
+    t1=$(cut -d' ' -f1 /proc/uptime)
+    secs=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')
+    echo "DAILY_PERF apt_reinstall_hello seconds=$secs" >/dev/console
+else
+    echo "DAILY_PERF apt_reinstall_hello failed $(tail -1 /tmp/perf-apt.log | tr ' ' '_' | head -c 40)" >/dev/console
+fi
+
 # --- Domain 6b: stability (Q3) --------------------------------------------
 # 30 minutes of load with a status line every 5 minutes, then 3 suspend cycles.
 (
