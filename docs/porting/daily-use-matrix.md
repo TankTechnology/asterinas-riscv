@@ -15,13 +15,14 @@ make test_x86_daily_use \
 `DAILY_SUSPEND_WAIT` 时发 `system_wakeup` → 汇总成 `matrix.tsv` 并打印。
 `fail`/`missing` 不会让门禁失败；只有"清单没跑完"才算失败，因此表格是现状快照。
 
-## 结果（2026-10-22，x86_64 + KVM，kernel `73b3a662e` + 音频提交）
+## 结果（2026-10-22，x86_64 + KVM，kernel `73b3a662e` + 音频提交；2026-10-23 追加 L1 包生态）
 
 | 域 | 结果 | 详情 |
 |---|---|---|
 | 桌面（Xorg + DRI3 + 应用） | **ok** | Xorg + DRI3，xterm 正常启动（`/dev/ptmx` 已由 devtmpfs 提供） |
 | 应用 | ok | xterm 起得来、伪终端可用（见 `2026-10-22-pty-ptmx.md`） |
 | apt 装小包 | ok | `apt-get install -y xclip xterm alsa-utils` 成功 |
+| Debian 包生态（L1：popcon top-50） | **ok** | 安装 **50/50**；直接可执行 smoke **31/50**（28 `ok` + 3 `cli`），其余 19 个为库/数据包；0 安装失败；guest 包循环 339.3 s、整轮 353 s；见 `debian-package-compat.md` |
 | 剪贴板 | ok | `xclip` 写读往返一致 |
 | 桌面应用（x11-apps 类：xclock/xcalc/xeyes） | **ok** | 7 包闭包注入镜像后三个 GUI 程序均起窗（`window=8388618/8388628`）；pcmanfm/eog 等 GTK 应用需 118 包闭包，不在本镜像范围 |
 | 输入法 | **ok（受限）** | XIM 服务已注册、`inputmethod/` 10 个 IM（wbpy 等）、fcitx5 存活且 D-Bus 调用成功；端到端键入受测试环境限制（无可用 WM：matchbox 未接管焦点、twm 启动即退出，`allowSendEvents` 直投也无按键落盘）；见 `2026-10-22-input-method.md` |

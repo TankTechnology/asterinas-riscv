@@ -12,6 +12,11 @@
 # This gate measures the current state. A `fail` or `missing` domain does not
 # fail the run; the gate fails only when the checklist itself did not complete,
 # so the matrix it prints is a faithful snapshot.
+#
+# `--popcon` swaps the checklist for the L1 package-ecosystem probe
+# (`popcon_packages.sh`): the same QEMU boot, login and serial plumbing, but the
+# guest installs the popcon top-50 with apt and prints one `POPCON pkg=` line
+# per package. The host writes `<workspace>/popcon.tsv` and prints a summary.
 
 set -euo pipefail
 
@@ -25,12 +30,16 @@ Options:
   --initramfs PATH    Stage1 cpio initramfs (required).
   --base-root PATH    Debian ext4 image to copy for the run (required).
   --workspace DIR     Image, checklist, transcripts and the matrix.
-  --timeout SECONDS   Deadline for login, checklist and power-off (default: 900).
+  --timeout SECONDS   Deadline for login, checklist and power-off.
   --accel MODE        'kvm' or 'tcg' (default: kvm).
   --qemu PATH         QEMU binary or wrapper (default: qemu-system-x86_64).
+  --popcon            Run the L1 package probe instead of the daily checklist.
+  --popcon-list PATH  Package list for --popcon
+                      (default: tools/x86/debian/popcon_top50.txt).
 
 The guest account is `asterinas` (uid 1000, password `asterinas`, passwordless
-sudo). Results land in `<workspace>/matrix.tsv` and on stdout.
+sudo). Results land in `<workspace>/matrix.tsv` (checklist) or
+`<workspace>/popcon.tsv` (--popcon) and on stdout.
 EOF
 }
 
@@ -44,14 +53,16 @@ KERNEL=""
 INITRAMFS=""
 BASE_ROOT=""
 WORKSPACE=""
-TIMEOUT=900
+TIMEOUT=""
 ACCEL="kvm"
 QEMU="qemu-system-x86_64"
+POPCON=0
+POPCON_LIST=""
 
 while (( $# > 0 )); do
     case "$1" in
         --kernel | --initramfs | --base-root | --workspace | --timeout | \
-            --accel | --qemu)
+            --accel | --qemu | --popcon-list)
             [[ $# -ge 2 && -n "$2" ]] || die_usage "missing value for $1"
             case "$1" in
                 --kernel) KERNEL="$2" ;;
@@ -61,13 +72,22 @@ while (( $# > 0 )); do
                 --timeout) TIMEOUT="$2" ;;
                 --accel) ACCEL="$2" ;;
                 --qemu) QEMU="$2" ;;
+                --popcon-list) POPCON_LIST="$2" ;;
             esac
             shift 2
             ;;
+        --popcon) POPCON=1; shift ;;
         -h | --help) usage; exit 0 ;;
         *) die_usage "unknown argument: $1" ;;
     esac
 done
+
+# The package probe runs 50 apt transactions; give it a longer default deadline
+# than the checklist, which is bounded by its own sleeps.
+if [[ -z "$TIMEOUT" ]]; then
+    if (( POPCON )); then TIMEOUT=3600; else TIMEOUT=900; fi
+fi
+[[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die_usage "--timeout must be a positive integer"
 
 [[ -n "$KERNEL" && -n "$INITRAMFS" && -n "$BASE_ROOT" && -n "$WORKSPACE" ]] ||
     die_usage "--kernel, --initramfs, --base-root and --workspace are required"
@@ -81,8 +101,15 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 BOOT_SCRIPT="$REPO_ROOT/tools/x86/debian/boot_debian.sh"
 CHECKLIST="$REPO_ROOT/tools/x86/debian/daily_use_checklist.sh"
+POPCON_SCRIPT="$REPO_ROOT/tools/x86/debian/popcon_packages.sh"
+[[ -n "$POPCON_LIST" ]] || POPCON_LIST="$REPO_ROOT/tools/x86/debian/popcon_top50.txt"
 MSGTEST_SRC="$REPO_ROOT/tools/x86/debian/msgtest.c"
 IOTEST_SRC="$REPO_ROOT/tools/x86/debian/iotest.c"
+if (( POPCON )); then
+    for path in "$POPCON_SCRIPT" "$POPCON_LIST"; do
+        [[ -f "$path" ]] || die_usage "popcon input does not exist: $path"
+    done
+fi
 for tool in debugfs e2fsck mke2fs python3 timeout "$QEMU"; do
     command -v "$tool" >/dev/null 2>&1 || {
         printf 'error: required tool not found: %s\n' "$tool" >&2
@@ -101,6 +128,8 @@ SERIAL_SOCK="$WORKSPACE/serial.sock"
 MONITOR_SOCK="$WORKSPACE/monitor.sock"
 PIDFILE="$WORKSPACE/qemu.pid"
 MATRIX="$WORKSPACE/matrix.tsv"
+POPCON_TSV="$WORKSPACE/popcon.tsv"
+POPCON_JSON="$WORKSPACE/popcon-result.json"
 
 # The X server configuration the checklist starts with (same options as the
 # Xorg gate: no udev, no automatic input devices).
@@ -169,16 +198,11 @@ import socket
 import sys
 import time
 
-console_path, serial_path, monitor_path, pid_path, shot_path, timeout = sys.argv[1:7]
+(console_path, serial_path, monitor_path, pid_path, shot_path, timeout,
+ command, done_marker, mode) = sys.argv[1:10]
 timeout = float(timeout)
 deadline = time.time() + timeout
-
-# The redirection runs inside `sudo sh -c`: /dev/console is not writable by
-# the login user.
-COMMAND = (
-    "sudo sh -c '/usr/local/bin/daily-use-checklist > /dev/console 2>&1'; "
-    "echo DAILY_SHELL_END"
-)
+done_marker = done_marker.encode()
 
 monitor = None
 
@@ -223,12 +247,12 @@ with open(console_path, 'wb') as out:
             sent_pass = True
         if sent_pass and not sent_command and b'asterinas@' in buffer:
             time.sleep(0.2)
-            serial.sendall((COMMAND + '\n').encode())
+            serial.sendall((command + '\n').encode())
             sent_command = True
 
         if sent_command and monitor is None:
             monitor = connect(monitor_path, 5)
-        if monitor is not None:
+        if monitor is not None and mode == 'checklist':
             if not answered_usb and b'DAILY_USB_WAIT' in buffer:
                 monitor.sendall(b'device_add usb-storage,drive=usbstick\n')
                 answered_usb = True
@@ -242,8 +266,8 @@ with open(console_path, 'wb') as out:
                 shot = True
 
         # The shell echoes the typed command, so the completion marker must be
-        # the checklist's own last line.
-        if sent_command and b'DAILY_DONE=ok' in buffer and not done:
+        # the checklist's (or probe's) own last line.
+        if sent_command and done_marker in buffer and not done:
             if monitor is not None:
                 monitor.sendall(b'system_powerdown\n')
             done = True
@@ -259,12 +283,23 @@ with open(console_path, 'wb') as out:
 print('DAILY_CLIENT user=%s pass=%s command=%s usb=%s suspend=%s done=%s'
       % (sent_user, sent_pass, sent_command, answered_usb, answered_suspend,
          done), flush=True)
-ok = sent_command and done and b'DAILY_DONE=ok' in buffer
+ok = sent_command and done and done_marker in buffer
 sys.exit(0 if ok else 1)
 PY
 
+# What the guest runs after login, and the line that ends the session.
+if (( POPCON )); then
+    GUEST_COMMAND="sudo sh -c '/usr/local/bin/popcon-packages > /dev/console 2>&1'; echo POPCON_SHELL_END"
+    DONE_MARKER="POPCON_DONE count="
+    MODE="popcon"
+else
+    GUEST_COMMAND="sudo sh -c '/usr/local/bin/daily-use-checklist > /dev/console 2>&1'; echo DAILY_SHELL_END"
+    DONE_MARKER="DAILY_DONE=ok"
+    MODE="checklist"
+fi
+
 rm -f -- "$IMAGE" "$SERIAL_SOCK" "$MONITOR_SOCK" "$PIDFILE" "$CONSOLE_LOG" \
-    "$SCREENSHOT" "$MATRIX"
+    "$SCREENSHOT" "$MATRIX" "$POPCON_TSV" "$POPCON_JSON"
 cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
 {
     # Retire units an earlier gate left enabled in the base image.
@@ -275,6 +310,12 @@ cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
     printf 'write %s /usr/local/bin/daily-use-checklist\n' "$CHECKLIST"
     printf 'sif /usr/local/bin/daily-use-checklist mode 0100755\n'
     printf 'write %s /etc/X11/xorg-noudev.conf\n' "$XORG_CONF"
+    if (( POPCON )); then
+        printf 'write %s /usr/local/bin/popcon-packages\n' "$POPCON_SCRIPT"
+        printf 'sif /usr/local/bin/popcon-packages mode 0100755\n'
+        printf 'write %s /usr/local/share/popcon_top50.txt\n' "$POPCON_LIST"
+        printf 'sif /usr/local/share/popcon_top50.txt mode 0100644\n'
+    fi
     if [[ -f "$MSGTEST_BIN" ]]; then
         printf 'write %s /usr/local/bin/msgtest\n' "$MSGTEST_BIN"
         printf 'sif /usr/local/bin/msgtest mode 0100755\n'
@@ -290,7 +331,8 @@ if ! e2fsck -fn "$IMAGE" >"$WORKSPACE/fsck-prepared.txt" 2>&1; then
 fi
 
 timeout "$((TIMEOUT + 30))" python3 "$CLIENT" "$CONSOLE_LOG" "$SERIAL_SOCK" \
-    "$MONITOR_SOCK" "$PIDFILE" "$SCREENSHOT" "$TIMEOUT" &
+    "$MONITOR_SOCK" "$PIDFILE" "$SCREENSHOT" "$TIMEOUT" \
+    "$GUEST_COMMAND" "$DONE_MARKER" "$MODE" &
 CLIENT_PID=$!
 
 set +e
@@ -310,13 +352,95 @@ kill "$BOOT_PID" 2>/dev/null
 wait "$BOOT_PID" 2>/dev/null
 set -e
 
-if ! grep -aq "DAILY_DONE=ok" "$CONSOLE_LOG"; then
-    printf 'FAIL (the checklist did not complete; see %s)\n' "$CONSOLE_LOG"
+if ! grep -aq -- "$DONE_MARKER" "$CONSOLE_LOG"; then
+    printf 'FAIL (the guest workload did not complete; see %s)\n' "$CONSOLE_LOG"
     exit 1
 fi
 if [[ $CLIENT_STATUS -ne 0 ]]; then
     printf 'FAIL (the client did not finish; see %s)\n' "$CONSOLE_LOG"
     exit 1
+fi
+
+if (( POPCON )); then
+    # Turn the guest's per-package lines into a TSV plus a JSON array. The
+    # attribution column is a first cut; the doc keeps the reviewed reasons.
+    python3 - "$CONSOLE_LOG" "$POPCON_TSV" "$POPCON_JSON" "$POPCON_LIST" <<'PY'
+import json
+import re
+import sys
+
+console, tsv, json_path, listing = sys.argv[1:5]
+text = open(console, "rb").read().decode("utf-8", "replace")
+text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
+
+pattern = re.compile(
+    r"POPCON pkg=([A-Za-z0-9.+-]+) rc=(-?[0-9]+) smoke=(ok|cli|lib|no|na) "
+    r"dur=([0-9.]+) tries=([0-9]+) err=([^\r\n]*)"
+)
+records = {}
+for match in pattern.finditer(text):
+    pkg, rc, smoke, dur, tries, err = match.groups()
+    records[pkg.rstrip("_")] = {
+        "pkg": pkg, "rc": int(rc), "smoke": smoke,
+        "dur": float(dur), "tries": int(tries), "err": err.strip(),
+    }
+
+
+def attribute(rec):
+    """Coarse cause, refined by hand in docs/porting/debian-package-compat.md."""
+    err = rec["err"].lower()
+    if rec["rc"] == 0:
+        return "ok"
+    if rec["rc"] == 124 or "timeout" in err:
+        return "disk-time"          # exceeded the per-install deadline
+    if "no space" in err or "enospc" in err or "disk full" in err:
+        return "disk-time"
+    if "unable to locate" in err or "no installation candidate" in err:
+        return "dependency-chain"    # index has no candidate for this release
+    if "depends" in err or "dependencies" in err:
+        return "dependency-chain"
+    if any(t in err for t in ("function not implemented", "enotsup",
+                              "unimplemented", "operation not supported")):
+        return "syscall"
+    return "other"
+
+
+order = [line.strip() for line in open(listing) if line.strip()
+         and not line.startswith("#")]
+found = [records[p] for p in order if p in records]
+extra = [r for p, r in records.items() if p not in order]
+found.extend(extra)
+
+with open(tsv, "w") as out:
+    out.write("pkg\trc\tsmoke\tdur\ttries\tcategory\terr\n")
+    for rec in found:
+        out.write("%s\t%d\t%s\t%.2f\t%d\t%s\t%s\n" % (
+            rec["pkg"], rec["rc"], rec["smoke"], rec["dur"], rec["tries"],
+            attribute(rec), rec["err"]))
+with open(json_path, "w") as out:
+    json.dump(found, out, indent=2)
+    out.write("\n")
+
+ok = sum(1 for r in found if r["rc"] == 0)
+smoke_ok = sum(1 for r in found if r["smoke"] == "ok")
+smoke_cli = sum(1 for r in found if r["smoke"] == "cli")
+smoke_lib = sum(1 for r in found if r["smoke"] == "lib")
+total = sum(r["dur"] for r in found)
+print("POPCON packages=%d/%d install_ok=%d smoke_ok=%d smoke_cli=%d smoke_lib=%d "
+      "guest_seconds=%.2f"
+      % (len(found), len(order), ok, smoke_ok, smoke_cli, smoke_lib, total))
+for rec in found:
+    if rec["rc"] != 0 or rec["smoke"] == "no":
+        print("  %-18s rc=%-3d smoke=%-3s %-16s %s"
+              % (rec["pkg"], rec["rc"], rec["smoke"],
+                 attribute(rec), rec["err"][:90]))
+if len(found) < len(order):
+    missing = [p for p in order if p not in records]
+    print("FAIL (no POPCON line for: %s)" % ", ".join(missing))
+    raise SystemExit(1)
+PY
+    printf 'POPCON (results written to %s)\n' "$POPCON_TSV"
+    exit 0
 fi
 
 # Build the matrix from the guest's markers.
