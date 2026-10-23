@@ -27,6 +27,7 @@ make test_x86_daily_use \
 | 输入法 | **ok（受限）** | XIM 服务已注册、`inputmethod/` 10 个 IM（wbpy 等）、fcitx5 存活且 D-Bus 调用成功；端到端键入受测试环境限制（无可用 WM：matchbox 未接管焦点、twm 启动即退出，`allowSendEvents` 直投也无按键落盘）；见 `2026-10-22-input-method.md` |
 | 音频 | ok | `/dev/snd/pcmC0D0p` + `aplay -D hw:0,0` 播放成功（见 `2026-10-22-alsa-aplay.md`） |
 | U 盘热插拔 | **ok** | 枚举 → `/sys/bus/usb/devices/1-1` → `/dev/sda` → `mount -t ext2 -o ro` → 读 `hello.txt` → `umount`；initramfs 门禁 10/10 通过；Debian daily 负载下多次出现 `can't read superblock`（1–2/3），重试链完整（控制器端点恢复 + ClearFeature(HALT)/BOT class reset + 重发）；Debian daily 10 连跑：有结果 9/9 ok（3 轮由恢复链救回），另 1 轮为夹具丢 marker；原始成功率 6/9、恢复后 9/9，见 `2026-10-22-usb-storage-blocker.md` |
+| 稳定性（Q3） | **ok** | 30 分钟负载无 panic/OOM；suspend/resume **3/3**（唤醒后 xclock 起窗）；U 盘热插拔 ok（本轮 1 次 + 既有 10 连跑）；见 `2026-10-23-stability.md` |
 | 睡眠唤醒 | **ok** | `/sys/power/state` + suspend-to-idle（2 s 窗口），`systemctl suspend` 返回 0，唤醒后磁盘/IO 可用（见 `2026-10-22-suspend-assessment.md`） |
 
 原始产物：`target/daily-use/matrix.tsv`、`console.txt`（串口全量）、

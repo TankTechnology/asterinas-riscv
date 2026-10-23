@@ -312,6 +312,39 @@ else
     mark USB missing "no-/sys/bus/usb"
 fi
 
+# --- Domain 6b: stability (Q3) --------------------------------------------
+# 30 minutes of load with a status line every 5 minutes, then 3 suspend cycles.
+(
+    for tick in 1 2 3 4 5 6; do
+        apt list --installed >/dev/null 2>&1
+        echo "DAILY_STAB_LOAD tick=$tick uptime=$(cut -d' ' -f1 /proc/uptime) load=$(cut -d' ' -f1 /proc/loadavg)" >/dev/console
+        sleep 300
+    done
+) &
+LOAD_PID=$!
+
+for round in 1 2 3; do
+    before=$(cut -d' ' -f1 /proc/uptime)
+    if timeout 20 systemctl suspend >/tmp/stab-suspend-$round.log 2>&1; then
+        sleep 1
+        after=$(cut -d' ' -f1 /proc/uptime)
+        xclock >/dev/null 2>&1 &
+        sleep 2
+        win=$(timeout 5 xdotool search --class xclock 2>/dev/null | head -1)
+        pkill -x xclock 2>/dev/null
+        if [ -n "$win" ]; then
+            echo "DAILY_STAB_SUSPEND round=$round result=ok before=$before after=$after xclock=$win" >/dev/console
+        else
+            echo "DAILY_STAB_SUSPEND round=$round result=no-xclock before=$before after=$after" >/dev/console
+        fi
+    else
+        echo "DAILY_STAB_SUSPEND round=$round result=fail $(head -1 /tmp/stab-suspend-$round.log 2>/dev/null | tr ' ' '_' | head -c 40)" >/dev/console
+    fi
+    sleep 5
+done
+wait $LOAD_PID 2>/dev/null
+echo "DAILY_STAB_DONE uptime=$(cut -d' ' -f1 /proc/uptime)" >/dev/console
+
 # --- Domain 7: suspend and wake ------------------------------------------
 echo DAILY_SUSPEND_WAIT
 timeout 20 systemctl suspend >/tmp/suspend.log 2>&1
