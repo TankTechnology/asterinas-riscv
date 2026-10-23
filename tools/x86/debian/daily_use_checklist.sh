@@ -327,20 +327,19 @@ for run in 1 2 3; do
     secs=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')
     echo "DAILY_PERF xclock_start run=$run seconds=$secs window=$win" >/dev/console
 done
-if dd if=/dev/zero of=/tmp/perf.bin bs=1M count=64 2>/tmp/dd-w.log; then
-    echo "DAILY_PERF dd_write $(grep -oE '[0-9.]+ [kM]?B/s' /tmp/dd-w.log | tail -1)" >/dev/console
-fi
-if dd if=/tmp/perf.bin of=/dev/null bs=1M 2>/tmp/dd-r.log; then
-    echo "DAILY_PERF dd_read $(grep -oE '[0-9.]+ [kM]?B/s' /tmp/dd-r.log | tail -1)" >/dev/console
-fi
+dd if=/dev/zero of=/tmp/perf.bin bs=1M count=64 2>/tmp/dd-w.log
+echo "DAILY_PERF dd_write_raw $(tail -1 /tmp/dd-w.log | tr -s ' ' | head -c 80)" >/dev/console
+dd if=/tmp/perf.bin of=/dev/null bs=1M iflag=direct 2>/tmp/dd-r.log
+echo "DAILY_PERF dd_read_raw $(tail -1 /tmp/dd-r.log | tr -s ' ' | head -c 80)" >/dev/console
 rm -f /tmp/perf.bin
+echo "DAILY_PERF apt_before [$(pgrep -a apt 2>/dev/null | head -2 | tr '\n' '|' | head -c 60)]" >/dev/console
 t0=$(cut -d' ' -f1 /proc/uptime)
-if timeout 120 apt-get install -y --reinstall hello >/tmp/perf-apt.log 2>&1; then
+if timeout 180 apt-get install -y --reinstall -o Debug::NoLocking=1 hello >/tmp/perf-apt.log 2>&1; then
     t1=$(cut -d' ' -f1 /proc/uptime)
     secs=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.2f", b-a}')
     echo "DAILY_PERF apt_reinstall_hello seconds=$secs" >/dev/console
 else
-    echo "DAILY_PERF apt_reinstall_hello failed $(tail -1 /tmp/perf-apt.log | tr ' ' '_' | head -c 40)" >/dev/console
+    echo "DAILY_PERF apt_reinstall_hello failed raw=$(tail -2 /tmp/perf-apt.log | tr '\n' '|' | tr ' ' '_' | head -c 100)" >/dev/console
 fi
 
 # --- Domain 6b: stability (Q3) --------------------------------------------
