@@ -126,8 +126,9 @@ sampled-PC 只有在"缺的是指令区域归因"时才被准入，且其设计�
 | ③ 睡眠唤醒（/sys/power/state） | ok（suspend-to-idle；非 ACPI S3） | `evidence/2026-10-22-suspend-assessment.md` |
 | ④ 输入法（fcitx5 + 中文） | ok（受限：端到端键入受无 WM 的测试环境限制） | `evidence/2026-10-22-input-method.md` |
 
-汇总与取舍见 [`daily-use-summary.md`](daily-use-summary.md)；能力账本见
-[`daily-use-matrix.md`](daily-use-matrix.md)。
+对外技术报告见 [`daily-use-report.md`](daily-use-report.md)（问题→根因→实现→证据、关键数字、
+已知限制、复现方式）；汇总与取舍见 [`daily-use-summary.md`](daily-use-summary.md)；
+能力账本见 [`daily-use-matrix.md`](daily-use-matrix.md)。
 
 当天相关提交（本地，未 push）：`da5549a3d`（/sys/power/state）、`85f52bfff`
 （MSG_NOSIGNAL/WEXITED）、`a5f14e33d`（sync_file_range）、`e9216a061`（BOT settle）、
