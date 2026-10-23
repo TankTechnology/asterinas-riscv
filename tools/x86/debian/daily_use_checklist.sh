@@ -144,6 +144,8 @@ if command -v fcitx5 >/dev/null 2>&1; then
         echo "DAILY_XAPPS installed=$(command -v xev >/dev/null 2>&1 && echo yes || echo no) err=$(tail -1 /tmp/fcitx-apt.log 2>/dev/null | tr ' ' '_' | head -c 50)" >/dev/console
     fi
     if command -v xev >/dev/null 2>&1; then
+        echo "DAILY_XEV_ERR $(timeout 8 /usr/bin/xev 2>&1 | head -3 | tr '\n' '|' | head -c 200)" >/dev/console
+        echo "DAILY_XEV_LDD $(ldd /usr/bin/xev 2>&1 | grep -ci 'not found') missing=$(ldd /usr/bin/xev 2>&1 | grep -i 'not found' | awk '{print $1}' | tr '\n' ',' | head -c 120)" >/dev/console
         xev -geometry 300x200 >/tmp/xev.log 2>&1 &
         sleep 2
         xev_id=$(timeout 5 xdotool search --class xev 2>/dev/null | head -1)

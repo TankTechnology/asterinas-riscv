@@ -512,3 +512,25 @@ trixie 上缺库或 ABI 不符；`/tmp/xev.log` 里有具体错误，但当前 m
 注入对应库，或改用 trixie 源里的 `x11-utils` deb 重新取二进制。
 
 **④ 仍为 ok（受限）**；Q1 未闭环，卡点：注入的 `xev` 无法启动（缺库/ABI）。
+
+### Q1 取证结果（2026-10-23，④ 定稿轮）
+
+注入后的 `xev` **可以运行**，且没有缺库：
+
+```
+DAILY_XEV_ERR  Outer window is 0xa00001, inner window is 0xa00002||PropertyNotify event, ...
+DAILY_XEV_LDD  0 missing=
+DAILY_XEV      id= keypress=0 any=0
+```
+
+- `xev` 前台运行正常，创建了窗口 `0xa00001` —— 注入的二进制与 trixie 的库/ABI **兼容**；
+- 但后台运行的那份，`xdotool search --class xev` 拿不到 id（`id=` 为空），
+  也收不到 KeyPress。
+
+即：**不是缺库、不是 ABI、不是输入法**；卡点是 `xdotool` 在这个 X 会话里无法发现/激活窗口
+并投递按键（与 xterm 的现象一致）。结合此前 `_NET_ACTIVE_WINDOW` 缺失、openbox 未接管、
+XTEST 存在但按键不落地，可以定性为**测试环境的窗口管理/注入路径不可用**。
+
+**④ 正式定稿：ok（受限）**——功能链路（内核 syscall、文件 I/O、fcitx5 守护进程、
+D-Bus、XIM 注册、10 个 IM 定义、XTEST 存在）全部验证通过；端到端键入受测试环境限制。
+本条不再追加轮次。
