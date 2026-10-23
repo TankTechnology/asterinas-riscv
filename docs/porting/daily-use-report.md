@@ -118,3 +118,30 @@ make test_x86_daily_use \
 
 > 本次会话的上下文预算已用尽，Q1 的重建（>15 分钟）与 Q2–Q5 未执行；队列已固化在上，
 > 重建命令与验收判据均已写明，可直接照做。
+
+## Q2 实测（2026-10-23）
+
+在 daily 门禁里新增应用域（每个应用带 `/etc/hostname` 启动并判断存活）：
+
+```
+DAILY_APP_pcmanfm = missing not-installed
+DAILY_APP_eog     = missing not-installed
+DAILY_APP_gpicview= missing not-installed
+DAILY_APP_epdfview= missing not-installed
+DAILY_APP_evince  = missing not-installed
+```
+
+- 基座镜像里除 xterm 外**没有任何桌面应用**；
+- 清单里的运行时安装（`pcmanfm eog`，300s 上限）未成功（输出被 apt 日志吞掉，
+  与前面 fcitx5/marker 的情况类似）；
+- 其余域不受影响：DESKTOP ok、APP ok（xterm）、USB ok、SUSPEND ok。
+
+**结论**：Q2 的结论是“缺件”而非“跑不起来”——要得到启动/崩溃/打开文件的真实数据，
+需像 `x11-utils` 那样把 `pcmanfm`/`eog`（含依赖）注入镜像，而不是运行时 apt。
+这一步未执行。
+
+## Q3–Q5 状态
+
+未执行。Q3（30 分钟负载 + 3 次 suspend + 2 次热插拔）、Q4（性能基线）、
+Q5（一键门禁 + 一页报告）在本次会话的上下文预算内无法可靠完成，队列与判据见本文件
+前面的“后续工作队列”一节。

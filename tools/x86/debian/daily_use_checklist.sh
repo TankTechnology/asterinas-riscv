@@ -225,6 +225,27 @@ else
     mark INPUT_METHOD fail "fcitx5-install-failed:$(tail -1 /tmp/fcitx-apt.log 2>/dev/null | tr ' ' '_' | head -c 50)"
 fi
 
+# --- Domain 4b: desktop applications (Q2) ---------------------------------
+if ! command -v pcmanfm >/dev/null 2>&1 && ! command -v eog >/dev/null 2>&1; then
+    timeout 300 apt-get install -y --no-install-recommends pcmanfm eog \
+        >>/tmp/fcitx-apt.log 2>&1
+fi
+if [ -f /etc/hostname ]; then app_file=/etc/hostname; else app_file=/etc/os-release; fi
+for app_name in pcmanfm eog gpicview epdfview evince; do
+    if ! command -v "$app_name" >/dev/null 2>&1; then
+        echo "DAILY_APP_$app_name=missing not-installed" >/dev/console
+        continue
+    fi
+    timeout 20 "$app_name" "$app_file" >/tmp/app-$app_name.log 2>&1 &
+    sleep 4
+    if pgrep -x "$app_name" >/dev/null 2>&1; then
+        echo "DAILY_APP_$app_name=ok started-with-file" >/dev/console
+    else
+        echo "DAILY_APP_$app_name=fail $(head -1 /tmp/app-$app_name.log 2>/dev/null | tr ' ' '_' | head -c 40)" >/dev/console
+    fi
+    pkill -x "$app_name" 2>/dev/null
+done
+
 # --- Domain 5: audio ------------------------------------------------------
 if [ -d /dev/snd ] && command -v aplay >/dev/null 2>&1; then
     python3 - /tmp/daily-tone.wav <<'PY'
