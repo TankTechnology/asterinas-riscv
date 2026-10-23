@@ -163,3 +163,28 @@ Q5（一键门禁 + 一页报告）在本次会话的上下文预算内无法可
 30 分钟负载 + 3 次 suspend + 2 次热插拔未执行（上下文预算耗尽）。
 已有可复用的部分：U 盘 10 连跑脚本（`target/usb-10x.log` 的循环）、
 suspend 门禁用例（daily 的 SUSPEND 域）、apt 负载（清单的 APT 域）。
+
+## Q2 路线 A（改为 profile 重建 + 替换）的实测结论（2026-10-23）
+
+按用户的修正路线，本轮先核对了 `desktop-drm` profile：它包含 `libdrm2`、
+`libgl1-mesa-dri`、`libglx-mesa0`、`mesa-utils` 等 DRM/Mesa 组件（**没有**
+xserver-xorg-video-fbdev，刻意只走 `/dev/dri/card0`）。
+
+该 profile 的镜像此前已经用项目命令构建过：
+`target/debian-x86-x11-drm/debian-root.ext2`（1 GiB，签名校验通过）。
+把它作为 `X86_DEBIAN_XORG_BASE_ROOT` 跑 daily 门禁的实测结果是：
+
+```
+DAILY_CLIENT user=False pass=False command=False usb=False suspend=False done=False
+FAIL (the checklist did not complete)
+```
+
+即 **镜像能启动但到不了登录提示**——它没有 `image18.ext2` 里叠加的 x86 登录面定制
+（`asterinas` 用户、console-getty 等）。因此“直接替换”会破坏整个门禁，
+按时间盒**不进行替换与回滚反复**（当前 `image18.ext2` 保持原样，备份仍在
+`image18.ext2.bak-*`）。
+
+**结论**：需要把两类东西组合进同一镜像——`desktop-drm` 的桌面包
+（pcmanfm/mesa/x11-apps）+ `image18` 的 x86 登录面定制。最小做法是找到
+image18 的生成流水线（当前不在仓库内），把 desktop 包列表并入它；退一步也可以
+在 `image18` 上只注入 `pcmanfm` 及其 118 个依赖中的必要子集（已判定不划算）。
