@@ -130,6 +130,7 @@ PIDFILE="$WORKSPACE/qemu.pid"
 MATRIX="$WORKSPACE/matrix.tsv"
 POPCON_TSV="$WORKSPACE/popcon.tsv"
 POPCON_JSON="$WORKSPACE/popcon-result.json"
+POPCON_GUEST_LIST="/usr/local/share/$(basename -- "$POPCON_LIST")"
 
 # The X server configuration the checklist starts with (same options as the
 # Xorg gate: no udev, no automatic input devices).
@@ -289,7 +290,7 @@ PY
 
 # What the guest runs after login, and the line that ends the session.
 if (( POPCON )); then
-    GUEST_COMMAND="sudo sh -c '/usr/local/bin/popcon-packages > /dev/console 2>&1'; echo POPCON_SHELL_END"
+    GUEST_COMMAND="sudo sh -c '/usr/local/bin/popcon-packages --list $POPCON_GUEST_LIST > /dev/console 2>&1'; echo POPCON_SHELL_END"
     DONE_MARKER="POPCON_DONE count="
     MODE="popcon"
 else
@@ -313,8 +314,8 @@ cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
     if (( POPCON )); then
         printf 'write %s /usr/local/bin/popcon-packages\n' "$POPCON_SCRIPT"
         printf 'sif /usr/local/bin/popcon-packages mode 0100755\n'
-        printf 'write %s /usr/local/share/popcon_top50.txt\n' "$POPCON_LIST"
-        printf 'sif /usr/local/share/popcon_top50.txt mode 0100644\n'
+        printf 'write %s %s\n' "$POPCON_LIST" "$POPCON_GUEST_LIST"
+        printf 'sif %s mode 0100644\n' "$POPCON_GUEST_LIST"
     fi
     if [[ -f "$MSGTEST_BIN" ]]; then
         printf 'write %s /usr/local/bin/msgtest\n' "$MSGTEST_BIN"
@@ -375,14 +376,15 @@ text = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", text)
 
 pattern = re.compile(
     r"POPCON pkg=([A-Za-z0-9.+-]+) rc=(-?[0-9]+) smoke=(ok|cli|lib|no|na) "
-    r"dur=([0-9.]+) tries=([0-9]+) err=([^\r\n]*)"
+    r"dur=([0-9.]+) tries=([0-9]+) pre=(absent|installed) err=([^\r\n]*)"
 )
 records = {}
 for match in pattern.finditer(text):
-    pkg, rc, smoke, dur, tries, err = match.groups()
+    pkg, rc, smoke, dur, tries, pre, err = match.groups()
     records[pkg.rstrip("_")] = {
         "pkg": pkg, "rc": int(rc), "smoke": smoke,
-        "dur": float(dur), "tries": int(tries), "err": err.strip(),
+        "dur": float(dur), "tries": int(tries), "pre": pre,
+        "err": err.strip(),
     }
 
 
@@ -390,7 +392,7 @@ def attribute(rec):
     """Coarse cause, refined by hand in docs/porting/debian-package-compat.md."""
     err = rec["err"].lower()
     if rec["rc"] == 0:
-        return "ok"
+        return "command-fail" if rec["smoke"] == "no" else "ok"
     if rec["rc"] == 124 or "timeout" in err:
         return "disk-time"          # exceeded the per-install deadline
     if "no space" in err or "enospc" in err or "disk full" in err:
@@ -412,11 +414,11 @@ extra = [r for p, r in records.items() if p not in order]
 found.extend(extra)
 
 with open(tsv, "w") as out:
-    out.write("pkg\trc\tsmoke\tdur\ttries\tcategory\terr\n")
+    out.write("pkg\trc\tsmoke\tdur\ttries\tpre\tcategory\terr\n")
     for rec in found:
-        out.write("%s\t%d\t%s\t%.2f\t%d\t%s\t%s\n" % (
+        out.write("%s\t%d\t%s\t%.2f\t%d\t%s\t%s\t%s\n" % (
             rec["pkg"], rec["rc"], rec["smoke"], rec["dur"], rec["tries"],
-            attribute(rec), rec["err"]))
+            rec["pre"], attribute(rec), rec["err"]))
 with open(json_path, "w") as out:
     json.dump(found, out, indent=2)
     out.write("\n")
@@ -425,14 +427,16 @@ ok = sum(1 for r in found if r["rc"] == 0)
 smoke_ok = sum(1 for r in found if r["smoke"] == "ok")
 smoke_cli = sum(1 for r in found if r["smoke"] == "cli")
 smoke_lib = sum(1 for r in found if r["smoke"] == "lib")
+preinstalled = sum(1 for r in found if r["pre"] == "installed")
 total = sum(r["dur"] for r in found)
 print("POPCON packages=%d/%d install_ok=%d smoke_ok=%d smoke_cli=%d smoke_lib=%d "
-      "guest_seconds=%.2f"
-      % (len(found), len(order), ok, smoke_ok, smoke_cli, smoke_lib, total))
+      "preinstalled=%d guest_seconds=%.2f"
+      % (len(found), len(order), ok, smoke_ok, smoke_cli, smoke_lib,
+         preinstalled, total))
 for rec in found:
-    if rec["rc"] != 0 or rec["smoke"] == "no":
-        print("  %-18s rc=%-3d smoke=%-3s %-16s %s"
-              % (rec["pkg"], rec["rc"], rec["smoke"],
+    if rec["rc"] != 0 or rec["smoke"] in ("no", "cli") or rec["pre"] != "absent":
+        print("  %-18s rc=%-3d smoke=%-3s pre=%-9s %-16s %s"
+              % (rec["pkg"], rec["rc"], rec["smoke"], rec["pre"],
                  attribute(rec), rec["err"][:90]))
 if len(found) < len(order):
     missing = [p for p in order if p not in records]

@@ -1,0 +1,56 @@
+# L1b: 40 popcon front packages that are NOT installed in the base image
+# (target/final-matrix/xwrap/image18.ext2, Debian trixie, 316 packages).
+#
+# Generated 2026-10-23 from popcon by_inst: of the top-600 packages, 257 were
+# already installed in the base image and were excluded; from the remaining
+# 343, these 40 were picked because each exposes a real command (no
+# libraries/data-only packages). Ranks are the popcon by_inst positions.
+#
+#   cpio 42, iputils-ping 63, less 72, whiptail 75, dmidecode 89,
+#   pciutils 100, nano 128, xz-utils 135, busybox 137, file 141,
+#   lsb-release 149, bzip2 154, groff-base 171, lsof 180, fdisk 200,
+#   traceroute 205, bsdextrautils 239, gnupg 244, eject 245, zstd 251,
+#   bind9-dnsutils 260, util-linux-extra 275, unzip 294, patch 300,
+#   psmisc 310, aspell 369, iptables 376, parted 510, dosfstools 515,
+#   bc 605, rsync 622, ntfs-3g 677, jq 797, net-tools 1087, htop 1161,
+#   zip 1207, socat 1355, lvm2 1402, smartmontools 1499, tree 1946
+cpio
+iputils-ping
+less
+whiptail
+dmidecode
+pciutils
+nano
+xz-utils
+busybox
+file
+lsb-release
+bzip2
+groff-base
+lsof
+fdisk
+traceroute
+bsdextrautils
+gnupg
+eject
+zstd
+bind9-dnsutils
+util-linux-extra
+unzip
+patch
+psmisc
+aspell
+iptables
+parted
+dosfstools
+bc
+rsync
+ntfs-3g
+jq
+net-tools
+htop
+zip
+socat
+lvm2
+smartmontools
+tree

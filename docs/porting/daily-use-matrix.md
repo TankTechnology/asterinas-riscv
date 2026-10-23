@@ -22,7 +22,7 @@ make test_x86_daily_use \
 | 桌面（Xorg + DRI3 + 应用） | **ok** | Xorg + DRI3，xterm 正常启动（`/dev/ptmx` 已由 devtmpfs 提供） |
 | 应用 | ok | xterm 起得来、伪终端可用（见 `2026-10-22-pty-ptmx.md`） |
 | apt 装小包 | ok | `apt-get install -y xclip xterm alsa-utils` 成功 |
-| Debian 包生态（L1：popcon top-50） | **ok** | 安装 **50/50**；直接可执行 smoke **31/50**（28 `ok` + 3 `cli`），其余 19 个为库/数据包；0 安装失败；guest 包循环 339.3 s、整轮 353 s；见 `debian-package-compat.md` |
+| Debian 包生态（L1） | **ok** | popcon top-50 安装 50/50；smoke ok 31/50（cli 3 + lib 19）；0 失败。L1b 新装 40/40（pre=absent 40/40），命令级 smoke 38/40（+1 cli；iptables 因缺 `NETLINK_NETFILTER` 失败）；见 `docs/porting/debian-package-compat.md` |
 | 剪贴板 | ok | `xclip` 写读往返一致 |
 | 桌面应用（x11-apps 类：xclock/xcalc/xeyes） | **ok** | 7 包闭包注入镜像后三个 GUI 程序均起窗（`window=8388618/8388628`）；pcmanfm/eog 等 GTK 应用需 118 包闭包，不在本镜像范围 |
 | 输入法 | **ok（受限）** | XIM 服务已注册、`inputmethod/` 10 个 IM（wbpy 等）、fcitx5 存活且 D-Bus 调用成功；端到端键入受测试环境限制（无可用 WM：matchbox 未接管焦点、twm 启动即退出，`allowSendEvents` 直投也无按键落盘）；见 `2026-10-22-input-method.md` |

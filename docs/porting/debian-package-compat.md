@@ -5,9 +5,10 @@
 - 清单：`tools/x86/debian/popcon_top50.txt`（popcon 前列，排除
   `libreoffice*`/`firefox*`/`thunderbird*`/`texlive*`/`chromium*`）；
 - 探测脚本：`tools/x86/debian/popcon_packages.sh`（guest 内逐包
-  `apt-get install --no-install-recommends`，记录 rc/耗时/尝试次数/smoke，
-  串口打 `POPCON pkg=… rc=… smoke=… dur=… tries=… err=…`，JSON 落到
-  `/tmp/popcon-result.json`）；
+  `apt-get install --no-install-recommends`，记录 rc/耗时/尝试次数/smoke/
+  安装前状态，串口打
+  `POPCON pkg=… rc=… smoke=… dur=… tries=… pre=… err=…`，JSON 落到
+  `/tmp/popcon-result.json`）；`--list PATH` 可参数化清单（L1b 用）；
 - 注入：`daily_use_gate.sh --popcon` 在复制出的镜像里写入
   `/usr/local/bin/popcon-packages` 与 `/usr/local/share/popcon_top50.txt`，
   然后用与日常门禁相同的 QEMU 启动链、串口登录和 host 侧解析；
@@ -112,8 +113,88 @@ make test_x86_debian_popcon \
 包清单改用 fd 3，所有 apt/smoke 子进程 `stdin` 接 `/dev/null`。这不是内核
 缺陷，但会让结果静默少包，已在脚本里固化。
 
+## L1b：新装包（40）
+
+### 为什么需要 L1b
+
+L1 的 top-50 里 **40 个在基础镜像中已经安装**，只有 10 个需要真正下载安装，
+所以 50/50 主要证明的是“apt 重装/已装路径”。L1b 专门测“基础镜像里没有、
+必须下载并首次配置”的包。
+
+### 清单怎么来的
+
+- 数据源：Debian popcon `by_inst`；基础镜像的已装清单取自
+  `/var/lib/dpkg/status`（即 `dpkg -l` 的数据源）；
+- 在 popcon **top-600** 中，基础镜像已装 **257 个 → 排除**；
+- 剩余 343 个未装包中，挑出 **40 个带真实命令**的包（跳过纯库/数据包），
+  排名范围 42–1946；
+- 清单：`tools/x86/debian/popcon_new40.txt`；guest 内安装前用
+  `dpkg-query -W -f='${Status}'` 逐包预检，串口行带 `pre=absent|installed`。
+
+### 运行方式（一条命令）
+
+```sh
+make test_x86_debian_popcon_new40 \
+  X86_DEBIAN_KERNEL=$PWD/target/prime/kernels/x86.elf \
+  X86_DEBIAN_STAGE1_INITRAMFS=$PWD/target/debian-x86/stage1/initramfs.cpio \
+  X86_DEBIAN_XORG_BASE_ROOT=$PWD/target/final-matrix/xwrap/image18.ext2
+```
+
+产物：`target/debian-popcon-new40/popcon.tsv`、`popcon-result.json`、
+`console.txt`。
+
+### 结果
+
+| 指标 | 数值 |
+|---|---|
+| 包总数 | 40 |
+| 安装前 **pre=absent** | **40 / 40**（0 个已装） |
+| 安装成功 | **40 / 40**（100%，全部 `tries=1`） |
+| 命令级 smoke `ok` | **38 / 40**（95%） |
+| 命令已执行但无该参数（`cli`） | 1 / 40 |
+| 命令执行失败（`no`） | **1 / 40**（iptables） |
+| 命令可用率（`ok` + `cli`） | **39 / 40**（97.5%） |
+| guest 包循环总耗时 | **364.03 s** |
+| 整轮门禁墙钟 | **376 s** |
+
+命令级 smoke 不是 `--version` 摆设：每个包跑自己的真实命令（`jq -e`、
+`printf '1+1' | bc | grep -qx 2`、`zip -v`、`tree --version`、`dig -v`、
+`lvm version`、`mkfs.fat --version` 等），见脚本里的 `smoke_probe_cmd()`。
+
+最慢的 5 个包：`lvm2` 44.34 s、`gnupg` 22.47 s、`aspell` 20.08 s、
+`bind9-dnsutils` 17.07 s、`iptables` 17.01 s。
+
+### 失败归因表
+
+| 包 | 现象 | 归因分类 | 说明 |
+|---|---|---|---|
+| iptables | 安装 rc=0；`iptables --version` 失败：`Failed to initialize nft: Address family not supported by protocol` | **syscall / 内核能力缺失** | 内核只实现 `NETLINK_ROUTE`、`NETLINK_SOCK_DIAG`、`NETLINK_KOBJECT_UEVENT` 三个标准 netlink 族；`NETLINK_NETFILTER` 落在 `EAFNOSUPPORT` 分支（`kernel/core/src/syscall/socket.rs:82-86`）。iptables 1.8 默认 nft 后端，启动即开 netfilter netlink socket，因此命令不可用。 |
+| dosfstools | 安装 rc=0；`mkfs.fat --version` 退出非 0：`unrecognized option '--version'` | 其他（CLI 接口差异，非失败） | 二进制正常执行并解析 argv，只是没有 `--version`；与 L1 的 cron/debconf/debianutils 同类。 |
+
+其余 38 个包的命令级 smoke 全部 `ok`。
+
+### 与 L1 的对比
+
+| 维度 | L1（top-50） | L1b（新装 40） |
+|---|---|---|
+| 基础镜像已装 | **40 / 50** | **0 / 40** |
+| 真实新装 | 10 | **40** |
+| 安装成功 | 50 / 50 | 40 / 40 |
+| 命令级失败 | 0（只做 `--version` 探测） | **1**（iptables） |
+| guest 包循环 | 339.29 s | 364.03 s |
+| 整轮墙钟 | 353 s | 376 s |
+
+**结论**：L1 的 50/50 确实主要覆盖“重装路径”；L1b 把真实新装提高到
+40 个包，并首次用命令级 smoke 暴露了 **netfilter netlink 缺失**这个
+L1 测不到的内核 gap。两轮共同说明 Debian 包管理/下载/解包/配置链路完整，
+短板在具体内核子系统（netfilter），不在 apt/dpkg。
+
 ## 结论
 
-popcon top-50 在 Asterinas x86_64 上 **100% 可安装**，直接可执行程序
-**100% 可运行**（31 个有同名可执行程序的包全部通过或仅有 CLI 接口差异）。
-本轮没有暴露 syscall、返回码、依赖链或磁盘/时间类阻塞。
+- **安装链路**：L1 50/50、L1b 40/40，100% 成功，无 syscall/返回码/
+  依赖链/磁盘类阻塞；
+- **命令可用性**：L1 31/50 有同名可执行程序且全部可运行；L1b 39/40
+  可执行（38 严格 ok + 1 CLI 参数差异），唯一真实失败是 `iptables`
+  依赖的 `NETLINK_NETFILTER` 未实现；
+- **下一步**：若要让 iptables/nftables 可用，需要在内核补 netfilter
+  netlink 族与 nf_tables 子系统（不在本轮“只加测试与文档”的范围内）。

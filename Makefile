@@ -746,6 +746,8 @@ DAILY_USE_WORKSPACE ?= $(CURDIR)/target/daily-use
 # 50 apt transactions do not fit the 900 s checklist deadline.
 POPCON_WORKSPACE ?= $(CURDIR)/target/debian-popcon
 POPCON_TIMEOUT ?= 3600
+POPCON_NEW40_WORKSPACE ?= $(CURDIR)/target/debian-popcon-new40
+POPCON_NEW40_LIST ?= $(CURDIR)/tools/x86/debian/popcon_new40.txt
 
 .PHONY: test_x86_debian_popcon
 test_x86_debian_popcon:
@@ -759,6 +761,24 @@ test_x86_debian_popcon:
 		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
 		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
 		--workspace "$(POPCON_WORKSPACE)" \
+		--timeout "$(POPCON_TIMEOUT)"
+
+# L1b: the same probe over 40 packages that are genuinely absent from the base
+# image (popcon front ranks, real commands only). The guest pre-checks each
+# name with dpkg-query before installing, so a preinstalled entry is visible.
+.PHONY: test_x86_debian_popcon_new40
+test_x86_debian_popcon_new40:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@tools/x86/debian/daily_use_gate.sh \
+		--popcon \
+		--popcon-list "$(POPCON_NEW40_LIST)" \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--workspace "$(POPCON_NEW40_WORKSPACE)" \
 		--timeout "$(POPCON_TIMEOUT)"
 
 .PHONY: test_x86_daily_use
