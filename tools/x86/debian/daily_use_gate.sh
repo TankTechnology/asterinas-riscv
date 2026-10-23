@@ -22,6 +22,10 @@
 # reports failed units, startup phases, blame, critical chain, unit verification
 # and this boot's error journal as `SYSD ` lines; the host writes the tables in
 # the workspace and prints a summary.
+#
+# `--ltp` swaps it for the L3 probe (`ltp_subset.sh`). LTP_PHASE=check reports
+# feasibility as `LTPCHK ` lines; LTP_PHASE=run builds a bounded syscall subset
+# in the guest and reports one `LTP case=` line per test.
 
 set -euo pipefail
 
@@ -43,6 +47,9 @@ Options:
                       (default: tools/x86/debian/popcon_top50.txt).
   --systemd-health    Run the L2 systemd health probe instead of the
                       daily checklist.
+  --ltp               Run the L3 LTP probe instead of the daily checklist.
+                      LTP_PHASE=check (default) reports feasibility;
+                      LTP_PHASE=run builds and runs the bounded subset.
 
 The guest account is `asterinas` (uid 1000, password `asterinas`, passwordless
 sudo). Results land in `<workspace>/matrix.tsv` (checklist),
@@ -67,6 +74,8 @@ QEMU="qemu-system-x86_64"
 POPCON=0
 POPCON_LIST=""
 SYSTEMD_HEALTH=0
+LTP=0
+LTP_PHASE="${LTP_PHASE:-check}"
 
 while (( $# > 0 )); do
     case "$1" in
@@ -87,18 +96,29 @@ while (( $# > 0 )); do
             ;;
         --popcon) POPCON=1; shift ;;
         --systemd-health) SYSTEMD_HEALTH=1; shift ;;
+        --ltp) LTP=1; shift ;;
         -h | --help) usage; exit 0 ;;
         *) die_usage "unknown argument: $1" ;;
     esac
 done
 
-(( POPCON && SYSTEMD_HEALTH )) &&
-    die_usage "--popcon and --systemd-health are mutually exclusive"
+(( POPCON + SYSTEMD_HEALTH + LTP > 1 )) &&
+    die_usage "--popcon, --systemd-health and --ltp are mutually exclusive"
+if (( LTP )); then
+    [[ "$LTP_PHASE" == "check" || "$LTP_PHASE" == "run" ]] ||
+        die_usage "LTP_PHASE must be 'check' or 'run'"
+fi
 
-# The package probe runs 50 apt transactions; give it a longer default deadline
-# than the checklist, which is bounded by its own sleeps.
+# The package probe runs 50 apt transactions and the LTP run compiles a subset;
+# give both a longer default deadline than the checklist.
 if [[ -z "$TIMEOUT" ]]; then
-    if (( POPCON )); then TIMEOUT=3600; else TIMEOUT=900; fi
+    if (( POPCON )); then
+        TIMEOUT=3600
+    elif (( LTP )) && [[ "$LTP_PHASE" == "run" ]]; then
+        TIMEOUT=1800
+    else
+        TIMEOUT=900
+    fi
 fi
 [[ "$TIMEOUT" =~ ^[1-9][0-9]*$ ]] || die_usage "--timeout must be a positive integer"
 
@@ -116,6 +136,7 @@ BOOT_SCRIPT="$REPO_ROOT/tools/x86/debian/boot_debian.sh"
 CHECKLIST="$REPO_ROOT/tools/x86/debian/daily_use_checklist.sh"
 POPCON_SCRIPT="$REPO_ROOT/tools/x86/debian/popcon_packages.sh"
 SYSTEMD_HEALTH_SCRIPT="$REPO_ROOT/tools/x86/debian/systemd_health.sh"
+LTP_SCRIPT="$REPO_ROOT/tools/x86/debian/ltp_subset.sh"
 [[ -n "$POPCON_LIST" ]] || POPCON_LIST="$REPO_ROOT/tools/x86/debian/popcon_top50.txt"
 MSGTEST_SRC="$REPO_ROOT/tools/x86/debian/msgtest.c"
 IOTEST_SRC="$REPO_ROOT/tools/x86/debian/iotest.c"
@@ -127,6 +148,9 @@ fi
 if (( SYSTEMD_HEALTH )); then
     [[ -f "$SYSTEMD_HEALTH_SCRIPT" ]] ||
         die_usage "systemd probe does not exist: $SYSTEMD_HEALTH_SCRIPT"
+fi
+if (( LTP )); then
+    [[ -f "$LTP_SCRIPT" ]] || die_usage "LTP probe does not exist: $LTP_SCRIPT"
 fi
 for tool in debugfs e2fsck mke2fs python3 timeout "$QEMU"; do
     command -v "$tool" >/dev/null 2>&1 || {
@@ -150,6 +174,9 @@ POPCON_TSV="$WORKSPACE/popcon.tsv"
 POPCON_JSON="$WORKSPACE/popcon-result.json"
 POPCON_GUEST_LIST="/usr/local/share/$(basename -- "$POPCON_LIST")"
 SYSTEMD_HEALTH_DIR="$WORKSPACE/systemd-health"
+LTP_DIR="$WORKSPACE/ltp"
+LTP_TSV="$LTP_DIR/ltp.tsv"
+LTP_JSON="$LTP_DIR/ltp.json"
 
 # The X server configuration the checklist starts with (same options as the
 # Xorg gate: no udev, no automatic input devices).
@@ -316,6 +343,10 @@ elif (( SYSTEMD_HEALTH )); then
     GUEST_COMMAND="sudo sh -c '/usr/local/bin/systemd-health > /dev/console 2>&1'; echo SYSD_SHELL_END"
     DONE_MARKER="SYSD_DONE"
     MODE="systemd-health"
+elif (( LTP )); then
+    GUEST_COMMAND="sudo sh -c 'LTP_PHASE=$LTP_PHASE /usr/local/bin/ltp-subset > /dev/console 2>&1'; echo LTP_SHELL_END"
+    DONE_MARKER="LTP_DONE"
+    MODE="ltp"
 else
     GUEST_COMMAND="sudo sh -c '/usr/local/bin/daily-use-checklist > /dev/console 2>&1'; echo DAILY_SHELL_END"
     DONE_MARKER="DAILY_DONE=ok"
@@ -323,7 +354,7 @@ else
 fi
 
 rm -f -- "$IMAGE" "$SERIAL_SOCK" "$MONITOR_SOCK" "$PIDFILE" "$CONSOLE_LOG" \
-    "$SCREENSHOT" "$MATRIX" "$POPCON_TSV" "$POPCON_JSON"
+    "$SCREENSHOT" "$MATRIX" "$POPCON_TSV" "$POPCON_JSON" "$LTP_TSV" "$LTP_JSON"
 cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
 {
     # Retire units an earlier gate left enabled in the base image.
@@ -343,6 +374,10 @@ cp --sparse=always -- "$BASE_ROOT" "$IMAGE"
     if (( SYSTEMD_HEALTH )); then
         printf 'write %s /usr/local/bin/systemd-health\n' "$SYSTEMD_HEALTH_SCRIPT"
         printf 'sif /usr/local/bin/systemd-health mode 0100755\n'
+    fi
+    if (( LTP )); then
+        printf 'write %s /usr/local/bin/ltp-subset\n' "$LTP_SCRIPT"
+        printf 'sif /usr/local/bin/ltp-subset mode 0100755\n'
     fi
     if [[ -f "$MSGTEST_BIN" ]]; then
         printf 'write %s /usr/local/bin/msgtest\n' "$MSGTEST_BIN"
@@ -387,6 +422,112 @@ fi
 if [[ $CLIENT_STATUS -ne 0 ]]; then
     printf 'FAIL (the client did not finish; see %s)\n' "$CONSOLE_LOG"
     exit 1
+fi
+
+if (( LTP )); then
+    mkdir -p -- "$LTP_DIR"
+    python3 - "$CONSOLE_LOG" "$LTP_DIR" "$LTP_PHASE" <<'PY'
+import json
+import os
+import re
+import sys
+
+console, outdir, phase = sys.argv[1:4]
+text = open(console, "rb").read().decode("utf-8", "replace")
+text = re.sub(r"\x1b\[[0-9;?]*m", "", text)
+
+if phase == "check":
+    lines = [m.group(1).strip() for m in re.finditer(r"LTPCHK ([^\r\n]*)", text)]
+    with open(os.path.join(outdir, "ltp-check.txt"), "w") as out:
+        out.write("\n".join(lines) + "\n")
+    for line in lines:
+        print("LTPCHK %s" % line)
+    print("LTP check done (%d lines, written to %s)" % (len(lines), outdir))
+    raise SystemExit(0)
+
+setup = [m.group(0).strip() for m in
+         re.finditer(r"LTP setup [^\r\n]*", text)]
+builds = [(m.group(1), int(m.group(2))) for m in
+          re.finditer(r"LTP build dir=(\S+) rc=(-?\d+)", text)]
+stopped = [m.group(1) for m in
+           re.finditer(r"LTP stopped reason=([^\r\n]*)", text)]
+diag = [m.group(1).strip() for m in
+        re.finditer(r"LTP diag ([^\r\n]*)", text)]
+cases = {}
+for m in re.finditer(
+        r"LTP case=(\S+) suite=(\S+) rc=(-?\d+) status=(pass|fail|skip) "
+        r"dur=([0-9.]+) reason=([^\r\n]*)", text):
+    name, suite, rc, status, dur, reason = m.groups()
+    cases[name] = {"case": name, "suite": suite, "rc": int(rc),
+                   "status": status, "dur": float(dur),
+                   "reason": reason.strip()}
+
+
+def attribute(rec):
+    """Coarse cause; the doc keeps the reviewed wording."""
+    if rec["status"] == "pass":
+        return "ok"
+    reason = rec["reason"].lower().replace("_", " ")
+    if rec["status"] == "skip":
+        if "binary missing" in reason or "tconf" in reason:
+            return "test-limitation"
+        return "skip"
+    if "sigsegv" in reason:
+        return "test-crash"
+    if any(t in reason for t in ("succeeded", "mismatched", "expected")):
+        return "semantics-mismatch"
+    if any(t in reason for t in ("enotsup", "function not implemented",
+                                 "unimplemented", "operation not supported",
+                                 "eafnosupport", "protocol not supported",
+                                 "enosys")):
+        return "syscall-missing"
+    if any(t in reason for t in ("permission denied", "eacces", "eperm",
+                                 "operation not permitted")):
+        return "permission-env"
+    if any(t in reason for t in ("einval", "eopnotsupp", "invalid argument",
+                                 "not supported")):
+        return "semantics-mismatch"
+    return "other"
+
+
+for rec in cases.values():
+    rec["category"] = attribute(rec)
+
+with open(os.path.join(outdir, "ltp.tsv"), "w") as out:
+    out.write("case\tsuite\trc\tstatus\tdur\treason\tcategory\n")
+    for rec in cases.values():
+        out.write("%s\t%s\t%d\t%s\t%.2f\t%s\t%s\n" % (
+            rec["case"], rec["suite"], rec["rc"], rec["status"],
+            rec["dur"], rec["reason"], rec["category"]))
+with open(os.path.join(outdir, "ltp.json"), "w") as out:
+    json.dump({"phase": "run", "setup": setup,
+               "builds": [{"dir": d, "rc": r} for d, r in builds],
+               "stopped": stopped, "diagnostics": diag,
+               "cases": list(cases.values())},
+              out, indent=2)
+    out.write("\n")
+
+passed = sum(1 for r in cases.values() if r["status"] == "pass")
+failed = sum(1 for r in cases.values() if r["status"] == "fail")
+skipped = sum(1 for r in cases.values() if r["status"] == "skip")
+print("LTP cases=%d pass=%d fail=%d skip=%d"
+      % (len(cases), passed, failed, skipped))
+for msg in setup:
+    print("  " + msg)
+for rec in cases.values():
+    if rec["status"] != "pass":
+        print("  %-12s %-6s %-14s %s"
+              % (rec["case"], rec["status"], rec["category"],
+                 rec["reason"][:80]))
+if "setup-failed" in text:
+    print("FAIL (LTP setup failed; see %s)" % console)
+    raise SystemExit(1)
+if not cases:
+    print("FAIL (no LTP case completed; see %s)" % console)
+    raise SystemExit(1)
+PY
+    printf 'LTP (tables written to %s)\n' "$LTP_DIR"
+    exit 0
 fi
 
 if (( SYSTEMD_HEALTH )); then

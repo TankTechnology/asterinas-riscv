@@ -24,6 +24,7 @@ make test_x86_daily_use \
 | apt 装小包 | ok | `apt-get install -y xclip xterm alsa-utils` 成功 |
 | Debian 包生态（L1） | **ok** | popcon top-50 安装 50/50；smoke ok 31/50（cli 3 + lib 19）；0 失败。L1b 新装 40/40（pre=absent 40/40），命令级 smoke 38/40（+1 cli；iptables 因缺 `NETLINK_NETFILTER` 失败）；见 `docs/porting/debian-package-compat.md` |
 | systemd 健康（L2） | **ok** | systemd 257.13，`is-system-running=running`，失败 unit **0/156**；运行中 service 9；启动 **3.416 s**（kernel 0.303 + userspace 3.112）；3 个关键 unit verify rc=0；boot error 3 条（DRM uevent EIO、`/proc/kmsg` 缺失）；见 `docs/porting/debian-systemd-health.md` |
+| syscall 一致性（L3） | **ok（基线 34/40）** | LTP 20260930 子集 40 case：**34 pass / 6 fail / 0 skip**（85%）；6 个失败已逐条归因（fd 上限未强制 ×3、O_NOATIME 权限检查 ×1、`/proc/maps` 展示 ×1、测试 fd 复用 ×1）；整轮 179 s；见 `docs/porting/debian-ltp-baseline.md` |
 | 剪贴板 | ok | `xclip` 写读往返一致 |
 | 桌面应用（x11-apps 类：xclock/xcalc/xeyes） | **ok** | 7 包闭包注入镜像后三个 GUI 程序均起窗（`window=8388618/8388628`）；pcmanfm/eog 等 GTK 应用需 118 包闭包，不在本镜像范围 |
 | 输入法 | **ok（受限）** | XIM 服务已注册、`inputmethod/` 10 个 IM（wbpy 等）、fcitx5 存活且 D-Bus 调用成功；端到端键入受测试环境限制（无可用 WM：matchbox 未接管焦点、twm 启动即退出，`allowSendEvents` 直投也无按键落盘）；见 `2026-10-22-input-method.md` |

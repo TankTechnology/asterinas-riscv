@@ -800,6 +800,27 @@ test_x86_debian_systemd_health:
 		--workspace "$(SYSTEMD_HEALTH_WORKSPACE)" \
 		--timeout "$(SYSTEMD_HEALTH_TIMEOUT)"
 
+# L3 syscall consistency (bounded LTP subset). LTP_PHASE=check reports
+# feasibility; LTP_PHASE=run downloads/builds the subset in the guest and runs
+# 40 cases (hard cap 25 minutes inside the probe).
+LTP_WORKSPACE ?= $(CURDIR)/target/ltp
+LTP_TIMEOUT ?= 1800
+LTP_PHASE ?= check
+
+.PHONY: test_x86_debian_ltp
+test_x86_debian_ltp:
+	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_STAGE1_INITRAMFS)" || { echo "X86_DEBIAN_STAGE1_INITRAMFS is required" >&2; exit 2; }
+	@test -n "$(X86_DEBIAN_XORG_BASE_ROOT)" || { echo "X86_DEBIAN_XORG_BASE_ROOT is required" >&2; exit 2; }
+	@LTP_PHASE="$(LTP_PHASE)" tools/x86/debian/daily_use_gate.sh \
+		--ltp \
+		--kernel "$(X86_DEBIAN_KERNEL)" \
+		--initramfs "$(X86_DEBIAN_STAGE1_INITRAMFS)" \
+		--base-root "$(X86_DEBIAN_XORG_BASE_ROOT)" \
+		--accel "$(X86_DEBIAN_XORG_ACCEL)" \
+		--workspace "$(LTP_WORKSPACE)" \
+		--timeout "$(LTP_TIMEOUT)"
+
 .PHONY: test_x86_daily_use
 test_x86_daily_use:
 	@test -n "$(X86_DEBIAN_KERNEL)" || { echo "X86_DEBIAN_KERNEL is required" >&2; exit 2; }
