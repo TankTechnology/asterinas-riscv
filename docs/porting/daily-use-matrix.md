@@ -23,7 +23,7 @@ make test_x86_daily_use \
 | 应用 | ok | xterm 起得来、伪终端可用（见 `2026-10-22-pty-ptmx.md`） |
 | apt 装小包 | ok | `apt-get install -y xclip xterm alsa-utils` 成功 |
 | 剪贴板 | ok | `xclip` 写读往返一致 |
-| 桌面应用（pcmanfm/eog/gpicview/epdfview/evince） | missing | 基座镜像未安装；依赖闭包 **118 个包**，按时间盒停止注入，应在镜像构建阶段加包（Q2，见 `daily-use-report.md`） |
+| 桌面应用（x11-apps 类：xclock/xcalc/xeyes） | **ok** | 7 包闭包注入镜像后三个 GUI 程序均起窗（`window=8388618/8388628`）；pcmanfm/eog 等 GTK 应用需 118 包闭包，不在本镜像范围 |
 | 输入法 | **ok（受限）** | XIM 服务已注册、`inputmethod/` 10 个 IM（wbpy 等）、fcitx5 存活且 D-Bus 调用成功；端到端键入受测试环境限制（无可用 WM：matchbox 未接管焦点、twm 启动即退出，`allowSendEvents` 直投也无按键落盘）；见 `2026-10-22-input-method.md` |
 | 音频 | ok | `/dev/snd/pcmC0D0p` + `aplay -D hw:0,0` 播放成功（见 `2026-10-22-alsa-aplay.md`） |
 | U 盘热插拔 | **ok** | 枚举 → `/sys/bus/usb/devices/1-1` → `/dev/sda` → `mount -t ext2 -o ro` → 读 `hello.txt` → `umount`；initramfs 门禁 10/10 通过；Debian daily 负载下多次出现 `can't read superblock`（1–2/3），重试链完整（控制器端点恢复 + ClearFeature(HALT)/BOT class reset + 重发）；Debian daily 10 连跑：有结果 9/9 ok（3 轮由恢复链救回），另 1 轮为夹具丢 marker；原始成功率 6/9、恢复后 9/9，见 `2026-10-22-usb-storage-blocker.md` |

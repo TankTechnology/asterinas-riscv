@@ -225,6 +225,23 @@ else
     mark INPUT_METHOD fail "fcitx5-install-failed:$(tail -1 /tmp/fcitx-apt.log 2>/dev/null | tr ' ' '_' | head -c 50)"
 fi
 
+# --- Domain 4c: x11-apps GUI programs (Q2) ---------------------------------
+for app_name in xclock xcalc xeyes; do
+    if ! command -v "$app_name" >/dev/null 2>&1; then
+        echo "DAILY_XAPP_$app_name=missing not-installed" >/dev/console
+        continue
+    fi
+    "$app_name" >/tmp/xapp-$app_name.log 2>&1 &
+    sleep 3
+    win=$(timeout 5 xdotool search --class "$app_name" 2>/dev/null | head -1)
+    if [ -n "$win" ]; then
+        echo "DAILY_XAPP_$app_name=ok window=$win" >/dev/console
+    else
+        echo "DAILY_XAPP_$app_name=fail no-window:$(head -1 /tmp/xapp-$app_name.log 2>/dev/null | tr ' ' '_' | head -c 40)" >/dev/console
+    fi
+    pkill -x "$app_name" 2>/dev/null
+done
+
 # --- Domain 4b: desktop applications (Q2) ---------------------------------
 if ! command -v pcmanfm >/dev/null 2>&1 && ! command -v eog >/dev/null 2>&1; then
     timeout 300 apt-get install -y --no-install-recommends pcmanfm eog \

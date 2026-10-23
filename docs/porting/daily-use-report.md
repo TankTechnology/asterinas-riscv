@@ -155,9 +155,21 @@ Q5（一键门禁 + 一页报告）在本次会话的上下文预算内无法可
    pcmanfm eog`）：**118 个包**。
 3. 按用户设定的时间盒（>30 个 deb 即止损）：**停止运行时注入尝试**。
 
-**结论**：桌面应用应**在镜像构建阶段加入包列表**（找到/补齐 image18 的构建流水线），
-而不是往成品镜像里塞 118 个 deb。矩阵“桌面应用”保持 `missing`，附注依赖闭包 118、
-需构建阶段解决。
+**后续（用户执行）**：从清华 trixie 源解析出 `x11-apps` 的**7 包闭包**并以
+loop 挂载 + `cp -a` 写入 `image18.ext2`（备份 `image18.ext2.bak-1429`）。
+同时修正一个认知：**`xev` 属于 `x11-utils`**（镜像本来就有），`x11-apps` 提供的是
+`xclock`/`xcalc`/`xeyes`/`xmessage` 这类真正的 GUI 程序。
+
+**实测（门禁）**：
+
+```
+DAILY_XAPP_xclock=ok window=8388618
+DAILY_XAPP_xcalc =ok window=8388628
+DAILY_XAPP_xeyes =ok window=8388618
+```
+
+三个 x11-apps GUI 程序都能启动并创建窗口——矩阵“桌面应用”记为 **ok**。
+pcmanfm/eog 等 GTK 应用需要 118 包闭包，不在本镜像范围，留作构建阶段加包。
 
 ### Q3 稳定性
 30 分钟负载 + 3 次 suspend + 2 次热插拔未执行（上下文预算耗尽）。
