@@ -90,3 +90,31 @@ make test_x86_daily_use \
 
 环境要求：宿主有 `qemu-system-x86_64`（KVM 可选）、`debugfs`/`e2fsck`/`mke2fs`、
 `python3`；镜像与 stage1 如上述路径。产物：`target/daily-use/{matrix.tsv,console.txt,screen.ppm}`。
+
+## 后续工作队列（2026-10-23 交接）
+
+由用户排定的持续完善队列，逐项完成后各自 commit：
+
+### Q1 重建基础镜像（让 x11-apps 进入 guest）
+- 入口：`tools/debian/rootfs/build_rootfs.sh --architecture amd64 --profile <profile> --output-dir target/debian-x86_64/...`；
+  `profiles.py` 已含 `x11-apps`（第 270/299 行），`image18.ext2` 早于它。
+- 验收：`DAILY_XEV keypress > 0`；若 >0 再用 `xterm -e cat` / GTK Entry 验证中文上屏，
+  中文出现则矩阵 ④ 改为无条件 ok；否则记录“重建后仍失败”的精确卡点。
+
+### Q2 真实应用验证
+- pcmanfm / eog（或 gpicview）/ epdfview（或 evince）：能否启动、是否崩溃、能否打开一个
+  文件（U 盘或 rootfs 内小文件）；尽量附 `import`/`xwd` 截图，至少给串口证据。
+
+### Q3 稳定性
+- 连续 30 分钟负载（反复 apt list + 打开应用），期间 3 次 suspend/resume、2 次 U 盘热插拔，
+  逐次记录结果；任一失败写清现象。
+
+### Q4 性能基线
+- xterm 启动耗时、apt 装小包耗时、文件读带宽（dd/fio 小测）、suspend→resume 耗时；
+  与 `docs/performance/` 已有基线对比，无则作为新基线。
+
+### Q5 一键门禁 + 一页报告
+- `make test_x86_daily_use` 覆盖 Q1–Q4 的全部检查并输出一页汇总。
+
+> 本次会话的上下文预算已用尽，Q1 的重建（>15 分钟）与 Q2–Q5 未执行；队列已固化在上，
+> 重建命令与验收判据均已写明，可直接照做。
