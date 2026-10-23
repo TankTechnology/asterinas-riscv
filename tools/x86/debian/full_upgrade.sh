@@ -8,7 +8,8 @@
 #
 #   source : rewrite trixie -> forky in the apt source lists
 #   update : apt-get update (with AllowReleaseInfoChange for the suite change)
-#   upgrade: apt-get -y full-upgrade, bounded by 40 minutes
+#   upgrade: apt-get -y full-upgrade, bounded by UPG_UPGRADE_TIMEOUT
+#            (default 90 minutes; 40 minutes stopped at 227/341 packages)
 #
 # The host gate adds stage=copy (before boot) and stage=reboot (a second boot
 # of the same image with a login and systemd check).
@@ -31,7 +32,7 @@ MIN_FREE_KB=${UPG_MIN_FREE_KB:-819200}
 OLD_SUITE=${UPG_OLD_SUITE:-trixie}
 NEW_SUITE=${UPG_NEW_SUITE:-forky}
 UPDATE_TIMEOUT=${UPG_UPDATE_TIMEOUT:-600}
-UPGRADE_TIMEOUT=${UPG_UPGRADE_TIMEOUT:-2400}
+UPGRADE_TIMEOUT=${UPG_UPGRADE_TIMEOUT:-5400}
 LOGDIR=${UPG_LOGDIR:-/var/tmp/upgrade}
 
 emit() { printf 'UPG %s\n' "$*" >/dev/console; }

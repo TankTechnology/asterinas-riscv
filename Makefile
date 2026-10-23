@@ -907,7 +907,8 @@ test_x86_debian_ext4_e2big:
 # (both sha256 sums are recorded), upgrade trixie -> forky in the copy, then
 # reboot that copy and check systemd, serial login and /etc/debian_version.
 FULL_UPGRADE_WORKSPACE ?= $(CURDIR)/target/debian-upgrade
-FULL_UPGRADE_TIMEOUT ?= 4200
+# The probe allows 90 minutes for full-upgrade; the gate must outlive it.
+FULL_UPGRADE_TIMEOUT ?= 6000
 
 .PHONY: test_x86_debian_full_upgrade
 test_x86_debian_full_upgrade:

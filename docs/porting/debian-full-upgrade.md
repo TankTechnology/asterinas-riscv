@@ -112,6 +112,44 @@ E: Unable to synchronize mmap - msync (7: Argument list too long)
 - 值得注意的是：forky 的 **glibc 2.43** 已经替换并配置成功，副本仍能启动
   到 systemd——说明 libc 本身在这版内核上可用，阻塞点不是 libc。
 
+## 时间预算（40 分钟 vs 90 分钟）
+
+修复 ext4 事务上限后，L6 的失败从 E2BIG 变成时间预算；把探针的
+`UPG_UPGRADE_TIMEOUT` 从 2400 s 提到 **5400 s**（90 分钟）重跑同一镜像：
+
+| 预算 | 结果 | 解包 / 配置 | 结束原因 | 重启后 |
+|---|---|---|---|---|
+| 40 min（2400 s） | rc=124（timeout） | **227 / 341**，配置 78 | 阶段超时 | `forky/sid`，systemd running |
+| 90 min（5400 s） | **内核 panic（无 rc）** | **321 / 341**，配置 78 | `spawn task failed: NoMemory`（guest **3427.5 s**，约 57 min） | `forky/sid`，systemd running，串口可登录 |
+
+90 分钟轮的完整证据：
+
+- 复制：base/copy sha 相同（`450ebe3b…`），0.53 s；source 0.05 s；
+  update 12.17 s（297 可升级）；
+- upgrade 阶段没有返回 rc：在 guest 3427.5 s 时内核 panic；
+- 升级日志（`/var/tmp/upgrade/upgrade.log`）在崩溃前有 **321 条
+  `Unpacking`**、**78 条 `Setting up`**，最后停在
+  `Unpacking libxcursor1 …`；
+- 同轮 `ext4 journal transaction is too large` **0 条**——E2BIG 没有回来；
+- panic 原文：
+
+  ```
+  Uncaught panic:
+      spawn task failed: NoMemory
+      at kernel/core/src/thread/task.rs:135
+  ```
+
+- panic 前串口有 **75,969** 条
+  `WARN: number of negative dentries has reached …`；guest 内存 4 GiB；
+- 崩溃后对同一副本做二次启动：journal 回放成功，登录提示正常，
+  `sudo systemctl is-system-running` = **running**，
+  `debian_version` = **forky/sid**。
+
+归因：**内存**（negative dentry/page cache 增长耗尽内核内存），不是
+E2BIG、不是 dpkg 冲突/依赖、也不是 90 分钟超时——panic 发生在 57 分钟，
+离 90 分钟上限还早。时间预算已经足够，限制变成了 guest 内存与 dentry
+缓存策略。
+
 ## 失败归因
 
 | 阶段 | rc | 分类 | 证据 |
