@@ -223,29 +223,37 @@ impl JournalTransaction {
         Ok(())
     }
 
-    pub(super) fn encode(self, journal: &SuperBlock) -> Result<Vec<Vec<u8>>> {
-        if self.blocks.is_empty() {
-            return_errno_with_message!(Errno::EINVAL, "empty ext4 journal transaction");
-        }
-        // The first tag carries the 16-byte UUID and every later tag sets
-        // `FLAG_SAME_UUID` instead. Omitting the UUID makes the descriptor
-        // unreadable to both jbd2 and this module's own parser as soon as a
-        // transaction has more than one block.
+    /// Number of tags a single descriptor block can hold.
+    ///
+    /// The first tag is followed by the 16-byte journal UUID; checksum-v3
+    /// descriptors also reserve a 4-byte tail. Neither can be used for tags.
+    fn descriptor_capacity(journal: &SuperBlock) -> usize {
         let tag_size = journal.tag_size();
         let tail_size = journal.block_tail_size();
-        let capacity = (BLOCK_SIZE - HEADER_SIZE - 16 - tail_size) / tag_size;
-        if self.blocks.len() > capacity {
-            return_errno_with_message!(Errno::E2BIG, "ext4 journal transaction is too large");
-        }
-        let sequence_bytes = self.sequence.to_be_bytes();
+        (BLOCK_SIZE - HEADER_SIZE - 16 - tail_size) / tag_size
+    }
+
+    /// Encodes one descriptor block for at most `descriptor_capacity` blocks.
+    ///
+    /// The first tag of *each* descriptor carries the UUID, and each
+    /// descriptor's last tag is marked `FLAG_LAST_TAG`; that is how jbd2
+    /// delimits the tag list of a descriptor that is followed by another
+    /// descriptor rather than by the commit record.
+    fn encode_descriptor(
+        blocks: &[(u32, Vec<u8>)],
+        sequence: u32,
+        journal: &SuperBlock,
+    ) -> Vec<u8> {
+        let tag_size = journal.tag_size();
+        let sequence_bytes = sequence.to_be_bytes();
         let mut descriptor = vec![0; BLOCK_SIZE];
         put_be32(&mut descriptor, 0, MAGIC);
         put_be32(&mut descriptor, 4, DESCRIPTOR);
-        put_be32(&mut descriptor, 8, self.sequence);
+        put_be32(&mut descriptor, 8, sequence);
         let mut offset = HEADER_SIZE;
-        for (index, (block, payload)) in self.blocks.iter().enumerate() {
+        for (index, (block, payload)) in blocks.iter().enumerate() {
             let mut flags = if index == 0 { 0 } else { FLAG_SAME_UUID };
-            if index + 1 == self.blocks.len() {
+            if index + 1 == blocks.len() {
                 flags |= FLAG_LAST_TAG;
             }
             if be32(payload, 0) == MAGIC {
@@ -280,17 +288,36 @@ impl JournalTransaction {
             let crc = checksum::crc32c(journal.csum_seed, &descriptor);
             put_be32(&mut descriptor, tail, crc);
         }
-        let mut encoded = vec![descriptor];
-        for (_, mut payload) in self.blocks {
-            if be32(&payload, 0) == MAGIC {
-                payload[..4].fill(0);
+        descriptor
+    }
+
+    pub(super) fn encode(self, journal: &SuperBlock) -> Result<Vec<Vec<u8>>> {
+        if self.blocks.is_empty() {
+            return_errno_with_message!(Errno::EINVAL, "empty ext4 journal transaction");
+        }
+        let capacity = Self::descriptor_capacity(journal);
+        if capacity == 0 {
+            return_errno_with_message!(Errno::EINVAL, "ext4 journal descriptor has no tag space");
+        }
+        let sequence = self.sequence;
+        let mut encoded = Vec::new();
+        // A JBD2 transaction may span several descriptors. The commit record
+        // stays unique and last, so an interrupted sequence is still discarded
+        // by replay and atomicity is unchanged.
+        for chunk in self.blocks.chunks(capacity) {
+            encoded.push(Self::encode_descriptor(chunk, sequence, journal));
+            for (_, payload) in chunk {
+                let mut data = payload.clone();
+                if be32(&data, 0) == MAGIC {
+                    data[..4].fill(0);
+                }
+                encoded.push(data);
             }
-            encoded.push(payload);
         }
         let mut commit = vec![0; BLOCK_SIZE];
         put_be32(&mut commit, 0, MAGIC);
         put_be32(&mut commit, 4, COMMIT);
-        put_be32(&mut commit, 8, self.sequence);
+        put_be32(&mut commit, 8, sequence);
         if journal.csum_v3 {
             let crc = checksum::crc32c(journal.csum_seed, &commit);
             put_be32(&mut commit, 16, crc);
@@ -362,16 +389,17 @@ pub(super) struct ReplayBlock {
     pub(super) escaped: bool,
 }
 
-/// Decode one descriptor/data/(optional revoke)/commit transaction.
+/// Decode a sequence of descriptor/data groups plus an optional revoke and one
+/// trailing commit block.
 ///
-/// `blocks` contains journal blocks in on-disk order, beginning with the
-/// descriptor.  A transaction is considered replayable only after its commit
-/// block has been validated; callers may then write the returned blocks to the
-/// filesystem, after a recovery-wide revoke pass. This helper only applies
-/// revocations in the supplied transaction; it is not a full journal replay
-/// engine. Multiple descriptors are not supported here, and a transaction that
-/// carries only revokes has no descriptor to decode (see [`scan_log`], which
-/// handles that form). No device I/O happens here.
+/// `blocks` contains journal blocks in on-disk order, beginning with the first
+/// descriptor. A transaction is considered replayable only after its single
+/// commit block has been validated; callers may then write the returned blocks
+/// to the filesystem, after a recovery-wide revoke pass. This helper only
+/// applies revocations in the supplied transaction; it is not a full journal
+/// replay engine. A transaction that carries only revokes has no descriptor to
+/// decode (see [`scan_log`], which handles that form). No device I/O happens
+/// here.
 pub(super) fn decode_transaction(
     blocks: &[&[u8]],
     sequence: u32,
@@ -380,54 +408,68 @@ pub(super) fn decode_transaction(
     if blocks.len() < 3 {
         return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal transaction");
     }
-    let tags = parse_descriptor(blocks[0], sequence, journal)?;
-    let data_end = 1 + tags.len();
-    if blocks.len() <= data_end {
-        return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal transaction data");
+    let mut replay = Vec::new();
+    let mut cursor = 0;
+    while cursor < blocks.len() && header_type(blocks[cursor]) == Some(DESCRIPTOR) {
+        let tags = parse_descriptor(blocks[cursor], sequence, journal)?;
+        let data_start = cursor + 1;
+        let data_end = data_start + tags.len();
+        if data_end > blocks.len() {
+            return_errno_with_message!(Errno::EUCLEAN, "truncated ext4 journal transaction data");
+        }
+        for (index, tag) in tags.iter().enumerate() {
+            let mut data = blocks[data_start + index].to_vec();
+            if data.len() != BLOCK_SIZE {
+                return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal data block");
+            }
+            if tag.flags & FLAG_ESCAPE != 0 {
+                if data[..4] != [0; 4] {
+                    return_errno_with_message!(Errno::EUCLEAN, "invalid escaped journal block");
+                }
+                data[0..4].copy_from_slice(&MAGIC.to_be_bytes());
+            }
+            if journal.csum_v3 {
+                // The checksum covers the logged copy, i.e. before the escape
+                // word is restored.
+                let crc = checksum::crc32c(journal.csum_seed, &sequence.to_be_bytes());
+                let crc = checksum::crc32c(crc, blocks[data_start + index]);
+                if crc != tag.checksum {
+                    return_errno_with_message!(Errno::EUCLEAN, "invalid journal data checksum");
+                }
+            }
+            replay.push(ReplayBlock {
+                block_number: tag.block_number,
+                data,
+                escaped: tag.flags & FLAG_ESCAPE != 0,
+            });
+        }
+        cursor = data_end;
+    }
+    if cursor == 0 {
+        return_errno_with_message!(Errno::EUCLEAN, "ext4 journal transaction has no descriptor");
     }
 
     let mut revoked = Vec::new();
-    let mut commit_index = data_end;
-    if blocks[commit_index].len() >= HEADER_SIZE && be32(blocks[commit_index], 4) == REVOKE {
-        revoked = parse_revoke(blocks[commit_index], sequence, journal)?;
-        commit_index += 1;
+    if cursor < blocks.len() && header_type(blocks[cursor]) == Some(REVOKE) {
+        revoked = parse_revoke(blocks[cursor], sequence, journal)?;
+        cursor += 1;
     }
-    if blocks.len() != commit_index + 1 {
+    if blocks.len() != cursor + 1 {
         return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal transaction length");
     }
-    validate_commit(blocks[commit_index], sequence, journal)?;
-
-    let mut replay = Vec::with_capacity(tags.len());
-    for (index, tag) in tags.iter().enumerate() {
-        if revoked.contains(&tag.block_number) {
-            continue;
-        }
-        let mut data = blocks[index + 1].to_vec();
-        if data.len() != BLOCK_SIZE {
-            return_errno_with_message!(Errno::EUCLEAN, "invalid ext4 journal data block");
-        }
-        if tag.flags & FLAG_ESCAPE != 0 {
-            if data[..4] != [0; 4] {
-                return_errno_with_message!(Errno::EUCLEAN, "invalid escaped journal block");
-            }
-            data[0..4].copy_from_slice(&MAGIC.to_be_bytes());
-        }
-        if journal.csum_v3 {
-            // The checksum covers the logged copy, i.e. before the escape
-            // word is restored.
-            let crc = checksum::crc32c(journal.csum_seed, &sequence.to_be_bytes());
-            let crc = checksum::crc32c(crc, blocks[index + 1]);
-            if crc != tag.checksum {
-                return_errno_with_message!(Errno::EUCLEAN, "invalid journal data checksum");
-            }
-        }
-        replay.push(ReplayBlock {
-            block_number: tag.block_number,
-            data,
-            escaped: tag.flags & FLAG_ESCAPE != 0,
-        });
+    validate_commit(blocks[cursor], sequence, journal)?;
+    if !revoked.is_empty() {
+        replay.retain(|block| !revoked.contains(&block.block_number));
     }
     Ok(replay)
+}
+
+/// Returns the JBD2 block type when `block` carries a valid header.
+fn header_type(block: &[u8]) -> Option<u32> {
+    if block.len() < HEADER_SIZE || be32(block, 0) != MAGIC {
+        return None;
+    }
+    Some(be32(block, 4))
 }
 
 /// Scan a linearized journal log and produce the final replay set.
@@ -467,29 +509,43 @@ pub(super) fn scan_log(
                         "non-contiguous ext4 journal sequence"
                     );
                 }
-                let tags = parse_descriptor(blocks[offset], sequence, journal)?;
-                let data_start = offset + 1;
-                let data_end = data_start + tags.len();
-                if data_end > blocks.len() {
+                // One transaction may span several descriptor blocks; each is
+                // followed by its own data blocks. Consume consecutive
+                // descriptors until a revoke or the final commit record.
+                let transaction_start = offset;
+                let mut cursor = offset;
+                loop {
+                    let tags = parse_descriptor(blocks[cursor], sequence, journal)?;
+                    let data_end = cursor + 1 + tags.len();
+                    if data_end > blocks.len() {
+                        // Incomplete transaction at the tail: discard it.
+                        cursor = blocks.len();
+                        break;
+                    }
+                    cursor = data_end;
+                    if cursor < blocks.len() && header_type(blocks[cursor]) == Some(DESCRIPTOR) {
+                        continue;
+                    }
                     break;
                 }
-                let mut end = data_end;
-                if end < blocks.len()
-                    && blocks[end].len() >= HEADER_SIZE
-                    && be32(blocks[end], 4) == REVOKE
-                {
-                    end += 1;
-                }
-                if end >= blocks.len() {
+                if cursor >= blocks.len() {
                     break;
                 }
-                if parse_header(blocks[end])?.block_type != COMMIT {
+                if header_type(blocks[cursor]) == Some(REVOKE) {
+                    cursor += 1;
+                    if cursor >= blocks.len() {
+                        break;
+                    }
+                }
+                if header_type(blocks[cursor]) != Some(COMMIT) {
                     return_errno_with_message!(
                         Errno::EUCLEAN,
                         "journal transaction missing commit"
                     );
                 }
-                let transaction = decode_transaction(&blocks[offset..=end], sequence, journal)?;
+                let end = cursor;
+                let transaction =
+                    decode_transaction(&blocks[transaction_start..=end], sequence, journal)?;
                 for block in transaction {
                     replay.retain(|old| old.block_number != block.block_number);
                     replay.push(block);
@@ -1006,5 +1062,71 @@ mod test {
         assert_eq!(replay.len(), 1);
         assert_eq!(replay[0].block_number, 44);
         assert_eq!(replay[0].data, data_b);
+    }
+
+    fn transaction_payload(index: usize) -> Vec<u8> {
+        let mut payload = vec![0x40 + (index % 16) as u8; BLOCK_SIZE];
+        // Keep the first word away from MAGIC so the block is not escaped.
+        payload[..4].fill(0);
+        payload
+    }
+
+    fn encode_many(journal: &SuperBlock, count: usize) -> Vec<Vec<u8>> {
+        let mut transaction = JournalTransaction::new(23).unwrap();
+        for index in 0..count {
+            transaction
+                .add_block(1000 + index as u32, &transaction_payload(index))
+                .unwrap();
+        }
+        transaction.encode(journal).unwrap()
+    }
+
+    #[ktest]
+    fn splits_oversized_legacy_transactions_across_descriptors() {
+        let journal = SuperBlock::parse(&superblock()).unwrap();
+        let capacity = JournalTransaction::descriptor_capacity(&journal);
+        assert_eq!(capacity, (BLOCK_SIZE - HEADER_SIZE - 16) / TAG_SIZE);
+
+        let count = capacity + 10;
+        let blocks = encode_many(&journal, count);
+        // Two descriptors, one data block per tag, one trailing commit.
+        assert_eq!(blocks.len(), 2 + count + 1);
+        assert_eq!(be32(&blocks[0], 4), DESCRIPTOR);
+        assert_eq!(be32(&blocks[1 + capacity], 4), DESCRIPTOR);
+
+        let refs: Vec<&[u8]> = blocks.iter().map(Vec::as_slice).collect();
+        let replay = decode_transaction(&refs, 23, &journal).unwrap();
+        assert_eq!(replay.len(), count);
+        assert_eq!(replay[0].block_number, 1000);
+        assert_eq!(replay[count - 1].block_number, 1000 + count as u32 - 1);
+
+        let scanned = scan_log(&refs, 23, &journal).unwrap();
+        assert_eq!(scanned.len(), count);
+        assert_eq!(scanned[0].block_number, 1000);
+    }
+
+    #[ktest]
+    fn splits_oversized_checksummed_transactions_across_descriptors() {
+        let mut block = superblock();
+        block[48..64].fill(0x6d);
+        block[40..44].copy_from_slice(&INCOMPAT_CSUM_V3.to_be_bytes());
+        seal_superblock(&mut block);
+        let journal = SuperBlock::parse(&block).unwrap();
+        assert!(journal.csum_v3);
+        let capacity = JournalTransaction::descriptor_capacity(&journal);
+        assert_eq!(
+            capacity,
+            (BLOCK_SIZE - HEADER_SIZE - 16 - BLOCK_TAIL_SIZE) / TAG3_SIZE
+        );
+
+        let count = capacity + 3;
+        let blocks = encode_many(&journal, count);
+        assert_eq!(blocks.len(), 2 + count + 1);
+
+        let refs: Vec<&[u8]> = blocks.iter().map(Vec::as_slice).collect();
+        let replay = decode_transaction(&refs, 23, &journal).unwrap();
+        assert_eq!(replay.len(), count);
+        let scanned = scan_log(&refs, 23, &journal).unwrap();
+        assert_eq!(scanned.len(), count);
     }
 }
