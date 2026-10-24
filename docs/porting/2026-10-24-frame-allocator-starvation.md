@@ -456,6 +456,25 @@ WARN: heap: reserved large-slot pool: base=0xffff8000a1000000 size=16 MiB (4096 
 - **保留**：分配器级分段回退（`alloc_segmented_with`）仍是池耗尽与
   ring-buffer 64 KiB 的兜底路径；4 KiB 回退与 4 页内核栈继续有效。
 
+### L4 / L5 回归与 ring-buffer 收尾（2026-10-25，HEAD `2f68006f0`）
+
+用通过 L6 的同一内核（`abe82e29`）重跑 L4/L5：
+
+| 关卡 | 本轮结果 | 与基线比较 |
+|---|---|---|
+| L4 源码包构建 | 3 包 **2 ok / 1 fail**：`hello`（2 个 .deb，281.31 s）、`python3-minimal`（19 个 .deb，343.26 s）成功；`coreutils` 两次 `debian/rules clean` 被 **signal 11** 杀死 | **一致**（`docs/porting/debian-source-build.md` 已记录该已知失败） |
+| L5 从零 rootfs | **stages=3 ok=3**：install 18.08 s、foreign 44.40 s、second 431.45 s；`chroot`/`mount`/`umount`/`unshare` 四个 probe 全 **rc=0**；`debian_version=13.7`；`/target` 清理后 133,124 KB | **一致**（全绿基线，`docs/porting/debian-debootstrap.md`） |
+
+→ **无退化**。产物：`target/debian-source-build/console.txt`、
+`target/debian-debootstrap/console.txt`。
+
+**ring-buffer 收尾**：本轮**不再改代码**。ring-buffer 自 `dbd8079df`
+起已经走 `alloc_segmented`（`SegmentedSegment`，分段映射）；L6 通过轮里
+的 40 次连续失败/41 次回退是它“先试连续、失败再分段”的**预期前置尝试**，
+全部被接住且未再触发挂起。保留“连续优先”是故意的：内存未碎片化时
+可以避免 KVirtArea 映射开销。若后续在意这部分日志/映射开销，可再给
+ring-buffer 单独预留一个小池（沿用 heap 的 `LargeSlotPool` 思路）。
+
 ### 下一步（L6 已通过后的收尾）
 
 1. **降低 ring-buffer 的分段回退量**：本轮仍记录 40 次失败 / 41 次回退
