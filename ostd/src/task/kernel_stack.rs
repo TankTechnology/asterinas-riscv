@@ -8,7 +8,7 @@ use crate::{
     impl_frame_meta_for,
     irq::DisabledLocalIrqGuard,
     mm::{
-        FrameAllocOptions, PAGE_SIZE,
+        FrameAllocOptions, PAGE_SIZE, Segment,
         kspace::kvirt_area::KVirtArea,
         page_prop::{CachePolicy, PageFlags, PageProperty, PrivilegedPageFlags},
     },
@@ -39,6 +39,19 @@ const DEFAULT_STACK_SIZE_IN_PAGES: u32 = 128;
 
 const KERNEL_STACK_SIZE: usize = STACK_SIZE_IN_PAGES as usize * PAGE_SIZE;
 
+/// The number of pages in each physically contiguous stack segment.
+///
+/// The stack used to be allocated as one 128-page segment, which needs an
+/// order-7 buddy block and fails first when physical memory is fragmented.
+/// Splitting it into order-4 (16-page) segments keeps the virtual layout
+/// unchanged while making the physical allocation much easier to satisfy.
+const STACK_SEGMENT_SIZE_IN_PAGES: usize = 16;
+
+const STACK_SIZE_IN_PAGES_USIZE: usize = KERNEL_STACK_SIZE / PAGE_SIZE;
+
+const STACK_SEGMENT_COUNT: usize =
+    (STACK_SIZE_IN_PAGES_USIZE + STACK_SEGMENT_SIZE_IN_PAGES - 1) / STACK_SEGMENT_SIZE_IN_PAGES;
+
 #[derive(Debug)]
 pub(super) struct KernelStack {
     kvirt_area: KVirtArea,
@@ -54,16 +67,38 @@ impl_frame_meta_for!(KernelStackMeta);
 impl KernelStack {
     /// Generates a kernel stack with guard pages.
     ///
-    /// 4 additional pages are allocated and regarded as guard pages, which
-    /// should not be accessed.
+    /// 4 additional virtual pages are reserved as guard pages (two below and
+    /// two above the stack); they are left unmapped and consume no frames.
     //
     // TODO: We map kernel stacks in the kernel virtual areas, which incurs
     // non-negligible TLB and mapping overhead on task creation. This could
     // be improved by caching/reusing kernel stacks with a pool.
     pub(super) fn new_with_guard_page() -> Result<Self> {
-        let pages = FrameAllocOptions::new()
-            .zeroed(false)
-            .alloc_segment_with(KERNEL_STACK_SIZE / PAGE_SIZE, |_| KernelStackMeta)?;
+        // Allocate the stack in several physically contiguous segments and
+        // map them into one contiguous virtual range.  Only the virtual
+        // layout is part of the contract; the frames may be scattered.
+        let mut segments: [Option<Segment<KernelStackMeta>>; STACK_SEGMENT_COUNT] =
+            [const { None }; STACK_SEGMENT_COUNT];
+        let mut remaining = STACK_SIZE_IN_PAGES_USIZE;
+        for slot in &mut segments {
+            let pages = remaining.min(STACK_SEGMENT_SIZE_IN_PAGES);
+            debug_assert!(pages > 0);
+            // If any segment cannot be allocated, `segments` is dropped on
+            // this early return, which releases every segment allocated so
+            // far.  Do not replace this with a manual cleanup path.
+            *slot = Some(
+                FrameAllocOptions::new()
+                    .zeroed(false)
+                    .alloc_segment_with(pages, |_| KernelStackMeta)?,
+            );
+            remaining -= pages;
+        }
+        debug_assert_eq!(remaining, 0);
+
+        let frames = segments
+            .iter_mut()
+            .filter_map(|segment| segment.take())
+            .flat_map(|segment| segment.into_iter());
         let prop = PageProperty {
             flags: PageFlags::RW,
             cache: CachePolicy::Writeback,
@@ -72,7 +107,7 @@ impl KernelStack {
         let new_kvirt_area = KVirtArea::map_frames(
             KERNEL_STACK_SIZE + 4 * PAGE_SIZE,
             2 * PAGE_SIZE,
-            pages.into_iter(),
+            frames,
             prop,
         );
         let mapped_start = new_kvirt_area.range().start + 2 * PAGE_SIZE;
