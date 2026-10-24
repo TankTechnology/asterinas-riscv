@@ -120,6 +120,10 @@ unsafe fn init() {
 
     sync::init();
 
+    // Reserve the contiguous pool for large heap slots before the heap is
+    // used heavily, while a large physically contiguous run still exists.
+    mm::heap::init_large_slot_pool();
+
     boot::init_after_heap();
 
     // SAFETY: This function is called only once on the BSP.

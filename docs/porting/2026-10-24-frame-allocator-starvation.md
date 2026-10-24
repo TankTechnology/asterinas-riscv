@@ -394,21 +394,69 @@ free_local=196587520  free_global=891371520
 
 证据：[`evidence/2026-10-24-l6-heapslot-pool/`](evidence/2026-10-24-l6-heapslot-pool/)。
 
-### 下一步（按优先级）
+### 第七轮：启动时预留 16 MiB 池（HEAPPOOL，内核 `abe82e2983c8f727`）—— **L6 通过**
 
-1. **抓挂起现场的 backtrace**（最高优先）：挂起已三次出现在分段回退
-   突发之后（3885 / 4083 / 3643 s），且本轮池耗尽后 28 s 即挂起；用
-   watchdog 或 NMI 打印每个 CPU 的返回地址，定位是页表锁、RCU 还是
-   控制台锁。没有 backtrace 之前不要再改分配策略。
-2. **扩大池做对照**：把 8 MiB 提到 64–128 MiB（或让池可增长），如果
-   挂起消失，说明只是容量；如果仍在池耗尽后挂起，则确认是分段路径的
-   锁序问题。
-3. **锁序审计**：`KVirtArea::try_map_frames` / `KVirtArea::Drop` 会在
-   heap 分配、ring-buffer 创建、RCU 延迟释放等任意上下文中拿页表锁；
-   检查这些上下文已持有的锁（socket、pipe、heap、RCU）是否与页错误/
-   其他映射路径形成环。
-4. **总量/高阶**：page cache 压力回收/上限；长期仍需回收，否则低阶也会
-   枯竭。
+#### 关于“回退 A”
+
+上一轮 `slot.rs` 的 +126 行**不是 slot 阶梯改造**，而是 8 MiB 预留池
+（懒初始化）。任务书把它记作“方案 A”是误标；代码本身正是 B 的基础，
+因此**不回退**，而是在它之上完成 B：启动时预留、扩到 16 MiB、加日志。
+
+失败点从 `:87` 移到 `:206` 也由此解释：池耗尽后，`alloc_large` 的
+分段回退被调用，caller 自然是 `:206`；这不是“槽阶梯失败”。
+
+#### 实现
+
+| 项 | 值 |
+|---|---|
+| 预留时机 | `ostd::init` 中 `sync::init()` 之后、`boot::init_after_heap()` 之前 |
+| 大小 | `LARGE_POOL_MIB = 16`（4096 页；常量可调） |
+| 分配 | first-fit 位图；`used_pages` 计数；释放直接清位 |
+| 日志 | 预留成功 `base=… size=… pages`；每 1024 次分配打用量；耗尽/回退按前 8 + 每 256 计数 |
+| 回退 | 池尽 → 分段分配（保留原有路径） |
+
+启动日志：
+
+```
+WARN: heap: reserved large-slot pool: base=0xffff8000a1000000 size=16 MiB (4096 pages)
+```
+
+#### L6 结果（**首次完整跑完**）
+
+| 项 | 值 |
+|---|---|
+| 池启动 | 成功，`base=0xffff8000a1000000`，4096 页 |
+| 池峰值用量 | **2404 / 4096 页**（约 9.4 MiB） |
+| 池分配次数 | **1,293,312** |
+| 池耗尽日志 | **0** |
+| 大槽失败 caller | **0 次来自 heap**；仅 ring-buffer（81 条日志） |
+| 未满足请求 | **0**（无 `spawn task failed` / panic / heap error） |
+| 解包 / 配置 | **341/341 / 341/341** |
+| 升级 | **rc=0**，`296 upgraded, 45 newly installed, 0 to remove, 0 not upgraded`，4779.92 s |
+| 二次启动 | `debian_version=forky/sid`、systemd **running**、登录成功 |
+| 根文件系统剩余 | 1,064,184 KB（高于 800 MiB 护栏） |
+| gate 汇总 | `UPGRADE stages=5 ok=5 fail=0` |
+
+**判定 A'：L6 通过。** 16 MiB 池把 heap 大槽全部留在连续池内，池从未
+耗尽（峰值 9.4 MiB）；失败仅剩 ring-buffer 的 64 KiB（已由分段回退接住，
+本轮未再触发挂起）。三次挂起（3643/3885/4083 s）都发生在 **heap 大槽
+分段回退密集**之后；本轮 heap 走池、不再映射，挂起没有出现——这与
+“挂起由 heap 侧的分段映射/释放 churn 触发”的判断一致。
+
+证据：[`evidence/2026-10-25-l6-upgrade-pass/`](evidence/2026-10-25-l6-upgrade-pass/)。
+
+### 下一步（L6 已通过后的收尾）
+
+1. **降低 ring-buffer 的分段回退量**：本轮仍记录 40 次失败 / 41 次回退
+   （全部来自 `ring-buffer/src/lib.rs:112`，64 KiB）。可给 ring buffer 也用
+   一个小预留池，或改成 4 KiB 分段（order 2），减少 KVirtArea 映射。
+2. **根因归档**：三次挂起都紧跟 heap 大槽的分段回退突发；本轮 heap 全走
+   池、挂起消失。可把“heap 侧不再使用分段回退（池兜底）”固化下来，
+   并把 ring-buffer 的分段路径单独压测，确认是否仍有锁序隐患。
+3. **negative dentry 淘汰**：本轮 46,665 条警告、18.8 MB 串口；加入上限
+   淘汰可显著减小串口与控制台开销。
+4. **page cache 压力回收**：升级完成时只剩 1.46 GiB 空闲、根文件系统
+   1.0 GiB 余量；长期仍需要回收/上限，避免下一次在更小内存上失败。
 
 ## 复现
 

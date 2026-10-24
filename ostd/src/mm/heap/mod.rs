@@ -19,6 +19,8 @@ pub use self::{
     slot_list::SlabSlotList,
 };
 
+pub(crate) use self::slot::init_large_slot_pool;
+
 /// The trait for the global heap allocator.
 ///
 /// By providing the slab ([`Slab`]) and heap slot ([`HeapSlot`])

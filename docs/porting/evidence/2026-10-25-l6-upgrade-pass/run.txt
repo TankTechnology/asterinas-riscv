@@ -1,0 +1,22 @@
+# L6 PASS: trixie -> forky on Asterinas x86_64
+date: 2026-10-25
+kernel_sha256: abe82e2983c8f727c0d62f2cfd4e8635bf4f452e4e26ac1ff3c0772def77ad9a
+workspace: target/debian-upgrade-heappool
+base/copy sha256: 450ebe3bf2506c290902d55ae651ba796e67c0b9a846c528de34528f82a083e0
+unpacking=341
+setting_up=341
+upgrade_summary=296_upgraded,_45_newly_installed,_0_to_remove,_0_not_upgraded
+upgrade_dur_s=4779.92
+reboot: debian_version=forky/sid state=running login=True
+disk_free_before_kb=2297976
+disk_free_after_kb=1064184
+pool: base=0xffff8000a1000000 size=16 MiB (4096 pages)
+pool_exhausted_logs=0
+pool_peak_usage=2404/4096 pages
+pool_allocations=1293312
+segment_allocation_failed_logged=40
+segmented_fallback_logged=41
+unfilled_requests=0
+
+## failure callers (logged)
+     81 caller=/home/arch-anjie/Program/asterinas-riscv/kernel/libs/ring-buffer/src/lib.rs:112:58

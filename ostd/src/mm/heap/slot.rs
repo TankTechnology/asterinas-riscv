@@ -5,7 +5,7 @@
 use core::{
     alloc::AllocError,
     ptr::NonNull,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use crate::{
@@ -17,18 +17,24 @@ use crate::{
     sync::{LocalIrqDisabled, SpinLock},
 };
 
-/// Number of pages reserved for large heap slots (8 MiB).
+/// Size of the reserved contiguous pool for large heap slots, in MiB.
 ///
-/// Large slots are 2 KiB..N pages; reserving a contiguous run at the first
-/// large allocation keeps them off the fragmented buddy allocator and avoids
-/// mapping/unmapping a kernel virtual area for every slot.
-const LARGE_POOL_PAGES: usize = 2048;
+/// Large slots are 2 KiB..N pages; serving them from a contiguous run keeps
+/// them off the fragmented buddy allocator and avoids mapping/unmapping a
+/// kernel virtual area for every slot. The pool is reserved during boot,
+/// before fragmentation, and falls back to segmented allocation when full.
+const LARGE_POOL_MIB: usize = 16;
+
+/// The pool size in pages (derived from [`LARGE_POOL_MIB`]).
+const LARGE_POOL_PAGES: usize = LARGE_POOL_MIB * 1024 * 1024 / PAGE_SIZE;
 
 /// A reserved contiguous run of frames serving large heap slots.
 struct LargeSlotPool {
     /// Kept alive for the lifetime of the kernel; its frames back the pool.
     _segment: Segment<()>,
     base: Vaddr,
+    /// Pages currently handed out.
+    used_pages: usize,
     /// One bit per page: set means allocated.
     bits: [u64; LARGE_POOL_PAGES / 64],
 }
@@ -38,6 +44,7 @@ impl LargeSlotPool {
         Self {
             base: paddr_to_vaddr(segment.paddr()),
             _segment: segment,
+            used_pages: 0,
             bits: [0; LARGE_POOL_PAGES / 64],
         }
     }
@@ -73,6 +80,7 @@ impl LargeSlotPool {
                 for page in start..=page {
                     self.set_used(page, true);
                 }
+                self.used_pages += pages;
                 return Some(self.base + start * PAGE_SIZE);
             }
         }
@@ -92,6 +100,7 @@ impl LargeSlotPool {
         for page in start..start + pages {
             self.set_used(page, false);
         }
+        self.used_pages -= pages;
         true
     }
 }
@@ -101,10 +110,57 @@ static LARGE_POOL: SpinLock<Option<LargeSlotPool>, LocalIrqDisabled> = SpinLock:
 /// Whether the one-shot pool initialization has been attempted.
 static LARGE_POOL_INIT_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
+/// Number of large slots served from the pool.
+static POOL_ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+
+/// Number of large slots that had to fall back to segmented allocation.
+static POOL_FALLBACKS: AtomicUsize = AtomicUsize::new(0);
+
+/// Reserves the large-slot pool.
+///
+/// This runs once during boot, after the frame allocator and the kernel page
+/// table are available but before the heap is used heavily, so the 16 MiB
+/// contiguous run is still obtainable. A failure is not fatal: large slots
+/// then fall back to segmented allocation.
+pub(crate) fn init_large_slot_pool() {
+    let mut pool = LARGE_POOL.lock();
+    if pool.is_some() || LARGE_POOL_INIT_ATTEMPTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+
+    let base = match FrameAllocOptions::new()
+        .zeroed(false)
+        .alloc_segment(LARGE_POOL_PAGES)
+    {
+        Ok(segment) => {
+            let base = paddr_to_vaddr(segment.paddr());
+            *pool = Some(LargeSlotPool::new(segment));
+            Some(base)
+        }
+        Err(_) => None,
+    };
+    drop(pool);
+
+    // Log outside the pool lock so the console path never runs under it.
+    match base {
+        Some(base) => crate::warn!(
+            "heap: reserved large-slot pool: base={:#x} size={} MiB ({} pages)",
+            base,
+            LARGE_POOL_MIB,
+            LARGE_POOL_PAGES
+        ),
+        None => crate::warn!(
+            "heap: failed to reserve the {} MiB large-slot pool; large slots fall back to segmentation",
+            LARGE_POOL_MIB
+        ),
+    }
+}
+
 fn pool_alloc(pages: usize) -> Option<Vaddr> {
     let mut pool = LARGE_POOL.lock();
     if pool.is_none() && !LARGE_POOL_INIT_ATTEMPTED.swap(true, Ordering::Relaxed) {
-        // Reserve while the buddy allocator can still find a large run.
+        // Last-resort lazy initialization for callers that run before the
+        // boot-time reservation.
         if let Ok(segment) = FrameAllocOptions::new()
             .zeroed(false)
             .alloc_segment(LARGE_POOL_PAGES)
@@ -112,7 +168,37 @@ fn pool_alloc(pages: usize) -> Option<Vaddr> {
             *pool = Some(LargeSlotPool::new(segment));
         }
     }
-    pool.as_mut().and_then(|pool| pool.alloc(pages))
+
+    let result = pool.as_mut().and_then(|pool| pool.alloc(pages));
+    let used = pool.as_ref().map_or(0, |pool| pool.used_pages);
+    drop(pool);
+
+    match result {
+        Some(vaddr) => {
+            let count = POOL_ALLOCATIONS.fetch_add(1, Ordering::Relaxed) + 1;
+            if count % 1024 == 0 {
+                crate::warn!(
+                    "heap: large-slot pool usage {}/{} pages, {} allocations",
+                    used,
+                    LARGE_POOL_PAGES,
+                    count
+                );
+            }
+            Some(vaddr)
+        }
+        None => {
+            let count = POOL_FALLBACKS.fetch_add(1, Ordering::Relaxed) + 1;
+            if count <= 8 || count % 256 == 0 {
+                crate::warn!(
+                    "heap: large-slot pool exhausted ({} / {} pages used), fallback #{}",
+                    used,
+                    LARGE_POOL_PAGES,
+                    count
+                );
+            }
+            None
+        }
+    }
 }
 
 fn pool_free(vaddr: Vaddr, pages: usize) -> bool {
