@@ -1,0 +1,13 @@
+# Pre-fix failure snapshot (kernel 5644aff792f48c0d, segmented stack, no cache fallback)
+
+[  3531.465] WARN  : frame-allocator: allocation failed: size=4096 align=4096 free_local=200302592 free_global=890032128 chunks_local=[40058, 3108, 657, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] chunks_global=[3, 49429, 29608, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+[  3531.466] WARN  : page fault handler failed: info: PageFaultInfo {
+[  3531.466] WARN  : frame-allocator: allocation failed: size=4096 align=4096 free_local=187392000 free_global=890032128 chunks_local=[35764, 3581, 706, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] chunks_global=[3, 49429, 29608, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+[  3531.467] WARN  : frame-allocator: allocation failed: size=4096 align=4096 free_local=200302592 free_global=890032128 chunks_local=[40058, 3108, 657, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] chunks_global=[3, 49429, 29608, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+[  3531.467] WARN  : page fault handler failed: info: PageFaultInfo {
+[  3531.468] WARN  : page fault handler failed: info: PageFaultInfo {
+[  3531.469] WARN  : frame-allocator: allocation failed: size=4096 align=4096 free_local=200302592 free_global=890032128 chunks_local=[40058, 3108, 657, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] chunks_global=[3, 49429, 29608, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+[  3531.470] WARN  : page fault handler failed: info: PageFaultInfo {
+[  3531.474] WARN  : frame-allocator: allocation failed: size=4096 align=4096 free_local=187392000 free_global=890032128 chunks_local=[35764, 3581, 706, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] chunks_global=[3, 49429, 29608, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+[  3531.488] ERROR : Failed to allocate a large slot
+[  3531.488] ERROR : Heap allocation error, layout = Layout {

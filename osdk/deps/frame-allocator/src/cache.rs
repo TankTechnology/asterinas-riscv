@@ -2,13 +2,26 @@
 
 //! A fixed-size local cache for frame allocation.
 
-use core::{alloc::Layout, cell::RefCell};
+use core::{
+    alloc::Layout,
+    cell::RefCell,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use ostd::{
     cpu_local,
     irq::DisabledLocalIrqGuard,
     mm::{PAGE_SIZE, Paddr},
 };
+
+/// Number of refill failures reported so far.
+///
+/// Reporting every failure would flood the console once order-3 blocks run
+/// out, because each single-frame allocation retries the refill.
+static REFILL_FAILURE_REPORTS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many refill failures are printed before the report is suppressed.
+const MAX_REFILL_FAILURE_REPORTS: usize = 8;
 
 cpu_local! {
     static CACHE: RefCell<CacheOfSizes> = RefCell::new(CacheOfSizes::new());
@@ -53,10 +66,25 @@ impl<const NR_CONT_FRAMES: usize, const COUNT: usize> CacheArray<NR_CONT_FRAMES,
         }
 
         let nr_to_alloc = COUNT * 2 / 3;
-        let allocated = super::pools::alloc(
-            guard,
-            Layout::from_size_align(nr_to_alloc * Self::segment_size(), PAGE_SIZE).unwrap(),
-        )?;
+        let refill_layout =
+            Layout::from_size_align(nr_to_alloc * Self::segment_size(), PAGE_SIZE).unwrap();
+        let Some(allocated) = super::pools::alloc(guard, refill_layout) else {
+            // Diagnostics only: a request for one or a few frames can fail here
+            // even when plenty of small free chunks exist, because the refill
+            // asks for a larger contiguous block.  Record that block's order,
+            // but only for the first few failures: once high orders run out,
+            // every single-frame allocation would otherwise log.
+            let reports = REFILL_FAILURE_REPORTS.fetch_add(1, Ordering::Relaxed);
+            if reports < MAX_REFILL_FAILURE_REPORTS {
+                ostd::warn!(
+                    "cache refill failed: class_frames={} refill_bytes={} refill_order={}",
+                    NR_CONT_FRAMES,
+                    refill_layout.size(),
+                    crate::chunk::greater_order_of(refill_layout.size()),
+                );
+            }
+            return None;
+        };
 
         for i in 1..nr_to_alloc {
             self.push_front(allocated + i * Self::segment_size());
@@ -126,13 +154,19 @@ pub(super) fn alloc(guard: &DisabledLocalIrqGuard, layout: Layout) -> Option<Pad
     let cache_cell = CACHE.get_with(guard);
     let mut cache = cache_cell.borrow_mut();
 
-    match nr_frames {
+    let cached = match nr_frames {
         1 => cache.cache1.alloc(guard),
         2 => cache.cache2.alloc(guard),
         3 => cache.cache3.alloc(guard),
         4 => cache.cache4.alloc(guard),
-        _ => super::pools::alloc(guard, layout),
-    }
+        _ => return super::pools::alloc(guard, layout),
+    };
+    drop(cache);
+
+    // A class cache refill asks for a larger contiguous block (eight pages for
+    // single frames), so it can fail while smaller free chunks are plentiful.
+    // Fall back to the exact request, which needs at most the requested order.
+    cached.or_else(|| super::pools::alloc(guard, layout))
 }
 
 pub(super) fn dealloc(guard: &DisabledLocalIrqGuard, addr: Paddr, size: usize) {

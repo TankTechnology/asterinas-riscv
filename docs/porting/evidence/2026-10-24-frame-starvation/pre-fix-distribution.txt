@@ -1,0 +1,13 @@
+# Local pool distribution at the first 4 KiB failure (guest t=3531.465 s)
+order	chunks	chunk_bytes	subtotal_bytes
+0	40058	4096	164077568
+1	3108	8192	25460736
+2	657	16384	10764288
+sum	43823	-	200302592
+printed_free_local	200302592	match=True
+
+# Global pool: chunks_global=[3, 49429, 29608, 0, 0, ...]
+largest_local_order = 2
+largest_global_order = 2
+requested: Layout size=4096 align=4096 -> order 0
+cache1 refill asks for 8 pages -> order 3 -> empty

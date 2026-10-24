@@ -108,10 +108,16 @@ pub(super) fn log_free_counts(guard: &DisabledLocalIrqGuard, layout: Layout) {
         (global.total_size(), global.free_counts())
     };
 
+    let order = greater_order_of(layout.size()).max(greater_order_of(layout.align()));
+    let largest = |counts: &[usize]| counts.iter().rposition(|&count| count > 0).unwrap_or(0);
+
     ostd::warn!(
-        "allocation failed: size={} align={} free_local={} free_global={} chunks_local={:?} chunks_global={:?}",
+        "allocation failed: size={} align={} order={} largest_local_order={} largest_global_order={} free_local={} free_global={} chunks_local={:?} chunks_global={:?}",
         layout.size(),
         layout.align(),
+        order,
+        largest(&local_counts),
+        largest(&global_counts),
         local_size,
         global_size,
         local_counts,
