@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
 use ostd::{
     arch::cpu::context::UserContext,
     irq::DisabledLocalIrqGuard,
@@ -23,12 +25,26 @@ use crate::{
     vm::vmar::is_userspace_vaddr,
 };
 
+/// Number of user tasks created so far, used only for periodic observability.
+static SPAWN_COUNT: AtomicU64 = AtomicU64::new(0);
+
 /// create new task with userspace and parent process
 pub(crate) fn create_new_user_task(
     user_ctx: Box<UserContext>,
     thread_ref: Arc<Thread>,
     thread_local: ThreadLocal,
 ) -> Task {
+    // Observability only: the L6 upgrade exhausted the frame allocator while
+    // spawning a task. Report the buddy allocator's free bytes every 256
+    // spawns so the trend is visible before a panic.
+    let spawn_count = SPAWN_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if spawn_count % 256 == 0 {
+        warn!(
+            "task spawn count={} free_frames_bytes={}",
+            spawn_count,
+            osdk_frame_allocator::load_total_free_size()
+        );
+    }
     let user_task_entry = move |user_ctx: UserContext| {
         let current_task = Task::current().unwrap();
         let current_thread = current_task.as_thread().unwrap();
@@ -124,15 +140,26 @@ pub(crate) fn create_new_user_task(
 
     let user_task_func = move || user_task_entry(*user_ctx);
 
-    TaskOptions::new(move || {
+    let task = TaskOptions::new(move || {
         // TODO: If a kernel "oops" is caught, we should kill the entire
         // process rather than just ending the thread.
         let _ = oops::catch_panics_as_oops(user_task_func);
     })
     .data(thread_ref)
     .local_data(thread_local)
-    .build()
-    .expect("spawn task failed")
+    .build();
+    match task {
+        Ok(task) => task,
+        Err(err) => {
+            // Observability only: keep the original panic semantics but add
+            // the frame allocator's remaining bytes to the message.
+            panic!(
+                "spawn task failed: {:?} free_frames_bytes={}",
+                err,
+                osdk_frame_allocator::load_total_free_size()
+            );
+        }
+    }
 }
 
 impl UserModeHooks for Context<'_> {

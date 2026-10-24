@@ -1,0 +1,169 @@
+[  3336.852] WARN  : number of negative dentries has reached 43053
+[  3336.853] WARN  : number of negative dentries has reached 43053
+[  3336.854] WARN  : number of negative dentries has reached 43053
+[  3336.860] WARN  : number of negative dentries has reached 43053
+[  3336.863] WARN  : number of negative dentries has reached 43053
+[  3337.108] WARN  : number of negative dentries has reached 43053
+[  3337.327] WARN  : number of negative dentries has reached 43054
+[  3337.553] WARN  : number of negative dentries has reached 43054
+[  3337.773] WARN  : number of negative dentries has reached 43055
+[  3337.985] WARN  : number of negative dentries has reached 43056
+[  3337.989] WARN  : number of negative dentries has reached 43057
+[  3338.228] WARN  : number of negative dentries has reached 43058
+[  3338.458] WARN  : number of negative dentries has reached 43057
+[  3338.464] WARN  : number of negative dentries has reached 43058
+[  3338.719] WARN  : number of negative dentries has reached 43058
+[  3338.961] WARN  : number of negative dentries has reached 43059
+[  3338.971] WARN  : number of negative dentries has reached 43060
+[  3338.980] WARN  : number of negative dentries has reached 43061
+[  3339.450] WARN  : number of negative dentries has reached 43062
+[  3339.680] WARN  : number of negative dentries has reached 43061
+[  3339.682] WARN  : number of negative dentries has reached 43062
+[  3339.683] WARN  : number of negative dentries has reached 43063
+[  3339.684] WARN  : number of negative dentries has reached 43064
+[  3339.686] WARN  : number of negative dentries has reached 43065
+[  3339.928] WARN  : number of negative dentries has reached 43066
+[  3340.165] ERROR : Uncaught panic:
+	spawn task failed: NoMemory free_frames_bytes=1671266304
+	at /home/arch-anjie/Program/asterinas-riscv/kernel/core/src/thread/task.rs:156
+	on CPU 0 by thread Some(Thread { task: (Weak), data: Any { .. }, is_exited: false, cpu_affinity: AtomicIdSet { bits: [15], phantom: PhantomData<ostd::cpu::id::CpuId> }, sched_attr: SchedAttr { policy: SchedPolicyState { kind: AtomicSchedPolicyKind(2), policy: UnsafeCell { .. } }, last_cpu: AtomicCpuId(0), real_time: RealTimeAttr { prio: 99, time_slice: 32832000 }, fair: FairAttr { weight: 1024, pending_weight: UnsafeCell { .. }, vruntime: 6702380552758 } } })
+Printing stack trace:
+   1: fn 0xffffffff88ee97e0 - pc 0xffffffff88ee982b / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde48cb0;
+
+   2: fn 0xffffffff882e64f0 - pc 0xffffffff882e6cae / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde48cd0;
+
+   3: fn 0xffffffff882e8480 - pc 0xffffffff882e848a / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde490f0;
+
+   4: fn 0xffffffff8804b000 - pc 0xffffffff8804b00a / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde49100;
+
+   5: fn 0xffffffff8907b950 - pc 0xffffffff8907b996 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde49110;
+
+   6: fn 0xffffffff883956a0 - pc 0xffffffff883959d3 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde49150;
+
+   7: fn 0xffffffff888efef0 - pc 0xffffffff888f05c3 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde49540;
+
+   8: fn 0xffffffff8854b380 - pc 0xffffffff8854b499 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde4a480;
+
+   9: fn 0xffffffff88547640 - pc 0xffffffff88547663 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde4a960;
+
+  10: fn 0xffffffff88b7ec00 - pc 0xffffffff88b7ef41 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde4aab0;
+
+  11: fn 0xffffffff883ac9b0 - pc 0xffffffff883acab3 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde4add0;
+
+  12: fn 0xffffffff883ab6f0 - pc 0xffffffff883ac495 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde4b280;
+
+  13: fn 0xffffffff883a9680 - pc 0xffffffff883a99c4 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde4cf50;
+
+  14: fn 0xffffffff8863f330 - pc 0xffffffff8863f50e / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde4d300;
+
+  15: fn 0xffffffff884fe560 - pc 0xffffffff8850b4ff / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde4d700;
+
+  16: fn 0xffffffff8822c880 - pc 0xffffffff8822c91a / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde61520;
+
+  17: fn 0xffffffff88aa4390 - pc 0xffffffff88aa4b41 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde616b0;
+
+  18: fn 0xffffffff88aa4c60 - pc 0xffffffff88aa4cb5 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde61b50;
+
+  19: fn 0xffffffff88204790 - pc 0xffffffff882047af / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde61ce0;
+
+  20: fn 0xffffffff882046d0 - pc 0xffffffff88204711 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde61d00;
+
+  21: fn 0xffffffff88544180 - pc 0xffffffff8854419a / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde61d70;
+
+  22: fn 0xffffffff886cc2e0 - pc 0xffffffff886cc30b / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde61da0;
+
+  23: fn 0xffffffff88aa4c30 - pc 0xffffffff88aa4c44 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde61f50;
+
+  24: fn 0xffffffff885f8060 - pc 0xffffffff885f8071 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde61f80;
+
+  25: fn 0xffffffff88edac60 - pc 0xffffffff88edac85 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde61fa0;
+
+  26: fn 0xffffffff88ee2a90 - pc 0xffffffff88ee2b14 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde61fd0;
+
+  27: fn 0xffffffff88ea0e17 - pc 0xffffffff88ea0e20 / registers:
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde62000;
+
+
+     rax 0xffffffff896075a8; rdx   0xffffff896075a8; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffde48bd8; rdi 0xffffffff88f61c93; rbp                0x0; rsp 0xffffdffffde62008;
+
