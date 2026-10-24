@@ -26,6 +26,13 @@ impl<const MAX_ORDER: BuddyOrder> BuddySet<MAX_ORDER> {
         self.total_size
     }
 
+    /// Returns the number of free chunks in each order.
+    ///
+    /// This is for diagnostics only; it never changes the set.
+    pub(crate) fn free_counts(&self) -> [usize; MAX_ORDER] {
+        core::array::from_fn(|order| self.lists[order].size())
+    }
+
     /// Inserts a free chunk into the set.
     pub(crate) fn insert_chunk(&mut self, addr: Paddr, order: BuddyOrder) {
         debug_assert!(order < MAX_ORDER);

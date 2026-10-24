@@ -22,6 +22,13 @@
 //! [`GlobalFrameAllocator`]: ostd::mm::frame::GlobalFrameAllocator
 //! [`global_frame_allocator`]: ostd::global_frame_allocator
 
+/// Log prefix for messages emitted by this crate.
+macro_rules! __log_prefix {
+    () => {
+        "frame-allocator: "
+    };
+}
+
 // The heap allocator usually depends on frame allocation. If we depend on heap
 // allocation then there will be a cyclic dependency. We only use the heap in
 // unit tests.
@@ -68,6 +75,11 @@ impl GlobalFrameAllocator for FrameAllocator {
         let res = cache::alloc(&guard, layout);
         if res.is_some() {
             TOTAL_FREE_SIZE.sub(guard.current_cpu(), layout.size());
+        } else {
+            // Diagnostics only: dump the per-order free chunk counts so a
+            // fragmentation failure can be told apart from a leak or a true
+            // out-of-memory condition.
+            pools::log_free_counts(&guard, layout);
         }
         res
     }

@@ -92,6 +92,33 @@ pub(super) fn alloc(guard: &DisabledLocalIrqGuard, layout: Layout) -> Option<Pad
     chunk_addr
 }
 
+/// Reports the free chunk distribution after an allocation failed.
+///
+/// This is diagnostics only: it reads the pools and never modifies them. The
+/// pool locks are dropped before logging so the console path cannot hold them.
+pub(super) fn log_free_counts(guard: &DisabledLocalIrqGuard, layout: Layout) {
+    let (local_size, local_counts) = {
+        let local_pool_cell = LOCAL_POOL.get_with(guard);
+        let local_pool = local_pool_cell.borrow();
+        (local_pool.total_size(), local_pool.free_counts())
+    };
+    let (global_size, global_counts) = {
+        let mut global_pool = OnDemandGlobalLock::new();
+        let global = global_pool.get();
+        (global.total_size(), global.free_counts())
+    };
+
+    ostd::warn!(
+        "allocation failed: size={} align={} free_local={} free_global={} chunks_local={:?} chunks_global={:?}",
+        layout.size(),
+        layout.align(),
+        local_size,
+        global_size,
+        local_counts,
+        global_counts,
+    );
+}
+
 pub(super) fn dealloc(
     guard: &DisabledLocalIrqGuard,
     segments: impl Iterator<Item = (Paddr, usize)>,
