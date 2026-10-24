@@ -5,6 +5,7 @@
 use core::{
     alloc::Layout,
     ops::Range,
+    panic::Location,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
@@ -38,6 +39,27 @@ const SEGMENTED_CHUNK_PAGES: usize = 4;
 
 /// How many times the segmented fallback has been used.
 static SEGMENTED_FALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// How many segment allocations have failed (before any fallback).
+static SEGMENT_FAILURE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// How many failed segment allocations are reported individually.
+const MAX_SEGMENT_FAILURE_REPORTS: usize = 32;
+
+/// Reports a failed segment allocation together with its caller.
+///
+/// The first few failures are reported individually; afterwards every 256th
+/// failure is reported so the total can be estimated without flooding the
+/// console.
+fn report_segment_failure(nframes: usize, caller: &'static Location<'static>) {
+    let count = SEGMENT_FAILURE_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+    if count <= MAX_SEGMENT_FAILURE_REPORTS || count % 256 == 0 {
+        warn!(
+            "segment allocation failed #{}: pages={} caller={}",
+            count, nframes, caller
+        );
+    }
+}
 
 /// How many segmented fallbacks are reported before the log is suppressed.
 const MAX_SEGMENTED_FALLBACK_LOGS: usize = 8;
@@ -109,6 +131,7 @@ impl FrameAllocOptions {
     }
 
     /// Allocates a contiguous range of untyped frames without metadata.
+    #[track_caller]
     pub fn alloc_segment(&self, nframes: usize) -> Result<Segment<()>> {
         self.alloc_segment_with(nframes, |_| ())
     }
@@ -117,6 +140,7 @@ impl FrameAllocOptions {
     ///
     /// The returned [`Segment`] contains at least one frame. The method returns
     /// an error if the number of frames is zero.
+    #[track_caller]
     pub fn alloc_segment_with<M: AnyFrameMeta, F>(
         &self,
         nframes: usize,
@@ -125,16 +149,31 @@ impl FrameAllocOptions {
     where
         F: FnMut(Paddr) -> M,
     {
+        self.alloc_segment_with_inner(nframes, metadata_fn, Location::caller())
+    }
+
+    fn alloc_segment_with_inner<M: AnyFrameMeta, F>(
+        &self,
+        nframes: usize,
+        metadata_fn: F,
+        caller: &'static Location<'static>,
+    ) -> Result<Segment<M>>
+    where
+        F: FnMut(Paddr) -> M,
+    {
         if nframes == 0 {
             return Err(Error::InvalidArgs);
         }
         let layout = Layout::from_size_align(nframes * PAGE_SIZE, PAGE_SIZE).unwrap();
-        let segment = get_global_frame_allocator()
-            .alloc(layout)
-            .map(|start| {
+        let segment = match get_global_frame_allocator().alloc(layout) {
+            Some(start) => {
                 Segment::from_unused(start..start + nframes * PAGE_SIZE, metadata_fn).unwrap()
-            })
-            .ok_or(Error::NoMemory)?;
+            }
+            None => {
+                report_segment_failure(nframes, caller);
+                return Err(Error::NoMemory);
+            }
+        };
 
         if self.zeroed {
             let addr = paddr_to_vaddr(segment.paddr()) as *mut u8;
@@ -149,6 +188,7 @@ impl FrameAllocOptions {
     /// non-contiguous.
     ///
     /// See [`Self::alloc_segmented_with`] for the fallback behavior.
+    #[track_caller]
     pub fn alloc_segmented(&self, nframes: usize) -> Result<SegmentedSegment<()>> {
         self.alloc_segmented_with(nframes, |_| ())
     }
@@ -164,6 +204,7 @@ impl FrameAllocOptions {
     ///
     /// A failure rolls back: every chunk allocated so far is released before
     /// `Error::NoMemory` is returned.
+    #[track_caller]
     pub fn alloc_segmented_with<M: AnyFrameMeta, F>(
         &self,
         nframes: usize,
@@ -172,6 +213,7 @@ impl FrameAllocOptions {
     where
         F: FnMut(Paddr) -> M,
     {
+        let caller = Location::caller();
         if nframes == 0 {
             return Err(Error::InvalidArgs);
         }
@@ -188,7 +230,7 @@ impl FrameAllocOptions {
         };
 
         if try_contiguous {
-            match self.alloc_segment_with(nframes, &mut metadata_fn) {
+            match self.alloc_segment_with_inner(nframes, &mut metadata_fn, caller) {
                 Ok(segment) => return Ok(SegmentedSegment::contiguous(segment)),
                 Err(Error::NoMemory) if nframes > SEGMENTED_FALLBACK_MIN_PAGES => {}
                 Err(err) => return Err(err),
@@ -217,7 +259,7 @@ impl FrameAllocOptions {
             let segment = loop {
                 let mut options = FrameAllocOptions::new();
                 options.zeroed(self.zeroed);
-                match options.alloc_segment_with(pages, &mut metadata_fn) {
+                match options.alloc_segment_with_inner(pages, &mut metadata_fn, caller) {
                     Ok(segment) => break segment,
                     // Start with the largest chunk and halve it if the buddy
                     // allocator cannot provide it.
@@ -238,11 +280,11 @@ impl FrameAllocOptions {
             .flat_map(|segment| segment.into_iter());
         let area = KVirtArea::try_map_frames(nbytes, 0, frames, prop)?;
 
-        let count = SEGMENTED_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
-        if count < MAX_SEGMENTED_FALLBACK_LOGS {
+        let count = SEGMENTED_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
+        if count <= MAX_SEGMENTED_FALLBACK_LOGS || count % 64 == 0 {
             warn!(
-                "frame allocator: segmented fallback for {} pages ({} bytes)",
-                nframes, nbytes
+                "frame allocator: segmented fallback #{}: pages={} bytes={} caller={}",
+                count, nframes, nbytes, caller
             );
         }
 

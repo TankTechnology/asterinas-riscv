@@ -311,16 +311,54 @@ free_local=196587520  free_global=891371520
 下一次需要：在挂起时抓取 **每个 CPU 的 backtrace**（NMI/watchdog），或者
 二分回退（只保留 ring-buffer 分段 / 只保留 heap 分段）定位到具体调用路径。
 
+### 第五轮：失败调用者追踪（L6SEG，内核 `808511e3a38e9662`）
+
+改动（只在 allocator）：
+
+- `alloc_segment` / `alloc_segment_with` / `alloc_segmented` /
+  `alloc_segmented_with` 全部 `#[track_caller]`；
+- 连续分配失败时打印
+  `segment allocation failed #N: pages=… caller=file:line:col`，
+  前 32 条逐条、之后每 256 条一次；
+- 分段回退打印
+  `segmented fallback #N: pages=… bytes=… caller=…`，前 8 条、之后每 64 条。
+
+结果：
+
+| 项 | 值 |
+|---|---|
+| caller 分布（已打印的 72 条） | **heap large slot 69 条**（`ostd/src/mm/heap/slot.rs:87`）、ring-buffer 3 条（`kernel/libs/ring-buffer/src/lib.rs:112`） |
+| 失败/回退计数 | 最后打印 **#1536 次连续失败 / #1664 次回退**（之前的“32 次”只是日志上限，不是真实次数） |
+| 未被满足的请求 | **0**（`spawn task failed` / `Uncaught panic` / `Heap allocation error` 均为 0） |
+| 进度 | **341/341** 解包、**160** 配置 |
+| 挂起位置 | guest **3884.904 s** 后控制台无输出；QEMU 137% CPU 空转；最后 UPG 阶段 `update rc=0`（upgrade 进行中） |
+
+判读：
+
+1. 调用者追踪回答了“谁要 64 KiB”：**heap large slot**（60/52/45/36 KiB），
+   不是 ring-buffer（后者只有 3 次 64 KiB）。这与 heap 的
+   `alloc_large` 在碎片下必然先撞连续分配失败一致。
+2. “失败次数 32 → 个位数”这个预期不成立，因为 32 本来就是日志上限；
+   真实连续失败 >1536，但它们**都是分段回退的预期前置失败**，请求最终
+   全部被满足。有意义的指标是“未满足请求 = 0”。
+3. 结果仍是 **B**：没有分配失败/panic，但升级在 341/341 解包、160 配置后
+   **再次挂起**（这次 3884.9 s，比上一轮 4083.6 s 更早），QEMU 空转、
+   无 panic。挂起路径仍指向 heap 大块的分段映射/释放，而非分配失败。
+
+证据：[`evidence/2026-10-24-l6-caller-trace/`](evidence/2026-10-24-l6-caller-trace/)。
+
 ### 下一步（按优先级）
 
-1. **定位 4083.6 s 的挂起**（最高优先）：在挂起时抓每个 CPU 的
-   backtrace（QEMU NMI + 内核 NMI 处理，或 watchdog），确认是否卡在
-   页表锁/控制台锁/RCU；没有 backtrace 之前不要再猜。
+1. **定位 3884.9 s 的挂起**（最高优先）：调用者追踪已确认请求方是
+   **heap large slot**（`ostd/src/mm/heap/slot.rs:87`），下一步在挂起时抓
+   每个 CPU 的 backtrace（watchdog 或 NMI 处理），确认卡在页表锁/RCU/
+   控制台锁中的哪一处；没有 backtrace 之前不要再猜。
 2. **二分回退定位**（低成本的对照）：把 heap large slot 改回
    `alloc_segment_with`、只保留 ring-buffer 分段，重跑；若不再挂起，
    说明问题在 heap 的 map/unmap 路径，反之在 ring-buffer。
-3. **把映射/释放移出敏感上下文**：分段映射不要在持有上层锁的路径里做
-   （例如 heap 的大块分配可延迟到锁外，或改用 boot 预留的连续池）。
+3. **给 heap 大块换一条不依赖页表映射的路**：例如 boot 时预留一小段
+   连续物理内存专门服务 large slot（无需 KVirtArea），或把映射推迟到
+   锁外；分段映射不应出现在任意分配上下文中。
 4. **总量/高阶**：page cache 压力回收/上限；1.49 GiB 的应用层空闲仍无法
    阻止低阶枯竭，长期必须回收。
 
