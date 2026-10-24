@@ -1,0 +1,63 @@
+[  3899.814] WARN  : Unimplemented syscall number: 334
+[  3899.817] WARN  : frame-allocator: allocation failed: size=65536 align=4096 order=4 largest_local_order=3 largest_global_order=3 free_local=191524864 free_global=887570432 chunks_local=[30083, 4816, 1745, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0] chunks_global=[2, 45619, 28307, 1528, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+[  3899.827] ERROR : Uncaught panic:
+	called `Result::unwrap()` on an `Err` value: NoMemory
+	at /home/arch-anjie/Program/asterinas-riscv/kernel/libs/ring-buffer/src/lib.rs:104
+	on CPU 2 by thread Some(Thread { task: (Weak), data: Any { .. }, is_exited: false, cpu_affinity: AtomicIdSet { bits: [15], phantom: PhantomData<ostd::cpu::id::CpuId> }, sched_attr: SchedAttr { policy: SchedPolicyState { kind: AtomicSchedPolicyKind(2), policy: UnsafeCell { .. } }, last_cpu: AtomicCpuId(2), real_time: RealTimeAttr { prio: 99, time_slice: 32832000 }, fair: FairAttr { weight: 1024, pending_weight: UnsafeCell { .. }, vruntime: 8036107854619 } } })
+Printing stack trace:
+   1: fn 0xffffffff88ee7cc0 - pc 0xffffffff88ee7d0b / registers:
+
+     rax 0xffffffff89608218; rdx   0xffffff89608218; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffd7979b8; rdi 0xffffffff88f5fbf3; rbp                0x0; rsp 0xffffdffffd797a90;
+
+   2: fn 0xffffffff8862b8e0 - pc 0xffffffff8862c09e / registers:
+
+     rax 0xffffffff89608218; rdx   0xffffff89608218; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffd7979b8; rdi 0xffffffff88f5fbf3; rbp                0x0; rsp 0xffffdffffd797ab0;
+
+   3: fn 0xffffffff8862d900 - pc 0xffffffff8862d90a / registers:
+
+     rax 0xffffffff89608218; rdx   0xffffff89608218; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffd7979b8; rdi 0xffffffff88f5fbf3; rbp                0x0; rsp 0xffffdffffd797ed0;
+
+   4: fn 0xffffffff8804b000 - pc 0xffffffff8804b00a / registers:
+
+     rax 0xffffffff89608218; rdx   0xffffff89608218; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffd7979b8; rdi 0xffffffff88f5fbf3; rbp                0x0; rsp 0xffffdffffd797ee0;
+
+   5: fn 0xffffffff8907e840 - pc 0xffffffff8907e886 / registers:
+
+     rax 0xffffffff89608218; rdx   0xffffff89608218; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffd7979b8; rdi 0xffffffff88f5fbf3; rbp                0x0; rsp 0xffffdffffd797ef0;
+
+   6: fn 0xffffffff8907e360 - pc 0xffffffff8907e3f6 / registers:
+
+     rax 0xffffffff89608218; rdx   0xffffff89608218; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffd7979b8; rdi 0xffffffff88f5fbf3; rbp                0x0; rsp 0xffffdffffd797f30;
+
+   7: fn 0xffffffff88b3f800 - pc 0xffffffff88b3f97a / registers:
+
+     rax 0xffffffff89608218; rdx   0xffffff89608218; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffd7979b8; rdi 0xffffffff88f5fbf3; rbp                0x0; rsp 0xffffdffffd797fb0;
+
+   8: fn 0xffffffff8827e220 - pc 0xffffffff8827e243 / registers:
+
+     rax 0xffffffff89608218; rdx   0xffffff89608218; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffd7979b8; rdi 0xffffffff88f5fbf3; rbp                0x0; rsp 0xffffdffffd798090;
+
+   9: fn 0xffffffff8827e350 - pc 0xffffffff8827e362 / registers:
+
+     rax 0xffffffff89608218; rdx   0xffffff89608218; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffd7979b8; rdi 0xffffffff88f5fbf3; rbp                0x0; rsp 0xffffdffffd798210;
+
+  10: fn 0xffffffff8827c600 - pc 0xffffffff8827c614 / registers:
+
+     rax 0xffffffff89608218; rdx   0xffffff89608218; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffd7979b8; rdi 0xffffffff88f5fbf3; rbp                0x0; rsp 0xffffdffffd798220;
+
+  11: fn 0xffffffff8827c6f0 - pc 0xffffffff8827c73a / registers:
+
+     rax 0xffffffff89608218; rdx   0xffffff89608218; rcx                0x1; rbx                0x0;
+     rsi  0x100dffffd7979b8; rdi 0xffffffff88f5fbf3; rbp                0x0; rsp 0xffffdffffd798440;
+
+  12: fn 0xffffffff8827bdc0 - pc 0xffffffff8827beef / registers:

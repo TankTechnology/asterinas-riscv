@@ -23,9 +23,11 @@
   order-0 块，正好有大量现货。
 - **验证**：第二次 L6 复测中，`cache refill failed` 出现了 8 次
   （order-3 用尽），但 **`size=4096` 的 `allocation failed` 为 0 次**——
-  回退路径把每一次 1 页请求都救回来了。升级继续到 333/341 解包，
-  最后仍在内核栈的 **order-4（16 页）段**上 panic，与 4 KiB 回退无关。
-  详见文末“修复后 L6 → 第二次复测”。
+  回退路径把每一次 1 页请求都救回来了。第三次复测把栈段降到 4 页
+  （order 2）后，`spawn task failed` 为 **0**，升级**解包 341/341、
+  配置 154**；随后在 `RingBuffer::new(65536)` 的 **order-4** 分配上
+  panic（`ring-buffer/src/lib.rs:104`），这是同一族问题的第三个分配点。
+  详见文末“修复后 L6”。
 
 ## 现象与证据
 
@@ -212,17 +214,53 @@ free_local=196587520  free_global=891371520
    解包数从 311 回到 **333**（与未加回退时的最好成绩持平）——
    回退既没有让升级倒退，也不再是阻塞点。
 
+### 第三次复测（SEG4：4 页栈段，order 2）
+
+栈段从 16 页降到 **4 页（32 段）**，内核 `924faa3c9c01538b`，同配置重跑：
+
+| 项 | 值 |
+|---|---|
+| `spawn task failed` | **0 次**——栈段的 order-4 panic 消失 |
+| `cache refill failed` | 8 次（t=3579.8，order 3 空），全部由回退救回 |
+| `allocation failed: size=4096` | 0 次 |
+| 解包 / 配置 | **341/341** / **154**（历史最高） |
+| 新 panic | t=**3899.827 s**，`called Result::unwrap() on an Err value: NoMemory`，位置 `kernel/libs/ring-buffer/src/lib.rs:104` |
+| 失败请求 | `size=65536 align=4096` → **order 4（16 页）**，来自 `RingBuffer::new(65536)` |
+| 失败瞬间各阶 | local `[30083, 4816, 1745, 8, 0, …]`、global `[2, 45619, 28307, 1528, 0, …]`，`largest_*_order=3`；空闲合计约 1.62 GB |
+
+判读：
+
+1. **内核栈的 order-4 问题已解决**：没有一次 `spawn task failed`，
+   升级把 **341 个包全部解包**、配置了 **154** 个，远超前两轮
+   （303/311/333 解包、78 配置）。4 页段（order 2）在失败瞬间仍有
+   1,745（本地）+ 28,307（全局）个 order-2 块可用，足以支撑栈分配。
+2. **仍有 order-4 panic → 本轮判定 C**，但分配点已不是内核栈，而是
+   **环形缓冲**：`RingBuffer::new(capacity)` 用**单个连续 Segment**
+   承载 `capacity × size_of::<T>()` 字节（`kernel/libs/ring-buffer/src/lib.rs:96-105`）。
+   失败请求 65,536 B = 16 页；默认管道缓冲
+   `DEFAULT_PIPE_BUF_SIZE = 65536`（`kernel/core/src/fs/pipe/common.rs:362`）
+   与 Unix stream 默认缓冲 `UNIX_STREAM_DEFAULT_BUF_SIZE = 65536`
+   （`kernel/core/src/net/socket/unix/stream/connected.rs:446`）都恰好是
+   16 页。升级上下文（dpkg 配置阶段大量 fork/管道）更像管道创建；
+   ELF 已 strip，地址无法解析到具体调用点。
+3. 结论：**同一族问题的第三个分配点**——order-7 栈（已修）、order-4 栈
+   （已修）、order-4 环形缓冲（新暴露）。碎片本身没有变，只是每次把
+   要求降一档，下一个“必须连续 16 页”的调用者就浮出来。
+
 ### 下一步（按优先级）
 
-1. **内核栈段再拆小**：把 16 页/段（order 4）改为 **4 页/段（order 2，
-   32 段）**——失败瞬间 order-2 块有 1,070（本地）+ 28,437（全局）个；
-   若仍担心，1 页/段（order 0）最稳，代价是每次创建任务 128 次分配。
-   这只是参数改动（`STACK_SEGMENT_SIZE_IN_PAGES`），映射逻辑不变。
-2. **再重跑 L6**：确认 order-4 panic 消失后，看升级能否跑完；
-   4 KiB 回退已经验证，不需要再单独验证。
+1. **环形缓冲多段化或降级**：`RingBuffer::new` 目前要求一段连续物理内存。
+   两条路：
+   - 把缓冲改成多段（数组 of `Segment`，或映射到连续虚拟区后用虚拟地址
+     索引），与内核栈多段映射同源，改动中等；
+   - 创建失败时把容量降一档（如 16 KiB / 4 页）重试，改动小但会改变
+     管道语义（Linux 允许 pipe 容量协商，`F_SETPIPE_SZ` 已有）。
+   推荐先做容量降级作为止血，再做多段化。
+2. **再重跑 L6**：确认配置阶段能走完（`UPG stage=upgrade rc=0` 与
+   `debian_version` 变化），并验证二次启动。
 3. **分配器第二层**：回填失败时归并其它 CPU 的本地池到全局再重试
-   （`pools/mod.rs:73-75` 的 TODO）；对 order-4 这类请求，只有当相邻的自
-   由块在别的 CPU 池里时才有效。
+   （`pools/mod.rs:73-75` 的 TODO）；对 order-4 这类请求，只有当相邻的
+   自由块在别的 CPU 池里时才有效。
 4. **总量/高阶**：page cache 压力回收/上限；这是唯一能让 order 4+ 长期
    存在的机制，但工作量大，放在后面。
 

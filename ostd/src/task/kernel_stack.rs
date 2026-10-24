@@ -42,10 +42,13 @@ const KERNEL_STACK_SIZE: usize = STACK_SIZE_IN_PAGES as usize * PAGE_SIZE;
 /// The number of pages in each physically contiguous stack segment.
 ///
 /// The stack used to be allocated as one 128-page segment, which needs an
-/// order-7 buddy block and fails first when physical memory is fragmented.
-/// Splitting it into order-4 (16-page) segments keeps the virtual layout
-/// unchanged while making the physical allocation much easier to satisfy.
-const STACK_SEGMENT_SIZE_IN_PAGES: usize = 16;
+/// order-7 buddy block.  Under the L6 upgrade's fragmentation it failed at
+/// guest 3340 s (order 7), then at 3459 s and 3578 s after splitting into
+/// 16-page segments (order 4).  Four-page segments only need an order-2
+/// block, which stayed plentiful (thousands of chunks) while orders 3 and 4
+/// were empty.  The virtual layout is unchanged at every step; only the
+/// physical contiguity required per segment shrinks.
+const STACK_SEGMENT_SIZE_IN_PAGES: usize = 4;
 
 const STACK_SIZE_IN_PAGES_USIZE: usize = KERNEL_STACK_SIZE / PAGE_SIZE;
 
