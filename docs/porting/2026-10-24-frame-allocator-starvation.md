@@ -504,6 +504,27 @@ ring-buffer 单独预留一个小池（沿用 heap 的 `LargeSlotPool` 思路）
 reserve 只为 ring buffer 设置；heap 仍以 reserve=0 使用同一池），
 因此按任务要求没有重跑 L6。
 
+### 第九轮：终验 L6（内核 `e23120606e4d942f`，HEAD `99d4b116e`）—— **端到端 0 失败**
+
+用 ring-buffer 池修复后的内核重跑 L6：
+
+| 项 | 值 |
+|---|---|
+| `allocation failed` | **0**（所有尺寸） |
+| `size=65536` 失败 | **0** |
+| `segment allocation failed` / `segmented fallback` | **0 / 0** |
+| ring-buffer 池 | **33 命中 / 0 未命中** |
+| heap 池 | 峰值 **2685/4096 页**、**0** 次耗尽 |
+| panic / heap error / spawn 失败 | **0** |
+| 解包 / 配置 | **341/341 / 341/341** |
+| 升级 | **rc=0**，4825.30 s，296 upgraded / 45 newly installed |
+| 二次启动 | `debian_version=forky/sid`、systemd **running**、登录成功 |
+| 根文件系统剩余 | 1,064,400 KB |
+| 证据 | `docs/porting/evidence/2026-10-25-l6-final-zero-failures/` |
+
+**判定 A：终验通过**——两个池（heap 大槽、ring-buffer）都在安全范围，
+64 KiB 与 heap 大槽都不再触发 frame allocator 的连续分配失败。
+
 ### 下一步（L6 已通过后的收尾）
 
 1. **降低 ring-buffer 的分段回退量**：本轮仍记录 40 次失败 / 41 次回退

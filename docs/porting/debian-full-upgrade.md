@@ -2,23 +2,29 @@
 
 ## 结论摘要
 
-**2026-10-25 复测（内核 `abe82e2983c8f727`）：升级完成，L6 通过。**
+**2026-10-25 终验（内核 `e23120606e4d942f`，HEAD `99d4b116e`）：升级完成，`allocation failed` 端到端为 0，L6 通过。**
 
-- `full-upgrade` **rc=0**，耗时 **4779.92 s**：**296 upgraded / 45 newly
+- `full-upgrade` **rc=0**，耗时 **4825.30 s**：**296 upgraded / 45 newly
   installed / 0 to remove / 0 not upgraded**；**341/341** 解包、
   **341/341** 配置；
+- **端到端零分配失败**：`allocation failed` **0** 条（含 `size=65536`）、
+  `segment allocation failed` **0**、`segmented fallback` **0**；
+  ring-buffer 池 **33 命中 / 0 未命中**，heap 池峰值 **2685/4096 页**、
+  **0** 次耗尽；无 panic / heap error；
 - 二次启动：`debian_version=forky/sid`、systemd **running**、串口登录成功；
-- 升级后根文件系统剩余 **1,064,184 KB**（高于 800 MiB 护栏）；基础与
+- 升级后根文件系统剩余 **1,064,400 KB**（高于 800 MiB 护栏）；基础与
   副本 sha 相同，基线未被修改；
 - 关键修复链（每步都有独立提交与证据）：
   1. ext4 日志事务跨 descriptor（`14b2d352a`）→ 消除 E2BIG；
   2. 4 KiB 缓存回填失败降级（`42c675571`）→ 消除逐页饥饿；
   3. 内核栈 4 页分段（`f67945641`）→ 消除栈的 order-4；
   4. 分配器级分段回退（`dbd8079df`）→ 统一处理 64 KiB 请求；
-  5. heap 大槽 16 MiB 启动预留池（`abe82e29`）→ 本轮关键：
-     池峰值 **2404/4096 页**、**1,293,312** 次大槽分配、**0** 次耗尽；
-- 剩余噪声：ring-buffer 的 64 KiB 仍有 **40** 次连续失败 / **41** 次
-  分段回退（全部被接住，未再挂起）；negative dentry 警告 46,665 条；
+  5. heap 大槽 16 MiB 启动预留池（`abe82e29`）→ 首次跑完的关键：
+     池峰值 **2404/4096 页**、1,293,312 次大槽分配、0 次耗尽；
+  6. ring-buffer 增长改走同一预留池（`99d4b116e`，保留 4 MiB 给 heap）
+     → 终验关键：64 KiB 请求不再触碰 frame allocator；
+- 剩余噪声：negative dentry 警告 46,643 条（无淘汰）；page cache 仍无
+  压力回收（升级完成时约 1.4 GiB 空闲）；
 - **历史记录**：2026-10-24 及更早，本路径曾依次被 ext4 E2BIG、时间预算、
   帧分配 OOM（order-7 → order-4 → 4 KiB）阻塞；下文“结果”“失败归因”
   等节保留这些结论作为演进证据，不再代表当前状态。
@@ -29,17 +35,20 @@
 
 | 项 | 值 |
 |---|---|
-| 内核 | `target/osdk/asterinas-osdk-bin.elf`，sha256 `abe82e2983c8f727…` |
+| 内核 | `target/osdk/asterinas-osdk-bin.elf`，sha256 `e23120606e4d942f…`（HEAD `99d4b116e`） |
 | 内核配置 | x86_64、`--scheme microvm`（vmm-direct）、4 vCPU、4 GiB、KVM |
 | Stage1 initramfs | `target/debian-x86/stage1/initramfs.cpio`（sha256 `fb9c5b17…`） |
 | 基础镜像 | `target/systemd-health/daily.ext2`（sha256 `450ebe3b…a083e0`） |
-| 工作副本 | `target/debian-upgrade-heappool/daily.ext2`（sha 与基础相同） |
+| 工作副本 | `target/debian-upgrade-final/daily.ext2`（sha 与基础相同） |
 | 网关 | `make test_x86_debian_full_upgrade`，90 分钟预算 |
-| 耗时 | **4779.92 s**（约 79.7 分钟；预算内） |
+| 耗时 | **4825.30 s**（约 80.4 分钟；预算内） |
 | 结果 | `stages=5 ok=5 fail=0`；`upgrade rc=0`；末尾 `Powering off.` |
-| 证据 | `docs/porting/evidence/2026-10-25-l6-upgrade-pass/` |
+| 证据 | `docs/porting/evidence/2026-10-25-l6-final-zero-failures/` |
 
 ### 两步归因（把 OOM 从 order-7 推到“能跑完”）
+
+> 终验在此之上再加一步：ring-buffer 增长改走同一预留池（`99d4b116e`），
+> 把最后的 64 KiB 连续失败清零（33 命中 / 0 未命中）。
 
 1. **内核栈多段化（16 页 → 4 页/段，order 4 → order 2）**
    `ostd/src/task/kernel_stack.rs`：把 128 页内核栈拆成 32 段 × 4 页，
@@ -63,12 +72,11 @@
 
 ### 剩余问题
 
-- **ring-buffer 增长仍要 64 KiB 连续页**（`kernel/libs/ring-buffer/src/lib.rs:112`）：
-  本轮记录 **40** 次连续失败 / **41** 次分段回退（任务书记录为 32 次，
-  数量随负载波动）；全部被分段回退接住，**没有 panic**。后续可给
-  ring-buffer 也用预留池或 4 KiB 分段；
-- negative dentry 无淘汰（46,665 条警告）、page cache 无压力回收；
-  升级完成时只剩约 1.46 GiB 空闲，余量不宽裕。
+- **ring-buffer 64 KiB 已收尾**（`99d4b116e`）：终验中 **33 次池命中 /
+  0 次未命中**，64 KiB 请求不再触碰 frame allocator，`allocation failed`
+  为 0；
+- negative dentry 无淘汰（46,643 条警告）、page cache 无压力回收；
+  升级完成时约剩 1.4 GiB 空闲，余量不宽裕。
 
 ## 安全前置
 

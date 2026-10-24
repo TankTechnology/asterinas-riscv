@@ -1,0 +1,30 @@
+[  4455.805] WARN  : ext2: ext2-specific handling for filesystem flags is not implemented
+All filesystems unmounted.
+Deactivating swaps.
+All swaps deactivated.
+Detaching loop devices.
+[  4455.813] WARN  : number of negative dentries has reached 46642
+[  4455.814] WARN  : number of negative dentries has reached 46642
+[  4455.815] WARN  : number of negative dentries has reached 46642
+[  4455.816] WARN  : number of negative dentries has reached 46642
+[  4455.817] WARN  : number of negative dentries has reached 46642
+[  4455.818] WARN  : number of negative dentries has reached 46642
+All loop devices detached.
+Stopping MD devices.
+All MD devices stopped.
+Detaching DM devices.
+All DM devices detached.
+All filesystems, swaps, loop devices, MD devices and DM devices detached.
+[  4455.827] WARN  : Unimplemented syscall number: 303
+[  4455.836] WARN  : Unimplemented syscall number: 334
+[  4455.840] WARN  : Unimplemented syscall number: 334
+Syncing filesystems and block devices.
+[  4455.852] WARN  : Unimplemented syscall number: 303
+[  4455.861] WARN  : number of negative dentries has reached 46643
+[  4455.862] WARN  : number of negative dentries has reached 46643
+[  4455.863] WARN  : number of negative dentries has reached 46643
+[  4455.864] WARN  : number of negative dentries has reached 46643
+[  4455.865] WARN  : number of negative dentries has reached 46643
+[  4455.866] WARN  : number of negative dentries has reached 46643
+[  4455.867] WARN  : number of negative dentries has reached 46643
+Powering off.

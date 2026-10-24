@@ -1,0 +1,19 @@
+# Final L6: end-to-end zero allocation failures (kernel e23120606e4d942f, HEAD 99d4b116e)
+date: 2026-10-25
+workspace: target/debian-upgrade-final
+base/copy sha256: 450ebe3bf2506c290902d55ae651ba796e67c0b9a846c528de34528f82a083e0
+unpacking=341
+setting_up=341
+upgrade_summary=296_upgraded,_45_newly_installed,_0_to_remove,_0_not_upgraded
+upgrade_dur_s=4825.30
+reboot: debian_version=forky/sid state=running login=True
+disk_free_after_kb=1064400
+allocation_failed=0 (all sizes; size=65536 count=0)
+segment_allocation_failed=0
+segmented_fallback=0
+ring_buffer_pool_hits=33
+ring_buffer_pool_misses=0
+heap_pool_peak=2685/4096 pages
+heap_pool_exhausted=0
+spawn_or_heap_errors=0
+console_last='Powering off.'
