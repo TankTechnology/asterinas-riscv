@@ -23,6 +23,53 @@
   帧分配 OOM（order-7 → order-4 → 4 KiB）阻塞；下文“结果”“失败归因”
   等节保留这些结论作为演进证据，不再代表当前状态。
 
+## 通过轮的环境与两步归因（2026-10-25）
+
+### 环境
+
+| 项 | 值 |
+|---|---|
+| 内核 | `target/osdk/asterinas-osdk-bin.elf`，sha256 `abe82e2983c8f727…` |
+| 内核配置 | x86_64、`--scheme microvm`（vmm-direct）、4 vCPU、4 GiB、KVM |
+| Stage1 initramfs | `target/debian-x86/stage1/initramfs.cpio`（sha256 `fb9c5b17…`） |
+| 基础镜像 | `target/systemd-health/daily.ext2`（sha256 `450ebe3b…a083e0`） |
+| 工作副本 | `target/debian-upgrade-heappool/daily.ext2`（sha 与基础相同） |
+| 网关 | `make test_x86_debian_full_upgrade`，90 分钟预算 |
+| 耗时 | **4779.92 s**（约 79.7 分钟；预算内） |
+| 结果 | `stages=5 ok=5 fail=0`；`upgrade rc=0`；末尾 `Powering off.` |
+| 证据 | `docs/porting/evidence/2026-10-25-l6-upgrade-pass/` |
+
+### 两步归因（把 OOM 从 order-7 推到“能跑完”）
+
+1. **内核栈多段化（16 页 → 4 页/段，order 4 → order 2）**
+   `ostd/src/task/kernel_stack.rs`：把 128 页内核栈拆成 32 段 × 4 页，
+   虚拟连续、物理分段。它消除了 `spawn task failed` 的 order-7 与
+   order-4 失败点（3340 s → 3578 s 的两次 panic 都由此而来）。
+2. **内核堆 16 MiB 启动预留连续池**
+   `ostd/src/mm/heap/slot.rs` + `ostd/src/lib.rs`：启动早期预留 16 MiB
+   连续物理内存，heap 大槽（36–60 KiB）全部从池内 first-fit 分配，
+   不再向碎片化的 buddy 要 order-4；池峰值 **2404/4096 页**、
+   **1,293,312** 次分配、**0** 次耗尽。这是本轮从“反复挂起”变成
+   “升级跑完”的决定性一步。
+
+### L4 / L5 回归（同内核 `abe82e29`，不重跑 L6）
+
+| 关卡 | 结果 | 与基线比较 |
+|---|---|---|
+| L4 源码包构建 | 3 包 **2 ok / 1 fail**：`hello`（2 个 .deb）、`python3-minimal`（19 个 .deb）成功；`coreutils` 在 `debian/rules clean` 被 signal 11 | **一致**（coreutils 是文档中已记录的已知失败） |
+| L5 从零 rootfs | `stages=3 ok=3 fail=0`（install/foreign/second）；chroot/mount/umount/unshare 四个 probe 全 **rc=0**；`debian_version=13.7`，`/target` 持久化 | **一致**（全绿基线） |
+
+→ 16 MiB 启动池与分段回退没有引入 L4/L5 退化。
+
+### 剩余问题
+
+- **ring-buffer 增长仍要 64 KiB 连续页**（`kernel/libs/ring-buffer/src/lib.rs:112`）：
+  本轮记录 **40** 次连续失败 / **41** 次分段回退（任务书记录为 32 次，
+  数量随负载波动）；全部被分段回退接住，**没有 panic**。后续可给
+  ring-buffer 也用预留池或 4 KiB 分段；
+- negative dentry 无淘汰（46,665 条警告）、page cache 无压力回收；
+  升级完成时只剩约 1.46 GiB 空闲，余量不宽裕。
+
 ## 安全前置
 
 | 项 | 值 |

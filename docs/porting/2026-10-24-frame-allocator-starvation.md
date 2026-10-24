@@ -445,6 +445,17 @@ WARN: heap: reserved large-slot pool: base=0xffff8000a1000000 size=16 MiB (4096 
 
 证据：[`evidence/2026-10-25-l6-upgrade-pass/`](evidence/2026-10-25-l6-upgrade-pass/)。
 
+#### 最终结论
+
+- **最终解法 = 启动时预留连续池**：16 MiB、first-fit 位图、池尽回退分段；
+  heap 大槽从此不再向碎片化 buddy 要 order-4 块。L6 已完整跑完并二次启动。
+- **已排除 = slot 阶梯改造（方案 A）**：代码中没有 64 KiB 档可以降低；
+  大槽尺寸由调用方的 `Layout` 决定，缩小会破坏 `GlobalAlloc` 必须返回
+  一个连续指针的语义。上一轮被记作“方案 A”的 +126 行其实已经是池的
+  实现（见“第七轮 / 关于回退 A”）。
+- **保留**：分配器级分段回退（`alloc_segmented_with`）仍是池耗尽与
+  ring-buffer 64 KiB 的兜底路径；4 KiB 回退与 4 页内核栈继续有效。
+
 ### 下一步（L6 已通过后的收尾）
 
 1. **降低 ring-buffer 的分段回退量**：本轮仍记录 40 次失败 / 41 次回退
