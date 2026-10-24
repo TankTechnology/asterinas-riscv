@@ -11,8 +11,14 @@ use core::{
 use crate::{
     impl_frame_meta_for,
     mm::{
-        FrameAllocOptions, HasPaddr, PAGE_SIZE, Paddr, Segment, SegmentedSegment, Vaddr,
-        kspace::LINEAR_MAPPING_BASE_VADDR, paddr_to_vaddr,
+        FrameAllocOptions, HasPaddr, HasSize, Infallible, PAGE_SIZE, Paddr, Segment,
+        SegmentedSegment, Vaddr,
+        io::{
+            VmReader, VmWriter,
+            util::{HasVmReaderWriter, VmReaderWriterIdentity},
+        },
+        kspace::LINEAR_MAPPING_BASE_VADDR,
+        paddr_to_vaddr,
     },
     sync::{LocalIrqDisabled, SpinLock},
 };
@@ -64,8 +70,14 @@ impl LargeSlotPool {
     }
 
     /// First-fit allocation of `pages` consecutive pages.
-    fn alloc(&mut self, pages: usize) -> Option<Vaddr> {
+    ///
+    /// At least `reserve_pages` pages are left free after the allocation, so
+    /// other users of the shared pool (the heap's large slots) are not starved.
+    fn alloc(&mut self, pages: usize, reserve_pages: usize) -> Option<Vaddr> {
         if pages == 0 || pages > LARGE_POOL_PAGES {
+            return None;
+        }
+        if self.used_pages + pages + reserve_pages > LARGE_POOL_PAGES {
             return None;
         }
         let mut run = 0;
@@ -169,7 +181,7 @@ fn pool_alloc(pages: usize) -> Option<Vaddr> {
         }
     }
 
-    let result = pool.as_mut().and_then(|pool| pool.alloc(pages));
+    let result = pool.as_mut().and_then(|pool| pool.alloc(pages, 0));
     let used = pool.as_ref().map_or(0, |pool| pool.used_pages);
     drop(pool);
 
@@ -198,6 +210,70 @@ fn pool_alloc(pages: usize) -> Option<Vaddr> {
             }
             None
         }
+    }
+}
+
+/// A buffer allocated from the reserved contiguous pool.
+///
+/// Unlike [`SegmentedSegment`], the memory is physically contiguous (it comes
+/// from the reserved pool), so it has a linear-map virtual address. Dropping
+/// the buffer returns its pages to the pool. Callers that can live with the
+/// "leave a reserve for the heap slots" rule use this for large requests that
+/// must not touch the fragmented buddy allocator.
+pub struct ReservedPoolBuffer {
+    vaddr: Vaddr,
+    pages: usize,
+}
+
+impl ReservedPoolBuffer {
+    /// Allocates `pages` consecutive pages from the reserved pool.
+    ///
+    /// `reserve_pages` keeps that many pages free after the allocation; pass
+    /// the amount of headroom the heap slots need. Returns `None` if the pool
+    /// cannot satisfy the request while keeping the reserve.
+    pub fn alloc(pages: usize, reserve_pages: usize) -> Option<Self> {
+        let mut pool = LARGE_POOL.lock();
+        let result = pool
+            .as_mut()
+            .and_then(|pool| pool.alloc(pages, reserve_pages));
+        drop(pool);
+
+        result.map(|vaddr| Self { vaddr, pages })
+    }
+
+    /// Returns the virtual (linear-map) base address.
+    pub fn vaddr(&self) -> Vaddr {
+        self.vaddr
+    }
+}
+
+impl HasSize for ReservedPoolBuffer {
+    fn size(&self) -> usize {
+        self.pages * PAGE_SIZE
+    }
+}
+
+impl HasVmReaderWriter for ReservedPoolBuffer {
+    type Types = VmReaderWriterIdentity;
+
+    fn reader(&self) -> VmReader<'_, Infallible> {
+        let ptr = self.vaddr as *const u8;
+        // SAFETY: The pool owns the range for `'_`, and the reader/writer are
+        // the only access path offered here.
+        unsafe { VmReader::from_kernel_space(ptr, self.size()) }
+    }
+
+    fn writer(&self) -> VmWriter<'_, Infallible> {
+        let ptr = self.vaddr as *mut u8;
+        // SAFETY: The pool owns the range for `'_`, and the reader/writer are
+        // the only access path offered here.
+        unsafe { VmWriter::from_kernel_space(ptr, self.size()) }
+    }
+}
+
+impl Drop for ReservedPoolBuffer {
+    fn drop(&mut self) {
+        pool_free(self.vaddr, self.pages);
     }
 }
 

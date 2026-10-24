@@ -475,6 +475,35 @@ WARN: heap: reserved large-slot pool: base=0xffff8000a1000000 size=16 MiB (4096 
 可以避免 KVirtArea 映射开销。若后续在意这部分日志/映射开销，可再给
 ring-buffer 单独预留一个小池（沿用 heap 的 `LargeSlotPool` 思路）。
 
+### 第八轮：ring-buffer 增长走预留池（RINGPOOL，内核 `e23120606e4d942f`）
+
+**增长请求**：64 KiB ring buffer（16 页）。此前 `kernel/libs/ring-buffer/src/lib.rs:112`
+先向 frame allocator 要 16 个连续页，碎片化时失败，再走分段回退。
+
+**改法**：
+
+- 页数 > 4 的 ring buffer 先调用
+  `ReservedPoolBuffer::alloc(nframes, 1024)`：共享 heap 的 16 MiB 预留池，
+  但**保留 1024 页（4 MiB）给 heap 大槽**，避免把让 L6 通过的池饿死；
+- 命中 → 线性映射的连续内存，不触碰 frame allocator，也没有 KVirtArea 映射；
+- 未命中 → 回退到原来的分段路径（`alloc_segmented`），再不行才降容量；
+- 日志：`ring-buffer: pool hit/miss: pages=… total=…`（前 8 次、之后每 256 次）。
+
+**L5 回归（只跑 L5，按任务纪律）**：
+
+| 项 | 值 |
+|---|---|
+| 阶段 | **stages=3 ok=3**（install 19.99 s、foreign 44.66 s、second 440.18 s） |
+| probe | chroot / mount / umount / unshare 全 **rc=0** |
+| 版本 | `debian_version=13.7`，`/target` 持久化（133,124 KB） |
+| ring-buffer 池 | **15 次命中、11 次未命中**（未命中走分段） |
+| `size=65536` 的分配失败 | **0** |
+| 全部 `allocation failed` | **0** |
+
+与 L5 基线一致，无退化。heap 主路径未改（`ReservedPoolBuffer` 的
+reserve 只为 ring buffer 设置；heap 仍以 reserve=0 使用同一池），
+因此按任务要求没有重跑 L6。
+
 ### 下一步（L6 已通过后的收尾）
 
 1. **降低 ring-buffer 的分段回退量**：本轮仍记录 40 次失败 / 41 次回退

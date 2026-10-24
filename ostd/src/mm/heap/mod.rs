@@ -15,7 +15,7 @@ mod slot_list;
 
 pub use self::{
     slab::{Slab, SlabMeta},
-    slot::{HeapSlot, SlotInfo},
+    slot::{HeapSlot, ReservedPoolBuffer, SlotInfo},
     slot_list::SlabSlotList,
 };
 

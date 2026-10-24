@@ -4,6 +4,13 @@
 
 extern crate alloc;
 
+/// Log prefix for messages emitted by this crate.
+macro_rules! __log_prefix {
+    () => {
+        "ring-buffer: "
+    };
+}
+
 use alloc::sync::Arc;
 use core::{
     marker::PhantomData,
@@ -14,13 +21,89 @@ use core::{
 
 use inherit_methods_macro::inherit_methods;
 use ostd::mm::{
-    FrameAllocOptions, PAGE_SIZE, SegmentedSegment, VmIo, io::util::HasVmReaderWriter,
+    FrameAllocOptions, HasSize, Infallible, PAGE_SIZE, SegmentedSegment, VmIo, VmReader, VmWriter,
+    heap::ReservedPoolBuffer,
+    io::util::{HasVmReaderWriter, VmReaderWriterIdentity},
 };
 use ostd_pod::Pod;
 
+/// Requests above this many pages try the reserved heap pool first.
+///
+/// Only the 64 KiB class (16 pages) is worth taking from the pool; smaller
+/// buffers are cheap to allocate contiguously from the buddy allocator.
+const POOL_MIN_PAGES: usize = 4;
+
+/// Pages kept free in the shared pool for the heap's own large slots.
+const POOL_RESERVE_PAGES: usize = 1024;
+
+static POOL_HITS: AtomicUsize = AtomicUsize::new(0);
+static POOL_MISSES: AtomicUsize = AtomicUsize::new(0);
+
+fn log_pool_event(hit: bool, nframes: usize) {
+    let (count, what) = if hit {
+        (
+            POOL_HITS.fetch_add(1, Ordering::Relaxed) + 1,
+            "pool hit",
+        )
+    } else {
+        (
+            POOL_MISSES.fetch_add(1, Ordering::Relaxed) + 1,
+            "pool miss, segmented fallback",
+        )
+    };
+    if count <= 8 || count % 256 == 0 {
+        ostd::warn!(
+            "{}: pages={} total={}",
+            what,
+            nframes,
+            count
+        );
+    }
+}
+
+/// The backing storage of a ring buffer.
+///
+/// It is either a segmented allocation (physically scattered, virtually
+/// contiguous) or a buffer from the reserved contiguous pool. Callers only
+/// need [`HasVmReaderWriter`] and [`HasSize`].
+pub enum Storage {
+    /// A segmented allocation.
+    Segmented(SegmentedSegment<()>),
+    /// A buffer from the reserved heap pool.
+    Pooled(ReservedPoolBuffer),
+}
+
+impl HasSize for Storage {
+    fn size(&self) -> usize {
+        match self {
+            Self::Segmented(segment) => segment.size(),
+            Self::Pooled(buffer) => buffer.size(),
+        }
+    }
+}
+
+impl HasVmReaderWriter for Storage {
+    type Types = VmReaderWriterIdentity;
+
+    fn reader(&self) -> VmReader<'_, Infallible> {
+        match self {
+            Self::Segmented(segment) => segment.reader(),
+            Self::Pooled(buffer) => buffer.reader(),
+        }
+    }
+
+    fn writer(&self) -> VmWriter<'_, Infallible> {
+        match self {
+            Self::Segmented(segment) => segment.writer(),
+            Self::Pooled(buffer) => buffer.writer(),
+        }
+    }
+}
+
 /// A lock-free single-producer single-consumer (SPSC) FIFO ring buffer.
 ///
-/// This ring buffer is backed by a [`SegmentedSegment<()>`] and provides non-blocking
+/// This ring buffer is backed by a [`SegmentedSegment<()>`] or a buffer from
+/// the reserved heap pool, and provides non-blocking
 /// `push`/`pop` and `push_slice`/`pop_slice` operations for `T: Pod` items.
 /// It is designed for concurrent use where one thread produces items and
 /// another consumes them without requiring locks.
@@ -49,7 +132,7 @@ use ostd_pod::Pod;
 /// assert_eq!(consumer.pop(), Some(42));
 /// ```
 pub struct RingBuffer<T> {
-    segment: SegmentedSegment<()>,
+    storage: Storage,
     capacity: usize,
     tail: AtomicUsize,
     head: AtomicUsize,
@@ -109,10 +192,28 @@ impl<T> RingBuffer<T> {
                 .checked_mul(Self::T_SIZE)
                 .unwrap()
                 .div_ceil(PAGE_SIZE);
+
+            // Large buffers (the 64 KiB class) come from the reserved heap
+            // pool, which is physically contiguous and needs no page-table
+            // work. A reserve keeps the heap's own large slots supplied.
+            if nframes > POOL_MIN_PAGES {
+                if let Some(buffer) = ReservedPoolBuffer::alloc(nframes, POOL_RESERVE_PAGES) {
+                    log_pool_event(true, nframes);
+                    return Self {
+                        storage: Storage::Pooled(buffer),
+                        capacity,
+                        tail: AtomicUsize::new(0),
+                        head: AtomicUsize::new(0),
+                        phantom: PhantomData,
+                    };
+                }
+                log_pool_event(false, nframes);
+            }
+
             match FrameAllocOptions::new().zeroed(false).alloc_segmented(nframes) {
                 Ok(segment) => {
                     return Self {
-                        segment,
+                        storage: Storage::Segmented(segment),
                         capacity,
                         tail: AtomicUsize::new(0),
                         head: AtomicUsize::new(0),
@@ -152,8 +253,8 @@ impl<T> RingBuffer<T> {
     /// Returns a reference to the underlying memory segment.
     ///
     /// This is intended for advanced use cases that require direct memory access.
-    pub fn segment(&self) -> &SegmentedSegment<()> {
-        &self.segment
+    pub fn segment(&self) -> &Storage {
+        &self.storage
     }
 
     /// Returns `true` if the ring buffer contains no items.
@@ -318,7 +419,7 @@ impl<T: Pod, R: Deref<Target = RingBuffer<T>>> Producer<T, R> {
         let offset = tail.0 & (rb.capacity - 1);
         let byte_offset = offset * Self::T_SIZE;
 
-        let mut writer = rb.segment.writer();
+        let mut writer = rb.storage.writer();
         writer.skip(byte_offset);
         writer.write_val(&item).unwrap();
 
@@ -344,14 +445,14 @@ impl<T: Pod, R: Deref<Target = RingBuffer<T>>> Producer<T, R> {
 
         if offset + nitems > rb.capacity {
             // Write into two separate parts due to wraparound.
-            rb.segment
+            rb.storage
                 .write_slice(byte_offset, &items[..rb.capacity - offset])
                 .unwrap();
-            rb.segment
+            rb.storage
                 .write_slice(0, &items[rb.capacity - offset..])
                 .unwrap();
         } else {
-            rb.segment.write_slice(byte_offset, items).unwrap();
+            rb.storage.write_slice(byte_offset, items).unwrap();
         }
 
         rb.advance_tail(tail, nitems);
@@ -368,7 +469,7 @@ impl<T, R: Deref<Target = RingBuffer<T>>> Producer<T, R> {
     pub fn free_len(&self) -> usize;
     pub fn head(&self) -> Wrapping<usize>;
     pub fn tail(&self) -> Wrapping<usize>;
-    pub fn segment(&self) -> &SegmentedSegment<()>;
+    pub fn segment(&self) -> &Storage;
 }
 
 impl<T, R: Deref<Target = RingBuffer<T>>> Producer<T, R> {
@@ -407,7 +508,7 @@ impl<T: Pod, R: Deref<Target = RingBuffer<T>>> Consumer<T, R> {
         let offset = head.0 & (rb.capacity - 1);
         let byte_offset = offset * Self::T_SIZE;
 
-        let mut reader = rb.segment.reader();
+        let mut reader = rb.storage.reader();
         reader.skip(byte_offset);
         let item = reader.read_val::<T>().unwrap();
 
@@ -433,14 +534,14 @@ impl<T: Pod, R: Deref<Target = RingBuffer<T>>> Consumer<T, R> {
 
         if offset + nitems > rb.capacity {
             // Read from two separate parts due to wraparound.
-            rb.segment
+            rb.storage
                 .read_slice(byte_offset, &mut items[..rb.capacity - offset])
                 .unwrap();
-            rb.segment
+            rb.storage
                 .read_slice(0, &mut items[rb.capacity - offset..])
                 .unwrap();
         } else {
-            rb.segment.read_slice(byte_offset, items).unwrap();
+            rb.storage.read_slice(byte_offset, items).unwrap();
         }
 
         rb.advance_head(head, nitems);
@@ -478,7 +579,7 @@ impl<T, R: Deref<Target = RingBuffer<T>>> Consumer<T, R> {
     pub fn free_len(&self) -> usize;
     pub fn head(&self) -> Wrapping<usize>;
     pub fn tail(&self) -> Wrapping<usize>;
-    pub fn segment(&self) -> &SegmentedSegment<()>;
+    pub fn segment(&self) -> &Storage;
 }
 
 impl<T, R: Deref<Target = RingBuffer<T>>> Consumer<T, R> {
