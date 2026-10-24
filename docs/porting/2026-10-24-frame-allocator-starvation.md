@@ -347,20 +347,68 @@ free_local=196587520  free_global=891371520
 
 证据：[`evidence/2026-10-24-l6-caller-trace/`](evidence/2026-10-24-l6-caller-trace/)。
 
+### 第六轮：heap 大槽预留池（HEAPSLOT，方案 B，内核 `ea6e711905fb4833`）
+
+#### 读代码：slot 的“阶梯”是什么
+
+| 项 | 事实（代码） |
+|---|---|
+| slab 类 | 8 / 16 / 32 / 64 / 128 / 256 / 512 / 1024 / 2048 B；每个 slab 一页（`Slab::new`） |
+| 大槽 | `layout.size() > 2048` 且 `align <= PAGE_SIZE` → `LargeSlot(round_up(size, PAGE))`（`type_from_layout`） |
+| 64 KiB 档 | **不存在**。9–15 页就是调用方真实的 36–60 KiB 布局取整，不是固定阶梯 |
+| 失败语义 | `alloc_large` 返回 Err → `GlobalAlloc::alloc` 返回 null → `handle_alloc_error` abort；堆**不能**用小 slot 拼，因为 `GlobalAlloc` 必须返回一个连续指针 |
+
+**纠正上一轮的前提**：`segment allocation failed` 只是**连续尝试**失败；
+紧接其后的 `segmented fallback` 是**成功**的（上一轮 0 个 heap error）。
+所以“连分段降级也救不了”不成立——真正的问题是分段路径下的挂起。
+
+#### 方案选择：B（预留连续池）
+
+- **A 不可行**：没有 64 KiB 上限档可降；调用方要 60 KiB，缩成 16 KiB
+  会破坏分配语义。GlobalAlloc 必须返回覆盖整个 layout 的连续指针。
+- **B 可行**：首次大槽分配时一次性 `alloc_segment(2048)`（**8 MiB**），
+  first-fit 位图分配/归还；池地址释放直接清位；池尽则回退到分段路径。
+  目的：让 heap 大槽绕开 KVirtArea 映射，同时检验挂起是否与映射路径有关。
+
+实现位置：`ostd/src/mm/heap/slot.rs`（`LargeSlotPool`、`pool_alloc`/`pool_free`）。
+
+#### 结果
+
+| 项 | 值 |
+|---|---|
+| 池覆盖期 | 到 **3614.989 s** 才出现第一次 `segment allocation failed`（池此时耗尽） |
+| 失败/回退 | 最后打印 #256 次失败 / #320 次回退（之后限流） |
+| 未满足请求 | **0**（无 `spawn task failed` / panic / `Heap allocation error`） |
+| 进度 | 338/341 解包、78 配置 |
+| 挂起 | **3642.937 s** 后控制台停止；QEMU **205%** CPU 空转、无 panic |
+| 与上一轮相比 | 首次分段回退从 3392 s 推迟到 3615 s（+223 s），但**池耗尽后仅 28 s 就挂起** |
+
+判读：
+
+1. **池本身工作正常**：数千次大槽分配没有触发连续失败，也没有破坏堆；
+   8 MiB 在 3614.9 s 的突发中被耗尽。
+2. **8 MiB 不够覆盖突发**，但更关键的是：**挂起紧跟在池耗尽后的分段回退
+   突发之后**（28 s），且比前两轮（3885 s、4083 s）更早。这支持“分段
+   映射/释放路径在突发下存在锁序问题”，而不是单纯的容量不足。
+3. 判定仍为 **B**（有改善但未完成）：分配请求全部被满足，升级仍未跑完。
+
+证据：[`evidence/2026-10-24-l6-heapslot-pool/`](evidence/2026-10-24-l6-heapslot-pool/)。
+
 ### 下一步（按优先级）
 
-1. **定位 3884.9 s 的挂起**（最高优先）：调用者追踪已确认请求方是
-   **heap large slot**（`ostd/src/mm/heap/slot.rs:87`），下一步在挂起时抓
-   每个 CPU 的 backtrace（watchdog 或 NMI 处理），确认卡在页表锁/RCU/
-   控制台锁中的哪一处；没有 backtrace 之前不要再猜。
-2. **二分回退定位**（低成本的对照）：把 heap large slot 改回
-   `alloc_segment_with`、只保留 ring-buffer 分段，重跑；若不再挂起，
-   说明问题在 heap 的 map/unmap 路径，反之在 ring-buffer。
-3. **给 heap 大块换一条不依赖页表映射的路**：例如 boot 时预留一小段
-   连续物理内存专门服务 large slot（无需 KVirtArea），或把映射推迟到
-   锁外；分段映射不应出现在任意分配上下文中。
-4. **总量/高阶**：page cache 压力回收/上限；1.49 GiB 的应用层空闲仍无法
-   阻止低阶枯竭，长期必须回收。
+1. **抓挂起现场的 backtrace**（最高优先）：挂起已三次出现在分段回退
+   突发之后（3885 / 4083 / 3643 s），且本轮池耗尽后 28 s 即挂起；用
+   watchdog 或 NMI 打印每个 CPU 的返回地址，定位是页表锁、RCU 还是
+   控制台锁。没有 backtrace 之前不要再改分配策略。
+2. **扩大池做对照**：把 8 MiB 提到 64–128 MiB（或让池可增长），如果
+   挂起消失，说明只是容量；如果仍在池耗尽后挂起，则确认是分段路径的
+   锁序问题。
+3. **锁序审计**：`KVirtArea::try_map_frames` / `KVirtArea::Drop` 会在
+   heap 分配、ring-buffer 创建、RCU 延迟释放等任意上下文中拿页表锁；
+   检查这些上下文已持有的锁（socket、pipe、heap、RCU）是否与页错误/
+   其他映射路径形成环。
+4. **总量/高阶**：page cache 压力回收/上限；长期仍需回收，否则低阶也会
+   枯竭。
 
 ## 复现
 

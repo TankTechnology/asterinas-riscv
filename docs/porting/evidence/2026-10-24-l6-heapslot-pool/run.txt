@@ -1,0 +1,18 @@
+# L6 with the 8 MiB large-slot pool (kernel ea6e711905fb4833)
+date: 2026-10-24
+workspace: target/debian-upgrade-heapslot
+base/copy sha256: 450ebe3bf2506c290902d55ae651ba796e67c0b9a846c528de34528f82a083e0
+unpacking=338
+setting_up=78
+first_segment_failure=segment allocation failed #1
+last_logged_segment_failure=segment allocation failed #256
+last_logged_fallback=segmented fallback #320
+spawn_or_heap_errors=0
+console_last_timestamp=[  3642.937]
+console_bytes=10509228
+qemu_cpu_at_hang=205%
+
+## first fallback callers
+[  3614.989] WARN  : segment allocation failed #1: pages=15 caller=/home/arch-anjie/Program/asterinas-riscv/ostd/src/mm/heap/slot.rs:206:14
+[  3615.133] WARN  : segment allocation failed #2: pages=13 caller=/home/arch-anjie/Program/asterinas-riscv/ostd/src/mm/heap/slot.rs:206:14
+[  3615.218] WARN  : segment allocation failed #3: pages=11 caller=/home/arch-anjie/Program/asterinas-riscv/ostd/src/mm/heap/slot.rs:206:14

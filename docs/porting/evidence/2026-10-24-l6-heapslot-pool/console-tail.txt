@@ -1,0 +1,20 @@
+[  3638.487] WARN  : number of negative dentries has reached 44070
+[  3638.729] WARN  : number of negative dentries has reached 44070
+[  3638.976] WARN  : number of negative dentries has reached 44070
+[  3639.087] WARN  : frame allocator: segmented fallback #320: pages=13 bytes=53248 caller=/home/arch-anjie/Program/asterinas-riscv/ostd/src/mm/heap/slot.rs:206:14
+[  3639.221] WARN  : number of negative dentries has reached 44070
+[  3639.470] WARN  : number of negative dentries has reached 44070
+[  3639.737] WARN  : number of negative dentries has reached 44070
+[  3639.976] WARN  : number of negative dentries has reached 44070
+[  3640.235] WARN  : number of negative dentries has reached 44070
+[  3640.478] WARN  : number of negative dentries has reached 44070
+[  3640.726] WARN  : number of negative dentries has reached 44070
+[  3640.972] WARN  : number of negative dentries has reached 44070
+[  3641.216] WARN  : number of negative dentries has reached 44070
+[  3641.464] WARN  : number of negative dentries has reached 44070
+[  3641.706] WARN  : number of negative dentries has reached 44070
+[  3641.956] WARN  : number of negative dentries has reached 44070
+[  3642.203] WARN  : number of negative dentries has reached 44070
+[  3642.447] WARN  : number of negative dentries has reached 44070
+[  3642.695] WARN  : number of negative dentries has reached 44070
+[  3642.937] WARN  : number of negative dentries has reached 44070
