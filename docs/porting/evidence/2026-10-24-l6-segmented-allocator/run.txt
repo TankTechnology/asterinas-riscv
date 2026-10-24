@@ -1,0 +1,27 @@
+# L6 with the allocator-level segmented fallback (kernel e8f0bda9321496ef)
+date: 2026-10-24
+git_head: f67945641 + uncommitted allocator work
+kernel_sha256: e8f0bda9321496efabbe538a2680b18513ef59248818ef26c10ceb7daf5cbaaa
+workspace: target/debian-upgrade-allocseg2
+base_path=/home/arch-anjie/Program/asterinas-riscv/target/systemd-health/daily.ext2
+base_sha256=450ebe3bf2506c290902d55ae651ba796e67c0b9a846c528de34528f82a083e0
+copy_path=/home/arch-anjie/Program/asterinas-riscv/target/debian-upgrade-allocseg2/daily.ext2
+copy_sha256=450ebe3bf2506c290902d55ae651ba796e67c0b9a846c528de34528f82a083e0
+copy_dur=1.32
+unpacking=341
+setting_up=243
+segmented_fallback_logged=8
+spawn_task_failed=0
+uncaught_panic=0
+heap_alloc_error=0
+console_last_timestamp=4083.595
+console_bytes=15408410
+negative_dentry_lines=84755
+
+## stages.tsv
+stage	rc	category	dur	free_before_kb	free_after_kb	detail
+copy	0	ok	1.32			base_sha256=450ebe3bf2506c290902d55ae651ba796e67c0b9a846c528de34528f82a083e0 copy_sha256=450ebe3bf2506c290902d55ae651ba796e67c0b9a846c528de34528f82a083e0
+source	0	ok	0.05	2308940	2308936	deb_https://mirrors.tuna.tsinghua.edu.cn/debian_forky_main
+update	0	ok	12.39	2308936	2297940	upgradable=297
+upgrade	-1	other	0.00			missing
+reboot	0	ok	10.83			debian_version=forky/sid state=running state= login=True

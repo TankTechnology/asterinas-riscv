@@ -2,23 +2,60 @@
 
 //! The physical memory allocator.
 
-use core::{alloc::Layout, ops::Range};
+use core::{
+    alloc::Layout,
+    ops::Range,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use align_ext::AlignExt;
 
-use super::{Frame, meta::AnyFrameMeta, segment::Segment};
+use super::{
+    Frame, meta::AnyFrameMeta, segment::Segment, segmented::SegmentedSegment,
+};
 use crate::{
     boot::memory_region::MemoryRegionType,
     error::Error,
     impl_frame_meta_for,
-    mm::{PAGE_SIZE, paddr_to_vaddr},
+    mm::{
+        PAGE_SIZE,
+        kspace::kvirt_area::KVirtArea,
+        page_prop::{CachePolicy, PageFlags, PageProperty, PrivilegedPageFlags},
+        paddr_to_vaddr,
+    },
     prelude::*,
     util::ops::range_difference,
 };
 
+/// The page count at which the segmented fallback starts splitting.
+///
+/// Requests up to this many pages are always served by one contiguous segment
+/// (or fail); only larger requests may be split.
+const SEGMENTED_FALLBACK_MIN_PAGES: usize = 4;
+
+/// The largest chunk (in pages) tried first when splitting a large request.
+const SEGMENTED_CHUNK_PAGES: usize = 4;
+
+/// How many times the segmented fallback has been used.
+static SEGMENTED_FALLBACK_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// How many segmented fallbacks are reported before the log is suppressed.
+const MAX_SEGMENTED_FALLBACK_LOGS: usize = 8;
+
+/// The maximum number of chunks a segmented fallback will allocate.
+///
+/// The chunks are collected before the mapping starts (so no frame allocation
+/// happens while page-table locks are held). 64 four-page chunks cover 1 MiB,
+/// which is well beyond the large requests seen under fragmentation.
+const SEGMENTED_MAX_CHUNKS: usize = 64;
+
 /// Options for allocating physical memory frames.
 pub struct FrameAllocOptions {
     zeroed: bool,
+    /// Forces [`Self::alloc_segmented_with`] to skip the contiguous attempt.
+    /// Only used by tests to exercise the fallback path.
+    #[cfg(ktest)]
+    force_segmented: bool,
 }
 
 impl Default for FrameAllocOptions {
@@ -30,7 +67,11 @@ impl Default for FrameAllocOptions {
 impl FrameAllocOptions {
     /// Creates new options for allocating the specified number of frames.
     pub fn new() -> Self {
-        Self { zeroed: true }
+        Self {
+            zeroed: true,
+            #[cfg(ktest)]
+            force_segmented: false,
+        }
     }
 
     /// Sets whether the allocated frames should be initialized with zeros.
@@ -103,6 +144,110 @@ impl FrameAllocOptions {
 
         Ok(segment)
     }
+
+    /// Allocates a range of untyped frames that may be physically
+    /// non-contiguous.
+    ///
+    /// See [`Self::alloc_segmented_with`] for the fallback behavior.
+    pub fn alloc_segmented(&self, nframes: usize) -> Result<SegmentedSegment<()>> {
+        self.alloc_segmented_with(nframes, |_| ())
+    }
+
+    /// Allocates a range of frames that may be physically non-contiguous.
+    ///
+    /// The method first tries a single contiguous segment, exactly like
+    /// [`Self::alloc_segment_with`]. If that fails and the request is larger
+    /// than an order-2 block, it allocates several smaller chunks (starting at
+    /// four pages and halving on failure) and maps them into one kernel
+    /// virtual area. The caller sees one virtually contiguous buffer and no
+    /// physical base address.
+    ///
+    /// A failure rolls back: every chunk allocated so far is released before
+    /// `Error::NoMemory` is returned.
+    pub fn alloc_segmented_with<M: AnyFrameMeta, F>(
+        &self,
+        nframes: usize,
+        mut metadata_fn: F,
+    ) -> Result<SegmentedSegment<M>>
+    where
+        F: FnMut(Paddr) -> M,
+    {
+        if nframes == 0 {
+            return Err(Error::InvalidArgs);
+        }
+
+        let try_contiguous = {
+            #[cfg(ktest)]
+            {
+                !self.force_segmented
+            }
+            #[cfg(not(ktest))]
+            {
+                true
+            }
+        };
+
+        if try_contiguous {
+            match self.alloc_segment_with(nframes, &mut metadata_fn) {
+                Ok(segment) => return Ok(SegmentedSegment::contiguous(segment)),
+                Err(Error::NoMemory) if nframes > SEGMENTED_FALLBACK_MIN_PAGES => {}
+                Err(err) => return Err(err),
+            }
+        }
+
+        let nbytes = nframes * PAGE_SIZE;
+        let prop = PageProperty {
+            flags: PageFlags::RW,
+            cache: CachePolicy::Writeback,
+            priv_flags: PrivilegedPageFlags::empty(),
+        };
+
+        // Allocate every chunk before mapping anything. Mapping holds
+        // page-table locks, and allocating frames under those locks risks a
+        // lock-order inversion with the heap and the page-fault path.
+        if nframes.div_ceil(SEGMENTED_CHUNK_PAGES) > SEGMENTED_MAX_CHUNKS {
+            return Err(Error::NoMemory);
+        }
+        let mut segments: [Option<Segment<M>>; SEGMENTED_MAX_CHUNKS] =
+            [const { None }; SEGMENTED_MAX_CHUNKS];
+        let mut remaining = nframes;
+        let mut used = 0;
+        while remaining > 0 {
+            let mut pages = SEGMENTED_CHUNK_PAGES.min(remaining);
+            let segment = loop {
+                let mut options = FrameAllocOptions::new();
+                options.zeroed(self.zeroed);
+                match options.alloc_segment_with(pages, &mut metadata_fn) {
+                    Ok(segment) => break segment,
+                    // Start with the largest chunk and halve it if the buddy
+                    // allocator cannot provide it.
+                    Err(_) if pages > 1 => pages /= 2,
+                    // Dropping `segments` releases every chunk allocated so far.
+                    Err(err) => return Err(err),
+                }
+            };
+            remaining -= pages;
+            segments[used] = Some(segment);
+            used += 1;
+        }
+
+        let frames = segments
+            .iter_mut()
+            .take(used)
+            .filter_map(|segment| segment.take())
+            .flat_map(|segment| segment.into_iter());
+        let area = KVirtArea::try_map_frames(nbytes, 0, frames, prop)?;
+
+        let count = SEGMENTED_FALLBACK_COUNT.fetch_add(1, Ordering::Relaxed);
+        if count < MAX_SEGMENTED_FALLBACK_LOGS {
+            warn!(
+                "frame allocator: segmented fallback for {} pages ({} bytes)",
+                nframes, nbytes
+            );
+        }
+
+        Ok(SegmentedSegment::mapped(area, nbytes))
+    }
 }
 
 #[cfg(ktest)]
@@ -124,6 +269,36 @@ fn test_alloc_dealloc() {
         let contiguous_segment = contiguous_options.alloc_segment(10).unwrap();
         drop(contiguous_segment);
         remember_vec.pop();
+    }
+}
+
+#[cfg(ktest)]
+#[ktest(expect_redundant_test_prefix)]
+fn test_alloc_segmented_fallback() {
+    use crate::mm::{VmIo, VmReader, VmWriter};
+
+    let mut options = FrameAllocOptions::new();
+    options.zeroed(false);
+    // Skip the contiguous attempt so the chunked path is always taken.
+    options.force_segmented = true;
+
+    // Five pages: one four-page chunk plus a one-page tail. A fragmented
+    // allocator that can still serve order-2 chunks must satisfy this.
+    let segment = options.alloc_segmented_with(5, |_| ()).unwrap();
+    assert_eq!(segment.size(), 5 * PAGE_SIZE);
+    assert!(!segment.is_contiguous());
+
+    // The first and the last chunk must be reachable through the single
+    // virtual mapping.
+    let source = [0x5a_u8; 64];
+    for offset in [0, 5 * PAGE_SIZE - 64] {
+        let mut reader = VmReader::from(&source[..]).to_fallible();
+        segment.write(offset, &mut reader).unwrap();
+
+        let mut buf = [0u8; 64];
+        let mut writer = VmWriter::from(&mut buf[..]).to_fallible();
+        segment.read(offset, &mut writer).unwrap();
+        assert_eq!(buf, source);
     }
 }
 

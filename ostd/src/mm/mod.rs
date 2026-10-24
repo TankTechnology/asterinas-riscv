@@ -33,6 +33,7 @@ pub use self::{
         Frame,
         allocator::FrameAllocOptions,
         segment::{Segment, USegment},
+        segmented::SegmentedSegment,
         unique::UniqueFrame,
         untyped::{AnyUFrameMeta, UFrame},
     },

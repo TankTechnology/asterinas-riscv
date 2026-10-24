@@ -13,12 +13,14 @@ use core::{
 };
 
 use inherit_methods_macro::inherit_methods;
-use ostd::mm::{FrameAllocOptions, PAGE_SIZE, Segment, VmIo, io::util::HasVmReaderWriter};
+use ostd::mm::{
+    FrameAllocOptions, PAGE_SIZE, SegmentedSegment, VmIo, io::util::HasVmReaderWriter,
+};
 use ostd_pod::Pod;
 
 /// A lock-free single-producer single-consumer (SPSC) FIFO ring buffer.
 ///
-/// This ring buffer is backed by a [`Segment<()>`] and provides non-blocking
+/// This ring buffer is backed by a [`SegmentedSegment<()>`] and provides non-blocking
 /// `push`/`pop` and `push_slice`/`pop_slice` operations for `T: Pod` items.
 /// It is designed for concurrent use where one thread produces items and
 /// another consumes them without requiring locks.
@@ -47,7 +49,7 @@ use ostd_pod::Pod;
 /// assert_eq!(consumer.pop(), Some(42));
 /// ```
 pub struct RingBuffer<T> {
-    segment: Segment<()>,
+    segment: SegmentedSegment<()>,
     capacity: usize,
     tail: AtomicUsize,
     head: AtomicUsize,
@@ -85,30 +87,44 @@ impl<T> RingBuffer<T> {
 
     /// Creates a new ring buffer with the specified capacity.
     ///
+    /// Under memory fragmentation the buddy allocator may be unable to provide
+    /// the requested contiguous run. Since the buffer is accessed through a
+    /// single [`Segment`], the capacity is halved until the allocation fits
+    /// (down to one page). The effective capacity is stored in the buffer and
+    /// reported by [`capacity`](Self::capacity), so all callers stay consistent.
+    ///
     /// # Panics
     ///
-    /// Panics if `capacity` is not a power of two.
+    /// Panics if `capacity` is not a power of two, or if even a one-page
+    /// buffer cannot be allocated.
     pub fn new(capacity: usize) -> Self {
         assert!(
             capacity.is_power_of_two(),
             "capacity must be a power of two"
         );
 
-        let nframes = capacity
-            .checked_mul(Self::T_SIZE)
-            .unwrap()
-            .div_ceil(PAGE_SIZE);
-        let segment = FrameAllocOptions::new()
-            .zeroed(false)
-            .alloc_segment(nframes)
-            .unwrap();
-
-        Self {
-            segment,
-            capacity,
-            tail: AtomicUsize::new(0),
-            head: AtomicUsize::new(0),
-            phantom: PhantomData,
+        let mut capacity = capacity;
+        loop {
+            let nframes = capacity
+                .checked_mul(Self::T_SIZE)
+                .unwrap()
+                .div_ceil(PAGE_SIZE);
+            match FrameAllocOptions::new().zeroed(false).alloc_segmented(nframes) {
+                Ok(segment) => {
+                    return Self {
+                        segment,
+                        capacity,
+                        tail: AtomicUsize::new(0),
+                        head: AtomicUsize::new(0),
+                        phantom: PhantomData,
+                    };
+                }
+                Err(_) if nframes > 1 && capacity > 1 => capacity /= 2,
+                Err(err) => panic!(
+                    "ring buffer: cannot allocate {} page(s) for a capacity of {}: {:?}",
+                    nframes, capacity, err
+                ),
+            }
         }
     }
 
@@ -136,7 +152,7 @@ impl<T> RingBuffer<T> {
     /// Returns a reference to the underlying memory segment.
     ///
     /// This is intended for advanced use cases that require direct memory access.
-    pub fn segment(&self) -> &Segment<()> {
+    pub fn segment(&self) -> &SegmentedSegment<()> {
         &self.segment
     }
 
@@ -352,7 +368,7 @@ impl<T, R: Deref<Target = RingBuffer<T>>> Producer<T, R> {
     pub fn free_len(&self) -> usize;
     pub fn head(&self) -> Wrapping<usize>;
     pub fn tail(&self) -> Wrapping<usize>;
-    pub fn segment(&self) -> &Segment<()>;
+    pub fn segment(&self) -> &SegmentedSegment<()>;
 }
 
 impl<T, R: Deref<Target = RingBuffer<T>>> Producer<T, R> {
@@ -462,7 +478,7 @@ impl<T, R: Deref<Target = RingBuffer<T>>> Consumer<T, R> {
     pub fn free_len(&self) -> usize;
     pub fn head(&self) -> Wrapping<usize>;
     pub fn tail(&self) -> Wrapping<usize>;
-    pub fn segment(&self) -> &Segment<()>;
+    pub fn segment(&self) -> &SegmentedSegment<()>;
 }
 
 impl<T, R: Deref<Target = RingBuffer<T>>> Consumer<T, R> {

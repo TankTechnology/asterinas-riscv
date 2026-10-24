@@ -247,22 +247,82 @@ free_local=196587520  free_global=891371520
    （已修）、order-4 环形缓冲（新暴露）。碎片本身没有变，只是每次把
    要求降一档，下一个“必须连续 16 页”的调用者就浮出来。
 
+### 第四轮：分配器级分段回退（ALLOCSEG）
+
+不再逐个消费者打补丁，而是在 `FrameAllocOptions` 里提供统一的“连续优先、
+分段兜底”接口。
+
+#### 接口与实现
+
+| 组件 | 位置 | 作用 |
+|---|---|---|
+| `SegmentedSegment<M>` | `ostd/src/mm/frame/segmented.rs`（新文件） | 物理可能分段、虚拟连续；实现 `HasSize`/`HasVmReaderWriter`；**故意不实现 `HasPaddr`**，防止 DMA/连续 VMO 误用 |
+| `FrameAllocOptions::alloc_segmented_with` | `ostd/src/mm/frame/allocator.rs` | 先试连续；失败且 `nframes > 4` 时按 **4 页 → 2 页 → 1 页** 逐段分配，最多 64 段（1 MiB）；**先分配完所有段再映射**；任一段失败即全部释放并返回 `NoMemory`；计数 + 前 8 次日志 |
+| `KVirtArea::try_map_frames` | `ostd/src/mm/kspace/kvirt_area.rs` | 精确映射指定页数；迭代器提前结束则回滚（unmap + 释放帧）；映射后做 TLB flush |
+| `KVirtArea::from_mapped_range` | 同上 | 供 heap 在释放时按 vaddr 区间重建映射 |
+| ring buffer | `kernel/libs/ring-buffer/src/lib.rs` | 改用 `SegmentedSegment`；保留容量减半兜底 |
+| heap large slot | `ostd/src/mm/heap/slot.rs` | `alloc_large` 用分段接口；记录 vaddr；释放时按 vaddr 是否在线性映射区决定重建 `Segment` 还是 `KVirtArea` |
+| 调用时机门槛 | `SEGMENTED_FALLBACK_MIN_PAGES = 4` | 只有大于 order-2 的请求才允许分段 |
+
+**为什么不做成对 `alloc_segment_with` 的全局透明替换**：`Segment` 的
+`HasPaddr`/`into_raw` 语义被 DMA、IOMMU、连续 VMO、bigtcp、块 I/O 等
+52 处调用依赖；把分段内存塞进 `Segment` 会静默破坏物理连续性。因此
+分段回退是**显式接口**，只给只需要虚拟访问的调用者用。
+
+#### 第一次验证（内核 `936405d67e58e949`）：挂起
+
+- 分段回退确实生效：每次 order-4 失败后都有
+  `frame allocator: segmented fallback for N pages`，覆盖 9–64 页；
+- 但在 guest **3708.314 s** 控制台**突然停止**，无 panic、无 `spawn task
+  failed`；QEMU 仍占 166% CPU，控制台 25 分钟无增长 → 疑似死锁；
+- 当时的实现是“映射过程中按需分配 chunk”（在页表锁内分配帧），且
+  `allocation failed` 日志未限流（3,027 条）。
+
+改造：**先分配所有 chunk，再拿页表锁映射**（消除锁内分配）；并把
+`allocation failed` 日志限流到前 32 条。
+
+#### 第二次验证（内核 `e8f0bda9321496ef`）：仍挂起，但推进更远
+
+| 项 | 值 |
+|---|---|
+| 分段回退（日志） | 8 次：64 / 16×4 / 15 / 14 / 11 页 |
+| `spawn task failed` / `Uncaught panic` / `Heap allocation error` | **0 / 0 / 0** |
+| 解包 / 配置 | **341/341** / **243**（此前最好 154） |
+| 控制台停止 | guest **4083.595 s**，之后 28 分钟无输出；QEMU 仍运行 |
+| 升级阶段 | gate 报 `stage=upgrade missing`；client 等到 6030 s 超时 |
+| 二次启动 | **成功**：`debian_version=forky/sid`、systemd **running**、串口可登录 |
+
+证据：[`evidence/2026-10-24-l6-segmented-allocator/`](evidence/2026-10-24-l6-segmented-allocator/)、
+第一次挂起：[`evidence/2026-10-24-l6-segmented-fallback-hang/`](evidence/2026-10-24-l6-segmented-fallback-hang/)。
+
+**判定 B**：分段回退消除了所有 order-4 分配失败（`spawn task failed` 与
+`Heap allocation error` 均为 0），升级推进到 341/341 解包、243 配置，副本
+可启动到 forky/sid；但**首次启动在内核态挂起**（无 panic），L6 仍未通过。
+
+挂起的可能原因（按怀疑度）：
+
+1. **页表/映射锁顺序**：分段映射与释放分别从 heap 分配、ring-buffer
+   创建、以及 RCU 延迟释放路径调用，会拿内核页表锁；这些路径可能已持有
+   上层锁（socket、pipe、RCU 回调等），与页错误/其他映射路径形成环；
+2. **控制台锁**：挂起前有 84,755 条 negative-dentry 警告，控制台是全局
+   串行瓶颈；若某条路径在持锁时打日志，可能自锁；
+3. 帧分配器本身（order-1/2 仍紧张，最后一刻 free 仅 1.49 GiB）。
+
+下一次需要：在挂起时抓取 **每个 CPU 的 backtrace**（NMI/watchdog），或者
+二分回退（只保留 ring-buffer 分段 / 只保留 heap 分段）定位到具体调用路径。
+
 ### 下一步（按优先级）
 
-1. **环形缓冲多段化或降级**：`RingBuffer::new` 目前要求一段连续物理内存。
-   两条路：
-   - 把缓冲改成多段（数组 of `Segment`，或映射到连续虚拟区后用虚拟地址
-     索引），与内核栈多段映射同源，改动中等；
-   - 创建失败时把容量降一档（如 16 KiB / 4 页）重试，改动小但会改变
-     管道语义（Linux 允许 pipe 容量协商，`F_SETPIPE_SZ` 已有）。
-   推荐先做容量降级作为止血，再做多段化。
-2. **再重跑 L6**：确认配置阶段能走完（`UPG stage=upgrade rc=0` 与
-   `debian_version` 变化），并验证二次启动。
-3. **分配器第二层**：回填失败时归并其它 CPU 的本地池到全局再重试
-   （`pools/mod.rs:73-75` 的 TODO）；对 order-4 这类请求，只有当相邻的
-   自由块在别的 CPU 池里时才有效。
-4. **总量/高阶**：page cache 压力回收/上限；这是唯一能让 order 4+ 长期
-   存在的机制，但工作量大，放在后面。
+1. **定位 4083.6 s 的挂起**（最高优先）：在挂起时抓每个 CPU 的
+   backtrace（QEMU NMI + 内核 NMI 处理，或 watchdog），确认是否卡在
+   页表锁/控制台锁/RCU；没有 backtrace 之前不要再猜。
+2. **二分回退定位**（低成本的对照）：把 heap large slot 改回
+   `alloc_segment_with`、只保留 ring-buffer 分段，重跑；若不再挂起，
+   说明问题在 heap 的 map/unmap 路径，反之在 ring-buffer。
+3. **把映射/释放移出敏感上下文**：分段映射不要在持有上层锁的路径里做
+   （例如 heap 的大块分配可延迟到锁外，或改用 boot 预留的连续池）。
+4. **总量/高阶**：page cache 压力回收/上限；1.49 GiB 的应用层空闲仍无法
+   阻止低阶枯竭，长期必须回收。
 
 ## 复现
 

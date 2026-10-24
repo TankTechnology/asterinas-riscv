@@ -1,0 +1,8 @@
+[  3556.834] WARN  : frame allocator: segmented fallback for 64 pages (262144 bytes)
+[  3763.319] WARN  : frame allocator: segmented fallback for 16 pages (65536 bytes)
+[  3763.337] WARN  : frame allocator: segmented fallback for 16 pages (65536 bytes)
+[  3763.359] WARN  : frame allocator: segmented fallback for 16 pages (65536 bytes)
+[  3783.895] WARN  : frame allocator: segmented fallback for 16 pages (65536 bytes)
+[  3787.257] WARN  : frame allocator: segmented fallback for 15 pages (61440 bytes)
+[  3787.395] WARN  : frame allocator: segmented fallback for 14 pages (57344 bytes)
+[  3787.450] WARN  : frame allocator: segmented fallback for 11 pages (45056 bytes)

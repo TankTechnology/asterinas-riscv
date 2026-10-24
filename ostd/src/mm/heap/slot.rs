@@ -7,8 +7,8 @@ use core::{alloc::AllocError, ptr::NonNull};
 use crate::{
     impl_frame_meta_for,
     mm::{
-        FrameAllocOptions, PAGE_SIZE, Paddr, Segment, Vaddr, kspace::LINEAR_MAPPING_BASE_VADDR,
-        paddr_to_vaddr,
+        FrameAllocOptions, PAGE_SIZE, Paddr, SegmentedSegment, Vaddr,
+        kspace::LINEAR_MAPPING_BASE_VADDR,
     },
 };
 
@@ -84,14 +84,15 @@ impl HeapSlot {
         let nframes = size / PAGE_SIZE;
         let segment = FrameAllocOptions::new()
             .zeroed(false)
-            .alloc_segment_with(nframes, |_| LargeAllocFrameMeta)
+            .alloc_segmented_with(nframes, |_| LargeAllocFrameMeta)
             .map_err(|_| {
                 crate::error!("Failed to allocate a large slot");
                 AllocError
             })?;
 
-        let paddr_range = segment.into_raw();
-        let vaddr = paddr_to_vaddr(paddr_range.start);
+        // Hand the virtual address to the caller and keep the allocation
+        // alive. Deallocation reconstructs the backing from this address.
+        let vaddr = segment.leak_vaddr();
 
         Ok(Self {
             addr: NonNull::new(vaddr as *mut u8).unwrap(),
@@ -115,11 +116,14 @@ impl HeapSlot {
         };
 
         debug_assert_eq!(size % PAGE_SIZE, 0);
-        debug_assert_eq!(self.paddr() % PAGE_SIZE, 0);
-        let range = self.paddr()..self.paddr() + size;
+        let vaddr = self.addr.as_ptr() as Vaddr;
+        debug_assert_eq!(vaddr % PAGE_SIZE, 0);
 
-        // SAFETY: The segment was once forgotten when allocated.
-        drop(unsafe { Segment::<LargeAllocFrameMeta>::from_raw(range) });
+        // SAFETY: The allocation was leaked in `alloc_large` and has not been
+        // reclaimed since.
+        unsafe {
+            SegmentedSegment::<LargeAllocFrameMeta>::reclaim_from_vaddr(vaddr, size);
+        }
     }
 
     /// Gets the physical address of the slot.

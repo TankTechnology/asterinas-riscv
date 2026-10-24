@@ -18,6 +18,16 @@ use ostd::{
 
 use crate::chunk::{BuddyOrder, greater_order_of, lesser_order_of, size_of_order, split_to_chunks};
 
+/// How many allocation-failure distributions have been reported.
+///
+/// Reporting every failure floods the console once fragmentation makes large
+/// requests fail routinely; the first few reports carry all the diagnostic
+/// information.
+static ALLOC_FAILURE_REPORTS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many allocation-failure distributions are printed.
+const MAX_ALLOC_FAILURE_REPORTS: usize = 32;
+
 use super::set::BuddySet;
 
 /// The global free buddies.
@@ -111,18 +121,21 @@ pub(super) fn log_free_counts(guard: &DisabledLocalIrqGuard, layout: Layout) {
     let order = greater_order_of(layout.size()).max(greater_order_of(layout.align()));
     let largest = |counts: &[usize]| counts.iter().rposition(|&count| count > 0).unwrap_or(0);
 
-    ostd::warn!(
-        "allocation failed: size={} align={} order={} largest_local_order={} largest_global_order={} free_local={} free_global={} chunks_local={:?} chunks_global={:?}",
-        layout.size(),
-        layout.align(),
-        order,
-        largest(&local_counts),
-        largest(&global_counts),
-        local_size,
-        global_size,
-        local_counts,
-        global_counts,
-    );
+    let reports = ALLOC_FAILURE_REPORTS.fetch_add(1, Ordering::Relaxed);
+    if reports < MAX_ALLOC_FAILURE_REPORTS {
+        ostd::warn!(
+            "allocation failed: size={} align={} order={} largest_local_order={} largest_global_order={} free_local={} free_global={} chunks_local={:?} chunks_global={:?}",
+            layout.size(),
+            layout.align(),
+            order,
+            largest(&local_counts),
+            largest(&global_counts),
+            local_size,
+            global_size,
+            local_counts,
+            global_counts,
+        );
+    }
 }
 
 pub(super) fn dealloc(

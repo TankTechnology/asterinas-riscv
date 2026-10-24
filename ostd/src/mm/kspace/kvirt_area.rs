@@ -7,6 +7,8 @@ use core::ops::Range;
 use self::allocator::kvirt_area_allocator;
 use super::{KERNEL_PAGE_TABLE, KernelPtConfig, MappedItem};
 use crate::{
+    arch::mm::tlb_flush_addr_range,
+    error::Error,
     irq,
     mm::{
         HasSize, PAGE_SIZE, Paddr, Split, Vaddr,
@@ -144,6 +146,68 @@ impl KVirtArea {
             unsafe { cursor.map(MappedItem::Tracked(Frame::from_unsized(frame), prop)) };
         }
 
+        Self { range }
+    }
+
+    /// Creates a kernel virtual area and maps exactly enough frames to fill the
+    /// area after `map_offset`.
+    ///
+    /// Unlike [`Self::map_frames`], this reports an error when the iterator
+    /// ends before the area is filled. The pages mapped so far are unmapped
+    /// (and their frames released) before the error is returned.
+    pub(crate) fn try_map_frames<T: AnyFrameMeta + ?Sized>(
+        area_size: usize,
+        map_offset: usize,
+        mut frames: impl Iterator<Item = Frame<T>>,
+        prop: PageProperty,
+    ) -> crate::prelude::Result<Self> {
+        assert!(area_size.is_multiple_of(PAGE_SIZE));
+        assert!(map_offset.is_multiple_of(PAGE_SIZE));
+
+        let irq_guard = irq::disable_local();
+
+        let range = kvirt_area_allocator(&irq_guard).alloc(area_size).unwrap();
+        let cursor_range = range.start + map_offset..range.end;
+        let expected_pages = (range.end - cursor_range.start) / PAGE_SIZE;
+
+        let filled = {
+            let page_table = KERNEL_PAGE_TABLE.get().unwrap();
+            let mut cursor = page_table.cursor_mut(&irq_guard, &cursor_range).unwrap();
+
+            let mut filled = true;
+            for _ in 0..expected_pages {
+                let Some(frame) = frames.next() else {
+                    filled = false;
+                    break;
+                };
+                // SAFETY: The constructor of the `KVirtArea` has already ensured
+                // that this mapping does not affect kernel's memory safety.
+                unsafe { cursor.map(MappedItem::Tracked(Frame::from_unsized(frame), prop)) };
+            }
+            filled
+        };
+
+        if !filled {
+            // Dropping the area unmaps the pages mapped so far, which releases
+            // their frames as well.
+            drop(Self { range });
+            return Err(Error::NoMemory);
+        }
+
+        // The caller may use the mapping on this CPU immediately; do not rely
+        // on a stale TLB entry from a previous area at the same address.
+        tlb_flush_addr_range(&cursor_range);
+
+        Ok(Self { range })
+    }
+
+    /// Reconstructs an area from a range that is still mapped and owned.
+    ///
+    /// # Safety
+    ///
+    /// The caller must own the mapping for `range`: it must have been created
+    /// by this module and must not have been dropped yet.
+    pub(crate) unsafe fn from_mapped_range(range: Range<Vaddr>) -> Self {
         Self { range }
     }
 

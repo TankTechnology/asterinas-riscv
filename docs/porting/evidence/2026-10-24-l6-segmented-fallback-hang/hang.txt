@@ -1,0 +1,25 @@
+# First segmented-fallback L6 run: console stopped at 3708.314 s
+date: 2026-10-24
+kernel_sha256_prefix: 936405d67e58e949
+console_bytes: 11815995
+allocation_failed_lines: 3027
+segmented_fallback_lines: 8
+spawn_task_failed: 0
+uncaught_panic: 0
+console_last_timestamp: 3708.314
+console_last_modified: 17:09:33 (no growth for >25 min before the run was stopped)
+qemu_state_before_stop: 166% CPU, console file unchanged
+
+## last 12 console lines
+[  3707.813] WARN  : frame-allocator: allocation failed: size=57344 align=4096 order=4 largest_local_order=1 largest_global_order=2 free_local=151236608 free_global=891936768 chunk
+[  3707.868] WARN  : frame-allocator: allocation failed: size=45056 align=4096 order=4 largest_local_order=1 largest_global_order=2 free_local=151228416 free_global=891887616 chunk
+[  3707.945] WARN  : frame-allocator: allocation failed: size=36864 align=4096 order=4 largest_local_order=1 largest_global_order=2 free_local=151232512 free_global=891838464 chunk
+[  3707.987] WARN  : number of negative dentries has reached 44367
+[  3707.988] WARN  : frame-allocator: allocation failed: size=61440 align=4096 order=4 largest_local_order=1 largest_global_order=2 free_local=151244800 free_global=891789312 chunk
+[  3708.116] WARN  : frame-allocator: allocation failed: size=57344 align=4096 order=4 largest_local_order=1 largest_global_order=2 free_local=151248896 free_global=891723776 chunk
+[  3708.174] WARN  : frame-allocator: allocation failed: size=45056 align=4096 order=4 largest_local_order=1 largest_global_order=2 free_local=151240704 free_global=891674624 chunk
+[  3708.254] WARN  : frame-allocator: allocation failed: size=36864 align=4096 order=4 largest_local_order=1 largest_global_order=2 free_local=151244800 free_global=891625472 chunk
+[  3708.301] WARN  : Unimplemented syscall number: 334
+[  3708.305] WARN  : number of negative dentries has reached 44366
+[  3708.306] WARN  : number of negative dentries has reached 44367
+[  3708.314] WARN  : frame-allocator: allocation failed: size=32768 align=4096 order=3 largest_local_order=1 largest_global_order=2 free_local=151171072 free_global=891068416 chunk
