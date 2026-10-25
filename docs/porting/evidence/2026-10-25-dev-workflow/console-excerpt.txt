@@ -1,0 +1,20 @@
+# developer workflow: guest console excerpt (target/dev-workflow2/console.txt)
+
+pip_six src=pypi-break-system rc=0 import_rc=0 import_out=six_version=1.17.0
+pip_click rc=0 import_rc=0 out=<string>:1: DeprecationWarning: The '__version__' attribute is deprecated and will be removed in Click 9.1. Use feature detection or 'importlib.metadata.version("click")' instead.
+zlib cfg_rc=0 make_rc=0 test_rc=0 ok_lines=3 result=yes err=Checking for gcc..._Checking for shared library support..._
+=== dev-workflow summary ===
+cpp gpp_rc=0 out=1000
+dev_workflow start 2026-10-25T10:24:49Z
+apt update_rc=0 install_rc=0
+git_version=git version 2.47.3
+git_clone rc=0 dur=2.1s src=github
+git_log=767c4c9 Honor deflateReset promise to reset the header. src=github size=6.1M dirty_files=0
+cpp gpp_rc=0 run_out=1000 err=
+pip_version=pip 25.1.1 from /usr/lib/python3/dist-packages/pip (python 3.13)
+pip_six rc=1 err=error: externally-managed-environment__× This environment is externally managed_
+pip_six src=pypi-break-system rc=0 import_rc=0 import_out=six_version=1.17.0
+pip_click rc=0 import_rc=0 out=<string>:1: DeprecationWarning: The '__version__' attribute is deprecated and will be removed in Click 9.1. Use feature detection or 'importlib.metadata.version("click")' instead.
+zlib cfg_rc=0 make_rc=0 test_rc=0 ok_lines=3 result=yes err=Checking for gcc..._Checking for shared library support..._
+real_panic_blocks=0
+first run note: host disk filled (no space left on device), not a guest failure
