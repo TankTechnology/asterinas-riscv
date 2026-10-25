@@ -30,6 +30,7 @@ use crate::{
     },
     prelude::*,
     process::LockedHeap,
+    thread::Thread,
     vm::{
         page_cache::{CachePage, Vmo, VmoCommitError, VmoMapMode},
         perms::VmPerms,
@@ -464,6 +465,10 @@ impl VmMapping {
         required_perms: VmPerms,
         rss_delta: &mut RssDelta,
     ) -> Result<()> {
+        // A major fault is one that had to commit a page (I/O); the retry
+        // after `commit_on` succeeds from the page cache.  Count the fault
+        // once, when it is finally resolved.
+        let mut is_major = false;
         'retry: loop {
             let preempt_guard = disable_preempt();
             let mut cursor = vm_space.cursor_mut(
@@ -540,6 +545,7 @@ impl VmMapping {
                         Ok((frame, is_readonly)) => (frame, is_readonly),
                         Err(err) => {
                             let index = err.pending_index()?;
+                            is_major = true;
                             drop(cursor);
                             drop(preempt_guard);
                             self.vmo()
@@ -568,6 +574,9 @@ impl VmMapping {
                     cursor.map(frame, map_prop);
                     rss_delta.add(self.rss_type(), 1);
                 }
+            }
+            if let Some(thread) = Thread::current() {
+                thread.record_page_fault(is_major);
             }
             break 'retry;
         }

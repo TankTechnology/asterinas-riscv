@@ -2,7 +2,7 @@
 
 //! Thread implementation.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use aster_util::per_cpu_counter::PerCpuCounter;
 use ostd::{
@@ -102,6 +102,10 @@ pub(crate) struct Thread {
     cpu_affinity: AtomicCpuSet,
     /// Thread scheduling attribute.
     sched_attr: SchedAttr,
+    /// Minor page faults handled for this thread (no I/O required).
+    min_flt: AtomicU64,
+    /// Major page faults handled for this thread (I/O required).
+    maj_flt: AtomicU64,
 }
 
 impl Thread {
@@ -118,6 +122,8 @@ impl Thread {
             is_exited: AtomicBool::new(false),
             cpu_affinity: AtomicCpuSet::new(cpu_affinity),
             sched_attr: SchedAttr::new(sched_policy),
+            min_flt: AtomicU64::new(0),
+            maj_flt: AtomicU64::new(0),
         }
     }
 
@@ -139,6 +145,25 @@ impl Thread {
     #[track_caller]
     pub(crate) fn run(&self) {
         self.task.upgrade().unwrap().run();
+    }
+
+    /// Records one handled page fault.
+    pub(crate) fn record_page_fault(&self, major: bool) {
+        if major {
+            self.maj_flt.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.min_flt.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Returns the number of minor page faults handled for this thread.
+    pub(crate) fn min_flt(&self) -> u64 {
+        self.min_flt.load(Ordering::Relaxed)
+    }
+
+    /// Returns the number of major page faults handled for this thread.
+    pub(crate) fn maj_flt(&self) -> u64 {
+        self.maj_flt.load(Ordering::Relaxed)
     }
 
     /// Returns whether the thread is exited.

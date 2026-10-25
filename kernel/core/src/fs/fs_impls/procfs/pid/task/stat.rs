@@ -172,9 +172,11 @@ impl ProcFileOps for StatFileOps {
         // Placeholder: kernel flags are not exposed yet.
         let flags = 0;
         // Placeholder: page-fault counters are not tracked per process/thread yet.
-        let min_flt = 0;
+        // `cmin_flt`/`cmaj_flt` are the children's cumulative counters; they
+        // are not accumulated yet and stay zero (Linux-compatible field).
+        let min_flt = thread.min_flt();
         let cmin_flt = 0;
-        let maj_flt = 0;
+        let maj_flt = thread.maj_flt();
         let cmaj_flt = 0;
 
         let (utime, stime) = {

@@ -1,0 +1,7 @@
+# A: page fault counters
+fault_probe_start 2026-10-25T19:23:49Z
+fault_before minflt=683 majflt=32
+fault_after_touch64m minflt=17068 majflt=32
+fault_after_touch_again minflt=17068 majflt=32
+fault_probe_done 2026-10-25T19:23:50Z
+DAILY_DONE=ok
