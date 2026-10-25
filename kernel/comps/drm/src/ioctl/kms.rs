@@ -545,12 +545,19 @@ impl DrmFile {
             current.wrapping_add(args.sequence)
         };
         if !vblank_reached(current, target) {
+            // The fake card0 may never tick a vblank (no display engine), so
+            // an unbounded wait would hang the caller forever.  Bound every
+            // KMS wait; userspace treats ETIME like a missed vblank.
             let wait_crtc = crtc.clone();
-            aster_core::wait_until_or_timeout(
+            let waited = aster_core::wait_until_or_timeout(
                 || vblank_reached(wait_crtc.vblank_sequence(), target),
                 |waker| wait_crtc.register_vblank_waker(waker),
-                None,
-            )?;
+                Some(Duration::from_secs(1)),
+            );
+            if let Err(err) = waited {
+                ostd::warn!("drm: WAIT_VBLANK timed out (target={target}, err={err:?})");
+                return Err(err);
+            }
         }
 
         let sequence = crtc.vblank_sequence();

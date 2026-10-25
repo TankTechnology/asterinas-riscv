@@ -1,0 +1,11 @@
+# 7-domain matrix on the fix kernel
+DAILY_APT=ok xclip+xterm+alsa-utils-installed
+DAILY_DESKTOP=ok Xorg+DRI3
+DAILY_APP=ok xterm
+DAILY_CLIPBOARD=ok xclip-round-trip
+DAILY_INPUT_METHOD=fail engine--no-text:
+DAILY_AUDIO=ok aplay-hw:0,0
+DAILY_USB=ok mounted-/dev/sda-read-ASTERINAS-USB-OK
+DAILY_SUSPEND=ok woke-up-disk-and-io-ok
+DAILY_DONE=ok
+panic=0 alloc=0

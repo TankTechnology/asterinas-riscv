@@ -7,6 +7,7 @@ use alloc::{
     vec::Vec,
 };
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::time::Duration;
 
 use aster_core::{
     current,
@@ -430,11 +431,21 @@ impl FileOps for DrmFile {
             if status_flags.contains(StatusFlags::O_NONBLOCK) {
                 return_errno_with_message!(Errno::EAGAIN, "there are no DRM events to read");
             }
-            aster_core::wait_until_or_timeout(
+            // A blocking read must still terminate: the fake card0 may never
+            // queue a flip/vblank event, and an unbounded wait hangs the
+            // caller (observed with glxgears).  One second, then EAGAIN.
+            match aster_core::wait_until_or_timeout(
                 || self.has_events(),
                 |waker| self.event_queue.source().register_waker(waker),
-                None,
-            )?;
+                Some(Duration::from_secs(1)),
+            ) {
+                Ok(()) => {}
+                Err(err) if err.error() == Errno::ETIME => {
+                    ostd::warn!("drm: event read timed out; returning EAGAIN");
+                    return_errno_with_message!(Errno::EAGAIN, "no DRM events within 1 s")
+                }
+                Err(err) => return Err(err),
+            }
         }
 
         let event = self.pop_event().ok_or_else(|| {

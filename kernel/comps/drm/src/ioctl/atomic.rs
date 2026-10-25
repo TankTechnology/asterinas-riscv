@@ -13,6 +13,7 @@
 //! commits, cursor/overlay planes, and multi-CRTC commits.
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use core::time::Duration;
 use core::mem::size_of;
 
 use aster_core::{
@@ -232,10 +233,16 @@ impl DrmFile {
             let (fence, point, timeline) = with_anon_file_as::<DrmSyncFile, _>(fd as i32, |file| {
                 (file.fence(), file.point(), file.timeline())
             })?;
-            if timeline {
-                fence.wait(point, None)?;
+            // Never wait on a producer fence without a bound: an
+            // unimplemented/never-signaled fence would hang the ioctl.
+            let waited = if timeline {
+                fence.wait(point, Some(Duration::from_secs(1)))
             } else {
-                fence.wait_signaled(None)?;
+                fence.wait_signaled(Some(Duration::from_secs(1)))
+            };
+            if let Err(err) = waited {
+                ostd::warn!("drm: atomic in-fence wait timed out (err={err:?})");
+                return Err(err);
             }
             let _ = close_file_fd(fd as i32);
         }

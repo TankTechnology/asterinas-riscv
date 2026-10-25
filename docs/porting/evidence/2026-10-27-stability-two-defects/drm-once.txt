@@ -1,0 +1,31 @@
+# B: one-shot probe with kernel wait logging
+once_start 2026-10-25T17:39:24Z
+once_xorg up=yes
+[     6.841] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0186449
+[     6.844] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     6.845] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     6.846] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     6.847] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     6.848] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     6.849] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     6.850] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     7.228] WARN  : drm: unknown ioctl minor=Primary cmd=0xc01c64a3
+[     7.499] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0186449
+[     7.500] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     7.501] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     7.502] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     7.503] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     7.504] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     7.505] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     7.506] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     7.514] WARN  : drm: unknown ioctl minor=Primary cmd=0xc01064c7
+[     7.838] WARN  : drm: unknown ioctl minor=Primary cmd=0xc01064ab
+[     7.861] WARN  : drm: unknown ioctl minor=Primary cmd=0xc02064a5
+[     7.865] WARN  : drm: unknown ioctl minor=Primary cmd=0xc01064ab
+[     7.866] WARN  : drm: unknown ioctl minor=Primary cmd=0xc01064c7
+[     8.136] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0186449
+[     8.139] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     8.140] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     8.141] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     8.142] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443
+[     8.143] WARN  : drm: unknown ioctl minor=Primary cmd=0xc0106443

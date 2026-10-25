@@ -1,0 +1,17 @@
+# B: 10x glxgears regression (20 s cap each)
+drm_regress_start 2026-10-25T17:35:05Z
+drm_xorg up=yes
+drm_glxinfo rc=124 renderer=
+drm_glx run=1 rc=124 dur_ms=20047 fps=none
+drm_glx run=2 rc=124 dur_ms=20075 fps=none
+drm_glx run=3 rc=124 dur_ms=20070 fps=none
+drm_glx run=4 rc=124 dur_ms=20073 fps=none
+drm_glx run=5 rc=124 dur_ms=20067 fps=none
+drm_glx run=6 rc=124 dur_ms=20086 fps=none
+drm_glx run=7 rc=124 dur_ms=20077 fps=none
+drm_glx run=8 rc=124 dur_ms=20072 fps=none
+drm_glx run=9 rc=124 dur_ms=20070 fps=none
+drm_glx run=10 rc=124 dur_ms=20059 fps=none
+drm_glx_summary runs=10 hangs=10
+drm_regress_done 2026-10-25T17:38:42Z
+DAILY_DONE=ok
