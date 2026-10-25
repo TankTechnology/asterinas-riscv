@@ -1,0 +1,10 @@
+# L4 coreutils signal 11 — console evidence (target/coreutils-diag2/console.txt)
+
+[   354.481] WARN  : page fault at 0x7ffffff3a002: nearest mapping below=Some(140737479155712..140737487544320), above=None
+[   354.485] WARN  : faulting context: rip=0x5555555ba632 rsp=0x7ffffff35d20 rbp=0x7ffffff39ff2 rax=0x10 rbx=0x5555556b5fa0 rcx=0x5555556b8d50 rdx=0x5555556b5ca0 rsi=0x0 rdi=0x5555556b5ca0
+[   354.486] WARN  : faulting instruction (read_ok=true): [42, 80, 7c, 2d, 00, 3d, 75, e6, 48, 8b, 33, 4c, 89, ea, 48, 89]
+[   354.488] WARN  : PID 1246: terminating on signal SIGSEGV
+[   369.159] WARN  : page fault at 0x7ffffff6a002: nearest mapping below=Some(140737479352320..140737487740928), above=None
+[   369.162] WARN  : faulting context: rip=0x555555621632 rsp=0x7ffffff65d20 rbp=0x7ffffff69ff2 rax=0x10 rbx=0x5555556d9fa0 rcx=0x5555556dcd50 rdx=0x5555556d9ca0 rsi=0x0 rdi=0x5555556d9ca0
+[   369.164] WARN  : faulting instruction (read_ok=true): [42, 80, 7c, 2d, 00, 3d, 75, e6, 48, 8b, 33, 4c, 89, ea, 48, 89]
+[   369.165] WARN  : PID 1345: terminating on signal SIGSEGV

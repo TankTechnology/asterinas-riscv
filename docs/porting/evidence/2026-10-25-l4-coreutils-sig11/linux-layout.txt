@@ -1,0 +1,7 @@
+# Linux host (Arch, 7.2.6) initial stack layout measurement
+# /tmp/stacklayout3.c output:
+topmost='CLAUDE_EFFORT=high' end=7ffc9dc1bfe6 vma_end=7ffc9dc1c000 gap=26
+bytes above end: 2f(/) 74(t) 6d(m) 70(p) 2f(/) 73(s) 74(t) 61(a) 63(c) 6b(k) 6c(l) 61(a) 79(y) 6f(o) 75(u) 74(t) 33(3) 00(.) 00(.) 00(.) 00(.) 00(.) 00(.) 00(.) 00(.) 00(.) 
+
+# Key: the highest initial-stack string is AT_EXECFN's filename, not envp[0].
+# Bytes above the env block are the exec path + NUL + alignment zeros.

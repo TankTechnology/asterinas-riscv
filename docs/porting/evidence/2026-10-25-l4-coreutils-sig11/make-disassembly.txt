@@ -1,0 +1,39 @@
+# GNU make /usr/bin/make (Debian trixie, 4.4.1) around the faulting rip
+# Faulting rip 0x5555555ba632, PIE base 0x5555555a9000 -> file offset 0x11632
+# Byte sequence 42 80 7c 2d 00 3d = cmp BYTE PTR [rbp+r13*1],0x3d
+
+
+/tmp/make.bin:     file format elf64-x86-64
+
+
+Disassembly of section .text:
+
+00000000000115f0 <recursively_expand_for_file@@Base+0x40>:
+   115f0:	2f                   	(bad)
+   115f1:	48 89 ef             	mov    rdi,rbp
+   115f4:	e8 c7 8c ff ff       	call   a2c0 <strlen@plt>
+   115f9:	49 89 c5             	mov    r13,rax
+   115fc:	f6 05 55 28 03 00 02 	test   BYTE PTR [rip+0x32855],0x2        # 43e58 <db_level@@Base>
+   11603:	0f 85 57 02 00 00    	jne    11860 <recursively_expand_for_file@@Base+0x2b0>
+   11609:	4c 8b 25 50 21 03 00 	mov    r12,QWORD PTR [rip+0x32150]        # 43760 <__environ@GLIBC_2.2.5>
+   11610:	49 8b 2c 24          	mov    rbp,QWORD PTR [r12]
+   11614:	48 85 ed             	test   rbp,rbp
+   11617:	75 19                	jne    11632 <recursively_expand_for_file@@Base+0x82>
+   11619:	e9 b2 02 00 00       	jmp    118d0 <recursively_expand_for_file@@Base+0x320>
+   1161e:	66 90                	xchg   ax,ax
+   11620:	49 8b 6c 24 08       	mov    rbp,QWORD PTR [r12+0x8]
+   11625:	49 83 c4 08          	add    r12,0x8
+   11629:	48 85 ed             	test   rbp,rbp
+   1162c:	0f 84 9e 02 00 00    	je     118d0 <recursively_expand_for_file@@Base+0x320>
+   11632:	42 80 7c 2d 00 3d    	cmp    BYTE PTR [rbp+r13*1+0x0],0x3d
+   11638:	75 e6                	jne    11620 <recursively_expand_for_file@@Base+0x70>
+   1163a:	48 8b 33             	mov    rsi,QWORD PTR [rbx]
+   1163d:	4c 89 ea             	mov    rdx,r13
+   11640:	48 89 ef             	mov    rdi,rbp
+   11643:	e8 d8 8a ff ff       	call   a120 <strncmp@plt>
+   11648:	85 c0                	test   eax,eax
+   1164a:	75 d4                	jne    11620 <recursively_expand_for_file@@Base+0x70>
+   1164c:	48                   	rex.W
+   1164d:	8b                   	.byte 0x8b
+   1164e:	44                   	rex.R
+   1164f:	24                   	.byte 0x24
