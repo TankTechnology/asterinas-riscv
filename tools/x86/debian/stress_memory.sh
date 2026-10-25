@@ -13,6 +13,7 @@ export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 LOG=/tmp/stress.log
 : >"$LOG"
+rounds=${STRESS_ROUNDS:-30}
 
 base=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)
 echo "baseline_memavailable_kb=$base" | tee -a "$LOG" >/dev/console
@@ -37,7 +38,7 @@ py_fail=0
 gcc_fail=0
 gcc_ok=0
 round=0
-while [ "$round" -lt 30 ]; do
+while [ "$round" -lt "$rounds" ]; do
     round=$((round + 1))
 
     # 1) Memory pressure: allocate 512 MiB and touch every page. The timeout
@@ -83,7 +84,7 @@ dmesg | tail -40 >/tmp/stress-dmesg.txt
     echo "=== stress.log begin ==="
     cat "$LOG"
     echo "=== stress.log end ==="
-    echo "stress_failures python3=${py_fail}/30 gcc=${gcc_fail}/30 gcc_ok=${gcc_ok}/30"
+    echo "stress_failures python3=${py_fail}/${rounds} gcc=${gcc_fail}/${rounds} gcc_ok=${gcc_ok}/${rounds}"
     echo "baseline_memavailable_kb=$base last_memavailable_kb=$last"
     echo "=== first three errors ==="
     grep -m 3 'err=' "$LOG" 2>/dev/null || true
