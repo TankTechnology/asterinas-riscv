@@ -117,6 +117,12 @@
     测试 fd 复用 ×1）仍是已知基线。
 11. **negative dentry 无淘汰**、**page cache 无压力回收**、**池大小是常量**
     （heap 16 MiB、ring-buffer 预留 4 MiB）；更小内存的 guest 需重新标定。
+12. **多线程 + 多 owner 文件锁会灾难性变慢**（4 进程×4 线程、每线程一个
+    flock fd：200 个小文件 56–95 s，全量 `/usr` 20 分钟只完成约 5,400 条）。
+    归因是调度器 `before_switching_to()` 的自旋（`ostd/src/task/processor.rs`，
+    命中 issue #1633 的切换竞争），由每次 unlock `wake_all` 的切换风暴触发；
+    `xargs -P8`、单线程 hash、编译与 I/O 不受影响。详见
+    `2026-10-25-parallel-perf-diag.md`，修复方案待下一轮。
 12. 1 小时复合负载实测 **3596.1 s**（59 分 56 秒；30 轮 ×120 s 的取整差 3.9 s）。
 
 ## 4. 复现命令

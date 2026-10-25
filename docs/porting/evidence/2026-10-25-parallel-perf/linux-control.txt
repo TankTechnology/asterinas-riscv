@@ -1,0 +1,9 @@
+# Linux control: same perf_bench.py, same 200-file sample (host /tmp, tmpfs)
+{"mode": "hash",  "procs": 1, "threads": 1, "elapsed_sec": 0.0142, "files_per_sec": 14067.5}
+{"mode": "hash",  "procs": 1, "threads": 8, "elapsed_sec": 0.0256, "files_per_sec": 7807.0}
+{"mode": "hash",  "procs": 4, "threads": 4, "elapsed_sec": 0.0119, "files_per_sec": 16828.6}
+{"mode": "lock",  "procs": 4, "threads": 4, "elapsed_sec": 0.0127, "files_per_sec": 15778.2}
+{"mode": "lock_tfd", "procs": 4, "threads": 4, "elapsed_sec": 0.0168, "files_per_sec": 11870.3}
+{"mode": "fork",  "ops": 100, "elapsed_sec": 0.0543, "ops_per_sec": 1841.6}
+{"mode": "thread","ops": 100, "elapsed_sec": 0.0134, "ops_per_sec": 7435.4}
+{"mode": "exec",  "ops": 50,  "elapsed_sec": 0.0572, "ops_per_sec": 874.0}

@@ -1,0 +1,8 @@
+# B full-scale /usr hash markers
+hash_usr root=/usr rc=124 dur=1232s raw_bytes=582863 err_bytes=0
+hash_usr_summary=
+hash_fallback root=/usr/lib rc=124 dur=622s raw_bytes=87099 err_bytes=0
+hash_fallback_summary=
+usr_hash_stress_full=0 fallback=0 full_records=5384 max_load=5.506 min_memavail_kb=2901032
+usr_hash_stress_files=fallback.err;fallback.raw;fallback.summary;samples.txt;usr.err;usr.raw;usr.summary;
+usr_hash_stress_done=2026-10-25T12:53:15Z

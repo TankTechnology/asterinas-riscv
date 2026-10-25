@@ -1,0 +1,18 @@
+# kernel scheduler self-spin during the slow runs
+target/usr-hash-stress/console.txt: 414 warnings
+target/perf-lockfd/console.txt: 88 warnings
+target/perf-diag/console.txt: 22 warnings
+
+## sample context (perf-lockfd, during lock_tfd 4x4)
+[     0.557] WARN  : Unimplemented syscall number: 334
+[     0.569] WARN  : Unimplemented syscall number: 334
+[     0.581] WARN  : Switching to a task already running in the foreground
+[     0.582] WARN  : Switching to a task already running in the foreground
+[     0.583] WARN  : Switching to a task already running in the foreground
+[     0.584] WARN  : Switching to a task already running in the foreground
+[     0.585] WARN  : Switching to a task already running in the foreground
+[     0.591] WARN  : Unimplemented syscall number: 334
+[     0.599] WARN  : Unimplemented syscall number: 334
+--
+[    14.999] WARN  : CLONE_SYSVSEM is not supported now
+[    15.000] WARN  : CLONE_SYSVSEM is not supported now
