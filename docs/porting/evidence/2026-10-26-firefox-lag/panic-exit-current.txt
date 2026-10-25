@@ -1,0 +1,8 @@
+# task-exit panic during the first baseline (xclock with no X server)
+[    77.592] ERROR : Uncaught panic:
+	internal error: entered unreachable code
+	at /home/arch-anjie/Program/asterinas-riscv/ostd/src/task/mod.rs:210
+	on CPU 3 by thread Some(Thread { task: (Weak), data: Any { .. }, is_exited: true, cpu_affinity: AtomicIdSet { bits: [15], phantom: PhantomData<ostd::cpu::id::CpuId> }, sched_attr: SchedAttr { policy: SchedPolicyState { kind: AtomicSchedPolicyKind(2), policy: UnsafeCell { .. } }, last_cpu: AtomicCpuId(3), real_time: RealTimeAttr { prio: 99, time_slice: 32832000 }, fair: FairAttr { weight: 1024, pending_weight: UnsafeCell { .. }, vruntime: 119566763066 } } })
+Printing stack trace:
+   1: fn 0xffffffff88f633b0 - pc 0xffffffff88f633fb / registers:
+[

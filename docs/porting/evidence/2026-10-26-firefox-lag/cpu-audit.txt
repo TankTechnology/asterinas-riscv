@@ -1,0 +1,14 @@
+# CPU audit (perf_baseline2)
+perf_xorg up=yes driver_log=(++) Using config file: "/etc/X11/xorg-noudev.conf"|(==) Using config directory: "/etc/X11/xorg.conf.d"|(==) Using system config directory "/usr/share/X11/xorg.conf.d"|
+perf_dev_dri=card0 renderD128  fb=ls: cannot access '/dev/fb*': No such file or directory 
+perf_cpu_nproc=4 online=4
+perf_cpu_cpuinfo_processors=4
+perf_cpu_model=13th Gen Intel(R) Core(TM) i5-1340P
+perf_cpu_flags=sse2,ssse3,fma,sse4_1,sse4_2,xsave,avx,rdrand,avx2,rdseed,
+perf_cpu_topology=4 cpus; cmdline=/home/arch-anjie/Program/asterinas-riscv/target/osdk/asterinas-osdk-bin.elf console=ttyS0 earlycon loglevel=4 init=/init -- --root-init=systemd --root-fs=ext4
+perf_xgetbv rc=0 out=xcr0=0x0000000000000007
+perf_avx2_exec rc=0 out=avx2_ok=1500000.000000
+perf_avx512_exec rc=132 out=
+perf_fb_write missing /dev/fb0
+
+# DRM unknown ioctl

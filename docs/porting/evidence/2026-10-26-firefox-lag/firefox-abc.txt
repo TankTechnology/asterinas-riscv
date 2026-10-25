@@ -1,0 +1,11 @@
+# Firefox A/B/C (softpipe)
+ff_apt rc=0 firefox=/usr/bin/firefox-esr glxinfo=/usr/bin/glxinfo
+ff_cpu_flags=sse2,pclmulqdq,fma,sse4_1,sse4_2,xsave,avx,avx2,
+ff_avx2 rc=0 out=avx2=2000000
+ff_glxinfo rc=0 renderer=OpenGL renderer string: softpipe|OpenGL version string: 3.3 (Compatibility Profile) Mesa 25.0.7-2+deb13u1|
+ff_A startup_ok launch_ms=619 win=2097153
+ff_A scroll20_ms=639 user_ticks=210 sys_ticks=1161 ticks_per_sec=100
+ff_B startup_ok launch_ms=656 win=2097153
+ff_B scroll20_ms=1461 user_ticks=548 sys_ticks=3546 ticks_per_sec=100
+ff_C startup_ok launch_ms=629 win=2097153
+[   131.111ff_C scroll20_ms=1075 user_ticks=378 sys_ticks=2985 ticks_per_sec=100

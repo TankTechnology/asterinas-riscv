@@ -1,0 +1,11 @@
+# llvmpipe default, 4 vCPU
+lp_glxinfo rc=0 renderer=OpenGL renderer string: llvmpipe (LLVM 19.1.7, 256 bits)|OpenGL version string: 4.5 (Compatibility Profile) Mesa 25.0.7-2+deb13u1|
+lp_glxgears rc=0 out=GL_RENDERER   = llvmpipe (LLVM 19.1.7, 256 bits)|1650 frames in 5.0 seconds = 329.912 FPS|1762 frames in 5.0 seconds = 352.263 FPS|1778 frames in 5.0 seconds = 355.540 FPS|
+lp_ff startup_ok launch_ms=2469 win=2097153
+lp_ff scroll20_ms=807 user_ticks=347 sys_ticks=1079
+
+# llvmpipe default, 8 vCPU
+lp_glxinfo rc=0 renderer=OpenGL renderer string: llvmpipe (LLVM 19.1.7, 256 bits)|OpenGL version string: 4.5 (Compatibility Profile) Mesa 25.0.7-2+deb13u1|
+lp_glxgears rc=0 out=GL_RENDERER   = llvmpipe (LLVM 19.1.7, 256 bits)|1797 frames in 5.0 seconds = 359.327 FPS|1884 frames in 5.0 seconds = 376.773 FPS|1912 frames in 5.0 seconds = 382.288 FPS|
+lp_ff startup_ok launch_ms=1808 win=2097153
+lp_ff scroll20_ms=832 user_ticks=315 sys_ticks=990
