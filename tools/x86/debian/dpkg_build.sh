@@ -503,8 +503,13 @@ for name in $PKGS; do
         t0=$(now)
         # nocheck: the goal is the .deb, not the package's own test suite;
         # parallel=4 matches the gate's four vCPUs.
+        # FORCE_UNSAFE_CONFIGURE: the gate builds as root. coreutils'
+        # configure refuses to run as root while probing whether mknod can
+        # create a fifo; the bypass is the package's own documented escape
+        # hatch and does not change what is built.
         timeout -k 10 "$(remaining)" env DEBIAN_FRONTEND=noninteractive \
             DEB_BUILD_OPTIONS="nocheck parallel=4" \
+            FORCE_UNSAFE_CONFIGURE=1 \
             dpkg-buildpackage -b -us -uc >"$LOGDIR/pkg$index-build.log" 2>&1 </dev/null
         rc=$?
         t1=$(now)
