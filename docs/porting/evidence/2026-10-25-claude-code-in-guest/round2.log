@@ -1,0 +1,8 @@
+[claude-code:unrecognized_model] {"model":"deepseek-flash[1m]","query_source":"sdk"}
+1. 新增 `statx` 探针（`fs` 类）：校验返回 mask、大小、文件类型、nlink，并与 `fstat` 交叉比对 ino/mode，另测 `AT_EMPTY_PATH`。
+2. 已注册进 `g_probes`，版本由 `1.0.0` 升至 `1.1.0`（`src/abi_probe.c`）。
+3. `tests/selftest.py` 新增 statx 专项：list/分类、JSON 单探针与状态、detail 内容、TMPDIR 残留清理。
+4. README 更新为 38 个探针、34 passed / 0 failed / 4 skipped、373 项检查，并补充设计说明。
+5. 已执行 `make report`，重生成 `results/report.{txt,json}`。
+6. 验证：`make test` 373 项全过；statx 单独运行 PASS；全量默认连跑 5 次稳定为 38/34/0/4；无临时文件残留。
+7. 障碍：无；该目录不是 git 仓库，故未提交。

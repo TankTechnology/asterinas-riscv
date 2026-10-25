@@ -1,0 +1,43 @@
+abi-probe 1.1.0 — Linux ABI feature probe
+system  Linux 5.13.0 x86_64 · 4 CPUs · glibc 2.41
+timeout 3000 ms/probe · 38 probe(s)
+
+PASS    uname          Linux 5.13.0 x86_64 (thinkpad)
+PASS    ids            pid=2337 tid=2337 uid=1000 gid=1000 ppid=2335
+PASS    fork_wait      fork/wait4 round-trip, exit status 42
+PASS    getrandom      getrandom twice + /dev/urandom, draws differ
+PASS    file_rw        open/write/pwrite/pread/ftruncate/fsync/stat, 200 B
+SKIP    openat2        openat2(relative, basic): Function not implemented
+PASS    dir_iter       mkdir + opendir/readdir found 3 files and 'sub'
+PASS    symlink_link   symlink/readlink/lstat, hardlink nlink=2, rename
+PASS    statfs         statfs type=0x1021994 bsize=4096 blocks=521216; statvfs namemax=255
+PASS    statx          statx size/mode/ino/nlink match fstat; AT_EMPTY_PATH agrees
+PASS    fallocate      fallocate 1 MiB; punch-hole keeps size
+PASS    fcntl_dup      dup/F_DUPFD_CLOEXEC/dup2 share offsets; O_APPEND honored
+PASS    close_range    close_range(200, 200) closed the fd
+PASS    pipe_io        4096-byte round-trip
+SKIP    splice         splice(file -> pipe): Function not implemented
+PASS    sendfile       sendfile(file -> unix socket) moved 8192 bytes
+PASS    epoll          epoll ADD/MOD/DEL, EPOLLIN and EPOLLOUT observed
+PASS    poll           poll timeout=0 then POLLIN on a pipe
+PASS    eventfd        counter read=3; EFD_SEMAPHORE decrements by one
+PASS    timerfd        20 ms one-shot timer fired (expirations=1)
+PASS    signalfd       SIGUSR1 delivered through signalfd
+PASS    inotify        inotify IN_CREATE for a newly created file
+PASS    socketpair     AF_UNIX stream socketpair, SOCK_CLOEXEC honored
+PASS    scm_rights     SCM_RIGHTS passed an fd; received fd matches inode
+PASS    unix_bind      pathname AF_UNIX bind/connect/accept4 + 1 byte
+PASS    unix_abstract  abstract AF_UNIX socket 'abi-probe-2362' bind/connect
+PASS    tcp_loopback   TCP 127.0.0.1:32842 connect/accept/1 byte
+PASS    mmap_fork      MAP_SHARED visible across fork, MAP_PRIVATE is copy-on-write
+PASS    mprotect       mprotect READ/RW/NONE reflected in /proc/self/maps
+PASS    procfs         stat pid matches; status/maps/meminfo readable
+PASS    prctl_name     PR_SET_NAME/PR_GET_NAME and /proc/self/comm
+PASS    sched          affinity 4 CPU(s), online=4, policy=0, sched_yield ok
+PASS    pidfd          pidfd_open + pidfd_send_signal(SIGKILL) worked
+PASS    clock          monotonic +15.4 ms over clock_nanosleep(15ms); realtime ok
+PASS    pthreads       pthread_create/join + condvar wakeup (clone/futex path)
+PASS    memfd_seal     memfd seals applied; write/ftruncate rejected with EPERM
+SKIP    seccomp        prctl(PR_GET_SECCOMP): Invalid argument (seccomp not implemented)
+SKIP    io_uring       io_uring_setup: Function not implemented
+38 probe(s): 34 passed, 0 failed, 4 skipped in 233 ms

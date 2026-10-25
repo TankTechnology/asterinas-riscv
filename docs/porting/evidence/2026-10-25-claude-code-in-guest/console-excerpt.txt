@@ -1,0 +1,17 @@
+# claude-in-guest console excerpt (target/claude-guest2/console.txt)
+
+claude_rounds_completed=2
+claude_work_files=drwxr-xr-x 4 asterinas asterinas 4096 Oct 25 11:05 .;drwx------ 7 asterinas asterinas 4096 Oct 25 10:57 ..;drwxr-xr-x 5 asterinas asterinas 4096 Oct 25 11:06 abi-probe;drwxr-xr-x 2 asterinas asterinas 4096 Oct 25 11:05 hook-fix;-rw-r--r-- 1 root      root      1301 Oct 25 11:05 round1.log;-rw-r--r-- 1 root      root       836 Oct 25 11:07 round2.log;
+claude_version rc=0 out=2.1.302 (Claude Code)
+claude_ok rc=0 dur=9.6s out=[claude-code:unrecognized_model] {"model":"deepseek-flash[1m]","query_source":"sdk"} OK
+claude_round1 rc=0 dur=503.5s bytes=1301
+claude_round2 rc=0 dur=84.4s bytes=836
+claude_rounds_completed=2
+claude_work_files=drwxr-xr-x 4 asterinas asterinas 4096 Oct 25 11:05 .;drwx------ 7 asterinas asterinas 4096 Oct 25 10:57 ..;drwxr-xr-x 5 asterinas asterinas 4096 Oct 25 11:06 abi-probe;drwxr-xr-x 2 asterinas asterinas 4096 Oct 25 11:05 hook-fix;-rw-r--r-- 1 root      root      1301 Oct 25 11:05 round1.log;-rw-r--r-- 1 root      root       836 Oct 25 11:07 round2.log;
+
+real_panic_blocks=0
+allocation_failed_lines=0
+
+# first run (root) blocking error:
+claude_round1 rc=1 dur=1.2s bytes=93
+claude_round1 rc=1 dur=1.2s bytes=93
