@@ -2,6 +2,7 @@
 
 use crate::{
     fs::{
+        file::{InodeMode, mkmod},
         fs_impls::ramfs::{self, RamFs},
         pseudofs::AnonDeviceId,
         vfs::{
@@ -52,7 +53,15 @@ impl TmpFs {
             super_block.ffree = max_inodes;
             super_block
         };
-        Self::new_with_sb(name, anon_device_id, sb, revalidation_policy)
+        Self::new_with_sb(
+            name,
+            anon_device_id,
+            sb,
+            revalidation_policy,
+            // Linux tmpfs roots are 1777 (sticky, world-writable); without it
+            // non-root users cannot create POSIX shm objects in /dev/shm.
+            mkmod!(a+rwx) | InodeMode::S_ISVTX,
+        )
     }
 }
 
@@ -85,5 +94,42 @@ impl FsType for TmpFsType {
 
     fn sysnode(&self) -> Option<Arc<dyn aster_systree::SysNode>> {
         None
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use ostd::prelude::ktest;
+
+    use super::TmpFs;
+    use crate::{
+        fs::{
+            file::{InodeMode, mkmod},
+            fs_impls::ramfs::RamFs,
+            vfs::{file_system::FileSystem, inode::Inode},
+        },
+        time::clocks::init_for_ktest as time_init_for_ktest,
+    };
+
+    /// Linux tmpfs roots are `S_IRWXUGO | S_ISVTX` (1777), so that non-root
+    /// users can create POSIX shm objects under `/dev/shm`.
+    #[ktest]
+    fn tmpfs_root_mode_is_1777() {
+        time_init_for_ktest();
+        let fs = TmpFs::new_tmpfs();
+
+        assert_eq!(
+            fs.root_inode().mode().unwrap(),
+            mkmod!(a+rwx) | InodeMode::S_ISVTX
+        );
+    }
+
+    /// Plain ramfs roots stay 0755, like Linux ramfs roots.
+    #[ktest]
+    fn ramfs_root_mode_stays_0755() {
+        time_init_for_ktest();
+        let fs = RamFs::new();
+
+        assert_eq!(fs.root_inode().mode().unwrap(), mkmod!(a+rx, u+w));
     }
 }
