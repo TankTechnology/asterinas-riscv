@@ -258,15 +258,47 @@ if ! command -v pcmanfm >/dev/null 2>&1 && ! command -v eog >/dev/null 2>&1; the
         >>/tmp/fcitx-apt.log 2>&1
 fi
 if [ -f /etc/hostname ]; then app_file=/etc/hostname; else app_file=/etc/os-release; fi
+# eog needs a real image, not a text file. Prefer a shipped logo and fall back
+# to a 1x1 PNG generated here so the probe is independent of the image's theme.
+app_image=/usr/share/pixmaps/debian-logo.png
+if [ ! -f "$app_image" ]; then
+    app_image=/tmp/gtk-app-probe.png
+    if [ ! -f "$app_image" ]; then
+        printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=' \
+            | base64 -d >"$app_image" 2>/dev/null
+    fi
+fi
 for app_name in pcmanfm eog gpicview epdfview evince; do
     if ! command -v "$app_name" >/dev/null 2>&1; then
         echo "DAILY_APP_$app_name=missing not-installed" >/dev/console
         continue
     fi
-    timeout 20 "$app_name" "$app_file" >/tmp/app-$app_name.log 2>&1 &
-    sleep 4
-    if pgrep -x "$app_name" >/dev/null 2>&1; then
-        echo "DAILY_APP_$app_name=ok started-with-file" >/dev/console
+    case "$app_name" in
+        eog) app_arg="$app_image"; app_class='[Ee]og' ;;
+        pcmanfm) app_arg="$app_file"; app_class='[Pp]cmanfm' ;;
+        *) app_arg="$app_file"; app_class="$app_name" ;;
+    esac
+    # Give GTK the same software rendering the gate gives Xorg. Without
+    # these the client's GLX path aborts with "glx: failed to create DRI3
+    # screen" on virtio-gpu + kms_swrast even though the server is fine.
+    timeout 30 env MESA_LOADER_DRIVER_OVERRIDE=kms_swrast \
+        LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=softpipe GDK_GL=disable \
+        "$app_name" "$app_arg" >/tmp/app-$app_name.log 2>&1 &
+    win=""
+    waited=0
+    while [ -z "$win" ] && [ "$waited" -lt 10 ]; do
+        sleep 1
+        waited=$((waited + 1))
+        win=$(timeout 2 xdotool search --onlyvisible --class "$app_class" 2>/dev/null | head -1)
+    done
+    if [ -z "$win" ]; then
+        win=$(xwininfo -root -tree 2>/dev/null | grep -iE "($app_name)" \
+            | awk 'NR==1 {print $1}')
+    fi
+    if [ -n "$win" ]; then
+        echo "DAILY_APP_$app_name=ok window=$win" >/dev/console
+    elif pgrep -x "$app_name" >/dev/null 2>&1; then
+        echo "DAILY_APP_$app_name=fail no-window alive:$(head -1 /tmp/app-$app_name.log 2>/dev/null | tr ' ' '_' | head -c 40)" >/dev/console
     else
         echo "DAILY_APP_$app_name=fail $(head -1 /tmp/app-$app_name.log 2>/dev/null | tr ' ' '_' | head -c 40)" >/dev/console
     fi

@@ -1,0 +1,13 @@
+# GTK closure guest console excerpt (target/daily-use/console.txt)
+
+thinkpad login: asterinas
+Password: asterinas
+[?2004hasterinas@thinkpad:/$ sudo sh -c '/usr/local/bin/daily-use-checklist > /dev/console 2>&1'; echo DAILY_SHELL_END
+DAILY_DESKTOP=ok Xorg+DRI3
+DAILY_APP=ok xterm
+DAILY_APP_pcmanfm=ok window=0x200002
+DAILY_APP_eog=ok window=0x400002
+
+# First run (before the software-GL fix) failure lines:
+DAILY_APP_pcmanfm=fail no-window alive:glx:_failed_to_create_dri3_screen
+DAILY_APP_eog=fail no-window alive:glx:_failed_to_create_dri3_screen

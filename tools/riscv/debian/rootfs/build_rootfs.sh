@@ -1194,6 +1194,33 @@ EOF
         "$stage/etc/systemd/system/sigpwr.target.wants/asterinas-sigpwr-poweroff.service"
 }
 
+# Points the console getty at ttyS0 and runs the password helper there.
+# Asterinas exposes the usable interactive serial tty as ttyS0; the
+# serial-getty template adds a dev-ttyS0.device dependency that the current
+# device manager does not materialize, so override console-getty instead.
+configure_x86_serial_getty() {
+    local stage="$1"
+    [[ "$ARCHITECTURE" == amd64 ]] || return 0
+
+    install -d -m 0755 -- \
+        "$stage/etc/systemd/system/console-getty.service.d"
+    cat >"$stage/etc/systemd/system/console-getty.service.d/asterinas-serial.conf" <<'EOF'
+[Unit]
+# Debootstrap images have no OCI console marker; the getty owns ttyS0.
+ConditionPathExists=
+[Service]
+TTYPath=/dev/ttyS0
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=tty
+TTYReset=yes
+TTYVHangup=no
+TTYVTDisallocate=no
+ExecStart=
+ExecStart=-/sbin/agetty -o '-- \\u' --noclear --keep-baud -l /usr/local/sbin/asterinas-login 115200,38400,9600 - $TERM
+EOF
+}
+
 configure_and_normalize_rootfs() {
     configure_architecture
     local stage="$WORK_DIR/stage"
@@ -1306,26 +1333,8 @@ EOF
             configure_logind_namespace_compatibility "$stage"
             # Asterinas exposes the usable interactive serial tty as ttyS0.
             # Keep Debian's console-getty ordering and lifecycle, but point
-            # its terminal directly at ttyS0. The serial-getty template adds
-            # a dev-ttyS0.device dependency that is not materialized by the
-            # current Asterinas device manager.
-            install -d -m 0755 -- \
-                "$stage/etc/systemd/system/console-getty.service.d"
-            cat >"$stage/etc/systemd/system/console-getty.service.d/asterinas-serial.conf" <<'EOF'
-[Unit]
-# Debootstrap images have no OCI console marker; the getty owns ttyS0.
-ConditionPathExists=
-[Service]
-TTYPath=/dev/ttyS0
-StandardInput=tty-force
-StandardOutput=tty
-StandardError=tty
-TTYReset=yes
-TTYVHangup=no
-TTYVTDisallocate=no
-ExecStart=
-ExecStart=-/sbin/agetty -o '-- \\u' --noclear --keep-baud -l /usr/local/sbin/asterinas-login 115200,38400,9600 - $TERM
-EOF
+            # its terminal directly at ttyS0.
+            configure_x86_serial_getty "$stage"
         fi
     elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
         configure_desktop "$stage" "${PROFILE#desktop-}"
@@ -1358,6 +1367,16 @@ EOF
         configure_desktop_m5_network "$stage" m5 false lightweight
     elif [[ "$PROFILE" == desktop-drm ]]; then
         configure_desktop "$stage" drm "offline" drm
+        # The daily-use gate logs in over ttyS0 as asterinas. Desktop
+        # profiles otherwise have no serial login plane, so give amd64 the
+        # same helper, getty and sudo wiring the systemd profiles use.
+        if [[ "$ARCHITECTURE" == amd64 ]]; then
+            install -D -m 0755 -- \
+                "$script_directory/asterinas_login.sh" \
+                "$stage/usr/local/sbin/asterinas-login"
+            configure_x86_serial_login "$stage"
+            configure_x86_serial_getty "$stage"
+        fi
     fi
     : >"$stage/etc/machine-id"
     if [[ "$PROFILE" == browser-web ]]; then

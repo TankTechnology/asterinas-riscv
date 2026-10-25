@@ -1,0 +1,11 @@
+# build facts
+build_exit=0
+tested_build_duration=2m12s (11:59:20 -> 12:01:32, build.log)
+image=1.1G
+packages_lock=357
+packages_before=331
+delta=26 (eog deps + sudo)
+apt_get_packages=278
+apt_download_MB=147.4
+kernel=target/prime/kernels/x86.elf
+kernel_sha256_prefix=9e8ee5dd544fa03a

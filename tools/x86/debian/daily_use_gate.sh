@@ -507,6 +507,14 @@ fi
     printf 'rm /etc/systemd/system/asterinas-debian-ext4.service\n'
     printf 'rm /etc/systemd/system/multi-user.target.wants/xorgprobe.service\n'
     printf 'rm /etc/systemd/system/xorgprobe.service\n'
+    # The daily checklist starts its own Xorg on :0 with the gate's config.
+    # A desktop image that also boots a session service would take :0 first
+    # and leave the checklist talking to a server it did not configure (or
+    # fail to start one at all), so retire those units too.
+    printf 'rm /etc/systemd/system/graphical.target.wants/asterinas-desktop-drm.service\n'
+    printf 'rm /etc/systemd/system/graphical.target.wants/asterinas-desktop-drm-evidence.service\n'
+    printf 'rm /etc/systemd/system/asterinas-desktop-drm.service\n'
+    printf 'rm /etc/systemd/system/asterinas-desktop-drm-evidence.service\n'
     # debugfs `write` refuses to replace an existing file, so a base image that
     # already carries a probe would silently keep the stale copy. Remove each
     # target first; `rm` on an absent path is harmless.
