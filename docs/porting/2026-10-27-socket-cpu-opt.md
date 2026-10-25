@@ -118,18 +118,31 @@ Firefox 阶段与上一轮相同（1024×768、开 openbox、Page_Down 滚动 20
 
 | by cpu | 改前 2e747b59 | 改后（iovec） | 改后（+warn-once） |
 |---|---|---|---|
-| recvmsg | 44.7% / 940.9 µs/次 | 40.8% / 687.4 µs/次 | 未取得（见 §4c） |
-| sendmsg | 32.1% / 4,875 µs/次 | 31.0% / 4,078.6 µs/次 | 未取得（见 §4c） |
-| read | 7.2% | 9.3% | — |
-| clone | 3.5% | 4.0% | — |
-| ioctl | 1.8% | 2.6% | — |
-| poll | 1.5% | 1.9% | — |
+| recvmsg | 44.7% / 940.9 µs/次 | 40.8% / 687.4 µs/次 | **4.8% / 19.7 µs/次** |
+| sendmsg | 32.1% / 4,875 µs/次 | 31.0% / 4,078.6 µs/次 | **跌出 top10（<2.6%）** |
+| read | 7.2% | 9.3% | **29.8% / 383 µs/次** |
+| clone | 3.5% | 4.0% | **14.6% / 235 ms/次**（14 次） |
+| ioctl | 1.8% | 2.6% | 9.3% / 730 µs/次 |
+| poll | 1.5% | 1.9% | 6.8% |
+| futex | 0.8% | 0.8% | 4.6% |
+| writev / epoll_wait / clone3 / mmap | — | — | 3.4% / 3.2% / 2.7% / 2.6% |
 
-按 total 的排序两边一致（futex 约 68%、epoll_wait 约 7%），即阻塞项没有变化。
+所有 syscall 的 CPU 总和也从改前的 ~40 CPU·s（20 s 窗口）降到 **22.6 CPU·s**。
 
-注意两次 Firefox 采样的工作量本身就有约 20% 波动（recvmsg 调用数
-20,784 → 25,341），所以单次逐调用差值（−26.9% / −16.3%）不能全部归因于
-iovec 改动；能确定的是微基准里 socket 路径本身快了 20%（§3.1）。
+结论：**Firefox 的 socket CPU 绝大部分不是 socket 逻辑，而是热路径上的
+`warn!` 串口输出**。去掉逐次 warn 后，`recvmsg` 单次 CPU 从 941 µs 降到
+19.7 µs（−97.9%），`sendmsg` 从 4.9 ms 降到 top10 之外。新的 top10 里
+`recvmsg`/`sendmsg` 合计只有 4.8%+（<2.6%），真正的成本转移到：
+
+- `read` 29.8%、`ioctl` 9.3%（渲染/字体/文件读取，各约 0.4–0.7 ms/次）；
+- `clone` 14.6%：14 次进程创建耗 3.3 CPU·s，**单次 235 ms**（既有的
+  进程创建过重问题，见 §5）；
+- 其余是阻塞项（poll/epoll_wait/futex 的 blocked 占 97%+）。
+
+注意三次 Firefox 采样的工作量本身波动很大（recvmsg 调用数
+20,784 → 25,341 → 54,978），所以百分比不能直接横比；**逐调用 CPU**
+（µs/次）才是可比的：`recvmsg` 941 → 687 → 19.7 µs，`sendmsg`
+4,875 → 4,079 → 跌出 top10。
 
 ## 4b. 新的发现：**每次 socket 调用都在打印 warn!**
 
@@ -151,7 +164,7 @@ WARN  : unsupported flags: MSG_DONTWAIT
 `warn_unsupported_flags_once(send, flags)`（`message_flags.rs`），
 每种方向只打印第一次，语义不变（标志仍然不被实现，只是不再刷屏）。
 
-## 4c. warn-once 的 Firefox 复测被 panic 打断
+## 4c. warn-once 的 Firefox 复测：一次 panic，一次成功
 
 同一内核（`245594cb`）跑 Firefox 阶段时，在滚动开始后触发了一次 panic：
 
@@ -171,9 +184,11 @@ panic 前一行控制台是 `mpool miss, segmented fallback: pages=16 total=7`
 滚动里出现了 2 次，是可复现的低频并发缺陷（缺页慢路径在 `preempt_count > 0`
 时进入了可能休眠的代码），应在下一轮单独修，不在本轮范围内。
 
-因此 warn-once 的 Firefox 前后对比**没有取得**；微基准不受影响（Python 不传
-`MSG_DONTWAIT`），其数字见 §3.1 表的后一列与
-`evidence/2026-10-27-socket-cpu-opt/microbench-after-warnfix.txt`。
+再次运行（同内核、同脚本）成功完成，§4 第三列与
+`evidence/2026-10-27-socket-cpu-opt/firefox-after-warnfix.txt` 就是这次。
+微基准不受影响（Python 不传 `MSG_DONTWAIT`），数字见 §3.1 表的后一列与
+`microbench-after-warnfix.txt`。**panic 合计出现 2 次（约每 3 次 Firefox
+负载 1 次）**，不是本轮改动引入，但应尽快单独修。
 
 ## 5. 判断与下一步
 
@@ -187,11 +202,14 @@ panic 前一行控制台是 `mpool miss, segmented fallback: pages=16 total=7`
    `Poller`（`Waiter`/`Waker` 两个 Arc），再往 pollee 的 BTreeMap 插/删
    一个观察者，然后 park/unpark + 跨 CPU 调度。下一步应在这里做（单等待者
    免堆分配路径、或 wake 落在唤醒者 CPU），而不是继续微调 socket。
-4. **Firefox 的 `sendmsg`/`recvmsg` 单次 CPU（687 µs / 4.1 ms）比微基准
-   高两个数量级**，原因已定位为 socket 热路径上的逐次 `warn!`（§4b）——
-   真实程序带 `MSG_DONTWAIT`，每条都写串口。warn-once 已修，但复测被
-   §4c 的缺页 panic 打断，尚未拿到数字；这是下一轮第一优先。
-5. **新发现的并发缺陷**（§4c）比性能问题更重要：缺页慢路径在
+4. **Firefox 的 `sendmsg`/`recvmsg` 单次 CPU 高两个数量级的原因已定位并修复**：
+   socket 热路径上的逐次 `warn!`（§4b）——真实程序带 `MSG_DONTWAIT`，
+   每条都写串口。warn-once 之后 `recvmsg` 941 → 19.7 µs/次、
+   `sendmsg` 4.9 ms → 跌出 top10（§4）。这是本轮收益最大的一项。
+5. 修掉 warn 之后暴露出的新 top 成本：`read`（383 µs/次）、`ioctl`
+   （730 µs/次）与 `clone`（**235 ms/次**）。`clone` 的进程创建成本异常，
+   是下一个该查的地方（Firefox 起进程时会有明显停顿）。
+6. **新发现的并发缺陷**（§4c）比性能问题更重要：缺页慢路径在
    `preempt_count = 3` 时调用可能休眠的代码，约 1/3 的 Firefox 负载运行
    会触发。应在下一轮单独定位（打开 panic backtrace 全栈、检查
    `handle_page_fault` 里持有 preempt guard 的那条路径）。
