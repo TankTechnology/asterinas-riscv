@@ -1,0 +1,16 @@
+# round-3 Claude session error excerpts (transcript fcffaac7, target/claude-r3/daily.ext2)
+
+## /dev/shm and multiprocessing probe
+drwxr-xr-x 2 root root 2 /dev/shm
+tempdir /tmp
+lock failed PermissionError [Errno 13] Permission denied
+sem failed AttributeError module _multiprocessing has no attribute SEMAPHORE
+
+## monitored /usr stress run result
+Exit code 137
+
+## small-tree run (agent workaround)
+{"root": "/tmp/smallroot", ... "files_discovered": 4, "hashed": 4, "hash_errors": 0, "worker_failures": 0, ... "first_error": null}
+
+## kernel markers for target/claude-r3/console.txt
+panic_blocks=0 allocation_failed=0 oom_killer=0 out_of_memory=0

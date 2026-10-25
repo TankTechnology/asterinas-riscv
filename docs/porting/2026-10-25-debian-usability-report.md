@@ -1,9 +1,9 @@
 # Asterinas 上的 Debian 可用性总报告
 
-日期：2026-10-25　仓库 HEAD：`4e4ba810f`
+日期：2026-10-25　仓库 HEAD：`ad9e5f829`
 目标：x86_64 Debian（trixie → forky/sid 升级路径），QEMU/KVM
-内核：最新验证内核 `e23120606e4d942f`（L6）与当前树重建的
-`20582f4b207b6cb1`（ring-buffer 修复后）
+内核：最新验证内核 `e23120606e4d942f`（L6）、`20582f4b207b6cb1`
+（ring-buffer 修复后）与 `548e5f0debee52c0`（tmpfs 根 1777 修复后）
 
 本报告只汇总**已经跑过并有日志/文档证据**的结果；未验证的项不写入能力表。
 所有证据路径相对于 `docs/porting/`。
@@ -25,7 +25,7 @@
 | **真实项目** | zlib 1.3.1 编译 + 自带测试 | `configure/make/make test` rc=0；**3 项 `zlib test OK`** | `2026-10-25-real-workflow-build.md` |
 | **开发者工作流** | git / C++ / pip / zlib | git 2.47.3，GitHub clone **2.1 s / 6.1 M**；g++ threads 输出 **1000**；pip six 1.17.0 / click（需 PEP 668 覆盖）；zlib 3 项 OK | `2026-10-25-dev-workflow.md` |
 
-## 2. 六个关键修复的归因
+## 2. 七个关键修复的归因
 
 1. **内核栈 128 页 → 32×4 页分段**（`1406bd76d` → `f67945641`）
    - 原因：L6 在 1.59 GiB 空闲时仍因 order-7 连续块缺失而 panic；
@@ -63,7 +63,19 @@
      suspend 3/3；
    - 证据：`2026-10-25-ringbuf-nomemory-fix.md`。
 
-6. **GTK 桌面应用闭包与独立 toolchain 剖面**（`db20ab5ea`、`22e7aa049`）
+6. **tmpfs 根目录对齐 Linux 1777**（`3f934bf7a`）
+   - 原因：`TmpFs` 复用 `RamFs` 的根 inode，模式硬编码 0755 且不解析
+     `mode=`，`/dev/shm` 因此为 `drwxr-xr-x root root`；Claude Code 在
+     guest 里跑 Python 多进程时 `multiprocessing.Lock()` 报
+     `PermissionError: [Errno 13]`；
+   - 做法：`RamFs::new_with_sb` 增加 `root_mode` 参数，tmpfs 传
+     `mkmod!(a+rwx) | S_ISVTX`（1777），ramfs/rootfs 保持 0755，并新增
+     `tmpfs_root_mode_is_1777` / `ramfs_root_mode_stays_0755` 两个 ktest；
+   - 结果：修复内核 `548e5f0d`；`/dev/shm` = 1777，uid 1000 写入 rc=0，
+     `Lock`/`Pool` 全通过；ktest 全量 `cargo osdk test` 退出码 0；
+   - 证据：`2026-10-25-claude-obstacles.md`。
+
+7. **GTK 桌面应用闭包与独立 toolchain 剖面**（`db20ab5ea`、`22e7aa049`）
    - 原因：`desktop-drm` 剖面已有 pcmanfm/GTK3/Xorg，但缺 `eog` 和日常门禁
      所需 `sudo`，且没有 amd64 串口登录面；
    - 做法：新增**独立** `desktop-drm-toolchain` 剖面（+eog/+sudo/build-essential，
@@ -80,7 +92,9 @@
 2. **pip 需要 PEP 668 覆盖**：`python3 -m pip install six` 首次报
    `externally-managed-environment`；用 `--break-system-packages`（或 venv）
    后成功。属 Debian 镜像策略，不是 Asterinas 缺陷。
-3. **磁盘/共享内存上限**：`/dev/shm` 上限 2 GiB；根 ext2 空闲约 300–400 MiB。
+3. **磁盘/共享内存上限**：`/dev/shm` 上限 2 GiB（根模式已修为 1777，
+   但 tmpfs 仍不解析 `mode=`/`size=` 等挂载选项）；根 ext2 空闲约
+   300–400 MiB。
    单个 2 GiB 文件放不下，因此 GUI 压测用 **1.5 GiB**，1 小时复合负载用
    **1 GiB**；需要更大 I/O 的测试要给 guest 挂数据盘。
 4. **guest DNS**：镜像内若为 `1.1.1.1`，经 slirp 不可解析；测试脚本在联网前

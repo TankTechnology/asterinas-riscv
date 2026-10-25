@@ -1,0 +1,6 @@
+[claude-code:unrecognized_model] {"model":"deepseek-flash[1m]","query_source":"sdk"}
+1. **项目/版本**：Lua v5.4.9（官方 GitHub tag `v5.4.9`），位于 `/home/asterinas/work/cproj/lua-5.4.9`。
+2. **构建**：`make -j4` 成功；clean build 约 5 秒，生成 `lua` 与 `liblua.a`，`./lua -v` 输出 Lua 5.4.9。
+3. **测试**：运行项目自带 `testes/all.lua` 全量测试，退出码 0，输出 `final OK !!!`（约 7 秒；跳过需 testC 的 API 测试及缺失的 pt_BR locale）。
+4. **第一条真实错误**：`lua.c:444: fatal error: readline/readline.h: No such file or directory`。
+5. **处理**：安装 `libreadline-dev` 后恢复 `-DLUA_USE_READLINE`/`-lreadline` 并重新 clean build；另因 stdin 为可 seek 的 `/dev/null` 导致 `files.lua:84` 失败一次，改用管道 stdin 后全套通过。

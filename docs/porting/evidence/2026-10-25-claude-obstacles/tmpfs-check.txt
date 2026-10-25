@@ -1,0 +1,8 @@
+# tmpfs 1777 + multiprocessing verification (target/tmpfs-check/console.txt)
+
+tmpfs_mode=1777 root root
+tmpfs_mount=tmpfs on /dev/shm type tmpfs (rw,nosuid,nodev,strictatime)
+shm_write_uid1000 rc=0 err=
+mp_test rc=0 out=pool [1, 2, 3] lock_ok True
+
+panic=0 alloc=0

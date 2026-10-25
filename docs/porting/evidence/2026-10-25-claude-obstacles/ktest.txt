@@ -1,0 +1,27 @@
+# tmpfs root mode ktests (fix 3f934bf7a, 2026-10-25)
+
+# 1) The OSDK test filter matches test-path suffixes component-wise, not by
+#    substring.  'cargo osdk test tmpfs_root_mode' therefore selects no
+#    test, and the run still exits 0:
+$ cargo osdk test tmpfs_root_mode --target-arch x86_64 --scheme microvm
+rc=0
+running 181 tests in crate "aster-core"
+test result: ok. 0 passed; 0 failed; 181 filtered out.
+
+# 2) The full name is required.  Instead of re-running all 38 test-base
+#    packages, the aster-core test base was rebuilt with OSDK's exact flags
+#    and its whitelist set to both full names; the ELF e_machine was set to
+#    EM_386 like make_elf_for_qemu() does, then booted directly:
+$ qemu-system-x86_64 -kernel /tmp/astercore-ktest.elf -append earlycon ...
+running 181 tests in crate "aster-core"
+test aster_core::fs::fs_impls::tmpfs::fs::tests::tmpfs_root_mode_is_1777 ... ok
+test aster_core::fs::fs_impls::tmpfs::fs::tests::ramfs_root_mode_stays_0755 ... ok
+test result: ok. 2 passed; 0 failed; 179 filtered out.
+qemu_rc=33   # isa-debug-exit: poweroff(Success)
+
+# 3) First attempt failed before the assertion because clocks are not
+#    initialized in ktest; Inode::mode() panicked in:
+Panicked at kernel/core/src/time/clocks/system_wide.rs:85:46
+called `Option::unwrap()` on a `None` value
+# fix: call crate::time::clocks::init_for_ktest() in each test (same as
+#      the configfs ktest does).
