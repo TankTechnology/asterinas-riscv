@@ -1,0 +1,5 @@
+# kernel 245594cb, Firefox 20 s scroll phase aborted
+[    50.331] ERROR : Uncaught panic:
+	This function might break atomic mode (preempt_count = 3, is_local_irq_enabled = true)
+	at kernel/core/src/vm/vmar/vmar_impls/page_fault.rs:10
+	on CPU 1; thread min_flt: 1001, maj_flt: 0

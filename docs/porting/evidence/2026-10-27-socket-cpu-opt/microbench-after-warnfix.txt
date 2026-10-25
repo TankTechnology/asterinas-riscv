@@ -1,0 +1,6 @@
+# kernel 245594cb (iovec ca9cdc665 + warn-once f4e10d5db), 64 B unless noted
+spp mode=pingpong size=64 n=200000 wall_ns_rt=62771.7 rt_per_s=15931 syscalls=799999 cpu_ns_rt=56858.2 blocked_ns_rt=50304.4 cpu_ns_syscall=14214.6 cpu_parent=0 cpu_child=3
+spp mode=pingpong size=65536 n=20000 wall_ns_rt=102711.9 rt_per_s=9736 syscalls=79999 cpu_ns_rt=78211.8 blocked_ns_rt=89721.0 cpu_ns_syscall=19553.2 cpu_parent=2 cpu_child=1
+spp mode=sameproc size=64 n=200000 wall_ns_rt=10185.2 rt_per_s=98182 syscalls=400000 cpu_ns_rt=6734.4 blocked_ns_rt=0.0 cpu_ns_syscall=3367.2 cpu_parent=0 cpu_child=?
+spp mode=pipe size=64 n=200000 wall_ns_rt=4861.1 rt_per_s=205715 syscalls=400004 cpu_ns_rt=2408.0 blocked_ns_rt=0.0 cpu_ns_syscall=1204.0 cpu_parent=0 cpu_child=?
+# pipepair row was not captured before the workspace was reclaimed for the matrix run

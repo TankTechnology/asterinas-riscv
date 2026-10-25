@@ -1,0 +1,9 @@
+spp_start 2026-10-25T23:27:58Z python=Python 3.13.5 cpus=4
+spp mode=pingpong size=64 n=200000 wall_ns_rt=64747.1 rt_per_s=15445 syscalls=799999 cpu_ns_rt=56869.9 blocked_ns_rt=51322.8 cpu_ns_syscall=14217.5 cpu_parent=1 cpu_child=3
+spp mode=pingpong size=65536 n=20000 wall_ns_rt=93758.5 rt_per_s=10666 syscalls=79999 cpu_ns_rt=81234.3 blocked_ns_rt=76465.3 cpu_ns_syscall=20308.8 cpu_parent=2 cpu_child=0
+spp mode=sameproc size=64 n=200000 wall_ns_rt=11274.9 rt_per_s=88693 syscalls=400000 cpu_ns_rt=8046.4 blocked_ns_rt=0.0 cpu_ns_syscall=4023.2 cpu_parent=1 cpu_child=?
+spp mode=pipe size=64 n=200000 wall_ns_rt=4525.8 rt_per_s=220955 syscalls=400004 cpu_ns_rt=2213.9 blocked_ns_rt=0.0 cpu_ns_syscall=1106.9 cpu_parent=1 cpu_child=?
+spp mode=pipepair size=64 n=200000 wall_ns_rt=45742.4 rt_per_s=21862 syscalls=800004 cpu_ns_rt=38828.2 blocked_ns_rt=39803.3 cpu_ns_syscall=9707.0 cpu_parent=1 cpu_child=0
+spp size=64 n=200000 rt_per_s=15850 wall_ns_rt=63089.6 sendmsg_count=400000 recvmsg_count=399999 sendmsg_cpu_ns=6882983146 recvmsg_cpu_ns=5043210681 cpu_ns_rt=59631.0 cpu_ns_syscall=14907.8
+spp size=4096 n=100000 rt_per_s=15809 wall_ns_rt=63254.1 sendmsg_count=200000 recvmsg_count=199999 sendmsg_cpu_ns=3372444621 recvmsg_cpu_ns=2529573660 cpu_ns_rt=59020.2 cpu_ns_syscall=14755.1
+spp size=65536 n=20000 rt_per_s=10387 wall_ns_rt=96272.5 sendmsg_count=40000 recvmsg_count=39999 sendmsg_cpu_ns=854771372 recvmsg_cpu_ns=709261465 cpu_ns_rt=78201.6 cpu_ns_syscall=19550.7

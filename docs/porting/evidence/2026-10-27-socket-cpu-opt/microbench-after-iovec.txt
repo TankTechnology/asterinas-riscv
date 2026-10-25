@@ -1,0 +1,6 @@
+# kernel ca51f28e (iovec change) + warn-once not yet
+spp mode=pingpong size=64 n=200000 wall_ns_rt=62929.8 rt_per_s=15891 syscalls=799999 cpu_ns_rt=57130.4 blocked_ns_rt=49869.2 cpu_ns_syscall=14282.6 cpu_parent=0 cpu_child=3
+spp mode=pingpong size=65536 n=20000 wall_ns_rt=96055.3 rt_per_s=10411 syscalls=79999 cpu_ns_rt=80032.2 blocked_ns_rt=80350.2 cpu_ns_syscall=20008.3 cpu_parent=2 cpu_child=0
+spp mode=sameproc size=64 n=200000 wall_ns_rt=9813.9 rt_per_s=101897 syscalls=400000 cpu_ns_rt=6420.0 blocked_ns_rt=0.0 cpu_ns_syscall=3210.0 cpu_parent=1 cpu_child=?
+spp mode=pipe size=64 n=200000 wall_ns_rt=4627.2 rt_per_s=216115 syscalls=400004 cpu_ns_rt=2253.0 blocked_ns_rt=0.0 cpu_ns_syscall=1126.5 cpu_parent=1 cpu_child=?
+spp mode=pipepair size=64 n=200000 wall_ns_rt=47979.4 rt_per_s=20842 syscalls=800004 cpu_ns_rt=40610.5 blocked_ns_rt=41708.4 cpu_ns_syscall=10152.6 cpu_parent=2 cpu_child=0
