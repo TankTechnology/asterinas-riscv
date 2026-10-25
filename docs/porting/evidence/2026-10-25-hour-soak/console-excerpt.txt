@@ -1,0 +1,43 @@
+# one-hour soak: guest console excerpt (target/hour-soak/console.txt)
+
+## summary
+dmesg_count[allocation failed]=0
+dmesg_count[oom-killer]=0
+dmesg_count[Out of memory]=0
+dmesg_count[Uncaught panic]=0
+failures cfg=0 make=0 test=0 mem=0 io=0
+first5_avg=15.74 last5_avg=14.56 ratio=0.925
+memavail_baseline=3968608 memavail_last=3906328
+rounds=30 elapsed_s=3596.1
+
+## 30 rounds
+round=1 work_s=18.52 memavail=3924508 load=0.000 uptime=23.75 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=2 work_s=16.17 memavail=3921380 load=0.000 uptime=141.34 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=3 work_s=15.50 memavail=3920316 load=0.073 uptime=260.24 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=4 work_s=14.30 memavail=3921804 load=0.086 uptime=378.93 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=5 work_s=14.20 memavail=3919180 load=0.083 uptime=498.53 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=6 work_s=14.21 memavail=3918608 load=0.008 uptime=618.17 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=7 work_s=14.09 memavail=3919696 load=0.000 uptime=737.66 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=8 work_s=14.28 memavail=3918324 load=0.000 uptime=858.36 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=9 work_s=14.26 memavail=3918548 load=0.000 uptime=978.02 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=10 work_s=14.26 memavail=3915848 load=0.000 uptime=1097.70 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=11 work_s=14.28 memavail=3917456 load=0.000 uptime=1217.39 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=12 work_s=14.54 memavail=3916028 load=0.000 uptime=1337.36 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=13 work_s=14.44 memavail=3914212 load=0.000 uptime=1457.20 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=14 work_s=14.14 memavail=3914888 load=0.000 uptime=1576.72 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=15 work_s=14.11 memavail=3914360 load=0.080 uptime=1696.25 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=16 work_s=14.72 memavail=3914636 load=0.007 uptime=1817.37 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=17 work_s=14.11 memavail=3914108 load=0.000 uptime=1936.88 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=18 work_s=14.49 memavail=3913576 load=0.073 uptime=2057.78 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=19 work_s=14.33 memavail=3912352 load=0.007 uptime=2177.53 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=20 work_s=14.39 memavail=3912460 load=0.000 uptime=2297.34 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=21 work_s=14.14 memavail=3911248 load=0.000 uptime=2416.87 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=22 work_s=14.22 memavail=3911400 load=0.073 uptime=2536.46 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=23 work_s=14.62 memavail=3910188 load=0.086 uptime=2656.51 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=24 work_s=14.23 memavail=3908132 load=0.009 uptime=2776.14 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=25 work_s=14.45 memavail=3909028 load=0.000 uptime=2896.01 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=26 work_s=14.60 memavail=3909156 load=0.000 uptime=3016.00 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=27 work_s=14.37 memavail=3908688 load=0.080 uptime=3135.79 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=28 work_s=14.61 memavail=3907324 load=0.008 uptime=3255.80 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=29 work_s=14.57 memavail=3906836 load=0.000 uptime=3375.81 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
+round=30 work_s=14.63 memavail=3906256 load=0.000 uptime=3495.84 cfg_fail=0 make_fail=0 test_fail=0 mem_fail=0 io_fail=0 io=yes
