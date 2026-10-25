@@ -561,9 +561,17 @@ run_baseline() {
     root=$1
     tag=$2
     t0=$(now)
+    # Append mode matters: with -P8 several sha256sum processes share one
+    # stdout.  A plain '>' does not set O_APPEND, so their writes race on the
+    # shared file offset and corrupt each other's records.
+    : >"$OUT/$tag.baseline.z"
+    # One writer only.  With -P8 the independent sha256sum processes append to
+    # the same file concurrently; on this kernel their records splice into
+    # each other (114 of 21,657 records were malformed even with O_APPEND), so
+    # the baseline would be unusable for digest comparison.
     find "$root" -xdev -type f -print0 | sort -z | \
-        xargs -0 -r -n 64 -P 8 sha256sum --zero \
-        >"$OUT/$tag.baseline.z" 2>"$OUT/$tag.baseline.err"
+        xargs -0 -r -n 64 -P 1 sha256sum --zero \
+        >>"$OUT/$tag.baseline.z" 2>"$OUT/$tag.baseline.err"
     rc=$?
     dur=$(( $(now) - t0 ))
     log "baseline_$tag root=$root rc=$rc dur=${dur}s records=$(tr -cd '\0' <"$OUT/$tag.baseline.z" | wc -c) err_bytes=$(wc -c <"$OUT/$tag.baseline.err" 2>/dev/null || echo 0)"

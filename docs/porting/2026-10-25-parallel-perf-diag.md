@@ -1,6 +1,7 @@
 # 并行哈希 ~5 文件/秒的归因：调度切换自旋，被 flock 争用触发
 
-日期：2026-10-25　内核：`548e5f0debee52c0`（tmpfs 修复后）
+日期：2026-10-25　内核：诊断用 `548e5f0debee52c0`（tmpfs 修复后）；
+修复后 `923ca5c53ea46e02`
 镜像：`target/debian-x86-toolchain3/rootfs/debian-root.ext2`（2 GiB）
 guest：4 vCPU / 8 GiB / KVM；串口 `loglevel=4`
 
@@ -23,9 +24,13 @@ guest：4 vCPU / 8 GiB / KVM；串口 `loglevel=4`
   时刻对多个任务做切换决策 → 同一任务被两个 CPU 同时选中，其中一个 CPU
   在 `before_switching_to()` 里空转，等待另一个 CPU 完成切换；空转期间
   **不睡眠、不发生上下文切换**，但烧掉 130%+ 的 CPU（guest 共 400%）。
-- 本轮**先测量、不冒险改调度器**：该自旋命中代码里已标注的
-  “scheduler decision and context switching are not atomic”（issue #1633）；
-  修复需要单独一轮设计 + ktest + 压测。本文给出修复方案与证据。
+- **已修复触发条件**（`bd904ff64`）：把 flock 的等待队列改为每个 inode
+  一个、unlock 只 `wake_one()`。同一 200 文件 4×4 基准从 **95.15 s →
+  0.151 s**，agent 工具从 **56.38 s → 0.287 s**；全量 `/usr`（21,657 文件 /
+  990.6 MiB）从“1,232 s 只完成 5,384 条”变为 **31.66 s 全部完成、0 错误，
+  且与 `sha256sum` 基线逐条一致**；内核 `923ca5c5` 复验。
+- 调度器侧的双重选中竞态（issue #1633）仍在，但被 flock 唤醒风暴放大
+  的路径已消除；调度器修复方案仍列在第 4 节，需要单独的 ktest 与压测。
 
 ## 1. 现象复现（最重要的对照）
 
@@ -107,10 +112,10 @@ uid 1000 运行；工具 `tools/x86/debian/perf_bench.py`，
 **结论（四选一）：A（调度/唤醒开销）**；C（锁同步争用）是触发条件，
 不是根因；B、D 排除。
 
-## 4. 修复方案（本轮未改内核）
+## 4. 修复方案
 
 这不是 flock 语义错误，而是调度器在唤醒-切换竞争窗口里的自旋。两个
-候选，均需单独验证：
+候选，方案 2 已实施并验证：
 
 1. **调度器（根因）**：`pick_next` / `enqueue` 时跳过
    `switched_to_cpu == true` 的任务（说明它已在另一个 CPU 上运行或正在
@@ -123,9 +128,37 @@ uid 1000 运行；工具 `tools/x86/debian/perf_bench.py`，
    并处理被丢弃 item 上的等待者（当前 `Drop` 也会 `wake_all`）。能把
    每次 unlock 的并发切换尝试从 15 降到 1，但单独做不能消除竞态。
 
-本轮 60 分钟上限内按“先测量再改”执行，没有提交未经压测的调度器改动；
-建议下一轮先做方案 1 的最小版本（只做 `pick_next` 跳过）并用本文件第 1
-节的三个变体做回归。
+**已实施方案 2**（commit `bd904ff64`，内核 `923ca5c5`）：
+`kernel/core/src/fs/file/flock.rs` 把等待队列从“每个 FlockItem 一个”
+改为 `FlockList` 上一个 per-inode 队列，`unlock()` 只调用 `wake_one()`
+（先释放锁表 mutex 再唤醒）。这样被唤醒者要么拿到锁、要么重新入队，不会
+丢唤醒；每次 unlock 只产生一个切换决策，不再形成 15 路风暴。
+
+复验（同样的 200 文件、4 进程×4 线程、每线程一个 fd）：
+
+| 变体 | 修复前 | 修复后 |
+|---|---|---|
+| `perf_bench --mode lock_tfd` 4×4 | 95.15 s（2.1 文件/s） | **0.151 s（1,324 文件/s）** |
+| agent `stress_hash.py` 4×4 | 56.38 s（3.5 文件/s） | **0.287 s（697 文件/s）** |
+| `lock_tfd` 1 进程×4 线程 | 1.38 s | 0.125 s |
+| `lock_tfd` 4 进程×1 线程 | 0.083 s | 0.077 s |
+| hash-only 4×4（对照） | 0.103 s | 0.103 s |
+| agent 工具全量 `/usr`（21,657 文件 / 990.6 MiB） | 1,232 s 只完成 5,384 条 | **31.66 s 完成 21,657 条（0 错误；与单写者基线逐条一致：matched 21,657 / missing 0 / extra 0 / mismatch 0）** |
+
+串口 `Switching to a task…` 从 62 次降到 2 次，且不再出现秒级停顿。
+
+### 校验基线的并发 append 现象（新发现，未修）
+
+第一次全量校验 `verify_ok=0`：`raw` 的 21,657 条记录全部可解析，但
+`xargs -P8 sha256sum --zero >> usr.baseline.z` 生成的基线有 **114 条
+记录被拼接**（例：`ca27a636ostnamectl`、`c15fa7d0…e737e_facets.tcc`），
+导致 missing/extra/mismatch。Linux 上同样命令（3 轮 × 5,000 文件）
+**0 条 malformed**，因此这**疑似 Asterinas 并发 append 写非原子**：
+多个进程共享一个 `O_APPEND` fd 时，写入会互相穿插。改为 **单写者**
+（`xargs -P1`）后基线可比较；该并发 append 问题已单独留证，留待后续
+复现与修复（不在本轮 60 分钟范围内）。
+方案 1（调度器 `pick_next` 跳过 `switched_to_cpu` 的任务）仍建议后续做，
+以覆盖非 flock 路径；需单独的 ktest 与压测。
 
 ## 5. 对 Debian 可用性的影响（如实记录）
 
@@ -166,8 +199,12 @@ Linux（宿主）对照：同一 `perf_bench.py`、同一 200 文件样本，
 
 - `target/perf-diag/console.txt`（六项测量原始串口）
 - `target/perf-lockfd/console.txt`（owner 数对照）
-- `target/usr-hash-stress/console.txt`（B 的全量 /usr 与 /usr/lib 超时、
+- `target/usr-hash-stress/console.txt`（修复前的全量 /usr 与 /usr/lib 超时、
   `Switching to a task…` 414 次、panic/alloc/OOM 均为 0）
+- `target/usr-hash-fixed3/console.txt`（修复内核上的全量校验：31.66 s、
+  `verify_ok=1`、matched 21,657）
+- `evidence/2026-10-25-parallel-perf/fixcheck-markers.txt`、
+  `append-interleave-observation.txt`
 - `tools/x86/debian/perf_bench.py`、`parallel_perf_diag.sh`、
   `parallel_perf_lockfd.sh`
 - 代码：`ostd/src/task/processor.rs`（`before_switching_to` 自旋）、

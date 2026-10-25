@@ -1,0 +1,7 @@
+# fixed-kernel full /usr verification (kernel 923ca5c5)
+hash_usr root=/usr rc=0 dur=32s raw_bytes=2377246 err_bytes=0
+hash_usr_summary={"root": "/usr", "procs": 4, "threads": 4, "threads_total": 16, "files_discovered": 21657, "bytes_discovered": 1038317842, "hashed": 21657, "hash_errors": 0, "discovery_errors": 0, "worker_failures": 0, "accounted": 21657, "elapsed_sec": 31.655, "first_error": null, "worker_stats": [{"worker": 0, "pid": 95, "files": 5398, "hashed": 5398, "hash_errors": 0, "elapsed_sec": 20.18, "status": "ok", "exit_code": 0}, {"worker": 1, "pid": 97, "files": 5410, "hashed": 5410, "hash_errors": 0, "elapsed_sec"
+baseline_usr root=/usr rc=0 dur=29s records=21657 err_bytes=0
+verify_usr rc=0 raw_records=21657 baseline_records=21657 raw_malformed=0 baseline_malformed=0 matched=21657 missing=0 extra=0 mismatch=0 verify_ok=1
+usr_hash_stress_full=1 fallback=0 full_records=21657 max_load=0.233 min_memavail_kb=2811880
+warnings=71 panic=0 alloc=0 oom=0

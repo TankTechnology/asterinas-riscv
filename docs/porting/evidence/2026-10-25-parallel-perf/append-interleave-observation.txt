@@ -1,0 +1,16 @@
+# Parallel append observation (guest kernel 923ca5c5)
+
+## guest: find /usr | xargs -P8 sha256sum --zero >> usr.baseline.z
+records=21657 malformed=114 matched=21155 missing=154 extra=269 mismatch=233 (verify_ok=0)
+malformed samples:
+  b'ca27a636ostnamectl'
+  b'62ude/X11/bitmaps/dimple1'
+  b'5bab063802439c257d607c2e427b3740f6cf212c07calude/c++/14/bits/stl_iterator.h'
+  b'ackward/hash_set'
+  b'c15fa7d0fe05bbc9d5cc3950236c43e8c4f46ad118e737e_facets.tcc'
+  b'sr/include/c++/14/ext/pb_ds/detail/cc_hash_table_map_/cmp_fn_imps.hpp'
+
+## Linux control: 3 runs x 5,000 files, xargs -P8 sha256sum --zero >> file
+each run: records=5000 malformed=0
+
+# Consequence: the digest-comparison baseline now uses -P1 (single writer).

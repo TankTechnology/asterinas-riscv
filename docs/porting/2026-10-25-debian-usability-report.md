@@ -25,7 +25,7 @@
 | **真实项目** | zlib 1.3.1 编译 + 自带测试 | `configure/make/make test` rc=0；**3 项 `zlib test OK`** | `2026-10-25-real-workflow-build.md` |
 | **开发者工作流** | git / C++ / pip / zlib | git 2.47.3，GitHub clone **2.1 s / 6.1 M**；g++ threads 输出 **1000**；pip six 1.17.0 / click（需 PEP 668 覆盖）；zlib 3 项 OK | `2026-10-25-dev-workflow.md` |
 
-## 2. 七个关键修复的归因
+## 2. 八个关键修复的归因
 
 1. **内核栈 128 页 → 32×4 页分段**（`1406bd76d` → `f67945641`）
    - 原因：L6 在 1.59 GiB 空闲时仍因 order-7 连续块缺失而 panic；
@@ -75,7 +75,16 @@
      `Lock`/`Pool` 全通过；ktest 全量 `cargo osdk test` 退出码 0；
    - 证据：`2026-10-25-claude-obstacles.md`。
 
-7. **GTK 桌面应用闭包与独立 toolchain 剖面**（`db20ab5ea`、`22e7aa049`）
+7. **flock 唤醒风暴**（`bd904ff64`）
+   - 原因：每个 FlockItem 一个等待队列、unlock `wake_all`；16 个 owner 的
+     flock 让调度器同时考虑 15 个切换，撞上非原子的决策/切换竞态，
+     `before_switching_to()` 在 `switched_to_cpu` 上自旋（IRQ 关闭）；
+   - 做法：等待队列移到 `FlockList`（per-inode），unlock 只 `wake_one()`；
+   - 结果：200 文件 4×4 基准 **95.15 s → 0.151 s**，agent 工具
+     **56.38 s → 0.287 s**；`xargs -P8`/单线程 hash 不变；
+   - 证据：`2026-10-25-parallel-perf-diag.md`。
+
+8. **GTK 桌面应用闭包与独立 toolchain 剖面**（`db20ab5ea`、`22e7aa049`）
    - 原因：`desktop-drm` 剖面已有 pcmanfm/GTK3/Xorg，但缺 `eog` 和日常门禁
      所需 `sudo`，且没有 amd64 串口登录面；
    - 做法：新增**独立** `desktop-drm-toolchain` 剖面（+eog/+sudo/build-essential，
@@ -117,12 +126,14 @@
     测试 fd 复用 ×1）仍是已知基线。
 11. **negative dentry 无淘汰**、**page cache 无压力回收**、**池大小是常量**
     （heap 16 MiB、ring-buffer 预留 4 MiB）；更小内存的 guest 需重新标定。
-12. **多线程 + 多 owner 文件锁会灾难性变慢**（4 进程×4 线程、每线程一个
-    flock fd：200 个小文件 56–95 s，全量 `/usr` 20 分钟只完成约 5,400 条）。
-    归因是调度器 `before_switching_to()` 的自旋（`ostd/src/task/processor.rs`，
-    命中 issue #1633 的切换竞争），由每次 unlock `wake_all` 的切换风暴触发；
-    `xargs -P8`、单线程 hash、编译与 I/O 不受影响。详见
-    `2026-10-25-parallel-perf-diag.md`，修复方案待下一轮。
+12. **多线程 + 多 owner 文件锁的性能缺陷已修**（`bd904ff64`，内核
+    `923ca5c5`）：修复前 4 进程×4 线程、每线程一个 flock fd 跑 200 个
+    小文件要 56–95 s（全量 `/usr` 20 分钟只完成约 5,400 条）；根因是每次
+    unlock `wake_all` 引发的切换风暴撞上调度器
+    `before_switching_to()` 的自旋（issue #1633 的切换竞争）；改为
+    per-inode 等待队列 + `wake_one()` 后，同基准 **95.15 s → 0.151 s**、
+    agent 工具 **56.38 s → 0.287 s**。调度器侧竞态本身仍在，见
+    `2026-10-25-parallel-perf-diag.md`。
 12. 1 小时复合负载实测 **3596.1 s**（59 分 56 秒；30 轮 ×120 s 的取整差 3.9 s）。
 
 ## 4. 复现命令

@@ -1,0 +1,13 @@
+# flock wake-one fix regression (kernel 923ca5c5, 200-file sample)
+perf_fixcheck start 2026-10-25T13:03:11Z
+fix_sample files=200
+fix_hash_4p4t rc=0 {"mode": "hash", "procs": 4, "threads": 4, "files": 200, "bytes": 1362215, "elapsed_sec": 0.103, "files_per_sec": 1941.5, "mib_per_sec": 12.61, "cpu_sec": 0.117, "cpu_pct_one_core": 113.6, "nvcsw": 0, "nivcsw": 0, "workers": [{"worker": 0, "pid": 1098, "files": 50, "done": 50, "elapsed_sec": 0.0422, "utime": 0.004, "stime": 0.035, "nvcsw": 0, "nivcsw": 0, "maxrss_kb": 0}, {"worker": 1, "pid": 1099, "files": 50, "done": 50, "elapsed_sec": 0.0371, "utime": 0.001, "stime": 0.013, "nvcsw": 0, "nivcs
+fix_lock_tfd_4p4t rc=0 {"mode": "lock_tfd", "procs": 4, "threads": 4, "files": 200, "bytes": 1362215, "elapsed_sec": 0.151, "files_per_sec": 1324.1, "mib_per_sec": 8.6, "cpu_sec": 0.205, "cpu_pct_one_core": 135.7, "nvcsw": 0, "nivcsw": 0, "workers": [{"worker": 0, "pid": 1125, "files": 50, "done": 50, "elapsed_sec": 0.0632, "utime": 0.012, "stime": 0.035, "nvcsw": 0, "nivcsw": 0, "maxrss_kb": 0}, {"worker": 1, "pid": 1126, "files": 50, "done": 50, "elapsed_sec": 0.0835, "utime": 0.004, "stime": 0.075, "nvcsw": 0, "niv
+fix_lock_tfd_1p4t rc=0 {"mode": "lock_tfd", "procs": 1, "threads": 4, "files": 200, "bytes": 1362215, "elapsed_sec": 0.1248, "files_per_sec": 1602.2, "mib_per_sec": 10.41, "cpu_sec": 0.127, "cpu_pct_one_core": 101.7, "nvcsw": 0, "nivcsw": 0, "workers": [{"worker": 0, "pid": 1152, "files": 200, "done": 200, "elapsed_sec": 0.0985, "utime": 0.024, "stime": 0.103, "nvcsw": 0, "nivcsw": 0, "maxrss_kb": 0}]}
+fix_lock_tfd_4p1t rc=0 {"mode": "lock_tfd", "procs": 4, "threads": 1, "files": 200, "bytes": 1362215, "elapsed_sec": 0.0769, "files_per_sec": 2599.6, "mib_per_sec": 16.89, "cpu_sec": 0.039, "cpu_pct_one_core": 50.7, "nvcsw": 0, "nivcsw": 0, "workers": [{"worker": 0, "pid": 1166, "files": 50, "done": 50, "elapsed_sec": 0.0112, "utime": 0.001, "stime": 0.008, "nvcsw": 0, "nivcsw": 0, "maxrss_kb": 0}, {"worker": 1, "pid": 1167, "files": 50, "done": 50, "elapsed_sec": 0.01, "utime": 0.001, "stime": 0.009, "nvcsw": 0, "niv
+fix_tool44 rc=0 dur=1s records=200 err_bytes=0
+fix_tool44_summary={"root": "/home/asterinas/work4/perf-sample", "procs": 4, "threads": 4, "threads_total": 16, "files_discovered": 200, "bytes_discovered": 1362215, "hashed": 200, "hash_errors": 0, "discovery_errors": 0, "worker_failures": 0, "accounted": 200, "elapsed_sec": 0.287, "first_error": null, "worker_stats": [{"worker": 0, "pid": 1180, "files": 49, "hashed": 49, "hash_errors": 0, "elapsed_sec": 0.057, "st
+perf_fixcheck_done=2026-10-25T13:03:22Z
+
+scheduler warnings: 6
+panic: 0 alloc: 0
