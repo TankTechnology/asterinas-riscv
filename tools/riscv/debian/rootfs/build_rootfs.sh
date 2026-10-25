@@ -1392,7 +1392,9 @@ EOF
             "$stage/usr/share/asterinas/browser-web-online-rootfs-static.log" ||
             die "online Firefox rootfs checker did not emit its exact PASS"
     else
-        printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
+        # QEMU's user-mode network resolves through its virtual DNS at
+        # 10.0.2.3; a public resolver is not reachable through slirp.
+        printf 'nameserver 10.0.2.3\n' >"$stage/etc/resolv.conf"
     fi
     rm -f -- "$stage/var/lib/dbus/machine-id"
     rm -f -- "$stage/var/lib/dpkg/lock" "$stage/var/lib/dpkg/lock-frontend"

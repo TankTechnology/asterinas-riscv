@@ -384,7 +384,8 @@ serial.settimeout(0.5)
 
 buffer = b''
 sent_user = sent_pass = sent_command = done = False
-answered_usb = answered_suspend = shot = False
+answered_usb = shot = False
+answered_suspend = 0
 with open(console_path, 'wb') as out:
     while time.time() < deadline:
         try:
@@ -413,10 +414,13 @@ with open(console_path, 'wb') as out:
             if not answered_usb and b'DAILY_USB_WAIT' in buffer:
                 monitor.sendall(b'device_add usb-storage,drive=usbstick\n')
                 answered_usb = True
-            if not answered_suspend and b'DAILY_SUSPEND_WAIT' in buffer:
+            # A soak may suspend several times; wake once per WAIT marker
+            # (capped at three) instead of only the first occurrence.
+            seen_suspend = buffer.count(b'DAILY_SUSPEND_WAIT')
+            while answered_suspend < seen_suspend and answered_suspend < 3:
                 time.sleep(3)
                 monitor.sendall(b'system_wakeup\n')
-                answered_suspend = True
+                answered_suspend += 1
             if not shot and b'DAILY_DESKTOP=' in buffer:
                 time.sleep(1)
                 monitor.sendall(('screendump %s\n' % shot_path).encode())

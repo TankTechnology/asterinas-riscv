@@ -1,0 +1,24 @@
+# GUI stress: guest console excerpt (target/gui-stress2/console.txt)
+
+## workload markers before the panic
+gui_tools x11_apps=yes xdotool=yes img=/usr/share/pixmaps/debian-logo.png
+DAILY_DESKTOP=ok Xorg+DRI3
+gui_windows total=7 apps="pcmanfm1 eog1 xterm1 xterm2 xclock xcalc xeyes pcmanfm2 eog2 xterm3"
+gui_window_class class=[Pp]cmanfm count=2
+gui_window_class class=[Ee]og count=2
+gui_window_class class=[Xx]term count=0
+gui_window_class class=[Xx]clock count=1
+gui_window_class class=[Xx]calc count=1
+gui_window_class class=[Xx]eyes count=1
+gui_windows retry_total=7
+gui_io start shm_avail=2084912_fallback_tmp io_file=/tmp/gui-big
+gui_baseline memavail=3405856 uptime=105.07
+
+## panic
+[   141.188] ERROR : Uncaught panic:
+	called `Result::unwrap()` on an `Err` value: NoMemory
+	at /root/asterinas/kernel/libs/ring-buffer/src/lib.rs:104
+panic_copies=3
+
+## gate
+make: *** [Makefile:932: test_x86_daily_use] Terminated
