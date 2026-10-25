@@ -1,0 +1,25 @@
+# toolchain stress: guest console excerpt (target/stress-toolchain2/console.txt)
+
+## compiler and versions
+toolchain gcc=/usr/bin/gcc make=/usr/bin/make
+toolchain_versions gcc=gcc (Debian 14.2.0-19) 14.2.0 make=GNU Make 4.4.1
+compiler_test rc=0 out=ok
+toolchain gcc=/usr/bin/gcc make=/usr/bin/make
+toolchain_versions gcc=gcc (Debian 14.2.0-19) 14.2.0 make=GNU Make 4.4.1
+compiler_test rc=0 out=ok
+
+## selected stress lines
+t=20min memavail=3920356 caches=
+t=30min memavail=3902132 caches=
+baseline_memavailable_kb=3970264
+t=10min memavail=3930324 caches=
+t=20min memavail=3920356 caches=
+t=30min memavail=3902132 caches=
+stress_failures python3=0/30 gcc=0/30 gcc_ok=30/30
+baseline_memavailable_kb=3970264 last_memavailable_kb=3911744
+
+## dmesg scan
+dmesg_count[Uncaught panic]=0
+dmesg_count[oom-killer]=0
+dmesg_count[Out of memory]=0
+dmesg_count[allocation failed]=0

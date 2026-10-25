@@ -97,6 +97,13 @@ static const unsigned char BROWSER_WEB_ROOT_LABEL[EXT2_LABEL_LENGTH] = {
  */
 static const unsigned char DESKTOP_DRM_ROOT_LABEL[EXT2_LABEL_LENGTH] =
     "ASTER_DEBIANDRM";
+/* The stress-testing image keeps the desktop-drm closure and adds the
+ * compiler toolchain under its own profile identity. It fills all 16 bytes,
+ * so spell it out instead of relying on an absent NUL terminator. */
+static const unsigned char DESKTOP_DRM_TOOLCHAIN_ROOT_LABEL[EXT2_LABEL_LENGTH] = {
+    'A', 'S', 'T', 'E', 'R', '_', 'D', 'R',
+    'M', '_', 'T', 'O', 'O', 'L', 'C', 'H',
+};
 
 enum RootInitMode {
     ROOT_INIT_INTERACTIVE,
@@ -302,6 +309,7 @@ static int ext2_superblock_matches_mode(
            ext2_superblock_matches(superblock, NETWORK_DESKTOP_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, SOFTWARE_DESKTOP_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, DESKTOP_DRM_ROOT_LABEL) ||
+           ext2_superblock_matches(superblock, DESKTOP_DRM_TOOLCHAIN_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, BROWSER_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, BROWSER_WEB_ROOT_LABEL);
 }

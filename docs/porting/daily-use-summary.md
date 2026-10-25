@@ -14,6 +14,7 @@
 | 输入法 | ok（受限） | XIM `@server=fcitx`、10 个 IM；端到端键入受测试环境限制 | `2026-10-22-input-method.md` |
 | 稳定性 | ok | 30 min 无 panic/OOM；3/3 休眠；热插拔 ok | `2026-10-23-stability.md` |
 | 性能基线 | ok | 写 859 MB/s；xclock 1.4 s；suspend→resume ≈2 s | `2026-10-23-performance-baseline.md` |
+| 编译器 / 编译压测 | **ok（2026-10-25）** | 独立 `desktop-drm-toolchain` 剖面装 `build-essential`（409 包，2.0 GiB）；`gcc 14.2.0` / `GNU Make 4.4.1`；**30/30 轮编译成功**、`t.c` 输出 `ok`；MemAvailable 3,970,264→3,911,744（**-1.47%**） | `2026-10-25-toolchain-stress.md` |
 
 ## 复现
 

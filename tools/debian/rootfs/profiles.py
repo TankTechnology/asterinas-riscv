@@ -357,6 +357,23 @@ _PROFILES = {
     ),
 }
 
+_PROFILES["desktop-drm-toolchain"] = RootfsProfile(
+    name="desktop-drm-toolchain",
+    # The stress-testing image keeps the desktop-drm identity and adds the
+    # compiler closure. It is a separate profile so the stable desktop image
+    # and every milestone gate keep their exact package set.
+    schema_version=9,
+    root_label="ASTER_DRM_TOOLCH",
+    root_uuid="9d3a7c52-6f1e-5b84-a2c7-4e8d1f6b0c93",
+    requested_packages=_PROFILES["desktop-drm"].requested_packages
+    + ("build-essential",),
+    identity_packages=_PROFILES["desktop-drm"].identity_packages
+    + ("build-essential",),
+    # The desktop closure leaves only ~190 MiB free in a 1 GiB image; the
+    # compiler toolchain needs more room for its installed files.
+    root_size_bytes=2 * 1024 * 1024 * 1024,
+)
+
 _PROFILES["browser-m5"] = RootfsProfile(
     name="browser-m5",
     schema_version=6,

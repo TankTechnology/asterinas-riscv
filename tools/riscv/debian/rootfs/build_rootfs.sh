@@ -23,6 +23,7 @@ DESKTOP_M9_SOFTWARE_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-m9-soft
 BROWSER_M5_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/browser-m5/rootfs"
 BROWSER_WEB_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/browser-web/rootfs"
 DESKTOP_DRM_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-drm/rootfs"
+DESKTOP_DRM_TOOLCHAIN_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-drm-toolchain/rootfs"
 DEFAULT_CACHE_DIR="target/debian-$ARCH_SLUG_DEFAULT/cache"
 ARCH_DEBIAN=""
 ARCH_SLUG=""
@@ -228,7 +229,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | systemd-ext4-m3 | systemd-ext4-m6-userspace | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web | desktop-drm) ;;
+        minimal-m1 | systemd-m2 | systemd-ext4-m3 | systemd-ext4-m6-userspace | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web | desktop-drm | desktop-drm-toolchain) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -271,6 +272,8 @@ configure_profile() {
         OUTPUT_DIR="$BROWSER_WEB_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-drm && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_DRM_OUTPUT_DIR"
+    elif [[ "$PROFILE" == desktop-drm-toolchain && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$DESKTOP_DRM_TOOLCHAIN_OUTPUT_DIR"
     elif [[ "$PROFILE" == systemd-ext4-m3 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$SYSTEMD_EXT4_M3_OUTPUT_DIR"
     elif [[ "$PROFILE" == systemd-ext4-m6-userspace && "$has_output_dir" == 0 ]]; then
@@ -315,6 +318,7 @@ configure_architecture() {
     BROWSER_M5_OUTPUT_DIR="$prefix/browser-m5/rootfs"
     BROWSER_WEB_OUTPUT_DIR="$prefix/browser-web/rootfs"
     DESKTOP_DRM_OUTPUT_DIR="$prefix/desktop-drm/rootfs"
+    DESKTOP_DRM_TOOLCHAIN_OUTPUT_DIR="$prefix/desktop-drm-toolchain/rootfs"
     DEFAULT_CACHE_DIR="$prefix/cache"
 }
 
@@ -1365,7 +1369,7 @@ EOF
     elif [[ "$PROFILE" == browser-web ]]; then
         configure_desktop "$stage" "m5" online
         configure_desktop_m5_network "$stage" m5 false lightweight
-    elif [[ "$PROFILE" == desktop-drm ]]; then
+    elif [[ "$PROFILE" == desktop-drm || "$PROFILE" == desktop-drm-toolchain ]]; then
         configure_desktop "$stage" drm "offline" drm
         # The daily-use gate logs in over ttyS0 as asterinas. Desktop
         # profiles otherwise have no serial login plane, so give amd64 the
@@ -2644,12 +2648,12 @@ write_rootfs_manifest() {
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
     build_timestamp="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%dT%H:%M:%SZ')"
-    debootstrap_version="$(debootstrap --version 2>&1 | head -n 1)"
-    mke2fs_version="$(mke2fs -V 2>&1 | head -n 1)"
+    debootstrap_version="$(debootstrap --version 2>&1 | sed -n '1p')"
+    mke2fs_version="$(mke2fs -V 2>&1 | sed -n '1p')"
     local -a emulator_tool_version=()
     if [[ "$ARCH_NATIVE" == 0 ]]; then
         local emulator_version
-        emulator_version="$("$ARCH_EMULATOR" --version 2>&1 | head -n 1)"
+        emulator_version="$("$ARCH_EMULATOR" --version 2>&1 | sed -n '1p')"
         emulator_tool_version=(--tool-version "$ARCH_EMULATOR=$emulator_version")
     fi
 

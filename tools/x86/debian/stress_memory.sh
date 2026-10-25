@@ -17,8 +17,25 @@ LOG=/tmp/stress.log
 base=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)
 echo "baseline_memavailable_kb=$base" | tee -a "$LOG" >/dev/console
 
+# Toolchain availability and a one-shot compile, so a missing compiler is
+# reported once with versions instead of only as 30 per-round 127s.
+gcc_path=$(command -v gcc 2>/dev/null || true)
+make_path=$(command -v make 2>/dev/null || true)
+gcc_ver=$(gcc --version 2>/dev/null | head -1)
+make_ver=$(make --version 2>/dev/null | head -1)
+echo "toolchain gcc=${gcc_path:-missing} make=${make_path:-missing}" \
+    | tee -a "$LOG" >/dev/console
+echo "toolchain_versions gcc=$gcc_ver make=$make_ver" \
+    | tee -a "$LOG" >/dev/console
+printf '#include <stdio.h>\nint main(){printf("ok\\n");return 0;}\n' >/tmp/t.c
+tool_out=$(timeout 30 sh -c 'gcc -O2 /tmp/t.c -o /tmp/t && /tmp/t' 2>&1)
+tool_rc=$?
+echo "compiler_test rc=$tool_rc out=$(printf '%s' "$tool_out" | tr '\n' ' ')" \
+    | tee -a "$LOG" >/dev/console
+
 py_fail=0
 gcc_fail=0
+gcc_ok=0
 round=0
 while [ "$round" -lt 30 ]; do
     round=$((round + 1))
@@ -46,6 +63,9 @@ time.sleep(5)
         gcc_fail=$((gcc_fail + 1))
         printf 'round=%s gcc_rc=%s err=%s\n' "$round" "$cc_rc" \
             "$(printf '%s' "$cc_err" | head -1)" >>"$LOG"
+    else
+        gcc_ok=$((gcc_ok + 1))
+        printf 'round=%s gcc_rc=0 ok\n' "$round" >>"$LOG"
     fi
 
     # 3) Sample.
@@ -63,7 +83,7 @@ dmesg | tail -40 >/tmp/stress-dmesg.txt
     echo "=== stress.log begin ==="
     cat "$LOG"
     echo "=== stress.log end ==="
-    echo "stress_failures python3=${py_fail}/30 gcc=${gcc_fail}/30"
+    echo "stress_failures python3=${py_fail}/30 gcc=${gcc_fail}/30 gcc_ok=${gcc_ok}/30"
     echo "baseline_memavailable_kb=$base last_memavailable_kb=$last"
     echo "=== first three errors ==="
     grep -m 3 'err=' "$LOG" 2>/dev/null || true
