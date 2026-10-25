@@ -126,6 +126,7 @@ pub(super) struct ProgramToLoad {
     elf_headers: ElfHeaders,
     argv: Vec<CString>,
     envp: Vec<CString>,
+    execfn: CString,
 }
 
 impl ProgramToLoad {
@@ -142,6 +143,11 @@ impl ProgramToLoad {
         // If the interpreter is a shebang, then recursion will be triggered. If it loops, we
         // should fail. We follow the same limit as Linux.
         let mut recursive_limit = 5;
+
+        // `AT_EXECFN` reports the path of the file being executed, even after a
+        // shebang interpreter has replaced the image.
+        let execfn =
+            CString::new(path_resolver.make_abs_path(executable.path()).into_string()).unwrap();
 
         let (elf_file, elf_headers) = loop {
             let (mut new_argv, current_script_path) = match executable.detect_format()? {
@@ -184,6 +190,7 @@ impl ProgramToLoad {
             elf_headers,
             argv,
             envp,
+            execfn,
         })
     }
 
@@ -207,6 +214,7 @@ impl ProgramToLoad {
             self.elf_headers,
             self.argv,
             self.envp,
+            self.execfn,
         )
     }
 }

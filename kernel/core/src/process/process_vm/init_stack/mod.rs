@@ -176,6 +176,7 @@ impl InitStack {
         vmar: &Vmar,
         argv: Vec<CString>,
         envp: Vec<CString>,
+        execfn: CString,
         auxvec: AuxVec,
     ) -> Result<()> {
         self.set_uninitialized();
@@ -199,6 +200,7 @@ impl InitStack {
             vmo,
             argv,
             envp,
+            execfn,
             auxvec,
             map_addr: self.initial_top - self.max_size,
         };
@@ -244,6 +246,7 @@ struct InitStackWriter<'a> {
     vmo: Arc<Vmo>,
     argv: Vec<CString>,
     envp: Vec<CString>,
+    execfn: CString,
     auxvec: AuxVec,
     /// The mapping address of the `InitStack`.
     map_addr: usize,
@@ -256,6 +259,12 @@ impl InitStackWriter<'_> {
     fn write(mut self) -> Result<(Range<Vaddr>, Range<Vaddr>, Range<Vaddr>)> {
         // FIXME: Some OSes may put the first page of the executable file here
         // for interpreting ELF headers.
+
+        // Write the executable path string that `AT_EXECFN` points to. Linux lays it out
+        // above the environment strings, so the bytes above `envp[0]` stay mapped; some
+        // programs read slightly past a short environment string while matching names.
+        let execfn_pointer = self.write_cstring(&self.execfn)?;
+        self.auxvec.set(AuxKey::AT_EXECFN, execfn_pointer);
 
         // Write envp strings.
         let envp_end = self.pos();

@@ -59,6 +59,7 @@ pub(crate) fn load_elf_to_vmar(
     elf_headers: ElfHeaders,
     argv: Vec<CString>,
     envp: Vec<CString>,
+    execfn: CString,
 ) -> Result<ElfLoadInfo> {
     let ldso = lookup_and_parse_ldso(&elf_headers, &elf_file, path_resolver)?;
 
@@ -81,7 +82,7 @@ pub(crate) fn load_elf_to_vmar(
     }
 
     vmar.process_vm()
-        .map_and_write_init_stack(vmar, argv, envp, aux_vec)?;
+        .map_and_write_init_stack(vmar, argv, envp, execfn, aux_vec)?;
     vmar.process_vm().map_and_init_heap(
         vmar,
         elf_mapped_info.data_range.len(),
