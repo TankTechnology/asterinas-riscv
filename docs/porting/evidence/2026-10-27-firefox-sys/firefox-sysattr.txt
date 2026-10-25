@@ -1,0 +1,29 @@
+# Firefox sys-time attribution evidence (kernel with A+B fixes)
+
+## attempt 1: strace attach (firefox_sys_attrib.sh)
+sysattr_before user_ticks=267 sys_ticks=3081 minflt=0 majflt=0 pids=134,
+sysattr_after  user_ticks=2279 sys_ticks=18743 minflt=0 majflt=0
+sysattr_delta  user_ticks=2012 sys_ticks=15662 minflt=0 majflt=0 window_ms=16080
+sysattr_strace_empty err=strace: attach: ptrace(PTRACE_ATTACH, 134): Input/output error
+
+## attempt 2: strace from exec (firefox_sys_attrib2.sh)
+attr2_window win=none ff_pid=128     # Firefox never reached a window under strace
+attr2| 21.43 0.003000 428 7 mprotect
+attr2| 21.43 0.003000 3000 1 execve
+attr2| 14.29 0.002000 500 4 munmap
+attr2| 14.29 0.002000 250 8 8 prctl
+attr2|  7.14 0.001000 31 32 mmap
+attr2|  0.00 0.000000 0 1 1 clone3
+attr2| total 93 syscalls in 0.014 s -> only the launcher, no rendering
+
+## attempt 3: fixed pid set utime/stime (firefox_sys_fixedpid.sh)
+fixed_pids count=1 pids=72
+fixed_total user_ticks=1038 sys_ticks=7092 minflt=0 majflt=0
+# sys:user ~= 6.8:1 for the traced Firefox main process; minflt/majflt are
+# reported as 0 by Asterinas procfs, and content processes were not matched.
+
+## blockers
+1. PTRACE_ATTACH returns EIO (ptrace attach not usable) -> no live strace.
+2. strace from exec traces only the launcher; Firefox does not reach a window
+   under it (clone3 error=1 in the trace) -> no scroll-time histogram.
+3. /proc/<pid>/stat minflt/majflt are 0 on this kernel -> no fault attribution.
