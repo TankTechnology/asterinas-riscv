@@ -17,11 +17,13 @@ struct Flock {
 }
 
 /// Represents a Flock item that can be held in a list of file locks.
-/// Each FlockItem contains a lock and a wait queue for threads that are blocked by the lock.
+///
+/// Waiters are queued on the inode-wide [`FlockList::waiters`] queue rather
+/// than on an individual item.  Otherwise a waiter could be enqueued on a
+/// lock item that is dropped before it is woken, and every unlock would have
+/// to wake every waiter.
 pub(crate) struct FlockItem {
     lock: Flock,
-    /// A wait queue for any threads that are blocked by this lock.
-    waitqueue: Arc<WaitQueue>,
 }
 
 impl FlockItem {
@@ -32,7 +34,6 @@ impl FlockItem {
                 owner: Arc::downgrade(owner),
                 type_,
             },
-            waitqueue: Arc::new(WaitQueue::new()),
         }
     }
 
@@ -59,26 +60,13 @@ impl FlockItem {
         }
         false
     }
-
-    /// Wakes all threads that are waiting for this lock.
-    pub(crate) fn wake_all(&self) {
-        self.waitqueue.wake_all();
-    }
 }
 
 impl Clone for FlockItem {
     fn clone(&self) -> Self {
         Self {
             lock: self.lock.clone(),
-            waitqueue: self.waitqueue.clone(),
         }
-    }
-}
-
-/// When a FlockItem is dropped, it wakes all threads that are waiting for the lock.
-impl Drop for FlockItem {
-    fn drop(&mut self) {
-        self.waitqueue.wake_all();
     }
 }
 
@@ -95,6 +83,10 @@ impl Debug for FlockItem {
 /// The list is used to manage file locks and resolve conflicts between them.
 pub(crate) struct FlockList {
     inner: Mutex<Vec<FlockItem>>,
+    /// Waiters for this inode's flock.  A single queue, rather than one queue
+    /// per held lock, keeps waiters alive independent of which item they
+    /// conflicted with.
+    waiters: WaitQueue,
 }
 
 impl FlockList {
@@ -102,6 +94,7 @@ impl FlockList {
     pub(crate) fn new() -> Self {
         Self {
             inner: Mutex::new(Vec::new()),
+            waiters: WaitQueue::new(),
         }
     }
 
@@ -109,13 +102,13 @@ impl FlockList {
     ///
     /// If no conflicting locks exist, the lock is set and the function returns `Ok(())`.
     /// If a conflicting lock exists:
-    /// - If waker is not `None`, it is added to the conflicting lock's waitqueue, and the function returns `EAGAIN`.
+    /// - If waker is not `None`, it is added to the inode's wait queue, and the function returns `EAGAIN`.
     /// - If waker is `None`, the function returns `EAGAIN`.
     fn try_set_lock(&self, req_lock: &FlockItem, waker: Option<&Arc<Waker>>) -> Result<()> {
         let mut list = self.inner.lock();
         if let Some(conflict_lock) = list.iter().find(|l| req_lock.conflict_with(l)) {
             if let Some(waker) = waker {
-                conflict_lock.waitqueue.enqueue(waker.clone());
+                self.waiters.enqueue(waker.clone());
             }
             return_errno_with_message!(Errno::EAGAIN, "the file is locked");
         } else {
@@ -156,29 +149,39 @@ impl FlockList {
         }
     }
 
-    /// Unlocks the specified owner, waking any waiting threads.
+    /// Unlocks the specified owner and wakes one waiting thread.
+    ///
     /// If the owner is no longer valid, the lock is removed from the list.
-    /// If the owner is valid, the lock is removed from the list and all threads waiting for the lock are woken.
     /// The function does nothing if the owner is not found in the list.
     /// The function is called when the file is closed or the lock is released.
+    ///
+    /// Only one waiter is woken.  Waking every waiter on every unlock made
+    /// the scheduler consider many context switches at the same time, which
+    /// repeatedly hit the non-atomic switch-decision race and turned a
+    /// contended flock into a multi-second (or multi-minute) stall.  One
+    /// wake-up is enough: the woken thread either acquires the lock or
+    /// re-enqueues itself, and the next unlock wakes the next waiter.
     pub(crate) fn unlock(&self, req_owner: &InodeHandle) {
         debug!("unlock with owner: {:?}", req_owner as *const InodeHandle);
-        let mut list = self.inner.lock();
-        list.retain(|lock| {
-            if let Some(owner) = lock.owner() {
-                if ptr::eq(
-                    Arc::as_ptr(&owner) as *const InodeHandle,
-                    req_owner as *const InodeHandle,
-                ) {
-                    lock.wake_all(); // Wake all threads waiting for this lock.
-                    false // Remove lock from the list.
+        let removed = {
+            let mut list = self.inner.lock();
+            let old_len = list.len();
+            list.retain(|lock| {
+                if let Some(owner) = lock.owner() {
+                    !ptr::eq(
+                        Arc::as_ptr(&owner) as *const InodeHandle,
+                        req_owner as *const InodeHandle,
+                    )
                 } else {
-                    true // Keep lock in the list.
+                    false // Remove lock if the owner is no longer valid.
                 }
-            } else {
-                false // Remove lock if the owner is no longer valid.
-            }
-        });
+            });
+            old_len != list.len()
+        };
+
+        if removed {
+            self.waiters.wake_one();
+        }
     }
 }
 
