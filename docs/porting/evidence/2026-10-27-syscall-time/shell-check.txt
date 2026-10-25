@@ -1,0 +1,10 @@
+# shell-driven check with Firefox (same kernel)
+st_file=# enabled=0
+st_off_us=996559 st_on_us=1001191
+st_overhead_pct=0.46
+st_getpid_count=3000000 st_getpid_share=10.3 st_total_ns=6950346460
+# ^ count is 3 x 1e6 (three timed runs); the low share comes from wait4/read
+#   wall-block time in the same reset window (the counter is wall time).
+st_file|# enabled=1
+st_file|0 42 3124349325 74389269
+st_file|61 32 3024741213 94523162

@@ -18,6 +18,7 @@ use self::{
     pid::{PidDirOps, TidDirOps},
     self_::SelfSymOps,
     sys::SysDirOps,
+    syscall_time::SyscallTimeFileOps,
     thread_self::ThreadSelfSymOps,
     uptime::UptimeFileOps,
     version::VersionFileOps,
@@ -52,6 +53,7 @@ mod pid;
 mod self_;
 mod stat;
 mod sys;
+mod syscall_time;
 mod template;
 mod thread_self;
 mod uptime;
@@ -167,6 +169,11 @@ impl RootDirOps {
         ("self", InodeType::SymLink, SelfSymOps::new_inode),
         ("stat", InodeType::File, StatFileOps::new_inode),
         ("sys", InodeType::Dir, SysDirOps::new_inode),
+        (
+            "syscall_time",
+            InodeType::File,
+            SyscallTimeFileOps::new_inode,
+        ),
         (
             "thread-self",
             InodeType::SymLink,

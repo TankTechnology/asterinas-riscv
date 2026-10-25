@@ -53,7 +53,7 @@ NAMES = {
     230: "clock_nanosleep", 231: "exit_group", 232: "epoll_wait",
     233: "epoll_ctl", 234: "tgkill", 247: "waitid", 257: "openat",
     262: "newfstatat", 263: "unlinkat", 264: "renameat", 273: "set_robust_list",
-    274: "get_robust_list", 281: "epoll_pwait", 284: "eventfd",
+    274: "get_robust_list", 270: "pselect6", 271: "ppoll", 281: "epoll_pwait", 284: "eventfd",
     288: "accept4", 290: "eventfd2", 291: "epoll_create1", 292: "dup3",
     293: "pipe2", 295: "preadv", 296: "pwritev", 302: "prlimit64",
     307: "sendmmsg", 309: "getcpu", 318: "getrandom", 319: "memfd_create",

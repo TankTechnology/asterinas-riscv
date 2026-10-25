@@ -1,0 +1,12 @@
+# /proc/syscall_time after a 20 s Firefox scroll (kernel 49cc2798)
+st_report|enabled=1 syscalls=126 total_ns=1247189605831
+st_report| 1 | futex            | 202 | 17581 | 871106.5 | 49548.18 | 69.8%
+st_report| 2 | epoll_wait       | 232 |  8573 | 128278.7 | 14963.10 | 10.3%
+st_report| 3 | poll             |   7 | 42101 |  93431.7 |  2219.23 |  7.5%
+st_report| 4 | wait4            |  61 |   135 |  39328.0 | 291318.81 |  3.2%
+st_report| 5 | clock_nanosleep  | 230 |    96 |  36283.8 | 377956.48 |  2.9%
+st_report| 6 | ppoll            | 271 |    34 |  33001.2 | 970624.04 |  2.6%
+st_report| 7 | recvmsg          |  47 | 22168 |  18936.1 |   854.21 |  1.5%
+st_report| 8 | sendmsg          |  46 |  3591 |  14191.9 |  3952.06 |  1.1%
+st_report| 9 | read             |   0 |  7044 |   4160.6 |   590.66 |  0.3%
+st_report|10 | clone            |  56 |    11 |   1787.0 | 162450.32 |  0.1%

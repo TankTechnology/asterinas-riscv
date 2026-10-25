@@ -11,11 +11,45 @@
     expect(dead_code)
 )]
 
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
 pub(crate) use clock_gettime::ClockId;
 use ostd::arch::cpu::context::UserContext;
 pub(crate) use timer_create::create_timer_for_clock;
 
 use crate::{cpu::LinuxAbi, prelude::*};
+
+/// Number of syscall slots in the per-syscall time counters.
+pub(crate) const SYSCALL_TIME_SLOTS: usize = 512;
+
+/// Cumulative TSC cycles spent in each syscall (all CPUs, all processes).
+pub(crate) static SYSCALL_TIME_CYCLES: [AtomicU64; SYSCALL_TIME_SLOTS] =
+    [const { AtomicU64::new(0) }; SYSCALL_TIME_SLOTS];
+
+/// Number of invocations of each syscall.
+pub(crate) static SYSCALL_TIME_COUNTS: [AtomicU64; SYSCALL_TIME_SLOTS] =
+    [const { AtomicU64::new(0) }; SYSCALL_TIME_SLOTS];
+
+/// Whether per-syscall timing is enabled (controlled by `/proc/syscall_time`).
+pub(crate) static SYSCALL_TIME_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Clears all per-syscall counters.
+pub(crate) fn syscall_time_reset() {
+    for slot in 0..SYSCALL_TIME_SLOTS {
+        SYSCALL_TIME_CYCLES[slot].store(0, Ordering::Relaxed);
+        SYSCALL_TIME_COUNTS[slot].store(0, Ordering::Relaxed);
+    }
+}
+
+/// Enables or disables per-syscall timing.
+pub(crate) fn syscall_time_set_enabled(enabled: bool) {
+    SYSCALL_TIME_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Returns whether per-syscall timing is enabled.
+pub(crate) fn syscall_time_enabled() -> bool {
+    SYSCALL_TIME_ENABLED.load(Ordering::Relaxed)
+}
 
 #[cfg_attr(target_arch = "x86_64", path = "arch/x86.rs")]
 #[cfg_attr(target_arch = "riscv64", path = "arch/riscv.rs")]
@@ -385,6 +419,7 @@ impl SyscallArgument {
 
 pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     let syscall_frame = SyscallArgument::new_from_context(user_ctx);
+    let time_start = syscall_time_enabled().then(ostd::arch::read_tsc);
     let current_thread = crate::thread::Thread::current();
     if let Some(thread) = current_thread.as_ref() {
         let regs = user_ctx.general_regs();
@@ -403,6 +438,15 @@ pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     );
     if let Some(thread) = current_thread.as_ref() {
         thread.record_syscall_exit();
+    }
+
+    if let Some(start) = time_start {
+        let cycles = ostd::arch::read_tsc().wrapping_sub(start);
+        let nr = syscall_frame.syscall_number as usize;
+        if nr < SYSCALL_TIME_SLOTS {
+            SYSCALL_TIME_CYCLES[nr].fetch_add(cycles, Ordering::Relaxed);
+            SYSCALL_TIME_COUNTS[nr].fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     match syscall_return {

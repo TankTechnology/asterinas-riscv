@@ -1,0 +1,3 @@
+# self-contained getpid check (kernel 49cc2798, /proc/syscall_time)
+stg_build rc=0 err=
+stg_getpid count=1000000 share=99.9 total_ns=247097828 off_cycles=2269562846 on_cycles=2250569891 overhead_pct=-0.84
