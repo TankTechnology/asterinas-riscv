@@ -8,6 +8,7 @@ use aster_util::per_cpu_counter::PerCpuCounter;
 use ostd::{
     cpu::{AtomicCpuSet, CpuId, CpuSet},
     irq::DisabledLocalIrqGuard,
+    sync::SpinLock,
     task::Task,
 };
 
@@ -84,6 +85,33 @@ pub(super) fn init_in_first_kthread() {
     softirqd::init_in_first_kthread();
 }
 
+/// The last syscall entered by a thread, for `/proc/<pid>/syscall`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SyscallState {
+    /// Whether the thread is currently inside a syscall.
+    pub active: bool,
+    /// Syscall number.
+    pub nr: u64,
+    /// Syscall arguments.
+    pub args: [u64; 6],
+    /// User stack pointer at syscall entry.
+    pub sp: u64,
+    /// User instruction pointer at syscall entry.
+    pub pc: u64,
+}
+
+impl Default for SyscallState {
+    fn default() -> Self {
+        Self {
+            active: false,
+            nr: 0,
+            args: [0; 6],
+            sp: 0,
+            pc: 0,
+        }
+    }
+}
+
 /// A thread is a wrapper on top of a task.
 #[derive(Debug)]
 pub(crate) struct Thread {
@@ -106,6 +134,8 @@ pub(crate) struct Thread {
     min_flt: AtomicU64,
     /// Major page faults handled for this thread (I/O required).
     maj_flt: AtomicU64,
+    /// Last syscall entered by this thread (sampled by procfs).
+    syscall_state: SpinLock<SyscallState>,
 }
 
 impl Thread {
@@ -124,6 +154,7 @@ impl Thread {
             sched_attr: SchedAttr::new(sched_policy),
             min_flt: AtomicU64::new(0),
             maj_flt: AtomicU64::new(0),
+            syscall_state: SpinLock::new(SyscallState::default()),
         }
     }
 
@@ -164,6 +195,27 @@ impl Thread {
     /// Returns the number of major page faults handled for this thread.
     pub(crate) fn maj_flt(&self) -> u64 {
         self.maj_flt.load(Ordering::Relaxed)
+    }
+
+    /// Records that the thread entered a syscall.
+    pub(crate) fn record_syscall_entry(&self, nr: u64, args: [u64; 6], sp: u64, pc: u64) {
+        *self.syscall_state.lock() = SyscallState {
+            active: true,
+            nr,
+            args,
+            sp,
+            pc,
+        };
+    }
+
+    /// Records that the thread left its syscall.
+    pub(crate) fn record_syscall_exit(&self) {
+        self.syscall_state.lock().active = false;
+    }
+
+    /// Returns a snapshot of the thread's syscall state.
+    pub(crate) fn syscall_state(&self) -> SyscallState {
+        *self.syscall_state.lock()
     }
 
     /// Returns whether the thread is exited.

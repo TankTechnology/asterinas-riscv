@@ -385,12 +385,25 @@ impl SyscallArgument {
 
 pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     let syscall_frame = SyscallArgument::new_from_context(user_ctx);
+    let current_thread = crate::thread::Thread::current();
+    if let Some(thread) = current_thread.as_ref() {
+        let regs = user_ctx.general_regs();
+        thread.record_syscall_entry(
+            syscall_frame.syscall_number,
+            syscall_frame.args,
+            regs.rsp as u64,
+            regs.rip as u64,
+        );
+    }
     let syscall_return = arch::syscall_dispatch(
         syscall_frame.syscall_number,
         syscall_frame.args,
         ctx,
         user_ctx,
     );
+    if let Some(thread) = current_thread.as_ref() {
+        thread.record_syscall_exit();
+    }
 
     match syscall_return {
         Ok(return_value) => {
