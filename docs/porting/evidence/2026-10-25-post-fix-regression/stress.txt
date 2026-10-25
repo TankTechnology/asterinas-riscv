@@ -1,0 +1,10 @@
+# stress 30 rounds
+baseline_memavailable_kb=3958432
+baseline_memavailable_kb=3958432
+stress_failures python3=0/30 gcc=0/30 gcc_ok=30/30
+baseline_memavailable_kb=3958432 last_memavailable_kb=3900496
+dmesg_count[Uncaught panic]=0
+dmesg_count[oom-killer]=0
+dmesg_count[Out of memory]=0
+dmesg_count[allocation failed]=0
+DAILY_DONE=ok

@@ -1,0 +1,4 @@
+[claude-code:unrecognized_model] {"model":"deepseek-flash[1m]","query_source":"sdk"}
+已修复该 Stop hook 环境问题：`/tmp/claude-events.jsonl` 原属 root（644），当前用户 asterinas 无法追加；使用免密 sudo 执行 `chown asterinas:asterinas` 后已恢复可写，本次工具调用后 hook 不再报错。
+
+C++ 任务结论不变：fmt 12.2.0 Release 构建成功，ctest 21/21 全部通过。

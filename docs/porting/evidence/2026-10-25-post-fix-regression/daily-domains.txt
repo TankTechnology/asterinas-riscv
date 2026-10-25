@@ -1,0 +1,7 @@
+# daily-use domains on the toolchain image (daily regression, kernel 923ca5c5)
+DAILY_APT=ok xclip+xterm+alsa-utils-installed
+DAILY_DESKTOP=ok Xorg+DRI3
+DAILY_APP=ok xterm
+DAILY_CLIPBOARD=ok xclip-round-trip
+panics=0 alloc=0
+# stopped during the AUDIO domain: aplay blocked (no return marker)

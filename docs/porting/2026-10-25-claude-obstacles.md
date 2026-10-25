@@ -260,3 +260,37 @@ make test_x86_daily_use \
 - `…/tmpfs-check.txt`（修复后内核的门禁输出）
 - 串口全量：`target/claude-r3/console.txt`（三轮）、
   `target/tmpfs-check/console.txt`（修复复验）
+
+## 第五轮（同日深夜）：更重的真实任务（C++/CMake、Python 套件、HTTP 服务）
+
+内核 `923ca5c5`（含 tmpfs 1777、flock wake-one），base 镜像
+`target/claude-r3/daily.ext2`，全部以 `asterinas`(uid 1000) 运行，
+每轮最多 1200 s。
+
+| 轮 | 任务 | 结果 | rc | 耗时 | 峰值 load / 最低 MemAvailable |
+|---|---|---|---|---|---|
+| 1 | fmtlib/fmt 12.2.0，`cmake -DCMAKE_BUILD_TYPE=Release` + `make -j4` + `ctest` | Release 构建成功，**ctest 21/21 通过** | 0 | 382.5 s | 1.146 / 1.60 GiB |
+| 2 | pallets/click `8.6.0.dev0`（`pip install pytest requests`，`pip install -e .`） | **2262 passed / 24 skipped / 0 failed** | 0 | 81.1 s | 0.376 / 3.10 GiB |
+| 3 | HTTP server + client（`ThreadingHTTPServer` 监听 `127.0.0.1:18080`，100 条独立连接并发） | **100/100 成功，0 失败**；服务端 `requests_handled=100 errors=0`，body 与 SHA256 全一致；总耗时 **471.679 ms** | 0 | 291.8 s | 0.096 / 3.14 GiB |
+
+串口 `Uncaught panic` = 0、`allocation failed` = 0，`oom-killer` = 0。
+
+### 本轮障碍
+
+| 轮 | 任务 | 第一条真实错误 | 疑似根因 | 是否 Asterinas 侧 | 状态 |
+|---|---|---|---|---|---|
+| 1 | claude 的 Stop hook | `/tmp/claude-events.jsonl` 属主 root（644），agent 用户无法追加，hook 反复失败 | 镜像里残留的 root 会话文件（此前 root 运行 claude 留下） | 否（镜像状态/客户端配置） | **agent 自行 `sudo chown asterinas:asterinas` 修复**，之后各轮正常 |
+| 2 | pip 安装 pytest/requests | 无（`--break-system-packages` 直接成功） | — | 否 | — |
+| 3 | 本机 HTTP 100 并发 | 无；绑定/连接无明显时延（总 471.7 ms） | — | 否 | — |
+
+**Asterinas 侧新增障碍：0 项。** 本轮覆盖了 CMake/CTest、真实 Python
+测试套件（2262 项）与 loopback 100 并发 HTTP，均无内核侧阻塞。
+（单轮 471.7 ms / 100 并发 ≈ 4.7 ms/请求，含 100 次 TCP 建连。）
+
+### 证据
+
+- `evidence/2026-10-25-claude-round5/round{1,2,3}.log`（agent 报告原文）
+- `…/work-tree.txt`、`…/netproj-files.txt`（镜像内产物）
+- 串口：`target/regress-r5/console.txt`（0 panic / 0 allocation failed）
+- 复现：`DAILY_USE_CHECKLIST=$PWD/tools/x86/debian/claude_round5_run.sh
+  make test_x86_daily_use … DAILY_USE_WORKSPACE=$PWD/target/regress-r5`

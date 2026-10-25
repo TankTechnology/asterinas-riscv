@@ -1,0 +1,16 @@
+# GUI stress
+gui_tools x11_apps=yes xdotool=yes img=/usr/share/pixmaps/debian-logo.png
+DAILY_DESKTOP=ok Xorg+DRI3
+gui_windows total=14 apps="pcmanfm1 eog1 xterm1 xterm2 xclock xcalc xeyes pcmanfm2 eog2 xterm3"
+gui_io start shm_avail=2084864KB tmp_avail=2084864KB mb=1536 io_file=/dev/shm/gui-big
+gui_io done dd_rc=0 sha_rc=0 sha=b7a1ca05cae9eefbf2deee895f4fb34c8d8ffc5d6665982424e0b2711c79ed1d
+suspend_ok=3/3
+[   776.031] WARN  : dmesg_count[Uncaught panic]=0
+dmesg_count[oom-killer]=0
+dmesg_count[Out of memory]=0
+dmesg_count[allocation failed]=0
+gui_tools x11_apps=yes xdotool=yes img=/usr/share/pixmaps/debian-logo.png
+DAILY_DESKTOP=ok Xorg+DRI3
+gui_windows total=14 apps="pcmanfm1 eog1 xterm1 xterm2 xclock xcalc xeyes pcmanfm2 eog2 xterm3"
+gui_io start shm_avail=2084864KB tmp_avail=2084864KB mb=1536 io_file=/dev/shm/gui-big
+gui_io done dd_rc=0 sha_rc=0 sha=b7a1ca05cae9eefbf2deee895f4fb34c8d8ffc5d6665982424e0b2711c79ed1d

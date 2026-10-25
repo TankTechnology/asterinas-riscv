@@ -1,0 +1,10 @@
+[claude-code:unrecognized_model] {"model":"deepseek-flash[1m]","query_source":"sdk"}
+- **实现**：`/home/asterinas/work5/netproj` 下 `server.py`（stdlib `ThreadingHTTPServer`，真实 HTTP/1.1，绑定 `127.0.0.1:18080`，固定响应体 + `Content-Length` + SHA256）和 `client.py`（100 条独立 TCP 连接、100 并发、逐项校验状态/长度/body 及跨响应 SHA256 一致），`run_benchmark.py` 自动拉起并核验服务端计数。
+- **100 请求结果**：**100/100 成功，0 失败**；服务端 `requests_handled=100, errors=0`，100 个 body 完全一致且匹配预期 SHA256 `8cf56389…e6bb81`。
+- **总耗时**：**471.679 ms**（100 并发；见 `results/benchmark.json`、`results/run.log`）。
+- **连接建立时延**：min/mean/p50/p95/max = **0.42/11.62/9.53/30.39/39.22 ms**；高并发突发下确有明显连接延迟。
+- **服务端绑定**：bind **69.6 µs**，listen **98.5 µs**；一次性 `getfqdn` 约 2.06 ms。
+- **延迟定位**：20 次串行抽查 connect p50 0.54 ms、请求 p50 2.72 ms，说明尾部延迟主要来自 100 连接突发下的调度/排队，而非 bind/listen。
+- **第一条真实错误**：中间复测固定端口时出现 `OSError: [Errno 98] Address already in use`。
+- **处理**：初版 runner 吞掉了 server stderr，只报 “exited before readiness”；已修复为同时采集 stdout/stderr，现会明确显示 `SERVER_FATAL ... Address already in use` 并以退出码 2 退出；端口释放后重跑得到上述 100/100。
+- **最终状态**：本轮无客户端或服务端错误；故障证据保存在 `results/address-in-use.log`。
