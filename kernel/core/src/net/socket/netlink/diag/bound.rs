@@ -44,7 +44,7 @@ impl datagram_common::Bound for BoundNetlinkDiag {
         flags: SendFlags,
     ) -> Result<usize> {
         if !flags.is_all_supported() {
-            warn!("unsupported flags: {:?}", flags);
+            crate::net::socket::util::message_flags::warn_unsupported_flags_once(true, flags);
         }
 
         if *remote != NetlinkSocketAddr::new_unspecified() {
@@ -103,7 +103,7 @@ impl datagram_common::Bound for BoundNetlinkDiag {
         flags: RecvFlags,
     ) -> Result<(RecvOutput, NetlinkSocketAddr)> {
         if !flags.is_all_supported() {
-            warn!("unsupported flags: {:?}", flags);
+            crate::net::socket::util::message_flags::warn_unsupported_flags_once(false, flags);
         }
 
         let mut receive_queue = self.receive_queue.lock();

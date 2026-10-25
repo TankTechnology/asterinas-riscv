@@ -272,7 +272,7 @@ impl Socket for UnixDatagramSocket {
     ) -> Result<usize> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
-            warn!("unsupported flags: {:?}", flags);
+            crate::net::socket::util::message_flags::warn_unsupported_flags_once(true, flags);
         }
 
         let MessageHeader {
@@ -303,7 +303,7 @@ impl Socket for UnixDatagramSocket {
     ) -> Result<(RecvOutput, MessageHeader)> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
-            warn!("unsupported flags: {:?}", flags);
+            crate::net::socket::util::message_flags::warn_unsupported_flags_once(false, flags);
         }
 
         let (output, control_messages, peer_addr) =

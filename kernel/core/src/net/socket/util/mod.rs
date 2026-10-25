@@ -3,7 +3,7 @@
 pub(super) mod datagram_common;
 pub(super) mod ioctl;
 mod linger_option;
-mod message_flags;
+pub(super) mod message_flags;
 mod message_header;
 pub(super) mod options;
 mod port_privilege;

@@ -355,7 +355,7 @@ impl Socket for VsockStreamSocket {
     ) -> Result<usize> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
-            warn!("unsupported flags: {:?}", flags);
+            crate::net::socket::util::message_flags::warn_unsupported_flags_once(true, flags);
         }
 
         let MessageHeader {
@@ -402,7 +402,7 @@ impl Socket for VsockStreamSocket {
     ) -> Result<(RecvOutput, MessageHeader)> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
-            warn!("unsupported flags: {:?}", flags);
+            crate::net::socket::util::message_flags::warn_unsupported_flags_once(false, flags);
         }
 
         let received_bytes = self.block_on(IoEvents::IN, None, || self.try_recv(writer, flags))?;

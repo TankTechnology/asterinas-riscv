@@ -45,7 +45,7 @@ impl datagram_common::Bound for BoundNetlinkRoute {
     ) -> Result<usize> {
         // TODO: Deal with flags
         if !flags.is_all_supported() {
-            warn!("unsupported flags: {:?}", flags);
+            crate::net::socket::util::message_flags::warn_unsupported_flags_once(true, flags);
         }
 
         // TODO: Further check whether other socket address can be supported.
@@ -102,7 +102,7 @@ impl datagram_common::Bound for BoundNetlinkRoute {
     ) -> Result<(RecvOutput, NetlinkSocketAddr)> {
         // TODO: Deal with other flags.
         if !flags.is_all_supported() {
-            warn!("unsupported flags: {:?}", flags);
+            crate::net::socket::util::message_flags::warn_unsupported_flags_once(false, flags);
         }
 
         let mut receive_queue = self.receive_queue.lock();

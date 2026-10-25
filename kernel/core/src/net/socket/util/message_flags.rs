@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use aster_bigtcp::socket::ReceiveBehavior;
+use crate::prelude::*;
 use bitflags::bitflags;
 
 bitflags! {
@@ -67,6 +68,28 @@ impl RecvFlags {
             ReceiveBehavior::Peek
         } else {
             ReceiveBehavior::Recv
+        }
+    }
+}
+
+/// Warns once (per direction) that a message flag is not implemented.
+///
+/// A warning on every call would be far too expensive: `MSG_DONTWAIT`, which
+/// real programs pass on every `sendmsg`/`recvmsg` of a non-blocking socket,
+/// would otherwise be formatted and written to the console from inside the
+/// syscall, and that serial output time is charged to the syscall itself.
+pub(crate) fn warn_unsupported_flags_once(send: bool, flags: impl core::fmt::Debug) {
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    static WARNED_SEND: AtomicBool = AtomicBool::new(false);
+    static WARNED_RECV: AtomicBool = AtomicBool::new(false);
+
+    let warned = if send { &WARNED_SEND } else { &WARNED_RECV };
+    if !warned.swap(true, Ordering::Relaxed) {
+        if send {
+            warn!("unsupported send flags: {:?} (further reports suppressed)", flags);
+        } else {
+            warn!("unsupported recv flags: {:?} (further reports suppressed)", flags);
         }
     }
 }
