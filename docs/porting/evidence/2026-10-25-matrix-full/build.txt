@@ -1,0 +1,10 @@
+# build tail
+gpgv: Signature made Sat 12 Sep 2026 03:57:47 PM CST
+gpgv:                using EDDSA key 41587F7DB8C774BCCF131416762F67A0B2C39DE4
+gpgv: Good signature from "Debian Stable Release Key (13/trixie) <debian-release@lists.debian.org>"
+[debian-rootfs] phase 7/8: configuring and normalizing rootfs
+[debian-rootfs] phase 8/8: creating and verifying ext2 image
+[debian-rootfs] published signed Debian rootfs to /home/arch-anjie/Program/asterinas-riscv/target/debian-x86-toolchain4/rootfs
+
+image: 2.0G
+lock rows: 420

@@ -1,0 +1,12 @@
+# hardware enumeration probe
+matrix_hw_diag start 2026-10-25T15:44:00Z
+hwdiag_cards=cat: /proc/asound/cards: No such file or directory|
+hwdiag_pcm=cat: /proc/asound/pcm: No such file or directory|
+hwdiag_snd_nodes=controlC0 pcmC0D0p 
+hwdiag_aplay_list=**** List of PLAYBACK Hardware Devices ****|
+hwdiag_aplay rc=0 err=Playing WAVE '/tmp/diag-tone.wav' : Signed 16 bit Little Endian, Rate 48000 Hz, Stereo|
+hwdiag_lsusb=
+hwdiag_lsusb_tree=/sys/bus/usb/devices: No such file or directory|
+hwdiag_usb_sys=ls: cannot access '/sys/bus/usb/devices': No such file or directory 
+hwdiag_pci_audio=
+matrix_hw_diag_done=2026-10-25T15:44:02Z

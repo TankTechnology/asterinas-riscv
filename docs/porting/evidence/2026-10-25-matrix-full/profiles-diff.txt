@@ -1,0 +1,40 @@
+diff --git a/tools/debian/rootfs/profiles.py b/tools/debian/rootfs/profiles.py
+index 82496a5b2..51ecd3e99 100644
+--- a/tools/debian/rootfs/profiles.py
++++ b/tools/debian/rootfs/profiles.py
+@@ -360,15 +360,30 @@ _PROFILES = {
+ _PROFILES["desktop-drm-toolchain"] = RootfsProfile(
+     name="desktop-drm-toolchain",
+     # The stress-testing image keeps the desktop-drm identity and adds the
+-    # compiler closure. It is a separate profile so the stable desktop image
+-    # and every milestone gate keep their exact package set.
+-    schema_version=9,
++    # compiler closure plus the audio/USB tools the daily matrix probes. It is
++    # a separate profile so the stable desktop image and every milestone gate
++    # keep their exact package set.
++    schema_version=10,
+     root_label="ASTER_DRM_TOOLCH",
+     root_uuid="9d3a7c52-6f1e-5b84-a2c7-4e8d1f6b0c93",
+     requested_packages=_PROFILES["desktop-drm"].requested_packages
+-    + ("build-essential",),
++    + (
++        "build-essential",
++        "alsa-utils",
++        "libasound2t64",
++        "alsa-ucm-conf",
++        "usbutils",
++        "usb-modeswitch",
++    ),
+     identity_packages=_PROFILES["desktop-drm"].identity_packages
+-    + ("build-essential",),
++    + (
++        "build-essential",
++        "alsa-utils",
++        "libasound2t64",
++        "alsa-ucm-conf",
++        "usbutils",
++        "usb-modeswitch",
++    ),
+     # The desktop closure leaves only ~190 MiB free in a 1 GiB image; the
+     # compiler toolchain needs more room for its installed files.
+     root_size_bytes=2 * 1024 * 1024 * 1024,

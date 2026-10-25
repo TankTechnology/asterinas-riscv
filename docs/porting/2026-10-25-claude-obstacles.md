@@ -294,3 +294,42 @@ make test_x86_daily_use \
 - 串口：`target/regress-r5/console.txt`（0 panic / 0 allocation failed）
 - 复现：`DAILY_USE_CHECKLIST=$PWD/tools/x86/debian/claude_round5_run.sh
   make test_x86_daily_use … DAILY_USE_WORKSPACE=$PWD/target/regress-r5`
+
+## 第六轮（补矩阵 + Claude Rust）
+
+### A. 日常矩阵补全（AUDIO / USB / SUSPEND）
+
+新建 `toolchain4` 镜像（profile schema 10，+alsa-utils/libasound2t64/
+alsa-ucm-conf/usbutils/usb-modeswitch），7 个要求域全部 ok；细节见
+`2026-10-25-matrix-full.md`。新发现的两个 **Asterinas 侧上报缺口**：
+
+| 任务 | 第一条真实错误 | 疑似根因 | 是否 Asterinas 侧 | 状态 |
+|---|---|---|---|---|
+| `aplay -l` 枚举声卡 | `cat: /proc/asound/cards: No such file or directory` | procfs 未实现 ALSA 的 `/proc/asound/{cards,pcm}`；按设备名放音正常（`aplay -D hw:0,0` rc=0） | **是**（procfs 功能缺口） | 未修（需实现 ALSA proc 接口） |
+| `lsusb` 枚举 USB | `ls /sys/bus/usb/devices: No such file or directory`；`lsusb` 无输出 | sysfs 未暴露 USB 总线/设备；USB 存储热插拔与挂载正常（挂载 `/dev/sda` 读到 `ASTERINAS-USB-OK`） | **是**（sysfs 上报缺口） | 未修（需暴露 USB sysfs 拓扑） |
+
+两处都不影响 7 域的功能判定，但会让标准用户态枚举工具看不到设备。
+
+### B. Claude 第六轮：Rust 工具链
+
+| 轮 | 任务 | 结果 | rc | 耗时 | 关键数字 |
+|---|---|---|---|---|---|
+| 1 | apt 装 rustc/cargo + `cargo new hello && cargo test` | rustc/cargo **1.85.1**；hello `cargo test` 通过 | 0 | 172.3 s | `install_rc=100` 但 agent 重装后可用；hook 属主问题再次出现 |
+| 2 | `rustproj`：`std::thread::scope` + `HashMap` 并行词频/分片求和 + 单元测试 | **cargo test 8 passed / 0 failed** | 0 | 131.2 s | 需 `CARGO_TARGET_DIR=/tmp/rustproj-target` |
+
+串口 `Uncaught panic` = 0、`allocation failed` = 0。
+
+| 轮 | 第一条真实错误 | 疑似根因 | 是否 Asterinas 侧 | 状态 |
+|---|---|---|---|---|
+| 1 | Stop hook：`/tmp/claude-events.jsonl` 为 root 所有，asterinas 无法追加 | 镜像里残留的 root 会话文件 | 否（镜像状态） | agent 自行 `sudo chown` 修复 |
+| 1 | apt `install_rc=100`，随后 `cargo: not found` | apt 事务部分失败（包/空间），未见内核错误 | 否（镜像/包管理） | agent 重新安装后 rustc/cargo 1.85.1 可用 |
+| 2 | `/usr/bin/ld: final link failed: No space left on device`（根分区剩 14M） | 2 GiB 镜像装完 rust 工具链后根空间不足 | 否（镜像容量） | agent 改用 `CARGO_TARGET_DIR=/tmp/rustproj-target`（2G tmpfs）后 8/8 通过；宿主侧复跑 `cargo test` 仍因默认 target 目录 rc=101 |
+
+**Asterinas 侧新增功能缺陷：0 项（Rust 轮次）**；但矩阵补全暴露了
+procfs `/proc/asound` 与 sysfs `/sys/bus/usb` 两个上报缺口（见 A）。
+
+### 证据
+
+- `evidence/2026-10-25-claude-round6/round{1,2}.log`、`work-tree.txt`
+- 串口：`target/regress-r6/console.txt`
+- 矩阵证据：`evidence/2026-10-25-matrix-full/`
