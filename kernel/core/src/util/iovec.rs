@@ -88,19 +88,23 @@ fn copy_iovs_and_convert<'a, T: 'a>(
 
     let vm_space = user_space.vmar().vm_space();
 
-    // Copy the whole I/O vector first, so that the length of every buffer is validated
-    // before the address of any buffer.
+    // Validate the length of every buffer before the address of any buffer, as Linux does.
     // Reference: <https://elixir.bootlin.com/linux/v6.16/source/lib/iov_iter.c#L1447>.
-    let mut iovs = Vec::with_capacity(count);
+    //
+    // The user I/O vector is walked twice instead of staging it in a heap vector: a
+    // syscall as common as `sendmsg` must not pay for an extra allocation here.
     for idx in 0..count {
         let addr = start_addr + idx * size_of::<UserIoVec>();
         let uiov: UserIoVec = vm_space.reader(addr, size_of::<UserIoVec>())?.read_val()?;
-        iovs.push(IoVec::try_from(uiov)?);
+        IoVec::try_from(uiov)?;
     }
 
     let mut v = Vec::with_capacity(count);
     let mut max_len = MAX_TOTAL_IOV_BYTES;
-    for mut iov in iovs {
+    for idx in 0..count {
+        let addr = start_addr + idx * size_of::<UserIoVec>();
+        let uiov: UserIoVec = vm_space.reader(addr, size_of::<UserIoVec>())?.read_val()?;
+        let mut iov = IoVec::try_from(uiov)?;
         // Linux checks the original range of every buffer, including zero-length ones,
         // before truncating the total I/O length. Otherwise, an empty or truncated
         // buffer could bypass validation.
