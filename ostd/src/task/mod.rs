@@ -15,7 +15,7 @@ use core::{
     cell::{Cell, SyncUnsafeCell},
     ops::Deref,
     ptr::NonNull,
-    sync::atomic::AtomicBool,
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use kernel_stack::KernelStack;
@@ -70,10 +70,41 @@ pub struct Task {
     /// See [`processor::switch_to_task`] for more details.
     switched_to_cpu: AtomicBool,
 
+    /// Wall time (in TSC cycles) this task spent blocked inside `park_current`
+    /// during the current syscall, used to separate CPU time from wait time.
+    blocked_cycles: AtomicU64,
+
     schedule_info: TaskScheduleInfo,
 }
 
+/// Whether `park_current` accumulates blocked cycles into the current task.
+static BLOCKED_CYCLES_ACCOUNTING: AtomicBool = AtomicBool::new(false);
+
+/// Enables or disables blocked-cycle accounting in `park_current`.
+pub fn set_blocked_cycles_accounting(enabled: bool) {
+    BLOCKED_CYCLES_ACCOUNTING.store(enabled, Ordering::Relaxed);
+}
+
+pub(crate) fn blocked_cycles_accounting() -> bool {
+    BLOCKED_CYCLES_ACCOUNTING.load(Ordering::Relaxed)
+}
+
 impl Task {
+    /// Returns the cycles this task spent blocked since the last reset.
+    pub fn blocked_cycles(&self) -> u64 {
+        self.blocked_cycles.load(Ordering::Relaxed)
+    }
+
+    /// Clears the blocked-cycle counter.
+    pub fn reset_blocked_cycles(&self) {
+        self.blocked_cycles.store(0, Ordering::Relaxed);
+    }
+
+    /// Adds blocked wall time (in TSC cycles) to this task.
+    pub fn add_blocked_cycles(&self, cycles: u64) {
+        self.blocked_cycles.fetch_add(cycles, Ordering::Relaxed);
+    }
+
     /// Gets the current task.
     ///
     /// It returns `None` if the function is called in the bootstrap context.
@@ -234,6 +265,7 @@ impl TaskOptions {
             ctx: SyncUnsafeCell::new(ctx),
             kstack,
             switched_to_cpu: AtomicBool::new(false),
+            blocked_cycles: AtomicU64::new(0),
             schedule_info: TaskScheduleInfo {
                 cpu: AtomicCpuId::default(),
             },

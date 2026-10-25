@@ -1,0 +1,4 @@
+# three verification modes (kernel 2e747b59, /proc/syscall_time 6 columns)
+cpuchk mode=getpid nr=39 count=1000000 total_ns=352852983 blocked_ns=0 cpu_ns=352852983 cpu_pct=100.0 blocked_pct=0.0
+cpuchk mode=nanosleep nr=230 count=100 total_ns=10067051816 blocked_ns=10061779778 cpu_ns=5272037 cpu_pct=0.1 blocked_pct=99.9
+cpuchk mode=futex nr=202 count=21769 total_ns=52666590 blocked_ns=25285997 cpu_ns=27380593 cpu_pct=52.0 blocked_pct=48.0

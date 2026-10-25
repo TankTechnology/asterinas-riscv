@@ -26,6 +26,10 @@ pub(crate) const SYSCALL_TIME_SLOTS: usize = 512;
 pub(crate) static SYSCALL_TIME_CYCLES: [AtomicU64; SYSCALL_TIME_SLOTS] =
     [const { AtomicU64::new(0) }; SYSCALL_TIME_SLOTS];
 
+/// Cumulative TSC cycles spent blocked inside each syscall.
+pub(crate) static SYSCALL_TIME_BLOCKED: [AtomicU64; SYSCALL_TIME_SLOTS] =
+    [const { AtomicU64::new(0) }; SYSCALL_TIME_SLOTS];
+
 /// Number of invocations of each syscall.
 pub(crate) static SYSCALL_TIME_COUNTS: [AtomicU64; SYSCALL_TIME_SLOTS] =
     [const { AtomicU64::new(0) }; SYSCALL_TIME_SLOTS];
@@ -37,6 +41,7 @@ pub(crate) static SYSCALL_TIME_ENABLED: AtomicBool = AtomicBool::new(false);
 pub(crate) fn syscall_time_reset() {
     for slot in 0..SYSCALL_TIME_SLOTS {
         SYSCALL_TIME_CYCLES[slot].store(0, Ordering::Relaxed);
+        SYSCALL_TIME_BLOCKED[slot].store(0, Ordering::Relaxed);
         SYSCALL_TIME_COUNTS[slot].store(0, Ordering::Relaxed);
     }
 }
@@ -44,6 +49,8 @@ pub(crate) fn syscall_time_reset() {
 /// Enables or disables per-syscall timing.
 pub(crate) fn syscall_time_set_enabled(enabled: bool) {
     SYSCALL_TIME_ENABLED.store(enabled, Ordering::Relaxed);
+    // Blocked-cycle accounting in `park_current` runs only while profiling.
+    ostd::task::set_blocked_cycles_accounting(enabled);
 }
 
 /// Returns whether per-syscall timing is enabled.
@@ -429,6 +436,9 @@ pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
             regs.rsp as u64,
             regs.rip as u64,
         );
+        if time_start.is_some() {
+            thread.task().reset_blocked_cycles();
+        }
     }
     let syscall_return = arch::syscall_dispatch(
         syscall_frame.syscall_number,
@@ -442,9 +452,13 @@ pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
 
     if let Some(start) = time_start {
         let cycles = ostd::arch::read_tsc().wrapping_sub(start);
+        let blocked = current_thread
+            .as_ref()
+            .map_or(0, |thread| thread.task().blocked_cycles());
         let nr = syscall_frame.syscall_number as usize;
         if nr < SYSCALL_TIME_SLOTS {
             SYSCALL_TIME_CYCLES[nr].fetch_add(cycles, Ordering::Relaxed);
+            SYSCALL_TIME_BLOCKED[nr].fetch_add(blocked.min(cycles), Ordering::Relaxed);
             SYSCALL_TIME_COUNTS[nr].fetch_add(1, Ordering::Relaxed);
         }
     }

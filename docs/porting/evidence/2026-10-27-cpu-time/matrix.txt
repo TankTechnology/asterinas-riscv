@@ -1,0 +1,15 @@
+# kernel 2e747b59, image toolchain4, DAILY_DONE=ok, panic=0, allocation failed=0
+domain	result	detail
+DESKTOP	ok	Xorg+DRI3
+APP	ok	xterm
+APT	ok	xclip+xterm+alsa-utils-installed
+CLIPBOARD	ok	xclip-round-trip
+INPUT_METHOD	fail	engine--no-text:
+AUDIO	ok	aplay-hw:0,0
+USB	ok	mounted-/dev/sda-read-ASTERINAS-USB-OK
+SUSPEND	ok	woke-up-disk-and-io-ok
+DAILY_PERF apt_early seconds=15.69
+DAILY_PERF xclock_start run=1 seconds=11.09 window=
+DAILY_PERF xclock_start run=2 seconds=10.96 window=
+DAILY_PERF xclock_start run=3 seconds=10.93 window=
+DAILY_PERF dd_write_raw 67108864 bytes (67 MB, 64 MiB) copied, 0.130215 s, 515 MB/s

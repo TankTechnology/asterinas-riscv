@@ -31,9 +31,9 @@ except Exception:  # pragma: no cover - fallback for a standalone copy
         return f"syscall_{nr}"
 
 
-def parse(path: str) -> tuple[int, list[tuple[int, int, int, int]]]:
+def parse(path: str) -> tuple[int, list[tuple[int, int, int, int, int, int]]]:
     enabled = 0
-    rows: list[tuple[int, int, int, int]] = []
+    rows: list[tuple[int, int, int, int, int, int]] = []
     with open(path, "r") as fh:
         for line in fh:
             line = line.strip()
@@ -41,13 +41,17 @@ def parse(path: str) -> tuple[int, list[tuple[int, int, int, int]]]:
                 continue
             if line.startswith("#"):
                 if "enabled=" in line:
-                    enabled = int(line.split("enabled=", 1)[1] or "0")
+                    enabled = int(line.split("enabled=", 1)[1].split()[0] or "0")
                 continue
             parts = line.split()
-            if len(parts) != 4:
+            if len(parts) == 6:
+                nr, count, total_ns, blocked_ns, cpu_ns, avg_cpu_ns = (int(x) for x in parts)
+            elif len(parts) == 4:
+                nr, count, total_ns, avg_cpu_ns = (int(x) for x in parts)
+                blocked_ns, cpu_ns = 0, total_ns
+            else:
                 continue
-            nr, count, total_ns, avg_ns = (int(x) for x in parts)
-            rows.append((nr, count, total_ns, avg_ns))
+            rows.append((nr, count, total_ns, blocked_ns, cpu_ns, avg_cpu_ns))
     return enabled, rows
 
 
@@ -55,28 +59,34 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", nargs="?", default="/proc/syscall_time")
     parser.add_argument("--top", type=int, default=10)
+    parser.add_argument("--by", choices=("cpu", "total"), default="cpu")
     parser.add_argument("--json")
     args = parser.parse_args(argv)
 
     enabled, rows = parse(args.path)
-    rows.sort(key=lambda row: row[2], reverse=True)
-    total = sum(row[2] for row in rows) or 1
+    metric = 4 if args.by == "cpu" else 2
+    rows.sort(key=lambda row: row[metric], reverse=True)
+    total = sum(row[metric] for row in rows) or 1
 
-    print(f"enabled={enabled} syscalls={len(rows)} total_ns={total}")
-    print("| # | syscall | nr | count | total_ms | avg_us | % |")
-    print("|---|---|---|---|---|---|---|")
+    print(f"enabled={enabled} by={args.by} syscalls={len(rows)} total_ns={total}")
+    print("| # | syscall | nr | count | total_ms | blocked_ms | cpu_ms | avg_cpu_us | % |")
+    print("|---|---|---|---|---|---|---|---|---|")
     top = []
-    for idx, (nr, count, total_ns, avg_ns) in enumerate(rows[: args.top], 1):
-        pct = 100.0 * total_ns / total
+    for idx, (nr, count, total_ns, blocked_ns, cpu_ns, avg_cpu_ns) in enumerate(rows[: args.top], 1):
+        pct = 100.0 * (cpu_ns if args.by == "cpu" else total_ns) / total
         name = syscall_name(str(nr))
         print(f"| {idx} | {name} | {nr} | {count} | {total_ns / 1e6:.1f} "
-              f"| {avg_ns / 1e3:.2f} | {pct:.1f}% |")
+              f"| {blocked_ns / 1e6:.1f} | {cpu_ns / 1e6:.1f} "
+              f"| {avg_cpu_ns / 1e3:.2f} | {pct:.1f}% |")
         top.append({"rank": idx, "nr": nr, "name": name, "count": count,
-                    "total_ns": total_ns, "avg_ns": avg_ns, "pct": round(pct, 3)})
+                    "total_ns": total_ns, "blocked_ns": blocked_ns,
+                    "cpu_ns": cpu_ns, "avg_cpu_ns": avg_cpu_ns,
+                    "pct": round(pct, 3)})
 
     if args.json:
         with open(args.json, "w") as fh:
-            json.dump({"enabled": enabled, "total_ns": total, "top": top}, fh, indent=2)
+            json.dump({"enabled": enabled, "by": args.by, "total_ns": total,
+                       "top": top}, fh, indent=2)
     return 0
 
 

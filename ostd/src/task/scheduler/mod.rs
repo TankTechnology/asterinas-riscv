@@ -450,6 +450,8 @@ where
     let mut current = None;
     let mut is_first_try = true;
 
+    let blocked_start = crate::task::blocked_cycles_accounting().then(crate::arch::read_tsc);
+
     reschedule(|local_rq: &mut dyn LocalRunQueue| {
         let next_task_opt = if is_first_try {
             if has_unparked() {
@@ -483,6 +485,13 @@ where
 
         ReschedAction::Retry
     });
+
+    if let Some(start) = blocked_start {
+        let cycles = crate::arch::read_tsc().wrapping_sub(start);
+        if let Some(task) = Task::current() {
+            task.add_blocked_cycles(cycles);
+        }
+    }
 }
 
 /// Unblocks a target task.

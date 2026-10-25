@@ -2,12 +2,16 @@
 
 //! `/proc/syscall_time`: per-syscall CPU time counters.
 //!
-//! Format, one line per syscall with `count > 0`, sorted by `total_ns`:
+//! Format, one line per syscall with `count > 0`, sorted by `cpu_ns`:
 //!
 //! ```text
-//! # enabled=1
-//! <nr> <count> <total_ns> <avg_ns>
+//! # enabled=1 (columns: nr count total_ns blocked_ns cpu_ns avg_cpu_ns)
+//! <nr> <count> <total_ns> <blocked_ns> <cpu_ns> <avg_cpu_ns>
 //! ```
+//!
+//! `total_ns` is the wall time spent inside the syscall, `blocked_ns` the
+//! part of it spent descheduled by the task scheduler, and
+//! `cpu_ns = total_ns - blocked_ns` the actual CPU consumption.
 //!
 //! Writing `on`/`off` enables or disables the timing, and `reset` clears the
 //! counters.  Timing is off by default so a normal run pays no rdtsc cost.
@@ -20,8 +24,8 @@ use crate::{
     fs::{file::mkmod, vfs::inode::Inode},
     prelude::*,
     syscall::{
-        SYSCALL_TIME_COUNTS, SYSCALL_TIME_CYCLES, SYSCALL_TIME_SLOTS, syscall_time_enabled,
-        syscall_time_reset, syscall_time_set_enabled,
+        SYSCALL_TIME_BLOCKED, SYSCALL_TIME_COUNTS, SYSCALL_TIME_CYCLES, SYSCALL_TIME_SLOTS,
+        syscall_time_enabled, syscall_time_reset, syscall_time_set_enabled,
     },
 };
 
@@ -35,27 +39,35 @@ impl SyscallTimeFileOps {
 }
 
 fn format_rows() -> String {
-    let freq = ostd::arch::tsc_freq().max(1);
-    let mut rows: Vec<(u64, u64, u64)> = Vec::new();
+    let freq = ostd::arch::tsc_freq().max(1) as u128;
+    let to_ns = |cycles: u64| (cycles as u128 * 1_000_000_000u128 / freq) as u64;
+
+    let mut rows: Vec<(u64, u64, u64, u64, u64)> = Vec::new();
     for nr in 0..SYSCALL_TIME_SLOTS {
         let count = SYSCALL_TIME_COUNTS[nr].load(Ordering::Relaxed);
         if count == 0 {
             continue;
         }
         let cycles = SYSCALL_TIME_CYCLES[nr].load(Ordering::Relaxed);
-        rows.push((nr as u64, count, cycles));
+        let blocked = SYSCALL_TIME_BLOCKED[nr].load(Ordering::Relaxed).min(cycles);
+        rows.push((nr as u64, count, cycles, blocked, cycles - blocked));
     }
-    rows.sort_by(|a, b| b.2.cmp(&a.2));
+    // Sort by CPU cycles (total - blocked), the useful attribution order.
+    rows.sort_by(|a, b| b.4.cmp(&a.4));
 
     let mut out = String::new();
     out.push_str(&format!(
-        "# enabled={}\n",
+        "# enabled={} (columns: nr count total_ns blocked_ns cpu_ns avg_cpu_ns)\n",
         u8::from(syscall_time_enabled())
     ));
-    for (nr, count, cycles) in rows {
-        let total_ns = (cycles as u128 * 1_000_000_000u128 / freq as u128) as u64;
-        let avg_ns = total_ns / count.max(1);
-        out.push_str(&format!("{nr} {count} {total_ns} {avg_ns}\n"));
+    for (nr, count, cycles, blocked, cpu) in rows {
+        let total_ns = to_ns(cycles);
+        let blocked_ns = to_ns(blocked);
+        let cpu_ns = to_ns(cpu);
+        let avg_cpu_ns = cpu_ns / count.max(1);
+        out.push_str(&format!(
+            "{nr} {count} {total_ns} {blocked_ns} {cpu_ns} {avg_cpu_ns}\n"
+        ));
     }
     out
 }
