@@ -361,4 +361,37 @@ mod test {
         };
         let _ = crate::task::TaskOptions::new(task).data(()).spawn();
     }
+
+    /// Many short-lived tasks exit concurrently.  This exercises the exit path
+    /// that used to reach `unreachable!()` when an exiting task was scheduled
+    /// again; it must finish without panicking.
+    #[ktest]
+    fn concurrent_task_exit() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+
+        let done = Arc::new(AtomicUsize::new(0));
+        let total = 64;
+        let mut tasks = alloc::vec::Vec::new();
+        for _ in 0..total {
+            let done = done.clone();
+            let task = move || {
+                done.fetch_add(1, Ordering::Release);
+            };
+            let task = crate::task::TaskOptions::new(task)
+                .data(())
+                .build()
+                .unwrap();
+            tasks.push(Arc::new(task));
+        }
+        for task in tasks {
+            task.run();
+        }
+
+        let mut spins = 0u64;
+        while done.load(Ordering::Acquire) < total {
+            crate::task::Task::yield_now();
+            spins += 1;
+            assert!(spins < 10_000_000, "tasks did not exit in time");
+        }
+    }
 }

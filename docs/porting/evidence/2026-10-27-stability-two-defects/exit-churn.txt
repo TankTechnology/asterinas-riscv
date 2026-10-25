@@ -1,0 +1,12 @@
+# A: exit churn regression (kernel with idempotent exit)
+0
+0
+churn_start 2026-10-25T17:34:12Z nproc=4
+churn_xclock exits=100
+churn_python exits=3000
+churn_fork_exec exits=3000 rc=0
+churn_threads threads=2000
+churn_threads rc=0
+churn_xclock2 exits=100
+churn_done 2026-10-25T17:34:41Z
+DAILY_DONE=ok

@@ -524,25 +524,40 @@ fn set_need_preempt(cpu_id: CpuId) {
 #[track_caller]
 pub(super) fn exit_current() -> ! {
     let mut is_first_try = true;
+    let mut resumed = 0u32;
 
-    reschedule(|local_rq: &mut dyn LocalRunQueue| {
-        let next_task_opt = if is_first_try {
-            is_first_try = false;
-            let should_pick_next = local_rq.update_current(UpdateFlags::Exit);
-            let _current = local_rq.dequeue_current();
-            should_pick_next.then(|| local_rq.pick_next())
-        } else {
-            local_rq.try_pick_next()
-        };
+    loop {
+        reschedule(|local_rq: &mut dyn LocalRunQueue| {
+            let next_task_opt = if is_first_try {
+                is_first_try = false;
+                let should_pick_next = local_rq.update_current(UpdateFlags::Exit);
+                let _current = local_rq.dequeue_current();
+                should_pick_next.then(|| local_rq.pick_next())
+            } else {
+                local_rq.try_pick_next()
+            };
 
-        if let Some(next_task) = next_task_opt {
-            ReschedAction::SwitchTo(next_task.clone())
-        } else {
-            ReschedAction::Retry
+            if let Some(next_task) = next_task_opt {
+                ReschedAction::SwitchTo(next_task.clone())
+            } else {
+                ReschedAction::Retry
+            }
+        });
+
+        // `reschedule` only returns when this task's context is resumed after
+        // it was switched away (the scheduler decision raced with a wake and
+        // picked this already-exiting task again).  The exit is idempotent:
+        // the task was dequeued by `update_current(Exit)` and stays exited, so
+        // switch away again instead of hitting `unreachable!()`.
+        resumed += 1;
+        is_first_try = true;
+        if resumed <= 3 {
+            crate::warn!(
+                "exiting task was scheduled again; retrying exit (attempt {})",
+                resumed
+            );
         }
-    });
-
-    unreachable!()
+    }
 }
 
 /// Yields execution.
