@@ -286,13 +286,13 @@ workspace 再跑一次完整 L4：
 3. **envp 写入顺序与 Linux 仍不同**（`envp[0]` 在最顶端，Linux 在 env 块
    最低端）。本轮不改：修复点已足以覆盖越界读，改顺序属于额外的布局对齐，
    需要单独评估兼容性收益与风险。
-4. **基线更新**：L4 仍为 **2 ok / 1 fail**，但失败原因已从 signal 11 变为
-   root 构建环境（两次重跑一致）。应把 `docs/porting/debian-source-build.md`
-   的“已知失败”与判定规则改为指向本文，并在 `daily-use-matrix.md`、
-   `2026-10-25-ladder-final.md` 的 L4 行注明“signal 11 已由内核
-   `f847a16a`/`66004cd6` 修复，剩余为 `configure` 的 root 保护”。
-   在 L4 环境中加 `FORCE_UNSAFE_CONFIGURE=1` 并重跑全绿后，再把基线更新为
-   **3 ok**。
+4. **基线更新**：本文的两次重跑停在 **2 ok / 1 fail**，剩余项是
+   `configure` 的 root 构建保护。**该保护已于同日修复**：L4 探针设置
+   `FORCE_UNSAFE_CONFIGURE=1`，`coreutils` 首次通过（575.99 s，1 次尝试），
+   **L4 = 3/3**，详见
+   [`2026-10-25-l4-mknodat.md`](2026-10-25-l4-mknodat.md)。基线文档
+   （`debian-source-build.md`、`daily-use-matrix.md`、
+   `2026-10-25-ladder-final.md`）已同步更新为 3 ok。
 
 ## 证据索引
 

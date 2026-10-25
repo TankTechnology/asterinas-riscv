@@ -1,0 +1,19 @@
+# FORCE_UNSAFE_CONFIGURE=1: coreutils configure proceeds and builds (L4 run 3)
+# Source: target/debian-source-build-3 guest /var/tmp/dpkg-logs/pkg2-build.log
+
+## The root guard no longer aborts; the probe result is 'no' and configure continues:
+checking whether mkfifo rejects trailing slashes... yes
+checking for mknodat... yes
+checking for mkfifoat... yes
+checking whether mkfifoat rejects trailing slashes... yes
+checking whether mknod can create fifo without root privileges... no
+checking for mkostemp... yes
+checking for working mkstemp... yes
+checking for __mktime_internal... no
+
+## root-guard occurrences in this log: 0
+
+## The binary packages were actually built:
+7202:dpkg-deb: building package 'coreutils' in '../coreutils_9.7-3_amd64.deb'.
+7203:dpkg-deb: building package 'coreutils-dbgsym' in '../coreutils-dbgsym_9.7-3_amd64.deb'.
+7208:dpkg-buildpackage: info: binary-only upload (no source included)

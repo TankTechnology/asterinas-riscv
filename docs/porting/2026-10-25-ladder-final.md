@@ -4,7 +4,7 @@
 
 ## 结论摘要
 
-- **L1–L6 全部通过**（L4 按基线为 2/3，见“已知遗留”）。
+- **L1–L6 全部通过**（L4 于 2026-10-25 修复为 **3/3**，见下）。
 - **L6 终验端到端零分配失败**：`allocation failed` **0** 条（含
   `size=65536`）、`segment allocation failed` **0**、`segmented fallback`
   **0**；`full-upgrade` **rc=0**，**4825.30 s**，341/341 解包与配置；
@@ -25,13 +25,14 @@
 | **L1b** 真实新装 | 基础镜像里没有的 40 包 | 安装 **40/40**（`pre=absent 40/40`）；smoke **38/40** + 1 CLI；`iptables` 因缺 `NETLINK_NETFILTER` 失败；364.03 s | `9e8ee5dd544fa03a` | `target/debian-popcon-new40/console.txt`；[`debian-package-compat.md`](debian-package-compat.md) |
 | **L2** systemd 健康 | `is-system-running`、失败 unit 数、启动时间 | systemd **257.13**，**running**，失败 unit **0/156**，运行中 service **9**；启动 **3.416 s**（kernel 0.303 + userspace 3.112）；3 个关键 unit rc=0；boot error 3 条 | `9e8ee5dd544fa03a` | `target/systemd-health/console.txt`（`SYSD_DONE systemd=yes failed=0 running=9 units=156 jerr=3`）；[`debian-systemd-health.md`](debian-systemd-health.md) |
 | **L3** syscall 一致性 | LTP 子集 40 case | **34 pass / 6 fail / 0 skip**（85%）；整轮 **179 s**；6 个失败均有源码级归因 | `9e8ee5dd544fa03a` | `target/ltp-final/console.txt`（`LTP summary total=40 pass=34 fail=6 skip=0`）；[`debian-ltp-baseline.md`](debian-ltp-baseline.md) |
-| **L4** 源码包构建 | guest 内 `dpkg-buildpackage` 产出 `.deb` | 3 包 **2 ok / 1 fail**：`hello` 2 个 `.deb`（281.31 s）、`python3-minimal` 19 个 `.deb`（343.26 s）；`coreutils` 两次在 `debian/rules clean` 被 **signal 11**（156.52 s） | `e2312060`（2026-10-25 回归） | `target/debian-source-build/console.txt`；[`debian-source-build.md`](debian-source-build.md) |
+| **L4** 源码包构建 | guest 内 `dpkg-buildpackage` 产出 `.deb` | **3 包 3 ok / 0 fail**（2026-10-25 修复后）：`hello` 2 个 `.deb`（277.81 s）、`coreutils` **首次通过**（575.99 s，1 次尝试，`coreutils` + dbgsym）、`python3-minimal` 19 个 `.deb`（369.11 s） | `66004cd6`（2026-10-25 修复后） | `target/debian-source-build-3/console.txt`；[`2026-10-25-l4-coreutils-sig11.md`](2026-10-25-l4-coreutils-sig11.md)、[`2026-10-25-l4-mknodat.md`](2026-10-25-l4-mknodat.md) |
 | **L5** 从零 rootfs | debootstrap minbase 三阶段 + chroot | **stages=3 ok=3**（install 19.99 s、foreign 44.66 s、second 440.18 s）；chroot/mount/umount/unshare **全 rc=0**；`debian_version=13.7`；`/target` 133,124 KB | `e2312060`（2026-10-25 回归） | `target/debian-debootstrap/console.txt`；[`debian-debootstrap.md`](debian-debootstrap.md) |
 | **L6** 跨版本升级 | trixie→forky `full-upgrade` 跑完并二次启动 | **rc=0**，**4825.30 s**；**296 upgraded / 45 newly installed / 0 not upgraded**；**341/341** 解包与配置；`allocation failed` **0**；二次启动 `forky/sid`、systemd **running**；根文件系统剩余 **1,064,400 KB** | `e2312060` | `target/debian-upgrade-final/console.txt`；[`evidence/2026-10-25-l6-final-zero-failures/`](evidence/2026-10-25-l6-final-zero-failures/)；[`debian-full-upgrade.md`](debian-full-upgrade.md) |
 
 说明：L1–L3 的数字来自各自文档记录的基线轮（内核 `9e8ee5dd`）；
-L4/L5 在最终内核 `e2312060` 上于 2026-10-25 重新回归，结果与基线一致；
-L6 为最终内核上的终验。
+L4 在 2026-10-25 修复 `AT_EXECFN` 与 root 构建环境后达到 **3/3**（内核
+`66004cd6`）；L5 在最终内核 `e2312060` 上于 2026-10-25 回归，结果与基线
+一致；L6 为最终内核上的终验。
 
 ## 归因一：内核栈分段（16 页 → 4 页）
 
@@ -87,18 +88,24 @@ ring-buffer 池 **33 命中 / 0 未命中**；`allocation failed` **0**。
 |---|---|
 | 架构 / 加速 | x86_64 / KVM，4 vCPU、4 GiB |
 | 启动方式 | `--scheme microvm`（vmm-direct，QEMU `-kernel` 直接加载 multiboot2 ELF） |
-| 内核 | L1–L3 基线：`9e8ee5dd544fa03a`；L4/L5/L6 终验：`e23120606e4d942f`（HEAD `99d4b116e`） |
+| 内核 | L1–L3 基线：`9e8ee5dd544fa03a`；L4 3/3：`66004cd683dd451b`；L5/L6 终验：`e23120606e4d942f`（HEAD `99d4b116e`） |
 | Stage1 initramfs | `target/debian-x86/stage1/initramfs.cpio`（sha256 `fb9c5b17…`） |
 | 根镜像 | L1–L5 原始基线：`image18.ext2`（`6941801d…`）；L4/L5/L6 终验：`target/systemd-health/daily.ext2`（`450ebe3b…a083e0`） |
 | L6 副本 | `target/debian-upgrade-final/daily.ext2`（sha 与基础相同） |
-| 耗时 | L1 探针 339.29 s；L1b 364.03 s；L2 启动 3.416 s；L3 179 s；L4 包时间合计约 781 s；L5 三阶段合计约 505 s；L6 **4825.30 s** |
+| 耗时 | L1 探针 339.29 s；L1b 364.03 s；L2 启动 3.416 s；L3 179 s；L4 3/3 轮包时间合计约 1,223 s；L5 三阶段合计约 505 s；L6 **4825.30 s** |
 
 ## 已知遗留（如实记录）
 
-1. **L4 `coreutils` signal 11**：`debian/rules clean` 阶段子进程崩溃，
-   两次一致；已收敛到 `DPKG_EXPORT_BUILDFLAGS=1` 导出的递归
-   `$(shell dpkg-buildflags)` 变量问题（见 `debian-source-build.md`）。
-   这是**基线问题，与本轮内存修复无关**；L4 因此为 **2 ok / 1 fail**。
+1. ~~**L4 `coreutils` signal 11**~~ **（2026-10-25 已解决，L4 = 3/3）**：
+   历史现象是 `debian/rules clean` 子进程两次 SIGSEGV；旧归因停在
+   `DPKG_EXPORT_BUILDFLAGS=1` 的递归 `$(shell)` 触发构造。最终根因是内核
+   **缺 `AT_EXECFN`**：`envp[0]` 贴住 8 MiB 初始栈映射上界，GNU make 读
+   `environ[i][name_len]` 时越过 2 字节。补齐 `AT_EXECFN` 后 `clean` 通过；
+   随后暴露的 configure root 保护用 L4 探针的
+   `FORCE_UNSAFE_CONFIGURE=1` 解决，`coreutils` 首次产出 `.deb`
+   （575.99 s，1 次尝试）。详见
+   [`2026-10-25-l4-coreutils-sig11.md`](2026-10-25-l4-coreutils-sig11.md)、
+   [`2026-10-25-l4-mknodat.md`](2026-10-25-l4-mknodat.md)。
 2. **L3 的 6 个 LTP 失败**：均为已归因的内核语义差异（fd 上限未强制 ×3、
    O_NOATIME 权限 ×1、`/proc/maps` ×1、测试 fd 复用 ×1），属基线。
 3. **negative dentry 无淘汰**：L6 终验 46,643 条警告，串口 18 MB 级。
@@ -129,7 +136,8 @@ make test_x86_debian_full_upgrade   X86_DEBIAN_KERNEL=$K X86_DEBIAN_STAGE1_INITR
 - L1b：`target/debian-popcon-new40/console.txt`
 - L2：`target/systemd-health/console.txt`
 - L3：`target/ltp-final/console.txt`、`target/ltp-final-gate.log`
-- L4：`target/debian-source-build/console.txt`
+- L4：`target/debian-source-build-3/console.txt`（3/3 轮）、
+  `target/debian-source-build/console.txt`（历史 2/3 轮）
 - L5：`target/debian-debootstrap/console.txt`
 - L6：`target/debian-upgrade-final/console.txt`、
   [`evidence/2026-10-25-l6-final-zero-failures/`](evidence/2026-10-25-l6-final-zero-failures/)

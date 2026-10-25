@@ -225,18 +225,24 @@ make test_x86_debian_source_build ... SOURCE_BUILD_PACKAGES=hello
 make test_x86_debian_source_build ... SOURCE_BUILD_SELFTEST=1
 ```
 
-产物：`target/debian-source-build/console.txt`（串口全量）、
+产物：最新基线在 `target/debian-source-build-3/console.txt`（串口全量）、
 `source-build/packages.tsv`、`stages.tsv`、`env.tsv`、
-`source-build.json`。guest 内的日志在 `/var/tmp/dpkg-logs/`，产物在
-`/var/tmp/dpkg-artifacts/`（随 root 镜像保留）。
+`source-build.json`；更早的 2/3 基线仍保留在 `target/debian-source-build/`。
+guest 内的日志在 `/var/tmp/dpkg-logs/`，产物在 `/var/tmp/dpkg-artifacts/`
+（随 root 镜像保留）。
 
 ## 基线声明
 
-- **结果**：3 包 **2 ok / 1 fail**；
-- **成功**：`hello` 2.10-5（2 个 `.deb`）、`python3-defaults` 3.13.5-1
-  （19 个 `.deb`）；
-- **已知失败**：`coreutils` 9.7-3，`debian/rules clean`，signal 11；
-- **判定规则**：后续运行若 `hello` 或 `python3-minimal` 不再产出 `.deb`，
-  或 `coreutils` 的失败阶段/信号发生变化，即视为退化；若内核修好了
+- **当前基线（2026-10-25，内核 `66004cd6`）**：3 包 **3 ok / 0 fail**，
+  **L4 = 3/3**。`coreutils` 9.7-3 首次通过（575.99 s，1 次尝试，产出
+  `coreutils` 与 `coreutils-dbgsym`）；`hello`、`python3-defaults`
+  保持通过。两次根因修复见
+  [`2026-10-25-l4-coreutils-sig11.md`](2026-10-25-l4-coreutils-sig11.md)
+  （补 `AT_EXECFN`）与
+  [`2026-10-25-l4-mknodat.md`](2026-10-25-l4-mknodat.md)
+  （root 构建环境设 `FORCE_UNSAFE_CONFIGURE=1`）。
+- **历史基线（保留）**：2026-10-24 为 **2 ok / 1 fail**，`coreutils` 在
+  `debian/rules clean` 被 signal 11；下方逐包表格与日志引用记录的是那一轮。
+- **判定规则**：后续运行若任一包不再产出 `.deb`，即视为退化；若内核修好了
   `splice`/SysV IPC/ext4 事务上限或 make 的导出展开，对应 shim/处置
   可以移除，并更新本基线（记日期、内核 sha、diff 原因）。

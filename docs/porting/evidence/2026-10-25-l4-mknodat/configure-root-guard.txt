@@ -1,0 +1,47 @@
+# coreutils configure: mknod fifo probe aborts as root (not mknodat)
+# Source: guest /var/tmp/dpkg-logs/pkg2-build.log (run 2), configure 9.7
+
+## The check and its result:
+checking whether mkfifo rejects trailing slashes... yes
+checking for mknodat... yes
+checking for mkfifoat... yes
+checking whether mkfifoat rejects trailing slashes... yes
+checking whether mknod can create fifo without root privileges... configure: error: in '/tmp/dpkg-build/pkg2/coreutils-9.7':
+configure: error: you should not run configure as root (set FORCE_UNSAFE_CONFIGURE=1 in environment to bypass this check)
+See 'config.log' for more details
+	tail -v -n \+0 config.log
+==> config.log <==
+
+## Earlier mknodat detection succeeded (compile/link only):
+819:checking for mknodat... yes
+820:checking for mkfifoat... yes
+
+## The conftest returned 99 before calling mknod():
+configure:65580: ./conftest
+configure:65580: $? = 99
+configure: program exited with status 99
+configure: failed program was:
+
+## conftest source and the root guard:
+|              #include <unistd.h>
+| 
+|              /* Copied from root-uid.h.  FIXME: Just use root-uid.h.  */
+|              #ifdef __TANDEM
+|              # define ROOT_UID 65535
+|              #else
+|              # define ROOT_UID 0
+|              #endif
+| 
+| int
+| main (void)
+| {
+| /* Indeterminate for super-user, assume no.  Why are you running
+|          configure as root, anyway?  */
+|       if (geteuid () == ROOT_UID) return 99;
+|       if (mknod ("conftest.fifo", S_IFIFO | 0600, 0)) return 2;
+|   ;
+|   return 0;
+| }
+configure:65585: error: in '/tmp/dpkg-build/pkg2/coreutils-9.7':
+configure:65587: error: you should not run configure as root (set FORCE_UNSAFE_CONFIGURE=1 in environment to bypass this check)
+See 'config.log' for more details

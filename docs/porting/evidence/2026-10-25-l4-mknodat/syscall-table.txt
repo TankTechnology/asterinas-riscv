@@ -1,0 +1,11 @@
+# Live tree (kernel/core) x86 syscall registration for mknod/mknodat
+
+79:    mknod::{sys_mknod, sys_mknodat},
+312:    SYS_MKNOD = 133            => sys_mknod(args[..3]);
+377:    SYS_MKNODAT = 259          => sys_mknodat(args[..4]);
+
+17:pub(super) fn sys_mknodat(
+56:        InodeType::NamedPipe => {
+68:pub(super) fn sys_mknod(
+
+# Note: kernel/src/** is a dead tree; the live implementation is kernel/core.
