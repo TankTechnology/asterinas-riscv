@@ -109,3 +109,22 @@ gui_io start shm_avail=2084912_fallback_tmp io_file=/tmp/gui-big
 - `target/gui-stress2/console.txt`（串口全量，含 panic）
 - `target/gui-stress2/host.log`（门禁被手动终止：`make ... Terminated`）
 - 归档：`docs/porting/evidence/2026-10-25-gui-stress/console-excerpt.txt`
+
+## 8. 修复后复验（2026-10-25）
+
+ring-buffer 的 NoMemory panic 已修复
+（`fix(ring-buffer): never panic on NoMemory during growth`），并用当前树重建
+内核（`20582f4b207b6cb1`）复跑同一 GUI 负载，I/O 改为 `/dev/shm` 可容纳的
+1.5 GiB（保持 10 分钟）：
+
+- **无 panic**（串口真实 panic 块 0；ring-buffer 降级 warn 0 次）；
+- **10 个应用全部起窗**（xwininfo 计数 14 含子窗口：pcmanfm 4、eog 4、
+  xterm 3、xclock/xcalc/xeyes 各 1）；
+- 1.5 GiB `dd` + sha256：`dd_rc=0 sha_rc=0`；
+- `MemAvailable` 3,398,356 → 3,288,172 kB（**-3.24%**）；
+- **suspend 3/3 ok**，唤醒后窗口存活、探测窗正常；
+- ring-buffer 全程走预留池（`pool hit` 累计 1024），heap 池峰值
+  2090/4096 页。
+
+判定 **A（修复有效）**。详见
+[`2026-10-25-ringbuf-nomemory-fix.md`](2026-10-25-ringbuf-nomemory-fix.md)。

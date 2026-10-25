@@ -1,0 +1,38 @@
+# fixed-kernel GUI rerun: guest console excerpt (target/gui-fixed/console.txt)
+
+## panic check (console is authoritative)
+real_panic_blocks=0
+panic_with_unwrap=0
+degrade_warn=0
+note: dmesg itself is ENOSYS on this kernel, so dmesg_count lines are vacuous
+
+## ring-buffer recovery path
+[    85.075] WARN  : ring-buffer: pool hit: pages=16 total=256
+[   243.796] WARN  : ring-buffer: pool hit: pages=16 total=512
+[   511.221] WARN  : ring-buffer: pool hit: pages=16 total=768
+[   700.419] WARN  : ring-buffer: pool hit: pages=16 total=1024
+
+## heap pool
+[   710.855] WARN  : heap: large-slot pool usage 2090/4096 pages, 3577856 allocations
+[   711.492] WARN  : heap: large-slot pool usage 1783/4096 pages, 3578880 allocations
+
+## workload/summary
+gui_io done dd_rc=0 sha_rc=0 sha=b7a1ca05cae9eefbf2deee895f4fb34c8d8ffc5d6665982424e0b2711c79ed1d
+duration_s=639.6
+memavail_baseline=3398356 memavail_last=3288172
+suspend_ok=3/3
+gui_tools x11_apps=yes xdotool=yes img=/usr/share/pixmaps/debian-logo.png
+DAILY_DESKTOP=ok Xorg+DRI3
+gui_windows total=14 apps="pcmanfm1 eog1 xterm1 xterm2 xclock xcalc xeyes pcmanfm2 eog2 xterm3"
+gui_io start shm_avail=2084864KB tmp_avail=2084864KB mb=1536 io_file=/dev/shm/gui-big
+gui_baseline memavail=3398356 uptime=100.31
+gui_io done dd_rc=0 sha_rc=0 sha=b7a1ca05cae9eefbf2deee895f4fb34c8d8ffc5d6665982424e0b2711c79ed1d
+
+## suspends
+gui_suspend round=1 rc=0 before=709.66 after=716.55 windows=14 apps=9 probe=2 result=ok err=
+gui_suspend round=2 rc=0 before=720.17 after=726.50 windows=13 apps=9 probe=1 result=ok err=
+gui_suspend round=3 rc=0 before=730.05 after=736.47 windows=13 apps=9 probe=1 result=ok err=
+
+## app first errors
+-- pcmanfm1: ** Message: 08:59:13.937: x-terminal-emulator has very limited support, consider choosing another terminal 
+-- xterm1: open ttydev: Inappropriate ioctl for device 

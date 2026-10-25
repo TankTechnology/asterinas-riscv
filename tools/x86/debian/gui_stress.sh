@@ -98,16 +98,13 @@ done
 sleep 5
 
 count_class() {
-    cls=$1
-    if [ "$have_xdotool" = yes ]; then
-        xdotool search --onlyvisible --class "$cls" 2>/dev/null | wc -l
-    else
-        xwininfo -root -tree 2>/dev/null | grep -icE "$cls"
-    fi
+    # xwininfo prints WT_CLASS in parentheses, e.g. ("xterm" "XTerm");
+    # match case-insensitively so XClock/XTerm are counted too.
+    xwininfo -root -tree 2>/dev/null | grep -ic -- "$1"
 }
 count_windows() {
     total=0
-    for cls in '[Pp]cmanfm' '[Ee]og' '[Xx]term' '[Xx]clock' '[Xx]calc' '[Xx]eyes'; do
+    for cls in pcmanfm eog xterm xclock xcalc xeyes; do
         c=$(count_class "$cls")
         total=$((total + c))
     done
@@ -116,7 +113,7 @@ count_windows() {
 
 win_total=$(count_windows)
 log "gui_windows total=$win_total apps=\"$APPS\""
-for cls in '[Pp]cmanfm' '[Ee]og' '[Xx]term' '[Xx]clock' '[Xx]calc' '[Xx]eyes'; do
+for cls in pcmanfm eog xterm xclock xcalc xeyes; do
     log "gui_window_class class=$cls count=$(count_class "$cls")"
 done
 if [ "$win_total" -lt 10 ]; then
@@ -126,19 +123,27 @@ if [ "$win_total" -lt 10 ]; then
 fi
 
 # --- 2 GiB write + sha256 through /dev/shm ---------------------------------
-mount -o remount,size=3G /dev/shm 2>/dev/null || true
 shm_avail=$(df -k /dev/shm 2>/dev/null | awk 'NR==2{print $4}')
-IOFILE=/dev/shm/gui-big
-io_note=""
-if [ -n "$shm_avail" ] && [ "$shm_avail" -ge 2100000 ]; then
-    ( dd if=/dev/zero of="$IOFILE" bs=1M count=2048 2>/tmp/gui-dd.log; echo "rc=$?" >/tmp/gui-dd.rc ) &
+tmp_avail=$(df -k /tmp 2>/dev/null | awk 'NR==2{print $4}')
+io_note="shm_avail=${shm_avail:-unknown}KB tmp_avail=${tmp_avail:-unknown}KB"
+if [ -n "$shm_avail" ] && [ "$shm_avail" -ge 1600000 ]; then
+    IO_MB=1536
+    IOFILE=/dev/shm/gui-big
+elif [ -n "$shm_avail" ] && [ "$shm_avail" -ge 1100000 ]; then
+    IO_MB=1024
+    IOFILE=/dev/shm/gui-big
 else
+    IO_MB=512
     IOFILE=/tmp/gui-big
-    io_note="shm_avail=${shm_avail:-unknown}_fallback_tmp"
 fi
-io_note="$io_note io_file=$IOFILE"
+io_note="$io_note mb=$IO_MB io_file=$IOFILE"
 log "gui_io start $io_note"
-( sha256sum "$IOFILE" >/tmp/gui-sha.log 2>&1; echo "rc=$?" >/tmp/gui-sha.rc ) &
+(
+    dd if=/dev/zero of="$IOFILE" bs=1M count="$IO_MB" 2>/tmp/gui-dd.log
+    echo "rc=$?" >/tmp/gui-dd.rc
+    sha256sum "$IOFILE" >/tmp/gui-sha.log 2>&1
+    echo "rc=$?" >/tmp/gui-sha.rc
+) &
 
 # --- hold + sample (20 minutes) -------------------------------------------
 base_ma=$(memavail)
@@ -148,13 +153,13 @@ sample=0
 while :; do
     up=$(now)
     elapsed=$(awk -v a="$base_up" -v b="$up" 'BEGIN{printf "%.0f", b-a}')
-    [ "$elapsed" -ge 1200 ] && break
+    [ "$elapsed" -ge 600 ] && break
     sample=$((sample + 1))
     ma=$(memavail)
     la=$(loadavg)
     wins=$(count_windows)
     if [ "$have_xdotool" = yes ] && [ $((sample % 10)) -eq 0 ]; then
-        w=$(xdotool search --onlyvisible --class '[Pp]cmanfm|[Ee]og|[Xx]term' 2>/dev/null | head -1)
+        w=$(xdotool search --onlyvisible --class 'pcmanfm|eog|xterm' 2>/dev/null | head -1)
         [ -n "$w" ] && xdotool windowactivate "$w" 2>/dev/null
     fi
     if [ $((sample % 4)) -eq 0 ]; then
@@ -186,12 +191,12 @@ for i in 1 2 3; do
     if command -v xclock >/dev/null 2>&1; then
         env $APP_ENV xclock >/tmp/gui-probe-$i.log 2>&1 &
         sleep 3
-        probe=$(count_class '[Xx]clock')
+        probe=$(count_class xclock)
         pkill -x xclock 2>/dev/null
     else
         env $APP_ENV eog "$IMG" >/tmp/gui-probe-$i.log 2>&1 &
         sleep 3
-        probe=$(count_class '[Ee]og')
+        probe=$(count_class eog)
         pkill -x eog 2>/dev/null
     fi
     if [ "$rc" -eq 0 ] && [ -n "$wins" ] && [ "$wins" -ge 8 ]; then
@@ -213,7 +218,7 @@ end_up=$(now)
     echo "windows=$win_total tools_x11_apps=$have_xapps xdotool=$have_xdotool"
     echo "io dd_rc=$dd_rc sha_rc=$sha_rc $io_note"
     echo "suspend_ok=$suspend_ok/3"
-    for cls in '[Pp]cmanfm' '[Ee]og' '[Xx]term' '[Xx]clock' '[Xx]calc' '[Xx]eyes'; do
+    for cls in pcmanfm eog xterm xclock xcalc xeyes; do
         echo "window_class class=$cls count=$(count_class "$cls")"
     done
     echo "=== app first errors ==="

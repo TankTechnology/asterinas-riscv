@@ -61,12 +61,30 @@ fn log_pool_event(hit: bool, nframes: usize) {
     }
 }
 
+/// A zero-length slice used by [`Storage::Empty`].
+static EMPTY_BYTES: [u8; 0] = [];
+
+/// Returns a mutable zero-length slice with a `'static` lifetime.
+///
+/// Only [`Storage::Empty`] uses this, and a capacity-zero ring buffer never
+/// writes through it (the push paths short-circuit on `capacity == 0`), so
+/// the shared zero-length slice is never aliased for an actual access.
+#[allow(static_mut_refs)]
+fn empty_writer_slice() -> &'static mut [u8] {
+    static mut EMPTY: [u8; 0] = [];
+    unsafe { &mut *(&raw mut EMPTY) }
+}
+
 /// The backing storage of a ring buffer.
 ///
 /// It is either a segmented allocation (physically scattered, virtually
 /// contiguous) or a buffer from the reserved contiguous pool. Callers only
 /// need [`HasVmReaderWriter`] and [`HasSize`].
 pub enum Storage {
+    /// No storage: the last-resort allocation path failed and the buffer was
+    /// degraded to capacity zero. It reports size zero, holds no items, and
+    /// accepts no pushes.
+    Empty,
     /// A segmented allocation.
     Segmented(SegmentedSegment<()>),
     /// A buffer from the reserved heap pool.
@@ -76,6 +94,7 @@ pub enum Storage {
 impl HasSize for Storage {
     fn size(&self) -> usize {
         match self {
+            Self::Empty => 0,
             Self::Segmented(segment) => segment.size(),
             Self::Pooled(buffer) => buffer.size(),
         }
@@ -87,6 +106,7 @@ impl HasVmReaderWriter for Storage {
 
     fn reader(&self) -> VmReader<'_, Infallible> {
         match self {
+            Self::Empty => VmReader::from(&EMPTY_BYTES[..]),
             Self::Segmented(segment) => segment.reader(),
             Self::Pooled(buffer) => buffer.reader(),
         }
@@ -94,6 +114,7 @@ impl HasVmReaderWriter for Storage {
 
     fn writer(&self) -> VmWriter<'_, Infallible> {
         match self {
+            Self::Empty => VmWriter::from(empty_writer_slice()),
             Self::Segmented(segment) => segment.writer(),
             Self::Pooled(buffer) => buffer.writer(),
         }
@@ -178,8 +199,9 @@ impl<T> RingBuffer<T> {
     ///
     /// # Panics
     ///
-    /// Panics if `capacity` is not a power of two, or if even a one-page
-    /// buffer cannot be allocated.
+    /// Panics if `capacity` is not a power of two. If even a one-page buffer
+    /// cannot be allocated, the buffer degrades to capacity zero with a
+    /// warning instead of panicking.
     pub fn new(capacity: usize) -> Self {
         assert!(
             capacity.is_power_of_two(),
@@ -221,10 +243,22 @@ impl<T> RingBuffer<T> {
                     };
                 }
                 Err(_) if nframes > 1 && capacity > 1 => capacity /= 2,
-                Err(err) => panic!(
-                    "ring buffer: cannot allocate {} page(s) for a capacity of {}: {:?}",
-                    nframes, capacity, err
-                ),
+                Err(err) => {
+                    ostd::warn!(
+                        "cannot allocate {} page(s) for a capacity of {}: {:?}; \
+                         degrading to an empty ring buffer",
+                        nframes,
+                        capacity,
+                        err
+                    );
+                    return Self {
+                        storage: Storage::Empty,
+                        capacity: 0,
+                        tail: AtomicUsize::new(0),
+                        head: AtomicUsize::new(0),
+                        phantom: PhantomData,
+                    };
+                }
             }
         }
     }
@@ -411,7 +445,7 @@ impl<T: Pod, R: Deref<Target = RingBuffer<T>>> Producer<T, R> {
     /// Returns `Some(())` on success, or `None` if the buffer is full.
     pub fn push(&mut self, item: T) -> Option<()> {
         let rb = &self.rb;
-        if rb.is_full() {
+        if rb.capacity == 0 || rb.is_full() {
             return None;
         }
 
@@ -435,7 +469,7 @@ impl<T: Pod, R: Deref<Target = RingBuffer<T>>> Producer<T, R> {
     pub fn push_slice(&mut self, items: &[T]) -> Option<()> {
         let rb = &self.rb;
         let nitems = items.len();
-        if rb.free_len() < nitems {
+        if rb.capacity == 0 || rb.free_len() < nitems {
             return None;
         }
 
@@ -500,7 +534,7 @@ impl<T: Pod, R: Deref<Target = RingBuffer<T>>> Consumer<T, R> {
     /// Returns `Some(item)` on success, or `None` if the buffer is empty.
     pub fn pop(&mut self) -> Option<T> {
         let rb = &self.rb;
-        if rb.is_empty() {
+        if rb.capacity == 0 || rb.is_empty() {
             return None;
         }
 
@@ -524,7 +558,7 @@ impl<T: Pod, R: Deref<Target = RingBuffer<T>>> Consumer<T, R> {
     pub fn pop_slice(&mut self, items: &mut [T]) -> Option<()> {
         let rb = &self.rb;
         let nitems = items.len();
-        if rb.len() < nitems {
+        if rb.capacity == 0 || rb.len() < nitems {
             return None;
         }
 
