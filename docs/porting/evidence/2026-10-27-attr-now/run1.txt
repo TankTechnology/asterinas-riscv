@@ -1,0 +1,28 @@
+[   attr_A|delta user_ticks=2145 sys_ticks=18355 sys_user_ratio=8.56 minflt=62170 majflt=29
+[    24.716] WARN  attr_A|SYSCALL 7 poll count=1036 pct=46.8
+[    24attr_A|SYSCALL 202 futex count=436 pct=19.7
+[    24.790] WARN  attr_A|SYSCALL 46 sendmsg count=113 pct=5.1
+[    24.814] attr_A|SYSCALL 0 read count=29 pct=1.3
+[    24.884] WARN attr_A|SYSCALL 10 mprotect count=14 pct=0.6
+[    24.913] attr_A|SYSCALL 9 mmap count=11 pct=0.5
+[  attr_A|SYSCALL 21 access count=5 pct=0.2
+attr_A|SYSCALL 47 recvmsg count=5 pct=0.2
+[    40.attr_B|SYSCALL 7 poll count=1185 pct=47.1
+[    attr_B|SYSCALL running running count=451 pct=17.9
+[    40.124]attr_B|SYSCALL 46 sendmsg count=187 pct=7.4
+[   attr_B|SYSCALL 9 mmap count=13 pct=0.5
+[  attr_B|SYSCALL 0 read count=13 pct=0.5
+attr_B|SYSCALL 435 clone3 count=13 pct=0.5
+attr_B|SYSCALL 10 mprotect count=9 pct=0.4
+attr_B|SYSCALL 47 recvmsg count=6 pct=0.2
+attr_B|SYSCALL 21 access count=3 pct=0.1
+[    56.572] WARN attr_C|samples=2646 duration=20.00s interval=0.02s pids=5
+[    56.591] attr_C|delta user_ticks=2434 sys_ticks=20845 sys_user_ratio=8.56 minflt=52873 majflt=0
+[    56.600] WARN  : unsupported flags: MSG_DONTWAITattr_C|SYSCALL 7 poll count=1760 pct=66.5
+[  attr_C|SYSCALL running running count=455 pct=17.2
+[  attr_C|SYSCALL 202 futex count=216 pct=8.2
+[    56.657attr_C|SYSCALL 46 sendmsg count=142 pct=5.4
+attr_C|SYSCALL 435 clone3 count=19 pct=0.7
+[    56.711attr_C|SYSCALL 9 mmap count=9 pct=0.3
+[    56.776] WARN  : attr_C|SYSCALL 21 access count=4 pct=0.2
+[    56.817] attr_C|SYSCALL 47 recvmsg count=3 pct=0.1

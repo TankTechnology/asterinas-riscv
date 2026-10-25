@@ -1,0 +1,28 @@
+[    25.337] attr_A|delta user_ticks=2193 sys_ticks=20406 sys_user_ratio=9.31 minflt=65342 majflt=29
+[attr_A|SYSCALL 7 poll count=1555 pct=54.4
+[    25.410attr_A|SYSCALL 202 futex count=493 pct=17.2
+[   attr_A|SYSCALL 46 sendmsg count=146 pct=5.1
+attr_A|SYSCALL 0 read count=43 pct=1.5
+[    25attr_A|SYSCALL 435 clone3 count=22 pct=0.8
+[    25.526]attr_A|SYSCALL 10 mprotect count=16 pct=0.6
+[    25.573]attr_A|SYSCALL 9 mmap count=10 pct=0.3
+[  attr_A|SYSCALL 257 openat count=8 pct=0.3
+[    25.614] WARN  : unsupported flags: attr_A|SYSCALL 21 access count=5 pct=0.2
+[    42.426] WARN  : unsupported flags: MSG_DONTWAITattr_B|samples=2815 duration=20.00s interval=0.02s pids=5
+[    42.457] WARN  : unsupported flags: attr_B|delta user_ticks=2551 sys_ticks=18777 sys_user_ratio=7.36 minflt=52724 majflt=0
+[    42.500attr_B|SYSCALL 7 poll count=1877 pct=66.7
+attr_B|SYSCALL running running count=400 pct=14.2
+[    attr_B|SYSCALL 202 futex count=251 pct=8.9
+attr_B|SYSCALL 435 clone3 count=21 pct=0.7
+attr_B|SYSCALL 10 mprotect count=12 pct=0.4
+attr_B|SYSCALL 257 openat count=5 pct=0.2
+[    42.841attr_B|SYSCALL 47 recvmsg count=4 pct=0.1
+[    58.736attr_C|samples=3421 duration=20.02s interval=0.02s pids=6
+attr_C|delta user_ticks=2609 sys_ticks=21336 sys_user_ratio=8.18 minflt=47970 majflt=0
+[  attr_C|SYSCALL 7 poll count=1952 pct=57.1
+[    58.789] WARN  : attr_C|SYSCALL 202 futex count=703 pct=20.5
+[    58attr_C|SYSCALL 46 sendmsg count=199 pct=5.8
+[    58.attr_C|SYSCALL 10 mprotect count=11 pct=0.3
+attr_C|SYSCALL 9 mmap count=6 pct=0.2
+attr_C|SYSCALL 21 access count=3 pct=0.1
+[    59.036] WARN  : unsupported flags: MSG_DONTWAITattr_C|SYSCALL 257 openat count=3 pct=0.1
