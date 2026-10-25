@@ -1,0 +1,45 @@
+# 30-round memory stress: guest console excerpt (target/stress/console.txt)
+
+## boot-to-login (kernel timestamps)
+[     3.305] WARN  : unsupported flags: MSG_DONTWAIT | MSG_CMSG_CLOEXEC
+[     3.306] WARN  : unsupported flags: MSG_DONTWAIT | MSG_CMSG_CLOEXEC
+[     3.308] WARN  : unsupported flags: MSG_DONTWAIT | MSG_CMSG_CLOEXEC
+[     3.309] WARN  : unsupported flags: MSG_DONTWAIT | MSG_CMSG_CLOEXEC
+
+Debian GNU/Linux 13 thinkpad ttyS0
+
+thinkpad login: asterinas
+[     4.305] WARN  : Unimplemented syscall number: 334
+Password: asterinas
+
+
+## selected /tmp/stress.log lines
+baseline_memavailable_kb=3975440
+t=10min memavail=3956440 caches=
+t=20min memavail=3944952 caches=
+t=30min memavail=3935664 caches=
+
+## first three errors
+round=1 gcc_rc=127 err=sh: 1: gcc: not found
+round=2 gcc_rc=127 err=sh: 1: gcc: not found
+round=3 gcc_rc=127 err=sh: 1: gcc: not found
+
+## dmesg scan
+dmesg_count[Uncaught panic]=0
+dmesg_count[oom-killer]=0
+dmesg_count[Out of memory]=0
+dmesg_count[allocation failed]=0
+
+## gate result
+DAILY_CLIENT user=True pass=True command=True usb=False suspend=False done=True
+FAIL (no result for: DESKTOP, APP, APT, CLIPBOARD, INPUT_METHOD, AUDIO, USB, SUSPEND)
+make: *** [Makefile:932: test_x86_daily_use] Error 1
+GATE_EXIT=2
+
+## final summary (after the stress.log end marker)
+stress_failures python3=0/30 gcc=30/30
+baseline_memavailable_kb=3975440 last_memavailable_kb=3936352
+
+## guest uptime at the final block
+[   480.205] WARN  : Unimplemented syscall number: 334
+[   480.224] WARN  : Unimplemented syscall number: 334

@@ -207,7 +207,7 @@ done
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 BOOT_SCRIPT="$REPO_ROOT/tools/x86/debian/boot_debian.sh"
-CHECKLIST="$REPO_ROOT/tools/x86/debian/daily_use_checklist.sh"
+CHECKLIST="${DAILY_USE_CHECKLIST:-$REPO_ROOT/tools/x86/debian/daily_use_checklist.sh}"
 POPCON_SCRIPT="$REPO_ROOT/tools/x86/debian/popcon_packages.sh"
 SYSTEMD_HEALTH_SCRIPT="$REPO_ROOT/tools/x86/debian/systemd_health.sh"
 LTP_SCRIPT="$REPO_ROOT/tools/x86/debian/ltp_subset.sh"
