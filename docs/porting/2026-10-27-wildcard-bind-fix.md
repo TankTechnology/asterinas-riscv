@@ -1,7 +1,8 @@
 # 通配 bind 修复：失败用例已复现；内核修复需要新抽象，停在设计阶段等批准
 
 日期：2026-10-27
-内核：`e74d914e8`（本轮未改内核代码，`target/osdk/asterinas-osdk-bin.elf` 未重建）
+内核基线：`e74d914e8`（**通配 bind 部分内核零改动**；同轮的可选任务 D 单独改了
+`/proc/net/tcp6|udp6` 表头，见 `2026-10-27-procnet-header.md`）
 任务书：`/tmp/tp/WILDCARD_BIND.md`
 **一句话：任务 A（失败用例 + 可复跑脚本）完成并已复现；任务 B 按任务书红线停手——
 正确修复必须给 aster-bigtcp 增加「一个 socket 绑定多个 iface」的新抽象，先出设计等批准。**
