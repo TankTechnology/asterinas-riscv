@@ -1,0 +1,6 @@
+PROBE phase_available=1
+PROBE before_t0=calls=1 p1=0 p2=0 p3=10869 p4=5456 p5=0 p6=0 total=16325 span=0 discard=0
+PROBE after_t0=calls=200 p1=43 p2=2033 p3=12170 p4=5337 p5=1335 p6=267 total=21185 span=70921 discard=70611
+PROBE before_t2048=calls=200 p1=43 p2=2033 p3=12227 p4=5342 p5=1335 p6=267 total=21247 span=70921 discard=70611
+PROBE after_t2048=calls=400 p1=65 p2=3002 p3=20318 p4=5463 p5=1397 p6=398 total=30643 span=400442 discard=399979
+PROBE probe_done=1
