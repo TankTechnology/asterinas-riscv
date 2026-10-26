@@ -89,11 +89,33 @@ fn cow_copy_pt(src: &mut CursorMut<'_>, dst: &mut CursorMut<'_>, size: usize) ->
         *flags -= PageFlags::W;
     };
 
-    while let Some(mapped_va) = src.find_next(remain_size) {
-        let (va, Some(item)) = src.query().unwrap() else {
+    let mut first = true;
+    loop {
+        // The previous iteration left the cursor exactly one page further, so
+        // in the common contiguous case the next entry is already under the
+        // cursor and searching for it again is wasted work. Only fall back to
+        // a search when the slot is empty (a hole in the mapping).
+        let (range, item) = if first {
+            first = false;
+            let Some(_) = src.find_next(remain_size) else {
+                break;
+            };
+            src.query().unwrap()
+        } else {
+            match src.query() {
+                Ok((range, Some(item))) => (range, Some(item)),
+                _ => {
+                    let Some(_) = src.find_next(end_va - src.virt_addr()) else {
+                        break;
+                    };
+                    src.query().unwrap()
+                }
+            }
+        };
+        let Some(item) = item else {
             panic!("Found mapped page but query failed");
         };
-        debug_assert_eq!(mapped_va, va.start);
+        let mapped_va = range.start;
 
         match item {
             VmQueriedItem::MappedRam { frame, mut prop } => {

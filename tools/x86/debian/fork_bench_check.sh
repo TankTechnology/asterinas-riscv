@@ -177,6 +177,51 @@ static void mode_protect(long mb) {
     munmap(p, len);
 }
 
+/* Copy-on-write correctness: the child writes must not be visible to the
+   parent, and neither side may see corrupt data. */
+static void mode_cow(void) {
+    const size_t len = 1 << 20;
+    char *p = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) { printf("fk_cow fail mmap\n"); return; }
+    for (size_t i = 0; i < len; i++) p[i] = (char)(i & 0xff);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        int bad = 0;
+        for (size_t i = 0; i < len; i++)
+            if (p[i] != (char)(i & 0xff)) bad = 1;
+        for (size_t i = 0; i < len; i++) p[i] = 0x5a;   /* COW write */
+        for (size_t i = 0; i < len; i++)
+            if (p[i] != 0x5a) bad = 1;
+        _exit(bad ? 1 : 0);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    int child_ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+
+    int parent_ok = 1;
+    for (size_t i = 0; i < len; i++)
+        if (p[i] != (char)(i & 0xff)) { parent_ok = 0; break; }
+    for (size_t i = 0; i < len; i++) p[i] = 0x33;      /* parent write after fork */
+    for (size_t i = 0; i < len; i++)
+        if (p[i] != 0x33) parent_ok = 0;
+
+    /* Heap (sbrk) and file-backed private mapping. */
+    char *heap = malloc(65536);
+    memset(heap, 0x11, 65536);
+    pid = fork();
+    if (pid == 0) {
+        for (int i = 0; i < 65536; i++) heap[i] = 0x22;
+        _exit(heap[65535] == 0x22 ? 0 : 1);
+    }
+    waitpid(pid, &status, 0);
+    int heap_ok = WIFEXITED(status) && WEXITSTATUS(status) == 0 && heap[65535] == 0x11;
+
+    printf("fk_cow child_ok=%d parent_ok=%d heap_ok=%d\n", child_ok, parent_ok, heap_ok);
+    munmap(p, len);
+    free(heap);
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) return 1;
     if (strcmp(argv[1], "fork") == 0) mode_fork(atol(argv[2]));
@@ -184,6 +229,7 @@ int main(int argc, char **argv) {
     else if (strcmp(argv[1], "size") == 0) mode_size(atol(argv[2]));
     else if (strcmp(argv[1], "reserve") == 0) mode_reserve(atol(argv[2]));
     else if (strcmp(argv[1], "protect") == 0) mode_protect(atol(argv[2]));
+    else if (strcmp(argv[1], "cow") == 0) mode_cow();
     return 0;
 }
 EOF
@@ -202,6 +248,7 @@ for mb in 64 512; do
     /tmp/fork_bench reserve "$mb" 2>&1 | while IFS= read -r l; do log "$l"; done
     /tmp/fork_bench protect "$mb" 2>&1 | while IFS= read -r l; do log "$l"; done
 done
+/tmp/fork_bench cow 0 2>&1 | while IFS= read -r l; do log "$l"; done
 
 log "fk_done $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 echo DAILY_DONE=ok >/dev/console

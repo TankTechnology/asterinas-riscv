@@ -1,0 +1,8 @@
+# kernel built from the contiguous fast path in cow_copy_pt, image ff-lag
+fk_fork n=10000 wall_ns_op=3650301 clone_cpu_ns_op=1580704 clone_count=10000
+fk_size mb=64 wall_ns_fork=28883195 clone_cpu_ns=28805062
+fk_size mb=256 wall_ns_fork=101647882 clone_cpu_ns=101550291
+fk_size mb=512 wall_ns_fork=204697707 clone_cpu_ns=204602048
+fk_reserve mb=64 wall_ns_fork=1617350 clone_cpu_ns=1558638
+fk_reserve mb=512 wall_ns_fork=1624123 clone_cpu_ns=1548594
+fk_cow child_ok=1 parent_ok=1 heap_ok=1

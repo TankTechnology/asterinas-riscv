@@ -1,0 +1,4 @@
+# rdtsc instrumentation of cow_copy_pt on a 512 MB fork (temporary, removed)
+# avg ns/page over ~4.4M pages:
+find=433 query=290 protect=304 map=510 pages=4377516
+# total measured fork: 249.4 ms (instrumentation adds overhead)
