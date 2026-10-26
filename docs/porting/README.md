@@ -22,6 +22,32 @@
 随后完成一次 `qualified=true` 的 daily-use profile（7/7 功能组，`recovered=true`）。
 这证明的是**合并的集成线仍可部署与启动**，不是新的性能结论。
 
+## x86 Debian 兼容线（2026-10-27）
+
+> 本页主体是 RISC-V/Megrez；本节只是 x86 Debian 线的状态入口，完整数字与证据见
+> [x86 Debian 可用性报告](2026-10-27-x86-debian-usability-report.md)。
+
+| 级别 | 状态 | 关键数字 |
+|---|---|---|
+| L1 包生态 | ✅ | 安装 50/50；smoke 31/50 |
+| L1b 新装 40 包 | ✅ | 安装 40/40；smoke 38/40 |
+| L2 systemd 健康 | ✅ | running；失败 unit 0/156；启动 3.416 s |
+| L3 syscall 一致性 | ✅ | LTP 34 pass / 6 fail / 0 skip |
+| **L4 源码包构建** | ✅ **3/3** | 3 ok / 0 fail，23 个 `.deb`（`17f5f904c` 复核）。早期「2/3」是 gnulib `geteuid()==0` root 守卫的**假阴性**，不是内核缺陷（见报告 §4） |
+| L5 从零 rootfs | ✅ | stages=3 ok=3 |
+| L6 跨版本升级 | ✅ | rc=0；341/341；allocation failed 0 |
+
+日常矩阵：DESKTOP / APP / APT / CLIPBOARD / AUDIO / USB / SUSPEND 全 ok
+（内核 `4a5f18528`，panic 0、allocation failed 0）。
+
+今夜落地的 5 项修复（数字与 `文件:行号` 见报告 §3）：
+
+1. 页缓存顺序预读 `f8091faef` —— 冷读 **132.53 → 29.74 µs/页**（−77.6%）
+2. `/proc` 时间单位 `0afe3b2ee` —— utime/stime 曾放大 **10×**
+3. VmSize 单位 `ac4e536d3` —— **466 GB → 445 MiB**
+4. `/proc/net/tcp6|udp6` 表头 `6d06f9ab2` —— `lsof` 告警 **2 → 0**
+5. `PTRACE_ATTACH/DETACH` `4a5f18528` —— **`strace -p` 可用**
+
 ## 最后真机边界
 
 - 冻结的 kernel（`8c470f09`）、Stage1（`9bcf5f7b`）与 Megrez DTB（`465cb129`）
