@@ -1,0 +1,21 @@
+L4S conftest_build=ok
+L4S conftest_root rc=99 euid=0
+L4S conftest_user uid=1000 rc=0
+L4S fifo_stat prw------- 1 asterinas asterinas 0 Oct 26 16:25 conftest.fifo
+L4S source=ok Fetched 6189 kB in 6s (974 kB/s)
+L4S configure_rc=1
+L4S cfg 791:checking whether mknod can create fifo without root privileges... configure: error: in '/tmp/coreutils-9.7':
+L4S cfg 792-configure: error: you should not run configure as root (set FORCE_UNSAFE_CONFIGURE=1 in environment to bypass this check)
+L4S cfg 793-See 'config.log' for more details
+L4S deb=3024912 /var/tmp/dpkg-artifacts/coreutils_9.7-3_amd64.deb
+L4S dpkg=ok Processing triggers for man-db (2.13.1-1) ...
+L4S ls_version=ls (GNU coreutils) 9.7
+L4S owned=coreutils: /usr/bin/ls
+L4S ls_rc=0 ls_lines=2 a.txt,b.txt,
+L4S cp_rc=0 err=
+L4S mv_rc=0 old_gone=yes new_present=yes err=
+L4S du 4096	/tmp/l4s/big.bin
+L4S df Filesystem     1K-blocks  Used Available Use% Mounted on
+L4S df tmpfs            2084824     0   2084824   0% /tmp
+DAILY_L4S=ok coreutils-deb-installed
+DAILY_DONE=ok

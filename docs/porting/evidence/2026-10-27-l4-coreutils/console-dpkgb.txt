@@ -1,0 +1,13 @@
+# Current-kernel coreutils build: console DPKGB lines (HEAD 86cf3f5d0, gate 2026-10-27)
+DPKGB pkg=1 start name=coreutils
+DPKGB pkg=1 disk_free_kb=2084824 attempt=1
+DPKGB pkg=1 stage=builddeps rc=0 dur=295.18 attempt=1
+DPKGB pkg=1 stage=source rc=0 dur=10.77 attempt=1
+DPKGB pkg=1 stage=build rc=0 dur=417.51 attempt=1
+DPKGB pkg=1 artifact=coreutils-dbgsym_9.7-3_amd64.deb
+DPKGB pkg=1 artifact=coreutils_9.7-3_amd64.deb
+DPKGB pkg=1 done name=coreutils result=ok attempts=1 dur=733.70
+DPKGB summary total=1 ok=1 fail=0
+DPKGB_DONE
+
+# gate_rc=0 (see /tmp/l4-close.log tail)

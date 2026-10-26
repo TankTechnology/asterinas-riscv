@@ -1,0 +1,21 @@
+# gnulib m4/mknod.m4 (serial 8) root guard — the exact test that prints the line
+# Local copy: /tmp/mknod.m4, fetched 2026-10-26
+             #endif
+]], [[/* Indeterminate for super-user, assume no.  Why are you running
+         configure as root, anyway?  */
+      if (geteuid () == ROOT_UID) return 99;
+      if (mknod ("conftest.fifo", S_IFIFO | 0600, 0)) return 2;]])],
+         [gl_cv_func_mknod_works=yes],
+         [if test $? = 99 && test x"$FORCE_UNSAFE_CONFIGURE" = x; then
+            AC_MSG_FAILURE([you should not run configure as root ]dnl
+[(set FORCE_UNSAFE_CONFIGURE=1 in environment to bypass this check)])
+          fi
+
+# The same conftest compiled and run on the host Linux (ext4), 2026-10-27:
+## run as uid 1000 (normal user)
+$ ./conftest; echo rc=$?
+rc=0        <- mknod(S_IFIFO) succeeded, configure would cache "yes"
+## run with euid 0 (user namespace root, unshare -r)
+$ unshare -r ./conftest; echo rc=$?
+rc=99       <- returns before mknod() is ever called
+             configure: AC_MSG_FAILURE unless FORCE_UNSAFE_CONFIGURE is set

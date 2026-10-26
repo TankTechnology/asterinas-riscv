@@ -1,0 +1,198 @@
+# mknod S_IFIFO permission chain on the live tree (kernel/core), HEAD 86cf3f5d0
+
+## 1. syscall entry (x86_64)
+312:    SYS_MKNOD = 133            => sys_mknod(args[..3]);
+377:    SYS_MKNODAT = 259          => sys_mknodat(args[..4]);
+
+## 2. sys_mknodat: mode -> InodeType, then per-type creation
+    let inode_mode = {
+        let mask_mode = mode & !fs_ref.umask().get();
+        InodeMode::from_bits_truncate(mask_mode)
+    };
+    let inode_type = InodeType::from_raw_mode(mode)?;
+    debug!(
+        "dirfd = {}, path = {:?}, inode_mode = {:?}, inode_type = {:?}, dev = {}",
+        dirfd, path_name, inode_mode, inode_type, dev
+    );
+    match inode_type {
+        InodeType::File => {
+            let _ = dir_path.new_child(&name, InodeType::File, inode_mode)?;
+        }
+        InodeType::CharDevice => {
+            let _ = dir_path.mknod(&name, inode_mode, MknodType::CharDevice(dev as u64))?;
+        }
+        InodeType::BlockDevice => {
+            let _ = dir_path.mknod(&name, inode_mode, MknodType::BlockDevice(dev as u64))?;
+        }
+        InodeType::NamedPipe => {
+            let _ = dir_path.mknod(&name, inode_mode, MknodType::NamedPipe)?;
+        }
+        InodeType::Socket => {
+            let _ = dir_path.new_child(&name, InodeType::Socket, inode_mode)?;
+        }
+        _ => return_errno_with_message!(Errno::EPERM, "unimplemented file types"),
+    }
+
+## 3. S_IFIFO (0o010000) is InodeType::NamedPipe
+pub enum InodeType {
+    Unknown = 0o000000,
+    NamedPipe = 0o010000,
+    CharDevice = 0o020000,
+    Dir = 0o040000,
+    BlockDevice = 0o060000,
+    File = 0o100000,
+    SymLink = 0o120000,
+    Socket = 0o140000,
+}
+
+    /// Parse the inode type in the `mode` from syscall, and convert it into `InodeType`.
+    pub(crate) fn from_raw_mode(mut mode: u16) -> Result<Self> {
+        const TYPE_MASK: u16 = 0o170000;
+        mode &= TYPE_MASK;
+
+        // Special case
+        if mode == 0 {
+            return Ok(Self::File);
+        }
+        Self::try_from(mode & TYPE_MASK)
+            .map_err(|_| Error::with_message(Errno::EINVAL, "invalid file type"))
+    }
+
+## 4. parent-directory permission (ordinary POSIX write+exec, not root)
+
+    /// Creates a `Path` by making an inode of the `type_` with the `mode`.
+    pub(crate) fn mknod(&self, name: &str, mode: InodeMode, type_: MknodType) -> Result<Self> {
+        let dir_dentry = self.dentry.as_dir_dentry_or_err()?;
+        self.check_dir_entry_mutation()?;
+        let inner = dir_dentry.mknod(name, mode, type_)?;
+        Ok(Self::new(self.mount.clone(), inner))
+    }
+
+    fn check_dir_entry_mutation(&self) -> Result<()> {
+        self.check_mount_writable()?;
+        self.inode()
+            .check_permission(Permission::MAY_WRITE | Permission::MAY_EXEC)
+    }
+
+## 5. capability check: CharDevice/BlockDevice only; NamedPipe returns early
+    pub(in crate::fs) fn mknod(
+        &self,
+        name: &str,
+        mode: InodeMode,
+        type_: MknodType,
+    ) -> Result<Arc<Dentry>> {
+        let children = self.validate_child_absent(name)?;
+        Self::check_mknod_capability(&type_)?;
+        let inode = self.inode.mknod(self, name, mode, type_)?;
+        let new_child = Dentry::new(
+            inode,
+            DentryOptions::Named((String::from(name), self.this())),
+        );
+        let mut children = children.upgrade();
+
+        Ok(self.insert_positive_child(&mut children, name, new_child))
+    }
+
+    fn check_mknod_capability(type_: &MknodType) -> Result<()> {
+        if !matches!(type_, MknodType::CharDevice(_) | MknodType::BlockDevice(_)) {
+            return Ok(());
+        }
+
+        let current_thread = current_thread!();
+        let Some(posix_thread) = current_thread.as_posix_thread() else {
+            return Ok(());
+        };
+
+        lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
+            UserNamespace::get_init_singleton().as_ref(),
+            posix_thread,
+            CapSet::MKNOD,
+        ))
+    }
+
+## 6. CAP_MKNOD bit and its LSM enforcement
+38:        const MKNOD = 1 << 27;
+    fn on_capable(&self, context: &CapableContext) -> Result<()> {
+        // Since creating new user namespaces is not supported at the moment,
+        // there is effectively only one user namespace in the entire system.
+        // Therefore, the thread has a single set of capabilities used for permission checks.
+        // FIXME: Once support for creating new user namespaces is added,
+        // we should verify the thread's capabilities within the relevant user namespace.
+        if context
+            .posix_thread()
+            .credentials()
+            .effective_capset()
+            .contains(context.required_cap())
+        {
+            return Ok(());
+        }
+
+        return_errno_with_message!(
+            Errno::EPERM,
+            "the thread does not have the required capability"
+        );
+    }
+}
+
+
+## 7. filesystem backends used by the build (ext2 root, ramfs tmpfs)
+    fn mknod(
+        &self,
+        _self_dentry: &Dentry,
+        name: &str,
+        mode: InodeMode,
+        type_: MknodType,
+    ) -> Result<Arc<dyn Inode>> {
+        let (inode_type, device_id) = match type_ {
+            MknodType::CharDevice(dev_id) => (InodeType::CharDevice, Some(dev_id)),
+            MknodType::BlockDevice(dev_id) => (InodeType::BlockDevice, Some(dev_id)),
+            MknodType::NamedPipe => (InodeType::NamedPipe, None),
+        };
+
+        let new_inode = self.create(name, inode_type, mode.into())?;
+        if let Some(device_id) = device_id {
+            // Store the ext2 special-file device encoding in `i_block`.
+            new_inode.set_device_id(device_id)?;
+        }
+
+        Ok(new_inode)
+
+    fn mknod_impl(
+        &self,
+        name: &str,
+        mode: InodeMode,
+        type_: MknodType,
+        to_be_revalidated: ToBeRevalidated,
+    ) -> Result<Arc<dyn Inode>> {
+        if name.len() > NAME_MAX {
+            return_errno!(Errno::ENAMETOOLONG);
+        }
+        if self.typ != InodeType::Dir {
+            return_errno_with_message!(Errno::ENOTDIR, "self is not dir");
+        }
+
+        let self_dir = self.inner.as_direntry().unwrap().upread();
+        if self_dir.contains_entry(name) {
+            return_errno_with_message!(Errno::EEXIST, "entry exists");
+        }
+
+        let (uid, gid) = utils::current_fs_ids();
+        let new_inode = match type_ {
+            MknodType::CharDevice(dev_id) | MknodType::BlockDevice(dev_id) => {
+                let dev_type = type_.device_type().unwrap();
+                RamInode::new_device(
+                    &self.fs.upgrade().unwrap(),
+                    mode,
+                    uid,
+                    gid,
+                    dev_type,
+                    dev_id,
+                    to_be_revalidated,
+                )
+            }
+            MknodType::NamedPipe => RamInode::new_named_pipe(
+                &self.fs.upgrade().unwrap(),
+                mode,
+                uid,
+                gid,
+                to_be_revalidated,

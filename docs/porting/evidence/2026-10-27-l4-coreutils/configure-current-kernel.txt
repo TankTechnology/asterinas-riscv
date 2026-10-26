@@ -1,0 +1,26 @@
+# guest /var/tmp/dpkg-logs/pkg1-build.log (built on HEAD 86cf3f5d0), configure excerpt
+# the required raw line is 822; configure completes at line 1137 -> the 'no' does not stop it
+     1 checking for memrchr... yes
+     2 checking for memset_explicit... no
+     3 checking for explicit_memset... no
+     4 checking whether mkdir handles trailing slash... yes
+     5 checking whether mkdir handles trailing dot... yes
+     6 checking for mkfifo... yes
+     7 checking whether mkfifo rejects trailing slashes... yes
+     8 checking for mknodat... yes
+     9 checking for mkfifoat... yes
+    10 checking whether mkfifoat rejects trailing slashes... yes
+    11 checking whether mknod can create fifo without root privileges... no
+    12 checking for mkostemp... yes
+    13 checking for working mkstemp... yes
+    14 checking for __mktime_internal... no
+    15 checking for listmntent... no
+    16 checking for sys/ucred.h... no
+    17 checking for sys/mount.h... (cached) yes
+    18 checking for mntent.h... yes
+    19 checking for sys/fs_types.h... (cached) no
+
+1137:config.status: creating Makefile
+7202:dpkg-deb: building package 'coreutils' in '../coreutils_9.7-3_amd64.deb'.
+7203:dpkg-deb: building package 'coreutils-dbgsym' in '../coreutils-dbgsym_9.7-3_amd64.deb'.
+dpkg-buildpackage: info: binary-only upload (no source included)

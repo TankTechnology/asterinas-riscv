@@ -241,6 +241,13 @@ guest 内的日志在 `/var/tmp/dpkg-logs/`，产物在 `/var/tmp/dpkg-artifacts
   （补 `AT_EXECFN`）与
   [`2026-10-25-l4-mknodat.md`](2026-10-25-l4-mknodat.md)
   （root 构建环境设 `FORCE_UNSAFE_CONFIGURE=1`）。
+- **回归确认（2026-10-27，内核 `86cf3f5d0`）**：三包全量**单次运行**
+  **3 ok / 0 fail**，共 23 个 `.deb`，panic=0（hello 274.31 s、coreutils
+  572.36 s、python3-minimal 370.86 s）。coreutils 日志里的
+  `checking whether mknod can create fifo without root privileges... no`
+  是 gnulib 在 `geteuid()==0` 时先 `return 99` 的结果，与 Linux 以 root 构建一致，
+  不是 mknod 语义问题；权限链审计见
+  [`2026-10-27-l4-coreutils-closure.md`](2026-10-27-l4-coreutils-closure.md)。
 - **历史基线（保留）**：2026-10-24 为 **2 ok / 1 fail**，`coreutils` 在
   `debian/rules clean` 被 signal 11；下方逐包表格与日志引用记录的是那一轮。
 - **判定规则**：后续运行若任一包不再产出 `.deb`，即视为退化；若内核修好了

@@ -1,0 +1,42 @@
+# Full L4 run on HEAD 86cf3f5d0 (2026-10-27): all three source packages
+DPKGB pkg=1 start name=hello
+DPKGB pkg=1 stage=builddeps rc=0 dur=183.40 attempt=1
+DPKGB pkg=1 stage=source rc=0 dur=5.04 attempt=1
+DPKGB pkg=1 stage=build rc=0 dur=84.44 attempt=1
+DPKGB pkg=1 artifact=hello-dbgsym_2.10-5_amd64.deb
+DPKGB pkg=1 artifact=hello_2.10-5_amd64.deb
+DPKGB pkg=1 done name=hello result=ok attempts=1 dur=274.31
+DPKGB pkg=2 start name=coreutils
+DPKGB pkg=2 stage=builddeps rc=0 dur=125.35 attempt=1
+DPKGB pkg=2 stage=source rc=0 dur=10.10 attempt=1
+DPKGB pkg=2 stage=build rc=0 dur=424.44 attempt=1
+DPKGB pkg=2 artifact=coreutils-dbgsym_9.7-3_amd64.deb
+DPKGB pkg=2 artifact=coreutils_9.7-3_amd64.deb
+DPKGB pkg=2 done name=coreutils result=ok attempts=1 dur=572.36
+DPKGB pkg=3 start name=python3-minimal
+DPKGB pkg=3 stage=builddeps rc=0 dur=334.52 attempt=1
+DPKGB pkg=3 stage=source rc=0 dur=5.18 attempt=1
+DPKGB pkg=3 stage=build rc=0 dur=27.18 attempt=1
+DPKGB pkg=3 artifact=idle_3.13.5-1_all.deb
+DPKGB pkg=3 artifact=libpython3-all-dbg_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=libpython3-all-dev_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=libpython3-dbg_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=libpython3-dev_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=libpython3-stdlib_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=python3-all-dbg_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=python3-all-dev_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=python3-all-venv_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=python3-all_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=python3-dbg_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=python3-dev_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=python3-doc_3.13.5-1_all.deb
+DPKGB pkg=3 artifact=python3-examples_3.13.5-1_all.deb
+DPKGB pkg=3 artifact=python3-full_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=python3-minimal_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=python3-nopie_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=python3-venv_3.13.5-1_amd64.deb
+DPKGB pkg=3 artifact=python3_3.13.5-1_amd64.deb
+DPKGB pkg=3 done name=python3-minimal result=ok attempts=1 dur=370.86
+DPKGB summary total=3 ok=3 fail=0
+DPKGB_DONE
+# panic lines: 0
