@@ -1,0 +1,6 @@
+PROBE available=1
+PROBE b0=L1: absent=654770 pt_nonzero=0 pt_zero=0 L2: absent=146663 pt_nonzero=2169 pt_zero=149 L3: absent=147168 pt_nonzero=288 pt_zero=0 L4: absent=73152 pt_nonzero=288 pt_zero=0 
+PROBE a0=L1: absent=841934 pt_nonzero=0 pt_zero=0 L2: absent=151332 pt_nonzero=2586 pt_zero=149 L3: absent=150234 pt_nonzero=294 pt_zero=0 L4: absent=74676 pt_nonzero=294 pt_zero=0 
+PROBE b2048=L1: absent=848195 pt_nonzero=0 pt_zero=0 L2: absent=154401 pt_nonzero=2603 pt_zero=149 L3: absent=153300 pt_nonzero=300 pt_zero=0 L4: absent=76200 pt_nonzero=300 pt_zero=0 
+PROBE a2048=L1: absent=943947 pt_nonzero=0 pt_zero=0 L2: absent=157615 pt_nonzero=3218 pt_zero=349 L3: absent=156366 pt_nonzero=306 pt_zero=0 L4: absent=77724 pt_nonzero=306 pt_zero=0 
+PROBE probe_done=1
