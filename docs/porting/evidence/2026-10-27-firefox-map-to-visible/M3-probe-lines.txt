@@ -1,0 +1,36 @@
+PROBE stage=env
+PROBE ticks_per_sec=100
+PROBE nproc=4
+PROBE stage=launch
+PROBE sys_on_rc=0
+PROBE t0_ns=1793010506784073745
+PROBE map_ms=7292
+PROBE window=2097195
+PROBE PROBE s1 delta_ticks=828 procs=1 ready=0
+PROBE PROBE s2 delta_ticks=804 procs=1 ready=1
+PROBE PROBE s3 delta_ticks=921 procs=1 ready=1
+PROBE PROBE s4 delta_ticks=873 procs=1 ready=1
+PROBE PROBE s5 delta_ticks=1305 procs=2 ready=1
+PROBE PROBE s6 delta_ticks=758 procs=1 ready=1
+PROBE PROBE s7 delta_ticks=1574 procs=1 ready=1
+PROBE PROBE s8 delta_ticks=991 procs=1 ready=1
+PROBE PROBE s9 delta_ticks=911 procs=1 ready=1
+PROBE PROBE s10 delta_ticks=997 procs=1 ready=1
+PROBE PROBE s11 delta_ticks=356 procs=1 ready=1
+PROBE PROBE s12 delta_ticks=130 procs=1 ready=1
+PROBE PROBE s13 delta_ticks=191 procs=1 ready=1
+PROBE PROBE s14 delta_ticks=178 procs=1 ready=1
+PROBE PROBE s15 delta_ticks=27 procs=1 ready=1
+PROBE PROBE s16 delta_ticks=18 procs=1 ready=1
+PROBE ready_ms=8746
+PROBE sys_top8=0:24117:6967741124|56:517:3868750114|257:20785:1268858775|7:54884:1189780878|59:803:1133342582|9:20009:853713785|202:53568:604331979|231:586:592077388|
+PROBE sys_read=count=24117 cpu_ns=6967741124 avg=288914
+PROBE sys_poll=count=54884 cpu_ns=1189780878 avg=21678
+PROBE sys_futex=count=53568 cpu_ns=604331979 avg=11281
+PROBE sys_mmap=count=20009 cpu_ns=853713785 avg=42666
+PROBE sys_clone=count=517 cpu_ns=3868750114 avg=7483075
+PROBE sys_sendmsg=count=5084 cpu_ns=193552689 avg=38070
+PROBE sys_recvmsg=count=60968 cpu_ns=489097738 avg=8022
+PROBE stage=cleanup
+PROBE probe_total_ms=19903
+PROBE probe_done=1
