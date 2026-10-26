@@ -1,0 +1,39 @@
+PROBE stage=env
+PROBE nproc=4
+PROBE cpu_mhz=2188.800
+PROBE page_bytes=27918
+PROBE stage=preload_build
+PROBE mark_build_rc=0
+PROBE mark_so_bytes=15760
+PROBE stage=primitives
+PROBE true_ms_1=18
+PROBE true_ms_2=21
+PROBE true_ms_3=16
+PROBE true_ms_4=15
+PROBE true_ms_5=15
+PROBE stage=ld_stats
+PROBE lds_true=       213:	  total startup time in dynamic loader: 275660 cycles|       213:	            time needed for relocation: 6146 cycles (2.2%)|
+PROBE lds_ff=       220:	  total startup time in dynamic loader: 281879 cycles|       220:	            time needed for relocation: 12232 cycles (4.3%)|       220:	  total startup time in dynamic loader: 1083057 cycles|       220:	            time needed for relocation: 201222 cycles (18.5%)|
+PROBE stage=marked_cold_start
+PROBE t0_launch_ns=1793006225669484573
+PROBE t3_window_ns=1793006231388004786
+PROBE mark_window_polls=17
+PROBE mark_total_ms=5718
+PROBE segs=rel_ms t1_ctor 11.2|rel_ms dlopen_libxul_enter 56.5|rel_ms dlopen_libxul_exit 163.4|dur_ms dlopen_libxul 106.9|rel_ms xopen_enter 220.5|dur_ms xopen 1.6|rel_ms xmap_enter 1033.6|dur_ms xmap_first 0.0|n_dlopen 112|rel_ms_last 8662.1|
+PROBE stage=clean_cold_start
+PROBE clean_total_ms=4466
+PROBE clean_polls=12
+PROBE stage=syscall_cost
+PROBE sys_on_rc=0
+PROBE ctrl_execve=2 2049098
+PROBE ctrl_mmap=61 647966
+PROBE ctrl_read=15 97765
+PROBE sys_execve=count=43 cpu_ns=36155831 avg_ns=840833
+PROBE sys_mmap=count=3740 cpu_ns=221655424 avg_ns=59266
+PROBE sys_openat=count=2459 cpu_ns=133028990 avg_ns=54098
+PROBE sys_read=count=5710 cpu_ns=3188111623 avg_ns=558338
+PROBE sys_poll=count=18652 cpu_ns=418712148 avg_ns=22448
+PROBE sys_top6=0 5710 3205977971 17866347 3188111623 558338|56 15 847224965 0 847224965 56481664|7 18652 16779083545 16360371397 418712148 22448|202 19017 173558261946 173321820694 236441251 12433|9 3740 333747870 112092445 221655424 59266|16 724 211270423 0 211270423 291809|
+PROBE stage=cleanup
+PROBE probe_total_ms=45929
+PROBE probe_done=1

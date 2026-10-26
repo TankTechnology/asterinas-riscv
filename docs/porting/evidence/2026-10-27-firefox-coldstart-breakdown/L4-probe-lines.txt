@@ -1,0 +1,48 @@
+PROBE stage=env
+PROBE nproc=4
+PROBE cpu_mhz=2188.800
+PROBE page_bytes=27918
+PROBE stage=preload_build
+PROBE mark_build_rc=0
+PROBE mark_so_bytes=15760
+PROBE stage=primitives
+PROBE true_ms_1=2
+PROBE true_ms_2=1
+PROBE true_ms_3=1
+PROBE true_ms_4=1
+PROBE true_ms_5=1
+PROBE stage=ld_stats
+PROBE lds_true=       453:	  total startup time in dynamic loader: 44056 cycles|       453:	            time needed for relocation: 2150 cycles (4.8%)|
+PROBE lds_ff=       460:	  total startup time in dynamic loader: 48636 cycles|       460:	            time needed for relocation: 4242 cycles (8.7%)|       460:	  total startup time in dynamic loader: 161628 cycles|       460:	            time needed for relocation: 83861 cycles (51.8%)|
+PROBE stage=marked_cold_start
+PROBE t0_launch_ns=1793006308647642751
+PROBE t3_window_ns=1793006309700269275
+PROBE mark_window_polls=16
+PROBE mark_total_ms=1052
+PROBE segs=rel_ms t1_ctor 0.7|rel_ms dlopen_libxul_enter 9.9|rel_ms dlopen_libxul_exit 15.8|dur_ms dlopen_libxul 5.9|rel_ms xopen_enter 19.8|dur_ms xopen 0.4|rel_ms xmap_enter 53.0|dur_ms xmap_first 0.0|n_dlopen 191|rel_ms_last 2409.9|
+PROBE stage=clean_cold_start
+PROBE clean_total_ms=892
+PROBE clean_polls=14
+PROBE stage=syscall_cost
+PROBE sys_on_rc=2
+PROBE awk: cannot open "/tmp/ctrl.txt" (No such file or directory)
+PROBE ctrl_execve=
+PROBE awk: cannot open "/tmp/ctrl.txt" (No such file or directory)
+PROBE ctrl_mmap=
+PROBE awk: cannot open "/tmp/ctrl.txt" (No such file or directory)
+PROBE ctrl_read=
+PROBE awk: cannot open "/tmp/st.txt" (No such file or directory)
+PROBE sys_execve=
+PROBE awk: cannot open "/tmp/st.txt" (No such file or directory)
+PROBE sys_mmap=
+PROBE awk: cannot open "/tmp/st.txt" (No such file or directory)
+PROBE sys_openat=
+PROBE awk: cannot open "/tmp/st.txt" (No such file or directory)
+PROBE sys_read=
+PROBE awk: cannot open "/tmp/st.txt" (No such file or directory)
+PROBE sys_poll=
+PROBE grep: /tmp/st.txt: No such file or directory
+PROBE sys_top6=
+PROBE stage=cleanup
+PROBE probe_total_ms=35484
+PROBE probe_done=1
