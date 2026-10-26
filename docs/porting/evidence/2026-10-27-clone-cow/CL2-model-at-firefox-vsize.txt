@@ -1,0 +1,5 @@
+PROBE firefox_like_64g=FK vsize_gib=64 touch=22000 avg_ms=44
+PROBE firefox_like_256g=FK vsize_gib=256 touch=22000 avg_ms=53
+PROBE firefox_like_512g=FK vsize_gib=512 touch=22000 avg_ms=59
+PROBE vsize4g_retest=FK vsize_gib=4 touch=1024 avg_ms=10
+PROBE probe_done=1

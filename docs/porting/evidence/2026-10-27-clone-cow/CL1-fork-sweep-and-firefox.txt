@@ -1,0 +1,24 @@
+PROBE stage=env
+PROBE nproc=4
+PROBE build_rc=0
+PROBE build_err=
+PROBE stage=fork_sweep_rss
+PROBE rss_1k=FK vsize_gib=2 touch_pages=1024 iters=5 avg_ms=5
+PROBE rss_8k=FK vsize_gib=2 touch_pages=8192 iters=5 avg_ms=17
+PROBE rss_32k=FK vsize_gib=2 touch_pages=32768 iters=4 avg_ms=55
+PROBE rss_64k=FK vsize_gib=2 touch_pages=65536 iters=3 avg_ms=110
+PROBE stage=fork_sweep_vsize
+PROBE vsize_0.5g=mmap: Invalid argument
+PROBE vsize_4g=FK vsize_gib=4 touch_pages=1024 iters=5 avg_ms=46
+PROBE stage=firefox
+PROBE ff_pid=221
+PROBE ff_s1=t=1s vm_kb=465907712 rss_kb=59080 procs=2
+PROBE ff_s2=t=2s vm_kb=466423808 rss_kb=90624 procs=2
+PROBE ff_s3=t=3s vm_kb=466423808 rss_kb=90624 procs=2
+PROBE ff_s4=t=4s vm_kb=466423808 rss_kb=90624 procs=2
+PROBE ff_s5=t=5s vm_kb=466423808 rss_kb=90624 procs=2
+PROBE ff_s6=t=6s vm_kb=466423808 rss_kb=90624 procs=2
+PROBE ff_clone56=count=26 cpu_ns=61307809 avg_ns=2357992
+PROBE ff_clone3=count=6 cpu_ns=2197766 avg_ns=366294
+PROBE ff_top5=257:1739:163691770|56:26:61307809|59:38:55520487|9:1270:31293970|0:1020:28746818|
+PROBE probe_done=1
