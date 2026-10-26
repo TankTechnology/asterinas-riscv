@@ -1,0 +1,11 @@
+# 7-domain matrix with the IPv6 UDP kernel
+domain	result	detail
+DESKTOP	ok	Xorg+DRI3
+APP	ok	xterm
+APT	ok	xclip+xterm+alsa-utils-installed
+CLIPBOARD	ok	xclip-round-trip
+INPUT_METHOD	fail	engine--no-text:
+AUDIO	ok	aplay-hw:0,0
+USB	ok	mounted-/dev/sda-read-ASTERINAS-USB-OK
+SUSPEND	ok	woke-up-disk-and-io-ok
+# panic=0 allocation_failed=0

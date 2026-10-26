@@ -4,7 +4,7 @@ use aster_bigtcp::wire::IpEndpoint;
 use bound::BoundDatagram;
 use unbound::{BindOptions, UnboundDatagram};
 
-use super::{addr::UNSPECIFIED_LOCAL_ENDPOINT, ioctl::ipv4_ioctl};
+use super::{addr::IpAddressFamily, ioctl::ipv4_ioctl};
 use crate::{
     events::IoEvents,
     fs::file::FileCommon,
@@ -38,6 +38,8 @@ pub(super) mod observer;
 mod unbound;
 
 pub(crate) struct DatagramSocket {
+    family: IpAddressFamily,
+
     // Lock order: `inner` first, `options` second
     inner: RwMutex<Inner<UnboundDatagram, BoundDatagram>>,
     options: RwLock<OptionSet>,
@@ -63,9 +65,10 @@ impl OptionSet {
 }
 
 impl DatagramSocket {
-    pub(crate) fn new(is_nonblocking: bool) -> Arc<Self> {
+    pub(crate) fn new(is_nonblocking: bool, family: IpAddressFamily) -> Arc<Self> {
         let unbound_datagram = UnboundDatagram::new();
         let socket = Arc::new(Self {
+            family,
             inner: RwMutex::new(Inner::Unbound(unbound_datagram)),
             options: RwLock::new(OptionSet::new()),
             timeouts: SocketTimeouts::new(),
@@ -74,6 +77,21 @@ impl DatagramSocket {
         });
         super::registry::register(&socket, super::registry::socket_inode(&socket.common));
         socket
+    }
+
+    /// Rejects an address of the other family, like Linux does.
+    ///
+    /// IPv4-mapped IPv6 addresses are not supported yet, so the families must
+    /// match exactly (the same rule `StreamSocket` applies).
+    fn check_family(&self, endpoint: &IpEndpoint) -> Result<()> {
+        if IpAddressFamily::from(endpoint.addr) != self.family {
+            return_errno_with_message!(
+                Errno::EAFNOSUPPORT,
+                "the protocol family does not match the address family"
+            );
+        }
+
+        Ok(())
     }
 
     fn try_recv(
@@ -139,8 +157,13 @@ impl SocketPrivate for DatagramSocket {
 
     fn protocol_ioctl(&self, raw_ioctl: RawIoctl) -> Result<i32> {
         // Handle common IPv4/IPv6 ioctl commands.
-        // TODO: Handle IPv6 ioctls once UDP sockets support IPv6.
-        ipv4_ioctl(raw_ioctl)
+        match self.family {
+            IpAddressFamily::IPv4 => ipv4_ioctl(raw_ioctl),
+            IpAddressFamily::IPv6 => {
+                // TODO: Add support for IPv6 ioctl commands.
+                return_errno_with_message!(Errno::ENOTTY, "the socket ioctl command is unknown")
+            }
+        }
 
         // Handle ioctl commands that require UDP-specific handling.
     }
@@ -149,6 +172,7 @@ impl SocketPrivate for DatagramSocket {
 impl Socket for DatagramSocket {
     fn bind(&self, socket_addr: SocketAddr) -> Result<()> {
         let endpoint = socket_addr.try_into()?;
+        self.check_family(&endpoint)?;
         let can_reuse = self.options.read().socket.reuse_addr();
 
         self.inner
@@ -158,6 +182,7 @@ impl Socket for DatagramSocket {
 
     fn connect(&self, socket_addr: SocketAddr) -> Result<()> {
         let endpoint = map_unspecified_to_localhost(socket_addr.try_into()?);
+        self.check_family(&endpoint)?;
         let can_broadcast = self.options.read().socket.broadcast();
         if !can_broadcast && is_broadcast_endpoint(&endpoint) {
             return_errno_with_message!(
@@ -174,7 +199,7 @@ impl Socket for DatagramSocket {
             .inner
             .read()
             .addr()
-            .unwrap_or(UNSPECIFIED_LOCAL_ENDPOINT);
+            .unwrap_or_else(|| self.family.unspecified_endpoint());
 
         Ok(endpoint.into())
     }
@@ -205,7 +230,11 @@ impl Socket for DatagramSocket {
         } = message_header;
 
         let endpoint = match addr {
-            Some(addr) => Some(addr.try_into()?),
+            Some(addr) => {
+                let endpoint = addr.try_into()?;
+                self.check_family(&endpoint)?;
+                Some(endpoint)
+            }
             None => None,
         };
 

@@ -1,0 +1,5 @@
+# IPv6 UDP loopback round-trip (target/ipv6-rt)
+RT v6: srv ('::1', 18090, 0, 0) cli ('::1', 32768, 0, 0)
+RT v6: server got b'hello-v6' from ('::1', 32768, 0, 0) in 0.004s
+RT v6: client got b'pong-v6' from ('::1', 18090, 0, 0)
+RT v6: v4 server got b'hello-v4' from ('127.0.0.1', 32769)

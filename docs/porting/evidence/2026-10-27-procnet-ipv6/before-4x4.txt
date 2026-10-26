@@ -1,0 +1,19 @@
+# BEFORE the fix (transcribed from the captured gate output; the workspace was removed during disk cleanup)
+V6 disable_ipv6_all=cat: /proc/sys/net/ipv6/conf/all/disable_ipv6: No such file or directory
+V6 ipv6_addrs=1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65535 qlen 1000|    inet6 ::1/128 scope host proto kernel_lo |
+V6 hold_pid=81
+V6 hold: BIND tcp4 ok local=('0.0.0.0', 18081)
+V6 hold: BIND tcp6 ok local=('::1', 18082, 0, 0)
+V6 hold: BIND udp4 ok local=('0.0.0.0', 18083)
+V6 hold: BIND udp6 FAILED OSError(97, 'Address family not supported by protocol')
+V6 hold: HOLD
+V6 matrix_tcp4  in_tcp=HIT in_tcp6=MISS in_udp=MISS in_udp6=MISS
+V6 matrix_tcp6  in_tcp=MISS in_tcp6=HIT in_udp=MISS in_udp6=MISS
+V6 matrix_udp4  in_tcp=MISS in_tcp6=MISS in_udp=HIT in_udp6=MISS
+V6 matrix_udp6  in_tcp=MISS in_tcp6=MISS in_udp=MISS in_udp6=MISS
+V6 tcp_rows=1 tcp6_rows=1 udp_rows=1 udp6_rows=0
+V6 tcp6_content:    0: 00000000000000000000000001000000:46A2 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000     0 0 192 1 0000000000000000 0 0 0 0 0|
+V6 udp6_content:
+V6 ss_tln: State  Recv-Q Send-Q Local Address:Port  Peer Address:Port|LISTEN 0      0            0.0.0.0:18081      0.0.0.0:*   |LISTEN 0      0              [::1]:18082            *:*   |
+V6 ss_uln: State  Recv-Q Send-Q Local Address:Port  Peer Address:Port|UNCONN 0      0            0.0.0.0:18083      0.0.0.0:*   |
+V6 lsof_i: COMMAND PID USER FD   TYPE DEVICE SIZE/OFF NODE NAME|python3  81 root 3u  IPv4    191      0t0  TCP *:18081 (LISTEN)|python3  81 root 4u  IPv6    192      0t0  TCP localhost:18082 (LISTEN)|python3  81 root 5u  IPv4    193      0t0  UDP *:18083 |
