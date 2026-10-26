@@ -1,0 +1,16 @@
+PROBE run1_window_ms=8018
+PROBE run1_ctxt=before=18201 after=21243 delta=3042
+PROBE run1_stat=pid=178 minflt=4399 majflt=84 utime=36 stime=396 threads=4
+PROBE run1_status=VmSize:=466423808kB VmRSS:=90652kB Threads:=4 
+PROBE run1_procs=2
+PROBE run2_window_ms=8017
+PROBE run2_ctxt=before=21530 after=22118 delta=588
+PROBE run2_stat=pid=224 minflt=4477 majflt=0 utime=31 stime=133 threads=4
+PROBE run2_status=VmSize:=466423808kB VmRSS:=90612kB Threads:=4 
+PROBE run2_procs=2
+PROBE run3_window_ms=8013
+PROBE run3_ctxt=before=22369 after=23147 delta=778
+PROBE run3_stat=pid=270 minflt=4471 majflt=0 utime=18 stime=131 threads=4
+PROBE run3_status=VmSize:=466423808kB VmRSS:=90572kB Threads:=4 
+PROBE run3_procs=2
+PROBE probe_done=1
