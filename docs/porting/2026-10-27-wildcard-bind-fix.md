@@ -142,5 +142,8 @@ WB nobind: CASE nobind|attempt=1 recvfrom errno=11 (Resource temporarily unavail
 ## 7. 现状与请求
 
 - 内核代码**零改动**，无 commit 到内核；本轮只新增测试与文档。
+- 同一轮的**可选任务 D** 已单独落地（`/proc/net/tcp6|udp6` 表头对齐 Linux，
+  `lsof -i` 不再报 unsupported format，见 `2026-10-27-procnet-header.md`），
+  与本文的通配 bind 设计无关，也未改变 §1 的失败用例结果。
 - 请批准方案 A（或指定方案 B），下一轮按 §4 的 C1–C3 实施并提交
   `fix(net): wildcard bind no longer pinned to loopback`。
