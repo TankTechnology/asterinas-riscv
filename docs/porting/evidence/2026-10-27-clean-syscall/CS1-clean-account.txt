@@ -1,0 +1,42 @@
+PROBE sys_on_rc=0
+PROBE run1_ff_stat=pid=182 utime=37 stime=388 rss_pages=22644
+PROBE run2_ff_stat=pid=216 utime=32 stime=135 rss_pages=22644
+PROBE run3_ff_stat=pid=250 utime=31 stime=112 rss_pages=22645
+PROBE top_available=1
+PROBE top1=cpu_ns=117055807 nr=257 count=537 avg_ns=217981 run=1
+PROBE top2=cpu_ns=27457045 nr=56 count=5 avg_ns=5491409 run=1
+PROBE top3=cpu_ns=24608298 nr=56 count=5 avg_ns=4921659 run=2
+PROBE top4=cpu_ns=21207448 nr=56 count=5 avg_ns=4241489 run=3
+PROBE top5=cpu_ns=19368903 nr=257 count=537 avg_ns=36068 run=2
+PROBE top6=cpu_ns=18966465 nr=59 count=15 avg_ns=1264431 run=1
+PROBE top7=cpu_ns=18841658 nr=9 count=707 avg_ns=26650 run=1
+PROBE top8=cpu_ns=17561383 nr=0 count=342 avg_ns=51349 run=1
+PROBE top9=cpu_ns=15595168 nr=257 count=537 avg_ns=29041 run=3
+PROBE top10=cpu_ns=15165619 nr=9 count=707 avg_ns=21450 run=2
+PROBE top11=cpu_ns=13327977 nr=9 count=707 avg_ns=18851 run=3
+PROBE top12=cpu_ns=7997399 nr=10 count=151 avg_ns=52962 run=1
+PROBE top13=cpu_ns=7522548 nr=231 count=10 avg_ns=752254 run=1
+PROBE top14=cpu_ns=7418893 nr=59 count=15 avg_ns=494592 run=2
+PROBE top15=cpu_ns=7055173 nr=59 count=15 avg_ns=470344 run=3
+PROBE top16=cpu_ns=6486245 nr=10 count=151 avg_ns=42955 run=2
+PROBE top17=cpu_ns=6295789 nr=231 count=10 avg_ns=629578 run=2
+PROBE top18=cpu_ns=6257262 nr=262 count=64 avg_ns=97769 run=1
+PROBE top19=cpu_ns=6001799 nr=10 count=151 avg_ns=39747 run=3
+PROBE top20=cpu_ns=5739707 nr=231 count=10 avg_ns=573970 run=3
+PROBE top21=cpu_ns=5055026 nr=20 count=861 avg_ns=5871 run=1
+PROBE top22=cpu_ns=3997924 nr=20 count=861 avg_ns=4643 run=3
+PROBE top23=cpu_ns=3928799 nr=20 count=861 avg_ns=4563 run=2
+PROBE top24=cpu_ns=3454049 nr=83 count=13 avg_ns=265696 run=1
+PROBE top25=cpu_ns=3119014 nr=7 count=263 avg_ns=11859 run=1
+PROBE top26=cpu_ns=3045708 nr=61 count=18 avg_ns=169206 run=1
+PROBE top27=cpu_ns=2824259 nr=21 count=65 avg_ns=43450 run=1
+PROBE top28=cpu_ns=2690076 nr=0 count=344 avg_ns=7819 run=2
+PROBE top29=cpu_ns=2685890 nr=61 count=18 avg_ns=149216 run=2
+PROBE top30=cpu_ns=2371269 nr=0 count=343 avg_ns=6913 run=3
+PROBE top31=cpu_ns=2323421 nr=7 count=271 avg_ns=8573 run=3
+PROBE top32=cpu_ns=2228248 nr=7 count=232 avg_ns=9604 run=2
+PROBE top33=cpu_ns=2077916 nr=439 count=1 avg_ns=2077916 run=1
+PROBE top34=cpu_ns=1917845 nr=58 count=5 avg_ns=383569 run=1
+PROBE top35=cpu_ns=1906840 nr=61 count=18 avg_ns=105935 run=3
+PROBE top36=cpu_ns=1844882 nr=435 count=6 avg_ns=307480 run=1
+PROBE probe_done=1
