@@ -1,0 +1,15 @@
+# DPKGB lines from the host console (target/l4-rootguard/console.txt)
+DPKGB env logdir=/var/tmp/dpkg-logs workdir=/tmp/dpkg-build
+DPKGB env disk_free_kb=2084828
+DPKGB env gcc=gcc__Debian_14.2.0-19__14.2.0
+DPKGB env dpkg=Debian__dpkg__package_management_program_version_1.22.22__amd64_.
+DPKGB env dpkg_buildpackage=Debian_dpkg-buildpackage_version_1.22.22.
+DPKGB env fakeroot=fakeroot_version_1.37.1.1
+DPKGB pkg=1 start name=coreutils
+DPKGB pkg=1 disk_free_kb=2084828 attempt=1
+DPKGB pkg=1 stage=builddeps rc=0 dur=289.30 attempt=1
+DPKGB pkg=1 stage=source rc=0 dur=11.34 attempt=1
+DPKGB pkg=1 stage=build rc=0 dur=491.24 attempt=1
+DPKGB pkg=1 artifact=coreutils-dbgsym_9.7-3_amd64.deb
+DPKGB pkg=1 artifact=coreutils_9.7-3_amd64.deb
+DPKGB pkg=1 done name=coreutils result=ok attempts=1 dur=803.20

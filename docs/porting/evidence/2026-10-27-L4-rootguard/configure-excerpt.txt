@@ -1,0 +1,25 @@
+# guest /var/tmp/dpkg-logs/pkg1-build.log (configure excerpt, lines 815-832)
+checking whether mkdir handles trailing slash... yes
+checking whether mkdir handles trailing dot... yes
+checking for mkfifo... yes
+checking whether mkfifo rejects trailing slashes... yes
+checking for mknodat... yes
+checking for mkfifoat... yes
+checking whether mkfifoat rejects trailing slashes... yes
+checking whether mknod can create fifo without root privileges... no
+checking for mkostemp... yes
+checking for working mkstemp... yes
+checking for __mktime_internal... no
+checking for listmntent... no
+checking for sys/ucred.h... no
+checking for sys/mount.h... (cached) yes
+checking for mntent.h... yes
+checking for sys/fs_types.h... (cached) no
+checking for struct fsstat.f_fstypename... no
+checking for library containing getmntent... none required
+
+# configure completed:
+1137:config.status: creating Makefile
+# GNULIB_TEST_MKNODAT occurrences: 0
+# last line:
+dpkg-buildpackage: info: binary-only upload (no source included)
