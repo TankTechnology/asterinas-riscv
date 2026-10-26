@@ -1,0 +1,25 @@
+PROBE stage=env
+PROBE nproc=4
+PROBE mb_build_rc=0
+PROBE mb_build_err=
+PROBE sys_on_rc=0
+PROBE stage=phases
+PROBE a1_out=MB a1 n=1000 total_ns=740764293 per_op_ns=740764
+PROBE a1_wall_ms=754
+PROBE a1_madvise=count=1000 cpu_ns=90657965 avg=90657
+PROBE a1_clone=435:count=1000 cpu_ns=305073279 avg=305073|56:count=2 cpu_ns=3161737 avg=1580868|
+PROBE a1_munmap=count=12 cpu_ns=853226 avg=71102
+PROBE a1_top5=435:1000:305073279|28:1000:90657965|60:1000:35145778|273:1006:16891058|202:1003:13021832|
+PROBE a2_out=MB a2 n=1000 total_ns=693224688 per_op_ns=693224
+PROBE a2_wall_ms=707
+PROBE a2_madvise=count=1000 cpu_ns=18368693 avg=18368
+PROBE a2_clone=435:count=1000 cpu_ns=285648033 avg=285648|56:count=2 cpu_ns=3081220 avg=1540610|
+PROBE a2_munmap=count=12 cpu_ns=766054 avg=63837
+PROBE a2_top5=435:1000:285648033|60:1000:32111307|28:1000:18368693|273:1006:18310030|202:1003:11698575|
+PROBE a3_out=MB a3 n=300 total_ns=953671345 per_op_ns=3178904
+PROBE a3_wall_ms=970
+PROBE a3_madvise=
+PROBE a3_clone=56:count=302 cpu_ns=412809947 avg=1366920|
+PROBE a3_munmap=count=12 cpu_ns=836912 avg=69742
+PROBE a3_top5=56:302:412809947|231:305:218756877|61:310:93337777|59:4:6665889|273:306:5143798|
+PROBE probe_done=1
