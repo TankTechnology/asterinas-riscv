@@ -1,0 +1,59 @@
+[?2004hasterinas@thinkpad:/$ sudo sh -c '/usr/local/bin/daily-use-checklist > /dev/console 2>&1'; echo DAILY_SHELL_END
+DAILY_PERF apt_early seconds=9.81
+DAILY_IME_ENV gtk3=1 wm=/usr/bin/openbox,
+DAILY_APT=ok xclip+xterm+alsa-utils-installed
+DAILY_DESKTOP=ok Xorg+DRI3
+DAILY_APP=ok xterm
+DAILY_CLIPBOARD=ok xclip-round-trip
+DAILY_APT_SEARCH fcitx-table-cangjie - Flexible Input Method Framework - Cangjie table (DO NOT USE)|fcitx5 - Fcitx Input Method Framework v5|fcitx5-data - Fcitx Input Method Framework v5 (common data files)|fcitx5-frontend-all - Fcitx Input Method Framework v5 (Frontend IM Module metapackage)|fcitx5-modules - Fcitx Input Method Framework v5 (core modules)|fcitx5-modules-dev - Fcitx Input Method Framework v5 (input modules dev files)|libfcitx5config-dev - Fcitx Input Method Framework v5 (config library dev files)
+DAILY_PKG_LIST 
+DAILY_IM_DIRS inputmethod=10 table=0
+DAILY_IM_ADDONS tables=[] ims=[cangjie db erbi pinyin qxm shuangpin wanfeng wbpy wbx zrm ]
+DAILY_IM_CHOSEN 'wbpy'
+DAILY_WM wm=openbox running=1 log=Openbox-Message:_Unable_to_find_a_valid_
+DAILY_XEV_ERR Outer window is 0xa00001, inner window is 0xa00002||PropertyNotify event, serial 8, synthetic NO, window 0xa00001,|
+DAILY_XEV_LDD 0 missing=
+DAILY_XEV id= keypress=0 any=0
+DAILY_XEXT 1 modules=libglx.so,
+DAILY_XSERVER Xorg,
+DAILY_XWIN tree=|xwininfo: Window id: 0x144 (the root window) (has no name)||  Root window id: 0x144 (the root window) (has no name)|  Parent window id: 0x0 (none)|     18 children:|
+DAILY_XWIN search=6291468,
+DAILY_XWIN activate_rc=124
+DAILY_XWIN netactive=_NET_ACTIVE_WINDOW(WINDOW): window id # 0xa00001
+DAILY_FCITX alive=1 engine='' window='6291468' active=''
+DAILY_DBUS method return time=1793029517.918771 sender=org.freedesktop.DBus -> destination=:1.5 serial=3 reply_serial=2    array [       string "org.freedesktop.DBus"       string ":1.3"       string "org.freedesktop.portal.IBus"       string ":1.4"  
+DAILY_FCITX activate_rc=0
+DAILY_FCITX after_activate=''
+DAILY_XDIAG active=10485761 win=6291468
+DAILY_XDIAG xim=XIM_SERVERS(ATOM) = @server=fcitx|_NET_SUPPORTED(ATOM) = _NET_SUPPORTING_WM_CHECK, _NET_WM_FULL_PLACEMENT, _NET_CURRENT_DESKTOP, _NET_NUMBER_OF_DESKTOPS, _NET_DESKTOP_GEOMETRY, _NET_DESKTOP_VIEWPORT, _NET_ACTIVE_WINDOW, _NET_WORKAREA, _NET_CLIENT_LIST, _NET_CLIENT_LIST_STACKING, _NET_DESKTOP_NAMES, _NET_CLOSE_WINDOW, _NET_DESKTOP_LAYOUT, _NET_SHOWING_DESKTOP, _NET_WM_NAME, _NET_WM_VISIBLE_NAME, _NET_WM_ICON_NAME, _NET_WM_VISIBLE_ICON_NAME, _NET_WM_DESKTOP, _NET_WM_STRUT, _NET_WM_STRUT_PARTIAL, _NET_WM_ICON, _NET_WM_ICON_GEOMETRY, _NET_WM_WINDOW_TYPE, _NET_WM_WINDOW_TYPE_DESKTOP, _NET_WM_WINDOW_TYPE_DOCK, _NET_WM_WINDOW_TYPE_TOOLBAR, _NET_WM_WINDOW_TYPE_MENU, _NET_WM_WINDOW_TYPE_UTILITY, _NET_WM_WINDOW_TYPE_SPLASH, _NET_WM_WINDOW_TYPE_DIALOG, _NET_WM_WINDOW_TYPE_NORMAL, _NET_WM_ALLOWED_ACTIONS, _NET_WM_WINDOW_OPACITY, _NET_WM_ACTION_MOVE, _NET_WM_ACTION_RESIZE, _NET_WM_ACTION_MINIMIZE, _NET_WM_ACTION_SHADE, _NET_WM_ACTION_MAXIMIZE_HORZ, _NET_WM_ACTION_MAXIMIZE_VERT, _NET_WM_ACTION_FULLSCREEN, _NET_WM_ACTION_CHANGE_DESKTOP, _NET_WM_ACTION_CLOSE, _NET_WM_ACTION_ABOVE, _NET_WM_ACTION_BELOW, _NET_WM_STATE, _NET_WM_STATE_MODAL, _NET_WM_STATE_MAXIMIZED_VERT, _NET_WM_STATE_MAXIMIZED_HORZ, _NET_WM_STATE_SHADED, _NET_WM_STATE_SKIP_TASKBAR, _NET_WM_STATE_SKIP_PAGER, _NET_WM_STATE_HIDDEN, _NET_WM_STATE_FULLSCREEN, _NET_WM_STATE_ABOVE, _NET_WM_STATE_BELOW, _NET_WM_STATE_DEMANDS_ATTENTION, _NET_MOVERESIZE_WINDOW, _NET_WM_MOVERESIZE, _NET_WM_USER_TIME, _NET_FRAME_EXTENTS, _NET_REQUEST_FRAME_EXTENTS, _NET_RESTACK_WINDOW, _NET_STARTUP_ID, _NET_WM_SYNC_REQUEST, _NET_WM_SYNC_REQUEST_COUNTER, _NET_WM_PID, _NET_WM_PING, _KDE_WM_CHANGE_STATE, _KDE_NET_WM_FRAME_STRUT, _KDE_NET_WM_WINDOW_TYPE_OVERRIDE, _OB_WM_ACTION_UNDECORATE, _OB_WM_STATE_UNDECORATED, _OPENBOX_PID, _OB_THEME, _OB_CONFIG_FILE, _OB_CONTROL, _OB_VERSION, _OB_APP_ROLE, _OB_APP_TITLE, _OB_APP_NAME, _OB_APP_CLASS, _OB_APP_GROUP_NAME, _OB_APP_GROUP_CLASS, _OB_APP_TYPE|
+DAILY_XDIAG direct_out=
+DAILY_INPUT_METHOD=fail engine--no-text:
+DAILY_XAPP_xclock=ok window=10485770
+DAILY_XAPP_xcalc=ok window=10485782
+DAILY_XAPP_xeyes=ok window=10485770
+DAILY_APP_pcmanfm=ok window=10485762
+DAILY_APP_eog=ok window=12582914
+[32m[   156.141][0m [93mWARN  [0m: [39m[0m[39mPID 970DAILY_APP_gpicview=missing not-installed
+DAILY_APP_epdfview=missing not-installed
+DAILY_APP_evince=missing not-installed
+DAILY_AUDIO_DEVICES **** List of PLAYBACK Hardware Devices ****|
+DAILY_AUDIO=ok aplay-hw:0,0
+DAILY_USB_TOOLS lsusb=/usr/bin/lsusb list=
+DAILY_USB_WAIT
+DAILY_USB=ok mounted-/dev/sda-read-ASTERINAS-USB-OK
+DAILY_PERF xclock_start run=1 seconds=1.29 window=12582922
+DAILY_PERF xclock_start run=2 seconds=1.36 window=12582922
+DAILY_PERF xclock_start run=3 seconds=1.30 window=12582922
+DAILY_PERF dd_write_raw 67108864 bytes (67 MB, 64 MiB) copied, 0.153072 s, 438 MB/s
+DAILY_PERF dd_read_raw 67108864 bytes (67 MB, 64 MiB) copied, 0.0216645 s, 3.1 GB/s
+DAILY_PERF apt_before []
+DAILY_PERF apt_reinstall_hello seconds=13.47
+DAILY_STAB_LOAD tick=1 uptime=185.19 load=0.195
+DAILY_STAB_SUSPEND round=1 result=ok before=184.68 after=185.79 xclock=12582922
+[32m[   191.816][0m [93mWARN  [0m: [39m[0m[39DAILY_STAB_SUSPEND round=2 result=ok before=193.02 after=194.08 xclock=12582922
+DAILY_STAB_SUSPEND round=3 result=ok before=201.25 after=202.30 xclock=12582922
+DAILY_STAB_DONE uptime=209.45
+DAILY_SUSPEND_WAIT
+DAILY_SUSPEND=ok woke-up-disk-and-io-ok
+DAILY_DONE=ok
+DAILY_SHELL_END
