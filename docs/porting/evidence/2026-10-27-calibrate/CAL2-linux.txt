@@ -1,0 +1,8 @@
+PROBE build_rc=0
+PROBE build_err=
+PROBE cal1=CAL busy wall_ms=1000 utime_ticks=99 stime_ticks=0 ops=0
+PROBE cal2=CAL getpid wall_ms=1000 utime_ticks=52 stime_ticks=47 ops=8515220
+PROBE cal1_again=CAL busy wall_ms=1000 utime_ticks=99 stime_ticks=0 ops=0
+PROBE cal2_again=CAL getpid wall_ms=1000 utime_ticks=52 stime_ticks=47 ops=8602187
+PROBE hz=100
+PROBE probe_done=1

@@ -1,0 +1,9 @@
+PROBE cal1=CAL busy wall_ms=1000 utime_ticks=99 stime_ticks=0 ops=0
+PROBE cal2=CAL getpid wall_ms=1000 utime_ticks=9 stime_ticks=90 ops=1002667
+PROBE ff1_stat=minflt=4393 utime=3 stime=45 threads=4
+PROBE ff1_status=VmSize:=466423808 VmRSS:=90576 
+PROBE ff1_ctxt=3000
+PROBE ff2_stat=minflt=4487 utime=3 stime=12 threads=4
+PROBE ff2_status=VmSize:=466423808 VmRSS:=90640 
+PROBE ff2_ctxt=539
+PROBE probe_done=1
