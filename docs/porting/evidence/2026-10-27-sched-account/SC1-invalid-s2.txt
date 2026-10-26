@@ -1,0 +1,10 @@
+PROBE run1_sched=s1:count=3010 total_ns=8619888 s2:count=2992 total_ns=8427788776 s3:count=1592 total_ns=24032849 s4:count=1491 total_ns=15755378 s5:count=31702 total_ns=138337648 sum_ns=8614534539
+PROBE run1_ffstat=utime=34 stime=399
+PROBE run1_syscall=cpu_ns=318033336
+PROBE run2_sched=s1:count=1138 total_ns=1905870 s2:count=1121 total_ns=8427788776 s3:count=703 total_ns=10481374 s4:count=409 total_ns=5374165 s5:count=31631 total_ns=135429437 sum_ns=8580979622
+PROBE run2_ffstat=utime=28 stime=137
+PROBE run2_syscall=cpu_ns=162413466
+PROBE run3_sched=s1:count=573 total_ns=1733821 s2:count=556 total_ns=8427788776 s3:count=382 total_ns=4410467 s4:count=204 total_ns=2333768 s5:count=31629 total_ns=139413118 sum_ns=8575679950
+PROBE run3_ffstat=utime=26 stime=130
+PROBE run3_syscall=cpu_ns=132988373
+PROBE probe_done=1
