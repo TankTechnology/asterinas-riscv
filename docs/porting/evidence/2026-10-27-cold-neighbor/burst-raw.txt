@@ -1,0 +1,7 @@
+# Cold burst: 5 UDP queries back-to-back as the first action after boot
+CB arp_before: IP address       HW type     Flags       HW address            Mask     Device|
+CB py: arp_at_start []
+CB py: burst sent=5 replies=1 lost=4 elapsed=3.004s
+CB py: arp_after_burst ['10.0.2.3']
+CB py: after_burst_single ok 0.001s
+CB arp_end: IP address       HW type     Flags       HW address            Mask     Device|10.0.2.3         0x1         0x2         52:55:0a:00:02:03     *        eth0|

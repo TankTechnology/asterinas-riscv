@@ -1,0 +1,8 @@
+# Cold TCP: first connect() after boot
+CT arp_before: IP address       HW type     Flags       HW address            Mask     Device|
+CT py: arp_at_start []
+CT py: tcp 10.0.2.2 err 0.744s ConnectionRefusedError(111, 'Connection refused')
+CT py: arp_after_10.0.2.2 ['10.0.2.2']
+CT py: tcp 10.0.2.3 err 8.001s TimeoutError('timed out')
+CT py: arp_after_10.0.2.3 ['10.0.2.2', '10.0.2.3']
+CT arp_end: IP address       HW type     Flags       HW address            Mask     Device|10.0.2.2         0x1         0x2         52:55:0a:00:02:02     *        eth0|10.0.2.3         0x1         0x2         52:55:0a:00:02:03     *        eth0|

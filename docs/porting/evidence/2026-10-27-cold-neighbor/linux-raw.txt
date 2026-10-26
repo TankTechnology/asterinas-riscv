@@ -1,0 +1,15 @@
+# Linux host comparison (2026-10-27, kernel 7.2.6-arch2-1, wlp0s20f3)
+# default via 10.100.79.1 dev wlp0s20f3
+
+$ sudo ip neigh del 10.100.79.1 dev wlp0s20f3
+$ ping -c 5 -i 0.01 -W 2 10.100.79.1     # immediately after the flush
+5 packets transmitted, 5 received, 0% packet loss, time 40ms
+rtt min/avg/max/mdev = 1.725/3.986/6.175/1.877 ms
+$ ip neigh show 10.100.79.1
+10.100.79.1 dev wlp0s20f3 lladdr 4c:d6:29:18:93:46 REACHABLE
+
+# single UDP datagram to the gateway after a flush: delivered, ICMP port
+# unreachable comes back (ConnectionRefused) in 35 ms
+$ sudo ip neigh del 10.100.79.1 dev wlp0s20f3
+$ python3 -c 'connected UDP socket send to 10.100.79.1:9, recv'
+udp result ConnectionRefusedError(111, 'Connection refused') 0.035

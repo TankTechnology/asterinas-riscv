@@ -1,0 +1,20 @@
+# Guest cold-neighbour probe (HEAD 6d06f9ab2 build), target/app-matrix image
+CN arp_before: IP address       HW type     Flags       HW address            Mask     Device|
+CN whoami=0 sudo=/usr/bin/sudo
+CN flush1_rc=0
+CN arp_after_flush1: IP address       HW type     Flags       HW address            Mask     Device|
+CN py: arp_at_start []
+CN py: single1_cold fail 3.003s errno=TimeoutError('timed out')
+CN py: arp_after_single1 ['10.0.2.3']
+CN py: single2_warm ok 0.001s bytes=12
+CN py: flush2_rc 0 arp_after_flush2 ['10.0.2.3']
+CN py: arp_entry_seen 0.011s
+CN py: flush_phase_reply ok 0.011s
+CN py: flush3_rc 0 arp_now ['10.0.2.3']
+CN py: burst sent=5 replies=5 lost=0 in 3.002s
+CN py: flush4_rc 0 arp_now ['10.0.2.3']
+CN py: tcp_connect err 6.090s TimeoutError('timed out')
+CN py: flush5_rc 0 arp_now ['10.0.2.3']
+CN py: connected_udp ok 0.042s
+CN py: arp_end ['10.0.2.3']
+CN arp_after: IP address       HW type     Flags       HW address            Mask     Device|10.0.2.3         0x1         0x2         52:55:0a:00:02:03     *        eth0|

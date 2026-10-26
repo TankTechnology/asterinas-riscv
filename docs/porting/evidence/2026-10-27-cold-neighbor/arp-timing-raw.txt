@@ -1,0 +1,7 @@
+# Precise cold-ARP timing (1 ms sampling of /proc/net/arp)
+CA arp_before: IP address       HW type     Flags       HW address            Mask     Device|
+CA py: arp_at_start []
+CA py: cold_arp_resolved 0.0032s
+CA py: first_packet_reply none errno=BlockingIOError(11, 'Resource temporarily unavailable') after 0.0049s
+CA py: second_packet_reply 0.0034s
+CA py: arp_end ['10.0.2.3']
