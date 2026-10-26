@@ -103,6 +103,8 @@ v4 自身也有一个 `IP_MTU_DISCOVER = ENOPROTOOPT` 却被容忍——说明 B
 ## 6. 边界
 
 - 本轮**不改内核代码**；`IPV6_RECVERR` 只作为下一轮的修复项。
+  （**2026-10-27 晚已实现**：`IPV6_RECVERR`/`IPV6_DONTFRAG`/`IPV6_MTU` 落地后
+  `dig @::1` 返回 `127.0.0.1`、rc=0，见 `2026-10-27-ipv6-recv-options.md`。）
 - `strace -f` 在本内核不可用（clone-ptrace 缺口），这是独立缺口，已在
   `2026-10-27-ptrace-attach.md` 的实现边界里记录过。
 - 所有验证都指向本机 responder（`127.0.0.1:18221` / `::1:18222`），不依赖外网。

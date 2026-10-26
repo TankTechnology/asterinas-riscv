@@ -1,0 +1,6 @@
+# dig over ::1 after the fix (plain + strace)
+R dig_v6_plain: 127.0.0.1| rc=0
+R dig_v6_strace rc=0 out=127.0.0.1|
+R v6_tail: setsockopt(9, SOL_IPV6, IPV6_RECVERR, [1], 4) = 0|setsockopt(9, SOL_IPV6, IPV6_V6ONLY, [1], 4) = 0|bind(9, {sa_family=AF_INET6, sin6_port=htons(0), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "::", &sin6_addr), sin6_scope_id=0}, 28) = 0|connect(9, {sa_family=AF_INET6, sin6_port=htons(18222), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "::1", &sin6_addr), sin6_scope_id=0}, 28) = 0|sendmsg(9, {msg_name=NULL, msg_namele
+R dig_v4_strace rc=0 out=127.0.0.1|
+R done

@@ -18,11 +18,11 @@
   - `iperf3 -6` —— 定位为内核缺口并**已修复**（`IPV6_V6ONLY` 补齐后 v6 传输 9.35 Gbits/sec，
     见 `2026-10-27-sol-ipv6.md`）；
   - `dig @::1` —— 补 `SOL_IPV6` 后错误由 `address family not supported` 变为
-    `invalid protocol`，证明原失败是 SOL_IPV6 缺口；**它现在撞在下一个未实现的
-    SOL_IPV6 选项上**，仍未通过。
+    `invalid protocol`，证明原失败是 SOL_IPV6 缺口；**2026-10-27 晚已修好**
+    （`IPV6_RECVERR` + `IPV6_V6ONLY`），`dig @::1` 现返回 `127.0.0.1`（rc=0）。
 
-> 本文记录的是 2026-10-27 上午的矩阵；`iperf3` 行与 `dig` 归因已按同日
-> `feat(net): implement SOL_IPV6 IPV6_V6ONLY sockopt` 的结果更新。
+> 本文记录的是 2026-10-27 上午的矩阵；`iperf3` 行与 `dig` 归因已按同日后续提交更新
+> （`SOL_IPV6 IPV6_V6ONLY`，以及 `IPV6_RECVERR/DONTFRAG/MTU`）。
 
 ## 1. 12 行矩阵
 
@@ -31,7 +31,7 @@
 | 1 | `nc` UDP 客户端 → echo 服务 | ok | ok | `echo:nc4` / `echo:nc6` | — |
 | 2 | `python3` UDP 自环 | ok | ok | `echo:py4` / `echo:py6` | — |
 | 3 | `python3` TCP 自环 | ok | ok | `echo:t4` / `echo:t6` | — |
-| 4 | `dig @127.0.0.1 / @::1`（自建 DNS） | ok | **fail** | v6 改前：`... address family not supported`；补 SOL_IPV6 后：`... invalid protocol`（下一个未实现的 SOL_IPV6 选项） | 见 §2.1 |
+| 4 | `dig @127.0.0.1 / @::1`（自建 DNS） | ok | **ok（已修复，2026-10-27 晚）** | v6 现返回 `127.0.0.1`（rc=0）；修复路径：`address family not supported` → `invalid protocol` → ok | 见 §2.1 |
 | 5 | `curl http://127.0.0.1 / http://[::1]` | ok | ok | `http-ok` / `http-ok` | — |
 | 6 | `getent ahostsv4 / ahostsv6 localhost` | ok | **fail** | v6 输出为空（rc=2） | **glibc `AI_ADDRCONFIG`**，见 §2.2 |
 | 7 | `ss -tln / -uln` | ok | ok | `127.0.0.1:18211` / `[::1]:18212`；UDP `[::1]:18202` | — |

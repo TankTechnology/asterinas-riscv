@@ -1,0 +1,14 @@
+# BEFORE: three IPv6 options unsupported
+V6O compile=ok
+V6O ipv6_recverr set rc=-1 errno=92 (Protocol not available) | get rc=-1 errno=92 (Protocol not available) value=-1
+V6O ipv6_dontfrag set rc=-1 errno=92 (Protocol not available) | get rc=-1 errno=92 (Protocol not available) value=-1
+V6O ipv6_mtu set rc=-1 errno=92 (Protocol not available) | get rc=-1 errno=92 (Protocol not available) value=-1
+V6O v4_ip_recverr rc=0 errno=0 (Success)
+V6O v4_sol6_recverr rc=-1 errno=92 (Protocol not available)
+V6O RESULT ipv6_recverr FAIL
+V6O RESULT ipv6_dontfrag FAIL
+V6O RESULT ipv6_mtu FAIL
+V6O RESULT v4_ip_recverr PASS
+V6O RESULT v4_sol6_enoprotoopt PASS
+V6O RESULT all FAIL
+V6O exit=1

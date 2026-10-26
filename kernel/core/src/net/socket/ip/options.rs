@@ -28,6 +28,13 @@ pub(super) struct IpOptionSet {
     /// single address family per socket, so the flag is stored for
     /// compatibility and does not change which packets a socket accepts.
     ipv6_v6only: bool,
+    /// `IPV6_RECVERR`. Stored only: this stack does not queue ICMP errors for
+    /// delivery as control messages.
+    ipv6_recverr: bool,
+    /// `IPV6_DONTFRAG`. Stored only: the IPv6 egress path does not set DF.
+    ipv6_dontfrag: bool,
+    /// `IPV6_MTU`. Stored only: there is no path-MTU enforcement.
+    ipv6_mtu: i32,
 }
 
 const DEFAULT_TTL: u8 = 64;
@@ -41,6 +48,9 @@ impl IpOptionSet {
             hdrincl: false,
             recverr: false,
             ipv6_v6only: false,
+            ipv6_recverr: false,
+            ipv6_dontfrag: false,
+            ipv6_mtu: 0,
         }
     }
 
@@ -51,6 +61,9 @@ impl IpOptionSet {
             hdrincl: false,
             recverr: false,
             ipv6_v6only: false,
+            ipv6_recverr: false,
+            ipv6_dontfrag: false,
+            ipv6_mtu: 0,
         }
     }
 
@@ -77,13 +90,20 @@ impl IpOptionSet {
                 ip_recverr.set(recverr);
             }
             ipv6_v6only @ Ipv6V6Only => {
-                if family != IpAddressFamily::IPv6 {
-                    return_errno_with_message!(
-                        Errno::ENOPROTOOPT,
-                        "an IPv6 option is not valid on a non-IPv6 socket"
-                    );
-                }
+                Self::check_ipv6(family)?;
                 ipv6_v6only.set(self.ipv6_v6only());
+            }
+            ipv6_recverr @ Ipv6Recverr => {
+                Self::check_ipv6(family)?;
+                ipv6_recverr.set(self.ipv6_recverr());
+            }
+            ipv6_dontfrag @ Ipv6Dontfrag => {
+                Self::check_ipv6(family)?;
+                ipv6_dontfrag.set(self.ipv6_dontfrag());
+            }
+            ipv6_mtu @ Ipv6Mtu => {
+                Self::check_ipv6(family)?;
+                ipv6_mtu.set(self.ipv6_mtu());
             }
             _ => return_errno_with_message!(Errno::ENOPROTOOPT, "the socket option is unknown"),
         });
@@ -119,14 +139,24 @@ impl IpOptionSet {
                 self.set_recverr(*recverr);
             }
             ipv6_v6only @ Ipv6V6Only => {
-                if family != IpAddressFamily::IPv6 {
-                    return_errno_with_message!(
-                        Errno::ENOPROTOOPT,
-                        "an IPv6 option is not valid on a non-IPv6 socket"
-                    );
-                }
+                Self::check_ipv6(family)?;
                 let value = ipv6_v6only.get().unwrap();
                 self.set_ipv6_v6only(*value);
+            }
+            ipv6_recverr @ Ipv6Recverr => {
+                Self::check_ipv6(family)?;
+                let value = ipv6_recverr.get().unwrap();
+                self.set_ipv6_recverr(*value);
+            }
+            ipv6_dontfrag @ Ipv6Dontfrag => {
+                Self::check_ipv6(family)?;
+                let value = ipv6_dontfrag.get().unwrap();
+                self.set_ipv6_dontfrag(*value);
+            }
+            ipv6_mtu @ Ipv6Mtu => {
+                Self::check_ipv6(family)?;
+                let value = ipv6_mtu.get().unwrap();
+                self.set_ipv6_mtu(*value);
             }
             _ => return_errno_with_message!(
                 Errno::ENOPROTOOPT,
@@ -138,12 +168,29 @@ impl IpOptionSet {
     }
 }
 
+impl IpOptionSet {
+    /// Rejects an IPv6-only option on a socket of another family.
+    fn check_ipv6(family: IpAddressFamily) -> Result<()> {
+        if family != IpAddressFamily::IPv6 {
+            return_errno_with_message!(
+                Errno::ENOPROTOOPT,
+                "an IPv6 option is not valid on a non-IPv6 socket"
+            );
+        }
+
+        Ok(())
+    }
+}
+
 impl_socket_options!(
     pub(crate) struct Tos(i32);
     pub(crate) struct Ttl(IpTtl);
     pub(crate) struct Hdrincl(bool);
     pub(crate) struct Recverr(bool);
     pub(crate) struct Ipv6V6Only(bool);
+    pub(crate) struct Ipv6Recverr(bool);
+    pub(crate) struct Ipv6Dontfrag(bool);
+    pub(crate) struct Ipv6Mtu(i32);
 );
 
 #[derive(Clone, Copy, Debug)]

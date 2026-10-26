@@ -1,0 +1,14 @@
+# AFTER: three IPv6 options readable/writable
+V6O compile=ok
+V6O ipv6_recverr set rc=0 errno=0 (Success) | get rc=0 errno=0 (Success) value=1
+V6O ipv6_dontfrag set rc=0 errno=0 (Success) | get rc=0 errno=0 (Success) value=1
+V6O ipv6_mtu set rc=0 errno=0 (Success) | get rc=0 errno=0 (Success) value=1280
+V6O v4_ip_recverr rc=0 errno=0 (Success)
+V6O v4_sol6_recverr rc=-1 errno=92 (Protocol not available)
+V6O RESULT ipv6_recverr PASS
+V6O RESULT ipv6_dontfrag PASS
+V6O RESULT ipv6_mtu PASS
+V6O RESULT v4_ip_recverr PASS
+V6O RESULT v4_sol6_enoprotoopt PASS
+V6O RESULT all PASS
+V6O exit=0
