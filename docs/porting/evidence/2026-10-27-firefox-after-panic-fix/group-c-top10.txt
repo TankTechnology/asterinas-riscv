@@ -1,0 +1,17 @@
+# group C: same kernel + /proc/syscall_time enabled; panics: 0
+fm_sampler|r1|delta user_ticks=7384 sys_ticks=24077 sys_user_ratio=3.26 minflt=115938 majflt=25
+fm_sampler|r2|delta user_ticks=2884 sys_ticks=6972 sys_user_ratio=2.42 minflt=28574 majflt=0
+fm_sampler|r3|delta user_ticks=938 sys_ticks=2505 sys_user_ratio=2.67 minflt=602 majflt=0
+# r1 top10 by cpu (total_ns=24.85 s)
+1 read     nr0   count 35866 total 11596.3 blocked 4749.8 cpu 6846.5 avg 190.89 27.6%
+2 clone    nr56  count 36    total 2972.8  blocked 0      cpu 2972.8 avg 82577  12.0%
+3 ioctl    nr16  count 11054 total 2309.1  blocked 0      cpu 2309.1 avg 208.89 9.3%
+4 poll     nr7   count 56242 total 147076.6 blocked 145303.3 cpu 1773.3 avg 31.53 7.1%
+5 recvmsg  nr47  count 59300 total 2506.8  blocked 1361.3 cpu 1145.5 avg 19.32 4.6%
+6 futex    nr202 count 62318 total 1224874.0 blocked 1223732.7 cpu 1141.3 avg 18.31 4.6%
+7 openat   nr257 count 14536 total 1144.0  blocked 4.3    cpu 1139.8 avg 78.41 4.6%
+8 epoll_wait nr232 count 23013 total 167953.7 blocked 167152.4 cpu 801.3 avg 34.82 3.2%
+9 writev   nr20  count 16423 total 789.0   blocked 0      cpu 789.0 avg 48.04 3.2%
+10 clone3  nr435 count 222   total 706.0   blocked 0      cpu 706.0 avg 3180 2.8%
+# r2 top1 ioctl 21.9% (2862.6 ms), recvmsg 7.9% (18.54 us/call), sendmsg absent
+# r3 top1 ioctl 30.8% (2667.0 ms), recvmsg 9.8% (17.71 us/call), sendmsg absent

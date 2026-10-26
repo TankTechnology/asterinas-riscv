@@ -1,0 +1,4 @@
+# group C: kernel 69f3feada (fix) + syscall_time
+spp mode=sameproc size=64 n=200000 wall_ns_rt=10225.7 rt_per_s=97793 syscalls=400000 cpu_ns_rt=6720.0 blocked_ns_rt=0.0 cpu_ns_syscall=3360.0 cpu_parent=3 cpu_child=?
+spp mode=pingpong size=64 n=200000 wall_ns_rt=73261.5 rt_per_s=13650 syscalls=799999 cpu_ns_rt=61208.0 blocked_ns_rt=59921.0 cpu_ns_syscall=15302.0 cpu_parent=3 cpu_child=1
+spp mode=pipe size=64 n=200000 wall_ns_rt=4999.3 rt_per_s=200029 syscalls=400004 cpu_ns_rt=2460.8 blocked_ns_rt=0.0 cpu_ns_syscall=1230.4 cpu_parent=0 cpu_child=?

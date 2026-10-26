@@ -1,0 +1,6 @@
+# group B: kernel 69f3feada57f598a (fix 15a3268df), image ff-lag
+# 3 x 20 s scroll; panics: 0 (DAILY_DONE=ok)
+fm_win win=6291457 area=100
+fm_sampler|r1|delta user_ticks=7033 sys_ticks=22599 sys_user_ratio=3.21 minflt=111761 majflt=0
+fm_sampler|r2|delta user_ticks=2834 sys_ticks=7325 sys_user_ratio=2.58 minflt=36215 majflt=0
+fm_sampler|r3|delta user_ticks=869 sys_ticks=2373 sys_user_ratio=2.73 minflt=751 majflt=0
