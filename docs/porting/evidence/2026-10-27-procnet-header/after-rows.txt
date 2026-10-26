@@ -1,0 +1,13 @@
+# AFTER: lsof -i parses a real row (IPv4 holder socket on port 9998)
+# (the IPv6 holder socket did not appear in /proc/net/udp6 in this run; only the header check applies to v6)
+target/lsof-rows2/console.txt:LH3 py: 
+target/lsof-rows2/console.txt:LH3 addr: 1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65535 qlen 1000|    inet6 ::1/128 scope host proto kernel_lo |
+target/lsof-rows2/console.txt:LH3 udp_rows=1 udp6_rows=0
+target/lsof-rows2/console.txt:LH3 udp:   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode|   0: 00000000:270E 00000000:0000 07 00000000:00000000 00:00000000 00000000     0 0 191 1 0000000000000000 0 0 0 0 0|
+target/lsof-rows2/console.txt:LH3 lsof_i rc=0 warns=0 rows=1
+target/lsof-rows2/console.txt:LH3 lsof_i: COMMAND PID USER FD   TYPE DEVICE SIZE/OFF NODE NAME
+target/lsof-rows2/console.txt:LH3 lsof_i: python3  75 root 3u  IPv4    191      0t0  UDP *:9998 
+target/lsof-rows/console.txt:LH2 udp6_rows: 0
+target/lsof-rows/console.txt:LH2 udp_rows: 0
+target/lsof-rows/console.txt:LH2 lsof_i rc=1 warns=0 rows=0
+target/lsof-rows/console.txt:LH2 lsof_i: 

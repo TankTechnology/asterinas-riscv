@@ -315,12 +315,19 @@ fn proc_endpoint(addr: Option<&SocketAddr>, is_ipv6: bool) -> String {
 impl ProcFileOps for InetFileOps {
     fn read_at(&self, offset: usize, writer: &mut VmWriter) -> Result<usize> {
         let mut printer = VmPrinter::new_skip(writer, offset);
-        writeln!(
-            printer,
-            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
-        )?;
 
+        // Linux prints a different header for the IPv6 tables: the address
+        // columns are wider and `remote_address` is spelled out. Readers such
+        // as lsof validate the header before parsing the rows, so a shared
+        // short header makes them reject `tcp6`/`udp6` as unsupported.
         let is_ipv6 = self.view.is_ipv6();
+        let header = if is_ipv6 {
+            "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
+        } else {
+            "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode"
+        };
+        writeln!(printer, "{header}")?;
+
         let mut index = 0usize;
         for socket in inet_sockets() {
             if socket.protocol != self.view.protocol() {

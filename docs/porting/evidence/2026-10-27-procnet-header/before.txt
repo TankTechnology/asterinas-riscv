@@ -1,0 +1,6 @@
+# BEFORE (HEAD e74d914e8): lsof rejects the IPv6 tables
+# source: docs/porting/evidence/2026-10-27-app-compat/matrix-raw.txt
+AM_OUT lsof: lsof: WARNING: unsupported format: /proc/net/tcp6|lsof: WARNING: unsupported format: /proc/net/udp6
+
+# header both tables used before the change:
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode

@@ -1,0 +1,7 @@
+# AFTER (kernel with the v6 header fix)
+LH tcp6_header:   sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode$
+LH tcp_header:   sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode$
+LH udp6_header:   sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode$
+LH lsof_i rc=1 lines=1 warns=0
+LH lsof_i: 
+LH lsof_p: COMMAND PID USER  FD      TYPE DEVICE SIZE/OFF NODE NAME|systemd   1 root cwd   unknown                      /proc/1/cwd (readlink: No such file or directory)|
