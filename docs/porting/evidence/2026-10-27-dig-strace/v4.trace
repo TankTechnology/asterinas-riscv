@@ -1,0 +1,15 @@
+# dig @127.0.0.1 -p 18221 test.local A (succeeds, rc=0): full strace, no -f
+1	socket(AF_INET, SOCK_STREAM, IPPROTO_IP) = 3
+2	socket(AF_INET6, SOCK_STREAM, IPPROTO_IP) = 3
+3	getsockname(3, {sa_family=AF_INET6, sin6_port=htons(0), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "::", &sin6_addr), sin6_scope_id=0}, [28]) = 0
+4	socket(AF_INET, SOCK_DGRAM, IPPROTO_IP) = 9
+5	setsockopt(9, SOL_IP, IP_MTU_DISCOVER, [5], 4) = -1 ENOPROTOOPT (Protocol not available)
+6	setsockopt(9, SOL_SOCKET, SO_REUSEADDR, [1], 4) = 0
+7	getpeername(9, 0x7ffffff05660, [128])   = -1 ENOTCONN (Transport endpoint is not connected)
+8	setsockopt(9, SOL_SOCKET, SO_REUSEADDR, [0], 4) = 0
+9	setsockopt(9, SOL_IP, IP_RECVERR, [1], 4) = 0
+10	bind(9, {sa_family=AF_INET, sin_port=htons(0), sin_addr=inet_addr("0.0.0.0")}, 16) = 0
+11	connect(9, {sa_family=AF_INET, sin_port=htons(18221), sin_addr=inet_addr("127.0.0.1")}, 16) = 0
+12	sendmsg(9, {msg_name=NULL, msg_namelen=0, msg_iov=[{iov_base="\266\373\1 \0\1\0\0\0\0\0\1\4test\5local\0\0\1\0\1\0\0)\4"..., iov_len=51}], msg_iovlen=1, msg_controllen=0, msg_flags=0}, 0) = 51
+13	recvmsg(9, {msg_name={sa_family=AF_INET, sin_port=htons(18221), sin_addr=inet_addr("127.0.0.1")}, msg_namelen=128 => 16, msg_iov=[{iov_base="\266\373\201\200\0\1\0\1\0\0\0\0\4test\5local\0\0\1\0\1\300\f\0\1"..., iov_len=1310700}], msg_iovlen=1, msg_controllen=0, msg_flags=0}, 0) = 44
+14	+++ exited with 0 +++

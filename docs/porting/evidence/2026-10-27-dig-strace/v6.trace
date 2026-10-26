@@ -1,0 +1,12 @@
+# dig @::1 -p 18222 test.local A (fails, rc=9): full strace, no -f
+1	socket(AF_INET, SOCK_STREAM, IPPROTO_IP) = 3
+2	socket(AF_INET6, SOCK_STREAM, IPPROTO_IP) = 3
+3	getsockname(3, {sa_family=AF_INET6, sin6_port=htons(0), sin6_flowinfo=htonl(0), inet_pton(AF_INET6, "::", &sin6_addr), sin6_scope_id=0}, [28]) = 0
+4	socket(AF_INET6, SOCK_DGRAM, IPPROTO_IP) = 9
+5	setsockopt(9, SOL_IPV6, IPV6_DONTFRAG, [0], 4) = -1 ENOPROTOOPT (Protocol not available)
+6	setsockopt(9, SOL_IPV6, IPV6_MTU, [1280], 4) = -1 ENOPROTOOPT (Protocol not available)
+7	setsockopt(9, SOL_SOCKET, SO_REUSEADDR, [1], 4) = 0
+8	getpeername(9, 0x7ffffffe6660, [128])   = -1 ENOTCONN (Transport endpoint is not connected)
+9	setsockopt(9, SOL_SOCKET, SO_REUSEADDR, [0], 4) = 0
+10	setsockopt(9, SOL_IPV6, IPV6_RECVERR, [1], 4) = -1 ENOPROTOOPT (Protocol not available)
+11	+++ exited with 9 +++

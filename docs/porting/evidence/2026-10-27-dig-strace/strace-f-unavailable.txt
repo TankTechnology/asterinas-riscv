@@ -1,0 +1,6 @@
+# strace -f aborts dig: our kernel does not support clone-family ptrace events
+# (kernel/core/src/process/clone.rs:243-249 -> EOPNOTSUPP when the cloner is traced)
+# transcribed from the captured gate output of target/dig-strace (workspace removed in cleanup)
+S v6_f rc=134 trace_lines=5 out=thread.c:140:isc_thread_create(): fatal error: pthread_create(): Operation not supported (95)|Aborted|
+S v6_f tail: 88    socket(AF_INET, SOCK_STREAM, IPPROTO_IP) = 3|88    socket(AF_INET6, SOCK_STREAM, IPPROTO_IP) = 3|88    getsockname(3, {sa_family=AF_INET6, ...}) = 0|88    --- SIGABRT {si_signo=SIGABRT, si_code=SI_TKILL, si_pid=88, si_uid=0} ---|88    +++ killed by SIGABRT +++
+S v4_f rc=134 trace_lines=5 out=thread.c:140:isc_thread_create(): fatal error: pthread_create(): Operation not supported (95)|Aborted|
