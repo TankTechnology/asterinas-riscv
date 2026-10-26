@@ -1,0 +1,7 @@
+PROBE stage=env
+PROBE nproc=4
+PROBE sb_build_rc=0
+PROBE sb_build_err=
+PROBE sb_rc=0
+PROBE sb_all=SB fork ops=100 avg_wall_ns=142683 avg_cpu_ns=59946|SB pthread ops=100 avg_wall_ns=29415 avg_cpu_ns=31340|SB mmap4k ops=5000 avg_wall_ns=1865 avg_cpu_ns=1810|SB pipe_rtt ops=20000 avg_wall_ns=405 avg_cpu_ns=395|SB futex_rtt ops=20000 avg_wall_ns=5844 avg_cpu_ns=4232|
+PROBE probe_done=1
