@@ -1,0 +1,12 @@
+PROBE stage=boot
+PROBE wm_available=1
+PROBE wm_boot=max_used_bytes=134464 max_used_kib=131 scanned_tasks=159
+PROBE stage=shell_activity
+PROBE wm_after_shell=max_used_bytes=134464 max_used_kib=131 scanned_tasks=225
+PROBE stage=firefox
+PROBE ff_window_ms_polls=15
+PROBE wm_with_ff=max_used_bytes=134464 max_used_kib=131 scanned_tasks=503
+PROBE ff_procs=9
+PROBE wm_after_ff_exit=max_used_bytes=134464 max_used_kib=131 scanned_tasks=716
+PROBE stage=cleanup
+PROBE probe_done=1
