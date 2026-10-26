@@ -1,0 +1,9 @@
+# kernel 69f3feada57f598a (with the fix), image ff-lag
+# pf_repro_check.sh, all four modes completed with no panic:
+pfr_mode=plain start 00:31:47   pfr_mode=plain rc=0 end 00:31:51
+pfr_mode=threads start 00:31:51 pfr_mode=threads rc=0 end 00:32:15
+pfr_mode=press start 00:32:15   pfr_mode=press rc=0 end 00:32:45
+pfr_mode=churn start 00:32:45   pfr_mode=churn rc=0 end 00:33:13
+# panic count for the whole boot: 0
+# Note: these same loads did not panic on the pre-fix kernel either, so they
+# prove "no regression", not "the fix works" (see the doc, section 4.1).

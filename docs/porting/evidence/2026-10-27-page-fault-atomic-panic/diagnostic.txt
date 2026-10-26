@@ -1,0 +1,13 @@
+# kernel 332ccd49 (diagnostic build, before the fix), image ff-lag
+# First atomic-mode user fault logged 1 s after boot:
+[     1.018] WARN  : atomic-mode user fault: preempt_count=1, addr=0x5555556fa000, syscall=217, user_sp=0x7ffffff1a248, user_pc=0x7ffffe7be623
+# syscall 217 = getdents64: a user page fault taken while the syscall holds
+# spin locks is a normal occurrence, not an exceptional path.
+
+# Targeted repro (pf_repro_check.sh) on the unbounded kernel:
+#   plain   (1 MiB untouched pages as sendmsg source)      -> no panic
+#   threads (4 sender threads)                             -> no panic
+#   press   (threads + 768 MiB resident)                   -> no panic
+#   churn   (threads + 64 MiB mmap/munmap churn)           -> run stopped before completing
+# Conclusion: faulting while holding locks is not sufficient; the panic needs
+# the Vmar read lock to be contended by a writer (mmap/munmap/mprotect).

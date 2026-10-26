@@ -1,0 +1,16 @@
+# kernel 69f3feada57f598a (fix), image ff-lag, 10 Firefox scroll rounds
+# window: pfx_ff win=6291457 area=100
+# panic count: 0
+# rounds present:
+pff_r1| pff_r10| pff_r2| pff_r3| pff_r4| pff_r5| pff_r6| pff_r7| pff_r8| pff_r9| 
+# top1 of each round:
+pff_r1|| 1 | read | 0 | 7611 | 4214.9 | 347.2 | 3867.8 | 508.18 | 35.3% |
+pff_r2|| 1 | read | 0 | 11676 | 2759.2 | 0.4 | 2758.8 | 236.28 | 23.9% |
+pff_r3|| 1 | ioctl | 16 | 760 | 296.4 | 0.0 | 296.4 | 390.01 | 18.7% |
+pff_r4|| 1 | poll | 7 | 30891 | 114699.5 | 113741.9 | 957.6 | 31.00 | 50.2% |
+pff_r5|| 1 | syscall_179 | 179 | 185 | 198.3 | 0.0 | 198.3 | 1072.06 | 14.9% |
+pff_r6|| 1 | execve | 59 | 40 | 43.6 | 0.0 | 43.6 | 1089.33 | 10.4% |
+pff_r7|| 1 | execve | 59 | 40 | 42.3 | 0.0 | 42.3 | 1058.04 | 11.6% |
+pff_r8|| 1 | execve | 59 | 40 | 42.7 | 0.0 | 42.7 | 1068.61 | 11.3% |
+pff_r9|| 1 | madvise | 28 | 5635 | 178.5 | 1.2 | 177.4 | 31.47 | 30.8% |
+pff_r10|| 1 | execve | 59 | 40 | 45.4 | 0.0 | 45.4 | 1133.91 | 13.4% |
