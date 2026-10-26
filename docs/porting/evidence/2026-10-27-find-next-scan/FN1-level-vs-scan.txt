@@ -1,0 +1,8 @@
+PROBE available=1
+PROBE b0=level_cyc=1025685 scan_cyc=158028361 total_cyc=571081442 calls=119942 level_iters=5115 scan_iters=1022635
+PROBE a0=level_cyc=1075700 scan_cyc=183479718 total_cyc=647113903 calls=121227 level_iters=5553 scan_iters=1216483
+PROBE b512=level_cyc=1083224 scan_cyc=185176298 total_cyc=653055262 calls=122030 level_iters=5598 scan_iters=1230243
+PROBE a512=level_cyc=1240599 scan_cyc=213087390 total_cyc=748606056 calls=135563 level_iters=6644 scan_iters=1425793
+PROBE b2048=level_cyc=1247469 scan_cyc=214644992 total_cyc=753717163 calls=136315 level_iters=6682 scan_iters=1437250
+PROBE a2048=level_cyc=1474259 scan_cyc=229020637 total_cyc=888016041 calls=240639 level_iters=8128 scan_iters=1541989
+PROBE probe_done=1

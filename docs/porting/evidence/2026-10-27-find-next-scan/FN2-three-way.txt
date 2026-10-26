@@ -1,0 +1,8 @@
+PROBE available=1
+PROBE b0=level_cyc=1219586 scan_cyc=171968804 fetch_cyc=268922646 total_cyc=778864475 calls=119794 level_iters=5020 scan_iters=1027438 fetch_iters=1121384
+PROBE a0=level_cyc=1293535 scan_cyc=202328837 fetch_cyc=310355304 total_cyc=889525881 calls=121079 level_iters=5460 scan_iters=1221508 fetch_iters=1316603
+PROBE b512=level_cyc=1306528 scan_cyc=204608689 fetch_cyc=313587410 total_cyc=898794352 calls=121884 level_iters=5507 scan_iters=1235490 fetch_iters=1331239
+PROBE a512=level_cyc=1555446 scan_cyc=234769928 fetch_cyc=357996871 total_cyc=1023369888 calls=135397 level_iters=6555 scan_iters=1431262 fetch_iters=1540778
+PROBE b2048=level_cyc=1565823 scan_cyc=236702974 fetch_cyc=360974031 total_cyc=1031405253 calls=136179 level_iters=6595 scan_iters=1442941 fetch_iters=1553094
+PROBE a2048=level_cyc=1922237 scan_cyc=252992762 fetch_cyc=406373186 total_cyc=1196346016 calls=240511 level_iters=8043 scan_iters=1547913 fetch_iters=1762649
+PROBE probe_done=1
