@@ -1,0 +1,33 @@
+# UDP bind/connect matrix probes on HEAD 86cf3f5d0
+
+## probe 3: dig retries all fail; getent works
+AT3 uptime_start=5.28
+AT3 getent1 rc=0 2a04:4e42:68::644 debian.map.fastlydns.net deb.debian.org|
+AT3 dig_t1 rc=9 out=;; communications error to 10.0.2.3#53: timed out|;; no servers could be reached
+AT3 dig_t3 rc=9 out=;; communications error to 10.0.2.3#53: timed out|;; communications error to 10.0.2.3#53: timed out|;; communications error to 10.0.2.3#53: timed out|;; no serv
+AT3 dig_10s rc=9 out=;; communications error to 10.0.2.3#53: timed out|;; no servers could be reached
+AT3 udp_snapshot:    0: 00000000:8005 0302000A:0035 01 00000000:00000000 00:00000000 00000000     0 0 207 1 0000000000000000 0 0 0 0 0|
+AT3 dig_slow rc=9 out=;; communications error to 10.0.2.3#53: timed out|
+AT3 py: iter0 error TimeoutError('timed out') 4.00s
+AT3 py: iter1 error TimeoutError('timed out') 4.00s
+AT3 py: iter2 error TimeoutError('timed out') 4.00s
+AT3 done 17:38:24
+
+## probe 4: epoll LT/ET and poll(2) with explicit bind(0.0.0.0,0) never see readiness
+AT4 dig_rc=9 out=;; communications error to 10.0.2.3#53: timed out|
+AT4 trace_lines=0
+AT4 udp_during: 
+AT4 py: epoll_lt events=[] waited=4.00s
+AT4 py: epoll_et events=[] waited=4.00s
+AT4 py: poll_lt events=[] waited=4.00s
+AT4 done 17:38:56
+
+## probe 5: explicit wildcard bind -> local 0.0.0.0 -> timeouts; implicit -> 10.0.2.15 -> reply
+AT5 py: implicit_sendto local=('10.0.2.15', 32768) error="TimeoutError('timed out')" 3.00s
+AT5 py: implicit_connect local=('10.0.2.15', 32769) reply=12 0.00s
+AT5 py: bind0_sendto local=('0.0.0.0', 32768) error="TimeoutError('timed out')" 3.00s
+AT5 py: bind0_connect local=('0.0.0.0', 32769) error="TimeoutError('timed out')" 3.00s
+AT5 py: bindport_sendto local=('0.0.0.0', 40555) error="TimeoutError('timed out')" 3.00s
+AT5 py: bind0_sendto_2 local=('0.0.0.0', 32770) error="TimeoutError('timed out')" 3.00s
+AT5 udp_now: 
+AT5 done 17:39:20
