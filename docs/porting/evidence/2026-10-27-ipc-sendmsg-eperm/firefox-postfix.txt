@@ -1,0 +1,1 @@
+# Firefox with content sandbox enabled, POST-fix kernel e8b4a819, run as root

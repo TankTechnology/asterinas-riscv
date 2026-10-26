@@ -241,8 +241,8 @@ impl AuxiliaryData {
                 }
                 Message::Cred(CredMessage { cred: msg_cred }) => {
                     let cur_cred = SocketCred::<ReadOp>::new_current();
-                    if cur_cred.to_real_c_cred() != msg_cred {
-                        // FIXME: Allow this if we're root or have the CAP_SYS_ADMIN capability.
+                    if !msg_cred.is_acceptable_sender_claim(&cur_cred.to_real_c_cred()) {
+                        // FIXME: Allow a differing uid/gid when the sender has CAP_SYS_ADMIN.
                         return_errno_with_message!(
                             Errno::EPERM,
                             "setting others' credentials is not allowed"
@@ -260,15 +260,14 @@ impl AuxiliaryData {
             .iter()
             .any(|file| (&**file as &dyn Any).is::<UnixStreamSocket>())
         {
+            // Linux lets any user pass a socket over a socket (it runs a
+            // cycle collector instead of refusing).  Demanding CAP_SYS_ADMIN
+            // here breaks ordinary multi-process IPC: Firefox's content
+            // processes receive their channel ends this way, so a non-root
+            // desktop user sees `sendmsg` fail with EPERM and the content
+            // process dies with "pipe error: Operation not permitted".
+            // Keep the warning, drop the capability check.
             warn!("UNIX sockets in SCM_RIGHTS messages can leak kernel resource");
-
-            let current = current_thread!();
-            let posix_thread = current.as_posix_thread().unwrap();
-            lsm_hooks::on_capable(lsm_hooks::CapableContext::new(
-                UserNamespace::get_init_singleton().as_ref(),
-                posix_thread,
-                CapSet::SYS_ADMIN,
-            ))?;
         }
 
         Ok(Self { files, cred })

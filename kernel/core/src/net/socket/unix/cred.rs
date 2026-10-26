@@ -90,6 +90,29 @@ pub(crate) struct CUserCred {
 }
 
 impl CUserCred {
+    /// Returns whether this `SCM_CREDENTIALS` claim from a sender is one the
+    /// kernel may accept.
+    ///
+    /// Linux compares the claimed uid/gid with the sender's current ones and
+    /// the claimed pid with the sender's pid as seen from its own PID
+    /// namespace (`task_tgid_vnr`).  A pid of zero asks the kernel to fill the
+    /// value in.
+    ///
+    /// Asterinas does not implement PID namespaces yet: `CLONE_NEWPID` is
+    /// accepted and ignored.  Sandboxed processes (Firefox's content
+    /// processes among them) therefore still believe they are pid 1 and send
+    /// that value; accept it so that such IPC keeps working, while a foreign
+    /// pid other than 0 or 1 is still rejected.
+    pub(in crate::net) fn is_acceptable_sender_claim(&self, current: &Self) -> bool {
+        if self.uid != current.uid && self.uid != Uid::INVALID {
+            return false;
+        }
+        if self.gid != current.gid && self.gid != Gid::INVALID {
+            return false;
+        }
+        self.pid == 0 || self.pid == 1 || self.pid == current.pid
+    }
+
     pub(in crate::net) const fn new_invalid() -> Self {
         Self {
             pid: 0,

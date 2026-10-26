@@ -1,0 +1,1 @@
+# Firefox with content sandbox enabled (pre-fix kernel), run as root

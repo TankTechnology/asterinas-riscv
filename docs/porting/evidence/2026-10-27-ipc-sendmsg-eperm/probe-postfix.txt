@@ -1,0 +1,20 @@
+# post-fix probe (kernel e8b4a819)
+root ipc_env uid=0 euid=0 gid=0
+root ipc_case SCM_RIGHTS:regular_fd              rc=0 errno=-
+root ipc_case SCM_RIGHTS:regular_fd:recv         rc=0 errno=-
+root ipc_case SCM_RIGHTS:socket_fd               rc=0 errno=-
+root ipc_case SCM_RIGHTS:socket_fd_DONTWAIT      rc=0 errno=-
+root ipc_case SCM_RIGHTS:for_CLOEXEC             rc=0 errno=-
+root ipc_case recvmsg:MSG_CMSG_CLOEXEC           rc=0 errno=-
+root ipc_case recvmsg:CLOEXEC_set                rc=-1 errno=Success
+root ipc_case send:MSG_NOSIGNAL                  rc=0 errno=-
+root ipc_case pipe2:O_CLOEXEC                    rc=0 errno=-
+root ipc_case pipe2:write                        rc=0 errno=-
+root ipc_case pipe2:read                         rc=0 errno=-
+root ipc_case pipe:nonblock_full                 rc=-1 errno=Resource temporarily unavailable
+root ipc_case SCM_CREDENTIALS:own_pid            rc=0 errno=-
+root ipc_case SCM_CREDENTIALS:pid_zero           rc=0 errno=-
+root ipc_case SCM_CREDENTIALS:foreign_pid        rc=-1 errno=Operation not permitted
+root ipc_case send:peer_closed                   rc=-1 errno=Broken pipe
+root ipc_case ff_style:seqpacket_socket_fd       rc=0 errno=-
+root ipc_done failures=4
