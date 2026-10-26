@@ -1,0 +1,2 @@
+XORG_CLIENT user=False pass=False command=False done=False
+FAIL (the Xorg flow did not complete; see /home/arch-anjie/vb-ws/PT3/console.txt and /home/arch-anjie/vb-ws/PT3/boot.log)

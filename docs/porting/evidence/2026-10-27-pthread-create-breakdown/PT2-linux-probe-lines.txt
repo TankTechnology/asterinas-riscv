@@ -1,0 +1,7 @@
+PROBE stage=env
+PROBE nproc=4
+PROBE pt_build_rc=0
+PROBE pt_build_err=
+PROBE pt_rc=0
+PROBE pt_all=PT default stack=0 d12_med=15457 d23_med=-2978 d34_med=8559 total_med=21037 total_p10=15607 total_p90=31680|PT small stack=131072 d12_med=16281 d23_med=-3110 d34_med=8731 total_med=22059 total_p10=18007 total_p90=35587|PT large stack=33554432 d12_med=10970 d23_med=-3057 d34_med=8707 total_med=16851 total_p10=15646 total_p90=28435|PT default2 stack=0 d12_med=11303 d23_med=-3072 d34_med=8803 total_med=17054 total_p10=15968 total_p90=24893|
+PROBE probe_done=1

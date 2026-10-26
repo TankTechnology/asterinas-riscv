@@ -1,0 +1,25 @@
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=dev-bind
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=dev-bind
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=api-directories
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=api-directories
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=run-mount
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=run-mount
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=tmp-mount
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=tmp-mount
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=chroot
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=chroot
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=chdir
+DEBIAN_STAGE1_PROGRESS step=handoff-done action=chdir
+DEBIAN_STAGE1_PROGRESS step=handoff-enter action=exec
+[0;1;31mFailed to find module 'autofs4'[0m
+[0;1;31mFailed to find module 'unix'[0m
+[!p]104[?7hsystemd 257.13-1~deb13u1 running in system mode (+PAM +AUDIT +SELINUX +APPARMOR +IMA +IPE +SMACK +SECCOMP +GCRYPT -GNUTLS +OPENSSL +ACL +BLKID +CURL +ELFUTILS +FIDO2 +IDN2 -IDN +IPTC +KMOD +LIBCRYPTSETUP +LIBCRYPTSETUP_PLUGINS +LIBFDISK +PCRE2 +PWQUALITY +P11KIT +QRENCODE +TPM2 +BZIP2 +LZ4 +XZ +ZLIB +ZSTD +BPF_FRAMEWORK +BTF -XKBCOMMON -UTMP +SYSVINIT +LIBARCHIVE)
+Detected virtualization kvm.
+Detected architecture x86-64.
+
+[0;1;39mWelcome to [0m[1mDebian GNU/Linux 13 (trixie)[0m[0;1;39m![0m
+
+Hostname set to <thinkpad>.
+[0;1;38:5:185mFailed to open netlink, ignoring: Protocol not available[0m
+[0;1;38:5:185mFailed to enable kbrequest handling, ignoring: Inappropriate ioctl for device[0m
+Failed to open libbpf, cgroup BPF features disabled: Operation not supported
