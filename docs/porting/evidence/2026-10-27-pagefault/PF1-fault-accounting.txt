@@ -1,0 +1,13 @@
+PROBE run1_pf=b0:count=65 total_ns=322573 avg_ns=4962 b1:count=933 total_ns=9859961 avg_ns=10568 b2:count=1751 total_ns=243533483 avg_ns=139082 b3:count=3990 total_ns=78287176 avg_ns=19620 total:count=6739 total_ns=332003194 avg_ns=49265
+PROBE run1_st=ok
+PROBE run1_ffstat=utime=39 stime=368
+PROBE run1_syscall_total=cpu_ns=306649961 count=6689
+PROBE run2_pf=b0:count=66 total_ns=233665 avg_ns=3540 b1:count=941 total_ns=7584562 avg_ns=8060 b2:count=1772 total_ns=29359564 avg_ns=16568 b3:count=3988 total_ns=24141476 avg_ns=6053 total:count=6767 total_ns=61319269 avg_ns=9061
+PROBE run2_st=ok
+PROBE run2_ffstat=utime=28 stime=125
+PROBE run2_syscall_total=cpu_ns=134839681 count=6679
+PROBE run3_pf=b0:count=66 total_ns=245960 avg_ns=3726 b1:count=943 total_ns=8611775 avg_ns=9132 b2:count=1771 total_ns=28974913 avg_ns=16360 b3:count=3989 total_ns=26726298 avg_ns=6699 total:count=6769 total_ns=64558949 avg_ns=9537
+PROBE run3_st=ok
+PROBE run3_ffstat=utime=25 stime=134
+PROBE run3_syscall_total=cpu_ns=144188618 count=6617
+PROBE probe_done=1
