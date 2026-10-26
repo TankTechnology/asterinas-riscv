@@ -1,0 +1,8 @@
+# Wildcard-bind failure case, BEFORE any kernel change (HEAD e74d914e8)
+# tools/x86/net/wildcard_bind_check.sh run on target/systemd-health/daily.ext2
+WB compile=ok
+WB bind: CASE bind|local=0.0.0.0:32768|attempt=1 recvfrom errno=11 (Resource temporarily unavailable)|attempt=2 recvfrom errno=11 (Resource temporarily unavailable)|attempt=3 recvfrom errno=11 (Resource temporarily unavailable)|RESULT bind FAIL|
+WB nobind: CASE nobind|attempt=1 recvfrom errno=11 (Resource temporarily unavailable)|attempt=2 reply=86 bytes id=0x1234|RESULT nobind PASS|
+WB udp: 
+
+# verdict: bind=FAIL nobind=PASS (check_rc=1)
