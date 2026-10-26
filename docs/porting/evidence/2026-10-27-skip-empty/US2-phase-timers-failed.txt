@@ -1,0 +1,9 @@
+PROBE stage=env
+PROBE stage=t0
+PROBE before_t0=calls=17471 iters=23609 pages=510877 cyc_loop=0 cyc_flush=0 cyc_calls=0
+PROBE after_t0=calls=17987 iters=23746 pages=514124 cyc_loop=0 cyc_flush=0 cyc_calls=0
+PROBE stage=t2048
+PROBE before_t2048_cyc=calls=18072 iters=23848 pages=516518 cyc_loop=0 cyc_flush=0 cyc_calls=0
+PROBE before_t2048=calls=18159 iters=23952 pages=518914 cyc_loop=0 cyc_flush=0 cyc_calls=0
+PROBE after_t2048=calls=18660 iters=127073 pages=931281 cyc_loop=0 cyc_flush=0 cyc_calls=0
+PROBE probe_done=1

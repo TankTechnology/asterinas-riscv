@@ -1,0 +1,8 @@
+PROBE stage=env
+PROBE stage=t0
+PROBE before_t0=calls=17466 iters=23602 pages=510842
+PROBE after_t0=calls=17976 iters=23733 pages=514081
+PROBE stage=t2048
+PROBE before_t2048=calls=18058 iters=23832 pages=516469
+PROBE after_t2048=calls=18542 iters=126932 pages=928348
+PROBE probe_done=1
