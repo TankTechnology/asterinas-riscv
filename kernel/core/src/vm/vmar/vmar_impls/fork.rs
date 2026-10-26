@@ -99,9 +99,15 @@ fn cow_copy_pt(src: &mut CursorMut<'_>, dst: &mut CursorMut<'_>, size: usize) ->
             VmQueriedItem::MappedRam { frame, mut prop } => {
                 let frame = (*frame).clone();
 
-                src.protect_next(end_va - mapped_va, op).unwrap();
+                // The cursor already points at this page (it was just queried),
+                // so protect it in place instead of searching for it again.
+                let _ = src.protect_cur(op);
 
-                dst.jump(mapped_va).unwrap();
+                // `map` advances the destination cursor too, so only jump when
+                // the page is not the one right after the previous mapping.
+                if dst.virt_addr() != mapped_va {
+                    dst.jump(mapped_va).unwrap();
+                }
                 op(&mut prop.flags, &mut prop.cache);
                 dst.map(frame, prop);
 

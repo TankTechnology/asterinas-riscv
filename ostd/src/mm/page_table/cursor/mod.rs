@@ -481,6 +481,24 @@ impl<'rcu, C: PageTableConfig> CursorMut<'rcu, C> {
         self.0.move_forward();
     }
 
+    /// Applies the operation to the current entry and moves to the next page.
+    ///
+    /// Unlike [`Self::protect_next`], this does not search for the next mapped
+    /// entry: the caller must have positioned the cursor on a mapped page (for
+    /// example with [`Self::find_next`] followed by [`Self::query`]).
+    pub(crate) unsafe fn protect_cur(
+        &mut self,
+        op: &mut impl FnMut(&mut PageProperty),
+    ) -> Range<Vaddr> {
+        self.0.cur_entry().protect(op);
+
+        let protected_va = self.0.cur_va_range();
+
+        self.0.move_forward();
+
+        protected_va
+    }
+
     /// Finds and removes the first page table fragment in the following range.
     ///
     /// The range to be found in is the current virtual address with the

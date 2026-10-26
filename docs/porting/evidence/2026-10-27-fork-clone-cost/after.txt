@@ -1,0 +1,10 @@
+# kernel 16dcb23215158731 (fork cursor optimization), image ff-lag
+fk_fork n=10000 wall_ns_op=3311387 clone_cpu_ns_op=1518047 clone_count=10000
+fk_thread n=10000 wall_ns_op=1975766 clone_cpu_ns_op=-0 clone_count=0
+fk_size mb=64 wall_ns_fork=30643927 clone_cpu_ns=30573792
+fk_size mb=256 wall_ns_fork=114037392 clone_cpu_ns=113959637
+fk_size mb=512 wall_ns_fork=226758477 clone_cpu_ns=226667804
+fk_reserve mb=64 wall_ns_fork=1528894 clone_cpu_ns=1465002
+fk_protect mb=64 wall_ns_protect=11336861
+fk_reserve mb=512 wall_ns_fork=1717613 clone_cpu_ns=1648005
+fk_protect mb=512 wall_ns_protect=94507993

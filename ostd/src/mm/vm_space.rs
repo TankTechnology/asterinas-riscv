@@ -572,6 +572,25 @@ impl<'a> CursorMut<'a> {
             })
         }
     }
+
+    /// Protects the entry the cursor currently points at and moves forward.
+    ///
+    /// The caller must have positioned the cursor on a mapped page already
+    /// (with [`Self::find_next`] and [`Self::query`]). This avoids searching
+    /// for the next mapped page twice, which matters for operations that walk
+    /// a whole mapping page by page, such as copy-on-write at `fork`.
+    pub fn protect_cur(
+        &mut self,
+        mut op: impl FnMut(&mut PageFlags, &mut CachePolicy),
+    ) -> Range<Vaddr> {
+        // SAFETY: It is safe to set `PageFlags` and `CachePolicy` of memory
+        // in the userspace.
+        unsafe {
+            self.pt_cursor.protect_cur(&mut |prop| {
+                op(&mut prop.flags, &mut prop.cache);
+            })
+        }
+    }
 }
 
 cpu_local_cell! {

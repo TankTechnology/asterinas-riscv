@@ -1,0 +1,9 @@
+# kernel 69f3feada57f598a (before the fork cursor optimization)
+fk_fork n=10000 wall_ns_op=3419816 clone_cpu_ns_op=1710435 clone_count=10000
+fk_size mb=64 wall_ns_fork=37567322 clone_cpu_ns=37482591
+fk_size mb=256 wall_ns_fork=143545487 clone_cpu_ns=143469206
+fk_size mb=512 wall_ns_fork=272841514 clone_cpu_ns=271493070
+fk_reserve mb=64 wall_ns_fork=1668698 clone_cpu_ns=1619518
+fk_protect mb=64 wall_ns_protect=12265699
+fk_reserve mb=512 wall_ns_fork=1905721 clone_cpu_ns=1843423
+fk_protect mb=512 wall_ns_protect=90675821
