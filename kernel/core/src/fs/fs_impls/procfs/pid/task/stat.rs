@@ -185,8 +185,8 @@ impl ProcFileOps for StatFileOps {
                 StatMode::Thread => posix_thread.prof_clock(),
             };
             (
-                prof_clock.user_clock().read_jiffies().as_u64(),
-                prof_clock.kernel_clock().read_jiffies().as_u64(),
+                jiffies_to_user_ticks(prof_clock.user_clock().read_jiffies().as_u64()),
+                jiffies_to_user_ticks(prof_clock.kernel_clock().read_jiffies().as_u64()),
             )
         };
 
@@ -349,14 +349,27 @@ impl ProcFileOps for StatFileOps {
     }
 }
 
-/// Converts a duration into kernel clock ticks.
-fn duration_to_jiffies(duration: Duration) -> u64 {
-    const NSEC_PER_JIFFY: u64 = NSEC_PER_SEC as u64 / TIMER_FREQ;
-    const { assert!((NSEC_PER_SEC as u64).is_multiple_of(TIMER_FREQ)) };
+/// The tick rate the `/proc` interfaces report in, as Linux defines it.
+const USER_HZ: u64 = 100;
 
-    let sec_jiffies = duration.as_secs().saturating_mul(TIMER_FREQ);
-    let subsec_jiffies = u64::from(duration.subsec_nanos()) / NSEC_PER_JIFFY;
-    sec_jiffies.saturating_add(subsec_jiffies)
+/// Converts an internal jiffy count (at `TIMER_FREQ`) into `USER_HZ` ticks.
+///
+/// Linux reports `utime`/`stime` and friends in `USER_HZ` ticks (100 per
+/// second), while the kernel clock counts at `TIMER_FREQ` (1000 per second).
+/// Reporting raw jiffies would inflate every CPU-time field by
+/// `TIMER_FREQ / USER_HZ`.
+fn jiffies_to_user_ticks(jiffies: u64) -> u64 {
+    jiffies.saturating_mul(USER_HZ) / TIMER_FREQ
+}
+
+/// Converts a duration into `USER_HZ` ticks.
+fn duration_to_jiffies(duration: Duration) -> u64 {
+    const NSEC_PER_TICK: u64 = NSEC_PER_SEC as u64 / USER_HZ;
+    const { assert!((NSEC_PER_SEC as u64).is_multiple_of(USER_HZ)) };
+
+    let sec_ticks = duration.as_secs().saturating_mul(USER_HZ);
+    let subsec_ticks = u64::from(duration.subsec_nanos()) / NSEC_PER_TICK;
+    sec_ticks.saturating_add(subsec_ticks)
 }
 
 /// Returns the `priority`, `rt_priority`, and `policy` values for `/proc/<pid>/stat`.
