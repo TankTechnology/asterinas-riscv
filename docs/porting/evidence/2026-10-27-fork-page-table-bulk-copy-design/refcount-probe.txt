@@ -1,0 +1,6 @@
+# wip/pte-bulk PoC: /proc/bulk_probe (512 real frames, 20 rounds of
+# dup_frame_ref + drop = one inc_ref_count + one dec)
+bp_r1 frames=512 rounds=20 bump_inc_dec_ns=52
+bp_r2 frames=512 rounds=20 bump_inc_dec_ns=53
+bp_r3 frames=512 rounds=20 bump_inc_dec_ns=51
+# panic=0
