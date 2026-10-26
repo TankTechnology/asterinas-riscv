@@ -1,0 +1,24 @@
+PROBE stage=env
+PROBE nproc=4
+PROBE shape_build_rc=0
+PROBE shape_build_err=
+PROBE sys_on_rc=0
+PROBE t0_wall_ms=51
+PROBE t0_madvise=count=200 cpu_ns=15720224 avg=78601
+PROBE t0_mmap=count=290 cpu_ns=2867390 avg=9887
+PROBE t1_wall_ms=66
+PROBE t1_madvise=count=200 cpu_ns=19367198 avg=96835
+PROBE t1_mmap=count=290 cpu_ns=4107965 avg=14165
+PROBE t512_wall_ms=1293
+PROBE t512_madvise=count=200 cpu_ns=36751483 avg=183757
+PROBE t512_mmap=count=290 cpu_ns=4595268 avg=15845
+PROBE t2048_wall_ms=4531
+PROBE t2048_madvise=count=200 cpu_ns=138425003 avg=692125
+PROBE t2048_mmap=count=290 cpu_ns=6190610 avg=21346
+PROBE r256_512_wall_ms=1079
+PROBE r256_512_madvise=count=200 cpu_ns=20935456 avg=104677
+PROBE r256_512_mmap=count=290 cpu_ns=4448642 avg=15340
+PROBE r1024_512_wall_ms=805
+PROBE r1024_512_madvise=count=200 cpu_ns=63310245 avg=316551
+PROBE r1024_512_mmap=count=290 cpu_ns=3563523 avg=12288
+PROBE probe_done=1
