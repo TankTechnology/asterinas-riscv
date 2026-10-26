@@ -19,6 +19,7 @@ use crate::{
             DequeuedSignal, PauseReason,
             c_types::siginfo_t,
             constants::{CLD_TRAPPED, SIGCHLD, SIGKILL, SIGTRAP},
+            sig_num::SigNum,
             signals::{kernel::KernelSignal, raw::RawSignal, user::UserSignal},
         },
     },
@@ -308,6 +309,32 @@ impl PosixThread {
             .ok_or_else(|| Error::with_message(Errno::ESRCH, "no such tracee"))
     }
 
+    /// Forgets a tracee after `PTRACE_DETACH`.
+    ///
+    /// The tracer side of the relationship is bookkeeping only; the tracee's
+    /// own [`TraceeStatus`] is cleared by [`Self::ptrace_detach`] beforehand.
+    pub(crate) fn remove_tracee(&self, tid: Tid) {
+        if let Some(tracees) = self.tracees() {
+            tracees.lock().remove(&tid);
+        }
+    }
+
+    /// Detaches from a ptrace-stopped tracee and resumes it.
+    ///
+    /// The stop signal that made the tracee stop is dropped, so detaching after
+    /// `PTRACE_ATTACH` does not leave the tracee stopped by `SIGSTOP`.
+    pub(crate) fn ptrace_detach(&self, sig_num: Option<SigNum>, ctx: &Context) -> Result<()> {
+        let status = self.get_tracee_status()?;
+
+        status.detach_from_stop()?;
+        if let Some(sig_num) = sig_num {
+            self.enqueue_signal(Box::new(UserSignal::new_kill(sig_num, ctx)));
+        }
+        self.wake_signalled_waker();
+
+        Ok(())
+    }
+
     /// Clears all tracees of this tracer on exit.
     pub(in crate::process) fn clear_tracees(&self) {
         let Some(tracees) = self.tracees() else {
@@ -384,6 +411,34 @@ impl TraceeStatus {
         state.is_tracing_syscall = false;
         detach_callback(&state);
         self.is_stopped.store(false, Ordering::Relaxed);
+    }
+
+    /// Detaches the tracer and resumes the tracee without delivering the stop
+    /// signal that paused it.
+    ///
+    /// Used by `PTRACE_DETACH`. Unlike [`Self::detach_tracer_with`], this
+    /// requires the thread to be ptrace-stopped and drops the pending stop
+    /// signal, so the tracee continues instead of stopping as if a real
+    /// `SIGSTOP` had been delivered.
+    fn detach_from_stop(&self) -> Result<()> {
+        let mut state = self.state.lock();
+        if !self.is_ptrace_stopped() {
+            return_errno_with_message!(Errno::ESRCH, "the thread is not ptrace-stopped");
+        }
+
+        // The stop signal is consumed by the detach, not delivered afterwards.
+        state.signal.clear();
+        state.event = None;
+        state.tracer = Weak::new();
+        #[cfg(target_arch = "x86_64")]
+        if let Some(user_context) = state.user_context.as_mut() {
+            arch_ptrace::disable_single_step(user_context);
+        }
+        state.is_tracing_syscall = false;
+
+        self.is_stopped.store(false, Ordering::Relaxed);
+
+        Ok(())
     }
 
     fn ptrace_stop(

@@ -1,0 +1,21 @@
+# PTRACE_ATTACH verification (kernel with ATTACH/DETACH), target/app-matrix image
+# B2: ctypes ptrace client; B1: real strace -p
+PA py: target-start
+PA py: attach rc=0 errno=0
+PA py: wait4 after attach pid=78 WIFSTOPPED=1 WSTOPSIG=19
+PA py: tracee state while stopped: t
+PA py: detach rc=0 errno=0
+PA py: alive after detach: True state: S
+PA py: target-end
+PA py: target final WIFEXITED=1 exit=0 signal=-1
+PA py: target-start
+PA py: B2b attach rc=0 stop=1 sig=19
+PA py: B2b cont rc=0 errno=0
+PA py: target-end
+PA py: B2b final WIFEXITED=1 exit=0
+PA strace_rc=124 log_lines=39 err=strace: Process 80 attached|strace: Process 80 detached|
+PA strace_log_head: clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, {tv_sec=7, tv_nsec=905781473}, NULL) = 0|clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, {tv_sec=7, tv_nsec=957665379}, NULL) = 0|clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, {tv_sec=8, tv_nsec=9713110}, NULL) = 0|clock_nanosleep(CLOCK_MONOTONIC, TI
+PA target_alive_after_strace: yes
+PA target_rc=0 log=target-start|target-end|
+
+# panic lines: 0

@@ -8,12 +8,17 @@ use crate::arch::ptrace as arch_ptrace;
 use crate::{
     prelude::*,
     process::{
+        pid_table,
         posix_thread::{
             AsPosixThread,
             alien_access::AlienAccessMode,
             ptrace::{PtraceContRequest, PtraceOptions},
         },
-        signal::{constants::SIGKILL, sig_num::SigNum, signals::user::UserSignal},
+        signal::{
+            constants::{SIGKILL, SIGSTOP},
+            sig_num::SigNum,
+            signals::user::UserSignal,
+        },
     },
     thread::{Thread, Tid},
 };
@@ -39,6 +44,32 @@ pub(super) fn sys_ptrace(
             let parent_main_thread = parent_guard.process().upgrade().unwrap().main_thread();
 
             do_ptrace_attach(&parent_main_thread, current_thread)?;
+        }
+        PtraceRequest::PTRACE_ATTACH => {
+            let tracee_thread = pid_table::pid_table_mut()
+                .get_thread(tid)
+                .ok_or_else(|| Error::with_message(Errno::ESRCH, "no such thread"))?;
+            let tracer_thread = current_thread!();
+
+            do_ptrace_attach(&tracer_thread, tracee_thread.clone())?;
+
+            // Linux makes the tracee enter a ptrace-stop with `SIGSTOP`, which
+            // the tracer's next `wait4` reports as `WIFSTOPPED`/`SIGSTOP`.
+            // The stop is consumed by `PTRACE_CONT`/`PTRACE_DETACH` instead of
+            // being delivered to the tracee.
+            tracee_thread
+                .as_posix_thread()
+                .unwrap()
+                .enqueue_signal(Box::new(UserSignal::new_kill(SIGSTOP, ctx)));
+        }
+        PtraceRequest::PTRACE_DETACH => {
+            let sig_num = parse_ptrace_injected_signal(data)?;
+
+            let tracee_thread = ctx.posix_thread.get_tracee(tid)?;
+            let tracee = tracee_thread.as_posix_thread().unwrap();
+
+            tracee.ptrace_detach(sig_num, ctx)?;
+            ctx.posix_thread.remove_tracee(tid);
         }
         PtraceRequest::PTRACE_PEEKTEXT | PtraceRequest::PTRACE_PEEKDATA => {
             let tracee = ctx.posix_thread.get_tracee(tid)?;
@@ -214,6 +245,10 @@ enum PtraceRequest {
     PTRACE_SETREGS = 13,
     /// Continues and stops at the next entry to or return from syscall.
     PTRACE_SYSCALL = 24,
+    /// Attaches to a thread that is already running.
+    PTRACE_ATTACH = 16,
+    /// Detaches from an attached thread.
+    PTRACE_DETACH = 17,
     /// Sets ptrace options.
     PTRACE_SETOPTIONS = 0x4200,
     /// Gets the message of the last ptrace-event-stop.
@@ -225,10 +260,6 @@ enum PtraceRequest {
     // PTRACE_GETFPREGS = 14,
     // /// Sets all floating-point registers used by the thread.
     // PTRACE_SETFPREGS = 15,
-    // /// Attaches to a thread that is already running.
-    // PTRACE_ATTACH = 16,
-    // /// Detaches from an attached thread.
-    // PTRACE_DETACH = 17,
     // /// Gets all extended floating-point registers used by the thread.
     // PTRACE_GETFPXREGS = 18,
     // /// Sets all extended floating-point registers used by the thread.

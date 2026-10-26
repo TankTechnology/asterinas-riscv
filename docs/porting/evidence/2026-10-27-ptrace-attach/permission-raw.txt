@@ -1,0 +1,15 @@
+# Permission matrix (kernel with ATTACH/DETACH)
+PP4 scope: 1
+PP4 ast_parent_child: same-uid parent->child ATTACH rc=0 errno=0|  wait4 WIFSTOPPED=1 WSTOPSIG=19|  DETACH rc=0 errno=0|  child final WIFEXITED=1 exit=0|
+PP4 done
+PP3 passwd: asterinas:x:1000:1000:Asterinas:/home/asterinas:/bin/bash
+PP3 root_ids: uid=0(root) gid=0(root) groups=0(root)|Uid:	0	0	0	0|Gid:	0	0	0	0|
+PP3 ast_ids: uid=1000(asterinas) gid=1000(asterinas) groups=1000(asterinas)|Uid:	1000	1000	1000	1000|Gid:	1000	1000	1000	1000|
+PP3 target_status: Uid:	1000	1000	1000	1000|Gid:	1000	1000	1000	1000|
+PP3 target_ids: attach uid=1000 pid=90 rc=-1 errno=1(Operation not permitted)
+PP3 root_to_ast: attach uid=0 pid=90 rc=0 errno=0(ok)
+PP2 root_target=77
+PP2 cross: attach_as_uid1000 pid=77 rc=-1 errno=1 (Operation not permitted)
+PP2 same: attach_as_uid1000 pid=85 rc=-1 errno=1 (Operation not permitted)
+PP2 root_target_alive=yes
+PP2 root_target_rc=0
