@@ -1,0 +1,21 @@
+mk_start 2026-10-26T05:55:54Z uid=0
+mk_build rc=0 err=
+mk_case fifo:create                  rc=0 errno=-
+mk_case fifo:exists                  rc=-1 errno=File exists
+mk_case fifo:dirfd                   rc=0 errno=-
+mk_case reg:create                   rc=0 errno=-
+mk_stat reg is_reg=1 mode=644
+mk_case mode0:create                 rc=0 errno=-
+mk_case dirtype                      rc=-1 errno=Operation not permitted
+mk_case socktype                     rc=0 errno=-
+mk_case chr:root                     rc=0 errno=-
+mk_stat chr is_chr=1 dev=1,3
+mk_case blk:root                     rc=0 errno=-
+mk_case fifo:trailing_slash          rc=-1 errno=No such file or directory
+mk_case fifo:umask027                rc=0 errno=-
+mk_stat fifo_umask mode=640
+mk_case dirfd_is_file                rc=-1 errno=Not a directory
+mk_np_build rc=0 err=
+mk_case chr:uid1000 rc=-1 errno=Operation not permitted
+mk_case fifo:uid1000 rc=0 errno=-
+mk_done 2026-10-26T05:55:56Z
