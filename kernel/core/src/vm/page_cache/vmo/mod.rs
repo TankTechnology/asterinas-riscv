@@ -217,6 +217,23 @@ impl CommitMode {
     }
 }
 
+/// Maximum number of pages fetched in one I/O batch when a read misses the
+/// page cache (sequential readahead). Set it to `1` to restore the historical
+/// one-page-per-I/O behavior; see `set_readahead_pages`.
+static READAHEAD_PAGES: AtomicUsize = AtomicUsize::new(32);
+
+/// Changes the readahead depth. `1` disables readahead (A/B switch).
+#[allow(dead_code)]
+pub(crate) fn set_readahead_pages(pages: usize) {
+    READAHEAD_PAGES.store(pages.max(1), Ordering::Relaxed);
+}
+
+/// Returns the current readahead depth.
+#[allow(dead_code)]
+pub(crate) fn readahead_pages() -> usize {
+    READAHEAD_PAGES.load(Ordering::Relaxed)
+}
+
 /// A mode specified when committing a new [`Vmo`] page to the map in a page table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VmoMapMode {
@@ -1051,7 +1068,7 @@ impl<'a> BackedVmo<'a> {
             drop(locked_pages);
 
             if !commit_mode.skips_backend_read() {
-                page.ensure_init(|locked_page| self.backend.read_page(page_idx, locked_page))?;
+                self.read_page_with_prefetch(page_idx, &page)?;
                 return Ok(page);
             }
 
@@ -1068,9 +1085,79 @@ impl<'a> BackedVmo<'a> {
             Ok(uninit_page)
         } else {
             // Read the page from the backend storage.
-            uninit_page.ensure_init(|locked_page| self.backend.read_page(page_idx, locked_page))?;
+            self.read_page_with_prefetch(page_idx, &uninit_page)?;
             Ok(uninit_page)
         }
+    }
+
+    /// Ensures that `page` is initialized, fetching it together with the
+    /// following pages in a single I/O batch when sequential readahead is on.
+    ///
+    /// The target page is guaranteed to be initialized when this returns `Ok`
+    /// (unless another thread already did it, in which case it returns early).
+    /// The readahead is strictly best-effort: any failure of the batch falls
+    /// back to a single-page read so that the caller still makes progress.
+    fn read_page_with_prefetch(&self, first_idx: usize, page: &CachePage) -> Result<()> {
+        let readahead = READAHEAD_PAGES.load(Ordering::Relaxed);
+        if readahead <= 1 || !page.state().is_uninit() {
+            return page.ensure_init(|locked_page| self.backend.read_page(first_idx, locked_page));
+        }
+
+        let page_count = self.size().div_ceil(PAGE_SIZE);
+        let end_idx = min(first_idx + readahead, page_count);
+
+        // Collect the run of pages that still need to be fetched, allocating
+        // cache pages for the ones that are not resident yet. The run stops at
+        // the first page that is already up to date.
+        let mut run: Vec<CachePage> = Vec::with_capacity(end_idx - first_idx);
+        {
+            let mut locked_pages = self.pages.lock();
+            for idx in first_idx..end_idx {
+                let mut cursor = locked_pages.cursor_mut(idx as u64);
+                match cursor.load() {
+                    Some(existing) => {
+                        if !existing.state().is_uninit() {
+                            break;
+                        }
+                        run.push(existing.clone());
+                    }
+                    None => {
+                        let new_page = CachePage::alloc_uninit()?;
+                        cursor.store(new_page.clone());
+                        run.push(new_page);
+                    }
+                }
+            }
+        }
+
+        // Nothing to batch (e.g., a concurrent fault finished first).
+        if run.is_empty() {
+            return page.ensure_init(|locked_page| self.backend.read_page(first_idx, locked_page));
+        }
+
+        let mut locked_pages: Vec<_> = run
+            .into_iter()
+            .map(|cache_page| cache_page.lock_guard().into_owned())
+            .collect();
+        let mut io_batch = IoBatch::with_capacity(locked_pages.len());
+        let mut pages = locked_pages.drain(..);
+        let batch_result = self
+            .backend
+            .read_pages_async(PageRun::new(first_idx, &mut pages), &mut io_batch)
+            .and_then(|()| {
+                io_batch.wait_all()?;
+                Ok(())
+            });
+        if let Err(err) = batch_result {
+            // Fall back to the historical single-page read for the target page.
+            drop(pages);
+            let _ = err;
+            return page.ensure_init(|locked_page| self.backend.read_page(first_idx, locked_page));
+        }
+
+        // The batch already initialized the pages it carried; this is a no-op
+        // fast path that also covers a concurrent initializer.
+        page.ensure_init(|locked_page| self.backend.read_page(first_idx, locked_page))
     }
 
     /// Attempts to commit a page using a cursor, without blocking on I/O.
