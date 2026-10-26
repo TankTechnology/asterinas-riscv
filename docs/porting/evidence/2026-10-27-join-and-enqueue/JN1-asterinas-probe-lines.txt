@@ -1,0 +1,13 @@
+PROBE stage=env
+PROBE nproc=4
+PROBE jn_build_rc=0
+PROBE jn_build_err=
+PROBE stage=run_with_syscall_time
+PROBE jn_rc=0
+PROBE jn_all=JN fast_wait_ns med=47847 p10=45207 p90=82388|JN fast_reap_ns med=220583 p10=126134 p90=722825|JN fast_total_ns med=294256 p10=174451 p90=807155|JN fast_join_cpu_ns med=0 p10=0 p90=1000000|JN sleep_wait_ns med=541216 p10=337785 p90=1236027|JN sleep_reap_ns med=197891 p10=119687 p90=642962|JN sleep_total_ns med=1020193 p10=473777 p90=1423472|JN sleep_join_cpu_ns med=0 p10=0 p90=1000000|
+PROBE sys_futex=count=401 total_ns=284352365 blocked_ns=278866950 cpu_ns=5485414 avg=13679
+PROBE sys_clone=
+PROBE awk: line 1: runaway string constant "} ...
+PROBE sys_sched_yield=
+PROBE sys_top6=435:400:119406733|28:400:35874110|60:400:14518917|202:401:5485414|273:402:5424864|230:200:4382876|
+PROBE probe_done=1

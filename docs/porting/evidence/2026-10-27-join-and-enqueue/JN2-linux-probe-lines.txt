@@ -1,0 +1,16 @@
+PROBE stage=env
+PROBE nproc=4
+PROBE jn_build_rc=0
+PROBE jn_build_err=
+PROBE stage=run_with_syscall_time
+PROBE jn_rc=0
+PROBE jn_all=JN fast_wait_ns med=3062 p10=2834 p90=6826|JN fast_reap_ns med=5868 p10=5572 p90=8657|JN fast_total_ns med=8838 p10=8458 p90=15321|JN fast_join_cpu_ns med=10859 p10=10541 p90=18895|JN sleep_wait_ns med=266509 p10=260140 p90=298805|JN sleep_reap_ns med=17547 p10=11648 p90=30774|JN sleep_total_ns med=284925 p10=273631 p90=330244|JN sleep_join_cpu_ns med=29735 p10=20263 p90=63148|
+PROBE awk: cannot open "/tmp/jn-st.txt" (No such file or directory)
+PROBE sys_futex=
+PROBE awk: cannot open "/tmp/jn-st.txt" (No such file or directory)
+PROBE sys_clone=
+PROBE awk: line 1: runaway string constant "} ...
+PROBE sys_sched_yield=
+PROBE grep: /tmp/jn-st.txt: No such file or directory
+PROBE sys_top6=
+PROBE probe_done=1
