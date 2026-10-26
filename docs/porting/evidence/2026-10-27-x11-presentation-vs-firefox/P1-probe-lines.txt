@@ -1,0 +1,85 @@
+PROBE stage=env
+PROBE probe_version=6
+PROBE x_dims=1024x768pixels(270x203millimeters)
+PROBE x_extensions=DRI3,MIT-SHM,Present,RENDER,SHAPE,X-Resource,
+PROBE mit_shm_present=1
+PROBE dri3_present=1
+PROBE present_ext_present=1
+PROBE stage=A1_root
+PROBE a1_red_md5=201e6b2c4f785405718cbf6b8c071e28
+PROBE a1_red_pixels=w=1024 h=768 sampled=52480 unique=1 top=#ff0000 topfrac=1.000
+PROBE a1_green_md5=3868a3e483e60f4f6474ab247755df14
+PROBE a1_green_pixels=w=1024 h=768 sampled=52480 unique=1 top=#00ff00 topfrac=1.000
+PROBE a1_changed=1
+PROBE stage=A2_xterm
+PROBE a2_xterm_window=2097164
+PROBE a2_xterm_geom=424x238
+PROBE a2_xterm_win_md5=8bb2ac1e9e7bd72fcc734c5d7bdfc712
+PROBE a2_xterm_win_pixels=w=426 h=240 sampled=51120 unique=2 top=#ffffff topfrac=0.987
+PROBE a2_xterm_screen_md5=0872ca6d1f84b4bf2d3aa85afe5bd7f1
+PROBE a2_xterm_screen_pixels=w=1024 h=768 sampled=52480 unique=3 top=#00ff00 topfrac=0.869
+PROBE a2_xterm_win_md5_after=8bb2ac1e9e7bd72fcc734c5d7bdfc712
+PROBE a2_xterm_win_pixels_after=w=426 h=240 sampled=51120 unique=2 top=#ffffff topfrac=0.987
+PROBE stage=A2_glxgears
+PROBE a2_glx_window=none
+PROBE stage=page
+PROBE page_bytes=30718
+PROBE stage=ff_default
+PROBE default_shot_rc=0
+PROBE default_shot_ms=10360
+PROBE default_shot_bytes=117172
+PROBE default_shot_pixels=w=900 h=700 sampled=52650 unique=196 top=#ffffff topfrac=0.915
+PROBE default_window=2097195
+PROBE default_window_ms=6339
+PROBE default_win_md5=eca8576cdcd44b7e469ab3c4dcea3f14
+PROBE default_win_pixels=w=921 h=691 sampled=53361 unique=488 top=#ffffff topfrac=0.824
+PROBE default_screen_pixels=w=1024 h=768 sampled=52480 unique=452 top=#ffffff topfrac=0.674
+PROBE default_win_md5_after=eca8576cdcd44b7e469ab3c4dcea3f14
+PROBE default_win_pixels_after=w=921 h=691 sampled=53361 unique=488 top=#ffffff topfrac=0.824
+PROBE default_win_err=[GFX1-]: glxtest: libEGL no display|[Parent 4497, Main Thread] WARNING: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)|: 'glib warning', file toolkit/xre/nsSigHandlers.cpp:201|** (firefox-esr:4497): WARNING **: 08:07:18.948: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)|
+PROBE default_gfx_hits=/tmp/default-win.out:[GFX1-]: glxtest: libEGL no display|/tmp/default-shot.out:[GFX1-]: glxtest: libEGL no display|
+PROBE stage=ff_no_wr
+PROBE no_wr_shot_rc=0
+PROBE no_wr_shot_ms=4780
+PROBE no_wr_shot_bytes=117172
+PROBE no_wr_shot_pixels=w=900 h=700 sampled=52650 unique=196 top=#ffffff topfrac=0.915
+PROBE no_wr_window=2097195
+PROBE no_wr_window_ms=4262
+PROBE no_wr_win_md5=eca8576cdcd44b7e469ab3c4dcea3f14
+PROBE no_wr_win_pixels=w=921 h=691 sampled=53361 unique=488 top=#ffffff topfrac=0.824
+PROBE no_wr_screen_pixels=w=1024 h=768 sampled=52480 unique=452 top=#ffffff topfrac=0.674
+PROBE no_wr_win_md5_after=eca8576cdcd44b7e469ab3c4dcea3f14
+PROBE no_wr_win_pixels_after=w=921 h=691 sampled=53361 unique=488 top=#ffffff topfrac=0.824
+PROBE no_wr_win_err=[GFX1-]: glxtest: libEGL no display|[Parent 5273, Main Thread] WARNING: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)|: 'glib warning', file toolkit/xre/nsSigHandlers.cpp:201|** (firefox-esr:5273): WARNING **: 08:07:47.632: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)|
+PROBE no_wr_gfx_hits=/tmp/no_wr-win.out:[GFX1-]: glxtest: libEGL no display|/tmp/no_wr-shot.out:[GFX1-]: glxtest: libEGL no display|
+PROBE stage=ff_no_egl
+PROBE no_egl_shot_rc=0
+PROBE no_egl_shot_ms=4896
+PROBE no_egl_shot_bytes=117172
+PROBE no_egl_shot_pixels=w=900 h=700 sampled=52650 unique=196 top=#ffffff topfrac=0.915
+PROBE no_egl_window=2097195
+PROBE no_egl_window_ms=4475
+PROBE no_egl_win_md5=eca8576cdcd44b7e469ab3c4dcea3f14
+PROBE no_egl_win_pixels=w=921 h=691 sampled=53361 unique=488 top=#ffffff topfrac=0.824
+PROBE no_egl_screen_pixels=w=1024 h=768 sampled=52480 unique=452 top=#ffffff topfrac=0.674
+PROBE no_egl_win_md5_after=eca8576cdcd44b7e469ab3c4dcea3f14
+PROBE no_egl_win_pixels_after=w=921 h=691 sampled=53361 unique=488 top=#ffffff topfrac=0.824
+PROBE no_egl_win_err=[GFX1-]: glxtest: libEGL no display|[Parent 5967, Main Thread] WARNING: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)|: 'glib warning', file toolkit/xre/nsSigHandlers.cpp:201|** (firefox-esr:5967): WARNING **: 08:08:15.705: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)|
+PROBE no_egl_gfx_hits=/tmp/no_egl-win.out:[GFX1-]: glxtest: libEGL no display|/tmp/no_egl-shot.out:[GFX1-]: glxtest: libEGL no display|
+PROBE stage=ff_swr_noshm
+PROBE swr_noshm_shot_rc=0
+PROBE swr_noshm_shot_ms=4912
+PROBE swr_noshm_shot_bytes=117172
+PROBE swr_noshm_shot_pixels=w=900 h=700 sampled=52650 unique=196 top=#ffffff topfrac=0.915
+PROBE swr_noshm_window=2097195
+PROBE swr_noshm_window_ms=4407
+PROBE swr_noshm_win_md5=eca8576cdcd44b7e469ab3c4dcea3f14
+PROBE swr_noshm_win_pixels=w=921 h=691 sampled=53361 unique=488 top=#ffffff topfrac=0.824
+PROBE swr_noshm_screen_pixels=w=1024 h=768 sampled=52480 unique=452 top=#ffffff topfrac=0.674
+PROBE swr_noshm_win_md5_after=eca8576cdcd44b7e469ab3c4dcea3f14
+PROBE swr_noshm_win_pixels_after=w=921 h=691 sampled=53361 unique=488 top=#ffffff topfrac=0.824
+PROBE swr_noshm_win_err=[GFX1-]: glxtest: libEGL no display|[Parent 6672, Main Thread] WARNING: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)|: 'glib warning', file toolkit/xre/nsSigHandlers.cpp:201|** (firefox-esr:6672): WARNING **: 08:08:44.007: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)|
+PROBE swr_noshm_gfx_hits=/tmp/swr_noshm-win.out:[GFX1-]: glxtest: libEGL no display|/tmp/swr_noshm-shot.out:[GFX1-]: glxtest: libEGL no display|
+PROBE stage=cleanup
+PROBE probe_total_ms=200733
+PROBE probe_done=1

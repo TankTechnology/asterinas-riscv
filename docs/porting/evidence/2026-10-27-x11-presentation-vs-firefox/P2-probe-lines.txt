@@ -1,0 +1,33 @@
+PROBE stage=B0_baseline
+PROBE b0_md5=201e6b2c4f785405718cbf6b8c071e28
+PROBE b0_pixels=w=1024 h=768 sampled=52480 unique=1 top=#ff0000 topfrac=1.000
+PROBE stage=B1_xterm_cold
+PROBE b1_xterm_window=2097164
+PROBE b1_xterm_map=ax=30 ay=30 w=364 h=160 map=IsViewable 
+PROBE b1_screen_change_at_s=1
+PROBE b1_screen_pixels=w=1024 h=768 sampled=52480 unique=3 top=#ff0000 topfrac=0.924
+PROBE b1_screen_pixels_20s=same
+PROBE stage=B2_firefox_a5
+PROBE b2_window=2097195
+PROBE b2_window_ms=11733
+PROBE b2_map=ax=0 ay=0 w=921 h=691 map=IsViewable 
+PROBE b2_md5_at5s=b4863ee9e4145fca8006ca228ea4f901
+PROBE b2_pixels_at5s=w=1024 h=768 sampled=52480 unique=482 top=#ffffff topfrac=0.678
+PROBE b2_change_after5s_at_s=NA
+PROBE b2_pixels_when_changed=NA
+PROBE b2_pixels_60s=w=1024 h=768 sampled=52480 unique=482 top=#ffffff topfrac=0.678
+PROBE stage=B3_force_repaint
+PROBE b3_md5_after_xsetroot=8d0c0dc67444c9284dd3d5a7e3ca82f8
+PROBE b3_pixels_after_xsetroot=w=1024 h=768 sampled=52480 unique=482 top=#ffffff topfrac=0.678
+PROBE b3_screen_changed=changed
+PROBE stage=B4_window_contents
+PROBE b4_win_md5=cdbf940f518477811de723037d892763
+PROBE b4_win_pixels=w=921 h=691 sampled=53361 unique=520 top=#ffffff topfrac=0.826
+PROBE b4_win_md5_again=cdbf940f518477811de723037d892763
+PROBE b4_win_pixels_again=w=921 h=691 sampled=53361 unique=520 top=#ffffff topfrac=0.826
+PROBE b4_tree=|xwininfo: Window id: 0x20002b "Mozilla Firefox"||  Root window id: 0x144 (the root window) (has no name)|  Parent window id: 0x144 (the root window) (has no name)|     2 children:|
+PROBE b4_pixels_after_raise=w=1024 h=768 sampled=52480 unique=482 top=#ffffff topfrac=0.678
+PROBE b4_ff_err=: 'glib warning', file toolkit/xre/nsSigHandlers.cpp:201||** (firefox-esr:230): WARNING **: 08:10:48.630: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)||
+PROBE stage=cleanup
+PROBE probe_total_ms=93948
+PROBE probe_done=1
