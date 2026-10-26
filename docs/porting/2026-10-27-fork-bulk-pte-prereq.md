@@ -69,6 +69,13 @@ Mapped 的大页**；因此把 4 KiB PTE 页整体 memcpy 不会把 PMD 当 PTE 
 
 ## 4. 结论
 
+**bulk memcpy 方案已被否决（用户 2026-10-26 红线：不得破坏 ostd 抽象）**
+
+本文档仅作历史记录，不得据此实现；fork 保持在 `c00db36af`（512 MB = 204.7 ms）。
+
+
+
+
 | 前提 | 结论 | 依据 |
 |---|---|---|
 | A. huge page | **通过（当前无 2 MiB 用户大页，整页 PTE memcpy 安全）** | `frame.map_level()` 恒为 1；`MAP_HUGETLB` 未实现；用户 PMD 只可能是页表指针 |

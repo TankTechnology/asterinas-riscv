@@ -97,3 +97,8 @@ unsafe 改动；本轮剩余时间不足以安全实现并验证（错误的引�
 | SUSPEND | ok | woke-up-disk-and-io-ok |
 
 INPUT_METHOD 仍 fail（既有缺口）；`DAILY_DONE=ok`、panic 0、allocation failed 0。
+
+
+---
+
+**bulk memcpy 方案已被否决（用户 2026-10-26 红线：不得破坏 ostd 抽象）。**
