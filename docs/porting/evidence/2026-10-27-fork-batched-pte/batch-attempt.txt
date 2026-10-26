@@ -1,0 +1,10 @@
+# kernel 377bd5982e77d495 (protect_run batch), image ff-lag
+fk_size mb=64 wall_ns_fork=31269814 clone_cpu_ns=31203927
+fk_size mb=256 wall_ns_fork=124869275 clone_cpu_ns=124784113
+fk_size mb=512 wall_ns_fork=249922347 clone_cpu_ns=249810132
+fk_reserve mb=64 wall_ns_fork=1877096 clone_cpu_ns=1813678
+fk_protect mb=512 wall_ns_protect=113455413
+fk_cow child_ok=1 parent_ok=1 heap_ok=1
+# same-run controls vs the previous kernel (c00db36af):
+#   reserve 512: 1.90 ms vs 1.62 ms (+17% host noise)
+#   protect 512: 113.5 ms vs 106.0 ms (+7%)
