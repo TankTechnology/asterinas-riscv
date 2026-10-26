@@ -1,0 +1,13 @@
+# baseline kernel (c00db36af source, clean build), image ff-lag, 4 vCPU
+# run 1
+fk_leak forks=1000 memfree_before_kb=3949548 after_kb=3949316 delta_kb=-232
+fk_sparse stripes=2048 wall_ns_fork=70831696
+fk_mixed parent_visible           <-- test bug (expected value was 1, check used 0); fixed below
+fk_forkexec n=100 memfree_delta_kb=-644
+# run 2 (mixed check fixed: child must see 1, write 2; parent must still see 1)
+fk_cow child_ok=1 parent_ok=1 heap_ok=1
+fk_leak forks=1000 memfree_before_kb=3949476 after_kb=3949800 delta_kb=+324
+fk_sparse stripes=2048 wall_ns_fork=72869122
+fk_mixed wall_ns_fork=5464025     <-- no child_bad, no parent_visible => COW correct
+fk_forkexec n=100 memfree_delta_kb=+1356
+# panic=0 in both runs
