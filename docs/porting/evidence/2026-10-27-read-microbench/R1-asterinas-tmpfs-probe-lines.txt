@@ -1,0 +1,24 @@
+PROBE stage=env
+PROBE nproc=4
+PROBE cpu_mhz=2188.800
+PROBE gcc=/usr/bin/gcc
+PROBE stage=build
+PROBE rb_build_rc=0
+PROBE rb_build_err=
+PROBE stage=make_file
+PROBE file_bytes=41943040
+PROBE dd_tail=41943040 bytes (42 MB, 40 MiB) copied, 0.0342008 s, 1.2 GB/s
+PROBE stage=run
+PROBE rb_rc=0
+PROBE rb_info=RB info file=/tmp/rb.bin size=41943040 count=10000 fstype=0x1021994 bsize=4096
+PROBE case_A0=phase=A0_cold_seq4096 reads=10240 bytes=41943040 wall_ns=49501917 cpu_ns=49000000 avg_wall_ns=4834 avg_cpu_ns=4785
+PROBE case_A1=phase=A1_warm_seq4096 reads=10000 bytes=40960000 wall_ns=46681716 cpu_ns=47000000 avg_wall_ns=4668 avg_cpu_ns=4700
+PROBE case_A2=phase=A2_warm_byte1 reads=10000 bytes=10000 wall_ns=42552022 cpu_ns=42000000 avg_wall_ns=4255 avg_cpu_ns=4200
+PROBE case_A3=phase=A3_warm_readv4096 reads=10000 bytes=40960000 wall_ns=58413357 cpu_ns=58000000 avg_wall_ns=5841 avg_cpu_ns=5800
+PROBE case_A4=phase=A4_warm_pread4096 reads=10000 bytes=40960000 wall_ns=46723324 cpu_ns=47000000 avg_wall_ns=4672 avg_cpu_ns=4700
+PROBE rb_all=phase=A0_cold_seq4096 reads=10240 bytes=41943040 wall_ns=49501917 cpu_ns=49000000 avg_wall_ns=4834 avg_cpu_ns=4785|phase=A1_warm_seq4096 reads=10000 bytes=40960000 wall_ns=46681716 cpu_ns=47000000 avg_wall_ns=4668 avg_cpu_ns=4700|phase=A2_warm_byte1 reads=10000 bytes=10000 wall_ns=42552022 cpu_ns=42000000 avg_wall_ns=4255 avg_cpu_ns=4200|phase=A3_warm_readv4096 reads=10000 bytes=40960000 wall_ns=58413357 cpu_ns=58000000 avg_wall_ns=5841 avg_cpu_ns=5800|phase=A4_warm_pread4096 reads=10000 bytes=40960000 wall_ns=46723324 cpu_ns=47000000 avg_wall_ns=4672 avg_cpu_ns=4700|
+PROBE stage=run2
+PROBE rb2_all=phase=A0_cold_seq4096 reads=10240 bytes=41943040 wall_ns=44132362 cpu_ns=44000000 avg_wall_ns=4309 avg_cpu_ns=4296|phase=A1_warm_seq4096 reads=10000 bytes=40960000 wall_ns=41757410 cpu_ns=41000000 avg_wall_ns=4175 avg_cpu_ns=4100|phase=A2_warm_byte1 reads=10000 bytes=10000 wall_ns=37864511 cpu_ns=38000000 avg_wall_ns=3786 avg_cpu_ns=3800|phase=A3_warm_readv4096 reads=10000 bytes=40960000 wall_ns=52683037 cpu_ns=53000000 avg_wall_ns=5268 avg_cpu_ns=5300|phase=A4_warm_pread4096 reads=10000 bytes=40960000 wall_ns=39345564 cpu_ns=39000000 avg_wall_ns=3934 avg_cpu_ns=3900|
+PROBE stage=cleanup
+PROBE probe_total_ms=2044
+PROBE probe_done=1

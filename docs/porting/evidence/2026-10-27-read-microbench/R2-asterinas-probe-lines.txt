@@ -1,0 +1,30 @@
+PROBE stage=env
+PROBE nproc=4
+PROBE cpu_mhz=2188.800
+PROBE gcc=/usr/bin/gcc
+PROBE stage=build
+PROBE rb_build_rc=0
+PROBE rb_build_err=
+PROBE stage=targets
+PROBE libxul_path=/usr/lib/firefox-esr/libxul.so
+PROBE libxul_bytes=164124984
+PROBE tmpfs_file_bytes=41943040
+PROBE ext4_file_bytes=41943040
+PROBE ext4_dd=41943040 bytes (42 MB, 40 MiB) copied, 0.352584 s, 119 MB/s
+PROBE stage=run_tmpfs
+PROBE rb_tmpfs_info=RB info file=/tmp/rb-tmpfs.bin size=41943040 count=10000 fstype=0x1021994 bsize=4096
+PROBE rb_tmpfs_all=phase=A0_cold_seq4096 reads=10240 bytes=41943040 wall_ns=51666264 cpu_ns=51000000 avg_wall_ns=5045 avg_cpu_ns=4980|phase=A1_warm_seq4096 reads=10000 bytes=40960000 wall_ns=46183529 cpu_ns=46000000 avg_wall_ns=4618 avg_cpu_ns=4600|phase=A2_warm_byte1 reads=10000 bytes=10000 wall_ns=42173139 cpu_ns=42000000 avg_wall_ns=4217 avg_cpu_ns=4200|phase=A3_warm_readv4096 reads=10000 bytes=40960000 wall_ns=57735293 cpu_ns=57000000 avg_wall_ns=5773 avg_cpu_ns=5700|phase=A4_warm_pread4096 reads=10000 bytes=40960000 wall_ns=43773676 cpu_ns=44000000 avg_wall_ns=4377 avg_cpu_ns=4400|
+PROBE stage=run_ext4new
+PROBE rb_ext4new_info=RB info file=/home/asterinas/rb-ext4.bin size=41943040 count=10000 fstype=0xef53 bsize=4096
+PROBE rb_ext4new_all=phase=A0_cold_seq4096 reads=10240 bytes=41943040 wall_ns=46180617 cpu_ns=46000000 avg_wall_ns=4509 avg_cpu_ns=4492|phase=A1_warm_seq4096 reads=10000 bytes=40960000 wall_ns=45292659 cpu_ns=45000000 avg_wall_ns=4529 avg_cpu_ns=4500|phase=A2_warm_byte1 reads=10000 bytes=10000 wall_ns=43552865 cpu_ns=43000000 avg_wall_ns=4355 avg_cpu_ns=4300|phase=A3_warm_readv4096 reads=10000 bytes=40960000 wall_ns=68509080 cpu_ns=69000000 avg_wall_ns=6850 avg_cpu_ns=6900|phase=A4_warm_pread4096 reads=10000 bytes=40960000 wall_ns=51213867 cpu_ns=51000000 avg_wall_ns=5121 avg_cpu_ns=5100|
+PROBE stage=run_libxul
+PROBE rb_libxul_info=RB info file=/usr/lib/firefox-esr/libxul.so size=164124984 count=10000 fstype=0xef53 bsize=4096
+PROBE rb_libxul_all=phase=A0_cold_seq4096 reads=40070 bytes=164124984 wall_ns=5310676198 cpu_ns=2016000000 avg_wall_ns=132534 avg_cpu_ns=50311|phase=A1_warm_seq4096 reads=10000 bytes=40960000 wall_ns=61549113 cpu_ns=62000000 avg_wall_ns=6154 avg_cpu_ns=6200|phase=A2_warm_byte1 reads=10000 bytes=10000 wall_ns=52590229 cpu_ns=52000000 avg_wall_ns=5259 avg_cpu_ns=5200|phase=A3_warm_readv4096 reads=10000 bytes=40960000 wall_ns=67913626 cpu_ns=68000000 avg_wall_ns=6791 avg_cpu_ns=6800|phase=A4_warm_pread4096 reads=10000 bytes=40960000 wall_ns=50837624 cpu_ns=50000000 avg_wall_ns=5083 avg_cpu_ns=5000|
+PROBE stage=run_ext4new2
+PROBE rb_ext4new2_info=RB info file=/home/asterinas/rb-ext4.bin size=41943040 count=10000 fstype=0xef53 bsize=4096
+PROBE rb_ext4new2_all=phase=A0_cold_seq4096 reads=10240 bytes=41943040 wall_ns=56532026 cpu_ns=56000000 avg_wall_ns=5520 avg_cpu_ns=5468|phase=A1_warm_seq4096 reads=10000 bytes=40960000 wall_ns=50314376 cpu_ns=50000000 avg_wall_ns=5031 avg_cpu_ns=5000|phase=A2_warm_byte1 reads=10000 bytes=10000 wall_ns=45762970 cpu_ns=46000000 avg_wall_ns=4576 avg_cpu_ns=4600|phase=A3_warm_readv4096 reads=10000 bytes=40960000 wall_ns=62663200 cpu_ns=62000000 avg_wall_ns=6266 avg_cpu_ns=6200|phase=A4_warm_pread4096 reads=10000 bytes=40960000 wall_ns=46903665 cpu_ns=47000000 avg_wall_ns=4690 avg_cpu_ns=4700|
+PROBE stage=make_file
+PROBE file_bytes=41943040
+PROBE stage=cleanup
+PROBE probe_total_ms=8441
+PROBE probe_done=1
