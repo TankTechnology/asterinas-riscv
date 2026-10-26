@@ -1,0 +1,14 @@
+PROBE stage=control_existing_dir
+PROBE p_exists_dir=1
+PROBE p_exists_entries=.parentlock,.startup-incomplete,activity-stream.discovery_stream.json,addonStartup.json.lz4,addons.json,bookmarkbackups,bounce-tracking-protection.sqlite,cache2,cert9.db,compatibility.ini,containers.j
+PROBE p_exists_windows=0x20002b "Mozilla Firefox": ("Navigator" "firefox-esr")  1152x720+0+0  +0+0|0x200048 "Firefox": ()  10x10+-100+-100  +-100+-100|0x200044 "Firefox": ("firefox-esr" "firefox-esr")  200x200+0+0  +0+0|
+PROBE p_exists_err=: 'glib warning', file toolkit/xre/nsSigHandlers.cpp:201||** (firefox-esr:415): WARNING **: 08:47:05.843: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)||
+PROBE stage=missing_dir
+PROBE p_pre_exists=0
+PROBE p_dir_exists=0
+PROBE p_dir_entries=
+PROBE p_windows=0x20002b "Profile Missing": ("Firefox" "firefox-esr")  566x104+357+348  +357+348|0x200001 "Firefox": ("firefox-esr" "Firefox-esr")  10x10+10+10  +10+10|
+PROBE p_err=[GFX1-]: glxtest: libpci missing|[Parent 754, Main Thread] WARNING: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)|: 'glib warning', file toolkit/xre/nsSigHandlers.cpp:201||** (firefox-esr:754): WARNING **: 08:47:14.845: Failed to create DBus proxy for org.a11y.Bus: Failed to execute child process “dbus-launch” (No such file or directory)||
+PROBE p_procs=3
+PROBE probe_total_ms=22075
+PROBE probe_done=1

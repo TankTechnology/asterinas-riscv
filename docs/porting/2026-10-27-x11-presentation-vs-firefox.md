@@ -112,7 +112,17 @@ PROBE ff_diag_procs=7
 
 一行改动同时把「主色、按键响应、首帧可测性」三项全部翻正，根因确认。
 
-### 5.2 一个尚未查清的旁证：Linux 侧同一探针为什么没弹对话框
+### 5.2 【已证伪】Linux 侧同一探针为什么没弹对话框
+
+> **更正（2026-10-26 晚）**：本节当时的推测是错的。用 `profile_probe.sh` 在 Linux 内核上
+> 直接测过：`p_pre_exists=0` → `p_dir_exists=0`，窗口同样
+> `0x20002b "Profile Missing": ("Firefox" "firefox-esr") 566x104`。
+> **Linux 上 Firefox 同样不会自动创建缺失的 `--profile` 目录**，两侧行为一致，
+> 不存在内核 `mkdir/openat` 差异。B3 那组 Linux 基线里首帧/输入数字也因此可疑（很可能
+> 同样测在对话框上），已用修好的探针重测，见
+> `2026-10-27-firefox-latency-after-probe-fix.md`。以下为原始推测，保留以存证。
+
+
 
 A3 与 B3 用的是**同一份 v5 探针**（md5 `9ad73d98…`），页面阶段同样
 `firefox --profile /tmp/ffs` 且同样没有建目录：
