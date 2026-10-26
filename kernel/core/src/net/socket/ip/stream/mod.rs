@@ -725,7 +725,7 @@ impl Socket for StreamSocket {
         }
 
         // Deal with IP-level options
-        match options.ip.get_option(option) {
+        match options.ip.get_option(option, self.family) {
             Err(err) if err.error() == Errno::ENOPROTOOPT => (),
             res => return res,
         }
@@ -812,7 +812,7 @@ impl Socket for StreamSocket {
         let need_iface_poll = match socket_option_result {
             Err(err) if err.error() == Errno::ENOPROTOOPT => {
                 // Deal with IP-level options
-                match options.ip.set_option(option, state.as_ref()) {
+                match options.ip.set_option(option, state.as_ref(), self.family) {
                     Err(err) if err.error() == Errno::ENOPROTOOPT => {
                         // Deal with TCP-level options
                         do_tcp_setsockopt(option, &mut options, state.as_mut())?

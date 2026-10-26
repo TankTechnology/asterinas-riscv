@@ -5,9 +5,12 @@ use core::num::NonZeroU8;
 use aster_bigtcp::socket::NeedIfacePoll;
 
 use crate::{
-    net::socket::options::{
-        SocketOption,
-        macros::{impl_socket_options, sock_option_mut, sock_option_ref},
+    net::socket::{
+        ip::IpAddressFamily,
+        options::{
+            SocketOption,
+            macros::{impl_socket_options, sock_option_mut, sock_option_ref},
+        },
     },
     prelude::*,
 };
@@ -21,6 +24,10 @@ pub(super) struct IpOptionSet {
     ttl: IpTtl,
     hdrincl: bool,
     recverr: bool,
+    /// `IPV6_V6ONLY`. Linux defaults to 0 (dual-stack); this stack supports a
+    /// single address family per socket, so the flag is stored for
+    /// compatibility and does not change which packets a socket accepts.
+    ipv6_v6only: bool,
 }
 
 const DEFAULT_TTL: u8 = 64;
@@ -33,6 +40,7 @@ impl IpOptionSet {
             ttl: IpTtl(None),
             hdrincl: false,
             recverr: false,
+            ipv6_v6only: false,
         }
     }
 
@@ -42,10 +50,15 @@ impl IpOptionSet {
             ttl: IpTtl(None),
             hdrincl: false,
             recverr: false,
+            ipv6_v6only: false,
         }
     }
 
-    pub(super) fn get_option(&self, option: &mut dyn SocketOption) -> Result<()> {
+    pub(super) fn get_option(
+        &self,
+        option: &mut dyn SocketOption,
+        family: IpAddressFamily,
+    ) -> Result<()> {
         sock_option_mut!(match option {
             ip_tos @ Tos => {
                 let tos = self.tos();
@@ -63,6 +76,15 @@ impl IpOptionSet {
                 let recverr = self.recverr();
                 ip_recverr.set(recverr);
             }
+            ipv6_v6only @ Ipv6V6Only => {
+                if family != IpAddressFamily::IPv6 {
+                    return_errno_with_message!(
+                        Errno::ENOPROTOOPT,
+                        "an IPv6 option is not valid on a non-IPv6 socket"
+                    );
+                }
+                ipv6_v6only.set(self.ipv6_v6only());
+            }
             _ => return_errno_with_message!(Errno::ENOPROTOOPT, "the socket option is unknown"),
         });
 
@@ -73,6 +95,7 @@ impl IpOptionSet {
         &mut self,
         option: &dyn SocketOption,
         socket: &dyn SetIpLevelOption,
+        family: IpAddressFamily,
     ) -> Result<NeedIfacePoll> {
         sock_option_ref!(match option {
             ip_tos @ Tos => {
@@ -95,6 +118,16 @@ impl IpOptionSet {
                 let recverr = ip_recverr.get().unwrap();
                 self.set_recverr(*recverr);
             }
+            ipv6_v6only @ Ipv6V6Only => {
+                if family != IpAddressFamily::IPv6 {
+                    return_errno_with_message!(
+                        Errno::ENOPROTOOPT,
+                        "an IPv6 option is not valid on a non-IPv6 socket"
+                    );
+                }
+                let value = ipv6_v6only.get().unwrap();
+                self.set_ipv6_v6only(*value);
+            }
             _ => return_errno_with_message!(
                 Errno::ENOPROTOOPT,
                 "the socket option to be set is unknown"
@@ -110,6 +143,7 @@ impl_socket_options!(
     pub(crate) struct Ttl(IpTtl);
     pub(crate) struct Hdrincl(bool);
     pub(crate) struct Recverr(bool);
+    pub(crate) struct Ipv6V6Only(bool);
 );
 
 #[derive(Clone, Copy, Debug)]

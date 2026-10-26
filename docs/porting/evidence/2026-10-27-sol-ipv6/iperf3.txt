@@ -1,0 +1,5 @@
+# C2: iperf3 -s -6 and v4 parity on the fixed kernel (target/sol-ipv6-c2)
+C2 v6_client: Connecting to host ::1, port 5201|[  5]   0.00-1.00   sec  1.09 GBytes  9.35 Gbits/sec  32767            sender|
+C2 v6_server: iperf3: getsockopt - Protocol not available|iperf3: getsockopt - Protocol not available|-----------------------------------------------------------|Server listening on 5201 (test #1)|---------------------------------------------------------
+C2 v4_client: Connecting to host 127.0.0.1, port 5201|[  5]   0.00-1.00   sec  1.07 GBytes  9.14 Gbits/sec  32767            sender|
+C2 v4_server: iperf3: getsockopt - Protocol not available|iperf3: getsockopt - Protocol not available|-----------------------------------------------------------|Server listening on 5201 (test #1)|-----------------

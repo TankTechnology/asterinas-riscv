@@ -302,7 +302,7 @@ impl Socket for DatagramSocket {
         }
 
         // Deal with IP-level options
-        options.ip.get_option(option)
+        options.ip.get_option(option, self.family)
     }
 
     fn set_option(&self, option: &dyn SocketOption) -> Result<()> {
@@ -316,7 +316,7 @@ impl Socket for DatagramSocket {
         {
             Err(err) if err.error() == Errno::ENOPROTOOPT => {
                 // Deal with IP-level options
-                options.ip.set_option(option, &*inner)?
+                options.ip.set_option(option, &*inner, self.family)?
             }
             Err(err) => return Err(err),
             Ok(need_iface_poll) => need_iface_poll,

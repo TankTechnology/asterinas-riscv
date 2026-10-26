@@ -1,0 +1,14 @@
+# AFTER the fix
+V6S compile=ok
+V6S SET v6only rc=0 errno=0 (Success)
+V6S GET v6only rc=0 errno=0 (Success) value=1
+V6S DEFAULT v6only rc=0 errno=0 (Success) value=0
+V6S CTRL v4_reuseaddr rc=0 errno=0 (Success)
+V6S V4_SOL6 rc=-1 errno=92 (Protocol not available)
+V6S RESULT v6only_set PASS
+V6S RESULT v6only_get PASS
+V6S RESULT v6only_default0 PASS
+V6S RESULT v4_ctrl PASS
+V6S RESULT v4_sol6_enoprotoopt PASS
+V6S RESULT all PASS
+V6S exit=0

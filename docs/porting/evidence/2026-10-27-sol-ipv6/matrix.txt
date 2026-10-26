@@ -1,0 +1,14 @@
+# 7-domain matrix with the SOL_IPV6 kernel (re-run)
+domain	result	detail
+DESKTOP	ok	Xorg+DRI3
+APP	ok	xterm
+APT	ok	xclip+xterm+alsa-utils-installed
+CLIPBOARD	ok	xclip-round-trip
+INPUT_METHOD	fail	engine--no-text:
+AUDIO	ok	aplay-hw:0,0
+USB	ok	mounted-/dev/sda-read-ASTERINAS-USB-OK
+SUSPEND	ok	woke-up-disk-and-io-ok
+# panic=0 allocation_failed=0
+
+# first run flake: DAILY_AUDIO merged into a kernel WARN line
+[32m[   806.600][0m [93mWARN  [0m: [DAILY_AUDIO=ok aplay-hw:0,0

@@ -15,10 +15,14 @@
   两族都不可用，不是 v6 缺陷）。
 - **3 组 v6-only 异常**：
   - `getent ahostsv6` —— 已证实是 **glibc `AI_ADDRCONFIG`**（本机只有 loopback IPv6）；
-  - `iperf3 -6` —— 已定位是**内核缺口**：`setsockopt(IPPROTO_IPV6, IPV6_V6ONLY)`
-    返回 `EOPNOTSUPP`，iperf3 的 v6 监听因此启动失败；
-  - `dig @::1` —— **未完全定论**：两个候选（`AI_ADDRCONFIG` / `SOL_IPV6` sockopt），
-    给了判别方法。
+  - `iperf3 -6` —— 定位为内核缺口并**已修复**（`IPV6_V6ONLY` 补齐后 v6 传输 9.35 Gbits/sec，
+    见 `2026-10-27-sol-ipv6.md`）；
+  - `dig @::1` —— 补 `SOL_IPV6` 后错误由 `address family not supported` 变为
+    `invalid protocol`，证明原失败是 SOL_IPV6 缺口；**它现在撞在下一个未实现的
+    SOL_IPV6 选项上**，仍未通过。
+
+> 本文记录的是 2026-10-27 上午的矩阵；`iperf3` 行与 `dig` 归因已按同日
+> `feat(net): implement SOL_IPV6 IPV6_V6ONLY sockopt` 的结果更新。
 
 ## 1. 12 行矩阵
 
@@ -27,7 +31,7 @@
 | 1 | `nc` UDP 客户端 → echo 服务 | ok | ok | `echo:nc4` / `echo:nc6` | — |
 | 2 | `python3` UDP 自环 | ok | ok | `echo:py4` / `echo:py6` | — |
 | 3 | `python3` TCP 自环 | ok | ok | `echo:t4` / `echo:t6` | — |
-| 4 | `dig @127.0.0.1 / @::1`（自建 DNS） | ok | **fail** | v6: `UDP setup with ::1#18222(::1) for test.local failed: address family not supported.`（rc=9） | 见 §2.1 |
+| 4 | `dig @127.0.0.1 / @::1`（自建 DNS） | ok | **fail** | v6 改前：`... address family not supported`；补 SOL_IPV6 后：`... invalid protocol`（下一个未实现的 SOL_IPV6 选项） | 见 §2.1 |
 | 5 | `curl http://127.0.0.1 / http://[::1]` | ok | ok | `http-ok` / `http-ok` | — |
 | 6 | `getent ahostsv4 / ahostsv6 localhost` | ok | **fail** | v6 输出为空（rc=2） | **glibc `AI_ADDRCONFIG`**，见 §2.2 |
 | 7 | `ss -tln / -uln` | ok | ok | `127.0.0.1:18211` / `[::1]:18212`；UDP `[::1]:18202` | — |
@@ -35,7 +39,7 @@
 | 9 | `ping -c1` | **NA** | **NA** | `ping: not found`；内核无 `AF_INET SOCK_RAW` | NA（两族一致） |
 | 10 | `openssl s_client`（自签 TLS） | ok | ok | 自签证书校验告警符合预期 | — |
 | 11 | `socat` UDP 客户端 | ok | ok | `echo:so4` / `echo:so6` | — |
-| 12 | `iperf3 -c` | ok | **fail** | v6: 连接失败；v4 有 `getsockopt - Protocol not available` 告警 | 见 §2.3 |
+| 12 | `iperf3 -c` | ok | **ok（已修复）** | v6: **1.09 GBytes / 9.35 Gbits/sec**（v4 1.07 GBytes / 9.14 Gbits/sec） | 已由 `SOL_IPV6 IPV6_V6ONLY` 支持修复 |
 
 首轮 `lsof` 的 v4 行用 `127.0.0.1:PORT` 过滤没命中，因为 lsof 把地址渲染成
 `localhost:PORT`；这是测试口径，不是 v4 缺陷。最终探针用端口号过滤复核，v4/v6 两族
@@ -66,9 +70,11 @@ BIND 在 "UDP setup" 阶段返回 `EAFNOSUPPORT(97)`。我们逐项排除了 soc
 **补充实验**：`dig -6 @::1`（强制 v6）与默认调用得到**完全相同**的错误，说明不是
 BIND 选错 socket 族。
 
-**未验证**：没有在不改内核的前提下把两者分开（见 §3 的 netlink 实验失败）。
-修好 `SOL_IPV6`（§4 缺口 1）后重跑 `dig @::1` 即可一次性判别：若变好 ⇒ 候选 2；
-若仍旧 ⇒ 候选 1（`AI_ADDRCONFIG`）。
+**已判别（2026-10-27，补 `SOL_IPV6 IPV6_V6ONLY` 之后）**：错误从
+`address family not supported` 变成 **`invalid protocol`** —— dig 越过了 V6ONLY 这一关，
+撞在**下一个未实现的 SOL_IPV6 选项**上。结论：原先的失败**是候选 2（SOL_IPV6 缺口）**，
+不是 `AI_ADDRCONFIG`。dig 仍未通过；剩余选项待补（本轮不修，见
+`docs/porting/2026-10-27-sol-ipv6.md` §3.4）。
 
 ### 2.2 `getent ahostsv6`：glibc `AI_ADDRCONFIG`（非内核）
 
@@ -105,6 +111,8 @@ I v6:   error - unable to connect to server ... Connection refused
   （不致命），可解释为 iperf3 在探测某个不受支持的选项。
 
 **结论**：`iperf3 -6` 的失败是**内核缺口**（SOL_IPV6 选项），不是 AI_ADDRCONFIG。
+**2026-10-27 更新**：补上 `IPV6_V6ONLY` 后 `iperf3 -s -6` 已正常监听并完成一次
+`::1` 传输（1.09 GBytes / 9.35 Gbits/sec）——本行已转为 **ok**。
 
 ## 3. 定位实验（含负结果）
 
