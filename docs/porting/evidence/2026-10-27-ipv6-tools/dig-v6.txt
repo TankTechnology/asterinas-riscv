@@ -1,0 +1,6 @@
+# dig default vs dig -6 (target/dig-v6)
+G plain: ;; UDP setup with ::1#18222(::1) for test.local failed: address family not supported.|;; no servers could be reached|
+G force6: ;; UDP setup with ::1#18222(::1) for test.local failed: address family not supported.|;; no servers could be reached|
+G err: ;; UDP setup with ::1#18222(::1) for test.local failed: address family not supported.|
+G getent_ahostsv6_localhost: 0
+G done

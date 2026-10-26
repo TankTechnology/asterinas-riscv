@@ -1,0 +1,9 @@
+# final probe: bounded netlink add, getent, lsof parity
+F add_rc=124 out=
+F lo_addrs: 1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65535 qlen 1000|    inet6 ::1/128 scope host proto kernel_lo |
+F getent_v6_literal: 
+F getent_v6_localhost: 
+F lsof_v4: python3  92 root 3u  IPv4    197      0t0  UDP localhost:18301 |python3  92 root 5u  IPv4    199      0t0  TCP localhost:18303 (LISTEN)|
+F lsof_v6: python3  92 root 4u  IPv6    198      0t0  UDP localhost:18302 |python3  92 root 6u  IPv6    200      0t0  TCP localhost:18304 (LISTEN)|
+F iperf3 NA
+F done

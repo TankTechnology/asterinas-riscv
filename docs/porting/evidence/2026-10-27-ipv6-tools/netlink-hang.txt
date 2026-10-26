@@ -1,0 +1,8 @@
+# 'ip -6 addr add fd00::1/64 dev lo' blocked: the guest stayed at the first line
+# for >120 s (workspace target/ipv6-addrconfig, run stopped manually)
+A before: 1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65535 qlen 1000|    inet6 ::1/128 scope host proto kernel_lo |
+--- tail ---
+A before: 1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65535 qlen 1000|    inet6 ::1/128 scope host proto kernel_lo |
+[32m[     4.887][0m [93mWARN  [0m: [39m[0m[39mUnimplemented syscall number: 334[0m
+
+[exited with code 0]

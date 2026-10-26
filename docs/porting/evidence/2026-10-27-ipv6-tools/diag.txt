@@ -1,0 +1,12 @@
+# getaddrinfo / sockopt diagnosis (target/ipv6-diag)
+D getaddrinfo: localhost_any -> [('::1', 0, 0, 0), ('127.0.0.1', 0)]|localhost_v6 -> [('::1', 18222, 0, 0)]|localhost_v6_ADDRCONFIG -> ERR gaierror(-2, 'Name or service not known')|localhost_v4_ADDRCONFIG -> [('127.0.0.1', 18222), ('127.0.0.1', 18222)]|literal_v6 -> [('::1', 0, 0, 0)]|literal_v6_ADDRCONFIG -> ERR gaierror(-9, 'Address family for hostname not supported')|
+D sockopts: socket_v6_dgram_proto_udp ok|set_IPV6_V6ONLY ERR OSError(95, 'Operation not supported')|set_SO_REUSEPORT ok|bind_any ('::', 32771, 0, 0)|bind_wildcard_v6 ok|bind_lo ('::1', 32772, 0, 0)|bind_::1 ok|
+D lsof: 
+D lsof_any: 
+D dig_v6_numeric: ;; UDP setup with ::1#18222(::1) for test.local failed: address family not supported.|;; no servers could be reached|
+D dig_v6_full: ;; UDP setup with ::1#18222(::1) for test.local failed: address family not supported.|
+D getent_v6_again:  rc=0
+D iperf3_v6_client: timeout: failed to run command ‘iperf3’: No such file or directory|
+D iperf3_v6_serverlog: timeout: failed to run command ‘iperf3’: No such file or directory|
+D iperf3_v4_serverlog: timeout: failed to run command ‘iperf3’: No such file or directory|
+D done

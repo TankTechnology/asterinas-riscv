@@ -1,0 +1,33 @@
+# 12-tool v4/v6 matrix (target/ipv6-tools)
+T env: 5.13.0 python=Python 3.13.5 openssl=OpenSSL 3.5.7 9 Jun 2026 (Library: OpenSSL 3.5.7 9 Jun 2026)
+T ipv6: 1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65535 qlen 1000|    inet6 ::1/128 scope host proto kernel_lo |
+T hosts: 127.0.0.1	localhost|::1		localhost ip6-localhost ip6-loopback|ff02::1		ip6-allnodes|ff02::2		ip6-allrouters|
+T servers: servers up|
+T nc_udp_v4 rc=0 ok out=echo:nc4
+T nc_udp_v6 rc=0 ok out=echo:nc6
+T py_udp_v4 rc=0 ok out=echo:py4
+T py_udp_v6 rc=0 ok out=echo:py6
+T py_tcp_v4 rc=0 ok out=echo:t4
+T py_tcp_v6 rc=0 ok out=echo:t6
+T dig_v4 rc=0 ok out=127.0.0.1
+T dig_v6 rc=9 fail out=;; UDP setup with ::1#18222(::1) for test.local failed: address family not supported.|;; no servers could be reached
+T curl_v4 rc=0 ok out=http-ok
+T curl_v6 rc=0 ok out=http-ok
+T getent_v4 rc=0 ok out=127.0.0.1       STREAM localhost|127.0.0.1       DGRAM  |127.0.0.1       RAW    |127.0.0.1       STREAM |127.0.0.1      
+T getent_v6 rc=2 fail out=
+T ss_v4: LISTEN 0      0          127.0.0.1:18211      0.0.0.0:*   |
+T ss_v6: LISTEN 0      0              [::1]:18212            *:*   |
+T ss_uln_v4: UNCONN 0      0          127.0.0.1:18201      0.0.0.0:*   |
+T ss_uln_v6: UNCONN 0      0              [::1]:18202            *:*   |
+T lsof_v4: 
+T lsof_v6: python3 233 root  6u  IPv6    271      0t0  TCP localhost:18212 (LISTEN)|
+T lsof_v6_udp: python3 233 root  4u  IPv6    269      0t0  UDP localhost:18202 |
+T ping_v4 rc=127 fail out=sh: 1: ping: not found
+T ping_v6 rc=127 fail out=sh: 1: ping: not found
+T tls_v4 rc=1 ok out=Connecting to 127.0.0.1|Can't use SSL_get_servername|depth=0 CN=localhost|verify error:num=18:self-signed certificate|ve
+T tls_v6 rc=1 ok out=Connecting to ::1|Can't use SSL_get_servername|depth=0 CN=localhost|verify error:num=18:self-signed certificate|verify r
+T socat_v4 rc=0 ok out=echo:so4
+T socat_v6 rc=0 ok out=echo:so6
+T iperf3_v4 rc=0 ok out=iperf3: getsockopt - Protocol not available|Connecting to host 127.0.0.1, port 5201|[  5] local 127.0.0.1 port 32783 con
+T iperf3_v6 rc=1 fail out=iperf3: error - unable to connect to server - server may have stopped running or use a different port, firewall issue, e
+T done

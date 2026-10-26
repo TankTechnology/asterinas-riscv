@@ -1,0 +1,8 @@
+# iperf3 v4/v6 with server logs (target/iperf-v6)
+I apt_rc=0 installed=yes tail=logger: send message failed: Operation not permitted|Processing triggers for libc-bin (2.41-12+deb13u4) ...|
+I v4: Connecting to host 127.0.0.1, port 5201|[  5]   0.00-1.00   sec  1.66 GBytes  14.2 Gbits/sec  32767            sender|
+I v6: iperf3: error - unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused|
+I srv4: iperf3: getsockopt - Protocol not available|iperf3: getsockopt - Protocol not available|-----------------------------------------------------------|Server listening on 5201 (test #1)|-----------------
+I srv6: iperf3: error - unable to start listener for connections: Operation not supported|iperf3: exiting|
+I v6_numeric_family: iperf3: error - unable to connect to server - server may have stopped running or use a different port, firewall issue, etc.: Connection refused|
+I done
