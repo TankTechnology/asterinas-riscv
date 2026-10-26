@@ -222,6 +222,105 @@ static void mode_cow(void) {
     free(heap);
 }
 
+static long memfree_kb(void) {
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (!f) return -1;
+    char line[128];
+    long kb = -1;
+    while (fgets(line, sizeof line, f)) {
+        if (strncmp(line, "MemFree:", 8) == 0) { kb = atol(line + 8); break; }
+    }
+    fclose(f);
+    return kb;
+}
+
+/* fork 1000 times (child exits, parent waits) and report the MemFree delta. */
+static void mode_leak(long n) {
+    long before = memfree_kb();
+    for (long i = 0; i < n; i++) {
+        pid_t p = fork();
+        if (p == 0) _exit(0);
+        if (p < 0) { printf("fk_leak error fork\n"); return; }
+        waitpid(p, NULL, 0);
+    }
+    long after = memfree_kb();
+    printf("fk_leak forks=%ld memfree_before_kb=%ld after_kb=%ld delta_kb=%ld\n",
+           n, before, after, after - before);
+}
+
+/* Sparse VMA: alternate mapped/unmapped 64 KiB stripes over 256 MiB,
+   touch the mapped ones, then fork. */
+static void mode_sparse(void) {
+    const size_t stripe = 64 * 1024, count = 4096;   /* 256 MiB span */
+    const size_t span = stripe * count;
+    char *base = mmap(NULL, span, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (base == MAP_FAILED) { printf("fk_sparse mmap fail\n"); return; }
+    int mapped = 0;
+    for (size_t i = 0; i < count; i += 2) {
+        void *addr = base + i * stripe;
+        if (mmap(addr, stripe, PROT_READ | PROT_WRITE,
+                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED) continue;
+        memset(addr, 0x7e, stripe);
+        mapped++;
+    }
+    double best = 1e18;
+    for (int r = 0; r < 3; r++) {
+        double t0 = now_s();
+        pid_t p = fork();
+        if (p == 0) _exit(0);
+        double t1 = now_s();
+        waitpid(p, NULL, 0);
+        if ((t1 - t0) * 1e9 < best) best = (t1 - t0) * 1e9;
+    }
+    printf("fk_sparse stripes=%d wall_ns_fork=%.0f\n", mapped, best);
+    munmap(base, span);
+}
+
+/* Mixed mappings: stack + heap + file-backed private + anonymous. */
+static void mode_mixed(void) {
+    char heapbuf[1 << 20];
+    memset(heapbuf, 0x5a, sizeof heapbuf);
+    FILE *f = fopen("/tmp/fk-mixed.bin", "w+b");
+    if (!f) { printf("fk_mixed file fail\n"); return; }
+    ftruncate(fileno(f), 8 << 20);
+    char *filemap = mmap(NULL, 8 << 20, PROT_READ | PROT_WRITE, MAP_PRIVATE, fileno(f), 0);
+    if (filemap == MAP_FAILED) { printf("fk_mixed mmap fail\n"); fclose(f); return; }
+    for (size_t off = 0; off < (8u << 20); off += 4096) filemap[off] = 1;
+    double best = 1e18;
+    for (int r = 0; r < 3; r++) {
+        double t0 = now_s();
+        pid_t p = fork();
+        if (p == 0) {
+            int ok = heapbuf[123] == 0x5a && filemap[0] == 1 && filemap[4096] == 1;
+            filemap[4096] = 2;                 /* COW write into a file mapping */
+            ok = ok && filemap[4096] == 2;
+            _exit(ok ? 0 : 1);
+        }
+        double t1 = now_s();
+        int st = 0; waitpid(p, &st, 0);
+        if ((t1 - t0) * 1e9 < best) best = (t1 - t0) * 1e9;
+        if (!(WIFEXITED(st) && WEXITSTATUS(st) == 0)) { printf("fk_mixed child_bad\n"); }
+        /* MAP_PRIVATE: the parent must still see its own value (1). */
+        if (filemap[4096] != 1) { printf("fk_mixed parent_visible\n"); }
+    }
+    printf("fk_mixed wall_ns_fork=%.0f\n", best);
+    munmap(filemap, 8 << 20);
+    fclose(f);
+    remove("/tmp/fk-mixed.bin");
+}
+
+/* fork + exec 100 times. */
+static void mode_forkexec(long n) {
+    long before = memfree_kb();
+    for (long i = 0; i < n; i++) {
+        pid_t p = fork();
+        if (p == 0) { execl("/bin/true", "true", (char *)NULL); _exit(127); }
+        int st = 0; waitpid(p, &st, 0);
+    }
+    long after = memfree_kb();
+    printf("fk_forkexec n=%ld memfree_delta_kb=%ld\n", n, after - before);
+}
+
 int main(int argc, char **argv) {
     if (argc < 3) return 1;
     if (strcmp(argv[1], "fork") == 0) mode_fork(atol(argv[2]));
@@ -230,6 +329,10 @@ int main(int argc, char **argv) {
     else if (strcmp(argv[1], "reserve") == 0) mode_reserve(atol(argv[2]));
     else if (strcmp(argv[1], "protect") == 0) mode_protect(atol(argv[2]));
     else if (strcmp(argv[1], "cow") == 0) mode_cow();
+    else if (strcmp(argv[1], "leak") == 0) mode_leak(atol(argv[2]));
+    else if (strcmp(argv[1], "sparse") == 0) mode_sparse();
+    else if (strcmp(argv[1], "mixed") == 0) mode_mixed();
+    else if (strcmp(argv[1], "forkexec") == 0) mode_forkexec(atol(argv[2]));
     return 0;
 }
 EOF
@@ -249,6 +352,10 @@ for mb in 64 512; do
     /tmp/fork_bench protect "$mb" 2>&1 | while IFS= read -r l; do log "$l"; done
 done
 /tmp/fork_bench cow 0 2>&1 | while IFS= read -r l; do log "$l"; done
+/tmp/fork_bench leak 1000 2>&1 | while IFS= read -r l; do log "$l"; done
+/tmp/fork_bench sparse 0 2>&1 | while IFS= read -r l; do log "$l"; done
+/tmp/fork_bench mixed 0 2>&1 | while IFS= read -r l; do log "$l"; done
+/tmp/fork_bench forkexec 100 2>&1 | while IFS= read -r l; do log "$l"; done
 
 log "fk_done $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 echo DAILY_DONE=ok >/dev/console
