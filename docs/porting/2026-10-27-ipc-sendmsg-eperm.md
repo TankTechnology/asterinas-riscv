@@ -96,9 +96,20 @@ Privileged_Cont / Web_Content ×3 / Utility_Process`）且有窗口
 `setpriv` 本身；**这是一个独立的新问题（uid 切换后某条路径丢唤醒/死锁），
 需要单独复现（建议：`setpriv` + 逐用例 `stdbuf -oL` + 每用例 `timeout`）**。
 
-### 4.4 7 域矩阵
+### 4.4 7 域矩阵（修复内核 `e8b4a819`）
 
-修复内核 `e8b4a819` 的矩阵结果见 §5（本轮结束后补跑）。
+| 域 | 结果 | 细节 |
+|---|---|---|
+| DESKTOP | ok | Xorg+DRI3 |
+| APP | ok | xterm |
+| APT | ok | xclip+xterm+alsa-utils-installed |
+| CLIPBOARD | ok | xclip-round-trip |
+| AUDIO | ok | aplay-hw:0,0 |
+| USB | ok | mounted-/dev/sda-read-ASTERINAS-USB-OK |
+| SUSPEND | ok | woke-up-disk-and-io-ok |
+
+INPUT_METHOD 仍 fail（既有缺口）；`DAILY_DONE=ok`、panic 0、allocation failed 0。
+原始行见 `evidence/2026-10-27-ipc-sendmsg-eperm/matrix.txt`。
 
 ## 5. 结论
 
@@ -107,7 +118,10 @@ Privileged_Cont / Web_Content ×3 / Utility_Process`）且有窗口
   （次因，root 下也每次都触发）。
 - 两处均已按 Linux 语义修正，未放宽 uid/gid 边界；探针 root 侧全绿（除
   `MSG_CMSG_CLOEXEC` 这个与本问题无关的遗留 TODO）。
+- Firefox（内容沙箱开启、root 运行）：10 个进程、有窗口；修复后
+  `SCM_CREDENTIALS` 拒绝次数 **173–187 → 0**。
 - **未完成**：非 root 端到端验证被 guest 卡死阻断（§4.3），因此"Firefox 在 uid
   1000 下 procs ≥5、页面绘制"这条验收**尚未拿到数字**；需要在解决该卡死后补测。
+- 7 域矩阵在修复内核上重跑：全 ok、panic 0、allocation failed 0（§4.4）。
 - 遗留：`MSG_CMSG_CLOEXEC` 未实现（`ctrl_msg.rs:139-144` 的 TODO），fd 会漏进
   exec 的子进程；与本 EPERM 无关，建议单独立项。
