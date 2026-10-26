@@ -217,6 +217,14 @@ impl Thread {
         *self.syscall_state.lock()
     }
 
+    /// Returns the syscall state without blocking.
+    ///
+    /// Used from the page-fault path, which may run while the state lock is
+    /// held.
+    pub(crate) fn try_syscall_state(&self) -> Option<SyscallState> {
+        self.syscall_state.try_lock().map(|state| *state)
+    }
+
     /// Returns whether the thread is exited.
     pub(crate) fn is_exited(&self) -> bool {
         self.is_exited.load(Ordering::Acquire)

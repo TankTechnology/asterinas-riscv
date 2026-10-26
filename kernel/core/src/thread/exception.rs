@@ -4,6 +4,8 @@
 use ostd::arch::cpu::context::CpuException;
 #[cfg(target_arch = "loongarch64")]
 use ostd::arch::cpu::context::CpuExceptionInfo as CpuException;
+use core::sync::atomic::{AtomicUsize, Ordering};
+
 use ostd::{arch::cpu::context::UserContext, task::Task};
 
 use crate::{
@@ -68,9 +70,29 @@ fn generate_fault_signal(exception: CpuException, ctx: &Context, user_ctx: &User
     ctx.posix_thread.enqueue_signal(Box::new(signal));
 }
 
+/// Counts the atomic-mode user faults reported by the diagnostic below.
+static ATOMIC_FAULTS: AtomicUsize = AtomicUsize::new(0);
+
 pub(super) fn page_fault_handler(info: &CpuException) -> Result<(), ()> {
     let task = Task::current().unwrap();
-    let page_fault_info = info.try_into().unwrap();
+    let page_fault_info: PageFaultInfo = info.try_into().unwrap();
+
+    // A user page fault taken while preemption is disabled means that kernel
+    // code touched a user pointer while holding spin locks. The generic
+    // handler below takes a sleepable lock, so this is exactly the context in
+    // which "might break atomic mode" is reported.  Log the offending
+    // syscall so the path can be identified.
+    let preempt_count = ostd::task::atomic_mode::preempt_count();
+    if preempt_count != 0 && ATOMIC_FAULTS.fetch_add(1, Ordering::Relaxed) < 32 {
+        let (nr, sp, pc) = crate::thread::Thread::current()
+            .as_ref()
+            .and_then(|thread| thread.try_syscall_state())
+            .map_or((u64::MAX, 0, 0), |state| (state.nr, state.sp, state.pc));
+        warn!(
+            "atomic-mode user fault: preempt_count={}, addr={:#x}, syscall={}, user_sp={:#x}, user_pc={:#x}",
+            preempt_count, page_fault_info.address, nr, sp, pc
+        );
+    }
 
     if let Some(thread_local) = task.as_thread_local() {
         if thread_local.is_page_fault_disabled() {

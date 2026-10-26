@@ -46,6 +46,13 @@ pub fn might_sleep() {
     }
 }
 
+/// Returns the current preemption guard count.
+///
+/// A non-zero value means the context is in atomic mode: it must not sleep.
+pub fn preempt_count() -> u32 {
+    super::preempt::cpu_local::get_guard_count()
+}
+
 /// A marker trait for guard types that enforce the atomic mode.
 ///
 /// Key kernel primitives such as `SpinLock` and `Rcu` rely on
