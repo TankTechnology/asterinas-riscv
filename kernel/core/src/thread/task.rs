@@ -84,6 +84,12 @@ pub(crate) fn create_new_user_task(
             crate::init::on_first_process_startup(&ctx);
         }
 
+        // A thread created under `PTRACE_O_TRACECLONE` starts in a ptrace-stop.
+        // `clone` queues a `SIGSTOP` for it; deliver pending signals before the
+        // first user instruction so the child is stopped before it can run.
+        // With no pending signal this is a no-op.
+        handle_pending_signal(user_mode.context_mut(), &ctx);
+
         while !current_thread.is_exited() {
             // Execute the user code
             let return_reason = user_mode.execute(&ctx);

@@ -1,0 +1,10 @@
+# BEFORE: same script on the baseline kernel (aff0f522a)
+TC compile=ok
+SETOPTIONS traceclone rc=0 errno=0 (Success)
+CLONE pthread_create_rc=95 new_tracee_stops=0 child_exited=1 read=4
+RESULT traceclone FAIL
+TC harness_exit=1
+TC stracef_python_rc=1 clones=1 out=RuntimeError: can't start new thread
+TC stracef_log: 153   clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7ffffe9c0990, parent_tid=0x7ffffe9c0990, exit_signal=0, stack=0x7ffffe1c0000, stack_size=0x7fff40, tls=0x7ffffe9c06c0}, 88) = -1 EOPNOTSUPP (O
+TC stracef_sh_rc=0 out=+++ exited with 0 +++
+TC strace_plain_rc=0 out=

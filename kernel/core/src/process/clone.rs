@@ -14,7 +14,12 @@ use super::{
     Credentials, Pid, Process, pid_table,
     posix_thread::{AsPosixThread, PosixThreadBuilder},
     rlimit::ResourceLimits,
-    signal::{constants::SIGCHLD, sig_disposition::SigDispositions, sig_num::SigNum},
+    signal::{
+        constants::{SIGCHLD, SIGSTOP},
+        sig_disposition::SigDispositions,
+        sig_num::SigNum,
+        signals::user::UserSignal,
+    },
 };
 use crate::{
     context::current_userspace,
@@ -32,7 +37,7 @@ use crate::{
         stats::PROCESS_CREATION_COUNTER,
     },
     sched::Nice,
-    thread::{AsThread, Tid},
+    thread::{AsThread, Thread, Tid},
     vm::vmar::{Vmar, VmarHandle},
 };
 
@@ -238,16 +243,6 @@ impl CloneArgs {
             );
         }
 
-        // TODO: Support clone-family ptrace events and remove this check.
-        if !clone_flags.contains(CloneFlags::CLONE_UNTRACED)
-            && ctx.posix_thread.needs_ptrace_clone_stop(self)
-        {
-            return_errno_with_message!(
-                Errno::EOPNOTSUPP,
-                "ptrace clone events are not supported currently"
-            );
-        }
-
         Ok(())
     }
 }
@@ -286,6 +281,39 @@ impl CloneFlags {
     }
 }
 
+/// Makes a freshly cloned child start traced, when the cloner's tracer asked
+/// for the matching `PTRACE_O_TRACE*` option.
+///
+/// The child is attached to the same tracer and gets a `SIGSTOP` queued. The
+/// task entry delivers pending signals before the first `execute`, so the
+/// child enters the ptrace-stop without running any user code.
+fn ptrace_trace_cloned_child(
+    ctx: &Context,
+    child_thread: &Arc<Thread>,
+    clone_args: &CloneArgs,
+) -> Result<()> {
+    if clone_args.flags.contains(CloneFlags::CLONE_UNTRACED) {
+        return Ok(());
+    }
+    if !ctx.posix_thread.needs_ptrace_clone_stop(clone_args) {
+        return Ok(());
+    }
+    let Some(tracer_thread) = ctx.posix_thread.tracer() else {
+        return Ok(());
+    };
+
+    let tracer = tracer_thread.as_posix_thread().unwrap();
+    tracer.attach_to(&tracer_thread, child_thread.clone())?;
+
+    // Delivered by the task entry before its first user instruction.
+    child_thread
+        .as_posix_thread()
+        .unwrap()
+        .enqueue_signal(Box::new(UserSignal::new_kill(SIGSTOP, ctx)));
+
+    Ok(())
+}
+
 /// Clone a child thread or child process.
 ///
 /// FIXME: currently, the child process or thread will be scheduled to run at once,
@@ -300,6 +328,7 @@ pub(crate) fn clone_child(
     if clone_args.flags.contains(CloneFlags::CLONE_THREAD) {
         let child_task = clone_child_task(ctx, parent_context, clone_args)?;
         let child_thread = child_task.as_thread().unwrap();
+        ptrace_trace_cloned_child(ctx, &child_thread, &clone_args)?;
         child_thread.run();
 
         let child_tid = child_thread.as_posix_thread().unwrap().tid();
@@ -345,6 +374,7 @@ pub(crate) fn clone_child(
             child_process.status().set_vfork_child(true);
         }
 
+        ptrace_trace_cloned_child(ctx, &child_process.main_thread(), &clone_args)?;
         child_process.run();
 
         PROCESS_CREATION_COUNTER

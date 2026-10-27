@@ -1,0 +1,7 @@
+# strace -f on a 3-thread python program and on a forking shell
+C2 py_rc=0 trace_lines=7
+C2 clone_lines: 84    clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7ffffe9c0990, parent_tid=0x7ffffe9c0990, exit_signal=0, stack=0x7ffffe1c0000, stack_size=0x7fff40, tls=0x7ffffe9c06c0} => {parent_tid=[85]}, 88) = 85|84    clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|C
+C2 attached: 0 
+C2 trace_head: 84    clone3({flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, child_tid=0x7ffffe9c0990, parent_tid=0x7ffffe9c0990, exit_signal=0, stack=0x7ffffe1c0000, stack_size=0x7fff40, tls=0x7ffffe9c06c0} => {parent_tid=[85]}, 8
+C2 fork_rc=0 lines=5 head=108   execve("/usr/bin/sh", ["sh", "-c", "true & wait"], 0x7ffffff10ce8 /* 15 vars */) = 0|108   clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0x7ffffedc4a10) = 109|109   +++ exited with 0 +++|108   --- SIGCHLD {si_signo=SIGCHLD, si_code=SI_KERNEL, si_pi
+C2 done
