@@ -31,7 +31,10 @@ mod fence;
 mod powervr_probe;
 mod prime;
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::{
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
+    time::Duration,
+};
 
 use align_ext::AlignExt;
 use aster_framebuffer::framebuffer::{FRAMEBUFFER, FrameBuffer};
@@ -39,6 +42,7 @@ use aster_virtio::device::gpu::{VirtioGpuBox, device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::{
     mm::{Paddr, VmIo},
+    sync::{Waiter, Waker},
     task::Task,
 };
 /// The dma-buf descriptor, reachable so that the SCM_RIGHTS classifier can
@@ -65,6 +69,7 @@ use crate::{
     },
     prelude::*,
     process::signal::{PollHandle, Pollable, Pollee},
+    time::clocks::MonotonicClock,
     util::ioctl::{RawIoctl, dispatch_ioctl},
     vm::page_cache::{Vmo, VmoFlags, VmoOptions},
 };
@@ -504,6 +509,9 @@ struct DriHandle {
     /// so it is never readable — but the poller still has to be registered, so
     /// that adding one later does not mean revisiting every call site.
     events: Pollee,
+    /// Events queued for this file, already encoded as the bytes `read(2)`
+    /// returns.
+    event_queue: SpinLock<VecDeque<u8>>,
 }
 
 #[derive(Debug)]
@@ -1011,6 +1019,148 @@ struct DrmModeCrtcPageFlip {
     user_data: u64,
 }
 
+/// `DRM_MODE_PAGE_FLIP_EVENT`: queue a completion event for this flip.
+const PAGE_FLIP_EVENT: u32 = 0x01;
+/// `DRM_MODE_PAGE_FLIP_ASYNC`: schedule the flip without waiting for vblank.
+const PAGE_FLIP_ASYNC: u32 = 0x02;
+/// `DRM_EVENT_VBLANK`.
+const DRM_EVENT_VBLANK: u32 = 0x01;
+/// `DRM_EVENT_FLIP_COMPLETE`.
+const DRM_EVENT_FLIP_COMPLETE: u32 = 0x02;
+/// `DRM_VBLANK_ABSOLUTE`.
+const VBLANK_ABSOLUTE: u32 = 1 << 0;
+/// `DRM_VBLANK_EVENT`.
+const VBLANK_EVENT: u32 = 1 << 26;
+
+/// `struct drm_event_vblank`, the record `read(2)` returns for a completed
+/// page flip or a requested vblank event.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h#L1151-L1158>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+struct DrmEventVblank {
+    event_type: u32,
+    length: u32,
+    user_data: u64,
+    tv_sec: u32,
+    tv_usec: u32,
+    sequence: u32,
+    crtc_id: u32,
+}
+
+impl DrmEventVblank {
+    fn new(event_type: u32, user_data: u64, time: Duration, sequence: u32) -> Self {
+        Self {
+            event_type,
+            length: core::mem::size_of::<Self>() as u32,
+            user_data,
+            tv_sec: time.as_secs() as u32,
+            tv_usec: time.subsec_micros(),
+            sequence,
+            crtc_id: CRTC_ID,
+        }
+    }
+
+    /// Encodes the record the way Linux lays it out, without taking a raw
+    /// pointer to the struct (`deny(unsafe_code)`).
+    fn encode(self) -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        bytes[0..4].copy_from_slice(&self.event_type.to_le_bytes());
+        bytes[4..8].copy_from_slice(&self.length.to_le_bytes());
+        bytes[8..16].copy_from_slice(&self.user_data.to_le_bytes());
+        bytes[16..20].copy_from_slice(&self.tv_sec.to_le_bytes());
+        bytes[20..24].copy_from_slice(&self.tv_usec.to_le_bytes());
+        bytes[24..28].copy_from_slice(&self.sequence.to_le_bytes());
+        bytes[28..32].copy_from_slice(&self.crtc_id.to_le_bytes());
+        bytes
+    }
+}
+
+/// `union drm_wait_vblank` in Linux, as a 24-byte payload.
+///
+/// The request form is `{ type, sequence, signal }` and the reply form is
+/// `{ type, sequence, tval_sec, tval_usec }`.
+///
+/// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm.h#L1268-L1287>.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Pod)]
+struct DrmWaitVblank {
+    type_: u32,
+    sequence: u32,
+    value1: u64,
+    value2: u64,
+}
+
+/// The scanout's vblank clock.
+///
+/// virtio-gpu has no refresh interrupt here, so a completed present (a
+/// modeset, page flip, or dirty update that transferred and flushed the
+/// framebuffer) advances the sequence and is the point a waiter is released.
+struct VblankState {
+    sequence: u32,
+    time: Duration,
+    waiters: Vec<Arc<Waker>>,
+}
+
+static VBLANK: SpinLock<VblankState> = SpinLock::new(VblankState {
+    sequence: 0,
+    time: Duration::ZERO,
+    waiters: Vec::new(),
+});
+
+/// Advances the scanout sequence and releases everyone waiting on it.
+fn note_vblank() {
+    let now = MonotonicClock::get().read_time();
+    let waiters = {
+        let mut state = VBLANK.lock();
+        state.sequence = state.sequence.wrapping_add(1);
+        state.time = now;
+        core::mem::take(&mut state.waiters)
+    };
+    for waker in waiters {
+        waker.wake_up();
+    }
+}
+
+fn vblank_now() -> (u32, Duration) {
+    let state = VBLANK.lock();
+    let time = if state.time.is_zero() {
+        MonotonicClock::get().read_time()
+    } else {
+        state.time
+    };
+    (state.sequence, time)
+}
+
+/// Returns whether the sequence has reached `target` (wrap-safe).
+fn vblank_reached(current: u32, target: u32) -> bool {
+    target == 0 || current.wrapping_sub(target) < 0x8000_0000
+}
+
+fn wait_for_vblank(target: u32) {
+    loop {
+        let (current, _) = vblank_now();
+        if vblank_reached(current, target) {
+            return;
+        }
+        let (waiter, waker) = Waiter::new_pair();
+        {
+            let mut state = VBLANK.lock();
+            if vblank_reached(state.sequence, target) {
+                return;
+            }
+            state.waiters.push(waker);
+        }
+        waiter.wait();
+    }
+}
+
+fn write_vblank_reply(args: &mut DrmWaitVblank, sequence: u32, time: Duration) {
+    args.sequence = sequence;
+    args.value1 = time.as_secs();
+    args.value2 = u64::from(time.subsec_micros());
+}
+
 /// `struct drm_mode_fb_dirty_cmd`.
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v6.18/source/include/uapi/drm/drm_mode.h#L1439>.
@@ -1089,7 +1239,7 @@ mod ioctl_defs {
         DrmModeObjGetProperties, DrmPrimeHandle, DrmSetClientCap, DrmVersion,
         DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
         DrmVirtgpuMap, DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo, DrmVirtgpuTransfer3d,
-        DrmVirtgpuWait,
+        DrmVirtgpuWait, DrmWaitVblank,
     };
     use crate::util::ioctl::{InData, InOutData, NoData, OutData, ioc};
 
@@ -1152,6 +1302,7 @@ mod ioctl_defs {
     pub(super) type ModeGetConnector = ioc!(DRM_IOCTL_MODE_GETCONNECTOR, b'd', 0xa7, InOutData<DrmModeGetConnector>);
     pub(super) type ModeAddFb = ioc!(DRM_IOCTL_MODE_ADDFB, b'd', 0xae, InOutData<DrmModeFbCmd>);
     pub(super) type ModePageFlip = ioc!(DRM_IOCTL_MODE_PAGE_FLIP, b'd', 0xb0, InOutData<DrmModeCrtcPageFlip>);
+    pub(super) type WaitVblank = ioc!(DRM_IOCTL_WAIT_VBLANK, b'd', 0x3a, InOutData<DrmWaitVblank>);
     pub(super) type ModeDirtyFb = ioc!(DRM_IOCTL_MODE_DIRTYFB, b'd', 0xb1, InOutData<DrmModeFbDirtyCmd>);
     pub(super) type ModeCreateDumb = ioc!(DRM_IOCTL_MODE_CREATE_DUMB, b'd', 0xb2, InOutData<DrmModeCreateDumb>);
     pub(super) type ModeMapDumb = ioc!(DRM_IOCTL_MODE_MAP_DUMB, b'd', 0xb3, InOutData<DrmModeMapDumb>);
@@ -1235,6 +1386,7 @@ impl Device for Dri {
             context_operation: Mutex::new(()),
             cursor_operation: Mutex::new(()),
             events: Pollee::new(),
+            event_queue: SpinLock::new(VecDeque::new()),
             inner: SpinLock::new(DriInner {
                 handles: BTreeMap::new(),
                 next_handle: 1,
@@ -2170,10 +2322,55 @@ impl DriHandle {
         inner.current_height = height;
     }
 
+    /// Queues a DRM event for this file and marks it readable.
+    fn queue_event(&self, event: DrmEventVblank) {
+        self.event_queue.lock().extend(event.encode());
+        self.events.notify(IoEvents::IN);
+    }
+
+    /// `DRM_IOCTL_WAIT_VBLANK`: report the scanout sequence, or wait for it to
+    /// reach a target. `DRM_VBLANK_EVENT` turns the request into a queued
+    /// `DRM_EVENT_VBLANK` instead of a wait.
+    fn wait_vblank(&self, cmd: ioctl_defs::WaitVblank) -> Result<i32> {
+        let mut req = cmd.read()?;
+        if req.type_ & !(VBLANK_ABSOLUTE | VBLANK_EVENT) != 0 {
+            return_errno_with_message!(
+                Errno::EINVAL,
+                "only CRTC 0 relative/absolute waits and event requests are supported"
+            );
+        }
+
+        let (current, time) = vblank_now();
+        if req.type_ & VBLANK_EVENT != 0 {
+            self.queue_event(DrmEventVblank::new(
+                DRM_EVENT_VBLANK,
+                req.value1,
+                time,
+                current,
+            ));
+            write_vblank_reply(&mut req, current, time);
+            cmd.write(&req)?;
+            return Ok(0);
+        }
+
+        let target = if req.type_ & VBLANK_ABSOLUTE != 0 {
+            req.sequence
+        } else {
+            current.wrapping_add(req.sequence)
+        };
+        wait_for_vblank(target);
+
+        let (sequence, time) = vblank_now();
+        write_vblank_reply(&mut req, sequence, time);
+        cmd.write(&req)?;
+        Ok(0)
+    }
+
     fn present_fb(&self, fb_id: u32) -> Result<()> {
         let (buffer, width, height) = self.scanout_buffer(fb_id)?;
         self.display.scanout.present_framebuffer(buffer)?;
         self.note_current_scanout(fb_id, width, height);
+        note_vblank();
         Ok(())
     }
 
@@ -2205,6 +2402,7 @@ impl DriHandle {
 
         self.display.scanout.dirty_framebuffer(buffer, &damage)?;
         self.note_current_scanout(fb_id, width, height);
+        note_vblank();
         Ok(())
     }
 
@@ -2366,7 +2564,13 @@ impl Pollable for DriHandle {
     /// its clients again — a `glxinfo` left blocked on the X socket with the
     /// server apparently alive.
     fn poll(&self, mask: IoEvents, poller: Option<&mut PollHandle>) -> IoEvents {
-        self.events.poll_with(mask, poller, || IoEvents::empty())
+        self.events.poll_with(mask, poller, || {
+            if self.event_queue.lock().is_empty() {
+                IoEvents::empty()
+            } else {
+                IoEvents::IN
+            }
+        })
     }
 }
 
@@ -2374,10 +2578,21 @@ impl FileOps for DriHandle {
     fn read_at(
         &self,
         _offset: usize,
-        _writer: &mut VmWriter,
+        writer: &mut VmWriter,
         _status_flags: StatusFlags,
     ) -> Result<usize> {
-        Ok(0)
+        let mut queue = self.event_queue.lock();
+        if queue.is_empty() {
+            return_errno_with_message!(Errno::EAGAIN, "no DRM events are pending");
+        }
+        let count = writer.avail().min(queue.len());
+        let mut bytes = Vec::with_capacity(count);
+        for _ in 0..count {
+            bytes.push(queue.pop_front().unwrap());
+        }
+        drop(queue);
+        writer.write_fallible(&mut VmReader::from(bytes.as_slice()))?;
+        Ok(count)
     }
 
     fn write_at(
@@ -2767,17 +2982,26 @@ impl PerOpenFileOps for DriHandle {
                 if req.fb_id == 0 {
                     return_errno_with_message!(Errno::EINVAL, "page flip to no framebuffer");
                 }
-                // No backend currently queues flip-complete events or supports
-                // asynchronous flips. Accepting either flag would leave an
-                // event-driven client waiting forever after a successful ioctl.
-                if req.flags != 0 {
-                    return_errno_with_message!(
-                        Errno::EOPNOTSUPP,
-                        "page flip flags are unsupported"
-                    );
+                if req.flags & !(PAGE_FLIP_EVENT | PAGE_FLIP_ASYNC) != 0 || req.reserved != 0 {
+                    return_errno_with_message!(Errno::EINVAL, "the page-flip flags are invalid");
                 }
+                // Presenting is synchronous on this driver, so the flip is
+                // complete when the ioctl returns; the event it promised is
+                // queued right after the pixels are visible.
                 self.present_fb(req.fb_id)?;
+                if req.flags & PAGE_FLIP_EVENT != 0 {
+                    let (sequence, time) = vblank_now();
+                    self.queue_event(DrmEventVblank::new(
+                        DRM_EVENT_FLIP_COMPLETE,
+                        req.user_data,
+                        time,
+                        sequence,
+                    ));
+                }
                 Ok(0)
+            }
+            cmd @ WaitVblank => {
+                self.wait_vblank(cmd)
             }
             cmd @ ModeDirtyFb => {
                 let req = cmd.read()?;
@@ -2918,6 +3142,58 @@ mod tests {
 
     use super::{ioctl_defs::*, *};
     use crate::util::ioctl::NoData;
+
+    /// The event record `read(2)` returns must be Linux's
+    /// `struct drm_event_vblank`, field for field.
+    #[ktest]
+    fn page_flip_event_encoding_matches_drm_event_vblank() {
+        let event = DrmEventVblank::new(
+            DRM_EVENT_FLIP_COMPLETE,
+            0x1122_3344_5566_7788,
+            Duration::new(3, 456_000_000),
+            7,
+        );
+        let bytes = event.encode();
+        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()), 0x02);
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()), 32);
+        assert_eq!(
+            u64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+            0x1122_3344_5566_7788
+        );
+        assert_eq!(u32::from_le_bytes(bytes[16..20].try_into().unwrap()), 3);
+        assert_eq!(
+            u32::from_le_bytes(bytes[20..24].try_into().unwrap()),
+            456_000
+        );
+        assert_eq!(u32::from_le_bytes(bytes[24..28].try_into().unwrap()), 7);
+        assert_eq!(
+            u32::from_le_bytes(bytes[28..32].try_into().unwrap()),
+            CRTC_ID
+        );
+        assert_eq!(core::mem::size_of::<DrmWaitVblank>(), 24);
+    }
+
+    /// The sequence comparison has to survive the counter wrapping at `u32`.
+    #[ktest]
+    fn vblank_sequence_comparison_is_wrap_safe() {
+        assert!(vblank_reached(0, 0));
+        assert!(vblank_reached(5, 5));
+        assert!(!vblank_reached(4, 5));
+        // The counter wrapped past `u32::MAX`.
+        assert!(vblank_reached(2, u32::MAX - 1));
+        assert!(!vblank_reached(2, 10));
+    }
+
+    /// A vblank reply carries the sequence and the timestamp of the present
+    /// that advanced it.
+    #[ktest]
+    fn vblank_reply_carries_sequence_and_time() {
+        let mut args = DrmWaitVblank::default();
+        write_vblank_reply(&mut args, 42, Duration::new(5, 250_000_000));
+        assert_eq!(args.sequence, 42);
+        assert_eq!(args.value1, 5);
+        assert_eq!(args.value2, 250_000);
+    }
 
     /// Linux requires an unsupported atomic KMS client cap to fail so clients
     /// keep using the legacy ioctls this driver actually implements.
