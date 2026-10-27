@@ -541,13 +541,16 @@ class BootMenuTests(unittest.TestCase):
         value["extlinux"] = menu.render(value)
         menu.validate(value)
 
-    def test_rejects_desktop_entry_without_management_console(self):
+    def test_accepts_daily_use_entry_without_management_console(self):
         value = document()
         value["desktop_args"] = menu.BASE_ARGS + " -- --root-init=systemd"
         value["extlinux"] = menu.render(value)
+        menu.validate(value)
+        self.assertIn(value["desktop_args"], value["extlinux"])
 
-        with self.assertRaisesRegex(menu.BootManifestError, "debug-console"):
-            menu.validate(value)
+        value["desktop_args"] += " --volatile-home"
+        value["extlinux"] = menu.render(value)
+        menu.validate(value)
 
     def test_publication_is_config_last_and_only_publishes_canary(self):
         value = document()

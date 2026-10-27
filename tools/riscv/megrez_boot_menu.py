@@ -313,8 +313,13 @@ def validate(document: dict) -> None:
             ["--root-init=systemd", "--debug-console=root"],
             ["--root-init=systemd", "--debug-console=root", "--volatile-home"],
             ["--root-init=systemd", "--debug-console=isolated-root"],
+            # Daily-use entry: the autologin getty owns ttyS0, so the debug
+            # console must not be started on the same line.  The debug entry
+            # stays available as a separate boot choice.
+            ["--root-init=systemd"],
+            ["--root-init=systemd", "--volatile-home"],
         ),
-        "invalid desktop root-init: require --debug-console=root without isolation",
+        "invalid desktop root-init: require systemd without an unexpected console",
     )
     require(
         not any(t.startswith("asterinas.reboot_after") for t in tokens),

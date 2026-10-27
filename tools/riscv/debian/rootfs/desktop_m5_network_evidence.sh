@@ -10,6 +10,10 @@ readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_COMMAND_TIMEOUT_SECONDS
 # accepting connections in a second, it is absent; do not spend the transfer
 # budget finding that out.
 readonly FIXTURE_CONNECT_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_FIXTURE_CONNECT_TIMEOUT_SECONDS:-1}"
+# Two seconds is enough for the 64 KiB fixture on that hop.  A transfer that
+# cannot finish in that window is treated as an absent fixture (web_fail's
+# exit 75) instead of stretching the boot wait.
+readonly FIXTURE_MAX_TIME_SECONDS="${ASTERINAS_DESKTOP_M5_FIXTURE_MAX_TIME_SECONDS:-2}"
 readonly CMDLINE_PATH="${ASTERINAS_DESKTOP_M5_CMDLINE_PATH:-/proc/cmdline}"
 readonly UPTIME_PATH="${ASTERINAS_DESKTOP_M5_UPTIME_PATH:-/proc/uptime}"
 readonly RESOLV_CONF="${ASTERINAS_DESKTOP_M5_RESOLV_CONF:-/etc/resolv.conf}"
@@ -185,7 +189,7 @@ web_network_evidence() {
         --silent
         --show-error
         --connect-timeout "$FIXTURE_CONNECT_TIMEOUT_SECONDS"
-        --max-time "$COMMAND_TIMEOUT_SECONDS"
+        --max-time "$FIXTURE_MAX_TIME_SECONDS"
         --noproxy '*'
     )
     local -a repeat_files=()
@@ -301,7 +305,7 @@ web_network_evidence() {
     limit="$(web_timeout_seconds "$deadline")" || web_fail http timeout
     if timeout "$limit" curl --fail --ipv4 --silent --show-error \
         --connect-timeout "$FIXTURE_CONNECT_TIMEOUT_SECONDS" \
-        --max-time "$limit" --noproxy '*' --dump-header "$http_headers" \
+        --max-time "$FIXTURE_MAX_TIME_SECONDS" --noproxy '*' --dump-header "$http_headers" \
         --output "$http_file" "$FIXTURE_URL"; then
         :
     else
@@ -403,7 +407,7 @@ web_network_evidence() {
     limit="$(web_timeout_seconds "$deadline")" || web_fail medium timeout
     if timeout "$limit" curl --fail --ipv4 --silent --show-error \
         --connect-timeout "$FIXTURE_CONNECT_TIMEOUT_SECONDS" \
-        --max-time "$limit" --noproxy '*' --output "$temporary_medium" \
+        --max-time "$FIXTURE_MAX_TIME_SECONDS" --noproxy '*' --output "$temporary_medium" \
         "$WEB_NETWORK_MEDIUM_URL"; then
         :
     else

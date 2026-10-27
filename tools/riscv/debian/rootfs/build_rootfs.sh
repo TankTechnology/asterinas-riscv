@@ -1011,29 +1011,76 @@ copy_into_content_cache() {
         --sha256 "$expected_sha256"
 }
 
-# Drops the sysctl assignments this kernel cannot apply.
+# Removes the sysctl files whose assignments this kernel cannot apply.
 #
-# Debian's systemd defaults write `kernel.pid_max` and `kernel.core_pattern`.
-# On Asterinas the first exists but rejects writes with EOPNOTSUPP and the
-# second does not exist at all, so systemd-sysctl exits 1 on every boot and
-# stays in `systemctl --failed`.  Nothing in the image depends on either
-# assignment (Asterinas already reports the maximum PID value, and it has no
-# coredump support), so comment them out rather than faking kernel knobs.
-# The files themselves stay in place so package upgrades keep their layout.
-normalize_unsupported_sysctl_keys() {
+# Debian ships `kernel.pid_max = 4194304` and `kernel.core_pattern=core`.  On
+# Asterinas pid_max already reads 2147483647 and rejects writes with
+# EOPNOTSUPP, and /proc/sys/kernel/core_pattern does not exist, so
+# systemd-sysctl exits 1 on every boot and stays in `systemctl --failed`.
+# Verified on the board: moving these two files away lets
+# `systemctl restart systemd-sysctl` succeed and drops the failed count from 4
+# to 3.  Removing them is the smallest fix that matches the kernel: a
+# conditional drop-in could only write pid_max, which is already at its
+# maximum, so there is nothing left to set.
+drop_unsupported_sysctl_files() {
     local stage="$1"
-    local directory
     local file
 
-    for directory in "$stage/usr/lib/sysctl.d" "$stage/etc/sysctl.d"; do
-        [[ -d "$directory" ]] || continue
-        while IFS= read -r -d '' file; do
-            sed -i \
-                -e 's/^\([[:space:]]*\)kernel\.pid_max[[:space:]]*=.*$/\1# Asterinas: kernel.pid_max is read-only; assignment dropped./' \
-                -e 's/^\([[:space:]]*\)kernel\.core_pattern[[:space:]]*=.*$/\1# Asterinas: kernel.core_pattern is not implemented; assignment dropped./' \
-                -- "$file"
-        done < <(find "$directory" -type f -name '*.conf' -print0)
+    for file in \
+        "$stage/usr/lib/sysctl.d/10-coredump-debian.conf" \
+        "$stage/usr/lib/sysctl.d/50-pid-max.conf" \
+        "$stage/etc/sysctl.d/10-coredump-debian.conf" \
+        "$stage/etc/sysctl.d/50-pid-max.conf"; do
+        rm -f -- "$file"
     done
+}
+
+# Installs the guest DNS tunnel used by the board images.
+#
+# The board reaches the build host and nothing beyond it, so the resolver the
+# network evidence service writes in direct mode never happens in proxy mode,
+# which is the mode every desktop boot uses. The shim answers on loopback and
+# tunnels to the host, and it only rewrites resolv.conf after its tunnel has
+# answered, so a shim that cannot reach the host leaves the guest as it found
+# it.  Both the daily-use image and browser-web need this; the unit skips
+# itself when no forwarder is configured.
+configure_dns_shim() {
+    local stage="$1"
+    local script_directory="$2"
+
+    install -D -m 0755 -- "$script_directory/megrez_dns_shim.py" \
+        "$stage/usr/lib/asterinas/megrez-dns-shim"
+    cat >"$stage/etc/systemd/system/asterinas-dns-shim.service" <<'EOF'
+[Unit]
+Description=Asterinas guest DNS tunnel to the build host
+After=local-fs.target
+
+[Service]
+# The shim serves for as long as the guest runs, so it stays Type=simple: a
+# oneshot would wait for a process that never exits, and TimeoutStartSec would
+# then kill the healthy tunnel and mark the unit failed.
+Type=simple
+Restart=no
+TimeoutStartSec=30s
+# No forwarder means there is nothing to tunnel.  Skip the unit before
+# launching Python instead of running it only to exit 3; ExecCondition status
+# 1..254 skips the unit.  The variable is set in the manager environment by
+# systemd.setenv=... on the kernel command line.
+ExecCondition=/bin/sh -c 'test -n "${ASTERINAS_DESKTOP_DNS_HOST:-}"'
+# Exit 3 (no forwarder configured) and exit 1 (tunnel not reachable) are
+# explicit inactive states, not failures.  A later explicit
+# `systemctl restart asterinas-dns-shim` retries after the host/interface is
+# up; boot never spins on it.
+SuccessExitStatus=1 3
+ExecStart=/usr/lib/asterinas/megrez-dns-shim
+
+[Install]
+WantedBy=basic.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/asterinas-dns-shim.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    ln -sf -- "../asterinas-dns-shim.service" \
+        "$stage/etc/systemd/system/basic.target.wants/asterinas-dns-shim.service"
 }
 
 configure_and_normalize_rootfs() {
@@ -1043,7 +1090,7 @@ configure_and_normalize_rootfs() {
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     log "phase 7/8: configuring and normalizing rootfs"
-    normalize_unsupported_sysctl_keys "$stage"
+    drop_unsupported_sysctl_files "$stage"
     cat >"$stage/etc/asterinas-rootfs.bashrc" <<'EOF'
 if [[ $- == *i* ]]; then
     printf '%s\n' '__DEBIAN_ROOTFS_SHELL_READY__'
@@ -1093,6 +1140,10 @@ EOF
             "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m4-evidence.service" \
             "$stage/etc/systemd/system/asterinas-desktop-core-evidence.service" \
             "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-core-evidence.service"
+        # The board boot path has no DHCP and no reachable public resolver;
+        # the shim is the only DNS path.  It skips itself when the board
+        # bootargs do not name a forwarder, so the QEMU gate is unaffected.
+        configure_dns_shim "$stage" "$script_directory"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
         configure_desktop "$stage" m4
         configure_desktop_m5_network "$stage"
@@ -1719,6 +1770,13 @@ EOF
         # password prompt.  The account stays locked; autologin starts the
         # shell and sudoers grants passwordless privilege escalation.
         #
+        # The daily-use boot entry must NOT pass `--debug-console=root`: the
+        # board showed the getty cycling Started -> Deactivated successfully
+        # -> restart 11/12/13 -> start-limit-hit while the debug console owned
+        # ttyS0.  The menu validator accepts a desktop entry without the
+        # debug console for this image; the debug entry stays available as a
+        # separate boot choice when a root shell is needed.
+        #
         # Do not use the Debian serial-getty template: it carries
         # BindsTo=dev-ttyS0.device, and Asterinas exposes /dev/ttyS0 through
         # devtmpfs without publishing that sysfs device unit, so systemd
@@ -1761,7 +1819,7 @@ EOF
         ln -sfn ../asterinas-console-getty.service \
             "$stage/etc/systemd/system/getty.target.wants/asterinas-console-getty.service"
         # Mask the template getty and console-getty so only the dedicated
-        # unit can own ttyS0.
+        # unit owns ttyS0 on the daily-use boot.
         ln -sfn /dev/null \
             "$stage/etc/systemd/system/serial-getty@ttyS0.service"
         ln -sfn /dev/null "$stage/etc/systemd/system/console-getty.service"
@@ -1824,44 +1882,7 @@ EOF
             # stopping the desktop.
             install -D -m 0644 -- "$script_directory/asterinas_clock_sync.conf" \
                 "$stage/etc/systemd/system/asterinas-desktop-m5.service.d/clock-sync.conf"
-            # The board reaches the host and nothing beyond it, so the resolver
-            # the network evidence service writes in direct mode never happens
-            # in proxy mode, which is the mode every desktop boot uses. The
-            # guest is left with the build-time nameserver it cannot route to.
-            # This shim answers on loopback and tunnels to the host, and it
-            # only rewrites resolv.conf after its tunnel has answered, so a
-            # shim that cannot reach the host leaves the guest as it found it.
-            # Restart=always is what lets it come up on a later boot phase than
-            # the interface it tunnels over.
-            install -D -m 0755 -- "$script_directory/megrez_dns_shim.py" \
-                "$stage/usr/lib/asterinas/megrez-dns-shim"
-            cat >"$stage/etc/systemd/system/asterinas-dns-shim.service" <<'EOF'
-[Unit]
-Description=Asterinas guest DNS tunnel to the build host
-After=local-fs.target
-
-[Service]
-# The shim serves for as long as the guest runs, so it stays Type=simple: a
-# oneshot that never returns would hold basic.target in "activating" forever.
-# What it must not do is restart or fail when it has nothing to tunnel: it
-# either proves its tunnel and keeps serving, or exits once naming why.
-Type=simple
-Restart=no
-TimeoutStartSec=30s
-# Exit 3 (no forwarder configured) and exit 1 (tunnel not reachable) are
-# explicit inactive states, not failures.  A later explicit
-# `systemctl restart asterinas-dns-shim` retries after the host/interface is
-# up; boot never spins on it.
-SuccessExitStatus=1 3
-ExecStart=/usr/lib/asterinas/megrez-dns-shim
-
-[Install]
-WantedBy=basic.target
-EOF
-            chmod 0644 -- "$stage/etc/systemd/system/asterinas-dns-shim.service"
-            install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
-            ln -sf -- "../asterinas-dns-shim.service" \
-                "$stage/etc/systemd/system/basic.target.wants/asterinas-dns-shim.service"
+            configure_dns_shim "$stage" "$script_directory"
             install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
             install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \
