@@ -6,12 +6,13 @@ use core::{
     time::Duration,
 };
 
+use alloc::collections::BTreeMap;
 use atomic_integer_wrapper::define_atomic_version_of_integer_like_type;
 use ostd::sync::{Waiter, Waker};
 
 use super::{
     PermissionMode,
-    sem_set::{SEMVMX, SemSetInner},
+    sem_set::{SEMAEM, SEMVMX, SemSetInner},
 };
 use crate::{
     ipc::{IpcFlags, IpcId, IpcNamespace},
@@ -69,10 +70,6 @@ impl PendingOp {
         for op in sops.iter() {
             if op.sem_num as usize >= num_sems {
                 return_errno_with_message!(Errno::EFBIG, "the semaphore number is out of bounds");
-            }
-            if IpcFlags::from_bits_truncate(op.sem_flags as u32).contains(IpcFlags::SEM_UNDO) {
-                // TODO: Add support for the `SEM_UNDO` flag
-                return_errno_with_message!(Errno::EINVAL, "SEM_UNDO is not supported yet");
             }
         }
 
@@ -215,7 +212,11 @@ pub fn sem_op(
         let mut inner = sem_set.inner();
 
         // Try to perform the operation without blocking
-        if let Some(status) = perform_atomic_semop(&mut inner.sems, &mut pending_op) {
+        let status_opt = {
+            let (sems, _, _, undo) = inner.field_mut();
+            perform_atomic_semop(sems, undo, &mut pending_op)
+        };
+        if let Some(status) = status_opt {
             if status != Status::Normal {
                 return Ok(SemOpResult::Completed { status });
             }
@@ -345,13 +346,13 @@ fn check_alter_sop(sops: &[SemBuf]) -> bool {
 fn do_smart_update(inner: &mut SemSetInner, pending_op: &PendingOp) -> LinkedList<PendingOp> {
     let mut wake_queue = LinkedList::new();
 
-    let (sems, pending_alter, pending_const) = inner.field_mut();
+    let (sems, pending_alter, pending_const, undo) = inner.field_mut();
 
     if !pending_const.is_empty() {
-        do_smart_wakeup_zero(sems, pending_const, pending_op, &mut wake_queue);
+        do_smart_wakeup_zero(sems, undo, pending_const, pending_op, &mut wake_queue);
     }
     if !pending_alter.is_empty() {
-        let _ = update_pending_alter(sems, pending_alter, pending_const, &mut wake_queue);
+        let _ = update_pending_alter(sems, undo, pending_alter, pending_const, &mut wake_queue);
     }
 
     wake_queue
@@ -366,6 +367,7 @@ fn do_smart_update(inner: &mut SemSetInner, pending_op: &PendingOp) -> LinkedLis
 #[must_use]
 pub(super) fn update_pending_alter(
     sems: &mut [Semaphore],
+    undo: &mut BTreeMap<Pid, Box<[i32]>>,
     pending_alter: &mut LinkedList<PendingOp>,
     pending_const: &mut LinkedList<PendingOp>,
     wake_queue: &mut LinkedList<PendingOp>,
@@ -374,7 +376,7 @@ pub(super) fn update_pending_alter(
 
     let mut cursor = pending_alter.cursor_front_mut();
     while let Some(alter_op) = cursor.current() {
-        let Some(status) = perform_atomic_semop(sems, alter_op) else {
+        let Some(status) = perform_atomic_semop(sems, undo, alter_op) else {
             cursor.move_next();
             continue;
         };
@@ -387,7 +389,7 @@ pub(super) fn update_pending_alter(
         }
         has_completed = true;
 
-        do_smart_wakeup_zero(sems, pending_const, alter_op.front().unwrap(), wake_queue);
+        do_smart_wakeup_zero(sems, undo, pending_const, alter_op.front().unwrap(), wake_queue);
         wake_queue.append(&mut alter_op);
 
         // Retry from the beginning since we've performed some alteration.
@@ -403,13 +405,14 @@ pub(super) fn update_pending_alter(
 /// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/ipc/sem.c#L893>
 fn do_smart_wakeup_zero(
     sems: &mut [Semaphore],
+    undo: &mut BTreeMap<Pid, Box<[i32]>>,
     pending_const: &mut LinkedList<PendingOp>,
     pending_op: &PendingOp,
     wake_queue: &mut LinkedList<PendingOp>,
 ) {
     for sop in pending_op.sops_iter() {
         if sems.get(sop.sem_num as usize).unwrap().val == 0 {
-            let _ = wake_const_ops(sems, pending_const, wake_queue);
+            let _ = wake_const_ops(sems, undo, pending_const, wake_queue);
             return;
         }
     }
@@ -424,6 +427,7 @@ fn do_smart_wakeup_zero(
 #[must_use]
 pub(super) fn wake_const_ops(
     sems: &mut [Semaphore],
+    undo: &mut BTreeMap<Pid, Box<[i32]>>,
     pending_const: &mut LinkedList<PendingOp>,
     wake_queue: &mut LinkedList<PendingOp>,
 ) -> bool {
@@ -431,7 +435,7 @@ pub(super) fn wake_const_ops(
 
     let mut cursor = pending_const.cursor_front_mut();
     while let Some(const_op) = cursor.current() {
-        if let Some(status) = perform_atomic_semop(sems, const_op) {
+        if let Some(status) = perform_atomic_semop(sems, undo, const_op) {
             has_completed |= status == Status::Normal;
             const_op.set_status(status);
             wake_queue.append(&mut cursor.remove_current_as_list().unwrap());
@@ -450,7 +454,11 @@ pub(super) fn wake_const_ops(
 /// 3. Return `Some(error_status)` if the operations cause an error.
 ///
 /// Reference: <https://elixir.bootlin.com/linux/v6.0.9/source/ipc/sem.c#L719>
-fn perform_atomic_semop(sems: &mut [Semaphore], pending_op: &mut PendingOp) -> Option<Status> {
+fn perform_atomic_semop(
+    sems: &mut [Semaphore],
+    undo: &mut BTreeMap<Pid, Box<[i32]>>,
+    pending_op: &mut PendingOp,
+) -> Option<Status> {
     match pending_op.blocker(sems) {
         Ok(PendingBlocker::NotBlock) => (),
         Ok(PendingBlocker::Zero(_) | PendingBlocker::Decrease(_)) => return None,
@@ -458,10 +466,22 @@ fn perform_atomic_semop(sems: &mut [Semaphore], pending_op: &mut PendingOp) -> O
     }
 
     // Success, do operation
+    let pid = pending_op.pid;
     for op in pending_op.sops_iter() {
         let sem = &mut sems[op.sem_num as usize];
         sem.val += i32::from(op.sem_op);
-        sem.latest_modified_pid = pending_op.pid;
+        sem.latest_modified_pid = pid;
+
+        // Record the adjustment the process must undo when it exits. The
+        // adjustment is the opposite of the operation, capped at `SEMAEM`.
+        let flags = IpcFlags::from_bits_truncate(op.sem_flags as u32);
+        if flags.contains(IpcFlags::SEM_UNDO) && op.sem_op != 0 {
+            let adjustments = undo
+                .entry(pid)
+                .or_insert_with(|| vec![0; sems.len()].into_boxed_slice());
+            let adjustment = &mut adjustments[op.sem_num as usize];
+            *adjustment = (*adjustment - i32::from(op.sem_op)).clamp(-SEMAEM, SEMAEM);
+        }
     }
 
     Some(Status::Normal)
