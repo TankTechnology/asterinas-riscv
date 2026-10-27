@@ -11,6 +11,23 @@ use super::{super::Ext2, Inode, InodeInner, RawInode};
 use crate::fs::ext2::{prelude::*, utils};
 
 impl Inode {
+    /// Returns whether the inode owns metadata that a filesystem-wide sync must
+    /// write back before the next metadata transaction is committed.
+    ///
+    /// Data pages alone do not count. A commit only publishes the inode table
+    /// ranges and allocation bitmaps that dirty inodes staged; an inode with a
+    /// clean descriptor and no new blocks allocated contributes nothing to
+    /// that transaction, so skipping its data writeback cannot expose a
+    /// descriptor that points at missing data. Data durability for such an
+    /// inode is the job of that inode's own `fsync`/`fdatasync`.
+    pub(in crate::fs::fs_impls::ext2) fn has_pending_metadata(&self) -> bool {
+        self.inner.read().is_dirty()
+            || self
+                .xattr
+                .as_ref()
+                .is_some_and(|xattr| xattr.is_dirty())
+    }
+
     /// Flushes all dirty state owned by the inode.
     ///
     /// Writes xattrs, data pages, and indirect blocks back before staging dirty

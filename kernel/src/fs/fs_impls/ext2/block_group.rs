@@ -27,7 +27,7 @@
 //! - `inode_cache` — protects the per-group live inode map. Uses
 //!   double-checked locking (read then promote to write on miss).
 
-use core::{fmt, sync::atomic::AtomicBool};
+use core::{fmt, ops::Range};
 
 use aster_block::bio::BioCompleteFn;
 use ostd::const_assert;
@@ -70,8 +70,11 @@ pub(super) struct BlockGroup {
     _inode_table_backend: Arc<InodeTableBackend>,
     /// Inode table page cache.
     inode_table_cache: PageCache,
-    /// Whether a cached inode descriptor has been staged into the inode table.
-    inode_table_dirty: AtomicBool,
+    /// Byte range of the inode table that has been written since the last
+    /// flush. `fsync` used to flush the whole table of every group, which on a
+    /// 4 GiB image scans ~256 MiB of page cache per call; track the dirty range
+    /// so a one-inode update costs one inode-sized flush.
+    inode_table_dirty: RwMutex<Option<Range<usize>>>,
     /// Per-group inode cache keyed by group-local inode index.
     ///
     /// Ext2 keeps this cache locally because the VFS layer does not provide
@@ -163,7 +166,7 @@ impl BlockGroup {
             inode_size,
             _inode_table_backend: backend,
             inode_table_cache,
-            inode_table_dirty: AtomicBool::new(false),
+            inode_table_dirty: RwMutex::new(None),
             inode_cache: RwMutex::new(BTreeMap::new()),
         })
     }
@@ -266,9 +269,16 @@ impl BlockGroup {
     }
 
     pub(super) fn sync_inodes_without_table(&self) -> Result<()> {
+        // Inodes whose metadata is clean contribute no descriptor and no
+        // allocation to the pending transaction, so writing their data back
+        // here is not needed for `data=ordered`; durability of their data is
+        // their own `fsync`'s job. Skipping them keeps a repeated fsync of one
+        // file O(1) instead of O(cached inodes).
         let inodes: Vec<Arc<Inode>> = self.inode_cache.read().values().cloned().collect();
         for inode in inodes {
-            inode.sync_all()?;
+            if inode.has_pending_metadata() {
+                inode.sync_all()?;
+            }
         }
         Ok(())
     }
@@ -282,28 +292,44 @@ impl BlockGroup {
         // `inode_cache.write()`.
         let inodes: Vec<Arc<Inode>> = self.inode_cache.read().values().cloned().collect();
         for inode in inodes {
-            inode.sync_all()?;
+            if inode.has_pending_metadata() {
+                inode.sync_all()?;
+            }
         }
         self.sync_inode_table()
     }
 
-    /// Syncs the inode table back to disk.
+    /// Syncs the dirty part of the inode table back to disk.
     pub(super) fn sync_inode_table(&self) -> Result<()> {
-        if !self
-            .inode_table_dirty
-            .swap(false, core::sync::atomic::Ordering::AcqRel)
-        {
+        // Take the range under the lock. A writer that dirties the table after
+        // this point records a fresh range for the next sync, so no update is
+        // lost and no caller has to walk the whole table.
+        let Some(range) = self.inode_table_dirty.write().take() else {
             return Ok(());
-        }
-        // TODO: support sync specific inode with inode number.
-        let size = self.nr_inodes_per_group as usize * self.inode_size;
-        let range = 0..size;
-        if let Err(error) = self.inode_table_cache.flush_range(range) {
-            self.inode_table_dirty
-                .store(true, core::sync::atomic::Ordering::Release);
+        };
+        if let Err(error) = self.inode_table_cache.flush_range(range.clone()) {
+            // Put the range back so a later sync retries it, merged with any
+            // range a concurrent writer recorded in the meantime.
+            let mut dirty = self.inode_table_dirty.write();
+            let merged = match dirty.take() {
+                Some(pending) => pending.start.min(range.start)..pending.end.max(range.end),
+                None => range,
+            };
+            *dirty = Some(merged);
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Records that `[offset, offset + len)` of the inode table has changed.
+    fn mark_inode_table_dirty(&self, offset: usize, len: usize) {
+        let mut dirty = self.inode_table_dirty.write();
+        let new = offset..offset + len;
+        let merged = match dirty.take() {
+            Some(range) => range.start.min(new.start)..range.end.max(new.end),
+            None => new,
+        };
+        *dirty = Some(merged);
     }
 
     /// Returns a read guard over the combined group metadata.
@@ -560,8 +586,7 @@ impl BlockGroup {
         let inode_idx = self.inode_idx_in_group(ino);
         let offset_bytes = (inode_idx as usize) * self.inode_size;
         self.inode_table_cache.write_val(offset_bytes, raw)?;
-        self.inode_table_dirty
-            .store(true, core::sync::atomic::Ordering::Release);
+        self.mark_inode_table_dirty(offset_bytes, self.inode_size);
         Ok(())
     }
 
