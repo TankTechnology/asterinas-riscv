@@ -1,0 +1,117 @@
+asterinas@thinkpad:/$ sleep 3; W=$(xdotool search --name imtest | head -1); echo WIN=$W; xwininfo -name imtest | grep -m1 "Map State"; echo XERR=$(head -2 /tmp/xte | tr "\n" "|") ; echo __M1793082317070""__
+  Map State: IsUnMapped
+asterinas@thinkpad:/$ sleep 3; xwininfo -name imtest2 | grep "Map State"; echo ERR2=$(head -2 /tmp/x2e)
+  Map State: IsUnMapped
+OPEN /dev/pts/2 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/0 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/0 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/0 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/0 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/2 fl=0x2 fd=-1 err=5
+asterinas@thinkpad:/$ printf '%s\n' ' try: fd=os.open(nm,os.O_RDWR); print("CHILD_OPEN_OK",fd,flush=True)' >> /tmp/px3.py
+asterinas@thinkpad:/$ printf '%s\n' ' except OSError as e: print("CHILD_OPEN_ERR ",e.errno,flush=True)' >> /tmp/px3.py
+asterinas@thinkpad:/$ printf '%s\n' 'try: fd=os.open(nm,os.O_RDWR); print("PARENT_REOPEN_OK",fd,flush=True)' >> /tmp/px3.py
+asterinas@thinkpad:/$ printf '%s\n' 'except OSError as e: print("PARENT_REOPEN_E RR",e.errno,flush=True)' >> /tmp/px3.py
+CHILD_OPEN_OK 4
+PARENT_REOPEN_OK 4
+OPEN /dev/tty fl=0x2 fd=-1 err=6
+OPEN /dev/pts/2 fl=0x2 fd=10 err=0
+OPEN /dev/pts/2 fl=0x2 fd=3 err=0
+OPEN /dev/tty fl=0x2 fd=-1 err=6
+OPEN /dev/pts/2 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/2 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/0 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/0 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/0 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/0 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/2 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+asterinas@thinkpad:/$ printf '%s\n' ' try: fd=os.open(nm,os.O_RDWR); print("CONC_OK",fd,flush=True)' >> /tmp/px4.py
+CONC_OK 5
+asterinas@thinkpad:/$ printf '%s\n' 'int posix_openpt(int fl){static int(*r)(int );if(!r)r=dlsym(RTLD_NEXT,"posix_openpt");int fd=r(fl);char b[128];snprintf(b,si zeof b,"POSIX_OPENPT fl=0x%x fd=%d err=%d\n",fl,fd,fd<0?errno:0);L(b);return fd;}' >> /tmp/shim.c
+asterinas@thinkpad:/$ printf '%s\n' 'int openpty(int*am,int*as,char*nm,const void*tr,const void*ws){static int(*r)(int*,int*,char*,const void*,const void*);if(!r)r=dlsym(RTLD_NEXT,"openpty");int rc=r(am,as,nm,tr,ws);char b[200];snprintf(b,sizeof b,"OPENPTY rc=%d m=%d s=%d nm=%s err=%d\n",rc,am?*am:-9,as?*as:-9,nm?nm:"-",rc<0?errno:0);L(b);return rc;}' >> /tmp/shim.c
+asterinas@thinkpad:/$ grep -E "OPENPTY|POSIX_OPENPT|pts/|/dev/tty" /tmp/shim.log | head -20
+OPEN /dev/tty fl=0x2 fd=-1 err=6
+POSIX_OPENPT fl=0x2 fd=5 err=0
+OPEN /dev/pts/1 fl=0x2 fd=10 err=0
+OPEN /dev/pts/1 fl=0x2 fd=3 err=0
+OPEN /dev/tty fl=0x2 fd=-1 err=6
+POSIX_OPENPT fl=0x2 fd=5 err=0
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+POSIX_OPENPT fl=0x2 fd=5 err=0
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+POSIX_OPENPT fl=0x2 fd=5 err=0
+OPEN /dev/pts/0 fl=0x2 fd=-1 err=5
+POSIX_OPENPT fl=0x2 fd=5 err=0
+OPEN /dev/pts/0 fl=0x2 fd=-1 err=5
+POSIX_OPENPT fl=0x2 fd=5 err=0
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+POSIX_OPENPT fl=0x2 fd=5 err=0
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+POSIX_OPENPT fl=0x2 fd=5 err=0
+OPEN /dev/pts/1 fl=0x2 fd=-1 err=5
+POSIX_OPENPT fl=0x2 fd=5 err=0
+asterinas@thinkpad:/$ grep -E "ptmx|OPENPTY|POSIX" /tmp/shim.log | tail -10
+POSIX_OPENPT fl=0x2 fd=5 err=0
+POSIX_OPENPT fl=0x2 fd=5 err=0
+POSIX_OPENPT fl=0x2 fd=5 err=0
+POSIX_OPENPT fl=0x2 fd=5 err=0
+POSIX_OPENPT fl=0x2 fd=5 err=0
+POSIX_OPENPT fl=0x2 fd=5 err=0
+POSIX_OPENPT fl=0x2 fd=5 err=0
+POSIX_OPENPT fl=0x2 fd=5 err=0
+POSIX_OPENPT fl=0x2 fd=5 err=0
+POSIX_OPENPT fl=0x2 fd=5 err=0
+asterinas@thinkpad:/$ grep -E "POSIX_OPENPT|OPEN /dev/pts|CLOSE fd=5|OPEN /dev/tty" /tmp/shim.log | head -12
+CLOSE fd=5 rc=0
+OPEN /dev/tty fl=0x2 fd=-1 err=6
+POSIX_OPENPT fl=0x2 fd=5 err=0
+OPEN /dev/pts/0 fl=0x2 fd=10 err=0
+CLOSE fd=5 rc=0
+OPEN /dev/pts/0 fl=0x2 fd=3 err=0
+OPEN /dev/tty fl=0x2 fd=-1 err=6
+CLOSE fd=5 rc=0
+POSIX_OPENPT fl=0x2 fd=5 err=0
+OPEN /dev/pts/0 fl=0x2 fd=-1 err=5
+CLOSE fd=5 rc=0
+POSIX_OPENPT fl=0x2 fd=5 err=0
+asterinas@thinkpad:/$ printf '%s\n' 'except OSError as e: print("STALE_ERR",e.errno,flush=True)' >> /tmp/px5.py
+STALE_ERR 2
+asterinas@thinkpad:/$ grep -E "POSIX_OPENPT|OPEN /dev/pts|OPEN /dev/tty|CLOSE|OPENPTY" /tmp/shim.log | head -16
+CLOSE fd=5 rc=0
+OPEN /dev/tty fl=0x2 fd=-1 err=6
+POSIX_OPENPT fl=0x2 fd=5 err=0
+OPEN /dev/pts/0 fl=0x2 fd=10 err=0
+CLOSE fd=5 rc=0
+OPEN /dev/pts/0 fl=0x2 fd=3 err=0
+OPEN /dev/tty fl=0x2 fd=-1 err=6
+CLOSE fd=5 rc=0
+POSIX_OPENPT fl=0x2 fd=5 err=0
+asterinas@thinkpad:/$ xwininfo -name zz4 | grep "Map State"; echo ZERR=$(head -2 /tmp/z4e | tr "\n" "|"); ls -l /dev/pts | tail -3
+  Map State: IsUnMapped
+ZERR=open ttydev: No such device or address|open ttydev: Input/output error|
+asterinas@thinkpad:/$ printf '%s\n' 'print("GPTN",num,flush=True)' >> /tmp/px6.py
+GPTN 1
+# LD_PRELOAD shim sources (built inside the guest, /tmp/shim.c):
+#   open/open64/openat/openat64/ioctl/close/posix_openpt/openpty wrappers
+#   logging to /tmp/shim.log; key observation:
+#   OPENPTY/POSIX_OPENPT succeed, open("/dev/pts/N",O_RDWR) returns EIO for xterm,
+#   while the same operations from python (openpty, setsid, reopen, concurrent,
+#   stale-name tests) all succeed.

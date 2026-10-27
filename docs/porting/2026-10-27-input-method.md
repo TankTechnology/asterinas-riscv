@@ -127,3 +127,41 @@ tty 问题更靠近协议层。
 下一步优先用 `LD_PRELOAD` 记录 xterm 的 open/ioctl（绕过 strace），
 再判断第二处 tty 不兼容是内核还是 xterm 配置；XIM 的 `XCreateIC` 阻塞则要
 针对 select/poll 等待做单独验证。
+
+## 9. LD_PRELOAD 定位（2026-10-27 晚，第二阶段）
+
+strace 在交互 shell 里不可用（会把 shell 卡死），改用自己编译的 LD_PRELOAD
+shim 记录 `open/open64/openat/openat64/ioctl/close/posix_openpt/openpty`
+（源码记录在 `evidence/2026-10-27-input-method/interactive-session.txt` 末尾）。
+
+拿到的事实：
+
+- **`posix_openpt()` 成功**（`POSIX_OPENPT fl=0x2 fd=5 err=0`）——master 能建立。
+- **`open("/dev/tty")` 返回 `ENXIO(6)`** —— 修复后的正确语义。
+- **xterm 的 `open("/dev/pts/N", O_RDWR)` 返回 `EIO(5)`**，反复重试，窗口保持
+  `IsUnMapped`（`ZERR=open ttydev: No such device or address|... Input/output error`）。
+
+同一内核、同一用户下的对照实验（全部通过）：
+
+| 实验 | 结果 |
+|---|---|
+| `openpty()` → `setsid()` → `open(slave)` → `TIOCSCTTY` | 全部成功，`TIOCSCTTY=0` |
+| 父进程持有 master，子进程按名字打开 slave | 成功（`CHILD_OPEN_OK`） |
+| 关闭 slave 后父进程重开 | 成功（`PARENT_REOPEN_OK`） |
+| 父子同时打开同一个 slave | 成功（`CONC_OK`） |
+| 关闭 master+slave 后节点与名字 | 节点被删除，重开 `ENOENT(2)`，索引可复用 |
+
+所以「没有 master」「旧条目残留」「并发打开」三种解释都被排除；
+**EIO 只出现在 xterm 自己的调用序列里**，尚未定位到具体是哪一步不同
+（`TIOCSPTLCK` 的手工调用在本轮脚本里没有跑完，未定论）。
+
+内核里可能返回 EIO 的位置（下一步要打点确认是哪一处）：
+
+- `kernel/core/src/device/pty/file.rs:30`
+- `kernel/core/src/device/tty/mod.rs:225`（"the TTY is closed"）
+- `kernel/core/src/device/pty/driver.rs:80`（"the pty slave has been closed"）
+- `kernel/core/src/fs/fs_impls/devpts/mod.rs:79`（"cannot alloc index"）
+
+**结论不变：`INPUT_METHOD` 仍为 fail。** 下一步是在上述四个 EIO 点加一次性
+观测（或对 xterm 用 `LD_PRELOAD` 记录 `tcgetattr/ioctl` 与 fd 生命周期），
+确定 xterm 拿到 EIO 的确切条件，再判断是内核语义还是 xterm 的调用序问题。
