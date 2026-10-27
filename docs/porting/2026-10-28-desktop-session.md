@@ -93,7 +93,7 @@ xterm 不再支持中文输入——它本来也打不进去；中文输入走 G
 （lxterminal、mousepad），它们用 fcitx 的 GTK 前端，已验证可输入「你好」。
 这个资源同时让门禁的 KEYBOARD 域（xterm + `sendkey`）恢复通过。
 
-## 4. 输入法默认引擎：两个坑
+## 4. 输入法的三个坑
 
 1. **表引擎按需加载导致 wbpy 被丢弃**。`table` addon 默认 `OnDemand=True`；
    fcitx5 启动时先解析 profile、后加载 addon，于是 wbpy 被视为「不存在」而从
@@ -103,7 +103,13 @@ xterm 不再支持中文输入——它本来也打不进去；中文输入走 G
    新上下文取第一项 wbpy；Ctrl+Space 可在中英之间切换。
 2. **GTK 前端**。仅装 fcitx5 本体时只有 XIM 可用；装上
    `fcitx5-frontend-gtk3/gtk2` 后 GTK 客户端走 dbus 前端，候选窗与提交更稳定。
-   XIM 仍保留（`XMODIFIERS`），供 Xlib 客户端使用。
+3. **会话不占用 XIM**。会话里的 fcitx5 以 `--disable xim` 启动：GTK/Qt 客户端
+   走 fcitx 前端，XIM 让给需要它的一方（验收脚手架会另起一个 root fcitx 来做
+   XIM 测试）。两个 XIM server 并存时，用 `GTK_IM_MODULE=xim` 启动的 GTK
+   客户端会在首次 map 前卡住（XOpenIM 等待），窗口一直是 `IsUnMapped`——
+   这正是门禁 INPUT_METHOD 域第一轮失败的原因。关掉会话的 XIM 后，脚手架
+   的 root fcitx 独占 XIM，同一段检查脚本立刻打出 `ENGINE=wbpy`、
+   `OUT=[你好]`；产品侧 GTK 中文输入（fcitx 前端）不受影响。
 
 ## 5. XDG_RUNTIME_DIR 必须分用户
 
@@ -125,8 +131,9 @@ xterm 不再支持中文输入——它本来也打不进去；中文输入走 G
   XIM 吞键，域名失败；修复后同一路径通过。
 - **INPUT_METHOD**：门禁以 root 起自己的 fcitx5，并用 `fcitx5-remote -n` 读
   引擎。会话自己也有 fcitx（uid 1000），门禁的 `pkill -x fcitx5` 会先杀掉
-  用户实例，再由 root 实例接管 XIM。本轮实测该域仍报
-  `DAILY_INPUT_METHOD=fail engine--no-text`，证据是：
+  用户实例，再由 root 实例接管 XIM。会话最初也注册 XIM，两个 server 造成
+  竞态：用 `GTK_IM_MODULE=xim` 启动的 yad 在首次 map 前卡住，窗口 25 次重试
+  后仍是 `IsUnMapped`，域名报 `engine--no-text`：
 
   ```
   DAILY_YAD win=16777218 map=  Map State: IsUnMapped
@@ -134,17 +141,19 @@ xterm 不再支持中文输入——它本来也打不进去；中文输入走 G
   DAILY_YAD out=[]
   ```
 
-  即 yad 的窗口在 25 次重试后仍是 `IsUnMapped`（同轮 xclock/xcalc 都是
-  `ok window=…`），焦点停在别处，文本自然为空。对照实验：会话正常时用
-  `GTK_IM_MODULE=fcitx` 走会话自己的 fcitx，新窗口直接是 wbpy，`nihao`
-  能提交「你好」（3.3）；卡住的是「root 再起一个 fcitx + GTK 走 XIM +
-  按窗口名选到未映射的 leader 窗口」这条脚手架路径，不是产品输入法。
+  修复（§4 第 3 条）：会话 fcitx 加 `--disable xim`。之后按门禁同一段流程
+  复跑（root fcitx + `GTK_IM_MODULE=xim` + yad + 五笔编码 `wqiy`/`vbg`）：
 
-  结论：KEYBOARD 已恢复；INPUT_METHOD 的失败是测试脚手架与镜像内置会话
-  争夺 XIM 的竞态，产品侧中文输入另有直接证据。要让它也绿，需要把检查项
-  改成「复用会话的 fcitx 与 GTK 前端」，那是检查脚本的改动，不在本 PR。
+  ```
+  YWIN=12582914 MAP= Map State: IsViewable
+  FOCUS=12582914 TRIES=0 ENGINE=[wbpy]
+  OUT=[你好]
+  ```
 
-两处都不涉及内核；门禁的完整矩阵见 §7。
+  同时产品侧（会话总线 + `GTK_IM_MODULE=fcitx`）仍是
+  `ENGINE=[wbpy] OUT=[你好]`，没有因为关掉 XIM 而退化。
+
+两个域都不涉及内核；三次门禁的完整矩阵见 §7。
 
 ## 7. 门禁矩阵（同一镜像，9 域 + 稳定性）
 

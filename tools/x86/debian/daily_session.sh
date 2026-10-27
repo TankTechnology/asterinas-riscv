@@ -101,7 +101,10 @@ if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]; then
 fi
 echo "$DBUS_SESSION_BUS_ADDRESS" > /tmp/asterinas-session-dbus
 # The input method first, so IM clients find it as they start.
-fcitx5 -d --replace >/tmp/fcitx5.log 2>&1
+# GTK/Qt clients use the fcitx frontend (GTK_IM_MODULE=fcitx); leave XIM to
+# whoever else needs it. A second XIM server makes GTK clients started with
+# GTK_IM_MODULE=xim stall before their first map.
+fcitx5 -d --replace --enable table --disable xim >/tmp/fcitx5.log 2>&1
 sleep 1
 openbox >/tmp/openbox.log 2>&1 &
 pcmanfm --desktop --profile=Asterinas >/tmp/pcmanfm.log 2>&1 &
