@@ -1463,7 +1463,7 @@ class BrowserWebContractTests(unittest.TestCase):
             "ConditionKernelCommandLine=!systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",
             network_drop_in,
         )
-        self.assertIn("TimeoutStartSec=600s", network_drop_in)
+        self.assertIn("TimeoutStartSec=45s", network_drop_in)
         builder = (ROOTFS / "build_rootfs.sh").read_text()
         self.assertIn(
             '"$stage/etc/systemd/system/'

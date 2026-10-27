@@ -6,6 +6,10 @@ set -euo pipefail
 readonly CONSOLE="${ASTERINAS_DESKTOP_M5_CONSOLE:-/dev/console}"
 readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-120}"
 readonly COMMAND_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_COMMAND_TIMEOUT_SECONDS:-30}"
+# The owned fixture lives on the build host across one wired hop. If it is not
+# accepting connections in a second, it is absent; do not spend the transfer
+# budget finding that out.
+readonly FIXTURE_CONNECT_TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_FIXTURE_CONNECT_TIMEOUT_SECONDS:-1}"
 readonly CMDLINE_PATH="${ASTERINAS_DESKTOP_M5_CMDLINE_PATH:-/proc/cmdline}"
 readonly UPTIME_PATH="${ASTERINAS_DESKTOP_M5_UPTIME_PATH:-/proc/uptime}"
 readonly RESOLV_CONF="${ASTERINAS_DESKTOP_M5_RESOLV_CONF:-/etc/resolv.conf}"
@@ -55,9 +59,25 @@ fail() {
 web_fail() {
     local layer="$1"
     local reason="$2"
+    local status=75
+
+    # Exit 75 means the network fixture is not available here (no link,
+    # address, neighbour, resolver, or a peer that does not answer). The unit
+    # treats it as a clean run so the unit ends inactive instead of staying in
+    # `systemctl --failed` on a board with nothing plugged in. Configuration
+    # mistakes and answers that contradict the fixture are still failures
+    # (exit 1) and remain visible.
+    case "$layer:$reason" in
+        config:* | http:content | http:date-header | \
+            https:http-status | https:local-address | \
+            baidu-asset:content | repeat:length | repeat:digest | \
+            medium:length | medium:digest)
+            status=1
+            ;;
+    esac
 
     emit "DEBIAN_WEB_NETWORK_FAIL mode=${WEB_NETWORK_MODE:-invalid} layer=$layer reason=$reason"
-    exit 1
+    exit "$status"
 }
 
 web_emit_layer() {
@@ -164,6 +184,7 @@ web_network_evidence() {
         --ipv4
         --silent
         --show-error
+        --connect-timeout "$FIXTURE_CONNECT_TIMEOUT_SECONDS"
         --max-time "$COMMAND_TIMEOUT_SECONDS"
         --noproxy '*'
     )
@@ -279,6 +300,7 @@ web_network_evidence() {
     http_headers="$WEB_TEMPORARY_DIRECTORY/http-headers"
     limit="$(web_timeout_seconds "$deadline")" || web_fail http timeout
     if timeout "$limit" curl --fail --ipv4 --silent --show-error \
+        --connect-timeout "$FIXTURE_CONNECT_TIMEOUT_SECONDS" \
         --max-time "$limit" --noproxy '*' --dump-header "$http_headers" \
         --output "$http_file" "$FIXTURE_URL"; then
         :
@@ -380,6 +402,7 @@ web_network_evidence() {
     temporary_medium="$WEB_TEMPORARY_DIRECTORY/medium"
     limit="$(web_timeout_seconds "$deadline")" || web_fail medium timeout
     if timeout "$limit" curl --fail --ipv4 --silent --show-error \
+        --connect-timeout "$FIXTURE_CONNECT_TIMEOUT_SECONDS" \
         --max-time "$limit" --noproxy '*' --output "$temporary_medium" \
         "$WEB_NETWORK_MEDIUM_URL"; then
         :

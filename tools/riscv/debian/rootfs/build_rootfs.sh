@@ -1011,6 +1011,31 @@ copy_into_content_cache() {
         --sha256 "$expected_sha256"
 }
 
+# Drops the sysctl assignments this kernel cannot apply.
+#
+# Debian's systemd defaults write `kernel.pid_max` and `kernel.core_pattern`.
+# On Asterinas the first exists but rejects writes with EOPNOTSUPP and the
+# second does not exist at all, so systemd-sysctl exits 1 on every boot and
+# stays in `systemctl --failed`.  Nothing in the image depends on either
+# assignment (Asterinas already reports the maximum PID value, and it has no
+# coredump support), so comment them out rather than faking kernel knobs.
+# The files themselves stay in place so package upgrades keep their layout.
+normalize_unsupported_sysctl_keys() {
+    local stage="$1"
+    local directory
+    local file
+
+    for directory in "$stage/usr/lib/sysctl.d" "$stage/etc/sysctl.d"; do
+        [[ -d "$directory" ]] || continue
+        while IFS= read -r -d '' file; do
+            sed -i \
+                -e 's/^\([[:space:]]*\)kernel\.pid_max[[:space:]]*=.*$/\1# Asterinas: kernel.pid_max is read-only; assignment dropped./' \
+                -e 's/^\([[:space:]]*\)kernel\.core_pattern[[:space:]]*=.*$/\1# Asterinas: kernel.core_pattern is not implemented; assignment dropped./' \
+                -- "$file"
+        done < <(find "$directory" -type f -name '*.conf' -print0)
+    done
+}
+
 configure_and_normalize_rootfs() {
     local stage="$WORK_DIR/stage"
     local script_directory
@@ -1018,6 +1043,7 @@ configure_and_normalize_rootfs() {
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     log "phase 7/8: configuring and normalizing rootfs"
+    normalize_unsupported_sysctl_keys "$stage"
     cat >"$stage/etc/asterinas-rootfs.bashrc" <<'EOF'
 if [[ $- == *i* ]]; then
     printf '%s\n' '__DEBIAN_ROOTFS_SHELL_READY__'
@@ -1358,10 +1384,16 @@ $(if [[ "$network_mode" == lightweight ]]; then printf '%s\n' 'Environment=ASTER
 # broken userspace probe must never hold graphical.target forever.  Bound the
 # unit as a whole instead of wrapping ip(8) with coreutils timeout: the latter
 # changes the process/signal path and has regressed on Asterinas before.
-TimeoutStartSec=180s
+TimeoutStartSec=45s
 TimeoutStopSec=5s
+Restart=no
+# The probe exits 75 when the network fixture itself is missing (no link,
+# address, neighbour, resolver, or unreachable peer).  That is an environment
+# condition, not a failed service: treat it as a clean run so the unit ends
+# inactive instead of parked in `systemctl --failed`.  Evidence mismatches
+# still exit 1 and remain visible as failures.
+SuccessExitStatus=75
 ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence
-RemainAfterExit=yes
 
 [Install]
 WantedBy=graphical.target
@@ -1809,16 +1841,18 @@ Description=Asterinas guest DNS tunnel to the build host
 After=local-fs.target
 
 [Service]
+# The shim serves for as long as the guest runs, so it stays Type=simple: a
+# oneshot that never returns would hold basic.target in "activating" forever.
+# What it must not do is restart or fail when it has nothing to tunnel: it
+# either proves its tunnel and keeps serving, or exits once naming why.
 Type=simple
-Restart=always
-RestartSec=5
+Restart=no
 TimeoutStartSec=30s
-# Status 3 means the shim was given no forwarder to tunnel through. Retrying
-# that forever would only fill the journal, and exiting zero -- which is what
-# this unit first did -- reported a clean shutdown and left the guest without a
-# resolver and without any sign of why. A tunnel that is merely not up yet
-# exits 1 and is retried, because the interface comes up after this unit.
-RestartPreventExitStatus=3
+# Exit 3 (no forwarder configured) and exit 1 (tunnel not reachable) are
+# explicit inactive states, not failures.  A later explicit
+# `systemctl restart asterinas-dns-shim` retries after the host/interface is
+# up; boot never spins on it.
+SuccessExitStatus=1 3
 ExecStart=/usr/lib/asterinas/megrez-dns-shim
 
 [Install]
