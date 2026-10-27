@@ -214,7 +214,11 @@ pty 里执行，pty 层面的问题已经不存在。
   窗口 id、`Map State: IsViewable`），但 `xdotool type abc` + Return 后
   `read` 收不到任何行 —— XIM 客户端路径吞掉了按键；
 - GTK 对照无法在本镜像做：`yad` 未安装、`/opt/stage.tar` 也不存在（早先
-  `im-probe6d` 上的 yad 成功不能直接外推）。
+  `im-probe6d` 上的 yad 成功不能直接外推）。补装 yad 后进一步发现：yad 的
+  两个窗口（`YAD`/标题窗）一直是 `IsUnMapped`，加 `LIBGL_ALWAYS_SOFTWARE=1
+  GDK_GL=disable GDK_BACKEND=x11 NO_AT_BRIDGE=1 XDG_RUNTIME_DIR=/tmp/xdg`
+  也不改变，键盘焦点因此永远到不了它——GTK 客户端在这个镜像里根本没把窗口
+  映射出来，XIM 也无从验证。
 - guest 默认 `LANG=C.UTF-8`，不是 locale 缺失。
 
 因此 INPUT_METHOD 仍是 fail，剩余工作在 fcitx5 的 XIM server / libX11 客户端
