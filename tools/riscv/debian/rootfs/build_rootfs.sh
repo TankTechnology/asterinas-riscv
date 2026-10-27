@@ -10,6 +10,7 @@ readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
 readonly SYSTEMD_EXT4_M3_OUTPUT_DIR="target/debian-riscv/systemd-ext4-m3/rootfs"
 readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
 readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
+readonly DESKTOP_M4_FIREFOX_OUTPUT_DIR="target/debian-riscv/desktop-m4-firefox/rootfs"
 readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
 readonly DESKTOP_M9_SOFTWARE_OUTPUT_DIR="target/debian-riscv/desktop-m9-software/rootfs"
 readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
@@ -203,7 +204,7 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | systemd-ext4-m3 | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web | desktop-drm) ;;
+        minimal-m1 | systemd-m2 | systemd-ext4-m3 | desktop-m3 | desktop-m4 | desktop-m4-firefox | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web | desktop-drm) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
@@ -235,6 +236,8 @@ configure_profile() {
         OUTPUT_DIR="$DESKTOP_M3_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m4 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M4_OUTPUT_DIR"
+    elif [[ "$PROFILE" == desktop-m4-firefox && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$DESKTOP_M4_FIREFOX_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m5-network && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m9-software && "$has_output_dir" == 0 ]]; then
@@ -1054,6 +1057,16 @@ EOF
             "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
     elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
         configure_desktop "$stage" "${PROFILE#desktop-}"
+    elif [[ "$PROFILE" == desktop-m4-firefox ]]; then
+        configure_desktop "$stage" m4
+        # The daily-use image runs the desktop session itself, not the M4
+        # framebuffer/X11 evidence probes.  Remove both evidence entry points
+        # so a later graphical boot cannot race the session.
+        rm -f -- \
+            "$stage/etc/systemd/system/asterinas-desktop-m4-evidence.service" \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m4-evidence.service" \
+            "$stage/etc/systemd/system/asterinas-desktop-core-evidence.service" \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-core-evidence.service"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
         configure_desktop "$stage" m4
         configure_desktop_m5_network "$stage"
@@ -1093,6 +1106,9 @@ EOF
         grep -qx 'FIREFOX_ONLINE_ROOTFS_PASS resolver=10.0.2.3 nsswitch=files,dns curl=riscv64 getent=riscv64 firefox=riscv64 trust_static=pass runtime_proven=0' \
             "$stage/usr/share/asterinas/browser-web-online-rootfs-static.log" ||
             die "online Firefox rootfs checker did not emit its exact PASS"
+    elif [[ "$PROFILE" == desktop-m4-firefox ]]; then
+        # The daily-use image's apt path runs on the QEMU slirp resolver.
+        printf 'nameserver 10.0.2.3\n' >"$stage/etc/resolv.conf"
     else
         printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
     fi
@@ -1617,6 +1633,107 @@ configure_desktop() {
     grep -q '^asterinas:' "$stage/etc/gshadow" ||
         printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
     install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
+    # The serial console account is the image's daily-use user; give it
+    # passwordless sudo so package management and service control work from
+    # the console like on a normal Debian box.
+    install -d -m 0750 -- "$stage/etc/sudoers.d"
+    cat >"$stage/etc/sudoers.d/asterinas" <<'EOF'
+Defaults !use_pty
+asterinas ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+    chmod 0440 -- "$stage/etc/sudoers.d/asterinas"
+    # sudo (and interactive tools) allocate a pty; debootstrap leaves fstab
+    # unconfigured, so /dev/pts is never mounted and sudo fails with
+    # "unable to allocate pty". Mount devpts like a normal Debian installation.
+    cat >"$stage/etc/fstab" <<'EOF'
+# <file system> <mount point> <type> <options> <dump> <pass>
+devpts /dev/pts devpts gid=5,mode=620,ptmxmode=000 0 0
+EOF
+    # sudo resolves its own host name; without an /etc/hosts entry the lookup
+    # falls through to DNS, which is not reachable before the network is
+    # configured and makes sudo fail. Bind the image host name to the loopback
+    # alias the way Debian's installer does.
+    if [[ -s "$stage/etc/hostname" ]]; then
+        local image_host
+        image_host="$(tr -d '[:space:]' <"$stage/etc/hostname")"
+        if [[ -n "$image_host" ]] &&
+            ! grep -qE "^127\.0\.1\.1[[:space:]]+$image_host([[:space:]]|$)" \
+                "$stage/etc/hosts"; then
+            printf '127.0.1.1 %s\n' "$image_host" >>"$stage/etc/hosts"
+        fi
+    fi
+    # The kernel forwards the ACPI power button as SIGPWR and systemd starts
+    # sigpwr.target for it. A drop-in that merely adds `Wants=poweroff.target`
+    # does not start the shutdown: special targets are started by the manager
+    # objective, not as a dependency. A unit wanted by sigpwr.target that
+    # calls `systemctl poweroff` does reach the ordinary shutdown path, so
+    # QEMU's `system_powerdown` (and a cloud stop request) leaves the guest
+    # off through S5.
+    cat >"$stage/etc/systemd/system/asterinas-sigpwr-poweroff.service" <<'EOF'
+[Unit]
+Description=Power off on SIGPWR
+
+[Service]
+Type=oneshot
+KeyringMode=inherit
+ExecStart=/bin/systemctl --no-block poweroff
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/asterinas-sigpwr-poweroff.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/sigpwr.target.wants"
+    ln -sfn ../asterinas-sigpwr-poweroff.service \
+        "$stage/etc/systemd/system/sigpwr.target.wants/asterinas-sigpwr-poweroff.service"
+    if [[ "$PROFILE" == desktop-m4-firefox ]]; then
+        # The daily-use image logs the console account in on ttyS0 without a
+        # password prompt.  The account stays locked; autologin starts the
+        # shell and sudoers grants passwordless privilege escalation.
+        #
+        # Do not use the Debian serial-getty template: it carries
+        # BindsTo=dev-ttyS0.device, and Asterinas exposes /dev/ttyS0 through
+        # devtmpfs without publishing that sysfs device unit, so systemd
+        # waits 90 s and then fails the getty.  A dedicated unit has only the
+        # user-session ordering and opens /dev/ttyS0 directly.
+        install -d -m 0755 -- "$stage/usr/local/sbin"
+        cat >"$stage/usr/local/sbin/asterinas-console-login" <<'EOF'
+#!/bin/sh
+# agetty owns the serial tty.  login(1) cannot complete its
+# controlling-terminal handoff on Asterinas, so start the provisioned
+# unprivileged session directly from the login helper.
+exec /usr/bin/setpriv --reuid=1000 --regid=1000 --init-groups \
+    env HOME=/home/asterinas USER=asterinas LOGNAME=asterinas \
+    SHELL=/bin/bash /bin/bash -i
+EOF
+        chmod 0755 -- "$stage/usr/local/sbin/asterinas-console-login"
+        cat >"$stage/etc/systemd/system/asterinas-console-getty.service" <<'EOF'
+[Unit]
+Description=Asterinas serial console (autologin)
+After=systemd-user-sessions.service
+Before=getty.target
+
+[Service]
+Type=idle
+ExecStart=-/sbin/agetty --autologin asterinas --noclear --keep-baud 115200,57600,38400,9600 -l /usr/local/sbin/asterinas-console-login ttyS0 linux
+Restart=always
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+TTYReset=yes
+TTYVHangup=no
+
+[Install]
+WantedBy=getty.target
+EOF
+        chmod 0644 -- \
+            "$stage/etc/systemd/system/asterinas-console-getty.service"
+        install -d -m 0755 -- "$stage/etc/systemd/system/getty.target.wants"
+        ln -sfn ../asterinas-console-getty.service \
+            "$stage/etc/systemd/system/getty.target.wants/asterinas-console-getty.service"
+        # Mask the template getty and console-getty so only the dedicated
+        # unit can own ttyS0.
+        ln -sfn /dev/null \
+            "$stage/etc/systemd/system/serial-getty@ttyS0.service"
+        ln -sfn /dev/null "$stage/etc/systemd/system/console-getty.service"
+    fi
     if [[ "$generation" == m4 || "$generation" == drm ]]; then
         install -d -m 0755 -o 1000 -g 1000 -- \
             "$stage/home/asterinas/Asterinas Files" \
