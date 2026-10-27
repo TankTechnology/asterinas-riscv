@@ -277,14 +277,11 @@ if command -v fcitx5 >/dev/null 2>&1; then
     YAD_OUT=""
     if command -v yad >/dev/null 2>&1; then
         export GTK_IM_MODULE=xim XMODIFIERS=@im=fcitx
-        # GTK must render through software GL here, and without a runtime dir
-        # the window stays unmapped, so it can never take focus. The keyboard
-        # domain proves real key delivery, so a mapping failure here is GTK's.
-        export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=softpipe GDK_GL=disable
-        export GDK_BACKEND=x11 NO_AT_BRIDGE=1
-        mkdir -p /tmp/xdg
-        chmod 700 /tmp/xdg
-        export XDG_RUNTIME_DIR=/tmp/xdg
+        # The software-GL defaults are part of the image (/etc/environment,
+        # /etc/tmpfiles.d and a pam_env rule for sudo), not something this
+        # script exports: the domain proves a user gets them for free. Record
+        # what the session actually carries.
+        echo "DAILY_SOFTGL env=$(env | grep -E '^(LIBGL_ALWAYS_SOFTWARE|GALLIUM_DRIVER|GDK_GL|GDK_BACKEND|NO_AT_BRIDGE|XDG_RUNTIME_DIR)=' | sort | tr '\n' ' ')" >/dev/console
         rm -f /tmp/yad.out /tmp/yad.err
         yad --entry --title yadim --text type >/tmp/yad.out 2>/tmp/yad.err &
         sleep 4
