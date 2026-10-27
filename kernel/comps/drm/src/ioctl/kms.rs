@@ -866,8 +866,6 @@ impl DrmFile {
     }
 
     pub(super) fn drm_mode_dirty_fb(&self, cmd: ioctl_defs::ModeDirtyFb) -> Result<i32> {
-        // TODO: Honor dirtyfb flags, color, and clip rectangles. For now,
-        // treat every dirtyfb request as a whole-framebuffer refresh.
         let args: DrmModeFbDirtyCmd = cmd.read()?;
 
         let framebuffer = self.lookup_framebuffer(args.fb_id).ok_or(Errno::ENOENT)?;
@@ -890,24 +888,49 @@ impl DrmFile {
             return_errno_with_message!(Errno::EINVAL, "too many DRM clip rectangles");
         }
 
-        // Validate userspace access even though the refresh covers the whole framebuffer.
-        cmd.with_data_ptr(|args_ptr| {
-            copy_array_from_user::<DrmClipRect>(args_ptr.vm(), args.clips_ptr, args.num_clips)
-                .map(drop)
-        })?;
+        // An empty clip list means the whole framebuffer is dirty; otherwise
+        // only the listed rectangles were written, and only those need to be
+        // copied to the display.
+        //
+        // Reference: <https://elixir.bootlin.com/linux/v6.17/source/include/uapi/drm/drm_mode.h#L744-L777>.
+        let clips: Vec<DrmClipRect> = if args.num_clips == 0 {
+            Vec::new()
+        } else {
+            cmd.with_data_ptr(|args_ptr| {
+                copy_array_from_user::<DrmClipRect>(args_ptr.vm(), args.clips_ptr, args.num_clips)
+            })?
+        };
 
         let kms_ops = self.device().as_kms_ops().unwrap();
         let object_store = kms_ops.mode_config().object_store().lock();
-        let source_rects = object_store
-            .planes()
-            .filter_map(|plane| {
-                let state = plane.state().lock();
-                state
-                    .framebuffer()
-                    .ptr_eq(&Arc::downgrade(&framebuffer))
-                    .then_some(state.source_rect())
-            })
-            .collect::<Vec<_>>();
+        let source_rects = if clips.is_empty() {
+            object_store
+                .planes()
+                .filter_map(|plane| {
+                    let state = plane.state().lock();
+                    state
+                        .framebuffer()
+                        .ptr_eq(&Arc::downgrade(&framebuffer))
+                        .then_some(state.source_rect())
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let fb_size = framebuffer.size();
+            clips
+                .into_iter()
+                .filter_map(|clip| {
+                    // `drm_clip_rect` uses exclusive right/bottom edges.
+                    let x1 = u32::from(clip.x1).min(fb_size.width());
+                    let y1 = u32::from(clip.y1).min(fb_size.height());
+                    let x2 = u32::from(clip.x2).min(fb_size.width());
+                    let y2 = u32::from(clip.y2).min(fb_size.height());
+                    (x2 > x1 && y2 > y1).then(|| DrmRect::new(x1, y1, x2 - x1, y2 - y1))
+                })
+                .collect::<Vec<_>>()
+        };
+        if source_rects.is_empty() {
+            return Ok(0);
+        }
 
         kms_ops.refresh_dirty_fb(&framebuffer, &source_rects)?;
 
