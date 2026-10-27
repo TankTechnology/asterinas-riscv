@@ -1,0 +1,63 @@
+sb-run.sh[63]: SB2_START n=200
+sb-run.sh[63]: RB info rss_mb 1 actual_mb 1.9
+sb-run.sh[63]: RB rss_mb 1 fork_us 3476.9
+[sb-run.sh [63]:  RB info rss_mb 32 actual_mb 32.9 
+sb-run.sh[63]: RB info rss_mb 128 actual_mb 128.9
+sb-run.sh[63]: RB rss_mb 128 fork_us 51840.5
+sb-run.sh[63]: RB info rss_mb 256 actual_mb 256.9
+sb-run.sh[63]: RB rss_mb 256 fork_us 103246.1
+sb-run.sh[63]: RB variant fork us 2317.8
+sb-run.sh[63]: RB variant clone_vm us 949.3
+sb-run.sh[63]: RB variant vfork us 662.7
+sb-run.sh[63]: RB info rss_mb 256 variant actual_mb 256.9
+sb-run.sh[63]: RB variant256 fork us 101977.8
+sb-run.sh[63]: RB variant256 clone_vm us 719.0
+sb-run.sh[63]: RB variant256 vfork us 704.5
+sb-run.sh[63]: RB DONE
+sb-run.sh[2121]: SB2_START n=20
+sb-run.sh[2121]: RB info rss_mb 256 actual_mb 256.9
+sb-run.sh[2121]: RB rss_mb 256 fork_us 106000.4
+sb-run.sh[2121]: RB DONE
+sb-run.sh[2147]: # enabled=0 (columns: nr count total_ns blocked_ns cpu_ns avg_cpu_ns)
+sb-run.sh[2147]: 56 25 2699477227 0 2699477227 107979089
+sb-run.sh[2147]: 231 26 25159794 0 25159794 967684
+sb-run.sh[2147]: 61 27 4056457315 4045418595 11038720 408841
+sb-run.sh[2147]: 20 17 2048322 0 2048322 120489
+sb-run.sh[2147]: 257 25 1343171 0 1343171 53726
+sb-run.sh[2147]: 46 34 1169148 0 1169148 34386
+sb-run.sh[2147]: 232 8 3982951134 3982073893 877241 109655
+sb-run.sh[2147]: 11 1 822523 0 822523 822523
+sb-run.sh[2147]: 59 1 761387 0 761387 761387
+sb-run.sh[2147]: 334 1 640534 0 640534 640534
+sb-run.sh[2147]: 273 26 632955 0 632955 24344
+sb-run.sh[2147]: 21 17 560798 0 560798 32988
+sb-run.sh[2147]: 14 78 424542 0 424542 5442
+sb-run.sh[2147]: 202 49 5212193 4804459 407733 8321
+sb-run.sh[2147]: 1 19 401496 0 401496 21131
+sb-run.sh[2147]: 7 16 4663430 4277255 386174 24135
+sb-run.sh[2147]: 58 1 1245221 900474 344747 344747
+sb-run.sh[2147]: 286 10 214439 0 214439 21443
+sb-run.sh[2147]: 47 17 214031 0 214031 12590
+sb-run.sh[2147]: 267 5 197759 0 197759 39551
+sb-run.sh[2147]: 0 10 167910 0 167910 16791
+sb-run.sh[2147]: 3 24 157729 0 157729 6572
+sb-run.sh[2147]: 12 6 74511 0 74511 12418
+sb-run.sh[2147]: 16 17 57134 0 57134 3360
+sb-run.sh[2147]: 77 1 30724 0 30724 30724
+sb-run.sh[2147]: 10 1 28263 0 28263 28263
+sb-run.sh[2147]: 15 1 26594 0 26594 26594
+sb-run.sh[2147]: 217 2 24977 0 24977 12488
+sb-run.sh[2147]: 5 4 16959 0 16959 4239
+sb-run.sh[2147]: 186 10 16296 0 16296 1629
+sb-run.sh[2147]: 318 2 16045 0 16045 8022
+sb-run.sh[2147]: 262 1 13125 0 13125 13125
+sb-run.sh[2147]: 72 2 8154 0 8154 4077
+sb-run.sh[2147]: 9 1 6871 0 6871 6871
+sb-run.sh[2147]: 138 3 5836 0 5836 1945
+sb-run.sh[2147]: 33 2 5191 0 5191 2595
+sb-run.sh[2147]: 28 1 2969 0 2969 2969
+sb-run.sh[2147]: 8 2 2829 0 2829 1414
+sb-run.sh[2147]: 302 1 2505 0 2505 2505
+sb-run.sh[2147]: 158 1 1672 0 1672 1672
+sb-run.sh[2147]: 218 1 844 0 844 844
+sb-run.sh[59]: SBENCH_DONE

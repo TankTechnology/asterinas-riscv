@@ -1,0 +1,17 @@
+[    7.045727] sb-run.sh[273]: SB2_START n=200
+[    7.048847] sb-run.sh[273]: RB info rss_mb 1 actual_mb 1.9
+[    7.049458] sb-run.sh[273]: RB rss_mb 1 fork_us 95.3
+[    7.050541] sb-run.sh[273]: RB info rss_mb 32 actual_mb 32.9
+[    7.051702] sb-run.sh[273]: RB rss_mb 32 fork_us 532.5
+[    7.052232] sb-run.sh[273]: RB info rss_mb 128 actual_mb 128.9
+[    7.052774] sb-run.sh[273]: RB rss_mb 128 fork_us 1979.6
+[    7.074034] sb-run.sh[273]: RB info rss_mb 256 actual_mb 256.9
+[!p]104[    7.074590] sb-run.sh[273]: RB rss_mb 256 fork_us 4144.5
+[    7.075359] sb-run.sh[273]: RB variant fork us 73.0
+[    7.075795] sb-run.sh[273]: RB variant clone_vm us 21.4
+[    7.076289] sb-run.sh[273]: RB variant vfork us 18.2
+[    7.076735] sb-run.sh[273]: RB info rss_mb 256 variant actual_mb 256.9
+[    7.077319] sb-run.sh[273]: RB variant256 fork us 3932.3
+[    7.077784] sb-run.sh[273]: RB variant256 clone_vm us 22.9
+[    7.078292] sb-run.sh[273]: RB variant256 vfork us 18.4
+[    7.078755] sb-run.sh[273]: RB DONE
