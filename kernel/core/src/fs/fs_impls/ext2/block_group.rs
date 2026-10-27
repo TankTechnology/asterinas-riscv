@@ -81,6 +81,11 @@ pub(super) struct BlockGroup {
     _inode_table_backend: Arc<InodeTableBackend>,
     /// Inode table page cache.
     inode_table_cache: PageCache,
+    /// Byte range of the inode table that has been written since the last
+    /// flush. `fsync` used to flush the whole table of every group, which on a
+    /// 4 GiB image scans ~256 MiB of page cache per call; track the dirty range
+    /// so a one-inode update costs one inode-sized flush.
+    inode_table_dirty: RwMutex<Option<Range<usize>>>,
     /// Per-group inode cache keyed by group-local inode index.
     ///
     /// Ext2 keeps this cache locally because the VFS layer does not provide
@@ -198,6 +203,7 @@ impl BlockGroup {
             inode_bitmap_csum_len: (sb.nr_inodes_per_group() / 8) as usize,
             _inode_table_backend: backend,
             inode_table_cache,
+            inode_table_dirty: RwMutex::new(None),
             inode_cache: RwMutex::new(BTreeMap::new()),
         })
     }
@@ -409,12 +415,23 @@ impl BlockGroup {
         }
     }
 
-    /// Syncs the inode table back to the device.
+    /// Syncs the dirty part of the inode table back to the device.
     pub(super) fn sync_inode_table(&self) -> Result<()> {
-        // TODO: support sync specific inode with inode number.
-        let size = self.nr_inodes_per_group as usize * self.inode_size;
-        let range = 0..size;
-        self.inode_table_cache.flush_range(range)
+        let range = self.inode_table_dirty.write().take();
+        match range {
+            Some(range) => self.inode_table_cache.flush_range(range),
+            None => Ok(()),
+        }
+    }
+
+    /// Records that `[offset, offset + len)` of the inode table was written.
+    fn mark_inode_table_dirty(&self, offset: usize, len: usize) {
+        let mut dirty = self.inode_table_dirty.write();
+        let new = offset..offset + len;
+        *dirty = Some(match dirty.take() {
+            Some(range) => range.start.min(new.start)..range.end.max(new.end),
+            None => new,
+        });
     }
 
     /// Returns a read guard over the combined group metadata.
@@ -576,6 +593,7 @@ impl BlockGroup {
             if !metadata.desc.has_flag(BG_INODE_ZEROED) {
                 let table_size = self.nr_inodes_per_group as usize * self.inode_size;
                 self.inode_table_cache.fill_zeros(0..table_size)?;
+                self.mark_inode_table_dirty(0, table_size);
             }
             metadata.desc.set_flag(BG_INODE_ZEROED);
             metadata.desc.clear_flag(BG_INODE_UNINIT);
@@ -677,6 +695,7 @@ impl BlockGroup {
         let inode_idx = self.inode_idx_in_group(ino);
         let offset_bytes = (inode_idx as usize) * self.inode_size;
         self.inode_table_cache.write_val(offset_bytes, raw)?;
+        self.mark_inode_table_dirty(offset_bytes, self.inode_size);
         if let Some(extras) = extras
             && self.time_extras_available(offset_bytes)?
         {
