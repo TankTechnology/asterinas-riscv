@@ -115,7 +115,12 @@ if command -v fcitx5 >/dev/null 2>&1; then
         export DBUS_SESSION_BUS_ADDRESS
     fi
     pkill -x fcitx5 2>/dev/null; sleep 1
-    fcitx5 -d --replace -v >/dev/console 2>&1 &
+    # `-v` is the version switch: `fcitx5 -v` prints 5.1.12 and exits, so the
+    # daemon never started (INPUT_METHOD: engine--no-text). Start it without
+    # `-v`; the XIM server then registers (`XIM_SERVERS=@server=fcitx`).
+    # NOTE: this alone does not make the domain pass -- XCreateIC still blocks,
+    # see docs/porting/2026-10-27-input-method.md.
+    fcitx5 -d --replace >/dev/console 2>&1
     sleep 5
     # Without a window manager nothing holds keyboard focus and synthetic key
     # events never reach a client, so start a tiny WM first.
