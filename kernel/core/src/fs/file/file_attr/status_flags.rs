@@ -20,6 +20,12 @@ bitflags! {
         /// on x86_64, O_LARGEFILE is 0
         /// not update st_atime
         const O_NOATIME = 1 << 18;
+        /// do not assign a controlling terminal when opening a tty
+        ///
+        /// This is an open-time flag, recorded here because the tty open path
+        /// receives the open flags as `StatusFlags`; it has the same bit as
+        /// `CreationFlags::O_NOCTTY` and is never reported by `F_GETFL`.
+        const O_NOCTTY = 1 << 8;
         /// synchronized I/O, data and metadata
         const O_SYNC = 1 << 20;
         /// equivalent of POSIX.1's O_EXEC

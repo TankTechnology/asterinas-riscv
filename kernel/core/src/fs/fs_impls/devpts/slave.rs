@@ -17,7 +17,7 @@ use crate::{
         },
     },
     prelude::*,
-    process::{Gid, Uid, posix_thread::AsPosixThread},
+    process::{Gid, Terminal, Uid, posix_thread::AsPosixThread},
 };
 
 /// Same major number with Linux, the minor number is the index of slave.
@@ -167,6 +167,18 @@ impl Inode for PtySlaveInode {
         access_mode: AccessMode,
         status_flags: StatusFlags,
     ) -> Option<Result<Box<dyn PerOpenFileOps>>> {
-        Some(self.device.open())
+        Some((|| {
+            let file = self.device.open()?;
+            // Linux assigns a newly opened tty as the controlling terminal of a
+            // session leader that has none (`tty_open_proc_set_tty`). xterm
+            // relies on it: the child calls `setsid`, opens the slave and then
+            // verifies `/dev/tty`; without the assignment it treats the pty as
+            // broken and retries forever.
+            if !status_flags.contains(StatusFlags::O_NOCTTY) {
+                let terminal: Arc<dyn Terminal> = self.device.clone();
+                terminal.acquire_control_on_open(&current!(), access_mode.is_readable());
+            }
+            Ok(file)
+        })())
     }
 }
