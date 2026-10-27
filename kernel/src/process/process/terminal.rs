@@ -150,6 +150,28 @@ impl dyn Terminal {
         Ok(())
     }
 
+    /// Adopts this terminal as the caller's controlling terminal when a tty is
+    /// opened, mirroring Linux's `tty_open_proc_set_tty`.
+    ///
+    /// A process that is a session leader without a controlling terminal
+    /// acquires the tty it opens, provided the open may read and does not pass
+    /// `O_NOCTTY`. xterm depends on this: after `setsid` it opens the pty slave
+    /// and then checks that `/dev/tty` works; without a controlling terminal it
+    /// reports the pty as bad and retries with a pty that nobody can unlock.
+    ///
+    /// All of Linux's preconditions are enforced here or by `set_control`, so
+    /// the error is ignored: failing to adopt the tty is not an open failure.
+    pub(crate) fn acquire_control_on_open(self: Arc<Self>, process: &Process, may_read: bool) {
+        if !may_read {
+            return;
+        }
+        // Never take a terminal away from the session that already owns it.
+        if self.job_control().session().is_some() {
+            return;
+        }
+        let _ = self.set_control(process);
+    }
+
     /// Unsets the terminal from the controlling terminal of the process.
     fn unset_control(self: Arc<Self>, process: &Process) -> Result<()> {
         // Lock order: group of process -> session inner -> job control
