@@ -189,7 +189,38 @@ open refused : 15981 次     <- 全部 locked=true, other_closed=false
 
 临时观测代码已回滚；仓库只保留 `8306c8fc7`（slave 归属）与 `9c6c85663`（/dev/tty ENXIO）两个真实修复。
 
-## 11. 换 GTK 客户端的尝试（未完成，环境卡住）
+## 11. 更正（2026-10-27 晚）：TIOCSPTLCK 结论被推翻；控制终端才是 pty 失败点
+
+上文第 10 节"xterm 从不发起 TIOCSPTLCK"是**错误的**：当时的 LD_PRELOAD 只拦到了
+`open/openat`，glibc 内部的 `ioctl` 调用走隐藏符号，拦不到。把日志加到内核里的
+`SetPtyLock` 后可以看到 `set_lock idx=0 pid=… val=false` 是发生的；pty 本身可用
+（Python 的 `os.openpty()` 在同镜像上一直成功）。
+
+真正的失败点在打开 slave 之后：xterm 子进程 `setsid` 后打开 pty slave，然后检查
+`/dev/tty` 是否可用。Linux 在打开 tty 时会把它设为"没有控制终端的会话首进程"的
+控制终端（`tty_open_proc_set_tty`），本内核只在 `TIOCSCTTY` 里设置，于是
+`/dev/tty` 返回 ENXIO，xterm 判 PTY_BAD、向父进程要新 pty，而新 pty 无人解锁，
+之后每次打开都 EIO（内核日志 create → EIO → master_drop 的循环）。
+
+已修复（`058ae1515`）：`Inode::open` 收到 `O_NOCTTY`，pty slave 打开成功后按
+Linux 条件自动取得控制终端。修复后 xterm 窗口 `IsViewable`、`-e` 的命令真的在
+pty 里执行，pty 层面的问题已经不存在。
+
+**XIM 仍然失败**（2026-10-27 晚复测，gate 镜像 `target/daily-kbd2`）：
+
+- `XIM_SERVERS=@server=fcitx` 已注册、fcitx5 进程在跑、openbox 在跑；
+- 无 `XMODIFIERS` 时 xterm 收键正常（KEYBOARD 域 ok）；
+- 加 `XMODIFIERS=@im=fcitx` 后 xterm 能建窗、能获得焦点（`getwindowfocus` 等于
+  窗口 id、`Map State: IsViewable`），但 `xdotool type abc` + Return 后
+  `read` 收不到任何行 —— XIM 客户端路径吞掉了按键；
+- GTK 对照无法在本镜像做：`yad` 未安装、`/opt/stage.tar` 也不存在（早先
+  `im-probe6d` 上的 yad 成功不能直接外推）。
+- guest 默认 `LANG=C.UTF-8`，不是 locale 缺失。
+
+因此 INPUT_METHOD 仍是 fail，剩余工作在 fcitx5 的 XIM server / libX11 客户端
+这一用户态层，与内核无关；本轮不再宣称修复。
+
+## 12. 换 GTK 客户端的尝试（未完成，环境卡住）
 
 既然 xterm 的失败被证明在它自己的 pty 路径，而 GTK 客户端（`zenity --entry`）
 既不使用 pty、也不走 XIM（GTK 通过 fcitx 的 D-Bus 模块上屏），是最直接的替代验证路径。
