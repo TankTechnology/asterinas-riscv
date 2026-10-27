@@ -24,6 +24,10 @@ pub(super) struct IpOptionSet {
     ttl: IpTtl,
     hdrincl: bool,
     recverr: bool,
+    /// `IP_MTU_DISCOVER`. Stored only: the egress path does not implement path
+    /// MTU discovery, so the value is accepted and read back but does not
+    /// change packet handling. Linux defaults to `IP_PMTUDISC_WANT` (1).
+    ip_mtu_discover: i32,
     /// `IPV6_V6ONLY`. Linux defaults to 0 (dual-stack); this stack supports a
     /// single address family per socket, so the flag is stored for
     /// compatibility and does not change which packets a socket accepts.
@@ -47,6 +51,7 @@ impl IpOptionSet {
             ttl: IpTtl(None),
             hdrincl: false,
             recverr: false,
+            ip_mtu_discover: 1,
             ipv6_v6only: false,
             ipv6_recverr: false,
             ipv6_dontfrag: false,
@@ -60,6 +65,7 @@ impl IpOptionSet {
             ttl: IpTtl(None),
             hdrincl: false,
             recverr: false,
+            ip_mtu_discover: 1,
             ipv6_v6only: false,
             ipv6_recverr: false,
             ipv6_dontfrag: false,
@@ -88,6 +94,9 @@ impl IpOptionSet {
             ip_recverr @ Recverr => {
                 let recverr = self.recverr();
                 ip_recverr.set(recverr);
+            }
+            ip_mtu_discover @ IpMtuDiscover => {
+                ip_mtu_discover.set(self.ip_mtu_discover());
             }
             ipv6_v6only @ Ipv6V6Only => {
                 Self::check_ipv6(family)?;
@@ -138,6 +147,15 @@ impl IpOptionSet {
                 let recverr = ip_recverr.get().unwrap();
                 self.set_recverr(*recverr);
             }
+            ip_mtu_discover @ IpMtuDiscover => {
+                let value = *ip_mtu_discover.get().unwrap();
+                // Linux only bounds the range `IP_PMTUDISC_DONT`(0)..=`IP_PMTUDISC_OMIT`(5),
+                // so 4 (an unused value) is accepted and anything else is `EINVAL`.
+                if !(0..=5).contains(&value) {
+                    return_errno_with_message!(Errno::EINVAL, "invalid IP_MTU_DISCOVER value");
+                }
+                self.set_ip_mtu_discover(value);
+            }
             ipv6_v6only @ Ipv6V6Only => {
                 Self::check_ipv6(family)?;
                 let value = ipv6_v6only.get().unwrap();
@@ -187,6 +205,7 @@ impl_socket_options!(
     pub(crate) struct Ttl(IpTtl);
     pub(crate) struct Hdrincl(bool);
     pub(crate) struct Recverr(bool);
+    pub(crate) struct IpMtuDiscover(i32);
     pub(crate) struct Ipv6V6Only(bool);
     pub(crate) struct Ipv6Recverr(bool);
     pub(crate) struct Ipv6Dontfrag(bool);

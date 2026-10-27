@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use super::{RawSocketOption, SocketOption, impl_raw_sock_option_set_only};
+use super::{
+    RawSocketOption, SocketOption, impl_raw_sock_option_set_only, impl_raw_socket_option,
+};
 use crate::{
-    net::socket::netlink::{AddMembership, DropMembership},
+    net::socket::netlink::{AddMembership, DropMembership, ExtAck},
     prelude::*,
 };
 
@@ -17,6 +19,7 @@ pub(crate) enum CNetlinkOptionName {
     ADD_MEMBERSHIP = 1,
     DROP_MEMBERSHIP = 2,
     PKTINFO = 3,
+    EXT_ACK = 11,
 }
 
 pub(crate) fn new_netlink_option(name: i32) -> Result<Box<dyn RawSocketOption>> {
@@ -24,9 +27,13 @@ pub(crate) fn new_netlink_option(name: i32) -> Result<Box<dyn RawSocketOption>> 
     match name {
         CNetlinkOptionName::ADD_MEMBERSHIP => Ok(Box::new(AddMembership::new())),
         CNetlinkOptionName::DROP_MEMBERSHIP => Ok(Box::new(DropMembership::new())),
+        CNetlinkOptionName::EXT_ACK => Ok(Box::new(ExtAck::new())),
         _ => return_errno_with_message!(Errno::ENOPROTOOPT, "unsupported netlink option"),
     }
 }
 
 impl_raw_sock_option_set_only!(AddMembership);
 impl_raw_sock_option_set_only!(DropMembership);
+// `NETLINK_EXT_ACK` is an `int` on the wire but a boolean in Linux: any
+// non-zero value reads back as 1.
+impl_raw_socket_option!(ExtAck);

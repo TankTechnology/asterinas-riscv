@@ -9,7 +9,7 @@ use crate::{
     fs::file::FileCommon,
     net::socket::{
         Socket,
-        netlink::{AddMembership, DropMembership, table::SupportedNetlinkProtocol},
+        netlink::{AddMembership, DropMembership, ExtAck, table::SupportedNetlinkProtocol},
         new_socket_common,
         options::{
             AttachFilter, DetachFilter, Error as SocketError, SocketOption,
@@ -45,12 +45,16 @@ pub(crate) struct NetlinkSocket<P: SupportedNetlinkProtocol> {
 #[derive(Clone, Debug)]
 struct OptionSet {
     socket: SocketOptionSet,
+    /// `NETLINK_EXT_ACK`. Stored only: the socket accepts and reads back the
+    /// flag but does not attach extended ACK attributes to replies.
+    ext_ack: bool,
 }
 
 impl OptionSet {
     pub(self) fn new() -> Self {
         Self {
             socket: SocketOptionSet::new_netlink(),
+            ext_ack: false,
         }
     }
 }
@@ -194,6 +198,11 @@ where
     }
 
     fn get_option(&self, option: &mut dyn SocketOption) -> Result<()> {
+        if let Some(ext_ack) = option.as_any_mut().downcast_mut::<ExtAck>() {
+            ext_ack.set(self.options.read().ext_ack);
+            return Ok(());
+        }
+
         sock_option_mut!(match option {
             socket_errors @ SocketError => {
                 // TODO: Support socket errors for netlink sockets
@@ -228,6 +237,13 @@ where
         }
         // `options` must be dropped here because `do_netlink_setsockopt` may lock other mutexes.
         drop(options);
+
+        // `NETLINK_EXT_ACK` lives in the netlink-level option set.
+        if let Some(ext_ack) = option.as_any().downcast_ref::<ExtAck>() {
+            let value = *ext_ack.get().unwrap();
+            self.options.write().ext_ack = value;
+            return Ok(());
+        }
 
         // Deal with netlink-level options
         do_netlink_setsockopt(option, &mut inner)
