@@ -1718,6 +1718,13 @@ EOF
         # password prompt.  The account stays locked; autologin starts the
         # shell and sudoers grants passwordless privilege escalation.
         #
+        # The daily-use boot entry must NOT pass `--debug-console=root`: the
+        # board showed the getty cycling Started -> Deactivated successfully
+        # -> restart 11/12/13 -> start-limit-hit while the debug console owned
+        # ttyS0.  The menu validator accepts a desktop entry without the
+        # debug console for this image; the debug entry stays available as a
+        # separate boot choice when a root shell is needed.
+        #
         # Do not use the Debian serial-getty template: it carries
         # BindsTo=dev-ttyS0.device, and Asterinas exposes /dev/ttyS0 through
         # devtmpfs without publishing that sysfs device unit, so systemd
@@ -1760,7 +1767,7 @@ EOF
         ln -sfn ../asterinas-console-getty.service \
             "$stage/etc/systemd/system/getty.target.wants/asterinas-console-getty.service"
         # Mask the template getty and console-getty so only the dedicated
-        # unit can own ttyS0.
+        # unit owns ttyS0 on the daily-use boot.
         ln -sfn /dev/null \
             "$stage/etc/systemd/system/serial-getty@ttyS0.service"
         ln -sfn /dev/null "$stage/etc/systemd/system/console-getty.service"
