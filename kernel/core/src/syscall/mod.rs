@@ -14,7 +14,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub(crate) use clock_gettime::ClockId;
-use ostd::arch::cpu::context::UserContext;
+use ostd::{arch::cpu::context::UserContext, user::UserContextApi};
 pub(crate) use timer_create::create_timer_for_clock;
 
 use crate::{cpu::LinuxAbi, prelude::*};
@@ -429,12 +429,14 @@ pub(crate) fn handle_syscall(ctx: &Context, user_ctx: &mut UserContext) {
     let time_start = syscall_time_enabled().then(ostd::arch::read_tsc);
     let current_thread = crate::thread::Thread::current();
     if let Some(thread) = current_thread.as_ref() {
-        let regs = user_ctx.general_regs();
+        // Use the architecture-independent accessors: x86 keeps these in the
+        // general registers while RISC-V keeps the instruction pointer in the
+        // trap frame.
         thread.record_syscall_entry(
             syscall_frame.syscall_number,
             syscall_frame.args,
-            regs.rsp as u64,
-            regs.rip as u64,
+            user_ctx.stack_pointer() as u64,
+            user_ctx.instruction_pointer() as u64,
         );
         if time_start.is_some() {
             thread.task().reset_blocked_cycles();
