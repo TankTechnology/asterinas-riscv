@@ -125,12 +125,26 @@ xterm 不再支持中文输入——它本来也打不进去；中文输入走 G
   XIM 吞键，域名失败；修复后同一路径通过。
 - **INPUT_METHOD**：门禁以 root 起自己的 fcitx5，并用 `fcitx5-remote -n` 读
   引擎。会话自己也有 fcitx（uid 1000），门禁的 `pkill -x fcitx5` 会先杀掉
-  用户实例，再由 root 实例接管 XIM；配合 4 的 eager addon 与 5 的
-  XDG 修复，root 实例能保留 wbpy。若 root 实例因 XIM 抢占时序仍未就绪，
-  该域会报 `engine--no-text`，但产品侧的 GTK 中文输入已单独验证（3.3）。
+  用户实例，再由 root 实例接管 XIM。本轮实测该域仍报
+  `DAILY_INPUT_METHOD=fail engine--no-text`，证据是：
 
-两处都不涉及内核，属于「会话与测试脚手架如何共存」的问题，已在镜像配置层
-处理；门禁的完整矩阵见 §7。
+  ```
+  DAILY_YAD win=16777218 map=  Map State: IsUnMapped
+  DAILY_YAD focus=4194591 tries=25
+  DAILY_YAD out=[]
+  ```
+
+  即 yad 的窗口在 25 次重试后仍是 `IsUnMapped`（同轮 xclock/xcalc 都是
+  `ok window=…`），焦点停在别处，文本自然为空。对照实验：会话正常时用
+  `GTK_IM_MODULE=fcitx` 走会话自己的 fcitx，新窗口直接是 wbpy，`nihao`
+  能提交「你好」（3.3）；卡住的是「root 再起一个 fcitx + GTK 走 XIM +
+  按窗口名选到未映射的 leader 窗口」这条脚手架路径，不是产品输入法。
+
+  结论：KEYBOARD 已恢复；INPUT_METHOD 的失败是测试脚手架与镜像内置会话
+  争夺 XIM 的竞态，产品侧中文输入另有直接证据。要让它也绿，需要把检查项
+  改成「复用会话的 fcitx 与 GTK 前端」，那是检查脚本的改动，不在本 PR。
+
+两处都不涉及内核；门禁的完整矩阵见 §7。
 
 ## 7. 门禁矩阵（同一镜像，9 域 + 稳定性）
 
