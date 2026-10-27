@@ -22,7 +22,10 @@ marker() {
     guest_ns="$(guest_monotonic_ns)"
     line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$guest_ns firefox_pid=$pid"
     [[ -z "$page" ]] || line="$line page=$page"
-    printf '%s\n' "$line" >>"$TIMELINE"
+    if ! printf '%s\n' "$line" >>"$TIMELINE" 2>/dev/null; then
+        printf 'A_WEB_TIMELINE_UNAVAILABLE path=%s marker=%s\n' \
+            "$TIMELINE" "$name" >&2 || true
+    fi
     # The browser phases run as the unprivileged asterinas user.  Asterinas
     # may intentionally reject writes to /dev/console from that uid; console
     # output is diagnostic only and must never restart the browser service.
@@ -40,11 +43,19 @@ case "${1-}" in
         marker BOOT_PHYSICAL_BROWSER_BEGIN
         ;;
     begin)
-        # The static image provisions this file for persistent home. In the
-        # volatile home, the timeline unit creates it as the asterinas user.
-        # Avoid install/chown during early boot: metadata updates can block
-        # while sysinit is bringing up the desktop.
-        : >"$TIMELINE"
+        # The immutable image provisions the timeline as uid 1000. A fresh
+        # volatile home does not, so recreate the file with the browser owner
+        # when the metadata path works. Keep it bounded: early Asterinas
+        # metadata operations have blocked before, and a failure must not
+        # stop the boot (the marker path below is best-effort).
+        if [[ $(id -u) -eq 0 ]]; then
+            if ! /usr/bin/timeout 5 /usr/bin/install -m 0600 -o 1000 -g 1000 \
+                /dev/null "$TIMELINE" 2>/dev/null; then
+                : >"$TIMELINE"
+            fi
+        else
+            : >"$TIMELINE"
+        fi
         marker BOOT_SYSTEMD_BEGIN
         ;;
     basic)
