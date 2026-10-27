@@ -266,7 +266,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
 
     def test_guest_network_deadline_matches_the_qemu_contract(self) -> None:
         self.assertIn(
-            'readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-120}"',
+            'readonly TIMEOUT_SECONDS="${ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS:-30}"',
             EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
         )
 
@@ -2511,6 +2511,16 @@ drop_unsupported_sysctl_files "$2"
         )
         self.assertIn("10-coredump-debian.conf", builder)
         self.assertIn("50-pid-max.conf", builder)
+
+    def test_dns_shim_unit_is_oneshot_and_does_not_loop(self) -> None:
+        source = BUILD_SCRIPT.read_text(encoding="utf-8")
+        block = source[source.index("asterinas-dns-shim.service"):]
+        block = block[: block.index("[Install]")]
+        self.assertIn("Type=oneshot", block)
+        self.assertIn("Restart=no", block)
+        self.assertIn("SuccessExitStatus=1 3", block)
+        self.assertNotIn("Restart=always", block)
+        self.assertNotIn("RestartPreventExitStatus", block)
 
     def test_qemu_evidence_uses_dns_and_https_without_ip_or_ping(self) -> None:
         console = self.directory / "qemu-console"

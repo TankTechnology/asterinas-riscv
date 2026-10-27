@@ -248,9 +248,12 @@ start_browser() {
     done
     [ "$status" -ne 0 ] || browser_stage desktop-ready
 
+    # The desktop itself is ready at this point.  A browser/network failure
+    # must not turn desktop-ready into a failed unit or hold the boot; report
+    # it as an optional stage and keep the desktop readiness result.
     if [ "$status" -eq 0 ]; then
         systemctl_bounded reset-failed asterinas-browser-web.service \
-            >/dev/null 2>&1 || status=$?
+            >/dev/null 2>&1 || true
     fi
     if [ "$status" -eq 0 ] && [ "$offline_desktop" -eq 0 ]; then
         # ignore-dependencies skips the sysinit timeline unit. Reset as the
@@ -263,8 +266,10 @@ start_browser() {
     fi
     if [ "$status" -eq 0 ]; then
         browser_stage browser-start
-        systemctl_bounded start --no-block --job-mode=ignore-dependencies \
-            asterinas-browser-web.service >/dev/null 2>&1 || status=$?
+        if ! systemctl_bounded start --no-block --job-mode=ignore-dependencies \
+            asterinas-browser-web.service >/dev/null 2>&1; then
+            boot_phase 'ASTERINAS_DESKTOP_BROWSER_OPTIONAL start=failed'
+        fi
     fi
     printf '__ASTERINAS_PHYSICAL_BROWSER_START__ status=%s\n' "$status"
     return "$status"
@@ -303,18 +308,9 @@ startup_ready_once() {
     [ "$xorg_ready" -eq 1 ] || return 1
     readiness_reason=openbox
     pgrep -u 1000 -x openbox >/dev/null 2>&1 || return 1
-    readiness_reason=firefox-service
-    [ "$(systemctl is-active asterinas-browser-web.service 2>/dev/null || true)" = active ] || return 1
-    browser_identity
-    readiness_reason=firefox-pid
-    is_uint "$pid" && [ "$pid" -gt 1 ] || return 1
-    grep -Eq '^firefox(-esr)?$' "/proc/$pid/comm" 2>/dev/null || return 1
-    readiness_reason=firefox-user
-    grep -Eq '^Uid:[[:space:]]+1000[[:space:]]' "/proc/$pid/status" 2>/dev/null || return 1
-    readiness_reason=firefox-window
-    DISPLAY=:0 XAUTHORITY=/home/asterinas/.Xauthority \
-        /usr/bin/timeout --kill-after=1s 8s /usr/bin/xdotool \
-        search --onlyvisible --class firefox >/dev/null 2>&1 || return 1
+    # Firefox is deliberately optional here: the desktop is ready when Xorg
+    # and openbox own the display.  A browser or network failure must not
+    # keep the desktop-ready unit activating or turn it into a failed unit.
     return 0
 }
 
@@ -360,7 +356,9 @@ startup_ready() {
         /usr/bin/sleep 1
     done
     boot_phase 'ASTERINAS_DESKTOP_DISPLAY_READY'
-    boot_phase "ASTERINAS_DESKTOP_FIREFOX_READY pid=$pid user=1000"
+    browser_identity
+    [ -n "$pid" ] || pid=0
+    boot_phase "ASTERINAS_DESKTOP_FIREFOX_READY pid=$pid user=1000 optional=1"
     printf '0\n' >"$watchdog" || {
         boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-write'
         return 1

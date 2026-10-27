@@ -1608,6 +1608,20 @@ int main(void)
             browser.index("browser-web-timeline reset-physical"),
             browser.index("browser_stage browser-start"),
         )
+    def test_physical_graphics_control_keeps_browser_optional(self) -> None:
+        source = STAGE1_PHYSICAL_GRAPHICS_CONTROL.read_text(encoding="utf-8")
+        browser = source[source.index("browser_stage browser-start"):]
+        self.assertIn("ASTERINAS_DESKTOP_BROWSER_OPTIONAL start=failed", browser)
+        self.assertIn(
+            "__ASTERINAS_PHYSICAL_BROWSER_START__ status=%s\\n' \"$status\"",
+            browser,
+        )
+        readiness = source[
+            source.index("startup_ready_once() {"):source.index("startup_ready() {")
+        ]
+        self.assertIn("readiness_reason=openbox", readiness)
+        self.assertNotIn("readiness_reason=firefox", readiness)
+        self.assertIn("ASTERINAS_DESKTOP_FIREFOX_READY pid=$pid user=1000 optional=1", source)
 
     def test_physical_graphics_control_disarms_only_after_desktop_readiness(
         self,
