@@ -2397,17 +2397,22 @@ esac
             '--connect-timeout "$FIXTURE_CONNECT_TIMEOUT_SECONDS"',
             source,
         )
+        self.assertIn('FIXTURE_MAX_TIME_SECONDS:-2', source)
+        self.assertIn('--max-time "$FIXTURE_MAX_TIME_SECONDS"', source)
 
     def test_dns_shim_unit_does_not_loop_or_fail_without_a_forwarder(self) -> None:
         source = BUILD_SCRIPT.read_text(encoding="utf-8")
         block = source[source.index("asterinas-dns-shim.service"):]
         block = block[: block.index("[Install]")]
-        # The healthy shim serves forever; oneshot would never finish starting
-        # and would hold basic.target.  Inactive-on-unconfigured comes from
-        # SuccessExitStatus plus Restart=no instead.
+        # The healthy shim serves forever; oneshot would wait for a process
+        # that never exits and TimeoutStartSec would kill it.  The
+        # unconfigured case is skipped by ExecCondition; the tunnel-down case
+        # is a successful exit with Restart=no, so neither loops or fails.
         self.assertIn("Type=simple", block)
         self.assertNotIn("Type=oneshot", block)
         self.assertIn("Restart=no", block)
+        self.assertIn('ExecCondition=/bin/sh -c', block)
+        self.assertIn('test -n "${ASTERINAS_DESKTOP_DNS_HOST:-}"', block)
         self.assertIn("SuccessExitStatus=1 3", block)
         self.assertNotIn("Restart=always", block)
         self.assertNotIn("RestartPreventExitStatus", block)

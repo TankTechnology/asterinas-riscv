@@ -1848,12 +1848,16 @@ After=local-fs.target
 
 [Service]
 # The shim serves for as long as the guest runs, so it stays Type=simple: a
-# oneshot that never returns would hold basic.target in "activating" forever.
-# What it must not do is restart or fail when it has nothing to tunnel: it
-# either proves its tunnel and keeps serving, or exits once naming why.
+# oneshot would wait for a process that never exits, and TimeoutStartSec would
+# then kill the healthy tunnel and mark the unit failed.
 Type=simple
 Restart=no
 TimeoutStartSec=30s
+# No forwarder means there is nothing to tunnel.  Skip the unit before
+# launching Python instead of running it only to exit 3; ExecCondition status
+# 1..254 skips the unit.  The variable is set in the manager environment by
+# systemd.setenv=... on the kernel command line.
+ExecCondition=/bin/sh -c 'test -n "${ASTERINAS_DESKTOP_DNS_HOST:-}"'
 # Exit 3 (no forwarder configured) and exit 1 (tunnel not reachable) are
 # explicit inactive states, not failures.  A later explicit
 # `systemctl restart asterinas-dns-shim` retries after the host/interface is
