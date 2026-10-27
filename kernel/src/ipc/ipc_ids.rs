@@ -44,6 +44,17 @@ impl<T> IpcIds<T> {
         Ok(op(object))
     }
 
+    /// Calls `op` with every object in the table.
+    pub(super) fn for_each<F>(&self, mut op: F)
+    where
+        F: FnMut(&T),
+    {
+        let objects = self.objects.read();
+        for object in objects.values() {
+            op(object);
+        }
+    }
+
     /// Removes the object identified by `id`.
     pub(super) fn remove<F>(&self, id: IpcId, may_remove: F) -> Result<()>
     where

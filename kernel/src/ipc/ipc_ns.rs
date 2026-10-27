@@ -126,6 +126,15 @@ impl IpcNamespace {
         })?
     }
 
+    /// Applies the pending `SEM_UNDO` adjustments recorded for `pid`.
+    ///
+    /// This runs when the process exits. See [`SemaphoreSet::apply_undo`].
+    pub fn apply_sem_undo(&self, pid: Pid) {
+        self.sem_ids.for_each(|sem_set| {
+            sem_set.apply_undo(pid);
+        });
+    }
+
     /// Removes the semaphore set identified by `semid`.
     pub fn remove_sem_set<F>(&self, semid: IpcId, may_remove: F) -> Result<()>
     where
