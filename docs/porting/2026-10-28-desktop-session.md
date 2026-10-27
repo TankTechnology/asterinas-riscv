@@ -181,10 +181,14 @@ SUSPEND      ok      woke-up-disk-and-io-ok
 DAILY_DONE=ok  (30 分钟稳定性负载 + 3 轮 suspend，tick 1..6 全部打印)
 ```
 
-两份原始 `matrix.tsv` 在 `evidence/2026-10-28-desktop-session/`：
-`gate-before-xim-fix.tsv`、`gate-after-xim-fix.tsv`。两次运行的 QEMU 在
-`system_powerdown` 后都没有自行退出（ACPI S5 挂起，已知问题），矩阵是在
-`DAILY_DONE=ok` 之后由 host 结束 QEMU 写出的。
+最终内核（含 P3 的 `/proc/stat` USER_HZ 换算，见
+`docs/porting/2026-10-28-daily-compat.md` §2.2）上又跑了一次完整门禁，仍是
+9/9，矩阵是 `evidence/2026-10-28-desktop-session/gate-final-kernel.tsv`。
+
+三份原始 `matrix.tsv` 在 `evidence/2026-10-28-desktop-session/`：
+`gate-before-xim-fix.tsv`、`gate-after-xim-fix.tsv`、`gate-final-kernel.tsv`。
+每次运行的 QEMU 在 `system_powerdown` 后都没有自行退出（ACPI S5 挂起，已知
+问题），矩阵是在 `DAILY_DONE=ok` 之后由 host 结束 QEMU 写出的。
 
 ## 8. 未决与限制
 
