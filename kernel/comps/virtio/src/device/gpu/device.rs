@@ -235,8 +235,7 @@ impl GpuDevice {
         check_ok(code)?;
 
         let blob_start = CTRL_RESP_OFFSET + size_of::<VirtioGpuCtrlHdr>();
-        let mut blob = Vec::new();
-        blob.resize(size as usize, 0u8);
+        let mut blob = alloc::vec![0u8; size as usize];
         Slice::new(buf.clone(), blob_start..blob_start + size as usize)
             .read_bytes(0, &mut blob)
             .map_err(VirtioDeviceError::ResourceAlloc)?;
@@ -754,6 +753,13 @@ impl GpuDevice {
     ///
     /// The context travels in the control header, not the body, so the plain
     /// `ctrl_hdr` would address context 0 — which no client has.
+    // The 3D transfer ABI carries the box and three strides separately; keep
+    // the primitive in one place instead of introducing a one-use parameter
+    // struct.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the 3D transfer ABI carries the box and three strides separately"
+    )]
     fn transfer_3d(
         &self,
         command: u32,
