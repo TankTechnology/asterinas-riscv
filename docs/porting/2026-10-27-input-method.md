@@ -245,3 +245,19 @@ pty 里执行，pty 层面的问题已经不存在。
 2. 或继续查 xterm：它是唯一已确认「从不调用 TIOCSPTLCK」的程序，
    需要对照 Debian xterm 的具体构建/代码路径；
 3. XIM 自写客户端的 `XCreateIC` 阻塞仍未解决，等 1/2 有结论后再回到它。
+
+
+## 13. 收口（2026-10-27 晚）：INPUT_METHOD = ok
+
+GTK 客户端不 map 的根因不是 map 协议、focus 或 WM，而是 GDK 的 GL 初始化：普通环境下
+Mesa 选 `virtio_gpu` 驱动失败（`glx: failed to create dri3 screen` /
+`failed to load driver: virtio_gpu`），GTK 在 realize 之前停住，root tree 里连窗口
+都没有。给 GTK 客户端带上软件渲染环境（`LIBGL_ALWAYS_SOFTWARE=1
+GALLIUM_DRIVER=softpipe GDK_GL=disable GDK_BACKEND=x11 NO_AT_BRIDGE=1
+XDG_RUNTIME_DIR=<0700>`）后窗口 33 ms 内 `IsViewable`，`windowfocus` 一次成功，
+五笔输入上屏 `你好`。
+
+门禁在 APT 域安装 `yad`，yad 路径先等 `IsViewable` 再校验焦点，最终矩阵
+（`target/daily-kbd4`）**9/9 域 ok**，`INPUT_METHOD ok table-wbpy-typed-你好`。
+xterm 的 XIM 客户端路径仍未恢复（Xlib 侧吞键），但输入法这个用户目标已由 GTK
+路径端到端验证；细节见 `2026-10-27-gtk-window-map.md`。

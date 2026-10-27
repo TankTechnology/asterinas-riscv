@@ -116,22 +116,27 @@ Linux 也从不因该标志失败，因此静默接受即可；注释写明等 S
   `2026-10-27-input-method.md`。这是 fcitx5/Xlib 用户态问题，与内核无关，
   低优先级。
 
-## 9. 门禁矩阵（`target/daily-kbd2`，内核 `94ad82da6`）
+## 9. 门禁矩阵（最终：`target/daily-kbd4`，全部 9 域 ok）
 
 ```
 DESKTOP        ok    Xorg+DRI3
 APP            ok    xterm
 KEYBOARD       ok    virtio-evdev-xterm-abc
-APT            ok    xclip+xterm+alsa-utils+xf86-input-evdev
+APT            ok    xclip+xterm+alsa-utils+xf86-input-evdev+yad
 CLIPBOARD      ok    xclip-round-trip
-INPUT_METHOD   fail  engine-wbpy-no-text:
+INPUT_METHOD   ok    table-wbpy-typed-你好
 AUDIO          ok    aplay-hw:0,0
 USB            ok    mounted-/dev/sda-read-ASTERINAS-USB-OK
 SUSPEND        ok    woke-up-disk-and-io-ok
 ```
 
-8/9 域 ok；唯一 fail 是既有的 INPUT_METHOD。`DAILY_DONE=ok`、稳定性 soak
-6/6（load 0.000）、suspend 3/3 正常。
+`DAILY_DONE=ok`、稳定性 soak 6/6（load 0.000）、suspend 3/3 正常。
+
+INPUT_METHOD 的缺口最终归因到 GTK 客户端的 GL 初始化（不是内核）：普通环境下 yad
+连顶层窗口都不建（`glx: failed to create dri3 screen` /
+`failed to load driver: virtio_gpu`），给 GTK 客户端带上软件渲染环境后 33 ms 内
+map、拿到焦点并上屏 `你好`。细节见 `2026-10-27-gtk-window-map.md`。
+（前一轮 `target/daily-kbd2` 的矩阵为 8/9，仅 INPUT_METHOD fail，可作对照。）
 
 ## 复现
 

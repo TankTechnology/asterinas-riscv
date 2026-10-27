@@ -33,9 +33,9 @@ echo "DAILY_IME_ENV gtk3=$(ldconfig -p 2>/dev/null | grep -c libgtk-3) wm=$(comm
 # --- Domain 2: package installation (first, so the desktop app exists) ----
 # xserver-xorg-input-evdev lets Xorg bind /dev/input/eventN, which the kernel
 # exposes for the virtio keyboard. Without it the X server has no input driver.
-if apt-get install -y xclip xterm alsa-utils xdotool \
+if apt-get install -y xclip xterm alsa-utils xdotool yad \
         xserver-xorg-input-evdev libevdev2 >/tmp/apt-install.log 2>&1; then
-    mark APT ok "xclip+xterm+alsa-utils+xf86-input-evdev"
+    mark APT ok "xclip+xterm+alsa-utils+xf86-input-evdev+yad"
 else
     mark APT fail "apt-get install"
 fi
@@ -277,15 +277,44 @@ if command -v fcitx5 >/dev/null 2>&1; then
     YAD_OUT=""
     if command -v yad >/dev/null 2>&1; then
         export GTK_IM_MODULE=xim XMODIFIERS=@im=fcitx
+        # GTK must render through software GL here, and without a runtime dir
+        # the window stays unmapped, so it can never take focus. The keyboard
+        # domain proves real key delivery, so a mapping failure here is GTK's.
+        export LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=softpipe GDK_GL=disable
+        export GDK_BACKEND=x11 NO_AT_BRIDGE=1
+        mkdir -p /tmp/xdg
+        chmod 700 /tmp/xdg
+        export XDG_RUNTIME_DIR=/tmp/xdg
         rm -f /tmp/yad.out /tmp/yad.err
         yad --entry --title yadim --text type >/tmp/yad.out 2>/tmp/yad.err &
-        sleep 3
-        ywin=$(timeout 5 xdotool search --name yadim 2>/dev/null | head -1)
+        sleep 4
+        ywin=$(timeout 5 xdotool search --name yadim 2>/dev/null | tail -1)
         echo "DAILY_YAD win=$ywin map=$(timeout 5 xwininfo -id "$ywin" 2>/dev/null | grep -m1 'Map State')" >/dev/console
         if [ -n "$ywin" ]; then
-            timeout 5 xdotool windowactivate --sync "$ywin" 2>/dev/null
-            sleep 1
-            echo "DAILY_YAD focus=$(timeout 5 xdotool getwindowfocus 2>/dev/null)" >/dev/console
+            # windowactivate needs a WM that honours _NET_ACTIVE_WINDOW; the
+            # direct focus request works without one and is what the keyboard
+            # domain uses. Try it in a loop and verify the focus actually moved.
+            n=0
+            while [ $n -lt 25 ]; do
+                # GTK maps the toplevel well after it creates the window; a
+                # focus request before that is rejected with BadMatch.
+                case "$(timeout 5 xwininfo -id "$ywin" 2>/dev/null | grep -m1 'Map State')" in
+                    *IsViewable*) ;;
+                    *)
+                        sleep 1
+                        n=$((n + 1))
+                        continue
+                        ;;
+                esac
+                timeout 5 xdotool windowfocus "$ywin" 2>/dev/null
+                if [ "$(timeout 5 xdotool getwindowfocus 2>/dev/null)" = "$ywin" ]; then
+                    break
+                fi
+                timeout 5 xdotool windowactivate --sync "$ywin" 2>/dev/null
+                sleep 1
+                n=$((n + 1))
+            done
+            echo "DAILY_YAD focus=$(timeout 5 xdotool getwindowfocus 2>/dev/null) tries=$n" >/dev/console
             timeout 5 xdotool type --delay 150 "wqiy" 2>/dev/null
             timeout 5 xdotool key space 2>/dev/null
             timeout 5 xdotool type --delay 150 "vbg" 2>/dev/null
