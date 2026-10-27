@@ -153,11 +153,38 @@ xterm 不再支持中文输入——它本来也打不进去；中文输入走 G
   同时产品侧（会话总线 + `GTK_IM_MODULE=fcitx`）仍是
   `ENGINE=[wbpy] OUT=[你好]`，没有因为关掉 XIM 而退化。
 
-两个域都不涉及内核；三次门禁的完整矩阵见 §7。
+两个域都不涉及内核；两次门禁（修复前/后）的完整矩阵见 §7。
 
 ## 7. 门禁矩阵（同一镜像，9 域 + 稳定性）
 
-见本轮运行结束后追加的 `matrix.tsv` 摘要。
+修复前（会话仍注册 XIM）：
+
+```
+DESKTOP ok  APP ok  KEYBOARD ok  APT ok  CLIPBOARD ok
+INPUT_METHOD fail engine--no-text
+AUDIO ok  USB ok  SUSPEND ok
+```
+
+修复后（会话 `--disable xim`，其余配置不变）：
+
+```
+domain       result  detail
+DESKTOP      ok      Xorg+DRI3
+APP          ok      xterm
+KEYBOARD     ok      virtio-evdev-xterm-abc
+APT          ok      xclip+xterm+alsa-utils+xf86-input-evdev+yad
+CLIPBOARD    ok      xclip-round-trip
+INPUT_METHOD ok      table--typed-你好
+AUDIO        ok      aplay-hw:0,0
+USB          ok      mounted-/dev/sda-read-ASTERINAS-USB-OK
+SUSPEND      ok      woke-up-disk-and-io-ok
+DAILY_DONE=ok  (30 分钟稳定性负载 + 3 轮 suspend，tick 1..6 全部打印)
+```
+
+两份原始 `matrix.tsv` 在 `evidence/2026-10-28-desktop-session/`：
+`gate-before-xim-fix.tsv`、`gate-after-xim-fix.tsv`。两次运行的 QEMU 在
+`system_powerdown` 后都没有自行退出（ACPI S5 挂起，已知问题），矩阵是在
+`DAILY_DONE=ok` 之后由 host 结束 QEMU 写出的。
 
 ## 8. 未决与限制
 
