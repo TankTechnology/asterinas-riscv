@@ -644,12 +644,17 @@ configure_and_normalize_rootfs
             (stage / "usr/share/asterinas/desktop-m6-javascript.html").is_file()
         )
         unit = stage / "etc/systemd/system/asterinas-desktop-m5-network.service"
+        unit_text = unit.read_text()
         self.assertIn(
             "ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence",
-            unit.read_text(),
+            unit_text,
         )
-        self.assertNotIn("ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS", unit.read_text())
-        self.assertIn("Before=asterinas-desktop-m4.service", unit.read_text())
+        self.assertNotIn("ASTERINAS_DESKTOP_M5_TIMEOUT_SECONDS", unit_text)
+        self.assertIn("Before=asterinas-desktop-m4.service", unit_text)
+        self.assertIn("TimeoutStartSec=45s", unit_text)
+        self.assertIn("SuccessExitStatus=75", unit_text)
+        self.assertIn("Restart=no", unit_text)
+        self.assertNotIn("RemainAfterExit=yes", unit_text)
         self.assertNotIn(
             "After=asterinas-desktop-m4-evidence.service", unit.read_text()
         )
@@ -1998,21 +2003,21 @@ esac
 
     def test_web_network_failure_taxonomy(self) -> None:
         cases = {
-            "link": ("link", "carrier"),
-            "address": ("address", "static-address"),
-            "neighbor": ("neighbor", "neighbor-unusable"),
-            "neighbor-command": ("neighbor", "neighbor-unusable"),
-            "reachability": ("reachability", "icmp-timeout"),
-            "dns": ("dns", "resolve"),
-            "http": ("http", "tcp-connect"),
-            "https-connect": ("https", "tcp-connect"),
-            "https-tls": ("https", "tls"),
-            "baidu-asset": ("baidu-asset", "content"),
-            "repeat": ("repeat", "length"),
-            "repeat-timeout": ("repeat", "timeout"),
-            "medium": ("medium", "length"),
+            "link": ("link", "carrier", 75),
+            "address": ("address", "static-address", 75),
+            "neighbor": ("neighbor", "neighbor-unusable", 75),
+            "neighbor-command": ("neighbor", "neighbor-unusable", 75),
+            "reachability": ("reachability", "icmp-timeout", 75),
+            "dns": ("dns", "resolve", 75),
+            "http": ("http", "tcp-connect", 75),
+            "https-connect": ("https", "tcp-connect", 75),
+            "https-tls": ("https", "tls", 75),
+            "baidu-asset": ("baidu-asset", "content", 1),
+            "repeat": ("repeat", "length", 1),
+            "repeat-timeout": ("repeat", "timeout", 75),
+            "medium": ("medium", "length", 1),
         }
-        for fail_stage, (layer, reason) in cases.items():
+        for fail_stage, (layer, reason, status) in cases.items():
             with self.subTest(fail_stage=fail_stage):
                 environment, console, _, _ = self._web_network_environment(
                     self.directory / f"web-fail-{fail_stage}",
@@ -2027,7 +2032,7 @@ esac
                     text=True,
                 )
 
-                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.returncode, status)
                 self.assertEqual(
                     console.read_text(encoding="utf-8").splitlines()[-1],
                     f"DEBIAN_WEB_NETWORK_FAIL mode=direct "
@@ -2382,8 +2387,82 @@ esac
         ).read_text(encoding="utf-8")
         self.assertIn("LAST_LINK_OUTPUT", source)
         self.assertIn("LAST_ADDRESS_OUTPUT", source)
-        self.assertIn("TimeoutStartSec=180s", service_source)
+        self.assertIn("TimeoutStartSec=45s", service_source)
         self.assertNotIn('timeout "$LINK_PROBE_TIMEOUT_SECONDS" ip', source)
+        self.assertIn(
+            'FIXTURE_CONNECT_TIMEOUT_SECONDS:-1',
+            source,
+        )
+        self.assertIn(
+            '--connect-timeout "$FIXTURE_CONNECT_TIMEOUT_SECONDS"',
+            source,
+        )
+
+    def test_dns_shim_unit_does_not_loop_or_fail_without_a_forwarder(self) -> None:
+        source = BUILD_SCRIPT.read_text(encoding="utf-8")
+        block = source[source.index("asterinas-dns-shim.service"):]
+        block = block[: block.index("[Install]")]
+        # The healthy shim serves forever; oneshot would never finish starting
+        # and would hold basic.target.  Inactive-on-unconfigured comes from
+        # SuccessExitStatus plus Restart=no instead.
+        self.assertIn("Type=simple", block)
+        self.assertNotIn("Type=oneshot", block)
+        self.assertIn("Restart=no", block)
+        self.assertIn("SuccessExitStatus=1 3", block)
+        self.assertNotIn("Restart=always", block)
+        self.assertNotIn("RestartPreventExitStatus", block)
+
+    def test_builder_drops_unsupported_sysctl_keys(self) -> None:
+        stage = self.directory / "sysctl-stage"
+        lib_directory = stage / "usr/lib/sysctl.d"
+        etc_directory = stage / "etc/sysctl.d"
+        lib_directory.mkdir(parents=True)
+        etc_directory.mkdir(parents=True)
+        pid_max = lib_directory / "50-pid-max.conf"
+        pid_max.write_text(
+            "# Debian default\nkernel.pid_max = 4194304\nkeep.me = 1\n",
+            encoding="utf-8",
+        )
+        coredump = lib_directory / "10-coredump-debian.conf"
+        coredump.write_text("kernel.core_pattern=core\n", encoding="utf-8")
+        local = etc_directory / "90-local.conf"
+        local.write_text(
+            "kernel.pid_max=99\n"
+            "kernel.core_pattern=|/bin/false\n"
+            "fs.file-max=1\n",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                """source "$1"
+normalize_unsupported_sysctl_keys "$2"
+""",
+                "builder-sysctl-test",
+                str(BUILD_SCRIPT),
+                str(stage),
+            ],
+            cwd=self.directory,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for path in (pid_max, coredump, local):
+            self.assertNotRegex(
+                path.read_text(encoding="utf-8"),
+                r"(?m)^\s*kernel\.(pid_max|core_pattern)\s*=",
+            )
+        self.assertIn("keep.me = 1", pid_max.read_text(encoding="utf-8"))
+        self.assertIn("fs.file-max=1", local.read_text(encoding="utf-8"))
+        builder = BUILD_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn(
+            'normalize_unsupported_sysctl_keys "$stage"',
+            builder,
+        )
 
     def test_qemu_evidence_uses_dns_and_https_without_ip_or_ping(self) -> None:
         console = self.directory / "qemu-console"
