@@ -55,7 +55,20 @@ fn parse_acpi_arg() -> BootloaderAcpiArg {
 }
 
 fn parse_framebuffer_info() -> Option<BootloaderFramebufferArg> {
-    simple_framebuffer::parse(DEVICE_TREE.get().unwrap())
+    let framebuffer = simple_framebuffer::parse(DEVICE_TREE.get().unwrap());
+    match framebuffer {
+        Some(framebuffer) => early_println!(
+            "RISCV_BOOT_FRAMEBUFFER status=found base={:#x} size={:#x} width={} height={} stride={} format={:?}",
+            framebuffer.address,
+            framebuffer.size,
+            framebuffer.width,
+            framebuffer.height,
+            framebuffer.line_size,
+            framebuffer.pixel_format,
+        ),
+        None => early_println!("RISCV_BOOT_FRAMEBUFFER status=missing"),
+    }
+    framebuffer
 }
 
 fn parse_memory_regions(device_tree_paddr: usize) -> MemoryRegionArray {

@@ -17,6 +17,14 @@ import threading
 import time
 
 from tools.riscv import megrez_boot_menu as menu
+from tools.riscv.megrez_hardware_probe import (
+    PROBE_SPECS,
+    ProbeContractError,
+    classify_probe_timeout,
+    validate_prerequisites,
+    validate_probe_evidence,
+    validate_probe_timeout_evidence,
+)
 from tools.riscv.debian.rootfs.gate_runtime import SerialConsole
 from tools.riscv.megrez_board_session import BoardSession, open_serial
 from tools.riscv.megrez_debug_board import RealBoardOperations, _lock_serial
@@ -61,6 +69,14 @@ def attach(device: str) -> RealRockOsAttestationOperations:
 def menu_path(document: dict) -> str:
     digest = hashlib.sha256(document["extlinux"].encode()).hexdigest()
     return f"/extlinux/asterinas-menu-{digest[:12]}.conf"
+
+
+def _record_probe_recovery(operations, device: str, status: str) -> None:
+    """Append one host-observed recovery marker to the device transcript."""
+
+    operations._log.write(
+        f"ASTERINAS_PROBE_RECOVERY device={device} status={status}\n"
+    )
 
 
 def stage(
@@ -157,10 +173,15 @@ def query_guest(session, command):
     raise AssertionError("guest query attempts exhausted")
 
 
-def desktop_ready(session):
+def desktop_ready(session, *, fbdev_only=False):
     """Acknowledge each short command; detect serial truncation separately."""
     ready = True
-    for command, marker in (
+    checks = [
+        (
+            "test -S /tmp/.X11-unix/X0 && test -c /dev/fb0; echo DISPLAY_RC=$?",
+            "DISPLAY_RC",
+        )
+    ] if fbdev_only else [
         (
             "test -S /tmp/.X11-unix/X0 && test -c /dev/fb0; echo DISPLAY_RC=$?",
             "DISPLAY_RC",
@@ -170,7 +191,8 @@ def desktop_ready(session):
             "DISPLAY=:0 timeout 8 xdotool search --onlyvisible --class firefox; echo WINDOW_RC=$?",
             "WINDOW_RC",
         ),
-    ):
+    ]
+    for command, marker in checks:
         # BoardSession.command enforces U-Boot echo/error rules, which do not
         # apply to Bash's prompt and wrapped readline display.
         response = query_guest(session, command)
@@ -183,14 +205,13 @@ def desktop_ready(session):
 
 
 def watchdog_mode_allowed(mode: str) -> bool:
-    """Return whether watchdog arming is safe for this menu operation.
+    """Return whether a cycle has a bounded recovery guard."""
 
-    The watchdog is a recovery guard for bounded Asterinas cycles only.  It
-    must never be armed for RockOS, fallback, or the interactive desktop
-    entry, where a normal userspace recovery path is required instead.
-    """
-
-    return mode in ("basic", "probe")
+    return (
+        mode in ("basic", "probe", "desktop")
+        or mode in PROBE_SPECS
+        or mode == menu.PHY_DIAGNOSTIC_MODE
+    )
 
 
 def boot_cycle(
@@ -202,21 +223,31 @@ def boot_cycle(
     nonce,
     check_root=False,
     hardware_watchdog=False,
+    firmware_timeout: float | None = None,
 ):
-    if hardware_watchdog and not watchdog_mode_allowed(mode):
-        raise menu.BootManifestError(
-            f"hardware watchdog is not permitted for {mode} cycle"
-        )
+    menu.require(
+        not hardware_watchdog
+        or mode in ("basic", "probe", "desktop")
+        or mode in PROBE_SPECS
+        or mode == menu.PHY_DIAGNOSTIC_MODE,
+        "hardware watchdog is not permitted for this menu mode; restricted to the Basic, desktop, or read-only probe entry",
+    )
+    menu.require(
+        (mode not in PROBE_SPECS and mode != menu.PHY_DIAGNOSTIC_MODE)
+        or hardware_watchdog,
+        "hardware watchdog is required for every device probe",
+    )
     session = operations._require_session()
     os.write(session.fd, b"\x03")
-    session.wait_for_uboot_prompt(45 if hardware_watchdog else 10)
+    initial_firmware_timeout = (
+        firmware_timeout if firmware_timeout is not None else (45 if hardware_watchdog else 10)
+    )
+    session.wait_for_uboot_prompt(initial_firmware_timeout)
     if hardware_watchdog:
-        # This performs clock/reset prerequisite readback, component-ID
-        # validation, writes the bounded timeout, and verifies the armed
-        # control state before any Asterinas entry is selected.
-        RealBoardOperations._arm_hardware_watchdog(
-            session, time.monotonic() + 15
-        )
+        # Arm only after a fresh U-Boot prompt and before sysboot. The helper
+        # performs clock/reset/type/readback checks and fails closed before
+        # loading the guest when the board does not expose the expected WDT.
+        RealBoardOperations._arm_hardware_watchdog(session, time.monotonic() + 10)
     path = menu_path(document)
     started = time.monotonic()
     if mode == "fallback":
@@ -266,11 +297,117 @@ def boot_cycle(
         session.send("3")
         session.wait_for("count=1 status=pass", 100)
         reached = time.monotonic()
-        recovery = session.wait_for_uboot_prompt(120)
+        recovery = session.wait_for_uboot_prompt(
+            firmware_timeout if firmware_timeout is not None else 120
+        )
         menu.require(
             "OpenSBI" in recovery and "U-Boot " in recovery,
             "probe did not produce a fresh firmware epoch",
         )
+    elif mode in PROBE_SPECS:
+        # Device probes are separate menu entries.  They never send a guest
+        # command: Stage1 prints the bounded result and reboots by itself.
+        session.send(str(menu.MODES.index(mode) + 2))
+        # Accept either a completed pass or an explicit fail marker.  The
+        # validator below still requires the full whitelist for pass and a
+        # bounded, recovered failure for fail; waiting only for pass would
+        # turn a safe MMIO timeout into an unclassified host timeout.
+        try:
+            session.wait_for(f"ASTERINAS_PROBE_DONE device={mode} status=", 100)
+        except TimeoutError:
+            # A stalled MMIO transaction can prevent the guest from flushing
+            # PROBE_FAIL before the hardware watchdog fires.  Give the
+            # recovery path its own bounded observation window and retain the
+            # outcome as a failed timeout, never as a qualification pass.
+            recovery = session.wait_for_uboot_prompt(120)
+            menu.require(
+                "OpenSBI" in recovery and "U-Boot " in recovery,
+                "hardware probe timeout did not produce a fresh firmware epoch",
+            )
+            reached = time.monotonic()
+            _record_probe_recovery(operations, mode, "timeout")
+            timeout_result = validate_probe_timeout_evidence(
+                operations._log.getvalue(), mode, nonce
+            )
+            return {
+                "boot_to_ready_seconds": reached - started,
+                "menu_to_ready_seconds": reached - menu_seen,
+                "probe_status": "timeout",
+                "probe_failure": "completion-timeout",
+                "probe_read_offsets": list(timeout_result.read_offsets),
+                "probe_attempt_offsets": list(timeout_result.attempt_offsets),
+                "probe_timeout_phase": classify_probe_timeout(
+                    operations._log.getvalue(), mode, nonce
+                ),
+                "recovery_observed": True,
+            }
+        reached = time.monotonic()
+        recovery = session.wait_for_uboot_prompt(120)
+        menu.require(
+            "OpenSBI" in recovery and "U-Boot " in recovery,
+            "hardware probe did not produce a fresh firmware epoch",
+        )
+        try:
+            probe_result = validate_probe_evidence(
+                operations._log.getvalue(), mode, nonce
+            )
+        except ProbeContractError:
+            _record_probe_recovery(operations, mode, "invalid")
+            raise
+        _record_probe_recovery(operations, mode, probe_result.status)
+        if probe_result.status == "fail":
+            # A recovered probe failure is useful safety evidence, but it is
+            # never a passed qualification or a prerequisite for GMAC.
+            return {
+                "boot_to_ready_seconds": reached - started,
+                "menu_to_ready_seconds": reached - menu_seen,
+                "probe_status": "fail",
+                "probe_read_offsets": list(probe_result.read_offsets),
+                "probe_attempt_offsets": list(probe_result.attempt_offsets),
+                "recovery_observed": True,
+            }
+        return {
+            "boot_to_ready_seconds": reached - started,
+            "menu_to_ready_seconds": reached - menu_seen,
+            "probe_status": "pass",
+            "probe_read_offsets": list(probe_result.read_offsets),
+            "probe_attempt_offsets": list(probe_result.attempt_offsets),
+        }
+    elif mode == menu.PHY_DIAGNOSTIC_MODE:
+        # PHY-only is a separate gate after a corrected GMAC-1 read-only
+        # probe. It does not register the network device or send traffic.
+        session.send(str(menu.MODES.index(mode) + 2))
+        try:
+            session.wait_for("ASTERINAS_GMAC_PHY_DONE status=", 100)
+        except TimeoutError:
+            recovery = session.wait_for_uboot_prompt(120)
+            menu.require(
+                "OpenSBI" in recovery and "U-Boot " in recovery,
+                "PHY diagnostic timeout did not produce a fresh firmware epoch",
+            )
+            reached = time.monotonic()
+            return {
+                "boot_to_ready_seconds": reached - started,
+                "menu_to_ready_seconds": reached - menu_seen,
+                "phy_status": "timeout",
+                "recovery_observed": True,
+            }
+        reached = time.monotonic()
+        recovery = session.wait_for_uboot_prompt(120)
+        menu.require(
+            "OpenSBI" in recovery and "U-Boot " in recovery,
+            "PHY diagnostic did not produce a fresh firmware epoch",
+        )
+        status = (
+            "pass"
+            if "ASTERINAS_GMAC_PHY_DONE status=pass" in operations._log.getvalue()
+            else "fail"
+        )
+        return {
+            "boot_to_ready_seconds": reached - started,
+            "menu_to_ready_seconds": reached - menu_seen,
+            "phy_status": status,
+        }
     elif mode == "basic":
         session.send("2")
         session.wait_for("asterinas-basic# ", 60)
@@ -299,11 +436,23 @@ def boot_cycle(
         # larger observation bound distinct from measured startup latency;
         # extending a test deadline is not a browser performance fix.
         deadline = time.monotonic() + 300
-        while not desktop_ready(session):
+        while not desktop_ready(session, fbdev_only=True):
             menu.require(
                 time.monotonic() < deadline, "desktop readiness deadline expired"
             )
             time.sleep(2)
+        framebuffer = query_guest(
+            session,
+            "test -x /usr/lib/asterinas/desktop-m4-framebuffer-rw && "
+            "/usr/lib/asterinas/desktop-m4-framebuffer-rw --device /dev/fb0; "
+            "rc=$?; echo FB_RW_RC=$rc",
+        )
+        menu.require(
+            "DEBIAN_DESKTOP_M4_FB_RW " in framebuffer
+            and "status=pass" in framebuffer
+            and re.search(r"\nFB_RW_RC=0\r?\n", framebuffer) is not None,
+            "desktop framebuffer write/restore gate failed",
+        )
         response = query_guest(
             session, f'echo DESKTOP_READY:{nonce[:16]}""{nonce[16:]}'
         )
@@ -353,8 +502,22 @@ def main():
     )
     parser.add_argument(
         "--mode",
-        choices=("rockos", "fallback", "basic", "probe", "desktop"),
+        choices=(
+            "rockos",
+            "fallback",
+            "basic",
+            "probe",
+            "desktop",
+            *PROBE_SPECS,
+            menu.PHY_DIAGNOSTIC_MODE,
+        ),
         default="probe",
+    )
+    parser.add_argument(
+        "--prior-result",
+        action="append",
+        type=Path,
+        help="a passed result.json for each required earlier hardware probe",
     )
     parser.add_argument("--address", default="10.100.19.216")
     parser.add_argument("--port", type=int, default=18082)
@@ -362,16 +525,47 @@ def main():
     parser.add_argument(
         "--hardware-watchdog",
         action="store_true",
-        help="arm the verified EIC7700 watchdog for a bounded Basic or Probe cycle",
+        help="arm the verified EIC7700 WDT for a bounded Basic, desktop, or probe cycle",
     )
     parser.add_argument("--from-uboot", action="store_true")
     args = parser.parse_args()
     document = json.loads(args.manifest.read_text())
     menu.validate(document)
-    if args.hardware_watchdog and not watchdog_mode_allowed(args.mode):
-        parser.error(
-            "--hardware-watchdog requires a Basic or read-only probe cycle"
+    if args.hardware_watchdog and (
+        args.action != "cycle"
+        or (
+        args.mode != "basic"
+        and args.mode != "probe"
+        and args.mode != "desktop"
+            and args.mode not in PROBE_SPECS
+            and args.mode != menu.PHY_DIAGNOSTIC_MODE
         )
+    ):
+        parser.error("--hardware-watchdog requires a Basic, desktop, or read-only probe cycle")
+    if (
+        args.action == "cycle"
+        and args.mode == "desktop"
+        and not args.hardware_watchdog
+    ):
+        parser.error("desktop cycle requires --hardware-watchdog")
+    if (
+        args.action == "cycle"
+        and (args.mode in PROBE_SPECS or args.mode == menu.PHY_DIAGNOSTIC_MODE)
+        and not args.hardware_watchdog
+    ):
+        parser.error("device probes require --hardware-watchdog")
+    if args.action == "cycle" and (
+        args.mode in PROBE_SPECS or args.mode == menu.PHY_DIAGNOSTIC_MODE
+    ):
+        completed = set()
+        for path in args.prior_result or ():
+            data = json.loads(path.read_text())
+            if data.get("passed") is True and data.get("recovered") is True:
+                completed.add(data.get("mode"))
+        if args.mode in PROBE_SPECS:
+            validate_prerequisites(args.mode, completed)
+        elif "gmac-1" not in completed:
+            parser.error("gmac-phy requires a passed gmac-1 read-only probe")
     if args.action == "promote":
         if args.evidence is None:
             parser.error("promote requires --evidence")
@@ -416,21 +610,38 @@ def main():
                     args.username,
                 )
             else:
-                result.update(
-                    boot_cycle(
-                        operations,
-                        document,
-                        args.mode,
-                        args.username,
-                        password,
-                        nonce,
-                        args.check_root,
-                        args.hardware_watchdog,
-                    )
+                cycle_result = boot_cycle(
+                    operations,
+                    document,
+                    args.mode,
+                    args.username,
+                    password,
+                    nonce,
+                    args.check_root,
+                    args.hardware_watchdog,
                 )
-        result.update(passed=True, recovered=True)
+                result.update(cycle_result)
+        if result.get("probe_status") in {"fail", "timeout"}:
+            result["error"] = (
+                "probe reported fail"
+                if result["probe_status"] == "fail"
+                else "probe completion timeout"
+            )
+        elif result.get("phy_status") in {"fail", "timeout"}:
+            result["error"] = f"PHY diagnostic {result['phy_status']}"
+        else:
+            result.update(passed=True, recovered=True)
     except (Exception, KeyboardInterrupt) as error:
         result["error"] = str(error) or type(error).__name__
+        if args.action == "cycle" and (
+            args.mode in PROBE_SPECS or args.mode == menu.PHY_DIAGNOSTIC_MODE
+        ):
+            # A failed read is never promoted to passed/recovered, but retain
+            # the independent recovery observation for watchdog diagnostics.
+            transcript = operations._log.getvalue()
+            result["recovery_observed"] = (
+                "OpenSBI" in transcript and "U-Boot " in transcript
+            )
     finally:
         result["elapsed_seconds"] = time.monotonic() - started
         transcript = operations._log.getvalue().encode()

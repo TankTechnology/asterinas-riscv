@@ -6,7 +6,7 @@ use super::TidDirOps;
 use crate::{
     events::IoEvents,
     fs::{
-        file::{mkmod, AccessMode, PerOpenFileOps, StatusFlags},
+        file::{AccessMode, PerOpenFileOps, StatusFlags, mkmod},
         procfs::template::{ProcFile, ProcFileOpsByHandle},
         vfs::{
             file_system::FsFlags,

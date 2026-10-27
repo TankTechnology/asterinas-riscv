@@ -36,6 +36,7 @@ SSD_IMAGE := $(BUILD_DIR)/nvme0n1.img
 XFSTESTS_TEST_IMAGE := $(BUILD_DIR)/xfstests_test.img
 XFSTESTS_SCRATCH_IMAGE := $(BUILD_DIR)/xfstests_scratch.img
 XFSTESTS_DISK_SIZE ?= 12G
+XFSTESTS_FS_TYPE ?= ext2
 
 # Include benchmark, if BENCHMARK is set.
 ifeq ($(BENCHMARK), none)
@@ -196,12 +197,12 @@ $(SSD_IMAGE):
 $(XFSTESTS_TEST_IMAGE):
 	@mkdir -p $(BUILD_DIR)
 	@truncate -s $(XFSTESTS_DISK_SIZE) $(XFSTESTS_TEST_IMAGE)
-	@mkfs.ext2 $(XFSTESTS_TEST_IMAGE)
+	@mkfs -t $(XFSTESTS_FS_TYPE) $(XFSTESTS_TEST_IMAGE)
 
 $(XFSTESTS_SCRATCH_IMAGE):
 	@mkdir -p $(BUILD_DIR)
 	@truncate -s $(XFSTESTS_DISK_SIZE) $(XFSTESTS_SCRATCH_IMAGE)
-	@mkfs.ext2 $(XFSTESTS_SCRATCH_IMAGE)
+	@mkfs -t $(XFSTESTS_FS_TYPE) $(XFSTESTS_SCRATCH_IMAGE)
 
 .PHONY: format
 format:

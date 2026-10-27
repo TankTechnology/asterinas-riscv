@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "profile": "desktop-m4",
+  "files": [
+    {
+      "source": "desktop_m4_session.sh",
+      "destination": "/usr/lib/asterinas/desktop-m4-session",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "desktop_m4_evidence.sh",
+      "destination": "/usr/lib/asterinas/desktop-m4-evidence",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "desktop_m4_framebuffer_probe.py",
+      "destination": "/usr/lib/asterinas/desktop-m4-framebuffer-probe",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "desktop_m4_framebuffer_rw.py",
+      "destination": "/usr/lib/asterinas/desktop-m4-framebuffer-rw",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "desktop_m4_x11_paint.py",
+      "destination": "/usr/lib/asterinas/desktop-m4-x11-paint",
+      "mode": "0755",
+      "create": true
+    },
+    {
+      "source": "desktop_fbdev_qemu.conf",
+      "destination": "/etc/asterinas/display-providers/fbdev/xorg.conf.d/20-asterinas-qemu.conf",
+      "mode": "0644",
+      "create": true
+    },
+    {
+      "source": "desktop_fbdev_no_input.conf",
+      "destination": "/etc/asterinas/display-providers/fbdev/xorg.conf.d/20-asterinas-no-input.conf",
+      "mode": "0644",
+      "create": true
+    }
+  ]
+}

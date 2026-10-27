@@ -227,6 +227,11 @@ impl VmMapping {
         }
     }
 
+    /// Returns whether this mapping is backed by device I/O memory.
+    pub fn is_device(&self) -> bool {
+        matches!(&self.mapped_mem, MappedMemory::Device)
+    }
+
     /// Returns the shared futex backing identity for the address if available.
     pub fn futex_backing(&self, addr: Vaddr) -> Result<Option<(Weak<Vmo>, usize)>> {
         if !self.is_shared {

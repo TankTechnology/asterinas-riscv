@@ -41,6 +41,7 @@ class GateConfig:
     boot_timeout: float = 120.0
     command_timeout: float = 30.0
     cleanup_timeout: float = 10.0
+    root_fs: str = "ext2"
 
 
 class GateFailure(RuntimeError):
@@ -462,6 +463,7 @@ def parse_gate_args(arguments: list[str] | None = None) -> GateConfig:
     parser.add_argument("--boot-timeout", type=_positive_timeout, default=120.0)
     parser.add_argument("--command-timeout", type=_positive_timeout, default=30.0)
     parser.add_argument("--cleanup-timeout", type=_positive_timeout, default=10.0)
+    parser.add_argument("--root-fs", choices=("ext2", "ext4"), default="ext2")
     values = parser.parse_args(arguments)
     return GateConfig(
         values.kernel,
@@ -479,6 +481,7 @@ def parse_gate_args(arguments: list[str] | None = None) -> GateConfig:
         values.boot_timeout,
         values.command_timeout,
         values.cleanup_timeout,
+        values.root_fs,
     )
 
 
