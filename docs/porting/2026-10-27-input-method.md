@@ -96,3 +96,34 @@ tty 问题更靠近协议层。
 - 主机 console：`target/im-probe*/console.txt`（本轮结束后已清理大镜像，console 保留）
 - 门禁原始结果：`target/matrix-sockopt/matrix.tsv` 的 `INPUT_METHOD fail engine--no-text`
 - 未 push。
+
+## 8. 2026-10-27 晚：交互式复测（常驻 VM + 逐条命令）
+
+方法改变：不再把整段探测写死进启动脚本，而是起一个常驻 VM、串口接 unix socket，
+逐条登录/敲命令、看输出再决定下一步。这一步本身也暴露了问题：
+
+- **登录控制台是 ttyS0，不是 hvc0**：门禁 wrapper 会把 `console=hvc0` 换成
+  `console=ttyS0 earlycon` 并接 `-serial` socket；按 hvc0 起 VM 时输入是死路
+  （tty 回显但 getty 不响应）。
+- **内核 bug（已修 `8306c8fc7`）**：devpts 创建的 pty slave 一律 `root:root 0620`，
+  普通用户 `openpty()` 直接 `out of pty devices`，xterm 子进程
+  `open() failed on ptsname: Permission denied`。修复后 slave 归打开 ptmx 的用户
+  （实测 `1000:1000 0620`），`setsid()` 后按名字重开 slave 也成功。
+- **内核语义不符（已修 `9c6c85663`）**：无控制终端时 `open("/dev/tty")` 返回
+  `ENOTTY`，Linux 返回 `ENXIO`。修复后 xterm 的第一条错误从
+  `open ttydev: Inappropriate ioctl for device` 变成 `No such device or address`。
+- **仍未解决：xterm 不 map**。修复后 xterm 仍 `Map State: IsUnMapped`，
+  错误变成 `open ttydev: ENXIO` 后反复 `Input/output error`。
+  **去掉 `XMODIFIERS` 再起 xterm 结果相同** ⇒ 与输入法/XIM 无关，是 xterm 自身的
+  tty 建立路径。
+- **对照**：用 python 复刻 `openpty → setsid → open(slave) → TIOCSCTTY` 全部成功
+  （`TIOCSCTTY=0`），说明基本 pty 语义没问题，差异在 xterm 特有的调用序
+  （仍未定位到具体调用）。
+- **XIM 侧仍未解决**：自写客户端 `XOpenIM` 成功、`XCreateIC` 阻塞 ≥15 s（§3）。
+- **测量工具问题**：在非 root 交互 shell 里 `strace`（哪怕 `strace true`）会把
+  shell 卡住、Ctrl-C 也救不回来；门禁里 root 的 `strace` 正常。这一点单独待查。
+
+结论不变：**`INPUT_METHOD` 仍为 fail，不宣称修复**。
+下一步优先用 `LD_PRELOAD` 记录 xterm 的 open/ioctl（绕过 strace），
+再判断第二处 tty 不兼容是内核还是 xterm 配置；XIM 的 `XCreateIC` 阻塞则要
+针对 select/poll 等待做单独验证。
