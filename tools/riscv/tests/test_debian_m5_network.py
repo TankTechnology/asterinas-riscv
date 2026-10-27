@@ -613,6 +613,10 @@ configure_and_normalize_rootfs
         )
         self.assertIn("Type=simple", safe_reboot_unit.read_text(encoding="utf-8"))
         self.assertNotIn("Type=oneshot", safe_reboot_unit.read_text(encoding="utf-8"))
+        self.assertNotIn(
+            "ASTERINAS_SAFE_REBOOT_AFTER",
+            safe_reboot_unit.read_text(encoding="utf-8"),
+        )
         self.assertIn(
             "WantedBy=multi-user.target asterinas-debug-console.target",
             safe_reboot_unit.read_text(encoding="utf-8"),
@@ -1478,6 +1482,27 @@ configure_and_normalize_rootfs
         self.assertFalse(
             any("ASTERINAS_USERSPACE_REBOOT_SYNC_DONE" in line for line in console_lines)
         )
+
+    def test_safe_reboot_defaults_off_and_treats_zero_as_off(self) -> None:
+        cmdline = self.directory / "safe-reboot-default-cmdline"
+        cmdline.write_text("console=ttyS0\n", encoding="utf-8")
+        for value in (None, "0"):
+            environment = os.environ.copy()
+            environment.pop("ASTERINAS_SAFE_REBOOT_AFTER", None)
+            environment["ASTERINAS_SAFE_REBOOT_CMDLINE_PATH"] = str(cmdline)
+            if value is not None:
+                environment["ASTERINAS_SAFE_REBOOT_AFTER"] = value
+            result = subprocess.run(
+                ["/bin/bash", str(SAFE_REBOOT_SCRIPT)],
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(result.stderr, "")
 
     def _fake_network_tools(
         self, *, address: str, directory: Path | None = None
