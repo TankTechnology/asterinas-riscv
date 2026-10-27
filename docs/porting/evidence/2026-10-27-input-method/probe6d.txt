@@ -1,0 +1,9 @@
+IM7 xorg=yes gcc=yes xlib=yes
+IM7 compile=ok
+IM7 fcitx alive=1 engine=[]
+IM7 after_o engine=[] xim=[XIM_SERVERS(ATOM) = @server=fcitx]
+IM7 FT before_openim
+IM7 FT after_openim im=0x55555561da00
+IM7 FT styles=5 chosen=0x408
+IM7 FT before_createic
+IM7 done
