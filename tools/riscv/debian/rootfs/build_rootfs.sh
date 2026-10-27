@@ -1742,6 +1742,35 @@ polkit.addRule(function(action, subject) {
 });
 EOF
     chmod 0644 -- "$stage/etc/polkit-1/rules.d/49-asterinas-console-power.rules"
+    # The board has no RTC, and a fixed stale clock leaks into every boot.  Seed
+    # it from the reproducible image build timestamp; an online sync may replace
+    # it later.  The marker says whether the value was applied or skipped.
+    install -D -m 0755 -- "$script_directory/megrez_clock_bootstrap.sh" \
+        "$stage/usr/lib/asterinas/megrez-clock-bootstrap"
+    printf '%s\n' "$SOURCE_DATE_EPOCH" >"$stage/etc/asterinas-build-time"
+    chmod 0644 -- "$stage/etc/asterinas-build-time"
+    cat >"$stage/etc/systemd/system/asterinas-clock-bootstrap.service" <<'EOF'
+[Unit]
+Description=Seed the guest clock from the image build time
+DefaultDependencies=no
+After=local-fs.target
+Before=basic.target
+ConditionPathExists=/etc/asterinas-build-time
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/asterinas/megrez-clock-bootstrap
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=basic.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/asterinas-clock-bootstrap.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    ln -sfn ../asterinas-clock-bootstrap.service \
+        "$stage/etc/systemd/system/basic.target.wants/asterinas-clock-bootstrap.service"
     # sudo (and interactive tools) allocate a pty; debootstrap leaves fstab
     # unconfigured, so /dev/pts is never mounted and sudo fails with
     # "unable to allocate pty". Mount devpts like a normal Debian installation.

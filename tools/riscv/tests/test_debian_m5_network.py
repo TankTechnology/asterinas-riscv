@@ -64,6 +64,7 @@ DESKTOP_M4_EVIDENCE_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_evidence.sh"
 )
 SAFE_REBOOT_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_safe_reboot.sh"
+CLOCK_BOOTSTRAP_SCRIPT = REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_clock_bootstrap.sh"
 MEGREZ_TCP_PROBE_SOURCE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/megrez_tcp_probe_init.c"
 )
@@ -858,6 +859,24 @@ configure_and_normalize_rootfs
                 / "asterinas-desktop-m4.service"
             ).is_symlink()
         )
+        build_time = stage / "etc/asterinas-build-time"
+        self.assertEqual(build_time.read_text(encoding="utf-8"), "1704067200\n")
+        clock_unit = stage / "etc/systemd/system/asterinas-clock-bootstrap.service"
+        clock_text = clock_unit.read_text(encoding="utf-8")
+        self.assertIn(
+            "ExecStart=/usr/lib/asterinas/megrez-clock-bootstrap", clock_text
+        )
+        self.assertIn("ConditionPathExists=/etc/asterinas-build-time", clock_text)
+        self.assertTrue(
+            (
+                stage
+                / "etc/systemd/system/basic.target.wants"
+                / "asterinas-clock-bootstrap.service"
+            ).is_symlink()
+        )
+        clock_script = stage / "usr/lib/asterinas/megrez-clock-bootstrap"
+        self.assertEqual(clock_script.read_bytes(), CLOCK_BOOTSTRAP_SCRIPT.read_bytes())
+        self.assertEqual(stat.S_IMODE(clock_script.stat().st_mode), 0o755)
 
     def test_safe_reboot_uses_uptime_and_syncs_before_reboot(self) -> None:
         fake_bin = self.directory / "safe-reboot-bin"
