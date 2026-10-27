@@ -1,0 +1,36 @@
+FF S_t4: 195:55 
+FF S_t4_procs=1 t4_sum=55
+FF S_t7: 195:70 
+FF S_t7_sum=69
+FF c_rc=124 err=0
+FF c_lines=78
+FF c_total 100.00    0.249000         103      2406       370 total
+FF cl_rc=124 err=0
+FF cl_lines=30 ok=10 err=0
+FF cl_callers=11 cloned=10
+FF cl_clone=4 cl_clone3=6
+FF cl_lines_raw:
+FF cl_exits: 7 sig_exits: 4
+FF pt_rc=124 err=0
+FF pt_threads=10 rseq=3 set_robust_list=11 mmap=440
+FF pt_tid=495 rseq=0 robust=1 mmap=1 total=3
+FF pt_tid=487 rseq=0 robust=1 mmap=1 total=4
+FF pt_tid=496 rseq=0 robust=1 mmap=1 total=3
+FF pt_tid=491 rseq=0 robust=1 mmap=1 total=4
+FF pt_tid=492 rseq=1 robust=1 mmap=31 total=38
+FF pt_tid=486 rseq=1 robust=2 mmap=382 total=398
+FF pt_threads_with_robust=10 pt_threads_with_rseq=3
+FF pt_rseq_ok=0 pt_rseq_enosys=3
+FF pt_tid_sample1=485
+FF pt_tid_sample2=487
+FF lf_rc=124 err=0
+FF short_lt10ms=0
+FF short_lt100ms=0
+FF short_lt500ms=2
+FF life child=533 0.128s
+FF life child=540 0.248s
+FF life child=535 0.603s
+FF life child=537 1.334s
+FF life child=536 1.557s
+FF longest child=536 1.557s
+FF lf_lines=30

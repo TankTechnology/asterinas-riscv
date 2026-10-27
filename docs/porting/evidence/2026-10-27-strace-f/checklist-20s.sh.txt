@@ -1,0 +1,52 @@
+#!/bin/sh
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export DISPLAY=:0
+export HOME=/tmp
+export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
+export MESA_LOADER_DRIVER_OVERRIDE=swrast
+FF=$(command -v firefox-esr 2>/dev/null || echo NA)
+W=/var/tmp/ff20
+rm -rf "$W"; mkdir -p "$W"
+mkdir -p /tmp/.X11-unix
+env MESA_LOADER_DRIVER_OVERRIDE=kms_swrast LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=softpipe \
+    /usr/lib/xorg/Xorg :0 -noreset -nolisten tcp -config /etc/X11/xorg-noudev.conf \
+    >"$W/xorg.log" 2>&1 &
+waited=0
+while [ ! -S /tmp/.X11-unix/X0 ] && [ $waited -lt 40 ]; do sleep 1; waited=$((waited+1)); done
+echo "FF20 xorg_ready=$([ -S /tmp/.X11-unix/X0 ] && echo yes || echo no)"
+echo "FF20 firefox_bin=$FF"
+if ! command -v strace >/dev/null 2>&1; then
+    timeout 240 apt-get update >"$W/apt.log" 2>&1 || true
+    timeout 300 apt-get install -y strace >>"$W/apt.log" 2>&1 || true
+fi
+echo "FF20 strace_bin=$(command -v strace 2>/dev/null || echo NA)"
+kill_ff() { pkill -9 -x firefox-esr 2>/dev/null; pkill -9 -x firefox 2>/dev/null; sleep 1; }
+snap() { # label
+    echo "FF20 $1_procs=$(pgrep -x firefox-esr | wc -l) $1_sum=$(for p in $(pgrep -x firefox-esr); do awk '/^Threads:/{s+=$2} END{print s}' /proc/$p/status 2>/dev/null; done | awk '{s+=$1} END{print s}')"
+}
+rm -rf /tmp/ffsP; mkdir -p /tmp/ffsP
+"$FF" --profile /tmp/ffsP about:blank >"$W/P.out" 2>&1 &
+sleep 4;  snap t4
+sleep 6;  snap t10
+sleep 5;  snap t15
+kill_ff
+
+rm -rf /tmp/ffsC; mkdir -p /tmp/ffsC
+strace -f -c -o "$W/c20.txt" timeout 20 "$FF" --profile /tmp/ffsC about:blank >"$W/c20.out" 2>&1
+echo "FF20 c_rc=$?"
+grep -a ' total$' "$W/c20.txt" | sed 's/^/FF20 c_total /'
+grep -aE ' (clone|clone3)$' "$W/c20.txt" | sed 's/^/FF20 c_clone_row /'
+echo "--- FF20 c20_begin ---"; sed -n '1,200p' "$W/c20.txt" | sed 's/^/FF20   /'; echo "--- FF20 c20_end ---"
+kill_ff
+
+rm -rf /tmp/ffsK; mkdir -p /tmp/ffsK
+strace -f -e trace=clone,clone3 -o "$W/cl20.txt" timeout 20 "$FF" --profile /tmp/ffsK about:blank >"$W/cl20.out" 2>&1
+echo "FF20 cl_rc=$?"
+echo "FF20 cl_lines=$(wc -l <"$W/cl20.txt") ok=$(grep -ac ' = [0-9]' "$W/cl20.txt") err=$(grep -ac '= -1' "$W/cl20.txt")"
+echo "FF20 cl_clone=$(grep -acE '^[0-9]+ +clone\(' "$W/cl20.txt") cl_clone3=$(grep -acE '^[0-9]+ +clone3\(' "$W/cl20.txt")"
+echo "FF20 cl_tids=$(awk '{print $1}' "$W/cl20.txt" | sort -u | wc -l) cloned=$(grep -aoE '\) = [0-9]+' "$W/cl20.txt" | grep -oE '[0-9]+' | sort -u | wc -l)"
+echo "FF20 cl_exits=$(grep -ac '+++ exited' "$W/cl20.txt")"
+echo "FF20 cl_first: $(grep -aE 'clone3?\(' "$W/cl20.txt" | head -3 | cut -c1-150 | tr '\n' '|')"
+echo "FF20 done"
+echo "DAILY_FF20=ok"; echo "DAILY_DONE=ok"

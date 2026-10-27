@@ -1,0 +1,110 @@
+#!/bin/sh
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export DISPLAY=:0
+export HOME=/tmp
+export LIBGL_ALWAYS_SOFTWARE=1
+export GALLIUM_DRIVER=llvmpipe
+export MESA_LOADER_DRIVER_OVERRIDE=swrast
+FF=$(command -v firefox-esr 2>/dev/null || command -v firefox 2>/dev/null || echo NA)
+W=/var/tmp/ff
+rm -rf "$W"; mkdir -p "$W"
+mkdir -p /tmp/.X11-unix
+env MESA_LOADER_DRIVER_OVERRIDE=kms_swrast LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=softpipe \
+    /usr/lib/xorg/Xorg :0 -noreset -nolisten tcp -config /etc/X11/xorg-noudev.conf \
+    >"$W/xorg.log" 2>&1 &
+waited=0
+while [ ! -S /tmp/.X11-unix/X0 ] && [ $waited -lt 40 ]; do sleep 1; waited=$((waited+1)); done
+echo "FF xorg_ready=$([ -S /tmp/.X11-unix/X0 ] && echo yes || echo no) waited=$waited"
+echo "FF firefox_bin=$FF"
+echo "FF ff_version=$("$FF" --version 2>&1 | head -1)"
+if ! command -v strace >/dev/null 2>&1; then
+    echo "FF strace_missing=1 installing"
+    timeout 240 apt-get update >"$W/apt.log" 2>&1 || true
+    timeout 300 apt-get install -y strace >>"$W/apt.log" 2>&1 || true
+fi
+echo "FF strace_bin=$(command -v strace 2>/dev/null || echo NA) $(strace -V 2>&1 | head -1)"
+
+kill_ff() { pkill -9 -x firefox-esr 2>/dev/null; pkill -9 -x firefox 2>/dev/null; sleep 1; }
+
+# S: plain run, /proc thread snapshot (no strace attached)
+rm -rf /tmp/ffsS; mkdir -p /tmp/ffsS
+"$FF" --profile /tmp/ffsS about:blank >"$W/S.out" 2>&1 &
+SPID=$!
+sleep 4
+echo "FF S_t4: $(for p in $(pgrep -x firefox-esr 2>/dev/null | head -8); do printf '%s:%s ' "$p" "$(awk '/^Threads:/{print $2}' /proc/$p/status 2>/dev/null)"; done)"
+echo "FF S_t4_procs=$(pgrep -x firefox-esr | wc -l) t4_sum=$(for p in $(pgrep -x firefox-esr); do awk '/^Threads:/{s+=$2} END{print s}' /proc/$p/status 2>/dev/null; done | awk '{s+=$1} END{print s}')"
+sleep 3
+echo "FF S_t7: $(for p in $(pgrep -x firefox-esr 2>/dev/null | head -8); do printf '%s:%s ' "$p" "$(awk '/^Threads:/{print $2}' /proc/$p/status 2>/dev/null)"; done)"
+echo "FF S_t7_sum=$(for p in $(pgrep -x firefox-esr); do awk '/^Threads:/{s+=$2} END{print s}' /proc/$p/status 2>/dev/null; done | awk '{s+=$1} END{print s}')"
+kill_ff
+
+run() { # tag strace-args...
+    tag=$1; shift
+    rm -rf "/tmp/ffs$tag"; mkdir -p "/tmp/ffs$tag"
+    strace -f "$@" -o "$W/$tag.txt" \
+        timeout 8 "$FF" --profile "/tmp/ffs$tag" about:blank >"$W/$tag.out" 2>&1
+    echo "FF ${tag}_rc=$? err=$(grep -ac 'No child processes' "$W/$tag.txt")"
+    kill_ff
+}
+
+# A: -c summary (timeout inside so the tracee exits on its own)
+run c -c
+echo "FF c_lines=$(wc -l <"$W/c.txt")"
+echo "--- FF c_summary_begin ---"
+sed -n '1,200p' "$W/c.txt" | sed 's/^/FF   /'
+echo "--- FF c_summary_end ---"
+grep -a 'total' "$W/c.txt" | tail -1 | sed 's/^/FF c_total /'
+awk '$1!="total" && $1 ~ /^[0-9]/ && $4 ~ /^[0-9]+$/ {print $4, $6}' "$W/c.txt" | sort -nr | head -10 | sed 's/^/FF topcount /'
+
+# B: clone/clone3 only
+run cl -e trace=clone,clone3
+echo "FF cl_lines=$(wc -l <"$W/cl.txt") ok=$(grep -ac ' = [0-9]' "$W/cl.txt") err=$(grep -ac '= -1' "$W/cl.txt")"
+echo "FF cl_callers=$(awk '{print $1}' "$W/cl.txt" | sort -u | wc -l) cloned=$(grep -aoE '\) = [0-9]+' "$W/cl.txt" | grep -oE '[0-9]+' | sort -u | wc -l)"
+echo "FF cl_clone=$(grep -acE '^[0-9]+ +clone\(' "$W/cl.txt") cl_clone3=$(grep -acE '^[0-9]+ +clone3\(' "$W/cl.txt")"
+echo "FF cl_lines_raw:"; grep -aE 'clone3?\(' "$W/cl.txt" | head -5 | cut -c1-210 | sed 's/^/FF   /'
+echo "FF cl_exits: $(grep -ac '+++ exited' "$W/cl.txt") sig_exits: $(grep -ac '+++ killed' "$W/cl.txt")"
+
+# C: per-thread rseq/set_robust_list/mmap
+run pt -e trace=rseq,set_robust_list,mmap,munmap
+awk '{n=$2; sub(/\(.*/, "", n); if (n=="rseq") r[$1]++; else if (n=="set_robust_list") s[$1]++; else if (n=="mmap") m[$1]++; t[$1]++} END {
+  nr=0; ns=0; nm=0; nt=0; for (k in t) {nt++; nr+=r[k]; ns+=s[k]; nm+=m[k]}
+  printf "FF pt_threads=%d rseq=%d set_robust_list=%d mmap=%d\n", nt, nr, ns, nm
+  c=0; for (k in t) { if (c<6) { printf "FF pt_tid=%s rseq=%d robust=%d mmap=%d total=%d\n", k, r[k], s[k], m[k], t[k]; c++ } }
+}' "$W/pt.txt"
+echo "FF pt_threads_with_robust=$(awk '$2 ~ /^set_robust_list\(/ {print $1}' "$W/pt.txt" | sort -u | wc -l) pt_threads_with_rseq=$(awk '$2 ~ /^rseq\(/ {print $1}' "$W/pt.txt" | sort -u | wc -l)"
+echo "FF pt_rseq_ok=$(grep -ac '^[0-9]* *rseq(.*) = 0' "$W/pt.txt") pt_rseq_enosys=$(grep -ac 'rseq(.*) = -1 ENOSYS' "$W/pt.txt")"
+S1=$(awk '$2 ~ /^mmap\(/ {print $1; exit}' "$W/pt.txt")
+S2=$(awk -v a="$S1" '$1!=a {print $1}' "$W/pt.txt" | sort -u | sed -n '2p')
+echo "FF pt_tid_sample1=$S1"; grep -a "^$S1 " "$W/pt.txt" | head -5 | cut -c1-180 | sed 's/^/FF   s1 /'
+echo "FF pt_tid_sample2=$S2"; grep -a "^$S2 " "$W/pt.txt" | head -5 | cut -c1-180 | sed 's/^/FF   s2 /'
+
+# D: thread lifetimes
+run lf -tt -e trace=clone,clone3,exit,exit_group
+python3 - "$W/lf.txt" <<'PY' 2>&1 | sed 's/^/FF /'
+import re, sys
+start, exited = {}, {}
+for line in open(sys.argv[1], errors="replace"):
+    m = re.match(r'^(\d+)\s+(\d\d:\d\d:\d\d\.\d+)\s+(clone3?|exit|exit_group)\(', line)
+    if not m:
+        continue
+    tid, ts, sc = m.groups()
+    h, mi, s = ts.split(':')
+    t = int(h)*3600 + int(mi)*60 + float(s)
+    if sc.startswith('clone'):
+        r = re.search(r'\)\s*=\s*(-?\d+)', line)
+        if r and int(r.group(1)) > 0:
+            start[r.group(1)] = t
+    else:
+        exited[tid] = t
+life = sorted((exited[c] - t0, c) for c, t0 in start.items() if c in exited)
+print("clones_ok=%d exits_seen=%d lifetimes_known=%d" % (len(start), len(exited), len(life)))
+for thr in (0.01, 0.1, 0.5):
+    print("short_lt%gms=%d" % (thr*1000, sum(1 for d, _ in life if d < thr)))
+for d, c in life[:8]:
+    print("life child=%s %.3fs" % (c, d))
+if life:
+    print("longest child=%s %.3fs" % (life[-1][1], life[-1][0]))
+PY
+echo "FF lf_lines=$(wc -l <"$W/lf.txt")"
+echo "FF done"
+echo "DAILY_FF=ok"; echo "DAILY_DONE=ok"
