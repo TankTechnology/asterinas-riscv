@@ -39,29 +39,39 @@ P3 before=44 after=1995 delta_10s=1951   →  ~97.6 ticks/s/CPU
 
 若按 1000 Hz 计数，应约为 20000。
 
-### 2.2 跑 Debian 的 feat 内核：进程级已修，全局行仍 1000 Hz
+### 2.2 跑 Debian 的 feat 内核：修复前后
 
-同一份 Debian 镜像（4 vCPU）上：
+同一份 Debian 镜像（4 vCPU）上，修复前：
 
 ```
 P3 cpus=4 before=48128 after=87489 delta10s=39361 per_cpu_hz=984   (全局 cpu 行)
 P3proc pid=111 ticks_5s=501                                        (单进程 5 s)
 ```
 
-即：
+- `/proc/<pid>/stat` 的 utime/stime 已经是 USER_HZ=100（5 s 忙循环 = 501
+  ticks），feat 的 `0afe3b2ee` 生效；
+- `/proc/stat` 的全局/每 CPU 行仍是 1000 Hz（约 984 ticks/s/CPU）。
 
-- **`/proc/<pid>/stat` 的 utime/stime 已经是 USER_HZ=100**（5 s 忙循环 = 501
-  ticks），feat 分支的 `0afe3b2ee` 生效；
-- **`/proc/stat` 的全局/每 CPU 行仍是 1000 Hz**（约 984 ticks/s/CPU），feat 的
-  `kernel/core/src/fs/fs_impls/procfs/stat.rs` 还没有做 `jiffies → USER_HZ` 的
-  换算。
+修复：`kernel/core/src/fs/fs_impls/procfs/stat.rs` 给 20 个 cpu-time 字段加了
+与 `/proc/<pid>/stat` 相同的 `jiffies_to_user_ticks`（`×100 / TIMER_FREQ`），
+commit `e52c2ce4f`（本地分支 `fix/proc-stat-user-hz-on-feat`，基于
+feat/drm-virtio-gpu；因为它的祖先就是那 205 个未推送的 DRM 提交，按约定不推）。
 
-影响：读全局 cpu 行算 CPU 占用率的脚本会放大 10 倍；`top` 的进程列正常。
-修复点与 main 的 `a73b65622` 相同（`jiffies_to_clock_ticks`），但这段代码只在
-feat 的 `kernel/core` 里；main 的 `kernel/src` 不能引导 Debian 镜像（缺
-devtmpfs 挂载与 root-init，见 `docs/porting/2026-10-28-sem-undo.md` §3 与
-`main-kernel-cannot-boot-debian` 记录）。因此这条修复的落点取决于 Debian
-内核何时回到 main：在 main 上已经正确，feat 上还差全局行的换算。
+修复后同一镜像、同一 10 s 窗口：
+
+```
+P3FIX cpus=4 before=5149 after=9092 delta10s=3943 per_cpu_hz=98     (全局 cpu 行)
+P3FIX proc_ticks_5s=499                                             (单进程 5 s)
+DESKTOP_UP                                                          (桌面正常)
+```
+
+即全局/每 CPU 行回到 **98.6 ticks/s/CPU**（100 Hz），进程级保持 100 Hz，桌面
+仍然正常启动。至此外部脚本读 `/proc/stat` 不再把 CPU 占用率放大 10 倍。
+
+main 的 `kernel/src` 早已正确（§2.1），feat 的这处修复留在
+`kernel/core`；Debian 支持迁回 main 时两者自然合一（main 目前还不能引导
+Debian：缺 devtmpfs 挂载与 root-init，见 `docs/porting/2026-10-28-sem-undo.md`
+§3）。
 
 ## 3. P4
 
