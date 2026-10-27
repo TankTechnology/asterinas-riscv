@@ -1,0 +1,16 @@
+SG mtu_discover_default PASS errno=0 default=1 (linux default 1)
+SG mtu_discover_0 PASS set_errno=0 get_errno=0 got=0
+SG mtu_discover_1 PASS set_errno=0 get_errno=0 got=1
+SG mtu_discover_2 PASS set_errno=0 get_errno=0 got=2
+SG mtu_discover_3 PASS set_errno=0 get_errno=0 got=3
+SG mtu_discover_4 PASS set_errno=0 get_errno=0 got=4
+SG mtu_discover_5 PASS set_errno=0 get_errno=0 got=5
+SG mtu_discover_reject_6 PASS set_errno=22 (want EINVAL=22)
+SG mtu_discover_reject_-1 PASS set_errno=22 (want EINVAL=22)
+SG v6_sol_ip_accepted_linux_parity PASS set_errno=0 get_errno=0 got=1 (linux accepts SOL_IP on v6)
+SG ext_ack_default PASS errno=0 default=0 (linux default 0)
+SG ext_ack_set_1 PASS set_errno=0 get_errno=0 got=1
+SG ext_ack_set_0 PASS set_errno=0 get_errno=0 got=0
+SG ext_ack_set_2 PASS set_errno=0 get_errno=0 got=1
+SG ext_ack_set_-1 PASS set_errno=0 get_errno=0 got=1
+SG RESULT all PASS

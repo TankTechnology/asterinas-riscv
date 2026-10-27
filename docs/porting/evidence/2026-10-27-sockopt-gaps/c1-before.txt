@@ -1,0 +1,18 @@
+SG compile=ok
+SG mtu_discover_default FAIL errno=92 default=-1 (linux default 1)
+SG mtu_discover_0 FAIL set_errno=92 get_errno=92 got=-1
+SG mtu_discover_1 FAIL set_errno=92 get_errno=92 got=-1
+SG mtu_discover_2 FAIL set_errno=92 get_errno=92 got=-1
+SG mtu_discover_3 FAIL set_errno=92 get_errno=92 got=-1
+SG mtu_discover_4 FAIL set_errno=92 get_errno=92 got=-1
+SG mtu_discover_5 FAIL set_errno=92 get_errno=92 got=-1
+SG mtu_discover_reject_6 FAIL set_errno=92 (want EINVAL=22)
+SG mtu_discover_reject_-1 FAIL set_errno=92 (want EINVAL=22)
+SG v6_sol_ip_accepted_linux_parity FAIL set_errno=92 get_errno=92 got=-1 (linux accepts SOL_IP on v6)
+SG ext_ack_default FAIL errno=92 default=-1 (linux default 0)
+SG ext_ack_set_1 FAIL set_errno=92 get_errno=92 got=-1
+SG ext_ack_set_0 FAIL set_errno=92 get_errno=92 got=-1
+SG ext_ack_set_2 FAIL set_errno=92 get_errno=92 got=-1
+SG ext_ack_set_-1 FAIL set_errno=92 get_errno=92 got=-1
+SG RESULT all FAIL failures=15
+SG exit=1

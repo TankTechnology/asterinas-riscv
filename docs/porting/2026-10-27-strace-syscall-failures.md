@@ -70,7 +70,7 @@ curl 7 / dig 9 / ss 0 / lsof 1 / python 1 / tar 2 / xz 0 / vim 0 / top 0`。
 
 | 项 | 工具数 | 原始行 | 判断依据 |
 |---|---|---|---|
-| `rseq` | 12 | `rseq(0xADDR, 0xADDR, 0, 0xADDR) = -1 ENOSYS` | `kernel/core/src/syscall/rseq.rs:12-25` 是**显式桩**，注释说明「Debian libc 启动时探测 rseq，这里返回 Linux 的 feature-detection 错误」。glibc 收到 ENOSYS 后永久禁用 rseq（上一轮 Firefox 观测到只有前 3 个线程尝试、之后不再调用），**无用户可见失败** |
+| `rseq` | 12 | `rseq(0xADDR, 0xADDR, 0, 0xADDR) = -1 ENOSYS` | `kernel/core/src/syscall/rseq.rs:12-25` 是**显式桩**，注释说明「Debian libc 启动时探测 rseq，这里返回 Linux 的 feature-detection 错误」。**更正（2026-10-27 晚）**：x86_64 的 `arch/x86.rs` 没有登记 rseq(334)，实际走未知 syscall 路径（同样返回 ENOSYS，另打一条 WARN）；桩只对 generic 架构（RISC-V 的 293）生效，详见 `2026-10-27-sockopt-gaps.md` §4。glibc 收到 ENOSYS 后永久禁用 rseq（上一轮 Firefox 观测到只有前 3 个线程尝试、之后不再调用），**无用户可见失败** |
 | `membarrier` | 1 | `membarrier(MEMBARRIER_CMD_QUERY, 0) = -1 ENOSYS` | 内核无 membarrier。调用方（dig 进程树，未进一步归因）探测失败后走回退路径——**本轮只确认没有观察到因此失败**，未验证具体回退实现 |
 | `io_uring_setup` | 1 | `io_uring_setup(256, {flags=0, ...}) = -1 ENOSYS` | 内核无 io_uring（`anon_inodefs.rs:72` 注释也把它列在「仅部分成员」里）。调用方是 dig 进程树中的某个组件（未归因）；dig 最终 rc=9 的原因是 `127.0.0.1` 没有 DNS 服务（`no servers could be reached`），不是 io_uring 失败 |
 | `landlock_create_ruleset` | 1 | `landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION) = -1 ENOSYS` | xz 用 `LANDLOCK_CREATE_RULESET_VERSION` 探测沙箱能力（参数即证据）；ENOSYS 后 xz 仍正常输出 `--version`（rc=0），说明该探针失败不影响功能 |

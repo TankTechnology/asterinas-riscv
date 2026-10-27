@@ -1,0 +1,5 @@
+# 7-domain matrix (default checklist, kernel with the two sockopts)
+# panic=0, allocation failed=0
+DAILY_STAB_DONE uptime=2646.66
+DAILY_SUSPEND=ok woke-up-disk-and-io-ok
+DAILY_DONE=ok
