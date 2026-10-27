@@ -17,7 +17,7 @@ use crate::{
         },
     },
     prelude::*,
-    process::{Gid, Uid},
+    process::{Gid, Uid, posix_thread::AsPosixThread},
 };
 
 /// Same major number with Linux, the minor number is the index of slave.
@@ -34,13 +34,24 @@ pub(crate) struct PtySlaveInode {
 impl PtySlaveInode {
     pub(crate) fn new(device: Arc<PtySlave>, fs: Weak<DevPts>) -> Arc<Self> {
         let devpts = fs.upgrade().unwrap();
-        let metadata = Metadata::new_device(
+        let mut metadata = Metadata::new_device(
             device.index() as u64 + FIRST_SLAVE_INO,
             mkmod!(u+rw, g+w),
             BLOCK_SIZE,
             device.as_ref(),
             devpts.sb().container_dev_id,
         );
+        // Linux gives a new pty slave to the user that opened `ptmx`; the group
+        // comes from the devpts mount's `gid=` option (`tty`=5 on Debian).
+        // This mount carries no options, so copy the opener's effective ids.
+        // Without this every slave is root:root and an unprivileged user gets
+        // EACCES opening it (`xterm: open() failed on ptsname`).
+        let credentials = current_thread!()
+            .as_posix_thread()
+            .unwrap()
+            .credentials();
+        metadata.uid = credentials.euid();
+        metadata.gid = credentials.egid();
         Arc::new(Self {
             device,
             metadata: RwLock::new(metadata),
