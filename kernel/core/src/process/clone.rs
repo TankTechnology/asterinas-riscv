@@ -790,10 +790,13 @@ fn clone_sighand(
     }
 }
 
-fn clone_sysvsem(clone_flags: CloneFlags) -> Result<()> {
-    if clone_flags.contains(CloneFlags::CLONE_SYSVSEM) {
-        warn!("CLONE_SYSVSEM is not supported now");
-    }
+fn clone_sysvsem(_clone_flags: CloneFlags) -> Result<()> {
+    // `CLONE_SYSVSEM` asks the child to share the parent's System V semaphore
+    // adjustment (SEM_UNDO) list. Linux never rejects the flag: a thread
+    // (CLONE_THREAD) shares the list implicitly, and for other children the
+    // flag only changes whether the undo list is shared or copied. This
+    // kernel has no undo list yet (SEM_UNDO itself is refused), so there is
+    // nothing to share or copy; accept the flag silently until SEM_UNDO lands.
     Ok(())
 }
 
