@@ -31,17 +31,33 @@ fi
 echo "DAILY_IME_ENV gtk3=$(ldconfig -p 2>/dev/null | grep -c libgtk-3) wm=$(command -v openbox matchbox-window-manager fluxbox 2>/dev/null | tr '\n' ',')" >/dev/console
 
 # --- Domain 2: package installation (first, so the desktop app exists) ----
-if apt-get install -y xclip xterm alsa-utils xdotool >/tmp/apt-install.log 2>&1; then
-    mark APT ok "xclip+xterm+alsa-utils-installed"
+# xserver-xorg-input-evdev lets Xorg bind /dev/input/eventN, which the kernel
+# exposes for the virtio keyboard. Without it the X server has no input driver.
+if apt-get install -y xclip xterm alsa-utils xdotool \
+        xserver-xorg-input-evdev libevdev2 >/tmp/apt-install.log 2>&1; then
+    mark APT ok "xclip+xterm+alsa-utils+xf86-input-evdev"
 else
     mark APT fail "apt-get install"
 fi
 
 # --- Domain 1: a desktop (Xorg + DRI3 + an application) -------------------
 mkdir -p /tmp/.X11-unix
+# With a virtio keyboard the gate also injects the evdev InputDevice section;
+# without one, keep the udev-less config that Xorg always starts with here.
+if [ -e /dev/input/event0 ] && [ -f /etc/X11/xorg-kbd.conf ]; then
+    XCONF=/etc/X11/xorg-kbd.conf
+    # A desktop base image may ship an xorg.conf.d fragment whose ServerLayout
+    # names its own (nonexistent) /run/asterinas-input nodes. A layout in a
+    # merged fragment wins over our unreferenced InputDevice section, so drop
+    # it: the kbd configuration is self-contained.
+    rm -f /etc/X11/xorg.conf.d/20-asterinas.conf
+else
+    XCONF=/etc/X11/xorg-noudev.conf
+fi
+echo "DAILY_INPUT node=$(ls /dev/input 2>/dev/null | tr '\n' ',') conf=$XCONF" >/dev/console
 env MESA_LOADER_DRIVER_OVERRIDE=kms_swrast LIBGL_ALWAYS_SOFTWARE=1 \
     GALLIUM_DRIVER=softpipe /usr/lib/xorg/Xorg :0 -noreset -nolisten tcp \
-    -config /etc/X11/xorg-noudev.conf >/tmp/xorg.log 2>&1 &
+    -config "$XCONF" >/tmp/xorg.log 2>&1 &
 waited=0
 while [ ! -S /tmp/.X11-unix/X0 ] && [ $waited -lt 40 ]; do
     sleep 1
@@ -64,6 +80,55 @@ if [ -S /tmp/.X11-unix/X0 ]; then
 else
     mark DESKTOP fail no-X-socket
     mark APP fail no-X
+fi
+
+# --- Domain: real keyboard (virtio-input -> evdev -> Xorg -> xterm) -------
+# XTEST (xdotool) proves the X server can inject input, not that a physical
+# keyboard reaches it. The gate's virtio keyboard is only real evidence: the
+# host sends QEMU `sendkey` and this xterm must receive the characters.
+if [ -S /tmp/.X11-unix/X0 ] && [ -e /dev/input/event0 ]; then
+    rm -f /tmp/kbd-out
+    HOME=/tmp xterm -display :0 -geometry 40x10+10+10 -title kbdtest \
+        -e sh -c 'read x; printf "%s" "$x" > /tmp/kbd-out; sleep 4' \
+        >/tmp/xterm-kbd.log 2>&1 &
+    kw=""
+    n=0
+    while [ -z "$kw" ] && [ $n -lt 10 ]; do
+        sleep 1
+        kw=$(timeout 3 xdotool search --class xterm 2>/dev/null | tail -1)
+        n=$((n + 1))
+    done
+    if [ -n "$kw" ]; then
+        # The window exists as soon as X creates it, but the input focus only
+        # sticks once it is mapped. Retry until X reports it as focused.
+        n=0
+        while [ $n -lt 20 ]; do
+            xdotool windowfocus "$kw" 2>/dev/null
+            if [ "$(xdotool getwindowfocus 2>/dev/null)" = "$kw" ]; then
+                break
+            fi
+            sleep 1
+            n=$((n + 1))
+        done
+        echo "DAILY_XFOCUS win=$kw focus=$(xdotool getwindowfocus 2>/dev/null) tries=$n" >/dev/console
+        echo DAILY_KEY_WAIT
+        n=0
+        while [ ! -s /tmp/kbd-out ] && [ $n -lt 30 ]; do
+            sleep 1
+            n=$((n + 1))
+        done
+        got=$(cat /tmp/kbd-out 2>/dev/null | tr -d '\n')
+        if [ "$got" = abc ]; then
+            mark KEYBOARD ok "virtio-evdev-xterm-abc"
+        else
+            mark KEYBOARD fail "typed:$got"
+        fi
+    else
+        mark KEYBOARD fail no-xterm-window
+    fi
+    pkill -f "title kbdtest" 2>/dev/null
+else
+    mark KEYBOARD missing "no-/dev/input/event0"
 fi
 
 # --- Domain 3: clipboard -------------------------------------------------
@@ -202,6 +267,37 @@ if command -v fcitx5 >/dev/null 2>&1; then
         engine=$(fcitx5-remote -n 2>/dev/null)
         echo "DAILY_FCITX after_activate='$engine'" >/dev/console
     fi
+    # xterm never maps its window on this kernel (its pty setup is broken, see
+    # docs/porting/2026-10-27-input-method.md), so type into a GTK client that
+    # needs no pty: `yad --entry` with GTK's built-in XIM immodule.
+    if ! command -v yad >/dev/null 2>&1 && [ -f /opt/stage.tar ]; then
+        tar -xf /opt/stage.tar -C / 2>/dev/null
+        ldconfig 2>/dev/null
+    fi
+    YAD_OUT=""
+    if command -v yad >/dev/null 2>&1; then
+        export GTK_IM_MODULE=xim XMODIFIERS=@im=fcitx
+        rm -f /tmp/yad.out /tmp/yad.err
+        yad --entry --title yadim --text type >/tmp/yad.out 2>/tmp/yad.err &
+        sleep 3
+        ywin=$(timeout 5 xdotool search --name yadim 2>/dev/null | head -1)
+        echo "DAILY_YAD win=$ywin map=$(timeout 5 xwininfo -id "$ywin" 2>/dev/null | grep -m1 'Map State')" >/dev/console
+        if [ -n "$ywin" ]; then
+            timeout 5 xdotool windowactivate --sync "$ywin" 2>/dev/null
+            sleep 1
+            echo "DAILY_YAD focus=$(timeout 5 xdotool getwindowfocus 2>/dev/null)" >/dev/console
+            timeout 5 xdotool type --delay 150 "wqiy" 2>/dev/null
+            timeout 5 xdotool key space 2>/dev/null
+            timeout 5 xdotool type --delay 150 "vbg" 2>/dev/null
+            timeout 5 xdotool key space 2>/dev/null
+            timeout 5 xdotool key Return 2>/dev/null
+            sleep 2
+            YAD_OUT=$(cat /tmp/yad.out 2>/dev/null | tr -d '\n')
+            echo "DAILY_YAD out=[$YAD_OUT]" >/dev/console
+        fi
+        pkill -x yad 2>/dev/null
+    fi
+
     # `fcitx5-remote -n` reports the engine of a *current input context*; an
     # empty answer does not mean the engine is unusable. The verdict comes from
     # typing through XIM into a real client.
@@ -228,7 +324,7 @@ if command -v fcitx5 >/dev/null 2>&1; then
             echo "DAILY_XDIAG direct_out=$(cat /tmp/xim-out 2>/dev/null | tr -d '\n' | head -c 20)" >/dev/console
             sleep 1
         fi
-        if grep -q 你好 /tmp/xim-out 2>/dev/null; then
+        if grep -q 你好 /tmp/xim-out 2>/dev/null || [ "$YAD_OUT" = "你好" ]; then
             mark INPUT_METHOD ok "table-$engine-typed-你好"
         else
             mark INPUT_METHOD fail "engine-$engine-no-text:$(cat /tmp/xim-out 2>/dev/null | tr -d '\n' | head -c 40)"

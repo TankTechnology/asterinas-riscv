@@ -299,6 +299,45 @@ Section "ServerFlags"
     Option "AutoEnableDevices" "false"
 EndSection
 CONF
+# Used instead when the gate's virtio keyboard gives the guest an evdev node:
+# there is no udev input database, so the server is told about the device by
+# path. It is self-contained (screen, layout, input) because the desktop base
+# image may also carry an xorg.conf.d fragment whose own layout would win over
+# an unreferenced InputDevice section.
+XORG_KBD_CONF="$WORKSPACE/xorg-kbd.conf"
+cat >"$XORG_KBD_CONF" <<'CONF'
+Section "Device"
+    Identifier "Asterinas DRM"
+    Driver "modesetting"
+    Option "AccelMethod" "glamor"
+EndSection
+
+Section "Screen"
+    Identifier "Asterinas screen"
+    Device "Asterinas DRM"
+EndSection
+
+Section "InputDevice"
+    Identifier "kbd"
+    Driver "evdev"
+    Option "Device" "/dev/input/event0"
+EndSection
+
+Section "ServerLayout"
+    Identifier "Asterinas layout"
+    Screen 0 "Asterinas screen"
+    InputDevice "kbd" "CoreKeyboard"
+EndSection
+
+Section "ServerFlags"
+    Option "AutoAddDevices" "false"
+    Option "AutoEnableDevices" "false"
+    Option "BlankTime" "0"
+    Option "StandbyTime" "0"
+    Option "SuspendTime" "0"
+    Option "OffTime" "0"
+EndSection
+CONF
 
 # The socket/wait unit checks are compiled on the host and injected as a
 # static binary, since the image has no compiler.
@@ -341,6 +380,7 @@ while [[ \$# -gt 0 ]]; do
 done
 printf '%s\n' "\$\$" >"$PIDFILE"
 exec "$QEMU" "\${args[@]}" -vga none -device virtio-gpu-pci \\
+    -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \\
     -device intel-hda -device hda-output,audiodev=audio0 \\
     -audiodev none,id=audio0 \\
     -device qemu-xhci -drive "if=none,id=usbstick,format=raw,file=$USB_IMAGE" \\
@@ -385,6 +425,7 @@ serial.settimeout(0.5)
 buffer = b''
 sent_user = sent_pass = sent_command = done = False
 answered_usb = shot = False
+answered_key = False
 answered_suspend = 0
 with open(console_path, 'wb') as out:
     while time.time() < deadline:
@@ -414,6 +455,18 @@ with open(console_path, 'wb') as out:
             if not answered_usb and b'DAILY_USB_WAIT' in buffer:
                 monitor.sendall(b'device_add usb-storage,drive=usbstick\n')
                 answered_usb = True
+            if not answered_key and b'DAILY_KEY_WAIT' in buffer:
+                # Real keystrokes through the gate's virtio keyboard: the
+                # kernel exposes it as evdev and Xorg binds it. Type "abc"
+                # and Return into the focused xterm. The checklist only asks
+                # once, but the window may need a moment to take focus, so
+                # repeat the sequence a few times; extra keys are harmless.
+                for _ in range(3):
+                    for key in (b'a', b'b', b'c', b'ret'):
+                        monitor.sendall(b'sendkey ' + key + b'\n')
+                        time.sleep(0.15)
+                    time.sleep(2.5)
+                answered_key = True
             # A soak may suspend several times; wake once per WAIT marker
             # (capped at three) instead of only the first occurrence.
             seen_suspend = buffer.count(b'DAILY_SUSPEND_WAIT')
@@ -524,9 +577,11 @@ fi
     # target first; `rm` on an absent path is harmless.
     printf 'rm /usr/local/bin/daily-use-checklist\n'
     printf 'rm /etc/X11/xorg-noudev.conf\n'
+    printf 'rm /etc/X11/xorg-kbd.conf\n'
     printf 'write %s /usr/local/bin/daily-use-checklist\n' "$CHECKLIST"
     printf 'sif /usr/local/bin/daily-use-checklist mode 0100755\n'
     printf 'write %s /etc/X11/xorg-noudev.conf\n' "$XORG_CONF"
+    printf 'write %s /etc/X11/xorg-kbd.conf\n' "$XORG_KBD_CONF"
     if (( POPCON )); then
         printf 'rm /usr/local/bin/popcon-packages\n'
         printf 'rm %s\n' "$POPCON_GUEST_LIST"
@@ -1643,8 +1698,8 @@ text = open(console, "rb").read().decode("utf-8", "replace")
 text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", text)
 
 domains = [
-    "DESKTOP", "APP", "APT", "CLIPBOARD", "INPUT_METHOD", "AUDIO", "USB",
-    "SUSPEND",
+    "DESKTOP", "APP", "KEYBOARD", "APT", "CLIPBOARD", "INPUT_METHOD", "AUDIO",
+    "USB", "SUSPEND",
 ]
 found = {}
 for name, value, *detail in re.findall(
