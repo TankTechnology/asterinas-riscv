@@ -1636,6 +1636,7 @@ int main(void)
         self.assertIn("ASTERINAS_DESKTOP_DISPLAY_READY", source)
         self.assertIn("ASTERINAS_DESKTOP_FIREFOX_READY", source)
         self.assertIn("ASTERINAS_DESKTOP_WATCHDOG_DISARMED", source)
+        self.assertIn("ASTERINAS_DESKTOP_WATCHDOG_ABSENT", source)
         self.assertIn("ASTERINAS_DESKTOP_BOOT_READY", source)
 
     def test_desktop_readiness_hands_off_safe_reboot_after_kernel_disarm(self) -> None:

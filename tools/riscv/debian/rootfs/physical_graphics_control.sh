@@ -316,14 +316,15 @@ startup_ready_once() {
 
 startup_ready() {
     watchdog=/proc/sys/kernel/asterinas_reboot_watchdog
-    [ -r "$watchdog" ] && [ -w "$watchdog" ] || {
-        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-unavailable'
-        return 1
-    }
-    [ "$(cat "$watchdog" 2>/dev/null || true)" = 1 ] || {
-        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-not-armed'
-        return 1
-    }
+    watchdog_armed=0
+    if [ -r "$watchdog" ] && [ -w "$watchdog" ] &&
+        [ "$(cat "$watchdog" 2>/dev/null || true)" = 1 ]; then
+        watchdog_armed=1
+    else
+        # The self-reboot timer is off by default now; desktop readiness must
+        # not fail just because there is no watchdog to disarm.
+        boot_phase 'ASTERINAS_DESKTOP_WATCHDOG_ABSENT'
+    fi
     start_browser 0 || {
         boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=browser-start'
         return 1
@@ -359,14 +360,17 @@ startup_ready() {
     browser_identity
     [ -n "$pid" ] || pid=0
     boot_phase "ASTERINAS_DESKTOP_FIREFOX_READY pid=$pid user=1000 optional=1"
-    printf '0\n' >"$watchdog" || {
-        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-write'
-        return 1
-    }
-    [ "$(cat "$watchdog" 2>/dev/null || true)" = 0 ] || {
-        boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-readback'
-        return 1
-    }
+    if [ "$watchdog_armed" -eq 1 ]; then
+        printf '0\n' >"$watchdog" || {
+            boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-write'
+            return 1
+        }
+        [ "$(cat "$watchdog" 2>/dev/null || true)" = 0 ] || {
+            boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=watchdog-readback'
+            return 1
+        }
+        boot_phase 'ASTERINAS_DESKTOP_WATCHDOG_DISARMED'
+    fi
     # The userspace sync/reboot timer is independent of the kernel watchdog.
     # Publish a boot-bound handoff only after the kernel disarm is confirmed;
     # otherwise it must still shut down the writable ext2 root safely.
@@ -384,7 +388,6 @@ startup_ready() {
         boot_phase 'ASTERINAS_DESKTOP_BOOT_FAIL reason=handoff-publish'
         return 1
     fi
-    boot_phase 'ASTERINAS_DESKTOP_WATCHDOG_DISARMED'
     boot_phase "ASTERINAS_DESKTOP_BOOT_READY firefox_pid=$pid"
 }
 
