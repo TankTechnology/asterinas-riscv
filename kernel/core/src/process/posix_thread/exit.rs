@@ -132,6 +132,19 @@ fn exit_internal(
         pid_table::pid_table_mut().remove_thread(posix_thread.tid());
     }
 
+    // Apply the process's pending `SEM_UNDO` adjustments while the namespace
+    // proxy is still available, as Linux does in `sem_exit`.
+    if is_last_thread {
+        let ipc_ns = posix_thread
+            .ns_proxy()
+            .lock()
+            .as_ref()
+            .map(|ns_proxy| ns_proxy.ipc_ns().clone());
+        if let Some(ipc_ns) = ipc_ns {
+            ipc_ns.apply_sem_undo(posix_process.pid());
+        }
+    }
+
     // Drop fields in `PosixThread`.
     drop_after!(posix_thread.file_table().lock().take());
     drop_after!(posix_thread.ns_proxy().lock().take());
