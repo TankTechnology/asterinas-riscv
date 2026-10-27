@@ -313,12 +313,20 @@ impl BlockGroup {
         self.inode_cache.write().remove(&inode_idx)
     }
 
-    /// Flushes the data and indirect metadata of every cached inode.
+    /// Flushes the data and indirect metadata of every cached inode that has
+    /// pending metadata.
     ///
     /// This must run before the transaction that stages the inode descriptors
     /// is committed: ext4 orders data before metadata (`data=ordered`), and a
     /// committed descriptor pointing at a data block that never reached the
     /// device is exactly the corruption the checker reports as a bad extent.
+    ///
+    /// Inodes with a clean descriptor, no newly allocated blocks and clean
+    /// xattrs are skipped. Their data pages are not referenced by anything the
+    /// pending transaction publishes, so writing them back here would only
+    /// turn every `fsync` into a filesystem-wide flush. Skipping them is what
+    /// makes a repeated `fsync` of one file cost O(1) instead of O(cached
+    /// inodes).
     pub(super) fn flush_inode_data(&self) -> Result<()> {
         // Clone the `Arc` handles under the read lock, then drop the lock before
         // calling `sync_all`. Otherwise `sync_all` acquires `inner.write()`
@@ -327,7 +335,9 @@ impl BlockGroup {
         // `inner.write()` first, then `inode_cache.write()`.
         let inodes: Vec<Arc<Inode>> = self.inode_cache.read().values().cloned().collect();
         for inode in inodes {
-            inode.sync_all()?;
+            if inode.has_pending_metadata() {
+                inode.sync_all()?;
+            }
         }
         Ok(())
     }

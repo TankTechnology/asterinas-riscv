@@ -264,6 +264,11 @@ impl Xattr {
         self.cache.write().flush()
     }
 
+    /// Returns whether the cached xattr block has changes that are not durable.
+    pub(super) fn is_dirty(&self) -> bool {
+        self.cache.read().dirty
+    }
+
     /// Parses a VFS [`XattrName`] into the ext2 `(name_index, name_suffix)` pair.
     fn parse_target_name(name: XattrName) -> Result<(XattrNameIndex, Vec<u8>)> {
         let name_index = XattrNameIndex::for_name(name)?;
