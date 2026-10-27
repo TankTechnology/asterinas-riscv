@@ -64,8 +64,11 @@ impl Device for TtyDevice {
 
     fn open(&self) -> Result<Box<dyn PerOpenFileOps>> {
         let Some(terminal) = current!().terminal() else {
+            // Linux returns ENXIO here (`tty_open` -> `tty_open_current_tty`),
+            // and programs such as xterm distinguish it from other errors when
+            // they probe /dev/tty before opening a pty slave.
             return_errno_with_message!(
-                Errno::ENOTTY,
+                Errno::ENXIO,
                 "the process does not have a controlling terminal"
             );
         };
