@@ -19,6 +19,8 @@
 #  - SMP: number of CPUs;
 #  - MEM: amount of memory, e.g. "8G";
 #  - VNC_PORT: VNC port, default is "42";
+#  - QEMU_ACCEL: QEMU accelerator, e.g. "kvm". Empty (the default) lets QEMU
+#    pick its own default;
 #  - RISCV_QEMU_CPU: RISC-V QEMU CPU model and extensions;
 #  - ATTACH_XFSTESTS_IMAGES: "true" or "false", whether to attach xfstests images (xfstests_test.img and xfstests_scratch.img) to the VM. Defaults to auto-detection from ENABLE_CONFORMANCE_TEST + CONFORMANCE_TEST_SUITE.
 
@@ -37,6 +39,8 @@ VSOCK=${VSOCK:-"off"}
 VIRTIOFS=${VIRTIOFS:-"off"}
 NETDEV=${NETDEV:-"user"}
 CONSOLE=${CONSOLE:-"hvc0"}
+QEMU_ACCEL=${QEMU_ACCEL:-""}
+QEMU_ACCEL_ARGS=${QEMU_ACCEL:+-accel $QEMU_ACCEL}
 RISCV_QEMU_CPU=${RISCV_QEMU_CPU:-"rv64,svpbmt=true,zkr=true"}
 
 ATTACH_XFSTESTS_IMAGES=${ATTACH_XFSTESTS_IMAGES:-false}
@@ -146,6 +150,7 @@ if [ "$1" = "tdx" ]; then
 fi
 
 COMMON_QEMU_ARGS="\
+    $QEMU_ACCEL_ARGS \
     -cpu Icelake-Server,+x2apic \
     -smp ${SMP:-1} \
     -m ${MEM:-8G} \

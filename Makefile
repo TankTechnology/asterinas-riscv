@@ -1723,12 +1723,30 @@ test: test_klog_store
 	fi
 
 .PHONY: ktest
-ktest: CONSOLE = ttyS0
-ktest: initramfs $(CARGO_OSDK)
+ktest:
+	@tools/ktest.sh
+
+.PHONY: ktest-local
+ktest-local: CONSOLE = ttyS0
+# Use KVM when the host exposes it.  Without an accelerator QEMU falls back to
+# TCG and the full suite takes well over five minutes.
+ktest-local: QEMU_ACCEL = $(if $(wildcard /dev/kvm),kvm,)
+# The test kernel must print its results to the serial console.  Otherwise
+# crates whose default console is not ttyS0 run their tests silently and a
+# failure only shows up as a non-zero QEMU exit status.
+ktest-local: CARGO_OSDK_TEST_ARGS += --kcmd-args="earlycon" --kcmd-args="console=$(CONSOLE)"
+ktest-local: initramfs $(CARGO_OSDK)
 	@# cargo-osdk tests default workspace members.
 	@# `linux-bzimage-setup` is left out of `default-members`
 	@# because it is hard to unit test.
-	@cargo osdk test $(CARGO_OSDK_TEST_ARGS)
+	@# Run inside one crate with KTEST_CRATE_DIR (the positional TESTNAME is a
+	@# suffix of the test path, so it cannot select a whole module).
+	@if [ -n "$(KTEST_CRATE_DIR)" ]; then \
+		cd $(KTEST_CRATE_DIR) && \
+		QEMU_ACCEL="$(QEMU_ACCEL)" cargo osdk test $(CARGO_OSDK_TEST_ARGS) $(KTEST_FILTER); \
+	else \
+		QEMU_ACCEL="$(QEMU_ACCEL)" cargo osdk test $(CARGO_OSDK_TEST_ARGS) $(KTEST_FILTER); \
+	fi
 
 .PHONY: docs
 docs: private DEFAULT_PACKAGE_NAMES = \
