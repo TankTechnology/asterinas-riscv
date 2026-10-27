@@ -1725,6 +1725,23 @@ Defaults !use_pty
 asterinas ALL=(ALL:ALL) NOPASSWD: ALL
 EOF
     chmod 0440 -- "$stage/etc/sudoers.d/asterinas"
+    # Fallback for images that do not carry sudo or whose user is not in the
+    # sudoers file: allow the active local console session to ask logind for
+    # reboot/poweroff.  This changes no kernel permission; it only lets the
+    # normal systemd shutdown path proceed without a polkit agent prompt.
+    install -d -m 0755 -- "$stage/etc/polkit-1/rules.d"
+    cat >"$stage/etc/polkit-1/rules.d/49-asterinas-console-power.rules" <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (subject.local && subject.active &&
+        (action.id == "org.freedesktop.login1.reboot" ||
+         action.id == "org.freedesktop.login1.reboot-multiple-sessions" ||
+         action.id == "org.freedesktop.login1.power-off" ||
+         action.id == "org.freedesktop.login1.power-off-multiple-sessions")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+    chmod 0644 -- "$stage/etc/polkit-1/rules.d/49-asterinas-console-power.rules"
     # sudo (and interactive tools) allocate a pty; debootstrap leaves fstab
     # unconfigured, so /dev/pts is never mounted and sudo fails with
     # "unable to allocate pty". Mount devpts like a normal Debian installation.

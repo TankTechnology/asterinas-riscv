@@ -443,6 +443,7 @@ class DebianDesktopM5NetworkTests(unittest.TestCase):
                         "fonts-wqy-microhei",
                         "iproute2",
                         "iputils-ping",
+                        "polkitd",
                         "x11-apps",
                         "xdotool",
                     )
@@ -793,6 +794,15 @@ configure_and_normalize_rootfs
             "Defaults !use_pty\nasterinas ALL=(ALL:ALL) NOPASSWD: ALL\n",
         )
         self.assertEqual(stat.S_IMODE(sudoers.stat().st_mode), 0o440)
+        polkit_rule = (
+            stage / "etc/polkit-1/rules.d/49-asterinas-console-power.rules"
+        )
+        polkit_text = polkit_rule.read_text(encoding="utf-8")
+        self.assertIn("subject.local && subject.active", polkit_text)
+        self.assertIn("org.freedesktop.login1.reboot", polkit_text)
+        self.assertIn("org.freedesktop.login1.power-off", polkit_text)
+        self.assertIn("polkit.Result.YES", polkit_text)
+        self.assertEqual(stat.S_IMODE(polkit_rule.stat().st_mode), 0o644)
         self.assertIn(
             "devpts /dev/pts devpts gid=5,mode=620,ptmxmode=000 0 0",
             (stage / "etc/fstab").read_text(encoding="utf-8"),
