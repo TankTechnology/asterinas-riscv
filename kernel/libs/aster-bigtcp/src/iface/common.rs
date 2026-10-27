@@ -553,24 +553,24 @@ impl PortTable {
             }
         };
 
-        if !config.is_backlog() {
-            if let Some(addresses) = self.port_addresses.get(&(port, protocol)) {
-                for existing_addr in addresses {
-                    if !port_addresses_conflict(*existing_addr, addr) {
-                        continue;
-                    }
-                    let existing = PortKey {
-                        addr: *existing_addr,
-                        port,
-                        protocol,
-                    };
-                    let Some(state) = self.used_ports.get(&existing) else {
-                        debug_assert!(false, "port address index must mirror the port table");
-                        return Err(BindError::InUse);
-                    };
-                    if !config_can_reuse || !state.can_reuse() {
-                        return Err(BindError::InUse);
-                    }
+        if !config.is_backlog()
+            && let Some(addresses) = self.port_addresses.get(&(port, protocol))
+        {
+            for existing_addr in addresses {
+                if !port_addresses_conflict(*existing_addr, addr) {
+                    continue;
+                }
+                let existing = PortKey {
+                    addr: *existing_addr,
+                    port,
+                    protocol,
+                };
+                let Some(state) = self.used_ports.get(&existing) else {
+                    debug_assert!(false, "port address index must mirror the port table");
+                    return Err(BindError::InUse);
+                };
+                if !config_can_reuse || !state.can_reuse() {
+                    return Err(BindError::InUse);
                 }
             }
         }
