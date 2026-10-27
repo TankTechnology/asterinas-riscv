@@ -7,6 +7,8 @@ use core::{fmt::Debug, mem::ManuallyDrop, ops::Range};
 use super::util::{
     alloc_kva, alloc_kva_in, cvm_need_private_protection, prepare_dma, split_daddr, unprepare_dma,
 };
+#[cfg(target_arch = "riscv64")]
+use crate::mm::paddr_to_vaddr;
 use crate::{
     arch::irq,
     error::Error,
@@ -16,7 +18,6 @@ use crate::{
         PAGE_SIZE, Paddr, Segment, Split, VmReader, VmWriter,
         io::util::{HasVmReaderWriter, VmReaderWriterIdentity},
         kspace::kvirt_area::KVirtArea,
-        paddr_to_vaddr,
     },
 };
 
