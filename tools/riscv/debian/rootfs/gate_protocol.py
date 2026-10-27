@@ -156,7 +156,11 @@ def qemu_argv(
     graphics_devices = (
         (
             "-device",
-            graphics_device,
+            (
+                "bochs-display,xres=1280,yres=1024"
+                if graphics_device == "bochs-display"
+                else graphics_device
+            ),
             "-device",
             "virtio-keyboard-device",
             "-device",

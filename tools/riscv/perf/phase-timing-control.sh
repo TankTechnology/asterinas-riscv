@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+
 # Phase timings for the Linux control, matched to phase-timing.sh so the two
 # tables can be read side by side.
 #

@@ -1,4 +1,4 @@
-printf 'BEGIN_585d2e50c821e1f2\n'; id -u; cat /proc/sys/ kernel/random/boot_id; cat /run/asterinas-video-drm-phase-20260930/s30k-record.j son; sha256sum /run/asterinas-video-drm-phase-20260930/s30k-record.json; cat /pr oc/asterinas_drm_scanout; systemctl is-active asterinas-desktop-m5.service aster inas-browser-web.service; printf 'END_585d2e50c821e1f2=%s\n' "$?"
+printf 'BEGIN_585d2e50c821e1f2\n'; id -u; cat /proc/sys/kernel/random/boot_id; cat /run/asterinas-video-drm-phase-20260930/s30k-record.json; sha256sum /run/asterinas-video-drm-phase-20260930/s30k-record.json; cat /proc/asterinas_drm_scanout; systemctl is-active asterinas-desktop-m5.service asterinas-browser-web.service; printf 'END_585d2e50c821e1f2=%s\n' "$?"
 BEGIN_585d2e50c821e1f2
 0
 ae17015f-216f-409a-a5b6-fdfe9e14cd5e
@@ -8,4 +8,4 @@ at_ns=933513656000 phase_profile=1 successes=338 full_count=1 full_bytes=8294400
 active
 active
 END_585d2e50c821e1f2=0
-root@asterinas-debug:/# 
+root@asterinas-debug:/#

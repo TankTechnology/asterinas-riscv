@@ -42,11 +42,24 @@ pub fn sys_msync(addr: Vaddr, len: usize, flag: i32, ctx: &Context) -> Result<Sy
         );
     }
 
-    // Do nothing if not file-backed, as <https://pubs.opengroup.org/onlinepubs/9699919799/> says.
     let inodes = query_guard
         .iter()
         .filter_map(|m| m.inode().cloned())
         .collect::<Vec<_>>();
+    let has_iomem_mapping = query_guard.iter().any(|mapping| mapping.is_device());
+    // `sync_iomem_to_device` takes its own page-table cursor. Release the
+    // validation cursor before creating it, otherwise the overlapping cursor
+    // lock would wait for itself.
+    drop(query_guard);
+
+    // Device mappings have no file-backed inode. Flush their retained I/O
+    // memory capability after validating the whole range, so a partial or
+    // unmapped request keeps the normal `ENOMEM` result above.
+    if has_iomem_mapping {
+        vmar.vm_space().sync_iomem_to_device(addr_range.clone())?;
+    }
+
+    // Do nothing if not file-backed, as <https://pubs.opengroup.org/onlinepubs/9699919799/> says.
     // If neither MS_SYNC nor MS_ASYNC is specified, Linux defaults to MS_ASYNC behavior.
     if flags.contains(MsyncFlags::MS_SYNC) {
         for inode in inodes {

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+
 # Sample the guest's host-side I/O counters while a QEMU run is in flight.
 #
 # QEMU with cache=directsync turns each guest block request into a host pread on

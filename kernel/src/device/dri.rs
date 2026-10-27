@@ -27,35 +27,34 @@ mod eic7700;
 #[cfg(target_arch = "riscv64")]
 mod eic7700_contract;
 mod fence;
-mod prime;
 #[cfg(target_arch = "riscv64")]
 mod powervr_probe;
-
-/// The dma-buf descriptor, reachable so that the SCM_RIGHTS classifier can
-/// recognize one. See [`prime::DmaBufFile`].
-pub(crate) use prime::DmaBufFile;
+mod prime;
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use align_ext::AlignExt;
+use aster_framebuffer::framebuffer::{FRAMEBUFFER, FrameBuffer};
 use aster_virtio::device::gpu::{VirtioGpuBox, device::GpuDevice, first_device};
 use device_id::{DeviceId, MajorId, MinorId};
 use ostd::{
     mm::{Paddr, VmIo},
     task::Task,
 };
+/// The dma-buf descriptor, reachable so that the SCM_RIGHTS classifier can
+/// recognize one. See [`prime::DmaBufFile`].
+pub(crate) use prime::DmaBufFile;
 
 use self::{
     backend::{
-        CursorBackend, CursorGeometry, CursorScanoutBuffer, DamageRect,
-        FirmwareFramebufferBackend, ScanoutBackend, ScanoutBuffer, firmware_backend,
+        CursorBackend, CursorGeometry, CursorScanoutBuffer, DamageRect, FirmwareFramebufferBackend,
+        ScanoutBackend, ScanoutBuffer, firmware_backend,
     },
     cursor::{
         CursorBuffer, CursorImage, CursorState, DrmModeCursor, DrmModeCursor2, MODE_CURSOR_BO,
         validate_cursor,
     },
 };
-use aster_framebuffer::framebuffer::{FRAMEBUFFER, FrameBuffer};
 use crate::{
     context::current_userspace,
     device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
@@ -391,9 +390,8 @@ fn display_source() -> Option<DisplaySource> {
         return Some(DisplaySource::Virtio(gpu));
     }
     let framebuffer = FRAMEBUFFER.get()?;
-    FirmwareFramebufferBackend::accepts(framebuffer).then(|| {
-        DisplaySource::Firmware(Arc::clone(framebuffer))
-    })
+    FirmwareFramebufferBackend::accepts(framebuffer)
+        .then(|| DisplaySource::Firmware(Arc::clone(framebuffer)))
 }
 
 /// The name of the driver that is actually presenting, for sysfs to report.
@@ -1084,15 +1082,14 @@ static NEXT_MAGIC: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32
 
 mod ioctl_defs {
     use super::{
-        DrmGetCap, DrmModeCardRes, DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip,
-        DrmModeCursor, DrmModeCursor2, DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd,
-        DrmGemClose, DrmGemFlink, DrmGemOpen, DrmModeGetConnector, DrmModeGetEncoder,
-        DrmPrimeHandle,
+        DrmAuth, DrmGemClose, DrmGemFlink, DrmGemOpen, DrmGetCap, DrmModeCardRes,
+        DrmModeCreateDumb, DrmModeCrtc, DrmModeCrtcPageFlip, DrmModeCursor, DrmModeCursor2,
+        DrmModeDestroyDumb, DrmModeFbCmd, DrmModeFbDirtyCmd, DrmModeGetConnector,
+        DrmModeGetEncoder, DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeMapDumb,
+        DrmModeObjGetProperties, DrmPrimeHandle, DrmSetClientCap, DrmVersion,
         DrmVirtgpuContextInit, DrmVirtgpuExecbuffer, DrmVirtgpuGetCaps, DrmVirtgpuGetparam,
-        DrmVirtgpuMap,
-        DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo, DrmVirtgpuTransfer3d, DrmVirtgpuWait,
-        DrmModeGetPlane, DrmModeGetPlaneRes, DrmModeMapDumb, DrmModeObjGetProperties,
-        DrmSetClientCap, DrmVersion, DrmAuth,
+        DrmVirtgpuMap, DrmVirtgpuResourceCreate, DrmVirtgpuResourceInfo, DrmVirtgpuTransfer3d,
+        DrmVirtgpuWait,
     };
     use crate::util::ioctl::{InData, InOutData, NoData, OutData, ioc};
 
@@ -1257,7 +1254,8 @@ impl Device for Dri {
 /// Installs a file the driver synthesized into the calling thread's file
 /// table, returning the descriptor that names it.
 fn install_file(file: Arc<dyn FileLike>, fd_flags: FdFlags) -> Result<i32> {
-    let current_task = Task::current().ok_or_else(|| Error::with_message(Errno::EAGAIN, "no current task"))?;
+    let current_task =
+        Task::current().ok_or_else(|| Error::with_message(Errno::EAGAIN, "no current task"))?;
     let thread_local = current_task
         .as_thread_local()
         .ok_or_else(|| Error::with_message(Errno::EAGAIN, "no thread-local storage"))?;
@@ -1270,7 +1268,10 @@ fn install_file(file: Arc<dyn FileLike>, fd_flags: FdFlags) -> Result<i32> {
 
 /// Creates a completed-fence descriptor in the calling thread's file table.
 fn install_fence_file() -> Result<i32> {
-    install_file(Arc::new(fence::FenceFile::new_signalled()), FdFlags::empty())
+    install_file(
+        Arc::new(fence::FenceFile::new_signalled()),
+        FdFlags::empty(),
+    )
 }
 
 /// Reads a NUL-terminated debug name from userspace.
@@ -1484,14 +1485,7 @@ impl DriHandle {
         // documents; the reverse order would deadlock against `gem_flink`.
         let mut inner = self.inner.lock();
         let mut objects = GEM_OBJECTS.lock();
-        let object_id = alloc_object(
-            &mut objects,
-            size,
-            pitch,
-            req.width,
-            req.height,
-            req.bpp,
-        )?;
+        let object_id = alloc_object(&mut objects, size, pitch, req.width, req.height, req.bpp)?;
         let handle = name_object(&mut inner, object_id);
 
         Ok(DrmModeCreateDumb {
@@ -1654,8 +1648,8 @@ impl DriHandle {
         let mut capset_id = None;
         let mut debug_name = String::new();
         for index in 0..req.num_params as usize {
-            let offset = req.ctx_set_params as usize
-                + index * size_of::<DrmVirtgpuContextSetParam>();
+            let offset =
+                req.ctx_set_params as usize + index * size_of::<DrmVirtgpuContextSetParam>();
             let entry: DrmVirtgpuContextSetParam = current_userspace!()
                 .read_val(offset)
                 .map_err(|_| Error::with_message(Errno::EFAULT, "bad context parameters"))?;
@@ -1664,10 +1658,9 @@ impl DriHandle {
                     if capset_id.is_some() {
                         return_errno_with_message!(Errno::EINVAL, "capset id given twice");
                     }
-                    capset_id = Some(
-                        u32::try_from(entry.value)
-                            .map_err(|_| Error::with_message(Errno::EINVAL, "capset id out of range"))?,
-                    );
+                    capset_id = Some(u32::try_from(entry.value).map_err(|_| {
+                        Error::with_message(Errno::EINVAL, "capset id out of range")
+                    })?);
                 }
                 VIRTGPU_CONTEXT_PARAM_DEBUG_NAME => {
                     debug_name = read_user_debug_name(entry.value as usize)?;
@@ -1798,7 +1791,11 @@ impl DriHandle {
         }
         if self
             .gpu()?
-            .attach_backing(resource_id, (base + object.offset) as u64, object.size as u32)
+            .attach_backing(
+                resource_id,
+                (base + object.offset) as u64,
+                object.size as u32,
+            )
             .is_err()
         {
             self.destroy_dumb(&DrmModeDestroyDumb { handle })?;
@@ -2000,16 +1997,22 @@ impl DriHandle {
     /// pool, so accepting a stranger's descriptor would produce a handle that
     /// resolves to bytes the caller never had.
     fn prime_fd_to_handle(&self, fd: i32) -> Result<u32> {
-        let current_task = Task::current().ok_or_else(|| Error::with_message(Errno::EAGAIN, "no current task"))?;
+        let current_task =
+            Task::current().ok_or_else(|| Error::with_message(Errno::EAGAIN, "no current task"))?;
         let thread_local = current_task
             .as_thread_local()
             .ok_or_else(|| Error::with_message(Errno::EAGAIN, "no thread-local storage"))?;
         let file_table = thread_local.borrow_file_table();
         let file_table_locked = file_table.unwrap().read();
         let file = file_table_locked.get_file(fd.try_into()?)?;
-        let dma_buf = (**file).downcast_ref::<prime::DmaBufFile>().ok_or_else(|| {
-            Error::with_message(Errno::EINVAL, "descriptor is not a dma-buf from this device")
-        })?;
+        let dma_buf = (**file)
+            .downcast_ref::<prime::DmaBufFile>()
+            .ok_or_else(|| {
+                Error::with_message(
+                    Errno::EINVAL,
+                    "descriptor is not a dma-buf from this device",
+                )
+            })?;
         prime::fd_to_handle(self, dma_buf)
     }
 
@@ -2441,10 +2444,7 @@ impl PerOpenFileOps for DriHandle {
         // check comes before the request is decoded: a refused ioctl must not
         // be able to reach the handlers at all.
         if self.node == DriNode::Render && !is_render_allowed(raw_ioctl) {
-            return_errno_with_message!(
-                Errno::EACCES,
-                "ioctl is not permitted on the render node"
-            );
+            return_errno_with_message!(Errno::EACCES, "ioctl is not permitted on the render node");
         }
 
         // `RMFB` passes its argument by value, so it cannot go through the typed
@@ -2456,7 +2456,11 @@ impl PerOpenFileOps for DriHandle {
 
         let traced_command = raw_ioctl.cmd();
         if DRI_TRACE.load(Ordering::Relaxed) {
-            ostd::error!("DRI_IOCTL cmd={:#010x} arg={:#x}", raw_ioctl.cmd(), raw_ioctl.arg());
+            ostd::error!(
+                "DRI_IOCTL cmd={:#010x} arg={:#x}",
+                raw_ioctl.cmd(),
+                raw_ioctl.arg()
+            );
         }
 
         let result: Result<i32> = dispatch_ioctl!(match raw_ioctl {
@@ -2767,7 +2771,10 @@ impl PerOpenFileOps for DriHandle {
                 // asynchronous flips. Accepting either flag would leave an
                 // event-driven client waiting forever after a successful ioctl.
                 if req.flags != 0 {
-                    return_errno_with_message!(Errno::EOPNOTSUPP, "page flip flags are unsupported");
+                    return_errno_with_message!(
+                        Errno::EOPNOTSUPP,
+                        "page flip flags are unsupported"
+                    );
                 }
                 self.present_fb(req.fb_id)?;
                 Ok(0)
@@ -2802,7 +2809,9 @@ impl PerOpenFileOps for DriHandle {
         // records the sequence, and a client that stops early stops because of
         // one call the driver would not serve. `Errno` alone does not say
         // which.
-        if DRI_TRACE.load(Ordering::Relaxed) && let Err(error) = &result {
+        if DRI_TRACE.load(Ordering::Relaxed)
+            && let Err(error) = &result
+        {
             ostd::error!(
                 "DRI_IOCTL REFUSED cmd={:#010x} errno={:?}",
                 traced_command,
@@ -2907,8 +2916,7 @@ pub(super) fn init_in_first_kthread() {
 mod tests {
     use ostd::prelude::ktest;
 
-    use super::ioctl_defs::*;
-    use super::*;
+    use super::{ioctl_defs::*, *};
     use crate::util::ioctl::NoData;
 
     /// Linux requires an unsupported atomic KMS client cap to fail so clients
@@ -2924,11 +2932,13 @@ mod tests {
             .error(),
             Errno::EOPNOTSUPP,
         );
-        assert!(validate_client_cap(DrmSetClientCap {
-            capability: DRM_CLIENT_CAP_UNIVERSAL_PLANES,
-            value: 1,
-        })
-        .is_ok());
+        assert!(
+            validate_client_cap(DrmSetClientCap {
+                capability: DRM_CLIENT_CAP_UNIVERSAL_PLANES,
+                value: 1,
+            })
+            .is_ok()
+        );
     }
 
     /// The command number and argument size the Linux uapi gives each ioctl
@@ -3133,7 +3143,10 @@ mod tests {
 
             release_object_locked(&mut objects, id);
 
-            assert!(!objects.objects.contains_key(&id), "object outlived its last reference");
+            assert!(
+                !objects.objects.contains_key(&id),
+                "object outlived its last reference"
+            );
             assert!(
                 !objects.names.contains_key(&7),
                 "a name outlived the object it named, so GEM_OPEN would hand out \

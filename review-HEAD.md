@@ -1,5 +1,5 @@
 ---
-date: 
+date:
 mode: diff
 base: 715b2c541
 head: a4ef18017
