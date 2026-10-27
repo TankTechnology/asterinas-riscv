@@ -1,0 +1,8 @@
+count errno syscall
+68	ENOENT	openat
+10	ENOENT	newfstatat
+4	ENOTTY	ioctl
+4	ENOENT	access
+4	EINVAL	prctl
+2	ENOENT	connect
+1	ENOSYS	rseq

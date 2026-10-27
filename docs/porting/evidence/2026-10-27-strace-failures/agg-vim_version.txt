@@ -1,0 +1,7 @@
+count errno syscall
+17	ENOENT	openat
+3	ENOENT	newfstatat
+2	ENOENT	statfs
+2	ENOENT	access
+1	ENOTTY	ioctl
+1	ENOSYS	rseq

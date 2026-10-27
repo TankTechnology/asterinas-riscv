@@ -1,0 +1,6 @@
+count errno syscall
+14	ENOENT	openat
+1	ENOTTY	ioctl
+1	ENOSYS	rseq
+1	ENOSYS	landlock_create_ruleset
+1	ENOENT	access

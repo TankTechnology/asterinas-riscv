@@ -1,0 +1,11 @@
+count errno syscall
+18	ENOENT	openat
+2	ENOTTY	ioctl
+2	ENOENT	open
+1	ENOTCONN	getpeername
+1	ENOSYS	rseq
+1	ENOSYS	membarrier
+1	ENOSYS	io_uring_setup
+1	ENOPROTOOPT	setsockopt
+1	ENOENT	readlink
+1	ENOENT	access

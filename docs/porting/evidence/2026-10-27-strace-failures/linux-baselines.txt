@@ -1,0 +1,7 @@
+# Host Linux baselines for the "expected error" verdicts (Linux 7.2.6-arch2-1)
+linux readlink(/tmp) errno=22 EINVAL
+linux getxattr(/proc/self/fd/0, system.sockprotoname) errno=95 ENOTSUP
+linux prctl(PR_CAPBSET_READ,0) -> 1 errno=0
+linux prctl(PR_CAPBSET_READ,40) -> 1 errno=0
+linux prctl(PR_CAPBSET_READ,41) -> -1 errno=22 EINVAL
+linux ioctl(pipe, TCGETS) errno=25 ENOTTY

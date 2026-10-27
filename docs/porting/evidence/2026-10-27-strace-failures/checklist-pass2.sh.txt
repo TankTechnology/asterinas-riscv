@@ -1,0 +1,35 @@
+#!/bin/sh
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/tmp
+export TERM=dumb
+W=/var/tmp/sm2
+rm -rf "$W"; mkdir -p "$W"
+mkdir -p "$W/repo"; git -C "$W/repo" init -q 2>/dev/null; echo hi >"$W/repo/f.txt"
+echo '{"a":1,"b":[2,3]}' >"$W/x.json"
+
+run() { # name cmd...
+    name=$1; shift
+    timeout 20 strace -f -o "$W/$name.trace" "$@" >"$W/$name.out" 2>&1
+    echo "SM2 tool=$name rc=$?"
+    grep -a ' = -1 ' "$W/$name.trace" 2>/dev/null | grep -av 'ENOENT' \
+        | sed -E 's/^[0-9]+ +//; s/0x[0-9a-f]+/0xADDR/g; s/\[\.\.\.\]/[...]/g' \
+        | cut -c1-190 | sort | uniq -c | sort -rn | head -18 \
+        | while read -r c l; do echo "SM2 sig $name $c $l"; done
+    rm -f "$W/$name.trace"
+}
+
+run git_gitstatus git -C "$W/repo" status
+run rg_version rg --version
+run jq_valid jq . "$W/x.json"
+run curl_refused curl -s http://127.0.0.1:1
+run dig_lo dig +time=1 +tries=1 @127.0.0.1 localhost
+run ss_listen ss -tln
+run lsof_net lsof -i
+run py_conn python3 -c 'import socket; socket.create_connection(("127.0.0.1",1))'
+run tar_tf tar -tf /etc/hostname
+run xz_version xz --version
+run vim_version vim --version
+run top_batch top -b -n1
+
+echo "SM2 done"
+echo "DAILY_SM2=ok"; echo "DAILY_DONE=ok"

@@ -1,0 +1,10 @@
+count errno syscall
+67	ENOTTY	ioctl
+27	ENOENT	newfstatat
+9	ENOENT	openat
+1	ESPIPE	lseek
+1	ENOSYS	rseq
+1	ENOENT	open
+1	ENOENT	access
+1	EINVAL	readlink
+1	ECONNREFUSED	connect

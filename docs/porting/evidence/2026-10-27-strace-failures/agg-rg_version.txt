@@ -1,0 +1,3 @@
+count errno syscall
+1	ENOSYS	rseq
+1	ENOENT	access

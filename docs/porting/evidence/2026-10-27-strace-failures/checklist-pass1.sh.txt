@@ -1,0 +1,70 @@
+#!/bin/sh
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export HOME=/tmp
+export TERM=dumb
+W=/var/tmp/sm
+rm -rf "$W"; mkdir -p "$W"
+echo "SM disk=$(df -h / | tail -1)"
+need=""
+for t in git rg jq curl dig ss lsof python3 xz vim top strace; do
+    command -v "$t" >/dev/null 2>&1 || need="$need $t"
+done
+echo "SM missing=[$need]"
+if [ -n "$need" ]; then
+    pkgs=""
+    for t in $need; do
+        case "$t" in
+            rg) pkgs="$pkgs ripgrep";; dig) pkgs="$pkgs bind9-dnsutils";;
+            ss) pkgs="$pkgs iproute2";; vim) pkgs="$pkgs vim-tiny";;
+            top) pkgs="$pkgs procps";; xz) pkgs="$pkgs xz-utils";;
+            *) pkgs="$pkgs $t";;
+        esac
+    done
+    echo "SM apt_install=$pkgs"
+    timeout 300 apt-get update >"$W/apt.log" 2>&1 || true
+    timeout 420 apt-get install -y $pkgs >>"$W/apt.log" 2>&1 || true
+    echo "SM apt_rc=$? missing_after=[$(for t in git rg jq curl dig ss lsof python3 xz vim top strace; do command -v $t >/dev/null 2>&1 || printf '%s ' $t; done)]"
+fi
+mkdir -p "$W/repo"; git -C "$W/repo" init -q 2>/dev/null; echo hi >"$W/repo/f.txt"
+echo '{"a":1,"b":[2,3]}' >"$W/x.json"
+
+agg() { awk '/= -1 / {
+    err=""; for(i=1;i<=NF;i++) if($i=="-1") {err=$(i+1); break}
+    name="";
+    for(i=1;i<=NF;i++) {
+        if ($i ~ /^[a-z_][a-z0-9_]*\(/) {name=$i; sub(/\(.*/,"",name); break}
+        if ($i=="<..." && $(i+1) ~ /^[a-z_]/) {name=$(i+1); break}
+    }
+    if (name != "") print err, name
+}' "$1" | sort | uniq -c | sort -rn; }
+
+run() { # name cmd...
+    name=$1; shift
+    timeout 20 strace -f -o "$W/$name.trace" "$@" >"$W/$name.out" 2>&1
+    rc=$?
+    n=$(grep -ac ' = -1 ' "$W/$name.trace" 2>/dev/null)
+    sz=$(wc -c <"$W/$name.trace" 2>/dev/null)
+    echo "SM tool=$name rc=$rc errlines=$n tracebytes=$sz"
+    echo "SM out=$name $(tail -1 "$W/$name.out" 2>/dev/null | tr -d '\r' | cut -c1-120)"
+    agg "$W/$name.trace" | head -20 | while read -r c e s; do echo "SM agg $name $c $e $s"; done
+    grep -a ' = -1 ' "$W/$name.trace" | head -2 | cut -c1-170 | while read -r l; do echo "SM ex $name $l"; done
+    rm -f "$W/$name.trace"
+}
+
+run git_gitstatus git -C "$W/repo" status
+run rg_version rg --version
+run jq_hostname jq . /etc/hostname
+run jq_valid jq . "$W/x.json"
+run curl_refused curl -s http://127.0.0.1:1
+run dig_lo dig +time=1 +tries=1 @127.0.0.1 localhost
+run ss_listen ss -tln
+run lsof_net lsof -i
+run py_conn python3 -c 'import socket; socket.create_connection(("127.0.0.1",1))'
+run tar_tf tar -tf /etc/hostname
+run xz_version xz --version
+run vim_version vim --version
+run top_batch top -b -n1
+
+echo "SM disk_end=$(df -h / | tail -1)"
+echo "SM done"
+echo "DAILY_SM=ok"; echo "DAILY_DONE=ok"

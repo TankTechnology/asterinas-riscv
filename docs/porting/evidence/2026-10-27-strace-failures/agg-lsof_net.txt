@@ -1,0 +1,6 @@
+count errno syscall
+65	EOPNOTSUPP	getxattr
+34	ENOENT	openat
+2	ENOENT	statfs
+2	ENOENT	access
+1	ENOSYS	rseq

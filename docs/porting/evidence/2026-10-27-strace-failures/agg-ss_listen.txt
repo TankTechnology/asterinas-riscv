@@ -1,0 +1,7 @@
+count errno syscall
+4	EINVAL	prctl
+2	ENOENT	statfs
+2	ENOENT	access
+1	ENOTTY	ioctl
+1	ENOSYS	rseq
+1	ENOPROTOOPT	setsockopt
