@@ -692,6 +692,139 @@ configure_and_normalize_rootfs
             "Environment=ASTERINAS_DESKTOP_SHOW_OVERVIEW=1\n",
         )
 
+    def test_builder_installs_daily_use_console_for_firefox(self) -> None:
+        work_directory = self.directory / "configure daily"
+        stage = work_directory / "stage"
+        for relative in (
+            "etc",
+            "etc/systemd/system",
+            "home",
+            "usr/bin",
+            "var/lib/dbus",
+            "var/lib/dpkg",
+            "var/cache/apt/archives",
+            "var/lib/apt/lists",
+            "var/log",
+            "tmp",
+            "var/tmp",
+        ):
+            (stage / relative).mkdir(parents=True, exist_ok=True)
+        (stage / "etc/passwd").write_text("root:x:0:0:root:/root:/bin/bash\n")
+        (stage / "etc/group").write_text("root:x:0:\n")
+        (stage / "etc/shadow").write_text("root:!:0:0:99999:7:::\n")
+        (stage / "etc/gshadow").write_text("root:!::\n")
+        (stage / "etc/hostname").write_text("asterinas-fixture\n")
+        (stage / "etc/hosts").write_text(
+            "127.0.0.1\tlocalhost\n"
+            "::1\t\tlocalhost ip6-localhost ip6-loopback\n"
+        )
+
+        result = subprocess.run(
+            [
+                "/bin/bash",
+                "-c",
+                """source "$1"
+PROFILE=desktop-m4-firefox
+configure_profile 1
+WORK_DIR="$2"
+configure_and_normalize_rootfs
+""",
+                "builder-configure-daily-test",
+                str(BUILD_SCRIPT),
+                str(work_directory),
+            ],
+            cwd=self.directory,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        getty_unit = (
+            stage / "etc/systemd/system/asterinas-console-getty.service"
+        )
+        getty_text = getty_unit.read_text(encoding="utf-8")
+        self.assertIn(
+            "ExecStart=-/sbin/agetty --autologin asterinas --noclear "
+            "--keep-baud 115200,57600,38400,9600 "
+            "-l /usr/local/sbin/asterinas-console-login ttyS0 linux",
+            getty_text,
+        )
+        self.assertIn("TTYPath=/dev/ttyS0", getty_text)
+        self.assertNotIn("BindsTo", getty_text)
+        login_helper = stage / "usr/local/sbin/asterinas-console-login"
+        self.assertTrue(login_helper.is_file())
+        self.assertEqual(stat.S_IMODE(login_helper.stat().st_mode), 0o755)
+        self.assertIn(
+            "exec /usr/bin/setpriv --reuid=1000 --regid=1000 --init-groups",
+            login_helper.read_text(encoding="utf-8"),
+        )
+        self.assertEqual(
+            (stage / "etc/resolv.conf").read_text(encoding="utf-8"),
+            "nameserver 10.0.2.3\n",
+        )
+        getty_wants = (
+            stage
+            / "etc/systemd/system/getty.target.wants/asterinas-console-getty.service"
+        )
+        self.assertTrue(getty_wants.is_symlink())
+        self.assertEqual(
+            os.readlink(getty_wants),
+            "../asterinas-console-getty.service",
+        )
+        self.assertEqual(
+            os.readlink(
+                stage / "etc/systemd/system/serial-getty@ttyS0.service"
+            ),
+            "/dev/null",
+        )
+        self.assertEqual(
+            os.readlink(stage / "etc/systemd/system/console-getty.service"),
+            "/dev/null",
+        )
+        sudoers = stage / "etc/sudoers.d/asterinas"
+        self.assertEqual(
+            sudoers.read_text(encoding="utf-8"),
+            "Defaults !use_pty\nasterinas ALL=(ALL:ALL) NOPASSWD: ALL\n",
+        )
+        self.assertEqual(stat.S_IMODE(sudoers.stat().st_mode), 0o440)
+        self.assertIn(
+            "devpts /dev/pts devpts gid=5,mode=620,ptmxmode=000 0 0",
+            (stage / "etc/fstab").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "127.0.1.1 asterinas-fixture\n",
+            (stage / "etc/hosts").read_text(encoding="utf-8"),
+        )
+        self.assertTrue(
+            (
+                stage
+                / "etc/systemd/system/sigpwr.target.wants"
+                / "asterinas-sigpwr-poweroff.service"
+            ).is_symlink()
+        )
+        # The daily-use image keeps the session but not the framebuffer
+        # evidence probes.
+        self.assertFalse(
+            (
+                stage
+                / "etc/systemd/system/asterinas-desktop-m4-evidence.service"
+            ).exists()
+        )
+        self.assertFalse(
+            (
+                stage
+                / "etc/systemd/system/asterinas-desktop-core-evidence.service"
+            ).exists()
+        )
+        self.assertTrue(
+            (
+                stage
+                / "etc/systemd/system/graphical.target.wants"
+                / "asterinas-desktop-m4.service"
+            ).is_symlink()
+        )
+
     def test_safe_reboot_uses_uptime_and_syncs_before_reboot(self) -> None:
         fake_bin = self.directory / "safe-reboot-bin"
         fake_bin.mkdir()
