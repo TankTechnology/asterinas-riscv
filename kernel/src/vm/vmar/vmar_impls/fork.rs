@@ -117,13 +117,21 @@ fn cow_copy_pt(src: &mut CursorMut<'_>, dst: &mut CursorMut<'_>, size: usize) ->
 
 #[cfg(ktest)]
 mod test {
+    use core::num::NonZeroUsize;
+
     use ostd::{
         io::IoMem,
-        mm::{FrameAllocOptions, PageProperty, VmSpace},
+        mm::{
+            FrameAllocOptions, PageProperty, VmSpace, io::util::HasVmReaderWriter,
+        },
         prelude::*,
     };
 
     use super::*;
+    use crate::vm::{
+        perms::VmPerms,
+        vmar::{PageFaultInfo, vm_mapping::{MappedMemory, VmMapping}},
+    };
 
     fn expected_iomem_flags(flags: PageFlags) -> PageFlags {
         #[cfg(target_arch = "riscv64")]
@@ -267,6 +275,104 @@ mod test {
                 .unwrap(),
             (_, None)
         ));
+    }
+
+    #[ktest]
+    fn cow_write_fault_copies_and_isolates_parent_child() {
+        const EXPECTED_VALUE: u8 = 0x5a;
+        const NEW_VALUE: u8 = 0xa5;
+
+        let parent_space = VmSpace::new();
+        let child_space = VmSpace::new();
+        let map_range = PAGE_SIZE..PAGE_SIZE * 2;
+        let cow_range = 0..PAGE_SIZE * 512 * 512;
+        let page_property = PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback);
+        let preempt_guard = disable_preempt();
+
+        let frame = FrameAllocOptions::new().alloc_frame().unwrap();
+        frame.writer().write_val(&EXPECTED_VALUE).unwrap();
+        let parent_frame = frame.clone();
+        let original_paddr = frame.paddr();
+
+        parent_space
+            .cursor_mut(&preempt_guard, &map_range)
+            .unwrap()
+            .map(frame.into(), page_property);
+
+        // Fork: both page tables now share the frame, and both PTEs are
+        // read-only so that the next write faults.
+        {
+            let mut parent_cursor = parent_space.cursor_mut(&preempt_guard, &cow_range).unwrap();
+            let mut child_cursor = child_space.cursor_mut(&preempt_guard, &cow_range).unwrap();
+            assert_eq!(
+                cow_copy_pt(&mut parent_cursor, &mut child_cursor, cow_range.len()),
+                1
+            );
+        }
+
+        let mapping = VmMapping::new(
+            NonZeroUsize::new(PAGE_SIZE).unwrap(),
+            map_range.start,
+            MappedMemory::Anonymous,
+            None,
+            false,
+            false,
+            false,
+            false,
+            VmPerms::READ | VmPerms::WRITE | VmPerms::MAY_WRITE,
+        );
+
+        // Writing to the child must copy the shared frame.
+        mapping
+            .handle_page_fault(
+                &child_space,
+                &PageFaultInfo::new(map_range.start, VmPerms::WRITE),
+                &mut RssDelta::new_for_test(),
+            )
+            .unwrap();
+
+        let child_paddr = {
+            let mut cursor = child_space.cursor(&preempt_guard, &map_range).unwrap();
+            let (_, Some(VmQueriedItem::MappedRam { frame, prop })) = cursor.query().unwrap()
+            else {
+                panic!("child mapping query failed");
+            };
+            assert!(prop.flags.contains(PageFlags::W));
+            frame.paddr()
+        };
+        assert_ne!(child_paddr, original_paddr);
+
+        // The parent keeps the original frame and its contents.
+        let parent_query = {
+            let mut cursor = parent_space.cursor(&preempt_guard, &map_range).unwrap();
+            let (_, Some(VmQueriedItem::MappedRam { frame, prop })) = cursor.query().unwrap()
+            else {
+                panic!("parent mapping query failed");
+            };
+            assert!(!prop.flags.contains(PageFlags::W));
+            (frame.paddr(), frame.clone())
+        };
+        assert_eq!(parent_query.0, original_paddr);
+        assert_eq!(
+            parent_query.1.reader().read_val::<u8>().unwrap(),
+            EXPECTED_VALUE
+        );
+
+        // Writing the child's private frame does not affect the parent.
+        let child_frame = {
+            let mut cursor = child_space.cursor(&preempt_guard, &map_range).unwrap();
+            let (_, Some(VmQueriedItem::MappedRam { frame, .. })) = cursor.query().unwrap() else {
+                panic!("child mapping query failed");
+            };
+            frame.clone()
+        };
+        child_frame.writer().write_val(&NEW_VALUE).unwrap();
+        assert_eq!(child_frame.reader().read_val::<u8>().unwrap(), NEW_VALUE);
+        assert_eq!(
+            parent_frame.reader().read_val::<u8>().unwrap(),
+            EXPECTED_VALUE
+        );
+        assert!(parent_frame.reference_count() >= 2);
     }
 
     #[ktest]

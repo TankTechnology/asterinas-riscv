@@ -511,3 +511,181 @@ impl VmarInner {
         Ok(())
     }
 }
+
+#[cfg(ktest)]
+impl Vmar {
+    pub(crate) fn new_for_test() -> Arc<Self> {
+        Self::new(crate::process::ProcessVm::new_for_test())
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use core::num::NonZeroUsize;
+
+    use ostd::{mm::PAGE_SIZE, prelude::*};
+
+    use super::*;
+    use crate::vm::{
+        perms::VmPerms,
+        vmar::{RemapOldMappingAction, VmarMapOffset},
+    };
+
+    fn anon_mapping(va: Vaddr, perms: VmPerms) -> VmMapping {
+        VmMapping::new(
+            NonZeroUsize::new(PAGE_SIZE).unwrap(),
+            va,
+            MappedMemory::Anonymous,
+            None,
+            false,
+            false,
+            false,
+            false,
+            perms,
+        )
+    }
+
+    #[ktest]
+    fn adjacent_compatible_vma_mappings_merge() {
+        let mut inner = VmarInner::new();
+        inner.insert_try_merge(anon_mapping(0x1000, VmPerms::READ));
+        inner.insert_try_merge(anon_mapping(0x2000, VmPerms::READ));
+
+        assert_eq!(inner.vm_mappings.iter().count(), 1);
+        let merged = inner.vm_mappings.iter().next().unwrap();
+        assert_eq!(merged.map_to_addr(), 0x1000);
+        assert_eq!(merged.map_end(), 0x3000);
+        assert_eq!(inner.total_vm, 2 * PAGE_SIZE);
+    }
+
+    #[ktest]
+    fn non_adjacent_or_incompatible_vma_mappings_do_not_merge() {
+        let mut inner = VmarInner::new();
+        inner.insert_try_merge(anon_mapping(0x1000, VmPerms::READ));
+        // Incompatible permissions.
+        inner.insert_try_merge(anon_mapping(0x2000, VmPerms::READ | VmPerms::WRITE));
+        // Compatible permissions but not adjacent.
+        inner.insert_try_merge(anon_mapping(0x4000, VmPerms::READ));
+
+        assert_eq!(inner.vm_mappings.iter().count(), 3);
+        assert_eq!(inner.total_vm, 3 * PAGE_SIZE);
+    }
+    fn map_fixed(
+        vmar: &Vmar,
+        addr: Vaddr,
+        size: usize,
+        perms: VmPerms,
+    ) -> crate::prelude::Result<Vaddr> {
+        vmar.new_map(size, perms)?
+            .offset(VmarMapOffset::FixedNoReplace(addr))
+            .build()
+    }
+
+    #[ktest]
+    fn failed_fixed_map_does_not_change_existing_vmas() {
+        let vmar = Vmar::new_for_test();
+        assert_eq!(
+            map_fixed(&vmar, 0x10000, PAGE_SIZE, VmPerms::READ).unwrap(),
+            0x10000
+        );
+
+        let err = map_fixed(&vmar, 0x10000, PAGE_SIZE, VmPerms::READ).unwrap_err();
+        assert_eq!(err.error(), Errno::EEXIST);
+
+        let inner = vmar.inner.read();
+        assert_eq!(inner.vm_mappings.iter().count(), 1);
+        assert_eq!(inner.total_vm, PAGE_SIZE);
+    }
+
+    #[ktest]
+    fn remove_mapping_across_vma_boundaries_splits_at_edges() {
+        let vmar = Vmar::new_for_test();
+        map_fixed(&vmar, 0x10000, 2 * PAGE_SIZE, VmPerms::READ).unwrap();
+        map_fixed(
+            &vmar,
+            0x12000,
+            PAGE_SIZE,
+            VmPerms::READ | VmPerms::WRITE,
+        )
+        .unwrap();
+        map_fixed(&vmar, 0x13000, 2 * PAGE_SIZE, VmPerms::READ).unwrap();
+
+        // The range cuts the first mapping's tail, removes the middle mapping
+        // whole, and cuts the third mapping's head.
+        vmar.remove_mapping(0x11000..0x14000).unwrap();
+
+        let mut remaining: Vec<_> = vmar
+            .inner
+            .read()
+            .vm_mappings
+            .iter()
+            .map(|m| {
+                (
+                    m.map_to_addr(),
+                    m.map_end(),
+                    m.perms() & VmPerms::ALL_PERMS,
+                )
+            })
+            .collect();
+        remaining.sort_by_key(|(start, _, _)| *start);
+        assert_eq!(
+            remaining,
+            vec![
+                (0x10000, 0x11000, VmPerms::READ),
+                (0x14000, 0x15000, VmPerms::READ),
+            ]
+        );
+    }
+
+    #[ktest]
+    fn failed_mprotect_keeps_original_perms() {
+        let vmar = Vmar::new_for_test();
+        vmar.new_map(PAGE_SIZE, VmPerms::READ)
+            .unwrap()
+            .may_perms(VmPerms::MAY_READ)
+            .offset(VmarMapOffset::FixedNoReplace(0x10000))
+            .build()
+            .unwrap();
+
+        // A plain WRITE request has no matching MAY_WRITE capability.
+        let err = vmar
+            .protect(VmPerms::WRITE, 0x10000..0x11000)
+            .unwrap_err();
+        assert_eq!(err.error(), Errno::EACCES);
+
+        let inner = vmar.inner.read();
+        assert_eq!(inner.vm_mappings.iter().count(), 1);
+        let mapping = inner.vm_mappings.iter().next().unwrap();
+        assert_eq!(
+            mapping.perms() & VmPerms::ALL_PERMS,
+            VmPerms::READ
+        );
+    }
+
+    #[ktest]
+    fn failed_mremap_keeps_original_mapping() {
+        let vmar = Vmar::new_for_test();
+        map_fixed(&vmar, 0x10000, 2 * PAGE_SIZE, VmPerms::READ).unwrap();
+
+        // This fails after the implementation may have shrunk the old
+        // mapping, because the new range overlaps the old one.
+        let err = vmar
+            .remap(
+                0x10000,
+                2 * PAGE_SIZE,
+                Some(0x10000),
+                PAGE_SIZE,
+                RemapOldMappingAction::Unmap,
+            )
+            .unwrap_err();
+        assert_eq!(err.error(), Errno::EINVAL);
+
+        let inner = vmar.inner.read();
+        assert_eq!(inner.vm_mappings.iter().count(), 1);
+        let mapping = inner.vm_mappings.iter().next().unwrap();
+        assert_eq!(mapping.map_to_addr(), 0x10000);
+        assert_eq!(mapping.map_end(), 0x12000);
+        assert_eq!(inner.total_vm, 2 * PAGE_SIZE);
+    }
+
+}
