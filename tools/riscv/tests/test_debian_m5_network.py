@@ -822,6 +822,21 @@ configure_and_normalize_rootfs
                 / "etc/systemd/system/asterinas-desktop-core-evidence.service"
             ).exists()
         )
+        # The board has no DHCP and no public resolver, so the daily-use image
+        # carries the DNS tunnel and starts it from basic.target.
+        dns_unit = stage / "etc/systemd/system/asterinas-dns-shim.service"
+        dns_text = dns_unit.read_text(encoding="utf-8")
+        self.assertIn("ExecCondition=/bin/sh -c", dns_text)
+        self.assertIn('test -n "${ASTERINAS_DESKTOP_DNS_HOST:-}"', dns_text)
+        self.assertIn("SuccessExitStatus=1 3", dns_text)
+        self.assertIn("Restart=no", dns_text)
+        self.assertTrue(
+            (
+                stage
+                / "etc/systemd/system/basic.target.wants/asterinas-dns-shim.service"
+            ).is_symlink()
+        )
+        self.assertTrue((stage / "usr/lib/asterinas/megrez-dns-shim").is_file())
         self.assertTrue(
             (
                 stage

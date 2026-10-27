@@ -1035,6 +1035,54 @@ drop_unsupported_sysctl_files() {
     done
 }
 
+# Installs the guest DNS tunnel used by the board images.
+#
+# The board reaches the build host and nothing beyond it, so the resolver the
+# network evidence service writes in direct mode never happens in proxy mode,
+# which is the mode every desktop boot uses. The shim answers on loopback and
+# tunnels to the host, and it only rewrites resolv.conf after its tunnel has
+# answered, so a shim that cannot reach the host leaves the guest as it found
+# it.  Both the daily-use image and browser-web need this; the unit skips
+# itself when no forwarder is configured.
+configure_dns_shim() {
+    local stage="$1"
+    local script_directory="$2"
+
+    install -D -m 0755 -- "$script_directory/megrez_dns_shim.py" \
+        "$stage/usr/lib/asterinas/megrez-dns-shim"
+    cat >"$stage/etc/systemd/system/asterinas-dns-shim.service" <<'EOF'
+[Unit]
+Description=Asterinas guest DNS tunnel to the build host
+After=local-fs.target
+
+[Service]
+# The shim serves for as long as the guest runs, so it stays Type=simple: a
+# oneshot would wait for a process that never exits, and TimeoutStartSec would
+# then kill the healthy tunnel and mark the unit failed.
+Type=simple
+Restart=no
+TimeoutStartSec=30s
+# No forwarder means there is nothing to tunnel.  Skip the unit before
+# launching Python instead of running it only to exit 3; ExecCondition status
+# 1..254 skips the unit.  The variable is set in the manager environment by
+# systemd.setenv=... on the kernel command line.
+ExecCondition=/bin/sh -c 'test -n "${ASTERINAS_DESKTOP_DNS_HOST:-}"'
+# Exit 3 (no forwarder configured) and exit 1 (tunnel not reachable) are
+# explicit inactive states, not failures.  A later explicit
+# `systemctl restart asterinas-dns-shim` retries after the host/interface is
+# up; boot never spins on it.
+SuccessExitStatus=1 3
+ExecStart=/usr/lib/asterinas/megrez-dns-shim
+
+[Install]
+WantedBy=basic.target
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/asterinas-dns-shim.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    ln -sf -- "../asterinas-dns-shim.service" \
+        "$stage/etc/systemd/system/basic.target.wants/asterinas-dns-shim.service"
+}
+
 configure_and_normalize_rootfs() {
     local stage="$WORK_DIR/stage"
     local script_directory
@@ -1092,6 +1140,10 @@ EOF
             "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m4-evidence.service" \
             "$stage/etc/systemd/system/asterinas-desktop-core-evidence.service" \
             "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-core-evidence.service"
+        # The board boot path has no DHCP and no reachable public resolver;
+        # the shim is the only DNS path.  It skips itself when the board
+        # bootargs do not name a forwarder, so the QEMU gate is unaffected.
+        configure_dns_shim "$stage" "$script_directory"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
         configure_desktop "$stage" m4
         configure_desktop_m5_network "$stage"
@@ -1830,48 +1882,7 @@ EOF
             # stopping the desktop.
             install -D -m 0644 -- "$script_directory/asterinas_clock_sync.conf" \
                 "$stage/etc/systemd/system/asterinas-desktop-m5.service.d/clock-sync.conf"
-            # The board reaches the host and nothing beyond it, so the resolver
-            # the network evidence service writes in direct mode never happens
-            # in proxy mode, which is the mode every desktop boot uses. The
-            # guest is left with the build-time nameserver it cannot route to.
-            # This shim answers on loopback and tunnels to the host, and it
-            # only rewrites resolv.conf after its tunnel has answered, so a
-            # shim that cannot reach the host leaves the guest as it found it.
-            # Restart=always is what lets it come up on a later boot phase than
-            # the interface it tunnels over.
-            install -D -m 0755 -- "$script_directory/megrez_dns_shim.py" \
-                "$stage/usr/lib/asterinas/megrez-dns-shim"
-            cat >"$stage/etc/systemd/system/asterinas-dns-shim.service" <<'EOF'
-[Unit]
-Description=Asterinas guest DNS tunnel to the build host
-After=local-fs.target
-
-[Service]
-# The shim serves for as long as the guest runs, so it stays Type=simple: a
-# oneshot would wait for a process that never exits, and TimeoutStartSec would
-# then kill the healthy tunnel and mark the unit failed.
-Type=simple
-Restart=no
-TimeoutStartSec=30s
-# No forwarder means there is nothing to tunnel.  Skip the unit before
-# launching Python instead of running it only to exit 3; ExecCondition status
-# 1..254 skips the unit.  The variable is set in the manager environment by
-# systemd.setenv=... on the kernel command line.
-ExecCondition=/bin/sh -c 'test -n "${ASTERINAS_DESKTOP_DNS_HOST:-}"'
-# Exit 3 (no forwarder configured) and exit 1 (tunnel not reachable) are
-# explicit inactive states, not failures.  A later explicit
-# `systemctl restart asterinas-dns-shim` retries after the host/interface is
-# up; boot never spins on it.
-SuccessExitStatus=1 3
-ExecStart=/usr/lib/asterinas/megrez-dns-shim
-
-[Install]
-WantedBy=basic.target
-EOF
-            chmod 0644 -- "$stage/etc/systemd/system/asterinas-dns-shim.service"
-            install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
-            ln -sf -- "../asterinas-dns-shim.service" \
-                "$stage/etc/systemd/system/basic.target.wants/asterinas-dns-shim.service"
+            configure_dns_shim "$stage" "$script_directory"
             install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
             install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \
