@@ -188,3 +188,25 @@ open refused : 15981 次     <- 全部 locked=true, other_closed=false
 `openpty()` 一步完成的客户端）来确认，而不是改内核。
 
 临时观测代码已回滚；仓库只保留 `8306c8fc7`（slave 归属）与 `9c6c85663`（/dev/tty ENXIO）两个真实修复。
+
+## 11. 换 GTK 客户端的尝试（未完成，环境卡住）
+
+既然 xterm 的失败被证明在它自己的 pty 路径，而 GTK 客户端（`zenity --entry`）
+既不使用 pty、也不走 XIM（GTK 通过 fcitx 的 D-Bus 模块上屏），是最直接的替代验证路径。
+
+- 该镜像里 `zenity` / `libgtk-3-0` / `fcitx5-frontend-gtk3` **都未安装**；
+- 在 guest 里执行 `apt-get update && apt-get install -y zenity fcitx5-frontend-gtk3`
+  后，**16 分钟没有任何完成输出**（console 的内核时间停在 135.6 s，此后无任何内核日志），
+  只能强杀 VM 并 `e2fsck` 修复镜像。
+- 因此 **GTK 路径本轮没有得到验证**；这一卡住属于 guest 的 apt/网络层面（同镜像在
+  门禁 checklist 里跑 apt 是正常的），本轮**未归因**，也不影响前面的结论。
+
+**状态：`INPUT_METHOD` 仍为 fail，没有宣称修复。**
+
+下一步（按成本排序）：
+
+1. **离线预装**：在主机上把 `zenity`、`fcitx5-frontend-gtk3` 装进基础镜像，
+   绕开 guest 内 apt；再跑 `zenity --entry` + XTEST 输入五笔，验证「真实上屏」；
+2. 或继续查 xterm：它是唯一已确认「从不调用 TIOCSPTLCK」的程序，
+   需要对照 Debian xterm 的具体构建/代码路径；
+3. XIM 自写客户端的 `XCreateIC` 阻塞仍未解决，等 1/2 有结论后再回到它。
