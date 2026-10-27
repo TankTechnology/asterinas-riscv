@@ -35,11 +35,18 @@ impl WaitOptions {
     pub(crate) fn check(&self) -> Result<()> {
         // `WEXITED` is the default behaviour of `waitid` and needs no special
         // handling; listing it keeps the kernel from logging it as unknown.
+        //
+        // `WALL` and `WCLONE` select which clone children are reported (see
+        // `try_wait_children`) and are handled, so they are not "unknown".
+        // `WNOTHREAD` is not implemented: this kernel keeps children per
+        // process, which already matches the default (thread-shared) behavior.
         let supported_args = WaitOptions::WEXITED
             | WaitOptions::WNOHANG
             | WaitOptions::WSTOPPED
             | WaitOptions::WCONTINUED
-            | WaitOptions::WNOWAIT;
+            | WaitOptions::WNOWAIT
+            | WaitOptions::WALL
+            | WaitOptions::WCLONE;
         if !supported_args.contains(*self) {
             warn!(
                 "unsupported wait options are found: {:?}",
@@ -303,10 +310,26 @@ fn try_wait_children(
             continue;
         }
 
+        let is_traced = child.main_thread().as_posix_thread().unwrap().is_traced();
+
+        // Only clone children (those whose exit signal is not `SIGCHLD`) need
+        // `__WALL`, and `__WCLONE` asks for them alone. Traced children are
+        // always eligible, as in Linux's `eligible_child`.
+        //
+        // Reference: <https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/plain/kernel/exit.c>
+        // (`eligible_child`).
+        let is_clone_child = child.exit_signal().is_some_and(|sig| sig != SIGCHLD);
+        if !is_traced
+            && !wait_options.contains(WaitOptions::WALL)
+            && is_clone_child != wait_options.contains(WaitOptions::WCLONE)
+        {
+            continue;
+        }
+
         // We have found at least one child matching `child_filter`.
         fallback_result = WaitResult::MatchedButUnready;
 
-        if child.main_thread().as_posix_thread().unwrap().is_traced() {
+        if is_traced {
             continue;
         }
 
