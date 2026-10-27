@@ -1,0 +1,10 @@
+domain	result	detail
+DESKTOP	ok	Xorg+DRI3
+APP	ok	xterm
+KEYBOARD	ok	virtio-evdev-xterm-abc
+APT	ok	xclip+xterm+alsa-utils+xf86-input-evdev+yad
+CLIPBOARD	ok	xclip-round-trip
+INPUT_METHOD	ok	table--typed-你好
+AUDIO	ok	aplay-hw:0,0
+USB	ok	mounted-/dev/sda-read-ASTERINAS-USB-OK
+SUSPEND	ok	woke-up-disk-and-io-ok
