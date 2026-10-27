@@ -1011,28 +1011,27 @@ copy_into_content_cache() {
         --sha256 "$expected_sha256"
 }
 
-# Drops the sysctl assignments this kernel cannot apply.
+# Removes the sysctl files whose assignments this kernel cannot apply.
 #
-# Debian's systemd defaults write `kernel.pid_max` and `kernel.core_pattern`.
-# On Asterinas the first exists but rejects writes with EOPNOTSUPP and the
-# second does not exist at all, so systemd-sysctl exits 1 on every boot and
-# stays in `systemctl --failed`.  Nothing in the image depends on either
-# assignment (Asterinas already reports the maximum PID value, and it has no
-# coredump support), so comment them out rather than faking kernel knobs.
-# The files themselves stay in place so package upgrades keep their layout.
-normalize_unsupported_sysctl_keys() {
+# Debian ships `kernel.pid_max = 4194304` and `kernel.core_pattern=core`.  On
+# Asterinas pid_max already reads 2147483647 and rejects writes with
+# EOPNOTSUPP, and /proc/sys/kernel/core_pattern does not exist, so
+# systemd-sysctl exits 1 on every boot and stays in `systemctl --failed`.
+# Verified on the board: moving these two files away lets
+# `systemctl restart systemd-sysctl` succeed and drops the failed count from 4
+# to 3.  Removing them is the smallest fix that matches the kernel: a
+# conditional drop-in could only write pid_max, which is already at its
+# maximum, so there is nothing left to set.
+drop_unsupported_sysctl_files() {
     local stage="$1"
-    local directory
     local file
 
-    for directory in "$stage/usr/lib/sysctl.d" "$stage/etc/sysctl.d"; do
-        [[ -d "$directory" ]] || continue
-        while IFS= read -r -d '' file; do
-            sed -i \
-                -e 's/^\([[:space:]]*\)kernel\.pid_max[[:space:]]*=.*$/\1# Asterinas: kernel.pid_max is read-only; assignment dropped./' \
-                -e 's/^\([[:space:]]*\)kernel\.core_pattern[[:space:]]*=.*$/\1# Asterinas: kernel.core_pattern is not implemented; assignment dropped./' \
-                -- "$file"
-        done < <(find "$directory" -type f -name '*.conf' -print0)
+    for file in \
+        "$stage/usr/lib/sysctl.d/10-coredump-debian.conf" \
+        "$stage/usr/lib/sysctl.d/50-pid-max.conf" \
+        "$stage/etc/sysctl.d/10-coredump-debian.conf" \
+        "$stage/etc/sysctl.d/50-pid-max.conf"; do
+        rm -f -- "$file"
     done
 }
 
@@ -1043,7 +1042,7 @@ configure_and_normalize_rootfs() {
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     log "phase 7/8: configuring and normalizing rootfs"
-    normalize_unsupported_sysctl_keys "$stage"
+    drop_unsupported_sysctl_files "$stage"
     cat >"$stage/etc/asterinas-rootfs.bashrc" <<'EOF'
 if [[ $- == *i* ]]; then
     printf '%s\n' '__DEBIAN_ROOTFS_SHELL_READY__'

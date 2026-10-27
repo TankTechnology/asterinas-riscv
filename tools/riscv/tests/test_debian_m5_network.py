@@ -2412,7 +2412,7 @@ esac
         self.assertNotIn("Restart=always", block)
         self.assertNotIn("RestartPreventExitStatus", block)
 
-    def test_builder_drops_unsupported_sysctl_keys(self) -> None:
+    def test_builder_drops_unsupported_sysctl_files(self) -> None:
         stage = self.directory / "sysctl-stage"
         lib_directory = stage / "usr/lib/sysctl.d"
         etc_directory = stage / "etc/sysctl.d"
@@ -2420,25 +2420,20 @@ esac
         etc_directory.mkdir(parents=True)
         pid_max = lib_directory / "50-pid-max.conf"
         pid_max.write_text(
-            "# Debian default\nkernel.pid_max = 4194304\nkeep.me = 1\n",
+            "# Debian default\nkernel.pid_max = 4194304\n",
             encoding="utf-8",
         )
         coredump = lib_directory / "10-coredump-debian.conf"
         coredump.write_text("kernel.core_pattern=core\n", encoding="utf-8")
-        local = etc_directory / "90-local.conf"
-        local.write_text(
-            "kernel.pid_max=99\n"
-            "kernel.core_pattern=|/bin/false\n"
-            "fs.file-max=1\n",
-            encoding="utf-8",
-        )
+        unrelated = lib_directory / "99-keep.conf"
+        unrelated.write_text("fs.file-max=1\n", encoding="utf-8")
 
         result = subprocess.run(
             [
                 "/bin/bash",
                 "-c",
                 """source "$1"
-normalize_unsupported_sysctl_keys "$2"
+drop_unsupported_sysctl_files "$2"
 """,
                 "builder-sysctl-test",
                 str(BUILD_SCRIPT),
@@ -2451,18 +2446,16 @@ normalize_unsupported_sysctl_keys "$2"
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        for path in (pid_max, coredump, local):
-            self.assertNotRegex(
-                path.read_text(encoding="utf-8"),
-                r"(?m)^\s*kernel\.(pid_max|core_pattern)\s*=",
-            )
-        self.assertIn("keep.me = 1", pid_max.read_text(encoding="utf-8"))
-        self.assertIn("fs.file-max=1", local.read_text(encoding="utf-8"))
+        self.assertFalse(pid_max.exists())
+        self.assertFalse(coredump.exists())
+        self.assertEqual(unrelated.read_text(encoding="utf-8"), "fs.file-max=1\n")
         builder = BUILD_SCRIPT.read_text(encoding="utf-8")
         self.assertIn(
-            'normalize_unsupported_sysctl_keys "$stage"',
+            'drop_unsupported_sysctl_files "$stage"',
             builder,
         )
+        self.assertIn("10-coredump-debian.conf", builder)
+        self.assertIn("50-pid-max.conf", builder)
 
     def test_qemu_evidence_uses_dns_and_https_without_ip_or_ping(self) -> None:
         console = self.directory / "qemu-console"
