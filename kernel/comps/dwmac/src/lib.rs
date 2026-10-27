@@ -4,6 +4,10 @@
 
 #![no_std]
 #![deny(unsafe_code)]
+// The GMAC driver is only instantiated on RISC-V. The shared register,
+// queue, and polling modules are still built for the cross-architecture
+// workspace lint, where their internals are unused.
+#![cfg_attr(not(target_arch = "riscv64"), allow(dead_code))]
 
 #[macro_use]
 extern crate ostd_pod;
