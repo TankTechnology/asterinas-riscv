@@ -9,7 +9,8 @@ use crate::{
     net::socket::{
         ip::{DatagramSocket, IpAddressFamily, StreamSocket},
         netlink::{
-            NetlinkRouteSocket, NetlinkUeventSocket, StandardNetlinkProtocol, is_valid_protocol,
+            NetlinkGenericSocket, NetlinkRouteSocket, NetlinkUeventSocket, StandardNetlinkProtocol,
+            is_valid_protocol,
         },
         unix::{UnixDatagramSocket, UnixStreamSocket},
         vsock::VsockStreamSocket,
@@ -82,6 +83,9 @@ pub(super) fn sys_socket(
                 }
                 Ok(StandardNetlinkProtocol::KOBJECT_UEVENT) => {
                     NetlinkUeventSocket::new(is_nonblocking, sock_type) as Arc<dyn FileLike>
+                }
+                Ok(StandardNetlinkProtocol::GENERIC) => {
+                    NetlinkGenericSocket::new(is_nonblocking, sock_type) as Arc<dyn FileLike>
                 }
                 Ok(_) => {
                     return_errno_with_message!(
