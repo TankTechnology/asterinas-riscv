@@ -112,8 +112,27 @@ pub enum CSegmentType {
     DELADDR = 21,
     GETADDR = 22,
 
+    NEWNEIGH = 28,
+    DELNEIGH = 29,
+    GETNEIGH = 30,
+    NEWRULE = 32,
+    DELRULE = 33,
+    GETRULE = 34,
+    NEWNEXTHOP = 104,
+    DELNEXTHOP = 105,
+    GETNEXTHOP = 106,
+
     NEWROUTE = 24,
     DELROUTE = 25,
     GETROUTE = 26,
+    NEWQDISC = 36,
+    DELQDISC = 37,
+    GETQDISC = 38,
+    NEWTCLASS = 40,
+    DELTCLASS = 41,
+    GETTCLASS = 42,
+    NEWTFILTER = 44,
+    DELTFILTER = 45,
+    GETTFILTER = 46,
     // TODO: The list is not exhaustive.
 }

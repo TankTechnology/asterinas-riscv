@@ -58,6 +58,12 @@ pub enum RtnlSegment {
     GetLink(LinkSegment),
     GetRoute(RouteSegment),
     NewRoute(RouteSegment),
+    GetQdisc(QdiscSegment),
+    GetTclass(QdiscSegment),
+    GetTfilter(QdiscSegment),
+    GetNeigh(QdiscSegment),
+    GetRule(QdiscSegment),
+    GetNexthop(QdiscSegment),
     Done(DoneSegment),
     Error(ErrorSegment),
 }
@@ -74,6 +80,12 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::GetRoute(route_segment) | RtnlSegment::NewRoute(route_segment) => {
                 route_segment.header()
             }
+            RtnlSegment::GetQdisc(qdisc_segment) => qdisc_segment.header(),
+            RtnlSegment::GetTclass(qdisc_segment) => qdisc_segment.header(),
+            RtnlSegment::GetTfilter(qdisc_segment) => qdisc_segment.header(),
+            RtnlSegment::GetNeigh(qdisc_segment) => qdisc_segment.header(),
+            RtnlSegment::GetRule(qdisc_segment) => qdisc_segment.header(),
+            RtnlSegment::GetNexthop(qdisc_segment) => qdisc_segment.header(),
             RtnlSegment::Done(done_segment) => done_segment.header(),
             RtnlSegment::Error(error_segment) => error_segment.header(),
         }
@@ -90,6 +102,12 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::GetRoute(route_segment) | RtnlSegment::NewRoute(route_segment) => {
                 route_segment.header_mut()
             }
+            RtnlSegment::GetQdisc(qdisc_segment) => qdisc_segment.header_mut(),
+            RtnlSegment::GetTclass(qdisc_segment) => qdisc_segment.header_mut(),
+            RtnlSegment::GetTfilter(qdisc_segment) => qdisc_segment.header_mut(),
+            RtnlSegment::GetNeigh(qdisc_segment) => qdisc_segment.header_mut(),
+            RtnlSegment::GetRule(qdisc_segment) => qdisc_segment.header_mut(),
+            RtnlSegment::GetNexthop(qdisc_segment) => qdisc_segment.header_mut(),
             RtnlSegment::Done(done_segment) => done_segment.header_mut(),
             RtnlSegment::Error(error_segment) => error_segment.header_mut(),
         }
@@ -119,6 +137,24 @@ impl ProtocolSegment for RtnlSegment {
             Ok(CSegmentType::GETROUTE) => {
                 RouteSegment::read_from(&header, reader)?.map(RtnlSegment::GetRoute)
             }
+            Ok(CSegmentType::GETQDISC) => {
+                QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetQdisc)
+            }
+            Ok(CSegmentType::GETTCLASS) => {
+                QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetTclass)
+            }
+            Ok(CSegmentType::GETTFILTER) => {
+                QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetTfilter)
+            }
+            Ok(CSegmentType::GETNEIGH) => {
+                QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetNeigh)
+            }
+            Ok(CSegmentType::GETRULE) => {
+                QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetRule)
+            }
+            Ok(CSegmentType::GETNEXTHOP) => {
+                QdiscSegment::read_from(&header, reader)?.map(RtnlSegment::GetNexthop)
+            }
             _ => {
                 let payload_len = header.calc_payload_len_with_padding(reader)?;
                 reader.skip_some(payload_len);
@@ -142,10 +178,40 @@ impl ProtocolSegment for RtnlSegment {
             RtnlSegment::SetLink(_)
             | RtnlSegment::GetAddr(_)
             | RtnlSegment::GetLink(_)
-            | RtnlSegment::GetRoute(_) => {
+            | RtnlSegment::GetRoute(_)
+            | RtnlSegment::GetQdisc(_)
+            | RtnlSegment::GetTclass(_)
+            | RtnlSegment::GetTfilter(_)
+            | RtnlSegment::GetNeigh(_)
+            | RtnlSegment::GetRule(_)
+            | RtnlSegment::GetNexthop(_) => {
                 unreachable!("kernel should not write set/get requests to user space");
             }
         }
         Ok(())
+    }
+}
+
+/// A `RTM_GETQDISC` request. Asterinas currently exposes no traffic-control
+/// qdisc objects, so retaining the header is sufficient to return `NLMSG_DONE`
+/// for an empty dump instead of leaving rtnetlink clients blocked.
+#[derive(Debug)]
+pub struct QdiscSegment {
+    header: CMsgSegHdr,
+}
+
+impl QdiscSegment {
+    fn read_from(header: &CMsgSegHdr, reader: &mut dyn MultiRead) -> Result<ContinueRead<Self>> {
+        let payload_len = header.calc_payload_len_with_padding(reader)?;
+        reader.skip_some(payload_len);
+        Ok(ContinueRead::Parsed(Self { header: *header }))
+    }
+
+    pub fn header(&self) -> &CMsgSegHdr {
+        &self.header
+    }
+
+    pub fn header_mut(&mut self) -> &mut CMsgSegHdr {
+        &mut self.header
     }
 }

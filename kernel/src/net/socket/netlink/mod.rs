@@ -40,6 +40,7 @@
 mod addr;
 mod common;
 mod ctrl_msg;
+mod generic;
 mod kobject_uevent;
 mod message;
 mod options;
@@ -49,6 +50,7 @@ mod table;
 
 pub use addr::{GroupIdSet, NetlinkSocketAddr};
 pub(in crate::net) use ctrl_msg::NetlinkControlMessage;
+pub use generic::NetlinkGenericSocket;
 pub use kobject_uevent::NetlinkUeventSocket;
 pub use options::{AddMembership, DropMembership, ExtAck, GetStrictChk, ListMemberships, PktInfo};
 pub(super) use receiver::NETLINK_DEFAULT_BUF_SIZE;
