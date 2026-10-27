@@ -794,10 +794,14 @@ mod test {
         {
             let mut metadata = group.metadata.write();
             assert_eq!(metadata.inode_bitmap.alloc(), Some(0));
-            metadata.desc.free_inodes_count = 1;
+            // The group's only valid inode is now allocated.
+            metadata.desc.free_inodes_count = 0;
         }
 
         assert!(group.alloc_ino(InodeType::File).unwrap().is_none());
+        // Deliberately make the counter inconsistent: freeing the inode would
+        // overflow the partial group's inode count.
+        group.metadata.write().desc.free_inodes_count = 1;
         assert_errno!(group.free_inode(1025, InodeType::File), Errno::EIO);
         assert!(group.is_inode_allocated(1025));
         assert_eq!(group.free_inodes_count(), 1);

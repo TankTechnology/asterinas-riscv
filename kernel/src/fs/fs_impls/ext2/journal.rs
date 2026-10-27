@@ -518,6 +518,7 @@ mod test {
         let mut block = header(JBD2_DESCRIPTOR_BLOCK);
         block[12..16].copy_from_slice(&31u32.to_be_bytes());
         block[16..20].copy_from_slice(&JBD2_FLAG_LAST_TAG.to_be_bytes());
+        block[20..36].fill(0x42);
         assert!(parse_descriptor(&block[..35], 7, &[0; 16]).is_err());
         assert_eq!(
             parse_descriptor(&block[..36], 7, &[0x42; 16])
