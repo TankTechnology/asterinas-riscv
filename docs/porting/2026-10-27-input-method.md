@@ -165,3 +165,26 @@ shim 记录 `open/open64/openat/openat64/ioctl/close/posix_openpt/openpty`
 **结论不变：`INPUT_METHOD` 仍为 fail。** 下一步是在上述四个 EIO 点加一次性
 观测（或对 xterm 用 `LD_PRELOAD` 记录 `tcgetattr/ioctl` 与 fd 生命周期），
 确定 xterm 拿到 EIO 的确切条件，再判断是内核语义还是 xterm 的调用序问题。
+
+## 10. 指针/pid 级定位（2026-10-27 深夜，第三阶段）
+
+在 `devpts create`、`TIOCSPTLCK`、`PtySlaveFile::new` 三处加一次性 `error!` 观测
+（打印 pid、index、`Arc` 指针），跑一个干净的 xterm（无 shim、无残留进程）：
+
+```
+devpts create: 15993 次
+pty lock     : 10 次        <- 全部来自我们用 python 直接调 grantpt/unlockpt 的测试（4+4）与早先 2 次
+open refused : 15981 次     <- 全部 locked=true, other_closed=false
+```
+
+- `create` 的 pid 与 `open` 的 pid **不同**：父 xterm 创建 pair，子进程去打开 slave。
+- 解锁过的 pair 指针（如 `0x…a210`）与被拒绝打开的 pair 指针（如 `0x…c210`）**不是同一个**。
+- 结论：**xterm 在这台内核上从不发起 `TIOCSPTLCK`**；每个新 pair 都保持 locked，
+  子进程按名字打开必然得到 `EIO`。内核这条规则（`pty/file.rs:24-31`）与 Linux
+  `TTY_LOCKED` 语义一致，**不是内核缺陷**。
+
+因此 INPUT_METHOD 的 xterm 路径的剩余问题是「xterm 为什么在打开 slave 前不解锁」，
+属于 xterm 自身的 pty 建立路径，需要读 Debian xterm 的具体实现（或换用经由
+`openpty()` 一步完成的客户端）来确认，而不是改内核。
+
+临时观测代码已回滚；仓库只保留 `8306c8fc7`（slave 归属）与 `9c6c85663`（/dev/tty ENXIO）两个真实修复。
