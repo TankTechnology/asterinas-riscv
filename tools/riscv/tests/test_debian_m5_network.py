@@ -822,6 +822,21 @@ configure_and_normalize_rootfs
                 / "etc/systemd/system/asterinas-desktop-core-evidence.service"
             ).exists()
         )
+        # The board has no DHCP and no public resolver, so the daily-use image
+        # carries the DNS tunnel and starts it from basic.target.
+        dns_unit = stage / "etc/systemd/system/asterinas-dns-shim.service"
+        dns_text = dns_unit.read_text(encoding="utf-8")
+        self.assertIn("ExecCondition=/bin/sh -c", dns_text)
+        self.assertIn('test -n "${ASTERINAS_DESKTOP_DNS_HOST:-}"', dns_text)
+        self.assertIn("SuccessExitStatus=1 3", dns_text)
+        self.assertIn("Restart=no", dns_text)
+        self.assertTrue(
+            (
+                stage
+                / "etc/systemd/system/basic.target.wants/asterinas-dns-shim.service"
+            ).is_symlink()
+        )
+        self.assertTrue((stage / "usr/lib/asterinas/megrez-dns-shim").is_file())
         self.assertTrue(
             (
                 stage
@@ -2397,22 +2412,27 @@ esac
             '--connect-timeout "$FIXTURE_CONNECT_TIMEOUT_SECONDS"',
             source,
         )
+        self.assertIn('FIXTURE_MAX_TIME_SECONDS:-2', source)
+        self.assertIn('--max-time "$FIXTURE_MAX_TIME_SECONDS"', source)
 
     def test_dns_shim_unit_does_not_loop_or_fail_without_a_forwarder(self) -> None:
         source = BUILD_SCRIPT.read_text(encoding="utf-8")
         block = source[source.index("asterinas-dns-shim.service"):]
         block = block[: block.index("[Install]")]
-        # The healthy shim serves forever; oneshot would never finish starting
-        # and would hold basic.target.  Inactive-on-unconfigured comes from
-        # SuccessExitStatus plus Restart=no instead.
+        # The healthy shim serves forever; oneshot would wait for a process
+        # that never exits and TimeoutStartSec would kill it.  The
+        # unconfigured case is skipped by ExecCondition; the tunnel-down case
+        # is a successful exit with Restart=no, so neither loops or fails.
         self.assertIn("Type=simple", block)
         self.assertNotIn("Type=oneshot", block)
         self.assertIn("Restart=no", block)
+        self.assertIn('ExecCondition=/bin/sh -c', block)
+        self.assertIn('test -n "${ASTERINAS_DESKTOP_DNS_HOST:-}"', block)
         self.assertIn("SuccessExitStatus=1 3", block)
         self.assertNotIn("Restart=always", block)
         self.assertNotIn("RestartPreventExitStatus", block)
 
-    def test_builder_drops_unsupported_sysctl_keys(self) -> None:
+    def test_builder_drops_unsupported_sysctl_files(self) -> None:
         stage = self.directory / "sysctl-stage"
         lib_directory = stage / "usr/lib/sysctl.d"
         etc_directory = stage / "etc/sysctl.d"
@@ -2420,25 +2440,20 @@ esac
         etc_directory.mkdir(parents=True)
         pid_max = lib_directory / "50-pid-max.conf"
         pid_max.write_text(
-            "# Debian default\nkernel.pid_max = 4194304\nkeep.me = 1\n",
+            "# Debian default\nkernel.pid_max = 4194304\n",
             encoding="utf-8",
         )
         coredump = lib_directory / "10-coredump-debian.conf"
         coredump.write_text("kernel.core_pattern=core\n", encoding="utf-8")
-        local = etc_directory / "90-local.conf"
-        local.write_text(
-            "kernel.pid_max=99\n"
-            "kernel.core_pattern=|/bin/false\n"
-            "fs.file-max=1\n",
-            encoding="utf-8",
-        )
+        unrelated = lib_directory / "99-keep.conf"
+        unrelated.write_text("fs.file-max=1\n", encoding="utf-8")
 
         result = subprocess.run(
             [
                 "/bin/bash",
                 "-c",
                 """source "$1"
-normalize_unsupported_sysctl_keys "$2"
+drop_unsupported_sysctl_files "$2"
 """,
                 "builder-sysctl-test",
                 str(BUILD_SCRIPT),
@@ -2451,18 +2466,16 @@ normalize_unsupported_sysctl_keys "$2"
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        for path in (pid_max, coredump, local):
-            self.assertNotRegex(
-                path.read_text(encoding="utf-8"),
-                r"(?m)^\s*kernel\.(pid_max|core_pattern)\s*=",
-            )
-        self.assertIn("keep.me = 1", pid_max.read_text(encoding="utf-8"))
-        self.assertIn("fs.file-max=1", local.read_text(encoding="utf-8"))
+        self.assertFalse(pid_max.exists())
+        self.assertFalse(coredump.exists())
+        self.assertEqual(unrelated.read_text(encoding="utf-8"), "fs.file-max=1\n")
         builder = BUILD_SCRIPT.read_text(encoding="utf-8")
         self.assertIn(
-            'normalize_unsupported_sysctl_keys "$stage"',
+            'drop_unsupported_sysctl_files "$stage"',
             builder,
         )
+        self.assertIn("10-coredump-debian.conf", builder)
+        self.assertIn("50-pid-max.conf", builder)
 
     def test_qemu_evidence_uses_dns_and_https_without_ip_or_ping(self) -> None:
         console = self.directory / "qemu-console"
