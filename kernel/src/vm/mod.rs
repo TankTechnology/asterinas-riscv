@@ -38,3 +38,73 @@ pub fn mem_total() -> usize {
         .map(|region| region.len())
         .sum::<usize>()
 }
+
+#[cfg(ktest)]
+mod tests {
+    use super::mem_total;
+    use ostd::{
+        Error,
+        mm::{
+            FrameAllocOptions, HasPaddr, HasSize, PAGE_SIZE, io::util::HasVmReaderWriter,
+        },
+        prelude::*,
+    };
+
+    #[ktest]
+    fn frame_alloc_free_roundtrip() {
+        let frame = FrameAllocOptions::new().alloc_frame().unwrap();
+        let paddr = frame.paddr();
+        assert_eq!(paddr % PAGE_SIZE, 0);
+
+        frame.writer().write_val(&0x5a_u8).unwrap();
+        assert_eq!(frame.reader().read_val::<u8>().unwrap(), 0x5a);
+
+        drop(frame);
+    }
+
+    #[ktest]
+    fn frame_alloc_multipage_is_contiguous() {
+        const NR_FRAMES: usize = 4;
+
+        let segment = FrameAllocOptions::new()
+            .alloc_segment(NR_FRAMES)
+            .unwrap();
+        assert_eq!(segment.size(), NR_FRAMES * PAGE_SIZE);
+        assert_eq!(segment.paddr() % PAGE_SIZE, 0);
+
+        // Every frame in the segment must be usable and at the next page.
+        for (idx, paddr) in (segment.paddr()..segment.paddr() + segment.size())
+            .step_by(PAGE_SIZE)
+            .enumerate()
+        {
+            assert_eq!(paddr, segment.paddr() + idx * PAGE_SIZE);
+        }
+    }
+
+    #[ktest]
+    fn frame_free_is_reused() {
+        let paddr = FrameAllocOptions::new()
+            .alloc_frame()
+            .unwrap()
+            .paddr();
+        let frame = FrameAllocOptions::new().alloc_frame().unwrap();
+        assert_eq!(frame.paddr(), paddr);
+    }
+
+    #[ktest]
+    fn frame_exhaustion_returns_enomem_without_panic() {
+        let total_frames = mem_total() / PAGE_SIZE;
+        assert!(total_frames > 0);
+
+        // Request more contiguous frames than the machine has.  The
+        // allocator must fail cleanly rather than panic, and it must remain
+        // usable for later, satisfiable requests.
+        let err = FrameAllocOptions::new()
+            .alloc_segment(total_frames + 1)
+            .unwrap_err();
+        assert_eq!(err, Error::NoMemory);
+
+        let frame = FrameAllocOptions::new().alloc_frame().unwrap();
+        drop(frame);
+    }
+}

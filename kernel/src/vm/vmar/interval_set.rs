@@ -308,6 +308,62 @@ mod tests {
     }
 
     #[ktest]
+    fn adjacent_intervals_have_exact_boundaries() {
+        let mut set = IntervalSet::new();
+        let first = TestInterval { range: 10..20 };
+        let second = TestInterval { range: 20..30 };
+        set.insert(first.clone());
+        set.insert(second.clone());
+
+        // Adjacent intervals are distinct entries; the shared endpoint
+        // belongs to the second interval only.
+        assert_eq!(set.iter().count(), 2);
+        assert_eq!(set.find_one(&9), None);
+        assert_eq!(set.find_one(&10), Some(&first));
+        assert_eq!(set.find_one(&19), Some(&first));
+        assert_eq!(set.find_one(&20), Some(&second));
+        assert_eq!(set.find_one(&29), Some(&second));
+        assert_eq!(set.find_one(&30), None);
+    }
+
+    #[ktest]
+    fn take_across_multiple_intervals() {
+        let mut set = IntervalSet::new();
+        let first = TestInterval { range: 10..20 };
+        let second = TestInterval { range: 30..40 };
+        let third = TestInterval { range: 50..60 };
+        set.insert(first.clone());
+        set.insert(second.clone());
+        set.insert(third.clone());
+
+        // The range intersects the first and second intervals, but not the
+        // third.  Both intersected intervals are taken whole.
+        let taken: Vec<TestInterval> = set.take(&(15..45)).collect();
+        assert_eq!(taken, vec![first, second]);
+        assert_eq!(set.iter().count(), 1);
+        assert_eq!(set.find_one(&55), Some(&third));
+        assert_eq!(set.find_one(&35), None);
+    }
+
+    #[ktest]
+    fn find_prev_and_next_at_boundaries() {
+        let mut set = IntervalSet::new();
+        let first = TestInterval { range: 10..20 };
+        let second = TestInterval { range: 30..40 };
+        set.insert(first.clone());
+        set.insert(second.clone());
+
+        assert_eq!(set.find_prev(&9), None);
+        assert_eq!(set.find_prev(&10), None);
+        assert_eq!(set.find_prev(&11), Some(&first));
+        assert_eq!(set.find_prev(&20), Some(&first));
+        assert_eq!(set.find_prev(&30), Some(&first));
+        assert_eq!(set.find_prev(&31), Some(&second));
+        assert_eq!(set.find_next(&20), Some(&second));
+        assert_eq!(set.find_next(&30), None);
+    }
+
+    #[ktest]
     fn take_one() {
         let mut set = IntervalSet::new();
         let interval1 = TestInterval { range: 10..20 };

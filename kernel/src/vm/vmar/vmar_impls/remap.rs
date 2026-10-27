@@ -110,10 +110,34 @@ impl Vmar {
             inner.check_extra_size_fits_rlimit(new_size - old_size)?;
         }
 
-        // Shrink the old mapping first.
         if old_addr.checked_add(old_size).is_none() {
             return_errno_with_message!(Errno::EINVAL, "remap: the address range overflows");
         }
+
+        // Validate the target range before mutating the old mapping.  A
+        // failure here must leave the old mapping untouched.
+        let shrunk_old_range = old_addr..old_addr + old_size.min(new_size);
+        if let Some(new_addr) = new_addr {
+            let Some(new_end) = new_addr.checked_add(new_size) else {
+                return_errno_with_message!(Errno::EINVAL, "remap: the new range overflows");
+            };
+            if !new_addr.is_multiple_of(PAGE_SIZE)
+                || !is_userspace_vaddr_range(new_addr, new_size)
+            {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "remap: the new range is not aligned or not in userspace"
+                );
+            }
+            if is_intersected(&shrunk_old_range, &(new_addr..new_end)) {
+                return_errno_with_message!(
+                    Errno::EINVAL,
+                    "remap: the new range overlaps with the old one"
+                );
+            }
+        }
+
+        // Shrink the old mapping.
         let (old_size, old_range) = if new_size < old_size {
             inner.alloc_free_region_exact_truncate(
                 &self.vm_space,
@@ -126,21 +150,8 @@ impl Vmar {
             (old_size, old_addr..old_addr + old_size)
         };
 
-        // Allocate a new free region that does not overlap with the old range.
+        // Allocate the new free region that does not overlap with the old one.
         let new_range = if let Some(new_addr) = new_addr {
-            if !new_addr.is_multiple_of(PAGE_SIZE) || !is_userspace_vaddr_range(new_addr, new_size)
-            {
-                return_errno_with_message!(
-                    Errno::EINVAL,
-                    "remap: the new range is not aligned or not in userspace"
-                );
-            }
-            if is_intersected(&old_range, &(new_addr..new_addr + new_size)) {
-                return_errno_with_message!(
-                    Errno::EINVAL,
-                    "remap: the new range overlaps with the old one"
-                );
-            }
             inner.alloc_free_region_exact_truncate(
                 &self.vm_space,
                 new_addr,
