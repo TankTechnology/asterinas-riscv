@@ -204,6 +204,17 @@ impl BlockDevice for Ext2MemoryDisk {
 // ===========================================================================
 
 pub(super) fn make_valid_raw_super_block(nr_block_groups: u32) -> RawSuperBlock {
+    make_valid_raw_super_block_with_geometry(nr_block_groups, 128, 64)
+}
+
+/// Builds a superblock with the legacy 128-block groups and a 64-block tail:
+/// `nr_block_groups = 1` declares 65 blocks, `nr_block_groups = 2` declares
+/// 193 (one full group plus a partial last group).
+pub(super) fn make_valid_raw_super_block_with_geometry(
+    nr_block_groups: u32,
+    blocks_per_group: u32,
+    tail_blocks: u32,
+) -> RawSuperBlock {
     let mut raw = RawSuperBlock::default();
     raw.magic = MAGIC_NUM;
     raw.log_block_size = 2;
@@ -213,12 +224,11 @@ pub(super) fn make_valid_raw_super_block(nr_block_groups: u32) -> RawSuperBlock 
     raw.creator_os = OsId::Linux as u32;
     raw.rev_level = RevLevel::GoodOld as u32;
     raw.first_data_block = 0;
-    raw.blocks_per_group = 128;
+    raw.blocks_per_group = blocks_per_group;
     raw.frags_per_group = raw.blocks_per_group;
     raw.inodes_per_group = 1024;
     raw.inodes_count = nr_block_groups * raw.inodes_per_group;
 
-    let tail_blocks = 64;
     raw.blocks_count = raw.first_data_block
         + 1
         + (nr_block_groups.saturating_sub(1)) * raw.blocks_per_group
@@ -234,10 +244,11 @@ pub(super) fn make_valid_raw_super_block_with_disk(
     nblocks: usize,
 ) -> RawSuperBlock {
     assert!(nr_block_groups > 0);
-    let mut raw = make_valid_raw_super_block(nr_block_groups);
-    raw.blocks_count = u32::try_from(nblocks).expect("fixture disk is too large");
-    raw.blocks_per_group = raw.blocks_count.div_ceil(nr_block_groups);
-    raw.frags_per_group = raw.blocks_per_group;
+    let blocks_count = u32::try_from(nblocks).expect("fixture disk is too large");
+    let blocks_per_group = blocks_count.div_ceil(nr_block_groups);
+    let mut raw = make_valid_raw_super_block_with_geometry(nr_block_groups, blocks_per_group, 0);
+    raw.blocks_count = blocks_count;
+    raw.frags_per_group = blocks_per_group;
     raw
 }
 
@@ -556,6 +567,9 @@ pub(super) struct Ext2FixtureBuilder {
     block_bitmap: Option<BlockBitmapInit>,
     inode_bitmap: Option<InodeBitmapInit>,
     custom_device: Option<Arc<dyn BlockDevice>>,
+    /// Explicit `(blocks_per_group, tail_blocks)` geometry for fixtures that
+    /// deliberately describe a smaller filesystem than the backing disk.
+    geometry: Option<(u32, u32)>,
 }
 
 impl Ext2FixtureBuilder {
@@ -573,6 +587,7 @@ impl Ext2FixtureBuilder {
             block_bitmap: None,
             inode_bitmap: None,
             custom_device: None,
+            geometry: None,
         }
     }
 
@@ -598,6 +613,14 @@ impl Ext2FixtureBuilder {
         self
     }
 
+    /// Overrides the superblock geometry instead of deriving it from the
+    /// backing disk.  `tail_blocks` keeps the last group partial, matching the
+    /// legacy `make_valid_raw_super_block(groups)` layout.
+    pub(super) fn with_geometry(mut self, blocks_per_group: u32, tail_blocks: u32) -> Self {
+        self.geometry = Some((blocks_per_group, tail_blocks));
+        self
+    }
+
     pub(super) fn block_bitmap(mut self, init: BlockBitmapInit) -> Self {
         self.block_bitmap = Some(init);
         self
@@ -609,7 +632,15 @@ impl Ext2FixtureBuilder {
     }
 
     fn prepare(&self) -> Result<PreparedFixture> {
-        let mut raw_sb = make_valid_raw_super_block_with_disk(self.groups, self.nblocks);
+        let mut raw_sb = match self.geometry {
+            Some((blocks_per_group, tail_blocks)) => {
+                make_valid_raw_super_block_with_geometry(self.groups, blocks_per_group, tail_blocks)
+            }
+            // By default the superblock covers the whole backing disk: a
+            // fixture that declares fewer blocks than the disk lets tests
+            // allocate outside the filesystem.
+            None => make_valid_raw_super_block_with_disk(self.groups, self.nblocks),
+        };
         if let Some(total_inodes) = self.total_inodes {
             raw_sb.inodes_count = total_inodes;
         }
@@ -640,17 +671,6 @@ impl Ext2FixtureBuilder {
         if let Some(v) = self.group0_used_dirs {
             descs[0].used_dirs_count = v;
         }
-
-        // A fixture must back exactly the block count its superblock claims.
-        // Otherwise a test can allocate/point at blocks that the filesystem
-        // does not actually declare (the old 65-block/256-block mismatch).
-        assert_eq!(
-            sb.total_blocks() as usize,
-            self.nblocks,
-            "fixture superblock claims {} blocks but the backing disk has {}",
-            sb.total_blocks(),
-            self.nblocks
-        );
 
         let disk = Arc::new(Ext2MemoryDisk::new(self.nblocks));
         disk.write_super_block(&raw_sb);
@@ -807,6 +827,18 @@ impl Ext2FixtureBuilder {
         crate::time::clocks::init_for_ktest();
 
         let (mut raw_sb, mut sb, mut descs, disk, layout) = self.prepare()?;
+
+        // Regression guard: a fixture must never claim more blocks than the
+        // device can store.  The old builder expanded the device to 256 blocks
+        // while the superblock still declared 65, so tests allocated blocks
+        // outside the filesystem.
+        assert!(
+            sb.total_blocks() as usize <= self.nblocks,
+            "fixture superblock declares {} blocks but the backing disk has {}",
+            sb.total_blocks(),
+            self.nblocks
+        );
+
         let free_blocks = self.write_bitmaps(&sb, &descs, &disk, &layout);
 
         raw_sb.free_blocks_count = self
