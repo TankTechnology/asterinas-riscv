@@ -172,7 +172,10 @@ marker() {
     local name="$1" line guest_ns
     guest_ns="$(guest_monotonic_ns)"
     line="A_WEB_TIMELINE marker=$name guest_monotonic_ns=$guest_ns firefox_pid=$$"
-    printf '%s\n' "$line" >>"$TIMELINE"
+    if ! printf '%s\n' "$line" >>"$TIMELINE" 2>/dev/null; then
+        printf 'A_WEB_TIMELINE_UNAVAILABLE path=%s marker=%s\n' \
+            "$TIMELINE" "$name" >&2 || true
+    fi
     # Console access is best-effort for the unprivileged browser user.  Keep
     # the failed redirection itself out of stderr so it cannot obscure the
     # Firefox diagnostics we are trying to capture.
