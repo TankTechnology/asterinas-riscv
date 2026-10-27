@@ -22,9 +22,11 @@ let
     overlays = [ ];
     inherit crossSystem;
   };
+  muslPkgs = import nixpkgs { config = { }; overlays = [ ]; crossSystem = { config = "riscv64-unknown-linux-musl"; }; };
 in rec {
   # Packages needed by initramfs
   busybox = pkgs.busybox;
+  simProbe = muslPkgs.callPackage ./sim { };
   benchmark = pkgs.callPackage ./benchmark { };
   conformance = pkgs.callPackage ./conformance {
     inherit smp;
