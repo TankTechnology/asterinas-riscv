@@ -1,5 +1,11 @@
 #!/bin/sh
 
+# --- sim probe hook (temporary, for RISC-V emulation capability probing) ---
+if [ -x /bin/sim-probe ]; then
+    /bin/sim-probe
+fi
+# --- end sim probe hook ---
+
 # SPDX-License-Identifier: MPL-2.0
 
 # The initramfs entry point (i.e., the init process).
