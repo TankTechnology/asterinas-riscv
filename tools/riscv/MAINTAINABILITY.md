@@ -93,15 +93,21 @@ The archived material is indexed in `tools/riscv/archive/README.md`.
 
 ## Remaining optional structure work
 
-The remaining maintenance cost is file size, not obsolete product surface.
-Splitting the largest test/build files is a separate refactor and should not
-block current-path work:
+The remaining maintenance cost is production-file size, not obsolete product
+surface or test monoliths. All `tools/riscv/tests` modules are now below the
+2,000-line guard; the remaining allowlist entries are production files:
 
-- `test_debian_rootfs.py`, `test_debian_browser_web.py`, and the Debian builder
-  can be split by responsibility when they next change.
-- The paused `desktop-drm` surface stays untouched while GPU work is paused.
-- Archived code is not imported by active code, tests, Makefile targets, or the
-  documented product path.
+- `build_rootfs.sh`,
+- `browser_web_marionette_gate.py`,
+- `megrez_desktop.py`,
+- `megrez_physical_graphics.py`,
+- `megrez_probe.py`.
+
+Split these only when their behavior changes; `build_rootfs.sh` should be the
+last and highest-risk split because it owns the staged image build. The paused
+`desktop-drm` surface stays untouched while GPU work is paused. Archived code
+is not imported by active code, tests, Makefile targets, or the documented
+product path.
 
 ## Next boundaries
 
