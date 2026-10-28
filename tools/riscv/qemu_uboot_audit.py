@@ -782,18 +782,32 @@ def audit_serial_log(
         serial_log,
         variant=policy.diagnostic_variant,
     )
+    # The firmware and bootloader banners have to be there -- they are what
+    # proves the run went through real OpenSBI and U-Boot rather than the
+    # kernel being started directly -- but their versions are whatever the
+    # host's QEMU and the pinned U-Boot checkout build. Pinning an exact
+    # version turns a host upgrade into a false failure: QEMU 11.1.1 ships
+    # OpenSBI v1.8.1, and an audit that only accepts "OpenSBI v1.7" reports
+    # a complete boot as FAIL.
+    required_patterns = (
+        (r"OpenSBI v\d+(?:\.\d+)+", "OpenSBI banner"),
+        (r"U-Boot 20\d\d\.\d+", "U-Boot banner"),
+    )
     required_fragments = (
-        "OpenSBI v1.7",
-        "U-Boot 2026.07",
         f"{artifacts.kernel_size} bytes read",
         f"{artifacts.dtb_size} bytes read",
         f"{artifacts.initrd_size} bytes read",
     )
     failures = [
+        f"missing required output: {description}"
+        for pattern, description in required_patterns
+        if re.search(pattern, serial_log) is None
+    ]
+    failures.extend(
         f"missing required output: {fragment}"
         for fragment in required_fragments
         if fragment not in serial_log
-    ]
+    )
     if readiness_count is not None and readiness_count != 1:
         failures.append(
             f"expected exactly one readiness marker, got {readiness_count}"

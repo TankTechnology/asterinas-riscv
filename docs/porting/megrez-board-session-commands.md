@@ -12,6 +12,8 @@ docker run --rm -v $PWD:/root/asterinas -w /root/asterinas \
   asterinas-env:uboot-sim bash -c 'export PATH=/usr/local/qemu/bin:$PATH
   tools/riscv/verify_megrez_sim.sh'
 # 输出：PASS + 产物身份（kernel/initrd/dtb 的 SHA-256 + CRC32）——记录
+# 如果 U-Boot 构建报 "The source tree is not clean"：
+#   make -C target/qemu-uboot/cache/u-boot mrproper   # 清掉上一轮的树内产物
 
 # 产物命名（带 commit + run id）
 # asterinas-megrez-<commit>-<run-id>.booti
@@ -25,7 +27,7 @@ docker run --rm -v $PWD:/root/asterinas -w /root/asterinas \
 # 串口独占检查（唯一 owner）
 fuser /dev/ttyUSB0; lsof /dev/ttyUSB0; ls /tmp/*.lock 2>/dev/null
 # 启动串口桥接（独占 + RX 日志 + paced TX，\x1d 退出）
-python3 paced_serial_bridge.py /dev/ttyUSB0 /tmp/megrez-session.serial.log
+python3 tools/riscv/paced_serial_bridge.py /dev/ttyUSB0 /tmp/megrez-session.serial.log
 # 上电 → U-Boot 提示符出现 → 记录 U-Boot 版本（2024.01-gdbb5f9e3）
 ```
 
