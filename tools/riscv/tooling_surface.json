@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "max_production_python": 204,
+  "max_production_shell": 148,
+  "max_top_level_shell": 15,
+  "top_level_shell": [
+    "build_megrez_sdhci_probe.sh",
+    "demo-all.sh",
+    "eic7700_isolation.sh",
+    "firefox_fast_check.sh",
+    "firefox_kernel_static_check.sh",
+    "fm3-gate.sh",
+    "fm4-gate.sh",
+    "kernel_ktest.sh",
+    "ltp-gate.sh",
+    "make_megrez_package.sh",
+    "pm1-gate.sh",
+    "prepare_qemu_uboot_booti.sh",
+    "qemu_live_pc_sampler.sh",
+    "qemu_system_gdb_probe.sh",
+    "verify_megrez_sim.sh"
+  ]
+}
