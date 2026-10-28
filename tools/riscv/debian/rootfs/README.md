@@ -361,36 +361,6 @@ retain and label the remaining timing fields rather than clamping that value.
 The opt-in syscall profiler is also unsuitable for this baseline because its
 periodic full serial snapshots prevent the desktop from reaching readiness.
 
-Build the separate schema-v2 systemd profile only when the M1 artifact is not
-the intended input. It has a distinct label, UUID, and output directory, so it
-cannot alias the interactive root:
-
-```bash
-tools/riscv/debian/rootfs/build_rootfs.sh --profile systemd-m2
-python3 -m tools.riscv.debian.rootfs.contract verify \
-  --image target/debian-riscv/systemd-m2/rootfs/debian-root.ext2 \
-  --manifest target/debian-riscv/systemd-m2/rootfs/rootfs-manifest.json \
-  --packages-lock target/debian-riscv/systemd-m2/rootfs/packages.lock
-```
-
-The M2 profile installs Debian's packaged systemd as PID 1, requires
-`systemd-logind` to reach its active state on the first cold boot, provides a
-deterministic serial evidence service, and contains no `qemu-riscv64-static`
-guest binary. The logind check is the first desktop-session foundation gate:
-it verifies the service responsible for seats, sessions, and device ownership.
-The second boot remains a persistence and normal-reboot check; it intentionally
-does not duplicate the logind check. Neither marker claims that a display
-server or desktop session has started.
-Systemd profiles include a final shutdown `sync` hook because Asterinas can be
-classified as a container and systemd then skips its own final sync. The M2
-Stage1 boot omits the initramfs tools bind mount, which M2 does not use and
-which can stall its normal shutdown. The gate's serial markers show the two
-boots; check a copy stopped immediately after the first firmware restart with
-`e2fsck -fn` when validating ext2 metadata persistence.
-Stage1 must receive the exact init argument `--root-init=systemd`; the gate
-places it after the kernel command-line `--` separator so Asterinas forwards it
-as init argv.
-
 #### Firefox daily-use gate
 
 `browser-daily-use-gate` is the bounded acceptance and diagnostic wrapper for
@@ -772,194 +742,42 @@ bootargs，默认关闭，不改变正常启动语义。
 nonce 协议。需要分析内核日志时应使用单独的诊断启动，不要扩大 root console
 分类器的接受范围。
 
-For the systemd M2 profile, use the M2 root and Stage1 archive. This gate keeps
-one QEMU process alive across the guest's normal reboot, interrupts the second
-U-Boot autoboot, and launches Asterinas a second time without `saveenv`:
-
-```bash
-make test_riscv_debian_systemd_m2_gate \
-  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
-  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
-  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
-  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/systemd-m2/stage1/initramfs.cpio" \
-  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/systemd-m2/rootfs/debian-root.ext2" \
-  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/systemd-m2/rootfs/rootfs-manifest.json" \
-  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/systemd-m2/rootfs/packages.lock" \
-  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/systemd-m2/rootfs/source-metadata/package-checksums" \
-  DEBIAN_SYSTEMD_M2_GATE_OUTPUT="$PWD/target/debian-riscv/systemd-m2/gate"
-```
-
 The target requires every frozen artifact and never invokes debootstrap, a
 mirror, or `build_rootfs.sh`. Network is permitted only while constructing the
-signed base root. The M1 and M2 gates are always launched with `-nic none`;
-the explicit M5 gate below is the only slirp-enabled exception.
+signed base root. Host-only gates are launched with `-nic none`; the explicit
+network gate below is the only slirp-enabled exception.
 
-### QEMU M5 HTTPS desktop gate
+### QEMU network HTTPS desktop gate
 
-Build the `desktop-network` root when the external-network desktop is the
-intended input. This profile adds the `curl` command as a frozen package
-identity. The QEMU gate uses slirp only for the guest data path; it does not
-inherit host proxy variables, TAP configuration, or a Linux guest kernel.
+Use the `browser-web` root when the external-network desktop is the intended
+input. Its package set includes `curl`, Firefox, and the desktop tools. The
+QEMU gate uses slirp only for the guest data path; it does not inherit host
+proxy variables, TAP configuration, or a Linux guest kernel.
 
 ```bash
-tools/riscv/debian/rootfs/build_rootfs.sh --profile desktop-network
+tools/riscv/debian/rootfs/build_rootfs.sh --profile browser-web
 make test_riscv_debian_desktop_network_qemu_gate \
   DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
   DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
   DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
-  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-network/stage1/initramfs.cpio" \
-  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-network/rootfs/debian-root.ext2" \
-  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-network/rootfs/rootfs-manifest.json" \
-  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-network/rootfs/packages.lock" \
-  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-network/rootfs/source-metadata/package-checksums" \
-  DEBIAN_DESKTOP_NETWORK_QEMU_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-network/qemu-gate"
+  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/browser-web/stage1/initramfs.cpio" \
+  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/browser-web/rootfs/debian-root.ext2" \
+  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/browser-web/rootfs/rootfs-manifest.json" \
+  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/browser-web/rootfs/packages.lock" \
+  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/browser-web/rootfs/source-metadata/package-checksums" \
+  DEBIAN_DESKTOP_NETWORK_QEMU_GATE_OUTPUT="$PWD/target/debian-riscv/browser-web/qemu-gate"
 ```
 
 The gate requires ordered DNS and HTTPS evidence for `www.baidu.com`, the
-exact slirp local address `10.0.2.15`, all M4 application-window milestones,
-and a non-blank framebuffer capture. ICMP ping sockets and `ip` route dumps
-are not part of this browser gate because those Linux interfaces remain
-separate compatibility work; UDP DNS and TCP/TLS are tested directly.
-
-NetSurf can render ordinary raster and SVG page assets supplied by its Debian
-dependencies. Its JavaScript engine is intentionally not a modern Chromium
-compatibility claim: JavaScript must be reported by a separate local DOM smoke
-test and is not allowed to turn a successful DNS/HTTPS gate into a failure.
-The current non-blank framebuffer check proves the desktop, not that the
-foreground window has finished rendering Baidu.
-
-### QEMU M6 browser evidence gate
-
-> This is a historical NetSurf milestone gate. Its `limited-pass`, `disabled`,
-> and `failed` JavaScript classifications must not be reported as Firefox-ready
-> or as modern-browser compatibility. Use the schema-seven Firefox Web gate for
-> current Firefox acceptance.
-
-After rebuilding the `desktop-network` root, use the M6 gate to foreground
-and capture a Baidu-hosted PNG in NetSurf before navigating the same window to
-a fixed local JavaScript fixture. The direct image isolates HTTPS transfer and
-image decoding from the modern Baidu homepage's script workload:
-
-```bash
-make test_riscv_debian_desktop_m6_browser_gate \
-  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
-  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
-  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
-  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-network/stage1/initramfs.cpio" \
-  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-network/rootfs/debian-root.ext2" \
-  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-network/rootfs/rootfs-manifest.json" \
-  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-network/rootfs/packages.lock" \
-  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-network/rootfs/source-metadata/package-checksums" \
-  DEBIAN_DESKTOP_M6_BROWSER_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-network/m6-qemu-gate"
-```
-
-`desktop-m6-browser.ppm` records the foreground Baidu logo image and
-`desktop-m6-javascript.ppm` records the local fixture after classification.
-`result.json` reports `limited-pass`, `disabled`, or `failed`. A
-`limited-pass` proves only that the packaged NetSurf engine executed a local
-script-only navigation from the pending fixture to a fixed pass document; it
-is not a claim of Chromium-compatible JavaScript. The changing remote pixels
-are inspected as visual evidence and are not compared to a fixed hash.
-Rendering the full modern Baidu homepage is a later compatibility target, not
-a prerequisite for this foundational gate.
-
-### QEMU M7 real Baidu page evidence
-
-The M7 gate reuses the M6 network, desktop, remote-image, and local-JavaScript
-evidence before starting a fresh NetSurf process with JavaScript disabled. It
-loads Baidu's official mobile page because the HTTPS desktop endpoint falls
-back to an approximately 700-KiB legacy document that NetSurf 3.11 does not
-finish laying out. The mobile document is approximately 80 KiB and retains
-the real Baidu logo, search form, remote stylesheets, and image requests.
-
-```bash
-make test_riscv_debian_desktop_m7_baidu_gate \
-  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
-  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
-  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
-  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/desktop-network/stage1/initramfs.cpio" \
-  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/debian-root.ext2" \
-  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/rootfs-manifest.json" \
-  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/packages.lock" \
-  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-m7-baidu/rootfs/source-metadata/package-checksums" \
-  DEBIAN_DESKTOP_M7_BAIDU_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-m7-baidu/m7-qemu"
-```
-
-`desktop-m7-baidu-home.ppm` is published only after the title identifies a
-real page from `https://m.baidu.com/`. A search-result frame and a passing
-`result.json` additionally require the submitted query to return a result
-title. If Baidu sends its `wappass.baidu.com` security challenge, the gate
-publishes `desktop-m7-baidu-failure.ppm` and remains failed. The challenge is
-evidence that DNS, HTTPS, navigation, and rendering reached Baidu, but it is
-not accepted as search-result evidence.
-
-The 2026-08-28 generic-Sv39/SMP=4 run reached the homepage milestone and
-captured a visible Baidu logo and search box. The subsequent `asterinas`
-query rendered `百度安全验证`, so the final M7 result remained failed with
-`search-title-timeout`. The current image also lacks a CJK font, leaving some
-Chinese text as missing-glyph boxes. These are user-space/browser and remote
-service limitations; the run did not expose a new Asterinas DNS, TCP, TLS,
-VirtIO input, Xorg, or framebuffer failure.
-
-### QEMU M9 desktop software smoke gate
-
-The M9 profile is a separate signed rootfs derived from the M5 desktop
-package set. It uses Debian's official `riscv64` `netsurf-gtk`, adds `vim` and
-`ffmpeg`, and does not list `ffprobe` separately: Debian ships `/usr/bin/ffprobe`
-from the `ffmpeg` package. The manifest deliberately keeps schema version 5
-for compatibility with existing readers while binding the new profile name,
-label, UUID, and package identity.
-
-Build and verify the image once, then reuse it for both QEMU and the bounded
-Megrez run:
-
-```bash
-tools/riscv/debian/rootfs/build_rootfs.sh --profile desktop-m9-software
-python3 -m tools.riscv.debian.rootfs.contract verify \
-  --image target/debian-riscv/desktop-m9-software/rootfs/debian-root.ext2 \
-  --manifest target/debian-riscv/desktop-m9-software/rootfs/rootfs-manifest.json \
-  --packages-lock target/debian-riscv/desktop-m9-software/rootfs/packages.lock
-```
-
-Run the complete four-hart QEMU contract with finite timeouts. This single
-gate reuses the M5 slirp/DNS/HTTPS, M4 desktop, and M7 NetSurf/Baidu evidence,
-then executes the M9 software service. The M8 quality gate remains an
-independent optional run because its title assertion is intentionally not a
-prerequisite for application smoke evidence:
-
-```bash
-make test_riscv_debian_desktop_m9_software_gate \
-  DEBIAN_KERNEL="$PWD/target/osdk/aster-kernel/aster-kernel-osdk-bin.Image" \
-  DEBIAN_UBOOT="$PWD/target/qemu-uboot/cache/u-boot-build/u-boot" \
-  DEBIAN_DTB="$PWD/target/qemu-uboot/debian-root/qemu-virt.dtb" \
-  DEBIAN_STAGE1_INITRAMFS="$PWD/target/debian-riscv/stage1/initramfs.cpio" \
-  DEBIAN_ROOT_IMAGE="$PWD/target/debian-riscv/desktop-m9-software/rootfs/debian-root.ext2" \
-  DEBIAN_ROOT_MANIFEST="$PWD/target/debian-riscv/desktop-m9-software/rootfs/rootfs-manifest.json" \
-  DEBIAN_PACKAGES_LOCK="$PWD/target/debian-riscv/desktop-m9-software/rootfs/packages.lock" \
-  DEBIAN_PACKAGE_CHECKSUMS="$PWD/target/debian-riscv/desktop-m9-software/rootfs/source-metadata/package-checksums" \
-  DEBIAN_DESKTOP_M9_SOFTWARE_GATE_OUTPUT="$PWD/target/debian-riscv/desktop-m9-software/m9-qemu-gate" \
-  DEBIAN_DESKTOP_BOOT_TIMEOUT=900
-```
-
-The software service is intentionally small and fail-closed. It saves a
-marker line with non-interactive Vim, generates a deterministic 16x16 RGB
-frame with single-threaded FFmpeg on the ext2-backed `/var/tmp`, and checks
-its dimensions with ffprobe. Each command has a 120-second timeout and the
-service has a 300-second systemd budget, so a missing package or a hung
-process produces `DEBIAN_DESKTOP_M9_FAIL reason=...` instead of leaving a
-QEMU or board session running indefinitely. The QEMU result retains the
-serial transcript, screenshot, network fixture summary, and immutable
-manifest identity.
-
-For an unreliable Chinese-network path, first use the proxy preflight above;
-if TUNA cannot provide a complete signed closure, retry the build explicitly
-with USTC and then `deb.debian.org`. Do not change the mirror in the guest or
-run an unbounded `apt` command on Megrez. The verified `.deb` closure and its
-`package-checksums` are the offline installation input for the physical test.
+exact slirp local address `10.0.2.15`, desktop readiness, and a non-blank
+framebuffer capture. ICMP ping sockets and `ip` route dumps are not part of
+this browser gate because those Linux interfaces remain separate compatibility
+work; UDP DNS and TCP/TLS are tested directly. Firefox content acceptance is
+covered by the browser-web QEMU gate and the physical Firefox daily-use gate.
 
 ### Megrez static-RJ45 browser gate
 
-The physical browser milestone reuses the signed `desktop-network` root
+The physical browser milestone reuses the signed `browser-web` root
 and the kernel's reviewed static profile. The exact guest identity is:
 
 ```text
@@ -1001,25 +819,12 @@ python3 -m tools.riscv.megrez_gmac_gate /dev/ttyUSB0 \
   --boot-timeout 360 --drain-timeout 5
 ```
 
-The strict serial order is selected GMAC, physical M5 link/DNS/HTTPS/PNG
-evidence, M5 READY, M4 desktop READY, M6 remote image, one JavaScript status,
-and matching M6 READY. `limited-pass`, `disabled`, and `failed` describe only
-the packaged NetSurf JavaScript engine; none claims Chromium compatibility.
-The gate drains the full serial transcript before publishing `passed: true`.
+The strict serial order is selected GMAC, physical network
+link/DNS/HTTPS/PNG evidence, network READY, and desktop READY. The gate drains
+the full serial transcript before publishing `passed: true`.
 It deliberately tests UDP DNS and TCP/TLS rather than ICMP: the current
 Asterinas network path does not provide the Linux ping-socket contract, and a
 ping result would not prove that browser traffic works.
-
-On a physical browser run, one exact input-capability degradation is collected
-rather than treated as a reason to release the serial port early. If M4 emits
-`DEBIAN_DESKTOP_M4_DIAGNOSTIC missing=pointer-device` followed by
-`DEBIAN_DESKTOP_M4_FAIL reason=desktop-timeout`, the collector continues to
-require every M6/M7 marker and the fresh automatic U-Boot recovery. A complete
-Baidu homepage and search sequence is then published as `passed: false` with
-`guest-failure-recovered:browser-pass-input-missing:pointer-device`; it proves
-the browser path but deliberately does not claim mouse usability. Missing,
-reordered, duplicated, or differently attributed M4 failure evidence remains
-a hard failure.
 
 For a desktop plan with `asterinas.reboot_after=600`, invoke
 `tools.riscv.megrez_debug board` with `--timeout 900`. The timeout is measured
@@ -1030,8 +835,8 @@ returns to U-Boot automatically.
 
 This is a bounded useful-network contract, not a general Linux network stack
 milestone. DHCP, `RTM_NEWADDR`, `RTM_NEWROUTE`, NetworkManager, cable-replug
-recovery, live GMAC failover, USB Ethernet, Wi-Fi, Firefox, and modern
-JavaScript remain outside this gate.
+recovery, live GMAC failover, USB Ethernet, Wi-Fi, and modern JavaScript
+remain outside this gate.
 
 ## Evidence and cleanup
 
@@ -1051,42 +856,6 @@ python3 -c 'import json; print(json.load(open("target/debian-riscv/gate/result.j
 writable root, boot disk, and `result.json`. A failed run retains the complete
 available logs and a failing result, never a stale `passed: true`, and never
 mutates the base image.
-
-## Verified M1 evidence (2026-08-24)
-
-The documented Make target passed on source commit `d50b17aef` in container
-image `sha256:4f054ba7e4d35567cd1b974506ecc6ae4a9e35e52616ca048cf302f8dfca8b23`
-with QEMU 10.2.1. The runtime container used `--network=none`.
-
-Frozen inputs:
-
-| Artifact | SHA-256 |
-| --- | --- |
-| Asterinas Sv39/SMP=4 kernel | `9b0b352bc5f3fb38c7d4ee67f3abc40785f3a26861032944a67db8a38da63b60` |
-| stage-1 initramfs | `aef46a338a158dbb9fbe4ed220167eb95c6a392c9f17de15d3877230eb740b08` |
-| four-hart QEMU DTB | `3886fd4e5e7f47e3ba1536b3a374f89d4d06cf42f9c3bb5c9038e418ebf9dec9` |
-| U-Boot | `cd1f164d4d6c3493bdceec168d2d066aaa218fe516ea9cd8cbc049427f9b55bc` |
-| immutable Debian root | `060f613281f2e77fa2232f31322213a310f48b5b18df2991ade9eb2fca7bebae` |
-| rootfs manifest | `6f246da49af0759184b47867047bec2e73d0be7228f08d0f723ce248412a14ae` |
-| package lock | `fd817c8db7bd71098113b8c2ed4f52c3d70542efaaf97ced2b81637c5528dfff` |
-| signed TUNA Trixie `InRelease` | `98b25b5cd185c59d34aa6e4c3e9b5b8f01bbe9d104fe2dcfbcd30dc0a14a59ed` |
-
-The manifest records Trixie `13.6`, `riscv64`, mirror
-`https://mirrors.tuna.tsinghua.edu.cn/debian`, and build timestamp
-`2024-01-01T00:00:00Z`. The checked identity packages were
-`base-files=13.8+deb13u6`, `libc6=2.41-12+deb13u3`,
-`bash=5.2.37-2+b9`, `coreutils=9.7-3`, and `util-linux=2.41-5`.
-
-The final result reported `passed: true`, reason `pass`, two QEMU argv vectors,
-boot-one duration 14.042 seconds, boot-two duration 13.940 seconds, and final
-writable-root SHA-256
-`f6300db673c17c038a8bdbca76f092e891d0874b6d74737e3bb766bbe7492262`.
-Both logs contain `__DEBIAN_ROOTFS_SHELL_READY__`, zero command statuses, and
-the second-boot probe; nonce plaintext is replaced by `<nonce-redacted>`.
-
-This evidence proves the generic QEMU Sv39/SMP=4 two-boot persistence
-contract. It does not claim physical Megrez operation, guest networking,
-systemd boot, display, USB, or desktop support.
 
 ## Megrez persistent Debian shell
 

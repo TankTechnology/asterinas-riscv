@@ -368,7 +368,6 @@ class MegrezGmacGateTests(unittest.TestCase):
                 f"systemd.setenv={variable}=/dev/ttyS0",
                 bootargs.split(),
             )
-        self.assertNotIn("ASTERINAS_BROWSER_M6_CONSOLE", bootargs)
         for variable, value in (
             ("ASTERINAS_WEB_NETWORK_MODE", "proxy"),
             ("ASTERINAS_DESKTOP_PROXY_URL", "http://10.100.19.216:17893"),
@@ -422,7 +421,6 @@ class MegrezGmacGateTests(unittest.TestCase):
         for unused_variable in (
             "ASTERINAS_DESKTOP_M4_CONSOLE",
             "ASTERINAS_BROWSER_WEB_CONSOLE",
-            "ASTERINAS_BROWSER_M6_CONSOLE",
         ):
             self.assertNotIn(unused_variable, network_bootargs)
         self.assertLess(
@@ -451,14 +449,11 @@ class MegrezGmacGateTests(unittest.TestCase):
             "asterinas-desktop-m4-evidence.service",
         ):
             self.assertIn(f"systemd.mask={service}", desktop_bootargs.split())
-        self.assertNotIn("asterinas-desktop-m6-browser.service", desktop_bootargs)
-        self.assertNotIn("asterinas-desktop-m7-baidu.service", desktop_bootargs)
         for excluded in (
             "asterinas.net=",
             "asterinas.neighbor=",
             "ASTERINAS_DESKTOP_NETWORK_CONSOLE",
             "ASTERINAS_BROWSER_WEB_CONSOLE",
-            "ASTERINAS_BROWSER_M6_CONSOLE",
             "ASTERINAS_DESKTOP_PROXY_",
             "ASTERINAS_DESKTOP_FIXTURE_",
         ):

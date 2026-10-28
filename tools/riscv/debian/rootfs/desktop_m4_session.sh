@@ -112,10 +112,10 @@ if [[ "${1-}" == --xsession ]]; then
     /usr/bin/lxpanel --profile Asterinas &
     if [[ "$BROWSER_ENABLED" == 1 ]]; then
         if [[ "${ASTERINAS_DESKTOP_BROWSER_VERBOSE:-0}" == 1 ]]; then
-            : >"$HOME/netsurf-m7.log"
-            chmod 0600 "$HOME/netsurf-m7.log"
+            : >"$HOME/netsurf.log"
+            chmod 0600 "$HOME/netsurf.log"
             /usr/bin/netsurf-gtk -v "${browser_arguments[@]}" "$browser_url" \
-                >"$HOME/netsurf-m7.log" 2>&1 &
+                >"$HOME/netsurf.log" 2>&1 &
         else
             /usr/bin/netsurf-gtk "${browser_arguments[@]}" "$browser_url" &
         fi

@@ -38,7 +38,7 @@ Firefox ESR + libavcodec-extra61
 openbox + pcmanfm + lxpanel + xterm + xdotool
 Xorg fbdev（软件渲染，不使用 GPU 加速）
 sudo + polkitd + apt
-m5 网络 services + curl/iproute2/iputils-ping
+network services + curl/iproute2/iputils-ping
 P1 的 desktop-ready / DNS / 时钟 / safe-reboot 修复
 ```
 
@@ -114,7 +114,7 @@ firefox --version
 systemctl --failed
 ```
 
-桌面：背景/窗口管理器/PCManFM/xterm/Firefox 正常；网络按旧 m5
+桌面：背景/窗口管理器/PCManFM/xterm/Firefox 正常；网络按当前 network service
 的真实条件验证（DNS/代理），不能只用 QEMU slirp 的通过来代替板端。
 如果网络仍需要 host proxy，按现状记录，不把它说成“已独立联网”。
 
@@ -169,5 +169,5 @@ polkitd 126-2。
 - 宿主 proxy bridge（10.100.19.216:17893 → mihomo 7890；
   15354 → DNS）已能监听，宿主侧 `curl -x` 返回 200；guest 侧
   `curl -x` 尚未跑通，guest 的 TCP/console 需要单独排查。
-- 旧 p2（只有 m4 单元）与新旧 stage1（期望 m5）都不兼容；p1 上
+- 旧 p2 与当前 stage1（期望 network service）不兼容；p1 上
   997c known-good 项保留，但不再作为日常桌面。
