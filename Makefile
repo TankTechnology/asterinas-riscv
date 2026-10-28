@@ -582,6 +582,8 @@ test_riscv_debian_rootfs_unit:
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_debian_dev_overlay \
 		tools.riscv.tests.test_debian_rootfs \
+		tools.riscv.tests.test_debian_rootfs_builder \
+		tools.riscv.tests.test_debian_stage1 \
 		tools.riscv.tests.test_debian_rootfs_docs \
 		tools.riscv.tests.test_debian_desktop_input \
 		tools.riscv.tests.test_debian_systemd_gate \
@@ -591,7 +593,7 @@ test_riscv_debian_rootfs_unit:
 test_riscv_debian_debug_console:
 	@python3 -m unittest \
 		tools.riscv.tests.test_debian_debug_console \
-		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
+		tools.riscv.tests.test_debian_stage1.DebianStage1Tests -v
 
 .PHONY: build_riscv_debian_browser_web_dev_overlay
 build_riscv_debian_browser_web_dev_overlay:
@@ -661,6 +663,8 @@ test_riscv_firefox_daily_use_physical_unit:
 		tools.riscv.tests.test_browser_daily_use_upload \
 		tools.riscv.tests.test_megrez_network_fixture \
 		tools.riscv.tests.test_debian_rootfs \
+		tools.riscv.tests.test_debian_rootfs_builder \
+		tools.riscv.tests.test_debian_stage1 \
 		tools.riscv.tests.test_megrez_physical_graphics \
 		tools.riscv.tests.test_megrez_firefox_daily_use \
 		tools.riscv.tests.test_megrez_firefox_daily_use_report -v
@@ -696,13 +700,13 @@ test_riscv_megrez_boot_manifest_unit:
 test_riscv_megrez_boot_menu_unit: test_riscv_megrez_boot_manifest_unit
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_boot_menu \
-		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
+		tools.riscv.tests.test_debian_stage1.DebianStage1Tests -v
 
 .PHONY: test_riscv_megrez_probe_unit
 test_riscv_megrez_probe_unit: test_riscv_megrez_boot_manifest_unit
 	@python3 -W error::ResourceWarning -m unittest \
 		tools.riscv.tests.test_megrez_probe \
-		tools.riscv.tests.test_debian_rootfs.DebianStage1Tests -v
+		tools.riscv.tests.test_debian_stage1.DebianStage1Tests -v
 
 MEGREZ_PROBE_BUNDLE ?= target/megrez-probe/current.json
 MEGREZ_PROBE_KERNEL ?= target/osdk/aster-kernel-osdk-bin.Image
