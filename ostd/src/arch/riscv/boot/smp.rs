@@ -10,7 +10,7 @@ use crate::{
     mm::{Paddr, Vaddr},
 };
 
-// Include the AP boot assembly code
+// Include the AP boot assembly code using the same paging mode as the kernel.
 global_asm!(
     include_str!("ap_boot.S"),
     SATP_MODE = const super::BOOT_SATP_MODE,

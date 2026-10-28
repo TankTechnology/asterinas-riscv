@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+
 # Build one arm of the redundant-units A/B and run the desktop gate on it,
 # timed by measure-desktop.sh.
 #
@@ -28,7 +30,7 @@ cp "$ROOT/tools/riscv/debian/rootfs/desktop_drm_evidence.sh" \
 "$(dirname "${BASH_SOURCE[0]}")/toggle-redundant-units.sh" "$STATE"
 
 sudo rm -rf "$DERIVED"
-sudo python3 -m tools.debian.rootfs.dev_overlay materialize \
+sudo python3 -m tools.riscv.debian.rootfs.dev_overlay materialize \
     --base-dir "$BASE" \
     --spec "$ROOT/target/drm-mesa/spec.json" \
     --output-dir "$DERIVED" >/dev/null

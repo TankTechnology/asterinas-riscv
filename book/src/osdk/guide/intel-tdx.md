@@ -7,7 +7,7 @@ Intel TDX can provide a more secure environment for your OS.
 
 Please make sure your server supports Intel TDX.
 
-See [this guide](https://github.com/canonical/tdx#4-setup-host-os)
+See [this guide](https://github.com/canonical/tdx/tree/noble-24.04?tab=readme-ov-file#4-setup-host-os)
 or other materials to enable Intel TDX in host OS.
 
 To verify the TDX host status, you can type:
@@ -32,7 +32,7 @@ Therefore, it is recommended to use a Docker image to deploy the environment.
 Run a TDX Docker container:
 
 ```bash
-docker run -it --privileged --network=host -v /dev:/dev asterinas/osdk-dev:0.19.0-20261012
+docker run -it --privileged --network=host -v /dev:/dev asterinas/osdk:0.18.0-20260702
 ```
 
 ## Edit `OSDK.toml` for Intel TDX support

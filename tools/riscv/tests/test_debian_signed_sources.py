@@ -61,12 +61,6 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
             "[Service]\n"
             "# Asterinas does not yet provide the user/mount namespace contract used by\n"
             "# Debian's systemd-logind sandbox. Keep functional logind without that sandbox.\n"
-            "# systemd-logind uses Type=notify-reload upstream, but the readiness\n"
-            "# notification can remain pending while it probes VT/seat devices here.\n"
-            "# Treat the daemon as ready after exec so service transactions do not block.\n"
-            "Type=simple\n"
-            "NotifyAccess=none\n"
-            "TimeoutStartSec=60s\n"
             "PrivateTmp=no\n"
             "ProtectClock=no\n"
             "ProtectControlGroups=no\n"
@@ -369,7 +363,7 @@ Components: updates/main updates/contrib updates/non-free-firmware updates/non-f
         evidence = (rootfs / "desktop_m5_evidence.sh").read_text()
         self.assertIn("$SECURITY_MIRROR/dists/trixie-security/InRelease", builder)
         self.assertIn("verify_m5_releases_are_unchanged", builder)
-        self.assertIn("tools.debian.rootfs.signed_sources owner", builder)
+        self.assertIn("tools.riscv.debian.rootfs.signed_sources owner", builder)
         self.assertIn('print $1, $2, $3, $4, role', builder)
         self.assertIn('--signed-source "base=', builder)
         self.assertIn('--signed-source "security=', builder)

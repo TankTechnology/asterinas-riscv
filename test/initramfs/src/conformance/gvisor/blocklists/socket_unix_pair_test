@@ -1,9 +1,10 @@
 # TODO: Support the `recvmmsg` system call
 AllUnixDomainSockets/UnixSocketPairTest.RecvmmsgTimeoutAfterRecv/*
 
-# TODO: Support socket queue-length ioctls
+# TODO: Support `ioctl` operations on sockets
 AllUnixDomainSockets/UnixSocketPairTest.TIOCINQSucceeds/*
 AllUnixDomainSockets/UnixSocketPairTest.TIOCOUTQSucceeds/*
+AllUnixDomainSockets/UnixSocketPairTest.NetdeviceIoctlsSucceed/*
 
 # TODO: Support `MSG_CMSG_CLOEXEC`
 AllUnixDomainSockets/UnixSocketPairCmsgTest.CloexecRecvFDPass/*

@@ -43,21 +43,18 @@ use core::{
     cell::UnsafeCell,
     fmt::Debug,
     mem::{ManuallyDrop, MaybeUninit},
-    ops::Range,
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use align_ext::AlignExt;
-
 use crate::{
     arch::mm::PagingConsts,
-    boot::memory_region::{MemoryRegion, MemoryRegionType},
+    boot::memory_region::MemoryRegionType,
     const_assert, info,
     mm::{
         CachePolicy, Infallible, PAGE_SIZE, Paddr, PageFlags, PageProperty, PrivilegedPageFlags,
         Segment, Vaddr, VmReader,
         frame::allocator::{self, EarlyAllocatedFrameMeta},
-        paddr_to_vaddr, page_size,
+        kspace, paddr_to_vaddr, page_size,
         page_table::boot_pt,
     },
     panic::abort,
@@ -210,7 +207,7 @@ pub(super) fn get_slot(paddr: Paddr) -> Result<&'static MetaSlot, GetFrameError>
     if !paddr.is_multiple_of(PAGE_SIZE) {
         return Err(GetFrameError::NotAligned);
     }
-    if paddr < super::min_paddr() || paddr >= super::max_paddr() {
+    if paddr >= super::max_paddr() {
         return Err(GetFrameError::OutOfBound);
     }
 
@@ -454,60 +451,63 @@ impl_frame_meta_for!(MetaPageMeta);
 /// This function should be called only once and only on the BSP,
 /// before any APs are started.
 pub(crate) unsafe fn init() -> Segment<MetaPageMeta> {
-    let paddr_range = {
+    let max_paddr = {
         let regions = &crate::boot::EARLY_INFO.get().unwrap().memory_regions;
-        tracked_paddr_range(regions)
+        regions
+            .iter()
+            .filter(|r| r.typ().is_physical())
+            .map(|r| r.base() + r.len())
+            .max()
+            .unwrap()
     };
-    let min_paddr = paddr_range.start;
-    let max_paddr = paddr_range.end;
 
     info!(
-        "Initializing frame metadata for physical memory {:x?}",
-        paddr_range
+        "Initializing frame metadata for physical memory up to {:x}",
+        max_paddr
     );
 
-    // In RISC-V and AArch64, the boot page table has mapped the 512GB memory,
-    // so we don't need to add temporary linear mapping.
+    // In RISC-V, the boot page table already provides a temporary linear
+    // mapping: 128 GiB with Sv39 or 512 GiB with Sv48.
     // In LoongArch, the DWM0 has mapped the whole memory,
     // so we don't need to add temporary linear mapping.
     #[cfg(target_arch = "x86_64")]
     add_temp_linear_mapping(max_paddr);
 
-    let tot_nr_frames = paddr_range.len() / page_size::<PagingConsts>(1);
+    let tot_nr_frames = max_paddr / page_size::<PagingConsts>(1);
     let (nr_meta_pages, meta_pages) = alloc_meta_frames(tot_nr_frames);
 
     // Map the metadata frames.
     boot_pt::with_borrow(|boot_pt| {
         for i in 0..nr_meta_pages {
             let frame_paddr = meta_pages + i * PAGE_SIZE;
-            let vaddr = mapping::frame_to_meta::<PagingConsts>(min_paddr) + i * PAGE_SIZE;
-            let prop = PageProperty {
+            let vaddr = mapping::frame_to_meta::<PagingConsts>(0) + i * PAGE_SIZE;
+            let prop = kspace::prepare_new_kernel_mapping_prop(PageProperty {
                 flags: PageFlags::RW,
                 cache: CachePolicy::Writeback,
                 priv_flags: PrivilegedPageFlags::GLOBAL,
-            };
-            // SAFETY: We are doing the metadata mappings for the kernel.
+            });
+            // SAFETY: we are doing the metadata mappings for the kernel.
             unsafe { boot_pt.map_base_page(vaddr, frame_paddr, prop) };
         }
     })
     .unwrap();
 
     // Now the metadata frames are mapped, we can initialize the metadata.
-    super::MIN_PADDR.store(min_paddr, Ordering::Relaxed);
     super::MAX_PADDR.store(max_paddr, Ordering::Relaxed);
 
     let meta_page_range = meta_pages..meta_pages + nr_meta_pages * PAGE_SIZE;
 
-    let early_allocated_ranges = allocator::EARLY_ALLOCATOR
+    let (range_1, range_2) = allocator::EARLY_ALLOCATOR
         .lock()
         .as_ref()
         .unwrap()
         .allocated_regions();
-    for range in early_allocated_ranges
-        .iter()
-        .flat_map(|range| range_difference(range, &meta_page_range))
-    {
-        let early_seg = Segment::from_unused(range, |_| EarlyAllocatedFrameMeta).unwrap();
+    for r in range_difference(&range_1, &meta_page_range) {
+        let early_seg = Segment::from_unused(r, |_| EarlyAllocatedFrameMeta).unwrap();
+        let _ = ManuallyDrop::new(early_seg);
+    }
+    for r in range_difference(&range_2, &meta_page_range) {
+        let early_seg = Segment::from_unused(r, |_| EarlyAllocatedFrameMeta).unwrap();
         let _ = ManuallyDrop::new(early_seg);
     }
 
@@ -522,20 +522,6 @@ pub(in crate::mm) fn is_initialized() -> bool {
     // to the safety requirement of the `init` function, we can assume that
     // there is no race conditions.
     super::MAX_PADDR.load(Ordering::Relaxed) != 0
-}
-
-fn tracked_paddr_range(regions: &[MemoryRegion]) -> Range<Paddr> {
-    let physical_regions = regions.iter().filter(|region| region.typ().is_physical());
-    let min_paddr = physical_regions
-        .clone()
-        .map(|region| region.base())
-        .min()
-        .unwrap();
-    let max_paddr = physical_regions.map(|region| region.end()).max().unwrap();
-
-    // This ensures that the first metadata slot starts at a page boundary.
-    const META_PAGE_COVERAGE: usize = PAGE_SIZE * (PAGE_SIZE / META_SLOT_SIZE);
-    min_paddr.align_down(META_PAGE_COVERAGE)..max_paddr
 }
 
 fn alloc_meta_frames(tot_nr_frames: usize) -> (usize, Paddr) {
@@ -590,8 +576,7 @@ macro_rules! mark_ranges {
         debug_assert!($region.base().is_multiple_of(PAGE_SIZE));
         debug_assert!($region.len().is_multiple_of(PAGE_SIZE));
 
-        let start = $region.base().max(super::min_paddr());
-        let seg = Segment::from_unused(start..$region.end(), |_| $typ).unwrap();
+        let seg = Segment::from_unused($region.base()..$region.end(), |_| $typ).unwrap();
         let _ = ManuallyDrop::new(seg);
     }};
 }
@@ -599,12 +584,7 @@ macro_rules! mark_ranges {
 fn mark_unusable_ranges() {
     let regions = &crate::boot::EARLY_INFO.get().unwrap().memory_regions;
 
-    for region in regions
-        .iter()
-        .rev()
-        .skip_while(|r| !r.typ().is_physical())
-        .take_while(|r| r.end() > super::min_paddr())
-    {
+    for region in regions.iter().rev().skip_while(|r| !r.typ().is_physical()) {
         match region.typ() {
             MemoryRegionType::BadMemory => mark_ranges!(region, UnusableMemoryMeta),
             MemoryRegionType::Unknown => mark_ranges!(region, ReservedMemoryMeta),
@@ -626,6 +606,8 @@ fn mark_unusable_ranges() {
 /// initializing metadata.
 #[cfg(target_arch = "x86_64")]
 fn add_temp_linear_mapping(max_paddr: Paddr) {
+    use align_ext::AlignExt;
+
     use crate::mm::kspace::LINEAR_MAPPING_BASE_VADDR;
 
     const PADDR4G: Paddr = 0x1_0000_0000;
@@ -645,7 +627,7 @@ fn add_temp_linear_mapping(max_paddr: Paddr) {
         priv_flags: PrivilegedPageFlags::GLOBAL,
     };
 
-    // SAFETY: We are doing the linear mapping for the kernel.
+    // SAFETY: we are doing the linear mapping for the kernel.
     unsafe {
         boot_pt::with_borrow(|boot_pt| {
             for paddr in prange.step_by(PAGE_SIZE) {

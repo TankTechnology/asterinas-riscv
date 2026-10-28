@@ -9,8 +9,8 @@ use super::{
 };
 use crate::{
     net::socket::netlink::{
-        addr::UNSPECIFIED_PORT, kobject_uevent::UeventMessage, receiver::MessageReceiver,
-        route::RtnlMessage,
+        addr::UNSPECIFIED_PORT, generic::GenericMessage, kobject_uevent::UeventMessage,
+        receiver::MessageReceiver, route::RtnlMessage,
     },
     prelude::*,
     util::random::getrandom,
@@ -22,7 +22,7 @@ mod multicast;
 pub(crate) struct NetlinkSocketTable {
     route: RwMutex<ProtocolSocketTable<RtnlMessage>>,
     uevent: RwMutex<ProtocolSocketTable<UeventMessage>>,
-    generic: RwMutex<ProtocolSocketTable<()>>,
+    generic: RwMutex<ProtocolSocketTable<GenericMessage>>,
 }
 
 impl NetlinkSocketTable {
@@ -106,7 +106,7 @@ impl SupportedNetlinkProtocol for NetlinkUeventProtocol {
 pub enum NetlinkGenericProtocol {}
 
 impl SupportedNetlinkProtocol for NetlinkGenericProtocol {
-    type Message = ();
+    type Message = GenericMessage;
 
     fn protocol_id() -> NetlinkProtocolId {
         StandardNetlinkProtocol::GENERIC as u32

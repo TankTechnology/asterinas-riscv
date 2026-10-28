@@ -9,7 +9,6 @@ ASTERINAS_GUEST_CMD=$2
 LINUX_GUEST_CMD=$3
 ASTERINAS_OUTPUT=$4
 LINUX_OUTPUT=$5
-BENCHMARK_NAME=$6
 # Message to monitor in the log file to determine whether the VM is ready
 # It should align with bench_runner.sh
 READY_MESSAGE="The VM is ready for the benchmark."
@@ -83,7 +82,7 @@ run_benchmark "${ASTERINAS_GUEST_CMD}" "${ASTERINAS_OUTPUT}" "/tmp/asterinas.log
 wait
 
 # Run the benchmark on the Linux VM
-prepare_fs "${BENCHMARK_NAME}"
+prepare_fs
 run_benchmark "${LINUX_GUEST_CMD}" "${LINUX_OUTPUT}" "/tmp/linux.log" "${READY_MESSAGE}"
 
 # Wait for the Linux QEMU process to exit

@@ -37,7 +37,7 @@ For more information, see [our talk on OC3'24](https://www.youtube.com/watch?v=3
 
 Please make sure your server supports Intel TDX.
 
-See [this guide](https://github.com/canonical/tdx#4-setup-host-os)
+See [this guide](https://github.com/canonical/tdx/tree/noble-24.04?tab=readme-ov-file#4-setup-host-os)
 or other materials to enable Intel TDX in host OS.
 
 To verify the TDX host status,
@@ -66,7 +66,7 @@ The following result is an example:
 2. Run a Docker container as the development environment.
 
     ```bash
-    docker run -it --privileged --network=host -v /dev:/dev -v $(pwd)/asterinas:/root/asterinas asterinas/dev:0.19.0-20261012
+    docker run -it --privileged --network=host -v /dev:/dev -v $(pwd)/asterinas:/root/asterinas asterinas/asterinas:0.18.0-20260702
     ```
 
 3. Inside the container,

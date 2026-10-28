@@ -37,6 +37,10 @@ static PRE_SCHEDULE_HANDLER: Once<fn(&DisabledLocalIrqGuard)> = Once::new();
 
 static POST_SCHEDULE_HANDLER: Once<fn()> = Once::new();
 
+static PRE_USER_RUN_HANDLER: Once<fn(&DisabledLocalIrqGuard)> = Once::new();
+
+static POST_USER_RUN_HANDLER: Once<fn(&DisabledLocalIrqGuard)> = Once::new();
+
 /// Injects a handler to be executed before scheduling.
 pub fn inject_pre_schedule_handler(handler: fn(&DisabledLocalIrqGuard)) {
     PRE_SCHEDULE_HANDLER.call_once(|| handler);
@@ -45,6 +49,36 @@ pub fn inject_pre_schedule_handler(handler: fn(&DisabledLocalIrqGuard)) {
 /// Injects a handler to be executed after scheduling.
 pub fn inject_post_schedule_handler(handler: fn()) {
     POST_SCHEDULE_HANDLER.call_once(|| handler);
+}
+
+/// Injects a handler to be executed right before entering user mode.
+pub fn inject_pre_user_run_handler(handler: fn(&DisabledLocalIrqGuard)) {
+    PRE_USER_RUN_HANDLER.call_once(|| handler);
+}
+
+/// Injects a handler to be executed immediately after returning from user mode.
+pub fn inject_post_user_run_handler(handler: fn(&DisabledLocalIrqGuard)) {
+    POST_USER_RUN_HANDLER.call_once(|| handler);
+}
+
+/// Runs the pre-user-run handler if one has been injected.
+///
+/// Called by architecture-specific `execute()` implementations
+/// right before entering user mode.
+pub(crate) fn call_pre_user_run_handler(guard: &DisabledLocalIrqGuard) {
+    if let Some(handler) = PRE_USER_RUN_HANDLER.get() {
+        handler(guard);
+    }
+}
+
+/// Runs the post-user-run handler if one has been injected.
+///
+/// Architecture code calls this with local interrupts disabled, before doing
+/// any work on behalf of the trap that returned control to the kernel.
+pub(crate) fn call_post_user_run_handler(guard: &DisabledLocalIrqGuard) {
+    if let Some(handler) = POST_USER_RUN_HANDLER.get() {
+        handler(guard);
+    }
 }
 
 /// A task that executes a function to the end.
@@ -88,16 +122,6 @@ impl Task {
         &self.ctx
     }
 
-    /// Returns whether we need to yield execution to another task.
-    ///
-    /// If the scheduler decides to preempt the current task in favor of
-    /// another (for example, if the current task has exhausted its runtime
-    /// budget or if the new task has a higher priority), this method will
-    /// return `true`.
-    pub fn need_yield() -> bool {
-        preempt::cpu_local::need_preempt()
-    }
-
     /// Yields execution so that another task may be scheduled.
     ///
     /// Note that this method cannot be simply named "yield" as the name is
@@ -105,6 +129,14 @@ impl Task {
     #[track_caller]
     pub fn yield_now() {
         scheduler::yield_now()
+    }
+
+    /// Re-enqueues the current task so that the scheduler can move it to another CPU.
+    ///
+    /// The caller should update the task's scheduling constraints before invoking this method.
+    #[track_caller]
+    pub fn migrate_current() {
+        scheduler::migrate_current()
     }
 
     /// Kicks the task scheduler to run the task.

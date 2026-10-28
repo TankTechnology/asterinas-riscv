@@ -74,8 +74,6 @@ def _hash_fd(descriptor: int) -> str:
 
 
 class ConcreteOperations:
-    BOOTARGS: str | None = None
-
     def __init__(self, config: GateConfig) -> None:
         self.config = config
         self._input_fds: dict[str, int] = {}
@@ -196,15 +194,11 @@ class ConcreteOperations:
             ):
                 self._materialize(name, staging / filename)
             boot = staging / "boot.ext4"
-            boot_image_arguments: dict[str, str] = {}
-            if self.BOOTARGS is not None:
-                boot_image_arguments["bootargs"] = self.BOOTARGS
             build_boot_image(
                 staging / "asterinas.booti",
                 staging / "qemu-virt.dtb",
                 staging / "stage1-initramfs.cpio",
                 boot,
-                **boot_image_arguments,
             )
             output.atomic_copy("boot.ext4", boot)
         pinned_parent = Path(f"/proc/self/fd/{output._operation_fd}")

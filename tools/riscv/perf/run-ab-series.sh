@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MPL-2.0
+
 # Run the redundant-units A/B as an alternating series.
 #
 # Alternating rather than off-off/on-on: this machine's desktop-gate timings

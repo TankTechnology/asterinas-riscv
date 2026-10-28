@@ -13,6 +13,8 @@ pub(crate) use ops::{
 };
 pub(crate) use remapping::IrqRemapping;
 
+use crate::irq::PhasedCallbackSnapshot;
+
 pub(crate) const IRQ_NUM_MIN: u8 = 0;
 pub(crate) const IRQ_NUM_MAX: u8 = 255;
 
@@ -25,15 +27,23 @@ pub(crate) const IRQ_NUM_MAX: u8 = 255;
 /// hardware interrupt.
 pub(crate) struct HwIrqLine {
     irq_num: u8,
+    phased_callback_snapshot: PhasedCallbackSnapshot,
 }
 
 impl HwIrqLine {
     pub(super) fn new(irq_num: u8) -> Self {
-        Self { irq_num }
+        Self {
+            irq_num,
+            phased_callback_snapshot: PhasedCallbackSnapshot::empty(),
+        }
     }
 
     pub(crate) fn irq_num(&self) -> u8 {
         self.irq_num
+    }
+
+    pub(crate) fn phased_callback_snapshot(&self) -> &PhasedCallbackSnapshot {
+        &self.phased_callback_snapshot
     }
 
     pub(crate) fn ack(&self) {

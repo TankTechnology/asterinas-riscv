@@ -23,21 +23,6 @@ mount -t sysfs none /sys
 mount -t proc none /proc
 mount -t cgroup2 none /sys/fs/cgroup
 mount -t configfs none /sys/kernel/config
-
-if ! grep -q '^[^ ]* /dev devtmpfs ' /proc/mounts; then
-    mount -t devtmpfs devtmpfs /dev
-fi
-mkdir -p /dev/pts /dev/shm
-mount -t tmpfs tmpfs /dev/shm
-chmod 1777 /dev/shm
-mount -t devpts devpts /dev/pts
-# Asterinas currently exposes /dev/ptmx as a symlink to pts/ptmx. This is
-# different from Linux's in-kernel devtmpfs node for /dev/ptmx, but Linux
-# documents this symlink layout as valid.
-# Reference: https://github.com/torvalds/linux/blob/v6.18/Documentation/filesystems/devpts.rst
-chmod 0666 /dev/pts/ptmx
-ln -s pts/ptmx /dev/ptmx
-
 ROOTFS_TYPE=ext2
 case " $(cat /proc/cmdline) " in
     *" rootfs_type=ext4 "*) ROOTFS_TYPE=ext4 ;;
@@ -47,16 +32,16 @@ case "$*" in
         ROOTFS_TYPE=ext4
         ;;
 esac
-printf 'ASTERINAS_INIT_ROOTFS type=%s argc=%s arg1=%s\n' "$ROOTFS_TYPE" "$#" "$1"
+case "$*" in
+    *run_ext4_regression_test.sh*) ROOTFS_TYPE=ext4 ;;
+esac
+echo "ASTERINAS_INIT_ROOTFS type=$ROOTFS_TYPE argc=$# arg1=$1"
+if ! mount -t "$ROOTFS_TYPE" /dev/vda /ext2; then
+    echo "ASTERINAS_INIT_ROOTFS_ERROR type=$ROOTFS_TYPE"
+    poweroff -f
+fi
 printf '%s\n' "$ROOTFS_TYPE" > /tmp/asterinas_requested_fs_type
-
-if [ -b /dev/vda ]; then
-    mount -t "$ROOTFS_TYPE" /dev/vda /ext2
-fi
-
-if [ -b /dev/vdb ]; then
-    mount -t exfat /dev/vdb /exfat
-fi
+mount -t exfat /dev/vdb /exfat
 
 # When the init process starts,
 # it does not have a process group, session, or controlling terminal.

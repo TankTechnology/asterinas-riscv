@@ -1,12 +1,11 @@
 # SPDX-License-Identifier: MPL-2.0
 
 TARGET_ARCH ?= x86_64
-BENCHMARK ?= none
 SMP ?= 1
 VERBOSE ?= 1
 ENABLE_CONFORMANCE_TEST ?= false
 CONFORMANCE_TEST_SUITE ?= ltp
-CONFORMANCE_TEST_SELECTOR ?=
+CONFORMANCE_GVISOR_TEST ?= null
 CONFORMANCE_TEST_WORKDIR ?= /tmp
 ENABLE_REGRESSION_TEST ?= false
 REGRESSION_TEST_DIRS ?= null
@@ -31,8 +30,6 @@ INITRAMFS_IMAGE := $(BUILD_DIR)/initramfs.cpio.gz
 INITRAMFS_COMPRESSED := true
 endif
 EXT2_IMAGE := $(BUILD_DIR)/ext2.img
-EXT2_FS_TYPE ?= ext2
-EXT2_IMAGE_STAMP := $(BUILD_DIR)/.ext2-image-$(EXT2_FS_TYPE)-compat-v3
 EXFAT_IMAGE := $(BUILD_DIR)/exfat.img
 LTP_DEV_IMAGE := $(BUILD_DIR)/ltp_dev.img
 SSD_IMAGE := $(BUILD_DIR)/nvme0n1.img
@@ -80,12 +77,11 @@ $(INITRAMFS_IMAGE): $(INITRAMFS)
 		--tarball-ttl $(NIXPKGS_CACHE_TTL) \
 		--argstr target $(TARGET_ARCH) \
 		--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
-		--argstr benchmarkName $(BENCHMARK) \
 		--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
 		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
 		--arg regressionTestDirs '$(REGRESSION_TEST_DIRS)' \
 		--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
-		--argstr conformanceTestSelector "$(CONFORMANCE_TEST_SELECTOR)" \
+		--arg conformanceGvisorTest '$(CONFORMANCE_GVISOR_TEST)' \
 		--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
 		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
 		--argstr dnsServer ${DNS_SERVER} \
@@ -100,12 +96,11 @@ $(INITRAMFS):
 		--tarball-ttl $(NIXPKGS_CACHE_TTL) \
 		--argstr target $(TARGET_ARCH) \
 		--arg enableBenchmarkTest $(ENABLE_BENCHMARK_TEST) \
-		--argstr benchmarkName $(BENCHMARK) \
 		--arg enableConformanceTest $(ENABLE_CONFORMANCE_TEST) \
 		--arg enableRegressionTest $(ENABLE_REGRESSION_TEST) \
 		--arg regressionTestDirs '$(REGRESSION_TEST_DIRS)' \
 		--argstr conformanceTestSuite $(CONFORMANCE_TEST_SUITE) \
-		--argstr conformanceTestSelector "$(CONFORMANCE_TEST_SELECTOR)" \
+		--arg conformanceGvisorTest '$(CONFORMANCE_GVISOR_TEST)' \
 		--argstr conformanceTestWorkDir $(CONFORMANCE_TEST_WORKDIR) \
 		--argstr regressionTestPlatform $(REGRESSION_TEST_PLATFORM) \
 		--argstr dnsServer ${DNS_SERVER} \
@@ -179,25 +174,14 @@ initramfs_pkgs:
 		--out-link /nix/var/nix/gcroots/auto/x86_64-initramfs-with-benchmark \
 		-A initramfs-image
 
-
-$(EXT2_IMAGE_STAMP):
+$(EXT2_IMAGE):
 	@mkdir -p $(BUILD_DIR)
-	@touch $@
-
-$(EXT2_IMAGE): $(EXT2_IMAGE_STAMP)
-	@current_type="$$(blkid -s TYPE -o value $(EXT2_IMAGE) 2>/dev/null || true)"; \
-	if [ ! -f $(EXT2_IMAGE) ] || [ "$$current_type" != "$(EXT2_FS_TYPE)" ]; then \
-		dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1; \
-		if [ "$(EXT2_FS_TYPE)" = ext4 ]; then \
-			mkfs.ext4 -F -I 128 -N 139264 -O extents,^64bit,^metadata_csum,^metadata_csum_seed,^flex_bg,^dir_nlink,^extra_isize,^huge_file $(EXT2_IMAGE); \
-		else \
-			mkfs -t $(EXT2_FS_TYPE) -F $(EXT2_IMAGE); \
-		fi; \
-	fi
+	@dd if=/dev/zero of=$(EXT2_IMAGE) bs=2G count=1
+	@mke2fs $(EXT2_IMAGE)
 
 $(EXFAT_IMAGE):
 	@mkdir -p $(BUILD_DIR)
-	@truncate -s 512M $(EXFAT_IMAGE)
+	@fallocate -l 512M $(EXFAT_IMAGE)
 	@mkfs.exfat $(EXFAT_IMAGE)
 
 $(LTP_DEV_IMAGE):

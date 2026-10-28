@@ -27,7 +27,7 @@
 //! - `inode_cache` — protects the per-group live inode map. Uses
 //!   double-checked locking (read then promote to write on miss).
 
-use core::fmt;
+use core::{fmt, ops::Range};
 
 use aster_block::bio::BioCompleteFn;
 use ostd::const_assert;
@@ -70,6 +70,11 @@ pub(super) struct BlockGroup {
     _inode_table_backend: Arc<InodeTableBackend>,
     /// Inode table page cache.
     inode_table_cache: PageCache,
+    /// Byte range of the inode table that has been written since the last
+    /// flush. `fsync` used to flush the whole table of every group, which on a
+    /// 4 GiB image scans ~256 MiB of page cache per call; track the dirty range
+    /// so a one-inode update costs one inode-sized flush.
+    inode_table_dirty: RwMutex<Option<Range<usize>>>,
     /// Per-group inode cache keyed by group-local inode index.
     ///
     /// Ext2 keeps this cache locally because the VFS layer does not provide
@@ -161,6 +166,7 @@ impl BlockGroup {
             inode_size,
             _inode_table_backend: backend,
             inode_table_cache,
+            inode_table_dirty: RwMutex::new(None),
             inode_cache: RwMutex::new(BTreeMap::new()),
         })
     }
@@ -263,9 +269,16 @@ impl BlockGroup {
     }
 
     pub(super) fn sync_inodes_without_table(&self) -> Result<()> {
+        // Inodes whose metadata is clean contribute no descriptor and no
+        // allocation to the pending transaction, so writing their data back
+        // here is not needed for `data=ordered`; durability of their data is
+        // their own `fsync`'s job. Skipping them keeps a repeated fsync of one
+        // file O(1) instead of O(cached inodes).
         let inodes: Vec<Arc<Inode>> = self.inode_cache.read().values().cloned().collect();
         for inode in inodes {
-            inode.sync_all()?;
+            if inode.has_pending_metadata() {
+                inode.sync_all()?;
+            }
         }
         Ok(())
     }
@@ -279,17 +292,44 @@ impl BlockGroup {
         // `inode_cache.write()`.
         let inodes: Vec<Arc<Inode>> = self.inode_cache.read().values().cloned().collect();
         for inode in inodes {
-            inode.sync_all()?;
+            if inode.has_pending_metadata() {
+                inode.sync_all()?;
+            }
         }
         self.sync_inode_table()
     }
 
-    /// Syncs the inode table back to disk.
+    /// Syncs the dirty part of the inode table back to disk.
     pub(super) fn sync_inode_table(&self) -> Result<()> {
-        // TODO: support sync specific inode with inode number.
-        let size = self.nr_inodes_per_group as usize * self.inode_size;
-        let range = 0..size;
-        self.inode_table_cache.flush_range(range)
+        // Take the range under the lock. A writer that dirties the table after
+        // this point records a fresh range for the next sync, so no update is
+        // lost and no caller has to walk the whole table.
+        let Some(range) = self.inode_table_dirty.write().take() else {
+            return Ok(());
+        };
+        if let Err(error) = self.inode_table_cache.flush_range(range.clone()) {
+            // Put the range back so a later sync retries it, merged with any
+            // range a concurrent writer recorded in the meantime.
+            let mut dirty = self.inode_table_dirty.write();
+            let merged = match dirty.take() {
+                Some(pending) => pending.start.min(range.start)..pending.end.max(range.end),
+                None => range,
+            };
+            *dirty = Some(merged);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Records that `[offset, offset + len)` of the inode table has changed.
+    fn mark_inode_table_dirty(&self, offset: usize, len: usize) {
+        let mut dirty = self.inode_table_dirty.write();
+        let new = offset..offset + len;
+        let merged = match dirty.take() {
+            Some(range) => range.start.min(new.start)..range.end.max(new.end),
+            None => new,
+        };
+        *dirty = Some(merged);
     }
 
     /// Returns a read guard over the combined group metadata.
@@ -523,11 +563,30 @@ impl BlockGroup {
         InodeDesc::try_from(&raw_inode)
     }
 
+    /// Reads an inode-table block from the page cache, including dirty
+    /// descriptors that have not reached the block device yet.
+    pub(super) fn read_inode_table_block(
+        &self,
+        block_offset: usize,
+        payload: &mut [u8],
+    ) -> Result<()> {
+        if payload.len() != BLOCK_SIZE {
+            return_errno_with_message!(Errno::EINVAL, "invalid inode-table block size");
+        }
+        let offset = block_offset
+            .checked_mul(BLOCK_SIZE)
+            .ok_or_else(|| Error::with_message(Errno::EOVERFLOW, "inode-table offset overflow"))?;
+        self.inode_table_cache
+            .read_bytes(offset, payload)
+            .map_err(|_| Error::with_message(Errno::EIO, "failed to read inode-table cache"))
+    }
+
     /// Writes an inode descriptor to the group's inode table `PageCache`.
     pub(super) fn write_back_inode_desc(&self, ino: Ext2Ino, raw: &RawInode) -> Result<()> {
         let inode_idx = self.inode_idx_in_group(ino);
         let offset_bytes = (inode_idx as usize) * self.inode_size;
         self.inode_table_cache.write_val(offset_bytes, raw)?;
+        self.mark_inode_table_dirty(offset_bytes, self.inode_size);
         Ok(())
     }
 
@@ -735,10 +794,14 @@ mod test {
         {
             let mut metadata = group.metadata.write();
             assert_eq!(metadata.inode_bitmap.alloc(), Some(0));
-            metadata.desc.free_inodes_count = 1;
+            // The group's only valid inode is now allocated.
+            metadata.desc.free_inodes_count = 0;
         }
 
         assert!(group.alloc_ino(InodeType::File).unwrap().is_none());
+        // Deliberately make the counter inconsistent: freeing the inode would
+        // overflow the partial group's inode count.
+        group.metadata.write().desc.free_inodes_count = 1;
         assert_errno!(group.free_inode(1025, InodeType::File), Errno::EIO);
         assert!(group.is_inode_allocated(1025));
         assert_eq!(group.free_inodes_count(), 1);

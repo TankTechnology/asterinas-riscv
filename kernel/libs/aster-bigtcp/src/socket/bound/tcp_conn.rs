@@ -26,7 +26,12 @@ use crate::{
     define_boolean_value,
     errors::tcp::{ConnectError, IoError, RecvError, SendError},
     ext::Ext,
-    iface::{BoundTcpPort, PacketSlice, PollKey, PollableIfaceMut},
+    iface::{
+        BoundTcpPort, PollKey, PollableIfaceMut,
+        tcp_diagnostics::{
+            TCP_EGRESS_TRACE, TcpDiagnosticStage, TcpEgressStage, record_tcp_diagnostic,
+        },
+    },
     socket::{
         event::SocketEvents,
         option::{RawTcpOption, RawTcpSetOption},
@@ -95,26 +100,6 @@ impl<E: Ext> RawTcpSocketExt<E> {
         matches!(state, State::FinWait1 | State::Closing | State::LastAck)
     }
 
-    /// Returns the connection state as a Linux TCP state code.
-    ///
-    /// `/proc/net/tcp` and `NETLINK_SOCK_DIAG` report these numbers, so the
-    /// translation belongs next to smoltcp's state instead of in each consumer.
-    pub fn linux_state_code(&self) -> u8 {
-        match self.state() {
-            State::Closed => 7,
-            State::Listen => 10,
-            State::SynSent => 2,
-            State::SynReceived => 3,
-            State::Established => 1,
-            State::FinWait1 => 4,
-            State::FinWait2 => 5,
-            State::CloseWait => 8,
-            State::Closing => 11,
-            State::LastAck => 9,
-            State::TimeWait => 6,
-        }
-    }
-
     /// Returns whether the receiving half of the socket is shut down.
     ///
     /// This method will return true if and only if [`TcpConnection::shut_recv`] or
@@ -134,7 +119,7 @@ impl<E: Ext> RawTcpSocketExt<E> {
 
 define_boolean_value!(
     /// Whether the TCP connection became dead.
-    pub(crate) TcpConnBecameDead
+    TcpConnBecameDead
 );
 
 impl<E: Ext> RawTcpSocketExt<E> {
@@ -314,25 +299,20 @@ impl<E: Ext> TcpConnection<E> {
     ///
     /// Polling the iface is _always_ required after this method succeeds.
     pub fn new_connect(
-        mut bound: BoundTcpPort<E>,
+        bound: BoundTcpPort<E>,
         remote_endpoint: IpEndpoint,
         option: &RawTcpOption,
         observer: E::TcpEventObserver,
     ) -> Result<Self, (BoundTcpPort<E>, ConnectError)> {
+        let local_endpoint = bound.endpoint();
+
         let iface = bound.iface().clone();
-
+        // We have to lock `interface` before locking `sockets`
+        // to avoid dead lock due to inconsistent lock orders.
         let mut interface = iface.common().interface();
-
-        // A TCP socket can initially be bound to a broadcast address; however, when connecting
-        // later, its address will fall back to a unicast address.
-        let connection_key = {
-            bound.ensure_unicast(&interface);
-            let local_endpoint = bound.endpoint();
-            ConnectionKey::from((local_endpoint, remote_endpoint))
-        };
-
-        // Lock order: `interface` -> `sockets`
         let mut sockets = iface.common().sockets();
+
+        let connection_key = ConnectionKey::from((local_endpoint, remote_endpoint));
 
         if sockets.lookup_connection(&connection_key).is_some() {
             return Err((bound, ConnectError::AddressInUse));
@@ -433,9 +413,10 @@ impl<E: Ext> TcpConnection<E> {
                         sent_bytes = current_sent_bytes;
                         (current_sent_bytes, Ok(()))
                     }
-                    Err((err, current_sent_bytes)) => {
-                        sent_bytes = current_sent_bytes;
-                        (current_sent_bytes, Err(err))
+                    Err((err, _)) => {
+                        // A failed copy must not commit the current contiguous
+                        // buffer. Earlier buffers may already have been sent.
+                        (0, Err(err))
                     }
                 }
             });
@@ -462,8 +443,35 @@ impl<E: Ext> TcpConnection<E> {
         };
 
         let result = NonZeroUsize::new(result).ok_or(IoError::NoProgress)?;
+        let key = self.0.connection_key();
+        record_tcp_diagnostic(
+            TcpDiagnosticStage::SendBuffered,
+            key.hash(),
+            key.local_port(),
+            key.remote_port(),
+            [result.get() as u64, 0, 0],
+        );
+        if TCP_EGRESS_TRACE.record(TcpEgressStage::Buffered) {
+            ostd::info!(
+                "ASTERINAS_TCP_EGRESS stage={}",
+                TcpEgressStage::Buffered.as_str()
+            );
+        }
+        let old_poll_at_ms = self.0.poll_key().diagnostic_next_poll_at_ms();
         let poll_at = socket.poll_at(iface.context_mut());
+        let new_poll_at_ms = match &poll_at {
+            PollAt::Now => 0,
+            PollAt::Time(instant) => instant.total_millis() as u64,
+            PollAt::Ingress => u64::MAX,
+        };
         let need_poll = iface.update_next_poll_at_ms(&self.0, poll_at);
+        record_tcp_diagnostic(
+            TcpDiagnosticStage::PollScheduled,
+            key.hash(),
+            key.local_port(),
+            key.remote_port(),
+            [old_poll_at_ms, new_poll_at_ms, u64::from(*need_poll)],
+        );
 
         Ok((result, need_poll))
     }
@@ -471,12 +479,16 @@ impl<E: Ext> TcpConnection<E> {
     /// Receives some data.
     ///
     /// Polling the iface _may_ be required after this method succeeds.
-    pub fn recv<CopyFn, CopyErr>(
+    /// `preflight_fn` sees the queued byte count under the socket lock before any bytes are
+    /// consumed. It must not block or access user memory.
+    pub fn recv<PreflightFn, CopyFn, CopyErr>(
         &self,
         behavior: ReceiveBehavior,
+        mut preflight_fn: PreflightFn,
         mut copy_fn: CopyFn,
     ) -> Result<(NonZeroUsize, NeedIfacePoll), IoError<RecvError, CopyErr>>
     where
+        PreflightFn: FnMut(usize) -> Result<(), CopyErr>,
         CopyFn: FnMut(&[u8]) -> Result<usize, (CopyErr, usize)>,
     {
         let common = self.iface().common();
@@ -487,6 +499,9 @@ impl<E: Ext> TcpConnection<E> {
         if socket.is_recv_shut && socket.recv_queue() == 0 {
             return Err(IoError::Socket(RecvError::Finished));
         }
+
+        // Check the whole queued range before consuming the first contiguous ring segment.
+        preflight_fn(socket.recv_queue()).map_err(IoError::Copy)?;
 
         let mut total_recv_bytes = 0;
         let mut need_wrap_continuation = behavior.will_consume_data();
@@ -505,9 +520,10 @@ impl<E: Ext> TcpConnection<E> {
                         recv_bytes = current_recv_bytes;
                         (current_recv_bytes, Ok(()))
                     }
-                    Err((err, current_recv_bytes)) => {
-                        recv_bytes = current_recv_bytes;
-                        (current_recv_bytes, Err(err))
+                    Err((err, _)) => {
+                        // A failed user copy must not consume the TCP bytes it partly copied.
+                        // The caller may retry the entire range after fixing the buffer.
+                        (0, Err(err))
                     }
                 }
             };
@@ -703,7 +719,6 @@ impl<E: Ext> TcpConnectionBg<E> {
         iface: &mut PollableIfaceMut<E>,
         ip_repr: &IpRepr,
         tcp_repr: &TcpRepr,
-        payload: PacketSlice<'_>,
     ) -> (TcpProcessResult, TcpConnBecameDead) {
         let mut socket = self.inner.lock();
 
@@ -749,12 +764,13 @@ impl<E: Ext> TcpConnectionBg<E> {
 
         let old_state = socket.state();
         let old_recv_queue = socket.recv_queue();
+        let payload_len = tcp_repr.payload.len();
         let is_rst = tcp_repr.control == TcpControl::Rst;
         // For TCP, receiving an ACK packet can free up space in the queue, allowing more packets
         // to be queued.
         let mut events = SocketEvents::CAN_RECV | SocketEvents::CAN_SEND;
 
-        let result = match socket.process(iface.context_mut(), ip_repr, tcp_repr, payload) {
+        let result = match socket.process(iface.context_mut(), ip_repr, tcp_repr) {
             None => TcpProcessResult::Processed,
             Some((ip_repr, tcp_repr)) => TcpProcessResult::ProcessedWithReply(ip_repr, tcp_repr),
         };
@@ -763,7 +779,37 @@ impl<E: Ext> TcpConnectionBg<E> {
             socket.check_state(self, old_state, old_recv_queue, is_rst);
         events |= state_events;
 
+        let key = self.connection_key();
+        if payload_len != 0 {
+            record_tcp_diagnostic(
+                TcpDiagnosticStage::PeerProcess,
+                key.hash(),
+                key.local_port(),
+                key.remote_port(),
+                [
+                    payload_len as u64,
+                    old_recv_queue as u64,
+                    socket.recv_queue() as u64,
+                ],
+            );
+            record_tcp_diagnostic(
+                TcpDiagnosticStage::SocketEvents,
+                key.hash(),
+                key.local_port(),
+                key.remote_port(),
+                [u64::from(events.bits()), 0, 0],
+            );
+        }
         self.notify_events(events);
+        if payload_len != 0 {
+            record_tcp_diagnostic(
+                TcpDiagnosticStage::PolleeNotify,
+                key.hash(),
+                key.local_port(),
+                key.remote_port(),
+                [u64::from(events.bits()), socket.recv_queue() as u64, 0],
+            );
+        }
 
         let poll_at = socket.poll_at(iface.context_mut());
         iface.update_next_poll_at_ms(self, poll_at);
@@ -804,12 +850,7 @@ impl<E: Ext> TcpConnectionBg<E> {
             }
             is_rst |= tcp_repr.control == TcpControl::Rst;
             events |= SocketEvents::CAN_RECV | SocketEvents::CAN_SEND;
-            reply = socket.process(
-                iface.context_mut(),
-                ip_repr,
-                tcp_repr,
-                PacketSlice::from(tcp_repr.payload),
-            );
+            reply = socket.process(iface.context_mut(), ip_repr, tcp_repr);
         }
 
         let (state_events, became_dead) =

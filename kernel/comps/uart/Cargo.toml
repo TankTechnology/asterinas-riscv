@@ -7,18 +7,14 @@ edition.workspace = true
 
 [dependencies]
 aster-console.workspace = true
+aster-softirq.workspace = true
 component.workspace = true
 inherit-methods-macro.workspace = true
 ostd.workspace = true
 spin.workspace = true
 
 [target.riscv64imac-unknown-none-elf.dependencies]
-aster-util.workspace = true
-fdt.workspace = true
-fdt-util.workspace = true
-
-[target.aarch64-unknown-none-softfloat.dependencies]
-fdt-util.workspace = true
+fdt = { version = "0.1.5", features = ["pretty-printing"] }
 
 [lints]
 workspace = true

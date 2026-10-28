@@ -93,21 +93,9 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
 
     def test_explicit_qemu_proot_virtualizes_guest_credentials(self) -> None:
         self.assertIn(
-            'command proot -0 -w / -q "$(command -v "$ARCH_EMULATOR")"',
+            'command proot -0 -w / -q "$(command -v qemu-riscv64-static)"',
             self.rootfs_builder,
         )
-
-    def test_default_architecture_matches_the_architecture_table(self) -> None:
-        # The builder resolves the default target's output paths without a
-        # Python interpreter, so its shell-side default has to agree with the
-        # architecture table that every other target comes from.
-        from tools.debian.rootfs.arch import get_architecture
-
-        default = get_architecture("riscv64")
-        self.assertIn(
-            f'ARCH_SLUG_DEFAULT="{default.arch_slug}"', self.rootfs_builder
-        )
-        self.assertIn(f'ARCHITECTURE="{default.debian_arch}"', self.rootfs_builder)
 
     def test_documentation_explains_runtime_contract(self) -> None:
         for required_text in (
@@ -120,28 +108,6 @@ class RiscvRootfsBuilderImageTests(unittest.TestCase):
             with self.subTest(required_text=required_text):
                 self.assertIn(required_text, self.readme)
         self.assertIn("build_riscv_rootfs_image", self.docker_readme)
-
-    def test_image_is_fsck_repaired_and_gated(self) -> None:
-        # `mke2fs -d` populates the tree with e2fsprogs' own copier rather than a
-        # mounted filesystem, and it does not always get the block and inode
-        # bitmaps right. A block owned by a live inode can be left marked free,
-        # so a later write allocates it, two inodes own it, and one of them is
-        # destroyed -- which shows up far away as an unrelated file reading back
-        # wrong bytes. The builder must repair the image and then refuse to
-        # publish one that is still inconsistent.
-        self.assertIn("e2fsck -fy", self.rootfs_builder)
-        self.assertIn('e2fsck -fn "$root_image"', self.rootfs_builder)
-        self.assertIn(
-            "root image is not a consistent filesystem", self.rootfs_builder
-        )
-        # The repair only runs if e2fsck is present, so the tool contract has to
-        # name it.
-        tools_line = next(
-            line
-            for line in self.rootfs_builder.splitlines()
-            if "gpgv" in line and "printf" in line
-        )
-        self.assertIn("e2fsck", tools_line)
 
     def test_makefile_exposes_explicit_image_target(self) -> None:
         for required_text in (

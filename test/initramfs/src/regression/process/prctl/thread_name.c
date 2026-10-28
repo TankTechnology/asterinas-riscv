@@ -2,7 +2,6 @@
 
 #include <stdio.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -10,6 +9,8 @@
 #include "../../common/test.h"
 
 #define THREAD_NAME "fork_comm"
+#define LONG_THREAD_NAME "prctl05_test_xxxxx"
+#define TRUNCATED_THREAD_NAME "prctl05_test_xx"
 
 static int check_proc_stat_comm(const char *expected_comm)
 {
@@ -47,29 +48,13 @@ FN_TEST(fork_inherits_thread_name)
 }
 END_TEST()
 
-#define NEW_NAME "new_comm"
-#define PAGE_SIZE 4096
-#define TASK_COMM_LEN 16
-
-FN_TEST(set_name_near_unmapped_page)
+FN_TEST(long_thread_name_is_silently_truncated)
 {
-	char *addr = (char *)TEST_SUCC(
-		mmap(NULL, PAGE_SIZE * 2, PROT_READ | PROT_WRITE,
-		     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+	char thread_name[16] = { 0 };
 
-	// Keep only the first page mapped.
-	TEST_SUCC(munmap(addr + PAGE_SIZE, PAGE_SIZE));
-
-	// Place the short name at the very end of the mapped page.
-	char *name_addr = addr + PAGE_SIZE - sizeof(NEW_NAME);
-	memcpy(name_addr, NEW_NAME, sizeof(NEW_NAME));
-
-	TEST_SUCC(prctl(PR_SET_NAME, name_addr));
-
-	char comm[TASK_COMM_LEN] = { 0 };
-	TEST_SUCC(prctl(PR_GET_NAME, comm));
-	TEST_RES(strcmp(comm, NEW_NAME), _ret == 0);
-
-	TEST_SUCC(munmap(addr, PAGE_SIZE));
+	TEST_SUCC(prctl(PR_SET_NAME, LONG_THREAD_NAME));
+	TEST_SUCC(prctl(PR_GET_NAME, thread_name));
+	TEST_RES(strcmp(thread_name, TRUNCATED_THREAD_NAME), _ret == 0);
+	TEST_RES(check_proc_stat_comm(TRUNCATED_THREAD_NAME), _ret == 0);
 }
 END_TEST()

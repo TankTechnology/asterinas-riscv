@@ -10,7 +10,6 @@ set -e
 #   --docker_version_file [major|minor|patch|date]   Bump the Docker image version in the DOCKER_IMAGE_VERSION file under the project root
 #   --docker_version_refs                            Update all references to the Docker image version throughout the codebase
 #   --version_file                                   Bump the project version to match the Docker image version
-#   --api_doc_hyperlinks_in_book                     Update all API doc hyperlinks in the Book to match VERSION
 #   --help, -h                                       Show this help message
 # Options:
 #   major, minor, patch, date                        The version part to increment when bumping the Docker image version
@@ -27,30 +26,20 @@ update_package_version() {
     sed -i "0,/${pattern}/s/${pattern}/version = \"${new_version}\"/1" $1
 }
 
-# Update the version of the $2 dependency in a single-line inline table in file $1.
+# Update the version of the $2 dependency (`$2 = { version = "", ...`) in file $1
 update_dep_version() {
-    local file="$1" dependency="$2"
-    local dep_pattern="^[[:space:]]*${dependency}[[:space:]]*=[[:space:]]*\\{"
-    local version_pattern='([,{][[:space:]]*version[[:space:]]*=[[:space:]]*")[0-9]+\.[0-9]+\.[0-9]+(")'
-
-    if ! sed -nE "/${dep_pattern}/p" "$file" | grep -Eq "$version_pattern"; then
-        echo "Error: Cannot find version for ${dependency} in ${file}" >&2
-        return 1
-    fi
-
-    echo "Updating the version of ${dependency} in file ${file}"
-    sed -Ei "/${dep_pattern}/s/${version_pattern}/\\1${new_version}\\2/" "$file"
+    echo "Updating the version of $2 in file $1"
+    pattern="^$2 = { version = \"[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\""
+    sed -i "0,/${pattern}/s/${pattern}/$2 = { version = \"${new_version}\"/1" $1
 }
 
 # Update Docker image versions in file $1
 update_image_versions() {
     echo "Updating file $1"
-    # Update the version of OSDK development container
-    sed -i "s/asterinas\/osdk-dev:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/asterinas\/osdk-dev:${new_version}/g" $1
-    # Update the version of kernel development container
-    sed -i "s/asterinas\/kernel-dev:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/asterinas\/kernel-dev:${new_version}/g" $1
     # Update the version of the Asterinas development container
-    sed -i "s/asterinas\/dev:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/asterinas\/dev:${new_version}/g" $1
+    sed -i "s/asterinas\/asterinas:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/asterinas\/asterinas:${new_version}/g" $1
+    # Update the version of asterinas/osdk container
+    sed -i "s/asterinas\/osdk:[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+\(-[[:digit:]]\+\)\?/asterinas\/osdk:${new_version}/g" $1
 }
 
 # Print the help message
@@ -61,7 +50,6 @@ print_help() {
     echo "  --docker_version_file [major|minor|patch|date]   Bump the Docker image version in the DOCKER_IMAGE_VERSION file under the project root"
     echo "  --docker_version_refs                            Update all references to the Docker image version throughout the codebase"
     echo "  --version_file                                   Bump the project version to match the Docker image version"
-    echo "  --api_doc_hyperlinks_in_book                     Update all API doc hyperlinks in the Book to match VERSION"
     echo "  --help, -h                                       Show this help message"
     echo ""
     echo "The [major|minor|patch|date] options for --docker_version_file specify which part of the"
@@ -134,7 +122,7 @@ update_all_docker_version_refs() {
     update_image_versions ${ASTER_SRC_DIR}/.devcontainer/devcontainer.json
     update_image_versions ${ASTER_SRC_DIR}/README.md
     update_image_versions ${ASTER_SRC_DIR}/AGENTS.md
-    update_image_versions ${SCRIPT_DIR}/dev_env/docker/README.md
+    update_image_versions ${SCRIPT_DIR}/docker/README.md
 
     # Update Docker image versions in the Book
     update_image_versions ${BOOK_DIR}/src/kernel/intel-tdx.md
@@ -156,21 +144,6 @@ update_all_docker_version_refs() {
     done
 }
 
-update_api_doc_hyperlinks_in_book() {
-    new_version=$(cat ${VERSION_PATH})
-
-    # This matches 'asterinas.github.io/api-docs/' followed by any X.Y.Z version.
-    SEARCH_PATTERN="asterinas\.github\.io/api-docs/[[:digit:]]\+\.[[:digit:]]\+\.[[:digit:]]\+"
-    REPLACE_STR="asterinas\.github\.io/api-docs/${new_version}"
-
-    grep -rl "asterinas.github.io/api-docs/" "$BOOK_SRC_DIR" | while read -r file; do
-        # We use '|' as a delimiter for sed to avoid escaping the slashes in the URL.
-        sed -i "s|$SEARCH_PATTERN|$REPLACE_STR|g" "$file"
-    done
-
-    echo "Updated Book API doc hyperlinks to ${new_version}"
-}
-
 # Update project dependencies (Cargo.toml and Cargo.lock)
 update_project_dependencies() {
     # Update the versions in Cargo.toml
@@ -185,7 +158,7 @@ update_project_dependencies() {
     update_dep_version ${OSDK_CARGO_TOML_PATH} linux-bzimage-builder
 
     # Automatically bump Cargo.lock files
-    cargo update -p asterinas --precise $new_version # For Cargo.lock
+    cargo update -p aster-kernel --precise $new_version # For Cargo.lock
     cd ${OSDK_DIR} && cargo update -p cargo-osdk --precise $new_version # For osdk/Cargo.lock
     cd ${SCTRACE_DIR} && cargo update -p sctrace --precise $new_version # For tools/sctrace/Cargo.lock
 }
@@ -226,7 +199,6 @@ OSDK_DIR=${ASTER_SRC_DIR}/osdk
 OSDK_CARGO_TOML_PATH=${OSDK_DIR}/Cargo.toml
 SCTRACE_DIR=${ASTER_SRC_DIR}/tools/sctrace
 SCTRACE_CARGO_TOML_PATH=${SCTRACE_DIR}/Cargo.toml
-BOOK_SRC_DIR=${ASTER_SRC_DIR}/book/src
 VERSION_PATH=${ASTER_SRC_DIR}/VERSION
 DOCKER_IMAGE_VERSION_PATH=${ASTER_SRC_DIR}/DOCKER_IMAGE_VERSION
 
@@ -247,10 +219,7 @@ case "$command" in
     "--version_file")
         sync_project_version
         ;;
-    "--api_doc_hyperlinks_in_book")
-        update_api_doc_hyperlinks_in_book
-        ;;
     *)
-        echo "Warning: Using --docker_version_file, --docker_version_refs, --version_file, or --api_doc_hyperlinks_in_book instead."
+        echo "Warning: Using --docker_version_file, --docker_version_refs, or --version_file instead."
         ;;
 esac

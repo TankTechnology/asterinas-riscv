@@ -12,16 +12,9 @@ use std::{
 
 use crate::util::get_cargo_metadata;
 
-const LINKER_SCRIPTS: &[(&str, &str)] = &[
-    ("x86_64.ld", include_str!("x86_64.ld.template")),
-    ("riscv64.ld", include_str!("riscv64.ld.template")),
-    ("loongarch64.ld", include_str!("loongarch64.ld.template")),
-    ("aarch64.ld", include_str!("aarch64.ld.template")),
-];
-
 /// Compares two files byte-by-byte to check if they are identical.
 /// Returns `Ok(true)` if files are identical, `Ok(false)` if they are different, or `Err` if any I/O operation fails.
-fn are_files_identical(file1: &PathBuf, file2: &PathBuf) -> Result<bool> {
+fn are_files_identical(file1: &Path, file2: &Path) -> Result<bool> {
     // Check file size first
     let metadata1 = fs::metadata(file1)?;
     let metadata2 = fs::metadata(file2)?;
@@ -51,19 +44,28 @@ fn are_files_identical(file1: &PathBuf, file2: &PathBuf) -> Result<bool> {
     }
 }
 
-fn are_base_crate_reuse_inputs_identical(
-    existing_base_crate_path: &Path,
-    candidate_base_crate_path: &Path,
-) -> bool {
-    ["Cargo.toml", "src/main.rs"]
-        .into_iter()
-        .chain(LINKER_SCRIPTS.iter().map(|(file_name, _)| *file_name))
-        .all(|file_name| {
+const GENERATED_BASE_FILES: &[&str] = &["Cargo.toml", "src/main.rs"];
+const GENERATED_LINKER_SCRIPTS: &[(&str, &str)] = &[
+    ("x86_64.ld", include_str!("x86_64.ld.template")),
+    ("riscv64.ld", include_str!("riscv64.ld.template")),
+    ("loongarch64.ld", include_str!("loongarch64.ld.template")),
+];
+
+fn generated_base_files_are_identical(existing: &Path, regenerated: &Path) -> bool {
+    GENERATED_BASE_FILES
+        .iter()
+        .copied()
+        .chain(
+            GENERATED_LINKER_SCRIPTS
+                .iter()
+                .map(|(relative_path, _)| *relative_path),
+        )
+        .all(|relative_path| {
             are_files_identical(
-                &existing_base_crate_path.join(file_name),
-                &candidate_base_crate_path.join(file_name),
+                &existing.join(relative_path),
+                &regenerated.join(relative_path),
             )
-            .is_ok_and(|is_identical| is_identical)
+            .is_ok_and(|identical| identical)
         })
 }
 
@@ -111,10 +113,9 @@ pub fn new_base_crate(
             &dep_crate_path,
             link_unit_test_kernel,
         );
-        let is_reusable =
-            are_base_crate_reuse_inputs_identical(&base_crate_path, &base_crate_tmp_path);
+        let can_reuse = generated_base_files_are_identical(&base_crate_path, &base_crate_tmp_path);
         std::fs::remove_dir_all(&base_crate_tmp_path).unwrap();
-        if is_reusable {
+        if can_reuse {
             info!("Reusing existing base crate");
             return base_crate_path;
         }
@@ -181,9 +182,8 @@ fn do_new_base_crate(
     let original_dir = std::env::current_dir().unwrap();
     std::env::set_current_dir(&base_crate_path).unwrap();
 
-    // Add linker script files
-    for (file_name, contents) in LINKER_SCRIPTS {
-        fs::write(base_crate_path.as_ref().join(file_name), contents).unwrap();
+    for (relative_path, contents) in GENERATED_LINKER_SCRIPTS {
+        fs::write(base_crate_path.as_ref().join(relative_path), contents).unwrap();
     }
 
     // Overwrite the main.rs file
@@ -354,35 +354,65 @@ fn add_feature_entries(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::{fs, path::Path};
+
+    use tempfile::tempdir;
+
+    const GENERATED_FILE_FIXTURES: &[(&str, &str)] = &[
+        ("Cargo.toml", "[package]\nname = \"base\"\n"),
+        ("src/main.rs", "fn main() {}\n"),
+        ("x86_64.ld", "x86_64 linker script\n"),
+        ("riscv64.ld", "riscv64 linker script\n"),
+        ("loongarch64.ld", "loongarch64 linker script\n"),
+    ];
+
+    fn write_generated_base_crate(path: &Path) {
+        fs::create_dir_all(path.join("src")).unwrap();
+        for (relative_path, contents) in GENERATED_FILE_FIXTURES {
+            fs::write(path.join(relative_path), contents).unwrap();
+        }
+    }
 
     #[test]
     fn changed_linker_script_prevents_base_crate_reuse() {
         // Regression test for https://github.com/asterinas/asterinas/issues/3649.
-        let temp_dir = tempfile::tempdir().unwrap();
-        let base_crate_path_stem = temp_dir.path().join("generated");
-        let dep_crate_path = env!("CARGO_MANIFEST_DIR");
-        let base_crate_path = new_base_crate(
-            BaseCrateType::Run,
-            &base_crate_path_stem,
-            env!("CARGO_PKG_NAME"),
-            dep_crate_path,
-            false,
+        let temp_dir = tempdir().unwrap();
+        let existing = temp_dir.path().join("existing");
+        let regenerated = temp_dir.path().join("regenerated");
+        write_generated_base_crate(&existing);
+        write_generated_base_crate(&regenerated);
+
+        assert!(
+            super::generated_base_files_are_identical(&existing, &regenerated),
+            "identical generated base crates must remain reusable"
         );
 
-        for (file_name, contents) in LINKER_SCRIPTS {
-            let linker_script_path = base_crate_path.join(file_name);
-            fs::write(&linker_script_path, "stale contents").unwrap();
-
-            new_base_crate(
-                BaseCrateType::Run,
-                &base_crate_path_stem,
-                env!("CARGO_PKG_NAME"),
-                dep_crate_path,
-                false,
+        for linker_script in ["x86_64.ld", "riscv64.ld", "loongarch64.ld"] {
+            fs::write(regenerated.join(linker_script), "changed linker script\n").unwrap();
+            assert!(
+                !super::generated_base_files_are_identical(&existing, &regenerated),
+                "a change to {linker_script} must invalidate the generated base crate"
             );
-
-            assert_eq!(fs::read(linker_script_path).unwrap(), contents.as_bytes());
+            fs::copy(
+                existing.join(linker_script),
+                regenerated.join(linker_script),
+            )
+            .unwrap();
         }
+    }
+
+    #[test]
+    fn missing_linker_script_prevents_base_crate_reuse() {
+        let temp_dir = tempdir().unwrap();
+        let existing = temp_dir.path().join("existing");
+        let regenerated = temp_dir.path().join("regenerated");
+        write_generated_base_crate(&existing);
+        write_generated_base_crate(&regenerated);
+        fs::remove_file(regenerated.join("riscv64.ld")).unwrap();
+
+        assert!(
+            !super::generated_base_files_are_identical(&existing, &regenerated),
+            "a missing linker script must invalidate the generated base crate"
+        );
     }
 }

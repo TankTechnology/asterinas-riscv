@@ -1,23 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
-//! NS16550A UART console support.
-
 use alloc::string::ToString;
 
 use fdt::node::FdtNode;
-use fdt_util::{AcquireIoMems, AcquireIrqLines};
 use ostd::{
-    arch::irq::MappedIrqLine,
+    arch::irq::{self as arch_irq, MappedIrqLine},
     console::uart_ns16650a::{Ns16550aAccess, Ns16550aRegister, Ns16550aUart},
     io::IoMem,
+    irq::IrqLine,
     mm::VmIoOnce,
     sync::SpinLock,
 };
 use spin::Once;
 
-use crate::console::{Uart, UartConsole};
-
-pub(super) const FDT_COMPATIBLES: [&str; 1] = ["ns16550a"];
+use crate::{
+    CONSOLE_NAME,
+    console::{Uart, UartConsole},
+};
 
 /// Access to serial registers via `IoMem`.
 struct SerialAccess {
@@ -38,12 +37,36 @@ impl Ns16550aAccess for SerialAccess {
 static IRQ_LINE: Once<MappedIrqLine> = Once::new();
 
 pub(super) fn init(fdt_node: FdtNode) {
-    let Some([io_mem]) =
-        fdt_node.acquire_io_mems([const { Ns16550aRegister::MAX as u16 as usize + 1 }])
-    else {
+    let Some(reg) = fdt_node.reg().and_then(|mut regs| regs.next()) else {
+        ostd::info!("failed to read 'reg' property from NS16550A node");
         return;
     };
-    let Some([mut irq_line]) = fdt_node.acquire_irq_lines() else {
+    let Some(reg_size) = reg.size else {
+        ostd::info!("Incomplete 'reg' property found in NS16550A node");
+        return;
+    };
+
+    let reg_addr = reg.starting_address as usize;
+    let Ok(io_mem) = IoMem::acquire(reg_addr..reg_addr + reg_size) else {
+        ostd::info!("I/O memory is not available for NS16550A");
+        return;
+    };
+
+    let interrupt_source = match super::parse_explicit_interrupt_source(fdt_node) {
+        Ok(source) => source,
+        Err(error) => {
+            ostd::info!("invalid NS16550A interrupt source: {:?}", error);
+            return;
+        }
+    };
+
+    let Ok(mut irq_line) = IrqLine::alloc().and_then(|irq_line| {
+        arch_irq::IRQ_CHIP
+            .get()
+            .unwrap()
+            .map_fdt_pin_to(interrupt_source, irq_line)
+    }) else {
+        ostd::info!("IRQ line is not available for NS16550A");
         return;
     };
 
@@ -52,10 +75,7 @@ pub(super) fn init(fdt_node: FdtNode) {
 
     let uart_console = UartConsole::new(SpinLock::new(uart));
 
-    aster_console::register_device(
-        aster_console::UART_CONSOLE_NAME.to_string(),
-        uart_console.clone(),
-    );
+    aster_console::register_device(CONSOLE_NAME.to_string(), uart_console.clone());
 
     let cloned_uart_console = uart_console.clone();
     irq_line.on_active(move |_| cloned_uart_console.trigger_input_callbacks());

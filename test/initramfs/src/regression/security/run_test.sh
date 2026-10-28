@@ -22,3 +22,6 @@ set -e
 ./namespace/proc_nsfs
 ./namespace/setns
 ./namespace/unshare
+./namespace/user_ns_ids
+
+./seccomp/tsync

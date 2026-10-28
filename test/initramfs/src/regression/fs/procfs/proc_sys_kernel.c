@@ -2,6 +2,7 @@
 
 #define _GNU_SOURCE
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -67,6 +68,83 @@ static unsigned long long read_tainted(void)
 	read_file_checked("/proc/sys/kernel/tainted", value, sizeof(value));
 	return strtoull(value, NULL, 10);
 }
+
+static int is_uuid_v4(const char *value)
+{
+	size_t i;
+
+	if (strlen(value) != 37 || value[8] != '-' || value[13] != '-' ||
+	    value[18] != '-' || value[23] != '-' || value[36] != '\n' ||
+	    value[14] != '4' || !strchr("89ab", value[19])) {
+		return 0;
+	}
+	for (i = 0; i < 36; ++i) {
+		if (i == 8 || i == 13 || i == 18 || i == 23) {
+			continue;
+		}
+		if (!isdigit(value[i]) &&
+		    !(value[i] >= 'a' && value[i] <= 'f')) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+FN_TEST(proc_sys_kernel_boot_id_is_stable_uuid)
+{
+	char first[64];
+	char second[64];
+	size_t i;
+
+	read_file_checked("/proc/sys/kernel/random/boot_id", first,
+			  sizeof(first));
+	read_file_checked("/proc/sys/kernel/random/boot_id", second,
+			  sizeof(second));
+
+	TEST_RES(strlen(first), _ret == 37);
+	TEST_RES(strcmp(first, second), _ret == 0);
+	TEST_RES(first[8] == '-' && first[13] == '-' && first[18] == '-' &&
+			 first[23] == '-' && first[36] == '\n',
+		 _ret);
+	TEST_RES(first[14], _ret == '4');
+	TEST_RES(first[19],
+		 _ret == '8' || _ret == '9' || _ret == 'a' || _ret == 'b');
+
+	for (i = 0; i < 36; ++i) {
+		if (i == 8 || i == 13 || i == 18 || i == 23) {
+			continue;
+		}
+		TEST_RES(first[i],
+			 isdigit(_ret) || (_ret >= 'a' && _ret <= 'f'));
+	}
+}
+END_TEST()
+
+FN_TEST(proc_sys_kernel_random_uuid_is_fresh)
+{
+	char first[64];
+	char second[64];
+	char after_seek[64];
+	int fd;
+	ssize_t read_len;
+
+	fd = CHECK(open("/proc/sys/kernel/random/uuid", O_RDONLY));
+	read_len = CHECK(pread(fd, first, sizeof(first) - 1, 0));
+	first[read_len] = '\0';
+	read_len = CHECK(pread(fd, second, sizeof(second) - 1, 0));
+	second[read_len] = '\0';
+	TEST_SUCC(lseek(fd, 0, SEEK_SET));
+	read_len = CHECK(read(fd, after_seek, sizeof(after_seek) - 1));
+	after_seek[read_len] = '\0';
+	CHECK(close(fd));
+
+	TEST_RES(is_uuid_v4(first), _ret == 1);
+	TEST_RES(is_uuid_v4(second), _ret == 1);
+	TEST_RES(is_uuid_v4(after_seek), _ret == 1);
+	TEST_RES(strcmp(first, second), _ret != 0);
+	TEST_RES(strcmp(second, after_seek), _ret != 0);
+}
+END_TEST()
 
 FN_TEST(proc_sys_kernel_uts_files_match_uname)
 {

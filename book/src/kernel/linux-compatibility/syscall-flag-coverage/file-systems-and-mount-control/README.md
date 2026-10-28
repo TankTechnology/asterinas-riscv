@@ -20,6 +20,7 @@ Supported functionality in SCML:
 ```
 
 Partially supported mount flags:
+* `MS_REC` is only effective when used in conjunction with `MS_BIND`
 * `MS_REMOUNT` can be used, but the set options have no actual effect.
 * `MS_DIRSYNC` can be set but have no actual effect.
 * `MS_LAZYTIME` can be set but have no actual effect.
@@ -34,6 +35,11 @@ Partially supported mount flags:
 * `MS_SILENT` can be set but have no actual effect.
 * `MS_STRICTATIME` can be set but have no actual effect.
 * `MS_SYNCHRONOUS` can be set but have no actual effect.
+
+Unsupported mount flags:
+* `MS_SHARED`
+* `MS_SLAVE`
+* `MS_UNBINDABLE`
 
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man2/mount.2.html).
@@ -169,6 +175,14 @@ Unsupported event flags:
 
 Unsupported control flags:
 * `IN_EXCL_UNLINK` - Events on unlinked files are not excluded
+
+Direct watches on cgroup v2 `cgroup.events` receive `IN_MODIFY`
+when the recursive `populated` value changes between zero and one,
+including affected ancestor cgroups.
+Repeated lookups and aliases through another cgroupfs mount retain watch identity.
+Removing the cgroup retires its `cgroup.events` watch.
+Notifications through watches on parent directories and
+`poll`/`epoll` priority notifications on `cgroup.events` are not supported.
 
 For more information,
 see [the man page](https://man7.org/linux/man-pages/man7/inotify.7.html).

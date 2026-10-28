@@ -10,58 +10,26 @@ This category covers desktop environments, window managers, and display servers.
 
 #### Installation
 
-To enable the Xfce desktop, add the following settings to `configuration.nix` before building the installation image:
+Add the following lines to the `configuration.nix` file:
 
 ```nix
-hardware.graphics.enable = true;
 services.xserver.enable = true;
 services.xserver.desktopManager.xfce.enable = true;
 ```
 
-**Note:** Enable Xfce during the initial installation of Asterinas NixOS. Applying configuration changes through `nixos-rebuild` is not supported yet.
-
-To include additional [verified GUI applications](#verified-gui-applications), add their package names to `environment.systemPackages` in the same file.
-
-For example, to install galculator:
-
-```nix
-environment.systemPackages = with pkgs; [
-  # Add packages from the applications listed below.
-  galculator
-];
-```
-
-#### Improving Desktop Responsiveness
-
 <!--
-TODO: Revisit this guidance when hardware-accelerated GPU drivers are supported.
+TODO: upgrade mdbook to enable admonition blocks like the one below:
+
+> [!WARNING]
+> Xfce must be enabled during the initial installation of Asterinas NixOS. Applying configuration changes via `nixos-rebuild` is not working yet.
 -->
-
-The current graphics stack relies on the CPU for rendering and display updates.
-
-Giving the VM more virtual CPUs (vCPUs) can improve desktop responsiveness by allowing graphics work and other tasks to run concurrently.
-
-For end users, add `-smp 4` to the QEMU boot command in the [Getting Started guide](../../#end-users).
-
-For example, replace its CPU and memory options with:
-
-```bash
--cpu host -smp 4 -m 8G -enable-kvm \
-```
-
-For kernel developers, set `SMP` (symmetric multiprocessing) to the desired vCPU count when starting the VM:
-
-```bash
-make run_nixos SMP=4
-```
 
 #### Verified Backends
 
 * Display server:
-  * Xorg display server with the `modesetting` driver over DRM/KMS
-* Graphics stack:
-  * `simpledrm` over the standard UEFI framebuffer
-  * Mesa software rendering through GLX
+  * Xorg display server
+* Graphics drivers:
+  * Standard UEFI VGA framebuffer
 
 #### Verified Functionality
 
@@ -73,15 +41,10 @@ make run_nixos SMP=4
 
 #### Verified GUI Applications
 
-After starting the Xfce desktop, find installed applications in the Applications menu and click an application's entry to launch it.
-
-Included with Xfce (no separate entry in `environment.systemPackages` is needed):
-
-* `mousepad`: Text editor
-
 Utilities:
 
 * `galculator`: Calculator
+* `mousepad`: The default Xfce text editor
 * `mupdf`: A lightweight PDF and XPS viewer
 
 Games:
@@ -94,9 +57,4 @@ Games:
 * `gnome-sudoku`: GNOME sudoku
 * `tali`: GNOME dice game
 * `xboard`: Chess
-
-3D Games:
-
-* `openarena`: First-person arena shooter
-* `supertuxkart`: Kart racing game
-* `neverball`: Tilt-controlled ball rolling game
+* `xgalaga`: Galaga-style arcade game

@@ -91,9 +91,8 @@ run_nixos: check-test-name
 check:
 	@cargo fmt --check
 	@cargo clippy -- -D warnings
-	@../../tools/nixfmt.sh --check .
 
 .PHONY: format
 format:
 	@cargo fmt
-	@../../tools/nixfmt.sh .
+	@nixfmt .

@@ -8,12 +8,15 @@ pub(crate) use util::{
 };
 
 use crate::{
+    Error, Result,
     arch::{
         boot::DEVICE_TREE,
         cpu::extension::{IsaExtensions, has_extensions},
     },
+    io::IoMem,
     mm::{
         PAGE_SIZE, Paddr, PagingConstsTrait, PagingLevel, PodOnce, Vaddr,
+        dma::{DmaDirection, ToDevice},
         page_prop::{
             CachePolicy, PageFlags, PageProperty, PageTableFlags, PrivilegedPageFlags as PrivFlags,
         },
@@ -21,7 +24,87 @@ use crate::{
     },
 };
 
+mod eic7700_cache;
 mod util;
+
+pub(super) fn init_platform_cache(io_mem_builder: &crate::io::IoMemAllocatorBuilder) {
+    eic7700_cache::init(io_mem_builder);
+}
+
+pub(crate) fn sync_io_mem_to_device(
+    physical_range: Range<Paddr>,
+    virtual_range: Range<Vaddr>,
+    cache_policy: CachePolicy,
+) -> Result<()> {
+    // Both `Uncacheable` and `WriteCombining` are encoded as non-cacheable
+    // PBMT mappings when Svpbmt is available. A device fence is sufficient;
+    // routing the latter through the EIC7700-specific cache controller would
+    // incorrectly fail on QEMU and on other Svpbmt-capable RISC-V machines.
+    if matches!(
+        cache_policy,
+        CachePolicy::Uncacheable | CachePolicy::WriteCombining
+    ) && has_extensions(IsaExtensions::SVPBMT)
+    {
+        crate::arch::device::io_mem::fence();
+        return Ok(());
+    }
+
+    if has_extensions(IsaExtensions::ZICBOM) {
+        // SAFETY: The caller supplies the mapped virtual range corresponding to
+        // the I/O memory being synchronized, and Zicbom was detected above.
+        unsafe { sync_dma_range::<ToDevice>(virtual_range) };
+        return Ok(());
+    }
+
+    eic7700_cache::sync_to_device(physical_range)
+}
+
+/// Cleans a CPU-written Die 0 DRAM range before an EIC7700 device reads it.
+///
+/// This is usable for pinned, contiguous memory that remains mapped with the
+/// ordinary write-back policy, such as a display GEM VMO. The caller must keep
+/// the backing memory alive while the device reads it. This operation only
+/// establishes visibility; it does not create or retain a DMA mapping.
+pub(crate) fn sync_eic7700_dram_to_device(physical_range: Range<Paddr>) -> Result<()> {
+    eic7700_cache::sync_to_device(physical_range)
+}
+
+pub(crate) fn has_uncached_dram_alias() -> bool {
+    eic7700_cache::has_uncached_dram_alias()
+}
+
+/// Creates a CPU mapping that guarantees uncached access to a DMA range.
+///
+/// An existing PBMT_NC mapping already provides that guarantee. On EIC7700
+/// systems without Svpbmt, the cached mapping is cleaned before exposing the
+/// SoC's non-cacheable DRAM alias. Other RISC-V systems fail closed.
+pub(crate) fn create_uncached_dma_alias(physical_range: Range<Paddr>) -> Result<Option<IoMem>> {
+    use eic7700_cache::UncachedDmaPath;
+
+    let path = eic7700_cache::select_uncached_dma_path(
+        has_extensions(IsaExtensions::SVPBMT),
+        eic7700_cache::has_uncached_dram_alias(),
+    )
+    .ok_or(Error::AccessDenied)?;
+
+    match path {
+        UncachedDmaPath::PageBased => Ok(None),
+        UncachedDmaPath::PlatformAlias => {
+            eic7700_cache::sync_to_device(physical_range.clone())?;
+            let alias_range =
+                eic7700_cache::uncached_alias_range(physical_range).ok_or(Error::InvalidArgs)?;
+
+            // SAFETY: `alias_range` is the checked EIC7700 non-cacheable
+            // system-port view of the allocated Die 0 DRAM range. The
+            // The DMA object retains the backing frames for at least as long
+            // as this mapping, and accesses through this view have no side
+            // effects beyond reading or writing those frames.
+            Ok(Some(unsafe {
+                IoMem::new(alias_range, PageFlags::RW, CachePolicy::Uncacheable)
+            }))
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct PagingConsts {}
@@ -47,9 +130,9 @@ impl PagingConstsTrait for PagingConsts {
 }
 
 bitflags::bitflags! {
-    /// Possible flags for a page table entry.
     #[repr(C)]
     #[derive(Pod)]
+    /// Possible flags for a page table entry.
     pub(crate) struct PteFlags: usize {
         /// Specifies whether the mapped frame or page table is valid.
         const VALID =           1 << 0;
@@ -69,16 +152,16 @@ bitflags::bitflags! {
         /// Whether the memory area represented by this entry is modified.
         const DIRTY =           1 << 7;
 
-        /// First bit ignored by MMU.
+        // First bit ignored by MMU.
         const RSV1 =            1 << 8;
-        /// Second bit ignored by MMU.
+        // Second bit ignored by MMU.
         const RSV2 =            1 << 9;
 
-        /// PBMT: Non-cacheable, idempotent, weakly-ordered (RVWMO), main memory.
+        // PBMT: Non-cacheable, idempotent, weakly-ordered (RVWMO), main memory
         const PBMT_NC =         1 << 61;
-        /// PBMT: Non-cacheable, non-idempotent, strongly-ordered (I/O ordering), I/O.
+        // PBMT: Non-cacheable, non-idempotent, strongly-ordered (I/O ordering), I/O
         const PBMT_IO =         1 << 62;
-        /// Naturally aligned power-of-2.
+        /// Naturally aligned power-of-2
         const NAPOT =           1 << 63;
     }
 }
@@ -120,14 +203,12 @@ pub(crate) fn can_sync_dma() -> bool {
 ///  - the virtual address range and DMA direction correspond correctly to a
 ///    DMA region;
 ///  - `can_sync_dma()` is `true`.
-pub(crate) unsafe fn sync_dma_range(mut range: Range<Vaddr>, is_from_device: bool) {
-    use core::arch::asm;
-
+pub(crate) unsafe fn sync_dma_range<D: DmaDirection>(range: Range<Vaddr>) {
     debug_assert!(can_sync_dma());
 
     static CMO_MANAGEMENT_BLOCK_SIZE: Once<usize> = Once::new();
     let cmo_management_block_size = *CMO_MANAGEMENT_BLOCK_SIZE.call_once(|| {
-        let block_size = DEVICE_TREE
+        DEVICE_TREE
             .get()
             .unwrap()
             .cpus()
@@ -136,14 +217,8 @@ pub(crate) unsafe fn sync_dma_range(mut range: Range<Vaddr>, is_from_device: boo
             .property("riscv,cbom-block-size")
             .expect("Failed to find `riscv,cbom-block-size` property of the CPU node")
             .as_usize()
-            .expect("Failed to parse `riscv,cbom-block-size` property of the CPU node");
-        assert!(block_size.is_power_of_two());
-        assert!(block_size <= PAGE_SIZE);
-        block_size
+            .expect("Failed to parse `riscv,cbom-block-size` property of the CPU node")
     });
-
-    // Start at an aligned address, so the following loop can cover every byte in the range.
-    range.start &= !(cmo_management_block_size - 1);
 
     for addr in range.step_by(cmo_management_block_size) {
         // Performing cache maintenance operations is required for correctness
@@ -152,22 +227,30 @@ pub(crate) unsafe fn sync_dma_range(mut range: Range<Vaddr>, is_from_device: boo
         // to a DMA region. So the underlying memory is untyped and the operations
         // are safe to perform.
         unsafe {
-            if is_from_device {
-                asm!("cbo.inval ({})", in(reg) addr, options(nostack, preserves_flags));
-            } else {
-                asm!("cbo.clean ({})", in(reg) addr, options(nostack, preserves_flags));
+            match (D::CAN_READ_FROM_DEVICE, D::CAN_WRITE_TO_DEVICE) {
+                (false, true) => core::arch::asm!("cbo.clean ({})", in(reg) addr, options(nostack)),
+                (true, false) => core::arch::asm!("cbo.inval ({})", in(reg) addr, options(nostack)),
+                (true, true) => core::arch::asm!("cbo.flush ({})", in(reg) addr, options(nostack)),
+                _ => unreachable!(),
             }
         }
     }
+
+    // Ensure that all cache operations have completed before proceeding.
+    // SAFETY: Performing a memory fence is always safe.
+    unsafe { core::arch::asm!("fence rw, rw", options(nostack)) };
 }
 
 /// Activates the given root-level page table.
+///
+/// "satp" register doesn't have a field that encodes the cache policy,
+/// so `_root_pt_cache` is ignored.
 ///
 /// # Safety
 ///
 /// Changing the root-level page table is unsafe, because it's possible to violate memory safety by
 /// changing the page mapping.
-pub(crate) unsafe fn activate_page_table(root_paddr: Paddr) {
+pub(crate) unsafe fn activate_page_table(root_paddr: Paddr, _root_pt_cache: CachePolicy) {
     assert!(root_paddr.is_multiple_of(PagingConsts::BASE_PAGE_SIZE));
     let ppn = root_paddr >> 12;
 
@@ -231,6 +314,11 @@ impl PageTableEntry {
 
         let cache = if self.0 & PteFlags::PBMT_IO.bits() != 0 {
             CachePolicy::Uncacheable
+        } else if self.0 & PteFlags::PBMT_NC.bits() != 0 {
+            // PBMT_NC is the RISC-V approximation of x86 write-combining:
+            // non-cacheable, idempotent, weakly-ordered main memory. The
+            // reverse mapping keeps the PTE round-trip lossless.
+            CachePolicy::WriteCombining
         } else {
             CachePolicy::Writeback
         };
@@ -261,13 +349,6 @@ impl PageTableEntry {
             | parse_flags!(prop.priv_flags.bits(), PrivFlags::AVAIL1, PteFlags::RSV1)
             | parse_flags!(prop.flags.bits(), PageFlags::AVAIL2, PteFlags::RSV2);
 
-        if has_extensions(IsaExtensions::SVADE) {
-            // TODO: With Svade, these bits must be managed by software, but
-            // that is not yet supported. For now, set them to 1 to avoid
-            // page fault exceptions.
-            flags |= (PteFlags::ACCESSED | PteFlags::DIRTY).bits();
-        }
-
         match prop.cache {
             CachePolicy::Writeback => (),
             CachePolicy::Uncacheable => {
@@ -276,6 +357,15 @@ impl PageTableEntry {
                 // PBMT should be set to `PBMT_NC`.
                 if has_extensions(IsaExtensions::SVPBMT) {
                     flags |= PteFlags::PBMT_IO.bits()
+                }
+            }
+            CachePolicy::WriteCombining => {
+                // RISC-V has no direct write-combining memory type. PBMT_NC
+                // (non-cacheable, idempotent, weakly-ordered main memory) is
+                // the closest Svpbmt equivalent of x86 PAT write-combining
+                // and is what the framebuffer component requests.
+                if has_extensions(IsaExtensions::SVPBMT) {
+                    flags |= PteFlags::PBMT_NC.bits()
                 }
             }
             _ => panic!("unsupported cache policy"),
@@ -322,5 +412,74 @@ unsafe impl PteTrait for PageTableEntry {
         } else {
             PteScalar::PageTable(self.paddr(), self.pt_flags())
         }
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use super::{PageTableEntry, PteFlags};
+    use crate::{
+        mm::{
+            CachePolicy, PageFlags, PageProperty, PagingLevel,
+            page_prop::PrivilegedPageFlags as PrivFlags,
+            page_table::{PteScalar, PteTrait},
+        },
+        prelude::ktest,
+    };
+
+    /// WriteCombining must encode as PBMT_NC (non-cacheable, weakly-ordered
+    /// main memory) and round-trip losslessly. This mirrors the x86 PAT
+    /// behavior where WriteCombining maps to PCD=1,PWT=0: both are
+    /// non-cacheable, weakly-ordered, and idempotent.
+    #[ktest]
+    fn write_combining_encodes_as_pbmt_nc_and_round_trips() {
+        let prop = PageProperty {
+            flags: PageFlags::R | PageFlags::W,
+            cache: CachePolicy::WriteCombining,
+            priv_flags: PrivFlags::USER,
+        };
+        let pte = PageTableEntry::new_page(0x8000_0000, 1 as PagingLevel, prop);
+
+        let raw = pte.0;
+        assert_ne!(raw & PteFlags::PBMT_NC.bits(), 0, "PBMT_NC must be set");
+        assert_eq!(raw & PteFlags::PBMT_IO.bits(), 0, "PBMT_IO must be clear");
+
+        // Round-trip: reading the PTE back must yield WriteCombining.
+        let repr = pte.to_repr(1 as PagingLevel);
+        let PteScalar::Mapped(_, back) = repr else {
+            panic!("PTE must remain mapped");
+        };
+        assert_eq!(back.cache, CachePolicy::WriteCombining);
+    }
+
+    /// Uncacheable remains the strongly ordered MMIO policy. DMA RAM uses
+    /// WriteCombining/PBMT_NC instead, so these encodings must stay distinct.
+    #[ktest]
+    fn uncacheable_encodes_as_pbmt_io_and_round_trips() {
+        let prop = PageProperty {
+            flags: PageFlags::R | PageFlags::W,
+            cache: CachePolicy::Uncacheable,
+            priv_flags: PrivFlags::USER,
+        };
+        let pte = PageTableEntry::new_page(0x8000_0000, 1 as PagingLevel, prop);
+
+        let raw = pte.0;
+        assert_ne!(raw & PteFlags::PBMT_IO.bits(), 0, "PBMT_IO must be set");
+        assert_eq!(raw & PteFlags::PBMT_NC.bits(), 0, "PBMT_NC must be clear");
+
+        let repr = pte.to_repr(1 as PagingLevel);
+        let PteScalar::Mapped(_, back) = repr else {
+            panic!("PTE must remain mapped");
+        };
+        assert_eq!(back.cache, CachePolicy::Uncacheable);
+    }
+
+    /// Without Svpbmt, WriteCombining must not panic (it degrades to the
+    /// default cacheable policy, matching how Uncacheable is tolerated).
+    #[ktest]
+    fn write_combining_does_not_panic_without_svpbmt() {
+        let prop = PageProperty::new_user(PageFlags::R | PageFlags::W, CachePolicy::WriteCombining);
+        let pte = PageTableEntry::new_page(0x8000_0000, 1 as PagingLevel, prop);
+        assert_ne!(pte.0 & PteFlags::VALID.bits(), 0);
     }
 }

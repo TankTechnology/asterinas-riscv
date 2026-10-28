@@ -5,35 +5,22 @@ set -euo pipefail
 
 umask 077
 
-# The default target, and the output paths that follow from it.
-# configure_architecture() recomputes both when --architecture names
-# another target, and fills in the remaining architecture fields; the
-# default lives here so the checks that run before any tool is trusted
-# need no Python interpreter.
-ARCHITECTURE="riscv64"
-ARCH_SLUG_DEFAULT="riscv"
-DEFAULT_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/rootfs"
-SYSTEMD_M2_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/systemd-m2/rootfs"
-SYSTEMD_EXT4_M3_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/systemd-ext4-m3/rootfs"
-SYSTEMD_EXT4_M6_USERSPACE_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/systemd-ext4-m6-userspace/rootfs"
-DESKTOP_M3_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-m3/rootfs"
-DESKTOP_M4_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-m4/rootfs"
-DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-m5-network/rootfs"
-DESKTOP_M9_SOFTWARE_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-m9-software/rootfs"
-BROWSER_M5_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/browser-m5/rootfs"
-BROWSER_WEB_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/browser-web/rootfs"
-DESKTOP_DRM_OUTPUT_DIR="target/debian-$ARCH_SLUG_DEFAULT/desktop-drm/rootfs"
-DEFAULT_CACHE_DIR="target/debian-$ARCH_SLUG_DEFAULT/cache"
-ARCH_DEBIAN=""
-ARCH_SLUG=""
-ARCH_PLATFORM=""
-ARCH_LOADER=""
-ARCH_EMULATOR=""
-ARCH_NATIVE=0
-ARCH_CROSS_CC=""
+readonly DEFAULT_OUTPUT_DIR="target/debian-riscv/rootfs"
+readonly SYSTEMD_M2_OUTPUT_DIR="target/debian-riscv/systemd-m2/rootfs"
+readonly SYSTEMD_EXT4_M3_OUTPUT_DIR="target/debian-riscv/systemd-ext4-m3/rootfs"
+readonly DESKTOP_M3_OUTPUT_DIR="target/debian-riscv/desktop-m3/rootfs"
+readonly DESKTOP_M4_OUTPUT_DIR="target/debian-riscv/desktop-m4/rootfs"
+readonly DESKTOP_M4_FIREFOX_OUTPUT_DIR="target/debian-riscv/desktop-m4-firefox/rootfs"
+readonly DESKTOP_M5_NETWORK_OUTPUT_DIR="target/debian-riscv/desktop-m5-network/rootfs"
+readonly DESKTOP_M9_SOFTWARE_OUTPUT_DIR="target/debian-riscv/desktop-m9-software/rootfs"
+readonly BROWSER_M5_OUTPUT_DIR="target/debian-riscv/browser-m5/rootfs"
+readonly BROWSER_WEB_OUTPUT_DIR="target/debian-riscv/browser-web/rootfs"
+readonly DESKTOP_DRM_OUTPUT_DIR="target/debian-riscv/desktop-drm/rootfs"
+readonly DEFAULT_CACHE_DIR="target/debian-riscv/cache"
 readonly DEFAULT_MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
 readonly SECURITY_MIRROR="https://security.debian.org/debian-security"
 readonly SUPPORTED_SUITE="trixie"
+readonly DEBIAN_ARCHITECTURE="riscv64"
 readonly DEBOOTSTRAP_VARIANT="minbase"
 readonly DEBIAN_KEYRING="/usr/share/keyrings/debian-archive-keyring.gpg"
 ROOT_SIZE_BYTES="1073741824"
@@ -42,12 +29,17 @@ readonly MAX_SOURCE_DATE_EPOCH="4294967295"
 # 2024-01-01T00:00:00Z is old enough for every Trixie input and deterministic.
 readonly DEFAULT_SOURCE_DATE_EPOCH="1704067200"
 
-# The emulator is required only when the target is not the host architecture.
-required_tools() {
-    printf '%s\n' debootstrap
-    [[ -z "$ARCH_EMULATOR" ]] || printf '%s\n' "$ARCH_EMULATOR"
-    printf '%s\n' gpgv dpkg-query mke2fs dumpe2fs debugfs e2fsck sha256sum curl
-}
+readonly -a REQUIRED_TOOLS=(
+    debootstrap
+    qemu-riscv64-static
+    gpgv
+    dpkg-query
+    mke2fs
+    dumpe2fs
+    debugfs
+    sha256sum
+    curl
+)
 readonly -a PUBLISHED_PATHS=(
     debian-root.ext2
     rootfs-manifest.json
@@ -81,20 +73,14 @@ declare -a INSTALL_PACKAGES=(
 # proot injects qemu-riscv64-static for every target exec inside the staged
 # root.  This mode never writes to binfmt_misc and is useful on hosts where
 # registration is intentionally off.
-EXPLICIT_QEMU="${ASTERINAS_EXPLICIT_QEMU:-0}"
+readonly EXPLICIT_QEMU="${ASTERINAS_EXPLICIT_QEMU:-0}"
 
 run_chroot() {
     local stage="$1"
     shift
-    if [[ "$ARCH_NATIVE" == 1 ]]; then
-        # A rootfs for the host architecture runs directly; no emulation
-        # boundary is involved at any point.
-        chroot "$stage" "$@"
-        return
-    fi
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
-        [[ -x "$stage/usr/bin/$ARCH_EMULATOR" ]] ||
-            die "explicit qemu mode requires staged $ARCH_EMULATOR"
+        [[ -x "$stage/usr/bin/qemu-riscv64-static" ]] ||
+            die "explicit qemu mode requires staged qemu-riscv64-static"
         # proot's qemu mode rewrites every subsequent target exec, including
         # interpreter shebangs and maintainer-script children.  A single
         # qemu-prefixed shell cannot do that once it forks, which is why the
@@ -105,7 +91,7 @@ run_chroot() {
         # Keep credentials virtual too.  Without -0, APT's switch to the _apt
         # user changes the QEMU process's host credentials, after which an
         # unprivileged proot tracer can no longer translate pathname pointers.
-        command proot -0 -w / -q "$(command -v "$ARCH_EMULATOR")" -r "$stage" "$@"
+        command proot -0 -w / -q "$(command -v qemu-riscv64-static)" -r "$stage" "$@"
     else
         chroot "$stage" "$@"
     fi
@@ -137,7 +123,6 @@ parse_arguments() {
     local has_suite=0
     local has_profile=0
     local has_firefox_jit_package_dir=0
-    local has_architecture=0
 
     while (($# > 0)); do
         case "$1" in
@@ -176,13 +161,6 @@ parse_arguments() {
                 PROFILE="$2"
                 shift 2
                 ;;
-            --architecture)
-                require_option_value "$1" "$#"
-                ((has_architecture == 0)) || die "duplicate argument: $1"
-                has_architecture=1
-                ARCHITECTURE="$2"
-                shift 2
-                ;;
             --firefox-jit-package-dir)
                 require_option_value "$1" "$#"
                 ((has_firefox_jit_package_dir == 0)) || die "duplicate argument: $1"
@@ -205,12 +183,10 @@ parse_arguments() {
 
     if [[ -n "$print_mode" ]]; then
         ((has_output_dir == 0 && has_cache_dir == 0 && has_mirror == 0 &&
-            has_suite == 0 && has_firefox_jit_package_dir == 0 &&
-            has_architecture == 0)) ||
+            has_suite == 0 && has_firefox_jit_package_dir == 0)) ||
             die "$print_mode does not accept build options"
         if [[ "$print_mode" == "--print-tools" ]]; then
-            configure_architecture
-            required_tools
+            printf '%s\n' "${REQUIRED_TOOLS[@]}"
             if [[ "$PROFILE" == browser-m5 || "$PROFILE" == desktop-m9-software ]]; then
                 printf '%s\n' ffprobe ffmpeg
             fi
@@ -228,18 +204,17 @@ configure_profile() {
     local -a profile_fields=()
 
     case "$PROFILE" in
-        minimal-m1 | systemd-m2 | systemd-ext4-m3 | systemd-ext4-m6-userspace | desktop-m3 | desktop-m4 | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web | desktop-drm) ;;
+        minimal-m1 | systemd-m2 | systemd-ext4-m3 | desktop-m3 | desktop-m4 | desktop-m4-firefox | desktop-m5-network | desktop-m9-software | browser-m5 | browser-web | desktop-drm) ;;
         *) die "unknown rootfs profile: $PROFILE" ;;
     esac
     if [[ "$PROFILE" == minimal-m1 ]]; then
         return
     fi
-    configure_architecture
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
     mapfile -t profile_fields < <(
         PYTHONPATH="$repository_root" python3 -m \
-            tools.debian.rootfs.profiles --profile "$PROFILE"
+            tools.riscv.debian.rootfs.profiles --profile "$PROFILE"
     )
     ((${#profile_fields[@]} >= 6)) || die "invalid rootfs profile data: $PROFILE"
     ROOT_LABEL="${profile_fields[0]}"
@@ -261,6 +236,8 @@ configure_profile() {
         OUTPUT_DIR="$DESKTOP_M3_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m4 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M4_OUTPUT_DIR"
+    elif [[ "$PROFILE" == desktop-m4-firefox && "$has_output_dir" == 0 ]]; then
+        OUTPUT_DIR="$DESKTOP_M4_FIREFOX_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m5-network && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$DESKTOP_M5_NETWORK_OUTPUT_DIR"
     elif [[ "$PROFILE" == desktop-m9-software && "$has_output_dir" == 0 ]]; then
@@ -273,49 +250,7 @@ configure_profile() {
         OUTPUT_DIR="$DESKTOP_DRM_OUTPUT_DIR"
     elif [[ "$PROFILE" == systemd-ext4-m3 && "$has_output_dir" == 0 ]]; then
         OUTPUT_DIR="$SYSTEMD_EXT4_M3_OUTPUT_DIR"
-    elif [[ "$PROFILE" == systemd-ext4-m6-userspace && "$has_output_dir" == 0 ]]; then
-        OUTPUT_DIR="$SYSTEMD_EXT4_M6_USERSPACE_OUTPUT_DIR"
     fi
-}
-
-configure_architecture() {
-    [[ -n "$ARCH_SLUG" ]] && return 0
-    local script_directory
-    script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-    local repository_root
-    repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
-    local -a architecture_fields
-    mapfile -t architecture_fields < <(
-        PYTHONPATH="$repository_root" python3 -m \
-            tools.debian.rootfs.arch --architecture "$ARCHITECTURE"
-    )
-    ((${#architecture_fields[@]} == 7)) ||
-        die "invalid architecture data: $ARCHITECTURE"
-    ARCH_DEBIAN="${architecture_fields[0]}"
-    ARCH_SLUG="${architecture_fields[1]}"
-    ARCH_PLATFORM="${architecture_fields[2]}"
-    ARCH_LOADER="${architecture_fields[3]}"
-    ARCH_EMULATOR="${architecture_fields[4]}"
-    [[ "${architecture_fields[5]}" == native ||
-        "${architecture_fields[5]}" == emulated ]] ||
-        die "invalid execution mode: ${architecture_fields[5]}"
-    ARCH_NATIVE=0
-    [[ "${architecture_fields[5]}" == native ]] && ARCH_NATIVE=1
-    ARCH_CROSS_CC="${architecture_fields[6]}"
-
-    local prefix="target/debian-$ARCH_SLUG"
-    DEFAULT_OUTPUT_DIR="$prefix/rootfs"
-    SYSTEMD_M2_OUTPUT_DIR="$prefix/systemd-m2/rootfs"
-    SYSTEMD_EXT4_M3_OUTPUT_DIR="$prefix/systemd-ext4-m3/rootfs"
-    SYSTEMD_EXT4_M6_USERSPACE_OUTPUT_DIR="$prefix/systemd-ext4-m6-userspace/rootfs"
-    DESKTOP_M3_OUTPUT_DIR="$prefix/desktop-m3/rootfs"
-    DESKTOP_M4_OUTPUT_DIR="$prefix/desktop-m4/rootfs"
-    DESKTOP_M5_NETWORK_OUTPUT_DIR="$prefix/desktop-m5-network/rootfs"
-    DESKTOP_M9_SOFTWARE_OUTPUT_DIR="$prefix/desktop-m9-software/rootfs"
-    BROWSER_M5_OUTPUT_DIR="$prefix/browser-m5/rootfs"
-    BROWSER_WEB_OUTPUT_DIR="$prefix/browser-web/rootfs"
-    DESKTOP_DRM_OUTPUT_DIR="$prefix/desktop-drm/rootfs"
-    DEFAULT_CACHE_DIR="$prefix/cache"
 }
 
 require_option_value() {
@@ -465,9 +400,9 @@ validate_existing_cache_targets() {
 
 require_tools() {
     local tool
-    while read -r tool; do
+    for tool in "${REQUIRED_TOOLS[@]}"; do
         command -v "$tool" >/dev/null 2>&1 || die "missing required tool: $tool"
-    done < <(required_tools)
+    done
     if [[ "$PROFILE" == browser-m5 || "$PROFILE" == desktop-m9-software ]]; then
         command -v ffprobe >/dev/null 2>&1 || die "missing required tool: ffprobe"
         command -v ffmpeg >/dev/null 2>&1 || die "missing required tool: ffmpeg"
@@ -544,12 +479,10 @@ fetch_and_verify_release() {
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
         repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
         DEBIAN_RELEASE="$(PYTHONPATH="$repository_root" python3 -m \
-            tools.debian.rootfs.signed_sources verify \
-            --architecture "$ARCH_DEBIAN" \
+            tools.riscv.debian.rootfs.signed_sources verify \
             --role base --inrelease "$inrelease" --keyring "$DEBIAN_KEYRING")"
         PYTHONPATH="$repository_root" python3 -m \
-            tools.debian.rootfs.signed_sources verify \
-            --architecture "$ARCH_DEBIAN" \
+            tools.riscv.debian.rootfs.signed_sources verify \
             --role security --inrelease "$security_inrelease" \
             --keyring "$DEBIAN_KEYRING" >/dev/null
         readonly DEBIAN_RELEASE
@@ -607,23 +540,20 @@ require_safe_keyring_path() {
 }
 
 bootstrap_rootfs() {
-    configure_architecture
     local stage="$WORK_DIR/stage"
 
     log "phase 2/8: running foreign debootstrap"
     debootstrap \
         --foreign \
         "--variant=$DEBOOTSTRAP_VARIANT" \
-        "--arch=$ARCH_DEBIAN" \
+        "--arch=$DEBIAN_ARCHITECTURE" \
         "--keyring=$DEBIAN_KEYRING" \
         "$SUITE" \
         "$stage" \
         "$MIRROR"
 
-    if [[ "$ARCH_NATIVE" == 0 ]]; then
-        install -m 0755 -- "$(command -v "$ARCH_EMULATOR")" \
-            "$stage/usr/bin/$ARCH_EMULATOR"
-    fi
+    install -m 0755 -- "$(command -v qemu-riscv64-static)" \
+        "$stage/usr/bin/qemu-riscv64-static"
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
         # debootstrap's foreign stage may reference its helper library through
         # /usr/share/debootstrap/functions.  A normal chroot receives this
@@ -634,7 +564,7 @@ bootstrap_rootfs() {
         install -d -- "$stage/usr/share/debootstrap"
         cp -a -- /usr/share/debootstrap/. "$stage/usr/share/debootstrap/"
     fi
-    verify_execution_boundary
+    verify_riscv_execution_boundary
     log "phase 3/8: completing debootstrap second stage"
     # proot can make the helper's self-test of /debootstrap ambiguous; pin
     # the directory explicitly so the generated suite/variant state is used.
@@ -642,31 +572,29 @@ bootstrap_rootfs() {
         /debootstrap/debootstrap --second-stage
 }
 
-verify_execution_boundary() {
+verify_riscv_execution_boundary() {
     # Docker gives the build container its own proc sys tree, which may expose
     # an empty binfmt_misc mount even though the host has the required fixed
     # qemu-riscv64 registration.  The workflow can bind that host tree at a
     # stable path and point the check at it without weakening the actual
     # kernel execution boundary.
-    if [[ "$ARCH_NATIVE" == 1 ]]; then
-        return
-    fi
-
     local binfmt_root="${ASTERINAS_BINFMT_ROOT:-/proc/sys/fs/binfmt_misc}"
-    local registration="$binfmt_root/${ARCH_EMULATOR%-static}"
+    local registration="$binfmt_root/qemu-riscv64"
 
+    [[ "$(uname -m)" != riscv64 ]] ||
+        die "refusing a native RISC-V host; this builder requires an emulated execution boundary"
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
-        [[ -x "$WORK_DIR/stage/usr/bin/$ARCH_EMULATOR" ]] ||
-            die "explicit qemu mode requires $ARCH_EMULATOR in the staged root"
+        [[ -x "$WORK_DIR/stage/usr/bin/qemu-riscv64-static" ]] ||
+            die "explicit qemu mode requires qemu-riscv64-static in the staged root"
         return
     fi
     [[ -r "$binfmt_root/status" ]] &&
         grep -qx enabled "$binfmt_root/status" ||
-        die "$ARCH_DEBIAN binfmt_misc is not enabled"
+        die "RISC-V binfmt_misc is not enabled"
     [[ -r "$registration" ]] && grep -qx enabled "$registration" ||
-        die "${ARCH_EMULATOR%-static} binfmt registration is not enabled"
+        die "qemu-riscv64 binfmt registration is not enabled"
     grep -q '^flags:.*F' "$registration" ||
-        die "${ARCH_EMULATOR%-static} binfmt registration lacks fix-binary semantics"
+        die "qemu-riscv64 binfmt registration lacks fix-binary semantics"
 }
 
 install_rootfs_packages() {
@@ -704,7 +632,7 @@ install_rootfs_packages() {
         # profiles must not seed an unrequested Firefox archive: the later
         # package-lock audit would (correctly) reject that extra package.
         is_firefox_profile || continue
-        [[ "$architecture" == "$ARCH_DEBIAN" || "$architecture" == all ]] || continue
+        [[ "$architecture" == riscv64 || "$architecture" == all ]] || continue
         filename="${package}_${version}_${architecture}.deb"
         # The content cache uses '_' as a portable encoding for '~' in Debian
         # versions.  Restore it for apt's canonical archive filename.
@@ -726,47 +654,14 @@ install_rootfs_packages() {
     fi
 
     log "phase 5/8: installing explicit minbase additions"
-    if ! run_chroot "$stage" /usr/bin/env \
+    run_chroot "$stage" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive \
-        TMPDIR=/var/tmp \
         SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-        apt-get -y --no-install-recommends install "${INSTALL_PACKAGES[@]}"; then
-        if [[ "$PROFILE" != systemd-ext4-m6-userspace ]]; then
-            die "explicit package installation failed"
-        fi
-        # openssh-server's ucf postinst uses a temporary file operation that
-        # races with explicit-qemu/proot.  Keep the package itself and its
-        # configuration files, but make the non-essential ucf bookkeeping a
-        # no-op for this image build; the real sshd configuration is checked
-        # and host keys are generated by the guest workload.
-        for helper in /usr/bin/ucf /usr/sbin/ucfr; do
-            if [[ -e "$stage$helper" ]]; then
-                mv -- "$stage$helper" "$stage$helper.asterinas-real"
-            fi
-            install -D -m 0755 /dev/stdin "$stage$helper" <<'EOF'
-#!/bin/sh
-exit 0
-EOF
-        done
-        install -D -m 0755 /dev/stdin "$stage/usr/sbin/policy-rc.d" <<'EOF'
-#!/bin/sh
-exit 101
-EOF
-        run_chroot "$stage" /usr/bin/env DEBIAN_FRONTEND=noninteractive \
-            TMPDIR=/var/tmp dpkg --configure -a || die "package configuration recovery failed"
-        rm -f -- "$stage/usr/sbin/policy-rc.d"
-        for helper in /usr/bin/ucf /usr/sbin/ucfr; do
-            rm -f -- "$stage$helper"
-            if [[ -e "$stage$helper.asterinas-real" ]]; then
-                mv -- "$stage$helper.asterinas-real" "$stage$helper"
-            fi
-        done
-    fi
+        apt-get -y --no-install-recommends install "${INSTALL_PACKAGES[@]}"
     rm -f -- "$fc_cache_wrapper"
     rm -f -- "$bootstrap_ca"
     run_chroot "$stage" /usr/bin/env \
         DEBIAN_FRONTEND=noninteractive \
-        TMPDIR=/var/tmp \
         apt-get -y --reinstall --download-only install "${INSTALL_PACKAGES[@]}"
 
     find "$stage/var/cache/apt/archives" -maxdepth 1 -type f -name '*.deb' \
@@ -811,10 +706,9 @@ audit_packages() {
         package_list_name="${package_list##*/}"
         if is_firefox_profile; then
             source_role="$(PYTHONPATH="$repository_root" python3 -m \
-                tools.debian.rootfs.signed_sources owner \
-                --filename "$package_list_name" \
-                --architecture "$ARCH_DEBIAN")"
-            if [[ "$package_list_name" =~ _dists_[^_]+_([^_]+)_binary-($ARCH_DEBIAN|all)_Packages ]]; then
+                tools.riscv.debian.rootfs.signed_sources owner \
+                --filename "$package_list_name")"
+            if [[ "$package_list_name" =~ _dists_[^_]+_([^_]+)_binary-(riscv64|all)_Packages ]]; then
                 component="${BASH_REMATCH[1]}"
                 release_path="$component/binary-${BASH_REMATCH[2]}/Packages"
             else
@@ -826,8 +720,8 @@ audit_packages() {
                 source_inrelease="$WORK_DIR/source-metadata/Security-InRelease"
             fi
         else case "$package_list_name" in
-            *_dists_${SUITE}_main_binary-${ARCH_DEBIAN}_Packages*)
-                release_path="main/binary-$ARCH_DEBIAN/Packages"
+            *_dists_${SUITE}_main_binary-${DEBIAN_ARCHITECTURE}_Packages*)
+                release_path="main/binary-$DEBIAN_ARCHITECTURE/Packages"
                 ;;
             *_dists_${SUITE}_main_binary-all_Packages*)
                 release_path="main/binary-all/Packages"
@@ -933,8 +827,7 @@ verify_m5_releases_are_unchanged() {
         curl --proto '=https' --tlsv1.2 --fail --location --show-error --silent \
             --output "$current" "$mirror/dists/$suite/InRelease"
         PYTHONPATH="$repository_root" python3 -m \
-            tools.debian.rootfs.signed_sources verify \
-            --architecture "$ARCH_DEBIAN" \
+            tools.riscv.debian.rootfs.signed_sources verify \
             --role "$role" --inrelease "$current" --keyring "$DEBIAN_KEYRING" \
             >/dev/null
         cmp --silent -- "$retained" "$current" ||
@@ -1111,97 +1004,93 @@ copy_into_content_cache() {
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     repository_root="$(cd -- "$script_directory/../../../.." && pwd -P)"
-    PYTHONPATH="$repository_root" python3 -m tools.debian.rootfs.fsops \
+    PYTHONPATH="$repository_root" python3 -m tools.riscv.debian.rootfs.fsops \
         cache-admit \
         --cache-dir "$CACHE_DIR" \
         --source "$source" \
         --sha256 "$expected_sha256"
 }
 
-# Configures the amd64 serial console login plane: the account the login
-# helper drops to, passwordless sudo for daily use, the image plumbing
-# sudo needs, the console-getty wiring and the SIGPWR power-off hook.
-configure_x86_serial_login() {
+# Removes the sysctl files whose assignments this kernel cannot apply.
+#
+# Debian ships `kernel.pid_max = 4194304` and `kernel.core_pattern=core`.  On
+# Asterinas pid_max already reads 2147483647 and rejects writes with
+# EOPNOTSUPP, and /proc/sys/kernel/core_pattern does not exist, so
+# systemd-sysctl exits 1 on every boot and stays in `systemctl --failed`.
+# Verified on the board: moving these two files away lets
+# `systemctl restart systemd-sysctl` succeed and drops the failed count from 4
+# to 3.  Removing them is the smallest fix that matches the kernel: a
+# conditional drop-in could only write pid_max, which is already at its
+# maximum, so there is nothing left to set.
+drop_unsupported_sysctl_files() {
     local stage="$1"
-    [[ "$ARCHITECTURE" == amd64 ]] || return 0
+    local file
 
-    grep -q '^asterinas:' "$stage/etc/passwd" ||
-        printf '%s\n' \
-            'asterinas:x:1000:1000:Asterinas:/home/asterinas:/bin/bash' \
-            >>"$stage/etc/passwd"
-    grep -q '^asterinas:' "$stage/etc/group" ||
-        printf '%s\n' 'asterinas:x:1000:' >>"$stage/etc/group"
-    grep -q '^asterinas:' "$stage/etc/shadow" ||
-        printf '%s\n' 'asterinas:!:19793:0:99999:7:::' >>"$stage/etc/shadow"
-    grep -q '^asterinas:' "$stage/etc/gshadow" ||
-        printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
-    install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
-    # The serial console account is the image's daily-use user;
-    # give it passwordless sudo so package management and service
-    # control work from the console like on a normal Debian box.
-    install -d -m 0750 -- "$stage/etc/sudoers.d"
-    cat >"$stage/etc/sudoers.d/asterinas" <<'EOF'
-Defaults !use_pty
-asterinas ALL=(ALL:ALL) NOPASSWD: ALL
-EOF
-    chmod 0440 -- "$stage/etc/sudoers.d/asterinas"
-    # sudo (and interactive tools) allocate a pty; debootstrap
-    # leaves fstab unconfigured, so /dev/pts is never mounted and
-    # sudo fails with "unable to allocate pty". Mount devpts like
-    # a normal Debian installation does.
-    cat >"$stage/etc/fstab" <<'EOF'
-# <file system> <mount point> <type> <options> <dump> <pass>
-devpts /dev/pts devpts gid=5,mode=620,ptmxmode=000 0 0
-EOF
-    # sudo resolves its own host name; without an /etc/hosts
-    # entry the lookup falls through to DNS, which is not
-    # reachable before the network is configured and makes sudo
-    # fail. Bind the image host name to the loopback alias the
-    # way Debian's installer does.
-    if [[ -s "$stage/etc/hostname" ]]; then
-        local image_host
-        image_host="$(tr -d '[:space:]' <"$stage/etc/hostname")"
-        if [[ -n "$image_host" ]] &&
-            ! grep -qE "^127\.0\.1\.1[[:space:]]+$image_host([[:space:]]|$)" \
-                "$stage/etc/hosts"; then
-            printf '127.0.1.1 %s\n' "$image_host" >>"$stage/etc/hosts"
-        fi
-    fi
-    install -d -m 0755 -- "$stage/etc/systemd/system/getty.target.wants"
-    ln -sfn /usr/lib/systemd/system/console-getty.service \
-        "$stage/etc/systemd/system/getty.target.wants/console-getty.service"
-    ln -sfn /dev/null "$stage/etc/systemd/system/serial-getty@hvc0.service"
-    ln -sfn /dev/null "$stage/etc/systemd/system/serial-getty@ttyS0.service"
-    # The kernel forwards the ACPI power button as SIGPWR and
-    # systemd starts sigpwr.target for it.  A drop-in that merely
-    # adds `Wants=poweroff.target` does not start the shutdown:
-    # special targets are started by the manager objective, not as
-    # a dependency.  A unit wanted by sigpwr.target that calls
-    # `systemctl poweroff` does reach the ordinary shutdown path,
-    # so QEMU's `system_powerdown` (and a cloud stop request)
-    # leaves the guest off through S5.
-    cat >"$stage/etc/systemd/system/asterinas-sigpwr-poweroff.service" <<'EOF'
+    for file in \
+        "$stage/usr/lib/sysctl.d/10-coredump-debian.conf" \
+        "$stage/usr/lib/sysctl.d/50-pid-max.conf" \
+        "$stage/etc/sysctl.d/10-coredump-debian.conf" \
+        "$stage/etc/sysctl.d/50-pid-max.conf"; do
+        rm -f -- "$file"
+    done
+}
+
+# Installs the guest DNS tunnel used by the board images.
+#
+# The board reaches the build host and nothing beyond it, so the resolver the
+# network evidence service writes in direct mode never happens in proxy mode,
+# which is the mode every desktop boot uses. The shim answers on loopback and
+# tunnels to the host, and it only rewrites resolv.conf after its tunnel has
+# answered, so a shim that cannot reach the host leaves the guest as it found
+# it.  Both the daily-use image and browser-web need this; the unit skips
+# itself when no forwarder is configured.
+configure_dns_shim() {
+    local stage="$1"
+    local script_directory="$2"
+
+    install -D -m 0755 -- "$script_directory/megrez_dns_shim.py" \
+        "$stage/usr/lib/asterinas/megrez-dns-shim"
+    cat >"$stage/etc/systemd/system/asterinas-dns-shim.service" <<'EOF'
 [Unit]
-Description=Power off on ACPI power button (SIGPWR)
+Description=Asterinas guest DNS tunnel to the build host
+After=local-fs.target
 
 [Service]
-Type=oneshot
-KeyringMode=inherit
-ExecStart=/bin/systemctl --no-block poweroff
+# The shim serves for as long as the guest runs, so it stays Type=simple: a
+# oneshot would wait for a process that never exits, and TimeoutStartSec would
+# then kill the healthy tunnel and mark the unit failed.
+Type=simple
+Restart=no
+TimeoutStartSec=30s
+# No forwarder means there is nothing to tunnel.  Skip the unit before
+# launching Python instead of running it only to exit 3; ExecCondition status
+# 1..254 skips the unit.  The variable is set in the manager environment by
+# systemd.setenv=... on the kernel command line.
+ExecCondition=/bin/sh -c 'test -n "${ASTERINAS_DESKTOP_DNS_HOST:-}"'
+# Exit 3 (no forwarder configured) and exit 1 (tunnel not reachable) are
+# explicit inactive states, not failures.  A later explicit
+# `systemctl restart asterinas-dns-shim` retries after the host/interface is
+# up; boot never spins on it.
+SuccessExitStatus=1 3
+ExecStart=/usr/lib/asterinas/megrez-dns-shim
+
+[Install]
+WantedBy=basic.target
 EOF
-    install -d -m 0755 -- "$stage/etc/systemd/system/sigpwr.target.wants"
-    ln -sfn ../asterinas-sigpwr-poweroff.service \
-        "$stage/etc/systemd/system/sigpwr.target.wants/asterinas-sigpwr-poweroff.service"
+    chmod 0644 -- "$stage/etc/systemd/system/asterinas-dns-shim.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
+    ln -sf -- "../asterinas-dns-shim.service" \
+        "$stage/etc/systemd/system/basic.target.wants/asterinas-dns-shim.service"
 }
 
 configure_and_normalize_rootfs() {
-    configure_architecture
     local stage="$WORK_DIR/stage"
     local script_directory
     local startup_cache_marker
 
     script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
     log "phase 7/8: configuring and normalizing rootfs"
+    drop_unsupported_sysctl_files "$stage"
     cat >"$stage/etc/asterinas-rootfs.bashrc" <<'EOF'
 if [[ $- == *i* ]]; then
     printf '%s\n' '__DEBIAN_ROOTFS_SHELL_READY__'
@@ -1216,55 +1105,12 @@ EOF
             "$script_directory/shutdown_sync.sh" \
             "$stage/usr/lib/systemd/system-shutdown/asterinas-sync"
     fi
-    if [[ "$PROFILE" == systemd-m2 || "$PROFILE" == systemd-ext4-m3 || "$PROFILE" == systemd-ext4-m6-userspace ]]; then
+    if [[ "$PROFILE" == systemd-m2 || "$PROFILE" == systemd-ext4-m3 ]]; then
         script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-        local evidence_script evidence_path evidence_command service_name
-        if [[ "$PROFILE" == systemd-ext4-m3 || "$PROFILE" == systemd-ext4-m6-userspace ]]; then
-            evidence_script="$script_directory/systemd_ext4_evidence.sh"
-            evidence_path="$stage/usr/lib/asterinas/systemd-ext4-evidence"
-            evidence_command=/usr/lib/asterinas/systemd-ext4-evidence
-            service_name=asterinas-debian-ext4.service
-        else
-            evidence_script="$script_directory/systemd_m2_evidence.sh"
-            evidence_path="$stage/usr/lib/asterinas/systemd-m2-evidence"
-            evidence_command=/usr/lib/asterinas/systemd-m2-evidence
-            service_name=asterinas-debian-m2.service
-        fi
-        if [[ "$PROFILE" == systemd-ext4-m3 || "$PROFILE" == systemd-ext4-m6-userspace ]]; then
-            # Keep the socket-activation probe identical to the standalone M2
-            # systemd gate.  Python's socket wrapper cannot prove that
-            # systemd passed LISTEN_FDS/LISTEN_PID and has hidden failures in
-            # this path in the past; these static helpers inspect fd 3 and
-            # accept the inherited listening socket directly.
-            local systemd_test_source="$script_directory/../../systemd/src"
-            local systemd_test_cc="${RISC_V_CC:-$ARCH_CROSS_CC}"
-            local systemd_test_program
-            command -v "$systemd_test_cc" >/dev/null 2>&1 ||
-                die "missing RISC-V C compiler for systemd socket probe: $systemd_test_cc"
-            for systemd_test_program in socktest sockclient abi_probe; do
-                "$systemd_test_cc" -O2 -static -no-pie -fno-stack-protector \
-                    -o "$stage/usr/bin/$systemd_test_program" \
-                    "$systemd_test_source/$systemd_test_program.c"
-                chmod 0755 "$stage/usr/bin/$systemd_test_program"
-            done
-        fi
-        install -D -m 0755 -- "$evidence_script" "$evidence_path"
-        if [[ "$PROFILE" == systemd-ext4-m3 || "$PROFILE" == systemd-ext4-m6-userspace ]]; then
-            install -D -m 0755 -- \
-                "$script_directory/asterinas_login.sh" \
-                "$stage/usr/local/sbin/asterinas-login"
-            # Interactive serial login. The helper starts the provisioned
-            # unprivileged account; configure_x86_serial_login adds that
-            # account, the console-getty wiring and the amd64-only pieces
-            # (the hvc0 RX path delivers no input there, so only amd64
-            # switches the console to ttyS0 and masks both template gettys).
-            configure_x86_serial_login "$stage"
-            if [[ "$PROFILE" == systemd-ext4-m6-userspace ]]; then
-                install -D -m 0644 /dev/null "$stage/etc/asterinas-userspace-m6"
-            fi
-        fi
-        if [[ "$PROFILE" == systemd-m2 ]]; then
-            cat >"$stage/etc/systemd/system/$service_name" <<'EOF'
+        install -D -m 0755 -- \
+            "$script_directory/systemd_m2_evidence.sh" \
+            "$stage/usr/lib/asterinas/systemd-m2-evidence"
+        cat >"$stage/etc/systemd/system/asterinas-debian-m2.service" <<'EOF'
 [Unit]
 Description=Asterinas Debian M2 evidence
 After=local-fs.target
@@ -1278,57 +1124,26 @@ RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
-        else
-            cat >"$stage/etc/systemd/system/$service_name" <<EOF
-[Unit]
-Description=Asterinas Debian ${PROFILE} evidence
-After=local-fs.target network.target getty.target
-
-[Service]
-Type=oneshot
-ExecStart=$evidence_command
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF
-        fi
         mkdir -p -- "$stage/etc/systemd/system/multi-user.target.wants"
         ln -s -- \
-            "../$service_name" \
-            "$stage/etc/systemd/system/multi-user.target.wants/$service_name"
-        if [[ "$PROFILE" == systemd-ext4-m3 || "$PROFILE" == systemd-ext4-m6-userspace ]]; then
-            # The ext4 systemd gate exercises logind as part of the Debian
-            # userspace contract.  Its Debian sandbox requests user/mount
-            # namespaces that Asterinas does not provide yet, so apply the
-            # same narrowly-scoped compatibility boundary used by desktop
-            # profiles instead of silently accepting a failed logind unit.
-            configure_logind_namespace_compatibility "$stage"
-            # Asterinas exposes the usable interactive serial tty as ttyS0.
-            # Keep Debian's console-getty ordering and lifecycle, but point
-            # its terminal directly at ttyS0. The serial-getty template adds
-            # a dev-ttyS0.device dependency that is not materialized by the
-            # current Asterinas device manager.
-            install -d -m 0755 -- \
-                "$stage/etc/systemd/system/console-getty.service.d"
-            cat >"$stage/etc/systemd/system/console-getty.service.d/asterinas-serial.conf" <<'EOF'
-[Unit]
-# Debootstrap images have no OCI console marker; the getty owns ttyS0.
-ConditionPathExists=
-[Service]
-TTYPath=/dev/ttyS0
-StandardInput=tty-force
-StandardOutput=tty
-StandardError=tty
-TTYReset=yes
-TTYVHangup=no
-TTYVTDisallocate=no
-ExecStart=
-ExecStart=-/sbin/agetty -o '-- \\u' --noclear --keep-baud -l /usr/local/sbin/asterinas-login 115200,38400,9600 - $TERM
-EOF
-        fi
+            ../asterinas-debian-m2.service \
+            "$stage/etc/systemd/system/multi-user.target.wants/asterinas-debian-m2.service"
     elif [[ "$PROFILE" == desktop-m3 || "$PROFILE" == desktop-m4 ]]; then
         configure_desktop "$stage" "${PROFILE#desktop-}"
+    elif [[ "$PROFILE" == desktop-m4-firefox ]]; then
+        configure_desktop "$stage" m4
+        # The daily-use image runs the desktop session itself, not the M4
+        # framebuffer/X11 evidence probes.  Remove both evidence entry points
+        # so a later graphical boot cannot race the session.
+        rm -f -- \
+            "$stage/etc/systemd/system/asterinas-desktop-m4-evidence.service" \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-m4-evidence.service" \
+            "$stage/etc/systemd/system/asterinas-desktop-core-evidence.service" \
+            "$stage/etc/systemd/system/graphical.target.wants/asterinas-desktop-core-evidence.service"
+        # The board boot path has no DHCP and no reachable public resolver;
+        # the shim is the only DNS path.  It skips itself when the board
+        # bootargs do not name a forwarder, so the QEMU gate is unaffected.
+        configure_dns_shim "$stage" "$script_directory"
     elif [[ "$PROFILE" == desktop-m5-network ]]; then
         configure_desktop "$stage" m4
         configure_desktop_m5_network "$stage"
@@ -1368,6 +1183,9 @@ EOF
         grep -qx 'FIREFOX_ONLINE_ROOTFS_PASS resolver=10.0.2.3 nsswitch=files,dns curl=riscv64 getent=riscv64 firefox=riscv64 trust_static=pass runtime_proven=0' \
             "$stage/usr/share/asterinas/browser-web-online-rootfs-static.log" ||
             die "online Firefox rootfs checker did not emit its exact PASS"
+    elif [[ "$PROFILE" == desktop-m4-firefox ]]; then
+        # The daily-use image's apt path runs on the QEMU slirp resolver.
+        printf 'nameserver 10.0.2.3\n' >"$stage/etc/resolv.conf"
     else
         printf 'nameserver 1.1.1.1\n' >"$stage/etc/resolv.conf"
     fi
@@ -1380,12 +1198,6 @@ EOF
         "$stage/var/log/"* \
         "$stage/tmp/"* \
         "$stage/var/tmp/"*
-    if [[ "$PROFILE" == systemd-ext4-m3 || "$PROFILE" == systemd-ext4-m6-userspace ]]; then
-        # The cleanup above intentionally removes package-maintainer logs.
-        # Recreate the Debian service compatibility files afterwards so the
-        # nginx log paths and systemd drop-ins are part of the published image.
-        configure_debian_service_compatibility "$stage"
-    fi
     if profile_uses_startup_caches "$PROFILE"; then
         # Both browser profiles must enter the guest with the target-owned
         # systemd/sysusers, dynamic-linker, journal, and font caches already
@@ -1410,11 +1222,9 @@ EOF
             die "target systemd-sysusers is missing; cannot finalize browser startup caches"
         fi
     fi
-    if [[ "$ARCH_NATIVE" == 0 ]]; then
-        rm -f -- "$stage/usr/bin/$ARCH_EMULATOR"
-        [[ ! -e "$stage/usr/bin/$ARCH_EMULATOR" ]] ||
-            die "$ARCH_EMULATOR remains in staged rootfs"
-    fi
+    rm -f -- "$stage/usr/bin/qemu-riscv64-static"
+    [[ ! -e "$stage/usr/bin/qemu-riscv64-static" ]] ||
+        die "qemu-riscv64-static remains in staged rootfs"
     if profile_uses_startup_caches "$PROFILE"; then
         : >"$stage/etc/.updated"
         : >"$stage/var/.updated"
@@ -1485,12 +1295,8 @@ finalize_browser_startup_caches() {
     # of the chroot, so run the target binary outside the chroot and give it an
     # explicit staged root.  The database format is still owned by the target
     # systemd, while the host's /proc makes publication atomic.
-    if [[ "$ARCH_NATIVE" == 1 ]]; then
-        chroot "$stage" /usr/bin/systemd-hwdb --root=/ update --usr
-    else
-        "$ARCH_EMULATOR" -L "$stage" "$stage/usr/bin/systemd-hwdb" \
-            --root="$stage" update --usr
-    fi
+    qemu-riscv64-static -L "$stage" "$stage/usr/bin/systemd-hwdb" \
+        --root="$stage" update --usr
     run_chroot "$stage" /usr/bin/journalctl --update-catalog
     generate_fontconfig_cache "$stage"
     if is_firefox_profile; then
@@ -1529,7 +1335,7 @@ run_fontconfig_scan() {
     local stage="$1"
 
     if [[ "$EXPLICIT_QEMU" == 1 ]]; then
-        chroot "$stage" "/usr/bin/$ARCH_EMULATOR" /usr/bin/fc-cache -f -v
+        chroot "$stage" /usr/bin/qemu-riscv64-static /usr/bin/fc-cache -f -v
     else
         chroot "$stage" /usr/bin/fc-cache -f -v
     fi
@@ -1629,10 +1435,16 @@ $(if [[ "$network_mode" == lightweight ]]; then printf '%s\n' 'Environment=ASTER
 # broken userspace probe must never hold graphical.target forever.  Bound the
 # unit as a whole instead of wrapping ip(8) with coreutils timeout: the latter
 # changes the process/signal path and has regressed on Asterinas before.
-TimeoutStartSec=180s
+TimeoutStartSec=45s
 TimeoutStopSec=5s
+Restart=no
+# The probe exits 75 when the network fixture itself is missing (no link,
+# address, neighbour, resolver, or unreachable peer).  That is an environment
+# condition, not a failed service: treat it as a clean run so the unit ends
+# inactive instead of parked in `systemctl --failed`.  Evidence mismatches
+# still exit 1 and remain visible as failures.
+SuccessExitStatus=75
 ExecStart=/usr/lib/asterinas/desktop-m5-network-evidence
-RemainAfterExit=yes
 
 [Install]
 WantedBy=graphical.target
@@ -1780,12 +1592,6 @@ configure_logind_namespace_compatibility() {
 [Service]
 # Asterinas does not yet provide the user/mount namespace contract used by
 # Debian's systemd-logind sandbox. Keep functional logind without that sandbox.
-# systemd-logind uses Type=notify-reload upstream, but the readiness
-# notification can remain pending while it probes VT/seat devices here.
-# Treat the daemon as ready after exec so service transactions do not block.
-Type=simple
-NotifyAccess=none
-TimeoutStartSec=60s
 PrivateTmp=no
 ProtectClock=no
 ProtectControlGroups=no
@@ -1797,83 +1603,6 @@ ProtectSystem=no
 ReadWritePaths=
 EOF
     chmod 0644 -- "$output"
-}
-
-configure_debian_service_compatibility() {
-    local stage="$1"
-    local directory="$stage/etc/systemd/system"
-
-    # These Debian units use mount/user namespaces that are not yet provided
-    # by Asterinas. Disable only the sandbox boundary; retain the services and
-    # their normal socket, credential, and restart behavior.
-    install -d -m 0755 -- "$directory/rsyslog.service.d"
-    cat >"$directory/rsyslog.service.d/asterinas-namespace-compat.conf" <<'EOF'
-[Service]
-PrivateTmp=no
-PrivateDevices=no
-Type=simple
-NotifyAccess=none
-ProtectHome=no
-ProtectSystem=no
-ProtectKernelTunables=no
-ProtectKernelModules=no
-ProtectClock=no
-ProtectControlGroups=no
-ProtectHostname=no
-ReadWritePaths=
-EOF
-
-    install -d -m 0755 -- "$directory/dbus.service.d"
-    cat >"$directory/dbus.service.d/asterinas-stdio-compat.conf" <<'EOF'
-[Service]
-StandardOutput=null
-StandardError=null
-# The daemon opens the system bus socket itself, but Asterinas does not yet
-# provide every readiness interaction used by systemd's Type=dbus handshake.
-# Mark it ready after exec while retaining the normal daemon and socket paths.
-Type=simple
-NotifyAccess=none
-TimeoutStartSec=60s
-EOF
-
-    for service_name in nginx ssh; do
-        install -d -m 0755 -- "$directory/$service_name.service.d"
-        cat >"$directory/$service_name.service.d/asterinas-namespace-compat.conf" <<'EOF'
-[Service]
-PrivateTmp=no
-PrivateDevices=no
-ProtectHome=no
-ProtectSystem=no
-ProtectKernelTunables=no
-ProtectKernelModules=no
-ProtectKernelLogs=no
-ProtectClock=no
-ProtectControlGroups=no
-ProtectHostname=no
-ReadWritePaths=
-EOF
-    done
-
-    # Debian's packaged default server listens on every address.  The guest
-    # network address is configured later by the gate, so that early bind
-    # fails with EADDRNOTAVAIL and blocks the initial systemd transaction.
-    # The userspace workload installs its loopback-only test site explicitly.
-    rm -f -- "$stage/etc/nginx/sites-enabled/default"
-
-    # openssh-server's maintainer script cannot reliably generate host keys in
-    # the foreign-root build environment.  Let the runtime evidence generate
-    # them with ssh-keygen -A before enabling ssh.service.
-    rm -f -- "$stage/etc/systemd/system/multi-user.target.wants/ssh.service"
-
-    # nginx is enabled by the package as well, but the gate installs its
-    # loopback-only server after boot.  Defer activation until that config is
-    # present so the initial transaction cannot wait on an empty/default unit.
-    rm -f -- "$stage/etc/systemd/system/multi-user.target.wants/nginx.service"
-
-    install -d -m 0755 -- "$stage/var/log/nginx" "$stage/var/lib/nginx"
-    touch "$stage/var/log/nginx/error.log" "$stage/var/log/nginx/access.log"
-    chmod 0640 "$stage/var/log/nginx/error.log" "$stage/var/log/nginx/access.log"
-    chown 33:33 "$stage/var/log/nginx/error.log" "$stage/var/log/nginx/access.log" 2>/dev/null || true
 }
 
 install_online_desktop_shell() {
@@ -1987,6 +1716,114 @@ configure_desktop() {
     grep -q '^asterinas:' "$stage/etc/gshadow" ||
         printf '%s\n' 'asterinas:!::' >>"$stage/etc/gshadow"
     install -d -m 0700 -o 1000 -g 1000 -- "$stage/home/asterinas"
+    # The serial console account is the image's daily-use user; give it
+    # passwordless sudo so package management and service control work from
+    # the console like on a normal Debian box.
+    install -d -m 0750 -- "$stage/etc/sudoers.d"
+    cat >"$stage/etc/sudoers.d/asterinas" <<'EOF'
+Defaults !use_pty
+asterinas ALL=(ALL:ALL) NOPASSWD: ALL
+EOF
+    chmod 0440 -- "$stage/etc/sudoers.d/asterinas"
+    # sudo (and interactive tools) allocate a pty; debootstrap leaves fstab
+    # unconfigured, so /dev/pts is never mounted and sudo fails with
+    # "unable to allocate pty". Mount devpts like a normal Debian installation.
+    cat >"$stage/etc/fstab" <<'EOF'
+# <file system> <mount point> <type> <options> <dump> <pass>
+devpts /dev/pts devpts gid=5,mode=620,ptmxmode=000 0 0
+EOF
+    # sudo resolves its own host name; without an /etc/hosts entry the lookup
+    # falls through to DNS, which is not reachable before the network is
+    # configured and makes sudo fail. Bind the image host name to the loopback
+    # alias the way Debian's installer does.
+    if [[ -s "$stage/etc/hostname" ]]; then
+        local image_host
+        image_host="$(tr -d '[:space:]' <"$stage/etc/hostname")"
+        if [[ -n "$image_host" ]] &&
+            ! grep -qE "^127\.0\.1\.1[[:space:]]+$image_host([[:space:]]|$)" \
+                "$stage/etc/hosts"; then
+            printf '127.0.1.1 %s\n' "$image_host" >>"$stage/etc/hosts"
+        fi
+    fi
+    # The kernel forwards the ACPI power button as SIGPWR and systemd starts
+    # sigpwr.target for it. A drop-in that merely adds `Wants=poweroff.target`
+    # does not start the shutdown: special targets are started by the manager
+    # objective, not as a dependency. A unit wanted by sigpwr.target that
+    # calls `systemctl poweroff` does reach the ordinary shutdown path, so
+    # QEMU's `system_powerdown` (and a cloud stop request) leaves the guest
+    # off through S5.
+    cat >"$stage/etc/systemd/system/asterinas-sigpwr-poweroff.service" <<'EOF'
+[Unit]
+Description=Power off on SIGPWR
+
+[Service]
+Type=oneshot
+KeyringMode=inherit
+ExecStart=/bin/systemctl --no-block poweroff
+EOF
+    chmod 0644 -- "$stage/etc/systemd/system/asterinas-sigpwr-poweroff.service"
+    install -d -m 0755 -- "$stage/etc/systemd/system/sigpwr.target.wants"
+    ln -sfn ../asterinas-sigpwr-poweroff.service \
+        "$stage/etc/systemd/system/sigpwr.target.wants/asterinas-sigpwr-poweroff.service"
+    if [[ "$PROFILE" == desktop-m4-firefox ]]; then
+        # The daily-use image logs the console account in on ttyS0 without a
+        # password prompt.  The account stays locked; autologin starts the
+        # shell and sudoers grants passwordless privilege escalation.
+        #
+        # The daily-use boot entry must NOT pass `--debug-console=root`: the
+        # board showed the getty cycling Started -> Deactivated successfully
+        # -> restart 11/12/13 -> start-limit-hit while the debug console owned
+        # ttyS0.  The menu validator accepts a desktop entry without the
+        # debug console for this image; the debug entry stays available as a
+        # separate boot choice when a root shell is needed.
+        #
+        # Do not use the Debian serial-getty template: it carries
+        # BindsTo=dev-ttyS0.device, and Asterinas exposes /dev/ttyS0 through
+        # devtmpfs without publishing that sysfs device unit, so systemd
+        # waits 90 s and then fails the getty.  A dedicated unit has only the
+        # user-session ordering and opens /dev/ttyS0 directly.
+        install -d -m 0755 -- "$stage/usr/local/sbin"
+        cat >"$stage/usr/local/sbin/asterinas-console-login" <<'EOF'
+#!/bin/sh
+# agetty owns the serial tty.  login(1) cannot complete its
+# controlling-terminal handoff on Asterinas, so start the provisioned
+# unprivileged session directly from the login helper.
+exec /usr/bin/setpriv --reuid=1000 --regid=1000 --init-groups \
+    env HOME=/home/asterinas USER=asterinas LOGNAME=asterinas \
+    SHELL=/bin/bash /bin/bash -i
+EOF
+        chmod 0755 -- "$stage/usr/local/sbin/asterinas-console-login"
+        cat >"$stage/etc/systemd/system/asterinas-console-getty.service" <<'EOF'
+[Unit]
+Description=Asterinas serial console (autologin)
+After=systemd-user-sessions.service
+Before=getty.target
+
+[Service]
+Type=idle
+ExecStart=-/sbin/agetty --autologin asterinas --noclear --keep-baud 115200,57600,38400,9600 -l /usr/local/sbin/asterinas-console-login ttyS0 linux
+Restart=always
+StandardInput=tty-force
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/ttyS0
+TTYReset=yes
+TTYVHangup=no
+
+[Install]
+WantedBy=getty.target
+EOF
+        chmod 0644 -- \
+            "$stage/etc/systemd/system/asterinas-console-getty.service"
+        install -d -m 0755 -- "$stage/etc/systemd/system/getty.target.wants"
+        ln -sfn ../asterinas-console-getty.service \
+            "$stage/etc/systemd/system/getty.target.wants/asterinas-console-getty.service"
+        # Mask the template getty and console-getty so only the dedicated
+        # unit owns ttyS0 on the daily-use boot.
+        ln -sfn /dev/null \
+            "$stage/etc/systemd/system/serial-getty@ttyS0.service"
+        ln -sfn /dev/null "$stage/etc/systemd/system/console-getty.service"
+    fi
     if [[ "$generation" == m4 || "$generation" == drm ]]; then
         install -d -m 0755 -o 1000 -g 1000 -- \
             "$stage/home/asterinas/Asterinas Files" \
@@ -2045,42 +1882,7 @@ configure_desktop() {
             # stopping the desktop.
             install -D -m 0644 -- "$script_directory/asterinas_clock_sync.conf" \
                 "$stage/etc/systemd/system/asterinas-desktop-m5.service.d/clock-sync.conf"
-            # The board reaches the host and nothing beyond it, so the resolver
-            # the network evidence service writes in direct mode never happens
-            # in proxy mode, which is the mode every desktop boot uses. The
-            # guest is left with the build-time nameserver it cannot route to.
-            # This shim answers on loopback and tunnels to the host, and it
-            # only rewrites resolv.conf after its tunnel has answered, so a
-            # shim that cannot reach the host leaves the guest as it found it.
-            # Restart=always is what lets it come up on a later boot phase than
-            # the interface it tunnels over.
-            install -D -m 0755 -- "$script_directory/megrez_dns_shim.py" \
-                "$stage/usr/lib/asterinas/megrez-dns-shim"
-            cat >"$stage/etc/systemd/system/asterinas-dns-shim.service" <<'EOF'
-[Unit]
-Description=Asterinas guest DNS tunnel to the build host
-After=local-fs.target
-
-[Service]
-Type=simple
-Restart=always
-RestartSec=5
-TimeoutStartSec=30s
-# Status 3 means the shim was given no forwarder to tunnel through. Retrying
-# that forever would only fill the journal, and exiting zero -- which is what
-# this unit first did -- reported a clean shutdown and left the guest without a
-# resolver and without any sign of why. A tunnel that is merely not up yet
-# exits 1 and is retried, because the interface comes up after this unit.
-RestartPreventExitStatus=3
-ExecStart=/usr/lib/asterinas/megrez-dns-shim
-
-[Install]
-WantedBy=basic.target
-EOF
-            chmod 0644 -- "$stage/etc/systemd/system/asterinas-dns-shim.service"
-            install -d -m 0755 -- "$stage/etc/systemd/system/basic.target.wants"
-            ln -sf -- "../asterinas-dns-shim.service" \
-                "$stage/etc/systemd/system/basic.target.wants/asterinas-dns-shim.service"
+            configure_dns_shim "$stage" "$script_directory"
             install -D -m 0644 -- "$script_directory/browser_m5_marionette_gate.py" \
                 "$stage/usr/lib/asterinas/browser_m5_marionette_gate.py"
             install -D -m 0755 -- "$script_directory/browser_web_firefox.sh" \
@@ -2293,6 +2095,17 @@ EOF
     install -D -m 0755 -- \
         "$script_directory/../../drm/gles-pixel-probe.py" \
         "$stage/usr/lib/asterinas/gles-pixel-probe"
+    if [[ "$generation" == m4 ]]; then
+        install -D -m 0755 -- \
+            "$script_directory/desktop_m4_framebuffer_probe.py" \
+            "$stage/usr/lib/asterinas/desktop-m4-framebuffer-probe"
+        install -D -m 0755 -- \
+            "$script_directory/desktop_m4_framebuffer_rw.py" \
+            "$stage/usr/lib/asterinas/desktop-m4-framebuffer-rw"
+        install -D -m 0755 -- \
+            "$script_directory/desktop_m4_x11_paint.py" \
+            "$stage/usr/lib/asterinas/desktop-m4-x11-paint"
+    fi
     install -d -m 0755 -- "$stage/etc/systemd/system/dbus.service.d"
     cat >"$stage/etc/systemd/system/dbus.service.d/asterinas-readiness.conf" <<'EOF'
 [Service]
@@ -2513,6 +2326,9 @@ EOF
             "$script_directory/desktop_fbdev_no_input.conf" \
             "$provider_config_directory/20-asterinas-no-input.conf"
     fi
+        install -D -m 0644 -- \
+            "$script_directory/desktop_fbdev_qemu.conf" \
+            "$provider_config_directory/20-asterinas-qemu.conf"
     install -d -m 0755 -- "$stage/etc/X11/xorg.conf.d"
     rm -f -- "$stage/etc/X11/xorg.conf.d/20-asterinas.conf"
     ln -s -- ../../asterinas/display-providers/$display_provider/xorg.conf.d/20-asterinas.conf \
@@ -2520,7 +2336,6 @@ EOF
 }
 
 create_and_verify_image() {
-    configure_architecture
     local root_image="$WORK_DIR/debian-root.ext2"
     local stage="$WORK_DIR/stage"
     local dumpe2fs_output="$WORK_DIR/dumpe2fs.txt"
@@ -2532,30 +2347,13 @@ create_and_verify_image() {
     if [[ "$ROOT_FILESYSTEM_TYPE" == ext4 ]]; then
         # Exercise the ext4 extent mapping while keeping features whose
         # checksums, high block fields, or orphan-file replay are not yet
-        # implemented out of this compatibility profile. Keep the inode size
-        # selected by mke2fs so the image contract follows the on-disk ext4
-        # format instead of silently narrowing Debian images to one layout.
+        # implemented out of this compatibility profile.
         mkfs_options+=(-O '^metadata_csum,^64bit,^flex_bg,^orphan_file,^huge_file,^dir_nlink,^extra_isize')
     fi
     mke2fs "${mkfs_options[@]}" \
         -L "$ROOT_LABEL" -U "$ROOT_UUID" -d "$stage" "$root_image"
     [[ "$(stat -c '%s' "$root_image")" == "$ROOT_SIZE_BYTES" ]] ||
         die "root image does not match the configured profile size"
-
-    # `-d` populates the tree with e2fsprogs' own copier rather than a mounted
-    # filesystem, and it does not always get the block and inode bitmaps right:
-    # blocks belonging to a live inode can be left marked free. That is not
-    # cosmetic. Any later write allocates one of those blocks, so two inodes end
-    # up owning it and the loser's data is destroyed on the next write -- which
-    # surfaces far away as an unrelated file reading back wrong contents.
-    # Repair first, then require a clean read-only pass, so an inconsistent image
-    # cannot be published even if the two steps ever disagree.
-    e2fsck -fy "$root_image" >/dev/null 2>&1 || true
-    local fsck_output
-    if ! fsck_output="$(e2fsck -fn "$root_image" 2>&1)"; then
-        printf '%s\n' "$fsck_output" >&2
-        die "root image is not a consistent filesystem"
-    fi
 
     dumpe2fs -h "$root_image" >"$dumpe2fs_output" 2>/dev/null
     grep -Eq "^Filesystem volume name:[[:space:]]+$ROOT_LABEL$" "$dumpe2fs_output" ||
@@ -2573,22 +2371,15 @@ create_and_verify_image() {
     fi
 
     debugfs_require_path "$root_image" /bin/bash
-    debugfs_require_path "$root_image" "$ARCH_LOADER"
+    debugfs_require_path "$root_image" /lib/ld-linux-riscv64-lp64d.so.1
     debugfs_require_path "$root_image" /var/lib/dpkg/status
     debugfs_require_path "$root_image" /etc/asterinas-rootfs.bashrc
-    if [[ "$ARCH_NATIVE" == 0 ]]; then
-        debugfs_reject_path "$root_image" "/usr/bin/$ARCH_EMULATOR"
-    fi
+    debugfs_reject_path "$root_image" /usr/bin/qemu-riscv64-static
     debugfs -R "dump /bin/bash $dumped_bash" "$root_image" >/dev/null 2>&1 ||
         die "failed to extract Bash from root image"
     chmod 0700 "$dumped_bash"
-    if [[ "$ARCH_NATIVE" == 1 ]]; then
-        chroot "$stage" /bin/bash -c true ||
-            die "root image Bash smoke test failed"
-    else
-        "$ARCH_EMULATOR" -L "$stage" "$dumped_bash" -c true ||
-            die "root image Bash smoke test failed"
-    fi
+    qemu-riscv64-static -L "$stage" "$dumped_bash" -c true ||
+        die "root image Bash smoke test failed"
 }
 
 debugfs_require_path() {
@@ -2627,12 +2418,7 @@ write_rootfs_manifest() {
     build_timestamp="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%dT%H:%M:%SZ')"
     debootstrap_version="$(debootstrap --version 2>&1 | head -n 1)"
     mke2fs_version="$(mke2fs -V 2>&1 | head -n 1)"
-    local -a emulator_tool_version=()
-    if [[ "$ARCH_NATIVE" == 0 ]]; then
-        local emulator_version
-        emulator_version="$("$ARCH_EMULATOR" --version 2>&1 | head -n 1)"
-        emulator_tool_version=(--tool-version "$ARCH_EMULATOR=$emulator_version")
-    fi
+    qemu_version="$(qemu-riscv64-static --version 2>&1 | head -n 1)"
 
     if [[ "$PROFILE" == browser-web ]]; then
         browser_web_runtime_version="$(browser_web_runtime_digest "$script_directory")"
@@ -2658,7 +2444,7 @@ write_rootfs_manifest() {
             --signed-source "security=$WORK_DIR/source-metadata/Security-InRelease"
         )
     fi
-    PYTHONPATH="$repository_root" python3 -m tools.debian.rootfs.contract \
+    PYTHONPATH="$repository_root" python3 -m tools.riscv.debian.rootfs.contract \
         write-manifest \
         --output "$WORK_DIR/rootfs-manifest.json" \
         --image "$WORK_DIR/debian-root.ext2" \
@@ -2669,12 +2455,11 @@ write_rootfs_manifest() {
         --suite "$SUITE" \
         --debian-release "$DEBIAN_RELEASE" \
         --profile "$PROFILE" \
-        --architecture "$ARCH_DEBIAN" \
         "${signed_source_arguments[@]}" \
         --build-timestamp "$build_timestamp" \
         --tool-version "debootstrap=$debootstrap_version" \
         --tool-version "mke2fs=$mke2fs_version" \
-        "${emulator_tool_version[@]}" \
+        --tool-version "qemu-riscv64-static=$qemu_version" \
         "${browser_web_tool_versions[@]}"
 }
 
@@ -2744,7 +2529,7 @@ publish_artifacts() {
     # The helper rolls back ordinary failures and termination signals. The
     # profile-specific file set is intentionally not claimed to be power-loss
     # atomic.
-    PYTHONPATH="$repository_root" python3 -m tools.debian.rootfs.fsops \
+    PYTHONPATH="$repository_root" python3 -m tools.riscv.debian.rootfs.fsops \
         publish-set \
         --output-dir "$OUTPUT_DIR" \
         --source-root "$WORK_DIR" \

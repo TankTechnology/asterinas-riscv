@@ -24,10 +24,10 @@ programs.firefox.enable = true;
 ```bash
 # Open a website in a new window
 export DISPLAY=:0
-firefox --new-instance https://httpbin.org/html
+firefox --new-instance https://example.com
 
 # Take a screenshot of a website
-firefox --headless --screenshot https://httpbin.org/html
+firefox --headless --screenshot https://example.com
 ```
 
 ### Links2
@@ -44,10 +44,10 @@ environment.systemPackages = [ pkgs.links2 ];
 
 ```bash
 # Open a website
-links https://httpbin.org/html
+links http://example.com
 
 # Dump page contents as text
-links -dump https://httpbin.org/html
+links -dump http://example.com
 ```
 
 ### w3m
@@ -64,8 +64,8 @@ environment.systemPackages = [ pkgs.w3m ];
 
 ```bash
 # Open a website in text mode
-w3m https://httpbin.org/html
+w3m http://example.com
 
 # Dump page contents as text
-w3m -dump https://httpbin.org/html
+w3m -dump http://example.com
 ```

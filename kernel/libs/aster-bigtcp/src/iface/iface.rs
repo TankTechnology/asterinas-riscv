@@ -1,15 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
+use core::ffi::CStr;
 
-use smoltcp::{
-    iface::Route,
-    wire::{EthernetAddress, Ipv4Address, Ipv4Cidr, Ipv6Cidr},
-};
+use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr, Ipv6Cidr};
 
 use super::{
-    BindPortConfig, BoundTcpPort, BoundUdpPort, IfaceStatsSnapshot, InterfaceFlags, InterfaceName,
-    InterfaceType,
+    BindPortConfig, BoundTcpPort, BoundUdpPort, IfaceStatsSnapshot, InterfaceFlags, InterfaceType,
 };
 use crate::{errors::BindError, ext::Ext};
 
@@ -23,18 +20,16 @@ pub trait Iface<E>: internal::IfaceInternal<E> + Send + Sync {
     /// Returns the Ethernet address, if the interface uses Ethernet framing.
     fn ethernet_addr(&self) -> Option<EthernetAddress>;
 
+    /// Returns the configured IPv4 default gateway, if any.
+    fn ipv4_gateway(&self) -> Option<Ipv4Address> {
+        None
+    }
+
     /// Transmits or receives packets queued in the iface, and updates socket status accordingly.
     fn poll(&self);
 
     /// Returns the maximum transmission unit.
     fn mtu(&self) -> usize;
-
-    /// Returns the IPv4-to-Ethernet mappings this interface has learned.
-    ///
-    /// Interfaces that do no neighbour discovery return an empty list.
-    fn arp_entries(&self) -> Vec<(Ipv4Address, EthernetAddress)> {
-        Vec::new()
-    }
 }
 
 impl<E: Ext> dyn Iface<E> {
@@ -74,8 +69,13 @@ impl<E: Ext> dyn Iface<E> {
     /// Gets the name of the iface.
     ///
     /// In Linux, the name is usually the driver name followed by a unit number.
-    pub fn name(&self) -> &InterfaceName {
+    pub fn name(&self) -> &CStr {
         self.common().name()
+    }
+
+    /// Returns receive and transmit counters for this interface.
+    pub fn stats(&self) -> IfaceStatsSnapshot {
+        self.common().stats()
     }
 
     /// Returns the interface type.
@@ -88,9 +88,9 @@ impl<E: Ext> dyn Iface<E> {
         self.common().flags()
     }
 
-    /// Samples the packets this interface has received and transmitted.
-    pub fn stats(&self) -> IfaceStatsSnapshot {
-        self.common().stats_snapshot()
+    /// Sets the interface flags (e.g., bringing the interface up or down).
+    pub fn set_flags(&self, flags: InterfaceFlags) {
+        self.common().set_flags(flags)
     }
 
     // FIXME: Linux and smoltcp allow multiple IP CIDRs per interface, while the
@@ -110,12 +110,10 @@ impl<E: Ext> dyn Iface<E> {
     ///
     /// IPv6 does not define broadcast addresses and uses multicast instead.
     pub fn broadcast_addr(&self) -> Option<Ipv4Address> {
+        if !self.flags().contains(InterfaceFlags::BROADCAST) {
+            return None;
+        }
         self.common().ipv4_cidr()?.broadcast()
-    }
-
-    /// Returns routes currently installed in the interface.
-    pub fn routes(&self) -> Vec<Route> {
-        self.common().routes()
     }
 
     /// Returns a reference to the associated [`ScheduleNextPoll`].

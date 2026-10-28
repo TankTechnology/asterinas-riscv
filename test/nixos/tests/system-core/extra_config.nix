@@ -13,7 +13,7 @@
     diffutils
     findutils
     gnugrep
-    net-tools
+    hostname
     less
     man-pages
     util-linux

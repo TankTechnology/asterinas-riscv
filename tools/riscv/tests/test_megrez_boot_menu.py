@@ -15,6 +15,11 @@ from unittest.mock import Mock, patch
 from tools.riscv import megrez_boot_menu as menu
 from tools.riscv import megrez_menu_board as board
 from tools.riscv import megrez_menu_qemu as qemu
+from tools.riscv.megrez_hardware_probe import (
+    PROBE_SPECS,
+    ProbeContractError,
+    ProbeResult,
+)
 from tools.riscv.debian.rootfs import stage1_basic
 
 
@@ -41,7 +46,9 @@ def document():
         "schema_version": 3,
         "vendor": VENDOR,
         "artifacts": {},
-        "desktop_args": menu.BASE_ARGS + " -- --root-init=systemd",
+        "desktop_args": (
+            menu.BASE_ARGS + " -- --root-init=systemd --debug-console=root"
+        ),
     }
     for name in menu.ARTIFACTS:
         payload = name.encode()
@@ -55,7 +62,8 @@ class BootMenuTests(unittest.TestCase):
     def test_watchdog_is_limited_to_bounded_asterinas_cycles(self):
         self.assertTrue(board.watchdog_mode_allowed("basic"))
         self.assertTrue(board.watchdog_mode_allowed("probe"))
-        for mode in ("rockos", "fallback", "desktop"):
+        self.assertTrue(board.watchdog_mode_allowed("desktop"))
+        for mode in ("rockos", "fallback"):
             with self.subTest(mode=mode):
                 self.assertFalse(board.watchdog_mode_allowed(mode))
 
@@ -65,7 +73,7 @@ class BootMenuTests(unittest.TestCase):
             board.boot_cycle(
                 operations,
                 document(),
-                "desktop",
+                "rockos",
                 "debian",
                 "fixture",
                 "0" * 32,
@@ -221,6 +229,216 @@ class BootMenuTests(unittest.TestCase):
         self.assertEqual(session.send.call_args_list[1].args, ("2",))
         operations.reboot_and_recover.assert_called_once_with("fixture", 120)
 
+    def test_basic_watchdog_is_armed_only_for_basic_before_sysboot(self):
+        value = document()
+        operations = Mock()
+        session = operations._require_session.return_value
+        session.wait_for.side_effect = [
+            "asterinas-basic# ",
+            "/proc proc\n/sys sysfs\nBASIC_OK:" + "0" * 32,
+        ]
+        session.wait_for_uboot_prompt.side_effect = [
+            "=> ",
+            "OpenSBI\nU-Boot \n=> ",
+        ]
+        with (
+            patch.object(board.os, "write"),
+            patch.object(board.RealBoardOperations, "_arm_hardware_watchdog") as arm,
+        ):
+            board.boot_cycle(
+                operations,
+                value,
+                "basic",
+                "debian",
+                "fixture",
+                "0" * 32,
+                hardware_watchdog=True,
+            )
+        arm.assert_called_once()
+        session.command.assert_called_once()
+        self.assertEqual(session.command.call_args.args[0].split()[0], "sysboot")
+
+    def test_fbdev_readiness_does_not_require_firefox(self):
+        session = Mock()
+        with patch.object(board, "query_guest", return_value="\nDISPLAY_RC=0\r\n") as query:
+            self.assertTrue(board.desktop_ready(session, fbdev_only=True))
+        query.assert_called_once()
+        self.assertIn("/dev/fb0", query.call_args.args[1])
+        self.assertNotIn("firefox", query.call_args.args[1])
+
+    def test_fbdev_missing_socket_or_device_is_not_ready(self):
+        with patch.object(board, "query_guest", return_value="\nDISPLAY_RC=1\r\n"):
+            self.assertFalse(board.desktop_ready(Mock(), fbdev_only=True))
+
+    def test_watchdog_rejects_non_diagnostic_menu_modes(self):
+        value = document()
+        operations = Mock()
+        with self.assertRaisesRegex(
+            menu.BootManifestError, "restricted to the Basic"
+        ):
+            board.boot_cycle(
+                operations,
+                value,
+                "rockos",
+                "debian",
+                "fixture",
+                "0" * 32,
+                hardware_watchdog=True,
+            )
+
+    def test_recovered_probe_failure_is_not_promoted_to_pass(self):
+        value = document()
+        operations = Mock()
+        session = operations._require_session.return_value
+        session.wait_for_uboot_prompt.return_value = "OpenSBI\nU-Boot \n=> "
+        session.wait_for.return_value = "ASTERINAS_PROBE_DONE device=gmac-1 status=fail"
+        operations._log.getvalue.return_value = "serial evidence"
+        with (
+            patch.object(board.os, "write"),
+            patch.object(board.RealBoardOperations, "_arm_hardware_watchdog"),
+            patch.object(
+                board,
+                "validate_probe_evidence",
+                return_value=ProbeResult("gmac-1", "fail", True, ()),
+            ),
+        ):
+            result = board.boot_cycle(
+                operations,
+                value,
+                "gmac-1",
+                "debian",
+                "fixture",
+                "0" * 32,
+                hardware_watchdog=True,
+            )
+        self.assertEqual(result["probe_status"], "fail")
+        self.assertTrue(result["recovery_observed"])
+        self.assertFalse(result.get("passed", False))
+        self.assertIn(
+            "ASTERINAS_PROBE_RECOVERY device=gmac-1 status=fail\n",
+            [call.args[0] for call in operations._log.write.call_args_list],
+        )
+        session.wait_for.assert_called_once_with(
+            "ASTERINAS_PROBE_DONE device=gmac-1 status=", 100
+        )
+
+    def test_probe_completion_timeout_observes_watchdog_recovery(self):
+        value = document()
+        operations = Mock()
+        session = operations._require_session.return_value
+        session.wait_for.side_effect = TimeoutError()
+        session.wait_for_uboot_prompt.return_value = "OpenSBI\nU-Boot \n=> "
+        spec = PROBE_SPECS["gmac-1"]
+        operations._log.getvalue.return_value = (
+            f"ASTERINAS_PROBE_BEGIN device=gmac-1\n"
+            f"ASTERINAS_PROBE_RESOURCE device=gmac-1 base=0x{spec.base:08x} "
+            f"size=0x{spec.size:x} irq={spec.irq}\n"
+            "ASTERINAS_PROBE_DT device=gmac-1 clocks=[3, 550, 3, 551, 3, 553] "
+            "resets=[20, 7, 33554432]\n"
+            "OpenSBI v1.5\nU-Boot 2024.10\n"
+        )
+        with (
+            patch.object(board.os, "write"),
+            patch.object(board.RealBoardOperations, "_arm_hardware_watchdog"),
+        ):
+            result = board.boot_cycle(
+                operations,
+                value,
+                "gmac-1",
+                "debian",
+                "fixture",
+                "0" * 32,
+                hardware_watchdog=True,
+            )
+        self.assertEqual(result["probe_status"], "timeout")
+        self.assertEqual(result["probe_failure"], "completion-timeout")
+        self.assertTrue(result["recovery_observed"])
+        self.assertFalse(result.get("passed", False))
+        self.assertIn(
+            "ASTERINAS_PROBE_RECOVERY device=gmac-1 status=timeout\n",
+            [call.args[0] for call in operations._log.write.call_args_list],
+        )
+        self.assertEqual(session.wait_for_uboot_prompt.call_args_list[-1].args, (120,))
+
+    def test_invalid_probe_evidence_still_records_recovery(self):
+        operations = Mock()
+        session = operations._require_session.return_value
+        session.wait_for.return_value = "ASTERINAS_PROBE_DONE device=gmac-1 status=pass"
+        session.wait_for_uboot_prompt.return_value = "OpenSBI\nU-Boot \n=> "
+        operations._log.getvalue.return_value = "serial evidence"
+        with (
+            patch.object(board.os, "write"),
+            patch.object(board.RealBoardOperations, "_arm_hardware_watchdog"),
+            patch.object(
+                board,
+                "validate_probe_evidence",
+                side_effect=ProbeContractError("invalid evidence"),
+            ),
+            self.assertRaisesRegex(ProbeContractError, "invalid evidence"),
+        ):
+            board.boot_cycle(
+                operations,
+                document(),
+                "gmac-1",
+                "debian",
+                "fixture",
+                "0" * 32,
+                hardware_watchdog=True,
+            )
+        self.assertIn(
+            "ASTERINAS_PROBE_RECOVERY device=gmac-1 status=invalid\n",
+            [call.args[0] for call in operations._log.write.call_args_list],
+        )
+
+    def test_device_probe_rejects_missing_hardware_watchdog_before_serial_use(self):
+        operations = Mock()
+        with self.assertRaisesRegex(menu.BootManifestError, "required"):
+            board.boot_cycle(
+                operations,
+                document(),
+                "gmac-1",
+                "debian",
+                "fixture",
+                "0" * 32,
+            )
+        operations._require_session.assert_not_called()
+
+    def test_phy_diagnostic_requires_hardware_watchdog(self):
+        operations = Mock()
+        with self.assertRaisesRegex(menu.BootManifestError, "required"):
+            board.boot_cycle(
+                operations,
+                document(),
+                menu.PHY_DIAGNOSTIC_MODE,
+                "debian",
+                "fixture",
+                "0" * 32,
+            )
+        operations._require_session.assert_not_called()
+
+    def test_phy_diagnostic_reports_pass_only_after_firmware_recovery(self):
+        value = document()
+        operations = Mock()
+        session = operations._require_session.return_value
+        session.wait_for.return_value = "ASTERINAS_GMAC_PHY_DONE status=pass"
+        session.wait_for_uboot_prompt.return_value = "OpenSBI\nU-Boot \n=> "
+        operations._log.getvalue.return_value = "ASTERINAS_GMAC_PHY_DONE status=pass"
+        with (
+            patch.object(board.os, "write"),
+            patch.object(board.RealBoardOperations, "_arm_hardware_watchdog"),
+        ):
+            result = board.boot_cycle(
+                operations,
+                value,
+                menu.PHY_DIAGNOSTIC_MODE,
+                "debian",
+                "fixture",
+                "0" * 32,
+                hardware_watchdog=True,
+            )
+        self.assertEqual(result["phy_status"], "pass")
+        self.assertEqual(session.send.call_args.args[0], str(menu.MODES.index(menu.PHY_DIAGNOSTIC_MODE) + 2))
+
     def test_rejects_missing_duplicate_or_inherited_defaults(self):
         variants = (
             VENDOR.replace("default l0\n", ""),
@@ -235,19 +453,25 @@ class BootMenuTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(menu.BootManifestError):
                 menu.vendor_default(value)
 
-    def test_four_modes_share_kernel_and_dtb(self):
+    def test_modes_share_kernel_and_dtb_and_probe_entries_are_explicit(self):
         value = document()
         menu.validate(value)
         text = value["extlinux"]
         self.assertTrue(text.startswith("default l0\n"))
         self.assertIn("timeout 100\n", text)
-        self.assertEqual(text.count("\nlabel "), 4)
-        self.assertEqual(text.count(value["artifacts"]["kernel"]["path"]), 3)
-        self.assertEqual(text.count(value["artifacts"]["dtb"]["path"]), 3)
-        self.assertEqual(text.count(value["artifacts"]["stage1"]["path"]), 2)
-        self.assertEqual(text.count("asterinas.reboot_after="), 1)
+        self.assertEqual(text.count("\nlabel "), 9)
+        self.assertEqual(text.count(value["artifacts"]["kernel"]["path"]), 8)
+        self.assertEqual(text.count(value["artifacts"]["dtb"]["path"]), 8)
+        self.assertEqual(text.count(value["artifacts"]["stage1"]["path"]), 7)
+        self.assertEqual(text.count("asterinas.reboot_after="), 7)
+        self.assertIn("asterinas.reboot_after=60 -- --root-init=basic", text)
         self.assertIn("--root-init=basic", text)
         self.assertIn("--root-init=probe-auto", text)
+        for mode in menu.PROBE_MODES:
+            self.assertIn(f"label asterinas-{mode}", text)
+            self.assertIn(f"asterinas.hardware_probe={mode}", text)
+        self.assertIn("label asterinas-gmac-phy", text)
+        self.assertIn("asterinas.gmac_diagnostic=phy", text)
 
     def test_rejects_identity_and_argument_drift(self):
         for change in (
@@ -271,7 +495,7 @@ class BootMenuTests(unittest.TestCase):
 
     def test_rejects_desktop_bootargs_that_overflow_megrez_uboot(self):
         value = document()
-        suffix = " -- --root-init=systemd"
+        suffix = " -- --root-init=systemd --debug-console=root"
         prefix = menu.BASE_ARGS + " test.padding="
         padding = "x" * (1023 - len(prefix.encode()) - len(suffix.encode()))
         value["desktop_args"] = prefix + padding + suffix
@@ -307,6 +531,27 @@ class BootMenuTests(unittest.TestCase):
         with self.assertRaisesRegex(menu.BootManifestError, "root-init"):
             menu.validate(value)
 
+    def test_accepts_ext4_root_with_the_desktop_management_console(self):
+        value = document()
+        value["desktop_args"] = (
+            menu.BASE_ARGS
+            + " -- --root-init=systemd --root-fs=ext4"
+            + " --debug-console=root --volatile-home"
+        )
+        value["extlinux"] = menu.render(value)
+        menu.validate(value)
+
+    def test_accepts_daily_use_entry_without_management_console(self):
+        value = document()
+        value["desktop_args"] = menu.BASE_ARGS + " -- --root-init=systemd"
+        value["extlinux"] = menu.render(value)
+        menu.validate(value)
+        self.assertIn(value["desktop_args"], value["extlinux"])
+
+        value["desktop_args"] += " --volatile-home"
+        value["extlinux"] = menu.render(value)
+        menu.validate(value)
+
     def test_publication_is_config_last_and_only_publishes_canary(self):
         value = document()
         script = menu.publication_script(value, "http://192.168.1.1:8000")
@@ -333,6 +578,27 @@ class BootMenuTests(unittest.TestCase):
             for name in menu.ARTIFACTS:
                 sources[name] = root / name
                 sources[name].write_bytes(name.encode())
+            stage = root / "stage"
+            (stage / "bin").mkdir(parents=True)
+            (stage / "bin/busybox").write_bytes(b"busybox")
+            (stage / "bin/sh").symlink_to("busybox")
+            with (root / "basic-stage1.cpio").open("wb") as archive:
+                subprocess.run(
+                    [
+                        "cpio",
+                        "--quiet",
+                        "--reproducible",
+                        "--owner=0:0",
+                        "--create",
+                        "--format=newc",
+                    ],
+                    cwd=stage,
+                    input="bin\nbin/busybox\nbin/sh\n",
+                    text=True,
+                    stdout=archive,
+                    check=True,
+                )
+            sources["stage1"] = root / "basic-stage1.cpio"
             raw_dtb = root / "raw.dtb"
             subprocess.run(
                 ["dtc", "-I", "dts", "-O", "dtb", "-o", str(raw_dtb)],
@@ -383,6 +649,56 @@ class BootMenuTests(unittest.TestCase):
             self.assertEqual(
                 shared["artifacts"]["stage1"], shared["artifacts"]["desktop_stage1"]
             )
+
+    @unittest.skipUnless(
+        shutil.which("dtc") and shutil.which("fdtput") and shutil.which("fdtget"),
+        "device-tree tools are required",
+    )
+    def test_prepare_rejects_a_stage1_without_basic_shell(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            vendor = root / "vendor.conf"
+            vendor.write_text(VENDOR)
+            sources = {}
+            for name in menu.ARTIFACTS:
+                sources[name] = root / name
+                sources[name].write_bytes(name.encode())
+            stage = root / "stage"
+            stage.mkdir()
+            (stage / "init").write_bytes(b"init")
+            with (root / "bad-stage1.cpio").open("wb") as archive:
+                subprocess.run(
+                    [
+                        "cpio",
+                        "--quiet",
+                        "--reproducible",
+                        "--owner=0:0",
+                        "--create",
+                        "--format=newc",
+                    ],
+                    cwd=stage,
+                    input="init\n",
+                    text=True,
+                    stdout=archive,
+                    check=True,
+                )
+            sources["stage1"] = root / "bad-stage1.cpio"
+            raw_dtb = root / "raw.dtb"
+            subprocess.run(
+                ["dtc", "-I", "dts", "-O", "dtb", "-o", str(raw_dtb)],
+                input="/dts-v1/; / { #address-cells = <2>; #size-cells = <2>; chosen {}; };",
+                text=True,
+                check=True,
+                capture_output=True,
+            )
+            sources["dtb"].unlink()
+            menu.prepare_dtb(raw_dtb, sources["dtb"])
+            with self.assertRaisesRegex(
+                menu.BootManifestError, "bin/busybox and bin/sh"
+            ):
+                menu.prepare(
+                    vendor, sources, document()["desktop_args"], root / "out"
+                )
 
     def test_corrupt_installed_artifact_stops_before_any_download(self):
         value = document()

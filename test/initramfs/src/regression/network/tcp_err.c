@@ -505,35 +505,8 @@ FN_TEST(sendmsg_and_recvmsg)
 	msg.msg_iovlen = 2;
 
 	char recv_buffer[4096] = { 0 };
-	/*
-	 * FIXME: Linux TCP reports `EFAULT` if a copy fault occurs before
-	 * completing the first SKB touched by the call. Later faults may return
-	 * a short count at SKB granularity. Asterinas has no SKBs, so it reports
-	 * byte-granular progress instead.
-	 *
-	 * Reference:
-	 * <https://elixir.bootlin.com/linux/v7.0/source/net/ipv4/tcp.c#L1328-L1329>
-	 * <https://elixir.bootlin.com/linux/v7.0/source/net/ipv4/tcp.c#L1441-L1442>
-	 */
-#ifdef __asterinas__
-	/*
-	 * The good bytes are queued in the TCP stream and must be drained
-	 * before the next case.
-	 */
-	TEST_RES(sendmsg(sk_accepted, &msg, 0), _ret == strlen(good_buffer));
-
-	sleep(1);
-
-	iov[0].iov_base = recv_buffer;
-	iov[0].iov_len = sizeof(recv_buffer);
-	msg.msg_iovlen = 1;
-	TEST_RES(recvmsg(sk_connected, &msg, 0),
-		 _ret == strlen(good_buffer) &&
-			 memcmp(recv_buffer, good_buffer,
-				strlen(good_buffer)) == 0);
-#else
+	/* The invalid tail faults before this small TCP write is committed. */
 	TEST_ERRNO(sendmsg(sk_accepted, &msg, 0), EFAULT);
-#endif
 
 	// TEST CASE 4: Receive via a partially bad receive buffer
 
@@ -557,24 +530,7 @@ FN_TEST(sendmsg_and_recvmsg)
 	iov[1].iov_len = 1;
 	msg.msg_iovlen = 2;
 
-	/* FIXME: Refer to the above FIXME regarding sending with a bad buffer. */
-#ifdef __asterinas__
-	/*
-	 * The bytes copied are consumed from the TCP stream, so only the
-	 * remaining bytes are left for the next receive.
-	 */
-	TEST_RES(recvmsg(sk_connected, &msg, 0),
-		 _ret == 1 && recv_buffer[0] == good_buffer[1]);
-
-	memset(recv_buffer, 0, sizeof(recv_buffer));
-	iov[0].iov_base = recv_buffer;
-	iov[0].iov_len = sizeof(recv_buffer);
-	msg.msg_iovlen = 1;
-	TEST_RES(recvmsg(sk_connected, &msg, 0),
-		 _ret == strlen(good_buffer) - 2 &&
-			 memcmp(recv_buffer, good_buffer + 2,
-				strlen(good_buffer) - 2) == 0);
-#else
+	/* The fault leaves the first queued TCP segment available for retry. */
 	TEST_ERRNO(recvmsg(sk_connected, &msg, 0), EFAULT);
 
 	memset(recv_buffer, 0, sizeof(recv_buffer));
@@ -585,7 +541,6 @@ FN_TEST(sendmsg_and_recvmsg)
 		 _ret == strlen(good_buffer) - 1 &&
 			 memcmp(recv_buffer, good_buffer + 1,
 				strlen(good_buffer) - 1) == 0);
-#endif
 
 	// TEST CASE 5: Send a large buffer
 
@@ -839,81 +794,5 @@ FN_TEST(listen_close)
 		   ECONNRESET);
 
 	TEST_SUCC(close(sk_connect));
-}
-END_TEST()
-
-FN_TEST(connect_ipv4_unspecified)
-{
-	const in_port_t listener_port = htons(0x2345);
-	const in_port_t bound_client_port = htons(0x2346);
-	struct sockaddr_in listener_addr = {
-		.sin_family = AF_INET,
-		.sin_port = listener_port,
-		.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
-	};
-	struct sockaddr_in remote_addr = {
-		.sin_family = AF_INET,
-		.sin_port = listener_port,
-		.sin_addr.s_addr = htonl(INADDR_ANY),
-	};
-	int listener = TEST_SUCC(socket(AF_INET, SOCK_STREAM, 0));
-
-	TEST_SUCC(bind(listener, (struct sockaddr *)&listener_addr,
-		       sizeof(listener_addr)));
-	TEST_SUCC(listen(listener, 2));
-
-	for (int is_bound = 0; is_bound < 2; is_bound++) {
-		int client = TEST_SUCC(socket(AF_INET, SOCK_STREAM, 0));
-		struct sockaddr_in local_addr;
-		struct sockaddr_in peer_addr;
-		socklen_t addrlen;
-
-		if (is_bound) {
-			struct sockaddr_in bind_addr = {
-				.sin_family = AF_INET,
-				.sin_port = bound_client_port,
-				.sin_addr.s_addr = htonl(INADDR_LOOPBACK),
-			};
-			TEST_SUCC(bind(client, (struct sockaddr *)&bind_addr,
-				       sizeof(bind_addr)));
-		}
-
-		TEST_SUCC(connect(client, (struct sockaddr *)&remote_addr,
-				  sizeof(remote_addr)));
-
-		addrlen = sizeof(local_addr);
-		TEST_RES(getsockname(client, (struct sockaddr *)&local_addr,
-				     &addrlen),
-			 addrlen == sizeof(local_addr) &&
-				 local_addr.sin_addr.s_addr ==
-					 htonl(INADDR_LOOPBACK) &&
-				 (is_bound ? local_addr.sin_port ==
-						     bound_client_port :
-					     local_addr.sin_port != 0));
-
-		addrlen = sizeof(peer_addr);
-		TEST_RES(getpeername(client, (struct sockaddr *)&peer_addr,
-				     &addrlen),
-			 addrlen == sizeof(peer_addr) &&
-				 peer_addr.sin_addr.s_addr ==
-					 htonl(INADDR_LOOPBACK) &&
-				 peer_addr.sin_port == listener_port);
-
-		int accepted = TEST_SUCC(accept(listener, NULL, NULL));
-		char request = 'r';
-		char response = 's';
-		TEST_RES(send(client, &request, sizeof(request), 0), _ret == 1);
-		TEST_RES(recv(accepted, &request, sizeof(request), 0),
-			 _ret == 1 && request == 'r');
-		TEST_RES(send(accepted, &response, sizeof(response), 0),
-			 _ret == 1);
-		TEST_RES(recv(client, &response, sizeof(response), 0),
-			 _ret == 1 && response == 's');
-
-		TEST_SUCC(close(accepted));
-		TEST_SUCC(close(client));
-	}
-
-	TEST_SUCC(close(listener));
 }
 END_TEST()

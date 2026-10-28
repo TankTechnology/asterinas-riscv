@@ -25,87 +25,6 @@ DUAL_STACK_FACTS = (
 
 
 class ValidateRunKernelLogTests(unittest.TestCase):
-    def test_initramfs_nix_arguments_follow_upstream_contract(self) -> None:
-        makefile = (REPOSITORY_ROOT / "test/initramfs/Makefile").read_text()
-        entrypoint = (
-            REPOSITORY_ROOT / "test/initramfs/nix/default.nix"
-        ).read_text()
-        self.assertNotIn("--arg conformanceGvisorTest", makefile)
-        for option in ("benchmarkName", "conformanceTestSelector"):
-            with self.subTest(option=option):
-                self.assertEqual(makefile.count(f"--argstr {option}"), 2)
-                self.assertIn(f'{option} ? "', entrypoint)
-
-    def test_ext4_replay_and_extent_parser_are_in_compiled_core_path(self) -> None:
-        core_root = REPOSITORY_ROOT / "kernel/core/src/fs/fs_impls/ext2"
-        assembler = (REPOSITORY_ROOT / "kernel/src/lib.rs").read_text()
-        module = (core_root / "mod.rs").read_text()
-        filesystem = (core_root / "fs.rs").read_text()
-        journal = (core_root / "journal.rs").read_text()
-        block_group = (core_root / "block_group.rs").read_text()
-        block_ptr_tree = (
-            core_root / "inode/block_manager/block_ptr_tree.rs"
-        ).read_text()
-        self.assertIn("aster_core::boot()", assembler)
-        self.assertIn("mod journal;", module)
-        self.assertIn("fn replay_journal", filesystem)
-        self.assertIn("const EXTENT_MAGIC", block_ptr_tree)
-        self.assertIn("fn lookup_extent_range", block_ptr_tree)
-        self.assertIn("depth > 1", block_ptr_tree)
-        self.assertIn("read_words", block_ptr_tree)
-        self.assertIn("struct JournalTransaction", journal)
-        self.assertIn("fn encode", journal)
-        self.assertIn("struct JournalRing", journal)
-        self.assertIn("fn reserve", journal)
-        self.assertIn("publish_journal_transaction", filesystem)
-        self.assertIn("journal_inode.sync_all()", filesystem)
-        self.assertIn("read-only ext4 journal write", filesystem)
-        self.assertIn("journal_publish_lock", filesystem)
-        self.assertIn("checkpoint_published_journal", filesystem)
-        self.assertIn("write_metadata_blocks", filesystem)
-        self.assertIn("publish_journal_transaction_locked", filesystem)
-        self.assertIn("Weak<Ext2>", block_group)
-        self.assertIn("block_group_load_error", filesystem)
-        self.assertIn("fn sync_bitmap", block_group)
-        self.assertIn("fs.write_metadata_blocks", block_group)
-        self.assertIn("fs: fs.clone()", block_group)
-        self.assertIn("as_bytes() == payload.as_slice()", block_group)
-        self.assertIn("ensure_filesystem_alive", block_group)
-        self.assertIn("descriptor_bytes", filesystem)
-        self.assertIn("group descriptor table", filesystem)
-
-    def test_general_network_runner_preserves_local_regressions(self) -> None:
-        runner = (
-            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
-        ).read_text()
-        commands = [line.strip() for line in runner.splitlines()]
-        for name in (
-            "ifconf",
-            "ifreq",
-            "proc_net_dev",
-            "tcp_ppoll_wakeup",
-            "tcp_event_handoff",
-            "tcp_user_buffer_prefault",
-            "unix_scm_rights_acyclic",
-            "ipv6_udp",
-            "ipv6_dual_stack",
-            "ipv6_dual_stack_udp",
-            "udp_user_buffer_prefault",
-            "udp_msg_dontwait",
-            "tcp_msg_dontwait_send",
-            "route_dump",
-            "route_local_dump",
-            "route_all_dump",
-        ):
-            with self.subTest(name=name):
-                self.assertEqual(commands.count(f"./{name}"), 1)
-                self.assertTrue(
-                    (
-                        REPOSITORY_ROOT
-                        / f"test/initramfs/src/regression/network/{name}.c"
-                    ).is_file()
-                )
-
     def test_fs_syscall_compat_gate_requires_one_clean_completion(self) -> None:
         marker = "ASTERINAS_FS_SYSCALL_COMPAT_OK readahead=5 quotactl=1"
         validate_transcript(marker + "\n", mode="fs-syscall-compat")
@@ -219,10 +138,14 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             REPOSITORY_ROOT
             / "test/initramfs/src/regression/scripts/run_ifreq_test.sh"
         ).read_text()
+        general = (
+            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
         self.assertIn("else ifeq ($(AUTO_TEST), ifreq)", makefile)
         self.assertIn('/test/run_ifreq_test.sh', makefile)
         self.assertIn('--mode "ifreq"', makefile)
         self.assertIn("/test/network/ifreq --expect-eth0", guest)
+        self.assertEqual(general.count("./ifreq"), 1)
 
     def test_proc_net_dev_gate_requires_one_clean_completion(self) -> None:
         marker = "/proc/net/dev regression passed."
@@ -242,10 +165,15 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             REPOSITORY_ROOT
             / "test/initramfs/src/regression/scripts/run_proc_net_dev_test.sh"
         )
+        general = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
         self.assertIn("else ifeq ($(AUTO_TEST), proc_net_dev)", makefile)
         self.assertIn("/test/run_proc_net_dev_test.sh", makefile)
         self.assertIn('--mode "proc-net-dev"', makefile)
         self.assertIn("proc_net_dev", guest.read_text())
+        self.assertEqual(general.count("./proc_net_dev"), 1)
 
     def test_ifconf_gvisor_gate_accepts_only_one_clean_completion(self) -> None:
         marker = "gVisor SIOCGIFCONF cases passed."
@@ -267,7 +195,7 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         )
         guest_text = guest.read_text()
         self.assertIn("else ifeq ($(AUTO_TEST), ifconf_gvisor)", makefile)
-        self.assertIn('CONFORMANCE_TEST_SELECTOR := ioctl_test', makefile)
+        self.assertIn('CONFORMANCE_GVISOR_TEST := "ioctl_test"', makefile)
         self.assertIn('/opt/run_ifconf_gvisor_test.sh', makefile)
         self.assertIn('--mode "ifconf-gvisor"', makefile)
         self.assertIn(
@@ -276,6 +204,11 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         )
         self.assertIn('[==========] 24 tests from 1 test suite ran.', guest_text)
         self.assertIn('[  PASSED  ] 24 tests.', guest_text)
+        blocklist = (
+            REPOSITORY_ROOT
+            / "test/initramfs/src/conformance/gvisor/blocklists/ioctl_test"
+        ).read_text()
+        self.assertNotIn("IoctlTestSIOCGIFCONF", blocklist)
 
     def test_ifconf_gate_accepts_only_one_clean_completion(self) -> None:
         marker = "SIOCGIFCONF regression passed."
@@ -295,6 +228,10 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             REPOSITORY_ROOT
             / "test/initramfs/src/regression/scripts/run_ifconf_test.sh"
         )
+        general_runner = (
+            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
+
         self.assertIn("else ifeq ($(AUTO_TEST), ifconf)", makefile)
         self.assertIn('/test/run_ifconf_test.sh', makefile)
         self.assertIn('--mode "ifconf"', makefile)
@@ -306,6 +243,7 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             ),
             ("/test/network/ifconf",),
         )
+        self.assertEqual(general_runner.count("./ifconf"), 1)
 
     def test_accepts_ipv6_dual_stack_udp_transcript(self) -> None:
         try:
@@ -340,6 +278,10 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             / "test/initramfs/src/regression/scripts/"
             "run_ipv6_dual_stack_udp_test.sh"
         )
+        general_runner = (
+            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
+
         self.assertIn("else ifeq ($(AUTO_TEST), ipv6_dual_stack_udp)", makefile)
         self.assertIn('/test/run_ipv6_dual_stack_udp_test.sh', makefile)
         self.assertIn('--mode "ipv6-dual-stack-udp"', makefile)
@@ -351,6 +293,7 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             ),
             ("/test/network/ipv6_dual_stack_udp",),
         )
+        self.assertEqual(general_runner.count("./ipv6_dual_stack_udp"), 1)
 
     def test_accepts_udp_user_buffer_prefault_transcript(self) -> None:
         try:
@@ -389,6 +332,10 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             / "test/initramfs/src/regression/scripts/"
             "run_udp_user_buffer_prefault_test.sh"
         )
+        general_runner = (
+            REPOSITORY_ROOT / "test/initramfs/src/regression/network/run_test.sh"
+        ).read_text()
+
         self.assertIn("else ifeq ($(AUTO_TEST), udp_user_buffer_prefault)", makefile)
         self.assertIn('/test/run_udp_user_buffer_prefault_test.sh', makefile)
         self.assertIn('--mode "udp-user-buffer-prefault"', makefile)
@@ -400,6 +347,7 @@ class ValidateRunKernelLogTests(unittest.TestCase):
             ),
             ("/test/network/udp_user_buffer_prefault",),
         )
+        self.assertEqual(general_runner.count("./udp_user_buffer_prefault"), 1)
 
     def test_accepts_native_ipv6_udp_transcript(self) -> None:
         try:
@@ -610,22 +558,25 @@ class ValidateRunKernelLogTests(unittest.TestCase):
         ).read_text()
 
         self.assertIn("test_id: 'regression-debug-smp4'", workflow)
-        self.assertIn("auto_test: 'riscv_icache_smp4'", workflow)
-        self.assertIn("else ifeq ($(AUTO_TEST), riscv_icache_smp4)", makefile)
-        self.assertIn("requires TARGET_ARCH=riscv64", makefile)
-        self.assertIn("requires SMP=4", makefile)
+        self.assertIn("riscv_icache_require_smp4: '1'", workflow)
+        self.assertIn('RISCV_ICACHE_REQUIRE_SMP4 ?= 0', makefile)
+        self.assertIn("--require-riscv-icache-smp4", makefile)
         self.assertIn('strcmp(argv[1], "--require-smp4")', guest)
         self.assertIn("cpu_count != 4", guest)
         self.assertIn("remote_index < cpu_count", guest)
         self.assertIn("select_current_cpu_as_local(cpus, cpu_count)", guest)
         self.assertIn("wait_for_cpu(context->cpu)", guest)
         self.assertIn("wait_for_cpu(cpus[0])", guest)
-        self.assertIn('/test/run_riscv_icache_smp4_test.sh', makefile)
-        dedicated_runner = (
-            REPOSITORY_ROOT
-            / "test/initramfs/src/regression/scripts/run_riscv_icache_smp4_test.sh"
-        ).read_text()
-        self.assertEqual(dedicated_runner.count("--require-smp4"), 2)
+        self.assertIn("RISCV_ICACHE_REQUIRE_SMP4=1", runner)
+        self.assertIn("formal SMP4 cross-hart I-cache regression", top_level_runner)
+        self.assertIn(
+            '"${SCRIPT_DIR}/process/riscv_flush_icache/riscv_flush_icache" --require-smp4',
+            top_level_runner,
+        )
+        self.assertLess(
+            top_level_runner.index("RISCV_ICACHE_REQUIRE_SMP4=1"),
+            top_level_runner.index("for dir in"),
+        )
 
 
 if __name__ == "__main__":

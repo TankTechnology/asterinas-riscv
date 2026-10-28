@@ -3,17 +3,22 @@
 //! TLB flush operations.
 
 use alloc::vec::Vec;
-use core::{mem::MaybeUninit, ops::Range, sync::atomic::Ordering};
+use core::{
+    mem::MaybeUninit,
+    ops::Range,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use super::{
     PAGE_SIZE, Vaddr,
     frame::{Frame, meta::AnyFrameMeta},
 };
 use crate::{
+    arch::irq,
     const_assert,
-    cpu::{AtomicCpuSet, PinCurrentCpu},
+    cpu::{AtomicCpuSet, CpuSet, PinCurrentCpu},
     cpu_local,
-    smp::{IpiSender, PendingIpis},
+    smp::IpiSender,
     sync::{LocalIrqDisabled, RcuDrop, SpinLock},
 };
 
@@ -22,7 +27,7 @@ use crate::{
 /// The flusher needs to stick to the current CPU.
 pub struct TlbFlusher<'a, G: PinCurrentCpu> {
     target_cpus: &'a AtomicCpuSet,
-    pending_ipis: PendingIpis,
+    have_unsynced_flush: CpuSet,
     ops_stack: OpsStack,
     ipi_sender: Option<&'static IpiSender>,
     _pin_current: G,
@@ -39,7 +44,7 @@ impl<'a, G: PinCurrentCpu> TlbFlusher<'a, G> {
     pub fn new(target_cpus: &'a AtomicCpuSet, pin_current_guard: G) -> Self {
         Self {
             target_cpus,
-            pending_ipis: PendingIpis::new_empty(),
+            have_unsynced_flush: CpuSet::new_empty(),
             ops_stack: OpsStack::new(),
             ipi_sender: crate::smp::IPI_SENDER.get(),
             _pin_current: pin_current_guard,
@@ -100,12 +105,17 @@ impl<'a, G: PinCurrentCpu> TlbFlusher<'a, G> {
 
         if let Some(ipi_sender) = self.ipi_sender {
             for cpu in target_cpus.iter() {
+                self.have_unsynced_flush.add(cpu);
+
                 let mut flush_ops = FLUSH_OPS.get_on_cpu(cpu).lock();
                 flush_ops.push_from(&self.ops_stack);
+                // Clear ACK before dropping the lock to avoid false ACKs.
+                ACK_REMOTE_FLUSH
+                    .get_on_cpu(cpu)
+                    .store(false, Ordering::Relaxed);
             }
 
-            let pending_ipis = ipi_sender.inter_processor_call(&target_cpus, do_remote_flush);
-            self.pending_ipis.extend(&pending_ipis);
+            ipi_sender.inter_processor_call(&target_cpus, do_remote_flush);
         }
 
         // Flush ourselves after sending all IPIs to save some time.
@@ -138,8 +148,18 @@ impl<'a, G: PinCurrentCpu> TlbFlusher<'a, G> {
             return;
         }
 
-        self.pending_ipis.wait();
-        self.pending_ipis = PendingIpis::new_empty();
+        assert!(
+            irq::is_local_enabled(),
+            "Waiting for remote flush with IRQs disabled"
+        );
+
+        for cpu in self.have_unsynced_flush.iter() {
+            while !ACK_REMOTE_FLUSH.get_on_cpu(cpu).load(Ordering::Relaxed) {
+                core::hint::spin_loop();
+            }
+        }
+
+        self.have_unsynced_flush = CpuSet::new_empty();
     }
 }
 
@@ -168,10 +188,11 @@ impl TlbFlushOp {
 
     /// Performs the TLB flush operation on the current CPU.
     pub fn perform_on_current(&self) {
-        use crate::arch::mm;
-
+        use crate::arch::mm::{
+            tlb_flush_addr, tlb_flush_addr_range, tlb_flush_all_excluding_global,
+        };
         match self.0 {
-            Self::FLUSH_ALL_VAL => mm::tlb_flush_all_excluding_global(),
+            Self::FLUSH_ALL_VAL => tlb_flush_all_excluding_global(),
             addr => {
                 let start = addr & !Self::FLUSH_RANGE_NPAGES_MASK;
                 let num_pages = addr & Self::FLUSH_RANGE_NPAGES_MASK;
@@ -180,9 +201,9 @@ impl TlbFlushOp {
                 debug_assert!(num_pages != 0);
 
                 if num_pages == 1 {
-                    mm::tlb_flush_addr(start);
+                    tlb_flush_addr(start);
                 } else {
-                    mm::tlb_flush_addr_range(&(start..start + num_pages * PAGE_SIZE));
+                    tlb_flush_addr_range(&(start..start + num_pages * PAGE_SIZE));
                 }
             }
         }
@@ -212,13 +233,13 @@ impl TlbFlushOp {
     pub const fn for_range(range: Range<Vaddr>) -> Self {
         assert!(
             range.start.is_multiple_of(PAGE_SIZE),
-            "range start must be page-aligned"
+            "Range start must be page-aligned"
         );
         assert!(
             range.end.is_multiple_of(PAGE_SIZE),
-            "range end must be page-aligned"
+            "Range end must be page-aligned"
         );
-        assert!(range.start < range.end, "range must not be empty");
+        assert!(range.start < range.end, "Range must not be empty");
         let num_pages = (range.end - range.start) / PAGE_SIZE;
         if num_pages >= FLUSH_ALL_PAGES_THRESHOLD {
             return TlbFlushOp::for_all();
@@ -246,6 +267,8 @@ impl TlbFlushOp {
 // The queues of pending requests on each CPU.
 cpu_local! {
     static FLUSH_OPS: SpinLock<OpsStack, LocalIrqDisabled> = SpinLock::new(OpsStack::new());
+    /// Whether this CPU finishes the last remote flush request.
+    static ACK_REMOTE_FLUSH: AtomicBool = AtomicBool::new(true);
 }
 
 fn do_remote_flush() {
@@ -257,8 +280,14 @@ fn do_remote_flush() {
         let mut op_queue = FLUSH_OPS.get_on_cpu(current_cpu).lock();
 
         core::mem::swap(&mut *op_queue, &mut new_op_queue);
+
+        // ACK before dropping the lock so that we won't miss flush requests.
+        ACK_REMOTE_FLUSH
+            .get_on_cpu(current_cpu)
+            .store(true, Ordering::Relaxed);
     }
-    // Unlock the locks quickly to avoid contention.
+    // Unlock the locks quickly to avoid contention. ACK before flushing is
+    // fine since we cannot switch back to userspace now.
     new_op_queue.flush_all();
 }
 
@@ -302,7 +331,6 @@ impl OpsStack {
 
     fn push(&mut self, op: TlbFlushOp, drop_after_flush: Option<RcuDrop<Frame<dyn AnyFrameMeta>>>) {
         if let Some(frame) = drop_after_flush {
-            self.frame_keeper.reserve(1);
             // SAFETY: By pushing into the `frame_keeper`, the frame will be
             // dropped after the RCU grace period.
             let (frame, panic_guard) = unsafe { RcuDrop::into_inner(frame) };

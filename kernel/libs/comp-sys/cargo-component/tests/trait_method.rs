@@ -3,6 +3,8 @@
 
 //! This test checks that if cargo-component can control method and trait method
 
+#![feature(once_cell)]
+
 mod test_utils;
 
 #[test]

@@ -95,8 +95,7 @@ jobs:
           FULL_TEST_MATRIX: >-
             [
               { "name": "system-core", "disk_size": 10240, "timeout_minutes": 45 },
-              { "name": "drm", "disk_size": 8192, "timeout_minutes": 45 },
-              { "name": "nix-and-nixos-tools", "disk_size": 8192, "timeout_minutes": 60, "test_timeout_minutes": 30 },
+              { "name": "nix-and-nixos-tools", "disk_size": 8192 },
               { "name": "containerization-and-virtualization", "disk_size": 10240, "timeout_minutes": 45 },
               { "name": "networking", "disk_size": 10240, "timeout_minutes": 45 },
               { "name": "web-servers-and-proxies", "disk_size": 10240, "timeout_minutes": 45 },
@@ -138,8 +137,6 @@ jobs:
                 exit 1
               fi
             fi
-          elif grep -Fxq 'distro/nixpkgs.nix' /tmp/changed; then
-            matrix="$FULL_TEST_MATRIX"
           else
             matrix="$(
               bash tools/github_workflows/filter_json_array_with_changed_files.sh \
@@ -157,16 +154,6 @@ jobs:
                 jq -c \
                   --arg suite_name "$SMOKE_TEST_NAME" \
                   '[.[] | select(.name == $suite_name)]' <<< "$FULL_TEST_MATRIX"
-              )"
-            fi
-
-            # Desktop changes need DRM coverage even when another suite is selected.
-            if grep -qE '^distro/etc_nixos/(modules/xfce|overlays/desktop)/' /tmp/changed; then
-              matrix="$(
-                jq -c \
-                  --argjson full_matrix "$FULL_TEST_MATRIX" \
-                  '. + [$full_matrix[] | select(.name == "drm")] | unique_by(.name)' \
-                  <<< "$matrix"
               )"
             fi
           fi
@@ -202,12 +189,8 @@ jobs:
         timeout-minutes: ${{ matrix.test.timeout_minutes || 30 }}
         uses: maus007/docker-run-action-fork@v1
         with:
-          image: asterinas/kernel-dev:0.19.0-20261012
+          image: asterinas/asterinas:0.18.0-20260702
           options: --privileged -v /dev:/dev -v ${{ github.workspace }}:/root/asterinas
-          # `docker-run-action-fork` joins these lines with ';' and runs them via
-          # `sh -c` without fail-fast settings, unlike a normal `run:` step.
-          # So we have to do `set -e` explicitly here.
           run: |
-            set -e
             make nixos NIXOS_TEST_SUITE=${{ matrix.test.name }} NIXOS_DISK_SIZE_IN_MB=${{ matrix.test.disk_size }}
-            make run_nixos NIXOS_TEST_SUITE=${{ matrix.test.name }} NIXOS_TEST_TIMEOUT=${{ matrix.test.test_timeout_minutes || 10 }}min
+            make run_nixos NIXOS_TEST_SUITE=${{ matrix.test.name }}

@@ -1,25 +1,18 @@
-{
-  disable-systemd ? "false",
-  stage-2-hook ? "/bin/sh -l",
-  log-level ? "error",
-  console ? "hvc0",
-  extra-substituters ? "",
-  extra-trusted-public-keys ? "",
-  config-file-name ? "configuration.nix",
-  target_platform ? "x86_64-linux",
-  pkgs ? import ../nixpkgs.nix { },
-}:
+{ disable-systemd ? "false", stage-2-hook ? "/bin/sh -l", log-level ? "error"
+, console ? "hvc0", extra-substituters ? "", extra-trusted-public-keys ? ""
+, config-file-name ? "configuration.nix", target_platform ? "x86_64-linux"
+, pkgs ? import <nixpkgs> { } }:
 let
-  asterinas = builtins.path {
-    name = "asterinas-osdk-bin";
-    path = ../../target/osdk/iso_root/boot/asterinas-osdk-bin;
+  aster-kernel = builtins.path {
+    name = "aster-kernel-osdk-bin";
+    path = ../../target/osdk/iso_root/boot/aster-kernel-osdk-bin;
   };
   etc-nixos = builtins.path { path = ../etc_nixos; };
 
   aster_configuration = pkgs.replaceVarsWith {
     src = ./templates/aster_configuration.nix;
     replacements = {
-      asterinas = asterinas;
+      aster-kernel = aster-kernel;
       aster-disable-systemd = disable-systemd;
       aster-stage-2-hook = stage-2-hook;
       aster-log-level = log-level;
@@ -34,7 +27,6 @@ let
     replacements = {
       aster-configuration = aster_configuration;
       aster-etc-nixos = etc-nixos;
-      aster-nixpkgs = builtins.storePath pkgs.path;
       aster-target-platform = target_platform;
       aster-substituters = extra-substituters;
       aster-trusted-public-keys = extra-trusted-public-keys;
@@ -42,8 +34,7 @@ let
     isExecutable = true;
   };
 
-in
-pkgs.stdenv.mkDerivation {
+in pkgs.stdenv.mkDerivation {
   name = "aster_nixos_installer";
   buildCommand = ''
     mkdir -p $out/{bin,etc_nixos}
@@ -52,6 +43,7 @@ pkgs.stdenv.mkDerivation {
     cp -L ${etc-nixos}/${config-file-name} $out/etc_nixos/configuration.nix
     cp -r ${etc-nixos}/modules $out/etc_nixos/modules
     cp -r ${etc-nixos}/overlays $out/etc_nixos/overlays
-    ln -s ${asterinas} $out/kernel
+    ln -s ${aster-kernel} $out/kernel
   '';
 }
+

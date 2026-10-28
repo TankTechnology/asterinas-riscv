@@ -5,7 +5,6 @@
 set -e
 
 if [ -e /dev/tdx_guest ]; then
-    # FIXME: Re-enable it once remote attestation works on the self-hosted runner.
-    # ./gen_quote/gen_quote
+    ./gen_quote/gen_quote
     ./tsm_mr/tsm_mr.sh
 fi

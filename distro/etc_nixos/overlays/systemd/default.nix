@@ -76,15 +76,6 @@ final: prev: {
       ExecStart=/bin/true
       EOF
 
-            cat > "$out/example/systemd/system/systemd-vconsole-setup.service" <<'EOF'
-      # placeholder for $out
-      [Unit]
-      Description=placeholder systemd-vconsole-setup
-      [Service]
-      Type=oneshot
-      ExecStart=/bin/true
-      EOF
-
     '';
   });
 }

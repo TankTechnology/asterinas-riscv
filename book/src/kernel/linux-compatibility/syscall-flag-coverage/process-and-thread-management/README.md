@@ -7,6 +7,20 @@ getpid, getppid, gettid, setuid, setgid, getuid, getgid, prctl and ptrace
 under this category.
 -->
 
+### `sched_yield`
+
+For a fair-scheduled task, an explicit yield selects a queued fair peer
+without waiting for the current time slice to expire.
+Higher-priority runnable tasks retain precedence.
+If no peer or higher-priority task is queued, the current task continues.
+Yielding still charges the task's weighted runtime;
+it does not reset its accumulated virtual runtime.
+
+This is Asterinas's voluntary-yield behavior, not a stronger Linux compatibility claim:
+Linux leaves the use of `sched_yield` with `SCHED_OTHER` unspecified.
+See [the man page](https://man7.org/linux/man-pages/man2/sched_yield.2.html).
+The no-argument syscall signature remains in `fully_covered.scml`.
+
 ### `sched_getattr` and `sched_setattr`
 
 Supported functionality in SCML:

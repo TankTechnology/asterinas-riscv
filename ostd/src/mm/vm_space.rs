@@ -18,7 +18,7 @@ use crate::{
     cpu_local_cell,
     io::IoMem,
     mm::{
-        Frame, HasPaddrRange, PAGE_SIZE, PageProperty, PrivilegedPageFlags, UFrame, VmReader,
+        Frame, MAX_USERSPACE_VADDR, PAGE_SIZE, PageProperty, PrivilegedPageFlags, UFrame, VmReader,
         VmWriter,
         frame::FrameRef,
         io::Fallible,
@@ -158,9 +158,11 @@ impl VmSpace {
     /// Users must ensure that no other page table is activated in the current task during the
     /// lifetime of the created `VmReader`. This guarantees that the `VmReader` can operate correctly.
     pub fn reader(&self, vaddr: Vaddr, len: usize) -> Result<VmReader<'_, Fallible>> {
-        if current_page_table_paddr() != self.pt.root_paddr()
-            || !super::is_in_user_space(vaddr, len)
-        {
+        if current_page_table_paddr() != self.pt.root_paddr() {
+            return Err(Error::AccessDenied);
+        }
+
+        if vaddr.saturating_add(len) > MAX_USERSPACE_VADDR {
             return Err(Error::AccessDenied);
         }
 
@@ -176,9 +178,11 @@ impl VmSpace {
     /// Users must ensure that no other page table is activated in the current task during the
     /// lifetime of the created `VmWriter`. This guarantees that the `VmWriter` can operate correctly.
     pub fn writer(&self, vaddr: Vaddr, len: usize) -> Result<VmWriter<'_, Fallible>> {
-        if current_page_table_paddr() != self.pt.root_paddr()
-            || !super::is_in_user_space(vaddr, len)
-        {
+        if current_page_table_paddr() != self.pt.root_paddr() {
+            return Err(Error::AccessDenied);
+        }
+
+        if vaddr.saturating_add(len) > MAX_USERSPACE_VADDR {
             return Err(Error::AccessDenied);
         }
 
@@ -206,9 +210,11 @@ impl VmSpace {
         vaddr: Vaddr,
         len: usize,
     ) -> Result<(VmReader<'_, Fallible>, VmWriter<'_, Fallible>)> {
-        if current_page_table_paddr() != self.pt.root_paddr()
-            || !super::is_in_user_space(vaddr, len)
-        {
+        if current_page_table_paddr() != self.pt.root_paddr() {
+            return Err(Error::AccessDenied);
+        }
+
+        if vaddr.saturating_add(len) > MAX_USERSPACE_VADDR {
             return Err(Error::AccessDenied);
         }
 
@@ -233,6 +239,45 @@ impl Default for VmSpace {
 }
 
 impl VmSpace {
+    /// Makes writes to user mappings backed by I/O memory visible to the device.
+    ///
+    /// `mmap(2)` users of device files have no file-backed inode for
+    /// `msync(2)` to flush. Walk the page-table mappings instead and use the
+    /// retained [`IoMem`] capability for each mapped device range. Ordinary
+    /// RAM mappings are deliberately ignored here; their writeback is owned by
+    /// the file and page-cache paths.
+    pub fn sync_iomem_to_device(&self, range: Range<Vaddr>) -> Result<()> {
+        if range.start >= range.end {
+            return Ok(());
+        }
+        if !range.start.is_multiple_of(PAGE_SIZE) {
+            return Err(Error::InvalidArgs);
+        }
+
+        let preempt_guard = disable_preempt();
+        let mut cursor = self.cursor(&preempt_guard, &range)?;
+        loop {
+            let (mapped_range, item) = cursor.query()?;
+            let item = item.ok_or(Error::AccessDenied)?;
+            let start = mapped_range.start.max(range.start);
+            let end = mapped_range.end.min(range.end);
+
+            if let VmQueriedItem::MappedIoMem { paddr, .. } = item {
+                let (io_mem, offset) =
+                    self.find_iomem_by_paddr(paddr).ok_or(Error::AccessDenied)?;
+                let relative_start = start - mapped_range.start;
+                let relative_end = end - mapped_range.start;
+                io_mem.sync_to_device((offset + relative_start)..(offset + relative_end))?;
+            }
+
+            if end >= range.end {
+                break;
+            }
+            cursor.jump(end)?;
+        }
+        Ok(())
+    }
+
     /// Finds the [`IoMem`] that contains the given physical address.
     ///
     /// It is a private method for internal use only. Please refer to
@@ -279,9 +324,7 @@ impl Cursor<'_> {
     ///
     /// # Panics
     ///
-    /// Panics if:
-    ///  - the length is longer than the remaining range of the cursor;
-    ///  - the length is not page-aligned.
+    /// Panics if the length is longer than the remaining range of the cursor.
     pub fn find_next(&mut self, len: usize) -> Option<Vaddr> {
         self.0.find_next(len)
     }
@@ -364,9 +407,7 @@ impl<'a> CursorMut<'a> {
     ///
     /// # Panics
     ///
-    /// Panics if:
-    ///  - the current virtual address is already mapped;
-    ///  - the current virtual address is outside the cursor's range.
+    /// Panics if the current virtual address is already mapped.
     pub fn map(&mut self, frame: UFrame, prop: PageProperty) {
         let item = VmItem::new_tracked(frame, prop);
 
@@ -391,27 +432,21 @@ impl<'a> CursorMut<'a> {
     /// # Panics
     ///
     /// Panics if
-    ///  - `len`, `offset`, or the address range of the `IoMem` instance is
-    ///    not aligned to the page size;
+    ///  - `len` or `offset` is not aligned to the page size;
     ///  - the current virtual address is already mapped.
     pub fn map_iomem(&mut self, io_mem: IoMem, prop: PageProperty, len: usize, offset: usize) {
         assert_eq!(len % PAGE_SIZE, 0);
         assert_eq!(offset % PAGE_SIZE, 0);
 
-        let io_mem_paddr = io_mem.paddr();
-        let io_mem_size = io_mem.size();
-        assert_eq!(io_mem_paddr % PAGE_SIZE, 0);
-        assert_eq!(io_mem_size % PAGE_SIZE, 0);
-
-        if offset >= io_mem_size {
+        if offset >= io_mem.size() {
             return;
         }
 
-        let paddr_begin = io_mem_paddr + offset;
-        let paddr_end = if io_mem_size - offset < len {
-            io_mem_paddr + io_mem_size
+        let paddr_begin = io_mem.paddr() + offset;
+        let paddr_end = if io_mem.size() - offset < len {
+            io_mem.paddr() + io_mem.size()
         } else {
-            io_mem_paddr + len + offset
+            io_mem.paddr() + len + offset
         };
 
         for current_paddr in (paddr_begin..paddr_end).step_by(PAGE_SIZE) {
@@ -422,15 +457,13 @@ impl<'a> CursorMut<'a> {
             };
         }
 
-        fn io_mem_contains(parent: &IoMem, child: &IoMem) -> bool {
-            parent.paddr() <= child.paddr() && child.end_paddr() <= parent.end_paddr()
-        }
-
         // If the `iomems` list in `VmSpace` does not contain the current I/O
         // memory, push it to maintain the correct reference count.
         let mut iomems = self.vmspace.iomems.lock();
-        if !iomems.iter().any(|iomem| io_mem_contains(iomem, &io_mem)) {
-            iomems.retain(|iomem| !io_mem_contains(&io_mem, iomem));
+        if !iomems
+            .iter()
+            .any(|iomem| iomem.paddr() == io_mem.paddr() && iomem.size() == io_mem.size())
+        {
             iomems.push(io_mem);
         }
     }
@@ -453,8 +486,8 @@ impl<'a> CursorMut<'a> {
     /// Clears the mapping starting from the current slot,
     /// and returns the number of unmapped pages.
     ///
-    /// This method will bring the cursor forward by at least `len` bytes
-    /// in the virtual address space, but not past the end of the cursor's range.
+    /// This method will bring the cursor forward by `len` bytes in the virtual
+    /// address space after the modification.
     ///
     /// Already-absent mappings encountered by the cursor will be skipped. It
     /// is valid to unmap a range that is not mapped.
@@ -556,9 +589,7 @@ impl<'a> CursorMut<'a> {
     ///
     /// # Panics
     ///
-    /// Panics if:
-    ///  - the length is longer than the remaining range of the cursor;
-    ///  - the length is not page-aligned.
+    /// Panics if the length is longer than the remaining range of the cursor.
     pub fn protect_next(
         &mut self,
         len: usize,
@@ -569,6 +600,10 @@ impl<'a> CursorMut<'a> {
         unsafe {
             self.pt_cursor.protect_next(len, &mut |prop| {
                 op(&mut prop.flags, &mut prop.cache);
+                #[cfg(target_arch = "riscv64")]
+                if prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1) {
+                    *prop = prepare_user_io_mapping_prop(*prop);
+                }
             })
         }
     }
@@ -648,6 +683,31 @@ enum MappedItemRef<'a> {
     UntrackedIoMem { paddr: Paddr, level: PagingLevel },
 }
 
+/// Applies the architecture policy for a user I/O mapping.
+///
+/// Under RISC-V Svade, accesses fault when A is clear or, for writes, when D
+/// is clear. Device mappings cannot recover these faults, so the required
+/// status bits are preset. See
+/// <https://docs.riscv.org/reference/isa/v20260120/priv/supervisor.html#translation>.
+fn prepare_user_io_mapping_prop(prop: PageProperty) -> PageProperty {
+    #[cfg(target_arch = "riscv64")]
+    {
+        let mut prop = prop;
+        let access = if prop.flags.contains(PageFlags::W) {
+            crate::mm::PageAccess::Write
+        } else {
+            crate::mm::PageAccess::Read
+        };
+        prop.flags.record_access(access);
+        prop
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        prop
+    }
+}
+
 impl VmItem {
     /// Creates a new `VmItem` that maps a tracked frame.
     pub(super) fn new_tracked(frame: UFrame, prop: PageProperty) -> Self {
@@ -659,9 +719,13 @@ impl VmItem {
 
     /// Creates a new `VmItem` that maps an untracked I/O memory.
     fn new_untracked_io(paddr: Paddr, prop: PageProperty) -> Self {
+        Self::from_untracked_io_raw_parts(paddr, 1, prepare_user_io_mapping_prop(prop))
+    }
+
+    fn from_untracked_io_raw_parts(paddr: Paddr, level: PagingLevel, prop: PageProperty) -> Self {
         Self {
             prop,
-            mapped_item: MappedItem::UntrackedIoMem { paddr, level: 1 },
+            mapped_item: MappedItem::UntrackedIoMem { paddr, level },
         }
     }
 }
@@ -720,7 +784,7 @@ unsafe impl PageTableConfig for UserPtConfig {
         debug_assert_eq!(level, 1);
         if prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1) {
             // `AVAIL1` is set, this is I/O memory.
-            VmItem::new_untracked_io(paddr, prop)
+            VmItem::from_untracked_io_raw_parts(paddr, level, prop)
         } else {
             // `AVAIL1` is clear, this is tracked memory.
             // SAFETY: The caller ensures safety.
@@ -751,5 +815,36 @@ unsafe impl PageTableConfig for UserPtConfig {
                 mapped_item: MappedItemRef::TrackedFrame(frame_ref),
             }
         }
+    }
+}
+
+#[cfg(ktest)]
+mod tests {
+    use super::*;
+    use crate::prelude::ktest;
+
+    // Regression test for Asterinas issue #3589.
+    #[ktest]
+    fn user_io_raw_info_preserves_status_flags() {
+        let prop = PageProperty::new_user(PageFlags::RW, CachePolicy::Uncacheable);
+        let item = VmItem::new_untracked_io(PAGE_SIZE, prop);
+
+        let (_, _, raw_prop) = UserPtConfig::item_raw_info(&item);
+
+        assert_eq!(raw_prop.flags, item.prop.flags);
+    }
+
+    // Regression test for Asterinas issue #3589.
+    #[cfg(target_arch = "riscv64")]
+    #[ktest]
+    fn user_io_raw_restoration_preserves_exact_property() {
+        let mut prop =
+            PageProperty::new_user(PageFlags::RW | PageFlags::AVAIL2, CachePolicy::Uncacheable);
+        prop.priv_flags |= PrivilegedPageFlags::AVAIL1;
+
+        // SAFETY: The aligned address and level describe an untracked I/O item.
+        let restored = unsafe { UserPtConfig::item_from_raw(PAGE_SIZE, 1, prop) };
+
+        assert_eq!(restored.prop, prop);
     }
 }

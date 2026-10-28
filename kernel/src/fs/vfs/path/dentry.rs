@@ -800,12 +800,7 @@ impl DirDentry<'_> {
 
             let old_dentry = self.resolve_child_for_rename(&mut children, old_name)?;
             let new_dentry = match self.resolve_child_for_rename(&mut children, new_name) {
-                Ok(new_dentry) => {
-                    if Arc::ptr_eq(old_dentry.inode(), new_dentry.inode()) {
-                        return Ok(());
-                    }
-                    Some(new_dentry)
-                }
+                Ok(dentry) => Some(dentry),
                 Err(e) if e.error() == Errno::ENOENT => None,
                 Err(e) => return Err(e),
             };
@@ -855,12 +850,7 @@ impl DirDentry<'_> {
 
             let old_dentry = self.resolve_child_for_rename(&mut old_children, old_name)?;
             let new_dentry = match new_dir.resolve_child_for_rename(&mut new_children, new_name) {
-                Ok(new_dentry) => {
-                    if Arc::ptr_eq(old_dentry.inode(), new_dentry.inode()) {
-                        return Ok(());
-                    }
-                    Some(new_dentry)
-                }
+                Ok(dentry) => Some(dentry),
                 Err(e) if e.error() == Errno::ENOENT => None,
                 Err(e) => return Err(e),
             };

@@ -1,6 +1,4 @@
 MMapFileTest.Bug38498194
-MMapFileTest.ReadSharedTruncateDownThenUp
-MMapFileTest.WriteSharedTruncateDownThenUp
 MMapFileTest.WriteSharedTruncatePartialPage
 MMapFileTest.WriteSharedTruncateUp
 MMapNoFixtureTest.MapReadOnlyAfterCreateWriteOnly

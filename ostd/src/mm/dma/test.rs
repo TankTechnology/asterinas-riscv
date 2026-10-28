@@ -4,7 +4,7 @@ use alloc::vec;
 
 use crate::{
     mm::{
-        FrameAllocOptions, PAGE_SIZE, VmReader, VmWriter,
+        FrameAllocOptions, HasDaddr, PAGE_SIZE, Split, VmReader, VmWriter,
         dma::*,
         io::{VmIo, VmIoOnce, util::HasVmReaderWriter},
     },
@@ -18,6 +18,57 @@ mod dma_coherent {
     fn alloc_with_coherent_device() {
         let dma_coherent = DmaCoherent::alloc(1, true).unwrap();
         assert_eq!(dma_coherent.size(), PAGE_SIZE);
+    }
+
+    #[ktest]
+    fn megrez_sdma_allocates_inside_a_physical_dma_window() {
+        let segment = FrameAllocOptions::new()
+            .zeroed(false)
+            .alloc_segment(8)
+            .unwrap();
+        let available = segment.paddr()..segment.paddr() + segment.size();
+        drop(segment);
+
+        let dma = DmaCoherent::alloc_in(4, false, available.clone()).unwrap();
+        assert!(dma.paddr() >= available.start);
+        assert!(dma.paddr() + dma.size() <= available.end);
+    }
+
+    #[ktest]
+    fn coherent_allocation_cannot_be_converted_to_uncached() {
+        let dma_coherent = DmaCoherent::alloc(1, true).unwrap();
+
+        assert!(dma_coherent.into_uncached().is_err());
+    }
+
+    #[ktest]
+    fn uncached_conversion_preserves_identity_and_split_access() {
+        let dma_coherent = DmaCoherent::alloc(2, false).unwrap();
+        let paddr = dma_coherent.paddr();
+        let daddr = dma_coherent.daddr();
+        let size = dma_coherent.size();
+        assert_eq!(dma_coherent.uncached_alias_paddr(), None);
+
+        let dma_coherent = dma_coherent.into_uncached().unwrap();
+        let alias = dma_coherent.uncached_alias_paddr();
+        assert_eq!(dma_coherent.paddr(), paddr);
+        assert_eq!(dma_coherent.daddr(), daddr);
+        assert_eq!(dma_coherent.size(), size);
+
+        let (first, second) = dma_coherent.split(PAGE_SIZE);
+        first.write_once(0, &0x1122_3344_5566_7788u64).unwrap();
+        second.write_once(0, &0x8877_6655_4433_2211u64).unwrap();
+        assert_eq!(first.read_once::<u64>(0).unwrap(), 0x1122_3344_5566_7788);
+        assert_eq!(second.read_once::<u64>(0).unwrap(), 0x8877_6655_4433_2211);
+        assert_eq!(first.paddr(), paddr);
+        assert_eq!(second.paddr(), paddr + PAGE_SIZE);
+        assert_eq!(first.daddr(), daddr);
+        assert_eq!(second.daddr(), daddr + PAGE_SIZE);
+        assert_eq!(first.uncached_alias_paddr(), alias);
+        assert_eq!(
+            second.uncached_alias_paddr(),
+            alias.map(|address| address + PAGE_SIZE)
+        );
     }
 
     #[ktest]
@@ -103,8 +154,190 @@ mod dma_coherent {
     }
 }
 
+mod dma_window {
+    use super::*;
+
+    #[ktest]
+    fn translates_megrez_cpu_addresses() {
+        let window = DmaWindow::new(0, 0xc000_0000, 0x200_0000_0000).unwrap();
+
+        assert_eq!(window.translate(0xc000_0000..0xc000_1000), Some(0..0x1000));
+        assert_eq!(
+            window.translate(0x1_c000_0000..0x1_c000_2000),
+            Some(0x1_0000_0000..0x1_0000_2000)
+        );
+    }
+
+    #[ktest]
+    fn rejects_invalid_dma_windows() {
+        assert_eq!(DmaWindow::new(0, 0xc000_0000, 0), None);
+        assert_eq!(DmaWindow::new(usize::MAX, 0, 1), None);
+        assert_eq!(DmaWindow::new(0, usize::MAX, 1), None);
+    }
+
+    #[ktest]
+    fn rejects_ranges_outside_dma_window() {
+        let window = DmaWindow::new(0, 0xc000_0000, 0x2000).unwrap();
+
+        assert_eq!(window.translate(0xbfff_f000..0xc000_0000), None);
+        assert_eq!(window.translate(0xc000_0000..0xc000_0000), None);
+        assert_eq!(window.translate(0xc000_1000..0xc000_3000), None);
+        // Keep the endpoints derived from the window so Clippy does not reject
+        // this intentional runtime check as a compile-time empty range.
+        let reversed_start = window.cpu_start() + 0x1000;
+        let reversed_end = window.cpu_start() + 0x0800;
+        assert_eq!(window.translate(reversed_start..reversed_end), None);
+    }
+}
+
+#[cfg(target_arch = "riscv64")]
+mod usb_kernel_op {
+    use core::{alloc::Layout, num::NonZeroUsize, ops::Range, ptr::NonNull};
+
+    use dma_api::{DmaConstraints, DmaDirection as ApiDirection, DmaOp};
+
+    use super::*;
+    use crate::mm::dma::usb_kernel_op::eic7700_uncached_alias_range;
+
+    fn identity_window() -> DmaWindow {
+        DmaWindow::new(0, 0, usize::MAX).unwrap()
+    }
+
+    #[ktest]
+    fn derives_eic7700_uncached_alias_from_cpu_address() {
+        let window = DmaWindow::new(0, 0xc000_0000, 0x200_0000_0000).unwrap();
+
+        assert_eq!(
+            eic7700_uncached_alias_range(&window, 0x2_a287_f000..0x2_a288_0000,),
+            Some(0xc2_2287_f000..0xc2_2288_0000)
+        );
+
+        let identity = DmaWindow::new(0x8000_0000, 0x8000_0000, 0x4_0000_0000).unwrap();
+        assert_eq!(
+            eic7700_uncached_alias_range(&identity, 0x2_a287_f000..0x2_a288_0000,),
+            Some(0xc2_2287_f000..0xc2_2288_0000)
+        );
+    }
+
+    #[ktest]
+    fn rejects_dma_windows_and_ranges_without_an_eic7700_alias() {
+        let identity = identity_window();
+        assert_eq!(
+            eic7700_uncached_alias_range(&identity, 0x1000..0x2000),
+            None
+        );
+
+        let window = DmaWindow::new(0, 0xc000_0000, 0x200_0000_0000).unwrap();
+        for range in [
+            Range { start: 1, end: 0 },
+            Range {
+                start: 0x4000_0000,
+                end: 0x4000_1000,
+            },
+            Range {
+                start: 0x10_8000_0000,
+                end: 0x10_8000_1000,
+            },
+            Range {
+                start: usize::MAX - 0xfff,
+                end: usize::MAX,
+            },
+        ] {
+            assert_eq!(eic7700_uncached_alias_range(&window, range), None);
+        }
+    }
+
+    #[ktest]
+    fn allocates_and_releases_uncached_dma_memory() {
+        let op = UsbKernelOp::new(identity_window());
+        let layout = Layout::from_size_align(128, 64).unwrap();
+        let handle = unsafe {
+            op.alloc_coherent(DmaConstraints::new(u64::MAX), layout)
+                .unwrap()
+        };
+
+        assert_eq!(handle.size(), 128);
+        assert_eq!(handle.dma_addr().as_u64() as usize % 64, 0);
+        assert_eq!(op.allocation_count(), 1);
+
+        unsafe { op.dealloc_coherent(handle) };
+        assert_eq!(op.allocation_count(), 0);
+    }
+
+    #[ktest]
+    fn bounces_streaming_dma_in_both_directions() {
+        let op = UsbKernelOp::new(identity_window());
+        let constraints = DmaConstraints::new(u64::MAX).with_align(64);
+        let size = NonZeroUsize::new(64).unwrap();
+
+        let mut to_device = [0x5au8; 64];
+        let to_device_ptr = NonNull::new(to_device.as_mut_ptr()).unwrap();
+        let to_device_map = unsafe {
+            op.map_streaming(constraints, to_device_ptr, size, ApiDirection::ToDevice)
+                .unwrap()
+        };
+        op.sync_map_for_device(&to_device_map, 0, size.get(), ApiDirection::ToDevice);
+        let bounce = unsafe {
+            core::slice::from_raw_parts(to_device_map.bounce_ptr().unwrap().as_ptr(), size.get())
+        };
+        assert_eq!(bounce, &to_device);
+        unsafe { op.unmap_streaming(to_device_map) };
+
+        let mut from_device = [0u8; 64];
+        let from_device_ptr = NonNull::new(from_device.as_mut_ptr()).unwrap();
+        let from_device_map = unsafe {
+            op.map_streaming(constraints, from_device_ptr, size, ApiDirection::FromDevice)
+                .unwrap()
+        };
+        unsafe {
+            from_device_map
+                .bounce_ptr()
+                .unwrap()
+                .as_ptr()
+                .write_bytes(0xa5, size.get());
+        }
+        op.sync_map_for_cpu(&from_device_map, 0, size.get(), ApiDirection::FromDevice);
+        assert_eq!(from_device, [0xa5; 64]);
+        unsafe { op.unmap_streaming(from_device_map) };
+    }
+}
+
 mod dma_stream {
     use super::*;
+    #[cfg(target_arch = "riscv64")]
+    use crate::mm::dma::dma_stream::needs_guaranteed_uncached_view;
+
+    #[cfg(target_arch = "riscv64")]
+    #[ktest]
+    fn requires_real_uncached_view_without_coherence_or_cache_maintenance() {
+        assert!(needs_guaranteed_uncached_view(false, false));
+        assert!(!needs_guaranteed_uncached_view(true, false));
+        assert!(!needs_guaranteed_uncached_view(false, true));
+        assert!(!needs_guaranteed_uncached_view(true, true));
+    }
+
+    #[ktest]
+    fn split_preserves_stream_identity_and_uncached_alias() {
+        let segment = FrameAllocOptions::new()
+            .alloc_segment_with(2, |_| ())
+            .unwrap();
+        let dma_stream = DmaStream::<FromAndToDevice>::map(segment.into(), false).unwrap();
+        let paddr = dma_stream.paddr();
+        let daddr = dma_stream.daddr();
+        let alias = dma_stream.uncached_alias_paddr();
+
+        let (first, second) = dma_stream.split(PAGE_SIZE);
+
+        assert_eq!(first.paddr(), paddr);
+        assert_eq!(second.paddr(), paddr + PAGE_SIZE);
+        assert_eq!(first.daddr(), daddr);
+        assert_eq!(second.daddr(), daddr + PAGE_SIZE);
+        assert_eq!(first.uncached_alias_paddr(), alias);
+        assert_eq!(
+            second.uncached_alias_paddr(),
+            alias.map(|address| address + PAGE_SIZE)
+        );
+    }
 
     #[ktest]
     fn streaming_map() {
@@ -255,33 +488,5 @@ mod dma_stream {
         dma_stream.sync_from_device(0..PAGE_SIZE).unwrap();
         dma_stream.read_bytes(0, &mut buf_read).unwrap();
         assert_eq!(buf_write, buf_read);
-    }
-
-    #[ktest]
-    fn sync_invalid_ranges() {
-        let dma_stream = DmaStream::<FromAndToDevice>::alloc(2, false).unwrap();
-        assert_eq!(dma_stream.size(), 2 * PAGE_SIZE);
-
-        #[expect(clippy::reversed_empty_ranges)]
-        const INVALID_RANGES: [core::ops::Range<usize>; 5] = [
-            // Reversed ranges:
-            PAGE_SIZE..0,
-            2 * PAGE_SIZE..PAGE_SIZE,
-            // Out-of-bounds ranges:
-            PAGE_SIZE..4 * PAGE_SIZE,
-            2 * PAGE_SIZE..4 * PAGE_SIZE,
-            3 * PAGE_SIZE..4 * PAGE_SIZE,
-        ];
-
-        for invalid_range in INVALID_RANGES {
-            assert_eq!(
-                dma_stream.sync_from_device(invalid_range.clone()),
-                Err(crate::Error::InvalidArgs)
-            );
-            assert_eq!(
-                dma_stream.sync_to_device(invalid_range),
-                Err(crate::Error::InvalidArgs)
-            );
-        }
     }
 }

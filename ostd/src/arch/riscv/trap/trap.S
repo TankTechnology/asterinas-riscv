@@ -85,14 +85,19 @@ _trap_from_user:
     STORE_SP t1, 32                          # save sstatus
     STORE_SP t2, 33                          # save sepc
 
-    andi t1, t1, 1 << 8                      # sstatus.SPP == 1
+    andi t1, t1, {SSTATUS_SPP}                # sstatus.SPP == 1
     beqz t1, _end_trap_from_user
 
 _end_trap_from_kernel:
     mv a0, sp                                # first arg is TrapFrame
     lla ra, _trap_return                     # set return address
 .extern trap_handler
-    j trap_handler
+    # Tail-call through a register instead of `j`: `j` emits a `jal`, whose
+    # +-1 MiB reach is too short to keep `trap_handler` in range once the
+    # unoptimized text grows past it. `lla` is PC-relative over +-2 GiB, and
+    # t0 is dead here because its sscratch value was stored above.
+    lla t0, trap_handler
+    jr t0
 
 _end_trap_from_user:
     # load callee-saved registers
@@ -147,9 +152,15 @@ _trap_return:
     csrw sstatus, t0        # load sstatus
     csrw sepc, t1           # load sepc
 
-    # restore general registers except sp(x2)
-    LOAD_SP x1, 1
+    # Kernel gp belongs to the executing CPU. A kernel page-fault handler
+    # may sleep and migrate, leaving another CPU's gp in the saved frame.
+    # Preserve the live CPU-local base on S-mode return; only restore user gp.
+    andi t2, t0, {SSTATUS_SPP}
+    bnez t2, .Ltrap_keep_kernel_gp
     LOAD_SP x3, 3
+.Ltrap_keep_kernel_gp:
+    # restore remaining general registers except sp(x2)
+    LOAD_SP x1, 1
     LOAD_SP x4, 4
     LOAD_SP x5, 5
     LOAD_SP x6, 6

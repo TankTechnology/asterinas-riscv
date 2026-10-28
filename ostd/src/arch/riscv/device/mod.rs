@@ -2,4 +2,5 @@
 
 //! Device-related APIs.
 
+pub mod io_mem;
 pub mod io_port;

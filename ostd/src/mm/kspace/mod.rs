@@ -45,20 +45,22 @@ use spin::Once;
 #[cfg(ktest)]
 mod test;
 
+#[cfg(target_arch = "riscv64")]
+use super::page_prop::PageAccess;
 use super::{
-    Frame, HasSize, Paddr, PagingConstsTrait, Vaddr,
+    HasSize, Paddr, PagingConstsTrait, Vaddr,
     frame::{
         Segment,
         meta::{AnyFrameMeta, MetaPageMeta, mapping},
     },
     page_prop::{CachePolicy, PageFlags, PageProperty, PrivilegedPageFlags},
-    page_table::{PageTable, PageTableConfig, largest_pages, max_page_level},
+    page_table::PageTable,
 };
 use crate::{
-    arch::mm::{PageTableEntry, PagingConsts},
+    arch::mm::PagingConsts,
     boot::memory_region::MemoryRegionType,
     const_assert, info,
-    mm::{HasPaddr, PAGE_SIZE, PagingLevel, frame::FrameRef},
+    mm::{PAGE_SIZE, PagingLevel, frame::FrameRef, page_table::largest_pages},
     task::disable_preempt,
 };
 
@@ -70,11 +72,11 @@ const ADDR_WIDTH_SHIFT: usize = PagingConsts::ADDRESS_WIDTH - 39;
 
 /// Start of the kernel address space.
 #[cfg(not(target_arch = "loongarch64"))]
-pub(super) const KERNEL_BASE_VADDR: Vaddr = 0xffff_ffc0_0000_0000 << ADDR_WIDTH_SHIFT;
+pub const KERNEL_BASE_VADDR: Vaddr = 0xffff_ffc0_0000_0000 << ADDR_WIDTH_SHIFT;
 #[cfg(target_arch = "loongarch64")]
-pub(super) const KERNEL_BASE_VADDR: Vaddr = 0x9000_0000_0000_0000;
+pub const KERNEL_BASE_VADDR: Vaddr = 0x9000_0000_0000_0000;
 /// End of the kernel address space (non inclusive).
-pub(super) const KERNEL_END_VADDR: Vaddr = 0xffff_ffff_ffff_0000;
+pub const KERNEL_END_VADDR: Vaddr = 0xffff_ffff_ffff_0000;
 
 /// The maximum virtual address of user space (non inclusive).
 ///
@@ -98,36 +100,35 @@ pub const KERNEL_VADDR_RANGE: Range<Vaddr> = KERNEL_BASE_VADDR..KERNEL_END_VADDR
 /// FIXME: This offset should be randomly chosen by the loader or the
 /// boot compatibility layer. But we disabled it because OSTD
 /// doesn't support relocatable kernel yet.
-pub(crate) fn kernel_loaded_offset() -> usize {
+pub fn kernel_loaded_offset() -> usize {
     KERNEL_CODE_BASE_VADDR
 }
 
 #[cfg(target_arch = "x86_64")]
 const KERNEL_CODE_BASE_VADDR: usize = 0xffff_ffff_8000_0000;
-#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+#[cfg(target_arch = "riscv64")]
 const KERNEL_CODE_BASE_VADDR: usize = 0xffff_ffff_0000_0000;
 #[cfg(target_arch = "loongarch64")]
 const KERNEL_CODE_BASE_VADDR: usize = 0x9000_0000_0000_0000;
 
 const FRAME_METADATA_CAP_VADDR: Vaddr = 0xffff_fff0_8000_0000 << ADDR_WIDTH_SHIFT;
 const FRAME_METADATA_BASE_VADDR: Vaddr = 0xffff_fff0_0000_0000 << ADDR_WIDTH_SHIFT;
-pub(super) const FRAME_METADATA_RANGE: Range<Vaddr> =
+pub(in crate::mm) const FRAME_METADATA_RANGE: Range<Vaddr> =
     FRAME_METADATA_BASE_VADDR..FRAME_METADATA_CAP_VADDR;
 
 const VMALLOC_BASE_VADDR: Vaddr = 0xffff_ffe0_0000_0000 << ADDR_WIDTH_SHIFT;
-pub(super) const VMALLOC_VADDR_RANGE: Range<Vaddr> = VMALLOC_BASE_VADDR..FRAME_METADATA_BASE_VADDR;
+pub const VMALLOC_VADDR_RANGE: Range<Vaddr> = VMALLOC_BASE_VADDR..FRAME_METADATA_BASE_VADDR;
 
 /// The base address of the linear mapping of all physical
 /// memory in the kernel address space.
 #[cfg(not(target_arch = "loongarch64"))]
-pub(crate) const LINEAR_MAPPING_BASE_VADDR: Vaddr = 0xffff_ffc0_0000_0000 << ADDR_WIDTH_SHIFT;
+pub const LINEAR_MAPPING_BASE_VADDR: Vaddr = 0xffff_ffc0_0000_0000 << ADDR_WIDTH_SHIFT;
 #[cfg(target_arch = "loongarch64")]
-pub(crate) const LINEAR_MAPPING_BASE_VADDR: Vaddr = 0x9000_0000_0000_0000;
-pub(crate) const LINEAR_MAPPING_VADDR_RANGE: Range<Vaddr> =
-    LINEAR_MAPPING_BASE_VADDR..VMALLOC_BASE_VADDR;
+pub const LINEAR_MAPPING_BASE_VADDR: Vaddr = 0x9000_0000_0000_0000;
+pub const LINEAR_MAPPING_VADDR_RANGE: Range<Vaddr> = LINEAR_MAPPING_BASE_VADDR..VMALLOC_BASE_VADDR;
 
 /// Convert physical address to virtual address using offset, only available inside `ostd`
-pub(crate) fn paddr_to_vaddr(pa: Paddr) -> usize {
+pub fn paddr_to_vaddr(pa: Paddr) -> usize {
     debug_assert!(pa < VMALLOC_BASE_VADDR - LINEAR_MAPPING_BASE_VADDR);
     pa + LINEAR_MAPPING_BASE_VADDR
 }
@@ -141,77 +142,157 @@ pub(super) static KERNEL_PAGE_TABLE: Once<PageTable<KernelPtConfig>> = Once::new
 #[derive(Clone, Debug)]
 pub(super) struct KernelPtConfig {}
 
-// We use the first available PTE bit to mark the frame as tracked.
-// SAFETY: `item_raw_info`, `item_into_raw`, `item_from_raw`, and
-// `item_ref_from_raw` are correctly implemented with respect to the `Item` and
-// `ItemRef` types.
-unsafe impl PageTableConfig for KernelPtConfig {
-    const TOP_LEVEL_INDEX_RANGE: Range<usize> = 256..512;
-    const TOP_LEVEL_CAN_UNMAP: bool = false;
-
-    type E = PageTableEntry;
-    type C = PagingConsts;
-
-    type Item = MappedItem;
-    type ItemRef<'a> = MappedItemRef<'a>;
-
-    fn item_raw_info(item: &Self::Item) -> (Paddr, PagingLevel, PageProperty) {
-        match *item {
-            MappedItem::Tracked(ref frame, mut prop) => {
-                debug_assert!(!prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1));
-                prop.priv_flags |= PrivilegedPageFlags::AVAIL1;
-                let level = frame.map_level();
-                let paddr = frame.paddr();
-                (paddr, level, prop)
-            }
-            MappedItem::Untracked(ref pa, ref level, mut prop) => {
-                debug_assert!(!prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1));
-                prop.priv_flags -= PrivilegedPageFlags::AVAIL1;
-                (*pa, *level, prop)
-            }
-        }
-    }
-
-    unsafe fn item_from_raw(paddr: Paddr, level: PagingLevel, prop: PageProperty) -> Self::Item {
-        if prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1) {
-            debug_assert_eq!(level, 1);
-            // SAFETY: The caller ensures safety.
-            let frame = unsafe { Frame::<dyn AnyFrameMeta>::from_raw(paddr) };
-            MappedItem::Tracked(frame, prop)
+/// Applies the architecture policy for a newly created kernel mapping.
+///
+/// Under RISC-V Svade, an access with A clear faults, and a write with D clear
+/// faults. Since kernel mappings have no recovery path, new writable mappings
+/// preset both A and D, while non-writable mappings preset only A. See
+/// <https://docs.riscv.org/reference/isa/v20260120/priv/supervisor.html#translation>.
+pub(in crate::mm) fn prepare_new_kernel_mapping_prop(prop: PageProperty) -> PageProperty {
+    #[cfg(target_arch = "riscv64")]
+    {
+        let mut prop = prop;
+        let access = if prop.flags.contains(PageFlags::W) {
+            PageAccess::Write
         } else {
-            MappedItem::Untracked(paddr, level, prop)
-        }
+            PageAccess::Read
+        };
+        prop.flags.record_access(access);
+        prop
     }
 
-    unsafe fn item_ref_from_raw<'a>(
-        paddr: Paddr,
-        level: PagingLevel,
-        prop: PageProperty,
-    ) -> Self::ItemRef<'a> {
-        if prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1) {
-            debug_assert_eq!(level, 1);
-            // SAFETY: The caller ensures that the frame outlives `'a` and that
-            // the type matches the frame.
-            let frame = unsafe { FrameRef::<dyn AnyFrameMeta>::borrow_paddr(paddr) };
-            MappedItemRef::Tracked(frame, prop)
-        } else {
-            MappedItemRef::Untracked(paddr, level, prop)
-        }
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        prop
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum MappedItem {
-    Tracked(Frame<dyn AnyFrameMeta>, PageProperty),
-    Untracked(Paddr, PagingLevel, PageProperty),
 }
 
 #[derive(Debug)]
-pub(crate) enum MappedItemRef<'a> {
+pub(in crate::mm) enum MappedItemRef<'a> {
     #[cfg_attr(not(ktest), expect(dead_code))]
     Tracked(FrameRef<'a, dyn AnyFrameMeta>, PageProperty),
     #[cfg_attr(not(ktest), expect(dead_code))]
     Untracked(Paddr, PagingLevel, PageProperty),
+}
+
+pub(super) use mapped_item::MappedItem;
+
+mod mapped_item {
+    //! Kernel page-table item representation and construction policy.
+    //!
+    //! [`MappedItem`] is the item representation for [`KernelPtConfig`]. New
+    //! mappings go through an architecture policy, while raw restoration
+    //! reconstructs an existing item and preserves all status flags exactly.
+
+    use core::ops::Range;
+
+    use super::{KernelPtConfig, MappedItemRef};
+    use crate::{
+        arch::mm::{PageTableEntry, PagingConsts},
+        mm::{
+            Frame, HasPaddr, Paddr, PagingLevel,
+            frame::{FrameRef, meta::AnyFrameMeta},
+            page_prop::{PageProperty, PrivilegedPageFlags},
+            page_table::PageTableConfig,
+        },
+    };
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub(in crate::mm) struct MappedItem(MappedItemKind);
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum MappedItemKind {
+        Tracked(Frame<dyn AnyFrameMeta>, PageProperty),
+        Untracked(Paddr, PagingLevel, PageProperty),
+    }
+
+    impl MappedItem {
+        pub(in crate::mm) fn tracked(frame: Frame<dyn AnyFrameMeta>, prop: PageProperty) -> Self {
+            Self(MappedItemKind::Tracked(
+                frame,
+                super::prepare_new_kernel_mapping_prop(prop),
+            ))
+        }
+
+        pub(in crate::mm) fn untracked(
+            paddr: Paddr,
+            level: PagingLevel,
+            prop: PageProperty,
+        ) -> Self {
+            Self(MappedItemKind::Untracked(
+                paddr,
+                level,
+                super::prepare_new_kernel_mapping_prop(prop),
+            ))
+        }
+    }
+
+    // We use the first available PTE bit to mark the frame as tracked.
+    // SAFETY: `item_raw_info`, `item_into_raw`, `item_from_raw`, and
+    // `item_ref_from_raw` are correctly implemented with respect to the `Item`
+    // and `ItemRef` types.
+    unsafe impl PageTableConfig for KernelPtConfig {
+        const TOP_LEVEL_INDEX_RANGE: Range<usize> = 256..512;
+        const TOP_LEVEL_CAN_UNMAP: bool = false;
+
+        type E = PageTableEntry;
+        type C = PagingConsts;
+
+        type Item = MappedItem;
+        type ItemRef<'a> = MappedItemRef<'a>;
+
+        fn item_raw_info(item: &Self::Item) -> (Paddr, PagingLevel, PageProperty) {
+            match &item.0 {
+                MappedItemKind::Tracked(frame, prop) => {
+                    let mut prop = *prop;
+                    debug_assert!(!prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1));
+                    prop.priv_flags |= PrivilegedPageFlags::AVAIL1;
+                    let level = frame.map_level();
+                    let paddr = frame.paddr();
+                    (paddr, level, prop)
+                }
+                MappedItemKind::Untracked(pa, level, prop) => {
+                    let mut prop = *prop;
+                    debug_assert!(!prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1));
+                    prop.priv_flags -= PrivilegedPageFlags::AVAIL1;
+                    (*pa, *level, prop)
+                }
+            }
+        }
+
+        unsafe fn item_from_raw(
+            paddr: Paddr,
+            level: PagingLevel,
+            prop: PageProperty,
+        ) -> Self::Item {
+            // Raw restoration must preserve the existing status flags exactly,
+            // so it intentionally bypasses the new-mapping policy constructors.
+            if prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1) {
+                debug_assert_eq!(level, 1);
+                // SAFETY: The caller ensures safety.
+                let frame = unsafe { Frame::<dyn AnyFrameMeta>::from_raw(paddr) };
+                MappedItem(MappedItemKind::Tracked(frame, prop))
+            } else {
+                MappedItem(MappedItemKind::Untracked(paddr, level, prop))
+            }
+        }
+
+        unsafe fn item_ref_from_raw<'a>(
+            paddr: Paddr,
+            level: PagingLevel,
+            prop: PageProperty,
+        ) -> Self::ItemRef<'a> {
+            if prop.priv_flags.contains(PrivilegedPageFlags::AVAIL1) {
+                debug_assert_eq!(level, 1);
+                // SAFETY: The caller ensures that the frame outlives `'a` and that
+                // the type matches the frame.
+                let frame = unsafe { FrameRef::<dyn AnyFrameMeta>::borrow_paddr(paddr) };
+                MappedItemRef::Tracked(frame, prop)
+            } else {
+                MappedItemRef::Untracked(paddr, level, prop)
+            }
+        }
+    }
 }
 
 /// Initializes the kernel page table.
@@ -222,7 +303,7 @@ pub(crate) enum MappedItemRef<'a> {
 ///
 /// This function should be called before:
 ///  - any initializer that modifies the kernel page table.
-pub(crate) fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
+pub fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
     info!("Initializing the kernel page table");
 
     // Start to initialize the kernel page table.
@@ -240,37 +321,32 @@ pub(crate) fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
             cache: CachePolicy::Writeback,
             priv_flags: PrivilegedPageFlags::GLOBAL,
         };
-        let min_level = max_page_level::<KernelPtConfig>(from.len());
-        let mut cursor = kpt
-            .cursor_mut_with_min_level(&preempt_guard, &from, min_level)
-            .unwrap();
+        let mut cursor = kpt.cursor_mut(&preempt_guard, &from).unwrap();
         for (pa, level) in largest_pages::<KernelPtConfig>(from.start, 0, max_paddr) {
-            // SAFETY: We are doing the linear mapping for the kernel.
-            unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) };
+            // SAFETY: we are doing the linear mapping for the kernel.
+            unsafe { cursor.map(MappedItem::untracked(pa, level, prop)) };
         }
     }
 
     // Map the metadata pages.
     {
-        let start_va = mapping::frame_to_meta::<PagingConsts>(crate::mm::frame::min_paddr());
+        let start_va = mapping::frame_to_meta::<PagingConsts>(0);
         let from = start_va..start_va + meta_pages.size();
         let prop = PageProperty {
             flags: PageFlags::RW,
             cache: CachePolicy::Writeback,
             priv_flags: PrivilegedPageFlags::GLOBAL,
         };
-        let min_level = max_page_level::<KernelPtConfig>(from.len());
-        let mut cursor = kpt
-            .cursor_mut_with_min_level(&preempt_guard, &from, min_level)
-            .unwrap();
+        let mut cursor = kpt.cursor_mut(&preempt_guard, &from).unwrap();
         // We use untracked mapping so that we can benefit from huge pages.
         // We won't unmap them anyway, so there's no leaking problem yet.
+        // TODO: support tracked huge page mapping.
         let pa_range = meta_pages.into_raw();
         for (pa, level) in
             largest_pages::<KernelPtConfig>(from.start, pa_range.start, pa_range.len())
         {
             // SAFETY: We are doing the metadata mappings for the kernel.
-            unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) };
+            unsafe { cursor.map(MappedItem::untracked(pa, level, prop)) };
         }
     }
 
@@ -291,13 +367,10 @@ pub(crate) fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
             cache: CachePolicy::Writeback,
             priv_flags: PrivilegedPageFlags::GLOBAL,
         };
-        let min_level = max_page_level::<KernelPtConfig>(from.len());
-        let mut cursor = kpt
-            .cursor_mut_with_min_level(&preempt_guard, &from, min_level)
-            .unwrap();
+        let mut cursor = kpt.cursor_mut(&preempt_guard, &from).unwrap();
         for (pa, level) in largest_pages::<KernelPtConfig>(from.start, region.base(), from.len()) {
-            // SAFETY: We are doing the kernel code mapping.
-            unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) };
+            // SAFETY: we are doing the kernel code mapping.
+            unsafe { cursor.map(MappedItem::untracked(pa, level, prop)) };
         }
     }
 
@@ -312,11 +385,11 @@ pub(crate) fn init_kernel_page_table(meta_pages: Segment<MetaPageMeta>) {
 /// # Safety
 ///
 /// This function must only be called once per CPU.
-pub(crate) unsafe fn activate_kernel_page_table() {
+pub unsafe fn activate_kernel_page_table() {
     let kpt = KERNEL_PAGE_TABLE
         .get()
         .expect("The kernel page table is not initialized yet");
-    // SAFETY: The kernel page table is initialized properly.
+    // SAFETY: the kernel page table is initialized properly.
     unsafe {
         kpt.first_activate_unchecked();
         crate::arch::mm::tlb_flush_all_including_global();

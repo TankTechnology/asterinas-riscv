@@ -21,22 +21,21 @@ use ostd::{
 use super::{
     MAX_SCANOUTS, VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, VIRTIO_GPU_CMD_CTX_CREATE,
     VIRTIO_GPU_CMD_CTX_DESTROY, VIRTIO_GPU_CMD_GET_CAPSET, VIRTIO_GPU_CMD_GET_CAPSET_INFO,
-    VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, VIRTIO_GPU_CMD_SUBMIT_3D,
-    VIRTIO_GPU_CMD_MOVE_CURSOR, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-    VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
-    VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
+    VIRTIO_GPU_CMD_GET_DISPLAY_INFO, VIRTIO_GPU_CMD_MOVE_CURSOR,
+    VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
+    VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+    VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT, VIRTIO_GPU_CMD_SUBMIT_3D,
     VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
     VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_F_VIRGL,
-    VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
+    VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM, VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM,
     VIRTIO_GPU_RESP_OK_CAPSET, VIRTIO_GPU_RESP_OK_CAPSET_INFO, VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
-    VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR, VirtioGpuBox, VirtioGpuCmdSubmit, VirtioGpuCtrlHdr, VirtioGpuCtxCreate,
-    VirtioGpuCursorPos, VirtioGpuDisplayOne, VirtioGpuGetCapset, VirtioGpuGetCapsetInfo,
-    VirtioGpuCtxResource, VirtioGpuMemEntry, VirtioGpuRect, VirtioGpuRespCapsetInfo,
-    VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d, VirtioGpuResourceCreate3d,
-    VirtioGpuResourceFlush, VirtioGpuResourceUnref,
-    VirtioGpuSetScanout, VirtioGpuTransferHost3d, VirtioGpuTransferToHost2d,
-    VirtioGpuUpdateCursor,
-    config::VirtioGpuConfig,
+    VIRTIO_GPU_RESP_OK_NODATA, VQ_CONTROL, VQ_CURSOR, VirtioGpuBox, VirtioGpuCmdSubmit,
+    VirtioGpuCtrlHdr, VirtioGpuCtxCreate, VirtioGpuCtxResource, VirtioGpuCursorPos,
+    VirtioGpuDisplayOne, VirtioGpuGetCapset, VirtioGpuGetCapsetInfo, VirtioGpuMemEntry,
+    VirtioGpuRect, VirtioGpuResourceAttachBacking, VirtioGpuResourceCreate2d,
+    VirtioGpuResourceCreate3d, VirtioGpuResourceFlush, VirtioGpuResourceUnref,
+    VirtioGpuRespCapsetInfo, VirtioGpuSetScanout, VirtioGpuTransferHost3d,
+    VirtioGpuTransferToHost2d, VirtioGpuUpdateCursor, config::VirtioGpuConfig,
 };
 use crate::{
     device::{VirtioDeviceError, gpu::register_device},
@@ -108,10 +107,9 @@ impl GpuDevice {
         // Recompute the same answer `negotiate_features` gave the transport:
         // the device's advertised bits do not change, and the transport offers
         // no way to read back what was acknowledged.
-        let virgl_supported =
-            Self::negotiate_features(device_transport.read_device_features())
-                & VIRTIO_GPU_F_VIRGL
-                != 0;
+        let virgl_supported = Self::negotiate_features(device_transport.read_device_features())
+            & VIRTIO_GPU_F_VIRGL
+            != 0;
         ostd::info!(
             "virtio-gpu: virgl 3D {}",
             if virgl_supported {
@@ -208,11 +206,8 @@ impl GpuDevice {
             padding: 0,
         };
         let mut queue = self.control_queue.lock();
-        let response = control_cmd_read::<_, VirtioGpuRespCapsetInfo>(
-            &mut queue,
-            &self.control_buf,
-            &req,
-        )?;
+        let response =
+            control_cmd_read::<_, VirtioGpuRespCapsetInfo>(&mut queue, &self.control_buf, &req)?;
         Ok(CapsetInfo {
             id: response.capset_id,
             max_version: response.capset_max_version,
@@ -232,15 +227,15 @@ impl GpuDevice {
         };
         let response_len = size_of::<VirtioGpuCtrlHdr>() + size as usize;
         let pages = (CTRL_RESP_OFFSET + response_len).div_ceil(PAGE_SIZE);
-        let buf = Arc::new(DmaStream::alloc(pages, false).map_err(VirtioDeviceError::ResourceAlloc)?);
+        let buf =
+            Arc::new(DmaStream::alloc(pages, false).map_err(VirtioDeviceError::ResourceAlloc)?);
 
         let mut queue = self.control_queue.lock();
         let code = control_cmd(&mut queue, &buf, &request, response_len)?;
         check_ok(code)?;
 
         let blob_start = CTRL_RESP_OFFSET + size_of::<VirtioGpuCtrlHdr>();
-        let mut blob = Vec::new();
-        blob.resize(size as usize, 0u8);
+        let mut blob = alloc::vec![0u8; size as usize];
         Slice::new(buf.clone(), blob_start..blob_start + size as usize)
             .read_bytes(0, &mut blob)
             .map_err(VirtioDeviceError::ResourceAlloc)?;
@@ -376,9 +371,10 @@ impl GpuDevice {
         // The command buffer is written straight after the header, so the
         // request is one contiguous span rather than a struct.
         let request_len = size_of::<VirtioGpuCmdSubmit>() + commands.len();
-        let pages = (CTRL_RESP_OFFSET + size_of::<VirtioGpuCtrlHdr>() + request_len)
-            .div_ceil(PAGE_SIZE);
-        let buf = Arc::new(DmaStream::alloc(pages, false).map_err(VirtioDeviceError::ResourceAlloc)?);
+        let pages =
+            (CTRL_RESP_OFFSET + size_of::<VirtioGpuCtrlHdr>() + request_len).div_ceil(PAGE_SIZE);
+        let buf =
+            Arc::new(DmaStream::alloc(pages, false).map_err(VirtioDeviceError::ResourceAlloc)?);
 
         let request_slice = Slice::new(buf.clone(), CTRL_REQ_OFFSET..CTRL_REQ_OFFSET + request_len);
         request_slice.write_val(0, &request).unwrap();
@@ -387,12 +383,7 @@ impl GpuDevice {
             .unwrap();
 
         let mut queue = self.control_queue.lock();
-        let code = submit_control(
-            &mut queue,
-            &buf,
-            request_len,
-            size_of::<VirtioGpuCtrlHdr>(),
-        )?;
+        let code = submit_control(&mut queue, &buf, request_len, size_of::<VirtioGpuCtrlHdr>())?;
         check_ok(code)
     }
 
@@ -762,6 +753,13 @@ impl GpuDevice {
     ///
     /// The context travels in the control header, not the body, so the plain
     /// `ctrl_hdr` would address context 0 — which no client has.
+    // The 3D transfer ABI carries the box and three strides separately; keep
+    // the primitive in one place instead of introducing a one-use parameter
+    // struct.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the 3D transfer ABI carries the box and three strides separately"
+    )]
     fn transfer_3d(
         &self,
         command: u32,

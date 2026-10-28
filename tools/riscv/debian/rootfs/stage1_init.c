@@ -112,10 +112,6 @@ struct RootInitConfig {
     int debug_root_console;
     int debug_console_isolated;
     int volatile_home;
-    /* An absolute path to an init program.  When set, it replaces the
-     * systemd/interactive program; acceptance harnesses use it to run a
-     * deterministic probe as the first userspace process. */
-    const char *custom_init_path;
 };
 
 struct ProductionContext {
@@ -214,7 +210,6 @@ static int parse_root_init(int argc, char **argv,
     config->debug_root_console = 0;
     config->debug_console_isolated = 0;
     config->volatile_home = 0;
-    config->custom_init_path = NULL;
     int selector_seen = 0;
     int debug_seen = 0;
     for (int index = 1; index < argc; ++index) {
@@ -234,13 +229,6 @@ static int parse_root_init(int argc, char **argv,
                 return -1;
             }
             config->root_filesystem_ext4 = 1;
-            continue;
-        } else if (strncmp(argv[index], "--root-init-path=", 17) == 0) {
-            const char *path = argv[index] + 17;
-            if (config->custom_init_path != NULL || path[0] != '/') {
-                return -1;
-            }
-            config->custom_init_path = path;
             continue;
         } else if (strcmp(argv[index], "--volatile-home") == 0) {
             if (config->volatile_home) {
@@ -304,15 +292,6 @@ static int ext2_superblock_matches_mode(
            ext2_superblock_matches(superblock, DESKTOP_DRM_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, BROWSER_ROOT_LABEL) ||
            ext2_superblock_matches(superblock, BROWSER_WEB_ROOT_LABEL);
-}
-
-/* The helpers are an accessory, not a handoff requirement. An initramfs
- * built without the desktop asset set -- every minimal one -- has nothing to
- * bind, and a bind of an absent directory fails, which must not end the
- * handoff. */
-static int ephemeral_tools_source_present(const char *source)
-{
-    return access(source, F_OK) == 0;
 }
 
 static int root_needs_ephemeral_tools(
@@ -459,26 +438,7 @@ static const char *handoff_root(struct Stage1Ops *ops, const char *root_device,
     return "exec-returned";
 }
 
-static int prepare_device_filesystem(
-    int (*mount_fs)(const char *, const char *, const char *,
-                    unsigned long, const void *))
-{
-    return mount_fs("devtmpfs", "/dev", "devtmpfs", MS_NOSUID, NULL);
-}
-
 #if defined(DEBIAN_STAGE1_SELF_TEST)
-
-static int mock_mount_result;
-static int mock_device_mount(const char *source, const char *target,
-                              const char *type, unsigned long flags,
-                              const void *data)
-{
-    if (strcmp(source, "devtmpfs") != 0 || strcmp(target, "/dev") != 0 ||
-        strcmp(type, "devtmpfs") != 0 || flags != MS_NOSUID || data != NULL) {
-        return -2;
-    }
-    return mock_mount_result;
-}
 
 struct MockContext {
     const char *case_name;
@@ -930,11 +890,6 @@ static int run_root_init_self_test(const char *case_name)
         if (!root_needs_ephemeral_tools(superblock)) {
             return fail_self_test(case_name, "desktop lost its tools bind mount");
         }
-        if (ephemeral_tools_source_present("/dev/null/absent") ||
-            !ephemeral_tools_source_present("/")) {
-            return fail_self_test(case_name,
-                                  "tools source presence was misjudged");
-        }
     } else if (strcmp(case_name, "systemd-desktop-root-label") == 0) {
         unsigned char superblock[EXT2_SUPERBLOCK_SIZE];
         make_valid_superblock(superblock, DESKTOP_ROOT_LABEL);
@@ -1086,14 +1041,7 @@ int main(int argc, char **argv)
     int result;
     enum HandoffStep failing_step;
     const char *expected_reason;
-    if (strcmp(case_name, "devtmpfs-mount") == 0) {
-        mock_mount_result = 0;
-        result = prepare_device_filesystem(mock_device_mount);
-        mock_mount_result = -1;
-        if (result != 0 || prepare_device_filesystem(mock_device_mount) != -1) {
-            return fail_self_test(case_name, "device mount contract was wrong");
-        }
-    } else if (handoff_case(case_name, &failing_step, &expected_reason)) {
+    if (handoff_case(case_name, &failing_step, &expected_reason)) {
         result = run_handoff_self_test(case_name, failing_step, expected_reason);
     } else if (strncmp(case_name, "root-init-", sizeof("root-init-") - 1) ==
                    0 ||
@@ -1269,9 +1217,6 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
              * silently discarding its pending metadata transactions.
              */
             result = mount(root_device, "/newroot", "ext4", 0, NULL);
-            if (result != 0) {
-                fprintf(stderr, "DEBIAN_ROOT_MOUNT ext4 errno=%d\n", errno);
-            }
         } else {
             result = mount(root_device, "/newroot", "ext2", 0, NULL);
         }
@@ -1300,9 +1245,6 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
         }
         result = mount("tmpfs", "/newroot/run", "tmpfs", 0, NULL);
         if (result != 0 || !production_context->needs_ephemeral_tools) {
-            break;
-        }
-        if (!ephemeral_tools_source_present("/usr/lib/asterinas")) {
             break;
         }
         if (result == 0 &&
@@ -1353,11 +1295,7 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
             ensure_directory("/newroot/sys/fs") != 0) {
             return -1;
         }
-        if (ensure_directory("/newroot/sys/fs/cgroup") != 0) {
-            return -1;
-        }
-        /* systemd requires the unified hierarchy during early boot. */
-        result = mount("none", "/newroot/sys/fs/cgroup", "cgroup2", 0, NULL);
+        result = ensure_directory("/newroot/sys/fs/cgroup");
         break;
     case HANDOFF_CHROOT:
         result = chroot("/newroot");
@@ -1366,13 +1304,6 @@ static int production_perform_handoff(void *context, enum HandoffStep step,
         result = chdir("/");
         break;
     case HANDOFF_EXEC: {
-        if (production_context->root_init.custom_init_path != NULL) {
-            char *custom_argv[] = {
-                (char *)production_context->root_init.custom_init_path,
-                NULL,
-            };
-            return execv(custom_argv[0], custom_argv);
-        }
         char *const *arguments =
             root_init_arguments(production_context->root_init.mode);
         return execv(arguments[0], arguments);
@@ -1479,12 +1410,6 @@ int main(int argc, char **argv)
     }
     if (root_init_result != 0) {
         fail_and_hold("root-init-argument");
-    }
-    /* Initramfs userspace owns the device filesystem mount. The kernel only
-     * supplies /dev/console there; registered block devices live in devtmpfs.
-     * Keep the open console descriptors while replacing the bootstrap /dev. */
-    if (prepare_device_filesystem(mount) != 0) {
-        fail_and_hold("devtmpfs-mount");
     }
     const char *mode = "interactive";
     if (context.root_init.mode == ROOT_INIT_SYSTEMD) {

@@ -14,10 +14,10 @@ use crate::{
     },
     cpu::PrivilegeLevel,
     irq::call_irq_callback_functions,
-    user::{ReturnReason, UserContextApi, UserContextApiInternal, UserModeHooks},
+    user::{ReturnReason, UserContextApi, UserContextApiInternal},
 };
 
-/// General registers.
+/// General registers
 #[expect(missing_docs)]
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -107,33 +107,29 @@ impl Default for UserContext {
 }
 
 impl UserContext {
-    // Methods shared across all architectures (i.e., general registers and exceptions).
-
     /// Returns a reference to the general registers.
     pub fn general_regs(&self) -> &GeneralRegs {
         &self.user_context.general
     }
 
-    /// Returns a mutable reference to the general registers.
+    /// Returns a mutable reference to the general registers
     pub fn general_regs_mut(&mut self) -> &mut GeneralRegs {
         &mut self.user_context.general
     }
 
-    /// Takes the CPU exception out.
+    /// Returns the trap information.
     pub fn take_exception(&mut self) -> Option<CpuExceptionInfo> {
         self.cpu_exception_info.take()
     }
 
-    // Architecture-specific methods.
-
-    /// Gets the value of the thread-local storage pointer.
-    pub fn tls_pointer(&self) -> usize {
-        self.tp()
-    }
-
-    /// Sets the value of the thread-local storage pointer.
+    /// Sets the thread-local storage pointer.
     pub fn set_tls_pointer(&mut self, tls: usize) {
         self.set_tp(tls)
+    }
+
+    /// Gets the thread-local storage pointer.
+    pub fn tls_pointer(&self) -> usize {
+        self.tp()
     }
 
     /// Enables floating-point unit.
@@ -143,13 +139,13 @@ impl UserContext {
 }
 
 impl UserContextApiInternal for UserContext {
-    fn execute<T: UserModeHooks>(&mut self, hooks: &T) -> ReturnReason {
+    fn execute<F>(&mut self, mut has_kernel_event: F) -> ReturnReason
+    where
+        F: FnMut() -> bool,
+    {
         let ret = loop {
             crate::task::scheduler::might_preempt();
-
-            let guard = crate::irq::disable_local();
-            hooks.pre_user_run(&guard);
-            self.user_context.run(guard);
+            self.user_context.run();
 
             let cause = loongArch64::register::estat::read().cause();
             let badv = loongArch64::register::badv::read().raw();
@@ -170,6 +166,7 @@ impl UserContextApiInternal for UserContext {
                     | Exception::PageNonExecutableFault
                     | Exception::PagePrivilegeIllegal => {
                         // Handle page fault
+                        // Disable the badv in TLB.
                         tlb_flush_addr(badv);
                         self.cpu_exception_info = Some(CpuExceptionInfo {
                             code: exception,
@@ -200,7 +197,7 @@ impl UserContextApiInternal for UserContext {
                         crate::debug!(
                             "Floating point unit is not available, badv: {badv:#x?}, badi: {badi:#x?}, era: {era:#x?}"
                         );
-                        // TODO: Add FPU support and enable it at proper time
+                        // TODO: Add FPU support and enable it when this exception occurs.
                         break ReturnReason::UserException;
                     }
                     Exception::TLBRFill => unreachable!(),
@@ -238,7 +235,7 @@ impl UserContextApiInternal for UserContext {
                 }
             }
 
-            if hooks.has_kernel_event() {
+            if has_kernel_event() {
                 break ReturnReason::KernelEvent;
             }
         };
@@ -258,6 +255,14 @@ impl UserContextApiInternal for UserContext {
 }
 
 impl UserContextApi for UserContext {
+    fn trap_number(&self) -> usize {
+        todo!()
+    }
+
+    fn trap_error_code(&self) -> usize {
+        todo!()
+    }
+
     fn instruction_pointer(&self) -> usize {
         self.user_context.era
     }

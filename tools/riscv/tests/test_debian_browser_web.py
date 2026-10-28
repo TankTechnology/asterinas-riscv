@@ -1463,7 +1463,7 @@ class BrowserWebContractTests(unittest.TestCase):
             "ConditionKernelCommandLine=!systemd.setenv=ASTERINAS_BROWSER_WEB_BASIC_ONLY=1",
             network_drop_in,
         )
-        self.assertIn("TimeoutStartSec=600s", network_drop_in)
+        self.assertIn("TimeoutStartSec=45s", network_drop_in)
         builder = (ROOTFS / "build_rootfs.sh").read_text()
         self.assertIn(
             '"$stage/etc/systemd/system/'
@@ -1619,6 +1619,7 @@ class BrowserWebContractTests(unittest.TestCase):
         self.assertNotIn("/usr/bin/Xorg :0", launcher)
         self.assertIn("about:blank", launcher)
         self.assertIn("ASTERINAS_FIREFOX_WEB_TARGET_URL", launcher)
+        self.assertIn("A_WEB_TIMELINE_UNAVAILABLE", launcher)
         self.assertIn(
             "Environment=ASTERINAS_FIREFOX_WEB_TARGET_URL=https://www.baidu.com/", unit
         )
@@ -1770,6 +1771,16 @@ class BrowserWebContractTests(unittest.TestCase):
                 r"\AA_WEB_TIMELINE marker=BOOT_PHYSICAL_BROWSER_BEGIN "
                 r"guest_monotonic_ns=[1-9][0-9]* firefox_pid=0\n\Z",
             )
+
+    def test_browser_timeline_writes_are_owner_safe_and_best_effort(self) -> None:
+        timeline_script = (ROOTFS / "browser_web_timeline.sh").read_text()
+        launcher = (ROOTFS / "browser_web_firefox.sh").read_text()
+        for script in (timeline_script, launcher):
+            self.assertIn("if ! printf", script)
+            self.assertIn('>>"$TIMELINE" 2>/dev/null; then', script)
+            self.assertIn("A_WEB_TIMELINE_UNAVAILABLE", script)
+        self.assertIn("/usr/bin/timeout 5 /usr/bin/install", timeline_script)
+        self.assertIn("-o 1000 -g 1000", timeline_script)
 
     def test_startup_timeline_requires_ordered_guest_monotonic_phases(self) -> None:
         evidence = web_evidence()

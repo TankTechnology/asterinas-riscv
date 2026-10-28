@@ -35,10 +35,6 @@ fn parse_initramfs() -> Option<&'static [u8]> {
 
     let base_va = paddr_to_vaddr(start);
     let length = end - start;
-    // SAFETY:
-    // 1. The initramfs is safe to read because of the contract with the loader.
-    // 2. We reserve the initramfs region in `parse_memory_regions`, so it will live as an immutable
-    //    reference for `'static`.
     Some(unsafe { core::slice::from_raw_parts(base_va as *const u8, length) })
 }
 
@@ -50,12 +46,10 @@ fn parse_framebuffer_info() -> Option<BootloaderFramebufferArg> {
     None
 }
 
-fn parse_memory_regions(device_tree_paddr: usize) -> MemoryRegionArray {
+fn parse_memory_regions() -> MemoryRegionArray {
     let mut regions = MemoryRegionArray::new();
 
-    let device_tree = DEVICE_TREE.get().unwrap();
-
-    for region in device_tree.memory().regions() {
+    for region in DEVICE_TREE.get().unwrap().memory().regions() {
         if region.size.unwrap_or(0) > 0 {
             regions
                 .push(MemoryRegion::new(
@@ -64,35 +58,6 @@ fn parse_memory_regions(device_tree_paddr: usize) -> MemoryRegionArray {
                     MemoryRegionType::Usable,
                 ))
                 .unwrap();
-        }
-    }
-
-    for reservation in device_tree.memory_reservations() {
-        let size = reservation.size();
-        if size > 0 {
-            regions
-                .push(MemoryRegion::new(
-                    reservation.address() as usize,
-                    size,
-                    MemoryRegionType::Reserved,
-                ))
-                .unwrap();
-        }
-    }
-
-    if let Some(node) = device_tree.find_node("/reserved-memory") {
-        for child in node.children() {
-            if let Some(reg_iter) = child.reg() {
-                for region in reg_iter {
-                    regions
-                        .push(MemoryRegion::new(
-                            region.starting_address as usize,
-                            region.size.unwrap(),
-                            MemoryRegionType::Reserved,
-                        ))
-                        .unwrap();
-                }
-            }
         }
     }
 
@@ -109,15 +74,6 @@ fn parse_memory_regions(device_tree_paddr: usize) -> MemoryRegionArray {
             ))
             .unwrap();
     }
-
-    // Add the device tree region.
-    regions
-        .push(MemoryRegion::new(
-            device_tree_paddr,
-            device_tree.total_size(),
-            MemoryRegionType::Module,
-        ))
-        .unwrap();
 
     regions.into_non_overlapping()
 }
@@ -158,19 +114,15 @@ unsafe extern "C" fn loongarch_boot(
     check_cpu_config();
 
     let systab_ptr = paddr_to_vaddr(systab_paddr) as *const EfiSystemTable;
-    // SAFETY: The caller ensures the correctness of `systab_paddr`.
     let systab = unsafe { &*(systab_ptr) };
     EFI_SYSTEM_TABLE.call_once(|| systab);
 
-    let device_tree_paddr = systab.device_tree().expect("device tree not found");
-    let device_tree_ptr = paddr_to_vaddr(device_tree_paddr) as *const u8;
-    // SAFETY: The caller ensures the correctness of `systab_paddr`, which then provides a correct
-    // `device_tree_ptr`.
+    let device_tree_ptr =
+        paddr_to_vaddr(systab.device_tree().expect("device tree not found")) as *const u8;
     let fdt = unsafe { Fdt::from_ptr(device_tree_ptr).unwrap() };
     DEVICE_TREE.call_once(|| fdt);
 
     let cmdline_ptr = paddr_to_vaddr(cmdline_paddr) as *const i8;
-    // SAFETY: The caller ensures the correctness of `cmdline_paddr`.
     let cmdline = unsafe { CStr::from_ptr(cmdline_ptr) }.to_str();
 
     use crate::boot::{EARLY_INFO, EarlyBootInfo, start_kernel};
@@ -181,7 +133,7 @@ unsafe extern "C" fn loongarch_boot(
         initramfs: parse_initramfs(),
         acpi_arg: parse_acpi_arg(),
         framebuffer_arg: parse_framebuffer_info(),
-        memory_regions: parse_memory_regions(device_tree_paddr),
+        memory_regions: parse_memory_regions(),
     });
 
     // SAFETY: The safety is guaranteed by the safety preconditions and the fact that we call it

@@ -4,8 +4,8 @@ use super::SyscallReturn;
 use crate::{
     fs::{
         file::{
-            file_table::{get_file_fast, RawFileDesc},
             StatusFlags,
+            file_table::{RawFileDesc, get_file_fast},
         },
         vfs::file_system::sync_all_live_file_systems,
     },

@@ -104,6 +104,20 @@ impl ProcessVm {
         }
     }
 
+    /// Creates a `ProcessVm` for unit tests.
+    ///
+    /// The VMAR tests need the address-space bookkeeping but never execute the
+    /// pseudo executable path, so an anonymous-inode path is sufficient.
+    #[cfg(ktest)]
+    pub(crate) fn new_for_test() -> Self {
+        // `InitStack::new()` uses the kernel RNG, which is normally seeded by
+        // the kernel's init sequence.  The ktest runner bypasses that sequence.
+        crate::util::random::init();
+        Self::new(crate::fs::pseudofs::AnonInodeFs::new_path(|inode| {
+            inode.ino().to_string()
+        }))
+    }
+
     /// Creates a new `ProcessVm` with identical contents of an existing one.
     pub fn fork_from(process_vm: &Self, heap_guard: &LockedHeap) -> Self {
         Self {

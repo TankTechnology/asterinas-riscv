@@ -7,71 +7,57 @@
 #  - scheme: "normal", "test", "microvm" or "iommu";
 # Other arguments are configured via environmental variables:
 #  - OVMF: "on" or "off";
-#  - OVMF_DIR: directory containing OVMF.fd, OVMF_VARS.fd and microvm/MICROVM.fd;
-#  - BOOT_METHOD: "vmm-direct", "grub-rescue-iso" or "grub-qcow2";
-#  - BOOT_PROTOCOL: "multiboot", "multiboot2", "pvh", "linux-legacy32", "linux-efi-pe64" or "linux-efi-handover64";
-#  - NETDEV: "user", "tap" or "none" ("none" is not supported by microvm);
-#  - QEMU_DISPLAY: QEMU display backend, default is "vnc=0.0.0.0:$VNC_PORT", or "none" to disable it;
+#  - BOOT_METHOD: "qemu-direct", "grub-rescue-iso" or "grub-qcow2";
+#  - BOOT_PROTOCOL: "multiboot", "multiboot2", "linux-legacy32", "linux-efi-pe64" or "linux-efi-handover64";
+#  - NETDEV: "user" or "tap";
 #  - VHOST: "off" or "on";
 #  - VSOCK: "off" or "on";
 #  - VIRTIOFS: "off" or "on";
-#  - VIRTIOFS_WORK_DIR: work directory used by the virtio-fs daemons;
 #  - VIRTIOFS_TAG: mount tag for virtio-fs device;
-#  - VIRTIOFS_SCRATCH: "off" or "on", whether to attach a scratch virtio-fs device;
-#  - VIRTIOFS_SCRATCH_TAG: mount tag for the scratch virtio-fs device;
-#  - INITRAMFS: "on" or "off"; when "off", attach `rootfs.img` as an extra block device.
+#  - VIRTIOFS_SOCKET: vhost-user socket path for the virtio-fs server.
 #  - CONSOLE: "hvc0" to enable virtio console;
 #  - SMP: number of CPUs;
 #  - MEM: amount of memory, e.g. "8G";
-#  - VNC_PORT: VNC display number, default is "42" (TCP port 5942),
-#    ignored when QEMU_DISPLAY is set;
-#  - XFSTESTS_NEEDS_BLOCK_DEVICES: "true" or "false", whether to attach
-#    xfstests images (xfstests_test.img and xfstests_scratch.img) to the VM.
+#  - VNC_PORT: VNC port, default is "42";
+#  - QEMU_ACCEL: QEMU accelerator, e.g. "kvm". Empty (the default) lets QEMU
+#    pick its own default;
+#  - RISCV_QEMU_CPU: RISC-V QEMU CPU model and extensions;
+#  - ATTACH_XFSTESTS_IMAGES: "true" or "false", whether to attach xfstests images (xfstests_test.img and xfstests_scratch.img) to the VM. Defaults to auto-detection from ENABLE_CONFORMANCE_TEST + CONFORMANCE_TEST_SUITE.
+
+# OSDK runs QEMU from an ephemeral bundle directory.  Resolve repository
+# artifacts here so drive and log paths do not depend on that working directory.
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" && pwd -P )
+REPO_ROOT=$( cd -- "${SCRIPT_DIR}/.." && pwd -P )
+TEST_BUILD_DIR=${ASTERINAS_TEST_BUILD_DIR:-${REPO_ROOT}/test/initramfs/build}
+QEMU_LOG_DIR=${ASTERINAS_QEMU_LOG_DIR:-${REPO_ROOT}}
+EXT2_DRIVE_FILE=${ASTERINAS_EXT2_DRIVE_FILE:-${TEST_BUILD_DIR}/ext2.img}
+EXFAT_DRIVE_FILE=${ASTERINAS_EXFAT_DRIVE_FILE:-${TEST_BUILD_DIR}/exfat.img}
 
 OVMF=${OVMF:-"on"}
-# Directory holding OVMF.fd, OVMF_VARS.fd and microvm/MICROVM.fd. Defaults to the
-# Docker image's path; the Nix dev shell exports this to the Nix store instead.
-OVMF_DIR=${OVMF_DIR:-/root/ovmf/release}
 VHOST=${VHOST:-"off"}
 VSOCK=${VSOCK:-"off"}
 VIRTIOFS=${VIRTIOFS:-"off"}
-VIRTIOFS_SCRATCH=${VIRTIOFS_SCRATCH:-"off"}
 NETDEV=${NETDEV:-"user"}
-QEMU_DISPLAY=${QEMU_DISPLAY:-"vnc=0.0.0.0:${VNC_PORT:-42}"}
 CONSOLE=${CONSOLE:-"hvc0"}
-XFSTESTS_NEEDS_BLOCK_DEVICES=${XFSTESTS_NEEDS_BLOCK_DEVICES:-false}
+QEMU_ACCEL=${QEMU_ACCEL:-""}
+QEMU_ACCEL_ARGS=${QEMU_ACCEL:+-accel $QEMU_ACCEL}
+RISCV_QEMU_CPU=${RISCV_QEMU_CPU:-"rv64,svpbmt=true,zkr=true"}
 
-# Keep artifact references stable when QEMU is launched from a Docker wrapper or
-# another working directory.  Durability gates may override the ext2 backing
-# file (for example with a blkdebug filter), while the auxiliary images remain
-# the repository build artifacts.
-REPO_ROOT=$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )
-INITRAMFS_BUILD_DIR="$REPO_ROOT/test/initramfs/build"
-EXT2_DRIVE_FILE=${ASTERINAS_EXT2_DRIVE_FILE:-$INITRAMFS_BUILD_DIR/ext2.img}
-EXFAT_DRIVE_FILE=${ASTERINAS_EXFAT_DRIVE_FILE:-$INITRAMFS_BUILD_DIR/exfat.img}
-LTP_DRIVE_FILE=${ASTERINAS_LTP_DRIVE_FILE:-$INITRAMFS_BUILD_DIR/ltp_dev.img}
-if [ -n "${ASTERINAS_QEMU_LOG_DIR:-}" ]; then
-    QEMU_LOG_FILE="$ASTERINAS_QEMU_LOG_DIR/qemu.log"
-else
-    QEMU_LOG_FILE="qemu.log"
+ATTACH_XFSTESTS_IMAGES=${ATTACH_XFSTESTS_IMAGES:-false}
+if [ "${ENABLE_CONFORMANCE_TEST:-"false"}" = "true" ] && \
+   [ "${CONFORMANCE_TEST_SUITE:-"ltp"}" = "xfstests" ]; then
+    ATTACH_XFSTESTS_IMAGES="true"
 fi
+VIRTIOFS_TAG=${VIRTIOFS_TAG:-"aster-virtiofs"}
+VIRTIOFS_SOCKET=${VIRTIOFS_SOCKET:-"/tmp/vhostqemu/vfs.sock"}
 
-if [ "$XFSTESTS_NEEDS_BLOCK_DEVICES" != "true" ] && \
-   [ "$XFSTESTS_NEEDS_BLOCK_DEVICES" != "false" ]; then
-    echo "Invalid XFSTESTS_NEEDS_BLOCK_DEVICES=${XFSTESTS_NEEDS_BLOCK_DEVICES}" 1>&2
-    exit 1
-fi
-
-# Draw all host ports from a single `shuf` invocation,
-# so that none of them will conflict with others.
-mapfile -t RAND_PORTS < <(shuf -i 1024-65535 -n 7)
-SSH_RAND_PORT=${SSH_PORT:-${RAND_PORTS[0]}}
-NGINX_RAND_PORT=${NGINX_PORT:-${RAND_PORTS[1]}}
-REDIS_RAND_PORT=${REDIS_PORT:-${RAND_PORTS[2]}}
-IPERF_RAND_PORT=${IPERF_PORT:-${RAND_PORTS[3]}}
-LMBENCH_TCP_LAT_RAND_PORT=${LMBENCH_TCP_LAT_PORT:-${RAND_PORTS[4]}}
-LMBENCH_TCP_BW_RAND_PORT=${LMBENCH_TCP_BW_PORT:-${RAND_PORTS[5]}}
-MEMCACHED_RAND_PORT=${MEMCACHED_PORT:-${RAND_PORTS[6]}}
+SSH_RAND_PORT=${SSH_PORT:-$(shuf -i 1024-65535 -n 1)}
+NGINX_RAND_PORT=${NGINX_PORT:-$(shuf -i 1024-65535 -n 1)}
+REDIS_RAND_PORT=${REDIS_PORT:-$(shuf -i 1024-65535 -n 1)}
+IPERF_RAND_PORT=${IPERF_PORT:-$(shuf -i 1024-65535 -n 1)}
+LMBENCH_TCP_LAT_RAND_PORT=${LMBENCH_TCP_LAT_PORT:-$(shuf -i 1024-65535 -n 1)}
+LMBENCH_TCP_BW_RAND_PORT=${LMBENCH_TCP_BW_PORT:-$(shuf -i 1024-65535 -n 1)}
+MEMCACHED_RAND_PORT=${MEMCACHED_PORT:-$(shuf -i 1024-65535 -n 1)}
 
 # Optional QEMU arguments. Opt in them manually if needed.
 # QEMU_OPT_ARG_DUMP_PACKETS="-object filter-dump,id=filter0,netdev=net01,file=virtio-net.pcap"
@@ -79,74 +65,33 @@ MEMCACHED_RAND_PORT=${MEMCACHED_PORT:-${RAND_PORTS[6]}}
 if [ "$NETDEV" = "user" ]; then
     echo "[$1] Forwarded QEMU guest port: $SSH_RAND_PORT->22; $NGINX_RAND_PORT->8080 $REDIS_RAND_PORT->6379 $IPERF_RAND_PORT->5201 $LMBENCH_TCP_LAT_RAND_PORT->31234 $LMBENCH_TCP_BW_RAND_PORT->31236 $MEMCACHED_RAND_PORT->11211" 1>&2
     NETDEV_ARGS="-netdev user,id=net01,hostfwd=tcp::$SSH_RAND_PORT-:22,hostfwd=tcp::$NGINX_RAND_PORT-:8080,hostfwd=tcp::$REDIS_RAND_PORT-:6379,hostfwd=tcp::$IPERF_RAND_PORT-:5201,hostfwd=tcp::$LMBENCH_TCP_LAT_RAND_PORT-:31234,hostfwd=tcp::$LMBENCH_TCP_BW_RAND_PORT-:31236,hostfwd=tcp::$MEMCACHED_RAND_PORT-:11211"
+    VIRTIO_NET_FEATURES=",mrg_rxbuf=off,ctrl_rx=off,ctrl_rx_extra=off,ctrl_vlan=off,ctrl_vq=off,ctrl_guest_offloads=off,ctrl_mac_addr=off,event_idx=off,queue_reset=off,guest_announce=off,indirect_desc=off"
 elif [ "$NETDEV" = "tap" ]; then
     THIS_SCRIPT_DIR=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
     QEMU_IFUP_SCRIPT_PATH=$THIS_SCRIPT_DIR/net/qemu-ifup.sh
     QEMU_IFDOWN_SCRIPT_PATH=$THIS_SCRIPT_DIR/net/qemu-ifdown.sh
     NETDEV_ARGS="-netdev tap,id=net01,script=$QEMU_IFUP_SCRIPT_PATH,downscript=$QEMU_IFDOWN_SCRIPT_PATH,vhost=$VHOST"
-elif [ "$NETDEV" = "none" ]; then
-    NETDEV_ARGS="-nic none"
+    VIRTIO_NET_FEATURES=",csum=off,guest_csum=off,ctrl_guest_offloads=off,guest_tso4=off,guest_tso6=off,guest_ecn=off,guest_ufo=off,host_tso4=off,host_tso6=off,host_ecn=off,host_ufo=off,mrg_rxbuf=off,ctrl_vq=off,ctrl_rx=off,ctrl_vlan=off,ctrl_rx_extra=off,guest_announce=off,ctrl_mac_addr=off,host_ufo=off,guest_uso4=off,guest_uso6=off,host_uso=off"
 else
     echo "Invalid netdev" 1>&2
     NETDEV_ARGS="-nic none"
 fi
 
-VIRTIO_NET_FEATURES=",csum=off,ctrl_guest_offloads=off,ctrl_mac_addr=off,ctrl_rx_extra=off,ctrl_rx=off,ctrl_vlan=off,ctrl_vq=off,event_idx=off,guest_announce=off,guest_csum=off,guest_ecn=off,guest_tso4=off,guest_tso6=off,guest_ufo=off,guest_uso4=off,guest_uso6=off,host_ecn=off,host_tso4=off,host_tso6=off,host_ufo=off,host_uso=off,indirect_desc=off,mrg_rxbuf=off,queue_reset=off"
-
-if [ "$NETDEV" = "none" ]; then
-    RISCV_NET_ARGS="-nic none"
-else
-    RISCV_NET_ARGS="$NETDEV_ARGS -device virtio-net-device,netdev=net01$VIRTIO_NET_FEATURES"
-fi
-
 if [ "$CONSOLE" = "hvc0" ]; then
     # Kernel logs are printed to all consoles. Redirect serial output to a file to avoid duplicate logs.
-    CONSOLE_ARGS="-device virtconsole,chardev=mux -serial file:qemu-serial.log"
+    CONSOLE_ARGS="-device virtconsole,chardev=mux -serial file:${QEMU_LOG_DIR}/qemu-serial.log"
 else
     CONSOLE_ARGS="-serial chardev:mux"
 fi
 
-if [ "$INITRAMFS" = "off" ]; then
-    ROOTFS_IMG=${ASTERINAS_ROOTFS_DRIVE_FILE:-./test/initramfs/build/rootfs.img}
-    ROOTFS_DRIVE_ARGS="-drive if=none,format=raw,id=rootfs,file=$ROOTFS_IMG"
-fi
-
-if [ "${XFSTESTS_FS_TYPE:-}" = "virtiofs" ]; then
-    VIRTIOFS_TAG=${XFSTESTS_TEST_DEV:-aster-virtiofs}
-    VIRTIOFS_SCRATCH_TAG=${XFSTESTS_SCRATCH_DEV:-aster-virtiofs-scratch}
-else
-    VIRTIOFS_TAG=${VIRTIOFS_TAG:-"aster-virtiofs"}
-    VIRTIOFS_SCRATCH_TAG=${VIRTIOFS_SCRATCH_TAG:-"aster-virtiofs-scratch"}
-fi
-
-if [ "$VIRTIOFS_SCRATCH" = "on" ] && [ "$VIRTIOFS" != "on" ]; then
-    echo "VIRTIOFS_SCRATCH=on requires VIRTIOFS=on" 1>&2
-    exit 1
-fi
-
-if [ "$VIRTIOFS" = "on" ] && [ -z "${VIRTIOFS_WORK_DIR:-}" ]; then
-    echo "VIRTIOFS_WORK_DIR must be set when VIRTIOFS=on" 1>&2
-    exit 1
-fi
-
-# These paths must match the work directories passed to tools/run_virtiofsd.sh.
-VIRTIOFS_SOCKET="$VIRTIOFS_WORK_DIR/vfs.sock"
-VIRTIOFS_SCRATCH_SOCKET="$VIRTIOFS_WORK_DIR/scratch/vfs.sock"
-
 if [ "$1" = "riscv" ]; then
     # NOTE: The initramfs assumes that ext2.img, exfat.img, and ltp_dev.img appear as
     # `/dev/vda`, `/dev/vdb`, and `/dev/vdc`, respectively. RISC-V virtio-mmio
-    # block devices are discovered in reverse command-line order, so list them
-    # in the reverse of the desired device-node order.
-    # When booting without initramfs, `rootfs.img` is placed before these devices
-    # so that it is discovered after them as `/dev/vdd`.
+    # block devices are discovered in command-line order, so declare the
+    # devices in the desired device-node order.
     # TODO: Once UUID-based mounting is implemented, this strict ordering will no longer be required.
-    if [ "$INITRAMFS" = "off" ]; then
-        ROOTFS_RISCV_DEVICE_ARGS="-device virtio-blk-device,drive=rootfs"
-    fi
-
     QEMU_ARGS="\
-        -cpu rv64,svpbmt=true,zkr=true \
+        -cpu $RISCV_QEMU_CPU \
         -machine virt \
         -m ${MEM:-8G} \
         -smp ${SMP:-1} \
@@ -154,48 +99,13 @@ if [ "$1" = "riscv" ]; then
         -nographic \
         -display none \
         -monitor chardev:mux \
-        -chardev stdio,id=mux,mux=on,signal=off,logfile=$QEMU_LOG_FILE \
-        $ROOTFS_DRIVE_ARGS \
-        -drive if=none,format=raw,id=x0,file=$EXT2_DRIVE_FILE \
-        -drive if=none,format=raw,id=x1,file=$EXFAT_DRIVE_FILE \
-        -drive if=none,format=raw,id=x2,file=$LTP_DRIVE_FILE \
-        $ROOTFS_RISCV_DEVICE_ARGS \
-        -device virtio-blk-device,drive=x2 \
-        -device virtio-blk-device,drive=x1 \
+        -chardev stdio,id=mux,mux=on,signal=off,logfile=${QEMU_LOG_DIR}/qemu.log \
+        -drive if=none,format=raw,id=x0,file=${EXT2_DRIVE_FILE} \
+        -drive if=none,format=raw,id=x1,file=${EXFAT_DRIVE_FILE} \
+        -drive if=none,format=raw,id=x2,file=${TEST_BUILD_DIR}/ltp_dev.img \
         -device virtio-blk-device,drive=x0 \
-        $RISCV_NET_ARGS \
-        -device virtio-keyboard-device \
-        -device virtio-serial-device \
-        $CONSOLE_ARGS \
-    "
-    echo $QEMU_ARGS
-    exit 0
-fi
-
-if [ "$1" = "aarch64" ]; then
-    # QEMU in KVM mode on a native aarch64 host only accepts host-compatible
-    # CPU models (e.g. `host` or `max`).
-    if [ "${ENABLE_KVM:-1}" = "1" ] && [ -e /dev/kvm ] && [ "$(uname -m)" = "aarch64" ]; then
-        CPU_MODEL=host
-    else
-        CPU_MODEL=cortex-a72
-    fi
-    QEMU_ARGS="\
-        -cpu ${CPU_MODEL} \
-        -machine virt,gic-version=3 \
-        -m ${MEM:-8G} \
-        -smp ${SMP:-1} \
-        --no-reboot \
-        -nographic \
-        -display none \
-        -monitor chardev:mux \
-        -chardev stdio,id=mux,mux=on,signal=off,logfile=qemu.log \
-        -drive if=none,format=raw,id=x0,file=./test/initramfs/build/ext2.img \
-        -drive if=none,format=raw,id=x1,file=./test/initramfs/build/exfat.img \
-        -drive if=none,format=raw,id=x2,file=./test/initramfs/build/ltp_dev.img \
-        -device virtio-blk-device,drive=x2 \
         -device virtio-blk-device,drive=x1 \
-        -device virtio-blk-device,drive=x0 \
+        -device virtio-blk-device,drive=x2 \
         -device virtio-keyboard-device \
         -device virtio-serial-device \
         $CONSOLE_ARGS \
@@ -206,9 +116,6 @@ fi
 
 if [ "$1" = "tdx" ]; then
     TDX_OBJECT='{ "qom-type": "tdx-guest", "id": "tdx0", "sept-ve-disable": true, "quote-generation-socket": { "type": "vsock", "cid": "1", "port": "4050" } }'
-    if [ "$INITRAMFS" = "off" ]; then
-        ROOTFS_TDX_DEVICE_ARGS="-device virtio-blk-pci,bus=pcie.0,addr=0xb,drive=rootfs,serial=vrootfs,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off"
-    fi
 
     QEMU_ARGS="\
         -m ${MEM:-8G} \
@@ -217,23 +124,21 @@ if [ "$1" = "tdx" ]; then
         -nographic \
         -monitor pty \
         -nodefaults \
-        -bios ${OVMF_DIR}/OVMF.fd \
+        -bios /root/ovmf/release/OVMF.fd \
         -cpu host,-kvm-steal-time,pmu=off \
         -machine q35,kernel-irqchip=split,confidential-guest-support=tdx0 \
         -object '$TDX_OBJECT' \
-        -drive if=none,format=raw,id=x0,file=./test/initramfs/build/ext2.img \
-        -drive if=none,format=raw,id=x1,file=./test/initramfs/build/exfat.img \
-        -drive if=none,format=raw,id=x2,file=./test/initramfs/build/ltp_dev.img \
-        $ROOTFS_DRIVE_ARGS \
+        -drive if=none,format=raw,id=x0,file=${TEST_BUILD_DIR}/ext2.img \
+        -drive if=none,format=raw,id=x1,file=${EXFAT_DRIVE_FILE} \
+        -drive if=none,format=raw,id=x2,file=${TEST_BUILD_DIR}/ltp_dev.img \
         -device virtio-blk-pci,bus=pcie.0,addr=0x6,drive=x0,serial=vext2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off \
         -device virtio-blk-pci,bus=pcie.0,addr=0x7,drive=x1,serial=vexfat,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off \
         -device virtio-blk-pci,bus=pcie.0,addr=0x8,drive=x2,serial=vltpdev,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off \
-        $ROOTFS_TDX_DEVICE_ARGS \
         -device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off$VIRTIO_NET_FEATURES \
         -device virtio-keyboard-pci,disable-legacy=on,disable-modern=off \
         $NETDEV_ARGS \
         $QEMU_OPT_ARG_DUMP_PACKETS \
-        -chardev stdio,id=mux,mux=on,logfile=qemu.log \
+        -chardev stdio,id=mux,mux=on,logfile=${QEMU_LOG_DIR}/qemu.log \
         -device virtio-serial,romfile= \
         $CONSOLE_ARGS \
         -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
@@ -245,28 +150,28 @@ if [ "$1" = "tdx" ]; then
 fi
 
 COMMON_QEMU_ARGS="\
-    -cpu Icelake-Server,+x2apic,+vmx \
+    $QEMU_ACCEL_ARGS \
+    -cpu Icelake-Server,+x2apic \
     -smp ${SMP:-1} \
     -m ${MEM:-8G} \
     --no-reboot \
     -nographic \
-    -display $QEMU_DISPLAY \
+    -display vnc=0.0.0.0:${VNC_PORT:-42} \
     -monitor chardev:mux \
-    -chardev stdio,id=mux,mux=on,signal=off,logfile=qemu.log \
+        -chardev stdio,id=mux,mux=on,signal=off,logfile=${QEMU_LOG_DIR}/qemu.log \
     $NETDEV_ARGS \
     $QEMU_OPT_ARG_DUMP_PACKETS \
     -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-    -drive if=none,format=raw,id=x0,file=./test/initramfs/build/ext2.img \
-    -drive if=none,format=raw,id=x1,file=./test/initramfs/build/exfat.img \
-    -drive if=none,format=raw,id=x2,file=./test/initramfs/build/ltp_dev.img \
-    $ROOTFS_DRIVE_ARGS \
+    -drive if=none,format=raw,id=x0,file=${TEST_BUILD_DIR}/ext2.img \
+    -drive if=none,format=raw,id=x1,file=${EXFAT_DRIVE_FILE} \
+    -drive if=none,format=raw,id=x2,file=${TEST_BUILD_DIR}/ltp_dev.img \
 "
 
-# Add xfstests drives when the selected file system needs block devices.
-if [ "$XFSTESTS_NEEDS_BLOCK_DEVICES" = "true" ]; then
+# Add xfstests drives when the selected conformance suite is `xfstests`.
+if [ "$ATTACH_XFSTESTS_IMAGES" = "true" ]; then
     COMMON_QEMU_ARGS="$COMMON_QEMU_ARGS \
-    -drive if=none,format=raw,id=x3,file=./test/initramfs/build/xfstests_test.img \
-    -drive if=none,format=raw,id=x4,file=./test/initramfs/build/xfstests_scratch.img \
+    -drive if=none,format=raw,id=x3,file=${TEST_BUILD_DIR}/xfstests_test.img \
+    -drive if=none,format=raw,id=x4,file=${TEST_BUILD_DIR}/xfstests_scratch.img \
 "
 fi
 
@@ -283,17 +188,6 @@ if [ "$1" = "iommu" ]; then
     # TODO: Add support for enabling IOMMU on AMD platforms
 fi
 
-if [ "$INITRAMFS" = "off" ]; then
-    ROOTFS_MICROVM_DEVICE_ARGS="-device virtio-blk-device,drive=rootfs,serial=vrootfs"
-    ROOTFS_Q35_DEVICE_ARGS="-device virtio-blk-pci,bus=pcie.0,addr=0xc,drive=rootfs,serial=vrootfs,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA"
-fi
-
-# The virtio-net device needs the net01 backend, which NETDEV=none does not create.
-Q35_NETWORK_DEVICE_ARGS=""
-if [ "$NETDEV" = "user" ] || [ "$NETDEV" = "tap" ]; then
-    Q35_NETWORK_DEVICE_ARGS="-device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off$VIRTIO_NET_FEATURES$IOMMU_DEV_EXTRA"
-fi
-
 if [ "$1" = "microvm" ]; then
     QEMU_ARGS="\
         $COMMON_QEMU_ARGS \
@@ -303,7 +197,6 @@ if [ "$1" = "microvm" ]; then
         -device virtio-blk-device,drive=x0,serial=vext2 \
         -device virtio-blk-device,drive=x1,serial=vexfat \
         -device virtio-blk-device,drive=x2,serial=vltpdev \
-        $ROOTFS_MICROVM_DEVICE_ARGS \
         -device virtio-keyboard-device \
         -device virtio-net-device,netdev=net01 \
         -device virtio-serial-device \
@@ -316,20 +209,19 @@ else
         -device virtio-blk-pci,bus=pcie.0,addr=0x6,drive=x0,serial=vext2,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -device virtio-blk-pci,bus=pcie.0,addr=0x7,drive=x1,serial=vexfat,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
         -device virtio-blk-pci,bus=pcie.0,addr=0x8,drive=x2,serial=vltpdev,disable-legacy=on,disable-modern=off,queue-size=64,num-queues=1,request-merging=off,backend_defaults=off,discard=off,write-zeroes=off,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
-        $ROOTFS_Q35_DEVICE_ARGS \
         -object rng-random,id=rng0,filename=/dev/urandom \
         -device virtio-rng-pci,bus=pcie.0,addr=0x9,disable-legacy=on,disable-modern=off,rng=rng0,event_idx=off,indirect_desc=off,queue_reset=off$IOMMU_DEV_EXTRA \
-        $Q35_NETWORK_DEVICE_ARGS \
+        -device virtio-net-pci,netdev=net01,disable-legacy=on,disable-modern=off$VIRTIO_NET_FEATURES$IOMMU_DEV_EXTRA \
         -device virtio-serial-pci,disable-legacy=on,disable-modern=off$IOMMU_DEV_EXTRA \
-        -drive if=none,format=raw,id=nvme0n1,file=./test/initramfs/build/nvme0n1.img \
+        -drive if=none,format=raw,id=nvme0n1,file=${TEST_BUILD_DIR}/nvme0n1.img \
         -device nvme,drive=nvme0n1,serial=nvme0n1 \
         $CONSOLE_ARGS \
         $IOMMU_EXTRA_ARGS \
     "
 fi
 
-# Add xfstests devices when the selected file system needs block devices.
-if [ "$XFSTESTS_NEEDS_BLOCK_DEVICES" = "true" ]; then
+# Add xfstests devices when the selected conformance suite is `xfstests`.
+if [ "$ATTACH_XFSTESTS_IMAGES" = "true" ]; then
     if [ "$1" = "microvm" ]; then
         QEMU_ARGS="$QEMU_ARGS \
         -device virtio-blk-device,drive=x3,serial=vxfstest \
@@ -352,15 +244,6 @@ if [ "$VIRTIOFS" = "on" ]; then
         -chardev socket,id=char0,path=$VIRTIOFS_SOCKET \
         -device vhost-user-fs-pci,chardev=char0,tag=$VIRTIOFS_TAG \
     "
-
-    if [ "$VIRTIOFS_SCRATCH" = "on" ]; then
-        echo "[$1] Enabled scratch virtio-fs: tag=$VIRTIOFS_SCRATCH_TAG, socket=$VIRTIOFS_SCRATCH_SOCKET" 1>&2
-        QEMU_ARGS="
-            $QEMU_ARGS \
-            -chardev socket,id=char1,path=$VIRTIOFS_SCRATCH_SOCKET \
-            -device vhost-user-fs-pci,chardev=char1,tag=$VIRTIOFS_SCRATCH_TAG \
-        "
-    fi
 fi
 
 if [ "$VSOCK" = "on" ]; then
@@ -378,9 +261,9 @@ if [ "$VSOCK" = "on" ]; then
     fi
 fi
 
-# When using direct ELF boot, OVMF depends on the boot protocol:
+# When using qemu-direct boot, OVMF depends on the boot protocol:
 # linux-efi-* protocols require OVMF; other protocols (e.g. multiboot) do not.
-if [ "$BOOT_METHOD" = "vmm-direct" ]; then
+if [ "$BOOT_METHOD" = "qemu-direct" ]; then
     if [ "$BOOT_PROTOCOL" = "linux-efi-pe64" ] || [ "$BOOT_PROTOCOL" = "linux-efi-handover64" ]; then
         OVMF="on"
     else
@@ -399,11 +282,11 @@ fi
 if [ "$OVMF" = "on" ]; then
     if [ "$1" = "microvm" ]; then
         QEMU_ARGS="${QEMU_ARGS} \
-            -bios ${OVMF_DIR}/microvm/MICROVM.fd \
+            -bios /root/ovmf/release/microvm/MICROVM.fd \
         "
     else
         QEMU_ARGS="${QEMU_ARGS} \
-            -bios ${OVMF_DIR}/OVMF.fd \
+            -bios /root/ovmf/release/OVMF.fd \
         "
     fi
 fi

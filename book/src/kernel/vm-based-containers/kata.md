@@ -199,14 +199,14 @@ If you are using the image's default kernel,
 look for:
 
 ```text
-/opt/kata/share/kata-containers/asterinas-osdk-bin.elf
+/opt/kata/share/kata-containers/aster-kernel-osdk-bin.qemu_elf
 ```
 
 If you configured a locally built kernel in Step 4,
 look for:
 
 ```text
-/root/asterinas/target/osdk/asterinas-osdk-bin.elf
+/root/asterinas/target/osdk/aster-kernel-osdk-bin.qemu_elf
 ```
 
 This is the most direct check that Kata booted an Asterinas guest kernel.
@@ -237,20 +237,20 @@ so it assumes you entered the Kata-ready environment through the
 Build the kernel first:
 
 ```bash
-(cd /root/asterinas && make kernel BOOT_METHOD=vmm-direct)
+(cd /root/asterinas && make kernel BOOT_METHOD=qemu-direct)
 ```
 
 Verify that the command produced the kernel image:
 
 ```bash
-ls /root/asterinas/target/osdk/asterinas-osdk-bin.elf
+ls /root/asterinas/target/osdk/aster-kernel-osdk-bin.qemu_elf
 ```
 
 Pass that path to `tools/kata/kata_env.sh install`:
 
 ```bash
 tools/kata/kata_env.sh install \
-    --kernel /root/asterinas/target/osdk/asterinas-osdk-bin.elf
+    --kernel /root/asterinas/target/osdk/aster-kernel-osdk-bin.qemu_elf
 ```
 
 Configuring a local kernel re-runs `tools/kata/kata_env.sh install`

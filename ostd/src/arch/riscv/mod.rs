@@ -11,7 +11,7 @@ pub(crate) mod io;
 pub(crate) mod iommu;
 pub mod irq;
 pub(crate) mod mm;
-pub mod power;
+mod power;
 pub(crate) mod serial;
 pub(crate) mod task;
 mod timer;
@@ -40,6 +40,8 @@ pub(crate) unsafe fn late_init_on_bsp() {
     // after the kernel page table is activated.
     let io_mem_builder = unsafe { io::construct_io_mem_allocator_builder() };
 
+    mm::init_platform_cache(&io_mem_builder);
+
     // SAFETY: This function is called once and at most once at a proper timing
     // in the boot context of the BSP, with no external interrupt-related
     // operations having been performed.
@@ -49,13 +51,19 @@ pub(crate) unsafe fn late_init_on_bsp() {
     // performed.
     unsafe { irq::ipi::init_on_bsp() };
 
+    init_instruction_cache_coherence();
+
     // SAFETY: This function is called once and at most once at a proper timing
     // in the boot context of the BSP, with no timer-related operations having
     // been performed.
     unsafe { timer::init_on_bsp() };
 
+    probe_cpu_clock_if_requested();
+
     // SAFETY: We're on the BSP and we're ready to boot all APs.
     unsafe { crate::boot::smp::boot_all_aps() };
+
+    power::init(&io_mem_builder);
 
     // SAFETY:
     // 1. All the system device memory have been removed from the builder.
@@ -91,6 +99,108 @@ pub(crate) unsafe fn init_on_ap() {
 /// Returns the frequency of TSC. The unit is Hz.
 pub fn tsc_freq() -> u64 {
     timer::get_timebase_freq()
+}
+
+/// Measures core cycles against the independent device-tree timebase when
+/// explicitly requested for board performance diagnosis.
+fn probe_cpu_clock_if_requested() {
+    let cmdline = crate::boot::EARLY_INFO.get().unwrap().kernel_cmdline;
+    if !cmdline
+        .split_ascii_whitespace()
+        .any(|arg| arg == "asterinas.cpu_clock_probe=1")
+    {
+        return;
+    }
+
+    let timebase_hz = tsc_freq();
+    let sample_ticks = (timebase_hz / 100).max(1); // About 10 ms per sample.
+    for sample in 1..=3 {
+        let cycle_start = riscv::register::cycle::read64();
+        let time_start = riscv::register::time::read64();
+        let time_end = loop {
+            let now = riscv::register::time::read64();
+            if now.wrapping_sub(time_start) >= sample_ticks {
+                break now;
+            }
+            core::hint::spin_loop();
+        };
+        let cycle_end = riscv::register::cycle::read64();
+        let elapsed_ticks = time_end.wrapping_sub(time_start);
+        let elapsed_cycles = cycle_end.wrapping_sub(cycle_start);
+        let core_hz =
+            u128::from(elapsed_cycles) * u128::from(timebase_hz) / u128::from(elapsed_ticks);
+        crate::early_println!(
+            "CPU clock probe: sample={} cycles={} time_ticks={} timebase_hz={} estimated_core_hz={}",
+            sample,
+            elapsed_cycles,
+            elapsed_ticks,
+            timebase_hz,
+            core_hz
+        );
+    }
+}
+
+pub(crate) fn request_timer_interrupt_after(duration: core::time::Duration) {
+    timer::request_interrupt_after(duration);
+}
+
+/// Flushes the instruction cache so that freshly written code becomes
+/// executable.
+///
+/// This is the backend of the `riscv_flush_icache` system call: user-space
+/// JITs write code pages with data stores and must synchronize the
+/// instruction stream before executing them.
+///
+/// If `local_only` is set, only the current hart's instruction cache is
+/// flushed; otherwise all harts are flushed (via the SBI RFENCE extension).
+/// Note that flushing all harts is a safe superset of Linux's semantics,
+/// which only flush the harts the current address space has run on.
+///
+/// Returns an error if the firmware cannot complete a requested remote fence.
+pub fn flush_icache(local_only: bool) -> Result<(), crate::Error> {
+    // SAFETY: Executing `fence.i` is always safe; it only synchronizes the
+    // instruction stream with data memory on the current hart.
+    unsafe { core::arch::asm!("fence.i", options(nostack)) };
+
+    if !local_only {
+        // Before SMP initialization, no other hart runs kernel or userspace
+        // code, so the local `fence.i` above is sufficient.
+        if let Some(hw_cpu_ids) = crate::smp::hw_cpu_id_mapping() {
+            // The writing hart must order earlier stores before requesting
+            // remote `fence.i` execution. This follows the RISC-V Zifencei
+            // contract and Linux's RISC-V cache-flush sequence.
+            //
+            // References:
+            // - <https://docs.riscv.org/reference/isa/unpriv/zifencei.html>
+            // - <https://github.com/torvalds/linux/blob/master/arch/riscv/mm/cacheflush.c>
+            //
+            // SAFETY: A `fence` only constrains the calling hart's memory and
+            // device-I/O ordering.
+            unsafe { core::arch::asm!("fence w, o", options(nostack)) };
+            irq::remote_fence_i_all_online_harts(hw_cpu_ids)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn init_instruction_cache_coherence() {
+    let num_cpus = crate::cpu::num_cpus();
+    if num_cpus == 1 {
+        crate::info!("RISC-V icache coherence: harts=1, mode=local-fence-i");
+        return;
+    }
+
+    let rfence_available = sbi_rt::probe_extension(sbi_rt::Fence).is_available();
+    crate::info!(
+        "RISC-V icache coherence: harts={}, sbi_rfence={}",
+        num_cpus,
+        rfence_available
+    );
+    assert!(
+        rfence_available,
+        "SBI RFENCE is required for instruction-cache coherence on SMP RISC-V systems"
+    );
 }
 
 /// Reads the current value of the processor's time-stamp counter (TSC).

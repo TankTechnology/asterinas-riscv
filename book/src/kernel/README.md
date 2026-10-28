@@ -18,7 +18,7 @@ establishes Asterinas as a more secure and dependable kernel option.
 * Asterinas surpasses Linux in terms of developer friendliness.
 It empowers kernel developers to
 (1) utilize the more productive Rust programming language,
-(2) leverage a purpose-built toolkit called [OSDK](../osdk/guide/) to streamline their workflows,
+(2) leverage a purpose-built toolkit called [OSDK]() to streamline their workflows,
 and (3) choose between releasing their kernel modules as open source
 or keeping them proprietary,
 thanks to the flexibility offered by [MPL](../).
@@ -45,7 +45,6 @@ that Asterinas can run on as an OS kernel.
 | ------------------- | ------ |
 | x86-64              | Tier 1 |
 | x86-64 (Intel TDX)  | Tier 2 |
-| ARM 64              | Tier 2 |
 | RISC-V 64           | Tier 2 |
 | LoongArch 64        | Tier 3 |
 
@@ -81,14 +80,12 @@ since `distro/README.md` references them -->
                 --network=host \
                 -v /dev:/dev \
                 -v $(pwd)/asterinas:/root/asterinas \
-                asterinas/dev:0.19.0-20261012
+                asterinas/asterinas:0.18.0-20260702
     ```
 
     Alternatively, if you use VS Code with the
     [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
     extension, open the cloned folder and select "Reopen in Container".
-    If you prefer Nix to Docker, enter the Nix development shell instead,
-    as described in [Using Nix for Development](nix-development.md).
 
 3. Inside the container, go to the project folder to build and run Asterinas.
 

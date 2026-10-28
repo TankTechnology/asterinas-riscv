@@ -30,7 +30,7 @@ import tempfile
 import time
 
 REVISION = 'afb47eddaf10a411c1ea3cb64965461f1308a6ea'
-DEFAULT_ARCHITECTURE = 'riscv64'
+PLATFORM = 'riscv64-unknown-linux-gnu'
 ADAPTATIONS = ['explicit IPv4 loopback server arguments',
                'skip modern netstat interface-table headers']
 
@@ -230,14 +230,14 @@ def audit(text: str, stderr: str, status: int | None, timed_out: bool) -> dict:
             'scope': 'native ALL, 8 MiB, one copy, FASTMEM; no raw disks or remote hosts'}
 
 
-def patch_scripts(root: Path, platform: str) -> None:
+def patch_scripts(root: Path) -> None:
     old = 'for server in $SERVERS; do $server -s; done'
     new = ('for server in $SERVERS; do\n'
            '    case "$server" in\n'
            '        lat_rpc) "$server" -s ;;\n'
            '        *) "$server" -s 127.0.0.1 ;;\n'
            '    esac\ndone')
-    for script in (root / 'scripts/lmbench', root / 'bin' / platform / 'lmbench'):
+    for script in (root / 'scripts/lmbench', root / 'bin' / PLATFORM / 'lmbench'):
         content = script.read_text()
         if content.count(old) != 1:
             raise ValueError('upstream server startup changed; review the adaptation')
@@ -246,45 +246,10 @@ def patch_scripts(root: Path, platform: str) -> None:
         if content.count(old_header) != 1:
             raise ValueError('upstream netstat header handling changed; review the adaptation')
         # Modern net-tools prints two headers, neither of which names an iface.
-        content = content.replace(old_header, '*ame|Kernel|Iface)\t;;')
-        # LINE_SIZE reaches the CONFIG only through config-run's `line -M ${MB}M`.
-        # That timing probe can return nothing on an emulated CPU -- the same
-        # guest reports MHZ="-1 System too busy" -- and the machine-specific
-        # default above applies only when there is no CONFIG, so the guest ends
-        # up with an empty LINE_SIZE and `tlb -L  -M 8M` fails to parse. MB
-        # already falls back below; give LINE_SIZE the same treatment, using the
-        # value upstream itself defaults to.
-        old_mb = 'if [ X$MB = X ]\nthen\tMB=8\nfi\n'
-        if content.count(old_mb) != 1:
-            raise ValueError('upstream MB default changed; review the adaptation')
-        content = content.replace(
-            old_mb,
-            old_mb + ('if [ X$LINE_SIZE = X ]\n'
-                      'then\tLINE_SIZE=512\n'
-                      'fi\n'))
-        script.write_text(content)
-
-    config_run = root / 'scripts/config-run'
-    content = config_run.read_text()
-    memsize_probe = 'MB=`../bin/$OS/memsize $MB`\n' * 3
-    if content.count(memsize_probe) != 1:
-        raise ValueError('upstream memory probe changed; review the adaptation')
-    config_run.write_text(content.replace(
-        memsize_probe,
-        memsize_probe + (
-            '# memsize widens its range until the average per-page touch exceeds its\n'
-            '# fixed 10 usec threshold, so an emulated CPU can make it report 1 MB on a\n'
-            '# machine with gigabytes free. The size check below then aborts the whole\n'
-            '# run before any CONFIG is written, which is what left the guest with no\n'
-            '# measurements at all. MB is already clamped to a fraction of MemTotal by\n'
-            '# this point, so read a collapse below the floor as "too slow to time",\n'
-            '# not as "not enough memory".\n'
-            'if [ $MB -lt 8 ]\n'
-            'then\tMB=8\n'
-            'fi\n')))
+        script.write_text(content.replace(old_header, '*ame|Kernel|Iface)\t;;'))
 
 
-def verify_archive(archive: Path, architecture: 'Architecture') -> dict:
+def verify_archive(archive: Path) -> dict:
     """Reject a stale native runtime before paying for a full guest run."""
     with tarfile.open(archive, 'r:gz') as tar:
         def read(name: str) -> bytes:
@@ -300,8 +265,7 @@ def verify_archive(archive: Path, architecture: 'Architecture') -> dict:
             return file.read()
 
         metadata = json.loads(read('asterinas-runtime.json'))
-        if (metadata.get('revision') != REVISION or
-                metadata.get('platform') != architecture.platform):
+        if metadata.get('revision') != REVISION or metadata.get('platform') != PLATFORM:
             raise ValueError('runtime archive revision or platform differs from this runner')
         if metadata.get('adaptations') != ADAPTATIONS:
             raise ValueError('runtime archive adaptations differ from this runner')
@@ -314,7 +278,7 @@ def verify_archive(archive: Path, architecture: 'Architecture') -> dict:
             raise ValueError('runtime archive runner differs from this runner')
         if read('src/GNUmakefile').decode() != make_entry():
             raise ValueError('runtime archive make entry differs from this runner')
-        for name in ('scripts/lmbench', 'bin/' + architecture.platform + '/lmbench'):
+        for name in ('scripts/lmbench', 'bin/' + PLATFORM + '/lmbench'):
             driver = read(name).decode()
             if ('case "$server" in' not in driver or '-s 127.0.0.1' not in driver or
                     '*ame|Kernel|Iface)\t;;' not in driver):
@@ -323,17 +287,16 @@ def verify_archive(archive: Path, architecture: 'Architecture') -> dict:
             raise ValueError('runtime archive does not preserve the native version probe')
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     return {'archive': str(archive), 'sha256': digest, 'revision': REVISION,
-            'platform': architecture.platform, 'adaptations': ADAPTATIONS}
+            'platform': PLATFORM, 'adaptations': ADAPTATIONS}
 
 
-def package(output: Path, architecture: 'Architecture') -> None:
+def package(output: Path) -> None:
     repo = Path(__file__).resolve().parents[2]
     expression = repo / 'test/initramfs/nix/default.nix'
     packages = {}
     for name in ('lmbench', 'make', 'rpcbind', 'nettools', 'source'):
         packages[name] = subprocess.check_output(
-            ['nix-build', str(expression), '--argstr', 'target',
-             architecture.nix_target,
+            ['nix-build', str(expression), '--argstr', 'target', 'riscv64',
              '-A', 'lmbenchNative.' + name, '--no-out-link'], text=True).strip().splitlines()[-1]
     closure = subprocess.check_output(['nix-store', '-qR', *[v for k, v in packages.items()
                                                           if k != 'source']], text=True).splitlines()
@@ -346,15 +309,14 @@ def package(output: Path, architecture: 'Architecture') -> None:
         hashes = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
                   for p in (root / 'scripts').iterdir() if p.is_file()}
         hashes['src/Makefile'] = hashlib.sha256((root / 'src/Makefile').read_bytes()).hexdigest()
-        bindir = root / 'bin' / architecture.platform
+        bindir = root / 'bin' / PLATFORM
         shutil.copytree(Path(packages['lmbench']) / 'bin', bindir)
         # Preserve the built driver's <version> substitution from bk.ver.
-        patch_scripts(root, architecture.platform)
+        patch_scripts(root)
         shutil.copy2(__file__, root / 'asterinas-native.py')
         (root / 'src/GNUmakefile').write_text(make_entry())
         (root / 'activate').write_text('export PATH=' + packages['make'] + '/bin:"$PATH"\n')
-        metadata = {'revision': REVISION, 'platform': architecture.platform,
-                    'packages': packages,
+        metadata = {'revision': REVISION, 'platform': PLATFORM, 'packages': packages,
                     'closure': sorted(set(closure)), 'upstream_script_sha256': hashes,
                     'adaptations': ADAPTATIONS,
                     'runner_sha256': hashlib.sha256((root / 'asterinas-native.py').read_bytes()).hexdigest(),
@@ -373,7 +335,7 @@ def package(output: Path, architecture: 'Architecture') -> None:
             for path in sorted(set(closure)):
                 tar.add(path, arcname=path.lstrip('/'))
             tar.add(root, arcname='opt/lmbench')
-    digest = verify_archive(output, architecture)['sha256']
+    digest = verify_archive(output)['sha256']
     output.with_suffix(output.suffix + '.sha256').write_text(digest + '  ' + output.name + '\n')
     print(json.dumps({'archive': str(output), 'sha256': digest}))
 
@@ -395,16 +357,13 @@ def run() -> int:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         old_handler = signal.signal(signal.SIGTERM, termination_requested)
         try:
-            platform = metadata['platform']
-            with owned_hello(Path('/tmp/hello'),
-                             (root / 'bin' / platform / 'hello').read_bytes()):
+            with owned_hello(Path('/tmp/hello'), (root / 'bin' / PLATFORM / 'hello').read_bytes()):
                 return run_locked(root, packages, metadata)
         finally:
             signal.signal(signal.SIGTERM, old_handler)
 
 
 def run_locked(root: Path, packages: dict, metadata: dict) -> int:
-    platform = metadata['platform']
     logs = root / 'asterinas-runs'
     logs.mkdir(exist_ok=True)
     out = Path(tempfile.mkdtemp(prefix='run-', dir=logs))
@@ -433,7 +392,7 @@ def run_locked(root: Path, packages: dict, metadata: dict) -> int:
         answers = '\n'.join(['1', '1', '8', 'all', 'yes', 'no', '', '', '',
                              str(fs), str(out / 'status.log'), 'no']) + '\n'
         (out / 'answers.txt').write_text(answers)
-        results = root / 'results' / platform
+        results = root / 'results' / PLATFORM
         before = set(results.glob('*')) if results.exists() else set()
         with (out / 'rpcbind.log').open('w') as rpc_log, \
                 (out / 'stdout').open('w') as stdout, (out / 'stderr').open('w') as stderr:
@@ -443,7 +402,7 @@ def run_locked(root: Path, packages: dict, metadata: dict) -> int:
             time.sleep(.2)
             if rpc.poll() is not None:
                 raise RuntimeError('rpcbind exited; inspect rpcbind.log and the system journal')
-            argv = native_command(packages['make'] + '/bin/make', platform)
+            argv = native_command(packages['make'] + '/bin/make', PLATFORM)
             report['argv'] = argv
             proc = subprocess.Popen(argv, cwd=root / 'src', env=env, stdin=subprocess.PIPE,
                                     stdout=stdout, stderr=stderr, text=True, start_new_session=True)
@@ -459,7 +418,7 @@ def run_locked(root: Path, packages: dict, metadata: dict) -> int:
             (out / 'native-results.txt').write_text(text)
             report.update(audit(text, (out / 'stderr').read_text(), proc.returncode, timed_out))
             report['native_result_files'] = [str(p) for p in raw]
-            config = root / 'bin' / platform / ('CONFIG.' + os.uname().nodename)
+            config = root / 'bin' / PLATFORM / ('CONFIG.' + os.uname().nodename)
             if config.exists():
                 shutil.copy2(config, out / 'CONFIG')
     except (OSError, KeyError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
@@ -485,25 +444,14 @@ def main() -> int:
     pack.add_argument('--output', type=Path, required=True)
     verify = sub.add_parser('verify')
     verify.add_argument('--archive', type=Path, required=True)
-    for subparser in (pack, verify):
-        subparser.add_argument('--architecture', default=DEFAULT_ARCHITECTURE)
     sub.add_parser('run')
     args = parser.parse_args()
-    if args.command in ('package', 'verify'):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-        from tools.debian.rootfs.arch import get_architecture
-
-        try:
-            architecture = get_architecture(args.architecture)
-        except ValueError as error:
-            print(f'{error}', file=sys.stderr)
-            return 2
     if args.command == 'package':
-        package(args.output.resolve(), architecture)
+        package(args.output.resolve())
         return 0
     if args.command == 'verify':
         try:
-            print(json.dumps(verify_archive(args.archive.resolve(), architecture)))
+            print(json.dumps(verify_archive(args.archive.resolve())))
         except (OSError, ValueError, tarfile.TarError, UnicodeDecodeError) as error:
             print(f'archive verification failed: {error}', file=sys.stderr)
             return 1

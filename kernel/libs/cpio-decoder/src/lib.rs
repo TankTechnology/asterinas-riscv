@@ -17,20 +17,17 @@
 
 #![cfg_attr(not(test), no_std)]
 #![deny(unsafe_code)]
-#![feature(alloc_io)]
 
 extern crate alloc;
 
 #[cfg(not(test))]
 use alloc::string::{String, ToString};
-use alloc::{
-    io::{Read, Write},
-    vec,
-};
+use alloc::vec;
 use core::cmp::min;
 
 use int_to_c_enum::TryFromInt;
 use lending_iterator::prelude::*;
+use no_std_io2::io::{Read, Write};
 
 use crate::error::{Error, Result};
 
@@ -103,7 +100,7 @@ pub struct CpioEntry<'a, R: Read> {
     metadata: FileMetadata,
     name: String,
     reader: &'a mut R,
-    // The entry's data (plus padding) that has not been consumed yet.
+    // File data and its 4-byte padding that have not been consumed yet.
     unread_data: usize,
 }
 
@@ -127,8 +124,6 @@ where
             } else {
                 FileMetadata::new(&header)?
             };
-            // The header (and file name) is padded up to a 4-byte boundary
-            // before the file data begins.
             let header_padding_len = align_up_pad(header.len() + name.len() + 1, 4);
             if header_padding_len > 0 {
                 let mut pad_buf = vec![0u8; header_padding_len];
@@ -137,13 +132,12 @@ where
 
             (metadata, name)
         };
-        // The data and its padding are unconsumed until `read_all` (or drop).
-        let unread_data = metadata.size() as usize + align_up_pad(metadata.size() as usize, 4);
+        let data_len = metadata.size() as usize;
         Ok(Self {
             metadata,
             name,
             reader,
-            unread_data,
+            unread_data: data_len + align_up_pad(data_len, 4),
         })
     }
 
@@ -163,7 +157,6 @@ where
         W: Write,
     {
         let data_len = self.metadata().size() as usize;
-        let data_padding_len = align_up_pad(data_len, 4);
         let mut send_len = 0;
         let mut buffer = vec![0u8; 0x1000];
         while send_len < data_len {
@@ -173,6 +166,7 @@ where
             writer.write_all(&buffer[..len])?;
             send_len += len;
         }
+        let data_padding_len = align_up_pad(data_len, 4);
         if data_padding_len > 0 {
             self.reader.read_exact(&mut buffer[..data_padding_len])?;
             self.unread_data -= data_padding_len;
@@ -186,18 +180,15 @@ where
 }
 
 impl<R: Read> Drop for CpioEntry<'_, R> {
-    /// Skips any data the caller did not read, leaving the reader aligned to the
-    /// next header.
+    /// Keep the decoder aligned when callers intentionally skip an entry.
     fn drop(&mut self) {
         let mut buffer = [0u8; 512];
         while self.unread_data > 0 {
-            let chunk = min(buffer.len(), self.unread_data);
-            if self.reader.read_exact(&mut buffer[..chunk]).is_err() {
-                // The stream cannot be realigned. The next `next()` will observe
-                // the desynchronized stream and reports it.
+            let len = min(buffer.len(), self.unread_data);
+            if self.reader.read_exact(&mut buffer[..len]).is_err() {
                 break;
             }
-            self.unread_data -= chunk;
+            self.unread_data -= len;
         }
     }
 }
@@ -344,7 +335,7 @@ struct Header {
 }
 
 impl Header {
-    fn new<R>(reader: &mut R) -> Result<Self>
+    pub fn new<R>(reader: &mut R) -> Result<Self>
     where
         R: Read,
     {

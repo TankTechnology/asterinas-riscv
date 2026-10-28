@@ -423,7 +423,9 @@ impl Inode {
             guards.inner_mut(target.ino).stage_directory_blocks(&fs)?;
         }
         if old_is_dir {
-            guards.inner_mut(old_inode.ino()).stage_directory_blocks(&fs)?;
+            guards
+                .inner_mut(old_inode.ino())
+                .stage_directory_blocks(&fs)?;
         }
 
         Ok(())
@@ -438,13 +440,16 @@ impl InodeInner {
         let block_manager = self.block_manager()?;
         let block_count = self.file_size().div_ceil(BLOCK_SIZE);
         for logical_block in 0..block_count {
-            let Some(bid) = block_manager.lookup_block(logical_block.try_into().map_err(
-                |_| Error::with_message(Errno::EIO, "directory block index overflow"),
-            )?)? else {
+            let Some(bid) =
+                block_manager.lookup_block(logical_block.try_into().map_err(|_| {
+                    Error::with_message(Errno::EIO, "directory block index overflow")
+                })?)?
+            else {
                 continue;
             };
             let mut payload = vec![0u8; BLOCK_SIZE];
-            self.page_cache().read_bytes(logical_block * BLOCK_SIZE, &mut payload)?;
+            self.page_cache()
+                .read_bytes(logical_block * BLOCK_SIZE, &mut payload)?;
             fs.stage_metadata_block(bid, &payload);
         }
         Ok(())

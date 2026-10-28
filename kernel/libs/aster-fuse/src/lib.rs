@@ -39,7 +39,6 @@ pub use self::{
     ops::{
         create::{CreateOperation, CreateReq},
         forget::{ForgetOperation, ForgetReq},
-        fsync::{FsyncFlags, FsyncOperation, FsyncReq, FsyncdirOperation},
         getattr::{FuseAttrReply, GetattrFlags, GetattrOperation, GetattrReq},
         init::{FuseInitFlags, FuseInitFlags2, InitOperation, InitReply, InitReq},
         link::{LinkOperation, LinkReq},
@@ -56,7 +55,6 @@ pub use self::{
         rmdir::RmdirOperation,
         setattr::{SetattrOperation, SetattrReq, SetattrValid},
         statfs::{Kstatfs, StatfsOperation, StatfsReply},
-        symlink::SymlinkOperation,
         unlink::UnlinkOperation,
         write::{WriteFlags, WriteOperation, WriteReply, WriteReq},
     },

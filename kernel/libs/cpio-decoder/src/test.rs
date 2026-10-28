@@ -6,12 +6,14 @@ use super::{CpioDecoder, FileType, error::*};
 
 struct FailingWriter;
 
-impl std::io::Write for FailingWriter {
-    fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
-        Err(std::io::Error::other("injected write failure"))
+impl no_std_io2::io::Write for FailingWriter {
+    fn write(&mut self, _buf: &[u8]) -> no_std_io2::io::Result<usize> {
+        Err(no_std_io2::io::Error::from(
+            no_std_io2::io::ErrorKind::Other,
+        ))
     }
 
-    fn flush(&mut self) -> std::io::Result<()> {
+    fn flush(&mut self) -> no_std_io2::io::Result<()> {
         Ok(())
     }
 }
@@ -87,12 +89,8 @@ fn dropping_unread_file_advances_to_next_entry() {
     {
         let first_entry = decoder.next().unwrap().unwrap();
         assert_eq!(first_entry.name(), "first");
-        assert_eq!(
-            first_entry.metadata().size(),
-            u32::try_from(first_contents.len()).unwrap()
-        );
+        assert_eq!(first_entry.metadata().size(), first_contents.len() as u32);
     }
-
     let mut second_entry = decoder.next().unwrap().unwrap();
     assert_eq!(second_entry.name(), "second");
     let mut decoded_contents = Vec::new();
@@ -115,7 +113,6 @@ fn writer_error_keeps_next_entry_aligned() {
         let mut first_entry = decoder.next().unwrap().unwrap();
         assert_eq!(first_entry.read_all(FailingWriter), Err(Error::IoError));
     }
-
     let mut second_entry = decoder.next().unwrap().unwrap();
     assert_eq!(second_entry.name(), "second");
     let mut decoded_contents = Vec::new();
@@ -150,7 +147,6 @@ fn append_newc_entry(buffer: &mut Vec<u8>, inode: u32, mode: u32, name: &str, co
         "070701{inode:08x}{mode:08x}{zero:08x}{zero:08x}{link_count:08x}{zero:08x}\
          {file_size:08x}{zero:08x}{zero:08x}{zero:08x}{zero:08x}{name_size:08x}{zero:08x}"
     );
-
     buffer.extend_from_slice(header.as_bytes());
     buffer.extend_from_slice(name.as_bytes());
     buffer.push(0);
@@ -160,7 +156,5 @@ fn append_newc_entry(buffer: &mut Vec<u8>, inode: u32, mode: u32, name: &str, co
 }
 
 fn pad_to_newc_alignment(buffer: &mut Vec<u8>) {
-    const NEWC_ALIGNMENT: usize = 4;
-
-    buffer.resize(buffer.len().next_multiple_of(NEWC_ALIGNMENT), 0);
+    buffer.resize(buffer.len().next_multiple_of(4), 0);
 }

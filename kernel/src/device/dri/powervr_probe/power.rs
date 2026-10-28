@@ -13,21 +13,21 @@ use ostd::{io::IoMem, mm::VmIoOnce, sync::Mutex};
 use spin::Once;
 
 use super::{
+    CRG_BASE, CRG_GATE_BIT, CrgSnapshot, GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET,
+    GPU_REG_SIZE, GPU_REG_START, GPU_RESET_OFFSET,
     catalogue::{
-        clear_selected_catalogue, install_selected_catalogue, selected_catalogue_state,
-        validate_selected_catalogue, CatalogueIo,
+        CatalogueIo, clear_selected_catalogue, install_selected_catalogue,
+        selected_catalogue_state, validate_selected_catalogue,
     },
-    dma::{GpuDmaAllocation, GpuFirmwareStage, FIRMWARE_STATUS_SIZE},
+    dma::{FIRMWARE_STATUS_SIZE, GpuDmaAllocation, GpuFirmwareStage},
     inspect_gpu_crg_dt, print_gpu_crg_snapshot,
     start::{
-        prepare_selected_meta, release_selected_meta, wait_selected_firmware, FirmwareStartIo,
-        StartIo,
+        FirmwareStartIo, StartIo, prepare_selected_meta, release_selected_meta,
+        wait_selected_firmware,
     },
-    CrgSnapshot, CRG_BASE, CRG_GATE_BIT, GPU_ACLK_OFFSET, GPU_CFG_OFFSET, GPU_GRAY_OFFSET,
-    GPU_REG_SIZE, GPU_REG_START, GPU_RESET_OFFSET,
 };
 use crate::{
-    device::{registry::char, Device, DeviceType, DevtmpfsInodeMeta},
+    device::{Device, DeviceType, DevtmpfsInodeMeta, registry::char},
     events::IoEvents,
     fs::{
         file::{PerOpenFileOps, StatusFlags},
@@ -35,10 +35,10 @@ use crate::{
     },
     prelude::*,
     process::{
+        UserNamespace,
         credentials::capabilities::CapSet,
         posix_thread::AsPosixThread,
         signal::{PollHandle, Pollable},
-        UserNamespace,
     },
     security::lsm::hooks as lsm_hooks,
 };

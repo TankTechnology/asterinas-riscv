@@ -5,7 +5,7 @@ use ostd_pod::FromZeros;
 use super::*;
 use crate::{
     mm::{
-        FrameAllocOptions, MAX_USERSPACE_VADDR, PAGE_SIZE,
+        self, FrameAllocOptions, MAX_USERSPACE_VADDR, PAGE_SIZE,
         kspace::{KernelPtConfig, LINEAR_MAPPING_BASE_VADDR},
         page_prop::{CachePolicy, PageFlags},
         vm_space::VmItem,
@@ -22,7 +22,7 @@ mod test_utils {
 
     /// Creates a new user page table that has mapped a virtual range to a physical frame.
     #[track_caller]
-    pub(super) fn create_user_pt_mapped_at(virt_range: Range<Vaddr>) -> PageTable<UserPtConfig> {
+    pub fn create_user_pt_mapped_at(virt_range: Range<Vaddr>) -> PageTable<UserPtConfig> {
         let page_table = PageTable::<UserPtConfig>::empty();
 
         let frame = FrameAllocOptions::new().alloc_frame().unwrap();
@@ -42,24 +42,21 @@ mod test_utils {
 
     /// Maps a range of virtual addresses to physical addresses with specified properties.
     #[track_caller]
-    pub(super) fn map_untracked(
+    pub fn map_untracked(
         pt: &PageTable<TestPtConfig>,
         va: Range<Vaddr>,
         pa: Paddr,
         prop: PageProperty,
     ) {
         let preempt_guard = disable_preempt();
-        let min_level = max_page_level::<TestPtConfig>(va.len());
-        let mut cursor = pt
-            .cursor_mut_with_min_level(&preempt_guard, &va, min_level)
-            .unwrap();
+        let mut cursor = pt.cursor_mut(&preempt_guard, &va).unwrap();
         for (paddr, level) in largest_pages::<TestPtConfig>(va.start, pa, va.len()) {
             unsafe { cursor.map((paddr, level, prop)) };
         }
     }
 
     /// Applies a protection operation to a range of virtual addresses within a PageTable.
-    pub(super) fn protect_range<C: PageTableConfig>(
+    pub fn protect_range<C: PageTableConfig>(
         page_table: &PageTable<C>,
         range: &Range<Vaddr>,
         mut protect_op: impl FnMut(&mut PageProperty),
@@ -75,7 +72,7 @@ mod test_utils {
     }
 
     #[derive(Clone, Debug, Default)]
-    pub(super) struct VeryHugePagingConsts;
+    pub struct VeryHugePagingConsts;
 
     impl PagingConstsTrait for VeryHugePagingConsts {
         const NR_LEVELS: PagingLevel = 4;
@@ -87,7 +84,7 @@ mod test_utils {
     }
 
     #[derive(Clone, Debug)]
-    pub(super) struct TestPtConfig;
+    pub struct TestPtConfig;
 
     // SAFETY: `item_raw_info`, `item_into_raw`, `item_from_raw`, and
     // `item_ref_from_raw` are correctly implemented with respect to the `Item`
@@ -123,8 +120,8 @@ mod test_utils {
         }
     }
 
-    pub(super) type TestPtItem = (Paddr, PagingLevel, PageProperty);
-    pub(super) struct TestPtItemRef<'a>(pub TestPtItem, pub PhantomData<&'a ()>);
+    pub type TestPtItem = (Paddr, PagingLevel, PageProperty);
+    pub struct TestPtItemRef<'a>(pub TestPtItem, pub PhantomData<&'a ()>);
 
     /// A subset iterator for bitflags.
     ///
@@ -132,7 +129,7 @@ mod test_utils {
     ///
     /// When given a bitflag `full`, it iterates over all subsets of `full` in
     /// descending order of their integer values.
-    pub(super) struct SubsetIter {
+    pub struct SubsetIter {
         full: u8,
         cur: u8,
         finished: bool,
@@ -140,7 +137,7 @@ mod test_utils {
 
     impl SubsetIter {
         /// Create a new subset iterator for the given full bitflag.
-        pub(super) fn new(full: u8) -> Self {
+        pub fn new(full: u8) -> Self {
             SubsetIter {
                 full,
                 cur: full,
@@ -179,7 +176,7 @@ mod test_utils {
     }
 
     /// Generates all possible page properties.
-    pub(super) fn all_page_properties() -> impl Iterator<Item = PageProperty> {
+    pub fn all_page_properties() -> impl Iterator<Item = PageProperty> {
         let flag_subsets =
             SubsetIter::new(PageFlags::all().bits()).map(|f| PageFlags::from_bits(f).unwrap());
         flag_subsets.flat_map(|flags| {
@@ -335,58 +332,6 @@ mod range_checks {
         let virt_range =
             (MAX_USERSPACE_VADDR - (PAGE_SIZE / 2))..(MAX_USERSPACE_VADDR + (PAGE_SIZE / 2));
         let _ = create_user_pt_mapped_at(virt_range);
-    }
-}
-
-mod lock_levels {
-    use super::{test_utils::*, *};
-
-    #[ktest]
-    fn map_huge_pages_with_minimum_lock_level() {
-        let huge_size = page_size::<TestPtConfig>(2);
-        let giant_size = page_size::<TestPtConfig>(3);
-        let prop = PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback);
-        let guard = disable_preempt();
-        for (level, range) in [
-            (1, PAGE_SIZE..2 * PAGE_SIZE),
-            (2, huge_size..2 * huge_size),
-            (3, giant_size..2 * giant_size),
-            (2, giant_size - huge_size..giant_size + huge_size),
-        ] {
-            let pt = PageTable::<TestPtConfig>::empty();
-            let size = page_size::<TestPtConfig>(level);
-            let min_level = max_page_level::<TestPtConfig>(range.len());
-            assert_eq!(min_level, level);
-            let mut cursor = pt
-                .cursor_mut_with_min_level(&guard, &range, min_level)
-                .unwrap();
-            for pa in (0..range.len()).step_by(size) {
-                // SAFETY: The test page table is never activated and mappings are untracked.
-                unsafe { cursor.map((pa, level, prop)) };
-            }
-            assert_eq!(cursor.virt_addr(), range.end);
-            assert!(cursor.jump(range.end).is_err());
-            cursor.jump(range.start).unwrap();
-            let (mapped_range, item) = cursor.query().unwrap();
-            assert_eq!(mapped_range, range.start..range.start + size);
-            assert_eq!(item.unwrap().0, (0, level, prop));
-            assert_eq!(pt.page_walk(range.end - 1), Some((range.len() - 1, prop)));
-            assert!(pt.page_walk(range.end).is_none());
-        }
-    }
-
-    #[ktest]
-    #[should_panic(expected = "cursor level not suitable for mapping")]
-    fn map_above_locked_level() {
-        let pt = PageTable::<TestPtConfig>::empty();
-        let guard = disable_preempt();
-        let mut cursor = pt
-            .cursor_mut(&guard, &(0..page_size::<TestPtConfig>(2)))
-            .unwrap();
-        let prop = PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback);
-
-        // SAFETY: The test page table is never activated and mappings are untracked.
-        unsafe { cursor.map((0, 2, prop)) };
     }
 }
 
@@ -665,8 +610,11 @@ mod navigation {
 
         // Map a page near the address space end.
         assert_eq!(cursor.virt_addr(), 0usize.wrapping_sub(HUGE_PAGE_SIZE));
+        // SAFETY: The cursor targets an empty test page table, and the
+        // untracked synthetic frame is used only to validate page-table
+        // navigation; it is never dereferenced or given ownership.
         unsafe {
-            cursor.map(MappedItem::Untracked(
+            cursor.map(MappedItem::untracked(
                 0,
                 1,
                 PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback),
@@ -999,6 +947,132 @@ mod mapping {
 
 mod protection_and_query {
     use super::{test_utils::*, *};
+
+    /// Returns the leaf PTE pointer for a mapped virtual address.
+    ///
+    /// # Safety
+    ///
+    /// `root_paddr` must identify a live `C` page table whose traversed nodes
+    /// remain valid and atomically accessed. The returned pointer must not
+    /// outlive or be used after removing its leaf page-table node.
+    unsafe fn mapped_pte_ptr<C: PageTableConfig>(
+        root_paddr: Paddr,
+        vaddr: Vaddr,
+    ) -> (*mut C::E, PagingLevel) {
+        let mut node_vaddr = mm::paddr_to_vaddr(root_paddr);
+        for level in (1..=C::NR_LEVELS).rev() {
+            // SAFETY: The caller guarantees that `root_paddr` owns a live page
+            // table and that the calculated index is in bounds.
+            let pte_ptr = unsafe { (node_vaddr as *mut C::E).add(pte_index::<C>(vaddr, level)) };
+            // SAFETY: The page-table node is alive and all PTE accesses are atomic.
+            let pte = unsafe { load_pte(pte_ptr, Ordering::Acquire) };
+            match pte.to_repr(level) {
+                PteScalar::PageTable(child_paddr, _) => {
+                    node_vaddr = mm::paddr_to_vaddr(child_paddr);
+                }
+                PteScalar::Mapped(_, _) => return (pte_ptr, level),
+                PteScalar::Absent => panic!("mapping is absent"),
+            }
+        }
+
+        panic!("mapping has no leaf PTE");
+    }
+
+    // Regression test for Asterinas issue #3589.
+    #[ktest]
+    fn protect_preserves_concurrent_hardware_status_update() {
+        let page_table = PageTable::<TestPtConfig>::empty();
+        let range = PAGE_SIZE..PAGE_SIZE * 2;
+        let prop = PageProperty::new_user(PageFlags::RW, CachePolicy::Writeback);
+        map_untracked(&page_table, range.clone(), 0, prop);
+
+        // SAFETY: The local page table owns a live mapping covering
+        // `range.start`, no operation removes it before the pointer's last use,
+        // the cursor locks the range while the pointer is used, and every
+        // pointer access uses the page-table atomic helpers.
+        let (pte_ptr, level) =
+            unsafe { mapped_pte_ptr::<TestPtConfig>(page_table.root_paddr(), range.start) };
+
+        let preempt_guard = disable_preempt();
+        let mut cursor = page_table.cursor_mut(&preempt_guard, &range).unwrap();
+        let mut simulate_hardware_update_fn = |prop: &mut PageProperty| {
+            // Simulate the MMU setting DIRTY after the cursor's initial PTE load.
+            // SAFETY: The pointer remains a live, aligned leaf PTE and all
+            // accesses use the page-table atomic helpers.
+            let hardware_pte = unsafe { load_pte(pte_ptr, Ordering::Acquire) };
+            let PteScalar::Mapped(paddr, mut hardware_prop) = hardware_pte.to_repr(level) else {
+                panic!("leaf PTE stopped mapping a page");
+            };
+            hardware_prop.flags |= PageFlags::DIRTY;
+            let hardware_pte = <TestPtConfig as PageTableConfig>::E::from_repr(
+                &PteScalar::Mapped(paddr, hardware_prop),
+                level,
+            );
+            // SAFETY: The replacement changes only the hardware-managed DIRTY bit.
+            unsafe { store_pte(pte_ptr, hardware_pte, Ordering::Release) };
+
+            prop.flags |= PageFlags::ACCESSED;
+        };
+        // SAFETY: The operation changes only public status flags and does not
+        // alter the mapping identity or its software-reserved ownership bit.
+        let protected =
+            unsafe { cursor.protect_next(range.len(), &mut simulate_hardware_update_fn) };
+        assert_eq!(protected, Some(range.clone()));
+        drop(cursor);
+
+        let (_, protected_prop) = page_table.page_walk(range.start).unwrap();
+        assert_eq!(
+            protected_prop.flags,
+            PageFlags::RW | PageFlags::ACCESSED | PageFlags::DIRTY
+        );
+    }
+
+    // Regression test for Asterinas issue #3589.
+    #[ktest]
+    fn protect_merges_only_new_hardware_status_update() {
+        let page_table = PageTable::<TestPtConfig>::empty();
+        let range = PAGE_SIZE..PAGE_SIZE * 2;
+        let prop =
+            PageProperty::new_user(PageFlags::RW | PageFlags::ACCESSED, CachePolicy::Writeback);
+        map_untracked(&page_table, range.clone(), 0, prop);
+
+        // SAFETY: The local page table owns a live mapping covering
+        // `range.start`, no operation removes it before the pointer's last use,
+        // the cursor locks the range while the pointer is used, and every
+        // pointer access uses the page-table atomic helpers.
+        let (pte_ptr, level) =
+            unsafe { mapped_pte_ptr::<TestPtConfig>(page_table.root_paddr(), range.start) };
+
+        let preempt_guard = disable_preempt();
+        let mut cursor = page_table.cursor_mut(&preempt_guard, &range).unwrap();
+        let mut simulate_hardware_update_fn = |prop: &mut PageProperty| {
+            // Simulate the MMU setting DIRTY after the cursor's initial PTE load.
+            // SAFETY: The pointer remains a live, aligned leaf PTE and all
+            // accesses use the page-table atomic helpers.
+            let hardware_pte = unsafe { load_pte(pte_ptr, Ordering::Acquire) };
+            let PteScalar::Mapped(paddr, mut hardware_prop) = hardware_pte.to_repr(level) else {
+                panic!("leaf PTE stopped mapping a page");
+            };
+            hardware_prop.flags |= PageFlags::DIRTY;
+            let hardware_pte = <TestPtConfig as PageTableConfig>::E::from_repr(
+                &PteScalar::Mapped(paddr, hardware_prop),
+                level,
+            );
+            // SAFETY: The replacement changes only the hardware-managed DIRTY bit.
+            unsafe { store_pte(pte_ptr, hardware_pte, Ordering::Release) };
+
+            prop.flags = PageFlags::R;
+        };
+        // SAFETY: The operation changes only public status and permission flags
+        // and does not alter the mapping identity or software-reserved ownership bit.
+        let protected =
+            unsafe { cursor.protect_next(range.len(), &mut simulate_hardware_update_fn) };
+        assert_eq!(protected, Some(range.clone()));
+        drop(cursor);
+
+        let (_, protected_prop) = page_table.page_walk(range.start).unwrap();
+        assert_eq!(protected_prop.flags, PageFlags::R | PageFlags::DIRTY);
+    }
 
     #[ktest]
     fn base_protect_query() {

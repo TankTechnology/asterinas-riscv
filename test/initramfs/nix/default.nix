@@ -1,45 +1,36 @@
-{
-  target ? "x86_64",
-  enableBenchmarkTest ? false,
-  enableConformanceTest ? false,
-  enableRegressionTest ? false,
-  conformanceTestSuite ? "ltp",
-  conformanceTestWorkDir ? "/tmp",
-  conformanceTestSelector ? "",
-  regressionTestDirs ? null,
-  regressionTestPlatform ? "asterinas",
-  dnsServer ? "none",
-  smp ? 1,
-  initramfsCompressed ? true,
-  benchmarkName ? "none",
-  system ? builtins.currentSystem,
-}:
+{ target ? "x86_64", enableBenchmarkTest ? false, enableConformanceTest ? false
+, enableRegressionTest ? false, conformanceTestSuite ? "ltp"
+, conformanceGvisorTest ? null, conformanceTestWorkDir ? "/tmp"
+, regressionTestPlatform ? "asterinas", dnsServer ? "none", smp ? 1
+, initramfsCompressed ? true, regressionTestDirs ? null, }:
 let
-  crossSystem.config =
-    if target == "x86_64" then
-      "x86_64-unknown-linux-gnu"
-    else if target == "riscv64" then
-      "riscv64-unknown-linux-gnu"
-    else if target == "aarch64" then
-      "aarch64-unknown-linux-gnu"
-    else
-      throw "Target arch ${target} not yet supported.";
+  crossSystem.config = if target == "x86_64" then
+    "x86_64-unknown-linux-gnu"
+  else if target == "riscv64" then
+    "riscv64-unknown-linux-gnu"
+  else
+    throw "Target arch ${target} not yet supported.";
 
-  pkgs = import ../../../distro/nixpkgs.nix {
+  # Pinned nixpkgs (nix version: 2.29.1, channel: nixos-25.05, release date: 2025-07-01)
+  nixpkgs = fetchTarball {
+    url =
+      "https://github.com/NixOS/nixpkgs/archive/c0bebd16e69e631ac6e52d6eb439daba28ac50cd.tar.gz";
+    sha256 = "1fbhkqm8cnsxszw4d4g0402vwsi75yazxkpfx3rdvln4n6s68saf";
+  };
+  pkgs = import nixpkgs {
     config = { };
     overlays = [ ];
-    inherit system crossSystem;
+    inherit crossSystem;
   };
-in
-rec {
+in rec {
   # Packages needed by initramfs
   busybox = pkgs.busybox;
-  benchmark = pkgs.callPackage ./benchmark { inherit benchmarkName; };
+  benchmark = pkgs.callPackage ./benchmark { };
   conformance = pkgs.callPackage ./conformance {
     inherit smp;
     testSuite = conformanceTestSuite;
+    gvisorTest = conformanceGvisorTest;
     workDir = conformanceTestWorkDir;
-    testSelector = conformanceTestSelector;
   };
   regression = pkgs.callPackage ./regression {
     testPlatform = regressionTestPlatform;
@@ -57,7 +48,6 @@ rec {
     inherit initramfs;
     compressed = initramfsCompressed;
   };
-  rootfs-image = pkgs.callPackage ./rootfs-image.nix { inherit initramfs; };
 
   # Packages needed by host
   apacheHttpd = pkgs.apacheHttpd;
@@ -70,19 +60,13 @@ rec {
   lmbench = pkgs.callPackage ./benchmark/lmbench.nix { };
   # Native make-results runtime; guest compilation is intentionally omitted.
   lmbenchNative = {
-    inherit (benchmark) lmbench;
+    lmbench = benchmark.lmbench;
     source = benchmark.lmbench.src;
     make = pkgs.gnumake;
     rpcbind = pkgs.rpcbind.override { useSystemd = false; };
     nettools = pkgs.nettools;
   };
-  redis =
-    (pkgs.redis.overrideAttrs (old: {
-      doCheck = false;
-      makeFlags = (old.makeFlags or [ ]) ++ [
-        "CC=${pkgs.stdenv.cc.targetPrefix}cc"
-        "LD=${pkgs.stdenv.cc.targetPrefix}cc"
-      ];
-    })).override
-      { withSystemd = false; };
+  redis = (pkgs.redis.overrideAttrs (_: { doCheck = false; })).override {
+    withSystemd = false;
+  };
 }

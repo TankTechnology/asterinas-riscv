@@ -13,12 +13,8 @@ pub struct DisabledPreemptGuard {
 
 impl !Send for DisabledPreemptGuard {}
 
-// Required by `InAtomicMode`. See the safety section of its doc comments.
-impl !Sync for DisabledPreemptGuard {}
-
-// SAFETY:
-// 1. The guard disables preemptions;
-// 2. The guard cannot be moved to or used by other tasks.
+// SAFETY: The guard disables preemptions, which meets the second
+// sufficient condition for atomic mode.
 unsafe impl InAtomicMode for DisabledPreemptGuard {}
 
 impl DisabledPreemptGuard {

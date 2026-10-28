@@ -17,7 +17,7 @@ use crate::{
         trap::{RawUserContext, SSTATUS_FS_MASK, TrapFrame, handle_irq},
     },
     cpu::PrivilegeLevel,
-    user::{ReturnReason, UserContextApi, UserContextApiInternal, UserModeHooks},
+    user::{ReturnReason, UserContextApi, UserContextApiInternal},
 };
 
 /// Userspace CPU context, including general-purpose registers and exception information.
@@ -146,14 +146,12 @@ pub enum FaultInstruction {
 }
 
 impl UserContext {
-    // Methods shared across all architectures (i.e., general registers and exceptions).
-
     /// Returns a reference to the general registers.
     pub fn general_regs(&self) -> &GeneralRegs {
         &self.user_context.general
     }
 
-    /// Returns a mutable reference to the general registers.
+    /// Returns a mutable reference to the general registers
     pub fn general_regs_mut(&mut self) -> &mut GeneralRegs {
         &mut self.user_context.general
     }
@@ -163,40 +161,34 @@ impl UserContext {
         self.exception.take()
     }
 
-    // Architecture-specific methods.
-
-    /// Gets the value of the thread-local storage pointer.
-    pub fn tls_pointer(&self) -> usize {
-        self.tp()
-    }
-
-    /// Sets the value of the thread-local storage pointer.
+    /// Sets the thread-local storage pointer.
     pub fn set_tls_pointer(&mut self, tls: usize) {
         self.set_tp(tls)
+    }
+
+    /// Gets the thread-local storage pointer.
+    pub fn tls_pointer(&self) -> usize {
+        self.tp()
     }
 }
 
 impl UserContextApiInternal for UserContext {
-    fn execute<T: UserModeHooks>(&mut self, hooks: &T) -> ReturnReason {
+    fn execute<F>(&mut self, mut has_kernel_event: F) -> ReturnReason
+    where
+        F: FnMut() -> bool,
+    {
         loop {
             crate::task::scheduler::might_preempt();
-
-            let guard = crate::irq::disable_local();
-            hooks.pre_user_run(&guard);
-            self.user_context.run(guard);
+            self.user_context.run();
 
             let scause = riscv::register::scause::read();
             let Ok(cause) = Trap::<Interrupt, Exception>::try_from(scause.cause()) else {
                 match scause.cause() {
                     Trap::Interrupt(i) => {
-                        panic!(
-                            "Cannot handle unknown interrupt: {:#x?}; trapframe: {:#x?}",
-                            i,
-                            self.as_trap_frame()
-                        );
+                        panic!("Unknown interrupt in user mode: {:?}", i);
                     }
                     Trap::Exception(e) => {
-                        crate::info!("Unknown CPU exception in user mode: {:#x?}", e);
+                        crate::info!("Unknown exception in user mode: {:?}", e);
                         self.exception = Some(CpuException::Unknown);
                         break ReturnReason::UserException;
                     }
@@ -222,7 +214,7 @@ impl UserContextApiInternal for UserContext {
                 }
             }
 
-            if hooks.has_kernel_event() {
+            if has_kernel_event() {
                 break ReturnReason::KernelEvent;
             }
         }
@@ -238,6 +230,14 @@ impl UserContextApiInternal for UserContext {
 }
 
 impl UserContextApi for UserContext {
+    fn trap_number(&self) -> usize {
+        todo!()
+    }
+
+    fn trap_error_code(&self) -> usize {
+        todo!()
+    }
+
     fn instruction_pointer(&self) -> usize {
         self.user_context.sepc
     }
@@ -427,39 +427,30 @@ impl Default for QFpuContext {
 
 impl FFpuContext {
     fn save(&mut self) {
-        // SAFETY: It is safe to save FPU registers.
         unsafe { save_fpu_context_f(self as *mut _) };
     }
 
     fn load(&self) {
-        // SAFETY: It is safe to load FPU registers, as the FPU state does not affect the kernel's
-        // memory safety.
         unsafe { load_fpu_context_f(self as *const _) };
     }
 }
 
 impl DFpuContext {
     fn save(&mut self) {
-        // SAFETY: It is safe to save FPU registers.
         unsafe { save_fpu_context_d(self as *mut _) };
     }
 
     fn load(&self) {
-        // SAFETY: It is safe to load FPU registers, as the FPU state does not affect the kernel's
-        // memory safety.
         unsafe { load_fpu_context_d(self as *const _) };
     }
 }
 
 impl QFpuContext {
     fn save(&mut self) {
-        // SAFETY: It is safe to save FPU registers.
         unsafe { save_fpu_context_q(self as *mut _) };
     }
 
     fn load(&self) {
-        // SAFETY: It is safe to load FPU registers, as the FPU state does not affect the kernel's
-        // memory safety.
         unsafe { load_fpu_context_q(self as *const _) };
     }
 }

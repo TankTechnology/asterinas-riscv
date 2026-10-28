@@ -17,17 +17,39 @@ PAGE_SHIFT             = 12
 
 KERNEL_VMA_OFFSET      = 0xffffffff00000000
 
+RISCV_IMAGE_HEADER_BYTES   = 64
+RISCV_IMAGE_ENTRY_JUMP     = 0x0400006f
+RISCV_IMAGE_HEADER_VERSION = 2
+RISCV_IMAGE_MAGIC          = 0x5643534952
+RISCV_IMAGE_MAGIC2         = 0x05435352
+
+# Standard format: <https://docs.kernel.org/arch/riscv/boot-image-header.html>.
 .section ".boot", "awx", @progbits
 
-# `_start` is also the entrypoint specified in the linker script.
+.balign 8
 .global _start
 _start:
+    .4byte RISCV_IMAGE_ENTRY_JUMP
+    .4byte 0                              # Reserved
+    .8byte RISCV_IMAGE_TEXT_OFFSET_BYTES
+    .8byte KERNEL_IMAGE_SIZE_BYTES
+    .8byte 0                              # Flags
+    .4byte RISCV_IMAGE_HEADER_VERSION
+    .4byte 0                              # Reserved
+    .8byte 0                              # Reserved
+    .8byte RISCV_IMAGE_MAGIC
+    .4byte RISCV_IMAGE_MAGIC2
+    .4byte 0                              # PE/COFF offset
+bsp_riscv_image_header_end:
+
+.global bsp_boot_entry
+bsp_boot_entry:
     # Arguments passed from SBI:
     #   a0 = hart id
     #   a1 = device tree paddr
     # We do not touch them here. They are passed to the Rust entrypoint `riscv_boot`.
 
-    # Set up the Sv48 page table.
+    # Set up the Sv48 page table. It is ignored by Sv39 builds.
     #   sv48_boot_l4pt[511] = (PPN(sv48_boot_l3pt) << PTE_PPN_SHIFT) | PTE_V
     lla    t1, sv48_boot_l4pt
     li     t0, 511 * PTE_SIZE
@@ -37,8 +59,9 @@ _start:
     ori    t0, t0, PTE_V
     sd     t0, 0(t1)
 
-    # Select the compiled paging mode. Rust's linear mapping must agree with
-    # the active page table even on CPUs that implement both Sv39 and Sv48.
+    # Load the page table mode selected by the Rust build. Probing Sv48 first
+    # is incorrect for an Sv39 build on hardware that implements both modes:
+    # Rust uses the Sv39 linear-map base while the active table is then Sv48.
     lla    t0, sv48_boot_l4pt
     li     t1, {SATP_MODE}
     li     t2, 8 << 60
@@ -49,11 +72,11 @@ bsp_write_satp:
     or     t0, t0, t1
     csrw   satp, t0
 
-    # Stop if the CPU does not support the compiled paging mode.
+    # The compiled paging mode is a kernel ABI requirement, not a runtime
+    # preference. Stop if the hart does not implement it.
     # Reference: <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#satp>.
     csrr   t1, satp
     beq    t0, t1, bsp_flush_tlb
-
 bsp_unreachable_pa:
     j      bsp_unreachable_pa
 
@@ -68,6 +91,10 @@ bsp_flush_tlb:
     or     t0, t0, t1
     jr     t0
 
+# Under Svade, clear A faults on any access and clear D faults on writes.
+# Early boot has no recovery handler, so writable leaves preset A|D; non-leaf
+# A/D bits are reserved and remain zero.
+# Reference: <https://docs.riscv.org/reference/isa/v20260120/priv/supervisor.html#translation>.
 PTE_VRWXAD = PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D
 
 .balign 4096
@@ -76,7 +103,7 @@ sv48_boot_l4pt:
     .zero 255 * PTE_SIZE
     .quad (0x0 << PTE_PPN_SHIFT) | PTE_VRWXAD  # linear 0~512 GiB
     .zero 254 * PTE_SIZE
-    .quad 0                                    # TBA (-> boot_l3pt)
+    .quad 0                                      # TBA (-> boot_l3pt)
 sv48_boot_l3pt:  # 0xffff_ffff_0000_0000 -> 0x0000_0000_0000_0000
     .zero 508 * PTE_SIZE
     .quad (0x00000 << PTE_PPN_SHIFT) | PTE_VRWXAD  # code 0~1 GiB
@@ -115,20 +142,6 @@ boot_stack_top:
 .text
 
 bsp_boot_virt:
-    # Load the address range of the BSS section.
-.extern __bss
-    lla     t0, __bss
-.extern __bss_end
-    lla     t1, __bss_end
-
-    # Initialize the BSS section.
-bsp_zero_bss_loop:
-    bgeu    t0, t1, bsp_zero_bss_end
-    sb      zero, 0(t0)
-    addi    t0, t0, 1
-    j       bsp_zero_bss_loop
-bsp_zero_bss_end:
-
     # Initialize GP to the CPU-local storage's base address.
 .extern __cpu_local_start
     lla    gp, __cpu_local_start

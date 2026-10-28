@@ -21,10 +21,23 @@ the kernel (`kernel/`) is entirely safe Rust.
 
 All development is done inside the project Docker container:
 
+For local iterative builds, use the persistent launcher:
+
+```bash
+tools/docker/run_dev_container.sh -- make kernel TARGET_ARCH=riscv64 SMP=4 FEATURES=riscv_sv39_mode
+```
+
+It reuses a named container and persistent Cargo, Rustup, and Nix caches.
+For an isolated worktree, pass `--workspace /absolute/path/to/worktree`.
+Do not use fresh uncached containers for repeated local builds.
+See `tools/docker/README.md` for local image selection, offline builds, and stopping.
+
+The underlying project image can also be run directly:
+
 ```bash
 docker run -it --privileged --network=host -v /dev:/dev \
   -v $(pwd)/asterinas:/root/asterinas \
-  asterinas/dev:0.19.0-20261012
+  asterinas/asterinas:0.18.0-20260702
 ```
 
 Key Makefile targets:
@@ -40,6 +53,27 @@ Key Makefile targets:
 | `make docs`          | Build rustdocs for all crates                        |
 
 Set `TARGET_ARCH` to `x86_64` (default), `riscv64`, or `loongarch64`.
+
+**Benchmark with `RELEASE=1`.** `RELEASE` and `RELEASE_LTO` both default to off,
+so a plain `make kernel` builds an unoptimized `dev` profile (~16 MB image;
+`RELEASE=1` is ~6 MB). That is fine for correctness work and wrong for anything
+you intend to report as a performance number. Measured on an otherwise-idle
+guest with the same userspace and the same QEMU/TCG, the debug build costs
+30--90x more per system call:
+
+| operation | debug | release |
+|---|---:|---:|
+| `getpid` | 189 us | 6.39 us |
+| `fstat` on a descriptor | 285 us | 7.28 us |
+| `stat` on a path | 1631 us | 18.1 us |
+| `fork+exec+wait` | 423 ms | 8.12 ms |
+
+The penalty is *uniform* across unrelated workloads, which is what makes it
+dangerous: a constant factor of that size reads like the kernel is
+architecturally slow and sends you looking for a missing feature. If a
+measurement seems to show the kernel slow everywhere, check the build profile
+before anything else. `tools/riscv/perf/measure-desktop.sh` refuses to measure a
+kernel image over 10 MB for this reason.
 
 ## Toolchain
 
@@ -72,27 +106,15 @@ so you can grasp a rule from the table and open its full text only when needed.
 
 ## Architecture Notes
 
-Asterinas is a framekernel
-comprising a safe upper half (`kernel/`)
-and an unsafe lower half (`ostd/`).
-
-The `ostd` crate is a minimal Rust OS development framework
-that encapsulates `unsafe` Rust code within safe APIs.
-`unsafe` Rust code is confined to OSTD (`ostd/`);
-kernel code under `kernel/` must remain safe Rust.
-
-The kernel code under `kernel/` is written using `ostd` APIs
-and is organized as an acyclic graph of kernel crates
-arranged in layers, from highest to lowest:
-
-1. The assembler crate (`kernel/src/`).
-2. High-level component crates (`kernel/comps/`).
-3. The `aster-core` crate (`kernel/core/`).
-4. Low-level component crates (`kernel/core/comps/`).
-5. Kernel libraries (`kernel/libs/`).
-
-A kernel crate may depend on crates in the same layer
-or any lower layer.
+- **Framekernel:** The kernel is split into a safe upper half (`kernel/`)
+  and an unsafe lower half (`ostd/`).
+  This is a hard architectural boundary — never add `unsafe` to `kernel/`.
+- **Components** (`kernel/comps/`): block, console, network, PCI, virtio, etc.
+  Each is a separate crate.
+- **OSTD** (`ostd/`): memory management, page tables, interrupt handling,
+  synchronization primitives, task scheduling, boot, and arch-specific code.
+- **Architectures:** x86-64 (primary), RISC-V 64, LoongArch 64.
+  Arch-specific code lives in `ostd/src/arch/` and `kernel/src/arch/`.
 
 ## CI
 

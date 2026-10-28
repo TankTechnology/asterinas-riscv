@@ -3,16 +3,11 @@
 //! Virtual memory (VM).
 
 #![cfg_attr(
-    any(
-        target_arch = "riscv64",
-        target_arch = "loongarch64",
-        target_arch = "aarch64"
-    ),
+    any(target_arch = "riscv64", target_arch = "loongarch64"),
     expect(unused_imports)
 )]
 
 pub mod dma;
-pub mod fault;
 pub mod frame;
 pub mod heap;
 pub mod io;
@@ -42,7 +37,7 @@ pub use self::{
     },
     kspace::{KERNEL_VADDR_RANGE, MAX_USERSPACE_VADDR},
     mem_obj::{HasDaddr, HasPaddr, HasPaddrRange, HasSize, Split},
-    page_prop::{CachePolicy, PageFlags, PageProperty},
+    page_prop::{CachePolicy, PageAccess, PageFlags, PageProperty},
     vm_space::VmSpace,
 };
 pub(crate) use self::{
@@ -60,11 +55,6 @@ pub type Paddr = usize;
 
 /// Device addresses.
 pub type Daddr = usize;
-
-/// Returns whether `vaddr` and `len` specify a user-space virtual address range.
-pub fn is_in_user_space(vaddr: Vaddr, len: usize) -> bool {
-    vaddr.saturating_add(len) <= MAX_USERSPACE_VADDR
-}
 
 /// The level of a page table node or a frame.
 pub type PagingLevel = u8;
@@ -125,4 +115,9 @@ pub(crate) const fn nr_subpage_per_huge<C: PagingConstsTrait>() -> usize {
 #[expect(dead_code)]
 pub(crate) const fn nr_base_per_page<C: PagingConstsTrait>(level: PagingLevel) -> usize {
     page_size::<C>(level) / C::BASE_PAGE_SIZE
+}
+
+/// Checks if the given address is page-aligned.
+pub const fn is_page_aligned(p: usize) -> bool {
+    (p & (PAGE_SIZE - 1)) == 0
 }

@@ -36,6 +36,7 @@ from tools.riscv.debian.rootfs.contract import (
     validate_frozen_root,
 )
 from tools.riscv.debian.rootfs.desktop_m3_gate import (
+    DESKTOP_M3_BOOTARGS,
     DESKTOP_M3_MILESTONES,
     DesktopM3Operations,
     capture_rendered_ppm,
@@ -48,6 +49,9 @@ from tools.riscv.debian.rootfs.desktop_m4_gate import (
     DesktopM4Operations,
     classify_desktop_m4,
     desktop_m4_qemu_argv,
+)
+from tools.riscv.debian.rootfs.desktop_m4_fbdev_canary_gate import (
+    FbdevCanaryOperations,
 )
 from tools.riscv.debian.rootfs.gate_protocol import (
     MAX_COMMAND_PAYLOAD_BYTES,
@@ -82,9 +86,11 @@ from tools.riscv.debian.rootfs.rootfs_gate import (
 )
 from tools.riscv.debian.rootfs.profiles import get_profile
 from tools.riscv.debian.rootfs.systemd_m2_gate import (
+    SYSTEMD_EXT4_M3_BOOTARGS,
     SYSTEMD_M2_BOOTARGS,
     SystemdM2Operations,
     orchestrate_systemd_m2_gate,
+    systemd_m2_bootargs,
     systemd_m2_qemu_argv,
 )
 
@@ -115,6 +121,9 @@ DESKTOP_M4_EVIDENCE_SCRIPT = (
 )
 DESKTOP_M4_SESSION_SCRIPT = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_session.sh"
+)
+DESKTOP_M4_X11_PAINT_SCRIPT = (
+    REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_x11_paint.py"
 )
 DESKTOP_M4_WELCOME_PAGE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/desktop_m4_welcome.html"
@@ -191,7 +200,7 @@ STAGE1_PHYSICAL_SYSTEM_PROBE = (
     REPOSITORY_ROOT / "tools/riscv/debian/rootfs/physical_system_probe.sh"
 )
 STAGE1_DEBUG_CONSOLE_INCLUDE = STAGE1_DEBUG_CONSOLE_SOURCE.parent
-CONTRACT_MODULE = "tools.debian.rootfs.contract"
+CONTRACT_MODULE = "tools.riscv.debian.rootfs.contract"
 REQUIRED_TOOLS = (
     "debootstrap",
     "qemu-riscv64-static",
@@ -228,16 +237,6 @@ SYSTEMD_M2_PACKAGE_ROWS = tuple(
             ("dbus", "riscv64", "1.16.2-2"),
             ("systemd", "riscv64", "257.8-1"),
             ("systemd-sysv", "riscv64", "257.8-1"),
-        )
-    )
-)
-
-SYSTEMD_EXT4_PACKAGE_ROWS = tuple(
-    sorted(
-        SYSTEMD_M2_PACKAGE_ROWS
-        + (
-            ("curl", "riscv64", "8.14.1-2+deb13u5"),
-            ("iproute2", "riscv64", "6.15.0-1"),
         )
     )
 )
@@ -969,7 +968,6 @@ class DebianStage1Tests(unittest.TestCase):
         compilation = self.compile_stage1(binary, "DEBIAN_STAGE1_SELF_TEST")
         self.assertEqual(compilation.returncode, 0, compilation.stderr)
         cases = (
-            "devtmpfs-mount",
             "one-valid-device",
             "one-valid-mmc-device",
             "no-match",
@@ -1498,58 +1496,6 @@ int main(void)
             ],
         )
 
-    def test_builder_declares_the_target_architecture_tools(self) -> None:
-        from tools.debian.rootfs.arch import get_architecture
-
-        for target in ("riscv64", "amd64"):
-            with self.subTest(architecture=target):
-                architecture = get_architecture(target)
-                result = self.run_builder(
-                    "--print-tools", "--architecture", target
-                )
-
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(
-                    result.stdout.splitlines(),
-                    [architecture.cross_cc, "cpio", "python3"],
-                )
-
-    def test_builder_shell_defaults_match_the_architecture_table(self) -> None:
-        # The default target is compiled without consulting the architecture
-        # table, so the shell-side copy has to agree with it.
-        from tools.debian.rootfs.arch import get_architecture
-
-        default = get_architecture("riscv64")
-        script = STAGE1_BUILD_SCRIPT.read_text(encoding="utf-8")
-
-        self.assertIn(
-            f'ARCH_SLUG_DEFAULT="{default.arch_slug}"',
-            script,
-        )
-        self.assertIn(
-            f'ARCH_CROSS_CC_DEFAULT="{default.cross_cc}"',
-            script,
-        )
-
-    def test_minimal_variant_carries_only_the_init_program(self) -> None:
-        entries = self.run_builder("--print-entries", "--minimal")
-
-        self.assertEqual(entries.returncode, 0, entries.stderr)
-        self.assertEqual(entries.stdout.splitlines(), [".", "init"])
-
-        environment = os.environ.copy()
-        environment["RISC_V_CC"] = "cc"
-        output = self.directory / "minimal" / "initramfs.cpio"
-
-        result = self.run_builder(
-            "--minimal", str(output), environment=environment
-        )
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        archived = _parse_newc_entries(output.read_bytes())
-        self.assertEqual([entry[0] for entry in archived], [".", "init"])
-        self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o644)
-
     def test_stage1_carries_safe_reboot_override(self) -> None:
         environment = os.environ.copy()
         environment["RISC_V_CC"] = "cc"
@@ -1799,16 +1745,6 @@ int main(void)
         self.assertNotIn(
             'mount(root_device, "/newroot", "ext4", 0, "noload")',
             normalized,
-        )
-
-    def test_stage1_mounts_cgroup_v2_before_systemd(self) -> None:
-        source = STAGE1_SOURCE.read_text()
-        normalized = " ".join(source.split())
-        api_dirs = normalized[normalized.index("case HANDOFF_PREPARE_API_DIRS:") :]
-        api_dirs = api_dirs[: api_dirs.index("case HANDOFF_CHROOT:")]
-        self.assertIn(
-            'mount("none", "/newroot/sys/fs/cgroup", "cgroup2", 0, NULL)',
-            api_dirs,
         )
 
     def test_physical_gate_imports_its_stage1_carried_dependencies(self) -> None:
@@ -2928,6 +2864,10 @@ WantedBy=multi-user.target
             device_access.read_text(),
         )
         self.assertIn("desktop-input-identity", device_access.read_text())
+        self.assertIn("ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE", device_access.read_text())
+        self.assertIn('keyboard_node="$INPUT_DIRECTORY/event0"', device_access.read_text())
+        self.assertIn('pointer_node="$INPUT_DIRECTORY/event1"', device_access.read_text())
+        self.assertIn("timeout --kill-after=1s 5s", device_access.read_text())
         self.assertIn(
             "failed: desktop input devices did not appear", device_access.read_text()
         )
@@ -3083,10 +3023,17 @@ WantedBy=multi-user.target
         self.assertIn("-extension MIT-SHM", session_text)
         self.assertIn('-title "Asterinas Terminal" &', session_text)
         self.assertLess(
-            session_text.index("pcmanfm --desktop"), session_text.index("xterm")
+            session_text.index("pcmanfm --desktop"),
+            session_text.index("/usr/bin/xterm -geometry"),
         )
-        self.assertLess(session_text.index("lxpanel"), session_text.index("xterm"))
-        self.assertLess(session_text.index("netsurf-gtk"), session_text.index("xterm"))
+        self.assertLess(
+            session_text.index("lxpanel"),
+            session_text.index("/usr/bin/xterm -geometry"),
+        )
+        self.assertLess(
+            session_text.index("netsurf-gtk"),
+            session_text.index("/usr/bin/xterm -geometry"),
+        )
         self.assertIn("<title>Asterinas Start</title>", welcome.read_text())
         self.assertEqual(
             stat.S_IMODE((stage / "home/asterinas/Asterinas Files").stat().st_mode),
@@ -3213,10 +3160,41 @@ WantedBy=multi-user.target
         self.assertIn("/usr/bin/lxpanel --profile Asterinas", session)
         self.assertIn("/usr/sbin/runuser --user asterinas", session)
 
+        m4_session = DESKTOP_M4_SESSION_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("map_client_windows", m4_session)
+        self.assertIn("xdotool windowmap", m4_session)
+        self.assertIn("DESKTOP_M4_WINDOW_HANDOFF status=complete", m4_session)
+
     def test_desktop_m4_evidence_requires_application_windows(self) -> None:
+        evidence_script = DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8")
         self.assertIn(
             "ASTERINAS_DESKTOP_M4_PROBE_TIMEOUT_SECONDS:-30",
-            DESKTOP_M4_EVIDENCE_SCRIPT.read_text(encoding="utf-8"),
+            evidence_script,
+        )
+        self.assertIn(
+            "probe logind pgrep -x systemd-logind",
+            evidence_script,
+        )
+        for window_class in ("pcmanfm", "lxpanel", "xterm", "netsurf-gtk"):
+            self.assertIn(
+                f"visible_window '^{window_class}$'",
+                evidence_script,
+            )
+
+    def test_desktop_m4_x11_paint_uses_translated_root_coordinates(self) -> None:
+        paint_script = DESKTOP_M4_X11_PAINT_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("XTranslateCoordinates", paint_script)
+        self.assertIn(
+            "(screen_y.value + WINDOW_HEIGHT // 2) * stride",
+            paint_script,
+        )
+        self.assertIn(
+            "(screen_x.value + center_x) * 4",
+            paint_script,
+        )
+        self.assertNotIn(
+            "(WINDOW_Y + WINDOW_HEIGHT // 2) * stride",
+            paint_script,
         )
         input_directory = self.directory / "desktop-m4-input"
         input_directory.mkdir()
@@ -4324,52 +4302,6 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
         self.assertEqual(validated.debian_release, "13.6")
         self.assertEqual(validated.downloaded_packages[0][0], "base-files")
 
-    def test_writer_and_verifier_carry_a_non_default_architecture(self) -> None:
-        """The requested architecture must reach every validation step.
-
-        The writer validates its own output through the same code the verifier
-        uses, so an architecture that is dropped between the command line and
-        that shared check fails the writer, not just the verifier.
-        """
-
-        rows = tuple(
-            (name, "amd64" if architecture == "riscv64" else architecture, version)
-            for name, architecture, version in PACKAGE_ROWS
-        )
-        self.packages_lock.write_text(_lock_text(rows), encoding="utf-8")
-        self.package_checksums.write_text(
-            _package_checksums_text(rows),
-            encoding="utf-8",
-        )
-
-        result = self.run_writer(self.writer_arguments() + ["--architecture", "amd64"])
-
-        self.assertEqual(result.returncode, 0, result.stderr)
-        manifest = json.loads(self.output.read_text(encoding="utf-8"))
-        self.assertEqual(manifest["architecture"], "amd64")
-        self.assertEqual(
-            {package["architecture"] for package in manifest["downloaded_packages"]},
-            {"amd64", "all"},
-        )
-        verified = self.run_verifier(
-            [
-                "verify",
-                "--image",
-                str(self.image),
-                "--manifest",
-                str(self.output),
-                "--packages-lock",
-                str(self.packages_lock),
-                "--expected-architecture",
-                "amd64",
-            ]
-        )
-        self.assertEqual(verified.returncode, 0, verified.stderr)
-
-        refused = self.run_verifier()
-        self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("unexpected architecture", refused.stderr)
-
     def test_verify_cli_accepts_exact_plan_command_quietly(self) -> None:
         self.write_verifier_fixture()
 
@@ -4500,10 +4432,10 @@ class DebianRootfsManifestWriterTests(unittest.TestCase):
         self.assertEqual(validated.profile, "systemd-m2")
 
     def test_writes_schema9_ext4_journal_profile_manifest(self) -> None:
-        lock_text = _lock_text(SYSTEMD_EXT4_PACKAGE_ROWS)
+        lock_text = _lock_text(SYSTEMD_M2_PACKAGE_ROWS)
         self.packages_lock.write_text(lock_text, encoding="utf-8")
         self.package_checksums.write_text(
-            _package_checksums_text(SYSTEMD_EXT4_PACKAGE_ROWS),
+            _package_checksums_text(SYSTEMD_M2_PACKAGE_ROWS),
             encoding="utf-8",
         )
         arguments = self.writer_arguments()
@@ -4656,6 +4588,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                 "util-linux",
                 "x11-utils",
                 "xauth",
+                "xdotool",
                 "xfonts-base",
                 "xinit",
                 "xserver-xorg-core",
@@ -4675,6 +4608,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                 "libpam-systemd",
                 "xserver-xorg-core",
                 "xterm",
+                "xdotool",
                 "librsvg2-common",
                 "lxpanel",
                 "netsurf-gtk",
@@ -4743,6 +4677,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                     ("matchbox-window-manager", "riscv64", "1.2.2-2"),
                     ("udev", "riscv64", "257.13-1"),
                     ("xauth", "riscv64", "1:1.1.2-1"),
+                    ("xdotool", "riscv64", "1:3.20160805.1-5.1"),
                     ("x11-utils", "riscv64", "7.7+7"),
                     ("xfonts-base", "all", "1:1.0.5+nmu1"),
                     ("xinit", "riscv64", "1.4.2-1"),
@@ -4798,6 +4733,7 @@ class DebianSystemdM2ProfileTests(unittest.TestCase):
                     ("pcmanfm", "riscv64", "1.4.0-1"),
                     ("udev", "riscv64", "257.13-1"),
                     ("xauth", "riscv64", "1:1.1.2-1"),
+                    ("xdotool", "riscv64", "1:3.20160805.1-5.1"),
                     ("x11-utils", "riscv64", "7.7+7"),
                     ("xfonts-base", "all", "1:1.0.5+nmu1"),
                     ("xinit", "riscv64", "1.4.2-1"),
@@ -6356,7 +6292,7 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
         self.addCleanup(self.temporary_directory.cleanup)
         self.directory = Path(self.temporary_directory.name)
 
-    def test_real_boot_image_is_64_mib_and_contains_boot_script(self) -> None:
+    def test_real_boot_image_is_64_mib_and_contains_exactly_three_files(self) -> None:
         kernel = self.directory / "kernel"
         dtb = self.directory / "dtb"
         initramfs = self.directory / "initramfs"
@@ -6365,24 +6301,11 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
         initramfs.write_bytes(b"initramfs")
         image = self.directory / "boot.ext4"
 
-        bootargs = "console=ttyS0 init=/init -- --root-fs=ext4 --root-init=systemd"
-        build_boot_image(kernel, dtb, initramfs, image, bootargs=bootargs)
+        build_boot_image(kernel, dtb, initramfs, image)
 
         self.assertEqual(image.stat().st_size, 64 * 1024 * 1024)
-        filesystem_image = self.directory / "boot.fs.ext4"
-        subprocess.run(
-            [
-                "dd",
-                "if=" + str(image),
-                "of=" + str(filesystem_image),
-                "bs=1M",
-                "skip=1",
-                "status=none",
-            ],
-            check=True,
-        )
         listing = subprocess.run(
-            ["debugfs", "-R", "ls -p /", str(filesystem_image)],
+            ["debugfs", "-R", "ls -p /", str(image)],
             check=True,
             text=True,
             capture_output=True,
@@ -6394,30 +6317,9 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
         }
         self.assertEqual(
             names,
-            {
-                "asterinas.booti",
-                "qemu-virt.dtb",
-                "stage1-initramfs.cpio",
-                "boot.scr.uimg",
-            },
+            {"asterinas.booti", "qemu-virt.dtb", "stage1-initramfs.cpio"},
         )
         self.assertNotIn("lost+found", listing)
-        script = self.directory / "boot.scr.uimg"
-        subprocess.run(
-            ["debugfs", "-R", f"dump /boot.scr.uimg {script}", str(filesystem_image)],
-            check=True, capture_output=True,
-        )
-        payload = script.read_bytes()[64:]
-        self.assertIn(f'setenv bootargs "{bootargs}"'.encode(), payload)
-        self.assertNotIn(b"--debug-console=root", payload)
-
-    def test_boot_image_rejects_script_injection_in_bootargs(self) -> None:
-        with self.assertRaisesRegex(GateFailure, "script characters"):
-            build_boot_image(
-                self.directory / "kernel", self.directory / "dtb",
-                self.directory / "initramfs", self.directory / "boot.ext4",
-                bootargs='console=ttyS0"; reset',
-            )
 
     def test_sparse_root_copy_uses_descriptor_and_preserves_source_identity(
         self,
@@ -6497,6 +6399,11 @@ class DebianRootfsGateArtifactTests(unittest.TestCase):
         config = parse_gate_args(arguments)
 
         self.assertEqual(config.smp, 4)
+        self.assertEqual(config.root_fs, "ext2")
+        self.assertEqual(
+            parse_gate_args([*arguments, "--root-fs", "ext4"]).root_fs,
+            "ext4",
+        )
         with self.assertRaises(SystemExit):
             parse_gate_args(arguments[:-2])
         for forbidden in ("download", "rebuild", "mirror"):
@@ -6673,7 +6580,7 @@ class DebianDesktopM3GateTests(unittest.TestCase):
             monitor_socket=self.directory / "monitor.sock",
         )
 
-        self.assertIn("bochs-display", arguments)
+        self.assertIn("bochs-display,xres=1280,yres=1024", arguments)
         self.assertIn("virtio-keyboard-device", arguments)
         self.assertIn("virtio-tablet-device", arguments)
         self.assertEqual(arguments[arguments.index("-smp") + 1], "4")
@@ -6776,14 +6683,136 @@ class DebianDesktopM4GateTests(unittest.TestCase):
             monitor_socket=self.directory / "monitor.sock",
         )
 
-        self.assertIn("bochs-display", arguments)
+        self.assertIn("bochs-display,xres=1280,yres=1024", arguments)
         self.assertIn("virtio-keyboard-device", arguments)
         self.assertIn("virtio-tablet-device", arguments)
         self.assertEqual(arguments[arguments.index("-smp") + 1], "4")
         self.assertEqual(arguments[arguments.index("-nic") + 1], "none")
 
+    def test_ext4_root_mode_adds_stage1_filesystem_selector(self) -> None:
+        operations = object.__new__(DesktopM4Operations)
+        ext2 = mock.Mock(root_fs="ext2")
+        ext4 = mock.Mock(root_fs="ext4")
+
+        qemu_bootargs = (
+            "console=ttyS0 loglevel=4 "
+            "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered "
+            "init=/init -- --root-init=systemd"
+        )
+        self.assertEqual(operations._bootargs(ext2), qemu_bootargs)
+        self.assertEqual(
+            operations._bootargs(ext4),
+            "console=ttyS0 loglevel=4 "
+            "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered "
+            "init=/init -- --root-fs=ext4 --root-init=systemd",
+        )
+
+    def test_scanout_pattern_is_opt_in_canary_only(self) -> None:
+        self.assertNotIn(
+            "ASTERINAS_DESKTOP_M4_SCANOUT_PATTERN=1",
+            DesktopM4Operations.BOOTARGS,
+        )
+        self.assertIn(
+            "ASTERINAS_DESKTOP_M4_SCANOUT_PATTERN=1",
+            FbdevCanaryOperations.BOOTARGS,
+        )
+
+    def test_canary_captures_before_final_desktop_marker(self) -> None:
+        class FakeSerial:
+            def __init__(self) -> None:
+                self.events: list[tuple[str, object]] = []
+                self.transcript = b"=> "
+
+            def checkpoint(self) -> int:
+                return len(self.transcript)
+
+            def send(self, payload: bytes, deadline: float) -> None:
+                del deadline
+                self.events.append(("send", payload))
+
+            def wait_for(self, marker: bytes, deadline: float, **kwargs: object) -> bytes:
+                del deadline, kwargs
+                self.events.append(("wait", marker))
+                return marker
+
+            def wait_for_any(
+                self, markers: tuple[bytes, ...], deadline: float
+            ) -> bytes:
+                del deadline
+                self.events.append(("wait_any", markers))
+                if FbdevCanaryOperations.EARLY_CAPTURE_MARKER in markers:
+                    return FbdevCanaryOperations.EARLY_CAPTURE_MARKER
+                return DESKTOP_M4_MILESTONES[-1].encode()
+
+        serial = FakeSerial()
+        operations = object.__new__(FbdevCanaryOperations)
+        config = mock.Mock(boot_timeout=5.0, command_timeout=1.0)
+        operations.config = config
+        session = {
+            "serial": serial,
+            "monitor": mock.Mock(),
+            "directory": self.directory,
+        }
+
+        def send_uboot(
+            _session: object, command: str, _index: int, _deadline: float
+        ) -> None:
+            if command == "pci bar 0.1.0":
+                serial.transcript += b"\n  0 0x40000000 0x1000000\n"
+
+        with (
+            mock.patch.object(operations, "_send_uboot", side_effect=send_uboot),
+            mock.patch(
+                "tools.riscv.debian.rootfs.desktop_m3_gate.capture_rendered_ppm",
+                return_value=(b"ppm", {"distinct_sampled_colors": 3}),
+            ) as capture,
+        ):
+            operations.run_protocol(session, config)
+
+        capture.assert_called_once()
+        wait_any = [event for event in serial.events if event[0] == "wait_any"]
+        self.assertEqual(len(wait_any), 2)
+        self.assertIn(FbdevCanaryOperations.EARLY_CAPTURE_MARKER, wait_any[0][1])
+        self.assertNotIn(FbdevCanaryOperations.EARLY_CAPTURE_MARKER, wait_any[1][1])
+
+    def test_boot_commands_reserve_scanout_before_booti(self) -> None:
+        operations = object.__new__(DesktopM4Operations)
+        operations.config = mock.Mock(root_fs="ext2")
+        commands = operations._boot_commands(0x40000000)
+
+        self.assertIn("fdt mknode / reserved-memory", commands)
+        self.assertIn(
+            "fdt set /reserved-memory/framebuffer@40000000 "
+            "reg <0x0 0x40000000 0x0 0x1000000>",
+            commands,
+        )
+        self.assertIn(
+            "fdt set /reserved-memory/framebuffer@40000000 no-map", commands
+        )
+        self.assertIn("fdt print /framebuffer@40000000", commands)
+        bootargs_index = next(
+            index
+            for index, command in enumerate(commands)
+            if command.startswith('setenv bootargs "')
+        )
+        self.assertLess(
+            commands.index("fdt set /reserved-memory/framebuffer@40000000 no-map"),
+            bootargs_index,
+        )
+        self.assertIn(
+            "systemd.setenv=ASTERINAS_DESKTOP_INPUT_IDENTITY_MODE=ordered",
+            commands[bootargs_index],
+        )
+
     def test_classifier_requires_ordered_application_evidence(self) -> None:
-        transcript = ("boot noise\n" + "\n".join(DESKTOP_M4_MILESTONES) + "\n").encode()
+        framebuffer = (
+            "DEBIAN_DESKTOP_M4_FB_IOCTL width=1280 height=1024 stride=5120 bpp=32 format=BgrReserved\n"
+            "DEBIAN_DESKTOP_M4_FB_SAMPLE bytes=4096 sha256=" + "a" * 64 + "\n"
+            "DEBIAN_DESKTOP_M4_FB_COLORS distinct=10 non_background=1024\n"
+        )
+        transcript = (
+            "boot noise\n" + "\n".join(DESKTOP_M4_MILESTONES) + "\n" + framebuffer
+        ).encode()
 
         result = classify_desktop_m4(transcript, expected_debian_release="13.6")
 
@@ -7082,6 +7111,13 @@ class DebianSystemdM2GateTests(unittest.TestCase):
             SYSTEMD_M2_BOOTARGS,
             "console=ttyS0 loglevel=4 init=/init -- --root-init=systemd",
         )
+        self.assertEqual(systemd_m2_bootargs(), SYSTEMD_M2_BOOTARGS)
+        self.assertEqual(
+            systemd_m2_bootargs("ext4"),
+            SYSTEMD_EXT4_M3_BOOTARGS,
+        )
+        with self.assertRaises(ValueError):
+            systemd_m2_bootargs("xfs")
 
     def test_orchestrator_invalidates_stale_pass_and_always_tears_down(self) -> None:
         class FakeOperations:
@@ -7244,6 +7280,24 @@ class DebianSystemdM2GateTests(unittest.TestCase):
         self.assertIn(b"DEBIAN_SYSTEMD_M2_READY boot=1", serial.waited)
         self.assertIn(b"DEBIAN_SYSTEMD_M2_PASS boot=2", serial.waited)
         self.assertIn(b" \n", serial.sent)
+
+    def test_concrete_protocol_selects_ext4_stage1_handoff(self) -> None:
+        serial = mock.Mock()
+        serial.wait_for.return_value = b"Starting kernel ..."
+        operations = object.__new__(SystemdM2Operations)
+        config = mock.Mock(boot_timeout=1.0, root_fs="ext4")
+        with mock.patch.object(operations, "_send_uboot") as send_uboot:
+            operations._boot_once(
+                {"serial": serial},
+                config,
+                wait_prompt=False,
+            )
+
+        commands = [call.args[1] for call in send_uboot.call_args_list]
+        self.assertIn(
+            f'setenv bootargs "{SYSTEMD_EXT4_M3_BOOTARGS}"',
+            commands,
+        )
 
 
 if __name__ == "__main__":

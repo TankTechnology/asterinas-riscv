@@ -3,9 +3,23 @@
     Toward a production-grade Linux alternative—memory safe, high-performance, and more<br/>
 </p>
 
+> [!IMPORTANT]
+> This repository is **asterinas-riscv**, an independently maintained RISC-V
+> downstream of Asterinas. See the
+> [RISC-V status and maintenance policy](docs/porting/asterinas-riscv-status.md)
+> for supported platforms, validation evidence, and the upstream relationship.
+
+<!-- Asterinas NixOS 0.18.0 demo. It is uploaded as a Github attachment
+so that GitHub will render that URL as a video player in Markdown.
+The original file name will be displayed up in the top bar of the video player.
+So make sure you give the video file a cool name before uploading it.
+-->
+https://github.com/user-attachments/assets/eabf8674-8503-44f7-abcc-52395d2ca4a3
+
+
+
 <p align="center">
     <a href="https://github.com/asterinas/asterinas/actions/workflows/test_x86.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_x86.yml/badge.svg?event=push" alt="Test x86-64" style="max-width: 100%;"></a>
-    <a href="https://github.com/asterinas/asterinas/actions/workflows/test_aarch64.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_aarch64.yml/badge.svg?event=push" alt="Test aarch64" style="max-width: 100%;"></a>
     <a href="https://github.com/asterinas/asterinas/actions/workflows/test_riscv.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_riscv.yml/badge.svg?event=push" alt="Test riscv64" style="max-width: 100%;"></a>
     <a href="https://github.com/asterinas/asterinas/actions/workflows/test_loongarch.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_loongarch.yml/badge.svg?event=push" alt="Test loongarch64" style="max-width: 100%;"></a>
     <a href="https://github.com/asterinas/asterinas/actions/workflows/test_x86_tdx.yml"><img src="https://github.com/asterinas/asterinas/actions/workflows/test_x86_tdx.yml/badge.svg" alt="Test Intel TDX" style="max-width: 100%;"></a>
@@ -16,23 +30,32 @@
 </p>
 
 **News:**
-- 2026-10-13: Asterinas 0.19.0 is released, adding a DRM graphics subsystem, AArch64 as the fourth supported architecture, a Rust-native device model (`aster-device`), better guest-kernel support for secure containers, and the first self-hosted build of Asterinas on Asterinas NixOS. Read the [announcement](https://asterinas.github.io/2026/10/13/announcing-asterinas-0.19.0.html).
+* 2025-12-08: **FAST 2026** accepted a paper on a novel secure storage solution having been integrated into Asterinas: _MlsDisk: Trusted Block Storage for TEEs Based on Layered Secure Logging_.
+* 2025-10-17: **ICSE 2026** accepted yet another paper about Asterinas: _RusyFuzz: Unhandled Exception Guided Fuzzing for Rust OS Kernel_.
+* 2025-10-14: [*CortenMM: Efficient Memory Management with Strong Correctness Guarantees*](https://dl.acm.org/doi/10.1145/3731569.3764836) received the **Best Paper Award** at **SOSP 2025**.
+* 2025-07-23: **SOSP 2025** accepted another Asterinas paper: [*CortenMM: Efficient Memory Management with Strong Correctness Guarantees*](https://dl.acm.org/doi/10.1145/3731569.3764836).
+* 2025-06-18: **USENIX _;login:_ magazine** published [*Asterinas: A Rust-Based Framekernel to Reimagine Linux in the 2020s*](https://www.usenix.org/publications/loginonline/asterinas-rust-based-framekernel-reimagine-linux-2020s).
+* 2025-04-30: **USENIX ATC 2025** accepted two Asterinas papers:
+    1. [*Asterinas: A Linux ABI-Compatible, Rust-Based Framekernel OS with a Small and Sound TCB*](https://www.usenix.org/conference/atc25/presentation/peng-yuke);
+    2. [*Converos: Practical Model Checking for Verifying Rust OS Kernel Concurrency*](https://www.usenix.org/conference/atc25/presentation/tang).
+
+Congratulations to the Asterinas community🎉🎉🎉
 
 ## Introducing Asterinas
 
 The future of operating systems (OSes) belongs to Rust—a modern systems programming language (PL)
 that delivers safety, efficiency, and productivity at once.
-The open question is not whether OS kernels should transition from C to Rust,
-but how we get there.
+The open question is not _whether_ OS kernels should transition from C to Rust,
+but _how_ we get there.
 
 Linux follows an _incremental_ path.
 While the Rust for Linux project has successfully integrated Rust as an official second PL,
-this approach faces inherent friction.
+this approach faces _inherent friction_.
 As a newcomer within a massive C codebase,
 Rust must often compromise on safety, efficiency, clarity, and ergonomics
 to maintain compatibility with legacy structures.
 And while new Rust code can improve what it touches,
-it cannot retroactively eliminate vulnerabilities in decades of existing C code.
+it cannot retroactively eliminate _vulnerabilities_ in decades of existing C code.
 
 Asterinas takes a _clean-slate_ approach.
 By building a Linux-compatible, general-purpose OS kernel from the ground up in Rust,
@@ -68,7 +91,7 @@ Through the lens of a modern PL, Asterinas rethinks and modernizes the construct
 Asterinas aims to become **a production-grade, memory-safe Linux alternative**,
 with performance that matches Linux—and in some scenarios, exceeds it.
 The project has been under active development for four years,
-supports 240+ Linux system calls,
+supports 230+ Linux system calls,
 and has launched an experimental distribution,
 [Asterinas NixOS](https://asterinas.github.io/book/distro/index.html).
 
@@ -99,7 +122,6 @@ that Asterinas can run on as an OS kernel.
 | ------------------- | ------ |
 | x86-64              | Tier 1 |
 | x86-64 (Intel TDX)  | Tier 2 |
-| ARM 64              | Tier 2 |
 | RISC-V 64           | Tier 2 |
 | LoongArch 64        | Tier 3 |
 
@@ -132,20 +154,18 @@ Follow the steps below to get Asterinas up and running.
 1. Download the latest source code on an x86-64 (or ARM64) Linux machine:
 
     ```bash
-    git clone https://github.com/asterinas/asterinas
+    git clone https://github.com/TankTechnology/asterinas-riscv
     ```
 
 2. Run a Docker container as the development environment:
 
     ```bash
-    docker run -it --privileged --network=host -v /dev:/dev -v $(pwd)/asterinas:/root/asterinas asterinas/dev:0.19.0-20261012
+    docker run -it --privileged --network=host -v /dev:/dev -v $(pwd)/asterinas:/root/asterinas asterinas/asterinas:0.18.0-20260702
     ```
 
     Alternatively, if you use VS Code with the
     [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
     extension, open the cloned folder and select "Reopen in Container".
-    If you prefer Nix to Docker, enter the Nix development shell instead,
-    as described in [Using Nix for Development](book/src/kernel/nix-development.md).
 
 3. Inside the container,
 go to the project folder (`/root/asterinas`) and run:

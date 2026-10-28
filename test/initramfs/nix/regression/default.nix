@@ -1,21 +1,17 @@
-{
-  lib,
-  pkgs,
-  stdenv,
-  callPackage,
-  testPlatform ? "asterinas",
-  testDirs ? null,
+{ lib, pkgs, stdenv, callPackage, testPlatform ? "asterinas", testDirs ? null,
 }:
 let
   scripts = lib.fileset.toSource {
     root = ./../../src/regression/scripts;
-    fileset = lib.fileset.fileFilter (file: file.hasExt "sh") ./../../src/regression/scripts;
+    fileset = lib.fileset.fileFilter (file: file.hasExt "sh")
+      ./../../src/regression/scripts;
   };
 
   commonArgs = { inherit testPlatform; };
   commonBuild = dir: callPackage ./common.nix (commonArgs // { inherit dir; });
 
   subDirs = [
+    "device"
     "fs"
     "hello_world"
     "io"
@@ -28,49 +24,27 @@ let
 
   tdxAttest = callPackage ./tdx-attest.nix { };
 
-  allPkgs =
-    lib.genAttrs subDirs commonBuild
-    // {
-      device = callPackage ./common.nix (
-        commonArgs
-        // {
-          dir = "device";
-          extraAttrs = {
-            C_FLAGS = "-I${pkgs.libdrm.dev}/include/libdrm";
-          };
-          extraBuildInputs = [ pkgs.libdrm ];
-        }
-      );
-      network = callPackage ./common.nix (
-        commonArgs
-        // {
-          dir = "network";
-          extraAttrs = {
-            C_FLAGS = "-I${pkgs.libnl.dev}/include/libnl3";
-          };
-          extraBuildInputs = [ pkgs.libnl ];
-        }
-      );
-    }
-    // lib.optionalAttrs (pkgs.hostPlatform.system == "x86_64-linux") {
-      intel_tdx = callPackage ./common.nix (
-        commonArgs
-        // {
-          dir = "intel_tdx";
-          extraAttrs = {
-            TDX_ATTEST_DIR = "${tdxAttest}/QuoteGeneration";
-          };
-        }
-      );
-    };
+  allPkgs = lib.genAttrs subDirs commonBuild // {
+    network = callPackage ./common.nix (commonArgs // {
+      dir = "network";
+      extraAttrs = { C_FLAGS = "-I${pkgs.libnl.dev}/include/libnl3"; };
+      extraBuildInputs = [ pkgs.libnl ];
+    });
+  } // lib.optionalAttrs (pkgs.hostPlatform.system == "x86_64-linux") {
+    intel_tdx = callPackage ./common.nix (commonArgs // {
+      dir = "intel_tdx";
+      extraAttrs = { TDX_ATTEST_DIR = "${tdxAttest}/QuoteGeneration"; };
+    });
+  };
   selectedNames = if testDirs == null then lib.attrNames allPkgs else testDirs;
-  invalidNames = lib.filter (name: !(builtins.hasAttr name allPkgs)) selectedNames;
-  selectedPkgs =
-    assert lib.assertMsg (invalidNames == [ ])
-      "unknown regression test directories: ${lib.concatStringsSep ", " invalidNames}";
+  invalidNames =
+    lib.filter (name: !(builtins.hasAttr name allPkgs)) selectedNames;
+  selectedPkgs = assert lib.assertMsg (invalidNames == [ ])
+    "unknown regression test directories: ${
+      lib.concatStringsSep ", " invalidNames
+    }";
     lib.getAttrs selectedNames allPkgs;
-in
-{
+in {
   package = stdenv.mkDerivation {
     pname = "regression";
     version = "0.1.0";

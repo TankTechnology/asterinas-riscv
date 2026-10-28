@@ -133,8 +133,8 @@ FN_TEST(linux_compatible_schedstat)
 	struct schedstat before_sleep;
 	struct schedstat after_sleep;
 	struct worker_context worker = {
-		.ready = false,
-		.stop = false,
+		.ready = ATOMIC_VAR_INIT(false),
+		.stop = ATOMIC_VAR_INIT(false),
 	};
 	cpu_set_t original_set;
 	cpu_set_t one_cpu_set;

@@ -11,7 +11,7 @@ jobs:
   basic-test:
     runs-on: ubuntu-latest
     container:
-      image: asterinas/kernel-dev:0.19.0-20261012
+      image: asterinas/asterinas:0.18.0-20260702
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -38,7 +38,7 @@ jobs:
   integration-test:
     runs-on: ubuntu-latest
     container:
-      image: asterinas/kernel-dev:0.19.0-20261012
+      image: asterinas/asterinas:0.18.0-20260702
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -51,21 +51,41 @@ jobs:
       matrix:
         include:
           - test_id: 'boot-debug-smp4'
+            release: false
             smp: 4
+            auto_test: 'boot'
 
-          - test_id: 'regression-debug-smp4'
-            auto_test: 'riscv_icache_smp4'
+          - test_id: 'boot-debug-sv48-svade-smp4'
+            release: false
             smp: 4
+            auto_test: 'boot'
+            riscv_qemu_cpu: 'rv64,svpbmt=true,zkr=true,svadu=false,svade=true'
+
+          - test_id: 'boot-debug-sv39-svade-smp4'
+            release: false
+            smp: 4
+            auto_test: 'boot'
+            features: 'riscv_sv39_mode'
+            riscv_qemu_cpu: 'rv64,svpbmt=true,zkr=true,sv48=false,svadu=false,svade=true'
 
           - test_id: 'boot-release'
             release: true
+            auto_test: 'boot'
+
+          - test_id: 'regression-debug-smp4'
+            release: false
+            smp: 4
+            auto_test: 'regression'
+            riscv_icache_require_smp4: '1'
 
           - test_id: 'conformance-release'
             release: true
+            auto_test: 'conformance'
 
           - test_id: 'conformance-release-smp4'
             release: true
             smp: 4
+            auto_test: 'conformance'
       fail-fast: false
     steps:
       - name: Free disk space
@@ -74,8 +94,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run integration tests ${{ (startsWith(matrix.test_id, 'conformance') && 'with LTP') || '' }}
         uses: ./.github/actions/test
+        env:
+          FEATURES: ${{ matrix.features }}
+          RISCV_QEMU_CPU: ${{ matrix.riscv_qemu_cpu }}
+          RISCV_ICACHE_REQUIRE_SMP4: ${{ matrix.riscv_icache_require_smp4 }}
         with:
-          auto_test: ${{ matrix.auto_test || ((startsWith(matrix.test_id, 'boot') && 'boot') || 'conformance') }}
+          auto_test: ${{ matrix.auto_test }}
           release: ${{ !contains(matrix.release, 'false') }}
           arch: 'riscv64'
           smp: ${{ matrix.smp }}

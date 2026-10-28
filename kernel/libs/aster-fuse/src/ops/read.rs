@@ -87,7 +87,7 @@ impl FuseOperation for ReadOperation {
     }
 
     fn reply_expectation(&self) -> ReplyExpectation {
-        ReplyExpectation::variable_payload(self.read_req.size() as usize)
+        ReplyExpectation::payload(self.read_req.size() as usize)
     }
 
     fn parse_reply(

@@ -11,3 +11,4 @@ set -e
 ./sem/sem
 
 ./shm/posix_shm
+./shm/sysv_shm

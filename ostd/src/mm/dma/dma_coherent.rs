@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: MPL-2.0
 
-use core::{fmt::Debug, mem::ManuallyDrop};
+#[cfg(target_arch = "riscv64")]
+use core::ptr::NonNull;
+use core::{fmt::Debug, mem::ManuallyDrop, ops::Range};
 
 use super::util::{
-    alloc_kva, cvm_need_private_protection, prepare_dma, split_daddr, unprepare_dma,
+    alloc_kva, alloc_kva_in, cvm_need_private_protection, prepare_dma, split_daddr, unprepare_dma,
 };
+#[cfg(target_arch = "riscv64")]
+use crate::mm::paddr_to_vaddr;
 use crate::{
     arch::irq,
     error::Error,
+    io::IoMem,
     mm::{
         Daddr, FrameAllocOptions, HasDaddr, HasPaddr, HasPaddrRange, HasSize, Infallible,
         PAGE_SIZE, Paddr, Segment, Split, VmReader, VmWriter,
@@ -30,6 +35,7 @@ pub struct DmaCoherent {
     inner: Inner,
     map_daddr: Option<Daddr>,
     is_cache_coherent: bool,
+    uncached_alias: Option<IoMem>,
 }
 
 #[derive(Debug)]
@@ -55,6 +61,17 @@ impl DmaCoherent {
         })
     }
 
+    /// Allocates coherent DMA memory inside a physical address range.
+    pub fn alloc_in(
+        nframes: usize,
+        is_cache_coherent: bool,
+        paddr_range: Range<Paddr>,
+    ) -> Result<Self, Error> {
+        Self::alloc_uninit_in(nframes, is_cache_coherent, paddr_range).inspect(|dma| {
+            dma.writer().fill_zeros(dma.size());
+        })
+    }
+
     /// Allocates a region of physical memory for coherent DMA access
     /// without initialization.
     ///
@@ -64,19 +81,42 @@ impl DmaCoherent {
     /// This method [requires](crate::mm::dma#usage-in-irqs) the caller to
     /// have IRQs enabled.
     pub fn alloc_uninit(nframes: usize, is_cache_coherent: bool) -> Result<Self, Error> {
+        Self::alloc_uninit_with_range(nframes, is_cache_coherent, None)
+    }
+
+    /// Allocates uninitialized coherent DMA memory inside a physical range.
+    pub fn alloc_uninit_in(
+        nframes: usize,
+        is_cache_coherent: bool,
+        paddr_range: Range<Paddr>,
+    ) -> Result<Self, Error> {
+        Self::alloc_uninit_with_range(nframes, is_cache_coherent, Some(paddr_range))
+    }
+
+    fn alloc_uninit_with_range(
+        nframes: usize,
+        is_cache_coherent: bool,
+        paddr_range: Option<Range<Paddr>>,
+    ) -> Result<Self, Error> {
         debug_assert!(irq::is_local_enabled());
 
         let cvm = cvm_need_private_protection();
 
         let (inner, paddr_range) = if is_cache_coherent && !cvm {
-            let segment = FrameAllocOptions::new()
-                .zeroed(false)
-                .alloc_segment(nframes)?;
+            let mut options = FrameAllocOptions::new();
+            options.zeroed(false);
+            let segment = match paddr_range {
+                Some(range) => options.alloc_segment_in(nframes, range)?,
+                None => options.alloc_segment(nframes)?,
+            };
             let paddr_range = segment.paddr_range();
 
             (Inner::Segment(segment), paddr_range)
         } else {
-            let (kva, paddr) = alloc_kva(nframes, is_cache_coherent)?;
+            let (kva, paddr) = match paddr_range {
+                Some(range) => alloc_kva_in(nframes, is_cache_coherent, range)?,
+                None => alloc_kva(nframes, is_cache_coherent)?,
+            };
 
             (Inner::Kva(kva, paddr), paddr..paddr + nframes * PAGE_SIZE)
         };
@@ -88,7 +128,52 @@ impl DmaCoherent {
             inner,
             map_daddr,
             is_cache_coherent,
+            uncached_alias: None,
         })
+    }
+
+    /// Converts a non-coherent DMA allocation to guaranteed uncached CPU access.
+    ///
+    /// On RISC-V this retains the existing PBMT_NC mapping when Svpbmt is
+    /// available, otherwise it uses a platform-provided uncached alias. The
+    /// operation fails rather than silently retaining a cacheable mapping when
+    /// neither mechanism is available.
+    pub fn into_uncached(self) -> Result<Self, Error> {
+        if self.is_cache_coherent {
+            return Err(Error::InvalidArgs);
+        }
+
+        #[cfg(target_arch = "riscv64")]
+        {
+            let mut dma = self;
+            dma.uncached_alias = crate::arch::mm::create_uncached_dma_alias(dma.paddr_range())?;
+            Ok(dma)
+        }
+
+        #[cfg(not(target_arch = "riscv64"))]
+        {
+            Ok(self)
+        }
+    }
+
+    /// Returns the physical start of the platform uncached alias, if one is active.
+    ///
+    /// A `None` result means CPU access uses the allocation's page-based mapping,
+    /// which may still be uncached through an architecture memory-type attribute.
+    pub fn uncached_alias_paddr(&self) -> Option<Paddr> {
+        self.uncached_alias.as_ref().map(HasPaddr::paddr)
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    pub(super) fn as_non_null_ptr(&self) -> NonNull<u8> {
+        if let Some(alias) = &self.uncached_alias {
+            return alias.as_non_null_ptr();
+        }
+        let vaddr = match &self.inner {
+            Inner::Segment(segment) => paddr_to_vaddr(segment.paddr()),
+            Inner::Kva(kva, _) => kva.start(),
+        };
+        NonNull::new(vaddr as *mut u8).unwrap()
     }
 }
 
@@ -97,13 +182,17 @@ impl Split for DmaCoherent {
         assert!(offset.is_multiple_of(PAGE_SIZE));
         assert!(0 < offset && offset < self.size());
 
-        let (inner, map_daddr, is_cache_coherent) = {
+        let (inner, map_daddr, is_cache_coherent, uncached_alias, size) = {
             let this = ManuallyDrop::new(self);
+            let size = this.size();
             (
                 // SAFETY: `this.inner` will never be used or dropped later.
                 unsafe { core::ptr::read(&this.inner as *const Inner) },
                 this.map_daddr,
                 this.is_cache_coherent,
+                // SAFETY: `this.uncached_alias` will never be used or dropped later.
+                unsafe { core::ptr::read(&this.uncached_alias) },
+                size,
             )
         };
 
@@ -120,17 +209,26 @@ impl Split for DmaCoherent {
         };
 
         let (daddr1, daddr2) = split_daddr(map_daddr, offset);
+        let (uncached_alias1, uncached_alias2) = match uncached_alias {
+            Some(alias) => (
+                Some(alias.slice(0..offset)),
+                Some(alias.slice(offset..size)),
+            ),
+            None => (None, None),
+        };
 
         (
             Self {
                 inner: inner1,
                 map_daddr: daddr1,
                 is_cache_coherent,
+                uncached_alias: uncached_alias1,
             },
             Self {
                 inner: inner2,
                 map_daddr: daddr2,
                 is_cache_coherent,
+                uncached_alias: uncached_alias2,
             },
         )
     }
@@ -171,6 +269,15 @@ impl HasVmReaderWriter for DmaCoherent {
     type Types = VmReaderWriterIdentity;
 
     fn reader(&self) -> VmReader<'_, Infallible> {
+        if let Some(alias) = &self.uncached_alias {
+            // SAFETY:
+            //  - The alias maps the same untyped backing memory owned by `self`.
+            //  - The alias mapping remains alive for the lifetime `'_`.
+            //  - All safe CPU access is routed through this reader or `writer`.
+            return unsafe {
+                VmReader::from_kernel_space(alias.as_non_null_ptr().as_ptr(), alias.size())
+            };
+        }
         match &self.inner {
             Inner::Segment(seg) => seg.reader(),
             Inner::Kva(kva, _) => {
@@ -184,6 +291,15 @@ impl HasVmReaderWriter for DmaCoherent {
     }
 
     fn writer(&self) -> VmWriter<'_, Infallible> {
+        if let Some(alias) = &self.uncached_alias {
+            // SAFETY:
+            //  - The alias maps the same untyped backing memory owned by `self`.
+            //  - The alias mapping remains alive for the lifetime `'_`.
+            //  - All safe CPU access is routed through `reader` or this writer.
+            return unsafe {
+                VmWriter::from_kernel_space(alias.as_non_null_ptr().as_ptr(), alias.size())
+            };
+        }
         match &self.inner {
             Inner::Segment(seg) => seg.writer(),
             Inner::Kva(kva, _) => {

@@ -12,7 +12,7 @@ use crate::{
         HasSize, PAGE_SIZE, Paddr, Split, Vaddr,
         frame::{Frame, meta::AnyFrameMeta},
         page_prop::PageProperty,
-        page_table::{largest_pages, max_page_level},
+        page_table::largest_pages,
     },
 };
 
@@ -52,7 +52,7 @@ mod allocator {
 // `KVirtArea`. However, `IoMem` need some non trivial refactoring to support
 // being implemented on a `!Send` and `!Sync` guard.
 #[derive(Debug)]
-pub(crate) struct KVirtArea {
+pub struct KVirtArea {
     range: Range<Vaddr>,
 }
 
@@ -79,27 +79,27 @@ impl Split for KVirtArea {
 }
 
 impl KVirtArea {
-    pub(crate) fn start(&self) -> Vaddr {
+    pub fn start(&self) -> Vaddr {
         self.range.start
     }
 
-    pub(crate) fn end(&self) -> Vaddr {
+    pub fn end(&self) -> Vaddr {
         self.range.end
     }
 
-    pub(crate) fn range(&self) -> Range<Vaddr> {
+    pub fn range(&self) -> Range<Vaddr> {
         self.range.start..self.range.end
     }
 
     #[cfg(ktest)]
-    pub(crate) fn query<'a, G: crate::task::atomic_mode::AsAtomicModeGuard>(
+    pub(in crate::mm) fn query<'a, G: crate::task::atomic_mode::AsAtomicModeGuard>(
         &'a self,
         guard: &'a G,
         addr: Vaddr,
     ) -> Option<super::MappedItemRef<'a>> {
         use align_ext::AlignExt;
 
-        assert!(self.start() <= addr && self.end() >= addr);
+        assert!(self.range.contains(&addr));
 
         let start = addr.align_down(PAGE_SIZE);
         let vaddr = start..start + PAGE_SIZE;
@@ -121,7 +121,7 @@ impl KVirtArea {
     ///  - the area size is not a multiple of [`PAGE_SIZE`];
     ///  - the map offset is not aligned to [`PAGE_SIZE`];
     ///  - the map offset plus the size of the pages exceeds the area size.
-    pub(crate) fn map_frames<T: AnyFrameMeta + ?Sized>(
+    pub fn map_frames<T: AnyFrameMeta + ?Sized>(
         area_size: usize,
         map_offset: usize,
         frames: impl Iterator<Item = Frame<T>>,
@@ -141,7 +141,7 @@ impl KVirtArea {
         for frame in frames.into_iter() {
             // SAFETY: The constructor of the `KVirtArea` has already ensured
             // that this mapping does not affect kernel's memory safety.
-            unsafe { cursor.map(MappedItem::Tracked(Frame::from_unsized(frame), prop)) };
+            unsafe { cursor.map(MappedItem::tracked(Frame::from_unsized(frame), prop)) };
         }
 
         Self { range }
@@ -165,7 +165,7 @@ impl KVirtArea {
     ///  - the map offset plus the length of the physical range exceeds the
     ///    area size;
     ///  - the provided physical range contains tracked physical addresses.
-    pub(crate) unsafe fn map_untracked_frames(
+    pub unsafe fn map_untracked_frames(
         area_size: usize,
         map_offset: usize,
         pa_range: Range<Paddr>,
@@ -186,15 +186,12 @@ impl KVirtArea {
             let va_range = range.start + map_offset..range.start + map_offset + len;
 
             let page_table = KERNEL_PAGE_TABLE.get().unwrap();
-            let min_level = max_page_level::<KernelPtConfig>(len);
-            let mut cursor = page_table
-                .cursor_mut_with_min_level(&irq_guard, &va_range, min_level)
-                .unwrap();
+            let mut cursor = page_table.cursor_mut(&irq_guard, &va_range).unwrap();
 
             for (pa, level) in largest_pages::<KernelPtConfig>(va_range.start, pa_range.start, len)
             {
                 // SAFETY: The caller of `map_untracked_frames` has ensured the safety of this mapping.
-                unsafe { cursor.map(MappedItem::Untracked(pa, level, prop)) };
+                unsafe { cursor.map(MappedItem::untracked(pa, level, prop)) };
             }
         }
 

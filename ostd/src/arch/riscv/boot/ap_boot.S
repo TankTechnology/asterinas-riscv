@@ -22,7 +22,7 @@ ap_boot_start:
     # Save hart ID in t4 for later use (t4 is caller-saved but we'll be careful).
     mv      t4, a0
 
-    # Use the compiled paging mode, matching the page table built by the BSP.
+    # Load the kernel page table using the paging mode selected by the build.
     lla     t0, __ap_boot_page_table_pointer - KERNEL_VMA_OFFSET
     ld      t1, 0(t0)                   # Load page table physical address.
     li      t2, {SATP_MODE}
@@ -30,12 +30,10 @@ ap_boot_start:
     or      t1, t1, t2
     csrw    satp, t1
 
-    # Check if the write to satp succeeds.
+    # The BSP and APs must use the same compiled paging mode.
     # Reference: <https://riscv.github.io/riscv-isa-manual/snapshot/privileged/#satp>.
     csrr    t3, satp
     beq     t3, t1, ap_flush_tlb
-
-    # An AP must implement the compiled paging mode, just like the BSP.
 ap_unreachable_pa:
     j       ap_unreachable_pa
 

@@ -16,7 +16,6 @@ mod util;
 
 pub mod create;
 pub mod forget;
-pub mod fsync;
 pub mod getattr;
 pub mod init;
 pub mod link;
@@ -33,6 +32,5 @@ pub mod rename;
 pub mod rmdir;
 pub mod setattr;
 pub mod statfs;
-pub mod symlink;
 pub mod unlink;
 pub mod write;

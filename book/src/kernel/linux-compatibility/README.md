@@ -49,9 +49,9 @@ which are summarized in the table below.
 | 26      | msync                  | ✅             | [⚠️](syscall-flag-coverage/memory-management/#msync) |
 | 27      | mincore                | ❌             | N/A |
 | 28      | madvise                | ✅             | [⚠️](syscall-flag-coverage/memory-management/#madvise) |
-| 29      | shmget                 | ❌             | N/A |
-| 30      | shmat                  | ❌             | N/A |
-| 31      | shmctl                 | ❌             | N/A |
+| 29      | shmget                 | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#system-v-shared-memory) |
+| 30      | shmat                  | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#system-v-shared-memory) |
+| 31      | shmctl                 | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#system-v-shared-memory) |
 | 32      | dup                    | ✅             | 💯 |
 | 33      | dup2                   | ✅             | 💯 |
 | 34      | pause                  | ✅             | 💯 |
@@ -87,7 +87,7 @@ which are summarized in the table below.
 | 64      | semget                 | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#semget) |
 | 65      | semop                  | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#semop-and-semtimedop) |
 | 66      | semctl                 | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#semctl) |
-| 67      | shmdt                  | ❌             | N/A |
+| 67      | shmdt                  | ✅             | [⚠️](syscall-flag-coverage/inter-process-communication/#system-v-shared-memory) |
 | 68      | msgget                 | ❌             | N/A |
 | 69      | msgsnd                 | ❌             | N/A |
 | 70      | msgrcv                 | ❌             | N/A |
@@ -123,7 +123,7 @@ which are summarized in the table below.
 | 100     | times                  | ❌             | N/A |
 | 101     | ptrace                 | ✅             | [⚠️](syscall-flag-coverage/process-and-thread-management/#ptrace) |
 | 102     | getuid                 | ✅             | 💯 |
-| 103     | syslog                 | ❌             | N/A |
+| 103     | syslog                 | ✅             | [⚠️](syscall-flag-coverage/system-information-and-misc/#syslog) |
 | 104     | getgid                 | ✅             | 💯 |
 | 105     | setuid                 | ✅             | 💯 |
 | 106     | setgid                 | ✅             | 💯 |
@@ -367,7 +367,7 @@ which are summarized in the table below.
     - N/A = not applicable (e.g., syscall not supported)
 
 Most of these system calls (or their variants) are also supported
-for the ARM, RISC-V, and LoongArch architectures.
+for the RISC-V and LoongArch architectures.
 
 ## File systems
 
@@ -397,7 +397,6 @@ Here is the list of supported symbols in vDSO:
 Here is the list of supported boot protocols:
 * [Multiboot](https://www.gnu.org/software/grub/manual/multiboot/multiboot.html)
 * [Multiboot2](https://www.gnu.org/software/grub/manual/multiboot2/multiboot.html)
-* [PVH](https://xenbits.xen.org/docs/unstable/misc/pvh.html)
 * [Linux 32-bit boot protocol](https://www.kernel.org/doc/html/v6.19/arch/x86/boot.html#bit-boot-protocol)
 * [Linux EFI handover](https://www.kernel.org/doc/html/v6.19/arch/x86/boot.html#efi-handover-protocol-deprecated)
 * [PE/COFF entry point](https://www.kernel.org/doc/html/v6.19/arch/x86/boot.html#pe-coff-entry-point)

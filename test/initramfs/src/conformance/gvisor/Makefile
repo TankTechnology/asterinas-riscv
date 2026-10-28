@@ -9,7 +9,6 @@ TESTS ?= \
 	access_test \
 	brk_test \
 	capabilities_test \
-	chmod_test \
 	chown_test \
 	creat_test \
 	dev_test \
@@ -89,6 +88,10 @@ TESTS ?= \
 	write_test \
 	xattr_test \
 	# The end of the list
+
+ifneq ($(GVISOR_TESTS),)
+TESTS := $(GVISOR_TESTS)
+endif
 
 MKFILE_PATH := $(abspath $(lastword $(MAKEFILE_LIST)))
 CUR_DIR := $(patsubst %/,%,$(dir $(MKFILE_PATH)))

@@ -22,15 +22,12 @@
     * [Communication](distro/popular-applications/communication/README.md)
     * [File Management & Terminal](distro/popular-applications/file-management-and-terminal/README.md)
     * [AI & Machine Learning](distro/popular-applications/ai-and-machine-learning/README.md)
-* [Building Asterinas on Asterinas](distro/building-on-asterinas.md)
 
 # Asterinas Kernel
 
 * [Getting Started](kernel/README.md)
-    * [Using Nix for Development](kernel/nix-development.md)
 * [Advanced Build and Test Instructions](kernel/advanced-instructions.md)
     * [Intel TDX](kernel/intel-tdx.md)
-    * [Firecracker](kernel/firecracker.md)
 * [The Framekernel Architecture](kernel/the-framekernel-architecture.md)
 * [Linux Compatibility](kernel/linux-compatibility/README.md)
     * [Syscall Flag Coverage](kernel/linux-compatibility/syscall-flag-coverage/README.md)
@@ -56,7 +53,6 @@
 
 * [An Overview of OSTD](ostd/README.md)
 * [Example: Writing a Kernel in 100 Lines of Safe Rust](ostd/a-100-line-kernel.md)
-* [Example: Writing a Hypervisor in 100 Lines of Safe Rust](ostd/a-100-line-hypervisor.md)
 * [Example: Writing a Driver in 100 Lines of Safe Rust]()
 * [Soundness Analysis](ostd/soundness/README.md)
     * [What Soundness Means](ostd/soundness/what-soundness-means.md)

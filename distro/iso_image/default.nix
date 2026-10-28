@@ -1,21 +1,10 @@
-{
-  pkgs ? import ../nixpkgs.nix { },
-  autoInstall ? false,
-  extra-substituters ? "",
-  config-file-name ? "configuration.nix",
-  extra-trusted-public-keys ? "",
-  target_platform ? "x86_64-linux",
-  version ? "",
-  ...
-}:
+{ pkgs ? import <nixpkgs> { }, autoInstall ? false, extra-substituters ? ""
+, config-file-name ? "configuration.nix", extra-trusted-public-keys ? ""
+, target_platform ? "x86_64-linux", version ? "", ... }:
 let
   installer = pkgs.callPackage ../aster_nixos_installer {
-    inherit
-      extra-substituters
-      extra-trusted-public-keys
-      config-file-name
-      target_platform
-      ;
+    inherit extra-substituters extra-trusted-public-keys config-file-name
+      target_platform;
   };
   configuration = {
     imports = [
@@ -26,7 +15,6 @@ let
     system.nixos.distroName = "Asterinas NixOS";
     system.nixos.label = "${version}";
     isoImage.appendToMenuLabel = " Installer";
-    isoImage.storeContents = [ (builtins.storePath pkgs.path) ];
 
     services.getty.autologinUser = pkgs.lib.mkForce "root";
     environment.systemPackages = [ installer ];
@@ -45,5 +33,4 @@ let
       ''}
     '';
   };
-in
-(pkgs.nixos configuration).config.system.build.isoImage
+in (pkgs.nixos configuration).config.system.build.isoImage

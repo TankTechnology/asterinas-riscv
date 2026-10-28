@@ -27,11 +27,7 @@ static struct custom_elf elf;
 static const unsigned char illegal_instr[] = { 0x0f, 0x0b }; // `ud2`.
 #elif defined(__riscv) && __riscv_xlen == 64
 #define ELF_MACHINE EM_RISCV
-// A zero-filled instruction is illegal in RISC-V (`unimp`).
-static const unsigned char illegal_instr[] = { 0x00, 0x00, 0x00, 0x00 };
-#elif defined(__aarch64__)
-#define ELF_MACHINE EM_AARCH64
-// A zero-filled instruction is illegal in ARM (`udf #0`).
+// A zero-filled instruction is illegal in RISC-V.
 static const unsigned char illegal_instr[] = { 0x00, 0x00, 0x00, 0x00 };
 #else
 #error "unsupported architecture"
@@ -302,24 +298,25 @@ static int do_execve_fatal(void)
 
 #include <sys/ptrace.h>
 #include <sys/syscall.h>
-#include <sys/uio.h>
 
 #if defined(__x86_64__)
-#include <sys/user.h> // struct user_regs_struct
+#include <sys/user.h>
 #elif defined(__riscv) && __riscv_xlen == 64
-#include <asm/ptrace.h> // struct user_regs_struct
-#elif defined(__aarch64__)
-#include <sys/user.h> // struct user_regs_struct
-#else
-#error "unsupported architecture"
+#include <asm/ptrace.h>
+#include <sys/uio.h>
 #endif
 
 static void get_tracee_regs(pid_t pid, struct user_regs_struct *regs)
 {
+#if defined(__x86_64__)
+	CHECK(ptrace(PTRACE_GETREGS, pid, NULL, regs));
+#elif defined(__riscv) && __riscv_xlen == 64
 	struct iovec iov = { .iov_base = regs, .iov_len = sizeof(*regs) };
 
-	CHECK_WITH(ptrace(PTRACE_GETREGSET, pid, (void *)NT_PRSTATUS, &iov),
-		   iov.iov_len == sizeof(*regs));
+	CHECK(ptrace(PTRACE_GETREGSET, pid, (void *)NT_PRSTATUS, &iov));
+#else
+#error "unsupported architecture"
+#endif
 }
 
 static long get_syscall_number(const struct user_regs_struct *regs)
@@ -328,8 +325,6 @@ static long get_syscall_number(const struct user_regs_struct *regs)
 	return regs->orig_rax;
 #elif defined(__riscv) && __riscv_xlen == 64
 	return regs->a7;
-#elif defined(__aarch64__)
-	return regs->regs[8];
 #else
 #error "unsupported architecture"
 #endif
@@ -341,8 +336,6 @@ static int get_syscall_errno(const struct user_regs_struct *regs)
 	return -regs->rax;
 #elif defined(__riscv) && __riscv_xlen == 64
 	return -(long)regs->a0;
-#elif defined(__aarch64__)
-	return -(long)regs->regs[0];
 #else
 #error "unsupported architecture"
 #endif

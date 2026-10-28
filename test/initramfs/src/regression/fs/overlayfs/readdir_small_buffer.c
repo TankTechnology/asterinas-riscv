@@ -1,14 +1,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
-#define _GNU_SOURCE
+#include <fcntl.h>
+#include <limits.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include "../../common/test.h"
 
 #define BASE_DIR "/ovl_readdir_test"
-
-#include "ovl_common.h"
-
-#include <stdint.h>
-#include <sys/syscall.h>
-#include <sys/sysmacros.h>
+#define UPPER_DIR BASE_DIR "/upper"
+#define WORK_DIR BASE_DIR "/work"
+#define LOWER_DIR BASE_DIR "/lower"
+#define MERGED_DIR BASE_DIR "/merged"
 
 #define NUM_UPPER_EXTRA 3
 #define NUM_LOWER_EXTRA 5
@@ -32,30 +40,45 @@ struct readdir_result {
 	int total_entries;
 };
 
+static void create_dir(const char *path)
+{
+	CHECK(mkdir(path, 0755));
+}
+
+static void write_file(const char *path)
+{
+	int fd = CHECK(open(path, O_WRONLY | O_CREAT, 0644));
+	CHECK(write(fd, "data", 4));
+	CHECK(close(fd));
+}
+
 static void setup_overlay_tree(void)
 {
-	create_overlay_dirs();
+	create_dir(BASE_DIR);
+	create_dir(UPPER_DIR);
+	create_dir(WORK_DIR);
+	create_dir(LOWER_DIR);
+	create_dir(MERGED_DIR);
 
-	write_file(UPPER_DIR "/normal_file", "data");
-	/* A char-device 0:0 whiteout named like a deleted file hides itself and the lower entry. */
-	CHECK(mknod(UPPER_DIR "/deleted", S_IFCHR | 0644, makedev(0, 0)));
-	write_file(UPPER_DIR "/normal_extra_0", "data");
-	write_file(UPPER_DIR "/normal_extra_1", "data");
-	write_file(UPPER_DIR "/normal_extra_2", "data");
+	write_file(UPPER_DIR "/normal_file");
+	write_file(UPPER_DIR "/.wh.deleted");
+	write_file(UPPER_DIR "/normal_extra_0");
+	write_file(UPPER_DIR "/normal_extra_1");
+	write_file(UPPER_DIR "/normal_extra_2");
 
-	write_file(LOWER_DIR "/deleted", "data");
-	write_file(LOWER_DIR "/another_file", "data");
-	write_file(LOWER_DIR "/another_extra_0", "data");
-	write_file(LOWER_DIR "/another_extra_1", "data");
-	write_file(LOWER_DIR "/another_extra_2", "data");
-	write_file(LOWER_DIR "/another_extra_3", "data");
-	write_file(LOWER_DIR "/another_extra_4", "data");
+	write_file(LOWER_DIR "/deleted");
+	write_file(LOWER_DIR "/another_file");
+	write_file(LOWER_DIR "/another_extra_0");
+	write_file(LOWER_DIR "/another_extra_1");
+	write_file(LOWER_DIR "/another_extra_2");
+	write_file(LOWER_DIR "/another_extra_3");
+	write_file(LOWER_DIR "/another_extra_4");
 }
 
 static void cleanup_overlay_tree(void)
 {
 	CHECK(unlink(UPPER_DIR "/normal_file"));
-	CHECK(unlink(UPPER_DIR "/deleted"));
+	CHECK(unlink(UPPER_DIR "/.wh.deleted"));
 	CHECK(unlink(UPPER_DIR "/normal_extra_0"));
 	CHECK(unlink(UPPER_DIR "/normal_extra_1"));
 	CHECK(unlink(UPPER_DIR "/normal_extra_2"));
@@ -68,9 +91,20 @@ static void cleanup_overlay_tree(void)
 	CHECK(unlink(LOWER_DIR "/another_extra_3"));
 	CHECK(unlink(LOWER_DIR "/another_extra_4"));
 
-	remove_overlay_dirs();
+	CHECK(rmdir(MERGED_DIR));
+	CHECK(rmdir(WORK_DIR));
+	CHECK(rmdir(UPPER_DIR));
 	CHECK(rmdir(LOWER_DIR));
 	CHECK(rmdir(BASE_DIR));
+}
+
+static void mount_overlay(void)
+{
+	char options[256];
+	snprintf(options, sizeof(options), "lowerdir=%s,upperdir=%s,workdir=%s",
+		 LOWER_DIR, UPPER_DIR, WORK_DIR);
+
+	CHECK(mount("overlay", MERGED_DIR, "overlay", 0, options));
 }
 
 FN_SETUP(init)
@@ -85,7 +119,13 @@ FN_TEST(readdir_small_buffer)
 {
 	int fd = TEST_SUCC(open(MERGED_DIR, O_RDONLY | O_DIRECTORY));
 
-	/* A one-dirent buffer must still yield the full view: whiteout and hidden lower excluded. */
+	/*
+	 * Use a buffer that can hold only one maximal-name dirent, so each
+	 * getdents64() call may stop after a single merged entry. The merged
+	 * directory view should still remain complete: lower entries hidden by
+	 * whiteouts must stay hidden, and the whiteout files themselves must not
+	 * appear.
+	 */
 	char buf[ONE_LONG_DIRENT_BUF_SIZE];
 	struct readdir_result result = { 0 };
 

@@ -10,6 +10,7 @@ use crate::{
     mm::{
         CachePolicy, Daddr, FrameAllocOptions, HasPaddr, HasSize, PAGE_SIZE, Paddr, PageFlags,
         PageProperty, PrivilegedPageFlags, Segment,
+        frame::meta::AnyFrameMeta,
         kspace::kvirt_area::KVirtArea,
         tlb::{TlbFlushOp, TlbFlusher},
     },
@@ -100,6 +101,21 @@ pub(super) fn split_daddr(daddr: Option<Daddr>, offset: usize) -> (Option<Daddr>
     }
 }
 
+const fn dma_cache_policy(is_cache_coherent: bool) -> CachePolicy {
+    if is_cache_coherent {
+        return CachePolicy::Writeback;
+    }
+
+    // Svpbmt distinguishes ordinary non-cacheable main memory (PBMT_NC)
+    // from strongly ordered MMIO (PBMT_IO). The RISC-V page-table backend
+    // uses WriteCombining as its lossless representation of PBMT_NC.
+    #[cfg(target_arch = "riscv64")]
+    return CachePolicy::WriteCombining;
+
+    #[cfg(not(target_arch = "riscv64"))]
+    return CachePolicy::Uncacheable;
+}
+
 pub(super) fn alloc_kva(
     nframes: usize,
     is_cache_coherent: bool,
@@ -109,7 +125,26 @@ pub(super) fn alloc_kva(
             .zeroed(false)
             .alloc_segment_with(nframes, |_| DmaBufferMeta)?,
     );
+    map_dma_segment(segment, is_cache_coherent)
+}
 
+pub(super) fn alloc_kva_in(
+    nframes: usize,
+    is_cache_coherent: bool,
+    paddr_range: Range<Paddr>,
+) -> Result<(KVirtArea, Paddr), Error> {
+    let segment = Segment::from_unsized(
+        FrameAllocOptions::new()
+            .zeroed(false)
+            .alloc_segment_with_in(nframes, paddr_range, |_| DmaBufferMeta)?,
+    );
+    map_dma_segment(segment, is_cache_coherent)
+}
+
+fn map_dma_segment(
+    segment: Segment<dyn AnyFrameMeta>,
+    is_cache_coherent: bool,
+) -> Result<(KVirtArea, Paddr), Error> {
     #[cfg_attr(not(target_arch = "x86_64"), expect(unused_labels))]
     let priv_flags = 'priv_flags: {
         #[cfg(target_arch = "x86_64")]
@@ -118,17 +153,13 @@ pub(super) fn alloc_kva(
         PrivilegedPageFlags::empty()
     };
 
-    let cache = if is_cache_coherent {
-        CachePolicy::Writeback
-    } else {
-        CachePolicy::Uncacheable
-    };
+    let cache = dma_cache_policy(is_cache_coherent);
 
     let paddr = segment.paddr();
     let kva = KVirtArea::map_frames(
         segment.size(),
         0,
-        segment.into_iter(),
+        segment,
         PageProperty {
             flags: PageFlags::RW,
             cache,
@@ -310,5 +341,17 @@ fn unmap_dma_remap(daddr_range: Option<Range<Daddr>>) {
     for da in da_range.step_by(PAGE_SIZE) {
         iommu::unmap(da).unwrap();
         // FIXME: Flush IOTLBs to prevent any future DMA access to the frames.
+    }
+}
+
+#[cfg(all(ktest, target_arch = "riscv64"))]
+mod tests {
+    use super::{CachePolicy, dma_cache_policy};
+    use crate::prelude::ktest;
+
+    #[ktest]
+    fn noncoherent_dma_uses_normal_noncacheable_memory() {
+        assert_eq!(dma_cache_policy(false), CachePolicy::WriteCombining);
+        assert_eq!(dma_cache_policy(true), CachePolicy::Writeback);
     }
 }

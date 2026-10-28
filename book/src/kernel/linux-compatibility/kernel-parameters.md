@@ -1,96 +1,23 @@
 # Kernel Parameters
 
-This section documents kernel command-line parameters supported by Asterinas.
+This section documents kernel command-line parameters and runtime sysctl
+interfaces supported by Asterinas.
 
 ## Inherited from Linux
 
-### `rdinit`
-
-Run the specified initramfs binary as the first userspace process.
-
-Example:
-```text
-rdinit=/bin/busybox
-```
-
-Notes:
-- The value is the path to the executable in the initramfs root.
-- If omitted, Asterinas will try to execute `/init` from the initramfs root.
-- If the specified path cannot be accessed,
-  Asterinas ignores it and proceeds with root filesystem initialization.
-  It does not fall back to `/init` in this case.
-
-### `root`
-
-Mount the specified block device as the root filesystem.
-
-Example:
-```text
-root=/dev/vda2
-```
-
-Notes:
-- The value currently must name a registered block device under `/dev`,
-  such as `/dev/vda2`.
-- Asterinas first determines the boot source. If the path specified by
-  `rdinit` is accessible, or if `rdinit` is absent and `/init` exists, it
-  boots from the initramfs and ignores `root`. Otherwise, it boots from the
-  rootfs, for which `root` is required: Asterinas mounts the specified device
-  as the root filesystem and panics if the parameter is absent.
-
-### `rootfstype`
-
-Select the filesystem type used for the root filesystem.
-
-Example:
-```text
-root=/dev/vda2 rootfstype=ext2
-```
-
-Valid values:
-- `ext2`
-
-### `ro`
-
-Mount the root filesystem read-only.
-This is the default when Asterinas mounts the root filesystem via `root`.
-
-Example:
-```text
-root=/dev/vda2 ro
-```
-
-Notes:
-- This parameter has no effect when Asterinas boots from the initramfs.
-- If both `ro` and `rw` are specified, the last one takes precedence.
-
-### `rw`
-
-Mount the root filesystem read-write.
-
-Example:
-```text
-root=/dev/vda2 rw
-```
-
-Notes:
-- This parameter has no effect when Asterinas boots from the initramfs.
-- `rw` overrides the default read-only root mount.
-- If both `ro` and `rw` are specified, the last one takes precedence.
-
 ### `init`
 
-Run the specified executable as the first userspace process from the root filesystem.
+Run the specified binary as `init`.
 
 Example:
 ```text
-root=/dev/vda2 rootfstype=ext2 init=/nix/var/nix/profiles/system/init
+init=/bin/busybox
 ```
 
 Notes:
-- `init` is used only after Asterinas mounts the root filesystem via `root=`.
-- If omitted,
-  Asterinas tries `/sbin/init`, `/etc/init`, `/bin/init`, and `/bin/sh`, in that order.
+- The value is the path to the executable.
+- If omitted, Asterinas will try to execute from the following paths in order:
+  `/sbin/init`, `/etc/init`, `/bin/init`, `/bin/sh`.
 
 ### `console`
 
@@ -131,35 +58,19 @@ virtio_mmio.device=0x200@0x5950f000:10
 virtio_mmio.device=1K@0x1001e000:74
 ```
 
-### `i8042.reset`
+## Asterinas-specific
 
-Force the i8042 controller self-test during initialization.
+### `asterinas.powervr_dma_probe`
 
-Valid values:
-- `1`, `on`, `yes`, `true` or no value — perform the controller self-test
-- `0`, `off`, `no`, `false` — skip the controller self-test (default)
+On an explicitly selected Megrez PowerVR development boot, setting
+`asterinas.powervr_dma_probe=1` makes the root-only `/dev/powervr-control`
+allocate one pinned DMA page when opened. It verifies that the zeroed page has
+an uncached CPU mapping and an identity-mapped device address in the supported
+Die 0 DRAM range, then releases the page when the control session closes.
 
-Examples:
-```text
-i8042.reset
-i8042.reset=1
-i8042.reset=0
-```
-
-### `atkbd.reset`
-
-Override whether the AT keyboard reset is performed during initialization.
-
-Valid values:
-- `1`, `on`, `yes`, `true` or no value — send the keyboard reset command
-- `0`, `off`, `no`, `false` — skip the keyboard reset
-
-Examples:
-```text
-atkbd.reset
-atkbd.reset=1
-atkbd.reset=0
-```
+This diagnostic requires `asterinas.powervr=1`. It does not start GPU firmware,
+prove that the GPU can read the page, or enable hardware rendering. It is
+disabled by default.
 
 ### `earlycon`
 
@@ -212,7 +123,167 @@ Notes:
 - Use `warn` for normal operation, `info`/`debug` when troubleshooting,
   and `error` or lower for a quieter console.
 
-## Asterinas-specific
+### `asterinas.klog_capture`
+
+Set the retained kernel-log threshold independently of console output. It accepts
+the same numeric values `0..8` and lowercase aliases as `loglevel`. The default
+is `warning`, so warnings and more severe messages remain available through
+`syslog(2)` and `/dev/kmsg` even when `loglevel=off`.
+
+The effective capture threshold is the more verbose of `loglevel` and
+`asterinas.klog_capture`; capture therefore never hides a record selected for
+the console. Repeated parameters use the normal last-value-wins rule. An invalid
+value falls back to `warning` and emits one warning after the retained logger is
+installed. Runtime syslog console controls do not change this capture threshold.
+
+For a quiet console with informational syscall lifecycle records retained for
+`dmesg`, use:
+
+```text
+loglevel=off asterinas.klog_capture=info asterinas.syscall_diag=1
+```
+
+### `asterinas.log_profile`
+
+Enable a bounded logging-cost probe with `asterinas.log_profile=1`.
+The default is disabled.
+Before userspace starts, the probe submits 640 fixed-size user-facility records
+through the retained log and normal console path.
+It alternates console levels `error` and `info`,
+and measured and unmeasured batches, over five repetitions.
+It restores the original console threshold on return and does not change capture policy.
+The probe overwrites older records in the bounded retained log;
+enable it only for dedicated diagnostic boots.
+
+`LOG_PROFILE` summaries report the RISC-V timebase frequency and count/total/max ticks
+for record preparation/publication, console-lock wait, and locked formatting/send.
+The locked interval includes device readiness callbacks but excludes lock release.
+The wait interval includes interrupt disabling and lock acquisition;
+neither is a complete CPU-interrupt-latency measurement.
+Attempted bytes include formatting and each console destination, not confirmed delivery.
+Back-to-back clock reads provide an overhead baseline;
+zero samples and unavailable clocks are not zero-cost measurements.
+Other architectures currently report `unavailable=clock` without running the workload.
+The probe measures user-record preparation, not kernel `format_args!` preparation
+or total Firefox logging overhead.
+
+Validate the complete transcript and its runner exit status with:
+
+```sh
+python3 tools/riscv/diagnostics/log_profile.py serial.log --exit-code 0
+```
+
+Supply the actual runner exit code; do not substitute zero after a timeout.
+
+### `asterinas.syscall_diag`
+
+Enable bounded syscall diagnostics with `asterinas.syscall_diag=1`.
+The default is disabled.
+While disabled, syscall entry and completion perform only the enable check:
+they allocate no diagnostic storage, read no timer, and format no messages.
+When enabled, each POSIX thread lazily allocates constant-size storage
+for its current syscall and 32 most recently completed syscalls.
+Bookkeeping covers all threads; a userspace collector selects the process tree to inspect.
+
+Read `/proc/<pid>/task/<tid>/asterinas_syscall`,
+or `/proc/<pid>/asterinas_syscall` for the main thread,
+to obtain one immutable JSON snapshot per open file.
+This is an Asterinas interface, not the Linux `/proc/<pid>/syscall` ABI.
+Partial reads and seeks reuse the same snapshot; reopen to refresh it.
+The file requires the existing read-level alien-access check using filesystem credentials.
+Reads recheck access and return EOF after the target changes its VM through exec.
+Records from the previous VM are hidden from new opens,
+and discarded at the next syscall entry without resetting the thread's sequence.
+IDs in the JSON are global kernel IDs, including after exec promotes a thread to main thread.
+
+Version 1 contains `version`, `enabled`, `pid`, `tid`, `snapshot_jiffies`,
+`current`, and `completed`. Version 2 adds `history`, an oldest-first array
+of at most 32 completions; `completed` remains an alias for its newest entry.
+An absent call is JSON `null`.
+Each call contains `sequence`, `number`, six unsigned scalar registers in `args`,
+and `entered_jiffies`.
+A completion additionally contains `finished_jiffies`, `result`, and `outcome`.
+The outcome is `return`, `error`, or `no_return`;
+`result` is the signed return value or negative errno,
+and is `null` when the syscall does not return normally or changes the user context.
+While disabled, both call fields are `null` and version 2 history is empty.
+Jiffies are kernel timer ticks, not wall-clock time or nanoseconds.
+Arguments are not dereferenced: strings, environment variables,
+and user payloads are never collected.
+
+The same flag enables OSTD `info` lifecycle observations
+for clone/fork, exec, wait outcomes, normal exit, and signal-driven exit.
+The `normal_exit` and `signal_exit` records carry the final `termination_status`
+encoded like `wait(2)` status; signal exits also include the signal number.
+Each completed thread exit transition produces at most one exit record,
+after completing any pending syscall diagnostic state.
+Use `loglevel=info` (or `7`) to receive them;
+`loglevel=off` suppresses these logs while proc snapshots remain available.
+There is a boot-wide limit of 1024 lifecycle records,
+followed by at most 64 `cap_exhausted` summaries
+with cumulative suppression counts at powers of two.
+Startup can exhaust this global budget before the selected workload runs;
+an absent record does not establish that an event did not happen.
+No serial message is emitted for ordinary syscall entry or completion.
+Syscall lifecycle records report both the current `tid` and `entered_tid`
+so successful exec's thread-ID change can be recognized.
+
+### `asterinas.tcp_diagnostic_port`
+
+Enable bounded scalar-only TCP tracing for connections whose local or remote
+port matches the configured value. Values `1..65535` select a port; omitting
+the parameter, using `0`, or using a value outside that range leaves the
+facility disabled. The trace records no payload bytes or pointers.
+
+At most 128 boundary records are emitted, followed by one suppression summary.
+The records use `info` severity, so retain them with
+`asterinas.klog_capture=info` when console output is disabled.
+
+Example:
+
+```text
+loglevel=off asterinas.klog_capture=info asterinas.tcp_diagnostic_port=2828
+```
+
+### `asterinas.reboot_after`
+
+On RISC-V, opt in to a software recovery deadline.
+After the specified number of seconds,
+the deadline requests an SBI cold reboot.
+
+Example:
+```text
+asterinas.reboot_after=120
+```
+
+Notes:
+- This parameter is supported only on RISC-V.
+  It is disabled when omitted or set to `0`.
+- The value must fit in an unsigned 32-bit integer.
+- Once armed, a fatal kernel panic also requests the recovery restart.
+- This is an emergency debugging mechanism, not a graceful shutdown.
+  It does not sync filesystems, unmount storage,
+  or run userspace shutdown handlers.
+
+### `asterinas.mmc_write_partition2`
+
+On RISC-V Megrez systems, opt in to writes through the SD card's second
+partition node. The MMC driver still rejects writes to the whole card and to
+other partitions, and it enables the write path only when partition 2 matches
+the recorded start LBA and sector count.
+
+Example:
+```text
+asterinas.mmc_write_partition2
+```
+
+Notes:
+- This parameter is disabled by default and is intended only for the bounded
+  Megrez Debian provisioning gates.
+- It does not authorize writes when the live partition-2 geometry differs from
+  the frozen Megrez disk contract.
+- Partition-table validation and a recoverable backup are still required before
+  a real-card write test.
 
 ### `i8042.exist`
 
@@ -220,7 +291,7 @@ Override ACPI's indication of whether a PS/2 (i8042) controller exists.
 
 Valid values:
 - `1`, `on`, `yes`, `true` or no value — treat the i8042 controller as present (force probing)
-- `0`, `off`, `no`, `false` — treat the i8042 controller as absent (skip probing)
+- `0`, `off`, `no`, `false` - treat the i8042 controller as absent (skip probing)
 
 Examples:
 ```text
@@ -228,3 +299,12 @@ i8042.exist
 i8042.exist=1
 i8042.exist=0
 ```
+
+## Runtime sysctl interfaces
+
+### `net.ipv4.ip_local_reserved_ports`
+
+Reading `/proc/sys/net/ipv4/ip_local_reserved_ports` returns an empty list
+(a single newline), matching the port allocator's lack of configured
+reserved ports. The file is read-only; configuring reserved ports through
+this interface is not supported.

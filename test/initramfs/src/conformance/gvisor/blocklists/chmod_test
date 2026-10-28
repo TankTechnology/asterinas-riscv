@@ -1,2 +1,1 @@
-ChmodTest.FchmodDirWithOpath
-ChmodTest.FchmodFileWithOpath
+ChmodTest.FchmodDirSucceeds_NoRandomSave

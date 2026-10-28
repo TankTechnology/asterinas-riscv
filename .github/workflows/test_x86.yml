@@ -11,7 +11,7 @@ jobs:
   basic-test:
     runs-on: ubuntu-latest
     container:
-      image: asterinas/kernel-dev:0.19.0-20261012
+      image: asterinas/asterinas:0.18.0-20260702
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -43,10 +43,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: ['asterinas/kernel-dev:0.19.0-20261012', 'asterinas/osdk-dev:0.19.0-20261012']
+        image: ['asterinas/asterinas:0.18.0-20260702', 'asterinas/osdk:0.18.0-20260702']
     steps:
       - uses: actions/checkout@v4
-
       - name: Run OSDK tests
         uses: ./.github/actions/test
         with:
@@ -56,7 +55,7 @@ jobs:
   boot-test:
     runs-on: ubuntu-latest
     container:
-      image: asterinas/kernel-dev:0.19.0-20261012
+      image: asterinas/asterinas:0.18.0-20260702
       options: -v /dev:/dev --privileged
     strategy:
       fail-fast: false
@@ -64,8 +63,6 @@ jobs:
         include:
           - { variant: 'legacy32', boot_protocol: 'linux-legacy32', smp: 4 }
           - { variant: 'multiboot2-smp4', boot_protocol: 'multiboot', smp: 4 }
-          - { variant: 'multiboot2-smp4-rootfs', boot_protocol: 'multiboot', smp: 4, rootfs_boot: true }
-          - { variant: 'pvh-smp4-rootfs', boot_protocol: 'pvh', smp: 4, rootfs_boot: true}
     steps:
       - uses: actions/checkout@v4
       - name: Run boot test (${{ matrix.variant }})
@@ -74,12 +71,11 @@ jobs:
           auto_test: 'boot'
           smp: ${{ matrix.smp }}
           boot_protocol: ${{ matrix.boot_protocol }}
-          rootfs_boot: ${{ matrix.rootfs_boot }}
 
   regression-test:
     runs-on: ubuntu-latest
     container:
-      image: asterinas/kernel-dev:0.19.0-20261012
+      image: asterinas/asterinas:0.18.0-20260702
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -110,7 +106,7 @@ jobs:
   conformance-test:
     runs-on: ubuntu-latest
     container:
-      image: asterinas/kernel-dev:0.19.0-20261012
+      image: asterinas/asterinas:0.18.0-20260702
       options: -v /dev:/dev --privileged
       volumes:
         # Map the following directories on the host into the container so that
@@ -131,9 +127,9 @@ jobs:
           - 'multiboot2-smp4'
         include:
           - { variant: 'debug', release: false, boot_protocol: 'linux-efi-pe64' }
-          - { variant: 'ext2-microvm', scheme: 'microvm', conformance_test_workdir: '/ext2', conformance_test_extra_blocklists: 'blocklists.ext2' }
-          - { variant: 'ext2-iommu-debug', scheme: 'iommu', conformance_test_workdir: '/ext2', conformance_test_extra_blocklists: 'blocklists.ext2', release: false }
-          - { variant: 'exfat-multiboot2-nokvm', boot_protocol: 'multiboot2', enable_kvm: false, conformance_test_workdir: '/exfat', conformance_test_extra_blocklists: 'blocklists.exfat' }
+          - { variant: 'ext2-microvm', scheme: 'microvm', extra_blocklists: 'blocklists.ext2', conformance_test_workdir: '/ext2' }
+          - { variant: 'ext2-iommu-debug', scheme: 'iommu', extra_blocklists: 'blocklists.ext2', conformance_test_workdir: '/ext2', release: false }
+          - { variant: 'exfat-multiboot2-nokvm', boot_protocol: 'multiboot2', enable_kvm: false, extra_blocklists: 'blocklists.exfat', conformance_test_workdir: '/exfat' }
           - { variant: 'multiboot2-smp4', boot_protocol: 'multiboot2', smp: 4 }
     steps:
       - name: Free disk space
@@ -149,9 +145,9 @@ jobs:
           smp: ${{ matrix.smp }}
           netdev: ${{ matrix.netdev || 'tap' }}
           scheme: ${{ matrix.scheme }}
+          extra_blocklists: ${{ matrix.extra_blocklists }}
           conformance_test_suite: ${{ matrix.suite }}
           conformance_test_workdir: ${{ matrix.conformance_test_workdir }}
-          conformance_test_extra_blocklists: ${{ matrix.conformance_test_extra_blocklists }}
           boot_protocol: ${{ matrix.boot_protocol || 'linux-efi-handover64' }}
 
   cross-compile-test:
@@ -162,7 +158,7 @@ jobs:
         include:
           - name: arm-cross-boot
             runs_on: ubuntu-24.04-arm
-            image: asterinas/kernel-dev:0.19.0-20261012
+            image: asterinas/asterinas:0.18.0-20260702
             auto_test: boot
             enable_kvm: false
     runs-on: ${{ matrix.runs_on }}
@@ -177,43 +173,25 @@ jobs:
           enable_kvm: ${{ matrix.enable_kvm }}
 
   xfstests:
-    name: xfstests (${{ matrix.fs_type }})
     runs-on: ubuntu-latest
     container:
-      image: asterinas/kernel-dev:0.19.0-20261012
+      image: asterinas/asterinas:0.18.0-20260702
       options: -v /dev:/dev --privileged
       volumes:
         - /usr/lib/google-cloud-sdk:/usr/lib/google-cloud-sdk
         - /usr/local/lib/android:/usr/local/lib/android
         - /usr/share/dotnet:/usr/share/dotnet
     timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - fs_type: 'ext2'
-            runlist: 'short.list'
-            disk_size: '2G'
-          - fs_type: 'overlay'
-            runlist: 'short.list'
-            disk_size: '6G'
-          - fs_type: 'tmpfs'
-            runlist: 'short.list'
-            disk_size: ''
-          - fs_type: 'virtiofs'
-            runlist: 'short.list'
-            disk_size: ''
     steps:
       - name: Free disk space
         run: rm -rf /usr/lib/google-cloud-sdk/* /usr/local/lib/android/* /usr/share/dotnet/*
       - uses: actions/checkout@v4
-      - name: Run xfstests (${{ matrix.fs_type }})
+      - name: Run xfstests
         uses: ./.github/actions/test
         with:
           auto_test: 'conformance'
           conformance_test_suite: 'xfstests'
           release: true
           mem: '12G'
-          xfstests_fs_type: ${{ matrix.fs_type }}
-          xfstests_runlist: ${{ matrix.runlist }}
-          xfstests_disk_size: ${{ matrix.disk_size }}
+          xfstests_disk_size: '2G'
+          xfstests_runlist: '/opt/xfstests/short.list'

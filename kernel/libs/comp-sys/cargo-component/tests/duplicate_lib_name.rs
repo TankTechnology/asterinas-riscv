@@ -3,6 +3,8 @@
 
 //! This test checks that if two components have same name, the compiler will panic.
 
+#![feature(once_cell)]
+
 mod test_utils;
 
 #[test]

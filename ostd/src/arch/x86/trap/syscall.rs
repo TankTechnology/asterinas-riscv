@@ -21,62 +21,47 @@ use core::arch::global_asm;
 use x86_64::{
     VirtAddr,
     registers::{
-        model_specific::{Efer, EferFlags, LStar, SFMask, Star},
+        model_specific::{Efer, EferFlags, LStar, SFMask},
         rflags::RFlags,
     },
 };
 
-use super::{RawUserContext, gdt};
-use crate::{irq::DisabledLocalIrqGuard, mm::PagingConstsTrait};
+use super::RawUserContext;
+use crate::mm::PagingConstsTrait;
 
 global_asm!(
     include_str!("syscall.S"),
-    USER_CS = const gdt::USER_CS.0,
-    USER_SS = const gdt::USER_SS.0,
+    USER_CS = const super::gdt::USER_CS.0,
+    USER_SS = const super::gdt::USER_SS.0,
     ADDRESS_WIDTH = const crate::arch::mm::PagingConsts::ADDRESS_WIDTH,
 );
 
 /// # Safety
 ///
-/// The caller must ensure that:
-/// 1. No preemption can occur during the method.
-/// 2. `gdt::init_on_cpu` has been called before.
+/// The caller needs to ensure that `gdt::init_on_cpu` has been called before,
+/// so the segment selectors used in the `syscall` and `sysret` instructions
+/// have been properly initialized.
 pub(super) unsafe fn init_on_cpu() {
     // We now assume that all x86-64 CPUs should support the `syscall` and `sysret` instructions.
     // Otherwise, we should check `has_extensions(IsaExtensions::SYSCALL)` here.
 
-    // No races because the caller guarantees that no preemption can occur.
-    configure_msrs_racy();
-
-    // SAFETY: Enabling the `syscall` and `sysret` instructions is safe because:
-    //  - `configure_msrs_racy` has configured the related MSRs.
-    //  - `gdt::init_on_cpu` has configured the kernel's GDT.
-    unsafe {
-        Efer::update(|efer| {
-            efer.insert(EferFlags::SYSTEM_CALL_EXTENSIONS);
-        });
-    }
-}
-
-/// Configures the kernel's syscall selectors, entry point, and flags mask.
-pub(in crate::arch) fn configure_msrs(_irq_guard: &DisabledLocalIrqGuard) {
-    // No races due to `_irq_guard`.
-    configure_msrs_racy();
-}
-
-fn configure_msrs_racy() {
     // Flags to clear on syscall.
     //
     // Linux 5.0 uses TF|DF|IF|IOPL|AC|NT. Reference:
     // <https://github.com/torvalds/linux/blob/v5.0/arch/x86/kernel/cpu/common.c#L1559-L1562>
     const RFLAGS_MASK: u64 = 0x47700;
 
-    // SAFETY: The syscall selectors, entry point, and flags mask are set
-    // correctly according to the kernel implementation.
+    // SAFETY: The segment selectors are correctly initialized (as upheld by the caller), and the
+    // entry point and flags to clear are also correctly set, so enabling the `syscall` and
+    // `sysret` instructions is safe.
     unsafe {
-        Star::write_raw(gdt::SYSRET_SEL.0, gdt::SYSCALL_SEL.0);
         LStar::write(VirtAddr::new(syscall_entry as *const () as usize as u64));
         SFMask::write(RFlags::from_bits(RFLAGS_MASK).unwrap());
+
+        // Enable the `syscall` and `sysret` instructions.
+        Efer::update(|efer| {
+            efer.insert(EferFlags::SYSTEM_CALL_EXTENSIONS);
+        });
     }
 }
 
@@ -95,11 +80,18 @@ impl RawUserContext {
     ///
     /// If `trap_num` is `0x100`, it will go user by `sysret` (`rcx` and `r11` are dropped),
     /// otherwise it will use `iret`.
-    pub(in crate::arch) fn run(&mut self, guard: DisabledLocalIrqGuard) {
+    pub(in crate::arch) fn run(&mut self) {
+        let guard = crate::irq::disable_local();
+
+        crate::task::call_pre_user_run_handler(&guard);
+
         // Return to userspace with interrupts disabled. Otherwise, interrupts
         // after executing `swapgs` will mess up the CPU state.
         core::mem::forget(guard);
 
         unsafe { syscall_return(self) };
+
+        let guard = crate::irq::disable_local();
+        crate::task::call_post_user_run_handler(&guard);
     }
 }

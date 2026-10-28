@@ -2,12 +2,12 @@
 
 //! Minimal generic-netlink transport.
 //!
-//! Generic netlink is used by systemd-networkd for optional family discovery
-//! (for example, nl80211).  Asterinas does not yet expose kernel generic
-//! families, but the socket itself must be usable so networkd can start and
-//! continue with the route netlink API.  Requests are consumed and reported
-//! as unsupported by the userspace transaction; no fake family data is
-//! generated.
+//! systemd-networkd opens a `NETLINK_GENERIC` socket while setting up its
+//! manager, even when no generic-netlink family is used by the configured
+//! interfaces.  Asterinas does not yet expose a generic-netlink family, but
+//! rejecting the socket at creation time prevents networkd from starting at
+//! all.  This transport provides the socket, bind, and option plumbing;
+//! family-specific request handling remains a follow-up.
 
 use crate::{
     events::IoEvents,
@@ -22,15 +22,20 @@ use crate::{
     util::{MultiRead, MultiWrite},
 };
 
-pub type NetlinkGenericSocket = super::common::NetlinkSocket<NetlinkGenericProtocol>;
+#[derive(Clone, Debug)]
+pub struct GenericMessage {
+    len: usize,
+}
 
-impl QueueableMessage for () {
+impl QueueableMessage for GenericMessage {
     fn total_len(&self) -> usize {
-        0
+        self.len
     }
 }
 
-pub(super) type BoundNetlinkGeneric = BoundNetlink<()>;
+pub type NetlinkGenericSocket = super::common::NetlinkSocket<NetlinkGenericProtocol>;
+
+type BoundNetlinkGeneric = BoundNetlink<GenericMessage>;
 
 impl datagram_common::Bound for BoundNetlinkGeneric {
     type Endpoint = NetlinkSocketAddr;
@@ -63,32 +68,31 @@ impl datagram_common::Bound for BoundNetlinkGeneric {
         if *remote != NetlinkSocketAddr::new_unspecified() {
             return_errno_with_message!(
                 Errno::ECONNREFUSED,
-                "sending generic netlink messages to userspace is not supported"
+                "sending generic netlink messages to user space is not supported"
             );
         }
 
-        // There are no generic-netlink kernel families yet.  Returning
-        // EOPNOTSUPP makes sd-netlink classify discovery as an optional,
-        // unsupported family instead of treating a malformed route reply as
-        // EINVAL and aborting systemd-networkd startup.
-        let _ = reader.sum_lens();
-        return_errno_with_message!(
-            Errno::EOPNOTSUPP,
-            "generic netlink families are not implemented"
-        );
+        // No generic-netlink family is registered yet. Consume the request
+        // so manager setup receives normal datagram send semantics instead
+        // of failing at socket creation time with EAFNOSUPPORT.
+        let len = reader.sum_lens();
+        reader.skip_some(len);
+        Ok(len)
     }
 
     fn try_recv(
         &self,
         writer: &mut dyn MultiWrite,
         flags: RecvFlags,
-    ) -> Result<(RecvOutput, Self::Endpoint)> {
+    ) -> Result<(RecvOutput, NetlinkSocketAddr)> {
         if !flags.is_all_supported() {
             warn!("unsupported flags: {:?}", flags);
         }
+
         let mut receive_queue = self.receive_queue.lock();
-        receive_queue.dequeue_if(|_, response_len| {
+        receive_queue.dequeue_if(|_response, response_len| {
             let copied_len = response_len.min(writer.sum_lens());
+            writer.skip_some(copied_len);
             let should_dequeue = flags.receive_behavior().will_consume_data();
             let output = RecvOutput::new_for_packet(flags, copied_len, response_len);
             Ok((

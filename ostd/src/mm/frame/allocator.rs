@@ -72,6 +72,15 @@ impl FrameAllocOptions {
         self.alloc_segment_with(nframes, |_| ())
     }
 
+    /// Allocates a contiguous range of untyped frames inside `paddr_range`.
+    pub fn alloc_segment_in(
+        &self,
+        nframes: usize,
+        paddr_range: Range<Paddr>,
+    ) -> Result<Segment<()>> {
+        self.alloc_segment_with_in(nframes, paddr_range, |_| ())
+    }
+
     /// Allocates a contiguous range of frames with additional metadata.
     ///
     /// The returned [`Segment`] contains at least one frame. The method returns
@@ -99,6 +108,39 @@ impl FrameAllocOptions {
             let addr = paddr_to_vaddr(segment.paddr()) as *mut u8;
             // SAFETY: The newly allocated segment is guaranteed to be valid.
             unsafe { core::ptr::write_bytes(addr, 0, nframes * PAGE_SIZE) }
+        }
+
+        Ok(segment)
+    }
+
+    /// Allocates contiguous frames with metadata inside `paddr_range`.
+    pub fn alloc_segment_with_in<M: AnyFrameMeta, F>(
+        &self,
+        nframes: usize,
+        paddr_range: Range<Paddr>,
+        metadata_fn: F,
+    ) -> Result<Segment<M>>
+    where
+        F: FnMut(Paddr) -> M,
+    {
+        if nframes == 0
+            || paddr_range.start >= paddr_range.end
+            || !paddr_range.start.is_multiple_of(PAGE_SIZE)
+            || !paddr_range.end.is_multiple_of(PAGE_SIZE)
+        {
+            return Err(Error::InvalidArgs);
+        }
+        let size = nframes.checked_mul(PAGE_SIZE).ok_or(Error::InvalidArgs)?;
+        let layout = Layout::from_size_align(size, PAGE_SIZE).map_err(|_| Error::InvalidArgs)?;
+        let segment = get_global_frame_allocator()
+            .alloc_in(layout, paddr_range)
+            .map(|start| Segment::from_unused(start..start + size, metadata_fn).unwrap())
+            .ok_or(Error::NoMemory)?;
+
+        if self.zeroed {
+            let addr = paddr_to_vaddr(segment.paddr()) as *mut u8;
+            // SAFETY: The newly allocated segment is guaranteed to be valid.
+            unsafe { core::ptr::write_bytes(addr, 0, size) }
         }
 
         Ok(segment)
@@ -153,6 +195,24 @@ pub trait GlobalFrameAllocator: Sync {
     /// allocated, they may be returned in any order with any number of calls.
     fn alloc(&self, layout: Layout) -> Option<Paddr>;
 
+    /// Allocates contiguous frames wholly contained in `paddr_range`.
+    ///
+    /// The caller guarantees that both range endpoints and the layout size
+    /// are aligned to [`PAGE_SIZE`].
+    fn alloc_in(&self, layout: Layout, paddr_range: Range<Paddr>) -> Option<Paddr> {
+        let addr = self.alloc(layout)?;
+        let Some(end) = addr.checked_add(layout.size()) else {
+            self.dealloc(addr, layout.size());
+            return None;
+        };
+        if addr >= paddr_range.start && end <= paddr_range.end {
+            Some(addr)
+        } else {
+            self.dealloc(addr, layout.size());
+            None
+        }
+    }
+
     /// Deallocates a contiguous range of frames.
     ///
     /// The caller guarantees that `addr` and `size` are both aligned to
@@ -197,36 +257,25 @@ pub(super) fn get_global_frame_allocator() -> &'static dyn GlobalFrameAllocator 
 ///
 /// This function should be called only once.
 pub(crate) unsafe fn init() {
+    let regions = &crate::boot::EARLY_INFO.get().unwrap().memory_regions;
+
     // Retire the early allocator.
     let early_allocator = EARLY_ALLOCATOR.lock().take().unwrap();
-    let early_allocated_ranges = early_allocator.allocated_regions();
+    let (range_1, range_2) = early_allocator.allocated_regions();
 
-    #[cfg(all(target_arch = "x86_64", feature = "cvm_guest"))]
-    let unaccepted_range = crate::if_tdx_enabled!({
-        super::unaccepted::init_unaccepted_memory_state(&early_allocated_ranges)
-    } else {
-        0..0
-    });
-    #[cfg(not(all(target_arch = "x86_64", feature = "cvm_guest")))]
-    let unaccepted_range: Range<Paddr> = 0..0;
+    for region in regions.iter() {
+        if region.typ() == MemoryRegionType::Usable {
+            debug_assert!(region.base().is_multiple_of(PAGE_SIZE));
+            debug_assert!(region.len().is_multiple_of(PAGE_SIZE));
 
-    let regions = &crate::boot::EARLY_INFO.get().unwrap().memory_regions;
-    let [range_1, range_2] = &early_allocated_ranges;
-
-    for region in regions
-        .iter()
-        .filter(|region| region.typ() == MemoryRegionType::Usable)
-    {
-        debug_assert!(region.base().is_multiple_of(PAGE_SIZE));
-        debug_assert!(region.len().is_multiple_of(PAGE_SIZE));
-
-        let region_range = region.base()..region.end();
-        for free_range in range_difference(&region_range, range_1)
-            .flat_map(|range| range_difference(&range, range_2))
-            .flat_map(|range| range_difference(&range, &unaccepted_range))
-        {
-            crate::info!("Adding free frames to the allocator: {:x?}", free_range);
-            get_global_frame_allocator().add_free_memory(free_range.start, free_range.len());
+            // Add global free pages to the frame allocator.
+            // Truncate the early allocated frames if there is an overlap.
+            for r1 in range_difference(&(region.base()..region.end()), &range_1) {
+                for r2 in range_difference(&r1, &range_2) {
+                    crate::info!("Adding free frames to the allocator: {:x?}", r2);
+                    get_global_frame_allocator().add_free_memory(r2.start, r2.len());
+                }
+            }
         }
     }
 }
@@ -264,7 +313,7 @@ impl EarlyFrameAllocator {
     /// It uses at most 2 regions, the first is the maximum usable region below
     /// 4 GiB. The other is the maximum usable region above 4 GiB and is only
     /// usable when linear mapping is constructed.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let regions = &crate::boot::EARLY_INFO.get().unwrap().memory_regions;
 
         let mut under_4g_range = 0..0;
@@ -305,7 +354,7 @@ impl EarlyFrameAllocator {
     }
 
     /// Allocates a contiguous range of frames.
-    pub(super) fn alloc(&mut self, layout: Layout) -> Option<Paddr> {
+    pub fn alloc(&mut self, layout: Layout) -> Option<Paddr> {
         let size = layout.size().align_up(PAGE_SIZE);
         let align = layout.align().max(PAGE_SIZE);
 
@@ -325,11 +374,11 @@ impl EarlyFrameAllocator {
         None
     }
 
-    pub(super) fn allocated_regions(&self) -> [Range<Paddr>; 2] {
-        [
+    pub(super) fn allocated_regions(&self) -> (Range<Paddr>, Range<Paddr>) {
+        (
             self.under_4g_range.start..self.under_4g_end,
             self.max_range.start..self.max_end,
-        ]
+        )
     }
 }
 
@@ -355,16 +404,7 @@ impl_frame_meta_for!(EarlyAllocatedFrameMeta);
 ///  - or if is called after [`init`].
 pub(crate) fn early_alloc(layout: Layout) -> Option<Paddr> {
     let mut early_allocator = EARLY_ALLOCATOR.lock();
-    let paddr = early_allocator.as_mut().unwrap().alloc(layout)?;
-
-    #[cfg(all(target_arch = "x86_64", feature = "cvm_guest"))]
-    crate::if_tdx_enabled!({
-        // SAFETY: The early allocator only exists in the boot context of the BSP before the APs
-        // boot up. Therefore, there are no other concurrent operations that accept pages.
-        unsafe { super::unaccepted::accept_early_allocated_range(paddr, layout.size()) };
-    });
-
-    Some(paddr)
+    early_allocator.as_mut().unwrap().alloc(layout)
 }
 
 /// Initializes the early frame allocator.

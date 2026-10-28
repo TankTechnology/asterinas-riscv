@@ -7,17 +7,13 @@ edition.workspace = true
 
 [dependencies]
 aster-softirq.workspace = true
-aster-util.workspace = true
 bitflags.workspace = true
-dma-pool.workspace = true
 int-to-c-enum.workspace = true
 jhash.workspace = true
 ostd.workspace = true
-ostd-pod.workspace = true
 smoltcp.workspace = true
 spin.workspace = true
 takeable.workspace = true
-zerocopy.workspace = true
 
 [lints]
 workspace = true

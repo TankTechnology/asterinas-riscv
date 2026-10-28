@@ -15,18 +15,15 @@ use crate::{arch::irq as arch_irq, sync::GuardTransfer, task::atomic_mode::InAto
 ///
 /// [`SpinLock`]: crate::sync::SpinLock
 ///
-/// # Examples
+/// # Example
 ///
 /// ```rust
-/// # fn work_with_irq_disabled() {}
-/// #
 /// use ostd::irq;
 ///
-/// let guard = irq::disable_local();
-/// // Do something with IRQs disabled.
-/// work_with_irq_disabled();
-/// // Re-enable IRQs if they were previously enabled.
-/// drop(guard);
+/// {
+///     let _ = irq::disable_local();
+///     todo!("do something when irqs are disabled");
+/// }
 /// ```
 pub fn disable_local() -> DisabledLocalIrqGuard {
     DisabledLocalIrqGuard::new()
@@ -42,12 +39,8 @@ pub struct DisabledLocalIrqGuard {
 
 impl !Send for DisabledLocalIrqGuard {}
 
-// Required by `InAtomicMode`. See the safety section of its doc comments.
-impl !Sync for DisabledLocalIrqGuard {}
-
-// SAFETY:
-// 1. The guard disables local IRQs;
-// 2. The guard cannot be moved to or used by other tasks.
+// SAFETY: The guard disables local IRQs, which meets the first
+// sufficient condition for atomic mode.
 unsafe impl InAtomicMode for DisabledLocalIrqGuard {}
 
 impl DisabledLocalIrqGuard {

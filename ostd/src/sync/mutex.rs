@@ -38,10 +38,10 @@ impl<T: ?Sized> Mutex<T> {
 
     /// Tries to acquire the mutex immediately.
     pub fn try_lock(&self) -> Option<MutexGuard<'_, T>> {
+        // Cannot be reduced to `then_some`, or the possible dropping of the temporary
+        // guard will cause an unexpected unlock.
+        // SAFETY: The lock is successfully acquired when creating the guard.
         self.acquire_lock()
-            // We cannot use `then_some`. Otherwise, the possible dropping of the temporary
-            // guard will cause an unexpected unlock.
-            // SAFETY: The lock is successfully acquired when creating the guard.
             .then(|| unsafe { MutexGuard::new(self) })
     }
 
@@ -54,13 +54,8 @@ impl<T: ?Sized> Mutex<T> {
     }
 
     /// Releases the mutex and wake up one thread which is blocked on this mutex.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that it has acquired the lock.
-    unsafe fn unlock(&self) {
-        // SAFETY: The safety is upheld by the caller.
-        unsafe { self.release_lock() };
+    fn unlock(&self) {
+        self.release_lock();
         self.queue.wake_one();
     }
 
@@ -70,10 +65,7 @@ impl<T: ?Sized> Mutex<T> {
             .is_ok()
     }
 
-    /// # Safety
-    ///
-    /// The caller must ensure that it has acquired the lock.
-    unsafe fn release_lock(&self) {
+    fn release_lock(&self) {
         self.lock.store(false, Ordering::Release);
     }
 }
@@ -84,7 +76,6 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for Mutex<T> {
     }
 }
 
-// SAFETY: Only a single lock holder is permitted to access the inner data of `Mutex`.
 unsafe impl<T: ?Sized + Send> Send for Mutex<T> {}
 unsafe impl<T: ?Sized + Send> Sync for Mutex<T> {}
 
@@ -98,16 +89,10 @@ pub struct MutexGuard<'a, T: ?Sized> {
 impl<'a, T: ?Sized> MutexGuard<'a, T> {
     /// # Safety
     ///
-    /// The caller must ensure that the given reference of [`Mutex`] lock has been successfully
-    /// acquired in the current context. When the created [`MutexGuard`] is dropped, it will unlock
-    /// the [`Mutex`].
-    unsafe fn new(mutex: &'a Mutex<T>) -> Self {
+    /// The caller must ensure that the given reference of [`Mutex`] lock has been successfully acquired
+    /// in the current context. When the created [`MutexGuard`] is dropped, it will unlock the [`Mutex`].
+    unsafe fn new(mutex: &'a Mutex<T>) -> MutexGuard<'a, T> {
         MutexGuard { mutex }
-    }
-
-    /// Returns the [`Mutex`] associated with this guard.
-    pub fn get_lock(guard: &Self) -> &'a Mutex<T> {
-        guard.mutex
     }
 }
 
@@ -115,22 +100,19 @@ impl<T: ?Sized> Deref for MutexGuard<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        // SAFETY: The mutex is locked, which provides exclusive access to the data.
         unsafe { &*self.mutex.val.get() }
     }
 }
 
 impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        // SAFETY: The mutex is locked, which provides exclusive access to the data.
         unsafe { &mut *self.mutex.val.get() }
     }
 }
 
 impl<T: ?Sized> Drop for MutexGuard<'_, T> {
     fn drop(&mut self) {
-        // SAFETY: The mutex is locked.
-        unsafe { self.mutex.unlock() };
+        self.mutex.unlock();
     }
 }
 
@@ -141,7 +123,15 @@ impl<T: ?Sized + fmt::Debug> fmt::Debug for MutexGuard<'_, T> {
 }
 
 impl<T: ?Sized> !Send for MutexGuard<'_, T> {}
+
 unsafe impl<T: ?Sized + Sync> Sync for MutexGuard<'_, T> {}
+
+impl<'a, T: ?Sized> MutexGuard<'a, T> {
+    /// Returns the [`Mutex`] associated with this guard.
+    pub fn get_lock(guard: &MutexGuard<'a, T>) -> &'a Mutex<T> {
+        guard.mutex
+    }
+}
 
 #[cfg(ktest)]
 mod test {

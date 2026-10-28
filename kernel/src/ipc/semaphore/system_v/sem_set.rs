@@ -2,6 +2,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use alloc::collections::BTreeMap;
 use aster_rights::ReadOp;
 
 use super::sem::{
@@ -28,7 +29,6 @@ pub const SEMOPM: usize = 500;
 /// Maximum semaphore value.
 pub const SEMVMX: i32 = 32767;
 /// Maximum value that can be recorded for semaphore adjustment (SEM_UNDO).
-#[expect(dead_code)]
 pub const SEMAEM: i32 = SEMVMX;
 
 #[derive(Debug)]
@@ -84,6 +84,11 @@ pub(super) struct SemSetInner {
     pub(super) pending_alter: LinkedList<PendingOp>,
     /// Pending zeros operations.
     pub(super) pending_const: LinkedList<PendingOp>,
+    /// Per-process `SEM_UNDO` adjustments, indexed by the semaphore number.
+    ///
+    /// An entry is created when a process first uses `SEM_UNDO` on this set and
+    /// is applied when that process exits.
+    pub(super) undo: BTreeMap<Pid, Box<[i32]>>,
 }
 
 impl SemSetInner {
@@ -93,11 +98,13 @@ impl SemSetInner {
         &mut Box<[Semaphore]>,
         &mut LinkedList<PendingOp>,
         &mut LinkedList<PendingOp>,
+        &mut BTreeMap<Pid, Box<[i32]>>,
     ) {
         (
             &mut self.sems,
             &mut self.pending_alter,
             &mut self.pending_const,
+            &mut self.undo,
         )
     }
 }
@@ -150,7 +157,7 @@ impl SemaphoreSet {
         }
 
         let mut inner = self.inner();
-        let (sems, pending_alter, pending_const) = inner.field_mut();
+        let (sems, pending_alter, pending_const, undo) = inner.field_mut();
         let Some(sem) = sems.get_mut(sem_num) else {
             return_errno_with_message!(Errno::EINVAL, "the semaphore number is out of bounds");
         };
@@ -161,10 +168,10 @@ impl SemaphoreSet {
         let mut wake_queue = LinkedList::new();
         let mut has_completed_op = false;
         if val == 0 {
-            has_completed_op |= wake_const_ops(sems, pending_const, &mut wake_queue);
+            has_completed_op |= wake_const_ops(sems, undo, pending_const, &mut wake_queue);
         }
         has_completed_op |=
-            update_pending_alter(sems, pending_alter, pending_const, &mut wake_queue);
+            update_pending_alter(sems, undo, pending_alter, pending_const, &mut wake_queue);
 
         for wake_op in wake_queue {
             if let Some(waker) = wake_op.waker() {
@@ -212,6 +219,48 @@ impl SemaphoreSet {
         self.inner.lock()
     }
 
+    /// Applies the `SEM_UNDO` adjustments recorded for `pid`, if any.
+    ///
+    /// This is called when a process exits. The adjustments are clamped to the
+    /// legal semaphore range, as Linux does in `sem_exit`; pending operations
+    /// that become satisfiable are woken up. Returns whether any semaphore
+    /// value changed.
+    pub(crate) fn apply_undo(&self, pid: Pid) -> bool {
+        let mut inner = self.inner.lock();
+        let Some(adjustments) = inner.undo.remove(&pid) else {
+            return false;
+        };
+
+        let (sems, pending_alter, pending_const, undo) = inner.field_mut();
+
+        let mut changed = false;
+        for (sem, adjustment) in sems.iter_mut().zip(adjustments.iter()) {
+            let adjustment = *adjustment;
+            if adjustment == 0 {
+                continue;
+            }
+            let new_val = (sem.val() + adjustment).clamp(0, SEMVMX);
+            if new_val != sem.val() {
+                sem.set_val(new_val);
+                changed = true;
+            }
+            sem.set_latest_modified_pid(pid);
+        }
+
+        if changed {
+            let mut wake_queue = LinkedList::new();
+            let _ = wake_const_ops(sems, undo, pending_const, &mut wake_queue);
+            let _ = update_pending_alter(sems, undo, pending_alter, pending_const, &mut wake_queue);
+            for pending_op in wake_queue {
+                if let Some(waker) = pending_op.waker() {
+                    waker.wake_up();
+                }
+            }
+        }
+
+        changed
+    }
+
     pub(in crate::ipc) fn new(
         key: IpcKey,
         num_sems: usize,
@@ -239,6 +288,7 @@ impl SemaphoreSet {
                 sems: sems.into_boxed_slice(),
                 pending_alter: LinkedList::new(),
                 pending_const: LinkedList::new(),
+                undo: BTreeMap::new(),
             }),
             permission,
             sem_ctime: AtomicU64::new(RealTimeCoarseClock::get().read_time().as_secs()),

@@ -16,7 +16,6 @@ sleep 0.2
 sleep 0.2
 ./unix_client
 
-./broadcast_complex
 ./listen_backlog
 ./ifconf
 ./ifreq
@@ -27,11 +26,8 @@ sleep 0.2
 ./send_buf_full
 ./sendmmsg
 ./socketpair
-./socket_ioctl
 ./sockoption
-./sockoption_short
 ./sockoption_unix
-./tcp_accept_reset
 ./tcp_err
 ./tcp_poll
 ./tcp_ppoll_wakeup

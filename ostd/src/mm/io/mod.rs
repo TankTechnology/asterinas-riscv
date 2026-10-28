@@ -51,7 +51,10 @@ use self::copy::{memcpy, memset};
 use crate::{
     Error,
     arch::mm::{__atomic_cmpxchg_fallible, __atomic_load_fallible},
-    mm::kspace::{KERNEL_BASE_VADDR, KERNEL_END_VADDR},
+    mm::{
+        MAX_USERSPACE_VADDR,
+        kspace::{KERNEL_BASE_VADDR, KERNEL_END_VADDR},
+    },
     prelude::*,
 };
 
@@ -124,7 +127,7 @@ pub trait VmIo {
     fn read_slice<T: Pod>(&self, offset: usize, slice: &mut [T]) -> Result<()> {
         let len_in_bytes = size_of_val(slice);
         let ptr = slice as *mut [T] as *mut u8;
-        // SAFETY: The slice can be transmuted to a writable byte slice since the elements
+        // SAFETY: the slice can be transmuted to a writable byte slice since the elements
         // are all Plain-Old-Data (Pod) types.
         let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len_in_bytes) };
         self.read_bytes(offset, buf)
@@ -167,7 +170,7 @@ pub trait VmIo {
     fn write_slice<T: Pod>(&self, offset: usize, slice: &[T]) -> Result<()> {
         let len_in_bytes = size_of_val(slice);
         let ptr = slice as *const [T] as *const u8;
-        // SAFETY: The slice can be transmuted to a readable byte slice since the elements
+        // SAFETY: the slice can be transmuted to a readable byte slice since the elements
         // are all Plain-Old-Data (Pod) types.
         let buf = unsafe { core::slice::from_raw_parts(ptr, len_in_bytes) };
         self.write_bytes(offset, buf)
@@ -496,35 +499,13 @@ impl VmReader<'_, Fallible> {
     ///
     /// The virtual address range `ptr..ptr + len` must be in user space.
     pub unsafe fn from_user_space(ptr: *const u8, len: usize) -> Self {
-        debug_assert!(super::is_in_user_space(ptr.addr(), len));
+        debug_assert!(ptr.addr().checked_add(len).unwrap() <= MAX_USERSPACE_VADDR);
 
         Self {
             cursor: ptr,
             end: ptr.wrapping_add(len),
             phantom: PhantomData,
         }
-    }
-
-    /// Makes every page covered by the reader resident.
-    ///
-    /// The reader itself is not advanced. Once this method returns `Ok`, a
-    /// subsequent read from the same range will not take a page fault unless
-    /// the mapping changes concurrently.
-    ///
-    /// Copies that execute with preemption disabled (e.g., while a spinlock is
-    /// held) must fault their user pages in first: the fault handler may need
-    /// to perform blocking I/O, which is illegal in atomic mode.
-    pub fn prefault(&mut self) -> Result<()> {
-        let mut probe = self.clone();
-        let mut byte = 0u8;
-        while probe.remain() > 0 {
-            let mut writer = VmWriter::<Infallible>::from(core::slice::from_mut(&mut byte));
-            probe.read_fallible(&mut writer).map_err(|(err, _)| err)?;
-            // Touch one byte per page.
-            let skip = probe.remain().min(crate::mm::PAGE_SIZE - 1);
-            probe.skip(skip);
-        }
-        Ok(())
     }
 
     /// Reads a value of `Pod` type.
@@ -796,7 +777,7 @@ impl VmWriter<'_, Fallible> {
     ///
     /// `ptr` must be in user space for `len` bytes.
     pub unsafe fn from_user_space(ptr: *mut u8, len: usize) -> Self {
-        debug_assert!(super::is_in_user_space(ptr.addr(), len));
+        debug_assert!(ptr.addr().checked_add(len).unwrap() <= MAX_USERSPACE_VADDR);
 
         Self {
             cursor: ptr,
@@ -1000,8 +981,7 @@ pub trait PodOnce: Pod {}
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "riscv64",
-    target_arch = "loongarch64",
-    target_arch = "aarch64"
+    target_arch = "loongarch64"
 ))]
 mod pod_once_impls {
     use super::PodOnce;

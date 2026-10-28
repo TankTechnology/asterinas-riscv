@@ -13,7 +13,7 @@
 use ostd::mm::io::util::HasVmReaderWriter;
 
 use super::block_ptr_tree::{RawBlockPtrs, ResolvedBlockRange};
-use crate::fs::fs_impls::ext2::{prelude::*, Ext2};
+use crate::fs::fs_impls::ext2::{Ext2, prelude::*};
 
 const EXTENT_MAGIC: u16 = 0xf30a;
 const EXTENT_HEADER_SIZE: usize = 12;
@@ -95,11 +95,12 @@ impl ExtentTree {
             if let Some(existing) = find_extent_range(&extents, iblock, max_blocks)? {
                 return Ok(ResolvedBlockRange::Existing(existing));
             }
+            let first_data_block = fs.super_block().first_data_block();
             let allocated = if extents.len() < child_header.max_entries {
                 self.allocate_extent_data(
                     &extents,
                     child_header.max_entries,
-                    fs.super_block().first_data_block(),
+                    first_data_block,
                     fs,
                     iblock,
                     max_blocks,
@@ -1341,20 +1342,21 @@ mod test {
         let second_leaf = fixture.ext2.alloc_blocks(1, first_data.end).unwrap();
         let second_data = fixture.ext2.alloc_blocks(2, second_leaf.end).unwrap();
 
-        let make_leaf = |data: Range<Ext2Bid>| {
+        let first_data_start = first_data.start;
+        let make_leaf = |logical_base: u32, data: Range<Ext2Bid>| {
             let mut words = vec![0u32; BLOCK_SIZE / size_of::<u32>()];
             words[0] = u32::from(EXTENT_MAGIC) | (2 << 16);
             words[1] = 4;
             for index in 0..2 {
                 let offset = EXTENT_HEADER_SIZE + index * EXTENT_ENTRY_SIZE;
-                words[offset / 4] = index as u32 * 2;
+                words[offset / 4] = logical_base + index as u32;
                 words[(offset + 4) / 4] = 1;
                 words[(offset + 8) / 4] = data.start + index as u32;
             }
             words
         };
-        let first_words = make_leaf(first_data);
-        let second_words = make_leaf(second_data);
+        let first_words = make_leaf(0, first_data);
+        let second_words = make_leaf(4, second_data);
         let mut root = [0u32; EXTENT_ROOT_WORDS];
         root[0] = u32::from(EXTENT_MAGIC) | (2 << 16);
         root[1] = 4 | (1 << 16);
@@ -1373,7 +1375,14 @@ mod test {
             .unwrap();
 
         assert_eq!((tree.root[0] >> 16) as usize, 1);
-        assert_eq!(tree.lookup_block_range(0, 4).unwrap().len(), 2);
+        assert_eq!(
+            tree.lookup_block_range(0, 1).unwrap(),
+            first_data_start..first_data_start + 1
+        );
+        assert_eq!(
+            tree.lookup_block_range(1, 1).unwrap(),
+            first_data_start + 1..first_data_start + 2
+        );
         assert_eq!(tree.lookup_block_range(4, 1).unwrap(), 0..0);
         assert_eq!(pointers.sector_count, 24);
     }

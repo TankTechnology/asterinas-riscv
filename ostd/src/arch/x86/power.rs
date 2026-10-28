@@ -9,7 +9,11 @@ mod qemu_isa_debug {
 
     use spin::Once;
 
-    use crate::{arch::device::io_port::WriteOnlyAccess, io::IoPort, power::ExitCode};
+    use crate::{
+        arch::device::io_port::WriteOnlyAccess,
+        io::IoPort,
+        power::{ExitCode, inject_poweroff_handler},
+    };
 
     // For `qemu-system-x86_64`, the exit code will be `(code << 1) | 1`. So it is not possible to
     // let QEMU invoke `exit(0)`. We also need to check if the exit code is returned by the kernel,
@@ -20,7 +24,7 @@ mod qemu_isa_debug {
 
     static DEBUG_EXIT_PORT: Once<IoPort<u32, WriteOnlyAccess>> = Once::new();
 
-    pub(super) fn try_exit_qemu(code: ExitCode) {
+    fn try_exit_qemu(code: ExitCode) {
         let value = match code {
             ExitCode::Success => EXIT_SUCCESS,
             ExitCode::Failure => EXIT_FAILURE,
@@ -38,27 +42,14 @@ mod qemu_isa_debug {
         let debug_exit_port = IoPort::acquire(DEBUG_EXIT_PORT_NUM).unwrap();
 
         DEBUG_EXIT_PORT.call_once(|| debug_exit_port);
+        inject_poweroff_handler(try_exit_qemu);
     }
 }
 
 pub(super) fn init() {
-    use super::{cpu::cpuid, kernel::ACPI_INFO};
+    use super::cpu::cpuid;
 
-    if !cpuid::query_if_running_in_qemu() {
-        return;
-    }
-    // The "KVMKVMKVM" signature is shared by every KVM-based VMM, including
-    // EC2 Nitro, where there is no isa-debug-exit device and installing this
-    // handler would shadow the real (ACPI) power-off path. QEMU's firmware
-    // tables carry the OEM ID "BOCHS "; require it when ACPI is available.
-    if let Some(info) = ACPI_INFO.get()
-        && let Some(oem_id) = info.oem_id
-        && &oem_id != b"BOCHS "
-    {
-        crate::info!(
-            "KVM hypervisor with firmware OEM {:?}: not QEMU, no isa-debug-exit",
-            core::str::from_utf8(&oem_id).unwrap_or("?")
-        );
+    if !cpuid::query_is_running_in_qemu() {
         return;
     }
 
@@ -68,19 +59,4 @@ pub(super) fn init() {
     crate::info!("QEMU hypervisor detected, assuming that the isa-debug-exit device exists");
 
     qemu_isa_debug::init();
-}
-
-/// Attempts to power off the system using an architecture-specific mechanism.
-///
-/// On x86, this function attempts to power off the system through QEMU's ISA debug-exit device if
-/// QEMU was detected during initialization. Otherwise, it does nothing and returns.
-pub fn try_poweroff(code: crate::power::ExitCode) {
-    qemu_isa_debug::try_exit_qemu(code);
-}
-
-/// Attempts to restart the system using an architecture-specific mechanism.
-///
-/// On x86, this function currently does nothing and returns.
-pub fn try_restart(_code: crate::power::ExitCode) {
-    // TODO: Add an OSTD-level restart mechanism for x86.
 }

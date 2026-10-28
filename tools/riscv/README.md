@@ -353,10 +353,8 @@ The archive contains the source, precompiled RISC-V executables, GNU make,
 rpcbind, net-tools and their complete Nix runtime closure. Install it once in
 a **disposable Debian guest**, with Python 3.10+, grep, awk, sed, tar and useradd.
 The guest kernel must expose `/proc/sys/net/ipv4/ip_local_reserved_ports`
-and `/proc/net/dev`, and preserve the script pathname in the interpreter's
-`argv` when running the Debian `/usr/bin/egrep` wrapper. `/proc/net/dev` is
-what the driver's `netstat -i` reads; without it that loop reports nothing,
-which is why the archive adapts the header handling. The `argv` fix is the
+and preserve the script pathname in the interpreter's `argv` when running
+the Debian `/usr/bin/egrep` wrapper. The latter is fixed by the
 [shebang argument change](../../docs/porting/evidence/2026-09-24-shebang-script-argv/README.md).
 Keep the archive's `.sha256` file when transferring it and verify before extraction:
 

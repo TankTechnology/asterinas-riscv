@@ -441,8 +441,14 @@ mod test {
         assert_eq!(read_be_u32(&blocks[0], 16), JBD2_FLAG_ESCAPE);
         assert_eq!(&blocks[0][20..36], &[0x42; 16]);
         assert_eq!(read_be_u32(&blocks[0], 36), 32);
-        assert_eq!(read_be_u32(&blocks[0], 40), JBD2_FLAG_LAST_TAG | JBD2_FLAG_SAME_UUID);
-        assert_eq!(parse_descriptor(&blocks[0], 7, &[0x42; 16]).unwrap().len(), 2);
+        assert_eq!(
+            read_be_u32(&blocks[0], 40),
+            JBD2_FLAG_LAST_TAG | JBD2_FLAG_SAME_UUID
+        );
+        assert_eq!(
+            parse_descriptor(&blocks[0], 7, &[0x42; 16]).unwrap().len(),
+            2
+        );
         assert_eq!(&blocks[1][..4], &[0; 4]);
         assert_eq!(blocks[2], vec![0x5a; BLOCK_SIZE]);
         assert_eq!(read_be_u32(&blocks[3], 4), JBD2_COMMIT_BLOCK);
@@ -512,8 +518,14 @@ mod test {
         let mut block = header(JBD2_DESCRIPTOR_BLOCK);
         block[12..16].copy_from_slice(&31u32.to_be_bytes());
         block[16..20].copy_from_slice(&JBD2_FLAG_LAST_TAG.to_be_bytes());
+        block[20..36].fill(0x42);
         assert!(parse_descriptor(&block[..35], 7, &[0; 16]).is_err());
-        assert_eq!(parse_descriptor(&block[..36], 7, &[0x42; 16]).unwrap().len(), 1);
+        assert_eq!(
+            parse_descriptor(&block[..36], 7, &[0x42; 16])
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[ktest]

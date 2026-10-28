@@ -1,7 +1,7 @@
 project_type = "library"
 
 [boot]
-method = "vmm-direct"
+method = "qemu-direct"
 
 [qemu]
 args = """\

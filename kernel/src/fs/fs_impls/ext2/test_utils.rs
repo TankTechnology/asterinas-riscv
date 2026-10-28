@@ -8,19 +8,19 @@ use core::{
 };
 
 use aster_block::{
+    BLOCK_SIZE, BlockDevice, BlockDeviceMeta, SECTOR_SIZE,
     bio::{BioEnqueueError, BioStatus, BioType, SubmittedBio},
     id::Bid,
-    BlockDevice, BlockDeviceMeta, BLOCK_SIZE, SECTOR_SIZE,
 };
 use device_id::{DeviceId, MajorId, MinorId};
-use ostd::mm::{io::util::HasVmReaderWriter, FrameAllocOptions, HasSize, Segment, VmIo};
+use ostd::mm::{FrameAllocOptions, HasSize, Segment, VmIo, io::util::HasVmReaderWriter};
 
 use super::{
     block_group::RawBlockGroup,
     fs::{Ext2, ROOT_INO},
-    inode::{FilePerm, Inode, RawInode, RAW_BLOCK_PTRS_LEN},
+    inode::{FilePerm, Inode, RAW_BLOCK_PTRS_LEN, RawInode},
     super_block::{
-        ErrorsBehavior, FsState, OsId, RawSuperBlock, RevLevel, MAGIC_NUM, SUPER_BLOCK_OFFSET,
+        ErrorsBehavior, FsState, MAGIC_NUM, OsId, RawSuperBlock, RevLevel, SUPER_BLOCK_OFFSET,
     },
 };
 use crate::{
@@ -204,6 +204,17 @@ impl BlockDevice for Ext2MemoryDisk {
 // ===========================================================================
 
 pub(super) fn make_valid_raw_super_block(nr_block_groups: u32) -> RawSuperBlock {
+    make_valid_raw_super_block_with_geometry(nr_block_groups, 128, 64)
+}
+
+/// Builds a superblock with the legacy 128-block groups and a 64-block tail:
+/// `nr_block_groups = 1` declares 65 blocks, `nr_block_groups = 2` declares
+/// 193 (one full group plus a partial last group).
+pub(super) fn make_valid_raw_super_block_with_geometry(
+    nr_block_groups: u32,
+    blocks_per_group: u32,
+    tail_blocks: u32,
+) -> RawSuperBlock {
     let mut raw = RawSuperBlock::default();
     raw.magic = MAGIC_NUM;
     raw.log_block_size = 2;
@@ -213,16 +224,31 @@ pub(super) fn make_valid_raw_super_block(nr_block_groups: u32) -> RawSuperBlock 
     raw.creator_os = OsId::Linux as u32;
     raw.rev_level = RevLevel::GoodOld as u32;
     raw.first_data_block = 0;
-    raw.blocks_per_group = 128;
+    raw.blocks_per_group = blocks_per_group;
     raw.frags_per_group = raw.blocks_per_group;
     raw.inodes_per_group = 1024;
     raw.inodes_count = nr_block_groups * raw.inodes_per_group;
 
-    let tail_blocks = 64;
     raw.blocks_count = raw.first_data_block
         + 1
         + (nr_block_groups.saturating_sub(1)) * raw.blocks_per_group
         + tail_blocks;
+    raw
+}
+
+/// Builds a superblock whose declared filesystem exactly covers the backing
+/// disk.  The group count is kept and `blocks_per_group` is rounded up so
+/// `nr_block_groups()` equals `nr_block_groups`; the last group may be short.
+pub(super) fn make_valid_raw_super_block_with_disk(
+    nr_block_groups: u32,
+    nblocks: usize,
+) -> RawSuperBlock {
+    assert!(nr_block_groups > 0);
+    let blocks_count = u32::try_from(nblocks).expect("fixture disk is too large");
+    let blocks_per_group = blocks_count.div_ceil(nr_block_groups);
+    let mut raw = make_valid_raw_super_block_with_geometry(nr_block_groups, blocks_per_group, 0);
+    raw.blocks_count = blocks_count;
+    raw.frags_per_group = blocks_per_group;
     raw
 }
 
@@ -541,6 +567,9 @@ pub(super) struct Ext2FixtureBuilder {
     block_bitmap: Option<BlockBitmapInit>,
     inode_bitmap: Option<InodeBitmapInit>,
     custom_device: Option<Arc<dyn BlockDevice>>,
+    /// Explicit `(blocks_per_group, tail_blocks)` geometry for fixtures that
+    /// deliberately describe a smaller filesystem than the backing disk.
+    geometry: Option<(u32, u32)>,
 }
 
 impl Ext2FixtureBuilder {
@@ -558,6 +587,7 @@ impl Ext2FixtureBuilder {
             block_bitmap: None,
             inode_bitmap: None,
             custom_device: None,
+            geometry: None,
         }
     }
 
@@ -583,6 +613,14 @@ impl Ext2FixtureBuilder {
         self
     }
 
+    /// Overrides the superblock geometry instead of deriving it from the
+    /// backing disk.  `tail_blocks` keeps the last group partial, matching the
+    /// legacy `make_valid_raw_super_block(groups)` layout.
+    pub(super) fn with_geometry(mut self, blocks_per_group: u32, tail_blocks: u32) -> Self {
+        self.geometry = Some((blocks_per_group, tail_blocks));
+        self
+    }
+
     pub(super) fn block_bitmap(mut self, init: BlockBitmapInit) -> Self {
         self.block_bitmap = Some(init);
         self
@@ -594,7 +632,15 @@ impl Ext2FixtureBuilder {
     }
 
     fn prepare(&self) -> Result<PreparedFixture> {
-        let mut raw_sb = make_valid_raw_super_block(self.groups);
+        let mut raw_sb = match self.geometry {
+            Some((blocks_per_group, tail_blocks)) => {
+                make_valid_raw_super_block_with_geometry(self.groups, blocks_per_group, tail_blocks)
+            }
+            // By default the superblock covers the whole backing disk: a
+            // fixture that declares fewer blocks than the disk lets tests
+            // allocate outside the filesystem.
+            None => make_valid_raw_super_block_with_disk(self.groups, self.nblocks),
+        };
         if let Some(total_inodes) = self.total_inodes {
             raw_sb.inodes_count = total_inodes;
         }
@@ -626,8 +672,7 @@ impl Ext2FixtureBuilder {
             descs[0].used_dirs_count = v;
         }
 
-        let disk_blocks = self.nblocks.max(sb.total_blocks() as usize);
-        let disk = Arc::new(Ext2MemoryDisk::new(disk_blocks));
+        let disk = Arc::new(Ext2MemoryDisk::new(self.nblocks));
         disk.write_super_block(&raw_sb);
         disk.write_group_desc_table(&sb, &descs);
 
@@ -671,7 +716,7 @@ impl Ext2FixtureBuilder {
         descs: &[RawBlockGroup],
         disk: &Ext2MemoryDisk,
         layout: &Group0Layout,
-    ) {
+    ) -> Vec<u16> {
         let root_bid = layout.first_data_bid.saturating_add(1);
 
         // Resolve bitmap strategies.
@@ -690,7 +735,9 @@ impl Ext2FixtureBuilder {
             }
         });
 
-        // Block bitmaps — one pass per group.
+        // Block bitmaps — one pass per group.  Also derive each group's free
+        // block count from the bitmap instead of leaving it at zero.
+        let mut free_blocks = Vec::with_capacity(descs.len());
         for (group_idx, desc) in descs.iter().enumerate() {
             let first = sb.group_first_block_no(group_idx);
             let last = sb.group_last_block_no(group_idx);
@@ -723,6 +770,12 @@ impl Ext2FixtureBuilder {
                     &bitmap_block,
                 )
                 .unwrap();
+
+            let group_blocks = (last - first + 1) as usize;
+            let used_blocks = (0..group_blocks)
+                .filter(|bit| bitmap_block[bit / 8] & (1u8 << (bit % 8)) != 0)
+                .count();
+            free_blocks.push((group_blocks - used_blocks) as u16);
         }
 
         // Inode bitmap — group 0 only.
@@ -764,11 +817,43 @@ impl Ext2FixtureBuilder {
         if self.init_root {
             write_simple_root_dir_block(disk, root_bid);
         }
+
+        free_blocks
     }
 
     pub(super) fn build(self) -> Result<Ext2Fixture> {
-        let (_, sb, descs, disk, layout) = self.prepare()?;
-        self.write_bitmaps(&sb, &descs, &disk, &layout);
+        // Ext2 writes timestamps on allocation; the ktest runner does not run
+        // the kernel's clock initialization.
+        crate::time::clocks::init_for_ktest();
+
+        let (mut raw_sb, mut sb, mut descs, disk, layout) = self.prepare()?;
+
+        // Regression guard: a fixture must never claim more blocks than the
+        // device can store.  The old builder expanded the device to 256 blocks
+        // while the superblock still declared 65, so tests allocated blocks
+        // outside the filesystem.
+        assert!(
+            sb.total_blocks() as usize <= self.nblocks,
+            "fixture superblock declares {} blocks but the backing disk has {}",
+            sb.total_blocks(),
+            self.nblocks
+        );
+
+        let free_blocks = self.write_bitmaps(&sb, &descs, &disk, &layout);
+
+        raw_sb.free_blocks_count = self
+            .sb_free_blocks
+            .unwrap_or_else(|| free_blocks.iter().map(|&n| u32::from(n)).sum());
+        for (idx, &free) in free_blocks.iter().enumerate() {
+            descs[idx].free_blocks_count = if idx == 0 {
+                self.group0_free_blocks.unwrap_or(free)
+            } else {
+                free
+            };
+        }
+        disk.write_super_block(&raw_sb);
+        disk.write_group_desc_table(&sb, &descs);
+        sb = SuperBlock::try_from(raw_sb)?;
 
         let root_bid = layout.first_data_bid.saturating_add(1);
         if self.init_root {

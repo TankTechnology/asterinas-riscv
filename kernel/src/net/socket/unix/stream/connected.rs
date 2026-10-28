@@ -364,6 +364,8 @@ impl Connected {
             return Ok(write_len);
         }
 
+        let mut all_aux = this_end.all_aux.lock();
+
         if aux_data.has_unsupported_file() {
             return_errno_with_message!(
                 Errno::EPERM,
@@ -389,28 +391,23 @@ impl Connected {
             )
         };
 
-        // `this_end.writer` is the peer endpoint's reader.  Receivers lock
-        // that reader before the peer's auxiliary queue, so senders must use
-        // the same writer -> all_aux order or concurrent SCM_RIGHTS traffic
-        // can deadlock across the two endpoints.
-        let mut writer = this_end.writer.lock();
-        let mut all_aux = this_end.all_aux.lock();
-
-        // Publish the flag only while both locks are held, so a receiver cannot
-        // observe auxiliary data before its queue entry is visible.
+        // No matter we succeed later or not, set the flag first to ensure that the auxiliary
+        // data are always visible to `try_recv`.
         this_end.has_aux.store(true, Ordering::Relaxed);
 
-        // Write the payload bytes while holding the ring lock.
-        let write_start = writer.tail();
-        let write_res = if !is_empty {
-            self.inner.write_with(|| {
+        // Write the payload bytes.
+        let (write_start, write_res) = if !is_empty {
+            let mut writer = this_end.writer.lock();
+            let write_start = writer.tail();
+            let write_res = self.inner.write_with(move || {
                 if is_seqpacket && writer.free_len() < reader.sum_lens() {
                     return Ok(0);
                 }
                 writer.write_fallible(reader)
-            })
+            });
+            (write_start, write_res)
         } else {
-            Ok(0)
+            (this_end.writer.lock().tail(), Ok(0))
         };
         let allow_zero_len = is_empty && is_seqpacket;
         let (write_len, committed_edges) =

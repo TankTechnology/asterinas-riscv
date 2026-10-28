@@ -18,7 +18,10 @@
 # the prefix from the desktop X build).
 set -euo pipefail
 
-ROOT=/home/arch-anjie/Program/asterinas-riscv
+# Resolve the checkout from this script so callers in another worktree do not
+# silently write the D-Bus prefix into an unrelated tree.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT="${ASTERINAS_REPOSITORY_ROOT:-$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)}"
 PREFIX="$ROOT/target/riscv-cross/usr"
 SRC="$ROOT/target/riscv-cross/src"
 HOST=riscv64-linux-gnu

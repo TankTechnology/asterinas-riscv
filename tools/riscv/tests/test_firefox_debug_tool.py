@@ -194,19 +194,7 @@ class FirefoxDebugToolTests(unittest.TestCase):
         self.assertIn(f"file={repo_root}/test/initramfs/build/exfat.img", args)
         self.assertIn(f"file={repo_root}/test/initramfs/build/ltp_dev.img", args)
         self.assertIn(f"logfile={log_dir}/qemu.log", args)
-        self.assertIn("-netdev user,id=net01", args)
-        self.assertIn("-device virtio-net-device,netdev=net01", args)
         self.assertNotIn("file=./test/initramfs/build", args)
-
-        no_network = subprocess.run(
-            ["bash", "tools/qemu_args.sh", "riscv"],
-            env={**os.environ, "NETDEV": "none"},
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-        self.assertIn("-nic none", no_network)
-        self.assertNotIn("virtio-net-device", no_network)
 
         injected = subprocess.run(
             ["bash", "tools/qemu_args.sh", "riscv"],

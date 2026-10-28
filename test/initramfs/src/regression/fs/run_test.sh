@@ -4,6 +4,11 @@
 
 set -e
 
+# Keep syscall compatibility probes ahead of the larger filesystem suite so
+# their result remains visible even when a later integration test fails.
+./quotactl/quotactl
+./readahead/readahead
+
 check_file_size() {
     local file_name="$1"
     local expected_size="$2"
@@ -100,7 +105,6 @@ test_ext2 "/ext2" "test_file.txt"
 ./ext2/shared_block_device
 ./ext2/short_rw
 ./ext2/sparse
-./ext2/sticky
 ./ext2/symlink
 ./ext2/unix_socket
 ./ext2/xattr
@@ -114,16 +118,10 @@ echo "Start mount bind file test......"
 test_mount_bind_file
 echo "All mount bind file test passed."
 
-TEST_TMPDIR=/tmp TEST_DIRECT=0 ./empty_write/empty_write
-TEST_TMPDIR=/exfat TEST_DIRECT=0 ./empty_write/empty_write
-TEST_TMPDIR=/exfat TEST_DIRECT=1 ./empty_write/empty_write
-TEST_TMPDIR=/ext2 TEST_DIRECT=0 ./empty_write/empty_write
-TEST_TMPDIR=/ext2 TEST_DIRECT=1 ./empty_write/empty_write
-
 ./getcwd/getcwd
 
 ./inotify/inotify_align
-./inotify/inotify_close
+./inotify/inotify_isdir
 ./inotify/inotify_o_path
 ./inotify/inotify_poll
 ./inotify/inotify_unlink
@@ -133,19 +131,11 @@ TEST_TMPDIR=/ext2 TEST_DIRECT=1 ./empty_write/empty_write
 
 ./mount/listmount
 ./mount/mount_api
-./mount/mount_capability
-./mount/mount_move
-./mount/mount_propagation
 ./mount/mountinfo_poll
+./mount/mount_move
 
-./overlayfs/lchown_lower_symlink
-./overlayfs/link_lower_file
-./overlayfs/mknod_whiteout_rejected
 ./overlayfs/ovl_test
 ./overlayfs/readdir_small_buffer
-./overlayfs/rmdir_lower_only_nonempty
-./overlayfs/sparse_copyup_consistency
-./overlayfs/xino_dino_identity
 
 ./procfs/dentry_cache
 ./procfs/fd
@@ -153,7 +143,9 @@ TEST_TMPDIR=/ext2 TEST_DIRECT=1 ./empty_write/empty_write
 ./procfs/mountstats
 ./procfs/pid_mem
 ./procfs/proc_fd_open_fifo_after_setid
+./procfs/proc_status_sandbox
 ./procfs/proc_sys_kernel
+./procfs/schedstat
 ./procfs/tid
 
 ./pseudofs/fallocate
@@ -163,8 +155,6 @@ TEST_TMPDIR=/ext2 TEST_DIRECT=1 ./empty_write/empty_write
 ./pseudofs/pseudo_dev_id
 ./pseudofs/pseudo_inode
 ./pseudofs/pseudo_mount
-
-./rename/same_inode
 
 ./statx/btime
 

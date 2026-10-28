@@ -28,19 +28,12 @@ virtio-net.pcap
 /result_*.json
 
 # profile results
-asterinas-profile-*.json
-asterinas-profile-*.folded
-asterinas-profile-*.svg
+aster-kernel-profile-*.json
+aster-kernel-profile-*.folded
+aster-kernel-profile-*.svg
 
 # distro results
 distro/result
-
-# nix build results
-/result
-/result-*
-
-# direnv cache; nix-direnv also keeps its GC roots here
-/.direnv/
 
 # cachix package list
 cachix.list
@@ -48,14 +41,8 @@ cachix.list
 # temporary configuration file for NixOS tests
 distro/etc_nixos/_config_for_test.nix
 
-# RustRover
-.idea
-# Python bytecode
 __pycache__/
-*.py[cod]
+*.pyc
 
-# Local git worktrees
+# Local isolated worktrees used for reproducible hardware experiments.
 .worktrees/
-
-# RISC-V patch set staged for evaluation (not part of the tree)
-patches-from-riscv/

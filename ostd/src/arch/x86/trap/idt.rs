@@ -2,6 +2,7 @@
 
 //! Configure the Interrupt Descriptor Table (IDT).
 
+use alloc::boxed::Box;
 use core::arch::global_asm;
 
 use spin::Once;
@@ -10,8 +11,6 @@ use x86_64::{
     instructions::tables::lidt,
     structures::{DescriptorTablePointer, idt::Entry},
 };
-
-use crate::mm::Vaddr;
 
 global_asm!(include_str!("trap.S"));
 
@@ -22,12 +21,7 @@ unsafe extern "C" {
     static VECTORS: [usize; NUM_INTERRUPTS];
 }
 
-static GLOBAL_IDT: Once<[Entry<()>; NUM_INTERRUPTS]> = Once::new();
-
-/// Returns the IDT base address.
-pub(in crate::arch) fn idt_base() -> Vaddr {
-    GLOBAL_IDT.get().unwrap().as_ptr() as Vaddr
-}
+static GLOBAL_IDT: Once<&'static [Entry<()>]> = Once::new();
 
 /// Initializes and loads the IDT.
 ///
@@ -35,8 +29,8 @@ pub(in crate::arch) fn idt_base() -> Vaddr {
 /// This is not a safety requirement, however, because calling this method again will do nothing
 /// more than load the same IDT.
 pub(super) fn init_on_cpu() {
-    let idt = GLOBAL_IDT.call_once(|| {
-        let mut idt = [const { Entry::missing() }; NUM_INTERRUPTS];
+    let idt = *GLOBAL_IDT.call_once(|| {
+        let idt = Box::leak(Box::new([const { Entry::missing() }; NUM_INTERRUPTS]));
 
         // SAFETY: The vector array is properly initialized, lives for `'static`, and will never be
         // mutated. So it's always fine to create an immutable borrow to it.
